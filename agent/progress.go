@@ -305,11 +305,16 @@ func isStatusEmojiLine(line string) bool {
 	for _, prefix := range []string{"🔄 ", "✅ ", "❌ "} {
 		if strings.HasPrefix(line, prefix) {
 			rest := line[len(prefix):]
+			// Handle format with colon: "🔄 role: desc" or "✅ role:"
 			if idx := strings.Index(rest, ":"); idx > 0 {
 				candidate := strings.TrimSpace(rest[:idx])
 				if isPlausibleAgentRole(candidate) {
 					return true
 				}
+			}
+			// Handle no-colon completion format: "✅ role" (legacy, no description)
+			if strings.HasPrefix(line, "✅ ") && isPlausibleAgentRole(strings.TrimSpace(rest)) {
+				return true
 			}
 		}
 	}
@@ -387,6 +392,14 @@ func parseSubAgentLine(line string) (childAgentStatus, bool) {
 	// 提取角色名（第一个冒号之前的部分）
 	colonIdx := strings.Index(line, ":")
 	if colonIdx <= 0 {
+		// No colon: handle legacy "✅ role" format (completion without description).
+		// Only accept ✅ with a plausible agent role name.
+		if status == "✅" {
+			role := strings.TrimSpace(line)
+			if role != "" && isPlausibleAgentRole(role) {
+				return childAgentStatus{Role: role, Status: status, Desc: ""}, true
+			}
+		}
 		return childAgentStatus{}, false
 	}
 
@@ -706,9 +719,11 @@ func formatSubAgentProgress(detail SubAgentProgressDetail) string {
 	}
 	indent := strings.Repeat("　", indentDepth)
 
-	// 1. 完成状态：无内容也无子 Agent
+	// 1. 运行中但无内容输出：保持 running 状态
+	//    agent 可能在 LLM 调用间隙、工具未产出、或刚启动时处于此状态。
+	//    不能标记为 ✅（done），否则 CLI 渲染器会过滤掉。
 	if ownLine == "" && len(children) == 0 {
-		return fmt.Sprintf("> %s✅ %s", indent, roleName)
+		return fmt.Sprintf("> %s🔄 %s:", indent, roleName)
 	}
 
 	// 2. 有子 Agent → 多行缩进树

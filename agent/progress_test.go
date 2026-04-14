@@ -511,22 +511,22 @@ func TestFormatSubAgentProgress(t *testing.T) {
 			want: "> 🔄 crown-prince: ⏳ Shell(ls) ...",
 		},
 		{
-			name: "completed (empty lines)",
+			name: "no content (empty lines) — should show running, not done",
 			detail: SubAgentProgressDetail{
 				Path:  []string{"main/crown-prince"},
 				Lines: []string{""},
 				Depth: 2,
 			},
-			want: "> ✅ crown-prince",
+			want: "> 🔄 crown-prince:",
 		},
 		{
-			name: "completed (nil lines)",
+			name: "no content (nil lines) — should show running, not done",
 			detail: SubAgentProgressDetail{
 				Path:  []string{"main/crown-prince"},
 				Lines: nil,
 				Depth: 2,
 			},
-			want: "> ✅ crown-prince",
+			want: "> 🔄 crown-prince:",
 		},
 		{
 			name: "empty path with content",
@@ -538,13 +538,13 @@ func TestFormatSubAgentProgress(t *testing.T) {
 			want: "> 🔄 : some progress",
 		},
 		{
-			name: "empty path completed",
+			name: "empty path no content — should show running, not done",
 			detail: SubAgentProgressDetail{
 				Path:  nil,
 				Lines: nil,
 				Depth: 2,
 			},
-			want: "> ✅ ",
+			want: "> 🔄 :",
 		},
 		{
 			name: "path without slash",
@@ -575,13 +575,13 @@ func TestFormatSubAgentProgress(t *testing.T) {
 			want: "> 🔄 crown-prince: → 尚书省",
 		},
 		{
-			name: "double quote prefix cleanup",
+			name: "double quote prefix cleanup — no own content after cleanup",
 			detail: SubAgentProgressDetail{
 				Path:  []string{"main/crown-prince"},
 				Lines: []string{"> > ⏳ Shell(go test) ..."},
 				Depth: 2,
 			},
-			want: "> ✅ crown-prince",
+			want: "> 🔄 crown-prince:",
 		},
 		// === 深度缩进 ===
 		{
@@ -594,13 +594,13 @@ func TestFormatSubAgentProgress(t *testing.T) {
 			want: "> 　🔄 ministry-works: ⏳ Shell(go test) ...",
 		},
 		{
-			name: "depth 3 completed",
+			name: "depth 3 no content — should show running, not done",
 			detail: SubAgentProgressDetail{
 				Path:  []string{"main/crown-prince", "main/crown-prince/ministry-works"},
 				Lines: []string{""},
 				Depth: 3,
 			},
-			want: "> 　✅ ministry-works",
+			want: "> 　🔄 ministry-works:",
 		},
 		{
 			name: "depth 4 multi line",

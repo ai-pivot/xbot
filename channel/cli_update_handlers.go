@@ -334,21 +334,30 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			}
 		}
 	}
-	// Preserve SubAgent tree across progress updates.
+	// Preserve SubAgent tree across progress updates within the SAME iteration.
 	// Progress events may arrive with incomplete subagent data (missing deep
 	// nodes) or no subagent data at all. We preserve the deepest tree seen
 	// during the current turn to prevent the TUI from losing deep agent nodes.
 	// PhaseDone is the exception — it intentionally clears the tree.
+	// When iteration changes, the tree MUST be cleared — there are no cross-iteration
+	// active tools, and stale SubAgent markers in progressLines from previous
+	// iterations would cause phantom agents to persist.
 	if m.progress != nil && m.progress.Phase != "done" && prev != nil {
-		newDepth := maxTreeDepth(m.progress.SubAgents)
-		prevDepth := maxTreeDepth(prev.SubAgents)
-		if len(m.progress.SubAgents) == 0 && len(prev.SubAgents) > 0 {
-			// New payload has no tree — carry forward old tree
-			m.progress.SubAgents = prev.SubAgents
-		} else if newDepth < prevDepth && newDepth > 0 {
-			// New tree is shallower than old — carry forward old tree
-			// (deeper nodes are still running even if this event didn't include them)
-			m.progress.SubAgents = prev.SubAgents
+		iterationChanged := m.progress.Iteration != prev.Iteration && prev.Iteration > 0
+		if iterationChanged {
+			// New iteration started — clear stale SubAgent tree
+			m.progress.SubAgents = nil
+		} else {
+			newDepth := maxTreeDepth(m.progress.SubAgents)
+			prevDepth := maxTreeDepth(prev.SubAgents)
+			if len(m.progress.SubAgents) == 0 && len(prev.SubAgents) > 0 {
+				// New payload has no tree — carry forward old tree
+				m.progress.SubAgents = prev.SubAgents
+			} else if newDepth < prevDepth && newDepth > 0 {
+				// New tree is shallower than old — carry forward old tree
+				// (deeper nodes are still running even if this event didn't include them)
+				m.progress.SubAgents = prev.SubAgents
+			}
 		}
 	}
 	// Update bg task count from callback
