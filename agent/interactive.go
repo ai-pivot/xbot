@@ -312,10 +312,15 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 
 			if cancelled {
-				// Context was cancelled (parent unloaded, agent shutdown, etc.)
-				// Clean up children and remove self from panel.
-				a.cancelChildSessions(key)
-				a.interactiveSubAgents.Delete(key)
+					// Context was cancelled (parent unloaded, agent shutdown, etc.)
+					// Clean up children and remove self from panel.
+					// Check if key still exists — UnloadInteractiveSession may have
+					// already cleaned up this session, preventing duplicate cleanup.
+					if _, ok := a.interactiveSubAgents.Load(key); !ok {
+						return
+					}
+					a.cancelChildSessions(key)
+					a.interactiveSubAgents.Delete(key)
 				log.WithFields(log.Fields{
 					"role":     roleName,
 					"instance": instance,
@@ -739,30 +744,39 @@ func (a *Agent) InspectInteractiveSession(
 // matches the given key. Recursively cascades to grandchildren.
 // This ensures that when a session is unloaded or its context is cancelled,
 // all descendant sessions are also cleaned up and disappear from the panel.
+// Collects keys first to avoid modifying sync.Map during Range iteration.
 func (a *Agent) cancelChildSessions(parentKey string) {
+	type childInfo struct {
+		key       string
+		parentKey string
+	}
+	var children []childInfo
 	a.interactiveSubAgents.Range(func(k, v any) bool {
 		childIA, ok := v.(*interactiveAgent)
 		if !ok || childIA == nil {
 			return true
 		}
 		childIA.mu.Lock()
-		childParentKey := childIA.parentKey
+		pk := childIA.parentKey
 		if childIA.cancelCurrent != nil {
 			childIA.cancelCurrent()
 		}
 		childIA.mu.Unlock()
-		if childParentKey == parentKey {
+		if pk == parentKey {
 			childKey, _ := k.(string)
-			a.interactiveSubAgents.Delete(childKey)
-			// Recurse: cancel grandchildren before they become orphaned
-			a.cancelChildSessions(childKey)
-			log.WithFields(log.Fields{
-				"parent": parentKey,
-				"child":  childKey,
-			}).Info("Cascade cancelled child interactive session")
+			children = append(children, childInfo{key: childKey, parentKey: parentKey})
 		}
 		return true
 	})
+	for _, c := range children {
+		a.interactiveSubAgents.Delete(c.key)
+		// Recurse: cancel grandchildren before they become orphaned
+		a.cancelChildSessions(c.key)
+		log.WithFields(log.Fields{
+			"parent": c.parentKey,
+			"child":  c.key,
+		}).Info("Cascade cancelled child interactive session")
+	}
 }
 
 // UnloadInteractiveSession 结束 interactive session：巩固记忆并清理。

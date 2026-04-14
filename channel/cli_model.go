@@ -80,13 +80,13 @@ func (m *cliModel) advanceTypewriter() {
 	// Advance reasoning writer
 	if m.progress.ReasoningStreamContent != "" {
 		target := len([]rune(m.progress.ReasoningStreamContent))
-		m.advanceWriterCJK(&m.rwVisible, target, m.progress.ReasoningStreamContent, &m.cjkSkipTick)
+		m.advanceWriterCJK(&m.rwVisible, target, m.progress.ReasoningStreamContent, &m.rwCjkSkipTick)
 	}
 
 	// Advance stream writer
 	if m.progress.StreamContent != "" {
 		target := len([]rune(m.progress.StreamContent))
-		m.advanceWriterCJK(&m.twVisible, target, m.progress.StreamContent, &m.cjkSkipTick)
+		m.advanceWriterCJK(&m.twVisible, target, m.progress.StreamContent, &m.twCjkSkipTick)
 	}
 }
 
@@ -316,7 +316,8 @@ type cliModel struct {
 	typewriterTickActive bool                   // true when typewriter tick chain (50ms) is running
 	twVisible            int                    // typewriter: runes currently visible in stream content
 	rwVisible            int                    // typewriter: runes currently visible in reasoning stream content
-	cjkSkipTick          bool                   // alternates each tick to halve CJK speed
+	rwCjkSkipTick       bool                   // alternates each tick to halve CJK speed (reasoning)
+	twCjkSkipTick       bool                   // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
 	workDir       string // 工作目录（标题栏显示用）

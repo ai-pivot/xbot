@@ -101,3 +101,4 @@ After completing a task, update knowledge:
 - When deleting/renaming files: Update all references in AGENT.md and other knowledge files
 - Do NOT just append — revise outdated content
 - Keep each file focused on one topic; split when a file grows beyond ~200 lines
+- After significant updates: spot-check that AGENT.md index entries match actual files on disk

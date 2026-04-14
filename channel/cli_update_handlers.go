@@ -343,7 +343,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// active tools, and stale SubAgent markers in progressLines from previous
 	// iterations would cause phantom agents to persist.
 	if m.progress != nil && m.progress.Phase != "done" && prev != nil {
-		iterationChanged := m.progress.Iteration != prev.Iteration && prev.Iteration > 0
+		iterationChanged := m.progress.Iteration != prev.Iteration && m.progress.Iteration > 0
 		if iterationChanged {
 			// New iteration started — clear stale SubAgent tree
 			m.progress.SubAgents = nil
