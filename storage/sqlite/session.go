@@ -264,9 +264,14 @@ func (s *SessionService) PurgeNewerThan(tenantID int64, cutoff time.Time) (int64
 		return 0, nil
 	}
 	conn := s.db.Conn()
+	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
+	// We must compare against the same string format — passing time.Time directly causes
+	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
+	// which breaks lexicographic comparison and deletes ALL messages.
+	cutoffStr := cutoff.Format(time.RFC3339)
 	result, err := conn.Exec(
 		"DELETE FROM session_messages WHERE tenant_id = ? AND created_at > ?",
-		tenantID, cutoff,
+		tenantID, cutoffStr,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("purge newer than: %w", err)
