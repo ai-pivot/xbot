@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -34,6 +35,9 @@ type SessionMCPManager struct {
 	sessionLastUsed   time.Time                 // 会话级别活跃时间
 	inactivityTimeout time.Duration             // 不活跃超时配置
 	initialized       bool                      // 是否已初始化配置加载
+	initOnce          uint32                    // atomic state: 0=idle, 1=starting, 2=started (background goroutine launched)
+	initDone          chan struct{}             // 后台初始化完成信号（closed = done）
+	onChange          func()                    // 初始化完成后的回调（通知调用方重新索引）
 }
 
 // NewSessionMCPManager 创建会话 MCP 管理器
@@ -48,6 +52,7 @@ func NewSessionMCPManager(sessionKey, userID, globalConfigPath, userConfigPath, 
 		lastActive:        make(map[string]time.Time),
 		sessionLastUsed:   time.Now(),
 		inactivityTimeout: inactivityTimeout,
+		initDone:          make(chan struct{}),
 	}
 }
 
@@ -69,24 +74,18 @@ func (sm *SessionMCPManager) UpdateScope(userID, userConfigPath, workspaceRoot s
 	sm.userConfigPath = userConfigPath
 	sm.workspaceRoot = workspaceRoot
 	sm.initialized = false
+	sm.initOnce = 0
+	sm.initDone = make(chan struct{})
 }
 
-// GetCatalog 返回此会话所有已连接 MCP Server 的目录信息（需在锁外调用，内部加锁）
+// GetCatalog 返回此会话所有已连接 MCP Server 的目录信息。
+// 首次调用时启动后台初始化（非阻塞），立即返回空 catalog。
+// 后续调用在后台初始化完成后返回完整 catalog。
 func (sm *SessionMCPManager) GetCatalog() []MCPServerCatalogEntry {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	sm.ensureInitAsync()
 
-	// 首次调用时确保配置已加载
-	if !sm.initialized {
-		if err := sm.loadAndConnect(context.Background()); err != nil {
-			if err != errNotInitialized {
-				log.WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for catalog")
-				sm.initialized = true
-			}
-			return nil
-		}
-		sm.initialized = true
-	}
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
 
 	var catalog []MCPServerCatalogEntry
 	for _, conn := range sm.connections {
@@ -103,26 +102,75 @@ func (sm *SessionMCPManager) GetCatalog() []MCPServerCatalogEntry {
 	return catalog
 }
 
-// GetSessionTools 懒加载并返回此会话的 MCP 工具
+// GetCatalogBlocking blocks until initialization is complete, then returns the catalog.
+// Use this when the caller needs the full catalog immediately and can tolerate blocking.
+func (sm *SessionMCPManager) GetCatalogBlocking() []MCPServerCatalogEntry {
+	sm.ensureInitAsync()
+	<-sm.initDone
+	return sm.GetCatalog()
+}
+
+// ensureInitAsync starts background initialization on first call (idempotent).
+// On errNotInitialized, it resets so the next access retries.
+func (sm *SessionMCPManager) ensureInitAsync() {
+	// Fast path: already started
+	if atomic.LoadUint32(&sm.initOnce) != 0 {
+		return
+	}
+	// CAS from 0→1: we are the one to start the background goroutine
+	if !atomic.CompareAndSwapUint32(&sm.initOnce, 0, 1) {
+		return
+	}
+	go func() {
+		sm.mu.Lock()
+		if err := sm.loadAndConnect(context.Background()); err != nil {
+			if err != errNotInitialized {
+				log.WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for catalog")
+			}
+			// Reset to idle so the next access retries (config may be created later).
+			// Safe because only the goroutine that won CAS(0→1) can CAS back to 0,
+			// and concurrent callers that saw 1 will return on the fast path above.
+			atomic.StoreUint32(&sm.initOnce, 0)
+			sm.mu.Unlock()
+			return
+		}
+		sm.initialized = true
+		// Mark as fully started (prevent any retry)
+		atomic.StoreUint32(&sm.initOnce, 2)
+		// Close initDone to signal completion
+		if ch := sm.initDone; ch != nil {
+			close(ch)
+		}
+		onChange := sm.onChange
+		sm.mu.Unlock()
+		if onChange != nil {
+			onChange()
+		}
+	}()
+}
+
+// SetOnChange registers a callback invoked after background initialization completes.
+// Must be called before GetCatalog to guarantee the callback fires.
+func (sm *SessionMCPManager) SetOnChange(fn func()) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.onChange = fn
+	// If already initialized, invoke immediately
+	if sm.initialized {
+		fn()
+	}
+}
+
+// GetSessionTools 懒加载并返回此会话的 MCP 工具（非阻塞）。
+// 首次调用时启动后台初始化，立即返回已有工具列表。
 func (sm *SessionMCPManager) GetSessionTools() []Tool {
+	sm.ensureInitAsync()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	// 标记会话为活跃
 	sm.sessionLastUsed = time.Now()
-
-	// 首次调用时加载配置
-	if !sm.initialized {
-		if err := sm.loadAndConnect(context.Background()); err != nil {
-			if err != errNotInitialized {
-				log.WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for session")
-				sm.initialized = true // 真正的错误，标记为已尝试，避免重复
-			}
-			// errNotInitialized: 配置文件暂不存在，不设 initialized，下次重试
-			return nil
-		}
-		sm.initialized = true
-	}
 
 	// 收集所有 MCP 工具
 	var tools []Tool
@@ -209,6 +257,8 @@ func (sm *SessionMCPManager) Invalidate() {
 	sm.connections = make(map[string]*mcpConnection)
 	sm.lastActive = make(map[string]time.Time)
 	sm.initialized = false
+	sm.initOnce = 0
+	sm.initDone = make(chan struct{})
 
 	log.WithField("session", sm.sessionKey).Info("Session MCP invalidated, will reload on next use")
 }

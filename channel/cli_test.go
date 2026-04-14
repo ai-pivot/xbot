@@ -728,6 +728,59 @@ func TestCLIModelUpdateTickMsg(t *testing.T) {
 	}
 }
 
+func TestTickChainSelfHealingViaIdleTick(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+
+	// Simulate broken tick chain: typing=true but only idle tick arrives
+	model.typing = true
+	model.fastTickActive = false
+
+	// idleTickMsg with typing=true should re-arm fast tick chain
+	_, cmd := model.Update(idleTickMsg{})
+	if cmd == nil {
+		t.Fatal("idleTickMsg with typing=true should return tickCmd to self-heal")
+	}
+}
+
+func TestTickChainSelfHealingViaProgressMsg(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+
+	// Progress events should NOT emit tickCmd — that would create duplicate chains.
+	// Self-healing is handled by idleTickMsg (3s safety net).
+	model.typing = true
+	model.fastTickActive = false
+
+	_, cmd := model.Update(cliProgressMsg{payload: &CLIProgressPayload{
+		Iteration: 1,
+		Phase:     "thinking",
+	}})
+	// cmd may contain viewport/textarea sub-commands but should NOT contain tickCmd
+	// (we can't easily inspect tea.Cmd contents, but at minimum verify no panic)
+	_ = cmd
+}
+
+func TestStartAgentTurnDoesNotDuplicateChain(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+
+	// When chain is already running (fastTickActive=true), startAgentTurn should NOT inject
+	model.fastTickActive = true
+	model.startAgentTurn()
+	if len(model.pendingCmds) > 0 {
+		t.Error("startAgentTurn should not inject tickCmd when chain was already running")
+	}
+
+	// When no chain (fastTickActive=false), it SHOULD inject
+	model.fastTickActive = false
+	model.pendingCmds = nil
+	model.startAgentTurn()
+	if len(model.pendingCmds) == 0 {
+		t.Error("startAgentTurn should inject tickCmd when fastTickActive is false (no chain)")
+	}
+}
+
 func TestCLIModelUpdateOutboundMsg(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
@@ -870,10 +923,9 @@ func TestCLIModelRenderProgressStatusWithIteration(t *testing.T) {
 func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 	model := newCLIModel()
 	model.progress = &CLIProgressPayload{
-		Phase: "tool_exec",
-		ActiveTools: []CLIToolProgress{
-			{Name: "read", Label: "Reading file", Elapsed: 100},
-		},
+		Phase:       "tool_exec",
+		Iteration:   1,
+		ActiveTools: []CLIToolProgress{{Name: "read", Label: "Reading file", Elapsed: 100}},
 	}
 
 	progressStyle := lipgloss.NewStyle()
@@ -881,18 +933,19 @@ func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 
 	result := model.renderProgressStatus(progressStyle, toolStyle)
 
-	if !strings.Contains(result, "Reading file") {
-		t.Errorf("renderProgressStatus should show tool label, got: %q", result)
+	// Active tool name is NOT shown in status bar (rendered in progress block instead)
+	// Verify it shows iteration and doesn't crash
+	if !strings.Contains(result, "#1") {
+		t.Errorf("renderProgressStatus should show iteration with active tools, got: %q", result)
 	}
 }
 
 func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 	model := newCLIModel()
 	model.progress = &CLIProgressPayload{
-		Phase: "tool_exec",
-		ActiveTools: []CLIToolProgress{
-			{Name: "read", Label: "", Elapsed: 0},
-		},
+		Phase:       "tool_exec",
+		Iteration:   1,
+		ActiveTools: []CLIToolProgress{{Name: "read", Label: "", Elapsed: 0}},
 	}
 
 	progressStyle := lipgloss.NewStyle()
@@ -900,8 +953,9 @@ func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 
 	result := model.renderProgressStatus(progressStyle, toolStyle)
 
-	if !strings.Contains(result, "read") {
-		t.Errorf("renderProgressStatus should show tool name when label empty, got: %q", result)
+	// Active tool name is NOT shown in status bar (rendered in progress block instead)
+	if !strings.Contains(result, "#1") {
+		t.Errorf("renderProgressStatus should show iteration without crash, got: %q", result)
 	}
 }
 

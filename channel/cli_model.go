@@ -28,7 +28,10 @@ func newAnimTicker(frames []string, color string) *animTicker {
 
 func (t *animTicker) tick() {
 	t.ticks++
-	t.frame = (t.frame + 1) % len(t.frames)
+	// Advance frame only every `speed` ticks (speed=1 → every tick, speed=3 → every 3rd)
+	if t.speed <= 1 || t.ticks%int64(t.speed) == 0 {
+		t.frame = (t.frame + 1) % len(t.frames)
+	}
 }
 
 // view 渲染当前帧，带双色呼吸效果（每 10 tick 在两种颜色间切换）
@@ -40,9 +43,20 @@ func (t *animTicker) view() string {
 }
 
 // viewFrames renders a frame from a given set using the ticker's current frame index.
+// speedOverride controls per-call animation speed (0 = use ticker's default speed).
 // 同样带呼吸效果。
-func (t *animTicker) viewFrames(frames []string) string {
-	idx := t.frame % len(frames)
+func (t *animTicker) viewFrames(frames []string, speedOverride ...int) string {
+	speed := t.speed
+	if len(speedOverride) > 0 && speedOverride[0] > 0 {
+		speed = speedOverride[0]
+	}
+	// Calculate effective frame based on speed
+	effectiveFrame := t.frame
+	if speed > 1 {
+		// Use a separate counter for this frame set, keyed by speed
+		effectiveFrame = int(t.ticks/int64(speed)) % len(frames)
+	}
+	idx := effectiveFrame % len(frames)
 	if t.ticks%20 < 10 {
 		return t.style.Render(frames[idx])
 	}
@@ -193,15 +207,15 @@ type cliModel struct {
 	ready           bool                  // 是否已初始化
 
 	// --- Agent state ---
-	agentTurnID     uint64                    // monotonically increasing turn counter
-	typing          bool                      // agent 是否正在回复
-	typingStartTime time.Time                 // 本次处理开始时间
-	inputReady      bool                      // 输入就绪状态（agent 回复期间禁止发送）
-	msgBus          *bus.MessageBus           // 消息总线引用
-	tempStatus      string                    // 临时状态提示（自动过期）
-	pendingCmds     []tea.Cmd                 // commands queued by helpers (auto-drained in Update)
-	shouldQuit      bool                      // Smart quit: quit after current operation completes
-	trimHistoryFn   func(keepCount int) error // Ctrl+K 确认删除后回调：截断数据库中的 session messages
+	agentTurnID     uint64                       // monotonically increasing turn counter
+	typing          bool                         // agent 是否正在回复
+	typingStartTime time.Time                    // 本次处理开始时间
+	inputReady      bool                         // 输入就绪状态（agent 回复期间禁止发送）
+	msgBus          *bus.MessageBus              // 消息总线引用
+	tempStatus      string                       // 临时状态提示（自动过期）
+	pendingCmds     []tea.Cmd                    // commands queued by helpers (auto-drained in Update)
+	shouldQuit      bool                         // Smart quit: quit after current operation completes
+	trimHistoryFn   func(cutoff time.Time) error // /rewind: delete DB messages at or after cutoff timestamp
 
 	// --- Message queue (typing 期间排队的消息) ---
 	messageQueue   []string // 排队等待发送的消息
@@ -223,9 +237,11 @@ type cliModel struct {
 	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
 
 	// --- Progress ---
-	progress          *CLIProgressPayload
-	iterationHistory  []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration int                    // 上次进度事件的迭代号
+	progress           *CLIProgressPayload
+	iterationHistory   []cliIterationSnapshot // 已完成迭代快照
+	lastSeenIteration  int                    // 上次进度事件的迭代号
+	iterationStartTime time.Time              // current iteration wall-clock start time
+	fastTickActive     bool                   // true when a fast tick chain (100ms) is running
 
 	// --- Session ---
 	workDir       string // 工作目录（标题栏显示用）
@@ -235,9 +251,11 @@ type cliModel struct {
 	chatID        string // 会话 ID（按工作目录区分）
 
 	// --- §1 增量渲染 ---
-	renderCacheValid bool   // 全局缓存是否有效（resize 后置 false）
-	cachedHistory    string // 缓存的历史消息渲染结果（不含当前流式消息）
-	cachedMsgCount   int    // messages count when cache was built
+	renderCacheValid    bool   // 全局缓存是否有效（resize 后置 false）
+	cachedHistory       string // 缓存的历史消息渲染结果（不含当前流式消息）
+	cachedMsgCount      int    // messages count when cache was built
+	lastViewportContent string // 上次 setViewportContent 的原始内容（去重用）
+	lastViewportWidth   int    // 上次 setViewportContent 的宽度（去重用）
 
 	// --- §2 工具可视化 ---
 	lastCompletedTools []CLIToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
@@ -253,8 +271,12 @@ type cliModel struct {
 	fileCompIdx     int      // 当前选中的文件补全索引
 	fileCompActive  bool     // true = Tab 循环中，阻止重新 glob
 
-	// --- §9 Ctrl+K 上下文编辑 ---
-	confirmDelete int // >0 时处于删除确认状态，值为待删除消息数
+	// --- §9 Rewind (/rewind command) ---
+	rewindMode     bool                  // true = rewind overlay active
+	rewindItems    []rewindItem          // candidate user messages for rewind selection
+	rewindCursor   int                   // selected index in rewindItems
+	rewindResult   *tools.RewindResult   // result of the last rewind operation (for display)
+	checkpointHook *tools.CheckpointHook // file checkpoint hook for rewind file rollback (nil = no file tracking)
 
 	// --- §10 TODO 进度条 ---
 	todos            []CLITodoItem // 从 progress 事件同步的 TODO 列表

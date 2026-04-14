@@ -6,8 +6,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-
-	log "xbot/logger"
 )
 
 // handleKeyPress processes key press events in the main update loop.
@@ -15,60 +13,6 @@ import (
 // immediately; otherwise, post-switch processing (viewport/textarea update) should continue.
 func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Model, []tea.Cmd, bool) {
 	var cmds []tea.Cmd
-
-	// §9 Ctrl+K 确认模式：必须在 switch msg.Code 之前拦截所有按键
-	if m.confirmDelete > 0 {
-		groups := visibleMsgGroupIndices(m.messages)
-		switch msg.String() {
-		case "y", "Y":
-			// 确认删除：根据 turn 索引截断
-			if m.confirmDelete > len(groups) {
-				m.confirmDelete = len(groups)
-			}
-			cutIdx := groups[len(groups)-m.confirmDelete]
-			m.messages = m.messages[:cutIdx]
-			// 同步截断数据库中的 session messages（异步避免阻塞 UI）
-			// safe: 此时 typing=false，输入被 confirmDelete 拦截，不会有并发写入
-			if m.trimHistoryFn != nil {
-				keepCount := cutIdx
-				go func() {
-					if err := m.trimHistoryFn(keepCount); err != nil {
-						log.WithError(err).Warn("Failed to trim session history after Ctrl+K")
-					}
-				}()
-			}
-			m.confirmDelete = 0
-			m.renderCacheValid = false
-			m.cachedHistory = ""
-			m.updateViewportContent()
-			return m, nil, true
-		case "n", "N":
-			// 取消删除
-			m.confirmDelete = 0
-			m.renderCacheValid = false
-			m.updateViewportContent()
-			return m, nil, true
-		default:
-			// 检查数字键（调整删除数量）
-			if len(msg.Text) > 0 {
-				if len(msg.Text) == 1 && msg.Text[0] >= '1' && msg.Text[0] <= '9' {
-					newDel := int(msg.Text[0] - '0')
-					if newDel > len(groups) {
-						newDel = len(groups)
-					}
-					m.confirmDelete = newDel
-					m.renderCacheValid = false
-					m.updateViewportContent()
-					return m, nil, true
-				}
-			}
-			// 其他键也取消（包括 Esc）
-			m.confirmDelete = 0
-			m.renderCacheValid = false
-			m.updateViewportContent()
-			return m, nil, true
-		}
-	}
 
 	// 🥚 彩蛋覆盖层激活时，按任意键退出（Ctrl+C 除外，已在上面处理）
 	if m.easterEgg != easterEggNone {
@@ -104,32 +48,11 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 	}
 
+	// NOTE: Ctrl+C is handled at the top of Update() — never handle it here.
+	// This case only remains to prevent Ctrl+C from falling through to the
+	// textarea (which would insert a ^C character).
 	switch {
 	case msg.String() == "ctrl+c":
-		// Ctrl+C：有迭代时中止并清空队列；无迭代时清空输入
-		if m.typing {
-			// 如果正在编辑排队消息，先取消编辑
-			if m.queueEditing {
-				m.queueEditing = false
-				m.queueEditBuf = ""
-				m.textarea.SetValue("")
-			}
-			// 清空排队消息，防止 cancel 后队列自动继续
-			queueLen := len(m.messageQueue)
-			if queueLen > 0 {
-				m.messageQueue = nil
-				m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
-			}
-			m.sendCancel()
-			return m, nil, true
-		}
-		// 非处理状态：清空输入
-		if m.textarea.Value() != "" {
-			m.textarea.Reset()
-			m.inputHistoryIdx = -1
-			m.inputDraft = ""
-			m.autoExpandInput()
-		}
 		return m, nil, true
 
 	case msg.Code == tea.KeyEsc:
@@ -270,24 +193,27 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			return m, nil, true
 		}
 		// §8b @ 模式：Enter 进入目录或确认文件
-		if m.fileCompActive && len(m.fileCompletions) > 0 {
-			selected := m.fileCompletions[m.fileCompIdx]
+		// Check fileCompletions even without Tab (fileCompActive=false):
+		// typing @path auto-populates completions via input change handler.
+		if len(m.fileCompletions) > 0 {
 			input := m.textarea.Value()
-			_, prefix := detectAtPrefix(input)
-			atStart := len(input) - len(prefix) - 1
-			if isDir(selected) {
-				newInput := input[:atStart] + "@" + selected + "/"
-				m.textarea.SetValue(newInput)
-				m.fileCompActive = false
-				m.populateFileCompletions(selected + "/")
-			} else {
-				newInput := input[:atStart] + "@" + selected + " "
-				m.textarea.SetValue(newInput)
-				m.fileCompActive = false
-				m.fileCompletions = nil
-				m.fileCompIdx = 0
+			if ok, prefix := detectAtPrefix(input); ok {
+				selected := m.fileCompletions[m.fileCompIdx]
+				atStart := len(input) - len(prefix) - 1
+				if isDir(selected) {
+					newInput := input[:atStart] + "@" + selected + "/"
+					m.textarea.SetValue(newInput)
+					m.fileCompActive = false
+					m.populateFileCompletions(selected + "/")
+				} else {
+					newInput := input[:atStart] + "@" + selected + " "
+					m.textarea.SetValue(newInput)
+					m.fileCompActive = false
+					m.fileCompletions = nil
+					m.fileCompIdx = 0
+				}
+				return m, nil, true
 			}
-			return m, nil, true
 		}
 		content := strings.TrimSpace(m.textarea.Value())
 		if content != "" {
@@ -325,23 +251,6 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		m.handleTabComplete()
 		return m, nil, true
 
-	case msg.String() == "ctrl+k":
-		// §9 Ctrl+K 上下文编辑（按可见消息组计数，tool_summary 合并到 assistant）
-		if !m.typing && len(m.messages) > 0 {
-			groups := visibleMsgGroupIndices(m.messages)
-			defaultDel := 1
-			if defaultDel > len(groups) {
-				defaultDel = len(groups)
-			}
-			m.confirmDelete = defaultDel
-			m.renderCacheValid = false
-			m.updateViewportContent()
-		} else if !m.typing {
-			m.showTempStatus(m.locale.NoMessagesToDelete)
-			return m, nil, true
-		}
-		return m, nil, true
-
 	case msg.String() == "ctrl+o":
 		// §11 Ctrl+O 切换 tool summary 展开/折叠（兼容非 CSI-u 终端）
 		m.toggleToolSummary()
@@ -367,7 +276,54 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	turnID := m.agentTurnID // capture before any mutation
 	prev := m.progress
+	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc) only carry
+	// stream content fields. Merge into existing progress instead of replacing to
+	// preserve tool/iteration state.
+	isStreamOnly := msg.payload != nil &&
+		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
+		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "")
+	if isStreamOnly {
+		if m.progress != nil {
+			if msg.payload.StreamContent != "" {
+				m.progress.StreamContent = msg.payload.StreamContent
+			}
+			if msg.payload.ReasoningStreamContent != "" {
+				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
+			}
+		} else if m.typing {
+			// Turn started but no structured progress yet — create minimal payload
+			m.progress = msg.payload
+		}
+		return
+	}
 	m.progress = msg.payload
+	// Preserve StartedAt across progress updates so live timers don't reset.
+	// Each structured progress event replaces ActiveTools entirely (StartedAt=zero),
+	// so we must carry forward the previous StartedAt values by matching tool name.
+	startedAtMap := make(map[string]time.Time)
+	if prev != nil {
+		for _, t := range prev.ActiveTools {
+			if !t.StartedAt.IsZero() {
+				startedAtMap[t.Name] = t.StartedAt
+			}
+		}
+	}
+	if m.progress != nil {
+		for i := range m.progress.ActiveTools {
+			t := &m.progress.ActiveTools[i]
+			// Restore from previous progress if available
+			if prev, ok := startedAtMap[t.Name]; ok {
+				t.StartedAt = prev
+			} else if t.StartedAt.IsZero() {
+				// First appearance: bootstrap from Elapsed or now
+				if t.Elapsed > 0 {
+					t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
+				} else {
+					t.StartedAt = time.Now()
+				}
+			}
+		}
+	}
 	// Update bg task count from callback
 	if m.bgTaskCountFn != nil {
 		m.bgTaskCount = m.bgTaskCountFn()
@@ -412,10 +368,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			}
 			if len(prevIterTools) > 0 || prev.Thinking != "" || prev.Reasoning != "" {
 				snap := cliIterationSnapshot{
-					Iteration: m.lastSeenIteration,
-					Thinking:  prev.Thinking,
-					Reasoning: prev.Reasoning,
-					Tools:     prevIterTools,
+					Iteration:   m.lastSeenIteration,
+					Thinking:    prev.Thinking,
+					Reasoning:   prev.Reasoning,
+					Tools:       prevIterTools,
+					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 				}
 				m.iterationHistory = append(m.iterationHistory, snap)
 			}
@@ -424,6 +381,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			m.lastCompletedTools = m.lastCompletedTools[:0]
 		}
 		m.lastSeenIteration = msg.payload.Iteration
+		m.iterationStartTime = time.Now()
 
 		// §2 工具可视化：快照 CompletedTools 到独立字段
 		// Only keep tools matching the current iteration to avoid cross-iteration leakage.
@@ -474,9 +432,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 						}
 					}
 					snap := cliIterationSnapshot{
-						Iteration: m.lastSeenIteration,
-						Thinking:  msg.payload.Thinking,
-						Tools:     finalTools,
+						Iteration:   m.lastSeenIteration,
+						Thinking:    msg.payload.Thinking,
+						Tools:       finalTools,
+						ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 					}
 					// Carry over reasoning: priority is lastReasoning (captured before progress clear)
 					// > prev progress > PhaseDone payload

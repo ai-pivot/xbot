@@ -140,7 +140,11 @@ func (a *Agent) IndexGlobalTools() {
 		indexed[name] = true
 	}
 
-	// 3. Index global MCP servers
+	// 3. Index global MCP servers (non-blocking: starts background init, re-indexes once on completion)
+	//    We do NOT use SetOnChange here because IndexGlobalTools creates a fresh
+	//    mcpMgr each call, and onChange would trigger another IndexGlobalTools →
+	//    another mcpMgr → infinite goroutine chain. Instead, we fire a single
+	//    background re-index that creates its own mcpMgr with sync.Once guard.
 	dummySessionKey := "indexing:dummy"
 	mcpMgr := tools.NewSessionMCPManager(
 		dummySessionKey,
@@ -149,7 +153,7 @@ func (a *Agent) IndexGlobalTools() {
 		"", "", 30*time.Minute,
 	)
 	if mcpMgr != nil {
-		catalog := mcpMgr.GetCatalog()
+		catalog := mcpMgr.GetCatalog() // non-blocking: returns current (may be empty on first call)
 		for _, entry := range catalog {
 			for _, toolName := range entry.ToolNames {
 				fullName := fmt.Sprintf("mcp_%s_%s", entry.Name, toolName)
@@ -1966,6 +1970,8 @@ func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 
 // 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。
 // 工具发送最终回复（如飞书卡片）时同样 Patch 更新，但标记 session 为"已完成"，后续调用自动跳过。
+// sendMessage 向 IM 渠道发送消息。
+// 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[string]string) error {
 	key := channel + ":" + chatID
 

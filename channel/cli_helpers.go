@@ -125,13 +125,20 @@ func (m *cliModel) openSettingsFromQuickSwitch() {
 func (m *cliModel) startAgentTurn() {
 	m.agentTurnID++
 	m.typing = true
+	// If fast tick chain is NOT running (e.g. we're on idle tick after Ctrl+C),
+	// inject a tickCmd so the spinner starts immediately.
+	if !m.fastTickActive {
+		m.pendingCmds = append(m.pendingCmds, tickCmd())
+	}
+	// Sync checkpoint hook turn index
+	if m.checkpointHook != nil {
+		m.checkpointHook.SetTurnIdx(int(m.agentTurnID))
+	}
+	// Clear rewind result when new turn starts
+	m.rewindResult = nil
 	m.updatePlaceholder()
 	m.inputReady = false
 	m.resetProgressState()
-	// Queue tickCmd so the next Update() drain picks it up.
-	// This guarantees the tick chain starts regardless of any early-return
-	// paths in Update() — the cmd will be drained at the top of the next call.
-	m.pendingCmds = append(m.pendingCmds, tickCmd())
 }
 
 // endAgentTurn resets all agent-turn tracking state and returns to idle.
@@ -249,6 +256,48 @@ func (m *cliModel) ensurePanelCursorVisible() {
 	}
 	if cursorLn < m.panelScrollY {
 		m.panelScrollY = cursorLn
+	}
+}
+
+// ensureBgCursorVisible adjusts panelScrollY so the bg task/agent cursor is within the visible area.
+// Accounts for preview lines (an agent with a preview takes 2 rendered lines).
+func (m *cliModel) ensureBgCursorVisible() {
+	visibleH := m.panelVisibleHeight()
+	// Calculate the cursor item's approximate line number.
+	// Tasks take 1 line each; agents take 1 line + 1 extra if they have a preview.
+	cursorLine := 0
+	// Header line
+	cursorLine = 1
+	idx := 0
+	for _, task := range m.panelBgTasks {
+		_ = task // tasks are always 1 line
+		if idx == m.panelBgCursor {
+			break
+		}
+		cursorLine++
+		idx++
+	}
+	for _, ag := range m.panelBgAgents {
+		if idx == m.panelBgCursor {
+			break
+		}
+		cursorLine++ // agent label line
+		if ag.Preview != "" {
+			cursorLine++ // preview line
+		}
+		idx++
+	}
+
+	totalLines := cursorLine + 2 // +2 for header and bottom padding
+	if totalLines <= visibleH {
+		m.panelScrollY = 0
+		return
+	}
+	if cursorLine >= m.panelScrollY+visibleH {
+		m.panelScrollY = cursorLine - visibleH + 1
+	}
+	if cursorLine < m.panelScrollY {
+		m.panelScrollY = cursorLine
 	}
 }
 

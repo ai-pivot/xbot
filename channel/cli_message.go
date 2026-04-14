@@ -179,10 +179,43 @@ func (m *cliModel) appendSystemMarkdown(content string) {
 	})
 }
 
+// sendInbound sends a message to the agent's inbound channel.
+// Uses non-blocking send to prevent the BubbleTea event loop from freezing
+// if the channel is full (e.g., agent is busy with a long LLM call).
+// Returns false if the message was dropped.
+func (m *cliModel) sendInbound(msg bus.InboundMessage) bool {
+	if m.msgBus == nil {
+		return false
+	}
+	select {
+	case m.msgBus.Inbound <- msg:
+		return true
+	default:
+		// Channel full — agent is backlogged. Drop to prevent TUI freeze.
+		return false
+	}
+}
+
+// sendInboundWait sends a message to the agent's inbound channel with a timeout.
+// Use for critical messages (ask_user answers) that MUST be delivered.
+// Returns false if the message couldn't be sent within the deadline.
+func (m *cliModel) sendInboundWait(msg bus.InboundMessage, timeout time.Duration) bool {
+	if m.msgBus == nil {
+		return false
+	}
+	select {
+	case m.msgBus.Inbound <- msg:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // sendCancel sends a cancel request to the agent and adds a system notification.
 func (m *cliModel) sendCancel() {
-	if m.msgBus != nil {
-		m.msgBus.Inbound <- m.newInbound("/cancel", nil)
+	if !m.sendInbound(m.newInbound("/cancel", nil)) {
+		m.showSystemMsg("Cancel failed: agent channel busy, try again", feedbackError)
+		return
 	}
 	m.showSystemMsg(m.locale.CancelSent, feedbackInfo)
 }
@@ -196,7 +229,7 @@ func (m *cliModel) sendToAgent(content string) {
 		dirty:     true,
 	})
 	if m.msgBus != nil {
-		m.msgBus.Inbound <- m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional})
+		m.sendInbound(m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}))
 		m.startAgentTurn()
 	}
 }
@@ -233,7 +266,7 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	if m.msgBus != nil {
 		msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
 		msg.Media = media
-		m.msgBus.Inbound <- msg
+		m.sendInbound(msg)
 		m.startAgentTurn()
 	}
 	return nil
@@ -275,6 +308,8 @@ func (m *cliModel) resetProgressState() {
 	m.iterationHistory = nil
 	m.lastSeenIteration = 0
 	m.lastReasoning = ""
+	m.progress = nil
+	m.iterationStartTime = time.Time{}
 	m.typingStartTime = time.Now()
 }
 
@@ -311,6 +346,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
 		m.cachedHistory = ""
 		m.exitSearch()
+
+	case "/rewind":
+		m.openRewindPanel()
 
 	case "/settings":
 		// Open interactive settings panel locally
@@ -418,7 +456,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	case "/compact":
 		// 保留本地处理（system 消息样式），发送到 msgBus 但不作为用户气泡
 		if m.msgBus != nil {
-			m.msgBus.Inbound <- m.newInbound("/compact", nil)
+			m.sendInbound(m.newInbound("/compact", nil))
 		}
 
 	// --- 透传命令（发送到 agent） ---
@@ -614,9 +652,13 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 						parts = append(parts, fmt.Sprintf("Q: %s\nA: %s", item.Question, ans))
 					}
 					content := strings.Join(parts, "\n\n")
-					// Send to agent as tool result replacement (not a new user message)
+					// Send to agent as tool result replacement (not a new user message).
+					// Use blocking send with timeout — ask_user answers are critical:
+					// if dropped, the agent hangs indefinitely waiting for a response.
 					if m.msgBus != nil {
-						m.msgBus.Inbound <- m.newInbound(content, map[string]string{"ask_user_answered": "true"})
+						if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
+							m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
+						}
 					}
 					// Render as tool call style (not user message)
 					m.messages = append(m.messages, cliMessage{
@@ -772,7 +814,7 @@ func (m *cliModel) renderProgressBlock() string {
 		sb.WriteString("\n")
 		if snap.Reasoning != "" {
 			for _, line := range strings.Split(snap.Reasoning, "\n") {
-				line = strings.TrimSpace(line)
+				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
 					continue
 				}
@@ -784,7 +826,7 @@ func (m *cliModel) renderProgressBlock() string {
 		}
 		if snap.Thinking != "" {
 			for _, line := range strings.Split(snap.Thinking, "\n") {
-				line = strings.TrimSpace(line)
+				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
 					continue
 				}
@@ -814,14 +856,29 @@ func (m *cliModel) renderProgressBlock() string {
 		sb.WriteString(iterStyle.Render(fmt.Sprintf("#%d", m.progress.Iteration)))
 		sb.WriteString("\n")
 
-		if m.progress.Reasoning != "" {
-			for _, line := range strings.Split(m.progress.Reasoning, "\n") {
-				line = strings.TrimSpace(line)
+		// Reasoning: prefer streaming content (real-time) over static snapshot
+		reasoningText := m.progress.ReasoningStreamContent
+		if reasoningText == "" {
+			reasoningText = m.progress.Reasoning
+		}
+		isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
+		if reasoningText != "" {
+			lines := strings.Split(reasoningText, "\n")
+			cursorVisible := (m.ticker.ticks/5)%2 == 0
+			for i, line := range lines {
+				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
 					continue
 				}
-				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-					sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
+				isLastLine := i == len(lines)-1
+				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
+				for j, wl := range wrappedLines {
+					isLast := isLastLine && j == len(wrappedLines)-1
+					if isLast && isReasoningStreaming && cursorVisible {
+						sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl) + s.StreamCursor.Render("▋"))
+					} else {
+						sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
+					}
 					sb.WriteString("\n")
 				}
 			}
@@ -829,7 +886,7 @@ func (m *cliModel) renderProgressBlock() string {
 
 		if m.progress.Thinking != "" {
 			for _, line := range strings.Split(m.progress.Thinking, "\n") {
-				line = strings.TrimSpace(line)
+				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
 					continue
 				}
@@ -846,48 +903,79 @@ func (m *cliModel) renderProgressBlock() string {
 				continue
 			}
 			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-			line := fmt.Sprintf("  │ %s %s", icon, label)
 			if tool.Elapsed > 0 {
-				pad := innerWidth - lipgloss.Width(line) - len(formatElapsed(tool.Elapsed))
+				elapsedStr := formatElapsed(tool.Elapsed)
+				// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds len(elapsedStr) more
+				overhead := 7 + len(elapsedStr)
+				label = truncateToWidth(label, innerWidth-overhead)
+				line := fmt.Sprintf("  │ %s %s", icon, label)
+				pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
 				if pad < 1 {
 					pad = 1
 				}
-				line += strings.Repeat(" ", pad) + elapsedStyle.Render(formatElapsed(tool.Elapsed))
+				line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
+				sb.WriteString(sty.Render(line))
+			} else {
+				line := fmt.Sprintf("  │ %s %s", icon, truncateToWidth(label, innerWidth-7))
+				sb.WriteString(sty.Render(line))
 			}
-			sb.WriteString(sty.Render(line))
 			sb.WriteString("\n")
 		}
 
-		// Active tools — with mini pulse progress bar animation
+		// Active tools — label + live elapsed timer
 		for _, tool := range m.progress.ActiveTools {
 			if tool.Status == "done" || tool.Status == "error" {
 				continue
 			}
 			label, _, _ := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-			// Mini pulse progress bar with dynamic width
-			miniW := 8 + int(m.ticker.ticks%7) // dynamic width 8-14
-			tick2 := int(m.ticker.ticks) % (miniW * 2)
-			pos2 := tick2
-			if pos2 >= miniW {
-				pos2 = miniW*2 - pos2 - 1
-			}
-			miniBar := strings.Repeat("░", pos2) + "▓" + strings.Repeat("░", miniW-pos2-1)
 			pulseIcon := m.ticker.viewFrames(pulseFrames)
-			line := fmt.Sprintf("  │ %s %s  %s", pulseIcon, label, s.ProgressGradient.Render(miniBar))
-			if tool.Elapsed > 0 {
-				pad := innerWidth - lipgloss.Width(line) - len(formatElapsed(tool.Elapsed))
-				if pad < 1 {
-					pad = 1
-				}
-				line += strings.Repeat(" ", pad) + elapsedStyle.Render(formatElapsed(tool.Elapsed))
+			// Calculate live elapsed time
+			var elapsedMs int64
+			if !tool.StartedAt.IsZero() {
+				elapsedMs = time.Since(tool.StartedAt).Milliseconds()
+			} else {
+				elapsedMs = tool.Elapsed
 			}
+			elapsedStr := formatElapsed(elapsedMs)
+			// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds ~8 more
+			overhead := 7 + 2 + len(elapsedStr)
+			label = truncateToWidth(label, innerWidth-overhead)
+			line := fmt.Sprintf("  │ %s %s", pulseIcon, label)
+			pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
+			if pad < 1 {
+				pad = 1
+			}
+			line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
 			sb.WriteString(toolRunningStyle.Render(line))
 			sb.WriteString("\n")
 		}
 
 		// Phase-specific fallback when no tools are shown
 		hasTools := len(m.progress.ActiveTools) > 0 || len(m.progress.CompletedTools) > 0
-		if !hasTools {
+
+		// Stream content: render LLM output in progress block when streaming
+		if m.progress.StreamContent != "" {
+			lines := strings.Split(m.progress.StreamContent, "\n")
+			// Blinking cursor: visible for 5 ticks (500ms), hidden for 5 ticks
+			cursorVisible := (m.ticker.ticks/5)%2 == 0
+			for i, line := range lines {
+				line = strings.TrimRight(line, " \t\r")
+				if line == "" {
+					continue
+				}
+				isLastLine := i == len(lines)-1
+				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
+				for j, wl := range wrappedLines {
+					isLast := isLastLine && j == len(wrappedLines)-1
+					if isLast && cursorVisible {
+						sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl) + s.StreamCursor.Render("▋"))
+					} else {
+						sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+					}
+					sb.WriteString("\n")
+				}
+			}
+		} else if !hasTools {
 			switch m.progress.Phase {
 			case "thinking":
 				sb.WriteString("  ")
@@ -910,7 +998,7 @@ func (m *cliModel) renderProgressBlock() string {
 		// SubAgent tree
 		if len(m.progress.SubAgents) > 0 {
 			var treeSB strings.Builder
-			m.renderSubAgentTree(&treeSB, m.progress.SubAgents, 1)
+			m.renderSubAgentTree(&treeSB, m.progress.SubAgents, 1, innerWidth)
 			if treeSB.Len() > 0 {
 				sb.WriteString("\n")
 				sb.WriteString(treeSB.String())
@@ -947,7 +1035,7 @@ func (m *cliModel) renderProgressBlock() string {
 // renderSubAgentTree renders nested sub-agents with indentation.
 // Only renders running/pending agents — completed or errored ones are already
 // captured in the tool summary and shouldn't linger in the progress panel.
-func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent, depth int) {
+func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent, depth int, maxWidth int) {
 	for i, sa := range agents {
 		if sa.Status == "done" || sa.Status == "error" {
 			continue
@@ -969,7 +1057,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 			}
 		}
 		icon := m.ticker.viewFrames(waveFrames)
-		style := m.styles.ProgressRunning
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(RoleColor(sa.Role)))
 		switch sa.Status {
 		case "error":
 			icon = "✗"
@@ -977,12 +1065,18 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 		}
 		line := fmt.Sprintf("%s%s %s", prefix, icon, sa.Role)
 		if sa.Desc != "" {
-			line += ": " + sa.Desc
+			// Truncate Desc separately to account for prefix+icon+role overhead.
+			overhead := lipgloss.Width(line) + 2 // +2 for ": "
+			descW := maxWidth - overhead
+			if descW < 10 {
+				descW = 10
+			}
+			line += ": " + truncateToWidth(sa.Desc, descW)
 		}
 		sb.WriteString(style.Render(line))
 		sb.WriteString("\n")
 		if len(sa.Children) > 0 {
-			m.renderSubAgentTree(sb, sa.Children, depth+1)
+			m.renderSubAgentTree(sb, sa.Children, depth+1, maxWidth)
 		}
 	}
 }
@@ -1088,12 +1182,19 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		thinkingGuide := s.ProgressIndent
 		hintStyle := s.ToolHint
 
-		// 统计总工具数和总耗时
+		// 统计总工具数和总耗时（使用 wall-clock 时间，非工具时间之和）
 		allTools, iterCount := msg.iterToolsFlat()
 		totalTools := len(allTools)
 		totalMs := int64(0)
-		for _, tool := range allTools {
-			totalMs += tool.Elapsed
+		for _, it := range msg.iterations {
+			if it.ElapsedWall > 0 {
+				totalMs += it.ElapsedWall
+			} else {
+				// Fallback: sum tool times for snapshots without wall-clock tracking
+				for _, tool := range it.Tools {
+					totalMs += tool.Elapsed
+				}
+			}
 		}
 
 		var toolSb strings.Builder
@@ -1108,13 +1209,16 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
 				textW := boxInnerW - guideW
 				for _, it := range msg.iterations {
-					// Render #iter header
-					iterLabel := s.ProgressIter.Render(fmt.Sprintf("#%d", it.Iteration))
-					toolSb.WriteString(iterLabel)
+					// Render #iter header with wall-clock time
+					iterLabel := fmt.Sprintf("#%d", it.Iteration)
+					if it.ElapsedWall > 0 {
+						iterLabel += " " + reasoningStyle.Render(formatElapsed(it.ElapsedWall))
+					}
+					toolSb.WriteString(s.ProgressIter.Render(iterLabel))
 					toolSb.WriteString("\n")
 					if it.Reasoning != "" {
 						for _, line := range strings.Split(it.Reasoning, "\n") {
-							line = strings.TrimSpace(line)
+							line = strings.TrimRight(line, " \t\r")
 							if line == "" {
 								continue
 							}
@@ -1126,7 +1230,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 					}
 					if it.Thinking != "" {
 						for _, line := range strings.Split(it.Thinking, "\n") {
-							line = strings.TrimSpace(line)
+							line = strings.TrimRight(line, " \t\r")
 							if line == "" {
 								continue
 							}
@@ -1258,10 +1362,15 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		}
 		// Agent 消息直接渲染（glamour 已处理 markdown）
-		sb.WriteString(rendered)
+		// Trim trailing newlines so cursor appears inline at end of content
+		trimmedRendered := strings.TrimRight(rendered, "\n")
+		sb.WriteString(trimmedRendered)
 		// 流式输出时追加闪烁光标，让用户感知"正在生成"
-		if msg.isPartial && rendered != "" {
-			sb.WriteString(s.StreamCursor.Render("▋"))
+		if msg.isPartial && trimmedRendered != "" {
+			cursorVisible := (m.ticker.ticks/5)%2 == 0
+			if cursorVisible {
+				sb.WriteString(s.StreamCursor.Render("▋"))
+			}
 		}
 	}
 
@@ -1273,26 +1382,19 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	return sb.String()
 }
 
-// setViewportContentForScroll is like setViewportContent but skips GotoBottom(),
-// allowing the caller to set a precise YOffset afterwards (e.g. for Ctrl+K red line).
-func (m *cliModel) setViewportContentForScroll(content string) {
-	if m.width > 0 {
-		lines := strings.Split(content, "\n")
-		var wrapped []string
-		for _, line := range lines {
-			line = strings.TrimRight(line, " \t")
-			wrapped = append(wrapped, strings.Split(hardWrapRunes(line, m.width), "\n")...)
-		}
-		content = strings.Join(wrapped, "\n")
-	}
-	m.viewport.SetContent(content)
-	m.newContentHint = false
-}
-
 // setViewportContent sets viewport content while preserving scroll position.
 // If the user was at the bottom before the update, keep them at the bottom.
 // Lines wider than the viewport are truncated to prevent layout breakage.
 func (m *cliModel) setViewportContent(content string) {
+	// Deduplicate: skip if content and width haven't changed.
+	// During resize storms or high-frequency ticks (busy state), this prevents
+	// O(N*W) hardWrapRunes from running every 100ms on the same content.
+	if content == m.lastViewportContent && m.width == m.lastViewportWidth && m.ready {
+		return
+	}
+	m.lastViewportContent = content
+	m.lastViewportWidth = m.width
+
 	if m.width > 0 {
 		lines := strings.Split(content, "\n")
 		var wrapped []string
@@ -1333,28 +1435,6 @@ func wrappedLineCount(content string, width int) int {
 	return count
 }
 
-// renderDeleteBoundaryLine 渲染 Ctrl+K 删除边界红线。
-func (m *cliModel) renderDeleteBoundaryLine() string {
-	w := m.width
-	if w <= 0 {
-		w = 80
-	}
-	redStyle := m.styles.ProgressError // §20
-	label := " ✂ delete below "
-	// label 的可见宽度（不含 ANSI 转义）
-	labelWidth := lipgloss.Width(redStyle.Bold(true).Render(label))
-	totalPad := w - labelWidth
-	if totalPad < 0 {
-		totalPad = 0
-	}
-	leftPad := totalPad / 2
-	rightPad := totalPad - leftPad
-	line := redStyle.Bold(true).Render(
-		strings.Repeat("━", leftPad) + label + strings.Repeat("━", rightPad),
-	)
-	return "\n" + line + "\n"
-}
-
 // visibleTurnIndices 返回每个"对话轮次"的起始 slice 索引。
 // 每个 turn 以 user 消息开头，包含之后所有的 assistant/tool_summary 消息
 // 直到下一个 user 消息为止。tool_summary 自动归属其前面最近的 user 所在的 turn。
@@ -1393,13 +1473,14 @@ func (m *cliModel) updateViewportContent() {
 		var sb strings.Builder
 		sb.WriteString(m.cachedHistory)
 		sb.WriteString(m.renderProgressBlock())
+		sb.WriteString(m.renderRewindResultBlock())
 		m.setViewportContent(sb.String())
 		return
 	}
 
-	// 快速路径：缓存有效 + 仅追加了新消息（无流式、无搜索、无删除确认）
+	// 快速路径：缓存有效 + 仅追加了新消息（无流式、无搜索）
 	// 只渲染新增的 dirty 消息并追加到 cachedHistory，跳过全量重建。
-	if m.renderCacheValid && m.streamingMsgIdx < 0 && !m.searchMode && m.confirmDelete == 0 &&
+	if m.renderCacheValid && m.streamingMsgIdx < 0 && !m.searchMode &&
 		len(m.messages) > m.cachedMsgCount {
 		m.appendNewMessagesToCache()
 		return
@@ -1422,10 +1503,12 @@ func (m *cliModel) updateStreamingOnly() {
 	// Append progress block
 	sb.WriteString(m.renderProgressBlock())
 
+	// Append rewind result block
+	sb.WriteString(m.renderRewindResultBlock())
+
 	m.setViewportContent(sb.String())
 }
 
-// appendNewMessagesToCache incrementally renders and appends only the new messages
 // since cachedMsgCount, updating cachedHistory and msgLineOffsets without rebuilding
 // old messages. This is O(new_messages) instead of O(all_messages).
 func (m *cliModel) appendNewMessagesToCache() {
@@ -1460,6 +1543,7 @@ func (m *cliModel) appendNewMessagesToCache() {
 	var vp strings.Builder
 	vp.WriteString(m.cachedHistory)
 	vp.WriteString(m.renderProgressBlock())
+	vp.WriteString(m.renderRewindResultBlock())
 	m.setViewportContent(vp.String())
 }
 
@@ -1473,20 +1557,9 @@ func (m *cliModel) fullRebuild() {
 		splitIdx = m.streamingMsgIdx
 	}
 
-	// §9 Ctrl+K 红线：根据可见消息组计算删除边界 slice 索引
-	var redLineInsertIdx = -1
-	if m.confirmDelete > 0 {
-		groups := visibleMsgGroupIndices(m.messages)
-		if m.confirmDelete <= len(groups) {
-			redLineInsertIdx = groups[len(groups)-m.confirmDelete] - 1
-		}
-	}
-
 	// §19 重置消息行号偏移（基于折行后的 viewport 行号）
 	m.msgLineOffsets = m.msgLineOffsets[:0]
 	runningLines := 0
-	// §9 Ctrl+K 红线：记录红线在折行后的 viewport 行号
-	var redLineWrappedPos = -1
 	for i := range m.messages[:splitIdx] {
 		// §19 记录消息在 viewport 折行后内容中的起始行号
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
@@ -1508,13 +1581,7 @@ func (m *cliModel) fullRebuild() {
 			chunk = indicator + chunk
 		}
 		historyBuf.WriteString(m.messages[i].rendered)
-		// §9 Ctrl+K 红线：在删除边界处插入红线指示器
-		if redLineInsertIdx >= 0 && i == redLineInsertIdx {
-			boundary := m.renderDeleteBoundaryLine()
-			redLineWrappedPos = runningLines + wrappedLineCount(chunk+"\n"+boundary, m.width)
-			historyBuf.WriteString(boundary)
-		}
-		// 累加本消息（含搜索指示条/红线）在折行后占用的行数
+		// 累加本消息（含搜索指示条）在折行后占用的行数
 		runningLines += wrappedLineCount(chunk, m.width)
 	}
 
@@ -1522,39 +1589,16 @@ func (m *cliModel) fullRebuild() {
 	m.renderCacheValid = true
 	m.cachedMsgCount = len(m.messages)
 
-	// 拼接最终内容：历史 + 当前流式消息（如有） + progress block
+	// 拼接最终内容：历史 + 当前流式消息（如有） + progress block + rewind result
 	var sb strings.Builder
 	sb.WriteString(m.cachedHistory)
 	if m.streamingMsgIdx >= 0 {
 		sb.WriteString(m.renderMessage(&m.messages[m.streamingMsgIdx]))
 	}
 	sb.WriteString(m.renderProgressBlock())
+	sb.WriteString(m.renderRewindResultBlock())
 
-	// §9 Ctrl+K 红线：设置内容时禁止 GotoBottom，以便随后精确定位红线
-	if m.confirmDelete > 0 {
-		m.setViewportContentForScroll(sb.String())
-	} else {
-		m.setViewportContent(sb.String())
-	}
-
-	// §9 Ctrl+K 红线：自动滚动到红线位置（使用折行后的精确行号）
-	if m.confirmDelete > 0 && redLineWrappedPos >= 0 {
-		vpHeight := m.viewport.Height()
-		totalLines := m.viewport.TotalLineCount()
-		// 将红线定位到视口中央偏上（留 3 行上方边距）
-		targetY := redLineWrappedPos - 3
-		if targetY < 0 {
-			targetY = 0
-		}
-		maxOff := totalLines - vpHeight
-		if maxOff < 0 {
-			maxOff = 0
-		}
-		if targetY > maxOff {
-			targetY = maxOff
-		}
-		m.viewport.SetYOffset(targetY)
-	}
+	m.setViewportContent(sb.String())
 }
 
 // isSearchMatch 检查消息是否匹配当前搜索（§21）
@@ -1715,6 +1759,41 @@ func idleTickCmd() tea.Cmd {
 	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 		return idleTickMsg{}
 	})
+}
+
+// renderRewindResultBlock renders the rewind result summary after a /rewind operation.
+// NOTE: This is a pure render function — it does NOT modify m.rewindResult.
+// The result is cleared when a new agent turn starts (in startAgentTurn).
+func (m *cliModel) renderRewindResultBlock() string {
+	if m.rewindResult == nil {
+		return ""
+	}
+	r := m.rewindResult
+
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(m.styles.ProgressDone.Bold(true).Render("  Rewind complete"))
+	sb.WriteString("\n")
+
+	if len(r.Restored) > 0 {
+		fmt.Fprintf(&sb, "  Files restored: %d\n", len(r.Restored))
+		for _, f := range r.Restored {
+			sb.WriteString(m.styles.TextMutedSt.Render(fmt.Sprintf("    %s\n", f)))
+		}
+	}
+	if len(r.CreatedDel) > 0 {
+		fmt.Fprintf(&sb, "  Files deleted: %d\n", len(r.CreatedDel))
+		for _, f := range r.CreatedDel {
+			sb.WriteString(m.styles.TextMutedSt.Render(fmt.Sprintf("    %s\n", f)))
+		}
+	}
+	if len(r.Errors) > 0 {
+		for _, e := range r.Errors {
+			sb.WriteString(m.styles.ProgressError.Render(fmt.Sprintf("  Error: %s\n", e)))
+		}
+	}
+
+	return sb.String()
 }
 
 // tickerCmd is deprecated — ticker is now driven by cliTickMsg.

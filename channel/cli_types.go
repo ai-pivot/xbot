@@ -92,6 +92,14 @@ func hardWrapRunes(line string, maxW int) string {
 			continue
 		}
 		rw := runewidth.RuneWidth(r)
+		// Safety: if a rune has zero display width (combining chars, control
+		// chars, zero-width joiners), still emit it but don't let it block
+		// line wrapping.  Without this, a run of zero-width runes causes
+		// w to never reach maxW → infinite loop → CPU 100% freeze.
+		if rw == 0 {
+			buf.WriteRune(r)
+			continue
+		}
 		if w+rw > maxW {
 			lines = append(lines, buf.String())
 			buf.Reset()
@@ -173,7 +181,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
 var cliCommands = []string{
 	"/cancel", "/clear", "/compact", "/context", "/exit", "/help",
-	"/new", "/quit", "/search", "/settings", "/setup", "/tasks", "/update",
+	"/new", "/quit", "/rewind", "/search", "/settings", "/setup", "/tasks", "/update",
 	"/usage",
 }
 
@@ -189,15 +197,17 @@ const (
 
 // CLIProgressPayload 结构化进度消息负载（对应 agent.StructuredProgress）。
 type CLIProgressPayload struct {
-	Phase          string
-	Iteration      int
-	ActiveTools    []CLIToolProgress
-	CompletedTools []CLIToolProgress
-	Thinking       string
-	Reasoning      string // model's reasoning/thinking chain (reasoning_content)
-	SubAgents      []CLISubAgent
-	Todos          []CLITodoItem
-	TokenUsage     *CLITokenUsage // Token 用量快照（实时更新）
+	Phase                  string
+	Iteration              int
+	ActiveTools            []CLIToolProgress
+	CompletedTools         []CLIToolProgress
+	Thinking               string
+	Reasoning              string // model's reasoning/thinking chain (reasoning_content)
+	SubAgents              []CLISubAgent
+	Todos                  []CLITodoItem
+	TokenUsage             *CLITokenUsage // Token 用量快照（实时更新）
+	StreamContent          string         // LLM streaming text content (accumulated, for real-time render)
+	ReasoningStreamContent string         // LLM streaming reasoning content (accumulated, for real-time render)
 }
 
 // CLITokenUsage Token 使用量（对应 agent.TokenUsageSnapshot）
@@ -220,9 +230,10 @@ type CLIToolProgress struct {
 	Name      string
 	Label     string
 	Status    string
-	Elapsed   int64 // milliseconds
+	Elapsed   int64 // milliseconds (from progress event)
 	Iteration int   // 所属迭代 ID
 	Summary   string
+	StartedAt time.Time // when tool started (for live elapsed timer)
 }
 
 // CLISubAgent 子 Agent 的结构化进度状态。
@@ -235,10 +246,11 @@ type CLISubAgent struct {
 
 // cliIterationSnapshot captures a completed iteration for the progress panel.
 type cliIterationSnapshot struct {
-	Iteration int
-	Thinking  string
-	Reasoning string // model's reasoning/thinking chain (reasoning_content)
-	Tools     []CLIToolProgress
+	Iteration   int
+	Thinking    string
+	Reasoning   string // model's reasoning/thinking chain (reasoning_content)
+	Tools       []CLIToolProgress
+	ElapsedWall int64 // wall-clock duration of the iteration (ms)
 }
 
 // formatElapsed formats milliseconds into a human-friendly duration string.
@@ -260,10 +272,11 @@ func formatElapsed(ms int64) string {
 
 // HistoryIteration 历史迭代快照（用于会话恢复的 tool_summary 渲染）
 type HistoryIteration struct {
-	Iteration int
-	Thinking  string
-	Reasoning string
-	Tools     []CLIToolProgress
+	Iteration   int
+	Thinking    string
+	Reasoning   string
+	Tools       []CLIToolProgress
+	ElapsedWall int64 // wall-clock duration of the iteration (ms)
 }
 
 // HistoryMessage 历史消息（用于会话恢复）
@@ -441,6 +454,8 @@ type AgentPanelEntry struct {
 	Instance   string
 	Running    bool
 	Background bool
+	Task       string // one-shot subagent task (empty for interactive)
+	Preview    string // latest progress/last reply summary for panel display
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +501,9 @@ type CLIChannel struct {
 	// Permission control
 	approvalHook *tools.ApprovalHook // injected to wire CLIApprovalHandler after program creation
 
+	// Pending injections (set before model exists, applied in Start)
+	pendingTrimHistoryFn  func(time.Time) error
+	pendingCheckpointHook *tools.CheckpointHook
 }
 
 // SettingsService is the interface needed by CLIChannel for settings panel.

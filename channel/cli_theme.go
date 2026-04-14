@@ -3,9 +3,13 @@ package channel
 import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/lipgloss/v2"
+	"fmt"
 	"github.com/muesli/termenv"
+	"hash/fnv"
 	"image/color"
+	"math"
 	"os"
+	"strings"
 )
 
 func init() {
@@ -603,4 +607,59 @@ func ThemeNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// RoleColor returns a hex color string for a SubAgent role name.
+// It uses a deterministic HSL-based hash so the same role always gets
+// the same color, and all roles are visually distinct.
+// Colors are tuned for dark terminal backgrounds (high lightness ~72%).
+func RoleColor(role string) string {
+	h := fnv.New32a()
+	h.Write([]byte(strings.ToLower(role)))
+	hash := h.Sum32()
+
+	// Spread hues evenly across 0-360°
+	hue := int(hash % 360)
+	const saturation, lightness = 0.75, 0.72 // tuned for dark backgrounds
+	return hslToHex(hue, saturation, lightness)
+}
+
+// hslToHex converts HSL (hue 0-359, saturation/lightness 0-1) to #RRGGBB.
+func hslToHex(h int, s, l float64) string {
+	r, g, b := hslToRGB(h, s, l)
+	return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+}
+
+// hslToRGB converts HSL to RGB (0-255 each).
+func hslToRGB(h int, s, l float64) (uint8, uint8, uint8) {
+	hf := float64(h) / 60.0
+	c := (1 - abs(2*l-1)) * s
+	x := c * (1 - abs(math.Mod(hf, 2)-1))
+	var r1, g1, b1 float64
+	switch {
+	case hf < 1:
+		r1, g1, b1 = c, x, 0
+	case hf < 2:
+		r1, g1, b1 = x, c, 0
+	case hf < 3:
+		r1, g1, b1 = 0, c, x
+	case hf < 4:
+		r1, g1, b1 = 0, x, c
+	case hf < 5:
+		r1, g1, b1 = x, 0, c
+	default:
+		r1, g1, b1 = c, 0, x
+	}
+	m := l - c/2
+	r := uint8((r1 + m) * 255)
+	g := uint8((g1 + m) * 255)
+	b := uint8((b1 + m) * 255)
+	return r, g, b
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

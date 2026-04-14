@@ -546,6 +546,7 @@ func TestRegistry_AsDefinitionsForSession_FlatModeIncludesSessionMCPTools(t *tes
 		},
 		lastActive:  make(map[string]time.Time),
 		initialized: true,
+		initDone:    make(chan struct{}),
 	}
 	registry.SetSessionMCPManagerProvider(&mockSessionMCPProvider{manager: sm})
 

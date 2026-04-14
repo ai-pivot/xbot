@@ -148,15 +148,6 @@ func (m *cliModel) View() tea.View {
 			input,
 			toastStr,
 		)
-	} else if m.confirmDelete > 0 {
-		warningText := m.styles.WarningBold.Render(fmt.Sprintf(m.locale.ConfirmDelete, m.confirmDelete))
-		content = fmt.Sprintf(
-			"%s\n%s\n%s\n%s",
-			titleBar,
-			m.viewport.View(),
-			warningText,
-			input,
-		)
 	} else if m.panelMode == "askuser" {
 		// §12b AskUser split layout: viewport visible above, panel at bottom
 		// Note: no panelFooter here — hints are inside the panel (viewAskUserPanel)
@@ -340,6 +331,14 @@ func (m *cliModel) View() tea.View {
 	// Rendered as a centered panel replacing the entire view.
 	if m.quickSwitchMode != "" {
 		overlay := m.viewQuickSwitch(m.width, m.height)
+		if overlay != "" {
+			v.Content = overlay
+		}
+	}
+
+	// §9 Rewind overlay (/rewind command)
+	if m.rewindMode {
+		overlay := m.viewRewindPanel(m.width, m.height)
 		if overlay != "" {
 			v.Content = overlay
 		}
@@ -749,33 +748,17 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 	if m.progress != nil {
 		fmt.Fprintf(&sb, "#%d", m.progress.Iteration)
 
-		// Show first active tool name
-		hasActive := false
-		for _, tool := range m.progress.ActiveTools {
-			if tool.Status != "done" && tool.Status != "error" {
-				hasActive = true
-				label := tool.Label
-				if label == "" {
-					label = tool.Name
-				}
-				sb.WriteString(s.Tool.Render(" · " + label))
-				break
-			}
-		}
-
-		// Phase hint when no active tool
-		if !hasActive {
-			switch m.progress.Phase {
-			case "thinking":
-				sb.WriteString(" · " + m.pickVerb(m.ticker.ticks))
-			case "compressing":
-				sb.WriteString(" · " + m.locale.StatusCompressing)
-			case "retrying":
-				sb.WriteString(" · " + m.locale.StatusRetrying)
-			default:
-				if len(m.progress.CompletedTools) > 0 {
-					sb.WriteString(" · " + m.locale.StatusDone)
-				}
+		// Phase hint (active tool is shown in progress block, skip here to avoid duplication)
+		switch m.progress.Phase {
+		case "thinking":
+			sb.WriteString(" · " + m.pickVerb(m.ticker.ticks))
+		case "compressing":
+			sb.WriteString(" · " + m.locale.StatusCompressing)
+		case "retrying":
+			sb.WriteString(" · " + m.locale.StatusRetrying)
+		default:
+			if len(m.progress.CompletedTools) > 0 {
+				sb.WriteString(" · " + m.locale.StatusDone)
 			}
 		}
 	} else {
