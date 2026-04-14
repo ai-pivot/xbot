@@ -1,6 +1,6 @@
 ---
 name: agent-creator
-description: "Create a new SubAgent role. Use when user asks to create a new agent/role, or needs a specialized assistant for a specific task."
+description: "Manage SubAgent roles: create, view, modify, or delete agent definitions. MUST activate when user asks to create/edit/view/inspect any agent, or when you need to look at agent files under ~/.xbot/agents/."
 ---
 
 # Agent Creator
@@ -18,9 +18,7 @@ Ask the user:
 
 ### Step 2: Create Agent File
 
-**IMPORTANT**: Create agent files in the correct agents directory, NOT in the current working directory. The correct path follows the same pattern as the system prompt's **"Skills 存储目录"** but with `agents` instead of `skills`. For example, if Skills 存储目录 is `/opt/xbot/.xbot/skills`, then agents go in `/opt/xbot/.xbot/agents/{agent-name}.md`.
-
-To find the correct path, check the system prompt's `Available Agents` section, or derive it from `Skill(name=agent-creator, action=list_files)` — replace `skills` with `agents` in the parent path.
+**IMPORTANT**: Create agent files in the correct agents directory, NOT in the current working directory. Use the system prompt's **"Agents 存储目录"** path (each agent's `<dir>` field also shows its definition location; `embed` means built-in). For example, if Agents 存储目录 is `/opt/xbot/.xbot/agents`, create files as `/opt/xbot/.xbot/agents/{agent-name}.md`.
 
 Agent definition uses YAML frontmatter + Markdown body:
 

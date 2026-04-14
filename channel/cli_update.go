@@ -333,7 +333,20 @@ func (m *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// with elapsed time display. Previously driven by a separate tickerTickMsg
 			// chain that could break when m.progress briefly went nil.
 			m.ticker.tick()
+			// Typewriter is now driven by its own typewriterTickMsg chain (50ms).
+			// Start the typewriter chain if there's stream or reasoning content to reveal.
+			hasStreamContent := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
+			hasReasoningContent := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
+			if hasStreamContent || hasReasoningContent {
+				if !m.typewriterTickActive {
+					m.typewriterTickActive = true
+					cmds = append(cmds, typewriterTickCmd())
+				}
+			}
 			m.updateViewportContent()
+		} else {
+			// Not busy: stop typewriter chain
+			m.typewriterTickActive = false
 		}
 
 		// §Q Flush message queue on tick (not in cliProgressMsg/cliOutboundMsg).
@@ -371,6 +384,19 @@ func (m *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickerTickMsg:
 		// Legacy: ticker is now driven by cliTickMsg. Drop stale messages.
+
+	case typewriterTickMsg:
+		// Advance typewriter by 1 rune on its own 50ms cadence.
+		m.advanceTypewriter()
+		m.updateViewportContent()
+		// Continue chain if still behind on either stream or reasoning content
+		streamBehind := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
+		reasoningBehind := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
+		if m.typewriterTickActive && (streamBehind || reasoningBehind) {
+			cmds = append(cmds, typewriterTickCmd())
+		} else {
+			m.typewriterTickActive = false
+		}
 
 	case splashTickMsg:
 		return m.handleSplashTick(msg)

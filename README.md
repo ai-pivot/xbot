@@ -2,6 +2,10 @@
   <strong>xbot</strong> — pluggable AI Agent framework
 </p>
 
+<p align="center">
+  <img alt="Streaming" src="docs-site/static/img/cli/streaming.gif" width="720">
+</p>
+
 ## What is xbot
 
 xbot is a Go framework for building AI agents. It provides a message bus + plugin architecture where an **Agent** (LLM + tools + memory) receives messages from any **Channel** (CLI, Feishu, QQ, Web) through a **Bus**, processes them in a multi-turn loop with tool calling, and sends replies back.
@@ -91,7 +95,7 @@ Each channel is a pluggable adapter on the message bus. Enable channels via envi
 
 ### CLI (TUI)
 
-The default channel — a full-featured terminal UI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+The default channel — a full-featured terminal UI built with [Bubble Tea](https://github.com/charmbracelet/bubbletea). Designed for power users who live in the terminal.
 
 ```bash
 xbot-cli                # Interactive TUI
@@ -99,28 +103,7 @@ xbot-cli "your prompt"  # One-shot mode
 echo "prompt" | xbot-cli # Pipe mode
 ```
 
-**Keyboard shortcuts:**
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Ctrl+Enter` / `Ctrl+J` | Insert newline |
-| `Tab` | Autocomplete (`/` commands, `@` file paths) |
-| `↑` `↓` | Input history / scroll messages |
-| `PgUp` `PgDn` | Page up / down |
-| `Home` `End` | Jump to top / bottom |
-| `Esc` | Cancel / clear input |
-| `Ctrl+C` | Interrupt current operation |
-| `Ctrl+K` | Context editing (trim history by turns) |
-| `Ctrl+O` | Toggle tool summary expand/collapse |
-| `Ctrl+E` | Toggle long message folding |
-| `^` | Background task panel |
-
-**Slash commands:** `/settings` `/setup` `/update` `/new` `/clear` `/compact` `/context` `/model` `/models` `/cancel` `/search` `/tasks` `/su` `/help` `/exit`
-
-**Features:** streaming output, markdown + Mermaid rendering, 6 color themes, background tasks, message search, built-in skill/agent creator.
-
-See [docs/cli-channel.md](docs/cli-channel.md) for full documentation.
+See [CLI Channel Docs](https://cjiw.github.io/xbot/channels/cli/) for full documentation.
 
 ### Feishu (Lark)
 

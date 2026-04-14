@@ -1259,6 +1259,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	oneshotIA.mu.Unlock()
 	// One-shot agents are ephemeral: remove immediately after completion.
 	// Unlike interactive sessions, there's no "send more messages" use case.
+	// Also cascade: cancel any bg sessions spawned during this one-shot's Run().
+	a.cancelChildSessions(oneshotKey)
 	a.interactiveSubAgents.Delete(oneshotKey)
 
 	log.Ctx(ctx).WithFields(log.Fields{

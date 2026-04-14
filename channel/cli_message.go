@@ -863,8 +863,19 @@ func (m *cliModel) renderProgressBlock() string {
 		}
 		isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
 		if reasoningText != "" {
+			// Typewriter effect for reasoning streaming content
+			totalReasoningRunes := len([]rune(m.progress.ReasoningStreamContent))
+			if isReasoningStreaming && totalReasoningRunes > 0 {
+				runes := []rune(m.progress.ReasoningStreamContent)
+				if m.rwVisible > 0 && m.rwVisible < totalReasoningRunes {
+					runes = runes[:m.rwVisible]
+				}
+				reasoningText = string(runes)
+			}
 			lines := strings.Split(reasoningText, "\n")
-			cursorVisible := (m.ticker.ticks/5)%2 == 0
+			// Solid cursor while actively typing; blink only when waiting for next chunk.
+			reasoningTyping := isReasoningStreaming && m.rwVisible < totalReasoningRunes
+			cursorVisible := reasoningTyping || (m.ticker.ticks/5)%2 == 0
 			for i, line := range lines {
 				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
@@ -955,9 +966,18 @@ func (m *cliModel) renderProgressBlock() string {
 
 		// Stream content: render LLM output in progress block when streaming
 		if m.progress.StreamContent != "" {
-			lines := strings.Split(m.progress.StreamContent, "\n")
-			// Blinking cursor: visible for 5 ticks (500ms), hidden for 5 ticks
-			cursorVisible := (m.ticker.ticks/5)%2 == 0
+			// Typewriter effect: gradually reveal characters
+			totalRunes := len([]rune(m.progress.StreamContent))
+			runes := []rune(m.progress.StreamContent)
+			if m.twVisible > 0 && m.twVisible < totalRunes {
+				runes = runes[:m.twVisible]
+			}
+			streamText := string(runes)
+			lines := strings.Split(streamText, "\n")
+			// Blinking cursor: only blink when waiting for next stream chunk.
+			// While actively typing (behind buffer), cursor stays solid.
+			typing := m.twVisible < totalRunes
+			cursorVisible := typing || (m.ticker.ticks/5)%2 == 0
 			for i, line := range lines {
 				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
@@ -1751,6 +1771,14 @@ func (m *cliModel) jumpToSearchResult(idx int) {
 func tickCmd() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
 		return cliTickMsg{}
+	})
+}
+
+// typewriterTickCmd returns a command that advances the typewriter by 1 rune every 50ms.
+// Runs independently from the main tick to give the typewriter its own update frequency.
+func typewriterTickCmd() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
+		return typewriterTickMsg{}
 	})
 }
 

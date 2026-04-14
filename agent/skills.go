@@ -185,14 +185,14 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string) stri
 	sb.WriteString("# Available Skills\n\n")
 	sb.WriteString("Skills 是特定任务的专门指导文档。当任务匹配时，用 `Skill` 工具加载对应的 skill 获取详细指令。\n\n")
 
-	// 注入实际目录路径，供 skill-creator 等参考
+	// 注入目录路径，供 skill-creator 参考新建位置
 	if len(s.globalDirs) > 0 {
 		fmt.Fprintf(&sb, "**Skills 存储目录**: %s\n\n", s.globalDirs[0])
 	}
 
 	sb.WriteString("<available_skills>\n")
 	for _, sk := range skills {
-		fmt.Fprintf(&sb, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n  </skill>\n", sk.Name, sk.Description)
+		fmt.Fprintf(&sb, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <dir>%s</dir>\n  </skill>\n", sk.Name, sk.Description, sk.Path)
 	}
 	sb.WriteString("</available_skills>\n")
 	return sb.String()

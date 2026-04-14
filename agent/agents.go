@@ -39,6 +39,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	type agentInfo struct {
 		name string
 		role tools.SubAgentRole
+		dir  string // 定义文件所在目录："embed" / 全局目录 / 用户目录
 	}
 
 	merged := make(map[string]agentInfo)
@@ -55,7 +56,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 			continue
 		}
 		orderedNames = append(orderedNames, role.Name)
-		merged[role.Name] = agentInfo{name: role.Name, role: role}
+		merged[role.Name] = agentInfo{name: role.Name, role: role, dir: "embed"}
 	}
 
 	// 2. 扫描全局目录 + 用户目录
@@ -95,6 +96,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 			merged[r.Name] = agentInfo{
 				name: r.Name,
 				role: r,
+				dir:  dir,
 			}
 		}
 	}
@@ -109,7 +111,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	sb.WriteString("# Available Agents (SubAgents)\n\n")
 	sb.WriteString("SubAgent 是拥有独立工具集和上下文的子代理，可委托专门任务并行处理。用 `SubAgent` 工具调用。\n\n")
 
-	// 注入实际目录路径，供 agent-creator 等参考
+	// 注入目录路径，供 agent-creator 参考新建位置
 	if s.globalDir != "" {
 		fmt.Fprintf(&sb, "**Agents 存储目录**: %s\n\n", s.globalDir)
 	}
@@ -121,8 +123,8 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 		if len(info.role.AllowedTools) > 0 {
 			toolsInfo = strings.Join(info.role.AllowedTools, ", ")
 		}
-		fmt.Fprintf(&sb, "  <agent>\n    <name>%s</name>\n    <description>%s</description>\n    <tools>%s</tools>\n  </agent>\n",
-			info.role.Name, info.role.Description, toolsInfo)
+		fmt.Fprintf(&sb, "  <agent>\n    <name>%s</name>\n    <description>%s</description>\n    <tools>%s</tools>\n    <dir>%s</dir>\n  </agent>\n",
+			info.role.Name, info.role.Description, toolsInfo, info.dir)
 	}
 	sb.WriteString("</available_agents>\n")
 	return sb.String()

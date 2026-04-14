@@ -63,6 +63,77 @@ func (t *animTicker) viewFrames(frames []string, speedOverride ...int) string {
 	return t.styleAlt.Render(frames[idx])
 }
 
+// isCJK reports whether r is a CJK character (ideographs, kana, hangul, etc.).
+func isCJK(r rune) bool {
+	return r >= 0x2E80
+}
+
+// advanceTypewriter advances both typewriters (stream + reasoning) on each tick.
+// Called every typewriterTickMsg (50ms) during streaming.
+func (m *cliModel) advanceTypewriter() {
+	if m.progress == nil {
+		m.twVisible = 0
+		m.rwVisible = 0
+		return
+	}
+
+	// Advance reasoning writer
+	if m.progress.ReasoningStreamContent != "" {
+		target := len([]rune(m.progress.ReasoningStreamContent))
+		m.advanceWriterCJK(&m.rwVisible, target, m.progress.ReasoningStreamContent, &m.cjkSkipTick)
+	}
+
+	// Advance stream writer
+	if m.progress.StreamContent != "" {
+		target := len([]rune(m.progress.StreamContent))
+		m.advanceWriterCJK(&m.twVisible, target, m.progress.StreamContent, &m.cjkSkipTick)
+	}
+}
+
+// advanceWriterCJK is like advanceWriter but CJK-aware: when the next rune to reveal
+// is CJK, it only advances every other tick (effectively half speed).
+// skipFlip tracks alternating ticks within a single call chain.
+func (m *cliModel) advanceWriterCJK(visible *int, target int, content string, skipFlip *bool) {
+	if target == 0 {
+		*visible = 0
+		return
+	}
+	gap := target - *visible
+	if gap <= 0 {
+		return
+	}
+
+	// Check if the next rune to reveal is CJK
+	runes := []rune(content)
+	nextIsCJK := *visible < len(runes) && isCJK(runes[*visible])
+
+	// Gap-based acceleration
+	advance := 1
+	switch {
+	case gap > 200:
+		advance = gap // jump to end
+	case gap > 80:
+		advance = 40
+	case gap > 40:
+		advance = 10
+	case gap > 20:
+		advance = 3
+	}
+
+	// CJK penalty: if next rune is CJK and we're at normal speed, skip every other tick
+	if nextIsCJK && advance <= 3 && gap <= 20 {
+		*skipFlip = !*skipFlip
+		if *skipFlip {
+			return // skip this tick, revealing nothing
+		}
+	}
+
+	*visible += advance
+	if *visible > target {
+		*visible = target
+	}
+}
+
 // Ticker frame presets
 var (
 	// dotFrames: braille dot orbit — 8 frames for a smooth clockwise loop
@@ -237,11 +308,15 @@ type cliModel struct {
 	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
 
 	// --- Progress ---
-	progress           *CLIProgressPayload
-	iterationHistory   []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration  int                    // 上次进度事件的迭代号
-	iterationStartTime time.Time              // current iteration wall-clock start time
-	fastTickActive     bool                   // true when a fast tick chain (100ms) is running
+	progress             *CLIProgressPayload
+	iterationHistory     []cliIterationSnapshot // 已完成迭代快照
+	lastSeenIteration    int                    // 上次进度事件的迭代号
+	iterationStartTime   time.Time              // current iteration wall-clock start time
+	fastTickActive       bool                   // true when a fast tick chain (100ms) is running
+	typewriterTickActive bool                   // true when typewriter tick chain (50ms) is running
+	twVisible            int                    // typewriter: runes currently visible in stream content
+	rwVisible            int                    // typewriter: runes currently visible in reasoning stream content
+	cjkSkipTick          bool                   // alternates each tick to halve CJK speed
 
 	// --- Session ---
 	workDir       string // 工作目录（标题栏显示用）
@@ -527,6 +602,9 @@ type cliProgressMsg struct {
 
 // cliTickMsg 定时刷新（用于流式输出动画）
 type cliTickMsg struct{}
+
+// typewriterTickMsg 独立的打字机刷新（50ms 间隔，逐 rune 输出）
+type typewriterTickMsg struct{}
 
 // idleTickMsg 低频定时刷新（用于 placeholder 轮转）
 type idleTickMsg struct{}

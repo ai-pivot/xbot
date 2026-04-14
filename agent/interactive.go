@@ -21,6 +21,10 @@ import (
 // instead of the Agent-level ctx, ensuring they never outlive their direct parent.
 type bgSessionCtxKey struct{}
 
+// bgParentKey stores the parent session's interactiveSubAgents map key,
+// enabling cascade cleanup when a parent session is unloaded or cancelled.
+type bgParentKey struct{}
+
 // interactiveAgent 封装一个 interactive SubAgent 会话。
 // 存储在 parent Agent 的 interactiveSubAgents map 中。
 type interactiveAgent struct {
@@ -35,6 +39,7 @@ type interactiveAgent struct {
 	running          bool                // 当前是否有 Run 在执行
 	background       bool                // 是否后台模式
 	cancelCurrent    context.CancelFunc  // 当前运行的取消函数（nil = idle）
+	parentKey        string              // parent session key (for cascade cleanup on unload/cancel)
 	lastError        string              // 最近一次错误
 	lastReply        string              // 最近一次回复摘要
 	task             string              // one-shot subagent 的任务描述（交互式为空）
@@ -109,6 +114,10 @@ func (a *Agent) SpawnInteractiveSession(
 
 	// 原子 check-and-store：如果 key 已存在，直接返回
 	placeholder := &interactiveAgent{roleName: roleName, instance: instance, lastUsed: time.Now(), background: background}
+	// Track parent session for cascade cleanup
+	if parentKey, ok := ctx.Value(bgParentKey{}).(string); ok {
+		placeholder.parentKey = parentKey
+	}
 	if _, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
 		return &bus.OutboundMessage{
 			Content: fmt.Sprintf("interactive session for role %q already exists, use action=\"send\" to continue or action=\"unload\" to end it", roleName),
@@ -194,6 +203,8 @@ func (a *Agent) SpawnInteractiveSession(
 		runCtx, runCancel := context.WithCancel(bgBase)
 		// Mark this context as a bg session context for nested detection
 		runCtx = context.WithValue(runCtx, bgSessionCtxKey{}, true)
+		// Store own key so nested bg sessions can identify this as parent
+		runCtx = context.WithValue(runCtx, bgParentKey{}, key)
 		// Copy call chain into derived context
 		runCtx = WithCallChain(runCtx, CallChainFromContext(subCtx))
 
@@ -256,6 +267,9 @@ func (a *Agent) SpawnInteractiveSession(
 					placeholder.lastError = fmt.Sprintf("panic: %v", r)
 					placeholder.mu.Unlock()
 					runCancel()
+					// Cascade: clean up children and remove self from panel
+					a.cancelChildSessions(key)
+					a.interactiveSubAgents.Delete(key)
 					// Notify parent
 					if notifyMgr != nil {
 						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
@@ -273,11 +287,16 @@ func (a *Agent) SpawnInteractiveSession(
 			out := Run(runCtx, cfg)
 			runCancel()
 
+			cancelled := runCtx.Err() != nil
+
 			// Notify parent agent about completion
 			if notifyMgr != nil {
 				content := out.Content
 				if out.Error != nil {
 					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
+				}
+				if cancelled {
+					content = "[cancelled] " + content
 				}
 				if len(content) > 2000 {
 					content = content[:2000] + "... [truncated, use inspect for details]"
@@ -292,7 +311,20 @@ func (a *Agent) SpawnInteractiveSession(
 				})
 			}
 
-			// Write results back
+			if cancelled {
+				// Context was cancelled (parent unloaded, agent shutdown, etc.)
+				// Clean up children and remove self from panel.
+				a.cancelChildSessions(key)
+				a.interactiveSubAgents.Delete(key)
+				log.WithFields(log.Fields{
+					"role":     roleName,
+					"instance": instance,
+					"key":      key,
+				}).Info("Background interactive session cancelled, removed from panel")
+				return
+			}
+
+			// Natural completion: session stays for future "send" interactions
 			placeholder.mu.Lock()
 			defer placeholder.mu.Unlock()
 
@@ -703,6 +735,36 @@ func (a *Agent) InspectInteractiveSession(
 	return sb.String(), nil
 }
 
+// cancelChildSessions cancels and removes all interactive sessions whose parentKey
+// matches the given key. Recursively cascades to grandchildren.
+// This ensures that when a session is unloaded or its context is cancelled,
+// all descendant sessions are also cleaned up and disappear from the panel.
+func (a *Agent) cancelChildSessions(parentKey string) {
+	a.interactiveSubAgents.Range(func(k, v any) bool {
+		childIA, ok := v.(*interactiveAgent)
+		if !ok || childIA == nil {
+			return true
+		}
+		childIA.mu.Lock()
+		childParentKey := childIA.parentKey
+		if childIA.cancelCurrent != nil {
+			childIA.cancelCurrent()
+		}
+		childIA.mu.Unlock()
+		if childParentKey == parentKey {
+			childKey, _ := k.(string)
+			a.interactiveSubAgents.Delete(childKey)
+			// Recurse: cancel grandchildren before they become orphaned
+			a.cancelChildSessions(childKey)
+			log.WithFields(log.Fields{
+				"parent": parentKey,
+				"child":  childKey,
+			}).Info("Cascade cancelled child interactive session")
+		}
+		return true
+	})
+}
+
 // UnloadInteractiveSession 结束 interactive session：巩固记忆并清理。
 // instance 为空时行为与旧版一致（向后兼容）。
 func (a *Agent) UnloadInteractiveSession(
@@ -739,6 +801,9 @@ func (a *Agent) UnloadInteractiveSession(
 	copy(messages, ia.messages)
 	cfg := *ia.cfg // dereference pointer for consolidateSubAgentMemory
 	ia.mu.Unlock()
+
+	// Cascade: cancel and remove all child sessions spawned by this one
+	a.cancelChildSessions(key)
 
 	// 巩固记忆
 	if cfg.Memory != nil && len(messages) > 0 {
