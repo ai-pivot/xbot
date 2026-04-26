@@ -316,6 +316,124 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	return feishuCh, webCh, nil
 }
 
+// registerOAuthAndFeishuTools registers OAuth tool and Feishu MCP tools when OAuth is enabled.
+// shutdownServices performs orderly shutdown of all services in reverse initialization order.
+func shutdownServices(
+	cancel context.CancelFunc,
+	webhookServer *event.WebhookServer,
+	backend agent.AgentBackend,
+	oauthServer *oauth.Server,
+	oauthManager *oauth.Manager,
+	sharedDB *sqlite.DB,
+	tokenDB *sqlite.DB,
+	disp *channel.Dispatcher,
+) {
+	// Cancel context first to let agent.Run() exit (its defer cleans up cron and cleanup routines)
+	cancel()
+
+	// Close Webhook event server
+	if webhookServer != nil {
+		webhookServer.Stop()
+	}
+
+	// Wait for agent loop to exit before continuing shutdown
+	if backend != nil {
+		backend.Close()
+	}
+
+	// Close sandbox (clean up Docker containers and other resources)
+	// export/import may take long (large containers: minutes); no timeout, must wait for completion.
+	if sandbox := tools.GetSandbox(); sandbox != nil {
+		if err := sandbox.Close(); err != nil {
+			log.WithError(err).Warn("Sandbox close error")
+		}
+	}
+
+	// Stop OAuth server
+	if oauthServer != nil {
+		if err := oauthServer.Shutdown(context.Background()); err != nil {
+			log.WithError(err).Warn("OAuth server shutdown error")
+		}
+	}
+	// Stop OAuth Manager periodic cleanup goroutine
+	if oauthManager != nil {
+		oauthManager.Close()
+	}
+
+	// Close OAuth shared database connection
+	if sharedDB != nil {
+		if err := sharedDB.Close(); err != nil {
+			log.WithError(err).Warn("OAuth shared DB close error")
+		}
+	}
+
+	// Close runner token database connection
+	if tokenDB != nil {
+		if err := tokenDB.Close(); err != nil {
+			log.WithError(err).Warn("Token DB close error")
+		}
+	}
+
+	disp.Stop()
+	log.Info("xbot stopped")
+}
+
+func registerOAuthAndFeishuTools(cfg *config.Config, backend agent.AgentBackend, oauthManager *oauth.Manager, feishuProvider *providers.FeishuProvider) {
+	if !cfg.OAuth.Enable || oauthManager == nil {
+		return
+	}
+
+	// Register OAuth tool
+	oauthTool := &tools.OAuthTool{
+		Manager: oauthManager,
+		BaseURL: cfg.OAuth.BaseURL,
+	}
+	backend.RegisterCoreTool(oauthTool)
+
+	// Register Feishu MCP tool
+	feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
+	if feishuProvider != nil {
+		feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())
+	}
+
+	// Bitable tools
+	backend.RegisterTool(&feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.BitableRecordTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.BitableListTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
+
+	// Wiki tools
+	backend.RegisterTool(&feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
+
+	// Document tools
+	backend.RegisterTool(&feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.DocxCreateTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
+
+	// Search tools
+	backend.RegisterTool(&feishu_mcp.SearchWikiTool{MCP: feishuMCP})
+
+	// Drive tools
+	backend.RegisterTool(&feishu_mcp.UploadFileTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.ListFilesTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.AddPermissionTool{MCP: feishuMCP})
+
+	// Message resource tools
+	backend.RegisterTool(&feishu_mcp.DownloadFileTool{MCP: feishuMCP})
+	backend.RegisterTool(&feishu_mcp.SendFileTool{MCP: feishuMCP})
+
+	log.Info("OAuth and Feishu MCP tools registered")
+}
+
 func Run(args []string) error {
 	// Parse --config flag before loading config.
 	// Usage: xbot --config /path/to/config.json
@@ -455,55 +573,7 @@ func Run(args []string) error {
 	}
 
 	// Register OAuth and Feishu MCP tools (if enabled)
-	if cfg.OAuth.Enable && oauthManager != nil {
-		// Register OAuth tool
-		oauthTool := &tools.OAuthTool{
-			Manager: oauthManager,
-			BaseURL: cfg.OAuth.BaseURL,
-		}
-		backend.RegisterCoreTool(oauthTool)
-
-		// Register Feishu MCP tool
-		feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
-		if feishuProvider != nil {
-			feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())
-		}
-		backend.RegisterTool(&feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BitableRecordTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BitableListTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
-
-		// Wiki tools
-		backend.RegisterTool(&feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
-
-		// Document tools
-		backend.RegisterTool(&feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxCreateTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
-
-		// Search tools
-		backend.RegisterTool(&feishu_mcp.SearchWikiTool{MCP: feishuMCP})
-
-		// Drive tools
-		backend.RegisterTool(&feishu_mcp.UploadFileTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.ListFilesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.AddPermissionTool{MCP: feishuMCP})
-
-		// Message resource tools
-		backend.RegisterTool(&feishu_mcp.DownloadFileTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.SendFileTool{MCP: feishuMCP})
-
-		log.Info("OAuth and Feishu MCP tools registered")
-	}
+	registerOAuthAndFeishuTools(cfg, backend, oauthManager, feishuProvider)
 
 	// Register DownloadFile tool (supports both Web/OSS and Feishu sources)
 	backend.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
@@ -735,54 +805,8 @@ func Run(args []string) error {
 	log.WithField("signal", sig.String()).Warn("Received shutdown signal")
 	fmt.Println("\nShutting down...")
 
-	// Cancel context first to let agent.Run() exit (its defer cleans up cron and cleanup routines)
-	cancel()
-
-	// Close Webhook event server
-	if webhookServer != nil {
-		webhookServer.Stop()
-	}
-
-	// Wait for agent loop to exit before continuing shutdown
-	if backend != nil {
-		backend.Close()
-	}
-
-	// Close sandbox (clean up Docker containers and other resources)
-	// export/import may take long (large containers: minutes); no timeout, must wait for completion.
-	if sandbox := tools.GetSandbox(); sandbox != nil {
-		if err := sandbox.Close(); err != nil {
-			log.WithError(err).Warn("Sandbox close error")
-		}
-	}
-
-	// Stop OAuth server
-	if oauthServer != nil {
-		if err := oauthServer.Shutdown(context.Background()); err != nil {
-			log.WithError(err).Warn("OAuth server shutdown error")
-		}
-	}
-	// Stop OAuth Manager periodic cleanup goroutine
-	if oauthManager != nil {
-		oauthManager.Close()
-	}
-
-	// Close OAuth shared database connection
-	if sharedDB != nil {
-		if err := sharedDB.Close(); err != nil {
-			log.WithError(err).Warn("OAuth shared DB close error")
-		}
-	}
-
-	// Close runner token database connection
-	if tokenDB != nil {
-		if err := tokenDB.Close(); err != nil {
-			log.WithError(err).Warn("Token DB close error")
-		}
-	}
-
-	disp.Stop()
-	log.Info("xbot stopped")
+	// Orderly shutdown: cancel context → close services in reverse initialization order.
+	shutdownServices(cancel, webhookServer, backend, oauthServer, oauthManager, sharedDB, tokenDB, disp)
 	return nil
 }
 
