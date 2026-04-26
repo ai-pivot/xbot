@@ -62,6 +62,13 @@ const (
 
 	// Panel minimum content width for rendering items (truncate if narrower)
 	panelMinContentWidth = 20
+
+	// Message role constants — used throughout the codebase for role comparisons.
+	// These match the values stored in HistoryMessage.Role and cliMessage.role.
+	roleUser        = "user"
+	roleAssistant   = "assistant"
+	roleSystem      = "system"
+	roleToolSummary = "tool_summary"
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).

@@ -826,7 +826,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			// We track by index from end because append copies the value,
 			// making pointer comparison unreliable.
 			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == "tool_summary" {
+				if m.messages[i].role == roleToolSummary {
 					m.messages = append(m.messages[:i], m.messages[i+1:]...)
 					break
 				}
@@ -850,7 +850,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 			// Find the assistant message we just added and insert before it
 			assistantIdx := len(m.messages) - 1
-			if assistantIdx >= 0 && m.messages[assistantIdx].role == "assistant" {
+			if assistantIdx >= 0 && m.messages[assistantIdx].role == roleAssistant {
 				m.messages = append(m.messages[:assistantIdx], append([]cliMessage{toolMsg}, m.messages[assistantIdx:]...)...)
 			} else {
 				// Fallback: append at end
@@ -1262,11 +1262,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	// 渲染 Markdown（assistant 消息 + 带 markdown 标记的 system 消息）
 	var rendered string
-	if msg.role == "assistant" || (msg.role == "system" && msg.markdown) {
+	if msg.role == roleAssistant || (msg.role == roleSystem && msg.markdown) {
 		// Pre-process: render mermaid code blocks to ASCII art
 		// Truncate to glamour wrap width to prevent wrapping.
 		preprocessed := msg.content
-		if msg.role == "assistant" {
+		if msg.role == roleAssistant {
 			preprocessed = renderMermaidBlocks(msg.content, m.contentWidth())
 		}
 		var err error
@@ -1529,7 +1529,7 @@ func wrappedLineCount(content string, width int) int {
 func visibleTurnIndices(messages []cliMessage) []int {
 	var turns []int
 	for i, msg := range messages {
-		if msg.role == "user" {
+		if msg.role == roleUser {
 			turns = append(turns, i)
 		}
 	}
@@ -1706,7 +1706,7 @@ func (m *cliModel) toggleMessageFold() {
 	anyUnfolded := false
 	for i := range m.messages {
 		msg := &m.messages[i]
-		if msg.role == "assistant" && !msg.isPartial && !msg.folded {
+		if msg.role == roleAssistant && !msg.isPartial && !msg.folded {
 			lines := msg.originalRenderedLines
 			if lines == 0 {
 				lines = msg.renderedLines
@@ -1790,7 +1790,7 @@ func (m *cliModel) executeSearch() {
 	lower := strings.ToLower(query)
 	m.searchResults = nil
 	for i, msg := range m.messages {
-		if msg.role == "system" {
+		if msg.role == roleSystem {
 			continue
 		}
 		if strings.Contains(strings.ToLower(msg.content), lower) {
