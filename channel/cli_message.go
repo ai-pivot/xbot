@@ -657,16 +657,59 @@ func (m *cliModel) handleDefaultSlashCommand(command string, cmd string) tea.Cmd
 	return nil
 }
 
-// handleAgentMessage Handle agent reply
+// handleAgentMessage handles agent reply messages.
+// It coordinates streaming updates, AskUser panels, iteration snapshots,
+// and tool summary rendering.
 func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
+	content, ok := m.filterAgentMessage(msg)
+	if !ok {
+		return
+	}
+
+	turnID := m.agentTurnID
+
+	if m.handleAgentEmptyContent(msg, content, turnID) {
+		return
+	}
+
+	if msg.IsPartial {
+		m.handleStreamingAgentContent(content)
+	} else {
+		m.handleCompleteAgentContent(msg, content, turnID)
+	}
+
+	m.updateViewportContent()
+}
+
+// handleCompleteAgentContent processes a complete (non-streaming) agent message,
+// including reasoning capture, AskUser panel detection, iteration snapshotting,
+// and tool summary construction.
+func (m *cliModel) handleCompleteAgentContent(msg bus.OutboundMessage, content string, turnID uint64) {
+	m.upsertCompleteAgentMessage(content)
+	m.captureAgentReasoning(turnID)
+	m.renderCacheValid = false
+	m.updateViewportContent()
+
+	if m.handleAskUserPanel(msg) {
+		return
+	}
+
+	m.snapshotCurrentIteration()
+	m.buildAndInsertToolSummary()
+	m.finalizeAgentTurn(turnID)
+}
+
+// filterAgentMessage checks session-level filtering and preprocesses the content
+// (e.g. converting Feishu card protocol). It returns the processed content and
+// true if the message should be handled, or ("", false) if it should be dropped.
+func (m *cliModel) filterAgentMessage(msg bus.OutboundMessage) (string, bool) {
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
 		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
-			return
+			return "", false
 		}
 	}
 
-	turnID := m.agentTurnID // capture at entry for stale-signal guard
 	content := msg.Content
 
 	// Handle __FEISHU_CARD__ protocol (simplified display)
@@ -674,8 +717,13 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		content = ConvertFeishuCard(content)
 	}
 
-	// Empty content with no waiting user: end turn and flush queue,
-	// but don't append a blank message.
+	return content, true
+}
+
+// handleAgentEmptyContent handles the case where the agent sends empty content
+// with no waiting user and no tools used. It ends the agent turn and flushes
+// the message queue. Returns true if the message was fully handled.
+func (m *cliModel) handleAgentEmptyContent(msg bus.OutboundMessage, content string, turnID uint64) bool {
 	if content == "" && !msg.WaitingUser && len(msg.ToolsUsed) == 0 {
 		m.streamingMsgIdx = -1
 		m.progress = nil
@@ -686,240 +734,269 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 				m.needFlushQueue = true
 			}
 		}
-		return
+		return true
+	}
+	return false
+}
+
+// handleStreamingAgentContent appends streaming (partial) content to the current
+// message. If no streaming message exists yet, it creates one.
+func (m *cliModel) handleStreamingAgentContent(content string) {
+	if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+		// Append to existing streaming message
+		m.messages[m.streamingMsgIdx].content = content
+		m.messages[m.streamingMsgIdx].dirty = true
+	} else {
+		// Create new streaming message
+		m.streamingMsgIdx = len(m.messages)
+		m.messages = append(m.messages, cliMessage{
+			role:      roleAssistant,
+			content:   content,
+			timestamp: time.Now(),
+			isPartial: true,
+			dirty:     true,
+		})
+	}
+}
+
+// upsertCompleteAgentMessage creates or updates the complete (non-partial)
+// assistant message in the message list and resets streaming state.
+func (m *cliModel) upsertCompleteAgentMessage(content string) {
+	if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+		// Update streaming message to complete message
+		m.messages[m.streamingMsgIdx].content = content
+		m.messages[m.streamingMsgIdx].isPartial = false
+		m.messages[m.streamingMsgIdx].dirty = true
+	} else {
+		// Add new complete assistant message
+		m.messages = append(m.messages, cliMessage{
+			role:      roleAssistant,
+			content:   content,
+			timestamp: time.Now(),
+			isPartial: false,
+			dirty:     true,
+		})
+	}
+	// Reset streaming state
+	m.streamingMsgIdx = -1
+}
+
+// captureAgentReasoning captures reasoning and thinking content from the
+// current progress state before it might be cleared by endAgentTurn.
+func (m *cliModel) captureAgentReasoning(turnID uint64) {
+	if turnID == m.agentTurnID && m.progress != nil {
+		reasoning := m.progress.Reasoning
+		if reasoning == "" {
+			reasoning = m.progress.ReasoningStreamContent
+		}
+		if reasoning != "" {
+			m.lastReasoning = reasoning
+		}
+		if m.progress.Thinking != "" {
+			m.lastThinking = m.progress.Thinking
+		}
+	}
+}
+
+// handleAskUserPanel detects a WaitingUser signal with ask_questions metadata
+// and opens the interactive AskUser panel. Returns true if the panel was opened
+// (the caller should return immediately as the panel handles the rest of the flow).
+func (m *cliModel) handleAskUserPanel(msg bus.OutboundMessage) bool {
+	if !msg.WaitingUser {
+		return false
 	}
 
-	if msg.IsPartial {
-		// Streaming output: append to current message
-		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// Append to existing streaming message
-			m.messages[m.streamingMsgIdx].content = content
-			m.messages[m.streamingMsgIdx].dirty = true
-		} else {
-			// Create new streaming message
-			m.streamingMsgIdx = len(m.messages)
-			m.messages = append(m.messages, cliMessage{
-				role:      roleAssistant,
-				content:   content,
-				timestamp: time.Now(),
-				isPartial: true,
-				dirty:     true,
-			})
-		}
-	} else {
-		// Complete message
-		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// Update streaming message to complete message
-			m.messages[m.streamingMsgIdx].content = content
-			m.messages[m.streamingMsgIdx].isPartial = false
-			m.messages[m.streamingMsgIdx].dirty = true
-		} else {
-			// Add new complete assistant message
-			m.messages = append(m.messages, cliMessage{
-				role:      roleAssistant,
-				content:   content,
-				timestamp: time.Now(),
-				isPartial: false,
-				dirty:     true,
-			})
-		}
-		// Reset streaming state
-		m.streamingMsgIdx = -1
-		// Capture reasoning from progress before it might be cleared.
-		// Do NOT clear m.progress here — progress is only cleared by endAgentTurn.
-		// Intermediate text messages (e.g. thinking content) arrive while the agent
-		// is still running; clearing progress here would hide the progress panel
-		// and make it look like the turn ended prematurely.
-		if turnID == m.agentTurnID && m.progress != nil {
-			reasoning := m.progress.Reasoning
-			if reasoning == "" {
-				reasoning = m.progress.ReasoningStreamContent
-			}
-			if reasoning != "" {
-				m.lastReasoning = reasoning
-			}
-			if m.progress.Thinking != "" {
-				m.lastThinking = m.progress.Thinking
+	var items []askItem
+	if msg.Metadata != nil {
+		if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {
+			// Multi-question mode: parse questions array
+			var qs []askQItem
+			if json.Unmarshal([]byte(qJSON), &qs) == nil {
+				for _, q := range qs {
+					items = append(items, askItem{Question: q.Question, Options: q.Options})
+				}
 			}
 		}
-		m.renderCacheValid = false
-		m.updateViewportContent()
+	}
+	// Fallback: search message history for ❓ (legacy single-question format)
+	if len(items) == 0 {
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if strings.HasPrefix(m.messages[i].content, "❓") {
+				question := strings.TrimSpace(strings.TrimPrefix(m.messages[i].content, "❓"))
+				m.messages = append(m.messages[:i], m.messages[i+1:]...)
+				if question != "" {
+					items = append(items, askItem{Question: question})
+				}
+				break
+			}
+		}
+	}
 
-		// §12 AskUser panel: detect WaitingUser and open interactive panel
-		if msg.WaitingUser {
-			var items []askItem
-			if msg.Metadata != nil {
-				if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {
-					// Multi-question mode: parse questions array
-					var qs []askQItem
-					if json.Unmarshal([]byte(qJSON), &qs) == nil {
-						for _, q := range qs {
-							items = append(items, askItem{Question: q.Question, Options: q.Options})
-						}
-					}
-				}
-			}
-			// Fallback: search message history for ❓ (legacy single-question format)
-			if len(items) == 0 {
-				for i := len(m.messages) - 1; i >= 0; i-- {
-					if strings.HasPrefix(m.messages[i].content, "❓") {
-						question := strings.TrimSpace(strings.TrimPrefix(m.messages[i].content, "❓"))
-						m.messages = append(m.messages[:i], m.messages[i+1:]...)
-						if question != "" {
-							items = append(items, askItem{Question: question})
-						}
-						break
-					}
-				}
-			}
-			if len(items) > 0 {
-				m.updateViewportContent()
-				m.openAskUserPanel(items, func(answers map[string]string) {
-					// Format answers as tool-call style message
-					var parts []string
-					for i, item := range items {
-						key := fmt.Sprintf("q%d", i)
-						ans := answers[key]
-						parts = append(parts, fmt.Sprintf("Q: %s\nA: %s", item.Question, ans))
-					}
-					content := strings.Join(parts, "\n\n")
-					// Send to agent as tool result replacement (not a new user message).
-					// Use blocking send with timeout — ask_user answers are critical:
-					// if dropped, the agent hangs indefinitely waiting for a response.
-					if m.msgBus != nil {
-						if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
-							m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
-						}
-					}
-					// Render as tool call style (not user message)
-					m.messages = append(m.messages, cliMessage{
-						role:       roleToolSummary,
-						content:    "AskUser",
-						timestamp:  time.Now(),
-						dirty:      true,
-						iterations: nil,
-						tools: []CLIToolProgress{
-							{
-								Name:    "AskUser",
-								Label:   fmt.Sprintf("asked %d question(s)", len(items)),
-								Status:  "completed",
-								Elapsed: 0,
-							},
-						},
-					})
-					// Show answers as system message
-					var answerParts []string
-					for i, item := range items {
-						key := fmt.Sprintf("q%d", i)
-						ans := answers[key]
-						answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
-					}
-					m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
-					m.startAgentTurn()
-					m.updateViewportContent()
-				}, func() {
-					m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
-					m.typing = false
-					m.updatePlaceholder()
-					m.inputReady = true
-					m.resetProgressState()
-					m.updateViewportContent()
-				})
-				return
-			}
-		}
-
-		// Snapshot the final iteration before clearing
-		if m.lastSeenIteration >= 0 && (len(m.lastCompletedTools) > 0 || m.lastReasoning != "" || m.lastThinking != "") {
-			alreadySnapped := false
-			for _, s := range m.iterationHistory {
-				if s.Iteration == m.lastSeenIteration {
-					alreadySnapped = true
-					break
-				}
-			}
-			if !alreadySnapped {
-				// Filter tools by Iteration field to ensure correct attribution
-				var finalTools []CLIToolProgress
-				for _, t := range m.lastCompletedTools {
-					if t.Iteration == m.lastSeenIteration {
-						finalTools = append(finalTools, t)
-					}
-				}
-				snap := cliIterationSnapshot{
-					Iteration:   m.lastSeenIteration,
-					Reasoning:   m.lastReasoning,
-					Thinking:    m.lastThinking,
-					Tools:       finalTools,
-					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
-				}
-				if len(finalTools) > 0 || m.lastReasoning != "" || m.lastThinking != "" {
-					m.iterationHistory = append(m.iterationHistory, snap)
-				}
-			}
-		}
-
-		// §2 Tool visualization: insert tool_summary before assistant message
-		// Build iterations from pendingToolSummary (PhaseDone) + local iterationHistory.
-		// Deduplicate: if an iteration exists in both, prefer the PhaseDone version
-		// (which has complete reasoning from the server) over the local snapshot.
-		var toolSummaryIterations []cliIterationSnapshot
-		pendingIters := make(map[int]bool)
-		if m.pendingToolSummary != nil {
-			for _, it := range m.pendingToolSummary.iterations {
-				pendingIters[it.Iteration] = true
-			}
-			toolSummaryIterations = append(toolSummaryIterations, m.pendingToolSummary.iterations...)
-			// Remove the last tool_summary placeholder that PhaseDone appended.
-			// We track by index from end because append copies the value,
-			// making pointer comparison unreliable.
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == roleToolSummary {
-					m.messages = append(m.messages[:i], m.messages[i+1:]...)
-					break
-				}
-			}
-			m.pendingToolSummary = nil
-		}
-		if len(m.iterationHistory) > 0 {
-			for _, it := range m.iterationHistory {
-				if !pendingIters[it.Iteration] {
-					toolSummaryIterations = append(toolSummaryIterations, it)
-				}
-			}
-		}
-		if len(toolSummaryIterations) > 0 {
-			toolMsg := cliMessage{
-				role:       roleToolSummary,
-				content:    "",
-				timestamp:  time.Now(),
-				iterations: toolSummaryIterations,
-				dirty:      true,
-			}
-			// Find the assistant message we just added and insert before it
-			assistantIdx := len(m.messages) - 1
-			if assistantIdx >= 0 && m.messages[assistantIdx].role == roleAssistant {
-				m.messages = append(m.messages[:assistantIdx], append([]cliMessage{toolMsg}, m.messages[assistantIdx:]...)...)
-			} else {
-				// Fallback: append at end
-				m.messages = append(m.messages, toolMsg)
-			}
-			m.renderCacheValid = false
-		}
-
-		// Reset iteration tracking state
-		m.endAgentTurn(turnID)
-		if turnID == m.agentTurnID {
-			m.inputReady = true
-			// §Q Mark that message queue needs refresh (checked by Update loop)
-			if len(m.messageQueue) > 0 {
-				m.needFlushQueue = true
-			}
-		}
-
+	if len(items) == 0 {
+		return false
 	}
 
 	m.updateViewportContent()
+	m.openAskUserPanel(items, func(answers map[string]string) {
+		// Format answers as tool-call style message
+		var parts []string
+		for i, item := range items {
+			key := fmt.Sprintf("q%d", i)
+			ans := answers[key]
+			parts = append(parts, fmt.Sprintf("Q: %s\nA: %s", item.Question, ans))
+		}
+		content := strings.Join(parts, "\n\n")
+		// Send to agent as tool result replacement (not a new user message).
+		// Use blocking send with timeout — ask_user answers are critical:
+		// if dropped, the agent hangs indefinitely waiting for a response.
+		if m.msgBus != nil {
+			if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
+				m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
+			}
+		}
+		// Render as tool call style (not user message)
+		m.messages = append(m.messages, cliMessage{
+			role:       roleToolSummary,
+			content:    "AskUser",
+			timestamp:  time.Now(),
+			dirty:      true,
+			iterations: nil,
+			tools: []CLIToolProgress{
+				{
+					Name:    "AskUser",
+					Label:   fmt.Sprintf("asked %d question(s)", len(items)),
+					Status:  "completed",
+					Elapsed: 0,
+				},
+			},
+		})
+		// Show answers as system message
+		var answerParts []string
+		for i, item := range items {
+			key := fmt.Sprintf("q%d", i)
+			ans := answers[key]
+			answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
+		}
+		m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
+		m.startAgentTurn()
+		m.updateViewportContent()
+	}, func() {
+		m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
+		m.typing = false
+		m.updatePlaceholder()
+		m.inputReady = true
+		m.resetProgressState()
+		m.updateViewportContent()
+	})
+	return true
+}
+
+// snapshotCurrentIteration records the current iteration's reasoning, thinking,
+// and completed tools into the iteration history for later rendering.
+func (m *cliModel) snapshotCurrentIteration() {
+	if m.lastSeenIteration < 0 {
+		return
+	}
+	if len(m.lastCompletedTools) == 0 && m.lastReasoning == "" && m.lastThinking == "" {
+		return
+	}
+
+	alreadySnapped := false
+	for _, s := range m.iterationHistory {
+		if s.Iteration == m.lastSeenIteration {
+			alreadySnapped = true
+			break
+		}
+	}
+	if alreadySnapped {
+		return
+	}
+
+	// Filter tools by Iteration field to ensure correct attribution
+	var finalTools []CLIToolProgress
+	for _, t := range m.lastCompletedTools {
+		if t.Iteration == m.lastSeenIteration {
+			finalTools = append(finalTools, t)
+		}
+	}
+	snap := cliIterationSnapshot{
+		Iteration:   m.lastSeenIteration,
+		Reasoning:   m.lastReasoning,
+		Thinking:    m.lastThinking,
+		Tools:       finalTools,
+		ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+	}
+	if len(finalTools) > 0 || m.lastReasoning != "" || m.lastThinking != "" {
+		m.iterationHistory = append(m.iterationHistory, snap)
+	}
+}
+
+// buildAndInsertToolSummary constructs a tool_summary message from pending
+// PhaseDone data and local iteration history, then inserts it before the
+// last assistant message. It handles deduplication between the two sources.
+func (m *cliModel) buildAndInsertToolSummary() {
+	// §2 Tool visualization: insert tool_summary before assistant message.
+	// Build iterations from pendingToolSummary (PhaseDone) + local iterationHistory.
+	// Deduplicate: if an iteration exists in both, prefer the PhaseDone version
+	// (which has complete reasoning from the server) over the local snapshot.
+	var toolSummaryIterations []cliIterationSnapshot
+	pendingIters := make(map[int]bool)
+	if m.pendingToolSummary != nil {
+		for _, it := range m.pendingToolSummary.iterations {
+			pendingIters[it.Iteration] = true
+		}
+		toolSummaryIterations = append(toolSummaryIterations, m.pendingToolSummary.iterations...)
+		// Remove the last tool_summary placeholder that PhaseDone appended.
+		// We track by index from end because append copies the value,
+		// making pointer comparison unreliable.
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].role == roleToolSummary {
+				m.messages = append(m.messages[:i], m.messages[i+1:]...)
+				break
+			}
+		}
+		m.pendingToolSummary = nil
+	}
+	if len(m.iterationHistory) > 0 {
+		for _, it := range m.iterationHistory {
+			if !pendingIters[it.Iteration] {
+				toolSummaryIterations = append(toolSummaryIterations, it)
+			}
+		}
+	}
+	if len(toolSummaryIterations) == 0 {
+		return
+	}
+	toolMsg := cliMessage{
+		role:       roleToolSummary,
+		content:    "",
+		timestamp:  time.Now(),
+		iterations: toolSummaryIterations,
+		dirty:      true,
+	}
+	// Find the assistant message we just added and insert before it
+	assistantIdx := len(m.messages) - 1
+	if assistantIdx >= 0 && m.messages[assistantIdx].role == roleAssistant {
+		m.messages = append(m.messages[:assistantIdx], append([]cliMessage{toolMsg}, m.messages[assistantIdx:]...)...)
+	} else {
+		// Fallback: append at end
+		m.messages = append(m.messages, toolMsg)
+	}
+	m.renderCacheValid = false
+}
+
+// finalizeAgentTurn ends the current agent turn and marks the input as ready.
+// If there are queued messages, it flags them for flushing.
+func (m *cliModel) finalizeAgentTurn(turnID uint64) {
+	// Reset iteration tracking state
+	m.endAgentTurn(turnID)
+	if turnID == m.agentTurnID {
+		m.inputReady = true
+		// §Q Mark that message queue needs refresh (checked by Update loop)
+		if len(m.messageQueue) > 0 {
+			m.needFlushQueue = true
+		}
+	}
 }
 
 // renderWrappedBlock writes text lines to sb with a guide prefix and content style.
