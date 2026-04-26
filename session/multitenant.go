@@ -424,7 +424,9 @@ func (m *MultiTenantSession) indexPersonalMCPTools(tenantID int64, mgr *tools.Se
 		copy(entriesCopy, entries)
 		fpCopy := fp
 		go func() {
-			ctx, cancel := context.WithTimeout(m.shutdownCtx, 10*time.Minute)
+			// toolIndexTimeout is the timeout for tool indexing operations.
+			const toolIndexTimeout = 10 * time.Minute
+			ctx, cancel := context.WithTimeout(m.shutdownCtx, toolIndexTimeout)
 			defer cancel()
 			if err := m.IndexToolsForTenant(ctx, tenantID, entriesCopy); err != nil {
 				if m.shutdownCtx.Err() != nil {

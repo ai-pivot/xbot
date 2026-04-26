@@ -213,7 +213,9 @@ func (rl *rateLimiter) allow(key string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-time.Minute)
+	// rateWindowDuration is the sliding window duration for rate limiting.
+	const rateWindowDuration = time.Minute
+	cutoff := now.Add(-rateWindowDuration)
 
 	w, ok := rl.windows[key]
 	if !ok {
@@ -249,7 +251,9 @@ func (rl *rateLimiter) allow(key string) bool {
 
 // evictEmpty removes windows with no recent timestamps.
 func (rl *rateLimiter) evictEmpty() {
-	cutoff := time.Now().Add(-2 * time.Minute)
+	// rateLimitBanDuration is how long a client stays rate-limited after exceeding the limit.
+	const rateLimitBanDuration = 2 * time.Minute
+	cutoff := time.Now().Add(-rateLimitBanDuration)
 	for k, w := range rl.windows {
 		if len(w.timestamps) == 0 || w.timestamps[len(w.timestamps)-1].Before(cutoff) {
 			delete(rl.windows, k)

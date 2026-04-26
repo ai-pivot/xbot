@@ -63,7 +63,9 @@ func injectProxyLLM(userID string, backend agent.AgentBackend) {
 						return rs.LLMGenerate(ctx, userID, model, messages, tools, thinkingMode)
 					},
 					ListModelsFunc: func() []string {
-						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						// createLLMTimeout is the timeout for the initial LLM creation.
+						const createLLMTimeout = 10 * time.Second
+						ctx, cancel := context.WithTimeout(context.Background(), createLLMTimeout)
 						defer cancel()
 						models, err := rs.LLMModels(ctx, userID)
 						if err != nil {

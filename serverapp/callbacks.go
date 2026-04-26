@@ -271,7 +271,9 @@ func buildWebCallbacks(cfg *config.Config, backend agent.AgentBackend, webDB *sq
 			if err := userSbx.MkdirAll(context.Background(), dir, 0755, senderID); err != nil {
 				log.WithError(err).Warn("Failed to create directory in sandbox")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// callbackTimeout is the timeout for callback operations.
+			const callbackTimeout = 30 * time.Second
+			ctx, cancel := context.WithTimeout(context.Background(), callbackTimeout)
 			defer cancel()
 			if err := userSbx.WriteFile(ctx, absPath, data, perm, senderID); err != nil {
 				return "", err
