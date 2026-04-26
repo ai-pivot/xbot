@@ -593,10 +593,6 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 // With DynamicHeight enabled on the textarea, it manages its own height based on
 // visual lines (including soft wraps from CJK characters). We just need to keep the
 // viewport in sync.
-const (
-	minTaHeight = 3
-	maxTaHeight = 10
-)
 
 func (m *cliModel) autoExpandInput() {
 	// Bubble Tea textarea owns its own height when DynamicHeight is enabled.

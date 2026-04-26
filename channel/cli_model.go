@@ -123,7 +123,7 @@ func (m *cliModel) advanceWriterCJK(visible *int, target int, content string, sk
 	}
 
 	// CJK penalty: if next rune is CJK and we're at normal speed, skip every other tick
-	if nextIsCJK && advance <= 3 && gap <= 20 {
+	if nextIsCJK && advance <= twSpeedSlow && gap <= twGapSlow {
 		*skipFlip = !*skipFlip
 		if *skipFlip {
 			return // skip this tick, revealing nothing

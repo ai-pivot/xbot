@@ -23,7 +23,21 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	cliMsgBufSize = 100
+	cliMsgBufSize = 100 // message buffer pre-allocation size
+
+	// Textarea height bounds (auto-grow range)
+	minTaHeight = 3  // minimum textarea rows
+	maxTaHeight = 10 // maximum textarea rows before internal scrolling
+
+	// Typewriter gap-based acceleration thresholds.
+	// When the gap between visible and target runes exceeds these thresholds,
+	// the typewriter accelerates to catch up smoothly.
+	twGapFast   = 80 // gap > 80: fast-forward (20 runes/tick)
+	twGapMedium = 40 // gap > 40: medium catch-up (10 runes/tick)
+	twGapSlow   = 20 // gap > 20: gentle catch-up (3 runes/tick)
+	twSpeedFast = 20
+	twSpeedMed  = 10
+	twSpeedSlow = 3
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).
