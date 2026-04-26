@@ -95,6 +95,13 @@ func WithToolIndexService(svc *vectordb.ToolIndexService) MultiTenantOption {
 	}
 }
 
+// Default timeout constants for session management.
+const (
+	defaultMCPInactivityTimeout = 30 * time.Minute
+	defaultMCPCleanupInterval   = 5 * time.Minute
+	defaultSessionCacheTimeout  = 24 * time.Hour
+)
+
 // MultiTenantSession manages multiple tenant sessions with SQLite backing
 type MultiTenantSession struct {
 	db                    *sqlite.DB
@@ -148,9 +155,9 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		toolIndexPrevNames:    make(map[int64]map[string]bool),
 		dbPath:                dbPath,
 		mcpConfigPath:         "mcp.json", // default in working directory
-		mcpInactivityTimeout:  30 * time.Minute,
-		mcpCleanupInterval:    5 * time.Minute,
-		sessionCacheTimeout:   24 * time.Hour,
+		mcpInactivityTimeout:  defaultMCPInactivityTimeout,
+		mcpCleanupInterval:    defaultMCPCleanupInterval,
+		sessionCacheTimeout:   defaultSessionCacheTimeout,
 		cleanupStopCh:         make(chan struct{}),
 		shutdownCtx:           shutdownCtx,
 		shutdownCancel:        shutdownCancel,
