@@ -24,7 +24,7 @@ func NewAgentStore(workDir string, globalDir string, sandbox tools.Sandbox) *Age
 	return &AgentStore{workDir: workDir, globalDir: globalDir, sandbox: sandbox}
 }
 
-// userAgentsDir 返回用户 agent 目录路径（沙箱感知）
+// userAgentsDir returns user agent directory path (sandbox-aware)
 func (s *AgentStore) userAgentsDir(senderID string) string {
 	if s.sandbox != nil && s.sandbox.Name() != "none" {
 		return filepath.Join(s.sandbox.Workspace(senderID), "agents")
@@ -39,13 +39,13 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	type agentInfo struct {
 		name string
 		role tools.SubAgentRole
-		dir  string // 定义文件所在目录："embed" / 全局目录 / 用户目录
+		dir  string // Definition file directory: "embed" / global directory / user directory
 	}
 
 	merged := make(map[string]agentInfo)
 	var orderedNames []string
 
-	// 1. 扫描内置嵌入的 agents（优先级最低，外部同名 agent 会覆盖）
+	// 1. Scan built-in embedded agents (lowest priority, external agents with same name override)
 	for _, name := range tools.ListEmbeddedAgents() {
 		data, err := tools.ReadEmbeddedAgentFile(name)
 		if err != nil {
@@ -59,7 +59,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 		merged[role.Name] = agentInfo{name: role.Name, role: role, dir: "embed"}
 	}
 
-	// 2. 扫描全局目录 + 用户目录
+	// 2. Scan global directory + user directory
 	sources := []string{s.globalDir}
 	if senderID != "" {
 		sources = append(sources, s.userAgentsDir(senderID))
@@ -111,7 +111,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	sb.WriteString("# Available Agents (SubAgents)\n\n")
 	sb.WriteString("SubAgent 是拥有独立工具集和上下文的子代理，可委托专门任务并行处理。用 `SubAgent` 工具调用。\n\n")
 
-	// 注入目录路径，供 agent-creator 参考新建位置
+	// Inject directory paths for agent-creator reference for new file locations
 	if s.globalDir != "" {
 		fmt.Fprintf(&sb, "**Agents 存储目录**: %s\n\n", s.globalDir)
 	}

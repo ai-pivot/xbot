@@ -11,7 +11,7 @@ import (
 	log "xbot/logger"
 )
 
-// ContextEditAction 定义 context_edit 工具的操作类型。
+// ContextEditAction defines the operation types for the context_edit tool.
 type ContextEditAction string
 
 const (
@@ -22,7 +22,7 @@ const (
 	ContextEditList       ContextEditAction = "list"
 )
 
-// ContextEditRequest 是 context_edit 工具的请求参数。
+// ContextEditRequest is the request parameters for the context_edit tool.
 type ContextEditRequest struct {
 	Action     ContextEditAction `json:"action"`
 	MessageIdx int               `json:"message_idx"`
@@ -32,7 +32,7 @@ type ContextEditRequest struct {
 	Reason     string            `json:"reason"`
 }
 
-// ContextEditResult 是 context_edit 的执行结果。
+// ContextEditResult is the execution result of context_edit.
 type ContextEditResult struct {
 	Action     ContextEditAction `json:"action"`
 	MessageIdx int               `json:"message_idx"`
@@ -48,14 +48,14 @@ const (
 	contextEditDefaultMaxChars = 200 // Default max characters for context edit
 )
 
-// ContextEditStore 管理 context editing 的历史记录。
+// ContextEditStore manages context editing history.
 type ContextEditStore struct {
 	mu      sync.RWMutex
 	history []ContextEditResult
 	maxSize int
 }
 
-// NewContextEditStore 创建 ContextEditStore。
+// NewContextEditStore creates ContextEditStore.
 func NewContextEditStore(maxSize int) *ContextEditStore {
 	if maxSize <= 0 {
 		maxSize = contextEditDefaultMaxSize
@@ -63,7 +63,7 @@ func NewContextEditStore(maxSize int) *ContextEditStore {
 	return &ContextEditStore{maxSize: maxSize}
 }
 
-// Record 记录一次 context edit 操作。
+// Record records one context edit operation.
 func (s *ContextEditStore) Record(result ContextEditResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,7 +73,7 @@ func (s *ContextEditStore) Record(result ContextEditResult) {
 	s.history = append(s.history, result)
 }
 
-// History 返回编辑历史（最近优先）。
+// History returns edit history (most recent first).
 func (s *ContextEditStore) History() []ContextEditResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -85,22 +85,22 @@ func (s *ContextEditStore) History() []ContextEditResult {
 	return result
 }
 
-// ContextEditor 执行 context editing 操作。
-// 它持有一个指向 messages slice 的指针，由 engine.go 在每次 Run 开始时设置。
+// ContextEditor executes context editing operations.
+// It holds a pointer to the messages slice, set by engine.go at the start of each Run.
 type ContextEditor struct {
 	Store     *ContextEditStore
-	messages  []llm.ChatMessage         // 当前对话消息，由 engine 在 Run 时设置
-	mu        sync.RWMutex              // 保护 messages 引用
+	messages  []llm.ChatMessage         // Current conversation messages, set by engine during Run
+	mu        sync.RWMutex              // Protect messages reference
 	PersistFn func(editedIndices []int) // persistence callback for syncing edits to DB (best-effort)
 	tenantID  int64                     // current tenant ID for persistence (set per-request)
 }
 
-// NewContextEditor 创建 ContextEditor。
+// NewContextEditor creates ContextEditor.
 func NewContextEditor(store *ContextEditStore) *ContextEditor {
 	return &ContextEditor{Store: store}
 }
 
-// SetMessages 设置当前 messages slice 引用（engine 在每次 Run 开始时调用）。
+// SetMessages sets the current messages slice reference (called by engine at the start of each Run).
 func (e *ContextEditor) SetMessages(messages []llm.ChatMessage) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -115,7 +115,7 @@ func (e *ContextEditor) SetTenantID(tenantID int64) {
 	e.tenantID = tenantID
 }
 
-// HandleRequest 处理 context_edit 请求，直接修改 messages slice。
+// HandleRequest handles context_edit request, directly modifying messages slice.
 func (e *ContextEditor) HandleRequest(action string, params map[string]interface{}) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -143,7 +143,7 @@ func (e *ContextEditor) HandleRequest(action string, params map[string]interface
 	}
 }
 
-// applyEdit 执行编辑操作并修改 messages slice。
+// applyEdit executes the edit operation and modifies messages slice.
 func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, params map[string]interface{}) (string, error) {
 	req := ContextEditRequest{
 		Action: ContextEditAction(action),
@@ -171,7 +171,7 @@ func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, par
 		req.Reason = "not specified"
 	}
 
-	// 将用户可见索引映射到 messages slice 索引
+	// Map user-visible index to messages slice index
 	actualIdx := userVisibleIndex(messages, req.MessageIdx)
 	if actualIdx < 0 || actualIdx >= len(messages) {
 		return "", fmt.Errorf("message index %d out of range (valid: 0-%d)", req.MessageIdx, countUserVisible(messages)-1)
@@ -179,12 +179,12 @@ func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, par
 
 	msg := messages[actualIdx]
 
-	// 安全检查：不允许编辑 system 消息
+	// Safety check: editing system messages is not allowed
 	if msg.Role == "system" {
 		return "", fmt.Errorf("cannot edit system messages")
 	}
 
-	// 安全检查：不允许编辑最近的 3 条消息
+	// Safety check: editing the most recent 3 messages is not allowed
 	visibleCount := countUserVisible(messages)
 	if req.MessageIdx >= visibleCount-3 {
 		return "", fmt.Errorf("cannot edit recent messages (last 3 messages are protected)")
@@ -291,7 +291,7 @@ func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, par
 	return fmt.Sprintf("✅ %s message #%d [%s]: %s → %s — %s", req.Action, req.MessageIdx, msg.Role, beforeChars, afterChars, req.Reason), nil
 }
 
-// countUserVisible 统计非 system 消息的数量。
+// countUserVisible counts non-system messages.
 func countUserVisible(messages []llm.ChatMessage) int {
 	count := 0
 	for _, m := range messages {
@@ -302,7 +302,7 @@ func countUserVisible(messages []llm.ChatMessage) int {
 	return count
 }
 
-// userVisibleIndex 将用户可见的消息索引转换为 messages slice 的实际索引。
+// userVisibleIndex converts user-visible message index to actual messages slice index.
 func userVisibleIndex(messages []llm.ChatMessage, visibleIdx int) int {
 	visibleCount := 0
 	for i, m := range messages {
@@ -316,24 +316,24 @@ func userVisibleIndex(messages []llm.ChatMessage, visibleIdx int) int {
 	return -1
 }
 
-// conversationTurn 代表一轮对话（一条 user 消息 + 所有关联的 assistant/tool 消息）。
+// conversationTurn represents one conversation turn (one user message + all associated assistant/tool messages).
 type conversationTurn struct {
-	TurnIdx       int    // 轮次编号（0-based，用户可见）
-	StartSliceIdx int    // messages slice 中的起始索引
-	EndSliceIdx   int    // messages slice 中的结束索引（inclusive）
-	UserSliceIdx  int    // user 消息在 slice 中的索引
-	MsgCount      int    // 该轮次包含的消息数量
-	ToolCount     int    // tool 消息数量
-	TotalChars    int    // 总字符数
-	UserPreview   string // user 消息预览
+	TurnIdx       int    // Turn number (0-based, user-visible)
+	StartSliceIdx int    // Start index in messages slice
+	EndSliceIdx   int    // End index in messages slice (inclusive)
+	UserSliceIdx  int    // User message index in slice
+	MsgCount      int    // Message count in this turn
+	ToolCount     int    // Tool message count
+	TotalChars    int    // Total character count
+	UserPreview   string // User message preview
 }
 
-// identifyTurns 将 messages slice 按对话轮次分组。
-// 一轮从一条 user 消息开始，到下一条 user 消息之前结束。
-// system 消息不属于任何轮次。
+// identifyTurns groups messages slice by conversation turns.
+// A turn starts from one user message and ends before the next user message.
+// System messages don't belong to any turn.
 func identifyTurns(messages []llm.ChatMessage) []conversationTurn {
 	var turns []conversationTurn
-	currentTurn := -1 // 当前轮次索引
+	currentTurn := -1 // Current turn index
 
 	for i, m := range messages {
 		if m.Role == "system" {
@@ -341,13 +341,13 @@ func identifyTurns(messages []llm.ChatMessage) []conversationTurn {
 		}
 
 		if m.Role == "user" {
-			// 结束上一轮
+			// End previous turn
 			if currentTurn >= 0 {
 				t := &turns[currentTurn]
 				t.EndSliceIdx = i - 1
 				t.MsgCount = i - t.StartSliceIdx
 			}
-			// 开始新一轮
+			// Start new turn
 			currentTurn = len(turns)
 			preview := m.Content
 			if len([]rune(preview)) > 80 {
@@ -361,7 +361,7 @@ func identifyTurns(messages []llm.ChatMessage) []conversationTurn {
 			})
 		}
 
-		// 累计当前轮次的统计
+		// Accumulate current turn statistics
 		if currentTurn >= 0 {
 			t := &turns[currentTurn]
 			t.TotalChars += len([]rune(m.Content))
@@ -371,7 +371,7 @@ func identifyTurns(messages []llm.ChatMessage) []conversationTurn {
 		}
 	}
 
-	// 结束最后一轮
+	// End last turn
 	if currentTurn >= 0 && len(turns) > 0 {
 		t := &turns[currentTurn]
 		t.EndSliceIdx = len(messages) - 1
@@ -381,7 +381,7 @@ func identifyTurns(messages []llm.ChatMessage) []conversationTurn {
 	return turns
 }
 
-// listMessagesByTurn 按对话轮次生成消息列表摘要。
+// listMessagesByTurn generates message list summary by conversation turns.
 func listMessagesByTurn(messages []llm.ChatMessage) string {
 	turns := identifyTurns(messages)
 
@@ -403,7 +403,7 @@ func listMessagesByTurn(messages []llm.ChatMessage) string {
 		}
 		sb.WriteString("\n")
 
-		// 统计 assistant 消息数（含 tool call 的迭代轮次）
+		// Count assistant messages (iteration rounds with tool calls)
 		assistantCount := 0
 		for i := t.StartSliceIdx; i <= t.EndSliceIdx; i++ {
 			if messages[i].Role == "assistant" {
@@ -419,7 +419,7 @@ func listMessagesByTurn(messages []llm.ChatMessage) string {
 	return sb.String()
 }
 
-// deleteTurn 删除整个对话轮次（user 消息 + 所有关联的 assistant/tool 消息）。
+// deleteTurn deletes an entire conversation turn (user message + all associated assistant/tool messages).
 func (e *ContextEditor) deleteTurn(messages []llm.ChatMessage, params map[string]interface{}) (string, error) {
 	turnIdx, ok := params["turn_idx"].(float64)
 	if !ok {
@@ -432,7 +432,7 @@ func (e *ContextEditor) deleteTurn(messages []llm.ChatMessage, params map[string
 		return "", fmt.Errorf("turn index %d out of range (valid: 0-%d)", idx, len(turns)-1)
 	}
 
-	// 安全检查：不允许删除最后一轮（当前对话）
+	// Safety check: deleting the last turn (current conversation) is not allowed
 	if idx == len(turns)-1 {
 		return "", fmt.Errorf("cannot delete the current (last) turn — it is protected")
 	}
@@ -443,7 +443,7 @@ func (e *ContextEditor) deleteTurn(messages []llm.ChatMessage, params map[string
 		reason = v
 	}
 
-	// 替换该轮次所有消息的 content 为 placeholder
+	// Replace all messages' content in this turn with placeholder
 	placeholder := fmt.Sprintf("[context edited: deleted turn %d (%d messages, %d tool calls) — %s — %s]",
 		idx, t.MsgCount, t.ToolCount, reason, time.Now().Format("15:04:05"))
 

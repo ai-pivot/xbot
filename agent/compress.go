@@ -217,14 +217,14 @@ func truncateArgs(args string, maxLen int) string {
 // handleCompress handles the /compress command: manually trigger context compaction.
 // formatCompressResult formats a human-readable compression summary.
 func formatCompressResult(persisted bool, oldTokens, newTokens int, result *CompressResult) string {
-	mode := "内存"
+	mode := "In-memory"
 	if persisted {
 		mode = ""
 	}
 	if mode != "" {
 		mode = " (" + mode + ")"
 	}
-	return fmt.Sprintf("context compression完成%s: %d → %d tokens (LLM %d 条, Session %d 条)",
+	return fmt.Sprintf("Context compression complete%s: %d → %d tokens (LLM %d 条, Session %d 条)",
 		mode, oldTokens, newTokens, len(result.LLMView), len(result.SessionView))
 }
 
@@ -236,7 +236,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("构建上下文失败: %v", err),
+			Content: fmt.Sprintf("Failed to build context: %v", err),
 		}, nil
 	}
 
@@ -244,7 +244,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: "当前没有消息需要压缩。",
+			Content: "No messages to compress.",
 		}, nil
 	}
 
@@ -255,7 +255,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 
 	// Always allow manual /compress regardless of threshold — user explicitly requested it.
 
-	_ = a.sendMessage(msg.Channel, msg.ChatID, "🔄 开始压缩上下文...")
+	_ = a.sendMessage(msg.Channel, msg.ChatID, "🔄 Starting context compression...")
 
 	cm := a.GetContextManager()
 
@@ -270,7 +270,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("context compression失败: %v", err),
+			Content: fmt.Sprintf("Context compression failed: %v", err),
 		}, nil
 	}
 

@@ -2,21 +2,21 @@ package agent
 
 import "context"
 
-// ChannelPromptProvider 定义 channel 特化 prompt 提供者接口。
-// 由外部（main.go 中的适配器）实现并注入，不依赖 channel 包。
+// ChannelPromptProvider defines the channel-specific prompt provider interface.
+// Implemented and injected externally (adapter in main.go), doesn't depend on channel package.
 type ChannelPromptProvider interface {
-	// ChannelPromptName 返回 channel 名称，用于匹配 MessageContext.Channel
+	// ChannelPromptName returns channel name, for matching MessageContext.Channel
 	ChannelPromptName() string
 
-	// ChannelSystemParts 返回 channel 特化的 system prompt 片段。
-	// 返回 nil 或空 map 表示该 channel 没有特化 prompt。
-	// key 命名建议使用 "05_channel_xxx" 前缀，确保在 "00_base" 之后、
-	// "10_skills" 之前。
+	// ChannelSystemParts returns channel-specific system prompt fragments.
+	// Returns nil or empty map means this channel has no specialized prompt.
+	// Key naming建议 use "05_channel_xxx" prefix, ensuring after "00_base" and
+	// before "10_skills".
 	ChannelSystemParts(ctx context.Context, chatID, senderID string) map[string]string
 }
 
-// ChannelPromptMiddleware 注入 channel 特化的 system prompt 片段。
-// 优先级 5（在 SystemPromptMiddleware 之后，SkillsCatalog 之前）。
+// ChannelPromptMiddleware injects channel-specific system prompt fragments.
+// Priority 5 (after SystemPromptMiddleware, before SkillsCatalog).
 type ChannelPromptMiddleware struct {
 	providers map[string]ChannelPromptProvider // key: channel name
 }

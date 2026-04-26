@@ -24,11 +24,11 @@ func formatTokenCount(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
 
-// handleContextInfo 处理 /context info 命令：显示当前 token 数和组成
+// handleContextInfo handles /context info command: displays current token count and composition
 func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
 	_, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
-	// 使用 buildPrompt 获取完整上下文（包含 system、skills、memory 等）
+	// Use buildPrompt to get full context (including system, skills, memory, etc.)
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {
 		return &bus.OutboundMessage{
@@ -38,7 +38,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 		}, nil
 	}
 
-	// 获取工具定义并计算 token
+	// Get tool definitions and calculate tokens
 	sessionKey := msg.Channel + ":" + msg.ChatID
 	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey), a.settingsSvc, msg.Channel, msg.SenderID)
 	toolDefsTokens, _ := llm.CountToolsTokens(toolDefs, model)
@@ -58,7 +58,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 	stats := cm.ContextInfo(messages, model, toolDefsTokens)
 
 	// Override total with API value if available
-	tokenSource := "估算"
+	tokenSource := "Estimated"
 	if apiTokens > 0 {
 		stats.TotalTokens = int(apiTokens)
 		tokenSource = "API"
@@ -92,9 +92,9 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 		stats.Mode,
 	)
 
-	// 运行时覆盖信息
+	// Runtime override info
 	if stats.IsRuntimeOverride {
-		content += fmt.Sprintf("（运行时覆盖，默认为 %s）", stats.DefaultMode)
+		content += fmt.Sprintf("（Runtime override, default is %s）", stats.DefaultMode)
 	}
 
 	// Per-user cumulative token usage
@@ -125,16 +125,16 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 	}, nil
 }
 
-// handleContextMode 处理 /context mode 子命令
+// handleContextMode handles /context mode sub-command
 func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, modeStr string) (*bus.OutboundMessage, error) {
 	cfg := a.contextManagerConfig
 
 	if modeStr == "" {
-		// 仅查询当前模式
+		// Query current mode only
 		stats := a.GetContextManager().ContextInfo(nil, "", 0)
 		overrideInfo := ""
 		if stats.IsRuntimeOverride {
-			overrideInfo = fmt.Sprintf("（运行时覆盖，默认为 %s）", stats.DefaultMode)
+			overrideInfo = fmt.Sprintf("（Runtime override, default is %s）", stats.DefaultMode)
 		}
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
@@ -150,7 +150,7 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("已恢复默认上下文模式: %s", cfg.DefaultMode),
+			Content: fmt.Sprintf("Restored default context mode: %s", cfg.DefaultMode),
 		}, nil
 	}
 
@@ -158,17 +158,17 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: "无效模式。可选: phase1, none, default",
+			Content: "Invalid mode. Options:: phase1, none, default",
 		}, nil
 	}
 
-	// 先设置Configuration，再替换 manager
+	// Set configuration first, then replace manager
 	cfg.SetRuntimeMode(target)
 	a.SetContextManager(NewContextManager(cfg))
 
 	return &bus.OutboundMessage{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: fmt.Sprintf("已切换上下文模式: %s", target),
+		Content: fmt.Sprintf("Switched context mode: %s", target),
 	}, nil
 }

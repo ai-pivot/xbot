@@ -21,10 +21,10 @@ import (
 	log "xbot/logger"
 )
 
-// sessionDirReplacer 用于清理 sessionKey 中的危险路径字符，声明为包级变量避免重复创建。
+// sessionDirReplacer cleans dangerous path characters from sessionKey, declared as package-level variable to avoid repeated creation.
 var sessionDirReplacer = strings.NewReplacer("/", "_", "\\", "_", ":", "_", "\x00", "_")
 
-// extractGoStructure 使用的正则，声明为包级变量避免每次调用重复编译。
+// Regex used by extractGoStructure, declared as package-level variable to avoid recompilation on each call.
 var (
 	goImportRe     = regexp.MustCompile(`"([^"]+)"`)
 	goTypeRe       = regexp.MustCompile(`type\s+(\w+)\s+(struct|interface|func)\b`)
@@ -35,16 +35,16 @@ var (
 	jsFuncRe       = regexp.MustCompile(`function\s+(\w+)\s*\(`)
 )
 
-// OffloadConfig Configuration大 tool result 的 offload 行为。
+// OffloadConfig configures offload behavior for large tool results.
 type OffloadConfig struct {
-	MaxResultTokens int    // 触发 offload 的 token 阈值（默认 2000）
-	MaxResultBytes  int    // 触发 offload 的字节阈值（默认 10240）
-	StoreDir        string // offload 文件存储根目录
-	CleanupAgeDays  int    // 过期清理天数（默认 7）
-	Model           string // tokenizer 使用的模型（默认 "gpt-4o"）
+	MaxResultTokens int    // Token threshold for triggering offload (default 2000)
+	MaxResultBytes  int    // Byte threshold for triggering offload (default 10240)
+	StoreDir        string // Offload file storage root directory
+	CleanupAgeDays  int    // Expiration cleanup days (default 7)
+	Model           string // Model used by tokenizer (default "gpt-4o")
 }
 
-// OffloadedResult 表示一个已被 offload 的工具结果元数据。
+// OffloadedResult represents metadata of an offloaded tool result.
 type OffloadedResult struct {
 	ID          string    `json:"id"`
 	ToolName    string    `json:"tool_name"`
@@ -58,13 +58,13 @@ type OffloadedResult struct {
 	Stale       bool      `json:"stale"`        // Whether this offload is stale
 }
 
-// offloadIndex 单个 session 的 offload 索引。
+// offloadIndex is the offload index for a single session.
 type offloadIndex struct {
 	mu      sync.RWMutex
 	entries []OffloadedResult
 }
 
-// offloadFile 完整 tool result 的磁盘存储格式。
+// offloadFile is the disk storage format for complete tool results.
 type offloadFile struct {
 	ID        string    `json:"id"`
 	ToolName  string    `json:"tool_name"`
@@ -73,14 +73,14 @@ type offloadFile struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// OffloadStore 管理大 tool result 的 offload 和召回。
+// OffloadStore manages offload and recall of large tool results.
 type OffloadStore struct {
 	config   OffloadConfig
 	sessions sync.Map      // map[sessionKey]*offloadIndex
 	sandbox  tools.Sandbox // optional sandbox for file hash computation (remote mode)
 }
 
-// NewOffloadStore 创建 OffloadStore 实例，使用默认值填充零值字段。
+// NewOffloadStore creates an OffloadStore instance, filling zero-value fields with defaults.
 func NewOffloadStore(config OffloadConfig) *OffloadStore {
 	if config.MaxResultTokens <= 0 {
 		config.MaxResultTokens = 2000
@@ -106,7 +106,7 @@ func (s *OffloadStore) SetSandbox(sb tools.Sandbox) {
 	s.sandbox = sb
 }
 
-// generateID 生成 offload 短 ID: "ol_" + 8位随机 hex。
+// generateID generates offload short ID: "ol_" + 8 random hex chars.
 func generateID() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
@@ -116,14 +116,14 @@ func generateID() string {
 	return "ol_" + hex.EncodeToString(b)
 }
 
-// getSessionDir 获取指定 session 的存储目录。
+// getSessionDir gets the storage directory for a specified session.
 func (s *OffloadStore) getSessionDir(sessionKey string) string {
-	// 清理 sessionKey 中的路径分隔符，防止目录穿越
+	// Clean path separators from sessionKey to prevent directory traversal
 	safe := sessionDirReplacer.Replace(sessionKey)
 	return filepath.Join(s.config.StoreDir, safe)
 }
 
-// getOrCreateIndex 获取或创建指定 session 的索引。
+// getOrCreateIndex gets or creates the index for a specified session.
 func (s *OffloadStore) getOrCreateIndex(sessionKey string) *offloadIndex {
 	if v, ok := s.sessions.Load(sessionKey); ok {
 		return v.(*offloadIndex)
@@ -133,17 +133,17 @@ func (s *OffloadStore) getOrCreateIndex(sessionKey string) *offloadIndex {
 	return actual.(*offloadIndex)
 }
 
-// indexFilePath 返回索引文件路径。
+// indexFilePath returns the index file path.
 func (s *OffloadStore) indexFilePath(sessionDir string) string {
 	return filepath.Join(sessionDir, "index.json")
 }
 
-// offloadFilePath 返回单个 offload 结果文件路径。
+// offloadFilePath returns a single offload result file path.
 func (s *OffloadStore) offloadFilePath(sessionDir, id string) string {
 	return filepath.Join(sessionDir, id+".json")
 }
 
-// estimateTokenSize 使用 llm.CountTokens 估算 token 数，error 时 fallback 到 len(text)*2/5。
+// estimateTokenSize estimates token count using llm.CountTokens, falls back to len(text)*2/5 on error.
 func estimateTokenSize(text string, model string) int {
 	n, err := llm.CountTokens(text, model)
 	if err != nil {
@@ -152,12 +152,12 @@ func estimateTokenSize(text string, model string) int {
 	return n
 }
 
-// MaybeOffload 检测 tool result 是否超过阈值，超过则 offload 到磁盘。
-// 返回 (OffloadedResult, true) 表示已 offload，content 应替换为 result.Summary。
-// 返回 (zero, false) 表示无需 offload。
-// workspaceRoot/sandboxWorkDir 用于 Read 工具：将 ReadPath 解析为宿主机路径后
-// 读取原始文件内容计算 ContentHash，确保与 InvalidateStaleReads 的比较一致。
-// sandbox 用于 remote 模式下穿越沙箱读取文件计算哈希。
+// MaybeOffload checks if tool result exceeds threshold, offloads to disk if exceeded.
+// Returns (OffloadedResult, true) meaning offloaded, content should be replaced with result.Summary.
+// Returns (zero, false) meaning no offload needed.
+// workspaceRoot/sandboxWorkDir for Read tool: after resolving ReadPath to host path
+// read original file content to calculate ContentHash, ensuring consistency with InvalidateStaleReads comparison.
+// sandbox for reading files across sandbox in remote mode to calculate hash.
 func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, args, result, workspaceRoot, sandboxWorkDir string, userID string) (OffloadedResult, bool) {
 	if result == "" {
 		return OffloadedResult{}, false
@@ -170,7 +170,7 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 		return OffloadedResult{}, false
 	}
 
-	// 检查是否超过阈值
+	// Check if exceeds threshold
 	tokenSize := estimateTokenSize(result, s.config.Model)
 	byteSize := len(result)
 
@@ -178,17 +178,17 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 		return OffloadedResult{}, false
 	}
 
-	// 执行 offload
+	// Execute offload
 	id := generateID()
 	sessionDir := s.getSessionDir(sessionKey)
 
-	// 创建目录
+	// Create directory
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		log.WithError(err).Warn("OffloadStore: failed to create session directory")
 		return OffloadedResult{}, false
 	}
 
-	// 写入完整结果文件
+	// Write complete result file
 	of := offloadFile{
 		ID:        id,
 		ToolName:  toolName,
@@ -206,11 +206,11 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 		return OffloadedResult{}, false
 	}
 
-	// 生成摘要
+	// Generate summary
 	summary := generateRuleSummary(toolName, args, result)
 	summaryContent := fmt.Sprintf("📂 [offload:%s] %s(%s)\n%s", id, toolName, truncateOffloadArgs(args), summary)
 
-	// 更新内存索引
+	// Update memory index
 	entry := OffloadedResult{
 		ID:        id,
 		ToolName:  toolName,
@@ -246,13 +246,13 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 	idx.entries = append(idx.entries, entry)
 	idx.mu.Unlock()
 
-	// 持久化索引
+	// Persist index
 	s.persistIndex(sessionDir, idx)
 
 	return entry, true
 }
 
-// Recall 按 ID 召回已 offload 的完整工具结果。
+// Recall recalls a complete offloaded tool result by ID.
 
 func (s *OffloadStore) Recall(sessionKey, id string) (string, error) {
 	sessionDir := s.getSessionDir(sessionKey)
@@ -261,7 +261,7 @@ func (s *OffloadStore) Recall(sessionKey, id string) (string, error) {
 		return "", fmt.Errorf("offload ID %s not found in session %s", id, sessionKey)
 	}
 
-	// 读取文件
+	// Read file
 	data, err := os.ReadFile(fp)
 	if err != nil {
 		return "", fmt.Errorf("read offload file: %w", err)
@@ -275,20 +275,20 @@ func (s *OffloadStore) Recall(sessionKey, id string) (string, error) {
 	return of.Content, nil
 }
 
-// CleanSession 清理指定 session 的所有 offload 数据。
+// CleanSession cleans all offload data for a specified session.
 func (s *OffloadStore) CleanSession(sessionKey string) {
-	// 从内存中删除
+	// Delete from memory
 	s.sessions.Delete(sessionKey)
 
-	// 删除磁盘文件
+	// Delete disk files
 	sessionDir := s.getSessionDir(sessionKey)
 	if err := os.RemoveAll(sessionDir); err != nil {
 		log.WithError(err).WithField("session", sessionKey).Debug("OffloadStore: failed to remove session directory")
 	}
 }
 
-// CleanOldEntries 删除指定 session 中 timestamp 在 cutoff 之前的 offload 记录和对应文件。
-// 用于压缩后清理：压缩点之前的 offload 已被摘要替代，不再需要召回。
+// CleanOldEntries deletes offload records and corresponding files with timestamp before cutoff in a specified session.
+// For post-compression cleanup: offloads before the compression point have been replaced by summaries, no longer need recall.
 func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int {
 	idx := s.getOrCreateIndex(sessionKey)
 	sessionDir := s.getSessionDir(sessionKey)
@@ -298,7 +298,7 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 	removedCount := 0
 	for _, entry := range idx.entries {
 		if entry.Timestamp.Before(cutoff) {
-			// 删除磁盘文件
+			// Delete disk files
 			fp := s.offloadFilePath(sessionDir, entry.ID)
 			os.Remove(fp)
 			removedCount++
@@ -309,7 +309,7 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 	idx.entries = kept
 	idx.mu.Unlock()
 
-	// 持久化更新后的索引
+	// Persist updated index
 	if removedCount > 0 {
 		s.persistIndex(sessionDir, idx)
 		log.WithFields(log.Fields{
@@ -322,7 +322,7 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 	return removedCount
 }
 
-// CleanStale 清理超过 CleanupAgeDays 的残留 offload 数据。
+// CleanStale cleans up stale offload data older than CleanupAgeDays.
 func (s *OffloadStore) CleanStale() {
 	cutoff := time.Now().AddDate(0, 0, -s.config.CleanupAgeDays)
 
@@ -354,7 +354,7 @@ func (s *OffloadStore) CleanStale() {
 	}
 }
 
-// persistIndex 将 session 索引持久化到磁盘。
+// persistIndex 将 session 索引Persist to disk。
 func (s *OffloadStore) persistIndex(sessionDir string, idx *offloadIndex) {
 	idx.mu.RLock()
 	entries := make([]OffloadedResult, len(idx.entries))
@@ -476,7 +476,7 @@ func (s *OffloadStore) PurgeStaleMessages(sessionKey string, messages []llm.Chat
 	return result
 }
 
-// truncateOffloadArgs 截断工具参数用于 offload 显示。
+// truncateOffloadArgs truncates tool arguments for offload display.
 func truncateOffloadArgs(args string) string {
 	if len(args) <= 80 {
 		return args
@@ -484,7 +484,7 @@ func truncateOffloadArgs(args string) string {
 	return args[:80] + "..."
 }
 
-// generateRuleSummary 按工具类型生成规则摘要（同步，无 LLM 依赖）。
+// generateRuleSummary generates rule summary by tool type (synchronous, no LLM dependency).
 func generateRuleSummary(toolName, args, content string) string {
 	switch toolName {
 	case "Read":
@@ -500,9 +500,9 @@ func generateRuleSummary(toolName, args, content string) string {
 	}
 }
 
-// summarizeRead 生成 Read 工具结果的摘要。
+// summarizeRead generates summary for Read tool results.
 func summarizeRead(args, content string) string {
-	// 提取文件名
+	// Extract filename
 	path := extractJSONStringField(args, "path")
 	if path == "" {
 		path = "(unknown)"
@@ -511,8 +511,8 @@ func summarizeRead(args, content string) string {
 	lines := strings.Split(content, "\n")
 	lineCount := len(lines)
 
-	// 单行截断保护：防止极长单行（如 JSON 序列化后的内容）撑爆 summary
-	// 使用 []rune 进行 UTF-8 安全截断
+	// Single-line truncation protection: prevent extremely long single lines (e.g. JSON-serialized content) from bloating summary
+	// Use []rune for UTF-8 safe truncation
 	const maxLineRunes = 500
 	const lineTruncSuffix = "...(truncated, %d chars)"
 	for i, line := range lines {
@@ -523,13 +523,13 @@ func summarizeRead(args, content string) string {
 		}
 	}
 
-	// 提取关键函数名
+	// Extract key function names
 	funcNames := extractFunctionNames(content)
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "File: %s, %d lines\n", path, lineCount)
 
-	// 首尾各 3 行
+	// First and last 3 lines
 	showLines := 3
 	if lineCount > showLines*2 {
 		fmt.Fprintln(&sb, "--- Head ---")
@@ -552,7 +552,7 @@ func summarizeRead(args, content string) string {
 		fmt.Fprintf(&sb, "Key functions: %s\n", strings.Join(funcNames[:min(len(funcNames), 10)], ", "))
 	}
 
-	// 对 Go 文件，额外提取结构体信息增强摘要
+	// For Go files, additionally extract struct info to enhance summary
 	if goStruct := extractGoStructure(content); goStruct != "" {
 		fmt.Fprintln(&sb, "--- Structure ---")
 		fmt.Fprintln(&sb, goStruct)
@@ -560,8 +560,8 @@ func summarizeRead(args, content string) string {
 
 	summary := sb.String()
 
-	// 总量上限保护：防止 summary 本身过大（如文件行数极多但每行都接近截断长度）
-	// 使用 []rune 进行 UTF-8 安全截断
+	// Total size limit protection: prevent summary itself from being too large (e.g. file has many lines each near truncation length)
+	// Use []rune for UTF-8 safe truncation
 	const maxSummaryRunes = 3000
 	summaryRunes := []rune(summary)
 	if len(summaryRunes) > maxSummaryRunes {
@@ -571,7 +571,7 @@ func summarizeRead(args, content string) string {
 	return summary
 }
 
-// summarizeGrep 生成 Grep 工具结果的摘要。
+// summarizeGrep generates summary for Grep tool results.
 func summarizeGrep(content string) string {
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	matchCount := 0
@@ -582,7 +582,7 @@ func summarizeGrep(content string) string {
 		if line == "" {
 			continue
 		}
-		// 匹配格式: "file:line: content" 或 "file(line): content"
+		// Match format: "file:line: content" or "file(line): content"
 		if strings.Contains(line, ":") && !strings.HasPrefix(line, "No matches") {
 			matchCount++
 			if len(matches) < 3 {
@@ -602,14 +602,14 @@ func summarizeGrep(content string) string {
 	return sb.String()
 }
 
-// summarizeShell 生成 Shell 工具结果的摘要。
+// summarizeShell generates summary for Shell tool results.
 func summarizeShell(content string) string {
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	if len(lines) == 0 {
 		return "Shell: (empty output)"
 	}
 
-	// 检查退出码
+	// Check exit code
 	var exitCode string
 	if len(lines) > 0 {
 		lastLine := lines[len(lines)-1]
@@ -624,7 +624,7 @@ func summarizeShell(content string) string {
 		fmt.Fprintf(&sb, "Shell exit: %s\n", exitCode)
 	}
 
-	// 最后 5 行输出
+	// Last 5 lines of output
 	showCount := min(len(lines), 5)
 	if len(lines) > showCount {
 		fmt.Fprintf(&sb, "  ... (%d lines omitted) ...\n", len(lines)-showCount)
@@ -635,7 +635,7 @@ func summarizeShell(content string) string {
 	return sb.String()
 }
 
-// summarizeGlob 生成 Glob 工具结果的摘要。
+// summarizeGlob generates summary for Glob tool results.
 func summarizeGlob(content string) string {
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	count := 0
@@ -666,7 +666,7 @@ func summarizeGlob(content string) string {
 	return sb.String()
 }
 
-// summarizeDefault 生成默认摘要。
+// summarizeDefault generates default summary.
 func summarizeDefault(content string) string {
 	runes := []rune(content)
 	maxPreview := 300
@@ -679,7 +679,7 @@ func summarizeDefault(content string) string {
 	return fmt.Sprintf("Content (first %d chars): %s...\n(Size: %d bytes, ~%d tokens)", maxPreview, preview, len(content), tokens)
 }
 
-// extractJSONStringField 从 JSON 字符串中提取指定字符串字段的值。
+// extractJSONStringField extracts the value of a specified string field from a JSON string.
 func extractJSONStringField(jsonStr, field string) string {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
@@ -696,9 +696,9 @@ func extractJSONStringField(jsonStr, field string) string {
 	return s
 }
 
-// extractFunctionNames 从代码内容中提取函数名（Go, Python, JS 等）。
+// extractFunctionNames extracts function names from code content (Go, Python, JS, etc.).
 func extractFunctionNames(content string) []string {
-	// Go: func Name( 或 func (recv) Name(
+	// Go: func Name( or func (recv) Name(
 	// Python: def Name(
 	// JS: function Name(
 	// Regexes pre-compiled at package level
@@ -730,12 +730,12 @@ func extractFunctionNames(content string) []string {
 	return names
 }
 
-// extractGoStructure 从 Go 源码中提取结构体信息（类型、接口、常量、变量）。
-// 用于增强 summarizeRead 的摘要质量，帮助 LLM 理解文件骨架。
-// 使用包级正则变量（goImportRe, goTypeRe, goConstVarRe, goFuncRe），
-// 单次 strings.Split 遍历完成所有提取。
+// extractGoStructure extracts struct info from Go source code (types, interfaces, constants, variables).
+// Used to enhance summarizeRead summary quality, helping LLM understand file skeleton.
+// Uses package-level regex variables (goImportRe, goTypeRe, goConstVarRe, goFuncRe),
+// completes all extraction in a single strings.Split pass.
 func extractGoStructure(content string) string {
-	// 快速检测：非 Go 文件跳过
+	// Fast check: skip non-Go files
 	if !strings.Contains(content, "package ") {
 		return ""
 	}
@@ -749,7 +749,7 @@ func extractGoStructure(content string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// 跳过注释行
+		// Skip comment lines
 		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") {
 			continue
 		}
@@ -760,7 +760,7 @@ func extractGoStructure(content string) string {
 			continue
 		}
 
-		// import 块
+		// import block
 		if trimmed == "import (" {
 			inImport = true
 			continue
@@ -782,19 +782,19 @@ func extractGoStructure(content string) string {
 			continue
 		}
 
-		// type 定义
+		// type definition
 		if m := goTypeRe.FindStringSubmatch(trimmed); len(m) > 0 {
 			parts = append(parts, fmt.Sprintf("type %s %s", m[1], m[2]))
 			continue
 		}
 
-		// const/var 组名
+		// const/var group name
 		if m := goConstVarRe.FindStringSubmatch(trimmed); len(m) > 0 {
 			parts = append(parts, trimmed)
 			continue
 		}
 
-		// func 签名（截断 15 个）
+		// func signatures (truncated to 15)
 		if m := goFuncRe.FindStringSubmatch(trimmed); len(m) > 0 {
 			params := strings.TrimSpace(m[2])
 			if params == "" {
@@ -810,7 +810,7 @@ func extractGoStructure(content string) string {
 		}
 	}
 
-	// 汇总 import 为短名列表
+	// Summarize imports as short name list
 	if len(imports) > 0 {
 		shortNames := make([]string, len(imports))
 		for i, imp := range imports {
@@ -824,7 +824,7 @@ func extractGoStructure(content string) string {
 	}
 
 	if len(parts) <= 1 {
-		return "" // 只有 package 名，没有其他结构信息
+		return "" // Only package name, no other struct info
 	}
 
 	return strings.Join(parts, "\n")

@@ -64,7 +64,7 @@ func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: "xbot 命令:\n" +
-			"/new — 开始新对话（归档记忆后重置）\n" +
+			"/new — 开始新对话（归档Memory后重置）\n" +
 			"/version — 显示version info\n" +
 			"/prompt <query> — 预览完整提示词（不调用 LLM）\n" +
 			"/help — 显示帮助\n" +
@@ -481,7 +481,7 @@ func (c *myCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (
 	}
 
 	if len(published) == 0 && len(installed) == 0 {
-		fmt.Fprintf(&sb, "暂无数据。使用 `/browse %s` 浏览市场。\n", subject)
+		fmt.Fprintf(&sb, "No data available。使用 `/browse %s` 浏览市场。\n", subject)
 	}
 
 	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
@@ -500,7 +500,7 @@ func (c *settingsCmd) Concurrent() bool { return true }
 
 func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
 	if msg.ChatType == "group" {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 设置仅限私聊使用，请私信我发送 /settings"}, nil
+		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 设置仅限私聊使用，请私信我Send /settings"}, nil
 	}
 
 	if a.settingsSvc == nil {

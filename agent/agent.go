@@ -29,7 +29,7 @@ import (
 	"xbot/tools"
 )
 
-// ErrLLMGenerate 表示 LLM 生成调用失败（网络、API 4xx/5xx 等）
+// ErrLLMGenerate indicates an LLM generation call failure (network, API 4xx/5xx, etc.)
 var ErrLLMGenerate = errors.New("LLM generate failed")
 
 // assertNoSystemPersist checks that a system message is not being persisted to session.
@@ -51,7 +51,7 @@ func copyMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 	return cpy
 }
 
-// formatErrorForUser 将错误格式化为对用户可见的提示
+// formatErrorForUser formats an error into a user-visible message
 func formatErrorForUser(err error) string {
 	if err == nil {
 		return ""
@@ -187,7 +187,7 @@ func (a *Agent) IndexGlobalTools() {
 	log.WithField("count", len(toolEntries)).Infof("Indexed %d global tools (registry + tool groups + MCP)", len(toolEntries))
 }
 
-// Agent 核心 Agent 引擎
+// Agent core engine
 type Agent struct {
 	bus              *bus.MessageBus
 	multiSession     *session.MultiTenantSession // Multi-tenant session manager
@@ -197,29 +197,29 @@ type Agent struct {
 
 	skills             *SkillStore
 	agents             *AgentStore
-	chatHistory        *tools.ChatHistoryStore // 聊天历史缓存
+	chatHistory        *tools.ChatHistoryStore // chat history cache
 	cardBuilder        *tools.CardBuilder      // Card Builder MCP
 	workDir            string
 	promptLoader       *PromptLoader
-	pipeline           *MessagePipeline // 消息构建管道（持有实例，支持运行时动态增删中间件）
-	cronPipeline       *MessagePipeline // Cron 专用消息构建管道
+	pipeline           *MessagePipeline // message build pipeline (holds instance, supports runtime dynamic add/remove of middleware)
+	cronPipeline       *MessagePipeline // Cron-specific message build pipeline
 	sandboxMode        string           // "none" or "docker"
-	sandbox            tools.Sandbox    // Sandbox 实例引用（V4 新增）
-	sandboxIdleTimeout time.Duration    // 沙箱空闲超时（0 禁用）
-	directWorkspace    string           // 非空时 workspaceRoot() 直接返回此值（CLI 模式使用，取代 singleUser 的 workspace 短路）
-	maxConcurrency     int              // 最大并发会话处理数
-	globalSem          chan struct{}    // 全局并发信号量（SetMaxConcurrency 动态重建）
-	globalSemMu        sync.Mutex       // 保护 globalSem 替换
-	globalSkillDirs    []string         // 全局 skill 目录（宿主机路径）
+	sandbox            tools.Sandbox    // Sandbox instance reference (added in V4)
+	sandboxIdleTimeout time.Duration    // sandbox idle timeout (0 to disable)
+	directWorkspace    string           // when non-empty, workspaceRoot() returns this directly (used in CLI mode, replaces singleUser workspace shortcut)
+	maxConcurrency     int              // max concurrent session processing count
+	globalSem          chan struct{}    // global concurrency semaphore (dynamically rebuilt by SetMaxConcurrency)
+	globalSemMu        sync.Mutex       // protects globalSem replacement
+	globalSkillDirs    []string         // global skill directories (host machine paths)
 	agentsDir          string
 	xbotHome           string // global xbot config dir (e.g. ~/.xbot), used for mcp.json etc.
 
-	// 上下文管理Configuration
+	// context management configuration
 	contextManagerConfig *ContextManagerConfig
-	contextManagerMu     sync.RWMutex // 保护 contextManager 的并发读写
+	contextManagerMu     sync.RWMutex // protects concurrent read/write of contextManager
 	contextManager       ContextManager
 
-	// SubAgent 深度控制
+	// SubAgent depth control
 	maxSubAgentDepth int
 
 	// Cron service and scheduler
@@ -233,17 +233,17 @@ type Agent struct {
 	llmConfigSvc *sqlite.UserLLMConfigService
 	llmFactory   *LLMFactory
 
-	// 用户级别的信号量：设置了自己的 LLM Configuration的用户使用独立信号量
-	// key: senderID, value: 用户独立的信号量（容量为1）
+	// user-level semaphore: users with custom LLM configuration use independent semaphores
+	// key: senderID, value: user-independent semaphore (capacity 1)
 	userSemaphores sync.Map // map[string]chan struct{}
 
-	commands         *CommandRegistry                          // 指令注册表
-	directSend       func(bus.OutboundMessage) (string, error) // 同步发送，绕过 bus 以获取 message_id
-	sessionMsgIDs    sync.Map                                  // key: "channel:chatID" -> 当前 session 已发消息 ID（用于 Patch 更新）
-	sessionReplyTo   sync.Map                                  // key: "channel:chatID" -> 用户入站消息 ID（用于首条回复的 reply 模式）
-	sessionFinalSent sync.Map                                  // key: "channel:chatID" -> bool, 工具已发送最终回复（如卡片），后续 sendMessage 跳过
+	commands         *CommandRegistry                          // command registry
+	directSend       func(bus.OutboundMessage) (string, error) // synchronous send, bypasses bus to get message_id
+	sessionMsgIDs    sync.Map                                  // key: "channel:chatID" -> current session sent message IDs (for Patch updates)
+	sessionReplyTo   sync.Map                                  // key: "channel:chatID" -> user inbound message ID (for first reply reply mode)
+	sessionFinalSent sync.Map                                  // key: "channel:chatID" -> bool, tool has sent final reply (e.g. card), subsequent sendMessage skipped
 
-	// per-request cancel: 用于 /cancel 取消当前正在处理的请求
+	// per-request cancel: used by /cancel to cancel the currently processing request
 	// key: "channel:chatID:senderID" -> chan struct{} (buffered, cap=1)
 	chatCancelCh sync.Map
 
@@ -285,13 +285,13 @@ type Agent struct {
 	// maskStore manages observation masking storage
 	maskStore *ObservationMaskStore
 
-	// contextEditor 管理上下文编辑（Context Editing 工具）
+	// contextEditor manages context editing (Context Editing tool)
 	contextEditor *ContextEditor
 
-	// todoManager 管理当前会话的 TODO 列表
+	// todoManager manages the current session's TODO list
 	todoManager *tools.TodoManager
 
-	// channelPromptProviders channel 特化 prompt 提供者列表（由外部注入）
+	// channelPromptProviders channel-specific prompt provider list (injected externally)
 	channelPromptProviders []ChannelPromptProvider
 
 	// RegistryManager for skill/agent sharing and marketplace
@@ -413,9 +413,9 @@ func buildToolMessageContent(result *tools.ToolResult) string {
 	if result == nil {
 		return ""
 	}
-	// 将 Summary + Detail + Tips 组合为纯文本，避免 JSON 序列化转义换行符。
-	// 旧方案用 json.Marshal(result) 导致 Detail 中的 diff 换行被编码为 \n，
-	// LLM 看到的是不可读的文本块而非格式化的 diff。
+	// Combine Summary + Detail + Tips into plain text to avoid JSON serialization escaping newlines.
+	// The old approach using json.Marshal(result) caused diff newlines in Detail to be encoded as \n,
+	// LLM sees unreadable text blocks instead of formatted diffs.
 	var sb strings.Builder
 	if result.Summary != "" {
 		sb.WriteString(result.Summary)
@@ -440,68 +440,68 @@ type Config struct {
 	Bus             *bus.MessageBus
 	LLM             llm.LLM
 	Model           string
-	MaxIterations   int           // 单次对话最大工具调用迭代次数
-	MaxConcurrency  int           // 最大并发会话处理数（默认 3）
-	DBPath          string        // SQLite 数据库路径（空则使用默认路径）
-	SkillsDir       string        // Skills 目录
+	MaxIterations   int           // max tool call iterations per conversation
+	MaxConcurrency  int           // max concurrent session processing count（默认 3）
+	DBPath          string        // SQLite database path (uses default path if empty)
+	SkillsDir       string        // Skills directory
 	AgentsDir       string        // Agents 目录（空则使用 WorkDir/.xbot/agents）
-	WorkDir         string        // 工作目录（所有文件相对此目录）
-	PromptFile      string        // 系统提示词模板文件路径（空则使用内置默认值）
+	WorkDir         string        // working directory (all files relative to this directory)
+	PromptFile      string        // system prompt template file path (uses built-in default if empty)
 	SingleUser      bool          `json:"single_user"` // Deprecated: no longer used, kept for config file compatibility
-	DirectWorkspace string        `json:"-"`           // 非空时直接作为 workspaceRoot（CLI 模式使用）
-	SandboxMode     string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
-	Sandbox         tools.Sandbox // Sandbox 实例引用（V4 新增）
+	DirectWorkspace string        `json:"-"`           // when non-empty, directly used as workspaceRoot (CLI mode)
+	SandboxMode     string        // sandbox mode: "none" or "docker" (default "docker")
+	Sandbox         tools.Sandbox // Sandbox instance reference (added in V4)
 
-	SandboxIdleTimeout time.Duration // 沙箱空闲超时（0 禁用）
+	SandboxIdleTimeout time.Duration // sandbox idle timeout (0 to disable)
 
-	MemoryProvider     string // 记忆提供者: "flat" 或 "letta"
-	EmbeddingProvider  string // 嵌入提供者: "openai"(默认) 或 "ollama"
-	EmbeddingBaseURL   string // 嵌入向量服务地址
-	EmbeddingAPIKey    string // 嵌入向量服务密钥
-	EmbeddingModel     string // 嵌入模型名称
-	EmbeddingMaxTokens int    // 嵌入模型最大 token 数
+	MemoryProvider     string // memory provider: "flat" or "letta"
+	EmbeddingProvider  string // embedding provider: "openai" (default) or "ollama"
+	EmbeddingBaseURL   string // embedding vector service URL
+	EmbeddingAPIKey    string // embedding vector service key
+	EmbeddingModel     string // embedding model name
+	EmbeddingMaxTokens int    // embedding model max token count
 
 	// XbotHome is the global xbot config directory (e.g. ~/.xbot).
 	// Used to locate global config files like mcp.json.
 	XbotHome string
 
 	// MCP Session managementConfiguration
-	MCPInactivityTimeout time.Duration // MCP 不活跃超时时间
-	MCPCleanupInterval   time.Duration // MCP 清理扫描间隔
-	SessionCacheTimeout  time.Duration // 会话缓存超时
+	MCPInactivityTimeout time.Duration // MCP inactivity timeout
+	MCPCleanupInterval   time.Duration // MCP cleanup scan interval
+	SessionCacheTimeout  time.Duration // session cache timeout
 
-	// 上下文管理模式
-	// 优先级：ContextMode > EnableAutoCompress 旧字段
-	// 默认 ""，由 resolveContextMode 决定
+	// context management mode
+	// priority: ContextMode > EnableAutoCompress legacy field
+	// default "", determined by resolveContextMode
 	ContextMode ContextMode
 
 	// Persona isolation: each web user has independent persona (no fallback to global)
 	PersonaIsolation bool
 
-	// 旧压缩Configuration（保留用于初始化 ContextManagerConfig，向后兼容 main.go 传参）
-	MaxContextTokens     int     // 最大上下文 token 数（默认 100000）
-	CompressionThreshold float64 // 触发压缩的 token 比例阈值（默认 0.7）
-	EnableAutoCompress   bool    // 是否启用自动context compression（默认 true，旧字段）
+	// legacy compression config (kept for initializing ContextManagerConfig, backward compatible with main.go params)
+	MaxContextTokens     int     // max context token count (default 100000)
+	CompressionThreshold float64 // token ratio threshold for triggering compression (default 0.7)
+	EnableAutoCompress   bool    // whether to enable auto context compression (default true, legacy field)
 
 	// DynamicMaxTokens dynamically adjusts max_output_tokens based on remaining
 	// context space. When enabled, max_output_tokens is reduced when the context
 	// is large to prevent context_window_exceeded errors.
 	DynamicMaxTokens bool
 
-	// SubAgent 深度控制
-	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
+	// SubAgent depth control
+	MaxSubAgentDepth int // SubAgent max nesting depth (default 6)
 
-	// 压缩后清理旧消息
-	PurgeOldMessages bool // 压缩后自动删除旧消息（默认 false）
+	// clean up old messages after compression
+	PurgeOldMessages bool // auto-delete old messages after compression (default false)
 
-	// OffloadDir: offload 文件存储目录（默认 ~/.xbot/offload_store）
+	// OffloadDir: offload file storage directory (default ~/.xbot/offload_store)
 	OffloadDir string
 
-	// MaskDir: mask 文件存储基目录（默认 ~/.xbot/mask/{tenantID}）
+	// MaskDir: mask file storage base directory (default ~/.xbot/mask/{tenantID})
 	MaskDir string
 }
 
-// initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
+// initStores initializes various stores and registries, returns skillStore, agentStore, chatHistory, registry, cardBuilder.
 
 func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, *tools.Registry, *tools.CardBuilder) {
 	globalSkillDirs := resolveGlobalSkillsDirs(cfg.SkillsDir)
@@ -518,7 +518,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	}
 	agentStore := NewAgentStore(cfg.WorkDir, agentsDir, cfg.Sandbox)
 
-	// 确定记忆模式
+	// determine memory mode
 	memoryProvider := cfg.MemoryProvider
 	if memoryProvider == "" {
 		memoryProvider = "flat"
@@ -526,8 +526,8 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 
 	registry := tools.DefaultRegistry(memoryProvider)
 
-	// 创建聊天历史存储
-	chatHistory := tools.NewChatHistoryStore(200) // 每个群组保留最近 200 条
+	// create chat history store
+	chatHistory := tools.NewChatHistoryStore(200) // keep the latest 200 entries per group
 	registry.Register(tools.NewChatHistoryTool(chatHistory))
 
 	// MCP global config: use xbotHome directly (~/.xbot/mcp.json).
@@ -538,7 +538,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	}
 	mcpConfigPath := filepath.Join(xbotHome, "mcp.json")
 
-	// 注册 ManageTools tool（需要 skillStore 和 mcpConfigPath）
+	// register ManageTools tool (requires skillStore and mcpConfigPath)
 	registry.RegisterCore(tools.NewManageTools(cfg.WorkDir, mcpConfigPath))
 
 	cardBuilder := tools.NewCardBuilder()
@@ -554,7 +554,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	return skillStore, agentStore, chatHistory, registry, cardBuilder
 }
 
-// initSession 初始化多租户Session management器。
+// initSession initializes multi-tenant session manager.
 func initSession(cfg Config) (*session.MultiTenantSession, error) {
 	memoryProvider := cfg.MemoryProvider
 	if memoryProvider == "" {
@@ -584,8 +584,8 @@ func initSession(cfg Config) (*session.MultiTenantSession, error) {
 	return multiSession, nil
 }
 
-// initServices 注册工具、初始化 cron/LLM/offload/registry/settings 等服务。
-// 此方法直接修改 Agent 指针。
+// initServices registers tools, initializes cron/LLM/offload/registry/settings services.
+// This method directly modifies the Agent pointer.
 func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession, registry *tools.Registry) {
 	// MCP config must use xbotHome directly (not resolveDataPath which double-nests).
 	mcpConfigPath := filepath.Join(a.xbotHome, "mcp.json")
@@ -598,16 +598,16 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	multiSession.SetMCPConfigPath(mcpConfigPath)
 
-	// 设置会话被清理时的回调，同步清理 Registry 中的 sessionActivated/sessionRound（C-09）
+	// set callback for session cleanup, synchronously clean up sessionActivated/sessionRound in Registry (C-09)
 	registryRef := registry // capture for closure
 	multiSession.SetOnSessionEvict(func(sessionKey string) { registryRef.DeactivateSession(sessionKey) })
 
-	// 设置会话 MCP 管理器提供者
+	// set session MCP manager provider
 	registry.SetSessionMCPManagerProvider(multiSession)
 
-	// 全局工具索引通过 IndexGlobalTools() 在所有工具注册完成后调用
+	// global tool index is called via IndexGlobalTools() after all tools are registered
 
-	// 如果使用 Letta 记忆模式，注册记忆工具（核心工具，始终可用）
+	// if using Letta memory mode, register memory tools (core tools, always available)
 	if memoryProvider == "letta" {
 		for _, tool := range tools.LettaMemoryTools() {
 			registry.RegisterCore(tool)
@@ -616,7 +616,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		log.Info("Letta memory tools registered (core)")
 	}
 
-	// Flat 模式：注册 flat memory tools（memory_read/write/list）
+	// Flat mode: register flat memory tools (memory_read/write/list)
 	if memoryProvider == "flat" || memoryProvider == "" {
 		for _, tool := range tools.FlatMemoryTools() {
 			registry.RegisterCore(tool)
@@ -624,26 +624,26 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		log.Info("Flat memory tools registered (core)")
 	}
 
-	// 项目记忆工具：所有 provider 都注册（provider-agnostic）
+	// project memory tools: registered for all providers (provider-agnostic)
 	for _, tool := range tools.KnowledgeTools() {
 		registry.RegisterCore(tool)
 	}
 	log.Info("Knowledge tools registered (core)")
 
-	// 初始化指令注册表
+	// 初始化command registry
 	a.commands = NewCommandRegistry()
 	registerBuiltinCommands(a.commands)
 
-	// 初始化 Cron 服务和调度器
+	// initialize Cron service and scheduler
 	cronSvc := sqlite.NewCronService(multiSession.DB())
 	cronSch := cron.NewScheduler(cronSvc)
 
-	// 从旧的 JSON 文件迁移数据（如果需要）
+	// migrate data from legacy JSON files (if needed)
 	if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
 		log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
 	}
 
-	// 注册 CronTool（核心工具，始终可用）
+	// register CronTool (core tool, always available)
 	registry.RegisterCore(tools.NewCronTool(cronSvc))
 
 	a.cronSvc = cronSvc
@@ -654,7 +654,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.llmFactory = NewLLMFactory(a.llmConfigSvc, cfg.LLM, cfg.Model)
 	a.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
 
-	// 初始化上下文管理器
+	// initialize context manager
 	a.contextManagerConfig = &ContextManagerConfig{
 		MaxContextTokens:     cfg.MaxContextTokens,
 		CompressionThreshold: cfg.CompressionThreshold,
@@ -662,7 +662,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	}
 	a.contextManager = NewContextManager(a.contextManagerConfig)
 
-	// 初始化 OffloadStore（Phase 2: Layer 1 Offload）
+	// initialize OffloadStore (Phase 2: Layer 1 Offload)
 	// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 	offloadDir := cfg.OffloadDir
 	if offloadDir == "" {
@@ -681,10 +681,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		a.offloadStore.SetSandbox(a.sandbox)
 	}
 
-	// 初始化 ObservationMaskStore（Phase 3: Observation Masking）
-	// 默认关闭：通过 settings 的 enable_masking 开启。
-	// 始终创建（工具注册需要），但 engine 层通过 RunConfig.MaskStore 控制。
-	// 磁盘落在全局 ~/.xbot/mask/{tenantID}/，避免污染当前工作目录。
+	// initialize ObservationMaskStore (Phase 3: Observation Masking)
+	// disabled by default: enabled via settings enable_masking.
+	// always created (needed for tool registration), but controlled at engine layer via RunConfig.MaskStore.
+	// Disk storage goes to global ~/.xbot/mask/{tenantID}/, avoiding polluting the current working directory.
 	maskDir := cfg.MaskDir
 	if maskDir == "" {
 		maskDir = filepath.Join(a.xbotHome, "mask")
@@ -693,18 +693,18 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.maskStore.SetBaseDir(maskDir)
 	go a.maskStore.CleanStale(7)
 
-	// 注册 offload_recall 工具（需要 OffloadStore dependency injection）
+	// register offload_recall tool (requires OffloadStore dependency injection)
 	if a.offloadStore != nil {
 		recallTool := &tools.OffloadRecallTool{Store: a.offloadStore}
 		registry.RegisterCore(recallTool)
 	}
 
-	// 注册 recall_masked 工具（需要 MaskStore dependency injection）
+	// register recall_masked tool (requires MaskStore dependency injection)
 	if a.maskStore != nil {
 		registry.RegisterCore(&tools.RecallMaskedTool{Store: a.maskStore})
 	}
 
-	// 初始化 ContextEditor（Context Editing 工具 — 精确编辑上下文）
+	// initialize ContextEditor (Context Editing tool — precise context editing)
 	editStore := NewContextEditStore(100)
 	contextEditor := NewContextEditor(editStore)
 	a.contextEditor = contextEditor
@@ -736,7 +736,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	}
 	registry.RegisterCore(&tools.ContextEditTool{Handler: contextEditor})
 
-	// 初始化并注册 TODO 管理工具
+	// initialize and register TODO management tool
 	todoMgr := tools.NewTodoManager()
 	a.todoManager = todoMgr
 	registry.RegisterCore(&tools.TodoWriteTool{Manager: todoMgr})
@@ -757,13 +757,13 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.llmFactory.SetSettingsService(a.settingsSvc)
 
-	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
+	// initialize message build pipeline (must be after settingsSvc, LanguageMiddleware depends on it)
 	a.initPipelines(memoryProvider)
 }
 
-// New 创建 Agent
+// New creates Agent
 func New(cfg Config) (*Agent, error) {
-	// 1. 设置Configuration默认值
+	// 1. set configuration defaults
 	if cfg.MaxIterations == 0 {
 		cfg.MaxIterations = 2000
 	}
@@ -791,7 +791,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.SessionCacheTimeout = 24 * time.Hour
 	}
 	if cfg.MaxContextTokens == 0 {
-		cfg.MaxContextTokens = 100000 // 默认 100k token
+		cfg.MaxContextTokens = 100000 // default 100k tokens
 	}
 	if cfg.CompressionThreshold == 0 {
 		cfg.CompressionThreshold = 0.7
@@ -800,16 +800,16 @@ func New(cfg Config) (*Agent, error) {
 		cfg.MaxSubAgentDepth = 6
 	}
 
-	// 2. 初始化存储和注册表
+	// 2. initialize stores and registries
 	skillStore, agentStore, chatHistory, registry, cardBuilder := initStores(cfg)
 
-	// 3. 初始化Session management器
+	// 3. initialize session manager
 	multiSession, err := initSession(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("init session: %w", err)
 	}
 
-	// 4. 构建 Agent 实例
+	// 4. build Agent instance
 	sandboxMode := cfg.SandboxMode
 	if sandboxMode == "" {
 		sandboxMode = "docker"
@@ -854,7 +854,7 @@ func New(cfg Config) (*Agent, error) {
 		bgTaskMgr: tools.NewBackgroundTaskManager(),
 	}
 
-	// 5. 初始化各类服务（修改 agent 指针）
+	// 5. initialize various services (modifies agent pointer)
 	initServices(agent, cfg, multiSession, registry)
 
 	// 5b. Register builtin hooks on the shared hookManager.
@@ -863,22 +863,22 @@ func New(cfg Config) (*Agent, error) {
 	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
-	// 6. 启动 bg task 通知路由 goroutine
+	// 6. start bg task notification routing goroutine
 	go agent.bgNotifyLoop()
 
 	return agent, nil
 }
 
-// GetContextManager 获取当前上下文管理器（读锁保护）。
-// 用于 buildMainRunConfig / buildSubAgentRunConfig / handleCompress 等场景。
+// GetContextManager returns the current context manager (read lock protected).
+// Used for buildMainRunConfig / buildSubAgentRunConfig / handleCompress etc.
 func (a *Agent) GetContextManager() ContextManager {
 	a.contextManagerMu.RLock()
 	defer a.contextManagerMu.RUnlock()
 	return a.contextManager
 }
 
-// SetContextManager 替换当前上下文管理器（写锁保护）。
-// 用于 /context mode 命令运行时切换。
+// SetContextManager replaces the current context manager (write lock protected).
+// Used for runtime switching via /context mode command.
 func (a *Agent) SetContextManager(cm ContextManager) {
 	a.contextManagerMu.Lock()
 	defer a.contextManagerMu.Unlock()
@@ -982,7 +982,7 @@ func (a *Agent) GetUserLLMConfig(senderID string) (provider, baseURL, model stri
 // SetUserLLM creates or replaces a user's full LLM config.
 func (a *Agent) SetUserLLM(senderID, provider, baseURL, apiKey, model string) error {
 	if provider == "" || baseURL == "" || apiKey == "" {
-		return fmt.Errorf("provider, base_url, api_key 必填")
+		return fmt.Errorf("provider, base_url, api_key are required")
 	}
 	cfg := &sqlite.UserLLMConfig{
 		SenderID: senderID,
@@ -1009,17 +1009,17 @@ func (a *Agent) DeleteUserLLM(senderID string) error {
 	return nil
 }
 
-// GetLLMConcurrency 获取用户个人 LLM 并发上限Configuration。
+// GetLLMConcurrency gets the user's personal LLM concurrency limit configuration.
 func (a *Agent) GetLLMConcurrency(senderID string) int {
 	return a.llmFactory.GetLLMConcurrency(senderID)
 }
 
-// SetLLMConcurrency 设置用户个人 LLM 并发上限Configuration。
+// SetLLMConcurrency sets the user's personal LLM concurrency limit configuration.
 func (a *Agent) SetLLMConcurrency(senderID string, personal int) error {
 	return a.llmFactory.SetLLMConcurrency(senderID, personal)
 }
 
-// SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）
+// SetDirectSend injects a synchronous send function (bypasses bus, for message update tracking)
 func (a *Agent) SetDirectSend(fn func(bus.OutboundMessage) (string, error)) {
 	a.directSend = fn
 }
@@ -1030,8 +1030,8 @@ func (a *Agent) SetEventRouter(r *event.Router) {
 	a.eventRouter = r
 }
 
-// SetChannelPromptProviders 设置 channel 特化 prompt 提供者。
-// 调用后会重建 pipeline，将 ChannelPromptMiddleware 插入到管道中。
+// SetChannelPromptProviders sets channel-specific prompt providers.
+// Rebuilds pipeline after call, inserting ChannelPromptMiddleware into the pipeline.
 func (a *Agent) SetChannelPromptProviders(providers ...ChannelPromptProvider) {
 	a.channelPromptProviders = providers
 	a.pipeline.Use(NewChannelPromptMiddleware(providers...))
@@ -1054,10 +1054,10 @@ func (a *Agent) GetCardBuilder() *tools.CardBuilder {
 	return a.cardBuilder
 }
 
-// getUserSemaphore 获取用户独立的信号量，用于有自定义 LLM Configuration的用户。
-// 容量与 maxConcurrency 一致：允许同一用户的不同会话并行处理，
-// 但总并发不超过全局上限。
-// 使用 LoadOrStore atomic operation避免并发创建多个信号量。
+// getUserSemaphore gets a user-independent semaphore for users with custom LLM configuration.
+// Capacity matches maxConcurrency: allows parallel processing of different sessions from the same user,
+// but total concurrency does not exceed the global limit.
+// Uses LoadOrStore atomic operation to avoid concurrent creation of multiple semaphores.
 func (a *Agent) getUserSemaphore(senderID string) chan struct{} {
 	if val, ok := a.userSemaphores.Load(senderID); ok {
 		return val.(chan struct{})
@@ -1066,13 +1066,13 @@ func (a *Agent) getUserSemaphore(senderID string) chan struct{} {
 	return sem.(chan struct{})
 }
 
-// Close 关闭 Agent 及其所有资源
+// Close closes the Agent and all its resources
 func (a *Agent) Close() error {
 	// Cancel agent-level context to stop background subagents
 	if a.agentCancel != nil {
 		a.agentCancel()
 	}
-	// 先停止 cron 调度器，避免在数据库关闭后仍尝试访问
+	// Stop cron scheduler first to avoid access attempts after database is closed
 	if a.cronSch != nil {
 		a.cronSch.Stop()
 	}
@@ -1080,7 +1080,7 @@ func (a *Agent) Close() error {
 	if a.bgTaskMgr != nil && a.bgTaskMgr.NotifyCh != nil {
 		close(a.bgTaskMgr.NotifyCh)
 	}
-	// 再关闭数据库连接
+	// Then close database connections
 	if a.multiSession != nil {
 		if err := a.multiSession.Close(); err != nil {
 			log.WithError(err).Warn("MultiTenantSession close error")
@@ -1110,10 +1110,10 @@ func (a *Agent) sendAck(channel, chatID string) {
 	}
 }
 
-// Run 启动 Agent 循环，持续消费入站消息。
-// 消息按 chat (channel:chatID) 分组，同一 chat 内顺序处理，不同 chat 并行处理。
-// 全局并发数由 AGENT_MAX_CONCURRENCY 控制（默认 3），避免 LLM 并发过高。
-// 用户设置了自己的 LLM Configuration后，该用户的请求使用独立的信号量，不再占用全局资源。
+// Run starts the Agent loop, continuously consuming inbound messages.
+// Messages are grouped by chat (channel:chatID), processed sequentially within the same chat, in parallel across different chats.
+// Global concurrency is controlled by AGENT_MAX_CONCURRENCY (default 3) to avoid excessive LLM concurrency.
+// After a user sets their own LLM configuration, that user's requests use an independent semaphore, no longer consuming global resources.
 func (a *Agent) Run(ctx context.Context) error {
 	log.WithFields(log.Fields{
 		"max_concurrency": a.getMaxConcurrency(),
@@ -1146,8 +1146,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	chatQueues := make(map[string]chan bus.InboundMessage)
 	var wg sync.WaitGroup
 
-	// getOrCreateQueue 为每个 chat 创建独立的消息队列和 worker
-	// 信号量在每次处理消息时动态选择（支持用户中途设置/取消自定义 LLM）
+	// getOrCreateQueue creates an independent message queue and worker for each chat
+	// Semaphore is dynamically selected on each message processing (supports users setting/canceling custom LLM mid-session)
 	getOrCreateQueue := func(key string) chan bus.InboundMessage {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1180,7 +1180,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		case msg := <-a.bus.Inbound:
 
-			// /cancel 拦截：不进入 chatWorker 队列，直接发 cancel 信号
+			// /cancel intercept: does not enter chatWorker queue, sends cancel signal directly
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				cancelKey := msg.Channel + ":" + msg.ChatID + ":" + msg.SenderID
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
@@ -1190,7 +1190,7 @@ func (a *Agent) Run(ctx context.Context) error {
 						log.Info("Cancel signal sent to processing goroutine")
 						_ = a.sendMessage(msg.Channel, msg.ChatID, "Request cancelled.")
 					default:
-						// cancel 信号已发过
+						// cancel signal already sent
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
 					}
 				} else {
@@ -1292,15 +1292,15 @@ func (a *Agent) ensureWorkspace(ctx context.Context, dir, senderID string) error
 	return os.MkdirAll(dir, 0o755)
 }
 
-// isGroupChat 判断是否为群聊
-// 使用消息的 ChatType 字段：p2p 为私聊，group 为群聊
+// isGroupChat checks if it's a group chat
+// Uses the message's ChatType field: p2p is private chat, group is group chat
 func (a *Agent) isGroupChat(msg bus.InboundMessage) bool {
 	return msg.ChatType == "group"
 }
 
-// getSemaphoreForMessage 获取消息应该使用的信号量
-// 私聊：用户有自定义 LLM 则使用独立信号量
-// 群聊：始终使用全局信号量（因为群里有多人，使用独立信号量会导致其他人的消息也被阻塞）
+// getSemaphoreForMessage gets the semaphore the message should use
+// Private chat: if user has custom LLM, use independent semaphore
+// Group chat: always use global semaphore (because a group has multiple people, using independent semaphore would block other people's messages)
 func (a *Agent) getSemaphoreForMessage(msg bus.InboundMessage) chan struct{} {
 	globalSem := a.getGlobalSem()
 	senderID := msg.SenderID
@@ -1308,12 +1308,12 @@ func (a *Agent) getSemaphoreForMessage(msg bus.InboundMessage) chan struct{} {
 		return globalSem
 	}
 
-	// 群聊使用全局信号量
+	// Group chat uses global semaphore
 	if a.isGroupChat(msg) {
 		return globalSem
 	}
 
-	// 私聊：检查用户是否有自定义 LLM
+	// Private chat: check if user has custom LLM
 	if a.llmFactory.HasCustomLLM(senderID) {
 		return a.getUserSemaphore(senderID)
 	}
@@ -1321,17 +1321,17 @@ func (a *Agent) getSemaphoreForMessage(msg bus.InboundMessage) chan struct{} {
 	return globalSem
 }
 
-// chatWorker 处理单个 chat 的消息队列，保证同一 chat 内顺序处理。
-// 通过信号量控制并发：获取信号量后才开始处理，处理完释放。
-// 信号量在每次处理消息时动态选择，以支持用户中途设置/取消自定义 LLM。
-// chatWorker 处理单个 chat 的消息队列。
-// 主循环持续从 ch 取消息并分发：
-//   - 指令消息（/version, /help 等）：独立 goroutine 立即执行，不阻塞
-//   - 普通消息：发送到内部 msgCh，由专门的 goroutine 串行处理（带信号量 + cancel）
+// chatWorker processes a single chat's message queue, guaranteeing sequential processing within the same chat.
+// Concurrency controlled via semaphore: processing starts only after acquiring semaphore, released after completion.
+// Semaphore is dynamically selected on each message processing to support users setting/canceling custom LLM mid-session.
+// chatWorker processes a single chat's message queue.
+// Main loop continuously takes messages from ch and dispatches:
+//   - Command messages (/version, /help, etc.): executed immediately in independent goroutine, non-blocking
+//   - Normal messages: sent to internal msgCh, processed serially by a dedicated goroutine (with semaphore + cancel)
 //
-// 这样即使普通消息正在长时间处理（LLM 推理），主循环仍能取出并执行命令消息。
+// This way, even when a normal message is being processed for a long time (LLM inference), the main loop can still pick up and execute command messages.
 func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.InboundMessage) {
-	// 内部普通消息队列：主循环写入，processLoop 消费
+	// Internal normal message queue: written by main loop, consumed by processLoop
 	msgCh := make(chan bus.InboundMessage, 32)
 
 	var wg sync.WaitGroup
@@ -1346,15 +1346,15 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 			break
 		}
 
-		// 指令消息分发：根据 Concurrent() 决定执行方式
+		// Command message dispatch: execution method determined by Concurrent()
 		if cmd := a.commands.Match(msg.Content); cmd != nil {
 			if cmd.Concurrent() {
-				// 无状态命令：独立 goroutine 处理，不占信号量，不阻塞
+				// Stateless commands: processed in independent goroutine, no semaphore, non-blocking
 				m := msg
 				c := cmd
 				clipanic.Go("agent.chatWorker.concurrentCommand", func() {
-					// 清除 sessionFinalSent：command 不走 processMessage，
-					// 需要手动清除否则 sendMessage 会被拦截
+					// Clear sessionFinalSent: commands don't go through processMessage,
+					// need to manually clear otherwise sendMessage will be intercepted
 					cmdKey := m.Channel + ":" + m.ChatID
 					a.sessionMsgIDs.Delete(cmdKey)
 					a.sessionFinalSent.Delete(cmdKey)
@@ -1379,8 +1379,8 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 					}
 				})
 			} else {
-				// 有状态命令（/new, /compress, /set-llm 等）：走串行队列，
-				// 避免与正在处理的普通消息产生 session 数据竞态
+				// Stateful commands (/new, /compress, /set-llm, etc.): go through serial queue,
+				// avoid session data races with currently processing normal messages
 				select {
 				case msgCh <- msg:
 				case <-ctx.Done():
@@ -1389,7 +1389,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 			continue
 		}
 
-		// 普通消息：转发到内部队列，由 processLoop 串行处理
+		// Normal messages: forwarded to internal queue, processed serially by processLoop
 		select {
 		case msgCh <- msg:
 		case <-ctx.Done():
@@ -1400,7 +1400,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 	wg.Wait()
 }
 
-// chatProcessLoop 串行处理普通消息（非命令），带信号量控制和 per-request cancel 支持。
+// chatProcessLoop processes normal messages (non-command) serially, with semaphore control and per-request cancel support.
 func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan bus.InboundMessage) {
 	var idleTimer *time.Timer
 	defer func() {
@@ -1409,14 +1409,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		}
 	}()
 
-	var lastSenderID string // 记录最后活跃的 senderID
+	var lastSenderID string // record the last active senderID
 
 	for msg := range ch {
 		if ctx.Err() != nil {
 			return
 		}
 
-		// 停止上一次的 idle timer（收到新消息，重置计时）
+		// stop the previous idle timer (new message received, reset timer)
 		if idleTimer != nil {
 			if !idleTimer.Stop() {
 				select {
@@ -1434,7 +1434,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			return
 		}
 
-		// 创建 per-request cancel context
+		// create per-request cancel context
 		var response *bus.OutboundMessage
 		var err error
 		cancelCh := make(chan struct{}, 1)
@@ -1443,7 +1443,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 		reqCtx, reqCancel := context.WithCancel(ctx)
 
-		// 监听 cancel 信号
+		// listen for cancel signal
 		clipanic.Go("agent.chatProcessLoop.cancelListener", func() {
 			select {
 			case <-cancelCh:
@@ -1452,8 +1452,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 		})
 
-		// 执行Message processing，完成后检查是否被取消
-		// 注意：必须在 reqCancel() 调用前检查，否则 reqCtx.Err() 总是返回 Canceled
+		// execute message processing, check if cancelled after completion
+		// Note: must check before reqCancel() call, otherwise reqCtx.Err() always returns Canceled
 		wasCancelled := false
 		func() {
 			defer func() {
@@ -1462,10 +1462,10 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				key := msg.Channel + ":" + msg.ChatID
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)
-				<-sem // 释放槽位
+				<-sem // release slot
 			}()
 
-			// 沙箱正在 export+import 时，拒绝该用户所有请求
+			// When sandbox is doing export+import, reject all requests from that user
 			sbUID := sandboxUserID(msg)
 			if sb := tools.GetSandbox(); sb.IsExporting(sbUID) {
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
@@ -1474,16 +1474,16 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 
 			response, err = a.processMessage(reqCtx, msg)
-			// 在 defer 执行前检查是否被取消（processMessage 过程中用户可能 /cancel）
+			// Check if cancelled before defer executes (user may /cancel during processMessage)
 			if reqCtx.Err() == context.Canceled {
 				wasCancelled = true
 			}
 		}()
 
 		if wasCancelled && ctx.Err() == nil {
-			// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
+			// Request was cancelled by user /cancel (not global ctx close)
 			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
-			// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
+			// Even when cancelled, send response so CLI can clean up typing/progress state.
 			if response != nil {
 				_ = a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata)
 			} else {
@@ -1496,7 +1496,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 		if err != nil {
 			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
-			// 走 sendMessage 与正常回复同一路径：可 Patch 已发出的进度条为错误内容，避免错误静默不达用户
+			// Use the same path as normal reply via sendMessage: can Patch sent progress bar with error content, avoiding silent error delivery failure
 			content := formatErrorForUser(err)
 			if sendErr := a.sendMessage(msg.Channel, msg.ChatID, content); sendErr != nil {
 				log.Ctx(ctx).WithError(sendErr).Warn("Failed to send error via sendMessage, fallback to bus")
@@ -1532,11 +1532,11 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 		}
 
-		// 更新最后活跃的 senderID
+		// update the last active senderID
 		lastSenderID = msg.SenderID
 
-		// 处理完成后，如果启用了 idle timeout 且用户有 docker 沙箱，设置 timer
-		// Remote sandbox 连接应保持常驻，不做 idle 清理
+		// After processing, if idle timeout is enabled and user has docker sandbox, set timer
+		// Remote sandbox connections should be persistent, no idle cleanup
 		if a.sandboxIdleTimeout > 0 && lastSenderID != "" {
 			// Skip idle cleanup for remote sandbox — the runner connection should be persistent
 			if !a.isRemoteUser(lastSenderID) {
@@ -1552,18 +1552,18 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 	}
 }
 
-// processMessage 处理单条入站消息
+// processMessage processes a single inbound message
 
 func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-	// 使用消息携带的 requestID（在渠道收到消息时生成），如果没有则生成新的
+	// Use the requestID carried by the message (generated when channel receives the message), generate new one if absent
 	reqID := msg.RequestID
 	if reqID == "" {
 		reqID = log.NewRequestID()
 	}
 	ctx = log.WithRequestID(ctx, reqID)
 
-	// 注入 senderID 到 context，用于 per-user human block（Letta 模式）
-	// Recall/Memorize 会通过 letta.GetUserID(ctx) 获取 userID
+	// Inject senderID into context, for per-user human block (Letta mode)
+	// Recall/Memorize gets userID via letta.GetUserID(ctx)
 	ctx = letta.WithUserID(ctx, msg.SenderID)
 
 	preview := msg.Content
@@ -1575,7 +1575,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		"sender":  msg.SenderID,
 	}).Infof("Processing: %s", preview)
 
-	// 将 Media 文件引用附加到消息内容中
+	// Attach media file references to message content
 	if len(msg.Media) > 0 {
 		var ref strings.Builder
 		ref.WriteString("\n\n[Attached files]")
@@ -1586,12 +1586,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		msg.Content += ref.String()
 	}
 
-	// Cron 消息使用独立处理流程（不带历史上下文，不参与消息更新跟踪）
+	// Cron messages use independent processing flow (no history context, no message update tracking)
 	if msg.IsCron {
 		return a.processCronMessage(ctx, msg)
 	}
 
-	// 初始化 session 消息跟踪：清除旧的已发消息 ID，记录入站消息 ID 用于首条回复
+	// Initialize session message tracking: clear old sent message IDs, record inbound message ID for first reply
 	key := msg.Channel + ":" + msg.ChatID
 	a.sessionMsgIDs.Delete(key)
 	a.sessionFinalSent.Delete(key)
@@ -1601,7 +1601,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		a.sessionReplyTo.Delete(key)
 	}
 
-	// 获取或创建租户会话（senderID 通过 context 传递，不在这里传）
+	// Get or create tenant session (senderID passed via context, not here)
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
 		return nil, fmt.Errorf("get/create tenant session: %w", err)
@@ -1616,7 +1616,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		a.maskStore.SetTenantID(tenantID)
 	}
 
-	// 缓存消息到聊天历史（用于 ChatHistory 工具查询）
+	// Cache message to chat history (for ChatHistory tool queries)
 	a.chatHistory.Add(msg.Channel, msg.ChatID, msg.SenderID, msg.Content)
 	log.Ctx(ctx).WithFields(log.Fields{
 		"channel": msg.Channel,
@@ -1624,7 +1624,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		"sender":  msg.SenderID,
 	}).Debug("Message cached to chat history")
 
-	// 指令匹配：通过 CommandRegistry 统一分发
+	// Command matching: dispatched uniformly via CommandRegistry
 	if cmd := a.commands.Match(msg.Content); cmd != nil {
 		log.Ctx(ctx).WithFields(log.Fields{
 			"channel": msg.Channel,
@@ -1633,7 +1633,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		return cmd.Execute(ctx, a, msg)
 	}
 
-	// 处理卡片响应（按钮点击、表单提交）
+	// Handle card responses (button clicks, form submissions)
 	if msg.Metadata != nil && msg.Metadata["card_response"] == "true" {
 		return a.handleCardResponse(ctx, msg, tenantSession)
 	}
@@ -1641,19 +1641,19 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	preReplyNotify := bus.ShouldPreReplyNotify(msg.Metadata) && msg.Channel != "cli"
 	replyPolicy := bus.InboundReplyPolicy(msg.Metadata)
 
-	// 立即发送随机确认回复
+	// Immediately send a random acknowledgment reply
 	if preReplyNotify {
 		a.sendAck(msg.Channel, msg.ChatID)
 	}
 
-	// 构建 LLM 消息（注入长期记忆、skills）
+	// Build LLM messages (inject long-term memory, skills)
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {
 		return nil, err
 	}
 
-	// AskUser 回答不是新的 user message，而是替换 AskUser 的 tool result。
-	// 移除 Assemble 追加的 user message，并精确替换最近的 AskUser tool message。
+	// AskUser reply is not a new user message, but replaces the AskUser tool result.
+	// Remove the user message appended by Assemble, and precisely replace the most recent AskUser tool message.
 	askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
 	if askUserAnswered {
 		// Remove last user message appended by Assemble
@@ -1682,7 +1682,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		}
 	}
 
-	// 运行 Agent 循环（统一 Run）
+	// Run Agent loop (unified Run)
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
 	// messages appear after it in the DB. GetHistory uses user messages as turn boundaries.
 	if !askUserAnswered && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
@@ -1701,9 +1701,9 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	}
 
 	cfg := a.buildMainRunConfig(ctx, msg, messages, tenantSession, preReplyNotify)
-	// 恢复上次 Run() 的 token 计数，确保 maybeCompress 在重启后仍能使用 API 精确值。
-	// 必须从当前 tenant 的 DB 读取 — Agent 级别的 lastPromptTokens 是全局共享的，
-	// 跨 chat 会导致新窗口误用其他 chat 的 token 计数而触发压缩。
+	// Restore token count from last Run() to ensure maybeCompress can use API-accurate values after restart.
+	// Must read from current tenant's DB — Agent-level lastPromptTokens is globally shared,
+	// cross-chat would cause new windows to incorrectly use other chat's token count and trigger compression.
 	if extras := cfg.ToolContextExtras; extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
 		if pt, ct, err := extras.MemorySvc.GetTokenState(ctx, extras.TenantID); err == nil && pt > 0 {
 			cfg.LastPromptTokens = pt
@@ -1899,7 +1899,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	finalContent := out.Content
 	waitingUser := out.WaitingUser
 
-	// 如果工具正在等待用户响应，发送 WaitingUser outbound 让渠道打开交互面板
+	// If tool is waiting for user response, send WaitingUser outbound to let channel open interaction panel
 	if waitingUser {
 		log.Ctx(ctx).Info("Tool is waiting for user response, sending WaitingUser outbound")
 		// User message and engine messages already persisted (eager-save + incremental).
@@ -1920,7 +1920,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		return waitOut, nil
 	}
 
-	// 如果最终内容为空且不是 Optional reply 策略，向用户发送提示
+	// If final content is empty and not Optional reply strategy, send prompt to user
 	if finalContent == "" && !waitingUser && replyPolicy != bus.ReplyPolicyOptional {
 		log.Ctx(ctx).Warn("Run produced empty content without waiting for user input")
 		if err := a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 处理完成，但未生成回复内容。请尝试重新描述您的需求。"); err != nil {
@@ -1963,7 +1963,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		log.Ctx(ctx).WithError(err).Warn("Failed to save assistant message")
 	}
 
-	// 通过 sendMessage 发送最终回复（复用 session 内的消息更新跟踪）
+	// Send final reply via sendMessage (reuse session-internal message update tracking)
 	sendMeta := map[string]string{}
 	if assistantMsg.Detail != "" {
 		sendMeta["progress_history"] = assistantMsg.Detail
@@ -1977,15 +1977,15 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		}, nil
 	}
 
-	// 对用户原始消息添加表情回复，表示处理完成
+	// Add emoji reaction to user's original message to indicate processing complete
 	a.addReaction(msg)
 
 	return nil, nil
 }
 
-// processCronMessage 处理 cron 触发消息（不带历史上下文，使用专用系统提示词）
+// processCronMessage processes cron-triggered messages (no history context, uses dedicated system prompt)
 func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-	// 注入 requestID（如果 processMessage 未注入）
+	// Inject requestID (if processMessage didn't inject it)
 	if log.RequestID(ctx) == "" {
 		ctx = log.WithRequestID(ctx, log.NewRequestID())
 	}
@@ -1996,23 +1996,23 @@ func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) 
 		"sender_id": msg.SenderID,
 	}).Infof("Processing cron message: %s", tools.Truncate(msg.Content, 80))
 
-	// 清除旧的 session 状态，确保 cron 消息可以正常发送
+	// Clear old session state to ensure cron messages can be sent normally
 	key := msg.Channel + ":" + msg.ChatID
 	a.sessionMsgIDs.Delete(key)
 	a.sessionFinalSent.Delete(key)
 
-	// 使用创建者的工作区路径
+	// Use creator's workspace path
 	senderID := msg.SenderID
 	workspaceRoot := a.workspaceRoot(senderID)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, senderID); err != nil {
 		log.Ctx(ctx).WithError(err).Warn("Failed to create cron user workspace")
 	}
 
-	// 构建 cron 专用消息（无历史上下文）
+	// Build cron-specific messages (no history context)
 	mc := NewCronMessageContext(msg.Content)
 	messages := a.cronPipeline.Run(mc)
 
-	// 运行 Agent 循环（统一 Run，cron 不需要自动压缩和进度通知）
+	// Run Agent loop (unified Run, cron doesn't need auto-compression and progress notifications)
 	cronMsg := msg
 	cronMsg.SenderID = senderID
 	cronCfg := a.buildCronRunConfig(ctx, cronMsg, messages)
@@ -2026,17 +2026,17 @@ func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) 
 		finalContent = "定时任务已执行，但无输出内容。"
 	}
 
-	// 如果工具已发送最终回复（如卡片），跳过后续文本回复
+	// If tool has already sent final reply (e.g. card), skip subsequent text reply
 	if _, sent := a.sessionFinalSent.Load(key); sent {
 		log.Ctx(ctx).Info("Cron: tool already sent final reply (card), skipping text reply")
 		a.persistCronMessages(ctx, msg, finalContent)
 		return nil, nil
 	}
 
-	// 持久化 cron 消息到 session（web 端用户下次进入可见）
+	// Persist cron messages to session (visible to web users on next visit)
 	a.persistCronMessages(ctx, msg, finalContent)
 
-	// 保留原始消息 ID 以支持回复模式
+	// Keep original message ID to support reply mode
 	metadata := make(map[string]string)
 	if msg.Metadata != nil {
 		metadata = msg.Metadata
@@ -2050,8 +2050,8 @@ func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) 
 	}, nil
 }
 
-// persistCronMessages 将 cron 消息持久化到 session，使 web 端用户下次进入时可见。
-// 对于非 web 渠道（如飞书），消息已通过 IM 平台持久化，无需额外保存。
+// persistCronMessages persists cron messages to session, making them visible to web users on next visit.
+// For non-web channels (e.g. Feishu), messages are already persisted via IM platform, no need for extra saving.
 func (a *Agent) persistCronMessages(ctx context.Context, msg bus.InboundMessage, assistantContent string) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
@@ -2080,8 +2080,8 @@ func (a *Agent) persistCronMessages(ctx context.Context, msg bus.InboundMessage,
 	}).Debug("Cron messages persisted to session")
 }
 
-// buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
-// 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
+// buildPrompt builds the complete LLM message list (shared logic: called by both processMessage and handlePromptQuery).
+// Uses the pipeline instance held by Agent, passing dynamic data via MessageContext.Extra.
 func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) ([]llm.ChatMessage, error) {
 	history, err := tenantSession.GetMessages()
 	if err != nil {
@@ -2124,8 +2124,8 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		msg.ChatID,
 	)
 
-	// 注入当前工作目录（CWD）到 prompt
-	// sandbox 模式下 CWD 已经是 sandbox 内路径，无 cd 时默认为 promptWorkDir
+	// Inject current working directory (CWD) into prompt
+	// In sandbox mode, CWD is already a sandbox-internal path, defaults to promptWorkDir when no cd
 	mc.CWD = tenantSession.GetCurrentDir()
 	if mc.CWD == "" {
 		log.WithFields(log.Fields{
@@ -2150,38 +2150,38 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 // max returns the larger of a and b.
 
-// summarizeRetryError 将 LLM 错误简化为用户友好的描述。
+// summarizeRetryError simplifies LLM errors into user-friendly descriptions.
 func summarizeRetryError(err error) string {
 	if err == nil {
-		return "未知错误"
+		return "unknown error"
 	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "TLS handshake timeout"):
-		return "网络超时"
+		return "network timeout"
 	case strings.Contains(msg, "connection refused"):
-		return "连接被拒绝"
+		return "connection refused"
 	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limit"):
-		return "请求限流"
+		return "rate limited"
 	case strings.Contains(msg, "502") || strings.Contains(msg, "503"):
-		return "服务暂时不可用"
+		return "service temporarily unavailable"
 	case strings.Contains(msg, "500") || strings.Contains(msg, "504"):
-		return "服务端错误"
+		return "server error"
 	default:
 		var netErr net.Error
 		if errors.As(err, &netErr) {
 			if netErr.Timeout() {
-				return "网络超时"
+				return "network timeout"
 			}
-			return "网络错误"
+			return "network error"
 		}
-		return "临时错误"
+		return "temporary error"
 	}
 }
 
-// runLoop 执行 Agent 迭代循环（LLM -> 工具调用 -> LLM ...）
-// autoNotify 为 true 时，累积显示模型中间内容和工具调用状态，实时更新同一条消息
-// tenantSession 用于自动压缩后持久化压缩结果（可传 nil）
+// runLoop executes the Agent iteration loop (LLM -> tool call -> LLM ...)
+// When autoNotify is true, cumulatively display model intermediate content and tool call status, updating the same message in real-time
+// tenantSession is for persisting compression results after auto-compression (can pass nil)
 
 // RegisterTool registers a tool to the agent's tool registry.
 // This is useful for dynamically adding tools after agent creation.
@@ -2195,14 +2195,14 @@ func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 	log.WithField("tool", tool.Name()).Info("Tool registered")
 }
 
-// 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。
-// 工具发送最终回复（如飞书卡片）时同样 Patch 更新，但标记 session 为"已完成"，后续调用自动跳过。
-// sendMessage 向 IM 渠道发送消息。
-// 通过 directSend 直连或 bus.Outbound 广播。
+// First send creates a new message (replies to inbound message_id if present), subsequent sends Patch update the same message.
+// When tools send final reply (e.g. Feishu card), also Patch updates, but marks session as "completed", subsequent calls auto-skip.
+// sendMessage sends a message to IM channel.
+// Via directSend direct connection or bus.Outbound broadcast.
 func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[string]string) error {
 	key := channel + ":" + chatID
 
-	// 工具已发送最终回复 → 跳过后续所有消息（进度更新、LLM 最终回复等）
+	// Tool has sent final reply → skip all subsequent messages (progress updates, LLM final reply, etc.)
 	if _, sent := a.sessionFinalSent.Load(key); sent {
 		return nil
 	}
@@ -2260,7 +2260,7 @@ func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[str
 		return nil
 	}
 
-	// 降级：directSend 不可用时走 bus（无消息更新跟踪）
+	// Fallback: use bus when directSend unavailable (no message update tracking)
 	select {
 	case a.bus.Outbound <- msg:
 		return nil
@@ -2269,8 +2269,8 @@ func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[str
 	}
 }
 
-// injectInbound 向入站队列注入消息，触发 Agent 完整处理循环。
-// 用于 cron 调度和后台任务通知等内部系统消息。
+// injectInbound injects a message into the inbound queue, triggering the full Agent processing loop.
+// For internal system messages such as cron scheduling and background task notifications.
 func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	msg := bus.InboundMessage{
 		Channel:   channel,
@@ -2287,9 +2287,9 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	}
 }
 
-// injectEventMessage 向入站队列注入事件触发的消息。
-// Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop，
-// 并设置 EventSource/EventTrigger 元数据。
+// injectEventMessage injects an event-triggered message into the inbound queue.
+// Event Router routes external events (webhooks, etc.) to agent loop via this function,
+// and sets EventSource/EventTrigger metadata.
 func (a *Agent) injectEventMessage(msg event.Message) {
 	inbound := bus.InboundMessage{
 		Channel:      msg.Channel,
@@ -2411,9 +2411,9 @@ func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
 // buildBgNotificationRunConfig is no longer needed — idle bg notifications
 // go through injectInbound → processMessage → buildMainRunConfig.
 
-// RunSubAgent 实现 tools.SubAgentManager 接口
-// 创建一个独立的子 Agent 循环来执行任务，子 Agent 拥有自己的工具集但不能再创建子 Agent
-// allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
+// RunSubAgent implements the tools.SubAgentManager interface
+// Creates an independent sub-Agent loop to execute a task; the sub-Agent has its own tool set but cannot create further sub-Agents
+// allowedTools is the tool whitelist; when empty, uses all tools (except SubAgent)
 func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, model string) (string, error) {
 	cfg := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, model)
 	out := Run(parentCtx.Ctx, cfg)
@@ -2423,7 +2423,7 @@ func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPro
 	return out.Content, nil
 }
 
-// addReaction 对用户消息添加表情回复，表示处理完成
+// addReaction adds emoji reaction to user message to indicate processing complete
 func (a *Agent) addReaction(msg bus.InboundMessage) {
 	if a.directSend == nil {
 		return
@@ -2449,7 +2449,7 @@ func (a *Agent) addReaction(msg bus.InboundMessage) {
 	}
 }
 
-// ProcessDirect 直接处理一条消息（用于 CLI 模式）
+// ProcessDirect processes a message directly (for CLI mode)
 func (a *Agent) ProcessDirect(ctx context.Context, content string) (string, error) {
 	msg := bus.InboundMessage{
 		Channel:   "cli",
@@ -2614,7 +2614,7 @@ func formatToolProgress(name string, args string) string {
 		summary = fmt.Sprintf("%s: %s", name, raw)
 	}
 
-	// 去掉换行符，避免引用块断裂（工具参数可能含多行内容）
+	// Remove newlines to prevent broken quote blocks (tool arguments may contain multi-line content)
 	summary = strings.NewReplacer("\n", " ", "\r", "").Replace(summary)
 	return truncate(summary, maxLen)
 }

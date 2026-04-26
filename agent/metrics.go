@@ -8,43 +8,43 @@ import (
 	"time"
 )
 
-// AgentMetrics Agent 运行指标（全局单例，进程重启归零）。
-// 使用 atomic 操作保证concurrency safe且零锁。
+// AgentMetrics Agent runtime metrics (global singleton, resets on process restart).
+// Uses atomic operations to ensure concurrency safety with zero locks.
 type AgentMetrics struct {
-	StartTime time.Time // 进程启动时间
+	StartTime time.Time // Process start time
 
-	// === 对话指标 ===
-	TotalConversations atomic.Int64 // 总对话数（每个用户消息算一次）
-	TotalIterations    atomic.Int64 // 总 Agent 迭代数
-	TotalToolCalls     atomic.Int64 // 总工具调用数
-	TotalLLMCalls      atomic.Int64 // 总 LLM API 调用数
-	TotalInputTokens   atomic.Int64 // 总输入 token 数
-	TotalOutputTokens  atomic.Int64 // 总输出 token 数
+	// === Conversation metrics ===
+	TotalConversations atomic.Int64 // Total conversations (each user message counts as one)
+	TotalIterations    atomic.Int64 // Total Agent iterations
+	TotalToolCalls     atomic.Int64 // Total tool calls
+	TotalLLMCalls      atomic.Int64 // Total LLM API calls
+	TotalInputTokens   atomic.Int64 // Total input tokens
+	TotalOutputTokens  atomic.Int64 // Total output tokens
 
-	// === 上下文管理指标（核心 — 衡量四层防御效果） ===
-	MaskingEvents     atomic.Int64 // Observation Masking 触发次数
-	MaskedItems       atomic.Int64 // 被遮蔽的 tool result 数量
-	OffloadEvents     atomic.Int64 // Offload 触发次数
-	OffloadedItems    atomic.Int64 // 被落盘的 tool result 数量
-	OffloadedRecalls  atomic.Int64 // offload_recall 唯一 ID 回调次数（去重）
-	MaskedRecalls     atomic.Int64 // recall_masked 唯一 ID 回调次数（去重）
-	CompressEvents    atomic.Int64 // context compression触发次数
-	CompressTokensIn  atomic.Int64 // 压缩前 token 总量
-	CompressTokensOut atomic.Int64 // 压缩后 token 总量
-	ContextEditEvents atomic.Int64 // Context Editing 触发次数
-	SummaryRefines    atomic.Int64 // 摘要精化触发次数
+	// === Context management metrics (core — measuring four-layer defense effectiveness) ===
+	MaskingEvents     atomic.Int64 // Observation Masking trigger count
+	MaskedItems       atomic.Int64 // Masked tool result count
+	OffloadEvents     atomic.Int64 // Offload trigger count
+	OffloadedItems    atomic.Int64 // Offloaded (written to disk) tool result count
+	OffloadedRecalls  atomic.Int64 // offload_recall unique ID callback count (deduplicated)
+	MaskedRecalls     atomic.Int64 // recall_masked unique ID callback count (deduplicated)
+	CompressEvents    atomic.Int64 // Context compression trigger count
+	CompressTokensIn  atomic.Int64 // Total tokens before compression
+	CompressTokensOut atomic.Int64 // Total tokens after compression
+	ContextEditEvents atomic.Int64 // Context Editing trigger count
+	SummaryRefines    atomic.Int64 // Summary refinement trigger count
 
-	// === 效率指标 ===
-	TotalToolErrors atomic.Int64 // 工具执行错误次数
-	TotalLLMErrors  atomic.Int64 // LLM 调用错误次数
+	// === Efficiency metrics ===
+	TotalToolErrors atomic.Int64 // Tool execution错误次数
+	TotalLLMErrors  atomic.Int64 // LLM call error count
 
-	// === 去重追踪（回调率基于唯一 item 计算） ===
-	recalledOffloadIDs sync.Map // string -> struct{}，已回调的唯一 offload ID
-	recalledMaskedIDs  sync.Map // string -> struct{}，已回调的唯一 mask ID
+	// === Deduplication tracking (recall rate calculated based on unique items) ===
+	recalledOffloadIDs sync.Map // string -> struct{}, unique offload IDs that have been recalled
+	recalledMaskedIDs  sync.Map // string -> struct{}, unique mask IDs that have been recalled
 }
 
-// RecordOffloadRecall 记录一次 offload_recall 调用（去重：同一 ID 只计一次）。
-// 返回 true 表示首次回调。
+// RecordOffloadRecall records one offload_recall call (deduplicated: same ID counted only once).
+// Returns true if first callback.
 func (m *AgentMetrics) RecordOffloadRecall(id string) bool {
 	if _, loaded := m.recalledOffloadIDs.LoadOrStore(id, struct{}{}); loaded {
 		return false
@@ -53,8 +53,8 @@ func (m *AgentMetrics) RecordOffloadRecall(id string) bool {
 	return true
 }
 
-// RecordMaskedRecall 记录一次 recall_masked 调用（去重：同一 ID 只计一次）。
-// 返回 true 表示首次回调。
+// RecordMaskedRecall records one recall_masked call (deduplicated: same ID counted only once).
+// Returns true if first callback.
 func (m *AgentMetrics) RecordMaskedRecall(id string) bool {
 	if _, loaded := m.recalledMaskedIDs.LoadOrStore(id, struct{}{}); loaded {
 		return false
@@ -63,7 +63,7 @@ func (m *AgentMetrics) RecordMaskedRecall(id string) bool {
 	return true
 }
 
-// ClearRecallTracking 清理回调追踪数据（对话结束时调用）。
+// ClearRecallTracking clears recall tracking data (called at conversation end).
 func (m *AgentMetrics) ClearRecallTracking() {
 	m.recalledOffloadIDs.Range(func(key, _ any) bool {
 		m.recalledOffloadIDs.Delete(key)
@@ -75,7 +75,7 @@ func (m *AgentMetrics) ClearRecallTracking() {
 	})
 }
 
-// MetricsSnapshot 指标快照（用于 Settings 展示）。
+// MetricsSnapshot metrics snapshot (for Settings display).
 type MetricsSnapshot struct {
 	UptimeSeconds      int64
 	TotalConversations int64
@@ -85,7 +85,7 @@ type MetricsSnapshot struct {
 	TotalInputTokens   int64
 	TotalOutputTokens  int64
 
-	// 上下文管理
+	// Context management
 	MaskingEvents     int64
 	MaskedItems       int64
 	OffloadEvents     int64
@@ -98,39 +98,39 @@ type MetricsSnapshot struct {
 	ContextEditEvents int64
 	SummaryRefines    int64
 
-	// 效率
+	// Efficiency
 	TotalToolErrors int64
 	TotalLLMErrors  int64
 
-	// 计算指标
-	AvgTokensPerIter float64 // 平均每次迭代输入 token 数
-	CompressRatio    float64 // 总体压缩比 (out/in)
-	RecallRate       float64 // 回调率 (recalls / offloads+maskings)
+	// Calculated metrics
+	AvgTokensPerIter float64 // Average input tokens per iteration
+	CompressRatio    float64 // Overall compression ratio (out/in)
+	RecallRate       float64 // Recall rate (recalls / offloads+maskings)
 
-	// 压缩效率
-	AvgTokensSavedPerCompress float64 // 每次压缩平均节省 token
-	TokenSavingRate           float64 // token 节省率 (saved/in)
+	// 压缩Efficiency
+	AvgTokensSavedPerCompress float64 // Average tokens saved per compression
+	TokenSavingRate           float64 // Token saving rate (saved/in)
 
-	// 记忆质量
-	OffloadRecallRate float64 // offload 回调率
+	// Memory Quality
+	OffloadRecallRate float64 // Offload recall rate
 	MaskedRecallRate  float64 // masked 回调率
-	SummaryRefineRate float64 // 摘要精化率 = SummaryRefines / CompressEvents
-	ContextEditRate   float64 // 上下文编辑率 = ContextEditEvents / TotalConversations
+	SummaryRefineRate float64 // Summary refine rate = SummaryRefines / CompressEvents
+	ContextEditRate   float64 // Context edit rate = ContextEditEvents / TotalConversations
 
-	// 任务完成效果
-	ToolSuccessRate     float64 // 工具成功率
-	LLMSuccessRate      float64 // LLM 成功率
-	AvgToolCallsPerConv float64 // 每对话平均工具调用数
+	// Task completion effectiveness
+	ToolSuccessRate     float64 // Tool success rate
+	LLMSuccessRate      float64 // LLM success rate
+	AvgToolCallsPerConv float64 // Average tool calls per conversation
 
-	// 成本效率
-	AvgTokensPerConv float64 // 每对话平均 token（输入+输出）
-	OutputInputRatio float64 // 输出/输入比
+	// 成本Efficiency
+	AvgTokensPerConv float64 // Average tokens per conversation (input+output)
+	OutputInputRatio float64 // Output/input ratio
 
-	// 四层防御效能
-	CombinedSavingRate float64 // 四层联合保存率 = 总节省 / 总输入
+	// Four-Layer Defense Effectiveness
+	CombinedSavingRate float64 // Four-layer combined saving rate = total saved / total input
 }
 
-// GlobalMetrics 全局指标单例。
+// GlobalMetrics global metrics singleton.
 var GlobalMetrics *AgentMetrics
 
 func init() {
@@ -139,9 +139,9 @@ func init() {
 	}
 }
 
-// RecordConversation 记录一次对话完成。
-// llmCalls 参数作为兜底校验：如果 engine.go 中的直接计数遗漏了某些路径，
-// RecordConversation 仍能通过此参数补齐。
+// RecordConversation records one conversation completion.
+// llmCalls parameter as fallback validation: if direct counting in engine.go misses some paths,
+// RecordConversation can still fill in via this parameter.
 func (m *AgentMetrics) RecordConversation(iterations, toolCalls, llmCalls, inputTokens, outputTokens int) {
 	m.TotalConversations.Add(1)
 	m.TotalIterations.Add(int64(iterations))
@@ -151,7 +151,7 @@ func (m *AgentMetrics) RecordConversation(iterations, toolCalls, llmCalls, input
 	m.TotalOutputTokens.Add(int64(outputTokens))
 }
 
-// Snapshot 获取指标快照（用于 Settings 展示）。
+// Snapshot gets metrics snapshot (for Settings display).
 func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 	if m == nil {
 		return MetricsSnapshot{}
@@ -187,7 +187,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		TotalLLMErrors:  m.TotalLLMErrors.Load(),
 	}
 
-	// 计算指标
+	// Calculated metrics
 	iters := m.TotalIterations.Load()
 	if iters > 0 {
 		s.AvgTokensPerIter = float64(s.TotalInputTokens) / float64(iters)
@@ -202,7 +202,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.RecallRate = float64(totalRecalls) / float64(totalEvictions)
 	}
 
-	// 压缩效率
+	// 压缩Efficiency
 	if s.CompressEvents > 0 {
 		s.AvgTokensSavedPerCompress = float64(s.CompressTokensIn-s.CompressTokensOut) / float64(s.CompressEvents)
 	}
@@ -210,7 +210,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.TokenSavingRate = float64(s.CompressTokensIn-s.CompressTokensOut) / float64(s.CompressTokensIn)
 	}
 
-	// 记忆质量
+	// Memory Quality
 	if s.OffloadedItems > 0 {
 		s.OffloadRecallRate = float64(s.OffloadedRecalls) / float64(s.OffloadedItems)
 	}
@@ -224,7 +224,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.ContextEditRate = float64(s.ContextEditEvents) / float64(s.TotalConversations)
 	}
 
-	// 任务完成效果
+	// Task completion effectiveness
 	if s.TotalToolCalls > 0 {
 		s.ToolSuccessRate = float64(s.TotalToolCalls-s.TotalToolErrors) / float64(s.TotalToolCalls)
 	}
@@ -235,7 +235,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.AvgToolCallsPerConv = float64(s.TotalToolCalls) / float64(s.TotalConversations)
 	}
 
-	// 成本效率
+	// 成本Efficiency
 	if s.TotalConversations > 0 {
 		s.AvgTokensPerConv = float64(s.TotalInputTokens+s.TotalOutputTokens) / float64(s.TotalConversations)
 	}
@@ -243,7 +243,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.OutputInputRatio = float64(s.TotalOutputTokens) / float64(s.TotalInputTokens)
 	}
 
-	// 四层防御效能
+	// Four-Layer Defense Effectiveness
 	if s.TotalInputTokens > 0 {
 		s.CombinedSavingRate = float64(s.CompressTokensIn-s.CompressTokensOut) / float64(s.TotalInputTokens)
 	}
@@ -251,8 +251,8 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 	return s
 }
 
-// FormatMarkdown 将 MetricsSnapshot 格式化为飞书 markdown 卡片文本。
-// 按能力维度分组为四段：运行概览、任务执行效果、记忆质量、压缩效率、四层防御效能。
+// FormatMarkdown formats MetricsSnapshot as Feishu markdown card text.
+// 按能力维度分组为四段：Runtime Overview、Task Execution Effectiveness、Memory Quality、压缩Efficiency、Four-Layer Defense Effectiveness。
 func (s MetricsSnapshot) FormatMarkdown() string {
 	var sb strings.Builder
 
@@ -261,14 +261,14 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 	hasCompress := s.CompressEvents > 0
 	hasDefense := s.MaskedItems > 0 || s.OffloadedItems > 0 || s.CompressTokensIn > 0
 
-	// ── 运行概览 ──
-	sb.WriteString("⏱️ **运行概览**\n──────────────\n")
+	// ── Runtime Overview ──
+	sb.WriteString("⏱️ **Runtime Overview**\n──────────────\n")
 	if hasOverview {
-		fmt.Fprintf(&sb, "⏱️ 运行时长：%s\n", formatDuration(s.UptimeSeconds))
-		fmt.Fprintf(&sb, "💬 对话：%d 次", s.TotalConversations)
+		fmt.Fprintf(&sb, "⏱️ Uptime: %s\n", formatDuration(s.UptimeSeconds))
+		fmt.Fprintf(&sb, "💬 Conversations: %d 次", s.TotalConversations)
 		if s.TotalConversations > 0 {
 			avgIter := float64(s.TotalIterations) / float64(s.TotalConversations)
-			fmt.Fprintf(&sb, " | 🔄 平均迭代：%.1f 次/对话", avgIter)
+			fmt.Fprintf(&sb, " | 🔄 Avg iterations: %.1f 次/对话", avgIter)
 		}
 		sb.WriteString("\n")
 
@@ -285,41 +285,41 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 		if s.TotalConversations > 0 {
 			fmt.Fprintf(&sb, "💰 平均成本：%s tokens/对话", formatTokenCount(int64(s.AvgTokensPerConv)))
 			if s.TotalInputTokens > 0 {
-				fmt.Fprintf(&sb, " | 输出/输入比：%.1f%%", s.OutputInputRatio*100)
+				fmt.Fprintf(&sb, " | Output/input ratio：%.1f%%", s.OutputInputRatio*100)
 			}
 			sb.WriteString("\n")
 		}
 	} else {
-		sb.WriteString("暂无数据\n")
+		sb.WriteString("No data available\n")
 	}
 
-	// ── 任务执行效果 ──
-	sb.WriteString("\n🎯 **任务执行效果**\n──────────────\n")
+	// ── Task Execution Effectiveness ──
+	sb.WriteString("\n🎯 **Task Execution Effectiveness**\n──────────────\n")
 	if s.TotalConversations > 0 {
 		avgIter := float64(s.TotalIterations) / float64(s.TotalConversations)
-		fmt.Fprintf(&sb, "📊 平均迭代：%.1f 次/对话\n", avgIter)
+		fmt.Fprintf(&sb, "📊 Avg iterations: %.1f 次/对话\n", avgIter)
 
 		if s.TotalToolCalls > 0 {
-			fmt.Fprintf(&sb, "🛠️ 工具成功率：%.1f%%（%d 调用 / %d 错误）\n",
+			fmt.Fprintf(&sb, "🛠️ Tool success rate：%.1f%%（%d 调用 / %d 错误）\n",
 				s.ToolSuccessRate*100, s.TotalToolCalls, s.TotalToolErrors)
 		} else {
-			sb.WriteString("🛠️ 工具成功率：N/A（无调用）\n")
+			sb.WriteString("🛠️ Tool success rate：N/A（无调用）\n")
 		}
 
 		if s.TotalLLMCalls > 0 {
-			fmt.Fprintf(&sb, "🤖 LLM 成功率：%.1f%%（%d 调用 / %d 错误）\n",
+			fmt.Fprintf(&sb, "🤖 LLM success rate：%.1f%%（%d 调用 / %d 错误）\n",
 				s.LLMSuccessRate*100, s.TotalLLMCalls, s.TotalLLMErrors)
 		} else {
-			sb.WriteString("🤖 LLM 成功率：N/A（无调用）\n")
+			sb.WriteString("🤖 LLM success rate：N/A（无调用）\n")
 		}
 
 		fmt.Fprintf(&sb, "🔧 每对话工具：%.1f 次\n", s.AvgToolCallsPerConv)
 	} else {
-		sb.WriteString("暂无数据\n")
+		sb.WriteString("No data available\n")
 	}
 
-	// ── 记忆质量 ──
-	sb.WriteString("\n🧠 **记忆质量**\n──────────────\n")
+	// ── Memory Quality ──
+	sb.WriteString("\n🧠 **Memory Quality**\n──────────────\n")
 	if hasMemory {
 		if s.MaskedItems > 0 {
 			fmt.Fprintf(&sb, "🎭 Masking 回调率：%.1f%%（%d / %d）\n",
@@ -344,24 +344,24 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 				s.SummaryRefineRate*100, s.SummaryRefines, s.CompressEvents)
 		}
 	} else {
-		sb.WriteString("暂无数据\n")
+		sb.WriteString("No data available\n")
 	}
 
-	// ── 压缩效率 ──
-	sb.WriteString("\n📦 **压缩效率**\n──────────────\n")
+	// ── 压缩Efficiency ──
+	sb.WriteString("\n📦 **压缩Efficiency**\n──────────────\n")
 	if hasCompress {
 		saved := s.CompressTokensIn - s.CompressTokensOut
 		fmt.Fprintf(&sb, "🧹 压缩：%d 次 | 节省 %s tokens（节省率 %.1f%%）\n",
 			s.CompressEvents, formatTokenCount(saved), s.TokenSavingRate*100)
 		fmt.Fprintf(&sb, "📊 每次平均节省：%s tokens\n",
 			formatTokenCount(int64(s.AvgTokensSavedPerCompress)))
-		fmt.Fprintf(&sb, "📐 输出/输入比：%.1f%%\n", s.CompressRatio*100)
+		fmt.Fprintf(&sb, "📐 Output/input ratio：%.1f%%\n", s.CompressRatio*100)
 	} else {
-		sb.WriteString("暂无数据\n")
+		sb.WriteString("No data available\n")
 	}
 
-	// ── 四层防御效能 ──
-	sb.WriteString("\n🛡️ **四层防御效能**\n──────────────\n")
+	// ── Four-Layer Defense Effectiveness ──
+	sb.WriteString("\n🛡️ **Four-Layer Defense Effectiveness**\n──────────────\n")
 	if hasDefense {
 		fmt.Fprintf(&sb, "🎭 Masking：遮蔽 %d 条（免费压缩）\n", s.MaskedItems)
 		fmt.Fprintf(&sb, "💾 Offload：落盘 %d 条（磁盘保存）\n", s.OffloadedItems)
@@ -377,13 +377,13 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 			formatTokenCount(s.CompressTokensIn-s.CompressTokensOut),
 			formatTokenCount(s.TotalInputTokens))
 	} else {
-		sb.WriteString("暂无数据\n")
+		sb.WriteString("No data available\n")
 	}
 
 	return sb.String()
 }
 
-// formatDuration 将秒数格式化为人类可读格式（如 "3h 25m"）。
+// formatDuration formats seconds into human-readable format (e.g. "3h 25m").
 func formatDuration(seconds int64) string {
 	if seconds < 60 {
 		return fmt.Sprintf("%ds", seconds)

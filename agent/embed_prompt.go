@@ -2,12 +2,12 @@ package agent
 
 import "xbot/prompt"
 
-// EmbeddedPrompt 返回编译时嵌入的默认系统提示词。
-// 由 PromptLoader 在文件不存在时使用。
+// EmbeddedPrompt returns the compile-time embedded default system prompt.
+// Used by PromptLoader when file doesn't exist.
 func EmbeddedPrompt() string { return prompt.Default }
 
-// EmbeddedFallbackPrompt 返回编译时嵌入的最小兜底系统提示词。
+// EmbeddedFallbackPrompt returns the compile-time embedded minimal fallback system prompt.
 func EmbeddedFallbackPrompt() string { return prompt.Fallback }
 
-// EmbeddedCronPrompt 返回编译时嵌入的 Cron system prompt模板。
+// EmbeddedCronPrompt returns the compile-time embedded Cron system prompt template.
 func EmbeddedCronPrompt() string { return prompt.CronSystem }

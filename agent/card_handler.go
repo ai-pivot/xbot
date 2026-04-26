@@ -9,7 +9,7 @@ import (
 	"xbot/session"
 )
 
-// handleCardResponse 处理卡片响应（按钮点击、表单提交）
+// handleCardResponse Handle card responses (button clicks, form submissions)
 func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
 	cardID := msg.Metadata["card_id"]
 	log.Ctx(ctx).WithFields(log.Fields{
@@ -18,7 +18,7 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 		"card_id": cardID,
 	}).Info("Processing card response")
 
-	// 注入卡片上下文，让 LLM 理解用户在回应什么
+	// Inject card context so LLM understands what the user is responding to
 	summary := msg.Content
 	if desc := a.cardBuilder.GetDescription(cardID); desc != "" {
 		summary = desc + "\nUser interaction:\n" + summary
@@ -27,7 +27,7 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	// Cleanup card metadata after callback is processed
 	defer a.cardBuilder.CleanupCard(cardID)
 
-	// 复用 buildPrompt，替换 Content 为卡片摘要
+	// Reuse buildPrompt, replace Content with card summary
 	cardMsg := msg
 	cardMsg.Content = summary
 	messages, err := a.buildPrompt(ctx, cardMsg, tenantSession)

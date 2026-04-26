@@ -18,9 +18,9 @@ import (
 // Skills are loaded on-demand by the LLM using the Read tool (OpenClaw-style progressive disclosure).
 // Skill creation/deletion is done via Edit/Shell tools — no dedicated Skill tool needed.
 type SkillStore struct {
-	globalDirs []string      // 全局只读 skills 根目录
-	workDir    string        // 用于派生用户私有 skills 目录
-	sandbox    tools.Sandbox // Sandbox 实例（nil 表示无沙箱）
+	globalDirs []string      // Global read-only skills root directory
+	workDir    string        // For deriving user's private skills directory
+	sandbox    tools.Sandbox // Sandbox instance (nil means no sandbox)
 	// per-user TTL cache (5 minutes). Uses map to support concurrent multi-user access
 	// without cache thrashing (each user's cache is independent).
 	mu         sync.RWMutex
@@ -51,7 +51,7 @@ type SkillInfo struct {
 	InstalledAt   int64  `json:"installed_at,omitempty"`
 }
 
-// userSkillsDir 返回用户 skill 目录路径（沙箱感知）
+// userSkillsDir returns user skill directory path (sandbox-aware)
 func (s *SkillStore) userSkillsDir(senderID string) string {
 	if s.sandbox != nil && s.sandbox.Name() != "none" {
 		return filepath.Join(s.sandbox.Workspace(senderID), "skills")
@@ -59,7 +59,7 @@ func (s *SkillStore) userSkillsDir(senderID string) string {
 	return tools.UserSkillsRoot(s.workDir, senderID)
 }
 
-// isUserSkillsSandboxed 返回用户 skills 目录是否在沙箱内
+// isUserSkillsSandboxed returns whether user skills directory is inside sandbox
 func (s *SkillStore) isUserSkillsSandboxed() bool {
 	return s.sandbox != nil && s.sandbox.Name() != "none"
 }
@@ -81,12 +81,12 @@ func (s *SkillStore) ListSkills(ctx context.Context, senderID string) ([]SkillIn
 	return s.refreshSkills(ctx, senderID)
 }
 
-// refreshSkills 扫描目录并更新缓存
+// refreshSkills scans directories and updates cache
 func (s *SkillStore) refreshSkills(ctx context.Context, senderID string) ([]SkillInfo, error) {
 	merged := make(map[string]SkillInfo)
 	orderedNames := make([]string, 0)
 
-	// 扫描内置嵌入的 skills（优先级最低，外部同名 skill 会覆盖）
+	// Scan built-in embedded skills (lowest priority, external skills with same name override)
 	for _, name := range tools.ListEmbeddedSkills() {
 		data, err := tools.ReadEmbeddedSkillFile(name, "SKILL.md")
 		if err != nil {
@@ -106,7 +106,7 @@ func (s *SkillStore) refreshSkills(ctx context.Context, senderID string) ([]Skil
 		}
 	}
 
-	// 扫描全局目录（始终用 os.*）
+	// Scan global directories (always use os.*)
 	for _, dir := range s.globalDirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -147,7 +147,7 @@ func (s *SkillStore) refreshSkills(ctx context.Context, senderID string) ([]Skil
 		}
 	}
 
-	// 扫描用户目录（沙箱感知）
+	// Scan user directory (sandbox-aware)
 	s.scanUserSkills(ctx, senderID, merged, &orderedNames)
 
 	sort.Strings(orderedNames)
@@ -156,7 +156,7 @@ func (s *SkillStore) refreshSkills(ctx context.Context, senderID string) ([]Skil
 		skills = append(skills, merged[name])
 	}
 
-	// 更新缓存
+	// Update cache
 	s.mu.Lock()
 	if s.cache == nil {
 		s.cache = make(map[string][]SkillInfo)
@@ -186,7 +186,7 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string) stri
 	sb.WriteString("Skills 是特定任务的专门指导文档。当任务匹配时，用 `Skill` 工具加载对应的 skill 获取详细指令。\n\n")
 	sb.WriteString("当用户输入以 `/xxxx` 开头的消息时，优先在 available_skills 中查找名称匹配的 skill 并激活再处理请求。\n\n")
 
-	// 注入目录路径，供 skill-creator 参考新建位置
+	// Inject directory paths for skill-creator reference for new file locations
 	if len(s.globalDirs) > 0 {
 		fmt.Fprintf(&sb, "**Skills 存储目录**: %s\n\n", s.globalDirs[0])
 	}

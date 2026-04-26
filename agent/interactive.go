@@ -28,32 +28,32 @@ type bgSessionCtxKey struct{}
 // enabling cascade cleanup when a parent session is unloaded or cancelled.
 type bgParentKey struct{}
 
-// interactiveAgent 封装一个 interactive SubAgent 会话。
-// 存储在 parent Agent 的 interactiveSubAgents map 中。
+// interactiveAgent wraps an interactive SubAgent session.
+// Stored in the parent Agent's interactiveSubAgents map.
 type interactiveAgent struct {
-	roleName         string              // 角色名
+	roleName         string              // Role name
 	instance         string              // instance ID
-	groupID          string              // 所属群聊 ID（如 "group:g1"，空=不属于群聊）
-	messages         []llm.ChatMessage   // 累积的对话历史（不含 system prompt）
-	iterationHistory []IterationSnapshot // 最近迭代快照，供 inspect/tail 使用
-	mu               sync.Mutex          // 保护会话状态并发访问
-	systemPrompt     llm.ChatMessage     // spawn 时的 system prompt（保持一致性，后续 send 不重建）
-	cfg              *RunConfig          // RunConfig 模板（Messages=nil，复用于 send/unload）
-	lastUsed         time.Time           // 最后访问时间，用于 TTL 清理
-	running          bool                // 当前是否有 Run 在执行
-	background       bool                // 是否后台模式
-	cancelCurrent    context.CancelFunc  // 当前运行的取消函数（nil = idle）
+	groupID          string              // Group chat ID (e.g. "group:g1", empty=not in group chat)
+	messages         []llm.ChatMessage   // Accumulated conversation history (excluding system prompt)
+	iterationHistory []IterationSnapshot // Recent iteration snapshots, for inspect/tail use
+	mu               sync.Mutex          // Protect session state concurrent access
+	systemPrompt     llm.ChatMessage     // System prompt at spawn time (maintain consistency, not rebuilt on subsequent sends)
+	cfg              *RunConfig          // RunConfig template (Messages=nil, reused for send/unload)
+	lastUsed         time.Time           // Last access time, for TTL cleanup
+	running          bool                // Whether a Run is currently executing
+	background       bool                // Whether background mode
+	cancelCurrent    context.CancelFunc  // Cancel function for current run (nil = idle)
 	parentKey        string              // parent session key (for cascade cleanup on unload/cancel)
-	lastError        string              // 最近一次错误
-	lastReply        string              // 最近一次回复摘要
-	task             string              // one-shot subagent 的任务描述（交互式为空）
+	lastError        string              // Most recent error
+	lastReply        string              // Most recent reply summary
+	task             string              // Task description for one-shot subagent (empty for interactive)
 }
 
-// interactiveSessionTTL 是 interactive SubAgent 会话的生存时间。
+// interactiveSessionTTL is the lifetime of interactive SubAgent sessions.
 const interactiveSessionTTL = 30 * time.Minute
 
-// cleanupExpiredSessions 清理所有过期的 interactive SubAgent 会话。
-// sync.Map 本身concurrency safe，调用方不需要持有任何额外的锁。
+// cleanupExpiredSessions cleans up all expired interactive SubAgent sessions.
+// sync.Map is inherently concurrency-safe, callers don't need any additional locks.
 func (a *Agent) cleanupExpiredSessions() {
 	now := time.Now()
 	a.interactiveSubAgents.Range(func(k, v interface{}) bool {
@@ -62,7 +62,7 @@ func (a *Agent) cleanupExpiredSessions() {
 			a.interactiveSubAgents.Delete(k)
 			return true
 		}
-		// 读取 lastUsed 需要加锁，避免与 SendToInteractiveSession 的写入竞争
+		// Reading lastUsed requires locking to avoid write race with SendToInteractiveSession
 		ia.mu.Lock()
 		lastUsed := ia.lastUsed
 		ia.mu.Unlock()
@@ -267,10 +267,10 @@ func (a *Agent) destroyInteractiveSession(key string) {
 	}
 }
 
-// interactiveKey 生成 interactive session 在 map 中的 key。
-// 使用 channel:chatID/roleName[:instance] 保证同一个 chat + role + instance 只有一个 session。
-// instance 为空时，行为与旧版一致（向后兼容）。
-// 设置 instance 后，同一个 role 可以创建多个独立的 interactive session。
+// interactiveKey generates the interactive session key in the map.
+// Uses channel:chatID/roleName[:instance] to ensure only one session per chat + role + instance.
+// When instance is empty, behavior is consistent with old version (backward compatible).
+// After setting instance, the same role can create multiple independent interactive sessions.
 func interactiveKey(channel, chatID, roleName, instance string) string {
 	key := channel + ":" + chatID + "/" + roleName
 	if instance != "" {
@@ -279,13 +279,13 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 	return key
 }
 
-// SpawnInteractiveSession 创建一个新的 interactive SubAgent 会话并执行首次任务。
-// 如果同名 role 的 session 已存在，返回 error。
+// SpawnInteractiveSession creates a new interactive SubAgent session and executes the first task.
+// If a session with the same role name already exists, returns error.
 //
-// 锁策略：interactiveSubAgents 使用 sync.Map，本身concurrency safe，无需额外mutex。
-// 使用 LoadOrStore 实现原子的 check-and-store，避免 spawn 竞态。
-// 使用占位符模式：Store 一个最小占位符，Run() 完成后替换为完整数据。
-// 任何错误路径都必须清理占位符，避免 session 卡死。
+// 锁Strategy:interactiveSubAgents 使用 sync.Map，本身concurrency safe，无需额外mutex。
+// Uses LoadOrStore for atomic check-and-store, avoiding spawn races.
+// Uses placeholder pattern: Store a minimal placeholder, replace with full data after Run() completes.
+// Any error path must clean up the placeholder to avoid session getting stuck.
 func (a *Agent) SpawnInteractiveSession(
 	ctx context.Context,
 	roleName string,
@@ -297,11 +297,11 @@ func (a *Agent) SpawnInteractiveSession(
 
 	key := interactiveKey(originChannel, originChatID, roleName, instance)
 
-	// --- 阶段 1：原子 check-and-store ---
-	// 先清理过期 session（sync.Map concurrency safe，不需要额外锁）
+	// --- Phase 1: Atomic check-and-store ---
+	// Clean expired sessions first (sync.Map is concurrency-safe, no additional lock needed)
 	a.cleanupExpiredSessions()
 
-	// 原子 check-and-store：如果 key 已存在，直接返回
+	// Atomic check-and-store: if key already exists, return directly
 	placeholder := &interactiveAgent{roleName: roleName, instance: instance, lastUsed: time.Now(), background: background}
 	// Track group membership for auto-cleanup on unload
 	if msg.Metadata != nil {
@@ -319,12 +319,12 @@ func (a *Agent) SpawnInteractiveSession(
 		}, nil
 	}
 
-	// --- 阶段 2：锁外构建 config（不需要锁） ---
+	// --- Phase 2: Build config outside lock (no lock needed) ---
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
 
 	cc := CallChainFromContext(ctx)
 	if err := cc.CanSpawn(roleName, a.maxSubAgentDepth); err != nil {
-		a.interactiveSubAgents.Delete(key) // 清理占位符
+		a.interactiveSubAgents.Delete(key) // Clean up placeholder
 		return &bus.OutboundMessage{Content: err.Error(), Error: err}, nil
 	}
 	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
@@ -373,10 +373,10 @@ func (a *Agent) SpawnInteractiveSession(
 		a.wireSubAgentCLIProgress(key, originChatID, &cfg)
 	}
 
-	// SubAgent 进度上报：优先使用父 Agent 注入的回调（避免并发 SubAgent 互相覆盖 patch），
-	// 否则 fallback 到直接发送消息（非并行场景）。
-	// 进度穿透：子 Agent 不仅上报自身进度，还注入回调到 subCtx 让更深层 SubAgent 也能递归穿透。
-	// Background 模式例外：bg subagent 的进度不应穿透到父 agent 的 TUI。
+	// SubAgent progress reporting: prefer parent Agent's injected callback (avoid concurrent SubAgents overwriting each other's patches),
+	// 否则 fallback 到直接Send消息（非并行场景）。
+	// Progress passthrough: child Agent not only reports its own progress, but also injects callbacks into subCtx for deeper SubAgents to recursively passthrough.
+	// Background mode exception: bg subagent's progress should not passthrough to parent agent's TUI.
 
 	// Override SendFunc to route outbound via agent session's channel/chatID.
 	// This makes agent session outbound go through the same pipeline as the main session.
@@ -399,11 +399,11 @@ func (a *Agent) SpawnInteractiveSession(
 				}
 			}
 		}
-		// 注意：无父引擎进度上下文时不使用 fallback sendMessage。
-		// 多个交互式 agent 共享 sessionMsgIDs（key=channel:chatID）会导致
-		// 后一个 agent 的进度 patch 到前一个 agent 的消息上（进度树串扰）。
+		// Note: don't use fallback sendMessage when there's no parent engine progress context.
+		// Multiple interactive agents sharing sessionMsgIDs (key=channel:chatID) causes
+		// later agent's progress to patch onto earlier agent's message (progress tree crosstalk).
 
-		// 注入穿透回调到 subCtx，让子 Agent 的 execOne 能获取并递归上报进度到父 Agent
+		// Inject passthrough callback into subCtx, letting child Agent's execOne obtain and recursively report progress to parent Agent
 		if cb, ok := SubAgentProgressFromContext(ctx); ok {
 			myDepth := cc.Depth() + 1
 			myPath := cc.Spawn(roleName).Chain
@@ -417,7 +417,7 @@ func (a *Agent) SpawnInteractiveSession(
 		}
 	}
 
-	// --- 阶段 3：执行 Run ---
+	// --- Phase 3: Execute Run ---
 	preLen := len(cfg.Messages)
 
 	if background {
@@ -619,8 +619,8 @@ func (a *Agent) SpawnInteractiveSession(
 	out := Run(subCtx, cfg)
 
 	if out.Error != nil {
-		a.destroyInteractiveSession(key) // 清理占位符 + tenant session
-		// BUG FIX: 在 Content 中附加错误标注，确保主 Agent LLM 能识别异常状态
+		a.destroyInteractiveSession(key) // Clean up placeholder + tenant session
+		// BUG FIX: Append error annotation in Content to ensure main Agent LLM can identify abnormal state
 		content := out.Content
 		if content == "" {
 			content = "⚠️ Interactive SubAgent 执行失败。"
@@ -630,7 +630,7 @@ func (a *Agent) SpawnInteractiveSession(
 		return out.OutboundMessage, nil
 	}
 
-	// --- 阶段 4：替换占位符为完整 session 数据 ---
+	// --- Phase 4: Replace placeholder with full session data ---
 	var newMessages []llm.ChatMessage
 	// Include the original user message (cfg.Messages[1]) so GetAgentSessionDump
 	// shows what the parent agent sent. cfg.Messages[0] is system prompt (stored separately).
@@ -653,7 +653,7 @@ func (a *Agent) SpawnInteractiveSession(
 	if len(cfg.Messages) > 0 {
 		ia.systemPrompt = cfg.Messages[0]
 	}
-	ia.cfg.Messages = nil // 避免与 ia.messages 重复（实际消息在 ia.messages 中）
+	ia.cfg.Messages = nil // Avoid duplication with ia.messages (actual messages are in ia.messages)
 	// Append final assistant reply so GetAgentSessionDumpByFullKey returns it.
 	// out.Messages (from Run) excludes the final text-only response — it's only
 	// in out.Content / buildOutput. Without this, switching away and back loses
@@ -692,7 +692,7 @@ func (a *Agent) SpawnInteractiveSession(
 	return out.OutboundMessage, nil
 }
 
-// SendToInteractiveSession 向已有的 interactive session 发送新消息。
+// SendToInteractiveSession 向已有的 interactive session Send新消息。
 func (a *Agent) SendToInteractiveSession(
 	ctx context.Context,
 	roleName string,
@@ -718,7 +718,7 @@ func (a *Agent) SendToInteractiveSession(
 		}, nil
 	}
 
-	// --- 阶段 1：锁内准备Configuration（读取 ia 数据）---
+	// --- Phase 1: Prepare config within lock (read ia data) ---
 	ia.mu.Lock()
 
 	// Guard: reject send while a background Run is in progress
@@ -738,7 +738,7 @@ func (a *Agent) SendToInteractiveSession(
 
 	ia.lastUsed = time.Now()
 
-	cfg := *ia.cfg // 浅拷贝 RunConfig 模板
+	cfg := *ia.cfg // Shallow copy RunConfig template
 	originUserID := cfg.OriginUserID
 	if originUserID == "" {
 		originUserID = cfg.SenderID
@@ -763,17 +763,17 @@ func (a *Agent) SendToInteractiveSession(
 
 	ia.mu.Unlock()
 
-	// --- 阶段 2：锁外构建上下文和执行 ---
-	// BUG FIX: 不能在持有 ia.mu 期间调用 Run()。
-	// Run() 内部如果生成嵌套交互式 agent（SubAgent 工具 → SpawnInteractiveSession），
-	// 新 agent 的 cleanupExpiredSessions() 会遍历所有 session 并尝试获取 ia.mu → 死锁。
+	// --- Phase 2: Build context and execute outside lock ---
+	// BUG FIX: Cannot call Run() while holding ia.mu.
+	// If Run() internally spawns a nested interactive agent (SubAgent tool → SpawnInteractiveSession),
+	// the new agent's cleanupExpiredSessions() iterates all sessions and tries to acquire ia.mu → deadlock.
 	cc := CallChainFromContext(ctx)
 	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
 
-	// BUG FIX: 必须使用当前 ctx 重建 ProgressNotifier 和进度穿透回调。
-	// ia.cfg 中存储的是 spawn 期间的旧闭包，捕获的 SubAgentProgressFromContext(ctx)
-	// 指向 spawn 时的 pi。send 期间子代理进度会通过旧闭包上报到旧 pi → 进度树串扰。
-	// Background 子代理不穿透进度到父 agent TUI。
+	// BUG FIX: Must rebuild ProgressNotifier and progress passthrough callback using current ctx.
+	// ia.cfg stores the old closure from spawn time, capturing SubAgentProgressFromContext(ctx)
+	// pointing to spawn-time pi. During send, sub-agent progress reports to old pi via old closure → progress tree crosstalk.
+	// Background sub-agents don't passthrough progress to parent agent TUI.
 	if !ia.background {
 		if cb, ok := SubAgentProgressFromContext(ctx); ok {
 			myDepth := cc.Depth() + 1
@@ -795,19 +795,19 @@ func (a *Agent) SendToInteractiveSession(
 				cb(detail)
 			})
 		} else {
-			// fallback：无父引擎进度上下文时，禁用直接 sendMessage 进度通知，
-			// 避免多个交互式 agent 竞争同一个 sessionMsgIDs 导致进度树串扰。
+			// fallback：无父引擎进度上下文时，禁用直接 sendMessage Progress notification，
+			// avoiding multiple interactive agents competing for the same sessionMsgIDs causing progress tree crosstalk.
 			cfg.ProgressNotifier = nil
 		}
 	} else {
-		// Background 模式：禁用进度穿透
+		// Background mode: disable progress passthrough
 		cfg.ProgressNotifier = nil
 	}
 
 	preLen := len(cfg.Messages)
 	out := Run(subCtx, cfg)
 
-	// --- 阶段 3：锁内写回结果 ---
+	// --- Phase 3: Write back results within lock ---
 	ia.mu.Lock()
 	defer ia.mu.Unlock()
 
@@ -821,7 +821,7 @@ func (a *Agent) SendToInteractiveSession(
 		return out.OutboundMessage, nil
 	}
 
-	// 追加新增对话消息到 ia.messages
+	// Append new conversation messages to ia.messages
 	// Include the user message sent via action=send so GetAgentSessionDump shows it.
 	// cfg.Messages[preLen-1] is the last element before Run, which is the user message
 	// appended at line ~670 (newMessages = append(..., llm.NewUserMessage(msg.Content)))
@@ -1095,8 +1095,8 @@ func (a *Agent) cancelChildSessions(parentKey string) {
 	}
 }
 
-// UnloadInteractiveSession 结束 interactive session：巩固记忆并清理。
-// instance 为空时行为与旧版一致（向后兼容）。
+// UnloadInteractiveSession ends interactive session: consolidate memory and cleanup.
+// When instance is empty, behavior is consistent with old version (backward compatible).
 func (a *Agent) UnloadInteractiveSession(
 	ctx context.Context,
 	roleName string,
@@ -1117,7 +1117,7 @@ func (a *Agent) UnloadInteractiveSession(
 	}
 
 	ia.mu.Lock()
-	// 防护：占位符尚未被替换为完整数据
+	// Guard: placeholder hasn't been replaced with full data
 	if ia.cfg == nil {
 		ia.mu.Unlock()
 		a.interactiveSubAgents.Delete(key)
@@ -1135,20 +1135,20 @@ func (a *Agent) UnloadInteractiveSession(
 	// Cascade: cancel and remove all child sessions spawned by this one
 	a.cancelChildSessions(key)
 
-	// 巩固记忆
+	// Consolidate memory
 	if cfg.Memory != nil && len(messages) > 0 {
 		a.consolidateSubAgentMemory(ctx, cfg, messages, "interactive session cleanup", roleName, cfg.AgentID)
 	}
 
-	// 清理
+	// Cleanup
 	a.destroyInteractiveSession(key)
 
 	log.WithField("role", roleName).Info("Interactive session unloaded")
 	return nil
 }
 
-// buildParentToolContext 从 InboundMessage 构建 SubAgent 需要的 parent ToolContext。
-// 与 spawnSubAgent 中的 parentCtx 构建保持一致。
+// buildParentToolContext builds the parent ToolContext needed by SubAgent from InboundMessage.
+// Consistent with parentCtx construction in spawnSubAgent.
 func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, senderID string, msg bus.InboundMessage) *tools.ToolContext {
 	workspaceRoot := a.workspaceRoot(senderID)
 	if !a.isRemoteUser(senderID) {
@@ -1173,8 +1173,8 @@ func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, sen
 		AgentID:             msg.ParentAgentID,
 		Channel:             channel,
 		ChatID:              chatID,
-		SenderID:            msg.ParentAgentID, // SubAgent 的父上下文：SenderID = 父 Agent ID
-		OriginUserID:        senderID,          // 原始用户 ID
+		SenderID:            msg.ParentAgentID, // SubAgent's parent context: SenderID = parent Agent ID
+		OriginUserID:        senderID,          // Original user ID
 		SenderName:          msg.SenderName,
 	}
 	// Restore parent's CWD for SubAgent directory inheritance
@@ -1198,8 +1198,8 @@ func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, sen
 	return tc
 }
 
-// GetActiveInteractiveRoles 返回当前 session 下所有活跃的 interactive SubAgent role 名（含 instance 标识）。
-// 返回格式："roleName" 或 "roleName:instance"。
+// GetActiveInteractiveRoles returns all active interactive SubAgent role names in the current session (including instance identifier).
+// Return format: "roleName" or "roleName:instance".
 func (a *Agent) GetActiveInteractiveRoles(channel, chatID string) []string {
 	var roles []string
 	prefix := channel + ":" + chatID + "/"
@@ -1219,11 +1219,11 @@ func (a *Agent) GetActiveInteractiveRoles(channel, chatID string) []string {
 	return roles
 }
 
-// CleanupInteractiveSessions 清理指定 session 下所有 interactive sessions。
+// CleanupInteractiveSessions Cleanup指定 session 下所有 interactive sessions。
 func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID string) {
 	keysToClean := a.GetActiveInteractiveRoles(channel, chatID)
 	for _, key := range keysToClean {
-		// key 格式: "roleName" 或 "roleName:instance"
+		// Key format: "roleName" or "roleName:instance"
 		role, instance, hasInstance := strings.Cut(key, ":")
 		if !hasInstance {
 			instance = ""
@@ -1238,8 +1238,8 @@ func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID 
 	}
 }
 
-// resolveOriginIDs 从 InboundMessage 中提取 origin channel/chatID/senderID，
-// 带有 fallback 到顶层字段的逻辑。
+// resolveOriginIDs extracts origin channel/chatID/senderID from InboundMessage,
+// with fallback logic to top-level fields.
 func resolveOriginIDs(msg bus.InboundMessage) (channel, chatID, sender string) {
 	channel = msg.OriginChannel()
 	chatID = msg.OriginChatID()

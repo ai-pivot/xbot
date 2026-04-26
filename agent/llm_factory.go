@@ -13,22 +13,22 @@ import (
 	"xbot/storage/sqlite"
 )
 
-// LLMFactory 管理用户自定义 LLM 客户端的创建和缓存
+// LLMFactory manages creation and caching of user-custom LLM clients
 type LLMFactory struct {
 	configSvc           *sqlite.UserLLMConfigService
-	subscriptionSvc     *sqlite.LLMSubscriptionService     // 多订阅管理 (DB-backed)
+	subscriptionSvc     *sqlite.LLMSubscriptionService     // Multi-subscription management (DB-backed)
 	configSubsFn        func() []config.SubscriptionConfig // CLI config.json subscriptions (non-DB)
-	settingsSvc         *SettingsService                   // 用于读写用户并发Configuration
+	settingsSvc         *SettingsService                   // For reading/writing user concurrency configuration
 	defaultLLM          llm.LLM
 	defaultModel        string
 	defaultThinkingMode string
 	tierModels          config.LLMConfig
-	retryConfig         llm.RetryConfig // 用于包装 createClient 创建的裸客户端
+	retryConfig         llm.RetryConfig // For wrapping bare clients created by createClient
 
-	// LLMSemaphoreManager 管理 per-tenant LLM 并发信号量
+	// LLMSemaphoreManager manages per-tenant LLM concurrency semaphore
 	llmSemManager *llm.LLMSemaphoreManager
 
-	// 缓存用户的 LLM 客户端
+	// Cache user's LLM clients
 	mu              sync.RWMutex
 	clients         map[string]llm.LLM // senderID -> LLM client
 	models          map[string]string  // senderID -> model name
@@ -36,12 +36,12 @@ type LLMFactory struct {
 	maxOutputTokens map[string]int     // senderID -> max_output_tokens
 	thinkingModes   map[string]string  // senderID -> thinking_mode
 
-	// hasCustomLLMCache 缓存用户是否有自定义 LLM Configuration（避免频繁查数据库）
-	// 使用 sync.Map 保证concurrency safe
+	// hasCustomLLMCache Cache whether user has custom LLM configuration (avoid frequent DB queries)
+	// Uses sync.Map to ensure concurrency safety
 	hasCustomLLMCache sync.Map
 }
 
-// NewLLMFactory 创建 LLM 工厂
+// NewLLMFactory creates LLM factory
 func NewLLMFactory(configSvc *sqlite.UserLLMConfigService, defaultLLM llm.LLM, defaultModel string) *LLMFactory {
 	return &LLMFactory{
 		configSvc:       configSvc,
@@ -52,7 +52,7 @@ func NewLLMFactory(configSvc *sqlite.UserLLMConfigService, defaultLLM llm.LLM, d
 		maxContexts:     make(map[string]int),
 		maxOutputTokens: make(map[string]int),
 		thinkingModes:   make(map[string]string),
-		// hasCustomLLMCache 使用零值 sync.Map，无需初始化
+		// hasCustomLLMCache uses zero-value sync.Map, no initialization needed
 	}
 }
 
@@ -78,10 +78,10 @@ func (f *LLMFactory) SetRetryConfig(cfg llm.RetryConfig) {
 	f.mu.Unlock()
 }
 
-// GetLLM 获取用户的 LLM 客户端，如果没有自定义Configuration则返回默认客户端
-// 返回: (LLM客户端, 模型名, maxContext, thinkingMode)
+// GetLLM gets user's LLM client, returns default client if no custom configuration
+// Returns: (LLM client, model name, maxContext, thinkingMode)
 //
-// 查找优先级:
+// Lookup priority:
 // GetLLM returns the LLM client for the given user. Lookup order:
 //  1. In-memory cache (from a previous GetLLM/SwitchSubscription call)
 //  2. subscriptionSvc (user_llm_subscriptions table, default subscription)
@@ -162,9 +162,9 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 	return f.GetLLM(senderID)
 }
 
-// HasCustomLLM 检查用户是否有自定义 LLM Configuration
+// HasCustomLLM checks if user has custom LLM configuration
 func (f *LLMFactory) HasCustomLLM(senderID string) bool {
-	// 先检查缓存
+	// Check cache first
 	if val, ok := f.hasCustomLLMCache.Load(senderID); ok {
 		if b, ok := val.(bool); ok {
 			return b
@@ -172,7 +172,7 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 		return false
 	}
 
-	// 再检查客户端缓存
+	// Then check client cache
 	f.mu.RLock()
 	if _, ok := f.clients[senderID]; ok {
 		f.mu.RUnlock()
@@ -181,7 +181,7 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 	}
 	f.mu.RUnlock()
 
-	// 从数据库检查旧单Configuration
+	// Check old single configuration from database
 	if f.configSvc != nil {
 		cfg, err := f.configSvc.GetConfig(senderID)
 		if err == nil && cfg != nil {
@@ -192,7 +192,7 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 			}
 		}
 	}
-	// 再检查多订阅系统
+	// Then check multi-subscription system
 	if f.subscriptionSvc != nil {
 		sub, err := f.subscriptionSvc.GetDefault(senderID)
 		if err == nil && sub != nil && sub.BaseURL != "" && sub.APIKey != "" {
@@ -204,7 +204,7 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 	return false
 }
 
-// InvalidateCustomLLMCache 使指定用户的自定义 LLM 缓存失效
+// InvalidateCustomLLMCache invalidates the specified user's custom LLM cache
 func (f *LLMFactory) InvalidateCustomLLMCache(senderID string) {
 	f.hasCustomLLMCache.Delete(senderID)
 }
@@ -332,8 +332,8 @@ func (f *LLMFactory) SetUserThinkingMode(senderID, mode string) {
 	f.mu.Unlock()
 }
 
-// SetDefaults 更新默认 LLM 客户端和模型名。
-// 用于 setup/settings 面板修改全局 LLM Configuration后立即生效。
+// SetDefaults updates the default LLM client and model name.
+// For immediate effect after modifying global LLM configuration via setup/settings panel.
 // Wraps the new defaultLLM with RetryLLM if retryConfig is set.
 func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	f.mu.Lock()
@@ -345,7 +345,7 @@ func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	}
 	f.defaultLLM = newLLM
 	f.defaultModel = newModel
-	// 清除所有用户缓存，让后续 GetLLM 重新创建客户端
+	// Clear all user caches, let subsequent GetLLM recreate clients
 	f.clients = make(map[string]llm.LLM)
 	f.models = make(map[string]string)
 	f.maxContexts = make(map[string]int)
@@ -404,11 +404,11 @@ func (f *LLMFactory) ClearProxyLLM(senderID string) {
 	delete(f.thinkingModes, senderID)
 }
 
-// createClient 根据Configuration创建 LLM 客户端，Configuration无效时返回 nil。
-// 创建的裸客户端会被 RetryLLM 包装，确保 SubAgent 和订阅客户端
-// 同样享有 429/5xx exponential backoff重试能力。
+// createClient creates LLM client based on configuration, returns nil if configuration is invalid.
+// Bare clients created are wrapped by RetryLLM, ensuring SubAgent and subscription clients
+// also enjoy 429/5xx exponential backoff retry capability.
 func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
-	// 检查必要字段
+	// Check required fields
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return nil, ""
 	}
@@ -429,7 +429,7 @@ func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 		})
 
 	default:
-		// 其他所有 provider（openai, deepseek, siliconflow 等）都使用 OpenAI 兼容 API
+		// All other providers (openai, deepseek, siliconflow, etc.) use OpenAI-compatible API
 		client = llm.NewOpenAILLM(llm.OpenAIConfig{
 			BaseURL:        cfg.BaseURL,
 			APIKey:         cfg.APIKey,
@@ -440,7 +440,7 @@ func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 		})
 	}
 
-	// 包装 RetryLLM：确保所有通过 LLMFactory 创建的客户端都有重试能力
+	// Wrap with RetryLLM: ensure all clients created via LLMFactory have retry capability
 	f.mu.RLock()
 	retryCfg := f.retryConfig
 	f.mu.RUnlock()
@@ -451,9 +451,9 @@ func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 	return client, model
 }
 
-// Invalidate 使用户的 LLM 客户端缓存失效（Configuration更新后调用）。
-// 同时清除 user-level key（senderID）和所有 per-chat key（senderID:chatID），
-// 确保 GetLLMForChat 不会返回过期的 per-chat 缓存。
+// Invalidate invalidates user's LLM client cache (called after configuration update).
+// Also clears user-level key (senderID) and all per-chat keys (senderID:chatID),
+// ensuring GetLLMForChat won't return stale per-chat cache.
 func (f *LLMFactory) Invalidate(senderID string) {
 	f.mu.Lock()
 	prefix := senderID + ":"
@@ -469,7 +469,7 @@ func (f *LLMFactory) Invalidate(senderID string) {
 	f.mu.Unlock()
 }
 
-// InvalidateAll 使所有缓存失效
+// InvalidateAll invalidates all caches
 func (f *LLMFactory) InvalidateAll() {
 	f.mu.Lock()
 	f.clients = make(map[string]llm.LLM)
@@ -480,18 +480,18 @@ func (f *LLMFactory) InvalidateAll() {
 	f.mu.Unlock()
 }
 
-// SetSettingsService 注入 SettingsService（用于读写用户并发Configuration）。
-// 必须在 Agent 初始化后调用，因为 SettingsService 创建依赖于 Agent。
+// SetSettingsService 注入 SettingsService（For reading/writing user concurrency configuration）。
+// Must be called after Agent initialization, because SettingsService creation depends on Agent.
 func (f *LLMFactory) SetSettingsService(svc *SettingsService) {
 	f.settingsSvc = svc
 }
 
-// SetLLMSemaphoreManager 注入 LLMSemaphoreManager。
+// SetLLMSemaphoreManager injects LLMSemaphoreManager.
 func (f *LLMFactory) SetLLMSemaphoreManager(mgr *llm.LLMSemaphoreManager) {
 	f.llmSemManager = mgr
 }
 
-// LLMSemaphoreManager 返回 LLMSemaphoreManager 实例。
+// LLMSemaphoreManager returns the LLMSemaphoreManager instance.
 func (f *LLMFactory) LLMSemaphoreManager() *llm.LLMSemaphoreManager {
 	return f.llmSemManager
 }
@@ -540,8 +540,8 @@ func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 	return result
 }
 
-// GetLLMConcurrency 读取用户Configuration的个人 LLM 并发上限。
-// 未Configuration时使用默认值 DefaultLLMConcurrencyPersonal。
+// GetLLMConcurrency reads the user's personal LLM concurrency limit from configuration.
+// Uses default DefaultLLMConcurrencyPersonal when not configured.
 func (f *LLMFactory) GetLLMConcurrency(senderID string) int {
 	if f.settingsSvc == nil {
 		return llm.DefaultLLMConcurrencyPersonal
@@ -553,7 +553,7 @@ func (f *LLMFactory) GetLLMConcurrency(senderID string) int {
 	return parseOrDefault(settings["llm_max_concurrent_personal"], llm.DefaultLLMConcurrencyPersonal)
 }
 
-// SetLLMConcurrency 设置用户的个人 LLM 并发上限Configuration。
+// SetLLMConcurrency sets the user's personal LLM concurrency limit configuration.
 func (f *LLMFactory) SetLLMConcurrency(senderID string, personal int) error {
 	if f.settingsSvc == nil {
 		return fmt.Errorf("settings service not available")
@@ -561,7 +561,7 @@ func (f *LLMFactory) SetLLMConcurrency(senderID string, personal int) error {
 	return f.settingsSvc.SetSetting("feishu", senderID, "llm_max_concurrent_personal", fmt.Sprintf("%d", personal))
 }
 
-// parseOrDefault 解析字符串为 int，失败时返回默认值。
+// parseOrDefault parses string as int, returns default on failure.
 func parseOrDefault(s string, defaultVal int) int {
 	if s == "" {
 		return defaultVal
@@ -634,15 +634,15 @@ func (f *LLMFactory) GetMaxOutputTokens(senderID string) int {
 	return 0
 }
 
-// GetLLMForModel 获取指定模型的 LLM 客户端，用于 SubAgent 使用不同于主 Agent 的模型。
+// GetLLMForModel gets LLM client for a specified model, for SubAgent using a different model than main Agent.
 //
 // 查找优先级：
-//  1. 在用户所有订阅中查找 Model 字段精确匹配 targetModel 的订阅
-//  2. 使用当前活跃订阅的凭证 + targetModel
-//  3. 使用任意订阅的凭证 + targetModel（优先 Provider 匹配）
-//  4. Fallback 到主 Agent 的当前 LLM（忽略 targetModel）
+//  1. Find subscription with Model field exactly matching targetModel among all user subscriptions
+//  2. Use current active subscription's credentials + targetModel
+//  3. Use any subscription's credentials + targetModel (prefer Provider match)
+//  4. Fallback to main Agent's current LLM (ignore targetModel)
 //
-// 返回: (LLM客户端, 实际模型名, maxContext, thinkingMode, 是否使用了非默认模型)
+// Returns: (LLM client, actual model name, maxContext, thinkingMode, whether non-default model was used)
 func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, int, string, bool) {
 	resolvedModel, _ := f.resolveTierModel(targetModel)
 	if resolvedModel == "" {
@@ -850,7 +850,7 @@ func configSubToLLMSubscription(cs config.SubscriptionConfig) *sqlite.LLMSubscri
 	}
 }
 
-// createClientFromSub 从订阅创建 LLM 客户端，使用指定的模型名（而非订阅的默认模型）
+// createClientFromSub creates LLM client from subscription, using specified model name (not subscription's default model)
 func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model string) llm.LLM {
 	if sub.BaseURL == "" || sub.APIKey == "" {
 		return nil
@@ -931,8 +931,8 @@ func (f *LLMFactory) tierModel(tiers config.LLMConfig, tier string) string {
 	return ""
 }
 
-// guessProvider 根据模型名猜测 provider。
-// 返回空字符串表示无法猜测。
+// guessProvider guesses provider based on model name.
+// Returns empty string if unable to guess.
 func guessProvider(model string) string {
 	switch {
 	case strings.Contains(model, "claude"):

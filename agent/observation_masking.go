@@ -17,44 +17,44 @@ import (
 	log "xbot/logger"
 )
 
-// MaskedObservation 存储一条被遮蔽的 tool result 的完整信息。
+// MaskedObservation stores the complete information of a masked tool result.
 type MaskedObservation struct {
 	ID         string    `json:"id"`
 	ToolName   string    `json:"tool_name"`
 	Arguments  string    `json:"arguments"`
-	Content    string    `json:"content"` // 完整的原始 tool result
+	Content    string    `json:"content"` // Complete original tool result
 	MaskedAt   time.Time `json:"masked_at"`
-	MessageIdx int       `json:"message_idx"` // 在 messages slice 中的原始位置
+	MessageIdx int       `json:"message_idx"` // Original position in messages slice
 }
 
 const (
-	defaultMaxEntries = 200       // 默认最大条数
-	defaultMaxChars   = 2_000_000 // 默认最大存储字符数（~2MB）
+	defaultMaxEntries = 200       // Default max entries
+	defaultMaxChars   = 2_000_000 // Default max stored characters (~2MB)
 
 	maskedEntryPrefix  = "📂 [masked:"  // Prefix identifying masked tool result entries
 	offloadEntryPrefix = "📂 [offload:" // Prefix identifying offloaded tool result entries
 )
 
-// ObservationMaskStore 管理 observation masking 的存储和召回。
-// 零成本压缩策略：遮蔽旧 tool result，不发给 LLM，但完整保留可通过工具召回。
-// 双重容量限制：maxSize（条数）+ maxChars（总字符数），任一超限则淘汰最旧条目。
+// ObservationMaskStore manages observation masking storage and recall.
+// Zero-cost compression strategy: mask old tool results, don't send to LLM, but fully retain for tool-based recall.
+// Dual capacity limit: maxSize (entry count) + maxChars (total characters), evicts oldest entries when either is exceeded.
 //
-// 磁盘持久化：每个 mask entry 存为 {storeDir}/{id}.json，重启后可恢复。
-// Recall 时优先内存查找，miss 则读磁盘。CleanOldEntries 时同步删除磁盘文件。
+// Disk persistence: each mask entry stored as {storeDir}/{id}.json, recoverable after restart.
+// Recall checks memory first, reads disk on miss. CleanOldEntries synchronously deletes disk files.
 type ObservationMaskStore struct {
 	mu         sync.RWMutex
-	entries    []MaskedObservation // 按 mask 顺序存储
-	maxSize    int                 // 最大存储条数
-	maxChars   int                 // 最大存储总字符数
-	totalChars int                 // 当前总字符数
-	baseDir    string              // 磁盘存储基目录（baseDir/{tenantID}）
-	storeDir   string              // 当前租户的磁盘存储目录（空 = 纯内存模式）
-	tenantID   int64               // 当前租户 ID
-	loaded     bool                // 是否已从磁盘加载
+	entries    []MaskedObservation // Stored in mask order
+	maxSize    int                 // Max stored entries
+	maxChars   int                 // Max total stored characters
+	totalChars int                 // Current total characters
+	baseDir    string              // Disk storage base directory (baseDir/{tenantID})
+	storeDir   string              // Current tenant's disk storage directory (empty = memory-only mode)
+	tenantID   int64               // Current tenant ID
+	loaded     bool                // Whether loaded from disk
 }
 
-// NewObservationMaskStore 创建 ObservationMaskStore。
-// storeDir 非空时启用磁盘持久化。
+// NewObservationMaskStore creates ObservationMaskStore.
+// Enables disk persistence when storeDir is non-empty.
 func NewObservationMaskStore(maxSize int, storeDir ...string) *ObservationMaskStore {
 	if maxSize <= 0 {
 		maxSize = defaultMaxEntries
@@ -69,7 +69,7 @@ func NewObservationMaskStore(maxSize int, storeDir ...string) *ObservationMaskSt
 	return s
 }
 
-// SetStoreDir 设置固定磁盘存储目录（兼容旧调用/测试）。
+// SetStoreDir sets a fixed disk storage directory (backward compatible with old calls/tests).
 func (s *ObservationMaskStore) SetStoreDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,7 +81,7 @@ func (s *ObservationMaskStore) SetStoreDir(dir string) {
 	s.loaded = false
 }
 
-// SetBaseDir 设置按租户分片的基目录：baseDir/{tenantID}/。
+// SetBaseDir sets the tenant-sharded base directory: baseDir/{tenantID}/.
 func (s *ObservationMaskStore) SetBaseDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,7 +96,7 @@ func (s *ObservationMaskStore) SetBaseDir(dir string) {
 	s.loaded = false
 }
 
-// SetTenantID 切换当前租户目录到 {baseDir}/{tenantID}/。
+// SetTenantID switches the current tenant directory to {baseDir}/{tenantID}/.
 func (s *ObservationMaskStore) SetTenantID(tenantID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,7 +118,7 @@ func (s *ObservationMaskStore) SetTenantID(tenantID int64) {
 	s.loaded = false
 }
 
-// ensureLoaded 首次访问时从磁盘目录加载所有 mask entries。
+// ensureLoaded loads all mask entries from disk directory on first access.
 func (s *ObservationMaskStore) ensureLoaded() {
 	if s.loaded || s.storeDir == "" {
 		return
@@ -158,7 +158,7 @@ func (s *ObservationMaskStore) ensureLoaded() {
 		s.totalChars += len([]rune(obs.Content))
 	}
 
-	// 按时间排序（保证淘汰顺序正确）
+	// Sort by time (ensure correct eviction order)
 	sort.Slice(s.entries, func(i, j int) bool {
 		return s.entries[i].MaskedAt.Before(s.entries[j].MaskedAt)
 	})
@@ -168,7 +168,7 @@ func (s *ObservationMaskStore) ensureLoaded() {
 	}
 }
 
-// persistEntry 将单个 entry 写入磁盘。
+// persistEntry writes a single entry to disk.
 func (s *ObservationMaskStore) persistEntry(entry MaskedObservation) {
 	if s.storeDir == "" {
 		return
@@ -188,7 +188,7 @@ func (s *ObservationMaskStore) persistEntry(entry MaskedObservation) {
 	}
 }
 
-// deleteEntryFile 删除磁盘上的 entry 文件。
+// deleteEntryFile deletes the entry file on disk.
 func (s *ObservationMaskStore) deleteEntryFile(id string) {
 	if s.storeDir == "" {
 		return
@@ -197,7 +197,7 @@ func (s *ObservationMaskStore) deleteEntryFile(id string) {
 	os.Remove(fp)
 }
 
-// generateMaskID 生成 mask ID: "mk_" + 8位随机 hex。
+// generateMaskID generates mask ID: "mk_" + 8 random hex chars.
 func generateMaskID() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
@@ -209,8 +209,8 @@ func generateMaskID() string {
 	return "mk_" + hex.EncodeToString(b)
 }
 
-// Mask 遮蔽一条 tool result，存储完整内容并返回占位符文本。
-// 占位符格式: 📂 [masked:mk_xxxx] ToolName(args_preview) — N chars — 结果已遮蔽，使用 recall_masked 可查看完整内容
+// Mask masks a tool result, stores complete content and returns placeholder text.
+// Placeholder format: 📂 [masked:mk_xxxx] ToolName(args_preview) — N chars — Result masked, use recall_masked to view full content
 func (s *ObservationMaskStore) Mask(toolName, arguments, content string, messageIdx int) (MaskedObservation, string) {
 	s.ensureLoaded()
 	id := generateMaskID()
@@ -226,7 +226,7 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 双重容量限制：超条数或超字符数时，淘汰最旧条目
+	// Dual capacity limit: evict oldest entries when entry count or character count is exceeded
 	contentLen := len([]rune(content))
 	evictedCount := 0
 	for len(s.entries) >= s.maxSize || (s.totalChars+contentLen > s.maxChars && len(s.entries) > 0) {
@@ -234,10 +234,10 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 		s.totalChars -= len([]rune(evicted.Content))
 		s.entries = s.entries[1:]
 		evictedCount++
-		// 异步删除磁盘文件（不需要等，淘汰是低频操作）
+		// Async delete disk files (no need to wait, eviction is a low-frequency operation)
 		go s.deleteEntryFile(evicted.ID)
 	}
-	// 重新分配 slice，释放被淘汰条目占用的底层数组内存
+	// Reallocate slice, release underlying array memory of evicted entries
 	if evictedCount > 0 {
 		newEntries := make([]MaskedObservation, len(s.entries))
 		copy(newEntries, s.entries)
@@ -246,10 +246,10 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 	s.entries = append(s.entries, entry)
 	s.totalChars += contentLen
 
-	// 持久化到磁盘
+	// Persist to disk
 	s.persistEntry(entry)
 
-	// 生成占位符
+	// Generate placeholder
 	argsPreview := arguments
 	if len([]rune(argsPreview)) > 80 {
 		argsPreview = string([]rune(argsPreview)[:80]) + "..."
@@ -260,8 +260,8 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 	return entry, placeholder
 }
 
-// Recall 按 ID 召回已遮蔽的完整 tool result。
-// 优先内存查找，miss 则从磁盘加载。
+// Recall recalls a masked complete tool result by ID.
+// Memory lookup first, load from disk on miss.
 func (s *ObservationMaskStore) Recall(id string) (MaskedObservation, error) {
 	s.ensureLoaded()
 
@@ -274,14 +274,14 @@ func (s *ObservationMaskStore) Recall(id string) (MaskedObservation, error) {
 	}
 	s.mu.RUnlock()
 
-	// 内存未找到，尝试从磁盘读取
+	// Not found in memory, try reading from disk
 	if s.storeDir != "" {
 		fp := filepath.Join(s.storeDir, id+".json")
 		data, err := os.ReadFile(fp)
 		if err == nil {
 			var obs MaskedObservation
 			if jsonErr := json.Unmarshal(data, &obs); jsonErr == nil {
-				// 恢复到内存
+				// Restore to memory
 				s.mu.Lock()
 				s.entries = append(s.entries, obs)
 				s.totalChars += len([]rune(obs.Content))
@@ -294,7 +294,7 @@ func (s *ObservationMaskStore) Recall(id string) (MaskedObservation, error) {
 	return MaskedObservation{}, fmt.Errorf("masked observation %s not found", id)
 }
 
-// List 列出所有已遮蔽的 observation（按 mask 时间倒序）。
+// List lists all masked observations (in reverse mask time order).
 func (s *ObservationMaskStore) List() []MaskedObservation {
 	s.ensureLoaded()
 
@@ -306,7 +306,7 @@ func (s *ObservationMaskStore) List() []MaskedObservation {
 	return result
 }
 
-// Size 返回当前存储的 observation 数量。
+// Size returns the current number of stored observations.
 func (s *ObservationMaskStore) Size() int {
 	s.ensureLoaded()
 
@@ -315,21 +315,21 @@ func (s *ObservationMaskStore) Size() int {
 	return len(s.entries)
 }
 
-// Clear 清空所有已遮蔽的 observation（内存 + 磁盘）。
+// Clear clears all masked observations (memory + disk).
 func (s *ObservationMaskStore) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = nil
 	s.totalChars = 0
-	// 删除磁盘文件
+	// Delete disk files
 	if s.storeDir != "" {
 		os.RemoveAll(s.storeDir)
 		os.MkdirAll(s.storeDir, 0o755)
 	}
 }
 
-// CleanOldEntries 删除 MaskedAt 在 cutoff 之前的记录。
-// 用于压缩后清理：压缩点之前的 masked observation 已被摘要替代，不再需要召回。
+// CleanOldEntries deletes records with MaskedAt before cutoff.
+// For post-compression cleanup: masked observations before the compression point have been replaced by summaries, no longer need recall.
 func (s *ObservationMaskStore) CleanOldEntries(cutoff time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -339,7 +339,7 @@ func (s *ObservationMaskStore) CleanOldEntries(cutoff time.Time) int {
 		if e.MaskedAt.Before(cutoff) {
 			s.totalChars -= len([]rune(e.Content))
 			removedCount++
-			// 删除磁盘文件
+			// Delete disk files
 			go s.deleteEntryFile(e.ID)
 		} else {
 			kept = append(kept, e)
@@ -356,8 +356,8 @@ func (s *ObservationMaskStore) CleanOldEntries(cutoff time.Time) int {
 	return removedCount
 }
 
-// CleanStale 清理超过指定天数的残留 mask 数据（磁盘文件）。
-// 用于定期清理。
+// CleanStale cleans up stale mask data older than specified days (disk files).
+// For periodic cleanup.
 func (s *ObservationMaskStore) CleanStale(maxAgeDays int) {
 	if maxAgeDays <= 0 {
 		return
@@ -419,11 +419,11 @@ func (s *ObservationMaskStore) CleanStale(maxAgeDays int) {
 	}
 }
 
-// --- tools.MaskedRecallStore 接口实现 ---
-// 这些方法让 ObservationMaskStore 满足 tools 包的 MaskedRecallStore 接口。
-// 不需要导入 tools 包（Go 鸭子类型），只需方法签名匹配。
+// --- tools.MaskedRecallStore interface implementation ---
+// These methods make ObservationMaskStore satisfy the tools package's MaskedRecallStore interface.
+// No need to import tools package (Go duck typing), just need matching method signatures.
 
-// RecallMasked 按 ID 召回已遮蔽的内容。
+// RecallMasked recalls masked content by ID.
 func (s *ObservationMaskStore) RecallMasked(id string) (string, string, error) {
 	obs, err := s.Recall(id)
 	if err != nil {
@@ -436,7 +436,7 @@ func (s *ObservationMaskStore) RecallMasked(id string) (string, string, error) {
 	return fmt.Sprintf("%s(%s)", obs.ToolName, argsPreview), obs.Content, nil
 }
 
-// ListMasked 列出所有已遮蔽的 observation（摘要信息）。
+// ListMasked lists all masked observations (summary info).
 func (s *ObservationMaskStore) ListMasked() []map[string]interface{} {
 	entries := s.List()
 	result := make([]map[string]interface{}, len(entries))
@@ -455,8 +455,8 @@ func (s *ObservationMaskStore) ListMasked() []map[string]interface{} {
 	return result
 }
 
-// calculateKeepGroups 根据 token 用量动态计算保留的 tool group 数量。
-// 上下文越充裕，保留越多；上下文紧张时才减少。
+// calculateKeepGroups dynamically calculates the number of tool groups to keep based on token usage.
+// More context available → keep more; reduce only when context is tight.
 func calculateKeepGroups(totalTokens, maxTokens int) int {
 	ratio := float64(totalTokens) / float64(maxTokens)
 	switch {
@@ -471,23 +471,23 @@ func calculateKeepGroups(totalTokens, maxTokens int) int {
 	}
 }
 
-// MaskedEntry 记录一条被 mask 的消息的位置和新内容，用于持久化回 Session。
+// MaskedEntry records the position and new content of a masked message, for persisting back to Session.
 type MaskedEntry struct {
-	MessageIndex int    // 在 messages slice 中的位置
-	Content      string // 替换后的 content（占位符或空字符串）
+	MessageIndex int    // Position in messages slice
+	Content      string // Replaced content (placeholder or empty string)
 }
 
-// MaskOldToolResults 遮蔽 messages 中较旧的 tool result，返回修改后的 messages slice。
+// MaskOldToolResults masks older tool results in messages, returns modified messages slice.
 //
-// 策略：
-//   - 保留最近的 keepGroups 个完整 tool group
-//   - 活跃文件相关的 tool group 不遮蔽（即使超过 keepGroups）
-//   - 短内容（<300 chars）不遮蔽
-//   - 连续纯工具组（assistant 无思考文本）折叠为一对消息
-//   - 按 token 收益排序遮蔽（内容最长的优先）
-//   - assistant 消息的思考内容保留（不 strip think blocks）
+// Strategy:
+//   - Keep the most recent keepGroups complete tool groups
+//   - Tool groups related to active files are not masked (even if exceeding keepGroups)
+//   - Short content (<300 chars) is not masked
+//   - Consecutive pure tool groups (assistant has no thinking text) are folded into a pair of messages
+//   - Sort masking by token benefit (longest content first)
+//   - Assistant message thinking content is preserved (don't strip think blocks)
 //
-// 返回：修改后的 messages（新 slice），实际遮蔽数量，被修改的消息条目（用于持久化）。
+// Returns: modified messages (new slice), actual masked count, modified message entries (for persistence).
 func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore, keepGroups int) ([]llm.ChatMessage, int, []MaskedEntry) {
 	if keepGroups <= 0 {
 		keepGroups = 3
@@ -511,36 +511,36 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 		return messages, 0, nil
 	}
 
-	// 提取活跃文件（最近 3 轮工具调用涉及的文件路径）
+	// Extract active files (file paths involved in the last 3 rounds of tool calls)
 	activeFiles := ExtractActiveFiles(messages, 3)
 	activePaths := make(map[string]bool)
 	for _, af := range activeFiles {
 		activePaths[af.Path] = true
 	}
 
-	// 收集可 mask 的候选组，排除活跃文件组
+	// Collect maskable candidate groups, excluding active file groups
 	type maskCandidate struct {
 		groupIdx int
 		grp      toolGroup
-		chars    int // group 中所有 tool result 的总字符数
+		chars    int // Total character count of all tool results in group
 	}
 	var candidates []maskCandidate
 
 	for g := range maskCount {
 		grp := groups[g]
 
-		// 检查是否涉及活跃文件
+		// Check if involves active files
 		if isGroupActiveFile(messages, grp, activePaths) {
 			continue
 		}
 
-		// 计算该 group 中可 mask 的 tool result 总字符数
+		// Calculate total maskable tool result characters in this group
 		chars := 0
 		allShort := true
 		for j := grp.start; j <= grp.end; j++ {
 			if messages[j].Role == "tool" {
 				content := messages[j].Content
-				// 跳过已遮蔽的
+				// Skip already masked
 				if content == "" || content == "null" || strings.HasPrefix(content, maskedEntryPrefix) {
 					continue
 				}
@@ -551,7 +551,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 				}
 			}
 		}
-		// 所有 tool result 都太短，不 mask
+		// All tool results too short, don't mask
 		if allShort {
 			continue
 		}
@@ -563,7 +563,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 		return messages, 0, nil
 	}
 
-	// 按 token 收益排序：字符数最多的优先 mask
+	// Sort by token benefit: most characters masked first
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].chars > candidates[j].chars
 	})
@@ -577,17 +577,17 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 	for _, cand := range candidates {
 		grp := cand.grp
 
-		// 判断该组是否为"纯工具组"（assistant 无思考文本，只有 tool_calls）
+		// Check if this group is a "pure tool group" (assistant has no thinking text, only tool_calls)
 		assistantMsg := messages[grp.start]
 		isPureToolGroup := strings.TrimSpace(llm.StripThinkBlocks(assistantMsg.Content)) == ""
 
 		if isPureToolGroup {
-			// 连续纯工具组折叠：收集该组的所有 tool result，折叠为一对消息
+			// Consecutive pure tool group folding: collect all tool results in the group, fold into a pair of messages
 			n, entries := foldPureToolGroup(result, grp, store)
 			maskedTotal += n
 			maskedEntries = append(maskedEntries, entries...)
 		} else {
-			// 有思考内容的 assistant 组：独立 mask tool results，保留 assistant 完整内容
+			// Assistant group with thinking content: mask tool results independently, preserve complete assistant content
 			for j := grp.start; j <= grp.end; j++ {
 				msg := result[j]
 				if msg.Role == "tool" {
@@ -595,7 +595,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 					if content != "" && content != "null" && !strings.HasPrefix(content, maskedEntryPrefix) {
 						runeLen := len([]rune(content))
 						if runeLen < 300 {
-							continue // 短内容不 mask
+							continue // Short content not masked
 						}
 						_, placeholder := store.Mask(msg.ToolName, msg.ToolArguments, msg.Content, j)
 						msg.Content = placeholder
@@ -603,7 +603,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 						maskedEntries = append(maskedEntries, MaskedEntry{MessageIndex: j, Content: placeholder})
 					}
 				}
-				// assistant 消息：保留完整内容（不 strip think blocks）
+				// Assistant message: preserve complete content (don't strip think blocks)
 				result[j] = msg
 			}
 		}
@@ -620,7 +620,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 	return result, maskedTotal, maskedEntries
 }
 
-// isGroupActiveFile 检查 tool group 是否涉及活跃文件。
+// isGroupActiveFile checks if a tool group involves active files.
 func isGroupActiveFile(messages []llm.ChatMessage, grp struct{ start, end int }, activePaths map[string]bool) bool {
 	for j := grp.start; j <= grp.end; j++ {
 		msg := messages[j]
@@ -638,11 +638,11 @@ func isGroupActiveFile(messages []llm.ChatMessage, grp struct{ start, end int },
 	return false
 }
 
-// foldPureToolGroup 将一个纯工具组折叠为一对 assistant+tool 消息。
-// 所有 tool result 存入 MaskStore，assistant 和第一条 tool 被替换为折叠摘要。
-// 返回实际 mask 的 tool result 数量和被修改的消息条目。
+// foldPureToolGroup folds a pure tool group into a pair of assistant+tool messages.
+// All tool results stored in MaskStore, assistant and first tool replaced with fold summary.
+// Returns actual masked tool result count and modified message entries.
 func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, store *ObservationMaskStore) (int, []MaskedEntry) {
-	// 收集所有 tool call 名称和参数
+	// Collect all tool call names and arguments
 	var callSummaries []string
 	maskedCount := 0
 	var batchIDs []string
@@ -663,7 +663,7 @@ func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, s
 			if content == "" || content == "null" || strings.HasPrefix(content, maskedEntryPrefix) {
 				continue
 			}
-			// 短内容不 mask
+			// Short content not masked
 			if len([]rune(content)) < 300 {
 				continue
 			}
@@ -677,14 +677,14 @@ func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, s
 		return 0, nil
 	}
 
-	// 折叠 assistant：保留 ToolCalls 以维持 tool_use/tool_result 配对，只替换 Content
+	// Fold assistant: preserve ToolCalls to maintain tool_use/tool_result pairing, only replace Content
 	summary := fmt.Sprintf("📂 [batch: %d tool calls folded] %s", maskedCount, strings.Join(callSummaries, ", "))
 	assistantMsg := result[grp.start]
 	assistantMsg.Content = summary
 	result[grp.start] = assistantMsg
 	entries = append(entries, MaskedEntry{MessageIndex: grp.start, Content: summary})
 
-	// 折叠 tool results：替换 Content 为占位符，保留 ToolCallID 以维持配对
+	// Fold tool results: replace Content with placeholder, preserve ToolCallID to maintain pairing
 	batchPlaceholder := fmt.Sprintf("📂 [batch-masked: %d results] IDs: %s — recall_masked <id> to view", maskedCount, strings.Join(batchIDs, ", "))
 	firstTool := true
 	for j := grp.start + 1; j <= grp.end; j++ {
@@ -703,7 +703,7 @@ func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, s
 				entries = append(entries, MaskedEntry{MessageIndex: j, Content: batchPlaceholder})
 				firstTool = false
 			} else {
-				msg.Content = "" // 清空后续 tool result
+				msg.Content = "" // Clear subsequent tool result
 				result[j] = msg
 				entries = append(entries, MaskedEntry{MessageIndex: j, Content: ""})
 			}

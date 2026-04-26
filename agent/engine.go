@@ -34,95 +34,95 @@ func WithSubAgentProgress(ctx context.Context, cb SubAgentProgressCallback) cont
 	return context.WithValue(ctx, subAgentProgressKey{}, cb)
 }
 
-// RunConfig 统一的 Agent 运行Configuration。
-// 主 Agent 和 SubAgent 使用同一个 Run() 方法，差异通过Configuration注入。
+// RunConfig unified Agent runtime configuration.
+// Main Agent and SubAgent use the same Run() method, differences injected via configuration.
 type RunConfig struct {
-	// === 必需 ===
+	// === Required ===
 	LLMClient    llm.LLM
 	Model        string
-	ThinkingMode string // 思考模式（如 "enabled", "auto"）
-	Stream       bool   // 使用流式 API 调用 LLM（兼容 Copilot 等代理）
+	ThinkingMode string // Thinking mode (e.g. "enabled", "auto")
+	Stream       bool   // Use streaming API for LLM calls (compatible with Copilot and other proxies)
 	Tools        *tools.Registry
 	Messages     []llm.ChatMessage
 
-	// === 身份（从 InboundMessage 提取） ===
+	// === Identity（从 InboundMessage 提取） ===
 	AgentID      string // "main", "main/code-reviewer"
-	Channel      string // 原始 IM 渠道（用于 ToolContext）
-	ChatID       string // 原始 IM 会话
-	SenderID     string // 直接调用者 ID（SubAgent 场景下为父 Agent ID）
-	OriginUserID string // 原始用户 ID（始终为终端用户，用于 LLM Configuration、工作区路径等）
+	Channel      string // Original IM channel (for ToolContext)
+	ChatID       string // Original IM session
+	SenderID     string // Direct caller ID (parent Agent ID in SubAgent scenario)
+	OriginUserID string // Original user ID (always the end user, for LLM configuration, workspace path, etc.)
 	SenderName   string
-	FeishuUserID string // 非空表示通过飞书身份登录 web（用于 runner 路由）
+	FeishuUserID string // 非空表示通过飞书Identity登录 web（用于 runner 路由）
 
-	// === 工作区 & 沙箱 ===
-	WorkingDir          string   // Agent 工作目录（宿主机）
-	WorkspaceRoot       string   // 用户可读写工作区根目录（宿主机路径）
-	ReadOnlyRoots       []string // 额外只读目录
-	SkillsDirs          []string // 全局 skill 目录列表
+	// === Workspace & Sandbox ===
+	WorkingDir          string   // Agent working directory (host machine)
+	WorkspaceRoot       string   // User read-write workspace root directory (host machine path)
+	ReadOnlyRoots       []string // Additional read-only directories
+	SkillsDirs          []string // Global skill directory list
 	AgentsDir           string
-	MCPConfigPath       string        // 用户 MCP Configuration路径
-	GlobalMCPConfig     string        // 全局 MCP Configuration路径（只读）
-	DataDir             string        // 数据持久化目录
-	SandboxEnabled      bool          // 是否启用命令沙箱
-	PreferredSandbox    string        // 沙箱类型（docker 优先）
-	Sandbox             tools.Sandbox // Sandbox 实例引用（V4 新增）
-	SandboxMode         string        // 实际沙箱模式："none", "docker", "remote"
-	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
-	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
-	InitialGroupMembers []string      // 群组成员列表（用于 system prompt 注入）
+	MCPConfigPath       string        // User MCP configuration path
+	GlobalMCPConfig     string        // Global MCP configuration path (read-only)
+	DataDir             string        // Data persistence directory
+	SandboxEnabled      bool          // Whether to enable command sandbox
+	PreferredSandbox    string        // Sandbox type (docker preferred)
+	Sandbox             tools.Sandbox // Sandbox instance reference (added in V4)
+	SandboxMode         string        // Actual sandbox mode: "none", "docker", "remote"
+	InitialCWD          string        // Initial current working directory (host machine path, for SubAgent inheriting parent Agent's CWD)
+	InitialGroupID      string        // Group ID (inherited by SubAgent, for SendMessage cross-group validation)
+	InitialGroupMembers []string      // Group member list (for system prompt injection)
 
-	// === 循环控制 ===
-	MaxIterations   int // 0 = 使用默认值 100
-	MaxOutputTokens int // 0 = 使用 LLM client 默认值（DefaultMaxOutputTokens）
+	// === Loop control ===
+	MaxIterations   int // 0 = use default value 100
+	MaxOutputTokens int // 0 = use LLM client default (DefaultMaxOutputTokens)
 
-	// === 可选能力（nil = 不启用） ===
+	// === Optional capabilities (nil = disabled) ===
 
-	// Session 持久化（nil = 纯内存，不持久化）
+	// Session persistence (nil = in-memory only, no persistence)
 	Session *session.TenantSession
 
-	// SessionKey 工具激活的 session key（为空时从 Channel+ChatID 生成）
+	// SessionKey session key for tool activation (generated from Channel+ChatID when empty)
 	SessionKey string
 
-	// RootSessionKey 顶层 Agent 的 session key。
-	// SubAgent 场景下指向主 Agent 的 session key，用于 offload_recall 等需要访问父 session 数据的场景。
-	// 主 Agent 场景下为空（与 SessionKey 相同）。
+	// RootSessionKey top-level Agent's session key.
+	// In SubAgent scenario, points to main Agent's session key, for scenarios like offload_recall that need parent session data access.
+	// Empty in main Agent scenario (same as SessionKey).
 	RootSessionKey string
 
-	// ProgressNotifier 进度通知回调（nil = 不通知）
+	// ProgressNotifier Progress notification回调（nil = 不通知）
 	ProgressNotifier func(lines []string)
 
-	// ProgressEventHandler 结构化进度事件回调（nil = 不发送）
+	// ProgressEventHandler 结构化进度事件回调（nil = 不Send）
 	ProgressEventHandler func(event *ProgressEvent)
 
-	// ContextManager 上下文管理器（nil = 不压缩）
+	// ContextManager context manager (nil = no compression)
 	ContextManager ContextManager
 
-	// ContextManagerConfig 上下文管理器Configuration（Phase 2 智能触发需要访问 MaxContextTokens 等）
+	// ContextManagerConfig context manager configuration (Phase 2 smart trigger needs access to MaxContextTokens etc.)
 	ContextManagerConfig *ContextManagerConfig
 
-	// SendFunc 向 IM 渠道发送消息（nil = 不能发消息）
+	// SendFunc 向 IM 渠道Send消息（nil = 不能发消息）
 	SendFunc func(channel, chatID, content string, metadata ...map[string]string) error
 
-	// InjectInbound 注入入站消息，触发 Agent 完整处理循环（nil = 不支持）
+	// InjectInbound injects inbound message, triggering full Agent processing loop (nil = not supported)
 	InjectInbound func(channel, chatID, senderID, content string)
 
-	// Memory 记忆提供者（nil = 无记忆）
+	// Memory memory provider (nil = no memory)
 	Memory memory.MemoryProvider
 
-	// ToolContextExtras Letta 记忆相关的 ToolContext 扩展字段
+	// ToolContextExtras Letta memory-related ToolContext extension fields
 	ToolContextExtras *ToolContextExtras
 
-	// SpawnAgent SubAgent 创建能力（nil = 不能创建子 Agent）
-	// 输入输出都是统一消息：InboundMessage → OutboundMessage
+	// SpawnAgent SubAgent creation capability (nil = cannot create child Agent)
+	// Both input and output are unified messages: InboundMessage → OutboundMessage
 	SpawnAgent func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error)
 
-	// OAuthHandler OAuth 自动触发处理器（nil = 不处理 OAuth）
-	// 返回 (content, handled)：handled=true 时用 content 替换工具错误
+	// OAuthHandler OAuth auto-trigger handler (nil = don't handle OAuth)
+	// Returns (content, handled): when handled=true, use content to replace tool error
 	OAuthHandler func(ctx context.Context, tc llm.ToolCall, execErr error) (content string, handled bool)
 
-	// ToolExecutor 工具执行函数。
-	// 主 Agent 注入带 session MCP、激活检查、Letta memory 的完整版本；
-	// SubAgent 使用 nil（defaultToolExecutor 从 cfg.Tools 查找并执行）。
+	// ToolExecutor Tool execution函数。
+	// Main Agent injects full version with session MCP, activation check, Letta memory;
+	// SubAgent uses nil (defaultToolExecutor looks up and executes from cfg.Tools).
 	ToolExecutor func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error)
 
 	// ToolTimeout is deprecated and no longer used for wrapping tool contexts.
@@ -130,15 +130,15 @@ type RunConfig struct {
 	// Engine only passes through the parent context (user Ctrl+C cancels it).
 	ToolTimeout time.Duration
 
-	// EnableReadWriteSplit 启用读写分离并行执行（默认 false = 全部串行）
+	// EnableReadWriteSplit enables read-write split parallel execution (default false = all serial)
 	EnableReadWriteSplit bool
 
-	// SessionFinalSentCallback 工具发送最终回复时的回调（如飞书卡片）。
-	// 返回 true 表示已发送最终回复，后续进度通知应停止。
+	// SessionFinalSentCallback 工具Send最终回复时的回调（如飞书卡片）。
+	// 返回 true 表示已Send最终回复，后续Progress notification应停止。
 	SessionFinalSentCallback func() bool
 
-	// InteractiveCallbacks Interactive SubAgent 回调（nil = 不支持 interactive）。
-	// 主 Agent 注入，SubAgent 不注入。
+	// InteractiveCallbacks Interactive SubAgent callbacks (nil = no interactive support).
+	// Injected by main Agent, not by SubAgent.
 	InteractiveCallbacks *InteractiveCallbacks
 
 	// HookManager tool execution hook manager (nil = no hooks).
@@ -147,22 +147,22 @@ type RunConfig struct {
 	// SettingsSvc provides access to user settings (nil = settings not available).
 	SettingsSvc *SettingsService
 
-	// OffloadStore Layer 1 offload store（nil = 不启用）
+	// OffloadStore Layer 1 offload store (nil = disabled)
 	OffloadStore *OffloadStore
 
-	// MaskStore Observation Masking 存储（nil = 不启用）
+	// MaskStore Observation Masking store (nil = disabled)
 	MaskStore *ObservationMaskStore
 
-	// ContextEditor Context Editing 编辑器（nil = 不启用）
+	// ContextEditor Context Editing editor (nil = disabled)
 	ContextEditor *ContextEditor
 
-	// MemoryToolDefs 记忆工具定义列表（nil = 压缩时不使用记忆工具）
+	// MemoryToolDefs memory tool definition list (nil = don't use memory tools during compression)
 	MemoryToolDefs []llm.ToolDefinition
 
-	// MemoryToolExec 记忆工具执行函数（nil = 压缩时不使用记忆工具）
+	// MemoryToolExec MemoryTool execution函数（nil = 压缩时不使用Memory工具）
 	MemoryToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error)
 
-	// TodoManager TODO 管理器（可选）
+	// TodoManager TODO manager (optional)
 	TodoManager TodoManagerProvider
 
 	// DrainBgNotifications is called between iterations to check for completed bg tasks
@@ -201,10 +201,10 @@ type RunConfig struct {
 	// If nil, token counts are only kept in memory (lost on restart).
 	SaveTokenState func(promptTokens, completionTokens int64)
 
-	// BgTaskManager 后台任务管理器（nil = 不支持后台任务）
+	// BgTaskManager background task manager (nil = no background task support)
 	BgTaskManager *tools.BackgroundTaskManager
-	// MessageSender 允许 Agent 向任何 Channel 发消息（IM、Agent、Group）。
-	// nil = 不启用（SubAgent 继承主 Agent 的 MessageSender）。
+	// MessageSender allows Agent to send messages to any Channel (IM, Agent, Group).
+	// nil = disabled (SubAgent inherits main Agent's MessageSender).
 	MessageSender bus.MessageSender
 	// RegisterAgentChannel registers an AgentChannel in the Dispatcher.
 	RegisterAgentChannel func(name string, runFn bus.RunFn) error
@@ -226,14 +226,14 @@ type RunConfig struct {
 	StreamReasoningFunc func(content string)
 }
 
-// TodoManagerProvider 提供 TODO 状态查询和清理
+// TodoManagerProvider provides TODO status query and cleanup
 type TodoManagerProvider interface {
 	GetTodoSummary(sessionKey string) string
 	GetTodoItems(sessionKey string) []TodoProgressItem
 	ClearTodos(sessionKey string)
 }
 
-// InteractiveCallbacks 主 Agent 提供给 buildToolContext 的 interactive 回调。
+// InteractiveCallbacks interactive callbacks provided by main Agent to buildToolContext.
 type InteractiveCallbacks struct {
 	SpawnFn     func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error)
 	SendFn      func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error)
@@ -242,9 +242,9 @@ type InteractiveCallbacks struct {
 	InspectFn   func(ctx context.Context, roleName, instance string, tail int) (string, error)
 }
 
-// ToolContextExtras Letta 记忆相关的 ToolContext 扩展字段。
-// 仅包含 Letta memory 特有的字段，通用字段（InjectInbound、Registry 等）
-// 已迁移到 RunConfig 中。
+// ToolContextExtras Letta memory-related ToolContext extension fields。
+// Only contains Letta memory-specific fields; common fields (InjectInbound, Registry, etc.)
+// have been migrated to RunConfig.
 type ToolContextExtras struct {
 	TenantID                int64
 	CoreMemory              *sqlite.CoreMemoryService
@@ -255,7 +255,7 @@ type ToolContextExtras struct {
 	InvalidateAllSessionMCP func()
 }
 
-// DefaultMaxIterations 默认最大迭代次数。
+// DefaultMaxIterations default max iteration count.
 const DefaultMaxIterations = 2000
 
 // DefaultMaxOutputTokens is the default maximum output token count when
@@ -271,7 +271,7 @@ const (
 	toolCreateChat    = "CreateChat"
 )
 
-// readOnlyTools 只读工具集合，用于读写分离并行执行。
+// readOnlyTools read-only tool set, for read-write split parallel execution.
 var readOnlyTools = map[string]bool{
 	"Read": true, "Grep": true, "Glob": true,
 	"WebSearch": true, "ChatHistory": true,
@@ -333,12 +333,12 @@ func readArgsHasOffsetOrLimit(argsJSON string) bool {
 	return args.Offset > 0 || args.MaxLines > 0
 }
 
-// Run 统一的 Agent 循环。
+// Run unified Agent loop.
 //
-// 输入：RunConfig（从 InboundMessage 构建）
-// 输出：*RunOutput（可直接发送到 IM 或返回给父 Agent）
+// Input: RunConfig (built from InboundMessage)
+// 输出：*RunOutput（可直接Send到 IM 或返回给父 Agent）
 //
-// 主 Agent 和 SubAgent 使用同一个 Run()，差异通过 RunConfig 注入：
+// Main Agent and SubAgent use the same Run(), differences injected via RunConfig:
 //   - 主 Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
 
 // generateResponse calls the LLM using non-streaming mode.
@@ -359,12 +359,12 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 	return client.Generate(ctx, model, messages, tools, thinkingMode)
 }
 
-// Run 统一的 Agent 循环。
+// Run unified Agent loop.
 //
-// 输入：RunConfig（从 InboundMessage 构建）
-// 输出：*RunOutput（可直接发送到 IM 或返回给父 Agent）
+// Input: RunConfig (built from InboundMessage)
+// 输出：*RunOutput（可直接Send到 IM 或返回给父 Agent）
 //
-// 主 Agent 和 SubAgent 使用同一个 Run()，差异通过 RunConfig 注入：
+// Main Agent and SubAgent use the same Run(), differences injected via RunConfig:
 //   - 主 Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
 //   - SubAgent: ToolExecutor=simpleExecutor, ProgressNotifier=nil, ContextManager=independent_phase1, ...
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
@@ -636,11 +636,11 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 	}
 }
 
-// spawnAgentAdapter 将 SpawnAgent 函数适配为 SubAgentManager 接口。
-// 核心职责：将 (task, prompt, tools) 函数签名转换为统一的 InboundMessage。
+// spawnAgentAdapter adapts the SpawnAgent function to the SubAgentManager interface.
+// Core responsibility: convert (task, prompt, tools) function signature to unified InboundMessage.
 //
-// 这使得 SubAgentTool 零改动：它仍然调用 SubAgentManager.RunSubAgent()，
-// 而 adapter 内部完成 string ↔ InboundMessage/OutboundMessage 转换。
+// This enables SubAgentTool zero changes: it still calls SubAgentManager.RunSubAgent(),
+// while adapter internally handles string ↔ InboundMessage/OutboundMessage conversion.
 type spawnAgentAdapter struct {
 	spawnFn  func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error)
 	parentID string
@@ -656,7 +656,7 @@ type spawnAgentAdapter struct {
 	interactiveInspectFn   func(ctx context.Context, roleName, instance string, tail int) (string, error)
 }
 
-// RunSubAgent 实现 tools.SubAgentManager 接口。
+// RunSubAgent implements the tools.SubAgentManager interface。
 func (a *spawnAgentAdapter) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, model string) (string, error) {
 	msg := a.buildMsg(parentCtx, task, roleName, systemPrompt, allowedTools, caps, false, "", model)
 	out, err := a.spawnFn(parentCtx.Ctx, msg)
@@ -669,7 +669,7 @@ func (a *spawnAgentAdapter) RunSubAgent(parentCtx *tools.ToolContext, task strin
 	return out.Content, nil
 }
 
-// SpawnInteractive 实现 InteractiveSubAgentManager.SpawnInteractive。
+// SpawnInteractive implements InteractiveSubAgentManager.SpawnInteractive.
 func (a *spawnAgentAdapter) SpawnInteractive(parentCtx *tools.ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, instance, model string) (string, error) {
 	if a.interactiveSpawnFn == nil {
 		return "", fmt.Errorf("interactive mode not supported")
@@ -685,7 +685,7 @@ func (a *spawnAgentAdapter) SpawnInteractive(parentCtx *tools.ToolContext, task,
 	return out.Content, nil
 }
 
-// SendInteractive 实现 InteractiveSubAgentManager.SendInteractive。
+// SendInteractive implements InteractiveSubAgentManager.SendInteractive.
 func (a *spawnAgentAdapter) SendInteractive(parentCtx *tools.ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, instance, model string) (string, error) {
 	if a.interactiveSendFn == nil {
 		return "", fmt.Errorf("interactive mode not supported")
@@ -701,7 +701,7 @@ func (a *spawnAgentAdapter) SendInteractive(parentCtx *tools.ToolContext, task, 
 	return out.Content, nil
 }
 
-// UnloadInteractive 实现 InteractiveSubAgentManager.UnloadInteractive。
+// UnloadInteractive implements InteractiveSubAgentManager.UnloadInteractive.
 func (a *spawnAgentAdapter) UnloadInteractive(parentCtx *tools.ToolContext, roleName, instance string) error {
 	if a.interactiveUnloadFn == nil {
 		return fmt.Errorf("interactive mode not supported")
@@ -709,7 +709,7 @@ func (a *spawnAgentAdapter) UnloadInteractive(parentCtx *tools.ToolContext, role
 	return a.interactiveUnloadFn(parentCtx.Ctx, roleName, instance)
 }
 
-// InspectInteractive 实现 InteractiveSubAgentManager.InspectInteractive。
+// InspectInteractive implements InteractiveSubAgentManager.InspectInteractive.
 func (a *spawnAgentAdapter) InspectInteractive(parentCtx *tools.ToolContext, roleName, instance string, tailCount int) (string, error) {
 	if a.interactiveInspectFn == nil {
 		return "", fmt.Errorf("interactive inspect not supported")
@@ -717,7 +717,7 @@ func (a *spawnAgentAdapter) InspectInteractive(parentCtx *tools.ToolContext, rol
 	return a.interactiveInspectFn(parentCtx.Ctx, roleName, instance, tailCount)
 }
 
-// InterruptInteractive 实现 InteractiveSubAgentManager.InterruptInteractive。
+// InterruptInteractive implements InteractiveSubAgentManager.InterruptInteractive.
 func (a *spawnAgentAdapter) InterruptInteractive(parentCtx *tools.ToolContext, roleName, instance string) error {
 	if a.interactiveInterruptFn == nil {
 		return fmt.Errorf("interactive interrupt not supported")
@@ -725,7 +725,7 @@ func (a *spawnAgentAdapter) InterruptInteractive(parentCtx *tools.ToolContext, r
 	return a.interactiveInterruptFn(parentCtx.Ctx, roleName, instance)
 }
 
-// buildMsg 构造 SubAgent InboundMessage。
+// buildMsg constructs SubAgent InboundMessage.
 func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, interactive bool, instance, model string) bus.InboundMessage {
 	metadata := map[string]string{
 		"origin_channel": a.channel,
@@ -790,8 +790,8 @@ func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleNam
 	}
 }
 
-// sandboxReadOnlyRoots 将 host 路径的 ReadOnlyRoots 转换为 sandbox 路径。
-// 仅在 sandboxWorkDir 非空且与 WorkspaceRoot 不同时进行转换。
+// sandboxReadOnlyRoots converts host-path ReadOnlyRoots to sandbox paths.
+// Only converts when sandboxWorkDir is non-empty and differs from WorkspaceRoot.
 func sandboxReadOnlyRoots(hostRoots []string, sandboxWorkDir, workspaceRoot string) []string {
 	if sandboxWorkDir == "" || sandboxWorkDir == workspaceRoot {
 		return hostRoots
@@ -807,8 +807,8 @@ func sandboxReadOnlyRoots(hostRoots []string, sandboxWorkDir, workspaceRoot stri
 	return result
 }
 
-// buildToolContext 统一构建 ToolContext。
-// 从 RunConfig 中提取所有字段，主 Agent 和 SubAgent 使用同一个构建路径。
+// buildToolContext builds ToolContext uniformly.
+// Extracts all fields from RunConfig; main Agent and SubAgent use the same build path.
 // resolveSandbox resolves the per-user sandbox instance if the global sandbox
 // implements SandboxResolver (e.g., SandboxRouter). Falls back to the global instance.
 func resolveSandbox(sandbox tools.Sandbox, userID string) tools.Sandbox {
@@ -854,7 +854,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		SendFunc:       cfg.SendFunc,
 		RootSessionKey: cfg.RootSessionKey,
 
-		// 工作区 & 沙箱
+		// Workspace & Sandbox
 		WorkingDir:           workingDir,
 		WorkspaceRoot:        workspaceRoot,
 		ReadOnlyRoots:        cfg.ReadOnlyRoots,
@@ -868,31 +868,31 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
 
-		// 注入入站消息
+		// Inject inbound message
 		InjectInbound: cfg.InjectInbound,
 
-		// 工具注册表
+		// Tool registry
 		Registry: cfg.Tools,
 
-		// 流式设置继承
+		// Streaming settings inheritance
 		Stream: cfg.Stream,
 	}
 
-	// 注入 SpawnAgent（包装为 SubAgentManager 接口）
+	// Inject SpawnAgent (wrapped as SubAgentManager interface)
 	if cfg.SpawnAgent != nil {
-		// 使用 OriginUserID 构建 adapter（用于消息溯源）
+		// Use OriginUserID to build adapter (for message tracing)
 		originUserID := cfg.OriginUserID
 		if originUserID == "" {
-			originUserID = cfg.SenderID // fallback：兼容旧数据
+			originUserID = cfg.SenderID // fallback: backward compatible with old data
 		}
 		adapter := &spawnAgentAdapter{
 			spawnFn:  cfg.SpawnAgent,
 			parentID: cfg.AgentID,
 			channel:  cfg.Channel,
 			chatID:   cfg.ChatID,
-			senderID: originUserID, // 使用原始用户 ID（用于消息溯源）
+			senderID: originUserID, // Use original user ID (for message tracing)
 		}
-		// 注入 Interactive callbacks（主 Agent 专有）
+		// Inject Interactive callbacks (main Agent specific)
 		if cb := cfg.InteractiveCallbacks; cb != nil {
 			adapter.interactiveSpawnFn = cb.SpawnFn
 			adapter.interactiveSendFn = cb.SendFn
@@ -903,7 +903,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.Manager = adapter
 	}
 
-	// 注入 Letta 记忆字段（覆盖上面的默认值）
+	// 注入 Letta memory fields（覆盖上面的默认值）
 	if ext := cfg.ToolContextExtras; ext != nil {
 		tc.TenantID = ext.TenantID
 		tc.CoreMemory = ext.CoreMemory
@@ -916,7 +916,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		}
 	}
 
-	// 注入 BgTaskManager 后台任务管理器
+	// Inject BgTaskManager background task manager
 	if cfg.BgTaskManager != nil {
 		tc.BgTaskManager = cfg.BgTaskManager
 		sessionKey := cfg.SessionKey
@@ -928,14 +928,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		// Engine no longer registers callbacks per-buildToolContext call.
 	}
 
-	// 注入 MessageSender（Dispatcher 引用，允许 Agent 向任何 Channel 发消息）
+	// Inject MessageSender (Dispatcher reference, allows Agent to send messages to any Channel)
 	tc.MessageSender = cfg.MessageSender
-	// 注入 AgentChannel 注册/注销回调
+	// Inject AgentChannel register/unregister callbacks
 	tc.RegisterAgentChannel = cfg.RegisterAgentChannel
 	tc.UnregisterAgentChannel = cfg.UnregisterAgentChannel
-	// 注入 ToolContext extras (memory, MCP, etc.)
+	// Inject ToolContext extras (memory, MCP, etc.)
 
-	// 注入 session cwd（PWD 工具优化）
+	// Inject session cwd (PWD tool optimization)
 	if cfg.Session != nil {
 		tc.CurrentDir = cfg.Session.GetCurrentDir()
 		// Fallback: new session has empty CWD, use InitialCWD (inherited from parent).
@@ -972,17 +972,17 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	return tc
 }
 
-// CallChain 调用链上下文，用于追踪 Agent 间调用关系和防止递归。
+// CallChain call chain context, for tracking inter-Agent call relationships and preventing recursion.
 type CallChain struct {
-	Chain []string // 调用链: ["main", "main/code-reviewer"]
+	Chain []string // Call chain: ["main", "main/code-reviewer"]
 }
 
-// DefaultMaxSubAgentDepth 默认 SubAgent 嵌套深度。
+// DefaultMaxSubAgentDepth default SubAgent nesting depth.
 const DefaultMaxSubAgentDepth = 6
 
 type callChainKey struct{}
 
-// CallChainFromContext 从 context 中提取调用链。
+// CallChainFromContext extracts the call chain from context.
 func CallChainFromContext(ctx context.Context) *CallChain {
 	if cc, ok := ctx.Value(callChainKey{}).(*CallChain); ok {
 		return cc
@@ -990,14 +990,14 @@ func CallChainFromContext(ctx context.Context) *CallChain {
 	return &CallChain{Chain: []string{"main"}}
 }
 
-// WithCallChain 将调用链注入 context。
+// WithCallChain injects the call chain into context.
 func WithCallChain(ctx context.Context, cc *CallChain) context.Context {
 	return context.WithValue(ctx, callChainKey{}, cc)
 }
 
-// CanSpawn 检查是否可以创建指定角色的 SubAgent。
-// 返回 nil 表示可以，返回 error 表示不可以（深度超限或循环调用）。
-// maxDepth 为最大允许深度，如果 <= 0 则使用默认值 DefaultMaxSubAgentDepth。
+// CanSpawn checks if a SubAgent of the specified role can be created.
+// Returns nil if allowed, returns error if not (depth exceeded or circular call).
+// maxDepth is the maximum allowed depth; if <= 0, uses default DefaultMaxSubAgentDepth.
 func (cc *CallChain) CanSpawn(targetRole string, maxDepth int) error {
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxSubAgentDepth
@@ -1017,7 +1017,7 @@ func (cc *CallChain) CanSpawn(targetRole string, maxDepth int) error {
 	return nil
 }
 
-// Spawn 创建新的调用链（追加目标角色）。
+// Spawn creates a new call chain (appends target role).
 func (cc *CallChain) Spawn(targetRole string) *CallChain {
 	currentID := cc.Chain[len(cc.Chain)-1]
 	newChain := make([]string, len(cc.Chain)+1)
@@ -1026,12 +1026,12 @@ func (cc *CallChain) Spawn(targetRole string) *CallChain {
 	return &CallChain{Chain: newChain}
 }
 
-// Depth 返回当前调用深度。
+// Depth returns the current call depth.
 func (cc *CallChain) Depth() int {
 	return len(cc.Chain)
 }
 
-// Current 返回当前 Agent ID。
+// Current returns the current Agent ID.
 func (cc *CallChain) Current() string {
 	if len(cc.Chain) == 0 {
 		return "main"

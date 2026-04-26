@@ -300,7 +300,7 @@ func (s *runState) setupRetryNotify(ctx context.Context) context.Context {
 		}
 		reason := summarizeRetryError(err)
 		s.progressLines = append(s.progressLines,
-			fmt.Sprintf("> ⚠️ LLM 请求失败 (%s)，重试中 %d/%d ...", reason, attempt, max))
+			fmt.Sprintf("> ⚠️ LLM request failed (%s)，重试中 %d/%d ...", reason, attempt, max))
 		s.notifyProgress("")
 	})
 }
@@ -355,7 +355,7 @@ func (s *runState) notifyThinking(iteration int) {
 		if iteration == 0 {
 			s.notifyProgress("💭")
 		} else {
-			s.notifyProgress("> 💭 思考中...")
+			s.notifyProgress("> 💭 Thinking...")
 		}
 	}
 }
@@ -374,7 +374,7 @@ func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 		return s.buildOutput(&bus.OutboundMessage{
 			Channel: s.cfg.Channel,
 			ChatID:  s.cfg.ChatID,
-			Content: "内部错误：system 消息数量异常",
+			Content: "Internal error: abnormal system message count",
 			Error:   fmt.Errorf("assert: LLM messages must have exactly one system message; got %d", systemCount),
 		})
 	}
@@ -482,7 +482,7 @@ func (s *runState) persistCompressedResult(ctx context.Context, sessionView []ll
 func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition) (*llm.LLMResponse, error) {
 	log.Ctx(ctx).WithError(fmt.Errorf("input too long")).Warn("Input too long for LLM, forcing context compression and retrying")
 	if s.autoNotify {
-		s.progressLines = append(s.progressLines, "> ⚠️ 输入超限，正在强制压缩上下文...")
+		s.progressLines = append(s.progressLines, "> ⚠️ Input exceeded limit, forcing context compression...")
 		s.notifyProgress("")
 	}
 
@@ -504,7 +504,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	s.lastCompletionTokens = 0
 	s.lastMsgCountAtLLMCall = len(s.messages)
 	if s.autoNotify {
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens (estimated)", newCount))
+		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ Force compression complete → %d tokens (estimated)", newCount))
 		s.notifyProgress("")
 	}
 	if s.cfg.Session != nil {
@@ -587,7 +587,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 		return s.buildOutput(&bus.OutboundMessage{
 			Channel:   s.cfg.Channel,
 			ChatID:    s.cfg.ChatID,
-			Content:   partialContent + "\n\n> ⚠️ LLM 调用失败 (" + summarizeRetryError(err) + ")，以上为部分结果。",
+			Content:   partialContent + "\n\n> ⚠️ LLM call failed (" + summarizeRetryError(err) + ")，以上为部分结果。",
 			ToolsUsed: s.toolsUsed,
 		})
 	}
@@ -978,7 +978,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		s.structuredProgress.Phase = PhaseCompressing
 	}
 	if s.autoNotify {
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> 📦 上下文过大 (%d tokens)，正在压缩 + 记忆整理...", totalTokens))
+		s.progressLines = append(s.progressLines, fmt.Sprintf("> 📦 上下文过大 (%d tokens)，Compressing + Memory整理...", totalTokens))
 		s.notifyProgress("")
 	}
 
@@ -1040,8 +1040,8 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	}
 	if s.autoNotify {
 		for i := len(s.progressLines) - 1; i >= 0; i-- {
-			if strings.Contains(s.progressLines[i], "正在压缩") {
-				s.progressLines[i] = fmt.Sprintf("> ✅ 压缩完成: %d → %d tokens", oldTokenCount, newTokenCount)
+			if strings.Contains(s.progressLines[i], "Compressing") {
+				s.progressLines[i] = fmt.Sprintf("> ✅ Compression complete: %d → %d tokens", oldTokenCount, newTokenCount)
 				break
 			}
 		}

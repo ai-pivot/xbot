@@ -9,51 +9,51 @@ import (
 	log "xbot/logger"
 )
 
-// MessageContext 中间件处理的上下文，携带消息构建所需的全部信息。
-// 中间件通过读取/修改此结构来参与消息构建流程。
+// MessageContext is the context processed by middleware, carrying all information needed for message building.
+// Middleware participates in the message building process by reading/modifying this structure.
 type MessageContext struct {
-	// Ctx 标准 context，用于timeout control和取消
+	// Ctx standard context, for timeout control and cancellation
 	Ctx context.Context
 
-	// SystemParts 系统提示词的各个部分，按 key 存储。
-	// 最终会按 key 排序后拼接为完整的 system message。
-	// 使用 map 而非 string 拼接，方便中间件独立修改自己负责的部分。
+	// SystemParts system prompt parts, stored by key.
+	// Eventually concatenated into a complete system message after sorting by key.
+	// Uses map instead of string concatenation, making it easy for middleware to independently modify its own parts.
 	SystemParts map[string]string
 
-	// UserContent 原始用户消息内容
+	// UserContent original user message content
 	UserContent string
 
-	// UserMessage 最终发送给 LLM 的用户消息（中间件可修改）
+	// UserMessage 最终Send给 LLM 的用户消息（中间件可修改）
 	UserMessage string
 
-	// History 对话历史
+	// History conversation history
 	History []llm.ChatMessage
 
-	// Messages 最终构建的消息列表。
-	// 通常由 pipeline 最后组装，中间件一般不直接操作。
+	// Messages final constructed message list.
+	// Usually assembled by pipeline at the end; middleware generally doesn't operate on it directly.
 	Messages []llm.ChatMessage
 
-	// --- 以下为中间件可能需要的元数据 ---
+	// --- Metadata possibly needed by middleware below ---
 
-	// Channel 消息渠道（如 feishu）
+	// Channel message channel (e.g. feishu)
 	Channel string
 
-	// WorkDir 工作目录（展示给 LLM 的路径）
+	// WorkDir Working directory（展示给 LLM 的路径）
 	WorkDir string
 
-	// CWD 当前工作目录（Agent 运行时的 cwd，可能与 WorkDir 不同）
+	// CWD 当前Working directory（Agent 运行时的 cwd，可能与 WorkDir 不同）
 	CWD string
 
-	// SenderName 发送者名称
+	// SenderName Send者名称
 	SenderName string
 
-	// SenderID 发送者 ID
+	// SenderID Send者 ID
 	SenderID string
 
-	// ChatID 会话 ID
+	// ChatID session ID
 	ChatID string
 
-	// Extra 扩展字段，中间件可以通过此 map 传递自定义数据
+	// Extra extension fields, middleware can pass custom data through this map
 	Extra map[string]any
 }
 
@@ -68,7 +68,7 @@ const (
 	ExtraKeyPermUsers      = "perm_users" // permission control user config
 )
 
-// GetExtra 从 Extra 中获取指定类型的值
+// GetExtra gets a value of specified type from Extra
 func (mc *MessageContext) GetExtra(key string) (any, bool) {
 	if mc.Extra == nil {
 		return nil, false
@@ -77,7 +77,7 @@ func (mc *MessageContext) GetExtra(key string) (any, bool) {
 	return v, ok
 }
 
-// SetExtra 设置 Extra 中的值
+// SetExtra sets a value in Extra
 func (mc *MessageContext) SetExtra(key string, value any) {
 	if mc.Extra == nil {
 		mc.Extra = make(map[string]any)
@@ -85,7 +85,7 @@ func (mc *MessageContext) SetExtra(key string, value any) {
 	mc.Extra[key] = value
 }
 
-// GetExtraString 从 Extra 中获取 string 类型的值
+// GetExtraString gets a string value from Extra
 func (mc *MessageContext) GetExtraString(key string) (string, bool) {
 	v, ok := mc.GetExtra(key)
 	if !ok {
@@ -95,8 +95,8 @@ func (mc *MessageContext) GetExtraString(key string) (string, bool) {
 	return s, ok
 }
 
-// GetExtraTyped 从 Extra 中获取指定类型 T 的值（泛型 helper）。
-// 避免手动 GetExtra + type assertion的样板代码。
+// GetExtraTyped gets a value of specified type T from Extra (generic helper).
+// Avoids boilerplate of manual GetExtra + type assertion.
 //
 //	mem, ok := GetExtraTyped[memory.MemoryProvider](mc, ExtraKeyMemoryProvider)
 func GetExtraTyped[T any](mc *MessageContext, key string) (T, bool) {
@@ -109,15 +109,15 @@ func GetExtraTyped[T any](mc *MessageContext, key string) (T, bool) {
 	return typed, ok
 }
 
-// BuildSystemPrompt 将 SystemParts 按 key 排序后拼接为完整的系统提示词。
-// key 的命名约定决定了拼接顺序（字典序），建议使用数字前缀：
+// BuildSystemPrompt concatenates SystemParts into a complete system prompt after sorting by key.
+// Key naming convention determines concatenation order (lexicographic), recommended to use numeric prefixes:
 //
-//	"00_base"    - 基础提示词模板
-//	"10_skills"  - Skills 目录
+//	"00_base"    - Base prompt template
+//	"10_skills"  - Skills directory
 //	"15_agents"  - Agents catalog
-//	"20_memory"  - 记忆内容
-//	"30_sender"  - 发送者信息
-//	"90_time"    - 时间戳（变化最频繁，放最后以优化 KV-cache）
+//	"20_memory"  - Memory内容
+//	"30_sender"  - Send者信息
+//	"90_time"    - Timestamp (changes most frequently, put last to optimize KV-cache)
 func (mc *MessageContext) BuildSystemPrompt() string {
 	if len(mc.SystemParts) == 0 {
 		return ""
@@ -147,8 +147,8 @@ func (mc *MessageContext) BuildSystemPrompt() string {
 	return string(buf)
 }
 
-// Assemble 组装最终的消息列表。
-// 将 system prompt + history + user message 组装为 []ChatMessage。
+// Assemble assembles the final message list.
+// Assembles system prompt + history + user message into []ChatMessage.
 func (mc *MessageContext) Assemble() []llm.ChatMessage {
 	systemPrompt := mc.BuildSystemPrompt()
 
@@ -159,7 +159,7 @@ func (mc *MessageContext) Assemble() []llm.ChatMessage {
 	messages = append(messages, mc.History...)
 	messages = append(messages, llm.NewUserMessage(mc.UserMessage))
 
-	// assert: 最终只能有一条 system（本 pipeline 生成），history 不得含 system（session 不持久化 system）
+	// assert: there can only be one system message (generated by this pipeline), history must not contain system (session doesn't persist system)
 	var systemCount int
 	for _, m := range messages {
 		if m.Role == "system" {
@@ -167,9 +167,9 @@ func (mc *MessageContext) Assemble() []llm.ChatMessage {
 		}
 	}
 	if systemCount != 1 {
-		// R-02 修复：panic 改为安全降级，移除多余的 system 消息，只保留第一条
+		// R-02 fix: panic changed to safe degradation, remove extra system messages, keep only the first
 		log.WithField("system_count", systemCount).Error("assert: Assemble should produce exactly one system message (history may contain system)")
-		// 安全降级：移除多余的 system 消息，只保留第一条
+		// Safe degradation: remove extra system messages, keep only the first
 		filtered := make([]llm.ChatMessage, 0, len(messages))
 		seen := false
 		for _, m := range messages {
@@ -188,36 +188,36 @@ func (mc *MessageContext) Assemble() []llm.ChatMessage {
 	return messages
 }
 
-// MessageMiddleware 消息构建中间件接口。
-// 每个中间件负责消息构建流程中的一个独立步骤。
+// MessageMiddleware message building middleware interface.
+// Each middleware is responsible for an independent step in the message building process.
 type MessageMiddleware interface {
-	// Name 返回中间件名称，用于日志和调试
+	// Name returns middleware name, for logging and debugging
 	Name() string
 
-	// Priority 返回中间件优先级。数值越小越先执行。
-	// 建议范围：
-	//   0-99:   基础设施（提示词模板、环境信息）
-	//   100-199: 上下文注入（skills、agents、memory）
-	//   200-299: 用户Message processing（时间戳、发送者标识）
-	//   300-399: 后处理（token 裁剪、格式化）
+	// Priority returns middleware priority. Lower values execute first.
+	// Recommended ranges:
+	//   0-99:   Infrastructure (prompt templates, environment info)
+	//   100-199: Context injection (skills, agents, memory)
+	//   200-299: 用户Message processing（时间戳、Send者标识）
+	//   300-399: Post-processing (token trimming, formatting)
 	Priority() int
 
-	// Process 处理消息上下文。
-	// 中间件应该只修改自己负责的部分，不要覆盖其他中间件的输出。
-	// 返回 error 时，pipeline 会记录日志但继续执行（不中断流程）。
+	// Process processes the message context.
+	// Middleware should only modify its own part, don't overwrite other middleware's output.
+	// When returning error, pipeline logs but continues execution (doesn't interrupt flow).
 	Process(mc *MessageContext) error
 }
 
-// MessagePipeline 消息构建管道，按优先级执行中间件链。
-// concurrency safe：Agent 持有单个 pipeline 实例，多个 goroutine 可同时调用 Run()。
-// Use/Remove 是写操作（通常在初始化阶段调用），Run/Middlewares 是读操作。
+// MessagePipeline message build pipeline, executes middleware chain by priority.
+// Concurrency-safe: Agent holds a single pipeline instance, multiple goroutines can call Run() simultaneously.
+// Use/Remove are write operations (usually called during initialization), Run/Middlewares are read operations.
 type MessagePipeline struct {
 	mu          sync.RWMutex
 	middlewares []MessageMiddleware
 	sorted      bool
 }
 
-// NewMessagePipeline 创建消息构建管道
+// NewMessagePipeline creates message build pipeline
 func NewMessagePipeline(middlewares ...MessageMiddleware) *MessagePipeline {
 	p := &MessagePipeline{
 		middlewares: middlewares,
@@ -226,7 +226,7 @@ func NewMessagePipeline(middlewares ...MessageMiddleware) *MessagePipeline {
 	return p
 }
 
-// Use 添加中间件到管道
+// Use adds middleware to the pipeline
 func (p *MessagePipeline) Use(mw ...MessageMiddleware) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -234,7 +234,7 @@ func (p *MessagePipeline) Use(mw ...MessageMiddleware) {
 	p.sortLocked()
 }
 
-// Remove 按名称移除所有同名中间件。返回实际移除的数量。
+// Remove removes all middleware with the same name. Returns actual count removed.
 func (p *MessagePipeline) Remove(name string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -251,8 +251,8 @@ func (p *MessagePipeline) Remove(name string) int {
 	return n
 }
 
-// sortLocked 按优先级排序中间件（稳定排序，相同优先级保持添加顺序）。
-// 调用方必须持有锁（mu.Lock）。
+// sortLocked sorts middleware by priority (stable sort, same priority preserves insertion order).
+// Caller must hold lock (mu.Lock).
 func (p *MessagePipeline) sortLocked() {
 	sort.SliceStable(p.middlewares, func(i, j int) bool {
 		return p.middlewares[i].Priority() < p.middlewares[j].Priority()
@@ -260,16 +260,16 @@ func (p *MessagePipeline) sortLocked() {
 	p.sorted = true
 }
 
-// snapshot 返回当前中间件列表的快照（浅拷贝）。
-// 调用方持有读锁即可。
+// snapshot returns a snapshot of the current middleware list (shallow copy).
+// Caller only needs read lock.
 func (p *MessagePipeline) snapshot() []MessageMiddleware {
 	result := make([]MessageMiddleware, len(p.middlewares))
 	copy(result, p.middlewares)
 	return result
 }
 
-// Run 执行管道，返回构建好的消息列表。
-// concurrency safe：先获取中间件快照，再在快照上执行，不持有锁。
+// Run executes the pipeline, returns the built message list.
+// Concurrency-safe: takes middleware snapshot first, then executes on snapshot without holding lock.
 func (p *MessagePipeline) Run(mc *MessageContext) []llm.ChatMessage {
 	p.mu.RLock()
 	mws := p.snapshot()
@@ -284,7 +284,7 @@ func (p *MessagePipeline) Run(mc *MessageContext) []llm.ChatMessage {
 	return mc.Assemble()
 }
 
-// Middlewares 返回当前管道中的中间件列表（按优先级排序的快照）
+// Middlewares returns the middleware list in the current pipeline (snapshot sorted by priority)
 func (p *MessagePipeline) Middlewares() []MessageMiddleware {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

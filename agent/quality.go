@@ -10,35 +10,35 @@ import (
 	"xbot/llm"
 )
 
-// ActiveFile 最近 N 轮活跃文件记录
+// ActiveFile recent N rounds of active file records
 type ActiveFile struct {
-	Path         string   // 文件路径
-	LastSeenIter int      // 最后出现的轮次（0=最近一轮）
-	Functions    []string // 涉及的函数签名（从 tool result 中提取）
+	Path         string   // File path
+	LastSeenIter int      // Last seen round (0=most recent round)
+	Functions    []string // Function signatures involved (extracted from tool result)
 }
 
 // semanticMatchThreshold is the minimum word overlap ratio for a semantic match.
 const semanticMatchThreshold = 0.6
 
-// containsSemanticMatch 语义模糊匹配：归一化子串 + 关键词重叠度。
+// containsSemanticMatch semantic fuzzy matching: normalized substring + keyword overlap.
 func containsSemanticMatch(text, target string) bool {
 	if text == "" || target == "" {
 		return false
 	}
 
-	// 精确子串匹配（不区分大小写）
+	// Exact substring match (case-insensitive)
 	if strings.Contains(strings.ToLower(text), strings.ToLower(target)) {
 		return true
 	}
 
-	// 反向检查：target 包含 text 的关键部分
+	// Reverse check: target contains key parts of text
 	if len(target) > 50 && len(target) > len(text) {
 		if strings.Contains(strings.ToLower(target), strings.ToLower(text)) {
 			return true
 		}
 	}
 
-	// 关键词重叠度：target 分词后至少 60% 出现在 text 中
+	// Keyword overlap: at least 60% of target's words appear in text
 	targetWords := splitToWords(target)
 	if len(targetWords) == 0 {
 		return false
@@ -54,11 +54,11 @@ func containsSemanticMatch(text, target string) bool {
 }
 
 // ----------------------------------------------------------------
-// 辅助函数
+// Helper functions
 // ----------------------------------------------------------------
 
-// extractFilePaths 正则提取文件路径。
-// 匹配：/absolute/path, ./relative/path, ../parent/path, 文件名.ext（至少含一个 / 或 .ext）
+// extractFilePaths 正则提取File path。
+// Matches: /absolute/path, ./relative/path, ../parent/path, filename.ext (must contain at least one / or .ext)
 var filePathRe = regexp.MustCompile(`(?:[A-Za-z]:[\\\/]|[./~][\w./~-]*|/\S+?\.\w{1,10})(?:\s|[),;:}"'\n]|$)`)
 
 var funcSigRe = regexp.MustCompile(`func\s+(\w+)`)
@@ -68,7 +68,7 @@ func extractFilePaths(text string) []string {
 	var result []string
 	seen := make(map[string]bool)
 	for _, m := range matches {
-		// 去掉尾部非路径字符
+		// Remove trailing non-path characters
 		m = strings.TrimRight(m, " \t\n\r,);:}\"'")
 		if m == "" || seen[m] {
 			continue
@@ -79,7 +79,7 @@ func extractFilePaths(text string) []string {
 	return result
 }
 
-// extractFunctionSignatures 从文本中提取 Go 函数签名（func FuncName 模式）。
+// extractFunctionSignatures extracts Go function signatures from text (func FuncName pattern).
 func extractFunctionSignatures(text string) []string {
 	matches := funcSigRe.FindAllStringSubmatch(text, -1)
 	seen := make(map[string]bool)
@@ -96,7 +96,7 @@ func extractFunctionSignatures(text string) []string {
 	return result
 }
 
-// stopWords 停用词集合。
+// stopWords stop word set.
 var stopWords = map[string]bool{
 	"the": true, "a": true, "an": true, "is": true, "are": true,
 	"was": true, "were": true, "be": true, "been": true, "being": true,
@@ -123,7 +123,7 @@ var stopWords = map[string]bool{
 	"they": true, "them": true, "their": true, "up": true, "down": true,
 }
 
-// splitToWords 文本分词（去停用词）。
+// splitToWords tokenizes text (removes stop words).
 func splitToWords(text string) []string {
 	fields := strings.FieldsFunc(text, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
@@ -140,23 +140,23 @@ func splitToWords(text string) []string {
 
 // Internal helpers
 
-// ExtractActiveFiles 从最近 N 轮 tool call 中提取活跃文件。
-// 一轮 = 一组 assistant(tool_calls) + 对应的 tool result 消息。
-// 扫描 messages 尾部，按工具类型提取文件路径：
-//   - Read/Edit/Write → Arguments JSON 中的 "path" 或 "file_path"
-//   - Glob → Arguments JSON 中的 "pattern"
-//   - Grep → Arguments JSON 中的 "path"
-//   - Shell → 从 tool result Content 中正则提取文件路径
-//   - SubAgent → 不提取
+// ExtractActiveFiles extracts active files from the last N rounds of tool calls.
+// One round = one set of assistant(tool_calls) + corresponding tool result messages.
+// 扫描 messages 尾部，按工具类型提取File path：
+//   - Read/Edit/Write → "path" or "file_path" in Arguments JSON
+//   - Glob → "pattern" in Arguments JSON
+//   - Grep → "path" in Arguments JSON
+//   - Shell → 从 tool result Content 中正则提取File path
+//   - SubAgent → don't extract
 //
-// 同时从 tool result Content 中提取函数签名（func \w+ 模式）。
-// 去重后按 LastSeenIter 降序排列（最近的排在前面）。
+// Also extract function signatures from tool result Content (func \w+ pattern).
+// Deduplicate and sort by LastSeenIter descending (most recent first).
 func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 	if len(messages) == 0 || lastN <= 0 {
 		return nil
 	}
 
-	// 从尾部向前找 tool 组
+	// Find tool groups from the tail
 	type toolRound struct {
 		iter  int
 		paths []string
@@ -164,8 +164,8 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 	}
 	var rounds []toolRound
 
-	// 识别 tool 组：assistant(tool_calls) + tool results
-	// 从尾部向前扫描
+	// Identify tool groups: assistant(tool_calls) + tool results
+	// Scan from tail forward
 	var currentPaths []string
 	var currentFuncs []string
 
@@ -176,22 +176,22 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 		msg := messages[i]
 
 		if msg.Role == "tool" {
-			// 从 tool result 中提取路径（Shell 特殊处理）
+			// Extract paths from tool result (Shell special handling)
 			if msg.ToolName == "Shell" {
-				// 从 Shell 输出中正则提取文件路径
+				// 从 Shell 输出中正则提取File path
 				currentPaths = append(currentPaths, extractFilePaths(msg.Content)...)
 			}
-			// 从 tool result 中提取函数签名
+			// Extract function signatures from tool result
 			funcSigs := extractFunctionSignatures(msg.Content)
 			currentFuncs = append(currentFuncs, funcSigs...)
 		} else if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
-			// 从 tool call Arguments JSON 中提取路径
+			// Extract paths from tool call Arguments JSON
 			for _, tc := range msg.ToolCalls {
 				paths := extractPathsFromToolArgs(tc.Name, tc.Arguments)
 				currentPaths = append(currentPaths, paths...)
 			}
 
-			// 这是一个新轮的开始
+			// This is the start of a new round
 			if len(currentPaths) > 0 || len(currentFuncs) > 0 {
 				rounds = append(rounds, toolRound{
 					iter:  roundCount,
@@ -202,22 +202,22 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 				currentPaths = nil
 				currentFuncs = nil
 			} else {
-				// 即使没有提取到路径也计为一轮（避免漏算）
+				// Count as a round even if no paths extracted (avoid undercounting)
 				roundCount++
 			}
 		} else if roundCount > 0 {
-			// 遇到非 tool/assistant 消息且已经开始收集，停止
+			// Encountered non-tool/assistant message and collection has started, stop
 			break
 		}
 		i--
 	}
 
-	// 反转 rounds 使最近的在前面
+	// Reverse rounds so most recent is first
 	for l, r := 0, len(rounds)-1; l < r; l, r = l+1, r-1 {
 		rounds[l], rounds[r] = rounds[r], rounds[l]
 	}
 
-	// 合并去重
+	// Merge and deduplicate
 	pathInfo := make(map[string]*ActiveFile) // path -> ActiveFile
 	for _, rd := range rounds {
 		seen := make(map[string]bool)
@@ -227,7 +227,7 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 			}
 			seen[p] = true
 			if existing, ok := pathInfo[p]; ok {
-				// 更新为更近的轮次
+				// Update to a more recent round
 				if rd.iter < existing.LastSeenIter {
 					existing.LastSeenIter = rd.iter
 				}
@@ -238,12 +238,12 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 				}
 			}
 		}
-		// 函数签名归入对应文件（按最近路径）
+		// Function signatures assigned to corresponding files (by nearest path)
 		for _, f := range rd.funcs {
 			if f == "" {
 				continue
 			}
-			// 找到该轮中最相关的路径
+			// Find the most relevant path in this round
 			if len(rd.paths) > 0 {
 				p := rd.paths[0]
 				if af, ok := pathInfo[p]; ok {
@@ -253,14 +253,14 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 		}
 	}
 
-	// 去重函数签名
+	// Deduplicate function signatures
 	result := make([]ActiveFile, 0, len(pathInfo))
 	for _, af := range pathInfo {
 		af.Functions = dedupStrings(af.Functions)
 		result = append(result, *af)
 	}
 
-	// 按 LastSeenIter 降序排列（最近的在前）
+	// Sort by LastSeenIter descending (most recent first)
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].LastSeenIter < result[j].LastSeenIter
 	})
@@ -268,7 +268,7 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 	return result
 }
 
-// extractPathsFromToolArgs 从工具调用的 Arguments JSON 中提取文件路径。
+// extractPathsFromToolArgs 从工具调用的 Arguments JSON 中提取File path。
 func extractPathsFromToolArgs(toolName, argsJSON string) []string {
 	if argsJSON == "" {
 		return nil
@@ -299,7 +299,7 @@ func extractPathsFromToolArgs(toolName, argsJSON string) []string {
 	return paths
 }
 
-// dedupStrings 去重字符串切片，保持顺序
+// dedupStrings deduplicates string slice, preserving order
 func dedupStrings(ss []string) []string {
 	seen := make(map[string]bool)
 	var result []string

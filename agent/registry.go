@@ -35,7 +35,7 @@ func NewRegistryManager(store *SkillStore, agentStore *AgentStore, sharedStore *
 	}
 }
 
-// useSandbox 判断是否应使用 Sandbox 访问用户文件。
+// useSandbox determines whether to use Sandbox to access user files.
 func (rm *RegistryManager) useSandbox() bool {
 	return rm.sandbox != nil && rm.sandbox.Name() != "none"
 }
@@ -696,7 +696,7 @@ func (rm *RegistryManager) findAgentFile(name, senderID string) string {
 }
 
 // markInstalled records the installation source and timestamp for a skill.
-// TODO: 持久化安装信息到本地数据库，用于后续版本管理和自动更新。
+// TODO: Persist installation info to local database for future version management and auto-update.
 func (rm *RegistryManager) markInstalled(skillDir, installedFrom string, installedAt int64) {
 	// TODO: write install metadata to DB (installedFrom, installedAt)
 }

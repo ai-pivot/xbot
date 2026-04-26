@@ -2,9 +2,9 @@ package agent
 
 import "strings"
 
-// ExtractFinalReply 从 LLM 的完整输出中提取最终回复。
-// 短内容（<500字）原样返回。
-// 长内容按段落分割，取最后 2-3 段（上限 2000 字），避免丢失结论上下文。
+// ExtractFinalReply extracts the final reply from LLM's complete output.
+// Short content (<500 chars) returned as-is.
+// Long content split by paragraphs, take last 2-3 paragraphs (max 2000 chars) to avoid losing conclusion context.
 func ExtractFinalReply(content string) string {
 	if len(content) < 500 {
 		return content
@@ -14,7 +14,7 @@ func ExtractFinalReply(content string) string {
 		return content
 	}
 
-	// 取最后几段：优先取 3 段，如果超过 2000 字符则缩减到 2 段
+	// Take last few paragraphs: prefer 3, reduce to 2 if exceeding 2000 chars
 	takeLast := 3
 	if len(paragraphs) < takeLast {
 		takeLast = len(paragraphs)

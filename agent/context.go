@@ -14,11 +14,11 @@ import (
 	"xbot/prompt"
 )
 
-// PromptData 模板渲染数据
+// PromptData template rendering data
 type PromptData struct {
 	Channel        string
 	WorkDir        string
-	CWD            string // 当前工作目录（始终有值，默认等于 WorkDir）
+	CWD            string // 当前Working directory（始终有值，默认等于 WorkDir）
 	MemoryProvider string // "flat" or "letta"
 	Identity       string
 	Behavior       string
@@ -28,7 +28,7 @@ type PromptData struct {
 	CodeRules      string
 }
 
-// PromptLoader 负责加载和渲染系统提示词模板
+// PromptLoader handles loading and rendering system prompt templates
 type PromptLoader struct {
 	filePath string
 	mu       sync.RWMutex
@@ -36,15 +36,15 @@ type PromptLoader struct {
 	lastMod  time.Time
 }
 
-// NewPromptLoader 创建 PromptLoader
-// filePath 为空或文件不存在时，使用内置默认模板
+// NewPromptLoader creates PromptLoader
+// When filePath is empty or file doesn't exist, uses built-in default template
 func NewPromptLoader(filePath string) *PromptLoader {
 	pl := &PromptLoader{filePath: filePath}
 	pl.load()
 	return pl
 }
 
-// load 加载模板（从文件 → 内嵌默认 → 最小 fallback）
+// load loads template (from file → embedded default → minimal fallback)
 func (pl *PromptLoader) load() {
 	if pl.filePath != "" {
 		if err := pl.loadFromFile(); err == nil {
@@ -55,7 +55,7 @@ func (pl *PromptLoader) load() {
 	}
 	pl.mu.Lock()
 	defer pl.mu.Unlock()
-	// 优先使用嵌入的完整默认 prompt
+	// Prefer embedded full default prompt
 	if ep := EmbeddedPrompt(); ep != "" {
 		if t, err := template.New("system").Parse(ep); err != nil {
 			log.WithError(err).Error("Failed to parse embedded prompt, using minimal fallback")
@@ -65,10 +65,10 @@ func (pl *PromptLoader) load() {
 			return
 		}
 	}
-	// 最终 fallback
+	// Final fallback
 	fallback := EmbeddedFallbackPrompt()
 	if fallback == "" {
-		fallback = "你是 xbot。渠道：{{.Channel}} | 工作目录：{{.WorkDir}} | 当前目录：{{.CWD}}\n"
+		fallback = "你是 xbot。渠道：{{.Channel}} | Working directory：{{.WorkDir}} | Current directory: {{.CWD}}\n"
 	}
 	if t, err := template.New("system").Parse(fallback); err != nil {
 		log.Fatalf("Failed to parse default system prompt template: %v", err)
@@ -78,7 +78,7 @@ func (pl *PromptLoader) load() {
 	pl.lastMod = time.Time{}
 }
 
-// loadFromFile 从文件加载模板
+// loadFromFile loads template from file
 func (pl *PromptLoader) loadFromFile() error {
 	info, err := os.Stat(pl.filePath)
 	if err != nil {
@@ -103,7 +103,7 @@ func (pl *PromptLoader) loadFromFile() error {
 	return nil
 }
 
-// reload 检查文件是否更新，如果更新则重新加载
+// reload checks if file has been updated, reloads if so
 func (pl *PromptLoader) reload() {
 	if pl.filePath == "" {
 		return
@@ -124,8 +124,8 @@ func (pl *PromptLoader) reload() {
 	}
 }
 
-// Render 渲染系统提示词
-// 每次调用时检查文件是否更新，支持热加载
+// Render renders system prompt
+// Checks for file updates on each call, supports hot reloading
 func (pl *PromptLoader) Render(data PromptData) string {
 	pl.reload()
 	data = enrichPromptData(data)
@@ -137,7 +137,7 @@ func (pl *PromptLoader) Render(data PromptData) string {
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		log.WithError(err).Error("Failed to render system prompt template")
-		// fallback: 使用简单格式化
+		// fallback: use simple formatting
 		return fmt.Sprintf("You are xbot, a helpful AI assistant.\nChannel: %s\nWorkDir: %s",
 			data.Channel, data.WorkDir)
 	}
@@ -161,15 +161,15 @@ func enrichPromptData(data PromptData) PromptData {
 	return data
 }
 
-// initPipelines 初始化 Agent 的消息构建管道。
-// 在 Agent 创建时调用一次，后续通过 pipeline.Use/Remove 动态调整。
+// initPipelines initializes the Agent's message build pipeline.
+// Called once during Agent creation, dynamically adjusted later via pipeline.Use/Remove.
 func (a *Agent) initPipelines(memoryProvider string) {
 	promptWorkDir := a.workDir
 	if a.sandboxMode == "docker" {
 		promptWorkDir = "/workspace"
 	}
 
-	// 主 pipeline：用于普通消息和卡片响应
+	// Main pipeline: for normal messages and card responses
 	a.pipeline = NewMessagePipeline(
 		NewSystemPromptMiddleware(a.promptLoader, memoryProvider),
 		NewProjectContextMiddleware(),
@@ -182,25 +182,25 @@ func (a *Agent) initPipelines(memoryProvider string) {
 		NewUserMessageMiddleware(memoryProvider),
 	)
 
-	// Cron pipeline：用于定时任务（简洁，无记忆和技能）
+	// Cron pipeline：用于定时任务（简洁，无Memory和技能）
 	a.cronPipeline = NewMessagePipeline(
 		NewCronSystemPromptMiddleware(promptWorkDir),
 	)
 }
 
-// Pipeline 返回 Agent 的主消息构建管道，支持运行时动态增删中间件。
+// Pipeline returns the Agent's main message build pipeline, supporting runtime dynamic add/remove of middleware.
 func (a *Agent) Pipeline() *MessagePipeline {
 	return a.pipeline
 }
 
-// CronPipeline 返回 Agent 的 Cron 消息构建管道。
+// CronPipeline returns the Agent's Cron message build pipeline.
 func (a *Agent) CronPipeline() *MessagePipeline {
 	return a.cronPipeline
 }
 
-// NewMessageContext 创建一个预填充的 MessageContext，用于主 pipeline。
-// 调用方设置动态字段（Extra 中的 ExtraKeySkillsCatalog、ExtraKeyAgentsCatalog、ExtraKeyMemoryProvider）后，
-// 传入 pipeline.Run(mc) 执行。
+// NewMessageContext creates a pre-filled MessageContext for the main pipeline.
+// After caller sets dynamic fields (ExtraKeySkillsCatalog, ExtraKeyAgentsCatalog, ExtraKeyMemoryProvider in Extra),
+// pass to pipeline.Run(mc) for execution.
 func NewMessageContext(ctx context.Context, userContent string, history []llm.ChatMessage, channel, workDir, senderName, senderID, chatID string) *MessageContext {
 	return &MessageContext{
 		Ctx:         ctx,
@@ -216,7 +216,7 @@ func NewMessageContext(ctx context.Context, userContent string, history []llm.Ch
 	}
 }
 
-// NewCronMessageContext 创建一个 Cron 专用的 MessageContext。
+// NewCronMessageContext creates a Cron-specific MessageContext.
 func NewCronMessageContext(task string) *MessageContext {
 	return &MessageContext{
 		SystemParts: make(map[string]string),

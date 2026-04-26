@@ -13,16 +13,16 @@ import (
 	"xbot/session"
 )
 
-// handlePromptQuery 构建完整提示词并写入文件发送给用户（dryrun，不调用 LLM）
+// handlePromptQuery 构建完整提示词并写入文件Send给用户（dryrun，不调用 LLM）
 func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
-	// 提取 /prompt 之后的 query 内容（先 trim 再截取，与 cmd 解析对齐）
+	// Extract query content after /prompt (trim then truncate, aligned with cmd parsing)
 	trimmed := strings.TrimSpace(msg.Content)
 	query := strings.TrimSpace(trimmed[len("/prompt"):])
 	if query == "" {
 		query = "(empty query)"
 	}
 
-	// 替换 msg.Content 为 query，复用 buildPrompt
+	// Replace msg.Content with query, reuse buildPrompt
 	dryMsg := msg
 	dryMsg.Content = query
 	messages, err := a.buildPrompt(ctx, dryMsg, tenantSession)
@@ -30,11 +30,11 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 		return nil, err
 	}
 
-	// 获取工具定义
+	// Get tool definitions
 	sessionKey := msg.Channel + ":" + msg.ChatID
 	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey), a.settingsSvc, msg.Channel, msg.SenderID)
 
-	// 格式化输出
+	// Format output
 	var buf strings.Builder
 	buf.WriteString("=== Prompt Dry Run ===\n\n")
 	for i, m := range messages {
@@ -57,7 +57,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 
 	fmt.Fprintf(&buf, "\n--- Total messages: %d ---\n", len(messages))
 
-	// 写入文件并发送
+	// 写入文件并Send
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.sandboxWorkspace(sbUID)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
@@ -81,7 +81,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 	}, nil
 }
 
-// handleNewSession 处理 /new 命令：先归档记忆，再clear session
+// handleNewSession 处理 /new 命令：先归档Memory，再clear session
 func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
 	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
@@ -96,7 +96,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	lastConsolidated := tenantSession.LastConsolidated()
 	mem := tenantSession.Memory()
 
-	// 取尚未合并的消息进行归档
+	// Take unmerged messages for archiving
 	snapshot := messages
 	if lastConsolidated < len(messages) {
 		snapshot = messages[lastConsolidated:]
@@ -115,7 +115,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 			return &bus.OutboundMessage{
 				Channel: msg.Channel,
 				ChatID:  msg.ChatID,
-				Content: "记忆归档失败，会话未重置，请重试。",
+				Content: "Memory归档失败，会话未重置，请重试。",
 			}, nil
 		}
 	}
@@ -127,14 +127,14 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 		log.Ctx(ctx).WithError(err).Warn("Failed to reset last consolidated")
 	}
 
-	// 清除记忆整理状态，取消正在进行的整理任务（多路径协调）
+	// 清除Memory整理状态，取消正在进行的整理任务（多路径协调）
 	tenantKey := msg.Channel + ":" + msg.ChatID
 
-	// 清理 offload 数据
+	// Cleanup offload 数据
 	if a.offloadStore != nil {
 		a.offloadStore.CleanSession(tenantKey)
 	}
-	// 清理 mask 数据
+	// Cleanup mask 数据
 	if a.maskStore != nil {
 		a.maskStore.Clear()
 	}
@@ -142,6 +142,6 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	return &bus.OutboundMessage{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: "会话已重置，记忆已归档。",
+		Content: "会话已重置，Memory已归档。",
 	}, nil
 }

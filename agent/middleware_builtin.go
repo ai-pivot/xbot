@@ -15,9 +15,9 @@ import (
 	log "xbot/logger"
 )
 
-// --- Priority 0-99: 基础设施 ---
+// --- Priority 0-99: Infrastructure ---
 
-// SystemPromptMiddleware 注入基础系统提示词模板（prompt.md 渲染结果）
+// SystemPromptMiddleware injects base system prompt template (prompt.md rendered result)
 type SystemPromptMiddleware struct {
 	loader         *PromptLoader
 	memoryProvider string
@@ -41,7 +41,7 @@ func (m *SystemPromptMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// --- Priority 5: 项目级上下文 ---
+// --- Priority 5: Project-level context ---
 
 // agentContextFiles defines the file names to search for project-level context,
 // in priority order. First match wins.
@@ -239,10 +239,10 @@ func LoadProjectContextFile(dir string) string {
 	return ""
 }
 
-// --- Priority 100-199: 上下文注入 ---
+// --- Priority 100-199: Context injection ---
 
-// SkillsCatalogMiddleware 注入 Skills 目录。
-// 从 MessageContext.Extra[ExtraKeySkillsCatalog] 读取动态内容。
+// SkillsCatalogMiddleware 注入 Skills directory。
+// Reads dynamic content from MessageContext.Extra[ExtraKeySkillsCatalog].
 type SkillsCatalogMiddleware struct{}
 
 func NewSkillsCatalogMiddleware() *SkillsCatalogMiddleware {
@@ -261,7 +261,7 @@ func (m *SkillsCatalogMiddleware) Process(mc *MessageContext) error {
 }
 
 // AgentsCatalogMiddleware injects available agents catalog.
-// 从 MessageContext.Extra[ExtraKeyAgentsCatalog] 读取动态内容。
+// Reads dynamic content from MessageContext.Extra[ExtraKeyAgentsCatalog].
 type AgentsCatalogMiddleware struct{}
 
 func NewAgentsCatalogMiddleware() *AgentsCatalogMiddleware {
@@ -335,8 +335,8 @@ func (m *PermissionControlMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// MemoryMiddleware 注入长期记忆。
-// 从 MessageContext.Extra[ExtraKeyMemoryProvider] 读取动态 MemoryProvider。
+// MemoryMiddleware 注入长期Memory。
+// Reads dynamic MemoryProvider from MessageContext.Extra[ExtraKeyMemoryProvider].
 type MemoryMiddleware struct{}
 
 func NewMemoryMiddleware() *MemoryMiddleware {
@@ -365,7 +365,7 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// SenderInfoMiddleware 注入发送者信息到系统提示词
+// SenderInfoMiddleware 注入Send者信息到系统提示词
 type SenderInfoMiddleware struct{}
 
 func NewSenderInfoMiddleware() *SenderInfoMiddleware {
@@ -431,10 +431,10 @@ func (m *LanguageMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// --- Priority 200-299: 用户Message processing ---
+// --- Priority 200-299: User message processing ---
 
-// buildSystemGuideText 根据记忆模式生成系统引导文本。
-// letta 模式下包含 search_tools 引导，flat 模式下不包含。
+// buildSystemGuideText 根据Memory模式生成系统引导文本。
+// Includes search_tools guide in letta mode, not in flat mode.
 func buildSystemGuideText(memoryProvider string) string {
 	if memoryProvider == "letta" {
 		return prompt.UserMessageGuideLetta
@@ -442,7 +442,7 @@ func buildSystemGuideText(memoryProvider string) string {
 	return prompt.UserMessageGuideFlat
 }
 
-// UserMessageMiddleware 构建最终的用户消息（注入时间戳、发送者标识、系统引导）
+// UserMessageMiddleware 构建最终的用户消息（注入时间戳、Send者标识、系统引导）
 type UserMessageMiddleware struct {
 	memoryProvider string
 }
@@ -471,9 +471,9 @@ func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// --- Cron 专用中间件 ---
+// --- Cron-specific middleware ---
 
-// CronSystemPromptMiddleware 注入 Cron 专用系统提示词
+// CronSystemPromptMiddleware injects Cron-specific system prompt
 type CronSystemPromptMiddleware struct {
 	workDir string
 }
@@ -492,7 +492,7 @@ func (m *CronSystemPromptMiddleware) Process(mc *MessageContext) error {
 		cronPrompt = "You are xbot executing a scheduled cron task.\n\n## Guidelines\n- You are processing a scheduled reminder/task\n- Execute the task directly and concisely\n- Use tools when needed\n- Report results clearly\n- WorkDir: %s\n- Time: %s\n"
 	}
 	mc.SystemParts["00_base"] = fmt.Sprintf(cronPrompt, m.workDir, now)
-	// Cron 消息不需要额外处理 UserMessage，直接使用原始内容
+	// Cron messages don't need extra UserMessage processing, use original content directly
 	mc.UserMessage = mc.UserContent
 	return nil
 }

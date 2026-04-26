@@ -20,9 +20,9 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 
 	isSubAgent := agentID != "main"
 
-	// 1. 提取任务目标：最后一条 user message（去掉时间戳和引导文本）
-	//   - 主 Agent：用户最新需求
-	//   - SubAgent：父 Agent 分配的任务命令
+	// 1. Extract task goal: last user message (remove timestamps and guide text)
+	//   - Main Agent: user's latest requirement
+	//   - SubAgent: task command assigned by parent Agent
 	var taskGoal string
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
@@ -34,7 +34,7 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		}
 	}
 
-	// 2. 统计 tool message 总数作为进度指标
+	// 2. Count total tool messages as progress indicator
 	toolCount := 0
 	for _, msg := range messages {
 		if msg.Role == "tool" {
@@ -48,32 +48,32 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		roundToolNames = append(roundToolNames, tc.Name)
 	}
 
-	// 4. 构建提醒
+	// 4. Build reminder
 	var parts []string
 
 	if taskGoal != "" {
 		if isSubAgent {
-			parts = append(parts, fmt.Sprintf("执行任务: %s", taskGoal))
+			parts = append(parts, fmt.Sprintf("Executing task:: %s", taskGoal))
 		} else {
-			parts = append(parts, fmt.Sprintf("用户需求: %s", taskGoal))
+			parts = append(parts, fmt.Sprintf("User requirement:: %s", taskGoal))
 		}
 	}
 
 	if cwd != "" {
-		parts = append(parts, fmt.Sprintf("当前目录: %s", cwd))
+		parts = append(parts, fmt.Sprintf("Current directory:: %s", cwd))
 	}
 
-	parts = append(parts, fmt.Sprintf("已完成 %d 次工具调用", toolCount))
-	parts = append(parts, fmt.Sprintf("本轮使用: %s", strings.Join(roundToolNames, ", ")))
+	parts = append(parts, fmt.Sprintf("Completed %d tool calls", toolCount))
+	parts = append(parts, fmt.Sprintf("This round used:: %s", strings.Join(roundToolNames, ", ")))
 
 	if todoSummary != "" {
 		parts = append(parts, fmt.Sprintf("TODO: %s", todoSummary))
 	}
 
-	parts = append(parts, "行为提醒:")
-	parts = append(parts, "- 优先编辑已有文件，避免创建新文件")
-	parts = append(parts, "- 修改后运行测试验证")
-	parts = append(parts, "- 错误时先分析根因再修改")
+	parts = append(parts, "Behavior reminders:")
+	parts = append(parts, "- Prefer editing existing files, avoid creating new files")
+	parts = append(parts, "- Run tests to verify after modifications")
+	parts = append(parts, "- Analyze root cause first when encountering errors")
 
 	// Detect git commit in Shell tool calls — remind agent to activate post-dev skill
 	gitCommitDetected := false
@@ -84,7 +84,7 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		}
 	}
 	if gitCommitDetected {
-		parts = append(parts, "- 检测到 git commit，立即激活 post-dev skill 更新项目文档")
+		parts = append(parts, "- Detected git commit, immediately activate post-dev skill to update project docs")
 	}
 
 	return "<system-reminder>\n" + strings.Join(parts, "\n") + "\n</system-reminder>"
@@ -96,22 +96,22 @@ func stripSystemReminder(content string) string {
 	return systemReminderRe.ReplaceAllString(content, "")
 }
 
-// extractUserGoal 从 user message 中提取实际用户需求（去掉时间戳和系统引导文本）。
+// extractUserGoal 从 user message 中提取实际User requirement:（去掉时间戳和系统引导文本）。
 func extractUserGoal(content string) string {
 	lines := strings.Split(content, "\n")
 	var goalLines []string
 	inGuide := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// 跳过时间戳行 [2026-03-21 23:08:51 CST]
+		// Skip timestamp line [2026-03-21 23:08:51 CST]
 		if len(trimmed) > 0 && trimmed[0] == '[' && strings.Contains(trimmed, "CST") {
 			continue
 		}
-		// 跳过 [用户名] 标记行
+		// Skip [username] marker lines
 		if len(trimmed) > 0 && trimmed[0] == '[' && strings.HasSuffix(trimmed, "]") && len(trimmed) < 50 {
 			continue
 		}
-		// 跳过系统引导文本块
+		// Skip system guide text blocks
 		if strings.Contains(trimmed, "[系统引导]") || strings.Contains(trimmed, "search_tools") || strings.Contains(trimmed, "WebSearch") || strings.Contains(trimmed, "Fetch") || strings.Contains(trimmed, "Skill") || strings.Contains(trimmed, "现在时间") {
 			inGuide = true
 			continue

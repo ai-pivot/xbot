@@ -43,9 +43,9 @@ func (a *todoManagerAdapter) ClearTodos(sessionKey string) {
 	a.mgr.SetTodos(sessionKey, nil)
 }
 
-// applyUserMaxContext 如果用户在 Settings 中设置了 max_context，
-// 创建一个新的 ContextManagerConfig 副本并覆盖 MaxContextTokens，
-// 避免污染 Agent 级别的原始Configuration（含 sync.RWMutex）。
+// applyUserMaxContext if the user has set max_context in Settings,
+// creates a new ContextManagerConfig copy and overrides MaxContextTokens,
+// to avoid polluting the Agent-level original config (which has sync.RWMutex).
 func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextManagerConfig {
 	if userMaxCtx <= 0 || base == nil {
 		return base
@@ -57,9 +57,9 @@ func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextMan
 	}
 }
 
-// buildBaseRunConfig 构建主 Agent（main/cron）共用的基础 RunConfig。
-// 包含 LLM、身份、工作区、工具执行器、循环控制、HookManager 等公共字段。
-// 返回 (RunConfig, userMaxContext) — userMaxContext 为用户在 Settings 中设置的值，0 表示未设置。
+// buildBaseRunConfig builds the base RunConfig shared by main Agent (main/cron).
+// Includes LLM, identity, workspace, tool executor, loop control, HookManager and other common fields.
+// Returns (RunConfig, userMaxContext) — userMaxContext is the value set by the user in Settings, 0 means not set.
 func (a *Agent) buildBaseRunConfig(
 	channel, chatID, senderID string,
 	messages []llm.ChatMessage,
@@ -70,27 +70,27 @@ func (a *Agent) buildBaseRunConfig(
 
 	llmClient, model, userMaxCtx, thinkingMode := a.llmFactory.GetLLMForChat(senderID, chatID)
 
-	// LLM 并发限流回调（per-tenant）
+	// LLM concurrency rate-limiting callback (per-tenant)
 	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID)
 	subAgentSem := a.llmFactory.SubAgentSemAcquireForUser(senderID)
 
 	return RunConfig{
-		// 必需
+		// Required
 		LLMClient:    llmClient,
 		Model:        model,
 		ThinkingMode: thinkingMode,
 		Tools:        a.tools,
 		Messages:     messages,
 
-		// 身份
+		// Identity
 		AgentID:      "main",
 		Channel:      channel,
 		ChatID:       chatID,
-		SenderID:     senderID,      // 直接调用者 = 原始用户（用于消息路由 + settings/usage 存储 key）
-		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		SenderID:     senderID,      // direct caller = original user (for message routing + settings/usage storage key)
+		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书Identity登录 web 时为飞书 ou_xxx）
 		SenderName:   senderName,
 
-		// 工作区 & 沙箱
+		// Workspace & Sandbox
 		WorkingDir:       a.workDir,
 		WorkspaceRoot:    a.workspaceRoot(sandboxUserID),
 		ReadOnlyRoots:    a.globalSkillDirs,
@@ -104,31 +104,31 @@ func (a *Agent) buildBaseRunConfig(
 		Sandbox:          resolveSandbox(a.sandbox, sandboxUserID),
 		SandboxMode:      a.sandboxMode,
 
-		// 循环控制
+		// Loop control
 		MaxIterations:   a.getMaxIterations(),
 		MaxOutputTokens: a.llmFactory.GetMaxOutputTokens(senderID),
 
 		// Session
 		SessionKey: sessionKey,
 
-		// 发送
+		// Send
 		SendFunc:      a.sendMessage,
 		InjectInbound: a.injectInbound,
 
-		// 工具执行
+		// Tool execution
 		ToolExecutor: a.buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID),
 		// ToolTimeout: no longer used. Tools manage their own timeouts.
 
-		// 读写分离（主 Agent 始终启用）
+		// Read-write split (always enabled for main Agent)
 		EnableReadWriteSplit: true,
 
-		// SessionFinalSent 回调
+		// SessionFinalSent callback
 		SessionFinalSentCallback: func() bool {
 			_, sent := a.sessionFinalSent.Load(sessionKey)
 			return sent
 		},
 
-		// Letta 记忆字段
+		// Letta memory fields
 		ToolContextExtras: a.buildToolContextExtras(channel, chatID),
 
 		// HookManager — inherit from Agent
@@ -137,15 +137,15 @@ func (a *Agent) buildBaseRunConfig(
 		// SettingsSvc — inherit from Agent
 		SettingsSvc: a.settingsSvc,
 
-		// LLM 并发限流回调（per-tenant）
+		// LLM concurrency rate-limiting callback (per-tenant)
 		LLMSemAcquire:             llmSemAcquire,
 		EnableConcurrentSubAgents: true,
 		SubAgentSem:               subAgentSem,
 	}, userMaxCtx
 }
 
-// buildMainRunConfig 为主 Agent 构建完整的 RunConfig。
-// 从 processMessage / handleCardResponse 调用。
+// buildMainRunConfig builds the complete RunConfig for the main Agent.
+// Called from processMessage / handleCardResponse.
 func (a *Agent) buildMainRunConfig(
 	_ context.Context,
 	msg bus.InboundMessage,
@@ -156,8 +156,8 @@ func (a *Agent) buildMainRunConfig(
 	channel, chatID, senderID, senderName := msg.Channel, msg.ChatID, msg.SenderID, msg.SenderName
 	sessionKey := channel + ":" + chatID
 
-	// 飞书身份登录 web 时，用飞书用户 ID 作为沙箱用户 ID，
-	// 确保 web 端与飞书端共用同一个 Docker 容器和工作区。
+	// 飞书Identity登录 web 时，用飞书用户 ID 作为沙箱用户 ID，
+	// ensuring web and Feishu share the same Docker container and workspace.
 	feishuUserID := msg.Metadata["feishu_user_id"]
 	sandboxUserID := senderID
 	if feishuUserID != "" {
@@ -166,13 +166,13 @@ func (a *Agent) buildMainRunConfig(
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
 
-	// 保留 FeishuUserID 供 buildToolContext 等处使用
+	// Keep FeishuUserID for use in buildToolContext etc.
 	cfg.FeishuUserID = feishuUserID
 
-	// 主 Agent 特有字段
+	// Main Agent specific fields
 	cfg.Session = tenantSession
 
-	// Token 状态持久化：Run() 结束后写入 DB，重启后恢复
+	// Token state persistence: written to DB after Run() completes, restored after restart
 	if extras := cfg.ToolContextExtras; extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
 		memSvc := extras.MemorySvc
 		tenantID := extras.TenantID
@@ -183,11 +183,11 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// OAuth 处理
+	// OAuth handling
 	cfg.OAuthHandler = a.buildOAuthHandler(channel, chatID, senderID, sessionKey)
 
-	// 进度通知
-	// Web 渠道始终启用结构化进度，但不发送文本进度消息
+	// Progress notification
+	// Web 渠道始终启用结构化进度，但不Send文本进度消息
 	if channel == "web" || channel == "cli" {
 		// Web: no-op notifier — structured progress goes via ProgressEventHandler
 		// Setting ProgressNotifier to non-nil enables autoNotify in engine.Run()
@@ -200,9 +200,9 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// 结构化进度事件推送（web 和 cli 渠道）
+	// Structured progress event push (web and CLI channels)
 	if (channel == "web" || channel == "cli") && a.channelFinder != nil {
-		// CLI 渠道进度处理
+		// CLI channel progress handling
 		switch channel {
 		case "cli":
 			var cliCh *channelpkg.CLIChannel
@@ -507,7 +507,7 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// 注入 ContextManager
+	// Inject ContextManager
 	cfg.ContextManager = a.GetContextManager()
 	cfg.ContextManagerConfig = applyUserMaxContext(a.contextManagerConfig, userMaxCtx)
 
@@ -518,7 +518,7 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// SpawnAgent（主 Agent 可以创建 SubAgent）
+	// SpawnAgent (main Agent can create SubAgent)
 	cfg.SpawnAgent = func(ctx context.Context, inMsg bus.InboundMessage) (*bus.OutboundMessage, error) {
 		return a.spawnSubAgent(ctx, inMsg)
 	}
@@ -526,7 +526,7 @@ func (a *Agent) buildMainRunConfig(
 	// OffloadStore — Layer 1 offload
 	cfg.OffloadStore = a.offloadStore
 
-	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）
+	// MaskStore — Observation Masking (enabled by default, can be disabled via settings enable_masking)
 	cfg.MaskStore = a.maskStore
 	streamDisabled := false
 	if a.settingsSvc != nil {
@@ -584,15 +584,15 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// ContextEditor — Context Editing（精确编辑上下文）
+	// ContextEditor — Context Editing (precise context editing)
 	cfg.ContextEditor = a.contextEditor
 
-	// TodoManager — TODO 状态查询
+	// TodoManager — TODO status query
 	if a.todoManager != nil {
 		cfg.TodoManager = &todoManagerAdapter{mgr: a.todoManager}
 	}
 
-	// InteractiveCallbacks — interactive SubAgent 支持
+	// InteractiveCallbacks — interactive SubAgent support
 	cfg.InteractiveCallbacks = &InteractiveCallbacks{
 		SpawnFn: a.SpawnInteractiveSession,
 		SendFn:  a.SendToInteractiveSession,
@@ -618,8 +618,8 @@ func (a *Agent) buildMainRunConfig(
 	return cfg
 }
 
-// buildCronRunConfig 为 Cron 消息构建 RunConfig。
-// Cron 消息不需要自动压缩、进度通知、session 持久化。
+// buildCronRunConfig builds RunConfig for Cron messages.
+// Cron 消息不需要自动压缩、Progress notification、session 持久化。
 func (a *Agent) buildCronRunConfig(
 	_ context.Context,
 	msg bus.InboundMessage,
@@ -631,10 +631,10 @@ func (a *Agent) buildCronRunConfig(
 	return cfg
 }
 
-// buildSubAgentRunConfig 为 SubAgent 构建 RunConfig。
-// SubAgent 使用独立工具集、无 session、有压缩（独立 ContextManager）、无进度通知。
-// Phase 2: SubAgent 通过 RunConfig 继承父 Agent 的工作区Configuration，
-// 使用统一的 defaultToolExecutor + buildToolContext 构建 ToolContext。
+// buildSubAgentRunConfig builds RunConfig for SubAgent.
+// SubAgent 使用独立工具集、无 session、有压缩（独立 ContextManager）、无Progress notification。
+// Phase 2: SubAgent inherits parent Agent's workspace configuration via RunConfig,
+// uses unified defaultToolExecutor + buildToolContext to build ToolContext.
 func (a *Agent) buildSubAgentRunConfig(
 	ctx context.Context,
 	parentCtx *tools.ToolContext,
@@ -644,11 +644,11 @@ func (a *Agent) buildSubAgentRunConfig(
 	caps tools.SubAgentCapabilities,
 	roleName string,
 	interactive bool,
-	model string, // 可选：角色指定的模型，为空时继承主 Agent
+	model string, // optional: model specified by the role, inherits from main Agent when empty
 ) RunConfig {
 	parentAgentID := parentCtx.AgentID
 
-	// Interactive SubAgent 默认拥有 send_message 能力（群聊/agent 间通信必需）
+	// Interactive SubAgent 默认拥有 send_message 能力（群聊/agent 间通信Required）
 	if interactive {
 		caps.SendMessage = true
 	}
@@ -657,17 +657,17 @@ func (a *Agent) buildSubAgentRunConfig(
 		systemPrompt = "You are a helpful assistant. Complete the given task using the available tools."
 	}
 
-	// 子 Agent 工具集：根据 capabilities 决定是否保留 SubAgent 工具
+	// Sub-Agent tool set: decide whether to keep SubAgent tool based on capabilities
 	subTools := a.tools.Clone()
 	if !caps.SpawnAgent {
 		subTools.Unregister(toolSubAgent)
 	}
 
-	// 如果指定了工具白名单，只保留白名单中的工具
-	// 以下工具永久可用，不受白名单限制：
-	//   - SubAgent（如果 caps.SpawnAgent=true）
-	//   - offload_recall、recall_masked（SubAgent 需要访问父 Agent 的 offload/mask 数据）
-	//   - SendMessage、CreateChat（interactive SubAgent 群聊/agent 间通信必需）
+	// If a tool whitelist is specified, only keep whitelisted tools
+	// The following tools are always available, not restricted by whitelist:
+	//   - SubAgent (if caps.SpawnAgent=true)
+	//   - offload_recall, recall_masked (SubAgent needs access to parent Agent's offload/mask data)
+	//   - SendMessage、CreateChat（interactive SubAgent 群聊/agent 间通信Required）
 	if len(allowedTools) > 0 {
 		allowed := make(map[string]bool, len(allowedTools))
 		for _, name := range allowedTools {
@@ -675,15 +675,15 @@ func (a *Agent) buildSubAgentRunConfig(
 		}
 		for _, tool := range subTools.List() {
 			toolName := tool.Name()
-			// SubAgent 工具：如果 SpawnAgent=true，始终保留
+			// SubAgent tool: if SpawnAgent=true, always keep
 			if toolName == toolSubAgent && caps.SpawnAgent {
 				continue
 			}
-			// offload_recall / recall_masked：SubAgent 始终可用
+			// offload_recall / recall_masked: always available for SubAgent
 			if toolName == toolOffloadRecall || toolName == toolRecallMasked {
 				continue
 			}
-			// SendMessage / CreateChat：interactive SubAgent 始终可用（群聊通信）
+			// SendMessage / CreateChat: always available for interactive SubAgent (group chat communication)
 			if interactive && (toolName == toolSendMessage || toolName == toolCreateChat) {
 				continue
 			}
@@ -693,9 +693,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		}
 	}
 
-	// 构建 SubAgent 的 system prompt：通用模板 + 角色专有能力描述
+	// Build SubAgent's system prompt: common template + role-specific capability description
 	// parentCtx.WorkspaceRoot 在 remote 模式下为空（buildToolContext 清空了宿主机路径），
-	// 回退到 a.workDir 确保提示词中始终包含正确的工作目录。
+	// Fallback to a.workDir to ensure the prompt always contains the correct working directory.
 	workDir := parentCtx.WorkspaceRoot
 	if workDir == "" {
 		workDir = a.workDir
@@ -705,20 +705,20 @@ func (a *Agent) buildSubAgentRunConfig(
 	}
 	now := time.Now().Format(timeFmtDatetime)
 
-	// CWD 继承父 Agent 的当前目录，无则默认 workDir
+	// CWD inherits parent Agent's current directory, defaults to workDir if absent
 	cwd := parentCtx.CurrentDir
 	if cwd == "" {
 		cwd = workDir
 	}
-	cwdPart := "\n- 当前目录：" + cwd
+	cwdPart := "\n- Current directory: " + cwd
 
-	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）
+	// role.SystemPrompt serves as role-specific capability description (not a generic prompt)
 	rolePrompt := strings.TrimSpace(systemPrompt)
 	if rolePrompt == "" {
 		rolePrompt = "You are a helpful assistant. Complete the given task using the available tools."
 	}
 
-	// 通用模板 + 角色描述（有白名单时使用精简模板）
+	// Common template + role description (use concise template when whitelist is present)
 	var sysPrompt string
 	if len(allowedTools) > 0 {
 		sysPrompt = fmt.Sprintf(subagentSystemPromptTemplateConcise, workDir, cwdPart, roleName, parentAgentID, now)
@@ -732,28 +732,28 @@ func (a *Agent) buildSubAgentRunConfig(
 	}
 	sysPrompt += "\n## 角色描述\n\n" + rolePrompt + "\n"
 
-	// 注入群组信息（当前 agent 是某个虚拟群组的成员）
+	// Inject group info (current agent is a member of a virtual group)
 	if parentCtx.GroupID != "" && len(parentCtx.GroupMembers) > 0 {
 		sysPrompt += "\n## 群组协作\n\n"
 		sysPrompt += fmt.Sprintf("你是虚拟群组 **%s** 的成员。群组成员：\n", parentCtx.GroupID)
 		for _, m := range parentCtx.GroupMembers {
 			sysPrompt += fmt.Sprintf("- %s\n", m)
 		}
-		sysPrompt += "\n你可以使用 **SendMessage** 工具直接向群组中的其他成员发送消息：\n"
-		sysPrompt += "- `SendMessage(to=\"agent:角色/实例\", message=\"...\")` → 直接发送消息给该成员\n"
+		sysPrompt += "\n你可以使用 **SendMessage** 工具直接向群组中的其他成员Send消息：\n"
+		sysPrompt += "- `SendMessage(to=\"agent:角色/实例\", message=\"...\")` → 直接Send消息给该成员\n"
 		sysPrompt += "- `SendMessage(to=\"" + parentCtx.GroupID + "\", message=\"...\")` → 广播发给所有成员\n"
 		sysPrompt += "- `SendMessage(to=\"" + parentCtx.GroupID + "\", message=\"@agent:角色/实例 ...\")` → @提及特定成员\n"
 		sysPrompt += "\n**注意**：你只能向同组成员发消息，不能跨群组通信。群组通信是直接的——消息会进入对方的 session，他们能看到完整的上下文并自行判断如何回应。\n"
 	}
 
-	// 注入可用 agent 目录（只在 spawn_agent=true 时注入）
+	// Inject available agent directory (only injected when spawn_agent=true)
 	if caps.SpawnAgent {
 		if agentsCatalog := a.agents.GetAgentsCatalog(ctx, parentCtx.SenderID); agentsCatalog != "" {
 			sysPrompt += "\n" + agentsCatalog
 		}
 	}
 
-	// 注入 skills 目录（SubAgent 可使用 Skill 工具加载 skill）
+	// Inject skills directory (SubAgent can use Skill tool to load skills)
 	originUserID := parentCtx.OriginUserID
 	if originUserID == "" {
 		originUserID = parentCtx.SenderID
@@ -791,10 +791,10 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	subAgentID := parentAgentID + "/" + roleName
 
-	// SubAgent 继承父 Agent 的 LLM Configuration（使用 OriginUserID 获取原始用户的Configuration）
-	// 如果角色指定了模型（含 tier 名称如 vanguard/balance/swift），则通过 GetLLMForModel
-	// 智能查找对应的订阅。当 tier 未Configuration模型时，自动 fallback 到 GetLLM(originUserID)，
-	// 即父 agent 当前使用的模型和订阅。model 为空时同理。
+	// SubAgent inherits parent Agent's LLM configuration (uses OriginUserID to get original user's config)
+	// If the role specifies a model (including tier name like vanguard/balance/swift), use GetLLMForModel
+	// to intelligently find the matching subscription. When tier has no model configured, auto-fallback to GetLLM(originUserID),
+	// i.e., the model and subscription currently used by the parent agent. Same logic when model is empty.
 	var llmClient llm.LLM
 	var subModel string
 	var userMaxCtx int
@@ -826,10 +826,10 @@ func (a *Agent) buildSubAgentRunConfig(
 		AgentID:         subAgentID,
 		Channel:         parentCtx.Channel,
 		ChatID:          parentCtx.ChatID,
-		SenderID:        parentAgentID, // SubAgent: 直接调用者 = 父 Agent
-		OriginUserID:    originUserID,  // SubAgent: 继承原始用户 ID
+		SenderID:        parentAgentID, // SubAgent: direct caller = parent Agent
+		OriginUserID:    originUserID,  // SubAgent: inherits original user ID
 
-		// 从父 Agent 继承工作区 & 沙箱Configuration
+		// 从父 Agent 继承Workspace & SandboxConfiguration
 		WorkingDir:       parentCtx.WorkingDir,
 		WorkspaceRoot:    parentCtx.WorkspaceRoot,
 		ReadOnlyRoots:    parentCtx.ReadOnlyRoots,
@@ -847,9 +847,9 @@ func (a *Agent) buildSubAgentRunConfig(
 			}
 			return "none"
 		}(),
-		// 继承父 Agent 的 CWD。remote 模式下 parentCtx.CurrentDir 可能为空
-		//（buildToolContext 清空了宿主机路径，且 session 未存过 CWD），
-		// 回退到 a.workDir 确保子 Agent 有正确的初始目录。
+		// Inherit parent Agent's CWD. In remote mode parentCtx.CurrentDir may be empty
+		//(buildToolContext cleared host paths, and session hasn't stored CWD),
+		// Fallback to a.workDir to ensure sub-Agent has the correct initial directory.
 		InitialCWD: func() string {
 			if parentCtx.CurrentDir != "" {
 				return parentCtx.CurrentDir
@@ -859,16 +859,16 @@ func (a *Agent) buildSubAgentRunConfig(
 		InitialGroupID:      parentCtx.GroupID,
 		InitialGroupMembers: parentCtx.GroupMembers,
 
-		MaxIterations: a.getMaxIterations(), // 继承主 Agent Configuration
-		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
+		MaxIterations: a.getMaxIterations(), // Inherit main Agent configuration
+		// SubAgent doesn't set independent timeout, directly uses deadline from parent context
 
-		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
+		// LLM concurrency rate-limiting: inherit parent Agent's per-tenant semaphore
 		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
 
-		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
+		// ToolExecutor = nil → use defaultToolExecutor (unified buildToolContext)
 	}
 
-	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户
+	// Per-user token usage tracking: SubAgent's token consumption is attributed to the original user
 	cfg.RecordUserTokenUsage = func(senderID, model string, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount int) {
 		if err := a.multiSession.RecordUserTokenUsage(originUserID, model, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount); err != nil {
 			log.WithError(err).WithFields(log.Fields{
@@ -878,58 +878,58 @@ func (a *Agent) buildSubAgentRunConfig(
 		}
 	}
 
-	// 独立 sessionKey：使用 subAgentID 确保与父 Agent 隔离，
-	// 避免工具激活、OffloadStore、MaskStore 等按 sessionKey 索引的数据污染。
+	// Independent sessionKey: uses subAgentID to ensure isolation from parent Agent,
+	// avoiding data pollution in tool activation, OffloadStore, MaskStore etc. indexed by sessionKey.
 	cfg.SessionKey = subAgentID
 
-	// RootSessionKey：记录顶层 Agent（主 Agent）的 session key，
-	// 用于 offload_recall 等需要访问父 session 数据的场景（如 SubAgent 回忆父 Agent 的 offload 数据）。
+	// RootSessionKey: records the top-level Agent (main Agent)'s session key,
+	// for scenarios like offload_recall that need access to parent session data (e.g. SubAgent recalling parent Agent's offload data).
 	rootKey := parentCtx.RootSessionKey
 	if rootKey == "" {
 		rootKey = parentCtx.Channel + ":" + parentCtx.ChatID
 	}
 	cfg.RootSessionKey = rootKey
 
-	// === Context Mask 统一机制：注入 6 个缺失字段 ===
-	// SubAgent 与主 Agent 共享同一 Run() 循环，context mask（offload/mask/context-edit）
-	// 依赖这些字段才能正确触发。之前缺失导致 SubAgent context compression/遮罩永不生效。
+	// === Context Mask unified mechanism: inject 6 missing fields ===
+	// SubAgent and main Agent share the same Run() loop; context mask (offload/mask/context-edit)
+	// depends on these fields to trigger correctly. Previous absence caused SubAgent context compression/masking to never take effect.
 
-	// 1. ContextManager：创建独立实例（不共享父 Agent 的触发器，避免计数交叉）
-	//    从 caps.Memory 条件中移出，所有 SubAgent 都需要压缩能力。
+	// 1. ContextManager: create independent instance (don't share parent Agent's triggers, avoid counter cross-contamination)
+	//    Moved out of caps.Memory condition; all SubAgents need compression capability.
 	if a.contextManagerConfig != nil {
 		cmCfg := applyUserMaxContext(a.contextManagerConfig, userMaxCtx)
 		cfg.ContextManager = newPhase1Manager(cmCfg)
 		cfg.ContextManagerConfig = cmCfg
 	}
 
-	// 2. OffloadStore：共享父 Agent 实例（按 sessionKey 隔离，完全安全）
+	// 2. OffloadStore: share parent Agent instance (isolated by sessionKey, fully safe)
 	cfg.OffloadStore = a.offloadStore
 
-	// 3. MaskStore：共享父 Agent 实例（通过随机 ID 查找，容量共享但 SubAgent 生命周期短影响可忽略）
+	// 3. MaskStore: share parent Agent instance (looked up by random ID, capacity shared but SubAgent has short lifecycle, impact negligible)
 	cfg.MaskStore = a.maskStore
 
-	// 4. ContextEditor：创建独立实例（每个 Agent 需要自己的 messages 引用和编辑历史）
+	// 4. ContextEditor: create independent instance (each Agent needs its own messages reference and edit history)
 	cfg.ContextEditor = NewContextEditor(NewContextEditStore(100))
 
-	// Capability: send_message — 允许 SubAgent 向 IM 渠道发送消息
+	// Capability: send_message — 允许 SubAgent 向 IM 渠道Send消息
 	if caps.SendMessage {
 		cfg.SendFunc = a.sendMessage
 	}
 
-	// Capability: memory — 创建独立记忆系统
-	// SubAgent 的会话 = 与调用者 Agent 的私有聊天。调用者是 "user"，SubAgent 是 "xbot"。
-	// 通过 deriveSubAgentTenantID 隔离：每个 (parentTenantID, parentAgentID, roleName) 组合
-	// 产生唯一的 tenantID，确保 SubAgent 和父 Agent 读写完全不同的记忆数据。
+	// Capability: memory — create independent memory system
+	// SubAgent's session = private chat with the calling Agent. Caller is "user", SubAgent is "xbot".
+	// Isolated via deriveSubAgentTenantID: each (parentTenantID, parentAgentID, roleName) combination
+	// produces a unique tenantID, ensuring SubAgent and parent Agent read/write completely different memory data.
 	if caps.Memory {
 		extras, mem := a.buildSubAgentMemory(ctx, parentCtx, parentExtras, parentAgentID, roleName)
 		if extras != nil && mem != nil {
 			cfg.ToolContextExtras = extras
 			cfg.Memory = mem
 
-			// 注入记忆使用指南到 system prompt
+			// Inject memory usage guide into system prompt
 			messages[0].Content += subagentMemorySection
 
-			// 注入记忆到 system prompt（SubAgent 不使用 pipeline，需手动调用 Recall）
+			// Inject memory into system prompt (SubAgent doesn't use pipeline, needs manual Recall call)
 			subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 			memCtx := letta.WithUserID(ctx, subSenderID)
 			if recallText, err := mem.Recall(memCtx, task); err == nil && recallText != "" {
@@ -938,7 +938,7 @@ func (a *Agent) buildSubAgentRunConfig(
 
 		}
 	} else {
-		// 无 memory 能力时，移除记忆工具，避免 SubAgent 尝试调用后失败
+		// When no memory capability, remove memory tools to prevent SubAgent from failing when trying to call them
 		subTools.Unregister("core_memory_append")
 		subTools.Unregister("core_memory_replace")
 		subTools.Unregister("rethink")
@@ -947,7 +947,7 @@ func (a *Agent) buildSubAgentRunConfig(
 		subTools.Unregister("recall_memory_search")
 	}
 
-	// Capability: spawn_agent — 允许 SubAgent 创建子 Agent
+	// Capability: spawn_agent — allows SubAgent to create child Agents
 	if caps.SpawnAgent {
 		cfg.SpawnAgent = func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
 			return a.spawnSubAgent(ctx, msg)
@@ -960,7 +960,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	cfg.RegisterAgentChannel = a.registerAgentChannel
 	cfg.UnregisterAgentChannel = a.unregisterAgentChannel
 
-	// Interactive 回调独立注入，不依赖 SpawnAgent
+	// Interactive callbacks are injected independently, not dependent on SpawnAgent
 	cfg.InteractiveCallbacks = &InteractiveCallbacks{
 		SpawnFn: a.SpawnInteractiveSession,
 		SendFn:  a.SendToInteractiveSession,
@@ -978,9 +978,9 @@ func (a *Agent) buildSubAgentRunConfig(
 	return cfg
 }
 
-// buildToolExecutor 构建主 Agent 的工具执行器。
-// 包含 session MCP 查找、激活检查、工具使用追踪等完整逻辑。
-// 这是主 Agent 和 Cron 使用的执行器，SubAgent 使用 defaultToolExecutor。
+// buildToolExecutor 构建主 Agent 的Tool execution器。
+// Includes complete logic for session MCP lookup, activation check, tool usage tracking, etc.
+// This is the executor used by main Agent and Cron; SubAgent uses defaultToolExecutor.
 func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	sessionKey := channel + ":" + chatID
 
@@ -1000,8 +1000,8 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		AgentID:      "main",
 		Channel:      channel,
 		ChatID:       chatID,
-		SenderID:     senderID,      // 主 Agent: 直接调用者（用于消息路由）
-		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		SenderID:     senderID,      // Main Agent: direct caller (for message routing)
+		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书Identity登录 web 时为飞书 ou_xxx）
 		SenderName:   senderName,
 		SendFunc:     a.sendMessage,
 
@@ -1064,7 +1064,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			}
 		})
 
-		// 1. tool lookup：session MCP 优先，然后全局注册表
+		// 1. tool lookup: session MCP first, then global registry
 		var tool tools.Tool
 		ok := false
 
@@ -1084,17 +1084,17 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
 
-		// 2. 激活检查：未激活的工具返回提示
+		// 2. Activation check: unactivated tools return a prompt
 		if !a.tools.IsToolActive(sessionKey, tc.Name) {
 			return &tools.ToolResult{
 				Summary: fmt.Sprintf("Tool %q is not loaded yet. Call load_tools(tools=%q) first to load it before use.", tc.Name, tc.Name),
 			}, nil
 		}
 
-		// 3. 刷新工具最后使用 round，延长激活有效期
+		// 3. Refresh tool's last-used round, extending activation validity
 		a.tools.TouchTool(sessionKey, tc.Name)
 
-		// 4. 确保用户工作目录存在（remote 模式跳过，runner 自行管理文件系统）
+		// 4. Ensure user working directory exists (skip in remote mode, runner manages filesystem itself)
 		if !a.isRemoteUser(senderID) {
 			if err := os.MkdirAll(wsRoot, 0o755); err != nil {
 				return nil, fmt.Errorf("create user workspace: %w", err)
@@ -1109,7 +1109,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			}
 		}
 
-		// 5. 构建 ToolContext（统一路径，只有 ctx 变化）
+		// 5. Build ToolContext (unified path, only ctx changes)
 		toolCtx := buildToolContext(toolExecCtx, cfg)
 
 		// 6-8. Execute with hooks (shared implementation — same as defaultToolExecutor)
@@ -1122,14 +1122,14 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	}
 }
 
-// buildOAuthHandler 构建 OAuth 自动触发处理器。
+// buildOAuthHandler builds the OAuth auto-trigger handler.
 func (a *Agent) buildOAuthHandler(channel, chatID, senderID, sessionKey string) func(ctx context.Context, tc llm.ToolCall, execErr error) (string, bool) {
 	return func(ctx context.Context, tc llm.ToolCall, execErr error) (string, bool) {
 		if !oauth.IsTokenNeededError(execErr) {
 			return "", false
 		}
 
-		// 已触发过则跳过，避免重复 OAuth 状态
+		// Skip if already triggered, avoid duplicate OAuth state
 		if _, sent := a.sessionFinalSent.Load(sessionKey); sent {
 			log.Ctx(ctx).WithFields(log.Fields{
 				"tool":   tc.Name,
@@ -1213,9 +1213,9 @@ func (a *Agent) buildMemoryToolSetup(channel, chatID string) ([]llm.ToolDefiniti
 	return defs, exec
 }
 
-// buildToolContextExtras 构建 ToolContext 扩展字段。
-// 通用字段（TenantID、MemorySvc）从 TenantSession 直接获取，对所有 memory 类型生效。
-// LettaMemory 专属字段（CoreMemory、ArchivalMemory、ToolIndexer）仅在 LettaMemory 时设置。
+// buildToolContextExtras builds ToolContext extension fields.
+// Common fields (TenantID, MemorySvc) are obtained directly from TenantSession, effective for all memory types.
+// LettaMemory-specific fields (CoreMemory, ArchivalMemory, ToolIndexer) are only set when using LettaMemory.
 func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtras {
 	extras := &ToolContextExtras{
 		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
@@ -1244,41 +1244,41 @@ func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtra
 	return extras
 }
 
-// buildSubAgentMemory 为 SubAgent 构建独立的记忆系统。
+// buildSubAgentMemory builds an independent memory system for SubAgent.
 //
-// 核心设计：SubAgent 的会话 = 与调用者 Agent 的私有聊天。
-// 调用者是 "user"，SubAgent 是 "xbot"。这保持了高度一致的 agent 逻辑抽象。
+// Core design: SubAgent's session = private chat with the calling Agent.
+// Caller is "user", SubAgent is "xbot". This maintains a highly consistent agent logic abstraction.
 //
-// 隔离策略：
-//   - tenantID: 通过 deriveSubAgentTenantID(parentTenantID, parentAgentID, roleName) 生成
-//   - persona: 完全独立（SubAgent 自己的身份，不从父级继承）
-//   - human: 通过 parentAgentID 隔离（记录调用者 agent 的特征，而非原始终端用户）
-//   - archival memory / working_context: 通过 tenantID 自动隔离
+// Isolation strategy:
+//   - tenantID: generated via deriveSubAgentTenantID(parentTenantID, parentAgentID, roleName)
+//   - persona: 完全独立（SubAgent 自己的Identity，不从父级继承）
+//   - human: isolated via parentAgentID (records calling agent's characteristics, not the end user)
+//   - archival memory / working_context: automatically isolated via tenantID
 //
-// 返回 (ToolContextExtras, MemoryProvider)。如果创建失败，返回 nil, nil 并记录警告。
+// Returns (ToolContextExtras, MemoryProvider). If creation fails, returns nil, nil and logs a warning.
 func (a *Agent) buildSubAgentMemory(
 	ctx context.Context,
 	parentCtx *tools.ToolContext,
 	parentExtras *ToolContextExtras,
 	parentAgentID, roleName string,
 ) (*ToolContextExtras, memory.MemoryProvider) {
-	// 1. 获取父 Agent 的 tenantID（用于推导 SubAgent 的 tenantID）
+	// 1. Get parent Agent's tenantID (for deriving SubAgent's tenantID)
 	if parentExtras.TenantID == 0 {
 		log.Ctx(ctx).WithField("parent", parentAgentID).Warn("SubAgent memory: parent tenantID is 0, skipping memory setup")
 		return nil, nil
 	}
 
-	// 2. 推导 SubAgent 的独立 tenantID
+	// 2. Derive SubAgent's independent tenantID
 	subTenantID := deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName)
 
-	// 3. 获取共享服务（通过 multiSession 访问）
+	// 3. Get shared services (accessed via multiSession)
 	coreSvc := a.multiSession.CoreMemoryService()
 	archivalSvc := a.multiSession.ArchivalService()
 	memorySvc := a.multiSession.MemoryService()
 
-	// 4. 初始化 SubAgent 的 core memory blocks（persona + human）
-	//    persona: 空的，由 SubAgent 通过 memorize 自行积累（不预填 systemPrompt，避免重复注入）
-	//    human: 以 parentAgentID 为 senderID 隔离
+	// 4. Initialize SubAgent's core memory blocks (persona + human)
+	//    persona: empty, accumulated by SubAgent via memorize (not pre-filled with systemPrompt to avoid duplicate injection)
+	//    human: isolated by parentAgentID as senderID
 	subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 	if err := coreSvc.InitBlocks(subTenantID, subSenderID); err != nil {
 		log.Ctx(ctx).WithError(err).WithFields(log.Fields{
@@ -1290,11 +1290,11 @@ func (a *Agent) buildSubAgentMemory(
 		return nil, nil
 	}
 
-	// 5. 创建独立的 LettaMemory 实例
+	// 5. Create independent LettaMemory instance
 	toolIndexSvc := a.multiSession.ToolIndexService()
 	mem := letta.New(subTenantID, coreSvc, archivalSvc, memorySvc, toolIndexSvc)
 
-	// 6. 构建 ToolContextExtras（供 SubAgent 的工具使用）
+	// 6. Build ToolContextExtras (for SubAgent's tools to use)
 	extras := &ToolContextExtras{
 		TenantID:                subTenantID,
 		CoreMemory:              coreSvc,
@@ -1358,8 +1358,8 @@ func (a *Agent) consolidateSubAgentMemory(
 	}
 }
 
-// spawnSubAgent 通过 Run() 创建并运行 SubAgent。
-// 这是 SpawnAgent 回调的实现，将 InboundMessage 转换为 RunConfig 并调用 Run()。
+// spawnSubAgent creates and runs a SubAgent via Run().
+// This is the SpawnAgent callback implementation, converting InboundMessage to RunConfig and calling Run().
 func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
 	parentAgentID := msg.ParentAgentID
 	task := msg.Content
@@ -1367,7 +1367,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	allowedTools := msg.AllowedTools
 	roleName := msg.RoleName
 
-	// --- CallChain 深度 & 循环检查 ---
+	// --- CallChain depth & loop check ---
 	cc := CallChainFromContext(ctx)
 	if roleName != "" {
 		if err := cc.CanSpawn(roleName, a.maxSubAgentDepth); err != nil {
@@ -1385,7 +1385,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		}
 	}
 
-	// 构建 parentCtx（从 InboundMessage 恢复）
+	// Build parentCtx (restored from InboundMessage)
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
 
@@ -1395,10 +1395,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		"task":   tools.Truncate(task, 80),
 	}).Info("SubAgent started (via Run)")
 
-	// 从 InboundMessage 恢复 capabilities
+	// Restore capabilities from InboundMessage
 	caps := tools.CapabilitiesFromMap(msg.Capabilities)
 
-	// 从 InboundMessage 元数据中获取角色指定的模型
+	// Get role-specified model from InboundMessage metadata
 	subModel := ""
 	if msg.Metadata != nil {
 		subModel = msg.Metadata["model"]
@@ -1406,20 +1406,20 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 
 	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, subModel)
 
-	// SubAgent 进度上报：统一走穿透回调模式。
-	// 顶层 agent（无 parent callback）创建 root callback，只渲染 depth=1（直接子 agent）的进度。
-	// 深层子 agent 的进度通过穿透回调冒泡上来，但 depth>1 不发送到聊天窗口。
+	// SubAgent progress reporting: unified passthrough callback pattern.
+	// Top-level agent (no parent callback) creates root callback, only renders progress for depth=1 (direct child agent).
+	// 深层子 agent 的进度通过穿透回调冒泡上来，但 depth>1 不Send到聊天窗口。
 	myDepth := cc.Depth() + 1
 	myPath := cc.Spawn(roleName).Chain
 
-	// 确定当前层级使用的 parent callback（可能为 nil）
+	// Determine the parent callback for current level (may be nil)
 	parentCB, _ := SubAgentProgressFromContext(ctx)
 
-	// 构建 subCtx：传递 CallChain + 穿透回调
+	// Build subCtx: pass CallChain + passthrough callback
 	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
 
-	// 注入穿透回调到 subCtx，让更深层 SubAgent 递归上报进度到顶层
-	// 穿透回调包装 parentCB，累加 depth 和 path
+	// Inject passthrough callback into subCtx, letting deeper SubAgents recursively report progress to top level
+	// Passthrough callback wraps parentCB, accumulating depth and path
 	subCtx = WithSubAgentProgress(subCtx, func(detail SubAgentProgressDetail) {
 		detail.Depth = myDepth + detail.Depth
 		if len(detail.Path) == 0 {
@@ -1430,9 +1430,9 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		}
 	})
 
-	// 设置当前层级的 ProgressNotifier
+	// Set current level's ProgressNotifier
 	if parentCB != nil {
-		// 非顶层：穿透进度到父 agent（由上面的穿透回调处理）
+		// Non-top-level: passthrough progress to parent agent (handled by the passthrough callback above)
 		cfg.ProgressNotifier = func(lines []string) {
 			if len(lines) > 0 {
 				parentCB(SubAgentProgressDetail{
@@ -1443,7 +1443,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 			}
 		}
 	} else if originChannel != "" && originChatID != "" {
-		// 顶层 agent（交互式）：只发送 depth=1 的进度到聊天窗口
+		// 顶层 agent（交互式）：只Send depth=1 的进度到聊天窗口
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string) {
 			if len(lines) > 0 {
@@ -1558,8 +1558,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		out.Content = content
 	}
 
-	// SubAgent 记忆整合：将本次对话的关键信息写入 SubAgent 的独立记忆
-	// 同步执行，确保记忆写入完成后再返回，避免 session 被 unload 导致记忆丢失。
+	// SubAgent memory consolidation: write key information from this conversation into SubAgent's independent memory
+	// Execute synchronously to ensure memory is written before returning, avoiding memory loss from session unload.
 	if cfg.Memory != nil && len(out.Messages) > 0 {
 		a.consolidateSubAgentMemory(ctx, cfg, out.Messages, task, roleName, parentAgentID)
 	}
@@ -1567,7 +1567,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	return out.OutboundMessage, nil
 }
 
-// convertWsSubAgentTree 将 agent.SubAgentNode 转换为 channelpkg.WsSubAgent 树。
+// convertWsSubAgentTree converts agent.SubAgentNode to channelpkg.WsSubAgent tree.
 func convertWsSubAgentTree(nodes []SubAgentNode) []channelpkg.WsSubAgent {
 	if len(nodes) == 0 {
 		return nil
@@ -1584,7 +1584,7 @@ func convertWsSubAgentTree(nodes []SubAgentNode) []channelpkg.WsSubAgent {
 	return result
 }
 
-// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 channelpkg.CLISubAgent 树。
+// convertCLISubAgentTree converts agent.SubAgentNode to channelpkg.CLISubAgent tree.
 func convertCLISubAgentTree(nodes []SubAgentNode) []channelpkg.CLISubAgent {
 	if len(nodes) == 0 {
 		return nil

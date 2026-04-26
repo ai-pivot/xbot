@@ -101,7 +101,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: "⚠️ 安全提醒：此命令涉及 API Key 等敏感信息，请通过私聊发送 /set-llm，避免在群聊中暴露密钥。",
+			Content: "⚠️ 安全提醒：此命令涉及 API Key 等敏感信息，请通过私聊Send /set-llm，避免在群聊中暴露密钥。",
 		}, nil
 	}
 
@@ -157,11 +157,11 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 				parseErrors = true
 			}
 		case "thinking_mode":
-			// 支持: enabled, disabled, adaptive, 自定义 JSON 字符串
+			// Supports: enabled, disabled, adaptive, custom JSON string
 			if value == "enabled" || value == "disabled" || value == "adaptive" {
 				cfg.ThinkingMode = value
 			} else if len(value) > 0 && value[0] == '{' {
-				// 校验 JSON 合法性
+				// Validate JSON legality
 				var js json.RawMessage
 				if json.Unmarshal([]byte(value), &js) == nil {
 					cfg.ThinkingMode = value
@@ -169,7 +169,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 					parseErrors = true
 				}
 			} else {
-				cfg.ThinkingMode = "" // 空/无效值表示不发送参数
+				cfg.ThinkingMode = "" // 空/无效值表示不Send参数
 			}
 		}
 	}
