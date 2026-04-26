@@ -21,6 +21,7 @@ type ChannelPromptMiddleware struct {
 	providers map[string]ChannelPromptProvider // key: channel name
 }
 
+// NewChannelPromptMiddleware creates a middleware that injects channel-specific prompts.
 func NewChannelPromptMiddleware(providers ...ChannelPromptProvider) *ChannelPromptMiddleware {
 	m := &ChannelPromptMiddleware{providers: make(map[string]ChannelPromptProvider)}
 	for _, p := range providers {

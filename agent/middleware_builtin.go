@@ -23,6 +23,7 @@ type SystemPromptMiddleware struct {
 	memoryProvider string
 }
 
+// NewSystemPromptMiddleware creates a middleware that injects the system prompt.
 func NewSystemPromptMiddleware(loader *PromptLoader, memoryProvider string) *SystemPromptMiddleware {
 	return &SystemPromptMiddleware{loader: loader, memoryProvider: memoryProvider}
 }
@@ -93,6 +94,7 @@ func newProjectContextCache() projectContextCache {
 	return projectContextCache{items: make(map[string]*projectContextEntry)}
 }
 
+// NewProjectContextMiddleware creates a middleware that injects project context.
 func NewProjectContextMiddleware() *ProjectContextMiddleware {
 	return &ProjectContextMiddleware{cache: newProjectContextCache()}
 }
@@ -245,6 +247,7 @@ func LoadProjectContextFile(dir string) string {
 // Reads dynamic content from MessageContext.Extra[ExtraKeySkillsCatalog].
 type SkillsCatalogMiddleware struct{}
 
+// NewSkillsCatalogMiddleware creates a middleware that injects the skills catalog.
 func NewSkillsCatalogMiddleware() *SkillsCatalogMiddleware {
 	return &SkillsCatalogMiddleware{}
 }
@@ -264,6 +267,7 @@ func (m *SkillsCatalogMiddleware) Process(mc *MessageContext) error {
 // Reads dynamic content from MessageContext.Extra[ExtraKeyAgentsCatalog].
 type AgentsCatalogMiddleware struct{}
 
+// NewAgentsCatalogMiddleware creates a middleware that injects the agents catalog.
 func NewAgentsCatalogMiddleware() *AgentsCatalogMiddleware {
 	return &AgentsCatalogMiddleware{}
 }
@@ -294,6 +298,7 @@ func IsPermControlEnabled(config *PermUsersConfig) bool {
 // when the feature is enabled (at least one user is configured).
 type PermissionControlMiddleware struct{}
 
+// NewPermissionControlMiddleware creates a middleware that enforces permission controls.
 func NewPermissionControlMiddleware() *PermissionControlMiddleware {
 	return &PermissionControlMiddleware{}
 }
@@ -339,6 +344,7 @@ func (m *PermissionControlMiddleware) Process(mc *MessageContext) error {
 // Reads dynamic MemoryProvider from MessageContext.Extra[ExtraKeyMemoryProvider].
 type MemoryMiddleware struct{}
 
+// NewMemoryMiddleware creates a middleware that injects memory context.
 func NewMemoryMiddleware() *MemoryMiddleware {
 	return &MemoryMiddleware{}
 }
@@ -368,6 +374,7 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 // SenderInfoMiddleware injects Sender info into the system prompt
 type SenderInfoMiddleware struct{}
 
+// NewSenderInfoMiddleware creates a middleware that injects sender info.
 func NewSenderInfoMiddleware() *SenderInfoMiddleware {
 	return &SenderInfoMiddleware{}
 }
@@ -407,6 +414,7 @@ func LanguageInstruction(lang string) string {
 	}
 }
 
+// NewLanguageMiddleware creates a middleware that sets the output language.
 func NewLanguageMiddleware(svc SettingsReader) *LanguageMiddleware {
 	return &LanguageMiddleware{settingsSvc: svc}
 }
@@ -447,6 +455,7 @@ type UserMessageMiddleware struct {
 	memoryProvider string
 }
 
+// NewUserMessageMiddleware creates a middleware that processes user messages.
 func NewUserMessageMiddleware(memoryProvider string) *UserMessageMiddleware {
 	return &UserMessageMiddleware{memoryProvider: memoryProvider}
 }
@@ -478,6 +487,7 @@ type CronSystemPromptMiddleware struct {
 	workDir string
 }
 
+// NewCronSystemPromptMiddleware creates a middleware for cron-specific system prompts.
 func NewCronSystemPromptMiddleware(workDir string) *CronSystemPromptMiddleware {
 	return &CronSystemPromptMiddleware{workDir: workDir}
 }

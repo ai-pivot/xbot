@@ -33,6 +33,7 @@ import (
 // cardExpiryDuration is how long to keep expired Feishu cards before cleanup.
 const cardExpiryDuration = 24 * time.Hour
 
+// ErrLLMGenerate is returned when LLM generation fails.
 var ErrLLMGenerate = errors.New("LLM generate failed")
 
 // assertNoSystemPersist checks that a system message is not being persisted to session.
