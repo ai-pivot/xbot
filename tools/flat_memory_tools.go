@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"xbot/llm"
@@ -130,5 +131,5 @@ func flatMemoryDir(ctx *ToolContext) string {
 			home = ".xbot"
 		}
 	}
-	return filepath.Join(home, "memory", fmt.Sprintf("%d", tenantID))
+	return filepath.Join(home, "memory", strconv.Itoa(int(tenantID)))
 }

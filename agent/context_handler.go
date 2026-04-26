@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -20,7 +21,7 @@ func formatTokenCount(n int64) string {
 	if n >= 1_000 {
 		return fmt.Sprintf("%.1fK", float64(n)/1_000)
 	}
-	return fmt.Sprintf("%d", n)
+	return strconv.FormatInt(n, 10)
 }
 
 // handleContextInfo 处理 /context info 命令：显示当前 token 数和组成

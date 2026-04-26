@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"xbot/llm"
 )
@@ -115,7 +116,7 @@ func (t *OffloadRecallTool) Execute(ctx *ToolContext, args string) (*ToolResult,
 
 	result := header + "\n" + sliced
 	if hasMore {
-		result += "\n\n... (more content below, use offset=" + fmt.Sprintf("%d", end) + " to continue)"
+		result += "\n\n... (more content below, use offset=" + strconv.Itoa(end) + " to continue)"
 	}
 
 	return NewResult(result), nil

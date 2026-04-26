@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"xbot/llm"
 )
@@ -113,7 +114,7 @@ func applyLineLimit(result *ToolResult, maxLines, offset int) *ToolResult {
 
 	// Add line numbers to each line
 	maxLineNum := startLineNum + len(lines) - 1
-	width := len(fmt.Sprintf("%d", maxLineNum))
+	width := len(strconv.Itoa(maxLineNum))
 	numbered := make([]string, len(lines))
 	for i, line := range lines {
 		numbered[i] = fmt.Sprintf("%*d\t%s", width, startLineNum+i, line)
