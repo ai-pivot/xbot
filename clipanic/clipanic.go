@@ -24,6 +24,7 @@ func DefaultLogPath() string {
 	return filepath.Join(config.XbotHome(), "logs", "cli-panic.log")
 }
 
+// EnableFileLogging enables panic logging to the default log file.
 func EnableFileLogging(path string) {
 	if path == "" {
 		path = DefaultLogPath()
@@ -34,6 +35,7 @@ func EnableFileLogging(path string) {
 	logPath = path
 }
 
+// DisableFileLogging disables panic logging.
 func DisableFileLogging() {
 	configMu.Lock()
 	defer configMu.Unlock()
@@ -41,6 +43,7 @@ func DisableFileLogging() {
 	logPath = ""
 }
 
+// Recover recovers from panics and logs the error.
 func Recover(where string, msg any, repanic bool) {
 	if r := recover(); r != nil {
 		ReportWithStack(where, msg, r, debug.Stack())
@@ -50,10 +53,13 @@ func Recover(where string, msg any, repanic bool) {
 	}
 }
 
+// Report reports a panic error.
 func Report(where string, msg any, recovered any) {
 	ReportWithStack(where, msg, recovered, debug.Stack())
 }
 
+// Report reports a panic error.
+// ReportWithStack reports a panic error with the full stack trace.
 func ReportWithStack(where string, msg any, recovered any, stack []byte) {
 	msgLabel := formatMessage(msg)
 	fields := log.Fields{"panic": recovered}
@@ -95,6 +101,7 @@ func ReportWithStack(where string, msg any, recovered any, stack []byte) {
 	_ = f.Sync()
 }
 
+// Go starts a goroutine with panic recovery.
 func Go(where string, fn func()) {
 	go func() {
 		defer Recover(where, nil, false)
