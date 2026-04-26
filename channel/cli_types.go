@@ -490,7 +490,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		finishCurIter()
 		if len(pendingIters) > 0 {
 			history = append(history, HistoryMessage{
-				Role:       "tool_summary",
+				Role:       roleToolSummary,
 				Iterations: pendingIters,
 			})
 			pendingIters = nil
@@ -501,7 +501,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		switch m.Role {
 		case "tool":
 			continue
-		case "assistant":
+		case roleAssistant:
 			if m.Detail != "" {
 				// Detail has authoritative iteration history. Discard pending iters
 				// from intermediate assistant messages — they lack elapsed/label data.
@@ -536,7 +536,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					}
 					if len(iters) > 0 {
 						history = append(history, HistoryMessage{
-							Role:       "tool_summary",
+							Role:       roleToolSummary,
 							Timestamp:  m.Timestamp,
 							Iterations: iters,
 						})
@@ -544,7 +544,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				}
 				if m.Content != "" {
 					history = append(history, HistoryMessage{
-						Role:      "assistant",
+						Role:      roleAssistant,
 						Content:   m.Content,
 						Timestamp: m.Timestamp,
 					})
@@ -568,7 +568,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			} else if m.Content != "" {
 				flushPending()
 				history = append(history, HistoryMessage{
-					Role:      "assistant",
+					Role:      roleAssistant,
 					Content:   m.Content,
 					Timestamp: m.Timestamp,
 				})

@@ -119,7 +119,7 @@ func isSubscriptionScopedSettingKey(key string) bool {
 
 func cliSettingScope(key string) string {
 	if isUserScopedSettingKey(key) {
-		return "user"
+		return roleUser
 	}
 	if IsGlobalScopedSettingKey(key) {
 		return "global"

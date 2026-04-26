@@ -156,7 +156,7 @@ func (m *cliModel) newInbound(content string, metadata map[string]string) bus.In
 // appendSystem adds a system message to the message history and marks it as dirty.
 func (m *cliModel) appendSystem(content string) {
 	m.messages = append(m.messages, cliMessage{
-		role:      "system",
+		role:      roleSystem,
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
@@ -167,7 +167,7 @@ func (m *cliModel) appendSystem(content string) {
 // the glamour markdown renderer (for tables, headers, etc.).
 func (m *cliModel) appendSystemMarkdown(content string) {
 	m.messages = append(m.messages, cliMessage{
-		role:      "system",
+		role:      roleSystem,
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
@@ -225,7 +225,7 @@ func (m *cliModel) sendCancel() {
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
 func (m *cliModel) sendToAgent(content string) {
 	m.messages = append(m.messages, cliMessage{
-		role:      "user",
+		role:      roleUser,
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
@@ -253,7 +253,7 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 
 	// 添加用户消息到历史
 	m.messages = append(m.messages, cliMessage{
-		role:      "user",
+		role:      roleUser,
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
@@ -651,7 +651,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			// 创建新的流式消息
 			m.streamingMsgIdx = len(m.messages)
 			m.messages = append(m.messages, cliMessage{
-				role:      "assistant",
+				role:      roleAssistant,
 				content:   content,
 				timestamp: time.Now(),
 				isPartial: true,
@@ -668,7 +668,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		} else {
 			// 新增完整的 assistant 消息
 			m.messages = append(m.messages, cliMessage{
-				role:      "assistant",
+				role:      roleAssistant,
 				content:   content,
 				timestamp: time.Now(),
 				isPartial: false,
@@ -745,7 +745,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 					}
 					// Render as tool call style (not user message)
 					m.messages = append(m.messages, cliMessage{
-						role:       "tool_summary",
+						role:       roleToolSummary,
 						content:    "AskUser",
 						timestamp:  time.Now(),
 						dirty:      true,
@@ -842,7 +842,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		}
 		if len(toolSummaryIterations) > 0 {
 			toolMsg := cliMessage{
-				role:       "tool_summary",
+				role:       roleToolSummary,
 				content:    "",
 				timestamp:  time.Now(),
 				iterations: toolSummaryIterations,
@@ -1282,7 +1282,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	timeStr := timeStyle.Render(msg.timestamp.Format("15:04:05"))
 
 	switch msg.role {
-	case "tool_summary":
+	case roleToolSummary:
 		// §20 使用缓存样式
 		toolSummaryStyle := s.ToolSummary
 		toolHeaderStyle := s.ToolHeader
@@ -1379,7 +1379,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			toolSb.WriteString(hintStyle.Render("[Ctrl+O]"))
 		}
 		sb.WriteString(toolSummaryStyle.Render(toolSb.String()))
-	case "system":
+	case roleSystem:
 		if msg.markdown {
 			// Markdown system messages (e.g. /usage tables): use glamour-rendered output directly
 			sb.WriteString(rendered)
@@ -1388,7 +1388,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		} else {
 			sb.WriteString(systemMsgStyle.Render(msg.content))
 		}
-	case "user":
+	case roleUser:
 		// 用户消息上方：右侧柔和光点分隔，与 assistant 的左侧竖线形成对称
 		dotSep := s.UserDotSep.Width(contentWidth).Align(lipgloss.Right).Render("···")
 		sb.WriteString(dotSep)

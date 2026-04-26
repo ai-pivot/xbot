@@ -606,7 +606,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 				// the assistant reply if one follows.
 				if len(m.iterationHistory) > 0 {
 					m.pendingToolSummary = &cliMessage{
-						role:       "tool_summary",
+						role:       roleToolSummary,
 						content:    "",
 						timestamp:  time.Now(),
 						iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
@@ -641,7 +641,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 				}
 				if assistantContent != "" {
 					m.messages = append(m.messages, cliMessage{
-						role:      "assistant",
+						role:      roleAssistant,
 						content:   assistantContent,
 						timestamp: time.Now(),
 						dirty:     true,
@@ -659,7 +659,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 // handleInjectedUserMsg processes user messages injected by the agent (e.g. bg task completion).
 func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	m.messages = append(m.messages, cliMessage{
-		role:      "user",
+		role:      roleUser,
 		content:   msg.content,
 		timestamp: time.Now(),
 		dirty:     true,
