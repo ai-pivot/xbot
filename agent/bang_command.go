@@ -16,6 +16,8 @@ import (
 const (
 	// bangOutputMaxLen is the max character count before output is sent as a file.
 	bangOutputMaxLen = 16000
+	// bangTruncationFooter is the character count reserved for the truncation notice.
+	bangTruncationFooter = 100
 	// bangDefaultTimeout is the default execution timeout for bang commands.
 	bangDefaultTimeout = 120 * time.Second
 )
@@ -77,14 +79,14 @@ func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, c
 			filePath, err := a.writeBangOutputFile(ctx, workspaceRoot, command, output, exitErr, sbUID)
 			if err != nil {
 				log.WithError(err).Warn("Failed to write bang output file, sending truncated")
-				content = string(runes[:bangOutputMaxLen-100]) + "\n...\n(output truncated, full output write failed)"
+				content = string(runes[:bangOutputMaxLen-bangTruncationFooter]) + "\n...\n(output truncated, full output write failed)"
 			} else {
 				fileName := filepath.Base(filePath)
 				content = fmt.Sprintf("[%s](%s)", fileName, filePath)
 			}
 		} else {
 			// Non-feishu channels: truncate inline
-			content = string(runes[:bangOutputMaxLen-100]) + "\n...\n(output truncated)"
+			content = string(runes[:bangOutputMaxLen-bangTruncationFooter]) + "\n...\n(output truncated)"
 		}
 	}
 
