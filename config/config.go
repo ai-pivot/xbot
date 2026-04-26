@@ -118,6 +118,7 @@ type CLIConfig struct {
 	Token string `json:"token,omitempty"`
 }
 
+// Config holds the application configuration.
 type Config struct {
 	Server        ServerConfig         `json:"server"`
 	LLM           LLMConfig            `json:"llm"`
