@@ -87,7 +87,7 @@ func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T)
 		}
 	}
 	model.openSettingsFromQuickSwitch()
-	if model.panelMode != "settings" {
+	if model.panelMode != panelModeSettings {
 		t.Fatalf("panelMode = %q, want settings", model.panelMode)
 	}
 	if got := model.panelValues["theme"]; got != "mono" {
@@ -574,7 +574,7 @@ func TestApplyLanguageChange_EmptyLang(t *testing.T) {
 func TestClosePanelAndResume_NotTyping(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "settings"
+	model.panelMode = panelModeSettings
 	model.typing = false
 
 	cont, _, cmd := model.closePanelAndResume()
@@ -593,7 +593,7 @@ func TestClosePanelAndResume_NotTyping(t *testing.T) {
 func TestClosePanelAndResume_Typing(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelMode = panelModeAskUser
 	model.typing = true
 
 	cont, _, cmd := model.closePanelAndResume()
@@ -613,7 +613,7 @@ func TestClosePanelAndResume_Typing(t *testing.T) {
 func TestClosePanelAndResume_CleansUpPanelState(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "settings"
+	model.panelMode = panelModeSettings
 	model.panelEdit = true
 	model.panelCombo = true
 	model.panelSchema = []SettingDefinition{{Key: "test"}}
@@ -766,7 +766,7 @@ func TestIterToolsFlat_IterationsWithEmptyTools(t *testing.T) {
 func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelMode = panelModeAskUser
 
 	var received map[string]string
 	model.panelOnAnswer = func(answers map[string]string) {
@@ -792,7 +792,7 @@ func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 func TestSubmitAskAnswers_Typing(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelMode = panelModeAskUser
 	model.typing = true
 
 	cont, _, cmd := model.submitAskAnswers()
@@ -809,7 +809,7 @@ func TestSubmitAskAnswers_Typing(t *testing.T) {
 func TestSubmitAskAnswers_NilCallback(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelMode = panelModeAskUser
 	model.panelOnAnswer = nil
 	model.typing = false
 
@@ -827,7 +827,7 @@ func TestSubmitAskAnswers_NilCallback(t *testing.T) {
 func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelMode = panelModeAskUser
 	model.panelItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
 	model.panelTab = 1
 	model.panelAnswerTA = model.newPanelTextArea("custom", 50, 3)

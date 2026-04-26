@@ -171,7 +171,7 @@ func TestPanelBoxLeftAlign(t *testing.T) {
 	m.panelSchema = schema
 	m.panelValues = map[string]string{"provider": "openai"}
 	m.panelCursor = 0
-	m.panelMode = "settings"
+	m.panelMode = panelModeSettings
 
 	raw := m.viewPanel()
 	// Wrap in PanelBox like cli_view.go does
