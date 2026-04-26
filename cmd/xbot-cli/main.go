@@ -762,6 +762,18 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 	cfg.DebugCaptureMs = s.flags.debugCapMs
 	cfg.IsFirstRun = s.firstRun
 
+	buildSettingsCallbacks(s, cfg)
+	buildMemoryCallbacks(s, cfg)
+	buildLLMCallbacks(s, cfg)
+	buildUsageCallbacks(s, cfg)
+	buildAgentCallbacks(s, cfg)
+	buildSessionCallbacks(s, cfg)
+	buildAdminCallbacks(s, cfg)
+}
+
+// buildSettingsCallbacks sets up settings-related callbacks: GetCurrentValues,
+// ApplySettings, and RefreshValuesCache.
+func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
 	app := s.app // local alias for closure captures
 
 	// ── GetCurrentValues: returns current settings for the TUI settings panel ──
@@ -932,6 +944,17 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 		}
 	}
 
+	// ── RefreshValuesCache: triggers a manual refresh of the remote values cache ──
+	cfg.RefreshValuesCache = func() {
+		app.refreshRemoteValuesCache()
+	}
+
+}
+
+// buildMemoryCallbacks sets up memory-related callbacks: ClearMemory and GetMemoryStats.
+func buildMemoryCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
+	app := s.app
+
 	// ── ClearMemory: clears agent memory for the current session ──
 	cfg.ClearMemory = func(targetType string) error {
 		if app.backend == nil {
@@ -947,6 +970,12 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 		}
 		return app.backend.GetMemoryStats(context.Background(), "cli", s.absWorkDir, "cli_user")
 	}
+
+}
+
+// buildLLMCallbacks sets up the SwitchLLM callback.
+func buildLLMCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
+	app := s.app
 
 	// ── SwitchLLM: switches the LLM client for the current session ──
 	cfg.SwitchLLM = func(provider, baseURL, apiKey, model string) error {
@@ -971,10 +1000,11 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 		return nil
 	}
 
-	// ── RefreshValuesCache: triggers a manual refresh of the remote values cache ──
-	cfg.RefreshValuesCache = func() {
-		app.refreshRemoteValuesCache()
-	}
+}
+
+// buildUsageCallbacks sets up the UsageQuery callback for token usage statistics.
+func buildUsageCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
+	app := s.app
 
 	// ── UsageQuery: returns token usage statistics ──
 	cfg.UsageQuery = func(senderID string, days int) (*sqlite.UserTokenUsage, []sqlite.DailyTokenUsage, error) {
@@ -1020,6 +1050,13 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 		}
 		return cumulative, daily, nil
 	}
+
+}
+
+// buildAgentCallbacks sets up agent-management callbacks: AgentCount, AgentList,
+// AgentInspect, and AgentMessages.
+func buildAgentCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
+	app := s.app
 
 	// ── AgentCount: returns the number of running agent sessions ──
 	cfg.AgentCount = func() int {
@@ -1083,7 +1120,11 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 		return result
 	}
 
-	// ── SessionsList: returns all sessions for the session panel ──
+}
+
+// buildSessionCallbacks sets up the SessionsList callback for the session panel.
+func buildSessionCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
+	app := s.app
 	absWorkDir := s.absWorkDir // local copy for closure
 	cfg.SessionsList = func() []channel.SessionPanelEntry {
 		var entries []channel.SessionPanelEntry
@@ -1179,6 +1220,12 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 		return entries
 	}
 
+}
+
+// buildAdminCallbacks sets up channel configuration and web user management callbacks.
+func buildAdminCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
+	app := s.app
+
 	// ── ChannelConfigGetFn: returns all channel configurations ──
 	cfg.ChannelConfigGetFn = func() (map[string]map[string]string, error) {
 		if app.backend == nil {
@@ -1262,6 +1309,7 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 	cfg.IsAdminFn = func() bool {
 		return true // standalone mode: CLI user is always admin
 	}
+
 }
 
 // setupHistoryLoaders configures history loading callbacks on the channel config.
