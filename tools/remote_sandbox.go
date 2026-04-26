@@ -571,7 +571,7 @@ func generateID() string {
 
 // === Sandbox Interface Implementation ===
 
-func (rs *RemoteSandbox) Name() string { return "remote" }
+func (rs *RemoteSandbox) Name() string { return SandboxRemote }
 
 // SetTokenStore sets or replaces the token store.
 func (rs *RemoteSandbox) SetTokenStore(store *RunnerTokenStore) {

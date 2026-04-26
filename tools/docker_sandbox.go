@@ -38,7 +38,7 @@ type dockerContainer struct {
 	shell   string // 用户默认 shell（从容器内 /etc/passwd 获取）
 }
 
-func (s *DockerSandbox) Name() string { return "docker" }
+func (s *DockerSandbox) Name() string { return SandboxDocker }
 
 // Image returns the configured docker image name.
 func (s *DockerSandbox) Image() string { return s.image }
@@ -322,7 +322,7 @@ func (s *DockerSandbox) Wrap(command string, args []string, env []string, worksp
 	dockerArgs = append(dockerArgs, containerName, command)
 	dockerArgs = append(dockerArgs, args...)
 
-	return "docker", dockerArgs, nil
+	return SandboxDocker, dockerArgs, nil
 }
 
 // dockerExecInContainer runs a command inside a Docker container, returning combined output.

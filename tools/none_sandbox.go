@@ -27,7 +27,7 @@ const maxNoneDownloadSize = 100 * 1024 * 1024
 // noneDownloadHTTPClient is a dedicated HTTP client for NoneSandbox downloads.
 var noneDownloadHTTPClient = &http.Client{Timeout: 0} // use context timeout
 
-func (s *NoneSandbox) Name() string              { return "none" }
+func (s *NoneSandbox) Name() string              { return SandboxNone }
 func (s *NoneSandbox) Workspace(_ string) string { return "" }
 
 func (s *NoneSandbox) Close() error                        { return nil }
