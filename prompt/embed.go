@@ -2,9 +2,9 @@ package prompt
 
 import _ "embed"
 
-// Default 是编译时嵌入的默认系统提示词模板。
-// 当用户未配置 prompt 文件（Agent.PromptFile / PROMPT_FILE）时使用。
-// 渠道无关：不含任何渠道特定提示，渠道特化内容由 ChannelPromptProvider 注入。
+// Default is the compile-time embedded default system prompt template.
+// Used when the user has not configured a prompt file (Agent.PromptFile / PROMPT_FILE).
+// Channel-agnostic: contains no channel-specific hints; channel customization is injected by ChannelPromptProvider.
 //
 //go:embed prompt.md
 var Default string
@@ -42,23 +42,23 @@ var UserMessageGuideFlat string
 //go:embed guides/user_message_letta.md
 var UserMessageGuideLetta string
 
-// Fallback 是最小兜底系统提示词模板，仅在默认 prompt 无法解析时使用。
+// Fallback is a minimal fallback system prompt template, used only when the default prompt cannot be parsed.
 //
 //go:embed fallback.md
 var Fallback string
 
-// CLIChannel 是 CLI 渠道的特化 prompt。
+// CLIChannel is the CLI channel-specific prompt.
 //
 //go:embed channels/cli.md
 var CLIChannel string
 
-// FeishuChannel 是飞书渠道的特化 prompt。
+// FeishuChannel is the Feishu channel-specific prompt.
 //
 //go:embed channels/feishu.md
 var FeishuChannel string
 
-// CronSystem 是 Cron 专用系统提示词模板。
-// 使用 fmt.Sprintf(workDir, now) 渲染。
+// CronSystem is the Cron-specific system prompt template.
+// Rendered with fmt.Sprintf(workDir, now).
 //
 //go:embed cron/system.md
 var CronSystem string

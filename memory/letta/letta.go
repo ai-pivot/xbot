@@ -206,7 +206,7 @@ func (m *LettaMemory) Memorize(ctx context.Context, input memory.MemorizeInput) 
 		if ts.IsZero() {
 			ts = time.Now()
 		}
-		// 按 rune 截断，避免中文乱码
+		// Truncate by rune to avoid corrupting multi-byte characters
 		content := msg.Content
 		if len([]rune(content)) > 500 {
 			content = string([]rune(content)[:500]) + "..."
@@ -439,7 +439,7 @@ func (m *LettaMemory) SearchToolsForTenant(ctx context.Context, tenantID int64, 
 			Description: r.Content,
 			Channels:    channels,
 		}
-		// 渠道过滤：如果指定了渠道，检查工具是否支持
+		// Channel filter: if channels specified, check if tool supports them
 		if channel != "" && len(entry.Channels) > 0 {
 			supported := false
 			for _, c := range entry.Channels {

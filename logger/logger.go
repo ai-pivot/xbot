@@ -13,44 +13,44 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// 类型别名
+// Type aliases
 type Fields = log.Fields
 type Entry = log.Entry
 type Formatter = log.Formatter
 type Level = log.Level
 
-// 级别常量
+// Level constants
 var (
 	InfoLevel = log.InfoLevel
 )
 
-// JSONFormatter JSON 格式化器
+// JSONFormatter formats log entries as JSON
 type JSONFormatter = log.JSONFormatter
 
-// TextFormatter 文本格式化器
+// TextFormatter formats log entries as plain text
 type TextFormatter = log.TextFormatter
 
-// SetupConfig 日志配置
+// SetupConfig holds logger configuration
 type SetupConfig struct {
-	Level      string // 日志级别：debug, info, warn, error
-	Format     string // 日志格式：text, json
-	WorkDir    string // 工作目录（日志文件存放位置，当 LogDir 为空时使用）
-	LogDir     string // 直接指定日志目录（优先于 WorkDir）
-	MaxAge     int    // 日志保留天数（默认 7 天）
-	MaxBackups int    // 保留的旧日志文件数量（默认 0，表示不限制）
+	Level      string // Log level: debug, info, warn, error
+	Format     string // Log format: text, json
+	WorkDir    string // Working directory (log file location; used when LogDir is empty)
+	LogDir     string // Explicit log directory (takes priority over WorkDir)
+	MaxAge     int    // Log retention days (default 7)
+	MaxBackups int    // Max old log files to keep (default 0 = unlimited)
 	FileOnly   bool   // true: only write to log file, suppress stdout (for TUI modes)
 }
 
-// dailyRotateFile 支持按日轮转的日志文件写入器
+// dailyRotateFile is a log file writer with daily rotation support
 type dailyRotateFile struct {
 	mu          sync.Mutex
-	baseDir     string   // 日志目录
-	currentFile *os.File // 当前日志文件
-	currentDate string   // 当前日期（YYYY-MM-DD）
-	baseName    string   // 基础文件名（如 "xbot"）
+	baseDir     string   // log directory
+	currentFile *os.File // current log file
+	currentDate string   // current date (YYYY-MM-DD)
+	baseName    string   // base filename (e.g. "xbot")
 }
 
-// newDailyRotateFile 创建按日轮转的日志文件写入器
+// newDailyRotateFile creates a daily-rotating log file writer
 func newDailyRotateFile(dir, baseName string) (*dailyRotateFile, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
@@ -65,12 +65,12 @@ func newDailyRotateFile(dir, baseName string) (*dailyRotateFile, error) {
 	return drf, nil
 }
 
-// Write 实现 io.Writer 接口
+// Write implements io.Writer
 func (drf *dailyRotateFile) Write(p []byte) (n int, err error) {
 	drf.mu.Lock()
 	defer drf.mu.Unlock()
 
-	// 检查是否需要轮转（日期变化）
+	// Check if rotation is needed (date changed)
 	today := time.Now().Format("2006-01-02")
 	if drf.currentDate != today {
 		if err := drf.rotateLocked(); err != nil {
@@ -85,7 +85,7 @@ func (drf *dailyRotateFile) Write(p []byte) (n int, err error) {
 	return drf.currentFile.Write(p)
 }
 
-// Close 关闭当前日志文件
+// Close closes the current log file
 func (drf *dailyRotateFile) Close() error {
 	drf.mu.Lock()
 	defer drf.mu.Unlock()
@@ -97,30 +97,30 @@ func (drf *dailyRotateFile) Close() error {
 	return nil
 }
 
-// rotate 执行日志轮转（需要持有锁）
+// rotate performs log rotation (caller must hold lock)
 func (drf *dailyRotateFile) rotate() error {
 	drf.mu.Lock()
 	defer drf.mu.Unlock()
 	return drf.rotateLocked()
 }
 
-// rotateLocked 执行日志轮转（已持有锁）
+// rotateLocked performs log rotation (lock already held)
 func (drf *dailyRotateFile) rotateLocked() error {
 	today := time.Now().Format("2006-01-02")
 	logFileName := fmt.Sprintf("%s-%s.log", drf.baseName, today)
 	logPath := filepath.Join(drf.baseDir, logFileName)
 
-	// 如果日期没变且文件已打开，无需轮转
+	// If date unchanged and file is open, no rotation needed
 	if drf.currentDate == today && drf.currentFile != nil {
 		return nil
 	}
 
-	// 关闭旧文件
+	// Close old file
 	if drf.currentFile != nil {
 		_ = drf.currentFile.Close()
 	}
 
-	// 打开新文件（追加模式）
+	// Open new file (append mode)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
@@ -131,23 +131,23 @@ func (drf *dailyRotateFile) rotateLocked() error {
 	return nil
 }
 
-// 全局日志文件写入器（用于 Close）
+// Global log file writer (used by Close)
 var globalRotateFile *dailyRotateFile
-var globalRotateFileMu sync.Mutex // 保护 globalRotateFile 的并发写入（C-11）
+var globalRotateFileMu sync.Mutex // Guards concurrent writes to globalRotateFile (C-11)
 
-// cleanupStopCh 用于通知 cleanupOldLogs goroutine 停止
+// cleanupStopCh signals the cleanupOldLogs goroutine to stop
 var cleanupStopCh chan struct{}
 
-// Setup 设置日志系统（文件输出 + 按日轮转 + 自动清理）
+// Setup initializes the logging system (file output + daily rotation + auto cleanup)
 func Setup(cfg SetupConfig) error {
-	// 设置日志级别
+	// Set log level
 	level, err := log.ParseLevel(cfg.Level)
 	if err != nil {
 		level = log.InfoLevel
 	}
 	log.SetLevel(level)
 
-	// 设置日志格式
+	// Set log format
 	switch cfg.Format {
 	case "json":
 		log.SetFormatter(&log.JSONFormatter{})
@@ -157,7 +157,7 @@ func Setup(cfg SetupConfig) error {
 		})
 	}
 
-	// 如果指定了日志目录，启用文件输出
+	// Enable file output if log directory is specified
 	logDir := cfg.LogDir
 	if logDir == "" && cfg.WorkDir != "" {
 		logDir = filepath.Join(cfg.WorkDir, ".xbot", "logs")
@@ -177,10 +177,10 @@ func Setup(cfg SetupConfig) error {
 		globalRotateFile = drf
 		globalRotateFileMu.Unlock()
 
-		// 启动后台清理旧日志
+		// Start background old-log cleanup
 		maxAge := cfg.MaxAge
 		if maxAge <= 0 {
-			maxAge = 7 // 默认保留 7 天
+			maxAge = 7 // Default: retain 7 days
 		}
 		cleanupStopCh = make(chan struct{})
 		go cleanupOldLogs(logDir, maxAge, cleanupStopCh)
@@ -189,9 +189,9 @@ func Setup(cfg SetupConfig) error {
 	return nil
 }
 
-// Close 关闭日志系统（刷新缓冲区，关闭文件，停止后台清理）
+// Close shuts down the logging system (flushes buffer, closes file, stops background cleanup)
 func Close() {
-	// 停止后台清理 goroutine
+	// Stop background cleanup goroutine
 	if cleanupStopCh != nil {
 		close(cleanupStopCh)
 		cleanupStopCh = nil
@@ -206,13 +206,13 @@ func Close() {
 	}
 }
 
-// cleanupOldLogs 清理过期的日志文件
-// stopCh 收到信号后 goroutine 会在下一个 tick 退出
+// cleanupOldLogs removes expired log files
+// goroutine exits on next tick after receiving signal on stopCh
 func cleanupOldLogs(dir string, maxAge int, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	// 启动时执行一次
+	// Run once at startup
 	doCleanup(dir, maxAge)
 
 	for {
@@ -225,11 +225,11 @@ func cleanupOldLogs(dir string, maxAge int, stopCh <-chan struct{}) {
 	}
 }
 
-// doCleanup 执行清理逻辑
+// doCleanup performs the cleanup logic
 func doCleanup(dir string, maxAge int) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// 使用 fmt.Fprintf(os.Stderr, ...) 避免递归调用日志系统
+		// Use fmt.Fprintf(os.Stderr, ...) to avoid recursive logging
 		fmt.Fprintf(os.Stderr, "[logger] failed to read log directory: %v\n", err)
 		return
 	}
@@ -243,7 +243,7 @@ func doCleanup(dir string, maxAge int) {
 		}
 
 		name := entry.Name()
-		// 只处理 .log 文件
+		// Only process .log files
 		if !strings.HasSuffix(name, ".log") {
 			continue
 		}
@@ -254,7 +254,7 @@ func doCleanup(dir string, maxAge int) {
 			continue
 		}
 
-		// 根据修改时间判断是否过期
+		// Check expiry by modification time
 		if info.ModTime().Before(cutoff) {
 			filePath := filepath.Join(dir, name)
 			if err := os.Remove(filePath); err != nil {
@@ -265,63 +265,63 @@ func doCleanup(dir string, maxAge int) {
 		}
 	}
 
-	// 按名称排序，保证输出稳定
+	// Sort by name for stable output
 	if len(deleted) > 0 {
 		sort.Strings(deleted)
 		fmt.Fprintf(os.Stderr, "[logger] cleaned up %d old log file(s): %s\n", len(deleted), strings.Join(deleted, ", "))
 	}
 }
 
-// SetFormatter 设置日志格式
+// SetFormatter sets the log formatter
 func SetFormatter(formatter Formatter) { log.SetFormatter(formatter) }
 
-// SetLevel 设置日志级别
+// SetLevel sets the log level
 func SetLevel(level Level) { log.SetLevel(level) }
 
-// ParseLevel 解析日志级别字符串
+// ParseLevel parses a log level string
 func ParseLevel(lvl string) (Level, error) { return log.ParseLevel(lvl) }
 
-// WithField 创建带字段的日志条目
+// WithField creates a log entry with a single field
 func WithField(key string, value any) *Entry {
 	return log.WithField(key, value)
 }
 
-// WithFields 创建带多个字段的日志条目
+// WithFields creates a log entry with multiple fields
 func WithFields(fields Fields) *Entry {
 	return log.WithFields(fields)
 }
 
-// WithError 创建带错误的日志条目
+// WithError creates a log entry with an error field
 func WithError(err error) *Entry {
 	return log.WithError(err)
 }
 
-// Debug 输出 Debug 级别日志
+// Debug logs at Debug level
 func Debug(args ...any) { log.Debug(args...) }
 
-// Debugf 输出格式化 Debug 级别日志
+// Debugf logs a formatted Debug message
 func Debugf(format string, args ...any) { log.Debugf(format, args...) }
 
-// Info 输出 Info 级别日志
+// Info logs at Info level
 func Info(args ...any) { log.Info(args...) }
 
-// Infof 输出格式化 Info 级别日志
+// Infof logs a formatted Info message
 func Infof(format string, args ...any) { log.Infof(format, args...) }
 
-// Warn 输出 Warn 级别日志
+// Warn logs at Warn level
 func Warn(args ...any) { log.Warn(args...) }
 
-// Warnf 输出格式化 Warn 级别日志
+// Warnf logs a formatted Warn message
 func Warnf(format string, args ...any) { log.Warnf(format, args...) }
 
-// Error 输出 Error 级别日志
+// Error logs at Error level
 func Error(args ...any) { log.Error(args...) }
 
-// Errorf 输出格式化 Error 级别日志
+// Errorf logs a formatted Error message
 func Errorf(format string, args ...any) { log.Errorf(format, args...) }
 
-// Fatal 输出 Fatal 级别日志并退出
+// Fatal logs at Fatal level and exits
 func Fatal(args ...any) { log.Fatal(args...) }
 
-// Fatalf 输出格式化 Fatal 级别日志并退出
+// Fatalf logs a formatted Fatal message and exits
 func Fatalf(format string, args ...any) { log.Fatalf(format, args...) }

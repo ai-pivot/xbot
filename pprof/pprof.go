@@ -10,36 +10,36 @@ import (
 	log "xbot/logger"
 )
 
-// Config pprof 配置
+// Config holds pprof configuration
 type Config struct {
-	Enable bool   // 是否启用 pprof
-	Host   string // 监听地址
-	Port   int    // 监听端口
+	Enable bool   // Whether to enable pprof
+	Host   string // Listen address
+	Port   int    // Listen port
 }
 
-// DefaultConfig 默认 pprof 配置
+// DefaultConfig returns the default pprof configuration
 func DefaultConfig() Config {
 	return Config{
 		Enable: false,
-		Host:   "localhost", // 默认只监听本地，安全考虑
+		Host:   "localhost", // Default: localhost only for security
 		Port:   6060,
 	}
 }
 
-// Server pprof 服务器
+// Server is a pprof HTTP server
 type Server struct {
 	config Config
 	server *http.Server
 }
 
-// NewServer 创建 pprof 服务器
+// NewServer creates a new pprof server
 func NewServer(cfg Config) *Server {
 	return &Server{
 		config: cfg,
 	}
 }
 
-// Start 启动 pprof 服务器
+// Start starts the pprof server
 func (s *Server) Start() error {
 	if !s.config.Enable {
 		log.Info("pprof server is disabled")
@@ -48,17 +48,17 @@ func (s *Server) Start() error {
 
 	mux := http.NewServeMux()
 
-	// 注册 pprof 路由
+	// Register pprof routes
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
-	// 添加运行时统计信息端点
+	// Add runtime stats endpoint
 	mux.HandleFunc("/debug/stats", s.statsHandler)
 
-	// 添加 GC 触发端点
+	// Add GC trigger endpoint
 	mux.HandleFunc("/debug/gc", s.gcHandler)
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
@@ -66,7 +66,7 @@ func (s *Server) Start() error {
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second, // profile 可能需要较长时间
+		WriteTimeout: 120 * time.Second, // profiling may take a long time
 	}
 
 	log.Infof("pprof server started on http://%s/debug/pprof/", addr)
@@ -88,7 +88,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Shutdown 关闭 pprof 服务器
+// Shutdown stops the pprof server
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.server == nil {
 		return nil
@@ -97,7 +97,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-// statsHandler 返回运行时统计信息
+// statsHandler returns runtime statistics
 func (s *Server) statsHandler(w http.ResponseWriter, r *http.Request) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -153,7 +153,7 @@ StackSys: %d KB
 	w.Write([]byte(stats))
 }
 
-// gcHandler 手动触发 GC
+// gcHandler manually triggers GC
 // SECURITY NOTE: This endpoint has no authentication. It is protected only by
 // binding to localhost (default Config.Host). If the server is exposed on a
 // public interface, add authentication middleware (e.g., API key or token check).

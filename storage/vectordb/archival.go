@@ -127,13 +127,13 @@ func ensureContentFits(ctx context.Context, cfg embeddingLimitConfig, content st
 		"max_tokens":   cfg.maxTokens,
 	}).Warn("Content exceeds embedding model token limit, compressing")
 
-	// 优先使用 LLM Content Compressor 做语义压缩
+	// Prefer LLM Content Compressor for semantic compression
 	if llmContentCompressor != nil {
 		compressed, err := llmContentCompressor(ctx, content, cfg.maxTokens)
 		if err == nil {
 			return compressed, nil
 		}
-		// LLM compressor 失败则 fallback 到暴力截断（尽量保留一些内容）
+		// On LLM compressor failure, fall back to brute-force truncation (preserve some content)
 		log.Warnf("LLM content compression failed, falling back to default: %v", err)
 	}
 
@@ -272,8 +272,8 @@ func newOllamaEmbedFunc(baseURL, model string, numCtx int) chromem.EmbeddingFunc
 	client := archivalHTTPClient
 
 	var checkedNormalized bool
-	// checkedNormalized 是闭包变量，在每个 embedding 调用后被读取。
-	// sync.Once.Do 保证首次写入 happens-before 后续所有读取，因此无需额外同步。
+	// checkedNormalized is a closure variable read after each embedding call.
+	// sync.Once.Do ensures the first write happens-before all subsequent reads, so no extra sync is needed.
 	checkNormalized := sync.Once{}
 
 	return func(ctx context.Context, text string) ([]float32, error) {

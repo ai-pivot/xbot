@@ -208,16 +208,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderSuccess(w http.ResponseWriter, provider string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><title>授权成功</title>
+<html><head><title>Authorization Successful</title>
 <style>body{font-family:sans-serif;max-width:500px;margin:50px auto;padding:20px;text-align:center}
 .success{color:#10b981;font-size:48px;margin-bottom:20px}
 .card{background:#f9fafb;border-radius:8px;padding:30px}
 </style></head><body>
 <div class="card">
 <div class="success">✓</div>
-<h2>授权成功</h2>
-<p>您已成功授权 `+html.EscapeString(provider)+`。</p>
-<p>现在可以关闭此窗口并返回对话。</p>
+<h2>Authorization Successful</h2>
+<p>You have successfully authorized `+html.EscapeString(provider)+`.</p>
+<p>You can now close this window and return to the conversation.</p>
 </div></body></html>`)
 }
 
@@ -233,7 +233,7 @@ func (s *Server) renderError(w http.ResponseWriter, title, detail string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
 	fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><title>授权失败</title>
+<html><head><title>Authorization Failed</title>
 <style>body{font-family:sans-serif;max-width:500px;margin:50px auto;padding:20px;text-align:center}
 .error{color:#ef4444;font-size:48px;margin-bottom:20px}
 .card{background:#fef2f2;border-radius:8px;padding:30px}

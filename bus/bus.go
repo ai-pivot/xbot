@@ -110,9 +110,9 @@ func (m *InboundMessage) OriginSenderID() string {
 type OutboundMessage struct {
 	// === Routing (unified addressing, Phase 1) ===
 	From Address // Sender address: agent://main
-	To   Address // Target address: im://feishu/oc_xxx or agent://main（返回给父 Agent）
+	To   Address // Target address: im://feishu/oc_xxx or agent://main (return to parent Agent)
 
-	// === 路由（旧字段，迁移期间保留） ===
+	// === Routing (legacy fields, kept during migration) ===
 	Channel string // Target channel
 	ChatID  string // Target session
 
