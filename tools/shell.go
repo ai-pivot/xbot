@@ -487,6 +487,7 @@ func remoteSandboxExecAsync(
 // cdPattern detects standalone cd commands (not inside subshells, comments, or strings).
 // Matches: "cd foo", "cd /path", "cd ..", "cd ~", as well as "cd foo && ls" etc.
 var cdPattern = regexp.MustCompile(`(?:^|&&|\|\||;)\s*cd\s+`)
+var sudoPattern = regexp.MustCompile(`\bsudo\b`)
 
 // detectCdTip returns a tip string if the command contains a cd that won't persist.
 func detectCdTip(command string) string {
@@ -530,8 +531,7 @@ func checkDangerousCommand(ctx context.Context, cmd string, disallowSudo bool) (
 	}
 
 	// sudo 检查
-	sudoRe := regexp.MustCompile(`\bsudo\b`)
-	if sudoRe.MatchString(cmd) {
+	if sudoPattern.MatchString(cmd) {
 		if disallowSudo {
 			// run_as 模式：用户切换由框架控制，禁止 LLM 使用任何形式的 sudo
 			return true, "sudo is not allowed when run_as is set (user switching is handled by the framework)"
