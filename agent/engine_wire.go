@@ -703,7 +703,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	if parentCtx.Sandbox != nil && parentCtx.Sandbox.Name() != "none" {
 		workDir = parentCtx.Sandbox.Workspace(parentCtx.OriginUserID)
 	}
-	now := time.Now().Format("2006-01-02 15:04:05 MST")
+	now := time.Now().Format(timeFmtDatetime)
 
 	// CWD 继承父 Agent 的当前目录，无则默认 workDir
 	cwd := parentCtx.CurrentDir

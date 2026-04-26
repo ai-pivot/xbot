@@ -19,6 +19,8 @@ type CronTool struct {
 	cronSvc *sqlite.CronService
 }
 
+const timeFmtDatetime = "2006-01-02 15:04:05 MST"
+
 // NewCronTool 创建 CronTool 实例
 func NewCronTool(cronSvc *sqlite.CronService) *CronTool {
 	return &CronTool{
@@ -163,7 +165,7 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 
 	schedDesc := t.scheduleDescription(job)
 	return NewResult(fmt.Sprintf("Job created: %s\nSchedule: %s\nMessage: %s\nNext run: %s",
-		job.ID, schedDesc, job.Message, job.NextRun.Format("2006-01-02 15:04:05 MST"))), nil
+		job.ID, schedDesc, job.Message, job.NextRun.Format(timeFmtDatetime))), nil
 }
 
 func (t *CronTool) listJobs(senderID string) (*ToolResult, error) {
@@ -187,7 +189,7 @@ func (t *CronTool) listJobs(senderID string) (*ToolResult, error) {
 	for _, j := range jobs {
 		fmt.Fprintf(&sb, "- **%s**\n  Schedule: %s\n  Message: %s\n  Channel: %s\n  Next: %s\n\n",
 			j.ID, t.scheduleDescription(j), j.Message, j.Channel,
-			j.NextRun.Format("2006-01-02 15:04:05 MST"))
+			j.NextRun.Format(timeFmtDatetime))
 	}
 	return NewResult(sb.String()), nil
 }

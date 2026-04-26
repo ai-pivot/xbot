@@ -171,7 +171,7 @@ func (t *EventTriggerTool) listTriggers(senderID string) (*ToolResult, error) {
 		fmt.Fprintf(&sb, "\n  Status: %s | Fires: %d\n  URL: %s\n  Channel: %s | Chat: %s\n",
 			status, tr.FireCount, webhookURL, tr.Channel, tr.ChatID)
 		if tr.LastFired != nil {
-			fmt.Fprintf(&sb, "  Last fired: %s\n", tr.LastFired.Format("2006-01-02 15:04:05 MST"))
+			fmt.Fprintf(&sb, "  Last fired: %s\n", tr.LastFired.Format(timeFmtDatetime))
 		}
 		sb.WriteString("\n")
 	}
