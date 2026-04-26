@@ -466,6 +466,21 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 	}
 }
 
+// scrollToVisible adjusts a scroll offset so that cursorLine is within the
+// visible viewport. If totalLines fits entirely, the offset is zeroed.
+func (m *cliModel) scrollToVisible(cursorLine, totalLines, visibleH int) {
+	if totalLines <= visibleH {
+		m.panelScrollY = 0
+		return
+	}
+	if cursorLine >= m.panelScrollY+visibleH {
+		m.panelScrollY = cursorLine - visibleH + 1
+	}
+	if cursorLine < m.panelScrollY {
+		m.panelScrollY = cursorLine
+	}
+}
+
 // ensurePanelCursorVisible 确保 panel cursor 行在可见区域内。
 // 编辑/combo 模式下额外滚到底部，确保 inline editor 可见。
 func (m *cliModel) ensurePanelCursorVisible() {
@@ -500,16 +515,7 @@ func (m *cliModel) ensurePanelCursorVisible() {
 	}
 	visibleH := m.panelVisibleHeight()
 	totalLines := cursorLn + 5 // +5 保证底部有足够空间
-	if totalLines <= visibleH {
-		m.panelScrollY = 0
-		return
-	}
-	if cursorLn >= m.panelScrollY+visibleH {
-		m.panelScrollY = cursorLn - visibleH + 1
-	}
-	if cursorLn < m.panelScrollY {
-		m.panelScrollY = cursorLn
-	}
+	m.scrollToVisible(cursorLn, totalLines, visibleH)
 }
 
 // ensureBgCursorVisible adjusts panelScrollY so the bg task/agent cursor is within the visible area.
@@ -542,16 +548,7 @@ func (m *cliModel) ensureBgCursorVisible() {
 	}
 
 	totalLines := cursorLine + 2 // +2 for header and bottom padding
-	if totalLines <= visibleH {
-		m.panelScrollY = 0
-		return
-	}
-	if cursorLine >= m.panelScrollY+visibleH {
-		m.panelScrollY = cursorLine - visibleH + 1
-	}
-	if cursorLine < m.panelScrollY {
-		m.panelScrollY = cursorLine
-	}
+	m.scrollToVisible(cursorLine, totalLines, visibleH)
 }
 
 // ensureSessionCursorVisible adjusts panelScrollY so the session cursor is within the visible area.
@@ -561,16 +558,7 @@ func (m *cliModel) ensureSessionCursorVisible() {
 	// +1 for header line
 	cursorLine := m.panelSessionCursor + 1
 	totalLines := len(m.panelSessionItems) + 1
-	if totalLines <= visibleH {
-		m.panelScrollY = 0
-		return
-	}
-	if cursorLine >= m.panelScrollY+visibleH {
-		m.panelScrollY = cursorLine - visibleH + 1
-	}
-	if cursorLine < m.panelScrollY {
-		m.panelScrollY = cursorLine
-	}
+	m.scrollToVisible(cursorLine, totalLines, visibleH)
 }
 
 // panelVisibleHeight 返回 panel 可见区域高度。
