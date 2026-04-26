@@ -395,6 +395,24 @@ func setSecondsEnv(key string, dst *time.Duration) {
 
 // applyEnvOverrides applies environment variable overrides to config (variable names match README/.env.example, higher priority than config.json).
 func applyEnvOverrides(cfg *Config) {
+	applyServerEnvOverrides(cfg)
+	applyLLMEnvOverrides(cfg)
+	applyLogEnvOverrides(cfg)
+	applyEmbeddingEnvOverrides(cfg)
+	applyAgentEnvOverrides(cfg)
+	applySandboxEnvOverrides(cfg)
+	applyFeishuEnvOverrides(cfg)
+	applyQQEnvOverrides(cfg)
+	applyNapCatEnvOverrides(cfg)
+	applyWebEnvOverrides(cfg)
+	applyEventWebhookEnvOverrides(cfg)
+	applyOAuthEnvOverrides(cfg)
+	applyPProfEnvOverrides(cfg)
+	applyMiscEnvOverrides(cfg)
+}
+
+// applyServerEnvOverrides applies SERVER_* environment variable overrides.
+func applyServerEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SERVER_HOST"); v != "" {
 		cfg.Server.Host = v
 	}
@@ -405,7 +423,10 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	setSecondsEnv("SERVER_READ_TIMEOUT", &cfg.Server.ReadTimeout)
 	setSecondsEnv("SERVER_WRITE_TIMEOUT", &cfg.Server.WriteTimeout)
+}
 
+// applyLLMEnvOverrides applies LLM_* and retry-related environment variable overrides.
+func applyLLMEnvOverrides(cfg *Config) {
 	if v := os.Getenv("LLM_PROVIDER"); v != "" {
 		cfg.LLM.Provider = v
 	}
@@ -426,14 +447,20 @@ func applyEnvOverrides(cfg *Config) {
 	setDurationEnv("LLM_RETRY_DELAY", &cfg.Agent.LLMRetryDelay)
 	setDurationEnv("LLM_RETRY_MAX_DELAY", &cfg.Agent.LLMRetryMaxDelay)
 	setDurationEnv("LLM_RETRY_TIMEOUT", &cfg.Agent.LLMRetryTimeout)
+}
 
+// applyLogEnvOverrides applies LOG_* environment variable overrides.
+func applyLogEnvOverrides(cfg *Config) {
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
 	if v := os.Getenv("LOG_FORMAT"); v != "" {
 		cfg.Log.Format = v
 	}
+}
 
+// applyEmbeddingEnvOverrides applies LLM_EMBEDDING_* environment variable overrides.
+func applyEmbeddingEnvOverrides(cfg *Config) {
 	if v := os.Getenv("LLM_EMBEDDING_PROVIDER"); v != "" {
 		cfg.Embedding.Provider = v
 	}
@@ -451,7 +478,10 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Embedding.MaxTokens = i
 		}
 	}
+}
 
+// applyAgentEnvOverrides applies agent-related environment variable overrides (WORK_DIR, PROMPT_FILE, MEMORY_PROVIDER, AGENT_*, MCP_*, SESSION_*, MAX_SUBAGENT_DEPTH).
+func applyAgentEnvOverrides(cfg *Config) {
 	if v := os.Getenv("WORK_DIR"); v != "" {
 		cfg.Agent.WorkDir = v
 	}
@@ -504,7 +534,10 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Agent.MaxSubAgentDepth = i
 		}
 	}
+}
 
+// applySandboxEnvOverrides applies SANDBOX_* and HOST_WORK_DIR environment variable overrides.
+func applySandboxEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SANDBOX_MODE"); v != "" {
 		cfg.Sandbox.Mode = v
 	}
@@ -533,7 +566,10 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SANDBOX_PUBLIC_URL"); v != "" {
 		cfg.Sandbox.PublicURL = v
 	}
+}
 
+// applyFeishuEnvOverrides applies FEISHU_* environment variable overrides.
+func applyFeishuEnvOverrides(cfg *Config) {
 	if v := os.Getenv("FEISHU_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Feishu.Enabled = b
@@ -557,7 +593,10 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("FEISHU_DOMAIN"); v != "" {
 		cfg.Feishu.Domain = v
 	}
+}
 
+// applyQQEnvOverrides applies QQ_* environment variable overrides.
+func applyQQEnvOverrides(cfg *Config) {
 	if v := os.Getenv("QQ_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.QQ.Enabled = b
@@ -572,7 +611,10 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := os.LookupEnv("QQ_ALLOW_FROM"); ok {
 		cfg.QQ.AllowFrom = splitCommaTrim(v)
 	}
+}
 
+// applyNapCatEnvOverrides applies NAPCAT_* environment variable overrides.
+func applyNapCatEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NAPCAT_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.NapCat.Enabled = b
@@ -587,7 +629,10 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := os.LookupEnv("NAPCAT_ALLOW_FROM"); ok {
 		cfg.NapCat.AllowFrom = splitCommaTrim(v)
 	}
+}
 
+// applyWebEnvOverrides applies WEB_* environment variable overrides.
+func applyWebEnvOverrides(cfg *Config) {
 	if v := os.Getenv("WEB_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Web.Enable = b
@@ -617,7 +662,10 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Web.InviteOnly = b
 		}
 	}
+}
 
+// applyEventWebhookEnvOverrides applies EVENT_WEBHOOK_* environment variable overrides.
+func applyEventWebhookEnvOverrides(cfg *Config) {
 	if v := os.Getenv("EVENT_WEBHOOK_ENABLE"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.EventWebhook.Enable = b
@@ -644,7 +692,10 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.EventWebhook.RateLimit = i
 		}
 	}
+}
 
+// applyOAuthEnvOverrides applies OAUTH_* environment variable overrides.
+func applyOAuthEnvOverrides(cfg *Config) {
 	if v := os.Getenv("OAUTH_ENABLE"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.OAuth.Enable = b
@@ -661,7 +712,10 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("OAUTH_BASE_URL"); v != "" {
 		cfg.OAuth.BaseURL = v
 	}
+}
 
+// applyPProfEnvOverrides applies PPROF_* environment variable overrides.
+func applyPProfEnvOverrides(cfg *Config) {
 	if v := os.Getenv("PPROF_ENABLE"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.PProf.Enable = b
@@ -675,7 +729,10 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.PProf.Port = i
 		}
 	}
+}
 
+// applyMiscEnvOverrides applies miscellaneous environment variable overrides (STARTUP_NOTIFY_*, ADMIN_*, TAVILY_API_KEY).
+func applyMiscEnvOverrides(cfg *Config) {
 	if v := os.Getenv("STARTUP_NOTIFY_CHANNEL"); v != "" {
 		cfg.StartupNotify.Channel = v
 	}
