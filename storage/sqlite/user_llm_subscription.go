@@ -56,7 +56,9 @@ func scanSubscription(scanner interface{ Scan(...interface{}) error }, sub *LLMS
 	sub.CreatedAt = parseSQLiteTime(createdAt)
 	sub.UpdatedAt = parseSQLiteTime(updatedAt)
 	if cachedModelsJSON != "" {
-		_ = json.Unmarshal([]byte(cachedModelsJSON), &sub.CachedModels)
+		if err := json.Unmarshal([]byte(cachedModelsJSON), &sub.CachedModels); err != nil {
+			log.WithError(err).WithField("subscription_id", sub.ID).Warn("Failed to unmarshal cached models for subscription")
+		}
 	}
 	return encryptedAPIKey, isDefault, nil
 }

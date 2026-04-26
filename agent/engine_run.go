@@ -1666,8 +1666,12 @@ func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, 
 	log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
 
 	if s.cfg.Session != nil {
-		_ = s.cfg.Session.AddMessage(bgAssistantMsg)
-		_ = s.cfg.Session.AddMessage(bgToolMsg)
+		if err := s.cfg.Session.AddMessage(bgAssistantMsg); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to persist background task assistant message to session")
+		}
+		if err := s.cfg.Session.AddMessage(bgToolMsg); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to persist background task tool message to session")
+		}
 		s.lastPersistedCount = len(s.messages)
 	}
 
@@ -1728,8 +1732,12 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 	}).Info("Injected bg subagent notification into Run loop")
 
 	if s.cfg.Session != nil {
-		_ = s.cfg.Session.AddMessage(assistantMsg)
-		_ = s.cfg.Session.AddMessage(toolMsg)
+		if err := s.cfg.Session.AddMessage(assistantMsg); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to persist subagent notification assistant message to session")
+		}
+		if err := s.cfg.Session.AddMessage(toolMsg); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to persist subagent notification tool message to session")
+		}
 		s.lastPersistedCount = len(s.messages)
 	}
 

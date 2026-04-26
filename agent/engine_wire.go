@@ -1455,7 +1455,9 @@ func (a *Agent) registerOneshotSubAgent(
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
-	_ = agentTenantSession.Clear()
+	if err := agentTenantSession.Clear(); err != nil {
+		log.Ctx(ctx).WithError(err).WithField("instance", oneshotInstance).Warn("Failed to clear old sub-agent session")
+	}
 
 	// Eager-save user message so get_history returns it during Run().
 	if err := agentTenantSession.AddMessage(llm.NewUserMessage(task)); err != nil {

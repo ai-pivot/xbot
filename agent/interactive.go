@@ -358,7 +358,9 @@ func (a *Agent) SpawnInteractiveSession(
 	// Clear any stale messages from a previous session with the same key.
 	// This can happen after server restart (DB retains old tenant data) or
 	// if destroyInteractiveSession's DeleteTenant failed silently.
-	_ = agentTenantSession.Clear()
+	if err := agentTenantSession.Clear(); err != nil {
+		log.Ctx(subCtx).WithError(err).WithField("instance", instance).Warn("Failed to clear old sub-agent session")
+	}
 
 	// Eager-save user message so get_history returns it during Run().
 	// Without this, the CLI shows "0 history messages loaded" and the DB has no
