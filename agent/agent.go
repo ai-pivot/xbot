@@ -30,6 +30,9 @@ import (
 )
 
 // ErrLLMGenerate indicates an LLM generation call failure (network, API 4xx/5xx, etc.)
+// cardExpiryDuration is how long to keep expired Feishu cards before cleanup.
+const cardExpiryDuration = 24 * time.Hour
+
 var ErrLLMGenerate = errors.New("LLM generate failed")
 
 // assertNoSystemPersist checks that a system message is not being persisted to session.
@@ -547,7 +550,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	}
 
 	// Clean up expired waiting cards from previous runs (TTL: 24h)
-	if n := cardBuilder.CleanupExpiredWaitingCards(24 * time.Hour); n > 0 {
+	if n := cardBuilder.CleanupExpiredWaitingCards(cardExpiryDuration); n > 0 {
 		log.WithField("count", n).Info("Cleaned up expired waiting cards")
 	}
 
