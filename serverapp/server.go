@@ -436,34 +436,59 @@ func registerOAuthAndFeishuTools(cfg *config.Config, backend agent.AgentBackend,
 	log.Info("OAuth and Feishu MCP tools registered")
 }
 
-// Run is the main entry point for the xbot server. It loads configuration,
-// initializes all subsystems (LLM, sandbox, channels, tools, event triggers),
-// starts the agent loop, and blocks until shutdown.
-func Run(args []string) error {
-	// Parse --config flag before loading config.
-	// Usage: xbot --config /path/to/config.json
-	var configPath string
+// parseConfigPath extracts the --config flag value from command-line arguments.
+// Returns empty string if not specified.
+func parseConfigPath(args []string) string {
 	for i := 0; i < len(args); i++ {
 		if (args[i] == "--config" || args[i] == "-config") && i+1 < len(args) {
-			configPath = args[i+1]
-			i++
-		} else if strings.HasPrefix(args[i], "--config=") {
-			configPath = strings.TrimPrefix(args[i], "--config=")
+			return args[i+1]
+		}
+		if strings.HasPrefix(args[i], "--config=") {
+			return strings.TrimPrefix(args[i], "--config=")
 		}
 	}
+	return ""
+}
 
-	var cfg *config.Config
+// loadConfig loads the configuration from the given path, or from default
+// locations if configPath is empty. Returns nil if loading fails.
+func loadConfig(configPath string) *config.Config {
 	if configPath != "" {
-		cfg = config.LoadFromFile(configPath)
+		cfg := config.LoadFromFile(configPath)
 		if cfg == nil {
-			return fmt.Errorf("load config from %s", configPath)
+			log.WithField("path", configPath).Error("Failed to load config file")
 		}
-	} else {
-		cfg = config.Load()
+		return cfg
 	}
+	return config.Load()
+}
 
+// serverState holds all initialized subsystems accumulated during server startup.
+// It is populated step-by-step by the init* functions and consumed by Run.
+type serverState struct {
+	cfg            *config.Config
+	backend        *agent.LocalBackend
+	msgBus         *bus.MessageBus
+	disp           *channel.Dispatcher
+	workDir        string
+	xbotDir        string
+	dbPath         string
+	oauthServer    *oauth.Server
+	oauthManager   *oauth.Manager
+	feishuProvider *providers.FeishuProvider
+	sharedDB       *sqlite.DB
+	tokenDB        *sqlite.DB
+	webhookServer  *event.WebhookServer
+	webhookBaseURL string
+	feishuCh       *channel.FeishuChannel
+	webCh          *channel.WebChannel
+}
+
+// initCoreServices initializes the foundational services: logging, LLM client,
+// message bus, database migration, OAuth, sandbox, and the agent backend.
+// Calls log.Fatal on unrecoverable errors.
+func initCoreServices(cfg *config.Config) *serverState {
 	setupLogging(cfg)
-	defer log.Close()
 
 	llmClient, err := setupLLM(cfg)
 	if err != nil {
@@ -472,7 +497,6 @@ func Run(args []string) error {
 	log.WithFields(log.Fields{"provider": cfg.LLM.Provider, "model": cfg.LLM.Model}).Info("LLM client created")
 
 	msgBus := bus.NewMessageBus()
-
 	workDir := cfg.Agent.WorkDir
 	xbotDir := config.XbotHome()
 	dbPath := config.DBFilePath()
@@ -502,6 +526,27 @@ func Run(args []string) error {
 	if err != nil {
 		log.WithError(err).Fatal("Failed to create local backend")
 	}
+
+	return &serverState{
+		cfg:            cfg,
+		backend:        backend,
+		msgBus:         msgBus,
+		workDir:        workDir,
+		xbotDir:        xbotDir,
+		dbPath:         dbPath,
+		oauthServer:    oauthServer,
+		oauthManager:   oauthManager,
+		feishuProvider: feishuProvider,
+		sharedDB:       sharedDB,
+	}
+}
+
+// syncSubscriptionsAndSettings migrates config.json subscriptions into the DB,
+// cleans up stale subscription-scoped keys, and syncs runtime settings from DB.
+// After this, DB is the source of truth for subscriptions and settings.
+func syncSubscriptionsAndSettings(st *serverState) {
+	cfg := st.cfg
+	backend := st.backend
 
 	// Migrate config.json subscriptions into DB for the admin user.
 	// This ensures admin is a normal DB user with real subscriptions,
@@ -576,9 +621,17 @@ func Run(args []string) error {
 			log.Info("Agent runtime settings synced from DB")
 		}
 	}
+}
+
+// registerCoreTools registers all server-level tools: OAuth/Feishu MCP tools,
+// DownloadFile, WebSearch, Logs, and the Event Trigger system.
+// It also creates the webhook server if configured.
+func registerCoreTools(st *serverState) {
+	cfg := st.cfg
+	backend := st.backend
 
 	// Register OAuth and Feishu MCP tools (if enabled)
-	registerOAuthAndFeishuTools(cfg, backend, oauthManager, feishuProvider)
+	registerOAuthAndFeishuTools(cfg, backend, st.oauthManager, st.feishuProvider)
 
 	// Register DownloadFile tool (supports both Web/OSS and Feishu sources)
 	backend.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
@@ -603,10 +656,10 @@ func Run(args []string) error {
 		webhookBaseURL = fmt.Sprintf("http://%s:%d", cfg.EventWebhook.Host, cfg.EventWebhook.Port)
 	}
 	backend.RegisterCoreTool(tools.NewEventTriggerTool(eventRouter, webhookBaseURL))
+	st.webhookBaseURL = webhookBaseURL
 
-	var webhookServer *event.WebhookServer
 	if cfg.EventWebhook.Enable {
-		webhookServer = event.NewWebhookServer(eventRouter, event.WebhookConfig{
+		st.webhookServer = event.NewWebhookServer(eventRouter, event.WebhookConfig{
 			Host:        cfg.EventWebhook.Host,
 			Port:        cfg.EventWebhook.Port,
 			BaseURL:     webhookBaseURL,
@@ -624,27 +677,39 @@ func Run(args []string) error {
 		MaxDelay: cfg.Agent.LLMRetryMaxDelay,
 		Timeout:  cfg.Agent.LLMRetryTimeout,
 	})
+}
 
-	tokenDB, err := sqlite.Open(dbPath)
+// initChannelsAndRPC opens the token database, creates the channel dispatcher,
+// registers all channels, builds the RPC table, and wires up message routing
+// between the backend, dispatcher, and channels.
+func initChannelsAndRPC(st *serverState) {
+	cfg := st.cfg
+	backend := st.backend
+
+	tokenDB, err := sqlite.Open(st.dbPath)
 	if err != nil {
 		log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
 	} else {
 		tools.SetRunnerTokenDB(tokenDB.Conn())
 	}
+	st.tokenDB = tokenDB
 
-	disp := channel.NewDispatcher(msgBus)
+	disp := channel.NewDispatcher(st.msgBus)
+	st.disp = disp
 
 	var webDB *sql.DB
 	if tokenDB != nil {
 		webDB = tokenDB.Conn()
 	}
-	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, backend, webDB, workDir)
+	feishuCh, webCh, err := registerChannels(disp, cfg, st.msgBus, backend, webDB, st.workDir)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to register channels")
 	}
+	st.feishuCh = feishuCh
+	st.webCh = webCh
 
 	// Build RPC table once at startup; per-request identity is passed via context.
-	rpcTable := buildRPCTable(cfg, backend, disp, msgBus)
+	rpcTable := buildRPCTable(cfg, backend, disp, st.msgBus)
 
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
@@ -687,6 +752,7 @@ func Run(args []string) error {
 		}
 
 		// Pass admin chatID and web DB (for admin commands like !webadd)
+		adminChatID := cfg.Admin.ChatID
 		if adminChatID != "" {
 			feishuCh.SetAdminChatID(adminChatID)
 		}
@@ -700,33 +766,43 @@ func Run(args []string) error {
 		// Inject Feishu channel-specific prompt provider
 		backend.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
 	}
+}
 
-	// Setup graceful shutdown (declare ctx early for OAuth Manager cleanup goroutine)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Set OAuth server callback to send messages after authorization completes
-	if oauthServer != nil {
-		// Start OAuth flow periodic cleanup goroutine
-		oauthManager.Start(ctx)
-
-		oauthServer.SetSendFunc(func(channel, chatID, content string) error {
-			_, err := disp.SendDirect(bus.OutboundMessage{
-				Channel: channel,
-				ChatID:  chatID,
-				Content: content,
-			})
-			return err
-		})
-		// Start OAuth HTTP server
-		if err := oauthServer.Start(); err != nil {
-			log.WithError(err).Fatal("Failed to start OAuth server")
-		}
-		log.WithFields(log.Fields{
-			"port":    cfg.OAuth.Port,
-			"baseURL": cfg.OAuth.BaseURL,
-		}).Info("OAuth server started")
+// startOAuthServer wires the OAuth server's send function to the dispatcher
+// and starts the OAuth HTTP server. Does nothing if OAuth is disabled.
+func startOAuthServer(st *serverState, ctx context.Context) {
+	if st.oauthServer == nil {
+		return
 	}
+
+	// Start OAuth flow periodic cleanup goroutine
+	st.oauthManager.Start(ctx)
+
+	st.oauthServer.SetSendFunc(func(channel, chatID, content string) error {
+		_, err := st.disp.SendDirect(bus.OutboundMessage{
+			Channel: channel,
+			ChatID:  chatID,
+			Content: content,
+		})
+		return err
+	})
+	// Start OAuth HTTP server
+	if err := st.oauthServer.Start(); err != nil {
+		log.WithError(err).Fatal("Failed to start OAuth server")
+	}
+	log.WithFields(log.Fields{
+		"port":    st.cfg.OAuth.Port,
+		"baseURL": st.cfg.OAuth.BaseURL,
+	}).Info("OAuth server started")
+}
+
+// startServices launches all runtime goroutines: the outbound dispatcher,
+// channel listeners, webhook server, agent loop, and startup notification.
+// It blocks until a shutdown signal is received on sigCh.
+func startServices(st *serverState, ctx context.Context, sigCh chan os.Signal) {
+	cfg := st.cfg
+	disp := st.disp
+	backend := st.backend
 
 	channels := disp.EnabledChannels()
 	if len(channels) == 0 {
@@ -735,9 +811,6 @@ func Run(args []string) error {
 	} else {
 		log.WithField("channels", channels).Info("Channels enabled")
 	}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start outbound message dispatcher
 	go func() {
@@ -765,21 +838,21 @@ func Run(args []string) error {
 	}
 
 	// Start Webhook event server
-	if webhookServer != nil {
+	if st.webhookServer != nil {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
 					log.WithField("panic", r).Error("Webhook server panicked\n" + string(debug.Stack()))
 				}
 			}()
-			if err := webhookServer.Start(); err != nil {
+			if err := st.webhookServer.Start(); err != nil {
 				log.WithError(err).Error("Webhook server failed")
 			}
 		}()
 		log.WithFields(log.Fields{
 			"host":     cfg.EventWebhook.Host,
 			"port":     cfg.EventWebhook.Port,
-			"base_url": webhookBaseURL,
+			"base_url": st.webhookBaseURL,
 		}).Info("Webhook event server started")
 	}
 
@@ -804,6 +877,32 @@ func Run(args []string) error {
 	if cfg.StartupNotify.Channel != "" && cfg.StartupNotify.ChatID != "" {
 		go sendStartupNotify(disp, cfg)
 	}
+}
+
+// Run is the main entry point for the xbot server. It loads configuration,
+// initializes all subsystems (LLM, sandbox, channels, tools, event triggers),
+// starts the agent loop, and blocks until shutdown.
+func Run(args []string) error {
+	configPath := parseConfigPath(args)
+	cfg := loadConfig(configPath)
+	if cfg == nil {
+		return fmt.Errorf("load config from %s", configPath)
+	}
+
+	defer log.Close()
+
+	st := initCoreServices(cfg)
+	syncSubscriptionsAndSettings(st)
+	registerCoreTools(st)
+	initChannelsAndRPC(st)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startOAuthServer(st, ctx)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	startServices(st, ctx, sigCh)
 
 	// Wait for shutdown signal
 	sig := <-sigCh
@@ -811,7 +910,7 @@ func Run(args []string) error {
 	fmt.Println("\nShutting down...")
 
 	// Orderly shutdown: cancel context → close services in reverse initialization order.
-	shutdownServices(cancel, webhookServer, backend, oauthServer, oauthManager, sharedDB, tokenDB, disp)
+	shutdownServices(cancel, st.webhookServer, st.backend, st.oauthServer, st.oauthManager, st.sharedDB, st.tokenDB, st.disp)
 	return nil
 }
 
