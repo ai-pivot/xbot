@@ -26,6 +26,18 @@ type panelAgentEntry struct {
 	Preview    string // latest progress/last reply summary
 }
 
+// writePanelHeader writes a styled panel header line to sb.
+// Optional extra strings are appended between help and the newline.
+func writePanelHeader(sb *strings.Builder, header, help string, extras ...string) {
+	sb.WriteString(header)
+	sb.WriteString("  ")
+	sb.WriteString(help)
+	for _, e := range extras {
+		sb.WriteString(e)
+	}
+	sb.WriteString("\n")
+}
+
 // renderSelLine renders a settings panel selected row left-aligned to the given width.
 // lipgloss v2 Width() defaults to centering; this helper avoids that by manual padding.
 func (m *cliModel) renderSelLine(line string, w int) string {
@@ -638,10 +650,7 @@ func (m *cliModel) viewBgTaskList() string {
 	help := s.PanelDesc.Render(m.locale.BgTasksHelp)
 
 	var sb strings.Builder
-	sb.WriteString(header)
-	sb.WriteString("  ")
-	sb.WriteString(help)
-	sb.WriteString("\n")
+	writePanelHeader(&sb, header, help)
 
 	// Calculate dynamic truncation width.
 	contentW := m.contentWidth()
@@ -934,11 +943,7 @@ func (m *cliModel) viewSessionsList() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(header)
-	sb.WriteString("  ")
-	sb.WriteString(help)
-	sb.WriteString(scrollHint)
-	sb.WriteString("\n")
+	writePanelHeader(&sb, header, help, scrollHint)
 
 	contentW := m.contentWidth()
 	if contentW < panelMinContentWidth {
