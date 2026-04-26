@@ -407,6 +407,21 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc)
 
+	s.recordLLMResponseUsage(response)
+
+	if err != nil && llm.IsInputTooLongError(err) && len(s.messages) > 3 {
+		response, err = s.handleInputTooLong(ctx, retryNotifyCtx, toolDefs)
+	}
+
+	if releaseLLMSem != nil {
+		releaseLLMSem()
+	}
+
+	return response, err
+}
+
+// recordLLMResponseUsage updates token tracking counters from an LLM response.
+func (s *runState) recordLLMResponseUsage(response *llm.LLMResponse) {
 	s.localLLMCalls++
 	if response != nil {
 		s.lastPromptTokens = response.Usage.PromptTokens
@@ -418,16 +433,16 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
 	}
+}
 
-	if err != nil && llm.IsInputTooLongError(err) && len(s.messages) > 3 {
-		response, err = s.handleInputTooLong(ctx, retryNotifyCtx, toolDefs)
+// cleanOffloadAndMaskStores removes old offload and mask entries after compression.
+func (s *runState) cleanOffloadAndMaskStores(cutoff time.Time) {
+	if s.cfg.OffloadStore != nil {
+		s.cfg.OffloadStore.CleanOldEntries(s.offloadSessionKey, cutoff)
 	}
-
-	if releaseLLMSem != nil {
-		releaseLLMSem()
+	if s.cfg.MaskStore != nil {
+		s.cfg.MaskStore.CleanOldEntries(cutoff)
 	}
-
-	return response, err
 }
 
 // persistCompressedResult replaces the session's messages with the compressed result.
@@ -521,17 +536,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	}
 
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc)
-	s.localLLMCalls++
-	if response != nil {
-		s.lastPromptTokens = response.Usage.PromptTokens
-		s.lastCompletionTokens = response.Usage.CompletionTokens
-		s.lastMsgCountAtLLMCall = len(s.messages)
-		s.hadLLMCall = true
-		s.localInputTokens += int(response.Usage.PromptTokens)
-		s.localOutputTokens += int(response.Usage.CompletionTokens)
-		s.localCachedTokens += int(response.Usage.CacheHitTokens)
-		s.updateTokenUsage()
-	}
+	s.recordLLMResponseUsage(response)
 	return response, err
 }
 
