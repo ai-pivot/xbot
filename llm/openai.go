@@ -17,13 +17,13 @@ import (
 	"github.com/openai/openai-go/v3/packages/ssestream"
 )
 
-// OpenAILLM OpenAI LLM 实现
+// OpenAILLM implements the OpenAI LLM
 type OpenAILLM struct {
 	client            *openai.Client
-	mu                sync.RWMutex   // 保护 models 和 defaultModel 的并发读写（C-12）
-	models            []string       // 可用模型列表
-	defaultModel      string         // 默认模型
-	maxTokens         int            // 最大生成 token 数（用户配置值，作为上限）
+	mu                sync.RWMutex   // Guards concurrent read/write of models and defaultModel (C-12)
+	models            []string       // Available model list
+	defaultModel      string         // Default model
+	maxTokens         int            // Max generation tokens (user-configured, used as upper bound)
 	onModelsLoaded    func([]string) // callback after models loaded from API
 	onModelsLoadError func(error)    // callback after models load fails
 	modelsLoaded      bool           // true after first ListModels() triggers async fetch
@@ -33,13 +33,13 @@ type OpenAILLM struct {
 	maxTokensUpgrade sync.Map // model -> bool
 }
 
-// OpenAIConfig OpenAI 配置
+// OpenAIConfig holds OpenAI configuration
 type OpenAIConfig struct {
 	BaseURL      string
 	APIKey       string
-	DefaultModel string // 默认模型（API 获取失败时的回退模型）
-	MaxTokens    int    // 最大生成 token 数（默认 8192）
-	UserAgent    string // 自定义 User-Agent（留空使用默认值）
+	DefaultModel string // Default model（API 获取失败时的回退模型）
+	MaxTokens    int    // Max generation tokens (default 8192)
+	UserAgent    string // Custom User-Agent (empty = use default)
 
 	// OnModelsLoadError is called when the async model list API call fails.
 	// Used by CLI to show a toast notification.
@@ -54,10 +54,10 @@ type OpenAIConfig struct {
 	SubscriptionID string
 }
 
-// defaultMaxTokens 默认最大生成 token 数
+// defaultMaxTokens is the default max generation token count
 const defaultMaxTokens = 8192
 
-// NewOpenAILLM 创建 OpenAI LLM 实例
+// NewOpenAILLM creates a new OpenAI LLM instance
 func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = defaultMaxTokens
@@ -125,7 +125,7 @@ var stainlessHeaders = []string{
 	"X-Stainless-Timeout",
 }
 
-// ListModels 获取可用模型列表
+// ListModels returns the available model list
 // Triggers an async model list fetch on the first call (lazy loading).
 func (o *OpenAILLM) ListModels() []string {
 	o.mu.RLock()
@@ -166,7 +166,7 @@ func (o *OpenAILLM) triggerModelLoad() {
 	}()
 }
 
-// GetDefaultModel 获取默认模型
+// GetDefaultModel returns the default model
 func (o *OpenAILLM) GetDefaultModel() string {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -186,7 +186,7 @@ func (o *OpenAILLM) MaxTokens() int {
 	return o.maxTokens
 }
 
-// LoadModelsFromAPI 从 OpenAI API 加载可用模型列表
+// LoadModelsFromAPI loads the available model list from the OpenAI API
 func (o *OpenAILLM) LoadModelsFromAPI(ctx context.Context) error {
 	log.Debug("[LLM] Loading models from OpenAI API")
 
@@ -205,7 +205,7 @@ func (o *OpenAILLM) LoadModelsFromAPI(ctx context.Context) error {
 		return nil
 	}
 
-	// 更新模型列表
+	// Update model list
 	o.mu.Lock()
 	o.models = models
 	if o.defaultModel == "" && len(o.models) > 0 {
@@ -228,7 +228,7 @@ func (o *OpenAILLM) LoadModelsFromAPI(ctx context.Context) error {
 	return nil
 }
 
-// buildToolCallsParam 构建工具调用参数
+// buildToolCallsParam builds tool call parameters
 func buildToolCallsParam(toolCalls []ToolCall) []openai.ChatCompletionMessageToolCallUnionParam {
 	result := make([]openai.ChatCompletionMessageToolCallUnionParam, 0, len(toolCalls))
 	for _, tc := range toolCalls {
@@ -245,44 +245,44 @@ func buildToolCallsParam(toolCalls []ToolCall) []openai.ChatCompletionMessageToo
 	return result
 }
 
-// extractReasoningContent 从 OpenAI 响应的 ExtraFields 中提取 reasoning_content
+// extractReasoningContent extracts reasoning_content from an OpenAI response's ExtraFields
 func extractReasoningContent(msg openai.ChatCompletionMessage) string {
 	if field, ok := msg.JSON.ExtraFields["reasoning_content"]; ok {
 		raw := field.Raw()
 		if raw != "" && raw != "null" {
-			// 尝试解析为字符串
+			// Try parsing as string
 			var str string
 			if err := json.Unmarshal([]byte(raw), &str); err == nil {
 				return str
 			}
-			// 如果解析失败，返回原始值
+			// If parsing fails, return raw value
 			return raw
 		}
 	}
 	return ""
 }
 
-// extractReasoningContentFromDelta 从流式响应的 Delta 中提取 reasoning_content
+// extractReasoningContentFromDelta extracts reasoning_content from a streaming response's Delta
 func extractReasoningContentFromDelta(delta openai.ChatCompletionChunkChoiceDelta) string {
 	if field, ok := delta.JSON.ExtraFields["reasoning_content"]; ok {
 		raw := field.Raw()
 		if raw != "" && raw != "null" {
-			// 尝试解析为字符串
+			// Try parsing as string
 			var str string
 			if err := json.Unmarshal([]byte(raw), &str); err == nil {
 				return str
 			}
-			// 如果解析失败，返回原始值
+			// If parsing fails, return raw value
 			return raw
 		}
 	}
 	return ""
 }
 
-// assistantMessageWithReasoning 用于构建包含 reasoning_content 的 assistant message。
-// 注意：ReasoningContent 不使用 omitempty——当 thinking mode 开启时，即使值为空字符串也必须传给 API（DeepSeek 要求）。
-// 此结构体仅在显式决定需要 reasoning_content 字段时才序列化（thinking mode 开启或有实际 reasoning 内容），
-// 所以不带 omitempty 不会影响非 thinking 模式下的行为。
+// assistantMessageWithReasoning builds an assistant message that includes reasoning_content.
+// Note: ReasoningContent does not use omitempty — when thinking mode is on, even an empty string must be sent to the API (DeepSeek requirement).
+// This struct is serialized only when reasoning_content is explicitly needed (thinking mode on or actual reasoning content present),
+// so the lack of omitempty doesn't affect non-thinking-mode behavior.
 type assistantMessageWithReasoning struct {
 	Role             string `json:"role"`
 	Content          any    `json:"content"` // string or null — must be present per OpenAI protocol
@@ -299,11 +299,11 @@ func hasAssistantReasoningHistory(messages []ChatMessage) bool {
 	return false
 }
 
-// toOpenAIMessages 将业务消息转换为 OpenAI 消息格式。
-// 显式开启 thinking mode 时，所有 assistant 消息都会包含 reasoning_content 字段。
-// 在 auto 模式下，只要历史里已经出现过 assistant reasoning，也会为所有 assistant
-// 消息补齐该字段（缺失时传空字符串），以满足 DeepSeek/OpenAI reasoning provider
-// 对历史消息形状的一致性要求。
+// toOpenAIMessages converts business messages to OpenAI message format.
+// When thinking mode is explicitly enabled, all assistant messages include the reasoning_content field.
+// In auto mode, if any assistant reasoning has appeared in history, all assistant messages
+// get the field back-filled (empty string if missing), to satisfy DeepSeek/OpenAI reasoning provider's
+// consistency requirements for historical message shapes.
 func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.ChatCompletionMessageParamUnion {
 	thinkingEnabled := IsThinkingActive(thinkingMode)
 	reasoningHistoryObserved := thinkingMode != ThinkingDisabled && hasAssistantReasoningHistory(messages)
@@ -339,12 +339,12 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 				result = append(result, openai.UserMessage(msg.Content))
 			}
 		case "assistant":
-			// Thinking mode 开启，或有实际 reasoning_content 时，使用 param.Override 路径
-			// 确保 reasoning_content 字段始终传给 API（DeepSeek thinking mode 要求）
+			// When thinking mode is on or there is actual reasoning_content, use param.Override path
+			// Ensure reasoning_content field is always sent to API (DeepSeek thinking mode requirement)
 			if thinkingEnabled || reasoningHistoryObserved || msg.ReasoningContent != "" {
 				var content any = msg.Content
 				if msg.Content == "" {
-					content = nil // OpenAI 协议: 空 content 用 null
+					content = nil // OpenAI protocol: empty content uses null
 				}
 				rawMsg := assistantMessageWithReasoning{
 					Role:             "assistant",
@@ -376,7 +376,7 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 	return result
 }
 
-// buildToolCallsParamForJSON 构建用于 JSON 序列化的 tool calls。
+// buildToolCallsParamForJSON builds tool calls for JSON serialization.
 // OpenAI/DeepSeek-compatible chat history requires function.arguments to stay a
 // JSON string, not a decoded object. Empty arguments are normalized to "{}".
 func buildToolCallsParamForJSON(toolCalls []ToolCall) []map[string]any {
@@ -450,7 +450,7 @@ func parseEmbeddedImages(content string) []imageContentPart {
 	return parts
 }
 
-// toOpenAITools 将工具转换为 OpenAI 格式
+// toOpenAITools converts tools to OpenAI format
 func toOpenAITools(tools []ToolDefinition) []openai.ChatCompletionToolUnionParam {
 	result := make([]openai.ChatCompletionToolUnionParam, 0, len(tools))
 	for _, tool := range tools {
@@ -487,7 +487,7 @@ func toOpenAITools(tools []ToolDefinition) []openai.ChatCompletionToolUnionParam
 	return result
 }
 
-// buildParams 构建请求参数
+// buildParams builds request parameters
 // modelMaxOutputTokens returns the maximum output tokens a model can produce.
 // Used to clamp max_tokens/max_completion_tokens to prevent API errors when
 // the user configures a value larger than the model supports.
@@ -632,16 +632,16 @@ func isMaxTokensParamError(err error) string {
 	return ""
 }
 
-// buildThinkingOptions 根据 thinkingMode 构建对应的 request options
-// 支持多种模型的 thinking mode：
+// buildThinkingOptions builds request options based on thinkingMode
+// Supports thinking mode for multiple models:
 // - DeepSeek: {"thinking": {"type": "enabled"}}
-// - 智谱 GLM: {"thinking": {"type": "enabled", "clear_thinking": false}}
-// - 其他模型可扩展
+// - Zhipu GLM: {"thinking": {"type": "enabled", "clear_thinking": false}}
+// - Other models can be extended
 //
-// 参数格式：
+// Parameter format:
 // - "enabled" -> {"thinking": {"type": "enabled"}}
-// - "disabled" -> {"thinking": {"type": "disabled"}} (不发送参数，让模型自己决定)
-// - 自定义 JSON: 直接使用，如 {"type": "enabled", "clear_thinking": false}
+// - "disabled" -> {"thinking": {"type": "disabled"}} (don't send parameter, let model decide)
+// - Custom JSON: used directly, e.g. {"type": "enabled", "clear_thinking": false}
 func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOption {
 	if thinkingMode == "" {
 		return nil
@@ -651,12 +651,12 @@ func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOp
 
 	switch thinkingMode {
 	case "enabled":
-		// DeepSeek/GLM 标准格式
+		// DeepSeek/GLM standard format
 		opts = append(opts, option.WithJSONSet("thinking", map[string]any{"type": "enabled"}))
 	case "disabled":
-		// 不发送任何 thinking 参数，让模型自己决定
+		// Don't send any thinking parameter, let model decide
 	default:
-		// JSON 格式的 thinking 参数
+		// JSON-format thinking parameter
 		if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
 			var customParams map[string]any
 			if err := json.Unmarshal([]byte(thinkingMode), &customParams); err == nil {
@@ -681,9 +681,9 @@ func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOp
 	return opts
 }
 
-// Generate 生成 LLM 响应
+// Generate produces an LLM response
 func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
-	// 如果未指定模型，使用默认模型
+	// Use default model if none specified
 	if model == "" {
 		model = o.GetDefaultModel()
 	}
@@ -701,7 +701,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	startTime := time.Now()
 	params := o.buildParams(model, messages, tools, thinkingMode, false)
 
-	// 构建 thinking mode 相关的 request options
+	// Build thinking mode request options
 	opts := o.buildThinkingOptions(thinkingMode)
 	if len(opts) > 0 {
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
@@ -731,10 +731,10 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		return nil, fmt.Errorf("openai chat completion: %w", err)
 	}
 
-	// 解析响应
+	// Parse response
 	resp := &LLMResponse{}
 
-	// 解析 token 使用统计
+	// Parse token usage statistics
 	resp.Usage = TokenUsage{
 		PromptTokens:     completion.Usage.PromptTokens,
 		CompletionTokens: completion.Usage.CompletionTokens,
@@ -750,12 +750,12 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		resp.Content = choice.Message.Content
 		resp.FinishReason = FinishReason(choice.FinishReason)
 
-		// 提取 reasoning_content（DeepSeek/OpenAI reasoning 模型）
+		// Extract reasoning_content (DeepSeek/OpenAI reasoning models)
 		resp.ReasoningContent = extractReasoningContent(choice.Message)
 
-		// BUG 5 fix: 某些 provider (DeepSeek) 会在 Content 中重复包含 reasoning_content。
-		// 如果 reasoning_content 非空且 Content 以 reasoning_content 开头，去除重复部分。
-		// 使用 TrimSpace 比较，避免前导空白（如 \n）导致漏判。
+		// BUG 5 fix: Some providers (DeepSeek) duplicate reasoning_content in Content.
+		// If reasoning_content is non-empty and Content starts with it, remove the duplicate.
+		// Use TrimSpace comparison to avoid false negatives from leading whitespace (e.g. \n).
 		if resp.ReasoningContent != "" && resp.Content != "" {
 			if strings.TrimSpace(resp.Content) == strings.TrimSpace(resp.ReasoningContent) {
 				resp.Content = ""
@@ -764,7 +764,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 			}
 		}
 
-		// 解析工具调用
+		// Parse tool calls
 		if len(choice.Message.ToolCalls) > 0 {
 			resp.ToolCalls = make([]ToolCall, 0, len(choice.Message.ToolCalls))
 			for _, tc := range choice.Message.ToolCalls {
@@ -810,9 +810,9 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	return resp, nil
 }
 
-// GenerateStream 流式生成 LLM 响应
+// GenerateStream produces a streaming response LLM 响应
 func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
-	// 如果未指定模型，使用默认模型
+	// Use default model if none specified
 	if model == "" {
 		model = o.GetDefaultModel()
 	}
@@ -829,7 +829,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 
 	startTime := time.Now()
 
-	// 构建 thinking mode 相关的 request options
+	// Build thinking mode request options
 	opts := o.buildThinkingOptions(thinkingMode)
 	if len(opts) > 0 {
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
@@ -840,10 +840,10 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 		return nil, fmt.Errorf("openai stream completion: %w", err)
 	}
 
-	// 创建事件 channel
+	// Create event channel
 	eventChan := make(chan StreamEvent, 100)
 
-	// 启动 goroutine 处理流式响应
+	// Start goroutine to process streaming response
 	go o.processStream(ctx, stream, eventChan, startTime, messages, model, tools, thinkingMode)
 
 	return eventChan, nil
@@ -876,7 +876,7 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 	return stream, nil
 }
 
-// processStream 处理流式响应
+// processStream processes a streaming response
 func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[openai.ChatCompletionChunk], eventChan chan<- StreamEvent, startTime time.Time, messages []ChatMessage, model string, tools []ToolDefinition, thinkingMode string) {
 	defer close(eventChan)
 	defer stream.Close()
@@ -906,7 +906,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		chunk := stream.Current()
 		chunkCount++
 
-		// 记录第一个 chunk 时间
+		// Record first chunk time
 		if chunkCount == 1 {
 			firstChunkTime = time.Now()
 			l.WithFields(log.Fields{
@@ -916,7 +916,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		}
 
 		for _, choice := range chunk.Choices {
-			// 处理 reasoning_content（DeepSeek/OpenAI reasoning 模型）
+			// Process reasoning_content (DeepSeek/OpenAI reasoning models)
 			if reasoningDelta := extractReasoningContentFromDelta(choice.Delta); reasoningDelta != "" {
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
@@ -924,7 +924,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 				}
 			}
 
-			// 处理文本内容
+			// Process text content
 			if choice.Delta.Content != "" {
 				eventChan <- StreamEvent{
 					Type:    EventContent,
@@ -932,7 +932,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 				}
 			}
 
-			// 处理工具调用 — 跳过全空 delta（BUG 4 fix）
+			// Process tool calls — skip fully empty deltas (BUG 4 fix)
 			for _, tc := range choice.Delta.ToolCalls {
 				if tc.ID == "" && tc.Function.Name == "" && tc.Function.Arguments == "" {
 					continue
@@ -957,15 +957,15 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 				}
 			}
 
-			// 记录 finish_reason 但不立即发送 EventDone（BUG 1 fix）
-			// 只在 stream 循环结束后统一发送，防止中间 chunk 的 finish_reason
-			// 导致消费方提前终止，丢失后续 content/tool_calls。
+			// Record finish_reason but don't send EventDone immediately (BUG 1 fix)
+			// Send only after the stream loop ends, to prevent intermediate chunk finish_reason
+			// from causing consumers to terminate early and miss subsequent content/tool_calls.
 			if choice.FinishReason != "" {
 				lastFinishReason = FinishReason(choice.FinishReason)
 			}
 		}
 
-		// 收集 usage（通常在最后一个 chunk），不单独打日志，合并到 Stream completed
+		// Collect usage (usually in the last chunk); don't log separately, merge into Stream completed
 		hasUsage := chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0
 		if hasUsage {
 			lastUsage = &TokenUsage{
@@ -979,7 +979,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		}
 	}
 
-	// 检查错误
+	// Check for errors
 	if err := stream.Err(); err != nil {
 		// Learn max_tokens preference for future requests (mid-stream safety net;
 		// HTTP-level 400 is handled by newStreamingWithRetry before reaching here).
@@ -1005,7 +1005,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		return
 	}
 
-	// BUG 2 fix: 先发 Usage，再发 Done。确保消费方在处理 Done 之前拿到 usage。
+	// BUG 2 fix: Send Usage before Done, ensuring consumers get usage before handling Done.
 	if lastUsage != nil {
 		eventChan <- StreamEvent{
 			Type:  EventUsage,
@@ -1013,8 +1013,8 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		}
 	}
 
-	// BUG 1 fix: 统一在 stream 结束后发送 EventDone。
-	// 如果 provider 没有发送 finish_reason，但有 tool_calls，推断为 tool_calls。
+	// BUG 1 fix: Send EventDone uniformly after stream ends.
+	// If provider didn't send finish_reason but has tool_calls, infer tool_calls.
 	if lastFinishReason == "" && hasToolCalls {
 		lastFinishReason = FinishReasonToolCalls
 	}
@@ -1035,7 +1035,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		fields["completion_tokens"] = lastUsage.CompletionTokens
 		fields["total_tokens"] = lastUsage.TotalTokens
 	}
-	// Debug: 当 chunk_count 极低（空响应）时打印详细请求信息
+	// Debug: print detailed request info when chunk_count is very low (empty response)
 	if chunkCount <= 1 {
 		addNearEmptyResponseDebugFields(fields, messages, model, tools, thinkingMode)
 		l.WithFields(fields).Warn("[LLM] Stream completed with near-empty response")

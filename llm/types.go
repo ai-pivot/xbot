@@ -25,26 +25,26 @@ func IsThinkingActive(mode string) bool {
 	return mode != "" && mode != ThinkingDisabled
 }
 
-// ChatMessage 业务层定义的消息类型，与具体 LLM 实现解耦
+// ChatMessage is the business-layer message type, decoupled from specific LLM implementations
 type ChatMessage struct {
 	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
 	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"` // DeepSeek/OpenAI reasoning 模型的思维链内容
-	ToolCallID       string     `json:"tool_call_id,omitempty"`      // 如果是 tool 消息，记录工具调用 ID
-	ToolName         string     `json:"tool_name,omitempty"`         // 如果是 tool 消息，记录工具名称
-	ToolArguments    string     `json:"tool_arguments,omitempty"`    // 如果是 tool 消息，记录工具调用参数
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // 如果是 assistant 消息且有工具调用
-	Detail           string     `json:"-"`                           // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
-	Timestamp        time.Time  `json:"-"`                           // 消息时间戳，不参与 LLM 上下文
-	DisplayOnly      bool       `json:"-"`                           // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	ReasoningContent string     `json:"reasoning_content,omitempty"` // Chain-of-thought content for DeepSeek/OpenAI reasoning models
+	ToolCallID       string     `json:"tool_call_id,omitempty"`      // For tool messages: the tool call ID
+	ToolName         string     `json:"tool_name,omitempty"`         // For tool messages: the tool name
+	ToolArguments    string     `json:"tool_arguments,omitempty"`    // For tool messages: the tool call arguments
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // For assistant messages with tool calls
+	Detail           string     `json:"-"`                           // Tool result details (e.g. diff); not sent to LLM, only used for persistence and frontend display
+	Timestamp        time.Time  `json:"-"`                           // Message timestamp; not sent to LLM
+	DisplayOnly      bool       `json:"-"`                           // Display-only message (e.g. cron results); not sent to LLM
 
-	// CacheHint 提示 LLM 层此消息的缓存特性。
-	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）
-	// "" (默认) — 动态内容，不标注缓存
+	// CacheHint indicates the caching behavior of this message to the LLM layer.
+	// "static" — content unchanged across requests (e.g. base system prompt template)
+	// "" (default) — dynamic content, no cache annotation
 	CacheHint string `json:"cache_hint,omitempty"`
 }
 
-// NewSystemMessage 创建系统消息
+// NewSystemMessage creates a system message
 func NewSystemMessage(content string) ChatMessage {
 	return ChatMessage{Role: "system", Content: content, Timestamp: time.Now()}
 }
@@ -85,17 +85,17 @@ func FixupTrailingToolCalls(messages []ChatMessage) []ChatMessage {
 	return messages
 }
 
-// NewUserMessage 创建用户消息
+// NewUserMessage creates a user message
 func NewUserMessage(content string) ChatMessage {
 	return ChatMessage{Role: "user", Content: content, Timestamp: time.Now()}
 }
 
-// NewAssistantMessage 创建助手消息
+// NewAssistantMessage creates an assistant message
 func NewAssistantMessage(content string) ChatMessage {
 	return ChatMessage{Role: "assistant", Content: content, Timestamp: time.Now()}
 }
 
-// NewToolMessage 创建工具消息
+// NewToolMessage creates a tool message
 func NewToolMessage(toolName, toolCallID, arguments, content string) ChatMessage {
 	return ChatMessage{
 		Role:          "tool",
@@ -107,31 +107,31 @@ func NewToolMessage(toolName, toolCallID, arguments, content string) ChatMessage
 	}
 }
 
-// ToolCall 业务层定义的工具调用类型
+// ToolCall is the business-layer tool call type
 type ToolCall struct {
-	ID        string `json:"id"`        // 工具调用 ID，用于后续返回结果时关联
-	Name      string `json:"name"`      // 工具名称
-	Arguments string `json:"arguments"` // 工具参数（JSON 字符串）
+	ID        string `json:"id"`        // Tool call ID, used to correlate with subsequent results
+	Name      string `json:"name"`      // Tool name
+	Arguments string `json:"arguments"` // Tool arguments (JSON string)
 }
 
-// FinishReason LLM 结束原因
+// FinishReason is the LLM finish reason
 type FinishReason string
 
 const (
-	FinishReasonStop                  FinishReason = "stop"                          // 正常结束
-	FinishReasonLength                FinishReason = "length"                        // 达到最大长度
-	FinishReasonToolCalls             FinishReason = "tool_calls"                    // 工具调用
-	FinishReasonContentFilter         FinishReason = "content_filter"                // 内容过滤
-	FinishReasonContextWindowExceeded FinishReason = "model_context_window_exceeded" // 上下文超限
+	FinishReasonStop                  FinishReason = "stop"                          // Normal completion
+	FinishReasonLength                FinishReason = "length"                        // Reached max length
+	FinishReasonToolCalls             FinishReason = "tool_calls"                    // Tool call requested
+	FinishReasonContentFilter         FinishReason = "content_filter"                // Content filtered
+	FinishReasonContextWindowExceeded FinishReason = "model_context_window_exceeded" // Context window exceeded
 )
 
-// TokenUsage token 使用统计
+// TokenUsage holds token usage statistics
 type TokenUsage struct {
-	PromptTokens        int64 `json:"prompt_tokens"`         // 输入 token 数
-	CompletionTokens    int64 `json:"completion_tokens"`     // 输出 token 数
-	TotalTokens         int64 `json:"total_tokens"`          // 总 token 数
-	CacheHitTokens      int64 `json:"cache_hit_tokens"`      // 缓存命中的 input tokens（OpenAI: prompt_tokens_details.cached_tokens, Anthropic: cache_read_input_tokens）
-	CacheCreationTokens int64 `json:"cache_creation_tokens"` // 缓存创建的 input tokens（Anthropic: cache_creation_input_tokens）
+	PromptTokens        int64 `json:"prompt_tokens"`         // Input token count
+	CompletionTokens    int64 `json:"completion_tokens"`     // Output token count
+	TotalTokens         int64 `json:"total_tokens"`          // Total token count
+	CacheHitTokens      int64 `json:"cache_hit_tokens"`      // Cache-hit input tokens (OpenAI: prompt_tokens_details.cached_tokens, Anthropic: cache_read_input_tokens)
+	CacheCreationTokens int64 `json:"cache_creation_tokens"` // Cache-creation input tokens (Anthropic: cache_creation_input_tokens)
 }
 
 func (u TokenUsage) Add(u1 TokenUsage) TokenUsage {
@@ -143,55 +143,55 @@ func (u TokenUsage) Add(u1 TokenUsage) TokenUsage {
 	return u
 }
 
-// LLMResponse 业务层定义的 LLM 响应类型
+// LLMResponse is the business-layer LLM response type
 type LLMResponse struct {
-	Content          string       `json:"content"`                     // 文本内容
-	ReasoningContent string       `json:"reasoning_content,omitempty"` // 思维链内容（DeepSeek/OpenAI reasoning 模型）
-	ToolCalls        []ToolCall   `json:"tool_calls,omitempty"`        // 工具调用列表（可能为空）
-	FinishReason     FinishReason `json:"finish_reason"`               // 结束原因
-	Usage            TokenUsage   `json:"usage"`                       // token 使用统计
+	Content          string       `json:"content"`                     // Text content
+	ReasoningContent string       `json:"reasoning_content,omitempty"` // Chain-of-thought content (DeepSeek/OpenAI reasoning models)
+	ToolCalls        []ToolCall   `json:"tool_calls,omitempty"`        // Tool call requested列表（可能为空）
+	FinishReason     FinishReason `json:"finish_reason"`               // Finish reason
+	Usage            TokenUsage   `json:"usage"`                       // Token usage statistics
 }
 
-// HasToolCalls 检查是否有工具调用。
-// 判断依据：实际收到了 tool_calls 数据（而非依赖 finish_reason）。
-// 某些 provider (DeepSeek、智谱) 返回 tool_calls 时 finish_reason 为 "stop" 而非 "tool_calls"，
-// 因此不能依赖 finish_reason 来判断。
+// HasToolCalls checks whether the response contains tool calls.
+// Decision is based on actual tool_calls data (not finish_reason).
+// Some providers (DeepSeek, Zhipu) return finish_reason "stop" instead of "tool_calls" when tool_calls are present;
+// therefore finish_reason alone is unreliable.
 func (r *LLMResponse) HasToolCalls() bool {
 	return len(r.ToolCalls) > 0
 }
 
-// StreamEventType 流式事件类型
+// StreamEventType is a streaming event type
 type StreamEventType string
 
 const (
-	EventContent          StreamEventType = "content"           // 文本内容增量
-	EventReasoningContent StreamEventType = "reasoning_content" // 思维链内容增量（DeepSeek/OpenAI reasoning 模型）
-	EventToolCall         StreamEventType = "tool_call"         // 工具调用增量
-	EventUsage            StreamEventType = "usage"             // Token 统计
-	EventDone             StreamEventType = "done"              // 完成
-	EventError            StreamEventType = "error"             // 错误
+	EventContent          StreamEventType = "content"           // Text content增量
+	EventReasoningContent StreamEventType = "reasoning_content" // Chain-of-thought content delta (DeepSeek/OpenAI reasoning models)
+	EventToolCall         StreamEventType = "tool_call"         // Tool call requested增量
+	EventUsage            StreamEventType = "usage"             // Token statistics
+	EventDone             StreamEventType = "done"              // Stream complete
+	EventError            StreamEventType = "error"             // Error
 )
 
-// ToolCallDelta 工具调用增量
+// ToolCallDelta is an incremental tool call update
 type ToolCallDelta struct {
-	Index     int    `json:"index"`               // 工具调用索引
-	ID        string `json:"id,omitempty"`        // 工具调用 ID（首次出现）
-	Name      string `json:"name,omitempty"`      // 工具名称（首次出现）
-	Arguments string `json:"arguments,omitempty"` // 参数增量
+	Index     int    `json:"index"`               // Tool call requested索引
+	ID        string `json:"id,omitempty"`        // Tool call requested ID（首次出现）
+	Name      string `json:"name,omitempty"`      // Tool name（首次出现）
+	Arguments string `json:"arguments,omitempty"` // Argument delta
 }
 
-// StreamEvent 流式事件
+// StreamEvent is a streaming event
 type StreamEvent struct {
 	Type             StreamEventType `json:"type"`
-	Content          string          `json:"content,omitempty"`           // 文本增量
-	ReasoningContent string          `json:"reasoning_content,omitempty"` // 思维链增量（DeepSeek/OpenAI reasoning 模型）
-	ToolCall         *ToolCallDelta  `json:"tool_call,omitempty"`         // 工具调用增量
-	Usage            *TokenUsage     `json:"usage,omitempty"`             // Token 统计
-	FinishReason     FinishReason    `json:"finish_reason,omitempty"`     // 结束原因
-	Error            string          `json:"error,omitempty"`             // 错误信息
+	Content          string          `json:"content,omitempty"`           // Text delta
+	ReasoningContent string          `json:"reasoning_content,omitempty"` // Chain-of-thought delta (DeepSeek/OpenAI reasoning models)
+	ToolCall         *ToolCallDelta  `json:"tool_call,omitempty"`         // Tool call requested增量
+	Usage            *TokenUsage     `json:"usage,omitempty"`             // Token statistics
+	FinishReason     FinishReason    `json:"finish_reason,omitempty"`     // Finish reason
+	Error            string          `json:"error,omitempty"`             // Error信息
 }
 
-// ToolParam 工具参数定义
+// ToolParam defines a tool parameter
 type ToolParam struct {
 	Name        string          `json:"name"`
 	Type        string          `json:"type"`
@@ -200,7 +200,7 @@ type ToolParam struct {
 	Items       *ToolParamItems `json:"items,omitempty"` // For array types
 }
 
-// ToolParamItems 定义数组类型的元素类型（支持完整 JSON Schema 子结构）
+// ToolParamItems defines the element type for array parameters (supports full JSON Schema sub-structures)
 type ToolParamItems struct {
 	Type                 string          `json:"type"`
 	Properties           map[string]any  `json:"properties,omitempty"`
@@ -210,7 +210,7 @@ type ToolParamItems struct {
 	AdditionalProperties any             `json:"additionalProperties,omitempty"`
 }
 
-// ToolDefinition 工具定义接口（用于 LLM 调用）
+// ToolDefinition is the tool definition interface (used for LLM calls)
 type ToolDefinition interface {
 	Name() string
 	Description() string

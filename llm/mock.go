@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// MockLLM Mock LLM 实现，用于测试
+// MockLLM is a mock LLM implementation for testing
 type MockLLM struct {
-	ChunkSize     int           // 流式输出每个片段的字符数，默认 5
-	ChunkInterval time.Duration // 流式输出每个片段的间隔，默认 50ms
+	ChunkSize     int           // Characters per streaming chunk, default 5
+	ChunkInterval time.Duration // Interval between streaming chunks, default 50ms
 	GenerateFn    func(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error)
 }
 
-// NewMockLLM 创建 MockLLM
+// NewMockLLM creates a new MockLLM
 func NewMockLLM() *MockLLM {
 	return &MockLLM{
 		ChunkSize:     5,
@@ -21,7 +21,7 @@ func NewMockLLM() *MockLLM {
 	}
 }
 
-// Generate 非流式：拼接所有消息内容作为响应，token 消耗为内容长度
+// Generate (non-streaming): concatenates all message content as response; token cost equals content length
 func (m *MockLLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
 	if m.GenerateFn != nil {
 		return m.GenerateFn(ctx, model, messages, tools, thinkingMode)
@@ -51,12 +51,12 @@ func (m *MockLLM) Generate(ctx context.Context, model string, messages []ChatMes
 	}, nil
 }
 
-// ListModels 返回 mock 模型列表
+// ListModels returns the mock model list
 func (m *MockLLM) ListModels() []string {
 	return []string{"mock"}
 }
 
-// GenerateStream 流式输出：按 ChunkSize 和 ChunkInterval 分片发送所有消息内容
+// GenerateStream (streaming): sends all message content in chunks of ChunkSize at ChunkInterval
 func (m *MockLLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
 	var sb strings.Builder
 	for _, msg := range messages {

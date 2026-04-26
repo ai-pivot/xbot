@@ -20,7 +20,7 @@ const (
 	anthropicMaxTokens      = 8192
 )
 
-// AnthropicLLM Anthropic Messages API 实现
+// AnthropicLLM implements the Anthropic Messages API
 type AnthropicLLM struct {
 	baseURL      string
 	apiKey       string
@@ -31,16 +31,16 @@ type AnthropicLLM struct {
 	maxTokens    int
 }
 
-// AnthropicConfig Anthropic 配置
+// AnthropicConfig holds Anthropic configuration
 type AnthropicConfig struct {
-	BaseURL      string // 默认 https://api.anthropic.com
+	BaseURL      string // Default: https://api.anthropic.com
 	APIKey       string
 	DefaultModel string
 	MaxTokens    int    // 0 = use default (8192)
-	UserAgent    string // 自定义 User-Agent（留空使用默认值）
+	UserAgent    string // Custom User-Agent (empty = use default)
 }
 
-// 常用 Claude 模型列表（供 ListModels）
+// Common Claude models (for ListModels)
 var anthropicKnownModels = []string{
 	"claude-sonnet-4-20250514",
 	"claude-opus-4-20250115",
@@ -53,7 +53,7 @@ var anthropicKnownModels = []string{
 	"claude-3-haiku-20240307",
 }
 
-// NewAnthropicLLM 创建 Anthropic LLM 实例
+// NewAnthropicLLM creates a new Anthropic LLM instance
 func NewAnthropicLLM(cfg AnthropicConfig) *AnthropicLLM {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -85,7 +85,7 @@ func NewAnthropicLLM(cfg AnthropicConfig) *AnthropicLLM {
 	return a
 }
 
-// ListModels 返回可用模型列表
+// ListModels returns the available model list
 // Anthropic has no /v1/models API, so we only return the configured model.
 // This prevents Ctrl+N from cycling through fake hardcoded model names.
 func (a *AnthropicLLM) ListModels() []string {
@@ -95,7 +95,7 @@ func (a *AnthropicLLM) ListModels() []string {
 	return nil
 }
 
-// GetDefaultModel 返回默认模型
+// GetDefaultModel returns the default model
 func (a *AnthropicLLM) GetDefaultModel() string {
 	if a.defaultModel != "" {
 		return a.defaultModel
@@ -114,7 +114,7 @@ func (a *AnthropicLLM) getMaxTokens() int {
 	return anthropicMaxTokens
 }
 
-// --- 请求/响应类型（Anthropic Messages API）---
+// --- Request/Response types (Anthropic Messages API) ---
 
 type anthropicMessage struct {
 	Role    string      `json:"role"`
@@ -198,7 +198,7 @@ type anthropicResp struct {
 	Model        string                  `json:"model"`
 }
 
-// toAnthropicMessages 将业务消息转为 Anthropic 格式（跳过 system 消息，由 buildAnthropicSystem 处理）。
+// toAnthropicMessages converts business messages to Anthropic format (skips system messages; handled by buildAnthropicSystem).
 // thinkingEnabled controls whether assistant messages get a thinking content block.
 // Anthropic requires all assistant messages to include thinking blocks when thinking is enabled,
 // even if the original reasoning content was lost (e.g. after compression).
@@ -216,7 +216,7 @@ func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthrop
 		msg := messages[i]
 		switch msg.Role {
 		case "system":
-			// system 消息由 buildAnthropicSystem 单独处理，此处跳过
+			// System messages are handled separately by buildAnthropicSystem; skip here
 			i++
 		case "user":
 			msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
@@ -268,7 +268,7 @@ func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthrop
 			}
 			i++
 		case "tool":
-			// 连续多条 tool 消息合并为一条 user 消息，content 为多个 tool_result
+			// Consecutive tool messages are merged into one user message with multiple tool_result content blocks
 			var results []anthropicToolResultBlock
 			for i < len(messages) && messages[i].Role == "tool" {
 				t := messages[i]
@@ -292,7 +292,7 @@ func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthrop
 	return msgs
 }
 
-// toAnthropicTools 将工具定义转为 Anthropic tools（input_schema 为 JSON Schema）
+// toAnthropicTools converts tool definitions to Anthropic tools format (input_schema as JSON Schema)
 func toAnthropicTools(tools []ToolDefinition) []anthropicTool {
 	out := make([]anthropicTool, 0, len(tools))
 	for _, tool := range tools {
@@ -324,11 +324,11 @@ func toAnthropicTools(tools []ToolDefinition) []anthropicTool {
 	return out
 }
 
-// buildAnthropicSystem 根据 ChatMessage 中的 system 消息构建 Anthropic system 字段。
-// - 无 system 消息时返回空字符串（向后兼容）
-// - 单条无缓存 system 时返回 string（向后兼容，避免不必要的数组序列化）
-// - 有 CacheHint="static" 时返回带 cache_control 的 blocks 数组
-// - 混合 static 和非 static 时返回 blocks 数组
+// buildAnthropicSystem builds the Anthropic system field from ChatMessage system messages.
+// - Returns empty string when no system messages (backward compatible)
+// - Returns string for single non-cached system message (avoids unnecessary array serialization)
+// - Returns cache_control-marked blocks array when CacheHint="static" is present
+// - Returns blocks array when mixing static and non-static
 func buildAnthropicSystem(messages []ChatMessage) interface{} {
 	var blocks []anthropicSystemBlock
 	for _, msg := range messages {
@@ -368,18 +368,18 @@ func (a *AnthropicLLM) setHeaders(req *http.Request) {
 	}
 }
 
-// parseAnthropicThinking 解析 thinkingMode 参数为 Anthropic thinking 结构
-// 支持格式:
+// parseAnthropicThinking parses the thinkingMode parameter into an Anthropic thinking structure
+// Supported formats:
 //   - "enabled" -> {type: "enabled"}
 //   - "adaptive" -> {type: "adaptive"}
-//   - "disabled" -> nil (不发送 thinking 参数)
-//   - JSON 格式: {"type": "enabled", "budget_tokens": 10000} 或 {"type": "adaptive", "effort": "high"}
+//   - "disabled" -> nil (don't send thinking parameter)
+//   - JSON: {"type": "enabled", "budget_tokens": 10000} or {"type": "adaptive", "effort": "high"}
 func parseAnthropicThinking(thinkingMode string) *anthropicThinking {
 	if thinkingMode == "" || thinkingMode == ThinkingDisabled {
 		return nil
 	}
 
-	// 简单关键字
+	// Simple keyword
 	switch thinkingMode {
 	case "enabled":
 		return &anthropicThinking{Type: ThinkingEnabled}
@@ -387,7 +387,7 @@ func parseAnthropicThinking(thinkingMode string) *anthropicThinking {
 		return &anthropicThinking{Type: "adaptive", Effort: "high"}
 	}
 
-	// JSON 格式解析
+	// Parse JSON format
 	var thinking anthropicThinking
 	if err := json.Unmarshal([]byte(thinkingMode), &thinking); err == nil {
 		if thinking.Type != "" {
@@ -395,11 +395,11 @@ func parseAnthropicThinking(thinkingMode string) *anthropicThinking {
 		}
 	}
 
-	// 无法解析，默认启用
+	// Unparseable, default to enabled
 	return &anthropicThinking{Type: ThinkingEnabled}
 }
 
-// Generate 非流式生成
+// Generate produces a non-streaming response
 func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
 	if model == "" {
 		model = a.GetDefaultModel()
@@ -527,7 +527,7 @@ func mapStopReason(s string) FinishReason {
 	}
 }
 
-// GenerateStream 流式生成
+// GenerateStream produces a streaming response
 func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
 	if model == "" {
 		model = a.GetDefaultModel()
@@ -589,7 +589,7 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 	return eventChan, nil
 }
 
-// Anthropic SSE 事件类型
+// Anthropic SSE event types
 type anthropicStreamEvent struct {
 	Type         string          `json:"type"`
 	Index        int             `json:"index,omitempty"`
@@ -662,7 +662,7 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 
 		switch ev.Type {
 		case "message_start":
-			// 可选：从 message.content 解析已有块（流式时通常为空）
+			// Optional: parse existing blocks from message.content (usually empty in streaming)
 			if ev.Message != nil {
 				for _, block := range ev.Message.Content {
 					if block.Type == "text" && block.Text != "" {

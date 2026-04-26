@@ -64,7 +64,7 @@ var modelToEncoding = map[string]tokenizer.Model{
 }
 
 // sortedPrefixes caches the sorted model prefixes for prefix matching
-// Sorted by length descending (longest first) to avoid mis匹配
+// Sorted by length descending (longest first) to avoid mismatches
 var (
 	sortedPrefixes []string
 	prefixOnce     sync.Once
@@ -150,7 +150,7 @@ func CountTokens(text string, model string) (int, error) {
 // Typically 4 tokens for role metadata + separators.
 const tokenOverheadPerMessage = 4
 
-// RoleTokenCount 按角色分类的 token 统计结果
+// RoleTokenCount holds per-role token count results
 type RoleTokenCount struct {
 	System    int
 	User      int

@@ -2,28 +2,28 @@ package llm
 
 import "context"
 
-// LLM 接口，使用业务定义的消息和响应类型
+// LLM is the interface using business-layer message and response types
 type LLM interface {
-	// Generate 生成 LLM 响应
-	// model: 模型名称
-	// messages: 消息列表
-	// tools: 工具定义列表
-	// thinkingMode: 思考模式 ("", "enabled", "disabled")，用于 DeepSeek/OpenAI reasoning 模型
+	// Generate produces an LLM response
+	// model: model name
+	// messages: message list
+	// tools: tool definition list
+	// thinkingMode: thinking mode ("", "enabled", "disabled"), for DeepSeek/OpenAI reasoning models
 	Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error)
 
-	// ListModels 获取可用模型列表
+	// ListModels returns the available model list
 	ListModels() []string
 }
 
-// StreamingLLM 流式 LLM 接口
+// StreamingLLM is the streaming LLM interface
 type StreamingLLM interface {
 	LLM
-	// GenerateStream 流式生成，返回事件 channel
-	// model: 模型名称
-	// messages: 消息列表
-	// tools: 工具定义列表
+	// GenerateStream produces a streaming response, returning an event channel
+	// model: model name
+	// messages: message list
+	// tools: tool definition list
 	// thinkingMode: 思考模式 ("", "enabled", "disabled")
-	// channel 会在完成或出错时关闭
+	// The channel is closed on completion or error
 	GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error)
 }
 
