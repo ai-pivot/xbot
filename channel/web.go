@@ -1318,246 +1318,272 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 
 		switch msg.Type {
 		case "sync":
-			// Client reconnect sync: sends last_seq from history API response.
-			// The replayMissedEvents goroutine is waiting on this.
-			if ch := c.syncCh.Load(); ch != nil {
-				lastSeq := uint64(0)
-				var syncMsg struct {
-					LastSeq uint64 `json:"last_seq"`
-				}
-				if err := json.Unmarshal(raw, &syncMsg); err == nil {
-					lastSeq = syncMsg.LastSeq
-				}
-				select {
-				case *ch <- lastSeq:
-				default:
-				}
-			}
+			wc.handleSyncMessage(c, raw)
 			continue
 		case "cancel":
-			// Reuse existing /cancel mechanism: push "/cancel" text into msgBus.
-			// Resolve business channel/chatID from WS message fields (same as message handler)
-			// so the cancel key matches the one used during message processing.
-			msgChannel := "web"
-			msgChatID := chatID
-			msgSenderID := c.userID
-			msgSenderName := username
-			if msg.Channel != "" && msg.ChatID != "" {
-				msgChannel = msg.Channel
-				msgChatID = msg.ChatID
-				if msg.SenderID != "" {
-					msgSenderID = msg.SenderID
-				}
-				if msg.SenderName != "" {
-					msgSenderName = msg.SenderName
-				}
-			}
-			wc.msgBus.Inbound <- bus.InboundMessage{
-				Channel:    msgChannel,
-				SenderID:   msgSenderID,
-				SenderName: msgSenderName,
-				ChatID:     msgChatID,
-				ChatType:   "p2p",
-				Content:    "/cancel",
-				Time:       time.Now(),
-				RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-				From:       bus.NewIMAddress(msgChannel, msgSenderID),
-				To:         bus.NewIMAddress(msgChannel, msgChatID),
-			}
+			wc.handleCancelMessage(c, msg, chatID, username)
 			continue
 		case "rpc":
-			// CLI RemoteBackend RPC request — dispatch to server-side handler
-			if wc.callbacks.RPCHandler == nil {
-				continue
-			}
-			var rpcReq struct {
-				ID     string          `json:"id"`
-				Method string          `json:"method"`
-				Params json.RawMessage `json:"params"`
-			}
-			if err := json.Unmarshal(raw, &rpcReq); err != nil {
-				log.WithError(err).Debug("Invalid RPC message from CLI client")
-				continue
-			}
-			result, rpcErr := wc.callbacks.RPCHandler(rpcReq.Method, rpcReq.Params, c.userID)
-			rpcMsg := wsMessage{Type: "rpc_response", ID: rpcReq.ID}
-			if rpcErr != nil {
-				rpcMsg.Error = rpcErr.Error()
-			} else if result != nil {
-				rpcMsg.Result = result
-			}
-			select {
-			case c.sendCh <- rpcMsg:
-			default:
-				log.Warn("RPC response channel full, dropping response to CLI client")
-			}
+			wc.handleRPCMessage(c, raw)
 			continue
 		case "subscribe":
-			// CLI RemoteBackend subscribes to a business chatID so the Hub
-			// can route progress/stream/outbound events to this WS client.
-			// Without this, RPC-only sessions (reconnect) never subscribe,
-			// and all server-pushed events are silently buffered.
-			var subMsg struct {
-				ChatID string `json:"chat_id"`
-			}
-			if err := json.Unmarshal(raw, &subMsg); err != nil || subMsg.ChatID == "" {
-				continue
-			}
-			wc.hub.subscribe(c.id, subMsg.ChatID)
-			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Debug("CLI client subscribed to chatID")
+			wc.handleSubscribeMessage(c, raw)
 		case "message":
-			if msg.Content == "" && len(msg.UploadKeys) == 0 {
-				continue
-			}
-
-			var mediaPaths []string
-			originalContent := msg.Content
-			content := msg.Content
-
-			// Handle OSS upload_keys: files already uploaded to cloud by frontend
-			// Web uploads MUST go through OSS — local file storage is never allowed for security
-			if len(msg.UploadKeys) > 0 && wc.ossProvider != nil {
-				for i, key := range msg.UploadKeys {
-					displayName := key
-					if i < len(msg.FileNames) && msg.FileNames[i] != "" {
-						displayName = filepath.Base(msg.FileNames[i])
-					}
-					var fileSize int64
-					if i < len(msg.FileSizes) {
-						fileSize = msg.FileSizes[i]
-					}
-
-					// Get signed download URL (private OSS requires signed URLs with TTL)
-					downloadURL, err := wc.ossProvider.GetDownloadURL(key)
-					if err != nil {
-						log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
-						content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载Links失败)", displayName)
-						continue
-					}
-
-					ext := strings.ToLower(filepath.Ext(displayName))
-					if isImageExt(ext) {
-						content += fmt.Sprintf("\n\n<image url=\"%s\" name=\"%s\" size=\"%d\" />\n![%s](%s)", downloadURL, displayName, fileSize, displayName, downloadURL)
-					} else {
-						content += fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
-					}
-				}
-			}
-
-			metadata := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
-
-			if feishuUserID != "" {
-				metadata["feishu_user_id"] = feishuUserID
-			}
-
-			// Echo back complete user message (with file info) so frontend can update optimistic message
-			if content != originalContent && len(msg.UploadKeys) > 0 {
-				echoMsg := wsMessage{
-					Type:            "user_echo",
-					Content:         content,
-					OriginalContent: originalContent,
-					TS:              time.Now().Unix(),
-				}
-				wc.hub.sendToClient(chatID, echoMsg)
-			}
-
-			msgChannel := "web"
-			msgSenderID := c.userID
-			msgSenderName := username
-			msgChatID := chatID
-			msgChatType := "p2p"
-			if msg.Channel != "" && msg.ChatID != "" {
-				msgChannel = msg.Channel
-				msgChatID = msg.ChatID
-				if msg.SenderID != "" {
-					msgSenderID = msg.SenderID
-				}
-				if msg.SenderName != "" {
-					msgSenderName = msg.SenderName
-				}
-				if msg.ChatType != "" {
-					msgChatType = msg.ChatType
-				}
-			}
-			// Subscribe this client to receive messages for this chatID.
-			// Hub routes by business chatID directly — no transport metadata needed.
-			// Always subscribe on every message — idempotent and handles both
-			// vanilla web messages (no channel/chat_id) and CLI relay messages.
-			wc.hub.subscribe(c.id, msgChatID)
-
-			// Eagerly save user message so history API can return it during processing.
-			// Skip bang commands (! prefix) — they should never be persisted.
-			// For remote CLI (business channel=cli), do NOT eager-save here: this web-layer
-			// helper persists by web sender/chat tenant, while remote CLI history must be
-			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
-			trimmed := strings.TrimSpace(content)
-			if msgChannel != "cli" && (len(trimmed) <= 1 || trimmed[0] != '!') {
-				if err := eagerSaveUserMsg(wc.db, msgSenderID, content); err != nil {
-					log.WithError(err).Warn("Failed to eager-save user message")
-				}
-				metadata["user_msg_eager_saved"] = "true"
-			}
-
-			wc.msgBus.Inbound <- bus.InboundMessage{
-				Channel:    msgChannel,
-				SenderID:   msgSenderID,
-				SenderName: msgSenderName,
-				ChatID:     msgChatID,
-				ChatType:   msgChatType,
-				Content:    content,
-				Media:      mediaPaths,
-				Time:       time.Now(),
-				RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-				From:       bus.NewIMAddress(msgChannel, msgSenderID),
-				To:         bus.NewIMAddress(msgChannel, msgChatID),
-				Metadata:   metadata,
-			}
+			wc.handleUserMessage(c, msg, chatID, username, feishuUserID)
 		case "ask_user_response":
-			var resp WsAskUserResponse
-			if err := json.Unmarshal(raw, &resp); err != nil {
-				log.WithError(err).Debug("WS invalid ask_user_response")
-				continue
-			}
-			if resp.Cancelled {
-				// User cancelled — send /cancel equivalent
-				wc.msgBus.Inbound <- bus.InboundMessage{
-					Channel:    "web",
-					SenderID:   c.userID,
-					SenderName: username,
-					ChatID:     chatID,
-					ChatType:   "p2p",
-					Content:    "/cancel",
-					Time:       time.Now(),
-					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-					From:       bus.NewIMAddress("web", c.userID),
-					To:         bus.NewIMAddress("web", chatID),
-				}
-			} else {
-				// Format answers as indexed Q/A pairs
-				var parts []string
-				for idx, ans := range resp.Answers {
-					parts = append(parts, fmt.Sprintf("Q%s: %s", idx, ans))
-				}
-				content := strings.Join(parts, "\n\n")
-				wc.msgBus.Inbound <- bus.InboundMessage{
-					Channel:    "web",
-					SenderID:   c.userID,
-					SenderName: username,
-					ChatID:     chatID,
-					ChatType:   "p2p",
-					Content:    content,
-					Time:       time.Now(),
-					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-					From:       bus.NewIMAddress("web", c.userID),
-					To:         bus.NewIMAddress("web", chatID),
-					Metadata:   map[string]string{"ask_user_answered": "true"},
-				}
-			}
+			wc.handleAskUserResponse(c, raw, chatID, username)
 		default:
 			log.WithField("type", msg.Type).Debug("WS unknown message type")
 		}
 	}
 
+}
+
+// handleSyncMessage processes a client reconnect sync message containing the
+// last sequence number from the history API response.
+func (wc *WebChannel) handleSyncMessage(c *Client, raw []byte) {
+	if ch := c.syncCh.Load(); ch != nil {
+		lastSeq := uint64(0)
+		var syncMsg struct {
+			LastSeq uint64 `json:"last_seq"`
+		}
+		if err := json.Unmarshal(raw, &syncMsg); err == nil {
+			lastSeq = syncMsg.LastSeq
+		}
+		select {
+		case *ch <- lastSeq:
+		default:
+		}
+	}
+}
+
+// handleCancelMessage pushes a /cancel command into the message bus using
+// the channel/chatID routing from the WS message fields.
+func (wc *WebChannel) handleCancelMessage(c *Client, msg wsClientMessage, chatID, username string) {
+	msgChannel := "web"
+	msgChatID := chatID
+	msgSenderID := c.userID
+	msgSenderName := username
+	if msg.Channel != "" && msg.ChatID != "" {
+		msgChannel = msg.Channel
+		msgChatID = msg.ChatID
+		if msg.SenderID != "" {
+			msgSenderID = msg.SenderID
+		}
+		if msg.SenderName != "" {
+			msgSenderName = msg.SenderName
+		}
+	}
+	wc.msgBus.Inbound <- bus.InboundMessage{
+		Channel:    msgChannel,
+		SenderID:   msgSenderID,
+		SenderName: msgSenderName,
+		ChatID:     msgChatID,
+		ChatType:   "p2p",
+		Content:    "/cancel",
+		Time:       time.Now(),
+		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+		From:       bus.NewIMAddress(msgChannel, msgSenderID),
+		To:         bus.NewIMAddress(msgChannel, msgChatID),
+	}
+}
+
+// handleRPCMessage dispatches a CLI RemoteBackend RPC request to the
+// server-side handler and sends the response back to the client.
+func (wc *WebChannel) handleRPCMessage(c *Client, raw []byte) {
+	if wc.callbacks.RPCHandler == nil {
+		return
+	}
+	var rpcReq struct {
+		ID     string          `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &rpcReq); err != nil {
+		log.WithError(err).Debug("Invalid RPC message from CLI client")
+		return
+	}
+	result, rpcErr := wc.callbacks.RPCHandler(rpcReq.Method, rpcReq.Params, c.userID)
+	rpcMsg := wsMessage{Type: "rpc_response", ID: rpcReq.ID}
+	if rpcErr != nil {
+		rpcMsg.Error = rpcErr.Error()
+	} else if result != nil {
+		rpcMsg.Result = result
+	}
+	select {
+	case c.sendCh <- rpcMsg:
+	default:
+		log.Warn("RPC response channel full, dropping response to CLI client")
+	}
+}
+
+// handleSubscribeMessage subscribes a CLI RemoteBackend client to a business
+// chatID so the Hub can route progress/stream/outbound events to it.
+func (wc *WebChannel) handleSubscribeMessage(c *Client, raw []byte) {
+	var subMsg struct {
+		ChatID string `json:"chat_id"`
+	}
+	if err := json.Unmarshal(raw, &subMsg); err != nil || subMsg.ChatID == "" {
+		return
+	}
+	wc.hub.subscribe(c.id, subMsg.ChatID)
+	log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Debug("CLI client subscribed to chatID")
+}
+
+// handleUserMessage processes a user chat message, handling file uploads,
+// echoing back enriched content, and dispatching to the message bus.
+func (wc *WebChannel) handleUserMessage(c *Client, msg wsClientMessage, chatID, username, feishuUserID string) {
+	if msg.Content == "" && len(msg.UploadKeys) == 0 {
+		return
+	}
+
+	var mediaPaths []string
+	originalContent := msg.Content
+	content := msg.Content
+
+	// Handle OSS upload_keys: files already uploaded to cloud by frontend
+	// Web uploads MUST go through OSS — local file storage is never allowed for security
+	if len(msg.UploadKeys) > 0 && wc.ossProvider != nil {
+		for i, key := range msg.UploadKeys {
+			displayName := key
+			if i < len(msg.FileNames) && msg.FileNames[i] != "" {
+				displayName = filepath.Base(msg.FileNames[i])
+			}
+			var fileSize int64
+			if i < len(msg.FileSizes) {
+				fileSize = msg.FileSizes[i]
+			}
+
+			// Get signed download URL (private OSS requires signed URLs with TTL)
+			downloadURL, err := wc.ossProvider.GetDownloadURL(key)
+			if err != nil {
+				log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
+				content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载Links失败)", displayName)
+				continue
+			}
+
+			ext := strings.ToLower(filepath.Ext(displayName))
+			if isImageExt(ext) {
+				content += fmt.Sprintf("\n\n<image url=\"%s\" name=\"%s\" size=\"%d\" />\n![%s](%s)", downloadURL, displayName, fileSize, displayName, downloadURL)
+			} else {
+				content += fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
+			}
+		}
+	}
+
+	metadata := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
+
+	if feishuUserID != "" {
+		metadata["feishu_user_id"] = feishuUserID
+	}
+
+	// Echo back complete user message (with file info) so frontend can update optimistic message
+	if content != originalContent && len(msg.UploadKeys) > 0 {
+		echoMsg := wsMessage{
+			Type:            "user_echo",
+			Content:         content,
+			OriginalContent: originalContent,
+			TS:              time.Now().Unix(),
+		}
+		wc.hub.sendToClient(chatID, echoMsg)
+	}
+
+	msgChannel := "web"
+	msgSenderID := c.userID
+	msgSenderName := username
+	msgChatID := chatID
+	msgChatType := "p2p"
+	if msg.Channel != "" && msg.ChatID != "" {
+		msgChannel = msg.Channel
+		msgChatID = msg.ChatID
+		if msg.SenderID != "" {
+			msgSenderID = msg.SenderID
+		}
+		if msg.SenderName != "" {
+			msgSenderName = msg.SenderName
+		}
+		if msg.ChatType != "" {
+			msgChatType = msg.ChatType
+		}
+	}
+	// Subscribe this client to receive messages for this chatID.
+	// Hub routes by business chatID directly — no transport metadata needed.
+	// Always subscribe on every message — idempotent and handles both
+	// vanilla web messages (no channel/chat_id) and CLI relay messages.
+	wc.hub.subscribe(c.id, msgChatID)
+
+	// Eagerly save user message so history API can return it during processing.
+	// Skip bang commands (! prefix) — they should never be persisted.
+	// For remote CLI (business channel=cli), do NOT eager-save here: this web-layer
+	// helper persists by web sender/chat tenant, while remote CLI history must be
+	// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
+	trimmed := strings.TrimSpace(content)
+	if msgChannel != "cli" && (len(trimmed) <= 1 || trimmed[0] != '!') {
+		if err := eagerSaveUserMsg(wc.db, msgSenderID, content); err != nil {
+			log.WithError(err).Warn("Failed to eager-save user message")
+		}
+		metadata["user_msg_eager_saved"] = "true"
+	}
+
+	wc.msgBus.Inbound <- bus.InboundMessage{
+		Channel:    msgChannel,
+		SenderID:   msgSenderID,
+		SenderName: msgSenderName,
+		ChatID:     msgChatID,
+		ChatType:   msgChatType,
+		Content:    content,
+		Media:      mediaPaths,
+		Time:       time.Now(),
+		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+		From:       bus.NewIMAddress(msgChannel, msgSenderID),
+		To:         bus.NewIMAddress(msgChannel, msgChatID),
+		Metadata:   metadata,
+	}
+}
+
+// handleAskUserResponse processes a user's response to an ask_user prompt,
+// either sending answers or a /cancel command to the message bus.
+func (wc *WebChannel) handleAskUserResponse(c *Client, raw []byte, chatID, username string) {
+	var resp WsAskUserResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		log.WithError(err).Debug("WS invalid ask_user_response")
+		return
+	}
+	if resp.Cancelled {
+		// User cancelled — send /cancel equivalent
+		wc.msgBus.Inbound <- bus.InboundMessage{
+			Channel:    "web",
+			SenderID:   c.userID,
+			SenderName: username,
+			ChatID:     chatID,
+			ChatType:   "p2p",
+			Content:    "/cancel",
+			Time:       time.Now(),
+			RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+			From:       bus.NewIMAddress("web", c.userID),
+			To:         bus.NewIMAddress("web", chatID),
+		}
+	} else {
+		// Format answers as indexed Q/A pairs
+		var parts []string
+		for idx, ans := range resp.Answers {
+			parts = append(parts, fmt.Sprintf("Q%s: %s", idx, ans))
+		}
+		content := strings.Join(parts, "\n\n")
+		wc.msgBus.Inbound <- bus.InboundMessage{
+			Channel:    "web",
+			SenderID:   c.userID,
+			SenderName: username,
+			ChatID:     chatID,
+			ChatType:   "p2p",
+			Content:    content,
+			Time:       time.Now(),
+			RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+			From:       bus.NewIMAddress("web", c.userID),
+			To:         bus.NewIMAddress("web", chatID),
+			Metadata:   map[string]string{"ask_user_answered": "true"},
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
