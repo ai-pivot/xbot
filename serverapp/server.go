@@ -436,6 +436,9 @@ func registerOAuthAndFeishuTools(cfg *config.Config, backend agent.AgentBackend,
 	log.Info("OAuth and Feishu MCP tools registered")
 }
 
+// Run is the main entry point for the xbot server. It loads configuration,
+// initializes all subsystems (LLM, sandbox, channels, tools, event triggers),
+// starts the agent loop, and blocks until shutdown.
 func Run(args []string) error {
 	// Parse --config flag before loading config.
 	// Usage: xbot --config /path/to/config.json
