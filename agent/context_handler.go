@@ -75,7 +75,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 | Tool (定义) | %d | %.1f%% |
 | **总计** | **%d** | 100%% |
 
-⚙️ 配置:
+⚙️ Configuration:
 - 最大上下文: %d tokens
 - 压缩阈值: %d tokens (%.0f%%)
 - 当前模式: %s`,
@@ -162,7 +162,7 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 		}, nil
 	}
 
-	// 先设置配置，再替换 manager
+	// 先设置Configuration，再替换 manager
 	cfg.SetRuntimeMode(target)
 	a.SetContextManager(NewContextManager(cfg))
 

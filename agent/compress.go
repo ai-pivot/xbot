@@ -224,7 +224,7 @@ func formatCompressResult(persisted bool, oldTokens, newTokens int, result *Comp
 	if mode != "" {
 		mode = " (" + mode + ")"
 	}
-	return fmt.Sprintf("上下文压缩完成%s: %d → %d tokens (LLM %d 条, Session %d 条)",
+	return fmt.Sprintf("context compression完成%s: %d → %d tokens (LLM %d 条, Session %d 条)",
 		mode, oldTokens, newTokens, len(result.LLMView), len(result.SessionView))
 }
 
@@ -270,7 +270,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("上下文压缩失败: %v", err),
+			Content: fmt.Sprintf("context compression失败: %v", err),
 		}, nil
 	}
 

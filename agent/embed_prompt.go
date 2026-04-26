@@ -9,5 +9,5 @@ func EmbeddedPrompt() string { return prompt.Default }
 // EmbeddedFallbackPrompt 返回编译时嵌入的最小兜底系统提示词。
 func EmbeddedFallbackPrompt() string { return prompt.Fallback }
 
-// EmbeddedCronPrompt 返回编译时嵌入的 Cron 系统提示词模板。
+// EmbeddedCronPrompt 返回编译时嵌入的 Cron system prompt模板。
 func EmbeddedCronPrompt() string { return prompt.CronSystem }

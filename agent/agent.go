@@ -57,7 +57,7 @@ func formatErrorForUser(err error) string {
 		return ""
 	}
 	if errors.Is(err, ErrLLMGenerate) {
-		return fmt.Sprintf("LLM 服务调用失败，请稍后重试或检查配置。\n错误详情: %v", err)
+		return fmt.Sprintf("LLM 服务调用失败，请稍后重试或检查Configuration。\n错误详情: %v", err)
 	}
 	return fmt.Sprintf("处理消息时发生错误: %v", err)
 }
@@ -214,7 +214,7 @@ type Agent struct {
 	agentsDir          string
 	xbotHome           string // global xbot config dir (e.g. ~/.xbot), used for mcp.json etc.
 
-	// 上下文管理配置
+	// 上下文管理Configuration
 	contextManagerConfig *ContextManagerConfig
 	contextManagerMu     sync.RWMutex // 保护 contextManager 的并发读写
 	contextManager       ContextManager
@@ -233,7 +233,7 @@ type Agent struct {
 	llmConfigSvc *sqlite.UserLLMConfigService
 	llmFactory   *LLMFactory
 
-	// 用户级别的信号量：设置了自己的 LLM 配置的用户使用独立信号量
+	// 用户级别的信号量：设置了自己的 LLM Configuration的用户使用独立信号量
 	// key: senderID, value: 用户独立的信号量（容量为1）
 	userSemaphores sync.Map // map[string]chan struct{}
 
@@ -435,7 +435,7 @@ func buildToolMessageContent(result *tools.ToolResult) string {
 	return sb.String()
 }
 
-// Config Agent 配置
+// Config Agent Configuration
 type Config struct {
 	Bus             *bus.MessageBus
 	LLM             llm.LLM
@@ -465,7 +465,7 @@ type Config struct {
 	// Used to locate global config files like mcp.json.
 	XbotHome string
 
-	// MCP 会话管理配置
+	// MCP Session managementConfiguration
 	MCPInactivityTimeout time.Duration // MCP 不活跃超时时间
 	MCPCleanupInterval   time.Duration // MCP 清理扫描间隔
 	SessionCacheTimeout  time.Duration // 会话缓存超时
@@ -478,10 +478,10 @@ type Config struct {
 	// Persona isolation: each web user has independent persona (no fallback to global)
 	PersonaIsolation bool
 
-	// 旧压缩配置（保留用于初始化 ContextManagerConfig，向后兼容 main.go 传参）
+	// 旧压缩Configuration（保留用于初始化 ContextManagerConfig，向后兼容 main.go 传参）
 	MaxContextTokens     int     // 最大上下文 token 数（默认 100000）
 	CompressionThreshold float64 // 触发压缩的 token 比例阈值（默认 0.7）
-	EnableAutoCompress   bool    // 是否启用自动上下文压缩（默认 true，旧字段）
+	EnableAutoCompress   bool    // 是否启用自动context compression（默认 true，旧字段）
 
 	// DynamicMaxTokens dynamically adjusts max_output_tokens based on remaining
 	// context space. When enabled, max_output_tokens is reduced when the context
@@ -554,7 +554,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	return skillStore, agentStore, chatHistory, registry, cardBuilder
 }
 
-// initSession 初始化多租户会话管理器。
+// initSession 初始化多租户Session management器。
 func initSession(cfg Config) (*session.MultiTenantSession, error) {
 	memoryProvider := cfg.MemoryProvider
 	if memoryProvider == "" {
@@ -693,13 +693,13 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.maskStore.SetBaseDir(maskDir)
 	go a.maskStore.CleanStale(7)
 
-	// 注册 offload_recall 工具（需要 OffloadStore 依赖注入）
+	// 注册 offload_recall 工具（需要 OffloadStore dependency injection）
 	if a.offloadStore != nil {
 		recallTool := &tools.OffloadRecallTool{Store: a.offloadStore}
 		registry.RegisterCore(recallTool)
 	}
 
-	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）
+	// 注册 recall_masked 工具（需要 MaskStore dependency injection）
 	if a.maskStore != nil {
 		registry.RegisterCore(&tools.RecallMaskedTool{Store: a.maskStore})
 	}
@@ -763,7 +763,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 // New 创建 Agent
 func New(cfg Config) (*Agent, error) {
-	// 1. 设置配置默认值
+	// 1. 设置Configuration默认值
 	if cfg.MaxIterations == 0 {
 		cfg.MaxIterations = 2000
 	}
@@ -803,7 +803,7 @@ func New(cfg Config) (*Agent, error) {
 	// 2. 初始化存储和注册表
 	skillStore, agentStore, chatHistory, registry, cardBuilder := initStores(cfg)
 
-	// 3. 初始化会话管理器
+	// 3. 初始化Session management器
 	multiSession, err := initSession(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("init session: %w", err)
@@ -1009,12 +1009,12 @@ func (a *Agent) DeleteUserLLM(senderID string) error {
 	return nil
 }
 
-// GetLLMConcurrency 获取用户个人 LLM 并发上限配置。
+// GetLLMConcurrency 获取用户个人 LLM 并发上限Configuration。
 func (a *Agent) GetLLMConcurrency(senderID string) int {
 	return a.llmFactory.GetLLMConcurrency(senderID)
 }
 
-// SetLLMConcurrency 设置用户个人 LLM 并发上限配置。
+// SetLLMConcurrency 设置用户个人 LLM 并发上限Configuration。
 func (a *Agent) SetLLMConcurrency(senderID string, personal int) error {
 	return a.llmFactory.SetLLMConcurrency(senderID, personal)
 }
@@ -1054,10 +1054,10 @@ func (a *Agent) GetCardBuilder() *tools.CardBuilder {
 	return a.cardBuilder
 }
 
-// getUserSemaphore 获取用户独立的信号量，用于有自定义 LLM 配置的用户。
+// getUserSemaphore 获取用户独立的信号量，用于有自定义 LLM Configuration的用户。
 // 容量与 maxConcurrency 一致：允许同一用户的不同会话并行处理，
 // 但总并发不超过全局上限。
-// 使用 LoadOrStore 原子操作避免并发创建多个信号量。
+// 使用 LoadOrStore atomic operation避免并发创建多个信号量。
 func (a *Agent) getUserSemaphore(senderID string) chan struct{} {
 	if val, ok := a.userSemaphores.Load(senderID); ok {
 		return val.(chan struct{})
@@ -1113,7 +1113,7 @@ func (a *Agent) sendAck(channel, chatID string) {
 // Run 启动 Agent 循环，持续消费入站消息。
 // 消息按 chat (channel:chatID) 分组，同一 chat 内顺序处理，不同 chat 并行处理。
 // 全局并发数由 AGENT_MAX_CONCURRENCY 控制（默认 3），避免 LLM 并发过高。
-// 用户设置了自己的 LLM 配置后，该用户的请求使用独立的信号量，不再占用全局资源。
+// 用户设置了自己的 LLM Configuration后，该用户的请求使用独立的信号量，不再占用全局资源。
 func (a *Agent) Run(ctx context.Context) error {
 	log.WithFields(log.Fields{
 		"max_concurrency": a.getMaxConcurrency(),
@@ -1452,7 +1452,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 		})
 
-		// 执行消息处理，完成后检查是否被取消
+		// 执行Message processing，完成后检查是否被取消
 		// 注意：必须在 reqCancel() 调用前检查，否则 reqCtx.Err() 总是返回 Canceled
 		wasCancelled := false
 		func() {

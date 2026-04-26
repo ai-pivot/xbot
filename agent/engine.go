@@ -34,8 +34,8 @@ func WithSubAgentProgress(ctx context.Context, cb SubAgentProgressCallback) cont
 	return context.WithValue(ctx, subAgentProgressKey{}, cb)
 }
 
-// RunConfig 统一的 Agent 运行配置。
-// 主 Agent 和 SubAgent 使用同一个 Run() 方法，差异通过配置注入。
+// RunConfig 统一的 Agent 运行Configuration。
+// 主 Agent 和 SubAgent 使用同一个 Run() 方法，差异通过Configuration注入。
 type RunConfig struct {
 	// === 必需 ===
 	LLMClient    llm.LLM
@@ -50,7 +50,7 @@ type RunConfig struct {
 	Channel      string // 原始 IM 渠道（用于 ToolContext）
 	ChatID       string // 原始 IM 会话
 	SenderID     string // 直接调用者 ID（SubAgent 场景下为父 Agent ID）
-	OriginUserID string // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等）
+	OriginUserID string // 原始用户 ID（始终为终端用户，用于 LLM Configuration、工作区路径等）
 	SenderName   string
 	FeishuUserID string // 非空表示通过飞书身份登录 web（用于 runner 路由）
 
@@ -60,8 +60,8 @@ type RunConfig struct {
 	ReadOnlyRoots       []string // 额外只读目录
 	SkillsDirs          []string // 全局 skill 目录列表
 	AgentsDir           string
-	MCPConfigPath       string        // 用户 MCP 配置路径
-	GlobalMCPConfig     string        // 全局 MCP 配置路径（只读）
+	MCPConfigPath       string        // 用户 MCP Configuration路径
+	GlobalMCPConfig     string        // 全局 MCP Configuration路径（只读）
 	DataDir             string        // 数据持久化目录
 	SandboxEnabled      bool          // 是否启用命令沙箱
 	PreferredSandbox    string        // 沙箱类型（docker 优先）
@@ -97,7 +97,7 @@ type RunConfig struct {
 	// ContextManager 上下文管理器（nil = 不压缩）
 	ContextManager ContextManager
 
-	// ContextManagerConfig 上下文管理器配置（Phase 2 智能触发需要访问 MaxContextTokens 等）
+	// ContextManagerConfig 上下文管理器Configuration（Phase 2 智能触发需要访问 MaxContextTokens 等）
 	ContextManagerConfig *ContextManagerConfig
 
 	// SendFunc 向 IM 渠道发送消息（nil = 不能发消息）

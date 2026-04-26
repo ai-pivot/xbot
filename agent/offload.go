@@ -35,7 +35,7 @@ var (
 	jsFuncRe       = regexp.MustCompile(`function\s+(\w+)\s*\(`)
 )
 
-// OffloadConfig 配置大 tool result 的 offload 行为。
+// OffloadConfig Configuration大 tool result 的 offload 行为。
 type OffloadConfig struct {
 	MaxResultTokens int    // 触发 offload 的 token 阈值（默认 2000）
 	MaxResultBytes  int    // 触发 offload 的字节阈值（默认 10240）

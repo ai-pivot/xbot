@@ -65,15 +65,15 @@ func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (
 		ChatID:  msg.ChatID,
 		Content: "xbot 命令:\n" +
 			"/new — 开始新对话（归档记忆后重置）\n" +
-			"/version — 显示版本信息\n" +
+			"/version — 显示version info\n" +
 			"/prompt <query> — 预览完整提示词（不调用 LLM）\n" +
 			"/help — 显示帮助\n" +
 			"/set-llm — 设置自定义 LLM API\n" +
-			"/unset-llm — 清除自定义 LLM 配置\n" +
-			"/llm — 查看当前 LLM 配置\n" +
+			"/unset-llm — 清除自定义 LLM Configuration\n" +
+			"/llm — 查看当前 LLM Configuration\n" +
 			"/models — 列出当前 API 可用模型\n" +
 			"/set-model <model> — 设置当前使用的模型\n" +
-			"/compress — 手动触发上下文压缩\n" +
+			"/compress — 手动触发context compression\n" +
 			"/context info — 查看 token 统计\n" +
 			"/context mode — 查看/切换压缩模式\n" +
 			"/cancel — 取消当前正在处理的请求\n" +

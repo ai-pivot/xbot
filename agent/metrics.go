@@ -9,7 +9,7 @@ import (
 )
 
 // AgentMetrics Agent 运行指标（全局单例，进程重启归零）。
-// 使用 atomic 操作保证并发安全且零锁。
+// 使用 atomic 操作保证concurrency safe且零锁。
 type AgentMetrics struct {
 	StartTime time.Time // 进程启动时间
 
@@ -28,7 +28,7 @@ type AgentMetrics struct {
 	OffloadedItems    atomic.Int64 // 被落盘的 tool result 数量
 	OffloadedRecalls  atomic.Int64 // offload_recall 唯一 ID 回调次数（去重）
 	MaskedRecalls     atomic.Int64 // recall_masked 唯一 ID 回调次数（去重）
-	CompressEvents    atomic.Int64 // 上下文压缩触发次数
+	CompressEvents    atomic.Int64 // context compression触发次数
 	CompressTokensIn  atomic.Int64 // 压缩前 token 总量
 	CompressTokensOut atomic.Int64 // 压缩后 token 总量
 	ContextEditEvents atomic.Int64 // Context Editing 触发次数

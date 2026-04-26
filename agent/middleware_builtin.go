@@ -431,7 +431,7 @@ func (m *LanguageMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// --- Priority 200-299: 用户消息处理 ---
+// --- Priority 200-299: 用户Message processing ---
 
 // buildSystemGuideText 根据记忆模式生成系统引导文本。
 // letta 模式下包含 search_tools 引导，flat 模式下不包含。

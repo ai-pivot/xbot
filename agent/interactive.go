@@ -53,7 +53,7 @@ type interactiveAgent struct {
 const interactiveSessionTTL = 30 * time.Minute
 
 // cleanupExpiredSessions 清理所有过期的 interactive SubAgent 会话。
-// sync.Map 本身并发安全，调用方不需要持有任何额外的锁。
+// sync.Map 本身concurrency safe，调用方不需要持有任何额外的锁。
 func (a *Agent) cleanupExpiredSessions() {
 	now := time.Now()
 	a.interactiveSubAgents.Range(func(k, v interface{}) bool {
@@ -282,7 +282,7 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 // SpawnInteractiveSession 创建一个新的 interactive SubAgent 会话并执行首次任务。
 // 如果同名 role 的 session 已存在，返回 error。
 //
-// 锁策略：interactiveSubAgents 使用 sync.Map，本身并发安全，无需额外互斥锁。
+// 锁策略：interactiveSubAgents 使用 sync.Map，本身concurrency safe，无需额外mutex。
 // 使用 LoadOrStore 实现原子的 check-and-store，避免 spawn 竞态。
 // 使用占位符模式：Store 一个最小占位符，Run() 完成后替换为完整数据。
 // 任何错误路径都必须清理占位符，避免 session 卡死。
@@ -298,7 +298,7 @@ func (a *Agent) SpawnInteractiveSession(
 	key := interactiveKey(originChannel, originChatID, roleName, instance)
 
 	// --- 阶段 1：原子 check-and-store ---
-	// 先清理过期 session（sync.Map 并发安全，不需要额外锁）
+	// 先清理过期 session（sync.Map concurrency safe，不需要额外锁）
 	a.cleanupExpiredSessions()
 
 	// 原子 check-and-store：如果 key 已存在，直接返回
@@ -718,7 +718,7 @@ func (a *Agent) SendToInteractiveSession(
 		}, nil
 	}
 
-	// --- 阶段 1：锁内准备配置（读取 ia 数据）---
+	// --- 阶段 1：锁内准备Configuration（读取 ia 数据）---
 	ia.mu.Lock()
 
 	// Guard: reject send while a background Run is in progress

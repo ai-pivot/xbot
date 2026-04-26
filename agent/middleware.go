@@ -12,7 +12,7 @@ import (
 // MessageContext 中间件处理的上下文，携带消息构建所需的全部信息。
 // 中间件通过读取/修改此结构来参与消息构建流程。
 type MessageContext struct {
-	// Ctx 标准 context，用于超时控制和取消
+	// Ctx 标准 context，用于timeout control和取消
 	Ctx context.Context
 
 	// SystemParts 系统提示词的各个部分，按 key 存储。
@@ -96,7 +96,7 @@ func (mc *MessageContext) GetExtraString(key string) (string, bool) {
 }
 
 // GetExtraTyped 从 Extra 中获取指定类型 T 的值（泛型 helper）。
-// 避免手动 GetExtra + 类型断言的样板代码。
+// 避免手动 GetExtra + type assertion的样板代码。
 //
 //	mem, ok := GetExtraTyped[memory.MemoryProvider](mc, ExtraKeyMemoryProvider)
 func GetExtraTyped[T any](mc *MessageContext, key string) (T, bool) {
@@ -198,7 +198,7 @@ type MessageMiddleware interface {
 	// 建议范围：
 	//   0-99:   基础设施（提示词模板、环境信息）
 	//   100-199: 上下文注入（skills、agents、memory）
-	//   200-299: 用户消息处理（时间戳、发送者标识）
+	//   200-299: 用户Message processing（时间戳、发送者标识）
 	//   300-399: 后处理（token 裁剪、格式化）
 	Priority() int
 
@@ -209,7 +209,7 @@ type MessageMiddleware interface {
 }
 
 // MessagePipeline 消息构建管道，按优先级执行中间件链。
-// 并发安全：Agent 持有单个 pipeline 实例，多个 goroutine 可同时调用 Run()。
+// concurrency safe：Agent 持有单个 pipeline 实例，多个 goroutine 可同时调用 Run()。
 // Use/Remove 是写操作（通常在初始化阶段调用），Run/Middlewares 是读操作。
 type MessagePipeline struct {
 	mu          sync.RWMutex
@@ -269,7 +269,7 @@ func (p *MessagePipeline) snapshot() []MessageMiddleware {
 }
 
 // Run 执行管道，返回构建好的消息列表。
-// 并发安全：先获取中间件快照，再在快照上执行，不持有锁。
+// concurrency safe：先获取中间件快照，再在快照上执行，不持有锁。
 func (p *MessagePipeline) Run(mc *MessageContext) []llm.ChatMessage {
 	p.mu.RLock()
 	mws := p.snapshot()

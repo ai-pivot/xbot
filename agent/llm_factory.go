@@ -18,7 +18,7 @@ type LLMFactory struct {
 	configSvc           *sqlite.UserLLMConfigService
 	subscriptionSvc     *sqlite.LLMSubscriptionService     // 多订阅管理 (DB-backed)
 	configSubsFn        func() []config.SubscriptionConfig // CLI config.json subscriptions (non-DB)
-	settingsSvc         *SettingsService                   // 用于读写用户并发配置
+	settingsSvc         *SettingsService                   // 用于读写用户并发Configuration
 	defaultLLM          llm.LLM
 	defaultModel        string
 	defaultThinkingMode string
@@ -36,8 +36,8 @@ type LLMFactory struct {
 	maxOutputTokens map[string]int     // senderID -> max_output_tokens
 	thinkingModes   map[string]string  // senderID -> thinking_mode
 
-	// hasCustomLLMCache 缓存用户是否有自定义 LLM 配置（避免频繁查数据库）
-	// 使用 sync.Map 保证并发安全
+	// hasCustomLLMCache 缓存用户是否有自定义 LLM Configuration（避免频繁查数据库）
+	// 使用 sync.Map 保证concurrency safe
 	hasCustomLLMCache sync.Map
 }
 
@@ -78,7 +78,7 @@ func (f *LLMFactory) SetRetryConfig(cfg llm.RetryConfig) {
 	f.mu.Unlock()
 }
 
-// GetLLM 获取用户的 LLM 客户端，如果没有自定义配置则返回默认客户端
+// GetLLM 获取用户的 LLM 客户端，如果没有自定义Configuration则返回默认客户端
 // 返回: (LLM客户端, 模型名, maxContext, thinkingMode)
 //
 // 查找优先级:
@@ -162,7 +162,7 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 	return f.GetLLM(senderID)
 }
 
-// HasCustomLLM 检查用户是否有自定义 LLM 配置
+// HasCustomLLM 检查用户是否有自定义 LLM Configuration
 func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 	// 先检查缓存
 	if val, ok := f.hasCustomLLMCache.Load(senderID); ok {
@@ -181,7 +181,7 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 	}
 	f.mu.RUnlock()
 
-	// 从数据库检查旧单配置
+	// 从数据库检查旧单Configuration
 	if f.configSvc != nil {
 		cfg, err := f.configSvc.GetConfig(senderID)
 		if err == nil && cfg != nil {
@@ -333,7 +333,7 @@ func (f *LLMFactory) SetUserThinkingMode(senderID, mode string) {
 }
 
 // SetDefaults 更新默认 LLM 客户端和模型名。
-// 用于 setup/settings 面板修改全局 LLM 配置后立即生效。
+// 用于 setup/settings 面板修改全局 LLM Configuration后立即生效。
 // Wraps the new defaultLLM with RetryLLM if retryConfig is set.
 func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	f.mu.Lock()
@@ -404,9 +404,9 @@ func (f *LLMFactory) ClearProxyLLM(senderID string) {
 	delete(f.thinkingModes, senderID)
 }
 
-// createClient 根据配置创建 LLM 客户端，配置无效时返回 nil。
+// createClient 根据Configuration创建 LLM 客户端，Configuration无效时返回 nil。
 // 创建的裸客户端会被 RetryLLM 包装，确保 SubAgent 和订阅客户端
-// 同样享有 429/5xx 指数退避重试能力。
+// 同样享有 429/5xx exponential backoff重试能力。
 func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 	// 检查必要字段
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
@@ -451,7 +451,7 @@ func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 	return client, model
 }
 
-// Invalidate 使用户的 LLM 客户端缓存失效（配置更新后调用）。
+// Invalidate 使用户的 LLM 客户端缓存失效（Configuration更新后调用）。
 // 同时清除 user-level key（senderID）和所有 per-chat key（senderID:chatID），
 // 确保 GetLLMForChat 不会返回过期的 per-chat 缓存。
 func (f *LLMFactory) Invalidate(senderID string) {
@@ -480,7 +480,7 @@ func (f *LLMFactory) InvalidateAll() {
 	f.mu.Unlock()
 }
 
-// SetSettingsService 注入 SettingsService（用于读写用户并发配置）。
+// SetSettingsService 注入 SettingsService（用于读写用户并发Configuration）。
 // 必须在 Agent 初始化后调用，因为 SettingsService 创建依赖于 Agent。
 func (f *LLMFactory) SetSettingsService(svc *SettingsService) {
 	f.settingsSvc = svc
@@ -540,8 +540,8 @@ func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 	return result
 }
 
-// GetLLMConcurrency 读取用户配置的个人 LLM 并发上限。
-// 未配置时使用默认值 DefaultLLMConcurrencyPersonal。
+// GetLLMConcurrency 读取用户Configuration的个人 LLM 并发上限。
+// 未Configuration时使用默认值 DefaultLLMConcurrencyPersonal。
 func (f *LLMFactory) GetLLMConcurrency(senderID string) int {
 	if f.settingsSvc == nil {
 		return llm.DefaultLLMConcurrencyPersonal
@@ -553,7 +553,7 @@ func (f *LLMFactory) GetLLMConcurrency(senderID string) int {
 	return parseOrDefault(settings["llm_max_concurrent_personal"], llm.DefaultLLMConcurrencyPersonal)
 }
 
-// SetLLMConcurrency 设置用户的个人 LLM 并发上限配置。
+// SetLLMConcurrency 设置用户的个人 LLM 并发上限Configuration。
 func (f *LLMFactory) SetLLMConcurrency(senderID string, personal int) error {
 	if f.settingsSvc == nil {
 		return fmt.Errorf("settings service not available")

@@ -45,7 +45,7 @@ func (a *todoManagerAdapter) ClearTodos(sessionKey string) {
 
 // applyUserMaxContext 如果用户在 Settings 中设置了 max_context，
 // 创建一个新的 ContextManagerConfig 副本并覆盖 MaxContextTokens，
-// 避免污染 Agent 级别的原始配置（含 sync.RWMutex）。
+// 避免污染 Agent 级别的原始Configuration（含 sync.RWMutex）。
 func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextManagerConfig {
 	if userMaxCtx <= 0 || base == nil {
 		return base
@@ -633,7 +633,7 @@ func (a *Agent) buildCronRunConfig(
 
 // buildSubAgentRunConfig 为 SubAgent 构建 RunConfig。
 // SubAgent 使用独立工具集、无 session、有压缩（独立 ContextManager）、无进度通知。
-// Phase 2: SubAgent 通过 RunConfig 继承父 Agent 的工作区配置，
+// Phase 2: SubAgent 通过 RunConfig 继承父 Agent 的工作区Configuration，
 // 使用统一的 defaultToolExecutor + buildToolContext 构建 ToolContext。
 func (a *Agent) buildSubAgentRunConfig(
 	ctx context.Context,
@@ -791,9 +791,9 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	subAgentID := parentAgentID + "/" + roleName
 
-	// SubAgent 继承父 Agent 的 LLM 配置（使用 OriginUserID 获取原始用户的配置）
+	// SubAgent 继承父 Agent 的 LLM Configuration（使用 OriginUserID 获取原始用户的Configuration）
 	// 如果角色指定了模型（含 tier 名称如 vanguard/balance/swift），则通过 GetLLMForModel
-	// 智能查找对应的订阅。当 tier 未配置模型时，自动 fallback 到 GetLLM(originUserID)，
+	// 智能查找对应的订阅。当 tier 未Configuration模型时，自动 fallback 到 GetLLM(originUserID)，
 	// 即父 agent 当前使用的模型和订阅。model 为空时同理。
 	var llmClient llm.LLM
 	var subModel string
@@ -829,7 +829,7 @@ func (a *Agent) buildSubAgentRunConfig(
 		SenderID:        parentAgentID, // SubAgent: 直接调用者 = 父 Agent
 		OriginUserID:    originUserID,  // SubAgent: 继承原始用户 ID
 
-		// 从父 Agent 继承工作区 & 沙箱配置
+		// 从父 Agent 继承工作区 & 沙箱Configuration
 		WorkingDir:       parentCtx.WorkingDir,
 		WorkspaceRoot:    parentCtx.WorkspaceRoot,
 		ReadOnlyRoots:    parentCtx.ReadOnlyRoots,
@@ -859,7 +859,7 @@ func (a *Agent) buildSubAgentRunConfig(
 		InitialGroupID:      parentCtx.GroupID,
 		InitialGroupMembers: parentCtx.GroupMembers,
 
-		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
+		MaxIterations: a.getMaxIterations(), // 继承主 Agent Configuration
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
@@ -892,7 +892,7 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	// === Context Mask 统一机制：注入 6 个缺失字段 ===
 	// SubAgent 与主 Agent 共享同一 Run() 循环，context mask（offload/mask/context-edit）
-	// 依赖这些字段才能正确触发。之前缺失导致 SubAgent 上下文压缩/遮罩永不生效。
+	// 依赖这些字段才能正确触发。之前缺失导致 SubAgent context compression/遮罩永不生效。
 
 	// 1. ContextManager：创建独立实例（不共享父 Agent 的触发器，避免计数交叉）
 	//    从 caps.Memory 条件中移出，所有 SubAgent 都需要压缩能力。
@@ -1064,7 +1064,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			}
 		})
 
-		// 1. 工具查找：session MCP 优先，然后全局注册表
+		// 1. tool lookup：session MCP 优先，然后全局注册表
 		var tool tools.Tool
 		ok := false
 
