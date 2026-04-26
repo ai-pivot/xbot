@@ -78,11 +78,7 @@ func detectAtPrefix(input string) (ok bool, prefix string) {
 func (m *cliModel) populateFileCompletions(prefix string) {
 	pattern := prefix
 	if !strings.Contains(pattern, "*") {
-		if strings.HasSuffix(pattern, "/") {
-			pattern += "*"
-		} else {
-			pattern += "*"
-		}
+		pattern += "*"
 	}
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
@@ -106,8 +102,8 @@ func (m *cliModel) populateFileCompletions(prefix string) {
 		}
 		return matches[i] < matches[j]
 	})
-	if len(matches) > 20 {
-		matches = matches[:20]
+	if len(matches) > fileCompMaxNameRunes {
+		matches = matches[:fileCompMaxNameRunes]
 	}
 	m.fileCompletions = matches
 	m.fileCompIdx = 0
@@ -876,6 +872,23 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	}
 
 	m.updateViewportContent()
+}
+
+// renderWrappedBlock writes text lines to sb with a guide prefix and content style.
+// Empty lines and trailing whitespace are skipped. Lines exceeding maxWidth are
+// hard-wrapped using CJK-aware rune counting.
+func renderWrappedBlock(sb *strings.Builder, text string, maxWidth int, guide, contentStyle lipgloss.Style) {
+	guideStr := guide.Render("  │ ")
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" {
+			continue
+		}
+		for _, wl := range strings.Split(hardWrapRunes(line, maxWidth), "\n") {
+			sb.WriteString(guideStr + contentStyle.Render(wl))
+			sb.WriteString("\n")
+		}
+	}
 }
 
 // renderProgressBlock renders the iteration progress panel for the viewport.
