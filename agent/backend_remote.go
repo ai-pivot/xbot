@@ -393,7 +393,7 @@ func (b *RemoteBackend) SubscribeChat(chatID string) {
 		return
 	}
 	subMsg := wsOutgoingMessage{Type: "subscribe", ChatID: chatID}
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	if err := conn.WriteJSON(subMsg); err != nil {
 		log.WithError(err).Warn("Failed to send subscribe message")
 	}
