@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
+
 	tea "charm.land/bubbletea/v2"
 	log "xbot/logger"
 )
@@ -1051,4 +1053,341 @@ func maxTreeDepth(agents []CLISubAgent) int {
 		}
 	}
 	return max
+}
+
+// handlePreSwitchMessages processes all pre-switch message checks in Update.
+// Returns (handled=true, model, cmd, nil) if the message was fully consumed.
+// Returns (false, nil, nil, extraCmds) if processing should continue.
+func (m *cliModel) handlePreSwitchMessages(msg tea.Msg) (bool, tea.Model, tea.Cmd, []tea.Cmd) {
+	// Phase 1: Async notifications (early return before side effects)
+	if handled, mdl, cmd := m.handleAsyncNotifications(msg); handled {
+		return true, mdl, cmd, nil
+	}
+	// Phase 2: Apply side effects (theme, locale, models error, pending cmds)
+	extraCmds := m.applyPreSwitchSideEffects(msg)
+	// Phase 3: Key-based early-return checks (pending cmds intentionally dropped for early returns)
+	if handled, mdl, cmd := m.handlePreSwitchKeyChecks(msg); handled {
+		return true, mdl, cmd, nil
+	}
+	return false, nil, nil, extraCmds
+}
+
+// handleAsyncNotifications handles async notification messages that return early.
+func (m *cliModel) handleAsyncNotifications(msg tea.Msg) (bool, tea.Model, tea.Cmd) {
+	// Async settings save completed — apply theme/locale/viewport changes
+	if saved, ok := msg.(cliSettingsSavedMsg); ok {
+		cmd := m.handleSettingsSavedMsg(saved)
+		return true, m, cmd
+	}
+	// Async subscription switch completed
+	if done, ok := msg.(cliSwitchLLMDoneMsg); ok {
+		return true, m, m.handleSwitchLLMDone(done)
+	}
+	// Runner status change notification
+	if rsm, ok := msg.(runnerStatusMsg); ok {
+		cmd := m.handleRunnerStatusMsg(rsm)
+		return true, m, cmd
+	}
+	return false, nil, nil
+}
+
+// applyPreSwitchSideEffects applies non-returning side effects:
+// theme rebuild, models load error, pending cmds drain, locale refresh.
+func (m *cliModel) applyPreSwitchSideEffects(msg tea.Msg) []tea.Cmd {
+	var cmds []tea.Cmd
+	// Theme change notification: rebuild style cache + glamour renderer
+	select {
+	case <-themeChangeCh:
+		m.applyThemeAndRebuild(currentThemeName)
+		m.updateViewportContent()
+	default:
+	}
+	// Model list load error notification from LLM goroutines
+	select {
+	case err := <-modelsLoadErrorCh:
+		m.showTempStatus(fmt.Sprintf("Model list load failed: %v", err))
+		_ = m.clearTempStatusCmd()
+	default:
+	}
+	// Drain pending cmds queued by helpers (e.g. showTempStatus).
+	// Append to cmds so they get batched with any cmds produced by the
+	// switch cases below — do NOT return early here, or the tick chain
+	// breaks (e.g. a pending tempStatus clear would prevent cliTickMsg
+	// from emitting the next tickCmd).
+	if len(m.pendingCmds) > 0 {
+		cmds = append(cmds, m.pendingCmds...)
+		m.pendingCmds = nil
+	}
+	// i18n: Locale change notification
+	select {
+	case <-localeChangeCh:
+		m.locale = GetLocale(currentLocaleLang)
+		m.renderCacheValid = false
+		for i := range m.messages {
+			m.messages[i].dirty = true
+		}
+		m.updatePlaceholder()
+		m.updateViewportContent()
+	default:
+	}
+	return cmds
+}
+
+// handlePreSwitchKeyChecks handles all key-based early-return checks
+// that must fire before the main type switch in Update.
+func (m *cliModel) handlePreSwitchKeyChecks(msg tea.Msg) (bool, tea.Model, tea.Cmd) {
+	// Ctrl+Z: emergency quit (regardless of state, including panel/typing/idle)
+	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "ctrl+z" {
+		m.showSystemMsg(m.locale.EmergencyQuitHint, feedbackWarning)
+		return true, m, tea.Quit
+	}
+	// DEBUG: log all KeyPressMsg to trace ctrl+c handling
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		log.WithFields(log.Fields{"str": key.String(), "code": key.Code, "mod": key.Mod}).Debug("DEBUG keypress")
+	}
+	// Ctrl+C: unified handling, placed before all other key handlers.
+	// This is the only Ctrl+C handling point — no other place should intercept Ctrl+C.
+	// Ensure Ctrl+C always works regardless of state (typing/idle/panel/queue/editing).
+	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "ctrl+c" {
+		m.handleCtrlC()
+		return true, m, nil
+	}
+	// §15 Quick switch overlay: highest priority (above panelMode).
+	// This ensures ESC in quick switch closes the overlay, not the panel behind it.
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		if handled, cmd := m.handleQuickSwitchKey(key); handled {
+			return true, m, cmd
+		}
+		// §9 Rewind overlay: same priority as quick switch.
+		if handled, cmd := m.handleRewindKey(key); handled {
+			return true, m, cmd
+		}
+	}
+	// §12 Panel mode: intercept all key events when panel is active
+	// NOTE: Ctrl+C is handled above — never intercept it here.
+	if key, ok := msg.(tea.KeyPressMsg); ok && m.panelMode != "" {
+		handled, newModel, cmd := m.updatePanel(key)
+		if handled {
+			return true, newModel, cmd
+		}
+	}
+	// §12b Panel mode: intercept paste events — PasteMsg is not KeyPressMsg,
+	// so it bypasses the above panel interceptor and would be captured by the
+	// main textarea below. Forward it to the panel's internal textarea instead.
+	if paste, ok := msg.(tea.PasteMsg); ok && m.panelMode != "" {
+		var cmd tea.Cmd
+		switch m.panelMode {
+		case "askuser":
+			// Check if current tab has options (use textinput) or free input (use textarea)
+			if m.panelTab >= 0 && m.panelTab < len(m.panelItems) && len(m.panelItems[m.panelTab].Options) > 0 {
+				m.panelOtherTI, cmd = m.panelOtherTI.Update(paste)
+			} else {
+				m.autoExpandAskTA()
+				m.panelAnswerTA, cmd = m.panelAnswerTA.Update(paste)
+			}
+		case "settings":
+			if m.panelEdit {
+				m.panelEditTA, cmd = m.panelEditTA.Update(paste)
+			}
+		}
+		return true, m, cmd
+	}
+	// §21 Search mode interception
+	if key, ok := msg.(tea.KeyPressMsg); ok && m.searchMode {
+		if cmd, handled := m.handleSearchKey(key); handled {
+			return true, m, cmd
+		}
+	}
+	// Home/End jump to top/bottom
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.String() {
+		case "home":
+			m.viewport.GotoTop()
+			return true, m, nil
+		case "end":
+			m.viewport.GotoBottom()
+			m.newContentHint = false
+			return true, m, nil
+		}
+	}
+	// Ctrl+Enter newline (terminal raw sequences are inconsistent, need manual detection)
+	if isCtrlEnter(msg) {
+		m.textarea.InsertString("\n")
+		m.autoExpandInput()
+		return true, m, nil
+	}
+	// Ctrl+J newline — directly InsertString bypassing textarea's internal atContentLimit check,
+	// otherwise textarea's InsertNewline keymap silently drops newlines after reaching MaxHeight.
+	if isCtrlJ(msg) {
+		m.textarea.InsertString("\n")
+		m.autoExpandInput()
+		return true, m, nil
+	}
+	// Ctrl+O toggle tool summary expand/collapse (CSI u protocol compatibility layer, kitty/Ghostty, etc.)
+	if isCtrlO(msg) {
+		m.toggleToolSummary()
+		return true, m, nil
+	}
+	return false, nil, nil
+}
+
+// handleIdleTickMsg handles the low-frequency idle tick: rotate placeholder, keep alive,
+// and self-heal broken tick chains.
+func (m *cliModel) handleIdleTickMsg() []tea.Cmd {
+	var cmds []tea.Cmd
+	// Remote mode: keep retrying model name fetch until we get one.
+	if m.cachedModelName == "" && m.remoteMode {
+		m.refreshCachedModelName()
+	}
+	if !m.typing && m.progress == nil {
+		m.updatePlaceholder()
+		cmds = append(cmds, idleTickCmd())
+	} else if !m.fastTickActive {
+		// Self-healing: if fast tick chain broke but we're still busy
+		// (typing or progress active), re-arm fast tick.
+		m.fastTickActive = true
+		cmds = append(cmds, tickCmd())
+	}
+	return cmds
+}
+
+// handleSplashDoneMsg handles the splash screen end confirmation.
+func (m *cliModel) handleSplashDoneMsg() []tea.Cmd {
+	var cmds []tea.Cmd
+	m.splashDone = true
+	// Remote mode: retry model name fetch — the initial call in cli.go:76
+	// may have failed if the WS RPC wasn't fully ready yet.
+	if m.cachedModelName == "" && m.remoteMode {
+		m.refreshCachedModelName()
+	}
+	if m.typing && m.progress != nil && !m.fastTickActive {
+		m.fastTickActive = true
+		cmds = append(cmds, tickCmd())
+	} else if !m.typing || m.progress == nil {
+		cmds = append(cmds, idleTickCmd())
+	}
+	return cmds
+}
+
+// handleTypewriterTickMsg advances the typewriter animation by one rune
+// and continues the tick chain if still behind.
+func (m *cliModel) handleTypewriterTickMsg() []tea.Cmd {
+	m.advanceTypewriter()
+	m.updateViewportContent()
+	// Continue chain if still behind on either stream or reasoning content
+	streamBehind := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
+	reasoningBehind := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
+	if m.typewriterTickActive && (streamBehind || reasoningBehind) {
+		return []tea.Cmd{typewriterTickCmd()}
+	}
+	m.typewriterTickActive = false
+	return nil
+}
+
+// handleHistoryLoadMsgCase applies a batch of history messages to the view.
+func (m *cliModel) handleHistoryLoadMsgCase(msg cliHistoryLoadMsg) {
+	if len(msg.history) > 0 {
+		m.messages = append(m.messages, msg.history...)
+		m.invalidateAllCache(false)
+		m.updateViewportContent()
+		if m.streamingMsgIdx < 0 {
+			m.viewport.GotoBottom()
+		}
+		log.WithFields(log.Fields{"count": len(msg.history)}).Info("Applied history load in Update loop")
+	}
+}
+
+// handleProcessingMsgCase updates agent turn state based on processing flag.
+// NOTE: do NOT flush queue here even if needFlushQueue is true!
+// PhaseDone can arrive before cliOutboundMsg (the reply text). If we
+// flush here, the queued message gets appended BEFORE the reply,
+// producing wrong order: msg1, msg2, reply1 instead of msg1, reply1, msg2.
+// Flush is handled in cliTickMsg instead (next tick after typing=false).
+func (m *cliModel) handleProcessingMsgCase(msg cliProcessingMsg) {
+	if msg.processing && !m.typing {
+		m.startAgentTurn()
+	} else if !msg.processing && m.typing {
+		m.endAgentTurn(m.agentTurnID)
+	}
+}
+
+// handleApprovalRequestMsg sets up the approval dialog state.
+func (m *cliModel) handleApprovalRequestMsg(msg approvalRequestMsg) {
+	m.approvalRequest = &msg.request
+	m.approvalResultCh = msg.resultCh
+	m.approvalCursor = 0 // default to Approve
+	m.approvalEnteringDeny = false
+	m.approvalDenyInput = textinput.New()
+	m.approvalDenyInput.Placeholder = "Optional deny reason for LLM"
+	m.approvalDenyInput.CharLimit = 200
+	m.approvalDenyInput.SetWidth(60)
+	m.panelMode = panelModeApproval
+	m.renderCacheValid = false
+}
+
+// handleProgressMsgCase processes a progress message and ensures the fast tick
+// chain is active when restoring progress (reconnect/switch).
+func (m *cliModel) handleProgressMsgCase(msg cliProgressMsg, cmds *[]tea.Cmd) {
+	m.handleProgressMsg(msg)
+	// Normal progress events don't need this (tick already running), but restored
+	// snapshots arrive before the idle tick self-heal fires (3s delay).
+	if m.typing && !m.fastTickActive {
+		m.fastTickActive = true
+		*cmds = append(*cmds, tickCmd())
+	}
+}
+
+// handleEasterEggDoneMsgCase dismisses the easter egg overlay.
+func (m *cliModel) handleEasterEggDoneMsgCase() {
+	m.dismissEasterEgg()
+	m.renderCacheValid = false
+	m.updateViewportContent()
+}
+
+// handleEasterEggMatrixTickCase advances the matrix rain animation.
+func (m *cliModel) handleEasterEggMatrixTickCase(cmds *[]tea.Cmd) tea.Cmd {
+	if m.easterEgg == easterEggMatrix {
+		m.tickMatrix()
+		*cmds = append(*cmds, matrixTickCmd())
+	}
+	return tea.Batch(*cmds...)
+}
+
+// handlePostSwitch performs post-switch processing: idle→typing guard,
+// viewport/textarea update, tab completion reset, and quit check.
+func (m *cliModel) handlePostSwitch(msg tea.Msg, prevText string, wasTyping bool, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	// Idle→typing transition guard: if typing just started (e.g. from
+	// handleInjectedUserMsg or cliProcessingMsg), ensure the tick chain is running.
+	if !wasTyping && m.typing && !m.fastTickActive {
+		cmds = append(cmds, tickCmd())
+	}
+	// Update viewport
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+	// Update textarea (skip WindowSizeMsg: handleResize already calls SetWidth)
+	if _, ok := msg.(tea.WindowSizeMsg); !ok {
+		m.textarea, cmd = m.textarea.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	// §8 Tab completion：Reset completion state on input content change
+	newVal := m.textarea.Value()
+	if newVal != prevText {
+		m.completions = nil
+		m.compIdx = 0
+		m.fileCompActive = false
+		if !m.fileCompActive {
+			if ok, prefix := detectAtPrefix(newVal); ok {
+				m.populateFileCompletions(prefix)
+			} else {
+				m.fileCompletions = nil
+				m.fileCompIdx = 0
+			}
+		}
+	}
+	if m.shouldQuit {
+		return m, tea.Quit
+	}
+	m.autoExpandInput()
+	return m, tea.Batch(cmds...)
 }
