@@ -24,7 +24,7 @@ type CronJob struct {
 	At           string     `json:"at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	NextRun      time.Time  `json:"next_run"`
-	LastTrigger  *time.Time `json:"last_trigger,omitempty"` // 上次触发时间，用于防重复
+	LastTrigger  *time.Time `json:"last_trigger,omitempty"` // last trigger time, used for dedup
 	OneShot      bool       `json:"one_shot"`
 }
 

@@ -94,7 +94,7 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 
 		label := labelMap[cid]
 		if label == "" && cid == senderID {
-			label = "默认会话"
+			label = "Default Chat"
 		}
 
 		result = append(result, UserChatWithPreview{
@@ -139,7 +139,7 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 	}
 
 	if label == "" {
-		label = "新会话"
+		label = "New Chat"
 	}
 
 	_, err := conn.Exec(

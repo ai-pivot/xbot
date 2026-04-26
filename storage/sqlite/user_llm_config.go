@@ -9,33 +9,33 @@ import (
 	log "xbot/logger"
 )
 
-// UserLLMConfig 用户 LLM 配置
+// UserLLMConfig holds per-user LLM configuration
 type UserLLMConfig struct {
 	ID              string         // subscription ID (for precise UPDATE targeting)
-	SenderID        string         // 用户 ID
-	Provider        string         // LLM 提供商: "openai", "deepseek", "anthropic" 等
+	SenderID        string         // user ID
+	Provider        string         // LLM provider: "openai", "deepseek", "anthropic", etc.
 	BaseURL         string         // API Base URL
 	APIKey          string         // API Key
-	Model           string         // 默认模型
-	MaxContext      int            // 最大上下文 token 数（0 表示不限制）
-	MaxOutputTokens int            // 最大输出 token 数（0 表示使用默认值 8192）
-	ThinkingMode    string         // 思考模式: "" (自动), "enabled", "disabled"
+	Model           string         // default model
+	MaxContext      int            // max context tokens (0 = unlimited)
+	MaxOutputTokens int            // max output tokens (0 = default 8192)
+	ThinkingMode    string         // thinking mode: "" (auto), "enabled", "disabled"
 	OnModelsLoaded  func([]string) // callback after models loaded from API
-	CreatedAt       time.Time      // 创建时间
-	UpdatedAt       time.Time      // 更新时间
+	CreatedAt       time.Time      // creation time
+	UpdatedAt       time.Time      // last update time
 }
 
-// UserLLMConfigService 用户 LLM 配置服务
+// UserLLMConfigService manages per-user LLM configurations
 type UserLLMConfigService struct {
 	db *DB
 }
 
-// NewUserLLMConfigService 创建用户 LLM 配置服务
+// NewUserLLMConfigService creates a new UserLLMConfigService
 func NewUserLLMConfigService(db *DB) *UserLLMConfigService {
 	return &UserLLMConfigService{db: db}
 }
 
-// GetConfig 获取用户的 LLM 配置
+// GetConfig retrieves the user's LLM configuration
 func (s *UserLLMConfigService) GetConfig(senderID string) (*UserLLMConfig, error) {
 	conn := s.db.Conn()
 
@@ -75,7 +75,7 @@ func (s *UserLLMConfigService) GetConfig(senderID string) (*UserLLMConfig, error
 	return &cfg, nil
 }
 
-// SetConfig 设置用户的 LLM 配置（写入 user_llm_subscriptions）
+// SetConfig sets the user's LLM configuration (writes to user_llm_subscriptions)
 func (s *UserLLMConfigService) SetConfig(cfg *UserLLMConfig) error {
 	conn := s.db.Conn()
 
@@ -165,7 +165,7 @@ func (s *UserLLMConfigService) SetConfig(cfg *UserLLMConfig) error {
 	return nil
 }
 
-// DeleteConfig 删除用户的 LLM 配置
+// DeleteConfig deletes the user's LLM configuration
 func (s *UserLLMConfigService) DeleteConfig(senderID string) error {
 	conn := s.db.Conn()
 	_, err := conn.Exec("DELETE FROM user_llm_subscriptions WHERE sender_id = ?", senderID)

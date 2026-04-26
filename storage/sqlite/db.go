@@ -42,12 +42,12 @@ func Open(path string) (*DB, error) {
 	conn.SetMaxOpenConns(1) // SQLite works best with a single connection
 	conn.SetMaxIdleConns(1)
 
-	// P-08 修复：启用 WAL 模式提升并发读性能和韧性
+	// P-08 fix: enable WAL mode for better concurrent read performance and resilience
 	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("set WAL mode: %w", err)
 	}
-	// 设置 busy_timeout 为 5 秒，避免 "database is locked" 错误
+	// Set busy_timeout to 5s to avoid "database is locked" errors
 	if _, err := conn.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
