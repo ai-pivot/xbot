@@ -42,7 +42,7 @@ func LoginShellArgs(shell, command string) []string {
 	}
 }
 
-// setProcessAttrs 设置 Unix 平台的进程属性
+// setProcessAttrs sets Unix platform process attributes
 // 使用进程组，超时时可以杀掉整棵进程树
 func setProcessAttrs(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -77,8 +77,8 @@ func isProcessAlive(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-// SetProcessAttrs 是 setProcessAttrs 的导出版本，供其他包使用
+// SetProcessAttrs is the exported version of setProcessAttrs, for use by other packages
 func SetProcessAttrs(cmd *exec.Cmd) { setProcessAttrs(cmd) }
 
-// KillProcess 是 killProcess 的导出版本，供其他包使用
+// KillProcess is the exported version of killProcess, for use by other packages
 func KillProcess(cmd *exec.Cmd) { killProcess(cmd) }

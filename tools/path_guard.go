@@ -240,8 +240,8 @@ func sandboxBaseDir(ctx *ToolContext) string {
 	return ""
 }
 
-// ShouldUseSandbox 判断是否应使用 Sandbox 访问文件系统。
-// 仅在 Sandbox 可用且非 none 模式时返回 true。
+// ShouldUseSandbox determines whether the Sandbox should be used for filesystem access.
+// returns true only when Sandbox is available and not in none mode.
 func ShouldUseSandbox(ctx *ToolContext) bool {
 	return ctx != nil && ctx.Sandbox != nil && ctx.Sandbox.Name() != "none"
 }
@@ -251,7 +251,7 @@ func shouldUseSandbox(ctx *ToolContext) bool {
 	return ShouldUseSandbox(ctx)
 }
 
-// resolveSandboxCWD 将 CurrentDir 解析为沙箱内的绝对路径。
+// resolveSandboxCWD resolves CurrentDir to an absolute path inside the sandbox.
 // supports two formats:
 //   - sandbox path (e.g. /workspace/src) → return directly
 //   - host path (e.g. /data/users/ou_xxx/workspace/src) → convert to sandbox path
@@ -283,7 +283,7 @@ func resolveSandboxCWD(ctx *ToolContext, sandboxBase string) string {
 	return ""
 }
 
-// shellEscape 对字符串进行 shell 单引号转义，防止命令注入。
+// shellEscape performs shell single-quote escaping to prevent command injection.
 // 将字符串中的单引号替换为 '\”（结束单引号、转义单引号、开始新单引号）。
 func shellEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "'\\''")

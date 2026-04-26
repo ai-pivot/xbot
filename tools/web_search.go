@@ -16,7 +16,7 @@ type WebSearchTool struct {
 	httpClient *http.Client
 }
 
-// NewWebSearchTool 创建网络搜索工具
+// NewWebSearchTool creates a web search tool
 func NewWebSearchTool(apiKey string) *WebSearchTool {
 	return &WebSearchTool{
 		apiKey: apiKey,
@@ -55,7 +55,7 @@ func (t *WebSearchTool) Parameters() []llm.ToolParam {
 	}
 }
 
-// TavilySearchRequest Tavily 搜索请求
+// TavilySearchRequest Tavily search request
 type TavilySearchRequest struct {
 	Query         string `json:"query"`
 	SearchDepth   string `json:"search_depth,omitempty"`
@@ -63,7 +63,7 @@ type TavilySearchRequest struct {
 	IncludeAnswer bool   `json:"include_answer,omitempty"`
 }
 
-// TavilySearchResult Tavily 搜索结果
+// TavilySearchResult Tavily search result
 type TavilySearchResult struct {
 	Title   string  `json:"title"`
 	URL     string  `json:"url"`
@@ -71,7 +71,7 @@ type TavilySearchResult struct {
 	Score   float64 `json:"score"`
 }
 
-// TavilySearchResponse Tavily 搜索响应
+// TavilySearchResponse Tavily search response
 type TavilySearchResponse struct {
 	Query   string               `json:"query"`
 	Answer  string               `json:"answer,omitempty"`
@@ -99,7 +99,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("query is required")
 	}
 
-	// 设置默认值
+	// 设置default value
 	searchDepth := "basic"
 	if params.SearchDepth == "advanced" {
 		searchDepth = "advanced"
@@ -128,7 +128,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// 发送请求（支持 context 取消）
+	// sends request (supports context cancellation)
 	req, err := http.NewRequestWithContext(ctx.Ctx, "POST", "https://api.tavily.com/search", bytes.NewBuffer(reqJSON))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -163,7 +163,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	return NewResult(formatSearchResults(&searchResp)), nil
 }
 
-// formatSearchResults 格式化搜索结果
+// formatSearchResults formats search results
 func formatSearchResults(resp *TavilySearchResponse) string {
 	var sb strings.Builder
 

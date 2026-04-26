@@ -18,9 +18,9 @@ import (
 	log "xbot/logger"
 )
 
-// DockerSandbox Docker 沙箱实现
-// 容器生命周期：Close/CloseForUser 仅 stop（不 rm），下次直接 start 复用。
-// 内部逻辑（如 stale mount 重建、启动失败重建）只做 forceRemove，不做 export/import。
+// DockerSandbox is the Docker sandbox implementation
+// Container lifecycle: Close/CloseForUser only stop (no rm); reused via start.
+// Internal logic (stale mount rebuild, startup failure rebuild) only does forceRemove, no export/import.
 // export+import 仅在用户主动触发 cleanup 时执行（由 settings 中的 sandbox_cleanup 控制）。
 // 始终使用 export+import（而非 docker commit），避免镜像层累积迅速耗尽磁盘空间。
 type DockerSandbox struct {
@@ -46,8 +46,8 @@ func (s *DockerSandbox) Image() string { return s.image }
 // Workspace returns the sandbox workspace root directory for the given user.
 func (s *DockerSandbox) Workspace(_ string) string { return "/workspace" }
 
-// Close 关闭所有 Docker 容器（仅 stop，不 rm 也不 export/import）。
-// 容器保留在磁盘上，下次 getOrCreateContainer 时直接 docker start 复用。
+// Close closes all Docker containers (stop only, no rm or export/import).
+// Container stays on disk; reused via docker start on next getOrCreateContainer.
 func (s *DockerSandbox) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,7 +68,7 @@ func (s *DockerSandbox) Close() error {
 	return nil
 }
 
-// CloseForUser 关闭指定用户的容器（仅 stop，不 rm 也不 export/import）。
+// CloseForUser closes the container for the specified user (stop only, no rm or export/import).
 // 容器保留在磁盘上，下次直接 docker start 复用。
 func (s *DockerSandbox) CloseForUser(userID string) error {
 	s.mu.Lock()
@@ -133,7 +133,7 @@ func (s *DockerSandbox) ExportAndImport(userID string) error {
 }
 
 // exportImportIfDirty 仅在容器有文件系统变更时，用 export+import 持久化为单层镜像。
-// 始终使用 export+import（而非 docker commit），确保镜像永远只有一层，避免磁盘空间膨胀。
+// Always uses export+import (not docker commit) to keep images single-layer and prevent disk bloat.
 // 注意：此方法不获取 s.mu 锁，调用方需确保不在持锁状态下调用。
 func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 	if userID == "" || strings.HasPrefix(userID, "__") {
@@ -597,7 +597,7 @@ func (s *DockerSandbox) DownloadFile(ctx context.Context, url, outputPath, userI
 }
 
 // getOrCreateContainer gets or creates the user's Docker container
-// 优先使用用户专属镜像（由 export+import 生成），不存在则用基础镜像
+// prefer user-specific image (from export+import); fall back to base image if not found
 // 返回容器名称和检测到的用户默认 shell
 func (s *DockerSandbox) getOrCreateContainer(userID, workspace string) (containerName, shell string, err error) {
 	s.mu.Lock()
@@ -853,7 +853,7 @@ func NewDockerSandbox(sandboxCfg config.SandboxConfig, workDir string) *DockerSa
 	return s
 }
 
-// NewSandbox 创建沙箱实例（backward compatible）
+// NewSandbox creates a sandbox instance (backward compatible)
 func NewSandbox(sandboxCfg config.SandboxConfig, workDir string, tokenStore *RunnerTokenStore) Sandbox {
 	switch sandboxCfg.Mode {
 	case SandboxNone:

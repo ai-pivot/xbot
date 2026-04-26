@@ -23,18 +23,18 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MCPServerConfig 单个 MCP Server 的配置
+// MCPServerConfig is the config for a single MCP Server
 type MCPServerConfig struct {
 	Command      string            `json:"command,omitempty"`      // 可执行文件路径（stdio 模式）
 	Args         []string          `json:"args,omitempty"`         // 命令行参数（stdio 模式）
-	Env          map[string]string `json:"env,omitempty"`          // 环境变量
+	Env          map[string]string `json:"env,omitempty"`          // environment variable
 	URL          string            `json:"url,omitempty"`          // HTTP MCP URL（http 模式）
 	Headers      map[string]string `json:"headers,omitempty"`      // HTTP 请求头
 	Enabled      *bool             `json:"enabled,omitempty"`      // 是否启用（默认 true）
 	Instructions string            `json:"instructions,omitempty"` // MCP 服务器使用说明（fallback，当服务器不返回时使用）
 }
 
-// MCPConfig MCP 配置文件结构
+// MCPConfig is the MCP configuration file structure
 type MCPConfig struct {
 	MCPServers map[string]MCPServerConfig `json:"mcpServers"`
 }
@@ -47,7 +47,7 @@ type mcpConnection struct {
 	instructions string // from server's InitializeResult
 }
 
-// MCPServerCatalogEntry 单个 MCP Server 的目录条目（用于系统提示词中的轻量展示）
+// MCPServerCatalogEntry is a catalog entry for a single MCP Server (lightweight, for system prompt)
 type MCPServerCatalogEntry struct {
 	Name         string   // Server 名称
 	Instructions string   // Server 初始化返回的使用说明
@@ -272,7 +272,7 @@ func resolveXbotBinDir(configPath string) string {
 
 	dir := filepath.Dir(configPath) // e.g. /workdir/.xbot 或 /workdir
 
-	// 如果 configPath 在 .xbot/ 目录下，bin 目录就在同一级
+	// if configPath is under .xbot/, bin directory is at the same level
 	var binDir string
 	// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 	if strings.HasSuffix(dir, string(filepath.Separator)+".xbot") || filepath.Base(dir) == ".xbot" {
@@ -290,7 +290,7 @@ func resolveXbotBinDir(configPath string) string {
 	return ""
 }
 
-// shellQuoteCmd 将 command + args 转为 shell 安全的单行字符串（用单引号包裹）
+// shellQuoteCmd converts command + args to a shell-safe single-line string (single-quoted)
 func shellQuoteCmd(command string, args []string) string {
 	quote := func(s string) string {
 		return "'" + shellEscape(s) + "'"
@@ -302,7 +302,7 @@ func shellQuoteCmd(command string, args []string) string {
 	return strings.Join(parts, " ")
 }
 
-// ConnectStdioServer 连接 stdio 模式的 MCP Server（公共函数）
+// ConnectStdioServer connects to a stdio-mode MCP server (public function)
 // Returns a ClientSession (auto-initialized) and the session itself for closing.
 func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, workspaceRoot, userID, serverName string) (*mcp.ClientSession, error) {
 	envList := BuildStdioEnv(cfg, configPath)
@@ -401,7 +401,7 @@ func drainStderr(serverName string, r io.Reader) {
 	}
 }
 
-// ConnectHTTPServer 连接 HTTP 模式的 MCP Server（公共函数）
+// ConnectHTTPServer connects to an HTTP-mode MCP server (public function)
 func ConnectHTTPServer(ctx context.Context, cfg MCPServerConfig) (*mcp.ClientSession, error) {
 	transport := &mcp.StreamableClientTransport{
 		Endpoint: cfg.URL,
@@ -424,7 +424,7 @@ func ConnectHTTPServer(ctx context.Context, cfg MCPServerConfig) (*mcp.ClientSes
 	return session, nil
 }
 
-// IsProcessExitError 判断是否为子进程退出错误（如 "exit status 1"）
+// IsProcessExitError checks if the error is a child process exit error (e.g. "exit status 1")
 func IsProcessExitError(err error) bool {
 	if err == nil {
 		return false
@@ -470,7 +470,7 @@ func ConvertMCPParams(tool *mcp.Tool) []llm.ToolParam {
 	return convertMCPParams(tool)
 }
 
-// convertMCPParams 将 MCP Tool 的 JSON Schema 参数转为 xbot ToolParam 列表
+// convertMCPParams converts MCP Tool JSON Schema params to xbot ToolParam list
 func convertMCPParams(tool *mcp.Tool) []llm.ToolParam {
 	schema, ok := tool.InputSchema.(map[string]any)
 	if !ok {
@@ -533,7 +533,7 @@ func convertMCPParams(tool *mcp.Tool) []llm.ToolParam {
 	return params
 }
 
-// formatMCPResult 将 MCP CallToolResult 的 Content 转为文本
+// formatMCPResult converts MCP CallToolResult Content to text
 func formatMCPResult(result *mcp.CallToolResult) string {
 	if result == nil || len(result.Content) == 0 {
 		return "(no output)"

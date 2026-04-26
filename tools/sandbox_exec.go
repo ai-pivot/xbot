@@ -25,8 +25,8 @@ const (
 	SandboxRemote = "remote"
 )
 
-// RunInSandbox 在沙箱内执行命令并返回输出。
-// 当沙箱为 none 模式时返回错误。
+// RunInSandbox executes a command in the sandbox and returns the output.
+// returns an error when sandbox is in none mode.
 func RunInSandbox(ctx *ToolContext, command string, args ...string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("sandbox not enabled")
@@ -60,7 +60,7 @@ func RunInSandbox(ctx *ToolContext, command string, args ...string) (string, err
 	return formatExecResult(result), nil
 }
 
-// RunInSandboxWithShell 在沙箱内执行 shell 命令并返回输出。
+// RunInSandboxWithShell executes a shell command in the sandbox and returns the output.
 // uses login shell to auto-load environment config files.
 func RunInSandboxWithShell(ctx *ToolContext, shellCmd string) (string, error) {
 	if ctx == nil {
@@ -105,7 +105,7 @@ func RunInSandboxWithShell(ctx *ToolContext, shellCmd string) (string, error) {
 	return formatExecResult(result), nil
 }
 
-// RunInSandboxRaw 在沙箱内执行命令并返回原始输出（不做 TrimSpace）。
+// RunInSandboxRaw executes a command in the sandbox and returns raw output (no TrimSpace)。
 // 适用于需要保留文件原始内容的场景（如 cat 读取文件）。
 func RunInSandboxRaw(ctx *ToolContext, command string, args ...string) (string, error) {
 	if ctx == nil {
@@ -140,7 +140,7 @@ func RunInSandboxRaw(ctx *ToolContext, command string, args ...string) (string, 
 	return formatExecResultRaw(result), nil
 }
 
-// RunInSandboxRawWithShell 在沙箱内执行 shell 命令并返回原始输出（不做 TrimSpace）。
+// RunInSandboxRawWithShell executes a shell command in the sandbox and returns raw output (no TrimSpace)。
 func RunInSandboxRawWithShell(ctx *ToolContext, shellCmd string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("sandbox not enabled")

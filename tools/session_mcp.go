@@ -29,7 +29,7 @@ type SessionMCPManager struct {
 	userID            string                    // 用户 ID（用于沙箱容器标识）
 	globalConfigPath  string                    // 全局 mcp.json 路径（只读）
 	userConfigPath    string                    // 用户 mcp.json 路径（可写）
-	workspaceRoot     string                    // 用户命令执行工作区
+	workspaceRoot     string                    // 用户command execution工作区
 	connections       map[string]*mcpConnection // 懒加载的连接
 	lastActive        map[string]time.Time      // 每个服务器的最后活跃时间
 	sessionLastUsed   time.Time                 // 会话级别活跃时间
@@ -81,7 +81,7 @@ func (sm *SessionMCPManager) UpdateScope(userID, userConfigPath, workspaceRoot s
 
 // GetCatalog 返回此会话所有已连接 MCP Server 的目录信息。
 // 首次调用时启动后台初始化（非阻塞），立即返回空 catalog。
-// 后续调用在后台初始化完成后返回完整 catalog。
+// subsequent calls return full catalog after background init completes.
 func (sm *SessionMCPManager) GetCatalog() []MCPServerCatalogEntry {
 	sm.ensureInitAsync()
 
@@ -270,7 +270,7 @@ func (sm *SessionMCPManager) Invalidate() {
 	log.WithField("session", sm.sessionKey).Info("Session MCP invalidated, will reload on next use")
 }
 
-// loadAndConnect 加载配置并连接所有启用的 MCP Server（跳过已连接的服务器）
+// loadAndConnect loads config and connects all enabled MCP servers (skips already connected servers)
 func (sm *SessionMCPManager) loadAndConnect(ctx context.Context) error {
 	config, err := sm.loadConfig()
 	if err != nil {
@@ -315,7 +315,7 @@ func (sm *SessionMCPManager) connectServer(ctx context.Context, name string, cfg
 		err     error
 	)
 
-	// 优先使用 HTTP transport（如果配置了 URL）
+	// prefer HTTP transport if URL is configured
 	if cfg.URL != "" {
 		session, err = ConnectHTTPServer(ctx, cfg)
 	} else if cfg.Command != "" {
@@ -339,7 +339,7 @@ func (sm *SessionMCPManager) connectServer(ctx context.Context, name string, cfg
 		return err
 	}
 
-	// 优先使用服务器返回的 instructions，否则使用 config 中的 fallback
+	// prefer server-returned instructions; otherwise use config fallback
 	instructions := initResult.Instructions
 	if instructions == "" {
 		instructions = cfg.Instructions

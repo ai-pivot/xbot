@@ -40,7 +40,7 @@ type ToolContext struct {
 	SenderName              string                                                                     // 当前消息发送者姓名
 	SendFunc                func(channel, chatID, content string, metadata ...map[string]string) error // 向 IM 渠道发送消息（不经过 Agent），返回错误
 	InjectInbound           func(channel, chatID, senderID, content string)                            // 注入入站消息，触发 Agent 完整处理循环
-	Registry                *Registry                                                                  // 工具注册表引用（用于动态注册工具）
+	Registry                *Registry                                                                  // tool registration表引用（用于动态注册工具）
 	InvalidateAllSessionMCP func()                                                                     // 使所有会话的 MCP 连接失效
 
 	// Letta memory fields (nil when memory provider is not letta)
@@ -52,12 +52,12 @@ type ToolContext struct {
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 
 	// RootSessionKey 顶层 Agent 的 session key。
-	// SubAgent 场景下指向主 Agent 的 session（offload 文件存放在该 session 目录下），
+	// In SubAgent context, points to the main Agent's session (offload files stored there);
 	// empty in main Agent context (same as SessionKey).
 	RootSessionKey string
 
 	// PWD 工具优化：current working directory (mutable, read from session)
-	CurrentDir    string           // 当前工作目录（优先级高于 WorkspaceRoot）
+	CurrentDir    string           // current working directory（优先级高于 WorkspaceRoot）
 	SetCurrentDir func(dir string) // 更新 session 中的 cwd
 
 	// Stream indicates whether the parent Agent is using streaming LLM calls.
@@ -68,7 +68,7 @@ type ToolContext struct {
 	// Used e.g. to propagate background=true from SubAgent tool to spawn adapter.
 	Metadata map[string]string
 
-	// BgTaskManager 后台任务管理器（nil = 不支持后台任务）
+	// BgTaskManager background task manager (nil = not supported)
 	BgTaskManager *BackgroundTaskManager
 	// SessionKey for task scoping (set by engine, not via RunConfig)
 	BgSessionKey string
@@ -88,7 +88,7 @@ type ToolContext struct {
 	GroupMembers []string
 }
 
-// SubAgentManager SubAgent 管理接口，避免循环依赖
+// SubAgentManager is the SubAgent management interface (avoids circular dependency)
 type SubAgentManager interface {
 	// RunSubAgent creates and runs a SubAgent, returning the final response text
 	// allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
@@ -109,28 +109,28 @@ type ToolResult struct {
 	Metadata    map[string]string `json:"-"`                 // 额外元数据，传递到 OutboundMessage.Metadata
 }
 
-// NewResult 创建 Summary == Detail 的简单结果
+// NewResult creates a simple result where Summary == Detail
 func NewResult(content string) *ToolResult {
 	return &ToolResult{Summary: content}
 }
 
-// NewErrorResult 创建表示底层操作失败的结果（如 shell 非零退出码）
+// NewErrorResult creates a result indicating an underlying operation failure (e.g. shell non-zero exit code)
 // distinct from returning error: the tool itself executed successfully (JSON parsing, sandbox startup etc. are fine), but the command/operation failed
 func NewErrorResult(content string) *ToolResult {
 	return &ToolResult{Summary: content, IsError: true}
 }
 
-// NewResultWithUserResponse 创建结果并标记为等待用户响应
+// NewResultWithUserResponse creates a result and marks it as waiting for user response
 func NewResultWithUserResponse(summary string) *ToolResult {
 	return &ToolResult{Summary: summary, WaitingUser: true}
 }
 
-// NewResultWithDetail 创建带详情的结果
+// NewResultWithDetail creates a result with detail
 func NewResultWithDetail(summary, detail string) *ToolResult {
 	return &ToolResult{Summary: summary, Detail: detail}
 }
 
-// NewResultWithTips 创建带指引的结果
+// NewResultWithTips creates a result with tips
 func NewResultWithTips(summary, tips string) *ToolResult {
 	return &ToolResult{Summary: summary, Tips: tips}
 }
@@ -153,7 +153,7 @@ type Tool interface {
 
 const defaultMaxIdleRounds int64 = 5
 
-// Registry 工具注册表
+// Registry tool registration表
 type Registry struct {
 	mu               sync.RWMutex
 	globalTools      map[string]Tool             // 所有工具（全局共享）
@@ -225,7 +225,7 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return tool, ok
 }
 
-// List 列出所有工具（按名称排序，保证顺序稳定以优化 KV-cache）
+// List 列出所有工具（sorted by name，保证顺序稳定以优化 KV-cache）
 func (r *Registry) List() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -422,14 +422,14 @@ type mcpSchemaProvider interface {
 	mcpServerName() string
 }
 
-// ToolGroupProvider 工具组提供者接口，用于将工具分组显示
+// ToolGroupProvider is the tool group provider interface for grouping tools in display
 // 实现此接口的工具将显示在独立的工具组中，而非 Built-in 分组
 type ToolGroupProvider interface {
 	GroupName() string         // 工具组名称（如 "Feishu"）
 	GroupInstructions() string // 工具组使用说明
 }
 
-// ChannelProvider 渠道提供者接口，用于限制工具仅在特定渠道可用
+// ChannelProvider is the channel provider interface for restricting tools to specific channels
 // 未实现此接口的工具在所有渠道可用
 type ChannelProvider interface {
 	SupportedChannels() []string // 返回支持的渠道列表，空则表示所有渠道
@@ -453,7 +453,7 @@ func IsChannelSupported(tool Tool, channel string) bool {
 	return true // 未实现接口 = 所有渠道可用
 }
 
-// ToolGroupEntry 工具组条目
+// ToolGroupEntry is a tool group entry
 type ToolGroupEntry struct {
 	Name         string   // 工具组名称
 	Instructions string   // 工具组使用说明
@@ -531,7 +531,7 @@ func (r *Registry) GetToolGroupsForChannel(channel string) []ToolGroupEntry {
 	return result
 }
 
-// SetGlobalMCPCatalog 设置全局 MCP Server 目录（由 MCPManager.RegisterTools 调用）
+// SetGlobalMCPCatalog sets the global MCP Server catalog (called by MCPManager.RegisterTools)
 func (r *Registry) SetGlobalMCPCatalog(catalog []MCPServerCatalogEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -557,12 +557,12 @@ func (r *Registry) GetMCPCatalog(sessionKey string) []MCPServerCatalogEntry {
 
 // GetToolSchemas returns full schema info for specified tools (param definitions, descriptions, etc.)
 // 支持内置工具和 MCP 工具。toolNames 为工具全名列表；传入 nil 返回所有可加载工具的 schema。
-// 如果 channel 不为空，则过滤掉不支持该渠道的工具。
+// if channel is not empty, filter out tools that don't support it.
 func (r *Registry) GetToolSchemas(sessionKey string, toolNames []string) []ToolSchema {
 	return r.GetToolSchemasForChannel(sessionKey, toolNames, "")
 }
 
-// GetToolSchemasForChannel 获取指定渠道可用的工具 schema 信息
+// GetToolSchemasForChannel returns tool schema info available for the specified channel
 // channel 为空时不进行渠道过滤
 func (r *Registry) GetToolSchemasForChannel(sessionKey string, toolNames []string, channel string) []ToolSchema {
 	nameSet := make(map[string]bool, len(toolNames))
@@ -647,12 +647,12 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	r.RegisterCore(&TaskStatusTool{})
 	r.RegisterCore(&TaskKillTool{})
 	r.RegisterCore(&TaskReadTool{})
-	// CronTool 需要依赖注入，需在 agent 初始化后单独注册
-	// DownloadFileTool 和 WebSearchTool 需要凭证注入，在 main.go 中注册
+	// CronTool requires dependency injection; register after agent initialization
+	// DownloadFileTool and WebSearchTool need credential injection; registered in main.go
 	// WebSearch: always available (requires TAVILY_API_KEY)
 	r.RegisterCore(NewFetchTool())
 	r.RegisterCore(&AskUserTool{})
-	// LoadToolsTool 仅在 letta 模式下注册（flat 模式所有工具直接可用）
+	// LoadToolsTool is only registered in letta mode (flat mode: all tools directly available)
 	if memoryProvider != "flat" {
 		r.RegisterCore(&LoadToolsTool{})
 	}

@@ -29,23 +29,23 @@ func SanitizeWorkspaceKey(raw string) string {
 	return sanitized
 }
 
-// UserRoot 返回用户根目录：{workDir}/.xbot/users/{sender}
+// UserRoot returns the user root directory：{workDir}/.xbot/users/{sender}
 func UserRoot(workDir, senderID string) string {
 	// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 	return filepath.Join(workDir, ".xbot", "users", SanitizeWorkspaceKey(senderID))
 }
 
-// UserWorkspaceRoot 返回用户工作区目录：{workDir}/.xbot/users/{sender}/workspace
+// UserWorkspaceRoot returns the user's workspace directory：{workDir}/.xbot/users/{sender}/workspace
 func UserWorkspaceRoot(workDir, senderID string) string {
 	return filepath.Join(UserRoot(workDir, senderID), "workspace")
 }
 
-// UserSkillsRoot 返回用户私有 skill 目录：{workDir}/.xbot/users/{sender}/workspace/skills
+// UserSkillsRoot returns the user's private skill directory：{workDir}/.xbot/users/{sender}/workspace/skills
 func UserSkillsRoot(workDir, senderID string) string {
 	return filepath.Join(UserWorkspaceRoot(workDir, senderID), "skills")
 }
 
-// UserMCPConfigPath 返回用户 MCP 配置路径：{workDir}/.xbot/users/{sender}/mcp.json
+// UserMCPConfigPath returns the user MCP config path：{workDir}/.xbot/users/{sender}/mcp.json
 func UserMCPConfigPath(workDir, senderID string) string {
 	return filepath.Join(UserRoot(workDir, senderID), "mcp.json")
 }

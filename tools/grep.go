@@ -267,7 +267,7 @@ func tryParseBracedQuantifier(pattern string, i int, sb *strings.Builder) (int, 
 	return 0, false
 }
 
-// executeInSandbox 在沙箱容器内执行 grep 命令
+// executeInSandbox executes grep in the sandbox
 func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include string, ignoreCase bool, contextLines int) (*ToolResult, error) {
 	sandboxBase := sandboxBaseDir(ctx)
 
@@ -291,7 +291,7 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 		searchDir = sandboxCWD
 	}
 
-	// 将 Go RE2 pattern 转换为 POSIX ERE pattern（grep -E 兼容）
+	// converts Go RE2 pattern to POSIX ERE pattern (grep -E compatible)
 	erePattern, err := convertGoRE2ToERE(pattern)
 	if err != nil {
 		// 转换失败，fallback 到本地 Go regexp 执行
@@ -317,13 +317,13 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 	}
 
 	grepCmd += fmt.Sprintf(" '%s' '%s'", shellEscape(erePattern), shellEscape(searchDir))
-	// 不用 pipefail：head 关闭管道时 grep 收到 SIGPIPE (exit 141)，
-	// pipefail 会将其传播为错误，导致有效结果被丢弃。
+	// don't use pipefail: when head closes pipe, grep gets SIGPIPE (exit 141),
+	// pipefail would propagate it as error, causing valid results to be discarded.
 	grepCmd += " | head -200"
 
 	output, err := RunInSandboxWithShell(ctx, grepCmd)
 	if err != nil {
-		// SIGPIPE (exit 141) 是 head 正常关闭管道导致的，不是真正的错误
+		// SIGPIPE (exit 141) is caused by head closing the pipe normally, not a real error
 		if output != "" && !strings.Contains(output, "No matches found") {
 			// 有输出但 err != nil → 很可能是 SIGPIPE，正常返回结果
 		} else {
@@ -506,7 +506,7 @@ func splitBraceAlternatives(s string) []string {
 	return parts
 }
 
-// executeLocal 在本地执行 grep 搜索（非沙箱模式）
+// executeLocal executes grep search locally (non-sandbox mode)
 func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string, ignoreCase bool, contextLines int) (*ToolResult, error) {
 	// Compile regex
 	regexPattern := pattern

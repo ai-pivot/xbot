@@ -86,7 +86,7 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 		params.MaxTokens = 30000
 	}
 
-	// 发起 HTTP 请求
+	// make HTTP request
 	resp, err := t.fetchURL(ctx, params.URL)
 	if err != nil {
 		return nil, err
@@ -112,7 +112,7 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 		return NewResult(content), nil
 	}
 
-	// 支持 text/html 和 application/xhtml+xml
+	// supports text/html and application/xhtml+xml
 	isHTML := strings.Contains(contentType, "text/html") ||
 		strings.Contains(contentType, "application/xhtml+xml")
 	if !isHTML {
@@ -140,7 +140,7 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 }
 
 // fetchURL 获取 URL 内容
-// 使用自定义 dialer 防止 DNS rebinding：在 TCP 连接建立时验证目标 IP 不是内网地址。
+// uses a custom dialer to prevent DNS rebinding: verifies target IP is not private on TCP connect.
 func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx.Ctx, "GET", targetURL, nil)
 	if err != nil {
@@ -150,10 +150,10 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 	// 设置合理的 User-Agent
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; xbot/1.0; +https://github.com/CjiW/xbot)")
 
-	// 不发送 Authorization header
+	// don't send Authorization header
 	req.Header.Del("Authorization")
 
-	// 创建自定义 Transport，在拨号时验证 IP 不是内网地址（防止 DNS rebinding TOCTOU）
+	// creates a custom Transport that verifies IP is not private on dial (prevents DNS rebinding TOCTOU)
 	safeTransport := &http.Transport{
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
@@ -209,7 +209,7 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 	return client.Do(req)
 }
 
-// validateURL 验证 URL 安全性
+// validateURL validates URL safety
 func validateURL(rawURL string) error {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -246,18 +246,18 @@ func validateURL(rawURL string) error {
 	return nil
 }
 
-// isPrivateIP 检查主机名是否为内网 IP（仅对字面 IP 地址检查，不含 DNS 解析）
+// isPrivateIP checks if hostname is a private IP (literal IP only, no DNS resolution)
 // S-03: 重构支持 IPv6 私有地址检测，内部委托 isPrivateIPRaw
 func isPrivateIP(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
-		// 不是字面 IP 地址（可能是域名），DNS 解析检查在 validateURL 中单独处理
+		// not a literal IP (may be a domain); DNS resolution check handled separately in validateURL
 		return false
 	}
 	return isPrivateIPRaw(ip)
 }
 
-// isPrivateIPRaw 检查 IP 地址（IPv4 或 IPv6）是否为私有/内网地址
+// isPrivateIPRaw checks if an IP address (IPv4 or IPv6) is private/internal
 // S-03: 新增 IPv6 私有地址检查（loopback、ULA、link-local、IPv4-mapped）
 func isPrivateIPRaw(ip net.IP) bool {
 	// IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
@@ -265,7 +265,7 @@ func isPrivateIPRaw(ip net.IP) bool {
 		return isPrivateIPv4(ip4)
 	}
 
-	// 原生 IPv6 检查
+	// native IPv6 check
 	if ip.IsLoopback() { // ::1
 		return true
 	}
@@ -283,7 +283,7 @@ func isPrivateIPRaw(ip net.IP) bool {
 	return false
 }
 
-// isPrivateIPv4 检查 IPv4 地址是否为私有/内网地址
+// isPrivateIPv4 checks if an IPv4 address is private/internal
 func isPrivateIPv4(ipv4 net.IP) bool {
 	// 127.0.0.0/8 (loopback)
 	if ipv4.IsLoopback() {
@@ -353,7 +353,7 @@ func (t *FetchTool) formatAsPlainText(content, pageURL string) string {
 	return sb.String()
 }
 
-// convertHTMLToMarkdown 将 HTML 内容转换为 Markdown 格式
+// convertHTMLToMarkdown converts HTML content to Markdown format
 func convertHTMLToMarkdown(htmlContent, pageURL string, fallbackText string) string {
 	// if no HTML content, use fallback text
 	if htmlContent == "" {
@@ -379,7 +379,7 @@ func convertHTMLToMarkdown(htmlContent, pageURL string, fallbackText string) str
 	return strings.TrimSpace(markdown)
 }
 
-// truncateByTokens 按 token 数量截断内容，返回实际 token 数
+// truncateByTokens truncates content by token count, returns actual token count
 func (t *FetchTool) truncateByTokens(content string, maxTokens int) (string, int) {
 	// 使用结构体中的 tokenizer（已在初始化时创建）
 	if t.tokenizer == nil {

@@ -84,8 +84,8 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 	}
 
 	// safety pre-check: intercept dangerous commands
-	// - run_as 模式下禁止任何形式的 sudo（用户切换由框架通过 cmdbuilder 处理）
-	// - permission control 启用时，即使未设置 run_as，也禁止 LLM 直接使用 sudo
+	// - in run_as mode, any form of sudo is prohibited (user switching handled by framework via cmdbuilder)
+	// - when permission control enabled, even without run_as, LLM is prohibited from using sudo directly
 	if blocked, reason := checkDangerousCommand(toolCtx.Ctx, params.Command, params.RunAs != ""); blocked {
 		return nil, fmt.Errorf("command blocked by safety check: %s", reason)
 	}
@@ -104,7 +104,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		}
 	}
 
-	// 使用传入的 context 作为父 context，支持外部取消（如用户 stop）
+	// uses the provided context as parent, supporting external cancellation (e.g. user stop)
 	parentCtx := context.Background()
 	if toolCtx != nil && toolCtx.Ctx != nil {
 		parentCtx = toolCtx.Ctx
@@ -135,7 +135,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		sandboxWorkspace = execDir
 	}
 
-	// 使用 ToolContext 中的沙箱实例（由 SandboxRouter 按用户路由注入）
+	// uses the sandbox instance from ToolContext (injected per-user by SandboxRouter)
 	sandbox := toolCtx.Sandbox
 	if sandbox == nil {
 		sandbox = GetSandbox()

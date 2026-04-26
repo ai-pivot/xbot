@@ -49,7 +49,7 @@ func EnsureSynced(ctx *ToolContext) {
 	// uses OriginUserID as sync key (isolated by original user)
 	syncUserID := ctx.OriginUserID
 	if syncUserID == "" {
-		syncUserID = ctx.SenderID // fallback：兼容旧数据
+		syncUserID = ctx.SenderID // fallback：compatible with old data
 	}
 	if syncUserID == "" || ctx.WorkspaceRoot == "" {
 		return

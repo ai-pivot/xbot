@@ -13,7 +13,7 @@ import (
 type MaskedRecallStore interface {
 	// RecallMasked 按 ID 召回已遮蔽的内容，返回 (toolName, fullContent, error)
 	RecallMasked(id string) (toolName string, content string, err error)
-	// ListMasked 列出所有已遮蔽的 observation，返回 JSON 格式的列表
+	// ListMasked list all masked observations，返回 JSON 格式的列表
 	ListMasked() []map[string]interface{}
 }
 
@@ -25,7 +25,7 @@ type RecallMaskedTool struct {
 // recallMaskedParams 参数
 type recallMaskedParams struct {
 	ID    string `json:"id"`              // 要召回的 mask ID
-	List  bool   `json:"list,omitempty"`  // 列出所有已遮蔽的 observation
+	List  bool   `json:"list,omitempty"`  // list all masked observations
 	Limit int    `json:"limit,omitempty"` // 返回内容最大 rune 数（默认 8000，最大 16000）
 }
 
@@ -65,7 +65,7 @@ func (t *RecallMaskedTool) Execute(ctx *ToolContext, args string) (*ToolResult, 
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
 
-	// 列出所有已遮蔽的 observation
+	// list all masked observations
 	if params.List {
 		return t.listMasked()
 	}

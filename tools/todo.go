@@ -97,7 +97,7 @@ func (m *TodoManager) sessionKey(ctx *ToolContext) string {
 
 // --- TodoWriteTool ---
 
-// TodoWriteTool TODO 写入工具
+// TodoWriteTool TODO write tool
 type TodoWriteTool struct {
 	Manager *TodoManager
 }
@@ -160,7 +160,7 @@ func (t *TodoWriteTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 
 // --- TodoListTool ---
 
-// TodoListTool TODO 查看工具
+// TodoListTool TODO list viewing tool
 type TodoListTool struct {
 	Manager *TodoManager
 }

@@ -62,7 +62,7 @@ func (t *OffloadRecallTool) Execute(ctx *ToolContext, args string) (*ToolResult,
 		return nil, fmt.Errorf("missing required parameter: id")
 	}
 
-	// 默认值填充
+	// default value filling
 	if params.Offset < 0 {
 		params.Offset = offloadDefaultOffset
 	}
@@ -74,7 +74,7 @@ func (t *OffloadRecallTool) Execute(ctx *ToolContext, args string) (*ToolResult,
 	}
 
 	// 构建 sessionKey：offload 数据存放在顶层 Agent 的 session 目录下
-	// SubAgent 自身的 sessionKey 是独立的（如 agent:main/code-reviewer），需要用 RootSessionKey 定位父 session
+	// the SubAgent's own sessionKey is independent (e.g. agent:main/code-reviewer), use RootSessionKey to locate the parent session
 	sessionKey := ctx.RootSessionKey
 	if sessionKey == "" {
 		sessionKey = ctx.Channel + ":" + ctx.ChatID
@@ -105,7 +105,7 @@ func (t *OffloadRecallTool) Execute(ctx *ToolContext, args string) (*ToolResult,
 
 	sliced := string(runes[params.Offset:end])
 
-	// 分页信息头
+	// pagination info header
 	header := fmt.Sprintf("📂 [%s] bytes:%d runes:%d-%d/%d", params.ID, totalBytes, params.Offset, end, totalRunes)
 	if hasMore {
 		header += fmt.Sprintf(" | ▶️ Use offset=%d to read next page", end)

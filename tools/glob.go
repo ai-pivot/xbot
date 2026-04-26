@@ -9,7 +9,7 @@ import (
 	"xbot/llm"
 )
 
-// globToFindArgs 将 glob pattern 翻译为 find 命令的参数。
+// globToFindArgs translates a glob pattern to find command arguments.
 // 返回值：(find 搜索子目录, find 过滤参数片段)
 //
 // 翻译规则：
@@ -62,7 +62,7 @@ func globToFindArgs(pattern string) (searchBase string, args string) {
 		return prefix, fmt.Sprintf("-name '%s'", shellEscape(suffixSegments[0]))
 	}
 
-	// 多个后缀 segment：用 -path
+	// multiple suffix segments: use -path
 	pathPattern := "*/" + strings.Join(suffixSegments, "/")
 	return prefix, fmt.Sprintf("-path '%s'", shellEscape(pathPattern))
 }
@@ -112,7 +112,7 @@ func (t *GlobTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 	return t.executeLocal(ctx, params.Pattern, params.Path)
 }
 
-// executeInSandbox 在沙箱容器内执行 find 命令
+// executeInSandbox executes find in the sandbox
 func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*ToolResult, error) {
 	sandboxBase := sandboxBaseDir(ctx)
 
@@ -131,7 +131,7 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 		searchDir = sandboxCWD
 	}
 
-	// 合并 globToFindArgs 的子目录前缀
+	// merge globToFindArgs subdirectory prefix
 	if searchBase != "" {
 		searchDir = searchDir + "/" + searchBase
 	}
@@ -168,7 +168,7 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 	return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
 }
 
-// executeLocal 在本地执行文件搜索（非沙箱模式）
+// executeLocal executes file search locally (non-sandbox mode)
 func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolResult, error) {
 	// Determine base directory
 	baseDir := path

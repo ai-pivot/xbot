@@ -8,7 +8,7 @@ import (
 	log "xbot/logger"
 )
 
-// SubAgentRole 预定义的 SubAgent 角色
+// SubAgentRole is a predefined SubAgent role
 type SubAgentRole struct {
 	Name         string
 	Description  string
@@ -19,15 +19,15 @@ type SubAgentRole struct {
 	Capabilities SubAgentCapabilities
 }
 
-// SubAgentCapabilities SubAgent 能力声明
+// SubAgentCapabilities SubAgent capability declaration
 type SubAgentCapabilities struct {
 	Memory      bool // 可访问 Letta memory（core/archival/recall）
 	SendMessage bool // 可直接向 IM 渠道发送消息
 	SpawnAgent  bool // 可创建子 Agent（需注意递归深度限制）
 }
 
-// ToMap 转换为 map[string]bool，用于跨包传递（避免循环依赖）。
-// 始终包含所有三个 key，确保显式设置的 false 值不会在反序列化时被默认值覆盖。
+// ToMap converts to map[string]bool for cross-package passing (avoids circular dependency).
+// 始终包含所有三个 key，确保显式设置的 false 值不会在反序列化时被default value覆盖。
 func (c SubAgentCapabilities) ToMap() map[string]bool {
 	m := make(map[string]bool)
 	m["memory"] = c.Memory
@@ -37,7 +37,7 @@ func (c SubAgentCapabilities) ToMap() map[string]bool {
 }
 
 // CapabilitiesFromMap constructs SubAgentCapabilities from map[string]bool.
-// 默认 SpawnAgent=true：所有 agent 都能创建子 agent，除非显式设置 spawn_agent=false。
+// Default SpawnAgent=true: all agents can spawn sub-agents unless explicitly set spawn_agent=false.
 func CapabilitiesFromMap(m map[string]bool) SubAgentCapabilities {
 	caps := SubAgentCapabilities{
 		SpawnAgent: true, // 默认允许 spawn 子 agent

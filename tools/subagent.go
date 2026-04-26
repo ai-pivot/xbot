@@ -8,7 +8,7 @@ import (
 	"xbot/llm"
 )
 
-// InteractiveSubAgentManager 扩展 SubAgentManager，支持 interactive mode。
+// InteractiveSubAgentManager extends SubAgentManager with interactive mode support.
 // the Agent type in the agent package implements this interface (nil means interactive not supported).
 type InteractiveSubAgentManager interface {
 	SubAgentManager
@@ -20,9 +20,9 @@ type InteractiveSubAgentManager interface {
 	SendInteractive(ctx *ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps SubAgentCapabilities, instance, model string) (string, error)
 	// UnloadInteractive unloads an interactive session (consolidates memory + cleanup).
 	UnloadInteractive(ctx *ToolContext, roleName, instance string) error
-	// InspectInteractive 返回 interactive session 的最近活动摘要（tail 风格）。
+	// InspectInteractive returns a recent activity summary for an interactive session (tail style).
 	InspectInteractive(ctx *ToolContext, roleName, instance string, tailCount int) (string, error)
-	// InterruptInteractive 中断 interactive session 当前正在执行的迭代。
+	// InterruptInteractive interrupts the current iteration of an interactive session.
 	InterruptInteractive(ctx *ToolContext, roleName, instance string) error
 }
 
@@ -138,7 +138,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 
 	originUserID := ctx.OriginUserID
 	if originUserID == "" {
-		originUserID = ctx.SenderID // fallback：兼容旧数据
+		originUserID = ctx.SenderID // fallback：compatible with old data
 	}
 
 	var userAgentDirs []string

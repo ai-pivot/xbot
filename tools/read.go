@@ -124,7 +124,7 @@ func applyLineLimit(result *ToolResult, maxLines, offset int) *ToolResult {
 	return result
 }
 
-// executeInSandbox 在沙箱容器内执行 cat 命令
+// executeInSandbox executes cat in the sandbox
 func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolResult, error) {
 	sandboxBase := sandboxBaseDir(ctx)
 
@@ -159,7 +159,7 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 	return NewResultWithTips(output, "如需修改此文件，优先使用 Edit 工具。"), nil
 }
 
-// executeLocal 在本地读取文件
+// executeLocal reads file locally
 func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult, error) {
 	// ResolveReadPath 内部已支持 CurrentDir 优先解析。
 	// 若 CurrentDir 下文件不存在，fallthrough 到 WorkspaceRoot 解析——

@@ -83,7 +83,7 @@ func (s *ChatHistoryStore) Add(channel, chatID, senderID, content string) {
 	}
 }
 
-// evictOldestLocked 清理最旧的 channel（调用方需持有写锁）
+// evictOldestLocked evicts the oldest channel (caller must hold write lock)
 func (s *ChatHistoryStore) evictOldestLocked() {
 	var oldestKey string
 	var oldestTime time.Time
@@ -121,7 +121,7 @@ func (s *ChatHistoryStore) Get(channel, chatID string, limit int) []ChatMessage 
 	return result
 }
 
-// makeKey 生成存储 key
+// makeKey generate storage key
 func (s *ChatHistoryStore) makeKey(channel, chatID string) string {
 	return fmt.Sprintf("%s:%s", channel, chatID)
 }

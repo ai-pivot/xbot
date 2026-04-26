@@ -152,8 +152,8 @@ func splitFrontmatter(content string) (frontmatter, body string, err error) {
 }
 
 // parseFrontmatter manually parses simple YAML frontmatter
-// 支持 name, description（字符串）、tools（列表）、model（字符串）和 capabilities（子字段）
-// 默认 spawn_agent=true，除非显式设置 spawn_agent: false
+// supports name, description (string), tools (list), model (string), and capabilities (sub-field)
+// spawn_agent allowed by default unless frontmatter explicitly sets spawn_agent: false
 func parseFrontmatter(fm string) (name, description, model string, tools []string, caps SubAgentCapabilities, err error) {
 	caps = SubAgentCapabilities{
 		SpawnAgent: true, // 默认允许 spawn 子 agent
@@ -171,7 +171,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 			continue
 		}
 
-		// 列表项：以 "  - " 或 "- " 开头（属于当前字段）
+		// list items: starting with "  - " or "- " (belonging to current field)
 		if strings.HasPrefix(trimmed, "- ") {
 			if currentField == "tools" {
 				item := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
@@ -227,7 +227,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 		case "tools":
 			currentField = "tools"
 			// tools 的值可能在同一行（如 tools: [a, b]）或后续行（列表格式）
-			// 我们只支持列表格式，忽略同行值
+			// we only support list format, ignore same-line values
 		case "capabilities":
 			currentField = "capabilities"
 		default:

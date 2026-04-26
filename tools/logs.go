@@ -244,7 +244,7 @@ func (t *LogsTool) readLastLines(path string, n int) ([]string, error) {
 	}
 	defer f.Close()
 
-	// 使用固定大小的环形缓冲区，只保留最后 N 行，避免大文件 OOM
+	// uses a fixed-size ring buffer keeping only the last N lines to avoid OOM on large files
 	type ringBuffer struct {
 		data  []string
 		pos   int
@@ -270,7 +270,7 @@ func (t *LogsTool) readLastLines(path string, n int) ([]string, error) {
 		return nil, err
 	}
 
-	// 从环形缓冲区中提取行（按原始顺序）
+	// extract lines from ring buffer (in original order)
 	result := make([]string, rb.count)
 	if rb.count < rb.size {
 		copy(result, rb.data[:rb.count])
@@ -316,7 +316,7 @@ func (t *LogsTool) matchLevel(line, level string) bool {
 	}
 }
 
-// formatFileSize 格式化文件大小
+// formatFileSize formats a file size
 func formatFileSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {

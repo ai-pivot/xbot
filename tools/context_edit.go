@@ -7,7 +7,7 @@ import (
 	"xbot/llm"
 )
 
-// ContextEditHandler 是 engine 层实现的消息编辑回调接口。
+// ContextEditHandler 是 engine 层实现的消息编辑callback interface。
 type ContextEditHandler interface {
 	HandleRequest(action string, params map[string]interface{}) (string, error)
 }

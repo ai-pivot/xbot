@@ -211,7 +211,7 @@ func pruneDockerResources() {
 		log.Debugf("Docker image prune: %s", strings.TrimSpace(string(out)))
 	}
 	// second cleanup: ensure all dangling images are deleted
-	// docker image prune 可能因镜像被容器引用而遗漏，再执行一次 builder prune
+	// docker image prune may miss images referenced by containers; run builder prune again
 	dockerRun(dockerCmdTimeout, "image", "prune", "-f", "--filter", "until=168h")
 }
 
