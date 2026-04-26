@@ -447,7 +447,9 @@ func remoteSandboxExecAsync(
 		select {
 		case <-ctx.Done():
 			// Try to kill the task on the runner before returning.
-			killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// killTimeout is the grace period before force-killing a process.
+			const killTimeout = 5 * time.Second
+			killCtx, cancel := context.WithTimeout(context.Background(), killTimeout)
 			rs.KillBg(killCtx, spec.UserID, taskID)
 			cancel()
 			return -1, ctx.Err()

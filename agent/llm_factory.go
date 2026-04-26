@@ -740,7 +740,9 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 					if client == nil {
 						continue
 					}
-					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					// llmTestTimeout is the timeout for testing LLM connectivity.
+					const llmTestTimeout = 15 * time.Second
+					ctx, cancel := context.WithTimeout(context.Background(), llmTestTimeout)
 					if loader, ok := client.(llm.ModelLoader); ok {
 						_ = loader.LoadModelsFromAPI(ctx)
 					}

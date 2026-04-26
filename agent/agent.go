@@ -1122,7 +1122,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.multiSession.StartCleanupRoutine()
 
 	a.cronSch.SetInjectFunc(a.injectInbound)
-	a.cronSch.StartDelayed(3 * time.Second)
+	// cronStartDelay is the delay before starting the cron scheduler after first agent run.
+	const cronStartDelay = 3 * time.Second
+	a.cronSch.StartDelayed(cronStartDelay)
 
 	if a.eventRouter != nil {
 		a.eventRouter.SetInjectFunc(a.injectEventMessage)
