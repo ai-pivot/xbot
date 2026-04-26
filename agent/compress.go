@@ -190,7 +190,7 @@ func extractJSONString(jsonStr, key string) string {
 
 // stripOffloadMaskPrefix removes 📂 [offload:...] / 📂 [masked:...] prefix from tool content.
 func stripOffloadMaskPrefix(content string) string {
-	if strings.HasPrefix(content, "📂 [offload:") || strings.HasPrefix(content, "📂 [masked:") {
+	if strings.HasPrefix(content, offloadEntryPrefix) || strings.HasPrefix(content, maskedEntryPrefix) {
 		if idx := strings.Index(content, "] "); idx >= 0 {
 			return content[idx+2:]
 		}

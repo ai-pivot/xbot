@@ -29,6 +29,9 @@ type MaskedObservation struct {
 const (
 	defaultMaxEntries = 200       // 默认最大条数
 	defaultMaxChars   = 2_000_000 // 默认最大存储字符数（~2MB）
+
+	maskedEntryPrefix  = "📂 [masked:"  // Prefix identifying masked tool result entries
+	offloadEntryPrefix = "📂 [offload:" // Prefix identifying offloaded tool result entries
 )
 
 // ObservationMaskStore 管理 observation masking 的存储和召回。
@@ -537,7 +540,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 			if messages[j].Role == "tool" {
 				content := messages[j].Content
 				// 跳过已遮蔽的
-				if content == "" || content == "null" || strings.HasPrefix(content, "📂 [masked:") {
+				if content == "" || content == "null" || strings.HasPrefix(content, maskedEntryPrefix) {
 					continue
 				}
 				runeLen := len([]rune(content))
@@ -588,7 +591,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 				msg := result[j]
 				if msg.Role == "tool" {
 					content := msg.Content
-					if content != "" && content != "null" && !strings.HasPrefix(content, "📂 [masked:") {
+					if content != "" && content != "null" && !strings.HasPrefix(content, maskedEntryPrefix) {
 						runeLen := len([]rune(content))
 						if runeLen < 300 {
 							continue // 短内容不 mask
@@ -656,7 +659,7 @@ func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, s
 			}
 		} else if msg.Role == "tool" {
 			content := msg.Content
-			if content == "" || content == "null" || strings.HasPrefix(content, "📂 [masked:") {
+			if content == "" || content == "null" || strings.HasPrefix(content, maskedEntryPrefix) {
 				continue
 			}
 			// 短内容不 mask
@@ -687,7 +690,7 @@ func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, s
 		msg := result[j]
 		if msg.Role == "tool" {
 			content := msg.Content
-			if content == "" || content == "null" || strings.HasPrefix(content, "📂 [masked:") {
+			if content == "" || content == "null" || strings.HasPrefix(content, maskedEntryPrefix) {
 				continue
 			}
 			if len([]rune(content)) < 300 {
