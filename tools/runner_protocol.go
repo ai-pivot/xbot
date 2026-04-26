@@ -38,28 +38,70 @@ const (
 
 // Runner protocol type aliases re-exported from the internal runnerproto package.
 // See internal/runnerclient/types.go for detailed documentation.
+// RunnerMessage is a message from the runner to the server.
 type RunnerMessage = runnerproto.RunnerMessage
+
+// RegisterRequest is the initial registration message.
 type RegisterRequest = runnerproto.RegisterRequest
+
+// ExecRequest requests command execution.
 type ExecRequest = runnerproto.ExecRequest
+
+// ExecResultResponse contains command execution results.
 type ExecResultResponse = runnerproto.ExecResultResponse
+
+// ReadFileRequest requests file content.
 type ReadFileRequest = runnerproto.ReadFileRequest
+
+// FileContentResponse contains file content.
 type FileContentResponse = runnerproto.FileContentResponse
+
+// WriteFileRequest writes content to a file.
 type WriteFileRequest = runnerproto.WriteFileRequest
+
+// StatRequest requests file metadata.
 type StatRequest = runnerproto.StatRequest
+
+// StatResponse contains file metadata.
 type StatResponse = runnerproto.StatResponse
+
+// ReadDirRequest requests directory listing.
 type ReadDirRequest = runnerproto.ReadDirRequest
+
+// DirEntryResponse contains a directory entry.
 type DirEntryResponse = runnerproto.DirEntryResponse
+
+// DirEntriesResponse contains directory entries.
 type DirEntriesResponse = runnerproto.DirEntriesResponse
+
+// PathRequest requests path resolution.
 type PathRequest = runnerproto.PathRequest
+
+// DownloadFileRequest downloads a file.
 type DownloadFileRequest = runnerproto.DownloadFileRequest
+
+// DownloadFileResponse contains downloaded file content.
 type DownloadFileResponse = runnerproto.DownloadFileResponse
+
+// ErrorResponse represents an error.
 type ErrorResponse = runnerproto.ErrorResponse
 
+// StdioStartRequest starts an interactive stdio process.
 type StdioStartRequest = runnerproto.StdioStartRequest
+
+// StdioStartResponse confirms stdio process creation.
 type StdioStartResponse = runnerproto.StdioStartResponse
+
+// StdioWriteRequest sends data to a stdio process.
 type StdioWriteRequest = runnerproto.StdioWriteRequest
+
+// StdioCloseRequest closes a stdio process.
 type StdioCloseRequest = runnerproto.StdioCloseRequest
+
+// StdioDataMessage carries stdout data.
 type StdioDataMessage = runnerproto.StdioDataMessage
+
+// StdioExitMessage reports process termination.
 type StdioExitMessage = runnerproto.StdioExitMessage
 
 // ProtoErrorCodes maps protocol error codes to Go errors.
