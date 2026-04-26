@@ -62,6 +62,13 @@ type sendEntry struct {
 	err  chan error
 }
 
+// Remote sandbox timeout constants.
+const (
+	remoteExecDefaultTimeout = 60 * time.Second // default timeout for remote exec operations
+	remoteExecExtraBuffer    = 5 * time.Second  // extra buffer on top of exec timeout for request-level timeout
+	remoteSyncTimeout        = 5 * time.Minute  // timeout for remote file sync operations
+)
+
 // RemoteSandbox implements the Sandbox interface via WebSocket communication
 // with xbot-runner instances running on users' machines.
 type RemoteSandbox struct {
@@ -662,7 +669,7 @@ func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 
 	timeout := spec.Timeout
 	if timeout == 0 {
-		timeout = 60 * time.Second
+		timeout = remoteExecDefaultTimeout
 	}
 
 	reqBody, err := json.Marshal(ExecRequest{
@@ -685,7 +692,7 @@ func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 		Body:   reqBody,
 	}
 
-	resp, err := rs.sendRequest(ctx, rc, msg, timeout+5*time.Second)
+	resp, err := rs.sendRequest(ctx, rc, msg, timeout+remoteExecExtraBuffer)
 	if err != nil {
 		return nil, err
 	}
@@ -1179,7 +1186,7 @@ func (rs *RemoteSandbox) DownloadFile(ctx context.Context, url, outputPath, user
 	}
 	msg := &RunnerMessage{ID: generateID(), Type: ProtoDownloadFile, UserID: userID, Body: reqBody}
 	// 5-minute timeout for downloads
-	resp, err := rs.sendRequest(ctx, rc, msg, 5*time.Minute)
+	resp, err := rs.sendRequest(ctx, rc, msg, remoteSyncTimeout)
 	if err != nil {
 		return err
 	}
@@ -1210,7 +1217,7 @@ func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
 	rs.syncing[userID] = true
 	rs.syncMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), remoteExecDefaultTimeout)
 	defer cancel()
 
 	log.WithFields(log.Fields{
