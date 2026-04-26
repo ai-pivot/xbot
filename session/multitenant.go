@@ -183,11 +183,32 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta mode: auto-create chromem-go archival service (if not injected via WithArchivalService)
-	if m.memoryProvider == "letta" && m.archivalSvc == nil && m.embeddingConfig != nil {
-		archivalDir := filepath.Join(filepath.Dir(dbPath), "archival")
-		embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
+	// Letta mode: initialize archival, tool index, and time-range search services.
+	if m.memoryProvider == "letta" {
+		m.initLettaServices(dbPath, db, embOpts)
+	}
 
+	return m, nil
+}
+
+// initLettaServices initializes Letta-specific services: archival memory, tool index, and time-range search.
+func (m *MultiTenantSession) initLettaServices(dbPath string, db *sqlite.DB, embOpts []vectordb.EmbeddingLimitOption) {
+	// Create time-range search function (does not require embedding config)
+	m.recallTimeRangeFn = vectordb.NewSQLiteRecallTimeRangeFunc(db.Conn())
+
+	if m.embeddingConfig == nil {
+		return
+	}
+
+	embFunc := vectordb.NewEmbeddingFunc(
+		m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey,
+		m.embeddingConfig.Model, m.embeddingConfig.Provider,
+		m.embeddingConfig.MaxTokens,
+	)
+
+	// Auto-create chromem-go archival service (if not injected via WithArchivalService)
+	if m.archivalSvc == nil {
+		archivalDir := filepath.Join(filepath.Dir(dbPath), "archival")
 		archSvc, err := vectordb.NewArchivalService(archivalDir, embFunc, embOpts...)
 		if err != nil {
 			log.WithError(err).Error("Failed to initialize archival memory (chromem-go), archival tools will be unavailable")
@@ -196,11 +217,9 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta mode: auto-create tool index service (if not injected via WithToolIndexService)
-	if m.memoryProvider == "letta" && m.toolIndexSvc == nil && m.embeddingConfig != nil {
+	// Auto-create tool index service (if not injected via WithToolIndexService)
+	if m.toolIndexSvc == nil {
 		toolIndexDir := filepath.Join(filepath.Dir(dbPath), "tool_index")
-		embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
-
 		toolIdxSvc, err := vectordb.NewToolIndexService(toolIndexDir, embFunc, embOpts...)
 		if err != nil {
 			log.WithError(err).Warn("Tool index DB corrupted, removing and recreating")
@@ -218,12 +237,6 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta mode: create time-range search function
-	if m.memoryProvider == "letta" {
-		m.recallTimeRangeFn = vectordb.NewSQLiteRecallTimeRangeFunc(db.Conn())
-	}
-
-	return m, nil
 }
 
 // NewMultiTenantWithOptions creates a session manager with options (backward compatible alias)
