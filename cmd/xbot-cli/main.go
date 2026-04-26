@@ -773,6 +773,118 @@ func buildCLIChannelConfig(s *interactiveState, cfg *channel.CLIChannelConfig) {
 	buildAdminCallbacks(s, cfg)
 }
 
+// readCLISetting reads a persisted CLI setting from the settings service,
+// returning defaultVal if not found.
+func (app *cliApp) readCLISetting(key, defaultVal string) string {
+	if app.backend != nil {
+		if ss := app.backend.SettingsService(); ss != nil {
+			if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
+				if v, ok := vals[key]; ok && v != "" {
+					return v
+				}
+			}
+		}
+	}
+	return defaultVal
+}
+
+// getCurrentLocalValues builds the current settings values map for local mode.
+func (app *cliApp) getCurrentLocalValues() map[string]string {
+	activeSub := currentActiveSubscription(app.backend, app.cfg)
+	llmProvider := app.cfg.LLM.Provider
+	llmAPIKey := app.cfg.LLM.APIKey
+	llmModel := app.cfg.LLM.Model
+	llmBaseURL := app.cfg.LLM.BaseURL
+	if activeSub != nil {
+		llmProvider = activeSub.Provider
+		llmAPIKey = activeSub.APIKey
+		llmModel = activeSub.Model
+		llmBaseURL = activeSub.BaseURL
+	}
+	sandboxMode := "none"
+	if app.cfg.Sandbox.Mode != "" {
+		sandboxMode = app.cfg.Sandbox.Mode
+	}
+	maxOutputTokens := "8192"
+	if activeSub != nil && activeSub.MaxOutputTokens > 0 {
+		maxOutputTokens = fmt.Sprintf("%d", activeSub.MaxOutputTokens)
+	} else if app.cfg.LLM.MaxOutputTokens > 0 {
+		maxOutputTokens = fmt.Sprintf("%d", app.cfg.LLM.MaxOutputTokens)
+	}
+	thinkingMode := app.cfg.LLM.ThinkingMode
+	if activeSub != nil && activeSub.ThinkingMode != "" {
+		thinkingMode = activeSub.ThinkingMode
+	}
+	enableAutoCompress := "true"
+	if app.cfg.Agent.EnableAutoCompress != nil && !*app.cfg.Agent.EnableAutoCompress {
+		enableAutoCompress = "false"
+	}
+	return map[string]string{
+		"llm_provider":         llmProvider,
+		"llm_api_key":          llmAPIKey,
+		"llm_model":            llmModel,
+		"llm_base_url":         llmBaseURL,
+		"vanguard_model":       app.cfg.LLM.VanguardModel,
+		"balance_model":        app.cfg.LLM.BalanceModel,
+		"swift_model":          app.cfg.LLM.SwiftModel,
+		"sandbox_mode":         sandboxMode,
+		"memory_provider":      app.cfg.Agent.MemoryProvider,
+		"tavily_api_key":       app.cfg.TavilyAPIKey,
+		"context_mode":         app.cfg.Agent.ContextMode,
+		"max_iterations":       fmt.Sprintf("%d", app.cfg.Agent.MaxIterations),
+		"max_concurrency":      fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency),
+		"max_context_tokens":   fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens),
+		"max_output_tokens":    maxOutputTokens,
+		"thinking_mode":        thinkingMode,
+		"enable_auto_compress": enableAutoCompress,
+		"theme":                app.readCLISetting("theme", "midnight"),
+		"language":             app.readCLISetting("language", ""),
+	}
+}
+
+// applySettingsLocalMode handles local-mode-specific settings application:
+// config update, model tiers, sandbox reinit, LLM client rebuild, theme save.
+func (app *cliApp) applySettingsLocalMode(values map[string]string) {
+	applyCLISettingsToConfig(app.cfg, values)
+	_, vanguardChanged := values["vanguard_model"]
+	_, balanceChanged := values["balance_model"]
+	_, swiftChanged := values["swift_model"]
+	_, maxOutputChanged := values["max_output_tokens"]
+	_, thinkingChanged := values["thinking_mode"]
+
+	// Model tiers (needs explicit check since config-only)
+	if vanguardChanged || balanceChanged || swiftChanged {
+		app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
+	}
+	// Sandbox reinit (local-only, needs app.workDir closure)
+	if v, ok := values["sandbox_mode"]; ok && v != "" {
+		tools.ReinitSandbox(app.cfg.Sandbox, app.workDir)
+		app.backend.SetSandbox(tools.GetSandbox(), v)
+	}
+	applyCLISettingsToBackend(app.backend, cliSenderID, values)
+	loadLLMFromDBSubscription(app.backend, app.cfg)
+	if err := saveCLIConfig(app.cfg); err != nil {
+		log.Warnf("Failed to save config.json: %v", err)
+	}
+	if theme, ok := values["theme"]; ok && theme != "" {
+		if ss := app.backend.SettingsService(); ss != nil {
+			if err := ss.SetSetting("cli", "cli_user", "theme", theme); err != nil {
+				log.WithError(err).Warn("Failed to save theme setting")
+			}
+		}
+	}
+	if maxOutputChanged || thinkingChanged {
+		if newClient, err := createLLM(app.cfg.LLM, llm.DefaultRetryConfig()); err == nil {
+			app.llmClient = newClient
+			app.backend.LLMFactory().SetDefaults(newClient, app.cfg.LLM.Model)
+			app.backend.LLMFactory().SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
+			app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
+		} else {
+			log.Warnf("Failed to rebuild LLM client: %v", err)
+		}
+	}
+}
+
 // buildSettingsCallbacks sets up settings-related callbacks: GetCurrentValues,
 // ApplySettings, and RefreshValuesCache.
 func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) {
@@ -781,93 +893,13 @@ func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) 
 	// ── GetCurrentValues: returns current settings for the TUI settings panel ──
 	cfg.GetCurrentValues = func() map[string]string {
 		// In remote mode, return cached values — never block the BubbleTea Update loop.
-		// The cache is refreshed asynchronously by refreshRemoteValuesCache().
 		if app.backend != nil && app.backend.IsRemote() {
 			app.valuesCacheMu.RLock()
 			cache := app.valuesCache
 			app.valuesCacheMu.RUnlock()
 			return cache
 		}
-		// Local mode: read directly from config (fast, no RPC).
-		activeSub := currentActiveSubscription(app.backend, app.cfg)
-		llmProvider := app.cfg.LLM.Provider
-		llmAPIKey := app.cfg.LLM.APIKey
-		llmModel := app.cfg.LLM.Model
-		llmBaseURL := app.cfg.LLM.BaseURL
-		if activeSub != nil {
-			llmProvider = activeSub.Provider
-			llmAPIKey = activeSub.APIKey
-			llmModel = activeSub.Model
-			llmBaseURL = activeSub.BaseURL
-		}
-		return map[string]string{
-			"llm_provider":   llmProvider,
-			"llm_api_key":    llmAPIKey,
-			"llm_model":      llmModel,
-			"llm_base_url":   llmBaseURL,
-			"vanguard_model": app.cfg.LLM.VanguardModel,
-			"balance_model":  app.cfg.LLM.BalanceModel,
-			"swift_model":    app.cfg.LLM.SwiftModel,
-			"sandbox_mode": func() string {
-				if app.cfg.Sandbox.Mode != "" {
-					return app.cfg.Sandbox.Mode
-				}
-				return "none"
-			}(),
-			"memory_provider":    app.cfg.Agent.MemoryProvider,
-			"tavily_api_key":     app.cfg.TavilyAPIKey,
-			"context_mode":       app.cfg.Agent.ContextMode,
-			"max_iterations":     fmt.Sprintf("%d", app.cfg.Agent.MaxIterations),
-			"max_concurrency":    fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency),
-			"max_context_tokens": fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens),
-			"max_output_tokens": func() string {
-				// Prefer subscription value (single source of truth)
-				if activeSub != nil && activeSub.MaxOutputTokens > 0 {
-					return fmt.Sprintf("%d", activeSub.MaxOutputTokens)
-				}
-				if app.cfg.LLM.MaxOutputTokens > 0 {
-					return fmt.Sprintf("%d", app.cfg.LLM.MaxOutputTokens)
-				}
-				return "8192"
-			}(),
-			"thinking_mode": func() string {
-				if activeSub != nil && activeSub.ThinkingMode != "" {
-					return activeSub.ThinkingMode
-				}
-				return app.cfg.LLM.ThinkingMode
-			}(),
-			"enable_auto_compress": func() string {
-				if app.cfg.Agent.EnableAutoCompress == nil || *app.cfg.Agent.EnableAutoCompress {
-					return "true"
-				}
-				return "false"
-			}(),
-			"theme": func() string {
-				// Read persisted theme from settings, default to dark
-				if app.backend != nil {
-					if ss := app.backend.SettingsService(); ss != nil {
-						if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
-							if t, ok := vals["theme"]; ok && t != "" {
-								return t
-							}
-						}
-					}
-				}
-				return "midnight"
-			}(),
-			"language": func() string {
-				if app.backend != nil {
-					if ss := app.backend.SettingsService(); ss != nil {
-						if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
-							if l, ok := vals["language"]; ok {
-								return l
-							}
-						}
-					}
-				}
-				return ""
-			}(),
-		}
+		return app.getCurrentLocalValues()
 	}
 
 	// ── ApplySettings: persists setting changes from the TUI settings panel ──
@@ -879,9 +911,6 @@ func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) 
 		_, keyChanged := values["llm_api_key"]
 		_, modelChanged := values["llm_model"]
 		_, urlChanged := values["llm_base_url"]
-		_, vanguardChanged := values["vanguard_model"]
-		_, balanceChanged := values["balance_model"]
-		_, swiftChanged := values["swift_model"]
 		_, maxOutputChanged := values["max_output_tokens"]
 		_, thinkingChanged := values["thinking_mode"]
 
@@ -910,38 +939,7 @@ func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) 
 
 		// ── Local-mode extras ──
 		if !app.backend.IsRemote() {
-			applyCLISettingsToConfig(app.cfg, values)
-			// Model tiers (needs explicit check since config-only)
-			if vanguardChanged || balanceChanged || swiftChanged {
-				app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
-			}
-			// Sandbox reinit (local-only, needs app.workDir closure)
-			if v, ok := values["sandbox_mode"]; ok && v != "" {
-				tools.ReinitSandbox(app.cfg.Sandbox, app.workDir)
-				app.backend.SetSandbox(tools.GetSandbox(), v)
-			}
-			applyCLISettingsToBackend(app.backend, cliSenderID, values)
-			loadLLMFromDBSubscription(app.backend, app.cfg)
-			if err := saveCLIConfig(app.cfg); err != nil {
-				log.Warnf("Failed to save config.json: %v", err)
-			}
-			if theme, ok := values["theme"]; ok && theme != "" {
-				if ss := app.backend.SettingsService(); ss != nil {
-					if err := ss.SetSetting("cli", "cli_user", "theme", theme); err != nil {
-						log.WithError(err).Warn("Failed to save theme setting")
-					}
-				}
-			}
-			if maxOutputChanged || thinkingChanged {
-				if newClient, err := createLLM(app.cfg.LLM, llm.DefaultRetryConfig()); err == nil {
-					app.llmClient = newClient
-					app.backend.LLMFactory().SetDefaults(newClient, app.cfg.LLM.Model)
-					app.backend.LLMFactory().SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
-					app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
-				} else {
-					log.Warnf("Failed to rebuild LLM client: %v", err)
-				}
-			}
+			app.applySettingsLocalMode(values)
 		}
 
 		// ── Remote mode: immediately refresh cache so UI shows new values ──
@@ -954,7 +952,6 @@ func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) 
 	cfg.RefreshValuesCache = func() {
 		app.refreshRemoteValuesCache()
 	}
-
 }
 
 // buildMemoryCallbacks sets up memory-related callbacks: ClearMemory and GetMemoryStats.
