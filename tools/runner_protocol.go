@@ -36,6 +36,8 @@ const (
 
 // === WebSocket Protocol Types ===
 
+// Runner protocol type aliases re-exported from the internal runnerproto package.
+// See internal/runnerclient/types.go for detailed documentation.
 type RunnerMessage = runnerproto.RunnerMessage
 type RegisterRequest = runnerproto.RegisterRequest
 type ExecRequest = runnerproto.ExecRequest
