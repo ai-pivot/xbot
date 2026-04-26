@@ -57,7 +57,7 @@ func (m *cliModel) View() tea.View {
 	// 标题栏右侧快捷键提示：紧凑的点分隔，比 | 更柔和
 	titleRight := m.locale.TitleHint
 	// Askuser panel: override titleRight with panel-specific hints (always visible)
-	if m.panelMode == "askuser" {
+	if m.panelMode == panelModeAskUser {
 		titleRight = m.askUserTitleHints()
 	} else if m.updateNotice != nil && m.updateNotice.HasUpdate {
 		titleRight = fmt.Sprintf("%s→%s · /update · /help", m.updateNotice.Current, m.updateNotice.Latest)
@@ -160,7 +160,7 @@ func (m *cliModel) View() tea.View {
 			input,
 			toastStr,
 		)
-	} else if m.panelMode == "askuser" {
+	} else if m.panelMode == panelModeAskUser {
 		// §12b AskUser split layout: viewport visible above, panel at bottom
 		// Note: no panelFooter here — hints are inside the panel (viewAskUserPanel)
 		askRaw := m.viewAskUserPanel()

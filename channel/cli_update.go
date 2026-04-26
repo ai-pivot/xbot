@@ -535,7 +535,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.approvalDenyInput.Placeholder = "Optional deny reason for LLM"
 		m.approvalDenyInput.CharLimit = 200
 		m.approvalDenyInput.SetWidth(60)
-		m.panelMode = "approval"
+		m.panelMode = panelModeApproval
 		m.renderCacheValid = false
 		return m, nil
 	}
@@ -619,7 +619,7 @@ func (m *cliModel) layoutViewportHeight() int {
 	fixedLines := 3 // titleBar + status + footer
 
 	if m.panelMode != "" {
-		if m.panelMode == "askuser" {
+		if m.panelMode == panelModeAskUser {
 			// AskUser split layout: viewport stays visible above the panel.
 			// Calculate panel content height, cap it, let viewport take the rest.
 			askContent := m.viewAskUserPanel()

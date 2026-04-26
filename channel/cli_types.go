@@ -69,6 +69,16 @@ const (
 	roleAssistant   = "assistant"
 	roleSystem      = "system"
 	roleToolSummary = "tool_summary"
+
+	// Panel mode constants — used for panelMode field comparisons.
+	panelModeSettings = "settings"
+	panelModeDanger   = "danger"
+	panelModeAskUser  = "askuser"
+	panelModeRunner   = "runner"
+	panelModeChannel  = "channel"
+	panelModeBgTasks  = "bgtasks"
+	panelModeSessions = "sessions"
+	panelModeApproval = "approval"
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).

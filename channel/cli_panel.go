@@ -38,7 +38,7 @@ func (m *cliModel) renderSelLine(line string, w int) string {
 
 // openSettingsPanel activates the settings panel overlay.
 func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[string]string, onSubmit func(map[string]string)) {
-	m.panelMode = "settings"
+	m.panelMode = panelModeSettings
 	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
 	m.panelCursor = 0
 	m.panelEdit = false
@@ -146,7 +146,7 @@ var dangerConfirmStrings = map[string]string{
 
 // openAskUserPanel activates the ask-user panel overlay.
 func (m *cliModel) openAskUserPanel(items []askItem, onAnswer func(map[string]string), onCancel func()) {
-	m.panelMode = "askuser"
+	m.panelMode = panelModeAskUser
 	// Do NOT clear m.progress here — the viewport above the AskUser panel
 	// still renders the progress block (iteration history, tool calls, etc).
 	// Clearing it causes all iteration info from the current turn to disappear.
@@ -462,7 +462,7 @@ func (m *cliModel) applyRewind() {
 
 // openBgTasksPanel opens the background tasks management panel.
 func (m *cliModel) openBgTasksPanel() {
-	m.panelMode = "bgtasks"
+	m.panelMode = panelModeBgTasks
 	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
 
 	// Fetch tasks — use callback (works for both local and remote mode)
@@ -739,7 +739,7 @@ func (m *cliModel) viewBgTaskLog() string {
 }
 
 func (m *cliModel) openSessionsPanel() {
-	m.panelMode = "sessions"
+	m.panelMode = panelModeSessions
 	m.relayoutViewport()
 
 	if m.sessionsListFn != nil {
@@ -1178,7 +1178,7 @@ func (m *cliModel) updateDangerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	switch {
 	case msg.Code == tea.KeyEsc:
 		// ESC goes back to settings (parent panel), not close everything
-		m.panelMode = "settings"
+		m.panelMode = panelModeSettings
 		m.relayoutViewport()
 		return true, m, nil
 
@@ -1225,7 +1225,7 @@ func (m *cliModel) openDangerPanelFromSettings() {
 		{"archival", m.locale.DangerArchival, stats["archival"]},
 	}
 
-	m.panelMode = "danger"
+	m.panelMode = panelModeDanger
 	m.panelScrollY = 0
 	m.relayoutViewport()
 	m.panelDangerItems = items
@@ -2488,7 +2488,7 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 
 // openRunnerPanel 打开 Runner 管理面板
 func (m *cliModel) openRunnerPanel() {
-	m.panelMode = "runner"
+	m.panelMode = panelModeRunner
 	m.panelScrollY = 0
 	m.relayoutViewport()
 
@@ -2547,7 +2547,7 @@ func (m *cliModel) newPanelTextInput(value, placeholder string) textinput.Model 
 func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	// Esc 回到 settings 面板（不关闭整个面板）
 	if msg.Code == tea.KeyEsc || msg.String() == "ctrl+c" {
-		m.panelMode = "settings"
+		m.panelMode = panelModeSettings
 		m.panelRunnerServerTI = textinput.Model{}
 		m.panelRunnerTokenTI = textinput.Model{}
 		m.panelRunnerWorkspace = textinput.Model{}
@@ -2582,7 +2582,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	if status == RunnerConnected {
 		if msg.Code == tea.KeyEnter {
 			m.runnerBridge.Disconnect()
-			m.panelMode = "settings"
+			m.panelMode = panelModeSettings
 			m.panelRunnerServerTI = textinput.Model{}
 			m.panelRunnerTokenTI = textinput.Model{}
 			m.panelRunnerWorkspace = textinput.Model{}
@@ -2634,7 +2634,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		})
 
 		// 回到 settings，发起连接
-		m.panelMode = "settings"
+		m.panelMode = panelModeSettings
 		m.panelRunnerServerTI = textinput.Model{}
 		m.panelRunnerTokenTI = textinput.Model{}
 		m.panelRunnerWorkspace = textinput.Model{}
@@ -2791,7 +2791,7 @@ var channelLabels = map[string]string{
 
 // openChannelPanel opens the channel configuration panel.
 func (m *cliModel) openChannelPanel() {
-	m.panelMode = "channel"
+	m.panelMode = panelModeChannel
 	m.relayoutViewport()
 	m.panelChannelCursor = 0
 	m.panelChannelItems = channelNames
