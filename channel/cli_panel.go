@@ -1464,6 +1464,60 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	//   Shift+↑/↓ — scroll the conversation viewport (history above)
 	//   Ctrl+↑/↓  — scroll the ask panel content (question/options)
 	//   PgUp/PgDn — scroll the ask panel content (page at a time)
+	if handled, model, cmd := m.handleAskScrollKeys(msg); handled {
+		return handled, model, cmd
+	}
+
+	item := &m.panelItems[m.panelTab]
+	numOpts := len(item.Options)
+	hasOpts := numOpts > 0
+	isLastTab := m.panelTab == len(m.panelItems)-1
+	// Cursor: 0..numOpts-1 (checkbox), numOpts (Other input), numOpts+1 (Submit, last tab only)
+	cursor := m.panelOptCursor[m.panelTab]
+	onOther := hasOpts && cursor == numOpts
+	onSubmit := hasOpts && isLastTab && cursor == numOpts+1
+
+	switch {
+	case msg.String() == "ctrl+s":
+		return m.submitAskAnswers()
+	case msg.Code == tea.KeyEsc:
+		if m.panelOnCancel != nil {
+			m.panelOnCancel()
+		}
+		m.closePanel()
+		return true, m, nil
+	case msg.Code == tea.KeyRight || msg.Code == tea.KeyTab:
+		if len(m.panelItems) > 1 && m.panelTab < len(m.panelItems)-1 {
+			m.saveCurrentFreeInput()
+			m.panelTab++
+			m.restoreFreeInput()
+		}
+		return true, m, nil
+	case msg.String() == "shift+tab" || msg.Code == tea.KeyLeft:
+		if len(m.panelItems) > 1 && m.panelTab > 0 {
+			m.saveCurrentFreeInput()
+			m.panelTab--
+			m.restoreFreeInput()
+		}
+		return true, m, nil
+	case msg.Code == tea.KeyUp:
+		return m.handleAskUpKey(hasOpts, cursor, onOther, msg)
+	case msg.Code == tea.KeyDown:
+		return m.handleAskDownKey(hasOpts, numOpts, isLastTab, cursor, onOther, msg)
+	case msg.Code == tea.KeyEnter:
+		return m.handleAskEnterKey(hasOpts, isLastTab, onOther, onSubmit)
+	case msg.Code == tea.KeySpace:
+		return m.handleAskSpaceKey(hasOpts, numOpts, onOther, cursor, msg)
+	case len(msg.Text) > 0:
+		return m.handleAskTextKey(hasOpts, numOpts, onOther, msg)
+	default:
+		return m.handleAskDefaultKey(hasOpts, onOther, msg)
+	}
+}
+
+// handleAskScrollKeys handles viewport and panel scroll keys in the ask-user panel.
+// Returns (false, m, nil) if the key is not a scroll key.
+func (m *cliModel) handleAskScrollKeys(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	switch {
 	case msg.String() == "ctrl+o":
 		// §11 Ctrl+O toggles tool summary expand/collapse — must work in askuser mode too
@@ -1504,156 +1558,140 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		// clamp happens in View via clampAskUserPanelScroll
 		return true, m, nil
 	}
+	return false, m, nil
+}
 
-	item := &m.panelItems[m.panelTab]
-	numOpts := len(item.Options)
-	hasOpts := numOpts > 0
-	isLastTab := m.panelTab == len(m.panelItems)-1
-	// Cursor: 0..numOpts-1 (checkbox), numOpts (Other input), numOpts+1 (Submit, last tab only)
-	cursor := m.panelOptCursor[m.panelTab]
-	onOther := hasOpts && cursor == numOpts
-	onSubmit := hasOpts && isLastTab && cursor == numOpts+1
+// handleAskUpKey handles the Up arrow key in the ask-user panel.
+func (m *cliModel) handleAskUpKey(hasOpts bool, cursor int, onOther bool, msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if hasOpts {
+		if onOther {
+			m.panelOptCursor[m.panelTab] = len(m.panelItems[m.panelTab].Options) - 1
+			return true, m, nil
+		}
+		if cursor > 0 {
+			m.panelOptCursor[m.panelTab] = cursor - 1
+		}
+		return true, m, nil
+	}
+	m.autoExpandAskTA()
+	var cmd tea.Cmd
+	m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+	return true, m, cmd
+}
 
-	switch {
-	case msg.String() == "ctrl+s":
-		return m.submitAskAnswers()
-	case msg.Code == tea.KeyEsc:
-		if m.panelOnCancel != nil {
-			m.panelOnCancel()
-		}
-		m.closePanel()
-		return true, m, nil
-	case msg.Code == tea.KeyRight || msg.Code == tea.KeyTab:
-		if len(m.panelItems) > 1 && m.panelTab < len(m.panelItems)-1 {
-			m.saveCurrentFreeInput()
-			m.panelTab++
-			m.restoreFreeInput()
-		}
-		return true, m, nil
-	case msg.String() == "shift+tab" || msg.Code == tea.KeyLeft:
-		if len(m.panelItems) > 1 && m.panelTab > 0 {
-			m.saveCurrentFreeInput()
-			m.panelTab--
-			m.restoreFreeInput()
-		}
-		return true, m, nil
-	case msg.Code == tea.KeyUp:
-		if hasOpts {
-			if onOther {
-				m.panelOptCursor[m.panelTab] = numOpts - 1
-				return true, m, nil
-			}
-			if cursor > 0 {
-				m.panelOptCursor[m.panelTab] = cursor - 1
-			}
-			return true, m, nil
-		}
-		m.autoExpandAskTA()
-		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
-		return true, m, cmd
-	case msg.Code == tea.KeyDown:
-		if hasOpts {
-			maxCursor := numOpts // Other input is the last item
-			if isLastTab {
-				maxCursor = numOpts + 1 // Submit button only on last tab
-			}
-			if onOther {
-				if isLastTab {
-					m.panelOptCursor[m.panelTab] = numOpts + 1
-				}
-				return true, m, nil
-			}
-			if cursor < maxCursor {
-				m.panelOptCursor[m.panelTab] = cursor + 1
-			}
-			return true, m, nil
-		}
-		m.autoExpandAskTA()
-		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
-		return true, m, cmd
-	case msg.Code == tea.KeyEnter:
-		if hasOpts {
-			if onSubmit {
-				return m.submitAskAnswers()
-			}
-			// On checkbox: toggle; on Other: do nothing (let user type)
-			if !onOther {
-				m.toggleOptAtCursor()
-			}
-			return true, m, nil
-		}
-		// No options (textarea): submit only on last tab, otherwise advance
+// handleAskDownKey handles the Down arrow key in the ask-user panel.
+func (m *cliModel) handleAskDownKey(hasOpts bool, numOpts int, isLastTab bool, cursor int, onOther bool, msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if hasOpts {
+		maxCursor := numOpts // Other input is the last item
 		if isLastTab {
+			maxCursor = numOpts + 1 // Submit button only on last tab
+		}
+		if onOther {
+			if isLastTab {
+				m.panelOptCursor[m.panelTab] = numOpts + 1
+			}
+			return true, m, nil
+		}
+		if cursor < maxCursor {
+			m.panelOptCursor[m.panelTab] = cursor + 1
+		}
+		return true, m, nil
+	}
+	m.autoExpandAskTA()
+	var cmd tea.Cmd
+	m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+	return true, m, cmd
+}
+
+// handleAskEnterKey handles the Enter key in the ask-user panel.
+func (m *cliModel) handleAskEnterKey(hasOpts bool, isLastTab bool, onOther bool, onSubmit bool) (bool, tea.Model, tea.Cmd) {
+	if hasOpts {
+		if onSubmit {
 			return m.submitAskAnswers()
 		}
-		m.saveCurrentFreeInput()
-		m.panelTab++
-		m.restoreFreeInput()
+		// On checkbox: toggle; on Other: do nothing (let user type)
+		if !onOther {
+			m.toggleOptAtCursor()
+		}
 		return true, m, nil
-	case msg.Code == tea.KeySpace:
-		if hasOpts && !onOther {
-			if cursor < numOpts {
-				m.toggleOptAtCursor()
-			}
-			if cursor < numOpts+1 {
-				m.panelOptCursor[m.panelTab] = cursor + 1
-			}
-			return true, m, nil
+	}
+	// No options (textarea): submit only on last tab, otherwise advance
+	if isLastTab {
+		return m.submitAskAnswers()
+	}
+	m.saveCurrentFreeInput()
+	m.panelTab++
+	m.restoreFreeInput()
+	return true, m, nil
+}
+
+// handleAskSpaceKey handles the Space key in the ask-user panel.
+func (m *cliModel) handleAskSpaceKey(hasOpts bool, numOpts int, onOther bool, cursor int, msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if hasOpts && !onOther {
+		if cursor < numOpts {
+			m.toggleOptAtCursor()
 		}
-		if onOther {
-			// Other input boxes: pass space to textinput
-			var cmd tea.Cmd
-			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
-			return true, m, cmd
+		if cursor < numOpts+1 {
+			m.panelOptCursor[m.panelTab] = cursor + 1
 		}
-		// No options: fall through to textarea
-		m.autoExpandAskTA()
+		return true, m, nil
+	}
+	if onOther {
+		// Other input boxes: pass space to textinput
 		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
-		return true, m, cmd
-	case len(msg.Text) > 0:
-		if hasOpts && !onOther {
-			m.panelOptCursor[m.panelTab] = numOpts
-			m.restoreOtherInput()
-		}
-		if onOther {
-			var cmd tea.Cmd
-			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
-			return true, m, cmd
-		}
-		if hasOpts {
-			// With options, all input goes through Other textinput
-			return true, m, nil
-		}
-		// No options: textarea
-		m.autoExpandAskTA()
-		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
-		return true, m, cmd
-	default:
-		if isCtrlJ(msg) {
-			if !hasOpts {
-				m.panelAnswerTA.InsertString("\n")
-				m.autoExpandAskTA()
-			}
-			return true, m, nil
-		}
-		if onOther {
-			var cmd tea.Cmd
-			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
-			return true, m, cmd
-		}
-		if hasOpts {
-			return true, m, nil
-		}
-		m.autoExpandAskTA()
-		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+		m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
 		return true, m, cmd
 	}
+	// No options: fall through to textarea
+	m.autoExpandAskTA()
+	var cmd tea.Cmd
+	m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+	return true, m, cmd
+}
 
+// handleAskTextKey handles printable character input in the ask-user panel.
+func (m *cliModel) handleAskTextKey(hasOpts bool, numOpts int, onOther bool, msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if hasOpts && !onOther {
+		m.panelOptCursor[m.panelTab] = numOpts
+		m.restoreOtherInput()
+	}
+	if onOther {
+		var cmd tea.Cmd
+		m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
+		return true, m, cmd
+	}
+	if hasOpts {
+		// With options, all input goes through Other textinput
+		return true, m, nil
+	}
+	// No options: textarea
+	m.autoExpandAskTA()
+	var cmd tea.Cmd
+	m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+	return true, m, cmd
+}
+
+// handleAskDefaultKey handles unmatched keys in the ask-user panel.
+func (m *cliModel) handleAskDefaultKey(hasOpts bool, onOther bool, msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if isCtrlJ(msg) {
+		if !hasOpts {
+			m.panelAnswerTA.InsertString("\n")
+			m.autoExpandAskTA()
+		}
+		return true, m, nil
+	}
+	if onOther {
+		var cmd tea.Cmd
+		m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
+		return true, m, cmd
+	}
+	if hasOpts {
+		return true, m, nil
+	}
+	m.autoExpandAskTA()
+	var cmd tea.Cmd
+	m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+	return true, m, cmd
 }
 
 // toggleOptAtCursor toggles the checkbox at the current cursor position.
