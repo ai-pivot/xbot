@@ -26,10 +26,13 @@ var sessionDirReplacer = strings.NewReplacer("/", "_", "\\", "_", ":", "_", "\x0
 
 // extractGoStructure 使用的正则，声明为包级变量避免每次调用重复编译。
 var (
-	goImportRe   = regexp.MustCompile(`"([^"]+)"`)
-	goTypeRe     = regexp.MustCompile(`type\s+(\w+)\s+(struct|interface|func)\b`)
-	goConstVarRe = regexp.MustCompile(`^(?:const|var)\s+\(?(\w+)\s*$`)
-	goFuncRe     = regexp.MustCompile(`func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)`)
+	goImportRe     = regexp.MustCompile(`"([^"]+)"`)
+	goTypeRe       = regexp.MustCompile(`type\s+(\w+)\s+(struct|interface|func)\b`)
+	goConstVarRe   = regexp.MustCompile(`^(?:const|var)\s+\(?(\w+)\s*$`)
+	goFuncRe       = regexp.MustCompile(`func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)`)
+	goMethodFuncRe = regexp.MustCompile(`func\s+\([^)]+\)\s+(\w+)\s*\(|func\s+(\w+)\s*\(`)
+	pyFuncRe       = regexp.MustCompile(`def\s+(\w+)\s*\(`)
+	jsFuncRe       = regexp.MustCompile(`function\s+(\w+)\s*\(`)
 )
 
 // OffloadConfig 配置大 tool result 的 offload 行为。
@@ -698,9 +701,7 @@ func extractFunctionNames(content string) []string {
 	// Go: func Name( 或 func (recv) Name(
 	// Python: def Name(
 	// JS: function Name(
-	reGoFunc := regexp.MustCompile(`func\s+\([^)]+\)\s+(\w+)\s*\(|func\s+(\w+)\s*\(`)
-	rePyFunc := regexp.MustCompile(`def\s+(\w+)\s*\(`)
-	reJSFunc := regexp.MustCompile(`function\s+(\w+)\s*\(`)
+	// Regexes pre-compiled at package level
 
 	seen := make(map[string]bool)
 	var names []string
@@ -711,7 +712,7 @@ func extractFunctionNames(content string) []string {
 		}
 	}
 
-	for _, m := range reGoFunc.FindAllStringSubmatch(content, -1) {
+	for _, m := range goMethodFuncRe.FindAllStringSubmatch(content, -1) {
 		if m[1] != "" {
 			addName(m[1])
 		}
@@ -719,10 +720,10 @@ func extractFunctionNames(content string) []string {
 			addName(m[2])
 		}
 	}
-	for _, m := range rePyFunc.FindAllStringSubmatch(content, -1) {
+	for _, m := range pyFuncRe.FindAllStringSubmatch(content, -1) {
 		addName(m[1])
 	}
-	for _, m := range reJSFunc.FindAllStringSubmatch(content, -1) {
+	for _, m := range jsFuncRe.FindAllStringSubmatch(content, -1) {
 		addName(m[1])
 	}
 
