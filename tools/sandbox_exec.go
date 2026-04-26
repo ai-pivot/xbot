@@ -12,6 +12,12 @@ const defaultExecTimeout = 30 * time.Second
 // maxHTTPResponseBodySize limits HTTP response body reads (10MB).
 const maxHTTPResponseBodySize = 10 * 1024 * 1024
 
+// HTTP client timeout defaults for tool HTTP operations.
+const (
+	httpDefaultTimeout  = 30 * time.Second // Default HTTP client timeout
+	httpDownloadTimeout = 60 * time.Second // Timeout for file downloads
+)
+
 // Sandbox backend type constants.
 const (
 	SandboxNone   = "none"

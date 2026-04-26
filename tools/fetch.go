@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
@@ -186,7 +185,7 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 	}
 
 	client := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   httpDefaultTimeout,
 		Transport: safeTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {

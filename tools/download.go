@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"time"
 	"xbot/llm"
 	log "xbot/logger"
 )
@@ -196,12 +195,12 @@ const maxDownloadSize = 100 * 1024 * 1024
 
 // downloadHTTPClient is a dedicated HTTP client with timeout for file downloads.
 var downloadHTTPClient = &http.Client{
-	Timeout: 60 * time.Second,
+	Timeout: httpDownloadTimeout,
 }
 
 // tokenHTTPClient is a dedicated HTTP client with timeout for token requests.
 var tokenHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
+	Timeout: httpDefaultTimeout,
 }
 
 // downloadFeishu downloads a file/image from Feishu via Message Resource API.

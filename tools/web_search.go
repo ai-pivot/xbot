@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 	"xbot/llm"
 )
 
@@ -22,7 +21,7 @@ func NewWebSearchTool(apiKey string) *WebSearchTool {
 	return &WebSearchTool{
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: httpDefaultTimeout,
 		},
 	}
 }
