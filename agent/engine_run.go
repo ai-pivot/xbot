@@ -430,6 +430,38 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 	return response, err
 }
 
+// persistCompressedResult replaces the session's messages with the compressed result.
+// Returns true if persistence succeeded (caller should update lastPersistedCount).
+// afterPersist is called on success (e.g. to fire SessionHook).
+func (s *runState) persistCompressedResult(ctx context.Context, sessionView []llm.ChatMessage, label string, afterPersist func()) bool {
+	if s.cfg.Session == nil {
+		return false
+	}
+	if err := s.cfg.Session.Clear(); err != nil {
+		log.Ctx(ctx).WithError(err).Warnf("Failed to clear session for %s, skipping persistence", label)
+		return false
+	}
+	allOk := true
+	for _, msg := range sessionView {
+		if err := assertNoSystemPersist(msg); err != nil {
+			continue
+		}
+		if err := s.cfg.Session.AddMessage(msg); err != nil {
+			log.Ctx(ctx).WithError(err).Errorf("Partial write during %s", label)
+			allOk = false
+			break
+		}
+	}
+	if allOk {
+		if afterPersist != nil {
+			afterPersist()
+		}
+		return true
+	}
+	log.Ctx(ctx).Warnf("%s persistence failed, session may be inconsistent", label)
+	return false
+}
+
 // handleInputTooLong forces context compression when input exceeds model limits,
 // then retries the LLM call.
 func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition) (*llm.LLMResponse, error) {
