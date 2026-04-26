@@ -11,6 +11,9 @@ import (
 	bitablev1 "github.com/larksuite/oapi-sdk-go/v3/service/bitable/v1"
 )
 
+// maxBatchRecords is the maximum number of records in a single batch create request.
+const maxBatchRecords = 500
+
 // bitableRecordArgs holds arguments for bitable record operations.
 type bitableRecordArgs struct {
 	Action   string         `json:"action"`
@@ -389,8 +392,8 @@ func (t *BatchCreateAppTableRecordTool) Execute(ctx *tools.ToolContext, input st
 	if len(args.Records) == 0 {
 		return nil, fmt.Errorf("records required")
 	}
-	if len(args.Records) > 500 {
-		return nil, fmt.Errorf("too many records, max 500")
+	if len(args.Records) > maxBatchRecords {
+		return nil, fmt.Errorf(fmt.Sprintf("too many records, max %d", maxBatchRecords))
 	}
 
 	client, err := t.MCP.GetClient(ctx.Ctx, ctx.Channel, ctx.ChatID)
