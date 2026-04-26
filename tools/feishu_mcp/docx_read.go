@@ -122,6 +122,7 @@ func (t *DocxGetContentTool) Execute(ctx *tools.ToolContext, input string) (*too
 	), nil
 }
 
+// DocxGetBlockTool retrieves a specific block from a Feishu document by block ID.
 type DocxGetBlockTool struct {
 	FeishuToolBase
 	MCP *FeishuMCP
