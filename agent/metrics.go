@@ -283,7 +283,7 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 		sb.WriteString("\n")
 
 		if s.TotalConversations > 0 {
-			fmt.Fprintf(&sb, "💰 平均成本：%s tokens/对话", formatTokens(int64(s.AvgTokensPerConv)))
+			fmt.Fprintf(&sb, "💰 平均成本：%s tokens/对话", formatTokenCount(int64(s.AvgTokensPerConv)))
 			if s.TotalInputTokens > 0 {
 				fmt.Fprintf(&sb, " | 输出/输入比：%.1f%%", s.OutputInputRatio*100)
 			}
@@ -352,9 +352,9 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 	if hasCompress {
 		saved := s.CompressTokensIn - s.CompressTokensOut
 		fmt.Fprintf(&sb, "🧹 压缩：%d 次 | 节省 %s tokens（节省率 %.1f%%）\n",
-			s.CompressEvents, formatTokens(saved), s.TokenSavingRate*100)
+			s.CompressEvents, formatTokenCount(saved), s.TokenSavingRate*100)
 		fmt.Fprintf(&sb, "📊 每次平均节省：%s tokens\n",
-			formatTokens(int64(s.AvgTokensSavedPerCompress)))
+			formatTokenCount(int64(s.AvgTokensSavedPerCompress)))
 		fmt.Fprintf(&sb, "📐 输出/输入比：%.1f%%\n", s.CompressRatio*100)
 	} else {
 		sb.WriteString("暂无数据\n")
@@ -368,14 +368,14 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 		if s.CompressTokensIn > 0 {
 			saved := s.CompressTokensIn - s.CompressTokensOut
 			fmt.Fprintf(&sb, "🧹 压缩：节省 %s tokens（节省率 %.1f%%）\n",
-				formatTokens(saved), s.TokenSavingRate*100)
+				formatTokenCount(saved), s.TokenSavingRate*100)
 		} else {
 			sb.WriteString("🧹 压缩：无数据\n")
 		}
 		fmt.Fprintf(&sb, "📈 联合保存率：%.1f%%（节省 %s / 总输入 %s）\n",
 			s.CombinedSavingRate*100,
-			formatTokens(s.CompressTokensIn-s.CompressTokensOut),
-			formatTokens(s.TotalInputTokens))
+			formatTokenCount(s.CompressTokensIn-s.CompressTokensOut),
+			formatTokenCount(s.TotalInputTokens))
 	} else {
 		sb.WriteString("暂无数据\n")
 	}
@@ -394,15 +394,4 @@ func formatDuration(seconds int64) string {
 	hours := seconds / 3600
 	mins := (seconds % 3600) / 60
 	return fmt.Sprintf("%dh %dm", hours, mins)
-}
-
-// formatTokens 将 token 数格式化为 K/M 单位。
-func formatTokens(tokens int64) string {
-	if tokens < 1000 {
-		return fmt.Sprintf("%d", tokens)
-	}
-	if tokens < 1_000_000 {
-		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
-	}
-	return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
 }
