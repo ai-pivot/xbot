@@ -806,7 +806,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		// than totalTokens=0 which never compresses (→ context_window_exceeded).
 		estimated, estErr := llm.CountMessagesTokens(s.messages, s.cfg.Model)
 		if estErr == nil && estimated > 0 {
-			totalTokens = int64(float64(estimated) * 1.5)
+			totalTokens = int64(float64(estimated) * tokenEstimateMargin)
 			tokenSource = "local_estimate_fallback"
 			if len(s.messages) > 3 {
 				log.Ctx(ctx).WithFields(log.Fields{
@@ -833,7 +833,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	// compression threshold. Only activates when maxOutputTokens is reasonable
 	// (>100 tokens) to avoid interfering with test scenarios using extreme values.
 	snipped := false
-	if !needCompress && maxOutputTokens > 100 && totalTokens > int64(float64(promptBudget)*0.65) && len(s.messages) > 6 {
+	if !needCompress && maxOutputTokens > 100 && totalTokens > int64(float64(promptBudget)*snipThreshold) && len(s.messages) > 6 {
 		snipped = s.snipOldToolResults(ctx)
 	}
 
@@ -842,7 +842,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		"max_context":        maxTokens,
 		"max_output_tokens":  maxOutputTokens,
 		"prompt_budget":      promptBudget,
-		"threshold":          int(float64(promptBudget) * 0.75),
+		"threshold":          int(float64(promptBudget) * compactThreshold),
 		"msg_count":          len(s.messages),
 		"need":               needCompress,
 		"snipped":            snipped,
@@ -858,8 +858,8 @@ func (s *runState) maybeCompress(ctx context.Context) {
 
 	// Layer 2: Observation masking (lightweight, no LLM call)
 	if s.cfg.MaskStore != nil {
-		maskingThreshold := float64(maxTokens) * 0.6
-		if float64(totalTokens) > maskingThreshold {
+		maskingThresholdVal := float64(maxTokens) * maskingThreshold
+		if float64(totalTokens) > maskingThresholdVal {
 			keepGroups := calculateKeepGroups(int(totalTokens), maxTokens)
 			masked, count, maskedEntries := MaskOldToolResults(s.messages, s.cfg.MaskStore, keepGroups)
 			if count > 0 {
@@ -1021,7 +1021,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 
 	if oldTokenCount > 0 {
 		reductionRate := 1.0 - float64(newTokenCount)/float64(oldTokenCount)
-		if reductionRate < 0.10 {
+		if reductionRate < minReductionRate {
 			log.Ctx(ctx).WithFields(log.Fields{
 				"old_tokens": oldTokenCount,
 				"new_tokens": newTokenCount,

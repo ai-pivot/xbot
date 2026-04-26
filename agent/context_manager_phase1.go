@@ -59,7 +59,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 		reductionRate = 1.0 - float64(newTokens)/float64(originalTokens)
 	}
 
-	if reductionRate < 0.10 {
+	if reductionRate < minReductionRate {
 		log.Ctx(ctx).WithFields(map[string]interface{}{
 			"reduction_rate":  reductionRate,
 			"new_tokens":      newTokens,
@@ -87,7 +87,7 @@ func (m *phase1Manager) ContextInfo(messages []llm.ChatMessage, model string, to
 		roleTokens = llm.RoleTokenCount{System: msgTokens}
 	}
 	totalTokens := roleTokens.System + roleTokens.User + roleTokens.Assistant + roleTokens.Tool + toolTokens
-	threshold := int(float64(m.config.MaxContextTokens) * 0.75)
+	threshold := int(float64(m.config.MaxContextTokens) * compactThreshold)
 
 	return &ContextStats{
 		SystemTokens:      roleTokens.System,
