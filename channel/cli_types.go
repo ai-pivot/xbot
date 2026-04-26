@@ -38,6 +38,10 @@ const (
 	twSpeedFast = 20
 	twSpeedMed  = 10
 	twSpeedSlow = 3
+
+	// File completion hint display limits
+	fileCompMaxNameRunes = 20 // max runes for file basename display before truncation
+	fileCompTruncateAt   = 18 // runes to keep before adding ellipsis
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).

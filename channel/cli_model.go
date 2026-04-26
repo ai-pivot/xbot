@@ -92,6 +92,21 @@ func (m *cliModel) advanceTypewriter() {
 	}
 }
 
+// typewriterBehind reports whether there is still unread stream or reasoning
+// content waiting to be revealed by the typewriter animation.
+func (m *cliModel) typewriterBehind() bool {
+	if m.progress == nil {
+		return false
+	}
+	if m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent)) {
+		return true
+	}
+	if m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent)) {
+		return true
+	}
+	return false
+}
+
 // advanceWriterCJK is like advanceWriter but CJK-aware: when the next rune to reveal
 // is CJK, it only advances every other tick (effectively half speed).
 // skipFlip tracks alternating ticks within a single call chain.

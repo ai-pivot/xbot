@@ -658,10 +658,7 @@ func (m *cliModel) layoutViewportHeight() int {
 		reservedLines = fixedLines + taBorder + 2 // min textarea
 	}
 	if height < 8 {
-		reservedLines = 4
-	}
-	if height < 5 {
-		reservedLines = 4
+		reservedLines = 4 // ultra-compact: title + status + 1-line viewport + border
 	}
 	viewportHeight := height - reservedLines
 	if viewportHeight < 3 {
@@ -823,9 +820,9 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 					base += "/"
 				}
 				// 截断过长文件名
-				if utf8.RuneCountInString(base) > 20 {
+				if utf8.RuneCountInString(base) > fileCompMaxNameRunes {
 					runes := []rune(base)
-					base = string(runes[:18]) + "…"
+					base = string(runes[:fileCompTruncateAt]) + "…"
 				}
 				icon := "📄 "
 				if dir {
