@@ -1158,7 +1158,7 @@ func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMRespon
 
 		var execCtx context.Context
 		var cancel context.CancelFunc
-		if tc.Name == "SubAgent" {
+		if tc.Name == toolSubAgent {
 			execCtx, cancel = ctx, func() {}
 			if s.autoNotify {
 				pi := progressStartIdx + entry.index
@@ -1225,7 +1225,7 @@ func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMRespon
 			execResults[entry.index].llmContent = execResults[entry.index].content
 
 			if s.autoNotify {
-				if tc.Name == "SubAgent" {
+				if tc.Name == toolSubAgent {
 					line := s.progressLines[progressStartIdx+entry.index]
 					line = strings.ReplaceAll(line, "⏳", "❌")
 					line = strings.ReplaceAll(line, "🔄", "❌")
@@ -1253,7 +1253,7 @@ func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMRespon
 			}).Debugf("Tool done: %s", resultPreview)
 
 			if s.autoNotify {
-				if tc.Name == "SubAgent" {
+				if tc.Name == toolSubAgent {
 					line := s.progressLines[progressStartIdx+entry.index]
 					// Replace both possible prefixes: ⏳ (initial placeholder) and 🔄 (progress-updated)
 					line = strings.ReplaceAll(line, "⏳", "✅")
@@ -1300,7 +1300,7 @@ func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMRespon
 		var readOps, writeOps, subAgentOps []toolCallEntry
 		for idx, tc := range response.ToolCalls {
 			entry := toolCallEntry{iteration: iteration, index: idx, tc: tc}
-			if tc.Name == "SubAgent" && s.cfg.EnableConcurrentSubAgents {
+			if tc.Name == toolSubAgent && s.cfg.EnableConcurrentSubAgents {
 				subAgentOps = append(subAgentOps, entry)
 			} else if readOnlyTools[tc.Name] {
 				readOps = append(readOps, entry)
@@ -1341,7 +1341,7 @@ func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMRespon
 		var subAgentOps, otherOps []toolCallEntry
 		for idx, tc := range response.ToolCalls {
 			entry := toolCallEntry{iteration: iteration, index: idx, tc: tc}
-			if tc.Name == "SubAgent" {
+			if tc.Name == toolSubAgent {
 				subAgentOps = append(subAgentOps, entry)
 			} else {
 				otherOps = append(otherOps, entry)
@@ -1413,7 +1413,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			continue
 		}
 		switch tc.Name {
-		case "offload_recall":
+		case toolOffloadRecall:
 			var args struct {
 				ID string `json:"id"`
 			}
@@ -1422,7 +1422,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			} else {
 				GlobalMetrics.OffloadedRecalls.Add(1)
 			}
-		case "recall_masked":
+		case toolRecallMasked:
 			var args struct {
 				ID string `json:"id"`
 			}
@@ -1442,7 +1442,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 		content := r.llmContent
 
 		// Layer 1 Offload
-		skipOffload := tc.Name == "offload_recall"
+		skipOffload := tc.Name == toolOffloadRecall
 		if tc.Name == "Read" && readArgsHasOffsetOrLimit(tc.Arguments) {
 			skipOffload = true
 		}

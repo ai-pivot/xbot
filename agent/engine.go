@@ -262,6 +262,15 @@ const DefaultMaxIterations = 2000
 // not specified by config or model capabilities.
 const DefaultMaxOutputTokens = 8192
 
+// Tool name constants used for cross-reference with the tools package.
+const (
+	toolSubAgent      = "SubAgent"
+	toolOffloadRecall = "offload_recall"
+	toolRecallMasked  = "recall_masked"
+	toolSendMessage   = "SendMessage"
+	toolCreateChat    = "CreateChat"
+)
+
 // readOnlyTools 只读工具集合，用于读写分离并行执行。
 var readOnlyTools = map[string]bool{
 	"Read": true, "Grep": true, "Glob": true,

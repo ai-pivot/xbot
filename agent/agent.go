@@ -2576,7 +2576,7 @@ func formatToolProgress(name string, args string) string {
 		summary = fmt.Sprintf("WebSearch: %q", get(m, "query"))
 	case "Cron":
 		summary = fmt.Sprintf("Cron: %s", get(m, "action"))
-	case "SubAgent":
+	case toolSubAgent:
 		role := get(m, "role")
 		task := get(m, "task")
 		if role != "" {

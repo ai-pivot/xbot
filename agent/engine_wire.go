@@ -660,7 +660,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 子 Agent 工具集：根据 capabilities 决定是否保留 SubAgent 工具
 	subTools := a.tools.Clone()
 	if !caps.SpawnAgent {
-		subTools.Unregister("SubAgent")
+		subTools.Unregister(toolSubAgent)
 	}
 
 	// 如果指定了工具白名单，只保留白名单中的工具
@@ -676,15 +676,15 @@ func (a *Agent) buildSubAgentRunConfig(
 		for _, tool := range subTools.List() {
 			toolName := tool.Name()
 			// SubAgent 工具：如果 SpawnAgent=true，始终保留
-			if toolName == "SubAgent" && caps.SpawnAgent {
+			if toolName == toolSubAgent && caps.SpawnAgent {
 				continue
 			}
 			// offload_recall / recall_masked：SubAgent 始终可用
-			if toolName == "offload_recall" || toolName == "recall_masked" {
+			if toolName == toolOffloadRecall || toolName == toolRecallMasked {
 				continue
 			}
 			// SendMessage / CreateChat：interactive SubAgent 始终可用（群聊通信）
-			if interactive && (toolName == "SendMessage" || toolName == "CreateChat") {
+			if interactive && (toolName == toolSendMessage || toolName == toolCreateChat) {
 				continue
 			}
 			if !allowed[toolName] {

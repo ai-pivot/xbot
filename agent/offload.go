@@ -163,7 +163,7 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 	// Never offload recall-type tools — their results are already retrieved content
 	// and offloading them would create infinite recursion (offload → recall → offload → ...)
 	switch toolName {
-	case "offload_recall", "recall_masked":
+	case toolOffloadRecall, toolRecallMasked:
 		return OffloadedResult{}, false
 	}
 
