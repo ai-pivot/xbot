@@ -141,7 +141,7 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 	if !ok {
 		return nil, fmt.Errorf("group %q not found (create it with CreateChat first)", groupName)
 	}
-	if gm.Closed {
+	if gm.IsClosed() {
 		return nil, fmt.Errorf("group %q is closed", groupName)
 	}
 
@@ -154,7 +154,7 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 	// No @mentions → broadcast to all members
 	if len(mentions) == 0 {
 		var responses []string
-		for _, memberAddr := range gm.Members {
+		for _, memberAddr := range gm.GetMembers() {
 			prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
 			result, err := ctx.MessageSender.SendMessage(memberAddr, "", prefixedMsg)
 			if err != nil {
@@ -164,7 +164,7 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 			}
 		}
 		return NewResult(fmt.Sprintf("Broadcast to group %s (%d members):\n%s",
-			groupName, len(gm.Members), strings.Join(responses, "\n"))), nil
+			groupName, gm.MemberCount(), strings.Join(responses, "\n"))), nil
 	}
 
 	// @mentioned agents: send directly with group context prefix.

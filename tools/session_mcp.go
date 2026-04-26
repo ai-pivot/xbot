@@ -132,6 +132,9 @@ func (sm *SessionMCPManager) ensureInitAsync() {
 			if err != errNotInitialized {
 				log.WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for catalog")
 			}
+			// Close old initDone to unblock any waiters, then create a new one.
+			close(sm.initDone)
+			sm.initDone = make(chan struct{})
 			// Reset to idle so the next access retries (config may be created later).
 			// Safe because only the goroutine that won CAS(0→1) can CAS back to 0,
 			// and concurrent callers that saw 1 will return on the fast path above.

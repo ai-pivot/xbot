@@ -10,6 +10,7 @@ import "sync"
 // This is a deliberate simplification over the old GroupState model which
 // duplicated agent session functionality (message store, history formatting).
 type GroupMembership struct {
+	mu      sync.RWMutex
 	ID      string   // e.g. "g1"
 	Name    string   // e.g. "group:g1"
 	Members []string // agent addresses e.g. ["agent:reviewer/r1", "agent:tester/t1"]
@@ -50,17 +51,44 @@ func DeleteGroup(name string) {
 
 // Close marks the group as closed.
 func (g *GroupMembership) Close() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.Closed = true
+}
+
+// IsClosed returns whether the group is closed.
+func (g *GroupMembership) IsClosed() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.Closed
 }
 
 // IsMember checks if an address is in this group.
 func (g *GroupMembership) IsMember(addr string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	for _, m := range g.Members {
 		if m == addr {
 			return true
 		}
 	}
 	return false
+}
+
+// GetMembers returns a copy of the members slice.
+func (g *GroupMembership) GetMembers() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	result := make([]string, len(g.Members))
+	copy(result, g.Members)
+	return result
+}
+
+// MemberCount returns the number of members.
+func (g *GroupMembership) MemberCount() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.Members)
 }
 
 // RemoveMember removes an address from the group. Returns true if the member was found.
@@ -70,6 +98,8 @@ func RemoveMember(groupName, memberAddr string) bool {
 	if !ok {
 		return false
 	}
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
 	for i, m := range gm.Members {
 		if m == memberAddr {
 			gm.Members = append(gm.Members[:i], gm.Members[i+1:]...)
@@ -98,12 +128,14 @@ func ListGroups() []GroupSummary {
 		if !ok {
 			return true
 		}
+		gm.mu.RLock()
 		results = append(results, GroupSummary{
 			ID:      gm.ID,
 			Name:    gm.Name,
 			Members: append([]string{}, gm.Members...),
 			Closed:  gm.Closed,
 		})
+		gm.mu.RUnlock()
 		return true
 	})
 	return results

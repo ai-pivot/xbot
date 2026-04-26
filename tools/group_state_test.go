@@ -10,10 +10,10 @@ func TestGroupCreateAndGet(t *testing.T) {
 	if gm.Name != "group:test1" {
 		t.Errorf("expected Name group:test1, got %s", gm.Name)
 	}
-	if len(gm.Members) != 2 {
-		t.Fatalf("expected 2 members, got %d", len(gm.Members))
+	if gm.MemberCount() != 2 {
+		t.Fatalf("expected 2 members, got %d", gm.MemberCount())
 	}
-	if gm.Closed {
+	if gm.IsClosed() {
 		t.Error("new group should not be closed")
 	}
 
@@ -48,11 +48,11 @@ func TestGroupClose(t *testing.T) {
 	gm := CreateGroup("test3", []string{"agent:a/1"})
 	defer DeleteGroup("group:test3")
 
-	if gm.Closed {
+	if gm.IsClosed() {
 		t.Error("group should not be closed initially")
 	}
 	gm.Close()
-	if !gm.Closed {
+	if !gm.IsClosed() {
 		t.Error("group should be closed after Close()")
 	}
 }
@@ -82,5 +82,39 @@ func TestListGroups(t *testing.T) {
 	}
 	if !found {
 		t.Error("la1 group not found in listing")
+	}
+}
+
+func TestGetMembersReturnsCopy(t *testing.T) {
+	gm := CreateGroup("testcopy", []string{"agent:a/1", "agent:b/2"})
+	defer DeleteGroup("group:testcopy")
+
+	members := gm.GetMembers()
+	if len(members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(members))
+	}
+
+	// Mutating the returned slice should not affect the group
+	members[0] = "agent:modified/0"
+	if gm.IsMember("agent:a/1") {
+		// Still a member — good, copy was returned
+	} else {
+		t.Error("GetMembers() should return a copy, not a reference")
+	}
+}
+
+func TestRemoveMember(t *testing.T) {
+	gm := CreateGroup("testrm", []string{"agent:a/1", "agent:b/2", "agent:c/3"})
+	defer DeleteGroup("group:testrm")
+
+	ok := RemoveMember("group:testrm", "agent:b/2")
+	if !ok {
+		t.Error("RemoveMember should return true for existing member")
+	}
+	if gm.IsMember("agent:b/2") {
+		t.Error("agent:b/2 should have been removed")
+	}
+	if gm.MemberCount() != 2 {
+		t.Errorf("expected 2 members after removal, got %d", gm.MemberCount())
 	}
 }

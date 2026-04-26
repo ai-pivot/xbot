@@ -180,10 +180,10 @@ func (m *BackgroundTaskManager) Start(
 			"exit_code": exitCode,
 			"elapsed":   now.Sub(task.StartedAt).Round(time.Millisecond),
 		}).Info("Background task completed")
-
 		// Fire callbacks
 		m.mu.RLock()
-		cbs := m.callbacks[sessionKey]
+		cbs := make([]func(task *BackgroundTask), len(m.callbacks[sessionKey]))
+		copy(cbs, m.callbacks[sessionKey])
 		m.mu.RUnlock()
 		for _, cb := range cbs {
 			cb(task)
@@ -339,10 +339,10 @@ func (m *BackgroundTaskManager) Adopt(
 			"exit_code": task.ExitCode,
 			"elapsed":   now.Sub(task.StartedAt).Round(time.Millisecond),
 		}).Info("Adopted background task completed")
-
 		// Fire callbacks
 		m.mu.RLock()
-		cbs := m.callbacks[sessionKey]
+		cbs := make([]func(task *BackgroundTask), len(m.callbacks[sessionKey]))
+		copy(cbs, m.callbacks[sessionKey])
 		m.mu.RUnlock()
 		for _, cb := range cbs {
 			cb(task)

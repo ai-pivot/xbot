@@ -222,7 +222,7 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 		return nil
 	}
 
-	// Async handler — fire and forget with independent context.
+	// Async handler — fire and forget with independent context + timeout.
 	if def.Async {
 		go func(d *HookDef) {
 			defer func() {
@@ -230,7 +230,10 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 					log.Errorf("hooks: async %s handler panicked: %v", d.Type, r)
 				}
 			}()
-			asyncCtx := context.WithoutCancel(ctx)
+			asyncCtx, asyncCancel := context.WithTimeout(
+				context.WithoutCancel(ctx), 60*time.Second,
+			)
+			defer asyncCancel()
 			exec := m.getExecutor(d.Type)
 			if exec == nil {
 				log.Errorf("hooks: no executor for type %q", d.Type)
