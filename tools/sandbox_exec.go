@@ -9,6 +9,9 @@ import (
 // defaultExecTimeout is the default timeout for sandbox exec operations.
 const defaultExecTimeout = 30 * time.Second
 
+// maxHTTPResponseBodySize limits HTTP response body reads (10MB).
+const maxHTTPResponseBodySize = 10 * 1024 * 1024
+
 // Sandbox backend type constants.
 const (
 	SandboxNone   = "none"

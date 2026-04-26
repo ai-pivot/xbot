@@ -98,7 +98,7 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 	contentType := resp.Header.Get("Content-Type")
 
 	// 读取响应（限制最大 10MB）
-	reader := io.LimitedReader{R: resp.Body, N: 10 * 1024 * 1024}
+	reader := io.LimitedReader{R: resp.Body, N: maxHTTPResponseBodySize}
 	htmlContent, err := io.ReadAll(&reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)

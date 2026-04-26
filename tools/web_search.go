@@ -145,7 +145,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	defer resp.Body.Close()
 
 	// 读取响应（限制最大 10MB，防止异常响应占用过多内存）
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBodySize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
