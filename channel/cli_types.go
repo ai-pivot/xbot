@@ -194,11 +194,11 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	zero := uint(0)
 	style.Document.Margin = &zero
 
-	// 文档正文
+	// Document body text
 	if t.GDocumentText != "" {
 		style.Document.Color = c(t.GDocumentText)
 	}
-	// 标题 (H1–H4)
+	// Headings (H1–H4)
 	if t.GHeadingText != "" {
 		style.Heading.Color = c(t.GHeadingText)
 		style.H1.Color = c(t.GHeadingText)
@@ -206,7 +206,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 		style.H3.Color = c(t.GHeadingText)
 		style.H4.Color = c(t.GHeadingText)
 	}
-	// 代码块背景与文本
+	// Code block background and text
 	if t.GCodeBlock != "" {
 		style.CodeBlock.BackgroundColor = c(t.GCodeBlock)
 		if style.CodeBlock.Chroma != nil {
@@ -219,21 +219,21 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 			style.CodeBlock.Chroma.Text.Color = c(t.GCodeText)
 		}
 	}
-	// 链接
+	// Links
 	if t.GLinkText != "" {
 		style.Link.Color = c(t.GLinkText)
 		style.LinkText.Color = c(t.GLinkText)
 	}
-	// 引用
+	// Block quotes
 	if t.GBlockQuote != "" {
 		style.BlockQuote.Color = c(t.GBlockQuote)
 		style.BlockQuote.IndentToken = c("│ ")
 	}
-	// 列表项
+	// List items
 	if t.GListItem != "" {
 		style.Item.Color = c(t.GListItem)
 	}
-	// 水平分隔线
+	// Horizontal rules
 	if t.GHorizontalRule != "" {
 		style.HorizontalRule.Color = c(t.GHorizontalRule)
 	}
@@ -245,7 +245,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	return r
 }
 
-// cliCommands 已知命令列表（用于 Tab 补全，§8）
+// cliCommands 已知命令列表（用于 Tab completion，§8）
 var cliCommands = []string{
 	"/cancel", "/channel", "/chat", "/clear", "/compact", "/context", "/exit",
 	"/help", "/model", "/models", "/new", "/quit", "/rewind", "/search",
@@ -253,7 +253,7 @@ var cliCommands = []string{
 	"/usage", "/user",
 }
 
-// §19 长消息折叠阈值
+// §19 Long message folding阈值
 const (
 	msgFoldThresholdLines = 20
 	msgFoldPreviewLines   = 6
@@ -263,7 +263,7 @@ const (
 // CLI Progress Payload (for structured progress events)
 // ---------------------------------------------------------------------------
 
-// CLIProgressPayload 结构化进度消息负载（对应 agent.StructuredProgress）。
+// CLIProgressPayload Structured progress message payload (corresponds to agent.StructuredProgress)。
 type CLIProgressPayload struct {
 	ChatID                 string // session key for routing — CLI filters by m.chatID
 	Phase                  string
@@ -274,14 +274,14 @@ type CLIProgressPayload struct {
 	Reasoning              string // model's reasoning/thinking chain (reasoning_content)
 	SubAgents              []CLISubAgent
 	Todos                  []CLITodoItem
-	TokenUsage             *CLITokenUsage       // Token 用量快照（实时更新）
+	TokenUsage             *CLITokenUsage       // Token usage snapshot (real-time updates)
 	StreamContent          string               // LLM streaming text content (accumulated, for real-time render)
 	ReasoningStreamContent string               // LLM streaming reasoning content (accumulated, for real-time render)
 	IterationHistory       []CLIProgressPayload // completed iteration snapshots (for mid-session reconnect restore)
 	HistoryCompacted       bool                 // true after context compression — CLI should reload messages from session
 }
 
-// CLITokenUsage Token 使用量（对应 agent.TokenUsageSnapshot）
+// CLITokenUsage Token usage (corresponds to agent.TokenUsageSnapshot)
 type CLITokenUsage struct {
 	PromptTokens     int64
 	CompletionTokens int64
@@ -296,18 +296,18 @@ type CLITodoItem struct {
 	Done bool
 }
 
-// CLIToolProgress 单个工具的执行进度。
+// CLIToolProgress Execution progress of a single tool.
 type CLIToolProgress struct {
 	Name      string
 	Label     string
 	Status    string
 	Elapsed   int64 // milliseconds (from progress event)
-	Iteration int   // 所属迭代 ID
+	Iteration int   // Belonging iteration ID
 	Summary   string
 	StartedAt time.Time // when tool started (for live elapsed timer)
 }
 
-// CLISubAgent 子 Agent 的结构化进度状态。
+// CLISubAgent Structured progress state of a sub-agent.
 type CLISubAgent struct {
 	Role     string
 	Status   string // "running" | "done" | "error"
@@ -341,7 +341,7 @@ func formatElapsed(ms int64) string {
 // CLI Channel Config
 // ---------------------------------------------------------------------------
 
-// HistoryIteration 历史迭代快照（用于会话恢复的 tool_summary 渲染）
+// HistoryIteration History iteration snapshot (for tool_summary rendering during session restore)
 type HistoryIteration struct {
 	Iteration   int
 	Thinking    string
@@ -350,12 +350,12 @@ type HistoryIteration struct {
 	ElapsedWall int64 // wall-clock duration of the iteration (ms)
 }
 
-// HistoryMessage 历史消息（用于会话恢复）
+// HistoryMessage History messages (for session restore)
 type HistoryMessage struct {
 	Role       string // "user", "assistant", "tool_summary", "system"
 	Content    string
 	Timestamp  time.Time
-	Iterations []HistoryIteration // 仅 role=="tool_summary" 时有值，按迭代顺序
+	Iterations []HistoryIteration // Only has value when role=="tool_summary", ordered by iteration
 }
 
 // iterSnapshot mirrors agent.IterationSnapshot for JSON unmarshaling Detail field.
@@ -588,39 +588,39 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	return history
 }
 
-// CLIChannelConfig CLI 渠道配置
+// CLIChannelConfig CLI channel configuration
 type CLIChannelConfig struct {
-	WorkDir              string                                                                                                         // 工作目录（用于标题栏显示）
-	ChatID               string                                                                                                         // 会话 ID（按工作目录区分）
-	RemoteMode           bool                                                                                                           // 是否为 remote backend 模式（用于标题栏/轻提示）
+	WorkDir              string                                                                                                         // Working directory (for title bar display)
+	ChatID               string                                                                                                         // Session ID (distinguished by working directory)
+	RemoteMode           bool                                                                                                           // Whether in remote backend mode (for title bar/hints)
 	RemoteServerURL      string                                                                                                         // remote server URL (for header display, e.g. "ws://host:port")
 	DebugMode            bool                                                                                                           // --debug: UI capture + key injection via SIGUSR1
 	DebugInput           string                                                                                                         // --debug-input "1,enter,ctrl+c": auto-inject key sequence after startup
 	DebugCaptureMs       int                                                                                                            // --debug-capture-ms 200: UI capture interval in ms (default 1000)
-	HistoryLoader        func() ([]HistoryMessage, error)                                                                               // 会话恢复：加载历史消息
-	DynamicHistoryLoader func(channelName, chatID string) ([]HistoryMessage, error)                                                     // /su 切换用户后加载目标用户历史
-	AgentSessionDumpFn   func(chatID string) ([]HistoryMessage, error)                                                                  // agent session 切换时从 Agent 内存加载消息
-	GetCurrentValues     func() map[string]string                                                                                       // 获取当前配置值（用于 settings panel 初始值）
-	ApplySettings        func(values map[string]string)                                                                                 // 应用设置变更（写 config.json + 更新运行时状态）
-	IsFirstRun           bool                                                                                                           // 首次运行标志，TUI 启动时自动打开 setup panel
-	ClearMemory          func(targetType string) error                                                                                  // 清空记忆（danger zone）
-	GetMemoryStats       func() map[string]string                                                                                       // 获取记忆统计（danger zone）
-	SwitchLLM            func(provider, baseURL, apiKey, model string) error                                                            // 切换活跃 LLM（config + factory + save）
-	RefreshValuesCache   func()                                                                                                         // 刷新 GetCurrentValues 缓存（sub 切换后调用）
-	UsageQuery           func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error) // 查询 token 用量
-	AgentCount           func() int                                                                                                     // 获取活跃的 interactive agent 数量
-	AgentList            func() []AgentPanelEntry                                                                                       // 列出活跃 interactive agents（用于 panel 展示）
-	AgentInspect         func(roleName, instance string, tailCount int) (string, error)                                                 // 窥探 interactive agent 的最近活动（tail 风格）
-	AgentMessages        func(roleName, instance string) []SessionChatMessage                                                           // 获取 interactive agent 的对话消息
-	ChatCreateFn         func(channelName, senderID, label string) (string, error)                                                      // 创建新 ChatRoom（返回 chatID）
-	SessionsList         func() []SessionPanelEntry                                                                                     // 列出所有 session（main + subagent）
-	GetActiveProgressFn  func(channelName, chatID string) *CLIProgressPayload                                                           // 获取目标 session 的活跃进度（session switch 恢复用）
-	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                                   // 获取频道配置（用于 /channel 面板）
-	ChannelConfigSetFn   func(channel string, values map[string]string) error                                                           // 保存频道配置（用于 /channel 面板）
-	CreateWebUserFn      func(username string) (password string, err error)                                                             // 创建 Web 用户（admin only，返回自动生成的密码）
-	ListWebUsersFn       func() ([]map[string]any, error)                                                                               // 列出所有 Web 用户
-	DeleteWebUserFn      func(username string) error                                                                                    // 删除 Web 用户（admin only）
-	IsAdminFn            func() bool                                                                                                    // 检查当前用户是否 admin
+	HistoryLoader        func() ([]HistoryMessage, error)                                                                               // Session restore: load history messages
+	DynamicHistoryLoader func(channelName, chatID string) ([]HistoryMessage, error)                                                     // Load target user history after /su switch
+	AgentSessionDumpFn   func(chatID string) ([]HistoryMessage, error)                                                                  // Load messages from Agent memory on agent session switch
+	GetCurrentValues     func() map[string]string                                                                                       // Get current config values (for settings panel initial values)
+	ApplySettings        func(values map[string]string)                                                                                 // Apply setting changes (write config.json + update runtime state)
+	IsFirstRun           bool                                                                                                           // First-run flag, auto-opens setup panel on TUI start
+	ClearMemory          func(targetType string) error                                                                                  // Clear memory (danger zone)
+	GetMemoryStats       func() map[string]string                                                                                       // Get memory stats (danger zone)
+	SwitchLLM            func(provider, baseURL, apiKey, model string) error                                                            // Switch active LLM (config + factory + save)
+	RefreshValuesCache   func()                                                                                                         // Refresh GetCurrentValues cache (called after sub switch)
+	UsageQuery           func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error) // Query token usage
+	AgentCount           func() int                                                                                                     // Get count of active interactive agents
+	AgentList            func() []AgentPanelEntry                                                                                       // List active interactive agents (for panel display)
+	AgentInspect         func(roleName, instance string, tailCount int) (string, error)                                                 // Inspect recent activity of interactive agent (tail style)
+	AgentMessages        func(roleName, instance string) []SessionChatMessage                                                           // Get conversation messages of interactive agent
+	ChatCreateFn         func(channelName, senderID, label string) (string, error)                                                      // Create new ChatRoom (returns chatID)
+	SessionsList         func() []SessionPanelEntry                                                                                     // List all sessions (main + subagent)
+	GetActiveProgressFn  func(channelName, chatID string) *CLIProgressPayload                                                           // Get active progress of target session (for session switch restore)
+	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                                   // Get channel config (for /channel panel)
+	ChannelConfigSetFn   func(channel string, values map[string]string) error                                                           // Save channel config (for /channel panel)
+	CreateWebUserFn      func(username string) (password string, err error)                                                             // Create Web user (admin only, returns auto-generated password)
+	ListWebUsersFn       func() ([]map[string]any, error)                                                                               // List all Web users
+	DeleteWebUserFn      func(username string) error                                                                                    // Delete Web user (admin only)
+	IsAdminFn            func() bool                                                                                                    // Check if current user is admin
 }
 
 type AgentPanelEntry struct {
@@ -650,12 +650,12 @@ type SessionPanelEntry struct {
 // CLI Channel (implements Channel interface)
 // ---------------------------------------------------------------------------
 
-// CLIChannel CLI 渠道实现
+// CLIChannel CLI channel implementation
 type CLIChannel struct {
 	config  CLIChannelConfig
 	msgBus  *bus.MessageBus
-	msgChan chan bus.OutboundMessage // 接收 agent 回复的通道
-	workDir string                   // 工作目录
+	msgChan chan bus.OutboundMessage // Channel for receiving agent replies
+	workDir string                   // Working directory
 
 	// Bubble Tea
 	program   *tea.Program
@@ -766,4 +766,4 @@ type LLMSubscriber interface {
 	GetDefaultModel() string
 }
 
-// NewCLIChannel 创建 CLI 渠道
+// NewCLIChannel Create CLI channel

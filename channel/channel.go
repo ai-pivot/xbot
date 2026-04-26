@@ -2,14 +2,14 @@ package channel
 
 import "xbot/bus"
 
-// Channel 聊天渠道接口
+// Channel Chat channel interface
 type Channel interface {
-	// Name 返回渠道名称
+	// Name Return channel name
 	Name() string
-	// Start 启动渠道，阻塞运行直到 ctx 取消
+	// Start Start channel, blocks until ctx is cancelled
 	Start() error
-	// Stop 停止渠道
+	// Stop Stop channel
 	Stop()
-	// Send 发送消息，返回平台消息 ID（用于后续更新）
+	// Send Send message, return platform message ID (for subsequent updates)
 	Send(msg bus.OutboundMessage) (string, error)
 }

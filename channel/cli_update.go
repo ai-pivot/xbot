@@ -14,7 +14,7 @@ import (
 	log "xbot/logger"
 )
 
-// Update 处理消息
+// Update Handle message
 func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	defer clipanic.Recover("channel.cliModel.Update", msg, true)
 	var (
@@ -22,7 +22,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds []tea.Cmd
 	)
 
-	// §8 Tab 补全：记录输入内容变化以重置补全状态
+	// §8 Tab completion：记录输入内容变化以重置补全状态
 	prevText := m.textarea.Value()
 
 	wasTyping := m.typing
@@ -83,7 +83,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		return m, cmd
 	}
 
-	// 主题变更通知：重建样式缓存 + glamour 渲染器
+	// Theme change notification: rebuild style cache + glamour renderer
 	select {
 	case <-themeChangeCh:
 		m.applyThemeAndRebuild(currentThemeName)
@@ -109,7 +109,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.pendingCmds = nil
 	}
 
-	// i18n: locale 变更通知
+	// i18n: Locale change notification
 	select {
 	case <-localeChangeCh:
 		m.locale = GetLocale(currentLocaleLang)
@@ -122,7 +122,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	default:
 	}
 
-	// Ctrl+Z: 紧急退出（无论什么状态，包括 panel/typing/idle）
+	// Ctrl+Z: emergency quit (regardless of state, including panel/typing/idle)
 	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "ctrl+z" {
 		m.showSystemMsg(m.locale.EmergencyQuitHint, feedbackWarning)
 		return m, tea.Quit
@@ -133,11 +133,11 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		log.WithFields(log.Fields{"str": key.String(), "code": key.Code, "mod": key.Mod}).Debug("DEBUG keypress")
 	}
 
-	// Ctrl+C: 统一处理，位于所有其他 key handler 之前。
-	// 这是唯一的 Ctrl+C 处理点——任何其他地方不得再拦截 Ctrl+C。
-	// 保证无论什么状态（typing/idle/panel/queue/editing），Ctrl+C 始终有效。
+	// Ctrl+C: unified handling, placed before all other key handlers.
+	// This is the only Ctrl+C handling point — no other place should intercept Ctrl+C.
+	// Ensure Ctrl+C always works regardless of state (typing/idle/panel/queue/editing).
 	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "ctrl+c" {
-		// 1. 关闭所有 overlay/panel
+		// 1. Close all overlay/panel
 		if m.quickSwitchMode != "" {
 			m.quickSwitchMode = ""
 		}
@@ -150,15 +150,15 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		if m.searchMode {
 			m.exitSearch()
 		}
-		// 2. 取消正在编辑的排队消息
+		// 2. Cancel editing of queued message
 		if m.queueEditing {
 			m.queueEditing = false
 			m.queueEditBuf = ""
 			m.textarea.SetValue("")
 		}
-		// 3. 如果 agent 正在处理：
-		//    - 有排队消息：只清空队列，不发 cancel（需要再按一次 Ctrl+C 才 cancel）
-		//    - 无排队消息：发送 cancel
+		// 3. If agent is processing:
+		//    - Has queued messages: only clear queue, don't send cancel (need another Ctrl+C to cancel)
+		//    - No queued messages: send cancel
 		if m.typing {
 			queueLen := len(m.messageQueue)
 			if queueLen > 0 {
@@ -169,7 +169,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			}
 			return m, nil
 		}
-		// 4. 空闲状态：清空输入
+		// 4. Idle state: clear input
 		if m.textarea.Value() != "" {
 			m.textarea.Reset()
 			m.inputHistoryIdx = -1
@@ -221,7 +221,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		return m, cmd
 	}
 
-	// §21 搜索模式拦截
+	// §21 Search mode拦截
 	if key, ok := msg.(tea.KeyPressMsg); ok && m.searchMode {
 		switch {
 		case m.searchEditing:
@@ -268,7 +268,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 	}
 
-	// Home/End 跳顶部/底部
+	// Home/End jump to top/bottom
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.String() {
 		case "home":
@@ -281,20 +281,20 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 	}
 
-	// Ctrl+Enter 换行（终端发送的 raw sequence 不统一，需手动检测）
+	// Ctrl+Enter newline (terminal raw sequences are inconsistent, need manual detection)
 	if isCtrlEnter(msg) {
 		m.textarea.InsertString("\n")
 		m.autoExpandInput()
 		return m, nil
 	}
-	// Ctrl+J 换行 — 直接 InsertString 绕过 textarea 内部 atContentLimit 检查，
-	// 否则到达 MaxHeight 后 textarea 的 InsertNewline keymap 会静默丢弃换行。
+	// Ctrl+J newline — directly InsertString bypassing textarea's internal atContentLimit check,
+	// otherwise textarea's InsertNewline keymap silently drops newlines after reaching MaxHeight.
 	if isCtrlJ(msg) {
 		m.textarea.InsertString("\n")
 		m.autoExpandInput()
 		return m, nil
 	}
-	// Ctrl+O 切换 tool summary 展开/折叠（CSI u 协议兼容层，kitty/Ghostty 等）
+	// Ctrl+O toggle tool summary 展开/折叠（CSI u 协议兼容层，kitty/Ghostty 等）
 	if isCtrlO(msg) {
 		m.toggleToolSummary()
 		return m, nil
@@ -315,11 +315,11 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// Unhandled key: fall through to post-switch processing
 
 	case tea.WindowSizeMsg:
-		// 窗口大小变化 - 动态调整布局
+		// Window size change - dynamically adjust layout
 		m.handleResize(msg.Width, msg.Height)
 
 	case cliOutboundMsg:
-		// 收到 agent 回复
+		// Received agent reply
 		m.handleAgentMessage(msg.msg)
 		// Queue flush is handled in cliTickMsg to ensure correct message ordering
 		// (reply must be appended before queued message is sent).
@@ -473,7 +473,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds = append(cmds, m.debugCaptureTick())
 
 	case splashDoneMsg:
-		// §14 启动画面结束确认
+		// §14 Splash screen end confirmation
 		m.splashDone = true
 		// Remote mode: retry model name fetch — the initial call in cli.go:76
 		// may have failed if the WS RPC wasn't fully ready yet.
@@ -511,14 +511,14 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds = append(cmds, m.handleToastClear(msg)...)
 
 	case easterEggDoneMsg:
-		// 🥚 彩蛋关闭（按任意键触发）
+		// 🥚 Easter egg dismiss (triggered by any key press)
 		m.dismissEasterEgg()
 		m.renderCacheValid = false
 		m.updateViewportContent()
 		return m, nil
 
 	case easterEggMatrixTickMsg:
-		// 🥚 Matrix 代码雨动画帧推进
+		// 🥚 Matrix rain animation frame advance
 		if m.easterEgg == easterEggMatrix {
 			m.tickMatrix()
 			cmds = append(cmds, matrixTickCmd())
@@ -548,11 +548,11 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds = append(cmds, tickCmd())
 	}
 
-	// 更新 viewport
+	// Update viewport
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
-	// 更新 textarea
+	// Update textarea
 	// Skip WindowSizeMsg: handleResize already calls SetWidth() which
 	// triggers recalculateHeight(). Forwarding the resize message to
 	// textarea.Update() would redundantly recalculate + render view().
@@ -561,14 +561,14 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// §8 Tab 补全：输入内容变化时重置补全状态
+	// §8 Tab completion：Reset completion state on input content change
 	newVal := m.textarea.Value()
 	if newVal != prevText {
 		m.completions = nil
 		m.compIdx = 0
 		m.fileCompActive = false
-		// 用户手动输入：根据当前 @ prefix 重新 glob
-		// 但如果 fileCompActive（Tab 循环中），不重新 glob
+		// User manual input: re-glob based on current @ prefix
+		// But if fileCompActive (in Tab cycle), don't re-glob
 		if !m.fileCompActive {
 			if ok, prefix := detectAtPrefix(newVal); ok {
 				m.populateFileCompletions(prefix)
@@ -579,7 +579,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 	}
 
-	// 检查是否需要退出
+	// Check if exit is needed
 	if m.shouldQuit {
 		return m, tea.Quit
 	}
@@ -611,9 +611,9 @@ func (m *cliModel) autoExpandInput() {
 	}
 }
 
-// layoutViewportHeight 计算 viewport 应有的高度，考虑 panel 模式。
-// 正常模式：titleBar(1) + status(1) + footer(1) + inputBox(taHeight+border)
-// Panel 模式：titleBar(1) + panel(border) + panelFooter(1) + toast(~1)
+// layoutViewportHeight Calculate viewport's intended height, considering panel mode.
+// Normal mode: titleBar(1) + status(1) + footer(1) + inputBox(taHeight+border)
+// Panel mode: titleBar(1) + panel(border) + panelFooter(1) + toast(~1)
 func (m *cliModel) layoutViewportHeight() int {
 	height := m.height
 	fixedLines := 3 // titleBar + status + footer
@@ -645,15 +645,15 @@ func (m *cliModel) layoutViewportHeight() int {
 		return 3
 	}
 
-	// 正常模式
+	// Normal mode
 	taBorder := 2 // top + bottom border
-	// 计算 todoBar 占用的行数：标题行(1) + 每个 todo item 一行
+	// Calculate lines occupied by todoBar: title line(1) + one line per todo item
 	todoLines := 0
 	if len(m.todos) > 0 {
 		todoLines = 1 + len(m.todos)
 	}
 	reservedLines := fixedLines + taBorder + m.textarea.Height() + todoLines
-	// §20b 小终端适配：极小窗口下动态缩减布局
+	// §20b Small terminal adaptation: dynamically reduce layout for very small windows
 	if height < 12 {
 		reservedLines = fixedLines + taBorder + 2 // min textarea
 	}
@@ -667,9 +667,9 @@ func (m *cliModel) layoutViewportHeight() int {
 	return viewportHeight
 }
 
-// relayoutViewport 重新计算并设置 viewport 高度（不重建样式缓存）。
-// 用于 panel 打开/关闭、todo 增减时动态调整布局。
-// 如果用户之前在底部，调整后继续保持跟随底部。
+// relayoutViewport Recalculate and set viewport height (without rebuilding style cache).
+// For dynamically adjusting layout when panel opens/closes, todos change.
+// If user was at bottom before, continue following bottom after adjustment.
 func (m *cliModel) relayoutViewport() {
 	if m.width == 0 || m.height == 0 {
 		return
@@ -681,7 +681,7 @@ func (m *cliModel) relayoutViewport() {
 	}
 }
 
-// handleResize 处理窗口大小变化
+// handleResize Handle window size change
 func (m *cliModel) handleResize(width, height int) {
 	// Deduplicate: skip if size hasn't actually changed.
 	// During resize drags, terminals (especially foot) may fire many
@@ -694,7 +694,7 @@ func (m *cliModel) handleResize(width, height int) {
 	m.width = width
 	m.height = height
 
-	// §20 重建样式缓存
+	// §20 Rebuild style cache
 	m.styles = buildStyles(width)
 
 	m.viewport.SetWidth(width)
@@ -719,14 +719,14 @@ func (m *cliModel) handleResize(width, height int) {
 		m.ready = true
 	}
 
-	// §1 增量渲染：resize 后缓存全部失效
+	// §1 Incremental rendering：resize 后缓存全部失效
 	m.renderCacheValid = false
 	m.lastViewportContent = "" // force setViewportContent to re-wrap
 	for i := range m.messages {
 		m.messages[i].dirty = true
 	}
 
-	// 更新内容（保持用户滚动位置）
+	// Update content (preserve user scroll position)
 	wasAtBottom := m.viewport.AtBottom()
 	m.updateViewportContent()
 	if wasAtBottom {
@@ -807,7 +807,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 		return
 	}
 
-	// §20c @ 文件引用补全（带目录/文件图标区分 + 截断）
+	// §20c @ file reference completion（带目录/文件图标区分 + 截断）
 	rawInput := m.textarea.Value()
 	if ok, _ := detectAtPrefix(rawInput); ok {
 		borderColor = lipgloss.Color(currentTheme.Info)
@@ -819,7 +819,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 				if dir {
 					base += "/"
 				}
-				// 截断过长文件名
+				// Truncate long filenames
 				if utf8.RuneCountInString(base) > fileCompMaxNameRunes {
 					runes := []rune(base)
 					base = string(runes[:fileCompTruncateAt]) + "…"
@@ -846,7 +846,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 	return
 }
 
-// handleRunnerStatusMsg 处理 runner 连接状态变化
+// handleRunnerStatusMsg Handle runner connection status change
 func (m *cliModel) handleRunnerStatusMsg(msg runnerStatusMsg) tea.Cmd {
 	if msg.err != nil {
 		m.showTempStatus(fmt.Sprintf("%s: %v", m.locale.RunnerConnectFailed, msg.err))

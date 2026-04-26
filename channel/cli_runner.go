@@ -19,7 +19,7 @@ import (
 // Runner Status & Stats
 // ---------------------------------------------------------------------------
 
-// RunnerStatus 表示 runner 连接状态
+// RunnerStatus Represents runner connection status
 type RunnerStatus string
 
 const (
@@ -28,7 +28,7 @@ const (
 	RunnerConnected    RunnerStatus = "connected"
 )
 
-// RunnerStats 连接统计
+// RunnerStats Connection statistics
 type RunnerStats struct {
 	ConnectedAt  time.Time
 	RequestCount int64
@@ -39,17 +39,17 @@ type RunnerStats struct {
 // Bubble Tea Messages (runner → TUI)
 // ---------------------------------------------------------------------------
 
-// runnerStatusMsg 通知 TUI runner 连接状态变化
+// runnerStatusMsg Notify TUI of runner connection status change
 type runnerStatusMsg struct {
 	status RunnerStatus
 	err    error
 }
 
 // ---------------------------------------------------------------------------
-// RunnerBridge — 管理 TUI 的 runner 连接生命周期
+// RunnerBridge — Manage TUI's runner connection lifecycle
 // ---------------------------------------------------------------------------
 
-// RunnerBridge 管理 TUI 的 runner 连接
+// RunnerBridge Manage TUI's runner connection
 type RunnerBridge struct {
 	mu        sync.Mutex
 	status    RunnerStatus
@@ -58,20 +58,20 @@ type RunnerBridge struct {
 	workspace string
 	stats     RunnerStats
 
-	// 内部状态
+	// Internal state
 	handler *runnerclient.Handler
 	stopCh  chan struct{}
-	doneCh  chan struct{} // goroutine 退出信号
+	doneCh  chan struct{} // Goroutine exit signal
 
-	// 回调（通过 tea.Cmd 通知 TUI）
+	// Callbacks (notify TUI via tea.Cmd)
 	program *tea.Program
 
-	// 日志文件
+	// Log file
 	logFile *os.File
 	logPath string
 }
 
-// NewRunnerBridge 创建 RunnerBridge
+// NewRunnerBridge Create RunnerBridge
 func NewRunnerBridge(program *tea.Program) *RunnerBridge {
 	return &RunnerBridge{
 		status:  RunnerDisconnected,
@@ -79,7 +79,7 @@ func NewRunnerBridge(program *tea.Program) *RunnerBridge {
 	}
 }
 
-// Connect 连接到 server（异步，通过 program.Send 回报结果）
+// Connect Connect to server (async, report result via program.Send)
 func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient llm.LLM, models []string, llmProvider string) {
 	rb.mu.Lock()
 	if rb.status == RunnerConnected || rb.status == RunnerConnecting {
@@ -100,7 +100,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 	clipanic.Go("channel.RunnerBridge.Connect", func() {
 		defer close(doneCh)
 
-		// 1. 创建日志文件
+		// 1. 创建Log file
 		cacheDir, _ := os.UserCacheDir()
 		logDir := filepath.Join(cacheDir, "xbot", "runner-logs")
 		os.MkdirAll(logDir, 0755)
@@ -111,7 +111,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			logFile = nil // fallback: no logging
 		}
 
-		// 2. 创建日志回调
+		// 2. Create log callback
 		logf := func(format string, args ...interface{}) {
 			if logFile != nil {
 				now := time.Now().Format("15:04:05")
@@ -119,24 +119,24 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			}
 		}
 
-		// 保存到 RunnerBridge
+		// Save to RunnerBridge
 		rb.mu.Lock()
 		rb.logFile = logFile
 		rb.logPath = logPath
 		rb.mu.Unlock()
 
-		// 3. 创建 NativeExecutor
+		// 3. Create NativeExecutor
 		executor := runnerclient.NewNativeExecutor(workspace)
 
-		// 4. 创建 Handler（带日志回调）
+		// 4. Create Handler (with log callback)
 		handler := runnerclient.NewHandler(executor, runnerclient.WithLogFunc(logf))
 
-		// 5. 设置 LLM 客户端（如果有）
+		// 5. Set LLM client (if available)
 		if llmClient != nil {
 			handler.SetLLMClient(llmClient, models, llmProvider)
 		}
 
-		// 6. 解析 userID
+		// 6. Parse userID
 		userID := parseUserID(serverURL)
 		if userID == "" {
 			program.Send(runnerStatusMsg{
@@ -146,13 +146,13 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			return
 		}
 
-		// 7. 确保有 ws:// 前缀
+		// 7. Ensure ws:// prefix
 		wsURL := serverURL
 		if !strings.Contains(wsURL, "://") {
 			wsURL = "ws://" + wsURL
 		}
 
-		// 8. 连接 server（自报告 LLM 能力）
+		// 8. Connect to server (self-report LLM capabilities)
 		shell := runnerclient.DetectShell(false, executor)
 		var opts runnerclient.ConnectOptions
 		opts.LogFunc = logf
@@ -169,7 +169,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			return
 		}
 
-		// 9. 保存内部状态
+		// 9. 保存Internal state
 		rb.mu.Lock()
 		rb.handler = handler
 		rb.stats = RunnerStats{
@@ -178,18 +178,18 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 		rb.status = RunnerConnected
 		rb.mu.Unlock()
 
-		// 10. 启动 WritePump + ReadLoop
+		// 10. Start WritePump + ReadLoop
 		writeCh := make(chan runnerclient.WriteMsg, 64)
 		writeDone := make(chan struct{})
 		handler.SetWriteChannels(writeCh, writeDone)
 
-		// 启动 WritePump
+		// Start WritePump
 		go runnerclient.WritePump(conn, writeCh, stopCh, writeDone, logf)
 
-		// 启动 ReadLoop（阻塞直到连接断开）
+		// Start ReadLoop (blocks until connection drops)
 		runnerclient.ReadLoop(conn, handler, writeCh, writeDone, logf)
 
-		// ReadLoop 退出 → 连接断开
+		// ReadLoop exit → connection dropped
 		rb.mu.Lock()
 		rb.status = RunnerDisconnected
 		handler.Cleanup()
@@ -203,7 +203,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 	})
 }
 
-// Disconnect 断开连接
+// Disconnect Disconnect
 func (rb *RunnerBridge) Disconnect() {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -214,7 +214,7 @@ func (rb *RunnerBridge) Disconnect() {
 
 	rb.status = RunnerDisconnected
 
-	// 关闭 stopCh → WritePump 退出 → ReadLoop 也会退出
+	// Close stopCh → WritePump exits → ReadLoop also exits
 	select {
 	case <-rb.stopCh:
 		// already closed
@@ -222,63 +222,63 @@ func (rb *RunnerBridge) Disconnect() {
 		close(rb.stopCh)
 	}
 
-	// 关闭日志文件
+	// 关闭Log file
 	if rb.logFile != nil {
 		rb.logFile.Close()
 		rb.logFile = nil
 	}
 
-	// 清理 handler 资源
+	// Clean up handler resources
 	if rb.handler != nil {
 		rb.handler.Cleanup()
 		rb.handler = nil
 	}
 }
 
-// Status 返回当前状态
+// Status Return current status
 func (rb *RunnerBridge) Status() RunnerStatus {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.status
 }
 
-// Stats 返回统计信息
+// Stats Return statistics
 func (rb *RunnerBridge) Stats() RunnerStats {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.stats
 }
 
-// ServerURL 返回当前 server URL
+// ServerURL Return current server URL
 func (rb *RunnerBridge) ServerURL() string {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.serverURL
 }
 
-// Workspace 返回当前 workspace
+// Workspace Return current workspace
 func (rb *RunnerBridge) Workspace() string {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.workspace
 }
 
-// LogPath 返回当前日志文件路径。
+// LogPath 返回当前Log file路径。
 func (rb *RunnerBridge) LogPath() string {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.logPath
 }
 
-// parseUserID 从 server URL 中解析 userID
-// 例如: ws://host:port/ws/abc123 → abc123
+// parseUserID 从 server URL 中Parse userID
+// e.g.: ws://host:port/ws/abc123 → abc123
 func parseUserID(serverURL string) string {
-	// 去掉协议前缀
+	// Strip protocol prefix
 	u := serverURL
 	if idx := strings.Index(u, "://"); idx >= 0 {
 		u = u[idx+3:]
 	}
-	// 取最后一段路径
+	// Take last path segment
 	if idx := strings.LastIndex(u, "/"); idx >= 0 {
 		return u[idx+1:]
 	}

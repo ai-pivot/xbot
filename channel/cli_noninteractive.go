@@ -9,11 +9,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// NonInteractiveChannel (非交互模式，单次执行)
+// NonInteractiveChannel (Non-interactive mode, single execution)
 // ---------------------------------------------------------------------------
 
-// NonInteractiveChannel 非交互模式渠道，用于管道/参数模式。
-// 收到完整消息后打印到 stdout 并设置退出标志。
+// NonInteractiveChannel Non-interactive mode channel, for pipe/argument mode.
+// 收到Complete message后打印到 stdout 并设置退出标志。
 type NonInteractiveChannel struct {
 	msgBus   *bus.MessageBus
 	msgCh    chan bus.OutboundMessage
@@ -21,14 +21,14 @@ type NonInteractiveChannel struct {
 	doneOnce sync.Once // ensures close(done) is called exactly once
 }
 
-// NewNonInteractiveChannel 创建非交互模式渠道
+// NewNonInteractiveChannel Create non-interactive mode channel
 func NewNonInteractiveChannel(msgBus *bus.MessageBus) *NonInteractiveChannel {
 	ch := &NonInteractiveChannel{
 		msgBus: msgBus,
 		msgCh:  make(chan bus.OutboundMessage, 64),
 		done:   make(chan struct{}),
 	}
-	// 启动消息接收 goroutine
+	// Start message receiving goroutine
 	go ch.run()
 	return ch
 }
@@ -41,14 +41,14 @@ func (c *NonInteractiveChannel) run() {
 			content = ConvertFeishuCard(content)
 		}
 		if msg.IsPartial {
-			// 流式部分消息：只输出增量部分
+			// Streaming partial message: only output the delta
 			if len(content) > len(prevContent) {
 				diff := content[len(prevContent):]
 				fmt.Print(diff)
 			}
 			prevContent = content
 		} else {
-			// 完整消息：输出剩余差异部分，然后换行
+			// Complete message：输出剩余差异部分，然后换行
 			if len(content) > len(prevContent) {
 				diff := content[len(prevContent):]
 				fmt.Print(diff)

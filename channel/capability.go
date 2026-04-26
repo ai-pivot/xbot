@@ -60,7 +60,7 @@ type StreamRenderer interface {
 // Used as fallback for channels that don't implement UIBuilder.
 func BuildTextSettingsUI(schema []SettingDefinition, currentValues map[string]string) string {
 	if len(schema) == 0 {
-		return "没有可配置的设置项。"
+		return "No configurable settings available."
 	}
 
 	var sb strings.Builder

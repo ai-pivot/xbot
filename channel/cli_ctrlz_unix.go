@@ -16,7 +16,7 @@ func setupCtrlZSuspend(c *CLIChannel, origStdout, origStderr *os.File) {
 	signal.Notify(sigCh, syscall.SIGTSTP)
 	clipanic.Go("channel.setupCtrlZSuspend", func() {
 		<-sigCh
-		// 恢复终端并直接退出，不依赖 bubbletea 的 Quit 流程
+		// Restore terminal and exit directly, without relying on bubbletea's Quit flow
 		_ = c.program.ReleaseTerminal()
 		os.Stdout = origStdout
 		os.Stderr = origStderr

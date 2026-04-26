@@ -22,33 +22,33 @@ func init() {
 // All schemes are designed for dark terminal backgrounds.
 type cliTheme struct {
 	// Text
-	TextPrimary   string // 主文本色
-	TextSecondary string // 次要文本
-	TextMuted     string // 弱化文本/占位符
+	TextPrimary   string // Primary text color
+	TextSecondary string // Secondary text
+	TextMuted     string // Muted text/placeholder
 	// Semantic
-	Success string // 成功/完成
-	Warning string // 警告/进行中
-	Error   string // 错误
-	Info    string // 信息/链接
+	Success string // Success/complete
+	Warning string // Warning/in progress
+	Error   string // Error
+	Info    string // 信息/Links
 	// UI
-	Accent    string // 强调色（边框、焦点）
-	AccentAlt string // 次要强调
-	BarFilled string // 进度条填充
-	BarEmpty  string // 进度条空
-	Border    string // 边框
-	TitleText string // 标题栏文字
+	Accent    string // Accent (border, focus)
+	AccentAlt string // Secondary accent
+	BarFilled string // Progress bar filled
+	BarEmpty  string // Progress bar empty
+	Border    string // Border
+	TitleText string // Title bar text
 	// Surface
-	Surface  string // 分隔线/标题栏背景
-	Gradient string // 渐变辅助色（分隔线、装饰）
-	// Glamour 渲染色（Markdown 内容跟随主题）
-	GDocumentText   string // 文档正文色
-	GHeadingText    string // 标题色
-	GCodeBlock      string // 代码块背景色
-	GCodeText       string // 代码文本色
-	GLinkText       string // 链接色
-	GBlockQuote     string // 引用边框色
-	GListItem       string // 列表标记色
-	GHorizontalRule string // 水平分隔线色
+	Surface  string // Divider/title bar background
+	Gradient string // Gradient helper color (divider, decoration)
+	// Glamour render colors (Markdown content follows theme)
+	GDocumentText   string // Document body text色
+	GHeadingText    string // Heading color
+	GCodeBlock      string // Code block background color
+	GCodeText       string // Code text color
+	GLinkText       string // Links色
+	GBlockQuote     string // Block quotesBorder色
+	GListItem       string // List marker color
+	GHorizontalRule string // Horizontal rules色
 }
 
 var (
@@ -304,9 +304,9 @@ var (
 )
 
 // ---------------------------------------------------------------------------
-// §20 样式缓存系统 — 避免每帧重建 lipgloss.Style（第 7 轮重构）
+// §20 Style cache system — avoid rebuilding lipgloss.Style every frame (round 7 refactor)
 // ---------------------------------------------------------------------------
-// 每个 View() 调用创建 200+ 个 lipgloss.NewStyle() → 改为缓存，只在主题/resize 时重建。
+// Each View() call creates 200+ lipgloss.NewStyle() → changed to cache, only rebuild on theme/resize.
 
 type cliStyles struct {
 	TitleBar         lipgloss.Style
@@ -535,11 +535,11 @@ func buildStyles(width int) cliStyles {
 	}
 }
 
-// applyTAStyles 将缓存样式应用到 textarea 组件
+// applyTAStyles Apply cached styles to textarea component
 func applyTAStyles(ta *textarea.Model, s *cliStyles) {
 	styles := ta.Styles()
 	styles.Cursor.Color = s.TACursor.GetForeground()
-	styles.Cursor.Blink = false // 禁用光标闪烁：避免 IME 输入时字符因闪烁竞态而视觉消失
+	styles.Cursor.Blink = false // Disable cursor blink: avoid characters visually disappearing due to blink race during IME input
 	styles.Focused.Base = s.TABase
 	styles.Focused.Placeholder = s.TAPlaceholder
 	styles.Focused.CursorLine = s.TACursorLine
@@ -578,9 +578,9 @@ func ModelsLoadErrorCh() chan<- error { return modelsLoadErrorCh }
 // currentThemeName tracks the active theme name for themeChangeCh handler.
 var currentThemeName string
 
-// setTheme 更新 currentTheme 但不发 channel 通知。
-// 供 applyThemeAndRebuild 等需要同步完成所有工作的调用方使用，
-// 避免后续 Update 周期再触发一次冗余的 fullRebuild。
+// setTheme Update currentTheme without sending channel notification.
+// For callers like applyThemeAndRebuild that need to complete all work synchronously,
+// avoid triggering a redundant fullRebuild in subsequent Update cycles.
 func setTheme(name string) {
 	if t, ok := themeRegistry[name]; ok {
 		currentTheme = t

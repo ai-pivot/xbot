@@ -42,7 +42,7 @@ func NewCLIChannel(cfg CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
 	}
 }
 
-// Name 返回渠道名称
+// Name Return channel name
 func (c *CLIChannel) Name() string {
 	return "cli"
 }
@@ -52,7 +52,7 @@ func (c *CLIChannel) SupportsStreamRender() bool {
 	return true
 }
 
-// Start 启动 CLI 渠道（阻塞运行）
+// Start Start CLI channel (blocking)
 func (c *CLIChannel) Start() error {
 	log.Info("CLI channel starting...")
 
@@ -72,7 +72,7 @@ func (c *CLIChannel) Start() error {
 		}()
 	}
 
-	// 初始化 Bubble Tea model
+	// Initialize Bubble Tea model
 	c.model = newCLIModel()
 	c.model.channel = c
 	c.model.refreshCachedModelName()
@@ -146,7 +146,7 @@ func (c *CLIChannel) Start() error {
 	// Setup bg task count callback
 	c.updateBgTaskCountFn()
 
-	// 加载历史消息（会话恢复）
+	// Load history messages (session restore)
 	if c.config.HistoryLoader != nil {
 		if history, err := c.config.HistoryLoader(); err == nil && len(history) > 0 {
 			for _, hm := range history {
@@ -157,7 +157,7 @@ func (c *CLIChannel) Start() error {
 					isPartial: false,
 					dirty:     true,
 				}
-				// 映射迭代快照
+				// Map iteration snapshots
 				if len(hm.Iterations) > 0 {
 					cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
 					for i, hi := range hm.Iterations {
@@ -172,12 +172,12 @@ func (c *CLIChannel) Start() error {
 		}
 	}
 
-	// 首次运行：打开 setup panel
+	// First run: open setup panel
 	if c.config.IsFirstRun {
 		c.model.openSetupPanel()
 	}
 
-	// 创建 Bubble Tea program
+	// Create Bubble Tea program
 	programOpts := []tea.ProgramOption{
 		tea.WithOutput(origStdout),
 	}
@@ -193,26 +193,26 @@ func (c *CLIChannel) Start() error {
 		c.approvalState.SetHandler(NewCLIApprovalHandler(c.program))
 	}
 
-	// Ctrl+Z 紧急退出：双保险
-	// 1) Key event handler (cli_update.go): raw mode 下终端可能直接传 0x1A 字节
-	// 2) SIGTSTP 信号兜底: 某些终端 emulator 在 raw mode 下仍发信号
+	// Ctrl+Z emergency quit: double insurance
+	// 1) Key event handler (cli_update.go): In raw mode, terminal may directly pass 0x1A byte
+	// 2) SIGTSTP signal fallback: some terminal emulators still send signal in raw mode
 	// Note: SIGTSTP is Unix-only; handled by handleCtrlZSuspend (platform-specific).
 	setupCtrlZSuspend(c, origStdout, origStderr)
 
-	// 启动 outbound 消息处理 goroutine
+	// Start outbound message handling goroutine
 	c.wg.Add(1)
 	go c.handleOutbound()
 
-	// 启动 progress coalescing goroutine: drains progressCh and forwards
+	// Start progress coalescing goroutine: drains progressCh and forwards
 	// to the unified async channel.
 	c.wg.Add(1)
 	clipanic.Go("channel.CLIChannel.handleProgressDrain", c.handleProgressDrain)
 
-	// 启动 unified async drain goroutine: single sender to p.msgs
+	// Start unified async drain goroutine: single sender to p.msgs
 	c.wg.Add(1)
 	clipanic.Go("channel.CLIChannel.handleAsyncDrain", c.handleAsyncDrain)
 
-	// §13 异步检查更新（不阻塞 TUI 启动）
+	// §13 Async check for updates (doesn't block TUI startup)
 	c.CheckUpdateAsync()
 
 	// Runner auto-connect: inject RunnerBridge into model and connect
@@ -263,7 +263,7 @@ func (c *CLIChannel) Start() error {
 		}
 	}
 
-	// 运行 Bubble Tea（阻塞）
+	// Run Bubble Tea (blocking)
 	if _, err := c.program.Run(); err != nil {
 		log.WithError(err).Error("CLI channel exited with error")
 		if debugSock != nil {
@@ -279,7 +279,7 @@ func (c *CLIChannel) Start() error {
 	return nil
 }
 
-// Stop 停止 CLI 渠道
+// Stop Stop CLI channel
 func (c *CLIChannel) Stop() {
 	log.Info("CLI channel stopping...")
 	// Disconnect runner bridge if active
@@ -298,11 +298,11 @@ func (c *CLIChannel) Stop() {
 	log.Info("CLI channel stopped")
 }
 
-// Send 发送消息到 CLI（实现 Channel 接口）
+// Send Send message to CLI (implements Channel interface)
 func (c *CLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
-	// 发送到消息通道，由 handleOutbound 处理
+	// Send to message channel, handled by handleOutbound
 	log.WithField("msg_id", msgID).WithField("content_len", len(msg.Content)).Debug("CLIChannel.Send: queuing")
 	select {
 	case c.msgChan <- msg:
@@ -313,7 +313,7 @@ func (c *CLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 	return msgID, nil
 }
 
-// SendProgress 发送结构化进度事件到 CLI（非阻塞）。
+// SendProgress Send structured progress event to CLI (non-blocking).
 // ALL messages (including PhaseDone) go through asyncCh to ensure there is only
 // ONE goroutine (handleAsyncDrain) calling program.Send(). This prevents multiple
 // senders from competing on the unbuffered p.msgs channel, which would starve
@@ -540,8 +540,8 @@ func (c *CLIChannel) SetCheckpointState(state *hooks.CheckpointState) {
 	c.pendingCheckpointState = state
 }
 
-// InjectUserMessage 通知 CLI 有 user 消息被 agent 注入（如 bg task 完成通知）。
-// 在 CLI 界面上显示为一条 user 消息，和用户手动输入的效果一致。
+// InjectUserMessage Notify CLI that a user message was injected by agent (e.g. bg task completion notification).
+// Displayed as a user message in the CLI UI, identical to manual user input.
 func (c *CLIChannel) InjectUserMessage(content string) {
 	if c.program != nil {
 		select {
@@ -626,7 +626,7 @@ func (c *CLIChannel) CheckUpdateAsync() {
 	})
 }
 
-// handleOutbound 处理从 agent 发来的消息 — 通过 asyncCh 合并发送
+// handleOutbound Handle messages from agent — send via asyncCh with merging
 func (c *CLIChannel) handleOutbound() {
 	defer c.wg.Done()
 
@@ -708,20 +708,20 @@ func (c *CLIChannel) handleAsyncDrain() {
 // Bubble Tea Model
 // ---------------------------------------------------------------------------
 
-// animTicker 是一个简单的字符动画 ticker，不依赖 bubbles/spinner。
-// 支持双色呼吸效果：颜色在 Accent 和 AccentAlt 之间平滑过渡。
-// speed 字段控制动画速度：每 speed 个 tick 才推进一帧。
+// animTicker A simple character animation ticker, independent of bubbles/spinner.
+// Supports dual-color breathing effect: smooth transition between Accent and AccentAlt.
+// speed field controls animation speed: advances one frame every speed ticks.
 //
-//	speed=1 → 100ms/frame (快), speed=3 → 300ms/frame (中等), speed=5 → 500ms/frame (慢)
+//	speed=1 → 100ms/frame (fast), speed=3 → 300ms/frame (medium), speed=5 → 500ms/frame (slow)
 type animTicker struct {
 	frames   []string
 	frame    int
 	ticks    int64          // total ticks for phase-aware behavior
 	speed    int            // ticks per frame advance (1=fast, 3=medium, 5=slow)
-	style    lipgloss.Style // 主色调
-	styleAlt lipgloss.Style // 备选色（呼吸效果用）
-	color    string         // 主色值（主题切换时重建样式用）
-	colorAlt string         // 备选色值
+	style    lipgloss.Style // Primary color
+	styleAlt lipgloss.Style // Alternate color (for breathing effect)
+	color    string         // Primary color value (for rebuilding styles on theme change)
+	colorAlt string         // Alternate color value
 }
 
 // SetRunnerLLM sets the LLM client and model list for the runner bridge.
@@ -766,7 +766,7 @@ func (c *CLIChannel) StartWithRunner(shareURL, token, workspace string) error {
 	return c.Start()
 }
 
-// ensureRunnerBridge 确保 RunnerBridge 存在（供 settings 面板使用）。
+// ensureRunnerBridge Ensure RunnerBridge exists (for settings panel usage).
 func (c *CLIChannel) ensureRunnerBridge() {
 	c.programMu.Lock()
 	defer c.programMu.Unlock()

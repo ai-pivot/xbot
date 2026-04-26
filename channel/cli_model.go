@@ -36,7 +36,7 @@ func (t *animTicker) tick() {
 	}
 }
 
-// view 渲染当前帧，带双色呼吸效果（每 10 tick 在两种颜色间切换）
+// view Render current frame with dual-color breathing effect (switches between two colors every 10 ticks)
 func (t *animTicker) view() string {
 	if t.ticks%20 < 10 {
 		return t.style.Render(t.frames[t.frame])
@@ -46,7 +46,7 @@ func (t *animTicker) view() string {
 
 // viewFrames renders a frame from a given set using the ticker's current frame index.
 // speedOverride controls per-call animation speed (0 = use ticker's default speed).
-// 同样带呼吸效果。
+// Also with breathing effect.
 func (t *animTicker) viewFrames(frames []string, speedOverride ...int) string {
 	speed := t.speed
 	if len(speedOverride) > 0 && speedOverride[0] > 0 {
@@ -171,14 +171,14 @@ var (
 	waveFrames = []string{"◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒"}
 	// orbitFrames: spinning orbit — processing feel
 	orbitFrames = []string{"◌", "◔", "◕", "●", "◕", "◔", "◌", "◔", "◕", "●", "◕", "◔"}
-	// splashFrames: loading bar animation — 启动画面进度条
+	// splashFrames: loading bar animation — splash screen progress bar
 	splashFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	// pulseFrames: pulsing circle — tool completion pulse
 	pulseFrames = []string{"◌", "◎", "◉", "◎", "◌"}
 )
 
-// errorKeywords — system 消息中的错误检测关键词
-var errorKeywords = []string{"error", "failed", "失败", "错误", "exception", "denied", "refused"}
+// errorKeywords — system 消息中的Error检测关键词
+var errorKeywords = []string{"error", "failed", "失败", "Error", "exception", "denied", "refused"}
 
 // Terminal CSI escape sequences for modified keys not recognized by Bubble Tea.
 // Some terminals use the CSI u protocol (kitty, Ghostty, Windows Terminal),
@@ -209,7 +209,7 @@ func (m *cliModel) pickVerb(ticks int64) string {
 	return verbs[idx]
 }
 
-// pickIdlePlaceholder 根据时间返回轮换的 placeholder（每 5 秒切换）
+// pickIdlePlaceholder Return rotating placeholder based on time (switches every 5 seconds)
 func (m *cliModel) pickIdlePlaceholder() string {
 	placeholders := m.locale.IdlePlaceholders
 	if len(placeholders) == 0 {
@@ -269,21 +269,21 @@ func (m *cliModel) cycleModel() {
 	m.updateQuickSwitchModels(nextModel)
 }
 
-// tickerTickMsg 是 ticker 定时 tick 消息
+// tickerTickMsg is the ticker periodic tick message
 type tickerTickMsg struct{}
 
-// splashTickMsg 启动画面定时 tick 消息
+// splashTickMsg Splash screen periodic tick message
 type splashTickMsg struct {
-	frame int // 当前帧索引
+	frame int // Current frame index
 }
 
 // debugCaptureMsg triggers a UI capture (dump View() to file).
 type debugCaptureMsg struct{}
 
-// splashDoneMsg 启动画面结束消息
+// splashDoneMsg Splash screen end message
 type splashDoneMsg struct{}
 
-// suHistoryLoadMsg /su 切换用户后的历史加载完成消息
+// suHistoryLoadMsg History load complete message after /su user switch
 type suHistoryLoadMsg struct {
 	history        []HistoryMessage
 	err            error
@@ -373,40 +373,40 @@ func (m *cliModel) resetSessionState() {
 	m.turnCancelled = false
 }
 
-// cliHistoryReloadMsg context compression 后重新加载历史完成消息
+// cliHistoryReloadMsg History reload complete message after context compression
 type cliHistoryReloadMsg struct {
 	history []HistoryMessage
 	err     error
 }
 
-// cliToastItem 单条 Toast 通知数据
+// cliToastItem Single toast notification data
 type cliToastItem struct {
 	text string
 	icon string // "✓" | "✗" | "ℹ" 等
 }
 
-// cliToastMsg Toast 通知消息（入队显示，自动消失）
+// cliToastMsg Toast notification message (queued for display, auto-dismiss)
 type cliToastMsg struct {
 	text string
 	icon string // "✓" | "✗" | "ℹ" 等
 }
 
-// cliToastClearMsg Toast 通知自动清除消息（弹出队列头部）
+// cliToastClearMsg Toast notification auto-clear message (dequeue from head)
 type cliToastClearMsg struct{}
 
-// cliModel Bubble Tea 状态模型
+// cliModel Bubble Tea state model
 type cliModel struct {
 	// --- Core UI ---
-	viewport viewport.Model // 消息显示区
-	textarea textarea.Model // 用户输入区
+	viewport viewport.Model // Message display area
+	textarea textarea.Model // User input area
 
-	// §22 输入历史
-	inputHistory    []string    // 已发送输入历史（新 → 旧），仅会话内
-	inputHistoryIdx int         // -1 = 不在浏览模式, >=0 = 当前浏览索引
-	inputDraft      string      // 进入历史浏览前的输入草稿
-	ticker          *animTicker // 进度动画 ticker
-	width           int         // 终端宽度
-	height          int         // 终端高度
+	// §22 Input history
+	inputHistory    []string    // 已发送Input history（新 → 旧），仅会话内
+	inputHistoryIdx int         // -1 = not in browse mode, >=0 = current browse index
+	inputDraft      string      // Input draft before entering history browsing
+	ticker          *animTicker // Progress animation ticker
+	width           int         // Terminal width
+	height          int         // Terminal height
 	styles          cliStyles
 	locale          *UILocale // i18n: current UI locale
 
@@ -416,30 +416,30 @@ type cliModel struct {
 	placeholderText string // current placeholder string to display in View
 
 	// --- Message state ---
-	messages        []cliMessage          // 消息历史
-	renderer        *glamour.TermRenderer // Markdown 渲染器
-	streamingMsgIdx int                   // 当前流式消息的索引（-1 表示无流式消息）
-	newContentHint  bool                  // 有新内容但用户未在底部（显示 ↓ 提示）
-	ready           bool                  // 是否已初始化
+	messages        []cliMessage          // Message history
+	renderer        *glamour.TermRenderer // Markdown renderer
+	streamingMsgIdx int                   // Index of current streaming message (-1 = no streaming message)
+	newContentHint  bool                  // New content but user is not at bottom (show ↓ hint)
+	ready           bool                  // Whether initialized
 
 	// --- Agent state ---
 	agentTurnID       uint64                        // monotonically increasing turn counter
-	typing            bool                          // agent 是否正在回复
-	typingStartTime   time.Time                     // 本次处理开始时间
-	inputReady        bool                          // 输入就绪状态（agent 回复期间禁止发送）
-	msgBus            *bus.MessageBus               // 消息总线引用
+	typing            bool                          // Whether agent is currently replying
+	typingStartTime   time.Time                     // Current processing start time
+	inputReady        bool                          // Input ready state (sending disabled during agent reply)
+	msgBus            *bus.MessageBus               // Message bus reference
 	sendInboundFn     func(bus.InboundMessage) bool // remote mode: forward to server via backend.SendInbound
-	tempStatus        string                        // 临时状态提示（自动过期）
+	tempStatus        string                        // Temporary status hint (auto-expires)
 	pendingCmds       []tea.Cmd                     // commands queued by helpers (auto-drained in Update)
 	shouldQuit        bool                          // Smart quit: quit after current operation completes
 	trimHistoryFn     func(cutoff time.Time) error  // /rewind: delete DB messages at or after cutoff timestamp
 	resetTokenStateFn func()                        // /rewind: clear stale prompt/completion token counts
 
 	// --- Message queue (typing 期间排队的消息) ---
-	messageQueue   []string // 排队等待发送的消息
-	queueEditing   bool     // true = 正在编辑/查看最后一条排队消息
-	queueEditBuf   string   // 编辑中的排队消息内容
-	needFlushQueue bool     // true = handleAgentMessage 后需要刷新队列
+	messageQueue   []string // Messages queued waiting to be sent
+	queueEditing   bool     // true = editing/viewing last queued message
+	queueEditBuf   string   // Queued message content being edited
+	needFlushQueue bool     // true = queue flush needed after handleAgentMessage
 
 	// --- Background tasks ---
 	bgTaskCount     int                            // running background tasks (0 = no indicator)
@@ -467,8 +467,8 @@ type cliModel struct {
 
 	// --- Progress ---
 	progress             *CLIProgressPayload
-	iterationHistory     []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration    int                    // 上次进度事件的迭代号
+	iterationHistory     []cliIterationSnapshot // Completed iteration snapshots
+	lastSeenIteration    int                    // Iteration number of last progress event
 	iterationStartTime   time.Time              // current iteration wall-clock start time
 	fastTickActive       bool                   // true when a fast tick chain (100ms) is running
 	typewriterTickActive bool                   // true when typewriter tick chain (50ms) is running
@@ -478,37 +478,37 @@ type cliModel struct {
 	twCjkSkipTick        bool                   // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
-	workDir         string // 工作目录（标题栏显示用）
-	remoteMode      bool   // 是否连接 remote backend（标题栏提示用）
+	workDir         string // Working directory (for title bar display)
+	remoteMode      bool   // Whether connected to remote backend (for title bar hint)
 	remoteServerURL string // remote server host for header display (e.g. "host:port")
 	connState       string // WS connection state: "connected"|"disconnected"|"reconnecting"
 	debugMode       bool   // --debug: UI capture + key injection via SIGUSR1
 	debugCaptureMs  int    // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
-	senderID        string // 当前身份 ID（默认 "cli_user"，/su 命令可切换）
-	channelName     string // 当前 channel（默认 "cli"，/su 切换时可能变为 "web"）
-	defaultChatID   string // 默认 chatID（/su 切换回来时恢复）
-	chatID          string // 会话 ID（按工作目录区分）
+	senderID        string // Current identity ID (default "cli_user", switchable via /su command)
+	channelName     string // Current channel (default "cli", may become "web" after /su switch)
+	defaultChatID   string // Default chatID (restored when /su switches back)
+	chatID          string // Session ID (distinguished by working directory)
 
-	// --- §1 增量渲染 ---
-	renderCacheValid    bool   // 全局缓存是否有效（resize 后置 false）
-	cachedHistory       string // 缓存的历史消息渲染结果（不含当前流式消息）
+	// --- §1 Incremental rendering ---
+	renderCacheValid    bool   // Whether global cache is valid (set false after resize)
+	cachedHistory       string // Cached rendered history messages (excluding current streaming message)
 	cachedMsgCount      int    // messages count when cache was built
-	lastViewportContent string // 上次 setViewportContent 的原始内容（去重用）
-	lastViewportWidth   int    // 上次 setViewportContent 的宽度（去重用）
+	lastViewportContent string // Last raw content of setViewportContent (for dedup)
+	lastViewportWidth   int    // Last width of setViewportContent (for dedup)
 
-	// --- §2 工具可视化 ---
-	lastCompletedTools []CLIToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
-	lastReasoning      string            // 最后一次迭代的 reasoning_content，在 progress 清除前捕获
-	lastThinking       string            // 最后一次迭代的 thinking_content，在 progress 清除前捕获
+	// --- §2 Tool visualization ---
+	lastCompletedTools []CLIToolProgress // Snapshot at end of each round, independent of m.progress lifecycle
+	lastReasoning      string            // Last iteration's reasoning_content, captured before progress is cleared
+	lastThinking       string            // Last iteration's thinking_content, captured before progress is cleared
 
-	// --- §8 Tab 补全 ---
-	completions []string // 当前补全候选项
-	compIdx     int      // 当前选中的补全索引
+	// --- §8 Tab completion ---
+	completions []string // Current completion candidates
+	compIdx     int      // Currently selected completion index
 
-	// --- §8b @ 文件引用补全 ---
-	fileCompletions []string // @ 文件路径补全候选项
-	fileCompIdx     int      // 当前选中的文件补全索引
-	fileCompActive  bool     // true = Tab 循环中，阻止重新 glob
+	// --- §8b @ file reference completion ---
+	fileCompletions []string // @ file path completion candidates
+	fileCompIdx     int      // Currently selected file completion index
+	fileCompActive  bool     // true = in Tab cycle, prevent re-glob
 
 	// --- §9 Rewind (/rewind command) ---
 	rewindMode      bool                   // true = rewind overlay active
@@ -517,12 +517,12 @@ type cliModel struct {
 	rewindResult    *tools.RewindResult    // result of the last rewind operation (for display)
 	checkpointState *hooks.CheckpointState // file checkpoint state for rewind file rollback (nil = no file tracking)
 
-	// --- §10 TODO 进度条 ---
-	todos            []CLITodoItem // 从 progress 事件同步的 TODO 列表
-	todosDoneCleared bool          // 全完成后已被用户输入清除，阻止 progress 重填
+	// --- §10 TODO progress bar ---
+	todos            []CLITodoItem // TODO list synced from progress events
+	todosDoneCleared bool          // Cleared by user input after full completion, prevent progress from refilling
 
-	// --- §11 Tool Summary 折叠 ---
-	toolSummaryExpanded bool // Ctrl+O 切换
+	// --- §11 Tool Summary collapse ---
+	toolSummaryExpanded bool // Ctrl+O toggle
 
 	// --- §11b Pending Tool Summary ---
 	// PhaseDone may arrive before handleAgentMessage. Store the tool_summary
@@ -534,7 +534,7 @@ type cliModel struct {
 	panelMode     string
 	panelCursor   int            // settings panel: selected item index
 	panelEdit     bool           // settings panel: editing current item
-	panelScrollY  int            // panel 滚动偏移（手动管理，不依赖 viewport）
+	panelScrollY  int            // Panel scroll offset (manually managed, independent of viewport)
 	panelEditTA   textarea.Model // settings panel: inline editor
 	panelCombo    bool           // settings panel: combo dropdown open
 	panelComboIdx int            // settings panel: combo selected option index
@@ -586,10 +586,10 @@ type cliModel struct {
 	// --- §13 Update Check ---
 
 	// --- Runner Panel ---
-	panelRunnerServerTI  textinput.Model     // server URL 输入
-	panelRunnerTokenTI   textinput.Model     // token 输入
-	panelRunnerWorkspace textinput.Model     // workspace 输入
-	panelRunnerEditField int                 // 当前编辑字段 (0=server, 1=token, 2=workspace)
+	panelRunnerServerTI  textinput.Model     // Server URL input
+	panelRunnerTokenTI   textinput.Model     // Token input
+	panelRunnerWorkspace textinput.Model     // Workspace input
+	panelRunnerEditField int                 // Currently editing field (0=server, 1=token, 2=workspace)
 	updateNotice         *version.UpdateInfo // nil=nothing, non-nil=show notice
 	checkingUpdate       bool                // true while /update is in progress
 
@@ -614,17 +614,17 @@ type cliModel struct {
 	subGeneration      int
 	panelSubGeneration int
 
-	// --- §14 Splash 画面 ---
-	splashDone  bool // true = splash 动画结束，进入正常界面
-	splashFrame int  // 当前 splash 动画帧索引
-	suLoading   bool // true = /su 切换用户后正在加载历史，显示 loading 画面
+	// --- §14 Splash screen ---
+	splashDone  bool // true = splash animation ended, enter normal UI
+	splashFrame int  // Current splash animation frame index
+	suLoading   bool // true = loading history after /su user switch, showing loading screen
 
-	// --- §16 Toast 通知队列 ---
-	toasts     []cliToastItem // Toast 队列（头部=当前显示）
-	toastTimer bool           // true = toast 消除计时器已启动
+	// --- §16 Toast notification queue ---
+	toasts     []cliToastItem // Toast queue (head = currently displayed)
+	toastTimer bool           // true = toast dismiss timer started
 
-	// --- §19 长消息折叠 ---
-	msgLineOffsets []int // 每条消息在 viewport 折行后 content 中的起始行号
+	// --- §19 Long message folding ---
+	msgLineOffsets []int // Start line number of each message in viewport-wrapped content
 
 	// --- §Session state save/restore ---
 	// Per-session saved state so switching sessions doesn't lose in-progress state.
@@ -632,27 +632,27 @@ type cliModel struct {
 	savedSessions map[string]*sessionState
 	turnCancelled bool // true after Ctrl+C — prevents auto-start on stale progress
 
-	// --- §21 消息搜索 /search ---
-	searchMode    bool            // 是否处于搜索模式
-	searchQuery   string          // 搜索关键词
-	searchResults []int           // 匹配的消息索引列表
-	searchIdx     int             // 当前导航到的搜索结果索引（-1 = 未选择）
-	searchEditing bool            // true = 编辑搜索词, false = 导航结果
-	searchTI      textinput.Model // 搜索输入框
+	// --- §21 Message search /search ---
+	searchMode    bool            // Whether in search mode
+	searchQuery   string          // Search query
+	searchResults []int           // List of matching message indices
+	searchIdx     int             // Currently navigated search result index (-1 = none selected)
+	searchEditing bool            // true = editing search query, false = navigating results
+	searchTI      textinput.Model // Search input box
 
 	// toolDisplayInfo
 
-	// --- 🥚 Easter Eggs 彩蛋 ---
-	easterEgg       easterEggMode // 当前激活的彩蛋类型（"" = 无）
-	easterEggCustom string        // 彩蛋自定义内容（版本成就 art 等）
-	konamiBuffer    []string      // Konami Code 按键缓冲区
-	matrixCols      int           // Matrix 代码雨列数
-	matrixRows      int           // Matrix 代码雨行数
-	matrixDrops     []int         // Matrix 每列头部位置
-	matrixSpeeds    []int         // Matrix 每列下落速度
-	matrixTrailLen  []int         // Matrix 每列拖尾长度
-	matrixBuffer    [][]rune      // Matrix 字符缓冲区
-	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
+	// --- 🥚 Easter Eggs ---
+	easterEgg       easterEggMode // Currently active easter egg type ("" = none)
+	easterEggCustom string        // Easter egg custom content (version achievement art, etc.)
+	konamiBuffer    []string      // Konami Code key buffer
+	matrixCols      int           // Matrix rain column count
+	matrixRows      int           // Matrix rain row count
+	matrixDrops     []int         // Matrix rain head position per column
+	matrixSpeeds    []int         // Matrix rain drop speed per column
+	matrixTrailLen  []int         // Matrix rain trail length per column
+	matrixBuffer    [][]rune      // Matrix rain character buffer
+	versionHitTimes []time.Time   // /version command call timestamps (triple-call detection)
 
 	channel         *CLIChannel // back-reference to owning channel (set during Start)
 	cachedModelName string      // cached model name for View() performance
@@ -662,31 +662,31 @@ type cliModel struct {
 	runnerBridge *RunnerBridge
 }
 
-// cliMessage 单条消息
+// cliMessage Single message
 type cliMessage struct {
 	role      string
 	content   string
 	timestamp time.Time
 	isPartial bool
-	// --- §1 增量渲染 ---
-	rendered    string // 缓存的渲染结果（ANSI 字符串）
-	dirty       bool   // 是否需要重新渲染
-	renderWidth int    // 渲染时的终端宽度（用于 resize 失效检测）
+	// --- §1 Incremental rendering ---
+	rendered    string // Cached render result (ANSI string)
+	dirty       bool   // Whether re-render is needed
+	renderWidth int    // 渲染时的Terminal width（用于 resize 失效检测）
 
-	// --- §2 工具可视化 ---
-	tools      []CLIToolProgress      // 扁平化工具列表（兼容旧逻辑）
-	iterations []cliIterationSnapshot // 按迭代分组的快照（优先使用）
+	// --- §2 Tool visualization ---
+	tools      []CLIToolProgress      // Flattened tool list (backward compatible)
+	iterations []cliIterationSnapshot // Snapshots grouped by iteration (preferred)
 
-	// --- §19 长消息折叠 ---
-	renderedLines         int  // 渲染后的总行数（每次 dirty 重算）
-	originalRenderedLines int  // fold 前的原始行数（fold 时保存，用于 unfold 判断）
-	folded                bool // 是否折叠
+	// --- §19 Long message folding ---
+	renderedLines         int  // Total rendered lines (recalculated on each dirty)
+	originalRenderedLines int  // Original line count before fold (saved at fold time, used for unfold decision)
+	folded                bool // Whether folded
 
 	// --- Markdown rendering for system messages ---
 	markdown bool // when true, system messages go through glamour renderer (e.g. /usage tables)
 }
 
-// newCLIModel 创建 CLI model
+// newCLIModel Create CLI model
 func newCLIModel() *cliModel {
 	ta := textarea.New()
 	ta.Placeholder = "" // disabled; placeholder rendered in View() to avoid CJK bug
@@ -712,10 +712,10 @@ func newCLIModel() *cliModel {
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 
-	// 滚动方式：Up/Down（逐行，也响应鼠标滚轮的转义序列）、PgUp/PgDn（翻页）
-	// 注意：Up/Down 会同时被 textarea 的光标移动和 viewport 的滚动处理。
-	// handleKeyPress 里对 KeyUp/KeyDown 的 input history 逻辑会优先拦截，
-	// 但仅在 idle + 输入框为空时才触发，所以滚轮滚动在 typing 时不冲突。
+	// Scroll behavior: Up/Down (line by line, also responds to mouse wheel escape sequences), PgUp/PgDn (page)
+	// Note: Up/Down is handled by both textarea cursor movement and viewport scrolling.
+	// The input history logic for KeyUp/KeyDown in handleKeyPress intercepts first,
+	// but only triggers when idle + empty input, so wheel scrolling doesn't conflict during typing.
 	vp.KeyMap.Up.SetKeys("up")
 	vp.KeyMap.Down.SetKeys("down")
 	vp.KeyMap.Left.SetKeys()
@@ -724,7 +724,7 @@ func newCLIModel() *cliModel {
 	vp.KeyMap.PageDown.SetKeys("pgdown")
 	vp.KeyMap.HalfPageUp.SetKeys()
 	vp.KeyMap.HalfPageDown.SetKeys()
-	vp.SetHorizontalStep(0) // 禁用水平滚动步长
+	vp.SetHorizontalStep(0) // Disable horizontal scroll step
 
 	renderer := newGlamourRenderer(maxBubbleWidth(80) - 2)
 
@@ -753,7 +753,7 @@ func newCLIModel() *cliModel {
 	}
 }
 
-// SetMsgBus 设置消息总线（用于发送用户消息）
+// SetMsgBus Set message bus (for sending user messages)
 func (m *cliModel) SetMsgBus(msgBus *bus.MessageBus) {
 	m.msgBus = msgBus
 }
@@ -769,15 +769,15 @@ func (m *cliModel) SetLLMSubscriber(sub LLMSubscriber) {
 }
 
 // ---------------------------------------------------------------------------
-// Bubble Tea Messages (内部消息类型)
+// Bubble Tea Messages (internal message types)
 // ---------------------------------------------------------------------------
 
-// cliOutboundMsg 从 agent 收到的消息
+// cliOutboundMsg Message received from agent
 type cliOutboundMsg struct {
 	msg bus.OutboundMessage
 }
 
-// cliProgressMsg 进度更新消息
+// cliProgressMsg Progress update message
 type cliProgressMsg struct {
 	payload *CLIProgressPayload
 }
@@ -798,16 +798,16 @@ type cliHistoryLoadMsg struct {
 	history []cliMessage
 }
 
-// cliTickMsg 定时刷新（用于流式输出动画）
+// cliTickMsg Periodic refresh (for streaming output animation)
 type cliTickMsg struct{}
 
-// typewriterTickMsg 独立的打字机刷新（50ms 间隔，逐 rune 输出）
+// typewriterTickMsg Independent typewriter refresh (50ms interval, rune-by-rune output)
 type typewriterTickMsg struct{}
 
-// idleTickMsg 低频定时刷新（用于 placeholder 轮转）
+// idleTickMsg Low-frequency periodic refresh (for placeholder rotation)
 type idleTickMsg struct{}
 
-// cliTempStatusClearMsg 临时状态提示自动清除
+// cliTempStatusClearMsg Temporary status hint auto-clear
 type cliTempStatusClearMsg struct{}
 
 // cliSettingsSavedMsg settings save completed (async callback result)
@@ -828,31 +828,31 @@ type cliSwitchLLMDoneMsg struct {
 	mgr      SubscriptionManager
 }
 
-// cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
+// cliInjectedUserMsg Notify CLI that a user message was injected (e.g. bg task completion notification)
 type cliInjectedUserMsg struct {
 	content string
 }
 
-// cliUpdateCheckMsg 更新检查结果消息
+// cliUpdateCheckMsg Update check result message
 type cliUpdateCheckMsg struct {
 	info *version.UpdateInfo
 }
 
-// isCtrlEnter 检测 Ctrl+Enter 按键。
-// 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：
+// isCtrlEnter Detect Ctrl+Enter key press.
+// Terminals have no unified standard for Ctrl+Enter, common raw sequences:
 //   - CSI u 协议: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
 //   - 旧格式:     \x1b[27;5;13~ (部分 xterm 变体)
 //
-// 注意：Bubble Tea 不识别这些序列，会作为 unknownCSISequenceMsg 传递，
+// Note: Bubble Tea doesn't recognize these sequences, passes them as unknownCSISequenceMsg,
 // 其 String() 格式为 "?CSI[49 51 59 53 117]?"（%+v 对 []byte 输出字节值数组）。
-// 因此需要同时匹配 KeyMsg 和 unknownCSISequenceMsg 的字符串表示。
+// so we need to match both KeyMsg and the string representation of unknownCSISequenceMsg.
 func isCtrlEnter(msg tea.Msg) bool {
 	s := fmt.Sprint(msg)
 	return s == csiCtrlEnterCSIu || s == csiCtrlEnterRaw ||
 		s == csiCtrlEnterLegacy || s == csiCtrlEnterLegacyRaw
 }
 
-// isCtrlO 检测 Ctrl+O 按键（部分终端发送 CSI u 序列，Bubble Tea 无法识别）。
+// isCtrlO Detect Ctrl+O key press (some terminals send CSI u sequences, Bubble Tea can't recognize them).
 // Ctrl+O = ASCII 15, CSI u 协议: \x1b[15;5u → "?CSI[49 53 59 53 117]?"
 func isCtrlO(msg tea.Msg) bool {
 	s := fmt.Sprint(msg)
@@ -884,7 +884,7 @@ func (m *cliModel) refreshCachedModelName() {
 	}
 }
 
-// Init 初始化 — 启动 splash 画面动画（最小展示 1 秒）
+// Init Init — start splash screen animation (minimum display 1 second)
 func (m *cliModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{textarea.Blink, m.splashTick(0)}
 	if m.debugMode {
@@ -904,14 +904,14 @@ func (m *cliModel) debugCaptureTick() tea.Cmd {
 	})
 }
 
-// splashTick 生成启动画面动画的 tick 命令
+// splashTick Generate tick command for splash screen animation
 func (m *cliModel) splashTick(frame int) tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
 		return splashTickMsg{frame: frame + 1}
 	})
 }
 
-// suLoadHistoryCmd 异步加载 /su 目标用户的历史消息
+// suLoadHistoryCmd Async load history messages for /su target user
 func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	chatID := m.chatID
 	channelName := m.channelName

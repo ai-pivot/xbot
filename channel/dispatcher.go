@@ -9,7 +9,7 @@ import (
 	log "xbot/logger"
 )
 
-// Dispatcher 出站消息分发器
+// Dispatcher Outbound message dispatcher
 type Dispatcher struct {
 	channels map[string]Channel
 	bus      *bus.MessageBus
@@ -17,7 +17,7 @@ type Dispatcher struct {
 	mu       sync.RWMutex
 }
 
-// NewDispatcher 创建分发器
+// NewDispatcher Create dispatcher
 func NewDispatcher(msgBus *bus.MessageBus) *Dispatcher {
 	return &Dispatcher{
 		channels: make(map[string]Channel),
@@ -26,7 +26,7 @@ func NewDispatcher(msgBus *bus.MessageBus) *Dispatcher {
 	}
 }
 
-// Register 注册渠道
+// Register Register channel
 func (d *Dispatcher) Register(ch Channel) {
 	d.mu.Lock()
 	d.channels[ch.Name()] = ch
@@ -34,7 +34,7 @@ func (d *Dispatcher) Register(ch Channel) {
 	log.WithField("channel", ch.Name()).Info("Channel registered")
 }
 
-// Run 启动出站消息分发循环
+// Run Start outbound message dispatch loop
 func (d *Dispatcher) Run() {
 	log.Info("Outbound dispatcher started")
 	for {
@@ -69,7 +69,7 @@ func (d *Dispatcher) Run() {
 	}
 }
 
-// Stop 停止分发器
+// Stop Stop dispatcher
 func (d *Dispatcher) Stop() {
 	close(d.done)
 	d.mu.RLock()
@@ -108,7 +108,7 @@ func (d *Dispatcher) SendMessage(channelName, chatID, content string) (string, e
 // Compile-time interface check
 var _ bus.MessageSender = (*Dispatcher)(nil)
 
-// SendDirect 同步发送消息到指定渠道，返回平台消息 ID
+// SendDirect Synchronously send message to specified channel, return platform message ID
 func (d *Dispatcher) SendDirect(msg bus.OutboundMessage) (string, error) {
 	d.mu.RLock()
 	ch, ok := d.channels[msg.Channel]
@@ -119,7 +119,7 @@ func (d *Dispatcher) SendDirect(msg bus.OutboundMessage) (string, error) {
 	return ch.Send(msg)
 }
 
-// GetChannel 获取渠道
+// GetChannel Get channel
 func (d *Dispatcher) GetChannel(name string) (Channel, bool) {
 	d.mu.RLock()
 	ch, ok := d.channels[name]
@@ -127,7 +127,7 @@ func (d *Dispatcher) GetChannel(name string) (Channel, bool) {
 	return ch, ok
 }
 
-// EnabledChannels 返回已注册的渠道列表
+// EnabledChannels Return list of registered channels
 func (d *Dispatcher) EnabledChannels() []string {
 	d.mu.RLock()
 	names := make([]string, 0, len(d.channels))

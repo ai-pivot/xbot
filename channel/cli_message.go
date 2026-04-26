@@ -21,18 +21,18 @@ import (
 // Helper Methods
 // ---------------------------------------------------------------------------
 
-// handleTabComplete 处理 Tab 补全（§8：/ 命令补全，§8b：@ 文件路径补全）
+// handleTabComplete 处理 Tab completion（§8：/ Command completion，§8b：@ 文件路径补全）
 func (m *cliModel) handleTabComplete() {
 	input := m.textarea.Value()
 
-	// 检测 @ 文件引用补全（从输入末尾检测）
+	// 检测 @ file reference completion（从输入末尾检测）
 	atOk, atPrefix := detectAtPrefix(input)
 	if atOk {
 		m.handleFileTabComplete(input, atPrefix)
 		return
 	}
 
-	// / 命令补全
+	// / Command completion
 	trimmed := strings.TrimSpace(input)
 	if !strings.HasPrefix(trimmed, "/") {
 		return
@@ -55,9 +55,9 @@ func (m *cliModel) handleTabComplete() {
 	m.textarea.SetValue(m.completions[m.compIdx] + " ")
 }
 
-// detectAtPrefix 检测输入文本末尾是否有 @ 触发文件补全。
-// ok=true 表示检测到 @（即使后面无字符也应触发 glob）。
-// prefix 是 @ 之后到文本末尾的部分。
+// detectAtPrefix Detect if input text ends with @ to trigger file completion.
+// ok=true means @ was detected (should trigger glob even if no characters follow).
+// prefix is the part after @ to the end of text.
 func detectAtPrefix(input string) (ok bool, prefix string) {
 	if len(input) == 0 || input[len(input)-1] == ' ' {
 		return false, ""
@@ -75,7 +75,7 @@ func detectAtPrefix(input string) (ok bool, prefix string) {
 	return true, input[i+1:]
 }
 
-// populateFileCompletions 根据 prefix 执行 glob 搜索并填充 fileCompletions
+// populateFileCompletions Execute glob search based on prefix and populate fileCompletions
 func (m *cliModel) populateFileCompletions(prefix string) {
 	pattern := prefix
 	if !strings.Contains(pattern, "*") {
@@ -87,7 +87,7 @@ func (m *cliModel) populateFileCompletions(prefix string) {
 		m.fileCompIdx = 0
 		return
 	}
-	// 过滤隐藏文件（以 . 开头）
+	// Filter hidden files (starting with .)
 	filtered := matches[:0]
 	for _, f := range matches {
 		base := filepath.Base(f)
@@ -110,17 +110,17 @@ func (m *cliModel) populateFileCompletions(prefix string) {
 	m.fileCompIdx = 0
 }
 
-// handleFileTabComplete 处理 @ 文件路径 Tab 补全
+// handleFileTabComplete 处理 @ 文件路径 Tab completion
 func (m *cliModel) handleFileTabComplete(input string, prefix string) {
 	if !m.fileCompActive || len(m.fileCompletions) == 0 {
-		// 首次 Tab 或候选被清空：glob 并进入循环模式
+		// First Tab or candidates cleared: glob and enter cycle mode
 		m.populateFileCompletions(prefix)
 		if len(m.fileCompletions) == 0 {
 			return
 		}
 		m.fileCompActive = true
 	} else {
-		// 循环模式：切换到下一个候选
+		// Cycle mode: switch to next candidate
 		m.fileCompIdx = (m.fileCompIdx + 1) % len(m.fileCompletions)
 	}
 
@@ -223,7 +223,7 @@ func (m *cliModel) sendCancel() {
 	m.showSystemMsg(m.locale.CancelSent, feedbackInfo)
 }
 
-// sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
+// sendToAgent Send command to agent, and add user message to history (§3 command passthrough mechanism)
 func (m *cliModel) sendToAgent(content string) {
 	m.messages = append(m.messages, cliMessage{
 		role:      roleUser,
@@ -237,22 +237,22 @@ func (m *cliModel) sendToAgent(content string) {
 	}
 }
 
-// sendMessage 发送用户消息，返回可能需要执行的 tea.Cmd（如彩蛋动画 tick）。
+// sendMessage Send user message, return possible tea.Cmd to execute (e.g. easter egg animation tick).
 func (m *cliModel) sendMessage(content string) tea.Cmd {
 	content = strings.TrimSpace(content)
 	if strings.HasPrefix(content, "/") {
 		return m.handleSlashCommand(content)
 	}
 
-	// 🥚 彩蛋 #3: The Answer is 42 检测
+	// 🥚 Easter egg #3: The Answer is 42 detection
 	if isAnswer42(content) {
 		_ = m.activateEasterEgg(easterEggAnswer42)
 	}
 
-	// 解析 @ 文件引用，提取文件路径
+	// Parse @ file references, extract file paths
 	media := parseFileReferences(content)
 
-	// 添加用户消息到历史
+	// Add user message to history
 	m.messages = append(m.messages, cliMessage{
 		role:      roleUser,
 		content:   content,
@@ -260,12 +260,12 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 		dirty:     true,
 	})
 
-	// 更新显示并强制滚动到底部（用户发送新消息时始终可见）
+	// Update display and force scroll to bottom (always visible when user sends new message)
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
 	m.newContentHint = false
 
-	// 发送到消息总线
+	// Send to message bus
 	if m.msgBus != nil {
 		msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
 		msg.Media = media
@@ -281,24 +281,24 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	return nil
 }
 
-// parseFileReferences 从用户消息中提取 @path 文件引用。
-// 匹配 @ 后跟非空格字符的路径，验证文件存在后返回。
+// parseFileReferences Extract @path file references from user message.
+// Match paths after @ followed by non-space characters, verify file exists before returning.
 func parseFileReferences(content string) []string {
 	var files []string
 	seen := make(map[string]bool)
 	for i := 0; i < len(content); i++ {
 		if content[i] == '@' {
-			// @ 必须在词首
+			// @ must be at word start
 			if i > 0 && content[i-1] != ' ' {
 				continue
 			}
-			// 提取 @ 后的路径
+			// Extract path after @
 			j := i + 1
 			for j < len(content) && content[j] != ' ' {
 				j++
 			}
 			path := content[i+1 : j]
-			// 去掉末尾的 /
+			// Remove trailing /
 			path = strings.TrimRight(path, "/")
 			if path != "" && !seen[path] {
 				if _, err := os.Stat(path); err == nil {
@@ -331,23 +331,23 @@ func (m *cliModel) collectAllTools() []CLIToolProgress {
 	return all
 }
 
-// handleSlashCommand 处理斜杠命令
+// handleSlashCommand Handle slash commands
 func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	cmd = strings.TrimSpace(cmd)
-	// 提取命令部分（去掉参数）
+	// Extract command part (strip arguments)
 	parts := strings.Fields(cmd)
 	command := ""
 	if len(parts) > 0 {
 		command = strings.ToLower(parts[0])
 	}
 
-	// 🥚 彩蛋命令优先检测（隐藏命令不注册到 cliCommands）
+	// 🥚 Easter egg commands checked first (hidden commands not registered in cliCommands)
 	if handled, cmd := m.handleEasterEggCommand(cmd); handled {
 		return cmd
 	}
 
 	switch command {
-	// --- 本地命令 ---
+	// --- Local commands ---
 	case "/cancel":
 		m.sendCancel()
 
@@ -431,14 +431,14 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.enterSearchMode()
 
 	case "/compact":
-		// 保留本地处理（system 消息样式），发送到 msgBus 但不作为用户气泡
+		// Keep local handling (system message style), send to msgBus but not as user bubble
 		if m.msgBus != nil {
 			m.sendInbound(m.newInbound("/compact", nil))
 		}
 
-	// --- 透传命令（发送到 agent） ---
+	// --- Passthrough commands (sent to agent) ---
 	case "/context":
-		m.sendToAgent(cmd) // 直接透传，agent 层会解析
+		m.sendToAgent(cmd) // Direct passthrough, agent layer will parse
 
 	case "/new":
 		m.sendToAgent("/new")
@@ -461,9 +461,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 
 	case "/su":
 		// /su — Switch user identity:
-		//   /su          — 切回默认身份
-		//   /su <userID> — 切换到指定用户身份
-		//   /su web:<senderID>[:<token>] — 切换到 Web 端用户
+		//   /su          — switch back to default identity
+		//   /su <userID> — switch to specified user identity
+		//   /su web:<senderID>[:<token>] — switch to Web user
 		if len(parts) < 2 {
 			if m.senderID == "cli_user" {
 				m.showSystemMsg(m.locale.SuAlreadyDefault, feedbackInfo)
@@ -510,9 +510,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 
 	case "/chat":
 		// /chat — Chat room management:
-		//   /chat new [label] — 创建新会话
-		//   /chat <id>        — 切换到指定会话
-		//   /chat ls          — 列出所有会话（文字版）
+		//   /chat new [label] — create new session
+		//   /chat <id>        — switch to specified session
+		//   /chat ls          — list all sessions (text version)
 		if len(parts) < 2 {
 			m.showSystemMsg("用法: /chat new [label] | /chat <id> | /chat ls", feedbackInfo)
 			return nil
@@ -592,7 +592,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.handleUserCommand(userArg)
 
 	default:
-		// 🥚 彩蛋 #7: /version 三连检测
+		// 🥚 Easter egg #7: /version triple-call detection
 		if command == "/version" {
 			if m.recordVersionHit() {
 				art := fmt.Sprintf(versionAchievementArt, version.Version)
@@ -602,7 +602,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				return nil
 			}
 		}
-		// 未知命令尝试透传到 agent（agent 层可能认识）
+		// Unknown command attempted to passthrough to agent (agent layer may recognize it)
 		m.sendToAgent(cmd)
 	}
 
@@ -610,7 +610,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	return nil
 }
 
-// handleAgentMessage 处理 agent 回复
+// handleAgentMessage Handle agent reply
 func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
@@ -622,7 +622,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
 	content := msg.Content
 
-	// 处理 __FEISHU_CARD__ 协议（简化显示）
+	// Handle __FEISHU_CARD__ protocol (simplified display)
 	if strings.HasPrefix(content, "__FEISHU_CARD__") {
 		content = ConvertFeishuCard(content)
 	}
@@ -643,13 +643,13 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	}
 
 	if msg.IsPartial {
-		// 流式输出：追加到当前消息
+		// Streaming output: append to current message
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// 追加到现有流式消息
+			// Append to existing streaming message
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].dirty = true
 		} else {
-			// 创建新的流式消息
+			// Create new streaming message
 			m.streamingMsgIdx = len(m.messages)
 			m.messages = append(m.messages, cliMessage{
 				role:      roleAssistant,
@@ -660,14 +660,14 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			})
 		}
 	} else {
-		// 完整消息
+		// Complete message
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// 更新流式消息为完整消息
+			// 更新流式消息为Complete message
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
 		} else {
-			// 新增完整的 assistant 消息
+			// Add new complete assistant message
 			m.messages = append(m.messages, cliMessage{
 				role:      roleAssistant,
 				content:   content,
@@ -676,7 +676,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 				dirty:     true,
 			})
 		}
-		// 重置流式状态
+		// Reset streaming state
 		m.streamingMsgIdx = -1
 		// Capture reasoning from progress before it might be cleared.
 		// Do NOT clear m.progress here — progress is only cleared by endAgentTurn.
@@ -812,7 +812,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 		}
 
-		// §2 工具可视化：在 assistant 消息之前插入 tool_summary
+		// §2 Tool visualization：在 assistant 消息之前插入 tool_summary
 		// Build iterations from pendingToolSummary (PhaseDone) + local iterationHistory.
 		// Deduplicate: if an iteration exists in both, prefer the PhaseDone version
 		// (which has complete reasoning from the server) over the local snapshot.
@@ -860,11 +860,11 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			m.renderCacheValid = false
 		}
 
-		// 重置迭代追踪状态
+		// Reset iteration tracking state
 		m.endAgentTurn(turnID)
 		if turnID == m.agentTurnID {
 			m.inputReady = true
-			// §Q 标记需要刷新消息队列（由 Update 循环检查）
+			// §Q Mark that message queue needs refresh (checked by Update loop)
 			if len(m.messageQueue) > 0 {
 				m.needFlushQueue = true
 			}
@@ -917,7 +917,7 @@ func (m *cliModel) renderProgressBlock() string {
 	bubbleWidth := m.contentWidth()
 	innerWidth := bubbleWidth - 4 // border(2) + padding(2)
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 	iterStyle := s.ProgressIter
 	thinkingStyle := s.ProgressThinking
@@ -1194,15 +1194,15 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 	}
 }
 
-// renderHelpPanel 渲染格式化的帮助面板（第 4 轮）。
-// 使用 lipgloss 边框 + 分组布局 + 状态图标，替代纯文本。
+// renderHelpPanel Render formatted help panel (round 4).
+// Use lipgloss borders + grouped layout + status icons, replacing plain text.
 func (m *cliModel) renderHelpPanel() string {
 	contentWidth := m.contentWidth()
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 	titleStyle := s.HelpTitle
 	cmdStyle := s.HelpCmd
@@ -1232,8 +1232,8 @@ func (m *cliModel) renderHelpPanel() string {
 	return panelStyle.Render(sb.String())
 }
 
-// renderMessage 渲染单条消息为 ANSI 字符串（§1 增量渲染：自包含方法）
-// toolDisplayInfo 从工具进度条目中提取显示用的 label、状态图标和样式。
+// renderMessage 渲染Single message为 ANSI 字符串（§1 Incremental rendering：自包含方法）
+// toolDisplayInfo extracts display label, status icon, and style from tool progress entry.
 func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
 	if tool.Label == "" {
 		label = tool.Name
@@ -1250,10 +1250,10 @@ func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (la
 }
 
 func (m *cliModel) renderMessage(msg *cliMessage) string {
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 	var sb strings.Builder
-	contentWidth := m.contentWidth() // 留边距
+	contentWidth := m.contentWidth() // Leave margin
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
 	assistantLabelStyle := s.AssistLabel
@@ -1261,7 +1261,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	systemMsgStyle := s.SystemMsg
 	errorMsgStyle := s.ErrorMsg
 
-	// 渲染 Markdown（assistant 消息 + 带 markdown 标记的 system 消息）
+	// Render Markdown (assistant messages + system messages with markdown markers)
 	var rendered string
 	if msg.role == roleAssistant || (msg.role == roleSystem && msg.markdown) {
 		// Pre-process: render mermaid code blocks to ASCII art
@@ -1284,7 +1284,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	switch msg.role {
 	case roleToolSummary:
-		// §20 使用缓存样式
+		// §20 Use cached styles
 		toolSummaryStyle := s.ToolSummary
 		toolHeaderStyle := s.ToolHeader
 		toolItemStyle := s.ToolItem
@@ -1295,7 +1295,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		thinkingGuide := s.ProgressIndent
 		hintStyle := s.ToolHint
 
-		// 统计总工具数和总耗时
+		// Count total tools and total duration
 		allTools, iterCount := msg.iterToolsFlat()
 		totalTools := len(allTools)
 		totalMs := int64(0)
@@ -1306,7 +1306,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		var toolSb strings.Builder
 
 		if m.toolSummaryExpanded {
-			// 展开模式：完整渲染
+			// Expanded mode: full render
 			if iterCount > 0 {
 				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
 				toolSb.WriteString("\n")
@@ -1348,9 +1348,9 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				}
 			}
 		} else {
-			// 折叠模式升级（第 4 轮）：统计摘要 + 成功/失败状态图标
+			// Fold mode upgrade (round 4): stats summary + success/failure status icons
 			elapsedStr := formatElapsed(totalMs)
-			// 统计成功/失败工具数
+			// Count successful/failed tool count
 			successCount, errorCount := 0, 0
 			for _, tool := range allTools {
 				if tool.Status == "error" {
@@ -1390,7 +1390,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			sb.WriteString(systemMsgStyle.Render(msg.content))
 		}
 	case roleUser:
-		// 用户消息上方：右侧柔和光点分隔，与 assistant 的左侧竖线形成对称
+		// Above user messages: soft dot separator on right, symmetrical with assistant's left vertical line
 		dotSep := s.UserDotSep.Width(contentWidth).Align(lipgloss.Right).Render("···")
 		sb.WriteString(dotSep)
 		sb.WriteString("\n")
@@ -1398,8 +1398,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		header := s.UserHeader.Width(contentWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
 		sb.WriteString(header)
 		sb.WriteString("\n")
-		// 用户消息：右对齐气泡效果
-		// 计算内容最大行宽，整块右对齐而非每行拉伸
+		// User messages: right-aligned bubble effect
+		// Calculate content max line width, right-align entire block rather than stretching each line
 		lines := strings.Split(rendered, "\n")
 		maxWidth := 0
 		for _, line := range lines {
@@ -1411,13 +1411,13 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		maxBubble := contentWidth * 3 / 4
 		userStyle := s.UserContent
 		if maxWidth <= maxBubble {
-			// 内容够窄，左填充实现气泡靠右
+			// Content narrow enough, left-pad to right-align bubble
 			userStyle = s.UserContent.PaddingLeft(contentWidth - maxWidth)
 		}
-		// 内容超宽时退回左对齐，避免终端折行后跑到最左边
+		// Fallback to left-align when content is too wide, prevent terminal wrapping to leftmost
 		sb.WriteString(userStyle.Render(rendered))
 	default:
-		// assistant 消息：左侧竖线引导 + 标签
+		// Assistant messages: left vertical line guide + label
 		guide := s.AssistantGuide.Render("│")
 		if msg.isPartial {
 			guide = s.WarningSt.Render("│")
@@ -1428,7 +1428,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			fmt.Fprintf(&sb, "%s %s %s", guide, timeStr, label)
 		}
 		sb.WriteString("\n")
-		// §19 长消息折叠：对已完成的 assistant 消息截取预览
+		// §19 Long message folding：对已完成的 assistant 消息截取预览
 		if msg.folded && !msg.isPartial {
 			origLines := msg.originalRenderedLines
 			if origLines == 0 {
@@ -1445,11 +1445,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				}
 			}
 		}
-		// Agent 消息直接渲染（glamour 已处理 markdown）
+		// Agent messages rendered directly (glamour already handles markdown)
 		// Trim trailing newlines so cursor appears inline at end of content
 		trimmedRendered := strings.TrimRight(rendered, "\n")
 		sb.WriteString(trimmedRendered)
-		// 流式输出时追加闪烁光标，让用户感知"正在生成"
+		// Append blinking cursor during streaming output so user perceives "generating"
 		if msg.isPartial && trimmedRendered != "" {
 			cursorVisible := (m.ticker.ticks/5)%2 == 0
 			if cursorVisible {
@@ -1460,7 +1460,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	sb.WriteString("\n\n")
 
-	// §19 计算渲染后行数（每次 dirty 重算）
+	// §19 Calculate rendered line count (recalculated on each dirty)
 	msg.renderedLines = countLines(sb.String())
 
 	return sb.String()
@@ -1521,11 +1521,11 @@ func wrappedLineCount(content string, width int) int {
 	return len(trimAndWrapLines(content, width))
 }
 
-// visibleTurnIndices 返回每个"对话轮次"的起始 slice 索引。
-// 每个 turn 以 user 消息开头，包含之后所有的 assistant/tool_summary 消息
-// 直到下一个 user 消息为止。tool_summary 自动归属其前面最近的 user 所在的 turn。
+// visibleTurnIndices Return the start slice index for each "conversation turn".
+// Each turn starts with a user message, including all subsequent assistant/tool_summary messages
+// Until the next user message. tool_summary automatically belongs to the turn of its nearest preceding user.
 //
-// 例如: [user(0), assistant(1), tool_summary(2), user(3), assistant(4)]
+// e.g.: [user(0), assistant(1), tool_summary(2), user(3), assistant(4)]
 // turns: [0, 3] — 按"1"删最后 1 轮即 cutIdx=3，保留 [user(0), assistant(1), tool_summary(2)]
 func visibleTurnIndices(messages []cliMessage) []int {
 	var turns []int
@@ -1534,27 +1534,27 @@ func visibleTurnIndices(messages []cliMessage) []int {
 			turns = append(turns, i)
 		}
 	}
-	// 如果没有 user 消息但有其他消息，回退到旧逻辑（保留兼容）
+	// If there are no user messages but other messages exist, fall back to old logic (for compatibility)
 	if len(turns) == 0 && len(messages) > 0 {
 		turns = append(turns, 0)
 	}
 	return turns
 }
 
-// visibleMsgGroupIndices 是 visibleTurnIndices 的别名，保留向后兼容。
+// visibleMsgGroupIndices is an alias for visibleTurnIndices, kept for backward compatibility.
 func visibleMsgGroupIndices(messages []cliMessage) []int {
 	return visibleTurnIndices(messages)
 }
 
-// updateViewportContent 更新 viewport 显示内容（§1 增量渲染）
+// updateViewportContent Update viewport 显示内容（§1 Incremental rendering）
 func (m *cliModel) updateViewportContent() {
-	// 快速路径：流式消息 + 缓存有效
+	// Fast path: streaming message + cache valid
 	if m.streamingMsgIdx >= 0 && m.renderCacheValid {
 		m.updateStreamingOnly()
 		return
 	}
 
-	// 快速路径：缓存有效 + 无流式消息 + 消息数未变，只刷新 progress block（tick 场景）
+	// Fast path: cache valid + no streaming + message count unchanged, only refresh progress block (tick scenario)
 	if m.renderCacheValid && m.streamingMsgIdx < 0 && m.cachedMsgCount == len(m.messages) {
 		var sb strings.Builder
 		sb.WriteString(m.cachedHistory)
@@ -1564,24 +1564,24 @@ func (m *cliModel) updateViewportContent() {
 		return
 	}
 
-	// 快速路径：缓存有效 + 仅追加了新消息（无流式、无搜索）
-	// 只渲染新增的 dirty 消息并追加到 cachedHistory，跳过全量重建。
+	// Fast path: cache valid + only new messages appended (no streaming, no search)
+	// Only render new dirty messages and append to cachedHistory, skip full rebuild.
 	if m.renderCacheValid && m.streamingMsgIdx < 0 && !m.searchMode &&
 		len(m.messages) > m.cachedMsgCount {
 		m.appendNewMessagesToCache()
 		return
 	}
 
-	// 慢速路径：全量重建
+	// Slow path: full rebuild
 	m.fullRebuild()
 }
 
-// updateStreamingOnly 只重新渲染当前流式消息（快速路径）
+// updateStreamingOnly Only re-render current streaming message (fast path)
 func (m *cliModel) updateStreamingOnly() {
 	var sb strings.Builder
 	sb.WriteString(m.cachedHistory)
 
-	// 只渲染当前流式消息
+	// Only render current streaming message
 	msg := &m.messages[m.streamingMsgIdx]
 	msg.dirty = true
 	sb.WriteString(m.renderMessage(msg))
@@ -1633,21 +1633,21 @@ func (m *cliModel) appendNewMessagesToCache() {
 	m.setViewportContent(vp.String())
 }
 
-// fullRebuild 全量重建渲染缓存（慢速路径）
+// fullRebuild Full rebuild of render cache (slow path)
 func (m *cliModel) fullRebuild() {
 	var historyBuf strings.Builder
 
-	// splitIdx 确保当前流式消息不进入 cachedHistory
+	// splitIdx ensures current streaming message doesn't enter cachedHistory
 	splitIdx := len(m.messages)
 	if m.streamingMsgIdx >= 0 {
 		splitIdx = m.streamingMsgIdx
 	}
 
-	// §19 重置消息行号偏移（基于折行后的 viewport 行号）
+	// §19 Reset message line number offsets (based on viewport line numbers after wrapping)
 	m.msgLineOffsets = m.msgLineOffsets[:0]
 	runningLines := 0
 	for i := range m.messages[:splitIdx] {
-		// §19 记录消息在 viewport 折行后内容中的起始行号
+		// §19 Record start line number of message in viewport-wrapped content
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
 		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != m.width
 		if needsRender {
@@ -1660,14 +1660,14 @@ func (m *cliModel) fullRebuild() {
 		// historyBuf.String() on every iteration — the O(N²) full
 		// buffer copy caused 100% CPU during resize with many messages).
 		chunk := m.messages[i].rendered
-		// §21 搜索高亮：匹配消息前插入指示条
+		// §21 Search highlight: insert indicator bar before matching messages
 		if m.searchMode && m.isSearchMatch(i) {
 			indicator := m.styles.SearchIndicator.Render("▸ ")
 			historyBuf.WriteString(indicator)
 			chunk = indicator + chunk
 		}
 		historyBuf.WriteString(m.messages[i].rendered)
-		// 累加本消息（含搜索指示条）在折行后占用的行数
+		// Accumulate line count occupied by this message (including search indicator) after wrapping
 		runningLines += wrappedLineCount(chunk, m.width)
 	}
 
@@ -1675,7 +1675,7 @@ func (m *cliModel) fullRebuild() {
 	m.renderCacheValid = true
 	m.cachedMsgCount = len(m.messages)
 
-	// 拼接最终内容：历史 + 当前流式消息（如有） + progress block + rewind result
+	// Concatenate final content: history + current streaming message (if any) + progress block + rewind result
 	var sb strings.Builder
 	sb.WriteString(m.cachedHistory)
 	if m.streamingMsgIdx >= 0 {
@@ -1687,7 +1687,7 @@ func (m *cliModel) fullRebuild() {
 	m.setViewportContent(sb.String())
 }
 
-// isSearchMatch 检查消息是否匹配当前搜索（§21）
+// isSearchMatch Check if message matches current search (§21)
 func (m *cliModel) isSearchMatch(idx int) bool {
 	for _, si := range m.searchResults {
 		if si == idx {
@@ -1697,13 +1697,13 @@ func (m *cliModel) isSearchMatch(idx int) bool {
 	return false
 }
 
-// toggleMessageFold 批量切换所有 assistant 消息的折叠状态（§19）
-// 如果当前有任一长消息未折叠 → 全部折叠；否则 → 全部展开。
+// toggleMessageFold Batch toggle fold state of all assistant messages (§19)
+// If any long message is currently unfolded → fold all; otherwise → unfold all.
 func (m *cliModel) toggleMessageFold() {
 	if len(m.messages) == 0 {
 		return
 	}
-	// 决定目标状态：如果存在任何未折叠的长消息，则全部折叠
+	// Determine target state: if any unfolded long message exists, fold all
 	anyUnfolded := false
 	for i := range m.messages {
 		msg := &m.messages[i]
@@ -1758,7 +1758,7 @@ func (m *cliModel) toggleMessageFold() {
 	}
 }
 
-// enterSearchMode 进入搜索模式（§21）
+// enterSearchMode Enter search mode (§21)
 func (m *cliModel) enterSearchMode() {
 	ti := textinput.New()
 	ti.Placeholder = m.locale.SearchPlaceholder
@@ -1780,7 +1780,7 @@ func (m *cliModel) enterSearchMode() {
 	m.updateViewportContent()
 }
 
-// executeSearch 执行搜索（§21）
+// executeSearch Execute search (§21)
 func (m *cliModel) executeSearch() {
 	query := strings.TrimSpace(m.searchTI.Value())
 	if query == "" {
@@ -1810,7 +1810,7 @@ func (m *cliModel) executeSearch() {
 	m.updateViewportContent()
 }
 
-// exitSearch 退出搜索模式（§21）
+// exitSearch Exit search mode (§21)
 func (m *cliModel) exitSearch() {
 	m.searchMode = false
 	m.searchQuery = ""
@@ -1821,7 +1821,7 @@ func (m *cliModel) exitSearch() {
 	m.updateViewportContent()
 }
 
-// jumpToSearchResult 跳转到指定搜索结果（§21）
+// jumpToSearchResult Jump to specified search result (§21)
 func (m *cliModel) jumpToSearchResult(idx int) {
 	if idx < 0 || idx >= len(m.searchResults) {
 		return

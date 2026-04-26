@@ -183,7 +183,7 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 }
 
 // ---------------------------------------------------------------------------
-// Refactored common patterns (方案 B: 提取重复代码)
+// Refactored common patterns (方案 B: Extract duplicated code)
 // ---------------------------------------------------------------------------
 
 // invalidateAllCache marks the render cache invalid, dirties all messages,
@@ -481,15 +481,15 @@ func (m *cliModel) scrollToVisible(cursorLine, totalLines, visibleH int) {
 	}
 }
 
-// ensurePanelCursorVisible 确保 panel cursor 行在可见区域内。
-// 编辑/combo 模式下额外滚到底部，确保 inline editor 可见。
+// ensurePanelCursorVisible Ensure panel cursor row is within visible area.
+// In edit/combo mode, additionally scroll to bottom to ensure inline editor is visible.
 func (m *cliModel) ensurePanelCursorVisible() {
 	if len(m.panelSchema) == 0 || m.panelCursor >= len(m.panelSchema) {
 		return
 	}
-	// 编辑或下拉模式：直接滚到内容底部，因为 overlay 在末尾
+	// Edit or dropdown mode: scroll directly to content bottom, since overlay is at the end
 	if m.panelEdit || m.panelCombo {
-		m.panelScrollY = 0 // 先重置
+		m.panelScrollY = 0 // Reset first
 		raw := m.viewPanel()
 		total := countLines(raw)
 		visible := m.panelVisibleHeight()
@@ -498,7 +498,7 @@ func (m *cliModel) ensurePanelCursorVisible() {
 		}
 		return
 	}
-	// 复刻 viewSettingsPanel 的行号计算逻辑。
+	// Replicate viewSettingsPanel's line number calculation logic.
 	// header = 2 lines (title + divider), each category = 2 lines (\n + title),
 	// each item = 1 line (label + value rendered inline).
 	cursorLn := 2 // header offset
@@ -506,15 +506,15 @@ func (m *cliModel) ensurePanelCursorVisible() {
 	for i, def := range m.panelSchema {
 		if def.Category != lastCat {
 			lastCat = def.Category
-			cursorLn += 2 // 空行 + 分类标题
+			cursorLn += 2 // Blank line + 分类标题
 		}
-		cursorLn++ // 所有 item 类型都是单行渲染
+		cursorLn++ // All item types render as single line
 		if i == m.panelCursor {
 			break
 		}
 	}
 	visibleH := m.panelVisibleHeight()
-	totalLines := cursorLn + 5 // +5 保证底部有足够空间
+	totalLines := cursorLn + 5 // +5 Ensure enough space at the bottom
 	m.scrollToVisible(cursorLn, totalLines, visibleH)
 }
 
@@ -561,7 +561,7 @@ func (m *cliModel) ensureSessionCursorVisible() {
 	m.scrollToVisible(cursorLine, totalLines, visibleH)
 }
 
-// panelVisibleHeight 返回 panel 可见区域高度。
+// panelVisibleHeight Return panel visible area height.
 func (m *cliModel) panelVisibleHeight() int {
 	h := m.height - 5 // titleBar(1) + footer(1) + toast(1) + PanelBox borders(2)
 	if h < 3 {
@@ -570,8 +570,8 @@ func (m *cliModel) panelVisibleHeight() int {
 	return h
 }
 
-// clampPanelScroll 确保 panelScrollY 不超出范围。
-// rawContent 是已渲染的 panel 内容，避免重复调用 viewPanel()。
+// clampPanelScroll Ensure panelScrollY doesn't exceed bounds.
+// rawContent is the rendered panel content, avoid calling viewPanel() repeatedly.
 func (m *cliModel) clampPanelScroll(rawContent string) {
 	total := countLines(rawContent)
 	visible := m.panelVisibleHeight()
@@ -721,7 +721,7 @@ func (msg *cliMessage) iterToolsFlat() (tools []CLIToolProgress, iterCount int) 
 }
 
 // ---------------------------------------------------------------------------
-// Unified error & feedback helpers (方案 A: 统一错误处理)
+// Unified error & feedback helpers (方案 A: Unified error handling)
 // ---------------------------------------------------------------------------
 
 // feedbackLevel represents the severity level of user feedback.

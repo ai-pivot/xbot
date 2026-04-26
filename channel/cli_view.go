@@ -21,12 +21,12 @@ func appendHint(status, hint string) string {
 	return hint
 }
 
-// View 渲染界面
+// View Render UI
 func (m *cliModel) View() tea.View {
-	// §14 启动画面：品牌展示动画（~2.4 秒后自动消失）
+	// §14 Splash screen: brand animation (auto-dismisses after ~2.4 seconds)
 	if !m.splashDone {
 		v := tea.NewView(m.renderSplash())
-		v.AltScreen = true // 使用 AltScreen 避免残留到主终端缓冲区
+		v.AltScreen = true // Use AltScreen to prevent residual content in main terminal buffer
 		return v
 	}
 
@@ -36,25 +36,25 @@ func (m *cliModel) View() tea.View {
 		return v
 	}
 
-	// 🥚 彩蛋覆盖层：有彩蛋激活时优先渲染全屏覆盖
+	// 🥚 Easter egg overlay: render fullscreen overlay when an easter egg is active
 	if m.easterEgg != easterEggNone {
 		v := tea.NewView(m.renderEasterEggOverlay())
 		v.AltScreen = true
 		return v
 	}
 
-	// /su 切换用户后加载历史中的 loading 画面
+	// Loading screen during history loading after /su user switch
 	if m.suLoading {
 		v := tea.NewView(m.renderSuLoading())
 		v.AltScreen = true
 		return v
 	}
 
-	// ========== 样式定义 ==========
+	// ========== Style definitions ==========
 
-	// 标题栏：纯 ASCII，避免 emoji 导致宽度误算
+	// Title bar: pure ASCII, avoid emoji causing width miscalculation
 	titleLeft := m.titleText()
-	// 标题栏右侧快捷键提示：紧凑的点分隔，比 | 更柔和
+	// Title bar right-side shortcut hints: compact dot separators, softer than |
 	titleRight := m.locale.TitleHint
 	// Askuser panel: override titleRight with panel-specific hints (always visible)
 	if m.panelMode == panelModeAskUser {
@@ -81,8 +81,8 @@ func (m *cliModel) View() tea.View {
 	titleBar := m.styles.TitleBar.
 		Render(titleLeft + strings.Repeat(" ", titlePad) + titleRight)
 
-		// 输入框样式：根据输入内容动态设置边框颜色
-		// ! 开头 → 错误色，/ 开头 → 成功色，默认 → 主题强调色
+		// Input box style: dynamically set border color based on input content
+		// ! prefix → error color, / prefix → success color, default → theme accent
 	inputValue := m.textarea.Value()
 	borderColor, completionsHint := m.renderCompletionsHint(inputValue)
 
@@ -122,28 +122,28 @@ func (m *cliModel) View() tea.View {
 		}
 	}
 
-	// 状态栏样式
+	// Status bar style
 	readyStatusStyle := m.styles.ReadyStatus
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	thinkingStatusStyle := m.styles.ThinkingSt
 
-	// §20 进度样式 → 缓存
+	// §20 Progress styles → cache
 	progressStyle := m.styles.Progress
 	toolStyle := m.styles.Tool
 
-	// ========== 渲染各部分 ==========
+	// ========== Render each section ==========
 
-	// 输入区
+	// Input area
 	input := inputBoxStyle.Render(inputArea)
 
 	// Build content string
 	var content string
 
-	// §16 Toast 通知渲染
+	// §16 Toast notification rendering
 	toastStr := m.renderToast()
 
-	// §21 搜索模式
+	// §21 Search mode
 	if m.searchMode {
 		var searchBar string
 		if m.searchEditing {
@@ -200,13 +200,13 @@ func (m *cliModel) View() tea.View {
 			toastStr,
 		)
 	} else if m.panelMode != "" {
-		// §12 Panel mode: 手动切片 + PanelBox 包裹（边框永远在屏幕内）
+		// §12 Panel mode: manual slicing + PanelBox wrapping (border always within screen)
 		panelFooter := m.renderFooter()
-		rawContent := m.viewPanel() // 原始内容，无 PanelBox
+		rawContent := m.viewPanel() // Raw content, no PanelBox
 		m.clampPanelScroll(rawContent)
 		rawLines := strings.Split(rawContent, "\n")
 		visibleH := m.panelVisibleHeight()
-		// 切片可见行
+		// Slice visible lines
 		if m.panelScrollY+visibleH > len(rawLines) {
 			m.panelScrollY = max(0, len(rawLines)-visibleH)
 		}
@@ -216,7 +216,7 @@ func (m *cliModel) View() tea.View {
 		}
 		visible := rawLines[m.panelScrollY:end]
 		panelContent := strings.Join(visible, "\n")
-		// PanelBox 包裹（边框在切片之后，保证完整显示）
+		// PanelBox wrapping (border after slicing, ensures complete display)
 		boxedContent := m.styles.PanelBox.Render(panelContent)
 		content = fmt.Sprintf(
 			"%s\n%s%s%s",
@@ -226,18 +226,18 @@ func (m *cliModel) View() tea.View {
 			toastStr,
 		)
 	} else {
-		// 输入区
+		// Input area
 		var status string
 		if m.typing || m.progress != nil {
-			// 显示 spinner + 进度信息
+			// Show spinner + progress info
 			status = thinkingStatusStyle.Render(m.renderProgressStatus(progressStyle, toolStyle))
 		} else if m.checkingUpdate {
 			status = thinkingStatusStyle.Render(m.locale.CheckingUpdates)
 		} else if completionsHint != "" {
-			// 显示补全候选提示
+			// Show completion candidate hint
 			status = completionsHint
 		} else {
-			// 就绪态：显示消息计数 + 当前模型（如果有覆盖）
+			// Ready state: show message count + current model (if overridden)
 			readyParts := []string{m.locale.StatusReady}
 			// Session indicator (for agent sessions)
 			if m.channelName == "agent" {
@@ -249,7 +249,7 @@ func (m *cliModel) View() tea.View {
 					readyParts = append(readyParts, fmt.Sprintf("🤖 %s", m.chatID))
 				}
 			}
-			// 消息计数
+			// Message count
 			msgCount := len(m.messages)
 			if msgCount > 0 {
 				readyParts = append(readyParts, fmt.Sprintf("%d msg%s", msgCount, func() string {
@@ -259,7 +259,7 @@ func (m *cliModel) View() tea.View {
 					return ""
 				}()))
 			}
-			// 模型名称（使用缓存，避免每次 View() 重复查找）
+			// Model name (use cache, avoid repeated lookup on each View())
 			if m.cachedModelName != "" {
 				modelHint := m.cachedModelName
 				if m.modelCount > 1 {
@@ -269,11 +269,11 @@ func (m *cliModel) View() tea.View {
 			}
 			status = readyStatusStyle.Render(strings.Join(readyParts, " · "))
 		}
-		// 临时状态提示（自动过期）
+		// Temporary status hint (auto-expires)
 		if m.tempStatus != "" {
 			status = appendHint(status, m.styles.WarningSt.Render(m.tempStatus))
 		}
-		// 新消息提示：用户上滚且有新内容时显示
+		// New message hint: show when user has scrolled up and there's new content
 		if m.newContentHint {
 			status = appendHint(status, m.styles.InfoSt.Render(m.locale.NewContentHint))
 		}
@@ -294,7 +294,7 @@ func (m *cliModel) View() tea.View {
 		}
 
 		todoBar := m.renderTodoBar()
-		// 底部快捷键提示条（第 4 轮：激活已定义但未使用的 renderFooter）
+		// Bottom shortcut hint bar (round 4: activate defined but unused renderFooter)
 		footer := m.renderFooter()
 
 		switch {
@@ -434,7 +434,7 @@ func (m *cliModel) renderTodoBar() string {
 	return sb.String()
 }
 
-// titleText 生成标题栏文字。
+// titleText Generate title bar text.
 func (m *cliModel) titleText() string {
 	modeLabel := "⌂ xbot"
 	if m.remoteMode {
@@ -488,10 +488,10 @@ func (m *cliModel) askUserTitleHints() string {
 }
 
 // ---------------------------------------------------------------------------
-// §14 启动画面 (Splash Screen)
+// §14 Splash Screen
 // ---------------------------------------------------------------------------
 
-// xbotLogo — "XBOT" ASCII art（slant 字体，figlet 生成）
+// xbotLogo — "XBOT" ASCII art (slant font, generated by figlet)
 var xbotLogo = []string{
 	"   _  __    ____    ____    ______",
 	"  | |/ /   / __ )  / __ \\  /_  __/",
@@ -521,9 +521,9 @@ func centerLinePlain(screenW int, styled string) string {
 	return strings.Repeat(" ", pad) + styled
 }
 
-// renderSplash 渲染启动画面 — 品牌 logo + 版本号 + 加载动画
+// renderSplash Render splash screen — brand logo + version number + loading animation
 func (m *cliModel) renderSplash() string {
-	// 中心化计算
+	// Centering calculation
 	screenW := m.width
 	if screenW < 40 {
 		screenW = 40
@@ -533,13 +533,13 @@ func (m *cliModel) renderSplash() string {
 		screenH = 10
 	}
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	logoStyle := m.styles.Accent.Bold(true)
 	versionStyle := m.styles.VersionSt
 	descStyle := m.styles.TextMutedSt
 	loadingStyle := m.styles.WarningSt
 
-	// 组装 splash 内容（logo 按最宽行整体居中，保持字母内部对齐）
+	// Assemble splash content (logo centered by widest line, preserving internal letter alignment)
 	var lines []string
 	maxLogoW := 0
 	renderedLogo := make([]string, len(xbotLogo))
@@ -557,27 +557,27 @@ func (m *cliModel) renderSplash() string {
 		lines = append(lines, strings.Repeat(" ", logoPad)+line)
 	}
 
-	// 空行
+	// Blank line
 	lines = append(lines, "")
 
-	// 版本号居中
+	// Version number centered
 	lines = append(lines, centerLine(screenW, fmt.Sprintf("xbot %s · %s", version.Version, version.Commit), versionStyle))
 
-	// 描述居中（节日版彩蛋）
+	// Description centered (holiday edition easter egg)
 	splashDesc := m.locale.SplashDesc
 	if holidayDesc := getHolidaySplashDesc(); holidayDesc != "" {
 		splashDesc = holidayDesc
 	}
 	lines = append(lines, centerLine(screenW, splashDesc, descStyle))
 
-	// 空行
+	// Blank line
 	lines = append(lines, "")
 
-	// 加载动画
+	// Loading animation
 	frame := splashFrames[m.splashFrame%len(splashFrames)]
 	lines = append(lines, centerLine(screenW, fmt.Sprintf(m.locale.SplashLoading, frame), loadingStyle))
 
-	// 垂直居中
+	// Vertical centering
 	emptyLinesBefore := (screenH - len(lines)) / 2
 	if emptyLinesBefore < 2 {
 		emptyLinesBefore = 2
@@ -595,7 +595,7 @@ func (m *cliModel) renderSplash() string {
 	return sb.String()
 }
 
-// renderSuLoading 渲染 /su 切换用户后的历史加载画面（复用 splash 动画帧）
+// renderSuLoading Render history loading screen after /su user switch (reuses splash animation frames)
 func (m *cliModel) renderSuLoading() string {
 	screenW := m.width
 	if screenW < 40 {
@@ -609,20 +609,20 @@ func (m *cliModel) renderSuLoading() string {
 	loadingStyle := m.styles.WarningSt
 	descStyle := m.styles.TextMutedSt
 
-	// 居中内容
+	// Center content
 	var lines []string
 	frame := splashFrames[m.splashFrame%len(splashFrames)]
 
-	// 切换目标提示
+	// Switch target hint
 	lines = append(lines, centerLine(screenW, fmt.Sprintf(m.locale.SuSwitching, m.senderID), descStyle))
 
-	// 空行
+	// Blank line
 	lines = append(lines, "")
 
-	// 加载动画
+	// Loading animation
 	lines = append(lines, centerLine(screenW, fmt.Sprintf(m.locale.SuLoadingHistory, frame), loadingStyle))
 
-	// 垂直居中
+	// Vertical centering
 	emptyLinesBefore := (screenH - len(lines)) / 2
 	if emptyLinesBefore < 3 {
 		emptyLinesBefore = 3
@@ -641,17 +641,17 @@ func (m *cliModel) renderSuLoading() string {
 }
 
 // ---------------------------------------------------------------------------
-// §15 底部快捷键提示条 (Footer Bar)
+// §15 Bottom shortcut hint bar (Footer Bar)
 // ---------------------------------------------------------------------------
 
-// renderFooter 渲染底部快捷键提示条。
-// 根据当前状态动态显示最相关的快捷键，避免信息过载。
+// renderFooter Render bottom shortcut hint bar.
+// Dynamically show most relevant shortcuts based on current state, avoiding information overload.
 func (m *cliModel) renderFooter() string {
-	// 收集当前上下文最相关的快捷键提示
+	// Collect most relevant shortcut hints for current context
 	var hints []string
 
 	if m.panelMode != "" {
-		// 面板打开时：显示面板相关快捷键
+		// When panel is open: show panel-related shortcuts
 		switch m.panelMode {
 		case "bgtasks":
 			if m.panelBgViewing {
@@ -665,10 +665,10 @@ func (m *cliModel) renderFooter() string {
 			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", m.locale.FooterClose))
 		}
 	} else if m.typing {
-		// 处理中：显示取消快捷键
+		// During processing: show cancel shortcut
 		hints = append(hints, m.ctrlKey("c", m.locale.FooterCancel))
 	} else {
-		// 就绪态：显示核心快捷键
+		// Ready state: show core shortcuts
 		if m.textarea.Value() == "" {
 			hints = append(hints, m.ctrlKey("k", m.locale.FooterDelete), m.keyHint("/", m.locale.FooterCommands), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("e", m.locale.FooterFold))
 			if m.subscriptionMgr != nil {
@@ -687,7 +687,7 @@ func (m *cliModel) renderFooter() string {
 		return ""
 	}
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	helpHint := m.styles.TextMutedSt.Render("/help")
 	ellipsis := m.styles.TextMutedSt.Render("…")
 	ellipsisW := lipgloss.Width(ellipsis)
@@ -707,21 +707,21 @@ func (m *cliModel) renderFooter() string {
 		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.width)))
 }
 
-// ctrlKey 渲染 Ctrl+X 快捷键标签（灰色键帽 + 彩色描述）
+// ctrlKey Render Ctrl+X shortcut label (gray keycap + colored description)
 func (m *cliModel) ctrlKey(key string, desc string) string {
 	k := m.styles.KeyLabelSt.Render("Ctrl+" + key)
 	d := m.styles.KeyDescSt.Render(desc)
 	return k + " " + d
 }
 
-// keyHint 渲染普通按键标签
+// keyHint Render normal key label
 func (m *cliModel) keyHint(key, desc string) string {
 	k := m.styles.KeyLabelSt.Render(key)
 	d := m.styles.KeyDescSt.Render(desc)
 	return k + " " + d
 }
 
-// padBetween 在左右文本之间填充空格，使总宽度达到 width
+// padBetween Pad spaces between left and right text to reach total width
 func padBetween(left, right string, width int) string {
 	w := lipgloss.Width(left) + lipgloss.Width(right)
 	if w >= width {
@@ -730,15 +730,15 @@ func padBetween(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-w) + right
 }
 
-// renderToast 渲染底部 Toast 通知堆叠（§16）。
-// 支持多条 toast 排队显示，最多同时渲染 3 条，3 秒轮换。
-// 浮在界面最底部，使用 Surface 背景与主题保持一致。
+// renderToast Render bottom Toast notification stack (§16).
+// Supports multiple toasts queued, max 3 rendered simultaneously, 3-second rotation.
+// Floats at the very bottom of the UI, uses Surface background consistent with theme.
 func (m *cliModel) renderToast() string {
 	if len(m.toasts) == 0 {
 		return ""
 	}
 
-	// 最多显示 3 条
+	// Max 3 displayed
 	showCount := len(m.toasts)
 	if showCount > 3 {
 		showCount = 3
@@ -756,8 +756,8 @@ func (m *cliModel) renderToast() string {
 			iconSty = iconSty.Foreground(lipgloss.Color(currentTheme.Info))
 		}
 
-		// 越靠后越透明（营造层级感）
-		faintFactor := i // 0=最新最亮, 1=稍暗, 2=最暗
+		// More transparent for later ones (creating depth)
+		faintFactor := i // 0=newest/brightest, 1=slightly dimmer, 2=dimmest
 		if faintFactor > 0 {
 			iconSty = iconSty.Faint(true)
 		}
@@ -807,7 +807,7 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 		sb.WriteString(formatElapsed(elapsed))
 	}
 
-	// §18 Token 使用量显示
+	// §18 Token usage display
 	if m.progress != nil && m.progress.TokenUsage != nil && m.progress.TokenUsage.TotalTokens > 0 {
 		tu := m.progress.TokenUsage
 		// §20 tokenStyle → s.TokenUsage
@@ -818,7 +818,7 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 	return sb.String()
 }
 
-// formatTokenCount 格式化 Token 使用量为紧凑字符串
+// formatTokenCount Format token usage as compact string
 func formatTokenCount(tu *CLITokenUsage) string {
 	if tu.TotalTokens < 1000 {
 		return fmt.Sprintf("tokens: %d", tu.TotalTokens)

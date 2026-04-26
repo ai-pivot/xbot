@@ -37,22 +37,22 @@ const napcatConnectTimeout = 30 * time.Second    // Max wait for initial WebSock
 const napcatReconnectInterval = 60 * time.Second // Pause between reconnect attempts
 
 // ---------------------------------------------------------------------------
-// NapCatConfig 配置
+// NapCatConfig Configuration
 // ---------------------------------------------------------------------------
 
-// NapCatConfig NapCat (OneBot 11) 渠道配置
+// NapCatConfig NapCat (OneBot 11) 渠道Configuration
 type NapCatConfig struct {
 	Enabled   bool
 	WSUrl     string   // NapCat WebSocket URL, e.g. "ws://localhost:3001"
-	Token     string   // 鉴权 token（可选）
-	AllowFrom []string // 允许的 QQ 号白名单（空则允许所有）
+	Token     string   // Auth token (optional)
+	AllowFrom []string // Allowed QQ number whitelist (empty = allow all)
 }
 
 // ---------------------------------------------------------------------------
-// NapCatChannel 实现
+// NapCatChannel Implementation
 // ---------------------------------------------------------------------------
 
-// NapCatChannel NapCat (OneBot 11) 渠道实现
+// NapCatChannel NapCat (OneBot 11) 渠道Implementation
 type NapCatChannel struct {
 	WSChannelBase
 
@@ -62,18 +62,18 @@ type NapCatChannel struct {
 	running  atomic.Bool
 	stopOnce sync.Once
 
-	// API 请求-响应匹配
+	// API request-response matching
 	pending   map[string]chan json.RawMessage // echo -> response channel
 	pendingMu sync.Mutex
 
-	// Bot 自身 QQ 号（从事件中获取）
+	// Bot's own QQ number (obtained from events)
 	selfID atomic.Int64
 
-	// 聊天类型缓存（chatID → "group"/"private"）
+	// Chat type cache (chatID → "group"/"private")
 	chatTypeCache sync.Map
 }
 
-// NewNapCatChannel 创建 NapCat 渠道
+// NewNapCatChannel Create NapCat channel
 func NewNapCatChannel(cfg NapCatConfig, msgBus *bus.MessageBus) *NapCatChannel {
 	return &NapCatChannel{
 		WSChannelBase: NewWSChannelBase(1000, napcatQuickDisconnectWindow, napcatQuickDisconnectCount),
@@ -89,7 +89,7 @@ func (n *NapCatChannel) Name() string { return "napcat" }
 // Start / Stop
 // ---------------------------------------------------------------------------
 
-// Start 启动 NapCat 渠道，阻塞运行直到 Stop 被调用
+// Start Start NapCat channel, blocks until Stop is called
 func (n *NapCatChannel) Start() error {
 	if n.config.WSUrl == "" {
 		return fmt.Errorf("napcat: ws_url is required")
@@ -109,7 +109,7 @@ func (n *NapCatChannel) Start() error {
 		if !n.running.Load() {
 			return nil // graceful shutdown
 		}
-		// 连接持续超过 30s 说明不是立即断开，重置计数
+		// Connection lasting over 30s indicates it's not an immediate disconnect, reset counter
 		if time.Since(connectStart) > napcatConnectTimeout {
 			attempt = 0
 		}
@@ -146,7 +146,7 @@ func (n *NapCatChannel) Start() error {
 	return nil
 }
 
-// Stop 停止 NapCat 渠道
+// Stop Stop NapCat channel
 func (n *NapCatChannel) Stop() {
 	n.stopOnce.Do(func() {
 		n.running.Store(false)
@@ -161,7 +161,7 @@ func (n *NapCatChannel) Stop() {
 // Connect and run main loop
 // ---------------------------------------------------------------------------
 
-// connectAndRun 建立 WebSocket 连接并运行消息循环，返回时表示连接断开
+// connectAndRun Establish WebSocket connection and run message loop, returns when connection drops
 func (n *NapCatChannel) connectAndRun() error {
 	header := http.Header{}
 	if n.config.Token != "" {
@@ -205,7 +205,7 @@ func (n *NapCatChannel) connectAndRun() error {
 // OneBot 11 event types
 // ---------------------------------------------------------------------------
 
-// obEvent OneBot 11 通用事件结构
+// obEvent OneBot 11 generic event structure
 type obEvent struct {
 	PostType      string          `json:"post_type"`
 	MessageType   string          `json:"message_type"`
@@ -220,44 +220,44 @@ type obEvent struct {
 	Message       json.RawMessage `json:"message"`
 	Sender        obSender        `json:"sender"`
 
-	// API 响应字段
+	// API response fields
 	Status  json.RawMessage `json:"status"`
 	RetCode int             `json:"retcode"`
 	Data    json.RawMessage `json:"data"`
 	Echo    string          `json:"echo"`
 }
 
-// obSender 发送者信息
+// obSender Sender info
 type obSender struct {
 	UserID   int64  `json:"user_id"`
 	Nickname string `json:"nickname"`
-	Card     string `json:"card"` // 群名片
+	Card     string `json:"card"` // Group nickname
 }
 
-// obMessageSegment OneBot 11 消息段
+// obMessageSegment OneBot 11 message segment
 type obMessageSegment struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
 }
 
-// obTextData 文本消息段数据
+// obTextData Text message segment data
 type obTextData struct {
 	Text string `json:"text"`
 }
 
-// obImageData 图片消息段数据
+// obImageData Image message segment data
 type obImageData struct {
 	File string `json:"file"`
 	URL  string `json:"url"`
 }
 
-// obAtData @消息段数据
+// obAtData @mention message segment data
 type obAtData struct {
 	QQ any `json:"qq"`
 }
 
-// formatQQ 将 obAtData.QQ(any) 格式化为字符串
-// NapCat 可能发送 string 或 float64 类型的 QQ 号
+// formatQQ Format obAtData.QQ(any) as string
+// NapCat may send QQ number as string or float64 type
 func formatQQ(qq any) string {
 	switch v := qq.(type) {
 	case string:
@@ -269,20 +269,20 @@ func formatQQ(qq any) string {
 	}
 }
 
-// obMediaData 通用媒体消息段数据（record/video/file）
+// obMediaData Generic media message segment data (record/video/file)
 type obMediaData struct {
 	File string `json:"file"`
 	URL  string `json:"url"`
 }
 
-// obAPIRequest OneBot 11 API 请求
+// obAPIRequest OneBot 11 API request
 type obAPIRequest struct {
 	Action string `json:"action"`
 	Params any    `json:"params"`
 	Echo   string `json:"echo"`
 }
 
-// obAPIResponse OneBot 11 API 响应
+// obAPIResponse OneBot 11 API response
 type obAPIResponse struct {
 	Status  string          `json:"status"`
 	RetCode int             `json:"retcode"`
@@ -290,7 +290,7 @@ type obAPIResponse struct {
 	Echo    string          `json:"echo"`
 }
 
-// obSendMsgResponse send_msg 响应数据
+// obSendMsgResponse send_msg response data
 type obSendMsgResponse struct {
 	MessageID int64 `json:"message_id"`
 }
@@ -299,20 +299,20 @@ type obSendMsgResponse struct {
 // Event dispatcher
 // ---------------------------------------------------------------------------
 
-// handleEvent 处理从 WebSocket 收到的事件
+// handleEvent Handle events received from WebSocket
 func (n *NapCatChannel) handleEvent(data []byte) error {
 	var event obEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		return fmt.Errorf("parse event: %w", err)
 	}
 
-	// 检查是否是 API 响应（有 echo 字段）
+	// Check if it's an API response (has echo field)
 	if event.Echo != "" {
 		n.handleAPIResponse(event.Echo, data)
 		return nil
 	}
 
-	// 记录 self_id
+	// Record self_id
 	if event.SelfID != 0 {
 		n.selfID.Store(event.SelfID)
 	}
@@ -327,9 +327,9 @@ func (n *NapCatChannel) handleEvent(data []byte) error {
 	case "request":
 		log.WithField("sub_type", event.SubType).Debug("NapCat: request event (ignored)")
 	default:
-		// 可能是纯 API 响应（status 字段存在但无 post_type）
+		// May be a pure API response (status field exists but no post_type)
 		if len(event.Status) > 0 {
-			// 无 echo 的 API 响应，忽略
+			// API response without echo, ignore
 			return nil
 		}
 		log.WithField("post_type", event.PostType).Debug("NapCat: unknown event type")
@@ -338,7 +338,7 @@ func (n *NapCatChannel) handleEvent(data []byte) error {
 	return nil
 }
 
-// handleAPIResponse 处理 API 响应，匹配 pending 请求
+// handleAPIResponse Handle API response, match pending request
 func (n *NapCatChannel) handleAPIResponse(echo string, data []byte) {
 	n.pendingMu.Lock()
 	ch, ok := n.pending[echo]
@@ -351,12 +351,12 @@ func (n *NapCatChannel) handleAPIResponse(echo string, data []byte) {
 		select {
 		case ch <- json.RawMessage(data):
 		default:
-			// channel 可能已满或已关闭，丢弃响应
+			// Channel may be full or closed, discard response
 		}
 	}
 }
 
-// handleMetaEvent 处理元事件
+// handleMetaEvent Handle meta events
 func (n *NapCatChannel) handleMetaEvent(event *obEvent) error {
 	switch event.MetaEventType {
 	case "heartbeat":
@@ -373,7 +373,7 @@ func (n *NapCatChannel) handleMetaEvent(event *obEvent) error {
 // Message handler
 // ---------------------------------------------------------------------------
 
-// handleMessage 处理消息事件
+// handleMessage Handle message事件
 func (n *NapCatChannel) handleMessage(event *obEvent) error {
 	messageID := fmt.Sprintf("%d", event.MessageID)
 
@@ -385,37 +385,37 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 		"raw_message":  truncate(event.RawMessage, 100),
 	}).Info("NapCat: message received")
 
-	// 去重
+	// Deduplication
 	if n.isDuplicate(messageID) {
 		log.WithField("message_id", messageID).Debug("NapCat: duplicate message, skipping")
 		return nil
 	}
 
-	// 白名单检查
+	// Whitelist check
 	senderID := fmt.Sprintf("%d", event.UserID)
 	if !n.isAllowed(n.config.AllowFrom, senderID) {
 		log.WithField("sender", senderID).Info("NapCat: access denied")
 		return nil
 	}
 
-	// 解析消息段
+	// Parse message segments
 	content, media, mentionedBot := n.parseMessageSegments(event.Message, event.SelfID)
 
-	// 群消息必须 @bot 才处理，私聊消息直接处理
+	// Group messages must @bot to be processed, private messages processed directly
 	if event.MessageType == "group" && !mentionedBot {
 		log.WithField("group_id", event.GroupID).Debug("NapCat: group message without @bot, skipping")
 		return nil
 	}
 
-	// 如果消息为空（可能全是表情或 @bot），跳过
+	// 如果消息为空（可能全是Emoji或 @bot），跳过
 	if content == "" && len(media) == 0 {
 		return nil
 	}
 
-	// 构建入站消息
+	// Build inbound message
 	senderName := event.Sender.Nickname
 	if event.Sender.Card != "" {
-		senderName = event.Sender.Card // 群名片优先
+		senderName = event.Sender.Card // Group nickname优先
 	}
 
 	var chatID string
@@ -460,11 +460,11 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 			"message_id":   messageID,
 			"chat_type":    chatType,
 			"self_id":      fmt.Sprintf("%d", event.SelfID),
-			"reply_policy": "optional", // QQ 不支持 patch，禁用 ACK 和进度通知
+			"reply_policy": "optional", // QQ doesn't support patch, disable ACK and progress notifications
 		},
 	}
 
-	// 缓存 chatID 对应的聊天类型，供 Send 方法使用
+	// Cache chat type for chatID, for use by Send method
 	n.chatTypeCache.Store(chatID, chatType)
 
 	n.msgBus.Inbound <- inbound
@@ -475,8 +475,8 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 // Message segment parsing
 // ---------------------------------------------------------------------------
 
-// parseMessageSegments 解析 OneBot 11 消息段数组，返回文本内容、媒体 URL 列表和是否 @bot
-// selfID 用于过滤群消息中 @bot 的消息段
+// parseMessageSegments 解析 OneBot 11 message segment数组，返回文本内容、媒体 URL 列表和是否 @bot
+// selfID For filtering @bot message segments in group messages
 func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) (string, []string, bool) {
 	if len(raw) == 0 {
 		return "", nil, false
@@ -484,7 +484,7 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 
 	var segments []obMessageSegment
 	if err := json.Unmarshal(raw, &segments); err != nil {
-		// 可能是字符串格式的消息（messagePostFormat=string），直接返回
+		// May be string-format message (messagePostFormat=string), return directly
 		var s string
 		if err2 := json.Unmarshal(raw, &s); err2 == nil {
 			return s, nil, false
@@ -521,7 +521,7 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 		case "at":
 			var data obAtData
 			if err := json.Unmarshal(seg.Data, &data); err == nil {
-				// 检测 @bot 自己或 @all
+				// Detect @bot self or @all
 				qqStr := formatQQ(data.QQ)
 				if qqStr == selfIDStr || qqStr == "all" {
 					mentionedBot = true
@@ -531,11 +531,11 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 			}
 
 		case "reply":
-			// 回复消息段，不添加到文本中，但可以记录
-			// metadata 中已有 message_id，reply 的 id 可以忽略
+			// Reply message segment, not added to text but can be logged
+			// metadata already has message_id, reply's id can be ignored
 
 		case "face":
-			// QQ 表情，忽略
+			// QQ Emoji，忽略
 
 		case "record":
 			var data obMediaData
@@ -586,30 +586,30 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 // Send (outbound)
 // ---------------------------------------------------------------------------
 
-// Send 发送消息到 NapCat
+// Send Send message to NapCat
 func (n *NapCatChannel) Send(msg bus.OutboundMessage) (string, error) {
 	if msg.Content == "" && len(msg.Media) == 0 {
 		return "", nil
 	}
 
-	// QQ 不支持 patch（原地更新消息），直接发送新消息。
-	// reply_policy=optional 已禁用 ACK 和进度通知，此处只会收到最终回复。
+	// QQ doesn't support patch (in-place message update), send new message directly.
+	// reply_policy=optional has disabled ACK and progress notifications, only final replies received here.
 
 	chatType := ""
 	if msg.Metadata != nil {
 		chatType = msg.Metadata["chat_type"]
 	}
-	// 从缓存推断聊天类型
+	// Infer chat type from cache
 	if chatType == "" {
 		if cached, ok := n.chatTypeCache.Load(msg.ChatID); ok {
 			chatType = cached.(string)
 		}
 	}
 
-	// 构建消息内容（消息段数组）
+	// Build message content (message segment array)
 	message := n.buildOutboundMessage(msg.Content, msg.Media)
 
-	// 根据 chat_type 选择 API
+	// Select API based on chat_type
 	switch chatType {
 	case "group":
 		groupID, err := strconv.ParseInt(msg.ChatID, 10, 64)
@@ -626,7 +626,7 @@ func (n *NapCatChannel) Send(msg bus.OutboundMessage) (string, error) {
 		return n.sendPrivateMsg(userID, message)
 
 	default:
-		// 无法确定聊天类型，默认尝试私聊
+		// Unable to determine chat type, default to private chat attempt
 		log.WithField("chat_id", msg.ChatID).Warn("NapCat: unknown chat type, defaulting to private")
 		id, err := strconv.ParseInt(msg.ChatID, 10, 64)
 		if err != nil {
@@ -636,7 +636,7 @@ func (n *NapCatChannel) Send(msg bus.OutboundMessage) (string, error) {
 	}
 }
 
-// mediaTypeFromURL 从 URL/路径扩展名推断 OneBot 媒体消息段类型
+// mediaTypeFromURL Infer OneBot media message segment type from URL/path extension
 func mediaTypeFromURL(url string) string {
 	switch {
 	case strings.HasSuffix(strings.ToLower(url), ".mp3"),
@@ -652,17 +652,17 @@ func mediaTypeFromURL(url string) string {
 	}
 }
 
-// buildOutboundMessage 构建出站消息内容
-// 如果只有文本，返回纯文本字符串；如果有媒体，返回消息段数组
+// buildOutboundMessage Build outbound message content
+// If text only, return plain string; if media present, return message segment array
 func (n *NapCatChannel) buildOutboundMessage(content string, media []string) any {
 	if len(media) == 0 {
 		return content
 	}
 
-	// 构建消息段数组
+	// Build message segment array
 	var segments []map[string]any
 
-	// 添加文本段
+	// Add text segment
 	if content != "" {
 		segments = append(segments, map[string]any{
 			"type": "text",
@@ -672,7 +672,7 @@ func (n *NapCatChannel) buildOutboundMessage(content string, media []string) any
 		})
 	}
 
-	// 添加媒体段
+	// Add media segment
 	for _, url := range media {
 		segments = append(segments, map[string]any{
 			"type": mediaTypeFromURL(url),
@@ -685,7 +685,7 @@ func (n *NapCatChannel) buildOutboundMessage(content string, media []string) any
 	return segments
 }
 
-// sendPrivateMsg 发送私聊消息
+// sendPrivateMsg Send private chat message
 func (n *NapCatChannel) sendPrivateMsg(userID int64, message any) (string, error) {
 	resp, err := n.callAPI("send_private_msg", map[string]any{
 		"user_id": userID,
@@ -697,12 +697,12 @@ func (n *NapCatChannel) sendPrivateMsg(userID int64, message any) (string, error
 
 	var result obSendMsgResponse
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return "", nil // 发送成功但解析响应失败，不影响
+		return "", nil // Send succeeded but response parsing failed, no impact
 	}
 	return fmt.Sprintf("%d", result.MessageID), nil
 }
 
-// sendGroupMsg 发送群消息
+// sendGroupMsg Send group message
 func (n *NapCatChannel) sendGroupMsg(groupID int64, message any) (string, error) {
 	resp, err := n.callAPI("send_group_msg", map[string]any{
 		"group_id": groupID,
@@ -723,17 +723,17 @@ func (n *NapCatChannel) sendGroupMsg(groupID int64, message any) (string, error)
 // API call with echo matching
 // ---------------------------------------------------------------------------
 
-// callAPI 调用 OneBot 11 API，通过 echo 匹配响应
+// callAPI Call OneBot 11 API, match response via echo
 func (n *NapCatChannel) callAPI(action string, params any) (*obAPIResponse, error) {
 	echo := uuid.New().String()
 
-	// 注册 pending 响应通道
+	// Register pending response channel
 	ch := make(chan json.RawMessage, 1)
 	n.pendingMu.Lock()
 	n.pending[echo] = ch
 	n.pendingMu.Unlock()
 
-	// 发送请求
+	// Send request
 	req := obAPIRequest{
 		Action: action,
 		Params: params,
@@ -747,7 +747,7 @@ func (n *NapCatChannel) callAPI(action string, params any) (*obAPIResponse, erro
 		return nil, fmt.Errorf("ws send: %w", err)
 	}
 
-	// 等待响应（超时 30s）
+	// Wait for response (timeout 30s)
 	select {
 	case data := <-ch:
 		if data == nil {
@@ -785,7 +785,7 @@ func (n *NapCatChannel) callAPI(action string, params any) (*obAPIResponse, erro
 // WebSocket helpers
 // ---------------------------------------------------------------------------
 
-// clearPending 清理所有 pending 请求
+// clearPending Clean up all pending requests
 func (n *NapCatChannel) clearPending() {
 	n.pendingMu.Lock()
 	defer n.pendingMu.Unlock()
@@ -812,7 +812,7 @@ func (n *NapCatChannel) clearPending() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// truncate 截断字符串用于日志
+// truncate Truncate string for logging
 func truncate(s string, maxLen int) string {
 	r := []rune(s)
 	if len(r) <= maxLen {

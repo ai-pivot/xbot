@@ -56,7 +56,7 @@ func (p *LocalProvider) GetDownloadURL(key string) (string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// QiniuProvider — Qiniu Cloud (七牛云) Object Storage
+// QiniuProvider — Qiniu Cloud Object Storage
 // ---------------------------------------------------------------------------
 
 // qiniuZoneMap maps region IDs to Qiniu storage.Zone values.

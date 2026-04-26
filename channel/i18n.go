@@ -6,11 +6,11 @@ type UILocale struct {
 	CancelSent     string // "已发送取消请求"
 	QueueCleared   string // "已清空 %d 条排队消息"
 	SettingsSaved  string // "✅ 设置已保存"
-	NoSettings     string // "当前渠道没有可配置的设置项。"
+	NoSettings     string // "当前渠道No configurable settings available."
 	CheckingUpdate string // "正在检查更新..."
 	ModelUsage     string // "用法: /model <模型名>\n使用 /models 查看可用模型"
 	AskCancelled   string // "已取消提问"
-	SetupComplete  string // "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。"
+	SetupComplete  string // "✅ 初始Configuration完成，可以开始使用了。随时用 /settings 修改Configuration，/setup 重新引导。"
 	SetupLettaNote string // "[!] letta memory mode requires embedding service:\n  1. ..."
 	UpdateFound    string // "发现新版本: %s → %s\n升级命令: ..."
 	UpdateCurrent  string // "当前版本 %s 已是最新"
@@ -195,12 +195,12 @@ func localeZH() *UILocale {
 		CancelSent:     "已发送取消请求",
 		QueueCleared:   "已清空 %d 条排队消息",
 		SettingsSaved:  "✅ 设置已保存",
-		NoSettings:     "当前渠道没有可配置的设置项。",
+		NoSettings:     "当前渠道No configurable settings available.",
 		CheckingUpdate: "正在检查更新...",
 		ModelUsage:     "用法: /model <模型名>\n使用 /models 查看可用模型",
 		AskCancelled:   "已取消提问",
-		SetupComplete:  "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。",
-		SetupLettaNote: "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在配置或环境变量中设置嵌入端点",
+		SetupComplete:  "✅ 初始Configuration完成，可以开始使用了。随时用 /settings 修改Configuration，/setup 重新引导。",
+		SetupLettaNote: "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在Configuration或环境变量中设置嵌入端点",
 		UpdateFound:    "发现新版本: %s → %s\n升级命令: curl -fsSL https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.sh | bash\n%s",
 		UpdateCurrent:  "当前版本 %s 已是最新",
 		UpdateFailed:   "更新检查失败（网络超时或无法连接 GitHub API）",
@@ -226,7 +226,7 @@ func localeZH() *UILocale {
 
 		BgTasksTitle:       "📋 Tasks",
 		BgTasksHelp:        "↑↓ 导航  Enter 查看日志  Del 终止  Esc 关闭",
-		BgTasksEmpty:       "没有正在运行的任务或代理",
+		BgTasksEmpty:       "没有正在运行的任务或Agents",
 		BgTasksUnsupported: "不支持后台任务。",
 		BgTaskLogTitle:     "日志: %s — %s",
 		BgTaskLogHelp:      "↑↓ 滚动  Esc 返回",
@@ -261,7 +261,7 @@ func localeZH() *UILocale {
 		HelpCmds: []HelpCmdEntry{
 			{Cmd: "/cancel", Desc: "取消当前操作"},
 			{Cmd: "/clear", Desc: "清空聊天记录"},
-			{Cmd: "/channel", Desc: "配置频道 (Web/飞书/QQ)"},
+			{Cmd: "/channel", Desc: "Configuration频道 (Web/飞书/QQ)"},
 			{Cmd: "/compact", Desc: "压缩上下文"},
 			{Cmd: "/user", Desc: "管理 Web 用户 (admin)"},
 			{Cmd: "/model", Desc: "切换模型"},
@@ -271,8 +271,8 @@ func localeZH() *UILocale {
 			{Cmd: "/quit", Desc: "退出程序"},
 			{Cmd: "/rewind", Desc: "回退对话"},
 			{Cmd: "/settings", Desc: "打开设置面板"},
-			{Cmd: "/setup", Desc: "重新运行配置引导"},
-			{Cmd: "/tasks", Desc: "查看任务和代理"},
+			{Cmd: "/setup", Desc: "重新运行Configuration引导"},
+			{Cmd: "/tasks", Desc: "查看任务和Agents"},
 			{Cmd: "/update", Desc: "检查更新"},
 			{Cmd: "/help", Desc: "显示此帮助"},
 		},
@@ -316,7 +316,7 @@ func localeZH() *UILocale {
 		FooterDelete:   "删除",
 		FooterCommands: "命令",
 		FooterComplete: "补全",
-		FooterBgTasks:  "任务/代理",
+		FooterBgTasks:  "任务/Agents",
 		FooterNewline:  "换行",
 		FooterSelect:   "选择",
 		FooterManage:   "管理",
@@ -329,18 +329,18 @@ func localeZH() *UILocale {
 		RunnerPanelTitle:           "Runner 管理",
 		RunnerStatusConnected:      "已连接",
 		RunnerConnecting:           "正在连接...",
-		RunnerDisconnect:           "断开连接",
+		RunnerDisconnect:           "Disconnect",
 		RunnerDisconnectAction:     "断开",
 		RunnerConnectSuccess:       "✅ Runner 已连接",
 		RunnerConnectFailed:        "❌ Runner 连接失败: %s",
 		RunnerServerLabel:          "Server URL",
 		RunnerTokenLabel:           "Token",
-		RunnerWorkspaceLabel:       "工作目录",
+		RunnerWorkspaceLabel:       "Working directory",
 		RunnerServerPlaceholder:    "ws://host:port/ws/userID",
 		RunnerTokenPlaceholder:     "认证 Token",
-		RunnerWorkspacePlaceholder: "共享的工作目录路径",
+		RunnerWorkspacePlaceholder: "共享的Working directory路径",
 		RunnerServerRequired:       "Server URL 不能为空",
-		RunnerWorkspaceRequired:    "工作目录不能为空",
+		RunnerWorkspaceRequired:    "Working directory不能为空",
 		RunnerPleaseWait:           "请稍候...",
 		RunnerNavHint:              "↑↓/Tab 切换字段  Enter 连接  Esc 返回",
 		RunnerNotAvailable:         "Runner 功能不可用",
@@ -430,7 +430,7 @@ func localeZH() *UILocale {
 				},
 			},
 			{
-				Key: "memory_provider", Label: "记忆模式", Description: "记忆系统实现方式",
+				Key: "memory_provider", Label: "记忆模式", Description: "记忆系统Implementation方式",
 				Type: SettingTypeSelect, Category: "环境", DefaultValue: "flat",
 				Options: []SettingOption{
 					{Label: "flat — 全量注入（推荐）", Value: "flat"},
@@ -554,8 +554,8 @@ func localeZH() *UILocale {
 				},
 			},
 			// Permission control
-			{Key: "default_user", Label: "默认执行用户", Description: "LLM 可以免审批以此用户执行工具。留空则只能以当前进程用户执行（最安全）。需配置 NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
-			{Key: "privileged_user", Label: "特权用户", Description: "LLM 以此用户执行时需要人工审批。留空则禁止提权。需配置 NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
+			{Key: "default_user", Label: "默认执行用户", Description: "LLM 可以免审批以此用户执行工具。留空则只能以当前进程用户执行（最安全）。需Configuration NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
+			{Key: "privileged_user", Label: "特权用户", Description: "LLM 以此用户执行时需要人工审批。留空则禁止提权。需Configuration NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
 			// Runner panel entry (display-only, triggers panel switch)
 			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "Runner"},
 			// Danger zone entry (display-only, triggers panel switch)
@@ -1049,7 +1049,7 @@ func localeJA() *UILocale {
 
 		// --- F. Confirm dialog ---
 		RewindTitle: "Rewind",
-		RewindHint:  "巻き戻すメッセージを選択してください。内容が入力欄に配置されます。",
+		RewindHint:  "巻き戻すメッセージを選択してください。内容が入力欄にConfigurationされます。",
 
 		// --- G. Splash ---
 		SplashDesc:    "AI駆動のターミナルエージェント",

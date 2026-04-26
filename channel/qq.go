@@ -57,7 +57,7 @@ const (
 	qqIntentPublicGuildMessage = 1 << 30
 )
 
-// intentLevels 从高到低尝试的 intent 组合
+// intentLevels Intent combinations to try from high to low priority
 var intentLevels = []struct {
 	name  string
 	value int
@@ -120,21 +120,21 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// QQConfig 配置
+// QQConfig Configuration
 // ---------------------------------------------------------------------------
 
-// QQConfig QQ 机器人渠道配置
+// QQConfig QQ 机器人渠道Configuration
 type QQConfig struct {
 	AppID        string   // QQ Bot App ID
 	ClientSecret string   // QQ Bot Client Secret
-	AllowFrom    []string // 允许的用户 openid 白名单（空则允许所有人）
+	AllowFrom    []string // Allowed user openid whitelist (empty = allow all)
 }
 
 // ---------------------------------------------------------------------------
-// QQChannel 实现
+// QQChannel Implementation
 // ---------------------------------------------------------------------------
 
-// QQChannel QQ 机器人渠道实现
+// QQChannel QQ 机器人渠道Implementation
 type QQChannel struct {
 	WSChannelBase
 
@@ -170,7 +170,7 @@ type QQChannel struct {
 	markdownDisabled atomic.Bool
 }
 
-// NewQQChannel 创建 QQ 渠道
+// NewQQChannel Create QQ channel
 func NewQQChannel(cfg QQConfig, msgBus *bus.MessageBus) *QQChannel {
 	return &QQChannel{
 		WSChannelBase: NewWSChannelBase(1000, quickDisconnectWindow, quickDisconnectCount),
@@ -187,7 +187,7 @@ func (q *QQChannel) Name() string { return "qq" }
 // Start / Stop
 // ---------------------------------------------------------------------------
 
-// Start 启动 QQ 渠道，阻塞运行直到 Stop 被调用
+// Start Start QQ channel, blocks until Stop is called
 func (q *QQChannel) Start() error {
 	if q.config.AppID == "" || q.config.ClientSecret == "" {
 		return fmt.Errorf("qq app_id and client_secret are required")
@@ -239,7 +239,7 @@ func (q *QQChannel) Start() error {
 	return nil
 }
 
-// Stop 停止 QQ 渠道
+// Stop Stop QQ channel
 func (q *QQChannel) Stop() {
 	if !q.running.Load() {
 		return
@@ -254,12 +254,12 @@ func (q *QQChannel) Stop() {
 // Token management
 // ---------------------------------------------------------------------------
 
-// getToken 获取有效的 access_token，必要时刷新
+// getToken Get valid access_token, refresh if necessary
 func (q *QQChannel) getToken() (string, error) {
 	q.tokenMu.Lock()
 	defer q.tokenMu.Unlock()
 
-	// 提前 5 分钟刷新
+	// Refresh 5 minutes early
 	if q.accessToken != "" && time.Now().Before(q.tokenExpireAt.Add(-qqTokenExpireMargin)) {
 		return q.accessToken, nil
 	}
@@ -304,7 +304,7 @@ func (q *QQChannel) getToken() (string, error) {
 	return q.accessToken, nil
 }
 
-// authHeader 返回 Authorization header 值
+// authHeader Return Authorization header value
 func (q *QQChannel) authHeader() (string, error) {
 	token, err := q.getToken()
 	if err != nil {
@@ -317,7 +317,7 @@ func (q *QQChannel) authHeader() (string, error) {
 // WebSocket gateway
 // ---------------------------------------------------------------------------
 
-// getGatewayURL 获取 WebSocket 网关地址
+// getGatewayURL Get WebSocket gateway URL
 func (q *QQChannel) getGatewayURL() (string, error) {
 	auth, err := q.authHeader()
 	if err != nil {
@@ -356,7 +356,7 @@ func (q *QQChannel) getGatewayURL() (string, error) {
 // Connect and run main loop
 // ---------------------------------------------------------------------------
 
-// connectAndRun 建立 WebSocket 连接并运行消息循环，返回时表示连接断开
+// connectAndRun Establish WebSocket connection and run message loop, returns when connection drops
 func (q *QQChannel) connectAndRun() error {
 	gwURL, err := q.getGatewayURL()
 	if err != nil {
@@ -446,7 +446,7 @@ type qqReadyData struct {
 	SessionID string `json:"session_id"`
 }
 
-// qqAttachment 富媒体文件附件
+// qqAttachment Rich media file attachment
 type qqAttachment struct {
 	ContentType string `json:"content_type"` // "image/jpeg", "image/png", "image/gif", "file", "video/mp4", "voice"
 	Filename    string `json:"filename"`
@@ -454,8 +454,8 @@ type qqAttachment struct {
 	Width       int    `json:"width,omitempty"`
 	Size        int    `json:"size,omitempty"`
 	URL         string `json:"url"`
-	VoiceWavURL string `json:"voice_wav_url,omitempty"`  // 语音 wav 格式链接
-	ASRText     string `json:"asr_refer_text,omitempty"` // 语音 ASR 参考结果
+	VoiceWavURL string `json:"voice_wav_url,omitempty"`  // 语音 wav 格式Links
+	ASRText     string `json:"asr_refer_text,omitempty"` // Voice ASR reference result
 }
 
 // qqC2CMessage C2C_MESSAGE_CREATE payload
@@ -499,7 +499,7 @@ type qqGuildMessage struct {
 // WebSocket protocol handlers
 // ---------------------------------------------------------------------------
 
-// waitForHello 等待 op:10 Hello 消息
+// waitForHello Wait for op:10 Hello message
 func (q *QQChannel) waitForHello() error {
 	q.connMu.Lock()
 	conn := q.conn
@@ -536,7 +536,7 @@ func (q *QQChannel) waitForHello() error {
 	return nil
 }
 
-// sendIdentify 发送 op:2 Identify，支持 intent 降级
+// sendIdentify Send op:2 Identify, with intent fallback support
 func (q *QQChannel) sendIdentify() error {
 	auth, err := q.authHeader()
 	if err != nil {
@@ -615,7 +615,7 @@ func (q *QQChannel) sendIdentify() error {
 	return fmt.Errorf("unexpected identify response op:%d t:%s", msg.Op, msg.T)
 }
 
-// sendResume 发送 op:6 Resume
+// sendResume Send op:6 Resume
 func (q *QQChannel) sendResume() error {
 	auth, err := q.authHeader()
 	if err != nil {
@@ -639,7 +639,7 @@ func (q *QQChannel) sendResume() error {
 	return q.wsSend(payload)
 }
 
-// handleMessage 处理收到的 WebSocket 消息
+// handleMessage Handle received WebSocket messages
 func (q *QQChannel) handleMessage(data []byte) error {
 	var msg qqWSMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -680,7 +680,7 @@ func (q *QQChannel) handleMessage(data []byte) error {
 	return nil
 }
 
-// handleDispatch 处理 op:0 Dispatch 事件
+// handleDispatch Handle op:0 Dispatch events
 func (q *QQChannel) handleDispatch(eventType string, data json.RawMessage) error {
 	switch eventType {
 	case "READY":
@@ -714,7 +714,7 @@ func (q *QQChannel) handleDispatch(eventType string, data json.RawMessage) error
 // Message handlers
 // ---------------------------------------------------------------------------
 
-// handleC2CMessage 处理私聊消息
+// handleC2CMessage Handle private chat messages
 func (q *QQChannel) handleC2CMessage(data json.RawMessage) error {
 	var msg qqC2CMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -777,7 +777,7 @@ func (q *QQChannel) handleC2CMessage(data json.RawMessage) error {
 	return nil
 }
 
-// handleGroupMessage 处理群消息
+// handleGroupMessage Handle group messages
 func (q *QQChannel) handleGroupMessage(data json.RawMessage) error {
 	var msg qqGroupMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -845,7 +845,7 @@ func (q *QQChannel) handleGroupMessage(data json.RawMessage) error {
 	return nil
 }
 
-// handleGuildMessage 处理频道消息
+// handleGuildMessage Handle guild messages
 func (q *QQChannel) handleGuildMessage(data json.RawMessage) error {
 	var msg qqGuildMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -923,13 +923,13 @@ func (q *QQChannel) handleGuildMessage(data json.RawMessage) error {
 // ---------------------------------------------------------------------------
 
 const (
-	qqFileTypeImage = 1 // 图片 (png/jpg)
-	qqFileTypeVideo = 2 // 视频 (mp4)
-	qqFileTypeVoice = 3 // 语音 (silk/wav/mp3/flac)
-	qqFileTypeFile  = 4 // 文件（群场景暂不开放）
+	qqFileTypeImage = 1 // Image (png/jpg)
+	qqFileTypeVideo = 2 // Video (mp4)
+	qqFileTypeVoice = 3 // Voice (silk/wav/mp3/flac)
+	qqFileTypeFile  = 4 // File (not yet available in group scenario)
 )
 
-// qqFileUploadResponse 富媒体上传 API 返回
+// qqFileUploadResponse Rich media upload API response
 type qqFileUploadResponse struct {
 	FileUUID string `json:"file_uuid"`
 	FileInfo string `json:"file_info"`
@@ -937,16 +937,16 @@ type qqFileUploadResponse struct {
 	ID       string `json:"id"`
 }
 
-// qqImageExtensions 图片文件扩展名集合
+// qqImageExtensions Set of image file extensions
 var qqImageExtensions = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".webp": true,
 	".gif": true, ".bmp": true, ".ico": true, ".tiff": true, ".heic": true,
 }
 
-// qqMdImageRe 匹配 markdown 图片语法 ![alt](path)
+// qqMdImageRe Match markdown image syntax ![alt](path)
 var qqMdImageRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
 
-// qqMdLinkRe 匹配 markdown 链接语法 [name](path)，但不匹配图片 ![alt](path)
+// qqMdLinkRe Match markdown link syntax [name](path), but not images ![alt](path)
 var qqMdLinkRe = regexp.MustCompile(`(?:^|[^!])\[([^\]]+)\]\(([^)]+)\)`)
 
 // qqMentionRegex matches QQ @mention artifacts like <@!123456> or <@123456>
@@ -956,7 +956,7 @@ var qqMentionRegex = regexp.MustCompile(`<@!?\d+>`)
 // Send (outbound)
 // ---------------------------------------------------------------------------
 
-// Send 发送消息到 QQ，返回平台消息 ID
+// Send Send message to QQ, return platform message ID
 func (q *QQChannel) Send(msg bus.OutboundMessage) (string, error) {
 	if msg.Content == "" {
 		return "", nil
@@ -1002,7 +1002,7 @@ func (q *QQChannel) Send(msg bus.OutboundMessage) (string, error) {
 	}
 }
 
-// sendC2CMessage 发送私聊消息
+// sendC2CMessage Send private chat message
 func (q *QQChannel) sendC2CMessage(openID, content string, metadata map[string]string) (string, error) {
 	url := fmt.Sprintf("%s/v2/users/%s/messages", qqAPIBase, openID)
 
@@ -1025,7 +1025,7 @@ func (q *QQChannel) sendC2CMessage(openID, content string, metadata map[string]s
 	return id, err
 }
 
-// sendGroupMessage 发送群消息
+// sendGroupMessage Send group message
 func (q *QQChannel) sendGroupMessage(groupOpenID, content string, metadata map[string]string) (string, error) {
 	url := fmt.Sprintf("%s/v2/groups/%s/messages", qqAPIBase, groupOpenID)
 
@@ -1048,7 +1048,7 @@ func (q *QQChannel) sendGroupMessage(groupOpenID, content string, metadata map[s
 	return id, err
 }
 
-// sendGuildMessage 发送频道消息
+// sendGuildMessage Send guild message
 func (q *QQChannel) sendGuildMessage(channelID, content string, metadata map[string]string) (string, error) {
 	url := fmt.Sprintf("%s/channels/%s/messages", qqAPIBase, channelID)
 
@@ -1067,7 +1067,7 @@ func (q *QQChannel) sendGuildMessage(channelID, content string, metadata map[str
 	return q.doSendRequest(url, body, "guild", channelID)
 }
 
-// sendAutoDetect 自动检测消息类型并发送
+// sendAutoDetect Auto-detect message type and send
 func (q *QQChannel) sendAutoDetect(chatID, content string, metadata map[string]string) (string, error) {
 	log.WithField("chat_id", chatID).Warn("QQ: unknown chat type, attempting auto-detect")
 
@@ -1126,11 +1126,11 @@ func (q *QQChannel) sendAutoDetect(chatID, content string, metadata map[string]s
 // Rich media upload & send (images / files)
 // ---------------------------------------------------------------------------
 
-// uploadFileToQQ 上传富媒体文件到 QQ，返回 file_info 用于发送消息
-// targetID: c2c 场景为 user openid，group 场景为 group_openid
+// uploadFileToQQ Upload rich media file to QQ, return file_info for sending messages
+// targetID: user openid for c2c scenario, group_openid for group scenario
 // chatType: "c2c" 或 "group"
 // fileType: qqFileTypeImage / qqFileTypeVideo / qqFileTypeVoice / qqFileTypeFile
-// fileData: base64 编码的文件内容
+// fileData: Base64-encoded file content
 func (q *QQChannel) uploadFileToQQ(targetID, chatType string, fileType int, fileData string) (*qqFileUploadResponse, error) {
 	var apiURL string
 	switch chatType {
@@ -1145,7 +1145,7 @@ func (q *QQChannel) uploadFileToQQ(targetID, chatType string, fileType int, file
 	body := map[string]any{
 		"file_type":    fileType,
 		"file_data":    fileData,
-		"srv_send_msg": false, // 不直接发送，获取 file_info 后再发
+		"srv_send_msg": false, // Don't send directly, get file_info first then send
 	}
 
 	auth, err := q.authHeader()
@@ -1200,7 +1200,7 @@ func (q *QQChannel) uploadFileToQQ(targetID, chatType string, fileType int, file
 	return &result, nil
 }
 
-// sendMediaMessage 发送富媒体消息 (msg_type: 7)
+// sendMediaMessage Send rich media message (msg_type: 7)
 func (q *QQChannel) sendMediaMessage(targetID, chatType, fileInfo string, metadata map[string]string) (string, error) {
 	var apiURL string
 	switch chatType {
@@ -1232,7 +1232,7 @@ func (q *QQChannel) sendMediaMessage(targetID, chatType, fileInfo string, metada
 	return q.doSendRequest(apiURL, body, chatType, targetID)
 }
 
-// extractAndSendLocalImages 从 markdown 中提取本地图片 ![alt](path)，上传并发送，从内容中移除
+// extractAndSendLocalImages Extract local images ![alt](path) from markdown, upload and send, remove from content
 func (q *QQChannel) extractAndSendLocalImages(targetID, chatType, content string, metadata map[string]string) string {
 	return qqMdImageRe.ReplaceAllStringFunc(content, func(match string) string {
 		subs := qqMdImageRe.FindStringSubmatch(match)
@@ -1290,7 +1290,7 @@ func (q *QQChannel) extractAndSendLocalImages(targetID, chatType, content string
 	})
 }
 
-// extractAndSendLocalFiles 从 markdown 中提取本地文件链接 [name](path)（非图片），上传并发送
+// extractAndSendLocalFiles 从 markdown 中提取本地文件Links [name](path)（非图片），上传并发送
 func (q *QQChannel) extractAndSendLocalFiles(targetID, chatType, content string, metadata map[string]string) string {
 	return qqMdLinkRe.ReplaceAllStringFunc(content, func(match string) string {
 		subs := qqMdLinkRe.FindStringSubmatch(match)
@@ -1357,7 +1357,7 @@ func (q *QQChannel) extractAndSendLocalFiles(targetID, chatType, content string,
 	})
 }
 
-// doSendRequest 执行发送消息的 HTTP 请求
+// doSendRequest Execute HTTP request to send message
 func (q *QQChannel) doSendRequest(url string, body map[string]any, chatType, target string) (string, error) {
 	auth, err := q.authHeader()
 	if err != nil {
@@ -1421,7 +1421,7 @@ func (q *QQChannel) doSendRequest(url string, body map[string]any, chatType, tar
 // Heartbeat
 // ---------------------------------------------------------------------------
 
-// startHeartbeat 启动心跳协程
+// startHeartbeat Start heartbeat goroutine
 func (q *QQChannel) startHeartbeat() {
 	q.heartbeatStop = make(chan struct{})
 	q.heartbeatACK.Store(true) // assume first ACK is OK
@@ -1465,7 +1465,7 @@ func (q *QQChannel) startHeartbeat() {
 	}()
 }
 
-// stopHeartbeat 停止心跳
+// stopHeartbeat Stop heartbeat
 func (q *QQChannel) stopHeartbeat() {
 	if q.heartbeatStop != nil {
 		select {
@@ -1493,7 +1493,7 @@ func (q *QQChannel) stopHeartbeat() {
 // msg_seq tracking
 // ---------------------------------------------------------------------------
 
-// nextMsgSeq 获取下一个 msg_seq（QQ 要求同一 msg_id 的回复递增 seq）
+// nextMsgSeq Get next msg_seq (QQ requires incrementing seq for replies to same msg_id)
 func (q *QQChannel) nextMsgSeq(msgID string) int {
 	if msgID == "" {
 		return 1
@@ -1530,13 +1530,13 @@ func (q *QQChannel) nextMsgSeq(msgID string) int {
 // Chat type inference
 // ---------------------------------------------------------------------------
 
-// cacheChatType 缓存 chatID 对应的聊天类型
+// cacheChatType Cache chat type for chatID
 func (q *QQChannel) cacheChatType(chatID, chatType string) {
 	q.chatTypeMu.Lock()
 	defer q.chatTypeMu.Unlock()
 	q.chatTypeCache[chatID] = chatTypeEntry{chatType: chatType, lastUsed: time.Now()}
 
-	// 防止无限增长：淘汰过期条目
+	// Prevent infinite growth: evict expired entries
 	if len(q.chatTypeCache) > cacheMaxEntries {
 		cutoff := time.Now().Add(-cacheExpiry)
 		scanned := 0
@@ -1552,7 +1552,7 @@ func (q *QQChannel) cacheChatType(chatID, chatType string) {
 	}
 }
 
-// inferChatType 根据 chatID 查找缓存的聊天类型
+// inferChatType Look up cached chat type by chatID
 func (q *QQChannel) inferChatType(chatID string) string {
 	q.chatTypeMu.RLock()
 	defer q.chatTypeMu.RUnlock()
@@ -1566,11 +1566,11 @@ func (q *QQChannel) inferChatType(chatID string) string {
 // Attachment formatting
 // ---------------------------------------------------------------------------
 
-// formatAttachments 将 QQ attachments 转为与飞书一致的 XML 标签格式
-// 图片: <image url="..." filename="..." width="..." height="..." />
-// 文件: <file url="..." filename="..." size="..." />
-// 视频: <video url="..." filename="..." />
-// 语音: <audio url="..." filename="..." asr_text="..." />
+// formatAttachments Convert QQ attachments to XML tag format consistent with Feishu
+// Image: <image url="..." filename="..." width="..." height="..." />
+// File: <file url="..." filename="..." size="..." />
+// Video: <video url="..." filename="..." />
+// Voice: <audio url="..." filename="..." asr_text="..." />
 func formatAttachments(attachments []qqAttachment) string {
 	if len(attachments) == 0 {
 		return ""
@@ -1582,7 +1582,7 @@ func formatAttachments(attachments []qqAttachment) string {
 		if url == "" {
 			continue
 		}
-		// QQ 返回的 URL 可能不带 scheme
+		// URL returned by QQ may not have a scheme
 		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 			url = "https://" + url
 		}
@@ -1619,7 +1619,7 @@ func formatAttachments(attachments []qqAttachment) string {
 			parts = append(parts, tag)
 
 		default:
-			// 通用文件
+			// Generic file
 			tag := fmt.Sprintf(`<file url="%s" filename="%s"`, url, att.Filename)
 			if att.Size > 0 {
 				tag += fmt.Sprintf(` size="%d"`, att.Size)
@@ -1639,13 +1639,13 @@ func formatAttachments(attachments []qqAttachment) string {
 // Utility helpers
 // ---------------------------------------------------------------------------
 
-// stripQQMention 去除 QQ @mention 标记
+// stripQQMention Strip QQ @mention markers
 // QQ messages may contain <@!botid> or similar mention artifacts
 func stripQQMention(content string) string {
 	return strings.TrimSpace(qqMentionRegex.ReplaceAllString(content, ""))
 }
 
-// parseTimestamp 解析 QQ 消息时间戳
+// parseTimestamp Parse QQ message timestamp
 func (q *QQChannel) parseTimestamp(ts string) time.Time {
 	if ts == "" {
 		return time.Now()
@@ -1676,8 +1676,8 @@ func (q *QQChannel) parseTimestamp(ts string) time.Time {
 // Markdown message helpers
 // ---------------------------------------------------------------------------
 
-// buildMarkdownBody 构建 markdown 格式的消息体 (msg_type: 2)
-// 如果 markdown 已被禁用（之前发送失败），直接返回纯文本格式
+// buildMarkdownBody Build markdown format message body (msg_type: 2)
+// If markdown has been disabled (previous send failure), return plain text format directly
 func (q *QQChannel) buildMarkdownBody(content, msgID string, seq int) map[string]any {
 	if q.markdownDisabled.Load() {
 		return q.buildTextBody(content, msgID, seq)
@@ -1696,7 +1696,7 @@ func (q *QQChannel) buildMarkdownBody(content, msgID string, seq int) map[string
 	return body
 }
 
-// buildTextBody 构建纯文本格式的消息体 (msg_type: 0)
+// buildTextBody Build plain text format message body (msg_type: 0)
 func (q *QQChannel) buildTextBody(content, msgID string, seq int) map[string]any {
 	body := map[string]any{
 		"content":  content,
@@ -1709,19 +1709,19 @@ func (q *QQChannel) buildTextBody(content, msgID string, seq int) map[string]any
 	return body
 }
 
-// isMarkdownUnsupported 判断错误是否表示 markdown 消息类型不被支持
-// QQ API 在未开通 markdown 权限时会返回特定错误码
+// isMarkdownUnsupported 判断Error是否表示 markdown 消息类型不被支持
+// QQ API 在未开通 markdown 权限时会返回特定Error码
 func (q *QQChannel) isMarkdownUnsupported(err error) bool {
 	if err == nil {
 		return false
 	}
 	errMsg := err.Error()
-	// QQ API 返回的错误中包含 "not support" 或权限相关错误码
+	// QQ API 返回的Error中包含 "not support" 或权限相关Error码
 	return strings.Contains(errMsg, "not support") ||
 		strings.Contains(errMsg, "msg_type") ||
-		strings.Contains(errMsg, "304003") || // 无权限
-		strings.Contains(errMsg, "304004") || // 消息类型不支持
-		strings.Contains(errMsg, "50006") // 不支持的消息类型
+		strings.Contains(errMsg, "304003") || // No permission
+		strings.Contains(errMsg, "304004") || // Message type not supported
+		strings.Contains(errMsg, "50006") // Unsupported message type
 }
 
 // ---------------------------------------------------------------------------

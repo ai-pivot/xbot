@@ -15,12 +15,12 @@ import (
 func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Model, []tea.Cmd, bool) {
 	var cmds []tea.Cmd
 
-	// 🥚 彩蛋覆盖层激活时，按任意键退出（Ctrl+C 除外，已在上面处理）
+	// 🥚 When easter egg overlay is active, any key dismisses it (except Ctrl+C, already handled above)
 	if m.easterEgg != easterEggNone {
 		return m, []tea.Cmd{func() tea.Msg { return easterEggDoneMsg{} }}, true
 	}
 
-	// 🥚 Konami Code 彩蛋：监听方向键和字母键
+	// 🥚 Konami Code easter egg: listen for arrow keys and letter keys
 	if m.easterEgg == easterEggNone {
 		konamiKey := ""
 		switch msg.Code {
@@ -33,7 +33,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		case tea.KeyRight:
 			konamiKey = "right"
 		}
-		// 检测字母键 B 和 A
+		// Detect letter keys B and A
 		if len(msg.Text) == 1 {
 			switch msg.Text[0] {
 			case 'b', 'B':
@@ -43,7 +43,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			}
 		}
 		if konamiKey != "" && m.checkKonami(konamiKey) {
-			// Konami Code 完整序列匹配！
+			// Konami Code full sequence match!
 			cmd := m.activateEasterEgg(easterEggKonami)
 			return m, []tea.Cmd{cmd}, true
 		}
@@ -57,7 +57,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		return m, nil, true
 
 	case msg.Code == tea.KeyEsc:
-		// Esc：非处理状态清空输入；处理中时取消排队编辑或清空输入
+		// Esc: clear input when idle; cancel queue editing or clear input when processing
 		if m.queueEditing {
 			m.queueEditing = false
 			m.queueEditBuf = ""
@@ -120,10 +120,10 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		if !m.viewport.AtBottom() {
 			return m, nil, true
 		}
-		// §Q 消息队列：typing 时 Shift+↑ 追回最后一条排队消息编辑
+		// §Q Message queue: Shift+Up during typing to recall last queued message for editing
 		if m.panelMode == "" && m.typing && !m.inputReady && len(m.messageQueue) > 0 {
 			if !m.queueEditing && m.textarea.Value() == "" {
-				// 追回最后一条排队消息
+				// Recall last queued message
 				m.queueEditing = true
 				m.queueEditBuf = m.messageQueue[len(m.messageQueue)-1]
 				m.textarea.SetValue(m.queueEditBuf)
@@ -132,10 +132,10 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			}
 		}
 		if m.panelMode == "" && !m.typing {
-			// 空输入时浏览历史
+			// Browse history when input is empty
 			if m.textarea.Value() == "" && len(m.inputHistory) > 0 {
 				if m.inputHistoryIdx == -1 {
-					m.inputDraft = "" // 保存空草稿
+					m.inputDraft = "" // Save empty draft
 					m.inputHistoryIdx = 0
 				} else if m.inputHistoryIdx < len(m.inputHistory)-1 {
 					m.inputHistoryIdx++
@@ -152,7 +152,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		if m.panelMode == "" && m.textarea.Value() != "" {
 			break
 		}
-		// Viewport 不在底部时，方向键滚动 viewport
+		// When viewport is not at bottom, arrow keys scroll viewport
 		if !m.viewport.AtBottom() {
 			m.viewport.ScrollUp(1)
 			return m, nil, true
@@ -194,11 +194,11 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		// especially once the input reaches MaxHeight.
 		// Note: ctrl+j is handled earlier in Update() via isCtrlJ() → InsertString("\n").
 		// Note: cycleModel uses Ctrl+N (not Ctrl+M), so no need to intercept here.
-		// Enter 发送消息
+		// Enter sends message
 		if !m.inputReady {
-			// §Q 消息队列：typing 期间允许排队消息
+			// §Q Message queue: allow queuing messages during typing
 			if m.queueEditing {
-				// 正在编辑排队消息 → 保存编辑结果
+				// Editing queued message → save edit result
 				m.messageQueue[len(m.messageQueue)-1] = m.textarea.Value()
 				m.queueEditing = false
 				m.queueEditBuf = ""
@@ -208,7 +208,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			if m.textarea.Value() != "" {
 				m.messageQueue = append(m.messageQueue, m.textarea.Value())
 				m.textarea.SetValue("")
-				// 显示队列提示
+				// Show queue hint
 				if len(m.messageQueue) == 1 {
 					m.showTempStatus(fmt.Sprintf(m.locale.MessageQueuedUp, len(m.messageQueue)))
 				} else {
@@ -218,7 +218,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			}
 			return m, nil, true
 		}
-		// §8b @ 模式：Enter 进入目录或确认文件
+		// §8b @ mode: Enter enters directory or confirms file
 		// Check fileCompletions even without Tab (fileCompActive=false):
 		// typing @path auto-populates completions via input change handler.
 		if len(m.fileCompletions) > 0 {
@@ -243,7 +243,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 		content := strings.TrimSpace(m.textarea.Value())
 		if content != "" {
-			// §22 输入历史：保存发送的内容（去重，不保存 / 命令和空输入）
+			// §22 Input history：保存发送的内容（Deduplication，不保存 / 命令和空输入）
 			if !strings.HasPrefix(content, "/") {
 				if len(m.inputHistory) == 0 || m.inputHistory[0] != content {
 					m.inputHistory = append([]string{content}, m.inputHistory...)
@@ -259,7 +259,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 				m.todosDoneCleared = true
 				m.relayoutViewport() // TODO 清除，恢复 viewport 高度
 			}
-			// 发送消息（彩蛋可能返回动画 cmd）
+			// Send message (easter egg may return animation cmd)
 			if cmd := m.sendMessage(content); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -273,17 +273,17 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		return m, cmds, true
 
 	case msg.Code == tea.KeyTab:
-		// §8 Tab 命令补全
+		// §8 Tab command completion
 		m.handleTabComplete()
 		return m, nil, true
 
 	case msg.String() == "ctrl+o":
-		// §11 Ctrl+O 切换 tool summary 展开/折叠（兼容非 CSI-u 终端）
+		// §11 Ctrl+O toggle tool summary 展开/折叠（兼容非 CSI-u 终端）
 		m.toggleToolSummary()
 		return m, nil, true
 
 	case msg.String() == "ctrl+e":
-		// §19 Ctrl+E 切换长消息折叠（搜索导航模式下拦截）
+		// §19 Ctrl+E 切换Long message folding（搜索导航模式下拦截）
 		if m.searchMode && !m.searchEditing {
 			return m, nil, true
 		}
@@ -540,7 +540,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			m.iterationStartTime = time.Now()
 		}
 
-		// §2 工具可视化：快照 CompletedTools 到独立字段
+		// §2 Tool visualization：快照 CompletedTools 到独立字段
 		// Accept all completed tools regardless of their Iteration field — they
 		// represent work that finished and should be displayed.
 		if len(msg.payload.CompletedTools) > 0 {
@@ -684,8 +684,8 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	// NOTE: do NOT return tickCmd() here. The wasTyping guard at the bottom of
 	// Update() detects idle->typing and starts the tick chain.
 	// Returning tickCmd() here creates a duplicate chain (2x spinner speed).
-	// §16 触发 toast 通知（后台任务完成提示）
-	// 提取首行作为 toast 文本，避免内容过长
+	// §16 Trigger toast notification (background task completion hint)
+	// Extract first line as toast text to avoid excessive content length
 	firstLine := msg.content
 	if idx := strings.Index(msg.content, "\n"); idx >= 0 {
 		firstLine = msg.content[:idx]
@@ -693,7 +693,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	if len([]rune(firstLine)) > toastMaxRunes {
 		firstLine = string([]rune(firstLine)[:toastTruncateRunes]) + "..."
 	}
-	// 检测是否为完成或失败消息
+	// Detect if it's a completion or failure message
 	icon := "ℹ"
 	lower := strings.ToLower(firstLine)
 	if strings.Contains(lower, "done") || strings.Contains(lower, "completed") || strings.Contains(lower, "完成") {
@@ -845,12 +845,12 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	m.splashFrame = msg.frame
 	if m.suLoading {
-		// /su 历史加载中，持续动画
+		// /su history loading, continue animation
 		cmds = append(cmds, m.splashTick(msg.frame))
 		return m, tea.Batch(cmds...)
 	}
 	if m.ready && msg.frame >= splashMinFrames {
-		// 初始化完成且已展示至少 1 秒（20 帧 × 50ms）
+		// Initialization complete and displayed for at least 1 second (20 frames × 50ms)
 		m.splashDone = true
 		if m.typing && m.progress != nil && !m.fastTickActive {
 			m.fastTickActive = true
@@ -860,7 +860,7 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 	}
-	// 兜底上限：~2 秒（40 帧）
+	// Failsafe limit: ~2 seconds (40 frames)
 	if msg.frame >= splashMaxFrames {
 		m.splashDone = true
 		if m.typing && m.progress != nil && !m.fastTickActive {
@@ -877,7 +877,7 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 
 // handleToastMsg enqueues a toast notification.
 func (m *cliModel) handleToastMsg(msg cliToastMsg) []tea.Cmd {
-	// §16 Toast 通知入队（最多保留 5 条，显示前 3 条）
+	// §16 Toast notification enqueue (keep max 5, display first 3)
 	if len(m.toasts) >= toastMaxQueue {
 		m.toasts = m.toasts[len(m.toasts)-toastTrimTo:]
 	}

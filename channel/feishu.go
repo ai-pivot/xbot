@@ -31,13 +31,13 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
-// FeishuConfig 飞书渠道配置
+// FeishuConfig Feishu channel configuration
 type FeishuConfig struct {
 	AppID             string   // App ID
 	AppSecret         string   // App Secret
-	EncryptKey        string   // 事件订阅加密 Key（可选）
-	VerificationToken string   // 事件订阅验证 Token（可选）
-	AllowFrom         []string // 允许的用户 open_id 白名单（空则允许所有人）
+	EncryptKey        string   // Event subscription encryption key (optional)
+	VerificationToken string   // Event subscription verification token (optional)
+	AllowFrom         []string // Allowed user open_id whitelist (empty = allow all)
 }
 
 // SettingsCallbacks holds the callback functions for settings card interaction.
@@ -48,17 +48,17 @@ type SettingsCallbacks struct {
 	LLMGetConfig func(senderID string) (provider, baseURL, model string, ok bool)                                        // user config (no key)
 	LLMSetConfig func(senderID, provider, baseURL, apiKey, model string, maxOutputTokens int, thinkingMode string) error // create/update config
 	LLMDelete    func(senderID string) error                                                                             // revert to global
-	// LLMGetMaxContext 获取用户当前 max_context 设置（0 = 使用默认值）
+	// LLMGetMaxContext Get user's current max_context setting (0 = use default)
 	LLMGetMaxContext func(senderID string) int
-	// LLMSetMaxContext 设置用户 max_context
+	// LLMSetMaxContext Set user max_context
 	LLMSetMaxContext func(senderID string, maxContext int) error
-	// LLMGetMaxOutputTokens 获取用户当前 max_output_tokens 设置（0 = 使用默认值 8192）
+	// LLMGetMaxOutputTokens Get user's current max_output_tokens setting (0 = use default 8192)
 	LLMGetMaxOutputTokens func(senderID string) int
-	// LLMSetMaxOutputTokens 设置用户 max_output_tokens
+	// LLMSetMaxOutputTokens Set user max_output_tokens
 	LLMSetMaxOutputTokens func(senderID string, maxTokens int) error
-	// LLMGetThinkingMode 获取用户当前 thinking_mode（"" = auto）
+	// LLMGetThinkingMode Get user's current thinking_mode ("" = auto)
 	LLMGetThinkingMode func(senderID string) string
-	// LLMSetThinkingMode 设置用户 thinking_mode
+	// LLMSetThinkingMode Set user thinking_mode
 	LLMSetThinkingMode func(senderID string, mode string) error
 
 	// Subscription management (multi-subscription support)
@@ -79,17 +79,17 @@ type SettingsCallbacks struct {
 	RegistryUnpublish func(entryType, name, senderID string) error
 	RegistryDelete    func(entryType, name, senderID string) error
 
-	// MetricsGet 获取当前运行指标（用于设置页展示）
+	// MetricsGet Get current runtime metrics (for settings page display)
 	MetricsGet func() string
 
-	// SandboxCleanupTrigger 触发沙箱 export+import 持久化（阻塞直到完成）
+	// SandboxCleanupTrigger Trigger sandbox export+import persistence (blocks until complete)
 	SandboxCleanupTrigger func(senderID string) error
-	// SandboxIsExporting 检查用户是否正在进行 export+import
+	// SandboxIsExporting Check if user is currently performing export+import
 	SandboxIsExporting func(senderID string) bool
 
-	// LLMGetPersonalConcurrency 获取用户个人 LLM 并发上限
+	// LLMGetPersonalConcurrency Get user's personal LLM concurrency limit
 	LLMGetPersonalConcurrency func(senderID string) int
-	// LLMSetPersonalConcurrency 设置用户个人 LLM 并发上限
+	// LLMSetPersonalConcurrency Set user's personal LLM concurrency limit
 	LLMSetPersonalConcurrency func(senderID string, personal int) error
 
 	// Model tier get/set (global config, not per-user)
@@ -100,7 +100,7 @@ type SettingsCallbacks struct {
 	// LLMListAllModels returns models from all subscriptions (for tier selectors).
 	LLMListAllModels func() []string
 
-	// RunnerConnectCmdGet 返回远程 Runner 连接命令（空字符串表示未启用）
+	// RunnerConnectCmdGet Return remote Runner connection command (empty string = not enabled)
 	// Deprecated: replaced by per-user token callbacks below.
 	RunnerConnectCmdGet func(senderID string) string
 
@@ -130,12 +130,12 @@ type SettingsCallbacks struct {
 	// FeishuWebUnlink removes the Feishu-Web account link.
 	FeishuWebUnlink func(feishuUserID string) error
 
-	// ── 记忆管理（危险区） ──
-	MemoryClear    func(senderID, chatID, targetType string) error // 执行清空（targetType: "session"/"core_persona"/"core_human"/...）
-	MemoryGetStats func(senderID, chatID string) map[string]string // 获取各项记忆统计
+	// -- Memory management (danger zone) --
+	MemoryClear    func(senderID, chatID, targetType string) error // Execute clear (targetType: "session"/"core_persona"/"core_human"/...)
+	MemoryGetStats func(senderID, chatID string) map[string]string // Get memory statistics for each category
 }
 
-// FeishuChannel 飞书渠道实现
+// FeishuChannel Feishu channel implementation
 type FeishuChannel struct {
 	config      FeishuConfig
 	msgBus      *bus.MessageBus
@@ -144,21 +144,21 @@ type FeishuChannel struct {
 	running     atomic.Bool
 	mu          sync.Mutex
 	botOpenID   string
-	botName     atomic.Value // 机器人名称，用于引用消息中标识自己（存储 string）
-	adminChatID string       // admin 会话 ID（用于权限控制）
-	webDB       *sql.DB      // web 用户数据库（用于 admin 创建用户命令）
+	botName     atomic.Value // Bot name, used to identify itself in reply messages (stores string)
+	adminChatID string       // Admin session ID (for permission control)
+	webDB       *sql.DB      // Web user database (for admin create user command)
 
-	// 消息去重缓存
+	// Message deduplication cache
 	processedIDs   map[string]struct{}
 	processedOrder []string
 	maxProcessed   int
-	processedMu    sync.Mutex // 专门保护 processedIDs 和 processedOrder
+	processedMu    sync.Mutex // Specifically protects processedIDs and processedOrder
 
-	// OpenID -> 用户姓名缓存
+	// OpenID -> user name cache
 	userNameCache map[string]string
 	userNameMu    sync.RWMutex
 
-	// 卡片 message_id -> card_id 映射（用于回调路由）
+	// Card message_id -> card_id mapping (for callback routing)
 	cardMsgIDs sync.Map
 
 	// CardBuilder for card callback handling
@@ -197,7 +197,7 @@ type feishuPendingAskUser struct {
 	CreatedAt time.Time
 }
 
-// NewFeishuChannel 创建飞书渠道
+// NewFeishuChannel Create Feishu channel
 func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 	return &FeishuChannel{
 		config:        cfg,
@@ -212,8 +212,8 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 
 func (f *FeishuChannel) Name() string { return "feishu" }
 
-// ChannelSystemParts 返回飞书渠道的特化 prompt。
-// 由 main.go 中的适配器调用，注入到 agent 中间件 pipeline。
+// ChannelSystemParts Return the specialized prompt for the Feishu channel.
+// Called by the adapter in main.go, injected into the agent middleware pipeline.
 func (f *FeishuChannel) ChannelSystemParts(ctx context.Context, chatID, senderID string) map[string]string {
 	return map[string]string{
 		"05_channel_feishu": prompt.FeishuChannel,
@@ -245,7 +245,7 @@ func (f *FeishuChannel) SetWebDB(db *sql.DB) {
 	f.webDB = db
 }
 
-// Start 启动飞书 WebSocket 长连接
+// Start Start Feishu WebSocket long connection
 func (f *FeishuChannel) Start() error {
 	if f.config.AppID == "" || f.config.AppSecret == "" {
 		return fmt.Errorf("feishu app_id and app_secret are required")
@@ -253,12 +253,12 @@ func (f *FeishuChannel) Start() error {
 
 	f.running.Store(true)
 
-	// 创建 Lark 客户端（用于发送消息）
+	// Create Lark client (for sending messages)
 	f.client = lark.NewClient(f.config.AppID, f.config.AppSecret,
 		lark.WithLogLevel(larkcore.LogLevelInfo),
 	)
 
-	// 初始化机器人自身 open_id（用于群聊 @ 识别）
+	// Initialize bot's own open_id (for group chat @ recognition)
 	if err := f.refreshBotOpenID(context.Background()); err != nil {
 		log.WithError(err).Warn("Feishu: failed to initialize bot open_id from bot/v3/info")
 	}
@@ -267,14 +267,14 @@ func (f *FeishuChannel) Start() error {
 		f.approvalState.SetHandler(NewFeishuApprovalHandler(f))
 	}
 
-	// 创建事件处理器
+	// Create event handler
 	eventHandler := dispatcher.NewEventDispatcher(
 		f.config.VerificationToken,
 		f.config.EncryptKey,
 	).OnP2MessageReceiveV1(f.onMessage).
 		OnP2CardActionTrigger(f.onCardAction)
 
-	// 创建 WebSocket 客户端
+	// Create WebSocket client
 	f.wsClient = larkws.NewClient(
 		f.config.AppID,
 		f.config.AppSecret,
@@ -284,7 +284,7 @@ func (f *FeishuChannel) Start() error {
 
 	log.Info("Feishu bot starting with WebSocket long connection...")
 
-	// wsClient.Start() 会阻塞
+	// wsClient.Start() will block
 	err := f.wsClient.Start(context.Background())
 	if err != nil {
 		return fmt.Errorf("feishu WebSocket failed: %w", err)
@@ -292,7 +292,7 @@ func (f *FeishuChannel) Start() error {
 	return nil
 }
 
-// Stop 停止飞书渠道
+// Stop Stop Feishu channel
 func (f *FeishuChannel) Stop() {
 	if !f.running.CompareAndSwap(true, false) {
 		return
@@ -302,14 +302,14 @@ func (f *FeishuChannel) Stop() {
 	log.Info("Feishu bot stopped")
 }
 
-// getUserName 通过 Contact API 获取用户姓名，带内存缓存
-// 对于 bot 类型的 sender（以 "cli_" 开头），返回机器人名称
+// getUserName Get user name via Contact API, with in-memory cache
+// For bot-type senders (starting with "cli_"), return the bot name
 func (f *FeishuChannel) getUserName(openID string) string {
 	if openID == "" {
 		return ""
 	}
 
-	// Bot open_id 通常以 "cli_" 开头，返回机器人名称
+	// Bot open_id usually starts with "cli_", return the bot name
 	if strings.HasPrefix(openID, "cli_") {
 		if v := f.botName.Load(); v != nil {
 			if name := v.(string); name != "" {
@@ -356,13 +356,13 @@ func (f *FeishuChannel) getUserName(openID string) string {
 	return resolved
 }
 
-// Send 发送消息到飞书，返回平台消息 ID
+// Send Send message to Feishu, return platform message ID
 func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 	if f.client == nil {
 		return "", fmt.Errorf("feishu client not initialized")
 	}
 
-	// 表情回复：metadata 中带 add_reaction 时，对指定消息添加表情后返回
+	// Emoji reply: when metadata contains add_reaction, add emoji to specified message and return
 	if msg.Metadata != nil && msg.Metadata["add_reaction"] != "" {
 		targetMsgID := msg.Metadata["reaction_message_id"]
 		emojiType := msg.Metadata["add_reaction"]
@@ -383,8 +383,8 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 		return "", nil
 	}
 
-	// card builder 生成的完整卡片 JSON，走正常 patch/reply/send 流程
-	// 格式: __FEISHU_CARD__:card_id:{"schema":...}
+	// Complete card JSON generated by card builder, follows normal patch/reply/send flow
+	// Format: __FEISHU_CARD__:card_id:{"schema":...}
 	if strings.HasPrefix(msg.Content, "__FEISHU_CARD__:") {
 		payload := strings.TrimPrefix(msg.Content, "__FEISHU_CARD__:")
 
@@ -403,7 +403,7 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 		}
 
 		var msgID string
-		// 尝试 patch 进度消息为卡片内容（同类型消息可直接替换）
+		// Try to patch progress message to card content (same-type messages can be replaced directly)
 		if updateMsgID != "" {
 			if err := f.patchMessage(updateMsgID, []byte(cardJSON)); err != nil {
 				log.WithError(err).WithField("message_id", updateMsgID).Warn("Feishu: card patch failed (likely cross-type), creating new message")
@@ -421,7 +421,7 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			// 卡片创建为新消息后，删除旧的进度消息避免刷屏
+			// After card is created as a new message, delete old progress message to avoid spamming
 			if updateMsgID != "" {
 				if delErr := f.deleteMessage(updateMsgID); delErr != nil {
 					log.WithError(delErr).WithField("message_id", updateMsgID).Warn("Feishu: failed to delete progress message after card send")
@@ -445,9 +445,9 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 		"content_len": originalLen,
 	}).Debug("Feishu: sending message")
 
-	// 1) 提取 markdown 中的本地文件链接 [name](path)，上传并单独发送，从内容中移除
+	// 1) Extract local file links [name](path) from markdown, upload and send separately, remove from content
 	content := f.extractAndSendLocalFiles(msg.ChatID, msg.Content)
-	// 2) 替换 markdown 中的本地图片引用 ![alt](path) 为飞书 image_key
+	// 2) Replace local image references ![alt](path) in markdown with Feishu image_key
 	content = f.replaceLocalImages(content)
 
 	if strings.TrimSpace(content) == "" {
@@ -461,17 +461,17 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 		}).Debug("Feishu: content length changed after processing")
 	}
 
-	// 飞书卡片对 markdown 表格数量有上限（约 3 个），超出会被 API 拒绝
+	// Feishu cards have a limit on markdown table count (~3), exceeding will be rejected by API
 	content = limitMarkdownTables(content, 3)
 
-	// 构建消息卡片
+	// Build message card
 	card := f.buildCard(content)
 	cardJSON, err := json.Marshal(card)
 	if err != nil {
 		return "", fmt.Errorf("marshal card: %w", err)
 	}
 
-	// 检查是否需要更新已有消息（Patch 模式）
+	// Check if existing message needs update (Patch mode)
 	updateMsgID := ""
 	if msg.Metadata != nil {
 		updateMsgID = msg.Metadata["update_message_id"]
@@ -484,7 +484,7 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 		}
 	}
 
-	// 检查是否需要回复消息（reply 模式）
+	// Check if reply message is needed (reply mode)
 	messageID := ""
 	if msg.Metadata != nil {
 		messageID = msg.Metadata["message_id"]
@@ -497,7 +497,7 @@ func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
 	return f.sendNormalMessage(msg.ChatID, cardJSON)
 }
 
-// sendReplyMessage 发送回复消息，返回新消息的 message_id
+// sendReplyMessage Send reply message, return new message's message_id
 func (f *FeishuChannel) sendReplyMessage(chatID, parentID string, cardJSON []byte) (string, error) {
 	req := larkim.NewReplyMessageReqBuilder().
 		MessageId(parentID).
@@ -534,7 +534,7 @@ func (f *FeishuChannel) sendReplyMessage(chatID, parentID string, cardJSON []byt
 	return msgID, nil
 }
 
-// sendNormalMessage 发送普通消息，返回新消息的 message_id
+// sendNormalMessage Send normal message, return new message's message_id
 func (f *FeishuChannel) sendNormalMessage(chatID string, cardJSON []byte) (string, error) {
 	receiveIDType := "chat_id"
 	if !strings.HasPrefix(chatID, "oc_") {
@@ -575,7 +575,7 @@ func (f *FeishuChannel) sendNormalMessage(chatID string, cardJSON []byte) (strin
 	return msgID, nil
 }
 
-// patchMessage 更新已有的卡片消息（原地替换内容，避免刷屏）
+// patchMessage Update existing card message (in-place replacement to avoid spamming)
 func (f *FeishuChannel) patchMessage(messageID string, cardJSON []byte) error {
 	req := larkim.NewPatchMessageReqBuilder().
 		MessageId(messageID).
@@ -596,7 +596,7 @@ func (f *FeishuChannel) patchMessage(messageID string, cardJSON []byte) error {
 	return nil
 }
 
-// deleteMessage 撤回/删除单条消息（用于卡片发送后清理进度消息）
+// deleteMessage Recall/delete a single message (for cleaning up progress messages after card sending)
 func (f *FeishuChannel) deleteMessage(messageID string) error {
 	req := larkim.NewDeleteMessageReqBuilder().
 		MessageId(messageID).
@@ -614,7 +614,7 @@ func (f *FeishuChannel) deleteMessage(messageID string) error {
 	return nil
 }
 
-// addReaction 对指定消息添加表情回复
+// addReaction Add emoji reply to specified message
 func (f *FeishuChannel) addReaction(messageID, emojiType string) error {
 	req := larkim.NewCreateMessageReactionReqBuilder().
 		MessageId(messageID).
@@ -638,16 +638,16 @@ func (f *FeishuChannel) addReaction(messageID, emojiType string) error {
 	return nil
 }
 
-// imageExtensions 图片文件扩展名集合
+// imageExtensions Set of image file extensions
 var imageExtensions = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".webp": true,
 	".gif": true, ".bmp": true, ".ico": true, ".tiff": true, ".heic": true,
 }
 
-// mdLinkRe 匹配 markdown 链接语法 [name](path)，但不匹配图片 ![alt](path)
+// mdLinkRe Match markdown link syntax [name](path), but not images ![alt](path)
 var mdLinkRe = regexp.MustCompile(`(?:^|[^!])\[([^\]]+)\]\(([^)]+)\)`)
 
-// extractAndSendLocalFiles 从 markdown 中提取本地文件链接（非图片），上传并发送文件消息，从内容中移除该链接
+// extractAndSendLocalFiles Extract local file links (non-image) from markdown, upload and send file message, remove link from content
 func (f *FeishuChannel) extractAndSendLocalFiles(chatID, content string) string {
 	return mdLinkRe.ReplaceAllStringFunc(content, func(match string) string {
 		subs := mdLinkRe.FindStringSubmatch(match)
@@ -656,29 +656,29 @@ func (f *FeishuChannel) extractAndSendLocalFiles(chatID, content string) string 
 		}
 		linkPath := subs[2]
 
-		// 保留前缀字符（mdLinkRe 可能捕获了 [ 前的非 ! 字符）
+		// Preserve prefix character (mdLinkRe may capture non-! characters before [)
 		prefix := ""
 		if len(match) > 0 && match[0] != '[' {
 			prefix = string(match[0])
 		}
 
-		// 跳过 URL
+		// Skip URL
 		if strings.HasPrefix(linkPath, "http://") || strings.HasPrefix(linkPath, "https://") {
 			return match
 		}
 
-		// 跳过图片扩展名（图片由 replaceLocalImages 处理）
+		// Skip image extensions (images handled by replaceLocalImages)
 		ext := strings.ToLower(filepath.Ext(linkPath))
 		if imageExtensions[ext] {
 			return match
 		}
 
-		// 检查文件是否存在
+		// Check if file exists
 		if _, err := os.Stat(linkPath); err != nil {
 			return match
 		}
 
-		// 上传并发送文件
+		// Upload and send file
 		if err := f.sendFile(chatID, linkPath); err != nil {
 			log.WithError(err).WithField("path", linkPath).Warn("Failed to send local file")
 			return match
@@ -686,12 +686,12 @@ func (f *FeishuChannel) extractAndSendLocalFiles(chatID, content string) string 
 
 		log.WithField("path", linkPath).Debug("Sent local file from markdown link")
 
-		// 替换链接为纯文本提示
+		// Replace link with plain text hint
 		return prefix + "📎 " + subs[1]
 	})
 }
 
-// sendFile 上传并发送文件消息
+// sendFile Upload and send file消息
 func (f *FeishuChannel) sendFile(chatID, filePath string) error {
 	fileKey, err := f.uploadFile(filePath)
 	if err != nil {
@@ -729,7 +729,7 @@ func (f *FeishuChannel) sendFile(chatID, filePath string) error {
 	return nil
 }
 
-// uploadImage 上传图片到飞书，返回 image_key
+// uploadImage Upload image to Feishu, return image_key
 func (f *FeishuChannel) uploadImage(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -755,7 +755,7 @@ func (f *FeishuChannel) uploadImage(filePath string) (string, error) {
 	return *resp.Data.ImageKey, nil
 }
 
-// uploadFile 上传文件到飞书，返回 file_key
+// uploadFile Upload file to Feishu, return file_key
 func (f *FeishuChannel) uploadFile(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -784,7 +784,7 @@ func (f *FeishuChannel) uploadFile(filePath string) (string, error) {
 	return *resp.Data.FileKey, nil
 }
 
-// detectFileType 根据扩展名检测飞书文件类型
+// detectFileType Detect Feishu file type based on extension
 func (f *FeishuChannel) detectFileType(filePath string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
@@ -805,9 +805,9 @@ func (f *FeishuChannel) detectFileType(filePath string) string {
 	}
 }
 
-// onMessage 处理收到的消息
+// onMessage Handle received message
 func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
-	// 在渠道收到消息的第一时间生成 requestID
+	// Generate requestID immediately when channel receives a message
 	requestID := log.NewRequestID()
 	l := log.WithField("request_id", requestID)
 
@@ -821,13 +821,13 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 	msg := event.Event.Message
 	sender := event.Event.Sender
 
-	// B-04: nil guard — 飞书 SDK 可能传入 MessageId == nil
+	// B-04: nil guard — Feishu SDK may pass MessageId == nil
 	if msg.MessageId == nil || *msg.MessageId == "" {
 		l.Warn("Feishu: received message with nil or empty MessageId, skipping")
 		return nil
 	}
 
-	// 调试日志：确认收到消息事件（记录所有消息，包括未@的）
+	// Debug log: confirm message event received (log all messages, including un-mentioned ones)
 	l.WithFields(log.Fields{
 		"message_id": *msg.MessageId,
 		"sender_type": func() string {
@@ -862,20 +862,20 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		}(),
 	}).Info("Feishu: message event received")
 
-	// 消息去重
+	// Message deduplication
 	messageID := *msg.MessageId
 	if f.isDuplicate(messageID) {
 		l.WithField("message_id", messageID).Debug("Feishu: duplicate message, skipping")
 		return nil
 	}
 
-	// 跳过机器人自己的消息
+	// Skip bot's own messages
 	if sender.SenderType != nil && *sender.SenderType == "bot" {
 		l.WithField("message_id", messageID).Debug("Feishu: bot message, skipping")
 		return nil
 	}
 
-	// 权限检查
+	// Permission check
 	senderID := ""
 	if sender.SenderId != nil && sender.SenderId.OpenId != nil {
 		senderID = *sender.SenderId.OpenId
@@ -898,9 +898,9 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		msgType = *msg.MessageType
 	}
 
-	// 群聊前置拦截：
-	// 1) 未 @ 机器人 且非 @所有人 -> 直接拦截
-	// 2) 仅 @所有人 -> 放行给 Agent 决定是否回复（并标记 optional）
+	// Group chat pre-intercept:
+	// 1) Not @bot and not @all -> intercept directly
+	// 2) Only @all -> pass to Agent to decide whether to reply (and mark as optional)
 	mentionScope := "direct"
 	if chatType == "group" {
 		shouldHandle, atAllOnly, reason := f.shouldHandleGroupMessage(msg)
@@ -917,13 +917,13 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		}
 	}
 
-	// 解析消息内容
+	// Parse message content
 	content := f.parseContent(eventMessageAdapter{msg})
 	if content == "" {
 		return nil
 	}
 
-	// 剥离 @mention 占位符（群聊中 @bot 后内容带 @_user_N 前缀）
+	// Strip @mention placeholders (content after @bot in group chat has @_user_N prefix)
 	if msg.Mentions != nil {
 		for _, m := range msg.Mentions {
 			if m.Key != nil {
@@ -940,7 +940,7 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		content = "[群聊 @所有人 消息：按相关性决定是否需要回复；不相关可不回复]\n" + content
 	}
 
-	// 确定回复目标
+	// Determine reply target
 	replyTo := chatID
 	if chatType != "group" {
 		replyTo = senderID
@@ -951,10 +951,10 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		return nil
 	}
 
-	// 检查是否有活跃的卡片会话，用户发送文本消息时跳过卡片
+	// Check if there is an active card session, skip card when user sends text message
 	if msgType == "text" && f.cardBuilder != nil {
 		if activeCardID, ok := f.cardBuilder.GetActiveCardID(replyTo); ok {
-			// 查找卡片消息 ID 并 patch 为"已跳过"状态
+			// Find card message ID and patch to "skipped" state
 			f.cardMsgIDs.Range(func(key, value any) bool {
 				if value.(string) == activeCardID {
 					messageID := key.(string)
@@ -968,7 +968,7 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 				}
 				return true
 			})
-			// 清除活跃卡片映射
+			// Clear active card mapping
 			f.cardBuilder.ClearActiveCard(replyTo)
 			l.WithFields(log.Fields{
 				"chat_id": replyTo,
@@ -977,7 +977,7 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		}
 	}
 
-	// 解析发送者姓名
+	// Parse sender name
 	senderName := f.getUserName(senderID)
 
 	var refMsg = ""
@@ -993,12 +993,12 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 			refSenderID = *refMsgEv.Sender.Id
 		}
 		refSenderName := f.getUserName(refSenderID)
-		refMsg = fmt.Sprintf("> 引用自 %s (%s) 的消息：%s", refSenderName, refSenderID, refMsg)
+		refMsg = fmt.Sprintf("> Block quotes自 %s (%s) 的消息：%s", refSenderName, refSenderID, refMsg)
 	} else if msg.RootId != nil {
-		refMsg = "[存在引用的消息但是无法找到内容，可能是因为消息过旧不在缓存中]"
+		refMsg = "[存在Block quotes的消息但是无法找到内容，可能是因为消息过旧不在缓存中]"
 	}
 
-	// 构建消息内容：refMsg 非空时添加引用前缀
+	// Build message content: add reference prefix when refMsg is non-empty
 	var finalContent string
 	if refMsg != "" {
 		finalContent = fmt.Sprintf("%s\n%s", refMsg, content)
@@ -1006,7 +1006,7 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		finalContent = content
 	}
 
-	// 发布到消息总线
+	// Publish to message bus
 	msgTime := time.Now()
 	if msg.CreateTime != nil {
 		if ms, err := strconv.ParseInt(*msg.CreateTime, 10, 64); err == nil {
@@ -1050,7 +1050,7 @@ type feishuBotInfoResp struct {
 	Msg  string `json:"msg"`
 	Bot  struct {
 		OpenID string `json:"open_id"`
-		Name   string `json:"app_name"` // 机器人名称
+		Name   string `json:"app_name"` // Bot name
 	} `json:"bot"`
 }
 
@@ -1178,13 +1178,13 @@ func isAtAllMention(mention *larkim.MentionEvent) bool {
 	return false
 }
 
-// onCardAction 处理卡片交互事件（按钮点击、表单提交）
+// onCardAction Handle card interaction events (button clicks, form submissions)
 func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
-	// 在渠道收到卡片交互的第一时间生成 requestID
+	// Generate requestID immediately when channel receives card interaction
 	requestID := log.NewRequestID()
 
-	// S-01: 权限检查 — 防止 AllowFrom 白名单外的用户通过卡片回调绕过权限向消息总线发送消息
-	// 对比 onMessage 函数有 isAllowed(senderID) 检查，此处需同步添加
+	// S-01: Permission check — 防止 AllowFrom 白名单外的用户通过卡片回调绕过权限向消息总线发送消息
+	// Compared to onMessage which has isAllowed(senderID) check, this needs to be added synchronously here
 	{
 		var senderID string
 		if event.Event != nil && event.Event.Operator != nil {
@@ -1203,11 +1203,11 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 
 	action := event.Event.Action
 
-	// 解析用户操作数据
-	// 飞书回调中 action.Value 和 action.FormValue 可能同时存在（form_submit 场景）：
-	// - action.Value: 按钮的 value 字段（包含 card_id 等元数据）
-	// - action.FormValue: 表单中所有字段的值（用户填写的数据）
-	// 需要合并两者：以 Value 为基础，再覆盖 FormValue 的字段
+	// Parse user action data
+	// In Feishu callbacks, action.Value and action.FormValue may coexist (form_submit scenario):
+	// - action.Value: button's value field (contains metadata like card_id)
+	// - action.FormValue: values of all fields in the form (user-filled data)
+	// Need to merge both: use Value as base, then override with FormValue fields
 	var actionData map[string]any
 	if action.Value != nil {
 		actionData = make(map[string]any, len(action.Value)+len(action.FormValue))
@@ -1223,19 +1223,19 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 		actionData = action.FormValue
 	}
 
-	// 获取聊天信息
+	// Get chat info
 	chatID := ""
 	if event.Event.Context != nil {
 		chatID = event.Event.Context.OpenChatID
 	}
 
-	// 获取用户 ID（必须用 OpenID，与消息事件中的 sender.SenderId.OpenId 一致）
+	// Get user ID (must use OpenID, consistent with sender.SenderId.OpenId in message events)
 	senderID := ""
 	if event.Event.Operator != nil {
 		senderID = event.Event.Operator.OpenID
 	}
 
-	// 获取 message_id（settings 卡片拦截和 CardBuilder 路由都需要）
+	// Get message_id (needed by both settings card interception and CardBuilder routing)
 	messageID := ""
 	if event.Event.Context != nil {
 		messageID = event.Event.Context.OpenMessageID
@@ -1251,7 +1251,7 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 		return resp, nil
 	}
 
-	// 拦截 settings 卡片交互（按钮点击、下拉选择、表单提交，在 CardBuilder 路由之前）
+	// Intercept settings card interactions (button clicks, dropdown selections, form submissions, before CardBuilder routing)
 	if parsed := parseActionDataFromMap(actionData); parsed != nil {
 		if actionName := parsed["action"]; strings.HasPrefix(actionName, settingsCardActionPrefix) {
 			if action.Option != "" {
@@ -1267,20 +1267,20 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 		}
 	}
 
-	// 查找 card_id：优先从 actionData（按钮 value），否则通过 message_id 反查
+	// Find card_id: prefer from actionData (button value), otherwise look up via message_id
 	cardID := ""
 	if id, ok := actionData["card_id"].(string); ok {
 		cardID = id
-		delete(actionData, "card_id") // 清理元数据，避免泄露到 agent
+		delete(actionData, "card_id") // Clean up metadata to prevent leaking to agent
 	} else if messageID != "" {
 		if id, ok := f.cardMsgIDs.Load(messageID); ok {
 			cardID = id.(string)
 		}
 	}
 	if cardID == "" {
-		// 没有 card_id：说明卡片是由外部工具发送的原始卡片，
-		// 没有 CardBuilder 的 card_id 注入。将回调数据作为通用卡片交互转发给 agent，
-		// 而不是直接丢弃。
+		// No card_id: the card is an original card sent by an external tool,
+		// No CardBuilder card_id injection. Forward callback data to agent as generic card interaction,
+		// instead of discarding it directly.
 		return f.handleGenericCardAction(actionData, action, chatID, senderID, messageID, requestID)
 	}
 
@@ -2164,9 +2164,9 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 		"data":        responseData,
 	}).Info("Card builder action triggered")
 
-	// 表单提交后，在回调响应中返回"已提交"卡片（防止重复提交）
-	// 注意：飞书卡片回调机制中，回调响应不带 Card 字段时卡片会恢复到原始状态，
-	// 所以必须通过回调响应的 Card 字段来更新卡片内容，而不是用 PATCH API。
+	// After form submission, return a "submitted" card in the callback response (to prevent duplicate submission)
+	// Note: In Feishu card callback mechanism, when callback response doesn't include Card field, the card reverts to its original state,
+	// so the card content must be updated via the Card field in the callback response, not the PATCH API.
 	var submittedCardResponse *callback.Card
 	if actionName == "form_submit" {
 		submittedCard := f.buildCard("✅ 已提交，正在处理...")
@@ -2256,9 +2256,9 @@ func (f *FeishuChannel) handleGenericCardAction(actionData map[string]any, actio
 
 	isFormSubmit := actionName == "form_submit" || (actionName == "button" && len(action.FormValue) > 0)
 
-	// 表单提交后，在回调响应中返回"已提交"卡片（防止重复提交）
-	// 注意：飞书卡片回调机制中，回调响应不带 Card 字段时卡片会恢复到原始状态，
-	// 所以必须通过回调响应的 Card 字段来更新卡片内容，而不是用 PATCH API。
+	// After form submission, return a "submitted" card in the callback response (to prevent duplicate submission)
+	// Note: In Feishu card callback mechanism, when callback response doesn't include Card field, the card reverts to its original state,
+	// so the card content must be updated via the Card field in the callback response, not the PATCH API.
 	var submittedCardResponse *callback.Card
 	if isFormSubmit {
 		submittedCard := f.buildCard("✅ 已提交，正在处理...")
@@ -2324,7 +2324,7 @@ func (f *FeishuChannel) isExpectedInteraction(expected []string, actionName stri
 	return false
 }
 
-// formatMapString 将 map 格式化为字符串（用于 metadata）
+// formatMapString Format map as string (for metadata)
 func formatMapString(m map[string]string) string {
 	if len(m) == 0 {
 		return ""
@@ -2371,7 +2371,7 @@ func (a messageAdapter) GetContent() *string {
 	return nil
 }
 
-// parseContent 解析消息内容 (接受 feishuMsg 接口，兼容 EventMessage 和 Message)
+// parseContent Parse message content (接受 feishuMsg 接口，兼容 EventMessage 和 Message)
 func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 	content := msg.GetContent()
 	if content == nil || *content == "" {
@@ -2411,12 +2411,12 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 		}
 		return fmt.Sprintf(`<image image_key="%s" message_id="%s" />`, imageKey, messageID)
 	case "folder":
-		// 文件夹
+		// Folder
 		fileKey, _ := contentJSON["file_key"].(string)
 		fileName, _ := contentJSON["file_name"].(string)
 		return fmt.Sprintf(`<folder name="%s" file_key="%s" />`, fileName, fileKey)
 	case "audio":
-		// 音频
+		// Audio
 		fileKey, _ := contentJSON["file_key"].(string)
 		duration, _ := contentJSON["duration"].(float64)
 		messageID := ""
@@ -2425,7 +2425,7 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 		}
 		return fmt.Sprintf(`<audio file_key="%s" duration="%.0f" message_id="%s" />`, fileKey, duration, messageID)
 	case "media":
-		// 视频（带封面）
+		// Video (with cover)
 		fileKey, _ := contentJSON["file_key"].(string)
 		imageKey, _ := contentJSON["image_key"].(string)
 		fileName, _ := contentJSON["file_name"].(string)
@@ -2436,18 +2436,18 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 		}
 		return fmt.Sprintf(`<video name="%s" file_key="%s" image_key="%s" duration="%.0f" message_id="%s" />`, fileName, fileKey, imageKey, duration, messageID)
 	case "sticker":
-		// 表情包
+		// Sticker/Emoji pack
 		fileKey, _ := contentJSON["file_key"].(string)
 		return fmt.Sprintf(`<sticker file_key="%s" />`, fileKey)
 	case "interactive":
-		// 卡片消息 - 解析卡片元素
+		// Card message - parse card elements
 		return f.extractInteractiveContent(contentJSON)
 	case "share_chat":
-		// 群名片
+		// Group nickname
 		chatID, _ := contentJSON["chat_id"].(string)
 		return fmt.Sprintf(`[分享群聊: %s]`, chatID)
 	case "share_user":
-		// 个人名片
+		// Personal contact card
 		userID, _ := contentJSON["user_id"].(string)
 		return fmt.Sprintf(`[分享用户: %s]`, userID)
 	// TODO: 其他不常用类型
@@ -2457,7 +2457,7 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 	// case "vote": return "[投票]"
 	// case "task": return "[任务]"
 	// case "share_calendar_event", "calendar", "general_calendar": return "[日程]"
-	// case "video_chat": return "[视频通话]"
+	// case "video_chat": return "[Video通话]"
 	// case "merge_forward": return "[合并转发]"
 	default:
 		return fmt.Sprintf("[%s]", msgType)
@@ -2465,16 +2465,16 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 	return ""
 }
 
-// extractPostText 提取富文本内容
+// extractPostText Extract rich text content
 // Design note: messageId is threaded through parseContent → extractPostText → extractFromLang
 // so that embedded images/videos in the post can include message_id in their XML tags.
 // This enables the agent to call feishu_download_file with the correct message_id later.
 func (f *FeishuChannel) extractPostText(contentJSON map[string]any, messageId string) string {
-	// 尝试直接格式
+	// Try direct format
 	if result := f.extractFromLang(contentJSON, messageId); result != "" {
 		return result
 	}
-	// 尝试本地化格式
+	// Try localized format
 	for _, lang := range []string{"zh_cn", "en_us", "ja_jp"} {
 		if langContent, ok := contentJSON[lang].(map[string]any); ok {
 			if result := f.extractFromLang(langContent, messageId); result != "" {
@@ -2516,29 +2516,29 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 						parts = append(parts, fmt.Sprintf("<image image_key=\"%s\" message_id=\"%s\" />", imageKey, messageId))
 					}
 				case "code_block":
-					// 代码块 - 重点支持
+					// Code block - priority support
 					language, _ := elemMap["language"].(string)
 					code, _ := elemMap["text"].(string)
 					if code != "" {
 						parts = append(parts, fmt.Sprintf("```%s\n%s\n```", language, code))
 					}
 				case "emotion":
-					// 表情
+					// Emoji
 					if emojiType, ok := elemMap["emoji_type"].(string); ok {
-						parts = append(parts, fmt.Sprintf("[表情: %s]", emojiType))
+						parts = append(parts, fmt.Sprintf("[Emoji: %s]", emojiType))
 					}
 				case "hr":
-					// 分割线
+					// Divider
 					parts = append(parts, "---")
 				case "media":
-					// 视频
+					// Video
 					fileKey, _ := elemMap["file_key"].(string)
 					imageKey, _ := elemMap["image_key"].(string)
 					if fileKey != "" {
 						parts = append(parts, fmt.Sprintf("<video file_key=\"%s\" image_key=\"%s\" message_id=\"%s\" />", fileKey, imageKey, messageId))
 					}
 				case "folder":
-					// 文件夹
+					// Folder
 					fileKey, _ := elemMap["file_key"].(string)
 					fileName, _ := elemMap["file_name"].(string)
 					if fileKey != "" {
@@ -2550,10 +2550,10 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 				// case "select_static": parts = append(parts, "[下拉选择]")
 				// case "date_picker": parts = append(parts, "[日期选择]")
 				// case "overflow": parts = append(parts, "[更多选项]")
-				// case "video_chat": parts = append(parts, "[视频通话]")
+				// case "video_chat": parts = append(parts, "[Video通话]")
 				// case "location": parts = append(parts, "[位置]")
 				default:
-					// 其他未处理的元素类型，记录但不阻塞
+					// Other unhandled element types, log but don't block
 					if tag != "" {
 						parts = append(parts, fmt.Sprintf("[%s]", tag))
 					}
@@ -2564,16 +2564,16 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 	return strings.Join(parts, " ")
 }
 
-// extractInteractiveContent 解析卡片消息内容（接收到的卡片结构与发送时不一致，仅支持部分元素）
+// extractInteractiveContent Parse card message content (received card structure differs from sent structure, only partial elements supported)
 func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) string {
 	var parts []string
 
-	// 解析标题
+	// Parse title
 	if title, ok := contentJSON["title"].(string); ok && title != "" {
 		parts = append(parts, "[卡片: "+title+"]")
 	}
 
-	// 解析元素
+	// Parse elements
 	if elements, ok := contentJSON["elements"].([]any); ok {
 		for _, block := range elements {
 			blockElems, ok := block.([]any)
@@ -2612,7 +2612,7 @@ func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) st
 				case "hr":
 					parts = append(parts, "---")
 				case "note":
-					// 备注元素
+					// Note element
 					if noteElems, ok := elemMap["elements"].([]any); ok {
 						var noteParts []string
 						for _, ne := range noteElems {
@@ -2641,7 +2641,7 @@ func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) st
 				case "overflow":
 					parts = append(parts, "[更多选项]")
 				default:
-					// 未知元素类型，记录但不阻塞
+					// Unknown element type, log but don't block
 					if tag != "" {
 						parts = append(parts, fmt.Sprintf("[%s]", tag))
 					}
@@ -2656,10 +2656,10 @@ func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) st
 	return strings.Join(parts, " ")
 }
 
-// mdImageRe 匹配 markdown 图片语法 ![alt](path)
+// mdImageRe Match markdown image syntax ![alt](path)
 var mdImageRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
 
-// replaceLocalImages 扫描 markdown 中的本地图片引用，上传后替换为飞书 image_key
+// replaceLocalImages Scan local image references in markdown, upload and replace with Feishu image_key
 func (f *FeishuChannel) replaceLocalImages(content string) string {
 	return mdImageRe.ReplaceAllStringFunc(content, func(match string) string {
 		subs := mdImageRe.FindStringSubmatch(match)
@@ -2668,24 +2668,24 @@ func (f *FeishuChannel) replaceLocalImages(content string) string {
 		}
 		imgPath := subs[2]
 
-		// 跳过 URL（http/https）和已经是 image_key 的（img_ 前缀）
+		// Skip URL（http/https）和已经是 image_key 的（img_ 前缀）
 		if strings.HasPrefix(imgPath, "http://") || strings.HasPrefix(imgPath, "https://") || strings.HasPrefix(imgPath, "img_") {
 			return match
 		}
 
-		// 检查文件是否是图片类型
+		// Check if file is an image type
 		ext := strings.ToLower(filepath.Ext(imgPath))
 		if !imageExtensions[ext] {
 			return match
 		}
 
-		// 检查文件是否存在
+		// Check if file exists
 		if _, err := os.Stat(imgPath); err != nil {
 			log.WithField("path", imgPath).Debug("Local image not found, keeping original markdown")
 			return match
 		}
 
-		// 上传图片
+		// Upload image
 		imageKey, err := f.uploadImage(imgPath)
 		if err != nil {
 			log.WithError(err).WithField("path", imgPath).Warn("Failed to upload local image, keeping original markdown")
@@ -2697,12 +2697,12 @@ func (f *FeishuChannel) replaceLocalImages(content string) string {
 			"image_key": imageKey,
 		}).Debug("Replaced local image with image_key")
 
-		// 替换为飞书 image_key 格式
+		// Replace with Feishu image_key format
 		return fmt.Sprintf("![%s](%s)", subs[1], imageKey)
 	})
 }
 
-// buildCard 构建飞书消息卡片（JSON 2.0 结构，启用 update_multi 以支持 Patch 更新）
+// buildCard Build Feishu message card (JSON 2.0 structure, enables update_multi for Patch updates)
 func (f *FeishuChannel) buildCard(content string) map[string]any {
 	return map[string]any{
 		"schema": "2.0",
@@ -2729,7 +2729,7 @@ func (f *FeishuChannel) getHistoryMsgById(currentMsgEV *larkim.P2MessageReceiveV
 		return nil
 	}
 
-	// 当前消息没有 ParentId，无需查找历史引用
+	// Current message has no ParentId, no need to look up historical references
 	if currentMsg.ParentId == nil || *currentMsg.ParentId == "" {
 		return nil
 	}
@@ -2758,7 +2758,7 @@ func (f *FeishuChannel) getHistoryMsgById(currentMsgEV *larkim.P2MessageReceiveV
 	return resp.Data.Items[0]
 }
 
-// isDuplicate 检查消息是否重复
+// isDuplicate Check if message is duplicate
 // handleAdminCommand handles admin-only commands (e.g., !webadd).
 // Returns true if the message was an admin command and was handled.
 func (f *FeishuChannel) handleAdminCommand(content, replyTo, senderID, messageID string) bool {
@@ -2784,7 +2784,7 @@ func (f *FeishuChannel) handleAdminCommand(content, replyTo, senderID, messageID
 		}
 		username := parts[1]
 		if f.webDB == nil {
-			f.sendTextReply(replyTo, messageID, "❌ Web 用户数据库未配置")
+			f.sendTextReply(replyTo, messageID, "❌ Web 用户数据库未Configuration")
 			return true
 		}
 		createdName, password, err := CreateWebUser(f.webDB, username)
@@ -2847,13 +2847,13 @@ func (f *FeishuChannel) isDuplicate(messageID string) bool {
 	f.processedIDs[messageID] = struct{}{}
 	f.processedOrder = append(f.processedOrder, messageID)
 
-	// 清理过期缓存
+	// Clean up expired cache
 	for len(f.processedOrder) > f.maxProcessed {
 		oldest := f.processedOrder[0]
 		f.processedOrder = f.processedOrder[1:]
 		delete(f.processedIDs, oldest)
 	}
-	// 防止底层数组无限增长：当容量超过阈值时收缩
+	// Prevent underlying array from growing indefinitely: shrink when capacity exceeds threshold
 	if cap(f.processedOrder) > f.maxProcessed*10 {
 		trimmed := make([]string, len(f.processedOrder))
 		copy(trimmed, f.processedOrder)
@@ -2862,7 +2862,7 @@ func (f *FeishuChannel) isDuplicate(messageID string) bool {
 	return false
 }
 
-// isAllowed 检查用户是否有权限
+// isAllowed Check if user has permission
 func (f *FeishuChannel) isAllowed(senderID string) bool {
 	if len(f.config.AllowFrom) == 0 {
 		return true
@@ -2875,17 +2875,17 @@ func (f *FeishuChannel) isAllowed(senderID string) bool {
 	return false
 }
 
-// mdTableSepRe 匹配 markdown 表格的分隔行（如 |---|---|）
+// mdTableSepRe Match markdown table separator lines (e.g. |---|---|)
 var mdTableSepRe = regexp.MustCompile(`^\|[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)+\|?\s*$`)
 
-// limitMarkdownTables 限制 markdown 内容中的表格数量。
-// 超出 maxTables 的表格会被转成代码块（保留可读性但不触发飞书 table 渲染）。
+// limitMarkdownTables Limit the number of tables in markdown content.
+// Tables exceeding maxTables are converted to code blocks (preserves readability without triggering Feishu table rendering).
 //
-// 表格检测逻辑：
-//   - 以 separator 行（|---|---|）作为表格起始标记
-//   - separator 前紧邻的 pipe 行（|）视为 header 行
-//   - 表格以 separator 开头（无 header）是合法的 markdown 边界情况，
-//     此时 header 行包裹逻辑被自然跳过（prev 不是 pipe 行）
+// Table detection logic:
+//   - Use separator lines (|---|---|) as table start markers
+//   - Pipe lines (|) immediately before separator are treated as header rows
+//   - Tables starting with separator (no header) is a valid markdown edge case,
+//     In this case the header wrapping logic is naturally skipped (prev is not a pipe line)
 func limitMarkdownTables(content string, maxTables int) string {
 	lines := strings.Split(content, "\n")
 	tableCount := 0
@@ -2898,13 +2898,13 @@ func limitMarkdownTables(content string, maxTables int) string {
 		isSepLine := isTableLine && mdTableSepRe.MatchString(strings.TrimSpace(line))
 
 		if !inTable && isSepLine {
-			// 进入新表格：分隔行之前的 header 行也属于这个表格
+			// Entering new table: header lines before separator also belong to this table
 			tableCount++
 			inTable = true
 			inExcessTable = tableCount > maxTables
 
 			if inExcessTable {
-				// 把已写入的 header 行（上一行）也转成代码块内容
+				// Convert already written header line (previous line) to code block content as well
 				if len(result) > 0 {
 					prev := result[len(result)-1]
 					if strings.HasPrefix(strings.TrimSpace(prev), "|") {
@@ -2922,7 +2922,7 @@ func limitMarkdownTables(content string, maxTables int) string {
 		}
 
 		if inTable && !isTableLine {
-			// 离开表格
+			// Leaving table
 			if inExcessTable {
 				result = append(result, "```")
 			}
@@ -2933,7 +2933,7 @@ func limitMarkdownTables(content string, maxTables int) string {
 		result = append(result, line)
 	}
 
-	// 文件末尾仍在超限表格中，关闭代码块
+	// Still in over-limit table at end of file, close code block
 	if inExcessTable {
 		result = append(result, "```")
 	}
@@ -3126,8 +3126,8 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 	sb.WriteString("## 🏠 主菜单\n\n")
 	sb.WriteString("欢迎使用 xbot！请选择功能：\n\n")
 	sb.WriteString("- ⚙️ `/settings` — 个人设置\n")
-	sb.WriteString("- 📦 `/my skills` — 我的 Skills\n")
-	sb.WriteString("- 🤖 `/my agents` — 我的 Agents\n")
+	sb.WriteString("- 📦 `/my skills` — My Skills\n")
+	sb.WriteString("- 🤖 `/my agents` — My Agents\n")
 	sb.WriteString("- 🏪 `/browse` — 浏览市场\n")
 	sb.WriteString("- 📤 `/publish skill|agent <name>` — 发布\n")
 	sb.WriteString("- 📥 `/install skill|agent <id>` — 安装\n")
@@ -3138,11 +3138,11 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 // BuildMySkillsUI builds a Skills panel for Feishu.
 func (f *FeishuChannel) BuildMySkillsUI(ctx context.Context, skills []string, senderID string) string {
 	if len(skills) == 0 {
-		return "## 📦 我的 Skills\n\n暂无已安装的 Skills。\n使用 `/browse skills` 浏览市场。"
+		return "## 📦 My Skills\n\n暂无已安装的 Skills。\n使用 `/browse skills` 浏览市场。"
 	}
 
 	var sb strings.Builder
-	sb.WriteString("## 📦 我的 Skills\n\n")
+	sb.WriteString("## 📦 My Skills\n\n")
 	for i, s := range skills {
 		fmt.Fprintf(&sb, "%d. %s\n", i+1, s)
 	}

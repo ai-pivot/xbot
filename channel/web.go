@@ -67,14 +67,14 @@ func limitBodySize(next http.HandlerFunc) http.HandlerFunc {
 // WebConfig (channel-level)
 // ---------------------------------------------------------------------------
 
-// WebChannelConfig Web 渠道配置（channel 包内部使用）
+// WebChannelConfig Web channel configuration (internal to channel package)
 type WebChannelConfig struct {
 	Host       string
 	Port       int
 	DB         *sql.DB // SQLite DB handle for user management and history
 	AdminToken string  // global admin token for privileged auth
-	InviteOnly bool    // 禁止自主注册，新账号只能由 admin 创建
-	PublicURL  string  // 对外访问地址，用于生成 Runner 连接命令
+	InviteOnly bool    // Disable self-registration, new accounts can only be created by admin
+	PublicURL  string  // Public access URL, for generating Runner connection commands
 }
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
@@ -174,7 +174,7 @@ type UserChatWithPreview struct {
 type ChatRoom struct {
 	ID       string `json:"id"`       // "main" for primary chat, "role/instance" for SubAgent
 	Type     string `json:"type"`     // "main" (human↔agent) or "subagent" (agent↔agent)
-	Label    string `json:"label"`    // Display name: "主会话" or "brainstorm/rt-1"
+	Label    string `json:"label"`    // Display name: "Main session" or "brainstorm/rt-1"
 	Role     string `json:"role"`     // SubAgent role name (empty for main)
 	Instance string `json:"instance"` // SubAgent instance ID (empty for main)
 	Running  bool   `json:"running"`  // Is the SubAgent currently running?
@@ -196,7 +196,7 @@ type SessionChatMessage struct {
 // Hub: manages all WebSocket clients
 // ---------------------------------------------------------------------------
 
-// Hub 管理所有 WebSocket 连接。
+// Hub Manages all WebSocket connections.
 // Routing is by business chatID (e.g. "/home/smith/src/xbot" or feishuUserID).
 // Auth identity (c.userID, e.g. "admin") is NOT used for routing.
 type Hub struct {
@@ -600,7 +600,7 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 	return cp
 }
 
-// WsToolProgress 单个工具的执行进度（对应 agent.ToolProgress）。
+// WsToolProgress Execution progress of a single tool (corresponds to agent.ToolProgress).
 type WsToolProgress struct {
 	Name      string `json:"name,omitempty"`
 	Label     string `json:"label,omitempty"`
@@ -610,7 +610,7 @@ type WsToolProgress struct {
 	Summary   string `json:"summary,omitempty"`
 }
 
-// WsSubAgent 子 Agent 的结构化进度状态。
+// WsSubAgent Structured progress state of a sub-agent.
 type WsSubAgent struct {
 	Role     string       `json:"role"`
 	Status   string       `json:"status"` // "running" | "done" | "error"
@@ -618,7 +618,7 @@ type WsSubAgent struct {
 	Children []WsSubAgent `json:"children,omitempty"`
 }
 
-// WsTokenUsage Token 使用量快照（对应 agent.TokenUsageSnapshot）。
+// WsTokenUsage Token usage snapshot (corresponds to agent.TokenUsageSnapshot).
 type WsTokenUsage struct {
 	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
 	CompletionTokens int64 `json:"completion_tokens,omitempty"`
@@ -670,7 +670,7 @@ type WsAskUserResponse struct {
 // WebChannel: implements Channel interface
 // ---------------------------------------------------------------------------
 
-// WebChannel Web 渠道实现
+// WebChannel Web channel implementation
 type WebChannel struct {
 	config   WebChannelConfig
 	msgBus   *bus.MessageBus
@@ -718,7 +718,7 @@ type sessionInfo struct {
 	expires      time.Time
 }
 
-// NewWebChannel 创建 Web 渠道
+// NewWebChannel Create Web channel
 func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 	return &WebChannel{
 		config:          cfg,
@@ -772,7 +772,7 @@ func (wc *WebChannel) Name() string { return "web" }
 // Start / Stop
 // ---------------------------------------------------------------------------
 
-// Start 启动 Web 渠道 HTTP server
+// Start Start Web channel HTTP server
 func (wc *WebChannel) Start() error {
 	mux := http.NewServeMux()
 
@@ -867,7 +867,7 @@ func (wc *WebChannel) Start() error {
 	return err
 }
 
-// Stop 停止 Web 渠道
+// Stop Stop Web channel
 func (wc *WebChannel) Stop() {
 	log.Info("Web channel stopping...")
 	close(wc.stopCh)
@@ -890,7 +890,7 @@ func (wc *WebChannel) Stop() {
 // Send: non-blocking write to WebSocket client
 // ---------------------------------------------------------------------------
 
-// Send 发送消息到 Web 客户端（非阻塞）
+// Send Send message to Web client (non-blocking)
 
 func (wc *WebChannel) Send(msg bus.OutboundMessage) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
@@ -957,8 +957,8 @@ func (wc *WebChannel) stampAndBuffer(chatID string, msg wsMessage) wsMessage {
 	return msg
 }
 
-// SendProgress 发送结构化进度事件到 Web 客户端（非阻塞）。
-// 内部通过 hub 的缓冲通道发送，保持调用路径轻量。
+// SendProgress Send structured progress event to Web client (non-blocking).
+// Internally sends via hub's buffered channel, keeping the call path lightweight.
 func (wc *WebChannel) SendProgress(chatID string, payload *WsProgressPayload) {
 	if payload == nil {
 		return
@@ -1431,7 +1431,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					downloadURL, err := wc.ossProvider.GetDownloadURL(key)
 					if err != nil {
 						log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
-						content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
+						content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载Links失败)", displayName)
 						continue
 					}
 

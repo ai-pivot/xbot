@@ -6,8 +6,8 @@ import (
 	"xbot/prompt"
 )
 
-// CliPromptProvider 实现 agent.ChannelPromptProvider 接口。
-// 为 CLI 渠道注入特化的 prompt 片段（AskUser 使用提示等）。
+// CliPromptProvider Implements agent.ChannelPromptProvider interface.
+// Inject specialized prompt fragments for CLI channel (AskUser usage hints, etc.).
 type CliPromptProvider struct{}
 
 func (p *CliPromptProvider) ChannelPromptName() string { return "cli" }

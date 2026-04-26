@@ -11,10 +11,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 彩蛋状态常量
+// Easter egg state constants
 // ---------------------------------------------------------------------------
 
-// easterEggMode 表示当前激活的彩蛋类型
+// easterEggMode Represents the currently active easter egg type
 type easterEggMode string
 
 const (
@@ -26,13 +26,13 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// 彩蛋内部消息类型
+// Easter egg internal message types
 // ---------------------------------------------------------------------------
 
-// easterEggDoneMsg 彩蛋关闭消息（按任意键触发）
+// easterEggDoneMsg Easter egg dismiss message (triggered by any key press)
 type easterEggDoneMsg struct{}
 
-// easterEggMatrixTickMsg Matrix 代码雨动画 tick
+// easterEggMatrixTickMsg Matrix rain animation tick
 type easterEggMatrixTickMsg struct{}
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ var konamiASCII = strings.TrimLeft(`
      [ Press any key to dismiss ]
 `, "\n")
 
-// checkKonami 检查按键是否匹配 Konami Code 序列
+// checkKonami Check if keypress matches Konami Code sequence
 func (m *cliModel) checkKonami(keyName string) bool {
 	if m.konamiBuffer == nil {
 		m.konamiBuffer = make([]string, 0, len(konamiSequence))
@@ -84,7 +84,7 @@ func (m *cliModel) checkKonami(keyName string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #2: /matrix — 黑客帝国代码雨
+// 彩蛋 #2: /matrix — Matrix rain
 // ---------------------------------------------------------------------------
 
 var matrixChars = []rune{
@@ -96,7 +96,7 @@ var matrixChars = []rune{
 	'5', '6', '7', '8', '9', ':', '.', '*', '+', '-', '=',
 }
 
-// initMatrixColumns 初始化代码雨的列状态
+// initMatrixColumns Initialize rain column states
 func (m *cliModel) initMatrixColumns() {
 	cols := m.width
 	if cols < 10 {
@@ -112,11 +112,11 @@ func (m *cliModel) initMatrixColumns() {
 	m.matrixSpeeds = make([]int, cols)
 	m.matrixTrailLen = make([]int, cols)
 	for i := 0; i < cols; i++ {
-		m.matrixDrops[i] = -rand.Intn(rows) // 负数 = 还在画面外
+		m.matrixDrops[i] = -rand.Intn(rows) // Negative = still off screen
 		m.matrixSpeeds[i] = 1 + rand.Intn(2)
 		m.matrixTrailLen[i] = 5 + rand.Intn(15)
 	}
-	// 用空格初始化矩阵缓冲区
+	// Initialize matrix buffer with spaces
 	m.matrixBuffer = make([][]rune, rows)
 	for r := 0; r < rows; r++ {
 		m.matrixBuffer[r] = make([]rune, cols)
@@ -126,7 +126,7 @@ func (m *cliModel) initMatrixColumns() {
 	}
 }
 
-// tickMatrix 推进一帧代码雨动画
+// tickMatrix Advance one frame of rain animation
 func (m *cliModel) tickMatrix() {
 	if m.matrixDrops == nil {
 		m.initMatrixColumns()
@@ -136,7 +136,7 @@ func (m *cliModel) tickMatrix() {
 	rows := m.matrixRows
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// 随机更新已有字符产生闪烁效果
+	// Randomly update existing characters for flicker effect
 	for r := 0; r < rows; r++ {
 		for c := 0; c < cols; c++ {
 			if m.matrixBuffer[r][c] != ' ' && rng.Intn(10) == 0 {
@@ -145,21 +145,21 @@ func (m *cliModel) tickMatrix() {
 		}
 	}
 
-	// 推进每列下落
+	// Advance each column's drop
 	for c := 0; c < cols; c++ {
 		m.matrixDrops[c] += m.matrixSpeeds[c]
 		head := m.matrixDrops[c]
 		tail := head - m.matrixTrailLen[c]
 
-		// 头部写入新字符
+		// Write new character at head
 		if head >= 0 && head < rows {
 			m.matrixBuffer[head][c] = matrixChars[rng.Intn(len(matrixChars))]
 		}
-		// 尾部擦除
+		// Erase at tail
 		if tail >= 0 && tail < rows {
 			m.matrixBuffer[tail][c] = ' '
 		}
-		// 超出画面：重置
+		// Off screen: reset
 		if tail > rows+5 {
 			m.matrixDrops[c] = -rng.Intn(rows / 2)
 			m.matrixSpeeds[c] = 1 + rng.Intn(2)
@@ -168,7 +168,7 @@ func (m *cliModel) tickMatrix() {
 	}
 }
 
-// matrixTickCmd 生成下一帧 Matrix 动画的 tick 命令（~12fps）
+// matrixTickCmd Generate tick command for next Matrix animation frame (~12fps)
 func matrixTickCmd() tea.Cmd {
 	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
 		return easterEggMatrixTickMsg{}
@@ -194,7 +194,7 @@ var answer42Art = strings.TrimLeft(`
     [ Press any key to dismiss ]
 `, "\n")
 
-// isAnswer42 检测用户输入是否触发 "The Answer is 42" 彩蛋
+// isAnswer42 Detect if user input triggers "The Answer is 42" easter egg
 func isAnswer42(content string) bool {
 	lower := strings.ToLower(content)
 	patterns := []string{
@@ -211,7 +211,7 @@ func isAnswer42(content string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #4: 节日 Splash 描述
+// 彩蛋 #4: Holiday Splash description
 // ---------------------------------------------------------------------------
 
 func holidaySplash() string {
@@ -254,7 +254,7 @@ func isLeapYear(year int) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #5: /sudo — 权限拒绝
+// 彩蛋 #5: /sudo — Permission denied
 // ---------------------------------------------------------------------------
 
 var sudoMessages = []string{
@@ -275,7 +275,7 @@ func randomSudoMessage() string {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #6: /fortune — 程序员签语饼
+// 彩蛋 #6: /fortune — Programmer fortune cookie
 // ---------------------------------------------------------------------------
 
 var fortuneMessages = []struct {
@@ -310,7 +310,7 @@ func randomFortune() (string, int) {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #7: 三连 /version — 版本强迫症成就
+// 彩蛋 #7: Triple /version — version OCD achievement
 // ---------------------------------------------------------------------------
 
 var versionAchievementArt = strings.TrimLeft(`
@@ -329,7 +329,7 @@ var versionAchievementArt = strings.TrimLeft(`
     [ Press any key to dismiss ]
 `, "\n")
 
-// recordVersionHit 记录 /version 调用，返回 true 表示触发了彩蛋
+// recordVersionHit Record /version call, return true if easter egg was triggered
 func (m *cliModel) recordVersionHit() bool {
 	now := time.Now()
 	m.versionHitTimes = append(m.versionHitTimes, now)
@@ -347,7 +347,7 @@ func (m *cliModel) recordVersionHit() bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #8: /zen — 禅意时刻
+// 彩蛋 #8: /zen — Zen moment
 // ---------------------------------------------------------------------------
 
 var zenHaiku = []struct {
@@ -370,23 +370,23 @@ func randomZen() (string, string) {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋激活/渲染 — 集中管理
+// Easter egg activation/rendering — centralized management
 // ---------------------------------------------------------------------------
 
-// activateEasterEgg 激活指定彩蛋（按任意键退出）。
-// 返回 tea.Cmd 用于 Matrix 动画的初始 tick。
+// activateEasterEgg Activate specified easter egg (dismiss on any key press).
+// Return tea.Cmd for Matrix animation's initial tick.
 func (m *cliModel) activateEasterEgg(mode easterEggMode) tea.Cmd {
 	m.easterEgg = mode
 	if mode == easterEggMatrix {
 		m.initMatrixColumns()
-		// 生成第一帧并启动动画循环
+		// Generate first frame and start animation loop
 		m.tickMatrix()
 		return matrixTickCmd()
 	}
 	return nil
 }
 
-// dismissEasterEgg 关闭当前彩蛋
+// dismissEasterEgg Dismiss current easter egg
 func (m *cliModel) dismissEasterEgg() {
 	m.easterEgg = easterEggNone
 	m.matrixBuffer = nil
@@ -394,9 +394,9 @@ func (m *cliModel) dismissEasterEgg() {
 	m.easterEggCustom = ""
 }
 
-// handleEasterEggCommand 处理隐藏的彩蛋斜杠命令。
-// 返回 (true, cmd) 表示命令已被彩蛋系统处理，cmd 需要被 Bubble Tea 执行。
-// 返回 (false, nil) 表示不是彩蛋命令。
+// handleEasterEggCommand Handle hidden easter egg slash commands.
+// Return (true, cmd) means command was handled by easter egg system, cmd needs to be executed by Bubble Tea.
+// Return (false, nil) means it's not an easter egg command.
 func (m *cliModel) handleEasterEggCommand(cmd string) (bool, tea.Cmd) {
 	cmd = strings.TrimSpace(cmd)
 	parts := strings.Fields(cmd)
@@ -433,10 +433,10 @@ func (m *cliModel) handleEasterEggCommand(cmd string) (bool, tea.Cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋渲染
+// Easter egg rendering
 // ---------------------------------------------------------------------------
 
-// renderEasterEggOverlay 渲染彩蛋覆盖层。返回空字符串表示无彩蛋。
+// renderEasterEggOverlay Render easter egg overlay. Return empty string if no easter egg.
 func (m *cliModel) renderEasterEggOverlay() string {
 	switch m.easterEgg {
 	case easterEggKonami:
@@ -452,14 +452,14 @@ func (m *cliModel) renderEasterEggOverlay() string {
 	}
 }
 
-// renderKonamiOverlay 渲染 Konami Code 庆祝画面
+// renderKonamiOverlay Render Konami Code celebration screen
 func (m *cliModel) renderKonamiOverlay() string {
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Bold(true)
 	content := green.Render(konamiASCII)
 	return centerOverlay(content, m.width, m.height)
 }
 
-// renderMatrixOverlay 渲染 Matrix 代码雨画面
+// renderMatrixOverlay Render Matrix rain screen
 func (m *cliModel) renderMatrixOverlay() string {
 	if m.matrixBuffer == nil {
 		return ""
@@ -477,7 +477,7 @@ func (m *cliModel) renderMatrixOverlay() string {
 				sb.WriteString(" ")
 				continue
 			}
-			// 判断是否是列头部
+			// Check if it's a column head
 			isHead := false
 			if m.matrixDrops != nil && c < len(m.matrixDrops) && m.matrixDrops[c] == r {
 				isHead = true
@@ -512,21 +512,21 @@ func (m *cliModel) renderMatrixOverlay() string {
 	return centerOverlay(sb.String()+"\n\n"+hint, m.width, m.height)
 }
 
-// renderAnswer42Overlay 渲染 "The Answer is 42" 画面
+// renderAnswer42Overlay Render "The Answer is 42" screen
 func (m *cliModel) renderAnswer42Overlay() string {
 	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700")).Bold(true)
 	content := yellow.Render(answer42Art)
 	return centerOverlay(content, m.width, m.height)
 }
 
-// renderVersionOverlay 渲染版本强迫症成就画面
+// renderVersionOverlay Render version OCD achievement screen
 func (m *cliModel) renderVersionOverlay() string {
 	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700")).Bold(true)
 	content := gold.Render(m.easterEggCustom)
 	return centerOverlay(content, m.width, m.height)
 }
 
-// centerOverlay 将内容居中到指定宽高的终端中
+// centerOverlay Center content in terminal of specified width and height
 func centerOverlay(content string, termW, termH int) string {
 	lines := strings.Split(content, "\n")
 	maxW := 0
@@ -558,7 +558,7 @@ func centerOverlay(content string, termW, termH int) string {
 	return sb.String()
 }
 
-// getHolidaySplashDesc 获取节日版 splash 描述文字
+// getHolidaySplashDesc Get holiday splash description text
 func getHolidaySplashDesc() string {
 	return holidaySplash()
 }

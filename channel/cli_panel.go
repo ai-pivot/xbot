@@ -51,7 +51,7 @@ func (m *cliModel) renderSelLine(line string, w int) string {
 // openSettingsPanel activates the settings panel overlay.
 func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[string]string, onSubmit func(map[string]string)) {
 	m.panelMode = panelModeSettings
-	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
+	m.relayoutViewport() // Shrink viewport to make room for panel
 	m.panelCursor = 0
 	m.panelEdit = false
 	m.panelScrollY = 0
@@ -228,7 +228,7 @@ func (m *cliModel) closePanel() {
 	m.panelRunnerTokenTI = textinput.Model{}
 	m.panelRunnerWorkspace = textinput.Model{}
 	m.panelRunnerEditField = 0
-	// 恢复 viewport 到正常模式高度
+	// 恢复 viewport 到Normal mode高度
 	m.panelScrollY = 0
 	m.relayoutViewport()
 }
@@ -475,7 +475,7 @@ func (m *cliModel) applyRewind() {
 // openBgTasksPanel opens the background tasks management panel.
 func (m *cliModel) openBgTasksPanel() {
 	m.panelMode = panelModeBgTasks
-	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
+	m.relayoutViewport() // Shrink viewport to make room for panel
 
 	// Fetch tasks — use callback (works for both local and remote mode)
 	m.panelBgTasks = m.listBgTasks()
@@ -643,7 +643,7 @@ func (m *cliModel) viewBgTasksPanel() string {
 
 // viewBgTaskList renders the background task list view.
 func (m *cliModel) viewBgTaskList() string {
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 	cursorStyle := s.PanelCursor
 	header := s.PanelHeader.Render(m.locale.BgTasksTitle)
@@ -717,7 +717,7 @@ func (m *cliModel) viewBgTaskList() string {
 // viewBgTaskLog renders the log viewer for a selected task.
 // Returns the FULL content — scrolling is handled by the outer clampPanelScroll + cli_view.go slicing.
 func (m *cliModel) viewBgTaskLog() string {
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 
 	contentW := m.contentWidth()
@@ -1132,7 +1132,7 @@ func (m *cliModel) updatePanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 		return false, m, nil
 	}()
 
-	// 对有 cursor 导航的 panel：cursor 超出可见区域时自动滚动
+	// For panels with cursor navigation: auto-scroll when cursor exceeds visible area
 	if handled {
 		switch m.panelMode {
 		case "settings":
@@ -1588,7 +1588,7 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			return true, m, nil
 		}
 		if onOther {
-			// Other 输入框：空格传给 textinput
+			// Other input boxes: pass space to textinput
 			var cmd tea.Cmd
 			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
 			return true, m, cmd
@@ -1770,7 +1770,7 @@ func (m *cliModel) viewPanel() string {
 
 func (m *cliModel) viewSettingsPanel() string {
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 	valueStyle := s.InfoSt
 	cursorStyle := s.PanelCursor
@@ -1780,13 +1780,13 @@ func (m *cliModel) viewSettingsPanel() string {
 	var sb strings.Builder
 	sb.WriteString(s.PanelHeader.Render(m.locale.PanelSettingsTitle))
 	sb.WriteString("\n")
-	// 表头下方精致分割线，区分标题与内容
+	// 表头下方精致Divider，区分标题与内容
 	sb.WriteString(s.SettingsDivider.Render("┈" + strings.Repeat("┈", 30)))
 	sb.WriteString("\n")
 
 	// Group by category
 	lastCat := ""
-	ln := 0 // 当前渲染行号
+	ln := 0 // Current render line number
 	for i, def := range m.panelSchema {
 		if def.Category != lastCat {
 			lastCat = def.Category
@@ -1969,7 +1969,7 @@ func (m *cliModel) viewSettingsPanel() string {
 
 func (m *cliModel) viewAskUserPanel() string {
 
-	// §20 使用缓存样式
+	// §20 Use cached styles
 	s := &m.styles
 	questionStyle := s.WarningSt.Bold(true)
 	activeTabStyle := s.PanelHeader
@@ -2491,23 +2491,23 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 // Runner Panel
 // ---------------------------------------------------------------------------
 
-// openRunnerPanel 打开 Runner 管理面板
+// openRunnerPanel Open Runner management panel
 func (m *cliModel) openRunnerPanel() {
 	m.panelMode = panelModeRunner
 	m.panelScrollY = 0
 	m.relayoutViewport()
 
-	// 确保 RunnerBridge 存在（正常 TUI 模式也需要，不只在 --share 时）
+	// Ensure RunnerBridge exists (needed in normal TUI mode too, not just --share)
 	if m.runnerBridge == nil && m.channel != nil {
 		m.channel.ensureRunnerBridge()
 	}
 
-	// 初始化 textinput 字段
+	// Initialize textinput fields
 	serverURL := ""
 	token := ""
 	workspace := m.workDir
 
-	// 从统一设置视图中读取已保存的值
+	// Read saved values from unified settings view
 	vals := m.mergeCLISettingsValues()
 	if v, ok := vals["runner_server"]; ok && v != "" {
 		serverURL = v
@@ -2527,7 +2527,7 @@ func (m *cliModel) openRunnerPanel() {
 	m.panelRunnerEditField = 0
 }
 
-// newPanelTextInput 创建一个配置好的 textinput 用于面板输入
+// newPanelTextInput Create a configured textinput for panel input
 func (m *cliModel) newPanelTextInput(value, placeholder string) textinput.Model {
 	ti := textinput.New()
 	ti.Placeholder = placeholder
@@ -2548,9 +2548,9 @@ func (m *cliModel) newPanelTextInput(value, placeholder string) textinput.Model 
 	return ti
 }
 
-// updateRunnerPanel 处理 Runner 面板的键盘事件
+// updateRunnerPanel Handle Runner panel keyboard events
 func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	// Esc 回到 settings 面板（不关闭整个面板）
+	// Esc returns to settings panel (doesn't close entire panel)
 	if msg.Code == tea.KeyEsc || msg.String() == "ctrl+c" {
 		m.panelMode = panelModeSettings
 		m.panelRunnerServerTI = textinput.Model{}
@@ -2561,9 +2561,9 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		return true, m, nil
 	}
 
-	// runnerBridge 为 nil 时只显示表单，不允许连接操作
+	// When runnerBridge is nil, only show form, don't allow connect operation
 	if m.runnerBridge == nil {
-		// 将按键传递给当前编辑的 textinput
+		// Pass keypress to currently editing textinput
 		var cmd tea.Cmd
 		switch m.panelRunnerEditField {
 		case 0:
@@ -2578,12 +2578,12 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 
 	status := m.runnerBridge.Status()
 
-	// 连接中：只允许 Esc（已处理）
+	// Connecting: only allow Esc (already handled)
 	if status == RunnerConnecting {
 		return true, m, nil
 	}
 
-	// 已连接：断开按钮
+	// Connected: disconnect button
 	if status == RunnerConnected {
 		if msg.Code == tea.KeyEnter {
 			m.runnerBridge.Disconnect()
@@ -2598,7 +2598,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		return true, m, nil
 	}
 
-	// 未连接：表单编辑
+	// Disconnected: form editing
 	switch msg.Code {
 	case tea.KeyUp:
 		if m.panelRunnerEditField > 0 {
@@ -2617,7 +2617,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		return true, m, nil
 
 	case tea.KeyEnter:
-		// 验证并连接
+		// Validate and connect
 		serverURL := strings.TrimSpace(m.panelRunnerServerTI.Value())
 		token := strings.TrimSpace(m.panelRunnerTokenTI.Value())
 		workspace := strings.TrimSpace(m.panelRunnerWorkspace.Value())
@@ -2631,14 +2631,14 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 			return true, m, m.clearTempStatusCmd()
 		}
 
-		// 保存设置
+		// Save settings
 		m.persistCLISettingsValues(map[string]string{
 			"runner_server":    serverURL,
 			"runner_token":     token,
 			"runner_workspace": workspace,
 		})
 
-		// 回到 settings，发起连接
+		// Return to settings, initiate connection
 		m.panelMode = panelModeSettings
 		m.panelRunnerServerTI = textinput.Model{}
 		m.panelRunnerTokenTI = textinput.Model{}
@@ -2646,7 +2646,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		m.panelRunnerEditField = 0
 		m.relayoutViewport()
 
-		// 获取 LLM 客户端
+		// Get LLM client
 		var llmClient llm.LLM
 		var models []string
 		var llmProvider string
@@ -2662,7 +2662,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		return true, m, m.clearTempStatusCmd()
 	}
 
-	// 将按键传递给当前编辑的 textinput
+	// Pass keypress to currently editing textinput
 	var cmd tea.Cmd
 	switch m.panelRunnerEditField {
 	case 0:
@@ -2675,7 +2675,7 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	return true, m, cmd
 }
 
-// viewRunnerPanel 渲染 Runner 管理面板
+// viewRunnerPanel Render Runner management panel
 func (m *cliModel) viewRunnerPanel() string {
 	s := &m.styles
 	var sb strings.Builder
@@ -2726,7 +2726,7 @@ func (m *cliModel) viewRunnerPanel() string {
 		sb.WriteString(s.PanelHint.Render("  Enter " + m.locale.RunnerDisconnectAction + "  Esc " + m.locale.RunnerBack))
 
 	default: // RunnerDisconnected 或 runnerBridge == nil
-		// 显示连接表单
+		// Show connection form
 		sb.WriteString("\n")
 
 		fields := []struct {

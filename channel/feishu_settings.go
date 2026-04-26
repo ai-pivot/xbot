@@ -279,7 +279,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			name = provider + " " + model
 		}
 		if provider == "" || baseURL == "" || apiKey == "" {
-			return nil, fmt.Errorf("请填写完整配置（Provider、API 地址、API Key）")
+			return nil, fmt.Errorf("请填写完整Configuration（Provider、API 地址、API Key）")
 		}
 		if f.settingsCallbacks.LLMAddSubscription != nil {
 			if err := f.settingsCallbacks.LLMAddSubscription(senderID, &Subscription{
@@ -669,7 +669,7 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 				"name": "mr_native_workspace",
 				"label": map[string]any{
 					"tag":     "plain_text",
-					"content": "工作目录",
+					"content": "Working directory",
 				},
 				"placeholder": map[string]any{
 					"tag":     "plain_text",
@@ -726,7 +726,7 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 				"name": "mr_docker_workspace",
 				"label": map[string]any{
 					"tag":     "plain_text",
-					"content": "工作目录",
+					"content": "Working directory",
 				},
 				"placeholder": map[string]any{
 					"tag":     "plain_text",
@@ -794,7 +794,7 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 				// No token — show generation forms (legacy): native vs docker
 				elements = append(elements, map[string]any{
 					"tag":     "markdown",
-					"content": "生成连接命令：**原生**仅工作目录；**Docker** 需填写镜像。",
+					"content": "生成连接命令：**原生**仅Working directory；**Docker** 需填写镜像。",
 				})
 				formLegacyNative := []map[string]any{
 					{
@@ -802,7 +802,7 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 						"name": "tok_native_ws",
 						"label": map[string]any{
 							"tag":     "plain_text",
-							"content": "工作目录",
+							"content": "Working directory",
 						},
 						"placeholder": map[string]any{
 							"tag":     "plain_text",
@@ -846,7 +846,7 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 						"name": "tok_docker_ws",
 						"label": map[string]any{
 							"tag":     "plain_text",
-							"content": "工作目录",
+							"content": "Working directory",
 						},
 						"placeholder": map[string]any{
 							"tag":     "plain_text",
@@ -1638,11 +1638,11 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 		"agent_page":    o.AgentMarketPage,
 	}
 
-	// "我的" section
+	// "My" section
 	if f.settingsCallbacks.RegistryListMy != nil {
-		elements = append(elements, f.buildMyItemsSection(senderID, "skill", "技能", o.MySkillPage, pageState)...)
+		elements = append(elements, f.buildMyItemsSection(senderID, "skill", "Skills", o.MySkillPage, pageState)...)
 		elements = append(elements, map[string]any{"tag": "hr"})
-		elements = append(elements, f.buildMyItemsSection(senderID, "agent", "代理", o.MyAgentPage, pageState)...)
+		elements = append(elements, f.buildMyItemsSection(senderID, "agent", "Agents", o.MyAgentPage, pageState)...)
 		elements = append(elements, map[string]any{"tag": "hr"})
 	}
 
@@ -1656,9 +1656,9 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 		return elements
 	}
 
-	elements = append(elements, f.buildMarketSection("skill", "技能市场", o.SkillMarketPage, pageState)...)
+	elements = append(elements, f.buildMarketSection("skill", "Skills市场", o.SkillMarketPage, pageState)...)
 	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, f.buildMarketSection("agent", "代理市场", o.AgentMarketPage, pageState)...)
+	elements = append(elements, f.buildMarketSection("agent", "Agents市场", o.AgentMarketPage, pageState)...)
 
 	log.WithField("element_count", len(elements)).Info("buildMarketTabContent completed")
 	return elements
@@ -1669,7 +1669,7 @@ func (f *FeishuChannel) buildMyItemsSection(senderID, entryType, label string, p
 
 	elements = append(elements, map[string]any{
 		"tag":     "markdown",
-		"content": fmt.Sprintf("**📁 我的%s**", label),
+		"content": fmt.Sprintf("**📁 My%s**", label),
 	})
 
 	published, local, err := f.settingsCallbacks.RegistryListMy(senderID, entryType)
