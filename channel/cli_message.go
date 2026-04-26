@@ -1033,6 +1033,7 @@ func renderWrappedBlockDimmed(sb *strings.Builder, text string, maxWidth int, gu
 }
 
 // renderProgressBlock renders the iteration progress panel for the viewport.
+// renderProgressBlock renders the iteration progress panel for the viewport.
 func (m *cliModel) renderProgressBlock() string {
 	if !m.typing && m.progress == nil {
 		return ""
@@ -1040,26 +1041,81 @@ func (m *cliModel) renderProgressBlock() string {
 
 	bubbleWidth := m.contentWidth()
 	innerWidth := bubbleWidth - 4 // border(2) + padding(2)
-
-	// §20 Use cached styles
 	s := &m.styles
-	iterStyle := s.ProgressIter
-	thinkingStyle := s.ProgressThinking
-	reasoningStyle := s.TextMutedSt // dimmed style for reasoning chain
-	toolDoneStyle := s.ProgressDone
-	toolRunningStyle := s.ProgressRunning
-	toolErrorStyle := s.ProgressError
-	elapsedStyle := s.ProgressElapsed
-	indentGuide := s.ProgressIndent
-	reasoningGuide := s.ProgressDim // dimmer │ for reasoning
-	thinkingGuide := indentGuide    // normal │ for thinking
-	reasoningW := lipgloss.Width(reasoningGuide.Render("  │ "))
-	thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
-	dimStyle := s.ProgressDim
 
 	var sb strings.Builder
 
 	// Render completed iterations (dimmed)
+	sb.WriteString(m.renderCompletedIterations(innerWidth))
+
+	// Render current iteration
+	if m.progress != nil {
+		sb.WriteString(s.ProgressIter.Render(fmt.Sprintf("#%d", m.progress.Iteration)))
+		sb.WriteString("\n")
+
+		sb.WriteString(m.renderProgressReasoning(innerWidth))
+
+		thinkingGuide := s.ProgressIndent
+		thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
+		renderWrappedBlock(&sb, m.progress.Thinking, innerWidth-thinkingW,
+			thinkingGuide, s.ProgressThinking)
+
+		sb.WriteString(m.renderProgressCompletedTools(innerWidth))
+		sb.WriteString(m.renderProgressActiveTools(innerWidth))
+		sb.WriteString(m.renderProgressStreamOrPhase(innerWidth))
+
+		// SubAgent tree
+		if len(m.progress.SubAgents) > 0 {
+			var treeSB strings.Builder
+			m.renderSubAgentTree(&treeSB, m.progress.SubAgents, "", innerWidth)
+			if treeSB.Len() > 0 {
+				sb.WriteString("\n")
+				sb.WriteString(treeSB.String())
+			}
+		}
+	} else if m.typing {
+		sb.WriteString("  ")
+		sb.WriteString(m.ticker.viewFrames(orbitFrames))
+		sb.WriteString(s.ProgressThinking.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
+		sb.WriteString("\n")
+	}
+
+	content := strings.TrimRight(sb.String(), "\n")
+	if content == "" {
+		return ""
+	}
+
+	// Total elapsed
+	elapsed := ""
+	if !m.typingStartTime.IsZero() {
+		elapsed = " " + s.ProgressElapsed.Render(formatElapsed(time.Since(m.typingStartTime).Milliseconds()))
+	}
+
+	// Header
+	header := s.ProgressHeader.Render("Progress") + elapsed
+
+	// Wrap in border
+	blockStyle := s.ProgressBlock.Width(bubbleWidth)
+
+	return blockStyle.Render(header+"\n"+content) + "\n\n"
+}
+
+// renderCompletedIterations renders dimmed past iteration snapshots.
+func (m *cliModel) renderCompletedIterations(innerWidth int) string {
+	s := &m.styles
+	iterStyle := s.ProgressIter
+	dimStyle := s.ProgressDim
+	reasoningGuide := s.ProgressDim // dimmer │ for reasoning
+	thinkingGuide := s.ProgressIndent
+	reasoningStyle := s.TextMutedSt
+	thinkingStyle := s.ProgressThinking
+	toolDoneStyle := s.ProgressDone
+	toolErrorStyle := s.ProgressError
+	elapsedStyle := s.ProgressElapsed
+	reasoningW := lipgloss.Width(reasoningGuide.Render("  │ "))
+	thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
+
+	var sb strings.Builder
 	for _, snap := range m.iterationHistory {
 		sb.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
 		sb.WriteString("\n")
@@ -1079,195 +1135,211 @@ func (m *cliModel) renderProgressBlock() string {
 			sb.WriteString("\n")
 		}
 	}
+	return sb.String()
+}
 
-	// Render current iteration
-	if m.progress != nil {
-		sb.WriteString(iterStyle.Render(fmt.Sprintf("#%d", m.progress.Iteration)))
-		sb.WriteString("\n")
+// renderProgressReasoning renders the reasoning chain for the current iteration
+// with typewriter reveal effect.
+func (m *cliModel) renderProgressReasoning(innerWidth int) string {
+	if m.progress == nil {
+		return ""
+	}
+	s := &m.styles
+	reasoningGuide := s.ProgressDim
+	reasoningStyle := s.TextMutedSt
 
-		// Reasoning: prefer streaming content (real-time) over static snapshot
-		reasoningText := m.progress.ReasoningStreamContent
-		if reasoningText == "" {
-			reasoningText = m.progress.Reasoning
+	// Reasoning: prefer streaming content (real-time) over static snapshot
+	reasoningText := m.progress.ReasoningStreamContent
+	if reasoningText == "" {
+		reasoningText = m.progress.Reasoning
+	}
+	isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
+	if reasoningText == "" {
+		return ""
+	}
+
+	reasoningW := lipgloss.Width(reasoningGuide.Render("  │ "))
+
+	// Typewriter effect for reasoning streaming content
+	totalReasoningRunes := len([]rune(m.progress.ReasoningStreamContent))
+	if isReasoningStreaming && totalReasoningRunes > 0 {
+		runes := []rune(m.progress.ReasoningStreamContent)
+		if m.rwVisible > 0 && m.rwVisible < totalReasoningRunes {
+			runes = runes[:m.rwVisible]
 		}
-		isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
-		if reasoningText != "" {
-			// Typewriter effect for reasoning streaming content
-			totalReasoningRunes := len([]rune(m.progress.ReasoningStreamContent))
-			if isReasoningStreaming && totalReasoningRunes > 0 {
-				runes := []rune(m.progress.ReasoningStreamContent)
-				if m.rwVisible > 0 && m.rwVisible < totalReasoningRunes {
-					runes = runes[:m.rwVisible]
-				}
-				reasoningText = string(runes)
-			}
-			lines := strings.Split(reasoningText, "\n")
-			// Solid cursor while actively typing; blink only when waiting for next chunk.
-			reasoningTyping := isReasoningStreaming && m.rwVisible < totalReasoningRunes
-			cursorVisible := reasoningTyping || (m.ticker.ticks/5)%2 == 0
-			for i, line := range lines {
-				line = strings.TrimRight(line, " \t\r")
-				if line == "" {
-					continue
-				}
-				isLastLine := i == len(lines)-1
-				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
-				for j, wl := range wrappedLines {
-					isLast := isLastLine && j == len(wrappedLines)-1
-					if isLast && isReasoningStreaming && cursorVisible {
-						sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl) + s.StreamCursor.Render("▋"))
-					} else {
-						sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
-					}
-					sb.WriteString("\n")
-				}
-			}
+		reasoningText = string(runes)
+	}
+
+	var sb strings.Builder
+	lines := strings.Split(reasoningText, "\n")
+	// Solid cursor while actively typing; blink only when waiting for next chunk.
+	reasoningTyping := isReasoningStreaming && m.rwVisible < totalReasoningRunes
+	cursorVisible := reasoningTyping || (m.ticker.ticks/5)%2 == 0
+	for i, line := range lines {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" {
+			continue
 		}
-
-		renderWrappedBlock(&sb, m.progress.Thinking, innerWidth-thinkingW, thinkingGuide, thinkingStyle)
-
-		// Completed tools in current iteration — filter by Iteration field
-		for _, tool := range m.progress.CompletedTools {
-			if tool.Iteration != m.progress.Iteration {
-				continue
-			}
-			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-			if tool.Elapsed > 0 {
-				elapsedStr := formatElapsed(tool.Elapsed)
-				// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds len(elapsedStr) more
-				overhead := 7 + len(elapsedStr)
-				label = truncateToWidth(label, innerWidth-overhead)
-				line := fmt.Sprintf("  │ %s %s", icon, label)
-				pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
-				if pad < 1 {
-					pad = 1
-				}
-				line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
-				sb.WriteString(sty.Render(line))
+		isLastLine := i == len(lines)-1
+		wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
+		for j, wl := range wrappedLines {
+			isLast := isLastLine && j == len(wrappedLines)-1
+			if isLast && isReasoningStreaming && cursorVisible {
+				sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl) + s.StreamCursor.Render("▋"))
 			} else {
-				line := fmt.Sprintf("  │ %s %s", icon, truncateToWidth(label, innerWidth-7))
-				sb.WriteString(sty.Render(line))
+				sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
 			}
 			sb.WriteString("\n")
 		}
+	}
+	return sb.String()
+}
 
-		// Active tools — label + live elapsed timer
-		for _, tool := range m.progress.ActiveTools {
-			if tool.Status == "done" || tool.Status == "error" {
-				continue
-			}
-			label, _, _ := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-			pulseIcon := m.ticker.viewFrames(pulseFrames)
-			// Calculate live elapsed time
-			var elapsedMs int64
-			if !tool.StartedAt.IsZero() {
-				elapsedMs = time.Since(tool.StartedAt).Milliseconds()
-			} else {
-				elapsedMs = tool.Elapsed
-			}
-			elapsedStr := formatElapsed(elapsedMs)
-			// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds ~8 more
-			overhead := 7 + 2 + len(elapsedStr)
+// renderProgressCompletedTools renders completed tools for the current iteration,
+// filtered by Iteration field to ensure correct attribution.
+func (m *cliModel) renderProgressCompletedTools(innerWidth int) string {
+	if m.progress == nil {
+		return ""
+	}
+	s := &m.styles
+	toolDoneStyle := s.ProgressDone
+	toolErrorStyle := s.ProgressError
+	elapsedStyle := s.ProgressElapsed
+
+	var sb strings.Builder
+	for _, tool := range m.progress.CompletedTools {
+		if tool.Iteration != m.progress.Iteration {
+			continue
+		}
+		label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+		if tool.Elapsed > 0 {
+			elapsedStr := formatElapsed(tool.Elapsed)
+			// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds len(elapsedStr) more
+			overhead := 7 + len(elapsedStr)
 			label = truncateToWidth(label, innerWidth-overhead)
-			line := fmt.Sprintf("  │ %s %s", pulseIcon, label)
+			line := fmt.Sprintf("  │ %s %s", icon, label)
 			pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
 			if pad < 1 {
 				pad = 1
 			}
 			line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
-			sb.WriteString(toolRunningStyle.Render(line))
-			sb.WriteString("\n")
+			sb.WriteString(sty.Render(line))
+		} else {
+			line := fmt.Sprintf("  │ %s %s", icon, truncateToWidth(label, innerWidth-7))
+			sb.WriteString(sty.Render(line))
 		}
-
-		// Phase-specific fallback when no tools are shown
-		hasTools := len(m.progress.ActiveTools) > 0 || len(m.progress.CompletedTools) > 0
-
-		// Stream content: render LLM output in progress block when streaming
-		if m.progress.StreamContent != "" {
-			// Typewriter effect: gradually reveal characters
-			totalRunes := len([]rune(m.progress.StreamContent))
-			runes := []rune(m.progress.StreamContent)
-			if m.twVisible > 0 && m.twVisible < totalRunes {
-				runes = runes[:m.twVisible]
-			}
-			streamText := string(runes)
-			lines := strings.Split(streamText, "\n")
-			// Blinking cursor: only blink when waiting for next stream chunk.
-			// While actively typing (behind buffer), cursor stays solid.
-			typing := m.twVisible < totalRunes
-			cursorVisible := typing || (m.ticker.ticks/5)%2 == 0
-			for i, line := range lines {
-				line = strings.TrimRight(line, " \t\r")
-				if line == "" {
-					continue
-				}
-				isLastLine := i == len(lines)-1
-				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
-				for j, wl := range wrappedLines {
-					isLast := isLastLine && j == len(wrappedLines)-1
-					if isLast && cursorVisible {
-						sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl) + s.StreamCursor.Render("▋"))
-					} else {
-						sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
-					}
-					sb.WriteString("\n")
-				}
-			}
-		} else if !hasTools {
-			switch m.progress.Phase {
-			case "thinking":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.view())
-				sb.WriteString(thinkingStyle.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
-				sb.WriteString("\n")
-			case "compressing":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.viewFrames(orbitFrames))
-				sb.WriteString(thinkingStyle.Render(" compressing..."))
-				sb.WriteString("\n")
-			case "retrying":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.viewFrames(orbitFrames))
-				sb.WriteString(thinkingStyle.Render(" retrying..."))
-				sb.WriteString("\n")
-			}
-		}
-
-		// SubAgent tree
-		if len(m.progress.SubAgents) > 0 {
-			var treeSB strings.Builder
-			m.renderSubAgentTree(&treeSB, m.progress.SubAgents, "", innerWidth)
-			if treeSB.Len() > 0 {
-				sb.WriteString("\n")
-				sb.WriteString(treeSB.String())
-			}
-		}
-	} else if m.typing {
-		sb.WriteString("  ")
-		sb.WriteString(m.ticker.viewFrames(orbitFrames))
-		sb.WriteString(thinkingStyle.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
 		sb.WriteString("\n")
 	}
+	return sb.String()
+}
 
-	content := strings.TrimRight(sb.String(), "\n")
-	if content == "" {
+// renderProgressActiveTools renders running tools with a pulsing icon and live
+// elapsed timer.
+func (m *cliModel) renderProgressActiveTools(innerWidth int) string {
+	if m.progress == nil {
 		return ""
 	}
+	s := &m.styles
+	toolDoneStyle := s.ProgressDone
+	toolErrorStyle := s.ProgressError
+	toolRunningStyle := s.ProgressRunning
+	elapsedStyle := s.ProgressElapsed
 
-	// Total elapsed
-	elapsed := ""
-	if !m.typingStartTime.IsZero() {
-		elapsed = " " + elapsedStyle.Render(formatElapsed(time.Since(m.typingStartTime).Milliseconds()))
+	var sb strings.Builder
+	for _, tool := range m.progress.ActiveTools {
+		if tool.Status == "done" || tool.Status == "error" {
+			continue
+		}
+		label, _, _ := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+		pulseIcon := m.ticker.viewFrames(pulseFrames)
+		// Calculate live elapsed time
+		var elapsedMs int64
+		if !tool.StartedAt.IsZero() {
+			elapsedMs = time.Since(tool.StartedAt).Milliseconds()
+		} else {
+			elapsedMs = tool.Elapsed
+		}
+		elapsedStr := formatElapsed(elapsedMs)
+		// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds ~8 more
+		overhead := 7 + 2 + len(elapsedStr)
+		label = truncateToWidth(label, innerWidth-overhead)
+		line := fmt.Sprintf("  │ %s %s", pulseIcon, label)
+		pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
+		if pad < 1 {
+			pad = 1
+		}
+		line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
+		sb.WriteString(toolRunningStyle.Render(line))
+		sb.WriteString("\n")
 	}
+	return sb.String()
+}
 
-	// Header
-	headerStyle := s.ProgressHeader
-	header := headerStyle.Render("Progress") + elapsed
+// renderProgressStreamOrPhase renders LLM stream content with typewriter effect,
+// or a phase-specific fallback spinner when no tools are visible.
+func (m *cliModel) renderProgressStreamOrPhase(innerWidth int) string {
+	if m.progress == nil {
+		return ""
+	}
+	s := &m.styles
+	thinkingStyle := s.ProgressThinking
+	thinkingGuide := s.ProgressIndent
+	thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
 
-	// Wrap in border
-	blockStyle := s.ProgressBlock.Width(bubbleWidth)
+	hasTools := len(m.progress.ActiveTools) > 0 || len(m.progress.CompletedTools) > 0
+	var sb strings.Builder
 
-	return blockStyle.Render(header+"\n"+content) + "\n\n"
+	// Stream content: render LLM output in progress block when streaming
+	if m.progress.StreamContent != "" {
+		// Typewriter effect: gradually reveal characters
+		totalRunes := len([]rune(m.progress.StreamContent))
+		runes := []rune(m.progress.StreamContent)
+		if m.twVisible > 0 && m.twVisible < totalRunes {
+			runes = runes[:m.twVisible]
+		}
+		streamText := string(runes)
+		lines := strings.Split(streamText, "\n")
+		// Blinking cursor: only blink when waiting for next stream chunk.
+		// While actively typing (behind buffer), cursor stays solid.
+		typing := m.twVisible < totalRunes
+		cursorVisible := typing || (m.ticker.ticks/5)%2 == 0
+		for i, line := range lines {
+			line = strings.TrimRight(line, " \t\r")
+			if line == "" {
+				continue
+			}
+			isLastLine := i == len(lines)-1
+			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
+			for j, wl := range wrappedLines {
+				isLast := isLastLine && j == len(wrappedLines)-1
+				if isLast && cursorVisible {
+					sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl) + s.StreamCursor.Render("▋"))
+				} else {
+					sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+				}
+				sb.WriteString("\n")
+			}
+		}
+	} else if !hasTools {
+		switch m.progress.Phase {
+		case "thinking":
+			sb.WriteString("  ")
+			sb.WriteString(m.ticker.view())
+			sb.WriteString(thinkingStyle.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
+			sb.WriteString("\n")
+		case "compressing":
+			sb.WriteString("  ")
+			sb.WriteString(m.ticker.viewFrames(orbitFrames))
+			sb.WriteString(thinkingStyle.Render(" compressing..."))
+			sb.WriteString("\n")
+		case "retrying":
+			sb.WriteString("  ")
+			sb.WriteString(m.ticker.viewFrames(orbitFrames))
+			sb.WriteString(thinkingStyle.Render(" retrying..."))
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
 }
 
 // renderSubAgentTree renders nested sub-agents with indentation.
@@ -1373,17 +1445,10 @@ func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (la
 	return
 }
 
+// renderMessage: render a single message as ANSI string (§1 Incremental rendering: self-contained method)
 func (m *cliModel) renderMessage(msg *cliMessage) string {
-	// §20 Use cached styles
 	s := &m.styles
-	var sb strings.Builder
-	contentWidth := m.contentWidth() // Leave margin
-	timeStyle := s.Time
-	userLabelStyle := s.UserLabel
-	assistantLabelStyle := s.AssistLabel
-	streamingLabelStyle := s.StreamingLabel
-	systemMsgStyle := s.SystemMsg
-	errorMsgStyle := s.ErrorMsg
+	contentWidth := m.contentWidth()
 
 	// Render Markdown (assistant messages + system messages with markdown markers)
 	var rendered string
@@ -1404,182 +1469,18 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		rendered = msg.content
 	}
 
-	timeStr := timeStyle.Render(msg.timestamp.Format("15:04:05"))
+	timeStr := s.Time.Render(msg.timestamp.Format("15:04:05"))
 
+	var sb strings.Builder
 	switch msg.role {
 	case roleToolSummary:
-		// §20 Use cached styles
-		toolSummaryStyle := s.ToolSummary
-		toolHeaderStyle := s.ToolHeader
-		toolItemStyle := s.ToolItem
-		toolErrorItemStyle := s.ToolErrorItem
-		thinkingStyle := s.ProgressThinking
-		reasoningStyle := s.TextMutedSt
-		reasoningGuide := s.ProgressDim
-		thinkingGuide := s.ProgressIndent
-		hintStyle := s.ToolHint
-
-		// Count total tools and total duration
-		allTools, iterCount := msg.iterToolsFlat()
-		totalTools := len(allTools)
-		totalMs := int64(0)
-		for _, it := range msg.iterations {
-			totalMs += it.ElapsedWall
-		}
-
-		var toolSb strings.Builder
-
-		if m.toolSummaryExpanded {
-			// Expanded mode: full render
-			if iterCount > 0 {
-				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
-				toolSb.WriteString("\n")
-				// Box internal width: ToolSummary has Border(2) + Padding(0,1 → 2) = 4 cols overhead
-				boxInnerW := contentWidth - 4
-				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
-				textW := boxInnerW - guideW
-				for _, it := range msg.iterations {
-					// Render #iter header with wall-clock time
-					iterLabel := fmt.Sprintf("#%d", it.Iteration)
-					if it.ElapsedWall > 0 {
-						iterLabel += " " + reasoningStyle.Render(formatElapsed(it.ElapsedWall))
-					}
-					toolSb.WriteString(s.ProgressIter.Render(iterLabel))
-					toolSb.WriteString("\n")
-					renderWrappedBlock(&toolSb, it.Reasoning, textW, reasoningGuide, reasoningStyle)
-					renderWrappedBlock(&toolSb, it.Thinking, textW, thinkingGuide, thinkingStyle)
-					for _, tool := range it.Tools {
-						label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
-						elapsed := ""
-						if tool.Elapsed > 0 {
-							elapsed = fmt.Sprintf(" (%dms)", tool.Elapsed)
-						}
-						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
-						toolSb.WriteString("\n")
-					}
-				}
-			} else {
-				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d)", totalTools)))
-				toolSb.WriteString("\n")
-				for _, tool := range msg.tools {
-					label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
-					elapsed := ""
-					if tool.Elapsed > 0 {
-						elapsed = fmt.Sprintf(" (%dms)", tool.Elapsed)
-					}
-					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
-					toolSb.WriteString("\n")
-				}
-			}
-		} else {
-			// Fold mode upgrade (round 4): stats summary + success/failure status icons
-			elapsedStr := formatElapsed(totalMs)
-			// Count successful/failed tool count
-			successCount, errorCount := 0, 0
-			for _, tool := range allTools {
-				if tool.Status == "error" {
-					errorCount++
-				} else {
-					successCount++
-				}
-			}
-			var statusIcons string
-			if errorCount > 0 {
-				statusIcons = s.ProgressError.Render("✗") +
-					s.TextMutedSt.Render(strconv.Itoa(errorCount))
-			}
-			if successCount > 0 && errorCount > 0 {
-				statusIcons += " "
-			}
-			if successCount > 0 {
-				statusIcons += s.ProgressDone.Render("✓") +
-					s.TextMutedSt.Render(strconv.Itoa(successCount))
-			}
-			toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools %d calls · %s", totalTools, elapsedStr)))
-			if statusIcons != "" {
-				toolSb.WriteString("  ")
-				toolSb.WriteString(statusIcons)
-			}
-			toolSb.WriteString("  ")
-			toolSb.WriteString(hintStyle.Render("[Ctrl+O]"))
-		}
-		sb.WriteString(toolSummaryStyle.Render(toolSb.String()))
+		sb.WriteString(m.renderToolSummaryMsg(msg, contentWidth))
 	case roleSystem:
-		if msg.markdown {
-			// Markdown system messages (e.g. /usage tables): use glamour-rendered output directly
-			sb.WriteString(rendered)
-		} else if isErrorContent(msg.content) {
-			sb.WriteString(errorMsgStyle.Render("⚠ " + msg.content))
-		} else {
-			sb.WriteString(systemMsgStyle.Render(msg.content))
-		}
+		sb.WriteString(m.renderSystemMsg(msg, rendered))
 	case roleUser:
-		// Above user messages: soft dot separator on right, symmetrical with assistant's left vertical line
-		dotSep := s.UserDotSep.Width(contentWidth).Align(lipgloss.Right).Render("···")
-		sb.WriteString(dotSep)
-		sb.WriteString("\n")
-		label := userLabelStyle.Render("You")
-		header := s.UserHeader.Width(contentWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
-		sb.WriteString(header)
-		sb.WriteString("\n")
-		// User messages: right-aligned bubble effect
-		// Calculate content max line width, right-align entire block rather than stretching each line
-		lines := strings.Split(rendered, "\n")
-		maxWidth := 0
-		for _, line := range lines {
-			w := lipgloss.Width(line)
-			if w > maxWidth {
-				maxWidth = w
-			}
-		}
-		maxBubble := contentWidth * 3 / 4
-		userStyle := s.UserContent
-		if maxWidth <= maxBubble {
-			// Content narrow enough, left-pad to right-align bubble
-			userStyle = s.UserContent.PaddingLeft(contentWidth - maxWidth)
-		}
-		// Fallback to left-align when content is too wide, prevent terminal wrapping to leftmost
-		sb.WriteString(userStyle.Render(rendered))
+		sb.WriteString(m.renderUserMsg(msg, rendered, contentWidth, timeStr))
 	default:
-		// Assistant messages: left vertical line guide + label
-		guide := s.AssistantGuide.Render("│")
-		if msg.isPartial {
-			guide = s.WarningSt.Render("│")
-			label := streamingLabelStyle.Render("Assistant")
-			fmt.Fprintf(&sb, "%s %s %s ...", guide, timeStr, label)
-		} else {
-			label := assistantLabelStyle.Render("Assistant")
-			fmt.Fprintf(&sb, "%s %s %s", guide, timeStr, label)
-		}
-		sb.WriteString("\n")
-		// §19 Long message folding: truncate preview for completed assistant messages
-		if msg.folded && !msg.isPartial {
-			origLines := msg.originalRenderedLines
-			if origLines == 0 {
-				origLines = msg.renderedLines
-			}
-			if origLines > msgFoldThresholdLines {
-				renderedLines := strings.Split(rendered, "\n")
-				if len(renderedLines) > msgFoldPreviewLines {
-					rendered = strings.Join(renderedLines[:msgFoldPreviewLines], "\n")
-					foldHint := m.styles.TextMutedSt.Render(
-						fmt.Sprintf("  ... %s (%d lines) ...",
-							m.locale.MsgCollapsed, origLines))
-					rendered += "\n" + foldHint
-				}
-			}
-		}
-		// Agent messages rendered directly (glamour already handles markdown)
-		// Trim trailing newlines so cursor appears inline at end of content
-		trimmedRendered := strings.TrimRight(rendered, "\n")
-		sb.WriteString(trimmedRendered)
-		// Append blinking cursor during streaming output so user perceives "generating"
-		if msg.isPartial && trimmedRendered != "" {
-			cursorVisible := (m.ticker.ticks/5)%2 == 0
-			if cursorVisible {
-				sb.WriteString(s.StreamCursor.Render("▋"))
-			}
-		}
+		sb.WriteString(m.renderAssistantMsg(msg, rendered, timeStr))
 	}
 
 	sb.WriteString("\n\n")
@@ -1587,6 +1488,197 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	// §19 Calculate rendered line count (recalculated on each dirty)
 	msg.renderedLines = countLines(sb.String())
 
+	return sb.String()
+}
+
+// renderToolSummaryMsg renders a tool_summary message in expanded or folded mode.
+func (m *cliModel) renderToolSummaryMsg(msg *cliMessage, contentWidth int) string {
+	s := &m.styles
+	toolSummaryStyle := s.ToolSummary
+	toolHeaderStyle := s.ToolHeader
+	toolItemStyle := s.ToolItem
+	toolErrorItemStyle := s.ToolErrorItem
+	thinkingStyle := s.ProgressThinking
+	reasoningStyle := s.TextMutedSt
+	reasoningGuide := s.ProgressDim
+	thinkingGuide := s.ProgressIndent
+	hintStyle := s.ToolHint
+
+	// Count total tools and total duration
+	allTools, iterCount := msg.iterToolsFlat()
+	totalTools := len(allTools)
+	totalMs := int64(0)
+	for _, it := range msg.iterations {
+		totalMs += it.ElapsedWall
+	}
+
+	var toolSb strings.Builder
+
+	if m.toolSummaryExpanded {
+		// Expanded mode: full render
+		if iterCount > 0 {
+			toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
+			toolSb.WriteString("\n")
+			// Box internal width: ToolSummary has Border(2) + Padding(0,1 → 2) = 4 cols overhead
+			boxInnerW := contentWidth - 4
+			guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
+			textW := boxInnerW - guideW
+			for _, it := range msg.iterations {
+				// Render #iter header with wall-clock time
+				iterLabel := fmt.Sprintf("#%d", it.Iteration)
+				if it.ElapsedWall > 0 {
+					iterLabel += " " + reasoningStyle.Render(formatElapsed(it.ElapsedWall))
+				}
+				toolSb.WriteString(s.ProgressIter.Render(iterLabel))
+				toolSb.WriteString("\n")
+				renderWrappedBlock(&toolSb, it.Reasoning, textW, reasoningGuide, reasoningStyle)
+				renderWrappedBlock(&toolSb, it.Thinking, textW, thinkingGuide, thinkingStyle)
+				for _, tool := range it.Tools {
+					label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
+					elapsed := ""
+					if tool.Elapsed > 0 {
+						elapsed = fmt.Sprintf(" (%dms)", tool.Elapsed)
+					}
+					toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
+					toolSb.WriteString("\n")
+				}
+			}
+		} else {
+			toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d)", totalTools)))
+			toolSb.WriteString("\n")
+			for _, tool := range msg.tools {
+				label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
+				elapsed := ""
+				if tool.Elapsed > 0 {
+					elapsed = fmt.Sprintf(" (%dms)", tool.Elapsed)
+				}
+				toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
+				toolSb.WriteString("\n")
+			}
+		}
+	} else {
+		// Fold mode upgrade (round 4): stats summary + success/failure status icons
+		elapsedStr := formatElapsed(totalMs)
+		// Count successful/failed tool count
+		successCount, errorCount := 0, 0
+		for _, tool := range allTools {
+			if tool.Status == "error" {
+				errorCount++
+			} else {
+				successCount++
+			}
+		}
+		var statusIcons string
+		if errorCount > 0 {
+			statusIcons = s.ProgressError.Render("✗") +
+				s.TextMutedSt.Render(strconv.Itoa(errorCount))
+		}
+		if successCount > 0 && errorCount > 0 {
+			statusIcons += " "
+		}
+		if successCount > 0 {
+			statusIcons += s.ProgressDone.Render("✓") +
+				s.TextMutedSt.Render(strconv.Itoa(successCount))
+		}
+		toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools %d calls · %s", totalTools, elapsedStr)))
+		if statusIcons != "" {
+			toolSb.WriteString("  ")
+			toolSb.WriteString(statusIcons)
+		}
+		toolSb.WriteString("  ")
+		toolSb.WriteString(hintStyle.Render("[Ctrl+O]"))
+	}
+	return toolSummaryStyle.Render(toolSb.String())
+}
+
+// renderSystemMsg renders a system message, detecting errors and markdown content.
+func (m *cliModel) renderSystemMsg(msg *cliMessage, rendered string) string {
+	s := &m.styles
+	if msg.markdown {
+		// Markdown system messages (e.g. /usage tables): use glamour-rendered output directly
+		return rendered
+	} else if isErrorContent(msg.content) {
+		return s.ErrorMsg.Render("⚠ " + msg.content)
+	}
+	return s.SystemMsg.Render(msg.content)
+}
+
+// renderUserMsg renders a user message with right-aligned bubble and header.
+func (m *cliModel) renderUserMsg(msg *cliMessage, rendered string, contentWidth int, timeStr string) string {
+	s := &m.styles
+	var sb strings.Builder
+	// Above user messages: soft dot separator on right, symmetrical with assistant's left vertical line
+	dotSep := s.UserDotSep.Width(contentWidth).Align(lipgloss.Right).Render("···")
+	sb.WriteString(dotSep)
+	sb.WriteString("\n")
+	label := s.UserLabel.Render("You")
+	header := s.UserHeader.Width(contentWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
+	sb.WriteString(header)
+	sb.WriteString("\n")
+	// User messages: right-aligned bubble effect
+	// Calculate content max line width, right-align entire block rather than stretching each line
+	lines := strings.Split(rendered, "\n")
+	maxWidth := 0
+	for _, line := range lines {
+		w := lipgloss.Width(line)
+		if w > maxWidth {
+			maxWidth = w
+		}
+	}
+	maxBubble := contentWidth * 3 / 4
+	userStyle := s.UserContent
+	if maxWidth <= maxBubble {
+		// Content narrow enough, left-pad to right-align bubble
+		userStyle = s.UserContent.PaddingLeft(contentWidth - maxWidth)
+	}
+	// Fallback to left-align when content is too wide, prevent terminal wrapping to leftmost
+	sb.WriteString(userStyle.Render(rendered))
+	return sb.String()
+}
+
+// renderAssistantMsg renders an assistant message with guide, folding, and streaming cursor.
+func (m *cliModel) renderAssistantMsg(msg *cliMessage, rendered string, timeStr string) string {
+	s := &m.styles
+	var sb strings.Builder
+	// Assistant messages: left vertical line guide + label
+	guide := s.AssistantGuide.Render("│")
+	if msg.isPartial {
+		guide = s.WarningSt.Render("│")
+		label := s.StreamingLabel.Render("Assistant")
+		fmt.Fprintf(&sb, "%s %s %s ...", guide, timeStr, label)
+	} else {
+		label := s.AssistLabel.Render("Assistant")
+		fmt.Fprintf(&sb, "%s %s %s", guide, timeStr, label)
+	}
+	sb.WriteString("\n")
+	// §19 Long message folding: truncate preview for completed assistant messages
+	if msg.folded && !msg.isPartial {
+		origLines := msg.originalRenderedLines
+		if origLines == 0 {
+			origLines = msg.renderedLines
+		}
+		if origLines > msgFoldThresholdLines {
+			renderedLines := strings.Split(rendered, "\n")
+			if len(renderedLines) > msgFoldPreviewLines {
+				rendered = strings.Join(renderedLines[:msgFoldPreviewLines], "\n")
+				foldHint := m.styles.TextMutedSt.Render(
+					fmt.Sprintf("  ... %s (%d lines) ...",
+						m.locale.MsgCollapsed, origLines))
+				rendered += "\n" + foldHint
+			}
+		}
+	}
+	// Agent messages rendered directly (glamour already handles markdown)
+	// Trim trailing newlines so cursor appears inline at end of content
+	trimmedRendered := strings.TrimRight(rendered, "\n")
+	sb.WriteString(trimmedRendered)
+	// Append blinking cursor during streaming output so user perceives "generating"
+	if msg.isPartial && trimmedRendered != "" {
+		cursorVisible := (m.ticker.ticks/5)%2 == 0
+		if cursorVisible {
+			sb.WriteString(s.StreamCursor.Render("▋"))
+		}
+	}
 	return sb.String()
 }
 
