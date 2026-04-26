@@ -84,7 +84,7 @@ func (m *cliModel) checkKonami(keyName string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #2: /matrix — Matrix rain
+// Easter egg #2: /matrix — Matrix rain
 // ---------------------------------------------------------------------------
 
 var matrixChars = []rune{
@@ -176,7 +176,7 @@ func matrixTickCmd() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #3: The Answer is 42
+// Easter egg #3: The Answer is 42
 // ---------------------------------------------------------------------------
 
 var answer42Art = strings.TrimLeft(`
@@ -211,7 +211,7 @@ func isAnswer42(content string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #4: Holiday Splash description
+// Easter egg #4: Holiday Splash description
 // ---------------------------------------------------------------------------
 
 func holidaySplash() string {
@@ -254,7 +254,7 @@ func isLeapYear(year int) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #5: /sudo — Permission denied
+// Easter egg #5: /sudo — Permission denied
 // ---------------------------------------------------------------------------
 
 var sudoMessages = []string{
@@ -275,7 +275,7 @@ func randomSudoMessage() string {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #6: /fortune — Programmer fortune cookie
+// Easter egg #6: /fortune — Programmer fortune cookie
 // ---------------------------------------------------------------------------
 
 var fortuneMessages = []struct {
@@ -310,7 +310,7 @@ func randomFortune() (string, int) {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #7: Triple /version — version OCD achievement
+// Easter egg #7: Triple /version — version OCD achievement
 // ---------------------------------------------------------------------------
 
 var versionAchievementArt = strings.TrimLeft(`
@@ -347,7 +347,7 @@ func (m *cliModel) recordVersionHit() bool {
 }
 
 // ---------------------------------------------------------------------------
-// 彩蛋 #8: /zen — Zen moment
+// Easter egg #8: /zen — Zen moment
 // ---------------------------------------------------------------------------
 
 var zenHaiku = []struct {

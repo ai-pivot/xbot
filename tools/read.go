@@ -54,7 +54,7 @@ func (t *ReadTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		return nil, fmt.Errorf("path is required")
 	}
 
-	// 沙箱模式：在容器内执行 cat 命令
+	// Sandbox mode: execute cat command inside the container
 	if shouldUseSandbox(ctx) {
 		result, err := t.executeInSandbox(ctx, params.Path)
 		if err != nil {
@@ -63,7 +63,7 @@ func (t *ReadTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		return applyLineLimit(result, params.MaxLines, params.Offset), nil
 	}
 
-	// 非沙箱模式：本地读取
+	// Non-sandbox mode: local read
 	result, err := t.executeLocal(ctx, params.Path)
 	if err != nil {
 		return nil, err
@@ -131,7 +131,7 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 	// converts a user-input path to a container-internal path
 	sandboxPath := filePath
 	if !strings.HasPrefix(filePath, sandboxBase+"/") && filePath != sandboxBase && !strings.HasPrefix(filePath, "/") {
-		// 相对路径：优先基于 CurrentDir（Cd 后的沙箱路径），否则 sandboxBase
+		// Relative path: prefer CurrentDir (sandbox path after Cd), otherwise sandboxBase
 		sandboxCWD := resolveSandboxCWD(ctx, sandboxBase)
 		if sandboxCWD != "" {
 			sandboxPath = path.Join(sandboxCWD, filePath)
@@ -149,7 +149,7 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 		}
 	}
 
-	// 在容器内执行 cat
+	// Execute cat inside the container
 	cmd := fmt.Sprintf("cat '%s'", shellEscape(sandboxPath))
 	output, err := RunInSandboxWithShell(ctx, cmd)
 	if err != nil {
@@ -161,13 +161,13 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 
 // executeLocal reads file locally
 func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult, error) {
-	// ResolveReadPath 内部已支持 CurrentDir 优先解析。
-	// 若 CurrentDir 下文件不存在，fallthrough 到 WorkspaceRoot 解析——
-	// 这使得 agent cd 到子目录后仍能读取 workspace root 下的文件。
+	// ResolveReadPath internally already supports CurrentDir-priority resolution.
+	// If the file doesn't exist under CurrentDir, fall through to WorkspaceRoot resolution —
+	// This allows the agent to read files under workspace root even after cd'ing into a subdirectory.
 	resolvedPath, err := ResolveReadPath(ctx, filePath)
 	if err == nil {
 		if _, statErr := os.Stat(resolvedPath); statErr != nil && ctx != nil && ctx.CurrentDir != "" && !filepath.IsAbs(filePath) {
-			// CurrentDir 下找不到，尝试从 workspace root 解析
+			// Not found under CurrentDir, try resolving from workspace root
 			root, rootErr := resolveScopedBase(ctx)
 			if rootErr == nil {
 				rootPath := filepath.Join(root, filePath)

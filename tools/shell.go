@@ -78,7 +78,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("run_as and reason must be provided together")
 	}
 
-	// 检测命令中的控制字符和 null bytes
+	// Detect control characters and null bytes in the command
 	if strings.ContainsAny(params.Command, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f") {
 		return nil, fmt.Errorf("command contains control characters (null bytes or other non-printable characters)")
 	}
@@ -128,7 +128,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		}
 	}
 
-	// 沙箱模式：workspace 必须用宿主机路径（用于 bind mount / 容器查找），
+	// Sandbox mode: workspace must use host path (for bind mount / container lookup),
 	// can't use container-internal path (CurrentDir); would cause container mount validation failure and rebuild.
 	sandboxWorkspace := workspaceRoot
 	if sandboxWorkspace == "" {
@@ -141,13 +141,13 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		sandbox = GetSandbox()
 	}
 
-	// 获取容器默认 shell 并使用 login shell 执行命令
+	// Get the container's default shell and use a login shell to execute the command
 	shell, err := sandbox.GetShell(userID, sandboxWorkspace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shell: %w", err)
 	}
 
-	// 构建登录 shell 命令
+	// Build login shell command
 	shellCmd := params.Command
 
 	// audit log: records every shell execution
@@ -520,10 +520,10 @@ var warningPatterns = []*regexp.Regexp{
 }
 
 // checkDangerousCommand checks if a command contains dangerous patterns
-// 返回 (blocked, reason)，如果 blocked=true 则应拒绝执行
-// disallowSudo: 当为 true 时（run_as 模式），任何形式的 sudo 都被禁止
+// Returns (blocked, reason); if blocked=true, execution should be denied
+// disallowSudo: when true (run_as mode), any form of sudo is forbidden
 func checkDangerousCommand(ctx context.Context, cmd string, disallowSudo bool) (bool, string) {
-	// 检查绝对禁止模式
+	// Check absolute deny mode
 	for _, dp := range dangerPatterns {
 		if dp.pattern.MatchString(cmd) {
 			return true, dp.reason
@@ -545,7 +545,7 @@ func checkDangerousCommand(ctx context.Context, cmd string, disallowSudo bool) (
 		// No additional sudo restrictions in default mode.
 	}
 
-	// 检查高危告警模式（仅日志记录，不拦截）
+	// Check high-risk warning mode (log only, don't block)
 	for _, wp := range warningPatterns {
 		if wp.MatchString(cmd) {
 			log.WithField("command", cmd).Warn("Dangerous command detected (allowed with warning)")

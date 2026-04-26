@@ -32,7 +32,7 @@ func EnsureSynced(ctx *ToolContext) {
 		return
 	}
 
-	// V4: remote 模式下委托给 RemoteSandbox.EnsureSynced
+	// V4: delegate to RemoteSandbox.EnsureSynced in remote mode
 	if ctx.Sandbox != nil && ctx.Sandbox.Name() == "remote" {
 		if syncer, ok := ctx.Sandbox.(SandboxSyncer); ok {
 			syncUserID := ctx.OriginUserID

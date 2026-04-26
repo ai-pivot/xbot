@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// CronTool 定时任务工具（无状态）
+// CronTool: scheduled task tool (stateless)
 type CronTool struct {
 	cronSvc *sqlite.CronService
 }

@@ -79,8 +79,8 @@ func (sm *SessionMCPManager) UpdateScope(userID, userConfigPath, workspaceRoot s
 	sm.initDone = make(chan struct{})
 }
 
-// GetCatalog 返回此会话所有已连接 MCP Server 的目录信息。
-// 首次调用时启动后台初始化（非阻塞），立即返回空 catalog。
+// GetCatalog returns the catalog info of all connected MCP servers for this session.
+// On first call, starts background initialization (non-blocking) and immediately returns an empty catalog.
 // subsequent calls return full catalog after background init completes.
 func (sm *SessionMCPManager) GetCatalog() []MCPServerCatalogEntry {
 	sm.ensureInitAsync()
@@ -166,18 +166,18 @@ func (sm *SessionMCPManager) SetOnChange(fn func()) {
 	}
 }
 
-// GetSessionTools 懒加载并返回此会话的 MCP 工具（非阻塞）。
-// 首次调用时启动后台初始化，立即返回已有工具列表。
+// GetSessionTools lazily loads and returns MCP tools for this session (non-blocking).
+// On first call, starts background initialization and immediately returns the existing tool list.
 func (sm *SessionMCPManager) GetSessionTools() []Tool {
 	sm.ensureInitAsync()
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// 标记会话为活跃
+	// Mark session as active
 	sm.sessionLastUsed = time.Now()
 
-	// 收集所有 MCP 工具
+	// Collect all MCP tools
 	var tools []Tool
 	for _, conn := range sm.connections {
 		for _, tool := range conn.tools {
@@ -198,7 +198,7 @@ func (sm *SessionMCPManager) MarkActive(serverName string) {
 }
 
 // UnloadInactiveServers unloads inactive servers past the timeout
-// 返回会话最后活跃时间（用于判断会话是否需要从缓存中移除）
+// Returns the session's last active time (used to determine if the session should be removed from cache)
 func (sm *SessionMCPManager) UnloadInactiveServers() time.Time {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -206,14 +206,14 @@ func (sm *SessionMCPManager) UnloadInactiveServers() time.Time {
 	now := time.Now()
 	var serversToUnload []string
 
-	// 检查每个服务器的活跃状态
+	// Check each server's active status
 	for name, lastActive := range sm.lastActive {
 		if now.Sub(lastActive) > sm.inactivityTimeout {
 			serversToUnload = append(serversToUnload, name)
 		}
 	}
 
-	// 卸载不活跃的服务器
+	// Unload inactive servers
 	for _, name := range serversToUnload {
 		if conn, ok := sm.connections[name]; ok {
 			sm.closeConnection(conn)
@@ -226,7 +226,7 @@ func (sm *SessionMCPManager) UnloadInactiveServers() time.Time {
 		}
 	}
 
-	// 有服务器被卸载时重置 initialized，使下次访问时触发 loadAndConnect 重连
+	// When servers are unloaded, reset initialized so the next access triggers loadAndConnect to reconnect
 	if len(serversToUnload) > 0 {
 		sm.initialized = false
 	}
@@ -275,8 +275,8 @@ func (sm *SessionMCPManager) loadAndConnect(ctx context.Context) error {
 	config, err := sm.loadConfig()
 	if err != nil {
 		if os.IsNotExist(err) {
-			// 配置文件暂不存在，返回 errNotInitialized 让调用方不标记 initialized=true，
-			// 以便下次调用时重试（配置可能稍后被 ManageTools 创建）。
+			// Config file doesn't exist yet; return errNotInitialized so the caller doesn't set initialized=true,
+			// so the next call will retry (the config may be created later by ManageTools).
 			return errNotInitialized
 		}
 		return fmt.Errorf("load mcp config: %w", err)
@@ -287,7 +287,7 @@ func (sm *SessionMCPManager) loadAndConnect(ctx context.Context) error {
 			continue
 		}
 
-		// 跳过已连接的服务器，避免重复连接
+		// Skip already connected servers to avoid duplicate connections
 		if _, connected := sm.connections[name]; connected {
 			continue
 		}
@@ -305,7 +305,7 @@ func (sm *SessionMCPManager) loadAndConnect(ctx context.Context) error {
 
 // connectServer connects a single MCP server
 func (sm *SessionMCPManager) connectServer(ctx context.Context, name string, cfg MCPServerConfig) error {
-	// 限制最大连接数，防止恶意或异常情况创建大量连接
+	// Limit maximum connections to prevent malicious or abnormal scenarios from creating excessive connections
 	if len(sm.connections) >= maxMCPConnections {
 		return fmt.Errorf("MCP connection limit reached (%d), cannot connect server %q", maxMCPConnections, name)
 	}
@@ -332,7 +332,7 @@ func (sm *SessionMCPManager) connectServer(ctx context.Context, name string, cfg
 		return err
 	}
 
-	// 获取可用工具列表和服务器说明 (session is already initialized by Connect)
+	// Get available tool list and server descriptions (session is already initialized by Connect)
 	initResult, err := InitializeMCPClient(ctx, session)
 	if err != nil {
 		_ = session.Close()
@@ -428,9 +428,9 @@ func (sm *SessionMCPManager) loadConfig() (*MCPConfig, error) {
 	return merged, nil
 }
 
-// ---- SessionMCPRemoteTool: 会话感知的 MCP 远程工具 ----
+// ---- SessionMCPRemoteTool: session-aware MCP remote tool ----
 
-// SessionMCPRemoteTool 封装一个远程 MCP 工具为 xbot Tool（会话感知）
+// SessionMCPRemoteTool wraps a remote MCP tool as an xbot Tool (session-aware)
 type SessionMCPRemoteTool struct {
 	serverName    string
 	tool          *mcp.Tool
@@ -440,7 +440,7 @@ type SessionMCPRemoteTool struct {
 	description   string
 }
 
-// newSessionMCPRemoteTool 创建 SessionMCPRemoteTool
+// newSessionMCPRemoteTool creates a SessionMCPRemoteTool
 func newSessionMCPRemoteTool(serverName string, tool *mcp.Tool, session *mcp.ClientSession, sessionMCPMgr *SessionMCPManager) *SessionMCPRemoteTool {
 	params := convertMCPParams(tool)
 	desc := tool.Description
@@ -492,7 +492,7 @@ func (t *SessionMCPRemoteTool) Execute(ctx *ToolContext, input string) (*ToolRes
 		t.sessionMCPMgr.MarkActive(t.serverName)
 	}
 
-	// 检查 session 是否仍然有效（可能已被 Close/Invalidate 关闭）
+	// Check if the session is still valid (may have been closed by Close/Invalidate)
 	if t.session == nil {
 		return nil, fmt.Errorf("MCP session for server %q has been closed", t.serverName)
 	}
@@ -529,10 +529,10 @@ func (t *SessionMCPRemoteTool) Execute(ctx *ToolContext, input string) (*ToolRes
 	return NewResult(content), nil
 }
 
-// ---- MCP 工具激活机制 ----
+// ---- MCP tool activation mechanism ----
 
-// GetActivatedToolDefs 返回已激活 MCP 工具的 LLM 工具定义（含完整参数 schema）。
-// activated 由 Registry.sessionActivated 提供，统一管理激活状态。
+// GetActivatedToolDefs returns LLM tool definitions for activated MCP tools (with full parameter schema).
+// activated is provided by Registry.sessionActivated for unified activation state management.
 func (sm *SessionMCPManager) GetActivatedToolDefs(activated map[string]bool) []llm.ToolDefinition {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -563,7 +563,7 @@ func (sm *SessionMCPManager) GetActivatedToolDefs(activated map[string]bool) []l
 	return defs
 }
 
-// mcpToolDefinition 是已激活 MCP 工具的 LLM 工具定义（含完整参数 schema）。
+// mcpToolDefinition is the LLM tool definition for an activated MCP tool (with full parameter schema).
 type mcpToolDefinition struct {
 	name   string
 	desc   string

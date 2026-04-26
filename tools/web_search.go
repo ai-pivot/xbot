@@ -79,12 +79,12 @@ type TavilySearchResponse struct {
 }
 
 func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
-	// 检查 API Key
+	// Check API Key
 	if t.apiKey == "" {
 		return nil, fmt.Errorf("TAVILY_API_KEY environment variable is not set")
 	}
 
-	// 解析输入参数
+	// Parse input parameters
 	params, err := parseToolArgs[struct {
 		Query         string `json:"query"`
 		SearchDepth   string `json:"search_depth"`
@@ -99,7 +99,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("query is required")
 	}
 
-	// 设置default value
+	// Set default values
 	searchDepth := "basic"
 	if params.SearchDepth == "advanced" {
 		searchDepth = "advanced"
@@ -115,7 +115,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		includeAnswer = *params.IncludeAnswer
 	}
 
-	// 构建请求
+	// Build request
 	reqBody := TavilySearchRequest{
 		Query:         params.Query,
 		SearchDepth:   searchDepth,
@@ -143,7 +143,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	}
 	defer resp.Body.Close()
 
-	// 读取响应（限制最大 10MB，防止异常响应占用过多内存）
+	// Read response (max 10MB limit to prevent abnormal responses from consuming too much memory)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBodySize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
@@ -153,13 +153,13 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("tavily API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// 解析响应
+	// Parse response
 	var searchResp TavilySearchResponse
 	if err := json.Unmarshal(body, &searchResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// 格式化输出
+	// Format output
 	return NewResult(formatSearchResults(&searchResp)), nil
 }
 
@@ -176,7 +176,7 @@ func formatSearchResults(resp *TavilySearchResponse) string {
 		sb.WriteString("\n\n")
 	}
 
-	// 显示搜索结果
+	// Display search results
 	if len(resp.Results) > 0 {
 		sb.WriteString("## Sources\n\n")
 		for i, result := range resp.Results {

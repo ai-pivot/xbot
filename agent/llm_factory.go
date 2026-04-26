@@ -480,7 +480,7 @@ func (f *LLMFactory) InvalidateAll() {
 	f.mu.Unlock()
 }
 
-// SetSettingsService 注入 SettingsService（For reading/writing user concurrency configuration）。
+// SetSettingsService injects SettingsService (For reading/writing user concurrency configuration）。
 // Must be called after Agent initialization, because SettingsService creation depends on Agent.
 func (f *LLMFactory) SetSettingsService(svc *SettingsService) {
 	f.settingsSvc = svc
@@ -636,7 +636,7 @@ func (f *LLMFactory) GetMaxOutputTokens(senderID string) int {
 
 // GetLLMForModel gets LLM client for a specified model, for SubAgent using a different model than main Agent.
 //
-// 查找优先级：
+// Lookup priority:
 //  1. Find subscription with Model field exactly matching targetModel among all user subscriptions
 //  2. Use current active subscription's credentials + targetModel
 //  3. Use any subscription's credentials + targetModel (prefer Provider match)

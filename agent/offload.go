@@ -354,7 +354,7 @@ func (s *OffloadStore) CleanStale() {
 	}
 }
 
-// persistIndex 将 session 索引Persist to disk。
+// persistIndex persists the session indexPersist to disk。
 func (s *OffloadStore) persistIndex(sessionDir string, idx *offloadIndex) {
 	idx.mu.RLock()
 	entries := make([]OffloadedResult, len(idx.entries))

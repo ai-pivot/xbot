@@ -10,19 +10,19 @@ import (
 )
 
 // globToFindArgs translates a glob pattern to find command arguments.
-// 返回值：(find 搜索子目录, find 过滤参数片段)
+// Return: (find search subdirectory, find filter parameter fragment)
 //
-// 翻译规则：
+// Translation rules:
 //   - *.go            → ("", "-maxdepth 1 -name '*.go'")
-//   - **/*.go         → ("", "-name '*.go'")               // 递归
+//   - **/*.go         → ("", "-name '*.go'")               // recursive
 //   - src/*.go        → ("src", "-maxdepth 1 -name '*.go'")
-//   - src/**/*.go     → ("src", "-name '*.go'")            // 递归
-//   - **/test/*.go    → ("", "-path '*/test/*.go'")        // 递归
-//   - src/**/test/*.go→ ("src", "-path '*/test/*.go'")     // 递归
+//   - src/**/*.go     → ("src", "-name '*.go'")            // recursive
+//   - **/test/*.go    → ("", "-path '*/test/*.go'")        // recursive
+//   - src/**/test/*.go→ ("src", "-path '*/test/*.go'")     // recursive
 func globToFindArgs(pattern string) (searchBase string, args string) {
 	// filepath.ToSlash converts Windows backslashes \ to forward slashes /,
-	// 确保跨平台 glob pattern 在 Linux 沙箱中正确工作。
-	// 例如 "src\*.go" 会被规范化为 "src/*.go"。
+	// Ensure cross-platform glob patterns work correctly in the Linux sandbox.
+	// For example, "src\*.go" is normalized to "src/*.go".
 	pattern = strings.Trim(pattern, "/")
 	pattern = filepath.ToSlash(pattern)
 	if pattern == "" {
@@ -41,7 +41,7 @@ func globToFindArgs(pattern string) (searchBase string, args string) {
 	}
 
 	if doubleStarIdx == -1 {
-		// 无 **：简单匹配，-maxdepth 1 限定不递归
+		// No **: simple match, -maxdepth 1 limits to non-recursive
 		if len(segments) == 1 {
 			return "", fmt.Sprintf("-maxdepth 1 -name '%s'", shellEscape(segments[0]))
 		}
@@ -50,7 +50,7 @@ func globToFindArgs(pattern string) (searchBase string, args string) {
 		return base, fmt.Sprintf("-maxdepth 1 -name '%s'", shellEscape(name))
 	}
 
-	// 有 **：
+	// Has **:
 	prefix := strings.Join(segments[:doubleStarIdx], "/")
 	suffixSegments := segments[doubleStarIdx+1:]
 
@@ -103,12 +103,12 @@ func (t *GlobTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		return nil, fmt.Errorf("pattern is required")
 	}
 
-	// 沙箱模式：在容器内执行 find 命令
+	// Sandbox mode: execute find command inside the container
 	if shouldUseSandbox(ctx) {
 		return t.executeInSandbox(ctx, params.Pattern, params.Path)
 	}
 
-	// 非沙箱模式：本地文件搜索
+	// Non-sandbox mode: local file search
 	return t.executeLocal(ctx, params.Pattern, params.Path)
 }
 
@@ -116,10 +116,10 @@ func (t *GlobTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*ToolResult, error) {
 	sandboxBase := sandboxBaseDir(ctx)
 
-	// 翻译 glob pattern → find 参数
+	// Translate glob pattern → find parameters
 	searchBase, findArgs := globToFindArgs(pattern)
 
-	// 确定 find 搜索目录
+	// Determine the find search directory
 	searchDir := sandboxBase
 	if path != "" {
 		if path == sandboxBase || strings.HasPrefix(path, sandboxBase+"/") {
@@ -136,14 +136,14 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 		searchDir = searchDir + "/" + searchBase
 	}
 
-	// 构建 find 命令（对 searchDir 做 shellEscape 防注入）
+	// Build the find command (shellEscape searchDir to prevent injection)
 	escapedDir := shellEscape(searchDir)
 	findCmd := fmt.Sprintf(
 		"find '%s' -type f %s -not -path '*/.*' -not -path '*/node_modules/*' 2>/dev/null | head -200",
 		escapedDir, findArgs)
 	output, err := RunInSandboxWithShell(ctx, findCmd)
 	if err != nil {
-		// 如果是"没有匹配文件"的情况，返回空结果
+		// If it's a "no matching files" case, return empty results
 		if output == "" {
 			return NewResultWithTips("No files matched the pattern.", "检查 glob 模式语法，或尝试更宽泛的匹配（如 **/*.go）。"), nil
 		}
@@ -154,7 +154,7 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 		return NewResultWithTips("No files matched the pattern.", "检查 glob 模式语法，或尝试更宽泛的匹配（如 **/*.go）。"), nil
 	}
 
-	// 输出即为容器内路径，直接返回
+	// Output is already a container-internal path, return directly
 	lines := strings.Split(output, "\n")
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Found %d matching file(s):\n", len(lines))

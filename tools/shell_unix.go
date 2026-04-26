@@ -43,7 +43,7 @@ func LoginShellArgs(shell, command string) []string {
 }
 
 // setProcessAttrs sets Unix platform process attributes
-// 使用进程组，超时时可以杀掉整棵进程树
+// Use process groups so the entire process tree can be killed on timeout
 func setProcessAttrs(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

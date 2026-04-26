@@ -107,7 +107,7 @@ type MetricsSnapshot struct {
 	CompressRatio    float64 // Overall compression ratio (out/in)
 	RecallRate       float64 // Recall rate (recalls / offloads+maskings)
 
-	// 压缩Efficiency
+	// Compression efficiency
 	AvgTokensSavedPerCompress float64 // Average tokens saved per compression
 	TokenSavingRate           float64 // Token saving rate (saved/in)
 
@@ -122,7 +122,7 @@ type MetricsSnapshot struct {
 	LLMSuccessRate      float64 // LLM success rate
 	AvgToolCallsPerConv float64 // Average tool calls per conversation
 
-	// 成本Efficiency
+	// Cost efficiency
 	AvgTokensPerConv float64 // Average tokens per conversation (input+output)
 	OutputInputRatio float64 // Output/input ratio
 
@@ -202,7 +202,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.RecallRate = float64(totalRecalls) / float64(totalEvictions)
 	}
 
-	// 压缩Efficiency
+	// Compression efficiency
 	if s.CompressEvents > 0 {
 		s.AvgTokensSavedPerCompress = float64(s.CompressTokensIn-s.CompressTokensOut) / float64(s.CompressEvents)
 	}
@@ -235,7 +235,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 		s.AvgToolCallsPerConv = float64(s.TotalToolCalls) / float64(s.TotalConversations)
 	}
 
-	// 成本Efficiency
+	// Cost efficiency
 	if s.TotalConversations > 0 {
 		s.AvgTokensPerConv = float64(s.TotalInputTokens+s.TotalOutputTokens) / float64(s.TotalConversations)
 	}
@@ -252,7 +252,7 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 }
 
 // FormatMarkdown formats MetricsSnapshot as Feishu markdown card text.
-// 按能力维度分组为四段：Runtime Overview、Task Execution Effectiveness、Memory Quality、压缩Efficiency、Four-Layer Defense Effectiveness。
+// 按能力维度分组为四段：Runtime Overview、Task Execution Effectiveness、Memory Quality、Compression efficiency、Four-Layer Defense Effectiveness。
 func (s MetricsSnapshot) FormatMarkdown() string {
 	var sb strings.Builder
 
@@ -347,8 +347,8 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 		sb.WriteString("No data available\n")
 	}
 
-	// ── 压缩Efficiency ──
-	sb.WriteString("\n📦 **压缩Efficiency**\n──────────────\n")
+	// ── Compression efficiency ──
+	sb.WriteString("\n📦 **Compression efficiency**\n──────────────\n")
 	if hasCompress {
 		saved := s.CompressTokensIn - s.CompressTokensOut
 		fmt.Fprintf(&sb, "🧹 压缩：%d 次 | 节省 %s tokens（节省率 %.1f%%）\n",

@@ -182,7 +182,7 @@ func (a *Agent) initPipelines(memoryProvider string) {
 		NewUserMessageMiddleware(memoryProvider),
 	)
 
-	// Cron pipeline：用于定时任务（简洁，无Memory和技能）
+	// Cron pipeline: for scheduled tasks (minimal, no memory or skills)
 	a.cronPipeline = NewMessagePipeline(
 		NewCronSystemPromptMiddleware(promptWorkDir),
 	)

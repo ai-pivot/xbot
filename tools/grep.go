@@ -89,12 +89,12 @@ func (t *GrepTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		params.ContextLines = 0
 	}
 
-	// 沙箱模式：在容器内执行 grep 命令
+	// Sandbox mode: execute grep command inside the container
 	if shouldUseSandbox(ctx) {
 		return t.executeInSandbox(ctx, params.Pattern, params.Path, params.Include, params.IgnoreCase, params.ContextLines)
 	}
 
-	// 非沙箱模式：本地搜索
+	// Non-sandbox mode: local search
 	return t.executeLocal(ctx, params.Pattern, params.Path, params.Include, params.IgnoreCase, params.ContextLines)
 }
 
@@ -276,8 +276,8 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 		if path == sandboxBase || strings.HasPrefix(path, sandboxBase+"/") {
 			searchDir = path
 		} else if ctx != nil && ctx.WorkspaceRoot != "" && strings.HasPrefix(path, ctx.WorkspaceRoot+"/") {
-			// path 是宿主机绝对路径（如 /workspace/xbot/agent/engine.go），
-			// 需要转为沙箱内的相对路径（sandboxBase + /xbot/agent/engine.go）
+			// path is a host absolute path (e.g. /workspace/xbot/agent/engine.go),
+			// needs to be converted to a sandbox-relative path (sandboxBase + /xbot/agent/engine.go)
 			rel, err := filepath.Rel(ctx.WorkspaceRoot, path)
 			if err == nil {
 				searchDir = sandboxBase + "/" + rel
@@ -294,11 +294,11 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 	// converts Go RE2 pattern to POSIX ERE pattern (grep -E compatible)
 	erePattern, err := convertGoRE2ToERE(pattern)
 	if err != nil {
-		// 转换失败，fallback 到本地 Go regexp 执行
+		// Conversion failed, fallback to local Go regexp execution
 		return t.executeLocal(ctx, pattern, path, include, ignoreCase, contextLines)
 	}
 
-	// 构建 grep 命令（使用 -E 扩展正则）
+	// Build the grep command (using -E extended regex)
 	grepCmd := "grep -E"
 	if ignoreCase {
 		grepCmd += "i" // -Ei
@@ -308,7 +308,7 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 	}
 	grepCmd += " -rn --binary-files=without-match --exclude-dir=.git --exclude-dir=node_modules"
 
-	// include brace 展开（复用已有函数 expandBracePattern）
+	// Expand include braces (reuse existing expandBracePattern function)
 	if include != "" {
 		patterns := expandBracePattern(include)
 		for _, p := range patterns {
@@ -325,7 +325,7 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 	if err != nil {
 		// SIGPIPE (exit 141) is caused by head closing the pipe normally, not a real error
 		if output != "" && !strings.Contains(output, "No matches found") {
-			// 有输出但 err != nil → 很可能是 SIGPIPE，正常返回结果
+			// Has output but err != nil → likely SIGPIPE, return results normally
 		} else {
 			return NewResultWithTips("No matches found.", "尝试换一个关键词，或检查路径/正则是否正确。"), nil
 		}
@@ -335,7 +335,7 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 		return NewResultWithTips("No matches found.", "尝试换一个关键词，或检查路径/正则是否正确。"), nil
 	}
 
-	// 解析 grep 输出并格式化
+	// Parse grep output and format
 	lines := strings.Split(output, "\n")
 	var sb strings.Builder
 	matchCount := 0

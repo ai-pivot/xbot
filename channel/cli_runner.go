@@ -100,7 +100,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 	clipanic.Go("channel.RunnerBridge.Connect", func() {
 		defer close(doneCh)
 
-		// 1. 创建Log file
+		// 1. Create log file
 		cacheDir, _ := os.UserCacheDir()
 		logDir := filepath.Join(cacheDir, "xbot", "runner-logs")
 		os.MkdirAll(logDir, 0755)
@@ -169,7 +169,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			return
 		}
 
-		// 9. 保存Internal state
+		// 9. Save internal state
 		rb.mu.Lock()
 		rb.handler = handler
 		rb.stats = RunnerStats{
@@ -222,7 +222,7 @@ func (rb *RunnerBridge) Disconnect() {
 		close(rb.stopCh)
 	}
 
-	// 关闭Log file
+	// Close log file
 	if rb.logFile != nil {
 		rb.logFile.Close()
 		rb.logFile = nil
@@ -263,14 +263,14 @@ func (rb *RunnerBridge) Workspace() string {
 	return rb.workspace
 }
 
-// LogPath 返回当前Log file路径。
+// LogPath returns the current log file path.
 func (rb *RunnerBridge) LogPath() string {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.logPath
 }
 
-// parseUserID 从 server URL 中Parse userID
+// parseUserID: parse userID from server URL
 // e.g.: ws://host:port/ws/abc123 → abc123
 func parseUserID(serverURL string) string {
 	// Strip protocol prefix

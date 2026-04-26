@@ -156,7 +156,7 @@ func (a *Agent) buildMainRunConfig(
 	channel, chatID, senderID, senderName := msg.Channel, msg.ChatID, msg.SenderID, msg.SenderName
 	sessionKey := channel + ":" + chatID
 
-	// 飞书Identity登录 web 时，用飞书用户 ID 作为沙箱用户 ID，
+	// When Feishu identity login web, use Feishu user ID as sandbox user ID,
 	// ensuring web and Feishu share the same Docker container and workspace.
 	feishuUserID := msg.Metadata["feishu_user_id"]
 	sandboxUserID := senderID
@@ -187,7 +187,7 @@ func (a *Agent) buildMainRunConfig(
 	cfg.OAuthHandler = a.buildOAuthHandler(channel, chatID, senderID, sessionKey)
 
 	// Progress notification
-	// Web 渠道始终启用结构化进度，但不Send文本进度消息
+	// Web channel always enables structured progress, but does not send text progress messages
 	if channel == "web" || channel == "cli" {
 		// Web: no-op notifier — structured progress goes via ProgressEventHandler
 		// Setting ProgressNotifier to non-nil enables autoNotify in engine.Run()
@@ -619,7 +619,7 @@ func (a *Agent) buildMainRunConfig(
 }
 
 // buildCronRunConfig builds RunConfig for Cron messages.
-// Cron 消息不需要自动压缩、Progress notification、session 持久化。
+// Cron messages do not need auto-compression, progress notification, or session persistence.
 func (a *Agent) buildCronRunConfig(
 	_ context.Context,
 	msg bus.InboundMessage,
@@ -632,7 +632,7 @@ func (a *Agent) buildCronRunConfig(
 }
 
 // buildSubAgentRunConfig builds RunConfig for SubAgent.
-// SubAgent 使用独立工具集、无 session、有压缩（独立 ContextManager）、无Progress notification。
+// SubAgent uses independent tool set, no session, has compression (independent ContextManager), no progress notification.
 // Phase 2: SubAgent inherits parent Agent's workspace configuration via RunConfig,
 // uses unified defaultToolExecutor + buildToolContext to build ToolContext.
 func (a *Agent) buildSubAgentRunConfig(
@@ -648,7 +648,7 @@ func (a *Agent) buildSubAgentRunConfig(
 ) RunConfig {
 	parentAgentID := parentCtx.AgentID
 
-	// Interactive SubAgent 默认拥有 send_message 能力（群聊/agent 间通信Required）
+	// Interactive SubAgent defaults to having send_message capability (required for group/inter-agent communication)
 	if interactive {
 		caps.SendMessage = true
 	}
@@ -667,7 +667,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	// The following tools are always available, not restricted by whitelist:
 	//   - SubAgent (if caps.SpawnAgent=true)
 	//   - offload_recall, recall_masked (SubAgent needs access to parent Agent's offload/mask data)
-	//   - SendMessage、CreateChat（interactive SubAgent 群聊/agent 间通信Required）
+	//   - SendMessage, CreateChat (required for interactive SubAgent group/inter-agent communication)
 	if len(allowedTools) > 0 {
 		allowed := make(map[string]bool, len(allowedTools))
 		for _, name := range allowedTools {
@@ -694,7 +694,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	}
 
 	// Build SubAgent's system prompt: common template + role-specific capability description
-	// parentCtx.WorkspaceRoot 在 remote 模式下为空（buildToolContext 清空了宿主机路径），
+	// parentCtx.WorkspaceRoot is empty in remote mode (buildToolContext cleared host paths),
 	// Fallback to a.workDir to ensure the prompt always contains the correct working directory.
 	workDir := parentCtx.WorkspaceRoot
 	if workDir == "" {
@@ -829,7 +829,7 @@ func (a *Agent) buildSubAgentRunConfig(
 		SenderID:        parentAgentID, // SubAgent: direct caller = parent Agent
 		OriginUserID:    originUserID,  // SubAgent: inherits original user ID
 
-		// 从父 Agent 继承Workspace & SandboxConfiguration
+		// Inherit workspace & sandbox config from parent Agent
 		WorkingDir:       parentCtx.WorkingDir,
 		WorkspaceRoot:    parentCtx.WorkspaceRoot,
 		ReadOnlyRoots:    parentCtx.ReadOnlyRoots,
@@ -911,7 +911,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 4. ContextEditor: create independent instance (each Agent needs its own messages reference and edit history)
 	cfg.ContextEditor = NewContextEditor(NewContextEditStore(100))
 
-	// Capability: send_message — 允许 SubAgent 向 IM 渠道Send消息
+	// Capability: send_message — allows SubAgent to send messages to IM channels
 	if caps.SendMessage {
 		cfg.SendFunc = a.sendMessage
 	}
@@ -978,7 +978,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	return cfg
 }
 
-// buildToolExecutor 构建主 Agent 的Tool execution器。
+// buildToolExecutor builds the main Agent's tool executor.
 // Includes complete logic for session MCP lookup, activation check, tool usage tracking, etc.
 // This is the executor used by main Agent and Cron; SubAgent uses defaultToolExecutor.
 func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
@@ -1251,7 +1251,7 @@ func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtra
 //
 // Isolation strategy:
 //   - tenantID: generated via deriveSubAgentTenantID(parentTenantID, parentAgentID, roleName)
-//   - persona: 完全独立（SubAgent 自己的Identity，不从父级继承）
+//   - persona: fully independent (SubAgent's own identity, not inherited from parent)
 //   - human: isolated via parentAgentID (records calling agent's characteristics, not the end user)
 //   - archival memory / working_context: automatically isolated via tenantID
 //
@@ -1408,7 +1408,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 
 	// SubAgent progress reporting: unified passthrough callback pattern.
 	// Top-level agent (no parent callback) creates root callback, only renders progress for depth=1 (direct child agent).
-	// 深层子 agent 的进度通过穿透回调冒泡上来，但 depth>1 不Send到聊天窗口。
+	// Deep sub-agent progress bubbles up through passthrough callbacks, but depth>1 is not sent to chat window.
 	myDepth := cc.Depth() + 1
 	myPath := cc.Spawn(roleName).Chain
 
@@ -1443,7 +1443,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 			}
 		}
 	} else if originChannel != "" && originChatID != "" {
-		// 顶层 agent（交互式）：只Send depth=1 的进度到聊天窗口
+		// Top-level agent (interactive): only send depth=1 progress to chat window
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string) {
 			if len(lines) > 0 {

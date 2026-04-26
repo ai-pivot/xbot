@@ -10,7 +10,7 @@ import (
 )
 
 // LoadAgentRoles loads all agent definition files (*.md) from a directory
-// 每个文件包含 YAML frontmatter（name, description, tools）和 SystemPrompt 正文
+// Each file contains YAML frontmatter (name, description, tools) and SystemPrompt body
 func LoadAgentRoles(dir string) ([]SubAgentRole, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -59,7 +59,7 @@ func LoadAgentRolesSandbox(ctx context.Context, dir string, sb Sandbox, userID s
 }
 
 // ParseAgentFile parses a single agent definition file
-// 格式：YAML frontmatter（--- 之间）+ Markdown 正文作为 SystemPrompt
+// Format: YAML frontmatter (between ---) + Markdown body as SystemPrompt
 func ParseAgentFile(path string) (SubAgentRole, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -74,14 +74,14 @@ func ParseAgentFile(path string) (SubAgentRole, error) {
 		return SubAgentRole{}, fmt.Errorf("invalid frontmatter: %w", err)
 	}
 
-	// 解析 frontmatter 字段
+	// Parse frontmatter fields
 	name, description, model, allowedTools, caps, err := parseFrontmatter(frontmatter)
 	if err != nil {
 		return SubAgentRole{}, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
 	if name == "" {
-		// 用文件名（去掉 .md）作为 fallback
+		// Use filename (without .md) as fallback
 		name = strings.TrimSuffix(filepath.Base(path), ".md")
 	}
 
@@ -123,7 +123,7 @@ func ParseAgentFileContent(data []byte, fallbackName string) (SubAgentRole, erro
 }
 
 // splitFrontmatter separates YAML frontmatter from body
-// 期望格式：以 "---\n" 开头，第二个 "---\n" 结束 frontmatter
+// Expected format: starts with "---\n", second "---\n" ends frontmatter
 func splitFrontmatter(content string) (frontmatter, body string, err error) {
 	// strip possible BOM
 	content = strings.TrimPrefix(content, "\xef\xbb\xbf")
@@ -144,7 +144,7 @@ func splitFrontmatter(content string) (frontmatter, body string, err error) {
 
 	frontmatter = rest[:idx]
 	body = rest[idx+4:] // 跳过 "\n---"
-	// 跳过 --- 后面的换行
+	// Skip the newline after ---
 	body = strings.TrimPrefix(body, "\r\n")
 	body = strings.TrimPrefix(body, "\n")
 
@@ -165,7 +165,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 		// strip \r
 		line = strings.TrimRight(line, "\r")
 
-		// 跳过空行和注释
+		// Skip blank lines and comments
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -182,7 +182,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 			continue
 		}
 
-		// 缩进的键值对（capabilities 子字段）
+		// Indented key-value pairs (capabilities sub-fields)
 		if (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) && currentField == "capabilities" {
 			colonIdx := strings.Index(trimmed, ":")
 			if colonIdx < 0 {
@@ -202,7 +202,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 			continue
 		}
 
-		// 键值对：key: value
+		// Key-value pairs: key: value
 		colonIdx := strings.Index(line, ":")
 		if colonIdx < 0 {
 			continue
@@ -226,7 +226,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 			currentField = "model"
 		case "tools":
 			currentField = "tools"
-			// tools 的值可能在同一行（如 tools: [a, b]）或后续行（列表格式）
+			// The tools value may be on the same line (e.g. tools: [a, b]) or subsequent lines (list format)
 			// we only support list format, ignore same-line values
 		case "capabilities":
 			currentField = "capabilities"
@@ -235,7 +235,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 		}
 	}
 
-	// 校验 name 格式：允许 Unicode 字母（含中文）、数字、连字符、下划线
+	// Validate name format: allows Unicode letters (including Chinese), digits, hyphens, underscores
 	if name != "" {
 		for _, c := range name {
 			if !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '-' && c != '_' {
@@ -244,7 +244,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 		}
 	}
 
-	// 校验 tools 列表格式
+	// Validate tools list format
 	for _, t := range tools {
 		if t == "" {
 			return "", "", "", nil, SubAgentCapabilities{}, fmt.Errorf("empty tool name in tools list")

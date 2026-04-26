@@ -15,7 +15,7 @@ package agent
 // Template parameters:
 //
 //	%s = Working directory
-//	%s = Current directory:（形如 "\n- Current directory: /workspace/subdir"，为空时不显示）
+//	%s = Current directory (e.g. "\n- Current directory: /workspace/subdir", hidden when empty)
 //	%s = Role name
 //	%s = Caller Agent ID
 //	%s = Current time
@@ -88,7 +88,7 @@ const subagentExecutionModeOneShot = `
 
 **你必须一次性完成所有任务，不能等待后续指令。** 你的输出将直接返回给调用者，没有多轮交互的机会。如果任务复杂，规划好步骤后依次执行完毕再返回结果。`
 
-// subagentExecutionModeInteractive 是 interactive SubAgent 的Execution Mode说明。
+// subagentExecutionModeInteractive describes the execution mode for interactive SubAgent.
 const subagentExecutionModeInteractive = `
 ## Execution Mode
 
@@ -101,7 +101,7 @@ const subagentExecutionModeInteractive = `
 // Template parameters:
 //
 //	%s = Working directory
-//	%s = Current directory:（形如 "\n- Current directory: /workspace/subdir"，为空时不显示）
+//	%s = Current directory (e.g. "\n- Current directory: /workspace/subdir", hidden when empty)
 //	%s = Role name
 //	%s = Caller Agent ID
 //	%s = Current time

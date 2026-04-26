@@ -18,7 +18,7 @@ import (
 // NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 const LogsSubDir = ".xbot/logs"
 
-// LogsTool 读取 xbot 日志文件的工具（仅管理员可用）
+// LogsTool: tool for reading xbot log files (admin only)
 type LogsTool struct {
 	adminChatID string
 }
@@ -61,12 +61,12 @@ func (t *LogsTool) Parameters() []llm.ToolParam {
 }
 
 func (t *LogsTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
-	// 权限检查：仅管理员可用
+	// Permission check: admin only
 	if ctx.ChatID != t.adminChatID {
 		return nil, fmt.Errorf("permission denied: Logs tool is only available to admin")
 	}
 
-	// 解析参数
+	// Parse parameters
 	params, err := parseToolArgs[struct {
 		Action string `json:"action"`
 		File   string `json:"file"`
@@ -82,7 +82,7 @@ func (t *LogsTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		return nil, fmt.Errorf("action is required")
 	}
 
-	// 确定日志目录
+	// Determine log directory
 	// uses DataDir instead of WorkspaceRoot since logs are global, not user-isolated
 	logDir := filepath.Join(ctx.DataDir, LogsSubDir)
 
@@ -116,7 +116,7 @@ func (t *LogsTool) listLogs(logDir string) (*ToolResult, error) {
 	return NewResult(sb.String()), nil
 }
 
-// logFileInfo 日志文件信息
+// logFileInfo: log file information
 type logFileInfo struct {
 	Name string
 	Size string
@@ -151,7 +151,7 @@ func (t *LogsTool) getLogFiles(logDir string) ([]logFileInfo, error) {
 		})
 	}
 
-	// 按文件名（日期）倒序排列
+	// Sort by filename (date) in descending order
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Name > files[j].Name
 	})
@@ -159,13 +159,13 @@ func (t *LogsTool) getLogFiles(logDir string) ([]logFileInfo, error) {
 	return files, nil
 }
 
-// readLogs 读取日志内容
+// readLogs: read log content
 func (t *LogsTool) readLogs(logDir, filename string, lines int, level, grep string) (*ToolResult, error) {
 	if lines <= 0 {
 		lines = 100
 	}
 
-	// 确定日志文件路径
+	// Determine log file path
 	var logPath string
 	if filename != "" {
 		logPath = filepath.Join(logDir, filename)
@@ -194,16 +194,16 @@ func (t *LogsTool) readLogs(logDir, filename string, lines int, level, grep stri
 		filename = files[0].Name
 	}
 
-	// 读取最后 N 行
+	// Read the last N lines
 	contents, err := t.readLastLines(logPath, lines)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read log file: %w", err)
 	}
 
-	// 应用过滤
+	// Apply filters
 	var filtered []string
 	for _, line := range contents {
-		// 级别过滤
+		// Level filter
 		if level != "" && !t.matchLevel(line, level) {
 			continue
 		}
@@ -236,7 +236,7 @@ func (t *LogsTool) readLogs(logDir, filename string, lines int, level, grep stri
 	return NewResult(sb.String()), nil
 }
 
-// readLastLines 读取文件最后 N 行
+// readLastLines: reads the last N lines of a file
 func (t *LogsTool) readLastLines(path string, n int) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -281,11 +281,11 @@ func (t *LogsTool) readLastLines(path string, n int) ([]string, error) {
 	return result, nil
 }
 
-// matchLevel 检查日志行是否匹配指定级别
+// matchLevel: checks if a log line matches the specified level
 func (t *LogsTool) matchLevel(line, level string) bool {
 	level = strings.ToLower(level)
 
-	// 尝试解析 JSON 格式日志（logrus JSONFormatter）
+	// Try parsing JSON-formatted logs (logrus JSONFormatter)
 	var jsonLog map[string]any
 	if err := json.Unmarshal([]byte(line), &jsonLog); err == nil {
 		if logLevel, ok := jsonLog["level"].(string); ok {
@@ -294,7 +294,7 @@ func (t *LogsTool) matchLevel(line, level string) bool {
 	}
 
 	// fall back to text matching (TextFormatter)
-	// 日志格式通常为：time="..." level=xxx msg="..."
+	// Log format is typically: time="..." level=xxx msg="..."
 	levelPrefix := fmt.Sprintf("level=%s", level)
 	if strings.Contains(strings.ToLower(line), levelPrefix) {
 		return true
@@ -330,7 +330,7 @@ func formatFileSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// 用于类型检查
+// Used for type checking
 var _ Tool = (*LogsTool)(nil)
 
 // record time at init (for debugging)

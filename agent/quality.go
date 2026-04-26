@@ -57,7 +57,7 @@ func containsSemanticMatch(text, target string) bool {
 // Helper functions
 // ----------------------------------------------------------------
 
-// extractFilePaths 正则提取File path。
+// extractFilePaths extracts file paths via regex.
 // Matches: /absolute/path, ./relative/path, ../parent/path, filename.ext (must contain at least one / or .ext)
 var filePathRe = regexp.MustCompile(`(?:[A-Za-z]:[\\\/]|[./~][\w./~-]*|/\S+?\.\w{1,10})(?:\s|[),;:}"'\n]|$)`)
 
@@ -142,11 +142,11 @@ func splitToWords(text string) []string {
 
 // ExtractActiveFiles extracts active files from the last N rounds of tool calls.
 // One round = one set of assistant(tool_calls) + corresponding tool result messages.
-// 扫描 messages 尾部，按工具类型提取File path：
+// Scan message tails, extract file paths by tool type:
 //   - Read/Edit/Write → "path" or "file_path" in Arguments JSON
 //   - Glob → "pattern" in Arguments JSON
 //   - Grep → "path" in Arguments JSON
-//   - Shell → 从 tool result Content 中正则提取File path
+//   - Shell → regex extract file paths from tool result content
 //   - SubAgent → don't extract
 //
 // Also extract function signatures from tool result Content (func \w+ pattern).
@@ -178,7 +178,7 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 		if msg.Role == "tool" {
 			// Extract paths from tool result (Shell special handling)
 			if msg.ToolName == "Shell" {
-				// 从 Shell 输出中正则提取File path
+				// Regex extract file paths from Shell output
 				currentPaths = append(currentPaths, extractFilePaths(msg.Content)...)
 			}
 			// Extract function signatures from tool result
@@ -268,7 +268,7 @@ func ExtractActiveFiles(messages []llm.ChatMessage, lastN int) []ActiveFile {
 	return result
 }
 
-// extractPathsFromToolArgs 从工具调用的 Arguments JSON 中提取File path。
+// extractPathsFromToolArgs extracts file paths from tool call Arguments JSON.
 func extractPathsFromToolArgs(toolName, argsJSON string) []string {
 	if argsJSON == "" {
 		return nil

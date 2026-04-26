@@ -69,10 +69,10 @@ func isUnrestricted(ctx *ToolContext) bool {
 	return name == "none" || name == "remote"
 }
 
-// ResolveWritePath 将 inputPath 解析为绝对路径，并校验其在 workspace 写入范围内。
+// ResolveWritePath resolves inputPath to an absolute path and validates it is within the workspace write scope.
 //
-// 相对路径解析优先级：CurrentDir（Cd 设置）> WorkspaceRoot/WorkingDir。
-// 绝对路径直接校验，不受 CurrentDir 影响。
+// Relative path resolution priority: CurrentDir (set by Cd) > WorkspaceRoot/WorkingDir.
+// Absolute paths are validated directly, unaffected by CurrentDir.
 func ResolveWritePath(ctx *ToolContext, inputPath string) (string, error) {
 	if inputPath == "" {
 		return "", fmt.Errorf("path is required")
@@ -120,7 +120,7 @@ func ResolveWritePath(ctx *ToolContext, inputPath string) (string, error) {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}
 
-	// 检查目标或父目录（处理符号链接）
+	// Check target or parent directory (handles symlinks)
 	checkPath := candidate
 	if _, err := os.Stat(candidate); err != nil {
 		checkPath = filepath.Dir(candidate)
@@ -145,10 +145,10 @@ func ResolveWritePath(ctx *ToolContext, inputPath string) (string, error) {
 	return candidate, nil
 }
 
-// ResolveReadPath 将 inputPath 解析为绝对路径，并校验其在允许的读取范围内。
+// ResolveReadPath resolves inputPath to an absolute path and validates it is within the allowed read scope.
 //
-// 相对路径解析优先级：CurrentDir（Cd 设置）> WorkspaceRoot/WorkingDir。
-// 绝对路径直接校验，不受 CurrentDir 影响。
+// Relative path resolution priority: CurrentDir (set by Cd) > WorkspaceRoot/WorkingDir.
+// Absolute paths are validated directly, unaffected by CurrentDir.
 // allowed read range includes workspace root and directories listed in ReadOnlyRoots.
 func ResolveReadPath(ctx *ToolContext, inputPath string) (string, error) {
 	if inputPath == "" {
@@ -231,8 +231,8 @@ func ResolveReadPath(ctx *ToolContext, inputPath string) (string, error) {
 }
 
 // sandboxBaseDir returns the sandbox working directory prefix.
-// 返回 Sandbox.Workspace(userID)（docker 模式下通常为 "/workspace"，remote 模式为 runner workspace）。
-// 返回空字符串表示无沙箱路径约束（none 模式），调用方应跳过路径校验。
+// Returns Sandbox.Workspace(userID) (typically "/workspace" in docker mode, runner workspace in remote mode).
+// Returns empty string to indicate no sandbox path constraint (none mode); callers should skip path validation.
 func sandboxBaseDir(ctx *ToolContext) string {
 	if ctx != nil && ctx.Sandbox != nil && ctx.Sandbox.Name() != "none" {
 		return ctx.Sandbox.Workspace(ctx.OriginUserID)
@@ -256,7 +256,7 @@ func shouldUseSandbox(ctx *ToolContext) bool {
 //   - sandbox path (e.g. /workspace/src) → return directly
 //   - host path (e.g. /data/users/ou_xxx/workspace/src) → convert to sandbox path
 //
-// 返回空字符串表示无法解析（CurrentDir 为空或不在已知根目录下）。
+// Returns empty string to indicate unable to resolve (CurrentDir is empty or not under a known root directory).
 func resolveSandboxCWD(ctx *ToolContext, sandboxBase string) string {
 	if ctx == nil || ctx.CurrentDir == "" {
 		return ""
@@ -284,7 +284,7 @@ func resolveSandboxCWD(ctx *ToolContext, sandboxBase string) string {
 }
 
 // shellEscape performs shell single-quote escaping to prevent command injection.
-// 将字符串中的单引号替换为 '\”（结束单引号、转义单引号、开始新单引号）。
+// Replace single quotes in the string with '\'\” (end single quote, escaped single quote, start new single quote).
 func shellEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "'\\''")
 }

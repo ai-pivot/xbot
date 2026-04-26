@@ -228,7 +228,7 @@ func (m *cliModel) closePanel() {
 	m.panelRunnerTokenTI = textinput.Model{}
 	m.panelRunnerWorkspace = textinput.Model{}
 	m.panelRunnerEditField = 0
-	// 恢复 viewport 到Normal mode高度
+	// Restore viewport to normal mode height
 	m.panelScrollY = 0
 	m.relayoutViewport()
 }
@@ -1780,7 +1780,7 @@ func (m *cliModel) viewSettingsPanel() string {
 	var sb strings.Builder
 	sb.WriteString(s.PanelHeader.Render(m.locale.PanelSettingsTitle))
 	sb.WriteString("\n")
-	// 表头下方精致Divider，区分标题与内容
+	// 表头下方精致Divider，区分Title与内容
 	sb.WriteString(s.SettingsDivider.Render("┈" + strings.Repeat("┈", 30)))
 	sb.WriteString("\n")
 

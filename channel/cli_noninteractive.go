@@ -13,7 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // NonInteractiveChannel Non-interactive mode channel, for pipe/argument mode.
-// 收到Complete message后打印到 stdout 并设置退出标志。
+// Print to stdout and set exit flag after receiving a complete message.
 type NonInteractiveChannel struct {
 	msgBus   *bus.MessageBus
 	msgCh    chan bus.OutboundMessage
@@ -48,7 +48,7 @@ func (c *NonInteractiveChannel) run() {
 			}
 			prevContent = content
 		} else {
-			// Complete message：输出剩余差异部分，然后换行
+			// Complete message: output the remaining diff, then newline
 			if len(content) > len(prevContent) {
 				diff := content[len(prevContent):]
 				fmt.Print(diff)

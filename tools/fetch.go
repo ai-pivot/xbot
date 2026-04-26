@@ -25,7 +25,7 @@ type FetchTool struct {
 
 // NewFetchTool creates a FetchTool
 func NewFetchTool() *FetchTool {
-	// 创建 tokenizer（复用）
+	// Create tokenizer (reuse)
 	enc, err := tokenizer.Get(tokenizer.Cl100kBase)
 	if err != nil {
 		slog.Warn("Failed to initialize tokenizer, token counting will use rough estimation", "error", err)
@@ -56,14 +56,14 @@ func (t *FetchTool) Parameters() []llm.ToolParam {
 	}
 }
 
-// fetchParams Fetch 工具参数
+// fetchParams: Fetch tool parameters
 type fetchParams struct {
 	URL       string `json:"url"`
 	MaxTokens int    `json:"max_tokens"`
 }
 
 func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
-	// 解析参数
+	// Parse parameters
 	params, err := parseToolArgs[fetchParams](input)
 	if err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
@@ -73,12 +73,12 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 		return nil, fmt.Errorf("url is required")
 	}
 
-	// 验证 URL
+	// Validate URL
 	if err := validateURL(params.URL); err != nil {
 		return nil, err
 	}
 
-	// 设置默认 max_tokens
+	// Set default max_tokens
 	if params.MaxTokens <= 0 {
 		params.MaxTokens = 4096
 	}
@@ -93,10 +93,10 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 	}
 	defer resp.Body.Close()
 
-	// 检查 Content-Type
+	// Check Content-Type
 	contentType := resp.Header.Get("Content-Type")
 
-	// 读取响应（限制最大 10MB）
+	// Read response (max 10MB limit)
 	reader := io.LimitedReader{R: resp.Body, N: maxHTTPResponseBodySize}
 	htmlContent, err := io.ReadAll(&reader)
 	if err != nil {
@@ -106,7 +106,7 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 	// text/plain (e.g. GitHub raw files) return content as-is
 	if strings.Contains(contentType, "text/plain") {
 		content := string(htmlContent)
-		// 格式化为与 HTML 一致的输出（带 URL 和分隔线）
+		// Format output consistent with HTML (with URL and separator)
 		content = t.formatAsPlainText(content, params.URL)
 		content, _ = t.truncateByTokens(content, params.MaxTokens)
 		return NewResult(content), nil
@@ -129,17 +129,17 @@ func (t *FetchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error)
 		return nil, fmt.Errorf("failed to parse webpage: %w", err)
 	}
 
-	// 构建 Markdown 内容
+	// Build Markdown content
 	content := t.formatAsMarkdown(&article, params.URL)
 
-	// Token 截断
+	// Token truncation
 	content, _ = t.truncateByTokens(content, params.MaxTokens)
 
-	// 构建输出
+	// Build output
 	return NewResult(content), nil
 }
 
-// fetchURL 获取 URL 内容
+// fetchURL: fetch URL content
 // uses a custom dialer to prevent DNS rebinding: verifies target IP is not private on TCP connect.
 func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx.Ctx, "GET", targetURL, nil)
@@ -147,7 +147,7 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// 设置合理的 User-Agent
+	// Set a reasonable User-Agent
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; xbot/1.0; +https://github.com/CjiW/xbot)")
 
 	// don't send Authorization header
@@ -160,7 +160,7 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 			if err != nil {
 				return nil, fmt.Errorf("invalid address %q: %w", addr, err)
 			}
-			// 解析 IP，验证不是内网地址
+			// Resolve IP, verify it's not a private address
 			ips, err := net.DefaultResolver.LookupIPAddr(dialCtx, host)
 			if err != nil {
 				return nil, fmt.Errorf("DNS lookup failed for %q: %w", host, err)
@@ -168,7 +168,7 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 			if len(ips) == 0 {
 				return nil, fmt.Errorf("no IP addresses found for %q", host)
 			}
-			// 选取第一个 IPv4 或 IPv6 地址
+			// Select the first IPv4 or IPv6 address
 			chosenIP := ips[0].IP
 			for _, ipAddr := range ips {
 				if v4 := ipAddr.IP.To4(); v4 != nil {
@@ -191,7 +191,7 @@ func (t *FetchTool) fetchURL(ctx *ToolContext, targetURL string) (*http.Response
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")
 			}
-			// 重定向时也验证目标不是内网
+			// Also verify the redirect target is not a private address
 			host := req.URL.Hostname()
 			ips, err := net.DefaultResolver.LookupIPAddr(req.Context(), host)
 			if err != nil {
@@ -247,7 +247,7 @@ func validateURL(rawURL string) error {
 }
 
 // isPrivateIP checks if hostname is a private IP (literal IP only, no DNS resolution)
-// S-03: 重构支持 IPv6 私有地址检测，内部委托 isPrivateIPRaw
+// S-03: Refactored to support IPv6 private address detection, internally delegates to isPrivateIPRaw
 func isPrivateIP(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -258,7 +258,7 @@ func isPrivateIP(host string) bool {
 }
 
 // isPrivateIPRaw checks if an IP address (IPv4 or IPv6) is private/internal
-// S-03: 新增 IPv6 私有地址检查（loopback、ULA、link-local、IPv4-mapped）
+// S-03: Added IPv6 private address check (loopback, ULA, link-local, IPv4-mapped)
 func isPrivateIPRaw(ip net.IP) bool {
 	// IPv4-mapped IPv6 addresses (::ffff:x.x.x.x)
 	if ip4 := ip.To4(); ip4 != nil {
@@ -270,7 +270,7 @@ func isPrivateIPRaw(ip net.IP) bool {
 		return true
 	}
 
-	// fc00::/7 — Unique Local Addresses (ULA/私有)
+	// fc00::/7 — Unique Local Addresses (ULA/private)
 	if len(ip) >= 1 && (ip[0]&0xfe) == 0xfc {
 		return true
 	}
@@ -312,11 +312,11 @@ func isPrivateIPv4(ipv4 net.IP) bool {
 	return false
 }
 
-// formatAsMarkdown 将文章格式化为 Markdown
+// formatAsMarkdown: format an article as Markdown
 func (t *FetchTool) formatAsMarkdown(article *readability.Article, pageURL string) string {
 	var sb strings.Builder
 
-	// 标题
+	// Title
 	title := strings.TrimSpace(article.Title)
 	if title != "" {
 		sb.WriteString("# ")
@@ -330,14 +330,14 @@ func (t *FetchTool) formatAsMarkdown(article *readability.Article, pageURL strin
 	sb.WriteString("\n\n")
 	sb.WriteString("---\n\n")
 
-	// 正文 - 将 HTML 转换为 Markdown 格式
+	// Body — convert HTML to Markdown format
 	markdownContent := convertHTMLToMarkdown(article.Content, pageURL, article.TextContent)
 	sb.WriteString(markdownContent)
 
 	return sb.String()
 }
 
-// formatAsPlainText 将纯文本格式化为 Markdown（与 HTML 分支格式一致）
+// formatAsPlainText: format plain text as Markdown (consistent with HTML branch format)
 func (t *FetchTool) formatAsPlainText(content, pageURL string) string {
 	var sb strings.Builder
 
@@ -347,7 +347,7 @@ func (t *FetchTool) formatAsPlainText(content, pageURL string) string {
 	sb.WriteString("\n\n")
 	sb.WriteString("---\n\n")
 
-	// 正文
+	// Body
 	sb.WriteString(content)
 
 	return sb.String()
@@ -360,19 +360,19 @@ func convertHTMLToMarkdown(htmlContent, pageURL string, fallbackText string) str
 		return fallbackText
 	}
 
-	// 解析 pageURL 获取域名，用于处理相对链接
+	// Parse pageURL to get the domain, used for handling relative links
 	u, err := url.Parse(pageURL)
 	if err != nil {
 		return fallbackText
 	}
 
-	// 使用顶层函数转换（支持 WithDomain）
+	// Use top-level function for conversion (supports WithDomain)
 	markdown, err := htmltomarkdown.ConvertString(
 		htmlContent,
 		converter.WithDomain(u.Hostname()),
 	)
 	if err != nil {
-		// 如果转换失败，回退到纯文本
+		// If conversion fails, fall back to plain text
 		return fallbackText
 	}
 
@@ -381,7 +381,7 @@ func convertHTMLToMarkdown(htmlContent, pageURL string, fallbackText string) str
 
 // truncateByTokens truncates content by token count, returns actual token count
 func (t *FetchTool) truncateByTokens(content string, maxTokens int) (string, int) {
-	// 使用结构体中的 tokenizer（已在初始化时创建）
+	// Use the tokenizer from the struct (already created during initialization)
 	if t.tokenizer == nil {
 		// if tokenizer not initialized, don't truncate
 		return content, countTokensRoughly(content)
@@ -400,15 +400,15 @@ func (t *FetchTool) truncateByTokens(content string, maxTokens int) (string, int
 		return content, actualTokens
 	}
 
-	// 截断到 maxTokens
+	// Truncate to maxTokens
 	truncated := ids[:maxTokens]
 	truncatedContent, err := t.tokenizer.Decode(truncated)
 	if err != nil {
-		// 截断失败，不截断
+		// Truncation failed, don't truncate
 		return content, actualTokens
 	}
 
-	// 添加截断提示
+	// Add truncation notice
 	var sb strings.Builder
 	sb.WriteString(truncatedContent)
 	fmt.Fprintf(&sb, "\n\n---\n\n*⚠️ 内容已截断（已截取 %d / %d tokens）*", maxTokens, actualTokens)

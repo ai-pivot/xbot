@@ -96,7 +96,7 @@ func stripSystemReminder(content string) string {
 	return systemReminderRe.ReplaceAllString(content, "")
 }
 
-// extractUserGoal 从 user message 中提取实际User requirement:（去掉时间戳和系统引导文本）。
+// extractUserGoal extracts the actual user requirement from the user message (strips timestamps and system guide text).
 func extractUserGoal(content string) string {
 	lines := strings.Split(content, "\n")
 	var goalLines []string

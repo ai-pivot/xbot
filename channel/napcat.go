@@ -40,7 +40,7 @@ const napcatReconnectInterval = 60 * time.Second // Pause between reconnect atte
 // NapCatConfig Configuration
 // ---------------------------------------------------------------------------
 
-// NapCatConfig NapCat (OneBot 11) 渠道Configuration
+// NapCatConfig: NapCat (OneBot 11) channel configuration
 type NapCatConfig struct {
 	Enabled   bool
 	WSUrl     string   // NapCat WebSocket URL, e.g. "ws://localhost:3001"
@@ -52,7 +52,7 @@ type NapCatConfig struct {
 // NapCatChannel Implementation
 // ---------------------------------------------------------------------------
 
-// NapCatChannel NapCat (OneBot 11) 渠道Implementation
+// NapCatChannel: NapCat (OneBot 11) channel implementation
 type NapCatChannel struct {
 	WSChannelBase
 
@@ -373,7 +373,7 @@ func (n *NapCatChannel) handleMetaEvent(event *obEvent) error {
 // Message handler
 // ---------------------------------------------------------------------------
 
-// handleMessage Handle message事件
+// handleMessage: handle message event
 func (n *NapCatChannel) handleMessage(event *obEvent) error {
 	messageID := fmt.Sprintf("%d", event.MessageID)
 
@@ -407,7 +407,7 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 		return nil
 	}
 
-	// 如果消息为空（可能全是Emoji或 @bot），跳过
+	// If the message is empty (possibly all emoji or @bot), skip it
 	if content == "" && len(media) == 0 {
 		return nil
 	}
@@ -475,7 +475,7 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 // Message segment parsing
 // ---------------------------------------------------------------------------
 
-// parseMessageSegments 解析 OneBot 11 message segment数组，返回文本内容、媒体 URL 列表和是否 @bot
+// parseMessageSegments: parse OneBot 11 message segment array, returns text content, media URL list, and whether @bot
 // selfID For filtering @bot message segments in group messages
 func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) (string, []string, bool) {
 	if len(raw) == 0 {
@@ -535,7 +535,7 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 			// metadata already has message_id, reply's id can be ignored
 
 		case "face":
-			// QQ Emoji，忽略
+			// QQ emoji, ignored
 
 		case "record":
 			var data obMediaData

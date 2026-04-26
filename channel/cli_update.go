@@ -22,7 +22,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds []tea.Cmd
 	)
 
-	// §8 Tab completion：记录输入内容变化以重置补全状态
+	// §8 Tab completion: record input content changes to reset completion state
 	prevText := m.textarea.Value()
 
 	wasTyping := m.typing
@@ -221,7 +221,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		return m, cmd
 	}
 
-	// §21 Search mode拦截
+	// §21 Search mode interception
 	if key, ok := msg.(tea.KeyPressMsg); ok && m.searchMode {
 		switch {
 		case m.searchEditing:
@@ -294,7 +294,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.autoExpandInput()
 		return m, nil
 	}
-	// Ctrl+O toggle tool summary 展开/折叠（CSI u 协议兼容层，kitty/Ghostty 等）
+	// Ctrl+O toggle tool summary expand/collapse (CSI u protocol compatibility layer, kitty/Ghostty, etc.)
 	if isCtrlO(msg) {
 		m.toggleToolSummary()
 		return m, nil
@@ -719,7 +719,7 @@ func (m *cliModel) handleResize(width, height int) {
 		m.ready = true
 	}
 
-	// §1 Incremental rendering：resize 后缓存全部失效
+	// §1 Incremental rendering: all caches invalidated after resize
 	m.renderCacheValid = false
 	m.lastViewportContent = "" // force setViewportContent to re-wrap
 	for i := range m.messages {
@@ -807,7 +807,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 		return
 	}
 
-	// §20c @ file reference completion（带目录/文件图标区分 + 截断）
+	// §20c @ file reference completion (with directory/file icon distinction + truncation)
 	rawInput := m.textarea.Value()
 	if ok, _ := detectAtPrefix(rawInput); ok {
 		borderColor = lipgloss.Color(currentTheme.Info)

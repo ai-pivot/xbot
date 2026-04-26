@@ -20,12 +20,12 @@ const (
 	offloadDefaultOffset = 0
 )
 
-// OffloadRecallTool 召回已 offload 的工具结果完整内容，支持分页读取。
+// OffloadRecallTool recalls the full content of offloaded tool results, supporting paginated reads.
 type OffloadRecallTool struct {
 	Store OffloadRecallStore
 }
 
-// offloadRecallParams 是 offload_recall 工具的参数。
+// offloadRecallParams holds the parameters for the offload_recall tool.
 type offloadRecallParams struct {
 	ID     string `json:"id"`
 	Offset int    `json:"offset,omitempty"` // 起始位置（rune 偏移），默认 0
@@ -73,7 +73,7 @@ func (t *OffloadRecallTool) Execute(ctx *ToolContext, args string) (*ToolResult,
 		params.Limit = offloadMaxLimit
 	}
 
-	// 构建 sessionKey：offload 数据存放在顶层 Agent 的 session 目录下
+	// Build sessionKey: offload data is stored in the top-level Agent's session directory
 	// the SubAgent's own sessionKey is independent (e.g. agent:main/code-reviewer), use RootSessionKey to locate the parent session
 	sessionKey := ctx.RootSessionKey
 	if sessionKey == "" {

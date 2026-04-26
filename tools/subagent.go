@@ -13,8 +13,8 @@ import (
 type InteractiveSubAgentManager interface {
 	SubAgentManager
 	// SpawnInteractive creates/reuses an interactive SubAgent session and executes a task.
-	// instance 为空时行为与旧版一致；设置 instance 后同一 role 可创建多个独立 session。
-	// model 为可选的模型覆盖，为空时继承主 Agent 模型。
+	// When instance is empty, behavior is consistent with the old version; setting instance allows the same role to create multiple independent sessions.
+	// model is an optional model override; when empty, inherits the main Agent's model。
 	SpawnInteractive(ctx *ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps SubAgentCapabilities, instance, model string) (string, error)
 	// SendInteractive sends a message to an existing interactive session.
 	SendInteractive(ctx *ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps SubAgentCapabilities, instance, model string) (string, error)
@@ -128,7 +128,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		return nil, fmt.Errorf("instance is required — provide a unique ID (e.g. \"task-1\") to identify this session. Use different instance values to run multiple sub-agents of the same role in parallel")
 	}
 
-	// 检查 ctx 是否为 nil，避免后续访问 panic
+	// Check if ctx is nil to avoid panic on subsequent access
 	if ctx == nil {
 		return nil, fmt.Errorf("tool context is required")
 	}

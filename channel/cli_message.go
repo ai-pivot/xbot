@@ -21,11 +21,11 @@ import (
 // Helper Methods
 // ---------------------------------------------------------------------------
 
-// handleTabComplete 处理 Tab completion（§8：/ Command completion，§8b：@ 文件路径补全）
+// handleTabComplete: handle Tab completion (§8: /command completion, §8b: @file path completion)
 func (m *cliModel) handleTabComplete() {
 	input := m.textarea.Value()
 
-	// 检测 @ file reference completion（从输入末尾检测）
+	// Detect @ file reference completion (detect from end of input)
 	atOk, atPrefix := detectAtPrefix(input)
 	if atOk {
 		m.handleFileTabComplete(input, atPrefix)
@@ -110,7 +110,7 @@ func (m *cliModel) populateFileCompletions(prefix string) {
 	m.fileCompIdx = 0
 }
 
-// handleFileTabComplete 处理 @ 文件路径 Tab completion
+// handleFileTabComplete: handle @ file path Tab completion
 func (m *cliModel) handleFileTabComplete(input string, prefix string) {
 	if !m.fileCompActive || len(m.fileCompletions) == 0 {
 		// First Tab or candidates cleared: glob and enter cycle mode
@@ -662,7 +662,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	} else {
 		// Complete message
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// 更新流式消息为Complete message
+			// Update streaming message to complete message
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
@@ -812,7 +812,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 		}
 
-		// §2 Tool visualization：在 assistant 消息之前插入 tool_summary
+		// §2 Tool visualization: insert tool_summary before assistant message
 		// Build iterations from pendingToolSummary (PhaseDone) + local iterationHistory.
 		// Deduplicate: if an iteration exists in both, prefer the PhaseDone version
 		// (which has complete reasoning from the server) over the local snapshot.
@@ -1232,7 +1232,7 @@ func (m *cliModel) renderHelpPanel() string {
 	return panelStyle.Render(sb.String())
 }
 
-// renderMessage 渲染Single message为 ANSI 字符串（§1 Incremental rendering：自包含方法）
+// renderMessage: render a single message as ANSI string (§1 Incremental rendering: self-contained method)
 // toolDisplayInfo extracts display label, status icon, and style from tool progress entry.
 func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
 	if tool.Label == "" {
@@ -1428,7 +1428,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			fmt.Fprintf(&sb, "%s %s %s", guide, timeStr, label)
 		}
 		sb.WriteString("\n")
-		// §19 Long message folding：对已完成的 assistant 消息截取预览
+		// §19 Long message folding: truncate preview for completed assistant messages
 		if msg.folded && !msg.isPartial {
 			origLines := msg.originalRenderedLines
 			if origLines == 0 {
@@ -1526,7 +1526,7 @@ func wrappedLineCount(content string, width int) int {
 // Until the next user message. tool_summary automatically belongs to the turn of its nearest preceding user.
 //
 // e.g.: [user(0), assistant(1), tool_summary(2), user(3), assistant(4)]
-// turns: [0, 3] — 按"1"删最后 1 轮即 cutIdx=3，保留 [user(0), assistant(1), tool_summary(2)]
+// turns: [0, 3] — delete last 1 round by pressing "1", i.e. cutIdx=3, keep [user(0), assistant(1), tool_summary(2)]
 func visibleTurnIndices(messages []cliMessage) []int {
 	var turns []int
 	for i, msg := range messages {
@@ -1546,7 +1546,7 @@ func visibleMsgGroupIndices(messages []cliMessage) []int {
 	return visibleTurnIndices(messages)
 }
 
-// updateViewportContent Update viewport 显示内容（§1 Incremental rendering）
+// updateViewportContent: update viewport display content (§1 Incremental rendering)
 func (m *cliModel) updateViewportContent() {
 	// Fast path: streaming message + cache valid
 	if m.streamingMsgIdx >= 0 && m.renderCacheValid {

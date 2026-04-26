@@ -95,8 +95,8 @@ var (
 )
 var sandboxInitOnce sync.Once
 
-// InitSandbox 初始化global sandbox instance（由 main.go 在启动时调用）。
-// 启动时自动清理上次残留的临时文件和悬空 Docker 资源。
+// InitSandbox initializes the global sandbox instance (called by main.go at startup).
+// Automatically cleans up leftover temp files and dangling Docker resources from the previous run at startup.
 //
 // When RemoteMode is set (non-empty), both docker and remote sandbox instances
 // are created and wrapped in a SandboxRouter for per-user routing.
@@ -139,7 +139,7 @@ func reinitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
 // GetSandbox returns the global sandbox instance
 func GetSandbox() Sandbox {
 	sandboxInitOnce.Do(func() {
-		// Fallback: 如果 InitSandbox 未被调用（例如测试场景），使用 NoneSandbox
+		// Fallback: if InitSandbox was not called (e.g. test scenarios), use NoneSandbox
 		log.Warn("GetSandbox called before InitSandbox, falling back to NoneSandbox")
 		globalSandboxMu.Lock()
 		globalSandbox = &NoneSandbox{}
@@ -182,7 +182,7 @@ func GetRunnerTokenDB() *sql.DB {
 }
 
 // cleanupStaleTmpFiles clean leftover export temp files from previous abnormal exit.
-// 进程被 OOM kill 或系统重启时，defer os.Remove 不会执行，tar 文件会残留在 /tmp。
+// When a process is OOM-killed or the system restarts, deferred os.Remove won't execute, leaving tar files in /tmp.
 func cleanupStaleTmpFiles() {
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "xbot-export-*.tar"))
 	if err != nil {
@@ -202,11 +202,11 @@ func cleanupStaleTmpFiles() {
 	}
 }
 
-// pruneDockerResources 清理悬空 Docker 镜像。
+// pruneDockerResources cleans up dangling Docker images.
 // run once at startup to prevent dangling images from last abnormal exit consuming disk.
-// 注意：不清理已停止的容器，容器生命周期由使用者控制。
+// Note: does not clean up stopped containers; container lifecycle is controlled by the user.
 func pruneDockerResources() {
-	// 清理悬空镜像（<none>:<none>），这些是异常退出时未被 rmi 的旧镜像
+	// Clean up dangling images (<none>:<none>), which are old images not removed via rmi after abnormal exits
 	if out, err := dockerExec(dockerCmdTimeout, "image", "prune", "-f"); err == nil {
 		log.Debugf("Docker image prune: %s", strings.TrimSpace(string(out)))
 	}

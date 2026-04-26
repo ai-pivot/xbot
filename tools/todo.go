@@ -40,7 +40,7 @@ func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 		delete(m.todos, sessionKey)
 		return
 	}
-	// 防止 map 无限增长：超过上限时清理最旧的一半条目
+	// Prevent unbounded map growth: clean up the oldest half of entries when the limit is exceeded
 	if m.maxEntries > 0 && len(m.todos) >= m.maxEntries {
 		count := 0
 		target := len(m.todos) / 2

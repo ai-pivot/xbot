@@ -183,7 +183,7 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 }
 
 // ---------------------------------------------------------------------------
-// Refactored common patterns (方案 B: Extract duplicated code)
+// Refactored common patterns (Plan B: Extract duplicated code)
 // ---------------------------------------------------------------------------
 
 // invalidateAllCache marks the render cache invalid, dirties all messages,
@@ -506,7 +506,7 @@ func (m *cliModel) ensurePanelCursorVisible() {
 	for i, def := range m.panelSchema {
 		if def.Category != lastCat {
 			lastCat = def.Category
-			cursorLn += 2 // Blank line + 分类标题
+			cursorLn += 2 // Blank line + 分类Title
 		}
 		cursorLn++ // All item types render as single line
 		if i == m.panelCursor {
@@ -721,7 +721,7 @@ func (msg *cliMessage) iterToolsFlat() (tools []CLIToolProgress, iterCount int) 
 }
 
 // ---------------------------------------------------------------------------
-// Unified error & feedback helpers (方案 A: Unified error handling)
+// Unified error & feedback helpers (Plan A: Unified error handling)
 // ---------------------------------------------------------------------------
 
 // feedbackLevel represents the severity level of user feedback.

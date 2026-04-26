@@ -241,7 +241,7 @@ func LoadProjectContextFile(dir string) string {
 
 // --- Priority 100-199: Context injection ---
 
-// SkillsCatalogMiddleware 注入 Skills directory。
+// SkillsCatalogMiddleware injects the skills catalog.
 // Reads dynamic content from MessageContext.Extra[ExtraKeySkillsCatalog].
 type SkillsCatalogMiddleware struct{}
 
@@ -335,7 +335,7 @@ func (m *PermissionControlMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// MemoryMiddleware 注入长期Memory。
+// MemoryMiddleware injects long-term memory.
 // Reads dynamic MemoryProvider from MessageContext.Extra[ExtraKeyMemoryProvider].
 type MemoryMiddleware struct{}
 
@@ -365,7 +365,7 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// SenderInfoMiddleware 注入Send者信息到系统提示词
+// SenderInfoMiddleware 注入Sender info到系统提示词
 type SenderInfoMiddleware struct{}
 
 func NewSenderInfoMiddleware() *SenderInfoMiddleware {
@@ -433,7 +433,7 @@ func (m *LanguageMiddleware) Process(mc *MessageContext) error {
 
 // --- Priority 200-299: User message processing ---
 
-// buildSystemGuideText 根据Memory模式生成系统引导文本。
+// buildSystemGuideText generates system guide text based on memory mode.
 // Includes search_tools guide in letta mode, not in flat mode.
 func buildSystemGuideText(memoryProvider string) string {
 	if memoryProvider == "letta" {
@@ -442,7 +442,7 @@ func buildSystemGuideText(memoryProvider string) string {
 	return prompt.UserMessageGuideFlat
 }
 
-// UserMessageMiddleware 构建最终的用户消息（注入时间戳、Send者标识、系统引导）
+// UserMessageMiddleware builds the final user message (injects timestamp, sender identification, system guide)
 type UserMessageMiddleware struct {
 	memoryProvider string
 }

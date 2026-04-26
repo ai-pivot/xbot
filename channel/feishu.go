@@ -691,7 +691,7 @@ func (f *FeishuChannel) extractAndSendLocalFiles(chatID, content string) string 
 	})
 }
 
-// sendFile Upload and send file消息
+// sendFile: upload and send file message
 func (f *FeishuChannel) sendFile(chatID, filePath string) error {
 	fileKey, err := f.uploadFile(filePath)
 	if err != nil {
@@ -1183,7 +1183,7 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 	// Generate requestID immediately when channel receives card interaction
 	requestID := log.NewRequestID()
 
-	// S-01: Permission check — 防止 AllowFrom 白名单外的用户通过卡片回调绕过权限向消息总线发送消息
+	// S-01: Permission check — prevent users outside the AllowFrom whitelist from bypassing permissions via card callbacks to send messages to the message bus
 	// Compared to onMessage which has isAllowed(senderID) check, this needs to be added synchronously here
 	{
 		var senderID string
@@ -2371,7 +2371,7 @@ func (a messageAdapter) GetContent() *string {
 	return nil
 }
 
-// parseContent Parse message content (接受 feishuMsg 接口，兼容 EventMessage 和 Message)
+// parseContent: parse message content (accepts feishuMsg interface, compatible with EventMessage and Message)
 func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 	content := msg.GetContent()
 	if content == nil || *content == "" {
@@ -2450,15 +2450,15 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 		// Personal contact card
 		userID, _ := contentJSON["user_id"].(string)
 		return fmt.Sprintf(`[分享用户: %s]`, userID)
-	// TODO: 其他不常用类型
-	// case "hongbao": return "[红包]"
-	// case "system": return "[系统消息]"
-	// case "location": return "[位置]"
-	// case "vote": return "[投票]"
-	// case "task": return "[任务]"
-	// case "share_calendar_event", "calendar", "general_calendar": return "[日程]"
-	// case "video_chat": return "[Video通话]"
-	// case "merge_forward": return "[合并转发]"
+	// TODO: other uncommon types
+	// case "hongbao": return "[Red envelope]"
+	// case "system": return "[System message]"
+	// case "location": return "[Location]"
+	// case "vote": return "[Vote]"
+	// case "task": return "[Task]"
+	// case "share_calendar_event", "calendar", "general_calendar": return "[Calendar event]"
+	// case "video_chat": return "[Video call]"
+	// case "merge_forward": return "[Merged forward]"
 	default:
 		return fmt.Sprintf("[%s]", msgType)
 	}
@@ -2544,14 +2544,14 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 					if fileKey != "" {
 						parts = append(parts, fmt.Sprintf("<folder name=\"%s\" file_key=\"%s\" />", fileName, fileKey))
 					}
-				// TODO: 其他不常用类型
-				// case "button": parts = append(parts, "[按钮]")
-				// case "note": parts = append(parts, "[备注]")
-				// case "select_static": parts = append(parts, "[下拉选择]")
-				// case "date_picker": parts = append(parts, "[日期选择]")
-				// case "overflow": parts = append(parts, "[更多选项]")
-				// case "video_chat": parts = append(parts, "[Video通话]")
-				// case "location": parts = append(parts, "[位置]")
+				// TODO: other uncommon types
+				// case "button": parts = append(parts, "[Button]")
+				// case "note": parts = append(parts, "[Note]")
+				// case "select_static": parts = append(parts, "[Dropdown select]")
+				// case "date_picker": parts = append(parts, "[Date picker]")
+				// case "overflow": parts = append(parts, "[More options]")
+				// case "video_chat": parts = append(parts, "[Video call]")
+				// case "location": parts = append(parts, "[Location]")
 				default:
 					// Other unhandled element types, log but don't block
 					if tag != "" {
@@ -2668,7 +2668,7 @@ func (f *FeishuChannel) replaceLocalImages(content string) string {
 		}
 		imgPath := subs[2]
 
-		// Skip URL（http/https）和已经是 image_key 的（img_ 前缀）
+		// Skip URLs (http/https) and those already as image_key (img_ prefix)
 		if strings.HasPrefix(imgPath, "http://") || strings.HasPrefix(imgPath, "https://") || strings.HasPrefix(imgPath, "img_") {
 			return match
 		}

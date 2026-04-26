@@ -177,7 +177,7 @@ var (
 	pulseFrames = []string{"◌", "◎", "◉", "◎", "◌"}
 )
 
-// errorKeywords — system 消息中的Error检测关键词
+// errorKeywords — error detection keywords in system messages
 var errorKeywords = []string{"error", "failed", "失败", "Error", "exception", "denied", "refused"}
 
 // Terminal CSI escape sequences for modified keys not recognized by Bubble Tea.
@@ -435,7 +435,7 @@ type cliModel struct {
 	trimHistoryFn     func(cutoff time.Time) error  // /rewind: delete DB messages at or after cutoff timestamp
 	resetTokenStateFn func()                        // /rewind: clear stale prompt/completion token counts
 
-	// --- Message queue (typing 期间排队的消息) ---
+	// --- Message queue (messages queued during typing) ---
 	messageQueue   []string // Messages queued waiting to be sent
 	queueEditing   bool     // true = editing/viewing last queued message
 	queueEditBuf   string   // Queued message content being edited
@@ -840,11 +840,11 @@ type cliUpdateCheckMsg struct {
 
 // isCtrlEnter Detect Ctrl+Enter key press.
 // Terminals have no unified standard for Ctrl+Enter, common raw sequences:
-//   - CSI u 协议: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
-//   - 旧格式:     \x1b[27;5;13~ (部分 xterm 变体)
+//   - CSI u protocol: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
+//   - Legacy format:     \x1b[27;5;13~ (some xterm variants)
 //
 // Note: Bubble Tea doesn't recognize these sequences, passes them as unknownCSISequenceMsg,
-// 其 String() 格式为 "?CSI[49 51 59 53 117]?"（%+v 对 []byte 输出字节值数组）。
+// Its String() format is "?CSI[49 51 59 53 117]?" (%+v outputs byte value array for []byte).
 // so we need to match both KeyMsg and the string representation of unknownCSISequenceMsg.
 func isCtrlEnter(msg tea.Msg) bool {
 	s := fmt.Sprint(msg)
@@ -853,7 +853,7 @@ func isCtrlEnter(msg tea.Msg) bool {
 }
 
 // isCtrlO Detect Ctrl+O key press (some terminals send CSI u sequences, Bubble Tea can't recognize them).
-// Ctrl+O = ASCII 15, CSI u 协议: \x1b[15;5u → "?CSI[49 53 59 53 117]?"
+// Ctrl+O = ASCII 15, CSI u protocol: \x1b[15;5u → "?CSI[49 53 59 53 117]?"
 func isCtrlO(msg tea.Msg) bool {
 	s := fmt.Sprint(msg)
 	return s == csiCtrlOCsiu || s == csiCtrlORaw

@@ -7,16 +7,16 @@ import (
 	"xbot/llm"
 )
 
-// ContextEditHandler 是 engine 层实现的消息编辑callback interface。
+// ContextEditHandler is the message editing callback interface implemented at the engine layer.
 type ContextEditHandler interface {
 	HandleRequest(action string, params map[string]interface{}) (string, error)
 }
 
-// ContextEditTool 允许 Agent 精确编辑上下文中的历史消息。
-// 这是上下文管理的关键工具——不同于压缩（LLM 摘要），这是精确的手术式编辑。
+// ContextEditTool allows the Agent to precisely edit historical messages in context.
+// This is a key tool for context management — unlike compression (LLM summarization), this is precise surgical editing.
 //
-// 特殊设计：这个工具通过 Handler 回调在 engine 层执行，因为它需要直接修改
-// messages slice。标准 ToolResult 机制无法修改已有消息。
+// Special design: this tool executes at the engine layer via a Handler callback because it needs to directly modify
+// the messages slice. Standard ToolResult mechanism cannot modify existing messages.
 type ContextEditTool struct {
 	Handler ContextEditHandler
 }

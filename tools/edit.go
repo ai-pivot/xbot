@@ -15,7 +15,7 @@ import (
 )
 
 // ============================================================================
-// FileCreateTool — 创建新文件（2 params: path, content）
+// FileCreateTool — create a new file (2 params: path, content)
 // ============================================================================
 
 // FileCreateTool creates a new file
@@ -117,7 +117,7 @@ func (t *FileCreateTool) executeLocal(ctx *ToolContext, params FileCreateParams)
 }
 
 // ============================================================================
-// FileReplaceTool — 查找替换文件内容（7 params）
+// FileReplaceTool — find and replace file content (7 params)
 // ============================================================================
 
 // FileReplaceTool replaces file content
@@ -281,7 +281,7 @@ func resolveSandboxPath(ctx *ToolContext, userPath string) string {
 	return userPath
 }
 
-// sandboxReadFile 通过 cat 读取沙箱内文件内容（保留原始内容，不做 TrimSpace）
+// sandboxReadFile reads file content in the sandbox via cat (preserves original content, no TrimSpace)
 func sandboxReadFile(ctx *ToolContext, path string) (string, error) {
 	cmd := fmt.Sprintf("cat '%s'", shellEscape(path))
 	content, err := RunInSandboxRawWithShell(ctx, cmd)
@@ -291,7 +291,7 @@ func sandboxReadFile(ctx *ToolContext, path string) (string, error) {
 	return content, nil
 }
 
-// sandboxWriteFile 将内容 base64 编码后写入沙箱内文件（彻底避免 shell 转义问题）
+// sandboxWriteFile base64-encodes content then writes to a file in the sandbox (completely avoids shell escaping issues)
 func sandboxWriteFile(ctx *ToolContext, path, content string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	safePath := shellEscape(path)
@@ -303,7 +303,7 @@ func sandboxWriteFile(ctx *ToolContext, path, content string) error {
 	return nil
 }
 
-// sandboxWriteNewFile 创建新文件并写入内容（含 mkdir -p），通过 base64 避免转义
+// sandboxWriteNewFile creates a new file and writes content (with mkdir -p), uses base64 to avoid escaping
 func sandboxWriteNewFile(ctx *ToolContext, path, content string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	safePath := shellEscape(path)

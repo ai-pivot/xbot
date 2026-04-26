@@ -123,7 +123,7 @@ const (
 // QQConfig Configuration
 // ---------------------------------------------------------------------------
 
-// QQConfig QQ 机器人渠道Configuration
+// QQConfig: QQ bot channel configuration
 type QQConfig struct {
 	AppID        string   // QQ Bot App ID
 	ClientSecret string   // QQ Bot Client Secret
@@ -134,7 +134,7 @@ type QQConfig struct {
 // QQChannel Implementation
 // ---------------------------------------------------------------------------
 
-// QQChannel QQ 机器人渠道Implementation
+// QQChannel: QQ bot channel implementation
 type QQChannel struct {
 	WSChannelBase
 
@@ -1128,7 +1128,7 @@ func (q *QQChannel) sendAutoDetect(chatID, content string, metadata map[string]s
 
 // uploadFileToQQ Upload rich media file to QQ, return file_info for sending messages
 // targetID: user openid for c2c scenario, group_openid for group scenario
-// chatType: "c2c" 或 "group"
+// chatType: "c2c" or "group"
 // fileType: qqFileTypeImage / qqFileTypeVideo / qqFileTypeVoice / qqFileTypeFile
 // fileData: Base64-encoded file content
 func (q *QQChannel) uploadFileToQQ(targetID, chatType string, fileType int, fileData string) (*qqFileUploadResponse, error) {
@@ -1290,7 +1290,7 @@ func (q *QQChannel) extractAndSendLocalImages(targetID, chatType, content string
 	})
 }
 
-// extractAndSendLocalFiles 从 markdown 中提取本地文件Links [name](path)（非图片），上传并发送
+// extractAndSendLocalFiles: extract local file links [name](path) from markdown (non-image), upload and send
 func (q *QQChannel) extractAndSendLocalFiles(targetID, chatType, content string, metadata map[string]string) string {
 	return qqMdLinkRe.ReplaceAllStringFunc(content, func(match string) string {
 		subs := qqMdLinkRe.FindStringSubmatch(match)
@@ -1709,14 +1709,14 @@ func (q *QQChannel) buildTextBody(content, msgID string, seq int) map[string]any
 	return body
 }
 
-// isMarkdownUnsupported 判断Error是否表示 markdown 消息类型不被支持
-// QQ API 在未开通 markdown 权限时会返回特定Error码
+// isMarkdownUnsupported: check if error indicates markdown message type is not supported
+// QQ API returns a specific error code when markdown permission is not enabled
 func (q *QQChannel) isMarkdownUnsupported(err error) bool {
 	if err == nil {
 		return false
 	}
 	errMsg := err.Error()
-	// QQ API 返回的Error中包含 "not support" 或权限相关Error码
+	// QQ API error contains "not support" or permission-related error codes
 	return strings.Contains(errMsg, "not support") ||
 		strings.Contains(errMsg, "msg_type") ||
 		strings.Contains(errMsg, "304003") || // No permission

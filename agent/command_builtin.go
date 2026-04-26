@@ -549,7 +549,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s = %s", key, value)}, nil
 	}
 
-	// /settings (list) — 检测飞书渠道使用交互式卡片，其他渠道使用 markdown
+	// /settings (list) — detect Feishu channel for interactive card, other channels use markdown
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder(msg.Channel); ok {
 			if fc, ok := ch.(*channel.FeishuChannel); ok {
@@ -570,7 +570,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		}
 	}
 
-	// Fallback: 非 Feishu 渠道使用 markdown UI
+	// Fallback: non-Feishu channels use markdown UI
 	ui, err := a.settingsSvc.GetSettingsUI(msg.Channel, msg.SenderID)
 	if err != nil {
 		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("获取设置失败：%v", err)}, nil

@@ -245,7 +245,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	return r
 }
 
-// cliCommands 已知命令列表（用于 Tab completion，§8）
+// cliCommands: known command list (for Tab completion, §8)
 var cliCommands = []string{
 	"/cancel", "/channel", "/chat", "/clear", "/compact", "/context", "/exit",
 	"/help", "/model", "/models", "/new", "/quit", "/rewind", "/search",
@@ -253,7 +253,7 @@ var cliCommands = []string{
 	"/usage", "/user",
 }
 
-// §19 Long message folding阈值
+// §19 Long message folding threshold
 const (
 	msgFoldThresholdLines = 20
 	msgFoldPreviewLines   = 6

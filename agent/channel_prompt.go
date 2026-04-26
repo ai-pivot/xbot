@@ -10,7 +10,7 @@ type ChannelPromptProvider interface {
 
 	// ChannelSystemParts returns channel-specific system prompt fragments.
 	// Returns nil or empty map means this channel has no specialized prompt.
-	// Key naming建议 use "05_channel_xxx" prefix, ensuring after "00_base" and
+	// Key naming convention: use "05_channel_xxx" prefix, ensuring it comes after "00_base" and
 	// before "10_skills".
 	ChannelSystemParts(ctx context.Context, chatID, senderID string) map[string]string
 }

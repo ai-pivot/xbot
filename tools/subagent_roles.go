@@ -23,11 +23,11 @@ type SubAgentRole struct {
 type SubAgentCapabilities struct {
 	Memory      bool // 可访问 Letta memory（core/archival/recall）
 	SendMessage bool // 可直接向 IM 渠道发送消息
-	SpawnAgent  bool // 可创建子 Agent（需注意递归深度限制）
+	SpawnAgent  bool // 可创建子 Agent（需注意recursive深度限制）
 }
 
 // ToMap converts to map[string]bool for cross-package passing (avoids circular dependency).
-// 始终包含所有三个 key，确保显式设置的 false 值不会在反序列化时被default value覆盖。
+// Always include all three keys to ensure explicitly set false values are not overwritten by defaults during deserialization.
 func (c SubAgentCapabilities) ToMap() map[string]bool {
 	m := make(map[string]bool)
 	m["memory"] = c.Memory
@@ -62,7 +62,7 @@ func InitAgentRoles(dir string) error {
 		return nil
 	}
 	agentsDir = dir
-	// 验证目录可读
+	// Verify directory is readable
 	roles, err := LoadAgentRoles(dir)
 	if err != nil {
 		return fmt.Errorf("validate agent roles in %s: %w", dir, err)

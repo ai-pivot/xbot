@@ -23,7 +23,7 @@ type MessageContext struct {
 	// UserContent original user message content
 	UserContent string
 
-	// UserMessage 最终Send给 LLM 的用户消息（中间件可修改）
+	// UserMessage: final user message sent to LLM (middleware can modify)
 	UserMessage string
 
 	// History conversation history
@@ -38,16 +38,16 @@ type MessageContext struct {
 	// Channel message channel (e.g. feishu)
 	Channel string
 
-	// WorkDir Working directory（展示给 LLM 的路径）
+	// WorkDir: working directory (path shown to LLM)
 	WorkDir string
 
-	// CWD 当前Working directory（Agent 运行时的 cwd，可能与 WorkDir 不同）
+	// CWD: current working directory (Agent's runtime cwd, may differ from WorkDir)
 	CWD string
 
-	// SenderName Send者名称
+	// SenderName: sender name
 	SenderName string
 
-	// SenderID Send者 ID
+	// SenderID: sender ID
 	SenderID string
 
 	// ChatID session ID
@@ -115,8 +115,8 @@ func GetExtraTyped[T any](mc *MessageContext, key string) (T, bool) {
 //	"00_base"    - Base prompt template
 //	"10_skills"  - Skills directory
 //	"15_agents"  - Agents catalog
-//	"20_memory"  - Memory内容
-//	"30_sender"  - Send者信息
+//	"20_memory"  - Memory content
+//	"30_sender"  - Sender info
 //	"90_time"    - Timestamp (changes most frequently, put last to optimize KV-cache)
 func (mc *MessageContext) BuildSystemPrompt() string {
 	if len(mc.SystemParts) == 0 {
@@ -198,7 +198,7 @@ type MessageMiddleware interface {
 	// Recommended ranges:
 	//   0-99:   Infrastructure (prompt templates, environment info)
 	//   100-199: Context injection (skills, agents, memory)
-	//   200-299: 用户Message processing（时间戳、Send者标识）
+	//   200-299: User message processing (timestamp, sender identification)
 	//   300-399: Post-processing (token trimming, formatting)
 	Priority() int
 

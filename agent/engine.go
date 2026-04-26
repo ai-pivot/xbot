@@ -45,7 +45,7 @@ type RunConfig struct {
 	Tools        *tools.Registry
 	Messages     []llm.ChatMessage
 
-	// === Identity（从 InboundMessage 提取） ===
+	// === Identity (extracted from InboundMessage) ===
 	AgentID      string // "main", "main/code-reviewer"
 	Channel      string // Original IM channel (for ToolContext)
 	ChatID       string // Original IM session
@@ -88,10 +88,10 @@ type RunConfig struct {
 	// Empty in main Agent scenario (same as SessionKey).
 	RootSessionKey string
 
-	// ProgressNotifier Progress notification回调（nil = 不通知）
+	// ProgressNotifier: progress notification callback (nil = no notification)
 	ProgressNotifier func(lines []string)
 
-	// ProgressEventHandler 结构化进度事件回调（nil = 不Send）
+	// ProgressEventHandler: structured progress event callback (nil = don't send)
 	ProgressEventHandler func(event *ProgressEvent)
 
 	// ContextManager context manager (nil = no compression)
@@ -100,7 +100,7 @@ type RunConfig struct {
 	// ContextManagerConfig context manager configuration (Phase 2 smart trigger needs access to MaxContextTokens etc.)
 	ContextManagerConfig *ContextManagerConfig
 
-	// SendFunc 向 IM 渠道Send消息（nil = 不能发消息）
+	// SendFunc: send message to IM channel (nil = cannot send)
 	SendFunc func(channel, chatID, content string, metadata ...map[string]string) error
 
 	// InjectInbound injects inbound message, triggering full Agent processing loop (nil = not supported)
@@ -120,7 +120,7 @@ type RunConfig struct {
 	// Returns (content, handled): when handled=true, use content to replace tool error
 	OAuthHandler func(ctx context.Context, tc llm.ToolCall, execErr error) (content string, handled bool)
 
-	// ToolExecutor Tool execution函数。
+	// ToolExecutor: tool execution function.
 	// Main Agent injects full version with session MCP, activation check, Letta memory;
 	// SubAgent uses nil (defaultToolExecutor looks up and executes from cfg.Tools).
 	ToolExecutor func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error)
@@ -133,8 +133,8 @@ type RunConfig struct {
 	// EnableReadWriteSplit enables read-write split parallel execution (default false = all serial)
 	EnableReadWriteSplit bool
 
-	// SessionFinalSentCallback 工具Send最终回复时的回调（如飞书卡片）。
-	// 返回 true 表示已Send最终回复，后续Progress notification应停止。
+	// SessionFinalSentCallback Callback when tool sends final reply (e.g. Feishu card).
+	// Returns true if final reply was sent; subsequent progress notifications should stop.
 	SessionFinalSentCallback func() bool
 
 	// InteractiveCallbacks Interactive SubAgent callbacks (nil = no interactive support).
@@ -159,7 +159,7 @@ type RunConfig struct {
 	// MemoryToolDefs memory tool definition list (nil = don't use memory tools during compression)
 	MemoryToolDefs []llm.ToolDefinition
 
-	// MemoryToolExec MemoryTool execution函数（nil = 压缩时不使用Memory工具）
+	// MemoryToolExec: memory tool execution function (nil = don't use memory tool during compression)
 	MemoryToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error)
 
 	// TodoManager TODO manager (optional)
@@ -336,10 +336,10 @@ func readArgsHasOffsetOrLimit(argsJSON string) bool {
 // Run unified Agent loop.
 //
 // Input: RunConfig (built from InboundMessage)
-// 输出：*RunOutput（可直接Send到 IM 或返回给父 Agent）
+// Output: *RunOutput (can be sent directly to IM or returned to parent Agent)
 //
 // Main Agent and SubAgent use the same Run(), differences injected via RunConfig:
-//   - 主 Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
+//   - Main Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
 
 // generateResponse calls the LLM using non-streaming mode.
 func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string)) (*llm.LLMResponse, error) {
@@ -362,10 +362,10 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 // Run unified Agent loop.
 //
 // Input: RunConfig (built from InboundMessage)
-// 输出：*RunOutput（可直接Send到 IM 或返回给父 Agent）
+// Output: *RunOutput (can be sent directly to IM or returned to parent Agent)
 //
 // Main Agent and SubAgent use the same Run(), differences injected via RunConfig:
-//   - 主 Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
+//   - Main Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
 //   - SubAgent: ToolExecutor=simpleExecutor, ProgressNotifier=nil, ContextManager=independent_phase1, ...
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	s := newRunState(cfg)
@@ -903,7 +903,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.Manager = adapter
 	}
 
-	// 注入 Letta memory fields（覆盖上面的默认值）
+	// Inject Letta memory fields (overriding the defaults above)
 	if ext := cfg.ToolContextExtras; ext != nil {
 		tc.TenantID = ext.TenantID
 		tc.CoreMemory = ext.CoreMemory

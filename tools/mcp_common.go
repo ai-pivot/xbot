@@ -262,9 +262,9 @@ func getLoginShellEnv() []string {
 	return env
 }
 
-// resolveXbotBinDir 从 configPath 推断 .xbot/bin 目录（存在才返回）
+// resolveXbotBinDir infers the .xbot/bin directory from configPath (returns only if it exists)
 
-// resolveXbotBinDir 从 configPath 推断 .xbot/bin 目录（存在才返回）
+// resolveXbotBinDir infers the .xbot/bin directory from configPath (returns only if it exists)
 func resolveXbotBinDir(configPath string) string {
 	if configPath == "" {
 		return ""
@@ -278,7 +278,7 @@ func resolveXbotBinDir(configPath string) string {
 	if strings.HasSuffix(dir, string(filepath.Separator)+".xbot") || filepath.Base(dir) == ".xbot" {
 		binDir = filepath.Join(dir, "bin")
 	} else {
-		// configPath 在 workDir 根目录，如 /workdir/mcp.json
+		// configPath is in the workDir root, e.g. /workdir/mcp.json
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		binDir = filepath.Join(dir, ".xbot", "bin")
 	}
@@ -354,7 +354,7 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 		}
 		return session, nil
 	default:
-		// None 模式：直接本地执行
+		// None mode: execute locally directly
 		execCmd = exec.Command(cfg.Command, cfg.Args...)
 	}
 
@@ -482,7 +482,7 @@ func convertMCPParams(tool *mcp.Tool) []llm.ToolParam {
 		return nil
 	}
 
-	// 构建 required 集合
+	// Build the required set
 	requiredSet := make(map[string]bool)
 	if reqList, ok := schema["required"].([]any); ok {
 		for _, r := range reqList {

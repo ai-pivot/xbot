@@ -149,7 +149,7 @@ func (t *SearchToolsTool) executeFallback(ctx *ToolContext, query string, topK i
 	// Get MCP catalog from registry
 	sessionKey := ctx.Channel + ":" + ctx.ChatID
 	mcpCatalog := ctx.Registry.GetMCPCatalog(sessionKey)
-	// 使用渠道过滤的工具组
+	// Tool groups filtered by channel
 	toolGroups := ctx.Registry.GetToolGroupsForChannel(ctx.Channel)
 
 	log.WithFields(log.Fields{

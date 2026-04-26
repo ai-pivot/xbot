@@ -630,7 +630,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	}
 	log.Info("Knowledge tools registered (core)")
 
-	// 初始化command registry
+	// Initialize command registry
 	a.commands = NewCommandRegistry()
 	registerBuiltinCommands(a.commands)
 

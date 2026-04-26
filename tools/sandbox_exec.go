@@ -76,7 +76,7 @@ func RunInSandboxWithShell(ctx *ToolContext, shellCmd string) (string, error) {
 		userID = ctx.SenderID
 	}
 
-	// 获取默认 shell
+	// Get default shell
 	workspaceRoot := ctx.WorkspaceRoot
 	if workspaceRoot == "" {
 		workspaceRoot = ctx.WorkingDir
@@ -106,7 +106,7 @@ func RunInSandboxWithShell(ctx *ToolContext, shellCmd string) (string, error) {
 }
 
 // RunInSandboxRaw executes a command in the sandbox and returns raw output (no TrimSpace)。
-// 适用于需要保留文件原始内容的场景（如 cat 读取文件）。
+// Suitable for scenarios that need to preserve the original file content (e.g. cat reading files).
 func RunInSandboxRaw(ctx *ToolContext, command string, args ...string) (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("sandbox not enabled")
@@ -183,7 +183,7 @@ func RunInSandboxRawWithShell(ctx *ToolContext, shellCmd string) (string, error)
 	return formatExecResultRaw(result), nil
 }
 
-// setSandboxDir 根据 sandbox 模式设置 ExecSpec 的 Dir 和 Workspace 字段。
+// setSandboxDir sets the Dir and Workspace fields of ExecSpec based on sandbox mode.
 func setSandboxDir(ctx *ToolContext, sandbox Sandbox, spec *ExecSpec) {
 	switch sandbox.Name() {
 	case SandboxDocker:
@@ -199,8 +199,8 @@ func setSandboxDir(ctx *ToolContext, sandbox Sandbox, spec *ExecSpec) {
 	}
 }
 
-// formatExecResult 格式化 ExecResult 为 TrimSpace 后的字符串。
-// 非零退出码时返回 error。
+// formatExecResult formats ExecResult as a TrimSpace'd string.
+// Returns error on non-zero exit code.
 func formatExecResult(result *ExecResult) string {
 	output := strings.TrimSpace(result.Stdout)
 	if result.Stderr != "" {
@@ -213,7 +213,7 @@ func formatExecResult(result *ExecResult) string {
 	return output
 }
 
-// formatExecResultRaw 格式化 ExecResult 为原始字符串（不做 TrimSpace）。
+// formatExecResultRaw formats ExecResult as a raw string (no TrimSpace).
 func formatExecResultRaw(result *ExecResult) string {
 	output := result.Stdout
 	if result.Stderr != "" {

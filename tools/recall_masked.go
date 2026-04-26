@@ -9,20 +9,20 @@ import (
 )
 
 // MaskedRecallStore is the ObservationMaskStore interface exposed to the tools package.
-// 返回字符串而非 struct，避免 tools/agent 循环依赖。
+// Return string instead of struct to avoid tools/agent circular dependency.
 type MaskedRecallStore interface {
-	// RecallMasked 按 ID 召回已遮蔽的内容，返回 (toolName, fullContent, error)
+	// RecallMasked recalls masked content by ID, returns (toolName, fullContent, error)
 	RecallMasked(id string) (toolName string, content string, err error)
-	// ListMasked list all masked observations，返回 JSON 格式的列表
+	// ListMasked lists all masked observations, returns a JSON-formatted list
 	ListMasked() []map[string]interface{}
 }
 
-// RecallMaskedTool 召回已被 observation masking 遮蔽的工具结果。
+// RecallMaskedTool recalls tool results that have been hidden by observation masking.
 type RecallMaskedTool struct {
 	Store MaskedRecallStore
 }
 
-// recallMaskedParams 参数
+// recallMaskedParams parameters
 type recallMaskedParams struct {
 	ID    string `json:"id"`              // 要召回的 mask ID
 	List  bool   `json:"list,omitempty"`  // list all masked observations
@@ -70,7 +70,7 @@ func (t *RecallMaskedTool) Execute(ctx *ToolContext, args string) (*ToolResult, 
 		return t.listMasked()
 	}
 
-	// 召回特定 ID
+	// Recall a specific ID
 	if params.ID == "" {
 		return nil, fmt.Errorf("missing required parameter: id (or set list=true to list all)")
 	}
@@ -126,7 +126,7 @@ func (t *RecallMaskedTool) recallByID(params recallMaskedParams) (*ToolResult, e
 		return NewResult(header + "\n" + content), nil
 	}
 
-	// 截断返回
+	// Truncated return
 	end := limit
 	sliced := string(runes[:end])
 	result := header + fmt.Sprintf(" (showing first %d of %d runes)\n\n%s\n\n... (truncated, %d more runes. Use a smaller scope or different query.)", limit, totalRunes, sliced, totalRunes-limit)

@@ -21,8 +21,8 @@ import (
 // DockerSandbox is the Docker sandbox implementation
 // Container lifecycle: Close/CloseForUser only stop (no rm); reused via start.
 // Internal logic (stale mount rebuild, startup failure rebuild) only does forceRemove, no export/import.
-// export+import 仅在用户主动触发 cleanup 时执行（由 settings 中的 sandbox_cleanup 控制）。
-// 始终使用 export+import（而非 docker commit），避免镜像层累积迅速耗尽磁盘空间。
+// export+import is only executed when the user actively triggers cleanup (controlled by sandbox_cleanup in settings).
+// Always use export+import (not docker commit) to avoid image layer accumulation rapidly consuming disk space.
 type DockerSandbox struct {
 	image            string // 基础镜像
 	hostWorkDir      string // DinD: 宿主机上对应 WORK_DIR 的路径（空则不翻译）
@@ -69,7 +69,7 @@ func (s *DockerSandbox) Close() error {
 }
 
 // CloseForUser closes the container for the specified user (stop only, no rm or export/import).
-// 容器保留在磁盘上，下次直接 docker start 复用。
+// Container is kept on disk, directly reuse via docker start next time.
 func (s *DockerSandbox) CloseForUser(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,7 +99,7 @@ func (s *DockerSandbox) IsExporting(userID string) bool {
 }
 
 // ExportAndImport performs synchronous export+import persistence (triggered by cleanup in settings).
-// 调用期间 IsExporting(userID) 返回 true，引擎层会阻塞该用户的后续请求。
+// During the call, IsExporting(userID) returns true; the engine layer blocks subsequent requests from this user.
 func (s *DockerSandbox) ExportAndImport(userID string) error {
 	s.mu.Lock()
 	if s.exportingUsers == nil {
@@ -121,7 +121,7 @@ func (s *DockerSandbox) ExportAndImport(userID string) error {
 
 	log.Infof("Starting export+import for user %s (container %s)", userID, containerName)
 
-	// 调用 exportImportIfDirty（不持有锁，因为内部不获取锁）
+	// Call exportImportIfDirty (without holding the lock, since it doesn't acquire locks internally)
 	s.exportImportIfDirty(containerName, userID)
 
 	s.mu.Lock()
@@ -132,16 +132,16 @@ func (s *DockerSandbox) ExportAndImport(userID string) error {
 	return nil
 }
 
-// exportImportIfDirty 仅在容器有文件系统变更时，用 export+import 持久化为单层镜像。
+// exportImportIfDirty only persists to a single-layer image via export+import when the container has filesystem changes.
 // Always uses export+import (not docker commit) to keep images single-layer and prevent disk bloat.
-// 注意：此方法不获取 s.mu 锁，调用方需确保不在持锁状态下调用。
+// Note: this method does not acquire s.mu lock; callers must ensure they don't hold the lock when calling.
 func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 	if userID == "" || strings.HasPrefix(userID, "__") {
 		log.Debugf("Skipping export for system container %s (userID=%q)", containerName, userID)
 		return
 	}
 
-	// 验证容器仍然存在且在运行（防止锁释放后被 CloseForUser 关闭导致操作无效容器）
+	// Verify the container still exists and is running (prevents operating on an invalid container if CloseForUser closed it after lock release)
 	if err := dockerRun(dockerCmdTimeout, "container", "inspect", containerName); err != nil {
 		log.WithError(err).Warnf("Container %s no longer exists, skipping export", containerName)
 		return
@@ -160,7 +160,7 @@ func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 	userImage := userImageName(userID)
 
 	// 1. get current image metadata (docker export/import loses CMD/ENTRYPOINT/ENV etc.)
-	//    优先从已有用户镜像读取，不存在则从基础镜像读取
+	//    Prefer reading from existing user image; fall back to base image if not found
 	sourceImage := userImage
 	if err := dockerRun(dockerCmdTimeout, "image", "inspect", sourceImage); err != nil {
 		sourceImage = s.image
@@ -228,10 +228,10 @@ func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 	}
 
 	// 6. don't do global image prune, avoid accidentally deleting user-installed dev environment images
-	// 旧镜像已在第 5 步通过 rmi oldImageID 精确清理
+	// Old image was already precisely cleaned up in step 5 via rmi oldImageID
 }
 
-// exportImportFallback 降级方案：export 到临时文件再 import（兼容 DinD 等管道不工作的场景）。
+// exportImportFallback: fallback approach — export to temp file then import (compatible with DinD and other scenarios where pipes don't work).
 // doesn't acquire s.mu lock.
 func (s *DockerSandbox) exportImportFallback(containerName, userImage string, changes []string) {
 	tmpFile, err := os.CreateTemp("", "xbot-export-*.tar")
@@ -248,7 +248,7 @@ func (s *DockerSandbox) exportImportFallback(containerName, userImage string, ch
 		return
 	}
 
-	// 记录旧镜像 ID
+	// Record old image ID
 	var oldImageID string
 	if out, err := dockerExec(dockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
 		oldImageID = strings.TrimSpace(string(out))
@@ -313,12 +313,12 @@ func (s *DockerSandbox) Wrap(command string, args []string, env []string, worksp
 		dockerArgs = append(dockerArgs, "-e", e)
 	}
 
-	// 直接透传 command + args，不做 shell 包装
-	// 职责边界：Wrap 只负责将调用方的命令透传给 docker exec
-	// shell 包装（-l -c）由调用方在需要时自行构造，例如：
-	//   - ShellTool: 用 login shell 自动加载 ~/.bashrc
-	//   - RunInSandboxWithShell: 用 login shell
-	//   - 测试: 直接传 command + args，按需自行决定
+	// Directly pass through command + args, no shell wrapping
+	// Responsibility boundary: Wrap is only responsible for passing the caller's command through to docker exec
+	// Shell wrapping (-l -c) is constructed by the caller when needed, for example:
+	//   - ShellTool: uses login shell to auto-load ~/.bashrc
+	//   - RunInSandboxWithShell: uses login shell
+	//   - Tests: pass command + args directly, decide as needed
 	dockerArgs = append(dockerArgs, containerName, command)
 	dockerArgs = append(dockerArgs, args...)
 
@@ -598,7 +598,7 @@ func (s *DockerSandbox) DownloadFile(ctx context.Context, url, outputPath, userI
 
 // getOrCreateContainer gets or creates the user's Docker container
 // prefer user-specific image (from export+import); fall back to base image if not found
-// 返回容器名称和检测到的用户默认 shell
+// Returns container name and detected user default shell
 func (s *DockerSandbox) getOrCreateContainer(userID, workspace string) (containerName, shell string, err error) {
 	s.mu.Lock()
 
@@ -726,14 +726,14 @@ func (s *DockerSandbox) GetShell(userID string, workspace string) (string, error
 		return "", err
 	}
 
-	// 获取或创建容器，同时获取 shell
+	// Get or create container, also get shell
 	_, shell, err := s.getOrCreateContainer(userID, ws)
 	return shell, err
 }
 
 // detectShell gets the user's default shell from /etc/passwd inside the container
 func (s *DockerSandbox) detectShell(containerName string) string {
-	// 获取 root 用户的默认 shell
+	// Get the default shell for the root user
 	output, err := dockerExec(dockerCmdTimeout, "exec", containerName,
 		"sh", "-c", "grep '^root:' /etc/passwd | cut -d: -f7")
 	if err != nil || len(strings.TrimSpace(string(output))) == 0 {

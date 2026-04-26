@@ -282,7 +282,7 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 // SpawnInteractiveSession creates a new interactive SubAgent session and executes the first task.
 // If a session with the same role name already exists, returns error.
 //
-// 锁Strategy:interactiveSubAgents 使用 sync.Map，本身concurrency safe，无需额外mutex。
+// Lock strategy: interactiveSubAgents uses sync.Map, inherently concurrency-safe, no extra mutex needed.
 // Uses LoadOrStore for atomic check-and-store, avoiding spawn races.
 // Uses placeholder pattern: Store a minimal placeholder, replace with full data after Run() completes.
 // Any error path must clean up the placeholder to avoid session getting stuck.
@@ -361,7 +361,7 @@ func (a *Agent) SpawnInteractiveSession(
 	_ = agentTenantSession.Clear()
 
 	// Eager-save user message so get_history returns it during Run().
-	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no
+	// Without this, the CLI shows "0 history messages loaded" and the DB has no
 	// user message turn boundary. Run()'s incremental persistence skips
 	// messages[0:lastPersistedCount] which includes this user message.
 	if err := agentTenantSession.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
@@ -374,7 +374,7 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 
 	// SubAgent progress reporting: prefer parent Agent's injected callback (avoid concurrent SubAgents overwriting each other's patches),
-	// 否则 fallback 到直接Send消息（非并行场景）。
+	// Otherwise fallback to direct message send (non-parallel scenario).
 	// Progress passthrough: child Agent not only reports its own progress, but also injects callbacks into subCtx for deeper SubAgents to recursively passthrough.
 	// Background mode exception: bg subagent's progress should not passthrough to parent agent's TUI.
 
@@ -692,7 +692,7 @@ func (a *Agent) SpawnInteractiveSession(
 	return out.OutboundMessage, nil
 }
 
-// SendToInteractiveSession 向已有的 interactive session Send新消息。
+// SendToInteractiveSession sends a new message to an existing interactive session.
 func (a *Agent) SendToInteractiveSession(
 	ctx context.Context,
 	roleName string,
@@ -795,7 +795,7 @@ func (a *Agent) SendToInteractiveSession(
 				cb(detail)
 			})
 		} else {
-			// fallback：无父引擎进度上下文时，禁用直接 sendMessage Progress notification，
+			// Fallback: when no parent engine progress context, disable direct sendMessage progress notification,
 			// avoiding multiple interactive agents competing for the same sessionMsgIDs causing progress tree crosstalk.
 			cfg.ProgressNotifier = nil
 		}
@@ -1219,7 +1219,7 @@ func (a *Agent) GetActiveInteractiveRoles(channel, chatID string) []string {
 	return roles
 }
 
-// CleanupInteractiveSessions Cleanup指定 session 下所有 interactive sessions。
+// CleanupInteractiveSessions cleans up all interactive sessions under the specified session.
 func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID string) {
 	keysToClean := a.GetActiveInteractiveRoles(channel, chatID)
 	for _, key := range keysToClean {

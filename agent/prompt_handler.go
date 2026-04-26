@@ -13,7 +13,7 @@ import (
 	"xbot/session"
 )
 
-// handlePromptQuery 构建完整提示词并写入文件Send给用户（dryrun，不调用 LLM）
+// handlePromptQuery builds the full prompt, writes it to a file, and sends it to the user (dryrun, no LLM call)
 func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
 	// Extract query content after /prompt (trim then truncate, aligned with cmd parsing)
 	trimmed := strings.TrimSpace(msg.Content)
@@ -57,7 +57,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 
 	fmt.Fprintf(&buf, "\n--- Total messages: %d ---\n", len(messages))
 
-	// 写入文件并Send
+	// Write to file and send
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.sandboxWorkspace(sbUID)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
@@ -81,7 +81,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 	}, nil
 }
 
-// handleNewSession 处理 /new 命令：先归档Memory，再clear session
+// handleNewSession handles /new command: archive memory first, then clear session
 func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
 	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
@@ -127,14 +127,14 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 		log.Ctx(ctx).WithError(err).Warn("Failed to reset last consolidated")
 	}
 
-	// 清除Memory整理状态，取消正在进行的整理任务（多路径协调）
+	// Clear memory consolidation state, cancel in-progress consolidation tasks (multi-path coordination)
 	tenantKey := msg.Channel + ":" + msg.ChatID
 
-	// Cleanup offload 数据
+	// Clean up offload data
 	if a.offloadStore != nil {
 		a.offloadStore.CleanSession(tenantKey)
 	}
-	// Cleanup mask 数据
+	// Clean up mask data
 	if a.maskStore != nil {
 		a.maskStore.Clear()
 	}

@@ -243,7 +243,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 		content := strings.TrimSpace(m.textarea.Value())
 		if content != "" {
-			// §22 Input history：保存发送的内容（Deduplication，不保存 / 命令和空输入）
+			// §22 Input history: save sent content (deduplicated, don't save / commands and empty input)
 			if !strings.HasPrefix(content, "/") {
 				if len(m.inputHistory) == 0 || m.inputHistory[0] != content {
 					m.inputHistory = append([]string{content}, m.inputHistory...)
@@ -278,12 +278,12 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		return m, nil, true
 
 	case msg.String() == "ctrl+o":
-		// §11 Ctrl+O toggle tool summary 展开/折叠（兼容非 CSI-u 终端）
+		// §11 Ctrl+O toggle tool summary expand/collapse (compatible with non-CSI-u terminals)
 		m.toggleToolSummary()
 		return m, nil, true
 
 	case msg.String() == "ctrl+e":
-		// §19 Ctrl+E 切换Long message folding（搜索导航模式下拦截）
+		// §19 Ctrl+E toggle long message folding (intercepted in search navigation mode)
 		if m.searchMode && !m.searchEditing {
 			return m, nil, true
 		}
@@ -540,7 +540,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			m.iterationStartTime = time.Now()
 		}
 
-		// §2 Tool visualization：快照 CompletedTools 到独立字段
+		// §2 Tool visualization: snapshot CompletedTools to a separate field
 		// Accept all completed tools regardless of their Iteration field — they
 		// represent work that finished and should be displayed.
 		if len(msg.payload.CompletedTools) > 0 {

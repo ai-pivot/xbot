@@ -55,7 +55,7 @@ func (s *ChatHistoryStore) Add(channel, chatID, senderID, content string) {
 	key := s.makeKey(channel, chatID)
 	hist, exists := s.history[key]
 	if !exists {
-		// 防止 map 无限增长：超过上限时清理最旧的 channel
+		// Prevent unbounded map growth: clean up the oldest channel when the limit is exceeded
 		if len(s.history) >= defaultMaxChannels {
 			s.evictOldestLocked()
 		}
@@ -67,7 +67,7 @@ func (s *ChatHistoryStore) Add(channel, chatID, senderID, content string) {
 		s.history[key] = hist
 	}
 
-	// 添加新消息
+	// Add new message
 	msg := ChatMessage{
 		Content:   content,
 		SenderID:  senderID,
@@ -76,7 +76,7 @@ func (s *ChatHistoryStore) Add(channel, chatID, senderID, content string) {
 	hist.messages = append(hist.messages, msg)
 	hist.lastUpdate = time.Now()
 
-	// 限制大小
+	// Limit size
 	if len(hist.messages) > hist.maxSize {
 		// keep the latest maxSize messages
 		hist.messages = hist.messages[len(hist.messages)-hist.maxSize:]
@@ -111,11 +111,11 @@ func (s *ChatHistoryStore) Get(channel, chatID string, limit int) []ChatMessage 
 
 	messages := hist.messages
 	if limit > 0 && limit < len(messages) {
-		// 返回最近的 limit 条消息
+		// Return the most recent limit messages
 		messages = messages[len(messages)-limit:]
 	}
 
-	// 返回副本，避免外部修改
+	// Return a copy to prevent external modification
 	result := make([]ChatMessage, len(messages))
 	copy(result, messages)
 	return result
@@ -126,7 +126,7 @@ func (s *ChatHistoryStore) makeKey(channel, chatID string) string {
 	return fmt.Sprintf("%s:%s", channel, chatID)
 }
 
-// ---- ChatHistoryTool: 让 LLM 可以查询聊天历史 ----
+// ---- ChatHistoryTool: allows the LLM to query chat history ----
 
 // ChatHistoryTool chat history query tool
 type ChatHistoryTool struct {
@@ -195,12 +195,12 @@ func (t *ChatHistoryTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 		return NewResult("No recent message history found."), nil
 	}
 
-	// 格式化输出
+	// Format output
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Recent %d messages in this conversation:\n\n", len(messages))
 
 	for i, msg := range messages {
-		// 格式化时间
+		// Format time
 		timeStr := msg.Timestamp.Format("15:04")
 		if time.Since(msg.Timestamp) > 24*time.Hour {
 			timeStr = msg.Timestamp.Format("01/02 15:04")
