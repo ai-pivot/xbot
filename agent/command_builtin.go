@@ -81,6 +81,21 @@ func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (
 	}, nil
 }
 
+// matchCommand checks if s matches a slash command by name.
+// It matches both the exact command (e.g. "/help") and the command with
+// trailing arguments (e.g. "/help something"). Case-insensitive.
+func matchCommand(s, cmd string) bool {
+	l := strings.ToLower(s)
+	return l == cmd || strings.HasPrefix(l, cmd+" ")
+}
+
+// matchCommandWithArgs checks if s starts with a slash command followed by arguments.
+// Unlike matchCommand, it does NOT match the bare command without arguments.
+// Case-insensitive.
+func matchCommandWithArgs(s, cmd string) bool {
+	return strings.HasPrefix(strings.ToLower(s), cmd+" ")
+}
+
 // --- /prompt ---
 
 type promptCmd struct{}
@@ -88,8 +103,7 @@ type promptCmd struct{}
 func (c *promptCmd) Name() string      { return "/prompt" }
 func (c *promptCmd) Aliases() []string { return nil }
 func (c *promptCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return lower == "/prompt" || strings.HasPrefix(lower, "/prompt ")
+	return matchCommand(s, "/prompt")
 }
 func (c *promptCmd) Concurrent() bool { return true } // read-only snapshot, no real-time requirement
 
@@ -108,8 +122,7 @@ type setLLMCmd struct{}
 func (c *setLLMCmd) Name() string      { return "/set-llm" }
 func (c *setLLMCmd) Aliases() []string { return nil }
 func (c *setLLMCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return lower == "/set-llm" || strings.HasPrefix(lower, "/set-llm ")
+	return matchCommand(s, "/set-llm")
 }
 func (c *setLLMCmd) Concurrent() bool { return false } // mutates LLM config
 
@@ -218,8 +231,7 @@ type setModelCmd struct{}
 func (c *setModelCmd) Name() string      { return "/set-model" }
 func (c *setModelCmd) Aliases() []string { return nil }
 func (c *setModelCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return lower == "/set-model" || strings.HasPrefix(lower, "/set-model ")
+	return matchCommand(s, "/set-model")
 }
 func (c *setModelCmd) Concurrent() bool { return false } // mutates LLM config
 
@@ -251,8 +263,7 @@ type publishCmd struct{}
 func (c *publishCmd) Name() string      { return "/publish" }
 func (c *publishCmd) Aliases() []string { return nil }
 func (c *publishCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/publish ")
+	return matchCommandWithArgs(s, "/publish")
 }
 func (c *publishCmd) Concurrent() bool { return false }
 
@@ -285,8 +296,7 @@ type unpublishCmd struct{}
 func (c *unpublishCmd) Name() string      { return "/unpublish" }
 func (c *unpublishCmd) Aliases() []string { return nil }
 func (c *unpublishCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/unpublish ")
+	return matchCommandWithArgs(s, "/unpublish")
 }
 func (c *unpublishCmd) Concurrent() bool { return false }
 
@@ -316,8 +326,7 @@ type browseCmd struct{}
 func (c *browseCmd) Name() string      { return "/browse" }
 func (c *browseCmd) Aliases() []string { return nil }
 func (c *browseCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return lower == "/browse" || strings.HasPrefix(lower, "/browse ")
+	return matchCommand(s, "/browse")
 }
 func (c *browseCmd) Concurrent() bool { return true }
 
@@ -361,8 +370,7 @@ type installCmd struct{}
 func (c *installCmd) Name() string      { return "/install" }
 func (c *installCmd) Aliases() []string { return nil }
 func (c *installCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/install ")
+	return matchCommandWithArgs(s, "/install")
 }
 func (c *installCmd) Concurrent() bool { return false }
 
@@ -395,8 +403,7 @@ type uninstallCmd struct{}
 func (c *uninstallCmd) Name() string      { return "/uninstall" }
 func (c *uninstallCmd) Aliases() []string { return nil }
 func (c *uninstallCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/uninstall ")
+	return matchCommandWithArgs(s, "/uninstall")
 }
 func (c *uninstallCmd) Concurrent() bool { return false }
 
@@ -426,8 +433,7 @@ type myCmd struct{}
 func (c *myCmd) Name() string      { return "/my" }
 func (c *myCmd) Aliases() []string { return nil }
 func (c *myCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/my ")
+	return matchCommandWithArgs(s, "/my")
 }
 func (c *myCmd) Concurrent() bool { return true }
 
@@ -488,8 +494,7 @@ type settingsCmd struct{}
 func (c *settingsCmd) Name() string      { return "/settings" }
 func (c *settingsCmd) Aliases() []string { return nil }
 func (c *settingsCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return lower == "/settings" || strings.HasPrefix(lower, "/settings ")
+	return matchCommand(s, "/settings")
 }
 func (c *settingsCmd) Concurrent() bool { return true }
 
