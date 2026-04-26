@@ -202,7 +202,7 @@ func extractRoleName(path []string) string {
 // 用于从扁平文本行重建子 Agent 层级树。
 func countFullWidthIndent(line string) int {
 	for strings.HasPrefix(line, quotePrefix) {
-		line = strings.TrimPrefix(line, "> ")
+		line = strings.TrimPrefix(line, quotePrefix)
 	}
 	count := 0
 	for _, r := range line {
@@ -278,7 +278,7 @@ type childAgentStatus struct {
 func isSubAgentLine(line string) bool {
 	// 清理引用前缀
 	for strings.HasPrefix(line, quotePrefix) {
-		line = strings.TrimPrefix(line, "> ")
+		line = strings.TrimPrefix(line, quotePrefix)
 	}
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -367,7 +367,7 @@ func isPlausibleAgentRole(name string) bool {
 func parseSubAgentLine(line string) (childAgentStatus, bool) {
 	// 清理引用前缀
 	for strings.HasPrefix(line, quotePrefix) {
-		line = strings.TrimPrefix(line, "> ")
+		line = strings.TrimPrefix(line, quotePrefix)
 	}
 
 	// 清理树状线和全角缩进
@@ -574,7 +574,7 @@ func emojiToStatus(emoji string) string {
 func isToolCompletionLine(line string) bool {
 	// 清理引用前缀
 	for strings.HasPrefix(line, quotePrefix) {
-		line = strings.TrimPrefix(line, "> ")
+		line = strings.TrimPrefix(line, quotePrefix)
 	}
 	line = strings.TrimLeft(line, "　 \t")
 	// 工具完成行特征：以 ) 结尾（耗时格式如 (508ms)、(1.2s)）
