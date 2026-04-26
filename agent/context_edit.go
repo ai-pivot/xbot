@@ -43,6 +43,11 @@ type ContextEditResult struct {
 	EditedAt   time.Time         `json:"edited_at"`
 }
 
+const (
+	contextEditDefaultMaxSize  = 100 // Default max entries for context edit store
+	contextEditDefaultMaxChars = 200 // Default max characters for context edit
+)
+
 // ContextEditStore 管理 context editing 的历史记录。
 type ContextEditStore struct {
 	mu      sync.RWMutex
@@ -53,7 +58,7 @@ type ContextEditStore struct {
 // NewContextEditStore 创建 ContextEditStore。
 func NewContextEditStore(maxSize int) *ContextEditStore {
 	if maxSize <= 0 {
-		maxSize = 100
+		maxSize = contextEditDefaultMaxSize
 	}
 	return &ContextEditStore{maxSize: maxSize}
 }
@@ -217,7 +222,7 @@ func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, par
 
 	case ContextEditTruncate:
 		if req.MaxChars <= 0 {
-			req.MaxChars = 200
+			req.MaxChars = contextEditDefaultMaxChars
 		}
 		runes := []rune(msg.Content)
 		if len(runes) <= req.MaxChars {
