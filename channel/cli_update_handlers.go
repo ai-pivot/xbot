@@ -247,8 +247,8 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			if !strings.HasPrefix(content, "/") {
 				if len(m.inputHistory) == 0 || m.inputHistory[0] != content {
 					m.inputHistory = append([]string{content}, m.inputHistory...)
-					if len(m.inputHistory) > 100 {
-						m.inputHistory = m.inputHistory[:100]
+					if len(m.inputHistory) > inputHistoryMax {
+						m.inputHistory = m.inputHistory[:inputHistoryMax]
 					}
 				}
 			}
