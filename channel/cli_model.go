@@ -155,6 +155,25 @@ var (
 // errorKeywords — system 消息中的错误检测关键词
 var errorKeywords = []string{"error", "failed", "失败", "错误", "exception", "denied", "refused"}
 
+// Terminal CSI escape sequences for modified keys not recognized by Bubble Tea.
+// Some terminals use the CSI u protocol (kitty, Ghostty, Windows Terminal),
+// others use the legacy format. These constants are matched against fmt.Sprint(msg)
+// since Bubble Tea delivers them as unknown sequences with varying internal types.
+const (
+	// Ctrl+Enter: CSI u = \x1b[13;5u, legacy = \x1b[27;5;13~
+	csiCtrlEnterCSIu      = "?CSI[49 51 59 53 117]?"
+	csiCtrlEnterRaw       = "\x1b[13;5u"
+	csiCtrlEnterLegacy    = "?CSI[50 55 59 53 59 49 51 126]?"
+	csiCtrlEnterLegacyRaw = "\x1b[27;5;13~"
+	// Ctrl+O: CSI u = \x1b[15;5u
+	csiCtrlOCsiu = "?CSI[49 53 59 53 117]?"
+	csiCtrlORaw  = "\x1b[15;5u"
+	// Ctrl+J: CSI u = \x1b[10;5u
+	csiCtrlJCsiu = "?CSI[49 48 59 53 117]?"
+	csiCtrlJRaw  = "\x1b[10;5u"
+	csiCtrlJKey  = "ctrl+j"
+)
+
 // pickVerb returns a deterministic verb based on tick count (changes every ~2s at 10 FPS).
 func (m *cliModel) pickVerb(ticks int64) string {
 	verbs := m.locale.ThinkingVerbs
@@ -789,25 +808,23 @@ type cliUpdateCheckMsg struct {
 // 其 String() 格式为 "?CSI[49 51 59 53 117]?"（%+v 对 []byte 输出字节值数组）。
 // 因此需要同时匹配 KeyMsg 和 unknownCSISequenceMsg 的字符串表示。
 func isCtrlEnter(msg tea.Msg) bool {
-	s := fmt.Sprintf("%v", msg)
-	// CSI u 协议: \x1b[13;5u → "?CSI[49 51 59 53 117]?" 或 KeyRunes "\x1b[13;5u"
-	// 旧格式:     \x1b[27;5;13~ → "?CSI[50 55 59 53 59 49 51 126]?" 或 KeyRunes "\x1b[27;5;13~"
-	return s == "?CSI[49 51 59 53 117]?" || s == "\x1b[13;5u" ||
-		s == "?CSI[50 55 59 53 59 49 51 126]?" || s == "\x1b[27;5;13~"
+	s := fmt.Sprint(msg)
+	return s == csiCtrlEnterCSIu || s == csiCtrlEnterRaw ||
+		s == csiCtrlEnterLegacy || s == csiCtrlEnterLegacyRaw
 }
 
 // isCtrlO 检测 Ctrl+O 按键（部分终端发送 CSI u 序列，Bubble Tea 无法识别）。
 // Ctrl+O = ASCII 15, CSI u 协议: \x1b[15;5u → "?CSI[49 53 59 53 117]?"
 func isCtrlO(msg tea.Msg) bool {
-	s := fmt.Sprintf("%v", msg)
-	return s == "?CSI[49 53 59 53 117]?" || s == "\x1b[15;5u"
+	s := fmt.Sprint(msg)
+	return s == csiCtrlOCsiu || s == csiCtrlORaw
 }
 
 // isCtrlJ detects Ctrl+J (newline). Ctrl+J = ASCII 10.
 // CSI u protocol: \x1b[10;5u → "?CSI[49 48 59 53 117]?"
 func isCtrlJ(msg tea.Msg) bool {
-	s := fmt.Sprintf("%v", msg)
-	return s == "?CSI[49 48 59 53 117]?" || s == "\x1b[10;5u" || s == "ctrl+j"
+	s := fmt.Sprint(msg)
+	return s == csiCtrlJCsiu || s == csiCtrlJRaw || s == csiCtrlJKey
 }
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
