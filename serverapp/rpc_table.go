@@ -360,7 +360,17 @@ func registerSubscriptionHandlers(t rpcTable, h *rpcContext) {
 
 // ── Memory / session / history / status ──
 
+// registerSessionHandlers registers all session/memory/history/status RPC handlers.
 func registerSessionHandlers(t rpcTable, h *rpcContext) {
+	registerMemoryHandlers(t, h)
+	registerSessionCRUDHandlers(t, h)
+	registerHistoryHandlers(t, h)
+	registerStatusHandlers(t, h)
+}
+
+// ── Memory / token-usage ──
+
+func registerMemoryHandlers(t rpcTable, h *rpcContext) {
 	backend := h.backend
 	t["clear_memory"] = rpc1void(func(ctx context.Context, p struct {
 		Channel    string `json:"channel"`
@@ -404,8 +414,12 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		}
 		return backend.MultiSession().GetDailyTokenUsage(rpcBizID(ctx), p.Days)
 	})
+}
 
-	// ── Sub-agents / sessions ──
+// ── Sub-agents / sessions ──
+
+func registerSessionCRUDHandlers(t rpcTable, h *rpcContext) {
+	backend := h.backend
 	t["count_interactive_sessions"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
@@ -492,8 +506,12 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		}
 		return dump, nil
 	})
+}
 
-	// ── History ──
+// ── History ──
+
+func registerHistoryHandlers(t rpcTable, h *rpcContext) {
+	backend := h.backend
 	t["get_history"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
@@ -539,8 +557,12 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		}
 		return backend.TrimHistory(p.Channel, p.ChatID, cutoff)
 	})
+}
 
-	// ── Status ──
+// ── Status ──
+
+func registerStatusHandlers(t rpcTable, h *rpcContext) {
+	backend := h.backend
 	t["is_processing"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
