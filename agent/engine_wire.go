@@ -1358,57 +1358,16 @@ func (a *Agent) consolidateSubAgentMemory(
 	}
 }
 
-// spawnSubAgent creates and runs a SubAgent via Run().
-// This is the SpawnAgent callback implementation, converting InboundMessage to RunConfig and calling Run().
-func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-	parentAgentID := msg.ParentAgentID
-	task := msg.Content
-	systemPrompt := msg.SystemPrompt
-	allowedTools := msg.AllowedTools
-	roleName := msg.RoleName
-
-	// --- CallChain depth & loop check ---
-	cc := CallChainFromContext(ctx)
-	if roleName != "" {
-		if err := cc.CanSpawn(roleName, a.maxSubAgentDepth); err != nil {
-			log.Ctx(ctx).WithFields(log.Fields{
-				"parent": parentAgentID,
-				"role":   roleName,
-				"chain":  cc.Chain,
-			}).Warn("SubAgent spawn blocked by CallChain")
-			return &bus.OutboundMessage{
-				Channel: "",
-				ChatID:  "",
-				Content: err.Error(),
-				Error:   err,
-			}, nil
-		}
-	}
-
-	// Build parentCtx (restored from InboundMessage)
-	originChannel, originChatID, originSender := resolveOriginIDs(msg)
-	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
-
-	log.Ctx(ctx).WithFields(log.Fields{
-		"parent": parentAgentID,
-		"role":   roleName,
-		"task":   tools.Truncate(task, 80),
-	}).Info("SubAgent started (via Run)")
-
-	// Restore capabilities from InboundMessage
-	caps := tools.CapabilitiesFromMap(msg.Capabilities)
-
-	// Get role-specified model from InboundMessage metadata
-	subModel := ""
-	if msg.Metadata != nil {
-		subModel = msg.Metadata["model"]
-	}
-
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, subModel)
-
-	// SubAgent progress reporting: unified passthrough callback pattern.
-	// Top-level agent (no parent callback) creates root callback, only renders progress for depth=1 (direct child agent).
-	// Deep sub-agent progress bubbles up through passthrough callbacks, but depth>1 is not sent to chat window.
+// setupSubAgentProgress configures the progress reporting chain for a SubAgent.
+// It builds a subCtx with CallChain and passthrough callback, sets ProgressNotifier on cfg,
+// and returns the subCtx to use for Run().
+func (a *Agent) setupSubAgentProgress(
+	ctx context.Context,
+	cfg *RunConfig,
+	cc *CallChain,
+	roleName, originChannel, originChatID string,
+	parentAgentID string,
+) context.Context {
 	myDepth := cc.Depth() + 1
 	myPath := cc.Spawn(roleName).Chain
 
@@ -1457,6 +1416,24 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		}
 	}
 
+	return subCtx
+}
+
+// oneshotSubAgentSession holds the state for a registered one-shot SubAgent.
+type oneshotSubAgentSession struct {
+	instance string
+	key      string
+	ia       *interactiveAgent
+}
+
+// registerOneshotSubAgent registers a one-shot subagent in interactiveSubAgents,
+// creates a TenantSession, wires CLI progress and iteration snapshot callbacks.
+// Returns the session state or an error if tenant session creation fails.
+func (a *Agent) registerOneshotSubAgent(
+	ctx context.Context,
+	cfg *RunConfig,
+	originChannel, originChatID, roleName, task string,
+) (*oneshotSubAgentSession, error) {
 	// Register one-shot subagent in interactiveSubAgents so it's visible
 	// in the Ctrl+T panel. Kept after completion for history viewing; TTL cleans it up.
 	oneshotInstance := fmt.Sprintf("oneshot-%s-%d", roleName, time.Now().UnixNano())
@@ -1486,7 +1463,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	}
 
 	// Wire CLI progress + stream callbacks so Ctrl+T shows real-time progress.
-	a.wireSubAgentCLIProgress(oneshotKey, originChatID, &cfg)
+	a.wireSubAgentCLIProgress(oneshotKey, originChatID, cfg)
 
 	// Wire incremental snapshot callback so iteration history is available
 	// during Run() for panel preview and inspect — not only after completion.
@@ -1497,37 +1474,40 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		oneshotIA.mu.Unlock()
 	}
 
-	// Emit SubAgentStart event (notification, non-blocking)
-	if a.hookManager != nil {
-		a.hookManager.Emit(ctx, &hooks.SubAgentStartEvent{
-			BasePayload: hooks.BasePayload{
-				SessionID: originChatID, Channel: originChannel,
-				SenderID: originSender, ChatID: originChatID,
-			},
-			AgentType: roleName,
-			Task:      task,
-		})
-	}
+	return &oneshotSubAgentSession{
+		instance: oneshotInstance,
+		key:      oneshotKey,
+		ia:       oneshotIA,
+	}, nil
+}
 
-	out := Run(subCtx, cfg)
-
+// finalizeSubAgentRun handles post-run cleanup: marks the agent as not running,
+// destroys the session, emits hook events, handles errors, and consolidates memory.
+// Returns the final OutboundMessage.
+func (a *Agent) finalizeSubAgentRun(
+	ctx context.Context,
+	cfg RunConfig,
+	out *RunOutput,
+	sess *oneshotSubAgentSession,
+	originChannel, originChatID, originSender, roleName, task, parentAgentID string,
+) (*bus.OutboundMessage, error) {
 	// Populate iteration history so inspect can show results after completion
-	oneshotIA.mu.Lock()
-	oneshotIA.running = false
+	sess.ia.mu.Lock()
+	sess.ia.running = false
 	if out != nil {
-		oneshotIA.lastReply = out.Content
-		log.Ctx(ctx).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
+		sess.ia.lastReply = out.Content
+		log.Ctx(ctx).WithField("iteration_count", len(sess.ia.iterationHistory)).Info("oneshot subagent completed")
 	} else {
 		log.Ctx(ctx).Warn("oneshot subagent returned nil output")
-		oneshotIA.mu.Unlock()
-		a.destroyInteractiveSession(oneshotKey)
+		sess.ia.mu.Unlock()
+		a.destroyInteractiveSession(sess.key)
 		return &bus.OutboundMessage{}, nil
 	}
-	oneshotIA.mu.Unlock()
+	sess.ia.mu.Unlock()
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
 	// then destroy the one-shot session immediately (no TTL retention).
-	a.cancelChildSessions(oneshotKey)
-	a.destroyInteractiveSession(oneshotKey)
+	a.cancelChildSessions(sess.key)
+	a.destroyInteractiveSession(sess.key)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"parent":    parentAgentID,
@@ -1544,7 +1524,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 				SenderID: originSender, ChatID: originChatID,
 			},
 			AgentType: roleName,
-			Instance:  oneshotInstance,
+			Instance:  sess.instance,
 			Content:   out.Content,
 		})
 	}
@@ -1565,6 +1545,80 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	}
 
 	return out.OutboundMessage, nil
+}
+
+// spawnSubAgent creates and runs a SubAgent via Run().
+// This is the SpawnAgent callback implementation, converting InboundMessage to RunConfig and calling Run().
+func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+	parentAgentID := msg.ParentAgentID
+	task := msg.Content
+	systemPrompt := msg.SystemPrompt
+	allowedTools := msg.AllowedTools
+	roleName := msg.RoleName
+
+	// --- CallChain depth & loop check ---
+	cc := CallChainFromContext(ctx)
+	if roleName != "" {
+		if err := cc.CanSpawn(roleName, a.maxSubAgentDepth); err != nil {
+			log.Ctx(ctx).WithFields(log.Fields{
+				"parent": parentAgentID,
+				"role":   roleName,
+				"chain":  cc.Chain,
+			}).Warn("SubAgent spawn blocked by CallChain")
+			return &bus.OutboundMessage{
+				Channel: "",
+				ChatID:  "",
+				Content: err.Error(),
+				Error:   err,
+			}, nil
+		}
+	}
+
+	// Build parentCtx (restored from InboundMessage)
+	originChannel, originChatID, originSender := resolveOriginIDs(msg)
+	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
+
+	log.Ctx(ctx).WithFields(log.Fields{
+		"parent": parentAgentID,
+		"role":   roleName,
+		"task":   tools.Truncate(task, 80),
+	}).Info("SubAgent started (via Run)")
+
+	// Restore capabilities from InboundMessage
+	caps := tools.CapabilitiesFromMap(msg.Capabilities)
+
+	// Get role-specified model from InboundMessage metadata
+	subModel := ""
+	if msg.Metadata != nil {
+		subModel = msg.Metadata["model"]
+	}
+
+	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, subModel)
+
+	// Set up progress reporting chain
+	subCtx := a.setupSubAgentProgress(ctx, &cfg, cc, roleName, originChannel, originChatID, parentAgentID)
+
+	// Register one-shot subagent and wire session/callbacks
+	sess, err := a.registerOneshotSubAgent(ctx, &cfg, originChannel, originChatID, roleName, task)
+	if err != nil {
+		return nil, err
+	}
+
+	// Emit SubAgentStart event (notification, non-blocking)
+	if a.hookManager != nil {
+		a.hookManager.Emit(ctx, &hooks.SubAgentStartEvent{
+			BasePayload: hooks.BasePayload{
+				SessionID: originChatID, Channel: originChannel,
+				SenderID: originSender, ChatID: originChatID,
+			},
+			AgentType: roleName,
+			Task:      task,
+		})
+	}
+
+	out := Run(subCtx, cfg)
+
+	return a.finalizeSubAgentRun(ctx, cfg, out, sess, originChannel, originChatID, originSender, roleName, task, parentAgentID)
 }
 
 // convertWsSubAgentTree converts agent.SubAgentNode to channelpkg.WsSubAgent tree.
