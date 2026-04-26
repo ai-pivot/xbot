@@ -21,12 +21,13 @@ func appendHint(status, hint string) string {
 	return hint
 }
 
-// View Render UI
+// View renders the full TUI. It acts as a thin coordinator that delegates
+// to focused render sub-methods based on the current UI mode.
 func (m *cliModel) View() tea.View {
 	// §14 Splash screen: brand animation (auto-dismisses after ~2.4 seconds)
 	if !m.splashDone {
 		v := tea.NewView(m.renderSplash())
-		v.AltScreen = true // Use AltScreen to prevent residual content in main terminal buffer
+		v.AltScreen = true
 		return v
 	}
 
@@ -50,18 +51,61 @@ func (m *cliModel) View() tea.View {
 		return v
 	}
 
-	// ========== Style definitions ==========
+	// Build shared UI sections
+	titleBar := m.renderTitleBar()
+	input := m.renderInputBox()
+	toastStr := m.renderToast()
 
-	// Title bar: pure ASCII, avoid emoji causing width miscalculation
+	// Select layout based on current mode
+	var content string
+	switch {
+	case m.searchMode:
+		content = m.renderSearchLayout(titleBar, input, toastStr)
+	case m.panelMode == panelModeAskUser:
+		content = m.renderAskUserLayout(titleBar, toastStr)
+	case m.panelMode != "":
+		content = m.renderPanelLayout(titleBar, toastStr)
+	default:
+		content = m.renderMainLayout(titleBar, input, toastStr)
+	}
+
+	v := tea.NewView(content)
+	v.AltScreen = true
+
+	// §15 Quick switch overlay (subscription/model picker)
+	if m.quickSwitchMode != "" {
+		if overlay := m.viewQuickSwitch(m.width, m.height); overlay != "" {
+			v.Content = overlay
+		}
+	}
+
+	// §9 Rewind overlay (/rewind command)
+	if m.rewindMode {
+		if overlay := m.viewRewindPanel(m.width, m.height); overlay != "" {
+			v.Content = overlay
+		}
+	}
+
+	return v
+}
+
+// ---------------------------------------------------------------------------
+// View sub-methods: each renders one focused section of the TUI.
+// ---------------------------------------------------------------------------
+
+// renderTitleBar builds the top title bar showing the application label,
+// working directory, runner status, identity, and shortcut hints.
+func (m *cliModel) renderTitleBar() string {
 	titleLeft := m.titleText()
-	// Title bar right-side shortcut hints: compact dot separators, softer than |
 	titleRight := m.locale.TitleHint
+
 	// Askuser panel: override titleRight with panel-specific hints (always visible)
 	if m.panelMode == panelModeAskUser {
 		titleRight = m.askUserTitleHints()
 	} else if m.updateNotice != nil && m.updateNotice.HasUpdate {
 		titleRight = fmt.Sprintf("%s→%s · /update · /help", m.updateNotice.Current, m.updateNotice.Latest)
 	}
+
 	// Runner status + identity indicator in title bar
 	if m.runnerBridge != nil {
 		switch m.runnerBridge.Status() {
@@ -74,38 +118,37 @@ func (m *cliModel) View() tea.View {
 	if m.senderID != "cli_user" {
 		titleRight = "👤 " + m.senderID + " · " + titleRight
 	}
+
 	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
 	if titlePad < 1 {
 		titlePad = 1
 	}
-	titleBar := m.styles.TitleBar.
-		Render(titleLeft + strings.Repeat(" ", titlePad) + titleRight)
+	return m.styles.TitleBar.Render(titleLeft + strings.Repeat(" ", titlePad) + titleRight)
+}
 
-		// Input box style: dynamically set border color based on input content
-		// ! prefix → error color, / prefix → success color, default → theme accent
+// renderInputBox renders the textarea input area with dynamic border color
+// based on input content (! → error, / → success, @ → info, default → accent).
+// When the textarea is empty, a custom placeholder is rendered to avoid
+// textarea's built-in placeholder that triggers CJK rendering bugs.
+func (m *cliModel) renderInputBox() string {
 	inputValue := m.textarea.Value()
-	borderColor, completionsHint := m.renderCompletionsHint(inputValue)
+	borderColor, _ := m.renderCompletionsHint(inputValue)
 
 	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor)
-
 	inputArea := m.textarea.View()
 
 	// §23 Render placeholder manually when textarea is empty.
 	// This avoids textarea's built-in placeholder which causes a view-mode
 	// switch that triggers CJK rendering bugs on Windows Terminal.
 	if m.textarea.Value() == "" && m.placeholderText != "" {
-		// Build a 3-line placeholder view matching the textarea's height (minTaHeight=3).
 		taHeight := minTaHeight
 		if h := m.textarea.Height(); h > 0 {
 			taHeight = h
 		}
-		// Truncate placeholder to fit the textarea content width on narrow terminals.
 		ph := m.placeholderText
 		if tw := m.textarea.Width(); tw > 0 {
 			ph = truncateToWidth(ph, tw)
 		}
-		// Render the first character of placeholder as a virtual cursor (reverse style),
-		// using the same cursor color as textarea's normal mode (TACursor).
 		phRunes := []rune(ph)
 		if len(phRunes) > 0 {
 			first := string(phRunes[0])
@@ -122,235 +165,221 @@ func (m *cliModel) View() tea.View {
 		}
 	}
 
-	// Status bar style
-	readyStatusStyle := m.styles.ReadyStatus
+	return inputBoxStyle.Render(inputArea)
+}
 
+// renderStatusBar builds the status bar shown in the default (non-panel) layout.
+// It displays thinking progress, completion hints, or the ready state with
+// contextual indicators (session info, message count, model, temp status, etc.).
+func (m *cliModel) renderStatusBar() string {
 	// §20 Use cached styles
 	thinkingStatusStyle := m.styles.ThinkingSt
-
-	// §20 Progress styles → cache
 	progressStyle := m.styles.Progress
 	toolStyle := m.styles.Tool
+	readyStatusStyle := m.styles.ReadyStatus
 
-	// ========== Render each section ==========
-
-	// Input area
-	input := inputBoxStyle.Render(inputArea)
-
-	// Build content string
-	var content string
-
-	// §16 Toast notification rendering
-	toastStr := m.renderToast()
-
-	// §21 Search mode
-	if m.searchMode {
-		var searchBar string
-		if m.searchEditing {
-			searchBar = m.styles.SearchBar.Render(m.searchTI.View())
-		} else {
-			searchBar = m.styles.SearchBar.Render(
-				fmt.Sprintf(m.locale.SearchNavFormat, m.searchQuery, m.searchIdx+1, len(m.searchResults)))
+	var status string
+	if m.typing || m.progress != nil {
+		// Show spinner + progress info
+		status = thinkingStatusStyle.Render(m.renderProgressStatus(progressStyle, toolStyle))
+	} else if m.checkingUpdate {
+		status = thinkingStatusStyle.Render(m.locale.CheckingUpdates)
+	} else if _, completionsHint := m.renderCompletionsHint(m.textarea.Value()); completionsHint != "" {
+		// Show completion candidate hint
+		status = completionsHint
+	} else {
+		// Ready state: show message count + current model (if overridden)
+		readyParts := []string{m.locale.StatusReady}
+		// Session indicator (for agent sessions)
+		if m.channelName == "agent" {
+			// Extract role/instance from chatID format: "channel:chatID/role:instance"
+			parts := strings.SplitN(m.chatID, "/", 2)
+			if len(parts) == 2 {
+				readyParts = append(readyParts, fmt.Sprintf("🤖 %s", parts[1]))
+			} else {
+				readyParts = append(readyParts, fmt.Sprintf("🤖 %s", m.chatID))
+			}
 		}
-		content = fmt.Sprintf(
-			"%s\n%s\n%s\n%s%s",
+		// Message count
+		msgCount := len(m.messages)
+		if msgCount > 0 {
+			readyParts = append(readyParts, fmt.Sprintf("%d msg%s", msgCount, func() string {
+				if msgCount > 1 {
+					return "s"
+				}
+				return ""
+			}()))
+		}
+		// Model name (use cache, avoid repeated lookup on each View())
+		if m.cachedModelName != "" {
+			modelHint := m.cachedModelName
+			if m.modelCount > 1 {
+				modelHint += " [Ctrl+N]"
+			}
+			readyParts = append(readyParts, modelHint)
+		}
+		status = readyStatusStyle.Render(strings.Join(readyParts, " · "))
+	}
+
+	// Temporary status hint (auto-expires)
+	if m.tempStatus != "" {
+		status = appendHint(status, m.styles.WarningSt.Render(m.tempStatus))
+	}
+	// New message hint: show when user has scrolled up and there's new content
+	if m.newContentHint {
+		status = appendHint(status, m.styles.InfoSt.Render(m.locale.NewContentHint))
+	}
+	// Background task indicator
+	if m.bgTaskCount > 0 {
+		status = appendHint(status, m.styles.WarningSt.Render(
+			fmt.Sprintf(m.locale.BgTaskRunning, m.bgTaskCount)))
+	}
+	// Agent indicator
+	if m.agentCount > 0 {
+		status = appendHint(status, m.styles.WarningSt.Render(
+			fmt.Sprintf(m.locale.AgentRunning, m.agentCount)))
+	}
+	// Message queue indicator (persistent, not temp status)
+	if len(m.messageQueue) > 0 {
+		status = appendHint(status, m.styles.InfoSt.Render(
+			fmt.Sprintf(m.locale.QueuePending, len(m.messageQueue))))
+	}
+
+	return status
+}
+
+// renderSearchLayout assembles the full-screen content for search mode,
+// overlaying a search bar between the viewport and input area.
+func (m *cliModel) renderSearchLayout(titleBar, input, toastStr string) string {
+	var searchBar string
+	if m.searchEditing {
+		searchBar = m.styles.SearchBar.Render(m.searchTI.View())
+	} else {
+		searchBar = m.styles.SearchBar.Render(
+			fmt.Sprintf(m.locale.SearchNavFormat, m.searchQuery, m.searchIdx+1, len(m.searchResults)))
+	}
+	return fmt.Sprintf(
+		"%s\n%s\n%s\n%s%s",
+		titleBar,
+		m.viewport.View(),
+		searchBar,
+		input,
+		toastStr,
+	)
+}
+
+// renderAskUserLayout assembles the split layout for the ask-user panel:
+// viewport visible above, scrollable ask-user panel at the bottom.
+func (m *cliModel) renderAskUserLayout(titleBar, toastStr string) string {
+	// §12b AskUser split layout: viewport visible above, panel at bottom
+	// Note: no panelFooter here — hints are inside the panel (viewAskUserPanel)
+	askRaw := m.viewAskUserPanel()
+	m.clampAskUserPanelScroll(askRaw)
+	askLines := strings.Split(askRaw, "\n")
+	// Calculate available height for the ask panel
+	fixedLines := 2 // titleBar + toast (no separate footer — hints are in-panel)
+	panelBorder := 2
+	viewportH := m.layoutViewportHeight()
+	askVisibleH := m.height - fixedLines - viewportH - panelBorder
+	if askVisibleH < 3 {
+		askVisibleH = 3
+	}
+	if m.askPanelScrollY+askVisibleH > len(askLines) {
+		m.askPanelScrollY = max(0, len(askLines)-askVisibleH)
+	}
+	end := m.askPanelScrollY + askVisibleH
+	if end > len(askLines) {
+		end = len(askLines)
+	}
+	visibleAsk := askLines[m.askPanelScrollY:end]
+	askContent := strings.Join(visibleAsk, "\n")
+	boxedAsk := m.styles.PanelBox.Render(askContent)
+	// Scroll indicator
+	totalAskLines := len(askLines)
+	scrollHint := ""
+	if totalAskLines > askVisibleH {
+		pct := (m.askPanelScrollY + askVisibleH) * 100 / totalAskLines
+		scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] Ctrl+↑↓/PgUp/PgDn", pct))
+	}
+	return fmt.Sprintf(
+		"%s\n%s\n%s%s%s",
+		titleBar,
+		m.viewport.View(),
+		boxedAsk,
+		scrollHint,
+		toastStr,
+	)
+}
+
+// renderPanelLayout assembles the full-screen content for general panel modes
+// (settings, bgtasks, approval, etc.) with manual line slicing and PanelBox wrapping.
+func (m *cliModel) renderPanelLayout(titleBar, toastStr string) string {
+	// §12 Panel mode: manual slicing + PanelBox wrapping (border always within screen)
+	panelFooter := m.renderFooter()
+	rawContent := m.viewPanel() // Raw content, no PanelBox
+	m.clampPanelScroll(rawContent)
+	rawLines := strings.Split(rawContent, "\n")
+	visibleH := m.panelVisibleHeight()
+	// Slice visible lines
+	if m.panelScrollY+visibleH > len(rawLines) {
+		m.panelScrollY = max(0, len(rawLines)-visibleH)
+	}
+	end := m.panelScrollY + visibleH
+	if end > len(rawLines) {
+		end = len(rawLines)
+	}
+	visible := rawLines[m.panelScrollY:end]
+	panelContent := strings.Join(visible, "\n")
+	// PanelBox wrapping (border after slicing, ensures complete display)
+	boxedContent := m.styles.PanelBox.Render(panelContent)
+	return fmt.Sprintf(
+		"%s\n%s%s%s",
+		titleBar,
+		boxedContent,
+		panelFooter,
+		toastStr,
+	)
+}
+
+// renderMainLayout assembles the default (non-panel, non-search) layout:
+// title bar, viewport, status bar, optional todo/footer bars, input, and toast.
+func (m *cliModel) renderMainLayout(titleBar, input, toastStr string) string {
+	status := m.renderStatusBar()
+
+	todoBar := m.renderTodoBar()
+	footer := m.renderFooter()
+
+	switch {
+	case todoBar != "":
+		return fmt.Sprintf(
+			"%s\n%s\n%s\n%s\n%s%s",
 			titleBar,
 			m.viewport.View(),
-			searchBar,
+			status,
+			todoBar,
 			input,
 			toastStr,
 		)
-	} else if m.panelMode == panelModeAskUser {
-		// §12b AskUser split layout: viewport visible above, panel at bottom
-		// Note: no panelFooter here — hints are inside the panel (viewAskUserPanel)
-		askRaw := m.viewAskUserPanel()
-		m.clampAskUserPanelScroll(askRaw)
-		askLines := strings.Split(askRaw, "\n")
-		// Calculate available height for the ask panel
-		fixedLines := 2 // titleBar + toast (no separate footer — hints are in-panel)
-		panelBorder := 2
-		viewportH := m.layoutViewportHeight()
-		askVisibleH := m.height - fixedLines - viewportH - panelBorder
-		if askVisibleH < 3 {
-			askVisibleH = 3
-		}
-		if m.askPanelScrollY+askVisibleH > len(askLines) {
-			m.askPanelScrollY = max(0, len(askLines)-askVisibleH)
-		}
-		end := m.askPanelScrollY + askVisibleH
-		if end > len(askLines) {
-			end = len(askLines)
-		}
-		visibleAsk := askLines[m.askPanelScrollY:end]
-		askContent := strings.Join(visibleAsk, "\n")
-		boxedAsk := m.styles.PanelBox.Render(askContent)
-		// Scroll indicator
-		totalAskLines := len(askLines)
-		scrollHint := ""
-		if totalAskLines > askVisibleH {
-			pct := (m.askPanelScrollY + askVisibleH) * 100 / totalAskLines
-			scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] Ctrl+↑↓/PgUp/PgDn", pct))
-		}
-		content = fmt.Sprintf(
-			"%s\n%s\n%s%s%s",
+	case footer != "":
+		return fmt.Sprintf(
+			"%s\n%s\n%s\n%s\n%s%s",
 			titleBar,
 			m.viewport.View(),
-			boxedAsk,
-			scrollHint,
+			status,
+			footer,
+			input,
 			toastStr,
 		)
-	} else if m.panelMode != "" {
-		// §12 Panel mode: manual slicing + PanelBox wrapping (border always within screen)
-		panelFooter := m.renderFooter()
-		rawContent := m.viewPanel() // Raw content, no PanelBox
-		m.clampPanelScroll(rawContent)
-		rawLines := strings.Split(rawContent, "\n")
-		visibleH := m.panelVisibleHeight()
-		// Slice visible lines
-		if m.panelScrollY+visibleH > len(rawLines) {
-			m.panelScrollY = max(0, len(rawLines)-visibleH)
-		}
-		end := m.panelScrollY + visibleH
-		if end > len(rawLines) {
-			end = len(rawLines)
-		}
-		visible := rawLines[m.panelScrollY:end]
-		panelContent := strings.Join(visible, "\n")
-		// PanelBox wrapping (border after slicing, ensures complete display)
-		boxedContent := m.styles.PanelBox.Render(panelContent)
-		content = fmt.Sprintf(
-			"%s\n%s%s%s",
+	default:
+		return fmt.Sprintf(
+			"%s\n%s\n%s\n%s%s",
 			titleBar,
-			boxedContent,
-			panelFooter,
+			m.viewport.View(),
+			status,
+			input,
 			toastStr,
 		)
-	} else {
-		// Input area
-		var status string
-		if m.typing || m.progress != nil {
-			// Show spinner + progress info
-			status = thinkingStatusStyle.Render(m.renderProgressStatus(progressStyle, toolStyle))
-		} else if m.checkingUpdate {
-			status = thinkingStatusStyle.Render(m.locale.CheckingUpdates)
-		} else if completionsHint != "" {
-			// Show completion candidate hint
-			status = completionsHint
-		} else {
-			// Ready state: show message count + current model (if overridden)
-			readyParts := []string{m.locale.StatusReady}
-			// Session indicator (for agent sessions)
-			if m.channelName == "agent" {
-				// Extract role/instance from chatID format: "channel:chatID/role:instance"
-				parts := strings.SplitN(m.chatID, "/", 2)
-				if len(parts) == 2 {
-					readyParts = append(readyParts, fmt.Sprintf("🤖 %s", parts[1]))
-				} else {
-					readyParts = append(readyParts, fmt.Sprintf("🤖 %s", m.chatID))
-				}
-			}
-			// Message count
-			msgCount := len(m.messages)
-			if msgCount > 0 {
-				readyParts = append(readyParts, fmt.Sprintf("%d msg%s", msgCount, func() string {
-					if msgCount > 1 {
-						return "s"
-					}
-					return ""
-				}()))
-			}
-			// Model name (use cache, avoid repeated lookup on each View())
-			if m.cachedModelName != "" {
-				modelHint := m.cachedModelName
-				if m.modelCount > 1 {
-					modelHint += " [Ctrl+N]"
-				}
-				readyParts = append(readyParts, modelHint)
-			}
-			status = readyStatusStyle.Render(strings.Join(readyParts, " · "))
-		}
-		// Temporary status hint (auto-expires)
-		if m.tempStatus != "" {
-			status = appendHint(status, m.styles.WarningSt.Render(m.tempStatus))
-		}
-		// New message hint: show when user has scrolled up and there's new content
-		if m.newContentHint {
-			status = appendHint(status, m.styles.InfoSt.Render(m.locale.NewContentHint))
-		}
-		// Background task indicator
-		if m.bgTaskCount > 0 {
-			status = appendHint(status, m.styles.WarningSt.Render(
-				fmt.Sprintf(m.locale.BgTaskRunning, m.bgTaskCount)))
-		}
-		// Agent indicator
-		if m.agentCount > 0 {
-			status = appendHint(status, m.styles.WarningSt.Render(
-				fmt.Sprintf(m.locale.AgentRunning, m.agentCount)))
-		}
-		// Message queue indicator (persistent, not temp status)
-		if len(m.messageQueue) > 0 {
-			status = appendHint(status, m.styles.InfoSt.Render(
-				fmt.Sprintf(m.locale.QueuePending, len(m.messageQueue))))
-		}
-
-		todoBar := m.renderTodoBar()
-		// Bottom shortcut hint bar (round 4: activate defined but unused renderFooter)
-		footer := m.renderFooter()
-
-		switch {
-		case todoBar != "":
-			content = fmt.Sprintf(
-				"%s\n%s\n%s\n%s\n%s%s",
-				titleBar,
-				m.viewport.View(),
-				status,
-				todoBar,
-				input,
-				toastStr,
-			)
-		case footer != "":
-			content = fmt.Sprintf(
-				"%s\n%s\n%s\n%s\n%s%s",
-				titleBar,
-				m.viewport.View(),
-				status,
-				footer,
-				input,
-				toastStr,
-			)
-		default:
-			content = fmt.Sprintf(
-				"%s\n%s\n%s\n%s%s",
-				titleBar,
-				m.viewport.View(),
-				status,
-				input,
-				toastStr,
-			)
-		}
 	}
-
-	v := tea.NewView(content)
-	v.AltScreen = true
-
-	// §15 Quick switch overlay (subscription/model picker)
-	// Rendered as a centered panel replacing the entire view.
-	if m.quickSwitchMode != "" {
-		overlay := m.viewQuickSwitch(m.width, m.height)
-		if overlay != "" {
-			v.Content = overlay
-		}
-	}
-
-	// §9 Rewind overlay (/rewind command)
-	if m.rewindMode {
-		overlay := m.viewRewindPanel(m.width, m.height)
-		if overlay != "" {
-			v.Content = overlay
-		}
-	}
-
-	return v
 }
 
 // allTodosDone returns true when todos exist and every item is marked done.
