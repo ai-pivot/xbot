@@ -856,11 +856,11 @@ func NewDockerSandbox(sandboxCfg config.SandboxConfig, workDir string) *DockerSa
 // NewSandbox 创建沙箱实例（backward compatible）
 func NewSandbox(sandboxCfg config.SandboxConfig, workDir string, tokenStore *RunnerTokenStore) Sandbox {
 	switch sandboxCfg.Mode {
-	case "none":
+	case SandboxNone:
 		return &NoneSandbox{}
-	case "docker":
+	case SandboxDocker:
 		return NewDockerSandbox(sandboxCfg, workDir)
-	case "remote":
+	case SandboxRemote:
 		wsPort := sandboxCfg.WSPort
 		if wsPort == 0 {
 			wsPort = 8080

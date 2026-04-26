@@ -160,7 +160,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 	// Build ExecSpec based on sandbox mode
 	buildSpec := func() ExecSpec {
 		switch sandbox.Name() {
-		case "docker":
+		case SandboxDocker:
 			dir := ""
 			if toolCtx != nil && toolCtx.CurrentDir != "" {
 				dir = toolCtx.CurrentDir
@@ -176,7 +176,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 				Workspace: sandboxWorkspace,
 				UserID:    userID,
 			}
-		case "remote":
+		case SandboxRemote:
 			remoteDir := ""
 			if toolCtx != nil && toolCtx.CurrentDir != "" {
 				remoteDir = toolCtx.CurrentDir
@@ -395,9 +395,9 @@ func sandboxExecAsync(
 	outputBuf func(string),
 ) (int, error) {
 	switch sandbox.Name() {
-	case "none":
+	case SandboxNone:
 		return noneSandboxExecAsync(ctx, spec, outputBuf)
-	case "remote":
+	case SandboxRemote:
 		return remoteSandboxExecAsync(ctx, sandbox, spec, outputBuf)
 	default:
 		// Docker: synchronous fallback (timeout=0 means no timeout)

@@ -316,7 +316,7 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 
 	var execCmd *exec.Cmd
 	switch sandbox.Name() {
-	case "docker":
+	case SandboxDocker:
 		shell, err := sandbox.GetShell(userID, workspaceRoot)
 		if err != nil {
 			return nil, fmt.Errorf("get shell for MCP: %w", err)
@@ -331,7 +331,7 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 		} else {
 			return nil, fmt.Errorf("MCP stdio not supported in %s mode", sandbox.Name())
 		}
-	case "remote":
+	case SandboxRemote:
 		rs, ok := sandbox.(*RemoteSandbox)
 		if !ok {
 			return nil, fmt.Errorf("remote sandbox type assertion failed")

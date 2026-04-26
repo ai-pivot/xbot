@@ -9,6 +9,13 @@ import (
 // defaultExecTimeout is the default timeout for sandbox exec operations.
 const defaultExecTimeout = 30 * time.Second
 
+// Sandbox backend type constants.
+const (
+	SandboxNone   = "none"
+	SandboxDocker = "docker"
+	SandboxRemote = "remote"
+)
+
 // RunInSandbox 在沙箱内执行命令并返回输出。
 // 当沙箱为 none 模式时返回错误。
 func RunInSandbox(ctx *ToolContext, command string, args ...string) (string, error) {
@@ -170,15 +177,15 @@ func RunInSandboxRawWithShell(ctx *ToolContext, shellCmd string) (string, error)
 // setSandboxDir 根据 sandbox 模式设置 ExecSpec 的 Dir 和 Workspace 字段。
 func setSandboxDir(ctx *ToolContext, sandbox Sandbox, spec *ExecSpec) {
 	switch sandbox.Name() {
-	case "docker":
+	case SandboxDocker:
 		spec.Workspace = ctx.WorkspaceRoot
 		spec.Dir = ctx.Sandbox.Workspace(ctx.OriginUserID)
-	case "remote":
+	case SandboxRemote:
 		// Remote: use Cd-set CurrentDir if available, otherwise runner defaults to its workspace
 		if ctx != nil && ctx.CurrentDir != "" {
 			spec.Dir = ctx.CurrentDir
 		}
-	case "none":
+	case SandboxNone:
 		spec.Dir = ctx.WorkspaceRoot
 	}
 }
