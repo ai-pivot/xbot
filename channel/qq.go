@@ -99,8 +99,14 @@ const maxReconnectAttempts = 100
 
 // quickDisconnectThreshold: if 3 disconnects happen within this window each,
 // we wait 60s before reconnecting.
-const quickDisconnectWindow = 5 * time.Second
-const quickDisconnectCount = 3
+const (
+	quickDisconnectWindow = 5 * time.Second
+	quickDisconnectCount  = 3
+
+	// QQ WebSocket read timeout and token refresh margin.
+	qqReadTimeout       = 30 * time.Second
+	qqTokenExpireMargin = 5 * time.Minute // Refresh token this long before expiry
+)
 
 // ---------------------------------------------------------------------------
 // QQ API endpoints
@@ -253,7 +259,7 @@ func (q *QQChannel) getToken() (string, error) {
 	defer q.tokenMu.Unlock()
 
 	// 提前 5 分钟刷新
-	if q.accessToken != "" && time.Now().Before(q.tokenExpireAt.Add(-5*time.Minute)) {
+	if q.accessToken != "" && time.Now().Before(q.tokenExpireAt.Add(-qqTokenExpireMargin)) {
 		return q.accessToken, nil
 	}
 
@@ -502,7 +508,7 @@ func (q *QQChannel) waitForHello() error {
 	}
 
 	// Set a read deadline for hello
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(qqReadTimeout))
 	defer conn.SetReadDeadline(time.Time{})
 
 	_, data, err := conn.ReadMessage()
@@ -564,7 +570,7 @@ func (q *QQChannel) sendIdentify() error {
 		return fmt.Errorf("no connection")
 	}
 
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(qqReadTimeout))
 	_, data, err := conn.ReadMessage()
 	conn.SetReadDeadline(time.Time{})
 	if err != nil {
