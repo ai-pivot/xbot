@@ -13,6 +13,9 @@ import (
 	log "xbot/logger"
 )
 
+// taskPollInterval is the polling interval for background task status checks.
+const taskPollInterval = 500 * time.Millisecond
+
 // BgNotification is the interface for background notifications that flow through
 // BgTaskManager.NotifyCh → bgNotifyLoop → bgRunPending → DrainBgNotifications.
 // Both BackgroundTask (shell tasks) and SubAgentBgNotify (bg subagents) implement this.
@@ -254,7 +257,7 @@ func (m *BackgroundTaskManager) Adopt(
 		if exitCodeCh != nil {
 			// Prefer real exit code from cmd.Wait goroutine.
 			// Wait for either the exit code channel or process death via Signal(0).
-			ticker := time.NewTicker(500 * time.Millisecond)
+			ticker := time.NewTicker(taskPollInterval)
 			defer ticker.Stop()
 
 		loop:
@@ -285,7 +288,7 @@ func (m *BackgroundTaskManager) Adopt(
 			}
 		} else {
 			// No channel provided — use isProcessAlive polling heuristic.
-			ticker := time.NewTicker(500 * time.Millisecond)
+			ticker := time.NewTicker(taskPollInterval)
 			defer ticker.Stop()
 
 		loop2:
