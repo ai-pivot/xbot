@@ -105,7 +105,8 @@ const (
 
 	// QQ WebSocket read timeout and token refresh margin.
 	qqReadTimeout       = 30 * time.Second
-	qqTokenExpireMargin = 5 * time.Minute // Refresh token this long before expiry
+	qqTokenExpireMargin = 5 * time.Minute  // Refresh token this long before expiry
+	qqReconnectInterval = 60 * time.Second // Pause between reconnect attempts
 )
 
 // ---------------------------------------------------------------------------
@@ -213,7 +214,7 @@ func (q *QQChannel) Start() error {
 		// Quick disconnect detection
 		if q.isQuickDisconnectLoop() {
 			log.Warn("QQ: rapid disconnect loop detected, waiting 60s")
-			if !q.sleepOrStop(60 * time.Second) {
+			if !q.sleepOrStop(qqReconnectInterval) {
 				return nil
 			}
 			attempt++
