@@ -24,6 +24,15 @@ import (
 	log "xbot/logger"
 )
 
+// WebSocket timeout constants for remote backend.
+const (
+	wsHandshakeTimeout = 10 * time.Second
+	wsWriteTimeout     = 5 * time.Second   // Per-message write deadline
+	wsReadTimeout      = 120 * time.Second // Expected pong interval × 4 (server pings every 30s)
+	wsPingInterval     = 25 * time.Second  // Client-to-server ping interval
+	wsCloseTimeout     = 30 * time.Second  // Graceful close timeout
+)
+
 // ---------------------------------------------------------------------------
 // RPC protocol types (shared between RemoteBackend client and server handler)
 // ---------------------------------------------------------------------------
@@ -158,7 +167,7 @@ func (b *RemoteBackend) Stop() {
 		close(b.done)
 		b.connMu.Lock()
 		if b.conn != nil {
-			b.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			b.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 			b.conn.WriteMessage(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client shutdown"))
 			b.conn.Close()
@@ -190,7 +199,7 @@ func (b *RemoteBackend) SendInbound(msg bus.InboundMessage) error {
 		return fmt.Errorf("not connected to server")
 	}
 	// Set write deadline to avoid blocking indefinitely on dead connections.
-	b.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	b.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	defer b.conn.SetWriteDeadline(time.Time{}) // reset
 
 	// Detect /cancel and send as "cancel" type so the server's cancel handler
@@ -323,7 +332,7 @@ func (b *RemoteBackend) connect(ctx context.Context) error {
 	u.RawQuery = q.Encode()
 	wsURL := u.String()
 	log.WithField("url", wsURL).Info("Connecting to remote xbot server...")
-	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	dialer := websocket.Dialer{HandshakeTimeout: wsHandshakeTimeout}
 	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("WS dial: %w", err)
@@ -332,11 +341,11 @@ func (b *RemoteBackend) connect(ctx context.Context) error {
 	// Set up pong handler to detect server liveness.
 	// Server sends pings every 30s; pong handler resets read deadline.
 	conn.SetPongHandler(func(_ string) error {
-		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		return nil
 	})
 	// Initial read deadline — if no data (including pongs) in 120s, connection is dead.
-	conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 
 	// Atomically replace connection to avoid race with Stop().
 	b.connMu.Lock()
@@ -627,7 +636,7 @@ func convertWsSubAgent(sa channel.WsSubAgent) channel.CLISubAgent {
 // The server sends pings every 30s and expects pongs within 60s.
 // Client pings prevent the server's read deadline from expiring.
 func (b *RemoteBackend) pingLoop(ctx context.Context) {
-	ticker := time.NewTicker(25 * time.Second)
+	ticker := time.NewTicker(wsPingInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -746,7 +755,7 @@ func (b *RemoteBackend) callRPC(method string, params any) (json.RawMessage, err
 	b.rpcMu.Unlock()
 	req := wsOutgoingMessage{Type: "rpc", ID: id, Method: method, Params: rawParams}
 	// Set write deadline to avoid blocking indefinitely on dead connections.
-	b.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	b.conn.SetWriteDeadline(time.Now().Add(wsHandshakeTimeout))
 	if err := b.conn.WriteJSON(req); err != nil {
 		b.conn.SetWriteDeadline(time.Time{})
 		b.connMu.Unlock()
@@ -766,7 +775,7 @@ func (b *RemoteBackend) callRPC(method string, params any) (json.RawMessage, err
 			return nil, fmt.Errorf("RPC %s: %s", method, resp.Error)
 		}
 		return resp.Result, nil
-	case <-time.After(30 * time.Second):
+	case <-time.After(wsCloseTimeout):
 		b.rpcMu.Lock()
 		delete(b.pending, id)
 		b.rpcMu.Unlock()
