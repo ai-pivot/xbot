@@ -61,6 +61,7 @@ type grepMatch struct {
 const (
 	maxGrepMatches    = 200
 	maxGrepFileSize   = 1 * 1024 * 1024 // 1MB
+	maxScanLineSize   = 1 * 1024 * 1024 // 1MB max line length for scanner
 	maxGrepLineLength = 500
 )
 
@@ -395,7 +396,7 @@ func searchFile(path string, re *regexp.Regexp, contextLines int) ([]grepMatch, 
 	var lines []string
 	scanner := bufio.NewScanner(f)
 	// Increase buffer for long lines
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScanLineSize)
 	for scanner.Scan() {
 		line := scanner.Text()
 		// Quick binary detection: if a line has invalid UTF-8 or null bytes, skip the file

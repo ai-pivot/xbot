@@ -256,7 +256,7 @@ func (t *LogsTool) readLastLines(path string, n int) ([]string, error) {
 
 	scanner := bufio.NewScanner(f)
 	scanBuf := make([]byte, 0, 64*1024)
-	scanner.Buffer(scanBuf, 1024*1024) // 支持 1MB 的行
+	scanner.Buffer(scanBuf, maxScanLineSize) // 支持 1MB 的行
 
 	for scanner.Scan() {
 		rb.data[rb.pos] = scanner.Text()
