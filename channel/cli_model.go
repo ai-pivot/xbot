@@ -317,7 +317,24 @@ func (m *cliModel) saveCurrentSession() {
 	if m.savedSessions == nil {
 		m.savedSessions = make(map[string]*sessionState)
 	}
-	m.savedSessions[key] = &sessionState{
+	m.savedSessions[key] = m.captureSessionState()
+}
+
+// restoreSession restores a session's live state from the savedSessions map.
+// If the session has saved state, restores it; otherwise resets to idle.
+func (m *cliModel) restoreSession() {
+	key := m.sessionKey()
+	if saved, ok := m.savedSessions[key]; ok {
+		m.applySessionState(saved)
+		delete(m.savedSessions, key) // clean up
+	} else {
+		m.resetSessionState()
+	}
+}
+
+// captureSessionState captures the current streaming/typing state into a snapshot.
+func (m *cliModel) captureSessionState() *sessionState {
+	return &sessionState{
 		progress:          m.progress,
 		typing:            m.typing,
 		iterationHistory:  m.iterationHistory,
@@ -330,33 +347,30 @@ func (m *cliModel) saveCurrentSession() {
 	}
 }
 
-// restoreSession restores a session's live state from the savedSessions map.
-// If the session has saved state, restores it; otherwise resets to idle.
-func (m *cliModel) restoreSession() {
-	key := m.sessionKey()
-	if saved, ok := m.savedSessions[key]; ok {
-		m.progress = saved.progress
-		m.typing = saved.typing
-		m.iterationHistory = saved.iterationHistory
-		m.lastSeenIteration = saved.lastSeenIteration
-		m.streamingMsgIdx = saved.streamingMsgIdx
-		m.typingStartTime = saved.typingStartTime
-		m.lastReasoning = saved.lastReasoning
-		m.lastThinking = saved.lastThinking
-		m.turnCancelled = saved.turnCancelled
-		delete(m.savedSessions, key) // clean up
-	} else {
-		// No saved state — reset to idle (NOT cancelled)
-		m.progress = nil
-		m.typing = false
-		m.streamingMsgIdx = -1
-		m.iterationHistory = nil
-		m.lastSeenIteration = 0
-		m.typingStartTime = time.Time{}
-		m.lastReasoning = ""
-		m.lastThinking = ""
-		m.turnCancelled = false
-	}
+// applySessionState restores streaming/typing state from a snapshot.
+func (m *cliModel) applySessionState(s *sessionState) {
+	m.progress = s.progress
+	m.typing = s.typing
+	m.iterationHistory = s.iterationHistory
+	m.lastSeenIteration = s.lastSeenIteration
+	m.streamingMsgIdx = s.streamingMsgIdx
+	m.typingStartTime = s.typingStartTime
+	m.lastReasoning = s.lastReasoning
+	m.lastThinking = s.lastThinking
+	m.turnCancelled = s.turnCancelled
+}
+
+// resetSessionState resets streaming/typing state to idle (not cancelled).
+func (m *cliModel) resetSessionState() {
+	m.progress = nil
+	m.typing = false
+	m.streamingMsgIdx = -1
+	m.iterationHistory = nil
+	m.lastSeenIteration = 0
+	m.typingStartTime = time.Time{}
+	m.lastReasoning = ""
+	m.lastThinking = ""
+	m.turnCancelled = false
 }
 
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
