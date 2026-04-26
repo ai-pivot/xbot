@@ -427,20 +427,7 @@ func (c *CLIChannel) LoadHistory(history []HistoryMessage) {
 	// Pre-convert to cliMessage outside the event loop (cheap allocation).
 	msgs := make([]cliMessage, len(history))
 	for i, hm := range history {
-		cm := cliMessage{
-			role:      hm.Role,
-			content:   hm.Content,
-			timestamp: hm.Timestamp,
-			isPartial: false,
-			dirty:     true,
-		}
-		if len(hm.Iterations) > 0 {
-			cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-			for j, hi := range hm.Iterations {
-				cm.iterations[j] = cliIterationSnapshot(hi)
-			}
-		}
-		msgs[i] = cm
+		msgs[i] = historyMessageToCLI(hm)
 	}
 
 	c.programMu.Lock()

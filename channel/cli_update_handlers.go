@@ -696,8 +696,8 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	if idx := strings.Index(msg.content, "\n"); idx >= 0 {
 		firstLine = msg.content[:idx]
 	}
-	if len([]rune(firstLine)) > 50 {
-		firstLine = string([]rune(firstLine)[:47]) + "..."
+	if len([]rune(firstLine)) > toastMaxRunes {
+		firstLine = string([]rune(firstLine)[:toastTruncateRunes]) + "..."
 	}
 	// 检测是否为完成或失败消息
 	icon := "ℹ"
@@ -742,20 +742,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		m.showSystemMsg(fmt.Sprintf(m.locale.SuLoadFailed, msg.err), feedbackWarning)
 	} else {
 		for _, hm := range msg.history {
-			cm := cliMessage{
-				role:      hm.Role,
-				content:   hm.Content,
-				timestamp: hm.Timestamp,
-				isPartial: false,
-				dirty:     true,
-			}
-			if len(hm.Iterations) > 0 {
-				cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-				for i, hi := range hm.Iterations {
-					cm.iterations[i] = cliIterationSnapshot(hi)
-				}
-			}
-			m.messages = append(m.messages, cm)
+			m.messages = append(m.messages, historyMessageToCLI(hm))
 		}
 		m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitchedHistory, m.senderID, len(msg.history)), feedbackInfo)
 	}
@@ -859,20 +846,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	}
 	var newMessages []cliMessage
 	for _, hm := range msg.history {
-		cm := cliMessage{
-			role:      hm.Role,
-			content:   hm.Content,
-			timestamp: hm.Timestamp,
-			isPartial: false,
-			dirty:     true,
-		}
-		if len(hm.Iterations) > 0 {
-			cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-			for i, hi := range hm.Iterations {
-				cm.iterations[i] = cliIterationSnapshot(hi)
-			}
-		}
-		newMessages = append(newMessages, cm)
+		newMessages = append(newMessages, historyMessageToCLI(hm))
 	}
 	m.messages = newMessages
 	m.streamingMsgIdx = -1
@@ -891,7 +865,7 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.splashTick(msg.frame))
 		return m, tea.Batch(cmds...)
 	}
-	if m.ready && msg.frame >= 20 {
+	if m.ready && msg.frame >= splashMinFrames {
 		// 初始化完成且已展示至少 1 秒（20 帧 × 50ms）
 		m.splashDone = true
 		if m.typing && m.progress != nil && !m.fastTickActive {
@@ -903,7 +877,7 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	}
 	// 兜底上限：~2 秒（40 帧）
-	if msg.frame >= 40 {
+	if msg.frame >= splashMaxFrames {
 		m.splashDone = true
 		if m.typing && m.progress != nil && !m.fastTickActive {
 			m.fastTickActive = true
@@ -920,13 +894,13 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 // handleToastMsg enqueues a toast notification.
 func (m *cliModel) handleToastMsg(msg cliToastMsg) []tea.Cmd {
 	// §16 Toast 通知入队（最多保留 5 条，显示前 3 条）
-	if len(m.toasts) >= 5 {
-		m.toasts = m.toasts[len(m.toasts)-4:]
+	if len(m.toasts) >= toastMaxQueue {
+		m.toasts = m.toasts[len(m.toasts)-toastTrimTo:]
 	}
 	m.toasts = append(m.toasts, cliToastItem(msg))
 	if !m.toastTimer {
 		m.toastTimer = true
-		return []tea.Cmd{tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return []tea.Cmd{tea.Tick(toastDisplaySec*time.Second, func(time.Time) tea.Msg {
 			return cliToastClearMsg{}
 		})}
 	}
@@ -939,7 +913,7 @@ func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
 		m.toasts = m.toasts[1:]
 	}
 	if len(m.toasts) > 0 {
-		return []tea.Cmd{tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return []tea.Cmd{tea.Tick(toastDisplaySec*time.Second, func(time.Time) tea.Msg {
 			return cliToastClearMsg{}
 		})}
 	}

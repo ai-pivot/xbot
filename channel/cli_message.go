@@ -1920,3 +1920,23 @@ func (m *cliModel) renderRewindResultBlock() string {
 // 		return tickerTickMsg{}
 // 	})
 // }
+
+// historyMessageToCLI converts a HistoryMessage (DB/persistence layer) to a
+// cliMessage (TUI layer). This is the single conversion point — all callers
+// (cli.go, handleSuHistoryLoad, handleHistoryReload) use this function.
+func historyMessageToCLI(hm HistoryMessage) cliMessage {
+	cm := cliMessage{
+		role:      hm.Role,
+		content:   hm.Content,
+		timestamp: hm.Timestamp,
+		isPartial: false,
+		dirty:     true,
+	}
+	if len(hm.Iterations) > 0 {
+		cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
+		for i, hi := range hm.Iterations {
+			cm.iterations[i] = cliIterationSnapshot(hi)
+		}
+	}
+	return cm
+}

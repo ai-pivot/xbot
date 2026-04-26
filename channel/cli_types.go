@@ -42,6 +42,20 @@ const (
 	// File completion hint display limits
 	fileCompMaxNameRunes = 20 // max runes for file basename display before truncation
 	fileCompTruncateAt   = 18 // runes to keep before adding ellipsis
+
+	// Toast notification limits
+	toastMaxQueue      = 5  // max toast items in queue
+	toastTrimTo        = 4  // keep this many when queue overflows
+	toastDisplaySec    = 3  // seconds each toast is visible
+	toastMaxRunes      = 50 // max runes for toast text before truncation
+	toastTruncateRunes = 47 // runes to keep before appending "..."
+
+	// Splash animation frame thresholds
+	splashMinFrames = 20 // minimum frames before splash can end (~1s at 50ms/frame)
+	splashMaxFrames = 40 // hard cap (~2 seconds)
+
+	// Input history limits
+	inputHistoryMax = 100 // max stored input history entries
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).
