@@ -59,6 +59,9 @@ const (
 
 	// Layout: message bubble horizontal overhead (left border + left padding + right padding + right border)
 	bubblePadding = 4
+
+	// Panel minimum content width for rendering items (truncate if narrower)
+	panelMinContentWidth = 20
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).
