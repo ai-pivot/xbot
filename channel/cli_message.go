@@ -360,65 +360,13 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.openRewindPanel()
 
 	case "/settings":
-		// Open interactive settings panel locally
-		if m.channel != nil {
-			schema := m.channel.SettingsSchema()
-			if len(schema) == 0 {
-				m.showSystemMsg(m.locale.NoSettings, feedbackWarning)
-			} else {
-				// Get current values: config is the single source of truth for LLM settings.
-				// Only overlay non-LLM settings from SettingsService (e.g. theme, language).
-				currentValues := m.mergeCLISettingsValues()
-				// Inject model list into combo options for tier model selectors.
-				if m.channel.modelLister != nil {
-					allModels := m.channel.modelLister.ListAllModels()
-					for i, s := range schema {
-						if (s.Key == "vanguard_model" || s.Key == "balance_model" || s.Key == "swift_model") && len(allModels) > 0 {
-							opts := make([]SettingOption, len(allModels))
-							for j, ml := range allModels {
-								opts[j] = SettingOption{Label: ml, Value: ml}
-							}
-							schema[i].Options = opts
-						}
-					}
-				}
-				m.openSettingsPanel(schema, currentValues, func(values map[string]string) {
-					// --- Subscription generation guard ---
-					// If the active subscription changed since this panel was opened,
-					// the per-subscription LLM fields (provider/key/model/base_url) are STALE
-					// and must NOT be written back — they would overwrite the new subscription.
-					// This is the structural guarantee against subscription data corruption.
-					if m.panelSubGeneration != m.subGeneration {
-						for k := range values {
-							if isSubscriptionScopedSettingKey(k) {
-								delete(values, k)
-							}
-						}
-					}
-					// Persist user-scoped settings to SettingsService, and apply global/runtime
-					// settings through config.ApplySettings (single source of truth for global/LLM).
-					m.persistCLISettingsValues(values)
-					// NOTE: UI updates (theme/locale/model/viewport) are handled
-					// by handleSettingsSavedMsg in Update() — do NOT call them here
-					// since this callback runs in a background goroutine.
-				})
-			}
-		}
+		m.handleSettingsSlashCommand()
 
 	case "/setup":
 		m.openSetupPanel()
 
 	case "/update":
-		if m.checkingUpdate {
-			m.showSystemMsg(m.locale.CheckingUpdate, feedbackInfo)
-		} else {
-			m.checkingUpdate = true
-			m.updateNotice = nil
-			if m.channel != nil {
-				m.channel.CheckUpdateAsync()
-			}
-			m.showSystemMsg(m.locale.CheckingUpdate, feedbackInfo)
-		}
+		m.handleUpdateSlashCommand()
 
 	case "/quit", "/exit":
 		m.shouldQuit = true
@@ -444,138 +392,19 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.sendToAgent("/new")
 
 	case "/tasks":
-		// /tasks — open unified tasks & agents panel
-		taskCount := 0
-		if m.bgTaskCountFn != nil {
-			taskCount = m.bgTaskCountFn()
-		}
-		agentCnt := 0
-		if m.agentCountFn != nil {
-			agentCnt = m.agentCountFn()
-		}
-		if taskCount+agentCnt == 0 {
-			m.showSystemMsg(m.locale.BgTasksEmpty, feedbackInfo)
-		} else {
-			m.openBgTasksPanel()
-		}
+		m.handleTasksSlashCommand()
 
 	case "/su":
-		// /su — Switch user identity:
-		//   /su          — switch back to default identity
-		//   /su <userID> — switch to specified user identity
-		//   /su web:<senderID>[:<token>] — switch to Web user
-		if len(parts) < 2 {
-			if m.senderID == "cli_user" {
-				m.showSystemMsg(m.locale.SuAlreadyDefault, feedbackInfo)
-				return nil
-			}
-			m.senderID = "cli_user"
-			m.chatID = m.defaultChatID
-		} else {
-			arg := strings.TrimSpace(parts[1])
-			if strings.HasPrefix(arg, "web:") {
-				webParts := strings.SplitN(strings.TrimPrefix(arg, "web:"), ":", 2)
-				if len(webParts) == 0 || webParts[0] == "" {
-					m.showSystemMsg("❌ 格式: /su web:<senderID>[:<token>]", feedbackInfo)
-					return nil
-				}
-				m.channelName = "web"
-				m.senderID = webParts[0]
-				m.chatID = webParts[0]
-				m.showSystemMsg(fmt.Sprintf("✅ 已切换到 Web 用户: %s", webParts[0]), feedbackInfo)
-			} else {
-				newID := arg
-				if newID == "cli_user" || newID == "" {
-					m.senderID = "cli_user"
-					m.chatID = m.defaultChatID
-				} else {
-					m.senderID = newID
-					m.chatID = newID
-				}
-			}
-		}
-		m.messages = nil
-		m.invalidateAllCache(false)
-		if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
-			m.suLoading = true
-			m.splashFrame = 0
-			return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
-		} else {
-			m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitched, m.chatID), feedbackInfo)
+		if cmd := m.handleSuSlashCommand(parts); cmd != nil {
+			return cmd
 		}
 
 	case "/ss", "/sessions":
-		// /ss — Open Sessions panel
 		m.openSessionsPanel()
 
 	case "/chat":
-		// /chat — Chat room management:
-		//   /chat new [label] — create new session
-		//   /chat <id>        — switch to specified session
-		//   /chat ls          — list all sessions (text version)
-		if len(parts) < 2 {
-			m.showSystemMsg("用法: /chat new [label] | /chat <id> | /chat ls", feedbackInfo)
-			return nil
-		}
-		arg := strings.TrimSpace(parts[1])
-		switch arg {
-		case "new":
-			if m.channel != nil && m.channel.config.ChatCreateFn != nil {
-				label := ""
-				if len(parts) > 2 {
-					label = strings.Join(parts[2:], " ")
-				}
-				chatID, err := m.channel.config.ChatCreateFn(m.channelName, m.defaultChatID, label)
-				if err != nil {
-					m.showSystemMsg("创建失败: "+err.Error(), feedbackInfo)
-					return nil
-				}
-				m.chatID = chatID
-				m.messages = nil
-				m.invalidateAllCache(false)
-				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
-			} else {
-				m.showSystemMsg("❌ 当前不支持创建新会话", feedbackInfo)
-			}
-		case "ls":
-			if m.sessionsListFn != nil {
-				entries := m.sessionsListFn()
-				if len(entries) == 0 {
-					m.showSystemMsg("(no active sessions)", feedbackInfo)
-				} else {
-					var lines []string
-					for _, e := range entries {
-						switch e.Type {
-						case "main":
-							active := ""
-							if e.ID == m.chatID {
-								active = " ←"
-							}
-							lines = append(lines, fmt.Sprintf("  ● %s%s", e.Label, active))
-						case "agent":
-							status := "●"
-							if !e.Running {
-								status = "◦"
-							}
-							lines = append(lines, fmt.Sprintf("  %s 🤖 %s/%s", status, e.Role, e.Instance))
-						}
-					}
-					m.showSystemMsg("Sessions:\n"+strings.Join(lines, "\n"), feedbackInfo)
-				}
-			} else {
-				m.showSystemMsg("❌ Sessions list not available", feedbackInfo)
-			}
-		default:
-			// Switch to specific chatID
-			m.chatID = arg
-			m.messages = nil
-			m.invalidateAllCache(false)
-			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
-				m.suLoading = true
-				m.splashFrame = 0
-				return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
-			}
-			m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", arg), feedbackInfo)
+		if cmd := m.handleChatSlashCommand(parts); cmd != nil {
+			return cmd
 		}
 
 	case "/usage":
@@ -592,21 +421,239 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.handleUserCommand(userArg)
 
 	default:
-		// 🥚 Easter egg #7: /version triple-call detection
-		if command == "/version" {
-			if m.recordVersionHit() {
-				art := fmt.Sprintf(versionAchievementArt, version.Version)
-				_ = m.activateEasterEgg(easterEggVersion)
-				m.easterEggCustom = art
-				m.updateViewportContent()
-				return nil
-			}
+		if cmd := m.handleDefaultSlashCommand(command, cmd); cmd != nil {
+			return cmd
 		}
-		// Unknown command attempted to passthrough to agent (agent layer may recognize it)
-		m.sendToAgent(cmd)
 	}
 
 	m.updateViewportContent()
+	return nil
+}
+
+// handleSettingsSlashCommand handles the /settings command to open the interactive settings panel.
+func (m *cliModel) handleSettingsSlashCommand() {
+	// Open interactive settings panel locally
+	if m.channel == nil {
+		return
+	}
+	schema := m.channel.SettingsSchema()
+	if len(schema) == 0 {
+		m.showSystemMsg(m.locale.NoSettings, feedbackWarning)
+		return
+	}
+	// Get current values: config is the single source of truth for LLM settings.
+	// Only overlay non-LLM settings from SettingsService (e.g. theme, language).
+	currentValues := m.mergeCLISettingsValues()
+	// Inject model list into combo options for tier model selectors.
+	if m.channel.modelLister != nil {
+		allModels := m.channel.modelLister.ListAllModels()
+		for i, s := range schema {
+			if (s.Key == "vanguard_model" || s.Key == "balance_model" || s.Key == "swift_model") && len(allModels) > 0 {
+				opts := make([]SettingOption, len(allModels))
+				for j, ml := range allModels {
+					opts[j] = SettingOption{Label: ml, Value: ml}
+				}
+				schema[i].Options = opts
+			}
+		}
+	}
+	m.openSettingsPanel(schema, currentValues, func(values map[string]string) {
+		// --- Subscription generation guard ---
+		// If the active subscription changed since this panel was opened,
+		// the per-subscription LLM fields (provider/key/model/base_url) are STALE
+		// and must NOT be written back — they would overwrite the new subscription.
+		// This is the structural guarantee against subscription data corruption.
+		if m.panelSubGeneration != m.subGeneration {
+			for k := range values {
+				if isSubscriptionScopedSettingKey(k) {
+					delete(values, k)
+				}
+			}
+		}
+		// Persist user-scoped settings to SettingsService, and apply global/runtime
+		// settings through config.ApplySettings (single source of truth for global/LLM).
+		m.persistCLISettingsValues(values)
+		// NOTE: UI updates (theme/locale/model/viewport) are handled
+		// by handleSettingsSavedMsg in Update() — do NOT call them here
+		// since this callback runs in a background goroutine.
+	})
+}
+
+// handleUpdateSlashCommand handles the /update command to check for updates.
+func (m *cliModel) handleUpdateSlashCommand() {
+	if m.checkingUpdate {
+		m.showSystemMsg(m.locale.CheckingUpdate, feedbackInfo)
+	} else {
+		m.checkingUpdate = true
+		m.updateNotice = nil
+		if m.channel != nil {
+			m.channel.CheckUpdateAsync()
+		}
+		m.showSystemMsg(m.locale.CheckingUpdate, feedbackInfo)
+	}
+}
+
+// handleTasksSlashCommand handles the /tasks command to open the unified tasks & agents panel.
+func (m *cliModel) handleTasksSlashCommand() {
+	taskCount := 0
+	if m.bgTaskCountFn != nil {
+		taskCount = m.bgTaskCountFn()
+	}
+	agentCnt := 0
+	if m.agentCountFn != nil {
+		agentCnt = m.agentCountFn()
+	}
+	if taskCount+agentCnt == 0 {
+		m.showSystemMsg(m.locale.BgTasksEmpty, feedbackInfo)
+	} else {
+		m.openBgTasksPanel()
+	}
+}
+
+// handleSuSlashCommand handles the /su command to switch user identity.
+//
+//	/su          — switch back to default identity
+//	/su <userID> — switch to specified user identity
+//	/su web:<senderID>[:<token>] — switch to Web user
+//
+// Returns a non-nil tea.Cmd if an async operation was started (e.g. history loading),
+// or nil to continue with the standard slash command tail.
+func (m *cliModel) handleSuSlashCommand(parts []string) tea.Cmd {
+	if len(parts) < 2 {
+		if m.senderID == "cli_user" {
+			m.showSystemMsg(m.locale.SuAlreadyDefault, feedbackInfo)
+			return nil
+		}
+		m.senderID = "cli_user"
+		m.chatID = m.defaultChatID
+	} else {
+		arg := strings.TrimSpace(parts[1])
+		if strings.HasPrefix(arg, "web:") {
+			webParts := strings.SplitN(strings.TrimPrefix(arg, "web:"), ":", 2)
+			if len(webParts) == 0 || webParts[0] == "" {
+				m.showSystemMsg("❌ 格式: /su web:<senderID>[:<token>]", feedbackInfo)
+				return nil
+			}
+			m.channelName = "web"
+			m.senderID = webParts[0]
+			m.chatID = webParts[0]
+			m.showSystemMsg(fmt.Sprintf("✅ 已切换到 Web 用户: %s", webParts[0]), feedbackInfo)
+		} else {
+			newID := arg
+			if newID == "cli_user" || newID == "" {
+				m.senderID = "cli_user"
+				m.chatID = m.defaultChatID
+			} else {
+				m.senderID = newID
+				m.chatID = newID
+			}
+		}
+	}
+	m.messages = nil
+	m.invalidateAllCache(false)
+	if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
+		m.suLoading = true
+		m.splashFrame = 0
+		return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+	}
+	m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitched, m.chatID), feedbackInfo)
+	return nil
+}
+
+// handleChatSlashCommand handles the /chat command for chat room management.
+//
+//	/chat new [label] — create new session
+//	/chat <id>        — switch to specified session
+//	/chat ls          — list all sessions (text version)
+//
+// Returns a non-nil tea.Cmd if an async operation was started (e.g. history loading),
+// or nil to continue with the standard slash command tail.
+func (m *cliModel) handleChatSlashCommand(parts []string) tea.Cmd {
+	if len(parts) < 2 {
+		m.showSystemMsg("用法: /chat new [label] | /chat <id> | /chat ls", feedbackInfo)
+		return nil
+	}
+	arg := strings.TrimSpace(parts[1])
+	switch arg {
+	case "new":
+		if m.channel != nil && m.channel.config.ChatCreateFn != nil {
+			label := ""
+			if len(parts) > 2 {
+				label = strings.Join(parts[2:], " ")
+			}
+			chatID, err := m.channel.config.ChatCreateFn(m.channelName, m.defaultChatID, label)
+			if err != nil {
+				m.showSystemMsg("创建失败: "+err.Error(), feedbackInfo)
+				return nil
+			}
+			m.chatID = chatID
+			m.messages = nil
+			m.invalidateAllCache(false)
+			m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
+		} else {
+			m.showSystemMsg("❌ 当前不支持创建新会话", feedbackInfo)
+		}
+	case "ls":
+		if m.sessionsListFn != nil {
+			entries := m.sessionsListFn()
+			if len(entries) == 0 {
+				m.showSystemMsg("(no active sessions)", feedbackInfo)
+			} else {
+				var lines []string
+				for _, e := range entries {
+					switch e.Type {
+					case "main":
+						active := ""
+						if e.ID == m.chatID {
+							active = " ←"
+						}
+						lines = append(lines, fmt.Sprintf("  ● %s%s", e.Label, active))
+					case "agent":
+						status := "●"
+						if !e.Running {
+							status = "◦"
+						}
+						lines = append(lines, fmt.Sprintf("  %s 🤖 %s/%s", status, e.Role, e.Instance))
+					}
+				}
+				m.showSystemMsg("Sessions:\n"+strings.Join(lines, "\n"), feedbackInfo)
+			}
+		} else {
+			m.showSystemMsg("❌ Sessions list not available", feedbackInfo)
+		}
+	default:
+		// Switch to specific chatID
+		m.chatID = arg
+		m.messages = nil
+		m.invalidateAllCache(false)
+		if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
+			m.suLoading = true
+			m.splashFrame = 0
+			return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+		}
+		m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", arg), feedbackInfo)
+	}
+	return nil
+}
+
+// handleDefaultSlashCommand handles unrecognized slash commands.
+// It checks for easter eggs (e.g. /version triple-call detection), then passes
+// unknown commands through to the agent layer.
+// Returns a non-nil tea.Cmd for early-exit scenarios, or nil to continue
+// with the standard slash command tail.
+func (m *cliModel) handleDefaultSlashCommand(command string, cmd string) tea.Cmd {
+	// 🥚 Easter egg #7: /version triple-call detection
+	if command == "/version" {
+		if m.recordVersionHit() {
+			art := fmt.Sprintf(versionAchievementArt, version.Version)
+			_ = m.activateEasterEgg(easterEggVersion)
+			m.easterEggCustom = art
+			m.updateViewportContent()
+			return nil
+		}
+	}
+	// Unknown command attempted to passthrough to agent (agent layer may recognize it)
+	m.sendToAgent(cmd)
 	return nil
 }
 
