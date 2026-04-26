@@ -146,6 +146,10 @@ func CountTokens(text string, model string) (int, error) {
 	return len(ids), nil
 }
 
+// tokenOverheadPerMessage approximates the token overhead per message (role + formatting).
+// Typically 4 tokens for role metadata + separators.
+const tokenOverheadPerMessage = 4
+
 // RoleTokenCount 按角色分类的 token 统计结果
 type RoleTokenCount struct {
 	System    int
@@ -157,9 +161,6 @@ type RoleTokenCount struct {
 // CountMessagesTokensByRole counts tokens for a list of messages, broken down by role.
 func CountMessagesTokensByRole(messages []ChatMessage, model string) (RoleTokenCount, error) {
 	var result RoleTokenCount
-
-	// Approximate token overhead per message (role + formatting)
-	overheadPerMessage := 4
 
 	for _, msg := range messages {
 		var contentTokens int
@@ -185,7 +186,7 @@ func CountMessagesTokensByRole(messages []ChatMessage, model string) (RoleTokenC
 
 		// Count tool call tokens if present (assistant messages with tool calls)
 		for _, tc := range msg.ToolCalls {
-			toolCallTokens += overheadPerMessage // per tool call overhead
+			toolCallTokens += tokenOverheadPerMessage // per tool call overhead
 			if tc.Name != "" {
 				count, err := CountTokens(tc.Name, model)
 				if err != nil {
@@ -211,7 +212,7 @@ func CountMessagesTokensByRole(messages []ChatMessage, model string) (RoleTokenC
 			contentTokens += count
 		}
 
-		totalForMsg := overheadPerMessage + contentTokens + toolCallTokens
+		totalForMsg := tokenOverheadPerMessage + contentTokens + toolCallTokens
 
 		switch msg.Role {
 		case "system":
@@ -233,13 +234,9 @@ func CountMessagesTokensByRole(messages []ChatMessage, model string) (RoleTokenC
 func CountMessagesTokens(messages []ChatMessage, model string) (int, error) {
 	total := 0
 
-	// Approximate token overhead per message (role + formatting)
-	// Typically 4 tokens for role + 2 for formatting
-	overheadPerMessage := 4
-
 	for _, msg := range messages {
 		// Add overhead
-		total += overheadPerMessage
+		total += tokenOverheadPerMessage
 
 		// Count content tokens
 		if msg.Content != "" {
@@ -264,7 +261,7 @@ func CountMessagesTokens(messages []ChatMessage, model string) (int, error) {
 
 		// Count tool call tokens if present (assistant messages with tool calls)
 		for _, tc := range msg.ToolCalls {
-			total += overheadPerMessage // per tool call formatting overhead
+			total += tokenOverheadPerMessage // per tool call formatting overhead
 			if tc.Name != "" {
 				count, err := CountTokens(tc.Name, model)
 				if err != nil {
