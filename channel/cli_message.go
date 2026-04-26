@@ -891,6 +891,22 @@ func renderWrappedBlock(sb *strings.Builder, text string, maxWidth int, guide, c
 	}
 }
 
+// renderWrappedBlockDimmed is like renderWrappedBlock but wraps the entire line
+// in outerStyle (typically dimStyle for completed iterations).
+func renderWrappedBlockDimmed(sb *strings.Builder, text string, maxWidth int, guide, contentStyle, outerStyle lipgloss.Style) {
+	guideStr := guide.Render("  │ ")
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" {
+			continue
+		}
+		for _, wl := range strings.Split(hardWrapRunes(line, maxWidth), "\n") {
+			sb.WriteString(outerStyle.Render(guideStr + contentStyle.Render(wl)))
+			sb.WriteString("\n")
+		}
+	}
+}
+
 // renderProgressBlock renders the iteration progress panel for the viewport.
 func (m *cliModel) renderProgressBlock() string {
 	if !m.typing && m.progress == nil {
