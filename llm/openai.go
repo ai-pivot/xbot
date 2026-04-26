@@ -305,8 +305,8 @@ func hasAssistantReasoningHistory(messages []ChatMessage) bool {
 // 消息补齐该字段（缺失时传空字符串），以满足 DeepSeek/OpenAI reasoning provider
 // 对历史消息形状的一致性要求。
 func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.ChatCompletionMessageParamUnion {
-	thinkingEnabled := thinkingMode != "" && thinkingMode != "disabled"
-	reasoningHistoryObserved := thinkingMode != "disabled" && hasAssistantReasoningHistory(messages)
+	thinkingEnabled := IsThinkingActive(thinkingMode)
+	reasoningHistoryObserved := thinkingMode != ThinkingDisabled && hasAssistantReasoningHistory(messages)
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {

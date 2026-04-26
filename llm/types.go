@@ -13,6 +13,18 @@ var (
 	thinkingBlockRegex  = regexp.MustCompile(`(?s)<thinking>.*?</thinking>`)
 )
 
+// Thinking mode constants for reasoning models.
+const (
+	ThinkingEnabled  = "enabled"
+	ThinkingDisabled = "disabled"
+)
+
+// IsThinkingActive returns true if the thinking mode string indicates that
+// extended thinking/reasoning should be active (non-empty and not "disabled").
+func IsThinkingActive(mode string) bool {
+	return mode != "" && mode != ThinkingDisabled
+}
+
 // ChatMessage 业务层定义的消息类型，与具体 LLM 实现解耦
 type ChatMessage struct {
 	Role             string     `json:"role"` // "system", "user", "assistant", "tool"

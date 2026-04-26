@@ -375,14 +375,14 @@ func (a *AnthropicLLM) setHeaders(req *http.Request) {
 //   - "disabled" -> nil (不发送 thinking 参数)
 //   - JSON 格式: {"type": "enabled", "budget_tokens": 10000} 或 {"type": "adaptive", "effort": "high"}
 func parseAnthropicThinking(thinkingMode string) *anthropicThinking {
-	if thinkingMode == "" || thinkingMode == "disabled" {
+	if thinkingMode == "" || thinkingMode == ThinkingDisabled {
 		return nil
 	}
 
 	// 简单关键字
 	switch thinkingMode {
 	case "enabled":
-		return &anthropicThinking{Type: "enabled"}
+		return &anthropicThinking{Type: ThinkingEnabled}
 	case "adaptive":
 		return &anthropicThinking{Type: "adaptive", Effort: "high"}
 	}
@@ -396,7 +396,7 @@ func parseAnthropicThinking(thinkingMode string) *anthropicThinking {
 	}
 
 	// 无法解析，默认启用
-	return &anthropicThinking{Type: "enabled"}
+	return &anthropicThinking{Type: ThinkingEnabled}
 }
 
 // Generate 非流式生成
@@ -413,7 +413,7 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 		"tools_count": len(tools),
 	}).Debug("[LLM] Starting non-stream request")
 
-	anthropicMsgs := toAnthropicMessages(messages, thinkingMode != "" && thinkingMode != "disabled")
+	anthropicMsgs := toAnthropicMessages(messages, IsThinkingActive(thinkingMode))
 	body := anthropicReq{
 		Model:     model,
 		MaxTokens: a.getMaxTokens(),
@@ -541,7 +541,7 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 		"tools_count": len(tools),
 	}).Debug("[LLM] Starting stream request")
 
-	anthropicMsgs := toAnthropicMessages(messages, thinkingMode != "" && thinkingMode != "disabled")
+	anthropicMsgs := toAnthropicMessages(messages, IsThinkingActive(thinkingMode))
 	body := anthropicReq{
 		Model:     model,
 		MaxTokens: a.getMaxTokens(),
