@@ -65,7 +65,11 @@ func (t *animTicker) viewFrames(frames []string, speedOverride ...int) string {
 	return t.styleAlt.Render(frames[idx])
 }
 
-// isCJK reports whether r is a CJK character (ideographs, kana, hangul, etc.).
+// isCJK reports whether r is likely a wide (double-width) character for the
+// typewriter speed penalty heuristic. Uses a conservative lower bound (0x2E80)
+// that covers CJK ideographs, Kana, Hangul, and other East Asian scripts.
+// This intentionally over-matches (emoji, etc.) to avoid rendering artifacts.
+// For precise CJK word-boundary detection, see internal/textarea.isCJK.
 func isCJK(r rune) bool {
 	return r >= 0x2E80
 }
