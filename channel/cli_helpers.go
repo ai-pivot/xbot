@@ -594,13 +594,7 @@ func (m *cliModel) clampPanelScroll(rawContent string) {
 func (m *cliModel) clampAskUserPanelScroll(rawContent string) {
 	total := strings.Count(rawContent, "\n") + 1
 	m.askPanelTotalLines = total
-	fixedLines := 2 // titleBar + toast (no separate footer — hints are in-panel)
-	panelBorder := 2
-	viewportH := m.layoutViewportHeight()
-	visible := m.height - fixedLines - viewportH - panelBorder
-	if visible < 3 {
-		visible = 3
-	}
+	visible := m.askUserPanelVisibleHeight()
 	if total <= visible {
 		m.askPanelScrollY = 0
 		return
