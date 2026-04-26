@@ -776,8 +776,11 @@ func (m *Model) Reset() {
 }
 
 // Word returns the word at the cursor position.
-// A word is delimited by spaces, line-breaks, or CJK character boundaries.
-// CJK characters are treated as individual words.
+//
+// A word is delimited by [isWordBoundary] (whitespace or CJK characters).
+// CJK characters are treated as individual words (one character each).
+// Returns an empty string if the cursor is on whitespace, beyond the line end,
+// or at position 0.
 func (m *Model) Word() string {
 	line := m.value[m.row]
 	col := m.col - 1
@@ -803,13 +806,13 @@ func (m *Model) Word() string {
 
 	// Find the start of the word by moving left (stop at spaces and CJK)
 	start := col
-	for start > 0 && !unicode.IsSpace(line[start-1]) && !isCJK(line[start-1]) {
+	for start > 0 && !isWordBoundary(line[start-1]) {
 		start--
 	}
 
 	// Find the end of the word by moving right (stop at spaces and CJK)
 	end := col + 1
-	for end < len(line) && !unicode.IsSpace(line[end]) && !isCJK(line[end]) {
+	for end < len(line) && !isWordBoundary(line[end]) {
 		end++
 	}
 
@@ -882,7 +885,7 @@ func (m *Model) deleteWordLeft() {
 			// Latin/other: delete to start of word
 			for m.col > 0 {
 				prev := m.value[m.row][m.col-1]
-				if unicode.IsSpace(prev) || isCJK(prev) {
+				if isWordBoundary(prev) {
 					break
 				}
 				m.SetCursorColumn(m.col - 1)
@@ -921,7 +924,7 @@ func (m *Model) deleteWordRight() {
 			// Latin/other: delete to end of word
 			for m.col < len(m.value[m.row]) {
 				r := m.value[m.row][m.col]
-				if unicode.IsSpace(r) || isCJK(r) {
+				if isWordBoundary(r) {
 					break
 				}
 				m.SetCursorColumn(m.col + 1)
@@ -968,7 +971,7 @@ func (m *Model) characterLeft(insideLine bool) {
 
 // wordLeft moves the cursor one word to the left.
 // CJK characters are treated as individual words; Latin words are delimited
-// by spaces or CJK boundaries.
+// by [isWordBoundary] (whitespace or CJK characters).
 func (m *Model) wordLeft() {
 	// Skip spaces backwards
 	for m.col > 0 && unicode.IsSpace(m.value[m.row][m.col-1]) {
@@ -986,7 +989,7 @@ func (m *Model) wordLeft() {
 		// Latin/other: move to start of word (stop at spaces and CJK)
 		for m.col > 0 {
 			prev := m.value[m.row][m.col-1]
-			if unicode.IsSpace(prev) || isCJK(prev) {
+			if isWordBoundary(prev) {
 				break
 			}
 			m.SetCursorColumn(m.col - 1)
@@ -996,11 +999,18 @@ func (m *Model) wordLeft() {
 
 // wordRight moves the cursor one word to the right.
 // CJK characters are treated as individual words; Latin words are delimited
-// by spaces or CJK boundaries.
+// by [isWordBoundary] (whitespace or CJK characters).
 func (m *Model) wordRight() {
 	m.doWordRight(func(int, int) { /* nothing */ })
 }
 
+// doWordRight moves the cursor one word to the right, invoking fn for each
+// character traversed. The fn callback receives the character index within the
+// word and the absolute column position. This enables word-transform operations
+// (uppercase, lowercase, capitalize) to modify characters as the cursor moves.
+//
+// CJK characters are treated as individual words; Latin words are delimited
+// by [isWordBoundary] (whitespace or CJK characters).
 func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 	// Skip spaces forward
 	for m.col < len(m.value[m.row]) && unicode.IsSpace(m.value[m.row][m.col]) {
@@ -1020,7 +1030,7 @@ func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 		charIdx := 0
 		for m.col < len(m.value[m.row]) {
 			r := m.value[m.row][m.col]
-			if unicode.IsSpace(r) || isCJK(r) {
+			if isWordBoundary(r) {
 				break
 			}
 			fn(charIdx, m.col)
@@ -1390,12 +1400,12 @@ func (m *Model) view() string {
 	m.virtualCursor.TextStyle = m.activeStyle().computedCursorLine()
 
 	var (
-		s                strings.Builder
-		style            lipgloss.Style
-		newLines         int
-		widestLineNumber int
-		lineInfo         = m.LineInfo()
-		styles           = m.activeStyle()
+		s        strings.Builder
+		style    lipgloss.Style
+		newLines int
+
+		lineInfo = m.LineInfo()
+		styles   = m.activeStyle()
 	)
 
 	displayLine := 0
@@ -1414,21 +1424,12 @@ func (m *Model) view() string {
 			s.WriteString(style.Render(prompt))
 			displayLine++
 
-			var ln string
 			if m.ShowLineNumbers {
-				if wl == 0 { // normal line
-					isCursorLine := m.row == l
-					s.WriteString(m.lineNumberView(l+1, isCursorLine))
-				} else { // soft wrapped line
-					isCursorLine := m.row == l
-					s.WriteString(m.lineNumberView(-1, isCursorLine))
+				if wl == 0 { // logical line
+					s.WriteString(m.lineNumberView(l+1, m.row == l))
+				} else { // soft-wrapped continuation
+					s.WriteString(m.lineNumberView(-1, m.row == l))
 				}
-			}
-
-			// Note the widest line number for padding purposes later.
-			lnw := uniseg.StringWidth(ln)
-			if lnw > widestLineNumber {
-				widestLineNumber = lnw
 			}
 
 			strwidth := uniseg.StringWidth(string(wrappedLine))
@@ -1471,7 +1472,7 @@ func (m *Model) view() string {
 
 		// Write end of buffer content
 		leftGutter := string(m.EndOfBufferCharacter)
-		rightGapWidth := m.Width() - uniseg.StringWidth(leftGutter) + widestLineNumber
+		rightGapWidth := m.Width() - uniseg.StringWidth(leftGutter)
 		rightGap := strings.Repeat(" ", max(0, rightGapWidth))
 		s.WriteString(styles.computedEndOfBuffer().Render(leftGutter + rightGap))
 		s.WriteRune('\n')
@@ -1755,8 +1756,14 @@ func (m *Model) visualLinesForInsert(lines [][]rune) int {
 	}
 	delta := len(m.memoizedWrap(merged, m.width)) - currentRowVisual
 
-	// Each additional line is a new logical line.
+	// Each additional line (beyond the first) is a new logical line.
+	// lines[0] is already accounted for in the merged calculation above.
 	for i, content := range lines {
+		if i == 0 {
+			// Skip: already counted in merged delta above.
+			// If there's only one line, merged already includes the tail.
+			continue
+		}
 		if i == len(lines)-1 {
 			content = append(content, m.value[m.row][m.col:]...)
 		}
@@ -1837,11 +1844,16 @@ func Paste() tea.Msg {
 
 // wrap performs CJK-aware line wrapping on a logical line of runes.
 //
-// CJK characters break individually (each character can start a new visual line).
-// Latin/ASCII words break at word boundaries (spaces).
-// Mixed text handles transitions between CJK and Latin correctly.
+// Breaking rules:
+//   - CJK characters: each character can start a new visual line (no word accumulation)
+//   - Latin/other characters: break at word boundaries (whitespace)
+//   - Mixed text: transitions between CJK and Latin are handled correctly
+//
 // Each visual line is terminated with one trailing space for cursor navigation
-// consistency (consumed by LineInfo's counter-based positioning).
+// consistency. The trailing space is consumed by LineInfo's counter-based
+// character positioning logic (see [Model.LineInfo]).
+//
+// Returns at least one visual line. Each visual line includes one trailing space.
 func wrap(runes []rune, width int) [][]rune {
 	if len(runes) == 0 {
 		return [][]rune{{' '}}
@@ -1856,12 +1868,14 @@ func wrap(runes []rune, width int) [][]rune {
 		currentWidth int
 	)
 
+	// flushLine emits the current visual line and starts a new empty one.
 	flushLine := func() {
 		lines = append(lines, currentLine)
 		currentLine = nil
 		currentWidth = 0
 	}
 
+	// addRune appends a single rune, flushing first if it would exceed the width.
 	addRune := func(r rune) {
 		cw := rw.RuneWidth(r)
 		if currentWidth+cw > width && currentWidth > 0 {
@@ -1876,23 +1890,25 @@ func wrap(runes []rune, width int) [][]rune {
 		r := runes[i]
 		switch {
 		case isCJK(r):
-			// CJK characters break individually — no word accumulation needed
+			// CJK characters break individually: each character is a potential
+			// line break point. No word accumulation is needed.
 			addRune(r)
 			i++
 
 		case unicode.IsSpace(r):
-			// Spaces are break points but don't force a wrap by themselves.
-			// Accumulate consecutive spaces.
+			// Whitespace is a break point but does not force a wrap by itself.
+			// Accumulate consecutive spaces into the current line.
 			for i < len(runes) && unicode.IsSpace(runes[i]) {
 				addRune(runes[i])
 				i++
 			}
 
 		default:
-			// Latin/other: collect the whole word, then try to fit it
+			// Non-CJK, non-space: collect the entire "word" (consecutive
+			// non-boundary characters), then attempt to fit it on the line.
 			wordStart := i
 			wordWidth := 0
-			for i < len(runes) && !unicode.IsSpace(runes[i]) && !isCJK(runes[i]) {
+			for i < len(runes) && !isWordBoundary(runes[i]) {
 				wordWidth += rw.RuneWidth(runes[i])
 				i++
 			}
@@ -1958,9 +1974,31 @@ func abs(n int) int {
 	return n
 }
 
-// isCJK returns true if the rune is a CJK (Chinese, Japanese, Korean) character.
-// CJK characters are individually wrappable and act as single-character "words"
-// for navigation purposes.
+// isCJK reports whether the rune belongs to a CJK (Chinese, Japanese, Korean)
+// script where each character is its own word boundary for navigation and wrapping.
+//
+// Covered Unicode blocks:
+//   - unicode.Han:     CJK Unified Ideographs (including Ext A–I, compatibility
+//     ideographs, CJK radicals, Kangxi radicals)
+//   - unicode.Hangul:  Korean syllables and Jamo
+//   - unicode.Hiragana: Japanese Hiragana (including digraphs and small variants)
+//   - unicode.Katakana: Japanese Katakana (including phonetic extensions U+31F0–U+31FF,
+//     half-width forms, and digraphs)
+//
+// Not covered (by design):
+//   - Fullwidth Latin/ASCII (U+FF00–U+FFEF): double-width display, but semantically Latin
+//   - CJK Compatibility Forms (U+FE30–U+FE4F): punctuation/vertical forms
+//   - CJK Symbols and Punctuation (U+3000–U+303F): punctuation, not word characters
 func isCJK(r rune) bool {
 	return unicode.In(r, unicode.Han, unicode.Hangul, unicode.Hiragana, unicode.Katakana)
+}
+
+// isWordBoundary reports whether r constitutes a word boundary for CJK-aware
+// navigation. A word boundary is a whitespace character or a CJK character
+// (each CJK character acts as both a word and a boundary).
+//
+// This is the central predicate used by wordLeft, wordRight, deleteWordLeft,
+// deleteWordRight, Word, and wrap to enforce consistent CJK word-breaking rules.
+func isWordBoundary(r rune) bool {
+	return unicode.IsSpace(r) || isCJK(r)
 }
