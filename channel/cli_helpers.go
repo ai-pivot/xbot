@@ -382,7 +382,7 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 func (m *cliModel) removeAllToolSummaries() {
 	filtered := m.messages[:0] // reuse backing array
 	for _, msg := range m.messages {
-		if msg.role != "tool_summary" {
+		if msg.role != roleToolSummary {
 			filtered = append(filtered, msg)
 		}
 	}
