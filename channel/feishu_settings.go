@@ -1190,10 +1190,28 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 	}, nil
 }
 
+// buildModelTabContent builds the model configuration tab.
+// It delegates to focused sub-methods for each UI section.
 func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID string) []map[string]any {
 	var elements []map[string]any
 
-	// --- Quick model switch (for active subscription) ---
+	elements = append(elements, f.buildModelSelectorSection(senderID)...)
+	elements = append(elements, f.buildMaxContextSection(senderID)...)
+	elements = append(elements, f.buildMaxOutputSection(senderID)...)
+	elements = append(elements, f.buildConcurrencySection(senderID)...)
+	elements = append(elements, f.buildThinkingModeSection(senderID)...)
+	elements = append(elements, f.buildModelTierSection()...)
+	elements = append(elements, f.buildSubscriptionSection(senderID)...)
+
+	return elements
+}
+
+// buildModelSelectorSection renders the quick model-switch dropdown for the
+// currently active subscription. If no models are available it falls back to
+// showing the current model so the dropdown is never blank.
+func (f *FeishuChannel) buildModelSelectorSection(senderID string) []map[string]any {
+	var elements []map[string]any
+
 	var models []string
 	currentModel := ""
 	if f.settingsCallbacks.LLMList != nil {
@@ -1239,7 +1257,12 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		)...)
 	}
 
-	// Max context setting (unit: k, stored as k*1000)
+	return elements
+}
+
+// buildMaxContextSection renders the max-context input form (unit: k tokens,
+// stored internally as k*1000).
+func (f *FeishuChannel) buildMaxContextSection(senderID string) []map[string]any {
 	currentMaxContext := 0
 	maxContextDisplay := "默认"
 	if f.settingsCallbacks.LLMGetMaxContext != nil {
@@ -1253,37 +1276,43 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 	if currentMaxContext > 0 {
 		maxCtxInitial = fmt.Sprintf("%d", currentMaxContext/1000)
 	}
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": fmt.Sprintf("**最大上下文 (k)**　当前: %s", maxContextDisplay),
-	})
-	elements = append(elements, map[string]any{
-		"tag":  "form",
-		"name": "max_context_form",
-		"elements": []map[string]any{
-			{
-				"tag":           "input",
-				"name":          "max_context_k",
-				"label":         map[string]any{"tag": "plain_text", "content": "上下文长度 (k)"},
-				"placeholder":   map[string]any{"tag": "plain_text", "content": "如 400 = 400k"},
-				"initial_value": maxCtxInitial,
-			},
-			{
-				"tag":         "button",
-				"name":        "max_context_submit",
-				"text":        map[string]any{"tag": "plain_text", "content": "保存"},
-				"type":        "primary",
-				"action_type": "form_submit",
-				"value": map[string]string{
-					"action_data": mustMapToJSON(map[string]string{
-						"action": "settings_set_max_context",
-					}),
+
+	return []map[string]any{
+		{
+			"tag":     "markdown",
+			"content": fmt.Sprintf("**最大上下文 (k)**　当前: %s", maxContextDisplay),
+		},
+		{
+			"tag":  "form",
+			"name": "max_context_form",
+			"elements": []map[string]any{
+				{
+					"tag":           "input",
+					"name":          "max_context_k",
+					"label":         map[string]any{"tag": "plain_text", "content": "上下文长度 (k)"},
+					"placeholder":   map[string]any{"tag": "plain_text", "content": "如 400 = 400k"},
+					"initial_value": maxCtxInitial,
+				},
+				{
+					"tag":         "button",
+					"name":        "max_context_submit",
+					"text":        map[string]any{"tag": "plain_text", "content": "保存"},
+					"type":        "primary",
+					"action_type": "form_submit",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action": "settings_set_max_context",
+						}),
+					},
 				},
 			},
 		},
-	})
+	}
+}
 
-	// Max output tokens setting (unit: k, stored as k*1000)
+// buildMaxOutputSection renders the max-output-tokens input form (unit: k
+// tokens, stored internally as k*1000).
+func (f *FeishuChannel) buildMaxOutputSection(senderID string) []map[string]any {
 	currentMaxOutputTokens := 0
 	maxOutputDisplay := "默认"
 	if f.settingsCallbacks.LLMGetMaxOutputTokens != nil {
@@ -1297,37 +1326,42 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 	if currentMaxOutputTokens > 0 {
 		maxOutInitial = fmt.Sprintf("%d", currentMaxOutputTokens/1000)
 	}
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": fmt.Sprintf("**最大输出 Token (k)**　当前: %s", maxOutputDisplay),
-	})
-	elements = append(elements, map[string]any{
-		"tag":  "form",
-		"name": "max_output_form",
-		"elements": []map[string]any{
-			{
-				"tag":           "input",
-				"name":          "max_output_k",
-				"label":         map[string]any{"tag": "plain_text", "content": "最大输出 (k)"},
-				"placeholder":   map[string]any{"tag": "plain_text", "content": "如 16 = 16k，0 = 默认"},
-				"initial_value": maxOutInitial,
-			},
-			{
-				"tag":         "button",
-				"name":        "max_output_submit",
-				"text":        map[string]any{"tag": "plain_text", "content": "保存"},
-				"type":        "primary",
-				"action_type": "form_submit",
-				"value": map[string]string{
-					"action_data": mustMapToJSON(map[string]string{
-						"action": "settings_set_max_output_tokens",
-					}),
+
+	return []map[string]any{
+		{
+			"tag":     "markdown",
+			"content": fmt.Sprintf("**最大输出 Token (k)**　当前: %s", maxOutputDisplay),
+		},
+		{
+			"tag":  "form",
+			"name": "max_output_form",
+			"elements": []map[string]any{
+				{
+					"tag":           "input",
+					"name":          "max_output_k",
+					"label":         map[string]any{"tag": "plain_text", "content": "最大输出 (k)"},
+					"placeholder":   map[string]any{"tag": "plain_text", "content": "如 16 = 16k，0 = 默认"},
+					"initial_value": maxOutInitial,
+				},
+				{
+					"tag":         "button",
+					"name":        "max_output_submit",
+					"text":        map[string]any{"tag": "plain_text", "content": "保存"},
+					"type":        "primary",
+					"action_type": "form_submit",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action": "settings_set_max_output_tokens",
+						}),
+					},
 				},
 			},
 		},
-	})
+	}
+}
 
-	// LLM concurrency settings (personal only)
+// buildConcurrencySection renders the personal LLM concurrency limit selector.
+func (f *FeishuChannel) buildConcurrencySection(senderID string) []map[string]any {
 	personalConc := 3 // default
 	if f.settingsCallbacks.LLMGetPersonalConcurrency != nil {
 		personalConc = f.settingsCallbacks.LLMGetPersonalConcurrency(senderID)
@@ -1343,11 +1377,14 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		{"text": map[string]any{"tag": "plain_text", "content": "不限"}, "value": "0"},
 	}
 
-	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "**个人 LLM 并发限制**",
-	})
+	elements := []map[string]any{
+		{"tag": "hr"},
+		{
+			"tag":     "markdown",
+			"content": "**个人 LLM 并发限制**",
+		},
+	}
+
 	elements = append(elements, buildSelectFormRow(
 		"并发上限",
 		fmt.Sprintf("%d", personalConc),
@@ -1366,7 +1403,11 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		},
 	)...)
 
-	// Thinking mode setting
+	return elements
+}
+
+// buildThinkingModeSection renders the thinking-mode selector dropdown.
+func (f *FeishuChannel) buildThinkingModeSection(senderID string) []map[string]any {
 	currentThinkingMode := ""
 	thinkingModeDisplay := "auto"
 	if f.settingsCallbacks.LLMGetThinkingMode != nil {
@@ -1376,7 +1417,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		thinkingModeDisplay = thinkingModeLabel(currentThinkingMode)
 	}
 
-	elements = append(elements, buildSelectFormRow(
+	return buildSelectFormRow(
 		"思考模式",
 		thinkingModeDisplay,
 		"thinking_mode_form",
@@ -1392,14 +1433,20 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 				}),
 			},
 		},
-	)...)
+	)
+}
 
-	// --- Model tier section ---
-	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "**模型等级 (SubAgent)** — 全局设置，跨订阅生效",
-	})
+// buildModelTierSection renders the model tier (vanguard/balance/swift)
+// selectors used by SubAgent routing. Tiers are global, not per-user.
+func (f *FeishuChannel) buildModelTierSection() []map[string]any {
+	elements := []map[string]any{
+		{"tag": "hr"},
+		{
+			"tag":     "markdown",
+			"content": "**模型等级 (SubAgent)** — 全局设置，跨订阅生效",
+		},
+	}
+
 	// Collect models from ALL subscriptions (not just active one) for tier selectors.
 	var allModels []string
 	if f.settingsCallbacks.LLMListAllModels != nil {
@@ -1466,7 +1513,14 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		)...)
 	}
 
-	// --- Subscription management section ---
+	return elements
+}
+
+// buildSubscriptionSection renders the subscription management list with
+// activate/delete buttons and the "add subscription" button.
+func (f *FeishuChannel) buildSubscriptionSection(senderID string) []map[string]any {
+	var elements []map[string]any
+
 	elements = append(elements, map[string]any{"tag": "hr"})
 	elements = append(elements, map[string]any{
 		"tag":     "markdown",
