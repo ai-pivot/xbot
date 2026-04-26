@@ -73,7 +73,7 @@ type RunConfig struct {
 
 	// === 循环控制 ===
 	MaxIterations   int // 0 = 使用默认值 100
-	MaxOutputTokens int // 0 = 使用 LLM client 默认值（8192）
+	MaxOutputTokens int // 0 = 使用 LLM client 默认值（DefaultMaxOutputTokens）
 
 	// === 可选能力（nil = 不启用） ===
 
@@ -257,6 +257,10 @@ type ToolContextExtras struct {
 
 // DefaultMaxIterations 默认最大迭代次数。
 const DefaultMaxIterations = 2000
+
+// DefaultMaxOutputTokens is the default maximum output token count when
+// not specified by config or model capabilities.
+const DefaultMaxOutputTokens = 8192
 
 // readOnlyTools 只读工具集合，用于读写分离并行执行。
 var readOnlyTools = map[string]bool{

@@ -288,7 +288,7 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 	chatID := "/home/user/project"
 	subA := &sqlite.LLMSubscription{
 		Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
-		Model: "gpt-4o", MaxOutputTokens: 8192,
+		Model: "gpt-4o", MaxOutputTokens: DefaultMaxOutputTokens,
 	}
 	subB := &sqlite.LLMSubscription{
 		Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
@@ -349,7 +349,7 @@ func TestSwitchModel_ClearsPerChatCache(t *testing.T) {
 	chatID := "/home/user/project"
 	sub := &sqlite.LLMSubscription{
 		Provider: "openai", BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
-		Model: "gpt-4o", MaxOutputTokens: 8192,
+		Model: "gpt-4o", MaxOutputTokens: DefaultMaxOutputTokens,
 	}
 
 	// Create per-chat cache via SwitchSubscription

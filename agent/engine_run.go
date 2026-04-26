@@ -777,7 +777,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	// generates a long response.
 	maxOutputTokens := s.cfg.MaxOutputTokens
 	if maxOutputTokens <= 0 {
-		maxOutputTokens = 8192 // defaultMaxOutputTokens
+		maxOutputTokens = DefaultMaxOutputTokens
 	}
 	promptBudget := maxTokens - maxOutputTokens
 	if promptBudget <= 0 {
