@@ -1465,6 +1465,18 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	return sb.String()
 }
 
+// trimAndWrapLines splits content by newlines, trims trailing whitespace from
+// each line, and hard-wraps each line to the given width. Returns the list of
+// wrapped display lines.
+func trimAndWrapLines(content string, width int) []string {
+	var result []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimRight(line, " \t")
+		result = append(result, strings.Split(hardWrapRunes(line, width), "\n")...)
+	}
+	return result
+}
+
 // setViewportContent sets viewport content while preserving scroll position.
 // If the user was at the bottom before the update, keep them at the bottom.
 // Lines wider than the viewport are truncated to prevent layout breakage.
@@ -1479,15 +1491,10 @@ func (m *cliModel) setViewportContent(content string) {
 	m.lastViewportWidth = m.width
 
 	if m.width > 0 {
-		lines := strings.Split(content, "\n")
-		var wrapped []string
-		for _, line := range lines {
-			// Strip trailing whitespace first — mermaid-ascii and wide tables
-			// pad lines with spaces that inflate lipgloss.Width() far beyond
-			// the actual visible content, causing premature wrapping.
-			line = strings.TrimRight(line, " \t")
-			wrapped = append(wrapped, strings.Split(hardWrapRunes(line, m.width), "\n")...)
-		}
+		// Strip trailing whitespace and hard-wrap — mermaid-ascii and wide tables
+		// pad lines with spaces that inflate lipgloss.Width() far beyond
+		// the actual visible content, causing premature wrapping.
+		wrapped := trimAndWrapLines(content, m.width)
 		content = strings.Join(wrapped, "\n")
 	}
 	atBottom := m.viewport.AtBottom()
@@ -1510,12 +1517,7 @@ func wrappedLineCount(content string, width int) int {
 	if width <= 0 {
 		return strings.Count(content, "\n")
 	}
-	count := 0
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimRight(line, " \t")
-		count += strings.Count(hardWrapRunes(line, width), "\n") + 1
-	}
-	return count
+	return len(trimAndWrapLines(content, width))
 }
 
 // visibleTurnIndices 返回每个"对话轮次"的起始 slice 索引。
