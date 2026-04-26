@@ -457,7 +457,7 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 	m.ticker.style = lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.Warning))
 	// Rebuild glamour renderer
 	if m.width > 4 {
-		m.renderer = newGlamourRenderer(m.width - 4)
+		m.renderer = newGlamourRenderer(m.contentWidth())
 	}
 	// Mark all messages for re-render (new theme = new styles)
 	m.renderCacheValid = false

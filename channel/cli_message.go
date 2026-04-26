@@ -913,7 +913,7 @@ func (m *cliModel) renderProgressBlock() string {
 		return ""
 	}
 
-	bubbleWidth := m.width - 4
+	bubbleWidth := m.contentWidth()
 	innerWidth := bubbleWidth - 4 // border(2) + padding(2)
 
 	// §20 使用缓存样式
@@ -1196,7 +1196,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 // renderHelpPanel 渲染格式化的帮助面板（第 4 轮）。
 // 使用 lipgloss 边框 + 分组布局 + 状态图标，替代纯文本。
 func (m *cliModel) renderHelpPanel() string {
-	contentWidth := m.width - 4
+	contentWidth := m.contentWidth()
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
@@ -1252,7 +1252,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	// §20 使用缓存样式
 	s := &m.styles
 	var sb strings.Builder
-	contentWidth := m.width - 4 // 留边距
+	contentWidth := m.contentWidth() // 留边距
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
 	assistantLabelStyle := s.AssistLabel
@@ -1267,7 +1267,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// Truncate to glamour wrap width to prevent wrapping.
 		preprocessed := msg.content
 		if msg.role == "assistant" {
-			preprocessed = renderMermaidBlocks(msg.content, m.width-4)
+			preprocessed = renderMermaidBlocks(msg.content, m.contentWidth())
 		}
 		var err error
 		rendered, err = m.renderer.Render(preprocessed)

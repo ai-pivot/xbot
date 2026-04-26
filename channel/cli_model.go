@@ -111,6 +111,12 @@ func (m *cliModel) typewriterBehind() bool {
 	return false
 }
 
+// contentWidth returns the available content width for message bubbles,
+// accounting for border and padding overhead.
+func (m *cliModel) contentWidth() int {
+	return m.width - bubblePadding
+}
+
 // advanceWriterCJK advances the typewriter cursor with CJK-aware speed control: when
 // is CJK, it only advances every other tick (effectively half speed).
 // skipFlip tracks alternating ticks within a single call chain.

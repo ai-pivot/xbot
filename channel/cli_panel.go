@@ -644,7 +644,7 @@ func (m *cliModel) viewBgTaskList() string {
 	sb.WriteString("\n")
 
 	// Calculate dynamic truncation width.
-	contentW := m.width - 4
+	contentW := m.contentWidth()
 	if contentW < 20 {
 		contentW = 20
 	}
@@ -711,7 +711,7 @@ func (m *cliModel) viewBgTaskLog() string {
 	// §20 使用缓存样式
 	s := &m.styles
 
-	contentW := m.width - 4
+	contentW := m.contentWidth()
 	if contentW < 20 {
 		contentW = 20
 	}
@@ -940,7 +940,7 @@ func (m *cliModel) viewSessionsList() string {
 	sb.WriteString(scrollHint)
 	sb.WriteString("\n")
 
-	contentW := m.width - 4
+	contentW := m.contentWidth()
 	if contentW < 20 {
 		contentW = 20
 	}
@@ -2851,7 +2851,7 @@ func (m *cliModel) viewChannelPanel() string {
 	sb.WriteString(help)
 	sb.WriteString("\n\n")
 
-	contentW := m.width - 4
+	contentW := m.contentWidth()
 	if contentW < 20 {
 		contentW = 20
 	}

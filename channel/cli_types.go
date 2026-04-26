@@ -56,6 +56,9 @@ const (
 
 	// Input history limits
 	inputHistoryMax = 100 // max stored input history entries
+
+	// Layout: message bubble horizontal overhead (left border + left padding + right padding + right border)
+	bubblePadding = 4
 )
 
 // syncWriter wraps an *os.File with DEC Synchronized Output (mode 2026).
