@@ -52,24 +52,3 @@ type MemorizeResult struct {
 	NewLastConsolidated int  // New consolidation offset
 	OK                  bool // Whether the operation succeeded
 }
-
-// --- Optional capability interfaces (Phase 2+, predefined here) ---
-
-// Manageable supports manual memory management (pin/unpin/delete).
-type Manageable interface {
-	Pin(ctx context.Context, noteID string) error
-	Unpin(ctx context.Context, noteID string) error
-	Delete(ctx context.Context, noteID string) error
-}
-
-// Evolvable supports memory evolution (A-Mem style).
-type Evolvable interface {
-	Evolve(ctx context.Context, content string) ([]Evolution, error)
-}
-
-// Evolution is a record of a memory evolution operation.
-type Evolution struct {
-	Action string // "created" | "merged" | "updated" | "strengthened" | "discarded"
-	NoteID string
-	Detail string
-}
