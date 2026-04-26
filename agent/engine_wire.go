@@ -800,7 +800,11 @@ func (a *Agent) buildSubAgentRunConfig(
 	var userMaxCtx int
 	var thinkingMode string
 	if model != "" {
-		llmClient, subModel, userMaxCtx, thinkingMode, _ = a.llmFactory.GetLLMForModel(originUserID, model)
+		var ok bool
+		llmClient, subModel, userMaxCtx, thinkingMode, ok = a.llmFactory.GetLLMForModel(originUserID, model)
+		if !ok {
+			log.WithField("model", model).Warn("Failed to resolve LLM for sub-agent model, using default")
+		}
 	} else {
 		llmClient, subModel, userMaxCtx, thinkingMode = a.llmFactory.GetLLM(originUserID)
 	}

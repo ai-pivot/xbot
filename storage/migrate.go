@@ -84,9 +84,15 @@ func MigrateFromFileStorage(workDir, dbPath string) error {
 		return nil
 	}
 
-	_ = renameWithBackup(sessionPath)
-	_ = renameWithBackup(memoryPath)
-	_ = renameWithBackup(historyPath)
+	if err := renameWithBackup(sessionPath); err != nil {
+		log.WithError(err).WithField("path", sessionPath).Warn("Failed to backup session file after migration")
+	}
+	if err := renameWithBackup(memoryPath); err != nil {
+		log.WithError(err).WithField("path", memoryPath).Warn("Failed to backup memory file after migration")
+	}
+	if err := renameWithBackup(historyPath); err != nil {
+		log.WithError(err).WithField("path", historyPath).Warn("Failed to backup history file after migration")
+	}
 
 	return nil
 }

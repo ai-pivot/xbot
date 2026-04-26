@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	log "xbot/logger"
 )
 
 var cliUserScopedSettingKeys = map[string]struct{}{
@@ -174,7 +175,9 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 	if m.channel != nil && m.channel.settingsSvc != nil {
 		for k, v := range values {
 			if isUserScopedSettingKey(k) {
-				_ = m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v)
+				if err := m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v); err != nil {
+					log.WithError(err).WithField("key", k).Warn("Failed to persist CLI setting")
+				}
 			}
 		}
 	}

@@ -77,7 +77,9 @@ var settingHandlerRegistry = map[string]settingHandler{
 	"context_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.ContextMode = value },
 		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
-			_ = backend.SetContextMode(value)
+			if err := backend.SetContextMode(value); err != nil {
+				log.WithError(err).WithField("value", value).Warn("Failed to set context mode")
+			}
 		},
 	},
 	"max_iterations": {
@@ -120,9 +122,13 @@ var settingHandlerRegistry = map[string]settingHandler{
 		},
 		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
 			if channel.ParseSettingBool(value) {
-				_ = backend.SetContextMode("auto")
+				if err := backend.SetContextMode("auto"); err != nil {
+					log.WithError(err).Warn("Failed to set context mode to auto")
+				}
 			} else {
-				_ = backend.SetContextMode("none")
+				if err := backend.SetContextMode("none"); err != nil {
+					log.WithError(err).Warn("Failed to set context mode to none")
+				}
 			}
 		},
 	},
@@ -168,7 +174,9 @@ func applyRuntimeSetting(cfg *config.Config, backend agent.AgentBackend, senderI
 	if backend != nil && backend.LLMFactory() != nil {
 		backend.LLMFactory().SetModelTiers(cfg.LLM)
 	}
-	_ = saveServerConfig(cfg)
+	if err := saveServerConfig(cfg); err != nil {
+		log.WithError(err).Warn("Failed to save server config after applying runtime setting")
+	}
 }
 
 // applyRuntimeSettings applies a batch of setting changes to the in-memory config and backend.
@@ -217,7 +225,9 @@ func applyRuntimeSettings(cfg *config.Config, backend agent.AgentBackend, sender
 	if backend != nil && backend.LLMFactory() != nil {
 		backend.LLMFactory().SetModelTiers(cfg.LLM)
 	}
-	_ = saveServerConfig(cfg)
+	if err := saveServerConfig(cfg); err != nil {
+		log.WithError(err).Warn("Failed to save server config after applying runtime setting")
+	}
 }
 
 // missingHandlerKeys returns keys from channel.CLIRuntimeSettingKeys

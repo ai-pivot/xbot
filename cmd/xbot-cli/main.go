@@ -365,7 +365,9 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 		}
 		for _, s := range subs {
 			if s.Provider == provider && s.Model == model && s.APIKey == apiKey {
-				_ = backend.SetDefaultSubscription(s.ID, "")
+				if err := backend.SetDefaultSubscription(s.ID, ""); err != nil {
+					log.WithError(err).Warn("Failed to set default subscription")
+				}
 				break
 			}
 		}
@@ -900,7 +902,9 @@ func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) 
 			if channel.IsGlobalScopedSettingKey(k) {
 				continue // global-scoped keys not stored in DB
 			}
-			_ = app.backend.SetSetting("cli", "cli_user", k, v)
+			if err := app.backend.SetSetting("cli", "cli_user", k, v); err != nil {
+				log.WithFields(log.Fields{"error": err, "key": k}).Warn("Failed to save CLI setting")
+			}
 		}
 		applyCLISettingsToBackend(app.backend, "cli_user", values)
 
@@ -923,7 +927,9 @@ func buildSettingsCallbacks(s *interactiveState, cfg *channel.CLIChannelConfig) 
 			}
 			if theme, ok := values["theme"]; ok && theme != "" {
 				if ss := app.backend.SettingsService(); ss != nil {
-					_ = ss.SetSetting("cli", "cli_user", "theme", theme)
+					if err := ss.SetSetting("cli", "cli_user", "theme", theme); err != nil {
+						log.WithError(err).Warn("Failed to save theme setting")
+					}
 				}
 			}
 			if maxOutputChanged || thinkingChanged {
@@ -1741,7 +1747,9 @@ func setupRemotePostConnect(ctx context.Context, s *interactiveState, cliCh *cha
 			// Re-sync CWD on reconnect (server may have restarted, losing in-memory cwd)
 			if isLocalServer(app.cfg.CLI.ServerURL) {
 				if cwd, err := os.Getwd(); err == nil {
-					_ = app.backend.SetCWD("cli", remoteChatID, cwd)
+					if err := app.backend.SetCWD("cli", remoteChatID, cwd); err != nil {
+						log.WithError(err).Warn("Failed to sync CWD on reconnect")
+					}
 				}
 			}
 			if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
@@ -2312,7 +2320,10 @@ func executeNonInteractive(prompt string) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_ = app.backend.Start(ctx)
+	if err := app.backend.Start(ctx); err != nil {
+		log.WithError(err).Error("Failed to start backend")
+		os.Exit(1)
+	}
 	go disp.Run()
 
 	app.msgBus.Inbound <- bus.InboundMessage{
