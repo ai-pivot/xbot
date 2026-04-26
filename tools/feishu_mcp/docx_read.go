@@ -14,6 +14,13 @@ import (
 	docxv1 "github.com/larksuite/oapi-sdk-go/v3/service/docx/v1"
 )
 
+// Feishu API pagination limits.
+const (
+	feishuDocxPageSize     = 500 // page size for listing document blocks
+	feishuDocxMaxListLimit = 100 // max limit for list operations
+	feishuDocxDefaultLimit = 100 // default limit for list operations
+)
+
 // fetchAllBlocks fetches all blocks of a document using pagination.
 func fetchAllBlocks(ctx context.Context, client *Client, documentID string) ([]*docxv1.Block, error) {
 	var allItems []*docxv1.Block
@@ -21,7 +28,7 @@ func fetchAllBlocks(ctx context.Context, client *Client, documentID string) ([]*
 	for {
 		reqBuilder := docxv1.NewListDocumentBlockReqBuilder().
 			DocumentId(documentID).
-			PageSize(500)
+			PageSize(feishuDocxPageSize)
 		if pageToken != "" {
 			reqBuilder.PageToken(pageToken)
 		}
@@ -224,8 +231,8 @@ func (t *DocxListBlocksTool) Execute(ctx *tools.ToolContext, input string) (*too
 	if args.Offset < 0 {
 		args.Offset = 0
 	}
-	if args.Limit <= 0 || args.Limit > 100 {
-		args.Limit = 100
+	if args.Limit <= 0 || args.Limit > feishuDocxMaxListLimit {
+		args.Limit = feishuDocxDefaultLimit
 	}
 
 	client, err := t.MCP.GetClient(ctx.Ctx, ctx.Channel, ctx.ChatID)
