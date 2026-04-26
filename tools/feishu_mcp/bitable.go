@@ -393,7 +393,7 @@ func (t *BatchCreateAppTableRecordTool) Execute(ctx *tools.ToolContext, input st
 		return nil, fmt.Errorf("records required")
 	}
 	if len(args.Records) > maxBatchRecords {
-		return nil, fmt.Errorf(fmt.Sprintf("too many records, max %d", maxBatchRecords))
+		return nil, fmt.Errorf("too many records, max %d", maxBatchRecords)
 	}
 
 	client, err := t.MCP.GetClient(ctx.Ctx, ctx.Channel, ctx.ChatID)
