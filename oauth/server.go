@@ -55,7 +55,7 @@ func NewServer(cfg Config, mgr *Manager) *Server {
 		cfg.Port = 8081
 	}
 	if cfg.Host == "" {
-		cfg.Host = "127.0.0.1" // 默认绑定 localhost，避免暴露到所有网络接口
+		cfg.Host = "127.0.0.1" // default bind to localhost, avoid exposing to all network interfaces
 	}
 	s := &Server{
 		config: cfg,
@@ -190,7 +190,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Send success message back to the chat
 	if fn := s.getSendFunc(); fn != nil {
-		successMsg := "✅ 授权成功！现在可以继续之前的操作了。"
+		successMsg := "✅ Authorization successful! You can now continue."
 		if err := fn(flow.Channel, flow.ChatID, successMsg); err != nil {
 			log.WithError(err).Error("Failed to send OAuth success message")
 		}

@@ -82,7 +82,7 @@ func main() {
 		}
 	}()
 
-	// 创建 handler
+	// Create handler
 	runnerLogf := func(format string, args ...interface{}) {
 		log.Printf(format, args...)
 	}
@@ -97,14 +97,14 @@ func main() {
 		runnerclient.WithLogFunc(runnerLogf),
 	)
 
-	// 初始化本地 LLM 客户端
+	// Initialize local LLM client
 	if *flagLLMProvider != "" {
 		if err := handler.InitLLM(*flagLLMProvider, *flagLLMBaseURL, *flagLLMAPIKey, *flagLLMModel); err != nil {
 			log.Fatalf("Failed to init local LLM: %v", err)
 		}
 	}
 
-	// 检测 shell
+	// Detect shell
 	shell := runnerclient.DetectShell(dockerMode, exec)
 
 	log.Printf("Starting xbot-runner  mode=%s server=%s  user=%s  workspace=%s  full-control=%v",
@@ -150,8 +150,8 @@ func main() {
 	}
 }
 
-// runSession 连接 server 并运行读写循环。
-// 连接丢失时返回错误（触发重连）。
+// runSession connects to the server and runs the read/write loop.
+// Returns error on connection loss (triggers reconnect).
 func runSession(serverURL, userID, authToken, workspace, shell string, handler *runnerclient.Handler) error {
 	runnerLogf := handler.LogFunc
 	conn, err := runnerclient.Connect(serverURL, userID, authToken, workspace, shell, runnerclient.ConnectOptions{
@@ -168,16 +168,16 @@ func runSession(serverURL, userID, authToken, workspace, shell string, handler *
 	stopWrite := make(chan struct{})
 	writeDone := make(chan struct{})
 
-	// 将写通道暴露给 stdio 处理器（用于推送消息）
+	// Expose write channel to stdio handler (for pushing messages)
 	handler.SetWriteChannels(writeCh, writeDone)
 
 	go runnerclient.WritePump(conn, writeCh, stopWrite, writeDone, runnerLogf)
 	runnerclient.ReadLoop(conn, handler, writeCh, writeDone, runnerLogf)
 
-	// 通知 writePump 立即退出
+	// Notify writePump to exit immediately
 	close(stopWrite)
 
-	// 断开连接时杀死活跃的 stdio 进程和后台任务
+	// Kill active stdio processes and background tasks on disconnect
 	handler.Cleanup()
 
 	return fmt.Errorf("read loop exited")
@@ -195,7 +195,7 @@ func mustRandInt63n(n int64) int64 {
 	return r.Int64()
 }
 
-// backoff 返回带随机抖动的指数退避延迟。
+// backoff returns an exponential backoff delay with random jitter.
 func backoff(attempt int) time.Duration {
 	delay := baseDelay
 	for i := 1; i < attempt; i++ {

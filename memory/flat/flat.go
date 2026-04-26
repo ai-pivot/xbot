@@ -284,7 +284,7 @@ func (m *FlatMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	return memory.MemorizeResult{NewLastConsolidated: len(messages), OK: true}, nil
 }
 
-// Close 释放资源（FlatMemory 无需清理）。
+// Close releases resources (FlatMemory has nothing to clean up).
 func (m *FlatMemory) Close() error {
 	return nil
 }

@@ -2,12 +2,12 @@
 // Standalone terminal-based chat interface
 //
 // Usage:
-//   xbot-cli               恢复上次会话（默认）
-//   xbot-cli --resume      恢复会话并显示当前状态
-//   xbot-cli --new         开始新会话
-//   xbot-cli <prompt>      非交互模式执行单次 prompt
-//   xbot-cli -p <prompt>   非交互模式执行单次 prompt
-//   echo "hello" | xbot-cli  管道模式
+//   xbot-cli               Resume last session (default)
+//   xbot-cli --resume      Resume session and show current status
+//   xbot-cli --new         Start a new session
+//   xbot-cli <prompt>      Execute single prompt in non-interactive mode
+//   xbot-cli -p <prompt>   Execute single prompt in non-interactive mode
+//   echo "hello" | xbot-cli  Pipe mode
 
 package main
 
@@ -402,7 +402,7 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 	return backend.UpdateSubscription(sub.ID, *sub)
 }
 
-// cliApp 封装 CLI 的公共初始化逻辑，供交互和非交互模式共享。
+// cliApp wraps shared CLI initialization logic for both interactive and non-interactive modes.
 type cliApp struct {
 	cfg       *config.Config
 	llmClient llm.LLM
@@ -425,7 +425,7 @@ type cliApp struct {
 	valuesCancel context.CancelFunc
 }
 
-// isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置）
+// isFirstRun checks if this is the first run (config.json missing or API key not configured)
 func isFirstRun() bool {
 	configPath := config.ConfigFilePath()
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -480,7 +480,7 @@ func isLocalServer(serverURL string) bool {
 	return false
 }
 
-// newCLIApp 执行公共初始化：加载配置、创建 Backend。
+// newCLIApp performs shared initialization: loads config, creates Backend.
 // If serverURL is non-empty, creates a RemoteBackend (agent runs on server).
 // Otherwise creates a LocalBackend (agent runs in-process).
 func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
@@ -594,7 +594,7 @@ func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 	}
 }
 
-// Close 释放资源。
+// Close releases resources.
 func (app *cliApp) Close() {
 	if app.valuesCancel != nil {
 		app.valuesCancel()
@@ -636,8 +636,8 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":
-			fmt.Println("install 子命令已不再主推，请使用 scripts/install.sh")
-			fmt.Println("例如: curl -fsSL https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.sh | bash")
+			fmt.Println("The install subcommand is deprecated, please use scripts/install.sh")
+			fmt.Println("Example: curl -fsSL https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.sh | bash")
 			return
 		case "serve":
 			if err := serverapp.Run(os.Args[2:]); err != nil {
@@ -651,7 +651,7 @@ func main() {
 		}
 	}
 
-	// 解析命令行标志
+	// Parse command line flags
 	prompt := ""
 	newSession := false
 	var (
@@ -667,7 +667,7 @@ func main() {
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--resume":
-			// 保留兼容性，行为与默认相同
+			// Kept for compatibility, behaves the same as default
 		case "--new":
 			newSession = true
 		case "-p":
@@ -729,10 +729,10 @@ func main() {
 		prompt = strings.TrimSpace(string(data))
 	}
 
-	// 首次运行检测（仅在交互模式下，传给 TUI 做 setup panel）
+	// First-run detection (interactive mode only, passed to TUI for setup panel)
 	firstRun := prompt == "" && isFirstRun()
 
-	// 非交互模式
+	// Non-interactive mode
 	if prompt != "" {
 		executeNonInteractive(prompt)
 		return
@@ -760,7 +760,7 @@ func main() {
 
 	disp := channel.NewDispatcher(app.msgBus)
 
-	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
+	// Use working directory absolute path as ChatID; different directories have separate sessions
 	absWorkDir, _ := filepath.Abs(app.workDir)
 
 	_, isRemoteBackend := app.backend.(*agent.RemoteBackend)
@@ -1097,7 +1097,7 @@ func main() {
 					isActive := t.ChatID == absWorkDir && t.Channel == "cli"
 					label := fmt.Sprintf("[%s] %s", t.Channel, t.ChatID)
 					if isActive {
-						label = "主会话  You ↔ Agent"
+						label = "Main Chat  You ↔ Agent"
 					}
 					entries = append(entries, channel.SessionPanelEntry{
 						ID:      t.ChatID,
@@ -1135,7 +1135,7 @@ func main() {
 					ID:      absWorkDir,
 					Type:    "main",
 					Channel: "cli",
-					Label:   "主会话  You ↔ Agent",
+					Label:   "Main Chat  You ↔ Agent",
 					Active:  true,
 				})
 				sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
@@ -1249,7 +1249,7 @@ func main() {
 		},
 	}
 
-	// 设置历史消息加载器（会话恢复）
+	// Set history message loader (session resume)
 	var cliTenantID int64
 	var cliSessionSvc *sqlite.SessionService
 	if !app.backend.IsRemote() && app.db != nil {
@@ -1270,8 +1270,8 @@ func main() {
 	// Remote mode: history loaded after backend.Start() via cliCh.LoadHistory()
 	// (HistoryLoader runs during NewCLIChannel, before WS is connected)
 
-	// 动态历史加载器：按 (channelName, chatID) 加载目标会话历史
-	// 用于 /su 切换用户、session 面板切换会话、压缩后刷新
+	// Dynamic history loader: loads target session history by (channelName, chatID)
+	// Used for /su user switch, session panel switch, and post-compression refresh
 	if tenantSvc != nil && cliSessionSvc != nil {
 		// Local mode: load from session DB directly
 		cliCfg.DynamicHistoryLoader = func(channelName, chatID string) ([]channel.HistoryMessage, error) {
@@ -1486,7 +1486,7 @@ func main() {
 		}
 	}
 
-	// 注入 channelFinder 以启用结构化进度事件（工具调用、思考过程等）
+	// Inject channelFinder to enable structured progress events (tool calls, thinking, etc.)
 	app.backend.SetDirectSend(disp.SendDirect)
 	app.backend.SetChannelFinder(disp.GetChannel)
 	if lb, ok := app.backend.(*agent.LocalBackend); ok {
@@ -1506,7 +1506,7 @@ func main() {
 		)
 	}
 
-	// 注入 CLI 渠道特化 prompt 提供者
+	// Inject CLI channel-specific prompt provider
 	app.backend.SetChannelPromptProviders(&channel.CliPromptProvider{})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2078,7 +2078,7 @@ func red(s string) string {
 	return "\033[0;31m" + s + "\033[0m"
 }
 
-// executeNonInteractive 非交互模式：单次执行 prompt 并输出到 stdout。
+// executeNonInteractive runs non-interactive mode: executes a single prompt and outputs to stdout.
 func executeNonInteractive(prompt string) {
 	app := newCLIApp("", "", true) // non-interactive always uses local backend
 	defer app.Close()
@@ -2108,8 +2108,8 @@ func executeNonInteractive(prompt string) {
 	nonIntCh.WaitDone()
 }
 
-// setupLogger 配置日志（CLI 模式：仅文件输出，不干扰终端 TUI）。
-// 日志写入全局 xbotHome/logs 目录。
+// setupLogger configures the logger (CLI mode: file-only output, no terminal TUI interference).
+// Logs are written to the global xbotHome/logs directory.
 func setupLogger(cfg config.LogConfig, xbotHome string) error {
 	logDir := filepath.Join(xbotHome, "logs")
 	return log.Setup(log.SetupConfig{
@@ -2121,7 +2121,7 @@ func setupLogger(cfg config.LogConfig, xbotHome string) error {
 	})
 }
 
-// createLLM 根据配置创建 LLM 客户端（带重试、指数退避和随机抖动）。
+// createLLM creates an LLM client with retry, exponential backoff, and jitter.
 func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) {
 	var inner llm.LLM
 	switch cfg.Provider {

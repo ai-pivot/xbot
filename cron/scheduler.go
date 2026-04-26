@@ -18,7 +18,7 @@ type Scheduler struct {
 	cronSvc    *sqlite.CronService
 	injectFunc InjectFunc
 	stopCh     chan struct{}
-	once       sync.Once // 共用 once 保证 Start 和 StartDelayed 互斥：只有第一个调用者会启动调度器
+	once       sync.Once // Shared once ensures Start and StartDelayed are mutually exclusive: only the first caller starts the scheduler
 	running    bool
 	mu         sync.Mutex
 }

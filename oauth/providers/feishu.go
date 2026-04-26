@@ -105,34 +105,34 @@ var allowedScopes = map[string]bool{
 // This is a subset of allowedScopes to stay under the 50 scope limit.
 // Covers all MCP tool requirements: bitable, docx, wiki, drive, sheets, etc.
 var defaultScopes = []string{
-	// Bitable (多维表格)
+	// Bitable (multi-dimensional table)
 	"bitable:app",
 	"bitable:app:readonly",
-	// Docx (文档)
+	// Docx (document)
 	"docx:document",
 	"docx:document:readonly",
 	"docs:document.content:read",
 	"docx:document:write_only",
 	"docx:document:create",
 	"docx:document.block:convert",
-	// Wiki (知识库)
+	// Wiki (knowledge base)
 	"wiki:wiki",
 	"wiki:wiki:readonly",
-	// Drive (云盘)
+	// Drive (cloud storage)
 	"drive:file:upload",
 	"drive:drive.metadata:readonly",
-	// Sheets (表格)
+	// Sheets (spreadsheets)
 	"sheets:spreadsheet",
 	"sheets:spreadsheet:create",
-	// Docs (旧版文档权限，用于权限管理)
+	// Docs (legacy document permissions, used for permission management)
 	"docs:permission.member",
 	"docs:permission.member:create",
-	// Search (搜索)
+	// Search
 	"search:docs:read",
-	// IM (消息)
+	// IM (messaging)
 	"im:message",
 	"im:message:readonly",
-	// Offline (离线访问)
+	// Offline (offline access)
 	"offline_access",
 }
 
@@ -183,8 +183,8 @@ func (p *FeishuProvider) BuildAuthURL(state string, scopes []string) string {
 	return authURL.String()
 }
 
-// buildTokenFromOIDCResponse 从 OIDC 响应数据构建 oauth.Token。
-// ExchangeCode 和 RefreshToken 共用此方法以消除重复逻辑。
+// buildTokenFromOIDCResponse constructs an oauth.Token from OIDC response data.
+// Shared by ExchangeCode and RefreshToken to eliminate duplicate logic.
 func (p *FeishuProvider) buildTokenFromOIDCResponse(data *OIDCResponse) *oauth.Token {
 	expiresIn := 7200 // default 2 hours
 	if data.ExpiresIn != nil {
@@ -221,8 +221,8 @@ func (p *FeishuProvider) buildTokenFromOIDCResponse(data *OIDCResponse) *oauth.T
 	return token
 }
 
-// OIDCResponse 封装 Feishu OIDC token 响应的公共字段，
-// 用于 ExchangeCode 和 RefreshToken 的统一 token 构建。
+// OIDCResponse wraps common fields from the Feishu OIDC token response,
+// used by ExchangeCode and RefreshToken for unified token construction.
 type OIDCResponse struct {
 	AccessToken      *string
 	RefreshToken     *string

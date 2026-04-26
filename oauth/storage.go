@@ -86,8 +86,8 @@ func (s *SQLiteStorage) GetToken(ctx context.Context, provider, channel, chatID 
 		return nil, fmt.Errorf("query token: %w", err)
 	}
 
-	// Token 未加密存储——DB 与服务同进程，加密只增加复杂度不增加安全性。
-	// 保留 Decrypt 兼容路径：如果之前有加密数据，仍可正常解密。
+	// Token stored unencrypted — DB is co-located with the service; encryption adds complexity without security benefit.
+	// Decrypt path kept for compatibility: if previously encrypted data exists, it can still be decrypted.
 	if accessToken != "" {
 		if decrypted, err := crypto.Decrypt(accessToken); err == nil {
 			accessToken = decrypted
@@ -130,13 +130,13 @@ func (s *SQLiteStorage) SetToken(ctx context.Context, provider, channel, chatID 
 	accessToken := token.AccessToken
 	refreshToken := token.RefreshToken
 
-	// Token 直接明文存储——DB 与服务同进程，加密无实际安全增益。
-	// 保留 Encrypt 兼容：如果 crypto 已初始化密钥则加密（兼容旧数据读取），否则直接存储。
+	// Token stored in plaintext — DB is co-located with the service; encryption provides no practical security gain.
+	// Encrypt kept for compatibility: if crypto has a key initialized, it encrypts (for old data compatibility); otherwise stores directly.
 	if accessToken != "" {
 		if encrypted, err := crypto.Encrypt(accessToken); err == nil {
 			accessToken = encrypted
 		}
-		// 加密失败（未设置密钥等）→ 直接明文存储，不报错
+		// Encryption failed (no key set, etc.) → store plaintext directly, no error
 	}
 	if refreshToken != "" {
 		if encrypted, err := crypto.Encrypt(refreshToken); err == nil {
