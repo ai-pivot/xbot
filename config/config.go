@@ -19,7 +19,7 @@ func init() {
 	}
 }
 
-// OAuthConfig OAuth 配置
+// OAuthConfig holds OAuth configuration
 type OAuthConfig struct {
 	Enable  bool   `json:"enable"`
 	Host    string `json:"host"`
@@ -27,7 +27,7 @@ type OAuthConfig struct {
 	BaseURL string `json:"base_url"`
 }
 
-// SandboxConfig 沙箱配置
+// SandboxConfig holds sandbox configuration
 type SandboxConfig struct {
 	Mode        string        `json:"mode"`
 	RemoteMode  string        `json:"remote_mode"`
@@ -39,7 +39,7 @@ type SandboxConfig struct {
 	PublicURL   string        `json:"public_url"`
 }
 
-// QQConfig QQ 机器人渠道配置
+// QQConfig holds QQ bot channel configuration
 type QQConfig struct {
 	Enabled      bool     `json:"enabled"`
 	AppID        string   `json:"app_id"`
@@ -47,7 +47,7 @@ type QQConfig struct {
 	AllowFrom    []string `json:"allow_from"`
 }
 
-// NapCatConfig NapCat (OneBot 11) 渠道配置
+// NapCatConfig holds NapCat (OneBot 11) channel configuration
 type NapCatConfig struct {
 	Enabled   bool     `json:"enabled"`
 	WSUrl     string   `json:"ws_url"`
@@ -55,7 +55,7 @@ type NapCatConfig struct {
 	AllowFrom []string `json:"allow_from"`
 }
 
-// EmbeddingConfig Embedding 配置
+// EmbeddingConfig holds embedding configuration
 type EmbeddingConfig struct {
 	Provider  string `json:"provider"`
 	BaseURL   string `json:"base_url"`
@@ -64,19 +64,19 @@ type EmbeddingConfig struct {
 	MaxTokens int    `json:"max_tokens"`
 }
 
-// StartupNotifyConfig 启动通知配置
+// StartupNotifyConfig holds startup notification configuration
 type StartupNotifyConfig struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
 }
 
-// AdminConfig 管理员配置
+// AdminConfig holds admin configuration
 type AdminConfig struct {
 	ChatID string `json:"chat_id"`
 	Token  string `json:"token"`
 }
 
-// OSSConfig 对象存储配置
+// OSSConfig holds object storage configuration
 type OSSConfig struct {
 	Provider       string `json:"provider"`
 	QiniuAccessKey string `json:"qiniu_access_key"`
@@ -86,7 +86,7 @@ type OSSConfig struct {
 	QiniuRegion    string `json:"qiniu_region"`
 }
 
-// EventWebhookConfig 事件 Webhook 配置
+// EventWebhookConfig holds event webhook configuration
 type EventWebhookConfig struct {
 	Enable      bool   `json:"enable"`
 	Host        string `json:"host"`
@@ -96,7 +96,7 @@ type EventWebhookConfig struct {
 	RateLimit   int    `json:"rate_limit"` // max requests per minute per trigger
 }
 
-// WebConfig Web 渠道配置
+// WebConfig holds Web channel configuration
 type WebConfig struct {
 	Enable           bool   `json:"enable"`
 	Host             string `json:"host"`
@@ -107,14 +107,14 @@ type WebConfig struct {
 	InviteOnly       bool   `json:"invite_only"`
 }
 
-// Config 应用配置
-// CLIConfig CLI 客户端配置（存储在 config.json，供 xbot-cli 读取）。
+// Config holds the application configuration
+// CLIConfig holds CLI client configuration (stored in config.json, read by xbot-cli).
 type CLIConfig struct {
-	// ServerURL 指定远端 agent server 的 WebSocket 地址（如 ws://localhost:8080）。
-	// 若非空，xbot-cli 默认以 RemoteBackend 连接该 server，而非本地运行 agent。
-	// 可通过 --server flag 在命令行覆盖此值。
+	// ServerURL specifies the remote agent server WebSocket address (e.g. ws://localhost:8080).
+	// If non-empty, xbot-cli connects to the server via RemoteBackend instead of running locally.
+	// Can be overridden via --server flag on the command line.
 	ServerURL string `json:"server_url,omitempty"`
-	// Token 连接 server 时使用的认证 token（对应 server 端的 admin.token）。
+	// Token is the authentication token for server connection (maps to server-side admin.token).
 	Token string `json:"token,omitempty"`
 }
 
@@ -140,7 +140,7 @@ type Config struct {
 	CLI           CLIConfig            `json:"cli,omitempty"`
 }
 
-// FeishuConfig 飞书渠道配置
+// FeishuConfig holds Feishu channel configuration
 type FeishuConfig struct {
 	Enabled           bool     `json:"enabled"`
 	AppID             string   `json:"app_id"`
@@ -151,7 +151,7 @@ type FeishuConfig struct {
 	Domain            string   `json:"domain"`
 }
 
-// AgentConfig Agent 配置
+// AgentConfig holds agent configuration
 type AgentConfig struct {
 	MaxIterations  int    `json:"max_iterations"`
 	MaxConcurrency int    `json:"max_concurrency"`
@@ -165,7 +165,7 @@ type AgentConfig struct {
 	SessionCacheTimeout  time.Duration `json:"session_cache_timeout"`
 
 	ContextMode string `json:"context_mode"`
-	// EnableAutoCompress 为 nil 表示 JSON 未写该字段，Load 后与未设置 AGENT_ENABLE_AUTO_COMPRESS 一致，默认启用压缩。
+	// EnableAutoCompress: nil means the field was absent in JSON; after Load, behaves the same as unset AGENT_ENABLE_AUTO_COMPRESS, defaulting to compression enabled.
 	EnableAutoCompress   *bool   `json:"enable_auto_compress,omitempty"`
 	MaxContextTokens     int     `json:"max_context_tokens"`
 	CompressionThreshold float64 `json:"compression_threshold"`
@@ -181,7 +181,7 @@ type AgentConfig struct {
 	LLMRetryTimeout  time.Duration `json:"llm_retry_timeout"`
 }
 
-// ServerConfig 服务器配置
+// ServerConfig holds server configuration
 type ServerConfig struct {
 	Host         string        `json:"host"`
 	Port         int           `json:"port"`
@@ -189,7 +189,7 @@ type ServerConfig struct {
 	WriteTimeout time.Duration `json:"write_timeout"`
 }
 
-// LLMConfig LLM 配置
+// LLMConfig holds LLM configuration
 type LLMConfig struct {
 	Provider        string `json:"provider"`
 	BaseURL         string `json:"base_url"`
@@ -202,7 +202,7 @@ type LLMConfig struct {
 	ThinkingMode    string `json:"thinking_mode,omitempty"`
 }
 
-// SubscriptionConfig CLI 订阅配置（存储在 config.json，不存数据库）。
+// SubscriptionConfig holds CLI subscription configuration (stored in config.json, not in database).
 type SubscriptionConfig struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
@@ -215,21 +215,21 @@ type SubscriptionConfig struct {
 	Active          bool   `json:"active"`
 }
 
-// LogConfig 日志配置
+// LogConfig holds log configuration
 type LogConfig struct {
 	Level  string `json:"level"`
 	Format string `json:"format"`
 }
 
-// PProfConfig pprof 配置
+// PProfConfig holds pprof configuration
 type PProfConfig struct {
 	Enable bool   `json:"enable"`
 	Host   string `json:"host"`
 	Port   int    `json:"port"`
 }
 
-// XbotHome 返回 xbot 全局目录路径（$XBOT_HOME 或 ~/.xbot）。
-// 目录如果不存在会自动创建。
+// XbotHome returns the xbot global directory path ($XBOT_HOME or ~/.xbot).
+// The directory is auto-created if it does not exist.
 func XbotHome() string {
 	dir := os.Getenv("XBOT_HOME")
 	if dir == "" {
@@ -246,17 +246,17 @@ func XbotHome() string {
 	return dir
 }
 
-// ConfigFilePath 返回全局配置文件路径。
+// ConfigFilePath returns the global config file path.
 func ConfigFilePath() string {
 	return filepath.Join(XbotHome(), "config.json")
 }
 
-// DBFilePath 返回全局数据库文件路径。
+// DBFilePath returns the global database file path.
 func DBFilePath() string {
 	return filepath.Join(XbotHome(), "xbot.db")
 }
 
-// LoadFromFile 从 JSON 文件加载配置。只覆盖文件中存在的非零值字段。
+// LoadFromFile loads configuration from a JSON file. Only overwrites non-zero fields present in the file.
 func LoadFromFile(path string) *Config {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -270,29 +270,29 @@ func LoadFromFile(path string) *Config {
 	return &cfg
 }
 
-// SaveToFile 将配置保存到 JSON 文件（原子写入：先写临时文件再 rename）。
-// 它会先读取磁盘上已有的文件，将 Go struct 序列化后的顶层 key 覆盖到原始 JSON 上，
-// 同时保留磁盘文件中存在但 Go struct 未定义的字段（未知 key）。
-// 这样用户手动添加的自定义字段或未来新增的 struct 字段不会被静默丢弃。
+// SaveToFile saves configuration to a JSON file (atomic: write temp file then rename)。
+// It reads the existing file from disk first, then overlays the Go struct's top-level keys onto the original JSON,
+// preserving keys that exist on disk but are not defined in the Go struct (unknown keys).
+// This prevents silently dropping user-added custom fields or future struct fields.
 func SaveToFile(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	// 序列化 Go struct
+	// Serialize Go struct
 	structData, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	// 尝试读取磁盘上已有的文件，做 JSON 级合并以保留未知字段
+	// Try to read existing file from disk and merge at JSON level to preserve unknown fields
 	finalData := structData
 	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 {
 		if merged, mergeErr := mergeJSONPreserveUnknown(existing, structData); mergeErr == nil {
 			finalData = merged
 		}
-		// 合并失败时回退到纯 struct 序列化（安全降级）
+		// On merge failure, fall back to pure struct serialization (safe degradation)
 	}
 
 	tmp := path + ".tmp"
@@ -306,9 +306,9 @@ func SaveToFile(path string, cfg *Config) error {
 	return nil
 }
 
-// mergeJSONPreserveUnknown 将 structData 的顶层 key 深度合并到 existing 上。
-// 对于两边都是 JSON object 的嵌套值，递归合并以保留 unknown 字段。
-// structData 中的 key 始终覆盖 existing 中的同名 key（非 object 时直接替换）。
+// mergeJSONPreserveUnknown deep-merges top-level keys from structData onto existing.
+// For nested values that are both JSON objects, it recursively merges to preserve unknown fields.
+// Keys in structData always override same-named keys in existing (non-objects are replaced directly).
 func mergeJSONPreserveUnknown(existing, structData []byte) ([]byte, error) {
 	var existingMap map[string]json.RawMessage
 	if err := json.Unmarshal(existing, &existingMap); err != nil {
@@ -318,12 +318,12 @@ func mergeJSONPreserveUnknown(existing, structData []byte) ([]byte, error) {
 	if err := json.Unmarshal(structData, &structMap); err != nil {
 		return nil, err
 	}
-	// 递归合并：两边都是 object 时深度合并，否则 struct 覆盖
+	// Recursive merge: deep merge when both are objects, otherwise struct overrides
 	for k, structVal := range structMap {
 		if existingVal, ok := existingMap[k]; ok {
 			merged, err := deepMergeJSON(existingVal, structVal)
 			if err != nil {
-				// 降级为直接覆盖
+				// Fall back to direct override
 				existingMap[k] = structVal
 				continue
 			}
@@ -335,9 +335,9 @@ func mergeJSONPreserveUnknown(existing, structData []byte) ([]byte, error) {
 	return json.MarshalIndent(existingMap, "", "  ")
 }
 
-// deepMergeJSON 对两个 JSON 值做深度合并。
-// 如果两者都是 JSON object，递归合并（structVal 的 key 覆盖 existingVal）。
-// 否则返回 structVal（直接替换）。
+// deepMergeJSON performs a deep merge of two JSON values.
+// If both are JSON objects, it recursively merges (structVal keys override existingVal).
+// Otherwise returns structVal (direct replacement).
 func deepMergeJSON(existing, structVal json.RawMessage) (json.RawMessage, error) {
 	var existingObj, structObj map[string]json.RawMessage
 	existingIsObj := json.Unmarshal(existing, &existingObj) == nil
@@ -392,7 +392,7 @@ func setSecondsEnv(key string, dst *time.Duration) {
 	}
 }
 
-// applyEnvOverrides 用环境变量覆盖配置（与 README / .env.example 中的变量名一致，优先级高于 config.json）。
+// applyEnvOverrides applies environment variable overrides to config (variable names match README/.env.example, higher priority than config.json).
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SERVER_HOST"); v != "" {
 		cfg.Server.Host = v
@@ -693,7 +693,7 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
-// EffectiveEnableAutoCompress 返回是否启用自动压缩；config.json 省略该字段时与文档默认一致，为 true。
+// EffectiveEnableAutoCompress returns whether auto-compress is enabled; when config.json omits the field, defaults to true per documentation.
 func (a AgentConfig) EffectiveEnableAutoCompress() bool {
 	if a.EnableAutoCompress == nil {
 		return true
@@ -701,8 +701,8 @@ func (a AgentConfig) EffectiveEnableAutoCompress() bool {
 	return *a.EnableAutoCompress
 }
 
-// Load 加载配置：先从全局 config.json 读取基础值，再用环境变量覆盖。
-// 这保证了：config.json 提供持久化配置，环境变量用于临时覆盖（如 CI/Docker）。
+// Load loads configuration: reads base values from global config.json first, then applies environment variable overrides.
+// This ensures: config.json provides persistent config, env vars for temporary overrides (e.g. CI/Docker).
 func Load() *Config {
 	cfg := LoadFromFile(ConfigFilePath())
 	if cfg == nil {
@@ -710,7 +710,7 @@ func Load() *Config {
 	}
 	applyEnvOverrides(cfg)
 
-	// 填充 CLI 常用的默认值（仅在配置和环境变量都未设置时生效）
+	// Fill CLI-common default values (only effective when both config and env vars are unset)
 	if cfg.LLM.Provider == "" {
 		cfg.LLM.Provider = "openai"
 	}
@@ -851,8 +851,8 @@ func (c *Config) PublicWSAddr() string {
 	return fmt.Sprintf("ws://%s:%d", c.Server.Host, c.Server.Port)
 }
 
-// getAdminChatID 获取管理员会话 ID，实现回退逻辑
-// 优先读取 ADMIN_CHAT_ID，如果为空则回退到 STARTUP_NOTIFY_CHAT_ID
+// getAdminChatID returns the admin chat ID with fallback logic
+// Reads ADMIN_CHAT_ID first; if empty, falls back to STARTUP_NOTIFY_CHAT_ID
 func getAdminChatID() string {
 	if adminChatID := os.Getenv("ADMIN_CHAT_ID"); adminChatID != "" {
 		return adminChatID
