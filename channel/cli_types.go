@@ -116,6 +116,14 @@ func truncateToWidth(s string, maxWidth int) string {
 // hardWrapRunes wraps a line at maxW columns, breaking at character boundaries.
 // ANSI escape sequences are preserved across wrapped segments.
 // Returns the original line if it fits within maxW.
+// countLines returns the number of lines in s (always >= 1 for non-empty strings).
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
 func hardWrapRunes(line string, maxW int) string {
 	if maxW <= 0 {
 		return line

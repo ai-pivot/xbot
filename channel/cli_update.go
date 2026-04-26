@@ -623,7 +623,7 @@ func (m *cliModel) layoutViewportHeight() int {
 			// AskUser split layout: viewport stays visible above the panel.
 			// Calculate panel content height, cap it, let viewport take the rest.
 			askContent := m.viewAskUserPanel()
-			askLines := strings.Count(askContent, "\n") + 1
+			askLines := countLines(askContent)
 			panelBorder := 2                // PanelBox top + bottom border
 			fixedLines := 2                 // titleBar + toast (no separate footer — hints are in-panel)
 			maxPanelH := (m.height / 2) + 2 // panel gets at most ~half the screen

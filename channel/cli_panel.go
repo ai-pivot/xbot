@@ -1725,7 +1725,7 @@ func (m *cliModel) restoreOtherInput() {
 
 // autoExpandAskTA dynamically grows the textarea height based on content.
 func (m *cliModel) autoExpandAskTA() {
-	lines := strings.Count(m.panelAnswerTA.Value(), "\n") + 1
+	lines := countLines(m.panelAnswerTA.Value())
 	if lines < 2 {
 		lines = 2
 	}

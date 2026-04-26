@@ -1460,7 +1460,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	sb.WriteString("\n\n")
 
 	// §19 计算渲染后行数（每次 dirty 重算）
-	msg.renderedLines = strings.Count(sb.String(), "\n") + 1
+	msg.renderedLines = countLines(sb.String())
 
 	return sb.String()
 }

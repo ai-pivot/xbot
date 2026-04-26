@@ -491,7 +491,7 @@ func (m *cliModel) ensurePanelCursorVisible() {
 	if m.panelEdit || m.panelCombo {
 		m.panelScrollY = 0 // 先重置
 		raw := m.viewPanel()
-		total := strings.Count(raw, "\n") + 1
+		total := countLines(raw)
 		visible := m.panelVisibleHeight()
 		if total > visible {
 			m.panelScrollY = total - visible
@@ -573,7 +573,7 @@ func (m *cliModel) panelVisibleHeight() int {
 // clampPanelScroll 确保 panelScrollY 不超出范围。
 // rawContent 是已渲染的 panel 内容，避免重复调用 viewPanel()。
 func (m *cliModel) clampPanelScroll(rawContent string) {
-	total := strings.Count(rawContent, "\n") + 1
+	total := countLines(rawContent)
 	visible := m.panelVisibleHeight()
 	if total <= visible {
 		m.panelScrollY = 0
@@ -592,7 +592,7 @@ func (m *cliModel) clampPanelScroll(rawContent string) {
 // Default scroll is 0 (show question at top), not bottom (hints).
 // Caches total line count in askPanelTotalLines for use by ensureAskUserVisible.
 func (m *cliModel) clampAskUserPanelScroll(rawContent string) {
-	total := strings.Count(rawContent, "\n") + 1
+	total := countLines(rawContent)
 	m.askPanelTotalLines = total
 	visible := m.askUserPanelVisibleHeight()
 	if total <= visible {
