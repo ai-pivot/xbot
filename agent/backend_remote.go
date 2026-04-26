@@ -662,7 +662,7 @@ func (b *RemoteBackend) sendPing() {
 	if b.conn == nil {
 		return
 	}
-	if err := b.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+	if err := b.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsHandshakeTimeout)); err != nil {
 		log.WithError(err).Warn("WS ping failed")
 	}
 }
