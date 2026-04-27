@@ -35,7 +35,7 @@ const (
 
 // isNilJSON returns true if the raw JSON bytes are empty or contain a JSON null.
 func isNilJSON(raw json.RawMessage) bool {
-	return isNilJSON(raw)
+	return len(raw) == 0 || string(raw) == "null"
 }
 
 // ---------------------------------------------------------------------------
