@@ -96,21 +96,6 @@ func (m *cliModel) advanceTypewriter() {
 	}
 }
 
-// typewriterBehind reports whether there is still unread stream or reasoning
-// content waiting to be revealed by the typewriter animation.
-func (m *cliModel) typewriterBehind() bool {
-	if m.progress == nil {
-		return false
-	}
-	if m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent)) {
-		return true
-	}
-	if m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent)) {
-		return true
-	}
-	return false
-}
-
 // contentWidth returns the available content width for message bubbles,
 // accounting for border and padding overhead.
 func (m *cliModel) contentWidth() int {

@@ -540,16 +540,6 @@ func centerLine(screenW int, text string, style lipgloss.Style) string {
 	return strings.Repeat(" ", pad) + styled
 }
 
-// centerLinePlain centers a pre-rendered string within the given screen width.
-func centerLinePlain(screenW int, styled string) string {
-	w := lipgloss.Width(styled)
-	pad := (screenW - w) / 2
-	if pad < 0 {
-		pad = 0
-	}
-	return strings.Repeat(" ", pad) + styled
-}
-
 // renderSplash Render splash screen — brand logo + version number + loading animation
 func (m *cliModel) renderSplash() string {
 	// Centering calculation

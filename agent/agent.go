@@ -1620,7 +1620,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	}
 
 	// Inject running background tasks / interactive agents / groups into last user message
-	messages = a.injectActiveContextNotes(ctx, msg, messages)
+	a.injectActiveContextNotes(ctx, msg, messages)
 
 	// Wire drain callback for bg notifications (session-scoped filtering)
 	a.wireBgNotificationDrain(&cfg, msg.Channel+":"+msg.ChatID)
