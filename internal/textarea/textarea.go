@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -19,11 +20,61 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/go-ego/gse"
 	rw "github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 	"xbot/internal/textarea/memoization"
 	"xbot/internal/textarea/runeutil"
 )
+
+// cjkSeg holds the shared CJK word segmenter, initialized lazily.
+var (
+	cjkSeg          gse.Segmenter
+	cjkSegAvailable bool
+	cjkSegOnce      sync.Once
+)
+
+func getCJKSegmenter() *gse.Segmenter {
+	cjkSegOnce.Do(func() {
+		var err error
+		cjkSeg, err = gse.NewEmbed()
+		if err == nil {
+			cjkSegAvailable = true
+		}
+	})
+	if !cjkSegAvailable {
+		return nil
+	}
+	return &cjkSeg
+}
+
+// cjkBoundary is a word boundary in a line of text, in rune positions.
+type cjkBoundary struct {
+	start, end int // [start, end) in rune offsets
+}
+
+// cjkWordBoundaries returns the segmented word boundaries for a line
+// using gse's CutSearch mode (DAG-based, correct for isolated CJK words).
+// Returns nil if the segmenter is unavailable (fall back to single-char).
+func cjkWordBoundaries(line []rune) []cjkBoundary {
+	seg := getCJKSegmenter()
+	if seg == nil {
+		return nil
+	}
+	text := string(line)
+	words := seg.CutSearch(text, true)
+	boundaries := make([]cjkBoundary, 0, len(words))
+	pos := 0
+	for _, word := range words {
+		wordRunes := []rune(word)
+		wordLen := len(wordRunes)
+		if wordLen > 0 {
+			boundaries = append(boundaries, cjkBoundary{pos, pos + wordLen})
+			pos += wordLen
+		}
+	}
+	return boundaries
+}
 
 const (
 	minHeight        = 1
@@ -352,6 +403,13 @@ type Model struct {
 
 	// rune sanitizer for input.
 	rsan runeutil.Sanitizer
+
+	// cjkWordCache holds segmented word boundaries for the current line.
+	// Nil if not yet segmented or segmenter unavailable.
+	cjkWordCache []cjkBoundary
+	// cjkWordCacheLine is the line text this cache was built for.
+	// When the line changes, the cache is invalidated (set to "").
+	cjkWordCacheLine string
 }
 
 // New creates a new model with default settings.
@@ -777,10 +835,37 @@ func (m *Model) Reset() {
 	m.recalculateHeight()
 }
 
+// cjkWordBounds returns the segmented CJK word boundaries for the current
+// line, recomputing the cache when the line text changes. Returns nil if
+// the segmenter is unavailable.
+func (m *Model) cjkWordBounds() []cjkBoundary {
+	line := string(m.value[m.row])
+	if m.cjkWordCacheLine != line {
+		m.cjkWordCache = cjkWordBoundaries(m.value[m.row])
+		m.cjkWordCacheLine = line
+	}
+	return m.cjkWordCache
+}
+
+// cjkWordAt returns the boundary of the CJK word containing the given rune
+// position.  Returns false if no segmenter word covers that position.
+func (m *Model) cjkWordAt(col int) (cjkBoundary, bool) {
+	bounds := m.cjkWordBounds()
+	if bounds == nil {
+		return cjkBoundary{}, false
+	}
+	for _, b := range bounds {
+		if b.start <= col && col < b.end {
+			return b, true
+		}
+	}
+	return cjkBoundary{}, false
+}
+
 // Word returns the word at the cursor position.
 //
-// A word is delimited by [isWordBoundary] (whitespace or CJK characters).
-// CJK characters are treated as individual words (one character each).
+// CJK words are segmented by the embedded gse segmenter; Latin words are
+// delimited by [isWordBoundary] (whitespace or CJK characters).
 // Returns an empty string if the cursor is on whitespace, beyond the line end,
 // or at position 0.
 func (m *Model) Word() string {
@@ -801,8 +886,12 @@ func (m *Model) Word() string {
 		return ""
 	}
 
-	// CJK: each character is its own word
+	// CJK: use segmenter to find word boundaries
 	if isCJK(line[col]) {
+		if b, ok := m.cjkWordAt(col); ok {
+			return string(line[b.start:b.end])
+		}
+		// Fallback: single character
 		return string(line[col])
 	}
 
@@ -881,8 +970,12 @@ func (m *Model) deleteWordLeft() {
 	if m.col > 0 {
 		r := m.value[m.row][m.col-1]
 		if isCJK(r) {
-			// CJK: delete one character
-			m.SetCursorColumn(m.col - 1)
+			// CJK: use segmenter to find word start
+			if b, ok := m.cjkWordAt(m.col - 1); ok {
+				m.SetCursorColumn(b.start)
+			} else {
+				m.SetCursorColumn(m.col - 1)
+			}
 		} else {
 			// Latin/other: delete to start of word
 			for m.col > 0 {
@@ -903,7 +996,7 @@ func (m *Model) deleteWordLeft() {
 }
 
 // deleteWordRight deletes the word right to the cursor.
-// CJK characters are treated as individual words.
+// CJK words are segmented by the embedded gse segmenter.
 func (m *Model) deleteWordRight() {
 	if m.col >= len(m.value[m.row]) || len(m.value[m.row]) == 0 {
 		return
@@ -920,8 +1013,12 @@ func (m *Model) deleteWordRight() {
 	if m.col < len(m.value[m.row]) {
 		r := m.value[m.row][m.col]
 		if isCJK(r) {
-			// CJK: delete one character
-			m.SetCursorColumn(m.col + 1)
+			// CJK: use segmenter to find word end
+			if b, ok := m.cjkWordAt(m.col); ok {
+				m.SetCursorColumn(b.end)
+			} else {
+				m.SetCursorColumn(m.col + 1)
+			}
 		} else {
 			// Latin/other: delete to end of word
 			for m.col < len(m.value[m.row]) {
@@ -972,8 +1069,8 @@ func (m *Model) characterLeft(insideLine bool) {
 }
 
 // wordLeft moves the cursor one word to the left.
-// CJK characters are treated as individual words; Latin words are delimited
-// by [isWordBoundary] (whitespace or CJK characters).
+// CJK words are segmented by the embedded gse segmenter; Latin words are
+// delimited by [isWordBoundary] (whitespace or CJK characters).
 func (m *Model) wordLeft() {
 	// Skip spaces backwards
 	for m.col > 0 && unicode.IsSpace(m.value[m.row][m.col-1]) {
@@ -985,8 +1082,12 @@ func (m *Model) wordLeft() {
 	}
 	r := m.value[m.row][m.col-1]
 	if isCJK(r) {
-		// CJK: one character = one word
-		m.SetCursorColumn(m.col - 1)
+		// CJK: use segmenter to find word start
+		if b, ok := m.cjkWordAt(m.col - 1); ok {
+			m.SetCursorColumn(b.start)
+		} else {
+			m.SetCursorColumn(m.col - 1)
+		}
 	} else {
 		// Latin/other: move to start of word (stop at spaces and CJK)
 		for m.col > 0 {
@@ -1000,8 +1101,8 @@ func (m *Model) wordLeft() {
 }
 
 // wordRight moves the cursor one word to the right.
-// CJK characters are treated as individual words; Latin words are delimited
-// by [isWordBoundary] (whitespace or CJK characters).
+// CJK words are segmented by the embedded gse segmenter; Latin words are
+// delimited by [isWordBoundary] (whitespace or CJK characters).
 func (m *Model) wordRight() {
 	m.doWordRight(func(int, int) { /* nothing */ })
 }
@@ -1011,8 +1112,8 @@ func (m *Model) wordRight() {
 // word and the absolute column position. This enables word-transform operations
 // (uppercase, lowercase, capitalize) to modify characters as the cursor moves.
 //
-// CJK characters are treated as individual words; Latin words are delimited
-// by [isWordBoundary] (whitespace or CJK characters).
+// CJK words are segmented by the embedded gse segmenter; Latin words are
+// delimited by [isWordBoundary] (whitespace or CJK characters).
 func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 	// Skip spaces forward
 	for m.col < len(m.value[m.row]) && unicode.IsSpace(m.value[m.row][m.col]) {
@@ -1024,9 +1125,16 @@ func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 	}
 	r := m.value[m.row][m.col]
 	if isCJK(r) {
-		// CJK: one character = one word
-		fn(0, m.col)
-		m.SetCursorColumn(m.col + 1)
+		// CJK: use segmenter to find word end
+		if b, ok := m.cjkWordAt(m.col); ok {
+			for i := m.col; i < b.end; i++ {
+				fn(i-m.col, m.col)
+				m.SetCursorColumn(m.col + 1)
+			}
+		} else {
+			fn(0, m.col)
+			m.SetCursorColumn(m.col + 1)
+		}
 	} else {
 		// Latin/other: move to end of word (stop at spaces and CJK)
 		charIdx := 0

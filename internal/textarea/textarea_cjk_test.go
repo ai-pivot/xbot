@@ -87,10 +87,10 @@ func TestWrapCJKNoSpaceHardWrap(t *testing.T) {
 }
 
 func TestWordNavigationCJK(t *testing.T) {
-	// Indices: H(0)e(1)l(2)l(3)o(4) ' '(5) 你(6)好(7) W(8)o(9)r(10)l(11)d(12) 测(13)试(14) ' '(15) e(16)n(17)d(18)
+	// Indices: H(0)e(1)l(2)l(3)o(4) ' '(5) 你(6)好(7)W(8)o(9)r(10)l(11)d(12) ' '(13)测(14)试(15) ' '(16)e(17)n(18)d(19)
 	m := New()
 	m.SetWidth(40)
-	m.SetValue("Hello 你好World测试 end")
+	m.SetValue("Hello 你好World 测试 end")
 
 	tests := []struct {
 		name     string
@@ -98,21 +98,20 @@ func TestWordNavigationCJK(t *testing.T) {
 		expected int
 		forward  bool
 	}{
+		// wordRight: gse segments CJK words ("你好" as one, "测试" as one)
 		{"right: skip Hello", 0, 5, true},
-		{"right: skip space+你(CJK)", 5, 7, true},
-		{"right: skip 好(CJK)", 7, 8, true},
+		{"right: skip space + 你好(gse)", 5, 8, true},
 		{"right: skip World", 8, 13, true},
-		{"right: skip 测(CJK)", 13, 14, true},
-		{"right: skip 试(CJK)", 14, 15, true},
-		{"right: skip space+end", 15, 19, true},
-		{"right: at end stays", 19, 19, true},
-		{"left: skip end", 19, 16, false},
-		{"left: skip space+试(CJK)", 16, 14, false},
-		{"left: skip 测(CJK)", 14, 13, false},
-		{"left: skip World", 13, 8, false},
-		{"left: skip 好(CJK)", 8, 7, false},
-		{"left: skip 你(CJK)", 7, 6, false},
-		{"left: skip space+Hello", 6, 0, false},
+		{"right: skip space + 测试(gse)", 13, 16, true},
+		{"right: skip space + end", 16, 20, true},
+		{"right: at end stays", 20, 20, true},
+		// wordLeft: gse segments CJK words
+		{"left: skip end", 20, 17, false},
+		{"left: skip space + 测试(gse)", 17, 14, false},
+		{"left: skip World", 14, 8, false},
+		{"left: skip 你好(gse)", 8, 6, false},
+		{"left: skip space + Hello", 6, 0, false},
+		{"left: at start stays", 0, 0, false},
 	}
 
 	for _, tt := range tests {
@@ -140,34 +139,22 @@ func TestDeleteWordCJK(t *testing.T) {
 	m.SetValue("Hello你好测试")
 	m.SetCursorColumn(len("Hello你好测试"))
 
-	// Delete 试 (CJK → one char)
-	m.deleteWordLeft()
-	if got := m.Value(); got != "Hello你好测" {
-		t.Errorf("after deleteWordLeft: got %q, want %q", got, "Hello你好测")
-	}
-
-	// Delete 测
+	// Delete "测试" (CJK word, gse segmented)
 	m.deleteWordLeft()
 	if got := m.Value(); got != "Hello你好" {
-		t.Errorf("after deleteWordLeft: got %q, want %q", got, "Hello你好")
+		t.Errorf("after deleteWordLeft (测试): got %q, want %q", got, "Hello你好")
 	}
 
-	// Delete 好 (CJK)
-	m.deleteWordLeft()
-	if got := m.Value(); got != "Hello你" {
-		t.Errorf("after deleteWordLeft: got %q, want %q", got, "Hello你")
-	}
-
-	// Delete 你 (CJK)
+	// Delete "你好" (CJK word, gse segmented)
 	m.deleteWordLeft()
 	if got := m.Value(); got != "Hello" {
-		t.Errorf("after deleteWordLeft: got %q, want %q", got, "Hello")
+		t.Errorf("after deleteWordLeft (你好): got %q, want %q", got, "Hello")
 	}
 
 	// Delete "Hello" (Latin word)
 	m.deleteWordLeft()
 	if got := m.Value(); got != "" {
-		t.Errorf("after deleteWordLeft: got %q, want %q", got, "")
+		t.Errorf("after deleteWordLeft (Hello): got %q, want %q", got, "")
 	}
 }
 
@@ -267,7 +254,7 @@ func TestIsWordBoundary(t *testing.T) {
 	}
 }
 
-// TestDeleteWordRightCJK tests forward word deletion with CJK characters.
+// TestDeleteWordRightCJK tests forward word deletion with CJK characters (gse segmented).
 func TestDeleteWordRightCJK(t *testing.T) {
 	m := New()
 	m.SetWidth(40)
@@ -282,25 +269,13 @@ func TestDeleteWordRightCJK(t *testing.T) {
 		t.Errorf("after deleteWordRight: got %q, want %q", got, "你好测试")
 	}
 
-	// Delete "你" (CJK single char)
-	m.deleteWordRight()
-	if got := m.Value(); got != "好测试" {
-		t.Errorf("after deleteWordRight: got %q, want %q", got, "好测试")
-	}
-
-	// Delete "好" (CJK)
+	// Delete "你好" (CJK word, gse segmented as one)
 	m.deleteWordRight()
 	if got := m.Value(); got != "测试" {
 		t.Errorf("after deleteWordRight: got %q, want %q", got, "测试")
 	}
 
-	// Delete "测" (CJK)
-	m.deleteWordRight()
-	if got := m.Value(); got != "试" {
-		t.Errorf("after deleteWordRight: got %q, want %q", got, "试")
-	}
-
-	// Delete "试" (CJK)
+	// Delete "测试" (CJK word, gse segmented as one)
 	m.deleteWordRight()
 	if got := m.Value(); got != "" {
 		t.Errorf("after deleteWordRight: got %q, want %q", got, "")
@@ -393,18 +368,18 @@ func TestWordCJK(t *testing.T) {
 		{"At col 5 (left=o)", 5, "Hello"},
 		// col=6: col-1=5=' ' → space → ""
 		{"At col 6 (left=space)", 6, ""},
-		// col=7: col-1=6='你' → CJK individual word → "你"
-		{"At col 7 (left=你)", 7, "你"},
-		// col=8: col-1=7='好' → CJK individual word → "好"
-		{"At col 8 (left=好)", 8, "好"},
+		// col=7: col-1=6='你' → gse CJK word → "你好"
+		{"At col 7 (left=你)", 7, "你好"},
+		// col=8: col-1=7='好' → gse CJK word → "你好"
+		{"At col 8 (left=好)", 8, "你好"},
 		// col=9: col-1=8='W' → part of "World"
 		{"At col 9 (left=W)", 9, "World"},
 		// col=13: col-1=12='d' → part of "World"
 		{"At col 13 (left=d)", 13, "World"},
-		// col=14: col-1=13='测' → CJK → "测"
-		{"At col 14 (left=测)", 14, "测"},
-		// col=15: col-1=14='试' → CJK → "试"
-		{"At col 15 (left=试)", 15, "试"},
+		// col=14: col-1=13='测' → gse CJK word → "测试"
+		{"At col 14 (left=测)", 14, "测试"},
+		// col=15: col-1=14='试' → gse CJK word → "测试"
+		{"At col 15 (left=试)", 15, "测试"},
 		// col=16: col-1=15=' ' → space → ""
 		{"At col 16 (left=space)", 16, ""},
 		// col=17: col-1=16='e' → part of "end"
