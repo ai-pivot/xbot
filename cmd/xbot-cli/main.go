@@ -1458,6 +1458,11 @@ func main() {
 				defer clipanic.Recover("main.remote.OnProgress", p, false)
 				cliCh.SendProgress("cli:"+cliCfg.ChatID, p)
 			})
+			// Register OnInjectUserMessage callback for bg task notifications
+			app.backend.OnInjectUserMessage(func(content string) {
+				defer clipanic.Recover("main.remote.OnInjectUserMessage", content, false)
+				cliCh.InjectUserMessage(content)
+			})
 			// Inject remote bg task callbacks (BgTaskManager is nil in remote mode)
 			bgSessionKey := "cli:" + cliCfg.ChatID
 			cliCh.SetBgTaskRemoteCallbacks(

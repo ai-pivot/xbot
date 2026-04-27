@@ -1733,6 +1733,20 @@ func (c *RemoteCLIChannel) Start() error { return nil }
 
 func (c *RemoteCLIChannel) Stop() {}
 
+// InjectUserMessage sends an injected user message (e.g. bg task notification)
+// to the remote CLI runner via WebSocket. The runner will display it as a user
+// message in the TUI and use it to start the agent turn display.
+func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
+	wsMsg := wsMessage{
+		Type:    "inject_user",
+		Content: content,
+		TS:      time.Now().Unix(),
+	}
+	if !c.hub.sendToClient(chatID, wsMsg) {
+		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")
+	}
+}
+
 // SendProgress sends structured progress to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendProgress(chatID string, payload *WsProgressPayload) {
 	if payload == nil {
