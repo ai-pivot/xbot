@@ -181,6 +181,14 @@ func (a *Agent) buildMainRunConfig(
 				log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to persist token state")
 			}
 		}
+		// Per-message exact token accounting: after each LLM API call,
+		// write the API's prompt_tokens to the most recent user message.
+		// Rewind reads this value to restore accurate token state without estimation.
+		cfg.SaveContextTokens = func(promptTokens int64) {
+			if err := tenantSession.SaveContextTokens(promptTokens); err != nil {
+				log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to save context tokens")
+			}
+		}
 	}
 
 	// OAuth 处理

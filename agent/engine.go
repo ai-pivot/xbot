@@ -201,6 +201,11 @@ type RunConfig struct {
 	// If nil, token counts are only kept in memory (lost on restart).
 	SaveTokenState func(promptTokens, completionTokens int64)
 
+	// SaveContextTokens records the exact API prompt_tokens on the most recent
+	// user message in the session. Called after each LLM API call returns,
+	// enabling rewind to restore precise token counts from DB.
+	SaveContextTokens func(promptTokens int64)
+
 	// BgTaskManager 后台任务管理器（nil = 不支持后台任务）
 	BgTaskManager *tools.BackgroundTaskManager
 	// MessageSender 允许 Agent 向任何 Channel 发消息（IM、Agent、Group）。

@@ -421,6 +421,11 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
 		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
+		// Save exact API prompt_tokens to the most recent user message
+		// so rewind can restore accurate token state from DB.
+		if s.cfg.SaveContextTokens != nil {
+			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
+		}
 		// Push updated token usage to CLI immediately so the context
 		// bar reflects the latest prompt token count on each iteration.
 		s.notifyProgress("")
@@ -484,6 +489,10 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
 		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
+		// Save exact API prompt_tokens (after compress retry, still the same user message)
+		if s.cfg.SaveContextTokens != nil {
+			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
+		}
 		s.validateInvariantsAt(ctx, "post_llm_call_input_too_long")
 	}
 	return response, err
@@ -717,28 +726,16 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		promptBudget = maxTokens / 2 // fallback: reserve half for output
 	}
 
-	// Truncation detection: if messages were truncated (e.g. by Ctrl+K / rewind)
-	// since the last LLM call, the cached promptTokens is stale because it
-	// was measured against a longer message list. Re-estimate from remaining messages.
-	if reEstimated, prevTokens := s.tokenTracker.DetectTruncation(s.messages, s.cfg.Model); reEstimated {
-		s.updateTokenUsage()
-		log.Ctx(ctx).WithFields(log.Fields{
-			"prev_prompt_tokens": prevTokens,
-			"new_prompt_tokens":  s.tokenTracker.PromptTokens(),
-			"new_msg_count":      s.tokenTracker.MsgCountAtCall(),
-		}).Info("maybeCompress: truncated messages detected, re-estimated token count")
-	}
+	// Truncation detection is no longer needed — rewind restores exact
+	// token counts from DB (session_messages.context_tokens).
+	// The TokenTracker is seeded with the correct value via LastPromptTokens.
 
 	totalTokens, tokenSource := s.tokenTracker.EstimateTotal(s.messages, s.cfg.Model)
-	if tokenSource == "local_estimate_fallback" && len(s.messages) > 3 {
-		log.Ctx(ctx).WithFields(log.Fields{
-			"estimated": totalTokens * 2 / 3, // reverse the 1.5x margin for display
-			"adjusted":  totalTokens,
-			"msg_count": len(s.messages),
-		}).Warn("maybeCompress: no API token data, using local estimation with 1.5x margin")
-	}
-	if tokenSource == "no_data" && len(s.messages) > 3 {
-		log.Ctx(ctx).Error("maybeCompress: no API token data and local estimation failed, skipping compress check")
+	if tokenSource == "no_data" {
+		// No API token data — cannot make compression decisions.
+		// Return early; compression is never triggered without real data.
+		log.Ctx(ctx).WithField("msg_count", len(s.messages)).Debug("maybeCompress: no API token data, skipping compress check")
+		return
 	}
 
 	compressThreshold := 0.9

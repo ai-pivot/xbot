@@ -1525,14 +1525,39 @@ func main() {
 						return nil
 					}
 					_, err := cliSessionSvc.PurgeNewerThanOrEqual(cliTenantID, cutoff)
-					return err
+					if err != nil {
+						return err
+					}
+					// Restore token state from the last remaining user message's
+					// context_tokens — exact API value, no estimation.
+					memSvc := sqlite.NewMemoryService(app.db)
+					lastCtx, ctxErr := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID)
+					if ctxErr != nil {
+						log.WithError(ctxErr).Warn("Failed to get context tokens after trim, using 0")
+						lastCtx = 0
+					}
+					if err := memSvc.SetTokenState(context.Background(), cliTenantID, lastCtx, 0); err != nil {
+						log.WithError(err).Warn("Failed to restore token state after trim")
+					}
+					return nil
 				})
 			} else {
 				log.WithFields(log.Fields{"tenantID": cliTenantID, "hasSessionSvc": cliSessionSvc != nil, "hasDB": app.db != nil}).Warn("TrimHistoryFn NOT registered — DB truncation will not work")
 			}
-			// Reset cached token state after rewind to prevent stale compress trigger
+			// Reset cached token state after rewind to prevent stale compress trigger.
+			// Uses exact context_tokens from the last remaining user message.
 			cliCh.SetResetTokenStateFn(func() {
-				app.backend.ResetTokenState()
+				if cliTenantID != 0 && app.db != nil {
+					memSvc := sqlite.NewMemoryService(app.db)
+					lastCtx, ctxErr := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID)
+					if ctxErr != nil {
+						log.WithError(ctxErr).Warn("Failed to get context tokens after reset, using 0")
+						lastCtx = 0
+					}
+					if err := memSvc.SetTokenState(context.Background(), cliTenantID, lastCtx, 0); err != nil {
+						log.WithError(err).Warn("Failed to reset token state after rewind")
+					}
+				}
 			})
 		}
 	}
