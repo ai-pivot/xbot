@@ -458,3 +458,184 @@ func TestCursorAtWrapBoundary(t *testing.T) {
 		})
 	}
 }
+
+// TestWordNavigationCJKWithPunctuation tests that ctrl+arrow correctly handles
+// CJK punctuation (，。！) as separate stops, not merged with adjacent Latin words.
+//
+// For "你好，世界测试" gse segments: ["你好" "，" "世界" "测试"]
+// Boundaries: [{0,2} {2,3} {3,5} {5,7}]
+//
+//	wordRight: 0→2→3→5→7
+//	wordLeft:  7→5→3→2→0
+func TestWordNavigationCJKWithPunctuation(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("你好，世界测试")
+
+	tests := []struct {
+		name     string
+		startCol int
+		expected int
+		forward  bool
+	}{
+		// wordRight through punctuation
+		{"right: 你好→end", 0, 2, true},
+		{"right: ，→end", 2, 3, true},
+		{"right: 世界→end", 3, 5, true},
+		{"right: 测试→end", 5, 7, true},
+		{"right: at end stays", 7, 7, true},
+		// wordLeft through punctuation
+		{"left: 测试→start", 7, 5, false},
+		{"left: 世界→start", 5, 3, false},
+		{"left: ，→start", 3, 2, false},
+		{"left: 你好→start", 2, 0, false},
+		{"left: at start stays", 0, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m.SetCursorColumn(tt.startCol)
+			if tt.forward {
+				m.wordRight()
+			} else {
+				m.wordLeft()
+			}
+			if m.col != tt.expected {
+				t.Errorf("from col %d, %s → col %d, expected %d",
+					tt.startCol,
+					map[bool]string{true: "wordRight", false: "wordLeft"}[tt.forward],
+					m.col, tt.expected)
+			}
+		})
+	}
+}
+
+// TestWordNavigationCJKMixedPunctuation tests mixed CJK/Latin/punctuation navigation.
+//
+// For "Hello你好，世界" gse segments: ["hello" "你好" "，" "世界"]
+// Boundaries: [{0,5} {5,7} {7,8} {8,10}]
+func TestWordNavigationCJKMixedPunctuation(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("Hello你好，世界")
+
+	tests := []struct {
+		name     string
+		startCol int
+		expected int
+		forward  bool
+	}{
+		{"right: Hello→end", 0, 5, true},
+		{"right: 你好→end", 5, 7, true},
+		{"right: ，→end", 7, 8, true},
+		{"right: 世界→end", 8, 10, true},
+		{"left: 世界→start", 10, 8, false},
+		{"left: ，→start", 8, 7, false},
+		{"left: 你好→start", 7, 5, false},
+		{"left: Hello→start", 5, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m.SetCursorColumn(tt.startCol)
+			if tt.forward {
+				m.wordRight()
+			} else {
+				m.wordLeft()
+			}
+			if m.col != tt.expected {
+				t.Errorf("from col %d, %s → col %d, expected %d",
+					tt.startCol,
+					map[bool]string{true: "wordRight", false: "wordLeft"}[tt.forward],
+					m.col, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDeleteWordCJKWithPunctuation tests delete operations with punctuation.
+func TestDeleteWordCJKWithPunctuation(t *testing.T) {
+	// deleteWordLeft: cursor after "测试", should delete "测试"
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("你好，世界测试")
+	m.SetCursorColumn(len("你好，世界测试"))
+
+	m.deleteWordLeft()
+	if got := m.Value(); got != "你好，世界" {
+		t.Errorf("after deleteWordLeft (测试): got %q, want %q", got, "你好，世界")
+	}
+
+	// Delete "世界"
+	m.deleteWordLeft()
+	if got := m.Value(); got != "你好，" {
+		t.Errorf("after deleteWordLeft (世界): got %q, want %q", got, "你好，")
+	}
+
+	// Delete "，"
+	m.deleteWordLeft()
+	if got := m.Value(); got != "你好" {
+		t.Errorf("after deleteWordLeft (，): got %q, want %q", got, "你好")
+	}
+
+	// Delete "你好"
+	m.deleteWordLeft()
+	if got := m.Value(); got != "" {
+		t.Errorf("after deleteWordLeft (你好): got %q, want %q", got, "")
+	}
+}
+
+// TestDeleteWordRightCJKWithPunctuation tests deleteWordRight with punctuation.
+func TestDeleteWordRightCJKWithPunctuation(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("你好，世界测试")
+	m.SetCursorColumn(0)
+
+	// Delete "你好"
+	m.deleteWordRight()
+	if got := m.Value(); got != "，世界测试" {
+		t.Errorf("after deleteWordRight (你好): got %q, want %q", got, "，世界测试")
+	}
+
+	// Delete "，"
+	m.deleteWordRight()
+	if got := m.Value(); got != "世界测试" {
+		t.Errorf("after deleteWordRight (，): got %q, want %q", got, "世界测试")
+	}
+
+	// Delete "世界"
+	m.deleteWordRight()
+	if got := m.Value(); got != "测试" {
+		t.Errorf("after deleteWordRight (世界): got %q, want %q", got, "测试")
+	}
+}
+
+// TestWordCJKWithPunctuation tests Word() returns correct tokens with punctuation.
+func TestWordCJKWithPunctuation(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("你好，世界")
+
+	tests := []struct {
+		name     string
+		col      int
+		expected string
+	}{
+		{"你", 1, "你好"},
+		{"好", 2, "你好"},
+		{"，", 3, "，"},
+		{"世", 4, "世界"},
+		{"界", 5, "世界"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m.SetCursorColumn(tt.col)
+			got := m.Word()
+			if got != tt.expected {
+				t.Errorf("Word() at col %d = %q, want %q", tt.col, got, tt.expected)
+			}
+		})
+	}
+}

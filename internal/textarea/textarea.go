@@ -851,25 +851,92 @@ func (m *Model) cjkWordBounds() []cjkBoundary {
 	return m.cjkWordCache
 }
 
-// cjkWordAt returns the boundary of the CJK word containing the given rune
-// position.  Returns false if no segmenter word covers that position.
-func (m *Model) cjkWordAt(col int) (cjkBoundary, bool) {
+// tokenRight returns the column after skipping one gse token to the right
+// from the given column. It skips spaces first, then jumps to the end of the
+// current token. Returns col unchanged if gse is unavailable or at end of line.
+func (m *Model) tokenRight(col int) int {
+	line := m.value[m.row]
+	// Skip spaces forward
+	for col < len(line) && unicode.IsSpace(line[col]) {
+		col++
+	}
+	if col >= len(line) {
+		return col
+	}
+	// Find the token containing col and jump to its end
 	bounds := m.cjkWordBounds()
-	if bounds == nil {
-		return cjkBoundary{}, false
-	}
-	for _, b := range bounds {
-		if b.start <= col && col < b.end {
-			return b, true
+	if bounds != nil {
+		for _, b := range bounds {
+			if b.start <= col && col < b.end {
+				return b.end
+			}
 		}
+		// col is at a gap between tokens (shouldn't happen), move to next token start
+		for _, b := range bounds {
+			if b.start > col {
+				return b.start
+			}
+		}
+		return len(line)
 	}
-	return cjkBoundary{}, false
+	// Fallback: no segmenter, use character-by-character with isWordBoundary
+	for col < len(line) {
+		r := line[col]
+		if isWordBoundary(r) {
+			break
+		}
+		col++
+	}
+	return col
+}
+
+// tokenLeft returns the column after skipping one gse token to the left
+// from the given column. It skips spaces first, then jumps to the start of the
+// previous token. Returns col unchanged if gse is unavailable or at start of line.
+func (m *Model) tokenLeft(col int) int {
+	line := m.value[m.row]
+	// Skip spaces backward
+	for col > 0 && unicode.IsSpace(line[col-1]) {
+		col--
+	}
+	if col <= 0 {
+		return 0
+	}
+	// Find the token containing col-1 and jump to its start
+	bounds := m.cjkWordBounds()
+	if bounds != nil {
+		for _, b := range bounds {
+			if b.start <= col-1 && col-1 < b.end {
+				return b.start
+			}
+		}
+		// col-1 is at a gap (shouldn't happen), find preceding token
+		prev := 0
+		for _, b := range bounds {
+			if b.end <= col-1 {
+				prev = b.start
+			} else {
+				break
+			}
+		}
+		return prev
+	}
+	// Fallback: no segmenter, use character-by-character with isWordBoundary
+	for col > 0 {
+		prev := line[col-1]
+		if isWordBoundary(prev) {
+			break
+		}
+		col--
+	}
+	return col
 }
 
 // Word returns the word at the cursor position.
 //
-// CJK words are segmented by the embedded gse segmenter; Latin words are
-// delimited by [isWordBoundary] (whitespace or CJK characters).
+// Uses gse token boundaries when available for accurate CJK + punctuation
+// identification. Falls back to isWordBoundary (whitespace or CJK characters)
+// when the segmenter is unavailable.
 // Returns an empty string if the cursor is on whitespace, beyond the line end,
 // or at position 0.
 func (m *Model) Word() string {
@@ -890,22 +957,20 @@ func (m *Model) Word() string {
 		return ""
 	}
 
-	// CJK: use segmenter to find word boundaries
-	if isCJK(line[col]) {
-		if b, ok := m.cjkWordAt(col); ok {
+	// Try gse token-based lookup
+	bounds := m.cjkWordBounds()
+	for _, b := range bounds {
+		if b.start <= col && col < b.end {
 			return string(line[b.start:b.end])
 		}
-		// Fallback: single character
-		return string(line[col])
 	}
 
-	// Find the start of the word by moving left (stop at spaces and CJK)
+	// Fallback: no segmenter or col not in any token, use isWordBoundary
 	start := col
 	for start > 0 && !isWordBoundary(line[start-1]) {
 		start--
 	}
 
-	// Find the end of the word by moving right (stop at spaces and CJK)
 	end := col + 1
 	for end < len(line) && !isWordBoundary(line[end]) {
 		end++
@@ -957,40 +1022,14 @@ func (m *Model) transposeLeft() {
 }
 
 // deleteWordLeft deletes the word left to the cursor.
-// CJK characters are treated as individual words.
+// Uses gse token boundaries when available for accurate CJK+ punctuation navigation.
 func (m *Model) deleteWordLeft() {
 	if m.col == 0 || len(m.value[m.row]) == 0 {
 		return
 	}
 
 	oldCol := m.col
-
-	// Skip spaces backwards
-	for m.col > 0 && unicode.IsSpace(m.value[m.row][m.col-1]) {
-		m.SetCursorColumn(m.col - 1)
-	}
-
-	// Skip one "word" backwards
-	if m.col > 0 {
-		r := m.value[m.row][m.col-1]
-		if isCJK(r) {
-			// CJK: use segmenter to find word start
-			if b, ok := m.cjkWordAt(m.col - 1); ok {
-				m.SetCursorColumn(b.start)
-			} else {
-				m.SetCursorColumn(m.col - 1)
-			}
-		} else {
-			// Latin/other: delete to start of word
-			for m.col > 0 {
-				prev := m.value[m.row][m.col-1]
-				if isWordBoundary(prev) {
-					break
-				}
-				m.SetCursorColumn(m.col - 1)
-			}
-		}
-	}
+	m.SetCursorColumn(m.tokenLeft(m.col))
 
 	if oldCol > len(m.value[m.row]) {
 		m.value[m.row] = m.value[m.row][:m.col]
@@ -1000,45 +1039,19 @@ func (m *Model) deleteWordLeft() {
 }
 
 // deleteWordRight deletes the word right to the cursor.
-// CJK words are segmented by the embedded gse segmenter.
+// Uses gse token boundaries when available for accurate CJK+ punctuation navigation.
 func (m *Model) deleteWordRight() {
 	if m.col >= len(m.value[m.row]) || len(m.value[m.row]) == 0 {
 		return
 	}
 
 	oldCol := m.col
+	endCol := m.tokenRight(m.col)
 
-	// Skip spaces forward
-	for m.col < len(m.value[m.row]) && unicode.IsSpace(m.value[m.row][m.col]) {
-		m.SetCursorColumn(m.col + 1)
-	}
-
-	// Skip one "word" forward
-	if m.col < len(m.value[m.row]) {
-		r := m.value[m.row][m.col]
-		if isCJK(r) {
-			// CJK: use segmenter to find word end
-			if b, ok := m.cjkWordAt(m.col); ok {
-				m.SetCursorColumn(b.end)
-			} else {
-				m.SetCursorColumn(m.col + 1)
-			}
-		} else {
-			// Latin/other: delete to end of word
-			for m.col < len(m.value[m.row]) {
-				r := m.value[m.row][m.col]
-				if isWordBoundary(r) {
-					break
-				}
-				m.SetCursorColumn(m.col + 1)
-			}
-		}
-	}
-
-	if m.col > len(m.value[m.row]) {
+	if endCol > len(m.value[m.row]) {
 		m.value[m.row] = m.value[m.row][:oldCol]
 	} else {
-		m.value[m.row] = append(m.value[m.row][:oldCol], m.value[m.row][m.col:]...)
+		m.value[m.row] = append(m.value[m.row][:oldCol], m.value[m.row][endCol:]...)
 	}
 
 	m.SetCursorColumn(oldCol)
@@ -1073,40 +1086,15 @@ func (m *Model) characterLeft(insideLine bool) {
 }
 
 // wordLeft moves the cursor one word to the left.
-// CJK words are segmented by the embedded gse segmenter; Latin words are
-// delimited by [isWordBoundary] (whitespace or CJK characters).
+// Uses gse token boundaries when available; falls back to isWordBoundary
+// (whitespace or CJK characters) when the segmenter is unavailable.
 func (m *Model) wordLeft() {
-	// Skip spaces backwards
-	for m.col > 0 && unicode.IsSpace(m.value[m.row][m.col-1]) {
-		m.SetCursorColumn(m.col - 1)
-	}
-	// Now move back one "word"
-	if m.col <= 0 {
-		return
-	}
-	r := m.value[m.row][m.col-1]
-	if isCJK(r) {
-		// CJK: use segmenter to find word start
-		if b, ok := m.cjkWordAt(m.col - 1); ok {
-			m.SetCursorColumn(b.start)
-		} else {
-			m.SetCursorColumn(m.col - 1)
-		}
-	} else {
-		// Latin/other: move to start of word (stop at spaces and CJK)
-		for m.col > 0 {
-			prev := m.value[m.row][m.col-1]
-			if isWordBoundary(prev) {
-				break
-			}
-			m.SetCursorColumn(m.col - 1)
-		}
-	}
+	m.SetCursorColumn(m.tokenLeft(m.col))
 }
 
 // wordRight moves the cursor one word to the right.
-// CJK words are segmented by the embedded gse segmenter; Latin words are
-// delimited by [isWordBoundary] (whitespace or CJK characters).
+// Uses gse token boundaries when available; falls back to isWordBoundary
+// (whitespace or CJK characters) when the segmenter is unavailable.
 func (m *Model) wordRight() {
 	m.doWordRight(func(int, int) { /* nothing */ })
 }
@@ -1116,41 +1104,50 @@ func (m *Model) wordRight() {
 // word and the absolute column position. This enables word-transform operations
 // (uppercase, lowercase, capitalize) to modify characters as the cursor moves.
 //
-// CJK words are segmented by the embedded gse segmenter; Latin words are
-// delimited by [isWordBoundary] (whitespace or CJK characters).
+// Uses gse token boundaries when available for accurate CJK + punctuation
+// navigation. Falls back to isWordBoundary when the segmenter is unavailable.
 func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
+	line := m.value[m.row]
+	col := m.col
+
 	// Skip spaces forward
-	for m.col < len(m.value[m.row]) && unicode.IsSpace(m.value[m.row][m.col]) {
-		m.SetCursorColumn(m.col + 1)
+	for col < len(line) && unicode.IsSpace(line[col]) {
+		fn(0, col)
+		m.SetCursorColumn(col + 1)
+		col++
 	}
-	// Now move forward one "word"
-	if m.col >= len(m.value[m.row]) {
+	if col >= len(line) {
 		return
 	}
-	r := m.value[m.row][m.col]
-	if isCJK(r) {
-		// CJK: use segmenter to find word end
-		if b, ok := m.cjkWordAt(m.col); ok {
-			for i := m.col; i < b.end; i++ {
-				fn(i-m.col, m.col)
-				m.SetCursorColumn(m.col + 1)
+
+	// Try gse token-based navigation
+	bounds := m.cjkWordBounds()
+	if bounds != nil {
+		for _, b := range bounds {
+			if b.start <= col && col < b.end {
+				// Walk through the token character by character, calling fn
+				for i := b.start; i < b.end; i++ {
+					fn(i-b.start, i)
+				}
+				m.SetCursorColumn(b.end)
+				return
 			}
-		} else {
-			fn(0, m.col)
-			m.SetCursorColumn(m.col + 1)
 		}
-	} else {
-		// Latin/other: move to end of word (stop at spaces and CJK)
-		charIdx := 0
-		for m.col < len(m.value[m.row]) {
-			r := m.value[m.row][m.col]
-			if isWordBoundary(r) {
-				break
-			}
-			fn(charIdx, m.col)
-			m.SetCursorColumn(m.col + 1)
-			charIdx++
+		// col is at a gap (shouldn't happen with CutSearch), just advance
+		m.SetCursorColumn(col + 1)
+		return
+	}
+
+	// Fallback: no segmenter, use character-by-character with isWordBoundary
+	charIdx := 0
+	for m.col < len(line) {
+		r := line[m.col]
+		if isWordBoundary(r) {
+			break
 		}
+		fn(charIdx, m.col)
+		m.SetCursorColumn(m.col + 1)
+		charIdx++
 	}
 }
 
