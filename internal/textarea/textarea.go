@@ -660,8 +660,10 @@ func (m *Model) setCursorLineRelative(delta int) {
 	charOffset := max(m.lastCharOffset, li.CharOffset)
 	m.lastCharOffset = charOffset
 
-	// 2 columns to account for the trailing space wrapping.
-	const trailingSpace = 2
+	// Without trailing spaces in the grid, StartColumn+Width gives the first
+	// character of the next visual line, and StartColumn-1 steps back across
+	// a wrap boundary.
+	const trailingStep = 1
 
 	if delta > 0 { //nolint:nestif
 		// Moving down.
@@ -671,7 +673,7 @@ func (m *Model) setCursorLineRelative(delta int) {
 				m.col = 0
 			} else {
 				// Move the cursor to the start of the next virtual line.
-				m.col = min(li.StartColumn+li.Width+trailingSpace, len(m.value[m.row])-1)
+				m.col = min(li.StartColumn+li.Width, len(m.value[m.row])-1)
 			}
 			li = m.LineInfo()
 		}
@@ -683,7 +685,7 @@ func (m *Model) setCursorLineRelative(delta int) {
 				m.col = len(m.value[m.row])
 			} else {
 				// Move the cursor to the end of the previous line.
-				m.col = li.StartColumn - trailingSpace
+				m.col = li.StartColumn - trailingStep
 			}
 			li = m.LineInfo()
 		}
@@ -1434,25 +1436,8 @@ func (m *Model) view() string {
 
 			strwidth := uniseg.StringWidth(string(wrappedLine))
 			padding := m.width - strwidth
-			// If the trailing space causes the line to be wider than the
-			// width, we should not draw it to the screen since it will result
-			// in an extra space at the end of the line which can look off when
-			// the cursor line is showing.
-			if strwidth > m.width {
-				// The character causing the line to be wider than the width is
-				// guaranteed to be a space since any other character would
-				// have been wrapped.
-				wrappedLine = []rune(strings.TrimSuffix(string(wrappedLine), " "))
-				padding -= m.width - strwidth
-			}
 			if m.row == l && lineInfo.RowOffset == wl {
 				co := lineInfo.ColumnOffset
-				// After trimming the trailing space (lines 1441-1447), co may
-				// point past the end of wrappedLine.  Clamp it so we never
-				// index out of bounds.
-				if co > len(wrappedLine) {
-					co = len(wrappedLine)
-				}
 				s.WriteString(style.Render(string(wrappedLine[:co])))
 				if co >= len(wrappedLine) {
 					// Cursor is at or beyond the last visible character.
@@ -1859,17 +1844,17 @@ func Paste() tea.Msg {
 //   - Latin/other characters: break at word boundaries (whitespace)
 //   - Mixed text: transitions between CJK and Latin are handled correctly
 //
-// Each visual line is terminated with one trailing space for cursor navigation
-// consistency. The trailing space is consumed by LineInfo's counter-based
-// character positioning logic (see [Model.LineInfo]).
+// Each visual line contains only the characters that fit within the width.
+// No trailing spaces are appended. LineInfo uses the grid to map character
+// positions to visual row/column coordinates.
 //
-// Returns at least one visual line. Each visual line includes one trailing space.
+// Returns at least one visual line.
 func wrap(runes []rune, width int) [][]rune {
 	if len(runes) == 0 {
-		return [][]rune{{' '}}
+		return [][]rune{{}}
 	}
 	if width <= 0 {
-		return [][]rune{append(slices.Clone(runes), ' ')}
+		return [][]rune{slices.Clone(runes)}
 	}
 
 	var (
@@ -1944,13 +1929,6 @@ func wrap(runes []rune, width int) [][]rune {
 	// Flush any remaining content
 	if len(currentLine) > 0 || len(lines) == 0 {
 		lines = append(lines, currentLine)
-	}
-
-	// Add one trailing space to each visual line for cursor navigation consistency.
-	// LineInfo counts characters (including this space) to map char positions
-	// to visual row/column coordinates.
-	for i := range lines {
-		lines[i] = append(lines[i], ' ')
 	}
 
 	return lines

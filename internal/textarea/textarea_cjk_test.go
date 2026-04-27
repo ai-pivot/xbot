@@ -67,14 +67,6 @@ func TestWrapCJK(t *testing.T) {
 					t.Errorf("  line %d: %q", i, string(line))
 				}
 			}
-			// Every line should end with a trailing space
-			for i, line := range result {
-				if len(line) == 0 {
-					t.Errorf("line %d is empty", i)
-				} else if line[len(line)-1] != ' ' {
-					t.Errorf("line %d doesn't end with trailing space: %q", i, string(line))
-				}
-			}
 		})
 	}
 }
@@ -432,15 +424,11 @@ func TestWordCJK(t *testing.T) {
 	}
 }
 
-// TestCursorAtWrapBoundary verifies that the cursor can be positioned after
-// the last character on a wrapped visual line without panicking (bounds-check
-// after the trailing-space trim in view()).
+// TestCursorAtWrapBoundary verifies that the cursor can be positioned at
+// the boundary between wrapped visual lines without panicking.
 //
-// Regression: wrap() appends a trailing space to each visual line.  LineInfo()
-// computes ColumnOffset against that space.  view() trims the space when it
-// would exceed the width, so ColumnOffset can be == len(wrappedLine) (one past
-// the end).  The old code indexed wrappedLine[ColumnOffset] unconditionally,
-// causing an out-of-bounds panic with CJK text.
+// cursor positions exactly at wrap boundaries are mapped to the end of
+// the previous visual line, rendered as a space-cursor placeholder.
 func TestCursorAtWrapBoundary(t *testing.T) {
 	tests := []struct {
 		name      string
