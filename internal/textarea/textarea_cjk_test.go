@@ -431,3 +431,67 @@ func TestWordCJK(t *testing.T) {
 		})
 	}
 }
+
+// TestCursorAtWrapBoundary verifies that the cursor can be positioned after
+// the last character on a wrapped visual line without panicking (bounds-check
+// after the trailing-space trim in view()).
+//
+// Regression: wrap() appends a trailing space to each visual line.  LineInfo()
+// computes ColumnOffset against that space.  view() trims the space when it
+// would exceed the width, so ColumnOffset can be == len(wrappedLine) (one past
+// the end).  The old code indexed wrappedLine[ColumnOffset] unconditionally,
+// causing an out-of-bounds panic with CJK text.
+func TestCursorAtWrapBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		width     int
+		cursorCol int
+	}{
+		{
+			name:      "CJK wrap boundary — cursor at end of first visual line",
+			input:     "你好你好", // 4 CJK chars, width 6 → 3 per line
+			width:     6,
+			cursorCol: 3, // after "你好你", at wrap point
+		},
+		{
+			name:      "CJK wrap boundary — cursor at end of input",
+			input:     "你好你好",
+			width:     6,
+			cursorCol: 4, // after all chars
+		},
+		{
+			name:      "CJK wrap boundary — cursor at end of long line",
+			input:     "你好世界测试文字",
+			width:     6,
+			cursorCol: 3, // first wrap point
+		},
+		{
+			name:      "CJK wrap boundary — cursor at mid wrap point",
+			input:     "你好世界测试文字",
+			width:     6,
+			cursorCol: 6, // second wrap point
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New()
+			m.SetWidth(tt.width)
+			m.SetValue(tt.input)
+			m.SetCursorColumn(tt.cursorCol)
+
+			// View() must not panic (the old code had an index-out-of-range).
+			view := m.View()
+			if view == "" {
+				t.Error("View() returned empty string")
+			}
+
+			// Also verify LineInfo is consistent.
+			li := m.LineInfo()
+			if li.ColumnOffset < 0 {
+				t.Errorf("LineInfo().ColumnOffset = %d, want >= 0", li.ColumnOffset)
+			}
+		})
+	}
+}

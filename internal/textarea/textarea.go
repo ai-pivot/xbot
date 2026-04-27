@@ -1446,14 +1446,24 @@ func (m *Model) view() string {
 				padding -= m.width - strwidth
 			}
 			if m.row == l && lineInfo.RowOffset == wl {
-				s.WriteString(style.Render(string(wrappedLine[:lineInfo.ColumnOffset])))
-				if m.col >= len(line) && lineInfo.CharOffset >= m.width {
+				co := lineInfo.ColumnOffset
+				// After trimming the trailing space (lines 1441-1447), co may
+				// point past the end of wrappedLine.  Clamp it so we never
+				// index out of bounds.
+				if co > len(wrappedLine) {
+					co = len(wrappedLine)
+				}
+				s.WriteString(style.Render(string(wrappedLine[:co])))
+				if co >= len(wrappedLine) {
+					// Cursor is at or beyond the last visible character.
+					// Render an empty-cursor placeholder so the cursor sits
+					// *after* the last glyph instead of highlighting it.
 					m.virtualCursor.SetChar(" ")
 					s.WriteString(m.virtualCursor.View())
 				} else {
-					m.virtualCursor.SetChar(string(wrappedLine[lineInfo.ColumnOffset]))
+					m.virtualCursor.SetChar(string(wrappedLine[co]))
 					s.WriteString(style.Render(m.virtualCursor.View()))
-					s.WriteString(style.Render(string(wrappedLine[lineInfo.ColumnOffset+1:])))
+					s.WriteString(style.Render(string(wrappedLine[co+1:])))
 				}
 			} else {
 				s.WriteString(style.Render(string(wrappedLine)))
