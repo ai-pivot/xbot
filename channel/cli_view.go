@@ -233,34 +233,34 @@ func (m *cliModel) layoutMain(titleBar, input, toast, completionsHint string) st
 	if m.newContentHint {
 		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
 	}
-	if m.bgTaskCount > 0 {
-		hints = append(hints, m.styles.WarningSt.Render(fmt.Sprintf(m.locale.BgTaskRunning, m.bgTaskCount)))
-	}
-	if m.agentCount > 0 {
-		hints = append(hints, m.styles.WarningSt.Render(fmt.Sprintf(m.locale.AgentRunning, m.agentCount)))
-	}
-	if len(m.messageQueue) > 0 {
-		hints = append(hints, m.styles.InfoSt.Render(fmt.Sprintf(m.locale.QueuePending, len(m.messageQueue))))
-	}
+	// Background tasks, agents, and queue now live in the info bar below input.
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))
 	}
 
-	// Layout assembly
-	todoBar := m.renderTodoBar()
-	footer := m.renderFooter()
-
-	switch {
-	case todoBar != "":
-		return fmt.Sprintf("%s\n%s\n%s\n%s\n%s%s",
-			titleBar, m.viewport.View(), status, todoBar, input, toast)
-	case footer != "":
-		return fmt.Sprintf("%s\n%s\n%s\n%s\n%s%s",
-			titleBar, m.viewport.View(), status, footer, input, toast)
-	default:
-		return fmt.Sprintf("%s\n%s\n%s\n%s%s",
-			titleBar, m.viewport.View(), status, input, toast)
+	// Layout assembly — build progressively so empty sections don't add blank lines.
+	var lines []string
+	lines = append(lines, titleBar, m.viewport.View())
+	if status != "" {
+		lines = append(lines, status)
 	}
+	todoBar := m.renderTodoBar()
+	if todoBar != "" {
+		lines = append(lines, todoBar)
+	}
+	footer := m.renderFooter()
+	if footer != "" {
+		lines = append(lines, footer)
+	}
+	infoBar := m.renderInfoBar()
+	if infoBar != "" {
+		lines = append(lines, infoBar)
+	}
+	lines = append(lines, input)
+	if toast != "" {
+		lines = append(lines, toast)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // View renders the CLI interface.
@@ -341,6 +341,53 @@ func (m *cliModel) allTodosDone() bool {
 		}
 	}
 	return true
+}
+
+// renderInfoBar renders a sleek bottom status line below the input box
+// showing background tasks, active subagents, and pending queue —
+// inspired by lazygit's and Warp's status panels.
+// Only renders when there are active items (no "empty" state noise).
+func (m *cliModel) renderInfoBar() string {
+	hasTasks := m.bgTaskCount > 0
+	hasAgents := m.agentCount > 0
+	hasQueue := len(m.messageQueue) > 0
+
+	if !hasTasks && !hasAgents && !hasQueue {
+		return ""
+	}
+
+	var parts []string
+
+	if hasTasks {
+		icon := m.styles.WarningSt.Render("⚡")
+		count := m.styles.WarningSt.Render(fmt.Sprintf("%d", m.bgTaskCount))
+		label := m.styles.Accent.Bold(true).Render(m.locale.InfoBarTasks)
+		parts = append(parts, fmt.Sprintf("%s%s %s", icon, count, label))
+	}
+	if hasAgents {
+		icon := m.styles.WarningSt.Render("🧠")
+		count := m.styles.WarningSt.Render(fmt.Sprintf("%d", m.agentCount))
+		label := m.styles.Accent.Bold(true).Render(m.locale.InfoBarAgents)
+		parts = append(parts, fmt.Sprintf("%s%s %s", icon, count, label))
+	}
+	if hasQueue {
+		icon := m.styles.InfoSt.Render("📬")
+		count := m.styles.InfoSt.Render(fmt.Sprintf("%d", len(m.messageQueue)))
+		parts = append(parts, fmt.Sprintf("%s%s", icon, count))
+	}
+
+	// Join sections with muted separators
+	separator := m.styles.TextMutedSt.Render(" · ")
+	content := strings.Join(parts, separator)
+
+	// Match InputBox visual: width-4, left padding of 2
+	barWidth := max(0, m.width-4)
+	bar := lipgloss.NewStyle().
+		Width(barWidth).
+		PaddingLeft(2).
+		Render(content)
+
+	return bar
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.
@@ -791,12 +838,6 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 		elapsed := time.Since(m.typingStartTime).Milliseconds()
 		sb.WriteString(" · ")
 		sb.WriteString(formatElapsed(elapsed))
-	}
-
-	// Queue indicator (persistent during typing, not just temp status)
-	if len(m.messageQueue) > 0 {
-		sb.WriteString(" · ")
-		fmt.Fprintf(&sb, m.locale.QueuePending, len(m.messageQueue))
 	}
 
 	return sb.String()

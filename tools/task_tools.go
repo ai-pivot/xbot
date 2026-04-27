@@ -176,7 +176,7 @@ func formatTask(task *BackgroundTask) string {
 
 // FormatBgTaskCompletion formats a completed background task notification for injection.
 // This is used by the engine to inject the task result into the conversation as a tool message.
-func FormatBgTaskCompletion(task *BackgroundTask) string {
+func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string {
 	if task.FinishedAt == nil {
 		return ""
 	}
@@ -201,7 +201,11 @@ func FormatBgTaskCompletion(task *BackgroundTask) string {
 		fmt.Fprintf(&sb, "Error: %s\n", task.Error)
 	}
 
-	if task.Output != "" {
+	// When outputOverride is provided (e.g. offload placeholder), use it directly.
+	// Otherwise, show the raw output (truncated if too large).
+	if outputOverride != "" {
+		fmt.Fprintf(&sb, "\n%s", outputOverride)
+	} else if task.Output != "" {
 		output := task.Output
 		// Truncate large output to avoid bloating context
 		const maxOutputLen = 2000

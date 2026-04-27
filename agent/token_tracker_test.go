@@ -103,20 +103,29 @@ func TestTokenTracker_ResetAfterCompress(t *testing.T) {
 	tt := NewTokenTracker(0, 0)
 	tt.RecordLLMCall(5000, 800, 10)
 
+	// After compression, all tracking fields should be zeroed.
+	// The tracker returns "no_data" until the next LLM API call.
 	tt.ResetAfterCompress(2000, 4)
 
-	if tt.PromptTokens() != 2000 {
-		t.Errorf("expected promptTokens=2000, got %d", tt.PromptTokens())
+	if tt.PromptTokens() != 0 {
+		t.Errorf("expected promptTokens=0 after compress reset, got %d", tt.PromptTokens())
 	}
 	if tt.CompletionTokens() != 0 {
 		t.Errorf("expected completionTokens=0 after compress reset, got %d", tt.CompletionTokens())
 	}
-	if tt.MsgCountAtCall() != 4 {
-		t.Errorf("expected msgCountAtCall=4, got %d", tt.MsgCountAtCall())
+	if tt.MsgCountAtCall() != 0 {
+		t.Errorf("expected msgCountAtCall=0 after compress reset, got %d", tt.MsgCountAtCall())
 	}
-	// hadLLMCall should remain true
-	if !tt.HadLLMCall() {
-		t.Error("expected hadLLMCall to remain true after compress")
+	if tt.HadLLMCall() {
+		t.Error("expected hadLLMCall=false after compress reset")
+	}
+	// Verify EstimateTotal returns no_data
+	total, source := tt.EstimateTotal(makeMessages(5), testModel)
+	if total != 0 {
+		t.Errorf("expected total=0 after compress reset, got %d", total)
+	}
+	if source != "no_data" {
+		t.Errorf("expected source='no_data' after compress reset, got %q", source)
 	}
 }
 

@@ -441,6 +441,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.sendToAgent(cmd) // 直接透传，agent 层会解析
 
 	case "/new":
+		m.lastTokenUsage = nil // clear context bar immediately
 		m.sendToAgent("/new")
 
 	case "/tasks":

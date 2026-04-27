@@ -1117,7 +1117,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 
 // injectBgTaskNotification injects a bg task completion as a synthetic tool call/result pair.
 func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, bgTask *tools.BackgroundTask) {
-	bgContent := tools.FormatBgTaskCompletion(bgTask)
+	bgContent := tools.FormatBgTaskCompletion(bgTask, "")
 	bgAssistantMsg := llm.ChatMessage{
 		Role:    "assistant",
 		Content: "A background task has completed. Let me check the result.",

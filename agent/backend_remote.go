@@ -590,12 +590,14 @@ func convertWsProgressToCLI(wp *channel.WsProgressPayload) *channel.CLIProgressP
 		payload.ActiveTools = append(payload.ActiveTools, channel.CLIToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Summary: t.Summary,
+			Iteration: t.Iteration,
 		})
 	}
 	for _, t := range wp.CompletedTools {
 		payload.CompletedTools = append(payload.CompletedTools, channel.CLIToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Summary: t.Summary,
+			Iteration: t.Iteration,
 		})
 	}
 	for _, sa := range wp.SubAgents {

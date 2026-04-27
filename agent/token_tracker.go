@@ -35,10 +35,14 @@ func (t *TokenTracker) RecordLLMCall(prompt, completion int64, msgCount int) {
 }
 
 // ResetAfterCompress resets token state after context compression.
+// All fields are zeroed — the tracker returns "no_data" until the next LLM API call
+// provides real token counts. This prevents infinite compression loops caused by
+// inaccurate local estimates (CountMessagesTokens) being treated as authoritative.
 func (t *TokenTracker) ResetAfterCompress(newPromptTokens int64, msgCount int) {
-	t.promptTokens = newPromptTokens
+	t.promptTokens = 0
 	t.completionTokens = 0
-	t.msgCountAtCall = msgCount
+	t.msgCountAtCall = 0
+	t.hadLLMCall = false
 }
 
 // MarkRestoredFromDB marks that token counts were restored from DB/session.

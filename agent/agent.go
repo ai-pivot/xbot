@@ -1210,8 +1210,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		case msg := <-a.bus.Inbound:
 
 			// /cancel 拦截：不进入 chatWorker 队列，直接发 cancel 信号
+			// cancel key 仅用 channel:chatID（不含 senderID），因为同一个 chat
+			// 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
+			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
-				cancelKey := msg.Channel + ":" + msg.ChatID + ":" + msg.SenderID
+				cancelKey := msg.Channel + ":" + msg.ChatID
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
@@ -1466,7 +1469,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		var response *bus.OutboundMessage
 		var err error
 		cancelCh := make(chan struct{}, 1)
-		cancelKey := msg.Channel + ":" + msg.ChatID + ":" + msg.SenderID
+		// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
+		cancelKey := msg.Channel + ":" + msg.ChatID
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
 		reqCtx, reqCancel := context.WithCancel(ctx)
@@ -2161,7 +2165,24 @@ func (a *Agent) processBgNotification(task *tools.BackgroundTask) {
 	}
 	channelName, chatID := parts[0], parts[1]
 
-	content := tools.FormatBgTaskCompletion(task)
+	// Offload large task output so the agent can retrieve it via offload_recall.
+	// Without this, FormatBgTaskCompletion truncates the output to 2000 chars
+	// and says "use offload_recall" without providing an actual offload ID.
+	outputOverride := ""
+	if a.offloadStore != nil && task.Output != "" {
+		offloadCtx := context.Background()
+		if offloaded, ok := a.offloadStore.MaybeOffload(offloadCtx, sessionKey,
+			"background_task_result", task.Command, task.Output,
+			"" /*workspaceRoot*/, "" /*sandboxWorkDir*/, "" /*userID*/); ok {
+			outputOverride = offloaded.Summary
+			log.WithFields(log.Fields{
+				"task_id":    task.ID,
+				"offload_id": offloaded.ID,
+			}).Info("Bg task output offloaded")
+		}
+	}
+
+	content := tools.FormatBgTaskCompletion(task, outputOverride)
 	log.WithFields(log.Fields{
 		"task_id": task.ID,
 		"channel": channelName,

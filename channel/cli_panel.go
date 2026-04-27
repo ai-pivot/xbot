@@ -227,8 +227,11 @@ func (m *cliModel) closePanel() {
 // ---------------------------------------------------------------------------
 
 // openRewindPanel collects user messages from history and opens the rewind overlay.
+// Messages before the most recent [Compacted context] marker are excluded —
+// they were replaced by compression and no longer exist in the session DB.
 func (m *cliModel) openRewindPanel() {
 	var items []rewindItem
+	compressIdx := -1 // index in items where [Compacted context] appears
 	for i, msg := range m.messages {
 		if msg.role != "user" {
 			continue
@@ -248,6 +251,14 @@ func (m *cliModel) openRewindPanel() {
 			Content:  content,
 			Time:     msg.timestamp,
 		})
+		if strings.HasPrefix(content, "[Compacted context]") {
+			compressIdx = len(items) - 1
+		}
+	}
+	// If compression happened, only allow rewinding to the compressed context
+	// or later — messages before it were deleted from the session DB.
+	if compressIdx > 0 {
+		items = items[compressIdx:]
 	}
 	if len(items) == 0 {
 		m.showTempStatus(m.locale.NoMessagesToDelete)
