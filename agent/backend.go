@@ -58,6 +58,11 @@ type AgentBackend interface {
 	// CLIProgressPayload and calls the callback.
 	OnProgress(callback func(*channel.CLIProgressPayload))
 
+	// OnInjectUserMessage registers a callback for injected user messages from the server.
+	// LocalBackend: no-op (injected messages flow through CLIChannel directly).
+	// RemoteBackend: converts WS inject_user messages and calls the callback.
+	OnInjectUserMessage(callback func(content string))
+
 	// --- Runtime management (used by CLI settings panel, dispatchers, etc.) ---
 
 	// LLMFactory returns the LLM factory for model management.

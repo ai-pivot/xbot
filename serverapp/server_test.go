@@ -124,6 +124,7 @@ func (b fakeBackend) IsRemote() bool                                            
 func (b fakeBackend) IsProcessing(_, _ string) bool                                      { return false }
 func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload          { return nil }
 func (b fakeBackend) OnProgress(_ func(*channel.CLIProgressPayload))                     {}
+func (b fakeBackend) OnInjectUserMessage(_ func(string))                                 {}
 func (b fakeBackend) LLMFactory() *agent.LLMFactory                                      { return b.factory }
 func (b fakeBackend) SettingsService() *agent.SettingsService                            { return b.settingsSvc }
 func (b fakeBackend) MultiSession() *session.MultiTenantSession                          { return nil }

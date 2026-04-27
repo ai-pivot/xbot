@@ -1126,7 +1126,7 @@ func (a *Agent) resetSessionState(key string) {
 
 // injectCLIUserMessage sends a user message to the CLI channel if available.
 // Used by background notification handlers to display messages in the CLI UI.
-func (a *Agent) injectCLIUserMessage(channelName, content string) {
+func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if a.channelFinder == nil {
 		return
 	}
@@ -1134,8 +1134,11 @@ func (a *Agent) injectCLIUserMessage(channelName, content string) {
 	if !ok {
 		return
 	}
-	if cliCh, ok := ch.(*channel.CLIChannel); ok {
-		cliCh.InjectUserMessage(content)
+	switch c := ch.(type) {
+	case *channel.CLIChannel:
+		c.InjectUserMessage(content)
+	case *channel.RemoteCLIChannel:
+		c.InjectUserMessage(chatID, content)
 	}
 }
 
@@ -2164,7 +2167,7 @@ func (a *Agent) processBgNotification(task *tools.BackgroundTask) {
 		"chat_id": chatID,
 	}).Info("Bg task notification: injecting as user message")
 
-	a.injectCLIUserMessage(channelName, content)
+	a.injectCLIUserMessage(channelName, chatID, content)
 	a.injectInbound(channelName, chatID, "user", content)
 }
 
@@ -2197,13 +2200,7 @@ func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
 		"channel":  channelName,
 	}).Info("Bg subagent notification: injecting as user message")
 
-	if a.channelFinder != nil {
-		if ch, ok := a.channelFinder(channelName); ok {
-			if cliCh, ok := ch.(*channel.CLIChannel); ok {
-				cliCh.InjectUserMessage(content)
-			}
-		}
-	}
+	a.injectCLIUserMessage(channelName, chatID, content)
 
 	a.injectInbound(channelName, chatID, "user", content)
 }
