@@ -136,96 +136,6 @@ func TestTokenTracker_MarkRestoredFromDB(t *testing.T) {
 }
 
 // ----------------------------------------------------------------
-// DetectTruncation
-// ----------------------------------------------------------------
-
-func TestTokenTracker_DetectTruncation_NoTruncation(t *testing.T) {
-	tt := NewTokenTracker(0, 0)
-	tt.RecordLLMCall(1000, 200, 5)
-
-	msgs := makeMessages(5)
-	re, prev := tt.DetectTruncation(msgs, testModel)
-	if re {
-		t.Error("expected no truncation detected when msg count equals boundary")
-	}
-	if prev != 0 {
-		t.Errorf("expected prevPromptTokens=0, got %d", prev)
-	}
-}
-
-func TestTokenTracker_DetectTruncation_MoreMessages(t *testing.T) {
-	tt := NewTokenTracker(0, 0)
-	tt.RecordLLMCall(1000, 200, 5)
-
-	msgs := makeMessages(8) // more messages than boundary → not truncated
-	re, prev := tt.DetectTruncation(msgs, testModel)
-	if re {
-		t.Error("expected no truncation when messages grew past boundary")
-	}
-	if prev != 0 {
-		t.Errorf("expected prevPromptTokens=0, got %d", prev)
-	}
-}
-
-func TestTokenTracker_DetectTruncation_Truncated(t *testing.T) {
-	tt := NewTokenTracker(0, 0)
-	tt.RecordLLMCall(1000, 200, 10)
-
-	// Messages were truncated from 10 to 3
-	msgs := makeMessages(3)
-	re, prev := tt.DetectTruncation(msgs, testModel)
-
-	if !re {
-		t.Fatal("expected truncation to be detected")
-	}
-	if prev != 1000 {
-		t.Errorf("expected prevPromptTokens=1000, got %d", prev)
-	}
-	// After truncation, promptTokens should be re-estimated (non-zero for valid content)
-	if tt.PromptTokens() <= 0 {
-		t.Error("expected promptTokens to be re-estimated after truncation")
-	}
-	if tt.PromptTokens() >= 1000 {
-		t.Errorf("expected promptTokens to be smaller than original after truncation, got %d", tt.PromptTokens())
-	}
-	if tt.CompletionTokens() != 0 {
-		t.Errorf("expected completionTokens=0 after truncation, got %d", tt.CompletionTokens())
-	}
-	if tt.MsgCountAtCall() != 3 {
-		t.Errorf("expected msgCountAtCall=3 after truncation, got %d", tt.MsgCountAtCall())
-	}
-}
-
-func TestTokenTracker_DetectTruncation_ZeroBoundary(t *testing.T) {
-	tt := NewTokenTracker(0, 0)
-	// No LLM call recorded → msgCountAtCall=0, should return false
-	msgs := makeMessages(2)
-	re, prev := tt.DetectTruncation(msgs, testModel)
-	if re {
-		t.Error("expected no truncation when boundary is 0")
-	}
-	if prev != 0 {
-		t.Errorf("expected prevPromptTokens=0, got %d", prev)
-	}
-}
-
-func TestTokenTracker_DetectTruncation_EmptyMessages(t *testing.T) {
-	tt := NewTokenTracker(0, 0)
-	tt.RecordLLMCall(1000, 200, 5)
-
-	// Truncated to empty — should still work but with 0 estimated tokens
-	// since there are no messages to count.
-	re, prev := tt.DetectTruncation([]llm.ChatMessage{}, testModel)
-	// empty messages → CountMessagesTokens returns 0 → estimated <= 0 → returns false
-	if re {
-		t.Error("expected no re-estimation when remaining messages are empty (estimated=0)")
-	}
-	if prev != 0 {
-		t.Errorf("expected prevPromptTokens=0 for empty estimation, got %d", prev)
-	}
-}
-
-// ----------------------------------------------------------------
 // EstimateTotal
 // ----------------------------------------------------------------
 
@@ -295,28 +205,18 @@ func TestTokenTracker_EstimateTotal_Restored(t *testing.T) {
 	}
 }
 
-func TestTokenTracker_EstimateTotal_LocalEstimateFallback(t *testing.T) {
+func TestTokenTracker_EstimateTotal_NoEstimation(t *testing.T) {
 	tt := NewTokenTracker(0, 0)
-	// No tokens, no LLM call
+	// No tokens, no LLM call — should return 0, never estimate
 
 	msgs := makeMessages(3)
 	total, source := tt.EstimateTotal(msgs, testModel)
 
-	if total <= 0 {
-		t.Errorf("expected total > 0 from local estimation, got %d", total)
+	if total != 0 {
+		t.Errorf("expected total=0 (no estimation), got %d", total)
 	}
-	if source != "local_estimate_fallback" {
-		t.Errorf("expected source='local_estimate_fallback', got %q", source)
-	}
-
-	// Verify 1.5x multiplier: manually count tokens
-	rawCount, err := llm.CountMessagesTokens(msgs, testModel)
-	if err != nil {
-		t.Fatalf("CountMessagesTokens error: %v", err)
-	}
-	expectedTotal := int64(float64(rawCount) * 1.5)
-	if total != expectedTotal {
-		t.Errorf("expected total=%d (1.5x of %d), got %d", expectedTotal, rawCount, total)
+	if source != "no_data" {
+		t.Errorf("expected source='no_data', got %q", source)
 	}
 }
 

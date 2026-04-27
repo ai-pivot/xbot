@@ -364,6 +364,52 @@ func (s *SessionService) UpdateMessageContentNonDisplayOnly(tenantID int64, mess
 	return nil
 }
 
+// UpdateUserMessageContextTokens sets the context_tokens field on the most recent
+// user-role message for a tenant. This records the exact API prompt_tokens at the
+// time that user message was sent, enabling precise token accounting for rewind.
+func (s *SessionService) UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error {
+	conn := s.db.Conn()
+	result, err := conn.Exec(`
+UPDATE session_messages SET context_tokens = ?
+WHERE id = (
+SELECT id FROM session_messages
+WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
+ORDER BY id DESC LIMIT 1
+)
+`, promptTokens, tenantID)
+	if err != nil {
+		return fmt.Errorf("update user message context_tokens: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// GetLastUserMessageContextTokens returns the context_tokens of the most recent
+// non-display-only user message for a tenant. Used by rewind to restore accurate
+// token state. Returns (0, nil) if no user message or context_tokens is 0.
+func (s *SessionService) GetLastUserMessageContextTokens(tenantID int64) (int64, error) {
+	conn := s.db.Conn()
+	var tokens sql.NullInt64
+	err := conn.QueryRow(`
+SELECT context_tokens FROM session_messages
+WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
+ORDER BY id DESC LIMIT 1
+`, tenantID).Scan(&tokens)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("get last user message context_tokens: %w", err)
+	}
+	if tokens.Valid {
+		return tokens.Int64, nil
+	}
+	return 0, nil
+}
+
 // scanMessages scans message rows from a query result
 func (s *SessionService) scanMessages(rows *sql.Rows) ([]llm.ChatMessage, error) {
 	var messages []llm.ChatMessage
