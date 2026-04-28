@@ -1,3 +1,9 @@
+// Package llm provides LLM client implementations.
+//
+// Importing this package registers a custom SSE decoder for
+// "text/event-stream" content types. This is done via init() and
+// affects the global ssestream decoder registry. Callers should be
+// aware that importing llm modifies global SSE decoding behavior.
 package llm
 
 import (
@@ -8,6 +14,8 @@ import (
 	"github.com/openai/openai-go/v3/packages/ssestream"
 )
 
+// init registers a filtered SSE decoder that skips comment lines (starting with ":")
+// and empty data events. This reduces noise in SSE stream processing.
 func init() {
 	for _, contentType := range []string{
 		"text/event-stream",

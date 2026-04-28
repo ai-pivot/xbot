@@ -924,14 +924,18 @@ func (m *Model) tokenLeft(col int) int {
 		}
 		return prev
 	}
-	// Fallback: no segmenter, use character-by-character with isWordBoundary
+	// Fallback: no segmenter, use character-by-character with isWordBoundary.
+	// On the first step, always retreat at least one rune even if it is a word
+	// boundary, so CJK navigation works before the gse segmenter is loaded.
+	origCol := col
 	for col > 0 {
 		prev := line[col-1]
-		if isWordBoundary(prev) {
+		if isWordBoundary(prev) && col != origCol {
 			break
 		}
 		col--
 	}
+
 	return col
 }
 
@@ -1128,24 +1132,34 @@ func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 	if bounds != nil {
 		for _, b := range bounds {
 			if b.start <= col && col < b.end {
-				// Walk through the token character by character, calling fn
-				for i := b.start; i < b.end; i++ {
-					fn(i-b.start, i)
+				// Walk through the token from cursor position, calling fn.
+				// The guard startCol=max(col,b.start) is defensive: col is guaranteed
+				// to be >= b.start by the outer if-condition, but the guard protects
+				// against future refactoring that might change the invariant.
+				startCol := col
+				if startCol < b.start {
+					startCol = b.start
+				}
+				for i := startCol; i < b.end; i++ {
+					fn(i-startCol, i)
 				}
 				m.SetCursorColumn(b.end)
 				return
 			}
 		}
-		// col is at a gap (shouldn't happen with CutSearch), just advance
+		// col is at a gap between tokens, just advance
 		m.SetCursorColumn(col + 1)
 		return
 	}
 
-	// Fallback: no segmenter, use character-by-character with isWordBoundary
+	// Fallback: no segmenter, use character-by-character with isWordBoundary.
+	// On the first character (charIdx==0), always advance at least one rune
+	// even if it is a word boundary (e.g. CJK char), so that CJK text
+	// navigation works before the gse segmenter is loaded.
 	charIdx := 0
 	for m.col < len(line) {
 		r := line[m.col]
-		if isWordBoundary(r) {
+		if isWordBoundary(r) && charIdx > 0 {
 			break
 		}
 		fn(charIdx, m.col)

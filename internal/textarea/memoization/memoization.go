@@ -4,7 +4,6 @@ package memoization
 
 import (
 	"container/list"
-	"crypto/sha256"
 	"fmt"
 	"sync"
 )
@@ -26,21 +25,19 @@ type entry[T any] struct {
 // uses an LRU (Least Recently Used) eviction policy. It is safe for
 // concurrent use.
 type MemoCache[H Hasher, T any] struct {
-	capacity      int
-	mutex         sync.Mutex
-	cache         map[string]*list.Element // The cache holding the results
-	evictionList  *list.List               // A list to keep track of the order for LRU
-	hashableItems map[string]T             // This map keeps track of the original hashable items (optional)
+	capacity     int
+	mutex        sync.Mutex
+	cache        map[string]*list.Element // The cache holding the results
+	evictionList *list.List               // A list to keep track of the order for LRU
 }
 
 // NewMemoCache is a function that creates a new MemoCache with a given
 // capacity. It returns a pointer to the created MemoCache.
 func NewMemoCache[H Hasher, T any](capacity int) *MemoCache[H, T] {
 	return &MemoCache[H, T]{
-		capacity:      capacity,
-		cache:         make(map[string]*list.Element),
-		evictionList:  list.New(),
-		hashableItems: make(map[string]T),
+		capacity:     capacity,
+		cache:        make(map[string]*list.Element),
+		evictionList: list.New(),
 	}
 }
 
@@ -94,7 +91,6 @@ func (m *MemoCache[H, T]) Set(h H, value T) {
 		if toEvict != nil {
 			evictedEntry := m.evictionList.Remove(toEvict).(*entry[T])
 			delete(m.cache, evictedEntry.key)
-			delete(m.hashableItems, evictedEntry.key) // if you're keeping track of original items
 		}
 	}
 
@@ -105,21 +101,22 @@ func (m *MemoCache[H, T]) Set(h H, value T) {
 	}
 	element := m.evictionList.PushFront(newEntry)
 	m.cache[hashedKey] = element
-	m.hashableItems[hashedKey] = value // if you're keeping track of original items
 }
 
 // HString is a type that implements the Hasher interface for strings.
+// Deprecated: kept for backward compatibility; prefer using fmt.Sprintf directly.
 type HString string
 
-// Hash is a method that returns the hash of the string.
+// Hash returns the hash of the string.
 func (h HString) Hash() string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(h)))
+	return string(h)
 }
 
 // HInt is a type that implements the Hasher interface for integers.
+// Deprecated: kept for backward compatibility; prefer using fmt.Sprintf directly.
 type HInt int
 
-// Hash is a method that returns the hash of the integer.
+// Hash returns the hash of the integer.
 func (h HInt) Hash() string {
-	return fmt.Sprintf("%x", sha256.Sum256(fmt.Appendf(nil, "%d", h)))
+	return fmt.Sprintf("%d", int(h))
 }

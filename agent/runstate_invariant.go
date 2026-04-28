@@ -17,12 +17,16 @@ func (s *runState) ValidateInvariants() error {
 		return fmt.Errorf("invariant violation: LastPersistedCount(%d) > len(messages)(%d)", pc, len(s.messages))
 	}
 
-	// Invariant 2: promptTokens > 0 iff hadLLMCall || restoredFromDB
-	hasTokens := s.tokenTracker.PromptTokens() > 0
-	hasSource := s.tokenTracker.HadLLMCall() || s.tokenTracker.RestoredFromDB()
-	if hasTokens != hasSource {
-		return fmt.Errorf("invariant violation: promptTokens=%d but hadLLMCall=%v restoredFromDB=%v",
-			s.tokenTracker.PromptTokens(), s.tokenTracker.HadLLMCall(), s.tokenTracker.RestoredFromDB())
+	// Invariant 2: promptTokens consistency.
+	// - promptTokens > 0 without any source (LLM call or DB restore) → violation
+	// - promptTokens == 0 with restoredFromDB → violation (DB restore should have data)
+	// - promptTokens == 0 with hadLLMCall is allowed (API may return 0 for cache hits)
+	if s.tokenTracker.PromptTokens() > 0 && !s.tokenTracker.HadLLMCall() && !s.tokenTracker.RestoredFromDB() {
+		return fmt.Errorf("invariant violation: promptTokens=%d but hadLLMCall=false restoredFromDB=false",
+			s.tokenTracker.PromptTokens())
+	}
+	if s.tokenTracker.PromptTokens() == 0 && s.tokenTracker.RestoredFromDB() {
+		return fmt.Errorf("invariant violation: promptTokens=0 but restoredFromDB=true (should have had data)")
 	}
 
 	return nil

@@ -62,7 +62,7 @@ func TestValidateInvariants(t *testing.T) {
 			errContains: "promptTokens=100 but hadLLMCall=false restoredFromDB=false",
 		},
 		{
-			name: "violation: hasLLMCall but promptTokens=0",
+			name: "valid: hasLLMCall but promptTokens=0 (API cache hit)",
 			state: &runState{
 				messages:    []llm.ChatMessage{{Role: "user", Content: "hi"}},
 				persistence: NewPersistenceBridge(nil, 0),
@@ -70,8 +70,7 @@ func TestValidateInvariants(t *testing.T) {
 					hadLLMCall: true,
 				},
 			},
-			wantErr:     true,
-			errContains: "promptTokens=0 but hadLLMCall=true restoredFromDB=false",
+			wantErr: false, // API may return 0 prompt tokens for fully cached responses
 		},
 		{
 			name: "valid after compress",

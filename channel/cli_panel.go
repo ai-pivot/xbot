@@ -833,6 +833,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.chatID = entry.ID
 					m.channelName = entry.Channel
 					m.messages = nil
+					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
 					m.restoreSession() // restore target session state (or reset to idle)
 					// Close panel first
@@ -863,6 +864,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.chatID = agentChatID
 					m.channelName = "agent"
 					m.messages = nil
+					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
 					m.restoreSession() // restore target session state (or reset to idle)
 					// Close panel first
