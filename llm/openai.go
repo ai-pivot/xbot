@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +26,7 @@ type OpenAILLM struct {
 	models            []string       // 可用模型列表
 	defaultModel      string         // 默认模型
 	maxTokens         int            // 最大生成 token 数（用户配置值，作为上限）
+	baseURL           string         // API base URL for error logging/diagnosis
 	onModelsLoaded    func([]string) // callback after models loaded from API
 	onModelsLoadError func(error)    // callback after models load fails
 	modelsLoaded      bool           // true after first ListModels() triggers async fetch
@@ -31,6 +34,11 @@ type OpenAILLM struct {
 	// maxTokensUpgrade tracks models that reject the legacy max_tokens param
 	// and need the newer max_completion_tokens. Learned at runtime via 400 errors.
 	maxTokensUpgrade sync.Map // model -> bool
+
+	// streamBodyMu/streamBodyTail capture the tail of streaming response body
+	// for diagnosis when JSON decode fails mid-stream.
+	streamBodyMu   sync.Mutex
+	streamBodyTail []byte
 }
 
 // OpenAIConfig OpenAI 配置
@@ -63,9 +71,24 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 		cfg.MaxTokens = defaultMaxTokens
 	}
 
+	o := &OpenAILLM{
+		baseURL:           cfg.BaseURL,
+		maxTokens:         cfg.MaxTokens,
+		onModelsLoaded:    cfg.OnModelsLoaded,
+		onModelsLoadError: cfg.OnModelsLoadError,
+	}
+
 	opts := []option.RequestOption{
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
+		// Inject custom HTTP transport to capture streaming response body
+		// for diagnosis when JSON decode fails mid-stream.
+		option.WithHTTPClient(&http.Client{
+			Transport: &streamCaptureTransport{
+				base: http.DefaultTransport,
+				o:    o,
+			},
+		}),
 	}
 
 	// Strip Go SDK fingerprint headers — TypeScript clients (opencode, cursor)
@@ -84,13 +107,7 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 
 	client := openai.NewClient(opts...)
 
-	o := &OpenAILLM{
-		client:         &client,
-		models:         nil,
-		defaultModel:   cfg.DefaultModel,
-		maxTokens:      cfg.MaxTokens,
-		onModelsLoaded: cfg.OnModelsLoaded,
-	}
+	o.client = &client
 
 	// Set fallback model immediately so ListModels() always returns something.
 	if cfg.DefaultModel != "" {
@@ -103,7 +120,6 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 	// Trigger on first ListModels() call instead, so unused clients
 	// (e.g. subscriptions for users who haven't sent a message yet)
 	// don't spam the API on startup.
-	o.onModelsLoadError = cfg.OnModelsLoadError
 
 	return o
 }
@@ -882,11 +898,21 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 			stream = o.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 			if retryErr := stream.Err(); retryErr != nil {
 				stream.Close()
+				log.Ctx(ctx).WithFields(log.Fields{
+					"provider": "openai", "model": model, "base_url": o.baseURL,
+					"error":    retryErr.Error(),
+					"raw_tail": o.captureStreamTail(),
+				}).Error("[LLM] Stream init error (after max_tokens retry)")
 				return nil, retryErr
 			}
 			return stream, nil
 		}
 		stream.Close()
+		log.Ctx(ctx).WithFields(log.Fields{
+			"provider": "openai", "model": model, "base_url": o.baseURL,
+			"error":    err.Error(),
+			"raw_tail": o.captureStreamTail(),
+		}).Error("[LLM] Stream init error")
 		return nil, err
 	}
 	return stream, nil
@@ -1010,9 +1036,12 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		}
 		l.WithFields(log.Fields{
 			"provider":    "openai",
+			"model":       model,
+			"base_url":    o.baseURL,
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
 			"error":       err.Error(),
+			"raw_tail":    o.captureStreamTail(),
 		}).Error("[LLM] Stream error")
 		eventChan <- StreamEvent{
 			Type:  EventError,
@@ -1086,4 +1115,83 @@ func addNearEmptyResponseDebugFields(fields log.Fields, messages []ChatMessage, 
 			break
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Stream body: SSE filter + tail capture for error diagnosis
+// ---------------------------------------------------------------------------
+
+// streamCaptureTransport wraps http.RoundTripper to:
+//  1. Normalize SSE content-types so the registered sseEventFilterDecoder is
+//     selected reliably.
+//  2. Capture the tail of the response body for error diagnosis.
+type streamCaptureTransport struct {
+	base http.RoundTripper
+	o    *OpenAILLM
+}
+
+func (t *streamCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if resp.Body != nil && strings.Contains(contentType, "text/event-stream") {
+		resp.Header.Set("Content-Type", contentType)
+		t.o.streamBodyMu.Lock()
+		t.o.streamBodyTail = t.o.streamBodyTail[:0]
+		t.o.streamBodyMu.Unlock()
+		// Chain: raw body → tailReader (capture for error diagnosis)
+		// Empty-event filtering is handled at the event level by
+		// sseEventFilterDecoder (registered via init()), NOT at the byte
+		// level.  Byte-level \n\n removal is fundamentally broken because
+		// it cannot distinguish SSE dispatch boundaries from \n\n inside
+		// model-generated content (e.g. markdown paragraphs).
+		resp.Body = &tailReader{
+			inner: resp.Body,
+			o:     t.o,
+			max:   8192,
+		}
+	}
+	return resp, nil
+}
+
+// tailReader wraps an io.ReadCloser and captures the last N bytes read into
+// the parent OpenAILLM's streamBodyTail field for error diagnosis.
+type tailReader struct {
+	inner io.ReadCloser
+	o     *OpenAILLM
+	max   int
+}
+
+func (r *tailReader) Read(p []byte) (int, error) {
+	n, err := r.inner.Read(p)
+	if n > 0 {
+		r.o.streamBodyMu.Lock()
+		r.o.streamBodyTail = append(r.o.streamBodyTail, p[:n]...)
+		if len(r.o.streamBodyTail) > r.max {
+			r.o.streamBodyTail = r.o.streamBodyTail[len(r.o.streamBodyTail)-r.max:]
+		}
+		r.o.streamBodyMu.Unlock()
+	}
+	return n, err
+}
+
+func (r *tailReader) Close() error { return r.inner.Close() }
+
+// captureStreamTail returns a truncated string of the captured streaming
+// response body tail, for inclusion in error logs. Resets the buffer.
+func (o *OpenAILLM) captureStreamTail() string {
+	o.streamBodyMu.Lock()
+	tail := make([]byte, len(o.streamBodyTail))
+	copy(tail, o.streamBodyTail)
+	o.streamBodyTail = o.streamBodyTail[:0]
+	o.streamBodyMu.Unlock()
+
+	s := string(tail)
+	const maxLogLen = 2000
+	if len(s) > maxLogLen {
+		s = "..." + s[len(s)-maxLogLen:]
+	}
+	return s
 }
