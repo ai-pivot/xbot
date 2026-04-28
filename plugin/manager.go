@@ -56,6 +56,7 @@ type PluginManager struct {
 	rateLimiter  *PluginRateLimiter
 	quotaManager *PluginQuotaManager
 	configStore  *PluginConfigStore
+	notifier     *PluginEventNotifier
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -79,6 +80,7 @@ func NewPluginManager(xbotHome string) *PluginManager {
 		retryInterval: 5 * time.Second,
 		auditLog:      al,
 		configStore:   NewPluginConfigStore(xbotHome),
+		notifier:      NewPluginEventNotifier(),
 	}
 }
 
@@ -97,6 +99,34 @@ func (pm *PluginManager) Bus() *PluginEventBus {
 // AuditLog returns the audit logger, or nil if initialization failed.
 func (pm *PluginManager) AuditLog() *AuditLogger {
 	return pm.auditLog
+}
+
+// OnPluginEvent registers a callback to receive plugin lifecycle events.
+// Returns an error if callback is nil.
+func (pm *PluginManager) OnPluginEvent(callback PluginEventCallback) error {
+	return pm.notifier.Subscribe(callback)
+}
+
+// RemoveOnPluginEvent removes a previously registered lifecycle event callback.
+func (pm *PluginManager) RemoveOnPluginEvent(callback PluginEventCallback) error {
+	return pm.notifier.Unsubscribe(callback)
+}
+
+// notifyEvent sends a lifecycle event via the notifier.
+func (pm *PluginManager) notifyEvent(typ PluginEventType, pluginID string, err error, data any) {
+	if pm.notifier == nil {
+		return
+	}
+	event := PluginEvent{
+		Type:      typ,
+		PluginID:  pluginID,
+		Timestamp: time.Now(),
+		Data:      data,
+	}
+	if err != nil {
+		event.Error = err
+	}
+	pm.notifier.Notify(event)
 }
 
 // audit records an audit entry if the audit logger is available.
@@ -245,6 +275,7 @@ func (pm *PluginManager) retryErrorPlugins(ctx context.Context) {
 			entry.lastError = nil
 			entry.stateMu.Unlock()
 
+			pm.notifyEvent(PluginEventActivated, entry.Manifest.ID, nil, map[string]any{"recovered": true, "attempt": retryNum})
 			log.WithField("plugin", entry.Manifest.ID).
 				WithField("attempt", retryNum).
 				Info("Plugin recovered after retry")
@@ -480,6 +511,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 			entry.lastError = result.err
 			entry.lastErrorAt = time.Now()
 			entry.stateMu.Unlock()
+			pm.notifyEvent(PluginEventError, entry.Manifest.ID, result.err, map[string]any{"phase": "activate"})
 			pm.notifyPluginError(entry, "activate", result.err)
 			pm.audit(entry.Manifest.ID, AuditActivate, map[string]any{"state": "error"}, result.err)
 			return result.err
@@ -493,6 +525,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 			entry.lastError = nil
 		}
 		entry.stateMu.Unlock()
+		pm.notifyEvent(PluginEventActivated, entry.Manifest.ID, nil, nil)
 		log.WithField("plugin", entry.Manifest.ID).Info("Plugin activated")
 		pm.audit(entry.Manifest.ID, AuditActivate, map[string]any{"state": "active"}, nil)
 		return nil
@@ -508,6 +541,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 			entry.lastErrorAt = time.Now()
 		}
 		entry.stateMu.Unlock()
+		pm.notifyEvent(PluginEventError, entry.Manifest.ID, timeoutErr, map[string]any{"phase": "activate", "timeout": true})
 		pm.notifyPluginError(entry, "activate", timeoutErr)
 		pm.audit(entry.Manifest.ID, AuditActivate, map[string]any{"state": "timeout"}, timeoutErr)
 		return timeoutErr
@@ -547,12 +581,14 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 		entry.State = StateDeactivating
 		entry.stateMu.Unlock()
 		if err := entry.Plugin.Deactivate(entry.Context); err != nil {
+			pm.notifyEvent(PluginEventError, entry.Manifest.ID, err, map[string]any{"phase": "deactivate"})
 			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
 			pm.audit(entry.Manifest.ID, AuditDeactivate, nil, err)
 		}
 		entry.stateMu.Lock()
 		entry.State = StateInactive
 		entry.stateMu.Unlock()
+		pm.notifyEvent(PluginEventDeactivated, entry.Manifest.ID, nil, nil)
 		log.WithField("plugin", entry.Manifest.ID).Info("Plugin deactivated")
 		pm.audit(entry.Manifest.ID, AuditDeactivate, nil, nil)
 	}
@@ -710,6 +746,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 	m, err := LoadManifest(pluginDir)
 	if err != nil {
+		pm.notifyEvent(PluginEventError, pluginID, err, map[string]any{"phase": "reload", "step": "manifest"})
 		return fmt.Errorf("reload %s: failed to load manifest: %w", pluginID, err)
 	}
 
@@ -734,6 +771,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 			log.WithField("plugin", m.ID).Warn("Failed to create runtime on reload: ", err3)
 			newEntry.State = StateError
 			pm.entries[m.ID] = newEntry
+			pm.notifyEvent(PluginEventError, m.ID, err3, map[string]any{"phase": "reload", "step": "runtime"})
 			return fmt.Errorf("reload %s: failed to create runtime: %w", m.ID, err3)
 		}
 		newEntry.Plugin = plugin
@@ -744,10 +782,12 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 	// Activate if has onStart event (activate only touches entry.stateMu, not pm.mu)
 	if hasActivationEvent(m, "onStart") {
 		if err4 := pm.activate(ctx, newEntry); err4 != nil {
+			pm.notifyEvent(PluginEventError, m.ID, err4, map[string]any{"phase": "reload", "step": "activate"})
 			return fmt.Errorf("reload %s: activation failed: %w", m.ID, err4)
 		}
 	}
 
+	pm.notifyEvent(PluginEventReloaded, m.ID, nil, nil)
 	log.WithField("plugin", m.ID).Info("Plugin reloaded")
 	pm.audit(m.ID, AuditReload, nil, nil)
 	return nil
@@ -839,6 +879,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 			log.WithField("plugin", pluginID).Warn("Failed to create runtime: ", err3)
 			entry.State = StateError
 			pm.entries[pluginID] = entry
+			pm.notifyEvent(PluginEventError, pluginID, err3, map[string]any{"phase": "install", "step": "runtime"})
 			pm.audit(pluginID, AuditInstall, nil, err3)
 			return entry, fmt.Errorf("install: runtime creation failed: %w", err3)
 		}
@@ -854,6 +895,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 		}
 	}
 
+	pm.notifyEvent(PluginEventInstalled, pluginID, nil, map[string]any{"dir": targetDir})
 	log.WithField("plugin", pluginID).WithField("dir", targetDir).Info("Plugin installed")
 	pm.audit(pluginID, AuditInstall, map[string]any{"dir": targetDir}, nil)
 	return entry, nil
@@ -888,6 +930,7 @@ func (pm *PluginManager) UninstallPlugin(ctx context.Context, pluginID string) e
 	// Remove from entries map
 	delete(pm.entries, pluginID)
 	delete(pm.disabled, pluginID)
+	pm.notifyEvent(PluginEventUninstalled, pluginID, nil, map[string]any{"dir": pluginDir})
 	pm.audit(pluginID, AuditUninstall, map[string]any{"dir": pluginDir}, nil)
 	pm.mu.Unlock()
 
@@ -1082,6 +1125,7 @@ func (w *configWatcher) applyDiff(old, new_ *configChangeState) {
 						entry.stateMu.Lock()
 						entry.State = StateInactive
 						entry.stateMu.Unlock()
+						pm.notifyEvent(PluginEventDeactivated, id, nil, map[string]any{"reason": "config_change"})
 						log.WithField("plugin", id).Info("Plugin deactivated by config change (newly disabled)")
 					}
 				}

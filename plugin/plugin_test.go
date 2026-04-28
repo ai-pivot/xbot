@@ -4116,3 +4116,168 @@ func TestPluginContext_SetConfig(t *testing.T) {
 		t.Errorf("key2: got %v (%T), want 42", config["key2"], config["key2"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PluginRegistry Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginRegistry_New(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	reg := NewPluginRegistry(pm)
+	if reg == nil {
+		t.Fatal("NewPluginRegistry returned nil")
+	}
+	if len(reg.sources) != 0 {
+		t.Errorf("expected 0 sources, got %d", len(reg.sources))
+	}
+	if len(reg.List()) != 0 {
+		t.Errorf("expected 0 cached entries, got %d", len(reg.List()))
+	}
+
+	// With sources
+	sources := []RegistrySource{
+		{Type: RegistrySourceLocal, URL: "/tmp/plugins"},
+		{Type: RegistrySourceGitHub, URL: "https://github.com/example/plugin"},
+	}
+	reg2 := NewPluginRegistry(pm, sources...)
+	if len(reg2.sources) != 2 {
+		t.Errorf("expected 2 sources, got %d", len(reg2.sources))
+	}
+	if reg2.sources[0].Type != RegistrySourceLocal {
+		t.Errorf("expected first source type %q, got %q", RegistrySourceLocal, reg2.sources[0].Type)
+	}
+	if reg2.sources[1].Type != RegistrySourceGitHub {
+		t.Errorf("expected second source type %q, got %q", RegistrySourceGitHub, reg2.sources[1].Type)
+	}
+}
+
+func TestPluginRegistry_Search(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// Register two plugins with different metadata
+	m1 := testManifest()
+	m1.ID = "com.test.hello"
+	m1.Name = "Hello Plugin"
+	m1.Description = "A greeting plugin for testing"
+	p1 := &mockPlugin{manifest: m1}
+	if err := pm.Register(p1); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := testManifest()
+	m2.ID = "com.test.calc"
+	m2.Name = "Calculator Plugin"
+	m2.Description = "Performs arithmetic operations"
+	p2 := &mockPlugin{manifest: m2}
+	if err := pm.Register(p2); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewPluginRegistry(pm)
+
+	// Search by ID substring
+	results, err := reg.Search(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'hello', got %d", len(results))
+	}
+	if results[0].ID != "com.test.hello" {
+		t.Errorf("expected ID 'com.test.hello', got %q", results[0].ID)
+	}
+
+	// Search by Name substring (case-insensitive)
+	results, err = reg.Search(context.Background(), "CALCULATOR")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'CALCULATOR', got %d", len(results))
+	}
+	if results[0].Name != "Calculator Plugin" {
+		t.Errorf("expected Name 'Calculator Plugin', got %q", results[0].Name)
+	}
+
+	// Search by Description substring
+	results, err = reg.Search(context.Background(), "arithmetic")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'arithmetic', got %d", len(results))
+	}
+
+	// Empty query returns all plugins
+	results, err = reg.Search(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for empty query, got %d", len(results))
+	}
+
+	// No match returns empty
+	results, err = reg.Search(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for 'nonexistent', got %d", len(results))
+	}
+
+	// Cancelled context returns error
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = reg.Search(ctx, "hello")
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestPluginRegistry_List(t *testing.T) {
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Prepare a plugin directory for installation
+	pluginsDir := filepath.Join(baseDir, "source")
+	pluginDir := filepath.Join(pluginsDir, "com.test.listable")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.listable"
+	m.Name = "Listable Plugin"
+	m.Version = "2.0.0"
+	m.Description = "A plugin that can be listed"
+	writeTestManifest(t, pluginDir, &m)
+
+	// Create registry with local source
+	reg := NewPluginRegistry(pm, RegistrySource{Type: RegistrySourceLocal, URL: pluginDir})
+
+	// List is empty before any Install
+	entries := reg.List()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 cached entries before install, got %d", len(entries))
+	}
+
+	// Install populates the cache
+	if err := reg.Install(context.Background(), "com.test.listable"); err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	entries = reg.List()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 cached entry after install, got %d", len(entries))
+	}
+	if entries[0].ID != "com.test.listable" {
+		t.Errorf("expected ID 'com.test.listable', got %q", entries[0].ID)
+	}
+	if entries[0].Name != "Listable Plugin" {
+		t.Errorf("expected Name 'Listable Plugin', got %q", entries[0].Name)
+	}
+	if entries[0].Version != "2.0.0" {
+		t.Errorf("expected Version '2.0.0', got %q", entries[0].Version)
+	}
+}
