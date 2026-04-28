@@ -3,6 +3,7 @@ package plugin
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -61,4 +62,27 @@ type PermissionError struct {
 
 func (e *PermissionError) Error() string {
 	return "plugin " + e.PluginID + ": permission denied for '" + e.Permission + "' (action: " + e.Action + ")"
+}
+
+// ---------------------------------------------------------------------------
+// Dependency Errors — circular and missing dependency detection
+// ---------------------------------------------------------------------------
+
+// ErrCircularDependency indicates a cycle was detected in the plugin dependency graph.
+type ErrCircularDependency struct {
+	Cycle []string // plugin IDs involved in the dependency cycle
+}
+
+func (e *ErrCircularDependency) Error() string {
+	return fmt.Sprintf("plugin: circular dependency detected among: %s", strings.Join(e.Cycle, " → "))
+}
+
+// ErrMissingDependency indicates a plugin depends on another plugin that is not installed.
+type ErrMissingDependency struct {
+	PluginID string // the plugin declaring the dependency
+	Missing  string // the dependency that is not available
+}
+
+func (e *ErrMissingDependency) Error() string {
+	return fmt.Sprintf("plugin %s: missing dependency %s", e.PluginID, e.Missing)
 }

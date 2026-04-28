@@ -57,6 +57,8 @@ type PluginManager struct {
 	quotaManager *PluginQuotaManager
 	configStore  *PluginConfigStore
 	notifier     *PluginEventNotifier
+
+	activationOrder []string // topological activation order (computed after Discover)
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -385,6 +387,12 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 		log.WithField("plugin", m.ID).Info("Plugin discovered")
 	}
 
+	// Resolve dependency activation order
+	if err := pm.resolveActivationOrder(); err != nil {
+		log.Error("Plugin dependency resolution failed: ", err)
+		// Don't fail discovery — plugins are still loaded, just without guaranteed order
+	}
+
 	return loaded, nil
 }
 
@@ -410,8 +418,16 @@ func (pm *PluginManager) findPluginDir(dirs []string, pluginID string) string {
 func (pm *PluginManager) ActivateAll(ctx context.Context) error {
 	pm.mu.RLock()
 	entries := make([]*PluginEntry, 0, len(pm.entries))
-	for _, e := range pm.entries {
-		entries = append(entries, e)
+	if len(pm.activationOrder) > 0 {
+		for _, id := range pm.activationOrder {
+			if e, ok := pm.entries[id]; ok {
+				entries = append(entries, e)
+			}
+		}
+	} else {
+		for _, e := range pm.entries {
+			entries = append(entries, e)
+		}
 	}
 	pm.mu.RUnlock()
 
@@ -572,13 +588,29 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 
 	pm.mu.RLock()
 	entries := make([]*PluginEntry, 0, len(pm.entries))
-	for _, e := range pm.entries {
-		e.stateMu.Lock()
-		if e.State == StateActive {
-			e.stateMu.Unlock()
-			entries = append(entries, e)
-		} else {
-			e.stateMu.Unlock()
+	if len(pm.activationOrder) > 0 {
+		// Reverse order: dependents before dependencies
+		for i := len(pm.activationOrder) - 1; i >= 0; i-- {
+			id := pm.activationOrder[i]
+			if e, ok := pm.entries[id]; ok {
+				e.stateMu.Lock()
+				if e.State == StateActive {
+					e.stateMu.Unlock()
+					entries = append(entries, e)
+				} else {
+					e.stateMu.Unlock()
+				}
+			}
+		}
+	} else {
+		for _, e := range pm.entries {
+			e.stateMu.Lock()
+			if e.State == StateActive {
+				e.stateMu.Unlock()
+				entries = append(entries, e)
+			} else {
+				e.stateMu.Unlock()
+			}
 		}
 	}
 	pm.mu.RUnlock()
@@ -1188,6 +1220,41 @@ func hasActivationEvent(m *PluginManifest, event string) bool {
 		}
 	}
 	return false
+}
+
+// resolveActivationOrder computes the topological activation order from current entries.
+func (pm *PluginManager) resolveActivationOrder() error {
+	dr := NewDependencyResolver()
+	for _, e := range pm.entries {
+		dr.AddManifest(e.Manifest)
+	}
+
+	// Validate first — missing deps mark plugins as error
+	if err := dr.Validate(); err != nil {
+		if missing, ok := err.(*ErrMissingDependency); ok {
+			if entry, exists := pm.entries[missing.PluginID]; exists {
+				entry.stateMu.Lock()
+				entry.State = StateError
+				entry.lastError = err
+				entry.lastErrorAt = time.Now()
+				entry.stateMu.Unlock()
+				log.WithField("plugin", missing.PluginID).
+					WithField("missing", missing.Missing).
+					Error("Plugin has missing dependency")
+				pm.notifyEvent(PluginEventError, missing.PluginID, err, map[string]any{"phase": "dependency"})
+			}
+			// Don't fail discovery entirely — just mark the offending plugin as error
+			// and re-resolve without it (it won't be in the order)
+		}
+	}
+
+	order, err := dr.Resolve()
+	if err != nil {
+		return err
+	}
+
+	pm.activationOrder = order
+	return nil
 }
 
 // ---------------------------------------------------------------------------
