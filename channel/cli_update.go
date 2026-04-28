@@ -356,7 +356,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 // visual lines (including soft wraps from CJK characters). We just need to keep the
 // viewport in sync.
 const (
-	minTaHeight = 3
+	minTaHeight = 1
 	maxTaHeight = 10
 )
 
@@ -418,7 +418,13 @@ func (m *cliModel) layoutViewportHeight() int {
 	if len(m.todos) > 0 {
 		todoLines = 1 + len(m.todos)
 	}
-	reservedLines := fixedLines + taBorder + m.textarea.Height() + todoLines
+	// Info bar: 1 line when bg tasks/agents/queue are active (now below input,
+	// but still reserves space to prevent viewport overflow).
+	infoBarLines := 0
+	if m.bgTaskCount > 0 || m.agentCount > 0 || len(m.messageQueue) > 0 {
+		infoBarLines = 1
+	}
+	reservedLines := fixedLines + taBorder + m.textarea.Height() + todoLines + infoBarLines
 	// §20b 小终端适配：极小窗口下动态缩减布局
 	if height < 12 {
 		reservedLines = fixedLines + taBorder + 2 // min textarea

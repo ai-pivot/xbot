@@ -72,3 +72,9 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - **`handleSuHistoryLoad` default case (PhaseDone)**: triggers `DynamicHistoryLoader` reload to pick up the final assistant reply
 - **Viewport dirty-check fallback**: tick handler checks `!m.renderCacheValid` when `busy=false` to ensure viewport refreshes after session switch
 - **`removeAllToolSummaries()`** must be called in all progress restore paths to prevent duplicate tool summaries
+
+### CLI Progress Panel Rendering
+
+- **`toolLine(icon, label, elapsedStyled, maxWidth)`** helper in `cli_message.go` — unified tool line formatting using `lipgloss.Width()` for precision. All tool rendering sites (historical, completed, active) use this helper. Previous code used `len()` (byte count) and magic number overhead constants (`7 + ...`) which broke on styled/unicode content.
+- **Typewriter cursor overflow**: when reasoning/stream content cursor `▋` would exceed `innerWidth`, it renders on a separate line. When cursor is hidden (blink off), a guide-only placeholder line maintains stable height. Both reasoning guide and thinking guide sites use this pattern.
+- **SubAgent tree**: description is skipped when `descW <= 0` (no room); old code forced `descW >= 10` minimum which caused overflow on narrow terminals.

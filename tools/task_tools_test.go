@@ -21,7 +21,7 @@ func TestFormatBgTaskCompletion_Basic(t *testing.T) {
 		Output:     "hello\n",
 	}
 
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 
 	if !strings.Contains(result, "abc123") {
 		t.Error("missing task ID")
@@ -54,7 +54,7 @@ func TestFormatBgTaskCompletion_WithError(t *testing.T) {
 		Output:     "",
 	}
 
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 
 	if !strings.Contains(result, "failed") {
 		t.Error("should say 'failed' for error status")
@@ -84,7 +84,7 @@ func TestFormatBgTaskCompletion_LargeOutputTruncated(t *testing.T) {
 		Output:     largeOutput,
 	}
 
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 
 	if !strings.Contains(result, "truncated") {
 		t.Error("should indicate truncation for large output")
@@ -115,7 +115,7 @@ func TestFormatBgTaskCompletion_SmallOutputNotTruncated(t *testing.T) {
 		Output:     output,
 	}
 
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 
 	if strings.Contains(result, "truncated") {
 		t.Error("should NOT truncate small output")
@@ -139,7 +139,7 @@ func TestFormatBgTaskCompletion_Killed(t *testing.T) {
 		Output:     "",
 	}
 
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 
 	if !strings.Contains(result, "killed by user") {
 		t.Error("should say 'killed by user'")
@@ -165,7 +165,7 @@ func TestFormatBgTaskCompletion_AlwaysShowsExitCode(t *testing.T) {
 		Output:     "hi\n",
 	}
 
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 
 	if !strings.Contains(result, "Exit Code: 0") {
 		t.Error("should always show exit code, even for success")
@@ -179,7 +179,7 @@ func TestFormatBgTaskCompletion_NilFinishedAt(t *testing.T) {
 		Status:    BgTaskRunning,
 		StartedAt: time.Now(),
 	}
-	result := FormatBgTaskCompletion(task)
+	result := FormatBgTaskCompletion(task, "")
 	if result != "" {
 		t.Errorf("should return empty string for task without FinishedAt, got: %q", result)
 	}

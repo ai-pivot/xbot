@@ -1,0 +1,18 @@
+{
+  "enable_command_hooks": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Shell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$PATH:$(go env GOPATH)/bin\" make -C \"$XBOT_PROJECT_DIR\" lint || exit 2",
+            "if": "Shell(*git commit*)",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

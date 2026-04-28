@@ -1,7 +1,6 @@
 package channel
 
 import (
-	"charm.land/bubbles/v2/textarea"
 	"charm.land/lipgloss/v2"
 	"fmt"
 	"github.com/muesli/termenv"
@@ -10,6 +9,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"xbot/internal/textarea"
 )
 
 func init() {

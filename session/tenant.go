@@ -99,6 +99,18 @@ func (s *TenantSession) TenantID() int64 {
 	return s.tenantID
 }
 
+// SaveContextTokens records the exact API prompt_tokens on the most recent
+// user message in this tenant's session.
+func (s *TenantSession) SaveContextTokens(promptTokens int64) error {
+	return s.sessionSvc.UpdateUserMessageContextTokens(s.tenantID, promptTokens)
+}
+
+// GetLastContextTokens returns the context_tokens of the most recent user message.
+// Used by rewind to restore accurate token state.
+func (s *TenantSession) GetLastContextTokens() (int64, error) {
+	return s.sessionSvc.GetLastUserMessageContextTokens(s.tenantID)
+}
+
 // MemoryService returns the underlying SQLite memory service for this tenant.
 // Used for tenant-level state operations (token state, consolidation state, etc.)
 // that are independent of the memory provider implementation.

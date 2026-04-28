@@ -231,8 +231,9 @@ func (t *ShellTool) executeBackground(
 	if sessionKey == "" {
 		sessionKey = toolCtx.Channel + ":" + toolCtx.ChatID
 	}
+	senderID := toolCtx.OriginUserID
 
-	task := toolCtx.BgTaskManager.Start(sessionKey, command,
+	task := toolCtx.BgTaskManager.Start(sessionKey, senderID, command,
 		func(ctx context.Context, outputBuf func(string)) (int, error) {
 			spec := buildSpec()
 			spec.Timeout = 0 // no timeout for background
@@ -295,6 +296,7 @@ func (t *ShellTool) executeForeground(
 			if sessionKey == "" {
 				sessionKey = toolCtx.Channel + ":" + toolCtx.ChatID
 			}
+			senderID := toolCtx.OriginUserID
 
 			var task *BackgroundTask
 
@@ -306,7 +308,7 @@ func (t *ShellTool) executeForeground(
 				if result.OngoingOutput != nil {
 					ongoingFn = result.OngoingOutput
 				}
-				task = toolCtx.BgTaskManager.Adopt(sessionKey, command, result.Process, partialOutput, result.ExitCodeCh, ongoingFn)
+				task = toolCtx.BgTaskManager.Adopt(sessionKey, senderID, command, result.Process, partialOutput, result.ExitCodeCh, ongoingFn)
 				log.WithFields(log.Fields{
 					"command": command,
 					"timeout": timeout,
@@ -315,7 +317,7 @@ func (t *ShellTool) executeForeground(
 			} else {
 				// Sandbox doesn't support KeepAlive (docker/remote) — fall back to re-execution.
 				partialOutput := output
-				task = toolCtx.BgTaskManager.Start(sessionKey, command,
+				task = toolCtx.BgTaskManager.Start(sessionKey, senderID, command,
 					func(ctx context.Context, outputBuf func(string)) (int, error) {
 						spec := buildSpec()
 						spec.Timeout = 0

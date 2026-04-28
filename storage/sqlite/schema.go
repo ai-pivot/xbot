@@ -20,19 +20,20 @@ CREATE TABLE tenants (
 );
 
 CREATE TABLE session_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    tool_call_id TEXT,
-    tool_name TEXT,
-    tool_arguments TEXT,
-    tool_calls TEXT,
-    detail TEXT,
-    display_only INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
-);
+	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+	    tenant_id INTEGER NOT NULL,
+	    role TEXT NOT NULL,
+	    content TEXT NOT NULL,
+	    tool_call_id TEXT,
+	    tool_name TEXT,
+	    tool_arguments TEXT,
+	    tool_calls TEXT,
+	    detail TEXT,
+	    display_only INTEGER DEFAULT 0,
+	    context_tokens INTEGER DEFAULT 0,
+	    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+	);
 CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
 
 CREATE TABLE tenant_state (
@@ -98,7 +99,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (30);
+INSERT INTO schema_version (version) VALUES (31);
 
 CREATE TABLE runner_tokens (
     user_id     TEXT PRIMARY KEY,

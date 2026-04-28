@@ -19,6 +19,9 @@ import (
 type BgNotification interface {
 	// SessionKey returns the session key (channel:chatID) for routing.
 	SessionKey() string
+	// SenderID returns the original user ID that triggered the bg task.
+	// Used by injectInbound to preserve correct sender context (workspace, sandbox, memory).
+	SenderID() string
 }
 
 // maxBgOutputSize is the maximum output size per background task (50KB).
@@ -50,6 +53,7 @@ type BackgroundTask struct {
 
 	// Internal fields (not serialized to LLM)
 	sessionKey string // session key for routing completion notifications
+	senderID   string // original user ID that triggered this task
 	cancel     context.CancelFunc
 	mu         sync.Mutex  // protects Output for concurrent writes
 	killed     bool        // set by Kill() before cancel()
@@ -100,8 +104,10 @@ func generateTaskID() string {
 
 // Start launches a background task and returns immediately.
 // The task runs in a goroutine; on completion, it's sent to NotifyCh.
+// senderID is the original user ID that triggered the task (for correct routing on completion).
 func (m *BackgroundTaskManager) Start(
 	sessionKey string,
+	senderID string,
 	command string,
 	execFn func(ctx context.Context, outputBuf func(string)) (exitCode int, execErr error),
 ) *BackgroundTask {
@@ -113,6 +119,7 @@ func (m *BackgroundTaskManager) Start(
 		StartedAt:  time.Now(),
 		ExitCode:   -1,
 		sessionKey: sessionKey,
+		senderID:   senderID,
 	}
 
 	// Safety timeout context (24h max lifetime)
@@ -209,6 +216,7 @@ func (m *BackgroundTaskManager) Start(
 // Called after the process exits and all capture goroutines have completed.
 func (m *BackgroundTaskManager) Adopt(
 	sessionKey string,
+	senderID string,
 	command string,
 	proc *os.Process,
 	partialOutput string,
@@ -224,6 +232,7 @@ func (m *BackgroundTaskManager) Adopt(
 		ExitCode:   -1,
 		Output:     partialOutput,
 		sessionKey: sessionKey,
+		senderID:   senderID,
 		process:    proc,
 		exitCodeCh: exitCodeCh,
 	}
@@ -385,6 +394,9 @@ func (m *BackgroundTaskManager) Kill(taskID string) error {
 // SessionKey returns the session key this task belongs to.
 func (t *BackgroundTask) SessionKey() string { return t.sessionKey }
 
+// SenderID returns the original user ID that triggered this task.
+func (t *BackgroundTask) SenderID() string { return t.senderID }
+
 // IsKilled returns true if the task was killed by the user.
 func (t *BackgroundTask) IsKilled() bool {
 	t.mu.Lock()
@@ -535,10 +547,14 @@ type SubAgentBgNotify struct {
 	Instance string               // subagent instance ID
 	Content  string               // formatted notification content for the LLM
 	Elapsed  time.Duration        // total elapsed time (for completed notifications)
+	Sid      string               // original user ID that triggered the subagent
 }
 
 // SessionKey implements BgNotification.
 func (n *SubAgentBgNotify) SessionKey() string { return n.Key }
+
+// SenderID implements BgNotification.
+func (n *SubAgentBgNotify) SenderID() string { return n.Sid }
 
 // SendSubAgentNotify sends a subagent notification through BgTaskManager.NotifyCh.
 // Safe to call from any goroutine. Drops silently if channel is full or closed.

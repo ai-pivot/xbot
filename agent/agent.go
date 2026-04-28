@@ -1126,7 +1126,7 @@ func (a *Agent) resetSessionState(key string) {
 
 // injectCLIUserMessage sends a user message to the CLI channel if available.
 // Used by background notification handlers to display messages in the CLI UI.
-func (a *Agent) injectCLIUserMessage(channelName, content string) {
+func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if a.channelFinder == nil {
 		return
 	}
@@ -1134,8 +1134,11 @@ func (a *Agent) injectCLIUserMessage(channelName, content string) {
 	if !ok {
 		return
 	}
-	if cliCh, ok := ch.(*channel.CLIChannel); ok {
-		cliCh.InjectUserMessage(content)
+	switch c := ch.(type) {
+	case *channel.CLIChannel:
+		c.InjectUserMessage(content)
+	case *channel.RemoteCLIChannel:
+		c.InjectUserMessage(chatID, content)
 	}
 }
 
@@ -1210,8 +1213,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		case msg := <-a.bus.Inbound:
 
 			// /cancel 拦截：不进入 chatWorker 队列，直接发 cancel 信号
+			// cancel key 仅用 channel:chatID（不含 senderID），因为同一个 chat
+			// 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
+			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
-				cancelKey := msg.Channel + ":" + msg.ChatID + ":" + msg.SenderID
+				cancelKey := msg.Channel + ":" + msg.ChatID
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
@@ -1466,7 +1472,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		var response *bus.OutboundMessage
 		var err error
 		cancelCh := make(chan struct{}, 1)
-		cancelKey := msg.Channel + ":" + msg.ChatID + ":" + msg.SenderID
+		// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
+		cancelKey := msg.Channel + ":" + msg.ChatID
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
 		reqCtx, reqCancel := context.WithCancel(ctx)
@@ -1728,13 +1735,17 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	}
 
 	cfg := a.buildMainRunConfig(ctx, msg, messages, tenantSession, preReplyNotify)
-	// 恢复上次 Run() 的 token 计数，确保 maybeCompress 在重启后仍能使用 API 精确值。
-	// 必须从当前 tenant 的 DB 读取 — Agent 级别的 lastPromptTokens 是全局共享的，
-	// 跨 chat 会导致新窗口误用其他 chat 的 token 计数而触发压缩。
-	if extras := cfg.ToolContextExtras; extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
-		if pt, ct, err := extras.MemorySvc.GetTokenState(ctx, extras.TenantID); err == nil && pt > 0 {
-			cfg.LastPromptTokens = pt
-			cfg.LastCompletionTokens = ct
+	// 恢复 token 计数，优先从 session_messages.context_tokens 读取精确值。
+	// tenant_state 可能被旧版 DetectTruncation 的估算值污染，context_tokens 永远是 API 精确值。
+	if extras := cfg.ToolContextExtras; extras != nil && extras.TenantID != 0 {
+		if lastCtx, err := tenantSession.GetLastContextTokens(); err == nil && lastCtx > 0 {
+			cfg.LastPromptTokens = lastCtx
+			cfg.LastCompletionTokens = 0
+		} else if extras.MemorySvc != nil {
+			if pt, ct, err := extras.MemorySvc.GetTokenState(ctx, extras.TenantID); err == nil && pt > 0 {
+				cfg.LastPromptTokens = pt
+				cfg.LastCompletionTokens = ct
+			}
 		}
 	}
 	// Mark Run as active so bgNotifyLoop buffers notifications instead of processing idle
@@ -2140,7 +2151,7 @@ func (a *Agent) bgNotifyLoop() {
 }
 
 // processBgNotification handles a background task completion when no Run() is active.
-// Injects the task result as a user message via injectInbound, triggering the standard
+// Injects the task result as a user message via injectBgUserMessage, triggering the standard
 // processMessage → Assemble → Run pipeline. This matches Claude Code's behavior:
 // bg task completion = environment notification = user message to the LLM.
 func (a *Agent) processBgNotification(task *tools.BackgroundTask) {
@@ -2157,15 +2168,31 @@ func (a *Agent) processBgNotification(task *tools.BackgroundTask) {
 	}
 	channelName, chatID := parts[0], parts[1]
 
-	content := tools.FormatBgTaskCompletion(task)
+	// Offload large task output so the agent can retrieve it via offload_recall.
+	// Without this, FormatBgTaskCompletion truncates the output to 2000 chars
+	// and says "use offload_recall" without providing an actual offload ID.
+	outputOverride := ""
+	if a.offloadStore != nil && task.Output != "" {
+		offloadCtx := context.Background()
+		if offloaded, ok := a.offloadStore.MaybeOffload(offloadCtx, sessionKey,
+			"background_task_result", task.Command, task.Output,
+			"" /*workspaceRoot*/, "" /*sandboxWorkDir*/, "" /*userID*/); ok {
+			outputOverride = offloaded.Summary
+			log.WithFields(log.Fields{
+				"task_id":    task.ID,
+				"offload_id": offloaded.ID,
+			}).Info("Bg task output offloaded")
+		}
+	}
+
+	content := tools.FormatBgTaskCompletion(task, outputOverride)
 	log.WithFields(log.Fields{
 		"task_id": task.ID,
 		"channel": channelName,
 		"chat_id": chatID,
 	}).Info("Bg task notification: injecting as user message")
 
-	a.injectCLIUserMessage(channelName, content)
-	a.injectInbound(channelName, chatID, "user", content)
+	a.injectBgUserMessage(channelName, chatID, task.SenderID(), content)
 }
 
 // processSubAgentBgNotification handles a bg subagent notification when no Run() is active.
@@ -2197,15 +2224,16 @@ func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
 		"channel":  channelName,
 	}).Info("Bg subagent notification: injecting as user message")
 
-	if a.channelFinder != nil {
-		if ch, ok := a.channelFinder(channelName); ok {
-			if cliCh, ok := ch.(*channel.CLIChannel); ok {
-				cliCh.InjectUserMessage(content)
-			}
-		}
-	}
+	a.injectBgUserMessage(channelName, chatID, n.SenderID(), content)
+}
 
-	a.injectInbound(channelName, chatID, "user", content)
+// injectBgUserMessage is the unified entry point for injecting background notification
+// content as a user message. It reads senderID from the notification to preserve
+// correct sender context (workspace, sandbox, memory, LLM config).
+// All bg notification handlers MUST use this function — never call injectInbound directly.
+func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
+	a.injectCLIUserMessage(channelName, chatID, content)
+	a.injectInbound(channelName, chatID, senderID, content)
 }
 
 // buildBgNotificationRunConfig is no longer needed — idle bg notifications

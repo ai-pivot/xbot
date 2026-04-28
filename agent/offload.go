@@ -626,7 +626,16 @@ func summarizeShell(content string) string {
 	if len(lines) > showCount {
 		fmt.Fprintf(&sb, "  ... (%d lines omitted) ...\n", len(lines)-showCount)
 	}
+
+	// 单行截断保护：防止极长单行（如二进制输出）撑爆 summary
+	const maxLineRunes = 500
+	const lineTruncSuffix = "...(truncated, %d chars)"
 	for _, l := range lines[len(lines)-showCount:] {
+		runes := []rune(l)
+		if len(runes) > maxLineRunes {
+			suffix := fmt.Sprintf(lineTruncSuffix, len(runes))
+			l = string(runes[:maxLineRunes]) + suffix
+		}
 		fmt.Fprintf(&sb, "  %s\n", l)
 	}
 	return sb.String()

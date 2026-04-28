@@ -886,10 +886,16 @@ func (m *MultiTenantSession) TrimHistory(channel, chatID string, cutoff time.Tim
 	if err != nil {
 		return err
 	}
-	// Clear token state so maybeCompress doesn't use stale values from before
-	// the rewind (would otherwise trigger incorrect compression on next Run).
-	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, 0, 0); err != nil {
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to clear token state after trim")
+	// Restore token state from the last remaining user message's context_tokens.
+	// This avoids triggering incorrect compression after rewind.
+	// Falls back to 0 if no user message remains (full rewind to empty session).
+	lastCtx, err := m.sessionSvc.GetLastUserMessageContextTokens(tenantID)
+	if err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to get context tokens after trim, using 0")
+		lastCtx = 0
+	}
+	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, lastCtx, 0); err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to restore token state after trim")
 	}
 	return nil
 }

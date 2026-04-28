@@ -114,6 +114,13 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 		task = "Ready. Waiting for instructions."
 	}
 
+	// Always spawn in background mode so CreateChat returns immediately.
+	// The parent agent can then send messages via SendMessage without blocking.
+	if ctx.Metadata == nil {
+		ctx.Metadata = make(map[string]string)
+	}
+	ctx.Metadata["background"] = "true"
+
 	result, err := im.SpawnInteractive(ctx, task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spawn SubAgent %q (%s): %w", params.Role, params.Instance, err)

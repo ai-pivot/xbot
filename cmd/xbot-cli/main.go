@@ -1312,8 +1312,18 @@ func main() {
 			}
 			// Restore token state from DB so the context bar shows immediately
 			// on startup (not just after the first LLM call of the new session).
+			// Restore token state for context bar display, preferring exact
+			// per-message context_tokens over tenant_state (which may contain
+			// stale estimated values from the old DetectTruncation code).
 			cliMemSvc := sqlite.NewMemoryService(app.db)
 			cliCfg.TokenStateLoader = func() (promptTokens, completionTokens int64) {
+				// Prefer exact context_tokens from last user message
+				if cliSessionSvc != nil && cliTenantID != 0 {
+					if lastCtx, err := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID); err == nil && lastCtx > 0 {
+						return lastCtx, 0
+					}
+				}
+				// Fallback to tenant_state
 				pt, ct, err := cliMemSvc.GetTokenState(context.Background(), cliTenantID)
 				if err != nil {
 					log.WithError(err).Warn("Failed to load token state")
@@ -1448,6 +1458,11 @@ func main() {
 				defer clipanic.Recover("main.remote.OnProgress", p, false)
 				cliCh.SendProgress("cli:"+cliCfg.ChatID, p)
 			})
+			// Register OnInjectUserMessage callback for bg task notifications
+			app.backend.OnInjectUserMessage(func(content string) {
+				defer clipanic.Recover("main.remote.OnInjectUserMessage", content, false)
+				cliCh.InjectUserMessage(content)
+			})
 			// Inject remote bg task callbacks (BgTaskManager is nil in remote mode)
 			bgSessionKey := "cli:" + cliCfg.ChatID
 			cliCh.SetBgTaskRemoteCallbacks(
@@ -1525,14 +1540,39 @@ func main() {
 						return nil
 					}
 					_, err := cliSessionSvc.PurgeNewerThanOrEqual(cliTenantID, cutoff)
-					return err
+					if err != nil {
+						return err
+					}
+					// Restore token state from the last remaining user message's
+					// context_tokens — exact API value, no estimation.
+					memSvc := sqlite.NewMemoryService(app.db)
+					lastCtx, ctxErr := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID)
+					if ctxErr != nil {
+						log.WithError(ctxErr).Warn("Failed to get context tokens after trim, using 0")
+						lastCtx = 0
+					}
+					if err := memSvc.SetTokenState(context.Background(), cliTenantID, lastCtx, 0); err != nil {
+						log.WithError(err).Warn("Failed to restore token state after trim")
+					}
+					return nil
 				})
 			} else {
 				log.WithFields(log.Fields{"tenantID": cliTenantID, "hasSessionSvc": cliSessionSvc != nil, "hasDB": app.db != nil}).Warn("TrimHistoryFn NOT registered — DB truncation will not work")
 			}
-			// Reset cached token state after rewind to prevent stale compress trigger
+			// Reset cached token state after rewind to prevent stale compress trigger.
+			// Uses exact context_tokens from the last remaining user message.
 			cliCh.SetResetTokenStateFn(func() {
-				app.backend.ResetTokenState()
+				if cliTenantID != 0 && app.db != nil {
+					memSvc := sqlite.NewMemoryService(app.db)
+					lastCtx, ctxErr := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID)
+					if ctxErr != nil {
+						log.WithError(ctxErr).Warn("Failed to get context tokens after reset, using 0")
+						lastCtx = 0
+					}
+					if err := memSvc.SetTokenState(context.Background(), cliTenantID, lastCtx, 0); err != nil {
+						log.WithError(err).Warn("Failed to reset token state after rewind")
+					}
+				}
 			})
 		}
 	}
