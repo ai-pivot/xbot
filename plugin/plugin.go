@@ -252,10 +252,77 @@ type ToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  []llm.ToolParam `json:"parameters"`
+	// Version is the tool version following semver (e.g., "1.0.0").
+	// When set, it is included in ToJSONSchema() output for version tracking.
+	Version string `json:"version,omitempty"`
 	// InputSchema is the auto-generated JSON Schema for tool parameters.
 	// When set, this provides a complete parameter schema for LLM function calling.
 	// Generated automatically by BuildToolDef; manual ToolDef construction leaves this nil.
 	InputSchema map[string]any `json:"inputSchema,omitempty"`
+}
+
+// ToJSONSchema returns the tool definition in OpenAI function calling format.
+// The returned map has the structure:
+//
+//	{
+//	  "type": "function",
+//	  "function": {
+//	    "name": "...",
+//	    "description": "...",
+//	    "parameters": { "type": "object", "properties": {...}, "required": [...] },
+//	    "version": "..."  // only if Version is set
+//	  }
+//	}
+//
+// If InputSchema is already populated (e.g., from BuildToolDef), it is used directly
+// as the parameters value; otherwise, the schema is built from the Parameters slice.
+func (td ToolDef) ToJSONSchema() map[string]any {
+	fn := map[string]any{
+		"name":        td.Name,
+		"description": td.Description,
+		"parameters":  td.buildParameters(),
+	}
+	if td.Version != "" {
+		fn["version"] = td.Version
+	}
+	return map[string]any{
+		"type":     "function",
+		"function": fn,
+	}
+}
+
+// buildParameters returns the parameters JSON Schema, preferring the pre-built
+// InputSchema over reconstructing from Parameters.
+// TODO: support ToolParam.Items nested structures in the fallback path.
+func (td ToolDef) buildParameters() map[string]any {
+	if td.InputSchema != nil {
+		return td.InputSchema
+	}
+
+	// Fallback: reconstruct from Parameters slice
+	properties := make(map[string]any, len(td.Parameters))
+	var required []string
+	for _, p := range td.Parameters {
+		prop := map[string]any{
+			"type":        p.Type,
+			"description": p.Description,
+		}
+		if p.Items != nil {
+			prop["items"] = p.Items
+		}
+		properties[p.Name] = prop
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
 }
 
 // ToolResult is the result of a plugin tool execution.

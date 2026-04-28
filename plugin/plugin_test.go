@@ -2428,6 +2428,135 @@ func TestBuildToolDef_JSONSchema(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ToolDef.ToJSONSchema Tests
+// ---------------------------------------------------------------------------
+
+func TestToolDef_ToJSONSchema(t *testing.T) {
+	def := BuildToolDef("read_file", "Read a file from disk",
+		ToolParamDef{Name: "path", Type: "string", Description: "File path", Required: true},
+		ToolParamDef{Name: "max_lines", Type: "number", Description: "Max lines to read"},
+	)
+	def.Version = "1.0.0"
+
+	schema := def.ToJSONSchema()
+
+	// Top-level structure
+	if schema["type"] != "function" {
+		t.Errorf("top-level type = %v, want %q", schema["type"], "function")
+	}
+
+	fn, ok := schema["function"].(map[string]any)
+	if !ok {
+		t.Fatal("function should be a map")
+	}
+	if fn["name"] != "read_file" {
+		t.Errorf("function.name = %v, want %q", fn["name"], "read_file")
+	}
+	if fn["description"] != "Read a file from disk" {
+		t.Errorf("function.description = %v, want %q", fn["description"], "Read a file from disk")
+	}
+	if fn["version"] != "1.0.0" {
+		t.Errorf("function.version = %v, want %q", fn["version"], "1.0.0")
+	}
+
+	// Parameters should use pre-built InputSchema
+	params, ok := fn["parameters"].(map[string]any)
+	if !ok {
+		t.Fatal("parameters should be a map")
+	}
+	if params["type"] != "object" {
+		t.Errorf("parameters.type = %v, want %q", params["type"], "object")
+	}
+
+	props, ok := params["properties"].(map[string]any)
+	if !ok || len(props) != 2 {
+		t.Fatalf("properties count = %d, want 2", len(props))
+	}
+
+	required, ok := params["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "path" {
+		t.Errorf("required = %v, want [path]", required)
+	}
+}
+
+func TestToolDef_ToJSONSchema_WithRequired(t *testing.T) {
+	// Test with multiple required parameters
+	def := BuildToolDef("create_file", "Create a new file",
+		ToolParamDef{Name: "path", Type: "string", Description: "File path", Required: true},
+		ToolParamDef{Name: "content", Type: "string", Description: "File content", Required: true},
+		ToolParamDef{Name: "overwrite", Type: "boolean", Description: "Overwrite if exists"},
+	)
+
+	schema := def.ToJSONSchema()
+	fn := schema["function"].(map[string]any)
+	params := fn["parameters"].(map[string]any)
+
+	required, ok := params["required"].([]string)
+	if !ok {
+		t.Fatal("required should be []string")
+	}
+	if len(required) != 2 {
+		t.Fatalf("required count = %d, want 2", len(required))
+	}
+	// Check both required fields present
+	requiredMap := map[string]bool{}
+	for _, r := range required {
+		requiredMap[r] = true
+	}
+	if !requiredMap["path"] || !requiredMap["content"] {
+		t.Errorf("required = %v, want [path content]", required)
+	}
+
+	// All 3 properties should be present
+	props := params["properties"].(map[string]any)
+	if len(props) != 3 {
+		t.Errorf("properties count = %d, want 3", len(props))
+	}
+
+	// No version when empty
+	if _, has := fn["version"]; has {
+		t.Error("version should not be present when empty")
+	}
+}
+
+func TestToolDef_ToJSONSchema_Empty(t *testing.T) {
+	// Test with no parameters and no version
+	def := ToolDef{
+		Name:        "ping",
+		Description: "Simple ping tool",
+	}
+
+	schema := def.ToJSONSchema()
+
+	fn := schema["function"].(map[string]any)
+	if fn["name"] != "ping" {
+		t.Errorf("function.name = %v, want %q", fn["name"], "ping")
+	}
+	if fn["description"] != "Simple ping tool" {
+		t.Errorf("function.description = %v, want %q", fn["description"], "Simple ping tool")
+	}
+
+	// No version when empty
+	if _, has := fn["version"]; has {
+		t.Error("version should not be present when empty")
+	}
+
+	// Parameters should produce an empty object schema
+	params := fn["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Errorf("parameters.type = %v, want %q", params["type"], "object")
+	}
+	props := params["properties"].(map[string]any)
+	if len(props) != 0 {
+		t.Errorf("properties count = %d, want 0", len(props))
+	}
+	// No required when empty
+	if _, has := params["required"]; has {
+		t.Error("required should not be present when no required params")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Benchmarks
 // ---------------------------------------------------------------------------
 
