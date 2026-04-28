@@ -3490,3 +3490,202 @@ func TestPluginManager_Metrics_AfterToolExecution(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// AuditLogger Tests
+// ---------------------------------------------------------------------------
+
+func TestAuditLogger_LogAndQuery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	al, err := NewAuditLogger(path)
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	// Log 3 entries with explicit timestamps
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "p2", Action: AuditDeactivate})
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditInstall, Details: map[string]any{"dir": "/tmp"}})
+
+	entries := al.Query(AuditFilter{})
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	// Verify auto-filled timestamps
+	for _, e := range entries {
+		if e.Timestamp.IsZero() {
+			t.Error("timestamp should be auto-filled")
+		}
+	}
+
+	// Verify ordering (ascending by timestamp)
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Timestamp.Before(entries[i-1].Timestamp) {
+			t.Error("entries not sorted by timestamp")
+		}
+	}
+
+	// Verify details preserved
+	if entries[2].Details["dir"] != "/tmp" {
+		t.Errorf("expected details.dir=/tmp, got %v", entries[2].Details["dir"])
+	}
+}
+
+func TestAuditLogger_QueryByPlugin(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLogger(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	al.Log(AuditEntry{PluginID: "plugin-a", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "plugin-b", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "plugin-a", Action: AuditDeactivate})
+
+	// Filter by plugin-a
+	entries := al.Query(AuditFilter{PluginID: "plugin-a"})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries for plugin-a, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.PluginID != "plugin-a" {
+			t.Errorf("expected plugin-a, got %s", e.PluginID)
+		}
+	}
+
+	// Filter by plugin-b
+	entriesB := al.Query(AuditFilter{PluginID: "plugin-b"})
+	if len(entriesB) != 1 {
+		t.Fatalf("expected 1 entry for plugin-b, got %d", len(entriesB))
+	}
+}
+
+func TestAuditLogger_QueryByTimeRange(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLogger(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	before := time.Now()
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditActivate})
+	mid := time.Now()
+	al.Log(AuditEntry{PluginID: "p2", Action: AuditActivate})
+	after := time.Now()
+
+	// Only second entry
+	entries := al.Query(AuditFilter{From: mid, To: after})
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry in [mid, after], got %d", len(entries))
+	}
+	if entries[0].PluginID != "p2" {
+		t.Errorf("expected p2, got %s", entries[0].PluginID)
+	}
+
+	// Only first entry (To is exclusive — Before check)
+	entriesFirst := al.Query(AuditFilter{From: before, To: mid})
+	if len(entriesFirst) != 1 {
+		t.Fatalf("expected 1 entry in [before, mid], got %d", len(entriesFirst))
+	}
+	if entriesFirst[0].PluginID != "p1" {
+		t.Errorf("expected p1, got %s", entriesFirst[0].PluginID)
+	}
+
+	// All entries
+	all := al.Query(AuditFilter{From: before, To: after})
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries in [before, after], got %d", len(all))
+	}
+}
+
+func TestAuditLogger_Clear(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLogger(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "p2", Action: AuditActivate})
+
+	if len(al.Query(AuditFilter{})) != 2 {
+		t.Fatal("expected 2 entries before clear")
+	}
+
+	al.Clear()
+
+	if len(al.Query(AuditFilter{})) != 0 {
+		t.Fatal("expected 0 entries after clear")
+	}
+
+	// Verify writing still works after clear
+	al.Log(AuditEntry{PluginID: "p3", Action: AuditInstall})
+	if len(al.Query(AuditFilter{})) != 1 {
+		t.Fatal("expected 1 entry after clear + log")
+	}
+}
+
+func TestPluginManager_AuditLog_Activate(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	defer pm.AuditLog().Close()
+
+	p := &mockPlugin{manifest: testManifest()}
+	if err := pm.RegisterAndActivate(context.Background(), p); err != nil {
+		t.Fatalf("RegisterAndActivate: %v", err)
+	}
+
+	entries := pm.AuditLog().Query(AuditFilter{PluginID: "com.test.example"})
+	if len(entries) == 0 {
+		t.Fatal("expected audit entries for activate")
+	}
+
+	last := entries[len(entries)-1]
+	if last.Action != AuditActivate {
+		t.Errorf("expected action %q, got %q", AuditActivate, last.Action)
+	}
+	if last.Error != "" {
+		t.Errorf("expected no error, got %q", last.Error)
+	}
+	if last.Details["state"] != "active" {
+		t.Errorf("expected details.state=active, got %v", last.Details["state"])
+	}
+}
+
+func TestPluginManager_AuditLog_Install(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	defer pm.AuditLog().Close()
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Prepare source directory with valid manifest
+	srcDir := t.TempDir()
+	m := testManifest()
+	writeTestManifest(t, srcDir, &m)
+
+	entry, err := pm.InstallPlugin(context.Background(), srcDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+
+	entries := pm.AuditLog().Query(AuditFilter{PluginID: "com.test.example"})
+	found := false
+	for _, e := range entries {
+		if e.Action == AuditInstall && e.Error == "" {
+			found = true
+			if e.Details["dir"] == nil {
+				t.Error("expected details.dir to be set")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected install audit entry without error")
+	}
+}

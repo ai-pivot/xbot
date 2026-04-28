@@ -50,6 +50,7 @@ type PluginManager struct {
 	retryCancel   context.CancelFunc // stops the retry goroutine
 	retryMu       sync.Mutex         // protects autoRetry/maxRetries/retryCancel
 	retryInterval time.Duration      // scan interval for retry loop (default 5s)
+	auditLog      *AuditLogger
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -59,12 +60,19 @@ type RuntimeFactory interface {
 
 // NewPluginManager creates a new PluginManager.
 func NewPluginManager(xbotHome string) *PluginManager {
+	auditPath := filepath.Join(xbotHome, "plugins", "audit.jsonl")
+	al, err := NewAuditLogger(auditPath)
+	if err != nil {
+		log.WithField("path", auditPath).Warn("Failed to create audit logger: ", err)
+	}
+
 	return &PluginManager{
 		entries:       make(map[string]*PluginEntry),
 		disabled:      make(map[string]bool),
 		xbotHome:      xbotHome,
 		bus:           NewPluginEventBus(),
 		retryInterval: 5 * time.Second,
+		auditLog:      al,
 	}
 }
 
@@ -76,6 +84,27 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 // Bus returns the plugin event bus.
 func (pm *PluginManager) Bus() *PluginEventBus {
 	return pm.bus
+}
+
+// AuditLog returns the audit logger, or nil if initialization failed.
+func (pm *PluginManager) AuditLog() *AuditLogger {
+	return pm.auditLog
+}
+
+// audit records an audit entry if the audit logger is available.
+func (pm *PluginManager) audit(pluginID, action string, details map[string]any, err error) {
+	if pm.auditLog == nil {
+		return
+	}
+	entry := AuditEntry{
+		PluginID: pluginID,
+		Action:   action,
+		Details:  details,
+	}
+	if err != nil {
+		entry.Error = err.Error()
+	}
+	pm.auditLog.Log(entry)
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +279,7 @@ func (pm *PluginManager) DisablePlugins(ids []string) {
 	defer pm.mu.Unlock()
 	for _, id := range ids {
 		pm.disabled[id] = true
+		pm.audit(id, AuditDisable, nil, nil)
 	}
 }
 
@@ -435,6 +465,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 			entry.lastErrorAt = time.Now()
 			entry.stateMu.Unlock()
 			pm.notifyPluginError(entry, "activate", result.err)
+			pm.audit(entry.Manifest.ID, AuditActivate, map[string]any{"state": "error"}, result.err)
 			return result.err
 		}
 
@@ -447,6 +478,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 		}
 		entry.stateMu.Unlock()
 		log.WithField("plugin", entry.Manifest.ID).Info("Plugin activated")
+		pm.audit(entry.Manifest.ID, AuditActivate, map[string]any{"state": "active"}, nil)
 		return nil
 
 	case <-timer.C:
@@ -461,6 +493,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 		}
 		entry.stateMu.Unlock()
 		pm.notifyPluginError(entry, "activate", timeoutErr)
+		pm.audit(entry.Manifest.ID, AuditActivate, map[string]any{"state": "timeout"}, timeoutErr)
 		return timeoutErr
 	}
 }
@@ -493,9 +526,11 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 		entry.State = StateDeactivating
 		if err := entry.Plugin.Deactivate(entry.Context); err != nil {
 			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
+			pm.audit(entry.Manifest.ID, AuditDeactivate, nil, err)
 		}
 		entry.State = StateInactive
 		log.WithField("plugin", entry.Manifest.ID).Info("Plugin deactivated")
+		pm.audit(entry.Manifest.ID, AuditDeactivate, nil, nil)
 	}
 }
 
@@ -679,6 +714,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 	}
 
 	log.WithField("plugin", m.ID).Info("Plugin reloaded")
+	pm.audit(m.ID, AuditReload, nil, nil)
 	return nil
 }
 
@@ -766,6 +802,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 			log.WithField("plugin", pluginID).Warn("Failed to create runtime: ", err3)
 			entry.State = StateError
 			pm.entries[pluginID] = entry
+			pm.audit(pluginID, AuditInstall, nil, err3)
 			return entry, fmt.Errorf("install: runtime creation failed: %w", err3)
 		}
 		entry.Plugin = p
@@ -781,6 +818,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 	}
 
 	log.WithField("plugin", pluginID).WithField("dir", targetDir).Info("Plugin installed")
+	pm.audit(pluginID, AuditInstall, map[string]any{"dir": targetDir}, nil)
 	return entry, nil
 }
 
@@ -807,6 +845,7 @@ func (pm *PluginManager) UninstallPlugin(ctx context.Context, pluginID string) e
 	// Remove from entries map
 	delete(pm.entries, pluginID)
 	delete(pm.disabled, pluginID)
+	pm.audit(pluginID, AuditUninstall, map[string]any{"dir": pluginDir}, nil)
 	pm.mu.Unlock()
 
 	// Delete directory from disk (outside lock — pure I/O)
