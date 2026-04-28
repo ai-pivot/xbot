@@ -5,7 +5,7 @@
 | File | Purpose |
 |------|---------|
 | `plugin.go` | Plugin interface, PluginManifest, PluginTool, PluginToolV2, ToolCallContext, PluginDependency |
-| `context.go` | PluginContext interface + implementations + event bus permission checks |
+| `context.go` | PluginContext interface + implementations + type-safe Storage helpers + event bus + error callback |
 | `manager.go` | PluginManager — discovery, lifecycle, reload, install, uninstall, watchConfig, health, metrics, String |
 | `manifest.go` | Manifest parsing, validation, dependency validation |
 | `permissions.go` | Permission checker (includes bus.plugin gate) |
@@ -33,7 +33,9 @@
 
 ### PluginContext
 - 安全子集接口：RegisterTool, OnPreToolUse/OnPostToolUse, EnrichContext, Storage, Logger
+- Type-safe Storage: StorageInt/StorageBool/StorageJSON/StorageGetJSON — 避免手动类型转换
 - Event Bus: Subscribe/Publish (需要 bus.plugin + bus.read/bus.write 权限)
+- Error Callback: OnPluginError 注册插件级错误回调 (非 tool 错误)
 
 ### Plugin States
 - StateDiscovered → StateActive → StateDeactivating → StateInactive
@@ -63,6 +65,12 @@
 - 后台 goroutine 轮询 config.json 的 mtime
 - 检测 plugins.disabled_plugins 变化，自动启用/禁用插件
 - 最小间隔 5s，返回 stop chan
+
+### Auto-Retry
+- SetAutoRetry(enabled, maxRetries) 启动后台 retryLoop goroutine
+- 指数退避: 1s * 2^(n-1), 上限 30s
+- maxRetries=0 表示无限重试
+- 成功后重置 retryCount; DeactivateAll 取消 retry context
 
 ### Health Check & Metrics
 - HealthChecker 可选接口：返回 map[string]error
@@ -114,5 +122,5 @@
 - **CLI**: /plugin 命令 → handlePluginCommand → PluginManager methods
 
 ## File Counts
-- 47 files, 9768 lines, ~80+ tests
-- 15 commits in plugin branch
+- 16 Go source files, ~5000+ lines, 94 tests
+- 18 commits in plugin branch

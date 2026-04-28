@@ -83,6 +83,12 @@
 - **Plugin IDs validated with regex `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`.** This prevents path traversal, null bytes, and injection attacks in storage paths.
 - **Storage files use 0600 permissions and atomic write (tmp+rename).** Never use 0644 for plugin storage.
 - **WASM runtime is skeleton-only.** It compiles and loads but Activate() is a no-op. Phase 2 requires wazero dependency.
+- **PluginContext provides 4 type-safe Storage helpers:** `StorageInt`, `StorageBool`, `StorageJSON`, `StorageGetJSON`. These wrap the base `StorageAccessor` with parse/unmarshal and return typed results. Failed parses return zero-value + false (not errors) for Int/Bool, and errors for GetJSON.
+- **Auto-retry runs in a background goroutine.** `SetAutoRetry(true, maxRetries)` starts `retryLoop` with exponential backoff (1s→30s cap). **`DeactivateAll()` cancels the retry context** — if you call `activate()` manually after `DeactivateAll()`, you must re-enable auto-retry or failed plugins won't recover automatically.
+- **Manifest `timeout` field accepts Go duration strings** (`"30s"`, `"1m"`, `"500ms"`), parsed via `time.ParseDuration`. Empty or missing defaults to `DefaultPluginTimeout` (30s). Max allowed: 5 minutes.
+- **EventBus requires `bus.plugin` permission** in addition to `bus.read`/`bus.write`. Subscribe needs `bus.plugin` + `bus.read`; Publish needs `bus.plugin` + `bus.write`. This separates plugin-to-plugin events from the core message bus.
+- **`InstallPlugin` uses `filepath.EvalSymlinks`** to resolve the real directory path before deletion check, preventing symlink-based path traversal attacks. Only directories under `xbotHome` are deleted.
+- **`WatchConfig` polls config.json every 30 seconds** (configurable, min 5s). It compares `plugins.disabled_plugins` lists via diff and reactively deactivates newly disabled / activates newly enabled plugins. Returns a stop channel for shutdown.
 
 ### Windows
 - `syscall.PROCESS_QUERY_LIMITED_INFORMATION` and `STILL_ACTIVE` not in Go stdlib — define as uint32 constants.
