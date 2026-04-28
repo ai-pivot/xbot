@@ -1385,11 +1385,12 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 		}
 		if remoteCLICh != nil {
 			payload := &channelpkg.WsProgressPayload{
-				ChatID:    progressKey,
-				Phase:     string(s.Phase),
-				Iteration: s.Iteration,
-				Thinking:  s.ThinkingContent,
-				Reasoning: s.ReasoningContent,
+				ChatID:           progressKey,
+				Phase:            string(s.Phase),
+				Iteration:        s.Iteration,
+				Thinking:         s.ThinkingContent,
+				Reasoning:        s.ReasoningContent,
+				HistoryCompacted: s.HistoryCompacted,
 			}
 			for _, t := range s.ActiveTools {
 				payload.ActiveTools = append(payload.ActiveTools, channelpkg.WsToolProgress{
@@ -1441,11 +1442,12 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			// Without this, GetActiveProgress returns nil after CLI restart
 			// because only the local cliCh path stored snapshots.
 			cliPayload := &channelpkg.CLIProgressPayload{
-				ChatID:    progressKey,
-				Phase:     string(s.Phase),
-				Iteration: s.Iteration,
-				Thinking:  s.ThinkingContent,
-				Reasoning: s.ReasoningContent,
+				ChatID:           progressKey,
+				Phase:            string(s.Phase),
+				Iteration:        s.Iteration,
+				Thinking:         s.ThinkingContent,
+				Reasoning:        s.ReasoningContent,
+				HistoryCompacted: s.HistoryCompacted,
 			}
 			for _, t := range s.ActiveTools {
 				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
@@ -1526,9 +1528,12 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 		}
 		s := event.Structured
 		payload := &channelpkg.WsProgressPayload{
-			Phase:     string(s.Phase),
-			Iteration: s.Iteration,
-			Thinking:  s.ThinkingContent,
+			ChatID:           progressKey,
+			Phase:            string(s.Phase),
+			Iteration:        s.Iteration,
+			Thinking:         s.ThinkingContent,
+			Reasoning:        s.ReasoningContent,
+			HistoryCompacted: s.HistoryCompacted,
 		}
 		for _, t := range s.ActiveTools {
 			payload.ActiveTools = append(payload.ActiveTools, channelpkg.WsToolProgress{

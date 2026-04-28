@@ -496,6 +496,7 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 		return nil
 	}
 	wp := &WsProgressPayload{
+		ChatID:                 p.ChatID,
 		Phase:                  p.Phase,
 		Iteration:              p.Iteration,
 		Thinking:               p.Thinking,
@@ -507,13 +508,29 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 	for _, t := range p.ActiveTools {
 		wp.ActiveTools = append(wp.ActiveTools, WsToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Summary: t.Summary,
+			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
 		})
 	}
 	for _, t := range p.CompletedTools {
 		wp.CompletedTools = append(wp.CompletedTools, WsToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Summary: t.Summary,
+			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
+		})
+	}
+	for _, t := range p.Todos {
+		wp.Todos = append(wp.Todos, WsTodoItem(t))
+	}
+	if p.TokenUsage != nil {
+		wp.TokenUsage = &WsTokenUsage{
+			PromptTokens: p.TokenUsage.PromptTokens, CompletionTokens: p.TokenUsage.CompletionTokens,
+			TotalTokens: p.TokenUsage.TotalTokens, CacheHitTokens: p.TokenUsage.CacheHitTokens,
+			MaxOutputTokens: p.TokenUsage.MaxOutputTokens,
+		}
+	}
+	for _, sa := range p.SubAgents {
+		wp.SubAgents = append(wp.SubAgents, WsSubAgent{
+			Role: sa.Role, Status: sa.Status, Desc: sa.Desc,
+			Children: convertCLISubAgentToWS(sa.Children),
 		})
 	}
 	return wp
@@ -544,36 +561,41 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 		return nil
 	}
 	cp := &CLIProgressPayload{
+		ChatID:                 p.ChatID,
 		Phase:                  p.Phase,
 		Iteration:              p.Iteration,
 		Thinking:               p.Thinking,
 		Reasoning:              p.Reasoning,
 		StreamContent:          p.StreamContent,
 		ReasoningStreamContent: p.ReasoningStreamContent,
+		HistoryCompacted:       p.HistoryCompacted,
 	}
 	for _, t := range p.ActiveTools {
 		cp.ActiveTools = append(cp.ActiveTools, CLIToolProgress{
-			Name:    t.Name,
-			Label:   t.Label,
-			Status:  t.Status,
-			Elapsed: t.Elapsed,
-			Summary: t.Summary,
+			Name:      t.Name,
+			Label:     t.Label,
+			Status:    t.Status,
+			Elapsed:   t.Elapsed,
+			Iteration: t.Iteration,
+			Summary:   t.Summary,
 		})
 	}
 	for _, t := range p.CompletedTools {
 		cp.CompletedTools = append(cp.CompletedTools, CLIToolProgress{
-			Name:    t.Name,
-			Label:   t.Label,
-			Status:  t.Status,
-			Elapsed: t.Elapsed,
-			Summary: t.Summary,
+			Name:      t.Name,
+			Label:     t.Label,
+			Status:    t.Status,
+			Elapsed:   t.Elapsed,
+			Iteration: t.Iteration,
+			Summary:   t.Summary,
 		})
 	}
 	for _, sa := range p.SubAgents {
 		cp.SubAgents = append(cp.SubAgents, CLISubAgent{
-			Role:   sa.Role,
-			Status: sa.Status,
-			Desc:   sa.Desc,
+			Role:     sa.Role,
+			Status:   sa.Status,
+			Desc:     sa.Desc,
+			Children: convertWsSubAgentToCLI(sa.Children),
 		})
 	}
 	if p.TokenUsage != nil {
@@ -586,7 +608,7 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 		}
 	}
 	for _, t := range p.Todos {
-		cp.Todos = append(cp.Todos, CLITodoItem{Text: t.Text, Done: t.Done})
+		cp.Todos = append(cp.Todos, CLITodoItem(t))
 	}
 	return cp
 }
@@ -607,6 +629,40 @@ type WsSubAgent struct {
 	Status   string       `json:"status"` // "running" | "done" | "error"
 	Desc     string       `json:"desc,omitempty"`
 	Children []WsSubAgent `json:"children,omitempty"`
+}
+
+// convertCLISubAgentToWS recursively converts CLI SubAgent tree to WS format.
+func convertCLISubAgentToWS(children []CLISubAgent) []WsSubAgent {
+	if len(children) == 0 {
+		return nil
+	}
+	result := make([]WsSubAgent, len(children))
+	for i, c := range children {
+		result[i] = WsSubAgent{
+			Role:     c.Role,
+			Status:   c.Status,
+			Desc:     c.Desc,
+			Children: convertCLISubAgentToWS(c.Children),
+		}
+	}
+	return result
+}
+
+// convertWsSubAgentToCLI recursively converts WS SubAgent tree to CLI format.
+func convertWsSubAgentToCLI(children []WsSubAgent) []CLISubAgent {
+	if len(children) == 0 {
+		return nil
+	}
+	result := make([]CLISubAgent, len(children))
+	for i, c := range children {
+		result[i] = CLISubAgent{
+			Role:     c.Role,
+			Status:   c.Status,
+			Desc:     c.Desc,
+			Children: convertWsSubAgentToCLI(c.Children),
+		}
+	}
+	return result
 }
 
 // WsTokenUsage Token 使用量快照（对应 agent.TokenUsageSnapshot）。

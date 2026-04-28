@@ -71,7 +71,7 @@ wrapping and word navigation. Key files:
 - `LineInfo()` maps cursor logical position (col) → visual row/column
 - `view()` renders each visual line and positions cursor via LineInfo
 - `setCursorLineRelative()` handles CursorUp/CursorDown across soft-wraps
-- `cjkWordBounds()` / `cjkWordAt()` — gse-based CJK word boundary cache
+- `cjkWordBounds()` / `Model.Word()` — gse-based CJK word boundary cache and word-at-cursor
 
 **CJK word segmentation:**
 Uses `github.com/go-ego/gse` (pure Go, embedded dictionary) for Ctrl+Arrow
@@ -79,11 +79,15 @@ word navigation. The segmenter is lazy-initialized via `sync.Once` and shared
 across all textarea instances. Word boundaries are cached per-line and
 automatically invalidated when the line text changes.
 
-**Gotcha — `CutSearch` vs `ModeSegment`:**
-`ModeSegment` (HMM-based) segments isolated CJK words like `"测试"` as two
-single characters. Use `CutSearch` (DAG-based) instead — it correctly
-segments isolated CJK words. Both return correct results with surrounding
-context; the difference only matters for short isolated text.
+**Gotcha — `Segment` vs `CutSearch`:**
+`CutSearch` (DAG-based) returns overlapping candidates for ambiguous
+input (e.g. `"第一个"` → `["第一","一个","第一个"]`), which causes
+cumulative position errors when treated as contiguous token boundaries.
+Use `Segment` (HMM-based) instead — it produces non-overlapping tokens
+that are safe for cursor navigation. The tradeoff is that `Segment` may
+split isolated CJK words like `"测试"` into two single characters when
+no surrounding context is available; this is acceptable because cursor
+navigation correctness takes priority over ideal linguistic segmentation.
 
 **Gotcha — Do NOT add trailing spaces to visual lines:**
 Previous versions appended `' '` to each visual line in wrap() for cursor

@@ -533,6 +533,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 				m.chatID = chatID
 				m.messages = nil
+				m.lastTokenUsage = nil // clear stale token bar on new session
 				m.invalidateAllCache(false)
 				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
 			} else {
@@ -988,7 +989,7 @@ func (m *cliModel) renderProgressBlock() string {
 					guide := reasoningGuide.Render("  │ ")
 					if isLast && isReasoningStreaming {
 						cursorStr := s.StreamCursor.Render("▋")
-						cursorOverflow := reasoningW+lipgloss.Width(wl)+1 > innerWidth
+						cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
 						if cursorOverflow {
 							// Cursor would overflow: always render on a separate line
 							// to prevent visual height jumping during cursor blink.
@@ -1087,7 +1088,7 @@ func (m *cliModel) renderProgressBlock() string {
 					guide := thinkingGuide.Render("  │ ")
 					if isLast {
 						cursorStr := s.StreamCursor.Render("▋")
-						cursorOverflow := thinkingW+lipgloss.Width(wl)+1 > innerWidth
+						cursorOverflow := thinkingW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
 						if cursorOverflow {
 							// Cursor would overflow: always render on a separate line
 							// to prevent visual height jumping during cursor blink.
