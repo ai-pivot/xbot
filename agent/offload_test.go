@@ -251,11 +251,29 @@ func TestGenerateRuleSummary_Shell(t *testing.T) {
 		t.Error("Shell summary should contain exit code")
 	}
 	if !strings.Contains(summary, "omitted") {
-		t.Error("Shell summary should indicate omitted lines")
+			t.Error("Shell summary should indicate omitted lines")
+		}
 	}
-}
 
-func TestGenerateRuleSummary_Glob(t *testing.T) {
+	func TestGenerateRuleSummary_Shell_BinaryContent(t *testing.T) {
+		// 模拟 Shell 返回二进制输出的场景：少量极长的行
+		// 真实场景：cat libmujoco.so 输出被 JSON 包装后只有 1-2 行，每行几 MB
+		longLine := strings.Repeat("BINARY\x00GARBAGE", 1000) // ~13KB 单行，远超 500 rune 阈值
+		content := longLine + "\nexit code: 0"
+		summary := generateRuleSummary("Shell", "", content)
+		// 验证输出被截断：不应包含完整的长行
+		if len(summary) > 3000 {
+			t.Errorf("Shell binary summary too long: got %d bytes, expected <= 3000", len(summary))
+		}
+		if !strings.Contains(summary, "truncated") {
+			t.Error("Shell binary summary should indicate truncation")
+		}
+		if !strings.Contains(summary, "exit code: 0") {
+			t.Error("Shell binary summary should still contain exit code")
+		}
+	}
+
+	func TestGenerateRuleSummary_Glob(t *testing.T) {
 	content := strings.Join([]string{"file1.go", "file2.go", "file3.go", "file4.go", "file5.go", "file6.go", "file7.go", "file8.go"}, "\n")
 	summary := generateRuleSummary("Glob", "", content)
 	if !strings.Contains(summary, "8 files matched") {
