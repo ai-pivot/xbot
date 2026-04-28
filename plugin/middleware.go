@@ -199,3 +199,94 @@ func RetryMiddleware(maxRetries int) PluginMiddleware {
 		return result, err
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tool-level Timeout Decorator
+// ---------------------------------------------------------------------------
+
+// timeoutTool wraps a PluginTool with an execution deadline.
+// It implements both PluginTool and PluginToolV2 so that V2 callers
+// also benefit from the timeout.
+type timeoutTool struct {
+	inner   PluginTool
+	timeout time.Duration
+}
+
+// ToolTimeout wraps a PluginTool with a timeout.
+// If the tool's Execute (or ExecuteWithContext) does not return within the
+// given duration, an error ToolResult is returned instead.
+// A non-positive timeout disables the timeout (returns the tool unchanged).
+func ToolTimeout(tool PluginTool, timeout time.Duration) PluginTool {
+	if timeout <= 0 {
+		return tool
+	}
+	return &timeoutTool{inner: tool, timeout: timeout}
+}
+
+// Definition returns the wrapped tool's definition.
+func (t *timeoutTool) Definition() ToolDef {
+	return t.inner.Definition()
+}
+
+// Execute runs the wrapped tool with a timeout-derivative context.
+func (t *timeoutTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+	childCtx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+
+	type outcome struct {
+		result *ToolResult
+		err    error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		r, e := t.inner.Execute(childCtx, input)
+		ch <- outcome{result: r, err: e}
+	}()
+
+	select {
+	case o := <-ch:
+		return o.result, o.err
+	case <-childCtx.Done():
+		name := t.inner.Definition().Name
+		return NewToolError(fmt.Sprintf("tool %s timed out after %s", name, t.timeout)), nil
+	}
+}
+
+// ExecuteWithContext runs the wrapped tool's V2 method with a timeout.
+// If the inner tool does not implement PluginToolV2, it falls back to V1 Execute.
+func (t *timeoutTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*ToolResult, error) {
+	v2, ok := t.inner.(PluginToolV2)
+	if !ok {
+		// Not V2 — delegate to V1 path
+		return t.Execute(ctx.Ctx, input)
+	}
+
+	childCtx, cancel := context.WithTimeout(ctx.Ctx, t.timeout)
+	defer cancel()
+
+	type outcome struct {
+		result *ToolResult
+		err    error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		// Build a child ToolCallContext with the deadline context.
+		childTCC := &ToolCallContext{
+			SessionID: ctx.SessionID,
+			Channel:   ctx.Channel,
+			ChatID:    ctx.ChatID,
+			UserID:    ctx.UserID,
+			Ctx:       childCtx,
+		}
+		r, e := v2.ExecuteWithContext(childTCC, input)
+		ch <- outcome{result: r, err: e}
+	}()
+
+	select {
+	case o := <-ch:
+		return o.result, o.err
+	case <-childCtx.Done():
+		name := t.inner.Definition().Name
+		return NewToolError(fmt.Sprintf("tool %s timed out after %s", name, t.timeout)), nil
+	}
+}

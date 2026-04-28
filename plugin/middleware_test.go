@@ -698,3 +698,152 @@ func (l *captureLogger) WithField(key string, value any) Logger {
 func (l *captureLogger) WithFields(fields ...Field) Logger {
 	return &loggerWithFields{parent: l, fields: fields}
 }
+
+// ---------------------------------------------------------------------------
+// ToolTimeout Decorator Tests
+// ---------------------------------------------------------------------------
+
+func TestToolTimeout_Success(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "fast_tool", Description: "A fast tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("fast: " + input), nil
+		},
+	}
+
+	wrapped := ToolTimeout(inner, 5*time.Second)
+
+	result, err := wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result.Content != `fast: {"key":"val"}` {
+		t.Errorf("Content = %q, want %q", result.Content, `fast: {"key":"val"}`)
+	}
+	if result.IsError {
+		t.Error("expected IsError = false")
+	}
+
+	// Definition should pass through
+	def := wrapped.Definition()
+	if def.Name != "fast_tool" {
+		t.Errorf("Definition().Name = %q, want %q", def.Name, "fast_tool")
+	}
+}
+
+func TestToolTimeout_Exceeded(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "slow_tool", Description: "A slow tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Second):
+				return NewToolResult("should not reach"), nil
+			}
+		},
+	}
+
+	wrapped := ToolTimeout(inner, 50*time.Millisecond)
+
+	result, err := wrapped.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("error should be nil (timeout converts to ToolResult), got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+	if !result.IsError {
+		t.Error("expected IsError = true for timeout")
+	}
+	if !strings.Contains(result.Content, "timed out") {
+		t.Errorf("Content = %q, should contain 'timed out'", result.Content)
+	}
+	if !strings.Contains(result.Content, "slow_tool") {
+		t.Errorf("Content = %q, should contain tool name 'slow_tool'", result.Content)
+	}
+}
+
+func TestToolTimeout_V2Success(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "v2_tool", Description: "V2 fast tool"},
+		ExecV2Fn: func(ctx *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("v2:session=" + ctx.SessionID), nil
+		},
+	}
+
+	wrapped := ToolTimeout(inner, 5*time.Second)
+
+	tcc := &ToolCallContext{
+		Ctx:       context.Background(),
+		SessionID: "sess-42",
+	}
+
+	// Verify it implements PluginToolV2
+	v2, ok := wrapped.(PluginToolV2)
+	if !ok {
+		t.Fatal("ToolTimeout wrapper should implement PluginToolV2")
+	}
+
+	result, err := v2.ExecuteWithContext(tcc, `{}`)
+	if err != nil {
+		t.Fatalf("ExecuteWithContext() error: %v", err)
+	}
+	if result.Content != "v2:session=sess-42" {
+		t.Errorf("Content = %q, want %q", result.Content, "v2:session=sess-42")
+	}
+}
+
+func TestToolTimeout_V2Exceeded(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "v2_slow", Description: "V2 slow tool"},
+		ExecV2Fn: func(ctx *ToolCallContext, input string) (*ToolResult, error) {
+			select {
+			case <-ctx.Ctx.Done():
+				return nil, ctx.Ctx.Err()
+			case <-time.After(5 * time.Second):
+				return NewToolResult("should not reach"), nil
+			}
+		},
+	}
+
+	wrapped := ToolTimeout(inner, 50*time.Millisecond)
+
+	tcc := &ToolCallContext{
+		Ctx:       context.Background(),
+		SessionID: "sess-99",
+	}
+
+	v2 := wrapped.(PluginToolV2)
+	result, err := v2.ExecuteWithContext(tcc, `{}`)
+	if err != nil {
+		t.Fatalf("error should be nil, got: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError = true")
+	}
+	if !strings.Contains(result.Content, "timed out") {
+		t.Errorf("Content = %q, should contain 'timed out'", result.Content)
+	}
+}
+
+func TestToolTimeout_NonPositiveIsNoop(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "noop_tool", Description: "no timeout"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("direct"), nil
+		},
+	}
+
+	// Zero timeout should return the original tool unchanged
+	wrapped := ToolTimeout(inner, 0)
+	if wrapped != inner {
+		t.Error("ToolTimeout with 0 should return the original tool")
+	}
+
+	// Negative timeout should also return the original tool unchanged
+	wrapped2 := ToolTimeout(inner, -1*time.Second)
+	if wrapped2 != inner {
+		t.Error("ToolTimeout with negative duration should return the original tool")
+	}
+}
