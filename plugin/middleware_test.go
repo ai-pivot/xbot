@@ -1188,3 +1188,198 @@ func TestToolCache_ErrorNotCached(t *testing.T) {
 		t.Errorf("calls = %d, want 2 (error should not be cached)", atomic.LoadInt32(&calls))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ToolLogging Decorator Tests
+// ---------------------------------------------------------------------------
+
+func TestToolLogging_ExecutesAndLogs(t *testing.T) {
+	logger := &captureLogger{}
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "echo_tool", Description: "Echoes input"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("echo: " + input), nil
+		},
+	}
+
+	wrapped := ToolLogging(inner, logger)
+
+	// Verify Definition passthrough
+	def := wrapped.Definition()
+	if def.Name != "echo_tool" {
+		t.Errorf("Definition().Name = %q, want %q", def.Name, "echo_tool")
+	}
+
+	// Execute
+	result, err := wrapped.Execute(context.Background(), `{"msg":"hello"}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result.Content != `echo: {"msg":"hello"}` {
+		t.Errorf("Content = %q, want %q", result.Content, `echo: {"msg":"hello"}`)
+	}
+
+	// Verify log entries
+	if len(logger.entries) != 2 {
+		t.Fatalf("log entries = %d, want 2", len(logger.entries))
+	}
+
+	// First log: started
+	if logger.entries[0].msg != "tool execution started" {
+		t.Errorf("entry[0].msg = %q, want %q", logger.entries[0].msg, "tool execution started")
+	}
+
+	// Second log: completed
+	if logger.entries[1].msg != "tool execution completed" {
+		t.Errorf("entry[1].msg = %q, want %q", logger.entries[1].msg, "tool execution completed")
+	}
+
+	// Verify tool name in first entry fields
+	foundTool := false
+	for _, f := range logger.entries[0].fields {
+		if f.Key == "tool" && f.Value == "echo_tool" {
+			foundTool = true
+		}
+	}
+	if !foundTool {
+		t.Error("entry[0] missing tool=echo_tool field")
+	}
+}
+
+func TestToolLogging_ExecutionError(t *testing.T) {
+	logger := &captureLogger{}
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "fail_tool", Description: "Always fails"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return nil, fmt.Errorf("something went wrong")
+		},
+	}
+
+	wrapped := ToolLogging(inner, logger)
+
+	// Execute
+	_, err := wrapped.Execute(context.Background(), `{}`)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != "something went wrong" {
+		t.Errorf("error = %q, want %q", err.Error(), "something went wrong")
+	}
+
+	// Verify log entries
+	if len(logger.entries) != 2 {
+		t.Fatalf("log entries = %d, want 2", len(logger.entries))
+	}
+
+	// First log: started
+	if logger.entries[0].msg != "tool execution started" {
+		t.Errorf("entry[0].msg = %q, want %q", logger.entries[0].msg, "tool execution started")
+	}
+
+	// Second log: failed
+	if logger.entries[1].msg != "tool execution failed" {
+		t.Errorf("entry[1].msg = %q, want %q", logger.entries[1].msg, "tool execution failed")
+	}
+
+	// Verify error field
+	foundError := false
+	for _, f := range logger.entries[1].fields {
+		if f.Key == "error" && f.Value == "something went wrong" {
+			foundError = true
+		}
+	}
+	if !foundError {
+		t.Error("entry[1] missing error field")
+	}
+}
+
+func TestToolLogging_NilLogger(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "noop_tool", Description: "No-op test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("direct"), nil
+		},
+	}
+
+	// nil logger — should return inner unchanged
+	wrapped := ToolLogging(inner, nil)
+	if wrapped != inner {
+		t.Error("ToolLogging with nil logger should return inner tool unchanged")
+	}
+}
+
+func TestToolLogging_V2Success(t *testing.T) {
+	logger := &captureLogger{}
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "v2_tool", Description: "V2 test"},
+		ExecV2Fn: func(ctx *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("v2: " + input), nil
+		},
+	}
+
+	wrapped := ToolLogging(inner, logger)
+
+	// ExecuteWithContext
+	tcc := &ToolCallContext{
+		SessionID: "sess-1",
+		Channel:   "cli",
+		Ctx:       context.Background(),
+	}
+	result, err := wrapped.(PluginToolV2).ExecuteWithContext(tcc, `{"data":"test"}`)
+	if err != nil {
+		t.Fatalf("ExecuteWithContext() error: %v", err)
+	}
+	if result.Content != `v2: {"data":"test"}` {
+		t.Errorf("Content = %q, want %q", result.Content, `v2: {"data":"test"}`)
+	}
+
+	// Verify log entries
+	if len(logger.entries) != 2 {
+		t.Fatalf("log entries = %d, want 2", len(logger.entries))
+	}
+	if logger.entries[0].msg != "tool execution started" {
+		t.Errorf("entry[0].msg = %q, want %q", logger.entries[0].msg, "tool execution started")
+	}
+	if logger.entries[1].msg != "tool execution completed" {
+		t.Errorf("entry[1].msg = %q, want %q", logger.entries[1].msg, "tool execution completed")
+	}
+}
+
+func TestToolLogging_ErrorResult(t *testing.T) {
+	logger := &captureLogger{}
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "err_result_tool", Description: "Returns error result"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolError("bad input"), nil
+		},
+	}
+
+	wrapped := ToolLogging(inner, logger)
+
+	result, err := wrapped.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError = true")
+	}
+
+	// Verify log entries
+	if len(logger.entries) != 2 {
+		t.Fatalf("log entries = %d, want 2", len(logger.entries))
+	}
+
+	// First log: started
+	if logger.entries[0].msg != "tool execution started" {
+		t.Errorf("entry[0].msg = %q, want %q", logger.entries[0].msg, "tool execution started")
+	}
+
+	// Second log: error result (Warn level)
+	if logger.entries[1].msg != "tool execution returned error result" {
+		t.Errorf("entry[1].msg = %q, want %q", logger.entries[1].msg, "tool execution returned error result")
+	}
+}

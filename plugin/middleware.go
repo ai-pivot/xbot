@@ -462,3 +462,105 @@ func (c *cacheTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*Too
 
 	return result, err
 }
+
+// ---------------------------------------------------------------------------
+// Tool-level Logging Decorator
+// ---------------------------------------------------------------------------
+
+// loggingTool wraps a PluginTool with structured logging.
+// It logs tool execution lifecycle events (start, success, error result, Go error)
+// using the same format as LoggingMiddleware, but at the tool-level decorator
+// layer. It implements both PluginTool and PluginToolV2.
+type loggingTool struct {
+	inner  PluginTool
+	logger Logger
+}
+
+// ToolLogging wraps a PluginTool with structured logging.
+// Logs are emitted at Info level for start/success, Warn for error results,
+// and Error for Go errors. A nil logger disables logging (returns the tool unchanged).
+func ToolLogging(tool PluginTool, logger Logger) PluginTool {
+	if logger == nil {
+		return tool
+	}
+	return &loggingTool{inner: tool, logger: logger}
+}
+
+// Definition returns the wrapped tool's definition.
+func (l *loggingTool) Definition() ToolDef {
+	return l.inner.Definition()
+}
+
+// Execute runs the wrapped tool, logging lifecycle events.
+func (l *loggingTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+	name := l.inner.Definition().Name
+	start := time.Now()
+
+	l.logger.Info("tool execution started",
+		Field{Key: "tool", Value: name},
+		Field{Key: "input_len", Value: len(input)},
+	)
+
+	result, err := l.inner.Execute(ctx, input)
+
+	elapsed := time.Since(start)
+	if err != nil {
+		l.logger.Error("tool execution failed",
+			Field{Key: "tool", Value: name},
+			Field{Key: "error", Value: err.Error()},
+			Field{Key: "duration", Value: elapsed.String()},
+		)
+	} else if result != nil && result.IsError {
+		l.logger.Warn("tool execution returned error result",
+			Field{Key: "tool", Value: name},
+			Field{Key: "duration", Value: elapsed.String()},
+		)
+	} else {
+		l.logger.Info("tool execution completed",
+			Field{Key: "tool", Value: name},
+			Field{Key: "duration", Value: elapsed.String()},
+		)
+	}
+
+	return result, err
+}
+
+// ExecuteWithContext runs the wrapped tool's V2 method with logging.
+// If the inner tool does not implement PluginToolV2, it falls back to V1 Execute.
+func (l *loggingTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*ToolResult, error) {
+	v2, ok := l.inner.(PluginToolV2)
+	if !ok {
+		return l.Execute(ctx.Ctx, input)
+	}
+
+	name := l.inner.Definition().Name
+	start := time.Now()
+
+	l.logger.Info("tool execution started",
+		Field{Key: "tool", Value: name},
+		Field{Key: "input_len", Value: len(input)},
+	)
+
+	result, err := v2.ExecuteWithContext(ctx, input)
+
+	elapsed := time.Since(start)
+	if err != nil {
+		l.logger.Error("tool execution failed",
+			Field{Key: "tool", Value: name},
+			Field{Key: "error", Value: err.Error()},
+			Field{Key: "duration", Value: elapsed.String()},
+		)
+	} else if result != nil && result.IsError {
+		l.logger.Warn("tool execution returned error result",
+			Field{Key: "tool", Value: name},
+			Field{Key: "duration", Value: elapsed.String()},
+		)
+	} else {
+		l.logger.Info("tool execution completed",
+			Field{Key: "tool", Value: name},
+			Field{Key: "duration", Value: elapsed.String()},
+		)
+	}
+
+	return result, err
+}
