@@ -121,10 +121,11 @@ type PluginDependency struct {
 
 // PluginContributes declares the capabilities a plugin provides.
 type PluginContributes struct {
-	Tools            []ToolContribution     `json:"tools,omitempty"`
-	Hooks            []HookContribution     `json:"hooks,omitempty"`
-	ContextEnrichers []EnricherContribution `json:"contextEnrichers,omitempty"`
-	Commands         []CommandContribution  `json:"commands,omitempty"`
+	Tools            []ToolContribution         `json:"tools,omitempty"`
+	Hooks            []HookContribution         `json:"hooks,omitempty"`
+	ContextEnrichers []EnricherContribution     `json:"contextEnrichers,omitempty"`
+	Commands         []CommandContribution      `json:"commands,omitempty"`
+	Configuration    *ConfigurationContribution `json:"configuration,omitempty"`
 }
 
 // ToolContribution describes a tool provided by the plugin.
@@ -150,6 +151,26 @@ type EnricherContribution struct {
 // CommandContribution describes a slash command provided by the plugin.
 type CommandContribution struct {
 	Name        string `json:"name"` // e.g., "/deploy"
+	Description string `json:"description"`
+}
+
+// ConfigurationContribution declares user-configurable settings for the plugin.
+// Defined in plugin.json under "contributes.configuration".
+// Users can override these settings via ~/.xbot/plugins/<id>/config.json.
+type ConfigurationContribution struct {
+	// Title is a human-readable title for this configuration section.
+	Title string `json:"title"`
+	// Properties defines the individual configuration properties.
+	Properties map[string]ConfigProperty `json:"properties"`
+}
+
+// ConfigProperty describes a single configuration property.
+type ConfigProperty struct {
+	// Type is the JSON schema type: "string", "number", "boolean".
+	Type string `json:"type"`
+	// Default is the default value when no user configuration exists.
+	Default any `json:"default,omitempty"`
+	// Description explains the property's purpose.
 	Description string `json:"description"`
 }
 

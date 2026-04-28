@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 
 	"xbot/llm"
@@ -26,10 +27,11 @@ import (
 // PluginToolBridge wraps a PluginToolAdapter to implement the full tools.Tool
 // interface, bridging the plugin↔host boundary for tool execution.
 type PluginToolBridge struct {
-	adapter      *PluginToolAdapter
-	rateLimiter  *PluginRateLimiter
-	quotaManager *PluginQuotaManager
-	pluginID     string
+	adapter         *PluginToolAdapter
+	rateLimiter     *PluginRateLimiter
+	quotaManager    *PluginQuotaManager
+	pluginID        string
+	middlewareChain *MiddlewareChain
 }
 
 // NewPluginToolBridge creates a bridge from a PluginToolAdapter.
@@ -64,8 +66,9 @@ func (b *PluginToolBridge) Parameters() []llm.ToolParam {
 
 // Execute implements tools.Tool.
 // Converts tools.ToolContext → ToolCallContext for V2, or context.Context for V1.
+// Rate limit and quota checks run before the middleware chain (host-level enforcement).
 func (b *PluginToolBridge) Execute(ctx *tools.ToolContext, input string) (*tools.ToolResult, error) {
-	// Rate limit check
+	// Rate limit check (host-level, cannot be bypassed by middleware)
 	if b.rateLimiter != nil && b.pluginID != "" {
 		if !b.rateLimiter.Allow(b.pluginID) {
 			tr := tools.NewResult(fmt.Sprintf("rate limit exceeded for plugin %s", b.pluginID))
@@ -74,7 +77,7 @@ func (b *PluginToolBridge) Execute(ctx *tools.ToolContext, input string) (*tools
 		}
 	}
 
-	// Quota check — tool call budget
+	// Quota check — tool call budget (host-level)
 	if b.quotaManager != nil && b.pluginID != "" {
 		if allowed, _ := b.quotaManager.CheckToolCall(b.pluginID); !allowed {
 			tr := tools.NewResult(fmt.Sprintf("daily quota exceeded for plugin %s", b.pluginID))
@@ -83,11 +86,21 @@ func (b *PluginToolBridge) Execute(ctx *tools.ToolContext, input string) (*tools
 		}
 	}
 
-	tcc := &ToolCallContext{
-		Ctx: ctx.Ctx,
+	// Define the final handler that calls the actual tool
+	final := func(execCtx context.Context, toolName string, toolInput string) (*ToolResult, error) {
+		tcc := &ToolCallContext{Ctx: execCtx}
+		return b.adapter.ExecuteWithContext(tcc, toolInput)
 	}
 
-	result, err := b.adapter.ExecuteWithContext(tcc, input)
+	// Execute through middleware chain if present, otherwise call directly
+	var result *ToolResult
+	var err error
+	if b.middlewareChain != nil && b.middlewareChain.Len() > 0 {
+		result, err = b.middlewareChain.Execute(ctx.Ctx, b.adapter.Name(), input, final)
+	} else {
+		result, err = final(ctx.Ctx, b.adapter.Name(), input)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +145,13 @@ func WirePluginTools(pm *PluginManager, registry *tools.Registry) error {
 		for _, tool := range entry.Context.GetTools() {
 			adapter := NewPluginToolAdapterWithContext(entry.Manifest.ID, tool, entry.Context)
 			bridge := NewPluginToolBridgeWithLimits(adapter, entry.Manifest.ID, rl, qm)
+
+			// Inject plugin middleware chain if any middleware was registered
+			if middlewares := entry.Context.GetMiddlewares(); len(middlewares) > 0 {
+				chain := NewMiddlewareChain(middlewares...)
+				bridge.middlewareChain = chain
+			}
+
 			registry.Register(bridge)
 			registered++
 		}

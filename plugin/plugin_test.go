@@ -173,7 +173,7 @@ func TestIsValidPermission(t *testing.T) {
 func TestPluginContext_RegisterTool(t *testing.T) {
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
 
 	tool := &SimplePluginTool{
 		Def: ToolDef{
@@ -202,7 +202,7 @@ func TestPluginContext_RegisterTool_NoPermission(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{"hooks.subscribe"} // no tools.register
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
 
 	tool := &SimplePluginTool{
 		Def: ToolDef{Name: "test_tool", Description: "test"},
@@ -220,7 +220,7 @@ func TestPluginContext_RegisterTool_NoPermission(t *testing.T) {
 func TestPluginContext_RegisterHook(t *testing.T) {
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
 
 	called := false
 	_ = called
@@ -247,7 +247,7 @@ func TestPluginContext_RegisterHook(t *testing.T) {
 func TestPluginContext_EnrichContext(t *testing.T) {
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
 
 	err := pc.EnrichContext("test_enricher", func(ctx context.Context) (string, error) {
 		return "enriched content", nil
@@ -1061,7 +1061,7 @@ func TestManifest_IDValidation(t *testing.T) {
 func TestPluginContext_SetSessionMetadata(t *testing.T) {
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
 
 	// Before setting, metadata should be empty
 	if pc.WorkingDir() != "" {
@@ -1784,7 +1784,7 @@ func TestWASMRuntime_Activate_NoOp(t *testing.T) {
 
 	// Activate should succeed (no-op with warning log)
 	storage := &noopStorage{}
-	ctx := newPluginContext(m, storage, newPluginLogger(m.ID), nil)
+	ctx := newPluginContext(m, storage, newPluginLogger(m.ID), nil, nil)
 
 	err = plugin.Activate(ctx)
 	if err != nil {
@@ -1958,7 +1958,7 @@ func TestPluginContext_Subscribe_NoPermission(t *testing.T) {
 	m.Permissions = []string{"bus.plugin", "bus.write"} // missing bus.read
 	storage := &noopStorage{}
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus, nil)
 
 	err := pc.Subscribe("test", func(ctx context.Context, topic string, data any) error {
 		return nil
@@ -1973,7 +1973,7 @@ func TestPluginContext_Publish_NoPermission(t *testing.T) {
 	m.Permissions = []string{"bus.plugin", "bus.read"} // missing bus.write
 	storage := &noopStorage{}
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus, nil)
 
 	err := pc.Publish("test", "data")
 	if err == nil {
@@ -2685,7 +2685,7 @@ func TestPluginContext_StorageInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
 
 	// Key not found
 	v, ok := pc.StorageInt("missing")
@@ -2734,7 +2734,7 @@ func TestPluginContext_StorageBool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
 
 	// Key not found
 	v, ok := pc.StorageBool("missing")
@@ -2790,7 +2790,7 @@ func TestPluginContext_StorageJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
 
 	type config struct {
 		Host string `json:"host"`
@@ -2820,7 +2820,7 @@ func TestPluginContext_StorageGetJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
 
 	type config struct {
 		Host string `json:"host"`
@@ -2895,7 +2895,7 @@ func (p *flakyPlugin) getAttempts() int {
 func TestPluginContext_OnPluginError(t *testing.T) {
 	m := testManifest()
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus, nil)
 
 	var receivedErr error
 	err := pc.OnPluginError(func(ctx context.Context, err error) {
@@ -2921,7 +2921,7 @@ func TestPluginContext_OnPluginError_NoPermission(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{} // no hooks.subscribe
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus, nil)
 
 	err := pc.OnPluginError(func(ctx context.Context, err error) {})
 	if err == nil {
@@ -3256,7 +3256,7 @@ func TestManifest_ChecksumVerification(t *testing.T) {
 func TestPluginContext_ResourceTracking(t *testing.T) {
 	t.Run("InitialCountsZero", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
 
 		if pc.ToolCallCount() != 0 {
 			t.Errorf("initial ToolCallCount = %d, want 0", pc.ToolCallCount())
@@ -3268,7 +3268,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("IncrementToolCalls", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
 
 		for i := 0; i < 3; i++ {
 			pc.incrementToolCallCount()
@@ -3284,7 +3284,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("IncrementHookCalls", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
 
 		for i := 0; i < 5; i++ {
 			pc.incrementHookCallCount()
@@ -3300,7 +3300,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("ConcurrentIncrements", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
 
 		const goroutines = 100
 		const increments = 100
@@ -3329,7 +3329,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("ToolAdapterIncrementsCount", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
 
 		tool := &SimplePluginTool{
 			Def: ToolDef{Name: "track_tool", Description: "test"},
@@ -3839,5 +3839,280 @@ func TestWirePluginTools_NilRegistry(t *testing.T) {
 	err := WirePluginTools(pm, nil)
 	if err == nil {
 		t.Error("expected error for nil registry")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginConfigStore_LoadEmpty(t *testing.T) {
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+
+	config, err := store.Load("com.test.empty")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(config) != 0 {
+		t.Errorf("expected empty config, got %v", config)
+	}
+}
+
+func TestPluginConfigStore_SaveAndLoad(t *testing.T) {
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+	pluginID := "com.test.save"
+
+	// Save config
+	config := map[string]any{
+		"apiKey": "sk-test-123",
+		"debug":  true,
+	}
+	if err := store.Save(pluginID, config); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Load and verify
+	loaded, err := store.Load(pluginID)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded["apiKey"] != "sk-test-123" {
+		t.Errorf("apiKey mismatch: got %v, want 'sk-test-123'", loaded["apiKey"])
+	}
+	if loaded["debug"] != true {
+		t.Errorf("debug mismatch: got %v, want true", loaded["debug"])
+	}
+
+	// Verify file exists on disk
+	path := filepath.Join(dir, "plugins", pluginID, "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config file: %v", err)
+	}
+	if !strings.Contains(string(data), "sk-test-123") {
+		t.Errorf("config file doesn't contain expected value")
+	}
+}
+
+func TestPluginConfigStore_Cache(t *testing.T) {
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+	pluginID := "com.test.cache"
+
+	// Save and load
+	config := map[string]any{"key": "value1"}
+	store.Save(pluginID, config)
+
+	loaded1, _ := store.Load(pluginID)
+	loaded2, _ := store.Load(pluginID)
+
+	// Modify returned map should not affect cache
+	loaded2["key"] = "modified"
+	if loaded1["key"] == "modified" {
+		t.Error("Load returned reference to cached map, not a clone")
+	}
+
+	// Invalidate cache and reload
+	store.InvalidateCache(pluginID)
+	loaded3, _ := store.Load(pluginID)
+	if loaded3["key"] != "value1" {
+		t.Errorf("after invalidation, got %v, want 'value1'", loaded3["key"])
+	}
+}
+
+func TestGetDefaultConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest *PluginManifest
+		want     map[string]any
+	}{
+		{
+			name:     "nil manifest",
+			manifest: nil,
+			want:     map[string]any{},
+		},
+		{
+			name:     "no contributes",
+			manifest: &PluginManifest{ID: "com.test", Name: "Test", Runtime: RuntimeNative},
+			want:     map[string]any{},
+		},
+		{
+			name: "with defaults",
+			manifest: &PluginManifest{
+				ID:      "com.test.defaults",
+				Name:    "Test",
+				Runtime: RuntimeNative,
+				Contributes: &PluginContributes{
+					Configuration: &ConfigurationContribution{
+						Title: "Test Config",
+						Properties: map[string]ConfigProperty{
+							"apiUrl":  {Type: "string", Default: "https://api.example.com", Description: "API URL"},
+							"timeout": {Type: "number", Default: 30, Description: "Timeout in seconds"},
+							"debug":   {Type: "boolean", Default: false, Description: "Debug mode"},
+						},
+					},
+				},
+			},
+			want: map[string]any{
+				"apiUrl":  "https://api.example.com",
+				"timeout": 30,
+				"debug":   false,
+			},
+		},
+		{
+			name: "no default value",
+			manifest: &PluginManifest{
+				ID:      "com.test.nodefault",
+				Name:    "Test",
+				Runtime: RuntimeNative,
+				Contributes: &PluginContributes{
+					Configuration: &ConfigurationContribution{
+						Title: "Test Config",
+						Properties: map[string]ConfigProperty{
+							"optional": {Type: "string", Description: "Optional field"},
+						},
+					},
+				},
+			},
+			want: map[string]any{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetDefaultConfig(tt.manifest)
+			if len(got) != len(tt.want) {
+				t.Errorf("len mismatch: got %d, want %d", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("key %q: got %v (%T), want %v (%T)", k, got[k], got[k], v, v)
+				}
+			}
+		})
+	}
+}
+
+func TestPluginContext_Config(t *testing.T) {
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+
+	// Create a manifest with configuration defaults
+	m := PluginManifest{
+		ID:          "com.test.config",
+		Name:        "Config Test",
+		Runtime:     RuntimeNative,
+		Permissions: []string{"*"},
+		Contributes: &PluginContributes{
+			Configuration: &ConfigurationContribution{
+				Title: "Test Settings",
+				Properties: map[string]ConfigProperty{
+					"mode":    {Type: "string", Default: "auto", Description: "Operating mode"},
+					"level":   {Type: "number", Default: 5, Description: "Log level"},
+					"enabled": {Type: "boolean", Default: true, Description: "Enable feature"},
+				},
+			},
+		},
+	}
+
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, store)
+
+	// Config() should return defaults when no user config exists
+	config, err := pc.Config()
+	if err != nil {
+		t.Fatalf("Config() failed: %v", err)
+	}
+	if config["mode"] != "auto" {
+		t.Errorf("mode default: got %v, want 'auto'", config["mode"])
+	}
+	if config["level"] != 5 {
+		t.Errorf("level default: got %v, want 5", config["level"])
+	}
+
+	// SetConfig should override defaults
+	if err := pc.SetConfig("mode", "manual"); err != nil {
+		t.Fatalf("SetConfig failed: %v", err)
+	}
+
+	config, err = pc.Config()
+	if err != nil {
+		t.Fatalf("Config() after SetConfig failed: %v", err)
+	}
+	if config["mode"] != "manual" {
+		t.Errorf("mode after set: got %v, want 'manual'", config["mode"])
+	}
+	// Other defaults should still be present
+	if config["level"] != 5 {
+		t.Errorf("level after mode set: got %v, want 5", config["level"])
+	}
+	if config["enabled"] != true {
+		t.Errorf("enabled after mode set: got %v, want true", config["enabled"])
+	}
+}
+
+func TestPluginContext_Config_NilStore(t *testing.T) {
+	m := testManifest()
+	// nil configStore should not panic
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+	config, err := pc.Config()
+	if err != nil {
+		t.Fatalf("Config() with nil store failed: %v", err)
+	}
+	if config == nil {
+		t.Error("expected non-nil config")
+	}
+
+	err = pc.SetConfig("key", "value")
+	if err == nil {
+		t.Error("expected error when configStore is nil")
+	}
+}
+
+func TestPluginContext_SetConfig(t *testing.T) {
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+	pluginID := "com.test.setconfig"
+
+	m := PluginManifest{
+		ID:          pluginID,
+		Name:        "SetConfig Test",
+		Runtime:     RuntimeNative,
+		Permissions: []string{"*"},
+	}
+
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, store)
+
+	// Set multiple keys
+	if err := pc.SetConfig("key1", "value1"); err != nil {
+		t.Fatalf("SetConfig key1 failed: %v", err)
+	}
+	if err := pc.SetConfig("key2", 42); err != nil {
+		t.Fatalf("SetConfig key2 failed: %v", err)
+	}
+
+	// Verify both keys are present
+	config, err := pc.Config()
+	if err != nil {
+		t.Fatalf("Config() failed: %v", err)
+	}
+	if config["key1"] != "value1" {
+		t.Errorf("key1: got %v, want 'value1'", config["key1"])
+	}
+	// JSON numbers unmarshal as float64, but cache stores Go native types
+	switch v := config["key2"].(type) {
+	case float64:
+		if v != 42 {
+			t.Errorf("key2: got %v, want 42", v)
+		}
+	case int:
+		if v != 42 {
+			t.Errorf("key2: got %v, want 42", v)
+		}
+	default:
+		t.Errorf("key2: got %v (%T), want 42", config["key2"], config["key2"])
 	}
 }

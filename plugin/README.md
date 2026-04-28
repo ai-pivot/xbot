@@ -1,20 +1,47 @@
 # xbot Plugin System
 
-A VSCode-inspired plugin system for xbot, providing extensible tool registration, lifecycle hooks, context enrichment, event bus, and isolated storage.
+A VSCode-inspired plugin system for xbot, providing extensible tool registration, lifecycle hooks, context enrichment, event bus, isolated storage, middleware chains, rate limiting, audit trails, and more.
 
 ## Quick Start
 
 ### 1. Create a Plugin
+
+The fastest way to create a plugin is using the SDK helpers:
 
 ```go
 package myplugin
 
 import (
     "context"
-    "fmt"
     "xbot/plugin"
 )
 
+type MyPlugin struct{}
+
+func (p *MyPlugin) Manifest() plugin.PluginManifest {
+    return plugin.QuickManifest("com.example.my-plugin", "My Plugin", "1.0.0",
+        "Does something useful",
+        plugin.WithPermissions("tools.register", "storage.private"),
+        plugin.WithActivationEvents("onStart"),
+    )
+}
+
+func (p *MyPlugin) Activate(ctx plugin.PluginContext) error {
+    // Create and register a tool with one-liner
+    ctx.RegisterTool(plugin.ToolFromFunc("echo", "Echo input",
+        func(ctx context.Context, input string) (string, error) {
+            return "Echo: " + input, nil
+        },
+    ))
+    return nil
+}
+
+func (p *MyPlugin) Deactivate(ctx plugin.PluginContext) error { return nil }
+```
+
+For more control, implement the `Plugin` interface directly:
+
+```go
 type MyPlugin struct{}
 
 func (p *MyPlugin) Manifest() plugin.PluginManifest {
@@ -29,29 +56,24 @@ func (p *MyPlugin) Manifest() plugin.PluginManifest {
             "tools.register",
             "hooks.subscribe",
             "storage.private",
-            // Optional: enable plugin-to-plugin event bus
-            // "bus.plugin", "bus.read", "bus.write",
         },
     }
 }
 
 func (p *MyPlugin) Activate(ctx plugin.PluginContext) error {
-    // Register a tool using V2 (ExecV2Fn) with rich call context
     ctx.RegisterTool(&plugin.SimplePluginTool{
         Def: plugin.BuildToolDef("my_tool", "Does something useful",
             plugin.ToolParamDef{Name: "input", Type: "string", Description: "Input param"},
         ),
         ExecV2Fn: func(ctx *plugin.ToolCallContext, input string) (*plugin.ToolResult, error) {
-            // Access session metadata from ToolCallContext
             sessionID := ctx.SessionID
             channel := ctx.Channel
-            _ = sessionID // use as needed
+            _ = sessionID
             _ = channel
             return plugin.NewToolResult("Done!"), nil
         },
     })
 
-    // Subscribe to events on the plugin event bus (requires bus.plugin + bus.read)
     ctx.Subscribe("my-topic", func(ctx context.Context, topic string, data any) error {
         fmt.Printf("Received event on %s: %v\n", topic, data)
         return nil
@@ -82,7 +104,16 @@ func (p *MyPlugin) Deactivate(ctx plugin.PluginContext) error {
                 "name": "my_tool",
                 "description": "Does something useful"
             }
-        ]
+        ],
+        "configuration": {
+            "properties": {
+                "max_retries": {
+                    "type": "number",
+                    "default": 3,
+                    "description": "Maximum retry attempts"
+                }
+            }
+        }
     }
 }
 ```
@@ -236,7 +267,7 @@ func (p *MyPlugin) Activate(ctx plugin.PluginContext) error {
 
 - Each handler invocation is wrapped in panic recovery — a panicking handler will not crash the bus.
 - Handlers can safely subscribe/unsubscribe during iteration (copy-on-read pattern).
-- `Publish` returns a slice of errors from all handlers (including recovered panics).
+- `Publish` returns an `error` (the first error from any handler, including recovered panics). The underlying `PluginEventBus.Publish` returns `[]error` for all handler errors.
 
 ## Health Check & Metrics
 
@@ -380,6 +411,207 @@ Plugins can declare dependencies on other plugins in their manifest. Dependencie
 ```
 
 > **Note:** Currently only format validation is performed on dependency declarations. Actual version resolution and ordering will be added in a future iteration.
+
+## Middleware Chain
+
+Middleware chain for plugin tool execution — onion-style composition. Middlewares wrap the final handler and can intercept, modify, or short-circuit tool calls.
+
+```go
+chain := plugin.NewMiddlewareChain(
+    plugin.LoggingMiddleware(logger),
+    plugin.RecoveryMiddleware(logger),
+    plugin.TimeoutMiddleware(10 * time.Second),
+    plugin.RetryMiddleware(3),
+)
+
+result, err := chain.Execute(ctx, "my_tool", input, func(ctx context.Context, toolName, input string) (*plugin.ToolResult, error) {
+    // final handler
+    return plugin.NewToolResult("done"), nil
+})
+```
+
+### Built-in Middleware
+
+| Middleware | Description |
+|------------|-------------|
+| `LoggingMiddleware(logger)` | Logs tool name, duration, and error |
+| `RecoveryMiddleware(logger)` | Recovers from panics, returns error instead |
+| `TimeoutMiddleware(timeout)` | Enforces context deadline |
+| `RetryMiddleware(maxRetries)` | Automatic retry on error |
+
+## Plugin Configuration
+
+User-level plugin configuration stored at `~/.xbot/plugins/<id>/config.json`, independent of the plugin installation directory. This allows plugins to be updated without losing user settings.
+
+### Reading Config
+
+```go
+// Read config within Activate
+config, err := ctx.Config() // returns (map[string]any, error)
+maxRetries := 3 // default
+if v, ok := config["max_retries"]; ok {
+    maxRetries = int(v.(float64))
+}
+```
+
+### Declaring Config Schema
+
+Add a `configuration` section to your manifest's `contributes`:
+
+```json
+"contributes": {
+    "configuration": {
+        "properties": {
+            "max_retries": {
+                "type": "number",
+                "default": 3,
+                "description": "Maximum retry attempts"
+            }
+        }
+    }
+}
+```
+
+### ConfigStore API
+
+| Method | Description |
+|--------|-------------|
+| `PluginConfigStore.Load(pluginID)` | Load config as `map[string]any` |
+| `PluginConfigStore.Save(pluginID, config)` | Save config (atomic write) |
+| `PluginConfigStore.Update(pluginID, key, value)` | Update a single key |
+| `GetDefaultConfig(manifest)` | Extract defaults from schema |
+
+## Rate Limiting & Quota
+
+Per-plugin rate limiting and resource quotas to prevent any single plugin from overwhelming the system.
+
+### Rate Limiter
+
+```go
+rl := plugin.NewPluginRateLimiter(map[string]plugin.RateLimit{
+    "com.example.plugin": {MaxCalls: 60, Window: time.Minute},
+})
+```
+
+### Quota Manager
+
+```go
+qm := plugin.NewPluginQuotaManager(map[string]plugin.PluginQuota{
+    "com.example.plugin": {MaxToolCallsPerDay: 1000, MaxStorageMB: 50},
+})
+```
+
+### Integrated Bridge
+
+```go
+// Rate limiting and quotas are enforced automatically via PluginToolBridgeWithLimits
+bridge := plugin.NewPluginToolBridgeWithLimits(adapter, pluginID, rl, qm)
+```
+
+### Features
+
+- Sliding window rate limiting per plugin
+- Tool call count + storage byte quotas
+- Automatic daily reset (midnight UTC)
+- Integrated with PluginToolBridge
+
+## Audit Trail
+
+All key plugin lifecycle events are automatically logged to an append-only audit trail.
+
+```go
+// Audit log is created automatically by PluginManager
+// Default path: ~/.xbot/plugins/audit.jsonl
+
+// Query audit entries
+entries := pm.AuditLog().Query(plugin.AuditFilter{
+    PluginID: "com.example.plugin",
+    From:     time.Now().Add(-24 * time.Hour),
+})
+```
+
+### AuditEntry
+
+| Field | Description |
+|-------|-------------|
+| `Timestamp` | Event time |
+| `PluginID` | Plugin identifier |
+| `Action` | One of: `activate`, `deactivate`, `install`, `uninstall`, `reload`, `disable` |
+| `Details` | Optional additional data |
+| `Error` | Error message if the action failed |
+
+### Features
+
+- Append-only JSONL format
+- Silent writes (errors don't block caller)
+- Query with time range + plugin ID filter
+- Auto-logged on key lifecycle events
+
+## SDK Helpers
+
+### Quick Tool Creation
+
+```go
+// Simple function → PluginTool
+tool := plugin.ToolFromFunc("echo", "Echo input", func(ctx context.Context, input string) (string, error) {
+    return "Echo: " + input, nil
+})
+
+// JSON input/output tool
+jsonTool := plugin.ToolFromJSONFunc("search", "Search items",
+    []plugin.ToolParamDef{{Name: "query", Type: "string", Description: "Search query", Required: true}},
+    func(ctx context.Context, input json.RawMessage) (any, error) {
+        return map[string]any{"results": []string{}}, nil
+    },
+)
+```
+
+### Quick Hook Creation
+
+```go
+// Deny matching tools
+ctx.OnPreToolUse("Shell*", plugin.DenyHook("Shell commands are blocked"))
+
+// Log all tool calls
+ctx.OnPreToolUse("*", plugin.LogHook(logger, "Tool call intercepted"))
+```
+
+### Quick Manifest Creation
+
+```go
+manifest := plugin.QuickManifest("com.example.plugin", "My Plugin", "1.0.0", "Does things",
+    plugin.WithPermissions("tools.register", "storage.private"),
+    plugin.WithActivationEvents("onStart"),
+    plugin.WithTools(toolContribution),
+)
+```
+
+### Quick Context Enrichers
+
+```go
+// Static text enricher
+ctx.EnrichContext("static-info", plugin.StaticEnricher("Additional context here"))
+
+// File-based enricher
+ctx.EnrichContext("file-data", plugin.FileEnricher("/path/to/data.txt"))
+```
+
+## Auto-Retry
+
+Automatic retry for plugins that enter an error state during activation.
+
+```go
+pm.SetAutoRetry(true, 5)             // Enable with max 5 retries per plugin
+pm.SetRetryInterval(10 * time.Second) // Custom scan interval
+```
+
+### Behavior
+
+- A background goroutine periodically scans plugins in error state
+- Exponential backoff: `1s → 2s → 4s → ... → 30s` max
+- `maxRetries=0` means unlimited retries
+- Activation timeout is read from the manifest `timeout` field (default 30s)
+- Auto-stopped when `DeactivateAll` is called
 
 ## Architecture
 

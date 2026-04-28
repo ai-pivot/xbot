@@ -55,6 +55,7 @@ type PluginManager struct {
 	// Rate limiting and quota (optional; nil = no enforcement)
 	rateLimiter  *PluginRateLimiter
 	quotaManager *PluginQuotaManager
+	configStore  *PluginConfigStore
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -77,6 +78,7 @@ func NewPluginManager(xbotHome string) *PluginManager {
 		bus:           NewPluginEventBus(),
 		retryInterval: 5 * time.Second,
 		auditLog:      al,
+		configStore:   NewPluginConfigStore(xbotHome),
 	}
 }
 
@@ -333,7 +335,7 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 		}
 
 		// Create PluginContext
-		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus)
+		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore)
 
 		// Create runtime instance
 		if pm.runtimeFactory != nil {
@@ -621,7 +623,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	entry := &PluginEntry{
 		Manifest: &m,
 		Plugin:   p,
-		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus),
+		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
 		State:    StateDiscovered,
 		Dir:      pluginDir,
 	}
@@ -717,11 +719,13 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 		storage = &noopStorage{}
 	}
 
+	pm.configStore.InvalidateCache(pluginID)
+
 	newEntry := &PluginEntry{
 		Manifest: m,
 		State:    StateDiscovered,
 		Dir:      pluginDir,
-		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus),
+		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
 	}
 
 	if pm.runtimeFactory != nil {
@@ -826,7 +830,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 		Manifest: installedManifest,
 		State:    StateDiscovered,
 		Dir:      targetDir,
-		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus),
+		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore),
 	}
 
 	if pm.runtimeFactory != nil {
@@ -1303,4 +1307,9 @@ func (pm *PluginManager) SetQuota(pluginID string, quota PluginQuota) {
 		pm.quotaManager = NewPluginQuotaManager(nil)
 	}
 	pm.quotaManager.SetQuota(pluginID, quota)
+}
+
+// ConfigStore returns the plugin configuration store.
+func (pm *PluginManager) ConfigStore() *PluginConfigStore {
+	return pm.configStore
 }

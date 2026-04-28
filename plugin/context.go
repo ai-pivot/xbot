@@ -31,6 +31,11 @@ type PluginContext interface {
 	// Requires "tools.register" permission in manifest.
 	RegisterTool(tool PluginTool) error
 
+	// UseMiddleware registers a plugin middleware.
+	// Middleware is called for ALL tool executions from this plugin.
+	// Requires "tools.register" permission.
+	UseMiddleware(middleware PluginMiddleware) error
+
 	// --- Hook Subscriptions ---
 
 	// OnPreToolUse subscribes to PreToolUse events with an optional matcher.
@@ -197,6 +202,7 @@ type pluginContextImpl struct {
 	tools            []PluginTool
 	hooks            []hookRegistration
 	contextEnrichers []enricherRegistration
+	toolMiddlewares  []PluginMiddleware
 
 	// Metadata from the current session
 	workingDir string
@@ -204,6 +210,8 @@ type pluginContextImpl struct {
 	chatID     string
 
 	bus *PluginEventBus
+
+	configStore *PluginConfigStore
 
 	errorCallback PluginErrorCallback
 
@@ -224,7 +232,7 @@ type enricherRegistration struct {
 }
 
 // newPluginContext creates a new PluginContext for the given plugin.
-func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger Logger, bus *PluginEventBus) *pluginContextImpl {
+func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger Logger, bus *PluginEventBus, configStore *PluginConfigStore) *pluginContextImpl {
 	return &pluginContextImpl{
 		pluginID:         manifest.ID,
 		manifest:         manifest,
@@ -235,6 +243,7 @@ func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger 
 		hooks:            make([]hookRegistration, 0),
 		contextEnrichers: make([]enricherRegistration, 0),
 		bus:              bus,
+		configStore:      configStore,
 	}
 }
 
@@ -416,6 +425,30 @@ func (pc *pluginContextImpl) ChatID() string {
 }
 func (pc *pluginContextImpl) Logger() Logger { return pc.logger }
 
+func (pc *pluginContextImpl) Config() (map[string]any, error) {
+	// Start with manifest defaults
+	config := GetDefaultConfig(pc.manifest)
+
+	// Overlay user config
+	if pc.configStore != nil {
+		userConfig, err := pc.configStore.Load(pc.pluginID)
+		if err != nil {
+			return config, fmt.Errorf("load config: %w", err)
+		}
+		for k, v := range userConfig {
+			config[k] = v
+		}
+	}
+	return config, nil
+}
+
+func (pc *pluginContextImpl) SetConfig(key string, value any) error {
+	if pc.configStore == nil {
+		return fmt.Errorf("plugin config: config store not available")
+	}
+	return pc.configStore.Update(pc.pluginID, key, value)
+}
+
 func (pc *pluginContextImpl) Subscribe(topic string, handler PluginEventHandler) error {
 	if !pc.perm.HasAll(PermBusPlugin, PermBusRead) {
 		return &PermissionError{
@@ -468,6 +501,34 @@ func (pc *pluginContextImpl) GetEnrichers() []enricherRegistration {
 	defer pc.mu.RUnlock()
 	result := make([]enricherRegistration, len(pc.contextEnrichers))
 	copy(result, pc.contextEnrichers)
+	return result
+}
+
+// UseMiddleware registers a plugin middleware for tool execution interception.
+func (pc *pluginContextImpl) UseMiddleware(middleware PluginMiddleware) error {
+	if !pc.perm.Has(PermToolsRegister) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermToolsRegister,
+			Action:     "register middleware",
+		}
+	}
+	if middleware == nil {
+		return nil
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.toolMiddlewares = append(pc.toolMiddlewares, middleware)
+	pc.logger.Info("Middleware registered")
+	return nil
+}
+
+// GetMiddlewares returns a copy of the registered middleware list.
+func (pc *pluginContextImpl) GetMiddlewares() []PluginMiddleware {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make([]PluginMiddleware, len(pc.toolMiddlewares))
+	copy(result, pc.toolMiddlewares)
 	return result
 }
 

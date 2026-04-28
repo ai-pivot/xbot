@@ -11,11 +11,16 @@ A comprehensive guide for plugin developers — from getting started to advanced
 - [5. Plugin Capabilities](#5-plugin-capabilities)
 - [6. gRPC Runtime Development](#6-grpc-runtime-development)
 - [7. Native Runtime Development (Go)](#7-native-runtime-development-go)
-- [8. Storage](#8-storage)
-- [9. Debugging](#9-debugging)
-- [10. Deployment](#10-deployment)
-- [11. Best Practices](#11-best-practices)
-- [12. FAQ](#12-faq)
+- [8. SDK Helpers](#8-sdk-helpers)
+- [9. Middleware System](#9-middleware-system)
+- [10. Plugin Configuration](#10-plugin-configuration)
+- [11. Rate Limiting & Quota](#11-rate-limiting--quota)
+- [12. Audit Trail](#12-audit-trail)
+- [13. Storage](#13-storage)
+- [14. Debugging](#14-debugging)
+- [15. Deployment](#15-deployment)
+- [16. Best Practices](#16-best-practices)
+- [17. FAQ](#17-faq)
 
 ---
 
@@ -544,7 +549,564 @@ pm.ActivateAll(ctx)    // Activate all onStart plugins
 
 ---
 
-## 8. Storage
+## 8. SDK Helpers
+
+The `sdk.go` package provides convenience functions that reduce boilerplate for common plugin tasks. These helpers are only available for **native (Go)** plugins.
+
+### Quick Tool Creation
+
+#### ToolFromFunc — Simplest possible tool
+
+`ToolFromFunc` creates a tool from a function that receives a plain string and returns a plain string. No struct definitions, no `ToolResult` wrapping — just the logic.
+
+```go
+// One function = one tool
+tool := plugin.ToolFromFunc("greet", "Greet a user",
+    func(ctx context.Context, input string) (string, error) {
+        return "Hello, " + input, nil
+    },
+)
+ctx.RegisterTool(tool)
+```
+
+This is equivalent to creating a `SimplePluginTool` manually, but with less code.
+
+#### ToolFromJSONFunc — Structured input/output
+
+When your tool needs typed parameters and returns structured data, use `ToolFromJSONFunc`. It accepts `json.RawMessage` as input and auto-marshals the return value to JSON.
+
+```go
+searchTool := plugin.ToolFromJSONFunc("search", "Search items",
+    []plugin.ToolParamDef{
+        {Name: "query", Type: "string", Description: "Search query", Required: true},
+        {Name: "limit", Type: "number", Description: "Max results", Required: false},
+    },
+    func(ctx context.Context, input json.RawMessage) (any, error) {
+        var params struct {
+            Query string `json:"query"`
+            Limit int    `json:"limit"`
+        }
+        if err := json.Unmarshal(input, &params); err != nil {
+            return nil, err
+        }
+        // ... perform search ...
+        return map[string]any{
+            "results": []string{"item1", "item2"},
+            "count":   2,
+        }, nil
+    },
+)
+ctx.RegisterTool(searchTool)
+```
+
+**What happens internally**: `ToolFromJSONFunc` calls `BuildToolDef` to construct the parameter schema from `ToolParamDef` slice, wraps the function to parse raw JSON input, and auto-marshals the return value.
+
+### Quick Manifest Builder
+
+`QuickManifest` creates a valid `PluginManifest` using a fluent option pattern. Instead of constructing the struct field by field, you compose it from declarative options:
+
+```go
+manifest := plugin.QuickManifest(
+    "com.example.my-plugin",
+    "My Plugin",
+    "1.0.0",
+    "A plugin built with SDK helpers",
+    plugin.WithPermissions("tools.register", "storage.private"),
+    plugin.WithActivationEvents("onStart"),
+    plugin.WithTools(plugin.ToolContribution{
+        Name: "my_tool", Description: "Does something",
+    }),
+    plugin.WithHooks(plugin.HookContribution{
+        Event: "PostToolUse", Matcher: "*",
+    }),
+    plugin.WithEnrichers(plugin.EnricherContribution{
+        Name: "project_info", Description: "Current project context",
+    }),
+    plugin.WithRuntime(plugin.RuntimeNative),
+)
+```
+
+**Available options**:
+
+| Option | Description |
+|--------|-------------|
+| `WithPermissions(perms...)` | Add permission strings |
+| `WithActivationEvents(events...)` | Set activation events (replaces default `onStart`) |
+| `WithRuntime(rt)` | Set the runtime type |
+| `WithTools(tools...)` | Add tool contributions |
+| `WithHooks(hooks...)` | Add hook contributions |
+| `WithEnrichers(enrichers...)` | Add context enricher contributions |
+
+### Hook Factory Functions
+
+One-line hooks for common patterns — no need to write the full `HookHandler` closure:
+
+```go
+// Deny — always block with a message
+ctx.OnPreToolUse("Shell*rm*", plugin.DenyHook("Dangerous rm commands are blocked"))
+
+// Log — record the event and allow
+ctx.OnPreToolUse("*", plugin.LogHook(logger, "Tool call observed"))
+
+// Allow — always allow (useful as a no-op placeholder)
+ctx.OnPostToolUse("*", plugin.AllowHook())
+```
+
+**When to use**:
+- `DenyHook`: Security policies — block dangerous operations
+- `LogHook`: Audit logging — record every matching event
+- `AllowHook`: Default passthrough — useful in conditional hook chains
+
+### Enricher Factory Functions
+
+One-line context enrichers for static or file-based content injection:
+
+```go
+// StaticEnricher — always returns the same string
+ctx.EnrichContext("rules", plugin.StaticEnricher("Always use tabs for indentation"))
+
+// FileEnricher — reads content from a file on every call
+ctx.EnrichContext("project-info", plugin.FileEnricher("./PROJECT.md"))
+```
+
+**Note**: `FileEnricher` reads from disk on every LLM interaction. For files that change infrequently, consider caching the content in your plugin and using `StaticEnricher` with the cached value.
+
+### MustActivate
+
+For plugins that must succeed at startup (fail-fast behavior):
+
+```go
+func init() {
+    ctx := /* obtain PluginContext */
+    plugin.MustActivate(myPlugin, ctx)  // panics if activation fails
+}
+```
+
+Use this in `init()` functions or during app bootstrap where a missing plugin should halt the entire process.
+
+---
+
+## 9. Middleware System
+
+### Concept
+
+The middleware chain follows the classic **onion model** (same pattern as Gin/Chi HTTP frameworks). Each middleware wraps the next, forming nested layers:
+
+```
+Request → Logging → Recovery → Timeout → Retry → [Tool Execute]
+                                                     ← Retry ← Timeout ← Recovery ← Logging ← Response
+```
+
+Each middleware receives `(ctx, toolName, input, next)` and **must** call `next()` to continue the chain. Not calling `next()` short-circuits execution — useful for early rejection.
+
+### Creating a Middleware Chain
+
+```go
+chain := plugin.NewMiddlewareChain(
+    plugin.LoggingMiddleware(logger),           // Log tool call details
+    plugin.RecoveryMiddleware(logger),          // Recover from panics
+    plugin.TimeoutMiddleware(10 * time.Second), // Enforce timeout
+    plugin.RetryMiddleware(3),                  // Retry on error
+)
+
+// Execute a tool call through the chain
+result, err := chain.Execute(ctx, "my_tool", input,
+    func(ctx context.Context, toolName, input string) (*plugin.ToolResult, error) {
+        // Final handler — the actual tool execution
+        return myTool.Execute(ctx, input)
+    },
+)
+```
+
+You can also append middleware after construction:
+
+```go
+chain.Use(myCustomMiddleware)
+```
+
+### Built-in Middleware
+
+#### LoggingMiddleware
+
+Logs tool call start, completion, and failure. Pure observer — does not modify results.
+
+```go
+plugin.LoggingMiddleware(logger)
+```
+
+Logs: tool name, input length, duration, and error (if any).
+
+#### RecoveryMiddleware
+
+Recovers from panics inside tool execution and converts them to error `ToolResult`. Includes the stack trace in the log.
+
+```go
+plugin.RecoveryMiddleware(logger)
+```
+
+Prevents a panicking tool from crashing the entire process.
+
+#### TimeoutMiddleware
+
+Enforces a maximum execution duration using `context.WithTimeout`. Returns an error `ToolResult` if the deadline is exceeded.
+
+```go
+plugin.TimeoutMiddleware(10 * time.Second)
+```
+
+Passing `0` or negative creates a no-op middleware.
+
+#### RetryMiddleware
+
+Retries tool execution on Go `error` (not `ToolResult.IsError`). Uses fixed 100ms backoff between attempts.
+
+```go
+plugin.RetryMiddleware(3)  // 1 initial + 3 retries = 4 total attempts
+```
+
+Stops retrying if the context is cancelled. `maxRetries <= 0` creates a no-op middleware.
+
+### Custom Middleware
+
+Write your own middleware by implementing the `PluginMiddleware` function signature:
+
+```go
+func MetricsMiddleware(metrics *MetricsCollector) plugin.PluginMiddleware {
+    return func(ctx context.Context, toolName, input string, next plugin.PluginMiddlewareNext) (*plugin.ToolResult, error) {
+        start := time.Now()
+        result, err := next(ctx, toolName, input)  // call the next middleware
+        duration := time.Since(start)
+
+        metrics.Record(toolName, duration, err)
+        return result, err
+    }
+}
+
+// Register during activation
+ctx.UseMiddleware(MetricsMiddleware(myMetrics))
+```
+
+**Key rules**:
+- Always call `next()` unless you intend to short-circuit
+- Return the same `(result, err)` from `next()` unless you need to transform them
+- Middleware registered via `ctx.UseMiddleware()` applies to **all** tool executions from this plugin
+
+### Execution Order
+
+Middlewares execute in **registration order** — the first registered is the outermost layer. For `[Logging, Recovery, Timeout, Retry]`:
+
+```
+1. Logging.before   → logs "tool call started"
+2. Recovery.before  → sets up panic recovery
+3. Timeout.before   → starts countdown
+4. Retry.before     → begins attempt loop
+5. [Tool Execute]   → actual tool logic
+6. Retry.after      → retries if error
+7. Timeout.after    → checks deadline
+8. Recovery.after   → cleans up
+9. Logging.after    → logs "tool call completed"
+```
+
+### Integration with PluginToolBridge
+
+The middleware chain is wired automatically when plugins are integrated via `PluginToolBridge`. Rate limiting and quota checks run **before** the middleware chain (host-level enforcement that cannot be bypassed by middleware):
+
+```
+Rate Limit Check → Quota Check → Middleware Chain → Tool Execute
+```
+
+---
+
+## 10. Plugin Configuration
+
+The plugin configuration system allows plugins to declare user-configurable settings with defaults, and users to override those settings without modifying plugin code.
+
+### Declaring Configuration Schema
+
+Add a `configuration` section to your `plugin.json` under `contributes`:
+
+```json
+{
+  "contributes": {
+    "configuration": {
+      "title": "My Plugin Settings",
+      "properties": {
+        "api_endpoint": {
+          "type": "string",
+          "default": "https://api.example.com",
+          "description": "API endpoint URL"
+        },
+        "max_retries": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum retry attempts"
+        },
+        "debug_mode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug logging"
+        }
+      }
+    }
+  }
+}
+```
+
+**Supported types**: `"string"`, `"number"`, `"boolean"`.
+
+Each property has:
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | JSON Schema type |
+| `default` | No | Default value when no user config exists |
+| `description` | Yes | Human-readable explanation |
+
+### Reading Configuration in Code
+
+In native plugins, use `Config()` on the `PluginContext`. It merges manifest defaults with user overrides:
+
+```go
+func (p *MyPlugin) Activate(ctx plugin.PluginContext) error {
+    config, err := ctx.Config()
+    if err != nil {
+        return fmt.Errorf("load config: %w", err)
+    }
+
+    endpoint, _ := config["api_endpoint"].(string)       // "https://api.example.com"
+    retries, _ := config["max_retries"].(float64)        // 3.0 (JSON numbers → float64)
+    debug, _ := config["debug_mode"].(bool)              // false
+
+    // Use config values...
+    return nil
+}
+```
+
+**Type assertion note**: JSON unmarshaling produces `float64` for numbers, `string` for strings, and `bool` for booleans. Always type-assert accordingly.
+
+### Writing Configuration
+
+Use `SetConfig` to persist individual configuration values at runtime:
+
+```go
+err := ctx.SetConfig("debug_mode", true)
+if err != nil {
+    return err
+}
+```
+
+`SetConfig` performs an atomic load-modify-save operation protected by a write lock, preventing concurrent updates from overwriting each other.
+
+### Configuration File Location
+
+User configuration is stored at:
+
+```
+~/.xbot/plugins/<id>/config.json
+```
+
+Users can manually edit this file. Example content:
+
+```json
+{
+  "api_endpoint": "https://custom-api.example.com",
+  "debug_mode": true
+}
+```
+
+**Properties**:
+- Independent of the plugin installation directory
+- Atomic writes (temp file + rename) to prevent corruption
+- In-memory cache with automatic invalidation — `Config()` always reads fresh data
+- Missing file → only manifest defaults are returned
+
+### How Defaults Work
+
+When `Config()` is called:
+1. Manifest defaults are extracted via `GetDefaultConfig()`
+2. User config from `config.json` is loaded
+3. User values **override** defaults for matching keys
+4. The merged result is returned
+
+This means plugins always have sensible defaults even when no user config file exists.
+
+---
+
+## 11. Rate Limiting & Quota
+
+xbot provides host-level enforcement of rate limits and daily quotas for plugin tool calls. These checks run **before** any middleware, making them impossible to bypass.
+
+### Rate Limiting (Sliding Window)
+
+`PluginRateLimiter` enforces per-plugin rate limits using a sliding window counter:
+
+```go
+// Create a rate limiter: allow 100 calls per minute for "com.example.api-plugin"
+rl := plugin.NewPluginRateLimiter(map[string]plugin.RateLimit{
+    "com.example.api-plugin": {MaxCalls: 100, Window: time.Minute},
+})
+
+// Check if a call is allowed
+if !rl.Allow("com.example.api-plugin") {
+    // Rate limit exceeded
+}
+
+// Query remaining calls
+remaining := rl.Remaining("com.example.api-plugin")  // -1 if no limit configured
+
+// Dynamically update limits
+rl.SetRateLimit("com.example.api-plugin", plugin.RateLimit{MaxCalls: 200, Window: time.Minute})
+
+// Reset counters
+rl.Reset("com.example.api-plugin")
+```
+
+**Behavior**:
+- Plugins without configured limits are **unlimited** (`Allow()` always returns `true`)
+- Uses a true sliding window (not fixed window) for smoother enforcement
+- Thread-safe (mutex-protected)
+
+### Daily Quotas
+
+`PluginQuotaManager` enforces daily resource limits:
+
+```go
+// Create a quota manager
+qm := plugin.NewPluginQuotaManager(map[string]plugin.PluginQuota{
+    "com.example.api-plugin": {
+        MaxToolCallsPerDay: 1000,
+        MaxStorageMB:       50,
+    },
+})
+
+// Check tool call budget
+allowed, remaining := qm.CheckToolCall("com.example.api-plugin")
+if !allowed {
+    // Daily quota exceeded
+}
+
+// Check storage quota
+ok, usedBytes := qm.CheckStorage("com.example.api-plugin")
+if !ok {
+    // Storage quota exceeded
+}
+
+// Query current usage
+toolCalls, storageBytes := qm.GetQuotaUsage("com.example.api-plugin")
+```
+
+**Quota features**:
+| Feature | Description |
+|---------|-------------|
+| `MaxToolCallsPerDay` | Maximum tool executions per UTC day (lazy reset) |
+| `MaxStorageMB` | Maximum storage size in MB (checked against actual key values) |
+| Daily reset | Counters reset automatically at UTC midnight |
+| Dynamic config | `SetQuota()` updates limits at runtime |
+
+### Integration with PluginToolBridge
+
+Rate limiting and quotas are enforced at the bridge level via `NewPluginToolBridgeWithLimits`:
+
+```go
+bridge := plugin.NewPluginToolBridgeWithLimits(adapter, pluginID, rateLimiter, quotaManager)
+```
+
+When a tool call comes through the bridge:
+1. **Rate limit check** — if exceeded, returns error immediately
+2. **Quota check** — if daily budget exhausted, returns error immediately
+3. **Middleware chain** — runs only if both checks pass
+4. **Tool execution** — runs last
+
+This ensures host-level resource protection is always enforced regardless of plugin middleware configuration.
+
+---
+
+## 12. Audit Trail
+
+The `AuditLogger` provides append-only JSONL audit logging for plugin operations. It automatically records key lifecycle events.
+
+### Creating an Audit Logger
+
+```go
+al, err := plugin.NewAuditLogger("/path/to/audit.jsonl")
+if err != nil {
+    return err
+}
+defer al.Close()
+```
+
+The parent directory is created automatically if it doesn't exist. The file is opened with `O_APPEND|O_CREATE|O_WRONLY` for atomic appends.
+
+### Recording Events
+
+```go
+al.Log(plugin.AuditEntry{
+    PluginID: "com.example.my-plugin",
+    Action:   plugin.AuditActivate,
+    Details:  map[string]any{"version": "1.0.0"},
+})
+
+al.Log(plugin.AuditEntry{
+    PluginID: "com.example.my-plugin",
+    Action:   plugin.AuditDeactivate,
+    Error:    "context cancelled",
+})
+```
+
+**Audit action constants**:
+
+| Constant | Value | When to use |
+|----------|-------|-------------|
+| `AuditActivate` | `"activate"` | Plugin activated |
+| `AuditDeactivate` | `"deactivate"` | Plugin deactivated |
+| `AuditInstall` | `"install"` | Plugin installed |
+| `AuditUninstall` | `"uninstall"` | Plugin uninstalled |
+| `AuditReload` | `"reload"` | Plugin reloaded |
+| `AuditDisable` | `"disable"` | Plugin disabled |
+
+**Note**: If `Timestamp` is zero, it is automatically set to `time.Now()`. Write errors are silently ignored — audit logging must not block the caller.
+
+### Querying the Audit Log
+
+```go
+// All entries for a specific plugin
+entries := al.Query(plugin.AuditFilter{
+    PluginID: "com.example.my-plugin",
+})
+
+// Entries in a time range
+entries := al.Query(plugin.AuditFilter{
+    From: time.Now().Add(-24 * time.Hour),
+    To:   time.Now(),
+})
+
+// Combined filter
+entries := al.Query(plugin.AuditFilter{
+    PluginID: "com.example.my-plugin",
+    From:     startTime,
+    To:       endTime,
+})
+```
+
+Results are sorted by `Timestamp` ascending. Zero-value filter fields mean "no filter on that field".
+
+### Clearing the Log
+
+```go
+al.Clear()  // Truncates the file; safe for concurrent use with Log
+```
+
+### Log Format
+
+Each line is a JSON object (JSONL format):
+
+```jsonl
+{"timestamp":"2025-01-15T10:30:00Z","plugin_id":"com.example.my-plugin","action":"activate","details":{"version":"1.0.0"}}
+{"timestamp":"2025-01-15T10:35:00Z","plugin_id":"com.example.my-plugin","action":"deactivate","error":"context cancelled"}
+```
+
+---
+
+## 13. Storage
 
 ### Private Storage
 
@@ -562,6 +1124,20 @@ keys := storage.Keys()
 storage.Clear()
 ```
 
+**Helper methods** for typed access:
+```go
+// Store JSON objects
+ctx.StorageJSON("config", map[string]any{"theme": "dark"})
+
+// Retrieve typed values
+count, ok := ctx.StorageInt("call_count")
+enabled, ok := ctx.StorageBool("enabled")
+
+// Retrieve JSON into a struct
+var config MyConfig
+err := ctx.StorageGetJSON("config", &config)
+```
+
 **Required permission**: `storage.private`
 
 > **Note**: gRPC plugins cannot access storage through the protocol directly. Store state internally or use your own persistence mechanism.
@@ -572,7 +1148,7 @@ Cross-plugin shared storage is planned. The permission (`storage.shared`) is def
 
 ---
 
-## 9. Debugging
+## 14. Debugging
 
 ### Plugin Status
 
@@ -629,7 +1205,7 @@ pm.ReloadAll(ctx)
 
 ---
 
-## 10. Deployment
+## 15. Deployment
 
 ### Directory Structure
 
@@ -638,6 +1214,7 @@ pm.ReloadAll(ctx)
 ├── my-plugin/
 │   ├── plugin.json       # Required: plugin manifest
 │   ├── main.py           # gRPC: plugin entry point
+│   ├── config.json       # Optional: user configuration overrides
 │   └── (other files)     # Any supporting files
 ├── another-plugin/
 │   ├── plugin.json
@@ -658,7 +1235,7 @@ pm.ReloadAll(ctx)
 
 ---
 
-## 11. Best Practices
+## 16. Best Practices
 
 ### Design Principles
 
@@ -687,9 +1264,16 @@ pm.ReloadAll(ctx)
 | gRPC | ~1-5ms | Acceptable for most tools; avoid in tight loops |
 | Enrichers | ~1-5ms each | Keep light; called on every LLM interaction |
 
+### Middleware Tips
+
+1. **Order matters**: Register `RecoveryMiddleware` early (outer layer) so it catches panics from all inner middleware
+2. **Keep it fast**: Middleware wraps every tool call — avoid heavy computation
+3. **Always call next()**: Unless you intentionally short-circuit, always delegate to the next handler
+4. **Use built-in middleware first**: `LoggingMiddleware`, `RecoveryMiddleware`, `TimeoutMiddleware`, and `RetryMiddleware` cover most needs
+
 ---
 
-## 12. FAQ
+## 17. FAQ
 
 ### Q1: Why is it called "gRPC" if it uses JSON/stdio?
 
@@ -721,7 +1305,7 @@ pm.ReloadAll(ctx)
 
 ### Q8: How do I persist plugin configuration?
 
-**A**: Use `storage.private` (native plugins) to store key-value pairs. For gRPC plugins, implement your own file-based configuration in the plugin directory.
+**A**: Use the configuration system (Section 10). Declare defaults in `plugin.json` under `contributes.configuration`, and use `ctx.Config()` / `ctx.SetConfig()` in native plugins. For gRPC plugins, implement your own file-based configuration in the plugin directory.
 
 ### Q9: Can I use third-party libraries in my plugin?
 
@@ -735,6 +1319,14 @@ echo '{"method":"activate","params":{"pluginId":"test"}}' | python3 main.py
 echo '{"method":"execute_tool","params":{"toolName":"my_tool","input":"{}"}}' | python3 main.py
 ```
 See [PROTOCOL.md](./PROTOCOL.md) for complete testing instructions.
+
+### Q11: When should I use SDK helpers vs. manual construction?
+
+**A**: Use SDK helpers (`ToolFromFunc`, `QuickManifest`, `DenyHook`, etc.) for simple cases — they reduce boilerplate and are easier to read. Switch to manual construction when you need `ExecV2Fn` (for `ToolCallContext`), custom middleware integration, or fine-grained control over the `ToolDef`.
+
+### Q12: Can middleware bypass rate limits?
+
+**A**: No. Rate limiting and quota checks run at the `PluginToolBridge` level, **before** the middleware chain. This is by design — host-level resource limits cannot be overridden by plugin middleware.
 
 ---
 

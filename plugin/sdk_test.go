@@ -340,6 +340,7 @@ func (p *sdkTestPlugin) Deactivate(ctx PluginContext) error { return nil }
 type sdkMockContext struct{}
 
 func (c *sdkMockContext) RegisterTool(tool PluginTool) error                      { return nil }
+func (c *sdkMockContext) UseMiddleware(middleware PluginMiddleware) error         { return nil }
 func (c *sdkMockContext) OnPreToolUse(matcher string, handler HookHandler) error  { return nil }
 func (c *sdkMockContext) OnPostToolUse(matcher string, handler HookHandler) error { return nil }
 func (c *sdkMockContext) OnUserPrompt(handler HookHandler) error                  { return nil }
@@ -363,6 +364,8 @@ func (c *sdkMockContext) WorkingDir() string                                    
 func (c *sdkMockContext) Channel() string                                           { return "" }
 func (c *sdkMockContext) ChatID() string                                            { return "" }
 func (c *sdkMockContext) Logger() Logger                                            { return &sdkMockLogger{} }
+func (c *sdkMockContext) Config() (map[string]any, error)                           { return make(map[string]any), nil }
+func (c *sdkMockContext) SetConfig(key string, value any) error                     { return nil }
 func (c *sdkMockContext) Subscribe(topic string, handler PluginEventHandler) error  { return nil }
 func (c *sdkMockContext) Publish(topic string, data any) error                      { return nil }
 func (c *sdkMockContext) ToolCallCount() int64                                      { return 0 }
