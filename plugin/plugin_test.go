@@ -1968,3 +1968,195 @@ func TestPluginContext_Publish_NoPermission(t *testing.T) {
 		t.Fatal("expected permission error for Publish without bus.write")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// E2E Integration Test — Full Lifecycle
+// ---------------------------------------------------------------------------
+
+// e2eFullPlugin implements Plugin + HealthChecker.
+// On Activate it registers a V2 tool, a PreToolUse hook, a context enricher,
+// and subscribes+publishes on the event bus.
+type e2eFullPlugin struct {
+	manifest   PluginManifest
+	hookCalled bool
+	enriched   bool
+	busSubData string
+}
+
+func (p *e2eFullPlugin) Manifest() PluginManifest { return p.manifest }
+
+func (p *e2eFullPlugin) Activate(ctx PluginContext) error {
+	// Register a V2 tool
+	ctx.RegisterTool(&SimplePluginTool{
+		Def: ToolDef{Name: "e2e_tool", Description: "E2E test tool"},
+		ExecV2Fn: func(tcc *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("session=" + tcc.SessionID + " input=" + input), nil
+		},
+	})
+
+	// Subscribe to PreToolUse hook
+	ctx.OnPreToolUse("Shell", func(c context.Context, payload *HookPayload) (*HookResult, error) {
+		p.hookCalled = true
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+
+	// Register a context enricher
+	ctx.EnrichContext("e2e_enricher", func(c context.Context) (string, error) {
+		p.enriched = true
+		return "e2e enriched content", nil
+	})
+
+	// Subscribe to a bus topic
+	ctx.Subscribe("e2e.topic", func(c context.Context, topic string, data any) error {
+		p.busSubData = data.(string)
+		return nil
+	})
+
+	// Publish to the bus
+	ctx.Publish("e2e.topic", "bus-data")
+
+	return nil
+}
+
+func (p *e2eFullPlugin) Deactivate(ctx PluginContext) error { return nil }
+
+func (p *e2eFullPlugin) HealthCheck(ctx context.Context) error { return nil }
+
+func TestPluginE2E_FullLifecycle(t *testing.T) {
+	// 1. Create PluginManager
+	pm := NewPluginManager(t.TempDir())
+
+	// 2. Create a full-featured plugin
+	m := PluginManifest{
+		ID:               "com.test.e2e",
+		Name:             "E2E Test Plugin",
+		Version:          "1.0.0",
+		Description:      "Full lifecycle E2E test",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register", "hooks.subscribe", "context.enrich", "bus.plugin", "bus.read", "bus.write"},
+	}
+	e2ePlugin := &e2eFullPlugin{manifest: m}
+
+	// 3. Register and activate
+	ctx := context.Background()
+	err := pm.RegisterAndActivate(ctx, e2ePlugin)
+	if err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	// 4. Verify tools registered via GetPlugin
+	entry, ok := pm.GetPlugin("com.test.e2e")
+	if !ok {
+		t.Fatal("plugin not found after activation")
+	}
+	tools := entry.Context.GetTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	// 5. Execute the tool via adapter (V2)
+	tool := tools[0]
+	adapter := NewPluginToolAdapter("com.test.e2e", tool)
+	result, err := adapter.ExecuteWithContext(&ToolCallContext{
+		SessionID: "sess-e2e",
+		Channel:   "cli",
+		UserID:    "user-e2e",
+		Ctx:       context.Background(),
+	}, `{"input": "hello"}`)
+	if err != nil {
+		t.Fatalf("ExecuteWithContext failed: %v", err)
+	}
+	// V2 result should contain session info
+	if !strContains(result.Content, "session=sess-e2e") {
+		t.Errorf("V2 result should contain session info, got %q", result.Content)
+	}
+
+	// 6. Verify hook received via PluginHookBridge
+	bridge := NewPluginHookBridge()
+	WirePluginHooks(bridge, pm)
+	hookResult := bridge.Dispatch(ctx, &HookPayload{
+		Event:    HookPreToolUse,
+		ToolName: "Shell",
+	})
+	if !e2ePlugin.hookCalled {
+		t.Error("hook handler should have been called")
+	}
+	if hookResult.Decision != DecisionAllow {
+		t.Errorf("hook decision = %q, want %q", hookResult.Decision, DecisionAllow)
+	}
+
+	// 7. Verify enricher works via EnricherRegistry
+	enricherReg := NewEnricherRegistry()
+	WirePluginEnrichers(enricherReg, pm, 100)
+	if enricherReg.Count() != 1 {
+		t.Errorf("enricher count = %d, want 1", enricherReg.Count())
+	}
+	content := enricherReg.RunAll(ctx)
+	if !strContains(content, "e2e enriched content") {
+		t.Errorf("enricher output should contain enriched content, got %q", content)
+	}
+
+	// 8. Verify metrics correct
+	metrics := pm.Metrics()
+	if metrics.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins = %d, want 1", metrics.TotalPlugins)
+	}
+	if metrics.ActivePlugins != 1 {
+		t.Errorf("ActivePlugins = %d, want 1", metrics.ActivePlugins)
+	}
+	if metrics.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", metrics.TotalTools)
+	}
+	if metrics.TotalHooks != 1 {
+		t.Errorf("TotalHooks = %d, want 1", metrics.TotalHooks)
+	}
+	if metrics.TotalEnrichers != 1 {
+		t.Errorf("TotalEnrichers = %d, want 1", metrics.TotalEnrichers)
+	}
+
+	// 9. Verify health check passes
+	results := pm.HealthCheck(ctx)
+	if results["com.test.e2e"] != nil {
+		t.Errorf("expected healthy (nil error), got %v", results["com.test.e2e"])
+	}
+
+	// 10. Verify String() output
+	s := pm.String()
+	if !strContains(s, "total=1") || !strContains(s, "active=1") {
+		t.Errorf("String() should contain total=1 and active=1, got %q", s)
+	}
+
+	// 11. Verify event bus works
+	bus := pm.Bus()
+	var busReceived string
+	bus.Subscribe("e2e.topic", func(c context.Context, topic string, data any) error {
+		busReceived = data.(string)
+		return nil
+	})
+	bus.Publish(context.Background(), "e2e.topic", "bus-data")
+	if busReceived != "bus-data" {
+		t.Errorf("bus received = %q, want %q", busReceived, "bus-data")
+	}
+
+	// 12. Deactivate
+	pm.DeactivateAll(ctx)
+
+	// 13. Verify metrics updated
+	metrics2 := pm.Metrics()
+	if metrics2.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins after deactivate = %d, want 1", metrics2.TotalPlugins)
+	}
+	if metrics2.ActivePlugins != 0 {
+		t.Errorf("ActivePlugins after deactivate = %d, want 0", metrics2.ActivePlugins)
+	}
+	if metrics2.TotalTools != 0 {
+		t.Errorf("TotalTools after deactivate = %d, want 0", metrics2.TotalTools)
+	}
+	if metrics2.TotalHooks != 0 {
+		t.Errorf("TotalHooks after deactivate = %d, want 0", metrics2.TotalHooks)
+	}
+	if metrics2.TotalEnrichers != 0 {
+		t.Errorf("TotalEnrichers after deactivate = %d, want 0", metrics2.TotalEnrichers)
+	}
+}
