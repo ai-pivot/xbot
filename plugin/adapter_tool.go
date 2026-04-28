@@ -274,3 +274,8 @@ func (sb *SchemaBuilder) AddArrayParam(name, desc string, required bool) *Schema
 func (sb *SchemaBuilder) Build() []llm.ToolParam {
 	return sb.params
 }
+
+// DescriptionWithPrefix returns description with [plugin_id] prefix.
+func (a *PluginToolAdapter) DescriptionWithPrefix() string {
+	return fmt.Sprintf("[%s] %s", a.pluginID, a.def.Description)
+}

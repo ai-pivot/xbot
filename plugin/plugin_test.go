@@ -668,6 +668,25 @@ func TestPluginToolAdapter(t *testing.T) {
 	}
 }
 
+func TestPluginToolAdapter_DescriptionWithPrefix(t *testing.T) {
+	tool := &SimplePluginTool{
+		Def: ToolDef{
+			Name:        "test_tool",
+			Description: "A test tool",
+		},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("ok"), nil
+		},
+	}
+	adapter := NewPluginToolAdapter("com.example", tool)
+
+	got := adapter.DescriptionWithPrefix()
+	want := "[com.example] A test tool"
+	if got != want {
+		t.Errorf("DescriptionWithPrefix() = %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Discovery Tests
 // ---------------------------------------------------------------------------
