@@ -1549,38 +1549,18 @@ func (m *Model) view() string {
 			strwidth := uniseg.StringWidth(string(wrappedLine))
 			padding := m.width - strwidth
 			// When the line is exactly full and the cursor is at the end,
-			// there's no room for the cursor placeholder. Steal the last
-			// character from this line and prepend it to the next visual line
-			// so the cursor can sit after the shortened line.
-			// IMPORTANT: only do this on the LAST visual line of the logical
-			// line. If there IS a next visual line to wrap to, LineInfo
-			// already handles wrapping the cursor there correctly.
-			var overflow []rune
-			cursorCol := m.col // track original cursor position for overflow
-			if padding == 0 && m.row == l && lineInfo.RowOffset == wl &&
+			// there's no room for the cursor placeholder. Render the full
+			// text on this line and put the cursor alone on the next line.
+			cursorOverflow := padding == 0 && m.row == l &&
+				lineInfo.RowOffset == wl &&
 				lineInfo.ColumnOffset >= len(wrappedLine) &&
-				wl == len(wrappedLines)-1 {
-				if len(wrappedLine) > 0 {
-					overflow = wrappedLine[len(wrappedLine)-1:]
-					wrappedLine = wrappedLine[:len(wrappedLine)-1]
-					strwidth = uniseg.StringWidth(string(wrappedLine))
-					padding = m.width - strwidth
-					cursorCol = len(wrappedLine)
-				}
-			}
-			if m.row == l && lineInfo.RowOffset == wl {
+				(wl == len(wrappedLines)-1 || m.col == len(line))
+			if m.row == l && lineInfo.RowOffset == wl && !cursorOverflow {
 				co := min(lineInfo.ColumnOffset, len(wrappedLine))
-				if len(overflow) > 0 {
-					co = cursorCol
-				}
 				s.WriteString(style.Render(string(wrappedLine[:co])))
 				if co >= len(wrappedLine) {
-					// Cursor is at or beyond the last visible character.
-					// Render an empty-cursor placeholder so the cursor sits
-					// *after* the last glyph instead of highlighting it.
 					m.virtualCursor.SetChar(" ")
 					s.WriteString(m.virtualCursor.View())
-					// Cursor consumed 1 column of padding space.
 					padding = max(0, padding-1)
 				} else {
 					m.virtualCursor.SetChar(string(wrappedLine[co]))
@@ -1594,8 +1574,8 @@ func (m *Model) view() string {
 			s.WriteRune('\n')
 			newLines++
 
-			// If we stole a character for cursor room, render it on the next line.
-			if len(overflow) > 0 {
+			// Cursor overflow: line was exactly full, put cursor on next line.
+			if cursorOverflow {
 				prompt := m.promptView(displayLine)
 				prompt = styles.computedPrompt().Render(prompt)
 				s.WriteString(style.Render(prompt))
@@ -1603,8 +1583,9 @@ func (m *Model) view() string {
 				if m.ShowLineNumbers {
 					s.WriteString(m.lineNumberView(-1, false))
 				}
-				s.WriteString(style.Render(string(overflow)))
-				s.WriteString(style.Render(strings.Repeat(" ", m.width-len(overflow))))
+				m.virtualCursor.SetChar(" ")
+				s.WriteString(m.virtualCursor.View())
+				s.WriteString(style.Render(strings.Repeat(" ", max(0, m.width-1))))
 				s.WriteRune('\n')
 				newLines++
 			}
@@ -1844,12 +1825,38 @@ func (m Model) cursorLineNumber() int {
 	return line
 }
 
+// hasCursorOverflow reports whether the current line will produce an extra
+// cursor-overflow visual line during rendering. This happens when the cursor
+// is at the end of the logical line AND the last visual line is exactly full
+// (strwidth == m.width), so the cursor placeholder cannot fit on that line
+// and is rendered alone on the next line.
+//
+// This must be kept in sync with the overflow logic in view().
+func (m *Model) hasCursorOverflow() bool {
+	if m.width <= 0 {
+		return false
+	}
+	line := m.value[m.row]
+	if m.col != len(line) {
+		return false
+	}
+	wrappedLines := m.memoizedWrap(line, m.width)
+	if len(wrappedLines) == 0 {
+		return false
+	}
+	last := wrappedLines[len(wrappedLines)-1]
+	return uniseg.StringWidth(string(last)) == m.width
+}
+
 // totalVisualLines returns the total number of display lines across all
 // logical lines, accounting for soft wraps.
 func (m *Model) totalVisualLines() int {
 	n := 0
 	for _, line := range m.value {
 		n += len(m.memoizedWrap(line, m.width))
+	}
+	if m.hasCursorOverflow() {
+		n++ // view() creates an extra line for the cursor
 	}
 	return n
 }

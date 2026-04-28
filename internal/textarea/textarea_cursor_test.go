@@ -1,8 +1,10 @@
 package textarea
 
 import (
+	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/rivo/uniseg"
 )
 
@@ -136,78 +138,248 @@ func TestCursorUpDownAtWrapBoundaryCJK(t *testing.T) {
 	}
 }
 
-// TestCursorWrapDiagnostic traces cursor behavior at CJK wrap boundaries.
-func TestCursorWrapDiagnostic(t *testing.T) {
-	// Simulate user typing "一二三四五六七八" (8 CJK chars) on width=12
-	// Each CJK char = 2 columns → 6 chars fill 12 columns exactly, wrapping after 6
+// TestCursorAtEndOfFullLine verifies that when text fills exactly one visual
+// line (padding == 0) and the cursor is at the end, the rendered output does
+// not exceed the textarea width. Before the fix, the cursor placeholder was
+// appended to the already-full line, making it width+1 columns, causing the
+// terminal to clip the last character and the cursor.
+//
+// Regression test for: "input box last character invisible + cursor disappears
+// when text fills exactly one row."
+func TestCursorAtEndOfFullLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		width int // SetWidth argument
+	}{
+		{"CJK_exact_fill", "一二三四五六", 12},             // 6 CJK × 2 cols = 12
+		{"ASCII_exact_fill", "abcdefghijkl", 12},     // 12 ASCII × 1 col = 12
+		{"CJK_multi_wrap_fill", "一二三四五六七八九十十一十二", 8}, // 4 CJK × 2 cols = 8, 6 visual lines
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New()
+			m.ShowLineNumbers = false
+			m.Prompt = ""
+			m.SetWidth(tt.width)
+			m.SetHeight(6)
+			m.Focus()
+
+			// Insert all characters
+			for _, r := range tt.input {
+				m.InsertRune(r)
+			}
+
+			// Cursor should be at end
+			if m.col != len(m.value[m.row]) {
+				t.Fatalf("cursor col=%d, want %d (end of line)", m.col, len(m.value[m.row]))
+			}
+
+			// Render the full pipeline: view() → viewport.View() → Base.Render()
+			// This is what the user actually sees.
+			fullView := m.View()
+			_ = fullView // use lipgloss.Width to measure each line below
+
+			// Also check the raw view() output
+			rawView := m.view()
+			for i, line := range strings.Split(strings.TrimSuffix(rawView, "\n"), "\n") {
+				w := lipgloss.Width(line)
+				if w > m.width {
+					t.Errorf("raw view() line %d width %d exceeds textarea width %d",
+						i, w, m.width)
+				}
+			}
+
+			// Check the full pipeline output (what the user actually sees).
+			// Base.Render applies its own Width style which pads to m.width.
+			// So the final output should be exactly m.width per line.
+			fullLines := strings.Split(strings.TrimSuffix(fullView, "\n"), "\n")
+			t.Logf("textarea m.width=%d, m.height=%d", m.width, m.height)
+			for i, line := range fullLines {
+				w := lipgloss.Width(line)
+				t.Logf("  full line %d: visual_width=%d", i, w)
+				// The full pipeline output should not exceed m.width
+				if w > m.width {
+					t.Errorf("full pipeline line %d width %d exceeds textarea width %d",
+						i, w, m.width)
+				}
+			}
+		})
+	}
+}
+
+// TestCursorAtEndOfFullLineDiagnostic dumps detailed info about what happens
+// when the cursor is at the end of a full line. For debugging.
+func TestCursorAtEndOfFullLineDiagnostic(t *testing.T) {
 	m := New()
-	m.SetWidth(12)
-	m.SetHeight(6)
+	m.ShowLineNumbers = false
+	m.Prompt = ""
+	m.SetWidth(12) // Will become internal width after style deductions
+	m.SetHeight(3)
+	m.Focus()
 
-	t.Logf("After SetWidth(12): m.width=%d", m.width)
-
-	// Type characters one by one, tracing cursor position after each.
-	input := "一二三四五六七八"
-	for i, r := range input {
+	input := "一二三四五六"
+	for _, r := range input {
 		m.InsertRune(r)
-		li := m.LineInfo()
-		t.Logf("After typing %q (pos %d): col=%d row=%d RowOffset=%d ColumnOffset=%d StartColumn=%d Width=%d",
-			string(r), i+1, m.col, m.row, li.RowOffset, li.ColumnOffset, li.StartColumn, li.Width)
 	}
 
-	// Now test character navigation across wrap boundaries
-	t.Log("=== Moving cursor left across wrap boundary ===")
-	for m.col > 0 {
-		m.characterLeft(false)
-		li := m.LineInfo()
-		t.Logf("  Left → col=%d RowOffset=%d ColumnOffset=%d",
-			m.col, li.RowOffset, li.ColumnOffset)
+	t.Logf("SetWidth(12) → m.width=%d, m.Height()=%d", m.width, m.Height())
+	t.Logf("Value=%q (len=%d runes)", m.Value(), len(m.value[0]))
+	t.Logf("Cursor col=%d", m.col)
+	t.Logf("m.Width()=%d (public getter)", m.Width())
+	t.Logf("Viewport height=%d, YOffset=%d", m.viewport.Height(), m.viewport.YOffset())
+
+	grid := m.memoizedWrap(m.value[0], m.width)
+	t.Logf("wrap grid: %d visual lines", len(grid))
+	for i, wl := range grid {
+		t.Logf("  line %d: %q (len=%d, width=%d)", i, string(wl), len(wl), uniseg.StringWidth(string(wl)))
 	}
 
-	t.Log("=== Moving cursor right across wrap boundary ===")
-	for m.col < len(m.value[m.row]) {
-		m.characterRight()
-		li := m.LineInfo()
-		t.Logf("  Right → col=%d RowOffset=%d ColumnOffset=%d",
-			m.col, li.RowOffset, li.ColumnOffset)
-	}
-
-	// Also test View rendering
-	t.Logf("\n=== View output ===\n%s", m.View())
-
-	// Test CursorUp/CursorDown at wrap boundaries
-	m.SetCursorColumn(8) // end
-	t.Log("\n=== CursorUp at end ===")
-	m.CursorUp()
 	li := m.LineInfo()
-	t.Logf("  Up → col=%d RowOffset=%d ColumnOffset=%d StartColumn=%d",
-		m.col, li.RowOffset, li.ColumnOffset, li.StartColumn)
+	t.Logf("LineInfo: RowOffset=%d ColumnOffset=%d CharOffset=%d StartColumn=%d",
+		li.RowOffset, li.ColumnOffset, li.CharOffset, li.StartColumn)
+	t.Logf("cursorLineNumber()=%d", m.cursorLineNumber())
+	t.Logf("totalVisualLines()=%d", m.totalVisualLines())
 
-	t.Log("\n=== CursorDown ===")
-	m.CursorDown()
-	li = m.LineInfo()
-	t.Logf("  Down → col=%d RowOffset=%d ColumnOffset=%d StartColumn=%d",
-		m.col, li.RowOffset, li.ColumnOffset, li.StartColumn)
+	raw := m.view()
+	rawLines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
+	t.Logf("view() output: %d lines", len(rawLines))
+	for i, line := range rawLines {
+		ww := lipgloss.Width(line)
+		t.Logf("  line %d: visual_width=%d", i, ww)
+	}
 
-	// Test cursor at wrap boundary
-	t.Log("\n=== Cursor at wrap boundary (col=6) ===")
-	m.SetCursorColumn(6)
-	li = m.LineInfo()
-	t.Logf("  col=%d RowOffset=%d ColumnOffset=%d StartColumn=%d Width=%d",
-		m.col, li.RowOffset, li.ColumnOffset, li.StartColumn, li.Width)
+	// Simulate repositionView: where does the viewport think the cursor is?
+	cursorRow := m.cursorLineNumber()
+	vpMin := m.viewport.YOffset()
+	vpMax := vpMin + m.viewport.Height() - 1
+	t.Logf("repositionView: cursorRow=%d, viewport=[%d, %d]", cursorRow, vpMin, vpMax)
+	if cursorRow < vpMin {
+		t.Errorf("BUG: cursor row %d < viewport min %d → cursor is ABOVE viewport (hidden!)", cursorRow, vpMin)
+	}
+	if cursorRow > vpMax {
+		t.Errorf("BUG: cursor row %d > viewport max %d → cursor is BELOW viewport (hidden!)", cursorRow, vpMax)
+	}
 
-	// Test cursor at col=7 (start of next visual line)
-	t.Log("\n=== Cursor at col=7 ===")
-	m.SetCursorColumn(7)
-	li = m.LineInfo()
-	t.Logf("  col=%d RowOffset=%d ColumnOffset=%d StartColumn=%d Width=%d",
-		m.col, li.RowOffset, li.ColumnOffset, li.StartColumn, li.Width)
+	// Check if viewport clips the overflow line
+	vpView := m.viewport.View()
+	vpLines := strings.Split(strings.TrimSuffix(vpView, "\n"), "\n")
+	t.Logf("viewport.View() output: %d lines", len(vpLines))
+	for i, line := range vpLines {
+		ww := lipgloss.Width(line)
+		t.Logf("  line %d: visual_width=%d", i, ww)
+	}
 
-	// Check the grid directly
-	t.Log("\n=== Grid contents ===")
-	grid := wrap(m.value[0], m.width)
-	for i, line := range grid {
-		t.Logf("  grid[%d]: %q (len=%d, strwidth=%d)",
-			i, string(line), len(line), uniseg.StringWidth(string(line)))
+	full := m.View()
+	fullLines := strings.Split(strings.TrimSuffix(full, "\n"), "\n")
+	t.Logf("View() (final) output: %d lines", len(fullLines))
+	for i, line := range fullLines {
+		ww := lipgloss.Width(line)
+		t.Logf("  line %d: visual_width=%d", i, ww)
+	}
+}
+
+// TestCursorAtEndOfFullLineRealWidth simulates the actual CLI rendering pipeline
+// with realistic terminal width to catch viewport clipping issues.
+func TestCursorAtEndOfFullLineRealWidth(t *testing.T) {
+	// Simulate: terminal width 120, InputBox width-8 = 112
+	terminalWidth := 120
+	textareaWidth := terminalWidth - 8 // matches CLI: iw = width - 8
+
+	m := New()
+	m.ShowLineNumbers = false
+	m.Prompt = ""
+	m.SetWidth(textareaWidth)
+	m.SetHeight(3) // min height
+	m.Focus()
+
+	// Type enough CJK chars to exactly fill one line
+	charsPerLine := textareaWidth / 2 // CJK = 2 cols each
+	for i := 0; i < charsPerLine; i++ {
+		m.InsertRune('测')
+	}
+
+	t.Logf("terminalWidth=%d, textareaWidth=%d, charsPerLine=%d", terminalWidth, textareaWidth, charsPerLine)
+	t.Logf("m.width=%d, m.Height()=%d, cursor=%d/%d", m.width, m.Height(), m.col, len(m.value[0]))
+	t.Logf("Viewport: height=%d, YOffset=%d", m.viewport.Height(), m.viewport.YOffset())
+	t.Logf("cursorLineNumber()=%d, totalVisualLines()=%d", m.cursorLineNumber(), m.totalVisualLines())
+
+	raw := m.view()
+	rawLines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
+	t.Logf("view() → %d lines:", len(rawLines))
+	for i, line := range rawLines {
+		t.Logf("  [%d] width=%d", i, lipgloss.Width(line))
+	}
+
+	vpView := m.viewport.View()
+	vpLines := strings.Split(strings.TrimSuffix(vpView, "\n"), "\n")
+	t.Logf("viewport.View() → %d lines:", len(vpLines))
+	for i, line := range vpLines {
+		t.Logf("  [%d] width=%d", i, lipgloss.Width(line))
+	}
+
+	// The overflow line should be visible in viewport
+	cursorRow := m.cursorLineNumber()
+	vpHeight := m.viewport.Height()
+	vpYOffset := m.viewport.YOffset()
+	t.Logf("Viewport range: [%d, %d], cursorRow=%d", vpYOffset, vpYOffset+vpHeight-1, cursorRow)
+
+	final := m.View()
+	finalLines := strings.Split(strings.TrimSuffix(final, "\n"), "\n")
+	t.Logf("Final View() → %d lines:", len(finalLines))
+	for i, line := range finalLines {
+		t.Logf("  [%d] width=%d", i, lipgloss.Width(line))
+	}
+
+	// Now test with real key events (simulating CLI Update flow)
+	t.Log("--- Testing with real key events ---")
+	m2 := New()
+	m2.ShowLineNumbers = false
+	m2.Prompt = ""
+	m2.SetWidth(textareaWidth)
+	m2.SetHeight(3)
+	m2.Focus()
+
+	for i := 0; i < charsPerLine-1; i++ {
+		m2.InsertRune('测')
+	}
+	t.Logf("Before last char: cursor=%d, height=%d, vpH=%d, vpYOff=%d",
+		m2.col, m2.Height(), m2.viewport.Height(), m2.viewport.YOffset())
+
+	// Insert the last character that fills the line exactly
+	m2.InsertRune('测')
+	t.Logf("After last char: cursor=%d, height=%d, vpH=%d, vpYOff=%d, cursorLine=%d, totalVis=%d",
+		m2.col, m2.Height(), m2.viewport.Height(), m2.viewport.YOffset(),
+		m2.cursorLineNumber(), m2.totalVisualLines())
+
+	raw2 := m2.view()
+	raw2Lines := strings.Split(strings.TrimSuffix(raw2, "\n"), "\n")
+	t.Logf("view() → %d lines:", len(raw2Lines))
+	for i, line := range raw2Lines {
+		t.Logf("  [%d] width=%d", i, lipgloss.Width(line))
+	}
+
+	vpView2 := m2.viewport.View()
+	vp2Lines := strings.Split(strings.TrimSuffix(vpView2, "\n"), "\n")
+	t.Logf("viewport.View() → %d lines:", len(vp2Lines))
+	for i, line := range vp2Lines {
+		t.Logf("  [%d] width=%d raw_len=%d raw_start=%q",
+			i, lipgloss.Width(line), len(line),
+			line[:min(len(line), 50)])
+	}
+
+	// Check if overflow line (line[1]) is different from end-of-buffer lines
+	if len(vp2Lines) >= 3 {
+		t.Logf("Overflow line [1] exists and has width %d", lipgloss.Width(vp2Lines[1]))
+	}
+
+	// Also dump the raw view() bytes for the key lines
+	rawBytes := m2.view()
+	rawBytesLines := strings.Split(strings.TrimSuffix(rawBytes, "\n"), "\n")
+	t.Logf("view() raw bytes for first 2 lines:")
+	for i := 0; i < min(2, len(rawBytesLines)); i++ {
+		t.Logf("  [%d] len=%d start=%q", i, len(rawBytesLines[i]),
+			rawBytesLines[i][:min(len(rawBytesLines[i]), 80)])
 	}
 }
