@@ -492,7 +492,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					activateErr = fmt.Errorf("plugin panic during Activate: %v", r)
+					activateErr = &ErrPluginActivationFailed{PluginID: entry.Manifest.ID, Err: fmt.Errorf("panic: %v", r)}
 				}
 			}()
 			activateErr = entry.Plugin.Activate(entry.Context)
@@ -506,6 +506,10 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	select {
 	case result := <-done:
 		if result.err != nil {
+			// Wrap in ErrPluginActivationFailed (avoid double-wrapping)
+			if _, ok := result.err.(*ErrPluginActivationFailed); !ok {
+				result.err = &ErrPluginActivationFailed{PluginID: entry.Manifest.ID, Err: result.err}
+			}
 			entry.stateMu.Lock()
 			entry.State = StateError
 			entry.lastError = result.err
@@ -533,7 +537,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	case <-timer.C:
 		// Timeout — set error state; the goroutine may still be running
 		// but will find state != StateActivating and not overwrite.
-		timeoutErr := fmt.Errorf("plugin %s activation timed out after %v", entry.Manifest.ID, timeout)
+		timeoutErr := &ErrPluginActivationFailed{PluginID: entry.Manifest.ID, Err: fmt.Errorf("timed out after %v", timeout)}
 		entry.stateMu.Lock()
 		if entry.State == StateActivating {
 			entry.State = StateError
@@ -647,7 +651,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	defer pm.mu.Unlock()
 
 	if _, exists := pm.entries[m.ID]; exists {
-		return fmt.Errorf("plugin %s already registered", m.ID)
+		return fmt.Errorf("%w: %s", ErrPluginAlreadyRegistered, m.ID)
 	}
 
 	pluginDir := filepath.Join(pm.xbotHome, "plugins", m.ID)
@@ -682,7 +686,7 @@ func (pm *PluginManager) RegisterAndActivate(ctx context.Context, p Plugin) erro
 	pm.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("plugin %s not found after registration", m.ID)
+		return fmt.Errorf("%w: %s (after registration)", ErrPluginNotFound, m.ID)
 	}
 
 	return pm.activate(ctx, entry)
@@ -715,7 +719,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 	entry, ok := pm.entries[pluginID]
 	if !ok {
-		return fmt.Errorf("plugin %s not found", pluginID)
+		return fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
 	}
 
 	// Deactivate if active
@@ -834,7 +838,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 
 	// Step 2: Check for existing plugin with same ID
 	if _, exists := pm.entries[pluginID]; exists {
-		return nil, fmt.Errorf("install: plugin %q already exists (uninstall it first)", pluginID)
+		return nil, fmt.Errorf("install: %w: %s (uninstall it first)", ErrPluginAlreadyRegistered, pluginID)
 	}
 
 	// Step 3: Determine target directory
@@ -910,7 +914,7 @@ func (pm *PluginManager) UninstallPlugin(ctx context.Context, pluginID string) e
 	entry, exists := pm.entries[pluginID]
 	if !exists {
 		pm.mu.Unlock()
-		return fmt.Errorf("uninstall: plugin %q not found", pluginID)
+		return fmt.Errorf("uninstall: %w: %s", ErrPluginNotFound, pluginID)
 	}
 	pluginDir := entry.Dir
 

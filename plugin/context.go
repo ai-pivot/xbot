@@ -565,21 +565,6 @@ func (pc *pluginContextImpl) GetErrorCallback() PluginErrorCallback {
 }
 
 // ---------------------------------------------------------------------------
-// PermissionError
-// ---------------------------------------------------------------------------
-
-// PermissionError is returned when a plugin attempts an unauthorized action.
-type PermissionError struct {
-	PluginID   string
-	Permission string
-	Action     string
-}
-
-func (e *PermissionError) Error() string {
-	return "plugin " + e.PluginID + ": permission denied for '" + e.Permission + "' (action: " + e.Action + ")"
-}
-
-// ---------------------------------------------------------------------------
 // deniedStorage — no-op storage returned when permission is missing
 // ---------------------------------------------------------------------------
 
