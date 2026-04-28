@@ -19,6 +19,7 @@
 - `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build
+- `docs/agent/plugin.md` — plugin system architecture, runtimes, integration
 
 ## Gotchas — MUST READ Before Any Code Change
 
@@ -72,6 +73,16 @@
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
 - **Command hooks disabled by default** — requires `enable_command_hooks: true` in config.
 - **Max 10 handlers per event**, total timeout 60s. Excess silently truncated with warning log.
+
+### Plugin System
+- **Plugin system is opt-in** — only activates when `plugins.enabled: true` in config.json. No plugin loading happens without explicit user consent.
+- **PluginManager.ActivateAll() collects capabilities; WireAll() connects them.** Never call registerCapabilities manually — WireAll is the single integration point.
+- **PluginEntry.stateMu protects state transitions.** Use CAS pattern (check state → set activating → set active/error) to prevent concurrent activation races.
+- **gRPC plugin processes are killed on timeout/cancellation.** The `call()` method kills the process and marks it as not-running to prevent goroutine leaks from blocked stdout reads.
+- **PluginToolBridge auto-detects PluginToolV2.** If a plugin tool implements V2, the bridge passes ToolCallContext. Otherwise falls back to V1 Execute(ctx, input).
+- **Plugin IDs validated with regex `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`.** This prevents path traversal, null bytes, and injection attacks in storage paths.
+- **Storage files use 0600 permissions and atomic write (tmp+rename).** Never use 0644 for plugin storage.
+- **WASM runtime is skeleton-only.** It compiles and loads but Activate() is a no-op. Phase 2 requires wazero dependency.
 
 ### Windows
 - `syscall.PROCESS_QUERY_LIMITED_INFORMATION` and `STILL_ACTIVE` not in Go stdlib — define as uint32 constants.
