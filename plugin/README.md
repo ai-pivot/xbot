@@ -304,9 +304,59 @@ err := pm.ReloadAll(ctx)
 
 Deactivates all plugins, clears entries, re-discovers from plugin directories, and re-activates all `onStart` plugins.
 
+## Install & Uninstall
+
+The plugin manager supports runtime installation and uninstallation of plugins.
+
+```go
+// Install a plugin from a source directory
+entry, err := pm.InstallPlugin(ctx, "/path/to/my-plugin")
+
+// Uninstall a plugin by ID
+err := pm.UninstallPlugin(ctx, "com.example.my-plugin")
+```
+
+- **InstallPlugin**: Validates the source manifest → acquires write lock (TOCTOU prevention) → checks for ID conflicts → copies to `~/.xbot/plugins/<id>/` → re-validates manifest → creates entry → auto-activates `onStart` plugins
+- **UninstallPlugin**: Acquires write lock → deactivates active plugin → removes entries → releases lock → deletes disk directory (with `EvalSymlinks` path traversal protection, only deletes within `xbotHome`)
+- The write lock is held during the in-memory operations; disk I/O (directory deletion) happens after lock release
+
+## CLI Commands
+
+The `/plugin` command provides plugin management from the CLI:
+
+| Command | Description |
+|---------|-------------|
+| `/plugin` | Show plugin status summary (total, active count) |
+| `/plugin list` | List all plugins with details (ID, version, status, tool count) |
+| `/plugin reload <id>` | Reload a specific plugin |
+| `/plugin reload-all` | Reload all plugins |
+| `/plugin health` | Health check all active plugins |
+| `/plugin metrics` | Show aggregate metrics |
+| `/plugin install <dir>` | Install plugin from directory |
+| `/plugin uninstall <id>` | Uninstall a plugin |
+
+Implemented in `channel/cli_helpers.go` (`handlePluginCommand`), injected via `CLIChannel.SetPluginManager`. Status display uses `lipgloss` styling.
+
+## Config Hot-Reload
+
+`WatchConfig` monitors the config file for changes to `plugins.disabled_plugins` and automatically enables/disables plugins:
+
+```go
+// Start watching config for plugin changes
+stop := pm.WatchConfig("config.json", 10*time.Second)
+// ... later
+close(stop) // stop watching
+```
+
+- A background goroutine polls the config file's mtime at the specified interval (minimum 5s)
+- When mtime changes, it reads the `plugins.disabled_plugins` field and applies the diff:
+  - **Newly disabled**: deactivate plugin + add to disabled map
+  - **Removed from disabled**: remove from disabled map → re-discover + activate
+- Config read failures keep the last known config (no accidental plugin disruption)
+
 ## Plugin Dependencies
 
-Plugins can declare dependencies on other plugins in their manifest. Dependencies are validated during manifest loading to ensure required plugins are available.
+Plugins can declare dependencies on other plugins in their manifest. Dependencies are format-validated during manifest loading. Actual version resolution and availability checking will be added in a future iteration.
 
 ### PluginDependency Struct
 
