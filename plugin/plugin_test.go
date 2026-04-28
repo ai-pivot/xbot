@@ -4734,3 +4734,405 @@ func TestToolResultBuilder_Empty(t *testing.T) {
 		t.Errorf("expected nil metadata, got %v", result.Metadata)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Error Path Tests
+// ---------------------------------------------------------------------------
+
+// failingRuntimeFactory is a test RuntimeFactory that always returns an error.
+type failingRuntimeFactory struct{ err error }
+
+func (f *failingRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
+	return nil, f.err
+}
+
+// TestPluginManager_Reload_ManifestLoadFails verifies Reload returns an error
+// when the manifest file has been deleted from disk.
+func TestPluginManager_Reload_ManifestLoadFails(t *testing.T) {
+	baseDir := t.TempDir()
+
+	// Create plugin directory with manifest
+	pluginsDir := filepath.Join(baseDir, "plugins", "com.test.reload-mf")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := PluginManifest{
+		ID:               "com.test.reload-mf",
+		Name:             "Reload Manifest Fail Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, pluginsDir, &m)
+
+	pm := NewPluginManager(baseDir)
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+	_, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if err := pm.ActivateAll(ctx); err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+
+	// Delete the manifest file
+	if err := os.Remove(filepath.Join(pluginsDir, "plugin.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	err = pm.Reload(ctx, "com.test.reload-mf")
+	if err == nil {
+		t.Fatal("expected error when manifest file is missing")
+	}
+	if !strContains(err.Error(), "manifest") {
+		t.Errorf("error should mention 'manifest', got: %v", err)
+	}
+}
+
+// TestPluginManager_Reload_RuntimeCreateFails verifies Reload returns an error
+// when the runtime factory fails to create the plugin.
+func TestPluginManager_Reload_RuntimeCreateFails(t *testing.T) {
+	baseDir := t.TempDir()
+
+	// Create plugin directory with manifest
+	pluginsDir := filepath.Join(baseDir, "plugins", "com.test.reload-rt")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := PluginManifest{
+		ID:               "com.test.reload-rt",
+		Name:             "Reload Runtime Fail Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, pluginsDir, &m)
+
+	pm := NewPluginManager(baseDir)
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+	_, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if err := pm.ActivateAll(ctx); err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+
+	// Replace runtime factory with one that fails
+	pm.SetRuntimeFactory(&failingRuntimeFactory{err: fmt.Errorf("runtime creation error")})
+
+	err = pm.Reload(ctx, "com.test.reload-rt")
+	if err == nil {
+		t.Fatal("expected error when runtime factory fails")
+	}
+	if !strContains(err.Error(), "runtime") {
+		t.Errorf("error should mention 'runtime', got: %v", err)
+	}
+}
+
+// TestPluginManager_InstallPlugin_AlreadyExists verifies InstallPlugin returns
+// ErrPluginAlreadyRegistered when a plugin with the same ID is already registered.
+func TestPluginManager_InstallPlugin_AlreadyExists(t *testing.T) {
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+
+	// Register a plugin first
+	p := &mockPlugin{manifest: testManifest()}
+	if err := pm.Register(p); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// Create a source directory with the same ID
+	sourceDir := t.TempDir()
+	m := testManifest()
+	writeTestManifest(t, sourceDir, &m)
+
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error when installing duplicate plugin")
+	}
+	if !strContains(err.Error(), "already registered") {
+		t.Errorf("error should mention 'already registered', got: %v", err)
+	}
+}
+
+// TestPluginManager_InstallPlugin_InvalidManifest verifies InstallPlugin returns
+// an error when the source directory contains an invalid manifest.
+func TestPluginManager_InstallPlugin_InvalidManifest(t *testing.T) {
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+
+	ctx := context.Background()
+
+	// Create source directory with invalid JSON
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "plugin.json"), []byte("not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error for invalid manifest")
+	}
+}
+
+// TestPluginManager_InstallPlugin_RuntimeCreateFails verifies InstallPlugin returns
+// an entry with StateError when the runtime factory fails.
+func TestPluginManager_InstallPlugin_RuntimeCreateFails(t *testing.T) {
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	pm.SetRuntimeFactory(&failingRuntimeFactory{err: fmt.Errorf("runtime boom")})
+
+	ctx := context.Background()
+
+	// Create valid source directory
+	sourceDir := t.TempDir()
+	m := PluginManifest{
+		ID:               "com.test.install-rtfail",
+		Name:             "Install RT Fail Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, sourceDir, &m)
+
+	entry, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error when runtime factory fails")
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if entry.State != StateError {
+		t.Errorf("expected StateError, got %v", entry.State)
+	}
+}
+
+// TestPluginManager_UninstallPlugin_NotFound verifies UninstallPlugin returns
+// ErrPluginNotFound when the plugin doesn't exist.
+func TestPluginManager_UninstallPlugin_NotFound(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	err := pm.UninstallPlugin(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent plugin")
+	}
+	if !strContains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_Subscribe_NilHandler verifies Subscribe returns an error
+// when the handler is nil.
+func TestPluginEventBus_Subscribe_NilHandler(t *testing.T) {
+	bus := NewPluginEventBus()
+
+	err := bus.Subscribe("topic", nil)
+	if err == nil {
+		t.Fatal("expected error for nil handler")
+	}
+	if !strContains(err.Error(), "must not be nil") {
+		t.Errorf("error should mention 'must not be nil', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_Unsubscribe_NoHandlers verifies Unsubscribe returns an error
+// when no handlers exist for the topic.
+func TestPluginEventBus_Unsubscribe_NoHandlers(t *testing.T) {
+	bus := NewPluginEventBus()
+
+	handler := func(ctx context.Context, topic string, data any) error {
+		return nil
+	}
+
+	err := bus.Unsubscribe("topic", handler)
+	if err == nil {
+		t.Fatal("expected error when no handlers for topic")
+	}
+	if !strContains(err.Error(), "no handlers") {
+		t.Errorf("error should mention 'no handlers', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_Unsubscribe_HandlerNotFound verifies Unsubscribe returns an error
+// when the specific handler is not subscribed to the topic.
+func TestPluginEventBus_Unsubscribe_HandlerNotFound(t *testing.T) {
+	bus := NewPluginEventBus()
+
+	handler1 := func(ctx context.Context, topic string, data any) error {
+		return nil
+	}
+	handler2 := func(ctx context.Context, topic string, data any) error {
+		return nil
+	}
+
+	if err := bus.Subscribe("topic", handler1); err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	err := bus.Unsubscribe("topic", handler2)
+	if err == nil {
+		t.Fatal("expected error when handler not found")
+	}
+	if !strContains(err.Error(), "handler not found") {
+		t.Errorf("error should mention 'handler not found', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_HandlerReturnsError verifies Publish collects errors from handlers.
+func TestPluginEventBus_HandlerReturnsError(t *testing.T) {
+	bus := NewPluginEventBus()
+
+	expectedErr := fmt.Errorf("handler error")
+	bus.Subscribe("topic", func(ctx context.Context, topic string, data any) error {
+		return expectedErr
+	})
+
+	errs := bus.Publish(context.Background(), "topic", nil)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+	if errs[0] != expectedErr {
+		t.Errorf("expected error %v, got %v", expectedErr, errs[0])
+	}
+}
+
+// TestPluginEventBus_ConcurrentPublish verifies no panic or race under concurrent use.
+func TestPluginEventBus_ConcurrentPublish(t *testing.T) {
+	bus := NewPluginEventBus()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			handler := func(ctx context.Context, topic string, data any) error {
+				return nil
+			}
+			_ = bus.Subscribe(fmt.Sprintf("topic-%d", i), handler)
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			_ = bus.Publish(context.Background(), fmt.Sprintf("topic-%d", i), nil)
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestQuotaManager_NoConfigUnlimited verifies plugins without quota config get unlimited access.
+func TestQuotaManager_NoConfigUnlimited(t *testing.T) {
+	qm := NewPluginQuotaManager(nil)
+
+	allowed, remaining := qm.CheckToolCall("unknown-plugin")
+	if !allowed {
+		t.Error("expected allowed for plugin without quota")
+	}
+	if remaining != -1 {
+		t.Errorf("expected remaining -1, got %d", remaining)
+	}
+
+	ok, used := qm.CheckStorage("unknown-plugin")
+	if !ok {
+		t.Error("expected ok for plugin without quota")
+	}
+	if used != -1 {
+		t.Errorf("expected used -1, got %d", used)
+	}
+
+	toolCalls, storageBytes := qm.GetQuotaUsage("unknown-plugin")
+	if toolCalls != 0 {
+		t.Errorf("expected 0 tool calls, got %d", toolCalls)
+	}
+	if storageBytes != 0 {
+		t.Errorf("expected 0 storage bytes, got %d", storageBytes)
+	}
+}
+
+// TestQuotaManager_ZeroMaxToolCalls verifies MaxToolCallsPerDay=0 means unlimited.
+func TestQuotaManager_ZeroMaxToolCalls(t *testing.T) {
+	qm := NewPluginQuotaManager(map[string]PluginQuota{
+		"zero-plugin": {MaxToolCallsPerDay: 0, MaxStorageMB: 100},
+	})
+
+	allowed, remaining := qm.CheckToolCall("zero-plugin")
+	if !allowed {
+		t.Error("expected allowed for zero MaxToolCallsPerDay")
+	}
+	if remaining != -1 {
+		t.Errorf("expected remaining -1, got %d", remaining)
+	}
+}
+
+// TestMiddlewareChain_UseNil verifies Use(nil) does not add anything to the chain.
+func TestMiddlewareChain_UseNil(t *testing.T) {
+	chain := NewMiddlewareChain()
+	before := chain.Len()
+	chain.Use(nil)
+	after := chain.Len()
+	if after != before {
+		t.Errorf("Len should not change after Use(nil): before=%d, after=%d", before, after)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UninstallPlugin Deactivate Failure Tests
+// ---------------------------------------------------------------------------
+
+// deactivateErrPlugin is a test plugin whose Deactivate returns an error.
+type deactivateErrPlugin struct {
+	manifest PluginManifest
+}
+
+func (p *deactivateErrPlugin) Manifest() PluginManifest { return p.manifest }
+func (p *deactivateErrPlugin) Activate(ctx PluginContext) error {
+	ctx.RegisterTool(&SimplePluginTool{
+		Def:    ToolDef{Name: "deact_tool", Description: "test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) { return NewToolResult("ok"), nil },
+	})
+	return nil
+}
+func (p *deactivateErrPlugin) Deactivate(ctx PluginContext) error {
+	return fmt.Errorf("deactivate failed: intentional error")
+}
+
+// TestPluginManager_UninstallPlugin_DeactivateFails verifies that UninstallPlugin
+// completes successfully even when Deactivate returns an error (error is logged, not propagated).
+func TestPluginManager_UninstallPlugin_DeactivateFails(t *testing.T) {
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+
+	m := testManifest()
+	m.ID = "com.test.deact-fail"
+	p := &deactivateErrPlugin{manifest: m}
+
+	if err := pm.RegisterAndActivate(context.Background(), p); err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	// Verify active
+	entry, ok := pm.GetPlugin("com.test.deact-fail")
+	if !ok || entry.State != StateActive {
+		t.Fatal("plugin should be active before uninstall")
+	}
+
+	// Uninstall should succeed despite Deactivate error
+	err := pm.UninstallPlugin(context.Background(), "com.test.deact-fail")
+	if err != nil {
+		t.Errorf("UninstallPlugin should not return error when Deactivate fails: %v", err)
+	}
+
+	// Plugin should be removed from manager
+	if _, ok := pm.GetPlugin("com.test.deact-fail"); ok {
+		t.Error("plugin should be removed from manager after uninstall")
+	}
+}
