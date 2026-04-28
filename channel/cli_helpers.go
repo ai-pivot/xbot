@@ -1045,15 +1045,17 @@ func (m *cliModel) handlePluginList() tea.Cmd {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("# Plugins\n\n")
-	sb.WriteString("| ID | Name | Version | State | Runtime |\n")
-	sb.WriteString("|----|------|---------|--------|----------|\n")
+	sb.WriteString(m.styles.ToolHeader.Render("🔌 Plugins"))
+	sb.WriteString("\n\n")
+	fmt.Fprintf(&sb, "  %-20s %-16s %-10s %-14s %s\n",
+		"ID", "Name", "Version", "State", "Runtime")
+	sb.WriteString("  " + m.styles.Separator.Render("─────────────────────────────────────────────────────────") + "\n")
 	for _, e := range entries {
-		icon := pluginStateIcon(string(e.State))
-		fmt.Fprintf(&sb, "| `%s` | %s | %s | %s %s | %s |\n",
-			e.Manifest.ID, e.Manifest.Name, e.Manifest.Version, icon, e.State, e.Manifest.Runtime)
+		stateStr := m.pluginStateStyled(string(e.State))
+		fmt.Fprintf(&sb, "  %-20s %-16s %-10s %s %-8s\n",
+			e.Manifest.ID, e.Manifest.Name, e.Manifest.Version, stateStr, string(e.Manifest.Runtime))
 	}
-	m.appendSystemMarkdown(sb.String())
+	m.appendSystemStyled(sb.String())
 	m.updateViewportContent()
 	return nil
 }
@@ -1166,6 +1168,25 @@ func pluginStateIcon(state string) string {
 		return "🟡"
 	default:
 		return "⚫"
+	}
+}
+
+// pluginStateStyled returns a lipgloss-styled state string using cached theme styles.
+func (m *cliModel) pluginStateStyled(state string) string {
+	icon := pluginStateIcon(state)
+	switch state {
+	case "active":
+		return icon + " " + m.styles.PluginActive.Render(state)
+	case "error":
+		return icon + " " + m.styles.PluginError.Render(state)
+	case "discovered":
+		return icon + " " + m.styles.PluginDiscovered.Render(state)
+	case "inactive":
+		return icon + " " + m.styles.PluginInactive.Render(state)
+	case "activating", "deactivating":
+		return icon + " " + m.styles.PluginTransition.Render(state)
+	default:
+		return icon + " " + m.styles.PluginInactive.Render(state)
 	}
 }
 

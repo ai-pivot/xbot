@@ -275,29 +275,27 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			m.showSystemMsg("No active plugins to check.", feedbackInfo)
 		} else {
 			var sb strings.Builder
-			sb.WriteString("# Plugin Health\n\n")
-			sb.WriteString("| Plugin | Status |\n")
-			sb.WriteString("|--------|--------|\n")
-			allHealthy := true
-			// Show errors first
+			sb.WriteString(m.styles.ToolHeader.Render("🔍 Plugin Health"))
+			sb.WriteString("\n\n")
+
+			// Show errors first, then healthy
 			for id, err := range results {
 				if err != nil {
-					allHealthy = false
-					fmt.Fprintf(&sb, "| `%s` | 🔴 %s |\n", id, err.Error())
+					icon := pluginStateIcon("error")
+					line := fmt.Sprintf("  %-20s %s %s\n", id, icon,
+						m.styles.PluginError.Render(err.Error()))
+					sb.WriteString(line)
 				}
 			}
-			if allHealthy {
-				for id := range results {
-					fmt.Fprintf(&sb, "| `%s` | 🟢 healthy |\n", id)
-				}
-			} else {
-				for id, err := range results {
-					if err == nil {
-						fmt.Fprintf(&sb, "| `%s` | 🟢 healthy |\n", id)
-					}
+			for id, err := range results {
+				if err == nil {
+					icon := pluginStateIcon("active")
+					line := fmt.Sprintf("  %-20s %s %s\n", id, icon,
+						m.styles.PluginActive.Render("healthy"))
+					sb.WriteString(line)
 				}
 			}
-			m.appendSystemMarkdown(sb.String())
+			m.appendSystemStyled(sb.String())
 		}
 		m.updateViewportContent()
 

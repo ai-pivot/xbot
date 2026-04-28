@@ -176,6 +176,18 @@ func (m *cliModel) appendSystemMarkdown(content string) {
 	})
 }
 
+// appendSystemStyled adds a pre-styled system message (content already contains ANSI codes).
+// The message bypasses both glamour rendering and systemMsgStyle wrapping.
+func (m *cliModel) appendSystemStyled(content string) {
+	m.messages = append(m.messages, cliMessage{
+		role:      "system",
+		content:   content,
+		timestamp: time.Now(),
+		dirty:     true,
+		styled:    true,
+	})
+}
+
 // sendInbound sends a message to the agent's inbound channel.
 // Uses non-blocking send to prevent the BubbleTea event loop from freezing
 // if the channel is full (e.g., agent is busy with a long LLM call).
@@ -1321,7 +1333,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	// 渲染 Markdown（assistant 消息 + 带 markdown 标记的 system 消息）
 	var rendered string
-	if msg.role == "assistant" || (msg.role == "system" && msg.markdown) {
+	if msg.role == "assistant" || (msg.role == "system" && msg.markdown && !msg.styled) {
 		// Pre-process: render mermaid code blocks to ASCII art
 		// Truncate to glamour wrap width to prevent wrapping.
 		preprocessed := msg.content
@@ -1461,7 +1473,10 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 		sb.WriteString(toolSummaryStyle.Render(toolSb.String()))
 	case "system":
-		if msg.markdown {
+		if msg.styled {
+			// Pre-styled content: output as-is, no wrapping
+			sb.WriteString(msg.content)
+		} else if msg.markdown {
 			// Markdown system messages (e.g. /usage tables): use glamour-rendered output directly
 			sb.WriteString(rendered)
 		} else if isErrorContent(msg.content) {

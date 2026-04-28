@@ -637,6 +637,7 @@ type cliMessage struct {
 
 	// --- Markdown rendering for system messages ---
 	markdown bool // when true, system messages go through glamour renderer (e.g. /usage tables)
+	styled   bool // when true, content is pre-rendered with ANSI codes, output as-is in renderMessage
 }
 
 // newCLIModel 创建 CLI model

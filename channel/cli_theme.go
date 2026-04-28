@@ -416,6 +416,12 @@ type cliStyles struct {
 	SearchBar       lipgloss.Style
 	SearchIndicator lipgloss.Style
 
+	// --- plugin state ---
+	PluginActive     lipgloss.Style
+	PluginError      lipgloss.Style
+	PluginDiscovered lipgloss.Style
+	PluginInactive   lipgloss.Style
+	PluginTransition lipgloss.Style
 	// toolDisplayInfo
 }
 
@@ -532,6 +538,12 @@ func buildStyles(width int) cliStyles {
 		// --- search (§21) ---
 		SearchBar:       lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Info)).Padding(0, 1).Width(width - 4),
 		SearchIndicator: lipgloss.NewStyle().Foreground(c(t.Warning)).Bold(true),
+		// --- plugin state ---
+		PluginActive:     lipgloss.NewStyle().Foreground(c(t.Success)),
+		PluginError:      lipgloss.NewStyle().Foreground(c(t.Error)),
+		PluginDiscovered: lipgloss.NewStyle().Foreground(c(t.Warning)),
+		PluginInactive:   lipgloss.NewStyle().Foreground(c(t.TextMuted)),
+		PluginTransition: lipgloss.NewStyle().Foreground(c(t.Warning)).Italic(true),
 	}
 }
 
