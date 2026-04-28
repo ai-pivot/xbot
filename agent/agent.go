@@ -23,6 +23,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -317,6 +318,9 @@ type Agent struct {
 	channelFinder func(name string) (channel.Channel, bool)
 
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
+
+	// PluginManager manages the plugin system lifecycle
+	pluginMgr *plugin.PluginManager
 	bgTaskMgr *tools.BackgroundTaskManager
 
 	// bgRunActive is atomically set to 1 when a Run is active and consuming bg notifications,
@@ -864,6 +868,25 @@ func New(cfg Config) (*Agent, error) {
 	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
+	// 5c. Initialize plugin system
+	agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
+	if _, err := agent.pluginMgr.Discover(context.Background()); err != nil {
+		log.WithError(err).Warn("Plugin discovery failed")
+	}
+	if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
+		log.WithError(err).Warn("Plugin activation failed")
+	}
+	// Wire plugin capabilities to xbot subsystems
+	hookBridge := plugin.NewPluginHookBridge()
+	enricherReg := plugin.NewEnricherRegistry()
+	if err := plugin.WireAll(agent.pluginMgr, registry, hookBridge, enricherReg); err != nil {
+		log.WithError(err).Warn("Plugin wiring failed")
+	}
+	// Register the hook bridge as a builtin hook handler
+	agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
+	// Wire enricher registry into the message pipeline
+	agent.pipeline.Use(newPluginEnricherMiddleware(enricherReg))
+
 	// 6. 启动 bg task 通知路由 goroutine
 	go agent.bgNotifyLoop()
 
@@ -1079,6 +1102,10 @@ func (a *Agent) Close() error {
 	if a.agentCancel != nil {
 		a.agentCancel()
 	}
+	// Deactivate all plugins before shutting down subsystems
+	if a.pluginMgr != nil {
+		a.pluginMgr.DeactivateAll(context.Background())
+	}
 	// 先停止 cron 调度器，避免在数据库关闭后仍尝试访问
 	if a.cronSch != nil {
 		a.cronSch.Stop()
@@ -1094,6 +1121,12 @@ func (a *Agent) Close() error {
 		}
 	}
 	return nil
+}
+
+// PluginManager returns the plugin manager for this agent.
+// Returns nil if the plugin system is not initialized.
+func (a *Agent) PluginManager() *plugin.PluginManager {
+	return a.pluginMgr
 }
 
 // NOTE: math/rand is intentionally used here for non-cryptographic random selection

@@ -1,0 +1,28 @@
+{
+  "id": "xbot.hello-world",
+  "name": "Hello World",
+  "version": "1.0.0",
+  "description": "A simple example plugin that demonstrates the xbot plugin system",
+  "author": "xbot",
+  "runtime": "native",
+  "activationEvents": ["onStart"],
+  "permissions": ["tools.register", "hooks.subscribe", "context.enrich", "storage.private"],
+  "contributes": {
+    "tools": [
+      {
+        "name": "hello",
+        "description": "Greet someone by name. Returns a friendly greeting message."
+      },
+      {
+        "name": "ping",
+        "description": "Simple ping-pong tool for testing plugin system connectivity."
+      }
+    ],
+    "hooks": [
+      { "event": "PostToolUse", "matcher": "" }
+    ],
+    "contextEnrichers": [
+      { "name": "hello_status", "description": "Shows Hello World plugin status" }
+    ]
+  }
+}

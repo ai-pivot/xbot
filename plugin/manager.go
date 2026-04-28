@@ -1,0 +1,346 @@
+package plugin
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+
+	log "xbot/logger"
+)
+
+// ---------------------------------------------------------------------------
+// PluginManager — central lifecycle coordinator for all plugins
+// ---------------------------------------------------------------------------
+
+// PluginEntry tracks a loaded plugin and its state.
+type PluginEntry struct {
+	Manifest *PluginManifest
+	Plugin   Plugin
+	Context  *pluginContextImpl
+	State    PluginState
+	Dir      string // plugin directory on disk
+	stateMu  sync.Mutex
+}
+
+// PluginManager discovers, loads, activates, and manages plugins.
+// Integration with xbot subsystems is done via plugin.WireAll() or
+// individual Wire* functions in integration.go.
+type PluginManager struct {
+	mu       sync.RWMutex
+	entries  map[string]*PluginEntry // pluginID → entry
+	xbotHome string
+
+	// Factory for creating plugin runtimes
+	runtimeFactory RuntimeFactory
+}
+
+// RuntimeFactory creates Plugin instances for different runtime types.
+type RuntimeFactory interface {
+	Create(manifest *PluginManifest, dir string) (Plugin, error)
+}
+
+// NewPluginManager creates a new PluginManager.
+func NewPluginManager(xbotHome string) *PluginManager {
+	return &PluginManager{
+		entries:  make(map[string]*PluginEntry),
+		xbotHome: xbotHome,
+	}
+}
+
+// SetRuntimeFactory sets the runtime factory for creating plugin instances.
+func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
+	pm.runtimeFactory = factory
+}
+
+// ---------------------------------------------------------------------------
+// Discovery & Loading
+// ---------------------------------------------------------------------------
+
+// Discover scans plugin directories and loads manifests.
+// Returns the number of plugins discovered.
+func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
+	dirs := DefaultPluginDirs(pm.xbotHome)
+	manifests := DiscoverPlugins(dirs)
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	loaded := 0
+	for _, m := range manifests {
+		if _, exists := pm.entries[m.ID]; exists {
+			log.WithField("plugin", m.ID).Warn("Duplicate plugin ID, skipping")
+			continue
+		}
+
+		// Find plugin directory
+		pluginDir := pm.findPluginDir(dirs, m.ID)
+
+		entry := &PluginEntry{
+			Manifest: m,
+			State:    StateDiscovered,
+			Dir:      pluginDir,
+		}
+
+		// Create storage for this plugin
+		storage, err := NewFileStorage(pluginDir)
+		if err != nil {
+			log.WithField("plugin", m.ID).Warn("Failed to create storage: ", err)
+			storage = &noopStorage{}
+		}
+
+		// Create PluginContext
+		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID))
+
+		// Create runtime instance
+		if pm.runtimeFactory != nil {
+			plugin, err := pm.runtimeFactory.Create(m, pluginDir)
+			if err != nil {
+				log.WithField("plugin", m.ID).Warn("Failed to create runtime: ", err)
+				entry.State = StateError
+				pm.entries[m.ID] = entry
+				continue
+			}
+			entry.Plugin = plugin
+		}
+
+		pm.entries[m.ID] = entry
+		loaded++
+		log.WithField("plugin", m.ID).Info("Plugin discovered")
+	}
+
+	return loaded, nil
+}
+
+// findPluginDir locates the directory containing the plugin.
+func (pm *PluginManager) findPluginDir(dirs []string, pluginID string) string {
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, pluginID)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return filepath.Join(dirs[0], pluginID)
+}
+
+// ---------------------------------------------------------------------------
+// Activation
+// ---------------------------------------------------------------------------
+
+// ActivateAll activates all plugins that have "onStart" in their activation events.
+func (pm *PluginManager) ActivateAll(ctx context.Context) error {
+	pm.mu.RLock()
+	entries := make([]*PluginEntry, 0, len(pm.entries))
+	for _, e := range pm.entries {
+		entries = append(entries, e)
+	}
+	pm.mu.RUnlock()
+
+	var errs []error
+	for _, entry := range entries {
+		if entry.State != StateDiscovered {
+			continue
+		}
+		if !hasActivationEvent(entry.Manifest, "onStart") {
+			continue
+		}
+		if err := pm.activate(ctx, entry); err != nil {
+			errs = append(errs, fmt.Errorf("activate %s: %w", entry.Manifest.ID, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%d plugin(s) failed to activate: %v", len(errs), errs)
+	}
+	return nil
+}
+
+// ActivateForEvent activates plugins that match the given activation event.
+// Called by the integration layer when events fire (onTool:xxx, onHook:xxx, etc.)
+func (pm *PluginManager) ActivateForEvent(ctx context.Context, event string) error {
+	pm.mu.RLock()
+	var toActivate []*PluginEntry
+	for _, e := range pm.entries {
+		if e.State == StateDiscovered && hasActivationEvent(e.Manifest, event) {
+			toActivate = append(toActivate, e)
+		}
+	}
+	pm.mu.RUnlock()
+
+	for _, entry := range toActivate {
+		if err := pm.activate(ctx, entry); err != nil {
+			log.WithField("plugin", entry.Manifest.ID).Error("Activation failed: ", err)
+		}
+	}
+	return nil
+}
+
+func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error {
+	if entry.Plugin == nil {
+		entry.stateMu.Lock()
+		entry.State = StateError
+		entry.stateMu.Unlock()
+		return fmt.Errorf("no runtime instance")
+	}
+
+	// CAS: StateDiscovered → StateActivating
+	entry.stateMu.Lock()
+	if entry.State != StateDiscovered {
+		entry.stateMu.Unlock()
+		return nil // already activating/active, skip
+	}
+	entry.State = StateActivating
+	entry.stateMu.Unlock()
+
+	// Call plugin's Activate method with panic recovery
+	var activateErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				activateErr = fmt.Errorf("plugin panic during Activate: %v", r)
+			}
+		}()
+		activateErr = entry.Plugin.Activate(entry.Context)
+	}()
+
+	if activateErr != nil {
+		entry.stateMu.Lock()
+		entry.State = StateError
+		entry.stateMu.Unlock()
+		return activateErr
+	}
+
+	// Note: Capability registration is done by integration.WireAll() after
+	// activation. The plugin's tools/hooks/enrichers are collected in
+	// entry.Context during Activate() and wired to xbot subsystems separately.
+
+	entry.stateMu.Lock()
+	entry.State = StateActive
+	entry.stateMu.Unlock()
+	log.WithField("plugin", entry.Manifest.ID).Info("Plugin activated")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Deactivation
+// ---------------------------------------------------------------------------
+
+// DeactivateAll deactivates all active plugins. Called on shutdown.
+func (pm *PluginManager) DeactivateAll(ctx context.Context) {
+	pm.mu.RLock()
+	entries := make([]*PluginEntry, 0, len(pm.entries))
+	for _, e := range pm.entries {
+		if e.State == StateActive {
+			entries = append(entries, e)
+		}
+	}
+	pm.mu.RUnlock()
+
+	for _, entry := range entries {
+		entry.State = StateDeactivating
+		if err := entry.Plugin.Deactivate(entry.Context); err != nil {
+			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
+		}
+		entry.State = StateInactive
+		log.WithField("plugin", entry.Manifest.ID).Info("Plugin deactivated")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Query
+// ---------------------------------------------------------------------------
+
+// GetPlugin returns a plugin entry by ID.
+func (pm *PluginManager) GetPlugin(id string) (*PluginEntry, bool) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	e, ok := pm.entries[id]
+	return e, ok
+}
+
+// ListPlugins returns all loaded plugin entries.
+func (pm *PluginManager) ListPlugins() []*PluginEntry {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	result := make([]*PluginEntry, 0, len(pm.entries))
+	for _, e := range pm.entries {
+		result = append(result, e)
+	}
+	return result
+}
+
+// ActiveCount returns the number of currently active plugins.
+func (pm *PluginManager) ActiveCount() int {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	count := 0
+	for _, e := range pm.entries {
+		if e.State == StateActive {
+			count++
+		}
+	}
+	return count
+}
+
+// ---------------------------------------------------------------------------
+// Manual Registration (for Go native plugins compiled into the binary)
+// ---------------------------------------------------------------------------
+
+// Register directly registers a native Go Plugin instance.
+// This is for plugins that are compiled into the xbot binary (built-in plugins).
+// The plugin must already have its manifest populated.
+func (pm *PluginManager) Register(p Plugin) error {
+	m := p.Manifest()
+	if m.ID == "" {
+		return fmt.Errorf("plugin manifest ID is empty")
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if _, exists := pm.entries[m.ID]; exists {
+		return fmt.Errorf("plugin %s already registered", m.ID)
+	}
+
+	pluginDir := filepath.Join(pm.xbotHome, "plugins", m.ID)
+	storage, err := NewFileStorage(pluginDir)
+	if err != nil {
+		storage = &noopStorage{}
+	}
+
+	entry := &PluginEntry{
+		Manifest: &m,
+		Plugin:   p,
+		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID)),
+		State:    StateDiscovered,
+		Dir:      pluginDir,
+	}
+
+	pm.entries[m.ID] = entry
+	log.WithField("plugin", m.ID).Info("Native plugin registered")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// hasActivationEvent checks if a manifest includes the given activation event.
+func hasActivationEvent(m *PluginManifest, event string) bool {
+	for _, e := range m.ActivationEvents {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
+// noopStorage is a no-op storage used when storage creation fails.
+type noopStorage struct{}
+
+func (n *noopStorage) Get(key string) (string, bool) { return "", false }
+func (n *noopStorage) Set(key, value string) error   { return nil }
+func (n *noopStorage) Delete(key string) error       { return nil }
+func (n *noopStorage) Keys() []string                { return nil }
+func (n *noopStorage) Clear() error                  { return nil }

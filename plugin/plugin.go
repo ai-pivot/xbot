@@ -1,0 +1,270 @@
+// Package plugin provides xbot's plugin system with VSCode-like extensibility.
+//
+// The plugin system supports multiple runtimes (native Go, gRPC, future WASM)
+// through a unified Plugin API. Plugins are discovered via plugin.json manifests,
+// activated lazily based on events, and sandboxed through the PluginContext interface.
+package plugin
+
+import (
+	"context"
+
+	"xbot/llm"
+)
+
+// ---------------------------------------------------------------------------
+// Plugin Interface — the single entry point for all plugins
+// ---------------------------------------------------------------------------
+
+// Plugin is the core interface that all xbot plugins must implement.
+// A plugin contributes tools, hooks, and/or context enrichers through
+// a unified activation lifecycle.
+//
+// Implementations are registered via PluginManager.Register() for native plugins,
+// or discovered automatically for gRPC plugins based on their manifest.
+type Plugin interface {
+	// Manifest returns plugin metadata. Called once during discovery phase.
+	// Must return a non-nil, valid PluginManifest.
+	Manifest() PluginManifest
+
+	// Activate initializes the plugin and registers all capabilities
+	// (tools, hooks, context enrichers) through the provided PluginContext.
+	// Called when an activation event matches.
+	//
+	// Implementations should be idempotent — safe to call multiple times.
+	Activate(ctx PluginContext) error
+
+	// Deactivate cleans up plugin resources. Called on shutdown or when
+	// the plugin is being unloaded. After Deactivate, no further callbacks
+	// will be invoked on this plugin.
+	Deactivate(ctx PluginContext) error
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Manifest — declarative plugin metadata
+// ---------------------------------------------------------------------------
+
+// PluginManifest describes a plugin's metadata, capabilities, and requirements.
+// It is loaded from plugin.json in the plugin directory.
+type PluginManifest struct {
+	// ID is the unique plugin identifier (reverse DNS recommended).
+	// Must be non-empty and unique across all loaded plugins.
+	ID string `json:"id"`
+
+	// Name is the human-readable plugin name.
+	Name string `json:"name"`
+
+	// Version follows semver (e.g., "1.0.0").
+	Version string `json:"version"`
+
+	// Description is a short summary of what the plugin does.
+	Description string `json:"description"`
+
+	// Author is the plugin author or organization.
+	Author string `json:"author,omitempty"`
+
+	// Homepage is the URL to the plugin's source or documentation.
+	Homepage string `json:"homepage,omitempty"`
+
+	// Runtime specifies the plugin execution environment.
+	// Valid values: "native", "grpc" (future: "wasm")
+	Runtime RuntimeType `json:"runtime"`
+
+	// Entry is the plugin entry point.
+	// For native: Go function name (default: "Plugin")
+	// For grpc: command to start the plugin process
+	Entry string `json:"entry"`
+
+	// Executable is the command to start the plugin process (gRPC runtime).
+	// If set, takes precedence over Entry. Use this for security.
+	Executable string `json:"executable,omitempty"`
+
+	// Args are command-line arguments passed to Executable.
+	Args []string `json:"args,omitempty"`
+
+	// ActivationEvents lists events that trigger plugin activation.
+	// Supports: "onStart", "onTool:<name>", "onHook:<event>", "onCommand:<cmd>"
+	// Empty means onStart.
+	ActivationEvents []string `json:"activationEvents"`
+
+	// Permissions declares required capabilities.
+	// The plugin can only access APIs for declared permissions.
+	Permissions []string `json:"permissions"`
+
+	// Contributes declares what the plugin provides to xbot.
+	Contributes *PluginContributes `json:"contributes,omitempty"`
+}
+
+// PluginContributes declares the capabilities a plugin provides.
+type PluginContributes struct {
+	Tools            []ToolContribution     `json:"tools,omitempty"`
+	Hooks            []HookContribution     `json:"hooks,omitempty"`
+	ContextEnrichers []EnricherContribution `json:"contextEnrichers,omitempty"`
+	Commands         []CommandContribution  `json:"commands,omitempty"`
+}
+
+// ToolContribution describes a tool provided by the plugin.
+type ToolContribution struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema,omitempty"`
+}
+
+// HookContribution describes a lifecycle hook the plugin subscribes to.
+type HookContribution struct {
+	Event   string `json:"event"`             // e.g., "PreToolUse", "PostToolUse"
+	Matcher string `json:"matcher,omitempty"` // tool name pattern, "" = all
+}
+
+// EnricherContribution describes a context enricher that injects dynamic
+// content into the system prompt.
+type EnricherContribution struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// CommandContribution describes a slash command provided by the plugin.
+type CommandContribution struct {
+	Name        string `json:"name"` // e.g., "/deploy"
+	Description string `json:"description"`
+}
+
+// ---------------------------------------------------------------------------
+// Runtime Type
+// ---------------------------------------------------------------------------
+
+// RuntimeType specifies how a plugin is executed.
+type RuntimeType string
+
+const (
+	// RuntimeNative runs the plugin in-process as Go code.
+	RuntimeNative RuntimeType = "native"
+
+	// RuntimeGRPC runs the plugin as an external process communicating via gRPC.
+	RuntimeGRPC RuntimeType = "grpc"
+
+	// RuntimeWASM runs the plugin in a WASM sandbox (Phase 2).
+	RuntimeWASM RuntimeType = "wasm"
+)
+
+// ---------------------------------------------------------------------------
+// PluginTool — tool definition for plugin-provided tools
+// ---------------------------------------------------------------------------
+
+// PluginTool defines a tool that a plugin provides. This is the plugin-side
+// interface — the plugin system adapts it to tools.Tool internally.
+type PluginTool interface {
+	// Definition returns the tool's JSON schema definition for LLM consumption.
+	Definition() ToolDef
+
+	// Execute runs the tool with the given input and returns a result.
+	// The input is a JSON string matching the tool's input schema.
+	Execute(ctx context.Context, input string) (*ToolResult, error)
+}
+
+// ToolDef is the tool definition for LLM function calling.
+type ToolDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  []llm.ToolParam `json:"parameters"`
+}
+
+// ToolResult is the result of a plugin tool execution.
+type ToolResult struct {
+	// Content is the primary output to send back to the LLM.
+	Content string `json:"content"`
+
+	// IsError indicates the tool execution failed (but the plugin itself ran correctly).
+	IsError bool `json:"isError,omitempty"`
+
+	// Metadata carries optional key-value pairs for downstream processing.
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// NewToolResult creates a successful tool result.
+func NewToolResult(content string) *ToolResult {
+	return &ToolResult{Content: content}
+}
+
+// NewToolError creates an error tool result.
+func NewToolError(content string) *ToolResult {
+	return &ToolResult{Content: content, IsError: true}
+}
+
+// ---------------------------------------------------------------------------
+// Hook Types
+// ---------------------------------------------------------------------------
+
+// HookEvent identifies a lifecycle event that plugins can subscribe to.
+type HookEvent string
+
+const (
+	HookPreToolUse       HookEvent = "PreToolUse"
+	HookPostToolUse      HookEvent = "PostToolUse"
+	HookPostToolUseError HookEvent = "PostToolUseFailure"
+	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
+	HookAgentStop        HookEvent = "AgentStop"
+	HookSessionStart     HookEvent = "SessionStart"
+	HookSessionEnd       HookEvent = "SessionEnd"
+	HookSubAgentStart    HookEvent = "SubAgentStart"
+	HookSubAgentStop     HookEvent = "SubAgentStop"
+	HookPreCompact       HookEvent = "PreCompact"
+	HookPostCompact      HookEvent = "PostCompact"
+	HookCronFired        HookEvent = "CronFired"
+	HookWebhookReceived  HookEvent = "WebhookReceived"
+)
+
+// HookDecision represents a hook handler's decision on whether to allow an operation.
+type HookDecision string
+
+const (
+	DecisionAllow HookDecision = "allow"
+	DecisionDeny  HookDecision = "deny"
+	DecisionAsk   HookDecision = "ask"
+	DecisionDefer HookDecision = "defer"
+)
+
+// HookResult is returned by a hook handler after processing an event.
+type HookResult struct {
+	Decision HookDecision   `json:"decision"`
+	Message  string         `json:"message,omitempty"` // Explanation for deny/ask
+	Data     map[string]any `json:"data,omitempty"`
+}
+
+// HookPayload carries event-specific data to hook handlers.
+type HookPayload struct {
+	Event     HookEvent      `json:"event"`
+	ToolName  string         `json:"toolName,omitempty"`
+	ToolInput string         `json:"toolInput,omitempty"`
+	SessionID string         `json:"sessionId,omitempty"`
+	Channel   string         `json:"channel,omitempty"`
+	ChatID    string         `json:"chatId,omitempty"`
+	UserID    string         `json:"userId,omitempty"`
+	Extra     map[string]any `json:"extra,omitempty"`
+}
+
+// HookHandler processes a lifecycle event and returns a decision.
+type HookHandler func(ctx context.Context, payload *HookPayload) (*HookResult, error)
+
+// ---------------------------------------------------------------------------
+// Context Enricher
+// ---------------------------------------------------------------------------
+
+// ContextEnricher injects dynamic content into the system prompt.
+// This upgrades the current static Skills (SKILL.md) model to executable logic.
+type ContextEnricher func(ctx context.Context) (string, error)
+
+// ---------------------------------------------------------------------------
+// Plugin State
+// ---------------------------------------------------------------------------
+
+// PluginState tracks the lifecycle state of a plugin.
+type PluginState string
+
+const (
+	StateDiscovered   PluginState = "discovered"   // Manifest loaded, waiting for activation
+	StateActivating   PluginState = "activating"   // Activate() in progress
+	StateActive       PluginState = "active"       // Running and contributing
+	StateDeactivating PluginState = "deactivating" // Deactivate() in progress
+	StateInactive     PluginState = "inactive"     // Deactivated or errored
+	StateError        PluginState = "error"        // Failed to activate
+)
