@@ -114,6 +114,19 @@ func validateManifest(m *PluginManifest, dir string) error {
 		}
 	}
 
+	// Validate dependency declarations
+	for i, dep := range m.Dependencies {
+		if dep.ID == "" {
+			return fmt.Errorf("dependencies[%d].id is required", i)
+		}
+		if !isValidPluginID(dep.ID) {
+			return fmt.Errorf("dependencies[%d].id: invalid plugin ID %q", i, dep.ID)
+		}
+		if dep.Version != "" && !isValidVersion(dep.Version) {
+			return fmt.Errorf("dependencies[%d].version: invalid version format %q (expected semver)", i, dep.Version)
+		}
+	}
+
 	return nil
 }
 
@@ -218,6 +231,33 @@ func DiscoverPlugins(dirs []string) []*PluginManifest {
 	}
 
 	return manifests
+}
+
+// isValidVersion performs basic semver format validation.
+// Accepts common patterns: "1.0.0", "^1.0.0", ">=1.0.0", "~1.0.0", "1.x", "*".
+func isValidVersion(v string) bool {
+	if v == "*" {
+		return true
+	}
+	// Strip common semver range prefixes
+	clean := strings.TrimLeft(v, "^~>=<")
+	clean = strings.TrimSpace(clean)
+	if clean == "" {
+		return false
+	}
+	// Accept "1.x" style
+	if strings.HasSuffix(clean, ".x") {
+		clean = strings.TrimSuffix(clean, ".x") + ".0.0"
+	}
+	// Must contain at least one digit
+	hasDigit := false
+	for _, c := range clean {
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	return hasDigit
 }
 
 // DefaultPluginDirs returns the standard plugin search paths.

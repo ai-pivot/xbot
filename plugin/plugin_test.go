@@ -1526,3 +1526,267 @@ func TestPluginMetrics_JSON(t *testing.T) {
 		t.Errorf("round-trip mismatch: got %+v, want %+v", m2, m)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Boundary Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_String(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// Empty manager
+	s := pm.String()
+	if s != "PluginManager{total=0, active=0, error=0, disabled=0}" {
+		t.Errorf("empty String() = %q", s)
+	}
+
+	// Register and activate one plugin
+	p1 := &mockPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p1)
+	s = pm.String()
+	if !strContains(s, "total=1") || !strContains(s, "active=1") {
+		t.Errorf("after activate String() = %q", s)
+	}
+
+	// Register a second plugin but don't activate (discovered state)
+	m2 := testManifest()
+	m2.ID = "com.test.discovered"
+	p2 := &mockPlugin{manifest: m2}
+	pm.Register(p2)
+	s = pm.String()
+	if !strContains(s, "total=2") || !strContains(s, "active=1") {
+		t.Errorf("with discovered String() = %q", s)
+	}
+
+	// Disable a plugin that is NOT in entries — should count as disabled
+	pm.DisablePlugins([]string{"com.test.notloaded"})
+	s = pm.String()
+	if !strContains(s, "disabled=1") {
+		t.Errorf("with disabled String() = %q", s)
+	}
+}
+
+func TestPluginManager_String_WithErrors(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// Activate a plugin that fails
+	m := testManifest()
+	m.ID = "com.test.failing"
+	p := &mockPlugin{manifest: m, activateErr: fmt.Errorf("fail")}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	s := pm.String()
+	if !strContains(s, "error=1") {
+		t.Errorf("with error String() = %q", s)
+	}
+}
+
+func TestPluginManager_HealthCheck_Empty(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// No plugins at all
+	results := pm.HealthCheck(context.Background())
+	if len(results) != 0 {
+		t.Errorf("empty HealthCheck should return empty map, got %d results", len(results))
+	}
+}
+
+func TestPluginManager_Metrics_AfterActivation(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// Before activation
+	m := pm.Metrics()
+	if m.TotalPlugins != 0 || m.ActivePlugins != 0 {
+		t.Fatalf("pre-activation metrics should be zero: %+v", m)
+	}
+
+	// Activate one plugin (mockPlugin registers 1 tool)
+	p := &mockPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	m = pm.Metrics()
+	if m.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins = %d, want 1", m.TotalPlugins)
+	}
+	if m.ActivePlugins != 1 {
+		t.Errorf("ActivePlugins = %d, want 1", m.ActivePlugins)
+	}
+	if m.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", m.TotalTools)
+	}
+	if m.TotalHooks != 0 {
+		t.Errorf("TotalHooks = %d, want 0", m.TotalHooks)
+	}
+	if m.TotalEnrichers != 0 {
+		t.Errorf("TotalEnrichers = %d, want 0", m.TotalEnrichers)
+	}
+}
+
+func TestManifest_DependencyValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		deps    []PluginDependency
+		wantErr bool
+	}{
+		{
+			name:    "no dependencies",
+			deps:    nil,
+			wantErr: false,
+		},
+		{
+			name: "valid dependency",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "1.0.0"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with semver range",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "^1.0.0"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with wildcard version",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "*"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty dependency ID",
+			deps: []PluginDependency{
+				{ID: "", Version: "1.0.0"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid dependency ID",
+			deps: []PluginDependency{
+				{ID: "/bad/id", Version: "1.0.0"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty version is ok (optional)",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "multiple valid dependencies",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "1.0.0"},
+				{ID: "com.example.utils", Version: ">=2.0.0"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := testManifest()
+			m.Dependencies = tt.deps
+			writeTestManifest(t, dir, &m)
+
+			_, err := LoadManifest(dir)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LoadManifest() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestWASMRuntime_Create(t *testing.T) {
+	factory := NewWASMRuntime()
+
+	m := &PluginManifest{
+		ID:               "com.test.wasm",
+		Name:             "WASM Test",
+		Version:          "1.0.0",
+		Description:      "WASM test plugin",
+		Runtime:          RuntimeWASM,
+		ActivationEvents: []string{"onStart"},
+	}
+
+	plugin, err := factory.Create(m, "/tmp/test-wasm")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if plugin == nil {
+		t.Fatal("Create() returned nil plugin")
+	}
+
+	// Verify manifest
+	loaded := plugin.Manifest()
+	if loaded.ID != "com.test.wasm" {
+		t.Errorf("Manifest ID = %q, want %q", loaded.ID, "com.test.wasm")
+	}
+	if loaded.Runtime != RuntimeWASM {
+		t.Errorf("Manifest Runtime = %q, want %q", loaded.Runtime, RuntimeWASM)
+	}
+}
+
+func TestWASMRuntime_Create_WrongRuntime(t *testing.T) {
+	factory := NewWASMRuntime()
+
+	m := &PluginManifest{
+		ID:      "com.test.native",
+		Name:    "Native",
+		Version: "1.0.0",
+		Runtime: RuntimeNative,
+	}
+
+	_, err := factory.Create(m, "/tmp/test")
+	if err == nil {
+		t.Fatal("expected error for wrong runtime type")
+	}
+}
+
+func TestWASMRuntime_Activate_NoOp(t *testing.T) {
+	factory := NewWASMRuntime()
+
+	m := &PluginManifest{
+		ID:               "com.test.wasm",
+		Name:             "WASM NoOp Test",
+		Version:          "1.0.0",
+		Description:      "test",
+		Runtime:          RuntimeWASM,
+		ActivationEvents: []string{"onStart"},
+	}
+
+	plugin, err := factory.Create(m, "/tmp/test-wasm")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	// Activate should succeed (no-op with warning log)
+	storage := &noopStorage{}
+	ctx := newPluginContext(m, storage, newPluginLogger(m.ID))
+
+	err = plugin.Activate(ctx)
+	if err != nil {
+		t.Fatalf("Activate() error: %v", err)
+	}
+
+	// Deactivate should also succeed
+	err = plugin.Deactivate(ctx)
+	if err != nil {
+		t.Fatalf("Deactivate() error: %v", err)
+	}
+}
+
+func TestPluginManager_DeactivateAll_NotInitialized(t *testing.T) {
+	// nil-safe: calling DeactivateAll on a manager with no active plugins
+	pm := NewPluginManager(t.TempDir())
+
+	// Should not panic
+	pm.DeactivateAll(context.Background())
+
+	if pm.ActiveCount() != 0 {
+		t.Error("expected 0 active plugins")
+	}
+}

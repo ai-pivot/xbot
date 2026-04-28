@@ -92,6 +92,24 @@ type PluginManifest struct {
 
 	// Contributes declares what the plugin provides to xbot.
 	Contributes *PluginContributes `json:"contributes,omitempty"`
+
+	// Dependencies lists other plugins this plugin depends on.
+	// Currently only format validation is performed; version resolution
+	// will be added in a future iteration.
+	Dependencies []PluginDependency `json:"dependencies,omitempty"`
+}
+
+// PluginDependency declares a dependency on another plugin.
+// Dependencies are validated during manifest loading to ensure
+// required plugins are available.
+type PluginDependency struct {
+	// ID is the unique identifier of the required plugin.
+	ID string `json:"id"`
+
+	// Version is the required version constraint (semver range).
+	// Currently only format validation is performed; actual version
+	// resolution is planned for a future iteration.
+	Version string `json:"version"`
 }
 
 // PluginContributes declares the capabilities a plugin provides.

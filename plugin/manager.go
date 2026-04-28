@@ -470,3 +470,33 @@ func (n *noopStorage) Set(key, value string) error   { return nil }
 func (n *noopStorage) Delete(key string) error       { return nil }
 func (n *noopStorage) Keys() []string                { return nil }
 func (n *noopStorage) Clear() error                  { return nil }
+
+// ---------------------------------------------------------------------------
+// String — human-readable status summary
+// ---------------------------------------------------------------------------
+
+// String returns a compact status summary of the plugin manager.
+// Format: PluginManager{total=5, active=3, error=1, disabled=1}
+func (pm *PluginManager) String() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var total, active, errCount, disabled int
+	for _, e := range pm.entries {
+		total++
+		switch e.State {
+		case StateActive:
+			active++
+		case StateError:
+			errCount++
+		}
+	}
+	for id := range pm.disabled {
+		if _, exists := pm.entries[id]; !exists {
+			disabled++
+		}
+	}
+
+	return fmt.Sprintf("PluginManager{total=%d, active=%d, error=%d, disabled=%d}",
+		total, active, errCount, disabled)
+}

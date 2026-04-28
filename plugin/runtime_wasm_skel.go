@@ -1,9 +1,7 @@
 package plugin
 
 import (
-	"context"
 	"fmt"
-	"sync"
 
 	log "xbot/logger"
 )
@@ -24,8 +22,9 @@ import (
 
 // wasmRuntime is the Phase 2 WASM sandbox runtime.
 type wasmRuntime struct {
-	mu       sync.RWMutex
-	registry map[string]*wasmPlugin // pluginID → instance
+	// Phase 2: add wazero compiler cache here
+	_        int                    // prevent empty struct
+	registry map[string]*wasmPlugin // pluginID → instance (Phase 2)
 }
 
 // NewWASMRuntime creates a factory for WASM plugin instances.
@@ -53,7 +52,8 @@ func (w *wasmRuntime) Create(manifest *PluginManifest, dir string) (Plugin, erro
 type wasmPlugin struct {
 	manifest PluginManifest
 	dir      string
-	instance any // future: wazero instance
+	// Phase 2: instance will hold the wazero compiled module
+	// instance api.Module
 }
 
 func (wp *wasmPlugin) Manifest() PluginManifest {

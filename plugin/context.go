@@ -1,9 +1,7 @@
 package plugin
 
 import (
-	"strconv"
 	"sync"
-	"time"
 
 	log "xbot/logger"
 )
@@ -382,63 +380,27 @@ func newPluginLogger(pluginID string) *pluginLogger {
 }
 
 func (l *pluginLogger) Debug(msg string, fields ...Field) {
-	log.WithField("plugin", l.id).Debug(l.formatMsg(msg, fields...))
+	log.WithFields(l.buildFields(fields)).Debug(msg)
 }
 
 func (l *pluginLogger) Info(msg string, fields ...Field) {
-	log.WithField("plugin", l.id).Info(l.formatMsg(msg, fields...))
+	log.WithFields(l.buildFields(fields)).Info(msg)
 }
 
 func (l *pluginLogger) Warn(msg string, fields ...Field) {
-	log.WithField("plugin", l.id).Warn(l.formatMsg(msg, fields...))
+	log.WithFields(l.buildFields(fields)).Warn(msg)
 }
 
 func (l *pluginLogger) Error(msg string, fields ...Field) {
-	log.WithField("plugin", l.id).Error(l.formatMsg(msg, fields...))
+	log.WithFields(l.buildFields(fields)).Error(msg)
 }
 
-func (l *pluginLogger) formatMsg(msg string, fields ...Field) string {
-	if len(fields) == 0 {
-		return msg
+// buildFields constructs structured log fields including the plugin namespace
+// and any additional fields passed by the plugin.
+func (l *pluginLogger) buildFields(fields []Field) log.Fields {
+	f := log.Fields{"plugin": l.id}
+	for _, field := range fields {
+		f[field.Key] = field.Value
 	}
-	result := msg
-	for _, f := range fields {
-		result += " " + f.Key + "="
-		if s, ok := f.Value.(string); ok {
-			result += s
-		} else {
-			result += stringify(f.Value)
-		}
-	}
-	return result
-}
-
-func stringify(v any) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case int, int64, int32:
-		return formatInt(val)
-	case bool:
-		if val {
-			return "true"
-		}
-		return "false"
-	case time.Duration:
-		return val.String()
-	default:
-		return "..."
-	}
-}
-
-func formatInt(v any) string {
-	switch val := v.(type) {
-	case int:
-		return strconv.Itoa(val)
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case int32:
-		return strconv.Itoa(int(val))
-	}
-	return "?"
+	return f
 }
