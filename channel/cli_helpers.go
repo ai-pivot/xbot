@@ -235,6 +235,12 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	if m.cachedMaxContextTokens == 0 {
 		m.cachedMaxContextTokens = m.resolveMaxContextTokens()
 	}
+	if m.cachedMaxOutputTokens == 0 {
+		m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
+	}
+	if m.cachedCompressRatio == 0 {
+		m.cachedCompressRatio = m.resolveCompressRatio()
+	}
 
 	// Restore StartedAt for active tools so live elapsed timers work.
 	for i := range m.progress.ActiveTools {
@@ -975,6 +981,21 @@ func (m *cliModel) resolveCompressRatio() float64 {
 	if v, ok := values["compression_threshold"]; ok && v != "" {
 		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f > 0 {
 			return f
+		}
+	}
+	return 0
+}
+
+// resolveMaxOutputTokens returns the max output tokens from settings values.
+// Falls back to 0 if unavailable (renderContextTopBorder will use 8192 as default).
+func (m *cliModel) resolveMaxOutputTokens() int64 {
+	if m.channel == nil || m.channel.config.GetCurrentValues == nil {
+		return 0
+	}
+	values := m.channel.config.GetCurrentValues()
+	if v, ok := values["max_output_tokens"]; ok && v != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && n > 0 {
+			return n
 		}
 	}
 	return 0

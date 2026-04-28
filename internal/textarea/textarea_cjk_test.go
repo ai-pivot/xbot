@@ -553,6 +553,59 @@ func TestWordNavigationCJKMixedPunctuation(t *testing.T) {
 	}
 }
 
+// TestWordNavigationCJKOverlapping validates that gse does not produce
+// overlapping DAG segments that cause cumulative position errors when
+// CJK characters precede a Latin word (e.g. "第一个tokens").
+// Regression test: CutSearch returned ["第一","一个","第一个","tokens"],
+// which when treated as contiguous caused wordLeft from end of "tokens"
+// to land in the middle of the Latin word instead of its start.
+func TestWordNavigationCJKOverlapping(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+
+	// "第一个tokens": 第(0)一(1)个(2) t(3) o(4) k(5) e(6) n(7) s(8)
+	m.SetValue("第一个tokens")
+
+	// wordLeft from end should land at start of "tokens" (col 3)
+	m.SetCursorColumn(9)
+	m.wordLeft()
+	if m.col != 3 {
+		t.Errorf("wordLeft from end of '第一个tokens': expected col 3 (start of 'tokens'), got %d", m.col)
+	}
+
+	// wordLeft again should land at start of "第一个" (col 0)
+	m.wordLeft()
+	if m.col != 0 {
+		t.Errorf("wordLeft from start of 'tokens': expected col 0, got %d", m.col)
+	}
+
+	// wordRight from 0 should skip "第一个" to col 3
+	m.SetCursorColumn(0)
+	m.wordRight()
+	if m.col != 3 {
+		t.Errorf("wordRight from col 0: expected col 3 (start of 'tokens'), got %d", m.col)
+	}
+
+	// wordRight again should skip "tokens" to end (col 9)
+	m.wordRight()
+	if m.col != 9 {
+		t.Errorf("wordRight from col 3: expected col 9 (end), got %d", m.col)
+	}
+
+	// Verify word boundaries are correct (non-overlapping)
+	bounds := cjkWordBoundaries([]rune("第一个tokens"))
+	expected := []cjkBoundary{{0, 3}, {3, 9}}
+	if len(bounds) != len(expected) {
+		t.Errorf("cjkWordBoundaries(%q) = %+v, want %+v", "第一个tokens", bounds, expected)
+	} else {
+		for i := range bounds {
+			if bounds[i] != expected[i] {
+				t.Errorf("cjkWordBoundaries(%q)[%d] = %+v, want %+v", "第一个tokens", i, bounds[i], expected[i])
+			}
+		}
+	}
+}
+
 // TestDeleteWordCJKWithPunctuation tests delete operations with punctuation.
 func TestDeleteWordCJKWithPunctuation(t *testing.T) {
 	// deleteWordLeft: cursor after "测试", should delete "测试"

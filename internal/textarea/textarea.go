@@ -54,7 +54,10 @@ type cjkBoundary struct {
 }
 
 // cjkWordBoundaries returns the segmented word boundaries for a line
-// using gse's CutSearch mode (DAG-based, correct for isolated CJK words).
+// using gse's Segment mode (non-overlapping best-effort segmentation).
+// We use Segment instead of CutSearch because CutSearch returns DAG
+// overlapping candidates (e.g. ["第一","一个","第一个"] for "第一个"),
+// which causes cumulative position errors when treated as contiguous.
 // Returns nil if the segmenter is unavailable (fall back to single-char).
 func cjkWordBoundaries(line []rune) []cjkBoundary {
 	seg := getCJKSegmenter()
@@ -62,11 +65,11 @@ func cjkWordBoundaries(line []rune) []cjkBoundary {
 		return nil
 	}
 	text := string(line)
-	words := seg.CutSearch(text, true)
-	boundaries := make([]cjkBoundary, 0, len(words))
+	segs := seg.Segment([]byte(text))
+	boundaries := make([]cjkBoundary, 0, len(segs))
 	pos := 0
-	for _, word := range words {
-		wordRunes := []rune(word)
+	for _, s := range segs {
+		wordRunes := []rune(s.Token().Text())
 		wordLen := len(wordRunes)
 		if wordLen > 0 {
 			boundaries = append(boundaries, cjkBoundary{pos, pos + wordLen})
@@ -1545,8 +1548,31 @@ func (m *Model) view() string {
 
 			strwidth := uniseg.StringWidth(string(wrappedLine))
 			padding := m.width - strwidth
+			// When the line is exactly full and the cursor is at the end,
+			// there's no room for the cursor placeholder. Steal the last
+			// character from this line and prepend it to the next visual line
+			// so the cursor can sit after the shortened line.
+			// IMPORTANT: only do this on the LAST visual line of the logical
+			// line. If there IS a next visual line to wrap to, LineInfo
+			// already handles wrapping the cursor there correctly.
+			var overflow []rune
+			cursorCol := m.col // track original cursor position for overflow
+			if padding == 0 && m.row == l && lineInfo.RowOffset == wl &&
+				lineInfo.ColumnOffset >= len(wrappedLine) &&
+				wl == len(wrappedLines)-1 {
+				if len(wrappedLine) > 0 {
+					overflow = wrappedLine[len(wrappedLine)-1:]
+					wrappedLine = wrappedLine[:len(wrappedLine)-1]
+					strwidth = uniseg.StringWidth(string(wrappedLine))
+					padding = m.width - strwidth
+					cursorCol = len(wrappedLine)
+				}
+			}
 			if m.row == l && lineInfo.RowOffset == wl {
-				co := lineInfo.ColumnOffset
+				co := min(lineInfo.ColumnOffset, len(wrappedLine))
+				if len(overflow) > 0 {
+					co = cursorCol
+				}
 				s.WriteString(style.Render(string(wrappedLine[:co])))
 				if co >= len(wrappedLine) {
 					// Cursor is at or beyond the last visible character.
@@ -1554,6 +1580,8 @@ func (m *Model) view() string {
 					// *after* the last glyph instead of highlighting it.
 					m.virtualCursor.SetChar(" ")
 					s.WriteString(m.virtualCursor.View())
+					// Cursor consumed 1 column of padding space.
+					padding = max(0, padding-1)
 				} else {
 					m.virtualCursor.SetChar(string(wrappedLine[co]))
 					s.WriteString(style.Render(m.virtualCursor.View()))
@@ -1565,6 +1593,21 @@ func (m *Model) view() string {
 			s.WriteString(style.Render(strings.Repeat(" ", max(0, padding))))
 			s.WriteRune('\n')
 			newLines++
+
+			// If we stole a character for cursor room, render it on the next line.
+			if len(overflow) > 0 {
+				prompt := m.promptView(displayLine)
+				prompt = styles.computedPrompt().Render(prompt)
+				s.WriteString(style.Render(prompt))
+				displayLine++
+				if m.ShowLineNumbers {
+					s.WriteString(m.lineNumberView(-1, false))
+				}
+				s.WriteString(style.Render(string(overflow)))
+				s.WriteString(style.Render(strings.Repeat(" ", m.width-len(overflow))))
+				s.WriteRune('\n')
+				newLines++
+			}
 		}
 	}
 

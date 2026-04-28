@@ -187,6 +187,10 @@ func (c *CLIChannel) Start() error {
 	}
 	// Resolve max context tokens immediately (not lazily on first progress event)
 	c.model.cachedMaxContextTokens = c.model.resolveMaxContextTokens()
+	// Also resolve max output tokens and compress ratio so the context bar
+	// threshold (red line) is correct from the first render, not defaulting to 8192.
+	c.model.cachedMaxOutputTokens = c.model.resolveMaxOutputTokens()
+	c.model.cachedCompressRatio = c.model.resolveCompressRatio()
 
 	// 首次运行：打开 setup panel
 	if c.config.IsFirstRun {

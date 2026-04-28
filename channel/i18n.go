@@ -60,6 +60,12 @@ type UILocale struct {
 	AgentRunning          string // "[Ctrl+T %da]"
 	TabNoMatch            string // "[Tab] no matching files"
 
+	// --- C2. Info Bar (bottom status line below input) ---
+	InfoBarTasks   string // "Tasks"
+	InfoBarAgents  string // "Agents"
+	InfoBarNoTasks string // "No tasks"
+	InfoBarNoAgent string // "No agents"
+
 	// --- D. Temp status ---
 	WaitingOperation   string // "... waiting for previous operation to complete..."
 	NoMessagesToDelete string // "[!] no messages to delete"
@@ -248,6 +254,12 @@ func localeZH() *UILocale {
 		BgTaskRunning:         "[^ %dt]",
 		AgentRunning:          "[Ctrl+T %da]",
 		TabNoMatch:            "[Tab] 无匹配文件",
+
+		// --- C2. Info Bar (bottom status line below input) ---
+		InfoBarTasks:   "任务",
+		InfoBarAgents:  "代理",
+		InfoBarNoTasks: "无任务",
+		InfoBarNoAgent: "无代理",
 
 		// --- D. Temp status ---
 		WaitingOperation:   "... 等待上一个操作完成...",
@@ -630,6 +642,8 @@ func localeEN() *UILocale {
 		AgentRunning:          "[Ctrl+T %da]",
 		TabNoMatch:            "[Tab] no matching files",
 
+		// --- C2. Info Bar (bottom status line below input) ---
+
 		// --- D. Temp status ---
 		WaitingOperation:   "... waiting for previous operation to complete...",
 		NoMessagesToDelete: "[!] no messages to delete",
@@ -1010,6 +1024,8 @@ func localeJA() *UILocale {
 		BgTaskRunning:         "[^ %dタ]",
 		AgentRunning:          "[Ctrl+T %dエ]",
 		TabNoMatch:            "[Tab] 一致するファイルなし",
+
+		// --- C2. Info Bar (bottom status line below input) ---
 
 		// --- D. Temp status ---
 		WaitingOperation:   "... 前の操作の完了を待機中...",
