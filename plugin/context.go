@@ -14,6 +14,12 @@ import (
 // PluginContext — the safe, permission-filtered API surface for plugins
 // ---------------------------------------------------------------------------
 
+// PluginErrorCallback is called when the plugin encounters an unhandled error
+// during its lifecycle (activation failure, runtime crash, etc.).
+// Unlike OnError (which handles tool execution failures), this handles
+// errors in the plugin's own lifecycle.
+type PluginErrorCallback func(ctx context.Context, err error)
+
 // PluginContext provides plugins with controlled access to xbot capabilities.
 // It is the ONLY interface plugins should use; direct access to internal
 // structures (ToolContext, Registry, etc.) is prohibited by design.
@@ -119,6 +125,14 @@ type PluginContext interface {
 	// Publish sends an event to all subscribers of the topic.
 	// Requires "bus.plugin" + "bus.write" permissions.
 	Publish(topic string, data any) error
+
+	// --- Plugin Error Callback ---
+
+	// OnPluginError registers a callback for plugin-level errors (not tool errors).
+	// Called when the plugin encounters an unhandled error during operation
+	// (activation failure, runtime crash, etc.).
+	// Requires "hooks.subscribe" permission.
+	OnPluginError(callback PluginErrorCallback) error
 }
 
 // Logger provides structured logging for plugins.
@@ -181,6 +195,8 @@ type pluginContextImpl struct {
 	chatID     string
 
 	bus *PluginEventBus
+
+	errorCallback PluginErrorCallback
 }
 
 type hookRegistration struct {
@@ -440,6 +456,31 @@ func (pc *pluginContextImpl) GetEnrichers() []enricherRegistration {
 	result := make([]enricherRegistration, len(pc.contextEnrichers))
 	copy(result, pc.contextEnrichers)
 	return result
+}
+
+func (pc *pluginContextImpl) OnPluginError(callback PluginErrorCallback) error {
+	if !pc.perm.Has(PermHooksSubscribe) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermHooksSubscribe,
+			Action:     "register plugin error callback",
+		}
+	}
+	if callback == nil {
+		return nil
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.errorCallback = callback
+	pc.logger.Info("Plugin error callback registered")
+	return nil
+}
+
+// GetErrorCallback returns the registered error callback (nil if none).
+func (pc *pluginContextImpl) GetErrorCallback() PluginErrorCallback {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.errorCallback
 }
 
 // ---------------------------------------------------------------------------

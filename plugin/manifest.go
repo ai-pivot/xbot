@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	log "xbot/logger"
 )
@@ -26,6 +27,16 @@ func LoadManifest(dir string) (*PluginManifest, error) {
 	var manifest PluginManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, fmt.Errorf("parse manifest %s: %w", manifestPath, err)
+	}
+
+	// Parse timeout from separate unmarshal (time.Duration doesn't support JSON directly)
+	var tm timeoutManifest
+	if err := json.Unmarshal(data, &tm); err == nil && tm.Timeout != "" {
+		d, err := parseTimeout(tm.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("parse manifest %s: %w", manifestPath, err)
+		}
+		manifest.Timeout = d
 	}
 
 	if err := validateManifest(&manifest, dir); err != nil {
@@ -132,6 +143,36 @@ func validateManifest(m *PluginManifest, dir string) error {
 	}
 
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Timeout Parsing
+// ---------------------------------------------------------------------------
+
+// timeoutManifest is an intermediate struct for parsing the timeout field from JSON.
+// PluginManifest.Timeout uses time.Duration which doesn't directly support JSON string parsing.
+type timeoutManifest struct {
+	Timeout string `json:"timeout,omitempty"` // Go duration string, e.g. "30s", "1m"
+}
+
+// parseTimeout parses a Go duration string (e.g., "30s", "1m", "500ms").
+// Returns the parsed duration, or an error if invalid.
+// Empty string returns (0, nil) — caller should apply DefaultPluginTimeout.
+func parseTimeout(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid timeout %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("timeout must be non-negative, got %v", d)
+	}
+	if d > 5*time.Minute {
+		return 0, fmt.Errorf("timeout too large (max 5m), got %v", d)
+	}
+	return d, nil
 }
 
 // isValidPluginID checks that a plugin ID matches the pattern ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$.

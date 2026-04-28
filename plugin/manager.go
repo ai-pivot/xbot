@@ -19,12 +19,15 @@ import (
 
 // PluginEntry tracks a loaded plugin and its state.
 type PluginEntry struct {
-	Manifest *PluginManifest
-	Plugin   Plugin
-	Context  *pluginContextImpl
-	State    PluginState
-	Dir      string // plugin directory on disk
-	stateMu  sync.Mutex
+	Manifest    *PluginManifest
+	Plugin      Plugin
+	Context     *pluginContextImpl
+	State       PluginState
+	Dir         string // plugin directory on disk
+	stateMu     sync.Mutex
+	retryCount  int       // number of consecutive retry attempts
+	lastError   error     // most recent error
+	lastErrorAt time.Time // when the last error occurred
 }
 
 // PluginManager discovers, loads, activates, and manages plugins.
@@ -40,6 +43,13 @@ type PluginManager struct {
 	// Factory for creating plugin runtimes
 	runtimeFactory RuntimeFactory
 	bus            *PluginEventBus
+
+	// Auto-retry configuration
+	autoRetry     bool
+	maxRetries    int
+	retryCancel   context.CancelFunc // stops the retry goroutine
+	retryMu       sync.Mutex         // protects autoRetry/maxRetries/retryCancel
+	retryInterval time.Duration      // scan interval for retry loop (default 5s)
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -50,10 +60,11 @@ type RuntimeFactory interface {
 // NewPluginManager creates a new PluginManager.
 func NewPluginManager(xbotHome string) *PluginManager {
 	return &PluginManager{
-		entries:  make(map[string]*PluginEntry),
-		disabled: make(map[string]bool),
-		xbotHome: xbotHome,
-		bus:      NewPluginEventBus(),
+		entries:       make(map[string]*PluginEntry),
+		disabled:      make(map[string]bool),
+		xbotHome:      xbotHome,
+		bus:           NewPluginEventBus(),
+		retryInterval: 5 * time.Second,
 	}
 }
 
@@ -65,6 +76,165 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 // Bus returns the plugin event bus.
 func (pm *PluginManager) Bus() *PluginEventBus {
 	return pm.bus
+}
+
+// ---------------------------------------------------------------------------
+// Auto-Retry
+// ---------------------------------------------------------------------------
+
+// SetAutoRetry enables or disables automatic retry for plugins in error state.
+// When enabled, a background goroutine periodically scans error-state plugins
+// and attempts to reactivate them with exponential backoff.
+// maxRetries: maximum retry attempts per plugin (0 = unlimited).
+func (pm *PluginManager) SetAutoRetry(enabled bool, maxRetries int) {
+	pm.retryMu.Lock()
+	defer pm.retryMu.Unlock()
+
+	// Stop existing goroutine if running
+	if pm.retryCancel != nil {
+		pm.retryCancel()
+		pm.retryCancel = nil
+	}
+
+	pm.autoRetry = enabled
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	pm.maxRetries = maxRetries
+
+	if enabled {
+		ctx, cancel := context.WithCancel(context.Background())
+		pm.retryCancel = cancel
+		go pm.retryLoop(ctx)
+		log.Info("Plugin auto-retry enabled")
+	}
+}
+
+// SetRetryInterval sets the scan interval for the auto-retry loop.
+// Intended for testing; production code should use the default (5s).
+func (pm *PluginManager) SetRetryInterval(d time.Duration) {
+	pm.retryMu.Lock()
+	defer pm.retryMu.Unlock()
+	if d > 0 {
+		pm.retryInterval = d
+	}
+}
+
+const (
+	retryInitialDelay = 1 * time.Second
+	retryMaxDelay     = 30 * time.Second
+)
+
+// retryLoop periodically scans for error-state plugins and attempts reactivation.
+func (pm *PluginManager) retryLoop(ctx context.Context) {
+	pm.retryMu.Lock()
+	interval := pm.retryInterval
+	pm.retryMu.Unlock()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pm.retryErrorPlugins(ctx)
+		}
+	}
+}
+
+// retryErrorPlugins scans all entries and retries activation for error-state plugins.
+func (pm *PluginManager) retryErrorPlugins(ctx context.Context) {
+	pm.retryMu.Lock()
+	maxRetries := pm.maxRetries
+	pm.retryMu.Unlock()
+
+	entries := pm.ListPlugins()
+	for _, entry := range entries {
+		entry.stateMu.Lock()
+		if entry.State != StateError {
+			entry.stateMu.Unlock()
+			continue
+		}
+		if maxRetries > 0 && entry.retryCount >= maxRetries {
+			entry.stateMu.Unlock()
+			continue
+		}
+		entry.retryCount++
+		retryNum := entry.retryCount
+		entry.stateMu.Unlock()
+
+		// Exponential backoff: 1s * 2^(retryNum-1), capped at 30s
+		shift := retryNum - 1
+		if shift > 30 {
+			shift = 30
+		}
+		delay := retryInitialDelay * time.Duration(1<<uint(shift))
+		if delay > retryMaxDelay {
+			delay = retryMaxDelay
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+
+		log.WithField("plugin", entry.Manifest.ID).
+			WithField("attempt", retryNum).
+			Info("Retrying plugin activation")
+
+		// Reset to discovered and attempt activation
+		entry.stateMu.Lock()
+		entry.State = StateDiscovered
+		entry.stateMu.Unlock()
+
+		if err := pm.activate(ctx, entry); err != nil {
+			entry.stateMu.Lock()
+			entry.lastError = err
+			entry.lastErrorAt = time.Now()
+			entry.stateMu.Unlock()
+
+			pm.notifyPluginError(entry, "activate", err)
+
+			log.WithField("plugin", entry.Manifest.ID).
+				WithField("attempt", retryNum).
+				Warn("Plugin retry failed: ", err)
+		} else {
+			// Success — reset retry counter
+			entry.stateMu.Lock()
+			entry.retryCount = 0
+			entry.lastError = nil
+			entry.stateMu.Unlock()
+
+			log.WithField("plugin", entry.Manifest.ID).
+				WithField("attempt", retryNum).
+				Info("Plugin recovered after retry")
+		}
+	}
+}
+
+// notifyPluginError invokes the plugin's error callback if registered.
+func (pm *PluginManager) notifyPluginError(entry *PluginEntry, phase string, err error) {
+	if entry.Context == nil {
+		return
+	}
+	callback := entry.Context.GetErrorCallback()
+	if callback == nil {
+		return
+	}
+
+	// Run callback with panic recovery
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.WithField("plugin", entry.Manifest.ID).
+					Warn("Plugin error callback panicked: ", r)
+			}
+		}()
+		callback(context.Background(), fmt.Errorf("plugin %s [%s]: %w", entry.Manifest.ID, phase, err))
+	}()
 }
 
 // AddSearchDirs adds additional directories to scan for plugins.
@@ -214,8 +384,10 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	if entry.Plugin == nil {
 		entry.stateMu.Lock()
 		entry.State = StateError
+		entry.lastError = fmt.Errorf("no runtime instance")
+		entry.lastErrorAt = time.Now()
 		entry.stateMu.Unlock()
-		return fmt.Errorf("no runtime instance")
+		return entry.lastError
 	}
 
 	// CAS: StateDiscovered → StateActivating
@@ -227,33 +399,70 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	entry.State = StateActivating
 	entry.stateMu.Unlock()
 
-	// Call plugin's Activate method with panic recovery
-	var activateErr error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				activateErr = fmt.Errorf("plugin panic during Activate: %v", r)
-			}
-		}()
-		activateErr = entry.Plugin.Activate(entry.Context)
-	}()
-
-	if activateErr != nil {
-		entry.stateMu.Lock()
-		entry.State = StateError
-		entry.stateMu.Unlock()
-		return activateErr
+	// Apply activation timeout from manifest
+	timeout := entry.Manifest.Timeout
+	if timeout <= 0 {
+		timeout = DefaultPluginTimeout
 	}
 
-	// Note: Capability registration is done by integration.WireAll() after
-	// activation. The plugin's tools/hooks/enrichers are collected in
-	// entry.Context during Activate() and wired to xbot subsystems separately.
+	// Run activation in a goroutine with timeout
+	type activateResult struct {
+		err error
+	}
+	done := make(chan activateResult, 1)
+	go func() {
+		var activateErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					activateErr = fmt.Errorf("plugin panic during Activate: %v", r)
+				}
+			}()
+			activateErr = entry.Plugin.Activate(entry.Context)
+		}()
+		done <- activateResult{err: activateErr}
+	}()
 
-	entry.stateMu.Lock()
-	entry.State = StateActive
-	entry.stateMu.Unlock()
-	log.WithField("plugin", entry.Manifest.ID).Info("Plugin activated")
-	return nil
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			entry.stateMu.Lock()
+			entry.State = StateError
+			entry.lastError = result.err
+			entry.lastErrorAt = time.Now()
+			entry.stateMu.Unlock()
+			pm.notifyPluginError(entry, "activate", result.err)
+			return result.err
+		}
+
+		// CAS: only set Active if still in Activating state
+		entry.stateMu.Lock()
+		if entry.State == StateActivating {
+			entry.State = StateActive
+			entry.retryCount = 0
+			entry.lastError = nil
+		}
+		entry.stateMu.Unlock()
+		log.WithField("plugin", entry.Manifest.ID).Info("Plugin activated")
+		return nil
+
+	case <-timer.C:
+		// Timeout — set error state; the goroutine may still be running
+		// but will find state != StateActivating and not overwrite.
+		timeoutErr := fmt.Errorf("plugin %s activation timed out after %v", entry.Manifest.ID, timeout)
+		entry.stateMu.Lock()
+		if entry.State == StateActivating {
+			entry.State = StateError
+			entry.lastError = timeoutErr
+			entry.lastErrorAt = time.Now()
+		}
+		entry.stateMu.Unlock()
+		pm.notifyPluginError(entry, "activate", timeoutErr)
+		return timeoutErr
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +471,15 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 
 // DeactivateAll deactivates all active plugins. Called on shutdown.
 func (pm *PluginManager) DeactivateAll(ctx context.Context) {
+	// Stop auto-retry goroutine
+	pm.retryMu.Lock()
+	if pm.retryCancel != nil {
+		pm.retryCancel()
+		pm.retryCancel = nil
+	}
+	pm.autoRetry = false
+	pm.retryMu.Unlock()
+
 	pm.mu.RLock()
 	entries := make([]*PluginEntry, 0, len(pm.entries))
 	for _, e := range pm.entries {

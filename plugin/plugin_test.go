@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -2847,4 +2848,226 @@ func TestPluginContext_StorageGetJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil target")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Iteration 18: Error Callback, Auto-Retry, Timeout Tests
+// ---------------------------------------------------------------------------
+
+// flakyPlugin succeeds after N failures.
+type flakyPlugin struct {
+	manifest  PluginManifest
+	failCount int // number of times to fail before succeeding
+	attempts  int // internal counter
+	mu        sync.Mutex
+}
+
+func (p *flakyPlugin) Manifest() PluginManifest { return p.manifest }
+func (p *flakyPlugin) Activate(ctx PluginContext) error {
+	p.mu.Lock()
+	p.attempts++
+	attempt := p.attempts
+	p.mu.Unlock()
+	if attempt <= p.failCount {
+		return fmt.Errorf("transient error (attempt %d)", attempt)
+	}
+	return nil
+}
+func (p *flakyPlugin) Deactivate(ctx PluginContext) error { return nil }
+
+func (p *flakyPlugin) getAttempts() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.attempts
+}
+
+func TestPluginContext_OnPluginError(t *testing.T) {
+	m := testManifest()
+	bus := NewPluginEventBus()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus)
+
+	var receivedErr error
+	err := pc.OnPluginError(func(ctx context.Context, err error) {
+		receivedErr = err
+	})
+	if err != nil {
+		t.Fatalf("OnPluginError failed: %v", err)
+	}
+
+	// Simulate callback invocation via internal accessor
+	cb := pc.GetErrorCallback()
+	if cb == nil {
+		t.Fatal("callback should be registered")
+	}
+	cb(context.Background(), fmt.Errorf("test error"))
+
+	if receivedErr == nil || receivedErr.Error() != "test error" {
+		t.Errorf("received error = %v, want 'test error'", receivedErr)
+	}
+}
+
+func TestPluginContext_OnPluginError_NoPermission(t *testing.T) {
+	m := testManifest()
+	m.Permissions = []string{} // no hooks.subscribe
+	bus := NewPluginEventBus()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus)
+
+	err := pc.OnPluginError(func(ctx context.Context, err error) {})
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if _, ok := err.(*PermissionError); !ok {
+		t.Errorf("expected PermissionError, got %T: %v", err, err)
+	}
+}
+
+func TestManifest_Timeout(t *testing.T) {
+	dir := testPluginDir(t)
+	m := testManifest()
+	raw := map[string]any{
+		"id":               m.ID,
+		"name":             m.Name,
+		"version":          m.Version,
+		"description":      m.Description,
+		"runtime":          string(m.Runtime),
+		"activationEvents": m.ActivationEvents,
+		"permissions":      m.Permissions,
+		"timeout":          "45s",
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+	if loaded.Timeout != 45*time.Second {
+		t.Errorf("Timeout = %v, want 45s", loaded.Timeout)
+	}
+}
+
+func TestManifest_DefaultTimeout(t *testing.T) {
+	dir := testPluginDir(t)
+	m := testManifest()
+	writeTestManifest(t, dir, &m)
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+	if loaded.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (unset; caller should use DefaultPluginTimeout)", loaded.Timeout)
+	}
+}
+
+func TestPluginManager_AutoRetry(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	pm.SetRetryInterval(10 * time.Millisecond)
+
+	// Create a flaky plugin that fails 2 times then succeeds
+	fp := &flakyPlugin{
+		manifest:  testManifest(),
+		failCount: 2,
+	}
+	pm.Register(fp)
+
+	ctx := context.Background()
+
+	// Activate — should fail (attempt 1)
+	err := pm.ActivateAll(ctx)
+	if err == nil {
+		t.Fatal("expected error on first activation")
+	}
+
+	entry, ok := pm.GetPlugin("com.test.example")
+	if !ok {
+		t.Fatal("plugin not found")
+	}
+	if entry.State != StateError {
+		t.Errorf("expected StateError, got %q", entry.State)
+	}
+
+	// Enable auto-retry with maxRetries=5
+	pm.SetAutoRetry(true, 5)
+
+	// Wait for retries to process (2 failures + 1 success)
+	// With 10ms interval and exponential backoff starting at 1s,
+	// we need a reasonable timeout. But the backoff is 1s for first retry.
+	// For testing, let's wait up to 10 seconds.
+	deadline := time.After(10 * time.Second)
+	for {
+		entry, _ = pm.GetPlugin("com.test.example")
+		entry.stateMu.Lock()
+		state := entry.State
+		entry.stateMu.Unlock()
+		if state == StateActive {
+			break
+		}
+		select {
+		case <-deadline:
+			// Check attempts
+			attempts := fp.getAttempts()
+			t.Fatalf("timeout waiting for recovery; state=%q, attempts=%d", state, attempts)
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Verify plugin recovered
+	if entry.State != StateActive {
+		t.Errorf("expected StateActive after retry, got %q", entry.State)
+	}
+
+	// Stop retry
+	pm.SetAutoRetry(false, 0)
+}
+
+func TestPluginManager_AutoRetry_MaxRetries(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	pm.SetRetryInterval(10 * time.Millisecond)
+
+	// Create a plugin that always fails
+	fp := &flakyPlugin{
+		manifest:  testManifest(),
+		failCount: 999, // always fails
+	}
+	pm.Register(fp)
+
+	ctx := context.Background()
+
+	// Activate — should fail
+	pm.ActivateAll(ctx)
+
+	// Enable auto-retry with maxRetries=2
+	pm.SetAutoRetry(true, 2)
+
+	// Wait enough time for retries to complete
+	// With exponential backoff: 1s + 2s = 3s total delay for 2 retries
+	time.Sleep(5 * time.Second)
+
+	entry, _ := pm.GetPlugin("com.test.example")
+	entry.stateMu.Lock()
+	retryCount := entry.retryCount
+	state := entry.State
+	entry.stateMu.Unlock()
+
+	if state != StateError {
+		t.Errorf("expected StateError after max retries, got %q", state)
+	}
+	if retryCount > 2 {
+		t.Errorf("retryCount = %d, should not exceed maxRetries=2", retryCount)
+	}
+
+	// Verify attempts: 1 initial + 2 retries = 3
+	attempts := fp.getAttempts()
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3 (1 initial + 2 retries)", attempts)
+	}
+
+	pm.SetAutoRetry(false, 0)
 }

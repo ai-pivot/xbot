@@ -8,6 +8,8 @@ package plugin
 import (
 	"context"
 
+	"time"
+
 	"xbot/llm"
 )
 
@@ -97,6 +99,11 @@ type PluginManifest struct {
 	// Currently only format validation is performed; version resolution
 	// will be added in a future iteration.
 	Dependencies []PluginDependency `json:"dependencies,omitempty"`
+
+	// Timeout is the maximum duration for plugin activation and tool operations.
+	// Zero means DefaultPluginTimeout (30s). Not serialized directly via JSON;
+	// parsed from manifest's "timeout" string field (e.g., "30s", "1m").
+	Timeout time.Duration `json:"-"`
 }
 
 // PluginDependency declares a dependency on another plugin.
@@ -353,3 +360,7 @@ const (
 	// StateError means the plugin failed to activate.
 	StateError PluginState = "error"
 )
+
+// DefaultPluginTimeout is the default timeout for plugin operations when not
+// specified in the manifest.
+const DefaultPluginTimeout = 30 * time.Second
