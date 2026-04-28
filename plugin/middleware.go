@@ -167,6 +167,9 @@ func TimeoutMiddleware(timeout time.Duration) PluginMiddleware {
 	}
 }
 
+// defaultRetryBackoff is the fixed delay between retry attempts.
+const defaultRetryBackoff = 100 * time.Millisecond
+
 // RetryMiddleware retries tool execution on error (Go error only, not ToolResult.IsError).
 // It performs up to maxRetries additional attempts with fixed 100ms backoff.
 // maxRetries <= 0 means no retries.
@@ -190,7 +193,7 @@ func RetryMiddleware(maxRetries int) PluginMiddleware {
 			}
 			// Last attempt — don't sleep
 			if attempt < maxRetries {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(defaultRetryBackoff)
 			}
 		}
 		return result, err

@@ -206,6 +206,10 @@ func WirePluginEnrichers(registry *EnricherRegistry, pm *PluginManager, priority
 // Full Wiring — one-call setup for all integration points
 // ---------------------------------------------------------------------------
 
+// defaultEnricherPriority is the priority for plugin context enrichers.
+// Set after built-in middlewares to allow them to run first.
+const defaultEnricherPriority = 150
+
 // WireAll performs complete integration of the plugin system with xbot's
 // subsystems. Call this after ActivateAll().
 //
@@ -219,7 +223,7 @@ func WireAll(pm *PluginManager, registry *tools.Registry, bridge *PluginHookBrid
 		return fmt.Errorf("wire tools: %w", err)
 	}
 	WirePluginHooks(bridge, pm)
-	WirePluginEnrichers(enricherRegistry, pm, 150) // priority 150 = after built-in middlewares
+	WirePluginEnrichers(enricherRegistry, pm, defaultEnricherPriority)
 
 	return nil
 }

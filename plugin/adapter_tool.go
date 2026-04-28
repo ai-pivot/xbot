@@ -97,9 +97,12 @@ func (a *PluginToolAdapter) PluginID() string {
 // SimplePluginTool is a convenience struct for creating PluginTool instances
 // without implementing the full interface.
 type SimplePluginTool struct {
-	Def      ToolDef
-	ExecFn   func(ctx context.Context, input string) (*ToolResult, error)
-	ExecV2Fn func(ctx *ToolCallContext, input string) (*ToolResult, error) // optional V2
+	// Def is the tool's parameter definition.
+	Def ToolDef
+	// ExecFn is the optional V1 execution function.
+	ExecFn func(ctx context.Context, input string) (*ToolResult, error)
+	// ExecV2Fn is the optional V2 execution function with rich context.
+	ExecV2Fn func(ctx *ToolCallContext, input string) (*ToolResult, error)
 }
 
 // Definition returns the tool's definition.
@@ -175,10 +178,14 @@ func BuildToolDef(name, description string, params ...ToolParamDef) ToolDef {
 
 // ToolParamDef is a simplified parameter definition for convenience.
 type ToolParamDef struct {
-	Name        string
-	Type        string // "string", "number", "boolean", "array", "object"
+	// Name is the parameter name.
+	Name string
+	// Type is the JSON schema type (e.g., "string", "number", "boolean").
+	Type string
+	// Description explains the parameter's purpose.
 	Description string
-	Required    bool
+	// Required indicates whether this parameter is mandatory.
+	Required bool
 }
 
 // ---------------------------------------------------------------------------

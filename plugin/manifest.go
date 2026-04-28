@@ -183,6 +183,9 @@ type timeoutManifest struct {
 	Timeout string `json:"timeout,omitempty"` // Go duration string, e.g. "30s", "1m"
 }
 
+// maxManifestTimeout is the maximum allowed timeout for a plugin.
+const maxManifestTimeout = 5 * time.Minute
+
 // parseTimeout parses a Go duration string (e.g., "30s", "1m", "500ms").
 // Returns the parsed duration, or an error if invalid.
 // Empty string returns (0, nil) — caller should apply DefaultPluginTimeout.
@@ -197,8 +200,8 @@ func parseTimeout(s string) (time.Duration, error) {
 	if d < 0 {
 		return 0, fmt.Errorf("timeout must be non-negative, got %v", d)
 	}
-	if d > 5*time.Minute {
-		return 0, fmt.Errorf("timeout too large (max 5m), got %v", d)
+	if d > maxManifestTimeout {
+		return 0, fmt.Errorf("timeout too large (max %v), got %v", maxManifestTimeout, d)
 	}
 	return d, nil
 }

@@ -4281,3 +4281,184 @@ func TestPluginRegistry_List(t *testing.T) {
 		t.Errorf("expected Version '2.0.0', got %q", entries[0].Version)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PluginContext hook registration tests
+// ---------------------------------------------------------------------------
+
+func TestPluginContext_OnAllToolUse(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnAllToolUse(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnAllToolUse failed: %v", err)
+	}
+	if len(pc.hooks) != 2 {
+		t.Fatalf("expected 2 hooks registered, got %d", len(pc.hooks))
+	}
+	if pc.hooks[0].Event != HookPreToolUse {
+		t.Errorf("expected first hook to be PreToolUse, got %s", pc.hooks[0].Event)
+	}
+	if pc.hooks[1].Event != HookPostToolUse {
+		t.Errorf("expected second hook to be PostToolUse, got %s", pc.hooks[1].Event)
+	}
+}
+
+func TestPluginContext_OnError(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnError(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnError failed: %v", err)
+	}
+	if len(pc.hooks) != 1 {
+		t.Fatalf("expected 1 hook registered, got %d", len(pc.hooks))
+	}
+	if pc.hooks[0].Event != HookPostToolUseError {
+		t.Errorf("expected hook to be PostToolUseFailure, got %s", pc.hooks[0].Event)
+	}
+}
+
+func TestPluginContext_OnUserPrompt(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnUserPrompt(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnUserPrompt failed: %v", err)
+	}
+	if len(pc.hooks) != 1 {
+		t.Fatalf("expected 1 hook, got %d", len(pc.hooks))
+	}
+	if pc.hooks[0].Event != HookUserPromptSubmit {
+		t.Errorf("expected UserPromptSubmit, got %s", pc.hooks[0].Event)
+	}
+}
+
+func TestPluginContext_OnAgentStop(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnAgentStop(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnAgentStop failed: %v", err)
+	}
+	if len(pc.hooks) != 1 || pc.hooks[0].Event != HookAgentStop {
+		t.Errorf("expected AgentStop hook, got %v", pc.hooks)
+	}
+}
+
+func TestPluginContext_OnSessionStart(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnSessionStart(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnSessionStart failed: %v", err)
+	}
+	if len(pc.hooks) != 1 || pc.hooks[0].Event != HookSessionStart {
+		t.Errorf("expected SessionStart hook, got %v", pc.hooks)
+	}
+}
+
+func TestPluginContext_OnSessionEnd(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnSessionEnd(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnSessionEnd failed: %v", err)
+	}
+	if len(pc.hooks) != 1 || pc.hooks[0].Event != HookSessionEnd {
+		t.Errorf("expected SessionEnd hook, got %v", pc.hooks)
+	}
+}
+
+func TestDeniedStorage(t *testing.T) {
+	ds := newDeniedStorage("test.plugin")
+
+	// Get always returns empty
+	v, ok := ds.Get("key")
+	if ok || v != "" {
+		t.Error("deniedStorage.Get should return empty")
+	}
+
+	// Set returns PermissionError
+	err := ds.Set("key", "val")
+	if err == nil {
+		t.Fatal("deniedStorage.Set should return error")
+	}
+	permErr, ok := err.(*PermissionError)
+	if !ok {
+		t.Fatalf("expected *PermissionError, got %T", err)
+	}
+	if permErr.PluginID != "test.plugin" {
+		t.Errorf("expected pluginID 'test.plugin', got %q", permErr.PluginID)
+	}
+
+	// Delete returns PermissionError
+	if err := ds.Delete("key"); err == nil {
+		t.Fatal("deniedStorage.Delete should return error")
+	}
+
+	// Keys returns nil
+	if keys := ds.Keys(); keys != nil {
+		t.Errorf("deniedStorage.Keys should return nil, got %v", keys)
+	}
+
+	// Clear returns PermissionError
+	if err := ds.Clear(); err == nil {
+		t.Fatal("deniedStorage.Clear should return error")
+	}
+}
+
+func TestCloneMap(t *testing.T) {
+	original := map[string]any{"a": 1, "b": "hello", "c": true}
+	cloned := cloneMap(original)
+
+	// Values should match
+	if len(cloned) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(cloned))
+	}
+	if cloned["a"] != 1 || cloned["b"] != "hello" || cloned["c"] != true {
+		t.Errorf("cloned values don't match: %v", cloned)
+	}
+
+	// Mutating clone should not affect original
+	cloned["d"] = "new"
+	if _, ok := original["d"]; ok {
+		t.Error("mutating clone should not affect original")
+	}
+
+	// Empty map
+	empty := cloneMap(map[string]any{})
+	if len(empty) != 0 {
+		t.Error("cloning empty map should be empty")
+	}
+
+	// Nil map — should not panic and returns an empty (nil-safe) map
+	nilClone := cloneMap(nil)
+	if len(nilClone) != 0 {
+		t.Errorf("cloning nil should return empty map, got %d entries", len(nilClone))
+	}
+}
