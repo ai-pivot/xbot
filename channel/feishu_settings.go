@@ -101,6 +101,70 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 	case "settings_tab":
 		return f.BuildSettingsCard(ctx, senderID, chatID, parsed["tab"])
 
+	case "settings_select_submit":
+		// Form submit button was clicked — extract the select value from form_value
+		// and map to the appropriate action by inspecting the form_name.
+		formName := parsed["form_name"]
+		var delegateAction string
+		switch formName {
+		case "model_select_form":
+			delegateAction = "settings_set_model"
+		case "concurrency_form":
+			delegateAction = "settings_set_concurrency"
+		case "thinking_mode_form":
+			delegateAction = "settings_set_thinking_mode"
+		default:
+			if strings.HasPrefix(formName, "tier_") {
+				delegateAction = "settings_set_model_tier"
+			} else {
+				return nil, fmt.Errorf("unknown select form: %s", formName)
+			}
+		}
+		// The select component's name matches its form_name pattern;
+		// extract the selected value from form_value (merged into actionData by feishu.go).
+		// Find the select name by scanning actionData for keys matching known select names.
+		selectedValue := ""
+		selectNames := []string{
+			"settings_model_select",
+			"settings_llm_conc_personal",
+			"settings_thinking_mode_select",
+		}
+		for _, sn := range selectNames {
+			if v := formStr(actionData, sn); v != "" {
+				selectedValue = v
+				break
+			}
+		}
+		// Check tier selects
+		if selectedValue == "" {
+			for _, tier := range []string{"vanguard", "balance", "swift"} {
+				name := "settings_tier_" + tier + "_select"
+				if v := formStr(actionData, name); v != "" {
+					selectedValue = v
+					// tier selects also need the tier param
+					parsed["tier"] = tier
+					break
+				}
+			}
+		}
+		if selectedValue == "" {
+			// Nothing selected, just re-render
+			return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		}
+		// Delegate by building action_data for the target handler and recursing
+		parsed["action"] = delegateAction
+		delete(parsed, "form_name")
+		newActionData := map[string]any{
+			"action_data":     mustMapToJSON(parsed),
+			"selected_option": selectedValue,
+		}
+		for k, v := range actionData {
+			if _, exists := newActionData[k]; !exists {
+				newActionData[k] = v
+			}
+		}
+		return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
+
 	case "settings_set_model":
 		model := parsed["model"]
 		if model == "" {
@@ -1136,10 +1200,6 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		maxContextDisplay = fmt.Sprintf("%dk", currentMaxContext/1000)
 	}
 
-	maxCtxInitial := ""
-	if currentMaxContext > 0 {
-		maxCtxInitial = fmt.Sprintf("%d", currentMaxContext/1000)
-	}
 	elements = append(elements, map[string]any{
 		"tag":     "markdown",
 		"content": fmt.Sprintf("**最大上下文 (k)**　当前: %s", maxContextDisplay),
@@ -1149,11 +1209,10 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"name": "max_context_form",
 		"elements": []map[string]any{
 			{
-				"tag":           "input",
-				"name":          "max_context_k",
-				"label":         map[string]any{"tag": "plain_text", "content": "上下文长度 (k)"},
-				"placeholder":   map[string]any{"tag": "plain_text", "content": "如 400 = 400k"},
-				"initial_value": maxCtxInitial,
+				"tag":         "input",
+				"name":        "max_context_k",
+				"label":       map[string]any{"tag": "plain_text", "content": "上下文长度 (k)"},
+				"placeholder": map[string]any{"tag": "plain_text", "content": "如 400 = 400k"},
 			},
 			{
 				"tag":         "button",
@@ -1180,10 +1239,6 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		maxOutputDisplay = fmt.Sprintf("%dk", currentMaxOutputTokens/1000)
 	}
 
-	maxOutInitial := ""
-	if currentMaxOutputTokens > 0 {
-		maxOutInitial = fmt.Sprintf("%d", currentMaxOutputTokens/1000)
-	}
 	elements = append(elements, map[string]any{
 		"tag":     "markdown",
 		"content": fmt.Sprintf("**最大输出 Token (k)**　当前: %s", maxOutputDisplay),
@@ -1193,11 +1248,10 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"name": "max_output_form",
 		"elements": []map[string]any{
 			{
-				"tag":           "input",
-				"name":          "max_output_k",
-				"label":         map[string]any{"tag": "plain_text", "content": "最大输出 (k)"},
-				"placeholder":   map[string]any{"tag": "plain_text", "content": "如 16 = 16k，0 = 默认"},
-				"initial_value": maxOutInitial,
+				"tag":         "input",
+				"name":        "max_output_k",
+				"label":       map[string]any{"tag": "plain_text", "content": "最大输出 (k)"},
+				"placeholder": map[string]any{"tag": "plain_text", "content": "如 16 = 16k，0 = 默认"},
 			},
 			{
 				"tag":         "button",
@@ -1313,7 +1367,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		}
 		// Build options: always include the currently configured model so
 		// the dropdown is never empty. Then append all global models.
-		var tierOptions []map[string]any
+		tierOptions := []map[string]any{}
 		seenTier := make(map[string]bool)
 		if currentTierModel != "" && !seenTier[currentTierModel] {
 			seenTier[currentTierModel] = true
@@ -1333,6 +1387,13 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		}
 		// Always render — even with only one option (the current value).
 		// Previously the section was entirely hidden when allModels was empty.
+		// Avoid empty options — Feishu rejects select_static with null/empty options.
+		if len(tierOptions) == 0 {
+			tierOptions = append(tierOptions, map[string]any{
+				"text":  map[string]any{"tag": "plain_text", "content": "暂无可用模型"},
+				"value": "",
+			})
+		}
 		elements = append(elements, buildSelectFormRow(
 			tier.label,
 			tierDisplay,
@@ -1979,10 +2040,11 @@ func parsePageOpts(parsed map[string]string) SettingsCardOpts {
 
 // --- Layout helpers ---
 
-// buildSelectFormRow wraps a select_static component inside a form so that
-// Feishu card callbacks work correctly. select_static MUST be inside a form
-// to trigger callbacks — placing it in column_set silently breaks interaction.
-// The label is rendered as a markdown element before the form.
+// buildSelectFormRow wraps a select_static component inside a form.
+// Feishu requires: (1) select_static MUST be inside a form to trigger callbacks,
+// (2) every form MUST have a submit button (action_type: form_submit).
+// Without the submit button, Feishu silently rejects the entire card update,
+// making the containing tab unreachable.
 func buildSelectFormRow(label, currentDisplay, formName string, selectControl map[string]any) []map[string]any {
 	leftContent := label
 	if currentDisplay != "" {
@@ -1994,9 +2056,24 @@ func buildSelectFormRow(label, currentDisplay, formName string, selectControl ma
 			"content": leftContent,
 		},
 		{
-			"tag":      "form",
-			"name":     formName,
-			"elements": []map[string]any{selectControl},
+			"tag":  "form",
+			"name": formName,
+			"elements": []map[string]any{
+				selectControl,
+				{
+					"tag":         "button",
+					"name":        formName + "_submit",
+					"text":        map[string]any{"tag": "plain_text", "content": "确认"},
+					"type":        "primary",
+					"action_type": "form_submit",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":    "settings_select_submit",
+							"form_name": formName,
+						}),
+					},
+				},
+			},
 		},
 	}
 }
