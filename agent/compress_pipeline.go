@@ -79,10 +79,13 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 		newMessages = params.SyncMessages(result.LLMView)
 	}
 
+	// Post-compress local estimation for logging/progress only.
+	// This is NOT used for compression decisions — the next LLM API call
+	// provides the real prompt_tokens.
 	newTokenCount, _ := llm.CountMessagesTokens(result.LLMView, params.Model)
 
 	if params.TokenTracker != nil {
-		params.TokenTracker.ResetAfterCompress(int64(newTokenCount), len(newMessages))
+		params.TokenTracker.ResetAfterCompress()
 	}
 
 	if params.Persistence != nil {

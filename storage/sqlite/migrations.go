@@ -124,6 +124,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v31: add context_tokens to session_messages for exact per-message token accounting
+	if from < 31 {
+		if err := migrateV30ToV31(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v31: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -993,5 +1000,23 @@ func migrateV29ToV30(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v30: added user_chats table")
+	return nil
+}
+
+// migrateV30ToV31 adds context_tokens column to session_messages.
+// This stores the exact API prompt_tokens value at the time each user message
+// was sent, enabling precise token accounting without estimation.
+// Rewind uses this value to restore accurate token state.
+func migrateV30ToV31(conn *sql.DB) error {
+	if _, err := conn.Exec("ALTER TABLE session_messages ADD COLUMN context_tokens INTEGER DEFAULT 0"); err != nil {
+		// "duplicate column name" is OK — means the column already exists (fresh DB from schema.go)
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate v30->v31 add context_tokens: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 31"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v31: added context_tokens to session_messages")
 	return nil
 }

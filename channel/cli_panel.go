@@ -1,7 +1,6 @@
 package channel
 
 import (
-	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"xbot/internal/textarea"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/tools"
@@ -81,15 +81,21 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 }
 
 // openSetupPanel opens the first-run setup wizard as a settings-style panel.
-// Unlike /settings, the setup wizard always starts from the schema's recommended
-// DefaultValue — it does NOT pre-fill from GetCurrentValues (which may contain
-// environment variable overrides like SANDBOX_MODE=docker). This ensures first-time
-// users see the recommended defaults, not values inherited from their environment.
+// Pre-fills from GetCurrentValues (respects existing config), falls back to
+// DefaultValue for keys not yet configured. This prevents misleading the user
+// with "flat" when their config already says "letta".
 func (m *cliModel) openSetupPanel() {
 	schema := m.locale.SetupSchema
 	values := make(map[string]string)
+	// Start from current config so existing choices are preserved.
+	if m.channel != nil && m.channel.config.GetCurrentValues != nil {
+		for k, v := range m.channel.config.GetCurrentValues() {
+			values[k] = v
+		}
+	}
+	// Fill gaps with schema defaults (e.g. keys not yet in config).
 	for _, def := range schema {
-		if def.DefaultValue != "" {
+		if _, ok := values[def.Key]; !ok && def.DefaultValue != "" {
 			values[def.Key] = def.DefaultValue
 		}
 	}
@@ -227,8 +233,11 @@ func (m *cliModel) closePanel() {
 // ---------------------------------------------------------------------------
 
 // openRewindPanel collects user messages from history and opens the rewind overlay.
+// Messages before the most recent [Compacted context] marker are excluded —
+// they were replaced by compression and no longer exist in the session DB.
 func (m *cliModel) openRewindPanel() {
 	var items []rewindItem
+	compressIdx := -1 // index in items where [Compacted context] appears
 	for i, msg := range m.messages {
 		if msg.role != "user" {
 			continue
@@ -248,6 +257,14 @@ func (m *cliModel) openRewindPanel() {
 			Content:  content,
 			Time:     msg.timestamp,
 		})
+		if strings.HasPrefix(content, "[Compacted context]") {
+			compressIdx = len(items) - 1
+		}
+	}
+	// If compression happened, only allow rewinding to the compressed context
+	// or later — messages before it were deleted from the session DB.
+	if compressIdx > 0 {
+		items = items[compressIdx:]
 	}
 	if len(items) == 0 {
 		m.showTempStatus(m.locale.NoMessagesToDelete)
@@ -816,6 +833,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.chatID = entry.ID
 					m.channelName = entry.Channel
 					m.messages = nil
+					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
 					m.restoreSession() // restore target session state (or reset to idle)
 					// Close panel first
@@ -846,6 +864,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.chatID = agentChatID
 					m.channelName = "agent"
 					m.messages = nil
+					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
 					m.restoreSession() // restore target session state (or reset to idle)
 					// Close panel first

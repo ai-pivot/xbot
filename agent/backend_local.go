@@ -139,6 +139,8 @@ func (b *LocalBackend) GetActiveProgress(ch, chatID string) *channel.CLIProgress
 // Dispatcher → CLIChannel.SendProgress path directly.
 func (b *LocalBackend) OnProgress(_ func(*channel.CLIProgressPayload)) {}
 
+func (b *LocalBackend) OnInjectUserMessage(_ func(content string)) {}
+
 func (b *LocalBackend) LLMFactory() *LLMFactory {
 	return b.agent.LLMFactory()
 }

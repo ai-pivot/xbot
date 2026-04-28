@@ -78,6 +78,9 @@ type RemoteBackend struct {
 	connState     string // "connected" | "disconnected" | "reconnecting"
 	onConnStateCb func(state string)
 
+	// Injected user message callback (for bg task notifications from server)
+	injectUserCb func(content string)
+
 	// RPC pending calls: requestID → response channel
 	rpcMu      sync.Mutex
 	pending    map[string]chan *rpcResponse
@@ -274,6 +277,13 @@ func (b *RemoteBackend) OnReconnect(callback func()) {
 // Used by CLI to update the header bar connection indicator in real-time.
 func (b *RemoteBackend) OnConnStateChange(callback func(state string)) {
 	b.onConnStateCb = callback
+}
+
+// OnInjectUserMessage registers a callback invoked when the server injects a user
+// message into the CLI (e.g. background task completion notification in remote mode).
+// The CLI displays it as a user message and starts the agent turn display.
+func (b *RemoteBackend) OnInjectUserMessage(callback func(content string)) {
+	b.injectUserCb = callback
 }
 
 // ConnState returns the current connection state string.
@@ -529,6 +539,19 @@ func (b *RemoteBackend) readPump(ctx context.Context) {
 					}
 				}
 			}
+		case "inject_user":
+			if b.injectUserCb != nil && msg.Content != "" {
+				log.WithField("content_len", len(msg.Content)).Info("RemoteBackend: dispatching inject_user")
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							clipanic.Report("agent.RemoteBackend.OnInjectUserMessage", msg.Content, r)
+							log.WithField("panic", r).Warn("RemoteBackend inject_user callback panicked")
+						}
+					}()
+					b.injectUserCb(msg.Content)
+				}()
+			}
 		}
 	}
 }
@@ -590,12 +613,14 @@ func convertWsProgressToCLI(wp *channel.WsProgressPayload) *channel.CLIProgressP
 		payload.ActiveTools = append(payload.ActiveTools, channel.CLIToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Summary: t.Summary,
+			Iteration: t.Iteration,
 		})
 	}
 	for _, t := range wp.CompletedTools {
 		payload.CompletedTools = append(payload.CompletedTools, channel.CLIToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Summary: t.Summary,
+			Iteration: t.Iteration,
 		})
 	}
 	for _, sa := range wp.SubAgents {

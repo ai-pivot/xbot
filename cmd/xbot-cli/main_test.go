@@ -691,6 +691,7 @@ func (b *fakeAgentBackend) Stop()                                               
 func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error                         { return nil }
 func (b *fakeAgentBackend) OnOutbound(func(bus.OutboundMessage))                         {}
 func (b *fakeAgentBackend) OnProgress(func(*channel.CLIProgressPayload))                 {}
+func (b *fakeAgentBackend) OnInjectUserMessage(func(string))                             {}
 func (b *fakeAgentBackend) Bus() *bus.MessageBus                                         { return nil }
 func (b *fakeAgentBackend) IsRemote() bool                                               { return false }
 func (b *fakeAgentBackend) IsProcessing(string, string) bool                             { return false }

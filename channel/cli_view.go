@@ -88,7 +88,17 @@ func (m *cliModel) renderInputArea(borderColor color.Color) string {
 		}
 	}
 
-	return inputBoxStyle.Render(inputArea)
+	inputRendered := inputBoxStyle.Render(inputArea)
+
+	// Replace top border with context usage progress bar
+	if newTop := m.renderContextTopBorder(borderColor, inputRendered); newTop != "" {
+		_, rest, found := strings.Cut(inputRendered, "\n")
+		if found {
+			return newTop + "\n" + rest
+		}
+	}
+
+	return inputRendered
 }
 
 // renderReadyStatus builds the "Ready" status bar line with message count,
@@ -123,16 +133,12 @@ func (m *cliModel) renderReadyStatus() string {
 	}
 	leftParts := strings.Join(readyParts, " · ")
 
-	// Context usage bar (right-aligned)
-	if ctxBar := m.renderContextUsage(); ctxBar != "" {
-		return m.styles.ReadyStatus.Render(padBetween(leftParts, ctxBar, m.width))
-	}
 	return m.styles.ReadyStatus.Render(leftParts)
 }
 
 // layoutSearch renders the search-mode layout: title bar, viewport, search bar,
-// input box, and toast.
-func (m *cliModel) layoutSearch(titleBar, input, toast string) string {
+// and input box.
+func (m *cliModel) layoutSearch(titleBar, input string) string {
 	var searchBar string
 	if m.searchEditing {
 		searchBar = m.styles.SearchBar.Render(m.searchTI.View())
@@ -140,17 +146,17 @@ func (m *cliModel) layoutSearch(titleBar, input, toast string) string {
 		searchBar = m.styles.SearchBar.Render(
 			fmt.Sprintf(m.locale.SearchNavFormat, m.searchQuery, m.searchIdx+1, len(m.searchResults)))
 	}
-	return fmt.Sprintf("%s\n%s\n%s\n%s%s",
-		titleBar, m.viewport.View(), searchBar, input, toast)
+	return fmt.Sprintf("%s\n%s\n%s\n%s",
+		titleBar, m.viewport.View(), searchBar, input)
 }
 
 // layoutAskUser renders the askuser panel layout: title bar, viewport,
-// scrollable ask panel with progress indicator, and toast.
-func (m *cliModel) layoutAskUser(titleBar, toast string) string {
+// scrollable ask panel with progress indicator.
+func (m *cliModel) layoutAskUser(titleBar string) string {
 	askRaw := m.viewAskUserPanel()
 	m.clampAskUserPanelScroll(askRaw)
 	askLines := strings.Split(askRaw, "\n")
-	fixedLines := 2 // titleBar + toast (no separate footer — hints are in-panel)
+	fixedLines := 2 // titleBar (no toast)
 	panelBorder := 2
 	viewportH := m.layoutViewportHeight()
 	askVisibleH := m.height - fixedLines - viewportH - panelBorder
@@ -174,13 +180,13 @@ func (m *cliModel) layoutAskUser(titleBar, toast string) string {
 		pct := (m.askPanelScrollY + askVisibleH) * 100 / totalAskLines
 		scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] Ctrl+↑↓/PgUp/PgDn", pct))
 	}
-	return fmt.Sprintf("%s\n%s\n%s%s%s",
-		titleBar, m.viewport.View(), boxedAsk, scrollHint, toast)
+	return fmt.Sprintf("%s\n%s\n%s%s",
+		titleBar, m.viewport.View(), boxedAsk, scrollHint)
 }
 
 // layoutPanel renders the generic panel-mode layout: title bar, scrollable
-// panel content in a bordered box, panel footer, and toast.
-func (m *cliModel) layoutPanel(titleBar, toast string) string {
+// panel content in a bordered box, and panel footer.
+func (m *cliModel) layoutPanel(titleBar string) string {
 	panelFooter := m.renderFooter()
 	rawContent := m.viewPanel()
 	m.clampPanelScroll(rawContent)
@@ -196,14 +202,14 @@ func (m *cliModel) layoutPanel(titleBar, toast string) string {
 	visible := rawLines[m.panelScrollY:end]
 	panelContent := strings.Join(visible, "\n")
 	boxedContent := m.styles.PanelBox.Render(panelContent)
-	return fmt.Sprintf("%s\n%s%s%s",
-		titleBar, boxedContent, panelFooter, toast)
+	return fmt.Sprintf("%s\n%s%s",
+		titleBar, boxedContent, panelFooter)
 }
 
 // layoutMain renders the primary chat layout: title bar, viewport, status bar
-// (with hints for temp status, new content, background tasks, agents, and queue),
-// optional footer/todo bar, input box, and toast.
-func (m *cliModel) layoutMain(titleBar, input, toast, completionsHint string) string {
+// (with hints for temp status, new content), optional todo bar, footer (shortcuts),
+// input box, and info bar below input.
+func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	// Render status bar
 	var status string
 	if m.typing || m.progress != nil {
@@ -227,34 +233,31 @@ func (m *cliModel) layoutMain(titleBar, input, toast, completionsHint string) st
 	if m.newContentHint {
 		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
 	}
-	if m.bgTaskCount > 0 {
-		hints = append(hints, m.styles.WarningSt.Render(fmt.Sprintf(m.locale.BgTaskRunning, m.bgTaskCount)))
-	}
-	if m.agentCount > 0 {
-		hints = append(hints, m.styles.WarningSt.Render(fmt.Sprintf(m.locale.AgentRunning, m.agentCount)))
-	}
-	if len(m.messageQueue) > 0 {
-		hints = append(hints, m.styles.InfoSt.Render(fmt.Sprintf(m.locale.QueuePending, len(m.messageQueue))))
-	}
+	// Background tasks, agents, and queue now live in the info bar below input.
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))
 	}
 
-	// Layout assembly
-	todoBar := m.renderTodoBar()
-	footer := m.renderFooter()
-
-	switch {
-	case todoBar != "":
-		return fmt.Sprintf("%s\n%s\n%s\n%s\n%s%s",
-			titleBar, m.viewport.View(), status, todoBar, input, toast)
-	case footer != "":
-		return fmt.Sprintf("%s\n%s\n%s\n%s\n%s%s",
-			titleBar, m.viewport.View(), status, footer, input, toast)
-	default:
-		return fmt.Sprintf("%s\n%s\n%s\n%s%s",
-			titleBar, m.viewport.View(), status, input, toast)
+	// Layout assembly — build progressively so empty sections don't add blank lines.
+	var lines []string
+	lines = append(lines, titleBar, m.viewport.View())
+	if status != "" {
+		lines = append(lines, status)
 	}
+	todoBar := m.renderTodoBar()
+	if todoBar != "" {
+		lines = append(lines, todoBar)
+	}
+	footer := m.renderFooter()
+	if footer != "" {
+		lines = append(lines, footer)
+	}
+	lines = append(lines, input)
+	infoBar := m.renderInfoBar()
+	if infoBar != "" {
+		lines = append(lines, infoBar)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // View renders the CLI interface.
@@ -289,19 +292,18 @@ func (m *cliModel) View() tea.View {
 	titleBar := m.renderTitleBar()
 	borderColor, completionsHint := m.renderCompletionsHint(m.textarea.Value())
 	input := m.renderInputArea(borderColor)
-	toast := m.renderToast()
 
 	// Layout selection
 	var content string
 	switch {
 	case m.searchMode:
-		content = m.layoutSearch(titleBar, input, toast)
+		content = m.layoutSearch(titleBar, input)
 	case m.panelMode == "askuser":
-		content = m.layoutAskUser(titleBar, toast)
+		content = m.layoutAskUser(titleBar)
 	case m.panelMode != "":
-		content = m.layoutPanel(titleBar, toast)
+		content = m.layoutPanel(titleBar)
 	default:
-		content = m.layoutMain(titleBar, input, toast, completionsHint)
+		content = m.layoutMain(titleBar, input, completionsHint)
 	}
 
 	v := tea.NewView(content)
@@ -335,6 +337,53 @@ func (m *cliModel) allTodosDone() bool {
 		}
 	}
 	return true
+}
+
+// renderInfoBar renders a sleek bottom status line below the input box
+// showing background tasks, active subagents, and pending queue —
+// inspired by lazygit's and Warp's status panels.
+// Only renders when there are active items (no "empty" state noise).
+func (m *cliModel) renderInfoBar() string {
+	hasTasks := m.bgTaskCount > 0
+	hasAgents := m.agentCount > 0
+	hasQueue := len(m.messageQueue) > 0
+
+	if !hasTasks && !hasAgents && !hasQueue {
+		return ""
+	}
+
+	var parts []string
+
+	if hasTasks {
+		icon := m.styles.WarningSt.Render("⚡")
+		count := m.styles.WarningSt.Render(fmt.Sprintf("%d", m.bgTaskCount))
+		label := m.styles.Accent.Bold(true).Render(m.locale.InfoBarTasks)
+		parts = append(parts, fmt.Sprintf("%s%s %s", icon, count, label))
+	}
+	if hasAgents {
+		icon := m.styles.WarningSt.Render("🧠")
+		count := m.styles.WarningSt.Render(fmt.Sprintf("%d", m.agentCount))
+		label := m.styles.Accent.Bold(true).Render(m.locale.InfoBarAgents)
+		parts = append(parts, fmt.Sprintf("%s%s %s", icon, count, label))
+	}
+	if hasQueue {
+		icon := m.styles.InfoSt.Render("📬")
+		count := m.styles.InfoSt.Render(fmt.Sprintf("%d", len(m.messageQueue)))
+		parts = append(parts, fmt.Sprintf("%s%s", icon, count))
+	}
+
+	// Join sections with muted separators
+	separator := m.styles.TextMutedSt.Render(" · ")
+	content := strings.Join(parts, separator)
+
+	// Match InputBox visual: width-4, left padding of 2
+	barWidth := max(0, m.width-4)
+	bar := lipgloss.NewStyle().
+		Width(barWidth).
+		PaddingLeft(2).
+		Render(content)
+
+	return bar
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.
@@ -710,49 +759,6 @@ func padBetween(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-w) + right
 }
 
-// renderToast 渲染底部 Toast 通知堆叠（§16）。
-// 支持多条 toast 排队显示，最多同时渲染 3 条，3 秒轮换。
-// 浮在界面最底部，使用 Surface 背景与主题保持一致。
-func (m *cliModel) renderToast() string {
-	if len(m.toasts) == 0 {
-		return ""
-	}
-
-	// 最多显示 3 条
-	showCount := len(m.toasts)
-	if showCount > 3 {
-		showCount = 3
-	}
-
-	var lines []string
-	for i := 0; i < showCount; i++ {
-		item := m.toasts[i]
-
-		iconSty := m.styles.ToastIcon
-		switch item.icon {
-		case "✗", "⚠":
-			iconSty = iconSty.Foreground(lipgloss.Color(currentTheme.Error))
-		case "ℹ":
-			iconSty = iconSty.Foreground(lipgloss.Color(currentTheme.Info))
-		}
-
-		// 越靠后越透明（营造层级感）
-		faintFactor := i // 0=最新最亮, 1=稍暗, 2=最暗
-		if faintFactor > 0 {
-			iconSty = iconSty.Faint(true)
-		}
-		textSty := m.styles.ToastText
-		if faintFactor > 0 {
-			textSty = textSty.Faint(true)
-		}
-
-		toastContent := iconSty.Render(" "+item.icon+" ") + " " + textSty.Render(item.text)
-		lines = append(lines, m.styles.ToastBg.Render(toastContent))
-	}
-
-	return "\n" + strings.Join(lines, "\n")
-}
-
 // renderProgressStatus renders a compact one-line status for the status bar.
 func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style) string {
 	s := &m.styles // §20
@@ -787,36 +793,7 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 		sb.WriteString(formatElapsed(elapsed))
 	}
 
-	// §18 Context usage bar — right-aligned so position stays fixed
-	var ctxBar string
-	if ctxHint := m.renderContextUsage(); ctxHint != "" {
-		ctxBar = ctxHint
-	} else if m.progress != nil && m.progress.TokenUsage != nil && m.progress.TokenUsage.TotalTokens > 0 {
-		// Fallback: raw token count when context bar data is not yet available
-		tu := m.progress.TokenUsage
-		ctxBar = s.TokenUsage.Render(formatTokenCount(tu))
-	}
-
-	// Queue indicator (persistent during typing, not just temp status)
-	if len(m.messageQueue) > 0 {
-		sb.WriteString(" · ")
-		fmt.Fprintf(&sb, m.locale.QueuePending, len(m.messageQueue))
-	}
-
-	leftText := sb.String()
-	if ctxBar != "" {
-		return padBetween(leftText, ctxBar, m.width)
-	}
-	return leftText
-}
-
-// formatTokenCount formats token usage for the fallback status line (when context bar is unavailable).
-// Shows prompt tokens (context fill) as the primary metric.
-func formatTokenCount(tu *CLITokenUsage) string {
-	if tu.PromptTokens < 1000 {
-		return fmt.Sprintf("ctx: %d tokens", tu.PromptTokens)
-	}
-	return fmt.Sprintf("ctx: %s", formatTokenCompact(tu.PromptTokens))
+	return sb.String()
 }
 
 // Pre-created styles for context bar (avoid per-frame allocation).
@@ -844,15 +821,14 @@ var ctxBarStyles = struct {
 	pctRed:     lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")),
 }
 
-// renderContextUsage returns a context usage bar for the status bar.
-// Uses cached rendering — only recomputes when token data or terminal width changes.
+// renderContextTopBorder replaces the input box top border with a context
+// usage progress bar. The border corners (╭╮) stay in the original border color,
+// while the inner line becomes a segmented progress bar using thin line characters:
 //
-// Shows a segmented progress bar with:
-//   - Filled portion (prompt tokens used) — color-coded by fill ratio
-//   - Output reservation marker (right-side dim segment)
-//   - Compression threshold marker
-//   - Numeric label: "prompt/budget"
-func (m *cliModel) renderContextUsage() string {
+//	─ filled (color-coded) · ─ free (dim) · ┊ threshold (red bold) · ╌ output reservation (dashed dim)
+//
+// Returns empty string when no token data is available (keep original border).
+func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox string) string {
 	if m.lastTokenUsage == nil || m.cachedMaxContextTokens <= 0 {
 		return ""
 	}
@@ -862,10 +838,19 @@ func (m *cliModel) renderContextUsage() string {
 		return ""
 	}
 
-	// Cache key: re-render only when data changes
-	cacheKey := fmt.Sprintf("%d:%d:%d:%d:%g", promptTokens, maxTokens, m.cachedMaxOutputTokens, m.width, m.cachedCompressRatio)
-	if cacheKey == m.ctxBarCacheKey && m.ctxBarCache != "" {
-		return m.ctxBarCache
+	firstLine, _, found := strings.Cut(renderedBox, "\n")
+	if !found {
+		return ""
+	}
+	totalW := lipgloss.Width(firstLine)
+	innerW := totalW - 2 // minus ╭ and ╮
+	if innerW < 6 {
+		return "" // too narrow, keep default
+	}
+
+	pct := float64(promptTokens) / float64(maxTokens)
+	if pct > 1 {
+		pct = 1
 	}
 
 	maxOutputTokens := m.cachedMaxOutputTokens
@@ -877,130 +862,87 @@ func (m *cliModel) renderContextUsage() string {
 		promptBudget = maxTokens / 2
 	}
 
-	// Use cached compression ratio (set during progress events), not GetCurrentValues()
 	compressRatio := m.cachedCompressRatio
 	if compressRatio <= 0 {
 		compressRatio = 0.9
 	}
 	compressThreshold := int64(float64(promptBudget) * compressRatio)
 
-	// Bar width: adapt to terminal width
-	barWidth := 20
-	if m.width > 120 {
-		barWidth = 30
-	}
-	if m.width < 80 {
-		barWidth = 12
+	// Cell counts
+	filledCells := int(float64(innerW) * float64(promptTokens) / float64(maxTokens))
+	if filledCells > innerW {
+		filledCells = innerW
 	}
 
-	promptFill := promptTokens
-	if promptFill > maxTokens {
-		promptFill = maxTokens
-	}
-	filledCells := int(float64(barWidth) * float64(promptFill) / float64(maxTokens))
-	if filledCells > barWidth {
-		filledCells = barWidth
-	}
-
-	outputCells := int(float64(barWidth) * float64(maxOutputTokens) / float64(maxTokens))
+	outputCells := int(float64(innerW) * float64(maxOutputTokens) / float64(maxTokens))
 	if outputCells < 1 {
 		outputCells = 1
 	}
-	if outputCells > barWidth-1 {
-		outputCells = barWidth - 1
+	if outputCells > innerW-1 {
+		outputCells = innerW - 1
 	}
 
-	compressPos := int(float64(barWidth) * float64(compressThreshold) / float64(maxTokens))
+	compressPos := int(float64(innerW) * float64(compressThreshold) / float64(maxTokens))
 	if compressPos < 1 {
 		compressPos = 1
 	}
-	if compressPos >= barWidth {
-		compressPos = barWidth - 1
+	if compressPos >= innerW {
+		compressPos = innerW - 1
 	}
 
-	pct := float64(promptTokens) / float64(maxTokens) * 100
-
-	// Select pre-created style (no allocation)
-	var fillColor, pctStyle lipgloss.Style
+	// Color selection
+	var fillSty lipgloss.Style
 	switch {
-	case pct > 80:
-		fillColor = ctxBarStyles.fillRed
-		pctStyle = ctxBarStyles.pctRed
-	case pct > 50:
-		fillColor = ctxBarStyles.fillYellow
-		pctStyle = ctxBarStyles.pctYellow
+	case pct > 0.8:
+		fillSty = ctxBarStyles.fillRed
+	case pct > 0.5:
+		fillSty = ctxBarStyles.fillYellow
 	default:
-		fillColor = ctxBarStyles.fillGreen
-		pctStyle = ctxBarStyles.pctGreen
+		fillSty = ctxBarStyles.fillGreen
 	}
 
-	// Build bar runes first (single allocation)
-	outputStart := barWidth - outputCells
+	cornerSty := lipgloss.NewStyle().Foreground(borderColor)
+
+	// Build top border
+	var sb strings.Builder
+	sb.WriteString(cornerSty.Render("╭"))
+
+	outputStart := innerW - outputCells
 	if outputStart < filledCells {
 		outputStart = filledCells
 	}
 
-	// Render bar segments as batch strings (3 segments max, not barWidth calls)
-	var barStr strings.Builder
-	// Segment 1: filled area
+	// 1. Filled segment — thin line matching border style
 	if filledCells > 0 {
-		barStr.WriteString(fillColor.Render(strings.Repeat("█", filledCells)))
+		sb.WriteString(fillSty.Render(strings.Repeat("─", filledCells)))
 	}
-	// Segment 2: empty area (may contain threshold marker)
+
+	// 2. Empty segment (may contain threshold marker)
 	emptyStart := filledCells
 	emptyEnd := outputStart
 	if emptyEnd > emptyStart {
 		if compressPos >= emptyStart && compressPos < emptyEnd {
-			// Split empty into two parts around threshold marker
 			before := compressPos - emptyStart
 			after := emptyEnd - compressPos - 1
 			if before > 0 {
-				barStr.WriteString(ctxBarStyles.empty.Render(strings.Repeat("░", before)))
+				sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", before)))
 			}
-			barStr.WriteString(ctxBarStyles.threshold.Render("┊"))
+			sb.WriteString(ctxBarStyles.threshold.Render("┊"))
 			if after > 0 {
-				barStr.WriteString(ctxBarStyles.empty.Render(strings.Repeat("░", after)))
+				sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", after)))
 			}
 		} else {
-			barStr.WriteString(ctxBarStyles.empty.Render(strings.Repeat("░", emptyEnd-emptyStart)))
+			sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", emptyEnd-emptyStart)))
 		}
 	}
-	// Segment 3: output reservation
-	if barWidth-outputStart > 0 {
-		barStr.WriteString(ctxBarStyles.dim.Render(strings.Repeat("▒", barWidth-outputStart)))
+
+	// 3. Output reservation — dashed thin line
+	if innerW-outputStart > 0 {
+		sb.WriteString(ctxBarStyles.dim.Render(strings.Repeat("╌", innerW-outputStart)))
 	}
 
-	pctStr := pctStyle.Render(fmt.Sprintf("%.0f%%", pct))
-
-	var result string
-	if m.width < 100 {
-		result = fmt.Sprintf("%s %s", pctStr, barStr.String())
-	} else {
-		usageStr := formatTokenCompact(promptTokens)
-		budgetStr := formatTokenCompact(promptBudget)
-		label := ctxBarStyles.label.Render(fmt.Sprintf("%s/%s", usageStr, budgetStr))
-		result = fmt.Sprintf("%s %s %s", pctStr, barStr.String(), label)
-	}
-
-	m.ctxBarCache = result
-	m.ctxBarCacheKey = cacheKey
-	return result
-}
-
-// formatTokenCompact formats token counts as compact human-readable strings.
-// e.g. 12500 → "12.5K", 128000 → "128K", 500 → "500"
-func formatTokenCompact(tokens int64) string {
-	if tokens >= 1_000_000 {
-		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
-	}
-	if tokens >= 1000 {
-		val := float64(tokens) / 1000
-		if val == float64(int(val)) {
-			return fmt.Sprintf("%dK", int(val))
-		}
-		return fmt.Sprintf("%.1fK", val)
-	}
-	return fmt.Sprintf("%d", tokens)
+	sb.WriteString(cornerSty.Render("╮"))
+	return sb.String()
 }
 
 // ---------------------------------------------------------------------------

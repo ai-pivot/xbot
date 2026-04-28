@@ -356,6 +356,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	if m.cachedCompressRatio == 0 {
 		m.cachedCompressRatio = m.resolveCompressRatio()
 	}
+	if m.cachedMaxOutputTokens == 0 {
+		m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
+	}
 
 	// Restore iteration history from reconnect/GetActiveProgress snapshot.
 	m.restoreIterationHistory(m.progress)
@@ -373,7 +376,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	// HistoryCompacted: context compression replaced the engine's message list.
 	// Rebuild m.messages from session storage to stay in sync.
+	// Also clear the token usage bar — compressed context has far fewer tokens.
 	if msg.payload != nil && msg.payload.HistoryCompacted {
+		m.lastTokenUsage = nil
 		m.reloadMessagesFromSession()
 	}
 

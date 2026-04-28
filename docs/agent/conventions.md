@@ -56,3 +56,43 @@ golangci-lint run ./...         # lint
 ```
 Makefile targets: `make build`, `make run`, `make test`
 Binary: `xbot-cli` from `cmd/xbot-cli/`
+
+## Textarea (BubbleTea Component)
+
+`internal/textarea/` is a fork of `charm.land/bubbles/v2/textarea` with CJK-aware
+wrapping and word navigation. Key files:
+
+- `textarea.go` — wrap(), LineInfo(), view(), setCursorLineRelative()
+- `textarea_cjk_test.go` — base CJK tests
+- `textarea_cursor_test.go` — cursor navigation regression tests
+
+**Architecture:**
+- `wrap()` splits logical text into visual line grid (no phantom spaces)
+- `LineInfo()` maps cursor logical position (col) → visual row/column
+- `view()` renders each visual line and positions cursor via LineInfo
+- `setCursorLineRelative()` handles CursorUp/CursorDown across soft-wraps
+- `cjkWordBounds()` / `Model.Word()` — gse-based CJK word boundary cache and word-at-cursor
+
+**CJK word segmentation:**
+Uses `github.com/go-ego/gse` (pure Go, embedded dictionary) for Ctrl+Arrow
+word navigation. The segmenter is lazy-initialized via `sync.Once` and shared
+across all textarea instances. Word boundaries are cached per-line and
+automatically invalidated when the line text changes.
+
+**Gotcha — `Segment` vs `CutSearch`:**
+`CutSearch` (DAG-based) returns overlapping candidates for ambiguous
+input (e.g. `"第一个"` → `["第一","一个","第一个"]`), which causes
+cumulative position errors when treated as contiguous token boundaries.
+Use `Segment` (HMM-based) instead — it produces non-overlapping tokens
+that are safe for cursor navigation. The tradeoff is that `Segment` may
+split isolated CJK words like `"测试"` into two single characters when
+no surrounding context is available; this is acceptable because cursor
+navigation correctness takes priority over ideal linguistic segmentation.
+
+**Gotcha — Do NOT add trailing spaces to visual lines:**
+Previous versions appended `' '` to each visual line in wrap() for cursor
+navigation. This created phantom character positions that view() trimmed
+inconsistently. LineInfo.StartColumn accumulated these phantom spaces,
+shifting all cursor calculations. Removing them was a 3-part fix:
+wrap() stops injecting, view() stops trimming, setCursorLineRelative
+uses StartColumn+Width (down) and StartColumn-1 (up).

@@ -122,12 +122,15 @@ func TestApplyCompress_CompressSuccess(t *testing.T) {
 		t.Error("CompressOutput should point to the original result")
 	}
 
-	// Verify TokenTracker was reset
-	if tracker.promptTokens != got.NewTokenCount {
-		t.Errorf("tracker promptTokens=%d, want %d", tracker.promptTokens, got.NewTokenCount)
+	// Verify TokenTracker was reset (all zeros after compression)
+	if tracker.promptTokens != 0 {
+		t.Errorf("tracker promptTokens=%d, want 0 (zeroed after compress)", tracker.promptTokens)
 	}
 	if tracker.completionTokens != 0 {
 		t.Errorf("tracker completionTokens=%d, want 0", tracker.completionTokens)
+	}
+	if tracker.HadLLMCall() {
+		t.Error("tracker hadLLMCall should be false after compress")
 	}
 }
 

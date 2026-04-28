@@ -441,6 +441,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.sendToAgent(cmd) // 直接透传，agent 层会解析
 
 	case "/new":
+		m.lastTokenUsage = nil // clear context bar immediately
 		m.sendToAgent("/new")
 
 	case "/tasks":
@@ -532,6 +533,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 				m.chatID = chatID
 				m.messages = nil
+				m.lastTokenUsage = nil // clear stale token bar on new session
 				m.invalidateAllCache(false)
 				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
 			} else {
@@ -705,8 +707,6 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		// §11.5 Session reset: clear token usage bar after /new
 		if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
 			m.lastTokenUsage = nil
-			m.ctxBarCacheKey = ""
-			m.ctxBarCache = ""
 		}
 
 		// §12 AskUser panel: detect WaitingUser and open interactive panel
@@ -943,15 +943,11 @@ func (m *cliModel) renderProgressBlock() string {
 		}
 		for _, tool := range snap.Tools {
 			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-			line := fmt.Sprintf("  │ %s %s", icon, label)
+			var elapsedStyled string
 			if tool.Elapsed > 0 {
-				pad := innerWidth - lipgloss.Width(line) - len(formatElapsed(tool.Elapsed))
-				if pad < 1 {
-					pad = 1
-				}
-				line += strings.Repeat(" ", pad) + elapsedStyle.Render(formatElapsed(tool.Elapsed))
+				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
 			}
-			sb.WriteString(dimStyle.Render(sty.Render(line)))
+			sb.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 			sb.WriteString("\n")
 		}
 	}
@@ -990,10 +986,27 @@ func (m *cliModel) renderProgressBlock() string {
 				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
 				for j, wl := range wrappedLines {
 					isLast := isLastLine && j == len(wrappedLines)-1
-					if isLast && isReasoningStreaming && cursorVisible {
-						sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl) + s.StreamCursor.Render("▋"))
+					guide := reasoningGuide.Render("  │ ")
+					if isLast && isReasoningStreaming {
+						cursorStr := s.StreamCursor.Render("▋")
+						cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
+						if cursorOverflow {
+							// Cursor would overflow: always render on a separate line
+							// to prevent visual height jumping during cursor blink.
+							sb.WriteString(guide + reasoningStyle.Render(wl))
+							sb.WriteString("\n")
+							if cursorVisible {
+								sb.WriteString(guide + cursorStr)
+							} else {
+								sb.WriteString(guide)
+							}
+						} else if cursorVisible {
+							sb.WriteString(guide + reasoningStyle.Render(wl) + cursorStr)
+						} else {
+							sb.WriteString(guide + reasoningStyle.Render(wl))
+						}
 					} else {
-						sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
+						sb.WriteString(guide + reasoningStyle.Render(wl))
 					}
 					sb.WriteString("\n")
 				}
@@ -1019,22 +1032,11 @@ func (m *cliModel) renderProgressBlock() string {
 				continue
 			}
 			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+			var elapsedStyled string
 			if tool.Elapsed > 0 {
-				elapsedStr := formatElapsed(tool.Elapsed)
-				// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds len(elapsedStr) more
-				overhead := 7 + len(elapsedStr)
-				label = truncateToWidth(label, innerWidth-overhead)
-				line := fmt.Sprintf("  │ %s %s", icon, label)
-				pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
-				if pad < 1 {
-					pad = 1
-				}
-				line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
-				sb.WriteString(sty.Render(line))
-			} else {
-				line := fmt.Sprintf("  │ %s %s", icon, truncateToWidth(label, innerWidth-7))
-				sb.WriteString(sty.Render(line))
+				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
 			}
+			sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
 			sb.WriteString("\n")
 		}
 
@@ -1052,17 +1054,8 @@ func (m *cliModel) renderProgressBlock() string {
 			} else {
 				elapsedMs = tool.Elapsed
 			}
-			elapsedStr := formatElapsed(elapsedMs)
-			// Prefix: "  │ "(4) + icon(2) + " "(1) = 7, elapsed adds ~8 more
-			overhead := 7 + 2 + len(elapsedStr)
-			label = truncateToWidth(label, innerWidth-overhead)
-			line := fmt.Sprintf("  │ %s %s", pulseIcon, label)
-			pad := innerWidth - lipgloss.Width(line) - len(elapsedStr)
-			if pad < 1 {
-				pad = 1
-			}
-			line += strings.Repeat(" ", pad) + elapsedStyle.Render(elapsedStr)
-			sb.WriteString(toolRunningStyle.Render(line))
+			elapsedStyled := elapsedStyle.Render(formatElapsed(elapsedMs))
+			sb.WriteString(toolRunningStyle.Render(toolLine(pulseIcon, label, elapsedStyled, innerWidth)))
 			sb.WriteString("\n")
 		}
 
@@ -1092,10 +1085,27 @@ func (m *cliModel) renderProgressBlock() string {
 				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
 				for j, wl := range wrappedLines {
 					isLast := isLastLine && j == len(wrappedLines)-1
-					if isLast && cursorVisible {
-						sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl) + s.StreamCursor.Render("▋"))
+					guide := thinkingGuide.Render("  │ ")
+					if isLast {
+						cursorStr := s.StreamCursor.Render("▋")
+						cursorOverflow := thinkingW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
+						if cursorOverflow {
+							// Cursor would overflow: always render on a separate line
+							// to prevent visual height jumping during cursor blink.
+							sb.WriteString(guide + thinkingStyle.Render(wl))
+							sb.WriteString("\n")
+							if cursorVisible {
+								sb.WriteString(guide + cursorStr)
+							} else {
+								sb.WriteString(guide)
+							}
+						} else if cursorVisible {
+							sb.WriteString(guide + thinkingStyle.Render(wl) + cursorStr)
+						} else {
+							sb.WriteString(guide + thinkingStyle.Render(wl))
+						}
 					} else {
-						sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+						sb.WriteString(guide + thinkingStyle.Render(wl))
 					}
 					sb.WriteString("\n")
 				}
@@ -1183,13 +1193,12 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 		}
 		line := fmt.Sprintf("%s%s%s %s", prefix, connector, icon, sa.Role)
 		if sa.Desc != "" {
-			// Truncate Desc separately to account for prefix+icon+role overhead.
+			// Only add description if there's room — never exceed maxWidth.
 			overhead := lipgloss.Width(line) + 2 // +2 for ": "
 			descW := maxWidth - overhead
-			if descW < 10 {
-				descW = 10
+			if descW > 0 {
+				line += ": " + truncateToWidth(sa.Desc, descW)
 			}
-			line += ": " + truncateToWidth(sa.Desc, descW)
 		}
 		sb.WriteString(style.Render(line))
 		sb.WriteString("\n")
@@ -1258,6 +1267,41 @@ func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (la
 		sty = errStyle
 	}
 	return
+}
+
+// toolLine formats a tool progress line guaranteed to fit within maxWidth cells.
+// icon and label are plain text; elapsed may be pre-styled with ANSI codes.
+// Returns the formatted string — caller wraps with style.Render().
+func toolLine(icon, label string, elapsedStyled string, maxWidth int) string {
+	prefix := fmt.Sprintf("  │ %s ", icon)
+	prefixW := lipgloss.Width(prefix)
+
+	elapsedW := lipgloss.Width(elapsedStyled) // strips ANSI, measures visual width
+
+	minPad := 0
+	if elapsedW > 0 {
+		minPad = 1
+	}
+
+	maxLabelW := maxWidth - prefixW - elapsedW - minPad
+	if maxLabelW < 0 {
+		maxLabelW = 0
+	}
+	label = truncateToWidth(label, maxLabelW)
+	labelW := lipgloss.Width(label)
+
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(label)
+	if elapsedW > 0 {
+		pad := maxWidth - prefixW - labelW - elapsedW
+		if pad < minPad {
+			pad = minPad
+		}
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(elapsedStyled)
+	}
+	return sb.String()
 }
 
 func (m *cliModel) renderMessage(msg *cliMessage) string {

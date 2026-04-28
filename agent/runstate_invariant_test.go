@@ -29,7 +29,7 @@ func TestValidateInvariants(t *testing.T) {
 				persistence: NewPersistenceBridge(nil, 3),
 				tokenTracker: func() *TokenTracker {
 					tt := &TokenTracker{}
-					tt.RecordLLMCall(100, 50, 4)
+					tt.RecordLLMCall(100, 50)
 					return tt
 				}(),
 			},
@@ -62,7 +62,7 @@ func TestValidateInvariants(t *testing.T) {
 			errContains: "promptTokens=100 but hadLLMCall=false restoredFromDB=false",
 		},
 		{
-			name: "violation: hasLLMCall but promptTokens=0",
+			name: "valid: hasLLMCall but promptTokens=0 (API cache hit)",
 			state: &runState{
 				messages:    []llm.ChatMessage{{Role: "user", Content: "hi"}},
 				persistence: NewPersistenceBridge(nil, 0),
@@ -70,28 +70,7 @@ func TestValidateInvariants(t *testing.T) {
 					hadLLMCall: true,
 				},
 			},
-			wantErr:     true,
-			errContains: "promptTokens=0 but hadLLMCall=true restoredFromDB=false",
-		},
-		{
-			name: "violation: msgCountAtCall > len(messages)",
-			state: &runState{
-				messages: []llm.ChatMessage{
-					{Role: "user", Content: "hi"},
-					{Role: "assistant", Content: "hello"},
-					{Role: "user", Content: "msg"},
-					{Role: "assistant", Content: "ok"},
-					{Role: "user", Content: "bye"},
-				},
-				persistence: NewPersistenceBridge(nil, 3),
-				tokenTracker: &TokenTracker{
-					promptTokens:   200,
-					hadLLMCall:     true,
-					msgCountAtCall: 10,
-				},
-			},
-			wantErr:     true,
-			errContains: "msgCountAtCall(10) > len(messages)(5)",
+			wantErr: false, // API may return 0 prompt tokens for fully cached responses
 		},
 		{
 			name: "valid after compress",
@@ -102,8 +81,28 @@ func TestValidateInvariants(t *testing.T) {
 					{Role: "assistant", Content: "summary"},
 				}
 				tt := &TokenTracker{}
-				tt.RecordLLMCall(500, 100, 8) // original call with more messages
-				tt.ResetAfterCompress(50, 3)  // after compress: fewer messages, lower tokens
+				tt.RecordLLMCall(500, 100)
+				tt.ResetAfterCompress()
+				return &runState{
+					messages:     msgs,
+					persistence:  NewPersistenceBridge(nil, 0),
+					tokenTracker: tt,
+				}
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "valid after compress with restoredFromDB",
+			state: func() *runState {
+				msgs := []llm.ChatMessage{
+					{Role: "system", Content: "sys"},
+					{Role: "user", Content: "compressed"},
+					{Role: "assistant", Content: "summary"},
+				}
+				// Simulate: session restored from DB (promptTokens=500) → LLM call → compress
+				tt := NewTokenTracker(500, 200)
+				tt.RecordLLMCall(800, 150)
+				tt.ResetAfterCompress()
 				return &runState{
 					messages:     msgs,
 					persistence:  NewPersistenceBridge(nil, 0),

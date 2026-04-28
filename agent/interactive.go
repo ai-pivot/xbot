@@ -180,6 +180,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			wsPayload := &channelpkg.WsProgressPayload{
 				ChatID: agentProgressKey, Phase: string(s.Phase),
 				Iteration: s.Iteration, Thinking: s.ThinkingContent,
+				Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 			}
 			for _, t := range s.ActiveTools {
 				wsPayload.ActiveTools = append(wsPayload.ActiveTools, channelpkg.WsToolProgress{
@@ -192,6 +193,19 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
 					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
 				})
+			}
+			if len(s.Todos) > 0 {
+				wsPayload.Todos = make([]channelpkg.WsTodoItem, len(s.Todos))
+				for i, td := range s.Todos {
+					wsPayload.Todos[i] = channelpkg.WsTodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+				}
+			}
+			if s.TokenUsage != nil {
+				wsPayload.TokenUsage = &channelpkg.WsTokenUsage{
+					PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
+					TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
+					MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
+				}
 			}
 			remoteCh.SendProgress(originChatID, wsPayload)
 		}
@@ -369,10 +383,10 @@ func (a *Agent) SpawnInteractiveSession(
 		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message")
 	}
 
-	// Wire CLI progress + stream callbacks (shared with one-shot SubAgents)
-	if !background {
-		a.wireSubAgentCLIProgress(key, originChatID, &cfg)
-	}
+	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
+	// ChatID-based filtering in handleProgressMsg ensures events route to the correct session view.
+	// Without this, background sessions have no live progress when viewed via Ctrl+T panel.
+	a.wireSubAgentCLIProgress(key, originChatID, &cfg)
 
 	// SubAgent 进度上报：优先使用父 Agent 注入的回调（避免并发 SubAgent 互相覆盖 patch），
 	// 否则 fallback 到直接发送消息（非并行场景）。
@@ -487,6 +501,7 @@ func (a *Agent) SpawnInteractiveSession(
 					Role:     roleName,
 					Instance: instance,
 					Content:  sb.String(),
+					Sid:      originSender,
 				})
 			}
 		}
@@ -520,6 +535,7 @@ func (a *Agent) SpawnInteractiveSession(
 							Instance: instance,
 							Content:  fmt.Sprintf("Panic: %v", r),
 							Elapsed:  time.Since(startTime),
+							Sid:      originSender,
 						})
 					}
 				}
@@ -549,6 +565,7 @@ func (a *Agent) SpawnInteractiveSession(
 					Instance: instance,
 					Content:  content,
 					Elapsed:  time.Since(startTime),
+					Sid:      originSender,
 				})
 			}
 
