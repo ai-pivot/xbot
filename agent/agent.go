@@ -516,6 +516,11 @@ type Config struct {
 
 	// MaskDir: mask 文件存储基目录（默认 ~/.xbot/mask/{tenantID}）
 	MaskDir string
+
+	// Plugin system configuration
+	PluginEnabled         bool     // Enable plugin system
+	PluginDirs            []string // Additional plugin directories
+	PluginDisabledPlugins []string // Plugin IDs to disable
 }
 
 // initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
@@ -868,24 +873,37 @@ func New(cfg Config) (*Agent, error) {
 	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
-	// 5c. Initialize plugin system
-	agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
-	if _, err := agent.pluginMgr.Discover(context.Background()); err != nil {
-		log.WithError(err).Warn("Plugin discovery failed")
+	// 5c. Initialize plugin system (if enabled in config)
+	if cfg.PluginEnabled {
+		agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
+		// Add extra plugin directories from config
+		if len(cfg.PluginDirs) > 0 {
+			agent.pluginMgr.AddSearchDirs(cfg.PluginDirs)
+		}
+		// Disable specific plugins from config
+		if len(cfg.PluginDisabledPlugins) > 0 {
+			agent.pluginMgr.DisablePlugins(cfg.PluginDisabledPlugins)
+		}
+		if _, err := agent.pluginMgr.Discover(context.Background()); err != nil {
+			log.WithError(err).Warn("Plugin discovery failed")
+		}
+		if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
+			log.WithError(err).Warn("Plugin activation failed")
+		}
+		// Wire plugin capabilities to xbot subsystems
+		hookBridge := plugin.NewPluginHookBridge()
+		enricherReg := plugin.NewEnricherRegistry()
+		if err := plugin.WireAll(agent.pluginMgr, registry, hookBridge, enricherReg); err != nil {
+			log.WithError(err).Warn("Plugin wiring failed")
+		}
+		// Register the hook bridge as a builtin hook handler
+		agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
+		// Wire enricher registry into the message pipeline
+		agent.pipeline.Use(newPluginEnricherMiddleware(enricherReg))
+		log.Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
+	} else {
+		log.Debug("Plugin system disabled in config")
 	}
-	if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
-		log.WithError(err).Warn("Plugin activation failed")
-	}
-	// Wire plugin capabilities to xbot subsystems
-	hookBridge := plugin.NewPluginHookBridge()
-	enricherReg := plugin.NewEnricherRegistry()
-	if err := plugin.WireAll(agent.pluginMgr, registry, hookBridge, enricherReg); err != nil {
-		log.WithError(err).Warn("Plugin wiring failed")
-	}
-	// Register the hook bridge as a builtin hook handler
-	agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
-	// Wire enricher registry into the message pipeline
-	agent.pipeline.Use(newPluginEnricherMiddleware(enricherReg))
 
 	// 6. 启动 bg task 通知路由 goroutine
 	go agent.bgNotifyLoop()

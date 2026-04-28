@@ -28,9 +28,11 @@ type PluginEntry struct {
 // Integration with xbot subsystems is done via plugin.WireAll() or
 // individual Wire* functions in integration.go.
 type PluginManager struct {
-	mu       sync.RWMutex
-	entries  map[string]*PluginEntry // pluginID → entry
-	xbotHome string
+	mu        sync.RWMutex
+	entries   map[string]*PluginEntry // pluginID → entry
+	xbotHome  string
+	extraDirs []string        // additional plugin search directories
+	disabled  map[string]bool // plugin IDs to skip
 
 	// Factory for creating plugin runtimes
 	runtimeFactory RuntimeFactory
@@ -45,6 +47,7 @@ type RuntimeFactory interface {
 func NewPluginManager(xbotHome string) *PluginManager {
 	return &PluginManager{
 		entries:  make(map[string]*PluginEntry),
+		disabled: make(map[string]bool),
 		xbotHome: xbotHome,
 	}
 }
@@ -52,6 +55,22 @@ func NewPluginManager(xbotHome string) *PluginManager {
 // SetRuntimeFactory sets the runtime factory for creating plugin instances.
 func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 	pm.runtimeFactory = factory
+}
+
+// AddSearchDirs adds additional directories to scan for plugins.
+// Must be called before Discover().
+func (pm *PluginManager) AddSearchDirs(dirs []string) {
+	pm.extraDirs = append(pm.extraDirs, dirs...)
+}
+
+// DisablePlugins adds plugin IDs to the disabled list.
+// Disabled plugins are skipped during activation.
+func (pm *PluginManager) DisablePlugins(ids []string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	for _, id := range ids {
+		pm.disabled[id] = true
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +81,7 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 // Returns the number of plugins discovered.
 func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 	dirs := DefaultPluginDirs(pm.xbotHome)
+	dirs = append(dirs, pm.extraDirs...)
 	manifests := DiscoverPlugins(dirs)
 
 	pm.mu.Lock()
@@ -71,6 +91,10 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 	for _, m := range manifests {
 		if _, exists := pm.entries[m.ID]; exists {
 			log.WithField("plugin", m.ID).Warn("Duplicate plugin ID, skipping")
+			continue
+		}
+		if pm.disabled[m.ID] {
+			log.WithField("plugin", m.ID).Debug("Plugin disabled by config, skipping")
 			continue
 		}
 
