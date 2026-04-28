@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 )
 
@@ -366,5 +367,98 @@ func (r *retryTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*Too
 			time.Sleep(r.delay)
 		}
 	}
+	return result, err
+}
+
+// ---------------------------------------------------------------------------
+// Tool-level Cache Decorator
+// ---------------------------------------------------------------------------
+
+// cacheEntry holds a cached ToolResult and its expiration time.
+type cacheEntry struct {
+	result *ToolResult
+	expiry time.Time
+}
+
+// cacheTool wraps a PluginTool with an in-memory TTL cache.
+// It implements both PluginTool and PluginToolV2 so that V2 callers
+// also benefit from caching.
+type cacheTool struct {
+	inner PluginTool
+	ttl   time.Duration
+	mu    sync.RWMutex
+	cache map[string]*cacheEntry
+}
+
+// ToolCache wraps a PluginTool with an in-memory TTL cache.
+// Successful results (err == nil, result != nil, !result.IsError) are cached
+// by input string and served from cache until the TTL expires.
+// The cache key is the input string alone; results are shared across sessions
+// and users for the same input.
+// A non-positive TTL disables caching (returns the tool unchanged).
+func ToolCache(tool PluginTool, ttl time.Duration) PluginTool {
+	if ttl <= 0 {
+		return tool
+	}
+	return &cacheTool{inner: tool, ttl: ttl, cache: make(map[string]*cacheEntry)}
+}
+
+// Definition returns the wrapped tool's definition.
+func (c *cacheTool) Definition() ToolDef {
+	return c.inner.Definition()
+}
+
+// Execute runs the wrapped tool, caching successful results.
+func (c *cacheTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+	// Check cache
+	c.mu.RLock()
+	entry, hit := c.cache[input]
+	c.mu.RUnlock()
+
+	if hit && time.Now().Before(entry.expiry) {
+		return entry.result, nil
+	}
+
+	// Cache miss or expired — call inner
+	result, err := c.inner.Execute(ctx, input)
+
+	// Only cache successful results
+	if err == nil && result != nil && !result.IsError {
+		c.mu.Lock()
+		c.cache[input] = &cacheEntry{result: result, expiry: time.Now().Add(c.ttl)}
+		c.mu.Unlock()
+	}
+
+	return result, err
+}
+
+// ExecuteWithContext runs the wrapped tool's V2 method with caching.
+// If the inner tool does not implement PluginToolV2, it falls back to V1 Execute.
+func (c *cacheTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*ToolResult, error) {
+	v2, ok := c.inner.(PluginToolV2)
+	if !ok {
+		// Not V2 — delegate to V1 path
+		return c.Execute(ctx.Ctx, input)
+	}
+
+	// Check cache
+	c.mu.RLock()
+	entry, hit := c.cache[input]
+	c.mu.RUnlock()
+
+	if hit && time.Now().Before(entry.expiry) {
+		return entry.result, nil
+	}
+
+	// Cache miss or expired — call inner V2
+	result, err := v2.ExecuteWithContext(ctx, input)
+
+	// Only cache successful results
+	if err == nil && result != nil && !result.IsError {
+		c.mu.Lock()
+		c.cache[input] = &cacheEntry{result: result, expiry: time.Now().Add(c.ttl)}
+		c.mu.Unlock()
+	}
+
 	return result, err
 }

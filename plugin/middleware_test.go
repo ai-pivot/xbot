@@ -1020,3 +1020,171 @@ func TestToolRetry_V2Success(t *testing.T) {
 		t.Errorf("calls = %d, want 1", atomic.LoadInt32(&calls))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ToolCache Decorator Tests
+// ---------------------------------------------------------------------------
+
+func TestToolCache_Hit(t *testing.T) {
+	var calls int32
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "cached_tool", Description: "A cached tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			atomic.AddInt32(&calls, 1)
+			return NewToolResult("cached: " + input), nil
+		},
+	}
+
+	wrapped := ToolCache(inner, 5*time.Second)
+
+	// First call — should invoke inner
+	result1, err := wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result1.Content != `cached: {"key":"val"}` {
+		t.Errorf("Content = %q, want %q", result1.Content, `cached: {"key":"val"}`)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("calls after first = %d, want 1", atomic.LoadInt32(&calls))
+	}
+
+	// Second call with same input — should hit cache
+	result2, err := wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result2.Content != `cached: {"key":"val"}` {
+		t.Errorf("Content = %q, want %q", result2.Content, `cached: {"key":"val"}`)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("calls after second = %d, want 1 (cache hit)", atomic.LoadInt32(&calls))
+	}
+
+	// Definition should pass through
+	def := wrapped.Definition()
+	if def.Name != "cached_tool" {
+		t.Errorf("Definition().Name = %q, want %q", def.Name, "cached_tool")
+	}
+}
+
+func TestToolCache_Miss(t *testing.T) {
+	var calls int32
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "miss_tool", Description: "Different inputs"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			atomic.AddInt32(&calls, 1)
+			return NewToolResult("result: " + input), nil
+		},
+	}
+
+	wrapped := ToolCache(inner, 5*time.Second)
+
+	// Two different inputs — each should invoke inner
+	result1, err := wrapped.Execute(context.Background(), `{"a":1}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result1.Content != `result: {"a":1}` {
+		t.Errorf("Content = %q, want %q", result1.Content, `result: {"a":1}`)
+	}
+
+	result2, err := wrapped.Execute(context.Background(), `{"b":2}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result2.Content != `result: {"b":2}` {
+		t.Errorf("Content = %q, want %q", result2.Content, `result: {"b":2}`)
+	}
+
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Errorf("calls = %d, want 2 (two different inputs)", atomic.LoadInt32(&calls))
+	}
+}
+
+func TestToolCache_Expired(t *testing.T) {
+	var calls int32
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "expire_tool", Description: "TTL expiry test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			atomic.AddInt32(&calls, 1)
+			return NewToolResult("result: " + input), nil
+		},
+	}
+
+	wrapped := ToolCache(inner, 50*time.Millisecond)
+
+	// First call — invoke inner
+	_, err := wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("calls after first = %d, want 1", atomic.LoadInt32(&calls))
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(80 * time.Millisecond)
+
+	// Second call — cache should have expired, inner invoked again
+	_, err = wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Errorf("calls after expiry = %d, want 2 (cache expired)", atomic.LoadInt32(&calls))
+	}
+}
+
+func TestToolCache_NonPositiveTTL(t *testing.T) {
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "noop_tool", Description: "No-op test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("direct"), nil
+		},
+	}
+
+	// Zero TTL — should return inner unchanged
+	wrapped := ToolCache(inner, 0)
+	if wrapped != inner {
+		t.Error("ToolCache with ttl=0 should return inner tool unchanged")
+	}
+
+	// Negative TTL — should also return inner unchanged
+	wrappedNeg := ToolCache(inner, -1*time.Second)
+	if wrappedNeg != inner {
+		t.Error("ToolCache with negative ttl should return inner tool unchanged")
+	}
+}
+
+func TestToolCache_ErrorNotCached(t *testing.T) {
+	var calls int32
+
+	inner := &SimplePluginTool{
+		Def: ToolDef{Name: "err_tool", Description: "Error caching test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			atomic.AddInt32(&calls, 1)
+			return nil, fmt.Errorf("transient error")
+		},
+	}
+
+	wrapped := ToolCache(inner, 5*time.Second)
+
+	// First call returns error
+	_, err := wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err == nil {
+		t.Fatal("expected error from first call")
+	}
+
+	// Second call — error should NOT be cached, inner called again
+	_, err = wrapped.Execute(context.Background(), `{"key":"val"}`)
+	if err == nil {
+		t.Fatal("expected error from second call")
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Errorf("calls = %d, want 2 (error should not be cached)", atomic.LoadInt32(&calls))
+	}
+}
