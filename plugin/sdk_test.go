@@ -392,3 +392,11 @@ func (l *sdkMockLogger) Warn(msg string, fields ...Field) {
 func (l *sdkMockLogger) Error(msg string, fields ...Field) {
 	l.entries = append(l.entries, sdkLogEntry{msg: msg, fields: fields})
 }
+
+func (l *sdkMockLogger) WithField(key string, value any) Logger {
+	return &loggerWithFields{parent: l, fields: []Field{{Key: key, Value: value}}}
+}
+
+func (l *sdkMockLogger) WithFields(fields ...Field) Logger {
+	return &loggerWithFields{parent: l, fields: fields}
+}

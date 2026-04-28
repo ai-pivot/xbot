@@ -690,3 +690,11 @@ func (l *captureLogger) Warn(msg string, fields ...Field) {
 func (l *captureLogger) Error(msg string, fields ...Field) {
 	l.entries = append(l.entries, captureLogEntry{msg: msg, fields: fields})
 }
+
+func (l *captureLogger) WithField(key string, value any) Logger {
+	return &loggerWithFields{parent: l, fields: []Field{{Key: key, Value: value}}}
+}
+
+func (l *captureLogger) WithFields(fields ...Field) Logger {
+	return &loggerWithFields{parent: l, fields: fields}
+}

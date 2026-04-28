@@ -4462,3 +4462,149 @@ func TestCloneMap(t *testing.T) {
 		t.Errorf("cloning nil should return empty map, got %d entries", len(nilClone))
 	}
 }
+
+func TestPluginLogger_WithField(t *testing.T) {
+	cl := &captureLogger{}
+
+	// Single WithField
+	child := cl.WithField("tool", "hello")
+	child.Info("executed")
+
+	if len(cl.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(cl.entries))
+	}
+	if cl.entries[0].msg != "executed" {
+		t.Errorf("expected msg 'executed', got %q", cl.entries[0].msg)
+	}
+	if len(cl.entries[0].fields) != 1 {
+		t.Fatalf("expected 1 field, got %d", len(cl.entries[0].fields))
+	}
+	if cl.entries[0].fields[0] != (Field{Key: "tool", Value: "hello"}) {
+		t.Errorf("expected field {tool hello}, got %+v", cl.entries[0].fields[0])
+	}
+
+	// Chained WithField
+	grandchild := child.WithField("user", "alice")
+	grandchild.Warn("chained")
+
+	if len(cl.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(cl.entries))
+	}
+	if cl.entries[1].msg != "chained" {
+		t.Errorf("expected msg 'chained', got %q", cl.entries[1].msg)
+	}
+	if len(cl.entries[1].fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(cl.entries[1].fields))
+	}
+	if cl.entries[1].fields[0] != (Field{Key: "tool", Value: "hello"}) {
+		t.Errorf("expected field {tool hello}, got %+v", cl.entries[1].fields[0])
+	}
+	if cl.entries[1].fields[1] != (Field{Key: "user", Value: "alice"}) {
+		t.Errorf("expected field {user alice}, got %+v", cl.entries[1].fields[1])
+	}
+
+	// Original logger unaffected
+	cl.Info("direct")
+	if len(cl.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(cl.entries))
+	}
+	if cl.entries[2].msg != "direct" {
+		t.Errorf("expected msg 'direct', got %q", cl.entries[2].msg)
+	}
+	if len(cl.entries[2].fields) != 0 {
+		t.Errorf("expected 0 fields on direct log, got %d", len(cl.entries[2].fields))
+	}
+
+	// Long chain
+	chained := cl.WithField("a", 1).WithField("b", 2).WithField("c", 3)
+	chained.Debug("long chain")
+	if len(cl.entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[3].fields) != 3 {
+		t.Fatalf("expected 3 fields, got %d", len(cl.entries[3].fields))
+	}
+	if cl.entries[3].fields[0] != (Field{Key: "a", Value: 1}) {
+		t.Errorf("expected field {a 1}, got %+v", cl.entries[3].fields[0])
+	}
+	if cl.entries[3].fields[1] != (Field{Key: "b", Value: 2}) {
+		t.Errorf("expected field {b 2}, got %+v", cl.entries[3].fields[1])
+	}
+	if cl.entries[3].fields[2] != (Field{Key: "c", Value: 3}) {
+		t.Errorf("expected field {c 3}, got %+v", cl.entries[3].fields[2])
+	}
+}
+
+func TestPluginLogger_WithFields(t *testing.T) {
+	cl := &captureLogger{}
+
+	// Batch fields
+	child := cl.WithFields(
+		Field{Key: "tool", Value: "hello"},
+		Field{Key: "version", Value: "1.0"},
+	)
+	child.Info("executed", Field{Key: "status", Value: "ok"})
+
+	if len(cl.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(cl.entries))
+	}
+	if cl.entries[0].msg != "executed" {
+		t.Errorf("expected msg 'executed', got %q", cl.entries[0].msg)
+	}
+	if len(cl.entries[0].fields) != 3 {
+		t.Fatalf("expected 3 fields, got %d", len(cl.entries[0].fields))
+	}
+	if cl.entries[0].fields[0] != (Field{Key: "tool", Value: "hello"}) {
+		t.Errorf("expected field {tool hello}, got %+v", cl.entries[0].fields[0])
+	}
+	if cl.entries[0].fields[1] != (Field{Key: "version", Value: "1.0"}) {
+		t.Errorf("expected field {version 1.0}, got %+v", cl.entries[0].fields[1])
+	}
+	if cl.entries[0].fields[2] != (Field{Key: "status", Value: "ok"}) {
+		t.Errorf("expected field {status ok}, got %+v", cl.entries[0].fields[2])
+	}
+
+	// WithFields + WithField mix
+	mixed := cl.WithFields(Field{Key: "a", Value: 1}).WithField("b", 2)
+	mixed.Warn("mixed")
+
+	if len(cl.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[1].fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(cl.entries[1].fields))
+	}
+	if cl.entries[1].fields[0] != (Field{Key: "a", Value: 1}) {
+		t.Errorf("expected field {a 1}, got %+v", cl.entries[1].fields[0])
+	}
+	if cl.entries[1].fields[1] != (Field{Key: "b", Value: 2}) {
+		t.Errorf("expected field {b 2}, got %+v", cl.entries[1].fields[1])
+	}
+
+	// Empty WithFields
+	cl.WithFields().Info("empty fields")
+	if len(cl.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[2].fields) != 0 {
+		t.Errorf("expected 0 fields on empty WithFields, got %d", len(cl.entries[2].fields))
+	}
+
+	// Key override: per-call field overrides pre-bound
+	override := cl.WithField("status", "pending")
+	override.Error("updated", Field{Key: "status", Value: "completed"})
+
+	if len(cl.entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[3].fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(cl.entries[3].fields))
+	}
+	// Pre-bound first, per-call second (last-write-wins in buildFields map)
+	if cl.entries[3].fields[0] != (Field{Key: "status", Value: "pending"}) {
+		t.Errorf("expected field {status pending}, got %+v", cl.entries[3].fields[0])
+	}
+	if cl.entries[3].fields[1] != (Field{Key: "status", Value: "completed"}) {
+		t.Errorf("expected field {status completed}, got %+v", cl.entries[3].fields[1])
+	}
+}

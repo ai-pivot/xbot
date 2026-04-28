@@ -52,6 +52,14 @@ func (l *testLogger) Error(msg string, fields ...Field) {
 	l.t.Errorf("[ERROR] %s %s", msg, formatFields(fields))
 }
 
+func (l *testLogger) WithField(key string, value any) Logger {
+	return &loggerWithFields{parent: l, fields: []Field{{Key: key, Value: value}}}
+}
+
+func (l *testLogger) WithFields(fields ...Field) Logger {
+	return &loggerWithFields{parent: l, fields: fields}
+}
+
 // ---------------------------------------------------------------------------
 // mapStorage — in-memory StorageAccessor for tests
 // ---------------------------------------------------------------------------

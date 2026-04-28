@@ -155,6 +155,13 @@ type Logger interface {
 	Info(msg string, fields ...Field)
 	Warn(msg string, fields ...Field)
 	Error(msg string, fields ...Field)
+
+	// WithField returns a new Logger that pre-binds an additional field.
+	// Pre-bound fields are merged with per-call fields on each log call.
+	// Per-call fields take precedence over pre-bound fields for the same key.
+	WithField(key string, value any) Logger
+	// WithFields returns a new Logger that pre-binds additional fields.
+	WithFields(fields ...Field) Logger
 }
 
 // Field is a structured logging field.
@@ -625,6 +632,14 @@ func (l *pluginLogger) Error(msg string, fields ...Field) {
 	log.WithFields(l.buildFields(fields)).Error(msg)
 }
 
+func (l *pluginLogger) WithField(key string, value any) Logger {
+	return &loggerWithFields{parent: l, fields: []Field{{Key: key, Value: value}}}
+}
+
+func (l *pluginLogger) WithFields(fields ...Field) Logger {
+	return &loggerWithFields{parent: l, fields: fields}
+}
+
 // buildFields constructs structured log fields including the plugin namespace
 // and any additional fields passed by the plugin.
 func (l *pluginLogger) buildFields(fields []Field) log.Fields {
@@ -633,6 +648,59 @@ func (l *pluginLogger) buildFields(fields []Field) log.Fields {
 		f[field.Key] = field.Value
 	}
 	return f
+}
+
+// ---------------------------------------------------------------------------
+// loggerWithFields — immutable wrapper that pre-binds fields to any Logger
+// ---------------------------------------------------------------------------
+
+// loggerWithFields wraps a Logger with pre-bound fields.
+// Each logging call merges pre-bound fields with per-call fields.
+// Per-call fields take precedence over pre-bound fields (last-write-wins).
+type loggerWithFields struct {
+	parent Logger
+	fields []Field
+}
+
+func (l *loggerWithFields) WithField(key string, value any) Logger {
+	// Must copy to avoid sharing the underlying array with the parent.
+	newFields := make([]Field, len(l.fields), len(l.fields)+1)
+	copy(newFields, l.fields)
+	newFields = append(newFields, Field{Key: key, Value: value})
+	return &loggerWithFields{parent: l.parent, fields: newFields}
+}
+
+func (l *loggerWithFields) WithFields(fields ...Field) Logger {
+	merged := make([]Field, len(l.fields), len(l.fields)+len(fields))
+	copy(merged, l.fields)
+	merged = append(merged, fields...)
+	return &loggerWithFields{parent: l.parent, fields: merged}
+}
+
+func (l *loggerWithFields) Debug(msg string, fields ...Field) {
+	l.parent.Debug(msg, l.mergeFields(fields)...)
+}
+func (l *loggerWithFields) Info(msg string, fields ...Field) {
+	l.parent.Info(msg, l.mergeFields(fields)...)
+}
+func (l *loggerWithFields) Warn(msg string, fields ...Field) {
+	l.parent.Warn(msg, l.mergeFields(fields)...)
+}
+func (l *loggerWithFields) Error(msg string, fields ...Field) {
+	l.parent.Error(msg, l.mergeFields(fields)...)
+}
+
+func (l *loggerWithFields) mergeFields(callFields []Field) []Field {
+	if len(l.fields) == 0 {
+		return callFields
+	}
+	if len(callFields) == 0 {
+		return l.fields
+	}
+	merged := make([]Field, len(l.fields)+len(callFields))
+	copy(merged, l.fields)
+	copy(merged[len(l.fields):], callFields)
+	return merged
 }
 
 // ---------------------------------------------------------------------------
