@@ -111,3 +111,7 @@ When permission control is enabled, `Shell`, `FileCreate`, and `FileReplace` gai
 |-----------|-------------|
 | `run_as` | OS user to execute as (e.g. `root`) |
 | `reason` | Required reason for execution (must be provided with `run_as`) |
+
+## Hooks System
+
+xbot has a full lifecycle hooks system that fires on 17 events (PreToolUse, PostToolUse, UserPromptSubmit, etc.). Supports command/http/mcp_tool/callback handlers with JSON configuration. See [Hooks System Design](/design/hooks-system/) for details.

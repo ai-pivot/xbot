@@ -296,3 +296,42 @@ CLI 模式支持配置多个 LLM 订阅，通过 `/model` 切换：
   ]
 }
 ```
+
+## Hooks 配置
+
+通过 `~/.xbot/hooks.json` 或项目级 `<project>/.xbot/hooks.json` 配置生命周期钩子。
+
+### 配置层级
+
+三层合并：`~/.xbot/hooks.json` → `<project>/.xbot/hooks.json` → `<project>/.xbot/hooks.local.json`，后者覆盖前者。项目级可提交 git。
+
+### 基本结构
+
+```json
+{
+  "enable_command_hooks": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Shell",
+        "hooks": [{ "type": "command", "command": ".xbot/hooks/lint.sh" }]
+      }
+    ]
+  }
+}
+```
+
+### 关键参数
+
+| 参数 | 说明 |
+|------|------|
+| `enable_command_hooks` | **必须设为 `true`**，command 类型默认禁用 |
+| `hooks.<事件名>` | 17 种事件之一 |
+| `matcher` | 工具名匹配，`""` 表示匹配所有 |
+| `hooks[].type` | `command` / `http` / `mcp_tool` / `callback` |
+| `hooks[].command` | Shell 命令，stdin 接收事件 JSON |
+| `hooks[].if` | 细粒度过滤，如 `"Shell(*git commit*)"` |
+| `hooks[].async` | 异步执行，不阻塞 agent |
+| `hooks[].timeout` | 超时秒数（默认 30） |
+
+详见 [Hooks 系统设计](/design/hooks-system/)。

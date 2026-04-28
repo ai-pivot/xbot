@@ -15,6 +15,7 @@
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior
 - `docs/agent/tools.md` — built-in tools, hooks system (agent/hooks/), sandbox types
+- `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
 - `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build
