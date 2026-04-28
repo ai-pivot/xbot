@@ -26,6 +26,7 @@ import (
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/tools"
 	"xbot/version"
 )
@@ -112,6 +113,9 @@ func (c *CLIChannel) Start() error {
 	}
 	if c.pendingBgTaskCleanupFn != nil {
 		c.model.bgTaskCleanupFn = c.pendingBgTaskCleanupFn
+	}
+	if c.pendingPluginMgrFn != nil {
+		c.model.pluginMgrFn = c.pendingPluginMgrFn
 	}
 	if c.pendingHistory != nil {
 		c.LoadHistory(c.pendingHistory)
@@ -433,6 +437,17 @@ func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() 
 		c.pendingBgTaskListFn = listFn
 		c.pendingBgTaskKillFn = killFn
 		c.pendingBgTaskCleanupFn = cleanupFn
+	}
+}
+
+// SetPluginManager sets the plugin manager callback for the /plugin command.
+// If the model hasn't been created yet (Start() not called), the callback
+// is saved as pending and applied when the model is created.
+func (c *CLIChannel) SetPluginManager(fn func() *plugin.PluginManager) {
+	if c.model != nil {
+		c.model.pluginMgrFn = fn
+	} else {
+		c.pendingPluginMgrFn = fn
 	}
 }
 

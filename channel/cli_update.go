@@ -251,6 +251,56 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	case cliUpdateCheckMsg:
 		m.handleUpdateCheck(msg)
 
+	case cliPluginReloadResultMsg:
+		m.pluginReloading = false
+		if msg.err != nil {
+			m.showSystemMsg(fmt.Sprintf("❌ Failed to reload plugin %s: %v", msg.pluginID, msg.err), feedbackError)
+		} else {
+			m.showSystemMsg(fmt.Sprintf("✅ Plugin %s reloaded successfully", msg.pluginID), feedbackInfo)
+		}
+		m.updateViewportContent()
+
+	case cliPluginReloadAllResultMsg:
+		m.pluginReloading = false
+		if msg.err != nil {
+			m.showSystemMsg(fmt.Sprintf("❌ Failed to reload all plugins: %v", msg.err), feedbackError)
+		} else {
+			m.showSystemMsg("✅ All plugins reloaded successfully", feedbackInfo)
+		}
+		m.updateViewportContent()
+
+	case cliPluginHealthResultMsg:
+		results := msg.results
+		if len(results) == 0 {
+			m.showSystemMsg("No active plugins to check.", feedbackInfo)
+		} else {
+			var sb strings.Builder
+			sb.WriteString("# Plugin Health\n\n")
+			sb.WriteString("| Plugin | Status |\n")
+			sb.WriteString("|--------|--------|\n")
+			allHealthy := true
+			// Show errors first
+			for id, err := range results {
+				if err != nil {
+					allHealthy = false
+					fmt.Fprintf(&sb, "| `%s` | 🔴 %s |\n", id, err.Error())
+				}
+			}
+			if allHealthy {
+				for id := range results {
+					fmt.Fprintf(&sb, "| `%s` | 🟢 healthy |\n", id)
+				}
+			} else {
+				for id, err := range results {
+					if err == nil {
+						fmt.Fprintf(&sb, "| `%s` | 🟢 healthy |\n", id)
+					}
+				}
+			}
+			m.appendSystemMarkdown(sb.String())
+		}
+		m.updateViewportContent()
+
 	case tickerTickMsg:
 		// Legacy: ticker is now driven by cliTickMsg. Drop stale messages.
 

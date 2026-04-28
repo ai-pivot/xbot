@@ -12,6 +12,7 @@ import (
 	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/internal/textarea"
+	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 	"xbot/version"
@@ -401,6 +402,10 @@ type cliModel struct {
 	// --- Usage query ---
 	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
 
+	// --- Plugin management ---
+	pluginMgrFn     func() *plugin.PluginManager
+	pluginReloading bool // true when a reload operation is in progress
+
 	// --- Web user management (admin only) ---
 	createWebUserFn func(username string) (password string, err error)
 	listWebUsersFn  func() ([]map[string]any, error)
@@ -784,6 +789,19 @@ type cliInjectedUserMsg struct {
 // cliUpdateCheckMsg 更新检查结果消息
 type cliUpdateCheckMsg struct {
 	info *version.UpdateInfo
+}
+
+type cliPluginReloadResultMsg struct {
+	pluginID string
+	err      error
+}
+
+type cliPluginReloadAllResultMsg struct {
+	err error
+}
+
+type cliPluginHealthResultMsg struct {
+	results map[string]error
 }
 
 // isCtrlEnter 检测 Ctrl+Enter 按键。

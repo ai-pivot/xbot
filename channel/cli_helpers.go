@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -969,6 +970,203 @@ func (m *cliModel) resolveMaxContextTokens() int {
 		}
 	}
 	return 0
+}
+
+// ---------------------------------------------------------------------------
+// /plugin command
+// ---------------------------------------------------------------------------
+
+// handlePluginCommand dispatches /plugin subcommands.
+func (m *cliModel) handlePluginCommand(parts []string) tea.Cmd {
+	subcmd := ""
+	if len(parts) > 1 {
+		subcmd = strings.ToLower(parts[1])
+	}
+
+	if subcmd == "" {
+		return m.handlePluginStatus()
+	}
+
+	switch subcmd {
+	case "list":
+		return m.handlePluginList()
+	case "reload":
+		if len(parts) < 3 {
+			m.showSystemMsg("Usage: /plugin reload <plugin-id>", feedbackInfo)
+			return nil
+		}
+		return m.handlePluginReload(strings.Join(parts[2:], " "))
+	case "reload-all":
+		return m.handlePluginReloadAll()
+	case "health":
+		return m.handlePluginHealth()
+	case "metrics":
+		return m.handlePluginMetrics()
+	default:
+		m.showSystemMsg(fmt.Sprintf("Unknown subcommand: %s\nUsage: /plugin [list|reload <id>|reload-all|health|metrics]", subcmd), feedbackInfo)
+		return nil
+	}
+}
+
+func (m *cliModel) handlePluginStatus() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	entries := mgr.ListPlugins()
+	if len(entries) == 0 {
+		m.showSystemMsg("🔌 No plugins loaded.", feedbackInfo)
+		return nil
+	}
+	active := mgr.ActiveCount()
+	m.showSystemMsg(fmt.Sprintf("🔌 Plugins: %d loaded, %d active\nUse /plugin list for details, /plugin health for status.", len(entries), active), feedbackInfo)
+	return nil
+}
+
+func (m *cliModel) handlePluginList() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	entries := mgr.ListPlugins()
+	if len(entries) == 0 {
+		m.showSystemMsg("No plugins loaded.", feedbackInfo)
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Plugins\n\n")
+	sb.WriteString("| ID | Name | Version | State | Runtime |\n")
+	sb.WriteString("|----|------|---------|--------|----------|\n")
+	for _, e := range entries {
+		icon := pluginStateIcon(string(e.State))
+		fmt.Fprintf(&sb, "| `%s` | %s | %s | %s %s | %s |\n",
+			e.Manifest.ID, e.Manifest.Name, e.Manifest.Version, icon, e.State, e.Manifest.Runtime)
+	}
+	m.appendSystemMarkdown(sb.String())
+	m.updateViewportContent()
+	return nil
+}
+
+func (m *cliModel) handlePluginReload(pluginID string) tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	if m.pluginReloading {
+		m.showSystemMsg("Plugin reload already in progress, please wait...", feedbackWarning)
+		return nil
+	}
+	m.pluginReloading = true
+	m.showSystemMsg(fmt.Sprintf("🔄 Reloading plugin: %s...", pluginID), feedbackInfo)
+	m.updateViewportContent()
+
+	return func() tea.Msg {
+		err := mgr.Reload(context.Background(), pluginID)
+		return cliPluginReloadResultMsg{pluginID: pluginID, err: err}
+	}
+}
+
+func (m *cliModel) handlePluginReloadAll() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	if m.pluginReloading {
+		m.showSystemMsg("Plugin reload already in progress, please wait...", feedbackWarning)
+		return nil
+	}
+	m.pluginReloading = true
+	m.showSystemMsg("🔄 Reloading all plugins...", feedbackInfo)
+	m.updateViewportContent()
+
+	return func() tea.Msg {
+		err := mgr.ReloadAll(context.Background())
+		return cliPluginReloadAllResultMsg{err: err}
+	}
+}
+
+func (m *cliModel) handlePluginHealth() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	m.showSystemMsg("🔍 Checking plugin health...", feedbackInfo)
+	m.updateViewportContent()
+
+	return func() tea.Msg {
+		results := mgr.HealthCheck(context.Background())
+		return cliPluginHealthResultMsg{results: results}
+	}
+}
+
+func (m *cliModel) handlePluginMetrics() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	metrics := mgr.Metrics()
+	var sb strings.Builder
+	sb.WriteString("# Plugin Metrics\n\n")
+	sb.WriteString("| | |\n|---|---|\n")
+	fmt.Fprintf(&sb, "| **Total plugins** | **%d** |\n", metrics.TotalPlugins)
+	fmt.Fprintf(&sb, "| Active plugins | %d |\n", metrics.ActivePlugins)
+	fmt.Fprintf(&sb, "| Registered tools | %d |\n", metrics.TotalTools)
+	fmt.Fprintf(&sb, "| Registered hooks | %d |\n", metrics.TotalHooks)
+	fmt.Fprintf(&sb, "| Registered enrichers | %d |\n", metrics.TotalEnrichers)
+	if metrics.TotalPlugins > 0 {
+		activeRate := float64(metrics.ActivePlugins) / float64(metrics.TotalPlugins) * 100
+		fmt.Fprintf(&sb, "| **Active rate** | **%.0f%%** |\n", activeRate)
+	}
+	m.appendSystemMarkdown(sb.String())
+	m.updateViewportContent()
+	return nil
+}
+
+// pluginStateIcon returns an emoji icon for a plugin state.
+func pluginStateIcon(state string) string {
+	switch state {
+	case "active":
+		return "🟢"
+	case "error":
+		return "🔴"
+	case "inactive", "discovered":
+		return "⚪"
+	case "deactivating", "activating":
+		return "🟡"
+	default:
+		return "⚫"
+	}
 }
 
 // resolveCompressRatio returns the compression threshold ratio from settings.

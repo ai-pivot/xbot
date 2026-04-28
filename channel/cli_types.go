@@ -14,6 +14,7 @@ import (
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/llm"
+	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -185,7 +186,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
 var cliCommands = []string{
 	"/cancel", "/channel", "/chat", "/clear", "/compact", "/context", "/exit",
-	"/help", "/model", "/models", "/new", "/quit", "/rewind", "/search",
+	"/help", "/model", "/models", "/new", "/plugin", "/quit", "/rewind", "/search",
 	"/sessions", "/settings", "/setup", "/ss", "/su", "/tasks", "/update",
 	"/usage", "/user",
 }
@@ -658,6 +659,7 @@ type CLIChannel struct {
 	pendingBgTaskListFn    func() []*tools.BackgroundTask
 	pendingBgTaskKillFn    func(taskID string) error // remote mode: forward to server
 	pendingBgTaskCleanupFn func()                    // remote mode: cleanup completed tasks
+	pendingPluginMgrFn     func() *plugin.PluginManager
 }
 
 // SettingsService is the interface needed by CLIChannel for settings panel.

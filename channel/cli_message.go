@@ -593,6 +593,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		}
 		m.handleUserCommand(userArg)
 
+	case "/plugin":
+		return m.handlePluginCommand(parts)
+
 	default:
 		// 🥚 彩蛋 #7: /version 三连检测
 		if command == "/version" {
