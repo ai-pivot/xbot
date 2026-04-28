@@ -346,6 +346,39 @@ func (pm *PluginManager) Register(p Plugin) error {
 	return nil
 }
 
+// RegisterAndActivate registers a plugin and immediately activates it.
+// This is a convenience method that combines Register() and activate().
+func (pm *PluginManager) RegisterAndActivate(ctx context.Context, p Plugin) error {
+	if err := pm.Register(p); err != nil {
+		return err
+	}
+
+	m := p.Manifest()
+	pm.mu.RLock()
+	entry, ok := pm.entries[m.ID]
+	pm.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("plugin %s not found after registration", m.ID)
+	}
+
+	return pm.activate(ctx, entry)
+}
+
+// IsPluginActive returns true if the plugin with the given ID is currently active.
+func (pm *PluginManager) IsPluginActive(id string) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	entry, ok := pm.entries[id]
+	if !ok {
+		return false
+	}
+	entry.stateMu.Lock()
+	defer entry.stateMu.Unlock()
+	return entry.State == StateActive
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -357,6 +359,17 @@ func (m *mockPlugin) Deactivate(ctx PluginContext) error {
 	m.deactivated = true
 	return nil
 }
+
+// panicPlugin is a test plugin that panics during Activate.
+type panicPlugin struct {
+	manifest PluginManifest
+}
+
+func (p *panicPlugin) Manifest() PluginManifest { return p.manifest }
+func (p *panicPlugin) Activate(ctx PluginContext) error {
+	panic("boom!")
+}
+func (p *panicPlugin) Deactivate(ctx PluginContext) error { return nil }
 
 func TestPluginManager_Register(t *testing.T) {
 	pm := NewPluginManager(t.TempDir())
@@ -823,5 +836,243 @@ func TestLoadManifest_GRPCNoEntryOrExecutable(t *testing.T) {
 	_, err := LoadManifest(dir)
 	if err == nil {
 		t.Fatal("expected error for grpc without entry or executable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Additional Coverage Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_DisabledPlugin(t *testing.T) {
+	// Create a plugin directory
+	baseDir := t.TempDir()
+	pluginsDir := filepath.Join(baseDir, "plugins")
+	os.MkdirAll(pluginsDir, 0755)
+
+	pluginDir := filepath.Join(pluginsDir, "disabled-plugin")
+	os.MkdirAll(pluginDir, 0755)
+	writeTestManifest(t, pluginDir, &PluginManifest{
+		ID:          "com.test.disabled",
+		Name:        "Disabled Plugin",
+		Version:     "1.0.0",
+		Description: "Should be skipped",
+		Runtime:     RuntimeNative,
+	})
+
+	pm := NewPluginManager(baseDir)
+	pm.DisablePlugins([]string{"com.test.disabled"})
+
+	ctx := context.Background()
+	count, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 discovered plugins (disabled), got %d", count)
+	}
+
+	_, found := pm.GetPlugin("com.test.disabled")
+	if found {
+		t.Error("disabled plugin should not be found")
+	}
+}
+
+func TestPluginManager_RegisterAndActivate(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+	p := &mockPlugin{manifest: testManifest()}
+
+	ctx := context.Background()
+	err := pm.RegisterAndActivate(ctx, p)
+	if err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	if !p.activated {
+		t.Error("plugin should be activated")
+	}
+	if !pm.IsPluginActive("com.test.example") {
+		t.Error("IsPluginActive should return true")
+	}
+	if pm.IsPluginActive("nonexistent") {
+		t.Error("IsPluginActive should return false for unknown plugin")
+	}
+}
+
+func TestPluginManager_PanicRecovery(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	// The activate method already has panic recovery, but let's test with
+	// an actual panicking plugin
+	panicPluginReal := &panicPlugin{manifest: testManifest()}
+
+	ctx := context.Background()
+	err := pm.RegisterAndActivate(ctx, panicPluginReal)
+	if err == nil {
+		t.Fatal("expected error from panicking plugin")
+	}
+
+	// Manager should still be functional
+	if pm.IsPluginActive("com.test.example") {
+		t.Error("panicking plugin should not be active")
+	}
+
+	// Manager state should be consistent
+	if pm.ActiveCount() != 0 {
+		t.Error("no plugins should be active after panic")
+	}
+}
+
+func TestPluginManager_ConcurrentActivation(t *testing.T) {
+	pm := NewPluginManager(t.TempDir())
+
+	var wg sync.WaitGroup
+	const n = 10
+	errors := make(chan error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			m := testManifest()
+			m.ID = fmt.Sprintf("com.test.plugin-%d", idx)
+			p := &mockPlugin{manifest: m}
+			if err := pm.RegisterAndActivate(context.Background(), p); err != nil {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Errorf("concurrent activation error: %v", err)
+	}
+
+	if pm.ActiveCount() != n {
+		t.Errorf("expected %d active plugins, got %d", n, pm.ActiveCount())
+	}
+}
+
+func TestEnricherRegistry_Empty(t *testing.T) {
+	reg := NewEnricherRegistry()
+
+	if reg.Count() != 0 {
+		t.Errorf("empty registry should have count 0, got %d", reg.Count())
+	}
+
+	ctx := context.Background()
+	content := reg.RunAll(ctx)
+	if content != "" {
+		t.Errorf("empty registry should produce empty content, got %q", content)
+	}
+
+	list := reg.List()
+	if len(list) != 0 {
+		t.Errorf("empty registry list should be empty, got %v", list)
+	}
+}
+
+func TestPluginBridge_NoHandlers(t *testing.T) {
+	bridge := NewPluginHookBridge()
+
+	ctx := context.Background()
+	result := bridge.Dispatch(ctx, &HookPayload{
+		Event:    HookPreToolUse,
+		ToolName: "Shell",
+	})
+
+	if result.Decision != DecisionDefer {
+		t.Errorf("no handlers should return Defer, got %q", result.Decision)
+	}
+}
+
+func TestPermissionChecker_EmptyPermissions(t *testing.T) {
+	pc := NewPermissionChecker(nil)
+
+	if pc.Has(PermToolsRegister) {
+		t.Error("empty permissions should deny all")
+	}
+	if pc.Has(PermHooksSubscribe) {
+		t.Error("empty permissions should deny all")
+	}
+	if pc.HasAll(PermToolsRegister) {
+		t.Error("empty permissions should deny HasAll")
+	}
+	if pc.HasAny(PermToolsRegister) {
+		t.Error("empty permissions should deny HasAny")
+	}
+
+	// Also test with empty slice (not nil)
+	pc2 := NewPermissionChecker([]string{})
+	if pc2.Has(PermToolsRegister) {
+		t.Error("empty slice permissions should deny all")
+	}
+}
+
+func TestManifest_IDValidation(t *testing.T) {
+	tests := []struct {
+		id     string
+		wantOK bool
+	}{
+		// Valid IDs
+		{"com.example.plugin", true},
+		{"my-plugin", true},
+		{"plugin_v1", true},
+		{"A", true},
+		{"a123", true},
+		// Invalid IDs
+		{"", false},                       // empty
+		{".plugin", false},                // starts with dot
+		{"-plugin", false},                // starts with hyphen
+		{"_plugin", false},                // starts with underscore
+		{"plugin with space", false},      // contains space
+		{"plugin/slash", false},           // contains slash
+		{"plugin\\backslash", false},      // contains backslash
+		{strings.Repeat("a", 129), false}, // too long (129 chars)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			dir := t.TempDir()
+			m := testManifest()
+			m.ID = tt.id
+			writeTestManifest(t, dir, &m)
+
+			_, err := LoadManifest(dir)
+			if (err == nil) != tt.wantOK {
+				t.Errorf("LoadManifest(%q): ok=%v, want ok=%v, err=%v", tt.id, err == nil, tt.wantOK, err)
+			}
+		})
+	}
+}
+
+func TestPluginContext_SetSessionMetadata(t *testing.T) {
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID))
+
+	// Before setting, metadata should be empty
+	if pc.WorkingDir() != "" {
+		t.Errorf("WorkingDir should be empty, got %q", pc.WorkingDir())
+	}
+	if pc.Channel() != "" {
+		t.Errorf("Channel should be empty, got %q", pc.Channel())
+	}
+	if pc.ChatID() != "" {
+		t.Errorf("ChatID should be empty, got %q", pc.ChatID())
+	}
+
+	// Set metadata
+	pc.SetSessionMetadata("/home/user/project", "cli", "chat-123")
+
+	if pc.WorkingDir() != "/home/user/project" {
+		t.Errorf("WorkingDir: got %q, want %q", pc.WorkingDir(), "/home/user/project")
+	}
+	if pc.Channel() != "cli" {
+		t.Errorf("Channel: got %q, want %q", pc.Channel(), "cli")
+	}
+	if pc.ChatID() != "chat-123" {
+		t.Errorf("ChatID: got %q, want %q", pc.ChatID(), "chat-123")
 	}
 }

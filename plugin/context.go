@@ -52,6 +52,14 @@ type PluginContext interface {
 	// Requires "hooks.subscribe" permission.
 	OnEvent(event HookEvent, matcher string, handler HookHandler) error
 
+	// OnAllToolUse subscribes to both PreToolUse and PostToolUse events for all tools.
+	// Requires "hooks.subscribe" permission.
+	OnAllToolUse(handler HookHandler) error
+
+	// OnError subscribes to PostToolUseFailure events for all tools.
+	// Requires "hooks.subscribe" permission.
+	OnError(handler HookHandler) error
+
 	// --- Context Enrichment ---
 
 	// EnrichContext registers a function that injects dynamic content
@@ -213,6 +221,17 @@ func (pc *pluginContextImpl) OnSessionStart(handler HookHandler) error {
 
 func (pc *pluginContextImpl) OnSessionEnd(handler HookHandler) error {
 	return pc.OnEvent(HookSessionEnd, "", handler)
+}
+
+func (pc *pluginContextImpl) OnAllToolUse(handler HookHandler) error {
+	if err := pc.OnPreToolUse("", handler); err != nil {
+		return err
+	}
+	return pc.OnPostToolUse("", handler)
+}
+
+func (pc *pluginContextImpl) OnError(handler HookHandler) error {
+	return pc.OnEvent(HookPostToolUseError, "", handler)
 }
 
 func (pc *pluginContextImpl) OnEvent(event HookEvent, matcher string, handler HookHandler) error {
