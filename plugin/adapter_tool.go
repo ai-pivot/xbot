@@ -204,3 +204,73 @@ func ParseToolInputString(input string, field string) (string, error) {
 	}
 	return v, nil
 }
+
+// ---------------------------------------------------------------------------
+// SchemaBuilder — fluent API for building []llm.ToolParam
+// ---------------------------------------------------------------------------
+
+// SchemaBuilder provides a fluent API for constructing tool parameter slices.
+// The returned Build() slice references the builder's internal state; callers
+// should not modify it after building.
+type SchemaBuilder struct {
+	params []llm.ToolParam
+}
+
+// NewSchemaBuilder creates a new SchemaBuilder with a non-nil empty params slice.
+func NewSchemaBuilder() *SchemaBuilder {
+	return &SchemaBuilder{
+		params: make([]llm.ToolParam, 0, 4),
+	}
+}
+
+// AddStringParam appends a string-typed parameter.
+func (sb *SchemaBuilder) AddStringParam(name, desc string, required bool) *SchemaBuilder {
+	sb.params = append(sb.params, llm.ToolParam{
+		Name:        name,
+		Type:        "string",
+		Description: desc,
+		Required:    required,
+	})
+	return sb
+}
+
+// AddNumberParam appends a number-typed parameter.
+func (sb *SchemaBuilder) AddNumberParam(name, desc string, required bool) *SchemaBuilder {
+	sb.params = append(sb.params, llm.ToolParam{
+		Name:        name,
+		Type:        "number",
+		Description: desc,
+		Required:    required,
+	})
+	return sb
+}
+
+// AddBoolParam appends a boolean-typed parameter.
+func (sb *SchemaBuilder) AddBoolParam(name, desc string, required bool) *SchemaBuilder {
+	sb.params = append(sb.params, llm.ToolParam{
+		Name:        name,
+		Type:        "boolean",
+		Description: desc,
+		Required:    required,
+	})
+	return sb
+}
+
+// AddArrayParam appends an array-typed parameter (without Items; for simple
+// arrays only). Use llm.ToolParam directly if you need to specify Items.
+func (sb *SchemaBuilder) AddArrayParam(name, desc string, required bool) *SchemaBuilder {
+	sb.params = append(sb.params, llm.ToolParam{
+		Name:        name,
+		Type:        "array",
+		Description: desc,
+		Required:    required,
+	})
+	return sb
+}
+
+// Build returns the accumulated parameters as a []llm.ToolParam slice.
+// The returned slice references the builder's internal state; callers should
+// not modify it after building.
+func (sb *SchemaBuilder) Build() []llm.ToolParam {
+	return sb.params
+}
