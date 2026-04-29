@@ -603,6 +603,12 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		visualChanged = true
 	}
 	m.refreshCachedModelName()
+	// Invalidate cached context settings so they're re-resolved from user settings.
+	// Without this, changing max_context_tokens/max_output_tokens/compression_threshold
+	// in the settings panel has no effect on the context progress bar.
+	m.cachedMaxContextTokens = 0
+	m.cachedMaxOutputTokens = 0
+	m.cachedCompressRatio = 0
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
 	}
