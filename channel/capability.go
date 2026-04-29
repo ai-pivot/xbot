@@ -36,6 +36,28 @@ const (
 	SettingTypePassword SettingType = "password" // password field (masked display)
 )
 
+// ProviderDefaultURLs maps provider identifiers to their default API base URLs.
+// Used by the settings panel to auto-fill llm_base_url when the user selects a provider.
+// Azure and custom are omitted because their URLs are user-specific.
+var ProviderDefaultURLs = map[string]string{
+	"openai":     "https://api.openai.com/v1",
+	"anthropic":  "https://api.anthropic.com",
+	"openrouter": "https://openrouter.ai/api/v1",
+	"ollama":     "http://localhost:11434/v1",
+	"google":     "https://generativelanguage.googleapis.com/v1beta/openai",
+}
+
+// IsProviderDefaultURL checks whether a URL matches any known provider default,
+// indicating it was auto-filled rather than user-customized.
+func IsProviderDefaultURL(url string) bool {
+	for _, v := range ProviderDefaultURLs {
+		if v == url {
+			return true
+		}
+	}
+	return false
+}
+
 // SettingOption defines an option for select-type settings.
 type SettingOption struct {
 	Label string `json:"label"`

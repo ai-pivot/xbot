@@ -501,6 +501,7 @@ type cliModel struct {
 	approvalDenyInput    textinput.Model                 // deny reason input
 	approvalEnteringDeny bool                            // true when editing deny reason
 	panelValues          map[string]string               // settings panel: current values
+	panelPrevProvider    string                          // previous llm_provider value for base_url auto-fill
 	panelOnSubmit        func(values map[string]string)  // callback on settings submit
 	panelOnAnswer        func(answers map[string]string) // callback on askuser answers (key=index, value=answer)
 	panelOnCancel        func()                          // callback on cancel

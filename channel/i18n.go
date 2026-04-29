@@ -394,7 +394,7 @@ func localeZH() *UILocale {
 
 			{
 				Key: "llm_provider", Label: "LLM 供应商", Description: "大模型服务提供商",
-				Type: SettingTypeSelect, Category: "LLM", DefaultValue: "openai",
+				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "openai",
 				Options: []SettingOption{
 					{Label: "OpenAI", Value: "openai"},
 					{Label: "Anthropic", Value: "anthropic"},
@@ -414,7 +414,7 @@ func localeZH() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "llm_base_url", Label: "Base URL", Description: "API 端点地址（自定义供应商时填写）",
+				Key: "llm_base_url", Label: "Base URL", Description: "API 端点地址（选择供应商时自动填充，也可自定义）",
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
@@ -775,7 +775,7 @@ func localeEN() *UILocale {
 
 			{
 				Key: "llm_provider", Label: "LLM Provider", Description: "Large language model service provider",
-				Type: SettingTypeSelect, Category: "LLM", DefaultValue: "openai",
+				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "openai",
 				Options: []SettingOption{
 					{Label: "OpenAI", Value: "openai"},
 					{Label: "Anthropic", Value: "anthropic"},
@@ -795,7 +795,7 @@ func localeEN() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "llm_base_url", Label: "Base URL", Description: "API endpoint URL (for custom providers)",
+				Key: "llm_base_url", Label: "Base URL", Description: "API endpoint URL (auto-filled on provider selection, or custom)",
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
@@ -1156,7 +1156,7 @@ func localeJA() *UILocale {
 
 			{
 				Key: "llm_provider", Label: "LLM プロバイダー", Description: "大規模言語モデルサービスプロバイダー",
-				Type: SettingTypeSelect, Category: "LLM", DefaultValue: "openai",
+				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "openai",
 				Options: []SettingOption{
 					{Label: "OpenAI", Value: "openai"},
 					{Label: "Anthropic", Value: "anthropic"},
@@ -1176,7 +1176,7 @@ func localeJA() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "llm_base_url", Label: "Base URL", Description: "APIエンドポイントURL（カスタムプロバイダー用）",
+				Key: "llm_base_url", Label: "Base URL", Description: "APIエンドポイントURL（プロバイダー選択時に自動入力、またはカスタム）",
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{

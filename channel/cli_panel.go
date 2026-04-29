@@ -71,6 +71,16 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 	}
 	m.panelOnSubmit = onSubmit
 	m.panelOnCancel = nil
+	// Auto-fill base_url on panel open if provider has a known default
+	// and base_url is currently empty (typical for setup wizard).
+	if provider := m.panelValues["llm_provider"]; provider != "" {
+		if m.panelValues["llm_base_url"] == "" {
+			if url, ok := ProviderDefaultURLs[provider]; ok {
+				m.panelValues["llm_base_url"] = url
+			}
+		}
+		m.panelPrevProvider = provider
+	}
 	// Pre-create textarea for editing
 	ta := textarea.New()
 	ta.Placeholder = m.locale.PanelEditPlaceholder
@@ -78,6 +88,26 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 	ta.SetHeight(1)
 	ta.CharLimit = 200
 	m.panelEditTA = ta
+}
+
+// autoFillBaseURL sets llm_base_url to the provider's default URL when the
+// current base_url is empty or matches a known provider default (i.e., was
+// previously auto-filled). Never overwrites a user's custom URL.
+func (m *cliModel) autoFillBaseURL(provider string) {
+	defaultURL, ok := ProviderDefaultURLs[provider]
+	if !ok {
+		// Provider has no known default (azure, custom) — clear base_url only
+		// if it currently holds a previous provider's auto-filled URL.
+		cur := m.panelValues["llm_base_url"]
+		if cur != "" && IsProviderDefaultURL(cur) {
+			m.panelValues["llm_base_url"] = ""
+		}
+		return
+	}
+	cur := m.panelValues["llm_base_url"]
+	if cur == "" || IsProviderDefaultURL(cur) {
+		m.panelValues["llm_base_url"] = defaultURL
+	}
 }
 
 // openSetupPanel opens the first-run setup wizard as a settings-style panel.
@@ -195,6 +225,7 @@ func (m *cliModel) closePanel() {
 	m.panelCombo = false
 	m.panelSchema = nil
 	m.panelValues = nil
+	m.panelPrevProvider = ""
 	m.panelOnSubmit = nil
 	m.panelItems = nil
 	m.panelTab = 0
@@ -1300,6 +1331,11 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 					m.panelValues[def.Key] = opts[m.panelComboIdx].Value
 				}
 				m.panelCombo = false
+				// Auto-fill llm_base_url when llm_provider changes via combo
+				if def.Key == "llm_provider" && m.panelValues["llm_provider"] != m.panelPrevProvider {
+					m.autoFillBaseURL(m.panelValues["llm_provider"])
+					m.panelPrevProvider = m.panelValues["llm_provider"]
+				}
 				return true, m, nil
 			case tea.KeySpace:
 				m.panelCombo = false
@@ -1401,6 +1437,11 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 					m.panelValues[def.Key] = def.Options[idx+1].Value
 				} else if len(def.Options) > 0 {
 					m.panelValues[def.Key] = def.Options[0].Value
+				}
+				// Auto-fill llm_base_url when llm_provider changes via select cycling
+				if def.Key == "llm_provider" && m.panelValues["llm_provider"] != m.panelPrevProvider {
+					m.autoFillBaseURL(m.panelValues["llm_provider"])
+					m.panelPrevProvider = m.panelValues["llm_provider"]
 				}
 				return true, m, nil
 			case SettingTypeCombo:
