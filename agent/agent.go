@@ -912,6 +912,29 @@ func New(cfg Config) (*Agent, error) {
 		agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
 		// Wire enricher registry into the message pipeline
 		agent.pipeline.Use(newPluginEnricherMiddleware(enricherReg))
+		// Wire WidgetRegistry.OnUpdated to push widget content to remote CLI clients.
+		// Local mode overrides this in CLIChannel.SetWidgetRegistry with asyncCh callback.
+		// Remote mode uses this to push via Hub to all connected WebSocket clients.
+		pm := agent.pluginMgr
+		pm.WidgetRegistry().OnUpdated(func() {
+			if agent.channelFinder == nil {
+				return
+			}
+			ch, ok := agent.channelFinder("cli")
+			if !ok {
+				return
+			}
+			rcli, ok := ch.(*channel.RemoteCLIChannel)
+			if !ok {
+				return // local CLIChannel handles its own OnUpdated
+			}
+			zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer"}
+			zones := make(map[string]string, len(zoneNames))
+			for _, z := range zoneNames {
+				zones[z] = pm.WidgetRegistry().RenderZone(z)
+			}
+			rcli.PushPluginWidgets(zones)
+		})
 		log.Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
 	} else {
 		log.Debug("Plugin system disabled in config")

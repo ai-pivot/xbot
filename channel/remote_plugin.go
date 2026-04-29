@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"xbot/plugin"
 
@@ -67,10 +66,23 @@ func NewRemotePluginCache(chatID string, callRPC func(method string, params any)
 	}
 }
 
-// Refresh fetches all plugin data from the server.
+// Refresh fetches all plugin data from the server (on-demand, e.g. /plugin commands).
 func (c *remotePluginCache) Refresh() {
 	c.refreshStatus()
 	c.refreshWidgets()
+}
+
+// UpdateZones replaces cached widget zone content from a server push.
+// Called by the WebSocket push handler — no RPC needed.
+// Triggers onUpdated callback for TUI redraw.
+func (c *remotePluginCache) UpdateZones(zones map[string]string) {
+	c.mu.Lock()
+	c.widgetZones = zones
+	onUpdated := c.onUpdated
+	c.mu.Unlock()
+	if onUpdated != nil {
+		onUpdated()
+	}
 }
 
 // refreshStatus fetches plugin list/status from server.
@@ -294,27 +306,6 @@ func (c *remotePluginCache) HasPlugins() bool {
 }
 
 // ── Background refresh goroutine ──
-
-// StartPeriodicRefresh starts a background goroutine that fetches plugin data
-// from the server at the specified interval. Returns a stop function.
-func (c *remotePluginCache) StartPeriodicRefresh(interval time.Duration) func() {
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		// Initial fetch
-		c.Refresh()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				c.Refresh()
-			}
-		}
-	}()
-	return func() { close(done) }
-}
 
 // ── Remote /plugin command formatters ──
 

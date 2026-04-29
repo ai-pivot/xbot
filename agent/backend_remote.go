@@ -82,6 +82,9 @@ type RemoteBackend struct {
 	// Injected user message callback (for bg task notifications from server)
 	injectUserCb func(content string)
 
+	// Plugin widget push callback (for real-time widget zone updates from server)
+	pluginWidgetsCb func(zones map[string]string)
+
 	// RPC pending calls: requestID → response channel
 	rpcMu      sync.Mutex
 	pending    map[string]chan *rpcResponse
@@ -285,6 +288,12 @@ func (b *RemoteBackend) OnConnStateChange(callback func(state string)) {
 // The CLI displays it as a user message and starts the agent turn display.
 func (b *RemoteBackend) OnInjectUserMessage(callback func(content string)) {
 	b.injectUserCb = callback
+}
+
+// OnPluginWidgets registers a callback invoked when the server pushes widget zone
+// content updates. This is the real-time push path — no polling needed.
+func (b *RemoteBackend) OnPluginWidgets(callback func(zones map[string]string)) {
+	b.pluginWidgetsCb = callback
 }
 
 // ConnState returns the current connection state string.
@@ -552,6 +561,15 @@ func (b *RemoteBackend) readPump(ctx context.Context) {
 					}()
 					b.injectUserCb(msg.Content)
 				}()
+			}
+		case "plugin_widgets":
+			// Server push: widget zone content updated.
+			// Parse and cache directly — no RPC round-trip needed.
+			if b.pluginWidgetsCb != nil {
+				var zones map[string]string
+				if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
+					b.pluginWidgetsCb(zones)
+				}
 			}
 		}
 	}

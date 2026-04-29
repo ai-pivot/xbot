@@ -1834,6 +1834,28 @@ func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) 
 	_ = c.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
 }
 
+// PushPluginWidgets pushes widget zone content to all connected CLI clients.
+// Called from WidgetRegistry.OnUpdated when plugin widget content changes.
+// Uses Hub's sendToClient with each subscriber's chatID.
+func (c *RemoteCLIChannel) PushPluginWidgets(zones map[string]string) {
+	b, _ := json.Marshal(zones)
+	wsMsg := wsMessage{
+		Type:    "plugin_widgets",
+		TS:      time.Now().Unix(),
+		Content: string(b),
+	}
+	// Broadcast to all subscribed chatIDs
+	c.hub.mu.RLock()
+	chatIDs := make([]string, 0, len(c.hub.subs))
+	for chatID := range c.hub.subs {
+		chatIDs = append(chatIDs, chatID)
+	}
+	c.hub.mu.RUnlock()
+	for _, chatID := range chatIDs {
+		_ = c.hub.sendToClient(chatID, wsMsg) // best-effort push
+	}
+}
+
 func (c *RemoteCLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 

@@ -1712,8 +1712,11 @@ func main() {
 				return rb.CallRPC(method, params)
 			})
 			cliCh.SetRemotePluginCache(remoteCache)
-			// Initial fetch + periodic refresh for widget zone content (30s).
-			remoteCache.StartPeriodicRefresh(30 * time.Second)
+			// Register push callback — server pushes widget zone content via
+			// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
+			rb.OnPluginWidgets(func(zones map[string]string) {
+				remoteCache.UpdateZones(zones)
+			})
 		}
 		// Check if server has an active agent turn for this chat (mid-session reconnect).
 		// Run in goroutine to avoid blocking TUI startup on RPC timeout.
