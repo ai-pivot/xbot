@@ -1313,7 +1313,9 @@ func (m *cliModel) handlePluginWidgets() tea.Cmd {
 	wr := mgr.WidgetRegistry()
 	infos := wr.WidgetInfo()
 	if len(infos) == 0 {
-		m.showSystemMsg("🖼️  No UI widgets registered.", feedbackInfo)
+		activeCount := mgr.ActiveCount()
+		m.showSystemMsg(fmt.Sprintf("🖼️  No UI widgets registered.\n   Plugin system: %d active plugins, %d total widgets in registry.",
+			activeCount, wr.Count()), feedbackInfo)
 		return nil
 	}
 	var sb strings.Builder
