@@ -453,12 +453,20 @@ func (c *CLIChannel) SetPluginManager(fn func() *plugin.PluginManager) {
 
 // SetWidgetRegistry wires the plugin system's widget registry into the TUI.
 // Must be called after SetPluginManager (when the PluginManager is available).
-// Sets the default render function based on the current theme.
+// Sets the default render function based on the current theme, and registers
+// a notifier that triggers TUI redraw when plugin widget content changes.
 func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 	if c.model != nil {
 		c.model.widgetRegistry = wr
 		if wr != nil {
 			wr.SetDefaultRenderFn(buildWidgetRenderFn(c.model.styles))
+			// When a widget updates, send a message through asyncCh to trigger View() redraw
+			wr.OnUpdated(func() {
+				select {
+				case c.asyncCh <- cliWidgetUpdateMsg{}:
+				default:
+				}
+			})
 		}
 	}
 }

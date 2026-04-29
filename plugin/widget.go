@@ -10,22 +10,15 @@ import (
 )
 
 // RenderFunc converts WidgetSpan slices to a styled string for display.
-// The TUI layer provides this to apply lipgloss/theme styling.
 type RenderFunc func(spans []WidgetSpan, width int) string
 
 // WidgetRegistry manages all plugin UI widget contributions. Thread-safe.
-//
-// Lifecycle:
-//  1. PluginManager creates WidgetRegistry
-//  2. On plugin Activate, widgets register via ContributeUI
-//  3. TUI calls SetDefaultRenderFn to set lipgloss-based styling
-//  4. TUI calls RefreshWidget(width) to render and cache
-//  5. View() calls RenderZone(zone) to read cached strings (atomic, zero alloc)
 type WidgetRegistry struct {
 	mu              sync.RWMutex
 	slots           map[string]*widgetSlot
 	byZone          map[string][]*widgetSlot
-	defaultRenderFn RenderFunc // set by TUI; used for push-based updates
+	defaultRenderFn RenderFunc
+	onUpdated       func() // called after widget content update
 }
 
 type widgetSlot struct {
@@ -41,6 +34,22 @@ func NewWidgetRegistry() *WidgetRegistry {
 	return &WidgetRegistry{
 		slots:  make(map[string]*widgetSlot),
 		byZone: make(map[string][]*widgetSlot),
+	}
+}
+
+// OnUpdated sets a callback that fires after any widget content is updated.
+func (r *WidgetRegistry) OnUpdated(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onUpdated = fn
+}
+
+func (r *WidgetRegistry) notifyUpdated() {
+	r.mu.RLock()
+	fn := r.onUpdated
+	r.mu.RUnlock()
+	if fn != nil {
+		fn()
 	}
 }
 
@@ -116,16 +125,12 @@ func (r *WidgetRegistry) UnregisterAll(pluginID string) {
 	}
 }
 
-// SetDefaultRenderFn sets the render function used for push-based updates.
-// Called by TUI at startup with a lipgloss-based function.
 func (r *WidgetRegistry) SetDefaultRenderFn(fn RenderFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.defaultRenderFn = fn
 }
 
-// RefreshWidget renders the widget and caches the result. If renderFn is nil,
-// uses the default render function (set by TUI via SetDefaultRenderFn).
 func (r *WidgetRegistry) RefreshWidget(pluginID, widgetID string, width int, renderFn RenderFunc) error {
 	r.mu.RLock()
 	key := slotKey(pluginID, widgetID)
@@ -144,14 +149,13 @@ func (r *WidgetRegistry) RefreshWidget(pluginID, widgetID string, width int, ren
 		content := fn(spans, width)
 		slot.content.Store(&content)
 	} else {
-		// No render function yet — store plain text
 		text := joinWidgetSpans(spans)
 		slot.content.Store(&text)
 	}
+	r.notifyUpdated()
 	return nil
 }
 
-// RefreshAllWidgets re-renders all widgets (e.g. on resize).
 func (r *WidgetRegistry) RefreshAllWidgets(width int, renderFn RenderFunc) {
 	r.mu.RLock()
 	slots := make([]*widgetSlot, 0, len(r.slots))
@@ -173,9 +177,9 @@ func (r *WidgetRegistry) RefreshAllWidgets(width int, renderFn RenderFunc) {
 			s.content.Store(&text)
 		}
 	}
+	r.notifyUpdated()
 }
 
-// RenderZone returns pre-cached styled strings for a zone, joined with separators.
 func (r *WidgetRegistry) RenderZone(zone string) string {
 	r.mu.RLock()
 	slots := r.byZone[zone]

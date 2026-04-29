@@ -349,6 +349,10 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	case cliToastClearMsg:
 		cmds = append(cmds, m.handleToastClear(msg)...)
 
+	case cliWidgetUpdateMsg:
+		// Widget content changed — invalidate render cache to redraw
+		m.renderCacheValid = false
+
 	case easterEggDoneMsg:
 		// 🥚 彩蛋关闭（按任意键触发）
 		m.dismissEasterEgg()

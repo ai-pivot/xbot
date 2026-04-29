@@ -817,6 +817,10 @@ type cliPluginUninstallResultMsg struct {
 	err      error
 }
 
+// cliWidgetUpdateMsg signals that a plugin widget's content has been updated
+// and the TUI should re-render to show the new content.
+type cliWidgetUpdateMsg struct{}
+
 // isCtrlEnter 检测 Ctrl+Enter 按键。
 // 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：
 //   - CSI u 协议: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
