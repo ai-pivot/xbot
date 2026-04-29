@@ -206,13 +206,17 @@ func (s *runState) dispatchToolCalls(ctx context.Context, iteration int, toolCal
 	} else if s.cfg.EnableConcurrentSubAgents {
 		s.dispatchConcurrentSubAgents(ctx, iteration, toolCalls, execFn)
 	} else {
-		s.dispatchSequential(iteration, toolCalls, execFn)
+		s.dispatchSequential(ctx, iteration, toolCalls, execFn)
 	}
 }
 
-// dispatchSequential runs all tool calls one by one.
-func (s *runState) dispatchSequential(iteration int, toolCalls []llm.ToolCall, execFn func(toolCallEntry)) {
+// dispatchSequential runs all tool calls one by one, respecting context cancellation.
+func (s *runState) dispatchSequential(ctx context.Context, iteration int, toolCalls []llm.ToolCall, execFn func(toolCallEntry)) {
 	for idx, tc := range toolCalls {
+		// 检查是否已取消：跳过后续工具调用
+		if ctx.Err() != nil {
+			return
+		}
 		execFn(toolCallEntry{iteration: iteration, index: idx, tc: tc})
 		if s.autoNotify && !s.batchProgressByIteration {
 			s.notifyProgress("")

@@ -257,8 +257,13 @@ type Agent struct {
 	sessionFinalSent sync.Map                                  // key: "channel:chatID" -> bool, 工具已发送最终回复（如卡片），后续 sendMessage 跳过
 
 	// per-request cancel: 用于 /cancel 取消当前正在处理的请求
-	// key: "channel:chatID:senderID" -> chan struct{} (buffered, cap=1)
+	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
 	chatCancelCh sync.Map
+
+	// pendingCancel: 当 /cancel 到达时 cancelCh 尚未注册（消息还在排队或等信号量），
+	// 先记录 pending，chatProcessLoop 注册 cancelCh 后立即消费。
+	// key: "channel:chatID" -> bool
+	pendingCancel sync.Map
 
 	// lastProgressSnapshot stores the latest CLIProgressPayload per active chat,
 	// updated by ProgressEventHandler during processing. Used by GetActiveProgress
@@ -1229,8 +1234,10 @@ func (a *Agent) Run(ctx context.Context) error {
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
 					}
 				} else {
-					log.WithField("cancel_key", cancelKey).Warn("No active request found for cancel")
-					_ = a.sendMessage(msg.Channel, msg.ChatID, "No active request.")
+					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
+					a.pendingCancel.Store(cancelKey, true)
+					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request queued for cancellation.")
 				}
 				continue
 			}
@@ -1476,6 +1483,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		cancelKey := msg.Channel + ":" + msg.ChatID
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
+		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号
+		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
+			select {
+			case cancelCh <- struct{}{}:
+				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
+			default:
+			}
+		}
+
 		reqCtx, reqCancel := context.WithCancel(ctx)
 
 		// 监听 cancel 信号
@@ -1494,6 +1510,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			defer func() {
 				reqCancel()
 				a.chatCancelCh.Delete(cancelKey)
+				a.pendingCancel.Delete(cancelKey)
 				key := sessionKey(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)
