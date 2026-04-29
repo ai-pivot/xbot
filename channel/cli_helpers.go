@@ -1039,6 +1039,8 @@ func (m *cliModel) handlePluginStatus() tea.Cmd {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.Refresh()
 			m.showSystemMsg(m.remotePluginCache.FormatStatus(), feedbackInfo)
+			m.renderCacheValid = false
+			m.relayoutViewport()
 			return nil
 		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
@@ -1065,6 +1067,8 @@ func (m *cliModel) handlePluginList() tea.Cmd {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.Refresh()
 			m.showSystemMsg(m.remotePluginCache.FormatList(), feedbackInfo)
+			m.renderCacheValid = false
+			m.relayoutViewport()
 		} else {
 			m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		}
@@ -1399,6 +1403,8 @@ func (m *cliModel) handlePluginRefresh() tea.Cmd {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.Refresh()
 			m.showSystemMsg("🔄 Plugin data refreshed.", feedbackInfo)
+			m.renderCacheValid = false
+			m.relayoutViewport()
 			return nil
 		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
@@ -1432,6 +1438,8 @@ func (m *cliModel) handlePluginWidgets() tea.Cmd {
 				}
 			}
 			m.showSystemMsg(msg, feedbackInfo)
+			m.renderCacheValid = false
+			m.relayoutViewport()
 			return nil
 		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
