@@ -537,6 +537,39 @@ func TestCLIModelHandleAgentMessageFeishuCardWithElements(t *testing.T) {
 	}
 }
 
+// TestSessionResetClearsMessages verifies that when the agent responds with
+// session_reset=true (after /new), the CLI clears all messages and resets state.
+func TestSessionResetClearsMessages(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+
+	// Simulate existing conversation
+	model.messages = []cliMessage{
+		{role: "user", content: "Hello", timestamp: time.Now(), dirty: true},
+		{role: "assistant", content: "Hi there!", timestamp: time.Now(), dirty: true},
+		{role: "user", content: "/new", timestamp: time.Now(), dirty: true},
+	}
+
+	// Agent responds with session_reset metadata
+	msg := bus.OutboundMessage{
+		Content:   "New session started",
+		IsPartial: false,
+		Metadata:  map[string]string{"session_reset": "true"},
+	}
+	model.handleAgentMessage(msg)
+
+	// Verify ALL messages were cleared (including the session_reset response itself)
+	if len(model.messages) != 0 {
+		t.Fatalf("Expected 0 messages after session_reset, got %d", len(model.messages))
+	}
+	if model.streamingMsgIdx != -1 {
+		t.Errorf("Expected streamingMsgIdx -1, got %d", model.streamingMsgIdx)
+	}
+	if model.lastTokenUsage != nil {
+		t.Error("Expected lastTokenUsage to be nil after session_reset")
+	}
+}
+
 func TestCLIModelHandleAgentMessageEmptyContent(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
