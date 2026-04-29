@@ -89,6 +89,12 @@ const (
 
 	// XXX: in v2, make max lines dynamic and default max lines configurable.
 	maxLines = 10000
+
+	// wrapCacheCap is the LRU capacity for the soft-wrap memoization cache.
+	// Each entry stores the wrapped result for one (line content, width) pair.
+	// A typical textarea has at most a few dozen logical lines, each at one
+	// width, so 128 is more than sufficient while keeping memory bounded.
+	wrapCacheCap = 128
 )
 
 // Internal messages for clipboard operations.
@@ -429,7 +435,7 @@ func New() Model {
 		MaxWidth:             defaultMaxWidth,
 		Prompt:               lipgloss.ThickBorder().Left + " ",
 		styles:               styles,
-		cache:                memoization.NewMemoCache[line, [][]rune](maxLines),
+		cache:                memoization.NewMemoCache[line, [][]rune](wrapCacheCap),
 		EndOfBufferCharacter: ' ',
 		ShowLineNumbers:      true,
 		useVirtualCursor:     true,
@@ -1386,8 +1392,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.value[m.row] = make([]rune, 0)
 	}
 
-	if m.MaxHeight > 0 && m.MaxHeight != m.cache.Capacity() {
-		m.cache = memoization.NewMemoCache[line, [][]rune](m.MaxHeight)
+	if m.cache == nil {
+		m.cache = memoization.NewMemoCache[line, [][]rune](wrapCacheCap)
 	}
 
 	switch msg := msg.(type) {
