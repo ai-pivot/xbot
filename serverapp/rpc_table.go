@@ -143,6 +143,10 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		// This ensures remote CLI clients see the actual runtime values
 		// (e.g. max_context_tokens=200000) even when the user never
 		// explicitly saved those settings.
+		//
+		// ⚠️ MaxContextTokens must no longer be blindly written back to config.json
+		// (see saveServerConfig). The value here comes from the user's config file
+		// and is the intended default.
 		if _, ok := result["max_context_tokens"]; !ok {
 			result["max_context_tokens"] = fmt.Sprintf("%d", h.cfg.Agent.MaxContextTokens)
 		}
