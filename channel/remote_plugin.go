@@ -33,6 +33,9 @@ type remotePluginCache struct {
 
 	// RPC caller
 	callRPC func(method string, params any) (json.RawMessage, error)
+
+	// onUpdated is called after widget content refresh to trigger TUI redraw.
+	onUpdated func()
 }
 
 type remotePluginEntry struct {
@@ -45,6 +48,13 @@ type remotePluginEntry struct {
 
 // NewRemotePluginCache creates a new remote plugin cache that fetches plugin data
 // from the server via the provided RPC call function.
+// SetOnUpdated sets the callback invoked after widget content is refreshed.
+func (c *remotePluginCache) SetOnUpdated(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onUpdated = fn
+}
+
 func NewRemotePluginCache(callRPC func(method string, params any) (json.RawMessage, error)) *remotePluginCache {
 	return &remotePluginCache{
 		widgetZones: make(map[string]string),
@@ -107,7 +117,11 @@ func (c *remotePluginCache) refreshWidgets() {
 	c.widgetZones = result.Zones
 	c.widgetInfos = result.Infos
 	c.widgetCount = result.Count
+	onUpdated := c.onUpdated
 	c.mu.Unlock()
+	if onUpdated != nil {
+		onUpdated()
+	}
 }
 
 // RefreshHealth fetches plugin health from server.

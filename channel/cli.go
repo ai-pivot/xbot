@@ -476,6 +476,15 @@ func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 	if c.model != nil {
 		c.model.remotePluginCache = cache
+		if cache != nil {
+			// When widget content is fetched from server, trigger TUI redraw.
+			cache.SetOnUpdated(func() {
+				select {
+				case c.asyncCh <- cliWidgetUpdateMsg{}:
+				default:
+				}
+			})
+		}
 	}
 }
 

@@ -1018,8 +1018,10 @@ func (m *cliModel) handlePluginCommand(parts []string) tea.Cmd {
 		return m.handlePluginUninstall(strings.Join(parts[2:], " "))
 	case "widgets":
 		return m.handlePluginWidgets()
+	case "refresh":
+		return m.handlePluginRefresh()
 	default:
-		m.showSystemMsg(fmt.Sprintf("Unknown subcommand: %s\nUsage: /plugin [list|install <dir>|uninstall <id>|reload <id>|reload-all|health|metrics|widgets]", subcmd), feedbackInfo)
+		m.showSystemMsg(fmt.Sprintf("Unknown subcommand: %s\nUsage: /plugin [list|refresh|install <dir>|uninstall <id>|reload <id>|reload-all|health|metrics|widgets]", subcmd), feedbackInfo)
 		return nil
 	}
 }
@@ -1029,7 +1031,7 @@ func (m *cliModel) handlePluginStatus() tea.Cmd {
 	if m.pluginMgrFn == nil {
 		// Fallback to remote plugin cache
 		if m.remotePluginCache != nil {
-			m.remotePluginCache.refreshStatus()
+			m.remotePluginCache.Refresh()
 			m.showSystemMsg(m.remotePluginCache.FormatStatus(), feedbackInfo)
 			return nil
 		}
@@ -1055,7 +1057,7 @@ func (m *cliModel) handlePluginList() tea.Cmd {
 	// Try local plugin manager first
 	if m.pluginMgrFn == nil {
 		if m.remotePluginCache != nil {
-			m.remotePluginCache.refreshStatus()
+			m.remotePluginCache.Refresh()
 			m.showSystemMsg(m.remotePluginCache.FormatList(), feedbackInfo)
 		} else {
 			m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
@@ -1382,6 +1384,31 @@ func (m *cliModel) resolveMaxOutputTokens() int64 {
 		}
 	}
 	return 0
+}
+
+// handlePluginRefresh forces a full refresh of plugin status and widget content.
+// Useful when widget content changes on the server but the periodic refresh hasn't fired yet.
+func (m *cliModel) handlePluginRefresh() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			m.remotePluginCache.Refresh()
+			m.showSystemMsg("🔄 Plugin data refreshed.", feedbackInfo)
+			return nil
+		}
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	widgets := mgr.WidgetRegistry()
+	if widgets != nil {
+		widgets.RefreshAllWidgets(0, nil) // force re-render
+	}
+	m.showSystemMsg("🔄 Plugin widgets refreshed.", feedbackInfo)
+	return nil
 }
 
 // handlePluginWidgets lists all UI widgets registered by plugins.
