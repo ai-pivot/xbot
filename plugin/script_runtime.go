@@ -111,13 +111,30 @@ func (p *scriptPlugin) Deactivate(ctx PluginContext) error {
 // PluginContext's current working directory. Each session sees its own
 // output because ~pctx.WorkingDir()~ is per-session (set by RefreshWorkDir
 // in the RPC handler).
+// If no cached output exists for the current workDir (e.g. after Cd or
+// initial remote connect), runs the script synchronously to populate it.
 func (p *scriptPlugin) Render(width int) []WidgetSpan {
 	p.outputMu.RLock()
-	var text string
+	var wd string
 	if p.pctx != nil {
-		text = p.outputs[p.pctx.WorkingDir()]
+		wd = p.pctx.WorkingDir()
 	}
+	text := p.outputs[wd]
 	p.outputMu.RUnlock()
+
+	// Cache miss — run script synchronously for this workDir
+	if text == "" && wd != "" {
+		if output, err := p.runScript(wd); err == nil && output != "" {
+			p.outputMu.Lock()
+			if p.outputs == nil {
+				p.outputs = make(map[string]string)
+			}
+			p.outputs[wd] = output
+			p.outputMu.Unlock()
+			text = output
+		}
+	}
+
 	if text == "" {
 		return []WidgetSpan{{Text: "", Style: StyleDim}}
 	}
