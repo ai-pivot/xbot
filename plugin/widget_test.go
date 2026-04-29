@@ -1,8 +1,12 @@
 package plugin
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateUIContributions(t *testing.T) {
@@ -251,4 +255,101 @@ type staticWidget struct {
 
 func (w *staticWidget) Render(width int) []WidgetSpan {
 	return []WidgetSpan{{Text: w.text, Style: StyleNormal}}
+}
+
+// TestScriptPluginE2E tests the full lifecycle: discover → activate → widget → render.
+func TestScriptPluginE2E(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "xbot-e2e-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpHome) })
+
+	pluginsDir := filepath.Join(tmpHome, "plugins")
+	pluginDir := filepath.Join(pluginsDir, "git-info")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write plugin.json with script runtime + UI contribution
+	writeTestManifest(t, pluginDir, &PluginManifest{
+		ID:      "git-info",
+		Name:    "git-info",
+		Version: "1.0.0",
+		Runtime: RuntimeScript,
+		Entry:   "echo ok",
+		Permissions: []string{
+			PermUIContribute,
+		},
+		Contributes: &PluginContributes{
+			UI: []UISlotContribution{
+				{ID: "git-branch", Slot: "infoBar", Priority: 10, RefreshInterval: "1h"},
+			},
+		},
+	})
+
+	// Create PluginManager
+	pm := NewPluginManager(tmpHome)
+	pm.SetRuntimeFactory(NewCompositeRuntimeFactory())
+
+	// Discover
+	discovered, err := pm.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if discovered != 1 {
+		t.Fatalf("expected 1 discovered plugin, got %d", discovered)
+	}
+
+	// Activate
+	if err := pm.ActivateAll(context.Background()); err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+	if pm.ActiveCount() != 1 {
+		t.Fatalf("expected 1 active plugin, got %d", pm.ActiveCount())
+	}
+
+	// Wait for async script execution to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Check WidgetRegistry
+	wr := pm.WidgetRegistry()
+	if wr.Count() != 1 {
+		t.Fatalf("expected 1 widget, got %d", wr.Count())
+	}
+
+	// Refresh widget and verify rendered content
+	wr.RefreshAllWidgets(40, nil)
+	content := wr.RenderZone("infoBar")
+	t.Logf("infoBar widget content: %q", content)
+	if content == "" {
+		t.Error("infoBar widget content is empty after activation")
+	}
+}
+
+// TestScriptPluginDiscoveryOnly tests that manifest with script runtime is loadable.
+func TestScriptPluginDiscoveryOnly(t *testing.T) {
+	tmpHome := t.TempDir()
+	pluginsDir := filepath.Join(tmpHome, "plugins")
+	pluginDir := filepath.Join(pluginsDir, "test-script")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestManifest(t, pluginDir, &PluginManifest{
+		ID:      "test-script",
+		Name:    "test-script",
+		Version: "1.0.0",
+		Runtime: RuntimeScript,
+		Entry:   "echo hi",
+	})
+
+	// LoadManifest should accept script runtime now
+	loaded, err := LoadManifest(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadManifest with RuntimeScript failed: %v", err)
+	}
+	if loaded.Runtime != RuntimeScript {
+		t.Errorf("expected runtime=script, got %q", loaded.Runtime)
+	}
 }
