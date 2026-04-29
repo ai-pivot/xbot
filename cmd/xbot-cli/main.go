@@ -1717,6 +1717,9 @@ func main() {
 			rb.OnPluginWidgets(func(zones map[string]string) {
 				remoteCache.UpdateZones(zones)
 			})
+			// Initial fetch — push only fires on CHANGES, so we need to
+			// pull the current state once on connect.
+			remoteCache.Refresh()
 		}
 		// Check if server has an active agent turn for this chat (mid-session reconnect).
 		// Run in goroutine to avoid blocking TUI startup on RPC timeout.
