@@ -191,11 +191,18 @@ func (p *scriptPlugin) runScript() (string, error) {
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	// Resolve the script path relative to the plugin directory so it can be found.
-	// But do NOT change cmd.Dir — the script should run in the process CWD
-	// (agent's workDir, which is typically a git repo), not the plugin dir.
 	if len(parts) > 1 && !filepath.IsAbs(parts[1]) {
 		parts[1] = filepath.Join(p.dir, parts[1])
 		cmd = exec.CommandContext(ctx, parts[0], parts[1:]...)
+	}
+	// Set working directory to the session CWD (via PluginContext), not the process CWD.
+	// In remote mode, Cd changes the session CWD but NOT the server process CWD.
+	// Without this, git-info always shows "git: —" because the server's initial CWD
+	// is not a git repo.
+	if p.pctx != nil {
+		if wd := p.pctx.WorkingDir(); wd != "" {
+			cmd.Dir = wd
+		}
 	}
 	out, err := cmd.Output()
 	if err != nil {
