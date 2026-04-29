@@ -2214,10 +2214,10 @@ func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) 
 		// All other providers (custom, openrouter, ollama, azure, google, deepseek, etc.)
 		// use OpenAI-compatible API — same as LLMFactory.createClient.
 		inner = llm.NewOpenAILLM(llm.OpenAIConfig{
-			BaseURL:        cfg.BaseURL,
-			APIKey:         cfg.APIKey,
-			DefaultModel:   cfg.Model,
-			MaxTokens:      cfg.MaxOutputTokens,
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			DefaultModel: cfg.Model,
+			MaxTokens:    cfg.MaxOutputTokens,
 			OnModelsLoadError: func(err error) {
 				select {
 				case channel.ModelsLoadErrorCh() <- err:

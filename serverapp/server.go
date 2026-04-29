@@ -153,14 +153,14 @@ func createAdminLLM(cfg *config.Config) (llm_pkg.LLM, error) {
 			MaxTokens:    cfg.LLM.MaxOutputTokens,
 		}), nil
 	default:
-			// All other providers (custom, openrouter, ollama, azure, google, deepseek, etc.)
-			// use OpenAI-compatible API — same as LLMFactory.createClient.
-			return llm_pkg.NewOpenAILLM(llm_pkg.OpenAIConfig{
-				BaseURL:      cfg.LLM.BaseURL,
-				APIKey:       cfg.LLM.APIKey,
-				DefaultModel: cfg.LLM.Model,
-				MaxTokens:    cfg.LLM.MaxOutputTokens,
-			}), nil
+		// All other providers (custom, openrouter, ollama, azure, google, deepseek, etc.)
+		// use OpenAI-compatible API — same as LLMFactory.createClient.
+		return llm_pkg.NewOpenAILLM(llm_pkg.OpenAIConfig{
+			BaseURL:      cfg.LLM.BaseURL,
+			APIKey:       cfg.LLM.APIKey,
+			DefaultModel: cfg.LLM.Model,
+			MaxTokens:    cfg.LLM.MaxOutputTokens,
+		}), nil
 	}
 }
 

@@ -72,14 +72,14 @@ type OAuthConfig struct {
 
 // SandboxConfig 沙箱配置
 type SandboxConfig struct {
-	Mode        string        `json:"mode"`
-	RemoteMode  string        `json:"remote_mode"`
-	DockerImage string        `json:"docker_image"`
-	HostWorkDir string        `json:"host_work_dir"`
+	Mode        string   `json:"mode"`
+	RemoteMode  string   `json:"remote_mode"`
+	DockerImage string   `json:"docker_image"`
+	HostWorkDir string   `json:"host_work_dir"`
 	IdleTimeout Duration `json:"idle_timeout"`
-	WSPort      int           `json:"ws_port"`
-	AuthToken   string        `json:"auth_token"`
-	PublicURL   string        `json:"public_url"`
+	WSPort      int      `json:"ws_port"`
+	AuthToken   string   `json:"auth_token"`
+	PublicURL   string   `json:"public_url"`
 }
 
 // QQConfig QQ 机器人渠道配置
@@ -218,7 +218,7 @@ type AgentConfig struct {
 
 	MaxSubAgentDepth int `json:"max_sub_agent_depth"`
 
-	LLMRetryAttempts int           `json:"llm_retry_attempts"`
+	LLMRetryAttempts int      `json:"llm_retry_attempts"`
 	LLMRetryDelay    Duration `json:"llm_retry_delay"`
 	LLMRetryMaxDelay Duration `json:"llm_retry_max_delay"`
 	LLMRetryTimeout  Duration `json:"llm_retry_timeout"`
@@ -226,8 +226,8 @@ type AgentConfig struct {
 
 // ServerConfig 服务器配置
 type ServerConfig struct {
-	Host         string        `json:"host"`
-	Port         int           `json:"port"`
+	Host         string   `json:"host"`
+	Port         int      `json:"port"`
 	ReadTimeout  Duration `json:"read_timeout"`
 	WriteTimeout Duration `json:"write_timeout"`
 }
