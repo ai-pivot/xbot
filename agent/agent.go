@@ -876,6 +876,7 @@ func New(cfg Config) (*Agent, error) {
 	// 5c. Initialize plugin system (if enabled in config)
 	if cfg.PluginEnabled {
 		agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
+		agent.pluginMgr.SetRuntimeFactory(plugin.NewCompositeRuntimeFactory())
 		// Add extra plugin directories from config
 		if len(cfg.PluginDirs) > 0 {
 			agent.pluginMgr.AddSearchDirs(cfg.PluginDirs)

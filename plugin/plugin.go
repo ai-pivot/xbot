@@ -202,6 +202,11 @@ type UISlotContribution struct {
 	// Only advisory — push-based UpdateWidget is preferred.
 	RefreshInterval string `json:"refreshInterval,omitempty"`
 
+	// Triggers is a list of hook matchers that trigger an instant script run.
+	// Format: "EventName:Matcher" (e.g. "PostToolUse:Shell*").
+	// Only effective for script runtime plugins.
+	Triggers []string `json:"triggers,omitempty"`
+
 	// Interactive indicates whether this widget supports user actions (v2).
 	// Default false (read-only).
 	Interactive bool `json:"interactive,omitempty"`
@@ -254,6 +259,11 @@ const (
 
 	// RuntimeWASM runs the plugin in a WASM sandbox (Phase 2).
 	RuntimeWASM RuntimeType = "wasm"
+
+	// RuntimeScript runs an external script/command periodically as a plugin.
+	// Language-agnostic: any executable (bash, python, binary, etc.) works.
+	// The script's stdout is used as widget content. No JSON protocol needed.
+	RuntimeScript RuntimeType = "script"
 )
 
 // ---------------------------------------------------------------------------
