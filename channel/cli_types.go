@@ -655,11 +655,13 @@ type CLIChannel struct {
 	pendingCheckpointState   *hooks.CheckpointState
 	pendingSendInboundFn     func(bus.InboundMessage) bool
 	// Pending remote bg task callbacks (set before model exists in remote mode)
-	pendingBgTaskCountFn   func() int
-	pendingBgTaskListFn    func() []*tools.BackgroundTask
-	pendingBgTaskKillFn    func(taskID string) error // remote mode: forward to server
-	pendingBgTaskCleanupFn func()                    // remote mode: cleanup completed tasks
-	pendingPluginMgrFn     func() *plugin.PluginManager
+	pendingBgTaskCountFn     func() int
+	pendingBgTaskListFn      func() []*tools.BackgroundTask
+	pendingBgTaskKillFn      func(taskID string) error // remote mode: forward to server
+	pendingBgTaskCleanupFn   func()                    // remote mode: cleanup completed tasks
+	pendingPluginMgrFn       func() *plugin.PluginManager
+	pendingWidgetRegistry    *plugin.WidgetRegistry // deferred from SetWidgetRegistry before model ready
+	pendingRemotePluginCache *remotePluginCache     // deferred from SetRemotePluginCache before model ready
 }
 
 // SettingsService is the interface needed by CLIChannel for settings panel.

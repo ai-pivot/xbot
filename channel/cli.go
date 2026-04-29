@@ -117,6 +117,27 @@ func (c *CLIChannel) Start() error {
 	if c.pendingPluginMgrFn != nil {
 		c.model.pluginMgrFn = c.pendingPluginMgrFn
 	}
+	if c.pendingWidgetRegistry != nil {
+		c.model.widgetRegistry = c.pendingWidgetRegistry
+		c.pendingWidgetRegistry.SetDefaultRenderFn(buildWidgetRenderFn(c.model.styles))
+		c.pendingWidgetRegistry.OnUpdated(func() {
+			select {
+			case c.asyncCh <- cliWidgetUpdateMsg{}:
+			default:
+			}
+		})
+		c.pendingWidgetRegistry = nil
+	}
+	if c.pendingRemotePluginCache != nil {
+		c.model.remotePluginCache = c.pendingRemotePluginCache
+		c.pendingRemotePluginCache.SetOnUpdated(func() {
+			select {
+			case c.asyncCh <- cliWidgetUpdateMsg{}:
+			default:
+			}
+		})
+		c.pendingRemotePluginCache = nil
+	}
 	if c.pendingHistory != nil {
 		c.LoadHistory(c.pendingHistory)
 		c.pendingHistory = nil
@@ -455,6 +476,7 @@ func (c *CLIChannel) SetPluginManager(fn func() *plugin.PluginManager) {
 // Must be called after SetPluginManager (when the PluginManager is available).
 // Sets the default render function based on the current theme, and registers
 // a notifier that triggers TUI redraw when plugin widget content changes.
+// If the model hasn't been created yet, the registry is cached and applied later.
 func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 	if c.model != nil {
 		c.model.widgetRegistry = wr
@@ -468,11 +490,14 @@ func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 				}
 			})
 		}
+	} else {
+		c.pendingWidgetRegistry = wr
 	}
 }
 
 // SetRemotePluginCache wires the remote plugin cache into the TUI for /plugin commands
 // and widget rendering in remote mode.
+// If the model hasn't been created yet, the cache is saved as pending and applied later.
 func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 	if c.model != nil {
 		c.model.remotePluginCache = cache
@@ -485,6 +510,8 @@ func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 				}
 			})
 		}
+	} else {
+		c.pendingRemotePluginCache = cache
 	}
 }
 
