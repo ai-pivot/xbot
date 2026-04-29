@@ -160,6 +160,9 @@ func createAdminLLM(cfg *config.Config) (llm_pkg.LLM, error) {
 			APIKey:       cfg.LLM.APIKey,
 			DefaultModel: cfg.LLM.Model,
 			MaxTokens:    cfg.LLM.MaxOutputTokens,
+			OnModelsLoadError: func(err error) {
+				log.WithError(err).Warn("Failed to load models list (admin LLM)")
+			},
 		}), nil
 	}
 }
@@ -816,6 +819,9 @@ func createLLM(cfg config.LLMConfig, retryCfg llm_pkg.RetryConfig) (llm_pkg.LLM,
 			BaseURL:      cfg.BaseURL,
 			APIKey:       cfg.APIKey,
 			DefaultModel: cfg.Model,
+			OnModelsLoadError: func(err error) {
+				log.WithError(err).Warn("Failed to load models list")
+			},
 		})
 	}
 

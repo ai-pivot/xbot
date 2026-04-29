@@ -1438,11 +1438,6 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 				} else if len(def.Options) > 0 {
 					m.panelValues[def.Key] = def.Options[0].Value
 				}
-				// Auto-fill llm_base_url when llm_provider changes via select cycling
-				if def.Key == "llm_provider" && m.panelValues["llm_provider"] != m.panelPrevProvider {
-					m.autoFillBaseURL(m.panelValues["llm_provider"])
-					m.panelPrevProvider = m.panelValues["llm_provider"]
-				}
 				return true, m, nil
 			case SettingTypeCombo:
 				// Open combo dropdown if options available, otherwise edit

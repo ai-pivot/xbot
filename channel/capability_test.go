@@ -63,6 +63,43 @@ func TestBuildTextSettingsUIEmpty(t *testing.T) {
 	}
 }
 
+func TestProviderDefaultURLs(t *testing.T) {
+	// All expected providers should have URLs
+	expected := []string{"openai", "anthropic", "openrouter", "ollama", "google"}
+	for _, p := range expected {
+		if _, ok := ProviderDefaultURLs[p]; !ok {
+			t.Errorf("ProviderDefaultURLs missing %q", p)
+		}
+	}
+	// Azure and custom should NOT be in the map
+	for _, p := range []string{"azure", "custom"} {
+		if _, ok := ProviderDefaultURLs[p]; ok {
+			t.Errorf("ProviderDefaultURLs should not contain %q", p)
+		}
+	}
+}
+
+func TestIsProviderDefaultURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://api.openai.com/v1", true},
+		{"https://api.anthropic.com", true},
+		{"https://openrouter.ai/api/v1", true},
+		{"http://localhost:11434/v1", true},
+		{"https://generativelanguage.googleapis.com/v1beta/openai", true},
+		{"https://custom.api.example.com/v1", false},
+		{"", false},
+		{"https://api.openai.com/v1/chat", false}, // not an exact match
+	}
+	for _, tt := range tests {
+		if got := IsProviderDefaultURL(tt.url); got != tt.want {
+			t.Errorf("IsProviderDefaultURL(%q) = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && len(s) >= len(substr) && search(s, substr)
 }
