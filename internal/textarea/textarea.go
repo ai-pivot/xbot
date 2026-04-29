@@ -3,7 +3,6 @@
 package textarea
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"image/color"
 	"slices"
@@ -291,10 +290,29 @@ type line struct {
 	width int
 }
 
-// Hash returns a hash of the line.
+// Hash returns a hash of the line using FNV-1a for fast, zero-allocation
+// memoization keys. This is intentionally non-cryptographic — we only need
+// collision resistance for the LRU cache, and FNV-1a provides ample
+// bit spread for short UI text lines.
 func (w line) Hash() string {
-	v := fmt.Sprintf("%s:%d", string(w.runes), w.width)
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(v)))
+	// Inline FNV-1a over the rune data + width to avoid string/[]byte allocations.
+	var h uint64 = 14695981039346656037 // offset64
+	for _, r := range w.runes {
+		v := uint32(r)
+		for i := 0; i < 4; i++ {
+			h ^= uint64(v & 0xFF)
+			h *= 1099511628211 // prime64
+			v >>= 8
+		}
+	}
+	// Mix in width to distinguish same content at different widths.
+	v := uint64(w.width)
+	for i := 0; i < 8; i++ {
+		h ^= v & 0xFF
+		h *= 1099511628211
+		v >>= 8
+	}
+	return strconv.FormatUint(h, 36) // base-36 compact string
 }
 
 // Model is the Bubble Tea model for this text area element.
