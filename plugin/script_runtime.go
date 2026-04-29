@@ -152,6 +152,35 @@ func (p *scriptPlugin) OnWorkDirChanged(dir string) {
 	}
 }
 
+// RenderForWorkDir renders widget content for a specific workDir WITHOUT
+// modifying the shared PluginContext. This prevents cross-session races.
+func (p *scriptPlugin) RenderForWorkDir(width int, workDir string) []WidgetSpan {
+	if workDir == "" {
+		return p.Render(width)
+	}
+	p.outputMu.RLock()
+	text := p.outputs[workDir]
+	p.outputMu.RUnlock()
+
+	// Cache miss — run script synchronously for this workDir
+	if text == "" {
+		if output, err := p.runScript(workDir); err == nil && output != "" {
+			p.outputMu.Lock()
+			if p.outputs == nil {
+				p.outputs = make(map[string]string)
+			}
+			p.outputs[workDir] = output
+			p.outputMu.Unlock()
+			text = output
+		}
+	}
+
+	if text == "" {
+		return []WidgetSpan{{Text: "", Style: StyleDim}}
+	}
+	return parseScriptOutput(text)
+}
+
 // ---------------------------------------------------------------------------
 // refresh loop
 // ---------------------------------------------------------------------------

@@ -1351,34 +1351,13 @@ func (pm *PluginManager) RenderZoneForWorkDir(zone, workDir string) string {
 	if workDir == "" {
 		return pm.widgetRegistry.RenderZone(zone)
 	}
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	// Set workDir on all plugin contexts so providers' Render() reads
-	// from the correct per-workDir output cache.
-	for _, entry := range pm.entries {
-		if entry.Context != nil {
-			entry.Context.SetSessionMetadata(workDir, "", "")
-		}
-	}
-
-	// Render on-the-fly — do NOT use RenderZone which reads global slot content.
-	return pm.widgetRegistry.RenderZoneForContext(zone)
+	// Render directly from providers' per-workDir cache WITHOUT modifying
+	// shared PluginContext. The script plugin checks its per-workDir outputs map.
+	// If cache miss, runScript is called synchronously from RenderForWorkDir.
+	return pm.widgetRegistry.RenderZoneForWorkDir(zone, workDir)
 }
 
-// WidgetInfoForWorkDir returns widget info after setting workDir on contexts.
 func (pm *PluginManager) WidgetInfoForWorkDir(workDir string) []WidgetInfo {
-	if workDir == "" {
-		return pm.widgetRegistry.WidgetInfo()
-	}
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	for _, entry := range pm.entries {
-		if entry.Context != nil {
-			entry.Context.SetSessionMetadata(workDir, "", "")
-		}
-	}
 	return pm.widgetRegistry.WidgetInfo()
 }
 

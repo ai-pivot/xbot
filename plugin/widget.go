@@ -13,6 +13,13 @@ import (
 // RenderFunc converts WidgetSpan slices to a styled string for display.
 type RenderFunc func(spans []WidgetSpan, width int) string
 
+// WorkDirRenderer is an optional interface for widget providers that can render
+// for a specific working directory without modifying the shared PluginContext.
+// Used by the plugin_widgets RPC to avoid cross-session workDir races.
+type WorkDirRenderer interface {
+	RenderForWorkDir(width int, workDir string) []WidgetSpan
+}
+
 // WidgetRegistry manages all plugin UI widget contributions. Thread-safe.
 type WidgetRegistry struct {
 	mu              sync.RWMutex
@@ -249,6 +256,39 @@ func (r *WidgetRegistry) renderZone(zone string, useCache bool) string {
 			} else {
 				parts = append(parts, BasicANSIRender(spans, 0))
 			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return joinWidgetParts(parts)
+}
+
+// RenderZoneForWorkDir renders zone content for a specific workDir WITHOUT
+// modifying the shared PluginContext. Providers that implement WorkDirRenderer
+// get the workDir passed directly. Others fall back to the global pctx.
+func (r *WidgetRegistry) RenderZoneForWorkDir(zone, workDir string) string {
+	r.mu.RLock()
+	slots := r.byZone[zone]
+	slotsCopy := make([]*widgetSlot, len(slots))
+	copy(slotsCopy, slots)
+	fn := r.defaultRenderFn
+	r.mu.RUnlock()
+	if len(slotsCopy) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(slotsCopy))
+	for _, s := range slotsCopy {
+		var spans []WidgetSpan
+		if wdr, ok := s.provider.(WorkDirRenderer); ok {
+			spans = SanitizeSpans(wdr.RenderForWorkDir(0, workDir))
+		} else {
+			spans = SanitizeSpans(s.provider.Render(0))
+		}
+		if fn != nil {
+			parts = append(parts, fn(spans, 0))
+		} else {
+			parts = append(parts, BasicANSIRender(spans, 0))
 		}
 	}
 	if len(parts) == 0 {
