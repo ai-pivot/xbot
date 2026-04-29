@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -189,10 +190,13 @@ func (p *scriptPlugin) runScript() (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
-	// Don't set cmd.Dir — the script runs relative to the agent's workDir,
-	// not the plugin directory (which is ~/.xbot/plugins and unlikely to be a git repo).
-	// Plugin scripts that need their own data files can use PLUGIN_DIR env var or
-	// access files via the script's own directory (dirname $0).
+	// Resolve the script path relative to the plugin directory so it can be found.
+	// But do NOT change cmd.Dir — the script should run in the process CWD
+	// (agent's workDir, which is typically a git repo), not the plugin dir.
+	if len(parts) > 1 && !filepath.IsAbs(parts[1]) {
+		parts[1] = filepath.Join(p.dir, parts[1])
+		cmd = exec.CommandContext(ctx, parts[0], parts[1:]...)
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("script %q: %w", p.manifest.Entry, err)
