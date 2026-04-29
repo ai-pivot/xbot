@@ -15,7 +15,7 @@
         "priority": 10,
         "description": "Git branch name and dirty/clean status",
         "refreshInterval": "30s",
-        "triggers": ["PostToolUse:Shell*"]
+        "triggers": ["PostToolUse:Shell*", "PostToolUse:Cd*"]
       }
     ]
   }
