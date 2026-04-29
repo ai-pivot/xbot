@@ -96,6 +96,7 @@ func buildRPCTable(cfg *config.Config, backend agent.AgentBackend, disp *channel
 	registerSessionHandlers(t, h)
 	registerTaskHandlers(t, h)
 	registerAdminHandlers(t, h)
+	registerPluginHandlers(t, h)
 	return t
 }
 
@@ -755,6 +756,142 @@ func registerAdminHandlers(t rpcTable, h *rpcContext) {
 	}) error {
 		return channel.DeleteWebUser(backend.MultiSession().DB().Conn(), p.Username)
 	}))
+}
+
+// ── Plugin system RPCs (remote CLI support) ──
+
+func registerPluginHandlers(t rpcTable, h *rpcContext) {
+	backend := h.backend
+
+	t["plugin_status"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		entries := pm.ListPlugins()
+		type pluginJSON struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			State   string `json:"state"`
+			Runtime string `json:"runtime"`
+		}
+		plugins := make([]pluginJSON, len(entries))
+		for i, e := range entries {
+			plugins[i] = pluginJSON{
+				ID:      e.Manifest.ID,
+				Name:    e.Manifest.Name,
+				Version: e.Manifest.Version,
+				State:   string(e.State),
+				Runtime: string(e.Manifest.Runtime),
+			}
+		}
+		return map[string]any{
+			"plugins": plugins,
+			"active":  pm.ActiveCount(),
+			"total":   len(entries),
+		}, nil
+	})
+
+	t["plugin_widgets"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return map[string]any{"zones": map[string]string{}, "infos": []struct{}{}}, nil
+		}
+		wr := pm.WidgetRegistry()
+		if wr == nil {
+			return map[string]any{"zones": map[string]string{}, "infos": []struct{}{}}, nil
+		}
+		zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer"}
+		zones := make(map[string]string)
+		for _, z := range zoneNames {
+			zones[z] = wr.RenderZone(z)
+		}
+		return map[string]any{
+			"zones": zones,
+			"infos": wr.WidgetInfo(),
+			"count": wr.Count(),
+		}, nil
+	})
+
+	t["plugin_reload"] = rpc1(func(ctx context.Context, p struct {
+		ID string `json:"id"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.Reload(context.Background(), p.ID); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	t["plugin_reload_all"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.ReloadAll(context.Background()); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	t["plugin_install"] = rpc1(func(ctx context.Context, p struct {
+		SourceDir string `json:"source_dir"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		entry, err := pm.InstallPlugin(context.Background(), p.SourceDir)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{
+			"id":  entry.Manifest.ID,
+			"dir": entry.Dir,
+		}, nil
+	})
+
+	t["plugin_uninstall"] = rpc1(func(ctx context.Context, p struct {
+		ID string `json:"id"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.UninstallPlugin(context.Background(), p.ID); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	t["plugin_health"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		results := pm.HealthCheck(context.Background())
+		out := make(map[string]string, len(results))
+		for id, err := range results {
+			if err != nil {
+				out[id] = err.Error()
+			} else {
+				out[id] = "ok"
+			}
+		}
+		return out, nil
+	})
+
+	t["plugin_metrics"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		return pm.Metrics(), nil
+	})
 }
 
 // handleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.

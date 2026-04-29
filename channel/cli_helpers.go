@@ -1025,7 +1025,14 @@ func (m *cliModel) handlePluginCommand(parts []string) tea.Cmd {
 }
 
 func (m *cliModel) handlePluginStatus() tea.Cmd {
+	// Try local plugin manager first
 	if m.pluginMgrFn == nil {
+		// Fallback to remote plugin cache
+		if m.remotePluginCache != nil {
+			m.remotePluginCache.refreshStatus()
+			m.showSystemMsg(m.remotePluginCache.FormatStatus(), feedbackInfo)
+			return nil
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1045,8 +1052,14 @@ func (m *cliModel) handlePluginStatus() tea.Cmd {
 }
 
 func (m *cliModel) handlePluginList() tea.Cmd {
+	// Try local plugin manager first
 	if m.pluginMgrFn == nil {
-		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		if m.remotePluginCache != nil {
+			m.remotePluginCache.refreshStatus()
+			m.showSystemMsg(m.remotePluginCache.FormatList(), feedbackInfo)
+		} else {
+			m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		}
 		return nil
 	}
 	mgr := m.pluginMgrFn()
@@ -1077,7 +1090,22 @@ func (m *cliModel) handlePluginList() tea.Cmd {
 }
 
 func (m *cliModel) handlePluginReload(pluginID string) tea.Cmd {
+	// Try local plugin manager first
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			if m.pluginReloading {
+				m.showSystemMsg("Plugin reload already in progress, please wait...", feedbackWarning)
+				return nil
+			}
+			m.pluginReloading = true
+			m.showSystemMsg(fmt.Sprintf("🔄 Reloading plugin: %s...", pluginID), feedbackInfo)
+			m.updateViewportContent()
+			cache := m.remotePluginCache
+			return func() tea.Msg {
+				err := cache.PluginReload(pluginID)
+				return cliPluginReloadResultMsg{pluginID: pluginID, err: err}
+			}
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1102,6 +1130,20 @@ func (m *cliModel) handlePluginReload(pluginID string) tea.Cmd {
 
 func (m *cliModel) handlePluginReloadAll() tea.Cmd {
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			if m.pluginReloading {
+				m.showSystemMsg("Plugin reload already in progress, please wait...", feedbackWarning)
+				return nil
+			}
+			m.pluginReloading = true
+			m.showSystemMsg("🔄 Reloading all plugins...", feedbackInfo)
+			m.updateViewportContent()
+			cache := m.remotePluginCache
+			return func() tea.Msg {
+				err := cache.PluginReloadAll()
+				return cliPluginReloadAllResultMsg{err: err}
+			}
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1126,6 +1168,15 @@ func (m *cliModel) handlePluginReloadAll() tea.Cmd {
 
 func (m *cliModel) handlePluginHealth() tea.Cmd {
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			m.showSystemMsg("🔍 Checking plugin health...", feedbackInfo)
+			m.updateViewportContent()
+			cache := m.remotePluginCache
+			return func() tea.Msg {
+				results := cache.RefreshHealth()
+				return cliPluginHealthResultMsg{results: results}
+			}
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1145,6 +1196,12 @@ func (m *cliModel) handlePluginHealth() tea.Cmd {
 
 func (m *cliModel) handlePluginMetrics() tea.Cmd {
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			m.remotePluginCache.RefreshMetrics()
+			m.appendSystemMarkdown(m.remotePluginCache.FormatMetrics())
+			m.updateViewportContent()
+			return nil
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1173,6 +1230,20 @@ func (m *cliModel) handlePluginMetrics() tea.Cmd {
 
 func (m *cliModel) handlePluginInstall(sourceDir string) tea.Cmd {
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			if m.pluginReloading {
+				m.showSystemMsg("Plugin operation already in progress, please wait...", feedbackWarning)
+				return nil
+			}
+			m.pluginReloading = true
+			m.showSystemMsg(fmt.Sprintf("📦 Installing plugin from: %s...", sourceDir), feedbackInfo)
+			m.updateViewportContent()
+			cache := m.remotePluginCache
+			return func() tea.Msg {
+				pluginID, pluginDir, err := cache.PluginInstall(sourceDir)
+				return cliPluginInstallResultMsg{pluginID: pluginID, pluginDir: pluginDir, err: err}
+			}
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1212,6 +1283,20 @@ func (m *cliModel) handlePluginInstall(sourceDir string) tea.Cmd {
 
 func (m *cliModel) handlePluginUninstall(pluginID string) tea.Cmd {
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			if m.pluginReloading {
+				m.showSystemMsg("Plugin operation already in progress, please wait...", feedbackWarning)
+				return nil
+			}
+			m.pluginReloading = true
+			m.showSystemMsg(fmt.Sprintf("🗑️  Uninstalling plugin: %s...", pluginID), feedbackInfo)
+			m.updateViewportContent()
+			cache := m.remotePluginCache
+			return func() tea.Msg {
+				err := cache.PluginUninstall(pluginID)
+				return cliPluginUninstallResultMsg{pluginID: pluginID, err: err}
+			}
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}
@@ -1302,6 +1387,11 @@ func (m *cliModel) resolveMaxOutputTokens() int64 {
 // handlePluginWidgets lists all UI widgets registered by plugins.
 func (m *cliModel) handlePluginWidgets() tea.Cmd {
 	if m.pluginMgrFn == nil {
+		if m.remotePluginCache != nil {
+			m.remotePluginCache.refreshWidgets()
+			m.showSystemMsg(m.remotePluginCache.FormatWidgets(), feedbackInfo)
+			return nil
+		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil
 	}

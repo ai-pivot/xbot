@@ -471,6 +471,14 @@ func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 	}
 }
 
+// SetRemotePluginCache wires the remote plugin cache into the TUI for /plugin commands
+// and widget rendering in remote mode.
+func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
+	if c.model != nil {
+		c.model.remotePluginCache = cache
+	}
+}
+
 // LoadHistory loads session history into the CLI model.
 // Used by remote mode where history must be fetched via RPC after the WS connection
 // is established. Thread-safe: always goes through asyncCh to avoid racing with

@@ -1439,5 +1439,10 @@ func RPCMethodList() []string {
 		"get_channel_config", "set_channel_config",
 		"is_processing", "get_active_progress",
 		"rewind_checkpoints",
+		// Plugin system
+		"plugin_status", "plugin_widgets",
+		"plugin_reload", "plugin_reload_all",
+		"plugin_install", "plugin_uninstall",
+		"plugin_health", "plugin_metrics",
 	}
 }

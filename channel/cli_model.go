@@ -403,9 +403,10 @@ type cliModel struct {
 	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
 
 	// --- Plugin management ---
-	pluginMgrFn     func() *plugin.PluginManager
-	widgetRegistry  *plugin.WidgetRegistry // UI widget registry from plugin system
-	pluginReloading bool                   // true when a reload operation is in progress
+	pluginMgrFn       func() *plugin.PluginManager
+	widgetRegistry    *plugin.WidgetRegistry // UI widget registry from plugin system
+	pluginReloading   bool                   // true when a reload operation is in progress
+	remotePluginCache *remotePluginCache     // plugin data cache for remote mode (nil = local mode)
 
 	// --- Web user management (admin only) ---
 	createWebUserFn func(username string) (password string, err error)

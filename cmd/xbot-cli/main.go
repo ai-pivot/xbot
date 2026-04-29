@@ -1706,6 +1706,14 @@ func main() {
 		// events are silently buffered.
 		if rb, ok := app.backend.(*agent.RemoteBackend); ok {
 			rb.SubscribeChat(remoteChatID)
+
+			// Initialize remote plugin cache for /plugin commands and widget rendering.
+			remoteCache := channel.NewRemotePluginCache(func(method string, params any) (json.RawMessage, error) {
+				return rb.CallRPC(method, params)
+			})
+			cliCh.SetRemotePluginCache(remoteCache)
+			// Initial fetch + periodic refresh for widget zone content (30s).
+			remoteCache.StartPeriodicRefresh(30 * time.Second)
 		}
 		// Check if server has an active agent turn for this chat (mid-session reconnect).
 		// Run in goroutine to avoid blocking TUI startup on RPC timeout.

@@ -267,11 +267,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 
 // augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.
 func (m *cliModel) augmentTitleBar(titleBar string) string {
-	if m.widgetRegistry == nil {
-		return titleBar
-	}
-	left := m.widgetRegistry.RenderZone("titleBarLeft")
-	right := m.widgetRegistry.RenderZone("titleBarRight")
+	left, right := m.resolveWidgetZone("titleBarLeft"), m.resolveWidgetZone("titleBarRight")
 	if left == "" && right == "" {
 		return titleBar
 	}
@@ -286,11 +282,7 @@ func (m *cliModel) augmentTitleBar(titleBar string) string {
 
 // augmentStatusBar prepends statusBarLeft and appends statusBarRight widgets.
 func (m *cliModel) augmentStatusBar(statusBar string) string {
-	if m.widgetRegistry == nil {
-		return statusBar
-	}
-	left := m.widgetRegistry.RenderZone("statusBarLeft")
-	right := m.widgetRegistry.RenderZone("statusBarRight")
+	left, right := m.resolveWidgetZone("statusBarLeft"), m.resolveWidgetZone("statusBarRight")
 	if left == "" && right == "" {
 		return statusBar
 	}
@@ -305,10 +297,7 @@ func (m *cliModel) augmentStatusBar(statusBar string) string {
 
 // augmentFooter appends footer widgets.
 func (m *cliModel) augmentFooter(footer string) string {
-	if m.widgetRegistry == nil {
-		return footer
-	}
-	content := m.widgetRegistry.RenderZone("footer")
+	content := m.resolveWidgetZone("footer")
 	if content == "" {
 		return footer
 	}
@@ -320,10 +309,7 @@ func (m *cliModel) augmentFooter(footer string) string {
 
 // augmentInfoBar prepends infoBar widgets.
 func (m *cliModel) augmentInfoBar(infoBar string) string {
-	if m.widgetRegistry == nil {
-		return infoBar
-	}
-	content := m.widgetRegistry.RenderZone("infoBar")
+	content := m.resolveWidgetZone("infoBar")
 	if content == "" {
 		return infoBar
 	}
@@ -331,6 +317,18 @@ func (m *cliModel) augmentInfoBar(infoBar string) string {
 		return m.styles.TextMutedSt.Render(content)
 	}
 	return infoBar + "  " + m.styles.TextMutedSt.Render(content)
+}
+
+// resolveWidgetZone returns widget content for a zone, checking local WidgetRegistry
+// first, then falling back to remote plugin cache in remote mode.
+func (m *cliModel) resolveWidgetZone(zone string) string {
+	if m.widgetRegistry != nil {
+		return m.widgetRegistry.RenderZone(zone)
+	}
+	if m.remotePluginCache != nil {
+		return m.remotePluginCache.WidgetZone(zone)
+	}
+	return ""
 }
 
 // View renders the CLI interface.
