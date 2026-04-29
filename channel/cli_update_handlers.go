@@ -375,10 +375,15 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 
 	// HistoryCompacted: context compression replaced the engine's message list.
-	// Rebuild m.messages from session storage to stay in sync.
+	// Clear stale messages immediately so the user doesn't see outdated content
+	// during the async reload, then rebuild from session storage.
 	// Also clear the token usage bar — compressed context has far fewer tokens.
 	if msg.payload != nil && msg.payload.HistoryCompacted {
 		m.lastTokenUsage = nil
+		m.messages = make([]cliMessage, 0, cliMsgBufSize)
+		m.streamingMsgIdx = -1
+		m.invalidateAllCache(true)
+		m.viewport.GotoBottom()
 		m.reloadMessagesFromSession()
 	}
 
