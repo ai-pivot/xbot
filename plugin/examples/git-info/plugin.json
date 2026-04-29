@@ -1,4 +1,5 @@
 {
+  "id": "git-info",
   "name": "git-info",
   "version": "1.0.0",
   "description": "Shows git branch and working tree status in the info bar. Works with any git repo.",

@@ -353,3 +353,25 @@ func TestScriptPluginDiscoveryOnly(t *testing.T) {
 		t.Errorf("expected runtime=script, got %q", loaded.Runtime)
 	}
 }
+
+// TestRealUserConfig verifies the plugin.json from the user's actual setup loads correctly.
+func TestRealUserConfig(t *testing.T) {
+	pluginDir := filepath.Join(os.Getenv("HOME"), ".xbot", "plugins", "git-info")
+	if _, err := os.Stat(pluginDir); os.IsNotExist(err) {
+		t.Skipf("plugin dir not found: %s (expected in production)", pluginDir)
+	}
+	manifest, err := LoadManifest(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadManifest failed for production plugin dir %q: %v", pluginDir, err)
+	}
+	if manifest.Runtime != RuntimeScript {
+		t.Errorf("expected runtime=script, got %q", manifest.Runtime)
+	}
+	if manifest.Entry != "bash git-info.sh" {
+		t.Errorf("expected entry='bash git-info.sh', got %q", manifest.Entry)
+	}
+	if len(manifest.Contributes.UI) == 0 {
+		t.Fatal("expected at least 1 UI contribution")
+	}
+	t.Logf("Manifest loaded OK: runtime=%s entry=%q widgets=%d", manifest.Runtime, manifest.Entry, len(manifest.Contributes.UI))
+}
