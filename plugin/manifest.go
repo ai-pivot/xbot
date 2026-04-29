@@ -99,10 +99,10 @@ func validateManifest(m *PluginManifest, dir string) error {
 
 	// Runtime must be valid
 	switch m.Runtime {
-	case RuntimeNative, RuntimeGRPC, RuntimeWASM, "":
+	case RuntimeNative, RuntimeGRPC, RuntimeWASM, RuntimeScript, "":
 		// valid
 	default:
-		return fmt.Errorf("invalid runtime %q (must be native, grpc, or wasm)", m.Runtime)
+		return fmt.Errorf("invalid runtime %q (must be native, grpc, wasm, or script)", m.Runtime)
 	}
 
 	// Default runtime to native
