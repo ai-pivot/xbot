@@ -188,6 +188,7 @@ func (p *busPlugin) Deactivate(_ PluginContext) error { return nil }
 func TestIntegration_FullPluginLifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	// 1. Create plugin
 	p := newFullPlugin("com.integration.full")
@@ -412,6 +413,7 @@ func TestIntegration_DependencyOrder(t *testing.T) {
 	// Step 2: Verify actual activation order through Discover + ActivateAll
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 
 	// Create plugin directories with manifests
 	manifests := []PluginManifest{mA, mB, mC}
@@ -485,7 +487,7 @@ func TestIntegration_DependencyOrder(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_RateLimiting(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	pm.SetRateLimiter(NewPluginRateLimiter(map[string]RateLimit{
 		"com.ratelimit.test": {MaxCalls: 2, Window: time.Minute},
 	}))
@@ -536,7 +538,7 @@ func TestIntegration_RateLimiting(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_MiddlewareChain(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	var middlewareCalled int32
 
@@ -592,7 +594,7 @@ func TestIntegration_MiddlewareChain(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_EventBus_PubSub(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	var received atomic.Value
 	var subscriberCtx PluginContext

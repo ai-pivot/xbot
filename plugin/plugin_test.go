@@ -19,6 +19,15 @@ import (
 // Test Helpers
 // ---------------------------------------------------------------------------
 
+// newTestPM creates a PluginManager in a temp dir that is automatically closed
+// when the test finishes. This prevents Windows "file in use" errors when
+// t.TempDir() tries to clean up the audit.jsonl file.
+func newTestPM(t *testing.T) *PluginManager {
+	pm := NewPluginManager(t.TempDir())
+	t.Cleanup(func() { pm.Close() })
+	return pm
+}
+
 func testManifest() PluginManifest {
 	return PluginManifest{
 		ID:               "com.test.example",
@@ -483,7 +492,7 @@ func (f *mockRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugi
 }
 
 func TestPluginManager_Register(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: testManifest()}
 
 	err := pm.Register(p)
@@ -501,7 +510,7 @@ func TestPluginManager_Register(t *testing.T) {
 }
 
 func TestPluginManager_Activate(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: testManifest()}
 	pm.Register(p)
 
@@ -526,7 +535,7 @@ func TestPluginManager_Activate(t *testing.T) {
 }
 
 func TestPluginManager_DeactivateAll(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: testManifest()}
 	pm.Register(p)
 
@@ -544,7 +553,7 @@ func TestPluginManager_DeactivateAll(t *testing.T) {
 }
 
 func TestPluginManager_DuplicateRegistration(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p1 := &mockPlugin{manifest: testManifest()}
 	p2 := &mockPlugin{manifest: testManifest()}
 
@@ -559,7 +568,7 @@ func TestPluginManager_ActivateForEvent(t *testing.T) {
 	m := testManifest()
 	m.ActivationEvents = []string{"onTool:code_review"}
 
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: m}
 	pm.Register(p)
 
@@ -990,6 +999,7 @@ func TestPluginManager_DisabledPlugin(t *testing.T) {
 	})
 
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.DisablePlugins([]string{"com.test.disabled"})
 
 	ctx := context.Background()
@@ -1008,7 +1018,7 @@ func TestPluginManager_DisabledPlugin(t *testing.T) {
 }
 
 func TestPluginManager_RegisterAndActivate(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: testManifest()}
 
 	ctx := context.Background()
@@ -1029,7 +1039,7 @@ func TestPluginManager_RegisterAndActivate(t *testing.T) {
 }
 
 func TestPluginManager_PanicRecovery(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// The activate method already has panic recovery, but let's test with
 	// an actual panicking plugin
@@ -1053,7 +1063,7 @@ func TestPluginManager_PanicRecovery(t *testing.T) {
 }
 
 func TestPluginManager_ConcurrentActivation(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	var wg sync.WaitGroup
 	const n = 10
@@ -1391,7 +1401,7 @@ func (s *sickPlugin) HealthCheck(ctx context.Context) error {
 }
 
 func TestPluginManager_HealthCheck_Healthy(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &healthyPlugin{manifest: testManifest()}
 	pm.RegisterAndActivate(context.Background(), p)
 
@@ -1405,7 +1415,7 @@ func TestPluginManager_HealthCheck_Healthy(t *testing.T) {
 }
 
 func TestPluginManager_HealthCheck_Sick(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	m := testManifest()
 	m.ID = "com.test.sick"
 	p := &sickPlugin{manifest: m}
@@ -1421,7 +1431,7 @@ func TestPluginManager_HealthCheck_Sick(t *testing.T) {
 }
 
 func TestPluginManager_HealthCheck_NoHealthChecker(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: testManifest()}
 	pm.RegisterAndActivate(context.Background(), p)
 
@@ -1436,7 +1446,7 @@ func TestPluginManager_HealthCheck_NoHealthChecker(t *testing.T) {
 }
 
 func TestPluginManager_HealthCheck_Mixed(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Healthy
 	h := &healthyPlugin{manifest: testManifest()}
@@ -1470,7 +1480,7 @@ func TestPluginManager_HealthCheck_Mixed(t *testing.T) {
 }
 
 func TestPluginManager_HealthCheck_InactivePlugin(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &healthyPlugin{manifest: testManifest()}
 	// Register but don't activate
 	pm.Register(p)
@@ -1486,7 +1496,7 @@ func TestPluginManager_HealthCheck_InactivePlugin(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPluginManager_Metrics_Empty(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	m := pm.Metrics()
 	if m.TotalPlugins != 0 {
 		t.Errorf("TotalPlugins = %d, want 0", m.TotalPlugins)
@@ -1497,7 +1507,7 @@ func TestPluginManager_Metrics_Empty(t *testing.T) {
 }
 
 func TestPluginManager_Metrics_Active(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	p := &mockPlugin{manifest: testManifest()}
 	pm.RegisterAndActivate(context.Background(), p)
 
@@ -1515,7 +1525,7 @@ func TestPluginManager_Metrics_Active(t *testing.T) {
 }
 
 func TestPluginManager_Metrics_MultiplePlugins(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Register 3 plugins with different capabilities
 	m1 := testManifest()
@@ -1548,7 +1558,7 @@ func TestPluginManager_Metrics_MultiplePlugins(t *testing.T) {
 }
 
 func TestPluginManager_Metrics_WithHooks(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	m := testManifest()
 	m.Permissions = []string{"tools.register", "hooks.subscribe", "context.enrich", "storage.private"}
 
@@ -1670,7 +1680,7 @@ func TestPluginMetrics_JSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPluginManager_String(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Empty manager
 	s := pm.String()
@@ -1705,7 +1715,7 @@ func TestPluginManager_String(t *testing.T) {
 }
 
 func TestPluginManager_String_WithErrors(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Activate a plugin that fails
 	m := testManifest()
@@ -1720,7 +1730,7 @@ func TestPluginManager_String_WithErrors(t *testing.T) {
 }
 
 func TestPluginManager_HealthCheck_Empty(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// No plugins at all
 	results := pm.HealthCheck(context.Background())
@@ -1730,7 +1740,7 @@ func TestPluginManager_HealthCheck_Empty(t *testing.T) {
 }
 
 func TestPluginManager_Metrics_AfterActivation(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Before activation
 	m := pm.Metrics()
@@ -1919,7 +1929,7 @@ func TestWASMRuntime_Activate_NoOp(t *testing.T) {
 
 func TestPluginManager_DeactivateAll_NotInitialized(t *testing.T) {
 	// nil-safe: calling DeactivateAll on a manager with no active plugins
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Should not panic
 	pm.DeactivateAll(context.Background())
@@ -2030,6 +2040,7 @@ func TestPluginManager_Reload(t *testing.T) {
 	writeTestManifest(t, pluginsDir, &m)
 
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	ctx := context.Background()
@@ -2065,7 +2076,7 @@ func TestPluginManager_Reload(t *testing.T) {
 }
 
 func TestPluginManager_Reload_NonExistent(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	err := pm.Reload(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for non-existent plugin")
@@ -2155,7 +2166,7 @@ func (p *e2eFullPlugin) HealthCheck(ctx context.Context) error { return nil }
 
 func TestPluginE2E_FullLifecycle(t *testing.T) {
 	// 1. Create PluginManager
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// 2. Create a full-featured plugin
 	m := PluginManifest{
@@ -2666,6 +2677,7 @@ func BenchmarkPluginManager_RegisterAndActivate(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		pm := NewPluginManager(b.TempDir())
+		defer pm.Close()
 		p := &benchPlugin{manifest: manifest}
 		if err := pm.RegisterAndActivate(ctx, p); err != nil {
 			b.Fatal(err)
@@ -2785,6 +2797,7 @@ func FuzzManifestValidation(f *testing.F) {
 func TestPluginManager_InstallPlugin(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	// Create source plugin directory
@@ -2834,6 +2847,7 @@ func TestPluginManager_InstallPlugin(t *testing.T) {
 func TestPluginManager_InstallPlugin_InvalidPath(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 
 	ctx := context.Background()
 	_, err := pm.InstallPlugin(ctx, "/nonexistent/path")
@@ -2845,6 +2859,7 @@ func TestPluginManager_InstallPlugin_InvalidPath(t *testing.T) {
 func TestPluginManager_UninstallPlugin(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	// Create and install a plugin first
@@ -2888,6 +2903,7 @@ func TestPluginManager_UninstallPlugin(t *testing.T) {
 func TestPluginManager_UninstallPlugin_ActivePlugin(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	// Create and install a plugin with onStart (will auto-activate)
@@ -3225,7 +3241,7 @@ func TestManifest_DefaultTimeout(t *testing.T) {
 }
 
 func TestPluginManager_AutoRetry(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	pm.SetRetryInterval(10 * time.Millisecond)
 
 	// Create a flaky plugin that fails 2 times then succeeds
@@ -3287,7 +3303,7 @@ func TestPluginManager_AutoRetry(t *testing.T) {
 }
 
 func TestPluginManager_AutoRetry_MaxRetries(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	pm.SetRetryInterval(10 * time.Millisecond)
 
 	// Create a plugin that always fails
@@ -3617,7 +3633,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 func TestPluginManager_Metrics_AfterToolExecution(t *testing.T) {
 	t.Run("ToolCallCountInMetrics", func(t *testing.T) {
-		pm := NewPluginManager(t.TempDir())
+		pm := newTestPM(t)
 		p := &mockPlugin{manifest: testManifest()}
 		pm.RegisterAndActivate(context.Background(), p)
 
@@ -3646,7 +3662,7 @@ func TestPluginManager_Metrics_AfterToolExecution(t *testing.T) {
 	})
 
 	t.Run("HookCallCountInMetrics", func(t *testing.T) {
-		pm := NewPluginManager(t.TempDir())
+		pm := newTestPM(t)
 		p := &mockPlugin{manifest: testManifest()}
 		pm.RegisterAndActivate(context.Background(), p)
 
@@ -3663,7 +3679,7 @@ func TestPluginManager_Metrics_AfterToolExecution(t *testing.T) {
 	})
 
 	t.Run("CombinedMetrics", func(t *testing.T) {
-		pm := NewPluginManager(t.TempDir())
+		pm := newTestPM(t)
 
 		// Plugin 1
 		m1 := testManifest()
@@ -3884,7 +3900,7 @@ func TestAuditLogger_Clear(t *testing.T) {
 }
 
 func TestPluginManager_AuditLog_Activate(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	defer pm.AuditLog().Close()
 
 	p := &mockPlugin{manifest: testManifest()}
@@ -3910,7 +3926,7 @@ func TestPluginManager_AuditLog_Activate(t *testing.T) {
 }
 
 func TestPluginManager_AuditLog_Install(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	defer pm.AuditLog().Close()
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
@@ -4083,7 +4099,7 @@ func TestPluginEventBus_Unsubscribe_NilHandler(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWirePluginTools_NilRegistry(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	err := WirePluginTools(pm, nil)
 	if err == nil {
 		t.Error("expected error for nil registry")
@@ -4402,7 +4418,7 @@ func TestPluginContext_SetConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPluginRegistry_New(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 	reg := NewPluginRegistry(pm)
 	if reg == nil {
 		t.Fatal("NewPluginRegistry returned nil")
@@ -4432,7 +4448,7 @@ func TestPluginRegistry_New(t *testing.T) {
 }
 
 func TestPluginRegistry_Search(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	// Register two plugins with different metadata
 	m1 := testManifest()
@@ -4518,6 +4534,7 @@ func TestPluginRegistry_Search(t *testing.T) {
 func TestPluginRegistry_List(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	// Prepare a plugin directory for installation
@@ -4987,6 +5004,7 @@ func TestPluginManager_Reload_ManifestLoadFails(t *testing.T) {
 	writeTestManifest(t, pluginsDir, &m)
 
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	ctx := context.Background()
@@ -5033,6 +5051,7 @@ func TestPluginManager_Reload_RuntimeCreateFails(t *testing.T) {
 	writeTestManifest(t, pluginsDir, &m)
 
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	ctx := context.Background()
@@ -5061,6 +5080,7 @@ func TestPluginManager_Reload_RuntimeCreateFails(t *testing.T) {
 func TestPluginManager_InstallPlugin_AlreadyExists(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&mockRuntimeFactory{})
 
 	ctx := context.Background()
@@ -5090,6 +5110,7 @@ func TestPluginManager_InstallPlugin_AlreadyExists(t *testing.T) {
 func TestPluginManager_InstallPlugin_InvalidManifest(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 
 	ctx := context.Background()
 
@@ -5110,6 +5131,7 @@ func TestPluginManager_InstallPlugin_InvalidManifest(t *testing.T) {
 func TestPluginManager_InstallPlugin_RuntimeCreateFails(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(&failingRuntimeFactory{err: fmt.Errorf("runtime boom")})
 
 	ctx := context.Background()
@@ -5141,7 +5163,7 @@ func TestPluginManager_InstallPlugin_RuntimeCreateFails(t *testing.T) {
 // TestPluginManager_UninstallPlugin_NotFound verifies UninstallPlugin returns
 // ErrPluginNotFound when the plugin doesn't exist.
 func TestPluginManager_UninstallPlugin_NotFound(t *testing.T) {
-	pm := NewPluginManager(t.TempDir())
+	pm := newTestPM(t)
 
 	err := pm.UninstallPlugin(context.Background(), "nonexistent")
 	if err == nil {
@@ -5330,6 +5352,7 @@ func (p *deactivateErrPlugin) Deactivate(ctx PluginContext) error {
 func TestPluginManager_UninstallPlugin_DeactivateFails(t *testing.T) {
 	baseDir := t.TempDir()
 	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
 
 	m := testManifest()
 	m.ID = "com.test.deact-fail"
@@ -5364,6 +5387,7 @@ func TestPluginManager_UninstallPlugin_DeactivateFails(t *testing.T) {
 func TestPluginManager_ExportConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	// Register a plugin and activate it
 	p := &mockPlugin{manifest: testManifest()}
@@ -5415,6 +5439,7 @@ func TestPluginManager_ExportConfig(t *testing.T) {
 func TestPluginManager_ExportConfig_EmptyManager(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	data, err := pm.ExportConfig()
 	if err != nil {
@@ -5437,6 +5462,7 @@ func TestPluginManager_ExportConfig_EmptyManager(t *testing.T) {
 func TestPluginManager_ExportConfig_WithDisabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	pm.DisablePlugins([]string{"com.test.disabled", "com.test.disabled2"})
 
@@ -5469,6 +5495,7 @@ func TestPluginManager_ExportConfig_WithDisabled(t *testing.T) {
 func TestPluginManager_ImportConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	// Register a plugin
 	p := &mockPlugin{manifest: testManifest()}
@@ -5526,6 +5553,7 @@ func TestPluginManager_ImportConfig(t *testing.T) {
 func TestPluginManager_ImportConfig_EmptyData(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	if err := pm.ImportConfig(nil); err == nil {
 		t.Error("Expected error for nil data")
@@ -5539,6 +5567,7 @@ func TestPluginManager_ImportConfig_EmptyData(t *testing.T) {
 func TestPluginManager_ImportConfig_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	if err := pm.ImportConfig([]byte("not json")); err == nil {
 		t.Error("Expected error for invalid JSON")
@@ -5548,6 +5577,7 @@ func TestPluginManager_ImportConfig_InvalidJSON(t *testing.T) {
 func TestPluginManager_ImportConfig_FutureVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	data := []byte(`{"version":999,"exportedAt":"","disabled":null,"plugins":null}`)
 	if err := pm.ImportConfig(data); err == nil {
@@ -5558,6 +5588,7 @@ func TestPluginManager_ImportConfig_FutureVersion(t *testing.T) {
 func TestPluginManager_ImportConfig_UnknownPlugin(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	// Import referencing a plugin that doesn't exist — should succeed (skip with warning)
 	importData := map[string]any{
@@ -5583,6 +5614,7 @@ func TestPluginManager_ImportConfig_UnknownPlugin(t *testing.T) {
 func TestPluginManager_ExportImport_RoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
 
 	// Setup: register plugin + set config + disable a plugin
 	p := &mockPlugin{manifest: testManifest()}
@@ -5602,6 +5634,7 @@ func TestPluginManager_ExportImport_RoundTrip(t *testing.T) {
 	// Create a new manager and import
 	tmpDir2 := t.TempDir()
 	pm2 := NewPluginManager(tmpDir2)
+	t.Cleanup(func() { pm2.Close() })
 	p2 := &mockPlugin{manifest: testManifest()}
 	if err := pm2.RegisterAndActivate(ctx, p2); err != nil {
 		t.Fatalf("RegisterAndActivate on pm2 failed: %v", err)

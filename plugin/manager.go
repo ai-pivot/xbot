@@ -1431,3 +1431,20 @@ func (pm *PluginManager) SetQuota(pluginID string, quota PluginQuota) {
 func (pm *PluginManager) ConfigStore() *PluginConfigStore {
 	return pm.configStore
 }
+
+// Close releases resources held by the PluginManager (audit log file, retry loop, etc.).
+// It is safe to call multiple times.
+func (pm *PluginManager) Close() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if pm.auditLog != nil {
+		pm.auditLog.Close()
+		pm.auditLog = nil
+	}
+
+	if pm.retryCancel != nil {
+		pm.retryCancel()
+		pm.retryCancel = nil
+	}
+}
