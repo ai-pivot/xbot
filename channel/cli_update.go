@@ -350,8 +350,10 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds = append(cmds, m.handleToastClear(msg)...)
 
 	case cliWidgetUpdateMsg:
-		// Widget content changed — invalidate render cache to redraw
+		// Widget content changed — invalidate render cache and relayout viewport.
+		// Info bar appearing/disappearing changes the number of reserved lines.
 		m.renderCacheValid = false
+		m.relayoutViewport()
 
 	case easterEggDoneMsg:
 		// 🥚 彩蛋关闭（按任意键触发）

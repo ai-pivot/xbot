@@ -1422,7 +1422,16 @@ func (m *cliModel) handlePluginWidgets() tea.Cmd {
 	if m.pluginMgrFn == nil {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.refreshWidgets()
-			m.showSystemMsg(m.remotePluginCache.FormatWidgets(), feedbackInfo)
+			msg := m.remotePluginCache.FormatWidgets()
+			// Also show zone content for diagnosis
+			zones := []string{"infoBar", "titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "footer"}
+			for _, z := range zones {
+				content := m.remotePluginCache.WidgetZone(z)
+				if content != "" {
+					msg += fmt.Sprintf("\n  [%s] = %q", z, content)
+				}
+			}
+			m.showSystemMsg(msg, feedbackInfo)
 			return nil
 		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)

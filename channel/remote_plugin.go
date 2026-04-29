@@ -101,7 +101,7 @@ func (c *remotePluginCache) refreshWidgets() {
 	}
 	raw, err := c.callRPC("plugin_widgets", nil)
 	if err != nil {
-		log.WithError(err).Debug("RemotePlugin: plugin_widgets RPC failed")
+		log.WithError(err).Warn("RemotePlugin: plugin_widgets RPC failed")
 		return
 	}
 	var result struct {
@@ -110,7 +110,7 @@ func (c *remotePluginCache) refreshWidgets() {
 		Count int                 `json:"count"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		log.WithError(err).Debug("RemotePlugin: unmarshal plugin_widgets failed")
+		log.WithError(err).Warn("RemotePlugin: unmarshal plugin_widgets failed")
 		return
 	}
 	c.mu.Lock()
