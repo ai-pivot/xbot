@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"xbot/internal/textarea"
+	"xbot/plugin"
 )
 
 func init() {
@@ -674,4 +675,37 @@ func abs(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// ---------------------------------------------------------------------------
+// Widget Style Mapping — maps plugin.StyleClass to lipgloss styles
+// ---------------------------------------------------------------------------
+
+// buildWidgetRenderFn returns a RenderFunc that applies the current theme to widget spans.
+// Passed to plugin.WidgetRegistry.SetDefaultRenderFn at startup.
+func buildWidgetRenderFn(st cliStyles) func(spans []plugin.WidgetSpan, width int) string {
+	styleMap := map[plugin.StyleClass]lipgloss.Style{
+		plugin.StyleNormal:  lipgloss.NewStyle(),
+		plugin.StyleDim:     st.TextMutedSt,
+		plugin.StyleAccent:  st.Accent,
+		plugin.StyleSuccess: st.ReadyStatus,
+		plugin.StyleWarning: st.WarningSt,
+		plugin.StyleError:   st.ErrorMsg,
+		plugin.StyleInfo:    st.InfoSt,
+		plugin.StyleMuted:   st.TextMutedSt,
+	}
+	return func(spans []plugin.WidgetSpan, width int) string {
+		if len(spans) == 0 {
+			return ""
+		}
+		var result string
+		for _, sp := range spans {
+			st, ok := styleMap[sp.Style]
+			if !ok {
+				st = lipgloss.NewStyle()
+			}
+			result += st.Render(sp.Text)
+		}
+		return result
+	}
 }

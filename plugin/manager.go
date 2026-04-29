@@ -59,6 +59,9 @@ type PluginManager struct {
 	notifier     *PluginEventNotifier
 
 	activationOrder []string // topological activation order (computed after Discover)
+
+	// UI widget registry — shared across all plugins
+	widgetRegistry *WidgetRegistry
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -75,14 +78,15 @@ func NewPluginManager(xbotHome string) *PluginManager {
 	}
 
 	return &PluginManager{
-		entries:       make(map[string]*PluginEntry),
-		disabled:      make(map[string]bool),
-		xbotHome:      xbotHome,
-		bus:           NewPluginEventBus(),
-		retryInterval: 5 * time.Second,
-		auditLog:      al,
-		configStore:   NewPluginConfigStore(xbotHome),
-		notifier:      NewPluginEventNotifier(),
+		entries:        make(map[string]*PluginEntry),
+		disabled:       make(map[string]bool),
+		xbotHome:       xbotHome,
+		bus:            NewPluginEventBus(),
+		retryInterval:  5 * time.Second,
+		auditLog:       al,
+		configStore:    NewPluginConfigStore(xbotHome),
+		notifier:       NewPluginEventNotifier(),
+		widgetRegistry: NewWidgetRegistry(),
 	}
 }
 
@@ -369,6 +373,7 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 
 		// Create PluginContext
 		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore)
+		entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 		// Create runtime instance
 		if pm.runtimeFactory != nil {
@@ -702,6 +707,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 		State:    StateDiscovered,
 		Dir:      pluginDir,
 	}
+	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 	pm.entries[m.ID] = entry
 	log.WithField("plugin", m.ID).Info("Native plugin registered")
@@ -803,6 +809,8 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 		Dir:      pluginDir,
 		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
 	}
+
+	newEntry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 	if pm.runtimeFactory != nil {
 		plugin, err3 := pm.runtimeFactory.Create(m, pluginDir)
@@ -911,6 +919,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 		Dir:      targetDir,
 		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore),
 	}
+	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 	if pm.runtimeFactory != nil {
 		p, err3 := pm.runtimeFactory.Create(installedManifest, targetDir)
@@ -1270,6 +1279,11 @@ type HealthChecker interface {
 // HealthCheck performs a health check on all active plugins.
 // Returns a map of plugin ID → error (nil means healthy).
 // Plugins that don't implement HealthChecker are reported as healthy (nil error).
+// WidgetRegistry returns the shared UI widget registry.
+func (pm *PluginManager) WidgetRegistry() *WidgetRegistry {
+	return pm.widgetRegistry
+}
+
 func (pm *PluginManager) HealthCheck(ctx context.Context) map[string]error {
 	pm.mu.RLock()
 	entries := make([]*PluginEntry, 0, len(pm.entries))

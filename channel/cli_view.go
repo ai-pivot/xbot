@@ -233,10 +233,17 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	if m.newContentHint {
 		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
 	}
-	// Background tasks, agents, and queue now live in the info bar below input.
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))
 	}
+
+	// Inject widget content into bars
+	titleBar = m.augmentTitleBar(titleBar)
+	status = m.augmentStatusBar(status)
+	footer := m.renderFooter()
+	footer = m.augmentFooter(footer)
+	infoBar := m.renderInfoBar()
+	infoBar = m.augmentInfoBar(infoBar)
 
 	// Layout assembly — build progressively so empty sections don't add blank lines.
 	var lines []string
@@ -248,16 +255,82 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	if todoBar != "" {
 		lines = append(lines, todoBar)
 	}
-	footer := m.renderFooter()
 	if footer != "" {
 		lines = append(lines, footer)
 	}
 	lines = append(lines, input)
-	infoBar := m.renderInfoBar()
 	if infoBar != "" {
 		lines = append(lines, infoBar)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.
+func (m *cliModel) augmentTitleBar(titleBar string) string {
+	if m.widgetRegistry == nil {
+		return titleBar
+	}
+	left := m.widgetRegistry.RenderZone("titleBarLeft")
+	right := m.widgetRegistry.RenderZone("titleBarRight")
+	if left == "" && right == "" {
+		return titleBar
+	}
+	if left != "" {
+		titleBar = left + " " + titleBar
+	}
+	if right != "" {
+		titleBar = titleBar + " " + right
+	}
+	return titleBar
+}
+
+// augmentStatusBar prepends statusBarLeft and appends statusBarRight widgets.
+func (m *cliModel) augmentStatusBar(statusBar string) string {
+	if m.widgetRegistry == nil {
+		return statusBar
+	}
+	left := m.widgetRegistry.RenderZone("statusBarLeft")
+	right := m.widgetRegistry.RenderZone("statusBarRight")
+	if left == "" && right == "" {
+		return statusBar
+	}
+	if left != "" {
+		statusBar = left + "  " + statusBar
+	}
+	if right != "" {
+		statusBar = statusBar + "  " + right
+	}
+	return statusBar
+}
+
+// augmentFooter appends footer widgets.
+func (m *cliModel) augmentFooter(footer string) string {
+	if m.widgetRegistry == nil {
+		return footer
+	}
+	content := m.widgetRegistry.RenderZone("footer")
+	if content == "" {
+		return footer
+	}
+	if footer == "" {
+		return m.styles.TextMutedSt.Render(content)
+	}
+	return footer + "  " + m.styles.TextMutedSt.Render(content)
+}
+
+// augmentInfoBar prepends infoBar widgets.
+func (m *cliModel) augmentInfoBar(infoBar string) string {
+	if m.widgetRegistry == nil {
+		return infoBar
+	}
+	content := m.widgetRegistry.RenderZone("infoBar")
+	if content == "" {
+		return infoBar
+	}
+	if infoBar == "" {
+		return m.styles.TextMutedSt.Render(content)
+	}
+	return infoBar + "  " + m.styles.TextMutedSt.Render(content)
 }
 
 // View renders the CLI interface.

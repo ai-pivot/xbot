@@ -538,6 +538,12 @@ func (m *cliModel) handleResize(width, height int) {
 	// §20 重建样式缓存
 	m.styles = buildStyles(width)
 
+	// Refresh widget render function with new styles and re-render all widgets
+	if m.widgetRegistry != nil {
+		m.widgetRegistry.SetDefaultRenderFn(buildWidgetRenderFn(m.styles))
+		m.widgetRegistry.RefreshAllWidgets(width, nil)
+	}
+
 	m.viewport.SetWidth(width)
 	m.viewport.SetHeight(m.layoutViewportHeight())
 

@@ -155,6 +155,10 @@ func validateManifest(m *PluginManifest, dir string) error {
 				return fmt.Errorf("contributes.hooks[%d].event: unknown event %q", i, hook.Event)
 			}
 		}
+		// Validate UI contributions
+		if err := validateUIContributions(m.Contributes.UI, m.Permissions); err != nil {
+			return err
+		}
 	}
 
 	// Validate dependency declarations
@@ -170,6 +174,56 @@ func validateManifest(m *PluginManifest, dir string) error {
 		}
 	}
 
+	return nil
+}
+
+// validUISlots is the set of allowed UI widget zones.
+var validUISlots = map[string]bool{
+	"titleBarLeft":   true,
+	"titleBarRight":  true,
+	"statusBarLeft":  true,
+	"statusBarRight": true,
+	"infoBar":        true,
+	"footer":         true,
+}
+
+// validateUIContributions validates UI slot declarations.
+// Requires "ui.contribute" permission and enforces slot/ID constraints.
+func validateUIContributions(ui []UISlotContribution, permissions []string) error {
+	if len(ui) == 0 {
+		return nil
+	}
+
+	// Check permission
+	hasPerm := false
+	for _, p := range permissions {
+		if p == "*" || p == PermUIContribute {
+			hasPerm = true
+			break
+		}
+	}
+	if !hasPerm {
+		return fmt.Errorf("contributes.ui requires \"ui.contribute\" permission")
+	}
+
+	// Max 10 widgets per plugin
+	if len(ui) > 10 {
+		return fmt.Errorf("contributes.ui: maximum 10 widgets per plugin, got %d", len(ui))
+	}
+
+	seen := make(map[string]bool)
+	for i, slot := range ui {
+		if slot.ID == "" {
+			return fmt.Errorf("contributes.ui[%d].id is required", i)
+		}
+		if !validUISlots[slot.Slot] {
+			return fmt.Errorf("contributes.ui[%d].slot: unknown slot %q (valid: titleBarLeft, titleBarRight, statusBarLeft, statusBarRight, infoBar, footer)", i, slot.Slot)
+		}
+		if seen[slot.ID] {
+			return fmt.Errorf("contributes.ui[%d].id: duplicate widget ID %q", i, slot.ID)
+		}
+		seen[slot.ID] = true
+	}
 	return nil
 }
 

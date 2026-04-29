@@ -451,6 +451,18 @@ func (c *CLIChannel) SetPluginManager(fn func() *plugin.PluginManager) {
 	}
 }
 
+// SetWidgetRegistry wires the plugin system's widget registry into the TUI.
+// Must be called after SetPluginManager (when the PluginManager is available).
+// Sets the default render function based on the current theme.
+func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
+	if c.model != nil {
+		c.model.widgetRegistry = wr
+		if wr != nil {
+			wr.SetDefaultRenderFn(buildWidgetRenderFn(c.model.styles))
+		}
+	}
+}
+
 // LoadHistory loads session history into the CLI model.
 // Used by remote mode where history must be fetched via RPC after the WS connection
 // is established. Thread-safe: always goes through asyncCh to avoid racing with

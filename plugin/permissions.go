@@ -29,6 +29,8 @@ const (
 	PermBusWrite = "bus.write"
 	// PermBusPlugin grants permission to use the plugin-to-plugin event bus.
 	PermBusPlugin = "bus.plugin"
+	// PermUIContribute grants permission to contribute UI widgets.
+	PermUIContribute = "ui.contribute"
 )
 
 // allPermissions is the set of all recognized permission strings.
@@ -43,6 +45,7 @@ var allPermissions = map[string]bool{
 	PermBusRead:         true,
 	PermBusWrite:        true,
 	PermBusPlugin:       true,
+	PermUIContribute:    true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.

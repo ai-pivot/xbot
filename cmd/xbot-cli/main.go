@@ -1525,6 +1525,7 @@ func main() {
 			// Inject PluginManager for /plugin command
 			if pm := app.backend.PluginManager(); pm != nil {
 				cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
+				cliCh.SetWidgetRegistry(pm.WidgetRegistry())
 			}
 			// Inject CheckpointState for Ctrl+K rewind file rollback
 			checkpointDir := filepath.Join(os.Getenv("HOME"), ".xbot", "checkpoints", "cli-default")

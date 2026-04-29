@@ -144,6 +144,22 @@ type PluginContext interface {
 	// Requires "hooks.subscribe" permission.
 	OnPluginError(callback PluginErrorCallback) error
 
+	// --- UI Contributions ---
+
+	// ContributeUI registers a UI widget provider for a zone declared in plugin.json.
+	// Requires "ui.contribute" permission. The widgetID must match a declared
+	// UIContribution ID in the plugin's manifest.
+	ContributeUI(widgetID, zone string, widget UIWidget, priority int) error
+
+	// UpdateWidget triggers an asynchronous re-render of the named widget.
+	// The widgetID must have been registered via ContributeUI.
+	// Safe to call from hook handlers, tool executors, or any goroutine.
+	UpdateWidget(widgetID string) error
+
+	// SetWidgetRegistry sets the widget registry for this context.
+	// Called internally by PluginManager before Activate.
+	SetWidgetRegistry(wr *WidgetRegistry)
+
 	// --- Context Values ---
 
 	// SetValue stores an arbitrary value in the plugin context.
@@ -238,6 +254,9 @@ type pluginContextImpl struct {
 	configStore *PluginConfigStore
 
 	errorCallback PluginErrorCallback
+
+	// UI widget registry (set by PluginManager before Activate)
+	widgetRegistry *WidgetRegistry
 
 	// Context values — session-scoped in-memory key-value store
 	contextValues map[string]any
@@ -610,6 +629,43 @@ func (pc *pluginContextImpl) GetValue(key string) (any, bool) {
 	defer pc.mu.RUnlock()
 	v, ok := pc.contextValues[key]
 	return v, ok
+}
+
+// ---------------------------------------------------------------------------
+// UI Widget Methods
+// ---------------------------------------------------------------------------
+
+// SetWidgetRegistry sets the widget registry for this context.
+// Called by PluginManager before Activate.
+func (pc *pluginContextImpl) SetWidgetRegistry(wr *WidgetRegistry) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.widgetRegistry = wr
+}
+
+// ContributeUI registers a UI widget. The widgetID must match a declared
+// UIContribution in the plugin's manifest.
+func (pc *pluginContextImpl) ContributeUI(widgetID, zone string, widget UIWidget, priority int) error {
+	if !pc.perm.Has(PermUIContribute) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIContribute,
+			Action:     "contribute UI widget",
+		}
+	}
+	if pc.widgetRegistry == nil {
+		return fmt.Errorf("widget registry not available")
+	}
+	return pc.widgetRegistry.Register(pc.pluginID, widgetID, zone, widget, priority)
+}
+
+// UpdateWidget triggers an asynchronous re-render of the named widget.
+func (pc *pluginContextImpl) UpdateWidget(widgetID string) error {
+	if pc.widgetRegistry == nil {
+		return fmt.Errorf("widget registry not available")
+	}
+	// Use default width 0 (unbounded) — TUI will refresh with real width on resize.
+	return pc.widgetRegistry.RefreshWidget(pc.pluginID, widgetID, 0, nil)
 }
 
 // ---------------------------------------------------------------------------

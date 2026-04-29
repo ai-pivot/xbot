@@ -126,6 +126,7 @@ type PluginContributes struct {
 	ContextEnrichers []EnricherContribution     `json:"contextEnrichers,omitempty"`
 	Commands         []CommandContribution      `json:"commands,omitempty"`
 	Configuration    *ConfigurationContribution `json:"configuration,omitempty"`
+	UI               []UISlotContribution       `json:"ui,omitempty"`
 }
 
 // ToolContribution describes a tool provided by the plugin.
@@ -172,6 +173,69 @@ type ConfigProperty struct {
 	Default any `json:"default,omitempty"`
 	// Description explains the property's purpose.
 	Description string `json:"description"`
+}
+
+// ---------------------------------------------------------------------------
+// UI Contributions — VSCode-like GUI extension points
+// ---------------------------------------------------------------------------
+
+// UISlotContribution declares a UI contribution in plugin.json.
+// Each entry reserves a widget slot in a predefined zone.
+type UISlotContribution struct {
+	// ID uniquely identifies this widget within the plugin.
+	// Must be unique per plugin. Used as the key for runtime updates.
+	ID string `json:"id"`
+
+	// Slot is the target UI zone where the widget renders.
+	// Valid values: "titleBarLeft", "titleBarRight", "statusBarLeft",
+	// "statusBarRight", "infoBar", "footer".
+	Slot string `json:"slot"`
+
+	// Priority controls ordering within a zone (lower = earlier/leftmost).
+	// Default 100.
+	Priority int `json:"priority,omitempty"`
+
+	// Description is a human-readable explanation of what this widget shows.
+	Description string `json:"description,omitempty"`
+
+	// RefreshInterval is the suggested polling interval (e.g. "30s").
+	// Only advisory — push-based UpdateWidget is preferred.
+	RefreshInterval string `json:"refreshInterval,omitempty"`
+
+	// Interactive indicates whether this widget supports user actions (v2).
+	// Default false (read-only).
+	Interactive bool `json:"interactive,omitempty"`
+}
+
+// StyleClass is a semantic style hint. The TUI maps these to theme colors.
+// Plugins must NOT output raw ANSI escape sequences.
+type StyleClass string
+
+const (
+	StyleNormal  StyleClass = "normal"
+	StyleDim     StyleClass = "dim"
+	StyleAccent  StyleClass = "accent"
+	StyleSuccess StyleClass = "success"
+	StyleWarning StyleClass = "warning"
+	StyleError   StyleClass = "error"
+	StyleInfo    StyleClass = "info"
+	StyleMuted   StyleClass = "muted"
+)
+
+// WidgetSpan is a single styled text segment. A widget returns zero or more
+// spans, and the TUI applies theme colors based on StyleClass. No raw ANSI
+// is ever exposed to the terminal from plugin spans.
+type WidgetSpan struct {
+	Text  string
+	Style StyleClass
+}
+
+// UIWidget is the interface plugins implement to provide UI content.
+// Render(width) returns styled spans that the TUI composits into the layout.
+// The width parameter is the available columns for this widget (0 = unbounded).
+// Plugins must NOT include ANSI escape sequences in Text fields.
+type UIWidget interface {
+	Render(width int) []WidgetSpan
 }
 
 // ---------------------------------------------------------------------------

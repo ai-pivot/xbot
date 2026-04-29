@@ -352,9 +352,14 @@ func (c *sdkMockContext) OnSessionEnd(handler HookHandler) error                
 func (c *sdkMockContext) OnEvent(event HookEvent, matcher string, handler HookHandler) error {
 	return nil
 }
-func (c *sdkMockContext) OnAllToolUse(handler HookHandler) error                    { return nil }
-func (c *sdkMockContext) OnError(handler HookHandler) error                         { return nil }
-func (c *sdkMockContext) OnPluginError(callback PluginErrorCallback) error          { return nil }
+func (c *sdkMockContext) OnAllToolUse(handler HookHandler) error           { return nil }
+func (c *sdkMockContext) OnError(handler HookHandler) error                { return nil }
+func (c *sdkMockContext) OnPluginError(callback PluginErrorCallback) error { return nil }
+func (c *sdkMockContext) ContributeUI(widgetID, zone string, widget UIWidget, priority int) error {
+	return nil
+}
+func (c *sdkMockContext) UpdateWidget(widgetID string) error                        { return nil }
+func (c *sdkMockContext) SetWidgetRegistry(wr *WidgetRegistry)                      {}
 func (c *sdkMockContext) EnrichContext(name string, enricher ContextEnricher) error { return nil }
 func (c *sdkMockContext) Storage() StorageAccessor                                  { return nil }
 func (c *sdkMockContext) StorageInt(key string) (int64, bool)                       { return 0, false }

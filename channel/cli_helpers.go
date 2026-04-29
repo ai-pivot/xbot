@@ -1016,8 +1016,10 @@ func (m *cliModel) handlePluginCommand(parts []string) tea.Cmd {
 			return nil
 		}
 		return m.handlePluginUninstall(strings.Join(parts[2:], " "))
+	case "widgets":
+		return m.handlePluginWidgets()
 	default:
-		m.showSystemMsg(fmt.Sprintf("Unknown subcommand: %s\nUsage: /plugin [list|install <dir>|uninstall <id>|reload <id>|reload-all|health|metrics]", subcmd), feedbackInfo)
+		m.showSystemMsg(fmt.Sprintf("Unknown subcommand: %s\nUsage: /plugin [list|install <dir>|uninstall <id>|reload <id>|reload-all|health|metrics|widgets]", subcmd), feedbackInfo)
 		return nil
 	}
 }
@@ -1295,4 +1297,31 @@ func (m *cliModel) resolveMaxOutputTokens() int64 {
 		}
 	}
 	return 0
+}
+
+// handlePluginWidgets lists all UI widgets registered by plugins.
+func (m *cliModel) handlePluginWidgets() tea.Cmd {
+	if m.pluginMgrFn == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	if mgr == nil {
+		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
+		return nil
+	}
+	wr := mgr.WidgetRegistry()
+	infos := wr.WidgetInfo()
+	if len(infos) == 0 {
+		m.showSystemMsg("🖼️  No UI widgets registered.", feedbackInfo)
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString("🖼️  UI Widgets:\n")
+	for _, info := range infos {
+		fmt.Fprintf(&sb, "  [%s/%s] zone=%s priority=%d\n",
+			info.PluginID, info.WidgetID, info.Zone, info.Priority)
+	}
+	m.showSystemMsg(sb.String(), feedbackInfo)
+	return nil
 }

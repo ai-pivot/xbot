@@ -404,7 +404,8 @@ type cliModel struct {
 
 	// --- Plugin management ---
 	pluginMgrFn     func() *plugin.PluginManager
-	pluginReloading bool // true when a reload operation is in progress
+	widgetRegistry  *plugin.WidgetRegistry // UI widget registry from plugin system
+	pluginReloading bool                   // true when a reload operation is in progress
 
 	// --- Web user management (admin only) ---
 	createWebUserFn func(username string) (password string, err error)
