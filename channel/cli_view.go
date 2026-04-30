@@ -295,16 +295,17 @@ func (m *cliModel) augmentStatusBar(statusBar string) string {
 	return statusBar
 }
 
-// augmentFooter appends footer widgets.
+// augmentFooter appends footer widget content below the shortcut-hint bar.
 func (m *cliModel) augmentFooter(footer string) string {
 	content := m.resolveWidgetZone("footer")
 	if content == "" {
 		return footer
 	}
+	widgetLine := m.styles.TextMutedSt.Render(content)
 	if footer == "" {
-		return m.styles.TextMutedSt.Render(content)
+		return widgetLine
 	}
-	return footer + "  " + m.styles.TextMutedSt.Render(content)
+	return footer + "  " + widgetLine
 }
 
 // augmentInfoBar appends infoBar widget content to the base info bar.
@@ -333,7 +334,8 @@ func (m *cliModel) resolveWidgetZone(zone string) string {
 		return m.widgetRegistry.RenderZoneForContext(zone)
 	}
 	if m.remotePluginCache != nil {
-		return m.remotePluginCache.WidgetZone(zone)
+		v := m.remotePluginCache.WidgetZone(zone)
+		return v
 	}
 	return ""
 }

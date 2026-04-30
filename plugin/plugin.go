@@ -225,6 +225,7 @@ const (
 	StyleError   StyleClass = "error"
 	StyleInfo    StyleClass = "info"
 	StyleMuted   StyleClass = "muted"
+	StyleRaw     StyleClass = "raw" // pass-through: no ANSI wrapping, text contains its own escapes
 )
 
 // WidgetSpan is a single styled text segment. A widget returns zero or more

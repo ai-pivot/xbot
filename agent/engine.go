@@ -11,6 +11,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
@@ -143,6 +144,10 @@ type RunConfig struct {
 
 	// HookManager tool execution hook manager (nil = no hooks).
 	HookManager *hooks.Manager
+
+	// PluginManager plugin manager (nil = no plugins).
+	// Used by the engine to read plugin-generated tool hints after PostToolUse hooks.
+	PluginManager *plugin.PluginManager
 
 	// SettingsSvc provides access to user settings (nil = settings not available).
 	SettingsSvc *SettingsService

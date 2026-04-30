@@ -103,6 +103,10 @@
 - **MockPlugin/MockTool chain API returns the same pointer** — each `With*` call mutates and returns `*MockPlugin`/`*MockTool`. Do not share a single mock across parallel tests without cloning.
 - **PluginRegistry MVP only supports local sources** for installation. Search operates on locally installed plugins only. GitHub/URL sources are defined but InstallFromSource is not yet implemented — Phase 3 scope.
 - **Plugin migration `Migrator` creates backup before applying migrations.** Backup is stored in `~/.xbot/plugins/<id>/backups/<version>/`. Rollback restores from the most recent backup. Migrations run sequentially by version order.
+- **`toolHint` zone plugins run synchronously on PostToolUse hook.** When `isHintPlugin=true`, the hook trigger runs `runScript` inline (not via triggerCh). The engine calls `PluginManager.GetToolHints()` immediately after the hook returns to populate `ToolProgress.ToolHints`. **`GetToolHints()` consumes (clears) the hint after reading** to prevent stale content from attaching to the next tool.
+- **`snapshotIterationChange` must include ActiveTools(done).** When an iteration ends, completed tools may still be in `ActiveTools` (status=done) rather than `CompletedTools` (which is populated later by `progressFinalizer`). Only checking `CompletedTools` loses ToolHints data.
+- **Do NOT use glamour to render diff inside progress panel.** Glamour's output (background fills, margins, line wrapping) corrupts the progress panel border layout. Use direct ANSI coloring (`renderDiffANSI`) with width truncation instead.
+- **`runScript` must `os.Stat(workDir)` before setting `cmd.Dir`.** On Windows parallel tests, temp dirs may be cleaned up before the script runs, causing `chdir` failure. If dir doesn't exist, skip setting `cmd.Dir` and run in plugin's own directory.
 
 ### Windows
 - `syscall.PROCESS_QUERY_LIMITED_INFORMATION` and `STILL_ACTIVE` not in Go stdlib — define as uint32 constants.

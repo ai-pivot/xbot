@@ -1719,8 +1719,10 @@ func main() {
 			// overwrite our widget content with another window's git status.
 			rb.OnPluginWidgets(func(zones map[string]string, pushChatID string) {
 				if pushChatID != "" && pushChatID != remoteChatID {
+					log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", pushChatID, remoteChatID)
 					return // ignore pushes for other sessions
 				}
+				log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", pushChatID, zones["footer"])
 				remoteCache.UpdateZones(zones)
 			})
 			// Initial fetch — push only fires on CHANGES, so we need to

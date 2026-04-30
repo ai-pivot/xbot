@@ -49,6 +49,11 @@ func (r *WidgetRegistry) SetDebounce(d time.Duration) {
 // has changed but the global cache should not be written (e.g. per-workDir
 // output cache in script plugins).
 func (r *WidgetRegistry) NotifyUpdated() {
+	r.mu.RLock()
+	fn := r.onUpdated
+	dur := r.debounceDur
+	r.mu.RUnlock()
+	log.Infof("[NotifyUpdated] fn=%v debounce=%v", fn != nil, dur)
 	r.notifyUpdated()
 }
 
@@ -75,6 +80,11 @@ func NewWidgetRegistry() *WidgetRegistry {
 func BasicANSIRender(spans []WidgetSpan, _ int) string {
 	var sb strings.Builder
 	for _, sp := range spans {
+		if sp.Style == StyleRaw {
+			// Raw pass-through: text contains its own ANSI escapes (e.g. diff output)
+			sb.WriteString(sp.Text)
+			continue
+		}
 		color := ""
 		switch sp.Style {
 		case StyleDim:
@@ -113,12 +123,14 @@ func (r *WidgetRegistry) notifyUpdated() {
 	fn := r.onUpdated
 	dur := r.debounceDur
 	r.mu.RUnlock()
+	log.Infof("[notifyUpdated] fn=%v debounce=%v", fn != nil, dur)
 	if fn == nil {
 		return
 	}
 
 	if dur <= 0 {
 		// No debounce — fire immediately
+		log.Infof("[notifyUpdated] firing immediately")
 		fn()
 		return
 	}
@@ -128,7 +140,10 @@ func (r *WidgetRegistry) notifyUpdated() {
 	if r.debounceTimer != nil {
 		r.debounceTimer.Stop()
 	}
-	r.debounceTimer = time.AfterFunc(dur, fn)
+	r.debounceTimer = time.AfterFunc(dur, func() {
+		log.Infof("[notifyUpdated] debounce fired after %v", dur)
+		fn()
+	})
 	r.debounceMu.Unlock()
 }
 

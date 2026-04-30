@@ -1,19 +1,20 @@
 {
   "id": "file-diff",
   "name": "file-diff",
-  "version": "1.0.0",
-  "description": "Displays a unified diff summary in the footer when FileReplace or FileCreate modifies files. Uses the tool_output from PostToolUse events.",
+  "version": "2.0.0",
+  "description": "Displays a unified diff with ANSI colors in the progress panel when FileReplace or FileCreate modifies files.",
   "author": "xbot",
   "runtime": "script",
   "entry": "bash file-diff.sh",
+  "activationEvents": ["onStart"],
   "permissions": ["ui.contribute", "hooks.subscribe"],
   "contributes": {
     "ui": [
       {
         "id": "diff-summary",
-        "slot": "footer",
+        "slot": "toolHint",
         "priority": 5,
-        "description": "Shows file diff summary after file modifications",
+        "description": "Shows unified diff in the progress panel after file modifications",
         "triggers": [
           "PostToolUse:FileReplace*",
           "PostToolUse:FileCreate*",

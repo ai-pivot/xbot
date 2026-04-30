@@ -832,7 +832,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 		// Render per-workDir — bypass global WidgetRegistry slot content.
 		// Each session's widget is rendered on-the-fly from the script's
 		// per-workDir output cache, so sessions never interfere.
-		zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer"}
+		zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"}
 		zones := make(map[string]string)
 		for _, z := range zoneNames {
 			zones[z] = pm.RenderZoneForWorkDir(z, cwd)

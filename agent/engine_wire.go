@@ -147,6 +147,9 @@ func (a *Agent) buildBaseRunConfig(
 		// HookManager — inherit from Agent
 		HookManager: a.hookManager,
 
+		// PluginManager — inherit from Agent
+		PluginManager: a.pluginMgr,
+
 		// SettingsSvc — inherit from Agent
 		SettingsSvc: a.settingsSvc,
 
@@ -656,6 +659,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	}
 	// HookManager — SubAgent inherits parent Agent's hook manager
 	cfg.HookManager = a.hookManager
+	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
 	cfg.MessageSender = a.messageSender
 	cfg.RegisterAgentChannel = a.registerAgentChannel
@@ -749,6 +753,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 
 	// Inherit hook manager from Agent.
 	cfg.HookManager = a.hookManager
+	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
 
 	var sessionOnce sync.Once
@@ -1357,6 +1362,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Iteration: t.Iteration,
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
@@ -1367,6 +1373,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Iteration: t.Iteration,
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 				})
 			}
 			if len(event.Lines) > 0 {
@@ -1422,6 +1429,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Status:    string(t.Status),
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 					Iteration: t.Iteration,
 				})
 			}
@@ -1432,6 +1440,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Status:    string(t.Status),
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 					Iteration: t.Iteration,
 				})
 			}
@@ -1475,13 +1484,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			for _, t := range s.ActiveTools {
 				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
 				cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 				})
 			}
 			if len(event.Lines) > 0 {
@@ -1565,6 +1574,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Status:    string(t.Status),
 				Elapsed:   t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				ToolHints: t.ToolHints,
 				Iteration: t.Iteration,
 			})
 		}
@@ -1575,6 +1585,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Status:    string(t.Status),
 				Elapsed:   t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				ToolHints: t.ToolHints,
 				Iteration: t.Iteration,
 			})
 		}

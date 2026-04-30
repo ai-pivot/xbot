@@ -185,6 +185,7 @@ var validUISlots = map[string]bool{
 	"statusBarRight": true,
 	"infoBar":        true,
 	"footer":         true,
+	"toolHint":       true, // plugin-provided markdown hint rendered alongside tool output in progress
 }
 
 // validateUIContributions validates UI slot declarations.

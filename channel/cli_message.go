@@ -968,6 +968,17 @@ func (m *cliModel) renderProgressBlock() string {
 			}
 			sb.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 			sb.WriteString("\n")
+			// Render tool hints (e.g. diff) from iteration history
+			if tool.ToolHints != "" {
+				if r, err := m.renderToolHint(tool.ToolHints); err == nil && r != "" {
+					diffGuide := dimStyle.Render(reasoningGuide.Render("  │ "))
+					for _, line := range strings.Split(r, "\n") {
+						sb.WriteString(diffGuide)
+						sb.WriteString(line)
+						sb.WriteString("\n")
+					}
+				}
+			}
 		}
 	}
 
@@ -1057,6 +1068,44 @@ func (m *cliModel) renderProgressBlock() string {
 			}
 			sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
 			sb.WriteString("\n")
+		}
+
+		// Render tool hints (e.g. file diff) from plugin below completed tool lines.
+		// Hints may be on ActiveTools (status=done, not yet moved to CompletedTools)
+		// or on CompletedTools (moved by progressFinalizer at iteration end).
+		// The hint content is markdown (e.g. ```diff code block) rendered by glamour.
+		hintRendered := func(toolHints string) string {
+			if toolHints == "" {
+				return ""
+			}
+			r, err := m.renderToolHint(toolHints)
+			if err != nil || r == "" {
+				return ""
+			}
+			return r
+		}
+		for _, tool := range m.progress.CompletedTools {
+			if r := hintRendered(tool.ToolHints); r != "" {
+				diffGuide := reasoningGuide.Render("  │ ")
+				for _, line := range strings.Split(r, "\n") {
+					sb.WriteString(diffGuide)
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
+			}
+		}
+		for _, tool := range m.progress.ActiveTools {
+			if tool.Status != "done" && tool.Status != "error" {
+				continue
+			}
+			if r := hintRendered(tool.ToolHints); r != "" {
+				diffGuide := reasoningGuide.Render("  │ ")
+				for _, line := range strings.Split(r, "\n") {
+					sb.WriteString(diffGuide)
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
+			}
 		}
 
 		// Active tools — label + live elapsed timer
@@ -1428,6 +1477,16 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 						}
 						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
 						toolSb.WriteString("\n")
+						// Render tool hints (e.g. file diff) below the tool line
+						if tool.ToolHints != "" {
+							if diff, _ := renderDiffANSI(tool.ToolHints, textW-4); diff != "" {
+								for _, dl := range strings.Split(diff, "\n") {
+									toolSb.WriteString(reasoningGuide.Render("  │ "))
+									toolSb.WriteString("  " + dl)
+									toolSb.WriteString("\n")
+								}
+							}
+						}
 					}
 				}
 			} else {
@@ -1994,3 +2053,75 @@ func (m *cliModel) renderRewindResultBlock() string {
 // 		return tickerTickMsg{}
 // 	})
 // }
+
+// renderToolHint renders plugin-provided markdown content (e.g. ```diff code block)
+// using the glamour renderer.  Returns empty string on error or empty input.
+// Must only be called from the BubbleTea Update/View goroutine (glamour is not
+// goroutine-safe).
+// renderToolHint renders plugin-provided markdown content.
+// For diff code blocks, it applies simple ANSI coloring instead of glamour,
+// because glamour's output (background fills, margins) conflicts with the
+// progress panel border layout.
+func (m *cliModel) renderToolHint(md string) (string, error) {
+	if md == "" {
+		return "", nil
+	}
+	return renderDiffANSI(md, m.width-4-6) // border(4) + guide("  │ " ~6 cols)
+}
+
+// renderDiffANSI extracts a ```diff code block from markdown and applies
+// simple ANSI coloring.  Lines are truncated to maxWidth visual columns.
+func renderDiffANSI(md string, maxWidth int) (string, error) {
+	// Extract content between ```diff and ```
+	lines := strings.Split(md, "\n")
+	var diffLines []string
+	inDiff := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inDiff && (trimmed == "```diff") {
+			inDiff = true
+			continue
+		}
+		if inDiff && trimmed == "```" {
+			break
+		}
+		if inDiff {
+			diffLines = append(diffLines, line)
+		}
+	}
+	// If no diff block found, return the raw text dimmed
+	if len(diffLines) == 0 {
+		if strings.TrimSpace(md) == "" {
+			return "", nil
+		}
+		return dimANSI(md), nil
+	}
+
+	var sb strings.Builder
+	for _, line := range diffLines {
+		// Truncate to maxWidth (rune-based, safe for ANSI-free text)
+		if maxWidth > 0 && len([]rune(line)) > maxWidth {
+			line = string([]rune(line)[:maxWidth])
+		}
+		switch {
+		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
+			sb.WriteString(boldANSI(line))
+		case strings.HasPrefix(line, "@@"):
+			sb.WriteString(cyanANSI(line))
+		case strings.HasPrefix(line, "+"):
+			sb.WriteString(greenANSI(line))
+		case strings.HasPrefix(line, "-"):
+			sb.WriteString(redANSI(line))
+		default:
+			sb.WriteString(dimANSI(line))
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n"), nil
+}
+
+func redANSI(s string) string   { return "\x1b[31m" + s + "\x1b[0m" }
+func greenANSI(s string) string { return "\x1b[32m" + s + "\x1b[0m" }
+func cyanANSI(s string) string  { return "\x1b[36m" + s + "\x1b[0m" }
+func boldANSI(s string) string  { return "\x1b[1m" + s + "\x1b[0m" }
+func dimANSI(s string) string   { return "\x1b[2m" + s + "\x1b[0m" }

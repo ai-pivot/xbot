@@ -28,13 +28,18 @@ func SanitizeWidgetOutput(input string) string {
 }
 
 // SanitizeSpans applies sanitization to all span texts. Used as a defense-in-depth
-// measure for gRPC/WASM runtimes.
+// measure for gRPC/WASM runtimes. StyleRaw spans are exempt: they intentionally
+// contain ANSI escapes (e.g. diff output) and may be longer than 200 chars.
 func SanitizeSpans(spans []WidgetSpan) []WidgetSpan {
 	result := make([]WidgetSpan, len(spans))
 	for i, sp := range spans {
-		result[i] = WidgetSpan{
-			Text:  SanitizeWidgetOutput(sp.Text),
-			Style: sp.Style,
+		if sp.Style == StyleRaw {
+			result[i] = sp // pass through unchanged
+		} else {
+			result[i] = WidgetSpan{
+				Text:  SanitizeWidgetOutput(sp.Text),
+				Style: sp.Style,
+			}
 		}
 	}
 	return result

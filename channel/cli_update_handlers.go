@@ -451,6 +451,13 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 	}
 	if payload.Iteration > m.lastSeenIteration && m.lastSeenIteration >= 0 && prev != nil {
 		prevIterTools := prev.CompletedTools
+		// Also include ActiveTools that completed (status=done/error) but
+		// haven't been moved to CompletedTools yet by progressFinalizer.
+		for _, t := range prev.ActiveTools {
+			if t.Status == "done" || t.Status == "error" {
+				prevIterTools = append(prevIterTools, t)
+			}
+		}
 		prevReasoning := prev.Reasoning
 		if prevReasoning == "" {
 			prevReasoning = prev.ReasoningStreamContent
@@ -487,6 +494,16 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 			var finalTools []CLIToolProgress
 			// Check progress.CompletedTools first (set by progressFinalizer)
 			finalTools = append(finalTools, msg.payload.CompletedTools...)
+			// Also include ActiveTools(done) not yet moved by progressFinalizer
+			for _, t := range msg.payload.ActiveTools {
+				if t.Status == "done" || t.Status == "error" {
+					if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+						return existing.Name == t.Name && existing.Label == t.Label
+					}) {
+						finalTools = append(finalTools, t)
+					}
+				}
+			}
 			// Also include any from lastCompletedTools (race safety)
 			for _, t := range m.lastCompletedTools {
 				if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {

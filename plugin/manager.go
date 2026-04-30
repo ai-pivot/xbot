@@ -1364,6 +1364,33 @@ func (pm *PluginManager) WidgetInfoForWorkDir(workDir string) []WidgetInfo {
 	return pm.widgetRegistry.WidgetInfo()
 }
 
+// GetToolHints returns the latest hint output from plugins that contribute
+// to the "toolHint" zone. Called by the engine after PostToolUse hook fires.
+// The hint is consumed (cleared) after reading to prevent stale content
+// from being attached to unrelated tools.
+func (pm *PluginManager) GetToolHints() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for _, e := range pm.entries {
+		e.stateMu.Lock()
+		active := e.State == StateActive
+		e.stateMu.Unlock()
+		if !active {
+			continue
+		}
+		if sp, ok := e.Plugin.(*scriptPlugin); ok && sp.isHintPlugin {
+			sp.hintMu.Lock()
+			content := sp.hintContent
+			sp.hintContent = "" // consume: clear after reading
+			sp.hintMu.Unlock()
+			if content != "" {
+				return content
+			}
+		}
+	}
+	return ""
+}
+
 func (pm *PluginManager) HealthCheck(ctx context.Context) map[string]error {
 	pm.mu.RLock()
 	entries := make([]*PluginEntry, 0, len(pm.entries))

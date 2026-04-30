@@ -137,6 +137,14 @@ func (s *runState) updateToolResultProgress(ctx context.Context, entry toolCallE
 		}
 	}
 	s.structuredProgress.ActiveTools[entry.index].Summary = summary
+
+	// Read plugin toolHints (e.g. file-diff markdown) after PostToolUse hook
+	// has fired synchronously. The hint plugin ran inside executeWithHooks.
+	if s.cfg.PluginManager != nil {
+		if hint := s.cfg.PluginManager.GetToolHints(); hint != "" {
+			s.structuredProgress.ActiveTools[entry.index].ToolHints = hint
+		}
+	}
 }
 
 // updateToolResultLine updates the progress line for a completed tool (success or failure).

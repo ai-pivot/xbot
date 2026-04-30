@@ -935,7 +935,7 @@ func New(cfg Config) (*Agent, error) {
 			// We use RenderZoneForWorkDir to render widget content for each
 			// session's working directory independently, avoiding cross-session
 			// overwrites (e.g. git branch from /repo1 overwriting /repo2).
-			zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer"}
+			zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"}
 			ms := agent.multiSession
 			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
 				cwd := ""
@@ -950,7 +950,7 @@ func New(cfg Config) (*Agent, error) {
 				for _, z := range zoneNames {
 					zones[z] = pm.WidgetRegistry().RenderZoneForWorkDir(z, cwd)
 				}
-				log.Debugf("[widget-push] chatID=%s cwd=%s infoBar=%q", chatID, cwd, zones["infoBar"])
+				log.Infof("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, cwd, zones["infoBar"], zones["footer"])
 				return zones
 			})
 		})

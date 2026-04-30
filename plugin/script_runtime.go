@@ -63,10 +63,25 @@ type scriptPlugin struct {
 
 	pctx      PluginContext   // captured in Activate for UpdateWidget
 	widgetReg *WidgetRegistry // captured in Activate for NotifyUpdated (no runtime type assertion)
+
+	// Synchronous hint content: when a plugin contributes to the "toolHint" zone,
+	// the hook trigger runs the script synchronously and stores the markdown output.
+	// The engine reads this immediately after the PostToolUse hook fires.
+	hintMu       sync.RWMutex
+	hintContent  string // last hint output from synchronous trigger
+	isHintPlugin bool   // true if plugin has any toolHint zone widget
 }
 
 func (p *scriptPlugin) Manifest() PluginManifest {
 	return p.manifest
+}
+
+// GetHintContent returns the last hint output from a synchronous trigger.
+// Used by the engine to include markdown hints in ToolProgress.
+func (p *scriptPlugin) GetHintContent() string {
+	p.hintMu.RLock()
+	defer p.hintMu.RUnlock()
+	return p.hintContent
 }
 
 func (p *scriptPlugin) Activate(ctx PluginContext) error {
@@ -81,6 +96,9 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 	for _, ui := range p.manifest.Contributes.UI {
 		if err := ctx.ContributeUI(ui.ID, ui.Slot, p, ui.Priority); err != nil {
 			return fmt.Errorf("contribute widget %q: %w", ui.ID, err)
+		}
+		if ui.Slot == "toolHint" {
+			p.isHintPlugin = true
 		}
 	}
 
@@ -327,11 +345,42 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 			p.lastHookMu.Lock()
 			p.lastHook = hp
 			p.lastHookMu.Unlock()
+			log.Infof("[plugin:%s] trigger fired: tool=%s", p.manifest.ID, hp.ToolName)
 		}
-		select {
-		case p.triggerCh <- struct{}{}:
-		default:
-			// channel full — skip this trigger (rate limiting)
+
+		if p.isHintPlugin {
+			// Synchronous execution: run script inline so the engine can read
+			// hint content immediately after the PostToolUse hook returns.
+			wd := ""
+			if p.pctx != nil {
+				wd = p.pctx.WorkingDir()
+			}
+			output, err := p.runScript(wd)
+			log.Infof("[plugin:%s] hint sync: wd=%s len=%d", p.manifest.ID, wd, len(output))
+			if err == nil && output != "" {
+				p.outputMu.Lock()
+				if p.outputs == nil {
+					p.outputs = make(map[string]string)
+				}
+				p.outputs[wd] = output
+				p.outputMu.Unlock()
+				// Strip "md|" prefix for clean markdown text
+				hintText := output
+				if strings.HasPrefix(hintText, "md|") {
+					hintText = hintText[3:]
+				} else if strings.HasPrefix(hintText, "diff|") {
+					hintText = hintText[5:]
+				}
+				p.hintMu.Lock()
+				p.hintContent = hintText
+				p.hintMu.Unlock()
+			}
+		} else {
+			select {
+			case p.triggerCh <- struct{}{}:
+			default:
+				// channel full — skip this trigger (rate limiting)
+			}
 		}
 		return nil, nil
 	}
@@ -387,7 +436,12 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 	}
 	// Use the captured workDir — concurrent RPCs cannot corrupt it.
 	if workDir != "" {
-		cmd.Dir = workDir
+		if _, err := os.Stat(workDir); err == nil {
+			cmd.Dir = workDir
+		}
+		// If workDir doesn't exist (e.g. temp dir cleaned up by a
+		// parallel test on Windows), skip setting cmd.Dir and let
+		// the script run in the plugin's own directory instead.
 	}
 
 	// Inject hook payload data as environment variables.
@@ -412,13 +466,20 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 
 	out, err := cmd.Output()
 	if err != nil {
+		log.Infof("[plugin:%s] runScript(%s) failed: %v", p.manifest.ID, workDir, err)
 		return "", fmt.Errorf("script %q: %w", p.manifest.Entry, err)
 	}
+	log.Infof("[plugin:%s] runScript(%s) output: %s", p.manifest.ID, workDir, strings.TrimSpace(string(out)))
 
-	// Use first line as widget content
-	lines := strings.SplitN(string(out), "\n", 2)
-	text := strings.TrimSpace(lines[0])
-	return text, nil
+	trimmed := strings.TrimSpace(string(out))
+	// For "md|" and "diff|" prefixes, preserve full multi-line output
+	// (markdown content or unified diff).  All other prefixes are single-line.
+	if strings.HasPrefix(trimmed, "md|") || strings.HasPrefix(trimmed, "diff|") {
+		return trimmed, nil
+	}
+	// Default: use first line as widget content
+	lines := strings.SplitN(trimmed, "\n", 2)
+	return lines[0], nil
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +495,7 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 //	"err|text"          → StyleError
 //	"info|text"         → StyleInfo
 //	"accent|text"       → StyleAccent
+//	"diff|<multiline>"  → StyleRaw (full multi-line unified diff, preserves ANSI)
 //
 // The part before the first "|" is the style hint, the rest is the text.
 func parseScriptOutput(text string) []WidgetSpan {
@@ -445,6 +507,10 @@ func parseScriptOutput(text string) []WidgetSpan {
 	parts := strings.SplitN(text, "|", 2)
 	if len(parts) == 2 {
 		style, content := strings.TrimSpace(parts[0]), parts[1]
+		// "diff|" prefix: multi-line raw content (unified diff with ANSI colors)
+		if style == "diff" {
+			return []WidgetSpan{{Text: content, Style: StyleRaw}}
+		}
 		sc := parseStyleHint(style)
 		return []WidgetSpan{{Text: content, Style: sc}}
 	}

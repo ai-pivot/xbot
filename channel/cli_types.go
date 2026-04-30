@@ -243,6 +243,7 @@ type CLIToolProgress struct {
 	Elapsed   int64 // milliseconds (from progress event)
 	Iteration int   // 所属迭代 ID
 	Summary   string
+	ToolHints string    // markdown hint from plugin (rendered with glamour)
 	StartedAt time.Time // when tool started (for live elapsed timer)
 }
 

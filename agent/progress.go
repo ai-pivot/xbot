@@ -58,6 +58,7 @@ type ToolProgress struct {
 	Elapsed   time.Duration
 	Iteration int
 	Summary   string
+	ToolHints string // markdown hint from plugin (rendered with glamour in progress panel)
 }
 
 // ToolStatus 工具执行状态。

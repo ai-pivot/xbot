@@ -151,13 +151,13 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		for _, t := range s.ActiveTools {
 			cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 			})
 		}
 		for _, t := range s.CompletedTools {
 			cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 			})
 		}
 		if len(s.Todos) > 0 {
@@ -185,13 +185,13 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			for _, t := range s.ActiveTools {
 				wsPayload.ActiveTools = append(wsPayload.ActiveTools, channelpkg.WsToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
 				wsPayload.CompletedTools = append(wsPayload.CompletedTools, channelpkg.WsToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 				})
 			}
 			if len(s.Todos) > 0 {
