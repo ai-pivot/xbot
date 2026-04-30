@@ -1915,7 +1915,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
-	history = llm.FixupTrailingToolCalls(history)
+	history = llm.SanitizeMessages(history)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {

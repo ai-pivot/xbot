@@ -144,7 +144,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// Save iteration history as an assistant message with detail,
 	// so web UI can restore it on page refresh without showing "loading".
 	if len(out.IterationHistory) > 0 {
-		cancelMsg := llm.NewAssistantMessage("")
+		cancelMsg := llm.NewAssistantMessage("[interrupted]")
 		cancelMsg.DisplayOnly = true
 		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 			cancelMsg.Detail = string(jsonBytes)
