@@ -1337,18 +1337,20 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		guideFn = func(s string) string { return dimSt.Render(s) }
 	}
 
-	// 1. ToolHints (diff from plugin or built-in) — render without guide prefix.
-	// Use the caller-provided available width. The progress panel has its own
-	// padding/border, so using m.width directly makes hint lines wider than the
-	// container and triggers hard wrapping in the viewport.
+	// 1. ToolHints (diff from plugin or built-in) — render with guide prefix,
+	// same as per-tool body, so diff appears inside the guide tree.
 	if tool.ToolHints != "" {
-		hintW := bodyW
+		g := guideFn(guide)
+		hintW := bodyW - lipgloss.Width(g)
 		if hintW < 1 {
 			hintW = 1
 		}
 		if r, err := m.renderToolHint(tool.ToolHints, hintW); err == nil && r != "" {
-			sb.WriteString(r)
-			sb.WriteString("\n")
+			for _, line := range strings.Split(r, "\n") {
+				sb.WriteString(g)
+				sb.WriteString(line)
+				sb.WriteString("\n")
+			}
 		}
 	}
 
@@ -2217,7 +2219,7 @@ const toolBodyMaxLines = 10
 // filePath is used to select the lexer; falls back to plain text if no match.
 // Each token is rendered with lipgloss including the background color (crush xchroma approach).
 // Returns a slice of highlighted lines (split by \n).
-func highlightCode(content string, filePath string, bgHex string) []string {
+func highlightCode(content string, filePath string) []string {
 	lexer := lexers.Match(filePath)
 	if lexer == nil {
 		lexer = lexers.Analyse(content)
@@ -2236,9 +2238,8 @@ func highlightCode(content string, filePath string, bgHex string) []string {
 	if style == nil {
 		style = styles.Fallback
 	}
-	bg := lipgloss.Color(bgHex)
 
-	// Walk tokens, format each with lipgloss + background, split by newline
+	// Walk tokens, format each with lipgloss (foreground only, no background), split by newline
 	var lineBuf strings.Builder
 	var result []string
 
@@ -2247,7 +2248,7 @@ func highlightCode(content string, filePath string, bgHex string) []string {
 			break
 		}
 		entry := style.Get(tok.Type)
-		s := lipgloss.NewStyle().Background(bg)
+		s := lipgloss.NewStyle()
 		if entry.Bold == chroma.Yes {
 			s = s.Bold(true)
 		}
@@ -2342,7 +2343,7 @@ func (m *cliModel) renderReadBody(tool CLIToolProgress, maxW int, t cliTheme) st
 		pureCode[i] = p.code
 	}
 	pureCodeStr := strings.Join(pureCode, "\n")
-	hlLines := highlightCode(pureCodeStr, filePath, t.GCodeBlock)
+	hlLines := highlightCode(pureCodeStr, filePath)
 
 	// Layout calculations
 	maxLineNum := parsed[totalLines-1].num
@@ -2350,7 +2351,6 @@ func (m *cliModel) renderReadBody(tool CLIToolProgress, maxW int, t cliTheme) st
 	numFmt := fmt.Sprintf("%%%dd ", digits)
 	lineNumW := digits + 1
 
-	bgCode := lipgloss.Color(t.GCodeBlock)
 	fgLineNum := lipgloss.Color(t.TextMuted)
 
 	codeW := maxW - lineNumW
@@ -2362,15 +2362,14 @@ func (m *cliModel) renderReadBody(tool CLIToolProgress, maxW int, t cliTheme) st
 	for i, p := range displayParsed {
 		lineNumText := fmt.Sprintf(numFmt, p.num)
 		lineNumText = strings.ReplaceAll(lineNumText, " ", "\u00a0")
-		lineNum := lipgloss.NewStyle().Foreground(fgLineNum).Background(bgCode).Render(lineNumText)
+		lineNum := lipgloss.NewStyle().Foreground(fgLineNum).Render(lineNumText)
 
 		var codeLine string
 		if hlLines != nil && i < len(hlLines) {
-			line := ansi.Truncate(hlLines[i], codeW, "")
-			codeLine = padBgRight(line, t.GCodeBlock, codeW)
+			codeLine = ansi.Truncate(hlLines[i], codeW, "")
 		} else {
-			line := ansi.Truncate(p.code, codeW, "")
-			codeLine = renderBgLine(line, t.TextPrimary, t.GCodeBlock, codeW)
+			codeLine = lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary)).
+				Render(ansi.Truncate(p.code, codeW, ""))
 		}
 		sb.WriteString(lineNum + codeLine)
 		sb.WriteString("\n")
@@ -2425,7 +2424,7 @@ func (m *cliModel) renderShellBody(tool CLIToolProgress, maxW int, t cliTheme) s
 	}
 	for _, line := range displayLines {
 		line = ansi.Truncate(line, maxW, "")
-		sb.WriteString(renderBgLine(line, t.TextPrimary, t.GCodeBlock, maxW))
+		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary)).Render(line))
 		sb.WriteString("\n")
 	}
 	if totalLines > toolBodyMaxLines {
@@ -2458,7 +2457,7 @@ func (m *cliModel) renderGrepBody(tool CLIToolProgress, maxW int, t cliTheme) st
 	var sb strings.Builder
 	for _, line := range displayLines {
 		line = ansi.Truncate(line, maxW, "")
-		sb.WriteString(renderBgLine(line, t.TextPrimary, t.GCodeBlock, maxW))
+		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary)).Render(line))
 		sb.WriteString("\n")
 	}
 	if totalLines > toolBodyMaxLines {
@@ -2605,11 +2604,11 @@ func renderDiffStyledImpl(md string, maxW int) string {
 	fgAdd := lipgloss.Color(t.Success)
 	fgDel := lipgloss.Color(t.Error)
 	fgMeta := lipgloss.Color(t.TextMuted)
-	bgCtx := lipgloss.Color(t.GCodeBlock)
 
 	// --- Syntax highlighting per line type (crush xchroma approach) ---
 	// Highlight code with background baked in via lipgloss, so ANSI codes are clean.
-	highlightMap := diffHighlightLines(diffLines, filePath, t.SuccessBg, t.ErrorBg, t.GCodeBlock)
+	// Context lines use empty bg → transparent (no background color).
+	highlightMap := diffHighlightLines(diffLines, filePath, t.SuccessBg, t.ErrorBg, "")
 
 	hunkRe := regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
@@ -2649,10 +2648,10 @@ func renderDiffStyledImpl(md string, maxW int) string {
 
 	lineNumStyleAdd := lipgloss.NewStyle().Foreground(fgMeta).Background(bgAdd)
 	lineNumStyleDel := lipgloss.NewStyle().Foreground(fgMeta).Background(bgDel)
-	lineNumStyleCtx := lipgloss.NewStyle().Foreground(fgMeta).Background(bgCtx)
+	lineNumStyleCtx := lipgloss.NewStyle().Foreground(fgMeta)
 	symStyleAdd := lipgloss.NewStyle().Background(bgAdd).Foreground(fgAdd)
 	symStyleDel := lipgloss.NewStyle().Background(bgDel).Foreground(fgDel)
-	symStyleCtx := lipgloss.NewStyle().Background(bgCtx).Foreground(fgMeta)
+	symStyleCtx := lipgloss.NewStyle().Foreground(fgMeta)
 
 	var sb strings.Builder
 	for i, line := range diffLines {
@@ -2711,10 +2710,9 @@ func renderDiffStyledImpl(md string, maxW int) string {
 			code = ansi.Truncate(code, codeW, "")
 			oldNum := fmt.Sprintf(numFmt, oldLine)
 			newNum := fmt.Sprintf(numFmt, newLine)
-			lineNums := lineNumStyleCtx.Render(oldNum + "\u00a0" + newNum + "\u00a0")
-			sym := symStyleCtx.Render("\u00a0\u00a0")
-			codeStyled := padBgRight(code, t.GCodeBlock, codeW)
-			sb.WriteString(lineNums + sym + codeStyled)
+			lineNums := lineNumStyleCtx.Render(oldNum + " " + newNum + " ")
+			sym := symStyleCtx.Render("  ")
+			sb.WriteString(lineNums + sym + code)
 			oldLine++
 			newLine++
 		}
@@ -2793,7 +2791,10 @@ func diffHighlightLines(diffLines []string, filePath string, bgAdd, bgDel, bgCtx
 
 	formatWithBg := func(tok chroma.Token, bgHex string) {
 		entry := style.Get(tok.Type)
-		s := lipgloss.NewStyle().Background(lipgloss.Color(bgHex))
+		s := lipgloss.NewStyle()
+		if bgHex != "" {
+			s = s.Background(lipgloss.Color(bgHex))
+		}
 		if entry.Bold == chroma.Yes {
 			s = s.Bold(true)
 		}

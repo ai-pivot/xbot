@@ -106,6 +106,14 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 	}
 
+	// §23 Command palette overlay: highest priority (above quick switch).
+	// When palette is open it intercepts all keys.
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		if handled, cmd := m.handlePaletteKey(key); handled {
+			return m, cmd
+		}
+	}
+
 	// §15 Quick switch overlay: highest priority (above panelMode).
 	// This ensures ESC in quick switch closes the overlay, not the panel behind it.
 	if key, ok := msg.(tea.KeyPressMsg); ok {

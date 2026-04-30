@@ -556,6 +556,14 @@ type cliModel struct {
 	subscriptionMgr          SubscriptionManager // injected by CLIChannel
 	llmSubscriber            LLMSubscriber       // injected by CLIChannel
 
+	// --- §23 Command Palette (Ctrl+K) ---
+	paletteOpen     bool             // true = command palette overlay is active
+	paletteInput    textinput.Model  // filter input
+	paletteItems    []paletteCommand // all available commands
+	paletteFiltered []paletteCommand // commands after fuzzy filter
+	paletteCursor   int              // selected index in filtered list
+	paletteScrollY  int              // scroll offset for visible items
+
 	// --- §16 Subscription generation guard ---
 	// subGeneration increments every time the active subscription actually changes.
 	// panelSubGeneration captures the generation when the settings panel opens.

@@ -75,6 +75,13 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 		return m, nil, true
 
+	case msg.String() == "ctrl+k":
+		// §23 Ctrl+K: Command Palette
+		if m.panelMode == "" && m.quickSwitchMode == "" && !m.paletteOpen {
+			m.openCommandPalette()
+			return m, nil, true
+		}
+
 	case msg.String() == "ctrl+p":
 		// Ctrl+P: Quick switch subscription
 		if m.panelMode == "" && m.subscriptionMgr != nil && !m.typing {
@@ -924,6 +931,9 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 // Returns (model, cmd, handled). If handled is true, Update() returns immediately.
 func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 	// 1. 关闭所有 overlay/panel
+	if m.paletteOpen {
+		m.closeCommandPalette()
+	}
 	if m.quickSwitchMode != "" {
 		m.quickSwitchMode = ""
 	}

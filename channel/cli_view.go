@@ -398,6 +398,14 @@ func (m *cliModel) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 
+	// Command palette overlay (highest priority — hides everything)
+	if m.paletteOpen {
+		if overlay := m.viewCommandPalette(m.width, m.height); overlay != "" {
+			v.Content = overlay
+		}
+		return v
+	}
+
 	// Quick switch overlay
 	if m.quickSwitchMode != "" {
 		if overlay := m.viewQuickSwitch(m.width, m.height); overlay != "" {
