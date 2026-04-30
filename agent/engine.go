@@ -503,7 +503,8 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		if ctx.Err() != nil {
 			// Strip trailing unpaired tool_calls so they don't get persisted
 			// to DB and cause API errors on the next Run.
-			s.messages = llm.FixupTrailingToolCalls(s.messages)
+			// Also strips invalid assistant messages (empty content + no tool_calls).
+			s.messages = llm.SanitizeMessages(s.messages)
 			out := s.buildOutput(&bus.OutboundMessage{
 				Channel: s.cfg.Channel,
 				ChatID:  s.cfg.ChatID,

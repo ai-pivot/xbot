@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	log "xbot/logger"
 )
 
 // Pre-compiled regex patterns for stripping think blocks
@@ -37,13 +39,36 @@ func NewSystemMessage(content string) ChatMessage {
 	return ChatMessage{Role: "system", Content: content, Timestamp: time.Now()}
 }
 
-// FixupTrailingToolCalls strips trailing unpaired tool_call messages from the
-// message list. An assistant message with non-empty ToolCalls is considered
-// unpaired if it is not followed by tool-result messages for every call.
-// This can happen when Ctrl+C cancels a Run between recordAssistantMsg and
-// executeToolCalls/processToolResults. Both Anthropic and OpenAI APIs reject
-// requests with unpaired tool_calls, so this must be called before sending.
-func FixupTrailingToolCalls(messages []ChatMessage) []ChatMessage {
+// SanitizeMessages validates and cleans the message list before sending to LLM.
+// It performs two passes:
+//
+// Pass 1: Strip invalid assistant messages that have empty content AND no tool_calls.
+// These occur when DisplayOnly messages (e.g. cancel iteration history) are persisted
+// but not filtered before prompt construction. OpenAI/Anthropic reject such messages
+// with "Invalid assistant message: content or tool_calls must be set".
+// Each stripped message is logged at Warn level to aid source tracing.
+//
+// Pass 2: Strip trailing unpaired tool_calls left by a cancelled Run.
+// An assistant message with non-empty ToolCalls is unpaired if not followed by
+// matching tool-result messages. Both APIs reject unpaired tool_calls.
+func SanitizeMessages(messages []ChatMessage) []ChatMessage {
+	// Pass 1: Strip invalid assistant messages (empty content + no tool_calls)
+	// from anywhere in the list. Use a single pass filter.
+	n := 0
+	for _, msg := range messages {
+		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
+			log.WithFields(log.Fields{
+				"display_only": msg.DisplayOnly,
+				"detail_len":   len(msg.Detail),
+			}).Warn("[SanitizeMessages] Stripping invalid assistant message (content and tool_calls both empty)")
+			continue
+		}
+		messages[n] = msg
+		n++
+	}
+	messages = messages[:n]
+
+	// Pass 2: Strip trailing unpaired tool_calls (existing logic)
 	for len(messages) > 0 {
 		last := messages[len(messages)-1]
 
