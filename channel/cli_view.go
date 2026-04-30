@@ -233,10 +233,17 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	if m.newContentHint {
 		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
 	}
-	// Background tasks, agents, and queue now live in the info bar below input.
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))
 	}
+
+	// Inject widget content into bars
+	titleBar = m.augmentTitleBar(titleBar)
+	status = m.augmentStatusBar(status)
+	footer := m.renderFooter()
+	footer = m.augmentFooter(footer)
+	infoBar := m.renderInfoBar()
+	infoBar = m.augmentInfoBar(infoBar)
 
 	// Layout assembly — build progressively so empty sections don't add blank lines.
 	var lines []string
@@ -248,16 +255,89 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	if todoBar != "" {
 		lines = append(lines, todoBar)
 	}
-	footer := m.renderFooter()
 	if footer != "" {
 		lines = append(lines, footer)
 	}
 	lines = append(lines, input)
-	infoBar := m.renderInfoBar()
 	if infoBar != "" {
 		lines = append(lines, infoBar)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.
+func (m *cliModel) augmentTitleBar(titleBar string) string {
+	left, right := m.resolveWidgetZone("titleBarLeft"), m.resolveWidgetZone("titleBarRight")
+	if left == "" && right == "" {
+		return titleBar
+	}
+	if left != "" {
+		titleBar = left + " " + titleBar
+	}
+	if right != "" {
+		titleBar = titleBar + " " + right
+	}
+	return titleBar
+}
+
+// augmentStatusBar prepends statusBarLeft and appends statusBarRight widgets.
+func (m *cliModel) augmentStatusBar(statusBar string) string {
+	left, right := m.resolveWidgetZone("statusBarLeft"), m.resolveWidgetZone("statusBarRight")
+	if left == "" && right == "" {
+		return statusBar
+	}
+	if left != "" {
+		statusBar = left + "  " + statusBar
+	}
+	if right != "" {
+		statusBar = statusBar + "  " + right
+	}
+	return statusBar
+}
+
+// augmentFooter appends footer widget content below the shortcut-hint bar.
+func (m *cliModel) augmentFooter(footer string) string {
+	content := m.resolveWidgetZone("footer")
+	if content == "" {
+		return footer
+	}
+	widgetLine := m.styles.TextMutedSt.Render(content)
+	if footer == "" {
+		return widgetLine
+	}
+	return footer + "  " + widgetLine
+}
+
+// augmentInfoBar appends infoBar widget content to the base info bar.
+// Widget content is appended left-aligned after the bg task info (if present).
+// The widget's own styling (from buildWidgetRenderFn) is preserved as-is.
+func (m *cliModel) augmentInfoBar(infoBar string) string {
+	content := m.resolveWidgetZone("infoBar")
+	if content == "" {
+		return infoBar
+	}
+	if infoBar == "" {
+		return content
+	}
+	return infoBar + "  " + content
+}
+
+// resolveWidgetZone returns widget content for a zone, checking local WidgetRegistry
+// first (using on-the-fly rendering to avoid stale slot cache), then falling back
+// to remote plugin cache in remote mode.
+func (m *cliModel) resolveWidgetZone(zone string) string {
+	if m.widgetRegistry != nil {
+		// Use RenderZoneForContext which calls provider.Render() directly
+		// instead of reading from the global slot cache. The slot cache is
+		// only written by RefreshWidget/RefreshAllWidgets and may be stale
+		// after script plugin updates that use NotifyUpdated instead.
+		return m.widgetRegistry.RenderZoneForContext(zone)
+	}
+	if m.remotePluginCache != nil {
+		v := m.remotePluginCache.WidgetZone(zone)
+		return v
+	}
+	return ""
 }
 
 // View renders the CLI interface.
@@ -376,14 +456,10 @@ func (m *cliModel) renderInfoBar() string {
 	separator := m.styles.TextMutedSt.Render(" · ")
 	content := strings.Join(parts, separator)
 
-	// Match InputBox visual: width-4, left padding of 2
-	barWidth := max(0, m.width-4)
-	bar := lipgloss.NewStyle().
-		Width(barWidth).
+	// Left padding of 2 (matching InputBox visual)
+	return lipgloss.NewStyle().
 		PaddingLeft(2).
 		Render(content)
-
-	return bar
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.

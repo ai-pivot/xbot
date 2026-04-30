@@ -638,3 +638,60 @@ func TestConcurrentSends(t *testing.T) {
 	}
 	t.Logf("Delivered %d/100 messages (buffer capacity: 64, non-blocking design)", received)
 }
+
+// ---------------------------------------------------------------------------
+// PushPluginWidgetsPerSession Incremental Tests
+// ---------------------------------------------------------------------------
+
+func TestPushPluginWidgetsPerSession_Incremental(t *testing.T) {
+	h := newHub()
+	// Add a client and subscribe to chatID "chat1"
+	cl := &Client{sendCh: make(chan wsMessage, 16)}
+	h.addClient("client1", cl)
+	h.subscribe("client1", "/home/user/test")
+
+	rcli := NewRemoteCLIChannel(h)
+
+	callIdx := 0
+	renderFn := func(chatID string) map[string]string {
+		callIdx++
+		if callIdx == 1 {
+			return map[string]string{"zone1": "contentA"}
+		}
+		if callIdx == 2 {
+			return map[string]string{"zone1": "contentA"} // same as first
+		}
+		return map[string]string{"zone1": "contentB"} // different
+	}
+
+	// First push — should send (no prior state)
+	rcli.PushPluginWidgetsPerSession(renderFn)
+	select {
+	case msg := <-cl.sendCh:
+		if msg.Type != "plugin_widgets" {
+			t.Errorf("first push: expected type plugin_widgets, got %s", msg.Type)
+		}
+	default:
+		t.Error("first push should have sent a message")
+	}
+
+	// Second push — same content, should be skipped (incremental)
+	rcli.PushPluginWidgetsPerSession(renderFn)
+	select {
+	case <-cl.sendCh:
+		t.Error("second push with same content should be skipped")
+	default:
+		// expected
+	}
+
+	// Third push — different content, should send
+	rcli.PushPluginWidgetsPerSession(renderFn)
+	select {
+	case msg := <-cl.sendCh:
+		if msg.Type != "plugin_widgets" {
+			t.Errorf("third push: expected type plugin_widgets, got %s", msg.Type)
+		}
+	default:
+		t.Error("third push with different content should have sent a message")
+	}
+}

@@ -983,8 +983,19 @@ func saveServerConfig(cfg *config.Config) error {
 			return fmt.Errorf("config file parse error, not overwriting")
 		}
 	}
-	// Agent settings: always write back (max_iterations, max_concurrency, etc.)
-	merged.Agent = cfg.Agent
+	// Agent settings: write back ONLY fields the server actually modifies at runtime.
+	// Do NOT copy the entire Agent struct — MaxContextTokens and MaxOutputTokens
+	// are user-configured (per-model) and must not be overwritten by server defaults.
+	// Only MaxIterations, MaxConcurrency, CompressionThreshold, and ContextMode
+	// are server-owned runtime settings.
+	merged.Agent.MaxIterations = cfg.Agent.MaxIterations
+	merged.Agent.MaxConcurrency = cfg.Agent.MaxConcurrency
+	merged.Agent.CompressionThreshold = cfg.Agent.CompressionThreshold
+	merged.Agent.ContextMode = cfg.Agent.ContextMode
+	// Auto-compress: only write back if explicitly set at runtime
+	if cfg.Agent.EnableAutoCompress != nil {
+		merged.Agent.EnableAutoCompress = cfg.Agent.EnableAutoCompress
+	}
 
 	// LLM tier model mappings: always write back (vanguard/balance/swift models).
 	// These are global preferences, not subscription credentials.

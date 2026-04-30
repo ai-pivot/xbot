@@ -19,6 +19,7 @@
 - `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build
+- `docs/agent/plugin.md` — plugin system architecture, runtimes, integration
 
 ## Gotchas — MUST READ Before Any Code Change
 
@@ -73,6 +74,39 @@
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
 - **Command hooks disabled by default** — requires `enable_command_hooks: true` in config.
 - **Max 10 handlers per event**, total timeout 60s. Excess silently truncated with warning log.
+
+### Plugin System
+- **Plugin system is opt-in** — only activates when `plugins.enabled: true` in config.json. No plugin loading happens without explicit user consent.
+- **`pm.workDir` is `atomic.Value` (not `string`).** `activate()` may be called while `pm.mu` write lock is held — reading workDir must be lock-free. Never change it back to `string` or `activate`/`InstallPlugin` will deadlock.
+- **`runAndUpdate()` does NOT write global slot cache.** It calls `NotifyUpdated()` instead of `UpdateWidget()`. Writing global cache causes cross-session overwrites (session B's git branch overwrites session A's).
+- **CLI WS clients must NOT auto-subscribe to senderID ("admin").** `client_type=cli` connections skip p2p subscribe. Subscribing CLI to "admin" causes `PushPluginWidgetsPerSession` to send stale content to wrong windows.
+- **`PushPluginWidgetsPerSession` skips non-path chatIDs.** Only chatIDs starting with `/` are session chatIDs. Virtual chatIDs like "admin" or "web-123" are not rendered.
+- **`OnPluginWidgets` callback filters by chatID.** Client-side rejects pushes for other sessions. Double protection against cross-session widget corruption.
+- **Script plugin outputs map is per-workDir.** `RenderForWorkDir(width, workDir)` reads `outputs[workDir]`. `Render()` falls back to shared `pctx.WorkingDir()` — never use for remote multi-session.
+- **`HookPayload.ToolOutput` is truncated to 8KB.** Don't rely on it for full file content. Plugins needing full output should use dedicated tool result channels.
+- **PluginManager.ActivateAll() collects capabilities; WireAll() connects them.** Never call registerCapabilities manually — WireAll is the single integration point.
+- **PluginEntry.stateMu protects state transitions.** Use CAS pattern (check state → set activating → set active/error) to prevent concurrent activation races.
+- **gRPC plugin processes are killed on timeout/cancellation.** The `call()` method kills the process and marks it as not-running to prevent goroutine leaks from blocked stdout reads.
+- **PluginToolBridge auto-detects PluginToolV2.** If a plugin tool implements V2, the bridge passes ToolCallContext. Otherwise falls back to V1 Execute(ctx, input).
+- **Plugin IDs validated with regex `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`.** This prevents path traversal, null bytes, and injection attacks in storage paths.
+- **Storage files use 0600 permissions and atomic write (tmp+rename).** Never use 0644 for plugin storage.
+- **WASM runtime is skeleton-only.** It compiles and loads but Activate() is a no-op. Phase 2 requires wazero dependency.
+- **PluginContext provides 4 type-safe Storage helpers:** `StorageInt`, `StorageBool`, `StorageJSON`, `StorageGetJSON`. These wrap the base `StorageAccessor` with parse/unmarshal and return typed results. Failed parses return zero-value + false (not errors) for Int/Bool, and errors for GetJSON.
+- **Auto-retry runs in a background goroutine.** `SetAutoRetry(true, maxRetries)` starts `retryLoop` with exponential backoff (1s→30s cap). **`DeactivateAll()` cancels the retry context** — if you call `activate()` manually after `DeactivateAll()`, you must re-enable auto-retry or failed plugins won't recover automatically.
+- **Manifest `timeout` field accepts Go duration strings** (`"30s"`, `"1m"`, `"500ms"`), parsed via `time.ParseDuration`. Empty or missing defaults to `DefaultPluginTimeout` (30s). Max allowed: 5 minutes.
+- **EventBus requires `bus.plugin` permission** in addition to `bus.read`/`bus.write`. Subscribe needs `bus.plugin` + `bus.read`; Publish needs `bus.plugin` + `bus.write`. This separates plugin-to-plugin events from the core message bus.
+- **`InstallPlugin` uses `filepath.EvalSymlinks`** to resolve the real directory path before deletion check, preventing symlink-based path traversal attacks. Only directories under `xbotHome` are deleted.
+- **`WatchConfig` polls config.json every 30 seconds** (configurable, min 5s). It compares `plugins.disabled_plugins` lists via diff and reactively deactivates newly disabled / activates newly enabled plugins. Returns a stop channel for shutdown.
+- **DependencyResolver uses Kahn's algorithm (BFS topological sort).** Circular dependencies return an error (not panic). `AddManifest` with duplicate ID replaces the existing entry. Resolve() returns activation order — plugins with no dependencies first, then in dependency order.
+- **Profiler is safe for concurrent use** (sync.Mutex). `Profile(pluginID)` returns a **copy** of PluginProfile — safe to mutate without affecting internal state. Unprofiled plugins return zero-value PluginProfile.
+- **ExportConfig acquires RLock on PluginManager.** Must not be called while holding a write lock (e.g., inside custom Activate/Deactivate that calls pm.mu.Lock). ImportConfig acquires write lock internally — do not nest inside another write-locked operation.
+- **MockPlugin/MockTool chain API returns the same pointer** — each `With*` call mutates and returns `*MockPlugin`/`*MockTool`. Do not share a single mock across parallel tests without cloning.
+- **PluginRegistry MVP only supports local sources** for installation. Search operates on locally installed plugins only. GitHub/URL sources are defined but InstallFromSource is not yet implemented — Phase 3 scope.
+- **Plugin migration `Migrator` creates backup before applying migrations.** Backup is stored in `~/.xbot/plugins/<id>/backups/<version>/`. Rollback restores from the most recent backup. Migrations run sequentially by version order.
+- **`toolHint` zone plugins run synchronously on PostToolUse hook.** When `isHintPlugin=true`, the hook trigger runs `runScript` inline (not via triggerCh). The engine calls `PluginManager.GetToolHints()` immediately after the hook returns to populate `ToolProgress.ToolHints`. **`GetToolHints()` consumes (clears) the hint after reading** to prevent stale content from attaching to the next tool.
+- **`snapshotIterationChange` must include ActiveTools(done).** When an iteration ends, completed tools may still be in `ActiveTools` (status=done) rather than `CompletedTools` (which is populated later by `progressFinalizer`). Only checking `CompletedTools` loses ToolHints data.
+- **Do NOT use glamour to render diff inside progress panel.** Glamour's output (background fills, margins, line wrapping) corrupts the progress panel border layout. Use direct ANSI coloring (`renderDiffANSI`) with width truncation instead.
+- **`runScript` must `os.Stat(workDir)` before setting `cmd.Dir`.** On Windows parallel tests, temp dirs may be cleaned up before the script runs, causing `chdir` failure. If dir doesn't exist, skip setting `cmd.Dir` and run in plugin's own directory.
 
 ### Windows
 - `syscall.PROCESS_QUERY_LIMITED_INFORMATION` and `STILL_ACTIVE` not in Go stdlib — define as uint32 constants.

@@ -18,6 +18,7 @@ import (
 	"xbot/config"
 	"xbot/event"
 	"xbot/llm"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -795,6 +796,7 @@ func (b *fakeAgentBackend) SetUserThinkingMode(string, string) error            
 func (b *fakeAgentBackend) GetLLMConcurrency(string) int                          { return 0 }
 func (b *fakeAgentBackend) SetLLMConcurrency(string, int) error                   { return nil }
 func (b *fakeAgentBackend) GetContextMode() string                                { return "" }
+func (b *fakeAgentBackend) PluginManager() *plugin.PluginManager                  { return nil }
 func (b *fakeAgentBackend) GetSettings(string, string) (map[string]string, error) { return nil, nil }
 func (b *fakeAgentBackend) SetSetting(string, string, string, string) error       { return nil }
 func (b *fakeAgentBackend) ListModels() []string                                  { return nil }

@@ -14,6 +14,7 @@ import (
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/llm"
+	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -185,7 +186,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
 var cliCommands = []string{
 	"/cancel", "/channel", "/chat", "/clear", "/compact", "/context", "/exit",
-	"/help", "/model", "/models", "/new", "/quit", "/rewind", "/search",
+	"/help", "/model", "/models", "/new", "/plugin", "/quit", "/rewind", "/search",
 	"/sessions", "/settings", "/setup", "/ss", "/su", "/tasks", "/update",
 	"/usage", "/user",
 }
@@ -242,6 +243,7 @@ type CLIToolProgress struct {
 	Elapsed   int64 // milliseconds (from progress event)
 	Iteration int   // 所属迭代 ID
 	Summary   string
+	ToolHints string    // markdown hint from plugin (rendered with glamour)
 	StartedAt time.Time // when tool started (for live elapsed timer)
 }
 
@@ -654,10 +656,13 @@ type CLIChannel struct {
 	pendingCheckpointState   *hooks.CheckpointState
 	pendingSendInboundFn     func(bus.InboundMessage) bool
 	// Pending remote bg task callbacks (set before model exists in remote mode)
-	pendingBgTaskCountFn   func() int
-	pendingBgTaskListFn    func() []*tools.BackgroundTask
-	pendingBgTaskKillFn    func(taskID string) error // remote mode: forward to server
-	pendingBgTaskCleanupFn func()                    // remote mode: cleanup completed tasks
+	pendingBgTaskCountFn     func() int
+	pendingBgTaskListFn      func() []*tools.BackgroundTask
+	pendingBgTaskKillFn      func(taskID string) error // remote mode: forward to server
+	pendingBgTaskCleanupFn   func()                    // remote mode: cleanup completed tasks
+	pendingPluginMgrFn       func() *plugin.PluginManager
+	pendingWidgetRegistry    *plugin.WidgetRegistry // deferred from SetWidgetRegistry before model ready
+	pendingRemotePluginCache *remotePluginCache     // deferred from SetRemotePluginCache before model ready
 }
 
 // SettingsService is the interface needed by CLIChannel for settings panel.

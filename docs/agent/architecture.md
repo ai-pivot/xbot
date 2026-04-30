@@ -9,6 +9,7 @@ agent/            Agent loop, LLM orchestration, middleware pipeline, tool execu
 channel/          Channel adapters: CLI (BubbleTea), Feishu, QQ, Web
 llm/              LLM client abstraction (OpenAI, Anthropic), retry, streaming
 memory/           Pluggable memory: letta/ (archival+core), flat/ (in-memory)
+plugin/           Plugin system: extensible tools, hooks, context enrichers
 tools/            Built-in tools, sandbox, hooks, MCP integration
 session/          Multi-tenant session management
 storage/          SQLite persistence, vector DB for archival memory
@@ -45,6 +46,7 @@ Registered in `agent/context.go:initPipelines()`.
 | 120 | MemoryMiddleware | `20_memory` | Core memory (persona/human/working_context) |
 | 130 | SenderInfoMiddleware | `30_sender` | Sender name |
 | 135 | LanguageMiddleware | `32_language` | Language preference |
+| 150 | PluginEnricherMiddleware | `plugin_enrichers` | Plugin context enrichers |
 | 200 | UserMessageMiddleware | — | Timestamp + user message wrapping |
 
 ## Tool Execution

@@ -16,6 +16,7 @@ import (
 	"xbot/event"
 	llm "xbot/llm"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -163,6 +164,10 @@ func (b *LocalBackend) HookManager() *hooks.Manager {
 
 func (b *LocalBackend) ApprovalState() *hooks.ApprovalState {
 	return b.agent.ApprovalState()
+}
+
+func (b *LocalBackend) PluginManager() *plugin.PluginManager {
+	return b.agent.PluginManager()
 }
 
 func (b *LocalBackend) SetDirectSend(fn func(bus.OutboundMessage) (string, error)) {

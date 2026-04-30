@@ -1,0 +1,29 @@
+{
+  "id": "com.example.python-hello",
+  "name": "Python Hello",
+  "version": "1.0.0",
+  "description": "Example Python plugin demonstrating the JSON/stdio protocol",
+  "author": "xbot",
+  "runtime": "grpc",
+  "entry": "python3 main.py",
+  "activationEvents": ["onStart"],
+  "permissions": ["tools.register", "hooks.subscribe", "context.enrich"],
+  "contributes": {
+    "tools": [
+      {
+        "name": "python_greet",
+        "description": "Greet someone by name. Returns greetings in multiple languages."
+      },
+      {
+        "name": "python_time",
+        "description": "Get current server time with timezone info."
+      }
+    ],
+    "hooks": [
+      { "event": "PostToolUse", "matcher": "python_*" }
+    ],
+    "contextEnrichers": [
+      { "name": "python_env", "description": "Inject Python runtime environment info" }
+    ]
+  }
+}

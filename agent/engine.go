@@ -11,6 +11,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
@@ -144,6 +145,10 @@ type RunConfig struct {
 	// HookManager tool execution hook manager (nil = no hooks).
 	HookManager *hooks.Manager
 
+	// PluginManager plugin manager (nil = no plugins).
+	// Used by the engine to read plugin-generated tool hints after PostToolUse hooks.
+	PluginManager *plugin.PluginManager
+
 	// SettingsSvc provides access to user settings (nil = settings not available).
 	SettingsSvc *SettingsService
 
@@ -229,6 +234,10 @@ type RunConfig struct {
 	// StreamReasoningFunc is called with accumulated reasoning content on each
 	// reasoning delta during LLM streaming. Nil by default (no reasoning streaming).
 	StreamReasoningFunc func(content string)
+
+	// RefreshPluginWorkDir is called after Cd changes the working directory,
+	// so script plugins (e.g. git-info) can re-execute in the new directory.
+	RefreshPluginWorkDir func(dir string)
 }
 
 // TodoManagerProvider 提供 TODO 状态查询和清理
@@ -589,11 +598,22 @@ func executeWithHooks(
 				ToolError:   err.Error(),
 			}
 		} else {
+			// Truncate tool output to prevent excessive memory usage in events.
+			// Plugins that need full output should use dedicated tool result channels.
+			toolOutput := result.Summary
+			if result.Detail != "" {
+				toolOutput = result.Detail
+			}
+			const maxToolOutput = 8192
+			if len(toolOutput) > maxToolOutput {
+				toolOutput = toolOutput[:maxToolOutput] + "\n... (truncated)"
+			}
 			postEvent = &hooks.PostToolUseEvent{
 				BasePayload:   base,
 				ToolName_:     toolName,
 				ToolInput_:    toolInput,
 				ToolElapsedMs: elapsed.Milliseconds(),
+				ToolOutput_:   toolOutput,
 			}
 		}
 		hookMgr.Emit(toolExecCtx, postEvent)
@@ -937,6 +957,9 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		}
 		tc.SetCurrentDir = func(dir string) {
 			cfg.Session.SetCurrentDir(dir)
+			if cfg.RefreshPluginWorkDir != nil {
+				cfg.RefreshPluginWorkDir(dir)
+			}
 		}
 	} else {
 		// No session — use InitialCWD for CWD persistence (SubAgent or sessionless mode).

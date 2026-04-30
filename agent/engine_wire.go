@@ -47,11 +47,24 @@ func (a *todoManagerAdapter) ClearTodos(sessionKey string) {
 // 创建一个新的 ContextManagerConfig 副本并覆盖 MaxContextTokens，
 // 避免污染 Agent 级别的原始配置（含 sync.RWMutex）。
 func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextManagerConfig {
-	if userMaxCtx <= 0 || base == nil {
+	if base == nil {
+		return nil
+	}
+	// userMaxCtx is the model's native context window (from subscription).
+	// base.MaxContextTokens is the user-configured cap (from settings panel, default 200k).
+	// Use the user's cap if set and lower than the model's window, otherwise use the model's.
+	effective := base.MaxContextTokens
+	if userMaxCtx > 0 && (effective <= 0 || userMaxCtx < effective) {
+		effective = userMaxCtx
+	}
+	if effective <= 0 {
+		return base
+	}
+	if effective == base.MaxContextTokens {
 		return base
 	}
 	return &ContextManagerConfig{
-		MaxContextTokens:     userMaxCtx,
+		MaxContextTokens:     effective,
 		CompressionThreshold: base.CompressionThreshold,
 		DefaultMode:          base.DefaultMode,
 	}
@@ -133,6 +146,9 @@ func (a *Agent) buildBaseRunConfig(
 
 		// HookManager — inherit from Agent
 		HookManager: a.hookManager,
+
+		// PluginManager — inherit from Agent
+		PluginManager: a.pluginMgr,
 
 		// SettingsSvc — inherit from Agent
 		SettingsSvc: a.settingsSvc,
@@ -226,6 +242,14 @@ func (a *Agent) buildMainRunConfig(
 	// 注入 ContextManager
 	cfg.ContextManager = a.GetContextManager()
 	cfg.ContextManagerConfig = applyUserMaxContext(a.contextManagerConfig, userMaxCtx)
+
+	// After Cd changes session CWD, refresh all plugin contexts so script plugins
+	// (e.g. git-info) re-execute in the new directory.
+	if a.pluginMgr != nil {
+		cfg.RefreshPluginWorkDir = func(dir string) {
+			a.pluginMgr.RefreshWorkDir(dir)
+		}
+	}
 
 	// Per-user token usage tracking (persisted to SQLite)
 	cfg.RecordUserTokenUsage = func(senderID, model string, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount int) {
@@ -635,6 +659,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	}
 	// HookManager — SubAgent inherits parent Agent's hook manager
 	cfg.HookManager = a.hookManager
+	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
 	cfg.MessageSender = a.messageSender
 	cfg.RegisterAgentChannel = a.registerAgentChannel
@@ -728,6 +753,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 
 	// Inherit hook manager from Agent.
 	cfg.HookManager = a.hookManager
+	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
 
 	var sessionOnce sync.Once
@@ -1122,8 +1148,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 				})
 			}
 		}
-	} else if originChannel != "" && originChatID != "" {
-		// 顶层 agent（交互式）：只发送 depth=1 的进度到聊天窗口
+	} else if originChannel != "" && originChatID != "" && originChannel != "cli" {
+		// 非 CLI 渠道（飞书、Web 等）：发送 text-based progress 到聊天窗口。
+		// CLI 模式下由 wireSubAgentCLIProgress 的 StructuredProgress 处理，
+		// 不需要 sendMessage（否则会把工具行渲染成主 session 的 assistant 消息）。
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string) {
 			if len(lines) > 0 {
@@ -1334,6 +1362,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Iteration: t.Iteration,
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
@@ -1344,6 +1373,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Iteration: t.Iteration,
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 				})
 			}
 			if len(event.Lines) > 0 {
@@ -1399,6 +1429,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Status:    string(t.Status),
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 					Iteration: t.Iteration,
 				})
 			}
@@ -1409,6 +1440,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Status:    string(t.Status),
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Summary:   t.Summary,
+					ToolHints: t.ToolHints,
 					Iteration: t.Iteration,
 				})
 			}
@@ -1452,13 +1484,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			for _, t := range s.ActiveTools {
 				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
 				cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
 				})
 			}
 			if len(event.Lines) > 0 {
@@ -1542,6 +1574,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Status:    string(t.Status),
 				Elapsed:   t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				ToolHints: t.ToolHints,
 				Iteration: t.Iteration,
 			})
 		}
@@ -1552,6 +1585,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Status:    string(t.Status),
 				Elapsed:   t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				ToolHints: t.ToolHints,
 				Iteration: t.Iteration,
 			})
 		}

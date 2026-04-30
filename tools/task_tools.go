@@ -210,7 +210,7 @@ func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string 
 		// Truncate large output to avoid bloating context
 		const maxOutputLen = 2000
 		if len(output) > maxOutputLen {
-			fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use offload_recall or check task output for full content]", maxOutputLen, len(output), output[:maxOutputLen])
+			fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), output[:maxOutputLen], task.ID)
 		} else {
 			fmt.Fprintf(&sb, "\nOutput:\n%s", output)
 		}
