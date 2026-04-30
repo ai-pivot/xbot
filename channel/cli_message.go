@@ -369,6 +369,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	case "/cancel":
 		m.sendCancel()
 
+	case "/commands", "/palette":
+		m.openCommandPalette()
+
 	case "/clear":
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
 		m.cachedHistory = ""
