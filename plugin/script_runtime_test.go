@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,7 +83,25 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 	t.Parallel()
 
 	workDirA := t.TempDir()
-	sp := newTestScriptPlugin(t, "pwd") // outputs current directory
+	// Use a script that echoes XBOT_WORK_DIR env var for cross-platform
+	// compatibility.  We write a small shell script to avoid platform
+	// differences in how "echo $VAR" is interpreted.
+	scriptName := "print_workdir.sh"
+	if runtime.GOOS == "windows" {
+		scriptName = "print_workdir.bat"
+	}
+	scriptPath := filepath.Join(t.TempDir(), scriptName)
+	if runtime.GOOS == "windows" {
+		os.WriteFile(scriptPath, []byte("@echo %XBOT_WORK_DIR%"), 0o644)
+	} else {
+		os.WriteFile(scriptPath, []byte("#!/bin/sh\necho \"$XBOT_WORK_DIR\""), 0o755)
+	}
+	entry := "sh " + scriptPath
+	if runtime.GOOS == "windows" {
+		entry = scriptPath
+	}
+
+	sp := newTestScriptPlugin(t, entry)
 	pctx := newTestPluginContext(t, sp, workDirA)
 
 	activateAndWait(t, sp, pctx, 3*time.Second)
@@ -90,7 +109,7 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 
 	// Verify initial workDir output
 	sp.outputMu.RLock()
-	outA := sp.outputs[workDirA]
+	outA := strings.TrimSpace(sp.outputs[workDirA])
 	sp.outputMu.RUnlock()
 	if outA != workDirA {
 		t.Errorf("initial output = %q, want %q", outA, workDirA)
@@ -104,8 +123,8 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	sp.outputMu.RLock()
-	outA2 := sp.outputs[workDirA]
-	outB := sp.outputs[workDirB]
+	outA2 := strings.TrimSpace(sp.outputs[workDirA])
+	outB := strings.TrimSpace(sp.outputs[workDirB])
 	sp.outputMu.RUnlock()
 
 	// Both workDirs should have independent outputs
