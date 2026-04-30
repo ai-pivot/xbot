@@ -469,8 +469,15 @@ func (a *Agent) buildSubAgentRunConfig(
 	// Pre-compute parentExtras once (shared between Phase 4 and buildSubAgentMemory)
 	parentExtras := a.buildToolContextExtras(parentCtx.Channel, parentCtx.ChatID)
 
-	// Phase 4: Inject project context from AGENT.md in current working directory
-	if projectCtx := LoadProjectContextFile(a.workDir); projectCtx != "" {
+	// Phase 4: Inject project context from AGENT.md
+	// Check resolved workDir first (includes sandbox path), then a.workDir
+	// (host path, needed in remote mode where sandbox clears workDir).
+	if projectCtx := LoadProjectContextFile(workDir); projectCtx != "" {
+		sysPrompt += projectCtx
+	} else if projectCtx := LoadProjectContextFile(a.workDir); projectCtx != "" {
+		sysPrompt += projectCtx
+	} else if projectCtx := LoadProjectContextFile(cwd); projectCtx != "" {
+		// Fallback: check CWD if neither workspace root has AGENT.md
 		sysPrompt += projectCtx
 	}
 

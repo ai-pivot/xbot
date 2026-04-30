@@ -1129,9 +1129,10 @@ func main() {
 			tenants, err := app.backend.ListTenants()
 			seen := make(map[string]bool) // dedup agent sessions by role:instance
 			if err == nil && len(tenants) > 0 {
-				// Fetch all interactive sessions across all chatIDs at once
-				// (empty chatID = list all for the channel).
-				allSessions := app.backend.ListInteractiveSessions("cli", "")
+				// Only show the current session's tenant and its SubAgents.
+				// Other sessions' agents are not relevant to the current conversation
+				// (Issue #17: sessions panel showed agents from unrelated sessions).
+				allSessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
 
 				for _, t := range tenants {
 					// Agent tenants (channel="agent") are not real "main" sessions —
@@ -1140,11 +1141,12 @@ func main() {
 					if t.Channel == "agent" {
 						continue
 					}
-					isActive := t.ChatID == absWorkDir && t.Channel == "cli"
-					label := fmt.Sprintf("[%s] %s", t.Channel, t.ChatID)
-					if isActive {
-						label = "主会话  You ↔ Agent"
+					// Only include the current session; other workdirs are separate conversations.
+					if t.ChatID != absWorkDir || t.Channel != "cli" {
+						continue
 					}
+					isActive := true // This is the current session
+					label := "主会话  You ↔ Agent"
 					entries = append(entries, channel.SessionPanelEntry{
 						ID:      t.ChatID,
 						Type:    "main",
@@ -1152,12 +1154,8 @@ func main() {
 						Label:   label,
 						Active:  isActive,
 					})
-					// SubAgent sessions: list agents belonging to this tenant's chatID.
-					// With cross-session listing, agents from other sessions are also visible.
+					// SubAgent sessions belonging to this session.
 					for _, s := range allSessions {
-						if s.ChatID != t.ChatID {
-							continue
-						}
 						agentKey := s.Role + ":" + s.Instance
 						if seen[agentKey] {
 							continue
