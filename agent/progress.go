@@ -58,7 +58,9 @@ type ToolProgress struct {
 	Elapsed   time.Duration
 	Iteration int
 	Summary   string
-	ToolHints string // markdown hint from plugin (rendered with glamour in progress panel)
+	Detail    string // full untruncated tool result (for per-tool body rendering)
+	Args      string // raw JSON tool arguments (for per-tool rendering in CLI)
+	ToolHints string // markdown hint from plugin or built-in diff (rendered in progress panel)
 }
 
 // ToolStatus 工具执行状态。

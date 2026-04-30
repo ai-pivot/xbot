@@ -136,19 +136,25 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	if t.GDocumentText != "" {
 		style.Document.Color = c(t.GDocumentText)
 	}
-	// 标题 (H1–H4)
+	// 标题 (H1–H6)
 	if t.GHeadingText != "" {
 		style.Heading.Color = c(t.GHeadingText)
 		style.H1.Color = c(t.GHeadingText)
 		style.H2.Color = c(t.GHeadingText)
 		style.H3.Color = c(t.GHeadingText)
 		style.H4.Color = c(t.GHeadingText)
+		style.H5.Color = c(t.GHeadingText)
+		style.H6.Color = c(t.GHeadingText)
 	}
-	// 代码块背景与文本
-	if t.GCodeBlock != "" {
-		style.CodeBlock.BackgroundColor = c(t.GCodeBlock)
+	// 代码块：首选 GCodeBlock，回退到 BGPanel
+	codeBg := t.GCodeBlock
+	if codeBg == "" {
+		codeBg = t.BGPanel
+	}
+	if codeBg != "" {
+		style.CodeBlock.BackgroundColor = c(codeBg)
 		if style.CodeBlock.Chroma != nil {
-			style.CodeBlock.Chroma.Background.BackgroundColor = c(t.GCodeBlock)
+			style.CodeBlock.Chroma.Background.BackgroundColor = c(codeBg)
 		}
 	}
 	if t.GCodeText != "" {
@@ -162,11 +168,13 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 		style.Link.Color = c(t.GLinkText)
 		style.LinkText.Color = c(t.GLinkText)
 	}
-	// 引用
+	// 引用 — 使用主题引导线色
 	if t.GBlockQuote != "" {
 		style.BlockQuote.Color = c(t.GBlockQuote)
-		style.BlockQuote.IndentToken = c("│ ")
 	}
+
+	style.BlockQuote.IndentToken = c("│ ")
+
 	// 列表项
 	if t.GListItem != "" {
 		style.Item.Color = c(t.GListItem)
@@ -174,6 +182,11 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	// 水平分隔线
 	if t.GHorizontalRule != "" {
 		style.HorizontalRule.Color = c(t.GHorizontalRule)
+	}
+	// 强调/加粗文本使用主题强调色
+	if t.Accent != "" {
+		style.Emph.Color = c(t.Accent)
+		style.Strong.Color = c(t.AccentAlt)
 	}
 
 	r, _ := glamour.NewTermRenderer(
@@ -190,6 +203,27 @@ var cliCommands = []string{
 	"/sessions", "/settings", "/setup", "/ss", "/su", "/tasks", "/update",
 	"/usage", "/user",
 }
+
+// --- Unified Unicode icons ---
+// 避免 emoji/ASCII/Unicode 混用，统一视觉风格。
+const (
+	IconCheck      = "✓" // 成功/完成
+	IconCross      = "✗" // 错误/失败
+	IconDot        = "●" // 进行中/活跃
+	IconArrow      = "→" // 方向/进度
+	IconBullet     = "•" // 列表项
+	IconWarning    = "⚠" // 警告
+	IconInfo       = "ℹ" // 信息
+	IconSearch     = "🔍" // 搜索
+	IconRobot      = "🤖" // Agent/SubAgent
+	IconRunnerOn   = "🟢" // Runner 在线
+	IconRunnerWait = "🟡" // Runner 连接中
+	IconUser       = "👤" // 用户切换
+	IconGear       = "⚙" // 设置
+	IconCloudOn    = "☁" // 远程已连接
+	IconCloudOff   = "⊘" // 远程已断开
+	IconCloudWait  = "◌" // 远程重连中
+)
 
 // §19 长消息折叠阈值
 const (
@@ -243,7 +277,9 @@ type CLIToolProgress struct {
 	Elapsed   int64 // milliseconds (from progress event)
 	Iteration int   // 所属迭代 ID
 	Summary   string
-	ToolHints string    // markdown hint from plugin (rendered with glamour)
+	Detail    string    // full untruncated tool result (for per-tool body rendering)
+	Args      string    // raw JSON tool arguments (for per-tool rendering)
+	ToolHints string    // markdown hint from plugin or built-in diff
 	StartedAt time.Time // when tool started (for live elapsed timer)
 }
 

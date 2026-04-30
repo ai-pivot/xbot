@@ -6,11 +6,17 @@ import (
 	"charm.land/lipgloss/v2"
 	"encoding/json"
 	"fmt"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"xbot/bus"
@@ -681,12 +687,14 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			})
 		}
 	} else {
-		// 完整消息
+		// 完整消息 — save the message index for later thinking capture
+		var completedMsgIdx int
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 			// 更新流式消息为完整消息
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
+			completedMsgIdx = m.streamingMsgIdx
 		} else {
 			// 新增完整的 assistant 消息
 			m.messages = append(m.messages, cliMessage{
@@ -696,6 +704,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 				isPartial: false,
 				dirty:     true,
 			})
+			completedMsgIdx = len(m.messages) - 1
 		}
 		// 重置流式状态
 		m.streamingMsgIdx = -1
@@ -714,6 +723,16 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 			if m.progress.Thinking != "" {
 				m.lastThinking = m.progress.Thinking
+			}
+		}
+		// Store captured thinking on the completed message for Thinking Box rendering.
+		if completedMsgIdx >= 0 && completedMsgIdx < len(m.messages) {
+			thinking := m.lastReasoning
+			if thinking == "" {
+				thinking = m.lastThinking
+			}
+			if thinking != "" {
+				m.messages[completedMsgIdx].thinking = thinking
 			}
 		}
 		m.renderCacheValid = false
@@ -912,7 +931,13 @@ func (m *cliModel) renderProgressBlock() string {
 	}
 
 	bubbleWidth := m.width - 4
-	innerWidth := bubbleWidth - 4 // border(2) + padding(2)
+	if bubbleWidth < 10 {
+		bubbleWidth = 10
+	}
+	innerWidth := bubbleWidth - 2 // padding(2)
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
 
 	// §20 使用缓存样式
 	s := &m.styles
@@ -931,6 +956,10 @@ func (m *cliModel) renderProgressBlock() string {
 	dimStyle := s.ProgressDim
 
 	var sb strings.Builder
+
+	// Clean section header — no border, just a dim divider (width-safe)
+	sb.WriteString(s.DimGuideSt.Render(strings.Repeat("─", innerWidth)))
+	sb.WriteString("\n")
 
 	// Render completed iterations (dimmed)
 	for _, snap := range m.iterationHistory {
@@ -968,16 +997,10 @@ func (m *cliModel) renderProgressBlock() string {
 			}
 			sb.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 			sb.WriteString("\n")
-			// Render tool hints (e.g. diff) from iteration history
-			if tool.ToolHints != "" {
-				if r, err := m.renderToolHint(tool.ToolHints); err == nil && r != "" {
-					diffGuide := dimStyle.Render(reasoningGuide.Render("  │ "))
-					for _, line := range strings.Split(r, "\n") {
-						sb.WriteString(diffGuide)
-						sb.WriteString(line)
-						sb.WriteString("\n")
-					}
-				}
+			// Render tool body (diff hints or per-tool output)
+			if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true); content != "" {
+				sb.WriteString(content)
+				sb.WriteString("\n")
 			}
 		}
 	}
@@ -1070,41 +1093,20 @@ func (m *cliModel) renderProgressBlock() string {
 			sb.WriteString("\n")
 		}
 
-		// Render tool hints (e.g. file diff) from plugin below completed tool lines.
-		// Hints may be on ActiveTools (status=done, not yet moved to CompletedTools)
-		// or on CompletedTools (moved by progressFinalizer at iteration end).
-		// The hint content is markdown (e.g. ```diff code block) rendered by glamour.
-		hintRendered := func(toolHints string) string {
-			if toolHints == "" {
-				return ""
-			}
-			r, err := m.renderToolHint(toolHints)
-			if err != nil || r == "" {
-				return ""
-			}
-			return r
-		}
+		guide := reasoningGuide.Render("  │ ")
 		for _, tool := range m.progress.CompletedTools {
-			if r := hintRendered(tool.ToolHints); r != "" {
-				diffGuide := reasoningGuide.Render("  │ ")
-				for _, line := range strings.Split(r, "\n") {
-					sb.WriteString(diffGuide)
-					sb.WriteString(line)
-					sb.WriteString("\n")
-				}
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {
+				sb.WriteString(content)
+				sb.WriteString("\n")
 			}
 		}
 		for _, tool := range m.progress.ActiveTools {
 			if tool.Status != "done" && tool.Status != "error" {
 				continue
 			}
-			if r := hintRendered(tool.ToolHints); r != "" {
-				diffGuide := reasoningGuide.Render("  │ ")
-				for _, line := range strings.Split(r, "\n") {
-					sb.WriteString(diffGuide)
-					sb.WriteString(line)
-					sb.WriteString("\n")
-				}
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {
+				sb.WriteString(content)
+				sb.WriteString("\n")
 			}
 		}
 
@@ -1322,6 +1324,53 @@ func (m *cliModel) renderHelpPanel() string {
 
 // renderMessage 渲染单条消息为 ANSI 字符串（§1 增量渲染：自包含方法）
 // toolDisplayInfo 从工具进度条目中提取显示用的 label、状态图标和样式。
+
+// renderToolContentBelow renders tool body content below a tool line.
+// Shows ToolHints (diff) first, then per-tool body (Read/Shell/Grep/Glob output).
+// guide is the prefix for each line (e.g. "  │ ").
+// dimmed controls whether the content is dimmed (for history iterations).
+func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bodyW int, dimmed bool) string {
+	var sb strings.Builder
+	guideFn := func(s string) string { return s }
+	if dimmed {
+		dimSt := m.styles.ProgressDim
+		guideFn = func(s string) string { return dimSt.Render(s) }
+	}
+
+	// 1. ToolHints (diff from plugin or built-in) — render without guide prefix.
+	// Use the caller-provided available width. The progress panel has its own
+	// padding/border, so using m.width directly makes hint lines wider than the
+	// container and triggers hard wrapping in the viewport.
+	if tool.ToolHints != "" {
+		hintW := bodyW
+		if hintW < 1 {
+			hintW = 1
+		}
+		if r, err := m.renderToolHint(tool.ToolHints, hintW); err == nil && r != "" {
+			sb.WriteString(r)
+			sb.WriteString("\n")
+		}
+	}
+
+	// 2. Per-tool body (Read code, Shell output, Grep matches, etc.)
+	if tool.ToolHints == "" { // Don't show body if diff hints are already displayed
+		g := guideFn(guide)
+		bodyContentW := bodyW - lipgloss.Width(g)
+		if bodyContentW < 1 {
+			bodyContentW = 1
+		}
+		if body := m.renderToolBody(tool, bodyContentW); body != "" {
+			for _, line := range strings.Split(body, "\n") {
+				sb.WriteString(g)
+				sb.WriteString(line)
+				sb.WriteString("\n")
+			}
+		}
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
 	if tool.Label == "" {
 		label = tool.Name
@@ -1379,7 +1428,6 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	contentWidth := m.width - 4 // 留边距
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
-	assistantLabelStyle := s.AssistLabel
 	streamingLabelStyle := s.StreamingLabel
 	systemMsgStyle := s.SystemMsg
 	errorMsgStyle := s.ErrorMsg
@@ -1428,13 +1476,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 		var toolSb strings.Builder
 
+		// Box internal width: ToolSummary has Border(2) + Padding(0,1 → 2) = 4 cols overhead
+		boxInnerW := contentWidth - 4
+
 		if m.toolSummaryExpanded {
 			// 展开模式：完整渲染
 			if iterCount > 0 {
 				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
 				toolSb.WriteString("\n")
-				// Box internal width: ToolSummary has Border(2) + Padding(0,1 → 2) = 4 cols overhead
-				boxInnerW := contentWidth - 4
 				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
 				textW := boxInnerW - guideW
 				for _, it := range msg.iterations {
@@ -1477,15 +1526,10 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 						}
 						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
 						toolSb.WriteString("\n")
-						// Render tool hints (e.g. file diff) below the tool line
-						if tool.ToolHints != "" {
-							if diff, _ := renderDiffANSI(tool.ToolHints, textW-4); diff != "" {
-								for _, dl := range strings.Split(diff, "\n") {
-									toolSb.WriteString(reasoningGuide.Render("  │ "))
-									toolSb.WriteString("  " + dl)
-									toolSb.WriteString("\n")
-								}
-							}
+						// Render tool body (diff hints or per-tool output)
+						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false); content != "" {
+							toolSb.WriteString(content)
+							toolSb.WriteString("\n")
 						}
 					}
 				}
@@ -1500,6 +1544,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 					}
 					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
 					toolSb.WriteString("\n")
+					// Render tool body for flat tool list too
+					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false); content != "" {
+						toolSb.WriteString(content)
+						toolSb.WriteString("\n")
+					}
 				}
 			}
 		} else {
@@ -1575,44 +1624,95 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// 内容超宽时退回左对齐，避免终端折行后跑到最左边
 		sb.WriteString(userStyle.Render(rendered))
 	default:
-		// assistant 消息：左侧竖线引导 + 标签
-		guide := s.AssistantGuide.Render("│")
+		// assistant 消息 — crush 风格：先构建内容体，再逐行加 guide 前缀
+		// Streaming: bright guide; Completed: dim guide
+		var guideSt lipgloss.Style
+		guideSym := "│ "
 		if msg.isPartial {
-			guide = s.WarningSt.Render("│")
-			label := streamingLabelStyle.Render("Assistant")
-			fmt.Fprintf(&sb, "%s %s %s ...", guide, timeStr, label)
+			guideSt = s.GuideSt
 		} else {
-			label := assistantLabelStyle.Render("Assistant")
-			fmt.Fprintf(&sb, "%s %s %s", guide, timeStr, label)
+			guideSt = s.DimGuideSt
 		}
+
+		// Build header line
+		label := streamingLabelStyle.Render("Assistant")
+		if !msg.isPartial {
+			label = lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.TextSecondary)).Render("Assistant")
+		}
+		headerLine := fmt.Sprintf("%s %s", guideSt.Render(guideSym)+timeStr, label)
+		if msg.isPartial {
+			headerLine += " ..."
+		}
+		sb.WriteString(headerLine)
 		sb.WriteString("\n")
-		// §19 长消息折叠：对已完成的 assistant 消息截取预览
+
+		// Build body lines (thinking box + content + cursor)
+		var bodyLines []string
+
+		// Thinking Box
+		if !msg.isPartial && msg.thinking != "" {
+			thinkingLines := strings.Split(strings.TrimSpace(msg.thinking), "\n")
+			const maxTL = 10
+			if len(thinkingLines) > 0 {
+				var display []string
+				truncated := len(thinkingLines) > maxTL
+				if truncated {
+					display = thinkingLines[len(thinkingLines)-maxTL:]
+				} else {
+					display = thinkingLines
+				}
+				body := strings.Join(display, "\n")
+				if truncated {
+					body = s.TextMutedSt.Render(fmt.Sprintf("… (%d lines hidden)", len(thinkingLines)-maxTL)) + "\n" + body
+				}
+				boxW := contentWidth - 4
+				if boxW < 20 {
+					boxW = 20
+				}
+				thinkingBox := s.ThinkingBox
+				for _, l := range strings.Split(thinkingBox.Width(boxW).Render(body), "\n") {
+					bodyLines = append(bodyLines, "  "+l)
+				}
+				bodyLines = append(bodyLines, "") // blank after box
+			}
+		}
+
+		// §19 长消息折叠
+		displayContent := rendered
 		if msg.folded && !msg.isPartial {
 			origLines := msg.originalRenderedLines
 			if origLines == 0 {
 				origLines = msg.renderedLines
 			}
 			if origLines > msgFoldThresholdLines {
-				renderedLines := strings.Split(rendered, "\n")
-				if len(renderedLines) > msgFoldPreviewLines {
-					rendered = strings.Join(renderedLines[:msgFoldPreviewLines], "\n")
-					foldHint := m.styles.TextMutedSt.Render(
-						fmt.Sprintf("  ... %s (%d lines) ...",
-							m.locale.MsgCollapsed, origLines))
-					rendered += "\n" + foldHint
+				renderedLinesList := strings.Split(rendered, "\n")
+				if len(renderedLinesList) > msgFoldPreviewLines {
+					displayContent = strings.Join(renderedLinesList[:msgFoldPreviewLines], "\n")
+					displayContent += "\n" + m.styles.TextMutedSt.Render(
+						fmt.Sprintf("  ... %s (%d lines) ...", m.locale.MsgCollapsed, origLines))
 				}
 			}
 		}
-		// Agent 消息直接渲染（glamour 已处理 markdown）
-		// Trim trailing newlines so cursor appears inline at end of content
-		trimmedRendered := strings.TrimRight(rendered, "\n")
-		sb.WriteString(trimmedRendered)
-		// 流式输出时追加闪烁光标，让用户感知"正在生成"
-		if msg.isPartial && trimmedRendered != "" {
+
+		// Main content — trim trailing newlines so cursor stays inline
+		trimmed := strings.TrimRight(displayContent, "\n")
+		if trimmed != "" {
+			bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
+		}
+
+		// Streaming cursor
+		if msg.isPartial && trimmed != "" {
 			cursorVisible := (m.ticker.ticks/5)%2 == 0
 			if cursorVisible {
-				sb.WriteString(s.StreamCursor.Render("▋"))
+				bodyLines = append(bodyLines, s.StreamCursor.Render("▋"))
 			}
+		}
+
+		// Render all body lines with guide prefix
+		for _, l := range bodyLines {
+			sb.WriteString(guideSt.Render(guideSym))
+			sb.WriteString(l)
+			sb.WriteString("\n")
 		}
 	}
 
@@ -1641,10 +1741,23 @@ func (m *cliModel) setViewportContent(content string) {
 		lines := strings.Split(content, "\n")
 		var wrapped []string
 		for _, line := range lines {
-			// Strip trailing whitespace first — mermaid-ascii and wide tables
-			// pad lines with spaces that inflate lipgloss.Width() far beyond
-			// the actual visible content, causing premature wrapping.
-			line = strings.TrimRight(line, " \t")
+			// Strip trailing whitespace — but only if it's plain whitespace.
+			// lipgloss Width().Render() produces ANSI-coded trailing spaces for
+			// background fills (diff highlighting, code blocks). These must be
+			// preserved. We detect this by checking if the line's visual width
+			// drops significantly when trailing spaces are removed.
+			trimmed := strings.TrimRight(line, " \t")
+			visualW := 0
+			if trimmed != line {
+				visualW = lipgloss.Width(line)
+				trimmedW := lipgloss.Width(trimmed)
+				// If visual width didn't change, the trailing spaces are plain
+				// whitespace (no ANSI codes) — safe to strip (mermaid-ascii etc.)
+				if visualW == trimmedW {
+					line = trimmed
+				}
+				// Otherwise, trailing spaces have ANSI background codes — keep them
+			}
 			wrapped = append(wrapped, strings.Split(hardWrapRunes(line, m.width), "\n")...)
 		}
 		content = strings.Join(wrapped, "\n")
@@ -2054,31 +2167,404 @@ func (m *cliModel) renderRewindResultBlock() string {
 // 	})
 // }
 
-// renderToolHint renders plugin-provided markdown content (e.g. ```diff code block)
-// using the glamour renderer.  Returns empty string on error or empty input.
-// Must only be called from the BubbleTea Update/View goroutine (glamour is not
-// goroutine-safe).
-// renderToolHint renders plugin-provided markdown content.
-// For diff code blocks, it applies simple ANSI coloring instead of glamour,
-// because glamour's output (background fills, margins) conflicts with the
-// progress panel border layout.
-func (m *cliModel) renderToolHint(md string) (string, error) {
+// renderToolHint renders plugin-provided or built-in hint content.
+// For ```diff code blocks, renders with line numbers and theme backgrounds (crush-style).
+// For other markdown, renders with glamour.
+func (m *cliModel) renderToolHint(md string, maxW int) (string, error) {
 	if md == "" {
 		return "", nil
 	}
-	return renderDiffANSI(md, m.width-4-6) // border(4) + guide("  │ " ~6 cols)
+	// Diff: use provided width (no guide prefix, fills full width like crush)
+	if strings.Contains(md, "```diff") {
+		w := maxW
+		if w < 40 {
+			w = 40
+		}
+		return renderDiffStyled(md, w), nil
+	}
+	// Non-diff markdown: render with glamour
+	rendered, err := m.renderer.Render(md)
+	if err != nil {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.TextSecondary)).Render(md), nil
+	}
+	return strings.TrimSpace(rendered), nil
 }
 
-// renderDiffANSI extracts a ```diff code block from markdown and applies
-// simple ANSI coloring.  Lines are truncated to maxWidth visual columns.
-func renderDiffANSI(md string, maxWidth int) (string, error) {
-	// Extract content between ```diff and ```
+// renderToolBody renders tool-specific body content below the tool line.
+// Dispatches to specialized renderers based on tool name (crush-style per-tool rendering).
+// Returns empty string if no body content should be shown.
+func (m *cliModel) renderToolBody(tool CLIToolProgress, maxW int) string {
+	if tool.Status == "error" {
+		return "" // errors shown in the tool line itself
+	}
+	t := *currentTheme
+	switch tool.Name {
+	case "Read":
+		return m.renderReadBody(tool, maxW, t)
+	case "Shell":
+		return m.renderShellBody(tool, maxW, t)
+	case "Grep":
+		return m.renderGrepBody(tool, maxW, t)
+	case "Glob":
+		return m.renderGlobBody(tool, maxW, t)
+	}
+	return ""
+}
+
+const toolBodyMaxLines = 10
+
+// highlightCode performs Chroma syntax highlighting on code content.
+// filePath is used to select the lexer; falls back to plain text if no match.
+// Each token is rendered with lipgloss including the background color (crush xchroma approach).
+// Returns a slice of highlighted lines (split by \n).
+func highlightCode(content string, filePath string, bgHex string) []string {
+	lexer := lexers.Match(filePath)
+	if lexer == nil {
+		lexer = lexers.Analyse(content)
+	}
+	if lexer == nil {
+		return nil // no match → caller uses plain rendering
+	}
+	lexer = chroma.Coalesce(lexer)
+
+	it, err := lexer.Tokenise(nil, content)
+	if err != nil {
+		return nil
+	}
+
+	style := styles.Get("monokai")
+	if style == nil {
+		style = styles.Fallback
+	}
+	bg := lipgloss.Color(bgHex)
+
+	// Walk tokens, format each with lipgloss + background, split by newline
+	var lineBuf strings.Builder
+	var result []string
+
+	for _, tok := range it.Tokens() {
+		if tok == chroma.EOF {
+			break
+		}
+		entry := style.Get(tok.Type)
+		s := lipgloss.NewStyle().Background(bg)
+		if entry.Bold == chroma.Yes {
+			s = s.Bold(true)
+		}
+		if entry.Italic == chroma.Yes {
+			s = s.Italic(true)
+		}
+		if entry.Underline == chroma.Yes {
+			s = s.Underline(true)
+		}
+		if entry.Colour.IsSet() {
+			s = s.Foreground(lipgloss.Color(entry.Colour.String()))
+		}
+
+		val := tok.Value
+		for val != "" {
+			nl := strings.IndexByte(val, '\n')
+			if nl < 0 {
+				lineBuf.WriteString(s.Render(val))
+				break
+			}
+			if nl > 0 {
+				lineBuf.WriteString(s.Render(val[:nl]))
+			}
+			result = append(result, lineBuf.String())
+			lineBuf.Reset()
+			val = val[nl+1:]
+		}
+	}
+	if lineBuf.Len() > 0 {
+		result = append(result, lineBuf.String())
+	}
+	return result
+}
+
+// renderReadBody renders Read tool output as code with line numbers and syntax highlighting.
+// The Read tool output (Detail/Summary) already has line numbers in format "%*d\t<code>".
+// We parse those to extract pure code, highlight it with Chroma, then render with our own line numbers.
+func (m *cliModel) renderReadBody(tool CLIToolProgress, maxW int, t cliTheme) string {
+	content := tool.Detail
+	if content == "" {
+		content = tool.Summary
+	}
+	if content == "" {
+		return ""
+	}
+
+	// Parse args for file path
+	filePath := ""
+	var args struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal([]byte(tool.Args), &args) == nil {
+		filePath = args.Path
+	}
+
+	// Read tool output has line numbers: "%*d\t<code>"
+	// Parse to extract line numbers and pure code
+	rawLines := strings.Split(content, "\n")
+	if len(rawLines) == 0 || (len(rawLines) == 1 && rawLines[0] == "") {
+		return ""
+	}
+
+	type parsedLine struct {
+		num  int
+		code string
+	}
+	var parsed []parsedLine
+	lineNumRe := regexp.MustCompile(`^\s*(\d+)\t(.*)$`)
+
+	for _, line := range rawLines {
+		m := lineNumRe.FindStringSubmatch(line)
+		if m != nil {
+			num, _ := strconv.Atoi(m[1])
+			parsed = append(parsed, parsedLine{num: num, code: m[2]})
+		}
+		// Skip non-matching lines (e.g. truncation messages)
+	}
+
+	if len(parsed) == 0 {
+		return "" // no parseable content
+	}
+
+	totalLines := len(parsed)
+	displayParsed := parsed
+	if len(displayParsed) > toolBodyMaxLines {
+		displayParsed = displayParsed[:toolBodyMaxLines]
+	}
+
+	// Try Chroma highlighting on pure code
+	pureCode := make([]string, len(parsed))
+	for i, p := range parsed {
+		pureCode[i] = p.code
+	}
+	pureCodeStr := strings.Join(pureCode, "\n")
+	hlLines := highlightCode(pureCodeStr, filePath, t.GCodeBlock)
+
+	// Layout calculations
+	maxLineNum := parsed[totalLines-1].num
+	digits := numDigits(maxLineNum)
+	numFmt := fmt.Sprintf("%%%dd ", digits)
+	lineNumW := digits + 1
+
+	bgCode := lipgloss.Color(t.GCodeBlock)
+	fgLineNum := lipgloss.Color(t.TextMuted)
+
+	codeW := maxW - lineNumW
+	if codeW < 10 {
+		codeW = 10
+	}
+
+	var sb strings.Builder
+	for i, p := range displayParsed {
+		lineNumText := fmt.Sprintf(numFmt, p.num)
+		lineNumText = strings.ReplaceAll(lineNumText, " ", "\u00a0")
+		lineNum := lipgloss.NewStyle().Foreground(fgLineNum).Background(bgCode).Render(lineNumText)
+
+		var codeLine string
+		if hlLines != nil && i < len(hlLines) {
+			line := ansi.Truncate(hlLines[i], codeW, "")
+			codeLine = padBgRight(line, t.GCodeBlock, codeW)
+		} else {
+			line := ansi.Truncate(p.code, codeW, "")
+			codeLine = renderBgLine(line, t.TextPrimary, t.GCodeBlock, codeW)
+		}
+		sb.WriteString(lineNum + codeLine)
+		sb.WriteString("\n")
+	}
+	if totalLines > toolBodyMaxLines {
+		hidden := totalLines - toolBodyMaxLines
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgLineNum).
+			Width(maxW).Render(fmt.Sprintf("  ... %d more lines", hidden)))
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderShellBody renders Shell tool output with command indicator.
+func (m *cliModel) renderShellBody(tool CLIToolProgress, maxW int, t cliTheme) string {
+	content := tool.Detail
+	if content == "" {
+		content = tool.Summary
+	}
+	if content == "" {
+		return ""
+	}
+	// Parse args for command
+	command := ""
+	var args struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal([]byte(tool.Args), &args) == nil {
+		command = args.Command
+	}
+
+	fgPrompt := lipgloss.Color(t.TextMuted)
+
+	var sb strings.Builder
+
+	// Show command
+	if command != "" {
+		cmdRunes := []rune(command)
+		if len(cmdRunes) > maxW-2 {
+			command = string(cmdRunes[:maxW-5]) + "..."
+		}
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgPrompt).Render("$ " + command))
+		sb.WriteString("\n")
+	}
+
+	// Show output (truncated)
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+	displayLines := lines
+	if len(displayLines) > toolBodyMaxLines {
+		displayLines = displayLines[:toolBodyMaxLines]
+	}
+	for _, line := range displayLines {
+		line = ansi.Truncate(line, maxW, "")
+		sb.WriteString(renderBgLine(line, t.TextPrimary, t.GCodeBlock, maxW))
+		sb.WriteString("\n")
+	}
+	if totalLines > toolBodyMaxLines {
+		hidden := totalLines - toolBodyMaxLines
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgPrompt).
+			Width(maxW).Render(fmt.Sprintf("  ... %d more lines", hidden)))
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderGrepBody renders Grep tool output with highlighted matches.
+func (m *cliModel) renderGrepBody(tool CLIToolProgress, maxW int, t cliTheme) string {
+	content := tool.Detail
+	if content == "" {
+		content = tool.Summary
+	}
+	if content == "" {
+		return ""
+	}
+	fgMeta := lipgloss.Color(t.TextMuted)
+
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+	displayLines := lines
+	if len(displayLines) > toolBodyMaxLines {
+		displayLines = displayLines[:toolBodyMaxLines]
+	}
+
+	var sb strings.Builder
+	for _, line := range displayLines {
+		line = ansi.Truncate(line, maxW, "")
+		sb.WriteString(renderBgLine(line, t.TextPrimary, t.GCodeBlock, maxW))
+		sb.WriteString("\n")
+	}
+	if totalLines > toolBodyMaxLines {
+		hidden := totalLines - toolBodyMaxLines
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).
+			Width(maxW).Render(fmt.Sprintf("  ... %d more matches", hidden)))
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderGlobBody renders Glob tool output as a file list.
+func (m *cliModel) renderGlobBody(tool CLIToolProgress, maxW int, t cliTheme) string {
+	content := tool.Detail
+	if content == "" {
+		content = tool.Summary
+	}
+	if content == "" {
+		return ""
+	}
+	fgFile := lipgloss.Color(t.TextPrimary)
+	fgMeta := lipgloss.Color(t.TextMuted)
+
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+	displayLines := lines
+	if len(displayLines) > toolBodyMaxLines {
+		displayLines = displayLines[:toolBodyMaxLines]
+	}
+
+	var sb strings.Builder
+	for _, line := range displayLines {
+		runes := []rune(line)
+		if len(runes) > maxW-2 {
+			line = string(runes[:maxW-5]) + "..."
+		}
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).Render("  "))
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgFile).Render(line))
+		sb.WriteString("\n")
+	}
+	if totalLines > toolBodyMaxLines {
+		hidden := totalLines - toolBodyMaxLines
+		sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).
+			Render(fmt.Sprintf("  ... %d more files", hidden)))
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// numDigits returns the number of digits in n (minimum 1).
+func numDigits(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	d := 0
+	for n > 0 {
+		n /= 10
+		d++
+	}
+	return d
+}
+
+// padBgRight appends background-colored non-breaking spaces after content.
+// Do NOT use ordinary spaces for terminal background fills: some renderers/terminals
+// trim or don't paint trailing regular spaces at EOL. NBSP is visually blank but
+// remains an actual cell, so the background is painted and selectable.
+func padBgRight(content string, bgHex string, targetWidth int) string {
+	visualW := lipgloss.Width(content)
+	pad := targetWidth - visualW
+	if pad <= 0 {
+		return content
+	}
+	padding := lipgloss.NewStyle().Background(lipgloss.Color(bgHex)).Render(strings.Repeat("\u00a0", pad))
+	return content + padding
+}
+
+func renderBgLine(content string, fgHex string, bgHex string, targetWidth int) string {
+	content = ansi.Truncate(content, targetWidth, "")
+	st := lipgloss.NewStyle().Background(lipgloss.Color(bgHex))
+	if fgHex != "" {
+		st = st.Foreground(lipgloss.Color(fgHex))
+	}
+	return padBgRight(st.Render(content), bgHex, targetWidth)
+}
+
+// renderDiffStyled renders diff content with syntax highlighting, line numbers
+// and theme semantic backgrounds. Uses the same approach as crush's xchroma:
+// Chroma tokens are formatted with lipgloss including the diff background color,
+// so ANSI codes are always correct without manual escape management.
+func renderDiffStyled(md string, maxW int) string {
+	return renderDiffStyledImpl(md, maxW)
+}
+
+func renderDiffStyledImpl(md string, maxW int) string {
+	if maxW < 40 {
+		maxW = 40
+	}
+	t := currentTheme
 	lines := strings.Split(md, "\n")
+
+	// Extract diff content from ```diff ... ``` block
 	var diffLines []string
 	inDiff := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if !inDiff && (trimmed == "```diff") {
+		if !inDiff && trimmed == "```diff" {
 			inDiff = true
 			continue
 		}
@@ -2089,43 +2575,266 @@ func renderDiffANSI(md string, maxWidth int) (string, error) {
 			diffLines = append(diffLines, line)
 		}
 	}
-	// If no diff block found, return the raw text dimmed
 	if len(diffLines) == 0 {
-		if strings.TrimSpace(md) == "" {
-			return "", nil
+		trimmed := strings.TrimSpace(md)
+		if trimmed == "" {
+			return ""
 		}
-		return dimANSI(md), nil
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextSecondary)).Render(trimmed)
 	}
 
-	var sb strings.Builder
+	// --- Extract file path for syntax highlighting ---
+	filePath := ""
 	for _, line := range diffLines {
-		// Skip "\ No newline at end of file" markers — noisy, not useful in progress panel
-		if strings.HasPrefix(line, "\\ ") {
+		if strings.HasPrefix(line, "--- a/") {
+			filePath = line[6:]
+		} else if strings.HasPrefix(line, "--- /dev/null") {
+			filePath = ""
+		}
+		if strings.HasPrefix(line, "+++ b/") {
+			if filePath == "" {
+				filePath = line[6:]
+			}
+			break
+		}
+	}
+
+	// --- Theme colors ---
+	bgAdd := lipgloss.Color(t.SuccessBg)
+	bgDel := lipgloss.Color(t.ErrorBg)
+	fgAdd := lipgloss.Color(t.Success)
+	fgDel := lipgloss.Color(t.Error)
+	fgMeta := lipgloss.Color(t.TextMuted)
+	bgCtx := lipgloss.Color(t.GCodeBlock)
+
+	// --- Syntax highlighting per line type (crush xchroma approach) ---
+	// Highlight code with background baked in via lipgloss, so ANSI codes are clean.
+	highlightMap := diffHighlightLines(diffLines, filePath, t.SuccessBg, t.ErrorBg, t.GCodeBlock)
+
+	hunkRe := regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+	oldLine := 0
+	newLine := 0
+	lineNumDigits := 3
+
+	for _, line := range diffLines {
+		if matches := hunkRe.FindStringSubmatch(line); matches != nil {
+			os, _ := strconv.Atoi(matches[1])
+			oc, _ := strconv.Atoi(matches[2])
+			if oc == 0 {
+				oc = 1
+			}
+			ns, _ := strconv.Atoi(matches[3])
+			nc, _ := strconv.Atoi(matches[4])
+			if nc == 0 {
+				nc = 1
+			}
+			maxNum := os + oc
+			if ns+nc > maxNum {
+				maxNum = ns + nc
+			}
+			d := numDigits(maxNum)
+			if d > lineNumDigits {
+				lineNumDigits = d
+			}
+		}
+	}
+
+	numFmt := fmt.Sprintf("%%%dd", lineNumDigits)
+	lineNumColW := lineNumDigits*2 + 2
+	codeW := maxW - lineNumColW - 2
+	if codeW < 10 {
+		codeW = 10
+	}
+
+	lineNumStyleAdd := lipgloss.NewStyle().Foreground(fgMeta).Background(bgAdd)
+	lineNumStyleDel := lipgloss.NewStyle().Foreground(fgMeta).Background(bgDel)
+	lineNumStyleCtx := lipgloss.NewStyle().Foreground(fgMeta).Background(bgCtx)
+	symStyleAdd := lipgloss.NewStyle().Background(bgAdd).Foreground(fgAdd)
+	symStyleDel := lipgloss.NewStyle().Background(bgDel).Foreground(fgDel)
+	symStyleCtx := lipgloss.NewStyle().Background(bgCtx).Foreground(fgMeta)
+
+	var sb strings.Builder
+	for i, line := range diffLines {
+		if strings.HasPrefix(line, `\ `) {
 			continue
 		}
-		// Truncate to maxWidth (rune-based, safe for ANSI-free text)
-		if maxWidth > 0 && len([]rune(line)) > maxWidth {
-			line = string([]rune(line)[:maxWidth])
+		runes := []rune(line)
+		if len(runes) > maxW {
+			line = string(runes[:maxW])
 		}
+
 		switch {
 		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
-			sb.WriteString(boldANSI(line))
+			sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).Faint(true).Render(ansi.Truncate(line, maxW, "")))
+
 		case strings.HasPrefix(line, "@@"):
-			sb.WriteString(cyanANSI(line))
+			if matches := hunkRe.FindStringSubmatch(line); matches != nil {
+				oldLine, _ = strconv.Atoi(matches[1])
+				newLine, _ = strconv.Atoi(matches[3])
+			}
+			sb.WriteString(renderBgLine(line, t.Info, t.Border, maxW))
+
 		case strings.HasPrefix(line, "+"):
-			sb.WriteString(greenANSI(line))
+			code := line[1:]
+			if hl, ok := highlightMap[i]; ok {
+				code = hl
+			}
+			code = ansi.Truncate(code, codeW, "")
+			oldNum := strings.Repeat("\u00a0", lineNumDigits)
+			newNum := fmt.Sprintf(numFmt, newLine)
+			lineNums := lineNumStyleAdd.Render(oldNum + "\u00a0" + newNum + "\u00a0")
+			sym := symStyleAdd.Render("+\u00a0")
+			codeStyled := padBgRight(code, t.SuccessBg, codeW)
+			sb.WriteString(lineNums + sym + codeStyled)
+			newLine++
+
 		case strings.HasPrefix(line, "-"):
-			sb.WriteString(redANSI(line))
+			code := line[1:]
+			if hl, ok := highlightMap[i]; ok {
+				code = hl
+			}
+			code = ansi.Truncate(code, codeW, "")
+			oldNum := fmt.Sprintf(numFmt, oldLine)
+			newNum := strings.Repeat("\u00a0", lineNumDigits)
+			lineNums := lineNumStyleDel.Render(oldNum + "\u00a0" + newNum + "\u00a0")
+			sym := symStyleDel.Render("-\u00a0")
+			codeStyled := padBgRight(code, t.ErrorBg, codeW)
+			sb.WriteString(lineNums + sym + codeStyled)
+			oldLine++
+
 		default:
-			sb.WriteString(dimANSI(line))
+			code := line
+			if hl, ok := highlightMap[i]; ok {
+				code = hl
+			}
+			code = ansi.Truncate(code, codeW, "")
+			oldNum := fmt.Sprintf(numFmt, oldLine)
+			newNum := fmt.Sprintf(numFmt, newLine)
+			lineNums := lineNumStyleCtx.Render(oldNum + "\u00a0" + newNum + "\u00a0")
+			sym := symStyleCtx.Render("\u00a0\u00a0")
+			codeStyled := padBgRight(code, t.GCodeBlock, codeW)
+			sb.WriteString(lineNums + sym + codeStyled)
+			oldLine++
+			newLine++
 		}
 		sb.WriteString("\n")
 	}
-	return strings.TrimRight(sb.String(), "\n"), nil
+	return strings.TrimRight(sb.String(), "\n")
 }
 
-func redANSI(s string) string   { return "\x1b[31m" + s + "\x1b[0m" }
-func greenANSI(s string) string { return "\x1b[32m" + s + "\x1b[0m" }
-func cyanANSI(s string) string  { return "\x1b[36m" + s + "\x1b[0m" }
-func boldANSI(s string) string  { return "\x1b[1m" + s + "\x1b[0m" }
-func dimANSI(s string) string   { return "\x1b[2m" + s + "\x1b[0m" }
+// diffHighlightLines performs Chroma-based syntax highlighting on code lines within a diff.
+// Uses crush's xchroma approach: each token is rendered via lipgloss with the diff background
+// color baked in, producing clean ANSI output that lipgloss can measure/Width correctly.
+// Returns a map from diff line index to highlighted code content (plain code, no +/- prefix).
+func diffHighlightLines(diffLines []string, filePath string, bgAdd, bgDel, bgCtx string) map[int]string {
+	lexer := lexers.Match(filePath)
+	if lexer == nil {
+		return nil
+	}
+	lexer = chroma.Coalesce(lexer)
+
+	// Collect code spans with their line types
+	type codeSpan struct {
+		diffIdx int
+		code    string
+		bgHex   string
+	}
+	var spans []codeSpan
+	var joined strings.Builder
+	for i, line := range diffLines {
+		code := ""
+		bg := bgCtx
+		switch {
+		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "@@"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			code = line[1:]
+			bg = bgAdd
+		case strings.HasPrefix(line, "-"):
+			code = line[1:]
+			bg = bgDel
+		default:
+			code = line
+		}
+		if code != "" {
+			spans = append(spans, codeSpan{diffIdx: i, code: code, bgHex: bg})
+			joined.WriteString(code)
+			joined.WriteString("\n")
+		}
+	}
+
+	if joined.Len() == 0 {
+		return nil
+	}
+
+	it, err := lexer.Tokenise(nil, joined.String())
+	if err != nil {
+		return nil
+	}
+
+	style := styles.Get("monokai")
+	if style == nil {
+		style = styles.Fallback
+	}
+
+	// Walk tokens, split by newline, format each token with lipgloss + background
+	result := make(map[int]string, len(spans))
+	var lineBuf strings.Builder
+	spanIdx := 0
+
+	flushLine := func() {
+		if spanIdx < len(spans) {
+			result[spans[spanIdx].diffIdx] = lineBuf.String()
+		}
+		lineBuf.Reset()
+		spanIdx++
+	}
+
+	formatWithBg := func(tok chroma.Token, bgHex string) {
+		entry := style.Get(tok.Type)
+		s := lipgloss.NewStyle().Background(lipgloss.Color(bgHex))
+		if entry.Bold == chroma.Yes {
+			s = s.Bold(true)
+		}
+		if entry.Italic == chroma.Yes {
+			s = s.Italic(true)
+		}
+		if entry.Underline == chroma.Yes {
+			s = s.Underline(true)
+		}
+		if entry.Colour.IsSet() {
+			s = s.Foreground(lipgloss.Color(entry.Colour.String()))
+		}
+		lineBuf.WriteString(s.Render(tok.Value))
+	}
+
+	for _, tok := range it.Tokens() {
+		if tok == chroma.EOF {
+			break
+		}
+		val := tok.Value
+		for val != "" {
+			nl := strings.IndexByte(val, '\n')
+			if nl < 0 {
+				if spanIdx < len(spans) {
+					formatWithBg(chroma.Token{Type: tok.Type, Value: val}, spans[spanIdx].bgHex)
+				}
+				break
+			}
+			if nl > 0 {
+				if spanIdx < len(spans) {
+					formatWithBg(chroma.Token{Type: tok.Type, Value: val[:nl]}, spans[spanIdx].bgHex)
+				}
+			}
+			flushLine()
+			val = val[nl+1:]
+		}
+	}
+
+	if lineBuf.Len() > 0 && spanIdx < len(spans) {
+		result[spans[spanIdx].diffIdx] = lineBuf.String()
+	}
+
+	return result
+}

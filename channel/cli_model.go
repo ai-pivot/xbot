@@ -624,6 +624,8 @@ type cliMessage struct {
 	content   string
 	timestamp time.Time
 	isPartial bool
+	// --- thinking/reasoning content (displayed in a collapsible box) ---
+	thinking string // raw reasoning text (stored when message is finalized)
 	// --- §1 增量渲染 ---
 	rendered    string // 缓存的渲染结果（ANSI 字符串）
 	dirty       bool   // 是否需要重新渲染

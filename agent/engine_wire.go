@@ -1362,6 +1362,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Iteration: t.Iteration,
 					Summary:   t.Summary,
+					Detail:    t.Detail,
+					Args:      t.Args,
 					ToolHints: t.ToolHints,
 				})
 			}
@@ -1373,6 +1375,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Iteration: t.Iteration,
 					Summary:   t.Summary,
+					Detail:    t.Detail,
+					Args:      t.Args,
 					ToolHints: t.ToolHints,
 				})
 			}
@@ -1429,6 +1433,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Status:    string(t.Status),
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Summary:   t.Summary,
+					Detail:    t.Detail,
+					Args:      t.Args,
 					ToolHints: t.ToolHints,
 					Iteration: t.Iteration,
 				})
@@ -1440,6 +1446,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Status:    string(t.Status),
 					Elapsed:   t.Elapsed.Milliseconds(),
 					Summary:   t.Summary,
+					Detail:    t.Detail,
+					Args:      t.Args,
 					ToolHints: t.ToolHints,
 					Iteration: t.Iteration,
 				})
@@ -1484,13 +1492,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			for _, t := range s.ActiveTools {
 				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
 				cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			if len(event.Lines) > 0 {
@@ -1574,6 +1582,8 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Status:    string(t.Status),
 				Elapsed:   t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				Detail:    t.Detail,
+				Args:      t.Args,
 				ToolHints: t.ToolHints,
 				Iteration: t.Iteration,
 			})
@@ -1585,6 +1595,8 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Status:    string(t.Status),
 				Elapsed:   t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				Detail:    t.Detail,
+				Args:      t.Args,
 				ToolHints: t.ToolHints,
 				Iteration: t.Iteration,
 			})

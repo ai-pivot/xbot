@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -117,7 +119,12 @@ func (t *FileCreateTool) executeLocal(ctx *ToolContext, params FileCreateParams)
 	}
 
 	summary := fmt.Sprintf("File created successfully: %s", filePath)
-	return &ToolResult{Summary: summary, Tips: tipFileCreated}, nil
+	diff := computeUnifiedDiff(filePath, "", params.Content)
+	result := &ToolResult{Summary: summary, Tips: tipFileCreated}
+	if diff != "" {
+		result.Metadata = map[string]string{"diff": diff}
+	}
+	return result, nil
 }
 
 // ============================================================================
@@ -256,7 +263,12 @@ func (t *FileReplaceTool) executeLocal(ctx *ToolContext, params FileReplaceParam
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
 
-	return &ToolResult{Summary: result, Tips: tipEditCompleted}, nil
+	diff := computeUnifiedDiff(filePath, string(content), newContent)
+	toolResult := &ToolResult{Summary: result, Tips: tipEditCompleted}
+	if diff != "" {
+		toolResult.Metadata = map[string]string{"diff": diff}
+	}
+	return toolResult, nil
 }
 
 // ============================================================================
@@ -637,4 +649,51 @@ func Truncate(s string, maxLen int) string {
 		return "..."
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+// computeUnifiedDiff generates a unified diff between old and new content.
+// Uses the system `diff` command. Returns empty string on error or if no diff.
+// The diff is capped at 200 lines to avoid excessive metadata.
+func computeUnifiedDiff(label string, oldContent, newContent string) string {
+	oldFile, err := os.CreateTemp("", "xbot-diff-old-*")
+	if err != nil {
+		return ""
+	}
+	defer os.Remove(oldFile.Name())
+	oldFile.WriteString(oldContent)
+	oldFile.Close()
+
+	newFile, err := os.CreateTemp("", "xbot-diff-new-*")
+	if err != nil {
+		return ""
+	}
+	defer os.Remove(newFile.Name())
+	newFile.WriteString(newContent)
+	newFile.Close()
+
+	// For absolute paths, strip leading / to avoid a//home/... double slash
+	diffLabel := strings.TrimPrefix(label, "/")
+
+	cmd := exec.Command("diff", "-u",
+		"--label", "a/"+diffLabel,
+		"--label", "b/"+diffLabel,
+		oldFile.Name(), newFile.Name())
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = nil
+	// diff returns exit code 1 when there are differences — ignore that error.
+	_ = cmd.Run()
+
+	result := out.String()
+	if result == "" {
+		return ""
+	}
+
+	// Cap at 200 lines to avoid bloating metadata
+	lines := strings.Split(result, "\n")
+	if len(lines) > 200 {
+		lines = lines[:200]
+		lines = append(lines, fmt.Sprintf("... (%d more lines truncated)", len(lines)-200))
+	}
+	return strings.Join(lines, "\n")
 }

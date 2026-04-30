@@ -48,6 +48,7 @@ func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *t
 				Label:     formatToolProgress(tc.Name, tc.Arguments),
 				Status:    ToolPending,
 				Iteration: iteration,
+				Args:      tc.Arguments,
 			}
 		}
 	}
@@ -138,11 +139,34 @@ func (s *runState) updateToolResultProgress(ctx context.Context, entry toolCallE
 	}
 	s.structuredProgress.ActiveTools[entry.index].Summary = summary
 
+	// Store full untruncated result for per-tool body rendering (Read, Shell, etc.)
+	if result != nil {
+		detail := ""
+		if result.Detail != "" {
+			detail = result.Detail
+		} else if result.Summary != "" {
+			detail = result.Summary
+		}
+		// Cap at 4000 runes to avoid bloating progress payloads
+		if r := []rune(detail); len(r) > 4000 {
+			detail = string(r[:4000]) + "\n... (truncated)"
+		}
+		s.structuredProgress.ActiveTools[entry.index].Detail = detail
+	}
+
 	// Read plugin toolHints (e.g. file-diff markdown) after PostToolUse hook
 	// has fired synchronously. The hint plugin ran inside executeWithHooks.
 	if s.cfg.PluginManager != nil {
 		if hint := s.cfg.PluginManager.GetToolHints(); hint != "" {
 			s.structuredProgress.ActiveTools[entry.index].ToolHints = hint
+		}
+	}
+
+	// Built-in diff: if no plugin hints, generate diff from tool result metadata.
+	// This makes diff work without the external file-diff.sh plugin.
+	if s.structuredProgress.ActiveTools[entry.index].ToolHints == "" && result != nil && result.Metadata != nil {
+		if diff, ok := result.Metadata["diff"]; ok && diff != "" {
+			s.structuredProgress.ActiveTools[entry.index].ToolHints = "```diff\n" + diff + "\n```"
 		}
 	}
 }

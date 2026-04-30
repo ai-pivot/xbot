@@ -75,7 +75,7 @@ except: pass
         printf '%s' "$old_str" > "$old_file"
         printf '%s' "$new_str" > "$new_file"
 
-        raw_diff=$(diff -u --label "a/$file_path" --label "b/$file_path" "$old_file" "$new_file" 2>/dev/null || true)
+        raw_diff=$(diff -u --label "a/${file_path#/}" --label "b/${file_path#/}" "$old_file" "$new_file" 2>/dev/null || true)
 
         if [ -n "$raw_diff" ]; then
             echo "md|"

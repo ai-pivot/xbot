@@ -25,8 +25,12 @@ func appendStatusHint(status, hint string) string {
 	return status + "  " + hint
 }
 
-// renderTitleBar builds the top title bar with mode label, hints, runner status,
-// and user identity indicator.
+// isCompact returns true when terminal width < 80 — compact layout for narrow windows.
+func (m *cliModel) isCompact() bool { return m.width < 80 }
+
+// renderTitleBar builds the top title bar with gradient wordmark, diagonal fill,
+// mode label, hints, runner status, and user identity indicator.
+// In compact mode (<80 cols), extras (runner, user) are hidden.
 func (m *cliModel) renderTitleBar() string {
 	titleLeft := m.titleText()
 	titleRight := m.locale.TitleHint
@@ -36,23 +40,28 @@ func (m *cliModel) renderTitleBar() string {
 	} else if m.updateNotice != nil && m.updateNotice.HasUpdate {
 		titleRight = fmt.Sprintf("%s→%s · /update · /help", m.updateNotice.Current, m.updateNotice.Latest)
 	}
-	// Runner status + identity indicator in title bar
-	if m.runnerBridge != nil {
-		switch m.runnerBridge.Status() {
-		case RunnerConnected:
-			titleRight = "🟢 Runner · " + titleRight
-		case RunnerConnecting:
-			titleRight = "🟡 Runner · " + titleRight
+	// Runner status + identity indicator — hidden in compact mode
+	if !m.isCompact() {
+		if m.runnerBridge != nil {
+			switch m.runnerBridge.Status() {
+			case RunnerConnected:
+				titleRight = IconRunnerOn + " Runner · " + titleRight
+			case RunnerConnecting:
+				titleRight = IconRunnerWait + " Runner · " + titleRight
+			}
+		}
+		if m.senderID != "cli_user" {
+			titleRight = IconUser + " " + m.senderID + " · " + titleRight
 		}
 	}
-	if m.senderID != "cli_user" {
-		titleRight = "👤 " + m.senderID + " · " + titleRight
-	}
+
 	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
-	if titlePad < 1 {
-		titlePad = 1
+	if titlePad < 3 {
+		titlePad = 3
 	}
-	return m.styles.TitleBar.Render(titleLeft + strings.Repeat(" ", titlePad) + titleRight)
+	// Diagonal fill between left and right sections
+	diagPad := m.styles.DimGuideSt.Render(strings.Repeat("╱", titlePad))
+	return m.styles.TitleBar.Render(titleLeft + diagPad + titleRight)
 }
 
 // renderInputArea renders the textarea input box with dynamic border color
@@ -532,7 +541,9 @@ func (m *cliModel) renderTodoBar() string {
 
 // titleText 生成标题栏文字。
 func (m *cliModel) titleText() string {
-	modeLabel := "⌂ xbot"
+	// Gradient "xbot" wordmark — gradient from Accent to Gradient colors
+	gradientXbot := gradientWordmark("xbot", currentTheme.Accent, currentTheme.Gradient)
+	modeLabel := gradientXbot
 	if m.remoteMode {
 		host := m.remoteServerURL
 		// Strip scheme for display: "ws://host:port" → "host:port"
@@ -543,22 +554,21 @@ func (m *cliModel) titleText() string {
 		var cloud string
 		switch m.connState {
 		case "connected":
-			cloud = "☁"
+			cloud = IconCloudOn
 		case "disconnected":
-			cloud = "⊘"
+			cloud = IconCloudOff
 		case "reconnecting":
-			cloud = "◌"
+			cloud = IconCloudWait
 		default:
-			cloud = "☁"
+			cloud = IconCloudOn
 		}
 		if host != "" {
-			modeLabel = fmt.Sprintf("%s xbot %s", cloud, host)
+			modeLabel = fmt.Sprintf("%s %s %s", cloud, gradientXbot, host)
 		} else {
-			modeLabel = fmt.Sprintf("%s xbot remote", cloud)
+			modeLabel = fmt.Sprintf("%s %s remote", cloud, gradientXbot)
 		}
 	}
 	if m.workDir != "" {
-		// Resolve to absolute path so "." → actual directory name
 		abs, err := filepath.Abs(m.workDir)
 		if err == nil {
 			return fmt.Sprintf(" %s [%s]", modeLabel, filepath.Base(abs))
@@ -609,17 +619,24 @@ func (m *cliModel) renderSplash() string {
 	}
 
 	// §20 使用缓存样式
-	logoStyle := m.styles.Accent.Bold(true)
 	versionStyle := m.styles.VersionSt
 	descStyle := m.styles.TextMutedSt
 	loadingStyle := m.styles.WarningSt
 
-	// 组装 splash 内容（logo 按最宽行整体居中，保持字母内部对齐）
+	// 组装 splash 内容 — ASCII logo 逐行渐变（Accent → Gradient）
 	var lines []string
 	maxLogoW := 0
 	renderedLogo := make([]string, len(xbotLogo))
+	fromR, fromG, fromB := hexToRGB(currentTheme.Accent)
+	toR, toG, toB := hexToRGB(currentTheme.Gradient)
+	n := len(xbotLogo)
 	for i, line := range xbotLogo {
-		renderedLogo[i] = logoStyle.Render(line)
+		t := float64(i) / float64(max(n-1, 1))
+		r := uint8(float64(fromR) + (float64(toR)-float64(fromR))*t)
+		g := uint8(float64(fromG) + (float64(toG)-float64(fromG))*t)
+		b := uint8(float64(fromB) + (float64(toB)-float64(fromB))*t)
+		lineColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b))
+		renderedLogo[i] = lipgloss.NewStyle().Foreground(lineColor).Bold(true).Render(line)
 		if w := lipgloss.Width(renderedLogo[i]); w > maxLogoW {
 			maxLogoW = w
 		}

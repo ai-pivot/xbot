@@ -621,7 +621,9 @@ type WsToolProgress struct {
 	Elapsed   int64  `json:"elapsed_ms,omitempty"` // milliseconds
 	Iteration int    `json:"iteration,omitempty"`
 	Summary   string `json:"summary,omitempty"`
-	ToolHints string `json:"toolHints,omitempty"` // markdown hint from plugin
+	Detail    string `json:"detail,omitempty"`    // full untruncated result
+	Args      string `json:"args,omitempty"`      // raw JSON tool arguments
+	ToolHints string `json:"toolHints,omitempty"` // markdown hint from plugin or built-in diff
 }
 
 // WsSubAgent 子 Agent 的结构化进度状态。

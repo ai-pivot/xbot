@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"xbot/internal/textarea"
 	"xbot/plugin"
@@ -17,15 +18,15 @@ func init() {
 	termenv.SetDefaultOutput(termenv.NewOutput(os.Stdout, termenv.WithTTY(false)))
 }
 
-// --- Theme system ---
-//
-// Theme = color scheme only. Terminal background is not controlled by xbot.
+// Theme system — semantic color palette with foreground/background layering.
 // All schemes are designed for dark terminal backgrounds.
 type cliTheme struct {
-	// Text
+	// Text (3-level foreground hierarchy)
 	TextPrimary   string // 主文本色
 	TextSecondary string // 次要文本
 	TextMuted     string // 弱化文本/占位符
+	FGMostSubtle  string // 最弱文本（引导线轨道、超弱分隔符）
+	FGGuide       string // 引导线（│）颜色
 	// Semantic
 	Success string // 成功/完成
 	Warning string // 警告/进行中
@@ -38,9 +39,15 @@ type cliTheme struct {
 	BarEmpty  string // 进度条空
 	Border    string // 边框
 	TitleText string // 标题栏文字
-	// Surface
-	Surface  string // 分隔线/标题栏背景
+	// Surface — background layers (darkest → lightest)
+	Surface  string // 主背景（最深）
+	BGPanel  string // 面板/卡片背景（比 Surface 略亮）
 	Gradient string // 渐变辅助色（分隔线、装饰）
+	// Semantic backgrounds (for diffs, tool output, status blocks)
+	ErrorBg   string // 错误背景（diff 删除行）
+	SuccessBg string // 成功背景（diff 插入行）
+	WarningBg string // 警告背景
+	InfoBg    string // 信息背景
 	// Glamour 渲染色（Markdown 内容跟随主题）
 	GDocumentText   string // 文档正文色
 	GHeadingText    string // 标题色
@@ -58,6 +65,8 @@ var (
 		TextPrimary:     "#e8eaed",
 		TextSecondary:   "#9aa0a6",
 		TextMuted:       "#5f6368",
+		FGMostSubtle:    "#3c4043",
+		FGGuide:         "#667eea",
 		Success:         "#81c995",
 		Warning:         "#fdd663",
 		Error:           "#f28b82",
@@ -69,7 +78,12 @@ var (
 		Border:          "#3c4043",
 		TitleText:       "#e8eaed",
 		Surface:         "#1e1f2e",
+		BGPanel:         "#252736",
 		Gradient:        "#667eea",
+		ErrorBg:         "#332020",
+		SuccessBg:       "#1a3325",
+		WarningBg:       "#332d1a",
+		InfoBg:          "#1a2533",
 		GDocumentText:   "#e8eaed",
 		GHeadingText:    "#8ab4f8",
 		GCodeBlock:      "#1e1f2e",
@@ -84,6 +98,8 @@ var (
 		TextPrimary:     "#c3e8f0",
 		TextSecondary:   "#6fb3c4",
 		TextMuted:       "#3d6b7a",
+		FGMostSubtle:    "#1e4976",
+		FGGuide:         "#0ea5e9",
 		Success:         "#5eead4",
 		Warning:         "#fbbf24",
 		Error:           "#fb7185",
@@ -95,7 +111,12 @@ var (
 		Border:          "#1e4976",
 		TitleText:       "#ecfeff",
 		Surface:         "#0c1929",
+		BGPanel:         "#112233",
 		Gradient:        "#0ea5e9",
+		ErrorBg:         "#2a1a1f",
+		SuccessBg:       "#1a2a25",
+		WarningBg:       "#2a251a",
+		InfoBg:          "#1a2230",
 		GDocumentText:   "#c3e8f0",
 		GHeadingText:    "#7dd3fc",
 		GCodeBlock:      "#0c1929",
@@ -110,6 +131,8 @@ var (
 		TextPrimary:     "#d1e7dd",
 		TextSecondary:   "#7dba8a",
 		TextMuted:       "#4a6b50",
+		FGMostSubtle:    "#1a4d2e",
+		FGGuide:         "#059669",
 		Success:         "#86efac",
 		Warning:         "#fde68a",
 		Error:           "#fca5a5",
@@ -121,7 +144,12 @@ var (
 		Border:          "#1a4d2e",
 		TitleText:       "#dcfce7",
 		Surface:         "#0a1f14",
+		BGPanel:         "#0f2a1c",
 		Gradient:        "#059669",
+		ErrorBg:         "#2a1a1f",
+		SuccessBg:       "#1a2a20",
+		WarningBg:       "#2a251a",
+		InfoBg:          "#1a2230",
 		GDocumentText:   "#d1e7dd",
 		GHeadingText:    "#93c5fd",
 		GCodeBlock:      "#0a1f14",
@@ -136,6 +164,8 @@ var (
 		TextPrimary:     "#fef3c7",
 		TextSecondary:   "#fdba74",
 		TextMuted:       "#78716c",
+		FGMostSubtle:    "#44403c",
+		FGGuide:         "#ea580c",
 		Success:         "#fde68a",
 		Warning:         "#fdba74",
 		Error:           "#fca5a5",
@@ -147,7 +177,12 @@ var (
 		Border:          "#44403c",
 		TitleText:       "#fffbeb",
 		Surface:         "#1c1917",
+		BGPanel:         "#24201c",
 		Gradient:        "#ea580c",
+		ErrorBg:         "#2a1a1f",
+		SuccessBg:       "#1d2a18",
+		WarningBg:       "#2a221a",
+		InfoBg:          "#1a2230",
 		GDocumentText:   "#fef3c7",
 		GHeadingText:    "#fbbf24",
 		GCodeBlock:      "#1c1917",
@@ -162,6 +197,8 @@ var (
 		TextPrimary:     "#fce7f3",
 		TextSecondary:   "#f9a8d4",
 		TextMuted:       "#6b4c5e",
+		FGMostSubtle:    "#4a2040",
+		FGGuide:         "#db2777",
 		Success:         "#fbcfe8",
 		Warning:         "#fdba74",
 		Error:           "#fca5a5",
@@ -173,7 +210,12 @@ var (
 		Border:          "#4a2040",
 		TitleText:       "#fdf2f8",
 		Surface:         "#1a0f1e",
+		BGPanel:         "#221525",
 		Gradient:        "#db2777",
+		ErrorBg:         "#2a1a20",
+		SuccessBg:       "#1a2a1d",
+		WarningBg:       "#2a221a",
+		InfoBg:          "#1d1a30",
 		GDocumentText:   "#fce7f3",
 		GHeadingText:    "#c4b5fd",
 		GCodeBlock:      "#1a0f1e",
@@ -188,6 +230,8 @@ var (
 		TextPrimary:     "#c9d1d9",
 		TextSecondary:   "#8b949e",
 		TextMuted:       "#484f58",
+		FGMostSubtle:    "#30363d",
+		FGGuide:         "#8b949e",
 		Success:         "#7ee787",
 		Warning:         "#e3b341",
 		Error:           "#ff7b72",
@@ -199,7 +243,12 @@ var (
 		Border:          "#30363d",
 		TitleText:       "#f0f6fc",
 		Surface:         "#161b22",
+		BGPanel:         "#1c2128",
 		Gradient:        "#484f58",
+		ErrorBg:         "#2d1a1f",
+		SuccessBg:       "#1d2d20",
+		WarningBg:       "#2d281a",
+		InfoBg:          "#1a2530",
 		GDocumentText:   "#c9d1d9",
 		GHeadingText:    "#79c0ff",
 		GCodeBlock:      "#161b22",
@@ -214,6 +263,8 @@ var (
 		TextPrimary:     "#d8dee9",
 		TextSecondary:   "#81a1c1",
 		TextMuted:       "#4c566a",
+		FGMostSubtle:    "#3b4252",
+		FGGuide:         "#5e81ac",
 		Success:         "#a3be8c",
 		Warning:         "#ebcb8b",
 		Error:           "#bf616a",
@@ -225,7 +276,12 @@ var (
 		Border:          "#434c5e",
 		TitleText:       "#eceff4",
 		Surface:         "#2e3440",
+		BGPanel:         "#353b49",
 		Gradient:        "#5e81ac",
+		ErrorBg:         "#382525",
+		SuccessBg:       "#253825",
+		WarningBg:       "#383525",
+		InfoBg:          "#202838",
 		GDocumentText:   "#d8dee9",
 		GHeadingText:    "#88c0d0",
 		GCodeBlock:      "#2e3440",
@@ -236,10 +292,12 @@ var (
 		GHorizontalRule: "#5e81ac",
 	}
 	themeDracula = cliTheme{
-		// Dracula — iconic dark purple theme, high contrast
+		// Dracula — deep purple theme with vivid contrast
 		TextPrimary:     "#f8f8f2",
 		TextSecondary:   "#bd93f9",
 		TextMuted:       "#6272a4",
+		FGMostSubtle:    "#44475a",
+		FGGuide:         "#6272a4",
 		Success:         "#50fa7b",
 		Warning:         "#f1fa8c",
 		Error:           "#ff5555",
@@ -251,7 +309,12 @@ var (
 		Border:          "#44475a",
 		TitleText:       "#f8f8f2",
 		Surface:         "#1e1f29",
+		BGPanel:         "#282a36",
 		Gradient:        "#6272a4",
+		ErrorBg:         "#382525",
+		SuccessBg:       "#1d3825",
+		WarningBg:       "#383525",
+		InfoBg:          "#202538",
 		GDocumentText:   "#f8f8f2",
 		GHeadingText:    "#bd93f9",
 		GCodeBlock:      "#1e1f29",
@@ -267,6 +330,8 @@ var (
 		TextPrimary:     "#cdd6f4", // Text
 		TextSecondary:   "#a6adc8", // Overlay0
 		TextMuted:       "#585b70", // Overlay2
+		FGMostSubtle:    "#45475a", // Surface1
+		FGGuide:         "#89b4fa", // Blue
 		Success:         "#a6e3a1", // Green
 		Warning:         "#f9e2af", // Yellow
 		Error:           "#f38ba8", // Red
@@ -278,7 +343,12 @@ var (
 		Border:          "#45475a", // Surface1
 		TitleText:       "#cdd6f4", // Text
 		Surface:         "#1e1e2e", // Base
+		BGPanel:         "#1e1e2e", // same as Surface
 		Gradient:        "#89b4fa", // Blue
+		ErrorBg:         "#3a2626",
+		SuccessBg:       "#263a2a",
+		WarningBg:       "#3a3626",
+		InfoBg:          "#24283a",
 		GDocumentText:   "#cdd6f4", // Text
 		GHeadingText:    "#cba6f7", // Mauve
 		GCodeBlock:      "#181825", // Mantle
@@ -388,6 +458,11 @@ type cliStyles struct {
 	UserContent    lipgloss.Style
 	AssistantGuide lipgloss.Style
 	StreamCursor   lipgloss.Style
+	// --- guide lines (message hierarchy) ---
+	GuideSt    lipgloss.Style // 活跃引导线（│）
+	DimGuideSt lipgloss.Style // 暗淡引导线（已完成的旧消息）
+	// --- thinking box ---
+	ThinkingBox lipgloss.Style // 推理内容折叠面板
 	// --- settings panel ---
 	SettingsDivider lipgloss.Style
 	SettingsCat     lipgloss.Style
@@ -448,7 +523,7 @@ func buildStyles(width int) cliStyles {
 		StreamingLabel:   lipgloss.NewStyle().Foreground(c(t.Warning)).Bold(true),
 		SystemMsg:        lipgloss.NewStyle().Foreground(c(t.TextSecondary)).Italic(true).Width(width).Align(lipgloss.Center),
 		ErrorMsg:         lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Error)).Foreground(c(t.Error)).Bold(true).Padding(0, 1).Width(cw),
-		ToolSummary:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Accent)).Foreground(c(t.TextPrimary)).Padding(0, 1).Width(cw).Align(lipgloss.Left),
+		ToolSummary:      lipgloss.NewStyle().Foreground(c(t.TextPrimary)).Padding(0, 1).Width(cw).Align(lipgloss.Left),
 		ToolHeader:       lipgloss.NewStyle().Foreground(c(t.Info)).Bold(true),
 		ToolItem:         lipgloss.NewStyle().Foreground(c(t.Success)),
 		ToolErrorItem:    lipgloss.NewStyle().Foreground(c(t.Error)),
@@ -463,7 +538,7 @@ func buildStyles(width int) cliStyles {
 		ProgressElapsed:  lipgloss.NewStyle().Foreground(c(t.TextSecondary)).Faint(true),
 		ProgressIndent:   lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
 		ProgressDim:      lipgloss.NewStyle().Faint(true),
-		ProgressBlock:    lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Accent)).Padding(0, 1).Width(cw),
+		ProgressBlock:    lipgloss.NewStyle().Padding(0, 1).Width(cw),
 		Accent:           lipgloss.NewStyle().Foreground(c(t.Accent)),
 		TextMutedSt:      lipgloss.NewStyle().Foreground(c(t.TextMuted)),
 		WarningSt:        lipgloss.NewStyle().Foreground(c(t.Warning)),
@@ -512,6 +587,11 @@ func buildStyles(width int) cliStyles {
 		UserContent:    lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
 		AssistantGuide: lipgloss.NewStyle().Foreground(c(t.Gradient)),
 		StreamCursor:   lipgloss.NewStyle().Foreground(c(t.Warning)).Bold(true),
+		// --- guide lines (message hierarchy) ---
+		GuideSt:    lipgloss.NewStyle().Foreground(c(t.FGGuide)),
+		DimGuideSt: lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)),
+		// --- thinking box ---
+		ThinkingBox: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Border)).Padding(0, 1),
 		// --- settings panel ---
 		SettingsDivider: lipgloss.NewStyle().Foreground(c(t.Border)).Faint(true),
 		SettingsCat:     lipgloss.NewStyle().Foreground(c(t.AccentAlt)).Bold(true),
@@ -708,4 +788,39 @@ func buildWidgetRenderFn(st cliStyles) func(spans []plugin.WidgetSpan, width int
 		}
 		return result
 	}
+}
+
+// hexToRGB converts a hex color string (e.g. "#ff0044" or "ff0044") to RGB components.
+func hexToRGB(hex string) (uint8, uint8, uint8) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return 128, 128, 128
+	}
+	r, _ := strconv.ParseUint(hex[0:2], 16, 8)
+	g, _ := strconv.ParseUint(hex[2:4], 16, 8)
+	b, _ := strconv.ParseUint(hex[4:6], 16, 8)
+	return uint8(r), uint8(g), uint8(b)
+}
+
+// gradWordmark renders each character of text with a smooth color gradient
+// from fromColor to toColor. Both are hex strings (e.g. "#667eea").
+func gradientWordmark(text, fromColor, toColor string) string {
+	fromR, fromG, fromB := hexToRGB(fromColor)
+	toR, toG, toB := hexToRGB(toColor)
+	runes := []rune(text)
+	n := len(runes)
+	if n == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, ch := range runes {
+		t := float64(i) / float64(max(n-1, 1))
+		r := uint8(float64(fromR) + (float64(toR)-float64(fromR))*t)
+		g := uint8(float64(fromG) + (float64(toG)-float64(fromG))*t)
+		b := uint8(float64(fromB) + (float64(toB)-float64(fromB))*t)
+		sb.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b))).
+			Render(string(ch)))
+	}
+	return sb.String()
 }
