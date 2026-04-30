@@ -800,7 +800,7 @@ func (m *cliModel) renderFooter() string {
 	} else {
 		// 就绪态：显示核心快捷键
 		if m.textarea.Value() == "" {
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterDelete), m.keyHint("/", m.locale.FooterCommands), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("e", m.locale.FooterFold))
+			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("e", m.locale.FooterFold))
 			if m.subscriptionMgr != nil {
 				hints = append(hints, m.ctrlKey("p", "Subs"))
 			}
@@ -809,7 +809,7 @@ func (m *cliModel) renderFooter() string {
 				hints = append(hints, m.keyHint("^", m.locale.FooterBgTasks))
 			}
 		} else {
-			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("k", m.locale.FooterDelete))
+			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("k", m.locale.FooterPalette))
 		}
 	}
 

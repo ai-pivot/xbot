@@ -76,8 +76,8 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		return m, nil, true
 
 	case msg.String() == "ctrl+k":
-		// §23 Ctrl+K: Command Palette
-		if m.panelMode == "" && m.quickSwitchMode == "" && !m.paletteOpen {
+		// §23 Ctrl+K: Command Palette — always available, even in panels
+		if !m.paletteOpen {
 			m.openCommandPalette()
 			return m, nil, true
 		}
