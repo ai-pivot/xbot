@@ -15,6 +15,7 @@ import (
 	"xbot/config"
 	"xbot/event"
 	llm "xbot/llm"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -213,6 +214,7 @@ func (b fakeBackend) Run(_ context.Context) error             { return nil }
 func (b fakeBackend) GetLLMConcurrency(_ string) int          { return 0 }
 func (b fakeBackend) SetLLMConcurrency(_ string, _ int) error { return nil }
 func (b fakeBackend) GetContextMode() string                  { return "" }
+func (b fakeBackend) PluginManager() *plugin.PluginManager    { return nil }
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.T) {
 	cfg := newTestConfig()

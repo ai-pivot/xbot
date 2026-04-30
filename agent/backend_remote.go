@@ -17,6 +17,7 @@ import (
 	"xbot/config"
 	"xbot/event"
 	llm "xbot/llm"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/tools"
 
@@ -80,6 +81,9 @@ type RemoteBackend struct {
 
 	// Injected user message callback (for bg task notifications from server)
 	injectUserCb func(content string)
+
+	// Plugin widget push callback (for real-time widget zone updates from server)
+	pluginWidgetsCb func(zones map[string]string, chatID string)
 
 	// RPC pending calls: requestID → response channel
 	rpcMu      sync.Mutex
@@ -284,6 +288,12 @@ func (b *RemoteBackend) OnConnStateChange(callback func(state string)) {
 // The CLI displays it as a user message and starts the agent turn display.
 func (b *RemoteBackend) OnInjectUserMessage(callback func(content string)) {
 	b.injectUserCb = callback
+}
+
+// OnPluginWidgets registers a callback invoked when the server pushes widget zone
+// content updates. This is the real-time push path — no polling needed.
+func (b *RemoteBackend) OnPluginWidgets(callback func(zones map[string]string, chatID string)) {
+	b.pluginWidgetsCb = callback
 }
 
 // ConnState returns the current connection state string.
@@ -552,6 +562,16 @@ func (b *RemoteBackend) readPump(ctx context.Context) {
 					b.injectUserCb(msg.Content)
 				}()
 			}
+		case "plugin_widgets":
+			// Server push: widget zone content updated.
+			// Parse and cache directly — no RPC round-trip needed.
+			// chatID in the message identifies which session this push targets.
+			if b.pluginWidgetsCb != nil {
+				var zones map[string]string
+				if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
+					b.pluginWidgetsCb(zones, msg.ChatID)
+				}
+			}
 		}
 	}
 }
@@ -612,14 +632,14 @@ func convertWsProgressToCLI(wp *channel.WsProgressPayload) *channel.CLIProgressP
 	for _, t := range wp.ActiveTools {
 		payload.ActiveTools = append(payload.ActiveTools, channel.CLIToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Summary: t.Summary,
+			Elapsed: t.Elapsed, Summary: t.Summary, ToolHints: t.ToolHints,
 			Iteration: t.Iteration,
 		})
 	}
 	for _, t := range wp.CompletedTools {
 		payload.CompletedTools = append(payload.CompletedTools, channel.CLIToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Summary: t.Summary,
+			Elapsed: t.Elapsed, Summary: t.Summary, ToolHints: t.ToolHints,
 			Iteration: t.Iteration,
 		})
 	}
@@ -912,6 +932,7 @@ func (b *RemoteBackend) MultiSession() *session.MultiTenantSession   { return ni
 func (b *RemoteBackend) BgTaskManager() *tools.BackgroundTaskManager { return nil }
 func (b *RemoteBackend) HookManager() *hooks.Manager                 { return nil }
 func (b *RemoteBackend) ApprovalState() *hooks.ApprovalState         { return nil }
+func (b *RemoteBackend) PluginManager() *plugin.PluginManager        { return nil }
 
 // ---------------------------------------------------------------------------
 // AgentBackend — init-only no-ops (server handles these)
@@ -1437,5 +1458,10 @@ func RPCMethodList() []string {
 		"get_channel_config", "set_channel_config",
 		"is_processing", "get_active_progress",
 		"rewind_checkpoints",
+		// Plugin system
+		"plugin_status", "plugin_widgets",
+		"plugin_reload", "plugin_reload_all",
+		"plugin_install", "plugin_uninstall",
+		"plugin_health", "plugin_metrics",
 	}
 }

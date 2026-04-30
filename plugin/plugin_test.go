@@ -1,0 +1,6420 @@
+package plugin
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"xbot/tools"
+)
+
+// ---------------------------------------------------------------------------
+// Test Helpers
+// ---------------------------------------------------------------------------
+
+// newTestPM creates a PluginManager in a temp dir that is automatically closed
+// when the test finishes. This prevents Windows "file in use" errors when
+// t.TempDir() tries to clean up the audit.jsonl file.
+func newTestPM(t *testing.T) *PluginManager {
+	pm := NewPluginManager(t.TempDir())
+	t.Cleanup(func() { pm.Close() })
+	return pm
+}
+
+func testManifest() PluginManifest {
+	return PluginManifest{
+		ID:               "com.test.example",
+		Name:             "Test Plugin",
+		Version:          "1.0.0",
+		Description:      "A test plugin",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register", "hooks.subscribe", "context.enrich", "storage.private"},
+	}
+}
+
+func testPluginDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	return dir
+}
+
+func writeTestManifest(t *testing.T, dir string, m *PluginManifest) {
+	t.Helper()
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manifest Tests
+// ---------------------------------------------------------------------------
+
+func TestLoadManifest(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	writeTestManifest(t, dir, &m)
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+	if loaded.ID != m.ID {
+		t.Errorf("ID mismatch: got %q, want %q", loaded.ID, m.ID)
+	}
+	if loaded.Name != m.Name {
+		t.Errorf("Name mismatch: got %q, want %q", loaded.Name, m.Name)
+	}
+	if loaded.Runtime != RuntimeNative {
+		t.Errorf("Runtime mismatch: got %q, want %q", loaded.Runtime, RuntimeNative)
+	}
+}
+
+func TestLoadManifestValidation_MissingID(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	m.ID = ""
+	writeTestManifest(t, dir, &m)
+
+	_, err := LoadManifest(dir)
+	if err == nil {
+		t.Fatal("expected error for missing ID")
+	}
+}
+
+func TestLoadManifestValidation_InvalidRuntime(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	m.Runtime = "invalid"
+	writeTestManifest(t, dir, &m)
+
+	_, err := LoadManifest(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid runtime")
+	}
+}
+
+func TestValidateActivationEvent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		event string
+		valid bool
+	}{
+		{"onStart", true},
+		{"onTool:code_review", true},
+		{"onTool:", false},
+		{"onHook:PreToolUse", true},
+		{"onHook:InvalidEvent", false},
+		{"onCommand:deploy", true},
+		{"onCommand:", false},
+		{"invalid", false},
+	}
+	for _, tt := range tests {
+		err := validateActivationEvent(tt.event)
+		if (err == nil) != tt.valid {
+			t.Errorf("validateActivationEvent(%q): valid=%v, err=%v", tt.event, tt.valid, err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Permission Tests
+// ---------------------------------------------------------------------------
+
+func TestPermissionChecker(t *testing.T) {
+	t.Parallel()
+	pc := NewPermissionChecker([]string{"tools.register", "hooks.subscribe"})
+
+	if !pc.Has(PermToolsRegister) {
+		t.Error("should have tools.register")
+	}
+	if !pc.Has(PermHooksSubscribe) {
+		t.Error("should have hooks.subscribe")
+	}
+	if pc.Has(PermStoragePrivate) {
+		t.Error("should not have storage.private")
+	}
+	if !pc.HasAll(PermToolsRegister, PermHooksSubscribe) {
+		t.Error("should have both permissions")
+	}
+	if pc.HasAll(PermToolsRegister, PermStoragePrivate) {
+		t.Error("should not have all (missing storage.private)")
+	}
+	if !pc.HasAny(PermToolsRegister, PermStoragePrivate) {
+		t.Error("should have at least one")
+	}
+}
+
+func TestPermissionChecker_Wildcard(t *testing.T) {
+	t.Parallel()
+	pc := NewPermissionChecker([]string{"*"})
+	if !pc.Has(PermToolsRegister) {
+		t.Error("wildcard should grant all permissions")
+	}
+	if !pc.Has(PermBusWrite) {
+		t.Error("wildcard should grant bus.write")
+	}
+}
+
+func TestIsValidPermission(t *testing.T) {
+	t.Parallel()
+	for _, perm := range AllPermissions() {
+		if !IsValidPermission(perm) {
+			t.Errorf("AllPermissions() contains invalid permission %q", perm)
+		}
+	}
+	if IsValidPermission("nonexistent") {
+		t.Error("nonexistent permission should be invalid")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginContext Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginContext_RegisterTool(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	tool := &SimplePluginTool{
+		Def: ToolDef{
+			Name:        "test_tool",
+			Description: "A test tool",
+		},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("ok"), nil
+		},
+	}
+
+	err := pc.RegisterTool(tool)
+	if err != nil {
+		t.Fatalf("RegisterTool failed: %v", err)
+	}
+	tools := pc.GetTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Definition().Name != "test_tool" {
+		t.Errorf("tool name mismatch: got %q", tools[0].Definition().Name)
+	}
+}
+
+func TestPluginContext_RegisterTool_NoPermission(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Permissions = []string{"hooks.subscribe"} // no tools.register
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "test_tool", Description: "test"},
+	}
+
+	err := pc.RegisterTool(tool)
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if _, ok := err.(*PermissionError); !ok {
+		t.Errorf("expected PermissionError, got %T", err)
+	}
+}
+
+func TestPluginContext_RegisterTools(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	tool1 := &SimplePluginTool{
+		Def: ToolDef{Name: "tool_a", Description: "first tool"},
+	}
+	tool2 := &SimplePluginTool{
+		Def: ToolDef{Name: "tool_b", Description: "second tool"},
+	}
+
+	err := pc.RegisterTools(tool1, tool2)
+	if err != nil {
+		t.Fatalf("RegisterTools failed: %v", err)
+	}
+
+	tools := pc.GetTools()
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Definition().Name != "tool_a" {
+		t.Errorf("first tool name mismatch: got %q", tools[0].Definition().Name)
+	}
+	if tools[1].Definition().Name != "tool_b" {
+		t.Errorf("second tool name mismatch: got %q", tools[1].Definition().Name)
+	}
+}
+
+func TestPluginContext_RegisterTools_PartialFailure(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	tool1 := &SimplePluginTool{
+		Def: ToolDef{Name: "tool_a", Description: "first tool"},
+	}
+
+	// Register tool1 successfully
+	err := pc.RegisterTools(tool1)
+	if err != nil {
+		t.Fatalf("RegisterTools (first call) failed: %v", err)
+	}
+
+	// Now revoke permission and try to register more
+	m2 := testManifest()
+	m2.Permissions = []string{"hooks.subscribe"} // no tools.register
+	pc2 := newPluginContext(&m2, storage, newPluginLogger(m2.ID), nil, nil)
+
+	tool2 := &SimplePluginTool{
+		Def: ToolDef{Name: "tool_b", Description: "second tool"},
+	}
+	tool3 := &SimplePluginTool{
+		Def: ToolDef{Name: "tool_c", Description: "third tool"},
+	}
+
+	// Should fail immediately on first tool (no permission), tool3 never attempted
+	err = pc2.RegisterTools(tool2, tool3)
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if _, ok := err.(*PermissionError); !ok {
+		t.Errorf("expected PermissionError, got %T", err)
+	}
+
+	// pc2 should have 0 tools registered (failed before any could be added)
+	tools := pc2.GetTools()
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools on failed pc2, got %d", len(tools))
+	}
+}
+
+func TestPluginContext_RegisterHook(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	called := false
+	_ = called
+	err := pc.OnPreToolUse("Shell", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		called = true
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnPreToolUse failed: %v", err)
+	}
+
+	hooks := pc.GetHooks()
+	if len(hooks) != 1 {
+		t.Fatalf("expected 1 hook, got %d", len(hooks))
+	}
+	if hooks[0].Event != HookPreToolUse {
+		t.Errorf("hook event mismatch: got %q", hooks[0].Event)
+	}
+	if hooks[0].Matcher != "Shell" {
+		t.Errorf("hook matcher mismatch: got %q", hooks[0].Matcher)
+	}
+}
+
+func TestPluginContext_EnrichContext(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.EnrichContext("test_enricher", func(ctx context.Context) (string, error) {
+		return "enriched content", nil
+	})
+	if err != nil {
+		t.Fatalf("EnrichContext failed: %v", err)
+	}
+
+	enrichers := pc.GetEnrichers()
+	if len(enrichers) != 1 {
+		t.Fatalf("expected 1 enricher, got %d", len(enrichers))
+	}
+	if enrichers[0].Name != "test_enricher" {
+		t.Errorf("enricher name mismatch: got %q", enrichers[0].Name)
+	}
+}
+
+func TestPluginContext_OnEvent_NilHandler(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnEvent(HookPreToolUse, "", nil)
+	if err == nil {
+		t.Fatal("expected error for nil handler")
+	}
+	if !strings.Contains(err.Error(), "must not be nil") {
+		t.Errorf("error = %v, want nil handler message", err)
+	}
+}
+
+func TestPluginContext_EnrichContext_NilEnricher(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.EnrichContext("test", nil)
+	if err == nil {
+		t.Fatal("expected error for nil enricher")
+	}
+	if !strings.Contains(err.Error(), "must not be nil") {
+		t.Errorf("error = %v, want nil enricher message", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Storage Tests
+// ---------------------------------------------------------------------------
+
+func TestFileStorage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	storage, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatalf("NewFileStorage failed: %v", err)
+	}
+
+	// Set and Get
+	if err := storage.Set("key1", "value1"); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	v, ok := storage.Get("key1")
+	if !ok || v != "value1" {
+		t.Errorf("Get key1: got %q, ok=%v, want %q, ok=true", v, ok, "value1")
+	}
+
+	// Keys
+	keys := storage.Keys()
+	if len(keys) != 1 || keys[0] != "key1" {
+		t.Errorf("Keys: got %v, want [key1]", keys)
+	}
+
+	// Delete
+	if err := storage.Delete("key1"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	_, ok = storage.Get("key1")
+	if ok {
+		t.Error("key1 should be deleted")
+	}
+
+	// Clear
+	storage.Set("a", "1")
+	storage.Set("b", "2")
+	if err := storage.Clear(); err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
+	if len(storage.Keys()) != 0 {
+		t.Error("storage should be empty after Clear")
+	}
+}
+
+func TestFileStorage_Persistence(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create and write
+	storage1, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage1.Set("persist", "me")
+
+	// Reopen and verify
+	storage2, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := storage2.Get("persist")
+	if !ok || v != "me" {
+		t.Errorf("persisted data: got %q, ok=%v", v, ok)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginManager Tests
+// ---------------------------------------------------------------------------
+
+type mockPlugin struct {
+	manifest    PluginManifest
+	activated   bool
+	deactivated bool
+	activateErr error
+}
+
+func (m *mockPlugin) Manifest() PluginManifest { return m.manifest }
+func (m *mockPlugin) Activate(ctx PluginContext) error {
+	m.activated = true
+	if m.activateErr != nil {
+		return m.activateErr
+	}
+	// Register a test tool
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "mock_tool", Description: "Mock tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("mock result"), nil
+		},
+	}
+	_ = ctx.RegisterTool(tool)
+	return nil
+}
+func (m *mockPlugin) Deactivate(ctx PluginContext) error {
+	m.deactivated = true
+	return nil
+}
+
+// panicPlugin is a test plugin that panics during Activate.
+type panicPlugin struct {
+	manifest PluginManifest
+}
+
+func (p *panicPlugin) Manifest() PluginManifest { return p.manifest }
+func (p *panicPlugin) Activate(ctx PluginContext) error {
+	panic("boom!")
+}
+func (p *panicPlugin) Deactivate(ctx PluginContext) error { return nil }
+
+// mockRuntimeFactory is a test RuntimeFactory that creates mockPlugin instances.
+type mockRuntimeFactory struct{}
+
+func (f *mockRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
+	return &mockPlugin{manifest: *manifest}, nil
+}
+
+func TestPluginManager_Register(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: testManifest()}
+
+	err := pm.Register(p)
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	entry, ok := pm.GetPlugin("com.test.example")
+	if !ok {
+		t.Fatal("plugin not found after registration")
+	}
+	if entry.State != StateDiscovered {
+		t.Errorf("expected StateDiscovered, got %q", entry.State)
+	}
+}
+
+func TestPluginManager_Activate(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: testManifest()}
+	pm.Register(p)
+
+	ctx := context.Background()
+	err := pm.ActivateAll(ctx)
+	if err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+
+	if !p.activated {
+		t.Error("plugin should be activated")
+	}
+
+	entry, _ := pm.GetPlugin("com.test.example")
+	if entry.State != StateActive {
+		t.Errorf("expected StateActive, got %q", entry.State)
+	}
+
+	if pm.ActiveCount() != 1 {
+		t.Errorf("expected 1 active plugin, got %d", pm.ActiveCount())
+	}
+}
+
+func TestPluginManager_DeactivateAll(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: testManifest()}
+	pm.Register(p)
+
+	ctx := context.Background()
+	pm.ActivateAll(ctx)
+	pm.DeactivateAll(ctx)
+
+	if !p.deactivated {
+		t.Error("plugin should be deactivated")
+	}
+
+	if pm.ActiveCount() != 0 {
+		t.Errorf("expected 0 active plugins, got %d", pm.ActiveCount())
+	}
+}
+
+func TestPluginManager_DuplicateRegistration(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p1 := &mockPlugin{manifest: testManifest()}
+	p2 := &mockPlugin{manifest: testManifest()}
+
+	pm.Register(p1)
+	err := pm.Register(p2)
+	if err == nil {
+		t.Fatal("expected error for duplicate registration")
+	}
+}
+
+func TestPluginManager_ActivateForEvent(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.ActivationEvents = []string{"onTool:code_review"}
+
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: m}
+	pm.Register(p)
+
+	ctx := context.Background()
+
+	// Should not activate for unrelated event
+	pm.ActivateForEvent(ctx, "onTool:other")
+	if p.activated {
+		t.Error("should not activate for unrelated event")
+	}
+
+	// Should activate for matching event
+	pm.ActivateForEvent(ctx, "onTool:code_review")
+	if !p.activated {
+		t.Error("should activate for matching event")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hook Bridge Tests
+// ---------------------------------------------------------------------------
+
+func TestHookBridge_Dispatch(t *testing.T) {
+	t.Parallel()
+	bridge := NewPluginHookBridge()
+
+	// Register a hook that denies Shell commands
+	bridge.Register("test-plugin", HookPreToolUse, "Shell", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionDeny, Message: "blocked"}, nil
+	})
+
+	// Register a hook that allows everything
+	bridge.Register("test-plugin2", HookPreToolUse, "", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+
+	ctx := context.Background()
+
+	// Test deny takes priority
+	result := bridge.Dispatch(ctx, &HookPayload{
+		Event:    HookPreToolUse,
+		ToolName: "Shell",
+	})
+	if result.Decision != DecisionDeny {
+		t.Errorf("expected Deny, got %q", result.Decision)
+	}
+
+	// Test no match falls through to allow
+	result2 := bridge.Dispatch(ctx, &HookPayload{
+		Event:    HookPreToolUse,
+		ToolName: "Read",
+	})
+	if result2.Decision != DecisionAllow {
+		t.Errorf("expected Allow for non-matching tool, got %q", result2.Decision)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Enricher Registry Tests
+// ---------------------------------------------------------------------------
+
+func TestEnricherRegistry(t *testing.T) {
+	t.Parallel()
+	reg := NewEnricherRegistry()
+
+	reg.Register("plugin1", "status", func(ctx context.Context) (string, error) {
+		return "All systems green", nil
+	}, 100)
+
+	reg.Register("plugin2", "metrics", func(ctx context.Context) (string, error) {
+		return "CPU: 50%", nil
+	}, 50)
+
+	ctx := context.Background()
+	content := reg.RunAll(ctx)
+
+	if reg.Count() != 2 {
+		t.Errorf("expected 2 enrichers, got %d", reg.Count())
+	}
+	// Metrics (priority 50) should come before status (priority 100)
+	if len(content) == 0 {
+		t.Error("expected non-empty content")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginToolAdapter Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginToolAdapter(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{
+			Name:        "test_tool",
+			Description: "Test description",
+		},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("test output"), nil
+		},
+	}
+
+	adapter := NewPluginToolAdapter("test-plugin", tool)
+
+	if adapter.Name() != "test_tool" {
+		t.Errorf("Name: got %q", adapter.Name())
+	}
+	if adapter.PluginID() != "test-plugin" {
+		t.Errorf("PluginID: got %q", adapter.PluginID())
+	}
+}
+
+func TestPluginToolAdapter_DescriptionWithPrefix(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{
+			Name:        "test_tool",
+			Description: "A test tool",
+		},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("ok"), nil
+		},
+	}
+	adapter := NewPluginToolAdapter("com.example", tool)
+
+	got := adapter.DescriptionWithPrefix()
+	want := "[com.example] A test tool"
+	if got != want {
+		t.Errorf("DescriptionWithPrefix() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Discovery Tests
+// ---------------------------------------------------------------------------
+
+func TestDiscoverPlugins(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pluginsDir := filepath.Join(baseDir, "plugins")
+	os.MkdirAll(pluginsDir, 0755)
+
+	// Create a valid plugin
+	pluginDir := filepath.Join(pluginsDir, "test-plugin")
+	os.MkdirAll(pluginDir, 0755)
+	writeTestManifest(t, pluginDir, &PluginManifest{
+		ID:          "com.test.plugin",
+		Name:        "Test",
+		Version:     "1.0.0",
+		Description: "Test",
+		Runtime:     RuntimeNative,
+	})
+
+	// Create an invalid plugin (missing manifest)
+	invalidDir := filepath.Join(pluginsDir, "invalid-plugin")
+	os.MkdirAll(invalidDir, 0755)
+
+	manifests := DiscoverPlugins([]string{pluginsDir})
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 valid plugin, got %d", len(manifests))
+	}
+	if manifests[0].ID != "com.test.plugin" {
+		t.Errorf("ID mismatch: got %q", manifests[0].ID)
+	}
+}
+
+func TestDiscoverPlugins_EmptyDir(t *testing.T) {
+	t.Parallel()
+	manifests := DiscoverPlugins([]string{"/nonexistent"})
+	if len(manifests) != 0 {
+		t.Errorf("expected 0 plugins from nonexistent dir, got %d", len(manifests))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// matchToolName Tests
+// ---------------------------------------------------------------------------
+
+func TestMatchToolName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		pattern string
+		name    string
+		want    bool
+	}{
+		// Exact match
+		{"Shell", "Shell", true},
+		{"Shell", "Read", false},
+		// Wildcard all
+		{"*", "Shell", true},
+		{"*", "", true},
+		// Empty pattern matches all
+		{"", "Shell", true},
+		// Prefix wildcard
+		{"Shell*", "Shell", true},
+		{"Shell*", "ShellExec", true},
+		{"Shell*", "BashShell", false},
+		// Suffix wildcard
+		{"*Shell", "Shell", true},
+		{"*Shell", "BashShell", true},
+		{"*Shell", "ShellExec", false},
+		// Contains wildcard
+		{"*ell*", "Shell", true},
+		{"*ell*", "Hello", true},
+		{"*ell*", "Bash", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.name, func(t *testing.T) {
+			got := matchToolName(tt.pattern, tt.name)
+			if got != tt.want {
+				t.Errorf("matchToolName(%q, %q) = %v, want %v", tt.pattern, tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseToolInputString Tests
+// ---------------------------------------------------------------------------
+
+func TestParseToolInputString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		input   string
+		field   string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "simple field",
+			input: `{"name": "Alice"}`,
+			field: "name",
+			want:  "Alice",
+		},
+		{
+			name:    "field not found",
+			input:   `{"name": "Alice"}`,
+			field:   "age",
+			wantErr: true,
+		},
+		{
+			name:    "not a string",
+			input:   `{"count": 42}`,
+			field:   "count",
+			wantErr: true,
+		},
+		{
+			name:  "escaped quotes in value",
+			input: `{"cmd": "echo \"hello\""}`,
+			field: "cmd",
+			want:  `echo "hello"`,
+		},
+		{
+			name:  "multiple fields",
+			input: `{"name": "Bob", "age": 30}`,
+			field: "name",
+			want:  "Bob",
+		},
+		{
+			name:    "invalid JSON",
+			input:   `{invalid}`,
+			field:   "name",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseToolInputString(tt.input, tt.field)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseToolInputString() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseToolInputString() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginToolAdapter Execute Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginToolAdapter_Execute(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{
+			Name:        "test_exec",
+			Description: "Execute test tool",
+		},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("executed: " + input), nil
+		},
+	}
+
+	adapter := NewPluginToolAdapter("test-plugin", tool)
+
+	// Test Description
+	desc := adapter.Description()
+	if !strContains(desc, "test-plugin") || !strContains(desc, "Execute test tool") {
+		t.Errorf("Description() = %q, should contain plugin attribution", desc)
+	}
+
+	// Test Execute
+	ctx := context.Background()
+	result, err := adapter.Execute(ctx, `{"input": "hello"}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Content != "executed: {\"input\": \"hello\"}" {
+		t.Errorf("Execute() Content = %q", result.Content)
+	}
+	if result.IsError {
+		t.Error("Execute() should not be error")
+	}
+}
+
+func TestPluginToolAdapter_ErrorResult(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "err_tool", Description: "error tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolError("something went wrong"), nil
+		},
+	}
+
+	adapter := NewPluginToolAdapter("test-plugin", tool)
+	ctx := context.Background()
+	result, err := adapter.Execute(ctx, "")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.IsError {
+		t.Error("result should be an error")
+	}
+	if result.Content != "something went wrong" {
+		t.Errorf("Content = %q", result.Content)
+	}
+}
+
+func strContains(s, substr string) bool {
+	return len(s) >= len(substr) && strSearch(s, substr)
+}
+
+func strSearch(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// EnricherRegistry Error Handling Tests
+// ---------------------------------------------------------------------------
+
+func TestEnricherRegistry_ErrorHandling(t *testing.T) {
+	t.Parallel()
+	reg := NewEnricherRegistry()
+
+	reg.Register("plugin1", "failing", func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("enricher failed")
+	}, 10)
+
+	reg.Register("plugin2", "working", func(ctx context.Context) (string, error) {
+		return "I work fine", nil
+	}, 20)
+
+	ctx := context.Background()
+	content := reg.RunAll(ctx)
+
+	// Should contain working enricher output but skip failing one
+	if !strContains(content, "I work fine") {
+		t.Error("RunAll should include output from working enricher")
+	}
+	if strContains(content, "enricher failed") {
+		t.Error("RunAll should not include error messages in output")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manifest Validation Executable Tests
+// ---------------------------------------------------------------------------
+
+func TestLoadManifest_GRPCExecutable(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	m.Runtime = RuntimeGRPC
+	m.Executable = "/usr/bin/my-plugin"
+	m.Args = []string{"--port", "5000"}
+	m.Entry = "" // Use Executable instead of Entry
+	writeTestManifest(t, dir, &m)
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest with Executable: %v", err)
+	}
+	if loaded.Executable != "/usr/bin/my-plugin" {
+		t.Errorf("Executable = %q, want /usr/bin/my-plugin", loaded.Executable)
+	}
+	if len(loaded.Args) != 2 || loaded.Args[0] != "--port" {
+		t.Errorf("Args = %v, want [--port 5000]", loaded.Args)
+	}
+}
+
+func TestLoadManifest_GRPCNoEntryOrExecutable(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	m.Runtime = RuntimeGRPC
+	m.Entry = ""
+	m.Executable = ""
+	writeTestManifest(t, dir, &m)
+
+	_, err := LoadManifest(dir)
+	if err == nil {
+		t.Fatal("expected error for grpc without entry or executable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Additional Coverage Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_DisabledPlugin(t *testing.T) {
+	t.Parallel()
+	// Create a plugin directory
+	baseDir := t.TempDir()
+	pluginsDir := filepath.Join(baseDir, "plugins")
+	os.MkdirAll(pluginsDir, 0755)
+
+	pluginDir := filepath.Join(pluginsDir, "disabled-plugin")
+	os.MkdirAll(pluginDir, 0755)
+	writeTestManifest(t, pluginDir, &PluginManifest{
+		ID:          "com.test.disabled",
+		Name:        "Disabled Plugin",
+		Version:     "1.0.0",
+		Description: "Should be skipped",
+		Runtime:     RuntimeNative,
+	})
+
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.DisablePlugins([]string{"com.test.disabled"})
+
+	ctx := context.Background()
+	count, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 discovered plugins (disabled), got %d", count)
+	}
+
+	_, found := pm.GetPlugin("com.test.disabled")
+	if found {
+		t.Error("disabled plugin should not be found")
+	}
+}
+
+func TestPluginManager_RegisterAndActivate(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: testManifest()}
+
+	ctx := context.Background()
+	err := pm.RegisterAndActivate(ctx, p)
+	if err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	if !p.activated {
+		t.Error("plugin should be activated")
+	}
+	if !pm.IsPluginActive("com.test.example") {
+		t.Error("IsPluginActive should return true")
+	}
+	if pm.IsPluginActive("nonexistent") {
+		t.Error("IsPluginActive should return false for unknown plugin")
+	}
+}
+
+func TestPluginManager_PanicRecovery(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// The activate method already has panic recovery, but let's test with
+	// an actual panicking plugin
+	panicPluginReal := &panicPlugin{manifest: testManifest()}
+
+	ctx := context.Background()
+	err := pm.RegisterAndActivate(ctx, panicPluginReal)
+	if err == nil {
+		t.Fatal("expected error from panicking plugin")
+	}
+
+	// Manager should still be functional
+	if pm.IsPluginActive("com.test.example") {
+		t.Error("panicking plugin should not be active")
+	}
+
+	// Manager state should be consistent
+	if pm.ActiveCount() != 0 {
+		t.Error("no plugins should be active after panic")
+	}
+}
+
+func TestPluginManager_ConcurrentActivation(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	var wg sync.WaitGroup
+	const n = 10
+	errors := make(chan error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			m := testManifest()
+			m.ID = fmt.Sprintf("com.test.plugin-%d", idx)
+			p := &mockPlugin{manifest: m}
+			if err := pm.RegisterAndActivate(context.Background(), p); err != nil {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Errorf("concurrent activation error: %v", err)
+	}
+
+	if pm.ActiveCount() != n {
+		t.Errorf("expected %d active plugins, got %d", n, pm.ActiveCount())
+	}
+}
+
+func TestEnricherRegistry_Empty(t *testing.T) {
+	t.Parallel()
+	reg := NewEnricherRegistry()
+
+	if reg.Count() != 0 {
+		t.Errorf("empty registry should have count 0, got %d", reg.Count())
+	}
+
+	ctx := context.Background()
+	content := reg.RunAll(ctx)
+	if content != "" {
+		t.Errorf("empty registry should produce empty content, got %q", content)
+	}
+
+	list := reg.List()
+	if len(list) != 0 {
+		t.Errorf("empty registry list should be empty, got %v", list)
+	}
+}
+
+func TestPluginBridge_NoHandlers(t *testing.T) {
+	t.Parallel()
+	bridge := NewPluginHookBridge()
+
+	ctx := context.Background()
+	result := bridge.Dispatch(ctx, &HookPayload{
+		Event:    HookPreToolUse,
+		ToolName: "Shell",
+	})
+
+	if result.Decision != DecisionDefer {
+		t.Errorf("no handlers should return Defer, got %q", result.Decision)
+	}
+}
+
+func TestPermissionChecker_EmptyPermissions(t *testing.T) {
+	t.Parallel()
+	pc := NewPermissionChecker(nil)
+
+	if pc.Has(PermToolsRegister) {
+		t.Error("empty permissions should deny all")
+	}
+	if pc.Has(PermHooksSubscribe) {
+		t.Error("empty permissions should deny all")
+	}
+	if pc.HasAll(PermToolsRegister) {
+		t.Error("empty permissions should deny HasAll")
+	}
+	if pc.HasAny(PermToolsRegister) {
+		t.Error("empty permissions should deny HasAny")
+	}
+
+	// Also test with empty slice (not nil)
+	pc2 := NewPermissionChecker([]string{})
+	if pc2.Has(PermToolsRegister) {
+		t.Error("empty slice permissions should deny all")
+	}
+}
+
+func TestManifest_IDValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id     string
+		wantOK bool
+	}{
+		// Valid IDs
+		{"com.example.plugin", true},
+		{"my-plugin", true},
+		{"plugin_v1", true},
+		{"A", true},
+		{"a123", true},
+		// Invalid IDs
+		{"", false},                       // empty
+		{".plugin", false},                // starts with dot
+		{"-plugin", false},                // starts with hyphen
+		{"_plugin", false},                // starts with underscore
+		{"plugin with space", false},      // contains space
+		{"plugin/slash", false},           // contains slash
+		{"plugin\\backslash", false},      // contains backslash
+		{strings.Repeat("a", 129), false}, // too long (129 chars)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			dir := t.TempDir()
+			m := testManifest()
+			m.ID = tt.id
+			writeTestManifest(t, dir, &m)
+
+			_, err := LoadManifest(dir)
+			if (err == nil) != tt.wantOK {
+				t.Errorf("LoadManifest(%q): ok=%v, want ok=%v, err=%v", tt.id, err == nil, tt.wantOK, err)
+			}
+		})
+	}
+}
+
+func TestPluginContext_SetSessionMetadata(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	// Before setting, metadata should be empty
+	if pc.WorkingDir() != "" {
+		t.Errorf("WorkingDir should be empty, got %q", pc.WorkingDir())
+	}
+	if pc.Channel() != "" {
+		t.Errorf("Channel should be empty, got %q", pc.Channel())
+	}
+	if pc.ChatID() != "" {
+		t.Errorf("ChatID should be empty, got %q", pc.ChatID())
+	}
+
+	// Set metadata
+	pc.SetSessionMetadata("/home/user/project", "cli", "chat-123")
+
+	if pc.WorkingDir() != "/home/user/project" {
+		t.Errorf("WorkingDir: got %q, want %q", pc.WorkingDir(), "/home/user/project")
+	}
+	if pc.Channel() != "cli" {
+		t.Errorf("Channel: got %q, want %q", pc.Channel(), "cli")
+	}
+	if pc.ChatID() != "chat-123" {
+		t.Errorf("ChatID: got %q, want %q", pc.ChatID(), "chat-123")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — PluginToolV2 / ToolCallContext Tests
+// ---------------------------------------------------------------------------
+
+func TestSimplePluginTool_ExecuteWithContext_V2(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "v2_tool", Description: "V2 test tool"},
+		ExecV2Fn: func(ctx *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("session=" + ctx.SessionID + " channel=" + ctx.Channel + " user=" + ctx.UserID), nil
+		},
+	}
+
+	// V2 should be used via ExecuteWithContext
+	tcc := &ToolCallContext{
+		SessionID: "sess-123",
+		Channel:   "cli",
+		UserID:    "user-456",
+		Ctx:       context.Background(),
+	}
+	result, err := tool.ExecuteWithContext(tcc, `{"q": "test"}`)
+	if err != nil {
+		t.Fatalf("ExecuteWithContext error: %v", err)
+	}
+	if result.Content != "session=sess-123 channel=cli user=user-456" {
+		t.Errorf("V2 result = %q", result.Content)
+	}
+}
+
+func TestSimplePluginTool_ExecuteWithContext_Fallback(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "fallback_tool", Description: "fallback test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("v1-fallback"), nil
+		},
+	}
+
+	// No ExecV2Fn set, should fallback to ExecFn
+	tcc := &ToolCallContext{Ctx: context.Background()}
+	result, err := tool.ExecuteWithContext(tcc, "")
+	if err != nil {
+		t.Fatalf("ExecuteWithContext fallback error: %v", err)
+	}
+	if result.Content != "v1-fallback" {
+		t.Errorf("fallback result = %q", result.Content)
+	}
+}
+
+func TestSimplePluginTool_ExecuteWithContext_NoFunc(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "nofunc_tool", Description: "no func"},
+	}
+
+	tcc := &ToolCallContext{Ctx: context.Background()}
+	result, err := tool.ExecuteWithContext(tcc, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result when no function set")
+	}
+}
+
+func TestPluginToolAdapter_V2Detection(t *testing.T) {
+	t.Parallel()
+	// Create a V2 tool
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "adapter_v2", Description: "adapter v2 test"},
+		ExecV2Fn: func(ctx *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("v2-called:" + ctx.SessionID), nil
+		},
+	}
+
+	adapter := NewPluginToolAdapter("test-plugin", tool)
+
+	// Execute via V1 interface — adapter should detect V2 and use it
+	result, err := adapter.Execute(context.Background(), `{"x": 1}`)
+	if err != nil {
+		t.Fatalf("adapter.Execute error: %v", err)
+	}
+	if result.Content != "v2-called:" {
+		// SessionID is empty since we called via V1 (no ToolCallContext fields)
+		t.Errorf("adapter V2 detection result = %q", result.Content)
+	}
+
+	// Execute via V2 interface directly
+	tcc := &ToolCallContext{SessionID: "sess-abc", Ctx: context.Background()}
+	result2, err := adapter.ExecuteWithContext(tcc, "")
+	if err != nil {
+		t.Fatalf("adapter.ExecuteWithContext error: %v", err)
+	}
+	if result2.Content != "v2-called:sess-abc" {
+		t.Errorf("adapter V2 direct result = %q", result2.Content)
+	}
+}
+
+func TestPluginToolAdapter_V1Fallback(t *testing.T) {
+	t.Parallel()
+	// V1-only tool (no ExecV2Fn)
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "v1_only", Description: "V1 only"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("v1-ok"), nil
+		},
+	}
+
+	adapter := NewPluginToolAdapter("test-plugin", tool)
+
+	// V1 call
+	result, err := adapter.Execute(context.Background(), "")
+	if err != nil {
+		t.Fatalf("adapter V1 error: %v", err)
+	}
+	if result.Content != "v1-ok" {
+		t.Errorf("adapter V1 result = %q", result.Content)
+	}
+
+	// V2 call with fallback
+	tcc := &ToolCallContext{SessionID: "test", Ctx: context.Background()}
+	result2, err := adapter.ExecuteWithContext(tcc, "")
+	if err != nil {
+		t.Fatalf("adapter V2 fallback error: %v", err)
+	}
+	if result2.Content != "v1-ok" {
+		t.Errorf("adapter V2 fallback result = %q", result2.Content)
+	}
+}
+
+func TestPluginToolV2_InterfaceAssertion(t *testing.T) {
+	t.Parallel()
+	v2Tool := &SimplePluginTool{
+		Def: ToolDef{Name: "interface_check", Description: "check"},
+		ExecV2Fn: func(ctx *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("v2"), nil
+		},
+	}
+
+	// SimplePluginTool with ExecV2Fn should implement PluginToolV2
+	var _ PluginToolV2 = v2Tool
+
+	// V1-only should NOT implement PluginToolV2 at the interface level...
+	// Actually SimplePluginTool always implements ExecuteWithContext, so
+	// it always satisfies PluginToolV2. But let's verify behavior:
+	v1Tool := &SimplePluginTool{
+		Def: ToolDef{Name: "v1_check", Description: "check"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("v1"), nil
+		},
+	}
+
+	// Both should work with PluginToolV2 interface
+	var iface PluginToolV2 = v1Tool
+	result, err := iface.ExecuteWithContext(&ToolCallContext{Ctx: context.Background()}, "")
+	if err != nil {
+		t.Fatalf("v1 as V2 interface error: %v", err)
+	}
+	if result.Content != "v1" {
+		t.Errorf("v1 as V2 result = %q", result.Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Health Check Tests
+// ---------------------------------------------------------------------------
+
+// healthyPlugin implements Plugin + HealthChecker
+type healthyPlugin struct {
+	manifest PluginManifest
+}
+
+func (h *healthyPlugin) Manifest() PluginManifest              { return h.manifest }
+func (h *healthyPlugin) Activate(ctx PluginContext) error      { return nil }
+func (h *healthyPlugin) Deactivate(ctx PluginContext) error    { return nil }
+func (h *healthyPlugin) HealthCheck(ctx context.Context) error { return nil }
+
+// sickPlugin implements Plugin + HealthChecker (always fails)
+type sickPlugin struct {
+	manifest PluginManifest
+}
+
+func (s *sickPlugin) Manifest() PluginManifest           { return s.manifest }
+func (s *sickPlugin) Activate(ctx PluginContext) error   { return nil }
+func (s *sickPlugin) Deactivate(ctx PluginContext) error { return nil }
+func (s *sickPlugin) HealthCheck(ctx context.Context) error {
+	return fmt.Errorf("database connection lost")
+}
+
+func TestPluginManager_HealthCheck_Healthy(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &healthyPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	results := pm.HealthCheck(context.Background())
+	if len(results) != 1 {
+		t.Fatalf("expected 1 health result, got %d", len(results))
+	}
+	if results["com.test.example"] != nil {
+		t.Errorf("expected healthy (nil error), got %v", results["com.test.example"])
+	}
+}
+
+func TestPluginManager_HealthCheck_Sick(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	m := testManifest()
+	m.ID = "com.test.sick"
+	p := &sickPlugin{manifest: m}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	results := pm.HealthCheck(context.Background())
+	if results["com.test.sick"] == nil {
+		t.Error("expected error from sick plugin")
+	}
+	if results["com.test.sick"].Error() != "database connection lost" {
+		t.Errorf("sick error = %q", results["com.test.sick"].Error())
+	}
+}
+
+func TestPluginManager_HealthCheck_NoHealthChecker(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	results := pm.HealthCheck(context.Background())
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// mockPlugin doesn't implement HealthChecker, should be nil (healthy)
+	if results["com.test.example"] != nil {
+		t.Errorf("expected nil for plugin without HealthChecker, got %v", results["com.test.example"])
+	}
+}
+
+func TestPluginManager_HealthCheck_Mixed(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// Healthy
+	h := &healthyPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), h)
+
+	// Sick
+	m := testManifest()
+	m.ID = "com.test.sick"
+	s := &sickPlugin{manifest: m}
+	pm.RegisterAndActivate(context.Background(), s)
+
+	// No health checker
+	m2 := testManifest()
+	m2.ID = "com.test.plain"
+	mp := &mockPlugin{manifest: m2}
+	pm.RegisterAndActivate(context.Background(), mp)
+
+	results := pm.HealthCheck(context.Background())
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	if results["com.test.example"] != nil {
+		t.Error("healthy plugin should be nil")
+	}
+	if results["com.test.sick"] == nil {
+		t.Error("sick plugin should have error")
+	}
+	if results["com.test.plain"] != nil {
+		t.Error("plain plugin should be nil (assumed healthy)")
+	}
+}
+
+func TestPluginManager_HealthCheck_InactivePlugin(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &healthyPlugin{manifest: testManifest()}
+	// Register but don't activate
+	pm.Register(p)
+
+	results := pm.HealthCheck(context.Background())
+	if len(results) != 0 {
+		t.Errorf("inactive plugins should not be health-checked, got %d results", len(results))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Metrics Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_Metrics_Empty(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	m := pm.Metrics()
+	if m.TotalPlugins != 0 {
+		t.Errorf("TotalPlugins = %d, want 0", m.TotalPlugins)
+	}
+	if m.ActivePlugins != 0 {
+		t.Errorf("ActivePlugins = %d, want 0", m.ActivePlugins)
+	}
+}
+
+func TestPluginManager_Metrics_Active(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	p := &mockPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	m := pm.Metrics()
+	if m.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins = %d, want 1", m.TotalPlugins)
+	}
+	if m.ActivePlugins != 1 {
+		t.Errorf("ActivePlugins = %d, want 1", m.ActivePlugins)
+	}
+	// mockPlugin registers 1 tool
+	if m.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", m.TotalTools)
+	}
+}
+
+func TestPluginManager_Metrics_MultiplePlugins(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// Register 3 plugins with different capabilities
+	m1 := testManifest()
+	m1.ID = "com.test.plugin1"
+	p1 := &mockPlugin{manifest: m1}
+	pm.RegisterAndActivate(context.Background(), p1)
+
+	m2 := testManifest()
+	m2.ID = "com.test.plugin2"
+	p2 := &mockPlugin{manifest: m2}
+	pm.RegisterAndActivate(context.Background(), p2)
+
+	// Register but don't activate
+	m3 := testManifest()
+	m3.ID = "com.test.plugin3"
+	p3 := &mockPlugin{manifest: m3}
+	pm.Register(p3)
+
+	metrics := pm.Metrics()
+	if metrics.TotalPlugins != 3 {
+		t.Errorf("TotalPlugins = %d, want 3", metrics.TotalPlugins)
+	}
+	if metrics.ActivePlugins != 2 {
+		t.Errorf("ActivePlugins = %d, want 2", metrics.ActivePlugins)
+	}
+	// Each mockPlugin registers 1 tool
+	if metrics.TotalTools != 2 {
+		t.Errorf("TotalTools = %d, want 2", metrics.TotalTools)
+	}
+}
+
+func TestPluginManager_Metrics_WithHooks(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	m := testManifest()
+	m.Permissions = []string{"tools.register", "hooks.subscribe", "context.enrich", "storage.private"}
+
+	// Create a plugin that registers tools, hooks, and enrichers
+	p := &richMockPlugin{manifest: m}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	metrics := pm.Metrics()
+	if metrics.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", metrics.TotalTools)
+	}
+	if metrics.TotalHooks != 2 {
+		t.Errorf("TotalHooks = %d, want 2", metrics.TotalHooks)
+	}
+	if metrics.TotalEnrichers != 1 {
+		t.Errorf("TotalEnrichers = %d, want 1", metrics.TotalEnrichers)
+	}
+}
+
+// richMockPlugin registers tools, hooks, and enrichers
+type richMockPlugin struct {
+	manifest PluginManifest
+}
+
+func (r *richMockPlugin) Manifest() PluginManifest { return r.manifest }
+func (r *richMockPlugin) Activate(ctx PluginContext) error {
+	ctx.RegisterTool(&SimplePluginTool{
+		Def: ToolDef{Name: "rich_tool", Description: "Rich tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("rich"), nil
+		},
+	})
+	ctx.OnPreToolUse("Shell", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	ctx.OnPostToolUse("", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	ctx.EnrichContext("test_enricher", func(ctx context.Context) (string, error) {
+		return "enriched", nil
+	})
+	return nil
+}
+func (r *richMockPlugin) Deactivate(ctx PluginContext) error { return nil }
+
+// ---------------------------------------------------------------------------
+// Phase 5 — ToolCallContext Fields Test
+// ---------------------------------------------------------------------------
+
+func TestToolCallContext_AllFields(t *testing.T) {
+	t.Parallel()
+	bg := context.Background()
+	tcc := &ToolCallContext{
+		SessionID: "sess-001",
+		Channel:   "feishu",
+		ChatID:    "chat-002",
+		UserID:    "user-003",
+		Ctx:       bg,
+	}
+
+	if tcc.SessionID != "sess-001" {
+		t.Errorf("SessionID = %q", tcc.SessionID)
+	}
+	if tcc.Channel != "feishu" {
+		t.Errorf("Channel = %q", tcc.Channel)
+	}
+	if tcc.ChatID != "chat-002" {
+		t.Errorf("ChatID = %q", tcc.ChatID)
+	}
+	if tcc.UserID != "user-003" {
+		t.Errorf("UserID = %q", tcc.UserID)
+	}
+	if tcc.Ctx != bg {
+		t.Error("Ctx should match")
+	}
+}
+
+func TestPluginMetrics_JSON(t *testing.T) {
+	t.Parallel()
+	m := PluginMetrics{
+		TotalPlugins:   5,
+		ActivePlugins:  3,
+		TotalTools:     10,
+		TotalHooks:     7,
+		TotalEnrichers: 2,
+		ToolCallCount:  42,
+		HookCallCount:  18,
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// Verify JSON tags
+	if !strContains(string(data), "totalPlugins") {
+		t.Error("JSON should contain totalPlugins")
+	}
+	if !strContains(string(data), "activePlugins") {
+		t.Error("JSON should contain activePlugins")
+	}
+	if !strContains(string(data), "toolCallCount") {
+		t.Error("JSON should contain toolCallCount")
+	}
+	if !strContains(string(data), "hookCallCount") {
+		t.Error("JSON should contain hookCallCount")
+	}
+
+	// Round-trip
+	var m2 PluginMetrics
+	if err := json.Unmarshal(data, &m2); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if m2 != m {
+		t.Errorf("round-trip mismatch: got %+v, want %+v", m2, m)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Boundary Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_String(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// Empty manager
+	s := pm.String()
+	if s != "PluginManager{total=0, active=0, error=0, disabled=0}" {
+		t.Errorf("empty String() = %q", s)
+	}
+
+	// Register and activate one plugin
+	p1 := &mockPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p1)
+	s = pm.String()
+	if !strContains(s, "total=1") || !strContains(s, "active=1") {
+		t.Errorf("after activate String() = %q", s)
+	}
+
+	// Register a second plugin but don't activate (discovered state)
+	m2 := testManifest()
+	m2.ID = "com.test.discovered"
+	p2 := &mockPlugin{manifest: m2}
+	pm.Register(p2)
+	s = pm.String()
+	if !strContains(s, "total=2") || !strContains(s, "active=1") {
+		t.Errorf("with discovered String() = %q", s)
+	}
+
+	// Disable a plugin that is NOT in entries — should count as disabled
+	pm.DisablePlugins([]string{"com.test.notloaded"})
+	s = pm.String()
+	if !strContains(s, "disabled=1") {
+		t.Errorf("with disabled String() = %q", s)
+	}
+}
+
+func TestPluginManager_String_WithErrors(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// Activate a plugin that fails
+	m := testManifest()
+	m.ID = "com.test.failing"
+	p := &mockPlugin{manifest: m, activateErr: fmt.Errorf("fail")}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	s := pm.String()
+	if !strContains(s, "error=1") {
+		t.Errorf("with error String() = %q", s)
+	}
+}
+
+func TestPluginManager_HealthCheck_Empty(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// No plugins at all
+	results := pm.HealthCheck(context.Background())
+	if len(results) != 0 {
+		t.Errorf("empty HealthCheck should return empty map, got %d results", len(results))
+	}
+}
+
+func TestPluginManager_Metrics_AfterActivation(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// Before activation
+	m := pm.Metrics()
+	if m.TotalPlugins != 0 || m.ActivePlugins != 0 {
+		t.Fatalf("pre-activation metrics should be zero: %+v", m)
+	}
+
+	// Activate one plugin (mockPlugin registers 1 tool)
+	p := &mockPlugin{manifest: testManifest()}
+	pm.RegisterAndActivate(context.Background(), p)
+
+	m = pm.Metrics()
+	if m.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins = %d, want 1", m.TotalPlugins)
+	}
+	if m.ActivePlugins != 1 {
+		t.Errorf("ActivePlugins = %d, want 1", m.ActivePlugins)
+	}
+	if m.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", m.TotalTools)
+	}
+	if m.TotalHooks != 0 {
+		t.Errorf("TotalHooks = %d, want 0", m.TotalHooks)
+	}
+	if m.TotalEnrichers != 0 {
+		t.Errorf("TotalEnrichers = %d, want 0", m.TotalEnrichers)
+	}
+}
+
+func TestManifest_DependencyValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		deps    []PluginDependency
+		wantErr bool
+	}{
+		{
+			name:    "no dependencies",
+			deps:    nil,
+			wantErr: false,
+		},
+		{
+			name: "valid dependency",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "1.0.0"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with semver range",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "^1.0.0"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with wildcard version",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "*"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty dependency ID",
+			deps: []PluginDependency{
+				{ID: "", Version: "1.0.0"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid dependency ID",
+			deps: []PluginDependency{
+				{ID: "/bad/id", Version: "1.0.0"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty version is ok (optional)",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "multiple valid dependencies",
+			deps: []PluginDependency{
+				{ID: "com.example.base", Version: "1.0.0"},
+				{ID: "com.example.utils", Version: ">=2.0.0"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := testManifest()
+			m.Dependencies = tt.deps
+			writeTestManifest(t, dir, &m)
+
+			_, err := LoadManifest(dir)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LoadManifest() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestWASMRuntime_Create(t *testing.T) {
+	t.Parallel()
+	factory := NewWASMRuntime()
+
+	m := &PluginManifest{
+		ID:               "com.test.wasm",
+		Name:             "WASM Test",
+		Version:          "1.0.0",
+		Description:      "WASM test plugin",
+		Runtime:          RuntimeWASM,
+		ActivationEvents: []string{"onStart"},
+	}
+
+	plugin, err := factory.Create(m, "/tmp/test-wasm")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if plugin == nil {
+		t.Fatal("Create() returned nil plugin")
+	}
+
+	// Verify manifest
+	loaded := plugin.Manifest()
+	if loaded.ID != "com.test.wasm" {
+		t.Errorf("Manifest ID = %q, want %q", loaded.ID, "com.test.wasm")
+	}
+	if loaded.Runtime != RuntimeWASM {
+		t.Errorf("Manifest Runtime = %q, want %q", loaded.Runtime, RuntimeWASM)
+	}
+}
+
+func TestWASMRuntime_Create_WrongRuntime(t *testing.T) {
+	t.Parallel()
+	factory := NewWASMRuntime()
+
+	m := &PluginManifest{
+		ID:      "com.test.native",
+		Name:    "Native",
+		Version: "1.0.0",
+		Runtime: RuntimeNative,
+	}
+
+	_, err := factory.Create(m, "/tmp/test")
+	if err == nil {
+		t.Fatal("expected error for wrong runtime type")
+	}
+}
+
+func TestWASMRuntime_Activate_NoOp(t *testing.T) {
+	t.Parallel()
+	factory := NewWASMRuntime()
+
+	m := &PluginManifest{
+		ID:               "com.test.wasm",
+		Name:             "WASM NoOp Test",
+		Version:          "1.0.0",
+		Description:      "test",
+		Runtime:          RuntimeWASM,
+		ActivationEvents: []string{"onStart"},
+	}
+
+	plugin, err := factory.Create(m, "/tmp/test-wasm")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	// Activate should succeed (no-op with warning log)
+	storage := &noopStorage{}
+	ctx := newPluginContext(m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err = plugin.Activate(ctx)
+	if err != nil {
+		t.Fatalf("Activate() error: %v", err)
+	}
+
+	// Deactivate should also succeed
+	err = plugin.Deactivate(ctx)
+	if err != nil {
+		t.Fatalf("Deactivate() error: %v", err)
+	}
+}
+
+func TestPluginManager_DeactivateAll_NotInitialized(t *testing.T) {
+	t.Parallel()
+	// nil-safe: calling DeactivateAll on a manager with no active plugins
+	pm := newTestPM(t)
+
+	// Should not panic
+	pm.DeactivateAll(context.Background())
+
+	if pm.ActiveCount() != 0 {
+		t.Error("expected 0 active plugins")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — EventBus Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginEventBus_SubscribeAndPublish(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	var received []string
+	handler := func(ctx context.Context, topic string, data any) error {
+		received = append(received, fmt.Sprintf("%s:%v", topic, data))
+		return nil
+	}
+
+	err := bus.Subscribe("test.topic", handler)
+	if err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	errs := bus.Publish(context.Background(), "test.topic", "hello")
+	if len(errs) > 0 {
+		t.Fatalf("Publish errors: %v", errs)
+	}
+
+	if len(received) != 1 || received[0] != "test.topic:hello" {
+		t.Errorf("received = %v, want [test.topic:hello]", received)
+	}
+}
+
+func TestPluginEventBus_Unsubscribe(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	called := 0
+	handler := func(ctx context.Context, topic string, data any) error {
+		called++
+		return nil
+	}
+
+	bus.Subscribe("test", handler)
+	bus.Publish(context.Background(), "test", nil)
+	if called != 1 {
+		t.Fatalf("expected 1 call before unsubscribe, got %d", called)
+	}
+
+	err := bus.Unsubscribe("test", handler)
+	if err != nil {
+		t.Fatalf("Unsubscribe failed: %v", err)
+	}
+
+	bus.Publish(context.Background(), "test", nil)
+	if called != 1 {
+		t.Errorf("expected 1 call after unsubscribe, got %d", called)
+	}
+}
+
+func TestPluginEventBus_NoSubscribers(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+	errs := bus.Publish(context.Background(), "nonexistent", "data")
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for no subscribers, got %v", errs)
+	}
+}
+
+func TestPluginEventBus_PanicRecovery(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	bus.Subscribe("panic.topic", func(ctx context.Context, topic string, data any) error {
+		panic("handler panic!")
+	})
+
+	bus.Subscribe("panic.topic", func(ctx context.Context, topic string, data any) error {
+		return nil // this should still run
+	})
+
+	errs := bus.Publish(context.Background(), "panic.topic", nil)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error (panic), got %d: %v", len(errs), errs)
+	}
+	if !strContains(errs[0].Error(), "panic") {
+		t.Errorf("error should mention panic, got: %v", errs[0])
+	}
+}
+
+func TestPluginManager_Reload(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+
+	// Create plugin directory with manifest
+	pluginsDir := filepath.Join(baseDir, "plugins", "com.test.reload")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := PluginManifest{
+		ID:               "com.test.reload",
+		Name:             "Reload Test Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, pluginsDir, &m)
+
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+	_, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	if err := pm.ActivateAll(ctx); err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+
+	entry, ok := pm.GetPlugin("com.test.reload")
+	if !ok {
+		t.Fatal("plugin not found after discover+activate")
+	}
+	if entry.State != StateActive {
+		t.Fatalf("expected active state, got %v", entry.State)
+	}
+
+	// Reload
+	if err := pm.Reload(ctx, "com.test.reload"); err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+
+	entry2, ok := pm.GetPlugin("com.test.reload")
+	if !ok {
+		t.Fatal("plugin not found after reload")
+	}
+	if entry2.State != StateActive {
+		t.Errorf("expected active state after reload, got %v", entry2.State)
+	}
+}
+
+func TestPluginManager_Reload_NonExistent(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	err := pm.Reload(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent plugin")
+	}
+}
+
+func TestPluginContext_Subscribe_NoPermission(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Permissions = []string{"bus.plugin", "bus.write"} // missing bus.read
+	storage := &noopStorage{}
+	bus := NewPluginEventBus()
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus, nil)
+
+	err := pc.Subscribe("test", func(ctx context.Context, topic string, data any) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected permission error for Subscribe without bus.read")
+	}
+}
+
+func TestPluginContext_Publish_NoPermission(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Permissions = []string{"bus.plugin", "bus.read"} // missing bus.write
+	storage := &noopStorage{}
+	bus := NewPluginEventBus()
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus, nil)
+
+	err := pc.Publish("test", "data")
+	if err == nil {
+		t.Fatal("expected permission error for Publish without bus.write")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E Integration Test — Full Lifecycle
+// ---------------------------------------------------------------------------
+
+// e2eFullPlugin implements Plugin + HealthChecker.
+// On Activate it registers a V2 tool, a PreToolUse hook, a context enricher,
+// and subscribes+publishes on the event bus.
+type e2eFullPlugin struct {
+	manifest   PluginManifest
+	hookCalled bool
+	enriched   bool
+	busSubData string
+}
+
+func (p *e2eFullPlugin) Manifest() PluginManifest { return p.manifest }
+
+func (p *e2eFullPlugin) Activate(ctx PluginContext) error {
+	// Register a V2 tool
+	ctx.RegisterTool(&SimplePluginTool{
+		Def: ToolDef{Name: "e2e_tool", Description: "E2E test tool"},
+		ExecV2Fn: func(tcc *ToolCallContext, input string) (*ToolResult, error) {
+			return NewToolResult("session=" + tcc.SessionID + " input=" + input), nil
+		},
+	})
+
+	// Subscribe to PreToolUse hook
+	ctx.OnPreToolUse("Shell", func(c context.Context, payload *HookPayload) (*HookResult, error) {
+		p.hookCalled = true
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+
+	// Register a context enricher
+	ctx.EnrichContext("e2e_enricher", func(c context.Context) (string, error) {
+		p.enriched = true
+		return "e2e enriched content", nil
+	})
+
+	// Subscribe to a bus topic
+	ctx.Subscribe("e2e.topic", func(c context.Context, topic string, data any) error {
+		p.busSubData = data.(string)
+		return nil
+	})
+
+	// Publish to the bus
+	ctx.Publish("e2e.topic", "bus-data")
+
+	return nil
+}
+
+func (p *e2eFullPlugin) Deactivate(ctx PluginContext) error { return nil }
+
+func (p *e2eFullPlugin) HealthCheck(ctx context.Context) error { return nil }
+
+func TestPluginE2E_FullLifecycle(t *testing.T) {
+	t.Parallel()
+	// 1. Create PluginManager
+	pm := newTestPM(t)
+
+	// 2. Create a full-featured plugin
+	m := PluginManifest{
+		ID:               "com.test.e2e",
+		Name:             "E2E Test Plugin",
+		Version:          "1.0.0",
+		Description:      "Full lifecycle E2E test",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register", "hooks.subscribe", "context.enrich", "bus.plugin", "bus.read", "bus.write"},
+	}
+	e2ePlugin := &e2eFullPlugin{manifest: m}
+
+	// 3. Register and activate
+	ctx := context.Background()
+	err := pm.RegisterAndActivate(ctx, e2ePlugin)
+	if err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	// 4. Verify tools registered via GetPlugin
+	entry, ok := pm.GetPlugin("com.test.e2e")
+	if !ok {
+		t.Fatal("plugin not found after activation")
+	}
+	tools := entry.Context.GetTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	// 5. Execute the tool via adapter (V2)
+	tool := tools[0]
+	adapter := NewPluginToolAdapter("com.test.e2e", tool)
+	result, err := adapter.ExecuteWithContext(&ToolCallContext{
+		SessionID: "sess-e2e",
+		Channel:   "cli",
+		UserID:    "user-e2e",
+		Ctx:       context.Background(),
+	}, `{"input": "hello"}`)
+	if err != nil {
+		t.Fatalf("ExecuteWithContext failed: %v", err)
+	}
+	// V2 result should contain session info
+	if !strContains(result.Content, "session=sess-e2e") {
+		t.Errorf("V2 result should contain session info, got %q", result.Content)
+	}
+
+	// 6. Verify hook received via PluginHookBridge
+	bridge := NewPluginHookBridge()
+	WirePluginHooks(bridge, pm)
+	hookResult := bridge.Dispatch(ctx, &HookPayload{
+		Event:    HookPreToolUse,
+		ToolName: "Shell",
+	})
+	if !e2ePlugin.hookCalled {
+		t.Error("hook handler should have been called")
+	}
+	if hookResult.Decision != DecisionAllow {
+		t.Errorf("hook decision = %q, want %q", hookResult.Decision, DecisionAllow)
+	}
+
+	// 7. Verify enricher works via EnricherRegistry
+	enricherReg := NewEnricherRegistry()
+	WirePluginEnrichers(enricherReg, pm, 100)
+	if enricherReg.Count() != 1 {
+		t.Errorf("enricher count = %d, want 1", enricherReg.Count())
+	}
+	content := enricherReg.RunAll(ctx)
+	if !strContains(content, "e2e enriched content") {
+		t.Errorf("enricher output should contain enriched content, got %q", content)
+	}
+
+	// 8. Verify metrics correct
+	metrics := pm.Metrics()
+	if metrics.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins = %d, want 1", metrics.TotalPlugins)
+	}
+	if metrics.ActivePlugins != 1 {
+		t.Errorf("ActivePlugins = %d, want 1", metrics.ActivePlugins)
+	}
+	if metrics.TotalTools != 1 {
+		t.Errorf("TotalTools = %d, want 1", metrics.TotalTools)
+	}
+	if metrics.TotalHooks != 1 {
+		t.Errorf("TotalHooks = %d, want 1", metrics.TotalHooks)
+	}
+	if metrics.TotalEnrichers != 1 {
+		t.Errorf("TotalEnrichers = %d, want 1", metrics.TotalEnrichers)
+	}
+
+	// 9. Verify health check passes
+	results := pm.HealthCheck(ctx)
+	if results["com.test.e2e"] != nil {
+		t.Errorf("expected healthy (nil error), got %v", results["com.test.e2e"])
+	}
+
+	// 10. Verify String() output
+	s := pm.String()
+	if !strContains(s, "total=1") || !strContains(s, "active=1") {
+		t.Errorf("String() should contain total=1 and active=1, got %q", s)
+	}
+
+	// 11. Verify event bus works
+	bus := pm.Bus()
+	var busReceived string
+	bus.Subscribe("e2e.topic", func(c context.Context, topic string, data any) error {
+		busReceived = data.(string)
+		return nil
+	})
+	bus.Publish(context.Background(), "e2e.topic", "bus-data")
+	if busReceived != "bus-data" {
+		t.Errorf("bus received = %q, want %q", busReceived, "bus-data")
+	}
+
+	// 12. Deactivate
+	pm.DeactivateAll(ctx)
+
+	// 13. Verify metrics updated
+	metrics2 := pm.Metrics()
+	if metrics2.TotalPlugins != 1 {
+		t.Errorf("TotalPlugins after deactivate = %d, want 1", metrics2.TotalPlugins)
+	}
+	if metrics2.ActivePlugins != 0 {
+		t.Errorf("ActivePlugins after deactivate = %d, want 0", metrics2.ActivePlugins)
+	}
+	if metrics2.TotalTools != 0 {
+		t.Errorf("TotalTools after deactivate = %d, want 0", metrics2.TotalTools)
+	}
+	if metrics2.TotalHooks != 0 {
+		t.Errorf("TotalHooks after deactivate = %d, want 0", metrics2.TotalHooks)
+	}
+	if metrics2.TotalEnrichers != 0 {
+		t.Errorf("TotalEnrichers after deactivate = %d, want 0", metrics2.TotalEnrichers)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseVersion Tests
+// ---------------------------------------------------------------------------
+
+func TestParseVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		version   string
+		wantMajor int
+		wantMinor int
+		wantPatch int
+		wantErr   bool
+	}{
+		{"1.0.0", 1, 0, 0, false},
+		{"0.1.0", 0, 1, 0, false},
+		{"0.0.1", 0, 0, 1, false},
+		{"10.20.30", 10, 20, 30, false},
+		{"", 0, 0, 0, true},
+		{"1.0", 0, 0, 0, true},
+		{"1", 0, 0, 0, true},
+		{"1.0.0.0", 0, 0, 0, true},
+		{"v1.0.0", 0, 0, 0, true},
+		{"1.0.0-beta", 0, 0, 0, true},
+		{"1.0.0+build", 0, 0, 0, true},
+		{"abc", 0, 0, 0, true},
+		{"a.b.c", 0, 0, 0, true},
+		{"1.0.-1", 0, 0, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			m := PluginManifest{Version: tt.version}
+			major, minor, patch, err := m.ParseVersion()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseVersion(%q) error = %v, wantErr %v", tt.version, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if major != tt.wantMajor || minor != tt.wantMinor || patch != tt.wantPatch {
+					t.Errorf("ParseVersion(%q) = (%d, %d, %d), want (%d, %d, %d)",
+						tt.version, major, minor, patch, tt.wantMajor, tt.wantMinor, tt.wantPatch)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadManifest_InvalidVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		version string
+		wantErr bool
+	}{
+		{"valid semver", "1.0.0", false},
+		{"missing patch", "1.0", true},
+		{"non-numeric", "abc", true},
+		{"with prefix", "v1.0.0", true},
+		{"with prerelease", "1.0.0-beta", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := testPluginDir(t)
+			m := testManifest()
+			m.Version = tt.version
+			writeTestManifest(t, dir, &m)
+
+			_, err := LoadManifest(dir)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("LoadManifest(version=%q) error = %v, wantErr %v", tt.version, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildToolDef InputSchema Tests
+// ---------------------------------------------------------------------------
+
+func TestBuildToolDef_InputSchema(t *testing.T) {
+	t.Parallel()
+	def := BuildToolDef("test_tool", "A test tool",
+		ToolParamDef{Name: "name", Type: "string", Description: "The name", Required: true},
+		ToolParamDef{Name: "count", Type: "number", Description: "The count"},
+	)
+
+	if def.InputSchema == nil {
+		t.Fatal("InputSchema should not be nil")
+	}
+
+	// Check type
+	typ, _ := def.InputSchema["type"].(string)
+	if typ != "object" {
+		t.Errorf("schema type = %q, want %q", typ, "object")
+	}
+
+	// Check properties
+	props, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("properties should be map[string]any")
+	}
+	if len(props) != 2 {
+		t.Errorf("properties count = %d, want 2", len(props))
+	}
+
+	nameProp, ok := props["name"].(map[string]any)
+	if !ok {
+		t.Fatal("name property should be map[string]any")
+	}
+	if nameProp["type"] != "string" {
+		t.Errorf("name type = %q, want %q", nameProp["type"], "string")
+	}
+
+	// Check required
+	req, ok := def.InputSchema["required"].([]string)
+	if !ok {
+		t.Fatal("required should be []string")
+	}
+	if len(req) != 1 || req[0] != "name" {
+		t.Errorf("required = %v, want [name]", req)
+	}
+}
+
+func TestBuildToolDef_InputSchema_NoParams(t *testing.T) {
+	t.Parallel()
+	def := BuildToolDef("empty_tool", "No params")
+
+	if def.InputSchema == nil {
+		t.Fatal("InputSchema should not be nil even with no params")
+	}
+
+	typ, _ := def.InputSchema["type"].(string)
+	if typ != "object" {
+		t.Errorf("schema type = %q, want %q", typ, "object")
+	}
+
+	props, _ := def.InputSchema["properties"].(map[string]any)
+	if len(props) != 0 {
+		t.Errorf("properties should be empty, got %d", len(props))
+	}
+
+	// No required field when all params are optional (or no params)
+	if _, hasRequired := def.InputSchema["required"]; hasRequired {
+		t.Error("schema should not have 'required' when no params are required")
+	}
+}
+
+func TestBuildToolDef_InputSchema_AllOptional(t *testing.T) {
+	t.Parallel()
+	def := BuildToolDef("optional_tool", "All optional",
+		ToolParamDef{Name: "a", Type: "string", Description: "A"},
+		ToolParamDef{Name: "b", Type: "number", Description: "B"},
+	)
+
+	if _, hasRequired := def.InputSchema["required"]; hasRequired {
+		t.Error("schema should not have 'required' when all params are optional")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildToolDef JSON Schema Serialization Tests
+// ---------------------------------------------------------------------------
+
+func TestBuildToolDef_JSONSchema(t *testing.T) {
+	t.Parallel()
+	def := BuildToolDef("json_tool", "A tool for JSON schema testing",
+		ToolParamDef{Name: "path", Type: "string", Description: "File path", Required: true},
+		ToolParamDef{Name: "count", Type: "number", Description: "Max items"},
+		ToolParamDef{Name: "recursive", Type: "boolean", Description: "Recurse into subdirs"},
+	)
+
+	data, err := json.Marshal(def)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	// Verify top-level fields
+	if raw["name"] != "json_tool" {
+		t.Errorf("name = %v, want %q", raw["name"], "json_tool")
+	}
+	if raw["description"] != "A tool for JSON schema testing" {
+		t.Errorf("description mismatch")
+	}
+
+	// Verify inputSchema structure via JSON round-trip
+	schema, ok := raw["inputSchema"].(map[string]any)
+	if !ok {
+		t.Fatal("inputSchema should be a JSON object")
+	}
+	if schema["type"] != "object" {
+		t.Errorf("inputSchema.type = %v, want %q", schema["type"], "object")
+	}
+
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("inputSchema.properties should be a JSON object")
+	}
+	if len(props) != 3 {
+		t.Errorf("properties count = %d, want 3", len(props))
+	}
+
+	// Verify each property has type and description
+	for _, paramName := range []string{"path", "count", "recursive"} {
+		prop, ok := props[paramName].(map[string]any)
+		if !ok {
+			t.Errorf("property %q should be an object", paramName)
+			continue
+		}
+		if _, hasType := prop["type"]; !hasType {
+			t.Errorf("property %q missing 'type'", paramName)
+		}
+		if _, hasDesc := prop["description"]; !hasDesc {
+			t.Errorf("property %q missing 'description'", paramName)
+		}
+	}
+
+	// Verify required array
+	req, ok := schema["required"].([]any)
+	if !ok {
+		t.Fatalf("inputSchema.required should be an array, got %T", schema["required"])
+	}
+	if len(req) != 1 || req[0] != "path" {
+		t.Errorf("required = %v, want [path]", req)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ToolDef.ToJSONSchema Tests
+// ---------------------------------------------------------------------------
+
+func TestToolDef_ToJSONSchema(t *testing.T) {
+	t.Parallel()
+	def := BuildToolDef("read_file", "Read a file from disk",
+		ToolParamDef{Name: "path", Type: "string", Description: "File path", Required: true},
+		ToolParamDef{Name: "max_lines", Type: "number", Description: "Max lines to read"},
+	)
+	def.Version = "1.0.0"
+
+	schema := def.ToJSONSchema()
+
+	// Top-level structure
+	if schema["type"] != "function" {
+		t.Errorf("top-level type = %v, want %q", schema["type"], "function")
+	}
+
+	fn, ok := schema["function"].(map[string]any)
+	if !ok {
+		t.Fatal("function should be a map")
+	}
+	if fn["name"] != "read_file" {
+		t.Errorf("function.name = %v, want %q", fn["name"], "read_file")
+	}
+	if fn["description"] != "Read a file from disk" {
+		t.Errorf("function.description = %v, want %q", fn["description"], "Read a file from disk")
+	}
+	if fn["version"] != "1.0.0" {
+		t.Errorf("function.version = %v, want %q", fn["version"], "1.0.0")
+	}
+
+	// Parameters should use pre-built InputSchema
+	params, ok := fn["parameters"].(map[string]any)
+	if !ok {
+		t.Fatal("parameters should be a map")
+	}
+	if params["type"] != "object" {
+		t.Errorf("parameters.type = %v, want %q", params["type"], "object")
+	}
+
+	props, ok := params["properties"].(map[string]any)
+	if !ok || len(props) != 2 {
+		t.Fatalf("properties count = %d, want 2", len(props))
+	}
+
+	required, ok := params["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "path" {
+		t.Errorf("required = %v, want [path]", required)
+	}
+}
+
+func TestToolDef_ToJSONSchema_WithRequired(t *testing.T) {
+	t.Parallel()
+	// Test with multiple required parameters
+	def := BuildToolDef("create_file", "Create a new file",
+		ToolParamDef{Name: "path", Type: "string", Description: "File path", Required: true},
+		ToolParamDef{Name: "content", Type: "string", Description: "File content", Required: true},
+		ToolParamDef{Name: "overwrite", Type: "boolean", Description: "Overwrite if exists"},
+	)
+
+	schema := def.ToJSONSchema()
+	fn := schema["function"].(map[string]any)
+	params := fn["parameters"].(map[string]any)
+
+	required, ok := params["required"].([]string)
+	if !ok {
+		t.Fatal("required should be []string")
+	}
+	if len(required) != 2 {
+		t.Fatalf("required count = %d, want 2", len(required))
+	}
+	// Check both required fields present
+	requiredMap := map[string]bool{}
+	for _, r := range required {
+		requiredMap[r] = true
+	}
+	if !requiredMap["path"] || !requiredMap["content"] {
+		t.Errorf("required = %v, want [path content]", required)
+	}
+
+	// All 3 properties should be present
+	props := params["properties"].(map[string]any)
+	if len(props) != 3 {
+		t.Errorf("properties count = %d, want 3", len(props))
+	}
+
+	// No version when empty
+	if _, has := fn["version"]; has {
+		t.Error("version should not be present when empty")
+	}
+}
+
+func TestToolDef_ToJSONSchema_Empty(t *testing.T) {
+	t.Parallel()
+	// Test with no parameters and no version
+	def := ToolDef{
+		Name:        "ping",
+		Description: "Simple ping tool",
+	}
+
+	schema := def.ToJSONSchema()
+
+	fn := schema["function"].(map[string]any)
+	if fn["name"] != "ping" {
+		t.Errorf("function.name = %v, want %q", fn["name"], "ping")
+	}
+	if fn["description"] != "Simple ping tool" {
+		t.Errorf("function.description = %v, want %q", fn["description"], "Simple ping tool")
+	}
+
+	// No version when empty
+	if _, has := fn["version"]; has {
+		t.Error("version should not be present when empty")
+	}
+
+	// Parameters should produce an empty object schema
+	params := fn["parameters"].(map[string]any)
+	if params["type"] != "object" {
+		t.Errorf("parameters.type = %v, want %q", params["type"], "object")
+	}
+	props := params["properties"].(map[string]any)
+	if len(props) != 0 {
+		t.Errorf("properties count = %d, want 0", len(props))
+	}
+	// No required when empty
+	if _, has := params["required"]; has {
+		t.Error("required should not be present when no required params")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks
+// ---------------------------------------------------------------------------
+
+func BenchmarkPluginManager_RegisterAndActivate(b *testing.B) {
+	ctx := context.Background()
+	manifest := PluginManifest{
+		ID:               "bench.plugin",
+		Name:             "Bench Plugin",
+		Version:          "1.0.0",
+		Description:      "benchmark plugin",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register"},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pm := NewPluginManager(b.TempDir())
+		defer pm.Close()
+		p := &benchPlugin{manifest: manifest}
+		if err := pm.RegisterAndActivate(ctx, p); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPluginHookBridge_Dispatch(b *testing.B) {
+	bridge := NewPluginHookBridge()
+	bridge.Register("bench.plugin", HookPreToolUse, "", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	bridge.Register("bench.plugin2", HookPreToolUse, "test_*", func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+
+	payload := &HookPayload{Event: HookPreToolUse, ToolName: "test_tool"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bridge.Dispatch(context.Background(), payload)
+	}
+}
+
+func BenchmarkPluginToolAdapter_Execute(b *testing.B) {
+	tool := &SimplePluginTool{
+		Def: BuildToolDef("bench_tool", "benchmark tool",
+			ToolParamDef{Name: "input", Type: "string", Description: "input data", Required: true},
+		),
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("ok"), nil
+		},
+	}
+	adapter := NewPluginToolAdapter("bench.plugin", tool)
+	input := `{"input":"test"}`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := adapter.Execute(context.Background(), input); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEnricherRegistry_RunAll(b *testing.B) {
+	reg := NewEnricherRegistry()
+	reg.Register("bench.plugin", "enricher1", func(ctx context.Context) (string, error) {
+		return "content from enricher 1", nil
+	}, 1)
+	reg.Register("bench.plugin", "enricher2", func(ctx context.Context) (string, error) {
+		return "content from enricher 2", nil
+	}, 2)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reg.RunAll(context.Background())
+	}
+}
+
+// benchPlugin is a minimal Plugin for benchmarking.
+type benchPlugin struct {
+	manifest PluginManifest
+}
+
+func (p *benchPlugin) Manifest() PluginManifest         { return p.manifest }
+func (p *benchPlugin) Activate(_ PluginContext) error   { return nil }
+func (p *benchPlugin) Deactivate(_ PluginContext) error { return nil }
+
+// ---------------------------------------------------------------------------
+// Fuzz Tests
+// ---------------------------------------------------------------------------
+
+func FuzzParseToolInputString(f *testing.F) {
+	// Seed corpus: valid and invalid inputs
+	f.Add(`{"field":"value"}`, "field")
+	f.Add(`{"field":"hello world"}`, "field")
+	f.Add(`{"other":"x"}`, "field")
+	f.Add(`not json`, "field")
+	f.Add(`{"field":123}`, "field")
+	f.Add("", "field")
+	f.Add(`{"field":"value"}`, "")
+
+	f.Fuzz(func(t *testing.T, input string, field string) {
+		// Should never panic on any input
+		_, _ = ParseToolInputString(input, field)
+	})
+}
+
+func FuzzManifestValidation(f *testing.F) {
+	// Seed corpus: valid and invalid manifest JSON fragments
+	// Note: validateManifest does not access the filesystem — the dir parameter
+	// is currently unused, so passing "." is safe.
+	f.Add([]byte(`{"id":"com.test.fuzz","name":"Fuzz","version":"1.0.0"}`))
+	f.Add([]byte(`{"id":"com.test.fuzz","name":"Fuzz","version":"1.0.0","runtime":"native"}`))
+	f.Add([]byte(`{"id":"","name":"Fuzz","version":"1.0.0"}`))
+	f.Add([]byte(`{"id":"com.test.fuzz","name":"","version":"1.0.0"}`))
+	f.Add([]byte(`{"id":"com.test.fuzz","name":"Fuzz","version":""}`))
+	f.Add([]byte(`{"id":"com.test.fuzz","name":"Fuzz","version":"not-semver"}`))
+	f.Add([]byte(`{"id":"com.test.fuzz","name":"Fuzz","version":"1.0"}`))
+	f.Add([]byte(`not json at all`))
+	f.Add([]byte(`{}`))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Parse as manifest and run validation — should never panic
+		var m PluginManifest
+		if err := json.Unmarshal(data, &m); err != nil {
+			return // invalid JSON, skip
+		}
+		_ = validateManifest(&m, ".")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// InstallPlugin Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_InstallPlugin(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Create source plugin directory
+	sourceDir := filepath.Join(baseDir, "source", "com.test.install")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.install"
+	writeTestManifest(t, sourceDir, &m)
+	// Add an extra file to verify copy
+	if err := os.WriteFile(filepath.Join(sourceDir, "data.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	entry, err := pm.InstallPlugin(ctx, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin failed: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if entry.Manifest.ID != "com.test.install" {
+		t.Errorf("expected ID %q, got %q", "com.test.install", entry.Manifest.ID)
+	}
+	if entry.State != StateActive {
+		t.Errorf("expected StateActive (has onStart event), got %v", entry.State)
+	}
+
+	// Verify files were copied
+	expectedDir := filepath.Join(baseDir, "plugins", "com.test.install")
+	data, err := os.ReadFile(filepath.Join(expectedDir, "data.txt"))
+	if err != nil {
+		t.Fatalf("data.txt not found in installed dir: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("data.txt content mismatch: got %q", string(data))
+	}
+
+	// Verify plugin is in entries
+	if _, ok := pm.GetPlugin("com.test.install"); !ok {
+		t.Error("plugin not found in manager after install")
+	}
+}
+
+func TestPluginManager_InstallPlugin_InvalidPath(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+
+	ctx := context.Background()
+	_, err := pm.InstallPlugin(ctx, "/nonexistent/path")
+	if err == nil {
+		t.Fatal("expected error for invalid path")
+	}
+}
+
+func TestPluginManager_UninstallPlugin(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Create and install a plugin first
+	sourceDir := filepath.Join(baseDir, "source", "com.test.uninstall")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.uninstall"
+	writeTestManifest(t, sourceDir, &m)
+
+	ctx := context.Background()
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin failed: %v", err)
+	}
+
+	// Verify it exists
+	expectedDir := filepath.Join(baseDir, "plugins", "com.test.uninstall")
+	if _, err := os.Stat(expectedDir); err != nil {
+		t.Fatalf("installed directory not found: %v", err)
+	}
+
+	// Uninstall
+	err = pm.UninstallPlugin(ctx, "com.test.uninstall")
+	if err != nil {
+		t.Fatalf("UninstallPlugin failed: %v", err)
+	}
+
+	// Verify removed from manager
+	if _, ok := pm.GetPlugin("com.test.uninstall"); ok {
+		t.Error("plugin still in manager after uninstall")
+	}
+
+	// Verify directory removed
+	if _, err := os.Stat(expectedDir); !os.IsNotExist(err) {
+		t.Error("plugin directory still exists after uninstall")
+	}
+}
+
+func TestPluginManager_UninstallPlugin_ActivePlugin(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Create and install a plugin with onStart (will auto-activate)
+	sourceDir := filepath.Join(baseDir, "source", "com.test.active")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.active"
+	writeTestManifest(t, sourceDir, &m)
+
+	ctx := context.Background()
+	entry, err := pm.InstallPlugin(ctx, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin failed: %v", err)
+	}
+
+	// Verify it's active
+	if entry.State != StateActive {
+		t.Fatalf("expected active state, got %v", entry.State)
+	}
+
+	// Uninstall the active plugin
+	err = pm.UninstallPlugin(ctx, "com.test.active")
+	if err != nil {
+		t.Fatalf("UninstallPlugin failed: %v", err)
+	}
+
+	// Verify removed
+	if _, ok := pm.GetPlugin("com.test.active"); ok {
+		t.Error("plugin still in manager after uninstall")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Type-Safe Storage Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginContext_StorageInt(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	dir := t.TempDir()
+	realStorage, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
+
+	// Key not found
+	v, ok := pc.StorageInt("missing")
+	if ok {
+		t.Error("expected false for missing key")
+	}
+	if v != 0 {
+		t.Errorf("expected 0 for missing key, got %d", v)
+	}
+
+	// Valid int
+	_ = pc.Storage().Set("count", "42")
+	v, ok = pc.StorageInt("count")
+	if !ok {
+		t.Error("expected true for existing key")
+	}
+	if v != 42 {
+		t.Errorf("expected 42, got %d", v)
+	}
+
+	// Negative int
+	_ = pc.Storage().Set("neg", "-100")
+	v, ok = pc.StorageInt("neg")
+	if !ok {
+		t.Error("expected true for negative int")
+	}
+	if v != -100 {
+		t.Errorf("expected -100, got %d", v)
+	}
+
+	// Invalid value
+	_ = pc.Storage().Set("bad", "not-a-number")
+	v, ok = pc.StorageInt("bad")
+	if ok {
+		t.Error("expected false for unparseable value")
+	}
+	if v != 0 {
+		t.Errorf("expected 0 for unparseable value, got %d", v)
+	}
+}
+
+func TestPluginContext_StorageBool(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	dir := t.TempDir()
+	realStorage, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
+
+	// Key not found
+	v, ok := pc.StorageBool("missing")
+	if ok {
+		t.Error("expected false for missing key")
+	}
+	if v {
+		t.Error("expected false (zero value) for missing key")
+	}
+
+	// true
+	_ = pc.Storage().Set("flag", "true")
+	v, ok = pc.StorageBool("flag")
+	if !ok {
+		t.Error("expected true for existing key")
+	}
+	if !v {
+		t.Error("expected true")
+	}
+
+	// false (valid parse)
+	_ = pc.Storage().Set("off", "false")
+	v, ok = pc.StorageBool("off")
+	if !ok {
+		t.Error("expected true for existing key with 'false' value")
+	}
+	if v {
+		t.Error("expected false")
+	}
+
+	// "1" is also valid for strconv.ParseBool
+	_ = pc.Storage().Set("one", "1")
+	v, ok = pc.StorageBool("one")
+	if !ok || !v {
+		t.Error("expected true for '1'")
+	}
+
+	// Invalid value
+	_ = pc.Storage().Set("bad", "maybe")
+	v, ok = pc.StorageBool("bad")
+	if ok {
+		t.Error("expected false for unparseable value")
+	}
+	if v {
+		t.Error("expected false (zero value) for unparseable value")
+	}
+}
+
+func TestPluginContext_StorageJSON(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	dir := t.TempDir()
+	realStorage, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
+
+	type config struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+	}
+	cfg := config{Host: "localhost", Port: 8080}
+
+	// Store JSON
+	if err := pc.StorageJSON("config", cfg); err != nil {
+		t.Fatalf("StorageJSON failed: %v", err)
+	}
+
+	// Verify raw storage has the JSON string
+	raw, ok := pc.Storage().Get("config")
+	if !ok {
+		t.Fatal("key 'config' not found in storage")
+	}
+	if !strings.Contains(raw, "localhost") || !strings.Contains(raw, "8080") {
+		t.Errorf("stored JSON = %q, should contain localhost and 8080", raw)
+	}
+}
+
+func TestPluginContext_StorageGetJSON(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	dir := t.TempDir()
+	realStorage, err := NewFileStorage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil)
+
+	type config struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+	}
+
+	// Key not found → error
+	var cfg config
+	err = pc.StorageGetJSON("missing", &cfg)
+	if err == nil {
+		t.Fatal("expected error for missing key")
+	}
+
+	// Round-trip
+	_ = pc.StorageJSON("config", config{Host: "example.com", Port: 9090})
+	var result config
+	if err := pc.StorageGetJSON("config", &result); err != nil {
+		t.Fatalf("StorageGetJSON failed: %v", err)
+	}
+	if result.Host != "example.com" {
+		t.Errorf("Host = %q, want %q", result.Host, "example.com")
+	}
+	if result.Port != 9090 {
+		t.Errorf("Port = %d, want %d", result.Port, 9090)
+	}
+
+	// Invalid JSON → error
+	_ = pc.Storage().Set("bad", "{invalid json}")
+	err = pc.StorageGetJSON("bad", &cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+
+	// Nil target → error
+	err = pc.StorageGetJSON("config", nil)
+	if err == nil {
+		t.Fatal("expected error for nil target")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Iteration 18: Error Callback, Auto-Retry, Timeout Tests
+// ---------------------------------------------------------------------------
+
+// flakyPlugin succeeds after N failures.
+type flakyPlugin struct {
+	manifest  PluginManifest
+	failCount int // number of times to fail before succeeding
+	attempts  int // internal counter
+	mu        sync.Mutex
+}
+
+func (p *flakyPlugin) Manifest() PluginManifest { return p.manifest }
+func (p *flakyPlugin) Activate(ctx PluginContext) error {
+	p.mu.Lock()
+	p.attempts++
+	attempt := p.attempts
+	p.mu.Unlock()
+	if attempt <= p.failCount {
+		return fmt.Errorf("transient error (attempt %d)", attempt)
+	}
+	return nil
+}
+func (p *flakyPlugin) Deactivate(ctx PluginContext) error { return nil }
+
+func (p *flakyPlugin) getAttempts() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.attempts
+}
+
+func TestPluginContext_OnPluginError(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	bus := NewPluginEventBus()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus, nil)
+
+	var receivedErr error
+	err := pc.OnPluginError(func(ctx context.Context, err error) {
+		receivedErr = err
+	})
+	if err != nil {
+		t.Fatalf("OnPluginError failed: %v", err)
+	}
+
+	// Simulate callback invocation via internal accessor
+	cb := pc.GetErrorCallback()
+	if cb == nil {
+		t.Fatal("callback should be registered")
+	}
+	cb(context.Background(), fmt.Errorf("test error"))
+
+	if receivedErr == nil || receivedErr.Error() != "test error" {
+		t.Errorf("received error = %v, want 'test error'", receivedErr)
+	}
+}
+
+func TestPluginContext_OnPluginError_NoPermission(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Permissions = []string{} // no hooks.subscribe
+	bus := NewPluginEventBus()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus, nil)
+
+	err := pc.OnPluginError(func(ctx context.Context, err error) {})
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if _, ok := err.(*PermissionError); !ok {
+		t.Errorf("expected PermissionError, got %T: %v", err, err)
+	}
+}
+
+func TestManifest_Timeout(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	raw := map[string]any{
+		"id":               m.ID,
+		"name":             m.Name,
+		"version":          m.Version,
+		"description":      m.Description,
+		"runtime":          string(m.Runtime),
+		"activationEvents": m.ActivationEvents,
+		"permissions":      m.Permissions,
+		"timeout":          "45s",
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+	if loaded.Timeout != 45*time.Second {
+		t.Errorf("Timeout = %v, want 45s", loaded.Timeout)
+	}
+}
+
+func TestManifest_DefaultTimeout(t *testing.T) {
+	t.Parallel()
+	dir := testPluginDir(t)
+	m := testManifest()
+	writeTestManifest(t, dir, &m)
+
+	loaded, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+	if loaded.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (unset; caller should use DefaultPluginTimeout)", loaded.Timeout)
+	}
+}
+
+func TestPluginManager_AutoRetry(t *testing.T) {
+	pm := newTestPM(t)
+	pm.SetRetryInterval(10 * time.Millisecond)
+
+	// Create a flaky plugin that fails 2 times then succeeds
+	fp := &flakyPlugin{
+		manifest:  testManifest(),
+		failCount: 2,
+	}
+	pm.Register(fp)
+
+	ctx := context.Background()
+
+	// Activate — should fail (attempt 1)
+	err := pm.ActivateAll(ctx)
+	if err == nil {
+		t.Fatal("expected error on first activation")
+	}
+
+	entry, ok := pm.GetPlugin("com.test.example")
+	if !ok {
+		t.Fatal("plugin not found")
+	}
+	if entry.State != StateError {
+		t.Errorf("expected StateError, got %q", entry.State)
+	}
+
+	// Enable auto-retry with maxRetries=5
+	pm.SetAutoRetry(true, 5)
+
+	// Wait for retries to process (2 failures + 1 success)
+	// With 10ms interval and exponential backoff starting at 1s,
+	// we need a reasonable timeout. But the backoff is 1s for first retry.
+	// For testing, let's wait up to 10 seconds.
+	deadline := time.After(10 * time.Second)
+	for {
+		entry, _ = pm.GetPlugin("com.test.example")
+		entry.stateMu.Lock()
+		state := entry.State
+		entry.stateMu.Unlock()
+		if state == StateActive {
+			break
+		}
+		select {
+		case <-deadline:
+			// Check attempts
+			attempts := fp.getAttempts()
+			t.Fatalf("timeout waiting for recovery; state=%q, attempts=%d", state, attempts)
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Verify plugin recovered
+	if entry.State != StateActive {
+		t.Errorf("expected StateActive after retry, got %q", entry.State)
+	}
+
+	// Stop retry
+	pm.SetAutoRetry(false, 0)
+}
+
+func TestPluginManager_AutoRetry_MaxRetries(t *testing.T) {
+	pm := newTestPM(t)
+	pm.SetRetryInterval(10 * time.Millisecond)
+
+	// Create a plugin that always fails
+	fp := &flakyPlugin{
+		manifest:  testManifest(),
+		failCount: 999, // always fails
+	}
+	pm.Register(fp)
+
+	ctx := context.Background()
+
+	// Activate — should fail
+	pm.ActivateAll(ctx)
+
+	// Enable auto-retry with maxRetries=2 and fast retry interval for tests.
+	pm.SetRetryInterval(50 * time.Millisecond)
+	pm.SetAutoRetry(true, 2)
+
+	// Wait enough time for retries to complete (retryInitialDelay=1s exponential: 1s+2s=3s)
+	time.Sleep(5 * time.Second)
+
+	entry, _ := pm.GetPlugin("com.test.example")
+	entry.stateMu.Lock()
+	retryCount := entry.retryCount
+	state := entry.State
+	entry.stateMu.Unlock()
+
+	if state != StateError {
+		t.Errorf("expected StateError after max retries, got %q", state)
+	}
+	if retryCount > 2 {
+		t.Errorf("retryCount = %d, should not exceed maxRetries=2", retryCount)
+	}
+
+	// Verify attempts: 1 initial + 2 retries = 3
+	attempts := fp.getAttempts()
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3 (1 initial + 2 retries)", attempts)
+	}
+
+	pm.SetAutoRetry(false, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Iteration 20: Manifest Checksum & Resource Tracking Tests
+// ---------------------------------------------------------------------------
+
+func TestManifest_ChecksumVerification(t *testing.T) {
+	t.Parallel()
+	t.Run("ValidChecksum", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		// Compute SHA256 of plugin.json
+		manifestData, err := os.ReadFile(filepath.Join(dir, "plugin.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checksum := fmt.Sprintf("%x", sha256.Sum256(manifestData))
+		if err := os.WriteFile(filepath.Join(dir, "plugin.sha256"), []byte(checksum), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, err := LoadManifest(dir)
+		if err != nil {
+			t.Fatalf("LoadManifest failed: %v", err)
+		}
+		if err := loaded.VerifyChecksum(dir); err != nil {
+			t.Fatalf("VerifyChecksum failed: %v", err)
+		}
+	})
+
+	t.Run("Sha256WithFilename", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		manifestData, err := os.ReadFile(filepath.Join(dir, "plugin.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checksum := fmt.Sprintf("%x", sha256.Sum256(manifestData))
+		// GNU coreutils style: "hash  filename"
+		content := checksum + "  plugin.json"
+		if err := os.WriteFile(filepath.Join(dir, "plugin.sha256"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, err := LoadManifest(dir)
+		if err != nil {
+			t.Fatalf("LoadManifest failed: %v", err)
+		}
+		if err := loaded.VerifyChecksum(dir); err != nil {
+			t.Fatalf("VerifyChecksum with filename format failed: %v", err)
+		}
+	})
+
+	t.Run("MissingSha256File", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		loaded, err := LoadManifest(dir)
+		if err != nil {
+			t.Fatalf("LoadManifest failed: %v", err)
+		}
+		err = loaded.VerifyChecksum(dir)
+		if err == nil {
+			t.Fatal("expected error for missing plugin.sha256")
+		}
+		if !strings.Contains(err.Error(), "plugin.sha256") {
+			t.Errorf("error should mention plugin.sha256, got: %v", err)
+		}
+	})
+
+	t.Run("CorruptedChecksum", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		if err := os.WriteFile(filepath.Join(dir, "plugin.sha256"), []byte("0000000000000000"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, err := LoadManifest(dir)
+		if err != nil {
+			t.Fatalf("LoadManifest failed: %v", err)
+		}
+		err = loaded.VerifyChecksum(dir)
+		if err == nil {
+			t.Fatal("expected error for corrupted checksum")
+		}
+		if !strings.Contains(err.Error(), "mismatch") {
+			t.Errorf("error should mention mismatch, got: %v", err)
+		}
+	})
+
+	t.Run("EmptySha256File", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		if err := os.WriteFile(filepath.Join(dir, "plugin.sha256"), []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, err := LoadManifest(dir)
+		if err != nil {
+			t.Fatalf("LoadManifest failed: %v", err)
+		}
+		err = loaded.VerifyChecksum(dir)
+		if err == nil {
+			t.Fatal("expected error for empty sha256 file")
+		}
+	})
+
+	t.Run("LoadManifestWithOptions_VerifyTrue", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		manifestData, err := os.ReadFile(filepath.Join(dir, "plugin.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checksum := fmt.Sprintf("%x", sha256.Sum256(manifestData))
+		if err := os.WriteFile(filepath.Join(dir, "plugin.sha256"), []byte(checksum), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		loaded, err := LoadManifestWithOptions(dir, LoadManifestOptions{VerifyChecksum: true})
+		if err != nil {
+			t.Fatalf("LoadManifestWithOptions with valid checksum failed: %v", err)
+		}
+		if loaded.ID != m.ID {
+			t.Errorf("ID mismatch: got %q, want %q", loaded.ID, m.ID)
+		}
+	})
+
+	t.Run("LoadManifestWithOptions_VerifyFalse", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+		// No plugin.sha256 file
+
+		loaded, err := LoadManifestWithOptions(dir, LoadManifestOptions{VerifyChecksum: false})
+		if err != nil {
+			t.Fatalf("LoadManifestWithOptions with VerifyChecksum=false should succeed: %v", err)
+		}
+		if loaded.ID != m.ID {
+			t.Errorf("ID mismatch: got %q, want %q", loaded.ID, m.ID)
+		}
+	})
+
+	t.Run("LoadManifestWithOptions_VerifyTrue_Mismatch", func(t *testing.T) {
+		dir := testPluginDir(t)
+		m := testManifest()
+		writeTestManifest(t, dir, &m)
+
+		if err := os.WriteFile(filepath.Join(dir, "plugin.sha256"), []byte("deadbeef"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := LoadManifestWithOptions(dir, LoadManifestOptions{VerifyChecksum: true})
+		if err == nil {
+			t.Fatal("expected error for checksum mismatch")
+		}
+		if !strings.Contains(err.Error(), "checksum") {
+			t.Errorf("error should mention checksum, got: %v", err)
+		}
+	})
+}
+
+func TestPluginContext_ResourceTracking(t *testing.T) {
+	t.Parallel()
+	t.Run("InitialCountsZero", func(t *testing.T) {
+		m := testManifest()
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+		if pc.ToolCallCount() != 0 {
+			t.Errorf("initial ToolCallCount = %d, want 0", pc.ToolCallCount())
+		}
+		if pc.HookCallCount() != 0 {
+			t.Errorf("initial HookCallCount = %d, want 0", pc.HookCallCount())
+		}
+	})
+
+	t.Run("IncrementToolCalls", func(t *testing.T) {
+		m := testManifest()
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+		for i := 0; i < 3; i++ {
+			pc.incrementToolCallCount()
+		}
+		if pc.ToolCallCount() != 3 {
+			t.Errorf("ToolCallCount = %d, want 3", pc.ToolCallCount())
+		}
+		// Hook should still be 0
+		if pc.HookCallCount() != 0 {
+			t.Errorf("HookCallCount = %d, want 0", pc.HookCallCount())
+		}
+	})
+
+	t.Run("IncrementHookCalls", func(t *testing.T) {
+		m := testManifest()
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+		for i := 0; i < 5; i++ {
+			pc.incrementHookCallCount()
+		}
+		if pc.HookCallCount() != 5 {
+			t.Errorf("HookCallCount = %d, want 5", pc.HookCallCount())
+		}
+		// Tool should still be 0
+		if pc.ToolCallCount() != 0 {
+			t.Errorf("ToolCallCount = %d, want 0", pc.ToolCallCount())
+		}
+	})
+
+	t.Run("ConcurrentIncrements", func(t *testing.T) {
+		m := testManifest()
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+		const goroutines = 100
+		const increments = 100
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				for j := 0; j < increments; j++ {
+					pc.incrementToolCallCount()
+					pc.incrementHookCallCount()
+				}
+			}()
+		}
+		wg.Wait()
+
+		expected := int64(goroutines * increments)
+		if pc.ToolCallCount() != expected {
+			t.Errorf("ToolCallCount = %d, want %d", pc.ToolCallCount(), expected)
+		}
+		if pc.HookCallCount() != expected {
+			t.Errorf("HookCallCount = %d, want %d", pc.HookCallCount(), expected)
+		}
+	})
+
+	t.Run("ToolAdapterIncrementsCount", func(t *testing.T) {
+		m := testManifest()
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+		tool := &SimplePluginTool{
+			Def: ToolDef{Name: "track_tool", Description: "test"},
+			ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+				return NewToolResult("ok"), nil
+			},
+		}
+
+		adapter := NewPluginToolAdapterWithContext("test.plugin", tool, pc)
+		adapter.Execute(context.Background(), `{"input":"test"}`)
+		adapter.Execute(context.Background(), `{"input":"test2"}`)
+		adapter.ExecuteWithContext(&ToolCallContext{Ctx: context.Background()}, `{"input":"test3"}`)
+
+		if pc.ToolCallCount() != 3 {
+			t.Errorf("ToolCallCount = %d, want 3 after 3 executions", pc.ToolCallCount())
+		}
+	})
+
+	t.Run("ToolAdapterWithoutContext_NoPanic", func(t *testing.T) {
+		tool := &SimplePluginTool{
+			Def: ToolDef{Name: "no_ctx_tool", Description: "test"},
+			ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+				return NewToolResult("ok"), nil
+			},
+		}
+
+		adapter := NewPluginToolAdapter("test.plugin", tool)
+		result, err := adapter.Execute(context.Background(), `{"input":"test"}`)
+		if err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+		if result.Content != "ok" {
+			t.Errorf("result = %q, want %q", result.Content, "ok")
+		}
+	})
+}
+
+func TestPluginManager_Metrics_AfterToolExecution(t *testing.T) {
+	t.Parallel()
+	t.Run("ToolCallCountInMetrics", func(t *testing.T) {
+		pm := newTestPM(t)
+		p := &mockPlugin{manifest: testManifest()}
+		pm.RegisterAndActivate(context.Background(), p)
+
+		// Before any tracked execution
+		m := pm.Metrics()
+		if m.ToolCallCount != 0 {
+			t.Errorf("initial ToolCallCount = %d, want 0", m.ToolCallCount)
+		}
+		if m.HookCallCount != 0 {
+			t.Errorf("initial HookCallCount = %d, want 0", m.HookCallCount)
+		}
+
+		// Simulate tool executions via context
+		entry, _ := pm.GetPlugin("com.test.example")
+		for i := 0; i < 3; i++ {
+			entry.Context.incrementToolCallCount()
+		}
+
+		m = pm.Metrics()
+		if m.ToolCallCount != 3 {
+			t.Errorf("ToolCallCount = %d, want 3", m.ToolCallCount)
+		}
+		if m.TotalTools != 1 {
+			t.Errorf("TotalTools = %d, want 1 (static registration count)", m.TotalTools)
+		}
+	})
+
+	t.Run("HookCallCountInMetrics", func(t *testing.T) {
+		pm := newTestPM(t)
+		p := &mockPlugin{manifest: testManifest()}
+		pm.RegisterAndActivate(context.Background(), p)
+
+		// Simulate hook dispatches via context
+		entry, _ := pm.GetPlugin("com.test.example")
+		for i := 0; i < 5; i++ {
+			entry.Context.incrementHookCallCount()
+		}
+
+		m := pm.Metrics()
+		if m.HookCallCount != 5 {
+			t.Errorf("HookCallCount = %d, want 5", m.HookCallCount)
+		}
+	})
+
+	t.Run("CombinedMetrics", func(t *testing.T) {
+		pm := newTestPM(t)
+
+		// Plugin 1
+		m1 := testManifest()
+		m1.ID = "com.test.plugin1"
+		p1 := &mockPlugin{manifest: m1}
+		pm.RegisterAndActivate(context.Background(), p1)
+
+		// Plugin 2
+		m2 := testManifest()
+		m2.ID = "com.test.plugin2"
+		p2 := &mockPlugin{manifest: m2}
+		pm.RegisterAndActivate(context.Background(), p2)
+
+		// Plugin 1: 3 tool calls, 1 hook call
+		e1, _ := pm.GetPlugin("com.test.plugin1")
+		for i := 0; i < 3; i++ {
+			e1.Context.incrementToolCallCount()
+		}
+		e1.Context.incrementHookCallCount()
+
+		// Plugin 2: 7 tool calls, 4 hook calls
+		e2, _ := pm.GetPlugin("com.test.plugin2")
+		for i := 0; i < 7; i++ {
+			e2.Context.incrementToolCallCount()
+		}
+		for i := 0; i < 4; i++ {
+			e2.Context.incrementHookCallCount()
+		}
+
+		m := pm.Metrics()
+		if m.TotalPlugins != 2 {
+			t.Errorf("TotalPlugins = %d, want 2", m.TotalPlugins)
+		}
+		if m.ActivePlugins != 2 {
+			t.Errorf("ActivePlugins = %d, want 2", m.ActivePlugins)
+		}
+		if m.ToolCallCount != 10 {
+			t.Errorf("ToolCallCount = %d, want 10", m.ToolCallCount)
+		}
+		if m.HookCallCount != 5 {
+			t.Errorf("HookCallCount = %d, want 5", m.HookCallCount)
+		}
+	})
+
+	t.Run("MetricsJSON_WithCallCounts", func(t *testing.T) {
+		m := PluginMetrics{
+			TotalPlugins:   3,
+			ActivePlugins:  2,
+			TotalTools:     5,
+			TotalHooks:     8,
+			TotalEnrichers: 2,
+			ToolCallCount:  150,
+			HookCallCount:  320,
+		}
+
+		data, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+
+		var m2 PluginMetrics
+		if err := json.Unmarshal(data, &m2); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+
+		if m2.ToolCallCount != 150 {
+			t.Errorf("ToolCallCount = %d, want 150", m2.ToolCallCount)
+		}
+		if m2.HookCallCount != 320 {
+			t.Errorf("HookCallCount = %d, want 320", m2.HookCallCount)
+		}
+		if m2.TotalPlugins != 3 {
+			t.Errorf("TotalPlugins = %d, want 3", m2.TotalPlugins)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// AuditLogger Tests
+// ---------------------------------------------------------------------------
+
+func TestAuditLogger_LogAndQuery(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	al, err := NewAuditLogger(path)
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	// Log 3 entries with explicit timestamps
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "p2", Action: AuditDeactivate})
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditInstall, Details: map[string]any{"dir": "/tmp"}})
+
+	entries := al.Query(AuditFilter{})
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	// Verify auto-filled timestamps
+	for _, e := range entries {
+		if e.Timestamp.IsZero() {
+			t.Error("timestamp should be auto-filled")
+		}
+	}
+
+	// Verify ordering (ascending by timestamp)
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Timestamp.Before(entries[i-1].Timestamp) {
+			t.Error("entries not sorted by timestamp")
+		}
+	}
+
+	// Verify details preserved
+	if entries[2].Details["dir"] != "/tmp" {
+		t.Errorf("expected details.dir=/tmp, got %v", entries[2].Details["dir"])
+	}
+}
+
+func TestAuditLogger_QueryByPlugin(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	al, err := NewAuditLogger(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	al.Log(AuditEntry{PluginID: "plugin-a", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "plugin-b", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "plugin-a", Action: AuditDeactivate})
+
+	// Filter by plugin-a
+	entries := al.Query(AuditFilter{PluginID: "plugin-a"})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries for plugin-a, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.PluginID != "plugin-a" {
+			t.Errorf("expected plugin-a, got %s", e.PluginID)
+		}
+	}
+
+	// Filter by plugin-b
+	entriesB := al.Query(AuditFilter{PluginID: "plugin-b"})
+	if len(entriesB) != 1 {
+		t.Fatalf("expected 1 entry for plugin-b, got %d", len(entriesB))
+	}
+}
+
+func TestAuditLogger_QueryByTimeRange(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	al, err := NewAuditLogger(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	// Use explicit timestamps to avoid Windows 15ms timer resolution issues.
+	// Windows time.Now() has ~15ms granularity, so back-to-back time.Now()
+	// calls may return the same value, breaking time-range assertions.
+	before := time.Now()
+	time.Sleep(time.Millisecond)
+	p1Time := time.Now()
+	time.Sleep(time.Millisecond)
+	mid := time.Now()
+	time.Sleep(time.Millisecond)
+	p2Time := time.Now()
+	time.Sleep(time.Millisecond)
+	after := time.Now()
+
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditActivate, Timestamp: p1Time})
+	al.Log(AuditEntry{PluginID: "p2", Action: AuditActivate, Timestamp: p2Time})
+
+	// Only second entry
+	entries := al.Query(AuditFilter{From: mid, To: after})
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry in [mid, after], got %d", len(entries))
+	}
+	if entries[0].PluginID != "p2" {
+		t.Errorf("expected p2, got %s", entries[0].PluginID)
+	}
+
+	// Only first entry (To is exclusive — Before check)
+	entriesFirst := al.Query(AuditFilter{From: before, To: mid})
+	if len(entriesFirst) != 1 {
+		t.Fatalf("expected 1 entry in [before, mid], got %d", len(entriesFirst))
+	}
+	if entriesFirst[0].PluginID != "p1" {
+		t.Errorf("expected p1, got %s", entriesFirst[0].PluginID)
+	}
+
+	// All entries
+	all := al.Query(AuditFilter{From: before, To: after})
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries in [before, after], got %d", len(all))
+	}
+}
+
+func TestAuditLogger_Clear(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	al, err := NewAuditLogger(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAuditLogger: %v", err)
+	}
+	defer al.Close()
+
+	al.Log(AuditEntry{PluginID: "p1", Action: AuditActivate})
+	al.Log(AuditEntry{PluginID: "p2", Action: AuditActivate})
+
+	if len(al.Query(AuditFilter{})) != 2 {
+		t.Fatal("expected 2 entries before clear")
+	}
+
+	if err := al.Clear(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(al.Query(AuditFilter{})) != 0 {
+		t.Fatal("expected 0 entries after clear")
+	}
+
+	// Verify writing still works after clear
+	al.Log(AuditEntry{PluginID: "p3", Action: AuditInstall})
+	if len(al.Query(AuditFilter{})) != 1 {
+		t.Fatal("expected 1 entry after clear + log")
+	}
+}
+
+func TestPluginManager_AuditLog_Activate(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	defer pm.AuditLog().Close()
+
+	p := &mockPlugin{manifest: testManifest()}
+	if err := pm.RegisterAndActivate(context.Background(), p); err != nil {
+		t.Fatalf("RegisterAndActivate: %v", err)
+	}
+
+	entries := pm.AuditLog().Query(AuditFilter{PluginID: "com.test.example"})
+	if len(entries) == 0 {
+		t.Fatal("expected audit entries for activate")
+	}
+
+	last := entries[len(entries)-1]
+	if last.Action != AuditActivate {
+		t.Errorf("expected action %q, got %q", AuditActivate, last.Action)
+	}
+	if last.Error != "" {
+		t.Errorf("expected no error, got %q", last.Error)
+	}
+	if last.Details["state"] != "active" {
+		t.Errorf("expected details.state=active, got %v", last.Details["state"])
+	}
+}
+
+func TestPluginManager_AuditLog_Install(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	defer pm.AuditLog().Close()
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Prepare source directory with valid manifest
+	srcDir := t.TempDir()
+	m := testManifest()
+	writeTestManifest(t, srcDir, &m)
+
+	entry, err := pm.InstallPlugin(context.Background(), srcDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+
+	entries := pm.AuditLog().Query(AuditFilter{PluginID: "com.test.example"})
+	found := false
+	for _, e := range entries {
+		if e.Action == AuditInstall && e.Error == "" {
+			found = true
+			if e.Details["dir"] == nil {
+				t.Error("expected details.dir to be set")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected install audit entry without error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NativeRuntime Tests
+// ---------------------------------------------------------------------------
+
+func TestNativeRuntime(t *testing.T) {
+	t.Parallel()
+	nr := NewNativeRuntime()
+	p := &mockPlugin{manifest: testManifest()}
+	nr.RegisterPlugin(p)
+
+	// Create should return the registered plugin
+	m := testManifest()
+	got, err := nr.Create(&m, "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != p {
+		t.Error("expected same plugin instance")
+	}
+
+	// Create for unknown plugin should error
+	unknown := PluginManifest{ID: "unknown", Name: "Unknown", Version: "1.0.0", Description: "test", Runtime: RuntimeNative}
+	_, err = nr.Create(&unknown, "/tmp")
+	if err == nil {
+		t.Error("expected error for unregistered plugin")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginToolBridge Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginToolBridge_Execute(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "test-tool", Description: "A test tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("result: " + input), nil
+		},
+	}
+	adapter := NewPluginToolAdapter("com.test", tool)
+	bridge := NewPluginToolBridge(adapter)
+
+	if bridge.Name() != "test-tool" {
+		t.Errorf("expected name 'test-tool', got %q", bridge.Name())
+	}
+	if !strings.Contains(bridge.Description(), "[com.test plugin]") {
+		t.Errorf("expected plugin attribution in description, got %q", bridge.Description())
+	}
+
+	// Execute via bridge
+	tCtx := &tools.ToolContext{Ctx: context.Background()}
+	result, err := bridge.Execute(tCtx, `"hello"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary != "result: \"hello\"" {
+		t.Errorf("unexpected result: %q", result.Summary)
+	}
+}
+
+func TestPluginToolBridge_RateLimited(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "limited-tool", Description: "A limited tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("ok"), nil
+		},
+	}
+	adapter := NewPluginToolAdapter("com.test", tool)
+	rl := NewPluginRateLimiter(map[string]RateLimit{
+		"com.test": {MaxCalls: 1, Window: time.Minute},
+	})
+	bridge := NewPluginToolBridgeWithLimits(adapter, "com.test", rl, nil)
+
+	tCtx := &tools.ToolContext{Ctx: context.Background()}
+
+	// First call should succeed
+	result, err := bridge.Execute(tCtx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Error("first call should not be rate limited")
+	}
+
+	// Second call should be rate limited
+	result, _ = bridge.Execute(tCtx, "")
+	if !result.IsError {
+		t.Error("expected rate limit error")
+	}
+}
+
+func TestPluginToolBridge_QuotaExceeded(t *testing.T) {
+	t.Parallel()
+	tool := &SimplePluginTool{
+		Def: ToolDef{Name: "quota-tool", Description: "A quota tool"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) {
+			return NewToolResult("ok"), nil
+		},
+	}
+	adapter := NewPluginToolAdapter("com.test", tool)
+	qm := NewPluginQuotaManager(map[string]PluginQuota{
+		"com.test": {MaxToolCallsPerDay: 1},
+	})
+	bridge := NewPluginToolBridgeWithLimits(adapter, "com.test", nil, qm)
+
+	tCtx := &tools.ToolContext{Ctx: context.Background()}
+
+	// First call should succeed
+	result, err := bridge.Execute(tCtx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Error("first call should not be quota limited")
+	}
+
+	// Second call should be quota exceeded
+	result, _ = bridge.Execute(tCtx, "")
+	if !result.IsError {
+		t.Error("expected quota exceeded error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EventBus Unsubscribe nil handler Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginEventBus_Unsubscribe_NilHandler(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+	err := bus.Unsubscribe("topic", nil)
+	if err == nil {
+		t.Error("expected error for nil handler")
+	}
+	if !strings.Contains(err.Error(), "must not be nil") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WirePluginTools Tests
+// ---------------------------------------------------------------------------
+
+func TestWirePluginTools_NilRegistry(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	err := WirePluginTools(pm, nil)
+	if err == nil {
+		t.Error("expected error for nil registry")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginConfigStore_LoadEmpty(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+
+	config, err := store.Load("com.test.empty")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(config) != 0 {
+		t.Errorf("expected empty config, got %v", config)
+	}
+}
+
+func TestPluginConfigStore_SaveAndLoad(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+	pluginID := "com.test.save"
+
+	// Save config
+	config := map[string]any{
+		"apiKey": "sk-test-123",
+		"debug":  true,
+	}
+	if err := store.Save(pluginID, config); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Load and verify
+	loaded, err := store.Load(pluginID)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded["apiKey"] != "sk-test-123" {
+		t.Errorf("apiKey mismatch: got %v, want 'sk-test-123'", loaded["apiKey"])
+	}
+	if loaded["debug"] != true {
+		t.Errorf("debug mismatch: got %v, want true", loaded["debug"])
+	}
+
+	// Verify file exists on disk
+	path := filepath.Join(dir, "plugins", pluginID, "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config file: %v", err)
+	}
+	if !strings.Contains(string(data), "sk-test-123") {
+		t.Errorf("config file doesn't contain expected value")
+	}
+}
+
+func TestPluginConfigStore_Cache(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+	pluginID := "com.test.cache"
+
+	// Save and load
+	config := map[string]any{"key": "value1"}
+	store.Save(pluginID, config)
+
+	loaded1, _ := store.Load(pluginID)
+	loaded2, _ := store.Load(pluginID)
+
+	// Modify returned map should not affect cache
+	loaded2["key"] = "modified"
+	if loaded1["key"] == "modified" {
+		t.Error("Load returned reference to cached map, not a clone")
+	}
+
+	// Invalidate cache and reload
+	store.InvalidateCache(pluginID)
+	loaded3, _ := store.Load(pluginID)
+	if loaded3["key"] != "value1" {
+		t.Errorf("after invalidation, got %v, want 'value1'", loaded3["key"])
+	}
+}
+
+func TestPluginConfigStore_Update(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+
+	// Update a key — creates new config
+	if err := store.Update("test-plugin", "key1", "value1"); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	// Load should reflect the update
+	config, err := store.Load("test-plugin")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if config["key1"] != "value1" {
+		t.Errorf("key1 = %v, want 'value1'", config["key1"])
+	}
+
+	// Update another key — should merge
+	if err := store.Update("test-plugin", "key2", 42); err != nil {
+		t.Fatalf("Update key2 failed: %v", err)
+	}
+
+	config, _ = store.Load("test-plugin")
+	if config["key2"] != 42 {
+		t.Errorf("key2 = %v, want 42", config["key2"])
+	}
+	if config["key1"] != "value1" {
+		t.Errorf("key1 should still be value1, got %v", config["key1"])
+	}
+}
+
+func TestGetDefaultConfig(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		manifest *PluginManifest
+		want     map[string]any
+	}{
+		{
+			name:     "nil manifest",
+			manifest: nil,
+			want:     map[string]any{},
+		},
+		{
+			name:     "no contributes",
+			manifest: &PluginManifest{ID: "com.test", Name: "Test", Runtime: RuntimeNative},
+			want:     map[string]any{},
+		},
+		{
+			name: "with defaults",
+			manifest: &PluginManifest{
+				ID:      "com.test.defaults",
+				Name:    "Test",
+				Runtime: RuntimeNative,
+				Contributes: &PluginContributes{
+					Configuration: &ConfigurationContribution{
+						Title: "Test Config",
+						Properties: map[string]ConfigProperty{
+							"apiUrl":  {Type: "string", Default: "https://api.example.com", Description: "API URL"},
+							"timeout": {Type: "number", Default: 30, Description: "Timeout in seconds"},
+							"debug":   {Type: "boolean", Default: false, Description: "Debug mode"},
+						},
+					},
+				},
+			},
+			want: map[string]any{
+				"apiUrl":  "https://api.example.com",
+				"timeout": 30,
+				"debug":   false,
+			},
+		},
+		{
+			name: "no default value",
+			manifest: &PluginManifest{
+				ID:      "com.test.nodefault",
+				Name:    "Test",
+				Runtime: RuntimeNative,
+				Contributes: &PluginContributes{
+					Configuration: &ConfigurationContribution{
+						Title: "Test Config",
+						Properties: map[string]ConfigProperty{
+							"optional": {Type: "string", Description: "Optional field"},
+						},
+					},
+				},
+			},
+			want: map[string]any{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetDefaultConfig(tt.manifest)
+			if len(got) != len(tt.want) {
+				t.Errorf("len mismatch: got %d, want %d", len(got), len(tt.want))
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("key %q: got %v (%T), want %v (%T)", k, got[k], got[k], v, v)
+				}
+			}
+		})
+	}
+}
+
+func TestPluginContext_Config(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+
+	// Create a manifest with configuration defaults
+	m := PluginManifest{
+		ID:          "com.test.config",
+		Name:        "Config Test",
+		Runtime:     RuntimeNative,
+		Permissions: []string{"*"},
+		Contributes: &PluginContributes{
+			Configuration: &ConfigurationContribution{
+				Title: "Test Settings",
+				Properties: map[string]ConfigProperty{
+					"mode":    {Type: "string", Default: "auto", Description: "Operating mode"},
+					"level":   {Type: "number", Default: 5, Description: "Log level"},
+					"enabled": {Type: "boolean", Default: true, Description: "Enable feature"},
+				},
+			},
+		},
+	}
+
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, store)
+
+	// Config() should return defaults when no user config exists
+	config, err := pc.Config()
+	if err != nil {
+		t.Fatalf("Config() failed: %v", err)
+	}
+	if config["mode"] != "auto" {
+		t.Errorf("mode default: got %v, want 'auto'", config["mode"])
+	}
+	if config["level"] != 5 {
+		t.Errorf("level default: got %v, want 5", config["level"])
+	}
+
+	// SetConfig should override defaults
+	if err := pc.SetConfig("mode", "manual"); err != nil {
+		t.Fatalf("SetConfig failed: %v", err)
+	}
+
+	config, err = pc.Config()
+	if err != nil {
+		t.Fatalf("Config() after SetConfig failed: %v", err)
+	}
+	if config["mode"] != "manual" {
+		t.Errorf("mode after set: got %v, want 'manual'", config["mode"])
+	}
+	// Other defaults should still be present
+	if config["level"] != 5 {
+		t.Errorf("level after mode set: got %v, want 5", config["level"])
+	}
+	if config["enabled"] != true {
+		t.Errorf("enabled after mode set: got %v, want true", config["enabled"])
+	}
+}
+
+func TestPluginContext_Config_NilStore(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	// nil configStore should not panic
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+	config, err := pc.Config()
+	if err != nil {
+		t.Fatalf("Config() with nil store failed: %v", err)
+	}
+	if config == nil {
+		t.Error("expected non-nil config")
+	}
+
+	err = pc.SetConfig("key", "value")
+	if err == nil {
+		t.Error("expected error when configStore is nil")
+	}
+}
+
+func TestPluginContext_SetConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := NewPluginConfigStore(dir)
+	pluginID := "com.test.setconfig"
+
+	m := PluginManifest{
+		ID:          pluginID,
+		Name:        "SetConfig Test",
+		Runtime:     RuntimeNative,
+		Permissions: []string{"*"},
+	}
+
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, store)
+
+	// Set multiple keys
+	if err := pc.SetConfig("key1", "value1"); err != nil {
+		t.Fatalf("SetConfig key1 failed: %v", err)
+	}
+	if err := pc.SetConfig("key2", 42); err != nil {
+		t.Fatalf("SetConfig key2 failed: %v", err)
+	}
+
+	// Verify both keys are present
+	config, err := pc.Config()
+	if err != nil {
+		t.Fatalf("Config() failed: %v", err)
+	}
+	if config["key1"] != "value1" {
+		t.Errorf("key1: got %v, want 'value1'", config["key1"])
+	}
+	// JSON numbers unmarshal as float64, but cache stores Go native types
+	switch v := config["key2"].(type) {
+	case float64:
+		if v != 42 {
+			t.Errorf("key2: got %v, want 42", v)
+		}
+	case int:
+		if v != 42 {
+			t.Errorf("key2: got %v, want 42", v)
+		}
+	default:
+		t.Errorf("key2: got %v (%T), want 42", config["key2"], config["key2"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginRegistry Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginRegistry_New(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+	reg := NewPluginRegistry(pm)
+	if reg == nil {
+		t.Fatal("NewPluginRegistry returned nil")
+	}
+	if len(reg.sources) != 0 {
+		t.Errorf("expected 0 sources, got %d", len(reg.sources))
+	}
+	if len(reg.List()) != 0 {
+		t.Errorf("expected 0 cached entries, got %d", len(reg.List()))
+	}
+
+	// With sources
+	sources := []RegistrySource{
+		{Type: RegistrySourceLocal, URL: "/tmp/plugins"},
+		{Type: RegistrySourceGitHub, URL: "https://github.com/example/plugin"},
+	}
+	reg2 := NewPluginRegistry(pm, sources...)
+	if len(reg2.sources) != 2 {
+		t.Errorf("expected 2 sources, got %d", len(reg2.sources))
+	}
+	if reg2.sources[0].Type != RegistrySourceLocal {
+		t.Errorf("expected first source type %q, got %q", RegistrySourceLocal, reg2.sources[0].Type)
+	}
+	if reg2.sources[1].Type != RegistrySourceGitHub {
+		t.Errorf("expected second source type %q, got %q", RegistrySourceGitHub, reg2.sources[1].Type)
+	}
+}
+
+func TestPluginRegistry_Search(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// Register two plugins with different metadata
+	m1 := testManifest()
+	m1.ID = "com.test.hello"
+	m1.Name = "Hello Plugin"
+	m1.Description = "A greeting plugin for testing"
+	p1 := &mockPlugin{manifest: m1}
+	if err := pm.Register(p1); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := testManifest()
+	m2.ID = "com.test.calc"
+	m2.Name = "Calculator Plugin"
+	m2.Description = "Performs arithmetic operations"
+	p2 := &mockPlugin{manifest: m2}
+	if err := pm.Register(p2); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewPluginRegistry(pm)
+
+	// Search by ID substring
+	results, err := reg.Search(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'hello', got %d", len(results))
+	}
+	if results[0].ID != "com.test.hello" {
+		t.Errorf("expected ID 'com.test.hello', got %q", results[0].ID)
+	}
+
+	// Search by Name substring (case-insensitive)
+	results, err = reg.Search(context.Background(), "CALCULATOR")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'CALCULATOR', got %d", len(results))
+	}
+	if results[0].Name != "Calculator Plugin" {
+		t.Errorf("expected Name 'Calculator Plugin', got %q", results[0].Name)
+	}
+
+	// Search by Description substring
+	results, err = reg.Search(context.Background(), "arithmetic")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for 'arithmetic', got %d", len(results))
+	}
+
+	// Empty query returns all plugins
+	results, err = reg.Search(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for empty query, got %d", len(results))
+	}
+
+	// No match returns empty
+	results, err = reg.Search(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for 'nonexistent', got %d", len(results))
+	}
+
+	// Cancelled context returns error
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = reg.Search(ctx, "hello")
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestPluginRegistry_List(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	// Prepare a plugin directory for installation
+	pluginsDir := filepath.Join(baseDir, "source")
+	pluginDir := filepath.Join(pluginsDir, "com.test.listable")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.listable"
+	m.Name = "Listable Plugin"
+	m.Version = "2.0.0"
+	m.Description = "A plugin that can be listed"
+	writeTestManifest(t, pluginDir, &m)
+
+	// Create registry with local source
+	reg := NewPluginRegistry(pm, RegistrySource{Type: RegistrySourceLocal, URL: pluginDir})
+
+	// List is empty before any Install
+	entries := reg.List()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 cached entries before install, got %d", len(entries))
+	}
+
+	// Install populates the cache
+	if err := reg.Install(context.Background(), "com.test.listable"); err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	entries = reg.List()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 cached entry after install, got %d", len(entries))
+	}
+	if entries[0].ID != "com.test.listable" {
+		t.Errorf("expected ID 'com.test.listable', got %q", entries[0].ID)
+	}
+	if entries[0].Name != "Listable Plugin" {
+		t.Errorf("expected Name 'Listable Plugin', got %q", entries[0].Name)
+	}
+	if entries[0].Version != "2.0.0" {
+		t.Errorf("expected Version '2.0.0', got %q", entries[0].Version)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PluginContext hook registration tests
+// ---------------------------------------------------------------------------
+
+func TestPluginContext_OnAllToolUse(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnAllToolUse(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnAllToolUse failed: %v", err)
+	}
+	if len(pc.hooks) != 2 {
+		t.Fatalf("expected 2 hooks registered, got %d", len(pc.hooks))
+	}
+	if pc.hooks[0].Event != HookPreToolUse {
+		t.Errorf("expected first hook to be PreToolUse, got %s", pc.hooks[0].Event)
+	}
+	if pc.hooks[1].Event != HookPostToolUse {
+		t.Errorf("expected second hook to be PostToolUse, got %s", pc.hooks[1].Event)
+	}
+}
+
+func TestPluginContext_OnError(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnError(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnError failed: %v", err)
+	}
+	if len(pc.hooks) != 1 {
+		t.Fatalf("expected 1 hook registered, got %d", len(pc.hooks))
+	}
+	if pc.hooks[0].Event != HookPostToolUseError {
+		t.Errorf("expected hook to be PostToolUseFailure, got %s", pc.hooks[0].Event)
+	}
+}
+
+func TestPluginContext_OnUserPrompt(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnUserPrompt(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnUserPrompt failed: %v", err)
+	}
+	if len(pc.hooks) != 1 {
+		t.Fatalf("expected 1 hook, got %d", len(pc.hooks))
+	}
+	if pc.hooks[0].Event != HookUserPromptSubmit {
+		t.Errorf("expected UserPromptSubmit, got %s", pc.hooks[0].Event)
+	}
+}
+
+func TestPluginContext_OnAgentStop(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnAgentStop(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnAgentStop failed: %v", err)
+	}
+	if len(pc.hooks) != 1 || pc.hooks[0].Event != HookAgentStop {
+		t.Errorf("expected AgentStop hook, got %v", pc.hooks)
+	}
+}
+
+func TestPluginContext_OnSessionStart(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnSessionStart(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnSessionStart failed: %v", err)
+	}
+	if len(pc.hooks) != 1 || pc.hooks[0].Event != HookSessionStart {
+		t.Errorf("expected SessionStart hook, got %v", pc.hooks)
+	}
+}
+
+func TestPluginContext_OnSessionEnd(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	storage := &noopStorage{}
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil)
+
+	err := pc.OnSessionEnd(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
+		return &HookResult{Decision: DecisionAllow}, nil
+	})
+	if err != nil {
+		t.Fatalf("OnSessionEnd failed: %v", err)
+	}
+	if len(pc.hooks) != 1 || pc.hooks[0].Event != HookSessionEnd {
+		t.Errorf("expected SessionEnd hook, got %v", pc.hooks)
+	}
+}
+
+func TestDeniedStorage(t *testing.T) {
+	t.Parallel()
+	ds := newDeniedStorage("test.plugin")
+
+	// Get always returns empty
+	v, ok := ds.Get("key")
+	if ok || v != "" {
+		t.Error("deniedStorage.Get should return empty")
+	}
+
+	// Set returns PermissionError
+	err := ds.Set("key", "val")
+	if err == nil {
+		t.Fatal("deniedStorage.Set should return error")
+	}
+	permErr, ok := err.(*PermissionError)
+	if !ok {
+		t.Fatalf("expected *PermissionError, got %T", err)
+	}
+	if permErr.PluginID != "test.plugin" {
+		t.Errorf("expected pluginID 'test.plugin', got %q", permErr.PluginID)
+	}
+
+	// Delete returns PermissionError
+	if err := ds.Delete("key"); err == nil {
+		t.Fatal("deniedStorage.Delete should return error")
+	}
+
+	// Keys returns nil
+	if keys := ds.Keys(); keys != nil {
+		t.Errorf("deniedStorage.Keys should return nil, got %v", keys)
+	}
+
+	// Clear returns PermissionError
+	if err := ds.Clear(); err == nil {
+		t.Fatal("deniedStorage.Clear should return error")
+	}
+}
+
+func TestCloneMap(t *testing.T) {
+	t.Parallel()
+	original := map[string]any{"a": 1, "b": "hello", "c": true}
+	cloned := cloneMap(original)
+
+	// Values should match
+	if len(cloned) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(cloned))
+	}
+	if cloned["a"] != 1 || cloned["b"] != "hello" || cloned["c"] != true {
+		t.Errorf("cloned values don't match: %v", cloned)
+	}
+
+	// Mutating clone should not affect original
+	cloned["d"] = "new"
+	if _, ok := original["d"]; ok {
+		t.Error("mutating clone should not affect original")
+	}
+
+	// Empty map
+	empty := cloneMap(map[string]any{})
+	if len(empty) != 0 {
+		t.Error("cloning empty map should be empty")
+	}
+
+	// Nil map — should not panic and returns an empty (nil-safe) map
+	nilClone := cloneMap(nil)
+	if len(nilClone) != 0 {
+		t.Errorf("cloning nil should return empty map, got %d entries", len(nilClone))
+	}
+}
+
+func TestPluginLogger_WithField(t *testing.T) {
+	t.Parallel()
+	cl := &captureLogger{}
+
+	// Single WithField
+	child := cl.WithField("tool", "hello")
+	child.Info("executed")
+
+	if len(cl.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(cl.entries))
+	}
+	if cl.entries[0].msg != "executed" {
+		t.Errorf("expected msg 'executed', got %q", cl.entries[0].msg)
+	}
+	if len(cl.entries[0].fields) != 1 {
+		t.Fatalf("expected 1 field, got %d", len(cl.entries[0].fields))
+	}
+	if cl.entries[0].fields[0] != (Field{Key: "tool", Value: "hello"}) {
+		t.Errorf("expected field {tool hello}, got %+v", cl.entries[0].fields[0])
+	}
+
+	// Chained WithField
+	grandchild := child.WithField("user", "alice")
+	grandchild.Warn("chained")
+
+	if len(cl.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(cl.entries))
+	}
+	if cl.entries[1].msg != "chained" {
+		t.Errorf("expected msg 'chained', got %q", cl.entries[1].msg)
+	}
+	if len(cl.entries[1].fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(cl.entries[1].fields))
+	}
+	if cl.entries[1].fields[0] != (Field{Key: "tool", Value: "hello"}) {
+		t.Errorf("expected field {tool hello}, got %+v", cl.entries[1].fields[0])
+	}
+	if cl.entries[1].fields[1] != (Field{Key: "user", Value: "alice"}) {
+		t.Errorf("expected field {user alice}, got %+v", cl.entries[1].fields[1])
+	}
+
+	// Original logger unaffected
+	cl.Info("direct")
+	if len(cl.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(cl.entries))
+	}
+	if cl.entries[2].msg != "direct" {
+		t.Errorf("expected msg 'direct', got %q", cl.entries[2].msg)
+	}
+	if len(cl.entries[2].fields) != 0 {
+		t.Errorf("expected 0 fields on direct log, got %d", len(cl.entries[2].fields))
+	}
+
+	// Long chain
+	chained := cl.WithField("a", 1).WithField("b", 2).WithField("c", 3)
+	chained.Debug("long chain")
+	if len(cl.entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[3].fields) != 3 {
+		t.Fatalf("expected 3 fields, got %d", len(cl.entries[3].fields))
+	}
+	if cl.entries[3].fields[0] != (Field{Key: "a", Value: 1}) {
+		t.Errorf("expected field {a 1}, got %+v", cl.entries[3].fields[0])
+	}
+	if cl.entries[3].fields[1] != (Field{Key: "b", Value: 2}) {
+		t.Errorf("expected field {b 2}, got %+v", cl.entries[3].fields[1])
+	}
+	if cl.entries[3].fields[2] != (Field{Key: "c", Value: 3}) {
+		t.Errorf("expected field {c 3}, got %+v", cl.entries[3].fields[2])
+	}
+}
+
+func TestPluginLogger_WithFields(t *testing.T) {
+	t.Parallel()
+	cl := &captureLogger{}
+
+	// Batch fields
+	child := cl.WithFields(
+		Field{Key: "tool", Value: "hello"},
+		Field{Key: "version", Value: "1.0"},
+	)
+	child.Info("executed", Field{Key: "status", Value: "ok"})
+
+	if len(cl.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(cl.entries))
+	}
+	if cl.entries[0].msg != "executed" {
+		t.Errorf("expected msg 'executed', got %q", cl.entries[0].msg)
+	}
+	if len(cl.entries[0].fields) != 3 {
+		t.Fatalf("expected 3 fields, got %d", len(cl.entries[0].fields))
+	}
+	if cl.entries[0].fields[0] != (Field{Key: "tool", Value: "hello"}) {
+		t.Errorf("expected field {tool hello}, got %+v", cl.entries[0].fields[0])
+	}
+	if cl.entries[0].fields[1] != (Field{Key: "version", Value: "1.0"}) {
+		t.Errorf("expected field {version 1.0}, got %+v", cl.entries[0].fields[1])
+	}
+	if cl.entries[0].fields[2] != (Field{Key: "status", Value: "ok"}) {
+		t.Errorf("expected field {status ok}, got %+v", cl.entries[0].fields[2])
+	}
+
+	// WithFields + WithField mix
+	mixed := cl.WithFields(Field{Key: "a", Value: 1}).WithField("b", 2)
+	mixed.Warn("mixed")
+
+	if len(cl.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[1].fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(cl.entries[1].fields))
+	}
+	if cl.entries[1].fields[0] != (Field{Key: "a", Value: 1}) {
+		t.Errorf("expected field {a 1}, got %+v", cl.entries[1].fields[0])
+	}
+	if cl.entries[1].fields[1] != (Field{Key: "b", Value: 2}) {
+		t.Errorf("expected field {b 2}, got %+v", cl.entries[1].fields[1])
+	}
+
+	// Empty WithFields
+	cl.WithFields().Info("empty fields")
+	if len(cl.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[2].fields) != 0 {
+		t.Errorf("expected 0 fields on empty WithFields, got %d", len(cl.entries[2].fields))
+	}
+
+	// Key override: per-call field overrides pre-bound
+	override := cl.WithField("status", "pending")
+	override.Error("updated", Field{Key: "status", Value: "completed"})
+
+	if len(cl.entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(cl.entries))
+	}
+	if len(cl.entries[3].fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(cl.entries[3].fields))
+	}
+	// Pre-bound first, per-call second (last-write-wins in buildFields map)
+	if cl.entries[3].fields[0] != (Field{Key: "status", Value: "pending"}) {
+		t.Errorf("expected field {status pending}, got %+v", cl.entries[3].fields[0])
+	}
+	if cl.entries[3].fields[1] != (Field{Key: "status", Value: "completed"}) {
+		t.Errorf("expected field {status completed}, got %+v", cl.entries[3].fields[1])
+	}
+}
+
+func TestToolResultBuilder_Basic(t *testing.T) {
+	t.Parallel()
+	result := NewResultBuilder().
+		Content("hello world").
+		Metadata("key1", "value1").
+		Build()
+
+	if result.Content != "hello world" {
+		t.Errorf("expected content 'hello world', got %q", result.Content)
+	}
+	if result.IsError {
+		t.Error("expected IsError to be false")
+	}
+	if v, ok := result.Metadata["key1"]; !ok || v != "value1" {
+		t.Errorf("expected metadata key1=value1, got %q", v)
+	}
+}
+
+func TestToolResultBuilder_WithError(t *testing.T) {
+	t.Parallel()
+	result := NewResultBuilder().
+		Error("something went wrong").
+		Build()
+
+	if result.Content != "something went wrong" {
+		t.Errorf("expected content 'something went wrong', got %q", result.Content)
+	}
+	if !result.IsError {
+		t.Error("expected IsError to be true")
+	}
+}
+
+func TestToolResultBuilder_WithMetadata(t *testing.T) {
+	t.Parallel()
+	result := NewResultBuilder().
+		Content("data").
+		Metadata("format", "json").
+		Metadata("version", "2").
+		IsError(false).
+		Build()
+
+	if result.Content != "data" {
+		t.Errorf("expected content 'data', got %q", result.Content)
+	}
+	if len(result.Metadata) != 2 {
+		t.Fatalf("expected 2 metadata entries, got %d", len(result.Metadata))
+	}
+	if result.Metadata["format"] != "json" {
+		t.Errorf("expected format=json, got %q", result.Metadata["format"])
+	}
+	if result.Metadata["version"] != "2" {
+		t.Errorf("expected version=2, got %q", result.Metadata["version"])
+	}
+}
+
+func TestToolResultBuilder_Empty(t *testing.T) {
+	t.Parallel()
+	result := NewResultBuilder().Build()
+
+	if result.Content != "" {
+		t.Errorf("expected empty content, got %q", result.Content)
+	}
+	if result.IsError {
+		t.Error("expected IsError to be false")
+	}
+	if result.Metadata != nil {
+		t.Errorf("expected nil metadata, got %v", result.Metadata)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error Path Tests
+// ---------------------------------------------------------------------------
+
+// failingRuntimeFactory is a test RuntimeFactory that always returns an error.
+type failingRuntimeFactory struct{ err error }
+
+func (f *failingRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
+	return nil, f.err
+}
+
+// TestPluginManager_Reload_ManifestLoadFails verifies Reload returns an error
+// when the manifest file has been deleted from disk.
+func TestPluginManager_Reload_ManifestLoadFails(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+
+	// Create plugin directory with manifest
+	pluginsDir := filepath.Join(baseDir, "plugins", "com.test.reload-mf")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := PluginManifest{
+		ID:               "com.test.reload-mf",
+		Name:             "Reload Manifest Fail Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, pluginsDir, &m)
+
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+	_, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if err := pm.ActivateAll(ctx); err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+
+	// Delete the manifest file
+	if err := os.Remove(filepath.Join(pluginsDir, "plugin.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	err = pm.Reload(ctx, "com.test.reload-mf")
+	if err == nil {
+		t.Fatal("expected error when manifest file is missing")
+	}
+	if !strContains(err.Error(), "manifest") {
+		t.Errorf("error should mention 'manifest', got: %v", err)
+	}
+}
+
+// TestPluginManager_Reload_RuntimeCreateFails verifies Reload returns an error
+// when the runtime factory fails to create the plugin.
+func TestPluginManager_Reload_RuntimeCreateFails(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+
+	// Create plugin directory with manifest
+	pluginsDir := filepath.Join(baseDir, "plugins", "com.test.reload-rt")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := PluginManifest{
+		ID:               "com.test.reload-rt",
+		Name:             "Reload Runtime Fail Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{"onStart"},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, pluginsDir, &m)
+
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+	_, err := pm.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if err := pm.ActivateAll(ctx); err != nil {
+		t.Fatalf("ActivateAll failed: %v", err)
+	}
+
+	// Replace runtime factory with one that fails
+	pm.SetRuntimeFactory(&failingRuntimeFactory{err: fmt.Errorf("runtime creation error")})
+
+	err = pm.Reload(ctx, "com.test.reload-rt")
+	if err == nil {
+		t.Fatal("expected error when runtime factory fails")
+	}
+	if !strContains(err.Error(), "runtime") {
+		t.Errorf("error should mention 'runtime', got: %v", err)
+	}
+}
+
+// TestPluginManager_InstallPlugin_AlreadyExists verifies InstallPlugin returns
+// ErrPluginAlreadyRegistered when a plugin with the same ID is already registered.
+func TestPluginManager_InstallPlugin_AlreadyExists(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	ctx := context.Background()
+
+	// Register a plugin first
+	p := &mockPlugin{manifest: testManifest()}
+	if err := pm.Register(p); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// Create a source directory with the same ID
+	sourceDir := t.TempDir()
+	m := testManifest()
+	writeTestManifest(t, sourceDir, &m)
+
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error when installing duplicate plugin")
+	}
+	if !strContains(err.Error(), "already registered") {
+		t.Errorf("error should mention 'already registered', got: %v", err)
+	}
+}
+
+// TestPluginManager_InstallPlugin_InvalidManifest verifies InstallPlugin returns
+// an error when the source directory contains an invalid manifest.
+func TestPluginManager_InstallPlugin_InvalidManifest(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+
+	ctx := context.Background()
+
+	// Create source directory with invalid JSON
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "plugin.json"), []byte("not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error for invalid manifest")
+	}
+}
+
+// TestPluginManager_InstallPlugin_RuntimeCreateFails verifies InstallPlugin returns
+// an entry with StateError when the runtime factory fails.
+func TestPluginManager_InstallPlugin_RuntimeCreateFails(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&failingRuntimeFactory{err: fmt.Errorf("runtime boom")})
+
+	ctx := context.Background()
+
+	// Create valid source directory
+	sourceDir := t.TempDir()
+	m := PluginManifest{
+		ID:               "com.test.install-rtfail",
+		Name:             "Install RT Fail Plugin",
+		Version:          "1.0.0",
+		Runtime:          RuntimeNative,
+		ActivationEvents: []string{},
+		Permissions:      []string{"tools.register"},
+	}
+	writeTestManifest(t, sourceDir, &m)
+
+	entry, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error when runtime factory fails")
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if entry.State != StateError {
+		t.Errorf("expected StateError, got %v", entry.State)
+	}
+}
+
+// TestPluginManager_UninstallPlugin_NotFound verifies UninstallPlugin returns
+// ErrPluginNotFound when the plugin doesn't exist.
+func TestPluginManager_UninstallPlugin_NotFound(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	err := pm.UninstallPlugin(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent plugin")
+	}
+	if !strContains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_Subscribe_NilHandler verifies Subscribe returns an error
+// when the handler is nil.
+func TestPluginEventBus_Subscribe_NilHandler(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	err := bus.Subscribe("topic", nil)
+	if err == nil {
+		t.Fatal("expected error for nil handler")
+	}
+	if !strContains(err.Error(), "must not be nil") {
+		t.Errorf("error should mention 'must not be nil', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_Unsubscribe_NoHandlers verifies Unsubscribe returns an error
+// when no handlers exist for the topic.
+func TestPluginEventBus_Unsubscribe_NoHandlers(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	handler := func(ctx context.Context, topic string, data any) error {
+		return nil
+	}
+
+	err := bus.Unsubscribe("topic", handler)
+	if err == nil {
+		t.Fatal("expected error when no handlers for topic")
+	}
+	if !strContains(err.Error(), "no handlers") {
+		t.Errorf("error should mention 'no handlers', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_Unsubscribe_HandlerNotFound verifies Unsubscribe returns an error
+// when the specific handler is not subscribed to the topic.
+func TestPluginEventBus_Unsubscribe_HandlerNotFound(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	handler1 := func(ctx context.Context, topic string, data any) error {
+		return nil
+	}
+	handler2 := func(ctx context.Context, topic string, data any) error {
+		return nil
+	}
+
+	if err := bus.Subscribe("topic", handler1); err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	err := bus.Unsubscribe("topic", handler2)
+	if err == nil {
+		t.Fatal("expected error when handler not found")
+	}
+	if !strContains(err.Error(), "handler not found") {
+		t.Errorf("error should mention 'handler not found', got: %v", err)
+	}
+}
+
+// TestPluginEventBus_HandlerReturnsError verifies Publish collects errors from handlers.
+func TestPluginEventBus_HandlerReturnsError(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	expectedErr := fmt.Errorf("handler error")
+	bus.Subscribe("topic", func(ctx context.Context, topic string, data any) error {
+		return expectedErr
+	})
+
+	errs := bus.Publish(context.Background(), "topic", nil)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+	if errs[0] != expectedErr {
+		t.Errorf("expected error %v, got %v", expectedErr, errs[0])
+	}
+}
+
+// TestPluginEventBus_ConcurrentPublish verifies no panic or race under concurrent use.
+func TestPluginEventBus_ConcurrentPublish(t *testing.T) {
+	t.Parallel()
+	bus := NewPluginEventBus()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			handler := func(ctx context.Context, topic string, data any) error {
+				return nil
+			}
+			_ = bus.Subscribe(fmt.Sprintf("topic-%d", i), handler)
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			_ = bus.Publish(context.Background(), fmt.Sprintf("topic-%d", i), nil)
+		}(i)
+	}
+	wg.Wait()
+}
+
+// TestQuotaManager_NoConfigUnlimited verifies plugins without quota config get unlimited access.
+func TestQuotaManager_NoConfigUnlimited(t *testing.T) {
+	t.Parallel()
+	qm := NewPluginQuotaManager(nil)
+
+	allowed, remaining := qm.CheckToolCall("unknown-plugin")
+	if !allowed {
+		t.Error("expected allowed for plugin without quota")
+	}
+	if remaining != -1 {
+		t.Errorf("expected remaining -1, got %d", remaining)
+	}
+
+	ok, used := qm.CheckStorage("unknown-plugin")
+	if !ok {
+		t.Error("expected ok for plugin without quota")
+	}
+	if used != -1 {
+		t.Errorf("expected used -1, got %d", used)
+	}
+
+	toolCalls, storageBytes := qm.GetQuotaUsage("unknown-plugin")
+	if toolCalls != 0 {
+		t.Errorf("expected 0 tool calls, got %d", toolCalls)
+	}
+	if storageBytes != 0 {
+		t.Errorf("expected 0 storage bytes, got %d", storageBytes)
+	}
+}
+
+// TestQuotaManager_ZeroMaxToolCalls verifies MaxToolCallsPerDay=0 means unlimited.
+func TestQuotaManager_ZeroMaxToolCalls(t *testing.T) {
+	t.Parallel()
+	qm := NewPluginQuotaManager(map[string]PluginQuota{
+		"zero-plugin": {MaxToolCallsPerDay: 0, MaxStorageMB: 100},
+	})
+
+	allowed, remaining := qm.CheckToolCall("zero-plugin")
+	if !allowed {
+		t.Error("expected allowed for zero MaxToolCallsPerDay")
+	}
+	if remaining != -1 {
+		t.Errorf("expected remaining -1, got %d", remaining)
+	}
+}
+
+// TestMiddlewareChain_UseNil verifies Use(nil) does not add anything to the chain.
+func TestMiddlewareChain_UseNil(t *testing.T) {
+	t.Parallel()
+	chain := NewMiddlewareChain()
+	before := chain.Len()
+	chain.Use(nil)
+	after := chain.Len()
+	if after != before {
+		t.Errorf("Len should not change after Use(nil): before=%d, after=%d", before, after)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UninstallPlugin Deactivate Failure Tests
+// ---------------------------------------------------------------------------
+
+// deactivateErrPlugin is a test plugin whose Deactivate returns an error.
+type deactivateErrPlugin struct {
+	manifest PluginManifest
+}
+
+func (p *deactivateErrPlugin) Manifest() PluginManifest { return p.manifest }
+func (p *deactivateErrPlugin) Activate(ctx PluginContext) error {
+	ctx.RegisterTool(&SimplePluginTool{
+		Def:    ToolDef{Name: "deact_tool", Description: "test"},
+		ExecFn: func(ctx context.Context, input string) (*ToolResult, error) { return NewToolResult("ok"), nil },
+	})
+	return nil
+}
+func (p *deactivateErrPlugin) Deactivate(ctx PluginContext) error {
+	return fmt.Errorf("deactivate failed: intentional error")
+}
+
+// TestPluginManager_UninstallPlugin_DeactivateFails verifies that UninstallPlugin
+// completes successfully even when Deactivate returns an error (error is logged, not propagated).
+func TestPluginManager_UninstallPlugin_DeactivateFails(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+
+	m := testManifest()
+	m.ID = "com.test.deact-fail"
+	p := &deactivateErrPlugin{manifest: m}
+
+	if err := pm.RegisterAndActivate(context.Background(), p); err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	// Verify active
+	entry, ok := pm.GetPlugin("com.test.deact-fail")
+	if !ok || entry.State != StateActive {
+		t.Fatal("plugin should be active before uninstall")
+	}
+
+	// Uninstall should succeed despite Deactivate error
+	err := pm.UninstallPlugin(context.Background(), "com.test.deact-fail")
+	if err != nil {
+		t.Errorf("UninstallPlugin should not return error when Deactivate fails: %v", err)
+	}
+
+	// Plugin should be removed from manager
+	if _, ok := pm.GetPlugin("com.test.deact-fail"); ok {
+		t.Error("plugin should be removed from manager after uninstall")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExportConfig / ImportConfig Tests
+// ---------------------------------------------------------------------------
+
+func TestPluginManager_ExportConfig(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	// Register a plugin and activate it
+	p := &mockPlugin{manifest: testManifest()}
+	ctx := context.Background()
+	if err := pm.RegisterAndActivate(ctx, p); err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	// Export
+	data, err := pm.ExportConfig()
+	if err != nil {
+		t.Fatalf("ExportConfig failed: %v", err)
+	}
+
+	// Parse the export
+	var export ConfigExport
+	if err := json.Unmarshal(data, &export); err != nil {
+		t.Fatalf("Failed to parse export: %v", err)
+	}
+
+	// Verify
+	if export.Version != ConfigExportVersion {
+		t.Errorf("Version = %d, want %d", export.Version, ConfigExportVersion)
+	}
+	if export.ExportedAt == "" {
+		t.Error("ExportedAt is empty")
+	}
+	if len(export.Plugins) != 1 {
+		t.Fatalf("Plugins count = %d, want 1", len(export.Plugins))
+	}
+	pce := export.Plugins[0]
+	if pce.ID != "com.test.example" {
+		t.Errorf("Plugin ID = %q, want %q", pce.ID, "com.test.example")
+	}
+	if pce.Name != "Test Plugin" {
+		t.Errorf("Plugin Name = %q, want %q", pce.Name, "Test Plugin")
+	}
+	if pce.Version != "1.0.0" {
+		t.Errorf("Plugin Version = %q, want %q", pce.Version, "1.0.0")
+	}
+	if pce.State != StateActive {
+		t.Errorf("Plugin State = %q, want %q", pce.State, StateActive)
+	}
+	if pce.Manifest == nil {
+		t.Error("Manifest is nil")
+	}
+}
+
+func TestPluginManager_ExportConfig_EmptyManager(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	data, err := pm.ExportConfig()
+	if err != nil {
+		t.Fatalf("ExportConfig on empty manager failed: %v", err)
+	}
+
+	var export ConfigExport
+	if err := json.Unmarshal(data, &export); err != nil {
+		t.Fatalf("Failed to parse export: %v", err)
+	}
+
+	if len(export.Plugins) != 0 {
+		t.Errorf("Plugins count = %d, want 0", len(export.Plugins))
+	}
+	if export.Version != ConfigExportVersion {
+		t.Errorf("Version = %d, want %d", export.Version, ConfigExportVersion)
+	}
+}
+
+func TestPluginManager_ExportConfig_WithDisabled(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	pm.DisablePlugins([]string{"com.test.disabled", "com.test.disabled2"})
+
+	data, err := pm.ExportConfig()
+	if err != nil {
+		t.Fatalf("ExportConfig failed: %v", err)
+	}
+
+	var export ConfigExport
+	if err := json.Unmarshal(data, &export); err != nil {
+		t.Fatalf("Failed to parse export: %v", err)
+	}
+
+	if len(export.Disabled) != 2 {
+		t.Errorf("Disabled count = %d, want 2", len(export.Disabled))
+	}
+
+	disabledSet := make(map[string]bool)
+	for _, id := range export.Disabled {
+		disabledSet[id] = true
+	}
+	if !disabledSet["com.test.disabled"] {
+		t.Error("com.test.disabled not in disabled list")
+	}
+	if !disabledSet["com.test.disabled2"] {
+		t.Error("com.test.disabled2 not in disabled list")
+	}
+}
+
+func TestPluginManager_ImportConfig(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	// Register a plugin
+	p := &mockPlugin{manifest: testManifest()}
+	ctx := context.Background()
+	if err := pm.RegisterAndActivate(ctx, p); err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+
+	// Import with config
+	importData := map[string]any{
+		"version":    ConfigExportVersion,
+		"exportedAt": "2026-01-01T00:00:00Z",
+		"disabled":   []string{"com.test.disabled"},
+		"plugins": []map[string]any{
+			{
+				"id":      "com.test.example",
+				"name":    "Test Plugin",
+				"version": "1.0.0",
+				"state":   "active",
+				"config": map[string]any{
+					"key1": "value1",
+					"key2": float64(42),
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(importData)
+	if err != nil {
+		t.Fatalf("Marshal import data failed: %v", err)
+	}
+
+	if err := pm.ImportConfig(data); err != nil {
+		t.Fatalf("ImportConfig failed: %v", err)
+	}
+
+	// Verify config was saved
+	config, err := pm.configStore.Load("com.test.example")
+	if err != nil {
+		t.Fatalf("Load config failed: %v", err)
+	}
+	if config["key1"] != "value1" {
+		t.Errorf("config[key1] = %v, want %q", config["key1"], "value1")
+	}
+	if config["key2"] != float64(42) {
+		t.Errorf("config[key2] = %v, want %v", config["key2"], float64(42))
+	}
+
+	// Verify disabled was merged
+	if !pm.disabled["com.test.disabled"] {
+		t.Error("com.test.disabled should be in disabled set")
+	}
+}
+
+func TestPluginManager_ImportConfig_EmptyData(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	if err := pm.ImportConfig(nil); err == nil {
+		t.Error("Expected error for nil data")
+	}
+
+	if err := pm.ImportConfig([]byte{}); err == nil {
+		t.Error("Expected error for empty data")
+	}
+}
+
+func TestPluginManager_ImportConfig_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	if err := pm.ImportConfig([]byte("not json")); err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+func TestPluginManager_ImportConfig_FutureVersion(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	data := []byte(`{"version":999,"exportedAt":"","disabled":null,"plugins":null}`)
+	if err := pm.ImportConfig(data); err == nil {
+		t.Error("Expected error for future version")
+	}
+}
+
+func TestPluginManager_ImportConfig_UnknownPlugin(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	// Import referencing a plugin that doesn't exist — should succeed (skip with warning)
+	importData := map[string]any{
+		"version":    ConfigExportVersion,
+		"exportedAt": "2026-01-01T00:00:00Z",
+		"plugins": []map[string]any{
+			{
+				"id":      "com.test.nonexistent",
+				"name":    "Nonexistent",
+				"version": "1.0.0",
+				"state":   "active",
+				"config":  map[string]any{"key": "value"},
+			},
+		},
+	}
+	data, _ := json.Marshal(importData)
+
+	if err := pm.ImportConfig(data); err != nil {
+		t.Fatalf("ImportConfig should succeed with unknown plugins (skip), got: %v", err)
+	}
+}
+
+func TestPluginManager_ExportImport_RoundTrip(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	pm := NewPluginManager(tmpDir)
+	t.Cleanup(func() { pm.Close() })
+
+	// Setup: register plugin + set config + disable a plugin
+	p := &mockPlugin{manifest: testManifest()}
+	ctx := context.Background()
+	if err := pm.RegisterAndActivate(ctx, p); err != nil {
+		t.Fatalf("RegisterAndActivate failed: %v", err)
+	}
+	pm.configStore.Save("com.test.example", map[string]any{"setting": "hello"})
+	pm.DisablePlugins([]string{"com.test.other"})
+
+	// Export
+	exportData, err := pm.ExportConfig()
+	if err != nil {
+		t.Fatalf("ExportConfig failed: %v", err)
+	}
+
+	// Create a new manager and import
+	tmpDir2 := t.TempDir()
+	pm2 := NewPluginManager(tmpDir2)
+	t.Cleanup(func() { pm2.Close() })
+	p2 := &mockPlugin{manifest: testManifest()}
+	if err := pm2.RegisterAndActivate(ctx, p2); err != nil {
+		t.Fatalf("RegisterAndActivate on pm2 failed: %v", err)
+	}
+
+	if err := pm2.ImportConfig(exportData); err != nil {
+		t.Fatalf("ImportConfig failed: %v", err)
+	}
+
+	// Verify config was restored
+	config, err := pm2.configStore.Load("com.test.example")
+	if err != nil {
+		t.Fatalf("Load config failed: %v", err)
+	}
+	if config["setting"] != "hello" {
+		t.Errorf("config[setting] = %v, want %q", config["setting"], "hello")
+	}
+
+	// Verify disabled was merged
+	if !pm2.disabled["com.test.other"] {
+		t.Error("com.test.other should be in disabled set")
+	}
+}
+
+func TestPluginContext_SetValue_GetValue(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+	// Set and retrieve a value.
+	pc.SetValue("user", "alice")
+	val, ok := pc.GetValue("user")
+	if !ok {
+		t.Fatal("expected ok=true for existing key")
+	}
+	if val != "alice" {
+		t.Fatalf("expected value %q, got %q", "alice", val)
+	}
+
+	// Different type.
+	pc.SetValue("count", 42)
+	val, ok = pc.GetValue("count")
+	if !ok {
+		t.Fatal("expected ok=true for count")
+	}
+	if val.(int) != 42 {
+		t.Fatalf("expected 42, got %v", val)
+	}
+}
+
+func TestPluginContext_SetValue_Overwrite(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+	pc.SetValue("role", "viewer")
+	pc.SetValue("role", "admin")
+
+	val, ok := pc.GetValue("role")
+	if !ok {
+		t.Fatal("expected ok=true after overwrite")
+	}
+	if val != "admin" {
+		t.Fatalf("expected %q after overwrite, got %q", "admin", val)
+	}
+}
+
+func TestPluginContext_GetValue_NotFound(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+
+	val, ok := pc.GetValue("nonexistent")
+	if ok {
+		t.Fatal("expected ok=false for missing key")
+	}
+	if val != nil {
+		t.Fatalf("expected nil value for missing key, got %v", val)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Widget Registry: Debounce Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_Debounce_NoDebounce(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	var calls int
+	r.OnUpdated(func() { calls++ })
+
+	// Without debounce, each refresh triggers immediately
+	r.Register("p1", "w1", "infoBar", &testStaticWidget{spans: []WidgetSpan{{Text: "hello"}}}, 10)
+	r.RefreshAllWidgets(80, BasicANSIRender)
+
+	if calls != 1 {
+		t.Fatalf("expected 1 call after RefreshAllWidgets, got %d", calls)
+	}
+}
+
+func TestWidgetRegistry_Debounce_ZeroDisables(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	var calls int
+	r.SetDebounce(0) // disable
+	r.OnUpdated(func() { calls++ })
+
+	r.Register("p1", "w1", "infoBar", &testStaticWidget{spans: []WidgetSpan{{Text: "x"}}}, 10)
+	r.RefreshAllWidgets(80, BasicANSIRender)
+	r.Register("p1", "w2", "infoBar", &testStaticWidget{spans: []WidgetSpan{{Text: "y"}}}, 9)
+	r.RefreshAllWidgets(80, BasicANSIRender)
+
+	if calls != 2 {
+		t.Fatalf("expected 2 immediate calls with debounce=0, got %d", calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Widget Rendering: Snapshot Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_RenderZone_Snapshot(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	r.Register("git", "branch", "infoBar", &testStaticWidget{spans: []WidgetSpan{
+		{Text: "git:main ✓", Style: "ok"},
+	}}, 10)
+	r.Register("user", "name", "infoBar", &testStaticWidget{spans: []WidgetSpan{
+		{Text: "admin"},
+	}}, 5)
+
+	// Refresh to populate cache
+	r.RefreshAllWidgets(80, BasicANSIRender)
+
+	got := r.RenderZone("infoBar")
+	// Snapshot: rendering includes ANSI reset codes around each span
+	want := "\x1b[0madmin\x1b[0m  \x1b[0mgit:main ✓\x1b[0m" // priority 5 first, then 10
+	if got != want {
+		t.Errorf("RenderZone snapshot mismatch:\nwant: %q\n got: %q", want, got)
+	}
+}
+
+func TestWidgetRegistry_RenderZone_Empty(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	got := r.RenderZone("nonexistent")
+	if got != "" {
+		t.Errorf("expected empty string for empty zone, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Script Trigger: Extended Events
+// ---------------------------------------------------------------------------
+
+func TestScriptTrigger_UnsupportedEvent(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "echo hello"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+	err = sp.subscribeTrigger(pc, "InvalidEvent:Shell*")
+	if err == nil {
+		t.Fatal("expected error for unsupported trigger event")
+	}
+}
+
+func TestScriptTrigger_AllSupportedEvents(t *testing.T) {
+	t.Parallel()
+
+	events := []struct {
+		trigger string
+	}{
+		{"PostToolUse:Shell*"},
+		{"PreToolUse:File*"},
+		{"PostToolUseFailure:Shell*"},
+		{"UserPromptSubmit:"},
+		{"AgentStop:"},
+		{"SessionStart:"},
+		{"SessionEnd:"},
+	}
+
+	for _, tc := range events {
+		t.Run(tc.trigger, func(t *testing.T) {
+			m := testManifest()
+			m.Runtime = "script"
+			m.Entry = "echo hello"
+			m.Contributes = &PluginContributes{
+				UI: []UISlotContribution{
+					{ID: "w1", Slot: "infoBar", Priority: 10},
+				},
+			}
+
+			p, err := NewScriptRuntime().Create(&m, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			sp := p.(*scriptPlugin)
+
+			pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+			err = sp.subscribeTrigger(pc, tc.trigger)
+			// Some events may not have a handler registered (e.g. AgentStop)
+			// but they should not return "unsupported trigger event"
+			if err != nil && strings.Contains(err.Error(), "unsupported") {
+				t.Errorf("event %q should be supported: %v", tc.trigger, err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HookPayload: ToolOutput and ToolElapsedMs
+// ---------------------------------------------------------------------------
+
+func TestHookPayload_ToolOutputField(t *testing.T) {
+	t.Parallel()
+	hp := &HookPayload{
+		Event:         HookPostToolUse,
+		ToolName:      "FileReplace",
+		ToolOutput:    "replaced 3 lines in main.go",
+		ToolElapsedMs: 42,
+		ToolInput:     `{"path":"main.go","old":"foo","new":"bar"}`,
+	}
+
+	if hp.ToolOutput != "replaced 3 lines in main.go" {
+		t.Errorf("expected ToolOutput, got %q", hp.ToolOutput)
+	}
+	if hp.ToolElapsedMs != 42 {
+		t.Errorf("expected ToolElapsedMs=42, got %d", hp.ToolElapsedMs)
+	}
+}
+
+// testStaticWidget is a test helper that returns fixed spans.
+type testStaticWidget struct {
+	spans []WidgetSpan
+}
+
+func (w *testStaticWidget) Render(width int) []WidgetSpan {
+	return w.spans
+}
+
+// mockWorkDirWidget implements both UIWidget and WorkDirRenderer for testing.
+type mockWorkDirWidget struct {
+	outputs map[string]string
+}
+
+func (w *mockWorkDirWidget) Render(width int) []WidgetSpan {
+	return []WidgetSpan{{Text: "default", Style: StyleDim}}
+}
+
+func (w *mockWorkDirWidget) RenderForWorkDir(width int, workDir string) []WidgetSpan {
+	if text, ok := w.outputs[workDir]; ok {
+		return []WidgetSpan{{Text: text}}
+	}
+	return []WidgetSpan{{Text: "default", Style: StyleDim}}
+}
+
+// ---------------------------------------------------------------------------
+// RenderZoneForContext Tests (covers 0% path for local CLI widget rendering)
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_RenderZoneForContext_WithProvider(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	r.Register("p1", "w1", "infoBar", &testStaticWidget{spans: []WidgetSpan{
+		{Text: "hello", Style: "ok"},
+	}}, 10)
+
+	// RenderZoneForContext should call provider.Render() directly, bypassing cache
+	got := r.RenderZoneForContext("infoBar")
+	if !strings.Contains(got, "hello") {
+		t.Errorf("RenderZoneForContext = %q, should contain 'hello'", got)
+	}
+}
+
+func TestWidgetRegistry_RenderZoneForContext_EmptyZone(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	got := r.RenderZoneForContext("nonexistent")
+	if got != "" {
+		t.Errorf("expected empty for nonexistent zone, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OnWorkDirChanged Pending Dirs Tests
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_OnWorkDirChanged_PendingDirs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "test.sh")
+	os.WriteFile(script, []byte("#!/bin/bash\necho \"ok|test\"\n"), 0o755)
+
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "bash test.sh"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	// Call OnWorkDirChanged multiple times with different dirs
+	sp.OnWorkDirChanged("/repo1")
+	sp.OnWorkDirChanged("/repo2")
+
+	// Verify pendingDirs contains both
+	sp.pendingMu.Lock()
+	if len(sp.pendingDirs) != 2 {
+		t.Fatalf("expected 2 pending dirs, got %d", len(sp.pendingDirs))
+	}
+	if _, ok := sp.pendingDirs["/repo1"]; !ok {
+		t.Error("missing /repo1 in pendingDirs")
+	}
+	if _, ok := sp.pendingDirs["/repo2"]; !ok {
+		t.Error("missing /repo2 in pendingDirs")
+	}
+	sp.pendingMu.Unlock()
+
+	// Now trigger runAndUpdate which should consume pendingDirs
+	// Note: /repo1 and /repo2 may not exist, but the script should still run
+	// and outputs map should be populated
+}
+
+func TestScriptPlugin_OnWorkDirChanged_EmptyDir(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "echo hello"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	// Empty dir should not be stored
+	sp.OnWorkDirChanged("")
+	sp.pendingMu.Lock()
+	if len(sp.pendingDirs) != 0 {
+		t.Fatalf("expected 0 pending dirs for empty dir, got %d", len(sp.pendingDirs))
+	}
+	sp.pendingMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// NotifyUpdated Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_NotifyUpdated_TriggersCallback(t *testing.T) {
+	r := NewWidgetRegistry()
+
+	var calls int
+	r.OnUpdated(func() { calls++ })
+
+	r.NotifyUpdated()
+
+	if calls != 1 {
+		t.Fatalf("expected 1 call after NotifyUpdated, got %d", calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NotifyUpdated Nil Callback Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_NotifyUpdated_NilCallback(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	// No OnUpdated callback set — should not panic
+	r.NotifyUpdated()
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent OnWorkDirChanged Tests
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_ConcurrentOnWorkDirChanged(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "echo ok"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+	// Initialize triggerCh like Activate() does so OnWorkDirChanged doesn't
+	// block on a nil channel (nil channel send in select falls to default, but
+	// initialise anyway for realism).
+	sp.triggerCh = make(chan struct{}, 8)
+
+	dirs := []string{"/repo/1", "/repo/2", "/repo/3", "/repo/4", "/repo/5"}
+	var wg sync.WaitGroup
+	for _, d := range dirs {
+		wg.Add(1)
+		go func(dir string) {
+			defer wg.Done()
+			sp.OnWorkDirChanged(dir)
+		}(d)
+	}
+	wg.Wait()
+
+	sp.pendingMu.Lock()
+	defer sp.pendingMu.Unlock()
+	if len(sp.pendingDirs) != len(dirs) {
+		t.Fatalf("expected %d pending dirs, got %d (pendingDirs=%v)", len(dirs), len(sp.pendingDirs), sp.pendingDirs)
+	}
+	for _, d := range dirs {
+		if _, ok := sp.pendingDirs[d]; !ok {
+			t.Errorf("missing %q in pendingDirs", d)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot Tests: JSON Serialization
+// ---------------------------------------------------------------------------
+
+func TestWidgetSpan_JSONSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		span any // WidgetSpan or []WidgetSpan
+		want string
+	}{
+		{
+			name: "normal",
+			span: WidgetSpan{Text: "hello", Style: StyleNormal},
+			want: `{"Text":"hello","Style":"normal"}`,
+		},
+		{
+			name: "empty",
+			span: WidgetSpan{Text: "", Style: ""},
+			want: `{"Text":"","Style":""}`,
+		},
+		{
+			name: "success",
+			span: WidgetSpan{Text: "✓", Style: StyleSuccess},
+			want: `{"Text":"✓","Style":"success"}`,
+		},
+		{
+			name: "slice",
+			span: []WidgetSpan{
+				{Text: "a", Style: StyleDim},
+				{Text: "b", Style: StyleError},
+			},
+			want: `[{"Text":"a","Style":"dim"},{"Text":"b","Style":"error"}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.span)
+			if err != nil {
+				t.Fatalf("json.Marshal error: %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("got %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHookPayload_JSONSnapshot_Omitempty(t *testing.T) {
+	t.Parallel()
+
+	t.Run("minimal", func(t *testing.T) {
+		hp := &HookPayload{Event: HookPostToolUse}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"event":"PostToolUse"}`
+		if string(got) != want {
+			t.Errorf("got %s\nwant %s", got, want)
+		}
+	})
+
+	t.Run("with_tool_fields", func(t *testing.T) {
+		hp := &HookPayload{
+			Event:         HookPostToolUse,
+			ToolName:      "Shell",
+			ToolOutput:    "ok",
+			ToolElapsedMs: 42,
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"event":"PostToolUse","toolName":"Shell","toolOutput":"ok","toolElapsedMs":42}`
+		if string(got) != want {
+			t.Errorf("got %s\nwant %s", got, want)
+		}
+	})
+
+	t.Run("full", func(t *testing.T) {
+		hp := &HookPayload{
+			Event:         HookPreToolUse,
+			ToolName:      "FileReplace",
+			ToolInput:     `{"path":"a.go"}`,
+			ToolOutput:    "done",
+			ToolElapsedMs: 100,
+			SessionID:     "sess-1",
+			Channel:       "ch-1",
+			ChatID:        "chat-1",
+			UserID:        "user-1",
+			Extra:         map[string]any{"key": "val"},
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"event":"PreToolUse","toolName":"FileReplace","toolInput":"{\"path\":\"a.go\"}","toolOutput":"done","toolElapsedMs":100,"sessionId":"sess-1","channel":"ch-1","chatId":"chat-1","userId":"user-1","extra":{"key":"val"}}`
+		if string(got) != want {
+			t.Errorf("got %s\nwant %s", got, want)
+		}
+	})
+
+	t.Run("zero_elapsed", func(t *testing.T) {
+		hp := &HookPayload{
+			Event:         HookPostToolUse,
+			ToolElapsedMs: 0,
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(got), "toolElapsedMs") {
+			t.Errorf("zero ToolElapsedMs should be omitted, got %s", got)
+		}
+	})
+
+	t.Run("nil_extra", func(t *testing.T) {
+		hp := &HookPayload{
+			Event: HookPreToolUse,
+			Extra: nil,
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(got), "extra") {
+			t.Errorf("nil Extra should be omitted, got %s", got)
+		}
+	})
+}
+
+func TestWidgetRegistry_RegisterDuplicate(t *testing.T) {
+	t.Parallel()
+
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	w := &testStaticWidget{spans: []WidgetSpan{{Text: "hello"}}}
+
+	err1 := r.Register("p1", "w1", "infoBar", w, 10)
+	if err1 != nil {
+		t.Fatalf("first Register failed: %v", err1)
+	}
+
+	err2 := r.Register("p1", "w1", "infoBar", w, 20)
+	if err2 == nil {
+		t.Fatal("expected error on duplicate registration, got nil")
+	}
+	if !strings.Contains(err2.Error(), "already registered") {
+		t.Errorf("error = %q, should contain 'already registered'", err2.Error())
+	}
+}

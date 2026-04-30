@@ -11,6 +11,7 @@ import (
 	"xbot/config"
 	"xbot/event"
 	llm "xbot/llm"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/tools"
 )
@@ -83,6 +84,10 @@ type AgentBackend interface {
 	// ApprovalState returns the approval state for runtime handler injection.
 	// LocalBackend delegates to Agent; RemoteBackend returns nil.
 	ApprovalState() *hooks.ApprovalState
+
+	// PluginManager returns the plugin manager.
+	// LocalBackend delegates to Agent; RemoteBackend returns nil.
+	PluginManager() *plugin.PluginManager
 
 	// SetDirectSend injects the direct send function (bypasses bus for message tracking).
 	SetDirectSend(fn func(bus.OutboundMessage) (string, error))

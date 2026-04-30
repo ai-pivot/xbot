@@ -89,6 +89,12 @@ func (s *TenantSession) UpdateMessageContent(messageIndex int, content string) e
 	return s.sessionSvc.UpdateMessageContent(s.tenantID, messageIndex, content)
 }
 
+// UpdateMessageContentNonDisplayOnly updates the content of the Nth non-display-only
+// message (0-indexed). Aligns with GetAllMessages() ordering (both filter display_only).
+func (s *TenantSession) UpdateMessageContentNonDisplayOnly(messageIndex int, content string) error {
+	return s.sessionSvc.UpdateMessageContentNonDisplayOnly(s.tenantID, messageIndex, content)
+}
+
 // Memory returns the memory provider for this tenant
 func (s *TenantSession) Memory() memory.MemoryProvider {
 	return s.memory

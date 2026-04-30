@@ -12,6 +12,7 @@ import (
 	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/internal/textarea"
+	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 	"xbot/version"
@@ -401,6 +402,12 @@ type cliModel struct {
 	// --- Usage query ---
 	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
 
+	// --- Plugin management ---
+	pluginMgrFn       func() *plugin.PluginManager
+	widgetRegistry    *plugin.WidgetRegistry // UI widget registry from plugin system
+	pluginReloading   bool                   // true when a reload operation is in progress
+	remotePluginCache *remotePluginCache     // plugin data cache for remote mode (nil = local mode)
+
 	// --- Web user management (admin only) ---
 	createWebUserFn func(username string) (password string, err error)
 	listWebUsersFn  func() ([]map[string]any, error)
@@ -633,6 +640,7 @@ type cliMessage struct {
 
 	// --- Markdown rendering for system messages ---
 	markdown bool // when true, system messages go through glamour renderer (e.g. /usage tables)
+	styled   bool // when true, content is pre-rendered with ANSI codes, output as-is in renderMessage
 }
 
 // newCLIModel 创建 CLI model
@@ -786,6 +794,34 @@ type cliInjectedUserMsg struct {
 type cliUpdateCheckMsg struct {
 	info *version.UpdateInfo
 }
+
+type cliPluginReloadResultMsg struct {
+	pluginID string
+	err      error
+}
+
+type cliPluginReloadAllResultMsg struct {
+	err error
+}
+
+type cliPluginHealthResultMsg struct {
+	results map[string]error
+}
+
+type cliPluginInstallResultMsg struct {
+	pluginID  string
+	pluginDir string
+	err       error
+}
+
+type cliPluginUninstallResultMsg struct {
+	pluginID string
+	err      error
+}
+
+// cliWidgetUpdateMsg signals that a plugin widget's content has been updated
+// and the TUI should re-render to show the new content.
+type cliWidgetUpdateMsg struct{}
 
 // isCtrlEnter 检测 Ctrl+Enter 按键。
 // 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：

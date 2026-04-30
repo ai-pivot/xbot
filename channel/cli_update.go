@@ -251,6 +251,72 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	case cliUpdateCheckMsg:
 		m.handleUpdateCheck(msg)
 
+	case cliPluginReloadResultMsg:
+		m.pluginReloading = false
+		if msg.err != nil {
+			m.showSystemMsg(fmt.Sprintf("❌ Failed to reload plugin %s: %v", msg.pluginID, msg.err), feedbackError)
+		} else {
+			m.showSystemMsg(fmt.Sprintf("✅ Plugin %s reloaded successfully", msg.pluginID), feedbackInfo)
+		}
+		m.updateViewportContent()
+
+	case cliPluginReloadAllResultMsg:
+		m.pluginReloading = false
+		if msg.err != nil {
+			m.showSystemMsg(fmt.Sprintf("❌ Failed to reload all plugins: %v", msg.err), feedbackError)
+		} else {
+			m.showSystemMsg("✅ All plugins reloaded successfully", feedbackInfo)
+		}
+		m.updateViewportContent()
+
+	case cliPluginHealthResultMsg:
+		results := msg.results
+		if len(results) == 0 {
+			m.showSystemMsg("No active plugins to check.", feedbackInfo)
+		} else {
+			var sb strings.Builder
+			sb.WriteString(m.styles.ToolHeader.Render("🔍 Plugin Health"))
+			sb.WriteString("\n\n")
+
+			// Show errors first, then healthy
+			for id, err := range results {
+				if err != nil {
+					icon := pluginStateIcon("error")
+					line := fmt.Sprintf("  %-20s %s %s\n", id, icon,
+						m.styles.PluginError.Render(err.Error()))
+					sb.WriteString(line)
+				}
+			}
+			for id, err := range results {
+				if err == nil {
+					icon := pluginStateIcon("active")
+					line := fmt.Sprintf("  %-20s %s %s\n", id, icon,
+						m.styles.PluginActive.Render("healthy"))
+					sb.WriteString(line)
+				}
+			}
+			m.appendSystemStyled(sb.String())
+		}
+		m.updateViewportContent()
+
+	case cliPluginInstallResultMsg:
+		m.pluginReloading = false
+		if msg.err != nil {
+			m.showSystemMsg(fmt.Sprintf("❌ Failed to install plugin: %v", msg.err), feedbackError)
+		} else {
+			m.showSystemMsg(fmt.Sprintf("✅ Plugin %s installed successfully at %s", msg.pluginID, msg.pluginDir), feedbackInfo)
+		}
+		m.updateViewportContent()
+
+	case cliPluginUninstallResultMsg:
+		m.pluginReloading = false
+		if msg.err != nil {
+			m.showSystemMsg(fmt.Sprintf("❌ Failed to uninstall plugin %s: %v", msg.pluginID, msg.err), feedbackError)
+		} else {
+			m.showSystemMsg(fmt.Sprintf("✅ Plugin %s uninstalled successfully", msg.pluginID), feedbackInfo)
+		}
+		m.updateViewportContent()
+
 	case tickerTickMsg:
 		// Legacy: ticker is now driven by cliTickMsg. Drop stale messages.
 
@@ -282,6 +348,12 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliToastClearMsg:
 		cmds = append(cmds, m.handleToastClear(msg)...)
+
+	case cliWidgetUpdateMsg:
+		// Widget content changed — invalidate render cache and relayout viewport.
+		// Info bar appearing/disappearing changes the number of reserved lines.
+		m.renderCacheValid = false
+		m.relayoutViewport()
 
 	case easterEggDoneMsg:
 		// 🥚 彩蛋关闭（按任意键触发）
@@ -418,10 +490,10 @@ func (m *cliModel) layoutViewportHeight() int {
 	if len(m.todos) > 0 {
 		todoLines = 1 + len(m.todos)
 	}
-	// Info bar: 1 line when bg tasks/agents/queue are active (now below input,
-	// but still reserves space to prevent viewport overflow).
+	// Info bar: 1 line when bg tasks/agents/queue are active OR widget content exists.
+	// (Widget content may fill the info bar even when no system indicators are active.)
 	infoBarLines := 0
-	if m.bgTaskCount > 0 || m.agentCount > 0 || len(m.messageQueue) > 0 {
+	if m.bgTaskCount > 0 || m.agentCount > 0 || len(m.messageQueue) > 0 || m.resolveWidgetZone("infoBar") != "" {
 		infoBarLines = 1
 	}
 	reservedLines := fixedLines + taBorder + m.textarea.Height() + todoLines + infoBarLines
@@ -471,6 +543,12 @@ func (m *cliModel) handleResize(width, height int) {
 
 	// §20 重建样式缓存
 	m.styles = buildStyles(width)
+
+	// Refresh widget render function with new styles and re-render all widgets
+	if m.widgetRegistry != nil {
+		m.widgetRegistry.SetDefaultRenderFn(buildWidgetRenderFn(m.styles))
+		m.widgetRegistry.RefreshAllWidgets(width, nil)
+	}
 
 	m.viewport.SetWidth(width)
 	m.viewport.SetHeight(m.layoutViewportHeight())

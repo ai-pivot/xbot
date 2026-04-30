@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xbot/agent"
@@ -28,6 +29,10 @@ type rpcContext struct {
 	backend agent.AgentBackend
 	disp    *channel.Dispatcher
 	msgBus  *bus.MessageBus
+
+	// pluginWidgetsMu serializes plugin_widgets RPC calls so concurrent
+	// sessions don't race on the shared PluginContext.workingDir.
+	pluginWidgetsMu sync.Mutex
 }
 
 func (h *rpcContext) requireAdmin(next rpcHandler) rpcHandler {
@@ -96,6 +101,7 @@ func buildRPCTable(cfg *config.Config, backend agent.AgentBackend, disp *channel
 	registerSessionHandlers(t, h)
 	registerTaskHandlers(t, h)
 	registerAdminHandlers(t, h)
+	registerPluginHandlers(t, h)
 	return t
 }
 
@@ -118,7 +124,15 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return err
 		}
-		return h.backend.SetCWD(p.Channel, p.ChatID, p.Dir)
+		if err := h.backend.SetCWD(p.Channel, p.ChatID, p.Dir); err != nil {
+			return err
+		}
+		// Refresh plugin workDir so script plugins (e.g. git-info) re-execute
+		// in the new directory after CLI client syncs its CWD.
+		if pm := h.backend.PluginManager(); pm != nil {
+			pm.RefreshWorkDir(p.Dir)
+		}
+		return nil
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {
 		Namespace string `json:"namespace"`
@@ -142,6 +156,10 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		// This ensures remote CLI clients see the actual runtime values
 		// (e.g. max_context_tokens=200000) even when the user never
 		// explicitly saved those settings.
+		//
+		// ⚠️ MaxContextTokens must no longer be blindly written back to config.json
+		// (see saveServerConfig). The value here comes from the user's config file
+		// and is the intended default.
 		if _, ok := result["max_context_tokens"]; !ok {
 			result["max_context_tokens"] = fmt.Sprintf("%d", h.cfg.Agent.MaxContextTokens)
 		}
@@ -755,6 +773,155 @@ func registerAdminHandlers(t rpcTable, h *rpcContext) {
 	}) error {
 		return channel.DeleteWebUser(backend.MultiSession().DB().Conn(), p.Username)
 	}))
+}
+
+// ── Plugin system RPCs (remote CLI support) ──
+
+func registerPluginHandlers(t rpcTable, h *rpcContext) {
+	backend := h.backend
+
+	t["plugin_status"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		entries := pm.ListPlugins()
+		type pluginJSON struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			State   string `json:"state"`
+			Runtime string `json:"runtime"`
+		}
+		plugins := make([]pluginJSON, len(entries))
+		for i, e := range entries {
+			plugins[i] = pluginJSON{
+				ID:      e.Manifest.ID,
+				Name:    e.Manifest.Name,
+				Version: e.Manifest.Version,
+				State:   string(e.State),
+				Runtime: string(e.Manifest.Runtime),
+			}
+		}
+		return map[string]any{
+			"plugins": plugins,
+			"active":  pm.ActiveCount(),
+			"total":   len(entries),
+		}, nil
+	})
+
+	t["plugin_widgets"] = rpc1(func(ctx context.Context, p struct {
+		ChatID string `json:"chat_id"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return map[string]any{"zones": map[string]string{}, "infos": []struct{}{}}, nil
+		}
+		h.pluginWidgetsMu.Lock()
+		defer h.pluginWidgetsMu.Unlock()
+
+		// Look up the session CWD using the chat_id sent by the CLI client.
+		// Each CLI window has a session keyed by its working directory path.
+		cwd := ""
+		if p.ChatID != "" && backend.MultiSession() != nil {
+			if sess, err := backend.MultiSession().GetOrCreateSession("cli", p.ChatID); err == nil {
+				cwd = sess.GetCurrentDir()
+			}
+		}
+
+		// Render per-workDir — bypass global WidgetRegistry slot content.
+		// Each session's widget is rendered on-the-fly from the script's
+		// per-workDir output cache, so sessions never interfere.
+		zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"}
+		zones := make(map[string]string)
+		for _, z := range zoneNames {
+			zones[z] = pm.RenderZoneForWorkDir(z, cwd)
+		}
+		return map[string]any{
+			"zones": zones,
+			"infos": pm.WidgetInfoForWorkDir(cwd),
+			"count": pm.WidgetRegistry().Count(),
+		}, nil
+	})
+
+	t["plugin_reload"] = rpc1(func(ctx context.Context, p struct {
+		ID string `json:"id"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.Reload(context.Background(), p.ID); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	t["plugin_reload_all"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.ReloadAll(context.Background()); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	t["plugin_install"] = rpc1(func(ctx context.Context, p struct {
+		SourceDir string `json:"source_dir"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		entry, err := pm.InstallPlugin(context.Background(), p.SourceDir)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{
+			"id":  entry.Manifest.ID,
+			"dir": entry.Dir,
+		}, nil
+	})
+
+	t["plugin_uninstall"] = rpc1(func(ctx context.Context, p struct {
+		ID string `json:"id"`
+	}) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.UninstallPlugin(context.Background(), p.ID); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
+	t["plugin_health"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		results := pm.HealthCheck(context.Background())
+		out := make(map[string]string, len(results))
+		for id, err := range results {
+			if err != nil {
+				out[id] = err.Error()
+			} else {
+				out[id] = "ok"
+			}
+		}
+		return out, nil
+	})
+
+	t["plugin_metrics"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := backend.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		return pm.Metrics(), nil
+	})
 }
 
 // handleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.

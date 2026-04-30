@@ -23,6 +23,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
+	"xbot/plugin"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -257,8 +258,13 @@ type Agent struct {
 	sessionFinalSent sync.Map                                  // key: "channel:chatID" -> bool, 工具已发送最终回复（如卡片），后续 sendMessage 跳过
 
 	// per-request cancel: 用于 /cancel 取消当前正在处理的请求
-	// key: "channel:chatID:senderID" -> chan struct{} (buffered, cap=1)
+	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
 	chatCancelCh sync.Map
+
+	// pendingCancel: 当 /cancel 到达时 cancelCh 尚未注册（消息还在排队或等信号量），
+	// 先记录 pending，chatProcessLoop 注册 cancelCh 后立即消费。
+	// key: "channel:chatID" -> bool
+	pendingCancel sync.Map
 
 	// lastProgressSnapshot stores the latest CLIProgressPayload per active chat,
 	// updated by ProgressEventHandler during processing. Used by GetActiveProgress
@@ -317,6 +323,9 @@ type Agent struct {
 	channelFinder func(name string) (channel.Channel, bool)
 
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
+
+	// PluginManager manages the plugin system lifecycle
+	pluginMgr *plugin.PluginManager
 	bgTaskMgr *tools.BackgroundTaskManager
 
 	// bgRunActive is atomically set to 1 when a Run is active and consuming bg notifications,
@@ -512,6 +521,11 @@ type Config struct {
 
 	// MaskDir: mask 文件存储基目录（默认 ~/.xbot/mask/{tenantID}）
 	MaskDir string
+
+	// Plugin system configuration
+	PluginEnabled         bool     // Enable plugin system
+	PluginDirs            []string // Additional plugin directories
+	PluginDisabledPlugins []string // Plugin IDs to disable
 }
 
 // initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
@@ -864,6 +878,87 @@ func New(cfg Config) (*Agent, error) {
 	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
+	// 5c. Initialize plugin system (if enabled in config)
+	if cfg.PluginEnabled {
+		agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
+		agent.pluginMgr.SetRuntimeFactory(plugin.NewCompositeRuntimeFactory())
+		// Set the agent's working directory so script plugins (e.g. git-info)
+		// run in the user's workspace, not the plugin install dir.
+		agent.pluginMgr.SetWorkDir(agent.workDir)
+		// Set default ANSI render so server-side widget rendering (plugin_widgets RPC)
+		// produces colored output. The TUI overrides this with lipgloss rendering.
+		agent.pluginMgr.WidgetRegistry().SetDefaultRenderFn(plugin.BasicANSIRender)
+		// Add extra plugin directories from config
+		if len(cfg.PluginDirs) > 0 {
+			agent.pluginMgr.AddSearchDirs(cfg.PluginDirs)
+		}
+		// Disable specific plugins from config
+		if len(cfg.PluginDisabledPlugins) > 0 {
+			agent.pluginMgr.DisablePlugins(cfg.PluginDisabledPlugins)
+		}
+		if _, err := agent.pluginMgr.Discover(context.Background()); err != nil {
+			log.WithError(err).Warn("Plugin discovery failed")
+		}
+		if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
+			log.WithError(err).Warn("Plugin activation failed")
+		}
+		// Wire plugin capabilities to xbot subsystems
+		hookBridge := plugin.NewPluginHookBridge()
+		enricherReg := plugin.NewEnricherRegistry()
+		if err := plugin.WireAll(agent.pluginMgr, registry, hookBridge, enricherReg); err != nil {
+			log.WithError(err).Warn("Plugin wiring failed")
+		}
+		// Register the hook bridge as a builtin hook handler
+		agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
+		// Wire enricher registry into the message pipeline
+		agent.pipeline.Use(newPluginEnricherMiddleware(enricherReg))
+		// Wire WidgetRegistry.OnUpdated to push widget content to remote CLI clients.
+		// Local mode overrides this in CLIChannel.SetWidgetRegistry with asyncCh callback.
+		// Remote mode uses this to push via Hub to all connected WebSocket clients.
+		pm := agent.pluginMgr
+		// Debounce widget push: coalesce rapid updates (e.g. multiple PostToolUse
+		// triggers in a single agent iteration) into a single WebSocket message.
+		pm.WidgetRegistry().SetDebounce(200 * time.Millisecond)
+		pm.WidgetRegistry().OnUpdated(func() {
+			if agent.channelFinder == nil {
+				return
+			}
+			ch, ok := agent.channelFinder("cli")
+			if !ok {
+				return
+			}
+			rcli, ok := ch.(*channel.RemoteCLIChannel)
+			if !ok {
+				return // local CLIChannel handles its own OnUpdated
+			}
+			// Per-session rendering: each chatID may have a different workDir.
+			// We use RenderZoneForWorkDir to render widget content for each
+			// session's working directory independently, avoiding cross-session
+			// overwrites (e.g. git branch from /repo1 overwriting /repo2).
+			zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"}
+			ms := agent.multiSession
+			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
+				cwd := ""
+				if ms != nil && chatID != "" {
+					if sess, err := ms.GetOrCreateSession("cli", chatID); err == nil {
+						cwd = sess.GetCurrentDir()
+					} else {
+						log.Debugf("[widget-push] GetOrCreateSession failed for cli/%s: %v", chatID, err)
+					}
+				}
+				zones := make(map[string]string, len(zoneNames))
+				for _, z := range zoneNames {
+					zones[z] = pm.WidgetRegistry().RenderZoneForWorkDir(z, cwd)
+				}
+				log.Infof("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, cwd, zones["infoBar"], zones["footer"])
+				return zones
+			})
+		})
+		log.Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
+	} else {
+		log.Debug("Plugin system disabled in config")
+	}
+
 	// 6. 启动 bg task 通知路由 goroutine
 	go agent.bgNotifyLoop()
 
@@ -1079,6 +1174,10 @@ func (a *Agent) Close() error {
 	if a.agentCancel != nil {
 		a.agentCancel()
 	}
+	// Deactivate all plugins before shutting down subsystems
+	if a.pluginMgr != nil {
+		a.pluginMgr.DeactivateAll(context.Background())
+	}
 	// 先停止 cron 调度器，避免在数据库关闭后仍尝试访问
 	if a.cronSch != nil {
 		a.cronSch.Stop()
@@ -1095,6 +1194,12 @@ func (a *Agent) Close() error {
 		}
 	}
 	return nil
+}
+
+// PluginManager returns the plugin manager for this agent.
+// Returns nil if the plugin system is not initialized.
+func (a *Agent) PluginManager() *plugin.PluginManager {
+	return a.pluginMgr
 }
 
 // NOTE: math/rand is intentionally used here for non-cryptographic random selection
@@ -1230,8 +1335,10 @@ func (a *Agent) Run(ctx context.Context) error {
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
 					}
 				} else {
-					log.WithField("cancel_key", cancelKey).Warn("No active request found for cancel")
-					_ = a.sendMessage(msg.Channel, msg.ChatID, "No active request.")
+					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
+					a.pendingCancel.Store(cancelKey, true)
+					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request queued for cancellation.")
 				}
 				continue
 			}
@@ -1477,6 +1584,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		cancelKey := msg.Channel + ":" + msg.ChatID
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
+		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号
+		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
+			select {
+			case cancelCh <- struct{}{}:
+				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
+			default:
+			}
+		}
+
 		reqCtx, reqCancel := context.WithCancel(ctx)
 
 		// 监听 cancel 信号
@@ -1495,6 +1611,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			defer func() {
 				reqCancel()
 				a.chatCancelCh.Delete(cancelKey)
+				a.pendingCancel.Delete(cancelKey)
 				key := sessionKey(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)

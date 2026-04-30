@@ -731,9 +731,13 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	// tokens to justify delta estimation.
 	totalTokens, tokenSource := s.tokenTracker.GetPromptTokens()
 	if tokenSource == "no_data" {
-		// No API token data — cannot make compression decisions.
-		// Return early; compression is never triggered without real data.
-		log.Ctx(ctx).WithField("msg_count", len(s.messages)).Debug("maybeCompress: no API token data, skipping compress check")
+		// No API token data yet (first iteration of a new turn). Run observation
+		// masking with the most conservative keepGroups (12) to prevent the first
+		// LLM call from including massive unmasked tool results from the previous
+		// turn. Without this, the context bar spikes on turn boundaries because
+		// the last iteration's tool results were preserved by keepGroups during
+		// the previous turn and were never masked.
+		s.maybeMaskObservations(ctx, 0, maxTokens)
 		return
 	}
 

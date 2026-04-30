@@ -26,6 +26,7 @@ import (
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/tools"
 	"xbot/version"
 )
@@ -112,6 +113,30 @@ func (c *CLIChannel) Start() error {
 	}
 	if c.pendingBgTaskCleanupFn != nil {
 		c.model.bgTaskCleanupFn = c.pendingBgTaskCleanupFn
+	}
+	if c.pendingPluginMgrFn != nil {
+		c.model.pluginMgrFn = c.pendingPluginMgrFn
+	}
+	if c.pendingWidgetRegistry != nil {
+		c.model.widgetRegistry = c.pendingWidgetRegistry
+		c.pendingWidgetRegistry.SetDefaultRenderFn(buildWidgetRenderFn(c.model.styles))
+		c.pendingWidgetRegistry.OnUpdated(func() {
+			select {
+			case c.asyncCh <- cliWidgetUpdateMsg{}:
+			default:
+			}
+		})
+		c.pendingWidgetRegistry = nil
+	}
+	if c.pendingRemotePluginCache != nil {
+		c.model.remotePluginCache = c.pendingRemotePluginCache
+		c.pendingRemotePluginCache.SetOnUpdated(func() {
+			select {
+			case c.asyncCh <- cliWidgetUpdateMsg{}:
+			default:
+			}
+		})
+		c.pendingRemotePluginCache = nil
 	}
 	if c.pendingHistory != nil {
 		c.LoadHistory(c.pendingHistory)
@@ -433,6 +458,60 @@ func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() 
 		c.pendingBgTaskListFn = listFn
 		c.pendingBgTaskKillFn = killFn
 		c.pendingBgTaskCleanupFn = cleanupFn
+	}
+}
+
+// SetPluginManager sets the plugin manager callback for the /plugin command.
+// If the model hasn't been created yet (Start() not called), the callback
+// is saved as pending and applied when the model is created.
+func (c *CLIChannel) SetPluginManager(fn func() *plugin.PluginManager) {
+	if c.model != nil {
+		c.model.pluginMgrFn = fn
+	} else {
+		c.pendingPluginMgrFn = fn
+	}
+}
+
+// SetWidgetRegistry wires the plugin system's widget registry into the TUI.
+// Must be called after SetPluginManager (when the PluginManager is available).
+// Sets the default render function based on the current theme, and registers
+// a notifier that triggers TUI redraw when plugin widget content changes.
+// If the model hasn't been created yet, the registry is cached and applied later.
+func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
+	if c.model != nil {
+		c.model.widgetRegistry = wr
+		if wr != nil {
+			wr.SetDefaultRenderFn(buildWidgetRenderFn(c.model.styles))
+			// When a widget updates, send a message through asyncCh to trigger View() redraw
+			wr.OnUpdated(func() {
+				select {
+				case c.asyncCh <- cliWidgetUpdateMsg{}:
+				default:
+				}
+			})
+		}
+	} else {
+		c.pendingWidgetRegistry = wr
+	}
+}
+
+// SetRemotePluginCache wires the remote plugin cache into the TUI for /plugin commands
+// and widget rendering in remote mode.
+// If the model hasn't been created yet, the cache is saved as pending and applied later.
+func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
+	if c.model != nil {
+		c.model.remotePluginCache = cache
+		if cache != nil {
+			// When widget content is fetched from server, trigger TUI redraw.
+			cache.SetOnUpdated(func() {
+				select {
+				case c.asyncCh <- cliWidgetUpdateMsg{}:
+				default:
+				}
+			})
+		}
+	} else {
+		c.pendingRemotePluginCache = cache
 	}
 }
 

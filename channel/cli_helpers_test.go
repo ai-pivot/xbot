@@ -1056,3 +1056,66 @@ func TestPersistCLISettingsValues_PersistsUserScopedAndAppliesAll(t *testing.T) 
 		t.Fatalf("ApplySettings did not receive full input: %#v", applied)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// /plugin helpers
+// ---------------------------------------------------------------------------
+
+func TestPluginStateIcon(t *testing.T) {
+	cases := map[string]string{
+		"active":       "🟢",
+		"error":        "🔴",
+		"inactive":     "⚪",
+		"discovered":   "⚪",
+		"activating":   "🟡",
+		"deactivating": "🟡",
+		"unknown":      "⚫",
+		"":             "⚫",
+	}
+	for state, want := range cases {
+		if got := pluginStateIcon(state); got != want {
+			t.Errorf("pluginStateIcon(%q) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+func TestPluginStateStyled(t *testing.T) {
+	m := &cliModel{}
+	m.styles = buildStyles(80)
+
+	states := []string{"active", "error", "inactive", "discovered", "activating", "deactivating", "unknown"}
+	for _, state := range states {
+		styled := m.pluginStateStyled(state)
+		icon := pluginStateIcon(state)
+		if !strings.HasPrefix(styled, icon) {
+			t.Errorf("pluginStateStyled(%q) should start with icon %q, got %q", state, icon, styled)
+		}
+		// Verify state text appears after stripping ANSI
+		clean := stripAnsi(styled)
+		if !strings.Contains(clean, state) {
+			t.Errorf("pluginStateStyled(%q) stripped output %q should contain %q", state, clean, state)
+		}
+	}
+}
+
+// stripAnsi removes ANSI escape sequences for test assertions.
+func stripAnsi(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			// skip until 'm'
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			if i < len(s) {
+				i++ // skip 'm'
+			}
+			continue
+		}
+		out.WriteByte(s[i])
+		i++
+	}
+	return out.String()
+}

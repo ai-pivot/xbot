@@ -35,6 +35,7 @@ import (
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/serverapp"
 	"xbot/storage"
 	"xbot/storage/sqlite"
@@ -1521,6 +1522,11 @@ func main() {
 			if state := app.backend.ApprovalState(); state != nil {
 				cliCh.SetApprovalState(state)
 			}
+			// Inject PluginManager for /plugin command
+			if pm := app.backend.PluginManager(); pm != nil {
+				cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
+				cliCh.SetWidgetRegistry(pm.WidgetRegistry())
+			}
 			// Inject CheckpointState for Ctrl+K rewind file rollback
 			checkpointDir := filepath.Join(os.Getenv("HOME"), ".xbot", "checkpoints", "cli-default")
 			if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
@@ -1700,6 +1706,28 @@ func main() {
 		// events are silently buffered.
 		if rb, ok := app.backend.(*agent.RemoteBackend); ok {
 			rb.SubscribeChat(remoteChatID)
+
+			// Initialize remote plugin cache for /plugin commands and widget rendering.
+			remoteCache := channel.NewRemotePluginCache(remoteChatID, func(method string, params any) (json.RawMessage, error) {
+				return rb.CallRPC(method, params)
+			})
+			cliCh.SetRemotePluginCache(remoteCache)
+			// Register push callback — server pushes widget zone content via
+			// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
+			// Filter: only accept pushes targeting our own chatID (absolute path).
+			// Without this, cross-session pushes (e.g. from "admin" chatID)
+			// overwrite our widget content with another window's git status.
+			rb.OnPluginWidgets(func(zones map[string]string, pushChatID string) {
+				if pushChatID != "" && pushChatID != remoteChatID {
+					log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", pushChatID, remoteChatID)
+					return // ignore pushes for other sessions
+				}
+				log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", pushChatID, zones["footer"])
+				remoteCache.UpdateZones(zones)
+			})
+			// Initial fetch — push only fires on CHANGES, so we need to
+			// pull the current state once on connect.
+			remoteCache.Refresh()
 		}
 		// Check if server has an active agent turn for this chat (mid-session reconnect).
 		// Run in goroutine to avoid blocking TUI startup on RPC timeout.

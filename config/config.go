@@ -181,6 +181,23 @@ type Config struct {
 	TavilyAPIKey  string               `json:"tavily_api_key"`
 	Subscriptions []SubscriptionConfig `json:"subscriptions,omitempty"`
 	CLI           CLIConfig            `json:"cli,omitempty"`
+	Plugins       PluginConfig         `json:"plugins,omitempty"`
+}
+
+// PluginConfig configures the plugin system.
+type PluginConfig struct {
+	// Enabled controls whether the plugin system is active.
+	Enabled bool `json:"enabled"`
+
+	// Dirs is a list of additional directories to scan for plugins.
+	// Defaults to ~/.xbot/plugins/ if empty.
+	Dirs []string `json:"dirs,omitempty"`
+
+	// DisabledPlugins is a list of plugin IDs to skip during discovery.
+	DisabledPlugins []string `json:"disabled_plugins,omitempty"`
+
+	// AllowUnverified allows loading plugins without verified manifests.
+	AllowUnverified bool `json:"allow_unverified,omitempty"`
 }
 
 // FeishuConfig 飞书渠道配置
