@@ -886,17 +886,23 @@ func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
 // Agents only in new are added.
 //
 // Key rule: if an agent in prev is NOT in new, it means the server stopped reporting
-// it. This is normal — the server only reports actively-running agents. We keep
-// completed agents visible so the user sees the full execution tree.
+// it. This is normal — the server only reports actively-running agents. We mark
+// stale running/pending agents as "done" so they don't linger in the progress panel
+// (Issue #29: zombie agents that completed but were never marked done by the server).
 func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 	if len(prev) == 0 {
 		return new
 	}
 	if len(new) == 0 {
+		// Mark all running/pending agents as done — they completed while the
+		// server wasn't reporting them.
+		for i := range prev {
+			prev[i] = markDoneIfRunning(prev[i])
+		}
 		return prev
 	}
 
-	// Build lookup from new by Role (unique key: "role/instance")
+	// Build lookup from new by Role (unique key: "role")
 	newByRole := make(map[string]int, len(new))
 	for i, a := range new {
 		newByRole[a.Role] = i
@@ -914,8 +920,9 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 			result = append(result, merged)
 			delete(newByRole, p.Role)
 		} else {
-			// Agent only in prev — keep as-is (completed or stale)
-			result = append(result, p)
+			// Agent only in prev — server stopped reporting it.
+			// Mark as done if still running/pending (it completed between updates).
+			result = append(result, markDoneIfRunning(p))
 		}
 	}
 
@@ -925,6 +932,20 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 	}
 
 	return result
+}
+
+// markDoneIfRunning marks a SubAgent and its children as done if they are
+// still in running/pending state. This handles the case where the server
+// stops reporting a completed SubAgent — without this, the agent would
+// linger as "running" forever (Issue #29).
+func markDoneIfRunning(sa CLISubAgent) CLISubAgent {
+	if sa.Status == "running" || sa.Status == "pending" {
+		sa.Status = "done"
+	}
+	for i := range sa.Children {
+		sa.Children[i] = markDoneIfRunning(sa.Children[i])
+	}
+	return sa
 }
 
 // handleCtrlC handles the unified Ctrl+C keypress.
@@ -962,6 +983,7 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 			m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
 		} else {
 			m.sendCancel()
+			m.turnCancelled = true // prevent stale progress from auto-starting after cancel
 		}
 		return m, nil, true
 	}

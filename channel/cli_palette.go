@@ -47,7 +47,7 @@ func (p paletteFilterable) String(i int) string { return p[i].Title + " " + p[i]
 const paletteMaxVisible = 12
 
 // buildPaletteCommands returns all available commands for the palette.
-// Commands are grouped logically but presented as a flat list.
+// Commands are grouped logically but presented as a flat searchable list.
 func (m *cliModel) buildPaletteCommands() []paletteCommand {
 	var cmds []paletteCommand
 
