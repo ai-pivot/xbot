@@ -83,7 +83,7 @@ type RemoteBackend struct {
 	injectUserCb func(content string)
 
 	// Plugin widget push callback (for real-time widget zone updates from server)
-	pluginWidgetsCb func(zones map[string]string)
+	pluginWidgetsCb func(zones map[string]string, chatID string)
 
 	// RPC pending calls: requestID → response channel
 	rpcMu      sync.Mutex
@@ -292,7 +292,7 @@ func (b *RemoteBackend) OnInjectUserMessage(callback func(content string)) {
 
 // OnPluginWidgets registers a callback invoked when the server pushes widget zone
 // content updates. This is the real-time push path — no polling needed.
-func (b *RemoteBackend) OnPluginWidgets(callback func(zones map[string]string)) {
+func (b *RemoteBackend) OnPluginWidgets(callback func(zones map[string]string, chatID string)) {
 	b.pluginWidgetsCb = callback
 }
 
@@ -565,10 +565,11 @@ func (b *RemoteBackend) readPump(ctx context.Context) {
 		case "plugin_widgets":
 			// Server push: widget zone content updated.
 			// Parse and cache directly — no RPC round-trip needed.
+			// chatID in the message identifies which session this push targets.
 			if b.pluginWidgetsCb != nil {
 				var zones map[string]string
 				if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
-					b.pluginWidgetsCb(zones)
+					b.pluginWidgetsCb(zones, msg.ChatID)
 				}
 			}
 		}

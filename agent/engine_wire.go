@@ -1143,8 +1143,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 				})
 			}
 		}
-	} else if originChannel != "" && originChatID != "" {
-		// 顶层 agent（交互式）：只发送 depth=1 的进度到聊天窗口
+	} else if originChannel != "" && originChatID != "" && originChannel != "cli" {
+		// 非 CLI 渠道（飞书、Web 等）：发送 text-based progress 到聊天窗口。
+		// CLI 模式下由 wireSubAgentCLIProgress 的 StructuredProgress 处理，
+		// 不需要 sendMessage（否则会把工具行渲染成主 session 的 assistant 消息）。
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string) {
 			if len(lines) > 0 {

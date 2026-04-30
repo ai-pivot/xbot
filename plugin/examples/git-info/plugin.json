@@ -1,7 +1,7 @@
 {
   "id": "git-info",
   "name": "git-info",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Shows git branch and working tree status in the info bar. Works with any git repo.",
   "author": "xbot",
   "runtime": "script",
@@ -15,7 +15,17 @@
         "priority": 10,
         "description": "Git branch name and dirty/clean status",
         "refreshInterval": "30s",
-        "triggers": ["PostToolUse:Shell*", "PostToolUse:Cd*"]
+        "triggers": [
+          "PostToolUse:Shell*",
+          "PostToolUse:Cd*",
+          "PostToolUse:FileReplace*",
+          "PostToolUse:FileCreate*",
+          "PostToolUse:FileEdit*",
+          "PostToolUse:Write*",
+          "PostToolUse:Glob*",
+          "PostToolUse:Grep*",
+          "PostToolUse:Read*"
+        ]
       }
     ]
   }

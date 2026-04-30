@@ -1160,11 +1160,15 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	wc.hub.addClient(client.id, client)
 
-	// Immediately subscribe the client to their chatID (p2p mode)
-	// so they can receive server-pushed events (progress, stream, etc.)
-	// without waiting for the first outbound message.
-	chatID := senderID // p2p mode: chatID == senderID
-	wc.hub.subscribe(client.id, chatID)
+	// Immediately subscribe to senderID for server-pushed events (progress, stream, etc.)
+	// CLI clients skip this — they subscribe to their business chatID (absolute path)
+	// via an explicit "subscribe" message after connection. Subscribing CLI clients to
+	// senderID ("admin") causes cross-session widget pushes to overwrite other windows.
+	isCLI := r.URL.Query().Get("client_type") == "cli"
+	if !isCLI {
+		chatID := senderID // p2p mode: chatID == senderID
+		wc.hub.subscribe(client.id, chatID)
+	}
 
 	log.WithFields(log.Fields{
 		"sender_id": senderID,
@@ -1175,7 +1179,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Reconnect sync: wait for client's sync message with last_seq,
 	// then replay missed events from the event stream buffer.
 	// This runs in a goroutine to not block the read pump startup.
-	go wc.replayMissedEvents(client, chatID)
+	go wc.replayMissedEvents(client, senderID)
 
 	// Write pump
 	wc.wg.Add(1)
@@ -1776,6 +1780,11 @@ func eagerSaveUserMsg(db *sql.DB, userID string, content string) error {
 // WebSocket client via the web channel's hub.
 type RemoteCLIChannel struct {
 	hub *Hub
+
+	// Per-chatID widget zone cache for incremental updates.
+	// Keyed by chatID to support per-session rendering.
+	lastWidgetMu    sync.Mutex
+	lastWidgetZones map[string]map[string]string // chatID → zone → content
 }
 
 // NewRemoteCLIChannel creates a virtual CLI channel that shares the given hub.
@@ -1834,24 +1843,64 @@ func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) 
 	_ = c.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
 }
 
-// PushPluginWidgets pushes widget zone content to all connected CLI clients.
-// Called from WidgetRegistry.OnUpdated when plugin widget content changes.
-// Uses Hub's sendToClient with each subscriber's chatID.
-func (c *RemoteCLIChannel) PushPluginWidgets(zones map[string]string) {
-	b, _ := json.Marshal(zones)
-	wsMsg := wsMessage{
-		Type:    "plugin_widgets",
-		TS:      time.Now().Unix(),
-		Content: string(b),
-	}
-	// Broadcast to all subscribed chatIDs
+// PushPluginWidgetsPerSession pushes widget zone content to each connected CLI
+// client with per-session rendering. The renderFn callback is called once per
+// subscribed chatID to produce session-specific widget content (using the
+// session's workDir for correct git branch, etc.).
+//
+// Performs incremental updates: only sends to chatIDs whose zones actually changed.
+func (c *RemoteCLIChannel) PushPluginWidgetsPerSession(renderFn func(chatID string) map[string]string) {
+	// Collect subscribed chatIDs
 	c.hub.mu.RLock()
 	chatIDs := make([]string, 0, len(c.hub.subs))
 	for chatID := range c.hub.subs {
 		chatIDs = append(chatIDs, chatID)
 	}
 	c.hub.mu.RUnlock()
+
 	for _, chatID := range chatIDs {
+		// Skip non-session chatIDs (e.g. "admin" from web-layer p2p routing).
+		// CLI sessions use absolute paths as chatID; web-layer uses userID.
+		// Pushing to web chatIDs sends stale content to wrong windows.
+		if !strings.HasPrefix(chatID, "/") {
+			continue
+		}
+
+		zones := renderFn(chatID)
+
+		// Incremental: skip if nothing changed for this chatID
+		c.lastWidgetMu.Lock()
+		changed := true
+		if c.lastWidgetZones != nil {
+			if prev, ok := c.lastWidgetZones[chatID]; ok {
+				if len(prev) == len(zones) {
+					changed = false
+					for k, v := range zones {
+						if ov, exists := prev[k]; !exists || ov != v {
+							changed = true
+							break
+						}
+					}
+				}
+			}
+		}
+		if !changed {
+			c.lastWidgetMu.Unlock()
+			continue
+		}
+		if c.lastWidgetZones == nil {
+			c.lastWidgetZones = make(map[string]map[string]string)
+		}
+		c.lastWidgetZones[chatID] = zones
+		c.lastWidgetMu.Unlock()
+
+		b, _ := json.Marshal(zones)
+		wsMsg := wsMessage{
+			Type:    "plugin_widgets",
+			TS:      time.Now().Unix(),
+			ChatID:  chatID, // client uses this to filter cross-session pushes
+			Content: string(b),
+		}
 		_ = c.hub.sendToClient(chatID, wsMsg) // best-effort push
 	}
 }

@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,19 @@ type scriptPlugin struct {
 	outputMu sync.RWMutex
 	outputs  map[string]string // workDir → last script output
 
-	pctx PluginContext // captured in Activate for UpdateWidget
+	// Pending workDirs from OnWorkDirChanged that haven't been processed yet.
+	// Prevents multi-session races where session B's Cd overwrites pctx before
+	// session A's trigger is processed.
+	pendingMu   sync.Mutex
+	pendingDirs map[string]struct{} // workDirs to refresh on next runAndUpdate
+
+	// Last hook payload data — stored by triggerFn for env injection in runScript.
+	lastHookMu sync.RWMutex
+	lastHook   *HookPayload // may be nil if not triggered by a hook
+	// NOTE: rapid triggers overwrite lastHook — script only sees the latest event.
+
+	pctx      PluginContext   // captured in Activate for UpdateWidget
+	widgetReg *WidgetRegistry // captured in Activate for NotifyUpdated (no runtime type assertion)
 }
 
 func (p *scriptPlugin) Manifest() PluginManifest {
@@ -59,6 +72,11 @@ func (p *scriptPlugin) Manifest() PluginManifest {
 func (p *scriptPlugin) Activate(ctx PluginContext) error {
 	p.pctx = ctx
 
+	// Capture WidgetRegistry at activation time to avoid runtime type assertion.
+	if impl, ok := ctx.(*pluginContextImpl); ok {
+		p.widgetReg = impl.getWidgetRegistry()
+	}
+
 	// Register UI widgets declared in the manifest
 	for _, ui := range p.manifest.Contributes.UI {
 		if err := ctx.ContributeUI(ui.ID, ui.Slot, p, ui.Priority); err != nil {
@@ -66,11 +84,18 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 		}
 	}
 
-	// Start periodic refresh loop
+	// Start periodic refresh loop — use the shortest interval across all widgets
 	interval := 30 * time.Second // default
-	if len(p.manifest.Contributes.UI) > 0 && p.manifest.Contributes.UI[0].RefreshInterval != "" {
-		if d, err := time.ParseDuration(p.manifest.Contributes.UI[0].RefreshInterval); err == nil && d > 0 {
-			interval = d
+	for _, ui := range p.manifest.Contributes.UI {
+		if ui.RefreshInterval != "" {
+			if d, err := time.ParseDuration(ui.RefreshInterval); err == nil && d > 0 {
+				if d < interval {
+					interval = d
+				}
+			} else if err != nil {
+				log.Info(fmt.Sprintf("Script plugin %s: invalid refreshInterval %q for widget %s: %v",
+					p.manifest.ID, ui.RefreshInterval, ui.ID, err))
+			}
 		}
 	}
 
@@ -131,6 +156,7 @@ func (p *scriptPlugin) Render(width int) []WidgetSpan {
 			}
 			p.outputs[wd] = output
 			p.outputMu.Unlock()
+			log.Debugf("[plugin:%s] output[%s]=%q", p.manifest.ID, wd, output)
 			text = output
 		}
 	}
@@ -142,13 +168,21 @@ func (p *scriptPlugin) Render(width int) []WidgetSpan {
 }
 
 // OnWorkDirChanged triggers an immediate script re-run when the session CWD changes.
-// The output is stored per-workDir in the outputs map, and Render() reads from
-// pctx.WorkingDir() which is set per-RPC-call — no cross-session mixing.
+// The dir is stored in a pending set so runAndUpdate can process it even if
+// pctx.WorkingDir() is overwritten by another session's Cd before the trigger fires.
 func (p *scriptPlugin) OnWorkDirChanged(dir string) {
+	if dir != "" {
+		p.pendingMu.Lock()
+		if p.pendingDirs == nil {
+			p.pendingDirs = make(map[string]struct{})
+		}
+		p.pendingDirs[dir] = struct{}{}
+		p.pendingMu.Unlock()
+	}
 	select {
 	case p.triggerCh <- struct{}{}:
 	default:
-		// channel full — a run is already queued, skip
+		// channel full — a run is already queued, dir is in pendingDirs for next run
 	}
 }
 
@@ -204,20 +238,58 @@ func (p *scriptPlugin) refreshLoop(ctx context.Context, interval time.Duration) 
 }
 
 func (p *scriptPlugin) runAndUpdate() {
-	// Capture the workDir ONCE before running — concurrent RPCs may change
-	// pctx.WorkingDir() between runScript() and output storage. Using the
-	// same wd for both ensures output goes to the correct key.
-	var wd string
+	// Collect ALL known workDirs from three sources:
+	// 1. Existing outputs map (previously refreshed workDirs)
+	// 2. Pending dirs from OnWorkDirChanged (new sessions that haven't been processed yet)
+	// 3. Current pctx workDir (fallback for the active session)
+	workDirSet := make(map[string]struct{})
+
+	p.outputMu.RLock()
+	for wd := range p.outputs {
+		workDirSet[wd] = struct{}{}
+	}
+	p.outputMu.RUnlock()
+
+	// Drain pending dirs from OnWorkDirChanged
+	p.pendingMu.Lock()
+	for wd := range p.pendingDirs {
+		workDirSet[wd] = struct{}{}
+	}
+	p.pendingDirs = nil // clear after consuming
+	p.pendingMu.Unlock()
+
+	// Also include current pctx workDir
 	if p.pctx != nil {
-		wd = p.pctx.WorkingDir()
+		if cur := p.pctx.WorkingDir(); cur != "" {
+			workDirSet[cur] = struct{}{}
+		}
 	}
-	output, err := p.runScript(wd)
-	if err != nil {
-		log.Info(fmt.Sprintf("Script plugin %s execution failed: %v", p.manifest.ID, err))
-		return
+
+	// Flatten to slice
+	workDirs := make([]string, 0, len(workDirSet))
+	for wd := range workDirSet {
+		workDirs = append(workDirs, wd)
 	}
-	// Store output per workDir so each CLI window sees its own result
-	if wd != "" {
+	log.Debugf("[plugin:%s] runAndUpdate: workDirs=%v", p.manifest.ID, workDirs)
+
+	// Evict stale entries: remove outputs for directories that no longer exist.
+	// Prevents unbounded map growth when users Cd through temp dirs.
+	// os.Stat is cheap and only runs every refresh tick (default 30s).
+	p.outputMu.Lock()
+	for wd := range p.outputs {
+		if _, err := os.Stat(wd); err != nil && os.IsNotExist(err) {
+			delete(p.outputs, wd)
+		}
+	}
+	p.outputMu.Unlock()
+
+	// Run script for each workDir and update per-workDir output cache.
+	for _, wd := range workDirs {
+		output, err := p.runScript(wd)
+		if err != nil {
+			log.Info(fmt.Sprintf("Script plugin %s execution failed for %s: %v", p.manifest.ID, wd, err))
+			continue
+		}
 		p.outputMu.Lock()
 		if p.outputs == nil {
 			p.outputs = make(map[string]string)
@@ -226,17 +298,22 @@ func (p *scriptPlugin) runAndUpdate() {
 		p.outputMu.Unlock()
 	}
 
-	// Push update to TUI via PluginContext
-	if p.pctx != nil {
-		for _, ui := range p.manifest.Contributes.UI {
-			_ = p.pctx.UpdateWidget(ui.ID)
-		}
+	// Trigger WidgetRegistry notification WITHOUT writing to the global slot cache.
+	// The global cache is session-agnostic and causes cross-session overwrites.
+	// Instead, the push path and RPC path use RenderZoneForWorkDir which reads
+	// from the per-workDir output cache directly.
+	if p.widgetReg != nil {
+		p.widgetReg.NotifyUpdated()
 	}
 }
 
 // subscribeTrigger parses a trigger string ("EventName:Matcher") and subscribes
 // to the corresponding hook. When the hook fires, it signals triggerCh to
 // run the script immediately.
+//
+// Supported events: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit,
+// AgentStop, SessionStart, SessionEnd, SubAgentStart, SubAgentStop, PreCompact,
+// PostCompact, CronFired, WebhookReceived.
 func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error {
 	parts := strings.SplitN(trigger, ":", 2)
 	if len(parts) != 2 {
@@ -244,18 +321,50 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 	}
 	event, matcher := parts[0], parts[1]
 
+	triggerFn := func(_ context.Context, hp *HookPayload) (*HookResult, error) {
+		// Store payload data so runScript can inject it as env vars
+		if hp != nil {
+			p.lastHookMu.Lock()
+			p.lastHook = hp
+			p.lastHookMu.Unlock()
+		}
+		select {
+		case p.triggerCh <- struct{}{}:
+		default:
+			// channel full — skip this trigger (rate limiting)
+		}
+		return nil, nil
+	}
+
 	switch event {
+	case "PreToolUse":
+		return ctx.OnPreToolUse(matcher, triggerFn)
 	case "PostToolUse":
-		return ctx.OnPostToolUse(matcher, func(_ context.Context, _ *HookPayload) (*HookResult, error) {
-			select {
-			case p.triggerCh <- struct{}{}:
-			default:
-				// channel full — skip this trigger (rate limiting)
-			}
-			return nil, nil
-		})
+		return ctx.OnPostToolUse(matcher, triggerFn)
+	case "PostToolUseFailure":
+		return ctx.OnEvent(HookPostToolUseError, matcher, triggerFn)
+	case "UserPromptSubmit":
+		return ctx.OnEvent(HookUserPromptSubmit, "", triggerFn)
+	case "AgentStop":
+		return ctx.OnAgentStop(triggerFn)
+	case "SessionStart":
+		return ctx.OnSessionStart(triggerFn)
+	case "SessionEnd":
+		return ctx.OnSessionEnd(triggerFn)
+	case "SubAgentStart":
+		return ctx.OnEvent(HookSubAgentStart, "", triggerFn)
+	case "SubAgentStop":
+		return ctx.OnEvent(HookSubAgentStop, "", triggerFn)
+	case "PreCompact":
+		return ctx.OnEvent(HookPreCompact, "", triggerFn)
+	case "PostCompact":
+		return ctx.OnEvent(HookPostCompact, "", triggerFn)
+	case "CronFired":
+		return ctx.OnEvent(HookCronFired, "", triggerFn)
+	case "WebhookReceived":
+		return ctx.OnEvent(HookWebhookReceived, "", triggerFn)
 	default:
-		return fmt.Errorf("unsupported trigger event %q (supported: PostToolUse)", event)
+		return fmt.Errorf("unsupported trigger event %q", event)
 	}
 }
 
@@ -280,6 +389,27 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
+
+	// Inject hook payload data as environment variables.
+	// Scripts can use XBOT_TOOL_NAME, XBOT_TOOL_OUTPUT, XBOT_TOOL_INPUT, XBOT_WORK_DIR.
+	p.lastHookMu.RLock()
+	hp := p.lastHook
+	p.lastHookMu.RUnlock()
+	env := os.Environ()
+	env = append(env, "XBOT_WORK_DIR="+workDir)
+	if hp != nil {
+		if hp.ToolName != "" {
+			env = append(env, "XBOT_TOOL_NAME="+hp.ToolName)
+		}
+		if hp.ToolOutput != "" {
+			env = append(env, "XBOT_TOOL_OUTPUT="+hp.ToolOutput)
+		}
+		if hp.ToolInput != "" {
+			env = append(env, "XBOT_TOOL_INPUT="+hp.ToolInput)
+		}
+	}
+	cmd.Env = env
+
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("script %q: %w", p.manifest.Entry, err)

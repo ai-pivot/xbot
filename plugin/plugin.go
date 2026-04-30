@@ -535,14 +535,16 @@ type HookResult struct {
 
 // HookPayload carries event-specific data to hook handlers.
 type HookPayload struct {
-	Event     HookEvent      `json:"event"`
-	ToolName  string         `json:"toolName,omitempty"`
-	ToolInput string         `json:"toolInput,omitempty"`
-	SessionID string         `json:"sessionId,omitempty"`
-	Channel   string         `json:"channel,omitempty"`
-	ChatID    string         `json:"chatId,omitempty"`
-	UserID    string         `json:"userId,omitempty"`
-	Extra     map[string]any `json:"extra,omitempty"`
+	Event         HookEvent      `json:"event"`
+	ToolName      string         `json:"toolName,omitempty"`
+	ToolInput     string         `json:"toolInput,omitempty"`
+	ToolOutput    string         `json:"toolOutput,omitempty"`    // tool execution result (PostToolUse only)
+	ToolElapsedMs int64          `json:"toolElapsedMs,omitempty"` // tool execution duration in ms
+	SessionID     string         `json:"sessionId,omitempty"`
+	Channel       string         `json:"channel,omitempty"`
+	ChatID        string         `json:"chatId,omitempty"`
+	UserID        string         `json:"userId,omitempty"`
+	Extra         map[string]any `json:"extra,omitempty"`
 }
 
 // HookHandler processes a lifecycle event and returns a decision.

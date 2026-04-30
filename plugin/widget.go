@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	log "xbot/logger"
 )
@@ -27,6 +28,28 @@ type WidgetRegistry struct {
 	byZone          map[string][]*widgetSlot
 	defaultRenderFn RenderFunc
 	onUpdated       func() // called after widget content update
+
+	// Debounce: coalesce rapid widget updates into a single notification.
+	debounceMu    sync.Mutex
+	debounceTimer *time.Timer
+	debounceDur   time.Duration // 0 = no debounce (immediate notify)
+}
+
+// SetDebounce configures the debounce interval for OnUpdated notifications.
+// Multiple rapid updates within this interval are coalesced into a single
+// notification. Pass 0 to disable debounce (default behavior).
+func (r *WidgetRegistry) SetDebounce(d time.Duration) {
+	r.mu.Lock()
+	r.debounceDur = d
+	r.mu.Unlock()
+}
+
+// NotifyUpdated triggers the OnUpdated callback (with debounce if configured)
+// without modifying any slot cache. Use this when the underlying data source
+// has changed but the global cache should not be written (e.g. per-workDir
+// output cache in script plugins).
+func (r *WidgetRegistry) NotifyUpdated() {
+	r.notifyUpdated()
 }
 
 type widgetSlot struct {
@@ -88,10 +111,25 @@ func (r *WidgetRegistry) OnUpdated(fn func()) {
 func (r *WidgetRegistry) notifyUpdated() {
 	r.mu.RLock()
 	fn := r.onUpdated
+	dur := r.debounceDur
 	r.mu.RUnlock()
-	if fn != nil {
-		fn()
+	if fn == nil {
+		return
 	}
+
+	if dur <= 0 {
+		// No debounce — fire immediately
+		fn()
+		return
+	}
+
+	// Debounce: reset timer, fire callback after dur of silence
+	r.debounceMu.Lock()
+	if r.debounceTimer != nil {
+		r.debounceTimer.Stop()
+	}
+	r.debounceTimer = time.AfterFunc(dur, fn)
+	r.debounceMu.Unlock()
 }
 
 func slotKey(pluginID, widgetID string) string {

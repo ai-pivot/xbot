@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -66,7 +67,9 @@ type PluginManager struct {
 	// workDir is the agent's working directory, injected via SetWorkDir.
 	// Used to set PluginContext.WorkingDir() before activation so script
 	// plugins run in the user's workspace (e.g. git repo).
-	workDir string
+	// Stored as atomic.Value[string] for lock-free reads from activate()
+	// (which may be called while pm.mu write lock is held).
+	workDir atomic.Value // stores string
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -109,18 +112,22 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 	pm.runtimeFactory = factory
 }
 
+// workDirValue safely loads the workDir from the atomic value.
+func (pm *PluginManager) workDirValue() string {
+	if v := pm.workDir.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
 // SetWorkDir sets the agent working directory applied to plugin contexts.
 func (pm *PluginManager) SetWorkDir(wd string) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	pm.workDir = wd
+	pm.workDir.Store(wd)
 }
 
 // WorkDir returns the current working directory (set by SetWorkDir or RefreshWorkDir).
 func (pm *PluginManager) WorkDir() string {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	return pm.workDir
+	return pm.workDirValue()
 }
 
 // RefreshWorkDir updates the working directory on ALL active plugin contexts.
@@ -128,9 +135,7 @@ func (pm *PluginManager) WorkDir() string {
 // re-execute in the new directory.
 // Also signals WorkDirAware plugins to immediately refresh their output.
 func (pm *PluginManager) RefreshWorkDir(wd string) {
-	pm.mu.Lock()
-	pm.workDir = wd
-	pm.mu.Unlock()
+	pm.workDir.Store(wd)
 
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -563,9 +568,7 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	// Set session metadata (workDir, channel) BEFORE activation so the plugin
 	// context has the correct working directory for script execution.
 	if entry.Context != nil {
-		pm.mu.RLock()
-		wd := pm.workDir
-		pm.mu.RUnlock()
+		wd := pm.workDirValue() // atomic read, no lock needed
 		if wd != "" {
 			entry.Context.SetSessionMetadata(wd, "", "")
 		}
@@ -886,7 +889,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 	pm.entries[m.ID] = newEntry
 
-	// Activate if has onStart event (activate only touches entry.stateMu, not pm.mu)
+	// Activate if has onStart event (workDir is read via atomic, safe under pm.mu write lock)
 	if hasActivationEvent(m, "onStart") {
 		if err4 := pm.activate(ctx, newEntry); err4 != nil {
 			pm.notifyEvent(PluginEventError, m.ID, err4, map[string]any{"phase": "reload", "step": "activate"})

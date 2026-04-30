@@ -77,6 +77,13 @@
 
 ### Plugin System
 - **Plugin system is opt-in** — only activates when `plugins.enabled: true` in config.json. No plugin loading happens without explicit user consent.
+- **`pm.workDir` is `atomic.Value` (not `string`).** `activate()` may be called while `pm.mu` write lock is held — reading workDir must be lock-free. Never change it back to `string` or `activate`/`InstallPlugin` will deadlock.
+- **`runAndUpdate()` does NOT write global slot cache.** It calls `NotifyUpdated()` instead of `UpdateWidget()`. Writing global cache causes cross-session overwrites (session B's git branch overwrites session A's).
+- **CLI WS clients must NOT auto-subscribe to senderID ("admin").** `client_type=cli` connections skip p2p subscribe. Subscribing CLI to "admin" causes `PushPluginWidgetsPerSession` to send stale content to wrong windows.
+- **`PushPluginWidgetsPerSession` skips non-path chatIDs.** Only chatIDs starting with `/` are session chatIDs. Virtual chatIDs like "admin" or "web-123" are not rendered.
+- **`OnPluginWidgets` callback filters by chatID.** Client-side rejects pushes for other sessions. Double protection against cross-session widget corruption.
+- **Script plugin outputs map is per-workDir.** `RenderForWorkDir(width, workDir)` reads `outputs[workDir]`. `Render()` falls back to shared `pctx.WorkingDir()` — never use for remote multi-session.
+- **`HookPayload.ToolOutput` is truncated to 8KB.** Don't rely on it for full file content. Plugins needing full output should use dedicated tool result channels.
 - **PluginManager.ActivateAll() collects capabilities; WireAll() connects them.** Never call registerCapabilities manually — WireAll is the single integration point.
 - **PluginEntry.stateMu protects state transitions.** Use CAS pattern (check state → set activating → set active/error) to prevent concurrent activation races.
 - **gRPC plugin processes are killed on timeout/cancellation.** The `call()` method kills the process and marks it as not-running to prevent goroutine leaks from blocked stdout reads.

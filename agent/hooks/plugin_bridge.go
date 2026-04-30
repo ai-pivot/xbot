@@ -46,6 +46,14 @@ func PluginBridgeCallback(bridge *plugin.PluginHookBridge) *CallbackHook {
 				if uid, ok := p["sender_id"].(string); ok {
 					payload.UserID = uid
 				}
+				// Pass tool output to plugins (e.g. for diff plugins)
+				if out, ok := p["tool_output"].(string); ok {
+					payload.ToolOutput = out
+				}
+				// Pass elapsed time for performance-aware plugins
+				if ms, ok := p["tool_elapsed_ms"].(int64); ok {
+					payload.ToolElapsedMs = ms
+				}
 			}
 
 			// Dispatch to all registered plugin hooks

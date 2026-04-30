@@ -916,6 +916,9 @@ func New(cfg Config) (*Agent, error) {
 		// Local mode overrides this in CLIChannel.SetWidgetRegistry with asyncCh callback.
 		// Remote mode uses this to push via Hub to all connected WebSocket clients.
 		pm := agent.pluginMgr
+		// Debounce widget push: coalesce rapid updates (e.g. multiple PostToolUse
+		// triggers in a single agent iteration) into a single WebSocket message.
+		pm.WidgetRegistry().SetDebounce(200 * time.Millisecond)
 		pm.WidgetRegistry().OnUpdated(func() {
 			if agent.channelFinder == nil {
 				return
@@ -928,12 +931,28 @@ func New(cfg Config) (*Agent, error) {
 			if !ok {
 				return // local CLIChannel handles its own OnUpdated
 			}
+			// Per-session rendering: each chatID may have a different workDir.
+			// We use RenderZoneForWorkDir to render widget content for each
+			// session's working directory independently, avoiding cross-session
+			// overwrites (e.g. git branch from /repo1 overwriting /repo2).
 			zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer"}
-			zones := make(map[string]string, len(zoneNames))
-			for _, z := range zoneNames {
-				zones[z] = pm.WidgetRegistry().RenderZone(z)
-			}
-			rcli.PushPluginWidgets(zones)
+			ms := agent.multiSession
+			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
+				cwd := ""
+				if ms != nil && chatID != "" {
+					if sess, err := ms.GetOrCreateSession("cli", chatID); err == nil {
+						cwd = sess.GetCurrentDir()
+					} else {
+						log.Debugf("[widget-push] GetOrCreateSession failed for cli/%s: %v", chatID, err)
+					}
+				}
+				zones := make(map[string]string, len(zoneNames))
+				for _, z := range zoneNames {
+					zones[z] = pm.WidgetRegistry().RenderZoneForWorkDir(z, cwd)
+				}
+				log.Debugf("[widget-push] chatID=%s cwd=%s infoBar=%q", chatID, cwd, zones["infoBar"])
+				return zones
+			})
 		})
 		log.Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
 	} else {

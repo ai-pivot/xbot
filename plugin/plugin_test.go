@@ -5889,3 +5889,532 @@ func TestPluginContext_GetValue_NotFound(t *testing.T) {
 		t.Fatalf("expected nil value for missing key, got %v", val)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Widget Registry: Debounce Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_Debounce_NoDebounce(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	var calls int
+	r.OnUpdated(func() { calls++ })
+
+	// Without debounce, each refresh triggers immediately
+	r.Register("p1", "w1", "infoBar", &testStaticWidget{spans: []WidgetSpan{{Text: "hello"}}}, 10)
+	r.RefreshAllWidgets(80, BasicANSIRender)
+
+	if calls != 1 {
+		t.Fatalf("expected 1 call after RefreshAllWidgets, got %d", calls)
+	}
+}
+
+func TestWidgetRegistry_Debounce_ZeroDisables(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	var calls int
+	r.SetDebounce(0) // disable
+	r.OnUpdated(func() { calls++ })
+
+	r.Register("p1", "w1", "infoBar", &testStaticWidget{spans: []WidgetSpan{{Text: "x"}}}, 10)
+	r.RefreshAllWidgets(80, BasicANSIRender)
+	r.Register("p1", "w2", "infoBar", &testStaticWidget{spans: []WidgetSpan{{Text: "y"}}}, 9)
+	r.RefreshAllWidgets(80, BasicANSIRender)
+
+	if calls != 2 {
+		t.Fatalf("expected 2 immediate calls with debounce=0, got %d", calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Widget Rendering: Snapshot Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_RenderZone_Snapshot(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	r.Register("git", "branch", "infoBar", &testStaticWidget{spans: []WidgetSpan{
+		{Text: "git:main ✓", Style: "ok"},
+	}}, 10)
+	r.Register("user", "name", "infoBar", &testStaticWidget{spans: []WidgetSpan{
+		{Text: "admin"},
+	}}, 5)
+
+	// Refresh to populate cache
+	r.RefreshAllWidgets(80, BasicANSIRender)
+
+	got := r.RenderZone("infoBar")
+	// Snapshot: rendering includes ANSI reset codes around each span
+	want := "\x1b[0madmin\x1b[0m  \x1b[0mgit:main ✓\x1b[0m" // priority 5 first, then 10
+	if got != want {
+		t.Errorf("RenderZone snapshot mismatch:\nwant: %q\n got: %q", want, got)
+	}
+}
+
+func TestWidgetRegistry_RenderZone_Empty(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	got := r.RenderZone("nonexistent")
+	if got != "" {
+		t.Errorf("expected empty string for empty zone, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Script Trigger: Extended Events
+// ---------------------------------------------------------------------------
+
+func TestScriptTrigger_UnsupportedEvent(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "echo hello"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+	err = sp.subscribeTrigger(pc, "InvalidEvent:Shell*")
+	if err == nil {
+		t.Fatal("expected error for unsupported trigger event")
+	}
+}
+
+func TestScriptTrigger_AllSupportedEvents(t *testing.T) {
+	t.Parallel()
+
+	events := []struct {
+		trigger string
+	}{
+		{"PostToolUse:Shell*"},
+		{"PreToolUse:File*"},
+		{"PostToolUseFailure:Shell*"},
+		{"UserPromptSubmit:"},
+		{"AgentStop:"},
+		{"SessionStart:"},
+		{"SessionEnd:"},
+	}
+
+	for _, tc := range events {
+		t.Run(tc.trigger, func(t *testing.T) {
+			m := testManifest()
+			m.Runtime = "script"
+			m.Entry = "echo hello"
+			m.Contributes = &PluginContributes{
+				UI: []UISlotContribution{
+					{ID: "w1", Slot: "infoBar", Priority: 10},
+				},
+			}
+
+			p, err := NewScriptRuntime().Create(&m, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			sp := p.(*scriptPlugin)
+
+			pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+			err = sp.subscribeTrigger(pc, tc.trigger)
+			// Some events may not have a handler registered (e.g. AgentStop)
+			// but they should not return "unsupported trigger event"
+			if err != nil && strings.Contains(err.Error(), "unsupported") {
+				t.Errorf("event %q should be supported: %v", tc.trigger, err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HookPayload: ToolOutput and ToolElapsedMs
+// ---------------------------------------------------------------------------
+
+func TestHookPayload_ToolOutputField(t *testing.T) {
+	t.Parallel()
+	hp := &HookPayload{
+		Event:         HookPostToolUse,
+		ToolName:      "FileReplace",
+		ToolOutput:    "replaced 3 lines in main.go",
+		ToolElapsedMs: 42,
+		ToolInput:     `{"path":"main.go","old":"foo","new":"bar"}`,
+	}
+
+	if hp.ToolOutput != "replaced 3 lines in main.go" {
+		t.Errorf("expected ToolOutput, got %q", hp.ToolOutput)
+	}
+	if hp.ToolElapsedMs != 42 {
+		t.Errorf("expected ToolElapsedMs=42, got %d", hp.ToolElapsedMs)
+	}
+}
+
+// testStaticWidget is a test helper that returns fixed spans.
+type testStaticWidget struct {
+	spans []WidgetSpan
+}
+
+func (w *testStaticWidget) Render(width int) []WidgetSpan {
+	return w.spans
+}
+
+// mockWorkDirWidget implements both UIWidget and WorkDirRenderer for testing.
+type mockWorkDirWidget struct {
+	outputs map[string]string
+}
+
+func (w *mockWorkDirWidget) Render(width int) []WidgetSpan {
+	return []WidgetSpan{{Text: "default", Style: StyleDim}}
+}
+
+func (w *mockWorkDirWidget) RenderForWorkDir(width int, workDir string) []WidgetSpan {
+	if text, ok := w.outputs[workDir]; ok {
+		return []WidgetSpan{{Text: text}}
+	}
+	return []WidgetSpan{{Text: "default", Style: StyleDim}}
+}
+
+// ---------------------------------------------------------------------------
+// RenderZoneForContext Tests (covers 0% path for local CLI widget rendering)
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_RenderZoneForContext_WithProvider(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	r.Register("p1", "w1", "infoBar", &testStaticWidget{spans: []WidgetSpan{
+		{Text: "hello", Style: "ok"},
+	}}, 10)
+
+	// RenderZoneForContext should call provider.Render() directly, bypassing cache
+	got := r.RenderZoneForContext("infoBar")
+	if !strings.Contains(got, "hello") {
+		t.Errorf("RenderZoneForContext = %q, should contain 'hello'", got)
+	}
+}
+
+func TestWidgetRegistry_RenderZoneForContext_EmptyZone(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	got := r.RenderZoneForContext("nonexistent")
+	if got != "" {
+		t.Errorf("expected empty for nonexistent zone, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OnWorkDirChanged Pending Dirs Tests
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_OnWorkDirChanged_PendingDirs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "test.sh")
+	os.WriteFile(script, []byte("#!/bin/bash\necho \"ok|test\"\n"), 0o755)
+
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "bash test.sh"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	// Call OnWorkDirChanged multiple times with different dirs
+	sp.OnWorkDirChanged("/repo1")
+	sp.OnWorkDirChanged("/repo2")
+
+	// Verify pendingDirs contains both
+	sp.pendingMu.Lock()
+	if len(sp.pendingDirs) != 2 {
+		t.Fatalf("expected 2 pending dirs, got %d", len(sp.pendingDirs))
+	}
+	if _, ok := sp.pendingDirs["/repo1"]; !ok {
+		t.Error("missing /repo1 in pendingDirs")
+	}
+	if _, ok := sp.pendingDirs["/repo2"]; !ok {
+		t.Error("missing /repo2 in pendingDirs")
+	}
+	sp.pendingMu.Unlock()
+
+	// Now trigger runAndUpdate which should consume pendingDirs
+	// Note: /repo1 and /repo2 may not exist, but the script should still run
+	// and outputs map should be populated
+}
+
+func TestScriptPlugin_OnWorkDirChanged_EmptyDir(t *testing.T) {
+	t.Parallel()
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "echo hello"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	// Empty dir should not be stored
+	sp.OnWorkDirChanged("")
+	sp.pendingMu.Lock()
+	if len(sp.pendingDirs) != 0 {
+		t.Fatalf("expected 0 pending dirs for empty dir, got %d", len(sp.pendingDirs))
+	}
+	sp.pendingMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// NotifyUpdated Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_NotifyUpdated_TriggersCallback(t *testing.T) {
+	r := NewWidgetRegistry()
+
+	var calls int
+	r.OnUpdated(func() { calls++ })
+
+	r.NotifyUpdated()
+
+	if calls != 1 {
+		t.Fatalf("expected 1 call after NotifyUpdated, got %d", calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NotifyUpdated Nil Callback Tests
+// ---------------------------------------------------------------------------
+
+func TestWidgetRegistry_NotifyUpdated_NilCallback(t *testing.T) {
+	t.Parallel()
+	r := NewWidgetRegistry()
+	// No OnUpdated callback set — should not panic
+	r.NotifyUpdated()
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent OnWorkDirChanged Tests
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_ConcurrentOnWorkDirChanged(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := testManifest()
+	m.Runtime = "script"
+	m.Entry = "echo ok"
+	m.Contributes = &PluginContributes{
+		UI: []UISlotContribution{
+			{ID: "w1", Slot: "infoBar", Priority: 10},
+		},
+	}
+
+	p, err := NewScriptRuntime().Create(&m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+	// Initialize triggerCh like Activate() does so OnWorkDirChanged doesn't
+	// block on a nil channel (nil channel send in select falls to default, but
+	// initialise anyway for realism).
+	sp.triggerCh = make(chan struct{}, 8)
+
+	dirs := []string{"/repo/1", "/repo/2", "/repo/3", "/repo/4", "/repo/5"}
+	var wg sync.WaitGroup
+	for _, d := range dirs {
+		wg.Add(1)
+		go func(dir string) {
+			defer wg.Done()
+			sp.OnWorkDirChanged(dir)
+		}(d)
+	}
+	wg.Wait()
+
+	sp.pendingMu.Lock()
+	defer sp.pendingMu.Unlock()
+	if len(sp.pendingDirs) != len(dirs) {
+		t.Fatalf("expected %d pending dirs, got %d (pendingDirs=%v)", len(dirs), len(sp.pendingDirs), sp.pendingDirs)
+	}
+	for _, d := range dirs {
+		if _, ok := sp.pendingDirs[d]; !ok {
+			t.Errorf("missing %q in pendingDirs", d)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot Tests: JSON Serialization
+// ---------------------------------------------------------------------------
+
+func TestWidgetSpan_JSONSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		span any // WidgetSpan or []WidgetSpan
+		want string
+	}{
+		{
+			name: "normal",
+			span: WidgetSpan{Text: "hello", Style: StyleNormal},
+			want: `{"Text":"hello","Style":"normal"}`,
+		},
+		{
+			name: "empty",
+			span: WidgetSpan{Text: "", Style: ""},
+			want: `{"Text":"","Style":""}`,
+		},
+		{
+			name: "success",
+			span: WidgetSpan{Text: "✓", Style: StyleSuccess},
+			want: `{"Text":"✓","Style":"success"}`,
+		},
+		{
+			name: "slice",
+			span: []WidgetSpan{
+				{Text: "a", Style: StyleDim},
+				{Text: "b", Style: StyleError},
+			},
+			want: `[{"Text":"a","Style":"dim"},{"Text":"b","Style":"error"}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.span)
+			if err != nil {
+				t.Fatalf("json.Marshal error: %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("got %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHookPayload_JSONSnapshot_Omitempty(t *testing.T) {
+	t.Parallel()
+
+	t.Run("minimal", func(t *testing.T) {
+		hp := &HookPayload{Event: HookPostToolUse}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"event":"PostToolUse"}`
+		if string(got) != want {
+			t.Errorf("got %s\nwant %s", got, want)
+		}
+	})
+
+	t.Run("with_tool_fields", func(t *testing.T) {
+		hp := &HookPayload{
+			Event:         HookPostToolUse,
+			ToolName:      "Shell",
+			ToolOutput:    "ok",
+			ToolElapsedMs: 42,
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"event":"PostToolUse","toolName":"Shell","toolOutput":"ok","toolElapsedMs":42}`
+		if string(got) != want {
+			t.Errorf("got %s\nwant %s", got, want)
+		}
+	})
+
+	t.Run("full", func(t *testing.T) {
+		hp := &HookPayload{
+			Event:         HookPreToolUse,
+			ToolName:      "FileReplace",
+			ToolInput:     `{"path":"a.go"}`,
+			ToolOutput:    "done",
+			ToolElapsedMs: 100,
+			SessionID:     "sess-1",
+			Channel:       "ch-1",
+			ChatID:        "chat-1",
+			UserID:        "user-1",
+			Extra:         map[string]any{"key": "val"},
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"event":"PreToolUse","toolName":"FileReplace","toolInput":"{\"path\":\"a.go\"}","toolOutput":"done","toolElapsedMs":100,"sessionId":"sess-1","channel":"ch-1","chatId":"chat-1","userId":"user-1","extra":{"key":"val"}}`
+		if string(got) != want {
+			t.Errorf("got %s\nwant %s", got, want)
+		}
+	})
+
+	t.Run("zero_elapsed", func(t *testing.T) {
+		hp := &HookPayload{
+			Event:         HookPostToolUse,
+			ToolElapsedMs: 0,
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(got), "toolElapsedMs") {
+			t.Errorf("zero ToolElapsedMs should be omitted, got %s", got)
+		}
+	})
+
+	t.Run("nil_extra", func(t *testing.T) {
+		hp := &HookPayload{
+			Event: HookPreToolUse,
+			Extra: nil,
+		}
+		got, err := json.Marshal(hp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(got), "extra") {
+			t.Errorf("nil Extra should be omitted, got %s", got)
+		}
+	})
+}
+
+func TestWidgetRegistry_RegisterDuplicate(t *testing.T) {
+	t.Parallel()
+
+	r := NewWidgetRegistry()
+	r.SetDefaultRenderFn(BasicANSIRender)
+
+	w := &testStaticWidget{spans: []WidgetSpan{{Text: "hello"}}}
+
+	err1 := r.Register("p1", "w1", "infoBar", w, 10)
+	if err1 != nil {
+		t.Fatalf("first Register failed: %v", err1)
+	}
+
+	err2 := r.Register("p1", "w1", "infoBar", w, 20)
+	if err2 == nil {
+		t.Fatal("expected error on duplicate registration, got nil")
+	}
+	if !strings.Contains(err2.Error(), "already registered") {
+		t.Errorf("error = %q, should contain 'already registered'", err2.Error())
+	}
+}

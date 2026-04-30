@@ -1,0 +1,26 @@
+{
+  "id": "file-diff",
+  "name": "file-diff",
+  "version": "1.0.0",
+  "description": "Displays a unified diff summary in the footer when FileReplace or FileCreate modifies files. Uses the tool_output from PostToolUse events.",
+  "author": "xbot",
+  "runtime": "script",
+  "entry": "bash file-diff.sh",
+  "permissions": ["ui.contribute", "hooks.subscribe"],
+  "contributes": {
+    "ui": [
+      {
+        "id": "diff-summary",
+        "slot": "footer",
+        "priority": 5,
+        "description": "Shows file diff summary after file modifications",
+        "triggers": [
+          "PostToolUse:FileReplace*",
+          "PostToolUse:FileCreate*",
+          "PostToolUse:FileEdit*",
+          "PostToolUse:Write*"
+        ]
+      }
+    ]
+  }
+}

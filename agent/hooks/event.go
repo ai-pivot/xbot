@@ -174,6 +174,7 @@ type PostToolUseEvent struct {
 	ToolUseID     string         `json:"tool_use_id"`
 	ToolElapsedMs int64          `json:"tool_elapsed_ms"`
 	ToolError     string         `json:"tool_error"`
+	ToolOutput_   string         `json:"tool_output,omitempty"` // tool execution result content
 }
 
 func (e *PostToolUseEvent) EventName() string         { return EventPostToolUse }
@@ -187,6 +188,9 @@ func (e *PostToolUseEvent) Payload() map[string]any {
 	m["tool_use_id"] = e.ToolUseID
 	m["tool_elapsed_ms"] = e.ToolElapsedMs
 	m["tool_error"] = e.ToolError
+	if e.ToolOutput_ != "" {
+		m["tool_output"] = e.ToolOutput_
+	}
 	return m
 }
 

@@ -1493,6 +1493,142 @@ func TestCLISubAgentFields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// mergeSubAgentTrees Tests
+// ---------------------------------------------------------------------------
+
+func TestMergeSubAgentTrees_EmptyPrev(t *testing.T) {
+	t.Parallel()
+	new := []CLISubAgent{{Role: "explore", Status: "running"}}
+	result := mergeSubAgentTrees(nil, new)
+	if len(result) != 1 || result[0].Role != "explore" {
+		t.Fatalf("expected 1 agent, got %v", result)
+	}
+}
+
+func TestMergeSubAgentTrees_EmptyNew(t *testing.T) {
+	t.Parallel()
+	prev := []CLISubAgent{{Role: "explore", Status: "done"}}
+	result := mergeSubAgentTrees(prev, nil)
+	if len(result) != 1 || result[0].Role != "explore" {
+		t.Fatalf("expected 1 agent carried forward, got %v", result)
+	}
+}
+
+func TestMergeSubAgentTrees_BothEmpty(t *testing.T) {
+	t.Parallel()
+	result := mergeSubAgentTrees(nil, nil)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 agents, got %d", len(result))
+	}
+}
+
+func TestMergeSubAgentTrees_MergeUpdates(t *testing.T) {
+	t.Parallel()
+	prev := []CLISubAgent{
+		{Role: "explore", Status: "running", Desc: "scanning code"},
+		{Role: "reviewer", Status: "done", Desc: "completed"},
+	}
+	new := []CLISubAgent{
+		{Role: "explore", Status: "done", Desc: "finished scan"},
+	}
+	result := mergeSubAgentTrees(prev, new)
+
+	// Should have 2 agents: explore (updated) + reviewer (kept from prev)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 agents, got %d: %v", len(result), result)
+	}
+
+	// Find explore
+	var explore *CLISubAgent
+	for i := range result {
+		if result[i].Role == "explore" {
+			explore = &result[i]
+			break
+		}
+	}
+	if explore == nil {
+		t.Fatal("explore agent not found")
+	}
+	if explore.Status != "done" {
+		t.Errorf("explore status = %q, want 'done'", explore.Status)
+	}
+	if explore.Desc != "finished scan" {
+		t.Errorf("explore desc = %q, want 'finished scan'", explore.Desc)
+	}
+}
+
+func TestMergeSubAgentTrees_NoZombieDuplicates(t *testing.T) {
+	t.Parallel()
+	// Simulate the exact zombie bug: prev has a completed SubAgent, new is empty.
+	// This happens when the server stops reporting a completed SubAgent but
+	// carryForwardProgressState is called multiple times.
+	prev := []CLISubAgent{
+		{Role: "ministry-works", Status: "done", Desc: "completed"},
+	}
+
+	// First merge: new is empty → carry forward prev
+	result1 := mergeSubAgentTrees(prev, nil)
+	if len(result1) != 1 {
+		t.Fatalf("first merge: expected 1, got %d", len(result1))
+	}
+
+	// Second merge: same prev, new is empty again → should still be 1, not 2
+	result2 := mergeSubAgentTrees(result1, nil)
+	if len(result2) != 1 {
+		t.Fatalf("second merge: expected 1 (no duplicates), got %d", len(result2))
+	}
+}
+
+func TestMergeSubAgentTrees_NestedChildren(t *testing.T) {
+	t.Parallel()
+	prev := []CLISubAgent{
+		{
+			Role:   "crown-prince",
+			Status: "running",
+			Children: []CLISubAgent{
+				{Role: "explore", Status: "done"},
+				{Role: "secretariat", Status: "running"},
+			},
+		},
+	}
+	new := []CLISubAgent{
+		{
+			Role:   "crown-prince",
+			Status: "running",
+			Children: []CLISubAgent{
+				{Role: "secretariat", Status: "done"},
+			},
+		},
+	}
+
+	result := mergeSubAgentTrees(prev, new)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 top-level agent, got %d", len(result))
+	}
+
+	children := result[0].Children
+	// Should have 2 children: explore (from prev) + secretariat (updated from new)
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(children), children)
+	}
+
+	// Find secretariat — should be "done" (updated from new)
+	var sec *CLISubAgent
+	for i := range children {
+		if children[i].Role == "secretariat" {
+			sec = &children[i]
+			break
+		}
+	}
+	if sec == nil {
+		t.Fatal("secretariat not found in merged children")
+	}
+	if sec.Status != "done" {
+		t.Errorf("secretariat status = %q, want 'done'", sec.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // formatElapsed Tests
 // ---------------------------------------------------------------------------
 

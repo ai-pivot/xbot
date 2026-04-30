@@ -668,6 +668,15 @@ func (pc *pluginContextImpl) UpdateWidget(widgetID string) error {
 	return pc.widgetRegistry.RefreshWidget(pc.pluginID, widgetID, 0, nil)
 }
 
+// getWidgetRegistry returns the underlying WidgetRegistry. Used internally by
+// script plugins to trigger notifications without updating the global cache.
+// Thread-safe: acquires read lock to prevent race with SetWidgetRegistry.
+func (pc *pluginContextImpl) getWidgetRegistry() *WidgetRegistry {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.widgetRegistry
+}
+
 // ---------------------------------------------------------------------------
 // deniedStorage — no-op storage returned when permission is missing
 // ---------------------------------------------------------------------------

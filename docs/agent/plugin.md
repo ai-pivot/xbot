@@ -19,7 +19,11 @@
 | `adapter_enricher.go` | EnricherRegistry |
 | `json.go` | JSON line protocol helpers (for gRPC runtime) |
 | `examples/hello-world/` | Example plugin demonstrating the API |
-| `plugin_test.go` | ~80+ tests |
+| `examples/git-info/` | Git status widget plugin (triggers on Shell/Cd/FileReplace etc.) |
+| `examples/file-diff/` | Diff summary widget plugin (triggers on FileReplace/FileCreate) |
+| `widget.go` | WidgetRegistry — per-zone rendering, per-workDir isolation, debounce |
+| `script_runtime.go` | Script plugin runtime — bash script execution, env var injection |
+| `plugin_test.go` | ~100+ tests including snapshot, debounce, trigger, env injection tests |
 
 ## Core Concepts
 
@@ -122,5 +126,65 @@
 - **CLI**: /plugin 命令 → handlePluginCommand → PluginManager methods
 
 ## File Counts
-- 16 Go source files, ~5000+ lines, 94 tests
+- 16 Go source files, ~5000+ lines, 100+ tests
 - 18 commits in plugin branch
+
+## Script Plugin Runtime
+
+### Triggers
+Script plugins support hook-based triggers declared in `plugin.json`:
+```json
+"triggers": ["PostToolUse:Shell*", "PostToolUse:FileReplace*", "PreToolUse:File*"]
+```
+
+Supported trigger events:
+- `PostToolUse:<matcher>` — after tool succeeds (matcher supports glob: `Shell*`, `FileReplace*`, etc.)
+- `PreToolUse:<matcher>` — before tool executes
+- `PostToolUseFailure:<matcher>` — after tool fails
+- `UserPromptSubmit:` — on user prompt submission
+- `AgentStop:` — on agent stop
+- `SessionStart:` / `SessionEnd:` — session lifecycle
+- `SubAgentStart:` / `SubAgentStop:` — subagent lifecycle
+- `PreCompact:` / `PostCompact:` — context compression
+- `CronFired:` / `WebhookReceived:` — scheduled/webhook events
+
+### Environment Variables
+When a trigger fires, the script receives environment variables:
+- `XBOT_TOOL_NAME` — tool name (e.g. "FileReplace")
+- `XBOT_TOOL_OUTPUT` — tool execution result (truncated to 8KB)
+- `XBOT_TOOL_INPUT` — tool input parameters as JSON string
+- `XBOT_WORK_DIR` — current working directory
+
+### Widget Rendering
+Script output format: `"style|text"` where style is one of:
+`dim`, `ok`, `warn`, `err`, `info`, `accent`, or empty for normal.
+
+## Widget Push (Remote Mode)
+
+### Multi-Session Isolation (Bug Fix)
+Widget rendering is **per-session**: each WebSocket client receives widget content
+rendered for its own working directory. This prevents the cross-session overwrite
+bug where session B (non-git dir) would overwrite session A's (git repo) content.
+
+**How it works:**
+1. `runAndUpdate()` runs the script for ALL known workDirs, not just the current one
+2. `NotifyUpdated()` triggers the OnUpdated callback without writing global slot cache
+3. Push path uses `RenderZoneForWorkDir(zone, workDir)` per chatID
+4. Each client receives only its session-specific widget content
+
+### Debounce
+`WidgetRegistry.SetDebounce(d)` coalesces rapid widget updates into a single
+push notification. Default: disabled (immediate). Server-side uses 200ms.
+
+### Incremental Updates
+`PushPluginWidgets` compares new zones against last-pushed content and skips
+the push if nothing changed. Reduces WebSocket traffic for idle sessions.
+
+### Per-WorkDir Isolation
+`RenderZoneForWorkDir(zone, workDir)` renders widgets using workDir-specific
+caches so multiple CLI windows in different git repos see correct branch info.
+
+## HookPayload Extensions
+`HookPayload` now carries `ToolOutput` and `ToolElapsedMs` fields from
+`PostToolUseEvent`. This enables plugins to inspect tool results (e.g. diff
+plugins reading FileReplace output).

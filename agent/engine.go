@@ -593,11 +593,22 @@ func executeWithHooks(
 				ToolError:   err.Error(),
 			}
 		} else {
+			// Truncate tool output to prevent excessive memory usage in events.
+			// Plugins that need full output should use dedicated tool result channels.
+			toolOutput := result.Summary
+			if result.Detail != "" {
+				toolOutput = result.Detail
+			}
+			const maxToolOutput = 8192
+			if len(toolOutput) > maxToolOutput {
+				toolOutput = toolOutput[:maxToolOutput] + "\n... (truncated)"
+			}
 			postEvent = &hooks.PostToolUseEvent{
 				BasePayload:   base,
 				ToolName_:     toolName,
 				ToolInput_:    toolInput,
 				ToolElapsedMs: elapsed.Milliseconds(),
+				ToolOutput_:   toolOutput,
 			}
 		}
 		hookMgr.Emit(toolExecCtx, postEvent)

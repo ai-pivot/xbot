@@ -261,21 +261,27 @@ func (m *cliModel) carryForwardProgressState(prev *CLIProgressPayload) {
 		}
 	}
 
-	// Preserve SubAgent tree within the same iteration (not across iterations).
-	if m.progress.Phase == "done" {
-		return
-	}
+	// SubAgent tree preservation: merge new data into previous tree instead of
+	// blindly copying the old tree. This prevents stale/zombie SubAgent entries
+	// from persisting after they've completed.
+	//
+	// The server sends SubAgent data only when SubAgent progress changes.
+	// Between updates, SubAgents is empty — we must carry forward the tree
+	// so it remains visible. BUT we must merge (not replace) so that:
+	//   - Completed SubAgents stay completed (don't revert to "running")
+	//   - New SubAgents get added
+	//   - SubAgents no longer in the server's tree get removed
 	iterationChanged := m.progress.Iteration != prev.Iteration && m.progress.Iteration > 0
 	if iterationChanged {
 		m.progress.SubAgents = nil
-	} else {
-		newDepth := maxTreeDepth(m.progress.SubAgents)
-		prevDepth := maxTreeDepth(prev.SubAgents)
-		if len(m.progress.SubAgents) == 0 && len(prev.SubAgents) > 0 {
-			m.progress.SubAgents = prev.SubAgents
-		} else if newDepth < prevDepth && newDepth > 0 {
-			m.progress.SubAgents = prev.SubAgents
-		}
+	} else if len(m.progress.SubAgents) > 0 {
+		// New progress has SubAgent data — merge into previous tree to preserve
+		// completion status for agents no longer reported by the server.
+		m.progress.SubAgents = mergeSubAgentTrees(prev.SubAgents, m.progress.SubAgents)
+	} else if len(prev.SubAgents) > 0 {
+		// No new SubAgent data — carry forward previous tree as-is.
+		// This is the common case between SubAgent progress updates.
+		m.progress.SubAgents = prev.SubAgents
 	}
 }
 
@@ -850,17 +856,51 @@ func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
 }
 
 // maxTreeDepth returns the maximum depth of the SubAgent tree (1 for top-level nodes).
-func maxTreeDepth(agents []CLISubAgent) int {
-	if len(agents) == 0 {
-		return 0
+// mergeSubAgentTrees merges new SubAgent data into the previous tree.
+// Agents present in both trees are updated with new data (status, tools, description).
+// Agents only in prev are kept as-is (they may have completed between server updates).
+// Agents only in new are added.
+//
+// Key rule: if an agent in prev is NOT in new, it means the server stopped reporting
+// it. This is normal — the server only reports actively-running agents. We keep
+// completed agents visible so the user sees the full execution tree.
+func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
+	if len(prev) == 0 {
+		return new
 	}
-	max := 1
-	for _, a := range agents {
-		if d := maxTreeDepth(a.Children); d+1 > max {
-			max = d + 1
+	if len(new) == 0 {
+		return prev
+	}
+
+	// Build lookup from new by Role (unique key: "role/instance")
+	newByRole := make(map[string]int, len(new))
+	for i, a := range new {
+		newByRole[a.Role] = i
+	}
+
+	result := make([]CLISubAgent, 0, len(prev)+len(new))
+
+	// Start with all prev entries, updating those that have new data
+	for _, p := range prev {
+		if idx, ok := newByRole[p.Role]; ok {
+			// Agent exists in both — merge: use new data but recursively merge children
+			n := new[idx]
+			merged := n
+			merged.Children = mergeSubAgentTrees(p.Children, n.Children)
+			result = append(result, merged)
+			delete(newByRole, p.Role)
+		} else {
+			// Agent only in prev — keep as-is (completed or stale)
+			result = append(result, p)
 		}
 	}
-	return max
+
+	// Add agents only in new
+	for role := range newByRole {
+		result = append(result, new[newByRole[role]])
+	}
+
+	return result
 }
 
 // handleCtrlC handles the unified Ctrl+C keypress.

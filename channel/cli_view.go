@@ -322,10 +322,15 @@ func (m *cliModel) augmentInfoBar(infoBar string) string {
 }
 
 // resolveWidgetZone returns widget content for a zone, checking local WidgetRegistry
-// first, then falling back to remote plugin cache in remote mode.
+// first (using on-the-fly rendering to avoid stale slot cache), then falling back
+// to remote plugin cache in remote mode.
 func (m *cliModel) resolveWidgetZone(zone string) string {
 	if m.widgetRegistry != nil {
-		return m.widgetRegistry.RenderZone(zone)
+		// Use RenderZoneForContext which calls provider.Render() directly
+		// instead of reading from the global slot cache. The slot cache is
+		// only written by RefreshWidget/RefreshAllWidgets and may be stale
+		// after script plugin updates that use NotifyUpdated instead.
+		return m.widgetRegistry.RenderZoneForContext(zone)
 	}
 	if m.remotePluginCache != nil {
 		return m.remotePluginCache.WidgetZone(zone)

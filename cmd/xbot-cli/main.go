@@ -1714,7 +1714,13 @@ func main() {
 			cliCh.SetRemotePluginCache(remoteCache)
 			// Register push callback — server pushes widget zone content via
 			// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
-			rb.OnPluginWidgets(func(zones map[string]string) {
+			// Filter: only accept pushes targeting our own chatID (absolute path).
+			// Without this, cross-session pushes (e.g. from "admin" chatID)
+			// overwrite our widget content with another window's git status.
+			rb.OnPluginWidgets(func(zones map[string]string, pushChatID string) {
+				if pushChatID != "" && pushChatID != remoteChatID {
+					return // ignore pushes for other sessions
+				}
 				remoteCache.UpdateZones(zones)
 			})
 			// Initial fetch — push only fires on CHANGES, so we need to
