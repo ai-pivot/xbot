@@ -972,13 +972,29 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 		m.textarea.SetValue("")
 	}
 	// 3. 如果 agent 正在处理：
-	//    - 有排队消息：只清空队列，不发 cancel（需要再按一次 Ctrl+C 才 cancel）
+	//    - 有排队消息：先删除最后一条（再按清空全部，再按 cancel agent）
 	//    - 无排队消息：发送 cancel
 	if m.typing {
 		queueLen := len(m.messageQueue)
 		if queueLen > 0 {
-			m.messageQueue = nil
-			m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
+			if m.queueEditing {
+				// 正在编辑排队消息 → 取消编辑并删除该消息
+				removed := m.messageQueue[len(m.messageQueue)-1]
+				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
+				m.queueEditing = false
+				m.queueEditBuf = ""
+				m.textarea.SetValue("")
+				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved, removed), feedbackInfo)
+			} else if queueLen > 1 {
+				// 多条排队 → 删除最后一条
+				removed := m.messageQueue[len(m.messageQueue)-1]
+				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
+				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved+". "+m.locale.QueueCleared, removed, len(m.messageQueue)), feedbackInfo)
+			} else {
+				// 只剩一条 → 清空全部
+				m.messageQueue = nil
+				m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
+			}
 		} else {
 			m.sendCancel()
 			m.turnCancelled = true // prevent stale progress from auto-starting after cancel

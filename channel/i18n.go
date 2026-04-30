@@ -164,9 +164,10 @@ type UILocale struct {
 	DangerArchival           string // "Archival Memory (vector DB)"
 
 	// --- N. Message queue ---
-	MessageQueued   string // "⏳ Message queued (%d pending)"
-	MessageQueuedUp string // "⏳ Message queued (%d pending) — ↑ to recall · Esc to cancel"
-	QueuePending    string // "📬 %d queued" — persistent status bar indicator
+	MessageQueued    string // "⏳ Message queued (%d pending)"
+	MessageQueuedUp  string // "⏳ Message queued (%d pending) — ↑ to recall · Esc to cancel"
+	QueuePending     string // "📬 %d queued" — persistent status bar indicator
+	QueueItemRemoved string // "Removed queued message: %s"
 
 	// --- I. Dynamic arrays ---
 	ThinkingVerbs    []string // spinner verbs: Thinking, Reasoning, ...
@@ -244,7 +245,7 @@ func localeZH() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter 发送 · Ctrl+J 换行 · /help",
-		ProcessingPlaceholder: "[处理中...] (Ctrl+C 取消)",
+		ProcessingPlaceholder: "[处理中...] 输入消息排队 · Ctrl+C 取消",
 		CheckingUpdates:       "⟳ 正在检查更新...",
 		StatusReady:           "● 就绪",
 		StatusCompressing:     "压缩中",
@@ -384,21 +385,20 @@ func localeZH() *UILocale {
 		DangerArchival:           "归档记忆（向量数据库）",
 
 		// --- N. Message queue ---
-		MessageQueued:   "⏳ 消息已排队（%d 条待发送）",
-		MessageQueuedUp: "⏳ 消息已排队（%d 条待发送）— ↑ 追回编辑 · Esc 撤销",
-		QueuePending:    "📬 %d 条排队中",
+		MessageQueued:    "⏳ 消息已排队（%d 条待发送）",
+		MessageQueuedUp:  "⏳ 消息已排队（%d 条待发送）— Shift+↑ 追回编辑 · Esc 撤销",
+		QueuePending:     "📬 %d 条排队中",
+		QueueItemRemoved: "已移除排队消息：%s",
 
 		// --- I. Dynamic arrays ---
 		ThinkingVerbs: []string{"思考中", "推理中", "分析中", "考虑中", "评估中", "反思中", "处理中", "沉思中"},
 		IdlePlaceholders: []string{
 			"Enter 发送 · Ctrl+J 换行 · /help",
-			"/model 切换模型",
-			"Ctrl+O 工具",
+			"Ctrl+K 命令面板",
+			"Ctrl+T 会话 · Ctrl+K 命令",
 			"@filepath 附加文件",
-			"^ 打开后台任务面板",
-			"/compact 压缩上下文",
-			"/settings 打开设置",
-			"/new 开始新会话",
+			"Ctrl+P 切换模型",
+			"Ctrl+K → 所有命令",
 		},
 
 		// --- J. Settings schema ---
@@ -631,7 +631,7 @@ func localeEN() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter send · Ctrl+J newline · /help",
-		ProcessingPlaceholder: "[Processing...] (Ctrl+C to cancel)",
+		ProcessingPlaceholder: "[Processing...] type to queue · Ctrl+C cancel",
 		CheckingUpdates:       "⟳ checking for updates...",
 		StatusReady:           "● ready",
 		StatusCompressing:     "compressing",
@@ -767,21 +767,20 @@ func localeEN() *UILocale {
 		DangerArchival:           "Archival Memory (vector DB)",
 
 		// --- N. Message queue ---
-		MessageQueued:   "⏳ Message queued (%d pending)",
-		MessageQueuedUp: "⏳ Message queued (%d pending) — ↑ to recall · Esc to cancel",
-		QueuePending:    "📬 %d queued",
+		MessageQueued:    "⏳ Message queued (%d pending)",
+		MessageQueuedUp:  "⏳ Message queued (%d pending) — Shift+↑ recall · Esc cancel",
+		QueuePending:     "📬 %d queued",
+		QueueItemRemoved: "Removed queued message: %s",
 
 		// --- I. Dynamic arrays ---
 		ThinkingVerbs: []string{"Thinking", "Reasoning", "Analyzing", "Considering", "Evaluating", "Reflecting", "Processing", "Contemplating"},
 		IdlePlaceholders: []string{
 			"Enter send · Ctrl+J newline · /help",
-			"Type /model to switch model",
-			"Ctrl+O tools",
+			"Ctrl+K command palette",
+			"Ctrl+T sessions · Ctrl+K commands",
 			"@filepath to attach files",
-			"^ open background tasks panel",
-			"Type /compact to compress context",
-			"Type /settings to configure",
-			"Type /new to start fresh session",
+			"Ctrl+P switch model",
+			"Ctrl+K → all commands",
 		},
 
 		// --- J. Settings schema ---
@@ -1014,7 +1013,7 @@ func localeJA() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter 送信 · Ctrl+J 改行 · /help",
-		ProcessingPlaceholder: "[処理中...] (Ctrl+C キャンセル)",
+		ProcessingPlaceholder: "[処理中...] 入力でキュー · Ctrl+C キャンセル",
 		CheckingUpdates:       "⟳ アップデート確認中...",
 		StatusReady:           "● 準備完了",
 		StatusCompressing:     "圧縮中",
@@ -1150,21 +1149,20 @@ func localeJA() *UILocale {
 		DangerArchival:           "アーカイブ記憶（ベクトルDB）",
 
 		// --- N. Message queue ---
-		MessageQueued:   "⏳ メッセージをキューに入れました（%d 件保留中）",
-		MessageQueuedUp: "⏳ メッセージをキューに入れました（%d 件保留中）— ↑ 編集 · Esc キャンセル",
-		QueuePending:    "📬 %d 件キュー中",
+		MessageQueued:    "⏳ メッセージをキューに入れました（%d 件保留中）",
+		MessageQueuedUp:  "⏳ メッセージをキューに入れました（%d 件保留中）— Shift+↑ 編集 · Esc キャンセル",
+		QueuePending:     "📬 %d 件キュー中",
+		QueueItemRemoved: "キューのメッセージを削除：%s",
 
 		// --- I. Dynamic arrays ---
 		ThinkingVerbs: []string{"思考中", "推論中", "分析中", "検討中", "評価中", "振り返り", "処理中", "熟考中"},
 		IdlePlaceholders: []string{
 			"Enter 送信 · Ctrl+J 改行 · /help",
-			"/model でモデル切替",
-			"Ctrl+O ツール",
+			"Ctrl+K コマンドパレット",
+			"Ctrl+T セッション · Ctrl+K コマンド",
 			"@filepath でファイル添付",
-			"^ バックグラウンドタスクパネル",
-			"/compact でコンテキスト圧縮",
-			"/settings で設定",
-			"/new で新規セッション",
+			"Ctrl+P モデル切替",
+			"Ctrl+K → 全コマンド",
 		},
 
 		// --- J. Settings schema ---
