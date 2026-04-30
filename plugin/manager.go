@@ -1378,7 +1378,7 @@ func (pm *PluginManager) GetToolHints() string {
 		if !active {
 			continue
 		}
-		if sp, ok := e.Plugin.(*scriptPlugin); ok && sp.isHintPlugin {
+		if sp, ok := e.Plugin.(*scriptPlugin); ok && len(sp.syncWidgets) > 0 {
 			sp.hintMu.Lock()
 			content := sp.hintContent
 			sp.hintContent = "" // consume: clear after reading

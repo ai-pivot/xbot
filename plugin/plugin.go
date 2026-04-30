@@ -207,6 +207,12 @@ type UISlotContribution struct {
 	// Only effective for script runtime plugins.
 	Triggers []string `json:"triggers,omitempty"`
 
+	// Sync controls whether hook triggers run synchronously (inline in the
+	// hook goroutine) or asynchronously (via triggerCh).  Sync triggers
+	// block the tool pipeline until the script finishes, so the engine can
+	// read output immediately.  Default false (async).
+	Sync bool `json:"sync,omitempty"`
+
 	// Interactive indicates whether this widget supports user actions (v2).
 	// Default false (read-only).
 	Interactive bool `json:"interactive,omitempty"`

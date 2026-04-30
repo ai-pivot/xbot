@@ -64,12 +64,12 @@ type scriptPlugin struct {
 	pctx      PluginContext   // captured in Activate for UpdateWidget
 	widgetReg *WidgetRegistry // captured in Activate for NotifyUpdated (no runtime type assertion)
 
-	// Synchronous hint content: when a plugin contributes to the "toolHint" zone,
-	// the hook trigger runs the script synchronously and stores the markdown output.
-	// The engine reads this immediately after the PostToolUse hook fires.
-	hintMu       sync.RWMutex
-	hintContent  string // last hint output from synchronous trigger
-	isHintPlugin bool   // true if plugin has any toolHint zone widget
+	// Synchronous trigger support: when a UISlotContribution has Sync=true,
+	// the hook trigger runs the script synchronously and stores output here.
+	// The engine reads this immediately after the hook fires.
+	hintMu      sync.RWMutex
+	hintContent string   // last output from synchronous trigger
+	syncWidgets []string // widget IDs that require synchronous execution
 }
 
 func (p *scriptPlugin) Manifest() PluginManifest {
@@ -97,8 +97,8 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 		if err := ctx.ContributeUI(ui.ID, ui.Slot, p, ui.Priority); err != nil {
 			return fmt.Errorf("contribute widget %q: %w", ui.ID, err)
 		}
-		if ui.Slot == "toolHint" {
-			p.isHintPlugin = true
+		if ui.Sync {
+			p.syncWidgets = append(p.syncWidgets, ui.ID)
 		}
 	}
 
@@ -348,7 +348,7 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 			log.Infof("[plugin:%s] trigger fired: tool=%s", p.manifest.ID, hp.ToolName)
 		}
 
-		if p.isHintPlugin {
+		if len(p.syncWidgets) > 0 {
 			// Synchronous execution: run script inline so the engine can read
 			// hint content immediately after the PostToolUse hook returns.
 			wd := ""

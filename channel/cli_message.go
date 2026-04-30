@@ -2099,6 +2099,10 @@ func renderDiffANSI(md string, maxWidth int) (string, error) {
 
 	var sb strings.Builder
 	for _, line := range diffLines {
+		// Skip "\ No newline at end of file" markers — noisy, not useful in progress panel
+		if strings.HasPrefix(line, "\\ ") {
+			continue
+		}
 		// Truncate to maxWidth (rune-based, safe for ANSI-free text)
 		if maxWidth > 0 && len([]rune(line)) > maxWidth {
 			line = string([]rune(line)[:maxWidth])
