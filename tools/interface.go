@@ -95,7 +95,8 @@ type SubAgentManager interface {
 	// allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
 	// caps 声明 SubAgent 可获得的能力（memory、send_message 等）
 	// model 为可选的模型覆盖，为空时继承主 Agent 模型
-	RunSubAgent(parentCtx *ToolContext, task string, systemPrompt string, allowedTools []string, caps SubAgentCapabilities, roleName string, model string) (string, error)
+	// instance 为实例 ID，用于区分同 role 的不同 SubAgent（进度树显示）
+	RunSubAgent(parentCtx *ToolContext, task string, systemPrompt string, allowedTools []string, caps SubAgentCapabilities, roleName, instance, model string) (string, error)
 }
 
 // --- Tool Registry ---

@@ -662,7 +662,7 @@ func convertWsProgressToCLI(wp *channel.WsProgressPayload) *channel.CLIProgressP
 }
 
 func convertWsSubAgent(sa channel.WsSubAgent) channel.CLISubAgent {
-	r := channel.CLISubAgent{Role: sa.Role, Status: sa.Status, Desc: sa.Desc}
+	r := channel.CLISubAgent{Role: sa.Role, Instance: sa.Instance, Status: sa.Status, Desc: sa.Desc}
 	for _, c := range sa.Children {
 		r.Children = append(r.Children, convertWsSubAgent(c))
 	}

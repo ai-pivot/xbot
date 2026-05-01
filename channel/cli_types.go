@@ -286,6 +286,7 @@ type CLIToolProgress struct {
 // CLISubAgent 子 Agent 的结构化进度状态。
 type CLISubAgent struct {
 	Role     string
+	Instance string
 	Status   string // "running" | "done" | "error"
 	Desc     string
 	Children []CLISubAgent

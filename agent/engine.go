@@ -670,8 +670,8 @@ type spawnAgentAdapter struct {
 }
 
 // RunSubAgent 实现 tools.SubAgentManager 接口。
-func (a *spawnAgentAdapter) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, model string) (string, error) {
-	msg := a.buildMsg(parentCtx, task, roleName, systemPrompt, allowedTools, caps, false, "", model)
+func (a *spawnAgentAdapter) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, instance, model string) (string, error) {
+	msg := a.buildMsg(parentCtx, task, roleName, systemPrompt, allowedTools, caps, false, instance, model)
 	out, err := a.spawnFn(parentCtx.Ctx, msg)
 	if err != nil {
 		return "", err

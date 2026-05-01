@@ -8,17 +8,23 @@
 
 ```
 agent/hooks/
-├── manager.go           # Manager: config load, Emit dispatch, decision aggregation
-├── matcher.go           # Tool name matching + if-condition filtering
-├── events.go            # 17 event structs (PreToolUseEvent, PostToolUseEvent, ...)
-├── config.go            # LoadHooksConfig: 3-layer merge, validation
-├── executor_command.go  # Command executor: stdin JSON → shell, exit code control
-├── executor_http.go     # HTTP executor: POST JSON
-├── executor_callback.go # Callback executor: Go func
-├── executor_mcp.go      # MCP tool executor
-├── env.go               # Env var interpolation ($XBOT_PROJECT_DIR, ...)
-├── sanitize.go          # Sensitive field masking (api_key, secret)
-└── hooks_test.go
+├── types.go              # Action, Decision, Result, Executor interface, HookDef, EventGroup, CallbackHook
+├── event.go              # Event interface + 17 event structs (SessionStartEvent, PreToolUseEvent, ...)
+├── config.go             # HookConfig, LoadHooksConfig: 3-layer merge (user→project→local)
+├── matcher.go            # Matcher: match-all / exact / multi-select / regex + if-condition filtering
+├── manager.go            # Manager: config load, RegisterBuiltin, RegisterExecutor, Emit dispatch, decision aggregation
+├── builtin.go            # LoggingCallback, TimingCallback, ApprovalCallback, CheckpointCallback
+├── executor_command.go   # CommandExecutor: stdin JSON → shell, exit code → decision
+├── executor_http.go      # HTTPExecutor: POST JSON, SSRF protection (dial-time IP check)
+├── executor_mcp.go       # MCPExecutor: MCP tool call with ${...} variable interpolation
+├── plugin_bridge.go      # PluginBridgeCallback: hooks.Event → plugin.HookPayload adapter
+├── config_test.go
+├── matcher_test.go
+├── manager_test.go
+├── executor_command_test.go
+├── executor_http_test.go
+├── executor_mcp_test.go
+└── plugin_bridge_test.go
 ```
 
 ## 17 Lifecycle Events
@@ -160,16 +166,18 @@ Priority chain: **deny > defer > ask > allow**. Low-priority deny cannot be over
 ## Integration Points (where Emit is called)
 
 ```
-engine.go:412      → UserPromptSubmit (before main loop)
-engine.go:394      → AgentStop (defer on exit)
-engine_run.go:762  → PreToolUse (before tool invocation)
-engine_run.go:830  → PostToolUse (after tool success)
-engine_run.go:846  → PostToolUseFailure (after tool error)
-engine_run.go:860  → PostToolBatch (after batch complete)
-agent.go:281       → SessionStart
-agent.go:294       → SessionEnd
-context_manager.go → PreCompact / PostCompact
-subagent.go        → SubAgentStart / SubAgentStop
+agent.go:1890      → SessionStart
+agent.go:1904      → SessionEnd
+engine.go:403      → AgentStop (defer on exit)
+engine.go:421      → UserPromptSubmit (before main loop)
+engine.go:501      → PostToolBatch (after batch complete)
+engine.go:571      → PreToolUse (before tool invocation)
+engine.go:619      → PostToolUse (after tool success)
+engine_run.go:532  → AgentError (LLM API call failed)
+engine_run.go:823  → PreCompact (before context compression)
+engine_run.go:870  → PostCompact (after compression)
+engine_wire.go:1223 → SubAgentStart
+engine_wire.go:1262 → SubAgentStop
 ```
 
 ## Gotchas

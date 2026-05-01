@@ -250,29 +250,37 @@ func TestIsPlausibleAgentRole(t *testing.T) {
 
 func TestParseSubAgentLine(t *testing.T) {
 	tests := []struct {
-		line       string
-		wantOK     bool
-		wantRole   string
-		wantStatus string
-		wantDesc   string
+		line         string
+		wantOK       bool
+		wantRole     string
+		wantInstance string
+		wantStatus   string
+		wantDesc     string
 	}{
 		// 树状格式
-		{"├─ 🔄 ministry-works: ⏳ Shell(ls) ...", true, "ministry-works", "🔄", "⏳ Shell(ls) ..."},
-		{"└─ ✅ 刑部:", true, "刑部", "✅", ""},
-		{"│ 🔄 工部: running", true, "工部", "🔄", "running"},
+		{"├─ 🔄 ministry-works: ⏳ Shell(ls) ...", true, "ministry-works", "", "🔄", "⏳ Shell(ls) ..."},
+		{"└─ ✅ 刑部:", true, "刑部", "", "✅", ""},
+		{"│ 🔄 工部: running", true, "工部", "", "🔄", "running"},
 		// 引用格式
 		// 占位行格式
-		{"> ⏳ SubAgent [ministry-works]: ...", true, "ministry-works", "⏳", "..."},
-		{"⏳ SubAgent [department-state]: some desc", true, "department-state", "⏳", "some desc"},
+		{"> ⏳ SubAgent [ministry-works]: ...", true, "ministry-works", "", "⏳", "..."},
+		{"⏳ SubAgent [department-state]: some desc", true, "department-state", "", "⏳", "some desc"},
 
-		{"> 🔄 crown-prince: 💭 思考中...", true, "crown-prince", "🔄", "💭 思考中..."},
-		{"> ✅ ministry-works:", true, "ministry-works", "✅", ""},
-		{"> 　🔄 department-state: 分派三部", true, "department-state", "🔄", "分派三部"},
-		{"　🔄 ministry-works: ⏳ Shell(ls)", true, "ministry-works", "🔄", "⏳ Shell(ls)"},
+		{"> 🔄 crown-prince: 💭 思考中...", true, "crown-prince", "", "🔄", "💭 思考中..."},
+		{"> ✅ ministry-works:", true, "ministry-works", "", "✅", ""},
+		{"> 　🔄 department-state: 分派三部", true, "department-state", "", "🔄", "分派三部"},
+		{"　🔄 ministry-works: ⏳ Shell(ls)", true, "ministry-works", "", "🔄", "⏳ Shell(ls)"},
+		// 实例格式：同 role 不同 instance 的 SubAgent
+		{"> 🔄 explore [mem-1]: reading files", true, "explore", "mem-1", "🔄", "reading files"},
+		{"> 🔄 explore [hooks-1]: reading hooks", true, "explore", "hooks-1", "🔄", "reading hooks"},
+		{"> ✅ explore [mem-1]:", true, "explore", "mem-1", "✅", ""},
+		{"> 🔄 crown-prince [audit]: thinking", true, "crown-prince", "audit", "🔄", "thinking"},
+		// 实例格式：no-colon completion
+		{"✅ explore [mem-1]", true, "explore", "mem-1", "✅", ""},
 		// 失败场景
-		{"> 💭 思考中...", false, "", "", ""},       // 不是子 Agent 格式
-		{"some random text", false, "", "", ""}, // 空白
-		{"", false, "", "", ""},                 // 空
+		{"> 💭 思考中...", false, "", "", "", ""},       // 不是子 Agent 格式
+		{"some random text", false, "", "", "", ""}, // 空白
+		{"", false, "", "", "", ""},                 // 空
 	}
 	for _, tt := range tests {
 		t.Run(tt.line, func(t *testing.T) {
@@ -284,9 +292,9 @@ func TestParseSubAgentLine(t *testing.T) {
 			if !tt.wantOK {
 				return
 			}
-			if got.Role != tt.wantRole || got.Status != tt.wantStatus || got.Desc != tt.wantDesc {
-				t.Errorf("parseSubAgentLine(%q) = %+v, want {Role:%q Status:%q Desc:%q}",
-					tt.line, got, tt.wantRole, tt.wantStatus, tt.wantDesc)
+			if got.Role != tt.wantRole || got.Instance != tt.wantInstance || got.Status != tt.wantStatus || got.Desc != tt.wantDesc {
+				t.Errorf("parseSubAgentLine(%q) = %+v, want {Role:%q Instance:%q Status:%q Desc:%q}",
+					tt.line, got, tt.wantRole, tt.wantInstance, tt.wantStatus, tt.wantDesc)
 			}
 		})
 	}

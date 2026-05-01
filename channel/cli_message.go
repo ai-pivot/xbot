@@ -1264,7 +1264,11 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 			icon = "✗"
 			style = m.styles.ProgressError
 		}
-		line := fmt.Sprintf("%s%s%s %s", prefix, connector, icon, sa.Role)
+		roleText := sa.Role
+		if sa.Instance != "" {
+			roleText = sa.Role + " [" + sa.Instance + "]"
+		}
+		line := fmt.Sprintf("%s%s%s %s", prefix, connector, icon, roleText)
 		if sa.Desc != "" {
 			// Only add description if there's room — never exceed maxWidth.
 			overhead := lipgloss.Width(line) + 2 // +2 for ": "

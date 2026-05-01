@@ -348,6 +348,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	caps tools.SubAgentCapabilities,
 	roleName string,
 	interactive bool,
+	instance string,
 	model string, // 可选：角色指定的模型，为空时继承主 Agent
 ) RunConfig {
 	parentAgentID := parentCtx.AgentID
@@ -1079,6 +1080,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	systemPrompt := msg.SystemPrompt
 	allowedTools := msg.AllowedTools
 	roleName := msg.RoleName
+	instance := ""
+	if msg.Metadata != nil {
+		instance = msg.Metadata["instance_id"]
+	}
 
 	// --- CallChain 深度 & 循环检查 ---
 	cc := CallChainFromContext(ctx)
@@ -1117,7 +1122,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		subModel = msg.Metadata["model"]
 	}
 
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, subModel)
+	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, subModel)
 
 	// SubAgent 进度上报：统一走穿透回调模式。
 	// 顶层 agent（无 parent callback）创建 root callback，只渲染 depth=1（直接子 agent）的进度。
@@ -1149,9 +1154,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		cfg.ProgressNotifier = func(lines []string) {
 			if len(lines) > 0 {
 				parentCB(SubAgentProgressDetail{
-					Path:  myPath,
-					Lines: lines,
-					Depth: myDepth,
+					Path:     myPath,
+					Lines:    lines,
+					Depth:    myDepth,
+					Instance: instance,
 				})
 			}
 		}
@@ -1291,6 +1297,7 @@ func convertWsSubAgentTree(nodes []SubAgentNode) []channelpkg.WsSubAgent {
 	for i, n := range nodes {
 		result[i] = channelpkg.WsSubAgent{
 			Role:     n.Role,
+			Instance: n.Instance,
 			Status:   n.Status,
 			Desc:     n.Desc,
 			Children: convertWsSubAgentTree(n.Children),
@@ -1308,6 +1315,7 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []channelpkg.CLISubAgent {
 	for i, n := range nodes {
 		result[i] = channelpkg.CLISubAgent{
 			Role:     n.Role,
+			Instance: n.Instance,
 			Status:   n.Status,
 			Desc:     n.Desc,
 			Children: convertCLISubAgentTree(n.Children),
@@ -1394,6 +1402,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					for i, sa := range subAgents {
 						cliSubAgents[i] = channelpkg.CLISubAgent{
 							Role:     sa.Role,
+							Instance: sa.Instance,
 							Status:   sa.Status,
 							Desc:     sa.Desc,
 							Children: convertCLISubAgentTree(sa.Children),
@@ -1464,7 +1473,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				if len(subAgents) > 0 {
 					wsSubAgents := make([]channelpkg.WsSubAgent, len(subAgents))
 					for i, sa := range subAgents {
-						wsSubAgents[i] = channelpkg.WsSubAgent{Role: sa.Role, Status: sa.Status, Desc: sa.Desc, Children: convertWsSubAgentTree(sa.Children)}
+						wsSubAgents[i] = channelpkg.WsSubAgent{Role: sa.Role, Instance: sa.Instance, Status: sa.Status, Desc: sa.Desc, Children: convertWsSubAgentTree(sa.Children)}
 					}
 					payload.SubAgents = wsSubAgents
 				}
@@ -1515,6 +1524,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					for i, sa := range subAgents {
 						cliSubAgents[i] = channelpkg.CLISubAgent{
 							Role:     sa.Role,
+							Instance: sa.Instance,
 							Status:   sa.Status,
 							Desc:     sa.Desc,
 							Children: convertCLISubAgentTree(sa.Children),
@@ -1616,6 +1626,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				for i, sa := range subAgents {
 					wsSubAgents[i] = channelpkg.WsSubAgent{
 						Role:     sa.Role,
+						Instance: sa.Instance,
 						Status:   sa.Status,
 						Desc:     sa.Desc,
 						Children: convertWsSubAgentTree(sa.Children),

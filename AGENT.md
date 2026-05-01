@@ -68,6 +68,15 @@
 - **SubAgent tree description**: skip description when `descW <= 0` instead of forcing `descW >= 10` minimum — the old minimum caused overflow on narrow terminals.
 - **Group chat members must be pre-spawned**: `CreateChat(type="group")` must auto-spawn each member agent and register AgentChannel in Dispatcher. Otherwise `@mentions` in SendMessage fail with "unknown channel: agent:role/instance".
 
+### SubAgent Progress Identity
+- **All SubAgent progress structs MUST carry an `Instance` field** (`CLISubAgent`, `WsSubAgent`, `SubAgentNode`, `childAgentStatus`). `mergeSubAgentTrees` uses `Role + ":" + Instance` as the unique key — without Instance, same-role different-instance SubAgents collapse into a single tree node.
+- **`RunSubAgent` interface must include `instance` parameter.** One-shot SubAgent goes through `spawnAgentAdapter.RunSubAgent` → `buildMsg` → metadata. Without this, instance never reaches `SubAgentProgressDetail` and the progress tree can't distinguish parallel SubAgents.
+- **`isPlausibleAgentRole` must strip `[instance]` suffix before the space check.** The formatted line `"> 🔄 explore [mem-1]: desc"` has `"explore [mem-1]"` as the role candidate, which contains a space and would be rejected. Strip `[instance]` before `strings.Contains(name, " ")` — otherwise ALL SubAgent progress lines with instance are filtered out by `isStatusEmojiLine`.
+- **`parseSubAgentLine` no-colon completion path must also extract instance.** For `"✅ explore [mem-1]"` (legacy format), instance extraction must happen before the early return, or the Instance field stays empty.
+
+### Reasoning Contamination
+- **`snapshotIterationChange` and `handleProgressDone` must NOT use `prev.ReasoningStreamContent` as reasoning fallback.** Stream-only messages (`StreamReasoningFunc`) update `m.progress.ReasoningStreamContent` directly between structured progress updates. Since `prev` is captured at the START of `handleProgressMsg` (pointer to `m.progress`), `prev.ReasoningStreamContent` can contain the NEXT iteration's reasoning when the iteration changes. Use `prev.Reasoning` (server's `ReasoningContent`, set at LLM completion) or `m.lastReasoning` instead.
+
 ### Hooks System
 - **Old `ToolHook`/`HookChain` is gone.** Replaced by `agent/hooks/Manager`. Any code referencing `HookChain`, `ToolHook`, `executeWithHooks` is stale.
 - **Manager.Emit() is shared across Agent + SubAgents** (same instance). Must be concurrency-safe.

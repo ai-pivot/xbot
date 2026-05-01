@@ -467,7 +467,7 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 		}
 		prevReasoning := prev.Reasoning
 		if prevReasoning == "" {
-			prevReasoning = prev.ReasoningStreamContent
+			prevReasoning = m.lastReasoning
 		}
 		if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 			snap := cliIterationSnapshot{
@@ -526,14 +526,15 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 				ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 			}
 			// Carry over reasoning: priority is lastReasoning (captured before progress clear)
-			// > prev progress Reasoning > prev ReasoningStreamContent
+			// > prev progress Reasoning (server-authoritative, from ReasoningContent)
 			// > PhaseDone payload Reasoning
+			// Note: prev.ReasoningStreamContent is intentionally NOT used — streaming
+			// content may be polluted by the next iteration's reasoning stream that
+			// arrived between structured progress updates.
 			if m.lastReasoning != "" {
 				snap.Reasoning = m.lastReasoning
 			} else if prev != nil && prev.Reasoning != "" {
 				snap.Reasoning = prev.Reasoning
-			} else if prev != nil && prev.ReasoningStreamContent != "" {
-				snap.Reasoning = prev.ReasoningStreamContent
 			} else if msg.payload.Reasoning != "" {
 				snap.Reasoning = msg.payload.Reasoning
 			}
@@ -883,6 +884,9 @@ func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
 // Agents only in prev are kept as-is (they may have completed between server updates).
 // Agents only in new are added.
 //
+// Uniqueness key: Role + ":" + Instance. When Instance is empty, Role alone is used.
+// This prevents same-role different-instance agents from being merged into one.
+//
 // Key rule: if an agent in prev is NOT in new, it means the server stopped reporting
 // it. This is normal — the server only reports actively-running agents. We mark
 // stale running/pending agents as "done" so they don't linger in the progress panel
@@ -900,23 +904,25 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 		return prev
 	}
 
-	// Build lookup from new by Role (unique key: "role")
-	newByRole := make(map[string]int, len(new))
+	// Build lookup from new by unique key (Role + Instance)
+	newByKey := make(map[string]int, len(new))
 	for i, a := range new {
-		newByRole[a.Role] = i
+		key := subAgentKey(a.Role, a.Instance)
+		newByKey[key] = i
 	}
 
 	result := make([]CLISubAgent, 0, len(prev)+len(new))
 
 	// Start with all prev entries, updating those that have new data
 	for _, p := range prev {
-		if idx, ok := newByRole[p.Role]; ok {
+		key := subAgentKey(p.Role, p.Instance)
+		if idx, ok := newByKey[key]; ok {
 			// Agent exists in both — merge: use new data but recursively merge children
 			n := new[idx]
 			merged := n
 			merged.Children = mergeSubAgentTrees(p.Children, n.Children)
 			result = append(result, merged)
-			delete(newByRole, p.Role)
+			delete(newByKey, key)
 		} else {
 			// Agent only in prev — server stopped reporting it.
 			// Mark as done if still running/pending (it completed between updates).
@@ -925,11 +931,19 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 	}
 
 	// Add agents only in new
-	for role := range newByRole {
-		result = append(result, new[newByRole[role]])
+	for key := range newByKey {
+		result = append(result, new[newByKey[key]])
 	}
 
 	return result
+}
+
+// subAgentKey builds a unique key for a SubAgent from Role and Instance.
+func subAgentKey(role, instance string) string {
+	if instance == "" {
+		return role
+	}
+	return role + ":" + instance
 }
 
 // markDoneIfRunning marks a SubAgent and its children as done if they are
