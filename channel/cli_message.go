@@ -2661,10 +2661,6 @@ func renderDiffStyled(md string, maxW int) string {
 		if strings.HasPrefix(line, `\ `) {
 			continue
 		}
-		runes := []rune(line)
-		if len(runes) > maxW {
-			line = string(runes[:maxW])
-		}
 
 		switch {
 		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
