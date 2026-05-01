@@ -79,7 +79,9 @@
 - **Reasoning stream without iteration advance contaminates previous snapshot.** `isStreamOnly` reasoning updates bypass `snapshotIterationChange`. When the next structured progress arrives with a new iteration, the old progress (with accumulated reasoning) gets snapshotted under the OLD iteration. Fix: `advanceIterationForReasoning()` detects when reasoning arrives for a completed iteration and advances `m.progress.Iteration`. Must also call after `restoreIterationHistory` + `carryForwardProgressState` for the TUI restart case.
 
 ### CLI Rendering Panics
-- **`renderGlobBody` must use `ansi.Truncate` like `renderGrepBody`, not manual `runes[:maxW-5]`.** On narrow viewports (e.g. after TUI restart with small terminal), `maxW-5` goes negative causing `slice bounds out of range [:-1]` panic. `ansi.Truncate` handles this safely.
+- **All render bodies (`renderGlobBody`, `renderShellBody`, `renderReadBody`, etc.) must use `ansi.Truncate`, NEVER manual `runes[:maxW-N]`.** On narrow viewports, `maxW-N` goes negative causing `slice bounds out of range [:-1]` panic. Glob and Shell both had this pattern — fix one, grep for the other. `ansi.Truncate` handles negative/zero widths safely.
+- **`regexp.MustCompile` must be package-level `var`, never inside function bodies.** Chroma-powered render functions (`renderReadBody`, `renderDiffStyled`) are called per-frame and re-compiling regexps on every call wastes CPU. All other channel files (feishu.go, mermaid.go, qq.go) already use package-level vars — follow the convention.
+- **`currentTheme` writes must be guarded when called from non-BubbleTea goroutines.** `ApplyTheme()` is exported and can be called from plugin/settings handlers. `setTheme()` now holds `currentThemeMu` — any new write path to `currentTheme` must also acquire this mutex.
 - **`DeleteTenant`/other `TenantService` methods must nil-guard `s.db`.** Interactive session cleanup races with DB initialization — `destroyInteractiveSession` can fire before the DB is connected, causing nil pointer dereference.
 
 ### Hooks System
