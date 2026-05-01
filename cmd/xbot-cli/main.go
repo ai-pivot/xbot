@@ -767,7 +767,63 @@ func (app *cliApp) Close() {
 	log.Close()
 }
 
+// ensureCJKWidth ensures consistent character width calculation between
+// go-runewidth (used by BubbleTea/ultraviolet renderer) and ansi.StringWidth
+// (used by xbot's hardWrapRunes/truncateToWidth/lipgloss).
+//
+// In CJK locales (LANG=zh_CN.UTF-8, ja_JP.UTF-8, ko_KR.UTF-8), go-runewidth
+// auto-detects EastAsianWidth=true, which makes ambiguous-width characters
+// (box-drawing │├─, block elements ▋, punctuation ·…) treated as 2 columns.
+// But ansi.StringWidth defaults to EastAsianWidth=false (only sets true when
+// RUNEWIDTH_EASTASIAN env var is explicitly set).
+//
+// This mismatch causes the terminal to render characters at different widths
+// than what the wrapping code expects, leading to CJK text being overwritten
+// during rapid streaming updates (Issue #14).
+//
+// We fix this by re-executing the process with RUNEWIDTH_EASTASIAN=1 when a
+// CJK locale is detected and the env var isn't already set. This ensures
+// both go-runewidth and ansi.StringWidth use EastAsianWidth=true.
+func ensureCJKWidth() {
+	if os.Getenv("RUNEWIDTH_EASTASIAN") != "" {
+		return // Already explicitly configured
+	}
+
+	lang := os.Getenv("LANG")
+	if !isCJKLocale(lang) {
+		return
+	}
+
+	os.Setenv("RUNEWIDTH_EASTASIAN", "1")
+
+	// syscall.Exec replaces the current process with a new one.
+	// This is necessary because Go's init() functions (including the
+	// ansi package's init that reads RUNEWIDTH_EASTASIAN) have already
+	// run before main().
+	execPath, err := os.Executable()
+	if err != nil {
+		return // Fall through, use default behavior
+	}
+	syscall.Exec(execPath, os.Args, os.Environ())
+	// If we reach here, exec failed — continue with default behavior.
+}
+
+// isCJKLocale returns true if the given locale string indicates CJK.
+func isCJKLocale(lang string) bool {
+	lang = strings.ToLower(lang)
+	for _, prefix := range []string{"zh_", "ja_", "ko_"} {
+		if strings.HasPrefix(lang, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
+	// Ensure consistent CJK character width in CJK locales.
+	// See: https://github.com/CjiW/xbot/issues/14
+	ensureCJKWidth()
+
 	xbotHome := config.XbotHome()
 	clipanic.EnableFileLogging(filepath.Join(xbotHome, "logs", "cli-panic.log"))
 	defer clipanic.Recover("main.main", nil, true)

@@ -80,6 +80,9 @@ func (s *TenantService) GetTenantInfo(tenantID int64) (channel, chatID string, e
 
 // DeleteTenant removes a tenant and all associated data (cascade)
 func (s *TenantService) DeleteTenant(tenantID int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 	result, err := conn.Exec("DELETE FROM tenants WHERE id = ?", tenantID)
 	if err != nil {

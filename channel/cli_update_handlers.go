@@ -350,6 +350,12 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.ReasoningStreamContent != "" {
 				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
 			}
+			// If reasoning is arriving and the current iteration has already
+			// been snapshotted (completed), this reasoning belongs to a new
+			// iteration that hasn't received a structured progress update yet.
+			// Advance the iteration number so reasoning isn't attributed to
+			// the wrong iteration snapshot.
+			m.advanceIterationForReasoning(m.progress)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
 			m.progress = msg.payload
@@ -377,6 +383,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	m.restoreIterationHistory(m.progress)
 
 	m.carryForwardProgressState(prev)
+
+	// After TUI restart, the restored progress may have reasoning content
+	// that belongs to a new iteration (beyond the last completed snapshot).
+	// Advance the iteration number so reasoning is displayed correctly.
+	m.advanceIterationForReasoning(m.progress)
 
 	// Update bg task count from callback
 	if m.bgTaskCountFn != nil {
@@ -481,6 +492,26 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 		}
 		m.lastCompletedTools = m.lastCompletedTools[:0]
 		m.lastSeenIteration = payload.Iteration
+		m.iterationStartTime = time.Now()
+	}
+}
+
+// advanceIterationForReasoning advances the iteration number in a progress
+// payload if reasoning content exists but the iteration matches a completed
+// snapshot. This prevents reasoning stream content from being attributed to
+// the wrong iteration (e.g. after TUI restart, or when the agent starts
+// reasoning for a new iteration before sending the first structured update).
+func (m *cliModel) advanceIterationForReasoning(progress *CLIProgressPayload) {
+	if progress == nil || progress.ReasoningStreamContent == "" {
+		return
+	}
+	if len(m.iterationHistory) == 0 {
+		return
+	}
+	lastSnap := m.iterationHistory[len(m.iterationHistory)-1]
+	if lastSnap.Iteration == progress.Iteration && progress.Iteration > 0 {
+		progress.Iteration++
+		m.lastSeenIteration = progress.Iteration
 		m.iterationStartTime = time.Now()
 	}
 }

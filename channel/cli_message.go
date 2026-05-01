@@ -2497,10 +2497,7 @@ func (m *cliModel) renderGlobBody(tool CLIToolProgress, maxW int, t cliTheme) st
 
 	var sb strings.Builder
 	for _, line := range displayLines {
-		runes := []rune(line)
-		if len(runes) > maxW-2 {
-			line = string(runes[:maxW-5]) + "..."
-		}
+		line = ansi.Truncate(line, maxW, "")
 		sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).Render("  "))
 		sb.WriteString(lipgloss.NewStyle().Foreground(fgFile).Render(line))
 		sb.WriteString("\n")
