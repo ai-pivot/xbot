@@ -16,6 +16,7 @@
 | `cli_types.go` | Type definitions, glamour renderer constructor (~712 lines) |
 | `cli_runner.go` | Runner integration, process management |
 | `cli_approval.go` | Tool execution confirmation dialog |
+| `cli_palette.go` | Command palette (Ctrl+K): fuzzy-search, category tabs, external contributors (~531 lines) |
 | `feishu.go` | Feishu webhook, message send, card messages (~3154 lines) |
 | `feishu_settings.go` | Feishu settings UI (~2189 lines) |
 | `web.go` | HTTP server, WebSocket (~1957 lines) |

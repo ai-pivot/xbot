@@ -24,6 +24,15 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Package-level compiled regexps (compiled once, not per-call)
+// ---------------------------------------------------------------------------
+
+var (
+	readLineNumRe = regexp.MustCompile(`^\s*(\d+)\t(.*)$`)
+	diffHunkRe    = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+)
+
+// ---------------------------------------------------------------------------
 // Helper Methods
 // ---------------------------------------------------------------------------
 
@@ -2323,13 +2332,12 @@ func (m *cliModel) renderReadBody(tool CLIToolProgress, maxW int, t cliTheme) st
 		code string
 	}
 	var parsed []parsedLine
-	lineNumRe := regexp.MustCompile(`^\s*(\d+)\t(.*)$`)
 
 	for _, line := range rawLines {
-		m := lineNumRe.FindStringSubmatch(line)
-		if m != nil {
-			num, _ := strconv.Atoi(m[1])
-			parsed = append(parsed, parsedLine{num: num, code: m[2]})
+		matches := readLineNumRe.FindStringSubmatch(line)
+		if matches != nil {
+			num, _ := strconv.Atoi(matches[1])
+			parsed = append(parsed, parsedLine{num: num, code: matches[2]})
 		}
 		// Skip non-matching lines (e.g. truncation messages)
 	}
@@ -2414,10 +2422,7 @@ func (m *cliModel) renderShellBody(tool CLIToolProgress, maxW int, t cliTheme) s
 
 	// Show command
 	if command != "" {
-		cmdRunes := []rune(command)
-		if len(cmdRunes) > maxW-2 {
-			command = string(cmdRunes[:maxW-5]) + "..."
-		}
+		command = ansi.Truncate(command, maxW-3, "") + "..."
 		sb.WriteString(lipgloss.NewStyle().Foreground(fgPrompt).Render("$ " + command))
 		sb.WriteString("\n")
 	}
@@ -2552,10 +2557,6 @@ func renderBgLine(content string, fgHex string, bgHex string, targetWidth int) s
 // Chroma tokens are formatted with lipgloss including the diff background color,
 // so ANSI codes are always correct without manual escape management.
 func renderDiffStyled(md string, maxW int) string {
-	return renderDiffStyledImpl(md, maxW)
-}
-
-func renderDiffStyledImpl(md string, maxW int) string {
 	if maxW < 40 {
 		maxW = 40
 	}
@@ -2614,14 +2615,12 @@ func renderDiffStyledImpl(md string, maxW int) string {
 	// Context lines use empty bg → transparent (no background color).
 	highlightMap := diffHighlightLines(diffLines, filePath, t.SuccessBg, t.ErrorBg, "")
 
-	hunkRe := regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
-
 	oldLine := 0
 	newLine := 0
 	lineNumDigits := 3
 
 	for _, line := range diffLines {
-		if matches := hunkRe.FindStringSubmatch(line); matches != nil {
+		if matches := diffHunkRe.FindStringSubmatch(line); matches != nil {
 			os, _ := strconv.Atoi(matches[1])
 			oc, _ := strconv.Atoi(matches[2])
 			if oc == 0 {
@@ -2672,7 +2671,7 @@ func renderDiffStyledImpl(md string, maxW int) string {
 			sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).Faint(true).Render(ansi.Truncate(line, maxW, "")))
 
 		case strings.HasPrefix(line, "@@"):
-			if matches := hunkRe.FindStringSubmatch(line); matches != nil {
+			if matches := diffHunkRe.FindStringSubmatch(line); matches != nil {
 				oldLine, _ = strconv.Atoi(matches[1])
 				newLine, _ = strconv.Atoi(matches[3])
 			}

@@ -9,10 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Command Palette (Ctrl+K)**: fuzzy-search 命令面板整合所有操作入口，支持分类标签和外部贡献者（`/palette`、`/commands` slash 命令）
+- **TUI 体验翻新**: crush-style 工具输出渲染（Shell/Read/Grep/Glob/Diff 统一风格）、透明代码块、消息队列 UX 增强、人可读耗时格式
 - **SubAgent 递归进度穿透**: 深层嵌套 SubAgent 进度以 tree-style 缩进格式展示在飞书消息中，支持并发子 Agent 内联摘要 (#292, #294, #295, #296, #299)
 - **Read 行号输出**: Read 工具每行输出前添加行号前缀，方便配合 Edit 精确定位 (#293)
 - **Edit 行范围限定**: replace/regex 模式新增 `start_line`/`end_line` 参数，限定替换搜索范围 (#293)
 - **`/context info` 角色分类**: 按 system/user/assistant/tool 角色分类统计 token (#306)
+- **CJK 流式渲染**: 半速逐字输出 (`advanceWriterCJK`) 解决 CJK 字符流式丢字 (#14)
+- **插件 ToolHint 区域**: 实时 diff 预览展示 (#26)
 
 ### Fixed
 

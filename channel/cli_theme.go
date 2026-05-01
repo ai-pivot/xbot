@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"xbot/internal/textarea"
 	"xbot/plugin"
 )
@@ -671,10 +672,16 @@ func ModelsLoadErrorCh() chan<- error { return modelsLoadErrorCh }
 // currentThemeName tracks the active theme name for themeChangeCh handler.
 var currentThemeName string
 
+// currentThemeMu protects currentTheme writes from external goroutines
+// (e.g. settings handler calling ApplyTheme during View() rendering).
+var currentThemeMu sync.Mutex
+
 // setTheme 更新 currentTheme 但不发 channel 通知。
 // 供 applyThemeAndRebuild 等需要同步完成所有工作的调用方使用，
 // 避免后续 Update 周期再触发一次冗余的 fullRebuild。
 func setTheme(name string) {
+	currentThemeMu.Lock()
+	defer currentThemeMu.Unlock()
 	if t, ok := themeRegistry[name]; ok {
 		currentTheme = t
 		currentThemeName = name
