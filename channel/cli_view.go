@@ -25,8 +25,15 @@ func appendStatusHint(status, hint string) string {
 	return status + "  " + hint
 }
 
-// renderTitleBar builds the top title bar with mode label, hints, runner status,
-// and user identity indicator.
+// isCompact returns true when terminal width < 80 — compact layout for narrow windows.
+func (m *cliModel) isCompact() bool { return m.width < 80 }
+
+// isNarrow returns true when terminal width < 60 — minimal layout.
+func (m *cliModel) isNarrow() bool { return m.width < 60 }
+
+// renderTitleBar builds the top title bar with gradient wordmark, diagonal fill,
+// mode label, hints, runner status, and user identity indicator.
+// In compact mode (<80 cols), extras (runner, user) are hidden.
 func (m *cliModel) renderTitleBar() string {
 	titleLeft := m.titleText()
 	titleRight := m.locale.TitleHint
@@ -36,23 +43,32 @@ func (m *cliModel) renderTitleBar() string {
 	} else if m.updateNotice != nil && m.updateNotice.HasUpdate {
 		titleRight = fmt.Sprintf("%s→%s · /update · /help", m.updateNotice.Current, m.updateNotice.Latest)
 	}
-	// Runner status + identity indicator in title bar
-	if m.runnerBridge != nil {
-		switch m.runnerBridge.Status() {
-		case RunnerConnected:
-			titleRight = "🟢 Runner · " + titleRight
-		case RunnerConnecting:
-			titleRight = "🟡 Runner · " + titleRight
+	// Runner status + identity indicator — hidden in compact mode
+	if !m.isCompact() {
+		if m.runnerBridge != nil {
+			switch m.runnerBridge.Status() {
+			case RunnerConnected:
+				titleRight = IconRunnerOn + " Runner · " + titleRight
+			case RunnerConnecting:
+				titleRight = IconRunnerWait + " Runner · " + titleRight
+			}
+		}
+		if m.senderID != "cli_user" {
+			titleRight = IconUser + " " + m.senderID + " · " + titleRight
 		}
 	}
-	if m.senderID != "cli_user" {
-		titleRight = "👤 " + m.senderID + " · " + titleRight
+
+	// Narrow: hide /help hint to save space
+	if m.isNarrow() {
+		titleRight = ""
 	}
 	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
-	if titlePad < 1 {
-		titlePad = 1
+	if titlePad < 3 {
+		titlePad = 3
 	}
-	return m.styles.TitleBar.Render(titleLeft + strings.Repeat(" ", titlePad) + titleRight)
+	// Diagonal fill between left and right sections
+	diagPad := m.styles.DimGuideSt.Render(strings.Repeat("╱", titlePad))
+	return m.styles.TitleBar.Render(titleLeft + diagPad + titleRight)
 }
 
 // renderInputArea renders the textarea input box with dynamic border color
@@ -126,10 +142,14 @@ func (m *cliModel) renderReadyStatus() string {
 	// Model name (cached, avoids per-frame lookup)
 	if m.cachedModelName != "" {
 		modelHint := m.cachedModelName
-		if m.modelCount > 1 {
+		if m.modelCount > 1 && !m.isCompact() {
 			modelHint += " [Ctrl+N]"
 		}
 		readyParts = append(readyParts, modelHint)
+	}
+	// Narrow screen: drop msg count to save space
+	if m.isNarrow() && len(readyParts) > 2 {
+		readyParts = readyParts[:2]
 	}
 	leftParts := strings.Join(readyParts, " · ")
 
@@ -389,6 +409,14 @@ func (m *cliModel) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 
+	// Command palette overlay (highest priority — hides everything)
+	if m.paletteOpen {
+		if overlay := m.viewCommandPalette(m.width, m.height); overlay != "" {
+			v.Content = overlay
+		}
+		return v
+	}
+
 	// Quick switch overlay
 	if m.quickSwitchMode != "" {
 		if overlay := m.viewQuickSwitch(m.width, m.height); overlay != "" {
@@ -532,7 +560,9 @@ func (m *cliModel) renderTodoBar() string {
 
 // titleText 生成标题栏文字。
 func (m *cliModel) titleText() string {
-	modeLabel := "⌂ xbot"
+	// Gradient "xbot" wordmark — gradient from Accent to Gradient colors
+	gradientXbot := gradientWordmark("xbot", currentTheme.Accent, currentTheme.Gradient)
+	modeLabel := gradientXbot
 	if m.remoteMode {
 		host := m.remoteServerURL
 		// Strip scheme for display: "ws://host:port" → "host:port"
@@ -543,22 +573,21 @@ func (m *cliModel) titleText() string {
 		var cloud string
 		switch m.connState {
 		case "connected":
-			cloud = "☁"
+			cloud = IconCloudOn
 		case "disconnected":
-			cloud = "⊘"
+			cloud = IconCloudOff
 		case "reconnecting":
-			cloud = "◌"
+			cloud = IconCloudWait
 		default:
-			cloud = "☁"
+			cloud = IconCloudOn
 		}
 		if host != "" {
-			modeLabel = fmt.Sprintf("%s xbot %s", cloud, host)
+			modeLabel = fmt.Sprintf("%s %s %s", cloud, gradientXbot, host)
 		} else {
-			modeLabel = fmt.Sprintf("%s xbot remote", cloud)
+			modeLabel = fmt.Sprintf("%s %s remote", cloud, gradientXbot)
 		}
 	}
 	if m.workDir != "" {
-		// Resolve to absolute path so "." → actual directory name
 		abs, err := filepath.Abs(m.workDir)
 		if err == nil {
 			return fmt.Sprintf(" %s [%s]", modeLabel, filepath.Base(abs))
@@ -609,17 +638,24 @@ func (m *cliModel) renderSplash() string {
 	}
 
 	// §20 使用缓存样式
-	logoStyle := m.styles.Accent.Bold(true)
 	versionStyle := m.styles.VersionSt
 	descStyle := m.styles.TextMutedSt
 	loadingStyle := m.styles.WarningSt
 
-	// 组装 splash 内容（logo 按最宽行整体居中，保持字母内部对齐）
+	// 组装 splash 内容 — ASCII logo 逐行渐变（Accent → Gradient）
 	var lines []string
 	maxLogoW := 0
 	renderedLogo := make([]string, len(xbotLogo))
+	fromR, fromG, fromB := hexToRGB(currentTheme.Accent)
+	toR, toG, toB := hexToRGB(currentTheme.Gradient)
+	n := len(xbotLogo)
 	for i, line := range xbotLogo {
-		renderedLogo[i] = logoStyle.Render(line)
+		t := float64(i) / float64(max(n-1, 1))
+		r := uint8(float64(fromR) + (float64(toR)-float64(fromR))*t)
+		g := uint8(float64(fromG) + (float64(toG)-float64(fromG))*t)
+		b := uint8(float64(fromB) + (float64(toB)-float64(fromB))*t)
+		lineColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b))
+		renderedLogo[i] = lipgloss.NewStyle().Foreground(lineColor).Bold(true).Render(line)
 		if w := lipgloss.Width(renderedLogo[i]); w > maxLogoW {
 			maxLogoW = w
 		}
@@ -775,16 +811,28 @@ func (m *cliModel) renderFooter() string {
 	} else {
 		// 就绪态：显示核心快捷键
 		if m.textarea.Value() == "" {
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterDelete), m.keyHint("/", m.locale.FooterCommands), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("e", m.locale.FooterFold))
-			if m.subscriptionMgr != nil {
+			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
+			if !m.isNarrow() {
+				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+			}
+			if !m.isCompact() {
+				hints = append(hints, m.ctrlKey("e", m.locale.FooterFold))
+			}
+			if m.subscriptionMgr != nil && !m.isNarrow() {
 				hints = append(hints, m.ctrlKey("p", "Subs"))
 			}
-			hints = append(hints, m.ctrlKey("t", "Sessions"))
-			if m.bgTaskCount > 0 {
+			if !m.isNarrow() {
+				hints = append(hints, m.ctrlKey("t", "Sessions"))
+			}
+			if m.bgTaskCount > 0 && !m.isCompact() {
 				hints = append(hints, m.keyHint("^", m.locale.FooterBgTasks))
 			}
 		} else {
-			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("k", m.locale.FooterDelete))
+			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline))
+			if !m.isNarrow() {
+				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+			}
+			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
 		}
 	}
 

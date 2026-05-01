@@ -85,23 +85,54 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		}
 	}
 	vals["context_mode"] = app.backend.GetContextMode()
-	if _, ok := vals["sandbox_mode"]; !ok {
-		vals["sandbox_mode"] = "none"
-	}
-	if _, ok := vals["memory_provider"]; !ok {
-		vals["memory_provider"] = "flat"
-	}
+	// ScopeGlobal keys: always override DB values with config (single source of truth).
+	// Old versions may have left stale values in user_settings DB; these must not
+	// override the config.json value. See Issue #18.
+	vals["sandbox_mode"] = func() string {
+		if app.cfg.Sandbox.Mode != "" {
+			return app.cfg.Sandbox.Mode
+		}
+		return "none"
+	}()
+	vals["memory_provider"] = func() string {
+		if app.cfg.Agent.MemoryProvider != "" {
+			return app.cfg.Agent.MemoryProvider
+		}
+		return "flat"
+	}()
+	vals["compression_threshold"] = func() string {
+		if app.cfg.Agent.CompressionThreshold > 0 {
+			return fmt.Sprintf("%g", app.cfg.Agent.CompressionThreshold)
+		}
+		return "0.9"
+	}()
+	vals["tavily_api_key"] = app.cfg.TavilyAPIKey
+	// ScopeUser keys (max_iterations, max_concurrency, max_context_tokens):
+	// Primary source is the user_settings DB (written by /set). Only fallback
+	// to config.json when DB has no value (first-run or never changed).
 	if _, ok := vals["max_iterations"]; !ok {
-		vals["max_iterations"] = "30"
+		vals["max_iterations"] = func() string {
+			if app.cfg.Agent.MaxIterations > 0 {
+				return fmt.Sprintf("%d", app.cfg.Agent.MaxIterations)
+			}
+			return "30"
+		}()
 	}
 	if _, ok := vals["max_concurrency"]; !ok {
-		vals["max_concurrency"] = "3"
+		vals["max_concurrency"] = func() string {
+			if app.cfg.Agent.MaxConcurrency > 0 {
+				return fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency)
+			}
+			return "3"
+		}()
 	}
 	if _, ok := vals["max_context_tokens"]; !ok {
-		vals["max_context_tokens"] = "200000" // default from config.go
-	}
-	if _, ok := vals["compression_threshold"]; !ok {
-		vals["compression_threshold"] = "0.9"
+		vals["max_context_tokens"] = func() string {
+			if app.cfg.Agent.MaxContextTokens > 0 {
+				return fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens)
+			}
+			return "200000"
+		}()
 	}
 	app.valuesCacheMu.Lock()
 	app.valuesCache = vals
@@ -523,6 +554,94 @@ func isLocalServer(serverURL string) bool {
 // newCLIApp 执行公共初始化：加载配置、创建 Backend。
 // If serverURL is non-empty, creates a RemoteBackend (agent runs on server).
 // Otherwise creates a LocalBackend (agent runs in-process).
+// buildPaletteExternalCommands collects commands from skills, plugins, and user
+// custom commands (~/.xbot/commands/*.md). Called each time the palette opens.
+func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand {
+	var cmds []channel.PaletteExternalCommand
+	home, _ := os.UserHomeDir()
+	xbotDir := home + "/.xbot"
+
+	// 1. Skills from ~/.xbot/skills/
+	if entries, err := os.ReadDir(xbotDir + "/skills"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") || name == "skill-creator" {
+				continue
+			}
+			cmds = append(cmds, channel.PaletteExternalCommand{
+				Title:       "Skill: " + name,
+				Description: "activate /" + name + " skill",
+				Category:    channel.PaletteCategorySkills,
+				Content:     "/" + name + " ",
+			})
+		}
+	}
+
+	// 2. Plugin commands from loaded plugins
+	if a.backend != nil {
+		if pm := a.backend.PluginManager(); pm != nil {
+			for _, p := range pm.ListPlugins() {
+				if p.Manifest == nil || p.Manifest.Contributes == nil {
+					continue
+				}
+				for _, cmd := range p.Manifest.Contributes.Commands {
+					cmds = append(cmds, channel.PaletteExternalCommand{
+						Title:       p.Manifest.Name + ": " + cmd.Name,
+						Description: cmd.Description,
+						Category:    channel.PaletteCategoryPlugins,
+						Content:     cmd.Name + " ",
+					})
+				}
+			}
+		}
+	}
+
+	// 3. User custom commands from ~/.xbot/commands/*.md (crush-style)
+	if entries, err := os.ReadDir(xbotDir + "/commands"); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+			content, err := os.ReadFile(xbotDir + "/commands/" + e.Name())
+			if err != nil {
+				continue
+			}
+			cmds = append(cmds, channel.PaletteExternalCommand{
+				Title:       name,
+				Description: "custom command",
+				Category:    channel.PaletteCategoryUser,
+				Content:     string(content),
+				Send:        true,
+			})
+		}
+	}
+
+	// 4. SubAgent roles from ~/.xbot/agents/
+	if entries, err := os.ReadDir(xbotDir + "/agents"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			cmds = append(cmds, channel.PaletteExternalCommand{
+				Title:       "Agent: " + name,
+				Description: "spawn " + name + " SubAgent",
+				Category:    channel.PaletteCategoryAgents,
+				Content:     "/agent " + name + " ",
+			})
+		}
+	}
+
+	return cmds
+}
+
 func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 	cfg := config.Load()
 
@@ -648,7 +767,63 @@ func (app *cliApp) Close() {
 	log.Close()
 }
 
+// ensureCJKWidth ensures consistent character width calculation between
+// go-runewidth (used by BubbleTea/ultraviolet renderer) and ansi.StringWidth
+// (used by xbot's hardWrapRunes/truncateToWidth/lipgloss).
+//
+// In CJK locales (LANG=zh_CN.UTF-8, ja_JP.UTF-8, ko_KR.UTF-8), go-runewidth
+// auto-detects EastAsianWidth=true, which makes ambiguous-width characters
+// (box-drawing │├─, block elements ▋, punctuation ·…) treated as 2 columns.
+// But ansi.StringWidth defaults to EastAsianWidth=false (only sets true when
+// RUNEWIDTH_EASTASIAN env var is explicitly set).
+//
+// This mismatch causes the terminal to render characters at different widths
+// than what the wrapping code expects, leading to CJK text being overwritten
+// during rapid streaming updates (Issue #14).
+//
+// We fix this by re-executing the process with RUNEWIDTH_EASTASIAN=1 when a
+// CJK locale is detected and the env var isn't already set. This ensures
+// both go-runewidth and ansi.StringWidth use EastAsianWidth=true.
+func ensureCJKWidth() {
+	if os.Getenv("RUNEWIDTH_EASTASIAN") != "" {
+		return // Already explicitly configured
+	}
+
+	lang := os.Getenv("LANG")
+	if !isCJKLocale(lang) {
+		return
+	}
+
+	os.Setenv("RUNEWIDTH_EASTASIAN", "1")
+
+	// syscall.Exec replaces the current process with a new one.
+	// This is necessary because Go's init() functions (including the
+	// ansi package's init that reads RUNEWIDTH_EASTASIAN) have already
+	// run before main().
+	execPath, err := os.Executable()
+	if err != nil {
+		return // Fall through, use default behavior
+	}
+	syscall.Exec(execPath, os.Args, os.Environ())
+	// If we reach here, exec failed — continue with default behavior.
+}
+
+// isCJKLocale returns true if the given locale string indicates CJK.
+func isCJKLocale(lang string) bool {
+	lang = strings.ToLower(lang)
+	for _, prefix := range []string{"zh_", "ja_", "ko_"} {
+		if strings.HasPrefix(lang, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
+	// Ensure consistent CJK character width in CJK locales.
+	// See: https://github.com/CjiW/xbot/issues/14
+	ensureCJKWidth()
+
 	xbotHome := config.XbotHome()
 	clipanic.EnableFileLogging(filepath.Join(xbotHome, "logs", "cli-panic.log"))
 	defer clipanic.Recover("main.main", nil, true)
@@ -1129,9 +1304,10 @@ func main() {
 			tenants, err := app.backend.ListTenants()
 			seen := make(map[string]bool) // dedup agent sessions by role:instance
 			if err == nil && len(tenants) > 0 {
-				// Fetch all interactive sessions across all chatIDs at once
-				// (empty chatID = list all for the channel).
-				allSessions := app.backend.ListInteractiveSessions("cli", "")
+				// Only show the current session's tenant and its SubAgents.
+				// Other sessions' agents are not relevant to the current conversation
+				// (Issue #17: sessions panel showed agents from unrelated sessions).
+				allSessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
 
 				for _, t := range tenants {
 					// Agent tenants (channel="agent") are not real "main" sessions —
@@ -1140,11 +1316,12 @@ func main() {
 					if t.Channel == "agent" {
 						continue
 					}
-					isActive := t.ChatID == absWorkDir && t.Channel == "cli"
-					label := fmt.Sprintf("[%s] %s", t.Channel, t.ChatID)
-					if isActive {
-						label = "主会话  You ↔ Agent"
+					// Only include the current session; other workdirs are separate conversations.
+					if t.ChatID != absWorkDir || t.Channel != "cli" {
+						continue
 					}
+					isActive := true // This is the current session
+					label := "主会话  You ↔ Agent"
 					entries = append(entries, channel.SessionPanelEntry{
 						ID:      t.ChatID,
 						Type:    "main",
@@ -1152,12 +1329,8 @@ func main() {
 						Label:   label,
 						Active:  isActive,
 					})
-					// SubAgent sessions: list agents belonging to this tenant's chatID.
-					// With cross-session listing, agents from other sessions are also visible.
+					// SubAgent sessions belonging to this session.
 					for _, s := range allSessions {
-						if s.ChatID != t.ChatID {
-							continue
-						}
 						agentKey := s.Role + ":" + s.Instance
 						if seen[agentKey] {
 							continue
@@ -1292,6 +1465,9 @@ func main() {
 		},
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
+		},
+		PaletteContributor: func() []channel.PaletteExternalCommand {
+			return app.buildPaletteExternalCommands()
 		},
 	}
 

@@ -556,6 +556,16 @@ type cliModel struct {
 	subscriptionMgr          SubscriptionManager // injected by CLIChannel
 	llmSubscriber            LLMSubscriber       // injected by CLIChannel
 
+	// --- §23 Command Palette (Ctrl+K) ---
+	paletteOpen           bool               // true = command palette overlay is active
+	paletteInput          textinput.Model    // filter input
+	paletteItems          []paletteCommand   // all available commands
+	paletteFiltered       []paletteCommand   // commands after fuzzy filter
+	paletteCursor         int                // selected index in filtered list
+	paletteScrollY        int                // scroll offset for visible items
+	paletteActiveCategory PaletteCategory    // active category tab (empty = all)
+	paletteContributor    PaletteContributor // external command provider (plugins/skills/agents)
+
 	// --- §16 Subscription generation guard ---
 	// subGeneration increments every time the active subscription actually changes.
 	// panelSubGeneration captures the generation when the settings panel opens.
@@ -624,6 +634,8 @@ type cliMessage struct {
 	content   string
 	timestamp time.Time
 	isPartial bool
+	// --- thinking/reasoning content (displayed in a collapsible box) ---
+	thinking string // raw reasoning text (stored when message is finalized)
 	// --- §1 增量渲染 ---
 	rendered    string // 缓存的渲染结果（ANSI 字符串）
 	dirty       bool   // 是否需要重新渲染

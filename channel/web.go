@@ -529,7 +529,7 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 	}
 	for _, sa := range p.SubAgents {
 		wp.SubAgents = append(wp.SubAgents, WsSubAgent{
-			Role: sa.Role, Status: sa.Status, Desc: sa.Desc,
+			Role: sa.Role, Instance: sa.Instance, Status: sa.Status, Desc: sa.Desc,
 			Children: convertCLISubAgentToWS(sa.Children),
 		})
 	}
@@ -593,6 +593,7 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 	for _, sa := range p.SubAgents {
 		cp.SubAgents = append(cp.SubAgents, CLISubAgent{
 			Role:     sa.Role,
+			Instance: sa.Instance,
 			Status:   sa.Status,
 			Desc:     sa.Desc,
 			Children: convertWsSubAgentToCLI(sa.Children),
@@ -621,12 +622,15 @@ type WsToolProgress struct {
 	Elapsed   int64  `json:"elapsed_ms,omitempty"` // milliseconds
 	Iteration int    `json:"iteration,omitempty"`
 	Summary   string `json:"summary,omitempty"`
-	ToolHints string `json:"toolHints,omitempty"` // markdown hint from plugin
+	Detail    string `json:"detail,omitempty"`    // full untruncated result
+	Args      string `json:"args,omitempty"`      // raw JSON tool arguments
+	ToolHints string `json:"toolHints,omitempty"` // markdown hint from plugin or built-in diff
 }
 
 // WsSubAgent 子 Agent 的结构化进度状态。
 type WsSubAgent struct {
 	Role     string       `json:"role"`
+	Instance string       `json:"instance,omitempty"`
 	Status   string       `json:"status"` // "running" | "done" | "error"
 	Desc     string       `json:"desc,omitempty"`
 	Children []WsSubAgent `json:"children,omitempty"`
@@ -641,6 +645,7 @@ func convertCLISubAgentToWS(children []CLISubAgent) []WsSubAgent {
 	for i, c := range children {
 		result[i] = WsSubAgent{
 			Role:     c.Role,
+			Instance: c.Instance,
 			Status:   c.Status,
 			Desc:     c.Desc,
 			Children: convertCLISubAgentToWS(c.Children),
@@ -658,6 +663,7 @@ func convertWsSubAgentToCLI(children []WsSubAgent) []CLISubAgent {
 	for i, c := range children {
 		result[i] = CLISubAgent{
 			Role:     c.Role,
+			Instance: c.Instance,
 			Status:   c.Status,
 			Desc:     c.Desc,
 			Children: convertWsSubAgentToCLI(c.Children),

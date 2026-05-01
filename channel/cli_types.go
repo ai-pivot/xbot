@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
-	"github.com/mattn/go-runewidth"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"sync"
 	"time"
@@ -50,17 +50,17 @@ func truncateToWidth(s string, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
 	}
-	if runewidth.StringWidth(s) <= maxWidth {
+	if ansi.StringWidth(s) <= maxWidth {
 		return s
 	}
 	ellipsis := "..."
-	target := maxWidth - runewidth.StringWidth(ellipsis)
+	target := maxWidth - ansi.StringWidth(ellipsis)
 	if target <= 0 {
 		return ellipsis[:maxWidth]
 	}
 	w := 0
 	for i, r := range s {
-		rw := runewidth.RuneWidth(r)
+		rw := ansi.StringWidth(string(r))
 		if w+rw > target {
 			return s[:i] + ellipsis
 		}
@@ -96,7 +96,7 @@ func hardWrapRunes(line string, maxW int) string {
 			}
 			continue
 		}
-		rw := runewidth.RuneWidth(r)
+		rw := ansi.StringWidth(string(r))
 		// Safety: if a rune has zero display width (combining chars, control
 		// chars, zero-width joiners), still emit it but don't let it block
 		// line wrapping.  Without this, a run of zero-width runes causes
@@ -136,19 +136,25 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	if t.GDocumentText != "" {
 		style.Document.Color = c(t.GDocumentText)
 	}
-	// 标题 (H1–H4)
+	// 标题 (H1–H6)
 	if t.GHeadingText != "" {
 		style.Heading.Color = c(t.GHeadingText)
 		style.H1.Color = c(t.GHeadingText)
 		style.H2.Color = c(t.GHeadingText)
 		style.H3.Color = c(t.GHeadingText)
 		style.H4.Color = c(t.GHeadingText)
+		style.H5.Color = c(t.GHeadingText)
+		style.H6.Color = c(t.GHeadingText)
 	}
-	// 代码块背景与文本
-	if t.GCodeBlock != "" {
-		style.CodeBlock.BackgroundColor = c(t.GCodeBlock)
+	// 代码块：首选 GCodeBlock，回退到 BGPanel
+	codeBg := t.GCodeBlock
+	if codeBg == "" {
+		codeBg = t.BGPanel
+	}
+	if codeBg != "" {
+		style.CodeBlock.BackgroundColor = c(codeBg)
 		if style.CodeBlock.Chroma != nil {
-			style.CodeBlock.Chroma.Background.BackgroundColor = c(t.GCodeBlock)
+			style.CodeBlock.Chroma.Background.BackgroundColor = c(codeBg)
 		}
 	}
 	if t.GCodeText != "" {
@@ -162,11 +168,13 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 		style.Link.Color = c(t.GLinkText)
 		style.LinkText.Color = c(t.GLinkText)
 	}
-	// 引用
+	// 引用 — 使用主题引导线色
 	if t.GBlockQuote != "" {
 		style.BlockQuote.Color = c(t.GBlockQuote)
-		style.BlockQuote.IndentToken = c("│ ")
 	}
+
+	style.BlockQuote.IndentToken = c("│ ")
+
 	// 列表项
 	if t.GListItem != "" {
 		style.Item.Color = c(t.GListItem)
@@ -174,6 +182,11 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	// 水平分隔线
 	if t.GHorizontalRule != "" {
 		style.HorizontalRule.Color = c(t.GHorizontalRule)
+	}
+	// 强调/加粗文本使用主题强调色
+	if t.Accent != "" {
+		style.Emph.Color = c(t.Accent)
+		style.Strong.Color = c(t.AccentAlt)
 	}
 
 	r, _ := glamour.NewTermRenderer(
@@ -185,11 +198,32 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
 var cliCommands = []string{
-	"/cancel", "/channel", "/chat", "/clear", "/compact", "/context", "/exit",
-	"/help", "/model", "/models", "/new", "/plugin", "/quit", "/rewind", "/search",
+	"/cancel", "/channel", "/chat", "/clear", "/commands", "/compact", "/context", "/exit",
+	"/help", "/model", "/models", "/new", "/palette", "/plugin", "/quit", "/rewind", "/search",
 	"/sessions", "/settings", "/setup", "/ss", "/su", "/tasks", "/update",
 	"/usage", "/user",
 }
+
+// --- Unified Unicode icons ---
+// 避免 emoji/ASCII/Unicode 混用，统一视觉风格。
+const (
+	IconCheck      = "✓" // 成功/完成
+	IconCross      = "✗" // 错误/失败
+	IconDot        = "●" // 进行中/活跃
+	IconArrow      = "→" // 方向/进度
+	IconBullet     = "•" // 列表项
+	IconWarning    = "⚠" // 警告
+	IconInfo       = "ℹ" // 信息
+	IconSearch     = "🔍" // 搜索
+	IconRobot      = "🤖" // Agent/SubAgent
+	IconRunnerOn   = "🟢" // Runner 在线
+	IconRunnerWait = "🟡" // Runner 连接中
+	IconUser       = "👤" // 用户切换
+	IconGear       = "⚙" // 设置
+	IconCloudOn    = "☁" // 远程已连接
+	IconCloudOff   = "⊘" // 远程已断开
+	IconCloudWait  = "◌" // 远程重连中
+)
 
 // §19 长消息折叠阈值
 const (
@@ -243,13 +277,16 @@ type CLIToolProgress struct {
 	Elapsed   int64 // milliseconds (from progress event)
 	Iteration int   // 所属迭代 ID
 	Summary   string
-	ToolHints string    // markdown hint from plugin (rendered with glamour)
+	Detail    string    // full untruncated tool result (for per-tool body rendering)
+	Args      string    // raw JSON tool arguments (for per-tool rendering)
+	ToolHints string    // markdown hint from plugin or built-in diff
 	StartedAt time.Time // when tool started (for live elapsed timer)
 }
 
 // CLISubAgent 子 Agent 的结构化进度状态。
 type CLISubAgent struct {
 	Role     string
+	Instance string
 	Status   string // "running" | "done" | "error"
 	Desc     string
 	Children []CLISubAgent
@@ -562,6 +599,7 @@ type CLIChannelConfig struct {
 	ListWebUsersFn       func() ([]map[string]any, error)                                                                               // 列出所有 Web 用户
 	DeleteWebUserFn      func(username string) error                                                                                    // 删除 Web 用户（admin only）
 	IsAdminFn            func() bool                                                                                                    // 检查当前用户是否 admin
+	PaletteContributor   PaletteContributor                                                                                             // supplies external commands for command palette
 }
 
 type AgentPanelEntry struct {
@@ -625,9 +663,10 @@ type CLIChannel struct {
 	asyncCh    chan tea.Msg // unified async send channel (buffered)
 
 	// Services (injected by Agent or main)
-	settingsSvc SettingsService // interface for GetSettings/SetSetting
-	configMu    sync.RWMutex    // protects runner LLM fields (llmClient, modelList, llmProvider)
-	modelLister ModelLister     // provides available model names for combo
+	settingsSvc        SettingsService    // interface for GetSettings/SetSetting
+	configMu           sync.RWMutex       // protects runner LLM fields (llmClient, modelList, llmProvider)
+	modelLister        ModelLister        // provides available model names for combo
+	PaletteContributor PaletteContributor // supplies external commands (plugins/skills/agents/custom)
 
 	// Multi-subscription management
 	subscriptionMgr SubscriptionManager // manages LLM subscriptions

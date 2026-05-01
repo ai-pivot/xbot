@@ -105,7 +105,7 @@ type UILocale struct {
 	FooterKill     string // "kill"
 	FooterClose    string // "close"
 	FooterCancel   string // "cancel"
-	FooterDelete   string // "delete"
+	FooterPalette  string // "palette"
 	FooterCommands string // "commands"
 	FooterComplete string // "complete"
 	FooterBgTasks  string // "bg tasks"
@@ -164,9 +164,10 @@ type UILocale struct {
 	DangerArchival           string // "Archival Memory (vector DB)"
 
 	// --- N. Message queue ---
-	MessageQueued   string // "⏳ Message queued (%d pending)"
-	MessageQueuedUp string // "⏳ Message queued (%d pending) — ↑ to recall · Esc to cancel"
-	QueuePending    string // "📬 %d queued" — persistent status bar indicator
+	MessageQueued    string // "⏳ Message queued (%d pending)"
+	MessageQueuedUp  string // "⏳ Message queued (%d pending) — ↑ to recall · Esc to cancel"
+	QueuePending     string // "📬 %d queued" — persistent status bar indicator
+	QueueItemRemoved string // "Removed queued message: %s"
 
 	// --- I. Dynamic arrays ---
 	ThinkingVerbs    []string // spinner verbs: Thinking, Reasoning, ...
@@ -244,7 +245,7 @@ func localeZH() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter 发送 · Ctrl+J 换行 · /help",
-		ProcessingPlaceholder: "[处理中...] (Ctrl+C 取消)",
+		ProcessingPlaceholder: "[处理中...] 输入消息排队 · Ctrl+C 取消",
 		CheckingUpdates:       "⟳ 正在检查更新...",
 		StatusReady:           "● 就绪",
 		StatusCompressing:     "压缩中",
@@ -271,31 +272,30 @@ func localeZH() *UILocale {
 		HelpCommandsTitle:  " 命令 ",
 		HelpShortcutsTitle: " 快捷键 ",
 		HelpCmds: []HelpCmdEntry{
+			{Cmd: "/commands", Desc: "打开命令面板 (Ctrl+K)"},
 			{Cmd: "/cancel", Desc: "取消当前操作"},
 			{Cmd: "/clear", Desc: "清空聊天记录"},
-			{Cmd: "/channel", Desc: "配置频道 (Web/飞书/QQ)"},
 			{Cmd: "/compact", Desc: "压缩上下文"},
-			{Cmd: "/user", Desc: "管理 Web 用户 (admin)"},
 			{Cmd: "/model", Desc: "切换模型"},
 			{Cmd: "/models", Desc: "列出可用模型"},
 			{Cmd: "/context", Desc: "查看上下文信息"},
 			{Cmd: "/new", Desc: "开始新会话"},
-			{Cmd: "/quit", Desc: "退出程序"},
 			{Cmd: "/rewind", Desc: "回退对话"},
 			{Cmd: "/settings", Desc: "打开设置面板"},
-			{Cmd: "/setup", Desc: "重新运行配置引导"},
-			{Cmd: "/tasks", Desc: "查看任务和代理"},
 			{Cmd: "/update", Desc: "检查更新"},
 			{Cmd: "/help", Desc: "显示此帮助"},
 		},
 		HelpKeys: []HelpKeyEntry{
-			{Key: "Enter", Desc: "发送消息"},
-			{Key: "Ctrl+C/Esc", Desc: "中止/清空"},
-			{Key: "Ctrl+J", Desc: "输入框换行"},
+			{Key: "Ctrl+K", Desc: "命令面板（所有操作入口）"},
+			{Key: "Ctrl+T", Desc: "会话列表"},
+			{Key: "Ctrl+P", Desc: "切换模型"},
+			{Key: "Ctrl+N", Desc: "下一个模型"},
 			{Key: "Ctrl+O", Desc: "展开/折叠工具"},
+			{Key: "Ctrl+J", Desc: "输入框换行"},
 			{Key: "Tab", Desc: "命令/路径补全"},
-			{Key: "Home/End", Desc: "跳到顶/底部"},
-			{Key: "↑", Desc: "后台任务面板"},
+			{Key: "Shift+↑", Desc: "追回排队消息编辑"},
+			{Key: "^", Desc: "后台任务面板"},
+			{Key: "Ctrl+C", Desc: "取消操作/删除排队消息"},
 		},
 
 		// --- E2. Fold messages (§19) ---
@@ -325,7 +325,7 @@ func localeZH() *UILocale {
 		FooterKill:     "终止",
 		FooterClose:    "关闭",
 		FooterCancel:   "取消",
-		FooterDelete:   "删除",
+		FooterPalette:  "命令面板",
 		FooterCommands: "命令",
 		FooterComplete: "补全",
 		FooterBgTasks:  "任务/代理",
@@ -384,21 +384,20 @@ func localeZH() *UILocale {
 		DangerArchival:           "归档记忆（向量数据库）",
 
 		// --- N. Message queue ---
-		MessageQueued:   "⏳ 消息已排队（%d 条待发送）",
-		MessageQueuedUp: "⏳ 消息已排队（%d 条待发送）— ↑ 追回编辑 · Esc 撤销",
-		QueuePending:    "📬 %d 条排队中",
+		MessageQueued:    "⏳ 消息已排队（%d 条待发送）",
+		MessageQueuedUp:  "⏳ 消息已排队（%d 条待发送）— Shift+↑ 追回编辑 · Esc 撤销",
+		QueuePending:     "📬 %d 条排队中",
+		QueueItemRemoved: "已移除排队消息：%s",
 
 		// --- I. Dynamic arrays ---
 		ThinkingVerbs: []string{"思考中", "推理中", "分析中", "考虑中", "评估中", "反思中", "处理中", "沉思中"},
 		IdlePlaceholders: []string{
 			"Enter 发送 · Ctrl+J 换行 · /help",
-			"/model 切换模型",
-			"Ctrl+O 工具",
+			"Ctrl+K 命令面板",
+			"Ctrl+T 会话 · Ctrl+K 命令",
 			"@filepath 附加文件",
-			"^ 打开后台任务面板",
-			"/compact 压缩上下文",
-			"/settings 打开设置",
-			"/new 开始新会话",
+			"Ctrl+P 切换模型",
+			"Ctrl+K → 所有命令",
 		},
 
 		// --- J. Settings schema ---
@@ -631,7 +630,7 @@ func localeEN() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter send · Ctrl+J newline · /help",
-		ProcessingPlaceholder: "[Processing...] (Ctrl+C to cancel)",
+		ProcessingPlaceholder: "[Processing...] type to queue · Ctrl+C cancel",
 		CheckingUpdates:       "⟳ checking for updates...",
 		StatusReady:           "● ready",
 		StatusCompressing:     "compressing",
@@ -654,31 +653,30 @@ func localeEN() *UILocale {
 		HelpCommandsTitle:  " Commands ",
 		HelpShortcutsTitle: " Shortcuts ",
 		HelpCmds: []HelpCmdEntry{
+			{Cmd: "/commands", Desc: "Open command palette (Ctrl+K)"},
 			{Cmd: "/cancel", Desc: "Cancel current operation"},
 			{Cmd: "/clear", Desc: "Clear chat history"},
-			{Cmd: "/channel", Desc: "Configure channels (Web/Feishu/QQ)"},
 			{Cmd: "/compact", Desc: "Compress context"},
-			{Cmd: "/user", Desc: "Manage Web users (admin)"},
 			{Cmd: "/model", Desc: "Switch model"},
 			{Cmd: "/models", Desc: "List available models"},
 			{Cmd: "/context", Desc: "View context info"},
 			{Cmd: "/new", Desc: "Start new session"},
-			{Cmd: "/quit", Desc: "Quit"},
 			{Cmd: "/rewind", Desc: "Rewind conversation"},
 			{Cmd: "/settings", Desc: "Open settings panel"},
-			{Cmd: "/setup", Desc: "Re-run setup wizard"},
-			{Cmd: "/tasks", Desc: "View tasks & agents"},
 			{Cmd: "/update", Desc: "Check for updates"},
 			{Cmd: "/help", Desc: "Show this help"},
 		},
 		HelpKeys: []HelpKeyEntry{
-			{Key: "Enter", Desc: "Send message"},
-			{Key: "Ctrl+C/Esc", Desc: "Abort/clear"},
-			{Key: "Ctrl+J", Desc: "Newline in input"},
+			{Key: "Ctrl+K", Desc: "Command palette (all actions)"},
+			{Key: "Ctrl+T", Desc: "Sessions list"},
+			{Key: "Ctrl+P", Desc: "Switch model"},
+			{Key: "Ctrl+N", Desc: "Next model"},
 			{Key: "Ctrl+O", Desc: "Expand/collapse tools"},
+			{Key: "Ctrl+J", Desc: "Newline in input"},
 			{Key: "Tab", Desc: "Command/path completion"},
-			{Key: "Home/End", Desc: "Jump to top/bottom"},
-			{Key: "↑", Desc: "Background tasks panel"},
+			{Key: "Shift+↑", Desc: "Recall queued message"},
+			{Key: "^", Desc: "Background tasks panel"},
+			{Key: "Ctrl+C", Desc: "Cancel / remove queued messages"},
 		},
 
 		// --- E2. Fold messages (§19) ---
@@ -708,7 +706,7 @@ func localeEN() *UILocale {
 		FooterKill:     "kill",
 		FooterClose:    "close",
 		FooterCancel:   "cancel",
-		FooterDelete:   "delete",
+		FooterPalette:  "palette",
 		FooterCommands: "commands",
 		FooterComplete: "complete",
 		FooterBgTasks:  "tasks/agents",
@@ -767,21 +765,20 @@ func localeEN() *UILocale {
 		DangerArchival:           "Archival Memory (vector DB)",
 
 		// --- N. Message queue ---
-		MessageQueued:   "⏳ Message queued (%d pending)",
-		MessageQueuedUp: "⏳ Message queued (%d pending) — ↑ to recall · Esc to cancel",
-		QueuePending:    "📬 %d queued",
+		MessageQueued:    "⏳ Message queued (%d pending)",
+		MessageQueuedUp:  "⏳ Message queued (%d pending) — Shift+↑ recall · Esc cancel",
+		QueuePending:     "📬 %d queued",
+		QueueItemRemoved: "Removed queued message: %s",
 
 		// --- I. Dynamic arrays ---
 		ThinkingVerbs: []string{"Thinking", "Reasoning", "Analyzing", "Considering", "Evaluating", "Reflecting", "Processing", "Contemplating"},
 		IdlePlaceholders: []string{
 			"Enter send · Ctrl+J newline · /help",
-			"Type /model to switch model",
-			"Ctrl+O tools",
+			"Ctrl+K command palette",
+			"Ctrl+T sessions · Ctrl+K commands",
 			"@filepath to attach files",
-			"^ open background tasks panel",
-			"Type /compact to compress context",
-			"Type /settings to configure",
-			"Type /new to start fresh session",
+			"Ctrl+P switch model",
+			"Ctrl+K → all commands",
 		},
 
 		// --- J. Settings schema ---
@@ -1014,7 +1011,7 @@ func localeJA() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter 送信 · Ctrl+J 改行 · /help",
-		ProcessingPlaceholder: "[処理中...] (Ctrl+C キャンセル)",
+		ProcessingPlaceholder: "[処理中...] 入力でキュー · Ctrl+C キャンセル",
 		CheckingUpdates:       "⟳ アップデート確認中...",
 		StatusReady:           "● 準備完了",
 		StatusCompressing:     "圧縮中",
@@ -1037,31 +1034,30 @@ func localeJA() *UILocale {
 		HelpCommandsTitle:  " コマンド ",
 		HelpShortcutsTitle: " ショートカット ",
 		HelpCmds: []HelpCmdEntry{
+			{Cmd: "/commands", Desc: "コマンドパレットを開く (Ctrl+K)"},
 			{Cmd: "/cancel", Desc: "現在の操作をキャンセル"},
 			{Cmd: "/clear", Desc: "チャット履歴をクリア"},
-			{Cmd: "/channel", Desc: "チャンネル設定 (Web/飛書/QQ)"},
 			{Cmd: "/compact", Desc: "コンテキストを圧縮"},
-			{Cmd: "/user", Desc: "Webユーザー管理 (admin)"},
 			{Cmd: "/model", Desc: "モデル切替"},
 			{Cmd: "/models", Desc: "利用可能モデル一覧"},
 			{Cmd: "/context", Desc: "コンテキスト情報表示"},
 			{Cmd: "/new", Desc: "新規セッション開始"},
-			{Cmd: "/quit", Desc: "終了"},
 			{Cmd: "/rewind", Desc: "会話を巻き戻す"},
 			{Cmd: "/settings", Desc: "設定パネルを開く"},
-			{Cmd: "/setup", Desc: "セットアップウィザード再実行"},
-			{Cmd: "/tasks", Desc: "タスクとエージェント表示"},
 			{Cmd: "/update", Desc: "アップデート確認"},
 			{Cmd: "/help", Desc: "ヘルプ表示"},
 		},
 		HelpKeys: []HelpKeyEntry{
-			{Key: "Enter", Desc: "メッセージ送信"},
-			{Key: "Ctrl+C/Esc", Desc: "中止/クリア"},
-			{Key: "Ctrl+J", Desc: "入力欄で改行"},
+			{Key: "Ctrl+K", Desc: "コマンドパレット（全操作の入口）"},
+			{Key: "Ctrl+T", Desc: "セッション一覧"},
+			{Key: "Ctrl+P", Desc: "モデル切替"},
+			{Key: "Ctrl+N", Desc: "次のモデル"},
 			{Key: "Ctrl+O", Desc: "ツール展開/折りたたみ"},
+			{Key: "Ctrl+J", Desc: "入力欄で改行"},
 			{Key: "Tab", Desc: "コマンド/パス補完"},
-			{Key: "Home/End", Desc: "先頭/末尾へ移動"},
-			{Key: "↑", Desc: "バックグラウンドタスクパネル"},
+			{Key: "Shift+↑", Desc: "キューメッセージを編集"},
+			{Key: "^", Desc: "バックグラウンドタスクパネル"},
+			{Key: "Ctrl+C", Desc: "キャンセル / キュー削除"},
 		},
 
 		// --- E2. Fold messages (§19) ---
@@ -1091,7 +1087,7 @@ func localeJA() *UILocale {
 		FooterKill:     "終了",
 		FooterClose:    "閉じる",
 		FooterCancel:   "キャンセル",
-		FooterDelete:   "削除",
+		FooterPalette:  "パレット",
 		FooterCommands: "コマンド",
 		FooterComplete: "補完",
 		FooterBgTasks:  "タスク/エージェント",
@@ -1150,21 +1146,20 @@ func localeJA() *UILocale {
 		DangerArchival:           "アーカイブ記憶（ベクトルDB）",
 
 		// --- N. Message queue ---
-		MessageQueued:   "⏳ メッセージをキューに入れました（%d 件保留中）",
-		MessageQueuedUp: "⏳ メッセージをキューに入れました（%d 件保留中）— ↑ 編集 · Esc キャンセル",
-		QueuePending:    "📬 %d 件キュー中",
+		MessageQueued:    "⏳ メッセージをキューに入れました（%d 件保留中）",
+		MessageQueuedUp:  "⏳ メッセージをキューに入れました（%d 件保留中）— Shift+↑ 編集 · Esc キャンセル",
+		QueuePending:     "📬 %d 件キュー中",
+		QueueItemRemoved: "キューのメッセージを削除：%s",
 
 		// --- I. Dynamic arrays ---
 		ThinkingVerbs: []string{"思考中", "推論中", "分析中", "検討中", "評価中", "振り返り", "処理中", "熟考中"},
 		IdlePlaceholders: []string{
 			"Enter 送信 · Ctrl+J 改行 · /help",
-			"/model でモデル切替",
-			"Ctrl+O ツール",
+			"Ctrl+K コマンドパレット",
+			"Ctrl+T セッション · Ctrl+K コマンド",
 			"@filepath でファイル添付",
-			"^ バックグラウンドタスクパネル",
-			"/compact でコンテキスト圧縮",
-			"/settings で設定",
-			"/new で新規セッション",
+			"Ctrl+P モデル切替",
+			"Ctrl+K → 全コマンド",
 		},
 
 		// --- J. Settings schema ---

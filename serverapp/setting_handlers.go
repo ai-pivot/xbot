@@ -147,6 +147,8 @@ var serverKnownNonRuntimeKeys = map[string]bool{
 	"runner_server": true, "runner_token": true, "runner_workspace": true,
 	"enable_stream": true, "enable_masking": true,
 	"default_user": true, "privileged_user": true,
+	// Legacy keys removed in v0.0.32+ — may still exist in DB from older versions.
+	"memory_window": true,
 }
 
 // applyRuntimeSetting applies a single setting change to the in-memory config and backend.

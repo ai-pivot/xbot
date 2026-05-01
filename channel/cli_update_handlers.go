@@ -75,6 +75,13 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 		return m, nil, true
 
+	case msg.String() == "ctrl+k":
+		// §23 Ctrl+K: Command Palette — always available, even in panels
+		if !m.paletteOpen {
+			m.openCommandPalette()
+			return m, nil, true
+		}
+
 	case msg.String() == "ctrl+p":
 		// Ctrl+P: Quick switch subscription
 		if m.panelMode == "" && m.subscriptionMgr != nil && !m.typing {
@@ -343,6 +350,12 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.ReasoningStreamContent != "" {
 				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
 			}
+			// If reasoning is arriving and the current iteration has already
+			// been snapshotted (completed), this reasoning belongs to a new
+			// iteration that hasn't received a structured progress update yet.
+			// Advance the iteration number so reasoning isn't attributed to
+			// the wrong iteration snapshot.
+			m.advanceIterationForReasoning(m.progress)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
 			m.progress = msg.payload
@@ -370,6 +383,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	m.restoreIterationHistory(m.progress)
 
 	m.carryForwardProgressState(prev)
+
+	// After TUI restart, the restored progress may have reasoning content
+	// that belongs to a new iteration (beyond the last completed snapshot).
+	// Advance the iteration number so reasoning is displayed correctly.
+	m.advanceIterationForReasoning(m.progress)
 
 	// Update bg task count from callback
 	if m.bgTaskCountFn != nil {
@@ -460,7 +478,7 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 		}
 		prevReasoning := prev.Reasoning
 		if prevReasoning == "" {
-			prevReasoning = prev.ReasoningStreamContent
+			prevReasoning = m.lastReasoning
 		}
 		if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 			snap := cliIterationSnapshot{
@@ -474,6 +492,26 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 		}
 		m.lastCompletedTools = m.lastCompletedTools[:0]
 		m.lastSeenIteration = payload.Iteration
+		m.iterationStartTime = time.Now()
+	}
+}
+
+// advanceIterationForReasoning advances the iteration number in a progress
+// payload if reasoning content exists but the iteration matches a completed
+// snapshot. This prevents reasoning stream content from being attributed to
+// the wrong iteration (e.g. after TUI restart, or when the agent starts
+// reasoning for a new iteration before sending the first structured update).
+func (m *cliModel) advanceIterationForReasoning(progress *CLIProgressPayload) {
+	if progress == nil || progress.ReasoningStreamContent == "" {
+		return
+	}
+	if len(m.iterationHistory) == 0 {
+		return
+	}
+	lastSnap := m.iterationHistory[len(m.iterationHistory)-1]
+	if lastSnap.Iteration == progress.Iteration && progress.Iteration > 0 {
+		progress.Iteration++
+		m.lastSeenIteration = progress.Iteration
 		m.iterationStartTime = time.Now()
 	}
 }
@@ -519,14 +557,15 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 				ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 			}
 			// Carry over reasoning: priority is lastReasoning (captured before progress clear)
-			// > prev progress Reasoning > prev ReasoningStreamContent
+			// > prev progress Reasoning (server-authoritative, from ReasoningContent)
 			// > PhaseDone payload Reasoning
+			// Note: prev.ReasoningStreamContent is intentionally NOT used — streaming
+			// content may be polluted by the next iteration's reasoning stream that
+			// arrived between structured progress updates.
 			if m.lastReasoning != "" {
 				snap.Reasoning = m.lastReasoning
 			} else if prev != nil && prev.Reasoning != "" {
 				snap.Reasoning = prev.Reasoning
-			} else if prev != nil && prev.ReasoningStreamContent != "" {
-				snap.Reasoning = prev.ReasoningStreamContent
 			} else if msg.payload.Reasoning != "" {
 				snap.Reasoning = msg.payload.Reasoning
 			}
@@ -551,9 +590,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 		}
 	}
 	// Reset all iteration tracking state (always, even if handleAgentMessage ran first)
-	m.todos = nil
-	m.todosDoneCleared = false
-	m.endAgentTurn(turnID)
+	m.endAgentTurn(turnID) // also clears todos and does relayoutViewport
 	if turnID == m.agentTurnID {
 		m.inputReady = true
 		if len(m.messageQueue) > 0 {
@@ -878,52 +915,89 @@ func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
 // Agents only in prev are kept as-is (they may have completed between server updates).
 // Agents only in new are added.
 //
+// Uniqueness key: Role + ":" + Instance. When Instance is empty, Role alone is used.
+// This prevents same-role different-instance agents from being merged into one.
+//
 // Key rule: if an agent in prev is NOT in new, it means the server stopped reporting
-// it. This is normal — the server only reports actively-running agents. We keep
-// completed agents visible so the user sees the full execution tree.
+// it. This is normal — the server only reports actively-running agents. We mark
+// stale running/pending agents as "done" so they don't linger in the progress panel
+// (Issue #29: zombie agents that completed but were never marked done by the server).
 func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 	if len(prev) == 0 {
 		return new
 	}
 	if len(new) == 0 {
+		// Mark all running/pending agents as done — they completed while the
+		// server wasn't reporting them.
+		for i := range prev {
+			prev[i] = markDoneIfRunning(prev[i])
+		}
 		return prev
 	}
 
-	// Build lookup from new by Role (unique key: "role/instance")
-	newByRole := make(map[string]int, len(new))
+	// Build lookup from new by unique key (Role + Instance)
+	newByKey := make(map[string]int, len(new))
 	for i, a := range new {
-		newByRole[a.Role] = i
+		key := subAgentKey(a.Role, a.Instance)
+		newByKey[key] = i
 	}
 
 	result := make([]CLISubAgent, 0, len(prev)+len(new))
 
 	// Start with all prev entries, updating those that have new data
 	for _, p := range prev {
-		if idx, ok := newByRole[p.Role]; ok {
+		key := subAgentKey(p.Role, p.Instance)
+		if idx, ok := newByKey[key]; ok {
 			// Agent exists in both — merge: use new data but recursively merge children
 			n := new[idx]
 			merged := n
 			merged.Children = mergeSubAgentTrees(p.Children, n.Children)
 			result = append(result, merged)
-			delete(newByRole, p.Role)
+			delete(newByKey, key)
 		} else {
-			// Agent only in prev — keep as-is (completed or stale)
-			result = append(result, p)
+			// Agent only in prev — server stopped reporting it.
+			// Mark as done if still running/pending (it completed between updates).
+			result = append(result, markDoneIfRunning(p))
 		}
 	}
 
 	// Add agents only in new
-	for role := range newByRole {
-		result = append(result, new[newByRole[role]])
+	for key := range newByKey {
+		result = append(result, new[newByKey[key]])
 	}
 
 	return result
+}
+
+// subAgentKey builds a unique key for a SubAgent from Role and Instance.
+func subAgentKey(role, instance string) string {
+	if instance == "" {
+		return role
+	}
+	return role + ":" + instance
+}
+
+// markDoneIfRunning marks a SubAgent and its children as done if they are
+// still in running/pending state. This handles the case where the server
+// stops reporting a completed SubAgent — without this, the agent would
+// linger as "running" forever (Issue #29).
+func markDoneIfRunning(sa CLISubAgent) CLISubAgent {
+	if sa.Status == "running" || sa.Status == "pending" {
+		sa.Status = "done"
+	}
+	for i := range sa.Children {
+		sa.Children[i] = markDoneIfRunning(sa.Children[i])
+	}
+	return sa
 }
 
 // handleCtrlC handles the unified Ctrl+C keypress.
 // Returns (model, cmd, handled). If handled is true, Update() returns immediately.
 func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 	// 1. 关闭所有 overlay/panel
+	if m.paletteOpen {
+		m.closeCommandPalette()
+	}
 	if m.quickSwitchMode != "" {
 		m.quickSwitchMode = ""
 	}
@@ -943,15 +1017,32 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 		m.textarea.SetValue("")
 	}
 	// 3. 如果 agent 正在处理：
-	//    - 有排队消息：只清空队列，不发 cancel（需要再按一次 Ctrl+C 才 cancel）
+	//    - 有排队消息：先删除最后一条（再按清空全部，再按 cancel agent）
 	//    - 无排队消息：发送 cancel
 	if m.typing {
 		queueLen := len(m.messageQueue)
 		if queueLen > 0 {
-			m.messageQueue = nil
-			m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
+			if m.queueEditing {
+				// 正在编辑排队消息 → 取消编辑并删除该消息
+				removed := m.messageQueue[len(m.messageQueue)-1]
+				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
+				m.queueEditing = false
+				m.queueEditBuf = ""
+				m.textarea.SetValue("")
+				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved, removed), feedbackInfo)
+			} else if queueLen > 1 {
+				// 多条排队 → 删除最后一条
+				removed := m.messageQueue[len(m.messageQueue)-1]
+				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
+				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved+". "+m.locale.QueueCleared, removed, len(m.messageQueue)), feedbackInfo)
+			} else {
+				// 只剩一条 → 清空全部
+				m.messageQueue = nil
+				m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
+			}
 		} else {
 			m.sendCancel()
+			m.turnCancelled = true // prevent stale progress from auto-starting after cancel
 		}
 		return m, nil, true
 	}

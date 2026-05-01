@@ -151,13 +151,13 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		for _, t := range s.ActiveTools {
 			cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
 			})
 		}
 		for _, t := range s.CompletedTools {
 			cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
 			})
 		}
 		if len(s.Todos) > 0 {
@@ -185,13 +185,13 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			for _, t := range s.ActiveTools {
 				wsPayload.ActiveTools = append(wsPayload.ActiveTools, channelpkg.WsToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
 				wsPayload.CompletedTools = append(wsPayload.CompletedTools, channelpkg.WsToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, ToolHints: t.ToolHints,
+					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			if len(s.Todos) > 0 {
@@ -349,7 +349,7 @@ func (a *Agent) SpawnInteractiveSession(
 	if msg.Metadata != nil {
 		subModel = msg.Metadata["model"]
 	}
-	cfg := a.buildSubAgentRunConfig(subCtx, parentCtx, msg.Content, msg.SystemPrompt, msg.AllowedTools, caps, roleName, true, subModel)
+	cfg := a.buildSubAgentRunConfig(subCtx, parentCtx, msg.Content, msg.SystemPrompt, msg.AllowedTools, caps, roleName, true, instance, subModel)
 
 	// Update placeholder with system prompt + user message so CLI session viewer
 	// can display them while Run() is executing (before the full session data
@@ -404,12 +404,14 @@ func (a *Agent) SpawnInteractiveSession(
 			rn := roleName
 			myDepth := cc.Depth() + 1
 			myPath := cc.Spawn(rn).Chain
+			inst := instance
 			cfg.ProgressNotifier = func(lines []string) {
 				if len(lines) > 0 {
 					cb(SubAgentProgressDetail{
-						Path:  myPath,
-						Lines: lines,
-						Depth: myDepth,
+						Path:     myPath,
+						Lines:    lines,
+						Depth:    myDepth,
+						Instance: inst,
 					})
 				}
 			}
@@ -796,12 +798,14 @@ func (a *Agent) SendToInteractiveSession(
 		if cb, ok := SubAgentProgressFromContext(ctx); ok {
 			myDepth := cc.Depth() + 1
 			myPath := cc.Spawn(roleName).Chain
+			inst := instance
 			cfg.ProgressNotifier = func(lines []string) {
 				if len(lines) > 0 {
 					cb(SubAgentProgressDetail{
-						Path:  myPath,
-						Lines: lines,
-						Depth: myDepth,
+						Path:     myPath,
+						Lines:    lines,
+						Depth:    myDepth,
+						Instance: inst,
 					})
 				}
 			}

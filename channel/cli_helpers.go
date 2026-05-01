@@ -329,7 +329,21 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	m.rwVisible = 0
 	m.typing = false
 	m.typewriterTickActive = false
-	m.turnCancelled = true // prevent stale progress from auto-starting after cancel
+	// Do NOT set turnCancelled here — this is normal turn completion,
+	// not a user cancel. Setting turnCancelled=true here prevents
+	// the next turn (from message queue flush) from receiving progress
+	// events, causing Issue #30: queue-flushed messages appear idle.
+	m.turnCancelled = false
+	// Collapse todos on turn end. If all done, clear and mark so stale
+	// progress events don't re-fill them. Otherwise just nil the slice.
+	if m.allTodosDone() {
+		m.todos = nil
+		m.todosDoneCleared = true
+	} else {
+		m.todos = nil
+		m.todosDoneCleared = false
+	}
+	m.relayoutViewport()
 	// Refresh agent count so the tick chain continues if agents exist
 	if m.agentCountFn != nil {
 		m.agentCount = m.agentCountFn()

@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mattn/go-runewidth"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/pgavlin/mermaid-ascii/pkg/diagram"
 	"github.com/pgavlin/mermaid-ascii/pkg/render"
 )
@@ -43,7 +43,7 @@ func renderMermaidBlocks(content string, maxW int) string {
 			lines := strings.Split(output, "\n")
 			for i, line := range lines {
 				line = strings.TrimRight(line, " \t")
-				if runewidth.StringWidth(line) > maxW {
+				if ansi.StringWidth(line) > maxW {
 					lines[i] = truncateStringWidth(line, maxW)
 				} else {
 					lines[i] = line
@@ -62,7 +62,7 @@ func truncateStringWidth(s string, maxW int) string {
 	var buf strings.Builder
 	w := 0
 	for _, r := range s {
-		rw := runewidth.RuneWidth(r)
+		rw := ansi.StringWidth(string(r))
 		if w+rw > maxW {
 			break
 		}

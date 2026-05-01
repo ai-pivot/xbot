@@ -266,7 +266,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 	}
 
 	// Default: one-shot mode
-	result, err := ctx.Manager.RunSubAgent(ctx, params.Task, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Role, effectiveModel)
+	result, err := ctx.Manager.RunSubAgent(ctx, params.Task, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Role, params.Instance, effectiveModel)
 	if err != nil {
 		return nil, fmt.Errorf("sub-agent failed: %w", err)
 	}

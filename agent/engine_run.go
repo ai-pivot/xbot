@@ -56,14 +56,14 @@ type runState struct {
 	tokenTracker *TokenTracker
 
 	// Loop state
-	toolsUsed            []string
-	waitingUser          bool
-	waitingQuestion      string
-	waitingMetadata      map[string]string
-	lastContent          string
-	disableCompressRetry bool
-	compressAttempts     int
-	lastCompressIter     int
+	toolsUsed          []string
+	waitingUser        bool
+	waitingQuestion    string
+	waitingMetadata    map[string]string
+	lastContent        string
+	compressRetryCount int
+	compressAttempts   int
+	lastCompressIter   int
 
 	// Metrics (local counters for this Run)
 	localIterCount    int
@@ -402,6 +402,23 @@ func (s *runState) updateTokenUsage() {
 	}
 }
 
+// updateTokenUsageEstimate updates TokenUsage with a local estimate after compression.
+// After ResetAfterCompress(), the tracker has zero values — we use the estimate from
+// the compression pipeline so the CLI context bar shows the reduced token count
+// immediately instead of disappearing until the next API call.
+func (s *runState) updateTokenUsageEstimate(estimatedTokens int64) {
+	if s.structuredProgress == nil {
+		return
+	}
+	s.structuredProgress.TokenUsage = &TokenUsageSnapshot{
+		PromptTokens:     estimatedTokens,
+		CompletionTokens: 0,
+		TotalTokens:      estimatedTokens,
+		CacheHitTokens:   0,
+		MaxOutputTokens:  int64(s.cfg.MaxOutputTokens),
+	}
+}
+
 // callLLM invokes the LLM with the current messages, handling per-tenant
 // concurrency semaphore and input-too-long errors with forced compression.
 func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
@@ -476,6 +493,8 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		return nil, compressErr
 	}
 	s.messages = pipelineResult.NewMessages
+	// Update token estimate so CLI shows reduced context immediately
+	s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens (estimated)", pipelineResult.NewTokenCount))
 		s.notifyProgress("")
@@ -578,14 +597,18 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 	if !response.HasToolCalls() {
 		// context_window_exceeded: force compress and retry
 		if response.FinishReason == llm.FinishReasonContextWindowExceeded {
+			const maxCompressRetries = 3
 			log.Ctx(ctx).WithFields(log.Fields{
 				"msg_count":          len(s.messages),
 				"last_prompt_tokens": s.tokenTracker.PromptTokens(),
 				"finish_reason":      response.FinishReason,
+				"compress_retry":     s.compressRetryCount,
 			}).Warn("Model context window exceeded, forcing compression and retry")
+
+			// Phase 1: Try LLM-based compression (up to maxCompressRetries times)
 			cm := s.cfg.ContextManager
-			if cm != nil && !s.disableCompressRetry {
-				s.disableCompressRetry = true
+			if cm != nil && s.compressRetryCount < maxCompressRetries {
+				s.compressRetryCount++
 				if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
 					cm.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 				}
@@ -598,17 +621,31 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					Persistence:     s.persistence,
 					AccumulateUsage: s.accumulateCompressUsage,
 					SyncMessages:    s.syncMessages,
-					// No OffloadStore/MaskStore cleaning for context_window_exceeded
 				})
 				if compressErr != nil {
-					log.Ctx(ctx).WithError(compressErr).Warn("Forced compression failed after context_window_exceeded")
+					log.Ctx(ctx).WithError(compressErr).Warn("Compression failed after context_window_exceeded, trying aggressive truncation")
 				} else {
 					s.messages = pipelineResult.NewMessages
 					s.validateInvariantsAt(ctx, "post_compress_window_exceeded")
-					log.Ctx(ctx).Info("Forced compression completed after context_window_exceeded, retrying")
+					// Update token estimate so CLI shows reduced context immediately
+					s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
+					log.Ctx(ctx).WithFields(log.Fields{
+						"new_msg_count": len(s.messages),
+						"retry":         s.compressRetryCount,
+					}).Info("Compression completed after context_window_exceeded, retrying")
 					return nil, true // retry loop iteration
 				}
 			}
+
+			// Phase 2: Aggressive truncation — keep system messages + last N messages
+			if truncated := s.aggressiveTruncate(ctx); truncated {
+				log.Ctx(ctx).WithFields(log.Fields{
+					"new_msg_count": len(s.messages),
+				}).Warn("Applied aggressive truncation after compression retries exhausted, retrying")
+				return nil, true // retry loop iteration
+			}
+
+			// Phase 3: All recovery attempts failed
 			out := s.buildOutput(&bus.OutboundMessage{
 				Channel:   s.cfg.Channel,
 				ChatID:    s.cfg.ChatID,
@@ -821,6 +858,10 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	s.messages = pipelineResult.NewMessages
 	s.lastCompressIter = s.compressAttempts
 	s.validateInvariantsAt(ctx, "post_compress")
+	// Update token usage estimate so progress events show reduced tokens
+	// immediately instead of showing 0 (from ResetAfterCompress) or stale
+	// pre-compress values until the next LLM API call.
+	s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
 
 	oldTokenCount := totalTokens
 
@@ -872,6 +913,74 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if hook := cm.SessionHook(); hook != nil {
 		hook.AfterPersist(ctx, s.cfg.Session, pipelineResult.CompressOutput)
 	}
+}
+
+// aggressiveTruncate performs emergency context truncation when all compression
+// retries have failed. It keeps system messages + the last few conversation
+// turns, discarding everything in between. Returns true if truncation was applied.
+func (s *runState) aggressiveTruncate(ctx context.Context) bool {
+	const keepTailMessages = 6 // keep last 6 messages (~3 turns)
+	msgs := s.messages
+	if len(msgs) <= keepTailMessages+1 {
+		// Already too few messages to truncate further
+		return false
+	}
+
+	// Separate system messages from conversation
+	var systemMsgs []llm.ChatMessage
+	var conversationMsgs []llm.ChatMessage
+	for _, m := range msgs {
+		if m.Role == "system" {
+			systemMsgs = append(systemMsgs, m)
+		} else {
+			conversationMsgs = append(conversationMsgs, m)
+		}
+	}
+
+	if len(conversationMsgs) <= keepTailMessages {
+		return false // nothing to truncate
+	}
+
+	// Keep: system messages + last keepTailMessages conversation messages
+	tailMsgs := conversationMsgs[len(conversationMsgs)-keepTailMessages:]
+	newMessages := make([]llm.ChatMessage, 0, len(systemMsgs)+1+len(tailMsgs))
+	newMessages = append(newMessages, systemMsgs...)
+
+	// Insert a notice about the truncation so the model knows context was lost
+	newMessages = append(newMessages, llm.ChatMessage{
+		Role: "system",
+		Content: "[System notice: Earlier conversation history was truncated due to context " +
+			"window limits. Some earlier context may be lost. Continue from the " +
+			"remaining conversation below.]",
+	})
+	newMessages = append(newMessages, tailMsgs...)
+
+	oldCount := len(msgs)
+	s.messages = s.syncMessages(newMessages)
+
+	// Reset token tracker so the next iteration gets fresh data from the API
+	if s.tokenTracker != nil {
+		s.tokenTracker.ResetAfterCompress()
+	}
+
+	// Update token estimate from local count so CLI shows reduced context
+	estimatedTokens, _ := llm.CountMessagesTokens(newMessages, s.cfg.Model)
+	s.updateTokenUsageEstimate(int64(estimatedTokens))
+
+	// Persist the truncated history
+	if s.persistence != nil {
+		s.persistence.RewriteAfterCompress(
+			newMessages, len(newMessages),
+		)
+	}
+
+	log.Ctx(ctx).WithFields(log.Fields{
+		"old_msg_count": oldCount,
+		"new_msg_count": len(s.messages),
+		"kept_tail":     keepTailMessages,
+	}).Warn("Aggressive truncation applied")
+
+	return true
 }
 
 // executeToolCalls runs all tool calls from the LLM response.

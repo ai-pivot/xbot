@@ -8,7 +8,7 @@ package channel
 import (
 	"testing"
 
-	"github.com/mattn/go-runewidth"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,8 +35,8 @@ func TestTruncateToWidth_ASCII(t *testing.T) {
 	if got != "hello..." {
 		t.Errorf("expected %q, got %q", "hello...", got)
 	}
-	if runewidth.StringWidth(got) != 8 {
-		t.Errorf("expected width 8, got %d", runewidth.StringWidth(got))
+	if ansi.StringWidth(got) != 8 {
+		t.Errorf("expected width 8, got %d", ansi.StringWidth(got))
 	}
 }
 
@@ -55,7 +55,7 @@ func TestTruncateToWidth_CJKTruncated(t *testing.T) {
 	if got != "你..." {
 		t.Errorf("expected %q, got %q", "你...", got)
 	}
-	if w := runewidth.StringWidth(got); w > 6 {
+	if w := ansi.StringWidth(got); w > 6 {
 		t.Errorf("expected width ≤ 6, got %d", w)
 	}
 }
@@ -63,7 +63,7 @@ func TestTruncateToWidth_CJKTruncated(t *testing.T) {
 func TestTruncateToWidth_CJKMixedASCII(t *testing.T) {
 	// Typical placeholder on a very narrow terminal (width=12).
 	got := truncateToWidth("Enter 发送 · Ctrl+J 换行 · /help", 12)
-	if w := runewidth.StringWidth(got); w > 12 {
+	if w := ansi.StringWidth(got); w > 12 {
 		t.Errorf("expected width ≤ 12, got %d for %q", w, got)
 	}
 	if got == "Enter 发送 · Ctrl+J 换行 · /help" {
@@ -98,7 +98,7 @@ func TestTruncateToWidth_PlaceholderNarrowTerminal(t *testing.T) {
 	ph := "Enter 发送 · Ctrl+J 换行 · /help"
 	for _, tw := range []int{10, 14, 18, 22, 28, 40} {
 		got := truncateToWidth(ph, tw)
-		w := runewidth.StringWidth(got)
+		w := ansi.StringWidth(got)
 		if w > tw {
 			t.Errorf("width=%d: truncated placeholder width %d exceeds %d", tw, w, tw)
 		}
@@ -132,7 +132,7 @@ func TestHardWrapRunes_CJKWrap(t *testing.T) {
 		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
 	}
 	for i, line := range lines {
-		w := runewidth.StringWidth(line)
+		w := ansi.StringWidth(line)
 		if w != 6 {
 			t.Errorf("line %d: expected width 6, got %d (%q)", i, w, line)
 		}
@@ -149,12 +149,12 @@ func TestHardWrapRunes_CJKWithSpaces_NoWordWrap(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
 	}
-	w1 := runewidth.StringWidth(lines[0])
+	w1 := ansi.StringWidth(lines[0])
 	if w1 != 10 {
 		t.Errorf("line 1: expected width 10 (filled to boundary), got %d (%q)", w1, lines[0])
 	}
 	// Space must stay on line 1 — no word-wrap at space
-	if runewidth.StringWidth(lines[0]) < 10 && lines[0] == "你好abc" {
+	if ansi.StringWidth(lines[0]) < 10 && lines[0] == "你好abc" {
 		t.Errorf("line 1 wrapped at space (word-wrap), expected hard-wrap: %q", lines[0])
 	}
 }
@@ -165,7 +165,7 @@ func TestHardWrapRunes_CJKWithMultipleSpaces(t *testing.T) {
 	input := "你好 世界 你好"
 	got := hardWrapRunes(input, 6)
 	lines := splitLines(got)
-	w1 := runewidth.StringWidth(lines[0])
+	w1 := ansi.StringWidth(lines[0])
 	if w1 != 5 {
 		t.Errorf("line 1: expected width 5, got %d (%q)", w1, lines[0])
 	}
@@ -175,7 +175,7 @@ func TestHardWrapRunes_PureSpaces(t *testing.T) {
 	got := hardWrapRunes("a b c d e", 3)
 	lines := splitLines(got)
 	for i, line := range lines {
-		w := runewidth.StringWidth(line)
+		w := ansi.StringWidth(line)
 		if w > 3 {
 			t.Errorf("line %d: width %d exceeds 3: %q", i, w, line)
 		}

@@ -16,6 +16,7 @@
 | `cli_types.go` | Type definitions, glamour renderer constructor (~712 lines) |
 | `cli_runner.go` | Runner integration, process management |
 | `cli_approval.go` | Tool execution confirmation dialog |
+| `cli_palette.go` | Command palette (Ctrl+K): fuzzy-search, category tabs, external contributors (~531 lines) |
 | `feishu.go` | Feishu webhook, message send, card messages (~3154 lines) |
 | `feishu_settings.go` | Feishu settings UI (~2189 lines) |
 | `web.go` | HTTP server, WebSocket (~1957 lines) |
@@ -79,3 +80,12 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - **`toolLine(icon, label, elapsedStyled, maxWidth)`** helper in `cli_message.go` — unified tool line formatting using `lipgloss.Width()` for precision. All tool rendering sites (historical, completed, active) use this helper. Previous code used `len()` (byte count) and magic number overhead constants (`7 + ...`) which broke on styled/unicode content.
 - **Typewriter cursor overflow**: when reasoning/stream content cursor `▋` would exceed `innerWidth`, it renders on a separate line. When cursor is hidden (blink off), a guide-only placeholder line maintains stable height. Both reasoning guide and thinking guide sites use this pattern.
 - **SubAgent tree**: description is skipped when `descW <= 0` (no room); old code forced `descW >= 10` minimum which caused overflow on narrow terminals.
+
+### CLI Tool Body / Diff Rendering
+
+- Tool progress carries both `Summary` (short label) and `Detail` (bounded full output) plus raw `Args`; CLI renderers use `Detail`/`Args` for per-tool bodies.
+- `Read` output from the tool already contains `line\tcontent`; CLI parses those line numbers, highlights only pure code with Chroma, then renders its own line-number column.
+- `FileCreate`/`FileReplace` include unified diff metadata; engine turns it into built-in `ToolHints` when no plugin hint is present. External `file-diff` plugin remains compatible but is no longer required.
+- Diff/code background fills must not depend on ordinary trailing spaces: terminal/viewport layers can drop or not paint them. Use NBSP padding (`\u00a0`) with the desired background (see `padBgRight`/`renderBgLine`) for selectable, painted blank cells.
+- Any highlighted/styled content must be measured/truncated with ANSI-aware helpers (`lipgloss.Width`, `ansi.Truncate`), never `len()`/`[]rune` on strings containing ANSI escapes.
+- Tool hints render without the `│` guide prefix. Always pass the actual available container width into hint/body rendering; if a guide prefix is prepended for non-hint bodies, subtract `lipgloss.Width(guide)` first to prevent viewport hard-wrap.
