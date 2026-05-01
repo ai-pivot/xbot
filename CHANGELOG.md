@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.0.33] - 2026-05-01
+
 ### Added
 
 - **Command Palette (Ctrl+K)**: fuzzy-search 命令面板整合所有操作入口，支持分类标签和外部贡献者（`/palette`、`/commands` slash 命令）
