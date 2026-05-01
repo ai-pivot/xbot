@@ -317,6 +317,39 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
 
+	case "settings_edit_subscription":
+		subID := parsed["subscription_id"]
+		if subID == "" {
+			return nil, fmt.Errorf("missing subscription_id")
+		}
+		return f.buildEditSubscriptionCard(senderID, subID)
+
+	case "settings_submit_edit_subscription":
+		subID := parsed["subscription_id"]
+		provider := formStr(actionData, "provider")
+		baseURL := formStr(actionData, "base_url")
+		apiKey := formStr(actionData, "api_key")
+		model := formStr(actionData, "model")
+		name := formStr(actionData, "name")
+		if name == "" {
+			name = provider + " " + model
+		}
+		if provider == "" || baseURL == "" {
+			return nil, fmt.Errorf("请填写完整配置（Provider、API 地址）")
+		}
+		if f.settingsCallbacks.LLMUpdateSubscription != nil {
+			if err := f.settingsCallbacks.LLMUpdateSubscription(subID, &Subscription{
+				Name:     name,
+				Provider: provider,
+				BaseURL:  baseURL,
+				APIKey:   apiKey,
+				Model:    model,
+			}); err != nil {
+				return nil, fmt.Errorf("更新订阅失败: %v", err)
+			}
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+
 	case "settings_delete_subscription":
 		subID := parsed["subscription_id"]
 		if subID == "" {
@@ -1039,6 +1072,24 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 
 // buildModelTabContent builds the model configuration tab.
 func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]any, error) {
+	// Fetch available models for the model selector dropdown
+	var modelOptions []map[string]any
+	if f.settingsCallbacks.LLMList != nil {
+		models, _ := f.settingsCallbacks.LLMList(senderID)
+		for _, m := range models {
+			modelOptions = append(modelOptions, map[string]any{
+				"text":  map[string]any{"tag": "plain_text", "content": m},
+				"value": m,
+			})
+		}
+	}
+	if len(modelOptions) == 0 {
+		modelOptions = append(modelOptions, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": "暂无可用模型（保存后可切换）"},
+			"value": "",
+		})
+	}
+
 	formElements := []map[string]any{
 		{
 			"tag":  "input",
@@ -1089,16 +1140,13 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 			},
 		},
 		{
-			"tag":  "input",
+			"tag":  "select_static",
 			"name": "model",
-			"label": map[string]any{
-				"tag":     "plain_text",
-				"content": "模型名称（可选，保存后可切换）",
-			},
 			"placeholder": map[string]any{
 				"tag":     "plain_text",
-				"content": "gpt-4o",
+				"content": "选择模型（可选，保存后可切换）",
 			},
+			"options": modelOptions,
 		},
 		{
 			"tag":         "button",
@@ -1134,6 +1182,159 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 				{
 					"tag":      "form",
 					"name":     "add_subscription_form",
+					"elements": formElements,
+				},
+			},
+		},
+	}, nil
+}
+
+// buildEditSubscriptionCard builds the edit subscription form with current values.
+func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[string]any, error) {
+	// Get current subscription data
+	var currentName, currentProvider, currentBaseURL, currentModel string
+	if f.settingsCallbacks.LLMListSubscriptions != nil {
+		subs, _ := f.settingsCallbacks.LLMListSubscriptions(senderID)
+		for _, s := range subs {
+			if s.ID == subID {
+				currentName = s.Name
+				currentProvider = s.Provider
+				currentBaseURL = s.BaseURL
+				currentModel = s.Model
+				break
+			}
+		}
+	}
+
+	// Fetch available models for the dropdown
+	var modelOptions []map[string]any
+	if f.settingsCallbacks.LLMList != nil {
+		models, _ := f.settingsCallbacks.LLMList(senderID)
+		for _, m := range models {
+			modelOptions = append(modelOptions, map[string]any{
+				"text":  map[string]any{"tag": "plain_text", "content": m},
+				"value": m,
+			})
+		}
+	}
+	// Always include current model
+	found := false
+	for _, opt := range modelOptions {
+		if opt["value"] == currentModel {
+			found = true
+			break
+		}
+	}
+	if !found && currentModel != "" {
+		modelOptions = append([]map[string]any{{
+			"text":  map[string]any{"tag": "plain_text", "content": currentModel},
+			"value": currentModel,
+		}}, modelOptions...)
+	}
+	if len(modelOptions) == 0 {
+		modelOptions = append(modelOptions, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": "暂无可用模型"},
+			"value": "",
+		})
+	}
+
+	formElements := []map[string]any{
+		{
+			"tag":  "input",
+			"name": "name",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "订阅名称",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "例如：工作账号、个人测试",
+			},
+			"default_value": currentName,
+		},
+		{
+			"tag":  "select_static",
+			"name": "provider",
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "选择 Provider",
+			},
+			"initial_option": currentProvider,
+			"options": []map[string]any{
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
+			},
+		},
+		{
+			"tag":  "input",
+			"name": "base_url",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "API 地址",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "https://api.openai.com/v1",
+			},
+			"default_value": currentBaseURL,
+		},
+		{
+			"tag":  "input",
+			"name": "api_key",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "API Key（留空则保持不变）",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "sk-...",
+			},
+		},
+		{
+			"tag":  "select_static",
+			"name": "model",
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "选择模型",
+			},
+			"initial_option": currentModel,
+			"options":        modelOptions,
+		},
+		{
+			"tag":         "button",
+			"name":        "sub_edit_submit",
+			"text":        map[string]any{"tag": "plain_text", "content": "保存修改"},
+			"type":        "primary",
+			"action_type": "form_submit",
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action":          "settings_submit_edit_subscription",
+					"subscription_id": subID,
+				}),
+			},
+		},
+	}
+
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "✏️ 编辑订阅",
+			},
+		},
+		"body": map[string]any{
+			"elements": []map[string]any{
+				{
+					"tag":     "markdown",
+					"content": "修改订阅配置。API Key 留空则保持原值不变。",
+				},
+				{
+					"tag":      "form",
+					"name":     "edit_subscription_form",
 					"elements": formElements,
 				},
 			},
@@ -1456,6 +1657,17 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 						},
 					})
 				}
+				btns = append(btns, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "编辑"},
+					"type": "default",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":          "settings_edit_subscription",
+							"subscription_id": sub.ID,
+						}),
+					},
+				})
 				btns = append(btns, map[string]any{
 					"tag":  "button",
 					"text": map[string]any{"tag": "plain_text", "content": "删除"},

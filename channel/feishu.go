@@ -75,6 +75,7 @@ type SettingsCallbacks struct {
 	LLMListSubscriptions      func(senderID string) ([]Subscription, error)  // list all user subscriptions
 	LLMGetDefaultSubscription func(senderID string) (*Subscription, error)   // get active subscription
 	LLMAddSubscription        func(senderID string, sub *Subscription) error // add a new subscription
+	LLMUpdateSubscription     func(id string, sub *Subscription) error       // update an existing subscription
 	LLMRemoveSubscription     func(id string) error                          // remove by subscription ID
 	LLMSetDefaultSubscription func(id string) error                          // set as active subscription
 	LLMRenameSubscription     func(id, name string) error                    // rename subscription
