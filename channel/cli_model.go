@@ -557,12 +557,14 @@ type cliModel struct {
 	llmSubscriber            LLMSubscriber       // injected by CLIChannel
 
 	// --- §23 Command Palette (Ctrl+K) ---
-	paletteOpen     bool             // true = command palette overlay is active
-	paletteInput    textinput.Model  // filter input
-	paletteItems    []paletteCommand // all available commands
-	paletteFiltered []paletteCommand // commands after fuzzy filter
-	paletteCursor   int              // selected index in filtered list
-	paletteScrollY  int              // scroll offset for visible items
+	paletteOpen           bool               // true = command palette overlay is active
+	paletteInput          textinput.Model    // filter input
+	paletteItems          []paletteCommand   // all available commands
+	paletteFiltered       []paletteCommand   // commands after fuzzy filter
+	paletteCursor         int                // selected index in filtered list
+	paletteScrollY        int                // scroll offset for visible items
+	paletteActiveCategory PaletteCategory    // active category tab (empty = all)
+	paletteContributor    PaletteContributor // external command provider (plugins/skills/agents)
 
 	// --- §16 Subscription generation guard ---
 	// subGeneration increments every time the active subscription actually changes.

@@ -28,6 +28,9 @@ func appendStatusHint(status, hint string) string {
 // isCompact returns true when terminal width < 80 — compact layout for narrow windows.
 func (m *cliModel) isCompact() bool { return m.width < 80 }
 
+// isNarrow returns true when terminal width < 60 — minimal layout.
+func (m *cliModel) isNarrow() bool { return m.width < 60 }
+
 // renderTitleBar builds the top title bar with gradient wordmark, diagonal fill,
 // mode label, hints, runner status, and user identity indicator.
 // In compact mode (<80 cols), extras (runner, user) are hidden.
@@ -55,6 +58,10 @@ func (m *cliModel) renderTitleBar() string {
 		}
 	}
 
+	// Narrow: hide /help hint to save space
+	if m.isNarrow() {
+		titleRight = ""
+	}
 	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
 	if titlePad < 3 {
 		titlePad = 3
@@ -135,10 +142,14 @@ func (m *cliModel) renderReadyStatus() string {
 	// Model name (cached, avoids per-frame lookup)
 	if m.cachedModelName != "" {
 		modelHint := m.cachedModelName
-		if m.modelCount > 1 {
+		if m.modelCount > 1 && !m.isCompact() {
 			modelHint += " [Ctrl+N]"
 		}
 		readyParts = append(readyParts, modelHint)
+	}
+	// Narrow screen: drop msg count to save space
+	if m.isNarrow() && len(readyParts) > 2 {
+		readyParts = readyParts[:2]
 	}
 	leftParts := strings.Join(readyParts, " · ")
 
@@ -800,16 +811,28 @@ func (m *cliModel) renderFooter() string {
 	} else {
 		// 就绪态：显示核心快捷键
 		if m.textarea.Value() == "" {
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterDelete), m.keyHint("/", m.locale.FooterCommands), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("e", m.locale.FooterFold))
-			if m.subscriptionMgr != nil {
+			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
+			if !m.isNarrow() {
+				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+			}
+			if !m.isCompact() {
+				hints = append(hints, m.ctrlKey("e", m.locale.FooterFold))
+			}
+			if m.subscriptionMgr != nil && !m.isNarrow() {
 				hints = append(hints, m.ctrlKey("p", "Subs"))
 			}
-			hints = append(hints, m.ctrlKey("t", "Sessions"))
-			if m.bgTaskCount > 0 {
+			if !m.isNarrow() {
+				hints = append(hints, m.ctrlKey("t", "Sessions"))
+			}
+			if m.bgTaskCount > 0 && !m.isCompact() {
 				hints = append(hints, m.keyHint("^", m.locale.FooterBgTasks))
 			}
 		} else {
-			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline), m.keyHint("tab", m.locale.FooterComplete), m.ctrlKey("k", m.locale.FooterDelete))
+			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline))
+			if !m.isNarrow() {
+				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+			}
+			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
 		}
 	}
 

@@ -105,7 +105,7 @@ type UILocale struct {
 	FooterKill     string // "kill"
 	FooterClose    string // "close"
 	FooterCancel   string // "cancel"
-	FooterDelete   string // "delete"
+	FooterPalette  string // "palette"
 	FooterCommands string // "commands"
 	FooterComplete string // "complete"
 	FooterBgTasks  string // "bg tasks"
@@ -325,7 +325,7 @@ func localeZH() *UILocale {
 		FooterKill:     "终止",
 		FooterClose:    "关闭",
 		FooterCancel:   "取消",
-		FooterDelete:   "删除",
+		FooterPalette:  "命令面板",
 		FooterCommands: "命令",
 		FooterComplete: "补全",
 		FooterBgTasks:  "任务/代理",
@@ -706,7 +706,7 @@ func localeEN() *UILocale {
 		FooterKill:     "kill",
 		FooterClose:    "close",
 		FooterCancel:   "cancel",
-		FooterDelete:   "delete",
+		FooterPalette:  "palette",
 		FooterCommands: "commands",
 		FooterComplete: "complete",
 		FooterBgTasks:  "tasks/agents",
@@ -1087,7 +1087,7 @@ func localeJA() *UILocale {
 		FooterKill:     "終了",
 		FooterClose:    "閉じる",
 		FooterCancel:   "キャンセル",
-		FooterDelete:   "削除",
+		FooterPalette:  "パレット",
 		FooterCommands: "コマンド",
 		FooterComplete: "補完",
 		FooterBgTasks:  "タスク/エージェント",

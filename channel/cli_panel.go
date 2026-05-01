@@ -609,7 +609,7 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	case msg.Code == tea.KeyEsc || msg.String() == "ctrl+c":
 		return m.closePanelAndResume()
 
-	case msg.Code == tea.KeyUp || msg.String() == "ctrl+k":
+	case msg.Code == tea.KeyUp:
 		if m.panelBgCursor > 0 {
 			m.panelBgCursor--
 			m.ensureBgCursorVisible()

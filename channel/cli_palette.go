@@ -28,12 +28,47 @@ const (
 	paletteActionQuit                              // quits the application
 )
 
+// PaletteCategory groups commands into tabs in the command palette.
+type PaletteCategory string
+
+const (
+	PaletteCategorySystem  PaletteCategory = "System"
+	PaletteCategoryUser    PaletteCategory = "User"
+	PaletteCategoryPlugins PaletteCategory = "Plugins"
+	PaletteCategorySkills  PaletteCategory = "Skills"
+	PaletteCategoryAgents  PaletteCategory = "Agents"
+)
+
+// paletteCategories is the ordered list of visible categories.
+var paletteCategories = []PaletteCategory{
+	PaletteCategorySystem,
+	PaletteCategoryUser,
+	PaletteCategoryPlugins,
+	PaletteCategorySkills,
+	PaletteCategoryAgents,
+}
+
+// PaletteExternalCommand represents a command contributed by an external source
+// (plugin, skill, user custom command).
+type PaletteExternalCommand struct {
+	Title       string
+	Description string
+	Category    PaletteCategory
+	Content     string // content to insert or send
+	Send        bool   // true = send immediately, false = insert into textarea
+}
+
+// PaletteContributor provides external commands for the command palette.
+// Injected by the application layer to supply plugin/skill/agent/custom commands.
+type PaletteContributor func() []PaletteExternalCommand
+
 // paletteCommand represents a single item in the command palette.
 type paletteCommand struct {
 	ID          string
 	Title       string
 	Description string
 	Shortcut    string
+	Category    PaletteCategory
 	ActionKind  paletteActionKind
 	ActionData  string
 }
@@ -47,95 +82,105 @@ func (p paletteFilterable) String(i int) string { return p[i].Title + " " + p[i]
 const paletteMaxVisible = 12
 
 // buildPaletteCommands returns all available commands for the palette.
-// Commands are grouped logically but presented as a flat searchable list.
+// Commands are grouped by category (tab-switchable) and presented as a flat searchable list.
 func (m *cliModel) buildPaletteCommands() []paletteCommand {
 	var cmds []paletteCommand
 
-	// --- Navigation ---
+	// --- System ---
 	cmds = append(cmds, paletteCommand{
 		ID: "sessions", Title: "Open Sessions", Description: "switch between chat sessions",
-		Shortcut: "Ctrl+T", ActionKind: paletteActionOpenPanel, ActionData: "sessions",
+		Shortcut: "Ctrl+T", Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "sessions",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "switch_sub", Title: "Switch Subscription", Description: "change LLM subscription",
-		Shortcut: "Ctrl+P", ActionKind: paletteActionOpenQuickSwitch, ActionData: "subscription",
+		Shortcut: "Ctrl+P", Category: PaletteCategorySystem, ActionKind: paletteActionOpenQuickSwitch, ActionData: "subscription",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "cycle_model", Title: "Cycle Model", Description: "switch to next model in list",
-		Shortcut: "Ctrl+N", ActionKind: paletteActionCycleModel, ActionData: "",
+		Shortcut: "Ctrl+N", Category: PaletteCategorySystem, ActionKind: paletteActionCycleModel,
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "bgtasks", Title: "Background Tasks", Description: "view running background tasks and agents",
-		Shortcut: "^", ActionKind: paletteActionOpenPanel, ActionData: "bgtasks",
+		Shortcut: "^", Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "bgtasks",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "runner", Title: "Runner Panel", Description: "connect to remote runner",
-		Shortcut: "", ActionKind: paletteActionOpenPanel, ActionData: "runner",
+		Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "runner",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "channel", Title: "Channel Config", Description: "configure web/feishu/QQ channels",
-		Shortcut: "", ActionKind: paletteActionOpenPanel, ActionData: "channel",
+		Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "channel",
 	})
-
-	// --- Chat ---
 	cmds = append(cmds, paletteCommand{
 		ID: "clear", Title: "Clear Chat", Description: "start a fresh conversation",
-		Shortcut: "/clear", ActionKind: paletteActionSendText, ActionData: "/clear",
+		Shortcut: "/clear", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/clear",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "compact", Title: "Compact Context", Description: "compress conversation history",
-		Shortcut: "/compact", ActionKind: paletteActionSendText, ActionData: "/compact",
+		Shortcut: "/compact", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/compact",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "search", Title: "Search Messages", Description: "find text in conversation history",
-		Shortcut: "", ActionKind: paletteActionInsertText, ActionData: "/search ",
+		Category: PaletteCategorySystem, ActionKind: paletteActionInsertText, ActionData: "/search ",
 	})
-
-	// --- Toggles ---
 	cmds = append(cmds, paletteCommand{
 		ID: "tool_detail", Title: "Toggle Tool Details", Description: "expand or collapse tool output",
-		Shortcut: "Ctrl+O", ActionKind: paletteActionToggle, ActionData: "tool_summary",
+		Shortcut: "Ctrl+O", Category: PaletteCategorySystem, ActionKind: paletteActionToggle, ActionData: "tool_summary",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "msg_fold", Title: "Toggle Message Fold", Description: "expand or collapse long messages",
-		Shortcut: "Ctrl+E", ActionKind: paletteActionToggle, ActionData: "msg_fold",
+		Shortcut: "Ctrl+E", Category: PaletteCategorySystem, ActionKind: paletteActionToggle, ActionData: "msg_fold",
 	})
-
-	// --- Settings ---
 	cmds = append(cmds, paletteCommand{
 		ID: "settings", Title: "Open Settings", Description: "configure LLM, sandbox, memory, etc.",
-		Shortcut: "", ActionKind: paletteActionSendText, ActionData: "/settings",
+		Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/settings",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "danger", Title: "Danger Zone", Description: "clear session, memory, history",
-		Shortcut: "", ActionKind: paletteActionOpenPanel, ActionData: "danger",
+		Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "danger",
 	})
-
-	// --- Plugins ---
 	cmds = append(cmds, paletteCommand{
 		ID: "reload_plugins", Title: "Reload Plugins", Description: "refresh all plugin widgets",
-		Shortcut: "", ActionKind: paletteActionSendText, ActionData: "/plugin reload",
+		Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/plugin reload",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "install_plugin", Title: "Install Plugin", Description: "install a plugin from URL or path",
-		Shortcut: "", ActionKind: paletteActionInsertText, ActionData: "/plugin install ",
+		Category: PaletteCategorySystem, ActionKind: paletteActionInsertText, ActionData: "/plugin install ",
 	})
-
-	// --- Help & Info ---
 	cmds = append(cmds, paletteCommand{
 		ID: "help", Title: "Help", Description: "show available slash commands and shortcuts",
-		Shortcut: "/help", ActionKind: paletteActionSendText, ActionData: "/help",
+		Shortcut: "/help", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/help",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "update", Title: "Check Update", Description: "check for new xbot versions",
-		Shortcut: "/update", ActionKind: paletteActionSendText, ActionData: "/update",
+		Shortcut: "/update", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/update",
 	})
-
-	// --- Quit ---
 	cmds = append(cmds, paletteCommand{
 		ID: "quit", Title: "Quit", Description: "exit xbot",
-		Shortcut: "Ctrl+Z", ActionKind: paletteActionQuit, ActionData: "",
+		Shortcut: "Ctrl+Z", Category: PaletteCategorySystem, ActionKind: paletteActionQuit,
 	})
+
+	// --- External contributions (plugins, skills, agents, custom commands) ---
+	if m.paletteContributor != nil {
+		for _, ext := range m.paletteContributor() {
+			kind := paletteActionInsertText
+			if ext.Send {
+				kind = paletteActionSendText
+			}
+			cat := ext.Category
+			if cat == "" {
+				cat = PaletteCategoryPlugins
+			}
+			cmds = append(cmds, paletteCommand{
+				ID:          "ext:" + ext.Title,
+				Title:       ext.Title,
+				Description: ext.Description,
+				Category:    cat,
+				ActionKind:  kind,
+				ActionData:  ext.Content,
+			})
+		}
+	}
 
 	return cmds
 }
@@ -146,11 +191,16 @@ func (m *cliModel) openCommandPalette() {
 		m.closeCommandPalette()
 		return
 	}
+	// Sync external contributor from channel (may change at runtime)
+	if m.channel != nil && m.channel.PaletteContributor != nil {
+		m.paletteContributor = m.channel.PaletteContributor
+	}
 	m.paletteOpen = true
 	m.paletteItems = m.buildPaletteCommands()
 	m.paletteFiltered = m.paletteItems
 	m.paletteCursor = 0
 	m.paletteScrollY = 0
+	m.paletteActiveCategory = "" // show all categories by default
 
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter commands…"
@@ -175,17 +225,32 @@ func (m *cliModel) closeCommandPalette() {
 }
 
 // filterPaletteCommands filters commands by the current input query using fuzzy matching.
+// Respects the active category tab — only shows commands in the current category.
 func (m *cliModel) filterPaletteCommands() {
 	query := m.paletteInput.Value()
+	active := m.paletteActiveCategory
+
+	source := m.paletteItems
+	// Filter by active category (unless "all")
+	if active != "" {
+		filtered := make([]paletteCommand, 0, len(source))
+		for _, cmd := range source {
+			if cmd.Category == active {
+				filtered = append(filtered, cmd)
+			}
+		}
+		source = filtered
+	}
+
 	if query == "" {
-		m.paletteFiltered = m.paletteItems
+		m.paletteFiltered = source
 		return
 	}
-	source := paletteFilterable(m.paletteItems)
-	matches := fuzzy.FindFrom(query, source)
+	fuzzySource := paletteFilterable(source)
+	matches := fuzzy.FindFrom(query, fuzzySource)
 	m.paletteFiltered = make([]paletteCommand, 0, len(matches))
 	for _, match := range matches {
-		m.paletteFiltered = append(m.paletteFiltered, m.paletteItems[match.Index])
+		m.paletteFiltered = append(m.paletteFiltered, source[match.Index])
 	}
 }
 
@@ -237,6 +302,45 @@ func (m *cliModel) applyPaletteCommand() {
 	}
 }
 
+// cyclePaletteCategory moves to the next/previous category tab.
+func (m *cliModel) cyclePaletteCategory(dir int) {
+	// Build list of non-empty categories
+	nonEmpty := make(map[PaletteCategory]bool)
+	for _, cmd := range m.paletteItems {
+		nonEmpty[cmd.Category] = true
+	}
+	var visible []PaletteCategory
+	for _, cat := range paletteCategories {
+		if nonEmpty[cat] {
+			visible = append(visible, cat)
+		}
+	}
+	if len(visible) == 0 {
+		return
+	}
+
+	// Find current index
+	curIdx := -1
+	for i, cat := range visible {
+		if cat == m.paletteActiveCategory {
+			curIdx = i
+			break
+		}
+	}
+
+	// Move to next/prev (wrap around)
+	nextIdx := curIdx + dir
+	if nextIdx < 0 {
+		nextIdx = len(visible) - 1
+	} else if nextIdx >= len(visible) {
+		nextIdx = 0
+	}
+	m.paletteActiveCategory = visible[nextIdx]
+	m.paletteCursor = 0
+	m.paletteScrollY = 0
+	m.filterPaletteCommands()
+}
+
 // handlePaletteKey handles key events when the command palette is open.
 // Returns (handled, cmd). When open, always returns handled=true to block all keys.
 func (m *cliModel) handlePaletteKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
@@ -271,8 +375,13 @@ func (m *cliModel) handlePaletteKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	}
 	// Non-Code key checks (Tab, Shift+Tab, etc.)
 	switch msg.String() {
-	case "tab", "shift+tab":
-		// Reserved for category switching (future)
+	case "tab":
+		// Cycle to next category
+		m.cyclePaletteCategory(1)
+		return true, nil
+	case "shift+tab":
+		// Cycle to previous category
+		m.cyclePaletteCategory(-1)
 		return true, nil
 	}
 
@@ -314,6 +423,29 @@ func (m *cliModel) viewCommandPalette(width, height int) string {
 
 	// Title
 	lines = append(lines, m.styles.PanelHeader.Render(" Command Palette"))
+
+	// Category tabs
+	nonEmpty := make(map[PaletteCategory]bool)
+	for _, cmd := range m.paletteItems {
+		nonEmpty[cmd.Category] = true
+	}
+	var tabParts []string
+	for _, cat := range paletteCategories {
+		if !nonEmpty[cat] {
+			continue
+		}
+		label := string(cat)
+		if cat == m.paletteActiveCategory {
+			label = m.styles.Accent.Bold(true).Render(label)
+		} else {
+			label = m.styles.TextMutedSt.Render(label)
+		}
+		tabParts = append(tabParts, label)
+	}
+	if len(tabParts) > 1 {
+		tabLine := " " + strings.Join(tabParts, "  ")
+		lines = append(lines, tabLine)
+	}
 
 	// Search input
 	lines = append(lines, m.paletteInput.View())
@@ -379,7 +511,7 @@ func (m *cliModel) viewCommandPalette(width, height int) string {
 	}
 
 	// Footer hints
-	lines = append(lines, m.styles.TextMutedSt.Render(" ↑↓ Navigate · Enter Select · Esc Close"))
+	lines = append(lines, m.styles.TextMutedSt.Render(" ↑↓ Navigate · Enter Select · Tab Category · Esc Close"))
 
 	// Build bordered panel
 	content := strings.Join(lines, "\n")

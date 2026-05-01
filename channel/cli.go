@@ -721,6 +721,9 @@ func (c *CLIChannel) updateBgTaskCountFn() {
 	if c.config.IsAdminFn != nil {
 		c.model.isAdminFn = c.config.IsAdminFn
 	}
+	if c.config.PaletteContributor != nil {
+		c.model.paletteContributor = c.config.PaletteContributor
+	}
 }
 
 // CheckUpdateAsync starts a background goroutine to check for updates.

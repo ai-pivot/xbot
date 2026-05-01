@@ -598,6 +598,7 @@ type CLIChannelConfig struct {
 	ListWebUsersFn       func() ([]map[string]any, error)                                                                               // 列出所有 Web 用户
 	DeleteWebUserFn      func(username string) error                                                                                    // 删除 Web 用户（admin only）
 	IsAdminFn            func() bool                                                                                                    // 检查当前用户是否 admin
+	PaletteContributor   PaletteContributor                                                                                             // supplies external commands for command palette
 }
 
 type AgentPanelEntry struct {
@@ -661,9 +662,10 @@ type CLIChannel struct {
 	asyncCh    chan tea.Msg // unified async send channel (buffered)
 
 	// Services (injected by Agent or main)
-	settingsSvc SettingsService // interface for GetSettings/SetSetting
-	configMu    sync.RWMutex    // protects runner LLM fields (llmClient, modelList, llmProvider)
-	modelLister ModelLister     // provides available model names for combo
+	settingsSvc        SettingsService    // interface for GetSettings/SetSetting
+	configMu           sync.RWMutex       // protects runner LLM fields (llmClient, modelList, llmProvider)
+	modelLister        ModelLister        // provides available model names for combo
+	PaletteContributor PaletteContributor // supplies external commands (plugins/skills/agents/custom)
 
 	// Multi-subscription management
 	subscriptionMgr SubscriptionManager // manages LLM subscriptions
