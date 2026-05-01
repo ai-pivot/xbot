@@ -781,9 +781,6 @@ func Load() *Config {
 	if cfg.LLM.BaseURL == "" {
 		cfg.LLM.BaseURL = "https://api.openai.com/v1"
 	}
-	if cfg.LLM.Model == "" {
-		cfg.LLM.Model = "gpt-4o"
-	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
 	}

@@ -423,18 +423,24 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 		},
 		LLMAddSubscription: func(senderID string, sub *channel.Subscription) error {
 			svc := backend.LLMFactory().GetSubscriptionSvc()
-			err := svc.Add(&sqlite.LLMSubscription{
+			newSub := &sqlite.LLMSubscription{
 				SenderID: senderID,
 				Name:     sub.Name,
 				Provider: sub.Provider,
 				BaseURL:  sub.BaseURL,
 				APIKey:   sub.APIKey,
 				Model:    sub.Model,
-			})
-			if err == nil {
-				backend.LLMFactory().Invalidate(senderID)
 			}
-			return err
+			// If user has no default subscription yet, auto-set the first one.
+			existing, _ := svc.List(senderID)
+			if len(existing) == 0 {
+				newSub.IsDefault = true
+			}
+			if err := svc.Add(newSub); err != nil {
+				return err
+			}
+			backend.LLMFactory().Invalidate(senderID)
+			return nil
 		},
 		LLMRemoveSubscription: func(id string) error {
 			svc := backend.LLMFactory().GetSubscriptionSvc()
@@ -461,6 +467,26 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 		},
 		LLMRenameSubscription: func(id, name string) error {
 			return backend.LLMFactory().GetSubscriptionSvc().Rename(id, name)
+		},
+
+		LLMUpdateSubscription: func(id string, sub *channel.Subscription) error {
+			svc := backend.LLMFactory().GetSubscriptionSvc()
+			existing, err := svc.Get(id)
+			if err != nil {
+				return err
+			}
+			existing.Name = sub.Name
+			existing.Provider = sub.Provider
+			existing.BaseURL = sub.BaseURL
+			if sub.APIKey != "" {
+				existing.APIKey = sub.APIKey
+			}
+			existing.Model = sub.Model
+			if err := svc.Update(existing); err != nil {
+				return err
+			}
+			backend.LLMFactory().Invalidate(existing.SenderID)
+			return nil
 		},
 
 		// Model tier
