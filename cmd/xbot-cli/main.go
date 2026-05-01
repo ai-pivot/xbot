@@ -100,24 +100,6 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		}
 		return "flat"
 	}()
-	vals["max_iterations"] = func() string {
-		if app.cfg.Agent.MaxIterations > 0 {
-			return fmt.Sprintf("%d", app.cfg.Agent.MaxIterations)
-		}
-		return "30"
-	}()
-	vals["max_concurrency"] = func() string {
-		if app.cfg.Agent.MaxConcurrency > 0 {
-			return fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency)
-		}
-		return "3"
-	}()
-	vals["max_context_tokens"] = func() string {
-		if app.cfg.Agent.MaxContextTokens > 0 {
-			return fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens)
-		}
-		return "200000"
-	}()
 	vals["compression_threshold"] = func() string {
 		if app.cfg.Agent.CompressionThreshold > 0 {
 			return fmt.Sprintf("%g", app.cfg.Agent.CompressionThreshold)
@@ -125,6 +107,33 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		return "0.9"
 	}()
 	vals["tavily_api_key"] = app.cfg.TavilyAPIKey
+	// ScopeUser keys (max_iterations, max_concurrency, max_context_tokens):
+	// Primary source is the user_settings DB (written by /set). Only fallback
+	// to config.json when DB has no value (first-run or never changed).
+	if _, ok := vals["max_iterations"]; !ok {
+		vals["max_iterations"] = func() string {
+			if app.cfg.Agent.MaxIterations > 0 {
+				return fmt.Sprintf("%d", app.cfg.Agent.MaxIterations)
+			}
+			return "30"
+		}()
+	}
+	if _, ok := vals["max_concurrency"]; !ok {
+		vals["max_concurrency"] = func() string {
+			if app.cfg.Agent.MaxConcurrency > 0 {
+				return fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency)
+			}
+			return "3"
+		}()
+	}
+	if _, ok := vals["max_context_tokens"]; !ok {
+		vals["max_context_tokens"] = func() string {
+			if app.cfg.Agent.MaxContextTokens > 0 {
+				return fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens)
+			}
+			return "200000"
+		}()
+	}
 	app.valuesCacheMu.Lock()
 	app.valuesCache = vals
 	app.valuesCacheMu.Unlock()
