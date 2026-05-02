@@ -349,13 +349,17 @@ func hasAssistantReasoningHistory(messages []ChatMessage) bool {
 }
 
 // toOpenAIMessages 将业务消息转换为 OpenAI 消息格式。
-// 显式开启 thinking mode 时，所有 assistant 消息都会包含 reasoning_content 字段。
-// 在 auto 模式下，只要历史里已经出现过 assistant reasoning，也会为所有 assistant
-// 消息补齐该字段（缺失时传空字符串），以满足 DeepSeek/OpenAI reasoning provider
-// 对历史消息形状的一致性要求。
+//
+// reasoning_content 处理规则：
+//
+//	只要历史中出现过 assistant reasoning（无论来源模型），
+//	所有 assistant 消息都会包含 reasoning_content 字段。
+//	这是 API 的数据完整性要求（DeepSeek thinking 模式硬性要求回传），
+//	不依赖 thinkingMode 配置——thinkingMode 只控制是否向 API 请求 thinking，
+//	不应影响历史消息的 round-trip 完整性。
 func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.ChatCompletionMessageParamUnion {
 	thinkingEnabled := thinkingMode != "" && thinkingMode != "disabled"
-	reasoningHistoryObserved := thinkingMode != "disabled" && hasAssistantReasoningHistory(messages)
+	reasoningHistoryObserved := hasAssistantReasoningHistory(messages)
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
