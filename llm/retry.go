@@ -268,6 +268,13 @@ func (r *RetryLLM) ListModels() []string {
 	return r.inner.ListModels()
 }
 
+// EnsureModelsLoaded delegates to the inner LLM if it supports synchronous model loading.
+func (r *RetryLLM) EnsureModelsLoaded() {
+	if eml, ok := r.inner.(interface{ EnsureModelsLoaded() }); ok {
+		eml.EnsureModelsLoaded()
+	}
+}
+
 // GenerateStream 仅在获取 channel 时重试，流开始后不重试。
 // 注意：不使用 perAttemptCtx，因为 GenerateStream 是异步的（启动 goroutine 后立即返回），
 // perAttemptCtx 的 defer cancel() 会在 goroutine 仍在运行时过早取消上下文，

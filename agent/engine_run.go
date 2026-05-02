@@ -176,6 +176,16 @@ func (s *runState) initProgress() {
 				}
 				s.structuredProgress.ActiveTools = nil
 			}
+			// When WaitingUser is true, the agent turn is paused (not ended).
+			// Do NOT send PhaseDone — the CLI would clear all progress state
+			// (iterationHistory, progress, lastCompletedTools), causing all
+			// previous iterations' tools to disappear from the progress panel.
+			// The tool states have been finalized above (Active→Completed),
+			// which is sufficient. The next notifyProgress from a subsequent
+			// callLLM will carry the correct state.
+			if s.waitingUser {
+				return
+			}
 			s.structuredProgress.Phase = PhaseDone
 			if s.autoNotify && s.cfg.ProgressEventHandler != nil {
 				s.cfg.ProgressEventHandler(&ProgressEvent{

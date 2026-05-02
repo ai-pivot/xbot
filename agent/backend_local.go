@@ -630,8 +630,8 @@ func (b *LocalBackend) UpdateSubscription(id string, sub channel.Subscription) e
 		APIKey:          sub.APIKey,
 		Model:           sub.Model,
 		MaxContext:      existing.MaxContext,
-		MaxOutputTokens: existing.MaxOutputTokens,
-		ThinkingMode:    existing.ThinkingMode,
+		MaxOutputTokens: sub.MaxOutputTokens,
+		ThinkingMode:    sub.ThinkingMode,
 		IsDefault:       sub.Active,
 	}
 	// Never overwrite with a masked key from server RPC transport.

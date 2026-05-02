@@ -419,7 +419,7 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 			Active:          true,
 		}
 		if v, ok := values["max_output_tokens"]; ok {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 				newSub.MaxOutputTokens = n
 			}
 		}
@@ -462,7 +462,7 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 		sub.BaseURL = strings.TrimSpace(v)
 	}
 	if v, ok := values["max_output_tokens"]; ok {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			sub.MaxOutputTokens = n
 		}
 	}
@@ -1149,7 +1149,7 @@ func main() {
 						_ = ss.SetSetting("cli", "cli_user", "theme", theme)
 					}
 				}
-				if maxOutputChanged || thinkingChanged {
+				if llmFieldChanged {
 					if newClient, err := createLLM(app.cfg.LLM, llm.DefaultRetryConfig()); err == nil {
 						app.llmClient = newClient
 						app.backend.LLMFactory().SetDefaults(newClient, app.cfg.LLM.Model)
@@ -2120,6 +2120,13 @@ func (l *cliModelLister) ListModels() []string {
 	return client.ListModels()
 }
 
+func (l *cliModelLister) EnsureModelsLoaded() {
+	client, _, _, _ := l.factory.GetLLM(l.senderID)
+	if eml, ok := client.(interface{ EnsureModelsLoaded() }); ok {
+		eml.EnsureModelsLoaded()
+	}
+}
+
 func (l *cliModelLister) ListAllModels() []string {
 	seen := make(map[string]bool)
 	var result []string
@@ -2353,6 +2360,8 @@ func (m *configSubscriptionManager) Update(id string, sub *channel.Subscription)
 				m.cfg.Subscriptions[i].APIKey = sub.APIKey
 			}
 			m.cfg.Subscriptions[i].Model = sub.Model
+			m.cfg.Subscriptions[i].MaxOutputTokens = sub.MaxOutputTokens
+			m.cfg.Subscriptions[i].ThinkingMode = sub.ThinkingMode
 			// If modifying active subscription, sync cfg.LLM
 			if m.cfg.Subscriptions[i].Active {
 				syncLLMFromActiveSub(m.cfg)
@@ -2432,20 +2441,21 @@ func setupLogger(cfg config.LogConfig, xbotHome string) error {
 
 // createLLM 根据配置创建 LLM 客户端（带重试、指数退避和随机抖动）。
 func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) {
+	modelsLoadErrCb := func(err error) {
+		select {
+		case channel.ModelsLoadErrorCh() <- err:
+		default:
+		}
+	}
 	var inner llm.LLM
 	switch cfg.Provider {
 	case "openai":
 		inner = llm.NewOpenAILLM(llm.OpenAIConfig{
-			BaseURL:      cfg.BaseURL,
-			APIKey:       cfg.APIKey,
-			DefaultModel: cfg.Model,
-			MaxTokens:    cfg.MaxOutputTokens,
-			OnModelsLoadError: func(err error) {
-				select {
-				case channel.ModelsLoadErrorCh() <- err:
-				default:
-				}
-			},
+			BaseURL:           cfg.BaseURL,
+			APIKey:            cfg.APIKey,
+			DefaultModel:      cfg.Model,
+			MaxTokens:         cfg.MaxOutputTokens,
+			OnModelsLoadError: modelsLoadErrCb,
 		})
 	case "anthropic":
 		inner = llm.NewAnthropicLLM(llm.AnthropicConfig{
@@ -2458,16 +2468,11 @@ func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) 
 		// All other providers (custom, openrouter, ollama, azure, google, deepseek, etc.)
 		// use OpenAI-compatible API — same as LLMFactory.createClient.
 		inner = llm.NewOpenAILLM(llm.OpenAIConfig{
-			BaseURL:      cfg.BaseURL,
-			APIKey:       cfg.APIKey,
-			DefaultModel: cfg.Model,
-			MaxTokens:    cfg.MaxOutputTokens,
-			OnModelsLoadError: func(err error) {
-				select {
-				case channel.ModelsLoadErrorCh() <- err:
-				default:
-				}
-			},
+			BaseURL:           cfg.BaseURL,
+			APIKey:            cfg.APIKey,
+			DefaultModel:      cfg.Model,
+			MaxTokens:         cfg.MaxOutputTokens,
+			OnModelsLoadError: modelsLoadErrCb,
 		})
 	}
 	return llm.NewRetryLLM(inner, retryCfg), nil
@@ -2505,6 +2510,11 @@ func newRemoteModelLister(backend agent.AgentBackend) *remoteModelLister {
 
 func (l *remoteModelLister) ListModels() []string {
 	return l.backend.ListModels()
+}
+
+func (l *remoteModelLister) EnsureModelsLoaded() {
+	// Remote mode: model list is fetched from the server on demand.
+	// No-op — the server handles caching and freshness.
 }
 
 func (l *remoteModelLister) ListAllModels() []string {

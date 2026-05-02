@@ -1105,6 +1105,24 @@ func (m *cliModel) renderProgressBlock() string {
 			sb.WriteString("\n")
 		}
 
+		// Done/error ActiveTools: also render label lines so they don't
+		// vanish between the tool-finishing progress event and the
+		// snapshotCompletedIteration progress event that moves them to
+		// CompletedTools. Without this, the label line disappears for 1-2
+		// frames causing a visible height flicker (shrink then grow).
+		for _, tool := range m.progress.ActiveTools {
+			if tool.Status != "done" && tool.Status != "error" {
+				continue
+			}
+			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+			var elapsedStyled string
+			if tool.Elapsed > 0 {
+				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
+			}
+			sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
+			sb.WriteString("\n")
+		}
+
 		guide := reasoningGuide.Render("  │ ")
 		for _, tool := range m.progress.CompletedTools {
 			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {

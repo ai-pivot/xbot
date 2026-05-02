@@ -314,7 +314,21 @@ func (f *LLMFactory) SwitchModel(senderID, model string) {
 		}
 	}
 	f.models[senderID] = model
+	svc := f.subscriptionSvc
 	f.mu.Unlock()
+
+	// Persist model change to the user's default subscription so it survives
+	// cache invalidation and restarts. Without this, Ctrl+N model switch
+	// only updates the in-memory factory cache; the DB subscription's Model
+	// field stays empty/wrong, causing GetLLM to use the wrong model after
+	// any cache clear (e.g. SetDefaults, restart).
+	if svc != nil && senderID != "" {
+		if sub, err := svc.GetDefault(senderID); err == nil && sub != nil {
+			if sub.Model != model && sub.ID != "" {
+				_ = svc.SetModel(sub.ID, model)
+			}
+		}
+	}
 }
 
 // SetUserMaxOutputTokens updates the max_output_tokens cache for a user.

@@ -715,6 +715,9 @@ type ModelLister interface {
 	ListModels() []string
 	// ListAllModels returns models across all subscriptions (for global tier settings).
 	ListAllModels() []string
+	// EnsureModelsLoaded triggers a synchronous model list fetch if not yet loaded.
+	// After this call returns, ListModels() should return the full model list.
+	EnsureModelsLoaded()
 }
 
 // Subscription represents a LLM subscription for display/selection.

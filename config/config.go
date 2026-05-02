@@ -775,12 +775,8 @@ func Load() *Config {
 	applyEnvOverrides(cfg)
 
 	// 填充 CLI 常用的默认值（仅在配置和环境变量都未设置时生效）
-	if cfg.LLM.Provider == "" {
-		cfg.LLM.Provider = "openai"
-	}
-	if cfg.LLM.BaseURL == "" {
-		cfg.LLM.BaseURL = "https://api.openai.com/v1"
-	}
+	// 注意: LLM Provider/BaseURL 不设默认值。
+	// 首次启动时用户未配置任何 LLM，这里保持空值，避免创建指向 api.openai.com 的无意义 client。
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
 	}
