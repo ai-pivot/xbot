@@ -501,19 +501,72 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 // snapshot. This prevents reasoning stream content from being attributed to
 // the wrong iteration (e.g. after TUI restart, or when the agent starts
 // reasoning for a new iteration before sending the first structured update).
+//
+// When advancing, it also snapshots the current iteration into iterationHistory
+// so that snapshotIterationChange won't miss it when the next structured
+// progress arrives.
 func (m *cliModel) advanceIterationForReasoning(progress *CLIProgressPayload) {
 	if progress == nil || progress.ReasoningStreamContent == "" {
 		return
 	}
-	if len(m.iterationHistory) == 0 {
+	// Case 1: iteration history has a snapshot matching the current iteration.
+	// The reasoning must belong to a new (not-yet-structured) iteration.
+	if len(m.iterationHistory) > 0 {
+		lastSnap := m.iterationHistory[len(m.iterationHistory)-1]
+		if lastSnap.Iteration == progress.Iteration {
+			m.snapshotAndAdvance(progress)
+			return
+		}
+	}
+	// Case 2: no iteration history (snapshotIterationChange hasn't fired yet),
+	// but the current progress already has static Reasoning from a completed
+	// iteration (set by recordAssistantMsg's structured progress). New stream
+	// content that differs from this static Reasoning must be the next iteration.
+	// This handles the common 0→1 transition where iter 0 was never snapshotted
+	// because snapshotIterationChange requires Iteration > lastSeenIteration.
+	if progress.Reasoning != "" && progress.ReasoningStreamContent != progress.Reasoning {
+		m.snapshotAndAdvance(progress)
 		return
 	}
-	lastSnap := m.iterationHistory[len(m.iterationHistory)-1]
-	if lastSnap.Iteration == progress.Iteration && progress.Iteration > 0 {
-		progress.Iteration++
-		m.lastSeenIteration = progress.Iteration
-		m.iterationStartTime = time.Now()
+}
+
+// snapshotAndAdvance creates a snapshot of the current iteration and advances
+// the iteration counter. Used by advanceIterationForReasoning to ensure the
+// completed iteration is recorded before the counter moves forward.
+func (m *cliModel) snapshotAndAdvance(progress *CLIProgressPayload) {
+	oldIter := m.lastSeenIteration
+	// Dedup: if iterationHistory already has a snapshot for oldIter, skip.
+	for _, s := range m.iterationHistory {
+		if s.Iteration == oldIter {
+			// Already snapshotted — just advance the counter.
+			progress.Iteration = oldIter + 1
+			m.lastSeenIteration = progress.Iteration
+			m.iterationStartTime = time.Now()
+			return
+		}
 	}
+	reasoning := progress.Reasoning
+	if reasoning == "" {
+		reasoning = m.lastReasoning
+	}
+	snap := cliIterationSnapshot{
+		Iteration:   oldIter,
+		Reasoning:   reasoning,
+		Thinking:    m.lastThinking,
+		ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+	}
+	// Include tools from the completed iteration if available.
+	for _, t := range m.lastCompletedTools {
+		if t.Iteration == oldIter {
+			snap.Tools = append(snap.Tools, t)
+		}
+	}
+	if len(snap.Tools) > 0 || snap.Reasoning != "" || snap.Thinking != "" {
+		m.iterationHistory = append(m.iterationHistory, snap)
+	}
+	progress.Iteration = oldIter + 1
+	m.lastSeenIteration = progress.Iteration
+	m.iterationStartTime = time.Now()
 }
 
 // handleProgressDone handles the Phase "done" case: snapshots the final iteration,

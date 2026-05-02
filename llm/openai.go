@@ -71,11 +71,23 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 		cfg.MaxTokens = defaultMaxTokens
 	}
 
+	log.WithField("base_url", cfg.BaseURL).Debug("[LLM] NewOpenAILLM called")
+	if cfg.BaseURL == "" && cfg.APIKey == "" {
+		log.Debug("[LLM] No BaseURL/APIKey configured — skipping model list fetch")
+	}
+
 	o := &OpenAILLM{
 		baseURL:           cfg.BaseURL,
 		maxTokens:         cfg.MaxTokens,
 		onModelsLoaded:    cfg.OnModelsLoaded,
 		onModelsLoadError: cfg.OnModelsLoadError,
+	}
+
+	// When both BaseURL and APIKey are empty, the client is a placeholder
+	// (first-run / unconfigured). Mark modelsLoaded so triggerModelLoad()
+	// won't fire a doomed HTTP request to api.openai.com.
+	if cfg.BaseURL == "" && cfg.APIKey == "" {
+		o.modelsLoaded = true
 	}
 
 	opts := []option.RequestOption{
@@ -156,6 +168,27 @@ func (o *OpenAILLM) ListModels() []string {
 	}
 
 	return result
+}
+
+// EnsureModelsLoaded performs a synchronous model list fetch if not yet loaded.
+// Callers that need the full model list (e.g. Ctrl+N model cycling) should
+// call this before ListModels to avoid getting a stale single-model fallback.
+func (o *OpenAILLM) EnsureModelsLoaded() {
+	o.mu.RLock()
+	loaded := o.modelsLoaded
+	o.mu.RUnlock()
+	if loaded {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := o.LoadModelsFromAPI(ctx); err != nil {
+		log.WithError(err).Debug("[LLM] EnsureModelsLoaded: failed to load models")
+	}
+	// Mark loaded so triggerModelLoad won't fire again.
+	o.mu.Lock()
+	o.modelsLoaded = true
+	o.mu.Unlock()
 }
 
 // triggerModelLoad fires a one-time async model list fetch.

@@ -197,6 +197,11 @@ func (m *cliModel) cycleModel() {
 		return
 	}
 
+	// Ensure models are loaded synchronously before cycling.
+	// Without this, the first Ctrl+N sees only the single fallback model
+	// (the async fetch hasn't completed yet).
+	m.channel.modelLister.EnsureModelsLoaded()
+
 	// Use ListModels (current subscription only) instead of ListAllModels.
 	// Ctrl+N should cycle through the current subscription's models only.
 	models := m.channel.modelLister.ListModels()
