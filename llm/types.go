@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"time"
@@ -40,7 +41,7 @@ func NewSystemMessage(content string) ChatMessage {
 }
 
 // SanitizeMessages validates and cleans the message list before sending to LLM.
-// It performs two passes:
+// It performs three passes:
 //
 // Pass 1: Strip invalid assistant messages that have empty content AND no tool_calls.
 // These occur when DisplayOnly messages (e.g. cancel iteration history) are persisted
@@ -48,7 +49,10 @@ func NewSystemMessage(content string) ChatMessage {
 // with "Invalid assistant message: content or tool_calls must be set".
 // Each stripped message is logged at Warn level to aid source tracing.
 //
-// Pass 2: Strip trailing unpaired tool_calls left by a cancelled Run.
+// Pass 2: Strip tool_calls with invalid/malformed arguments (e.g. partial JSON from
+// a cancelled stream). DeepSeek/OpenAI reject tool_calls with broken argument JSON.
+//
+// Pass 3: Strip trailing unpaired tool_calls left by a cancelled Run.
 // An assistant message with non-empty ToolCalls is unpaired if not followed by
 // matching tool-result messages. Both APIs reject unpaired tool_calls.
 func SanitizeMessages(messages []ChatMessage) []ChatMessage {
@@ -68,7 +72,32 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 	}
 	messages = messages[:n]
 
-	// Pass 2: Strip trailing unpaired tool_calls (existing logic)
+	// Pass 2: Strip tool_calls with invalid JSON arguments.
+	// Partially streamed tool_calls can have broken JSON (e.g. {"command":"ls without closing).
+	// DeepSeek rejects these with "tool call must be paired" or 400 errors.
+	for i := range messages {
+		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			continue
+		}
+		valid := make([]ToolCall, 0, len(messages[i].ToolCalls))
+		for _, tc := range messages[i].ToolCalls {
+			if isValidToolCallArgs(tc.Arguments) {
+				valid = append(valid, tc)
+			} else {
+				log.WithFields(log.Fields{
+					"tool_name": tc.Name,
+					"tool_id":   tc.ID,
+					"args_len":  len(tc.Arguments),
+				}).Warn("[SanitizeMessages] Stripping tool_call with invalid JSON arguments")
+			}
+		}
+		messages[i].ToolCalls = valid
+		if len(valid) == 0 && messages[i].Content == "" {
+			messages[i].ToolCalls = nil // will be stripped by Pass 1 on next round
+		}
+	}
+
+	// Pass 3: Strip trailing unpaired tool_calls (existing logic)
 	for len(messages) > 0 {
 		last := messages[len(messages)-1]
 
@@ -96,6 +125,16 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 		break
 	}
 	return messages
+}
+
+// isValidToolCallArgs returns true if the argument string is valid JSON (or empty).
+// Partially streamed tool_call arguments may contain broken JSON like {"command":"ls
+func isValidToolCallArgs(args string) bool {
+	if args == "" {
+		return true
+	}
+	var dummy interface{}
+	return json.Unmarshal([]byte(args), &dummy) == nil
 }
 
 // NewUserMessage 创建用户消息
