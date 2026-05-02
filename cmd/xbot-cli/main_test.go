@@ -774,7 +774,7 @@ func (b *fakeAgentBackend) RenameSubscription(id, name string) error {
 	return b.factory.GetSubscriptionSvc().Rename(id, name)
 }
 func (b *fakeAgentBackend) UpdateSubscription(id string, sub channel.Subscription) error {
-	return b.factory.GetSubscriptionSvc().Update(&sqlite.LLMSubscription{ID: id, SenderID: cliSenderID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, IsDefault: sub.Active})
+	return b.factory.GetSubscriptionSvc().Update(&sqlite.LLMSubscription{ID: id, SenderID: cliSenderID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode, IsDefault: sub.Active})
 }
 func (b *fakeAgentBackend) RegisterTool(tools.Tool)                   {}
 func (b *fakeAgentBackend) RegistryManager() *agent.RegistryManager   { return nil }
