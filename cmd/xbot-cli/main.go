@@ -463,7 +463,7 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 	}
 	if v, ok := values["max_output_tokens"]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-		sub.MaxOutputTokens = n
+			sub.MaxOutputTokens = n
 		}
 	}
 	if v, ok := values["thinking_mode"]; ok {
@@ -2353,15 +2353,15 @@ func (m *configSubscriptionManager) Update(id string, sub *channel.Subscription)
 	for i := range m.cfg.Subscriptions {
 		if m.cfg.Subscriptions[i].ID == id {
 			m.cfg.Subscriptions[i].Name = sub.Name
-				m.cfg.Subscriptions[i].Provider = sub.Provider
-				m.cfg.Subscriptions[i].BaseURL = sub.BaseURL
-				// Never overwrite with a masked API key from server RPC.
-				if !strings.HasSuffix(sub.APIKey, "****") || len(sub.APIKey) > 20 {
-					m.cfg.Subscriptions[i].APIKey = sub.APIKey
-				}
-				m.cfg.Subscriptions[i].Model = sub.Model
-				m.cfg.Subscriptions[i].MaxOutputTokens = sub.MaxOutputTokens
-				m.cfg.Subscriptions[i].ThinkingMode = sub.ThinkingMode
+			m.cfg.Subscriptions[i].Provider = sub.Provider
+			m.cfg.Subscriptions[i].BaseURL = sub.BaseURL
+			// Never overwrite with a masked API key from server RPC.
+			if !strings.HasSuffix(sub.APIKey, "****") || len(sub.APIKey) > 20 {
+				m.cfg.Subscriptions[i].APIKey = sub.APIKey
+			}
+			m.cfg.Subscriptions[i].Model = sub.Model
+			m.cfg.Subscriptions[i].MaxOutputTokens = sub.MaxOutputTokens
+			m.cfg.Subscriptions[i].ThinkingMode = sub.ThinkingMode
 			// If modifying active subscription, sync cfg.LLM
 			if m.cfg.Subscriptions[i].Active {
 				syncLLMFromActiveSub(m.cfg)
