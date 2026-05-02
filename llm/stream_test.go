@@ -301,10 +301,11 @@ func TestCollectStreamWithCallbackCtxCancel(t *testing.T) {
 		}
 	}, nil)
 
-	// Context cancelled → function returns nil, ctx.Err()
-	// (even though EventDone was in the channel, ctx check at top of loop fires first)
-	if resp != nil {
-		t.Errorf("expected nil response after ctx cancel, got content %q", resp.Content)
+	// Context cancelled → function returns partial content + ctx.Err()
+	if resp == nil {
+		t.Error("expected non-nil response with partial content after ctx cancel")
+	} else if resp.Content != "partial" {
+		t.Errorf("expected partial content %q, got %q", "partial", resp.Content)
 	}
 	if err == nil {
 		t.Error("expected context.Canceled error")

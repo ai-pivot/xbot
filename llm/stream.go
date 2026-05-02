@@ -71,7 +71,13 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 		// Check context cancellation between events
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// Return partial content accumulated so far (same as EventError path).
+			// This preserves reasoning_content and tool_calls for proper persistence,
+			// preventing malformed assistant messages in subsequent turns.
+			resp.Content = content.String()
+			resp.ReasoningContent = reasoningContent.String()
+			resp.ToolCalls = orderedToolCalls(toolCalls)
+			return &resp, ctx.Err()
 		default:
 		}
 
