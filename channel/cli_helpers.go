@@ -334,6 +334,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	}
 	m.lastCompletedTools = nil
 	m.iterationHistory = nil
+	m.invalidateProgressHistoryCache()
 	m.lastSeenIteration = 0
 	m.lastReasoning = ""
 	m.lastThinking = ""

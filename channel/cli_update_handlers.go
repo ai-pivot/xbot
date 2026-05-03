@@ -806,6 +806,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 		// Rebuild iteration history from server snapshot (authoritative).
 		m.iterationHistory = nil
+		m.invalidateProgressHistoryCache()
 		if len(msg.activeProgress.IterationHistory) > 0 {
 			for _, ih := range msg.activeProgress.IterationHistory {
 				snap := cliIterationSnapshot{

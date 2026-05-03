@@ -314,6 +314,7 @@ func (m *cliModel) restoreSession() {
 		m.typing = false
 		m.streamingMsgIdx = -1
 		m.iterationHistory = nil
+		m.invalidateProgressHistoryCache()
 		m.lastSeenIteration = 0
 		m.typingStartTime = time.Time{}
 		m.lastReasoning = ""
@@ -450,6 +451,11 @@ type cliModel struct {
 	cachedMsgCount      int    // messages count when cache was built
 	lastViewportContent string // 上次 setViewportContent 的原始内容（去重用）
 	lastViewportWidth   int    // 上次 setViewportContent 的宽度（去重用）
+
+	// --- progress block cache ---
+	cachedProgressHistory     string // cached rendered output of completed iterations (dimmed)
+	cachedProgressHistoryLen  int    // len(iterationHistory) when cache was built
+	cachedProgressHistoryWidth int   // viewport width when cache was built
 
 	// --- §2 工具可视化 ---
 	lastCompletedTools []CLIToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
