@@ -664,17 +664,17 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 	if m.channelName == "agent" && !m.typing {
 		assistantContent := msg.payload.Thinking
 		if assistantContent == "" {
-		assistantContent = msg.payload.StreamContent
+			assistantContent = msg.payload.StreamContent
 		}
 		if assistantContent != "" {
-		m.upsertMessageByTurn(turnID, "assistant", cliMessage{
-			role:      "assistant",
-			content:   assistantContent,
-			timestamp: time.Now(),
-			dirty:     true,
-		})
-		m.setTurnReplyReceived(turnID)
-		m.renderCacheValid = false
+			m.upsertMessageByTurn(turnID, "assistant", cliMessage{
+				role:      "assistant",
+				content:   assistantContent,
+				timestamp: time.Now(),
+				dirty:     true,
+			})
+			m.setTurnReplyReceived(turnID)
+			m.renderCacheValid = false
 		}
 	}
 

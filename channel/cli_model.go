@@ -453,9 +453,9 @@ type cliModel struct {
 	lastViewportWidth   int    // 上次 setViewportContent 的宽度（去重用）
 
 	// --- progress block cache ---
-	cachedProgressHistory     string // cached rendered output of completed iterations (dimmed)
-	cachedProgressHistoryLen  int    // len(iterationHistory) when cache was built
-	cachedProgressHistoryWidth int   // viewport width when cache was built
+	cachedProgressHistory      string // cached rendered output of completed iterations (dimmed)
+	cachedProgressHistoryLen   int    // len(iterationHistory) when cache was built
+	cachedProgressHistoryWidth int    // viewport width when cache was built
 
 	// --- §2 工具可视化 ---
 	lastCompletedTools []CLIToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期

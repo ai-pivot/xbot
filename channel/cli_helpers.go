@@ -449,15 +449,6 @@ func (m *cliModel) upsertMessageByTurn(turnID uint64, role string, msg cliMessag
 
 // removeMessageByTurn removes the last message with the given turnID+role.
 // Returns true if a message was removed.
-func (m *cliModel) removeMessageByTurn(turnID uint64, role string) bool {
-	idx := m.findMessageByTurn(turnID, role)
-	if idx < 0 {
-		return false
-	}
-	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
-	return true
-}
-
 // flushMessageQueue sends the first queued message (if any) when input becomes ready.
 // Returns a tea.Cmd to send the message, or nil if queue is empty.
 func (m *cliModel) flushMessageQueue() {
