@@ -281,6 +281,12 @@ type CLIToolProgress struct {
 	Args      string    // raw JSON tool arguments (for per-tool rendering)
 	ToolHints string    // markdown hint from plugin or built-in diff
 	StartedAt time.Time // when tool started (for live elapsed timer)
+
+	// Render cache: the final output of renderToolContentBelow, cached to avoid
+	// re-running chroma tokenisation + lipgloss on every 100ms tick.
+	// Only valid when cachedBodyW matches the current viewport width.
+	cachedBody  string
+	cachedBodyW int
 }
 
 // CLISubAgent 子 Agent 的结构化进度状态。

@@ -1004,8 +1004,9 @@ func (m *cliModel) renderProgressBlock() string {
 	if m.cachedProgressHistoryLen == len(m.iterationHistory) && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistory != "" {
 		sb.WriteString(m.cachedProgressHistory)
 	} else {
-		var histBuf strings.Builder
-		for _, snap := range m.iterationHistory {
+			var histBuf strings.Builder
+			for j := range m.iterationHistory {
+				snap := &m.iterationHistory[j]
 		histBuf.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
 		histBuf.WriteString("\n")
 		if snap.Reasoning != "" {
@@ -1032,8 +1033,9 @@ func (m *cliModel) renderProgressBlock() string {
 			}
 			}
 		}
-		for _, tool := range snap.Tools {
-			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+		for k := range snap.Tools {
+				tool := &snap.Tools[k]
+			label, icon, sty := toolDisplayInfo(*tool, toolDoneStyle, toolErrorStyle)
 			var elapsedStyled string
 			if tool.Elapsed > 0 {
 			elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
@@ -1041,7 +1043,7 @@ func (m *cliModel) renderProgressBlock() string {
 			histBuf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 			histBuf.WriteString("\n")
 			// Render tool body (diff hints or per-tool output)
-			if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true); content != "" {
+				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true, 0); content != "" {
 			histBuf.WriteString(content)
 			histBuf.WriteString("\n")
 			}
@@ -1160,17 +1162,19 @@ func (m *cliModel) renderProgressBlock() string {
 		}
 
 		guide := reasoningGuide.Render("  │ ")
-		for _, tool := range m.progress.CompletedTools {
-			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {
+			for i := range m.progress.CompletedTools {
+				tool := &m.progress.CompletedTools[i]
+				if content := m.renderToolContentBelow(tool, guide, innerWidth, false, toolBodyMaxLines); content != "" {
 				sb.WriteString(content)
 				sb.WriteString("\n")
 			}
 		}
-		for _, tool := range m.progress.ActiveTools {
+		for i := range m.progress.ActiveTools {
+			tool := &m.progress.ActiveTools[i]
 			if tool.Status != "done" && tool.Status != "error" {
 				continue
 			}
-			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false, toolBodyMaxLines); content != "" {
 				sb.WriteString(content)
 				sb.WriteString("\n")
 			}
@@ -1399,7 +1403,14 @@ func (m *cliModel) renderHelpPanel() string {
 // Shows ToolHints (diff) first, then per-tool body (Read/Shell/Grep/Glob output).
 // guide is the prefix for each line (e.g. "  │ ").
 // dimmed controls whether the content is dimmed (for history iterations).
-func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bodyW int, dimmed bool) string {
+// maxLines caps diff rendering (0 = unlimited). Passed through to renderToolHint.
+// Caches the result on the tool struct to avoid re-running chroma/lipgloss on every tick.
+func (m *cliModel) renderToolContentBelow(tool *CLIToolProgress, guide string, bodyW int, dimmed bool, maxLines int) string {
+	// Return cached result if content hasn't changed and width matches.
+	if tool.cachedBody != "" && tool.cachedBodyW == bodyW {
+		return tool.cachedBody
+	}
+
 	var sb strings.Builder
 	guideFn := func(s string) string { return s }
 	if dimmed {
@@ -1415,7 +1426,7 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		if hintW < 1 {
 			hintW = 1
 		}
-		if r, err := m.renderToolHint(tool.ToolHints, hintW); err == nil && r != "" {
+		if r, err := m.renderToolHint(tool.ToolHints, hintW, maxLines); err == nil && r != "" {
 			for _, line := range strings.Split(r, "\n") {
 				sb.WriteString(g)
 				sb.WriteString(line)
@@ -1431,7 +1442,7 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		if bodyContentW < 1 {
 			bodyContentW = 1
 		}
-		if body := m.renderToolBody(tool, bodyContentW); body != "" {
+		if body := m.renderToolBody(*tool, bodyContentW); body != "" {
 			for _, line := range strings.Split(body, "\n") {
 				sb.WriteString(g)
 				sb.WriteString(line)
@@ -1440,7 +1451,10 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		}
 	}
 
-	return strings.TrimRight(sb.String(), "\n")
+	result := strings.TrimRight(sb.String(), "\n")
+	tool.cachedBody = result
+	tool.cachedBodyW = bodyW
+	return result
 }
 
 func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
@@ -1558,8 +1572,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				toolSb.WriteString("\n")
 				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
 				textW := boxInnerW - guideW
-				for _, it := range msg.iterations {
-					// Render #iter header with wall-clock time
+				for ii := range msg.iterations {
+						it := &msg.iterations[ii]
 					iterLabel := fmt.Sprintf("#%d", it.Iteration)
 					if it.ElapsedWall > 0 {
 						iterLabel += " " + reasoningStyle.Render(formatElapsed(it.ElapsedWall))
@@ -1590,16 +1604,17 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 							}
 						}
 					}
-					for _, tool := range it.Tools {
-						label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
-						elapsed := ""
-						if tool.Elapsed > 0 {
-							elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
-						}
-						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
-						toolSb.WriteString("\n")
-						// Render tool body (diff hints or per-tool output)
-						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false); content != "" {
+					for k := range it.Tools {
+							tool := &it.Tools[k]
+							label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
+							elapsed := ""
+							if tool.Elapsed > 0 {
+								elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
+							}
+							toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
+							toolSb.WriteString("\n")
+							// Render tool body (diff hints or per-tool output)
+							if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false, 0); content != "" {
 							toolSb.WriteString(content)
 							toolSb.WriteString("\n")
 						}
@@ -1608,16 +1623,17 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			} else {
 				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d)", totalTools)))
 				toolSb.WriteString("\n")
-				for _, tool := range msg.tools {
-					label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
-					elapsed := ""
-					if tool.Elapsed > 0 {
-						elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
-					}
-					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
-					toolSb.WriteString("\n")
-					// Render tool body for flat tool list too
-					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false); content != "" {
+				for i := range msg.tools {
+						tool := &msg.tools[i]
+						label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
+						elapsed := ""
+						if tool.Elapsed > 0 {
+							elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
+						}
+						toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
+						toolSb.WriteString("\n")
+						// Render tool body for flat tool list too
+						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false, 0); content != "" {
 						toolSb.WriteString(content)
 						toolSb.WriteString("\n")
 					}
@@ -2242,7 +2258,8 @@ func (m *cliModel) renderRewindResultBlock() string {
 // renderToolHint renders plugin-provided or built-in hint content.
 // For ```diff code blocks, renders with line numbers and theme backgrounds (crush-style).
 // For other markdown, renders with glamour.
-func (m *cliModel) renderToolHint(md string, maxW int) (string, error) {
+// maxLines caps diff line rendering (0 = unlimited).
+func (m *cliModel) renderToolHint(md string, maxW, maxLines int) (string, error) {
 	if md == "" {
 		return "", nil
 	}
@@ -2252,7 +2269,7 @@ func (m *cliModel) renderToolHint(md string, maxW int) (string, error) {
 		if w < 40 {
 			w = 40
 		}
-		return renderDiffStyled(md, w), nil
+		return renderDiffStyled(md, w, maxLines), nil
 	}
 	// Non-diff markdown: render with glamour
 	rendered, err := m.renderer.Render(md)
@@ -2401,18 +2418,20 @@ func (m *cliModel) renderReadBody(tool CLIToolProgress, maxW int, t cliTheme) st
 	}
 
 	totalLines := len(parsed)
-	displayParsed := parsed
-	if len(displayParsed) > toolBodyMaxLines {
-		displayParsed = displayParsed[:toolBodyMaxLines]
-	}
+		displayParsed := parsed
+		if len(displayParsed) > toolBodyMaxLines {
+			displayParsed = displayParsed[:toolBodyMaxLines]
+		}
 
-	// Try Chroma highlighting on pure code
-	pureCode := make([]string, len(parsed))
-	for i, p := range parsed {
-		pureCode[i] = p.code
-	}
-	pureCodeStr := strings.Join(pureCode, "\n")
-	hlLines := highlightCode(pureCodeStr, filePath)
+		// Try Chroma highlighting — only on the lines we'll actually display,
+		// not the entire file. Avoids chroma tokenizing thousands of lines
+		// when only 10 are shown.
+		pureCode := make([]string, len(displayParsed))
+		for i, p := range displayParsed {
+			pureCode[i] = p.code
+		}
+		pureCodeStr := strings.Join(pureCode, "\n")
+		hlLines := highlightCode(pureCodeStr, filePath)
 
 	// Layout calculations
 	maxLineNum := parsed[totalLines-1].num
@@ -2610,7 +2629,8 @@ func renderBgLine(content string, fgHex string, bgHex string, targetWidth int) s
 // and theme semantic backgrounds. Uses the same approach as crush's xchroma:
 // Chroma tokens are formatted with lipgloss including the diff background color,
 // so ANSI codes are always correct without manual escape management.
-func renderDiffStyled(md string, maxW int) string {
+// maxLines caps the number of diff lines rendered (0 = unlimited).
+func renderDiffStyled(md string, maxW, maxLines int) string {
 	if maxW < 40 {
 		maxW = 40
 	}
@@ -2634,12 +2654,17 @@ func renderDiffStyled(md string, maxW int) string {
 		}
 	}
 	if len(diffLines) == 0 {
-		trimmed := strings.TrimSpace(md)
-		if trimmed == "" {
-			return ""
+			trimmed := strings.TrimSpace(md)
+			if trimmed == "" {
+				return ""
+			}
+			return lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextSecondary)).Render(trimmed)
 		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextSecondary)).Render(trimmed)
-	}
+
+		// Cap diff lines before expensive chroma tokenisation.
+		if maxLines > 0 && len(diffLines) > maxLines {
+			diffLines = diffLines[:maxLines]
+		}
 
 	// --- Extract file path for syntax highlighting ---
 	filePath := ""
