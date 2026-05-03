@@ -627,21 +627,24 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 			}
 		}
 		// Generate tool_summary if we have iteration history.
-		// Append to end immediately so cancel/error cases (no handleAgentMessage)
-		// still display the summary. handleAgentMessage will relocate it before
-		// the assistant reply if one follows.
+		// Use upsert to avoid duplicates when PhaseDone fires multiple times
+		// (e.g. cancel + late tool completion).
 		if len(m.iterationHistory) > 0 {
-			m.pendingToolSummary = &cliMessage{
+			toolSummaryMsg := cliMessage{
 				role:       "tool_summary",
 				content:    "",
 				timestamp:  time.Now(),
 				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
 				dirty:      true,
 			}
-			m.messages = append(m.messages, *m.pendingToolSummary)
+			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
+			m.pendingToolSummary = nil // upsert replaces the slot; no need for separate pending
 			m.renderCacheValid = false
 		}
 	}
+	// Mark this turn as done-processed (tool_summary created, turn ending).
+	m.setTurnDoneProcessed(turnID)
+
 	// Reset all iteration tracking state (always, even if handleAgentMessage ran first)
 	m.endAgentTurn(turnID) // also clears todos and does relayoutViewport
 	if turnID == m.agentTurnID {
@@ -661,16 +664,17 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 	if m.channelName == "agent" && !m.typing {
 		assistantContent := msg.payload.Thinking
 		if assistantContent == "" {
-			assistantContent = msg.payload.StreamContent
+		assistantContent = msg.payload.StreamContent
 		}
 		if assistantContent != "" {
-			m.messages = append(m.messages, cliMessage{
-				role:      "assistant",
-				content:   assistantContent,
-				timestamp: time.Now(),
-				dirty:     true,
-			})
-			m.renderCacheValid = false
+		m.upsertMessageByTurn(turnID, "assistant", cliMessage{
+			role:      "assistant",
+			content:   assistantContent,
+			timestamp: time.Now(),
+			dirty:     true,
+		})
+		m.setTurnReplyReceived(turnID)
+		m.renderCacheValid = false
 		}
 	}
 
@@ -1223,13 +1227,47 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	// §Q Flush message queue on tick (not in cliProgressMsg/cliOutboundMsg).
 	// This ensures the previous reply is already appended to m.messages before
 	// the queued message gets sent, producing correct order: msg1, reply1, msg2.
-	// Guard: only flush when NOT typing (previous turn fully complete).
+	// Guard: only flush when NOT typing AND the previous turn's reply has been
+	// received (or the previous turn had no assistant reply — e.g. empty cancel).
 	if m.needFlushQueue && !m.typing && len(m.messageQueue) > 0 {
-		m.needFlushQueue = false
-		m.flushMessageQueue()
-		// Always return after flush so the tickCmd queued by startAgentTurn()
-		// (inside sendMessageFromQueue → sendMessage) gets picked up in cmds.
-		return cmds
+		// Check that the previous turn's reply was received before flushing.
+		// The previous turn is the current agentTurnID (endAgentTurn was already
+		// called, but startAgentTurn for the new turn hasn't run yet).
+		// We can flush only if:
+		// 1. replyReceived is true (handleAgentMessage processed the reply), OR
+		// 2. doneProcessed is true AND the turn was cancelled (no reply coming).
+		// 3. Timeout: if doneProcessed has been true for >2s, force flush to
+		//    prevent queue from getting permanently stuck.
+		prevTurnID := m.agentTurnID
+		canFlush := m.isTurnReplyReceived(prevTurnID)
+		if !canFlush && m.isTurnDoneProcessed(prevTurnID) && m.turnCancelled {
+			// Cancelled turn: no assistant reply coming (or empty cancel ack).
+			// The doneProcessed flag means PhaseDone already ran.
+			canFlush = true
+		}
+		if !canFlush && m.isTurnDoneProcessed(prevTurnID) {
+			// Timeout fallback: if PhaseDone arrived >2s ago but no reply,
+			// force flush to prevent the queue from being permanently stuck.
+			// This handles edge cases where the reply is lost or never sent.
+			prevFlag := m.getTurnFlag(prevTurnID)
+			if prevFlag != nil && !prevFlag.doneTime.IsZero() && time.Since(prevFlag.doneTime) > 2*time.Second {
+				log.WithField("turnID", prevTurnID).Warn("Queue flush timeout: forcing flush after 2s without reply")
+				canFlush = true
+			}
+		}
+
+		if canFlush {
+			m.needFlushQueue = false
+			m.flushMessageQueue()
+			// Always return after flush so the tickCmd queued by startAgentTurn()
+			// (inside sendMessageFromQueue → sendMessage) gets picked up in cmds.
+			return cmds
+		}
+		// Not safe to flush yet — keep fast tick active so we check again soon.
+		if !m.fastTickActive {
+			m.fastTickActive = true
+			cmds = append(cmds, tickCmd())
+		}
 	}
 
 	return cmds

@@ -278,6 +278,7 @@ func (m *cliModel) saveCurrentSession() {
 	key := m.sessionKey()
 	if m.savedSessions == nil {
 		m.savedSessions = make(map[string]*sessionState)
+		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
 		progress:          m.progress,
@@ -597,6 +598,11 @@ type cliModel struct {
 	savedSessions map[string]*sessionState
 	turnCancelled bool // true after Ctrl+C — prevents auto-start on stale progress
 
+	// --- Deterministic rendering: per-turn completion tracking ---
+	// turnDoneFlags tracks whether specific events have been processed for a turn.
+	// Keyed by agentTurnID. Entries for old turns are cleaned up in startAgentTurn.
+	turnDoneFlags map[uint64]*turnDoneFlag
+
 	// --- §21 消息搜索 /search ---
 	searchMode    bool            // 是否处于搜索模式
 	searchQuery   string          // 搜索关键词
@@ -633,12 +639,23 @@ type cliModel struct {
 	runnerBridge *RunnerBridge
 }
 
+// turnDoneFlag tracks completion events for a single agent turn.
+// Used to prevent duplicate message insertion when events arrive out of order
+// (e.g. PhaseDone before cliOutboundMsg, or late tool completion after cancel).
+type turnDoneFlag struct {
+	doneProcessed bool      // true after handleProgressDone has created the tool_summary
+	replyReceived bool      // true after handleAgentMessage has appended the assistant reply
+	doneTime      time.Time // when doneProcessed was set (for flush timeout fallback)
+}
+
 // cliMessage 单条消息
 type cliMessage struct {
 	role      string
 	content   string
 	timestamp time.Time
 	isPartial bool
+	// --- turn identification for deterministic rendering ---
+	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)
 	// --- thinking/reasoning content (displayed in a collapsible box) ---
 	thinking string // raw reasoning text (stored when message is finalized)
 	// --- §1 增量渲染 ---
