@@ -69,6 +69,12 @@
 - **SubAgent tree description**: skip description when `descW <= 0` instead of forcing `descW >= 10` minimum — the old minimum caused overflow on narrow terminals.
 - **Group chat members must be pre-spawned**: `CreateChat(type="group")` must auto-spawn each member agent and register AgentChannel in Dispatcher. Otherwise `@mentions` in SendMessage fail with "unknown channel: agent:role/instance".
 
+### CLI Deterministic Rendering
+- **Every assistant/tool_summary message is keyed by `agentTurnID` + `role`.** `upsertMessageByTurn(turnID, role, msg)` finds existing entries and updates in-place instead of appending duplicates. This prevents duplicate messages when PhaseDone and cliOutboundMsg arrive out of order.
+- **`turnDoneFlags` tracks per-turn completion state**: `doneProcessed` (PhaseDone created tool_summary) and `replyReceived` (handleAgentMessage appended assistant reply). `handleAgentMessage` checks `doneProcessed` to skip redundant tool_summary creation.
+- **Queue flush requires `replyReceived` or `doneProcessed+turnCancelled`.** The old heuristic (`!typing` on next tick) could flush before the assistant reply arrived. Now the tick handler waits for `replyReceived=true` on the completed turn. A 2s timeout fallback prevents permanent queue stalls when replies are lost.
+- **`pendingToolSummary` is no longer used for PhaseDone→handleAgentMessage handoff.** The upsert-by-turn mechanism replaces it — `handleProgressDone` creates the tool_summary via upsert, and `handleAgentMessage` either finds it already there (doneProcessed) or creates it from local iteration history.
+
 ### SubAgent Progress Identity
 - **All SubAgent progress structs MUST carry an `Instance` field** (`CLISubAgent`, `WsSubAgent`, `SubAgentNode`, `childAgentStatus`). `mergeSubAgentTrees` uses `Role + ":" + Instance` as the unique key — without Instance, same-role different-instance SubAgents collapse into a single tree node.
 - **`RunSubAgent` interface must include `instance` parameter.** One-shot SubAgent goes through `spawnAgentAdapter.RunSubAgent` → `buildMsg` → metadata. Without this, instance never reaches `SubAgentProgressDetail` and the progress tree can't distinguish parallel SubAgents.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -521,38 +522,93 @@ func leadingWhitespace(s string) string {
 
 // adjustIndentation adjusts newStr's indentation based on the difference
 // between oldLines (what the LLM sent) and actualLines (what the file has).
-// It detects the base indent from the first non-empty line pair and applies
-// the same prefix substitution to every line in newStr.
+//
+// oldLines and actualLines are guaranteed line-by-line aligned (same count, same
+// trimmed content). We compute the indent delta per line pair and apply a
+// consistent mapping to every line of newStr.
+//
+// Strategy:
+//  1. From all non-empty line pairs, derive the base indent (minimum old indent)
+//     and the corresponding actual base indent.
+//  2. For each newStr line, compute how many characters deeper than the base
+//     its indent is, then produce: actualBase + scaled_relative + rest.
+//     The scaling ratio is derived from the line pairs so tab↔space works.
 func adjustIndentation(oldLines, actualLines []string, newStr string) string {
-	var oldBase, actualBase string
+	// Collect indent pairs from non-empty lines.
+	type indentPair struct{ old, actual string }
+	var pairs []indentPair
 	for i, line := range oldLines {
-		if strings.TrimSpace(line) != "" && i < len(actualLines) {
-			oldBase = leadingWhitespace(line)
-			actualBase = leadingWhitespace(actualLines[i])
-			break
+		if strings.TrimSpace(line) == "" || i >= len(actualLines) {
+			continue
 		}
+		pairs = append(pairs, indentPair{
+			old:    leadingWhitespace(line),
+			actual: leadingWhitespace(actualLines[i]),
+		})
 	}
-
-	if oldBase == actualBase {
+	if len(pairs) == 0 {
 		return newStr
 	}
 
+	// Find minimum indents (the common base level).
+	minOld := pairs[0].old
+	minActual := pairs[0].actual
+	for _, p := range pairs[1:] {
+		if len(p.old) < len(minOld) {
+			minOld = p.old
+		}
+		if len(p.actual) < len(minActual) {
+			minActual = p.actual
+		}
+	}
+
+	// Nothing to adjust if bases are identical.
+	if minOld == minActual {
+		return newStr
+	}
+
+	// Compute average scale: how many actual-chars per old-char for extra depth.
+	// Use weighted average across all pairs with extra depth.
+	var totalOldExtra, totalActualExtra float64
+	for _, p := range pairs {
+		extraOld := len(p.old) - len(minOld)
+		extraActual := len(p.actual) - len(minActual)
+		if extraOld > 0 {
+			totalOldExtra += float64(extraOld)
+			totalActualExtra += float64(extraActual)
+		}
+	}
+	scale := 1.0
+	if totalOldExtra > 0 {
+		scale = totalActualExtra / totalOldExtra
+	}
+
+	// Determine the character used for actual indentation (tab or space).
+	actualPadChar := byte(' ')
+	if strings.ContainsRune(minActual, '\t') {
+		actualPadChar = '\t'
+	}
+
+	// Apply to each line of newStr.
 	newLines := strings.Split(newStr, "\n")
 	for i, line := range newLines {
-		indent := leadingWhitespace(line)
-		rest := line[len(indent):]
-		level := 0
-		remaining := indent
-		// Guard: empty oldBase would cause infinite loop
-		if oldBase == "" {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		for strings.HasPrefix(remaining, oldBase) {
-			level++
-			remaining = remaining[len(oldBase):]
-		}
-		if level > 0 {
-			newLines[i] = strings.Repeat(actualBase, level) + remaining + rest
+		indent := leadingWhitespace(line)
+		rest := line[len(indent):]
+
+		relativeLen := len(indent) - len(minOld)
+		if relativeLen <= 0 {
+			// At or below base level: use actual base indent.
+			newLines[i] = minActual + rest
+		} else {
+			// Scale the relative portion.
+			scaledLen := int(math.Round(float64(relativeLen) * scale))
+			if scaledLen < 0 {
+				scaledLen = 0
+			}
+			newLines[i] = minActual + strings.Repeat(string(actualPadChar), scaledLen) + rest
 		}
 	}
 	return strings.Join(newLines, "\n")

@@ -339,6 +339,14 @@ func parseFileReferences(content string) []string {
 	return files
 }
 
+// invalidateProgressHistoryCache clears the cached rendered output of completed
+// iterations so it is rebuilt on the next renderProgressBlock call.
+func (m *cliModel) invalidateProgressHistoryCache() {
+	m.cachedProgressHistory = ""
+	m.cachedProgressHistoryLen = 0
+	m.cachedProgressHistoryWidth = 0
+}
+
 // resetProgressState resets iteration tracking for a new agent turn.
 func (m *cliModel) resetProgressState() {
 	m.iterationHistory = nil
@@ -347,6 +355,7 @@ func (m *cliModel) resetProgressState() {
 	m.progress = nil
 	m.iterationStartTime = time.Now() // wall-clock start for iteration 0
 	m.typingStartTime = time.Now()
+	m.invalidateProgressHistoryCache()
 }
 
 // collectAllTools gathers all tools from iteration history into a flat slice.
@@ -671,6 +680,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		}
 		m.streamingMsgIdx = -1
 		m.progress = nil
+		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
 		if turnID == m.agentTurnID {
 			m.inputReady = true
@@ -696,6 +706,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 				timestamp: time.Now(),
 				isPartial: true,
 				dirty:     true,
+				turnID:    turnID,
 			})
 		}
 	} else {
@@ -706,17 +717,19 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
+			m.messages[m.streamingMsgIdx].turnID = turnID
 			completedMsgIdx = m.streamingMsgIdx
 		} else {
-			// 新增完整的 assistant 消息
-			m.messages = append(m.messages, cliMessage{
+			// 新增完整的 assistant 消息 — use upsert to prevent duplicates
+			assistantMsg := cliMessage{
 				role:      "assistant",
 				content:   content,
 				timestamp: time.Now(),
 				isPartial: false,
 				dirty:     true,
-			})
-			completedMsgIdx = len(m.messages) - 1
+				turnID:    turnID,
+			}
+			completedMsgIdx = m.upsertMessageByTurn(turnID, "assistant", assistantMsg)
 		}
 		// 重置流式状态
 		m.streamingMsgIdx = -1
@@ -873,55 +886,68 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 		}
 
-		// §2 工具可视化：在 assistant 消息之前插入 tool_summary
-		// Build iterations from pendingToolSummary (PhaseDone) + local iterationHistory.
-		// Deduplicate: if an iteration exists in both, prefer the PhaseDone version
-		// (which has complete reasoning from the server) over the local snapshot.
-		var toolSummaryIterations []cliIterationSnapshot
-		pendingIters := make(map[int]bool)
-		if m.pendingToolSummary != nil {
-			for _, it := range m.pendingToolSummary.iterations {
-				pendingIters[it.Iteration] = true
-			}
-			toolSummaryIterations = append(toolSummaryIterations, m.pendingToolSummary.iterations...)
-			// Remove the last tool_summary placeholder that PhaseDone appended.
-			// We track by index from end because append copies the value,
-			// making pointer comparison unreliable.
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == "tool_summary" {
-					m.messages = append(m.messages[:i], m.messages[i+1:]...)
-					break
-				}
-			}
-			m.pendingToolSummary = nil
-		}
-		if len(m.iterationHistory) > 0 {
-			for _, it := range m.iterationHistory {
-				if !pendingIters[it.Iteration] {
-					toolSummaryIterations = append(toolSummaryIterations, it)
-				}
-			}
-		}
-		if len(toolSummaryIterations) > 0 {
-			toolMsg := cliMessage{
+		// Tool summary handling with deterministic rendering.
+		// If handleProgressDone already processed this turn (doneProcessed=true),
+		// the tool_summary is already in m.messages — skip to avoid duplicates.
+		// If not, we need to create/update it from local iteration history.
+		if !m.isTurnDoneProcessed(turnID) && len(m.iterationHistory) > 0 {
+			// PhaseDone hasn't run yet (or arrived after the reply).
+			// Create tool_summary from local iteration history.
+			toolSummaryMsg := cliMessage{
 				role:       "tool_summary",
 				content:    "",
 				timestamp:  time.Now(),
-				iterations: toolSummaryIterations,
+				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
 				dirty:      true,
 			}
-			// Find the assistant message we just added and insert before it
-			assistantIdx := len(m.messages) - 1
-			if assistantIdx >= 0 && m.messages[assistantIdx].role == "assistant" {
-				m.messages = append(m.messages[:assistantIdx], append([]cliMessage{toolMsg}, m.messages[assistantIdx:]...)...)
-			} else {
-				// Fallback: append at end
-				m.messages = append(m.messages, toolMsg)
+			// Insert before the assistant message using upsert.
+			// If a tool_summary for this turn already exists (shouldn't happen
+			// since doneProcessed is false, but defensive), update in-place.
+			tsIdx := m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
+
+			// Ensure tool_summary is positioned BEFORE the assistant message.
+			// The assistant was just added/updated above; find its index.
+			asstIdx := m.findMessageByTurn(turnID, "assistant")
+			if asstIdx >= 0 && tsIdx > asstIdx {
+				// Swap positions: move tool_summary before assistant
+				toolSummary := m.messages[tsIdx]
+				m.messages = append(m.messages[:tsIdx], m.messages[tsIdx+1:]...)
+				// Recalculate asstIdx after removal (shifted by 1 if asstIdx > tsIdx)
+				asstIdx = m.findMessageByTurn(turnID, "assistant")
+				if asstIdx >= 0 {
+					m.messages = append(m.messages[:asstIdx], append([]cliMessage{toolSummary}, m.messages[asstIdx:]...)...)
+				} else {
+					m.messages = append(m.messages, toolSummary)
+				}
 			}
 			m.renderCacheValid = false
+		} else if m.isTurnDoneProcessed(turnID) {
+			// PhaseDone already created the tool_summary. If we have richer
+			// local iteration data (e.g. more complete reasoning), update it.
+			if len(m.iterationHistory) > 0 {
+				tsIdx := m.findMessageByTurn(turnID, "tool_summary")
+				if tsIdx >= 0 {
+					// Merge: prefer PhaseDone iterations (server-authoritative reasoning)
+					// but add any local-only iterations not in PhaseDone's snapshot.
+					existing := m.messages[tsIdx]
+					pendingIters := make(map[int]bool)
+					for _, it := range existing.iterations {
+						pendingIters[it.Iteration] = true
+					}
+					for _, it := range m.iterationHistory {
+						if !pendingIters[it.Iteration] {
+							existing.iterations = append(existing.iterations, it)
+						}
+					}
+					existing.dirty = true
+					m.messages[tsIdx] = existing
+					m.renderCacheValid = false
+				}
+			}
 		}
 
-		// 重置迭代追踪状态
+		// Mark reply as received and reset iteration tracking state
+		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
 		if turnID == m.agentTurnID {
 			m.inputReady = true
@@ -973,48 +999,60 @@ func (m *cliModel) renderProgressBlock() string {
 	sb.WriteString(s.DimGuideSt.Render(strings.Repeat("─", innerWidth)))
 	sb.WriteString("\n")
 
-	// Render completed iterations (dimmed)
-	for _, snap := range m.iterationHistory {
-		sb.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
-		sb.WriteString("\n")
-		if snap.Reasoning != "" {
-			for _, line := range strings.Split(snap.Reasoning, "\n") {
-				line = strings.TrimRight(line, " \t\r")
-				if line == "" {
-					continue
+	// Render completed iterations (dimmed) — use cache to avoid re-running
+	// chroma/lipgloss on every 100ms tick (major CPU saver for long sessions).
+	if m.cachedProgressHistoryLen == len(m.iterationHistory) && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistory != "" {
+		sb.WriteString(m.cachedProgressHistory)
+	} else {
+		var histBuf strings.Builder
+		for j := range m.iterationHistory {
+			snap := &m.iterationHistory[j]
+			histBuf.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
+			histBuf.WriteString("\n")
+			if snap.Reasoning != "" {
+				for _, line := range strings.Split(snap.Reasoning, "\n") {
+					line = strings.TrimRight(line, " \t\r")
+					if line == "" {
+						continue
+					}
+					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
+						histBuf.WriteString(dimStyle.Render(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl)))
+						histBuf.WriteString("\n")
+					}
 				}
-				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-					sb.WriteString(dimStyle.Render(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl)))
-					sb.WriteString("\n")
+			}
+			if snap.Thinking != "" {
+				for _, line := range strings.Split(snap.Thinking, "\n") {
+					line = strings.TrimRight(line, " \t\r")
+					if line == "" {
+						continue
+					}
+					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
+						histBuf.WriteString(dimStyle.Render(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl)))
+						histBuf.WriteString("\n")
+					}
+				}
+			}
+			for k := range snap.Tools {
+				tool := &snap.Tools[k]
+				label, icon, sty := toolDisplayInfo(*tool, toolDoneStyle, toolErrorStyle)
+				var elapsedStyled string
+				if tool.Elapsed > 0 {
+					elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
+				}
+				histBuf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
+				histBuf.WriteString("\n")
+				// Render tool body (diff hints or per-tool output)
+				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true, 0); content != "" {
+					histBuf.WriteString(content)
+					histBuf.WriteString("\n")
 				}
 			}
 		}
-		if snap.Thinking != "" {
-			for _, line := range strings.Split(snap.Thinking, "\n") {
-				line = strings.TrimRight(line, " \t\r")
-				if line == "" {
-					continue
-				}
-				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-					sb.WriteString(dimStyle.Render(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl)))
-					sb.WriteString("\n")
-				}
-			}
-		}
-		for _, tool := range snap.Tools {
-			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-			var elapsedStyled string
-			if tool.Elapsed > 0 {
-				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
-			}
-			sb.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
-			sb.WriteString("\n")
-			// Render tool body (diff hints or per-tool output)
-			if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true); content != "" {
-				sb.WriteString(content)
-				sb.WriteString("\n")
-			}
-		}
+		m.cachedProgressHistory = histBuf.String()
+		m.cachedProgressHistoryLen = len(m.iterationHistory)
+		m.cachedProgressHistoryWidth = bubbleWidth
+		sb.WriteString(m.cachedProgressHistory)
 	}
 
 	// Render current iteration
@@ -1124,17 +1162,19 @@ func (m *cliModel) renderProgressBlock() string {
 		}
 
 		guide := reasoningGuide.Render("  │ ")
-		for _, tool := range m.progress.CompletedTools {
-			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {
+		for i := range m.progress.CompletedTools {
+			tool := &m.progress.CompletedTools[i]
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
 				sb.WriteString(content)
 				sb.WriteString("\n")
 			}
 		}
-		for _, tool := range m.progress.ActiveTools {
+		for i := range m.progress.ActiveTools {
+			tool := &m.progress.ActiveTools[i]
 			if tool.Status != "done" && tool.Status != "error" {
 				continue
 			}
-			if content := m.renderToolContentBelow(tool, guide, innerWidth, false); content != "" {
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
 				sb.WriteString(content)
 				sb.WriteString("\n")
 			}
@@ -1363,7 +1403,14 @@ func (m *cliModel) renderHelpPanel() string {
 // Shows ToolHints (diff) first, then per-tool body (Read/Shell/Grep/Glob output).
 // guide is the prefix for each line (e.g. "  │ ").
 // dimmed controls whether the content is dimmed (for history iterations).
-func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bodyW int, dimmed bool) string {
+// maxLines caps diff rendering (0 = unlimited). Passed through to renderToolHint.
+// Caches the result on the tool struct to avoid re-running chroma/lipgloss on every tick.
+func (m *cliModel) renderToolContentBelow(tool *CLIToolProgress, guide string, bodyW int, dimmed bool, maxLines int) string {
+	// Return cached result if content hasn't changed and width matches.
+	if tool.cachedBody != "" && tool.cachedBodyW == bodyW {
+		return tool.cachedBody
+	}
+
 	var sb strings.Builder
 	guideFn := func(s string) string { return s }
 	if dimmed {
@@ -1379,7 +1426,7 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		if hintW < 1 {
 			hintW = 1
 		}
-		if r, err := m.renderToolHint(tool.ToolHints, hintW); err == nil && r != "" {
+		if r, err := m.renderToolHint(tool.ToolHints, hintW, maxLines); err == nil && r != "" {
 			for _, line := range strings.Split(r, "\n") {
 				sb.WriteString(g)
 				sb.WriteString(line)
@@ -1395,7 +1442,7 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		if bodyContentW < 1 {
 			bodyContentW = 1
 		}
-		if body := m.renderToolBody(tool, bodyContentW); body != "" {
+		if body := m.renderToolBody(*tool, bodyContentW); body != "" {
 			for _, line := range strings.Split(body, "\n") {
 				sb.WriteString(g)
 				sb.WriteString(line)
@@ -1404,7 +1451,10 @@ func (m *cliModel) renderToolContentBelow(tool CLIToolProgress, guide string, bo
 		}
 	}
 
-	return strings.TrimRight(sb.String(), "\n")
+	result := strings.TrimRight(sb.String(), "\n")
+	tool.cachedBody = result
+	tool.cachedBodyW = bodyW
+	return result
 }
 
 func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
@@ -1522,8 +1572,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				toolSb.WriteString("\n")
 				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
 				textW := boxInnerW - guideW
-				for _, it := range msg.iterations {
-					// Render #iter header with wall-clock time
+				for ii := range msg.iterations {
+					it := &msg.iterations[ii]
 					iterLabel := fmt.Sprintf("#%d", it.Iteration)
 					if it.ElapsedWall > 0 {
 						iterLabel += " " + reasoningStyle.Render(formatElapsed(it.ElapsedWall))
@@ -1554,8 +1604,9 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 							}
 						}
 					}
-					for _, tool := range it.Tools {
-						label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
+					for k := range it.Tools {
+						tool := &it.Tools[k]
+						label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
 						elapsed := ""
 						if tool.Elapsed > 0 {
 							elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
@@ -1563,7 +1614,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
 						toolSb.WriteString("\n")
 						// Render tool body (diff hints or per-tool output)
-						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false); content != "" {
+						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false, 0); content != "" {
 							toolSb.WriteString(content)
 							toolSb.WriteString("\n")
 						}
@@ -1572,8 +1623,9 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			} else {
 				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d)", totalTools)))
 				toolSb.WriteString("\n")
-				for _, tool := range msg.tools {
-					label, icon, sty := toolDisplayInfo(tool, toolItemStyle, toolErrorItemStyle)
+				for i := range msg.tools {
+					tool := &msg.tools[i]
+					label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
 					elapsed := ""
 					if tool.Elapsed > 0 {
 						elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
@@ -1581,7 +1633,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
 					toolSb.WriteString("\n")
 					// Render tool body for flat tool list too
-					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false); content != "" {
+					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false, 0); content != "" {
 						toolSb.WriteString(content)
 						toolSb.WriteString("\n")
 					}
@@ -2206,7 +2258,8 @@ func (m *cliModel) renderRewindResultBlock() string {
 // renderToolHint renders plugin-provided or built-in hint content.
 // For ```diff code blocks, renders with line numbers and theme backgrounds (crush-style).
 // For other markdown, renders with glamour.
-func (m *cliModel) renderToolHint(md string, maxW int) (string, error) {
+// maxLines caps diff line rendering (0 = unlimited).
+func (m *cliModel) renderToolHint(md string, maxW, maxLines int) (string, error) {
 	if md == "" {
 		return "", nil
 	}
@@ -2216,7 +2269,7 @@ func (m *cliModel) renderToolHint(md string, maxW int) (string, error) {
 		if w < 40 {
 			w = 40
 		}
-		return renderDiffStyled(md, w), nil
+		return renderDiffStyled(md, w, maxLines), nil
 	}
 	// Non-diff markdown: render with glamour
 	rendered, err := m.renderer.Render(md)
@@ -2574,7 +2627,8 @@ func renderBgLine(content string, fgHex string, bgHex string, targetWidth int) s
 // and theme semantic backgrounds. Uses the same approach as crush's xchroma:
 // Chroma tokens are formatted with lipgloss including the diff background color,
 // so ANSI codes are always correct without manual escape management.
-func renderDiffStyled(md string, maxW int) string {
+// maxLines caps the number of diff lines rendered (0 = unlimited).
+func renderDiffStyled(md string, maxW, maxLines int) string {
 	if maxW < 40 {
 		maxW = 40
 	}
@@ -2603,6 +2657,11 @@ func renderDiffStyled(md string, maxW int) string {
 			return ""
 		}
 		return lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextSecondary)).Render(trimmed)
+	}
+
+	// Cap diff lines before expensive chroma tokenisation.
+	if maxLines > 0 && len(diffLines) > maxLines {
+		diffLines = diffLines[:maxLines]
 	}
 
 	// --- Extract file path for syntax highlighting ---

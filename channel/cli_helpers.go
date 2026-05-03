@@ -192,6 +192,20 @@ func (m *cliModel) startAgentTurn() {
 	m.agentTurnID++
 	m.typing = true
 	m.turnCancelled = false // clear any previous cancel flag
+
+	// Initialize turnDoneFlags for the new turn.
+	if m.turnDoneFlags == nil {
+		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
+	}
+	m.turnDoneFlags[m.agentTurnID] = &turnDoneFlag{}
+
+	// Clean up old turn entries (keep last 3 for late-arrival safety).
+	for id := range m.turnDoneFlags {
+		if id+3 < m.agentTurnID {
+			delete(m.turnDoneFlags, id)
+		}
+	}
+
 	// Remote mode: optimistically show initial progress so the user sees
 	// immediate feedback (progress bubble) without waiting for the server's
 	// first progress_structured event (which has network round-trip latency).
@@ -320,6 +334,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	}
 	m.lastCompletedTools = nil
 	m.iterationHistory = nil
+	m.invalidateProgressHistoryCache()
 	m.lastSeenIteration = 0
 	m.lastReasoning = ""
 	m.lastThinking = ""
@@ -351,6 +366,89 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	m.updatePlaceholder()
 }
 
+// --- Deterministic rendering helpers ---
+
+// getTurnFlag returns the turnDoneFlag for the given turn, or nil if not tracked.
+func (m *cliModel) getTurnFlag(turnID uint64) *turnDoneFlag {
+	if m.turnDoneFlags == nil {
+		return nil
+	}
+	return m.turnDoneFlags[turnID]
+}
+
+// isTurnDoneProcessed returns true if handleProgressDone has already processed
+// the given turn (created tool_summary and ended the turn).
+func (m *cliModel) isTurnDoneProcessed(turnID uint64) bool {
+	f := m.getTurnFlag(turnID)
+	return f != nil && f.doneProcessed
+}
+
+// isTurnReplyReceived returns true if handleAgentMessage has already received
+// the assistant reply for the given turn.
+func (m *cliModel) isTurnReplyReceived(turnID uint64) bool {
+	f := m.getTurnFlag(turnID)
+	return f != nil && f.replyReceived
+}
+
+// setTurnDoneProcessed marks the turn as having been processed by handleProgressDone.
+func (m *cliModel) setTurnDoneProcessed(turnID uint64) {
+	if m.turnDoneFlags == nil {
+		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
+	}
+	f, ok := m.turnDoneFlags[turnID]
+	if !ok {
+		f = &turnDoneFlag{}
+		m.turnDoneFlags[turnID] = f
+	}
+	f.doneProcessed = true
+	f.doneTime = time.Now()
+}
+
+// setTurnReplyReceived marks the turn as having received the assistant reply.
+func (m *cliModel) setTurnReplyReceived(turnID uint64) {
+	if m.turnDoneFlags == nil {
+		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
+	}
+	f, ok := m.turnDoneFlags[turnID]
+	if !ok {
+		f = &turnDoneFlag{}
+		m.turnDoneFlags[turnID] = f
+	}
+	f.replyReceived = true
+}
+
+// findMessageByTurn finds the index of the last message with the given turnID and role.
+// Returns -1 if not found.
+func (m *cliModel) findMessageByTurn(turnID uint64, role string) int {
+	// Search from end — the most recent message is the most likely match.
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].turnID == turnID && m.messages[i].role == role {
+			return i
+		}
+	}
+	return -1
+}
+
+// upsertMessageByTurn finds an existing message with the given turnID+role and
+// updates it in-place. If not found, appends the message. Returns the final index.
+// This is the core mechanism for deterministic rendering: duplicate events update
+// existing slots instead of creating new messages.
+func (m *cliModel) upsertMessageByTurn(turnID uint64, role string, msg cliMessage) int {
+	idx := m.findMessageByTurn(turnID, role)
+	if idx >= 0 {
+		// Update in-place: preserve position in the message list.
+		m.messages[idx] = msg
+		m.messages[idx].turnID = turnID
+		return idx
+	}
+	// Not found: append at end.
+	msg.turnID = turnID
+	m.messages = append(m.messages, msg)
+	return len(m.messages) - 1
+}
+
+// removeMessageByTurn removes the last message with the given turnID+role.
+// Returns true if a message was removed.
 // flushMessageQueue sends the first queued message (if any) when input becomes ready.
 // Returns a tea.Cmd to send the message, or nil if queue is empty.
 func (m *cliModel) flushMessageQueue() {
