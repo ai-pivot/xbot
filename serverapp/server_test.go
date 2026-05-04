@@ -206,6 +206,7 @@ func (b fakeBackend) TrimHistory(_, _ string, _ time.Time) error                
 func (b fakeBackend) ResetTokenState()                                                   {}
 func (b fakeBackend) GetChannelConfigs() (map[string]map[string]string, error)           { return nil, nil }
 func (b fakeBackend) SetChannelConfig(channel string, values map[string]string) error    { return nil }
+func (b fakeBackend) SetChannelReconfigureFn(func(string))                               {}
 func (b fakeBackend) Close() error                                                       { return nil }
 func (b fakeBackend) CallRPC(string, any) (json.RawMessage, error) {
 	return nil, fmt.Errorf("not implemented")
