@@ -1703,8 +1703,17 @@ func main() {
 				cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
 				cliCh.SetWidgetRegistry(pm.WidgetRegistry())
 			}
-			// Inject CheckpointState for Ctrl+K rewind file rollback
-			checkpointDir := filepath.Join(os.Getenv("HOME"), ".xbot", "checkpoints", "cli-default")
+			// Inject CheckpointState for Ctrl+K rewind file rollback.
+			// Use a chatID-specific directory so checkpoints from different
+			// sessions (and different work directories) don't interfere.
+			// On unclean shutdown, old checkpoints could otherwise persist
+			// and cause random-file-deletion bugs when rewinding.
+			sanitized := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(absWorkDir)
+			checkpointDir := filepath.Join(config.XbotHome(), "checkpoints", sanitized)
+			// Scrub stale checkpoints from a previous (possibly unclean) shutdown.
+			// Without this, checkpoints from before restart would be included
+			// when rewinding, causing random file deletions/restorations.
+			os.RemoveAll(checkpointDir)
 			if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
 				if mgr := app.backend.HookManager(); mgr != nil {
 					cpState := hooks.NewCheckpointState(cpStore)
