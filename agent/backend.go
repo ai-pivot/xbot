@@ -17,11 +17,11 @@ import (
 )
 
 // AgentBackend abstracts where the agent loop runs.
-//   - LocalBackend: in-process agent.Agent (default CLI mode)
-//   - RemoteBackend: connects to a remote xbot server via WebSocket
+// Backend is the single unified implementation that supports both
+// local (in-process Agent) and remote (WebSocket Transport) modes.
 //
 // CLI uses this interface to interact with the agent regardless of location.
-// Management methods may return nil for RemoteBackend (where the operation
+// Management methods may return nil for remote mode (where the operation
 // runs server-side); callers should nil-check as appropriate.
 type AgentBackend interface {
 	// Start launches the backend (local: agent.Run, remote: WS connect).
@@ -63,6 +63,35 @@ type AgentBackend interface {
 	// LocalBackend: no-op (injected messages flow through CLIChannel directly).
 	// RemoteBackend: converts WS inject_user messages and calls the callback.
 	OnInjectUserMessage(callback func(content string))
+
+	// OnReconnect registers a callback invoked after a successful WS reconnect.
+	// Local: no-op.
+	OnReconnect(callback func())
+
+	// OnConnStateChange registers a callback for connection state changes.
+	// States: "connected", "disconnected", "reconnecting".
+	// Local: no-op.
+	OnConnStateChange(callback func(state string))
+
+	// OnPluginWidgets registers a callback for plugin widget zone push.
+	// Local: no-op.
+	OnPluginWidgets(callback func(zones map[string]string, chatID string))
+
+	// Subscribe registers this client to receive events for a chatID.
+	// Local: no-op. Remote: sends subscribe message via WS.
+	Subscribe(chatID string) error
+
+	// ConnState returns the current connection state.
+	// Local: always "connected". Remote: "connected"/"disconnected"/"reconnecting".
+	ConnState() string
+
+	// ServerURL returns the remote server URL.
+	// Local: returns empty string.
+	ServerURL() string
+
+	// Agent returns the underlying *Agent.
+	// Local: returns the agent. Remote: returns nil.
+	Agent() *Agent
 
 	// --- Runtime management (used by CLI settings panel, dispatchers, etc.) ---
 
