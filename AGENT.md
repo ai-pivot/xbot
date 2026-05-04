@@ -11,7 +11,7 @@
 
 ## Knowledge Files
 
-- `docs/agent/architecture.md` — package map, message flow, pipeline, key interfaces, concurrency
+- `docs/agent/architecture.md` — package map, message flow, pipeline, Backend/Transport architecture, key interfaces, concurrency
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior
 - `docs/agent/tools.md` — built-in tools, hooks system (agent/hooks/), sandbox types
@@ -95,6 +95,13 @@
 - **Old `ToolHook`/`HookChain` is gone.** Replaced by `agent/hooks/Manager`. Any code referencing `HookChain`, `ToolHook`, `executeWithHooks` is stale.
 - **Manager.Emit() is shared across Agent + SubAgents** (same instance). Must be concurrency-safe.
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
+
+### Backend/Transport Architecture
+- **Backend is the ONLY AgentBackend implementation** (agent/backend_impl.go). There is no LocalBackend or RemoteBackend — both modes are handled by the same Backend struct.
+- **Backend methods use `dispatch[Req,Res]()` generics** — the single place where local (Agent direct call, zero JSON) vs remote (Transport.Call, JSON serialization) dispatch occurs. Never add `if agent != nil` branches to individual Backend methods.
+- **Transport is pure communication** (agent/transport.go) — only `Call(method, payload)`, `SendMessage`, `Subscribe`, lifecycle, event callbacks. Never add business methods (GetSettings, SetUserModel, etc.) to Transport.
+- **RemoteTransport** (agent/transport_remote.go) implements Transport over WebSocket. Adding new transports (gRPC, MCP) only requires implementing ~10 methods.
+- **Request types** (agent/req_types.go) are typed structs for compile-time safety with `dispatch[Req,Res]()`. Use them instead of `map[string]any`.
 
 ### Channel Configuration
 - **TUI channel config changes require live channel restart.** Writing config.json is not enough — Feishu/Web/QQ/NapCat channels are created once at startup via `registerChannels()`. `SetChannelConfig()` now calls `reconfigureFn` (set by server.go) to start/stop the affected channel. Any new channel type must be added to both `channelShouldRun()` and `createChannelInstance()`.
