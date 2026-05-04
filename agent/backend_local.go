@@ -36,8 +36,9 @@ var (
 // Outbound messages flow through the MessageBus as usual — the caller
 // should set up a Dispatcher to route them to channels.
 type LocalBackend struct {
-	agent *Agent
-	bus   *bus.MessageBus
+	agent         *Agent
+	bus           *bus.MessageBus
+	reconfigureFn func(channel string) // called after SetChannelConfig to restart affected channel
 }
 
 // NewLocalBackend creates a LocalBackend with the given agent config.
@@ -717,6 +718,12 @@ func (b *LocalBackend) ResetTokenState() {
 	// /rewind already clears token state via TrimHistory → SetTokenState(0,0).
 }
 
+// SetChannelReconfigureFn sets the function to call after channel config changes
+// to restart the affected live channel.
+func (b *LocalBackend) SetChannelReconfigureFn(fn func(channel string)) {
+	b.reconfigureFn = fn
+}
+
 func (b *LocalBackend) GetChannelConfigs() (map[string]map[string]string, error) {
 	cfg := config.LoadFromFile(config.ConfigFilePath())
 	if cfg == nil {
@@ -724,9 +731,9 @@ func (b *LocalBackend) GetChannelConfigs() (map[string]map[string]string, error)
 	}
 	result := make(map[string]map[string]string)
 	result["web"] = map[string]string{
-		"enable": strconv.FormatBool(cfg.Web.Enable),
-		"host":   cfg.Web.Host,
-		"port":   strconv.Itoa(cfg.Web.Port),
+		"enabled": strconv.FormatBool(cfg.Web.Enable),
+		"host":    cfg.Web.Host,
+		"port":    strconv.Itoa(cfg.Web.Port),
 	}
 	result["feishu"] = map[string]string{
 		"enabled":            strconv.FormatBool(cfg.Feishu.Enabled),
@@ -756,7 +763,10 @@ func (b *LocalBackend) SetChannelConfig(channel string, values map[string]string
 	}
 	switch channel {
 	case "web":
-		if v, ok := values["enable"]; ok {
+		// Accept both "enable" (legacy) and "enabled" (aligned with other channels)
+		if v, ok := values["enabled"]; ok {
+			cfg.Web.Enable, _ = strconv.ParseBool(v)
+		} else if v, ok := values["enable"]; ok {
 			cfg.Web.Enable, _ = strconv.ParseBool(v)
 		}
 		if v, ok := values["host"]; ok {
@@ -807,7 +817,11 @@ func (b *LocalBackend) SetChannelConfig(channel string, values map[string]string
 	default:
 		return fmt.Errorf("unknown channel: %s", channel)
 	}
-	return config.SaveToFile(config.ConfigFilePath(), cfg)
+	err := config.SaveToFile(config.ConfigFilePath(), cfg)
+	if b.reconfigureFn != nil {
+		b.reconfigureFn(channel)
+	}
+	return err
 }
 
 func (b *LocalBackend) Run(ctx context.Context) error {

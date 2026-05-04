@@ -2952,7 +2952,7 @@ func channelSettingsSchema(channel string) []SettingDefinition {
 	switch channel {
 	case "web":
 		return []SettingDefinition{
-			{Key: "enable", Label: "Enable", Description: "Enable Web channel", Type: SettingTypeToggle, Category: "Web Channel", DefaultValue: "false"},
+			{Key: "enabled", Label: "Enabled", Description: "Enable Web channel", Type: SettingTypeToggle, Category: "Web Channel", DefaultValue: "false"},
 			{Key: "host", Label: "Host", Description: "Listen host (e.g. 0.0.0.0)", Type: SettingTypeText, Category: "Web Channel", DefaultValue: "0.0.0.0"},
 			{Key: "port", Label: "Port", Description: "Listen port (e.g. 8080)", Type: SettingTypeText, Category: "Web Channel", DefaultValue: "8080"},
 		}
