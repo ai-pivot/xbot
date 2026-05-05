@@ -321,14 +321,14 @@ func TestWidgetRegistry_Debounce(t *testing.T) {
 		atomic.AddInt64(&callCount, 1)
 	})
 
-	// Fire 10 rapid NotifyUpdated calls
+	// Fire 10 rapid NotifyUpdated calls — all within a single debounce window.
+	// Total duration ~2ms, well within the 100ms debounce window.
 	for i := 0; i < 10; i++ {
 		r.NotifyUpdated()
-		time.Sleep(2 * time.Millisecond) // tiny gap to let all fire within debounce window
 	}
 
-	// Wait for debounce to elapse
-	time.Sleep(150 * time.Millisecond)
+	// Wait for debounce to elapse (Windows CI scheduler can be slow)
+	time.Sleep(300 * time.Millisecond)
 
 	count := atomic.LoadInt64(&callCount)
 	if count != 1 {
