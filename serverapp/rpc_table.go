@@ -731,7 +731,12 @@ func registerAdminHandlers(t rpcTable, h *rpcContext) {
 		if err := backend.SetChannelConfig(p.Channel, p.Values); err != nil {
 			return nil, err
 		}
-		if enabledVal, ok := p.Values["enabled"]; ok && disp != nil && msgBus != nil {
+		enabledVal, ok := p.Values["enabled"]
+		if !ok {
+			// Fallback: web channel historically used "enable", not "enabled".
+			enabledVal, ok = p.Values["enable"]
+		}
+		if ok && disp != nil && msgBus != nil {
 			enabled, _ := strconv.ParseBool(enabledVal)
 			_, alreadyRunning := disp.GetChannel(p.Channel)
 			if enabled && !alreadyRunning {

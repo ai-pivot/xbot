@@ -1421,6 +1421,10 @@ func (b *RemoteBackend) SetChannelConfig(channel string, values map[string]strin
 	})
 }
 
+// SetChannelReconfigureFn is a no-op in remote mode: channel restart
+// is handled server-side via the set_channel_config RPC.
+func (b *RemoteBackend) SetChannelReconfigureFn(fn func(channel string)) {}
+
 func (b *RemoteBackend) Run(ctx context.Context) error {
 	<-ctx.Done()
 	return ctx.Err()
