@@ -120,35 +120,43 @@ Debug-mode state consistency checker, called at key transition points:
 
 ## AgentBackend
 
-The `AgentBackend` interface (`agent/backend.go`) abstracts where the agent loop runs:
-
-- **LocalBackend** (`agent/backend_local.go`): In-process `agent.Agent`. CLI creates the agent,
-  runs `agent.Run()`, and executes tools locally. This is the default mode (no `--server` flag / `serve` subcommand).
-- **RemoteBackend** (`agent/backend_remote.go`): Connects to a remote xbot server via WebSocket.
-  Agent loop and tool execution run server-side; CLI is a display/input layer.
+The `AgentBackend` interface (`agent/backend.go`) abstracts where the agent loop runs.
+There is only one implementation: `Backend` (`agent/backend_impl.go`).
 
 ### Backend/Transport Architecture
 
-**Backend** (`agent/backend_impl.go`) is the single unified `AgentBackend` implementation. It operates in two modes:
-- **Local**: `agent *Agent` is non-nil — calls Agent directly, zero JSON serialization
-- **Remote**: `transport Transport` is non-nil — delegates to Transport for communication
-
-All Backend methods use `dispatch[Req, Res]()` generic helpers that encapsulate the local/remote dispatch. Backend methods themselves contain zero `if agent != nil` branches. The `dispatch` generic is the single place where local-vs-remote branching occurs.
-
-**Transport** (`agent/transport.go`) is a pure communication interface (~10 methods):
+**Backend is a pure typed RPC client.** Every method is 1-3 lines:
 ```go
-type Transport interface {
-    Start/Stop/Close()
-    Call(method, payload) → response  // sole communication method
-    SendMessage(msg) / Subscribe(chatID)
-    OnOutbound/OnProgress/OnReconnect/OnConnStateChange/OnPluginWidgets
-    ConnState/IsRemote/ServerURL
+func (b *Backend) GetSettings(ns, sid string) (map[string]string, error) {
+    var r map[string]string
+    return r, b.call(MethodGetSettings, getSettingsReq{Namespace: ns, SenderID: sid}, &r)
 }
 ```
 
-**RemoteTransport** (`agent/transport_remote.go`) implements Transport over WebSocket (extracted from the old RemoteBackend). Adding new transports (gRPC, MCP) only requires implementing ~10 methods.
+There is NO business logic branching — zero `if agent != nil` in RPC methods.
+The `call()` / `callVoid()` helpers marshal the request, call `transport.Call()`,
+and unmarshal the response. Backend never knows whether it's local or remote.
 
-**Request types** (`agent/req_types.go`) are typed structs (e.g. `getSettingsReq{Namespace, SenderID}`) used with `dispatch[Req, Res]()` for compile-time field checking — no loose `map[string]any`.
+**Transport is the execution layer** (`agent/transport.go`):
+- `localTransport` (`agent/local_transport.go`) — handler table dispatches to `*Agent` directly.
+  Uses generic helpers `rpc0`/`rpc1`/`rpcVoid`/`rpcVoid0` to eliminate JSON boilerplate.
+- `RemoteTransport` (`agent/transport_remote.go`) — WebSocket JSON-RPC to xbot server.
+
+```
+Backend.GetSettings(ns, sid)
+  → b.call("get_settings", req, &result)
+    → transport.Call("get_settings", payload)
+      ├─ localTransport: handler table → agent.settingsSvc.GetSettings(...)
+      └─ RemoteTransport: WS RPC → server handler → agent.settingsSvc.GetSettings(...)
+```
+
+**Request types** (`agent/req_types.go`) define typed structs + RPC method name constants
+(`MethodXxx`) for compile-time safety.
+
+**Adding a new RPC method** requires 3 lines of code:
+1. Constant in `req_types.go`: `MethodFooBar = "foo_bar"`
+2. Handler in `local_transport.go`: `h[MethodFooBar] = rpc1(func(r fooBarReq) (result, error) { ... })`
+3. Method in `backend_impl.go`: `func (b *Backend) FooBar(...) { b.call(MethodFooBar, req, &result) }`
 
 ### Server / CLI Entry
 

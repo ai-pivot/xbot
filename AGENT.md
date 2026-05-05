@@ -97,11 +97,11 @@
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
 
 ### Backend/Transport Architecture
-- **Backend is the ONLY AgentBackend implementation** (agent/backend_impl.go). There is no LocalBackend or RemoteBackend — both modes are handled by the same Backend struct.
-- **Backend methods use `dispatch[Req,Res]()` generics** — the single place where local (Agent direct call, zero JSON) vs remote (Transport.Call, JSON serialization) dispatch occurs. Never add `if agent != nil` branches to individual Backend methods.
-- **Transport is pure communication** (agent/transport.go) — only `Call(method, payload)`, `SendMessage`, `Subscribe`, lifecycle, event callbacks. Never add business methods (GetSettings, SetUserModel, etc.) to Transport.
-- **RemoteTransport** (agent/transport_remote.go) implements Transport over WebSocket. Adding new transports (gRPC, MCP) only requires implementing ~10 methods.
-- **Request types** (agent/req_types.go) are typed structs for compile-time safety with `dispatch[Req,Res]()`. Use them instead of `map[string]any`.
+- **Backend is a pure typed RPC client** (agent/backend_impl.go). Every method is 1-3 lines calling `b.call(method, req, &result)` or `b.callVoid(method, req)`. There is NO business logic branching — zero `if agent != nil` in RPC methods.
+- **Transport is the execution layer** (agent/transport.go). `localTransport` (agent/local_transport.go) has a handler table that executes business logic directly on `*Agent`. `RemoteTransport` (agent/transport_remote.go) sends JSON-RPC over WebSocket. Backend never knows which one it's using.
+- **Handler table uses generic helpers**: `rpc0`, `rpc1`, `rpcVoid`, `rpcVoid0` eliminate JSON marshal/unmarshal boilerplate. Adding a new RPC method = 1 constant in req_types.go + 1 handler in local_transport.go + 1 method in backend_impl.go.
+- **Request types** (agent/req_types.go) define typed structs + RPC method name constants (`MethodXxx`) for compile-time safety. Use them instead of bare strings.
+- **Adding new transports** (gRPC, MCP) only requires implementing ~12 Transport interface methods.
 
 ### Channel Configuration
 - **TUI channel config changes require live channel restart.** Writing config.json is not enough — Feishu/Web/QQ/NapCat channels are created once at startup via `registerChannels()`. `SetChannelConfig()` now calls `reconfigureFn` (set by server.go) to start/stop the affected channel. Any new channel type must be added to both `channelShouldRun()` and `createChannelInstance()`.
