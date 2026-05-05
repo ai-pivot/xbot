@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -771,26 +772,19 @@ func (app *cliApp) Close() {
 // go-runewidth (used by BubbleTea/ultraviolet renderer) and ansi.StringWidth
 // (used by xbot's hardWrapRunes/truncateToWidth/lipgloss).
 //
-// In CJK locales (LANG=zh_CN.UTF-8, ja_JP.UTF-8, ko_KR.UTF-8), go-runewidth
-// auto-detects EastAsianWidth=true, which makes ambiguous-width characters
-// (box-drawing │├─, block elements ▋, punctuation ·…) treated as 2 columns.
-// But ansi.StringWidth defaults to EastAsianWidth=false (only sets true when
-// RUNEWIDTH_EASTASIAN env var is explicitly set).
+// In CJK locales, go-runewidth auto-detects EastAsianWidth=true, which makes
+// ambiguous-width characters (box-drawing │├─, block elements ▋, punctuation ·…)
+// treated as 2 columns. But ansi.StringWidth defaults to EastAsianWidth=false
+// unless RUNEWIDTH_EASTASIAN=1 is set.
 //
-// This mismatch causes the terminal to render characters at different widths
-// than what the wrapping code expects, leading to CJK text being overwritten
-// during rapid streaming updates (Issue #14).
-//
-// We fix this by re-executing the process with RUNEWIDTH_EASTASIAN=1 when a
-// CJK locale is detected and the env var isn't already set. This ensures
-// both go-runewidth and ansi.StringWidth use EastAsianWidth=true.
+// On macOS, LANG is often empty even when the system language is set to CJK.
+// We also check LC_ALL, LC_CTYPE, and AppleLocale to detect CJK environments.
 func ensureCJKWidth() {
 	if os.Getenv("RUNEWIDTH_EASTASIAN") != "" {
 		return // Already explicitly configured
 	}
 
-	lang := os.Getenv("LANG")
-	if !isCJKLocale(lang) {
+	if !isCJKLocaleEnv() {
 		return
 	}
 
@@ -806,6 +800,25 @@ func ensureCJKWidth() {
 	}
 	syscall.Exec(execPath, os.Args, os.Environ())
 	// If we reach here, exec failed — continue with default behavior.
+}
+
+// isCJKLocaleEnv checks environment variables and macOS-specific locale
+// settings to determine if the current environment is CJK.
+func isCJKLocaleEnv() bool {
+	// Check standard locale environment variables (works on Linux + macOS)
+	for _, env := range []string{"LANG", "LC_ALL", "LC_CTYPE"} {
+		if isCJKLocale(os.Getenv(env)) {
+			return true
+		}
+	}
+	// macOS: check AppleLocale user default (e.g. "zh-Hans-CN" or "zh-Hant-TW")
+	cmd := exec.Command("defaults", "read", "-g", "AppleLocale")
+	if out, err := cmd.Output(); err == nil {
+		if isCJKLocale(strings.TrimSpace(string(out))) {
+			return true
+		}
+	}
+	return false
 }
 
 // isCJKLocale returns true if the given locale string indicates CJK.

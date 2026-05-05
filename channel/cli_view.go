@@ -366,11 +366,13 @@ func (m *cliModel) View() tea.View {
 	if !m.splashDone {
 		v := tea.NewView(m.renderSplash())
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 	if !m.ready {
 		v := tea.NewView("\n  " + m.locale.SplashLoading)
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -378,6 +380,7 @@ func (m *cliModel) View() tea.View {
 	if m.easterEgg != easterEggNone {
 		v := tea.NewView(m.renderEasterEggOverlay())
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -385,6 +388,7 @@ func (m *cliModel) View() tea.View {
 	if m.suLoading {
 		v := tea.NewView(m.renderSuLoading())
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -408,6 +412,7 @@ func (m *cliModel) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 
 	// Command palette overlay (highest priority — hides everything)
 	if m.paletteOpen {
