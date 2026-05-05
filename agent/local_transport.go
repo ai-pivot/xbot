@@ -90,7 +90,7 @@ func (t *localTransport) ServerURL() string { return "" }
 func (t *localTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
 	handler, ok := t.handlers[method]
 	if !ok {
-		return nil, fmt.Errorf("unknown RPC method: %s", method)
+		return nil, fmt.Errorf("RPC method %q not available in standalone mode", method)
 	}
 	return handler(payload)
 }
