@@ -679,7 +679,8 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 		case <-t.reconnectCh:
 			t.setConnState("reconnecting")
 			consecutiveFailures := 0
-			for delay := time.Second; delay <= 30*time.Second; delay *= 2 {
+			delay := time.Second
+			for {
 				select {
 				case <-t.done:
 					return
@@ -701,8 +702,8 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 				if err := t.connect(ctx); err != nil {
 					consecutiveFailures++
 					log.WithError(err).Warn("Reconnect failed")
-					// Notify user after 3 consecutive failures via outbound callback.
-					if consecutiveFailures == 3 {
+					// Notify user after every 3 failures via outbound callback.
+					if consecutiveFailures%3 == 0 {
 						t.outboundMu.RLock()
 						cb := t.outboundCb
 						t.outboundMu.RUnlock()
@@ -712,6 +713,11 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 								Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
 							})
 						}
+					}
+					// Exponential backoff capped at 30s, never give up.
+					delay = delay * 2
+					if delay > 30*time.Second {
+						delay = 30 * time.Second
 					}
 					continue
 				}
