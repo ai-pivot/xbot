@@ -220,6 +220,21 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 	}
 }
 
+// channelShouldRun returns true if the given channel should be running
+// based on the current config.
+func channelShouldRun(cfg *config.Config, name string) bool {
+	switch name {
+	case "feishu":
+		return cfg.Feishu.Enabled
+	case "qq":
+		return cfg.QQ.Enabled
+	case "napcat":
+		return cfg.NapCat.Enabled
+	default:
+		return false
+	}
+}
+
 // registerChannels creates and registers all channels.
 func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, backend agent.AgentBackend, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
 	var feishuCh *channel.FeishuChannel
@@ -577,6 +592,39 @@ func Run(args []string) error {
 	if err != nil {
 		log.WithError(err).Fatal("Failed to register channels")
 	}
+
+	// Wire channel reconfiguration: when TUI channel config changes, restart
+	// the affected channel so it picks up the new configuration immediately.
+	backend.SetChannelReconfigureFn(func(name string) {
+		if disp == nil || msgBus == nil {
+			return
+		}
+		cfg := config.LoadFromFile(config.ConfigFilePath())
+		if cfg == nil {
+			return
+		}
+		_, running := disp.GetChannel(name)
+		shouldRun := channelShouldRun(cfg, name)
+		if shouldRun && !running {
+			if ch := createChannelInstance(name, cfg, msgBus); ch != nil {
+				disp.Register(ch)
+				go func(n string, c any) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.WithField("channel", n).Error("Dynamic channel start panicked\n" + string(debug.Stack()))
+						}
+					}()
+					if sc, ok := c.(interface{ Start() error }); ok {
+						if err := sc.Start(); err != nil {
+							log.WithError(err).WithField("channel", n).Error("Dynamic channel failed")
+						}
+					}
+				}(ch.Name(), ch)
+			}
+		} else if !shouldRun && running {
+			disp.Unregister(name)
+		}
+	})
 
 	// Build RPC table once at startup; per-request identity is passed via context.
 	rpcTable := buildRPCTable(cfg, backend, disp, msgBus)

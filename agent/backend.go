@@ -299,6 +299,10 @@ type AgentBackend interface {
 	// channel: "web", "feishu", "qq", or "napcat".
 	SetChannelConfig(channel string, values map[string]string) error
 
+	// SetChannelReconfigureFn sets a callback to restart a channel after config changes.
+	// In remote mode, channel restart is handled server-side via RPC; this is a no-op.
+	SetChannelReconfigureFn(fn func(channel string))
+
 	// CallRPC sends a raw RPC call to the server (RemoteBackend forwards via WS).
 	// LocalBackend returns an error (not available in standalone mode, but
 	// CLI callbacks use DB directly instead of going through this).

@@ -95,6 +95,10 @@
 - **Old `ToolHook`/`HookChain` is gone.** Replaced by `agent/hooks/Manager`. Any code referencing `HookChain`, `ToolHook`, `executeWithHooks` is stale.
 - **Manager.Emit() is shared across Agent + SubAgents** (same instance). Must be concurrency-safe.
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
+
+### Channel Configuration
+- **TUI channel config changes require live channel restart.** Writing config.json is not enough — Feishu/Web/QQ/NapCat channels are created once at startup via `registerChannels()`. `SetChannelConfig()` now calls `reconfigureFn` (set by server.go) to start/stop the affected channel. Any new channel type must be added to both `channelShouldRun()` and `createChannelInstance()`.
+- **Key naming must be consistent across all channels.** Web used `enable` while Feishu/QQ/NapCat used `enabled` — the RPC handler only checked `enabled`, so web changes were silently ignored. All channels now use `enabled` (with backward compat for `enable`).
 - **Command hooks disabled by default** — requires `enable_command_hooks: true` in config.
 - **Max 10 handlers per event**, total timeout 60s. Excess silently truncated with warning log.
 
