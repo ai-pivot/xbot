@@ -119,8 +119,22 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 	workDirB := t.TempDir()
 	sp.OnWorkDirChanged(workDirB)
 
-	// Wait for trigger processing
-	time.Sleep(200 * time.Millisecond)
+	// Poll until workDirB output appears (Windows CI can be slow).
+	deadline := time.After(3 * time.Second)
+	for {
+		sp.outputMu.RLock()
+		outB := strings.TrimSpace(sp.outputs[workDirB])
+		sp.outputMu.RUnlock()
+		if outB != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for workDirB output")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 
 	sp.outputMu.RLock()
 	outA2 := strings.TrimSpace(sp.outputs[workDirA])
