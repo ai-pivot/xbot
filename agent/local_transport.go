@@ -38,10 +38,13 @@ func newLocalTransport(agent *Agent, bus *bus.MessageBus) *localTransport {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-func (t *localTransport) Start(ctx context.Context) error { go t.agent.Run(ctx); return nil }
-func (t *localTransport) Stop()                           { _ = t.agent.Close() }
-func (t *localTransport) Close() error                    { return t.agent.Close() }
-func (t *localTransport) Run(ctx context.Context) error   { return t.agent.Run(ctx) }
+func (t *localTransport) Start(ctx context.Context) error {
+	go t.agent.Run(ctx)
+	return nil
+}
+func (t *localTransport) Stop()                         { _ = t.agent.Close() }
+func (t *localTransport) Close() error                  { return t.agent.Close() }
+func (t *localTransport) Run(ctx context.Context) error { return t.agent.Run(ctx) }
 
 // ---------------------------------------------------------------------------
 // Communication
@@ -191,8 +194,10 @@ func (t *localTransport) registerHandlers() {
 	})
 
 	h[MethodSetProxyLLM] = rpcVoid(func(r setProxyLLMReq) error {
-		// Note: proxy object is local-only, not serialized; handler is a placeholder.
-		return nil
+		// ProxyLLM contains non-serializable local objects (interfaces, closures).
+		// This handler exists only for RPC completeness; actual proxy setup
+		// uses Backend.SetProxyLLM() which directly operates on the agent.
+		return fmt.Errorf("set_proxy_llm: not supported via RPC, use Backend.SetProxyLLM() directly")
 	})
 
 	h[MethodClearProxyLLM] = rpcVoid(func(r clearProxyLLMReq) error {
@@ -236,7 +241,12 @@ func (t *localTransport) registerHandlers() {
 			return fmt.Errorf("max_output_tokens must be >= 0, got %d", r.MaxTokens)
 		}
 		if err := a.SetUserMaxOutputTokens(r.SenderID, r.MaxTokens); err != nil {
-			a.llmFactory.SetUserMaxOutputTokens(r.SenderID, r.MaxTokens)
+			// Only fallback to factory-level setting when user has no DB config.
+			if strings.Contains(err.Error(), "未配置自定义 LLM") {
+				a.llmFactory.SetUserMaxOutputTokens(r.SenderID, r.MaxTokens)
+				return nil
+			}
+			return err
 		}
 		return nil
 	})
@@ -247,7 +257,12 @@ func (t *localTransport) registerHandlers() {
 			return fmt.Errorf("invalid thinking_mode: %q", r.Mode)
 		}
 		if err := a.SetUserThinkingMode(r.SenderID, r.Mode); err != nil {
-			a.llmFactory.SetUserThinkingMode(r.SenderID, r.Mode)
+			// Only fallback to factory-level setting when user has no DB config.
+			if strings.Contains(err.Error(), "未配置自定义 LLM") {
+				a.llmFactory.SetUserThinkingMode(r.SenderID, r.Mode)
+				return nil
+			}
+			return err
 		}
 		return nil
 	})
@@ -690,16 +705,18 @@ func (t *localTransport) registerHandlers() {
 			return nil, nil
 		}
 		snapshot := v.(*channel.CLIProgressPayload)
+		// Shallow copy to avoid data race: agent may update snapshot fields
+		// concurrently during json.Marshal.
+		result := *snapshot
 		if histPtr, ok := a.iterationHistories.Load(key); ok {
 			hist := *histPtr.(*[]channel.CLIProgressPayload)
 			if len(hist) > 0 {
-				result := *snapshot
 				result.IterationHistory = make([]channel.CLIProgressPayload, len(hist))
 				copy(result.IterationHistory, hist)
 				return &result, nil
 			}
 		}
-		return snapshot, nil
+		return &result, nil
 	})
 
 	// ── Channel config ────────────────────────────────────────────────────
@@ -797,9 +814,12 @@ func (t *localTransport) registerHandlers() {
 			return fmt.Errorf("unknown channel: %s", r.Channel)
 		}
 		err := config.SaveToFile(config.ConfigFilePath(), cfg)
+		if err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
 		if t.reconfigureFn != nil {
 			t.reconfigureFn(r.Channel)
 		}
-		return err
+		return nil
 	})
 }
