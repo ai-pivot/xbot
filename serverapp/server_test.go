@@ -126,6 +126,13 @@ func (b fakeBackend) IsProcessing(_, _ string) bool                             
 func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload          { return nil }
 func (b fakeBackend) OnProgress(_ func(*channel.CLIProgressPayload))                     {}
 func (b fakeBackend) OnInjectUserMessage(_ func(string))                                 {}
+func (b fakeBackend) OnReconnect(_ func())                                               {}
+func (b fakeBackend) OnConnStateChange(_ func(string))                                   {}
+func (b fakeBackend) OnPluginWidgets(_ func(map[string]string, string))                  {}
+func (b fakeBackend) Subscribe(_ string) error                                           { return nil }
+func (b fakeBackend) ConnState() string                                                  { return "connected" }
+func (b fakeBackend) ServerURL() string                                                  { return "" }
+func (b fakeBackend) Agent() *agent.Agent                                                { return nil }
 func (b fakeBackend) LLMFactory() *agent.LLMFactory                                      { return b.factory }
 func (b fakeBackend) SettingsService() *agent.SettingsService                            { return b.settingsSvc }
 func (b fakeBackend) MultiSession() *session.MultiTenantSession                          { return nil }

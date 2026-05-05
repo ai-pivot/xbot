@@ -373,8 +373,18 @@ func (m *cliModel) handlePaletteKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	}
-	// Non-Code key checks (Tab, Shift+Tab, etc.)
+	// Non-Code key checks (Tab, Shift+Tab, Enter fallback, etc.)
 	switch msg.String() {
+	case "enter", "ctrl+m":
+		// Fallback Enter handling: some terminals/key protocols may encode Enter
+		// as ctrl+m instead of tea.KeyEnter (e.g. flagCtrlM legacy encoding).
+		m.applyPaletteCommand()
+		if len(m.pendingCmds) > 0 {
+			pending := m.pendingCmds
+			m.pendingCmds = nil
+			return true, tea.Batch(pending...)
+		}
+		return true, nil
 	case "tab":
 		// Cycle to next category
 		m.cyclePaletteCategory(1)
@@ -388,9 +398,11 @@ func (m *cliModel) handlePaletteKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	// Forward printable keys to textinput for filtering
 	var cmd tea.Cmd
 	m.paletteInput, cmd = m.paletteInput.Update(msg)
+	prevFiltered := m.paletteFiltered
 	m.filterPaletteCommands()
-	// Reset cursor if filter changed and cursor is out of bounds
-	if m.paletteCursor >= len(m.paletteFiltered) {
+	// Reset cursor when filter results change (even if cursor is still in bounds,
+	// the item at the old cursor position has likely changed).
+	if len(m.paletteFiltered) != len(prevFiltered) || m.paletteCursor >= len(m.paletteFiltered) {
 		m.paletteCursor = 0
 		m.paletteScrollY = 0
 	}

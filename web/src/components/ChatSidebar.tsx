@@ -14,10 +14,12 @@ interface ChatSidebarProps {
   currentChatID: string
 }
 
-export default function ChatSidebar({ onSwitchChat, onNewChat, currentChatID }: ChatSidebarProps) {
+export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 640)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
 
   const fetchChats = useCallback(async () => {
     setLoading(true)
@@ -29,14 +31,14 @@ export default function ChatSidebar({ onSwitchChat, onNewChat, currentChatID }: 
     setLoading(false)
   }, [])
 
-  // Initial load — setLoading(true) is intentional to show loading state on mount
   useEffect(() => { fetchChats() }, [fetchChats])
 
   const handleSwitch = async (chatID: string) => {
-    if (chatID === currentChatID) return
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}/switch`, { method: 'POST' })
       onSwitchChat(chatID)
+      // Auto-collapse on mobile after switch
+      if (window.innerWidth < 640) setCollapsed(true)
     } catch { /* ignored */ }
   }
 
@@ -50,8 +52,9 @@ export default function ChatSidebar({ onSwitchChat, onNewChat, currentChatID }: 
       const data = await resp.json()
       if (data.ok && data.chat_id) {
         await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
-        onNewChat()
+        onSwitchChat(data.chat_id)
         fetchChats()
+        if (window.innerWidth < 640) setCollapsed(true)
       }
     } catch { /* ignored */ }
   }
@@ -61,43 +64,115 @@ export default function ChatSidebar({ onSwitchChat, onNewChat, currentChatID }: 
     if (!confirm('确定要删除此会话吗？')) return
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}`, { method: 'DELETE' })
+      // If deleting current chat, switch to first remaining
       if (chatID === currentChatID) {
-        // Switch back to default
-        const defaultID = chats.find(c => c.label === '默认会话')?.chat_id
-        if (defaultID) onSwitchChat(defaultID)
+        fetchChats()
+        const remaining = chats.filter(c => c.chat_id !== chatID)
+        if (remaining.length > 0) {
+          await fetch(`/api/chats/${encodeURIComponent(remaining[0].chat_id)}/switch`, { method: 'POST' })
+          onSwitchChat(remaining[0].chat_id)
+        }
+      } else {
+        fetchChats()
       }
-      fetchChats()
     } catch { /* ignored */ }
   }
 
+  const handleRename = async (e: React.KeyboardEvent, chatID: string) => {
+    if (e.key !== 'Enter') return
+    const label = renameValue.trim()
+    if (!label) { setRenamingId(null); return }
+    try {
+      await fetch(`/api/chats/${encodeURIComponent(chatID)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      })
+      fetchChats()
+    } catch { /* ignored */ }
+    setRenamingId(null)
+  }
+
+  // Mobile overlay mode
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 640
+
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center py-2 px-1 bg-slate-900/80 border-r border-slate-700/50"
-           onClick={() => setCollapsed(false)}
-           title="展开会话列表"
-           style={{ cursor: 'pointer' }}>
-        <span className="text-lg">💬</span>
-        <span className="text-[10px] text-slate-500 mt-1">{chats.length}</span>
+      <button
+        className="chat-sidebar-toggle"
+        onClick={() => { setCollapsed(false); fetchChats() }}
+        title="展开会话列表"
+      >
+        💬 <span className="sidebar-count">{chats.length}</span>
+      </button>
+    )
+  }
+
+  // Mobile: render as overlay
+  if (isMobile) {
+    return (
+      <div className="chat-sidebar-overlay" onClick={(e) => { if (e.target === e.currentTarget) setCollapsed(true) }}>
+        <div className="chat-sidebar-mobile">
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
+            <span className="text-sm font-medium text-slate-300">💬 会话</span>
+            <div className="flex items-center gap-1">
+              <button onClick={handleCreate} className="sidebar-btn" title="新建会话">+</button>
+              <button onClick={() => setCollapsed(true)} className="sidebar-btn" title="收起">✕</button>
+            </div>
+          </div>
+          {/* List */}
+          <div className="flex-1 overflow-y-auto py-1">
+            {loading ? (
+              <div className="text-center py-4 text-slate-500 text-xs">加载中...</div>
+            ) : (
+              chats.map((chat) => (
+                <div
+                  key={chat.chat_id}
+                  className={`sidebar-item ${chat.is_current ? 'sidebar-item-active' : ''}`}
+                  onClick={() => handleSwitch(chat.chat_id)}
+                >
+                  <div className="flex items-center gap-1">
+                    {renamingId === chat.chat_id ? (
+                      <input
+                        className="sidebar-rename-input"
+                        value={renameValue}
+                        onChange={e => setRenameValue(e.target.value)}
+                        onKeyDown={e => handleRename(e, chat.chat_id)}
+                        onBlur={() => setRenamingId(null)}
+                        autoFocus
+                        onClick={e => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span
+                        className="text-xs truncate flex-1 text-slate-300"
+                        onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
+                      >{chat.label || '未命名'}</span>
+                    )}
+                    {chat.is_current && <span className="text-[10px] text-indigo-400 shrink-0">●</span>}
+                    {!chat.is_current && (
+                      <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn">✕</button>
+                    )}
+                  </div>
+                  {chat.preview && <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     )
   }
 
+  // Desktop: inline sidebar
   return (
     <div className="flex flex-col w-56 bg-slate-900/80 border-r border-slate-700/50 shrink-0">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
         <span className="text-sm font-medium text-slate-300">💬 会话</span>
         <div className="flex items-center gap-1">
-          <button
-            onClick={handleCreate}
-            className="text-xs px-1.5 py-0.5 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200"
-            title="新建会话"
-          >+</button>
-          <button
-            onClick={() => setCollapsed(true)}
-            className="text-xs px-1.5 py-0.5 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200"
-            title="收起"
-          >◀</button>
+          <button onClick={handleCreate} className="sidebar-btn" title="新建会话">+</button>
+          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title="收起">◀</button>
         </div>
       </div>
 
@@ -111,29 +186,37 @@ export default function ChatSidebar({ onSwitchChat, onNewChat, currentChatID }: 
           chats.map((chat) => (
             <div
               key={chat.chat_id}
-              className={`group mx-1 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-                chat.is_current
-                  ? 'bg-indigo-900/30 border-l-2 border-indigo-500'
-                  : 'hover:bg-slate-800/50 border-l-2 border-transparent'
-              }`}
+              className={`sidebar-item group ${chat.is_current ? 'sidebar-item-active' : ''}`}
               onClick={() => handleSwitch(chat.chat_id)}
             >
               <div className="flex items-center gap-1">
-                <span className="text-xs truncate flex-1 text-slate-300">{chat.label}</span>
+                {renamingId === chat.chat_id ? (
+                  <input
+                    className="sidebar-rename-input"
+                    value={renameValue}
+                    onChange={e => setRenameValue(e.target.value)}
+                    onKeyDown={e => handleRename(e, chat.chat_id)}
+                    onBlur={() => setRenamingId(null)}
+                    autoFocus
+                    onClick={e => e.stopPropagation()}
+                  />
+                ) : (
+                  <span
+                    className="text-xs truncate flex-1 text-slate-300"
+                    onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
+                  >{chat.label || '未命名'}</span>
+                )}
                 {chat.is_current && (
                   <span className="text-[10px] text-indigo-400 shrink-0">当前</span>
                 )}
-                {!chat.is_current && chat.chat_id !== currentChatID && (
+                {!chat.is_current && (
                   <button
                     onClick={(e) => handleDelete(e, chat.chat_id)}
-                    className="hidden group-hover:block text-[10px] text-slate-600 hover:text-red-400 shrink-0"
-                    title="删除"
+                    className="sidebar-delete-btn"
                   >✕</button>
                 )}
               </div>
-              {chat.preview && (
-                <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>
-              )}
+              {chat.preview && <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>}
             </div>
           ))
         )}
@@ -141,11 +224,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat, currentChatID }: 
 
       {/* Refresh */}
       <div className="border-t border-slate-700/50 px-2 py-1">
-        <button
-          onClick={fetchChats}
-          disabled={loading}
-          className="text-[10px] text-slate-500 hover:text-slate-300 w-full text-center"
-        >
+        <button onClick={fetchChats} disabled={loading} className="sidebar-refresh-btn">
           {loading ? '...' : '🔄 刷新'}
         </button>
       </div>
