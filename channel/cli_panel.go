@@ -2964,11 +2964,7 @@ func (m *cliModel) viewChannelPanel() string {
 		statusStyle := s.TextMutedSt
 		if m.panelChannelCfg != nil {
 			if cfg, ok := m.panelChannelCfg[ch]; ok {
-				enabledKey := "enabled"
-				if ch == "web" {
-					enabledKey = "enable"
-				}
-				if v, ok2 := cfg[enabledKey]; ok2 && v == "true" {
+				if v, ok2 := cfg["enabled"]; ok2 && v == "true" {
 					status = "● enabled"
 					statusStyle = s.ProgressDone
 				}

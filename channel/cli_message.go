@@ -1826,29 +1826,65 @@ func (m *cliModel) setViewportContent(content string) {
 	m.lastViewportWidth = m.width
 
 	if m.width > 0 {
-		lines := strings.Split(content, "\n")
-		var wrapped []string
-		for _, line := range lines {
-			// Strip trailing whitespace — but only if it's plain whitespace.
-			// lipgloss Width().Render() produces ANSI-coded trailing spaces for
-			// background fills (diff highlighting, code blocks). These must be
-			// preserved. We detect this by checking if the line's visual width
-			// drops significantly when trailing spaces are removed.
-			trimmed := strings.TrimRight(line, " \t")
-			visualW := 0
-			if trimmed != line {
-				visualW = lipgloss.Width(line)
-				trimmedW := lipgloss.Width(trimmed)
-				// If visual width didn't change, the trailing spaces are plain
-				// whitespace (no ANSI codes) — safe to strip (mermaid-ascii etc.)
-				if visualW == trimmedW {
-					line = trimmed
-				}
-				// Otherwise, trailing spaces have ANSI background codes — keep them
-			}
-			wrapped = append(wrapped, strings.Split(hardWrapRunes(line, m.width), "\n")...)
+		// Two-tier wrap: find the cachedHistory boundary in content.
+		// The history portion is stable (doesn't change between ticks) — reuse
+		// its wrapped version to avoid O(N*W) hardWrapRunes on the growing history.
+		historyEnd := 0
+		if len(m.cachedHistory) > 0 && strings.HasPrefix(content, m.cachedHistory) {
+			historyEnd = len(m.cachedHistory)
 		}
-		content = strings.Join(wrapped, "\n")
+
+		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == m.width {
+			// Fast path: reuse wrapped history, only wrap the dynamic suffix
+			wrappedHistory := m.cachedWrappedHistory
+			dynamicPart := content[historyEnd:]
+			var wrappedDynamic []string
+			if dynamicPart != "" {
+				for _, line := range strings.Split(dynamicPart, "\n") {
+					trimmed := strings.TrimRight(line, " \t")
+					if trimmed != line {
+						visualW := lipgloss.Width(line)
+						trimmedW := lipgloss.Width(trimmed)
+						if visualW == trimmedW {
+							line = trimmed
+						}
+					}
+					wrappedDynamic = append(wrappedDynamic, strings.Split(hardWrapRunes(line, m.width), "\n")...)
+				}
+			}
+			content = wrappedHistory + strings.Join(wrappedDynamic, "\n")
+		} else {
+			// Slow path: wrap everything and cache the history portion
+			lines := strings.Split(content, "\n")
+			var wrapped []string
+			historyLineCount := 0
+			if historyEnd > 0 {
+				historyLineCount = strings.Count(m.cachedHistory, "\n") + 1
+			}
+			var wrappedHistoryParts []string
+			for i, line := range lines {
+				trimmed := strings.TrimRight(line, " \t")
+				if trimmed != line {
+					visualW := lipgloss.Width(line)
+					trimmedW := lipgloss.Width(trimmed)
+					if visualW == trimmedW {
+						line = trimmed
+					}
+				}
+				wrappedLines := strings.Split(hardWrapRunes(line, m.width), "\n")
+				if i < historyLineCount {
+					wrappedHistoryParts = append(wrappedHistoryParts, wrappedLines...)
+				}
+				wrapped = append(wrapped, wrappedLines...)
+			}
+			content = strings.Join(wrapped, "\n")
+			// Cache the wrapped history portion for next tick
+			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
+				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
+				m.cachedWrappedHistoryRaw = m.cachedHistory
+				m.cachedWrappedHistoryWidth = m.width
+			}
+		}
 	}
 	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(content)

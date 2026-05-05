@@ -102,6 +102,9 @@ func (m *cliModel) invalidateAllCache(updateViewport bool) {
 	m.renderCacheValid = false
 	m.lastViewportContent = "" // Force viewport refresh on next updateViewportContent
 	m.lastViewportWidth = 0
+	m.cachedWrappedHistory = ""
+	m.cachedWrappedHistoryRaw = ""
+	m.cachedWrappedHistoryWidth = 0
 	for i := range m.messages {
 		m.messages[i].dirty = true
 	}

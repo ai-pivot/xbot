@@ -583,6 +583,9 @@ func (m *cliModel) handleResize(width, height int) {
 	// §1 增量渲染：resize 后缓存全部失效
 	m.renderCacheValid = false
 	m.lastViewportContent = "" // force setViewportContent to re-wrap
+	m.cachedWrappedHistory = ""
+	m.cachedWrappedHistoryRaw = ""
+	m.cachedWrappedHistoryWidth = 0
 	for i := range m.messages {
 		m.messages[i].dirty = true
 	}
