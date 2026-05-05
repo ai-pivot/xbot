@@ -38,7 +38,9 @@ type CheckpointStore struct {
 	dirty   bool
 }
 
-// NewCheckpointStore creates (or reopens) a checkpoint store for the given session.
+// NewCheckpointStore creates a fresh checkpoint store for a new session.
+// Any stale checkpoints from a previous session (e.g. after unclean shutdown)
+// are truncated — each session starts with a clean slate.
 // baseDir is typically ~/.xbot/checkpoints/{sessionKey}/
 func NewCheckpointStore(baseDir string) (*CheckpointStore, error) {
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
