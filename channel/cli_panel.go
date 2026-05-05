@@ -791,11 +791,15 @@ func (m *cliModel) openSessionsPanel() {
 	m.panelMode = "sessions"
 	m.relayoutViewport()
 
+	// Server sessions (from backend)
 	if m.sessionsListFn != nil {
 		m.panelSessionItems = m.sessionsListFn()
 	} else {
 		m.panelSessionItems = nil
 	}
+	// Also include local directory sessions (same-directory multi-session)
+	localSessions := m.listLocalDirSessions()
+	m.panelSessionItems = append(m.panelSessionItems, localSessions...)
 	// Position cursor on the currently active session
 	m.panelSessionCursor = 0
 	for i, entry := range m.panelSessionItems {
@@ -950,6 +954,34 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 		}
 		return true, m, nil
 
+	// N: create new session in current directory
+	case msg.String() == "n" || msg.String() == "N":
+		if !m.panelSessionViewing {
+			return true, m, m.showSessionCreateDialog()
+		}
+
+	// D: delete selected session (except default) — with confirmation
+	case msg.String() == "d" || msg.String() == "D":
+		if !m.panelSessionViewing && m.panelSessionCursor >= 0 && m.panelSessionCursor < len(m.panelSessionItems) {
+			entry := m.panelSessionItems[m.panelSessionCursor]
+			if entry.Type == "main" && entry.Label != defaultSessionName {
+				m.panelSessionConfirmDelete = true
+				m.panelSessionConfirmEntry = entry
+			}
+		}
+		return true, m, nil
+
+	// Y: confirm delete (follows D)
+	case (msg.String() == "y" || msg.String() == "Y") && m.panelSessionConfirmDelete:
+		m.panelSessionConfirmDelete = false
+		m.deleteLocalSession(m.panelSessionConfirmEntry)
+		return true, m, nil
+
+	// Any other key cancels delete confirmation
+	case m.panelSessionConfirmDelete:
+		m.panelSessionConfirmDelete = false
+		return true, m, nil
+
 	default:
 		if msg.String() == "pgdown" && !m.panelSessionViewing {
 			visibleH := m.panelVisibleHeight()
@@ -977,7 +1009,7 @@ func (m *cliModel) viewSessionsList() string {
 	s := &m.styles
 	cursorStyle := s.PanelCursor
 	header := s.PanelHeader.Render("Sessions")
-	help := s.PanelDesc.Render("↑↓ Navigate  Enter Switch/View  r Refresh  Esc Close")
+	help := s.PanelDesc.Render("↑↓ Navigate  Enter Switch/View  n New  d Delete  r Refresh  Esc Close")
 	total := len(m.panelSessionItems)
 	scrollHint := ""
 	if total > 1 {
@@ -990,6 +1022,13 @@ func (m *cliModel) viewSessionsList() string {
 	sb.WriteString(help)
 	sb.WriteString(scrollHint)
 	sb.WriteString("\n")
+
+	// Show delete confirmation prompt
+	if m.panelSessionConfirmDelete {
+		sb.WriteString(s.ErrorMsg.Render(
+			fmt.Sprintf("  ⚠ Delete session %q? [Y]es / [N]o", m.panelSessionConfirmEntry.Label)))
+		sb.WriteString("\n")
+	}
 
 	contentW := m.width - 4
 	if contentW < 20 {
@@ -3024,4 +3063,66 @@ func (m *cliModel) openChannelSettingsPanel(channel string) {
 			m.showTempStatus(fmt.Sprintf("✅ %s config saved", channel))
 		}
 	})
+}
+
+// ── Session management (same-directory multi-session) ──
+
+// showSessionCreateDialog shows an input dialog for creating a new session.
+func (m *cliModel) showSessionCreateDialog() tea.Cmd {
+	schema := []SettingDefinition{
+		{Key: "session_name", Label: "Session Name", Description: "Name for the new session (e.g. debug, experiment)", Type: SettingTypeText, DefaultValue: ""},
+	}
+	m.panelMode = "" // close sessions panel
+	m.openSettingsPanel(schema, map[string]string{}, func(values map[string]string) {
+		name := strings.TrimSpace(values["session_name"])
+		if name == "" {
+			m.showTempStatus("Session name cannot be empty")
+			return
+		}
+		ds, err := loadDirSessions(m.workDir)
+		if err != nil {
+			m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+			return
+		}
+		chatID, err := ds.addSession(name)
+		if err != nil {
+			m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+			return
+		}
+		m.saveCurrentSession()
+		m.chatID = chatID
+		m.sessionName = name
+		m.messages = nil
+		m.lastTokenUsage = nil
+		m.invalidateAllCache(false)
+		m.restoreSession()
+		m.showTempStatus(fmt.Sprintf("Created session: %s", name))
+	})
+	return nil
+}
+
+// deleteLocalSession deletes the selected session and switches to default if active.
+func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
+	ds, err := loadDirSessions(m.workDir)
+	if err != nil {
+		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+		return
+	}
+	if err := ds.removeSession(entry.Label); err != nil {
+		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+		return
+	}
+	// If we deleted the active session, switch to default
+	if entry.Active {
+		m.saveCurrentSession()
+		m.chatID = m.defaultChatID
+		m.sessionName = defaultSessionName
+		m.messages = nil
+		m.lastTokenUsage = nil
+		m.invalidateAllCache(false)
+		m.restoreSession()
+	}
+	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
+	// Refresh sessions panel
+	m.openSessionsPanel()
 }

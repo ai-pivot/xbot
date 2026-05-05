@@ -149,6 +149,10 @@ func (c *CLIChannel) Start() error {
 	c.model.channelName = "cli"
 	c.model.defaultChatID = c.config.ChatID
 	c.model.chatID = c.config.ChatID
+	c.model.sessionName, _ = ParseChatID(c.config.ChatID)
+	if c.model.sessionName == "" {
+		c.model.sessionName = defaultSessionName
+	}
 
 	// Propagate late-injected services to model (set before Start() when model was nil)
 	if c.subscriptionMgr != nil {
