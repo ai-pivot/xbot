@@ -11,7 +11,7 @@
 
 ## Knowledge Files
 
-- `docs/agent/architecture.md` — package map, message flow, pipeline, key interfaces, concurrency
+- `docs/agent/architecture.md` — package map, message flow, pipeline, Backend/Transport architecture, key interfaces, concurrency
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior
 - `docs/agent/tools.md` — built-in tools, hooks system (agent/hooks/), sandbox types
@@ -96,9 +96,17 @@
 - **Manager.Emit() is shared across Agent + SubAgents** (same instance). Must be concurrency-safe.
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
 
+### Backend/Transport Architecture
+- **Backend is a pure typed RPC client** (agent/backend_impl.go). Every method is 1-3 lines calling `b.call(method, req, &result)` or `b.callVoid(method, req)`. There is NO business logic branching — zero `if agent != nil` in RPC methods.
+- **Transport is the execution layer** (agent/transport.go). `localTransport` (agent/local_transport.go) has a handler table that executes business logic directly on `*Agent`. `RemoteTransport` (agent/transport_remote.go) sends JSON-RPC over WebSocket. Backend never knows which one it's using.
+- **Handler table uses generic helpers**: `rpc0`, `rpc1`, `rpcVoid`, `rpcVoid0` eliminate JSON marshal/unmarshal boilerplate. Adding a new RPC method = 1 constant in req_types.go + 1 handler in local_transport.go + 1 method in backend_impl.go.
+- **Request types** (agent/req_types.go) define typed structs + RPC method name constants (`MethodXxx`) for compile-time safety. Use them instead of bare strings.
+- **Adding new transports** (gRPC, MCP) only requires implementing ~12 Transport interface methods.
+
 ### Channel Configuration
 - **TUI channel config changes require live channel restart.** Writing config.json is not enough — Feishu/Web/QQ/NapCat channels are created once at startup via `registerChannels()`. `SetChannelConfig()` now calls `reconfigureFn` (set by server.go) to start/stop the affected channel. Any new channel type must be added to both `channelShouldRun()` and `createChannelInstance()`.
 - **Key naming must be consistent across all channels.** Web used `enable` while Feishu/QQ/NapCat used `enabled` — the RPC handler only checked `enabled`, so web changes were silently ignored. All channels now use `enabled` (with backward compat for `enable`).
+- **New backend methods must be added to `AgentBackend` interface, not `LocalBackend` only.** `SetChannelReconfigureFn` was originally a `*LocalBackend`-only method, requiring a type assertion in server.go. This breaks the abstraction — `AgentBackend` is the contract. Both `LocalBackend` and `RemoteBackend` must implement any functional method. RemoteBackend gets a no-op when the server handles the behavior via RPC.
 - **Command hooks disabled by default** — requires `enable_command_hooks: true` in config.
 - **Max 10 handlers per event**, total timeout 60s. Excess silently truncated with warning log.
 

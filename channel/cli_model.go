@@ -444,6 +444,7 @@ type cliModel struct {
 	channelName     string // 当前 channel（默认 "cli"，/su 切换时可能变为 "web"）
 	defaultChatID   string // 默认 chatID（/su 切换回来时恢复）
 	chatID          string // 会话 ID（按工作目录区分）
+	sessionName     string // 当前会话名称（同目录多 session 支持）
 
 	// --- §1 增量渲染 ---
 	renderCacheValid    bool   // 全局缓存是否有效（resize 后置 false）
@@ -451,6 +452,12 @@ type cliModel struct {
 	cachedMsgCount      int    // messages count when cache was built
 	lastViewportContent string // 上次 setViewportContent 的原始内容（去重用）
 	lastViewportWidth   int    // 上次 setViewportContent 的宽度（去重用）
+	// Two-tier wrap cache: avoid O(N*W) hardWrapRunes on the growing history every tick.
+	// cachedWrappedHistory stores the hard-wrapped version of cachedHistory at the current width.
+	// Only the dynamic suffix (progress block, rewind result) is re-wrapped on each tick.
+	cachedWrappedHistory      string // hard-wrapped cachedHistory (already split/wrapped at m.width)
+	cachedWrappedHistoryRaw   string // the raw cachedHistory that was wrapped (for invalidation)
+	cachedWrappedHistoryWidth int    // width at which cachedWrappedHistory was built
 
 	// --- progress block cache ---
 	cachedProgressHistory      string // cached rendered output of completed iterations (dimmed)
@@ -534,9 +541,11 @@ type cliModel struct {
 	panelBgLogLines []string // cached log lines for viewing
 
 	// --- Sessions Panel ---
-	panelSessionItems   []SessionPanelEntry // cached session list
-	panelSessionCursor  int                 // selected item index
-	panelSessionViewing bool                // true = viewing session messages
+	panelSessionItems         []SessionPanelEntry // cached session list
+	panelSessionCursor        int                 // selected item index
+	panelSessionViewing       bool                // true = viewing session messages
+	panelSessionConfirmDelete bool                // true = showing delete confirmation
+	panelSessionConfirmEntry  SessionPanelEntry   // entry pending deletion
 
 	// --- Danger Zone Panel ---
 	panelDangerItems   []dangerItem

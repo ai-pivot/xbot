@@ -400,7 +400,7 @@ func Run(args []string) error {
 		XbotHome:         xbotDir,
 		PersonaIsolation: cfg.Web.PersonaIsolation,
 	}
-	backend, err := agent.NewLocalBackend(bc.AgentConfig())
+	backend, err := agent.NewBackend(bc.AgentConfig())
 	if err != nil {
 		log.WithError(err).Fatal("Failed to create local backend")
 	}

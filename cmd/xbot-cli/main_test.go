@@ -693,6 +693,13 @@ func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error                
 func (b *fakeAgentBackend) OnOutbound(func(bus.OutboundMessage))                         {}
 func (b *fakeAgentBackend) OnProgress(func(*channel.CLIProgressPayload))                 {}
 func (b *fakeAgentBackend) OnInjectUserMessage(func(string))                             {}
+func (b *fakeAgentBackend) OnReconnect(func())                                           {}
+func (b *fakeAgentBackend) OnConnStateChange(func(string))                               {}
+func (b *fakeAgentBackend) OnPluginWidgets(func(map[string]string, string))              {}
+func (b *fakeAgentBackend) Subscribe(string) error                                       { return nil }
+func (b *fakeAgentBackend) ConnState() string                                            { return "connected" }
+func (b *fakeAgentBackend) ServerURL() string                                            { return "" }
+func (b *fakeAgentBackend) Agent() *agent.Agent                                          { return nil }
 func (b *fakeAgentBackend) Bus() *bus.MessageBus                                         { return nil }
 func (b *fakeAgentBackend) IsRemote() bool                                               { return false }
 func (b *fakeAgentBackend) IsProcessing(string, string) bool                             { return false }

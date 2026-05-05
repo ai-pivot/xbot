@@ -120,37 +120,65 @@ Debug-mode state consistency checker, called at key transition points:
 
 ## AgentBackend
 
-The `AgentBackend` interface (`agent/backend.go`) abstracts where the agent loop runs:
+The `AgentBackend` interface (`agent/backend.go`) abstracts where the agent loop runs.
+There is only one implementation: `Backend` (`agent/backend_impl.go`).
 
-- **LocalBackend** (`agent/backend_local.go`): In-process `agent.Agent`. CLI creates the agent,
-  runs `agent.Run()`, and executes tools locally. This is the default mode (no `--server` flag / `serve` subcommand).
-- **RemoteBackend** (`agent/backend_remote.go`): Connects to a remote xbot server via WebSocket.
-  Agent loop and tool execution run server-side; CLI is a display/input layer.
+### Backend/Transport Architecture
 
-Server entry can now be launched either from the root binary (`main.go`) or from the CLI binary via
-`xbot-cli serve [--config path]`. Both paths call the same reusable server startup logic in `serverapp/`.
+**Backend is a pure typed RPC client.** Every method is 1-3 lines:
+```go
+func (b *Backend) GetSettings(ns, sid string) (map[string]string, error) {
+    var r map[string]string
+    return r, b.call(MethodGetSettings, getSettingsReq{Namespace: ns, SenderID: sid}, &r)
+}
+```
 
-The `serverapp/` package is structured as:
+There is NO business logic branching — zero `if agent != nil` in RPC methods.
+The `call()` / `callVoid()` helpers marshal the request, call `transport.Call()`,
+and unmarshal the response. Backend never knows whether it's local or remote.
+
+**Transport is the execution layer** (`agent/transport.go`):
+- `localTransport` (`agent/local_transport.go`) — handler table dispatches to `*Agent` directly.
+  Uses generic helpers `rpc0`/`rpc1`/`rpcVoid`/`rpcVoid0` to eliminate JSON boilerplate.
+- `RemoteTransport` (`agent/transport_remote.go`) — WebSocket JSON-RPC to xbot server.
+
+```
+Backend.GetSettings(ns, sid)
+  → b.call("get_settings", req, &result)
+    → transport.Call("get_settings", payload)
+      ├─ localTransport: handler table → agent.settingsSvc.GetSettings(...)
+      └─ RemoteTransport: WS RPC → server handler → agent.settingsSvc.GetSettings(...)
+```
+
+**Request types** (`agent/req_types.go`) define typed structs + RPC method name constants
+(`MethodXxx`) for compile-time safety.
+
+**Adding a new RPC method** requires 3 lines of code:
+1. Constant in `req_types.go`: `MethodFooBar = "foo_bar"`
+2. Handler in `local_transport.go`: `h[MethodFooBar] = rpc1(func(r fooBarReq) (result, error) { ... })`
+3. Method in `backend_impl.go`: `func (b *Backend) FooBar(...) { b.call(MethodFooBar, req, &result) }`
+
+### Server / CLI Entry
+
+Server entry can be launched from the root binary or via `xbot-cli serve`. Both paths call `serverapp/`.
+
+The `serverapp/` package:
 - `server.go` — `Run()` startup, channel registration, graceful shutdown
 - `rpc.go` — generic RPC dispatch helpers (`rpc0`, `rpc1`, `rpc1void`, etc.)
 - `rpc_table.go` — RPC method registry + auth helpers (`requireAdmin`, `ownOrAdmin`)
 - `rpc_*.go` — handler groups by domain (settings, llm, subscription, session, tasks)
-- `callbacks.go` — shared Runner/Registry/LLM callback builders (used by Web + Feishu)
+- `callbacks.go` — shared Runner/Registry/LLM callback builders
 - `setting_handlers.go` — runtime setting registry for server-side effects
 
 Adding a new CLI RPC: define a typed handler method on `rpcContext` in the appropriate `rpc_*.go`,
-then register it with one line in `buildRPCTable()` in `rpc_table.go`. No switch-case to update.
+then register it with one line in `buildRPCTable()`. No switch-case to update.
 
-Both implement the same `AgentBackend` interface, so CLI code works identically regardless of mode.
-Management methods (LLMFactory, SettingsService, etc.) return nil for RemoteBackend until the
-WS protocol is extended with RPC support.
-
-### RemoteBackend Connection
+### Remote Connection
 
 CLI connects to server's web channel WebSocket endpoint with query params:
-- `?client_type=cli&token=<runner_token>` — token-based auth for CLI clients
-- Server validates token against `runner_tokens` table, returns associated `userID`
-- Messages use the same WS protocol as web browser clients (`wsMessage`/`wsClientMessage`)
+- `?client_type=cli&token=<runner_token>` — token-based auth
+- Server validates token against `runner_tokens` table
+- RemoteTransport uses the same WS protocol as web browser clients
 
 ## Per-Package Details
 

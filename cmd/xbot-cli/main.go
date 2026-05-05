@@ -713,7 +713,7 @@ func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
 		log.WithField("server", serverURL).Info("Using remote backend")
-		backend = agent.NewRemoteBackend(agent.RemoteBackendConfig{
+		backend = agent.NewRemoteBackend(agent.RemoteTransportConfig{
 			ServerURL: serverURL,
 			Token:     token,
 		})
@@ -728,7 +728,7 @@ func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 			XbotHome:        xbotHome,
 			DirectWorkspace: workDir, // CLI: workspace = workDir directly (no per-user subdirectory)
 		}
-		backend, err = agent.NewLocalBackend(bc.AgentConfig())
+		backend, err = agent.NewBackend(bc.AgentConfig())
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create local backend")
 		}
@@ -991,11 +991,8 @@ func main() {
 	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
 	absWorkDir, _ := filepath.Abs(app.workDir)
 
-	_, isRemoteBackend := app.backend.(*agent.RemoteBackend)
-	remoteServerURL := ""
-	if rb, ok := app.backend.(*agent.RemoteBackend); ok {
-		remoteServerURL = rb.ServerURL()
-	}
+	isRemoteBackend := app.backend.IsRemote()
+	remoteServerURL := app.backend.ServerURL()
 	// Pre-declare tenantSvc so SessionsList closure can capture it.
 	// Assigned later after backend checks. Closure reads at invocation time.
 	var tenantSvc *sqlite.TenantService
@@ -1798,9 +1795,9 @@ func main() {
 	// 注入 channelFinder 以启用结构化进度事件（工具调用、思考过程等）
 	app.backend.SetDirectSend(disp.SendDirect)
 	app.backend.SetChannelFinder(disp.GetChannel)
-	if lb, ok := app.backend.(*agent.LocalBackend); ok {
-		lb.Agent().SetMessageSender(disp)
-		lb.Agent().SetAgentChannelRegistry(
+	if ag := app.backend.Agent(); ag != nil {
+		ag.SetMessageSender(disp)
+		ag.SetAgentChannelRegistry(
 			func(name string, runFn bus.RunFn) error {
 				ac := channel.NewAgentChannel(name, runFn)
 				if err := ac.Start(); err != nil {
@@ -1902,31 +1899,29 @@ func main() {
 		// (progress, stream, outbound) to this WS connection.
 		// Without this, RPC-only sessions never subscribe and all pushed
 		// events are silently buffered.
-		if rb, ok := app.backend.(*agent.RemoteBackend); ok {
-			rb.SubscribeChat(remoteChatID)
+		app.backend.Subscribe(remoteChatID)
 
-			// Initialize remote plugin cache for /plugin commands and widget rendering.
-			remoteCache := channel.NewRemotePluginCache(remoteChatID, func(method string, params any) (json.RawMessage, error) {
-				return rb.CallRPC(method, params)
-			})
-			cliCh.SetRemotePluginCache(remoteCache)
-			// Register push callback — server pushes widget zone content via
-			// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
-			// Filter: only accept pushes targeting our own chatID (absolute path).
-			// Without this, cross-session pushes (e.g. from "admin" chatID)
-			// overwrite our widget content with another window's git status.
-			rb.OnPluginWidgets(func(zones map[string]string, pushChatID string) {
-				if pushChatID != "" && pushChatID != remoteChatID {
-					log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", pushChatID, remoteChatID)
-					return // ignore pushes for other sessions
-				}
-				log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", pushChatID, zones["footer"])
-				remoteCache.UpdateZones(zones)
-			})
-			// Initial fetch — push only fires on CHANGES, so we need to
-			// pull the current state once on connect.
-			remoteCache.Refresh()
-		}
+		// Initialize remote plugin cache for /plugin commands and widget rendering.
+		remoteCache := channel.NewRemotePluginCache(remoteChatID, func(method string, params any) (json.RawMessage, error) {
+			return app.backend.CallRPC(method, params)
+		})
+		cliCh.SetRemotePluginCache(remoteCache)
+		// Register push callback — server pushes widget zone content via
+		// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
+		// Filter: only accept pushes targeting our own chatID (absolute path).
+		// Without this, cross-session pushes (e.g. from "admin" chatID)
+		// overwrite our widget content with another window's git status.
+		app.backend.OnPluginWidgets(func(zones map[string]string, pushChatID string) {
+			if pushChatID != "" && pushChatID != remoteChatID {
+				log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", pushChatID, remoteChatID)
+				return // ignore pushes for other sessions
+			}
+			log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", pushChatID, zones["footer"])
+			remoteCache.UpdateZones(zones)
+		})
+		// Initial fetch — push only fires on CHANGES, so we need to
+		// pull the current state once on connect.
+		remoteCache.Refresh()
 		// Check if server has an active agent turn for this chat (mid-session reconnect).
 		// Run in goroutine to avoid blocking TUI startup on RPC timeout.
 		clipanic.Go("main.remote.RestoreActiveProgress", func() {
@@ -1950,44 +1945,38 @@ func main() {
 		})
 
 		// Wire reconnect callback to reload history on WS reconnect.
-		if rb, ok := app.backend.(interface{ OnReconnect(func()) }); ok {
-			rb.OnReconnect(func() {
-				defer clipanic.Recover("main.remote.OnReconnect", nil, false)
-				// Re-subscribe to business chatID for new WS connection.
-				if rb, ok := app.backend.(*agent.RemoteBackend); ok {
-					rb.SubscribeChat(remoteChatID)
+		app.backend.OnReconnect(func() {
+			defer clipanic.Recover("main.remote.OnReconnect", nil, false)
+			// Re-subscribe to business chatID for new WS connection.
+			_ = app.backend.Subscribe(remoteChatID)
+			// Re-sync CWD on reconnect (server may have restarted, losing in-memory cwd)
+			if isLocalServer(app.cfg.CLI.ServerURL) {
+				if cwd, err := os.Getwd(); err == nil {
+					_ = app.backend.SetCWD("cli", remoteChatID, cwd)
 				}
-				// Re-sync CWD on reconnect (server may have restarted, losing in-memory cwd)
-				if isLocalServer(app.cfg.CLI.ServerURL) {
-					if cwd, err := os.Getwd(); err == nil {
-						_ = app.backend.SetCWD("cli", remoteChatID, cwd)
-					}
+			}
+			if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
+				log.WithError(err).Warn("Failed to reload history after reconnect")
+			} else {
+				cliCh.LoadHistory(history)
+			}
+			// Re-check processing state after reconnect.
+			if app.backend.IsProcessing("cli", remoteChatID) {
+				cliCh.SetProcessing(true)
+				// Restore active progress snapshot (iteration history + stream state).
+				// Use RestoreInitialProgress for full iteration history restore + dedup.
+				if progress := app.backend.GetActiveProgress("cli", remoteChatID); progress != nil {
+					cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
 				}
-				if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
-					log.WithError(err).Warn("Failed to reload history after reconnect")
-				} else {
-					cliCh.LoadHistory(history)
-				}
-				// Re-check processing state after reconnect.
-				if app.backend.IsProcessing("cli", remoteChatID) {
-					cliCh.SetProcessing(true)
-					// Restore active progress snapshot (iteration history + stream state).
-					// Use RestoreInitialProgress for full iteration history restore + dedup.
-					if progress := app.backend.GetActiveProgress("cli", remoteChatID); progress != nil {
-						cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
-					}
-				} else {
-					cliCh.SetProcessing(false)
-				}
-			})
-		}
+			} else {
+				cliCh.SetProcessing(false)
+			}
+		})
 		// Wire connection state change callback for header bar indicator.
-		if csc, ok := app.backend.(interface{ OnConnStateChange(func(string)) }); ok {
-			csc.OnConnStateChange(func(state string) {
-				defer clipanic.Recover("main.remote.OnConnStateChange", state, false)
-				cliCh.SetConnState(state)
-			})
-		}
+		app.backend.OnConnStateChange(func(state string) {
+			defer clipanic.Recover("main.remote.OnConnStateChange", state, false)
+			cliCh.SetConnState(state)
+		})
 		// Background goroutine: periodically refresh agent count/list cache
 		// (RPC calls must not happen from BubbleTea event loop → deadlock)
 		clipanic.Go("main.remote.RefreshAgentCache", func() {
