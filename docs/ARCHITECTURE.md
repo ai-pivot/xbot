@@ -163,7 +163,7 @@ type Channel interface {
 - `registryManager` — 市场/共享
 - `settingsSvc` — 用户设置
 - `interactiveSubAgents` — Interactive SubAgent 会话池
-- `hookChain` — 工具执行钩子链（与 SubAgent 共享同一实例）
+- `hooksManager` — 工具执行钩子管理器（`hooks.Manager`，与 SubAgent 共享同一实例）
 - `bgTaskMgr` — 后台任务管理
 
 ### 2.2 Engine Run 循环
@@ -206,13 +206,16 @@ for i := 0; i < maxIter; i++ {
 | 顺序 | 中间件 | Priority | SystemParts Key | 职责 |
 |------|--------|----------|----------------|------|
 | 1 | SystemPromptMiddleware | 0 | `00_base` | 渲染 prompt.md（支持 hot reload） |
-| 2 | ProjectHintMiddleware | 1 | `05_project_hint` | 注入已知项目知识卡片 |
-| 3 | SkillsCatalogMiddleware | 100 | `10_skills` | 可用 Skills 目录 |
-| 4 | AgentsCatalogMiddleware | 110 | `15_agents` | 可用 Agents 目录 |
-| 5 | MemoryMiddleware | 120 | `20_memory` | 长期记忆（Recall） |
-| 6 | SenderInfoMiddleware | 130 | `30_sender` | 发送者名称 |
-| 7 | LanguageMiddleware | 135 | `32_language` | 语言指令 |
-| 8 | UserMessageMiddleware | 200 | — | 时间戳 + 引导文本 |
+| 2 | ProjectContextMiddleware | 5 | `05_project_context` | 加载 AGENT.md 到 system prompt |
+| 3 | ProjectHintMiddleware | 1 | `05_project_hint` | 注入已知项目知识卡片 |
+| 4 | SkillsCatalogMiddleware | 100 | `10_skills` | 可用 Skills 目录 |
+| 5 | AgentsCatalogMiddleware | 110 | `15_agents` | 可用 Agents 目录 |
+| 6 | PermissionControlMiddleware | 115 | `14_perm_control` | OS 用户权限控制 |
+| 7 | MemoryMiddleware | 120 | `20_memory` | 长期记忆（Recall） |
+| 8 | SenderInfoMiddleware | 130 | `30_sender` | 发送者名称 |
+| 9 | LanguageMiddleware | 135 | `32_language` | 语言指令 |
+| 10 | PluginEnricherMiddleware | 150 | `plugin_enrichers` | Plugin context enrichers |
+| 11 | UserMessageMiddleware | 200 | — | 时间戳 + 用户消息 |
 
 **CacheHint**: system prompt 标记为 `"static"`，Anthropic 下转为 `cache_control: {type: "ephemeral"}`。
 
@@ -419,21 +422,27 @@ type MemoryProvider interface {
 | **管理** | Logs, ask_user, OAuth |
 | **飞书 MCP** | 20+ 工具（多维表格/知识库/文档/云盘） |
 
-### 5.2 HookChain
+### 5.2 Hooks Manager
 
-工具生命周期拦截器，Agent 和 SubAgent 共享同一实例。
+工具生命周期管理器（`agent/hooks/`），Agent 和 SubAgent 共享同一实例。支持多层优先级、决策策略。
 
 ```go
-type ToolHook interface {
-    PreToolUse(ctx, toolName, args) error   // 返回 error 阻止执行
-    PostToolUse(ctx, toolName, args, result, err, elapsed)
+type Manager interface {
+    Register(layer int, handler Handler) error
+    Emit(ctx, event) error  // event = PreToolUse / PostToolUse / ...
 }
 ```
 
-- 默认 hooks: `LoggingHook`（日志）+ `TimingHook`（耗时统计）
-- Pre 遍历所有 hook，**不短路**（记录第一个 error）
-- Post 保证所有 hook 执行（即使前面 panic）
-- 执行前复制 hooks 切片，释放读锁后遍历
+**Handler 决策类型**:
+- `deny` — 拒绝执行（最高优先级，不可被覆盖）
+- `defer` — 延迟到下一层决定
+- `ask` — 需要用户确认
+- `allow` — 允许执行
+
+**决策优先级**: `deny > defer > ask > allow`。低优先级层的 deny 不能被高优先级的 allow 覆盖。
+
+**默认 hooks**: `LoggingHook`（日志）+ `TimingHook`（耗时统计）
+**最大 handlers**: 每个事件最多 10 个，总超时 60s
 
 ### 5.3 工具激活/失效机制
 
