@@ -789,3 +789,9 @@ func (t *RemoteTransport) Close() error {
 	t.Stop()
 	return nil
 }
+
+// Run blocks until the context is cancelled (implements Transport interface).
+func (t *RemoteTransport) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}

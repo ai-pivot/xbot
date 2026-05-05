@@ -8,35 +8,30 @@ import (
 	"xbot/channel"
 )
 
-// Transport is the pure communication layer. It handles how data is sent and
-// received, without any knowledge of business semantics.
+// Transport is the execution layer. Every Backend method goes through Transport.
 //
-// Implementations:
-//   - RemoteTransport: WebSocket-based, for remote CLI connecting to xbot server.
-//   - Future: gRPCTransport, MCPTransport, etc.
+// Local mode uses localTransport (in-process handler dispatch that directly
+// operates on *Agent). Remote mode uses RemoteTransport (WebSocket RPC to xbot server).
 //
-// Local mode does NOT use Transport — Backend directly accesses Agent.
+// The key insight: Backend is a pure typed RPC client. Transport decides whether
+// the call executes locally or remotely. Backend never branches on mode.
 type Transport interface {
 	// === Lifecycle ===
 	Start(ctx context.Context) error
 	Stop()
 	Close() error
+	Run(ctx context.Context) error // blocks until done (local: agent.Run, remote: <-ctx.Done())
 
-	// === Communication ===
-
-	// Call sends a request and waits for a response.
+	// === RPC ===
+	// Call sends a request and returns the response.
 	// method is an RPC method name (e.g. "get_settings").
-	// payload and response are JSON-encoded.
 	Call(method string, payload json.RawMessage) (json.RawMessage, error)
 
-	// SendMessage sends a user message to the agent (fire-and-forget).
+	// === Communication ===
 	SendMessage(msg Message) error
-
-	// Subscribe registers this connection to receive events for chatID.
 	Subscribe(chatID string) error
 
 	// === Server-push events ===
-
 	OnOutbound(cb func(bus.OutboundMessage))
 	OnProgress(cb func(*channel.CLIProgressPayload))
 	OnInjectUserMessage(cb func(content string))
@@ -45,7 +40,6 @@ type Transport interface {
 	OnPluginWidgets(cb func(zones map[string]string, chatID string))
 
 	// === State ===
-
 	ConnState() string
 	IsRemote() bool
 	ServerURL() string

@@ -1,5 +1,68 @@
 package agent
 
+// RPC method name constants. Used by both Backend (client) and rpc_table (server)
+// to ensure method name consistency. Any typo is caught at compile time.
+const (
+	MethodGetSettings                  = "get_settings"
+	MethodSetSetting                   = "set_setting"
+	MethodSetCWD                       = "set_cwd"
+	MethodSetContextMode               = "set_context_mode"
+	MethodGetContextMode               = "get_context_mode"
+	MethodSetSandbox                   = "set_sandbox"
+	MethodSetUserModel                 = "set_user_model"
+	MethodSwitchModel                  = "switch_model"
+	MethodSetUserMaxContext            = "set_user_max_context"
+	MethodGetUserMaxContext            = "get_user_max_context"
+	MethodSetUserMaxOutputTokens       = "set_user_max_output_tokens"
+	MethodGetUserMaxOutputTokens       = "get_user_max_output_tokens"
+	MethodSetUserThinkingMode          = "set_user_thinking_mode"
+	MethodGetUserThinkingMode          = "get_user_thinking_mode"
+	MethodSetLLMConcurrency            = "set_llm_concurrency"
+	MethodGetLLMConcurrency            = "get_llm_concurrency"
+	MethodSetProxyLLM                  = "set_proxy_llm"
+	MethodClearProxyLLM                = "clear_proxy_llm"
+	MethodSetDefaultThinkingMode       = "set_default_thinking_mode"
+	MethodGetDefaultModel              = "get_default_model"
+	MethodListModels                   = "list_models"
+	MethodListAllModels                = "list_all_models"
+	MethodSetModelTiers                = "set_model_tiers"
+	MethodClearMemory                  = "clear_memory"
+	MethodGetMemoryStats               = "get_memory_stats"
+	MethodGetUserTokenUsage            = "get_user_token_usage"
+	MethodGetDailyTokenUsage           = "get_daily_token_usage"
+	MethodGetBgTaskCount               = "get_bg_task_count"
+	MethodListBgTasks                  = "list_bg_tasks"
+	MethodKillBgTask                   = "kill_bg_task"
+	MethodCleanupCompletedBgTasks      = "cleanup_completed_bg_tasks"
+	MethodListSubscriptions            = "list_subscriptions"
+	MethodGetDefaultSubscription       = "get_default_subscription"
+	MethodAddSubscription              = "add_subscription"
+	MethodRemoveSubscription           = "remove_subscription"
+	MethodSetDefaultSubscription       = "set_default_subscription"
+	MethodRenameSubscription           = "rename_subscription"
+	MethodUpdateSubscription           = "update_subscription"
+	MethodSetSubscriptionModel         = "set_subscription_model"
+	MethodGetHistory                   = "get_history"
+	MethodGetTokenState                = "get_token_state"
+	MethodTrimHistory                  = "trim_history"
+	MethodResetTokenState              = "reset_token_state"
+	MethodGetChannelConfig             = "get_channel_config"
+	MethodSetChannelConfig             = "set_channel_config"
+	MethodIsProcessing                 = "is_processing"
+	MethodGetActiveProgress            = "get_active_progress"
+	MethodCountInteractiveSessions     = "count_interactive_sessions"
+	MethodListInteractiveSessions      = "list_interactive_sessions"
+	MethodInspectInteractiveSession    = "inspect_interactive_session"
+	MethodGetSessionMessages           = "get_session_messages"
+	MethodGetAgentSessionDump          = "get_agent_session_dump"
+	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
+	MethodListTenants                  = "list_tenants"
+	MethodSetMaxIterations             = "set_max_iterations"
+	MethodSetMaxConcurrency            = "set_max_concurrency"
+	MethodSetMaxContextTokens          = "set_max_context_tokens"
+	MethodSetCompressionThreshold      = "set_compression_threshold"
+)
+
 // --- Settings ---
 
 type getSettingsReq struct {
@@ -25,10 +88,6 @@ type setCWDReq struct {
 // --- Context / Runtime ---
 
 type setContextModeReq struct {
-	Mode string `json:"mode"`
-}
-
-type setSandboxReq struct {
 	Mode string `json:"mode"`
 }
 
