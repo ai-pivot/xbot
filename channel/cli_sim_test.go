@@ -153,8 +153,13 @@ type SimStep struct {
 	LoopSteps []SimStep `json:"loop_steps,omitempty"` // steps to repeat
 
 	// ─── include fields ───
-	// "include" loads steps from an external JSON file
-	IncludePath string `json:"include_path,omitempty"` // path to steps JSON file
+	IncludePath string `json:"include_path,omitempty"`
+
+	// ─── conditional execution ───
+	IfVar     string    `json:"if_var,omitempty"`
+	IfValue   any       `json:"if_value,omitempty"`
+	ThenSteps []SimStep `json:"then_steps,omitempty"`
+	ElseSteps []SimStep `json:"else_steps,omitempty"`
 
 	// ─── assert tool timing ───
 	AssertToolName  string `json:"assert_tool_name,omitempty"`   // tool name to check
@@ -470,6 +475,8 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 	case "validate":
 		// Validate the scenario structure without executing
 		return r.doValidate(idx, step)
+	case "if":
+		return r.doIf(idx, step)
 	case "system_msg":
 		return r.doSystemMsg(idx, step)
 	case "turn":
@@ -1367,7 +1374,7 @@ func (r *simRunner) doValidate(idx int, step SimStep) error {
 		"tick": true, "inspect": true, "queue_add": true, "subagent": true,
 		"system_msg": true, "turn": true, "summary": true, "export": true,
 		"diff": true, "loop": true, "include": true, "comment": true,
-		"clear": true, "validate": true,
+		"clear": true, "validate": true, "if": true,
 	}
 	var errors []string
 	for i, s := range r.scenario.Steps {
@@ -1407,6 +1414,38 @@ func (r *simRunner) doValidate(idx int, step SimStep) error {
 		Label:   "validation_ok",
 		Summary: fmt.Sprintf("Scenario valid: %d steps, all actions recognized", len(r.scenario.Steps)),
 	})
+	return nil
+}
+
+func (r *simRunner) doIf(idx int, step SimStep) error {
+	if step.IfVar == "" {
+		return fmt.Errorf("if_var is required")
+	}
+	allVars := r.dumpVars()
+	actual, ok := allVars[step.IfVar]
+	if !ok {
+		return fmt.Errorf("unknown variable: %q", step.IfVar)
+	}
+
+	// Evaluate condition
+	conditionMet := false
+	if step.IfValue != nil {
+		conditionMet = fmt.Sprintf("%v", actual) == fmt.Sprintf("%v", step.IfValue)
+	}
+
+	// Execute appropriate branch
+	var steps []SimStep
+	if conditionMet {
+		steps = step.ThenSteps
+	} else {
+		steps = step.ElseSteps
+	}
+
+	for i, s := range steps {
+		if err := r.processStep(idx, s); err != nil {
+			return fmt.Errorf("if[%d].%s: %w", i, s.Action, err)
+		}
+	}
 	return nil
 }
 
