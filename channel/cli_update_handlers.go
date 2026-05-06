@@ -587,6 +587,48 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 	// (Restarting the client restores them via ConvertMessagesToHistory from DB,
 	// proving the data is valid — we just need to persist it in-memory too.)
 	if m.turnCancelled {
+		// Snapshot the final iteration (same logic as the non-cancelled path below).
+		// This is needed because snapshotIterationChange only fires on iteration
+		// *changes* (N→N+1), so a single-iteration turn won't have any snapshots yet.
+		if m.lastSeenIteration >= 0 {
+			alreadySnapped := slices.ContainsFunc(m.iterationHistory, func(s cliIterationSnapshot) bool {
+				return s.Iteration == m.lastSeenIteration
+			})
+			if !alreadySnapped {
+				var finalTools []CLIToolProgress
+				finalTools = append(finalTools, msg.payload.CompletedTools...)
+				for _, t := range msg.payload.ActiveTools {
+					if t.Status == "done" || t.Status == "error" {
+						if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+							return existing.Name == t.Name && existing.Label == t.Label
+						}) {
+							finalTools = append(finalTools, t)
+						}
+					}
+				}
+				for _, t := range m.lastCompletedTools {
+					if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+						return existing.Name == t.Name && existing.Label == t.Label
+					}) {
+						finalTools = append(finalTools, t)
+					}
+				}
+				snap := cliIterationSnapshot{
+					Iteration:   m.lastSeenIteration,
+					Thinking:    msg.payload.Thinking,
+					Tools:       finalTools,
+					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+				}
+				if m.lastReasoning != "" {
+					snap.Reasoning = m.lastReasoning
+				} else if msg.payload.Reasoning != "" {
+					snap.Reasoning = msg.payload.Reasoning
+				}
+				if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
+					m.iterationHistory = append(m.iterationHistory, snap)
+				}
+			}
+		}
 		if len(m.iterationHistory) > 0 {
 			toolSummaryMsg := cliMessage{
 				role:       "tool_summary",
