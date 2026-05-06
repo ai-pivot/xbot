@@ -130,6 +130,16 @@ type SimStep struct {
 	// ─── export fields ───
 	// "export" saves current messages as a history JSON file
 	ExportPath string `json:"export_path,omitempty"`
+
+	// ─── diff fields ───
+	// "diff" compares two snapshots by label
+	DiffFrom string `json:"diff_from,omitempty"` // first snapshot label
+	DiffTo   string `json:"diff_to,omitempty"`   // second snapshot label
+
+	// ─── loop fields ───
+	// "loop" repeats a set of sub-steps N times
+	LoopCount int       `json:"loop_count,omitempty"` // number of repetitions
+	LoopSteps []SimStep `json:"loop_steps,omitempty"` // steps to repeat
 }
 
 // SimSubAgent describes a SubAgent in the tree for simulation.
@@ -154,8 +164,19 @@ type SimResult struct {
 	Snapshots   []SimSnapshot   `json:"snapshots,omitempty"`
 	Assertions  []SimAssertion  `json:"assertions,omitempty"`
 	Inspections []SimInspection `json:"inspections,omitempty"`
+	Diffs       []SimDiff       `json:"diffs,omitempty"`
 	StepsTotal  int             `json:"steps_total"`
 	StepsOK     int             `json:"steps_ok"`
+}
+
+type SimDiff struct {
+	Step     int    `json:"step"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Added    int    `json:"added"`
+	Removed  int    `json:"removed"`
+	Modified int    `json:"modified"`
+	Summary  string `json:"summary,omitempty"`
 }
 
 type SimSnapshot struct {
@@ -255,6 +276,7 @@ func newSimRunner(scenario SimScenario) *simRunner {
 			Snapshots:   []SimSnapshot{},
 			Assertions:  []SimAssertion{},
 			Inspections: []SimInspection{},
+			Diffs:       []SimDiff{},
 		},
 	}
 }
@@ -368,6 +390,10 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 		return r.doSummary(idx, step)
 	case "export":
 		return r.doExport(idx, step)
+	case "diff":
+		return r.doDiff(idx, step)
+	case "loop":
+		return r.doLoop(idx, step)
 	case "system_msg":
 		return r.doSystemMsg(idx, step)
 	case "turn":
@@ -911,6 +937,86 @@ func (r *simRunner) doExport(idx int, step SimStep) error {
 		Label:   step.Label,
 		Summary: fmt.Sprintf("Exported %d messages to %s", len(history), step.ExportPath),
 	})
+	return nil
+}
+
+func (r *simRunner) doDiff(idx int, step SimStep) error {
+	var fromSnap, toSnap *SimSnapshot
+	for i := range r.result.Snapshots {
+		if r.result.Snapshots[i].Label == step.DiffFrom {
+			fromSnap = &r.result.Snapshots[i]
+		}
+		if r.result.Snapshots[i].Label == step.DiffTo {
+			toSnap = &r.result.Snapshots[i]
+		}
+	}
+	if fromSnap == nil {
+		return fmt.Errorf("diff: snapshot %q not found", step.DiffFrom)
+	}
+	if toSnap == nil {
+		return fmt.Errorf("diff: snapshot %q not found", step.DiffTo)
+	}
+
+	fromLines := strings.Split(fromSnap.View, "\n")
+	toLines := strings.Split(toSnap.View, "\n")
+
+	// Simple line-based diff
+	fromSet := make(map[string]int)
+	toSet := make(map[string]int)
+	for _, l := range fromLines {
+		fromSet[l]++
+	}
+	for _, l := range toLines {
+		toSet[l]++
+	}
+
+	added, removed, modified := 0, 0, 0
+	for l, cnt := range toSet {
+		if fromSet[l] == 0 {
+			added += cnt
+		}
+	}
+	for l, cnt := range fromSet {
+		if toSet[l] == 0 {
+			removed += cnt
+		}
+	}
+	// Count lines that changed position/content
+	maxLen := len(fromLines)
+	if len(toLines) > maxLen {
+		maxLen = len(toLines)
+	}
+	for i := 0; i < maxLen; i++ {
+		if i < len(fromLines) && i < len(toLines) && fromLines[i] != toLines[i] {
+			modified++
+		}
+	}
+
+	summary := fmt.Sprintf("Lines: %d → %d. Added: %d, Removed: %d, Modified: %d",
+		len(fromLines), len(toLines), added, removed, modified)
+
+	r.result.Diffs = append(r.result.Diffs, SimDiff{
+		Step: idx, From: step.DiffFrom, To: step.DiffTo,
+		Added: added, Removed: removed, Modified: modified,
+		Summary: summary,
+	})
+	return nil
+}
+
+func (r *simRunner) doLoop(idx int, step SimStep) error {
+	if step.LoopCount <= 0 {
+		return fmt.Errorf("loop_count must be > 0")
+	}
+	if len(step.LoopSteps) == 0 {
+		return fmt.Errorf("loop_steps is empty")
+	}
+	for i := 0; i < step.LoopCount; i++ {
+		for j, subStep := range step.LoopSteps {
+			if err := r.processStep(idx, subStep); err != nil {
+				return fmt.Errorf("loop[%d].step[%d]: %w", i, j, err)
+			}
+		}
+	}
 	return nil
 }
 
