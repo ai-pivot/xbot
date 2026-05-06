@@ -135,6 +135,9 @@ type SimStep struct {
 	AssertToolCallCount int  `json:"assert_tool_call_count,omitempty"` // exact count for assert_tool_name
 	// State assertions — directly verify model variable values
 	AssertState map[string]any `json:"assert_state,omitempty"` // e.g. {"typing": false}
+	// Assert last message
+	AssertLastRole    string `json:"assert_last_role,omitempty"`
+	AssertLastContent string `json:"assert_last_content,omitempty"`
 
 	// ─── assert fields (message-level) ───
 	AssertRole    string   `json:"assert_role,omitempty"`
@@ -999,6 +1002,46 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 				r.result.OK = false
 				return fmt.Errorf("assert_index_content: messages[%d] does not contain %q",
 					idx, step.AssertContent)
+			}
+		}
+	}
+
+	// ─── Last message assertions ───
+	if step.AssertLastRole != "" {
+		msgs := r.model.messages
+		if len(msgs) == 0 {
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step: idx, Type: "assert_last_role",
+				Pattern: fmt.Sprintf("last.role == %q", step.AssertLastRole),
+				Passed:  false, Actual: "no messages",
+			})
+			r.result.OK = false
+			return fmt.Errorf("assert_last_role: no messages")
+		}
+		last := msgs[len(msgs)-1]
+		passed := last.role == step.AssertLastRole
+		r.result.Assertions = append(r.result.Assertions, SimAssertion{
+			Step: idx, Type: "assert_last_role",
+			Pattern: fmt.Sprintf("last.role == %q", step.AssertLastRole),
+			Passed:  passed,
+			Actual:  fmt.Sprintf("messages[%d].role = %q", len(msgs)-1, last.role),
+		})
+		if !passed {
+			r.result.OK = false
+			return fmt.Errorf("assert_last_role: last message role = %q, expected %q", last.role, step.AssertLastRole)
+		}
+
+		if step.AssertLastContent != "" {
+			found := strings.Contains(last.content, step.AssertLastContent)
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step: idx, Type: "assert_last_content",
+				Pattern: fmt.Sprintf("last contains %q", step.AssertLastContent),
+				Passed:  found,
+				Actual:  fmt.Sprintf("content = %q (len %d)", truncateStr(last.content, 50), len(last.content)),
+			})
+			if !found {
+				r.result.OK = false
+				return fmt.Errorf("assert_last_content: last message does not contain %q", step.AssertLastContent)
 			}
 		}
 	}
