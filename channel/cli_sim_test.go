@@ -143,6 +143,11 @@ type SimStep struct {
 	// ─── include fields ───
 	// "include" loads steps from an external JSON file
 	IncludePath string `json:"include_path,omitempty"` // path to steps JSON file
+
+	// ─── assert tool timing ───
+	AssertToolName  string `json:"assert_tool_name,omitempty"`   // tool name to check
+	AssertToolMinMs int    `json:"assert_tool_min_ms,omitempty"` // minimum elapsed_ms
+	AssertToolMaxMs int    `json:"assert_tool_max_ms,omitempty"` // maximum elapsed_ms
 }
 
 // SimSubAgent describes a SubAgent in the tree for simulation.
@@ -763,6 +768,58 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 				return fmt.Errorf("assert_index_content: messages[%d] does not contain %q",
 					idx, step.AssertContent)
 			}
+		}
+	}
+
+	// ─── Tool timing assertion ───
+	if step.AssertToolName != "" {
+		var toolElapsed int
+		found := false
+		for _, msg := range r.model.messages {
+			if msg.role == "tool_summary" {
+				for _, it := range msg.iterations {
+					for _, t := range it.Tools {
+						if t.Name == step.AssertToolName {
+							toolElapsed = int(t.Elapsed)
+							found = true
+						}
+					}
+				}
+			}
+		}
+		if !found {
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step: idx, Type: "assert_tool_elapsed",
+				Pattern: fmt.Sprintf("tool %q exists", step.AssertToolName),
+				Passed:  false,
+				Actual:  "tool not found in any tool_summary",
+			})
+			r.result.OK = false
+			return fmt.Errorf("assert_tool_elapsed: tool %q not found", step.AssertToolName)
+		}
+		passed := true
+		if step.AssertToolMinMs > 0 && toolElapsed < step.AssertToolMinMs {
+			passed = false
+		}
+		if step.AssertToolMaxMs > 0 && toolElapsed > step.AssertToolMaxMs {
+			passed = false
+		}
+		desc := fmt.Sprintf("tool %q elapsed=%dms", step.AssertToolName, toolElapsed)
+		if step.AssertToolMinMs > 0 {
+			desc += fmt.Sprintf(" >=%dms", step.AssertToolMinMs)
+		}
+		if step.AssertToolMaxMs > 0 {
+			desc += fmt.Sprintf(" <=%dms", step.AssertToolMaxMs)
+		}
+		r.result.Assertions = append(r.result.Assertions, SimAssertion{
+			Step: idx, Type: "assert_tool_elapsed",
+			Pattern: desc,
+			Passed:  passed,
+			Actual:  fmt.Sprintf("%dms", toolElapsed),
+		})
+		if !passed {
+			r.result.OK = false
+			return fmt.Errorf("assert_tool_elapsed: %s (actual %dms)", desc, toolElapsed)
 		}
 	}
 
