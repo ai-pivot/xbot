@@ -580,10 +580,24 @@ func (m *cliModel) snapshotAndAdvance(progress *CLIProgressPayload) {
 // handleProgressDone handles the Phase "done" case: snapshots the final iteration,
 // generates tool summary, resets iteration tracking state, and synthesizes agent messages.
 func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPayload, turnID uint64) {
-	// When turn was cancelled (Ctrl+C), skip tool summary generation and only
-	// clean up progress state. Producing tool summaries for a cancelled turn
-	// creates confusing "Tools N calls ✗N" blocks with stale/incomplete data.
+	// When turn was cancelled (Ctrl+C), still generate tool_summary from
+	// accumulated iterationHistory so tool records survive rewind operations.
+	// Without this, cancelled turns lose their tool records because iterationHistory
+	// is cleared by endAgentTurn, and no tool_summary message exists in m.messages.
+	// (Restarting the client restores them via ConvertMessagesToHistory from DB,
+	// proving the data is valid — we just need to persist it in-memory too.)
 	if m.turnCancelled {
+		if len(m.iterationHistory) > 0 {
+			toolSummaryMsg := cliMessage{
+				role:       "tool_summary",
+				content:    "",
+				timestamp:  time.Now(),
+				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
+				dirty:      true,
+			}
+			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
+			m.renderCacheValid = false
+		}
 		m.setTurnDoneProcessed(turnID)
 		m.endAgentTurn(turnID)
 		if turnID == m.agentTurnID {
