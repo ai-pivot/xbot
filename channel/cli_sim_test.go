@@ -542,6 +542,8 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 		return r.doCaptureHistory(idx, step)
 	case "count_messages":
 		return r.doCountMessages(idx, step)
+	case "sleep_ms":
+		return nil
 	case "help":
 		return r.doHelp(idx, step)
 	case "system_msg":
@@ -556,6 +558,7 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 
 // ─── Action implementations ────────────────────────────────────────
 
+// doUserMsg adds a user message and starts agent turn.
 func (r *simRunner) doUserMsg(idx int, step SimStep) error {
 	m := r.model
 	m.messages = append(m.messages, cliMessage{
@@ -571,6 +574,7 @@ func (r *simRunner) doUserMsg(idx int, step SimStep) error {
 	return nil
 }
 
+// doAgentMsg sends an agent (outbound) message.
 func (r *simRunner) doAgentMsg(idx int, step SimStep) error {
 	m := r.model
 	outMsg := bus.OutboundMessage{
@@ -583,6 +587,7 @@ func (r *simRunner) doAgentMsg(idx int, step SimStep) error {
 	return nil
 }
 
+// doProgress sends a progress event with tools/reasoning/streaming.
 func (r *simRunner) doProgress(idx int, step SimStep) error {
 	m := r.model
 	payload := &CLIProgressPayload{
@@ -603,6 +608,7 @@ func (r *simRunner) doProgress(idx int, step SimStep) error {
 	return nil
 }
 
+// doPhaseDone sends a PhaseDone event, triggering handleProgressDone.
 func (r *simRunner) doPhaseDone(idx int, step SimStep) error {
 	m := r.model
 	tools := step.CompletedTools
@@ -622,6 +628,7 @@ func (r *simRunner) doPhaseDone(idx int, step SimStep) error {
 	return nil
 }
 
+// doKey simulates a key press.
 func (r *simRunner) doKey(idx int, step SimStep) error {
 	m := r.model
 	key := parseKeyInput(step.Key)
@@ -631,6 +638,7 @@ func (r *simRunner) doKey(idx int, step SimStep) error {
 	return nil
 }
 
+// doResize changes the terminal dimensions.
 func (r *simRunner) doResize(idx int, step SimStep) error {
 	w, h := step.NewWidth, step.NewHeight
 	if w <= 0 {
@@ -643,6 +651,7 @@ func (r *simRunner) doResize(idx int, step SimStep) error {
 	return nil
 }
 
+// doRewind removes messages after the specified user message.
 func (r *simRunner) doRewind(idx int, step SimStep) error {
 	m := r.model
 	var items []rewindItem
@@ -670,6 +679,7 @@ func (r *simRunner) doRewind(idx int, step SimStep) error {
 	return nil
 }
 
+// doSnapshot captures the current rendered view.
 func (r *simRunner) doSnapshot(idx int, step SimStep) {
 	view := r.captureView()
 	r.result.Snapshots = append(r.result.Snapshots, SimSnapshot{
@@ -682,6 +692,7 @@ func (r *simRunner) doSnapshot(idx int, step SimStep) {
 	})
 }
 
+// doAssert runs all configured assertions against current state.
 func (r *simRunner) doAssert(idx int, step SimStep) error {
 	view := r.captureView()
 
@@ -1225,6 +1236,7 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 	return nil
 }
 
+// doSetVar sets a model variable.
 func (r *simRunner) doSetVar(idx int, step SimStep) error {
 	m := r.model
 	switch step.Var {
@@ -1240,6 +1252,7 @@ func (r *simRunner) doSetVar(idx int, step SimStep) error {
 	return nil
 }
 
+// doInspect dumps model state (messages, vars, view summary).
 func (r *simRunner) doInspect(idx int, step SimStep) error {
 	insp := SimInspection{Step: idx, Label: step.Label}
 
@@ -1273,11 +1286,13 @@ func (r *simRunner) doInspect(idx int, step SimStep) error {
 	return nil
 }
 
+// doQueueAdd adds messages to the input queue.
 func (r *simRunner) doQueueAdd(idx int, step SimStep) error {
 	r.model.messageQueue = append(r.model.messageQueue, step.QueueMessages...)
 	return nil
 }
 
+// doClear wipes all messages (simulates /clear).
 func (r *simRunner) doClear(idx int, step SimStep) error {
 	m := r.model
 	m.messages = nil
@@ -1287,6 +1302,7 @@ func (r *simRunner) doClear(idx int, step SimStep) error {
 	return nil
 }
 
+// doSummary generates a markdown summary of current state.
 func (r *simRunner) doSummary(idx int, step SimStep) error {
 	m := r.model
 	var sb strings.Builder
@@ -1357,6 +1373,7 @@ func (r *simRunner) doSummary(idx int, step SimStep) error {
 	return nil
 }
 
+// doExport saves messages as a reusable history JSON file.
 func (r *simRunner) doExport(idx int, step SimStep) error {
 	if step.ExportPath == "" {
 		return fmt.Errorf("export_path is required for export action")
@@ -1414,6 +1431,7 @@ func (r *simRunner) doExport(idx int, step SimStep) error {
 	return nil
 }
 
+// doDiff compares two named snapshots.
 func (r *simRunner) doDiff(idx int, step SimStep) error {
 	var fromSnap, toSnap *SimSnapshot
 	for i := range r.result.Snapshots {
@@ -1477,6 +1495,7 @@ func (r *simRunner) doDiff(idx int, step SimStep) error {
 	return nil
 }
 
+// doLoop repeats a set of sub-steps N times.
 func (r *simRunner) doLoop(idx int, step SimStep) error {
 	if step.LoopCount <= 0 {
 		return fmt.Errorf("loop_count must be > 0")
@@ -1494,6 +1513,7 @@ func (r *simRunner) doLoop(idx int, step SimStep) error {
 	return nil
 }
 
+// doInclude loads steps from an external JSON file.
 func (r *simRunner) doInclude(idx int, step SimStep) error {
 	if step.IncludePath == "" {
 		return fmt.Errorf("include_path is required")
@@ -1514,6 +1534,7 @@ func (r *simRunner) doInclude(idx int, step SimStep) error {
 	return nil
 }
 
+// doValidate checks scenario structure without executing.
 func (r *simRunner) doValidate(idx int, step SimStep) error {
 	validActions := map[string]bool{
 		"user_msg": true, "agent_msg": true, "progress": true, "phase_done": true,
@@ -1527,6 +1548,7 @@ func (r *simRunner) doValidate(idx int, step SimStep) error {
 		"capture_history": true,
 		"help":            true,
 		"count_messages":  true,
+		"sleep_ms":        true,
 	}
 	var errors []string
 	for i, s := range r.scenario.Steps {
@@ -1569,6 +1591,7 @@ func (r *simRunner) doValidate(idx int, step SimStep) error {
 	return nil
 }
 
+// doIf conditionally executes then_steps or else_steps.
 func (r *simRunner) doIf(idx int, step SimStep) error {
 	if step.IfVar == "" {
 		return fmt.Errorf("if_var is required")
@@ -1601,6 +1624,7 @@ func (r *simRunner) doIf(idx int, step SimStep) error {
 	return nil
 }
 
+// doScroll scrolls the viewport.
 func (r *simRunner) doScroll(idx int, step SimStep) error {
 	m := r.model
 	switch step.ScrollTo {
@@ -1620,6 +1644,7 @@ func (r *simRunner) doScroll(idx int, step SimStep) error {
 	return nil
 }
 
+// doInputText records simulated input text.
 func (r *simRunner) doInputText(idx int, step SimStep) error {
 	// Record the input text in an inspection (not actually typed into textarea)
 	r.result.Inspections = append(r.result.Inspections, SimInspection{
@@ -1630,6 +1655,7 @@ func (r *simRunner) doInputText(idx int, step SimStep) error {
 	return nil
 }
 
+// doCountMessages outputs message statistics.
 func (r *simRunner) doCountMessages(idx int, step SimStep) error {
 	m := r.model
 	roleCounts := make(map[string]int)
@@ -1651,6 +1677,7 @@ func (r *simRunner) doCountMessages(idx int, step SimStep) error {
 	return nil
 }
 
+// doCaptureHistory dumps messages in readable format.
 func (r *simRunner) doCaptureHistory(idx int, step SimStep) error {
 	m := r.model
 	var sb strings.Builder
@@ -1682,6 +1709,7 @@ func (r *simRunner) doCaptureHistory(idx int, step SimStep) error {
 	return nil
 }
 
+// doHelp outputs action documentation.
 func (r *simRunner) doHelp(idx int, step SimStep) error {
 	help := `## TUI Simulator Actions
 
@@ -1749,6 +1777,7 @@ func (r *simRunner) doHelp(idx int, step SimStep) error {
 	return nil
 }
 
+// doSubAgent injects SubAgent tree via progress event.
 func (r *simRunner) doSubAgent(idx int, step SimStep) error {
 	m := r.model
 	var agents []CLISubAgent
@@ -1768,6 +1797,7 @@ func (r *simRunner) doSubAgent(idx int, step SimStep) error {
 	return nil
 }
 
+// doSystemMsg adds a system feedback message.
 func (r *simRunner) doSystemMsg(idx int, step SimStep) error {
 	m := r.model
 	content := step.Content
