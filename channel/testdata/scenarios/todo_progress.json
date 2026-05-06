@@ -1,0 +1,22 @@
+{
+  "description": "Regression: TODO progress bar with completion tracking",
+  "config": {"width": 120, "height": 40},
+  "steps": [
+    {"action": "user_msg", "content": "complete all tasks"},
+    {"action": "progress", "phase": "thinking", "iteration": 0,
+      "todos": [
+        {"id": 1, "text": "Task 1", "done": true},
+        {"id": 2, "text": "Task 2", "done": false},
+        {"id": 3, "text": "Task 3", "done": false}
+      ]},
+    {"action": "assert", "contains": "Task"},
+    {"action": "progress", "phase": "done", "iteration": 0,
+      "todos": [
+        {"id": 1, "text": "Task 1", "done": true},
+        {"id": 2, "text": "Task 2", "done": true},
+        {"id": 3, "text": "Task 3", "done": true}
+      ]},
+    {"action": "agent_msg", "content": "All tasks completed!"},
+    {"action": "assert", "assert_role": "assistant", "assert_content": "completed"}
+  ]
+}

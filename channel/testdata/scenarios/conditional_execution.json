@@ -1,0 +1,20 @@
+{
+  "description": "Regression: conditional execution with if/then/else",
+  "config": {"width": 120, "height": 40},
+  "steps": [
+    {"action": "user_msg", "content": "hello"},
+    {"action": "if", "if_var": "typing", "if_value": "true",
+      "then_steps": [
+        {"action": "agent_msg", "content": "typing is true"}
+      ],
+      "else_steps": [
+        {"action": "agent_msg", "content": "typing is false"}
+      ]},
+    {"action": "assert", "assert_role": "assistant", "assert_content": "typing is true"},
+    {"action": "if", "if_var": "queueLen", "if_value": "0",
+      "then_steps": [
+        {"action": "queue_add", "queue_messages": ["msg1"]}
+      ]},
+    {"action": "assert", "assert_state": {"queueLen": 1}}
+  ]
+}
