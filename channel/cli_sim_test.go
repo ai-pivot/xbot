@@ -91,6 +91,9 @@ type SimStep struct {
 	AssertIndex     int    `json:"assert_index,omitempty"`      // 0-based index
 	AssertIndexRole string `json:"assert_index_role,omitempty"` // expected role at that index
 
+	// Assert total message count
+	AssertTotal int `json:"assert_total,omitempty"` // expected total messages
+
 	// ─── set_var fields ───
 	Var   string `json:"var,omitempty"`
 	Value bool   `json:"value,omitempty"`
@@ -351,6 +354,8 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 		return r.doQueueAdd(idx, step)
 	case "subagent":
 		return r.doSubAgent(idx, step)
+	case "clear":
+		return r.doClear(idx, step)
 	case "system_msg":
 		return r.doSystemMsg(idx, step)
 	case "turn":
@@ -625,6 +630,23 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 		}
 	}
 
+	// ─── Total message count assertion ───
+	if step.AssertTotal > 0 {
+		msgCount := len(r.model.messages)
+		passed := msgCount == step.AssertTotal
+		r.result.Assertions = append(r.result.Assertions, SimAssertion{
+			Step:    idx,
+			Type:    "assert_total",
+			Pattern: fmt.Sprintf("total == %d", step.AssertTotal),
+			Passed:  passed,
+			Actual:  fmt.Sprintf("have %d messages", msgCount),
+		})
+		if !passed {
+			r.result.OK = false
+			return fmt.Errorf("assert_total: expected %d messages, have %d", step.AssertTotal, msgCount)
+		}
+	}
+
 	// ─── Index-based assertions ───
 	if step.AssertIndexRole != "" {
 		idx := step.AssertIndex
@@ -722,6 +744,15 @@ func (r *simRunner) doInspect(idx int, step SimStep) error {
 
 func (r *simRunner) doQueueAdd(idx int, step SimStep) error {
 	r.model.messageQueue = append(r.model.messageQueue, step.QueueMessages...)
+	return nil
+}
+
+func (r *simRunner) doClear(idx int, step SimStep) error {
+	m := r.model
+	m.messages = nil
+	m.cachedHistory = ""
+	m.renderCacheValid = false
+	m.updateViewportContent()
 	return nil
 }
 
@@ -1080,6 +1111,32 @@ func TestSimProgressWithTools(t *testing.T) {
 	result := runner.run()
 	if !result.OK {
 		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimClearAndAssertTotal(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "hello", Response: "Hi!"},
+			{Action: "turn", Content: "bye", Response: "Bye!"},
+			{Action: "assert", AssertTotal: 4}, // 2 user + 2 assistant
+			{Action: "clear"},
+			{Action: "assert", AssertTotal: 0},
+			{Action: "turn", Content: "fresh start", Response: "Hello again!"},
+			{Action: "assert", AssertTotal: 2}, // 1 user + 1 assistant
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	// Verify all 4 assertions passed
+	for _, a := range result.Assertions {
+		if !a.Passed {
+			t.Errorf("Unexpected failure: %v", a)
+		}
 	}
 }
 
