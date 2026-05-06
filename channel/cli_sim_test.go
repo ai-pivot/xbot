@@ -1383,7 +1383,8 @@ func (r *simRunner) doValidate(idx int, step SimStep) error {
 		if s.Action == "assert" && s.Contains == "" && s.NotContains == "" && s.Matches == "" &&
 			s.AssertRole == "" && s.AssertTotal == 0 && !s.AssertViewportAtBottom && !s.AssertViewportAtTop &&
 			!s.AssertNoToolErrors && len(s.AssertMessageOrder) == 0 && len(s.AssertState) == 0 &&
-			s.AssertViewLines == 0 && s.AssertViewLinesMax == 0 {
+			s.AssertViewLines == 0 && s.AssertViewLinesMax == 0 && s.AssertToolName == "" &&
+			s.AssertContentRegex == "" {
 			errors = append(errors, fmt.Sprintf("step %d: assert has no condition", i))
 		}
 		if s.Action == "loop" && (s.LoopCount <= 0 || len(s.LoopSteps) == 0) {
