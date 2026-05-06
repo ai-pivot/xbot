@@ -249,6 +249,9 @@ type SimModelSnapshot struct {
 	LastSeenIter  int    `json:"last_seen_iteration"`
 	RemoteMode    bool   `json:"remote_mode"`
 	QueueLen      int    `json:"queue_len"`
+	ViewportAtTop bool   `json:"viewport_at_top"`
+	ViewportAtBot bool   `json:"viewport_at_bottom"`
+	TotalLines    int    `json:"total_lines"`
 }
 
 // ─── Simulator ─────────────────────────────────────────────────────
@@ -1345,6 +1348,9 @@ func (r *simRunner) dumpState() *SimModelSnapshot {
 		LastSeenIter:  m.lastSeenIteration,
 		RemoteMode:    m.remoteMode,
 		QueueLen:      len(m.messageQueue),
+		ViewportAtTop: m.viewport.AtTop(),
+		ViewportAtBot: m.viewport.AtBottom(),
+		TotalLines:    m.viewport.TotalLineCount(),
 	}
 	if m.progress != nil {
 		snap.ProgressPhase = m.progress.Phase
