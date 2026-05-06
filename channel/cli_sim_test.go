@@ -2533,3 +2533,52 @@ func TestSimAssertViewport(t *testing.T) {
 		t.Fatalf("Simulation failed: %s", result.Error)
 	}
 }
+
+func TestSimIf(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "user_msg", Content: "hello"},
+			// typing should be true after user_msg (startAgentTurn)
+			{Action: "if", IfVar: "typing", IfValue: "true",
+				ThenSteps: []SimStep{
+					{Action: "agent_msg", Content: "response while typing"},
+				},
+				ElseSteps: []SimStep{
+					{Action: "agent_msg", Content: "response without typing"},
+				},
+			},
+			{Action: "assert", AssertRole: "assistant", AssertContent: "response while typing"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimValidate(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "validate"},
+			{Action: "turn", Content: "hello", Response: "Hi!"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Validation should pass for valid scenario: %s", result.Error)
+	}
+	// Check validation inspection exists
+	found := false
+	for _, i := range result.Inspections {
+		if i.Label == "validation_ok" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected validation_ok inspection")
+	}
+}
