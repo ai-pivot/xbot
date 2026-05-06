@@ -2029,9 +2029,25 @@ func TestSimMain(t *testing.T) {
 			}
 		}
 	} else {
-		// No output file: print markdown report to stdout (more agent-friendly)
-		report := generateHumanReport(result)
-		fmt.Println(report)
+		// No output file: print to stdout
+		if os.Getenv("XBOT_SIM_QUIET") != "" {
+			// Quiet mode: just status line
+			status := "✓ PASS"
+			if !result.OK {
+				status = "✗ FAIL: " + result.Error
+			}
+			passed := 0
+			for _, a := range result.Assertions {
+				if a.Passed {
+					passed++
+				}
+			}
+			fmt.Printf("%s | %d/%d steps | %d/%d assertions\n", status, result.StepsOK, result.StepsTotal, passed, len(result.Assertions))
+		} else {
+			// Default: print markdown report to stdout (more agent-friendly)
+			report := generateHumanReport(result)
+			fmt.Println(report)
+		}
 	}
 	if !result.OK {
 		t.Errorf("Simulation failed: %s", result.Error)
