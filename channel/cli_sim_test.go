@@ -87,6 +87,9 @@ type SimStep struct {
 	// Viewport scroll position
 	AssertViewportAtBottom bool `json:"assert_viewport_at_bottom,omitempty"`
 	AssertViewportAtTop    bool `json:"assert_viewport_at_top,omitempty"`
+	// Tool call assertions
+	AssertNoToolErrors  bool `json:"assert_no_tool_errors,omitempty"`  // no tool has "error" status
+	AssertToolCallCount int  `json:"assert_tool_call_count,omitempty"` // exact count for assert_tool_name
 
 	// ─── assert fields (message-level) ───
 	AssertRole    string   `json:"assert_role,omitempty"`
@@ -923,6 +926,63 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 		if !passed {
 			r.result.OK = false
 			return fmt.Errorf("assert_tool_elapsed: %s (actual %dms)", desc, toolElapsed)
+		}
+	}
+
+	// ─── No tool errors assertion ───
+	if step.AssertNoToolErrors {
+		var errorTools []string
+		for _, msg := range r.model.messages {
+			if msg.role == "tool_summary" {
+				for _, it := range msg.iterations {
+					for _, t := range it.Tools {
+						if t.Status == "error" {
+							errorTools = append(errorTools, t.Name)
+						}
+					}
+				}
+			}
+		}
+		passed := len(errorTools) == 0
+		r.result.Assertions = append(r.result.Assertions, SimAssertion{
+			Step:    idx,
+			Type:    "assert_no_tool_errors",
+			Pattern: "no tools with error status",
+			Passed:  passed,
+			Actual:  fmt.Sprintf("error tools: %v", errorTools),
+		})
+		if !passed {
+			r.result.OK = false
+			return fmt.Errorf("assert_no_tool_errors: found tools with errors: %v", errorTools)
+		}
+	}
+
+	// ─── Tool call count assertion ───
+	if step.AssertToolName != "" && step.AssertToolCallCount > 0 {
+		callCount := 0
+		for _, msg := range r.model.messages {
+			if msg.role == "tool_summary" {
+				for _, it := range msg.iterations {
+					for _, t := range it.Tools {
+						if t.Name == step.AssertToolName {
+							callCount++
+						}
+					}
+				}
+			}
+		}
+		passed := callCount == step.AssertToolCallCount
+		r.result.Assertions = append(r.result.Assertions, SimAssertion{
+			Step:    idx,
+			Type:    "assert_tool_call_count",
+			Pattern: fmt.Sprintf("tool %q called %d times", step.AssertToolName, step.AssertToolCallCount),
+			Passed:  passed,
+			Actual:  fmt.Sprintf("called %d times", callCount),
+		})
+		if !passed {
+			r.result.OK = false
+			return fmt.Errorf("assert_tool_call_count: tool %q called %d times, expected %d",
+				step.AssertToolName, callCount, step.AssertToolCallCount)
 		}
 	}
 
