@@ -2800,3 +2800,87 @@ func BenchmarkSimHeavyScenario(b *testing.B) {
 		runner.run()
 	}
 }
+
+func TestSimEdgeCases(t *testing.T) {
+	t.Run("empty_scenario", func(t *testing.T) {
+		scenario := SimScenario{Config: SimConfig{Width: 120, Height: 40}}
+		runner := newSimRunner(scenario)
+		result := runner.run()
+		if !result.OK {
+			t.Fatalf("Empty scenario should pass: %s", result.Error)
+		}
+		if result.StepsTotal != 0 {
+			t.Errorf("Expected 0 steps, got %d", result.StepsTotal)
+		}
+	})
+
+	t.Run("many_rewinds", func(t *testing.T) {
+		steps := []SimStep{
+			{Action: "turn", Content: "1", Response: "r1"},
+			{Action: "turn", Content: "2", Response: "r2"},
+			{Action: "turn", Content: "3", Response: "r3"},
+			{Action: "rewind", RewindIndex: 2},
+			{Action: "assert", AssertRole: "user", AssertCount: 0},
+			{Action: "assert", AssertTotal: 0},
+		}
+		scenario := SimScenario{Config: SimConfig{Width: 120, Height: 40}, Steps: steps}
+		runner := newSimRunner(scenario)
+		result := runner.run()
+		if !result.OK {
+			t.Fatalf("Many rewinds should work: %s", result.Error)
+		}
+	})
+
+	t.Run("clear_then_add", func(t *testing.T) {
+		steps := []SimStep{
+			{Action: "turn", Content: "old", Response: "old"},
+			{Action: "clear"},
+			{Action: "assert", AssertTotal: 0},
+			{Action: "turn", Content: "new", Response: "new"},
+			{Action: "assert", AssertTotal: 2},
+			{Action: "assert", AssertRole: "user", AssertContent: "new"},
+			{Action: "assert", AssertRole: "user", AssertContent: "new"},
+		}
+		scenario := SimScenario{Config: SimConfig{Width: 120, Height: 40}, Steps: steps}
+		runner := newSimRunner(scenario)
+		result := runner.run()
+		if !result.OK {
+			t.Fatalf("Clear then add should work: %s", result.Error)
+		}
+	})
+
+	t.Run("resize_mid_scenario", func(t *testing.T) {
+		steps := []SimStep{
+			{Action: "turn", Content: "hello", Response: "world"},
+			{Action: "assert", AssertState: map[string]any{"width": 120}},
+			{Action: "resize", NewWidth: 60, NewHeight: 15},
+			{Action: "assert", AssertState: map[string]any{"width": 60, "height": 15}},
+			{Action: "turn", Content: "narrow", Response: "ok"},
+			{Action: "assert", AssertRole: "assistant", AssertContent: "ok"},
+		}
+		scenario := SimScenario{Config: SimConfig{Width: 120, Height: 40}, Steps: steps}
+		runner := newSimRunner(scenario)
+		result := runner.run()
+		if !result.OK {
+			t.Fatalf("Resize should work: %s", result.Error)
+		}
+	})
+
+	t.Run("nested_loop", func(t *testing.T) {
+		steps := []SimStep{
+			{Action: "loop", LoopCount: 2, LoopSteps: []SimStep{
+				{Action: "turn", Content: "outer", Response: "r"},
+				{Action: "loop", LoopCount: 2, LoopSteps: []SimStep{
+					{Action: "turn", Content: "inner", Response: "r"},
+				}},
+			}},
+			{Action: "assert", AssertRole: "user", AssertCount: 6},
+		}
+		scenario := SimScenario{Config: SimConfig{Width: 120, Height: 40}, Steps: steps}
+		runner := newSimRunner(scenario)
+		result := runner.run()
+		if !result.OK {
+			t.Fatalf("Nested loop should work: %s", result.Error)
+		}
+	})
+}
