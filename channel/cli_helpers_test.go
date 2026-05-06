@@ -983,7 +983,7 @@ func TestCLISettingScopeClassification(t *testing.T) {
 		{key: "runner_token", scope: "user"},
 		{key: "max_output_tokens", scope: "subscription"},
 		{key: "thinking_mode", scope: "subscription"},
-		{key: "enable_stream", scope: "global"},
+		{key: "enable_stream", scope: "user"},
 		{key: "subscription_manage", scope: "action"},
 	}
 	for _, tc := range cases {

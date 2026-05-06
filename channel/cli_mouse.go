@@ -253,7 +253,7 @@ func (m *cliModel) clickPanelToggle(idx int) (bool, tea.Model, tea.Cmd) {
 		return false, m, nil
 	}
 	def := m.panelSchema[idx]
-	if def.Type != SettingTypeToggle {
+	if def.ReadOnly || def.Type != SettingTypeToggle {
 		return false, m, nil
 	}
 	cur := m.panelValues[def.Key]
@@ -267,7 +267,7 @@ func (m *cliModel) clickPanelCombo(idx int) (bool, tea.Model, tea.Cmd) {
 		return false, m, nil
 	}
 	def := m.panelSchema[idx]
-	if def.Type != SettingTypeCombo && def.Type != SettingTypeSelect {
+	if def.ReadOnly || (def.Type != SettingTypeCombo && def.Type != SettingTypeSelect) {
 		return false, m, nil
 	}
 	m.panelCursor = idx
@@ -302,6 +302,9 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 		return false, m, nil
 	}
 	def := m.panelSchema[m.panelCursor]
+	if def.ReadOnly {
+		return true, m, nil
+	}
 	switch def.Type {
 	case SettingTypeToggle:
 		cur := m.panelValues[def.Key]
@@ -710,7 +713,7 @@ func (m *cliModel) trackPanelZones(zb *mouseZoneBuilder) {
 
 	switch m.panelMode {
 	case "settings":
-		m.trackSettingsZones(zb, visibleH)
+		m.trackSettingsZones(zb, visibleH, contentStartY)
 	case "sessions":
 		m.trackSessionsZones(zb, visibleH)
 	case "bgtasks":
@@ -748,9 +751,11 @@ func (m *cliModel) trackPanelZones(zb *mouseZoneBuilder) {
 
 // trackSettingsZones records zones for settings panel items.
 // Each visible item occupies exactly 1 line (after scroll offset).
-func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH int) {
+func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentStartY int) {
 	for i := range m.panelSchema {
-		if zb.y >= zb.zones[0].YStart+visibleH+2 { // rough bound check
+		// Use contentStartY + visibleH as bound (contentStartY = 2 after titleBar + border)
+		// instead of zones[0] which may not exist yet.
+		if zb.y >= contentStartY+visibleH+2 {
 			break
 		}
 		def := m.panelSchema[i]

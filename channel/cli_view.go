@@ -63,12 +63,10 @@ func (m *cliModel) renderTitleBar() string {
 		titleRight = ""
 	}
 	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
-	if titlePad < 3 {
-		titlePad = 3
+	if titlePad < 1 {
+		titlePad = 1
 	}
-	// Diagonal fill between left and right sections
-	diagPad := m.styles.DimGuideSt.Render(strings.Repeat("╱", titlePad))
-	return m.styles.TitleBar.Render(titleLeft + diagPad + titleRight)
+	return m.styles.TitleBar.Render(titleLeft + strings.Repeat(" ", titlePad) + titleRight)
 }
 
 // renderInputArea renders the textarea input box with dynamic border color
@@ -593,9 +591,7 @@ func (m *cliModel) renderTodoBar() string {
 
 // titleText 生成标题栏文字。
 func (m *cliModel) titleText() string {
-	// Gradient "xbot" wordmark — gradient from Accent to Gradient colors
-	gradientXbot := gradientWordmark("xbot", currentTheme.Accent, currentTheme.Gradient)
-	modeLabel := gradientXbot
+	modeLabel := "xbot"
 	if m.remoteMode {
 		host := m.remoteServerURL
 		// Strip scheme for display: "ws://host:port" → "host:port"
@@ -615,9 +611,9 @@ func (m *cliModel) titleText() string {
 			cloud = IconCloudOn
 		}
 		if host != "" {
-			modeLabel = fmt.Sprintf("%s %s %s", cloud, gradientXbot, host)
+			modeLabel = fmt.Sprintf("%s xbot %s", cloud, host)
 		} else {
-			modeLabel = fmt.Sprintf("%s %s remote", cloud, gradientXbot)
+			modeLabel = fmt.Sprintf("%s xbot remote", cloud)
 		}
 	}
 	if m.workDir != "" {

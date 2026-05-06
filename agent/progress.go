@@ -37,6 +37,10 @@ type StructuredProgress struct {
 	// HistoryCompacted is set to true after context compression completes.
 	// CLI uses this to rebuild its message list from session storage.
 	HistoryCompacted bool
+
+	// SubAgents carries the structured SubAgent tree directly, avoiding
+	// the fragile text-based parsing in ExtractSubAgentTree.
+	SubAgents []SubAgentNode
 }
 
 // ProgressPhase Agent 运行阶段。
@@ -372,6 +376,12 @@ func isPlausibleAgentRole(name string) bool {
 	// ASCII 小写开头 → 角色名（如 "explore", "crown-prince"）
 	// 但需排除含空格的句子
 	if strings.Contains(name, " ") {
+		return false
+	}
+	// 含下划线且不含连字符 → 工具名（如 "offload_recall", "mcp_go-debugger_attach"）
+	// SubAgent 角色名使用连字符而非下划线（如 "crown-prince", "ministry-works"）。
+	// 但 "test-agent_v2" 这样的 role+instance 格式允许。
+	if strings.Contains(name, "_") && !strings.Contains(name, "-") {
 		return false
 	}
 	return true
@@ -726,6 +736,49 @@ func renderChildrenTree(children []childAgentStatus, baseIndent string, currentD
 		}
 	}
 	return lines
+}
+
+// extractSubAgentNodesFromDetail builds structured SubAgentNode trees directly
+// from SubAgentProgressDetail, without relying on text-based parsing.
+// This replaces the fragile ExtractSubAgentTree that parses progress text lines.
+func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNode {
+	roleName := extractRoleName(detail.Path)
+	roleText := roleWithInstance(roleName, detail.Instance)
+
+	flat := flattenLines(detail.Lines)
+	_, children := extractOwnAndChildProgress(flat)
+
+	// Determine status from Lines (reuse existing logic)
+	ownLine := ""
+	if len(flat) > 0 {
+		ownLine = flat[0]
+	}
+	status := "running"
+	if strings.HasPrefix(ownLine, "> ✅") || strings.HasPrefix(ownLine, "✅") {
+		status = "done"
+	} else if strings.HasPrefix(ownLine, "> ❌") || strings.HasPrefix(ownLine, "❌") {
+		status = "error"
+	}
+
+	// Extract own description
+	desc := ""
+	if idx := strings.Index(ownLine, ": "); idx >= 0 {
+		desc = ownLine[idx+2:]
+		if len(desc) > 80 {
+			desc = desc[:80] + "…"
+		}
+	}
+
+	node := SubAgentNode{
+		Role:     roleText,
+		Instance: detail.Instance,
+		Status:   status,
+		Desc:     desc,
+	}
+	if len(children) > 0 {
+		node.Children = convertChildTree(children)
+	}
+	return []SubAgentNode{node}
 }
 
 // --- 主格式化函数 ---

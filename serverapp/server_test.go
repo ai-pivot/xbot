@@ -99,6 +99,152 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHandleCLIRPCAddSubscription_PreservesCredentials verifies that add_subscription
+// RPC correctly deserializes base_url and api_key from the snake_case JSON payload.
+// This was a real bug: rpc_table.go used sqlite.LLMSubscription (no JSON tags) to
+// receive the RPC parameter, but the client sends channelSubscriptionJSON (with
+// json:"base_url" / json:"api_key" tags). Go's json package couldn't match the
+// fields → base_url and api_key were silently dropped (always empty).
+func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(sqlite.NewUserLLMConfigService(db), &llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	factory.SetSubscriptionSvc(subSvc)
+
+	aCfg := &config.Config{}
+	lb := fakeBackend{factory: factory}
+	table := buildRPCTable(aCfg, lb, nil, nil)
+
+	// Use snake_case keys matching channelSubscriptionJSON — the format the real
+	// backend sends via RPC (backend_impl.go UpdateSubscription).
+	addParams, _ := json.Marshal(map[string]any{
+		"sub": map[string]any{
+			"name":     "codex",
+			"provider": "openai",
+			"base_url": "https://api.openai-proxy.org/v1",
+			"api_key":  "sk-secret-key-12345",
+			"model":    "gpt-5.5",
+		},
+	})
+	if _, err := handleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+		t.Fatalf("add_subscription: %v", err)
+	}
+
+	// List and verify base_url/api_key are preserved
+	listParams, _ := json.Marshal(map[string]string{"sender_id": ""})
+	raw, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	if err != nil {
+		t.Fatalf("list_subscriptions: %v", err)
+	}
+	var subs []channel.Subscription
+	if err := json.Unmarshal(raw, &subs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(subs) == 0 {
+		t.Fatal("list_subscriptions returned empty")
+	}
+	// subToChannel masks API key
+	if subs[0].BaseURL != "https://api.openai-proxy.org/v1" {
+		t.Fatalf("expected base_url 'https://api.openai-proxy.org/v1', got %q", subs[0].BaseURL)
+	}
+	if subs[0].APIKey != "sk-s****" {
+		t.Fatalf("expected masked api_key 'sk-s****', got %q", subs[0].APIKey)
+	}
+}
+
+// TestHandleCLIRPCUpdateSubscription_PreservesCredentials verifies that
+// update_subscription RPC correctly deserializes and preserves base_url and api_key.
+func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(sqlite.NewUserLLMConfigService(db), &llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	factory.SetSubscriptionSvc(subSvc)
+
+	aCfg := &config.Config{}
+	lb := fakeBackend{factory: factory}
+	table := buildRPCTable(aCfg, lb, nil, nil)
+
+	// Add a subscription first (using snake_case matching real client)
+	addParams, _ := json.Marshal(map[string]any{
+		"sub": map[string]any{
+			"name":     "codex",
+			"provider": "openai",
+			"base_url": "https://api.openai-proxy.org/v1",
+			"api_key":  "sk-secret-key-12345",
+			"model":    "gpt-5.5",
+		},
+	})
+	if _, err := handleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+		t.Fatalf("add_subscription: %v", err)
+	}
+
+	// Get the subscription ID via list
+	listParams, _ := json.Marshal(map[string]string{"sender_id": ""})
+	listRaw, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	if err != nil {
+		t.Fatalf("list_subscriptions: %v", err)
+	}
+	var subs []channel.Subscription
+	if err := json.Unmarshal(listRaw, &subs); err != nil || len(subs) == 0 {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	subID := subs[0].ID
+
+	// Update the subscription with a new name but same credentials
+	// Using snake_case matching real client (channelSubscriptionJSON tags)
+	updateParams, _ := json.Marshal(map[string]any{
+		"id": subID,
+		"sub": map[string]any{
+			"name":              "codex-updated",
+			"provider":          "openai",
+			"base_url":          "https://api.openai-proxy.org/v1",
+			"api_key":           "sk-secret-key-12345",
+			"model":             "gpt-5.5",
+			"max_output_tokens": 0,
+			"thinking_mode":     "",
+		},
+	})
+	if _, err := handleCLIRPC(table, "update_subscription", updateParams, "admin"); err != nil {
+		t.Fatalf("update_subscription: %v", err)
+	}
+
+	// Verify base_url and api_key are preserved
+	listRaw2, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	if err != nil {
+		t.Fatalf("list_subscriptions after update: %v", err)
+	}
+	var subs2 []channel.Subscription
+	if err := json.Unmarshal(listRaw2, &subs2); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(subs2) == 0 {
+		t.Fatal("list_subscriptions returned empty after update")
+	}
+	if subs2[0].Name != "codex-updated" {
+		t.Fatalf("expected name 'codex-updated', got %q", subs2[0].Name)
+	}
+	if subs2[0].BaseURL != "https://api.openai-proxy.org/v1" {
+		t.Fatalf("expected base_url preserved, got %q", subs2[0].BaseURL)
+	}
+	if subs2[0].APIKey != "sk-s****" {
+		t.Fatalf("expected masked api_key 'sk-s****', got %q", subs2[0].APIKey)
+	}
+}
+
 func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *sqlite.UserSettingsService) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "settings.db"))

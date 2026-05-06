@@ -19,7 +19,7 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
+
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -78,9 +78,18 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		if sub.APIKey != "" {
 			vals["llm_api_key"] = sub.APIKey
 		}
-		if sub.MaxOutputTokens > 0 {
-			vals["max_output_tokens"] = fmt.Sprintf("%d", sub.MaxOutputTokens)
-		}
+		vals["max_output_tokens"] = fmt.Sprintf("%d", sub.MaxOutputTokens)
+		log.Debugf("[Settings] refreshRemoteValuesCache: sub=%s max_output_tokens=%d", func() string {
+			if sub != nil {
+				return sub.ID
+			}
+			return "<nil>"
+		}(), func() int {
+			if sub != nil {
+				return sub.MaxOutputTokens
+			}
+			return -1
+		}())
 		if sub.ThinkingMode != "" {
 			vals["thinking_mode"] = sub.ThinkingMode
 		}
@@ -395,6 +404,17 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 	// Get or create default subscription
 	sub, err := backend.GetDefaultSubscription(cliSenderID)
 	if err != nil || sub == nil {
+		subID := ""
+		maxTok := -1
+		if sub != nil {
+			subID = sub.ID
+			maxTok = sub.MaxOutputTokens
+		}
+		log.Warnf("[Settings] GetDefaultSubscription: id=%s max_output_tokens=%d err=%v", subID, maxTok, err)
+	} else {
+		log.Debugf("[Settings] GetDefaultSubscription: id=%s max_output_tokens=%d base_url=%q", sub.ID, sub.MaxOutputTokens, sub.BaseURL)
+	}
+	if err != nil || sub == nil {
 		// No subscription exists yet (first-time setup). Create one from the provided values.
 		provider := strings.TrimSpace(values["llm_provider"])
 		apiKey := strings.TrimSpace(values["llm_api_key"])
@@ -464,13 +484,17 @@ func updateActiveSubscription(backend agent.AgentBackend, cfg *config.Config, va
 	}
 	if v, ok := values["max_output_tokens"]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			log.Debugf("[Settings] Setting max_output_tokens: %d (from value %q)", n, v)
 			sub.MaxOutputTokens = n
+		} else {
+			log.Warnf("[Settings] Invalid max_output_tokens value %q: err=%v", v, err)
 		}
 	}
 	if v, ok := values["thinking_mode"]; ok {
 		sub.ThinkingMode = v
 	}
 
+	log.Debugf("[Settings] UpdateSubscription: id=%s max_output_tokens=%d thinking_mode=%q", sub.ID, sub.MaxOutputTokens, sub.ThinkingMode)
 	return backend.UpdateSubscription(sub.ID, *sub)
 }
 
@@ -485,9 +509,10 @@ type cliApp struct {
 	xbotHome  string
 
 	// Remote-mode async cache for agent info (avoid RPC from event loop → deadlock)
-	agentCacheMu    sync.RWMutex
-	agentCacheCount int
-	agentCacheList  []channel.AgentPanelEntry
+	agentCacheMu      sync.RWMutex
+	agentCacheCount   int
+	agentCacheList    []channel.AgentPanelEntry
+	sessionsCacheList []channel.SessionPanelEntry
 
 	// Remote-mode async cache for GetCurrentValues (avoid RPC from Update loop → 30s freeze)
 	valuesCacheMu sync.RWMutex
@@ -768,73 +793,27 @@ func (app *cliApp) Close() {
 	log.Close()
 }
 
-// ensureCJKWidth ensures consistent character width calculation between
-// go-runewidth (used by BubbleTea/ultraviolet renderer) and ansi.StringWidth
-// (used by xbot's hardWrapRunes/truncateToWidth/lipgloss).
+// ensureCJKWidth is now a no-op.
 //
-// In CJK locales, go-runewidth auto-detects EastAsianWidth=true, which makes
-// ambiguous-width characters (box-drawing │├─, block elements ▋, punctuation ·…)
-// treated as 2 columns. But ansi.StringWidth defaults to EastAsianWidth=false
-// unless RUNEWIDTH_EASTASIAN=1 is set.
+// Previously, in CJK locales we set RUNEWIDTH_EASTASIAN=1 to align go-runewidth
+// with ansi.StringWidth. However, RUNEWIDTH_EASTASIAN=1 makes ambiguous-width
+// characters (│─╭▋● etc.) report width=2, while most terminals (foot, gnome-terminal,
+// iTerm2, Windows Terminal) render them as width=1 when using non-CJK fonts.
+// This width mismatch causes the entire TUI layout to shift and wrap incorrectly.
 //
-// On macOS, LANG is often empty even when the system language is set to CJK.
-// We also check LC_ALL, LC_CTYPE, and AppleLocale to detect CJK environments.
-func ensureCJKWidth() {
-	if os.Getenv("RUNEWIDTH_EASTASIAN") != "" {
-		return // Already explicitly configured
-	}
-
-	if !isCJKLocaleEnv() {
-		return
-	}
-
-	os.Setenv("RUNEWIDTH_EASTASIAN", "1")
-
-	// syscall.Exec replaces the current process with a new one.
-	// This is necessary because Go's init() functions (including the
-	// ansi package's init that reads RUNEWIDTH_EASTASIAN) have already
-	// run before main().
-	execPath, err := os.Executable()
-	if err != nil {
-		return // Fall through, use default behavior
-	}
-	syscall.Exec(execPath, os.Args, os.Environ())
-	// If we reach here, exec failed — continue with default behavior.
-}
-
-// isCJKLocaleEnv checks environment variables and macOS-specific locale
-// settings to determine if the current environment is CJK.
-func isCJKLocaleEnv() bool {
-	// Check standard locale environment variables (works on Linux + macOS)
-	for _, env := range []string{"LANG", "LC_ALL", "LC_CTYPE"} {
-		if isCJKLocale(os.Getenv(env)) {
-			return true
-		}
-	}
-	// macOS: check AppleLocale user default (e.g. "zh-Hans-CN" or "zh-Hant-TW")
-	cmd := exec.Command("defaults", "read", "-g", "AppleLocale")
-	if out, err := cmd.Output(); err == nil {
-		if isCJKLocale(strings.TrimSpace(string(out))) {
-			return true
-		}
-	}
-	return false
-}
-
-// isCJKLocale returns true if the given locale string indicates CJK.
-func isCJKLocale(lang string) bool {
-	lang = strings.ToLower(lang)
-	for _, prefix := range []string{"zh_", "ja_", "ko_"} {
-		if strings.HasPrefix(lang, prefix) {
-			return true
-		}
-	}
-	return false
-}
+// The original CJK truncation bug (#14) was fixed by switching from go-runewidth
+// to ansi.StringWidth in truncateToWidth/hardWrapRunes. lipgloss v2 also uses
+// the ansi package internally, so both paths agree on width=1 for ambiguous chars
+// without needing RUNEWIDTH_EASTASIAN=1.
+//
+// Users who actually have CJK fonts that render ambiguous chars as double-width
+// can opt in by setting RUNEWIDTH_EASTASIAN=1 in their shell profile.
+func ensureCJKWidth() {}
 
 func main() {
-	// Ensure consistent CJK character width in CJK locales.
-	// See: https://github.com/CjiW/xbot/issues/14
+	// CJK width: ensureCJKWidth is now a no-op (see comment above).
+	// Kept as a call site for forward compatibility if we need to re-enable
+	// locale-aware width detection in the future.
 	ensureCJKWidth()
 
 	xbotHome := config.XbotHome()
@@ -1310,6 +1289,31 @@ func main() {
 			return result
 		},
 		SessionsList: func() []channel.SessionPanelEntry {
+			// Remote mode: use cached sessions to avoid RPC from BubbleTea Update loop.
+			// The cache is refreshed periodically by refreshAgentCache().
+			if app.backend != nil && app.backend.IsRemote() {
+				app.agentCacheMu.RLock()
+				cached := app.sessionsCacheList
+				app.agentCacheMu.RUnlock()
+				// Append group chats (in-memory, no RPC needed)
+				entries := make([]channel.SessionPanelEntry, len(cached))
+				copy(entries, cached)
+				for _, g := range tools.ListGroups() {
+					status := ""
+					if g.Closed {
+						status = " [closed]"
+					}
+					entries = append(entries, channel.SessionPanelEntry{
+						ID:          g.Name,
+						Type:        "group",
+						Label:       "💬 " + g.Name + status,
+						MessageHint: fmt.Sprintf("%d members", len(g.Members)),
+					})
+				}
+				return entries
+			}
+
+			// Local mode: query backend directly (no RPC, no deadlock risk).
 			var entries []channel.SessionPanelEntry
 			tenants, err := app.backend.ListTenants()
 			seen := make(map[string]bool) // dedup agent sessions by role:instance
@@ -1960,14 +1964,12 @@ func main() {
 			} else {
 				cliCh.LoadHistory(history)
 			}
-			// Re-check processing state after reconnect.
+			// Re-check processing state after reconnect. Progress is restored via the
+			// WebSocket event-stream replay path. Do not also fetch/restore the active
+			// snapshot here: that creates two sources for the same live turn (replayed
+			// progress event + RPC snapshot) and can render duplicate Progress blocks.
 			if app.backend.IsProcessing("cli", remoteChatID) {
 				cliCh.SetProcessing(true)
-				// Restore active progress snapshot (iteration history + stream state).
-				// Use RestoreInitialProgress for full iteration history restore + dedup.
-				if progress := app.backend.GetActiveProgress("cli", remoteChatID); progress != nil {
-					cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
-				}
 			} else {
 				cliCh.SetProcessing(false)
 			}
@@ -1979,6 +1981,56 @@ func main() {
 		})
 		// Background goroutine: periodically refresh agent count/list cache
 		// (RPC calls must not happen from BubbleTea event loop → deadlock)
+		refreshAgentCache := func() {
+			if app.backend == nil {
+				return
+			}
+			count := app.backend.CountInteractiveSessions("cli", absWorkDir)
+			sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
+			agentEntries := make([]channel.AgentPanelEntry, len(sessions))
+			// Build sessions panel entries (main + agents) for remote mode.
+			var sessionEntries []channel.SessionPanelEntry
+			seen := make(map[string]bool)
+			sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+				ID:      absWorkDir,
+				Type:    "main",
+				Channel: "cli",
+				Label:   "主会话  You ↔ Agent",
+				Active:  true,
+			})
+			for i, s := range sessions {
+				agentEntries[i] = channel.AgentPanelEntry{
+					Role:       s.Role,
+					Instance:   s.Instance,
+					Running:    s.Running,
+					Background: s.Background,
+					Task:       s.Task,
+					Preview:    s.Preview,
+				}
+				agentKey := s.Role + ":" + s.Instance
+				if seen[agentKey] {
+					continue
+				}
+				seen[agentKey] = true
+				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+					ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
+					Type:        "agent",
+					Channel:     "cli",
+					Role:        s.Role,
+					Instance:    s.Instance,
+					ParentID:    absWorkDir,
+					Running:     s.Running,
+					MessageHint: s.Preview,
+				})
+			}
+			app.agentCacheMu.Lock()
+			app.agentCacheCount = count
+			app.agentCacheList = agentEntries
+			app.sessionsCacheList = sessionEntries
+			app.agentCacheMu.Unlock()
+		}
+		// Initial seed — don't wait 5s for the first tick.
+		refreshAgentCache()
 		clipanic.Go("main.remote.RefreshAgentCache", func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
@@ -1987,26 +2039,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					if app.backend == nil {
-						return
-					}
-					count := app.backend.CountInteractiveSessions("cli", absWorkDir)
-					sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
-					entries := make([]channel.AgentPanelEntry, len(sessions))
-					for i, s := range sessions {
-						entries[i] = channel.AgentPanelEntry{
-							Role:       s.Role,
-							Instance:   s.Instance,
-							Running:    s.Running,
-							Background: s.Background,
-							Task:       s.Task,
-							Preview:    s.Preview,
-						}
-					}
-					app.agentCacheMu.Lock()
-					app.agentCacheCount = count
-					app.agentCacheList = entries
-					app.agentCacheMu.Unlock()
+					refreshAgentCache()
 				}
 			}
 		})

@@ -316,6 +316,14 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	turnID := m.agentTurnID // capture before any mutation
 	prev := m.progress
 
+	// New turn's first non-PhaseDone progress clears the cancel flag.
+	// This allows the new turn (started by bg notification injection or queue flush)
+	// to receive progress events, while still blocking stale progress from the
+	// cancelled turn. Guard: only clear when typing (turn is active).
+	if m.turnCancelled && msg.payload != nil && msg.payload.Phase != "done" && msg.payload.Phase != "" && m.typing {
+		m.turnCancelled = false
+	}
+
 	// Guard: ignore progress after explicit Ctrl+C cancel.
 	// PhaseDone is allowed through: it's idempotent (endAgentTurn checks turnID).
 	// When switching to a running session with no saved state (first switch),
@@ -572,6 +580,20 @@ func (m *cliModel) snapshotAndAdvance(progress *CLIProgressPayload) {
 // handleProgressDone handles the Phase "done" case: snapshots the final iteration,
 // generates tool summary, resets iteration tracking state, and synthesizes agent messages.
 func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPayload, turnID uint64) {
+	// When turn was cancelled (Ctrl+C), skip tool summary generation and only
+	// clean up progress state. Producing tool summaries for a cancelled turn
+	// creates confusing "Tools N calls ✗N" blocks with stale/incomplete data.
+	if m.turnCancelled {
+		m.setTurnDoneProcessed(turnID)
+		m.endAgentTurn(turnID)
+		if turnID == m.agentTurnID {
+			m.inputReady = true
+			if len(m.messageQueue) > 0 {
+				m.needFlushQueue = true
+			}
+		}
+		return
+	}
 	// Snapshot the final iteration before clearing progress.
 	// This handles the case where PhaseDone arrives before
 	// handleAgentMessage (e.g. agent error/cancel).

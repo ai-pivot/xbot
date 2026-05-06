@@ -1324,12 +1324,13 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				cancelKey := msg.Channel + ":" + msg.ChatID
+				cancelMeta := map[string]string{"cancelled": "true"}
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
 					case ch.(chan struct{}) <- struct{}{}:
 						log.Info("Cancel signal sent to processing goroutine")
-						_ = a.sendMessage(msg.Channel, msg.ChatID, "Request cancelled.")
+						_ = a.sendMessage(msg.Channel, msg.ChatID, "Request cancelled.", cancelMeta)
 					default:
 						// cancel 信号已发过
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
@@ -1338,7 +1339,7 @@ func (a *Agent) Run(ctx context.Context) error {
 					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
 					a.pendingCancel.Store(cancelKey, true)
 					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
-					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request queued for cancellation.")
+					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request queued for cancellation.", cancelMeta)
 				}
 				continue
 			}
@@ -1637,12 +1638,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
 			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
 			// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
+			// Always include cancelled metadata so CLI can distinguish cancel acks
+			// from normal replies and avoid ending a subsequently-started turn.
+			cancelMeta := map[string]string{"cancelled": "true"}
 			if response != nil {
+				// Merge cancelled into existing metadata
+				if response.Metadata == nil {
+					response.Metadata = cancelMeta
+				} else {
+					response.Metadata["cancelled"] = "true"
+				}
 				_ = a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata)
 			} else {
 				// No response generated yet (cancelled mid-tool-call) — send empty
 				// message to signal turn end so CLI can clean up typing/progress state.
-				_ = a.sendMessage(msg.Channel, msg.ChatID, "")
+				_ = a.sendMessage(msg.Channel, msg.ChatID, "", cancelMeta)
 			}
 			continue
 		}

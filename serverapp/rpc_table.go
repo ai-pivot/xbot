@@ -351,14 +351,33 @@ func registerSubscriptionHandlers(t rpcTable, h *rpcContext) {
 	t["list_subscriptions"] = rpc0err(h.listSubscriptions)
 	t["get_default_subscription"] = rpc0err(h.getDefaultSubscription)
 	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
-		Sub sqlite.LLMSubscription `json:"sub"`
+		Sub struct {
+			Name            string `json:"name"`
+			Provider        string `json:"provider"`
+			BaseURL         string `json:"base_url"`
+			APIKey          string `json:"api_key"`
+			Model           string `json:"model"`
+			Active          bool   `json:"active"`
+			MaxOutputTokens int    `json:"max_output_tokens"`
+			ThinkingMode    string `json:"thinking_mode"`
+		} `json:"sub"`
 	}) error {
 		svc, err := h.requireSubscriptionSvc()
 		if err != nil {
 			return err
 		}
-		p.Sub.SenderID = rpcBizID(ctx)
-		return svc.Add(&p.Sub)
+		dbSub := &sqlite.LLMSubscription{
+			Name:            p.Sub.Name,
+			Provider:        p.Sub.Provider,
+			BaseURL:         p.Sub.BaseURL,
+			APIKey:          p.Sub.APIKey,
+			Model:           p.Sub.Model,
+			MaxOutputTokens: p.Sub.MaxOutputTokens,
+			ThinkingMode:    p.Sub.ThinkingMode,
+			IsDefault:       p.Sub.Active,
+		}
+		dbSub.SenderID = rpcBizID(ctx)
+		return svc.Add(dbSub)
 	})
 	t["update_subscription"] = rpc1void(h.updateSubscription)
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
@@ -591,7 +610,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 	t["trim_history"] = rpc1void(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
-		Cutoff  string `json:"cutoff"`
+		Cutoff  int64  `json:"cutoff"`
 	}) error {
 		bizID := rpcBizID(ctx)
 		if p.Channel == "" {
@@ -604,11 +623,8 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 			return fmt.Errorf("access denied")
 		}
 		var cutoff time.Time
-		if p.Cutoff != "" {
-			var err error
-			if cutoff, err = time.Parse(time.RFC3339, p.Cutoff); err != nil {
-				return fmt.Errorf("invalid cutoff format: %w", err)
-			}
+		if p.Cutoff > 0 {
+			cutoff = time.Unix(p.Cutoff, 0)
 		}
 		return backend.TrimHistory(p.Channel, p.ChatID, cutoff)
 	})
@@ -973,8 +989,17 @@ func (h *rpcContext) getDefaultSubscription(ctx context.Context) (*channel.Subsc
 }
 
 func (h *rpcContext) updateSubscription(ctx context.Context, p struct {
-	ID  string                 `json:"id"`
-	Sub sqlite.LLMSubscription `json:"sub"`
+	ID  string `json:"id"`
+	Sub struct {
+		Name            string `json:"name"`
+		Provider        string `json:"provider"`
+		BaseURL         string `json:"base_url"`
+		APIKey          string `json:"api_key"`
+		Model           string `json:"model"`
+		Active          bool   `json:"active"`
+		MaxOutputTokens int    `json:"max_output_tokens"`
+		ThinkingMode    string `json:"thinking_mode"`
+	} `json:"sub"`
 }) error {
 	bizID := rpcBizID(ctx)
 	svc, err := h.requireSubscriptionSvc()
@@ -988,19 +1013,34 @@ func (h *rpcContext) updateSubscription(ctx context.Context, p struct {
 	if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
 		return fmt.Errorf("subscription not found")
 	}
-	p.Sub.ID = p.ID
-	p.Sub.SenderID = existing.SenderID
-	p.Sub.IsDefault = existing.IsDefault
-	if strings.HasSuffix(p.Sub.APIKey, "****") && len(p.Sub.APIKey) <= 20 {
-		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing API key (received masked)")
-		p.Sub.APIKey = existing.APIKey
+	dbSub := &sqlite.LLMSubscription{
+		ID: p.ID, SenderID: existing.SenderID,
+		Name: p.Sub.Name, Provider: p.Sub.Provider, BaseURL: p.Sub.BaseURL,
+		APIKey: p.Sub.APIKey, Model: p.Sub.Model,
+		MaxContext: existing.MaxContext, MaxOutputTokens: p.Sub.MaxOutputTokens,
+		ThinkingMode: p.Sub.ThinkingMode, IsDefault: existing.IsDefault,
 	}
-	if err := svc.Update(&p.Sub); err != nil {
+	// Never overwrite with a masked key from server RPC transport.
+	if strings.HasSuffix(dbSub.APIKey, "****") && len(dbSub.APIKey) <= 20 {
+		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing API key (received masked)")
+		dbSub.APIKey = existing.APIKey
+	}
+	// Preserve existing credentials when client sends empty values
+	// (e.g. due to stripped sensitive fields or client-side cache miss).
+	if dbSub.BaseURL == "" && existing.BaseURL != "" {
+		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing base_url (received empty)")
+		dbSub.BaseURL = existing.BaseURL
+	}
+	if dbSub.APIKey == "" && existing.APIKey != "" {
+		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing api_key (received empty)")
+		dbSub.APIKey = existing.APIKey
+	}
+	if err := svc.Update(dbSub); err != nil {
 		return err
 	}
 	h.backend.LLMFactory().Invalidate(existing.SenderID)
 	if existing.IsDefault {
-		h.backend.LLMFactory().SwitchSubscription(bizID, &p.Sub, "")
+		h.backend.LLMFactory().SwitchSubscription(bizID, dbSub, "")
 	}
 	return nil
 }

@@ -289,34 +289,34 @@ type getActiveProgressReq struct {
 // --- SubAgent Sessions ---
 
 type countInteractiveSessionsReq struct {
-	ChannelName string `json:"channel_name"`
+	ChannelName string `json:"channel"`
 	ChatID      string `json:"chat_id"`
 }
 
 type listInteractiveSessionsReq struct {
-	ChannelName string `json:"channel_name"`
+	ChannelName string `json:"channel"`
 	ChatID      string `json:"chat_id"`
 }
 
 type inspectInteractiveSessionReq struct {
-	RoleName    string `json:"role_name"`
-	ChannelName string `json:"channel_name"`
+	RoleName    string `json:"role"`
+	ChannelName string `json:"channel"`
 	ChatID      string `json:"chat_id"`
 	Instance    string `json:"instance"`
 	TailCount   int    `json:"tail_count"`
 }
 
 type getSessionMessagesReq struct {
-	ChannelName string `json:"channel_name"`
+	ChannelName string `json:"channel"`
 	ChatID      string `json:"chat_id"`
-	RoleName    string `json:"role_name"`
+	RoleName    string `json:"role"`
 	Instance    string `json:"instance"`
 }
 
 type getAgentSessionDumpReq struct {
-	ChannelName string `json:"channel_name"`
+	ChannelName string `json:"channel"`
 	ChatID      string `json:"chat_id"`
-	RoleName    string `json:"role_name"`
+	RoleName    string `json:"role"`
 	Instance    string `json:"instance"`
 }
 

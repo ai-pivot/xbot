@@ -48,9 +48,12 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 		return values
 	}
 	// Non-LLM settings from GetCurrentValues (theme, language, tiers, etc.)
+	// Skip empty-string values so DefaultValue in the schema can fill correctly.
 	if m.channel.config.GetCurrentValues != nil {
 		for k, v := range m.channel.config.GetCurrentValues() {
-			values[k] = v
+			if v != "" {
+				values[k] = v
+			}
 		}
 	}
 	// Subscription-scoped settings from active subscription.
@@ -64,12 +67,13 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 			values["thinking_mode"] = sub.ThinkingMode
 		}
 	}
-	// User-scoped settings (theme, language, context_mode, etc.) override GetCurrentValues
+	// User-scoped settings override GetCurrentValues.
+	// Skip empty-string values so DefaultValue in the schema can fill correctly.
 	if m.channel.settingsSvc != nil {
 		vals, err := m.channel.settingsSvc.GetSettings(m.channelName, m.senderID)
 		if err == nil {
 			for k, v := range vals {
-				if isUserScopedSettingKey(k) {
+				if v != "" && isUserScopedSettingKey(k) {
 					values[k] = v
 				}
 			}
@@ -81,7 +85,9 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 	if m.channel != nil && m.channel.settingsSvc != nil {
 		for k, v := range values {
-			if isUserScopedSettingKey(k) {
+			// Skip empty values — don't pollute the DB with meaningless entries
+			// that would block DefaultValue from taking effect.
+			if v != "" && isUserScopedSettingKey(k) {
 				_ = m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v)
 			}
 		}
@@ -194,7 +200,10 @@ func (m *cliModel) openSettingsFromQuickSwitch() {
 func (m *cliModel) startAgentTurn() {
 	m.agentTurnID++
 	m.typing = true
-	m.turnCancelled = false // clear any previous cancel flag
+	// Do NOT clear turnCancelled here — it must persist across turn boundaries
+	// to block stale PhaseDone/tool_summary from a cancelled turn. It is cleared
+	// when the new turn's first non-PhaseDone progress arrives (handleProgressMsg)
+	// or by endAgentTurn for the matching turnID (normal cancel completion path).
 
 	// Initialize turnDoneFlags for the new turn.
 	if m.turnDoneFlags == nil {

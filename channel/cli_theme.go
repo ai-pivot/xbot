@@ -629,6 +629,18 @@ func buildStyles(width int) cliStyles {
 	}
 }
 
+// hexToRGB converts a hex color string (e.g. "#ff0044" or "ff0044") to RGB components.
+func hexToRGB(hex string) (uint8, uint8, uint8) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return 128, 128, 128
+	}
+	r, _ := strconv.ParseUint(hex[0:2], 16, 8)
+	g, _ := strconv.ParseUint(hex[2:4], 16, 8)
+	b, _ := strconv.ParseUint(hex[4:6], 16, 8)
+	return uint8(r), uint8(g), uint8(b)
+}
+
 // applyTAStyles 将缓存样式应用到 textarea 组件
 func applyTAStyles(ta *textarea.Model, s *cliStyles) {
 	styles := ta.Styles()
@@ -795,39 +807,4 @@ func buildWidgetRenderFn(st cliStyles) func(spans []plugin.WidgetSpan, width int
 		}
 		return result
 	}
-}
-
-// hexToRGB converts a hex color string (e.g. "#ff0044" or "ff0044") to RGB components.
-func hexToRGB(hex string) (uint8, uint8, uint8) {
-	hex = strings.TrimPrefix(hex, "#")
-	if len(hex) != 6 {
-		return 128, 128, 128
-	}
-	r, _ := strconv.ParseUint(hex[0:2], 16, 8)
-	g, _ := strconv.ParseUint(hex[2:4], 16, 8)
-	b, _ := strconv.ParseUint(hex[4:6], 16, 8)
-	return uint8(r), uint8(g), uint8(b)
-}
-
-// gradWordmark renders each character of text with a smooth color gradient
-// from fromColor to toColor. Both are hex strings (e.g. "#667eea").
-func gradientWordmark(text, fromColor, toColor string) string {
-	fromR, fromG, fromB := hexToRGB(fromColor)
-	toR, toG, toB := hexToRGB(toColor)
-	runes := []rune(text)
-	n := len(runes)
-	if n == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for i, ch := range runes {
-		t := float64(i) / float64(max(n-1, 1))
-		r := uint8(float64(fromR) + (float64(toR)-float64(fromR))*t)
-		g := uint8(float64(fromG) + (float64(toG)-float64(fromG))*t)
-		b := uint8(float64(fromB) + (float64(toB)-float64(fromB))*t)
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b))).
-			Render(string(ch)))
-	}
-	return sb.String()
 }

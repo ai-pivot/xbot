@@ -1307,6 +1307,39 @@ func convertWsSubAgentTree(nodes []SubAgentNode) []channelpkg.WsSubAgent {
 }
 
 // convertCLISubAgentTree 将 agent.SubAgentNode 转换为 channelpkg.CLISubAgent 树。
+// resolveSubAgents extracts the SubAgent tree from a ProgressEvent.
+// It prefers the structured SubAgents field (reliable), falling back to
+// text-based ExtractSubAgentTree only if structured data is unavailable.
+func resolveSubAgents(event *ProgressEvent) []channelpkg.CLISubAgent {
+	// Prefer structured data (no fragile text parsing)
+	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
+		return convertCLISubAgentTree(event.Structured.SubAgents)
+	}
+	// Fallback: text-based parsing for backward compatibility
+	if len(event.Lines) > 0 {
+		subAgents := ExtractSubAgentTree(event.Lines)
+		if len(subAgents) > 0 {
+			return convertCLISubAgentTree(subAgents)
+		}
+	}
+	return nil
+}
+
+// resolveWsSubAgents is the WsSubAgent variant of resolveSubAgents.
+func resolveWsSubAgents(event *ProgressEvent) []channelpkg.WsSubAgent {
+	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
+		return convertWsSubAgentTree(event.Structured.SubAgents)
+	}
+	if len(event.Lines) > 0 {
+		subAgents := ExtractSubAgentTree(event.Lines)
+		if len(subAgents) > 0 {
+			return convertWsSubAgentTree(subAgents)
+		}
+	}
+	return nil
+}
+
+// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 channelpkg.CLISubAgent 树。
 func convertCLISubAgentTree(nodes []SubAgentNode) []channelpkg.CLISubAgent {
 	if len(nodes) == 0 {
 		return nil
@@ -1395,21 +1428,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					ToolHints: t.ToolHints,
 				})
 			}
-			if len(event.Lines) > 0 {
-				subAgents := ExtractSubAgentTree(event.Lines)
-				if len(subAgents) > 0 {
-					cliSubAgents := make([]channelpkg.CLISubAgent, len(subAgents))
-					for i, sa := range subAgents {
-						cliSubAgents[i] = channelpkg.CLISubAgent{
-							Role:     sa.Role,
-							Instance: sa.Instance,
-							Status:   sa.Status,
-							Desc:     sa.Desc,
-							Children: convertCLISubAgentTree(sa.Children),
-						}
-					}
-					payload.SubAgents = cliSubAgents
-				}
+			if cliSubAgents := resolveSubAgents(event); len(cliSubAgents) > 0 {
+				payload.SubAgents = cliSubAgents
 			}
 			if len(s.Todos) > 0 {
 				payload.Todos = make([]channelpkg.CLITodoItem, len(s.Todos))
@@ -1468,15 +1488,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Iteration: t.Iteration,
 				})
 			}
-			if len(event.Lines) > 0 {
-				subAgents := ExtractSubAgentTree(event.Lines)
-				if len(subAgents) > 0 {
-					wsSubAgents := make([]channelpkg.WsSubAgent, len(subAgents))
-					for i, sa := range subAgents {
-						wsSubAgents[i] = channelpkg.WsSubAgent{Role: sa.Role, Instance: sa.Instance, Status: sa.Status, Desc: sa.Desc, Children: convertWsSubAgentTree(sa.Children)}
-					}
-					payload.SubAgents = wsSubAgents
-				}
+			if wsSubAgents := resolveWsSubAgents(event); len(wsSubAgents) > 0 {
+				payload.SubAgents = wsSubAgents
 			}
 			if len(s.Todos) > 0 {
 				payload.Todos = make([]channelpkg.WsTodoItem, len(s.Todos))
@@ -1517,21 +1530,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
-			if len(event.Lines) > 0 {
-				subAgents := ExtractSubAgentTree(event.Lines)
-				if len(subAgents) > 0 {
-					cliSubAgents := make([]channelpkg.CLISubAgent, len(subAgents))
-					for i, sa := range subAgents {
-						cliSubAgents[i] = channelpkg.CLISubAgent{
-							Role:     sa.Role,
-							Instance: sa.Instance,
-							Status:   sa.Status,
-							Desc:     sa.Desc,
-							Children: convertCLISubAgentTree(sa.Children),
-						}
-					}
-					cliPayload.SubAgents = cliSubAgents
-				}
+			if cliSubAgents := resolveSubAgents(event); len(cliSubAgents) > 0 {
+				cliPayload.SubAgents = cliSubAgents
 			}
 			if len(s.Todos) > 0 {
 				cliPayload.Todos = make([]channelpkg.CLITodoItem, len(s.Todos))
@@ -1618,22 +1618,9 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 				Iteration: t.Iteration,
 			})
 		}
-		// Parse sub-agent tree from progress lines
-		if len(event.Lines) > 0 {
-			subAgents := ExtractSubAgentTree(event.Lines)
-			if len(subAgents) > 0 {
-				wsSubAgents := make([]channelpkg.WsSubAgent, len(subAgents))
-				for i, sa := range subAgents {
-					wsSubAgents[i] = channelpkg.WsSubAgent{
-						Role:     sa.Role,
-						Instance: sa.Instance,
-						Status:   sa.Status,
-						Desc:     sa.Desc,
-						Children: convertWsSubAgentTree(sa.Children),
-					}
-				}
-				payload.SubAgents = wsSubAgents
-			}
+		// Resolve sub-agent tree (structured data preferred over text parsing)
+		if wsSubAgents := resolveWsSubAgents(event); len(wsSubAgents) > 0 {
+			payload.SubAgents = wsSubAgents
 		}
 		// Copy todo items for web display
 		if len(s.Todos) > 0 {

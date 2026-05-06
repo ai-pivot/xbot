@@ -83,6 +83,9 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 				execCtx = WithSubAgentProgress(execCtx, func(detail SubAgentProgressDetail) {
 					s.progressMu.Lock()
 					s.progressLines[pi] = formatSubAgentProgress(detail)
+					// Keep structured SubAgent tree in sync for direct access
+					// (avoids fragile text-based parsing in ExtractSubAgentTree).
+					s.subAgentNodes = extractSubAgentNodesFromDetail(detail)
 					s.progressMu.Unlock()
 					s.notifyProgress("")
 				})

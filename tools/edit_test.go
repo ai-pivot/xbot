@@ -539,6 +539,70 @@ func TestDoReplace_FuzzyDoesNotOverrideExactMatch(t *testing.T) {
 	}
 }
 
+func TestDoReplace_ExactMatch_NewLinesWithSpaces(t *testing.T) {
+	// LLM correctly copies old lines with tabs, but adds new lines with spaces.
+	// normalizeReplacementIndent should convert them to tabs.
+	content := "\t{Key: \"enable_stream\", Scope: ScopeUser},\n\t{Key: \"enable_masking\", Scope: ScopeUser},\n\t{Key: \"default_user\", Scope: ScopeGlobal},\n"
+	oldStr := "\t{Key: \"enable_masking\", Scope: ScopeUser},\n\t{Key: \"default_user\", Scope: ScopeGlobal},"
+	newStr := "\t{Key: \"enable_masking\", Scope: ScopeUser},\n\n     // ── Global-scoped settings ──\n     {Key: \"sandbox_mode\", Scope: ScopeGlobal, Runtime: true},\n\t{Key: \"default_user\", Scope: ScopeGlobal},"
+
+	result, summary, err := doReplace(content, FileReplaceParams{OldString: oldStr, NewString: newStr}, "/test/file.go")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(summary, "auto-corrected") {
+		t.Errorf("exact match should NOT mention auto-correction, got: %s", summary)
+	}
+
+	// All non-empty lines should use tab indentation
+	for i, line := range strings.Split(result, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := leadingWhitespace(line)
+		if indent != "" && !strings.HasPrefix(indent, "\t") {
+			t.Errorf("line %d should use tab indent, got: %q (full: %q)", i, indent, line)
+		}
+	}
+}
+
+func TestDoReplace_ExactMatch_BlankLinesStripped(t *testing.T) {
+	// LLM adds a blank line with trailing spaces — should be stripped.
+	content := "\tfunc foo() {\n\t\treturn 1\n\t}\n"
+	oldStr := "\tfunc foo() {\n\t\treturn 1\n\t}"
+	newStr := "\tfunc foo() {\n   \n\t\treturn 2\n\t}"
+
+	result, _, err := doReplace(content, FileReplaceParams{OldString: oldStr, NewString: newStr}, "/test/file.go")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lines := strings.Split(result, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" && line != "" {
+			t.Errorf("blank line should be empty, got: %q", line)
+		}
+	}
+}
+
+func TestAdjustIndentation_MinEqualButDeeperMismatch(t *testing.T) {
+	// adjustIndentation should NOT early-return when minOld == minActual
+	// but deeper lines have mismatched whitespace.
+	oldLines := []string{"\t\tx := 1", "        y := 2"}
+	actualLines := []string{"\t\tx := 1", "\t\ty := 2"}
+	newStr := "\t\tx := 1\n        y := 3\n        z := 4"
+
+	got := adjustIndentation(oldLines, actualLines, newStr)
+	for i, line := range strings.Split(got, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := leadingWhitespace(line)
+		if indent != "" && !strings.HasPrefix(indent, "\t") {
+			t.Errorf("line %d should use tab indent, got: %q (full: %q)", i, indent, line)
+		}
+	}
+}
+
 // ============================================================================
 // FileCreateTool — local mode test
 // ============================================================================

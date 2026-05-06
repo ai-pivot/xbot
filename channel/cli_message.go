@@ -1,16 +1,8 @@
 package channel
 
 import (
-	"charm.land/bubbles/v2/textinput"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"encoding/json"
 	"fmt"
-	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/styles"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/google/uuid"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +13,15 @@ import (
 	"time"
 	"xbot/bus"
 	"xbot/version"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -666,6 +667,26 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
 	content := msg.Content
 
+	// Cancel ack handling: when a Run is cancelled, the agent sends outbound
+	// messages with metadata cancelled=true. These belong to the cancelled turn,
+	// not the current turn. If a new turn has already started (bg notification
+	// injection arrived first via cliInjectedUserMsg), these cancel acks would
+	// match the new turn's ID and incorrectly endAgentTurn. Skip turn-ending
+	// logic for cancel acks to preserve the new turn's state.
+	isCancelledAck := msg.Metadata != nil && msg.Metadata["cancelled"] == "true"
+	if isCancelledAck {
+		// Still clean up progress/streaming state for the cancelled turn.
+		// Do NOT endAgentTurn — the current turn (if any) must remain active.
+		if m.progress != nil {
+			m.cacheTokenUsage(m.progress.TokenUsage)
+		}
+		m.streamingMsgIdx = -1
+		m.progress = nil
+		m.renderCacheValid = false
+		m.updateViewportContent()
+		return
+	}
+
 	// 处理 __FEISHU_CARD__ 协议（简化显示）
 	if strings.HasPrefix(content, "__FEISHU_CARD__") {
 		content = ConvertFeishuCard(content)
@@ -768,6 +789,13 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			m.lastTokenUsage = nil
 			m.messages = make([]cliMessage, 0, cliMsgBufSize)
 			m.streamingMsgIdx = -1
+			m.cachedHistory = ""
+			m.cachedWrappedHistory = ""
+			m.cachedWrappedHistoryRaw = ""
+			m.cachedWrappedHistoryWidth = 0
+			// Builtin commands like /new do not emit PhaseDone, so endAgentTurn
+			// is never called by the progress path. End the turn here instead.
+			m.endAgentTurn(m.agentTurnID)
 			m.invalidateAllCache(true)
 			m.viewport.GotoBottom()
 		}
@@ -1427,7 +1455,11 @@ func (m *cliModel) renderToolContentBelow(tool *CLIToolProgress, guide string, b
 			hintW = 1
 		}
 		if r, err := m.renderToolHint(tool.ToolHints, hintW, maxLines); err == nil && r != "" {
+			guideW := lipgloss.Width(g)
 			for _, line := range strings.Split(r, "\n") {
+				if visW := lipgloss.Width(line); guideW+visW > bodyW {
+					line = truncateToWidth(line, bodyW-guideW)
+				}
 				sb.WriteString(g)
 				sb.WriteString(line)
 				sb.WriteString("\n")
@@ -1443,7 +1475,14 @@ func (m *cliModel) renderToolContentBelow(tool *CLIToolProgress, guide string, b
 			bodyContentW = 1
 		}
 		if body := m.renderToolBody(*tool, bodyContentW); body != "" {
+			guideW := lipgloss.Width(g)
 			for _, line := range strings.Split(body, "\n") {
+				// Final safety net: ensure guide + rendered line fits within bodyW.
+				// Tool body renderers (renderGrepBody etc.) truncate to bodyContentW,
+				// but lipgloss.Style.Render() may change effective width.
+				if visW := lipgloss.Width(line); guideW+visW > bodyW {
+					line = truncateToWidth(line, bodyW-guideW)
+				}
 				sb.WriteString(g)
 				sb.WriteString(line)
 				sb.WriteString("\n")
@@ -1859,7 +1898,13 @@ func (m *cliModel) setViewportContent(content string) {
 			var wrapped []string
 			historyLineCount := 0
 			if historyEnd > 0 {
-				historyLineCount = strings.Count(m.cachedHistory, "\n") + 1
+				// cachedHistory always ends with \n (message rendering appends it).
+				// strings.Count("\n") already equals the line count in that case.
+				// Only add 1 if cachedHistory has no trailing newline (shouldn't happen in practice).
+				historyLineCount = strings.Count(m.cachedHistory, "\n")
+				if len(m.cachedHistory) > 0 && m.cachedHistory[len(m.cachedHistory)-1] != '\n' {
+					historyLineCount++
+				}
 			}
 			var wrappedHistoryParts []string
 			for i, line := range lines {

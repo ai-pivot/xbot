@@ -35,13 +35,15 @@ var AllSettingDefs = []SettingDef{
 	{Key: "max_output_tokens", Scope: ScopeSubscription},
 	{Key: "thinking_mode", Scope: ScopeSubscription},
 
+	// ── User-scoped settings (per-user, persisted in user_settings DB) ──
+	{Key: "enable_stream", Scope: ScopeUser},
+	{Key: "enable_masking", Scope: ScopeUser},
+
 	// ── Global-scoped settings (shared, persisted in config.json) ──
 	{Key: "sandbox_mode", Scope: ScopeGlobal, Runtime: true},
-	{Key: "compression_threshold", Scope: ScopeGlobal, Runtime: true},
+	{Key: "compression_threshold", Scope: ScopeUser, Runtime: true},
 	{Key: "memory_provider", Scope: ScopeGlobal, Runtime: true},
 	{Key: "tavily_api_key", Scope: ScopeGlobal, Runtime: true},
-	{Key: "enable_stream", Scope: ScopeGlobal},
-	{Key: "enable_masking", Scope: ScopeGlobal},
 	{Key: "default_user", Scope: ScopeGlobal},
 	{Key: "privileged_user", Scope: ScopeGlobal},
 

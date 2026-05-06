@@ -21,6 +21,7 @@ type SettingDefinition struct {
 	Options      []SettingOption `json:"options,omitempty"`
 	DefaultValue string          `json:"default_value,omitempty"`
 	Category     string          `json:"category"`
+	ReadOnly     bool            `json:"read_only,omitempty"` // if true, display-only (not editable by user)
 }
 
 // SettingType defines the type of a setting.

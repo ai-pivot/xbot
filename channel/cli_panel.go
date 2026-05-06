@@ -51,9 +51,19 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 	for k, v := range values {
 		m.panelValues[k] = v
 	}
-	// Fill defaults
-	for _, def := range m.panelSchema {
-		if _, ok := m.panelValues[def.Key]; !ok && def.DefaultValue != "" {
+	// Fill defaults and mark global-scoped settings as read-only (admin-only).
+	for i := range m.panelSchema {
+		def := &m.panelSchema[i]
+		cur, ok := m.panelValues[def.Key]
+		needsDefault := !ok || cur == ""
+		// For number fields, also treat "0" as needing default when the
+		// default value is non-zero (handles stale DB entries from scope migrations).
+		if !needsDefault && def.Type == SettingTypeNumber && def.DefaultValue != "" && def.DefaultValue != "0" {
+			if cur == "0" {
+				needsDefault = true
+			}
+		}
+		if needsDefault && def.DefaultValue != "" {
 			m.panelValues[def.Key] = def.DefaultValue
 		}
 		// Inject cross-subscription model list for tier model selectors.
@@ -67,6 +77,10 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 				def.Options = opts
 				def.Type = SettingTypeCombo
 			}
+		}
+		// Global-scoped settings require admin access — mark read-only for normal users.
+		if !def.ReadOnly && IsGlobalScopedSettingKey(def.Key) {
+			def.ReadOnly = true
 		}
 	}
 	m.panelOnSubmit = onSubmit
@@ -1424,6 +1438,15 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 		m.closePanel()
 		return true, m, nil
 	case msg.String() == "ctrl+s":
+		// If currently editing a field, commit the edit before saving.
+		if m.panelEdit && m.panelCursor < len(m.panelSchema) {
+			def := m.panelSchema[m.panelCursor]
+			if !def.ReadOnly {
+				key := def.Key
+				m.panelValues[key] = strings.TrimSpace(m.panelEditTA.Value())
+			}
+			m.panelEdit = false
+		}
 		// Submit all settings — async to avoid blocking the UI.
 		// Close panel immediately to restore responsiveness, then run
 		// the save callback in a goroutine and send back results.
@@ -1447,6 +1470,10 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 	case msg.Code == tea.KeyEnter:
 		if m.panelCursor < len(m.panelSchema) {
 			def := m.panelSchema[m.panelCursor]
+			// Read-only items: skip editing (display-only)
+			if def.ReadOnly {
+				return true, m, nil
+			}
 			// Runner panel entry
 			if def.Key == "runner_panel" {
 				m.openRunnerPanel()
@@ -1895,6 +1922,15 @@ func (m *cliModel) viewSettingsPanel() string {
 			prefix = "  "
 		}
 
+		// Read-only items: show lock icon, dim label, skip value interaction
+		labelSt := lipgloss.NewStyle()
+		valueSt := valueStyle
+		if def.ReadOnly {
+			prefix = s.PanelDesc.Render("🔒")
+			labelSt = s.PanelDesc
+			valueSt = s.PanelDesc
+		}
+
 		// Runner panel entry: render with connection status
 		if def.Key == "runner_panel" {
 			statusHint := ""
@@ -1961,16 +1997,16 @@ func (m *cliModel) viewSettingsPanel() string {
 		switch def.Type {
 		case SettingTypeToggle:
 			if cur == "true" {
-				displayVal = valueStyle.Render(m.locale.PanelToggleOn)
+				displayVal = valueSt.Render(m.locale.PanelToggleOn)
 			} else {
-				displayVal = valueStyle.Render(m.locale.PanelToggleOff)
+				displayVal = valueSt.Render(m.locale.PanelToggleOff)
 			}
 		case SettingTypeSelect:
 			// Find label for current value
 			displayVal = cur
 			for _, opt := range def.Options {
 				if opt.Value == cur {
-					displayVal = valueStyle.Render(opt.Label)
+					displayVal = valueSt.Render(opt.Label)
 					break
 				}
 			}
@@ -1979,26 +2015,26 @@ func (m *cliModel) viewSettingsPanel() string {
 			if cur == "" {
 				displayVal = descStyle.Render(m.locale.PanelNotSet)
 			} else {
-				displayVal = valueStyle.Render(cur)
+				displayVal = valueSt.Render(cur)
 			}
-			if len(def.Options) > 0 {
+			if !def.ReadOnly && len(def.Options) > 0 {
 				displayVal += descStyle.Render(" ▾")
 			}
 		case SettingTypePassword:
 			if cur == "" {
 				displayVal = descStyle.Render(m.locale.PanelNotSet)
 			} else {
-				displayVal = valueStyle.Render("••••••")
+				displayVal = valueSt.Render("••••••")
 			}
 		default:
 			if cur == "" {
 				displayVal = descStyle.Render(m.locale.PanelNotSet)
 			} else {
-				displayVal = valueStyle.Render(cur)
+				displayVal = valueSt.Render(cur)
 			}
 		}
 
-		line := fmt.Sprintf("%s %s: %s", prefix, def.Label, displayVal)
+		line := fmt.Sprintf("%s %s: %s", prefix, labelSt.Render(def.Label), displayVal)
 		if i == m.panelCursor && !m.panelEdit {
 			line = m.renderSelLine(line, m.width-6)
 		}
@@ -2087,7 +2123,13 @@ func (m *cliModel) viewAskUserPanel() string {
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
 		isLastTab := m.panelTab == len(m.panelItems)-1
-		sb.WriteString(questionStyle.Render("❓ " + item.Question))
+		// Wrap question text to fit inside PanelBox (border 2 + padding 2 + scrollbar reserve 2)
+		qWrapWidth := m.width - 6
+		if qWrapWidth < 20 {
+			qWrapWidth = 20
+		}
+		wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
+		sb.WriteString(questionStyle.Render(wrapped))
 		sb.WriteString("\n")
 
 		hasOpts := len(item.Options) > 0

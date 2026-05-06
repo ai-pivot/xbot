@@ -77,6 +77,7 @@ type runState struct {
 	progressLines      []string
 	progressMu         sync.Mutex
 	structuredProgress *StructuredProgress
+	subAgentNodes      []SubAgentNode // structured SubAgent tree (updated alongside progressLines)
 	iterationSnapshots []IterationSnapshot
 	progressFinalizer  func()
 }
@@ -188,6 +189,7 @@ func (s *runState) initProgress() {
 			}
 			s.structuredProgress.Phase = PhaseDone
 			if s.autoNotify && s.cfg.ProgressEventHandler != nil {
+				s.structuredProgress.SubAgents = s.subAgentNodes
 				s.cfg.ProgressEventHandler(&ProgressEvent{
 					Lines:      copyLines(s.progressLines),
 					Structured: s.structuredProgress,
@@ -301,6 +303,9 @@ func (s *runState) notifyProgress(extra string) {
 		s.progressMu.Lock()
 		snapshot := make([]string, len(s.progressLines))
 		copy(snapshot, s.progressLines)
+		// Attach structured SubAgent tree (if any) directly to the event,
+		// so consumers don't need to parse text lines.
+		s.structuredProgress.SubAgents = s.subAgentNodes
 		s.progressMu.Unlock()
 		s.cfg.ProgressEventHandler(&ProgressEvent{
 			Lines:      snapshot,
@@ -344,11 +349,13 @@ func (s *runState) buildOutput(ob *bus.OutboundMessage) *RunOutput {
 // beginIteration updates state at the start of each loop iteration.
 func (s *runState) beginIteration(i int) {
 	s.localIterCount++
+	s.subAgentNodes = nil
 	if s.structuredProgress != nil {
 		s.structuredProgress.Iteration = i
 		s.structuredProgress.Phase = PhaseThinking
 		s.structuredProgress.ActiveTools = nil
 		s.structuredProgress.CompletedTools = nil
+		s.structuredProgress.SubAgents = nil
 		s.structuredProgress.ThinkingContent = ""
 		s.structuredProgress.ReasoningContent = ""
 	}

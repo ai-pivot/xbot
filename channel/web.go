@@ -413,6 +413,17 @@ func (es *eventStream) push(msg wsMessage) {
 	es.count++
 }
 
+// clear drops buffered events without resetting the monotonic sequence.
+// Used on session reset (/new) so reconnect replay cannot resurrect progress
+// events from the previous session.
+func (es *eventStream) clear() {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	es.head = 0
+	es.tail = 0
+	es.count = 0
+}
+
 // eventsAfter returns all buffered events with seq > fromSeq, in order.
 func (es *eventStream) eventsAfter(fromSeq uint64) []wsMessage {
 	es.mu.Lock()
@@ -972,6 +983,13 @@ func (wc *WebChannel) Send(msg bus.OutboundMessage) (string, error) {
 
 	targetClientID := msg.ChatID
 
+	// /new resets the conversation boundary. Drop buffered pre-reset events before
+	// buffering the reset message itself; otherwise reconnect replay can resurrect
+	// a stale in-flight progress event from the previous session.
+	if wsMsg.SessionReset {
+		wc.getEventStream(targetClientID).clear()
+	}
+
 	// Stamp seq and buffer for replay
 	wsMsg = wc.stampAndBuffer(targetClientID, wsMsg)
 
@@ -1269,15 +1287,29 @@ func (wc *WebChannel) replayMissedEvents(client *Client, chatID string) {
 		return
 	}
 
-	// Replay missed events from buffer
+	// Replay missed events from buffer. If no progress event is replayed, send the
+	// current active progress snapshot once so reconnecting clients can still
+	// restore an in-flight turn when their last_seq is already up to date.
 	es := wc.getEventStream(chatID)
 	events := es.eventsAfter(fromSeq)
+	replayedProgress := false
 	for _, evt := range events {
+		if evt.Type == "progress_structured" {
+			replayedProgress = true
+		}
 		select {
 		case client.sendCh <- evt:
 		default:
 			log.Debug("Client sendCh full during replay, stopping")
 			return
+		}
+	}
+	if !replayedProgress && wc.callbacks.GetActiveProgress != nil {
+		if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil {
+			select {
+			case client.sendCh <- wsMessage{Type: "progress_structured", TS: time.Now().Unix(), Progress: cliProgressToWS(p)}:
+			default:
+			}
 		}
 	}
 }
