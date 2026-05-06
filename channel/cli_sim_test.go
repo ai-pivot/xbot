@@ -178,7 +178,8 @@ type SimInspection struct {
 	Messages    []SimMessageDump  `json:"messages,omitempty"`
 	Vars        map[string]any    `json:"vars,omitempty"`
 	State       *SimModelSnapshot `json:"state,omitempty"`
-	ViewSummary string            `json:"view_summary,omitempty"` // first 500 chars of current view
+	ViewSummary string            `json:"view_summary,omitempty"`
+	Summary     string            `json:"summary,omitempty"` // markdown-formatted summary
 }
 
 type SimMessageDump struct {
@@ -359,6 +360,8 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 		return r.doSubAgent(idx, step)
 	case "clear":
 		return r.doClear(idx, step)
+	case "summary":
+		return r.doSummary(idx, step)
 	case "system_msg":
 		return r.doSystemMsg(idx, step)
 	case "turn":
@@ -787,6 +790,64 @@ func (r *simRunner) doClear(idx int, step SimStep) error {
 	m.cachedHistory = ""
 	m.renderCacheValid = false
 	m.updateViewportContent()
+	return nil
+}
+
+func (r *simRunner) doSummary(idx int, step SimStep) error {
+	m := r.model
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, "## Summary (step %d, %dx%d)\n\n", idx, m.width, m.height)
+
+	// State overview
+	fmt.Fprintf(&sb, "**State**: typing=%v cancelled=%v inputReady=%v msgs=%d iterHist=%d queueLen=%d\n\n",
+		m.typing, m.turnCancelled, m.inputReady, len(m.messages), len(m.iterationHistory), len(m.messageQueue))
+
+	// Messages table
+	if len(m.messages) > 0 {
+		sb.WriteString("| # | Role | TurnID | Content (first 50) | Iterations | Tools |\n")
+		sb.WriteString("|---|------|--------|-------------------|------------|-------|\n")
+		for i, msg := range m.messages {
+			content := truncateStr(msg.content, 50)
+			iterCount := len(msg.iterations)
+			var toolNames []string
+			for _, it := range msg.iterations {
+				for _, t := range it.Tools {
+					toolNames = append(toolNames, t.Name)
+				}
+			}
+			toolStr := strings.Join(toolNames, ", ")
+			if toolStr == "" {
+				toolStr = "-"
+			}
+			fmt.Fprintf(&sb, "| %d | %s | %d | %s | %d | %s |\n",
+				i, msg.role, msg.turnID, content, iterCount, toolStr)
+		}
+		sb.WriteString("\n")
+	}
+
+	// View preview (first 10 lines)
+	view := r.captureView()
+	lines := strings.Split(view, "\n")
+	maxLines := 10
+	if len(lines) < maxLines {
+		maxLines = len(lines)
+	}
+	sb.WriteString("**View preview**:\n```\n")
+	for i := 0; i < maxLines; i++ {
+		sb.WriteString(lines[i] + "\n")
+	}
+	if len(lines) > maxLines {
+		fmt.Fprintf(&sb, "... (%d more lines)\n", len(lines)-maxLines)
+	}
+	sb.WriteString("```\n")
+
+	insp := SimInspection{
+		Step:    idx,
+		Label:   step.Label,
+		Summary: sb.String(),
+	}
+	r.result.Inspections = append(r.result.Inspections, insp)
 	return nil
 }
 
