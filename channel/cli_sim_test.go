@@ -2671,3 +2671,63 @@ func TestSimValidate(t *testing.T) {
 		t.Error("Expected validation_ok inspection")
 	}
 }
+
+func BenchmarkSimBasicTurn(b *testing.B) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "hello", Response: "Hi!"},
+		},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := newSimRunner(scenario)
+		runner.run()
+	}
+}
+
+func BenchmarkSimTurnWithTools(b *testing.B) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "analyze",
+				TurnIterations: []SimTurnIter{
+					{Tools: []SimToolRecord{
+						{Name: "Read", Label: "Read file", Elapsed: 50},
+						{Name: "Grep", Label: "Grep pattern", Elapsed: 20},
+					}},
+					{Tools: []SimToolRecord{
+						{Name: "FileReplace", Label: "Fix", Elapsed: 30},
+						{Name: "Shell", Label: "Test", Elapsed: 3000},
+					}},
+				},
+				Response: "Fixed!",
+			},
+		},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := newSimRunner(scenario)
+		runner.run()
+	}
+}
+
+func BenchmarkSimHeavyScenario(b *testing.B) {
+	steps := make([]SimStep, 50)
+	for i := range steps {
+		steps[i] = SimStep{
+			Action:   "turn",
+			Content:  fmt.Sprintf("msg %d", i),
+			Response: fmt.Sprintf("resp %d", i),
+		}
+	}
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps:  steps,
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := newSimRunner(scenario)
+		runner.run()
+	}
+}
