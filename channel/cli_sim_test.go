@@ -161,6 +161,13 @@ type SimStep struct {
 	ThenSteps []SimStep `json:"then_steps,omitempty"`
 	ElseSteps []SimStep `json:"else_steps,omitempty"`
 
+	// ─── scroll fields ───
+	ScrollLines int    `json:"scroll_lines,omitempty"` // positive=down, negative=up
+	ScrollTo    string `json:"scroll_to,omitempty"`    // "top" or "bottom"
+
+	// ─── input text fields ───
+	InputText string `json:"input_text,omitempty"` // text to type into input area
+
 	// ─── assert tool timing ───
 	AssertToolName  string `json:"assert_tool_name,omitempty"`   // tool name to check
 	AssertToolMinMs int    `json:"assert_tool_min_ms,omitempty"` // minimum elapsed_ms
@@ -477,6 +484,10 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 		return r.doValidate(idx, step)
 	case "if":
 		return r.doIf(idx, step)
+	case "scroll":
+		return r.doScroll(idx, step)
+	case "input_text":
+		return r.doInputText(idx, step)
 	case "system_msg":
 		return r.doSystemMsg(idx, step)
 	case "turn":
@@ -1375,6 +1386,7 @@ func (r *simRunner) doValidate(idx int, step SimStep) error {
 		"system_msg": true, "turn": true, "summary": true, "export": true,
 		"diff": true, "loop": true, "include": true, "comment": true,
 		"clear": true, "validate": true, "if": true,
+		"scroll": true, "input_text": true,
 	}
 	var errors []string
 	for i, s := range r.scenario.Steps {
@@ -1446,6 +1458,35 @@ func (r *simRunner) doIf(idx int, step SimStep) error {
 			return fmt.Errorf("if[%d].%s: %w", i, s.Action, err)
 		}
 	}
+	return nil
+}
+
+func (r *simRunner) doScroll(idx int, step SimStep) error {
+	m := r.model
+	switch step.ScrollTo {
+	case "top":
+		m.viewport.SetYOffset(0)
+	case "bottom":
+		m.viewport.SetYOffset(m.viewport.TotalLineCount())
+	default:
+		if step.ScrollLines > 0 {
+			m.viewport.ScrollDown(step.ScrollLines)
+		} else if step.ScrollLines < 0 {
+			m.viewport.ScrollUp(-step.ScrollLines)
+		}
+	}
+	m.renderCacheValid = false
+	m.updateViewportContent()
+	return nil
+}
+
+func (r *simRunner) doInputText(idx int, step SimStep) error {
+	// Record the input text in an inspection (not actually typed into textarea)
+	r.result.Inspections = append(r.result.Inspections, SimInspection{
+		Step:    idx,
+		Label:   "input_text",
+		Summary: fmt.Sprintf("Simulated input: %q", step.InputText),
+	})
 	return nil
 }
 
