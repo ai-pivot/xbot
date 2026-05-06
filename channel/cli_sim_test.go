@@ -845,7 +845,11 @@ func (r *simRunner) doSummary(idx int, step SimStep) error {
 			var toolNames []string
 			for _, it := range msg.iterations {
 				for _, t := range it.Tools {
-					toolNames = append(toolNames, t.Name)
+					name := t.Name
+					if t.Status == "error" {
+						name += "(!)"
+					}
+					toolNames = append(toolNames, name)
 				}
 			}
 			toolStr := strings.Join(toolNames, ", ")
