@@ -2233,3 +2233,142 @@ func TestSimTurnShortcut(t *testing.T) {
 		t.Fatalf("Simulation failed: %s", result.Error)
 	}
 }
+
+func TestSimAssertState(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "user_msg", Content: "hello"},
+			{Action: "assert", AssertState: map[string]any{"splashDone": true}},
+			{Action: "set_var", Var: "typing", Value: false},
+			{Action: "assert", AssertState: map[string]any{"typing": false, "messageCount": 1}},
+			{Action: "agent_msg", Content: "world"},
+			{Action: "assert", AssertState: map[string]any{"messageCount": 2}},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimAssertMessageOrder(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "hello", Response: "world"},
+			{Action: "assert", AssertMessageOrder: []string{"user", "assistant"}},
+			{Action: "turn", Content: "bye",
+				TurnIterations: []SimTurnIter{
+					{Tools: []SimToolRecord{{Name: "Shell", Label: "Test", Elapsed: 100}}},
+				},
+				Response: "done"},
+			{Action: "assert", AssertMessageOrder: []string{"user", "assistant", "user", "tool_summary", "assistant"}},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimAssertNoToolErrors(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "build",
+				TurnIterations: []SimTurnIter{
+					{Tools: []SimToolRecord{{Name: "Shell", Label: "Build", Elapsed: 1000, Status: "done"}}},
+				},
+				Response: "Built!"},
+			{Action: "assert", AssertNoToolErrors: true},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimAssertToolCallCount(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "read multiple files",
+				TurnIterations: []SimTurnIter{
+					{Tools: []SimToolRecord{{Name: "Read", Label: "Read f1", Elapsed: 50}}},
+					{Tools: []SimToolRecord{
+						{Name: "Read", Label: "Read f2", Elapsed: 60},
+						{Name: "Grep", Label: "Grep pattern", Elapsed: 20},
+					}},
+				},
+				Response: "Done"},
+			{Action: "assert", AssertToolName: "Read", AssertToolCallCount: 2},
+			{Action: "assert", AssertToolName: "Grep", AssertToolCallCount: 1},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimAssertContentRegex(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "analyze", Response: "Found 3 bugs in cli_update_handlers.go line 42"},
+			{Action: "assert", AssertRole: "assistant", AssertContentRegex: "Found \\d+ bugs"},
+			{Action: "assert", AssertRole: "assistant", AssertContentRegex: "cli_\\w+\\.go"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimIncludeAction(t *testing.T) {
+	// Create a sub-scenario file
+	subSteps := []SimStep{
+		{Action: "turn", Content: "included msg", Response: "included resp"},
+	}
+	data, _ := json.Marshal(subSteps)
+	tmpFile := t.TempDir() + "/sub.json"
+	os.WriteFile(tmpFile, data, 0644)
+
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "main msg", Response: "main resp"},
+			{Action: "include", IncludePath: tmpFile},
+			{Action: "assert", AssertRole: "user", AssertCount: 2},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimAssertViewport(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "hello", Response: "world"},
+			{Action: "assert", AssertViewportAtBottom: true},
+			{Action: "assert", AssertViewportAtTop: true}, // few lines, at both top and bottom
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
