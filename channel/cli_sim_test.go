@@ -1772,9 +1772,12 @@ func generateHumanReport(r SimResult) string {
 	// Assertions
 	if len(r.Assertions) > 0 {
 		sb.WriteString("## Assertions\n\n")
+		passed := 0
 		for _, a := range r.Assertions {
 			mark := "✓"
-			if !a.Passed {
+			if a.Passed {
+				passed++
+			} else {
 				mark = "✗"
 			}
 			fmt.Fprintf(&sb, "- %s [%s] %s", mark, a.Type, a.Pattern)
@@ -1782,8 +1785,11 @@ func generateHumanReport(r SimResult) string {
 				fmt.Fprintf(&sb, " (%s)", a.Actual)
 			}
 			sb.WriteString("\n")
+			if !a.Passed && a.Context != "" {
+				fmt.Fprintf(&sb, "  Context: %s\n", a.Context)
+			}
 		}
-		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "\n**%d/%d passed**\n\n", passed, len(r.Assertions))
 	}
 
 	// Diffs
