@@ -87,6 +87,9 @@ type SimStep struct {
 	AssertCount   int      `json:"assert_count,omitempty"`
 	AssertContent string   `json:"assert_content,omitempty"`
 	AssertTools   []string `json:"assert_tools,omitempty"`
+	// Assert at a specific message index
+	AssertIndex     int    `json:"assert_index,omitempty"`      // 0-based index
+	AssertIndexRole string `json:"assert_index_role,omitempty"` // expected role at that index
 
 	// ─── set_var fields ───
 	Var   string `json:"var,omitempty"`
@@ -115,6 +118,8 @@ type SimStep struct {
 	// "turn" is a shortcut that combines: user_msg + progress(tools) + phase_done + agent_msg
 	// into a single step. It expands into multiple internal steps.
 	Response string `json:"response,omitempty"` // agent response text (for "turn" action)
+	// Multi-iteration support for "turn": each entry = one iteration with its own tools
+	TurnIterations []SimTurnIter `json:"turn_iterations,omitempty"`
 }
 
 // SimSubAgent describes a SubAgent in the tree for simulation.
@@ -124,6 +129,11 @@ type SimSubAgent struct {
 	Status   string        `json:"status"`
 	Task     string        `json:"task,omitempty"`
 	Children []SimSubAgent `json:"children,omitempty"`
+}
+
+// SimTurnIter defines one iteration within a "turn" shortcut action.
+type SimTurnIter struct {
+	Tools []SimToolRecord `json:"tools,omitempty"` // completed tools for this iteration
 }
 
 // ─── Output types ──────────────────────────────────────────────────
@@ -157,11 +167,12 @@ type SimAssertion struct {
 }
 
 type SimInspection struct {
-	Step     int               `json:"step"`
-	Label    string            `json:"label,omitempty"`
-	Messages []SimMessageDump  `json:"messages,omitempty"`
-	Vars     map[string]any    `json:"vars,omitempty"`
-	State    *SimModelSnapshot `json:"state,omitempty"`
+	Step        int               `json:"step"`
+	Label       string            `json:"label,omitempty"`
+	Messages    []SimMessageDump  `json:"messages,omitempty"`
+	Vars        map[string]any    `json:"vars,omitempty"`
+	State       *SimModelSnapshot `json:"state,omitempty"`
+	ViewSummary string            `json:"view_summary,omitempty"` // first 500 chars of current view
 }
 
 type SimMessageDump struct {
@@ -614,6 +625,50 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 		}
 	}
 
+	// ─── Index-based assertions ───
+	if step.AssertIndexRole != "" {
+		idx := step.AssertIndex
+		msgs := r.model.messages
+		if idx < 0 || idx >= len(msgs) {
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step: idx, Type: "assert_index_role",
+				Pattern: fmt.Sprintf("[%d].role == %q", idx, step.AssertIndexRole),
+				Passed:  false,
+				Actual:  fmt.Sprintf("index %d out of range (have %d messages)", idx, len(msgs)),
+			})
+			r.result.OK = false
+			return fmt.Errorf("assert_index: index %d out of range (have %d messages)", idx, len(msgs))
+		}
+		passed := msgs[idx].role == step.AssertIndexRole
+		r.result.Assertions = append(r.result.Assertions, SimAssertion{
+			Step: idx, Type: "assert_index_role",
+			Pattern: fmt.Sprintf("[%d].role == %q", idx, step.AssertIndexRole),
+			Passed:  passed,
+			Actual:  fmt.Sprintf("messages[%d].role = %q", idx, msgs[idx].role),
+		})
+		if !passed {
+			r.result.OK = false
+			return fmt.Errorf("assert_index_role: messages[%d].role = %q, expected %q",
+				idx, msgs[idx].role, step.AssertIndexRole)
+		}
+
+		// Also check content at this index
+		if step.AssertContent != "" {
+			found := strings.Contains(msgs[idx].content, step.AssertContent)
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step: idx, Type: "assert_index_content",
+				Pattern: fmt.Sprintf("[%d] contains %q", idx, step.AssertContent),
+				Passed:  found,
+				Actual:  fmt.Sprintf("content = %q (len %d)", truncateStr(msgs[idx].content, 50), len(msgs[idx].content)),
+			})
+			if !found {
+				r.result.OK = false
+				return fmt.Errorf("assert_index_content: messages[%d] does not contain %q",
+					idx, step.AssertContent)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -634,6 +689,14 @@ func (r *simRunner) doSetVar(idx int, step SimStep) error {
 
 func (r *simRunner) doInspect(idx int, step SimStep) error {
 	insp := SimInspection{Step: idx, Label: step.Label}
+
+	// Always include view summary
+	view := r.captureView()
+	if len(view) > 500 {
+		insp.ViewSummary = view[:500] + "..."
+	} else {
+		insp.ViewSummary = view
+	}
 
 	if step.InspectAll {
 		insp.Messages = r.dumpMessages()
@@ -698,41 +761,78 @@ func (r *simRunner) doSystemMsg(idx int, step SimStep) error {
 	return nil
 }
 
-// doTurn is a shortcut that expands into: user_msg → progress(tools) → phase_done → agent_msg.
-// This dramatically reduces JSON boilerplate for simple turns.
+// doTurn is a shortcut that expands into: user_msg → [progress → phase_done]* → agent_msg.
 func (r *simRunner) doTurn(idx int, step SimStep) error {
 	// 1. User message
 	if err := r.doUserMsg(idx, SimStep{Content: step.Content}); err != nil {
 		return err
 	}
 
-	// 2. Progress with active tools (if any)
-	if len(step.ActiveTools) > 0 || step.Thinking != "" {
-		progStep := SimStep{
-			Phase:       "thinking",
-			Iteration:   0,
-			Thinking:    step.Thinking,
-			Reasoning:   step.Reasoning,
-			ActiveTools: step.ActiveTools,
+	// 2a. Multi-iteration mode
+	if len(step.TurnIterations) > 0 {
+		for i, iter := range step.TurnIterations {
+			// Progress: show active tools
+			if len(iter.Tools) > 0 {
+				activeTools := make([]SimToolRecord, len(iter.Tools))
+				for j, t := range iter.Tools {
+					activeTools[j] = SimToolRecord{
+						Name:   t.Name,
+						Label:  t.Label,
+						Status: "active",
+					}
+				}
+				if err := r.doProgress(idx, SimStep{
+					Phase:       "thinking",
+					Iteration:   i,
+					ActiveTools: activeTools,
+				}); err != nil {
+					return err
+				}
+			}
+			// Phase done: mark tools as done
+			completedTools := make([]SimToolRecord, len(iter.Tools))
+			for j, t := range iter.Tools {
+				completedTools[j] = SimToolRecord{
+					Name:    t.Name,
+					Label:   t.Label,
+					Status:  "done",
+					Elapsed: t.Elapsed,
+				}
+			}
+			if err := r.doPhaseDone(idx, SimStep{
+				Iteration:      i,
+				CompletedTools: completedTools,
+			}); err != nil {
+				return err
+			}
 		}
-		if err := r.doProgress(idx, progStep); err != nil {
-			return err
+	} else {
+		// 2b. Single-iteration mode (backward compatible)
+		if len(step.ActiveTools) > 0 || step.Thinking != "" {
+			progStep := SimStep{
+				Phase:       "thinking",
+				Iteration:   0,
+				Thinking:    step.Thinking,
+				Reasoning:   step.Reasoning,
+				ActiveTools: step.ActiveTools,
+			}
+			if err := r.doProgress(idx, progStep); err != nil {
+				return err
+			}
+		}
+		if len(step.CompletedTools) > 0 || len(step.Tools) > 0 {
+			doneStep := SimStep{
+				Iteration:      0,
+				CompletedTools: step.CompletedTools,
+				Tools:          step.Tools,
+			}
+			if err := r.doPhaseDone(idx, doneStep); err != nil {
+				return err
+			}
 		}
 	}
 
-	// 3. Phase done with completed tools (if any)
-	if len(step.CompletedTools) > 0 || len(step.Tools) > 0 {
-		doneStep := SimStep{
-			Iteration:      0,
-			CompletedTools: step.CompletedTools,
-			Tools:          step.Tools,
-		}
-		if err := r.doPhaseDone(idx, doneStep); err != nil {
-			return err
-		}
-	}
-
-	// 4. Agent response
+	// 3. Agent response
 	if step.Response != "" {
 		if err := r.doAgentMsg(idx, SimStep{Content: step.Response}); err != nil {
 			return err
@@ -889,6 +989,13 @@ func extractContext(haystack, needle string, radius int) string {
 	return "..." + haystack[start:end] + "..."
 }
 
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func sortedKeys[M ~map[K]V, K comparable, V any](m M) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -973,6 +1080,77 @@ func TestSimProgressWithTools(t *testing.T) {
 	result := runner.run()
 	if !result.OK {
 		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimTurnMultiIteration(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "analyze and fix",
+				TurnIterations: []SimTurnIter{
+					{Tools: []SimToolRecord{
+						{Name: "Grep", Label: "Grep TODO", Elapsed: 200},
+						{Name: "Read", Label: "Read file.go", Elapsed: 100},
+					}},
+					{Tools: []SimToolRecord{
+						{Name: "FileReplace", Label: "Fix bug", Elapsed: 50},
+					}},
+					{Tools: []SimToolRecord{
+						{Name: "Shell", Label: "Shell go test", Elapsed: 3000},
+					}},
+				},
+				Response: "Fixed and verified!",
+			},
+			{Action: "inspect", Label: "multi_iter"},
+			{Action: "assert", AssertRole: "user", AssertCount: 1},
+			{Action: "assert", AssertRole: "tool_summary", AssertCount: 3},
+			{Action: "assert", AssertRole: "tool_summary", AssertTools: []string{"Grep", "Read", "FileReplace", "Shell"}},
+			{Action: "assert", AssertRole: "assistant", AssertContent: "Fixed and verified"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	// Verify the tool_summary messages cover all 3 iterations
+	insp := result.Inspections[0]
+	iterCounts := 0
+	for _, m := range insp.Messages {
+		if m.Role == "tool_summary" {
+			iterCounts += len(m.Iterations)
+		}
+	}
+	if iterCounts != 3 {
+		t.Errorf("Expected 3 total iterations across tool_summaries, got %d", iterCounts)
+	}
+}
+
+func TestSimAssertIndex(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "user_msg", Content: "hello"},
+			{Action: "agent_msg", Content: "world"},
+			// Verify exact message structure by index
+			{Action: "assert", AssertIndex: 0, AssertIndexRole: "user"},
+			{Action: "assert", AssertIndex: 1, AssertIndexRole: "assistant", AssertContent: "world"},
+			// Negative: wrong role should fail
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	if len(result.Assertions) != 3 {
+		t.Errorf("Expected 3 assertions, got %d", len(result.Assertions))
+	}
+	for _, a := range result.Assertions {
+		if !a.Passed {
+			t.Errorf("Assertion failed: %v", a)
+		}
 	}
 }
 
