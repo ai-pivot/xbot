@@ -1328,6 +1328,18 @@ func TestSimMain(t *testing.T) {
 		if err := os.WriteFile(outputPath, out, 0644); err != nil {
 			t.Fatalf("Failed to write output: %v", err)
 		}
+		// Generate human-readable report alongside JSON output
+		humanPath := os.Getenv("XBOT_SIM_HUMAN")
+		if humanPath == "" && outputPath != "" {
+			humanPath = strings.TrimSuffix(outputPath, ".json") + ".md"
+		}
+		if humanPath != "" {
+			report := generateHumanReport(result)
+			if err := os.WriteFile(humanPath, []byte(report), 0644); err != nil {
+				// Non-fatal: human report is a convenience feature
+				fmt.Fprintf(os.Stderr, "Warning: failed to write human report: %v\n", err)
+			}
+		}
 	} else {
 		fmt.Println(string(out))
 	}
@@ -1337,6 +1349,55 @@ func TestSimMain(t *testing.T) {
 }
 
 // ─── Built-in tests ────────────────────────────────────────────────
+
+// generateHumanReport creates a markdown-formatted report from simulation results.
+func generateHumanReport(r SimResult) string {
+	var sb strings.Builder
+
+	status := "✓ PASS"
+	if !r.OK {
+		status = "✗ FAIL"
+	}
+	fmt.Fprintf(&sb, "# TUI Simulation Report %s\n\n", status)
+	fmt.Fprintf(&sb, "**Steps**: %d/%d  **Snapshots**: %d  **Assertions**: %d  **Diffs**: %d\n\n",
+		r.StepsOK, r.StepsTotal, len(r.Snapshots), len(r.Assertions), len(r.Diffs))
+
+	if r.Error != "" {
+		fmt.Fprintf(&sb, "## Error\n```\n%s\n```\n\n", r.Error)
+	}
+
+	// Assertions
+	if len(r.Assertions) > 0 {
+		sb.WriteString("## Assertions\n\n")
+		for _, a := range r.Assertions {
+			mark := "✓"
+			if !a.Passed {
+				mark = "✗"
+			}
+			fmt.Fprintf(&sb, "- %s [%s] %s", mark, a.Type, a.Pattern)
+			if a.Actual != "" {
+				fmt.Fprintf(&sb, " (%s)", a.Actual)
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Diffs
+	for _, d := range r.Diffs {
+		fmt.Fprintf(&sb, "## Diff: %s → %s\n%s\n\n", d.From, d.To, d.Summary)
+	}
+
+	// Summaries from inspections
+	for _, i := range r.Inspections {
+		if i.Summary != "" {
+			sb.WriteString(i.Summary)
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
 
 func TestSimBasic(t *testing.T) {
 	scenario := SimScenario{
