@@ -1744,7 +1744,9 @@ func TestSimMain(t *testing.T) {
 			}
 		}
 	} else {
-		fmt.Println(string(out))
+		// No output file: print markdown report to stdout (more agent-friendly)
+		report := generateHumanReport(result)
+		fmt.Println(report)
 	}
 	if !result.OK {
 		t.Errorf("Simulation failed: %s", result.Error)
