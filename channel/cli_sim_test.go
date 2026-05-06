@@ -84,6 +84,9 @@ type SimStep struct {
 	// View height assertion
 	AssertViewLines    int `json:"assert_view_lines,omitempty"`     // expected view line count (exact)
 	AssertViewLinesMax int `json:"assert_view_lines_max,omitempty"` // expected max view line count
+	// Visible area assertions (only checks what's currently in viewport)
+	VisibleContains    string `json:"visible_contains,omitempty"`
+	VisibleNotContains string `json:"visible_not_contains,omitempty"`
 	// Viewport scroll position
 	AssertViewportAtBottom bool `json:"assert_viewport_at_bottom,omitempty"`
 	AssertViewportAtTop    bool `json:"assert_viewport_at_top,omitempty"`
@@ -784,6 +787,46 @@ func (r *simRunner) doAssert(idx int, step SimStep) error {
 			if !passed {
 				r.result.OK = false
 				return fmt.Errorf("assert_tools: missing tool names: %v", missing)
+			}
+		}
+	}
+
+	// ─── Visible area assertions ───
+	if step.VisibleContains != "" || step.VisibleNotContains != "" {
+		visibleView := r.captureVisibleView()
+		if step.VisibleContains != "" {
+			count := strings.Count(visibleView, step.VisibleContains)
+			passed := count >= 1
+			ctx := ""
+			if !passed {
+				ctx = extractContext(view, step.VisibleContains, 80)
+			}
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step:    idx,
+				Type:    "visible_contains",
+				Pattern: step.VisibleContains,
+				Passed:  passed,
+				Actual:  fmt.Sprintf("found %d in visible area (y_offset=%d of %d total lines)", count, r.model.viewport.YOffset(), r.model.viewport.TotalLineCount()),
+				Context: ctx,
+			})
+			if !passed {
+				r.result.OK = false
+				return fmt.Errorf("visible_contains: %q not in visible viewport area", step.VisibleContains)
+			}
+		}
+		if step.VisibleNotContains != "" {
+			count := strings.Count(visibleView, step.VisibleNotContains)
+			passed := count == 0
+			r.result.Assertions = append(r.result.Assertions, SimAssertion{
+				Step:    idx,
+				Type:    "visible_not_contains",
+				Pattern: step.VisibleNotContains,
+				Passed:  passed,
+				Actual:  fmt.Sprintf("found %d in visible area", count),
+			})
+			if !passed {
+				r.result.OK = false
+				return fmt.Errorf("visible_not_contains: %q found in visible viewport area", step.VisibleNotContains)
 			}
 		}
 	}
@@ -1721,6 +1764,11 @@ func (r *simRunner) messageRoleSummary() string {
 
 func (r *simRunner) captureView() string {
 	return stripAnsi(r.model.View().Content)
+}
+
+// captureVisibleView returns only the currently visible portion of the viewport.
+func (r *simRunner) captureVisibleView() string {
+	return stripAnsi(r.model.viewport.View())
 }
 
 func convertSimTools(tools []SimToolRecord, iteration int) []CLIToolProgress {
