@@ -1378,6 +1378,109 @@ func TestSimProgressWithTools(t *testing.T) {
 	}
 }
 
+func TestSimDiff(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "user_msg", Content: "hello"},
+			{Action: "snapshot", Label: "s1"},
+			{Action: "agent_msg", Content: "world"},
+			{Action: "snapshot", Label: "s2"},
+			{Action: "diff", DiffFrom: "s1", DiffTo: "s2"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	if len(result.Diffs) != 1 {
+		t.Fatalf("Expected 1 diff, got %d", len(result.Diffs))
+	}
+	df := result.Diffs[0]
+	if df.From != "s1" || df.To != "s2" {
+		t.Errorf("Unexpected diff labels: %s → %s", df.From, df.To)
+	}
+	if df.Added == 0 && df.Modified == 0 {
+		t.Error("Expected some changes between snapshots")
+	}
+}
+
+func TestSimLoop(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "loop", LoopCount: 3, LoopSteps: []SimStep{
+				{Action: "turn", Content: "msg", Response: "resp"},
+			}},
+			{Action: "assert", AssertRole: "user", AssertCount: 3},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 3},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimExport(t *testing.T) {
+	tmpFile := "/tmp/sim_export_test_history.json"
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "hello", Response: "world"},
+			{Action: "export", ExportPath: tmpFile},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	// Verify exported file exists and is valid JSON
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("Export file not found: %v", err)
+	}
+	var history []SimHistoryMsg
+	if err := json.Unmarshal(data, &history); err != nil {
+		t.Fatalf("Invalid export JSON: %v", err)
+	}
+	if len(history) != 2 {
+		t.Errorf("Expected 2 exported messages, got %d", len(history))
+	}
+	if history[0].Role != "user" || history[1].Role != "assistant" {
+		t.Errorf("Unexpected roles: %s, %s", history[0].Role, history[1].Role)
+	}
+	os.Remove(tmpFile)
+}
+
+func TestSimSummary(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "turn", Content: "hello", Response: "world"},
+			{Action: "summary", Label: "test_summary"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	if len(result.Inspections) != 1 {
+		t.Fatalf("Expected 1 inspection, got %d", len(result.Inspections))
+	}
+	insp := result.Inspections[0]
+	if insp.Summary == "" {
+		t.Error("Expected non-empty summary")
+	}
+	if !strings.Contains(insp.Summary, "user") || !strings.Contains(insp.Summary, "assistant") {
+		t.Errorf("Summary should contain role names: %s", insp.Summary[:100])
+	}
+}
+
 func TestSimClearAndAssertTotal(t *testing.T) {
 	scenario := SimScenario{
 		Config: SimConfig{Width: 120, Height: 40},
