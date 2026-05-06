@@ -1,0 +1,11 @@
+{
+  "description": "Regression: basic turn flow with message assertions",
+  "config": {"width": 120, "height": 40},
+  "steps": [
+    {"action": "turn", "content": "hello", "response": "Hi!"},
+    {"action": "assert", "assert_role": "user", "assert_count": 1},
+    {"action": "assert", "assert_role": "assistant", "assert_count": 1},
+    {"action": "assert", "assert_total": 2},
+    {"action": "assert", "assert_message_order": ["user", "assistant"]}
+  ]
+}

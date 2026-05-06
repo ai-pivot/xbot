@@ -1,0 +1,19 @@
+{
+  "description": "Regression: streaming simulation with reasoning",
+  "config": {"width": 120, "height": 40},
+  "steps": [
+    {"action": "user_msg", "content": "write a function"},
+    {"action": "progress", "phase": "thinking", "iteration": 0,
+      "reasoning_stream_content": "Let me think about the function signature..."},
+    {"action": "progress", "phase": "thinking", "iteration": 0,
+      "active_tools": [{"name": "FileCreate", "label": "Create func.go", "status": "active"}]},
+    {"action": "progress", "phase": "done", "iteration": 0,
+      "completed_tools": [{"name": "FileCreate", "label": "Create func.go", "status": "done", "elapsed_ms": 100}]},
+    {"action": "progress", "phase": "thinking", "iteration": 1,
+      "stream_content": "Here is the function:\n```go\nfunc add(a, b int) int {"},
+    {"action": "agent_msg", "content": "Here is the function:\n```go\nfunc add(a, b int) int {\n    return a + b\n}\n```"},
+    {"action": "assert", "assert_role": "assistant", "assert_count": 1},
+    {"action": "assert", "assert_role": "assistant", "assert_content": "func add"},
+    {"action": "assert", "assert_no_tool_errors": true}
+  ]
+}

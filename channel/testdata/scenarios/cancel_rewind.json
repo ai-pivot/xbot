@@ -1,0 +1,27 @@
+{
+  "description": "Regression: cancelled turn + rewind preserves tool records",
+  "config": {"width": 120, "height": 40},
+  "steps": [
+    {"action": "turn", "content": "first",
+      "turn_iterations": [
+        {"tools": [{"name": "Read", "label": "Read f1", "elapsed_ms": 100}]}
+      ],
+      "response": "First response"},
+
+    {"action": "user_msg", "content": "second"},
+    {"action": "progress", "phase": "thinking", "iteration": 0,
+      "active_tools": [{"name": "Shell", "label": "Shell ls", "status": "active"}]},
+    {"action": "cancel"},
+    {"action": "phase_done", "iteration": 0,
+      "completed_tools": [{"name": "Shell", "label": "Shell ls", "status": "done", "elapsed_ms": 50}]},
+
+    {"action": "user_msg", "content": "third"},
+    {"action": "phase_done", "iteration": 0},
+    {"action": "agent_msg", "content": "Third response"},
+
+    {"action": "rewind", "rewind_index": 0},
+    {"action": "assert", "assert_role": "tool_summary", "assert_count": 2},
+    {"action": "assert", "assert_role": "tool_summary", "assert_tools": ["Shell", "Read"]},
+    {"action": "assert", "not_contains": "Third response"}
+  ]
+}

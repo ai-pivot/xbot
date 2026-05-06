@@ -1,0 +1,17 @@
+{
+  "description": "Regression: viewport scroll behavior with visible area assertions",
+  "config": {"width": 120, "height": 20},
+  "steps": [
+    {"action": "loop", "loop_count": 15, "loop_steps": [
+      {"action": "turn", "content": "msg", "response": "Response line content here"}
+    ]},
+    {"action": "assert", "assert_viewport_at_bottom": true},
+    {"action": "assert", "visible_contains": "Response line"},
+    {"action": "scroll", "scroll_to": "top"},
+    {"action": "assert", "assert_viewport_at_top": true},
+    {"action": "assert", "visible_contains": "msg"},
+    {"action": "scroll", "scroll_to": "bottom"},
+    {"action": "assert", "visible_contains": "Response line"},
+    {"action": "assert", "assert_state": {"queueLen": 0}}
+  ]
+}
