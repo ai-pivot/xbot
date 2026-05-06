@@ -405,13 +405,14 @@ func (a *Agent) SpawnInteractiveSession(
 			myDepth := cc.Depth() + 1
 			myPath := cc.Spawn(rn).Chain
 			inst := instance
-			cfg.ProgressNotifier = func(lines []string) {
+			cfg.ProgressNotifier = func(lines []string, thinking string) {
 				if len(lines) > 0 {
 					cb(SubAgentProgressDetail{
 						Path:     myPath,
 						Lines:    lines,
 						Depth:    myDepth,
 						Instance: inst,
+						Thinking: thinking,
 					})
 				}
 			}
@@ -799,13 +800,14 @@ func (a *Agent) SendToInteractiveSession(
 			myDepth := cc.Depth() + 1
 			myPath := cc.Spawn(roleName).Chain
 			inst := instance
-			cfg.ProgressNotifier = func(lines []string) {
+			cfg.ProgressNotifier = func(lines []string, thinking string) {
 				if len(lines) > 0 {
 					cb(SubAgentProgressDetail{
 						Path:     myPath,
 						Lines:    lines,
 						Depth:    myDepth,
 						Instance: inst,
+						Thinking: thinking,
 					})
 				}
 			}

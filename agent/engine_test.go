@@ -379,7 +379,7 @@ func TestRun_ProgressNotification(t *testing.T) {
 		Tools:     newTestRegistry(),
 		Messages:  baseMessages(),
 		AgentID:   "main",
-		ProgressNotifier: func(lines []string) {
+		ProgressNotifier: func(lines []string, _ string) {
 			notifications = append(notifications, lines...)
 		},
 		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
@@ -790,7 +790,7 @@ func TestRun_SessionFinalSentCallback(t *testing.T) {
 		Tools:     newTestRegistry(),
 		Messages:  baseMessages(),
 		AgentID:   "main",
-		ProgressNotifier: func(lines []string) {
+		ProgressNotifier: func(lines []string, _ string) {
 			notifyCount++
 		},
 		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
@@ -1547,7 +1547,7 @@ func TestRun_TokenUsageInProgress(t *testing.T) {
 		AgentID:   "main",
 		Channel:   "test",
 		ChatID:    "chat1",
-		ProgressNotifier: func(_ []string) {
+		ProgressNotifier: func(_ []string, _ string) {
 			// Required for autoNotify=true so that progressFinalizer fires
 		},
 		ProgressEventHandler: func(evt *ProgressEvent) {

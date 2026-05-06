@@ -90,7 +90,7 @@ type RunConfig struct {
 	RootSessionKey string
 
 	// ProgressNotifier 进度通知回调（nil = 不通知）
-	ProgressNotifier func(lines []string)
+	ProgressNotifier func(lines []string, thinking string)
 
 	// ProgressEventHandler 结构化进度事件回调（nil = 不发送）
 	ProgressEventHandler func(event *ProgressEvent)

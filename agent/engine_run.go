@@ -298,7 +298,11 @@ func (s *runState) notifyProgress(extra string) {
 			buf.WriteByte('\n')
 		}
 	}
-	s.cfg.ProgressNotifier([]string{buf.String()})
+	thinking := ""
+	if s.structuredProgress != nil {
+		thinking = s.structuredProgress.ThinkingContent
+	}
+	s.cfg.ProgressNotifier([]string{buf.String()}, thinking)
 	if s.cfg.ProgressEventHandler != nil && s.structuredProgress != nil {
 		s.progressMu.Lock()
 		snapshot := make([]string, len(s.progressLines))
@@ -695,8 +699,19 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		// recordAssistantMsg is not called for final text responses (handleFinalResponse
 		// returns directly), so ThinkingContent must be set here for SubAgent
 		// session viewers that synthesize assistant messages from PhaseDone payload.
-		if s.structuredProgress != nil && cleanContent != "" {
-			s.structuredProgress.ThinkingContent = cleanContent
+		if s.structuredProgress != nil {
+			if cleanContent != "" {
+				s.structuredProgress.ThinkingContent = cleanContent
+			} else if response.ReasoningContent != "" {
+				// Model returned only tool calls (no text) but has reasoning.
+				// Use reasoning as ThinkingContent so SubAgent progress tree
+				// shows what the model is thinking rather than "💭 思考中...".
+				rc := response.ReasoningContent
+				if r := []rune(rc); len(r) > 200 {
+					rc = string(r[:200]) + "…"
+				}
+				s.structuredProgress.ThinkingContent = rc
+			}
 		}
 
 		out := s.buildOutput(&bus.OutboundMessage{

@@ -1028,9 +1028,14 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 	for _, p := range prev {
 		key := subAgentKey(p.Role, p.Instance)
 		if idx, ok := newByKey[key]; ok {
-			// Agent exists in both — merge: use new data but recursively merge children
+			// Agent exists in both — merge: use new data but preserve
+			// previous Desc when new is empty (SubAgent progress may
+			// report an empty Desc between activity bursts).
 			n := new[idx]
 			merged := n
+			if merged.Desc == "" && p.Desc != "" {
+				merged.Desc = p.Desc
+			}
 			merged.Children = mergeSubAgentTrees(p.Children, n.Children)
 			result = append(result, merged)
 			delete(newByKey, key)

@@ -215,9 +215,9 @@ func (a *Agent) buildMainRunConfig(
 	if channel == "web" || channel == "cli" {
 		// Web: no-op notifier — structured progress goes via ProgressEventHandler
 		// Setting ProgressNotifier to non-nil enables autoNotify in engine.Run()
-		cfg.ProgressNotifier = func(lines []string) {}
+		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	} else if autoNotify {
-		cfg.ProgressNotifier = func(lines []string) {
+		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
 				_ = a.sendMessage(channel, chatID, lines[0])
 			}
@@ -1151,13 +1151,14 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 	// 设置当前层级的 ProgressNotifier
 	if parentCB != nil {
 		// 非顶层：穿透进度到父 agent（由上面的穿透回调处理）
-		cfg.ProgressNotifier = func(lines []string) {
+		cfg.ProgressNotifier = func(lines []string, thinking string) {
 			if len(lines) > 0 {
 				parentCB(SubAgentProgressDetail{
 					Path:     myPath,
 					Lines:    lines,
 					Depth:    myDepth,
 					Instance: instance,
+					Thinking: thinking,
 				})
 			}
 		}
@@ -1166,7 +1167,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		// CLI 模式下由 wireSubAgentCLIProgress 的 StructuredProgress 处理，
 		// 不需要 sendMessage（否则会把工具行渲染成主 session 的 assistant 消息）。
 		rn := roleName
-		cfg.ProgressNotifier = func(lines []string) {
+		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
 				last := lines[len(lines)-1]
 				if idx := strings.LastIndex(last, "\n"); idx >= 0 {
@@ -1176,6 +1177,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 				_ = a.sendMessage(originChannel, originChatID, prefixed)
 			}
 		}
+	} else if originChannel == "cli" {
+		// CLI 渠道 + 无父 callback：设置 dummy notifier 使 autoNotify=true，
+		// 这样 wireSubAgentCLIProgress 设置的 ProgressEventHandler 才会被调用。
+		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
 	// Register one-shot subagent in interactiveSubAgents so it's visible

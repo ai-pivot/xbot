@@ -100,6 +100,7 @@ type SubAgentProgressDetail struct {
 	Lines    []string // 进度内容（所有行，已清理换行）
 	Depth    int      // 嵌套深度（0 = 直接子 Agent）
 	Instance string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
+	Thinking string   // 当前迭代的 assistant thinking/content（用于进度树描述）
 }
 
 // --- 辅助函数 ---
@@ -743,34 +744,52 @@ func renderChildrenTree(children []childAgentStatus, baseIndent string, currentD
 // This replaces the fragile ExtractSubAgentTree that parses progress text lines.
 func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNode {
 	roleName := extractRoleName(detail.Path)
-	roleText := roleWithInstance(roleName, detail.Instance)
 
 	flat := flattenLines(detail.Lines)
 	_, children := extractOwnAndChildProgress(flat)
 
-	// Determine status from Lines (reuse existing logic)
-	ownLine := ""
-	if len(flat) > 0 {
-		ownLine = flat[0]
-	}
+	// Status:穿透回调只在 SubAgent 运行期间触发（完成后不再调用），
+	// 所以状态始终为 "running"。绝不能从 ownLine 推断 "done" ——
+	// ownLine 是 SubAgent 内部的 progressLines，工具完成后包含 ✅ 前缀，
+	// 会被 CLI renderSubAgentTree 跳过导致进度树消失。
 	status := "running"
-	if strings.HasPrefix(ownLine, "> ✅") || strings.HasPrefix(ownLine, "✅") {
-		status = "done"
-	} else if strings.HasPrefix(ownLine, "> ❌") || strings.HasPrefix(ownLine, "❌") {
-		status = "error"
-	}
 
-	// Extract own description
+	// Description:优先使用 thinking content（LLM 迭代的实际输出），
+	// 这比工具行名称更能反映 SubAgent 当前在做什么。
 	desc := ""
-	if idx := strings.Index(ownLine, ": "); idx >= 0 {
-		desc = ownLine[idx+2:]
-		if len(desc) > 80 {
-			desc = desc[:80] + "…"
+	if detail.Thinking != "" {
+		desc = detail.Thinking
+		if r := []rune(desc); len(r) > 80 {
+			desc = string(r[:80]) + "…"
+		}
+	}
+	if desc == "" {
+		// Fallback:从 progressLines 提取最新活动行（跳过 ✅/❌ 和 💭 占位行）。
+		// 如果所有行都是完成的工具或思考占位，desc 保持空，
+		// 让 mergeSubAgentTrees 保留上一条有意义的描述。
+		ownLine := ""
+		for i := len(flat) - 1; i >= 0; i-- {
+			line := flat[i]
+			if strings.HasPrefix(line, "> ✅") || strings.HasPrefix(line, "✅") ||
+				strings.HasPrefix(line, "> ❌") || strings.HasPrefix(line, "❌") ||
+				strings.HasPrefix(line, "💭") || strings.HasPrefix(line, "> 💭") {
+				continue
+			}
+			ownLine = line
+			break
+		}
+		if ownLine != "" {
+			ownLine = strings.TrimPrefix(ownLine, "> ")
+			if len(ownLine) > 80 {
+				desc = string([]rune(ownLine)[:80]) + "…"
+			} else {
+				desc = ownLine
+			}
 		}
 	}
 
 	node := SubAgentNode{
-		Role:     roleText,
+		Role:     roleName,
 		Instance: detail.Instance,
 		Status:   status,
 		Desc:     desc,
