@@ -106,6 +106,15 @@ type SimStep struct {
 
 	// ─── queue fields ───
 	QueueMessages []string `json:"queue_messages,omitempty"`
+
+	// ─── system_msg fields ───
+	// "system_msg" adds a system feedback message (like info/error feedback)
+	Level string `json:"level,omitempty"` // "info" (default), "error", "warn"
+
+	// ─── turn shortcut fields ───
+	// "turn" is a shortcut that combines: user_msg + progress(tools) + phase_done + agent_msg
+	// into a single step. It expands into multiple internal steps.
+	Response string `json:"response,omitempty"` // agent response text (for "turn" action)
 }
 
 // SimSubAgent describes a SubAgent in the tree for simulation.
@@ -331,6 +340,10 @@ func (r *simRunner) processStep(idx int, step SimStep) error {
 		return r.doQueueAdd(idx, step)
 	case "subagent":
 		return r.doSubAgent(idx, step)
+	case "system_msg":
+		return r.doSystemMsg(idx, step)
+	case "turn":
+		return r.doTurn(idx, step)
 	default:
 		return fmt.Errorf("unknown action: %q", step.Action)
 	}
@@ -665,6 +678,67 @@ func (r *simRunner) doSubAgent(idx int, step SimStep) error {
 		m.renderCacheValid = false
 		m.updateViewportContent()
 	}
+	return nil
+}
+
+func (r *simRunner) doSystemMsg(idx int, step SimStep) error {
+	m := r.model
+	content := step.Content
+	switch step.Level {
+	case "error", "err":
+		content = "✗ " + content
+	case "warn", "warning":
+		content = "⚠ " + content
+	default:
+		content = "ℹ " + content
+	}
+	m.appendSystem(content)
+	m.renderCacheValid = false
+	m.updateViewportContent()
+	return nil
+}
+
+// doTurn is a shortcut that expands into: user_msg → progress(tools) → phase_done → agent_msg.
+// This dramatically reduces JSON boilerplate for simple turns.
+func (r *simRunner) doTurn(idx int, step SimStep) error {
+	// 1. User message
+	if err := r.doUserMsg(idx, SimStep{Content: step.Content}); err != nil {
+		return err
+	}
+
+	// 2. Progress with active tools (if any)
+	if len(step.ActiveTools) > 0 || step.Thinking != "" {
+		progStep := SimStep{
+			Phase:       "thinking",
+			Iteration:   0,
+			Thinking:    step.Thinking,
+			Reasoning:   step.Reasoning,
+			ActiveTools: step.ActiveTools,
+		}
+		if err := r.doProgress(idx, progStep); err != nil {
+			return err
+		}
+	}
+
+	// 3. Phase done with completed tools (if any)
+	if len(step.CompletedTools) > 0 || len(step.Tools) > 0 {
+		doneStep := SimStep{
+			Iteration:      0,
+			CompletedTools: step.CompletedTools,
+			Tools:          step.Tools,
+		}
+		if err := r.doPhaseDone(idx, doneStep); err != nil {
+			return err
+		}
+	}
+
+	// 4. Agent response
+	if step.Response != "" {
+		if err := r.doAgentMsg(idx, SimStep{Content: step.Response}); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -1141,5 +1215,50 @@ func TestSimHistoryPreload(t *testing.T) {
 	}
 	if len(result.Inspections[0].Messages) != 2 {
 		t.Errorf("Expected 2 preloaded messages, got %d", len(result.Inspections[0].Messages))
+	}
+}
+
+func TestSimSystemMsg(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "user_msg", Content: "hello"},
+			{Action: "system_msg", Content: "Connected to server"},
+			{Action: "system_msg", Content: "API rate limit exceeded", Level: "error"},
+			{Action: "system_msg", Content: "Retrying in 5s", Level: "warn"},
+			{Action: "inspect", Label: "with_system_msgs", InspectMessages: true},
+			{Action: "assert", AssertRole: "system", AssertCount: 3},
+			{Action: "assert", AssertRole: "system", AssertContent: "rate limit"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+}
+
+func TestSimTurnShortcut(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			// Simple turn with no tools
+			{Action: "turn", Content: "hello", Response: "Hi there!"},
+			// Turn with tools
+			{Action: "turn", Content: "read the file",
+				ActiveTools:    []SimToolRecord{{Name: "Read", Label: "Read main.go", Status: "active"}},
+				CompletedTools: []SimToolRecord{{Name: "Read", Label: "Read main.go", Status: "done", Elapsed: 100}},
+				Response:       "Here is main.go..."},
+			// Verify
+			{Action: "assert", AssertRole: "user", AssertCount: 2},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 2},
+			{Action: "assert", AssertRole: "tool_summary", AssertCount: 1},
+			{Action: "assert", AssertRole: "assistant", AssertContent: "Here is main.go"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
 	}
 }
