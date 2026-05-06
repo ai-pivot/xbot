@@ -56,13 +56,15 @@ type SimStep struct {
 	Content string `json:"content,omitempty"`
 
 	// ─── progress / phase_done fields ───
-	Phase          string          `json:"phase,omitempty"`
-	Iteration      int             `json:"iteration,omitempty"`
-	Thinking       string          `json:"thinking,omitempty"`
-	Reasoning      string          `json:"reasoning,omitempty"`
-	Tools          []SimToolRecord `json:"tools,omitempty"`
-	ActiveTools    []SimToolRecord `json:"active_tools,omitempty"`
-	CompletedTools []SimToolRecord `json:"completed_tools,omitempty"`
+	Phase                  string          `json:"phase,omitempty"`
+	Iteration              int             `json:"iteration,omitempty"`
+	Thinking               string          `json:"thinking,omitempty"`
+	Reasoning              string          `json:"reasoning,omitempty"`
+	StreamContent          string          `json:"stream_content,omitempty"`
+	ReasoningStreamContent string          `json:"reasoning_stream_content,omitempty"`
+	Tools                  []SimToolRecord `json:"tools,omitempty"`
+	ActiveTools            []SimToolRecord `json:"active_tools,omitempty"`
+	CompletedTools         []SimToolRecord `json:"completed_tools,omitempty"`
 
 	// ─── key / resize / rewind fields ───
 	Key         string `json:"key,omitempty"`
@@ -367,13 +369,15 @@ func (r *simRunner) doAgentMsg(idx int, step SimStep) error {
 func (r *simRunner) doProgress(idx int, step SimStep) error {
 	m := r.model
 	payload := &CLIProgressPayload{
-		Phase:          step.Phase,
-		Iteration:      step.Iteration,
-		Thinking:       step.Thinking,
-		Reasoning:      step.Reasoning,
-		ActiveTools:    convertSimTools(step.ActiveTools, step.Iteration),
-		CompletedTools: convertSimTools(step.CompletedTools, step.Iteration),
-		ChatID:         m.channelName + ":" + m.chatID,
+		Phase:                  step.Phase,
+		Iteration:              step.Iteration,
+		Thinking:               step.Thinking,
+		Reasoning:              step.Reasoning,
+		StreamContent:          step.StreamContent,
+		ReasoningStreamContent: step.ReasoningStreamContent,
+		ActiveTools:            convertSimTools(step.ActiveTools, step.Iteration),
+		CompletedTools:         convertSimTools(step.CompletedTools, step.Iteration),
+		ChatID:                 m.channelName + ":" + m.chatID,
 	}
 	m.Update(cliProgressMsg{payload: payload})
 	m.renderCacheValid = false
@@ -1073,5 +1077,69 @@ func TestSimSubAgent(t *testing.T) {
 	}
 	if len(result.Snapshots) != 1 {
 		t.Errorf("Expected 1 snapshot, got %d", len(result.Snapshots))
+	}
+}
+
+func TestSimStreaming(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		Steps: []SimStep{
+			{Action: "user_msg", Content: "write a function"},
+			// Reasoning streaming phase
+			{Action: "progress", Phase: "thinking", Iteration: 0,
+				ReasoningStreamContent: "Let me think about this..."},
+			{Action: "snapshot", Label: "reasoning_start"},
+			// More reasoning accumulated
+			{Action: "progress", Phase: "thinking", Iteration: 0,
+				ReasoningStreamContent: "Let me think about this... I need to consider edge cases and error handling."},
+			// Tools
+			{Action: "progress", Phase: "thinking", Iteration: 0,
+				ActiveTools: []SimToolRecord{{Name: "FileCreate", Label: "Create func.go", Status: "active"}}},
+			{Action: "progress", Phase: "done", Iteration: 0,
+				CompletedTools: []SimToolRecord{{Name: "FileCreate", Label: "Create func.go", Status: "done", Elapsed: 100}}},
+			// Content streaming phase
+			{Action: "progress", Phase: "thinking", Iteration: 1,
+				StreamContent: "Here is the function:\n\n```go\nfunc add(a, b int) int {"},
+			{Action: "snapshot", Label: "streaming_content"},
+			{Action: "progress", Phase: "thinking", Iteration: 1,
+				StreamContent: "Here is the function:\n\n```go\nfunc add(a, b int) int {\n    return a + b\n}\n```"},
+			{Action: "agent_msg", Content: "Here is the function:\n\n```go\nfunc add(a, b int) int {\n    return a + b\n}\n```"},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 1},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	if len(result.Snapshots) != 2 {
+		t.Errorf("Expected 2 snapshots, got %d", len(result.Snapshots))
+	}
+}
+
+func TestSimHistoryPreload(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 40},
+		History: []SimHistoryMsg{
+			{Role: "user", Content: "previous question"},
+			{Role: "assistant", Content: "previous answer"},
+		},
+		Steps: []SimStep{
+			{Action: "inspect", Label: "preloaded", InspectMessages: true},
+			{Action: "assert", AssertRole: "user", AssertCount: 1},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 1},
+			{Action: "assert", AssertRole: "assistant", AssertContent: "previous answer"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Simulation failed: %s", result.Error)
+	}
+	if len(result.Inspections) != 1 {
+		t.Fatalf("Expected 1 inspection")
+	}
+	if len(result.Inspections[0].Messages) != 2 {
+		t.Errorf("Expected 2 preloaded messages, got %d", len(result.Inspections[0].Messages))
 	}
 }
