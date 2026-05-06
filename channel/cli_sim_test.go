@@ -1,5 +1,29 @@
 package channel
 
+// ─── TUI Scenario-Driven Simulator ──────────────────────────────────
+//
+// A zero-dependency TUI simulator for testing CLI interactions without
+// requiring an LLM, server, or real terminal. Agent writes JSON scenarios,
+// compiles the test binary, and reads structured results.
+//
+// Quick start:
+//
+//	go test -c -o /tmp/xbot-tui-sim ./channel/
+//	XBOT_SIM_SCENARIO=scene.json /tmp/xbot-tui-sim -test.run TestSimMain
+//
+// Features:
+//   - 30+ action types (user_msg, turn, progress, rewind, scroll, etc.)
+//   - 15+ assertion types (view, message, state, tool, viewport, visible area)
+//   - Auto markdown report to stdout (no Python needed)
+//   - Conditional execution (if/then/else)
+//   - Modular scenarios (include, loop, export/import history)
+//   - SubAgent tree simulation
+//   - Streaming/reasoning simulation
+//   - Viewport scroll testing
+//   - Performance: 50 turns in ~78ms
+//
+// See ~/.xbot/skills/tui-debug/SKILL.md for full documentation.
+
 import (
 	"encoding/json"
 	"fmt"
@@ -49,6 +73,13 @@ type SimToolRecord struct {
 }
 
 // SimStep is a single event in the simulation.
+// Each step has an Action field and optional fields depending on the action type.
+//
+// Message actions: user_msg, agent_msg, system_msg, turn
+// Progress actions: progress, phase_done, subagent
+// Control actions: cancel, key, resize, rewind, clear, tick, set_var, queue_add, scroll, input_text
+// Observation actions: snapshot, inspect, summary, assert
+// Structure actions: loop, include, if, comment, validate, export, wait_ms
 type SimStep struct {
 	Action string `json:"action"`
 
@@ -193,6 +224,10 @@ type SimTurnIter struct {
 
 // ─── Output types ──────────────────────────────────────────────────
 
+// SimResult is the output of a simulation run.
+// On success, ok=true and steps_ok==steps_total.
+// On failure, ok=false, error describes the failing step, and an
+// auto_on_failure inspection is appended with full messages + state.
 type SimResult struct {
 	OK          bool            `json:"ok"`
 	Error       string          `json:"error,omitempty"`
