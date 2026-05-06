@@ -1061,11 +1061,16 @@ func (r *simRunner) doSummary(idx int, step SimStep) error {
 	fmt.Fprintf(&sb, "**State**: typing=%v cancelled=%v inputReady=%v msgs=%d iterHist=%d queueLen=%d\n\n",
 		m.typing, m.turnCancelled, m.inputReady, len(m.messages), len(m.iterationHistory), len(m.messageQueue))
 
-	// Messages table
+	// Messages table (max 20 rows, with summary for overflow)
 	if len(m.messages) > 0 {
 		sb.WriteString("| # | Role | TurnID | Content (first 50) | Iterations | Tools |\n")
 		sb.WriteString("|---|------|--------|-------------------|------------|-------|\n")
-		for i, msg := range m.messages {
+		maxRows := 20
+		showMsgs := m.messages
+		if len(showMsgs) > maxRows {
+			showMsgs = showMsgs[:maxRows]
+		}
+		for i, msg := range showMsgs {
 			content := truncateStr(msg.content, 50)
 			iterCount := len(msg.iterations)
 			var toolNames []string
@@ -1084,6 +1089,9 @@ func (r *simRunner) doSummary(idx int, step SimStep) error {
 			}
 			fmt.Fprintf(&sb, "| %d | %s | %d | %s | %d | %s |\n",
 				i, msg.role, msg.turnID, content, iterCount, toolStr)
+		}
+		if len(m.messages) > maxRows {
+			fmt.Fprintf(&sb, "| ... | ... | ... | *%d more messages* | ... | ... |\n", len(m.messages)-maxRows)
 		}
 		sb.WriteString("\n")
 	}
