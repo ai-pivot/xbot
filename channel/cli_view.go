@@ -37,8 +37,8 @@ func (m *cliModel) isWide() bool { return m.width >= 120 }
 // chatWidth returns the effective width for the chat viewport, accounting for sidebar.
 func (m *cliModel) chatWidth() int {
 	if m.isWide() && m.sidebarEnabled && m.sidebarVisible {
-		// sidebar renders at Width(sw) with BorderLeft(│), total = sw + 1 chars
-		w := m.width - m.sidebarWidth - 1
+		// sidebar: Width(sw-1) + BorderLeft = sw chars total
+		w := m.width - m.sidebarWidth
 		if w < 20 {
 			w = 20
 		}
@@ -323,49 +323,69 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	infoBar = m.augmentInfoBar(infoBar)
 
 	// Layout assembly — build progressively so empty sections don't add blank lines.
-	var lines []string
-	lines = append(lines, titleBar)
-
-	// Chat viewport (may include sidebar alongside)
-	chatView := m.viewport.View()
 	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
-	if showSidebar {
-		sidebar := m.renderSidebar()
-		if m.sidebarPosition == "right" {
-			lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, chatView, sidebar))
-		} else {
-			lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, sidebar, chatView))
-		}
-	} else {
-		lines = append(lines, chatView)
-	}
 
+	// Title bar is always full width
+	var topLines []string
+	topLines = append(topLines, titleBar)
+
+	// Middle section: viewport + status + todo + footer + input
+	// When sidebar is visible, this whole section is squeezed to chatWidth
+	var middleLines []string
+	middleLines = append(middleLines, m.viewport.View())
 	if status != "" {
-		lines = append(lines, status)
+		middleLines = append(middleLines, status)
 	}
 	todoBar := m.renderTodoBar()
 	if todoBar != "" {
-		lines = append(lines, todoBar)
+		middleLines = append(middleLines, todoBar)
 	}
 	if footer != "" {
-		lines = append(lines, footer)
+		middleLines = append(middleLines, footer)
 	}
-	lines = append(lines, input)
+	middleLines = append(middleLines, input)
+	middleBlock := strings.Join(middleLines, "\n")
+
+	// When sidebar is visible, constrain middle block to chatWidth
+	// so status/footer/input don't overflow into sidebar space.
+	if showSidebar {
+		cw := m.chatWidth()
+		middleBlock = lipgloss.NewStyle().Width(cw).Render(middleBlock)
+	}
+
+	// Info bar is always full width
+	infoBarLine := ""
 	if infoBar != "" {
-		lines = append(lines, infoBar)
+		infoBarLine = "\n" + infoBar
 	}
-	return strings.Join(lines, "\n")
+
+	// Sidebar: spans the full height of the middle section (viewport → input)
+	if showSidebar {
+		sidebar := m.renderSidebarForBlock(middleBlock)
+		if m.sidebarPosition == "right" {
+			return strings.Join(topLines, "\n") + "\n" +
+				lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar) +
+				infoBarLine
+		}
+		return strings.Join(topLines, "\n") + "\n" +
+			lipgloss.JoinHorizontal(lipgloss.Top, sidebar, middleBlock) +
+			infoBarLine
+	}
+
+	return strings.Join(topLines, "\n") + "\n" + middleBlock + infoBarLine
 }
 
-// renderSidebar renders the sidebar next to the viewport.
-// Design: no background, no filler sections. Only shows what's useful.
-// Sessions are clickable to switch directly.
-func (m *cliModel) renderSidebar() string {
+// renderSidebarForBlock renders the sidebar that spans the full height of the
+// middle content block (viewport + status + footer + input).
+// The block string is used only to measure height via line counting.
+func (m *cliModel) renderSidebarForBlock(block string) string {
 	sw := m.sidebarWidth
 	if sw < 12 {
 		sw = 12
 	}
-	h := m.viewport.Height()
+
+	// Measure middle block height
+	h := strings.Count(block, "\n") + 1
 	if h < 5 {
 		h = 5
 	}
@@ -381,11 +401,6 @@ func (m *cliModel) renderSidebar() string {
 	// --- Active tasks (only when something is running) ---
 	if m.bgTaskCount > 0 || m.agentCount > 0 {
 		blocks = append(blocks, m.renderSidebarActive())
-	}
-
-	// --- Token usage (only when available) ---
-	if m.lastTokenUsage != nil && m.lastTokenUsage.PromptTokens > 0 {
-		blocks = append(blocks, m.renderSidebarTokens())
 	}
 
 	content := strings.Join(blocks, "\n\n")
@@ -440,20 +455,6 @@ func (m *cliModel) renderSidebarActive() string {
 			b.WriteByte('\n')
 		}
 		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf(" ● agents: %d", m.agentCount)))
-	}
-	return b.String()
-}
-
-func (m *cliModel) renderSidebarTokens() string {
-	if m.lastTokenUsage == nil || m.lastTokenUsage.PromptTokens <= 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(m.styles.SidebarHeader.Render("Tokens"))
-	b.WriteByte('\n')
-	b.WriteString(m.styles.TextMutedSt.Render(fmt.Sprintf("  %s", cliFormatTokenCount(m.lastTokenUsage.PromptTokens))))
-	if m.lastTokenUsage.CompletionTokens > 0 {
-		b.WriteString(m.styles.TextMutedSt.Render(fmt.Sprintf(" + %s", cliFormatTokenCount(m.lastTokenUsage.CompletionTokens))))
 	}
 	return b.String()
 }
