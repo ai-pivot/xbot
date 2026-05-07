@@ -257,15 +257,22 @@ type suHistoryLoadMsg struct {
 // sessionState holds per-session state that should be preserved when switching sessions.
 // Messages are NOT stored here — the DB is the source of truth for history.
 type sessionState struct {
-	progress          *CLIProgressPayload
-	typing            bool
-	iterationHistory  []cliIterationSnapshot
-	lastSeenIteration int
-	streamingMsgIdx   int
-	typingStartTime   time.Time
-	lastReasoning     string
-	lastThinking      string
-	turnCancelled     bool // true after explicit Ctrl+C cancel — prevents auto-start
+	progress             *CLIProgressPayload
+	typing               bool
+	agentTurnID          uint64
+	inputReady           bool
+	needFlushQueue       bool
+	lastProgressSeq      uint64
+	twVisible            int
+	rwVisible            int
+	iterationHistory     []cliIterationSnapshot
+	lastSeenIteration    int
+	streamingMsgIdx      int
+	typingStartTime      time.Time
+	lastReasoning        string
+	lastThinking         string
+	turnCancelled        bool
+	typewriterTickActive bool
 }
 
 // sessionKey returns the map key for the current session.
@@ -281,15 +288,22 @@ func (m *cliModel) saveCurrentSession() {
 		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
-		progress:          m.progress,
-		typing:            m.typing,
-		iterationHistory:  m.iterationHistory,
-		lastSeenIteration: m.lastSeenIteration,
-		streamingMsgIdx:   m.streamingMsgIdx,
-		typingStartTime:   m.typingStartTime,
-		lastReasoning:     m.lastReasoning,
-		lastThinking:      m.lastThinking,
-		turnCancelled:     m.turnCancelled,
+		progress:             m.progress,
+		typing:               m.typing,
+		agentTurnID:          m.agentTurnID,
+		inputReady:           m.inputReady,
+		needFlushQueue:       m.needFlushQueue,
+		lastProgressSeq:      m.lastProgressSeq,
+		twVisible:            m.twVisible,
+		rwVisible:            m.rwVisible,
+		iterationHistory:     m.iterationHistory,
+		lastSeenIteration:    m.lastSeenIteration,
+		streamingMsgIdx:      m.streamingMsgIdx,
+		typingStartTime:      m.typingStartTime,
+		lastReasoning:        m.lastReasoning,
+		lastThinking:         m.lastThinking,
+		turnCancelled:        m.turnCancelled,
+		typewriterTickActive: m.typewriterTickActive,
 	}
 }
 
@@ -300,6 +314,12 @@ func (m *cliModel) restoreSession() {
 	if saved, ok := m.savedSessions[key]; ok {
 		m.progress = saved.progress
 		m.typing = saved.typing
+		m.agentTurnID = saved.agentTurnID
+		m.inputReady = saved.inputReady
+		m.needFlushQueue = saved.needFlushQueue
+		m.lastProgressSeq = saved.lastProgressSeq
+		m.twVisible = saved.twVisible
+		m.rwVisible = saved.rwVisible
 		m.iterationHistory = saved.iterationHistory
 		m.lastSeenIteration = saved.lastSeenIteration
 		m.streamingMsgIdx = saved.streamingMsgIdx
@@ -307,6 +327,7 @@ func (m *cliModel) restoreSession() {
 		m.lastReasoning = saved.lastReasoning
 		m.lastThinking = saved.lastThinking
 		m.turnCancelled = saved.turnCancelled
+		m.typewriterTickActive = saved.typewriterTickActive
 		delete(m.savedSessions, key) // clean up
 	} else {
 		// No saved state — reset to idle (NOT cancelled)
@@ -321,6 +342,12 @@ func (m *cliModel) restoreSession() {
 		m.reasoningByIter = nil
 		m.lastThinking = ""
 		m.turnCancelled = false
+		m.inputReady = false
+		m.needFlushQueue = false
+		m.lastProgressSeq = 0
+		m.twVisible = 0
+		m.rwVisible = 0
+		m.typewriterTickActive = false
 	}
 }
 
