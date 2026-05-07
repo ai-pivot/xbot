@@ -730,7 +730,19 @@ func normalizeReplacementIndent(matchedOld, newStr string) string {
 		}
 		if fIndent, ok := fileIndent[trimmed]; ok {
 			refFileTabDepth = strings.Count(fIndent, "\t")
-			refNewSpaceDepth = len(leadingWhitespace(line))
+			// Use visual width, not byte length — a \t is tabWidth columns,
+			// not 1. Otherwise "    " (4 spaces) vs "\t" (1 byte) gives
+			// spaceDelta=3 and produces an extra tab level.
+			indent := leadingWhitespace(line)
+			visualW := 0
+			for _, r := range indent {
+				if r == '\t' {
+					visualW += tabWidth - (visualW % tabWidth)
+				} else {
+					visualW++
+				}
+			}
+			refNewSpaceDepth = visualW
 			break
 		}
 	}
