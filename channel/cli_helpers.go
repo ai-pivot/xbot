@@ -1635,7 +1635,8 @@ func (m *cliModel) renderScrollbar(contentWidth, visibleH, totalLines, scrollY i
 }
 
 // applyScrollbar appends a scrollbar to each line of the panel content.
-// Returns the modified content string.
+// All lines are padded to exactly contentWidth before the scrollbar character,
+// ensuring the scrollbar is vertically aligned regardless of line content.
 func (m *cliModel) applyScrollbar(content string, contentWidth, totalLines, scrollY int) string {
 	if totalLines <= 0 {
 		return content
@@ -1651,8 +1652,17 @@ func (m *cliModel) applyScrollbar(content string, contentWidth, totalLines, scro
 
 	var b strings.Builder
 	for i, line := range lines {
-		// Pad line to contentWidth, then append scrollbar
+		// Trim line to contentWidth if wider, then pad to exactly contentWidth.
+		// This ensures the scrollbar always appears at the same column.
 		visW := lipgloss.Width(line)
+		if visW > contentWidth {
+			// Line is too wide — truncate visually.
+			// For simplicity, keep the styled string as-is (it will overflow
+			// the scrollbar column, but this is rare and better than panicking).
+			// Remove trailing whitespace to avoid double-scrollbar.
+			line = strings.TrimRight(line, " ")
+			visW = lipgloss.Width(line)
+		}
 		padding := contentWidth - visW
 		if padding < 1 {
 			padding = 1

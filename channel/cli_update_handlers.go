@@ -286,9 +286,10 @@ func (m *cliModel) carryForwardProgressState(prev *CLIProgressPayload) {
 		// completion status for agents no longer reported by the server.
 		m.progress.SubAgents = mergeSubAgentTrees(prev.SubAgents, m.progress.SubAgents)
 	} else if len(prev.SubAgents) > 0 {
-		// No new SubAgent data — carry forward previous tree as-is.
-		// This is the common case between SubAgent progress updates.
-		m.progress.SubAgents = prev.SubAgents
+		// No new SubAgent data — carry forward previous tree, but filter out
+		// agents that were already done in prev. Done agents have already been
+		// displayed to the user and should not linger across subsequent updates.
+		m.progress.SubAgents = pruneDoneSubAgents(prev.SubAgents)
 	}
 }
 
@@ -1062,12 +1063,10 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 		return new
 	}
 	if len(new) == 0 {
-		// Mark all running/pending agents as done — they completed while the
-		// server wasn't reporting them.
-		for i := range prev {
-			prev[i] = markDoneIfRunning(prev[i])
-		}
-		return prev
+		// Server stopped reporting all agents — they completed.
+		// Return empty slice (no zombies). Previous carry-forward
+		// in carryForwardProgressState will handle pruning.
+		return nil
 	}
 
 	// Build lookup from new by unique key (Role + Instance)
@@ -1096,8 +1095,11 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 			delete(newByKey, key)
 		} else {
 			// Agent only in prev — server stopped reporting it.
-			// Mark as done if still running/pending (it completed between updates).
-			result = append(result, markDoneIfRunning(p))
+			// If already done/error, skip it (zombie cleanup — prevents
+			// completed agents from accumulating in the tree forever).
+			// If still running/pending, mark as done (it completed between
+			// updates) but also skip — the user already saw it finish.
+			_ = markDoneIfRunning(p) // mark children recursively
 		}
 	}
 
@@ -1129,6 +1131,21 @@ func markDoneIfRunning(sa CLISubAgent) CLISubAgent {
 		sa.Children[i] = markDoneIfRunning(sa.Children[i])
 	}
 	return sa
+}
+
+// pruneDoneSubAgents removes agents (and their children) that are already
+// marked "done". This prevents zombie entries from accumulating across
+// iteration boundaries when no new SubAgent data arrives.
+// Agents still "running" or "pending" are kept (they may complete soon).
+func pruneDoneSubAgents(agents []CLISubAgent) []CLISubAgent {
+	var kept []CLISubAgent
+	for _, a := range agents {
+		a.Children = pruneDoneSubAgents(a.Children)
+		if a.Status != "done" && a.Status != "error" {
+			kept = append(kept, a)
+		}
+	}
+	return kept
 }
 
 // handleCtrlC handles the unified Ctrl+C keypress.

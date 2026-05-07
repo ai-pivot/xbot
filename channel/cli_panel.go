@@ -30,9 +30,16 @@ type panelAgentEntry struct {
 // renderSelLine renders a settings panel selected row left-aligned to the given width.
 // lipgloss v2 Width() defaults to centering; this helper avoids that by manual padding.
 func (m *cliModel) renderSelLine(line string, w int) string {
+	// Use w-2 to leave room for scrollbar (1 char) + spacing (1 char).
+	// When scrollbar is not shown, applyScrollbar won't be called, so
+	// the shorter padding is fine (panel box clips the content anyway).
+	padW := w - 2
+	if padW < 10 {
+		padW = 10
+	}
 	vw := lipgloss.Width(line)
-	if vw < w {
-		line += strings.Repeat(" ", w-vw)
+	if vw < padW {
+		line += strings.Repeat(" ", padW-vw)
 	}
 	return m.styles.SettingsSelBg.Render(line)
 }
