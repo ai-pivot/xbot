@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -1348,6 +1349,41 @@ func (r *simRunner) doSummary(idx int, step SimStep) error {
 		sb.WriteString("\n")
 	}
 
+	// Tool statistics
+	toolStats := make(map[string]struct {
+		count  int
+		errors int
+	})
+	for _, msg := range m.messages {
+		for _, it := range msg.iterations {
+			for _, t := range it.Tools {
+				s := toolStats[t.Name]
+				s.count++
+				if t.Status == "error" {
+					s.errors++
+				}
+				toolStats[t.Name] = s
+			}
+		}
+	}
+	if len(toolStats) > 0 {
+		sb.WriteString("**Tool stats**:\n")
+		names := make([]string, 0, len(toolStats))
+		for name := range toolStats {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			s := toolStats[name]
+			extra := ""
+			if s.errors > 0 {
+				extra = fmt.Sprintf(" (%d errors)", s.errors)
+			}
+			fmt.Fprintf(&sb, "  - %s: %d calls%s\n", name, s.count, extra)
+		}
+		sb.WriteString("\n")
+	}
+
 	// View preview (first 10 lines)
 	view := r.captureView()
 	lines := strings.Split(view, "\n")
@@ -1417,6 +1453,9 @@ func (r *simRunner) doExport(idx int, step SimStep) error {
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal history: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(step.ExportPath), 0755); err != nil {
+		return fmt.Errorf("failed to create export directory: %v", err)
 	}
 	if err := os.WriteFile(step.ExportPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write export file: %v", err)
@@ -2314,7 +2353,7 @@ func TestSimLoop(t *testing.T) {
 }
 
 func TestSimExport(t *testing.T) {
-	tmpFile := "/tmp/sim_export_test_history.json"
+	tmpFile := filepath.Join(t.TempDir(), "sim_export_test_history.json")
 	scenario := SimScenario{
 		Config: SimConfig{Width: 120, Height: 40},
 		Steps: []SimStep{
