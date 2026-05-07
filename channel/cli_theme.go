@@ -770,7 +770,7 @@ func buildStyles(width int) cliStyles {
 		FooterHintLabel: lipgloss.NewStyle().Foreground(c(t.TextMuted)).Bold(true).Underline(true),
 		FooterHintHover: lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true).Underline(true),
 		// --- sidebar ---
-		SidebarBg:      lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.Border{Left: "│"}).BorderForeground(c(t.Border)),
+		SidebarBg:      lipgloss.NewStyle().BorderLeft(true).BorderStyle(lipgloss.Border{Left: "┃"}).BorderForeground(c(t.Accent)),
 		SidebarSection: lipgloss.NewStyle().Foreground(c(t.TextSecondary)).Bold(true),
 		SidebarItem:    lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
 		SidebarActive:  lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
