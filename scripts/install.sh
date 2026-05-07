@@ -332,7 +332,9 @@ install_launchd() {
     <string>${config_path}</string>
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>WorkingDirectory</key><string>${HOME}</string>
   <key>EnvironmentVariables</key><dict>
     <key>XBOT_HOME</key><string>${XBOT_HOME}</string>
