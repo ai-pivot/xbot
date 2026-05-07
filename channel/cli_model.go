@@ -139,10 +139,8 @@ func (m *cliModel) advanceWriterCJK(visible *int, target int, content string, sk
 
 // Ticker frame presets
 var (
-	// dotFrames: braille dot orbit — 8 frames for a smooth clockwise loop
-	dotFrames = []string{
-		"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-	}
+	// diamondPulseFrames: pulsing diamond sweep — thinking/loading spinner
+	diamondPulseFrames = []string{"◇◇◇◇◇", "◇◆◇◇◇", "◇◆◆◇◇", "◇◆◆◆◇", "◇◇◆◆◇", "◇◇◇◆◇"}
 	// waveFrames: rotating crescent moon phases — subagent feel
 	waveFrames = []string{"◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒"}
 	// orbitFrames: spinning orbit — processing feel
@@ -670,6 +668,14 @@ type cliModel struct {
 	// --- Mouse support ---
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
+	// --- Layout configuration ---
+	chatMaxWidth    int    // max content width (0 = unlimited)
+	chatCenter      bool   // center content in middle-width screens
+	layoutMode      string // "auto" / "single" / "dual"
+	sidebarEnabled  bool   // show sidebar in wide screens
+	sidebarWidth    int    // sidebar width in chars
+	sidebarPosition string // "left" / "right"
+
 	// toolDisplayInfo
 
 	// --- 🥚 Easter Eggs 彩蛋 ---
@@ -786,7 +792,7 @@ func newCLIModel() *cliModel {
 	renderer := newGlamourRenderer(maxBubbleWidth(80) - 2)
 
 	// Ticker
-	tk := newAnimTicker(dotFrames, currentTheme.Warning)
+	tk := newAnimTicker(diamondPulseFrames, currentTheme.Warning)
 
 	return &cliModel{
 		viewport:        vp,
@@ -807,6 +813,13 @@ func newCLIModel() *cliModel {
 		inputDraft:      "",
 		senderID:        "cli_user",
 		channelName:     "cli",
+		// Layout defaults
+		chatMaxWidth:    76,
+		chatCenter:      true,
+		layoutMode:      "auto",
+		sidebarEnabled:  true,
+		sidebarWidth:    20,
+		sidebarPosition: "left",
 	}
 }
 
@@ -869,11 +882,13 @@ type cliTempStatusClearMsg struct{}
 
 // cliSettingsSavedMsg settings save completed (async callback result)
 type cliSettingsSavedMsg struct {
-	themeChanged bool
-	theme        string
-	langChanged  bool
-	lang         string
-	feedbackMsg  string
+	themeChanged  bool
+	theme         string
+	langChanged   bool
+	lang          string
+	layoutChanged bool
+	layoutVals    map[string]string // layout-related settings for field update
+	feedbackMsg   string
 }
 
 // cliSwitchLLMDoneMsg is sent when an async subscription switch completes.

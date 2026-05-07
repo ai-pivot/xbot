@@ -138,6 +138,17 @@ var settingHandlerRegistry = map[string]settingHandler{
 			}
 		},
 	},
+
+	// --- Layout settings (UI-only, no server-side side-effects) ---
+	// These keys are marked Runtime=true so the CLI can detect layout changes.
+	// On the server side they're no-ops — the actual layout is handled by the CLI frontend.
+	"layout_mode":      {},
+	"sidebar_enabled":  {},
+	"sidebar_width":    {},
+	"sidebar_position": {},
+	"sidebar_sections": {},
+	"chat_max_width":   {},
+	"chat_center":      {},
 }
 
 // serverKnownNonRuntimeKeys are keys that may appear in DB settings but don't need

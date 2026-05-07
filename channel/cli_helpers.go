@@ -714,6 +714,34 @@ func (m *cliModel) applyLanguageChange(lang string) {
 	m.renderCacheValid = false
 }
 
+// applyLayoutConfig updates layout-related model fields from settings values
+// and invalidates the render cache so the viewport relayouts.
+func (m *cliModel) applyLayoutConfig(vals map[string]string) {
+	if v, ok := vals["layout_mode"]; ok && v != "" {
+		m.layoutMode = v
+	}
+	if v, ok := vals["sidebar_enabled"]; ok {
+		m.sidebarEnabled = ParseSettingBool(v)
+	}
+	if v, ok := vals["sidebar_width"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			m.sidebarWidth = n
+		}
+	}
+	if v, ok := vals["sidebar_position"]; ok && v != "" {
+		m.sidebarPosition = v
+	}
+	if v, ok := vals["chat_max_width"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			m.chatMaxWidth = n
+		}
+	}
+	if v, ok := vals["chat_center"]; ok {
+		m.chatCenter = ParseSettingBool(v)
+	}
+	m.renderCacheValid = false
+}
+
 // doSaveSettings runs the settings save callback synchronously and returns
 // a tea.Cmd that sends the result back as cliSettingsSavedMsg.
 // The callback is pure local I/O (config.json write, SQLite write, LLM rebuild)
@@ -725,22 +753,38 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	// Capture feedback string now (m.locale is only safe to read in Update)
 	feedbackMsg := m.locale.SettingsSaved
 
+	// Detect layout changes and collect layout values
+	layoutKeys := map[string]bool{
+		"layout_mode": true, "sidebar_enabled": true, "sidebar_width": true,
+		"sidebar_position": true, "sidebar_sections": true, "chat_max_width": true, "chat_center": true,
+	}
+	layoutChanged := false
+	layoutVals := make(map[string]string)
+	for k, v := range vals {
+		if layoutKeys[k] {
+			layoutChanged = true
+			layoutVals[k] = v
+		}
+	}
+
 	// Run synchronously — all operations are local I/O, no network calls
 	onSubmit(vals)
 
 	return func() tea.Msg {
 		return cliSettingsSavedMsg{
-			themeChanged: hasTheme && theme != "",
-			theme:        theme,
-			langChanged:  hasLang,
-			lang:         lang,
-			feedbackMsg:  feedbackMsg,
+			themeChanged:  hasTheme && theme != "",
+			theme:         theme,
+			langChanged:   hasLang,
+			lang:          lang,
+			layoutChanged: layoutChanged,
+			layoutVals:    layoutVals,
+			feedbackMsg:   feedbackMsg,
 		}
 	}
 }
 
 // handleSettingsSavedMsg processes the async settings save result.
-// Called from Update() to apply theme/locale changes and refresh the viewport.
+// Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	visualChanged := false
 	if msg.themeChanged {
@@ -749,6 +793,10 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	}
 	if msg.langChanged {
 		m.applyLanguageChange(msg.lang)
+		visualChanged = true
+	}
+	if msg.layoutChanged {
+		m.applyLayoutConfig(msg.layoutVals)
 		visualChanged = true
 	}
 	m.refreshCachedModelName()

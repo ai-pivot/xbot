@@ -209,22 +209,28 @@ var cliCommands = []string{
 // --- Unified Unicode icons ---
 // 避免 emoji/ASCII/Unicode 混用，统一视觉风格。
 const (
-	IconCheck      = "✓" // 成功/完成
-	IconCross      = "✗" // 错误/失败
-	IconDot        = "●" // 进行中/活跃
-	IconArrow      = "→" // 方向/进度
-	IconBullet     = "•" // 列表项
-	IconWarning    = "⚠" // 警告
-	IconInfo       = "ℹ" // 信息
-	IconSearch     = "🔍" // 搜索
-	IconRobot      = "🤖" // Agent/SubAgent
-	IconRunnerOn   = "🟢" // Runner 在线
-	IconRunnerWait = "🟡" // Runner 连接中
-	IconUser       = "👤" // 用户切换
-	IconGear       = "⚙" // 设置
-	IconCloudOn    = "☁" // 远程已连接
-	IconCloudOff   = "⊘" // 远程已断开
-	IconCloudWait  = "◌" // 远程重连中
+	IconCheck        = "✓" // 成功/完成
+	IconCross        = "✗" // 错误/失败
+	IconDot          = "◉" // 进行中/活跃
+	IconArrow        = "→" // 方向/进度
+	IconBullet       = "•" // 列表项
+	IconWarning      = "⚠" // 警告
+	IconInfo         = "ℹ" // 信息
+	IconSearch       = "◈" // 搜索
+	IconRobot        = "◆" // Agent/SubAgent
+	IconRunnerOn     = "◉" // Runner 在线
+	IconRunnerWait   = "◎" // Runner 连接中
+	IconUser         = "▣" // 用户切换
+	IconGear         = "⚙" // 设置
+	IconCloudOn      = "☁" // 远程已连接
+	IconCloudOff     = "⊘" // 远程已断开
+	IconCloudWait    = "◌" // 远程重连中
+	IconDiamond      = "◈" // 品牌标记（菱形）
+	IconDiamondSolid = "◆" // 焦点/活跃
+	IconDiamondEmpty = "◇" // 非焦点
+	IconGuideActive  = "┊" // 消息引导线（活跃）
+	IconGuideDim     = "┆" // 消息引导线（暗淡）
+	IconDotLine      = "┈" // 点线分隔符
 )
 
 // §19 长消息折叠阈值

@@ -123,6 +123,17 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 			}
 		},
 	},
+
+	// --- Layout settings (UI-only, no config/backend side-effects) ---
+	// These keys are marked Runtime=true so the CLI can detect layout changes
+	// and trigger relayout. The actual field updates happen in handleSettingsSavedMsg.
+	"layout_mode":      {},
+	"sidebar_enabled":  {},
+	"sidebar_width":    {},
+	"sidebar_position": {},
+	"sidebar_sections": {},
+	"chat_max_width":   {},
+	"chat_center":      {},
 }
 
 // applyCLISettingsToConfig applies config field updates for all recognized keys in values.

@@ -1040,10 +1040,10 @@ func (m *cliModel) renderProgressBlock() string {
 	toolErrorStyle := s.ProgressError
 	elapsedStyle := s.ProgressElapsed
 	indentGuide := s.ProgressIndent
-	reasoningGuide := s.ProgressDim // dimmer │ for reasoning
-	thinkingGuide := indentGuide    // normal │ for thinking
-	reasoningW := lipgloss.Width(reasoningGuide.Render("  │ "))
-	thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
+	reasoningGuide := s.ProgressDim // dimmer ┊ for reasoning
+	thinkingGuide := indentGuide    // normal ┊ for thinking
+	reasoningW := lipgloss.Width(reasoningGuide.Render("  ┊ "))
+	thinkingW := lipgloss.Width(thinkingGuide.Render("  ┊ "))
 	dimStyle := s.ProgressDim
 
 	var sb strings.Builder
@@ -1069,7 +1069,7 @@ func (m *cliModel) renderProgressBlock() string {
 						continue
 					}
 					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-						histBuf.WriteString(dimStyle.Render(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl)))
+						histBuf.WriteString(dimStyle.Render(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl)))
 						histBuf.WriteString("\n")
 					}
 				}
@@ -1081,7 +1081,7 @@ func (m *cliModel) renderProgressBlock() string {
 						continue
 					}
 					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-						histBuf.WriteString(dimStyle.Render(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl)))
+						histBuf.WriteString(dimStyle.Render(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl)))
 						histBuf.WriteString("\n")
 					}
 				}
@@ -1096,7 +1096,7 @@ func (m *cliModel) renderProgressBlock() string {
 				histBuf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 				histBuf.WriteString("\n")
 				// Render tool body (diff hints or per-tool output)
-				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true, 0); content != "" {
+				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), innerWidth, true, 0); content != "" {
 					histBuf.WriteString(content)
 					histBuf.WriteString("\n")
 				}
@@ -1238,7 +1238,7 @@ func (m *cliModel) getCurrentStaticCache(
 	}
 
 	// Tool content (completed + done/error active)
-	guide := reasoningGuide.Render("  │ ")
+	guide := reasoningGuide.Render("  ┊ ")
 	for i := range m.progress.CompletedTools {
 		tool := &m.progress.CompletedTools[i]
 		if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
@@ -1315,7 +1315,7 @@ func (m *cliModel) renderCurrentIteration(
 			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
 			for j, wl := range wrappedLines {
 				isLast := isLastLine && j == len(wrappedLines)-1
-				guide := reasoningGuide.Render("  │ ")
+				guide := reasoningGuide.Render("  ┊ ")
 				if isLast && isReasoningStreaming {
 					cursorStr := s.StreamCursor.Render("▋")
 					cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
@@ -1348,7 +1348,7 @@ func (m *cliModel) renderCurrentIteration(
 				continue
 			}
 			for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-				sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+				sb.WriteString(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl))
 				sb.WriteString("\n")
 			}
 		}
@@ -1383,7 +1383,7 @@ func (m *cliModel) renderCurrentIteration(
 			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
 			for j, wl := range wrappedLines {
 				isLast := isLastLine && j == len(wrappedLines)-1
-				guide := thinkingGuide.Render("  │ ")
+				guide := thinkingGuide.Render("  ┊ ")
 				if isLast {
 					cursorStr := s.StreamCursor.Render("▋")
 					cursorOverflow := thinkingW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
@@ -1465,7 +1465,7 @@ func (m *cliModel) renderCurrentIteration(
 // captured in the tool summary and shouldn't linger in the progress panel.
 //
 // Uses a prefix-based approach instead of depth-based: each level appends
-// "│   " or "    " to the prefix depending on whether the parent was the last
+// "┊   " or "    " to the prefix depending on whether the parent was the last
 // sibling. This avoids spurious vertical lines after a └── branch.
 func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent, prefix string, maxWidth int) {
 	for i, sa := range agents {
@@ -1504,7 +1504,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 			if isLast {
 				childPrefix += "    "
 			} else {
-				childPrefix += "│   "
+				childPrefix += "┊   "
 			}
 			m.renderSubAgentTree(sb, sa.Children, childPrefix, maxWidth)
 		}
@@ -1554,7 +1554,7 @@ func (m *cliModel) renderHelpPanel() string {
 
 // renderToolContentBelow renders tool body content below a tool line.
 // Shows ToolHints (diff) first, then per-tool body (Read/Shell/Grep/Glob output).
-// guide is the prefix for each line (e.g. "  │ ").
+// guide is the prefix for each line (e.g. "  ┊ ").
 // dimmed controls whether the content is dimmed (for history iterations).
 // maxLines caps diff rendering (0 = unlimited). Passed through to renderToolHint.
 // Caches the result on the tool struct to avoid re-running chroma/lipgloss on every tick.
@@ -1640,7 +1640,7 @@ func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (la
 // icon and label are plain text; elapsed may be pre-styled with ANSI codes.
 // Returns the formatted string — caller wraps with style.Render().
 func toolLine(icon, label string, elapsedStyled string, maxWidth int) string {
-	prefix := fmt.Sprintf("  │ %s ", icon)
+	prefix := fmt.Sprintf("  ┊ %s ", icon)
 	prefixW := lipgloss.Width(prefix)
 
 	elapsedW := lipgloss.Width(elapsedStyled) // strips ANSI, measures visual width
@@ -1734,7 +1734,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			if iterCount > 0 {
 				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
 				toolSb.WriteString("\n")
-				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
+				guideW := lipgloss.Width(s.ProgressIndent.Render("  ┊ "))
 				textW := boxInnerW - guideW
 				for ii := range msg.iterations {
 					it := &msg.iterations[ii]
@@ -1751,7 +1751,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								continue
 							}
 							for _, wl := range strings.Split(hardWrapRunes(line, textW), "\n") {
-								toolSb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
+								toolSb.WriteString(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl))
 								toolSb.WriteString("\n")
 							}
 						}
@@ -1763,7 +1763,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								continue
 							}
 							for _, wl := range strings.Split(hardWrapRunes(line, textW), "\n") {
-								toolSb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+								toolSb.WriteString(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl))
 								toolSb.WriteString("\n")
 							}
 						}
@@ -1778,7 +1778,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
 						toolSb.WriteString("\n")
 						// Render tool body (diff hints or per-tool output)
-						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false, 0); content != "" {
+						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), textW, false, 0); content != "" {
 							toolSb.WriteString(content)
 							toolSb.WriteString("\n")
 						}
@@ -1797,7 +1797,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
 					toolSb.WriteString("\n")
 					// Render tool body for flat tool list too
-					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false, 0); content != "" {
+					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), boxInnerW, false, 0); content != "" {
 						toolSb.WriteString(content)
 						toolSb.WriteString("\n")
 					}
@@ -1890,7 +1890,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// assistant 消息 — crush 风格：先构建内容体，再逐行加 guide 前缀
 		// Streaming: bright guide; Completed: dim guide
 		var guideSt lipgloss.Style
-		guideSym := "│ "
+		guideSym := "┊ "
 		if msg.isPartial {
 			guideSt = s.GuideSt
 		} else {

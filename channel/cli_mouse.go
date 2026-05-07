@@ -14,7 +14,9 @@ import (
 type mouseZone struct {
 	YStart int    // first terminal line (inclusive, 0-based)
 	YEnd   int    // last terminal line (inclusive)
-	ID     string // zone identifier (e.g., "panelItem", "paletteItem", "textarea")
+	XStart int    // first terminal column (inclusive), -1 means full row (default)
+	XEnd   int    // last terminal column (exclusive), -1 means full row (default)
+	ID     string // zone identifier (e.g., "panelItem", "paletteItem", "textarea", "footerHint")
 	Index  int    // item index within zone (e.g., list item index)
 }
 
@@ -31,11 +33,13 @@ func (zb *mouseZoneBuilder) reset() {
 }
 
 // add records a zone at the current Y position with the given height,
-// then advances the Y cursor.
+// then advances the Y cursor. The zone spans the full row width (X is ignored during hit testing).
 func (zb *mouseZoneBuilder) add(h int, id string, index int) {
 	zb.zones = append(zb.zones, mouseZone{
 		YStart: zb.y,
 		YEnd:   zb.y + h - 1,
+		XStart: -1,
+		XEnd:   -1,
 		ID:     id,
 		Index:  index,
 	})
@@ -47,15 +51,29 @@ func (zb *mouseZoneBuilder) skip(n int) {
 	zb.y += n
 }
 
-// findZone returns the zone containing the given terminal Y coordinate, or nil.
-func (zb *mouseZoneBuilder) findZone(y int) *mouseZone {
-	for i := range zb.zones {
-		z := &zb.zones[i]
+// addX registers an inline zone with X-coordinate bounds (for same-row clickable regions).
+func (zb *mouseZoneBuilder) addX(yOffset, xStart, xEnd int, id string, index int) {
+	zb.zones = append(zb.zones, mouseZone{
+		YStart: zb.y + yOffset,
+		YEnd:   zb.y + yOffset,
+		XStart: xStart,
+		XEnd:   xEnd,
+		ID:     id,
+		Index:  index,
+	})
+}
+
+// findZone returns the zone containing the given terminal Y and X coordinates.
+// When XStart/XEnd are negative, the zone spans the full row (X is ignored).
+func (zb *mouseZoneBuilder) findZone(y, x int) (mouseZone, bool) {
+	for _, z := range zb.zones {
 		if y >= z.YStart && y <= z.YEnd {
-			return z
+			if z.XStart < 0 || (x >= z.XStart && x < z.XEnd) {
+				return z, true
+			}
 		}
 	}
-	return nil
+	return mouseZone{}, false
 }
 
 // handleMouseMsg dispatches mouse events to the appropriate handler.
@@ -73,8 +91,8 @@ func (m *cliModel) handleMouseMsg(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
 
 // handleMouseClick processes mouse click events.
 func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea.Cmd) {
-	zone := m.mouseZones.findZone(msg.Y)
-	if zone == nil {
+	zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+	if !found {
 		return false, m, nil
 	}
 
@@ -122,8 +140,69 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickChannelItem(zone.Index)
 	case "runnerField":
 		return m.clickRunnerField(zone.Index)
+	case "footerHint":
+		return m.clickFooterHint(zone.Index)
 	}
 	return false, m, nil
+}
+
+// clickFooterHint handles mouse clicks on footer hint items.
+// Returns (handled, model, cmd) matching handleMouseClick signature.
+func (m *cliModel) clickFooterHint(index int) (bool, tea.Model, tea.Cmd) {
+	if index < 0 || index >= len(footerHints) {
+		return false, m, nil
+	}
+	action := footerHints[index].action
+
+	switch action {
+	case "ctrl+k":
+		if !m.paletteOpen {
+			m.openCommandPalette()
+		}
+		return true, m, nil
+	case "ctrl+c":
+		m.sendCancel()
+		return true, m, nil
+	case "ctrl+e":
+		m.toggleMessageFold()
+		return true, m, nil
+	case "ctrl+p":
+		if m.subscriptionMgr != nil {
+			m.openQuickSwitch("subscription")
+		}
+		return true, m, nil
+	case "ctrl+t":
+		m.openSessionsPanel()
+		return true, m, nil
+	case "ctrl+j":
+		m.textarea.InsertString("\n")
+		m.autoExpandInput()
+		return true, m, nil
+	case "esc":
+		if m.paletteOpen {
+			m.closeCommandPalette()
+		} else if m.quickSwitchMode != "" {
+			m.quickSwitchMode = ""
+		} else if m.rewindMode {
+			m.rewindMode = false
+		} else if m.panelMode != "" {
+			m.closePanel()
+		}
+		return true, m, nil
+	case "enter":
+		if m.panelMode != "" {
+			return m.clickPanelItem(m.panelCursor)
+		}
+		return true, m, nil
+	case "tab":
+		m.handleTabComplete()
+		return true, m, nil
+	case "^":
+		m.openBgTasksPanel()
+		return true, m, nil
+	default:
+		return false, m, nil
+	}
 }
 
 // isYInPanelBox checks if a Y coordinate falls within the panel box area.
@@ -143,13 +222,13 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 	case tea.MouseWheelUp:
 		// AskUser split layout: route wheel based on mouse position
 		if m.panelMode == "askuser" {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "askViewport" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "askViewport" {
 				// Scroll the main viewport
 				return false, m, nil // unhandled → viewport.Update will process it
 			}
 			// Panel area (any zone inside the ask panel)
-			if zone != nil {
+			if found {
 				m.askPanelScrollY = max(0, m.askPanelScrollY-3)
 				return true, m, nil
 			}
@@ -165,15 +244,15 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 		}
 		// Check overlays
 		if m.paletteOpen {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "paletteItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "paletteItem" {
 				m.paletteScrollY = max(0, m.paletteScrollY-1)
 				return true, m, nil
 			}
 		}
 		if m.rewindMode {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "rewindItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "rewindItem" {
 				if m.rewindCursor > 0 {
 					m.rewindCursor--
 				}
@@ -186,13 +265,13 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 	case tea.MouseWheelDown:
 		// AskUser split layout: route wheel based on mouse position
 		if m.panelMode == "askuser" {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "askViewport" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "askViewport" {
 				// Scroll the main viewport
 				return false, m, nil // unhandled → viewport.Update will process it
 			}
 			// Panel area
-			if zone != nil {
+			if found {
 				m.askPanelScrollY += 3
 				return true, m, nil
 			}
@@ -207,16 +286,16 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 			}
 		}
 		if m.paletteOpen {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "paletteItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "paletteItem" {
 				maxScroll := max(0, len(m.paletteFiltered)-paletteMaxVisible)
 				m.paletteScrollY = min(maxScroll, m.paletteScrollY+1)
 				return true, m, nil
 			}
 		}
 		if m.rewindMode {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "rewindItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "rewindItem" {
 				if m.rewindCursor < len(m.rewindItems)-1 {
 					m.rewindCursor++
 				}
@@ -712,7 +791,13 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 	footer := m.renderFooter()
 	footer = m.augmentFooter(footer)
 	if footer != "" {
-		zb.skip(1)
+		// Register footer hint zones (inline clickable regions)
+		for i, h := range footerHints {
+			if h.xStart >= 0 && h.xEnd > h.xStart {
+				zb.addX(0, h.xStart, h.xEnd, "footerHint", i)
+			}
+		}
+		zb.y++ // advance past footer line
 	}
 
 	// Input box: border top + textarea height + border bottom

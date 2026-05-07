@@ -49,6 +49,16 @@ var AllSettingDefs = []SettingDef{
 
 	// ── User-scoped settings (per-user, persisted in user_settings DB) ──
 	{Key: "theme", Scope: ScopeUser},
+
+	// Layout configuration
+	{Key: "layout_mode", Scope: ScopeUser, Runtime: true},
+	{Key: "sidebar_enabled", Scope: ScopeUser, Runtime: true},
+	{Key: "sidebar_width", Scope: ScopeUser, Runtime: true},
+	{Key: "sidebar_position", Scope: ScopeUser, Runtime: true},
+	{Key: "sidebar_sections", Scope: ScopeUser, Runtime: true},
+	{Key: "chat_max_width", Scope: ScopeUser, Runtime: true},
+	{Key: "chat_center", Scope: ScopeUser, Runtime: true},
+
 	{Key: "language", Scope: ScopeUser},
 	{Key: "context_mode", Scope: ScopeUser, Runtime: true},
 	{Key: "max_iterations", Scope: ScopeUser, Runtime: true},
