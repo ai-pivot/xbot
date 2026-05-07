@@ -371,43 +371,40 @@ func (m *cliModel) handleDebugCommand(cmd string) {
 
 	switch sub {
 	case "stats":
-		m.appendSystemMarkdown(m.renderDebugStats())
+		m.showSystemMsg(m.renderDebugStats(), feedbackInfo)
 
 	case "mem", "memory":
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
-		m.appendSystemMarkdown(m.renderDebugMemory(&mem))
+		m.showSystemMsg(m.renderDebugMemory(&mem), feedbackInfo)
 
 	case "goroutines", "goro":
-		m.appendSystemMarkdown(m.renderDebugGoroutines())
+		m.showSystemMsg(m.renderDebugGoroutines(), feedbackInfo)
 
 	case "heap":
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
-		m.appendSystemMarkdown(m.renderDebugHeap(&mem))
+		m.showSystemMsg(m.renderDebugHeap(&mem), feedbackInfo)
 
 	case "profile":
-		m.appendSystemMarkdown(m.renderDebugCPUProfile())
+		m.showSystemMsg(m.renderDebugCPUProfile(), feedbackInfo)
 
 	case "gc":
-		m.appendSystemMarkdown(m.renderDebugGC())
+		m.showSystemMsg(m.renderDebugGC(), feedbackInfo)
 
 	case "gc-force":
 		runtime.GC()
-		m.appendSystemMarkdown("GC forced")
+		m.showSystemMsg("GC forced", feedbackInfo)
 
 	default:
-		m.appendSystemMarkdown(`| Subcommand | Description |
-	|---|---|
-	| stats | runtime overview (goroutines, memory, GC, session) |
-	| mem | detailed memory breakdown |
-	| goroutines | goroutine count + stack dump |
-	| heap | heap profile summary + GC goal |
-	| profile | CPU profiling instructions |
-	| gc | GC statistics + recent pauses |
-	| gc-force | force immediate GC cycle |`)
+		m.showSystemMsg(`/debug stats       runtime overview (goroutines, memory, GC)
+/debug mem         detailed memory breakdown
+/debug goroutines  goroutine count + stack dump
+/debug heap        heap profile summary + GC goal
+/debug profile     CPU profiling instructions
+/debug gc          GC statistics + recent pauses
+/debug gc-force    force immediate GC cycle`, feedbackInfo)
 	}
-	m.updateViewportContent()
 }
 
 func (m *cliModel) renderDebugStats() string {
