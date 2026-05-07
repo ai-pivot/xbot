@@ -39,7 +39,7 @@ Registered in `agent/context.go:initPipelines()`.
 | Priority | Middleware | Key | Purpose |
 |----------|-----------|-----|---------|
 | 0 | SystemPromptMiddleware | `00_base` | Render prompt.md template |
-| 5 | ProjectContextMiddleware | `05_project_context` | Load AGENT.md from CWD |
+| 5 | ProjectContextMiddleware | `04_global_context` + `05_project_context` | Load AGENTS.md (global + project) |
 | 100 | SkillsCatalogMiddleware | `10_skills` | Inject skill names+descriptions |
 | 110 | AgentsCatalogMiddleware | `15_agents` | Inject subagent catalog |
 | 115 | PermissionControlMiddleware | `14_perm_control` | OS user permission control |

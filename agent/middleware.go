@@ -57,6 +57,9 @@ type MessageContext struct {
 
 	// Extra 扩展字段，中间件可以通过此 map 传递自定义数据
 	Extra map[string]any
+
+	// XbotHome global xbot config directory (e.g. ~/.xbot), for loading global AGENTS.md
+	XbotHome string
 }
 
 // Well-known Extra keys used by built-in middlewares.

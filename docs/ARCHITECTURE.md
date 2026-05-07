@@ -206,7 +206,7 @@ for i := 0; i < maxIter; i++ {
 | 顺序 | 中间件 | Priority | SystemParts Key | 职责 |
 |------|--------|----------|----------------|------|
 | 1 | SystemPromptMiddleware | 0 | `00_base` | 渲染 prompt.md（支持 hot reload） |
-| 2 | ProjectContextMiddleware | 5 | `05_project_context` | 自动加载 AGENT.md 项目上下文 |
+| 2 | ProjectContextMiddleware | 5 | `04_global_context` + `05_project_context` | 加载全局/项目级 AGENTS.md 上下文 |
 | 3 | SkillsCatalogMiddleware | 100 | `10_skills` | 可用 Skills 目录 |
 | 4 | AgentsCatalogMiddleware | 110 | `15_agents` | 可用 Agents 目录 |
 | 5 | PermissionControlMiddleware | 115 | `14_perm_control` | OS 用户权限控制 |

@@ -2080,6 +2080,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// 注入当前工作目录（CWD）到 prompt
 	// sandbox 模式下 CWD 已经是 sandbox 内路径，无 cd 时默认为 promptWorkDir
 	mc.CWD = tenantSession.GetCurrentDir()
+	mc.XbotHome = a.xbotHome
 	if mc.CWD == "" {
 		log.WithFields(log.Fields{
 			"channel":      msg.Channel,

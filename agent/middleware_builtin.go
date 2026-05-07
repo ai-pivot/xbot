@@ -47,7 +47,9 @@ func (m *SystemPromptMiddleware) Process(mc *MessageContext) error {
 // in priority order. First match wins.
 var agentContextFiles = []string{
 	".xbot/context.md",
-	"AGENT.md",
+	"AGENTS.md",
+	"CLAUDE.md",
+	"AGENT.md", // legacy fallback
 	".cursorrules",
 }
 
@@ -63,7 +65,7 @@ const (
 )
 
 // ProjectContextMiddleware automatically loads a project-level context file
-// (AGENT.md, .xbot/context.md, or .cursorrules) from the current working
+// (AGENTS.md, CLAUDE.md, .xbot/context.md, or .cursorrules) from the current working
 // directory and injects it into the system prompt. This gives the LLM
 // immediate awareness of project conventions, architecture, and coding rules
 // without any memory provider dependency.
@@ -100,6 +102,21 @@ func (m *ProjectContextMiddleware) Name() string { return "project_context" }
 func (m *ProjectContextMiddleware) Priority() int { return 5 }
 
 func (m *ProjectContextMiddleware) Process(mc *MessageContext) error {
+	// Phase 1: Global context from $XBOT_HOME/AGENTS.md (always injected if present)
+	if mc.XbotHome != "" {
+		globalContent, globalFile := m.loadGlobal(mc.XbotHome)
+		if globalContent != "" {
+			mc.SystemParts["04_global_context"] = formatGlobalContext(globalContent, globalFile)
+
+			log.WithFields(log.Fields{
+				"dir":   mc.XbotHome,
+				"file":  globalFile,
+				"chars": len(globalContent),
+			}).Debug("ProjectContextMiddleware: injected global context")
+		}
+	}
+
+	// Phase 2: Project-level context from CWD/WorkDir
 	dir := mc.CWD
 	if dir == "" {
 		dir = mc.WorkDir
@@ -123,6 +140,50 @@ func (m *ProjectContextMiddleware) Process(mc *MessageContext) error {
 	}).Debug("ProjectContextMiddleware: injected project context")
 
 	return nil
+}
+
+// globalContextFiles defines the file names to search for in $XBOT_HOME.
+// First match wins. These are loaded IN ADDITION to project-level files.
+var globalContextFiles = []string{
+	"AGENTS.md",
+	"CLAUDE.md",
+	"AGENT.md", // legacy fallback
+}
+
+// loadGlobal searches for a global context file in xbotHome (e.g. ~/.xbot).
+// Only searches globalContextFiles (AGENTS.md, CLAUDE.md, AGENT.md).
+// Does NOT use the project-level cache — global files are read directly.
+func (m *ProjectContextMiddleware) loadGlobal(xbotHome string) (content string, filePath string) {
+	for _, name := range globalContextFiles {
+		fullPath := filepath.Join(xbotHome, name)
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+		content = strings.TrimSpace(string(data))
+		if content != "" {
+			return content, name
+		}
+	}
+	return "", ""
+}
+
+// formatGlobalContext builds a formatted string for global context injection.
+func formatGlobalContext(content string, filePath string) string {
+	var sb strings.Builder
+	sb.WriteString("\n## Global Instructions\n\n")
+	sb.WriteString("Global instructions loaded from `~/.xbot/")
+	sb.WriteString(filePath)
+	sb.WriteString("`.\n\n")
+
+	if len(content) > maxProjectContextChars {
+		sb.WriteString(content[:maxProjectContextChars])
+		fmt.Fprintf(&sb, "\n\n... (truncated, use Read tool to view full `%s`)\n", filePath)
+	} else {
+		sb.WriteString(content)
+	}
+	sb.WriteString("\n")
+	return sb.String()
 }
 
 // load searches for the first matching context file in dir and returns its content.
