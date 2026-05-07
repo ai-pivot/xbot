@@ -3312,3 +3312,49 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 	// Refresh sessions panel
 	m.openSessionsPanel()
 }
+
+// switchToSession switches to the given session entry directly (used by sidebar click).
+// Extracted from the sessions panel Enter key handler for reuse.
+func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
+	switch entry.Type {
+	case "main":
+		if entry.ID != m.chatID {
+			m.saveCurrentSession()
+			m.chatID = entry.ID
+			m.channelName = entry.Channel
+			m.messages = nil
+			m.lastTokenUsage = nil
+			m.invalidateAllCache(false)
+			m.restoreSession()
+			m.relayoutViewport()
+			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
+				m.suLoading = true
+				m.splashFrame = 0
+				return true, tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+			}
+			m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", entry.Label), feedbackInfo)
+		}
+	case "agent":
+		agentChatID := entry.Channel + ":" + entry.ParentID + "/" + entry.Role
+		if entry.Instance != "" {
+			agentChatID += ":" + entry.Instance
+		}
+		if agentChatID != m.chatID {
+			m.saveCurrentSession()
+			m.chatID = agentChatID
+			m.channelName = "agent"
+			m.messages = nil
+			m.lastTokenUsage = nil
+			m.invalidateAllCache(false)
+			m.restoreSession()
+			m.relayoutViewport()
+			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
+				m.suLoading = true
+				m.splashFrame = 0
+				return true, tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+			}
+			m.showSystemMsg(fmt.Sprintf("✅ 已切换到 agent 会话: %s/%s", entry.Role, entry.Instance), feedbackInfo)
+		}
+	}
+	return true, nil
+}
