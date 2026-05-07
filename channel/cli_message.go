@@ -2908,7 +2908,10 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 			oldLine++
 
 		default:
-			code := line[1:] // strip diff prefix char (space for context lines)
+			code := ""
+			if len(line) > 1 {
+				code = line[1:] // strip diff prefix char (space for context lines)
+			}
 			if hl, ok := highlightMap[i]; ok {
 				code = hl
 			}
