@@ -37,6 +37,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
+	"xbot/pprof"
 	"xbot/serverapp"
 	"xbot/storage"
 	"xbot/storage/sqlite"
@@ -862,14 +863,17 @@ func main() {
 	prompt := ""
 	newSession := false
 	var (
-		flagServer     string // --server ws://host:port (RemoteBackend: agent runs on server)
-		flagShare      string // --share ws://host:port/ws/userID (Runner mode: tools run locally)
-		flagToken      string // --token xxx
-		flagWorkspace  string // --workspace /path (overrides config)
-		flagLocal      bool   // --local force legacy in-process mode
-		flagDebug      bool   // --debug enable UI capture + key injection via SIGUSR1
-		flagDebugInput string // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
-		flagDebugCapMs int    // --debug-capture-ms 200  UI capture interval in ms (default 1000)
+		flagServer     string        // --server ws://host:port (RemoteBackend: agent runs on server)
+		flagShare      string        // --share ws://host:port/ws/userID (Runner mode: tools run locally)
+		flagToken      string        // --token xxx
+		flagWorkspace  string        // --workspace /path (overrides config)
+		flagLocal      bool          // --local force legacy in-process mode
+		flagDebug      bool          // --debug enable UI capture + key injection via SIGUSR1
+		flagDebugInput string        // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
+		flagDebugCapMs int           // --debug-capture-ms 200  UI capture interval in ms (default 1000)
+		flagPProf      bool          // --pprof enable pprof HTTP server
+		flagPProfPort  int           // --pprof-port 6060
+		pprofServer    *pprof.Server // initialized if --pprof flag is set
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -901,6 +905,16 @@ func main() {
 				n, err := strconv.Atoi(os.Args[i+1])
 				if err == nil && n >= 50 {
 					flagDebugCapMs = n
+				}
+				i++
+			}
+		case "--pprof":
+			flagPProf = true
+		case "--pprof-port":
+			if len(os.Args) > i+1 {
+				n, err := strconv.Atoi(os.Args[i+1])
+				if err == nil && n > 0 {
+					flagPProfPort = n
 				}
 				i++
 			}
@@ -964,6 +978,11 @@ func main() {
 		fmt.Println("Backend: local mode")
 	}
 	defer app.Close()
+
+	// Shutdown pprof server on exit
+	if pprofServer != nil {
+		defer pprofServer.Shutdown(context.Background())
+	}
 
 	disp := channel.NewDispatcher(app.msgBus)
 
@@ -1620,6 +1639,22 @@ func main() {
 
 	cliCh := channel.NewCLIChannel(cliCfg, app.msgBus)
 	disp.Register(cliCh)
+
+	// Start pprof HTTP server if --pprof flag is set
+	if flagPProf {
+		pprofPort := 6060
+		if flagPProfPort > 0 {
+			pprofPort = flagPProfPort
+		}
+		pprofServer = pprof.NewServer(pprof.Config{
+			Enable: true,
+			Host:   "localhost",
+			Port:   pprofPort,
+		})
+		if err := pprofServer.Start(); err != nil {
+			log.WithError(err).Warn("Failed to start pprof server")
+		}
+	}
 
 	// Inject SettingsService for interactive /settings panel
 	if app.backend != nil {

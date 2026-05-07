@@ -639,6 +639,11 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		return m.handlePluginCommand(parts)
 
 	default:
+		// /debug subcommands for runtime diagnostics
+		if strings.HasPrefix(command, "/debug") {
+			m.handleDebugCommand(command)
+			return nil
+		}
 		// 🥚 彩蛋 #7: /version 三连检测
 		if command == "/version" {
 			if m.recordVersionHit() {

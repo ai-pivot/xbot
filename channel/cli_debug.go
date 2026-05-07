@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -355,4 +357,214 @@ func isSpecialKey(s string) bool {
 		return true
 	}
 	return false
+}
+
+// ── /debug command handlers for runtime diagnostics ──
+
+// handleDebugCommand processes /debug subcommands for runtime diagnostics.
+func (m *cliModel) handleDebugCommand(cmd string) {
+	parts := strings.Fields(cmd)
+	sub := ""
+	if len(parts) > 1 {
+		sub = parts[1]
+	}
+
+	switch sub {
+	case "stats":
+		m.showSystemMsg(m.renderDebugStats(), feedbackInfo)
+
+	case "mem", "memory":
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		m.showSystemMsg(m.renderDebugMemory(&mem), feedbackInfo)
+
+	case "goroutines", "goro":
+		m.showSystemMsg(m.renderDebugGoroutines(), feedbackInfo)
+
+	case "heap":
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		m.showSystemMsg(m.renderDebugHeap(&mem), feedbackInfo)
+
+	case "profile":
+		m.showSystemMsg(m.renderDebugCPUProfile(), feedbackInfo)
+
+	case "gc":
+		m.showSystemMsg(m.renderDebugGC(), feedbackInfo)
+
+	case "gc-force":
+		runtime.GC()
+		m.showSystemMsg("GC forced", feedbackInfo)
+
+	default:
+		m.showSystemMsg(`/debug <subcommand>
+	stats       runtime overview (goroutines, memory, uptime)
+	mem         detailed memory statistics
+	goroutines  goroutine count and stack samples
+	heap        heap profile summary
+	profile     CPU profiling instructions
+	gc          GC statistics
+	gc-force    force a GC cycle`, feedbackInfo)
+	}
+}
+
+func (m *cliModel) renderDebugStats() string {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	var sb strings.Builder
+	sb.WriteString("═══ Runtime Stats ═══\n\n")
+	fmt.Fprintf(&sb, "Goroutines:   %d\n", runtime.NumGoroutine())
+	fmt.Fprintf(&sb, "CPU cores:    %d\n", runtime.NumCPU())
+	fmt.Fprintf(&sb, "Go version:   %s\n", runtime.Version())
+
+	fmt.Fprintf(&sb, "\n── Memory ──\n")
+	fmt.Fprintf(&sb, "Alloc:      %s\n", humanBytes(mem.Alloc))
+	fmt.Fprintf(&sb, "TotalAlloc: %s\n", humanBytes(mem.TotalAlloc))
+	fmt.Fprintf(&sb, "Sys:        %s\n", humanBytes(mem.Sys))
+	fmt.Fprintf(&sb, "HeapAlloc:  %s\n", humanBytes(mem.HeapAlloc))
+	fmt.Fprintf(&sb, "HeapInuse:  %s\n", humanBytes(mem.HeapInuse))
+	fmt.Fprintf(&sb, "StackInuse: %s\n", humanBytes(mem.StackInuse))
+
+	fmt.Fprintf(&sb, "\n── GC ──\n")
+	fmt.Fprintf(&sb, "NumGC:      %d\n", mem.NumGC)
+	fmt.Fprintf(&sb, "CPU frac:   %.4f\n", mem.GCCPUFraction)
+	fmt.Fprintf(&sb, "PauseTotal: %s\n", time.Duration(mem.PauseTotalNs))
+	fmt.Fprintf(&sb, "NextGC:     %s\n", humanBytes(mem.NextGC))
+
+	fmt.Fprintf(&sb, "\n── Session ──\n")
+	fmt.Fprintf(&sb, "Messages:   %d\n", len(m.messages))
+	if m.progress != nil {
+		fmt.Fprintf(&sb, "Iteration:  %d\n", m.progress.Iteration)
+		fmt.Fprintf(&sb, "History:    %d snapshots\n", len(m.iterationHistory))
+	}
+	fmt.Fprintf(&sb, "Queue:      %d\n", len(m.messageQueue))
+	fmt.Fprintf(&sb, "Viewport H: %d\n", m.viewport.Height())
+
+	return sb.String()
+}
+
+func (m *cliModel) renderDebugMemory(mem *runtime.MemStats) string {
+	var sb strings.Builder
+	sb.WriteString("═══ Memory Details ═══\n\n")
+	fmt.Fprintf(&sb, "Alloc:         %s\n", humanBytes(mem.Alloc))
+	fmt.Fprintf(&sb, "TotalAlloc:    %s\n", humanBytes(mem.TotalAlloc))
+	fmt.Fprintf(&sb, "Sys:           %s\n", humanBytes(mem.Sys))
+	fmt.Fprintf(&sb, "Mallocs:       %d\n", mem.Mallocs)
+	fmt.Fprintf(&sb, "Frees:         %d\n", mem.Frees)
+	fmt.Fprintf(&sb, "Live objects:  %d\n", mem.Mallocs-mem.Frees)
+
+	fmt.Fprintf(&sb, "\n── Heap ──\n")
+	fmt.Fprintf(&sb, "HeapAlloc:     %s\n", humanBytes(mem.HeapAlloc))
+	fmt.Fprintf(&sb, "HeapSys:       %s\n", humanBytes(mem.HeapSys))
+	fmt.Fprintf(&sb, "HeapIdle:      %s\n", humanBytes(mem.HeapIdle))
+	fmt.Fprintf(&sb, "HeapInuse:     %s\n", humanBytes(mem.HeapInuse))
+	fmt.Fprintf(&sb, "HeapReleased:  %s\n", humanBytes(mem.HeapReleased))
+	fmt.Fprintf(&sb, "HeapObjects:   %d\n", mem.HeapObjects)
+
+	fmt.Fprintf(&sb, "\n── Stack ──\n")
+	fmt.Fprintf(&sb, "StackInuse:    %s\n", humanBytes(mem.StackInuse))
+	fmt.Fprintf(&sb, "StackSys:      %s\n", humanBytes(mem.StackSys))
+
+	fmt.Fprintf(&sb, "\n── Off-heap ──\n")
+	fmt.Fprintf(&sb, "MSpanInuse:    %s\n", humanBytes(mem.MSpanInuse))
+	fmt.Fprintf(&sb, "MCacheInuse:   %s\n", humanBytes(mem.MCacheInuse))
+	fmt.Fprintf(&sb, "GCSys:         %s\n", humanBytes(mem.GCSys))
+	fmt.Fprintf(&sb, "OtherSys:      %s\n", humanBytes(mem.OtherSys))
+
+	return sb.String()
+}
+
+func (m *cliModel) renderDebugGoroutines() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "═══ Goroutines ═══\n\n")
+	fmt.Fprintf(&sb, "Count: %d\n\n", runtime.NumGoroutine())
+
+	buf := make([]byte, 8192)
+	n := runtime.Stack(buf, true)
+	sb.WriteString("Stack dump (top 8KB):\n")
+	sb.WriteString(string(buf[:n]))
+	if n == len(buf) {
+		sb.WriteString("\n... (truncated, use go tool pprof for full dump)")
+	}
+
+	return sb.String()
+}
+
+func (m *cliModel) renderDebugHeap(mem *runtime.MemStats) string {
+	var sb strings.Builder
+	sb.WriteString("═══ Heap Profile ═══\n\n")
+	fmt.Fprintf(&sb, "HeapAlloc:    %s\n", humanBytes(mem.HeapAlloc))
+	fmt.Fprintf(&sb, "HeapObjects:  %d\n", mem.HeapObjects)
+	fmt.Fprintf(&sb, "HeapIdle:     %s\n", humanBytes(mem.HeapIdle))
+	fmt.Fprintf(&sb, "HeapInuse:    %s\n", humanBytes(mem.HeapInuse))
+	fmt.Fprintf(&sb, "HeapReleased: %s\n", humanBytes(mem.HeapReleased))
+
+	fmt.Fprintf(&sb, "\nNextGC goal:  %s\n", humanBytes(mem.NextGC))
+	if mem.NextGC > 0 {
+		pct := float64(mem.HeapAlloc) / float64(mem.NextGC) * 100
+		fmt.Fprintf(&sb, "Progress:     %.1f%%\n", pct)
+	}
+
+	sb.WriteString("\n── For detailed heap profile ──\n")
+	sb.WriteString("  go tool pprof http://localhost:<port>/debug/pprof/heap\n")
+
+	return sb.String()
+}
+
+func (m *cliModel) renderDebugCPUProfile() string {
+	return `═══ CPU Profile ═══
+
+	CPU profiling requires the pprof HTTP server.
+
+	1. Start with:  xbot --pprof [--pprof-port 6060]
+	2. Capture:     go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
+	3. In pprof:    top20 / web / list <func>
+
+	Quick 30s capture (if server running):
+	curl -o /tmp/cpu.prof http://localhost:6060/debug/pprof/profile?seconds=30
+	go tool pprof /tmp/cpu.prof
+	`
+}
+
+func (m *cliModel) renderDebugGC() string {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	var gcStats debug.GCStats
+	debug.ReadGCStats(&gcStats)
+
+	var sb strings.Builder
+	sb.WriteString("═══ GC Statistics ═══\n\n")
+	fmt.Fprintf(&sb, "NumGC:         %d\n", mem.NumGC)
+	fmt.Fprintf(&sb, "GCCPUFraction: %.6f\n", mem.GCCPUFraction)
+	fmt.Fprintf(&sb, "PauseTotal:    %s\n", time.Duration(mem.PauseTotalNs))
+	fmt.Fprintf(&sb, "LastGC:        %s\n", gcStats.LastGC.Format(time.RFC3339))
+
+	if mem.NumGC > 0 {
+		sb.WriteString("\n── Recent GC pauses ──\n")
+		start := 0
+		if len(gcStats.Pause) > 5 {
+			start = len(gcStats.Pause) - 5
+		}
+		for i := start; i < len(gcStats.Pause); i++ {
+			fmt.Fprintf(&sb, "  %s\n", gcStats.Pause[i])
+		}
+	}
+
+	sb.WriteString("\n  Force GC: /debug gc-force\n")
+
+	return sb.String()
+}
+
+func humanBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
