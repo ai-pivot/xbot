@@ -30,7 +30,8 @@ func (zb *mouseZoneBuilder) reset() {
 	zb.y = 0
 }
 
-// add records a zone at the current Y position with the given height.
+// add records a zone at the current Y position with the given height,
+// then advances the Y cursor.
 func (zb *mouseZoneBuilder) add(h int, id string, index int) {
 	zb.zones = append(zb.zones, mouseZone{
 		YStart: zb.y,
@@ -38,6 +39,7 @@ func (zb *mouseZoneBuilder) add(h int, id string, index int) {
 		ID:     id,
 		Index:  index,
 	})
+	zb.y += h
 }
 
 // skip advances the Y cursor by n lines (for non-interactive regions).
