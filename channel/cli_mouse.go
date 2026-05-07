@@ -132,6 +132,10 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickCompletionsItem(zone.Index)
 	case "sessionsItem":
 		return m.clickSessionsItem(zone.Index)
+	case "sidebarArea":
+		// Click anywhere in sidebar → open sessions panel for quick switch
+		m.openSessionsPanel()
+		return true, m, nil
 	case "bgtaskItem":
 		return m.clickBgTasksItem(zone.Index)
 	case "dangerItem":
@@ -776,7 +780,33 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	// viewport: layoutViewportHeight() lines (wheel handled by viewport automatically)
 	viewportH := m.layoutViewportHeight()
-	zb.skip(viewportH)
+
+	// If sidebar is visible, register its entire area as a clickable zone to open sessions panel.
+	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
+	if showSidebar {
+		// Viewport area spans the full viewportH lines
+		if m.sidebarPosition == "right" {
+			// viewport on left, sidebar on right
+			zb.skip(viewportH) // viewport zone
+			// Now go back and overlay sidebar zones on the same Y range
+			for dy := 0; dy < viewportH; dy++ {
+				xStart := m.chatWidth()
+				xEnd := m.width
+				if xEnd > xStart {
+					zb.addX(dy-viewportH, xStart, xEnd, "sidebarArea", dy)
+				}
+			}
+		} else {
+			// sidebar on left, viewport on right
+			sw := m.sidebarWidth + 1 // sidebarWidth + border
+			for dy := 0; dy < viewportH; dy++ {
+				zb.addX(dy, 0, sw, "sidebarArea", dy)
+			}
+			zb.skip(viewportH)
+		}
+	} else {
+		zb.skip(viewportH)
+	}
 
 	// status bar: 1 line
 	zb.skip(1)
