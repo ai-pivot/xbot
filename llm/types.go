@@ -124,6 +124,52 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 
 		break
 	}
+
+	// Pass 4: Ensure every tool_call_id has a matching tool response message.
+	// Some providers (Kimi) reject assistant messages with tool_calls when the
+	// corresponding tool response messages are missing — even in the middle of
+	// the conversation, not just trailing.
+	// Build set of all tool_call_ids that have response messages.
+	respondedIDs := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			respondedIDs[msg.ToolCallID] = true
+		}
+	}
+	// Remove unpaired tool_calls from assistant messages
+	for i := range messages {
+		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			continue
+		}
+		valid := make([]ToolCall, 0, len(messages[i].ToolCalls))
+		for _, tc := range messages[i].ToolCalls {
+			if respondedIDs[tc.ID] {
+				valid = append(valid, tc)
+			} else {
+				log.WithFields(log.Fields{
+					"tool_name": tc.Name,
+					"tool_id":   tc.ID,
+					"msg_index": i,
+				}).Warn("[SanitizeMessages] Removing tool_call without response message")
+			}
+		}
+		messages[i].ToolCalls = valid
+		// If all tool_calls were removed and content is empty, will be stripped by Pass 1 on next round
+		if len(valid) == 0 && messages[i].Content == "" {
+			messages[i].ToolCalls = nil
+		}
+	}
+	// Run Pass 1 again to clean up any assistant messages that became empty after Pass 4
+	n = 0
+	for _, msg := range messages {
+		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
+			continue
+		}
+		messages[n] = msg
+		n++
+	}
+	messages = messages[:n]
+
 	return messages
 }
 
