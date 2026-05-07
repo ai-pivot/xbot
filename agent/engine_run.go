@@ -188,6 +188,9 @@ func (s *runState) initProgress() {
 				return
 			}
 			s.structuredProgress.Phase = PhaseDone
+			if s.cfg.ProgressSeq != nil {
+				s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
+			}
 			if s.autoNotify && s.cfg.ProgressEventHandler != nil {
 				s.structuredProgress.SubAgents = s.subAgentNodes
 				s.cfg.ProgressEventHandler(&ProgressEvent{
@@ -271,6 +274,10 @@ func (s *runState) syncMessages(newMessages []llm.ChatMessage) []llm.ChatMessage
 func (s *runState) notifyProgress(extra string) {
 	if !s.autoNotify {
 		return
+	}
+	// Increment seq and assign to structuredProgress (unified entry point).
+	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
+		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
 	}
 	s.progressMu.Lock()
 	lines := make([]string, len(s.progressLines))

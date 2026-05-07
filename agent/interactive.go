@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xbot/bus"
@@ -144,7 +145,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		s := event.Structured
 
 		cliPayload := &channelpkg.CLIProgressPayload{
-			ChatID: agentProgressKey, Phase: string(s.Phase),
+			ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
 			Iteration: s.Iteration, Thinking: s.ThinkingContent,
 			Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 		}
@@ -178,7 +179,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			localCh.SendProgress(key, cliPayload)
 		} else if remoteCh != nil {
 			wsPayload := &channelpkg.WsProgressPayload{
-				ChatID: agentProgressKey, Phase: string(s.Phase),
+				ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
 				Iteration: s.Iteration, Thinking: s.ThinkingContent,
 				Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 			}
@@ -219,9 +220,12 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 
 	// Wire stream callbacks for real-time rendering
 	cfg.Stream = true
+	var subAgentProgressSeq atomic.Uint64
+	cfg.ProgressSeq = &subAgentProgressSeq
 	if localCh != nil {
 		cfg.StreamContentFunc = func(content string) {
-			localCh.SendProgress(key, &channelpkg.CLIProgressPayload{ChatID: agentProgressKey, StreamContent: content})
+			seq := subAgentProgressSeq.Add(1)
+			localCh.SendProgress(key, &channelpkg.CLIProgressPayload{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*channelpkg.CLIProgressPayload)
 				cp.StreamContent = content
@@ -229,7 +233,8 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			}
 		}
 		cfg.StreamReasoningFunc = func(content string) {
-			localCh.SendProgress(key, &channelpkg.CLIProgressPayload{ChatID: agentProgressKey, ReasoningStreamContent: content})
+			seq := subAgentProgressSeq.Add(1)
+			localCh.SendProgress(key, &channelpkg.CLIProgressPayload{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*channelpkg.CLIProgressPayload)
 				cp.ReasoningStreamContent = content
@@ -238,7 +243,8 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		}
 	} else if remoteCh != nil {
 		cfg.StreamContentFunc = func(content string) {
-			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, StreamContent: content})
+			seq := subAgentProgressSeq.Add(1)
+			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*channelpkg.CLIProgressPayload)
 				cp.StreamContent = content
@@ -246,7 +252,8 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			}
 		}
 		cfg.StreamReasoningFunc = func(content string) {
-			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, ReasoningStreamContent: content})
+			seq := subAgentProgressSeq.Add(1)
+			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*channelpkg.CLIProgressPayload)
 				cp.ReasoningStreamContent = content

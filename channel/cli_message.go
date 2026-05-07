@@ -352,7 +352,9 @@ func (m *cliModel) invalidateProgressHistoryCache() {
 func (m *cliModel) resetProgressState() {
 	m.iterationHistory = nil
 	m.lastSeenIteration = 0
+	m.lastProgressSeq = 0
 	m.lastReasoning = ""
+	m.reasoningByIter = nil
 	m.progress = nil
 	m.iterationStartTime = time.Now() // wall-clock start for iteration 0
 	m.typingStartTime = time.Now()
@@ -766,6 +768,13 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 			if reasoning != "" {
 				m.lastReasoning = reasoning
+				if m.reasoningByIter == nil {
+					m.reasoningByIter = make(map[int]string)
+				}
+				iter := m.progress.Iteration
+				if iter >= 0 {
+					m.reasoningByIter[iter] = reasoning
+				}
 			}
 			if m.progress.Thinking != "" {
 				m.lastThinking = m.progress.Thinking
@@ -901,14 +910,18 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 						finalTools = append(finalTools, t)
 					}
 				}
+				reasoning := m.lastReasoning
+				if reasoning == "" && m.reasoningByIter != nil {
+					reasoning = m.reasoningByIter[m.lastSeenIteration]
+				}
 				snap := cliIterationSnapshot{
 					Iteration:   m.lastSeenIteration,
-					Reasoning:   m.lastReasoning,
+					Reasoning:   reasoning,
 					Thinking:    m.lastThinking,
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 				}
-				if len(finalTools) > 0 || m.lastReasoning != "" || m.lastThinking != "" {
+				if len(finalTools) > 0 || reasoning != "" || m.lastThinking != "" {
 					m.iterationHistory = append(m.iterationHistory, snap)
 				}
 			}

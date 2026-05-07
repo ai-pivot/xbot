@@ -317,6 +317,15 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	turnID := m.agentTurnID // capture before any mutation
 	prev := m.progress
 
+	// Seq monotonic check: discard out-of-order or duplicate progress events.
+	// Placed after ChatID filtering, before any state mutation.
+	if msg.payload != nil && msg.payload.Seq > 0 {
+		if msg.payload.Seq <= m.lastProgressSeq {
+			return
+		}
+		m.lastProgressSeq = msg.payload.Seq
+	}
+
 	// New turn's first non-PhaseDone progress clears the cancel flag.
 	// This allows the new turn (started by bg notification injection or queue flush)
 	// to receive progress events, while still blocking stale progress from the
@@ -359,12 +368,6 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.ReasoningStreamContent != "" {
 				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
 			}
-			// If reasoning is arriving and the current iteration has already
-			// been snapshotted (completed), this reasoning belongs to a new
-			// iteration that hasn't received a structured progress update yet.
-			// Advance the iteration number so reasoning isn't attributed to
-			// the wrong iteration snapshot.
-			m.advanceIterationForReasoning(m.progress)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
 			m.progress = msg.payload
@@ -393,11 +396,6 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	m.carryForwardProgressState(prev)
 
-	// After TUI restart, the restored progress may have reasoning content
-	// that belongs to a new iteration (beyond the last completed snapshot).
-	// Advance the iteration number so reasoning is displayed correctly.
-	m.advanceIterationForReasoning(m.progress)
-
 	// Update bg task count from callback
 	if m.bgTaskCountFn != nil {
 		m.bgTaskCount = m.bgTaskCountFn()
@@ -425,6 +423,14 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.syncProgressTodos(msg.payload)
 		// Detect iteration change and snapshot previous iteration
 		m.snapshotIterationChange(msg.payload, prev)
+
+		// Record per-iteration reasoning from structured progress.
+		if m.progress != nil && m.progress.Reasoning != "" && m.progress.Iteration >= 0 {
+			if m.reasoningByIter == nil {
+				m.reasoningByIter = make(map[int]string)
+			}
+			m.reasoningByIter[m.progress.Iteration] = m.progress.Reasoning
+		}
 
 		// §2 工具可视化：快照 CompletedTools 到独立字段
 		// Accept all completed tools regardless of their Iteration field — they
@@ -487,7 +493,10 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 		}
 		prevReasoning := prev.Reasoning
 		if prevReasoning == "" {
-			prevReasoning = m.lastReasoning
+			prevReasoning = m.reasoningByIter[m.lastSeenIteration]
+		}
+		if prevReasoning == "" {
+			prevReasoning = prev.ReasoningStreamContent
 		}
 		if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 			snap := cliIterationSnapshot{
@@ -503,78 +512,6 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 		m.lastSeenIteration = payload.Iteration
 		m.iterationStartTime = time.Now()
 	}
-}
-
-// advanceIterationForReasoning advances the iteration number in a progress
-// payload if reasoning content exists but the iteration matches a completed
-// snapshot. This prevents reasoning stream content from being attributed to
-// the wrong iteration (e.g. after TUI restart, or when the agent starts
-// reasoning for a new iteration before sending the first structured update).
-//
-// When advancing, it also snapshots the current iteration into iterationHistory
-// so that snapshotIterationChange won't miss it when the next structured
-// progress arrives.
-func (m *cliModel) advanceIterationForReasoning(progress *CLIProgressPayload) {
-	if progress == nil || progress.ReasoningStreamContent == "" {
-		return
-	}
-	// Case 1: iteration history has a snapshot matching the current iteration.
-	// The reasoning must belong to a new (not-yet-structured) iteration.
-	if len(m.iterationHistory) > 0 {
-		lastSnap := m.iterationHistory[len(m.iterationHistory)-1]
-		if lastSnap.Iteration == progress.Iteration {
-			m.snapshotAndAdvance(progress)
-			return
-		}
-	}
-	// Case 2: no iteration history (snapshotIterationChange hasn't fired yet),
-	// but the current progress already has static Reasoning from a completed
-	// iteration (set by recordAssistantMsg's structured progress). New stream
-	// content that differs from this static Reasoning must be the next iteration.
-	// This handles the common 0→1 transition where iter 0 was never snapshotted
-	// because snapshotIterationChange requires Iteration > lastSeenIteration.
-	if progress.Reasoning != "" && progress.ReasoningStreamContent != progress.Reasoning {
-		m.snapshotAndAdvance(progress)
-		return
-	}
-}
-
-// snapshotAndAdvance creates a snapshot of the current iteration and advances
-// the iteration counter. Used by advanceIterationForReasoning to ensure the
-// completed iteration is recorded before the counter moves forward.
-func (m *cliModel) snapshotAndAdvance(progress *CLIProgressPayload) {
-	oldIter := m.lastSeenIteration
-	// Dedup: if iterationHistory already has a snapshot for oldIter, skip.
-	// Don't advance the counter here — the reasoning stream may be a false
-	// signal. Let the next structured progress (snapshotIterationChange)
-	// handle the real iteration transition.
-	for _, s := range m.iterationHistory {
-		if s.Iteration == oldIter {
-			return
-		}
-	}
-	reasoning := progress.Reasoning
-	if reasoning == "" {
-		reasoning = m.lastReasoning
-	}
-	snap := cliIterationSnapshot{
-		Iteration:   oldIter,
-		Reasoning:   reasoning,
-		Thinking:    m.lastThinking,
-		ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
-	}
-	// Include tools from the completed iteration if available.
-	for _, t := range m.lastCompletedTools {
-		if t.Iteration == oldIter {
-			snap.Tools = append(snap.Tools, t)
-		}
-	}
-	if len(snap.Tools) > 0 || snap.Reasoning != "" || snap.Thinking != "" {
-		m.iterationHistory = append(m.iterationHistory, snap)
-	}
-	progress.Iteration = oldIter + 1
-	m.lastSeenIteration = progress.Iteration
-	m.iterationStartTime = time.Now()
 }
 
 // handleProgressDone handles the Phase "done" case: snapshots the final iteration,
@@ -619,9 +556,13 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 				}
-				if m.lastReasoning != "" {
+				if m.reasoningByIter != nil {
+					snap.Reasoning = m.reasoningByIter[m.lastSeenIteration]
+				}
+				if snap.Reasoning == "" {
 					snap.Reasoning = m.lastReasoning
-				} else if msg.payload.Reasoning != "" {
+				}
+				if snap.Reasoning == "" {
 					snap.Reasoning = msg.payload.Reasoning
 				}
 				if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
@@ -687,19 +628,21 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 				Tools:       finalTools,
 				ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
 			}
-			// Carry over reasoning: priority is lastReasoning (captured before progress clear)
+			// Carry over reasoning: priority is reasoningByIter (per-iteration, authoritative)
+			// > lastReasoning (captured before progress clear)
 			// > prev progress Reasoning (server-authoritative, from ReasoningContent)
 			// > PhaseDone payload Reasoning
-			// Note: prev.ReasoningStreamContent is intentionally NOT used — streaming
-			// content may be polluted by the next iteration's reasoning stream that
-			// arrived between structured progress updates.
-			if m.lastReasoning != "" {
-				snap.Reasoning = m.lastReasoning
-			} else if prev != nil && prev.Reasoning != "" {
-				snap.Reasoning = prev.Reasoning
-			} else if msg.payload.Reasoning != "" {
-				snap.Reasoning = msg.payload.Reasoning
+			reasoning := m.reasoningByIter[m.lastSeenIteration]
+			if reasoning == "" {
+				reasoning = m.lastReasoning
 			}
+			if reasoning == "" && prev != nil {
+				reasoning = prev.Reasoning
+			}
+			if reasoning == "" {
+				reasoning = msg.payload.Reasoning
+			}
+			snap.Reasoning = reasoning
 			if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
 				m.iterationHistory = append(m.iterationHistory, snap)
 			}

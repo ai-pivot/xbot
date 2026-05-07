@@ -349,6 +349,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	m.invalidateProgressHistoryCache()
 	m.lastSeenIteration = 0
 	m.lastReasoning = ""
+	m.reasoningByIter = nil
 	m.lastThinking = ""
 	m.typingStartTime = time.Time{}
 	m.progress = nil

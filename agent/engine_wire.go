@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xbot/agent/hooks"
@@ -284,7 +285,9 @@ func (a *Agent) buildMainRunConfig(
 	if !streamDisabled {
 		cfg.Stream = true
 		if a.channelFinder != nil {
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc = a.buildStreamCallbacks(chatID, channel)
+			var progressSeq atomic.Uint64
+			cfg.ProgressSeq = &progressSeq
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq)
 		}
 	}
 
@@ -1402,6 +1405,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			payload := &channelpkg.CLIProgressPayload{
 				ChatID:           progressKey,
 				Phase:            string(s.Phase),
+				Seq:              s.Seq,
 				Iteration:        s.Iteration,
 				Thinking:         s.ThinkingContent,
 				Reasoning:        s.ReasoningContent,
@@ -1461,6 +1465,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 		if remoteCLICh != nil {
 			payload := &channelpkg.WsProgressPayload{
 				ChatID:           progressKey,
+				Seq:              s.Seq,
 				Phase:            string(s.Phase),
 				Iteration:        s.Iteration,
 				Thinking:         s.ThinkingContent,
@@ -1517,6 +1522,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			// because only the local cliCh path stored snapshots.
 			cliPayload := &channelpkg.CLIProgressPayload{
 				ChatID:           progressKey,
+				Seq:              s.Seq,
 				Phase:            string(s.Phase),
 				Iteration:        s.Iteration,
 				Thinking:         s.ThinkingContent,
@@ -1592,6 +1598,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 		payload := &channelpkg.WsProgressPayload{
 			ChatID:           progressKey,
 			Phase:            string(s.Phase),
+			Seq:              s.Seq,
 			Iteration:        s.Iteration,
 			Thinking:         s.ThinkingContent,
 			Reasoning:        s.ReasoningContent,
@@ -1666,7 +1673,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 // buildStreamCallbacks resolves CLI and Web channels and returns stream content
 // and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
 // no channels are available.
-func (a *Agent) buildStreamCallbacks(chatID, channel string) (streamContentFunc func(string), streamReasoningFunc func(string)) {
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
 	var cliCh *channelpkg.CLIChannel
 	var remoteCLICh *channelpkg.RemoteCLIChannel
 	if ch, ok := a.channelFinder("cli"); ok {
@@ -1684,8 +1691,9 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string) (streamContentFunc 
 	}
 
 	streamContentFunc = func(content string) {
+		seq := progressSeq.Add(1)
 		if cliCh != nil {
-			cliCh.SendProgress(chatID, &channelpkg.CLIProgressPayload{ChatID: sessionKey(channel, chatID), StreamContent: content})
+			cliCh.SendProgress(chatID, &channelpkg.CLIProgressPayload{ChatID: sessionKey(channel, chatID), Seq: seq, StreamContent: content})
 		}
 		if remoteCLICh != nil {
 			remoteCLICh.SendStreamContent(chatID, content, "")
@@ -1695,8 +1703,9 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string) (streamContentFunc 
 		}
 	}
 	streamReasoningFunc = func(content string) {
+		seq := progressSeq.Add(1)
 		if cliCh != nil {
-			cliCh.SendProgress(chatID, &channelpkg.CLIProgressPayload{ChatID: sessionKey(channel, chatID), ReasoningStreamContent: content})
+			cliCh.SendProgress(chatID, &channelpkg.CLIProgressPayload{ChatID: sessionKey(channel, chatID), Seq: seq, ReasoningStreamContent: content})
 		}
 		if remoteCLICh != nil {
 			remoteCLICh.SendStreamContent(chatID, "", content)

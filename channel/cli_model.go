@@ -318,6 +318,7 @@ func (m *cliModel) restoreSession() {
 		m.lastSeenIteration = 0
 		m.typingStartTime = time.Time{}
 		m.lastReasoning = ""
+		m.reasoningByIter = nil
 		m.lastThinking = ""
 		m.turnCancelled = false
 	}
@@ -425,6 +426,7 @@ type cliModel struct {
 	progress             *CLIProgressPayload
 	iterationHistory     []cliIterationSnapshot // 已完成迭代快照
 	lastSeenIteration    int                    // 上次进度事件的迭代号
+	lastProgressSeq      uint64                 // 上次进度事件的序列号（单调递增校验）
 	iterationStartTime   time.Time              // current iteration wall-clock start time
 	fastTickActive       bool                   // true when a fast tick chain (100ms) is running
 	typewriterTickActive bool                   // true when typewriter tick chain (50ms) is running
@@ -467,6 +469,7 @@ type cliModel struct {
 	// --- §2 工具可视化 ---
 	lastCompletedTools []CLIToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
 	lastReasoning      string            // 最后一次迭代的 reasoning_content，在 progress 清除前捕获
+	reasoningByIter    map[int]string    // per-iteration reasoning，snapshot 时用于精确查找
 	lastThinking       string            // 最后一次迭代的 thinking_content，在 progress 清除前捕获
 
 	// --- §8 Tab 补全 ---

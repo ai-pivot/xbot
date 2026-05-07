@@ -25,6 +25,7 @@ func (e *ProgressEvent) FullText() string {
 
 // StructuredProgress 结构化进度信息，描述 Agent 当前状态。
 type StructuredProgress struct {
+	Seq              uint64 // monotonic sequence number per Run — linear consistency guarantee
 	Phase            ProgressPhase
 	Iteration        int
 	ActiveTools      []ToolProgress

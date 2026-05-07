@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"xbot/agent/hooks"
@@ -234,6 +235,10 @@ type RunConfig struct {
 	// StreamReasoningFunc is called with accumulated reasoning content on each
 	// reasoning delta during LLM streaming. Nil by default (no reasoning streaming).
 	StreamReasoningFunc func(content string)
+
+	// ProgressSeq is a per-Run monotonic counter shared between notifyProgress
+	// and stream callbacks. Created by buildRunConfig, consumed by runState.
+	ProgressSeq *atomic.Uint64
 
 	// RefreshPluginWorkDir is called after Cd changes the working directory,
 	// so script plugins (e.g. git-info) can re-execute in the new directory.

@@ -583,6 +583,7 @@ func convertWsProgressToCLI(wp *channel.WsProgressPayload) *channel.CLIProgressP
 	}
 	payload := &channel.CLIProgressPayload{
 		ChatID:                 wp.ChatID,
+		Seq:                    wp.Seq,
 		Phase:                  wp.Phase,
 		Iteration:              wp.Iteration,
 		Thinking:               wp.Thinking,

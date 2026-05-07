@@ -483,6 +483,7 @@ type wsMessage struct {
 // WsProgressPayload — structured progress data (corresponds to agent.StructuredProgress).
 type WsProgressPayload struct {
 	ChatID         string              `json:"chat_id,omitempty"`
+	Seq            uint64              `json:"seq,omitempty"`
 	Phase          string              `json:"phase,omitempty"`
 	Iteration      int                 `json:"iteration"`
 	ActiveTools    []WsToolProgress    `json:"active_tools,omitempty"`
@@ -508,6 +509,7 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 	}
 	wp := &WsProgressPayload{
 		ChatID:                 p.ChatID,
+		Seq:                    p.Seq,
 		Phase:                  p.Phase,
 		Iteration:              p.Iteration,
 		Thinking:               p.Thinking,
