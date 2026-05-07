@@ -1124,7 +1124,7 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 		if queueLen > 0 {
 			if m.queueEditing {
 				// 正在编辑排队消息 → 取消编辑并删除该消息
-				removed := m.messageQueue[len(m.messageQueue)-1]
+				removed := m.messageQueue[len(m.messageQueue)-1].content
 				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
 				m.queueEditing = false
 				m.queueEditBuf = ""
@@ -1132,7 +1132,7 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved, removed), feedbackInfo)
 			} else if queueLen > 1 {
 				// 多条排队 → 删除最后一条
-				removed := m.messageQueue[len(m.messageQueue)-1]
+				removed := m.messageQueue[len(m.messageQueue)-1].content
 				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
 				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved+". "+m.locale.QueueCleared, removed, len(m.messageQueue)), feedbackInfo)
 			} else {
@@ -1464,14 +1464,14 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 		// §Q 消息队列：typing 期间允许排队消息
 		if m.queueEditing {
 			// 正在编辑排队消息 → 保存编辑结果
-			m.messageQueue[len(m.messageQueue)-1] = m.textarea.Value()
+			m.messageQueue[len(m.messageQueue)-1].content = m.textarea.Value()
 			m.queueEditing = false
 			m.queueEditBuf = ""
 			m.textarea.SetValue("")
 			return m, nil, true
 		}
 		if m.textarea.Value() != "" {
-			m.messageQueue = append(m.messageQueue, m.textarea.Value())
+			m.messageQueue = append(m.messageQueue, queuedMsg{content: m.textarea.Value(), chatID: m.chatID})
 			m.textarea.SetValue("")
 			// 显示队列提示
 			if len(m.messageQueue) == 1 {
@@ -1552,7 +1552,7 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 		if !m.queueEditing && m.textarea.Value() == "" {
 			// 追回最后一条排队消息
 			m.queueEditing = true
-			m.queueEditBuf = m.messageQueue[len(m.messageQueue)-1]
+			m.queueEditBuf = m.messageQueue[len(m.messageQueue)-1].content
 			m.textarea.SetValue(m.queueEditBuf)
 			m.autoExpandInput()
 			return m, nil, true

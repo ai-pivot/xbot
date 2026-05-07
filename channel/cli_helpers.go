@@ -468,12 +468,18 @@ func (m *cliModel) flushMessageQueue() {
 	if len(m.messageQueue) == 0 {
 		return
 	}
+	// Only flush messages queued for the current session.
+	// If user queued a message in main session and switched to a SubAgent session,
+	// skip until we're back in the correct session.
 	msg := m.messageQueue[0]
+	if msg.chatID != m.chatID {
+		return // wrong session, wait for the correct one
+	}
 	m.messageQueue = m.messageQueue[1:]
 	m.queueEditing = false
 	m.queueEditBuf = ""
 	// Put message into textarea and trigger send
-	m.textarea.SetValue(msg)
+	m.textarea.SetValue(msg.content)
 	m.sendMessageFromQueue()
 }
 

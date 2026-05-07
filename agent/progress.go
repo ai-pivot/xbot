@@ -801,6 +801,36 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 	return []SubAgentNode{node}
 }
 
+// mergeSubAgentNodeList merges new nodes into existing list by Role+Instance key.
+// Existing nodes with matching key are updated; new nodes are appended.
+// Nodes not present in new list are preserved (they belong to other SubAgents).
+func mergeSubAgentNodeList(existing, incoming []SubAgentNode) []SubAgentNode {
+	if len(existing) == 0 {
+		return incoming
+	}
+	// Build key set of incoming nodes
+	incomingByKey := make(map[string]SubAgentNode)
+	for _, n := range incoming {
+		key := n.Role + "/" + n.Instance
+		incomingByKey[key] = n
+	}
+	// Update existing nodes that match
+	result := make([]SubAgentNode, len(existing))
+	copy(result, existing)
+	for i, n := range result {
+		key := n.Role + "/" + n.Instance
+		if updated, ok := incomingByKey[key]; ok {
+			result[i] = updated
+			delete(incomingByKey, key)
+		}
+	}
+	// Append truly new nodes
+	for _, n := range incomingByKey {
+		result = append(result, n)
+	}
+	return result
+}
+
 // --- 主格式化函数 ---
 
 // formatSubAgentProgress 格式化 SubAgent 进度为文本。

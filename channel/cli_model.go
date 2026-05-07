@@ -387,10 +387,10 @@ type cliModel struct {
 	resetTokenStateFn func()                        // /rewind: clear stale prompt/completion token counts
 
 	// --- Message queue (typing 期间排队的消息) ---
-	messageQueue   []string // 排队等待发送的消息
-	queueEditing   bool     // true = 正在编辑/查看最后一条排队消息
-	queueEditBuf   string   // 编辑中的排队消息内容
-	needFlushQueue bool     // true = handleAgentMessage 后需要刷新队列
+	messageQueue   []queuedMsg // 排队等待发送的消息（绑定 chatID 防止跨 session 误投）
+	queueEditing   bool        // true = 正在编辑/查看最后一条排队消息
+	queueEditBuf   string      // 编辑中的排队消息内容
+	needFlushQueue bool        // true = handleAgentMessage 后需要刷新队列
 
 	// --- Background tasks ---
 	bgTaskCount     int                            // running background tasks (0 = no indicator)
@@ -670,6 +670,13 @@ type turnDoneFlag struct {
 }
 
 // cliMessage 单条消息
+// queuedMsg is a user message waiting in the queue, bound to a specific chatID.
+// When flushed, it is only delivered to the session that was active when queued.
+type queuedMsg struct {
+	content string
+	chatID  string
+}
+
 type cliMessage struct {
 	role      string
 	content   string

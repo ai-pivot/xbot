@@ -1289,7 +1289,9 @@ func (r *simRunner) doInspect(idx int, step SimStep) error {
 
 // doQueueAdd adds messages to the input queue.
 func (r *simRunner) doQueueAdd(idx int, step SimStep) error {
-	r.model.messageQueue = append(r.model.messageQueue, step.QueueMessages...)
+	for _, msg := range step.QueueMessages {
+		r.model.messageQueue = append(r.model.messageQueue, queuedMsg{content: msg, chatID: r.model.chatID})
+	}
 	return nil
 }
 
