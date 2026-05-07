@@ -1749,7 +1749,20 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			userStyle = s.UserContent.PaddingLeft(contentWidth - maxWidth)
 		}
 		// 内容超宽时退回左对齐，避免终端折行后跑到最左边
-		sb.WriteString(userStyle.Render(rendered))
+		// CRITICAL: lipgloss Render pads ALL lines (including blank lines) to the
+		// width of the longest line. When a blank line is padded to e.g. 424 chars
+		// and the terminal is 120 cols, hardWrapRunes in setViewportContent wraps
+		// that "blank" line into 4 visual lines — amplifying every blank line by
+		// maxWidth/terminalWidth. Fix: strip trailing whitespace from blank lines
+		// after Render so they stay as single empty lines.
+		renderedUser := userStyle.Render(rendered)
+		userLines := strings.Split(renderedUser, "\n")
+		for i, rl := range userLines {
+			if strings.TrimSpace(rl) == "" {
+				userLines[i] = "" // collapse padded blank lines back to empty
+			}
+		}
+		sb.WriteString(strings.Join(userLines, "\n"))
 	default:
 		// assistant 消息 — crush 风格：先构建内容体，再逐行加 guide 前缀
 		// Streaming: bright guide; Completed: dim guide

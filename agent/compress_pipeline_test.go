@@ -346,27 +346,3 @@ func TestApplyCompress_NilAccumulateUsage(t *testing.T) {
 		t.Error("CompressOutput should point to the original result")
 	}
 }
-
-func TestNormalizeBlankLines(t *testing.T) {
-	tests := []struct {
-		name, input, expected string
-	}{
-		{"no change needed", "hello\nworld", "hello\nworld"},
-		{"already normalized", "hello\n\nworld", "hello\n\nworld"},
-		{"3 newlines → 2", "hello\n\n\nworld", "hello\n\nworld"},
-		{"5 newlines → 2", "a\n\n\n\n\nb", "a\n\nb"},
-		{"section headers", "### Next Steps\n\n\n\n\n1. item", "### Next Steps\n\n1. item"},
-		{"trailing newlines", "hello\n\n\n", "hello\n\n"},
-		{"empty string", "", ""},
-		{"only newlines", "\n\n\n\n", "\n\n"},
-		{"mixed content", "### A\n\n\n### B\n\n### C\n\n\n\n### D", "### A\n\n### B\n\n### C\n\n### D"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeBlankLines(tt.input)
-			if got != tt.expected {
-				t.Errorf("normalizeBlankLines(%q)\n  got:      %q\n  expected: %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}

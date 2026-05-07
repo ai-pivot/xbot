@@ -24,39 +24,6 @@ type CompressResult struct {
 	LLMCalls     int
 }
 
-// normalizeBlankLines collapses 3+ consecutive newlines into 2 (one blank line).
-// LLM compaction output often has excessive blank lines around section headers.
-func normalizeBlankLines(s string) string {
-	// Fast path: no runs of 3+ newlines
-	if !strings.Contains(s, "\n\n\n") {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	prev := byte(0)
-	run := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\n' {
-			run++
-			if run <= 2 {
-				b.WriteByte(c)
-			}
-			// skip 3rd+ newline
-		} else {
-			if prev == '\n' && run > 2 {
-				// we were suppressing newlines; now a non-newline char
-				b.WriteByte(c)
-			} else {
-				b.WriteByte(c)
-			}
-			run = 0
-		}
-		prev = c
-	}
-	return b.String()
-}
-
 // compactionPrompt is the structured contract for LLM-based context compaction.
 // Inspired by Claude Code's "working state" contract and Codex's cumulative history.
 const compactionPrompt = `You are performing a CONTEXT COMPACTION. Create a structured working state
@@ -583,11 +550,6 @@ Output the structured working state directly.`
 		log.Ctx(ctx).WithField("system_count", len(systemMsgs)).Error("assert: at most one system message in compact input")
 		return nil, fmt.Errorf("compact: expected at most one system message, got %d", len(systemMsgs))
 	}
-
-	// Normalize excessive blank lines from LLM output.
-	// LLMs often emit 3+ consecutive newlines around section headers;
-	// collapse them to at most one blank line (two newlines).
-	compressed = normalizeBlankLines(compressed)
 
 	summaryMsg := llm.NewUserMessage("[Compacted context]\n\n" + compressed)
 	continuationMsg := llm.NewUserMessage(continuationMessage)
