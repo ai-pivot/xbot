@@ -544,12 +544,11 @@ func (m *cliModel) advanceIterationForReasoning(progress *CLIProgressPayload) {
 func (m *cliModel) snapshotAndAdvance(progress *CLIProgressPayload) {
 	oldIter := m.lastSeenIteration
 	// Dedup: if iterationHistory already has a snapshot for oldIter, skip.
+	// Don't advance the counter here — the reasoning stream may be a false
+	// signal. Let the next structured progress (snapshotIterationChange)
+	// handle the real iteration transition.
 	for _, s := range m.iterationHistory {
 		if s.Iteration == oldIter {
-			// Already snapshotted — just advance the counter.
-			progress.Iteration = oldIter + 1
-			m.lastSeenIteration = progress.Iteration
-			m.iterationStartTime = time.Now()
 			return
 		}
 	}
