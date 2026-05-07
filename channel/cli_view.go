@@ -34,6 +34,19 @@ func (m *cliModel) isNarrow() bool { return m.width < 60 }
 // isWide returns true when terminal width >= 120 — wide layout with extra info.
 func (m *cliModel) isWide() bool { return m.width >= 120 }
 
+// chatWidth returns the effective width for the chat viewport, accounting for sidebar.
+func (m *cliModel) chatWidth() int {
+	if m.isWide() && m.sidebarEnabled && m.sidebarVisible {
+		// sidebar renders at Width(sw) with BorderLeft(│), total = sw + 1 chars
+		w := m.width - m.sidebarWidth - 1
+		if w < 20 {
+			w = 20
+		}
+		return w
+	}
+	return m.width
+}
+
 // cliFormatTokenCount formats a token count with K/M/B suffixes for display.
 func cliFormatTokenCount(n int64) string {
 	if n >= 1_000_000_000 {
@@ -311,7 +324,22 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 
 	// Layout assembly — build progressively so empty sections don't add blank lines.
 	var lines []string
-	lines = append(lines, titleBar, m.viewport.View())
+	lines = append(lines, titleBar)
+
+	// Chat viewport (may include sidebar alongside)
+	chatView := m.viewport.View()
+	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
+	if showSidebar {
+		sidebar := m.renderSidebar()
+		if m.sidebarPosition == "right" {
+			lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, chatView, sidebar))
+		} else {
+			lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, sidebar, chatView))
+		}
+	} else {
+		lines = append(lines, chatView)
+	}
+
 	if status != "" {
 		lines = append(lines, status)
 	}
@@ -327,6 +355,144 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 		lines = append(lines, infoBar)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderSidebar renders the sidebar next to the viewport.
+// No background color — just text with a thin "│" separator on the edge facing the chat.
+func (m *cliModel) renderSidebar() string {
+	sw := m.sidebarWidth
+	if sw < 12 {
+		sw = 12
+	}
+	h := m.viewport.Height()
+	if h < 5 {
+		h = 5
+	}
+
+	// Build sections
+	sections := []string{
+		m.renderSidebarSection("Sessions", m.sidebarSessionsContent(sw-2)),
+		m.renderSidebarSection("Model", m.sidebarModelContent()),
+		m.renderSidebarSection("Status", m.sidebarStatusContent()),
+		m.renderSidebarSection("Keys", m.sidebarKeysContent()),
+	}
+	sectionBlock := strings.Join(sections, "\n\n")
+
+	// Render: left separator "│" + content, fixed width = sw, fixed height = h
+	content := lipgloss.NewStyle().Width(sw - 2).Render(sectionBlock)
+	// Vertically center-ish: push top padding ~20% of height
+	topPad := h / 5
+	if topPad < 1 {
+		topPad = 1
+	}
+	return m.styles.SidebarBg.
+		Width(sw - 1). // -1 for left border
+		Height(h).
+		PaddingTop(topPad).
+		Render(content)
+}
+
+func (m *cliModel) renderSidebarSection(title string, body string) string {
+	return m.styles.SidebarHeader.Render(title) + "\n" + body
+}
+
+func (m *cliModel) sidebarSessionsContent(w int) string {
+	sessions := m.sidebarSessionList()
+	if len(sessions) == 0 {
+		return m.styles.TextMutedSt.Render("  no sessions")
+	}
+	var items []string
+	for i, s := range sessions {
+		icon := "○"
+		style := m.styles.SidebarItem
+		if i == m.sidebarCurrentIdx() {
+			icon = "●"
+			style = m.styles.SidebarActive
+		}
+		label := s
+		if len(label) > w-4 {
+			label = label[:w-5] + "…"
+		}
+		items = append(items, style.Render(" "+icon+" "+label))
+	}
+	return strings.Join(items, "\n")
+}
+
+func (m *cliModel) sidebarModelContent() string {
+	model := m.sidebarModelName()
+	status := IconRunnerOn
+	if !m.sidebarIsConnected() {
+		status = "○"
+	}
+	return m.styles.SidebarItem.Render(" " + status + " " + model)
+}
+
+func (m *cliModel) sidebarStatusContent() string {
+	parts := []string{}
+	if m.bgTaskCount > 0 {
+		parts = append(parts, fmt.Sprintf(" ● bg: %d", m.bgTaskCount))
+	}
+	if m.agentCount > 0 {
+		parts = append(parts, fmt.Sprintf(" ● agents: %d", m.agentCount))
+	}
+	if len(parts) == 0 {
+		return m.styles.TextMutedSt.Render(" ○ idle")
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (m *cliModel) sidebarKeysContent() string {
+	return m.styles.TextMutedSt.Render(" ^k palette  ^b bar\n ^t sessions ^n model")
+}
+
+// sidebarSessionList returns session names for sidebar display.
+func (m *cliModel) sidebarSessionList() []string {
+	if m.sessionsListFn == nil {
+		return nil
+	}
+	entries := m.sessionsListFn()
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Label != "" {
+			names = append(names, e.Label)
+		} else {
+			names = append(names, e.ID)
+		}
+	}
+	return names
+}
+
+// sidebarCurrentIdx returns the index of the currently active session.
+func (m *cliModel) sidebarCurrentIdx() int {
+	if m.sessionsListFn == nil {
+		return -1
+	}
+	entries := m.sessionsListFn()
+	for i, e := range entries {
+		if e.Active {
+			return i
+		}
+	}
+	return -1
+}
+
+// sidebarModelName returns the current model name for sidebar display.
+func (m *cliModel) sidebarModelName() string {
+	if m.cachedModelName != "" {
+		return m.cachedModelName
+	}
+	return "unknown"
+}
+
+// sidebarIsConnected returns whether the runner (or remote) is connected.
+func (m *cliModel) sidebarIsConnected() bool {
+	if m.runnerBridge != nil && m.runnerBridge.Status() == RunnerConnected {
+		return true
+	}
+	if !m.remoteMode {
+		return true // local mode is always "connected"
+	}
+	return m.connState == "connected"
 }
 
 // augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.

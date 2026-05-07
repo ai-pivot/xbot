@@ -838,6 +838,8 @@ func main() {
 		fmt.Println("  -p <prompt>         Non-interactive single prompt")
 		fmt.Println("  --token <token>     Token for remote server")
 		fmt.Println("  --workspace <path>  Override workspace")
+		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
+		fmt.Println("  --no-sidebar       Disable sidebar")
 	}
 
 	// Sub-commands: handled before flag parsing.
@@ -863,17 +865,19 @@ func main() {
 	prompt := ""
 	newSession := false
 	var (
-		flagServer     string        // --server ws://host:port (RemoteBackend: agent runs on server)
-		flagShare      string        // --share ws://host:port/ws/userID (Runner mode: tools run locally)
-		flagToken      string        // --token xxx
-		flagWorkspace  string        // --workspace /path (overrides config)
-		flagLocal      bool          // --local force legacy in-process mode
-		flagDebug      bool          // --debug enable UI capture + key injection via SIGUSR1
-		flagDebugInput string        // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
-		flagDebugCapMs int           // --debug-capture-ms 200  UI capture interval in ms (default 1000)
-		flagPProf      bool          // --pprof enable pprof HTTP server
-		flagPProfPort  int           // --pprof-port 6060
-		pprofServer    *pprof.Server // initialized if --pprof flag is set
+		flagServer       string        // --server ws://host:port (RemoteBackend: agent runs on server)
+		flagShare        string        // --share ws://host:port/ws/userID (Runner mode: tools run locally)
+		flagToken        string        // --token xxx
+		flagWorkspace    string        // --workspace /path (overrides config)
+		flagLocal        bool          // --local force legacy in-process mode
+		flagDebug        bool          // --debug enable UI capture + key injection via SIGUSR1
+		flagDebugInput   string        // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
+		flagDebugCapMs   int           // --debug-capture-ms 200  UI capture interval in ms (default 1000)
+		flagPProf        bool          // --pprof enable pprof HTTP server
+		flagPProfPort    int           // --pprof-port 6060
+		pprofServer      *pprof.Server // initialized if --pprof flag is set
+		flagSidebarWidth int           // --sidebar-width 25 (range 16-40)
+		flagNoSidebar    bool          // --no-sidebar
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -936,6 +940,15 @@ func main() {
 				flagWorkspace = os.Args[i+1]
 				i++
 			}
+		case "--sidebar-width":
+			if len(os.Args) > i+1 {
+				if n, err := strconv.Atoi(os.Args[i+1]); err == nil && n >= 16 && n <= 40 {
+					flagSidebarWidth = n
+				}
+				i++
+			}
+		case "--no-sidebar":
+			flagNoSidebar = true
 		default:
 			if !strings.HasPrefix(os.Args[i], "-") {
 				prompt = os.Args[i]
@@ -996,14 +1009,16 @@ func main() {
 	var tenantSvc *sqlite.TenantService
 
 	cliCfg := channel.CLIChannelConfig{
-		WorkDir:         app.workDir,
-		ChatID:          absWorkDir,
-		RemoteMode:      isRemoteBackend,
-		RemoteServerURL: remoteServerURL,
-		DebugMode:       flagDebug,
-		DebugInput:      flagDebugInput,
-		DebugCaptureMs:  flagDebugCapMs,
-		IsFirstRun:      firstRun,
+		WorkDir:              app.workDir,
+		ChatID:               absWorkDir,
+		RemoteMode:           isRemoteBackend,
+		RemoteServerURL:      remoteServerURL,
+		DebugMode:            flagDebug,
+		DebugInput:           flagDebugInput,
+		DebugCaptureMs:       flagDebugCapMs,
+		IsFirstRun:           firstRun,
+		SidebarWidthOverride: flagSidebarWidth,
+		NoSidebar:            flagNoSidebar,
 		GetCurrentValues: func() map[string]string {
 			// In remote mode, return cached values — never block the BubbleTea Update loop.
 			// The cache is refreshed asynchronously by refreshRemoteValuesCache().

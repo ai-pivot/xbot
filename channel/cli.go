@@ -88,6 +88,14 @@ func (c *CLIChannel) Start() error {
 	c.model.debugCaptureMs = c.config.DebugCaptureMs
 	c.model.senderID = "cli_user"
 
+	// Apply CLI flag overrides for layout
+	if c.config.SidebarWidthOverride > 0 {
+		c.model.sidebarWidth = c.config.SidebarWidthOverride
+	}
+	if c.config.NoSidebar {
+		c.model.sidebarEnabled = false
+	}
+
 	// Apply pending injections that were set before model existed
 	if c.pendingTrimHistoryFn != nil {
 		c.model.trimHistoryFn = c.pendingTrimHistoryFn

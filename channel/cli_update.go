@@ -533,15 +533,44 @@ func (m *cliModel) layoutViewportHeight() int {
 	return viewportHeight
 }
 
-// relayoutViewport 重新计算并设置 viewport 高度（不重建样式缓存）。
-// 用于 panel 打开/关闭、todo 增减时动态调整布局。
+// relayoutViewport 重新计算并设置 viewport 宽高、textarea 和 glamour。
+// 用于 panel 打开/关闭、todo 增减、sidebar toggle 时动态调整布局。
 // 如果用户之前在底部，调整后继续保持跟随底部。
 func (m *cliModel) relayoutViewport() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	wasAtBottom := m.viewport.AtBottom()
+
+	cw := m.chatWidth()
+
+	m.viewport.SetWidth(cw)
 	m.viewport.SetHeight(m.layoutViewportHeight())
+
+	// Textarea width matches input box content area
+	iw := cw - 8
+	if iw < 10 {
+		iw = 10
+	}
+	iw = iw &^ 1
+	m.textarea.SetWidth(iw)
+
+	// Glamour word-wrap matches viewport
+	if cw > 4 {
+		m.renderer = newGlamourRenderer(cw - 4)
+	}
+
+	// Invalidate render caches so content re-wraps at new width
+	m.renderCacheValid = false
+	m.lastViewportContent = ""
+	m.cachedWrappedHistory = ""
+	m.cachedWrappedHistoryRaw = ""
+	m.cachedWrappedHistoryWidth = 0
+	for i := range m.messages {
+		m.messages[i].dirty = true
+	}
+
+	wasAtBottom := m.viewport.AtBottom()
+	m.updateViewportContent()
 	if wasAtBottom {
 		m.viewport.GotoBottom()
 	}
@@ -569,43 +598,10 @@ func (m *cliModel) handleResize(width, height int) {
 		m.widgetRegistry.RefreshAllWidgets(width, nil)
 	}
 
-	m.viewport.SetWidth(width)
-	m.viewport.SetHeight(m.layoutViewportHeight())
-
-	// InputBox lipgloss style: Width(width-4) includes border(2) + padding(2).
-	// Content area = width-4-2-2 = width-8. Textarea must match this.
-	iw := width - 8
-	if iw < 10 {
-		iw = 10
-	}
-	iw = iw &^ 1 // round down to even for CJK
-	m.textarea.SetWidth(iw)
-
-	// Glamour word-wrap must match viewport width so that lines
-	// don't get re-wrapped by lipgloss (which would lose the margin).
-	if width > 4 {
-		m.renderer = newGlamourRenderer(width - 4)
-	}
+	m.relayoutViewport()
 
 	if !m.ready {
 		m.ready = true
-	}
-
-	// §1 增量渲染：resize 后缓存全部失效
-	m.renderCacheValid = false
-	m.lastViewportContent = "" // force setViewportContent to re-wrap
-	m.cachedWrappedHistory = ""
-	m.cachedWrappedHistoryRaw = ""
-	m.cachedWrappedHistoryWidth = 0
-	for i := range m.messages {
-		m.messages[i].dirty = true
-	}
-
-	// 更新内容（保持用户滚动位置）
-	wasAtBottom := m.viewport.AtBottom()
-	m.updateViewportContent()
-	if wasAtBottom {
-		m.viewport.GotoBottom()
 	}
 }
 

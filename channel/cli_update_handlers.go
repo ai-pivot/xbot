@@ -96,6 +96,14 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			return m, nil, true
 		}
 
+	case msg.String() == "ctrl+b":
+		// Ctrl+B: Toggle sidebar (only in wide mode)
+		if m.panelMode == "" && m.isWide() && m.sidebarEnabled {
+			m.sidebarVisible = !m.sidebarVisible
+			m.relayoutViewport()
+			return m, nil, true
+		}
+
 	case msg.String() == "ctrl+n":
 		// Cycle model (next in list)
 		// Uses Ctrl+N instead of Ctrl+M because Ctrl+M is indistinguishable

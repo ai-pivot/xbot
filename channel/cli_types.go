@@ -615,6 +615,8 @@ type CLIChannelConfig struct {
 	DeleteWebUserFn      func(username string) error                                                                                    // 删除 Web 用户（admin only）
 	IsAdminFn            func() bool                                                                                                    // 检查当前用户是否 admin
 	PaletteContributor   PaletteContributor                                                                                             // supplies external commands for command palette
+	SidebarWidthOverride int                                                                                                            // --sidebar-width N (0 = use setting/default)
+	NoSidebar            bool                                                                                                           // --no-sidebar
 }
 
 type AgentPanelEntry struct {

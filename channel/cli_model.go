@@ -675,6 +675,7 @@ type cliModel struct {
 	sidebarEnabled  bool   // show sidebar in wide screens
 	sidebarWidth    int    // sidebar width in chars
 	sidebarPosition string // "left" / "right"
+	sidebarVisible  bool   // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
 
 	// toolDisplayInfo
 
@@ -818,6 +819,7 @@ func newCLIModel() *cliModel {
 		chatCenter:      true,
 		layoutMode:      "auto",
 		sidebarEnabled:  true,
+		sidebarVisible:  true,
 		sidebarWidth:    20,
 		sidebarPosition: "left",
 	}
