@@ -1112,16 +1112,9 @@ func (m *cliModel) renderProgressBlock() string {
 		sb.WriteString(iterStyle.Render(fmt.Sprintf("#%d", m.progress.Iteration)))
 		sb.WriteString("\n")
 
-		// Static parts (reasoning, thinking, completed tools, tool content, SubAgent tree)
-		// — cached between ticks to avoid re-running lipgloss.Style.Render every 100ms.
-		static := m.getCurrentStaticCache(bubbleWidth, innerWidth, s, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, iterStyle)
-		if static != "" {
-			sb.WriteString(static)
-		}
-
-		// Dynamic parts (active tools elapsed + pulse, stream content, spinner)
-		// — rendered fresh every tick (lightweight: typically 2-3 lines).
-		m.renderCurrentDynamic(&sb, s, innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, toolRunningStyle, elapsedStyle, iterStyle)
+		// Render all current-iteration content with correct linear order.
+		// Static cache (completed tools + content) is inserted mid-stream.
+		m.renderCurrentIteration(&sb, s, innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, toolDoneStyle, toolErrorStyle, toolRunningStyle, elapsedStyle, dimStyle, iterStyle)
 	} else if m.typing {
 		sb.WriteString("  ")
 		sb.WriteString(m.ticker.viewFrames(orbitFrames))
@@ -1190,8 +1183,10 @@ func (m *cliModel) progressStaticFP() uint64 {
 }
 
 // getCurrentStaticCache returns the cached rendering of static parts for the
-// current iteration (reasoning lines, thinking lines, completed tools, tool
-// content, SubAgent tree). Rebuilds only when the content fingerprint changes.
+// current iteration (completed tools, tool content). These are truly static
+// once a tool finishes — no typewriter, no cursor, no elapsed timer.
+// Reasoning, thinking, stream content, active tools, and SubAgent tree are
+// always rendered dynamically to maintain correct linear order.
 func (m *cliModel) getCurrentStaticCache(
 	bubbleWidth, innerWidth int,
 	s *cliStyles,
@@ -1211,45 +1206,7 @@ func (m *cliModel) getCurrentStaticCache(
 		return m.cachedCurrentStatic
 	}
 
-	// Rebuild
-	reasoningW := lipgloss.Width(reasoningGuide.Render("  │ "))
-	thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
-
 	var sb strings.Builder
-
-	// Reasoning (static: only when NOT streaming — streaming reasoning is dynamic due to typewriter)
-	isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
-	reasoningText := m.progress.Reasoning
-	if !isReasoningStreaming && reasoningText == "" {
-		reasoningText = m.progress.ReasoningStreamContent
-	}
-	if !isReasoningStreaming && reasoningText != "" {
-		lines := strings.Split(reasoningText, "\n")
-		for _, line := range lines {
-			line = strings.TrimRight(line, " \t\r")
-			if line == "" {
-				continue
-			}
-			for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-				sb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
-				sb.WriteString("\n")
-			}
-		}
-	}
-
-	// Thinking
-	if m.progress.Thinking != "" {
-		for _, line := range strings.Split(m.progress.Thinking, "\n") {
-			line = strings.TrimRight(line, " \t\r")
-			if line == "" {
-				continue
-			}
-			for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-				sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
-				sb.WriteString("\n")
-			}
-		}
-	}
 
 	// Completed tools in current iteration
 	for _, tool := range m.progress.CompletedTools {
@@ -1306,22 +1263,104 @@ func (m *cliModel) getCurrentStaticCache(
 	return m.cachedCurrentStatic
 }
 
-// renderCurrentDynamic renders the tick-sensitive parts of the current iteration:
-// active tool elapsed timers, pulse icons, stream content with typewriter/cursor,
-// and phase-specific spinners. These change every tick and are lightweight to render.
-func (m *cliModel) renderCurrentDynamic(
+// renderCurrentIteration renders the current iteration with correct linear order:
+//
+//  1. Reasoning (with typewriter when streaming)
+//  2. Thinking
+//  3. Completed tools + content (from static cache)
+//  4. Stream content (assistant text output)
+//  5. Active tools (live elapsed)
+//  6. Phase spinner (only when no content at all)
+//  7. SubAgent tree
+//
+// Only completed tools + tool content are cached (truly static once finished).
+// Everything else is rendered fresh each tick.
+func (m *cliModel) renderCurrentIteration(
 	sb *strings.Builder,
 	s *cliStyles,
 	innerWidth, reasoningW, thinkingW int,
 	reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle,
-	toolRunningStyle, elapsedStyle, iterStyle lipgloss.Style,
+	toolDoneStyle, toolErrorStyle, toolRunningStyle, elapsedStyle, dimStyle, iterStyle lipgloss.Style,
 ) {
 	if m.progress == nil {
 		return
 	}
 
-	// Phase-specific fallback / stream content — rendered BEFORE active tools
-	// to maintain linear chronological order: completed → stream text → active
+	// --- 1. Reasoning ---
+	isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
+	reasoningText := m.progress.Reasoning
+	if reasoningText == "" {
+		reasoningText = m.progress.ReasoningStreamContent
+	}
+	if reasoningText != "" {
+		// Typewriter effect for reasoning streaming
+		if isReasoningStreaming {
+			totalRunes := len([]rune(m.progress.ReasoningStreamContent))
+			runes := []rune(m.progress.ReasoningStreamContent)
+			if m.rwVisible > 0 && m.rwVisible < totalRunes {
+				runes = runes[:m.rwVisible]
+			}
+			reasoningText = string(runes)
+		}
+		lines := strings.Split(reasoningText, "\n")
+		reasoningTyping := isReasoningStreaming && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
+		cursorVisible := reasoningTyping || (m.ticker.ticks/5)%2 == 0
+		for i, line := range lines {
+			line = strings.TrimRight(line, " \t\r")
+			if line == "" {
+				continue
+			}
+			isLastLine := i == len(lines)-1
+			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
+			for j, wl := range wrappedLines {
+				isLast := isLastLine && j == len(wrappedLines)-1
+				guide := reasoningGuide.Render("  │ ")
+				if isLast && isReasoningStreaming {
+					cursorStr := s.StreamCursor.Render("▋")
+					cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
+					if cursorOverflow {
+						sb.WriteString(guide + reasoningStyle.Render(wl))
+						sb.WriteString("\n")
+						if cursorVisible {
+							sb.WriteString(guide + cursorStr)
+						} else {
+							sb.WriteString(guide)
+						}
+					} else if cursorVisible {
+						sb.WriteString(guide + reasoningStyle.Render(wl) + cursorStr)
+					} else {
+						sb.WriteString(guide + reasoningStyle.Render(wl))
+					}
+				} else {
+					sb.WriteString(guide + reasoningStyle.Render(wl))
+				}
+				sb.WriteString("\n")
+			}
+		}
+	}
+
+	// --- 2. Thinking ---
+	if m.progress.Thinking != "" {
+		for _, line := range strings.Split(m.progress.Thinking, "\n") {
+			line = strings.TrimRight(line, " \t\r")
+			if line == "" {
+				continue
+			}
+			for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
+				sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+				sb.WriteString("\n")
+			}
+		}
+	}
+
+	// --- 3. Completed tools + tool content (static cache) ---
+	bubbleWidth := innerWidth + 4 // match the padding used elsewhere
+	static := m.getCurrentStaticCache(bubbleWidth, innerWidth, s, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, iterStyle)
+	if static != "" {
+		sb.WriteString(static)
+	}
+
+	// --- 4. Stream content (assistant text output) ---
 	hasTools := len(m.progress.ActiveTools) > 0 || len(m.progress.CompletedTools) > 0
 
 	if m.progress.StreamContent != "" {
@@ -1367,9 +1406,7 @@ func (m *cliModel) renderCurrentDynamic(
 			}
 		}
 	} else if !hasTools {
-		// Only show phase spinner if reasoning/thinking hasn't already
-		// been rendered in the static cache — otherwise we get duplicate
-		// "thinking..." text on top of actual reasoning lines.
+		// Phase spinner only when no content at all
 		hasReasoning := m.progress.Reasoning != "" || m.progress.ReasoningStreamContent != ""
 		hasThinking := m.progress.Thinking != ""
 		if !hasReasoning && !hasThinking {
@@ -1393,8 +1430,7 @@ func (m *cliModel) renderCurrentDynamic(
 		}
 	}
 
-	// Active tools — label + live elapsed timer (tick-sensitive)
-	// Rendered AFTER stream content to maintain linear order
+	// --- 5. Active tools (live elapsed + pulse) ---
 	for _, tool := range m.progress.ActiveTools {
 		if tool.Status == "done" || tool.Status == "error" {
 			continue
@@ -1412,53 +1448,7 @@ func (m *cliModel) renderCurrentDynamic(
 		sb.WriteString("\n")
 	}
 
-	// Reasoning streaming with typewriter effect (tick-sensitive)
-	isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
-	if isReasoningStreaming && m.progress.ReasoningStreamContent != "" {
-		totalReasoningRunes := len([]rune(m.progress.ReasoningStreamContent))
-		runes := []rune(m.progress.ReasoningStreamContent)
-		if m.rwVisible > 0 && m.rwVisible < totalReasoningRunes {
-			runes = runes[:m.rwVisible]
-		}
-		reasoningText := string(runes)
-		lines := strings.Split(reasoningText, "\n")
-		reasoningTyping := m.rwVisible < totalReasoningRunes
-		cursorVisible := reasoningTyping || (m.ticker.ticks/5)%2 == 0
-		for i, line := range lines {
-			line = strings.TrimRight(line, " \t\r")
-			if line == "" {
-				continue
-			}
-			isLastLine := i == len(lines)-1
-			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
-			for j, wl := range wrappedLines {
-				isLast := isLastLine && j == len(wrappedLines)-1
-				guide := reasoningGuide.Render("  │ ")
-				if isLast {
-					cursorStr := s.StreamCursor.Render("▋")
-					cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
-					if cursorOverflow {
-						sb.WriteString(guide + reasoningStyle.Render(wl))
-						sb.WriteString("\n")
-						if cursorVisible {
-							sb.WriteString(guide + cursorStr)
-						} else {
-							sb.WriteString(guide)
-						}
-					} else if cursorVisible {
-						sb.WriteString(guide + reasoningStyle.Render(wl) + cursorStr)
-					} else {
-						sb.WriteString(guide + reasoningStyle.Render(wl))
-					}
-				} else {
-					sb.WriteString(guide + reasoningStyle.Render(wl))
-				}
-				sb.WriteString("\n")
-			}
-		}
-	}
-
-	// SubAgent tree — rendered after active tools and stream content
+	// --- 6. SubAgent tree ---
 	if len(m.progress.SubAgents) > 0 {
 		var treeSB strings.Builder
 		m.renderSubAgentTree(&treeSB, m.progress.SubAgents, "", innerWidth)
