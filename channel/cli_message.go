@@ -2961,7 +2961,9 @@ func diffHighlightLines(diffLines []string, filePath string, bgAdd, bgDel, bgCtx
 			code = line[1:]
 			bg = bgDel
 		default:
-			code = line
+			if len(line) > 1 {
+				code = line[1:] // strip diff prefix space for context lines
+			}
 		}
 		if code != "" {
 			spans = append(spans, codeSpan{diffIdx: i, code: code, bgHex: bg})

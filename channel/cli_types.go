@@ -5,6 +5,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"encoding/json"
 	"fmt"
+
+	// Markdown rendering for assistant messages
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/x/ansi"
