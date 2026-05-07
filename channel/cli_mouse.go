@@ -112,7 +112,7 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickCompletionsItem(zone.Index)
 	case "sessionsItem":
 		return m.clickSessionsItem(zone.Index)
-	case "bgtasksItem":
+	case "bgtaskItem":
 		return m.clickBgTasksItem(zone.Index)
 	case "dangerItem":
 		return m.clickDangerItem(zone.Index)
@@ -147,7 +147,7 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 			if zone != nil && (zone.ID == "panelItem" || zone.ID == "panelToggle" ||
 				zone.ID == "panelCombo" || zone.ID == "panelComboItem" ||
 				zone.ID == "panelTextarea" ||
-				zone.ID == "sessionsItem" || zone.ID == "bgtasksItem" ||
+				zone.ID == "sessionsItem" || zone.ID == "bgtaskItem" ||
 				zone.ID == "dangerItem" || zone.ID == "channelItem" ||
 				zone.ID == "runnerField") {
 				m.panelScrollY = max(0, m.panelScrollY-3)
@@ -194,7 +194,7 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 			if zone != nil && (zone.ID == "panelItem" || zone.ID == "panelToggle" ||
 				zone.ID == "panelCombo" || zone.ID == "panelComboItem" ||
 				zone.ID == "panelTextarea" ||
-				zone.ID == "sessionsItem" || zone.ID == "bgtasksItem" ||
+				zone.ID == "sessionsItem" || zone.ID == "bgtaskItem" ||
 				zone.ID == "dangerItem" || zone.ID == "channelItem" ||
 				zone.ID == "runnerField") {
 				m.panelScrollY += 3
@@ -750,37 +750,35 @@ func (m *cliModel) trackPanelZones(zb *mouseZoneBuilder) {
 }
 
 // trackSettingsZones records zones for settings panel items.
-// Each visible item occupies exactly 1 line (after scroll offset).
+// The rendering order is: header(1 line) + divider(1 line) + [category(2 lines) + items(1 line each)]...
+// Zones must account for scroll offset (panelScrollY).
 func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentStartY int) {
+	scrollY := m.panelScrollY
+
+	// Build the complete line map (same logic as viewSettingsPanel)
+	type lineInfo struct {
+		isItem    bool
+		itemIndex int
+	}
+	var lines []lineInfo
+
+	// Header line
+	lines = append(lines, lineInfo{})
+	// Divider line
+	lines = append(lines, lineInfo{})
+
+	lastCat := ""
 	for i := range m.panelSchema {
-		// Use contentStartY + visibleH as bound (contentStartY = 2 after titleBar + border)
-		// instead of zones[0] which may not exist yet.
-		if zb.y >= contentStartY+visibleH+2 {
-			break
-		}
 		def := m.panelSchema[i]
-
-		// Category headers take 2 lines (blank + header)
-		// We detect them by checking if Category changed
-		// Since we don't track categories separately, use a simpler approach:
-		// Each item is 1 line, categories add 2 lines.
-		// But we need to match the actual rendering...
-
-		// Instead, count lines the same way viewSettingsPanel does.
-		// For simplicity, each schema item + category separator = 1 item zone.
-		// We'll use a broader zone that covers each item.
-		defType := def.Type
-		zoneID := "panelItem"
-		switch defType {
-		case SettingTypeToggle:
-			zoneID = "panelToggle"
-		case SettingTypeCombo:
-			zoneID = "panelCombo"
+		if def.Category != lastCat {
+			lastCat = def.Category
+			lines = append(lines, lineInfo{}) // blank line
+			lines = append(lines, lineInfo{}) // category header
 		}
-		zb.add(1, zoneID, i)
+		lines = append(lines, lineInfo{isItem: true, itemIndex: i})
 	}
 
-	// Combo dropdown items (if open)
+	// Combo dropdown items
 	if m.panelCombo && m.panelCursor < len(m.panelSchema) {
 		def := m.panelSchema[m.panelCursor]
 		start := 0
@@ -789,60 +787,142 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 		}
 		end := min(start+8, len(def.Options))
 		for j := start; j < end; j++ {
-			zb.add(1, "panelComboItem", j)
+			lines = append(lines, lineInfo{isItem: true, itemIndex: -(j + 1)}) // negative for combo items
 		}
 	}
 
-	// Edit textarea (if editing)
+	// Edit textarea
 	if m.panelEdit {
-		zb.skip(1) // label line
-		zb.add(1, "panelTextarea", 0)
+		lines = append(lines, lineInfo{})              // label line
+		lines = append(lines, lineInfo{isItem: false}) // textarea (not clickable as item)
+	}
+
+	// Now apply scroll offset and track zones
+	for ln := scrollY; ln < len(lines) && zb.y < contentStartY+visibleH; ln++ {
+		info := lines[ln]
+		if info.isItem {
+			if info.itemIndex >= 0 {
+				def := m.panelSchema[info.itemIndex]
+				zoneID := "panelItem"
+				switch def.Type {
+				case SettingTypeToggle:
+					zoneID = "panelToggle"
+				case SettingTypeCombo:
+					zoneID = "panelCombo"
+				}
+				zb.add(1, zoneID, info.itemIndex)
+			} else {
+				// Combo dropdown item (negative index)
+				zb.add(1, "panelComboItem", -(info.itemIndex + 1))
+			}
+		} else {
+			zb.skip(1)
+		}
 	}
 }
 
 // trackSessionsZones records zones for sessions panel.
+// Rendering order: header+help(1 line) + [deleteConfirm(1 line)] + items(1 line each).
+// Zones account for scroll offset (panelScrollY).
 func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
+	scrollY := m.panelScrollY
+	lineIdx := 0
+
+	// Header + help line
+	if lineIdx >= scrollY {
+		zb.skip(1)
+	} // else: skip silently
+	lineIdx++
+
+	// Delete confirmation (if shown)
+	if m.panelSessionConfirmDelete {
+		if lineIdx >= scrollY {
+			zb.skip(1)
+		}
+		lineIdx++
+	}
+
 	for i := range m.panelSessionItems {
-		zb.add(1, "sessionsItem", i)
+		if lineIdx >= scrollY {
+			zb.add(1, "sessionsItem", i)
+		}
+		lineIdx++
 	}
 }
 
 // trackBgTasksZones records zones for background tasks panel.
+// Rendering: header+help(1 line) + items(1 line each).
 func (m *cliModel) trackBgTasksZones(zb *mouseZoneBuilder, visibleH int) {
-	totalItems := len(m.panelBgTasks) + len(m.panelBgAgents)
-	for i := 0; i < totalItems; i++ {
-		zb.add(1, "bgtasksItem", i)
+	// Header + help line
+	zb.skip(1)
+	if m.panelBgViewing {
+		// Log view: header only, log lines are not clickable
+		return
+	}
+	for i := range m.panelBgTasks {
+		zb.add(1, "bgtaskItem", i)
 	}
 }
 
 // trackDangerZones records zones for danger zone panel.
+// Selection mode: header(1 line) + items(1 line each).
+// Confirm mode: header(1 line) + 4 info lines + input zone.
 func (m *cliModel) trackDangerZones(zb *mouseZoneBuilder, visibleH int) {
-	for i := range m.panelDangerItems {
-		zb.add(1, "dangerItem", i)
+	// Header line
+	zb.skip(1)
+	if m.panelDangerConfirm {
+		// Confirm sub-mode: 4 info lines + input line
+		zb.skip(4) // confirm text, desc, blank, type prompt
+		zb.add(1, "dangerInput", 0)
+	} else {
+		// Selection mode
+		for i := range m.panelDangerItems {
+			zb.add(1, "dangerItem", i)
+		}
 	}
 }
 
 // trackChannelZones records zones for channel config panel.
+// Rendering: header+help+"\n\n"(3 lines consumed by header block) + items(1 line each).
 func (m *cliModel) trackChannelZones(zb *mouseZoneBuilder, visibleH int) {
+	// header+help line + empty line from "\n\n"
+	zb.skip(2)
 	for i := range m.panelChannelItems {
 		zb.add(1, "channelItem", i)
 	}
 }
 
 // trackRunnerZones records zones for runner panel fields.
+// Disconnected mode: header(1 line) + blank(1 line) + 3 fields × 2 lines (label + input).
+// Connected/Connecting mode: header(1 line) only, no clickable zones.
 func (m *cliModel) trackRunnerZones(zb *mouseZoneBuilder, visibleH int) {
-	// 3 textinput fields
+	// Header line
+	zb.skip(1)
+
+	var status RunnerStatus
+	if m.runnerBridge != nil {
+		status = m.runnerBridge.Status()
+	}
+	if status != RunnerDisconnected {
+		// Connected/connecting: no clickable fields
+		return
+	}
+
+	// Blank line after header
+	zb.skip(1)
+
+	// 3 fields: label(1 line) + input(1 line) each
 	for i := 0; i < 3; i++ {
-		zb.add(1, "runnerField", i)
+		zb.skip(1)                  // label line
+		zb.add(1, "runnerField", i) // input line
 	}
 }
 
 // trackApprovalZones records zones for approval dialog.
+// Rendering varies: header + question lines + approve/deny buttons.
 func (m *cliModel) trackApprovalZones(zb *mouseZoneBuilder, visibleH int) {
-	// Approve button
-	zb.add(1, "approvalBtn", 0)
-	// Deny button
-	zb.add(1, "approvalBtn", 1)
+	// Approval dialog has a custom layout; skip all for now
+	// (approval is typically short-lived, not worth precise tracking)
 }
 
 // trackOverlayZones computes zones for overlay content (palette/quickSwitch/rewind).
