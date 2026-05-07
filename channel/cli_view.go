@@ -331,7 +331,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	var topLines []string
 	topLines = append(topLines, titleBar)
 
-	// Middle section: viewport + status + todo + footer + input
+	// Middle section: viewport + status + todo + footer + input + infoBar
 	// When sidebar is visible, this whole section is squeezed to chatWidth
 	var middleLines []string
 	middleLines = append(middleLines, m.viewport.View())
@@ -346,28 +346,23 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 		middleLines = append(middleLines, footer)
 	}
 	middleLines = append(middleLines, input)
+	if infoBar != "" {
+		middleLines = append(middleLines, infoBar)
+	}
 	middleBlock := strings.Join(middleLines, "\n")
 
-	// Info bar is always full width
-	infoBarLine := ""
-	if infoBar != "" {
-		infoBarLine = "\n" + infoBar
-	}
-
-	// Sidebar: spans the full height of the middle section (viewport → input)
+	// Sidebar: spans the full height of the middle section (viewport → infoBar)
 	if showSidebar {
 		sidebar := m.renderSidebarForBlock(middleBlock)
 		if m.sidebarPosition == "right" {
 			return strings.Join(topLines, "\n") + "\n" +
-				lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar) +
-				infoBarLine
+				lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar)
 		}
 		return strings.Join(topLines, "\n") + "\n" +
-			lipgloss.JoinHorizontal(lipgloss.Top, sidebar, middleBlock) +
-			infoBarLine
+			lipgloss.JoinHorizontal(lipgloss.Top, sidebar, middleBlock)
 	}
 
-	return strings.Join(topLines, "\n") + "\n" + middleBlock + infoBarLine
+	return strings.Join(topLines, "\n") + "\n" + middleBlock
 }
 
 // renderSidebarForBlock renders the sidebar that spans the full height of the
@@ -407,32 +402,56 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 }
 
 func (m *cliModel) renderSidebarSessions(w int) string {
-	sessions := m.sidebarSessionList()
-	if len(sessions) == 0 {
-		return m.styles.SidebarHeader.Render("Sessions") + "\n" +
-			m.styles.TextMutedSt.Render("  (empty)")
-	}
+	// Reset tracking
+	sidebarSessionLines = nil
+	sidebarNewSessionY = -1
+
+	entries := m.sidebarSessionEntries()
+	currentIdx := m.sidebarCurrentIdx()
 
 	var b strings.Builder
 	b.WriteString(m.styles.SidebarHeader.Render("Sessions"))
-	b.WriteByte('\n')
+	sidebarSessionLines = append(sidebarSessionLines, -1) // header line
 
-	for i, s := range sessions {
-		label := s
-		maxLen := w - 4 // icon + space + label + potential ellipsis
-		if len(label) > maxLen {
-			label = label[:maxLen-1] + "…"
-		}
-		if i == m.sidebarCurrentIdx() {
-			b.WriteString(m.styles.SidebarActive.Render(" ● " + label))
-		} else {
-			b.WriteString(m.styles.SidebarItem.Render(" ○ " + label))
-		}
-		if i < len(sessions)-1 {
+	if len(entries) == 0 {
+		b.WriteByte('\n')
+		b.WriteString(m.styles.TextMutedSt.Render("  (empty)"))
+		sidebarSessionLines = append(sidebarSessionLines, -1)
+	} else {
+		for i, s := range entries {
 			b.WriteByte('\n')
+			label := s.Label
+			if label == "" {
+				label = s.ID
+			}
+			maxLen := w - 4
+			if len(label) > maxLen {
+				label = label[:maxLen-1] + "…"
+			}
+			if i == currentIdx {
+				b.WriteString(m.styles.SidebarActive.Render(" ● " + label))
+			} else {
+				b.WriteString(m.styles.SidebarItem.Render(" ○ " + label))
+			}
+			sidebarSessionLines = append(sidebarSessionLines, i) // session index
 		}
 	}
+
+	// "+ New" button
+	b.WriteByte('\n')
+	b.WriteByte('\n')
+	sidebarNewSessionY = len(sidebarSessionLines) + 1 // blank line + new button line
+	b.WriteString(m.styles.Accent.Bold(true).Render("  + New"))
+
 	return b.String()
+}
+
+// sidebarSessionEntries returns the full session entries (not just names).
+func (m *cliModel) sidebarSessionEntries() []SessionPanelEntry {
+	if m.sessionsListFn == nil {
+		return nil
+	}
+	return m.sessionsListFn()
 }
 
 func (m *cliModel) renderSidebarActive() string {
@@ -452,22 +471,6 @@ func (m *cliModel) renderSidebarActive() string {
 }
 
 // sidebarSessionList returns session names for sidebar display.
-func (m *cliModel) sidebarSessionList() []string {
-	if m.sessionsListFn == nil {
-		return nil
-	}
-	entries := m.sessionsListFn()
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.Label != "" {
-			names = append(names, e.Label)
-		} else {
-			names = append(names, e.ID)
-		}
-	}
-	return names
-}
-
 // sidebarCurrentIdx returns the index of the currently active session.
 func (m *cliModel) sidebarCurrentIdx() int {
 	if m.sessionsListFn == nil {
@@ -1008,6 +1011,15 @@ type footerHint struct {
 // footerHints stores the current frame's footer hint positions for mouse click handling.
 // Populated during renderFooter(), consumed during trackMainLayoutZones().
 var footerHints []footerHint
+
+// sidebarSessionLines tracks Y-offsets of each session item row in the sidebar.
+// Populated during renderSidebarSessions, consumed by trackMainLayoutZones.
+// -1 means "no item" (header, blank line, etc).
+var sidebarSessionLines []int
+
+// sidebarNewSessionY tracks the Y-offset of the "+ New" button in the sidebar.
+// -1 means not rendered.
+var sidebarNewSessionY int
 
 // renderFooter 渲染底部快捷键提示条。
 // 根据当前状态动态显示最相关的快捷键，避免信息过载。

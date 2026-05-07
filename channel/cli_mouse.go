@@ -132,10 +132,10 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickCompletionsItem(zone.Index)
 	case "sessionsItem":
 		return m.clickSessionsItem(zone.Index)
-	case "sidebarArea":
-		// Click anywhere in sidebar → open sessions panel for quick switch
-		m.openSessionsPanel()
-		return true, m, nil
+	case "sidebarSession":
+		return m.clickSidebarSession(zone.Index)
+	case "sidebarNewSession":
+		return m.clickSidebarNewSession()
 	case "bgtaskItem":
 		return m.clickBgTasksItem(zone.Index)
 	case "dangerItem":
@@ -781,32 +781,30 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 	// viewport: layoutViewportHeight() lines (wheel handled by viewport automatically)
 	viewportH := m.layoutViewportHeight()
 
-	// If sidebar is visible, register its entire area as a clickable zone to open sessions panel.
+	// If sidebar is visible, register session item zones and new-session button.
 	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
 	if showSidebar {
-		// Viewport area spans the full viewportH lines
+		// Sidebar X range within the viewport Y span
+		sbXEnd := m.sidebarWidth + 4 // border(2) + padding(2) + content
+		sbXStart := 0
 		if m.sidebarPosition == "right" {
-			// viewport on left, sidebar on right
-			zb.skip(viewportH) // viewport zone
-			// Now go back and overlay sidebar zones on the same Y range
-			for dy := 0; dy < viewportH; dy++ {
-				xStart := m.chatWidth()
-				xEnd := m.width
-				if xEnd > xStart {
-					zb.addX(dy-viewportH, xStart, xEnd, "sidebarArea", dy)
-				}
-			}
-		} else {
-			// sidebar on left, viewport on right
-			sw := m.sidebarWidth + 1 // sidebarWidth + border
-			for dy := 0; dy < viewportH; dy++ {
-				zb.addX(dy, 0, sw, "sidebarArea", dy)
-			}
-			zb.skip(viewportH)
+			sbXStart = m.chatWidth()
+			sbXEnd = m.width
 		}
-	} else {
-		zb.skip(viewportH)
+
+		// Register each session item row
+		for relY, sessionIdx := range sidebarSessionLines {
+			if sessionIdx >= 0 {
+				zb.addX(relY, sbXStart, sbXEnd, "sidebarSession", sessionIdx)
+			}
+		}
+		// Register "+ New" button
+		if sidebarNewSessionY >= 0 {
+			zb.addX(sidebarNewSessionY, sbXStart, sbXEnd, "sidebarNewSession", 0)
+		}
 	}
+
+	zb.skip(viewportH)
 
 	// status bar: 1 line
 	zb.skip(1)
@@ -1314,4 +1312,20 @@ func (m *cliModel) collectAskUserAnswers() map[string]string {
 		}
 	}
 	return answers
+}
+
+// clickSidebarSession handles clicking a session item in the sidebar.
+func (m *cliModel) clickSidebarSession(index int) (bool, tea.Model, tea.Cmd) {
+	entries := m.sidebarSessionEntries()
+	if index < 0 || index >= len(entries) {
+		return false, m, nil
+	}
+	handled, cmd := m.switchToSession(entries[index])
+	return handled, m, cmd
+}
+
+// clickSidebarNewSession handles clicking the "+ New" button in the sidebar.
+func (m *cliModel) clickSidebarNewSession() (bool, tea.Model, tea.Cmd) {
+	cmd := m.showSessionCreateDialog()
+	return true, m, cmd
 }
