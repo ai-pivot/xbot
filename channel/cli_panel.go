@@ -17,6 +17,69 @@ import (
 
 // --- §12 Interactive Panel ---
 
+// panelStackEntry saves the parent panel state before pushing to a child panel.
+// When the child panel's ESC is pressed, popPanel restores this state.
+type panelStackEntry struct {
+	mode        string // panelMode value ("settings", etc.)
+	cursor      int    // panelCursor
+	scrollY     int    // panelScrollY
+	values      map[string]string
+	schema      []SettingDefinition
+	onSubmit    func(values map[string]string)
+	fromPalette bool // true = ESC should reopen command palette instead of restoring mode
+}
+
+// pushPanel saves the current panel state onto the navigation stack.
+// The caller should set the new panelMode afterwards (via openXxxPanel).
+// Used when navigating from a parent panel (e.g. Settings) to a child panel.
+func (m *cliModel) pushPanel() {
+	m.panelStack = append(m.panelStack, panelStackEntry{
+		mode:     m.panelMode,
+		cursor:   m.panelCursor,
+		scrollY:  m.panelScrollY,
+		values:   m.panelValues,
+		schema:   m.panelSchema,
+		onSubmit: m.panelOnSubmit,
+	})
+}
+
+// pushPanelFromPalette saves a marker so that popPanel reopens the palette
+// instead of restoring a previous panel. Called when a palette command opens a panel.
+func (m *cliModel) pushPanelFromPalette() {
+	m.panelStack = append(m.panelStack, panelStackEntry{fromPalette: true})
+}
+
+// popPanel restores the parent panel state from the navigation stack.
+// Returns true if a parent panel was restored, false if the stack is empty
+// (meaning we should close the panel entirely).
+func (m *cliModel) popPanel() bool {
+	if len(m.panelStack) == 0 {
+		return false
+	}
+	// Pop the last entry
+	entry := m.panelStack[len(m.panelStack)-1]
+	m.panelStack = m.panelStack[:len(m.panelStack)-1]
+
+	if entry.fromPalette {
+		// Clean up current panel state entirely, then reopen palette
+		m.closePanel()
+		m.openCommandPalette()
+		return true
+	}
+
+	// Restore parent panel state
+	m.panelMode = entry.mode
+	m.panelCursor = entry.cursor
+	m.panelScrollY = entry.scrollY
+	m.panelValues = entry.values
+	m.panelSchema = entry.schema
+	m.panelOnSubmit = entry.onSubmit
+	m.panelEdit = false
+	m.panelCombo = false
+	m.relayoutViewport()
+	return true
+}
+
 // panelAgentEntry represents an interactive sub-agent session in the unified panel.
 type panelAgentEntry struct {
 	Role       string // role name (e.g. "explore")
@@ -248,6 +311,7 @@ func (m *cliModel) openAskUserPanel(items []askItem, onAnswer func(map[string]st
 // closePanel deactivates any active panel.
 func (m *cliModel) closePanel() {
 	m.panelMode = ""
+	m.panelStack = nil
 	m.panelEdit = false
 	m.panelCombo = false
 	m.panelSchema = nil
@@ -627,8 +691,13 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 
 	// Task list mode
 	switch {
-	case msg.Code == tea.KeyEsc || msg.String() == "ctrl+c":
+	case msg.String() == "ctrl+c":
 		return m.closePanelAndResume()
+	case msg.Code == tea.KeyEsc:
+		if !m.popPanel() {
+			return m.closePanelAndResume()
+		}
+		return true, m, nil
 
 	case msg.Code == tea.KeyUp:
 		if m.panelBgCursor > 0 {
@@ -855,9 +924,11 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 			m.panelScrollY = 0
 			return true, m, nil
 		}
-		m.panelMode = ""
-		m.panelSessionItems = nil
-		m.relayoutViewport()
+		if !m.popPanel() {
+			m.panelMode = ""
+			m.panelSessionItems = nil
+			m.relayoutViewport()
+		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyUp:
@@ -1288,9 +1359,10 @@ func (m *cliModel) updateDangerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	// Item selection mode
 	switch {
 	case msg.Code == tea.KeyEsc:
-		// ESC goes back to settings (parent panel), not close everything
-		m.panelMode = "settings"
-		m.relayoutViewport()
+		// ESC: pop back to parent panel via navigation stack
+		if !m.popPanel() {
+			m.closePanel()
+		}
 		return true, m, nil
 
 	case msg.String() == "ctrl+c":
@@ -1442,7 +1514,9 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 	// Navigation mode
 	switch {
 	case msg.Code == tea.KeyEsc:
-		m.closePanel()
+		if !m.popPanel() {
+			m.closePanel()
+		}
 		return true, m, nil
 	case msg.String() == "ctrl+s":
 		// If currently editing a field, commit the edit before saving.
@@ -1467,11 +1541,13 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 	case msg.Code == tea.KeyUp || msg.String() == "shift+tab":
 		if m.panelCursor > 0 {
 			m.panelCursor--
+			m.ensureSettingsCursorVisible(0)
 		}
 		return true, m, nil
 	case msg.Code == tea.KeyDown || msg.Code == tea.KeyTab:
 		if m.panelCursor < len(m.panelSchema)-1 {
 			m.panelCursor++
+			m.ensureSettingsCursorVisible(0)
 		}
 		return true, m, nil
 	case msg.Code == tea.KeyEnter:
@@ -1481,13 +1557,15 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 			if def.ReadOnly {
 				return true, m, nil
 			}
-			// Runner panel entry
+			// Runner panel entry — push settings state before opening child panel
 			if def.Key == "runner_panel" {
+				m.pushPanel()
 				m.openRunnerPanel()
 				return true, m, nil
 			}
-			// Danger zone entry
+			// Danger zone entry — push settings state before opening child panel
 			if def.Key == "danger_zone" {
+				m.pushPanel()
 				m.openDangerPanelFromSettings()
 				return true, m, nil
 			}
@@ -1651,6 +1729,14 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			}
 			if cursor > 0 {
 				m.panelOptCursor[m.panelTab] = cursor - 1
+				// Auto-scroll panel up when cursor moves above visible area
+				m.ensureAskUserCursorVisible()
+			} else if cursor == 0 && m.askPanelScrollY > 0 {
+				// At top option and panel is scrolled — scroll content up
+				m.askPanelScrollY -= 1
+				if m.askPanelScrollY < 0 {
+					m.askPanelScrollY = 0
+				}
 			}
 			return true, m, nil
 		}
@@ -1667,11 +1753,14 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			if onOther {
 				if isLastTab {
 					m.panelOptCursor[m.panelTab] = numOpts + 1
+					m.ensureAskUserCursorVisible()
 				}
 				return true, m, nil
 			}
 			if cursor < maxCursor {
 				m.panelOptCursor[m.panelTab] = cursor + 1
+				// Auto-scroll panel down when cursor moves below visible area
+				m.ensureAskUserCursorVisible()
 			}
 			return true, m, nil
 		}
@@ -1863,6 +1952,46 @@ func (m *cliModel) autoExpandAskTA() {
 	}
 }
 
+// ensureAskUserCursorVisible adjusts askPanelScrollY so the current option
+// cursor stays within the visible panel area. This provides automatic
+// edge-scrolling when navigating options with ↑/↓ keys.
+func (m *cliModel) ensureAskUserCursorVisible() {
+	if m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+		return
+	}
+	item := &m.panelItems[m.panelTab]
+	if len(item.Options) == 0 {
+		return
+	}
+	cursor := m.panelOptCursor[m.panelTab]
+	// Each option takes 1 line. Estimate the line offset of the cursor.
+	// Lines before options: tab bar (if multi) + question + blank line = ~3 lines
+	headerLines := 2
+	if len(m.panelItems) > 1 {
+		headerLines = 4 // tab bar + blank + question + blank
+	}
+	cursorLine := headerLines + cursor
+	// Visible height (approximate — exact clamp happens in View)
+	askVisibleH := m.panelVisibleHeight()
+	if askVisibleH <= 0 {
+		return
+	}
+	// Scroll up if cursor is above visible area
+	if cursorLine < m.askPanelScrollY+1 {
+		m.askPanelScrollY = cursorLine - 1
+		if m.askPanelScrollY < 0 {
+			m.askPanelScrollY = 0
+		}
+	}
+	// Scroll down if cursor is below visible area
+	if cursorLine > m.askPanelScrollY+askVisibleH-1 {
+		m.askPanelScrollY = cursorLine - askVisibleH + 1
+		if m.askPanelScrollY < 0 {
+			m.askPanelScrollY = 0
+		}
+	}
+}
+
 // viewPanel renders the active panel as a string.
 func (m *cliModel) viewPanel() string {
 	var raw string
@@ -2042,54 +2171,57 @@ func (m *cliModel) viewSettingsPanel() string {
 		}
 
 		line := fmt.Sprintf("%s %s: %s", prefix, labelSt.Render(def.Label), displayVal)
-		if i == m.panelCursor && !m.panelEdit {
+		if i == m.panelCursor && !m.panelEdit && !m.panelCombo {
 			line = m.renderSelLine(line, m.width-6)
 		}
 		sb.WriteString(line)
 		sb.WriteString("\n")
+		ln++
+
+		// ── Inline edit/combo overlay (Crush-style: render right below the item) ──
+		if i == m.panelCursor {
+			if m.panelEdit {
+				sb.WriteString("  ")
+				sb.WriteString(cursorStyle.Render("✎ "))
+				sb.WriteString(m.panelEditTA.View())
+				sb.WriteString("\n")
+				sb.WriteString(descStyle.Render("    " + m.locale.PanelEditHint))
+				sb.WriteString("\n")
+				ln += 3
+			} else if m.panelCombo {
+				maxShow := 8
+				start := 0
+				if m.panelComboIdx >= maxShow {
+					start = m.panelComboIdx - maxShow + 1
+				}
+				end := start + maxShow
+				if end > len(def.Options) {
+					end = len(def.Options)
+				}
+				for j := start; j < end; j++ {
+					opt := def.Options[j]
+					label := opt.Label
+					runes := []rune(label)
+					if len(runes) > 40 {
+						label = string(runes[:37]) + "..."
+					}
+					if j == m.panelComboIdx {
+						sb.WriteString(cursorStyle.Render("    ▸ " + label))
+					} else {
+						sb.WriteString("      " + label)
+					}
+					sb.WriteString("\n")
+					ln++
+				}
+				sb.WriteString(descStyle.Render("    " + m.locale.PanelComboHint))
+				sb.WriteString("\n")
+				ln++
+			}
+		}
 	}
 
-	// Editing overlay
-	if m.panelEdit && m.panelCursor < len(m.panelSchema) {
-		def := m.panelSchema[m.panelCursor]
-		sb.WriteString("\n")
-		editLabel := cursorStyle.Render("  ✎ " + def.Label + ": ")
-		sb.WriteString(editLabel)
-		sb.WriteString(m.panelEditTA.View())
-		sb.WriteString("\n")
-		sb.WriteString(descStyle.Render("  " + m.locale.PanelEditHint))
-	} else if m.panelCombo && m.panelCursor < len(m.panelSchema) {
-		def := m.panelSchema[m.panelCursor]
-		sb.WriteString("\n")
-		comboTitle := cursorStyle.Render("  ▾ " + def.Label + ":")
-		sb.WriteString(comboTitle)
-		sb.WriteString("\n")
-		maxShow := 8
-		start := 0
-		if m.panelComboIdx >= maxShow {
-			start = m.panelComboIdx - maxShow + 1
-		}
-		end := start + maxShow
-		if end > len(def.Options) {
-			end = len(def.Options)
-		}
-		for j := start; j < end; j++ {
-			opt := def.Options[j]
-			label := opt.Label
-			// Truncate long model names to prevent box overflow
-			runes := []rune(label)
-			if len(runes) > 40 {
-				label = string(runes[:37]) + "..."
-			}
-			if j == m.panelComboIdx {
-				sb.WriteString(cursorStyle.Render("  ▸ " + label))
-			} else {
-				sb.WriteString("    " + label)
-			}
-			sb.WriteString("\n")
-		}
-		sb.WriteString(descStyle.Render("  " + m.locale.PanelComboHint))
-	} else {
+	// Bottom hint when no overlay is active
+	if !m.panelEdit && !m.panelCombo {
 		sb.WriteString("\n")
 		sb.WriteString(hintStyle.Render("  " + m.locale.PanelNavHint))
 	}
@@ -2686,14 +2818,19 @@ func (m *cliModel) newPanelTextInput(value, placeholder string) textinput.Model 
 
 // updateRunnerPanel 处理 Runner 面板的键盘事件
 func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	// Esc 回到 settings 面板（不关闭整个面板）
-	if msg.Code == tea.KeyEsc || msg.String() == "ctrl+c" {
-		m.panelMode = "settings"
+	// Esc/popPanel 回到 parent 面板；Ctrl+C 关闭所有
+	if msg.String() == "ctrl+c" {
+		return m.closePanelAndResume()
+	}
+	if msg.Code == tea.KeyEsc {
+		// Clean up runner panel state
 		m.panelRunnerServerTI = textinput.Model{}
 		m.panelRunnerTokenTI = textinput.Model{}
 		m.panelRunnerWorkspace = textinput.Model{}
 		m.panelRunnerEditField = 0
-		m.relayoutViewport()
+		if !m.popPanel() {
+			m.closePanel()
+		}
 		return true, m, nil
 	}
 
@@ -2951,11 +3088,15 @@ func (m *cliModel) openChannelPanel() {
 // updateChannelPanel handles key events in the channel config panel.
 func (m *cliModel) updateChannelPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	switch {
-	case msg.Code == tea.KeyEsc || msg.String() == "ctrl+c":
-		m.panelMode = ""
+	case msg.String() == "ctrl+c":
+		return m.closePanelAndResume()
+	case msg.Code == tea.KeyEsc:
 		m.panelChannelItems = nil
 		m.panelChannelCfg = nil
-		m.relayoutViewport()
+		if !m.popPanel() {
+			m.panelMode = ""
+			m.relayoutViewport()
+		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyUp:

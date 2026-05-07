@@ -68,6 +68,11 @@
 - **Progress panel tool lines**: use `toolLine()` helper (lipgloss.Width-based) instead of `len()` for width calculation — byte length ≠ visual width for styled/unicode content.
 - **SubAgent tree description**: skip description when `descW <= 0` instead of forcing `descW >= 10` minimum — the old minimum caused overflow on narrow terminals.
 - **Group chat members must be pre-spawned**: `CreateChat(type="group")` must auto-spawn each member agent and register AgentChannel in Dispatcher. Otherwise `@mentions` in SendMessage fail with "unknown channel: agent:role/instance".
+- **Panel navigation stack (push/pop)**: `panelStack []panelStackEntry` stores parent panel state for nested navigation. `pushPanel()` saves state, `popPanel()` restores it. `pushPanelFromPalette()` marks `fromPalette=true` so ESC reopens the palette. Only the **caller** (e.g. Settings entering Runner) should push — `openXxxPanel()` never pushes itself. `closePanel()` clears the entire stack.
+- **Settings inline overlay (Crush-style)**: edit/combo overlay renders inline right below the cursor item, NOT at the end of the list. `trackSettingsZones` must account for inline overlay lines. `ensureSettingsCursorVisible(extraLines)` adjusts `panelScrollY` so the overlay stays visible.
+- **Settings click handlers must `commitPanelEdit()` first**: clicking a different item while in edit/combo mode must save the current edit value and close the overlay before activating the new item. Otherwise stale overlay state causes rendering bugs.
+- **Panel mouse wheel uses `isYInPanelBox(y)`, not zone matching**: zone-based scroll detection left gaps (category headers, blank lines). Y-range check covers the entire panel box area with no dead zones.
+- **Palette tab zone is a single line**: `trackPaletteZones` tracks tabs as ONE zone, not `tabCount` zones. The old code tracked one zone per tab, causing Y offset = `tabCount - 1` for all items below.
 
 ### CLI Deterministic Rendering
 - **Every assistant/tool_summary message is keyed by `agentTurnID` + `role`.** `upsertMessageByTurn(turnID, role, msg)` finds existing entries and updates in-place instead of appending duplicates. This prevents duplicate messages when PhaseDone and cliOutboundMsg arrive out of order.

@@ -413,6 +413,7 @@ type cliStyles struct {
 	ProgressBlock    lipgloss.Style
 	Accent           lipgloss.Style
 	TextMutedSt      lipgloss.Style
+	TextSecondarySt  lipgloss.Style
 	WarningSt        lipgloss.Style
 	InfoSt           lipgloss.Style
 	TokenUsage       lipgloss.Style
@@ -542,6 +543,7 @@ func buildStyles(width int) cliStyles {
 		ProgressBlock:    lipgloss.NewStyle().Padding(0, 1).Width(cw),
 		Accent:           lipgloss.NewStyle().Foreground(c(t.Accent)),
 		TextMutedSt:      lipgloss.NewStyle().Foreground(c(t.TextMuted)),
+		TextSecondarySt:  lipgloss.NewStyle().Foreground(c(t.TextSecondary)),
 		WarningSt:        lipgloss.NewStyle().Foreground(c(t.Warning)),
 		InfoSt:           lipgloss.NewStyle().Foreground(c(t.Info)),
 		TokenUsage:       lipgloss.NewStyle().Foreground(c(t.TextMuted)).Faint(true),

@@ -516,49 +516,19 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 	}
 }
 
-// ensurePanelCursorVisible 确保 panel cursor 行在可见区域内。
-// 编辑/combo 模式下额外滚到底部，确保 inline editor 可见。
+// ensurePanelCursorVisible ensures the panel cursor line is within the visible area.
+// For settings panel: uses precise line calculation with inline overlay awareness.
 func (m *cliModel) ensurePanelCursorVisible() {
-	if len(m.panelSchema) == 0 || m.panelCursor >= len(m.panelSchema) {
-		return
-	}
-	// 编辑或下拉模式：直接滚到内容底部，因为 overlay 在末尾
-	if m.panelEdit || m.panelCombo {
-		m.panelScrollY = 0 // 先重置
-		raw := m.viewPanel()
-		total := strings.Count(raw, "\n") + 1
-		visible := m.panelVisibleHeight()
-		if total > visible {
-			m.panelScrollY = total - visible
+	if m.panelMode == "settings" {
+		extra := 0
+		if m.panelEdit {
+			extra = 3
+		} else if m.panelCombo && m.panelCursor < len(m.panelSchema) {
+			def := m.panelSchema[m.panelCursor]
+			extra = min(len(def.Options), 8) + 1
 		}
+		m.ensureSettingsCursorVisible(extra)
 		return
-	}
-	// 复刻 viewSettingsPanel 的行号计算逻辑。
-	// header = 2 lines (title + divider), each category = 2 lines (\n + title),
-	// each item = 1 line (label + value rendered inline).
-	cursorLn := 2 // header offset
-	lastCat := ""
-	for i, def := range m.panelSchema {
-		if def.Category != lastCat {
-			lastCat = def.Category
-			cursorLn += 2 // 空行 + 分类标题
-		}
-		cursorLn++ // 所有 item 类型都是单行渲染
-		if i == m.panelCursor {
-			break
-		}
-	}
-	visibleH := m.panelVisibleHeight()
-	totalLines := cursorLn + 5 // +5 保证底部有足够空间
-	if totalLines <= visibleH {
-		m.panelScrollY = 0
-		return
-	}
-	if cursorLn >= m.panelScrollY+visibleH {
-		m.panelScrollY = cursorLn - visibleH + 1
-	}
-	if cursorLn < m.panelScrollY {
-		m.panelScrollY = cursorLn
 	}
 }
 
@@ -646,6 +616,64 @@ func (m *cliModel) clampPanelScroll(rawContent string) {
 	}
 	if m.panelScrollY > total-visible {
 		m.panelScrollY = total - visible
+	}
+}
+
+// settingsCursorLine computes the 0-based line number where the current
+// settings panel cursor item starts rendering. This mirrors the layout in
+// viewSettingsPanel: 2 header lines, then per-category (2 lines header) and
+// per-item (1 line). Inline overlays (edit/combo) after items add extra lines.
+func (m *cliModel) settingsCursorLine() int {
+	const headerLines = 2 // title + divider
+	line := headerLines
+	lastCat := ""
+	for i, def := range m.panelSchema {
+		if def.Category != lastCat {
+			lastCat = def.Category
+			line += 2 // blank line + category header
+		}
+		if i == m.panelCursor {
+			return line
+		}
+		line++
+		// Account for inline overlay lines rendered after cursor item
+		if i == m.panelCursor {
+			if m.panelEdit {
+				line += 3 // input + hint + newline
+			} else if m.panelCombo && len(def.Options) > 0 {
+				maxShow := 8
+				opts := min(len(def.Options), maxShow)
+				line += opts + 1 // option lines + hint
+			}
+		}
+	}
+	return line
+}
+
+// ensureSettingsCursorVisible adjusts panelScrollY so that the cursor item
+// and its inline edit/combo overlay are visible. Call after opening edit/combo
+// or changing cursor. extraLines is the number of additional lines below the
+// cursor item (e.g. edit overlay = 3, combo = min(options, 8) + 1).
+func (m *cliModel) ensureSettingsCursorVisible(extraLines int) {
+	cursorLine := m.settingsCursorLine()
+	visibleH := m.panelVisibleHeight()
+	if visibleH <= 0 {
+		return
+	}
+	// Ensure cursor + overlay fit within the visible area
+	neededBottom := cursorLine + 1 + extraLines // item line + overlay
+	neededTop := cursorLine
+
+	// If overlay extends below visible area, scroll down
+	if neededBottom > m.panelScrollY+visibleH {
+		m.panelScrollY = neededBottom - visibleH
+	}
+	// If cursor is above visible area, scroll up
+	if neededTop < m.panelScrollY {
+		m.panelScrollY = neededTop
+	}
+	if m.panelScrollY < 0 {
+		m.panelScrollY = 0
 	}
 }
 

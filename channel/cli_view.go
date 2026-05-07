@@ -200,11 +200,11 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 		askContent = m.applyScrollbar(askContent, contentWidth, totalAskLines, m.askPanelScrollY)
 	}
 	boxedAsk := m.styles.PanelBox.Render(askContent)
-	// Scroll indicator
+	// Scroll indicator — mouse wheel or ↑↓ at edges scrolls content
 	scrollHint := ""
 	if totalAskLines > askVisibleH {
 		pct := (m.askPanelScrollY + askVisibleH) * 100 / totalAskLines
-		scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] Ctrl+↑↓/PgUp/PgDn", pct))
+		scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] ↕ scroll", pct))
 	}
 	return fmt.Sprintf("%s\n%s\n%s%s",
 		titleBar, m.viewport.View(), boxedAsk, scrollHint)
@@ -634,9 +634,9 @@ func (m *cliModel) titleText() string {
 // displayed in the header bar so they're always visible regardless of scroll.
 // Keep it short — header width is limited and line wrap looks terrible.
 func (m *cliModel) askUserTitleHints() string {
-	hints := []string{"Shift+↑↓ history", "Ctrl+↑↓ question", "Enter submit", "Esc cancel"}
+	hints := []string{"↑↓ select", "Space check", "Enter submit", "Esc cancel"}
 	if len(m.panelItems) > 1 {
-		hints = append([]string{"←→/Tab switch"}, hints...)
+		hints = append([]string{"←→ switch"}, hints...)
 	}
 	return strings.Join(hints, " · ")
 }
@@ -822,6 +822,10 @@ func (m *cliModel) renderFooter() string {
 
 	if m.panelMode != "" {
 		// 面板打开时：显示面板相关快捷键
+		escLabel := m.locale.FooterClose
+		if len(m.panelStack) > 0 {
+			escLabel = m.locale.FooterBack
+		}
 		switch m.panelMode {
 		case "bgtasks":
 			if m.panelBgViewing {
@@ -831,8 +835,16 @@ func (m *cliModel) renderFooter() string {
 			}
 		case "approval":
 			hints = append(hints, m.keyHint("←→", m.locale.FooterNavigate), m.keyHint("y/n", "Quick"), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", "Deny"))
+		case "settings":
+			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.ctrlKey("s", "Save"), m.keyHint("Esc", escLabel))
+		case "askuser":
+			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Space", "Check"), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", m.locale.FooterClose))
+		case "danger":
+			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", "Confirm"), m.keyHint("Esc", escLabel))
+		case "runner":
+			hints = append(hints, m.keyHint("↑↓", "Field"), m.keyHint("Enter", "Connect"), m.keyHint("Esc", escLabel))
 		default:
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", m.locale.FooterClose))
+			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", escLabel))
 		}
 	} else if m.typing {
 		// 处理中：显示取消快捷键

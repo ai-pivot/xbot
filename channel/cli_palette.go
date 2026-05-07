@@ -116,8 +116,8 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 		Shortcut: "/clear", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/clear",
 	})
 	cmds = append(cmds, paletteCommand{
-		ID: "compact", Title: "Compact Context", Description: "compress conversation history",
-		Shortcut: "/compact", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/compact",
+		ID: "compress", Title: "Compress Context", Description: "compress conversation history",
+		Shortcut: "/compress", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/compress",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "search", Title: "Search Messages", Description: "find text in conversation history",
@@ -154,6 +154,30 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 	cmds = append(cmds, paletteCommand{
 		ID: "update", Title: "Check Update", Description: "check for new xbot versions",
 		Shortcut: "/update", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/update",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "context", Title: "Context Info", Description: "show token usage and context info",
+		Shortcut: "/context", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/context",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "setup", Title: "Setup Wizard", Description: "re-run initial setup wizard",
+		Shortcut: "/setup", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/setup",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "models", Title: "List Models", Description: "show available LLM models",
+		Shortcut: "/models", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/models",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "new", Title: "New Session", Description: "start a fresh chat session",
+		Shortcut: "/new", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/new",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "rewind", Title: "Rewind", Description: "undo last conversation turn",
+		Shortcut: "/rewind", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/rewind",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "cancel", Title: "Cancel", Description: "cancel current operation",
+		Shortcut: "/cancel", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/cancel",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "quit", Title: "Quit", Description: "exit xbot",
@@ -265,6 +289,8 @@ func (m *cliModel) applyPaletteCommand() {
 
 	switch cmd.ActionKind {
 	case paletteActionOpenPanel:
+		// Push palette marker so ESC returns to palette
+		m.pushPanelFromPalette()
 		switch cmd.ActionData {
 		case "sessions":
 			m.openSessionsPanel()
@@ -285,6 +311,10 @@ func (m *cliModel) applyPaletteCommand() {
 		m.textarea.SetValue(cmd.ActionData)
 		m.autoExpandInput()
 	case paletteActionSendText:
+		// Slash commands that open panels: push palette marker for ESC-back-to-palette
+		if cmd.ActionData == "/settings" || cmd.ActionData == "/channel" {
+			m.pushPanelFromPalette()
+		}
 		if fn := m.sendMessage(cmd.ActionData); fn != nil {
 			m.pendingCmds = append(m.pendingCmds, fn)
 		}
@@ -450,7 +480,7 @@ func (m *cliModel) viewCommandPalette(width, height int) string {
 		if cat == m.paletteActiveCategory {
 			label = m.styles.Accent.Bold(true).Render(label)
 		} else {
-			label = m.styles.TextMutedSt.Render(label)
+			label = m.styles.TextSecondarySt.Render(label)
 		}
 		tabParts = append(tabParts, label)
 	}
@@ -463,7 +493,7 @@ func (m *cliModel) viewCommandPalette(width, height int) string {
 	lines = append(lines, m.paletteInput.View())
 
 	// Separator
-	lines = append(lines, m.styles.TextMutedSt.Render(strings.Repeat("─", paletteW-2)))
+	lines = append(lines, m.styles.TextSecondarySt.Render(strings.Repeat("─", paletteW-2)))
 
 	// Command list (with scroll)
 	total := len(m.paletteFiltered)
@@ -476,7 +506,7 @@ func (m *cliModel) viewCommandPalette(width, height int) string {
 
 		// Cursor indicator
 		cursor := "  "
-		titleStyle := m.styles.TextMutedSt
+		titleStyle := m.styles.TextSecondarySt
 		if selected {
 			cursor = m.styles.Accent.Render("▸ ")
 			titleStyle = m.styles.Accent
@@ -523,7 +553,7 @@ func (m *cliModel) viewCommandPalette(width, height int) string {
 	}
 
 	// Footer hints
-	lines = append(lines, m.styles.TextMutedSt.Render(" ↑↓ Navigate · Enter Select · Tab Category · Esc Close"))
+	lines = append(lines, m.styles.TextSecondarySt.Render(" ↑↓ Navigate · Enter Select · Tab Category · Esc Close"))
 
 	// Build bordered panel
 	content := strings.Join(lines, "\n")

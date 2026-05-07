@@ -537,12 +537,13 @@ type cliModel struct {
 	// --- §12 Interactive Panel ---
 	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel
 	panelMode     string
-	panelCursor   int            // settings panel: selected item index
-	panelEdit     bool           // settings panel: editing current item
-	panelScrollY  int            // panel 滚动偏移（手动管理，不依赖 viewport）
-	panelEditTA   textarea.Model // settings panel: inline editor
-	panelCombo    bool           // settings panel: combo dropdown open
-	panelComboIdx int            // settings panel: combo selected option index
+	panelStack    []panelStackEntry // push/pop navigation stack for nested panels
+	panelCursor   int               // settings panel: selected item index
+	panelEdit     bool              // settings panel: editing current item
+	panelScrollY  int               // panel 滚动偏移（手动管理，不依赖 viewport）
+	panelEditTA   textarea.Model    // settings panel: inline editor
+	panelCombo    bool              // settings panel: combo dropdown open
+	panelComboIdx int               // settings panel: combo selected option index
 	// --- Panel state backup (for quick switch round-trip) ---
 	panelValuesBackup   map[string]string              // saved panelValues before quick switch
 	panelCursorBackup   int                            // saved panelCursor before quick switch

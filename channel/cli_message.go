@@ -478,10 +478,10 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	case "/search":
 		m.enterSearchMode()
 
-	case "/compact":
+	case "/compress":
 		// 保留本地处理（system 消息样式），发送到 msgBus 但不作为用户气泡
 		if m.msgBus != nil {
-			m.sendInbound(m.newInbound("/compact", nil))
+			m.sendInbound(m.newInbound("/compress", nil))
 		}
 
 	// --- 透传命令（发送到 agent） ---

@@ -126,6 +126,17 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 	return false, m, nil
 }
 
+// isYInPanelBox checks if a Y coordinate falls within the panel box area.
+// Layout: titleBar(1) + PanelBox border(1) + content(visibleH) + border(1).
+// The scrollable content area is lines [2, 2+visibleH).
+func (m *cliModel) isYInPanelBox(y int) bool {
+	const titleBarLines = 1
+	const boxBorderTop = 1
+	panelTop := titleBarLines + boxBorderTop // first content line
+	panelBottom := panelTop + m.panelVisibleHeight()
+	return y >= panelTop && y < panelBottom
+}
+
 // handleMouseWheel processes mouse wheel events for panel/overlay scrolling.
 func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea.Cmd) {
 	switch msg.Button {
@@ -142,16 +153,12 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 				m.askPanelScrollY = max(0, m.askPanelScrollY-3)
 				return true, m, nil
 			}
+			// No zone hit in askuser panel — try viewport
+			return false, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
 		if m.panelMode != "" {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && (zone.ID == "panelItem" || zone.ID == "panelToggle" ||
-				zone.ID == "panelCombo" || zone.ID == "panelComboItem" ||
-				zone.ID == "panelTextarea" ||
-				zone.ID == "sessionsItem" || zone.ID == "bgtaskItem" ||
-				zone.ID == "dangerItem" || zone.ID == "channelItem" ||
-				zone.ID == "runnerField") {
+			if m.isYInPanelBox(msg.Y) {
 				m.panelScrollY = max(0, m.panelScrollY-3)
 				return true, m, nil
 			}
@@ -189,16 +196,12 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 				m.askPanelScrollY += 3
 				return true, m, nil
 			}
+			// No zone hit in askuser panel — try viewport
+			return false, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
 		if m.panelMode != "" {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && (zone.ID == "panelItem" || zone.ID == "panelToggle" ||
-				zone.ID == "panelCombo" || zone.ID == "panelComboItem" ||
-				zone.ID == "panelTextarea" ||
-				zone.ID == "sessionsItem" || zone.ID == "bgtaskItem" ||
-				zone.ID == "dangerItem" || zone.ID == "channelItem" ||
-				zone.ID == "runnerField") {
+			if m.isYInPanelBox(msg.Y) {
 				m.panelScrollY += 3
 				return true, m, nil
 			}
@@ -227,22 +230,30 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 
 // --- Panel click handlers ---
 
+// commitPanelEdit saves the current edit value back to panelValues.
+func (m *cliModel) commitPanelEdit() {
+	if !m.panelEdit || m.panelCursor >= len(m.panelSchema) {
+		return
+	}
+	def := m.panelSchema[m.panelCursor]
+	if !def.ReadOnly {
+		m.panelValues[def.Key] = strings.TrimSpace(m.panelEditTA.Value())
+	}
+}
+
 // clickPanelItem clicks a settings panel item by index.
+// Single click: activate item (same as Enter) after moving cursor.
+// If currently in edit/combo mode, close the overlay first.
 func (m *cliModel) clickPanelItem(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelMode == "settings" && idx < len(m.panelSchema) && !m.panelEdit && !m.panelCombo {
-		if idx == m.panelCursor {
-			// Double-click equivalent: activate item (same as Enter)
-			return m.activatePanelItem()
+	if m.panelMode == "settings" && idx < len(m.panelSchema) {
+		// Close any active overlay before switching to a new item
+		if m.panelEdit || m.panelCombo {
+			m.commitPanelEdit()
+			m.panelEdit = false
+			m.panelCombo = false
 		}
 		m.panelCursor = idx
-		return true, m, nil
-	}
-	if m.panelMode == "settings" {
-		// Still set cursor even in edit/combo mode for visual feedback
-		if idx < len(m.panelSchema) {
-			m.panelCursor = idx
-		}
-		return true, m, nil
+		return m.activatePanelItem()
 	}
 	// For other panel modes that use panelItem zones
 	m.panelCursor = idx
@@ -251,8 +262,14 @@ func (m *cliModel) clickPanelItem(idx int) (bool, tea.Model, tea.Cmd) {
 
 // clickPanelToggle handles clicking a toggle setting.
 func (m *cliModel) clickPanelToggle(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelMode != "settings" || idx >= len(m.panelSchema) || m.panelEdit {
+	if m.panelMode != "settings" || idx >= len(m.panelSchema) {
 		return false, m, nil
+	}
+	// Close any active overlay first
+	if m.panelEdit || m.panelCombo {
+		m.commitPanelEdit()
+		m.panelEdit = false
+		m.panelCombo = false
 	}
 	def := m.panelSchema[idx]
 	if def.ReadOnly || def.Type != SettingTypeToggle {
@@ -265,23 +282,37 @@ func (m *cliModel) clickPanelToggle(idx int) (bool, tea.Model, tea.Cmd) {
 
 // clickPanelCombo handles clicking a combo/select setting.
 func (m *cliModel) clickPanelCombo(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelMode != "settings" || idx >= len(m.panelSchema) || m.panelEdit {
+	if m.panelMode != "settings" || idx >= len(m.panelSchema) {
 		return false, m, nil
 	}
+	// Close any active overlay first (unless clicking same combo to toggle off)
 	def := m.panelSchema[idx]
 	if def.ReadOnly || (def.Type != SettingTypeCombo && def.Type != SettingTypeSelect) {
 		return false, m, nil
 	}
 	m.panelCursor = idx
-	if m.panelCombo && m.panelComboIdx == idx {
-		// Click again to close combo
+	if m.panelCombo && m.panelCursor == idx {
+		// Click same combo again to close
 		m.panelCombo = false
 		return true, m, nil
 	}
-	if len(def.Options) > 0 {
-		m.panelCombo = true
-		m.panelComboIdx = 0
+	// Close previous edit if any
+	if m.panelEdit {
+		m.commitPanelEdit()
+		m.panelEdit = false
 	}
+	m.panelCombo = true
+	m.panelComboIdx = 0
+	// Pre-select current value
+	cur := m.panelValues[def.Key]
+	for i, opt := range def.Options {
+		if opt.Value == cur {
+			m.panelComboIdx = i
+			break
+		}
+	}
+	extraLines := 2 + min(len(def.Options), 8)
+	m.ensureSettingsCursorVisible(extraLines)
 	return true, m, nil
 }
 
@@ -299,6 +330,7 @@ func (m *cliModel) clickPanelComboItem(optIdx int) (bool, tea.Model, tea.Cmd) {
 }
 
 // activatePanelItem simulates pressing Enter on the current panel cursor item.
+// Handles both regular setting types and special entries (runner, danger, subscription).
 func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 	if m.panelCursor >= len(m.panelSchema) {
 		return false, m, nil
@@ -307,6 +339,31 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 	if def.ReadOnly {
 		return true, m, nil
 	}
+
+	// Special entries — same logic as keyboard Enter in updateSettingsPanel
+	switch def.Key {
+	case "runner_panel":
+		m.pushPanel()
+		m.openRunnerPanel()
+		return true, m, nil
+	case "danger_zone":
+		m.pushPanel()
+		m.openDangerPanelFromSettings()
+		return true, m, nil
+	case "subscription_manage":
+		m.panelValuesBackup = make(map[string]string, len(m.panelValues))
+		for k, v := range m.panelValues {
+			m.panelValuesBackup[k] = v
+		}
+		m.panelCursorBackup = m.panelCursor
+		m.panelOnSubmitBackup = m.panelOnSubmit
+		m.panelMode = ""
+		m.relayoutViewport()
+		m.quickSwitchReturnToPanel = true
+		m.openQuickSwitch("subscription")
+		return true, m, nil
+	}
+
 	switch def.Type {
 	case SettingTypeToggle:
 		cur := m.panelValues[def.Key]
@@ -332,6 +389,8 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 		} else if len(def.Options) > 0 {
 			m.panelCombo = true
 			m.panelComboIdx = 0
+			extraLines := 2 + min(len(def.Options), 8)
+			m.ensureSettingsCursorVisible(extraLines)
 		}
 		return true, m, nil
 	default:
@@ -340,6 +399,7 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 		m.panelEditTA.SetValue(m.panelValues[def.Key])
 		m.panelEditTA.CursorEnd()
 		m.panelEditTA.Focus()
+		m.ensureSettingsCursorVisible(3)
 		return true, m, nil
 	}
 }
@@ -400,23 +460,9 @@ func (m *cliModel) clickPaletteTab(idx int) (bool, tea.Model, tea.Cmd) {
 	if !m.paletteOpen {
 		return false, m, nil
 	}
-	// Cycle through non-empty categories
-	nonEmpty := make(map[PaletteCategory]bool)
-	for _, cmd := range m.paletteItems {
-		nonEmpty[cmd.Category] = true
-	}
-	var activeCats []PaletteCategory
-	for _, cat := range paletteCategories {
-		if nonEmpty[cat] {
-			activeCats = append(activeCats, cat)
-		}
-	}
-	if idx < len(activeCats) {
-		m.paletteActiveCategory = activeCats[idx]
-		m.filterPaletteCommands()
-		m.paletteCursor = 0
-		m.paletteScrollY = 0
-	}
+	// Tab line is a single zone; clicking it cycles to the next category
+	// (same behavior as pressing Tab key).
+	m.cyclePaletteCategory(1)
 	return true, m, nil
 }
 
@@ -760,8 +806,9 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 	// Build the complete line map (same logic as viewSettingsPanel)
 	type lineInfo struct {
 		isItem    bool
-		itemIndex int
+		itemIndex int // >= 0: schema item, < 0: combo option (-(optIdx+1))
 	}
+
 	var lines []lineInfo
 
 	// Header line
@@ -778,25 +825,32 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 			lines = append(lines, lineInfo{}) // category header
 		}
 		lines = append(lines, lineInfo{isItem: true, itemIndex: i})
+
+		// Inline overlay: combo/edit rendered right after cursor item (Crush-style)
+		if i == m.panelCursor {
+			if m.panelEdit {
+				lines = append(lines, lineInfo{}) // input line
+				lines = append(lines, lineInfo{}) // hint line
+				lines = append(lines, lineInfo{}) // trailing newline
+			} else if m.panelCombo && len(def.Options) > 0 {
+				maxShow := 8
+				start := 0
+				if m.panelComboIdx >= maxShow {
+					start = m.panelComboIdx - maxShow + 1
+				}
+				end := min(start+maxShow, len(def.Options))
+				for j := start; j < end; j++ {
+					lines = append(lines, lineInfo{isItem: true, itemIndex: -(j + 1)})
+				}
+				lines = append(lines, lineInfo{}) // hint line
+			}
+		}
 	}
 
-	// Combo dropdown items
-	if m.panelCombo && m.panelCursor < len(m.panelSchema) {
-		def := m.panelSchema[m.panelCursor]
-		start := 0
-		if m.panelComboIdx >= 8 {
-			start = m.panelComboIdx - 7
-		}
-		end := min(start+8, len(def.Options))
-		for j := start; j < end; j++ {
-			lines = append(lines, lineInfo{isItem: true, itemIndex: -(j + 1)}) // negative for combo items
-		}
-	}
-
-	// Edit textarea
-	if m.panelEdit {
-		lines = append(lines, lineInfo{})              // label line
-		lines = append(lines, lineInfo{isItem: false}) // textarea (not clickable as item)
+	// Bottom hint (when no overlay active)
+	if !m.panelEdit && !m.panelCombo {
+		lines = append(lines, lineInfo{}) // blank line
+		lines = append(lines, lineInfo{}) // hint line
 	}
 
 	// Now apply scroll offset and track zones
@@ -976,12 +1030,9 @@ func (m *cliModel) trackPaletteZones(zb *mouseZoneBuilder) {
 	zb.skip(1)          // PanelBox top border
 	zb.skip(1)          // header
 	if tabCount > 1 {
-		// Each tab portion is clickable
-		// For simplicity, make the entire tab line one zone per tab
-		// We'll use a coarse approach: track tab line as multiple zones
-		for i := 0; i < tabCount; i++ {
-			zb.add(1, "paletteTab", i)
-		}
+		// The entire tab line is one line with multiple clickable segments.
+		// Track it as a single zone (coarse: whole line = tab 0 for simplicity).
+		zb.add(1, "paletteTab", 0)
 	}
 	zb.skip(1) // search input line
 	zb.skip(1) // separator
