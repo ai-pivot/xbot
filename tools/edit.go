@@ -747,6 +747,10 @@ func normalizeReplacementIndent(matchedOld, newStr string) string {
 		}
 	}
 
+	// lastNormalizedIndent tracks the indent of the most recent line that
+	// was successfully normalized. Used as fallback for lines with no indent.
+	lastNormalizedIndent := ""
+
 	for i, line := range newLines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -758,11 +762,14 @@ func normalizeReplacementIndent(matchedOld, newStr string) string {
 		if fIndent, ok := fileIndent[trimmed]; ok {
 			// Line exists in old — use file's exact indent.
 			newLines[i] = fIndent + trimmed
+			lastNormalizedIndent = fIndent
 		} else {
 			// Genuinely new line.
 			currIndent := leadingWhitespace(line)
 			if strings.ContainsRune(currIndent, '\t') {
 				// Already uses tabs, keep as-is.
+				newLines[i] = line
+				lastNormalizedIndent = currIndent
 			} else if currIndent != "" && refNewSpaceDepth > 0 {
 				// Has spaces where file uses tabs.
 				// Convert space depth to tab depth using reference ratio.
@@ -776,9 +783,16 @@ func normalizeReplacementIndent(matchedOld, newStr string) string {
 						newTabDepth = 0
 					}
 				}
-				newLines[i] = strings.Repeat("\t", newTabDepth) + trimmed
+				indent := strings.Repeat("\t", newTabDepth)
+				newLines[i] = indent + trimmed
+				lastNormalizedIndent = indent
+			} else if currIndent == "" && lastNormalizedIndent != "" {
+				// New line has NO indent but previous line had tabs.
+				// LLMs often omit indentation for body lines.
+				// Inherit the previous line's indent as the best guess.
+				newLines[i] = lastNormalizedIndent + trimmed
 			}
-			// If no reference or empty indent, leave as-is.
+			// If no reference at all, leave as-is.
 		}
 	}
 
