@@ -37,8 +37,8 @@ func (m *cliModel) isWide() bool { return m.width >= 120 }
 // chatWidth returns the effective width for the chat viewport, accounting for sidebar.
 func (m *cliModel) chatWidth() int {
 	if m.isWide() && m.sidebarEnabled && m.sidebarVisible {
-		// sidebar: Width(sw-1) + BorderLeft = sw chars total
-		w := m.width - m.sidebarWidth
+		// sidebar: RoundedBorder(2) + Padding(0,1)(2) + content(sidebarWidth) = sidebarWidth+4
+		w := m.width - m.sidebarWidth - 4
 		if w < 20 {
 			w = 20
 		}
@@ -385,7 +385,7 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 		h = 5
 	}
 
-	contentW := sw - 2 // -1 left border, -1 right padding
+	contentW := sw // content width = sidebarWidth; border + padding from SidebarBg style
 
 	// Only render sections that have real content
 	var blocks []string
@@ -401,11 +401,8 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 	content := strings.Join(blocks, "\n\n")
 
 	return m.styles.SidebarBg.
-		Width(sw - 1). // -1 for left border
+		Width(sw).
 		Height(h).
-		PaddingTop(1).
-		PaddingBottom(1).
-		PaddingRight(1).
 		Render(content)
 }
 
