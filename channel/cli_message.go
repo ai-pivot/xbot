@@ -1320,25 +1320,8 @@ func (m *cliModel) renderCurrentDynamic(
 		return
 	}
 
-	// Active tools — label + live elapsed timer (tick-sensitive)
-	for _, tool := range m.progress.ActiveTools {
-		if tool.Status == "done" || tool.Status == "error" {
-			continue
-		}
-		label, _, _ := toolDisplayInfo(tool, toolRunningStyle, lipgloss.Style{})
-		pulseIcon := m.ticker.viewFrames(pulseFrames)
-		var elapsedMs int64
-		if !tool.StartedAt.IsZero() {
-			elapsedMs = time.Since(tool.StartedAt).Milliseconds()
-		} else {
-			elapsedMs = tool.Elapsed
-		}
-		elapsedStyled := elapsedStyle.Render(formatElapsed(elapsedMs))
-		sb.WriteString(toolRunningStyle.Render(toolLine(pulseIcon, label, elapsedStyled, innerWidth)))
-		sb.WriteString("\n")
-	}
-
-	// Phase-specific fallback / stream content (tick-sensitive due to cursor blink & typewriter)
+	// Phase-specific fallback / stream content — rendered BEFORE active tools
+	// to maintain linear chronological order: completed → stream text → active
 	hasTools := len(m.progress.ActiveTools) > 0 || len(m.progress.CompletedTools) > 0
 
 	if m.progress.StreamContent != "" {
@@ -1401,6 +1384,25 @@ func (m *cliModel) renderCurrentDynamic(
 			sb.WriteString(thinkingStyle.Render(" retrying..."))
 			sb.WriteString("\n")
 		}
+	}
+
+	// Active tools — label + live elapsed timer (tick-sensitive)
+	// Rendered AFTER stream content to maintain linear order
+	for _, tool := range m.progress.ActiveTools {
+		if tool.Status == "done" || tool.Status == "error" {
+			continue
+		}
+		label, _, _ := toolDisplayInfo(tool, toolRunningStyle, lipgloss.Style{})
+		pulseIcon := m.ticker.viewFrames(pulseFrames)
+		var elapsedMs int64
+		if !tool.StartedAt.IsZero() {
+			elapsedMs = time.Since(tool.StartedAt).Milliseconds()
+		} else {
+			elapsedMs = tool.Elapsed
+		}
+		elapsedStyled := elapsedStyle.Render(formatElapsed(elapsedMs))
+		sb.WriteString(toolRunningStyle.Render(toolLine(pulseIcon, label, elapsedStyled, innerWidth)))
+		sb.WriteString("\n")
 	}
 
 	// Reasoning streaming with typewriter effect (tick-sensitive)
