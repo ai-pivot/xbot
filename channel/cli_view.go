@@ -31,6 +31,23 @@ func (m *cliModel) isCompact() bool { return m.width < 80 }
 // isNarrow returns true when terminal width < 60 — minimal layout.
 func (m *cliModel) isNarrow() bool { return m.width < 60 }
 
+// isWide returns true when terminal width >= 120 — wide layout with extra info.
+func (m *cliModel) isWide() bool { return m.width >= 120 }
+
+// cliFormatTokenCount formats a token count with K/M/B suffixes for display.
+func cliFormatTokenCount(n int64) string {
+	if n >= 1_000_000_000 {
+		return fmt.Sprintf("%.1fB", float64(n)/1_000_000_000)
+	}
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
 // renderTitleBar builds the top title bar with gradient wordmark, diagonal fill,
 // mode label, hints, runner status, and user identity indicator.
 // In compact mode (<80 cols), extras (runner, user) are hidden.
@@ -123,9 +140,9 @@ func (m *cliModel) renderReadyStatus() string {
 	if m.channelName == "agent" {
 		parts := strings.SplitN(m.chatID, "/", 2)
 		if len(parts) == 2 {
-			readyParts = append(readyParts, fmt.Sprintf("🤖 %s", parts[1]))
+			readyParts = append(readyParts, fmt.Sprintf("%s %s", IconRobot, parts[1]))
 		} else {
-			readyParts = append(readyParts, fmt.Sprintf("🤖 %s", m.chatID))
+			readyParts = append(readyParts, fmt.Sprintf("%s %s", IconRobot, m.chatID))
 		}
 	}
 	// Message count
@@ -150,6 +167,17 @@ func (m *cliModel) renderReadyStatus() string {
 		readyParts = readyParts[:2]
 	}
 	leftParts := strings.Join(readyParts, " · ")
+
+	// Wide screen: append token usage
+	if m.isWide() && m.lastTokenUsage != nil {
+		total := m.lastTokenUsage.PromptTokens + m.lastTokenUsage.CompletionTokens
+		if total > 0 {
+			leftParts += fmt.Sprintf("  ·  tokens: %s", cliFormatTokenCount(m.lastTokenUsage.PromptTokens))
+			if m.lastTokenUsage.CompletionTokens > 0 {
+				leftParts += fmt.Sprintf(" + %s", cliFormatTokenCount(m.lastTokenUsage.CompletionTokens))
+			}
+		}
+	}
 
 	return m.styles.ReadyStatus.Render(leftParts)
 }
@@ -616,14 +644,15 @@ func (m *cliModel) titleText() string {
 			modeLabel = fmt.Sprintf("%s xbot remote", cloud)
 		}
 	}
+	prefix := IconDiamond + " "
 	if m.workDir != "" {
 		abs, err := filepath.Abs(m.workDir)
 		if err == nil {
-			return fmt.Sprintf(" %s [%s]", modeLabel, filepath.Base(abs))
+			return prefix + fmt.Sprintf("%s [%s]", modeLabel, filepath.Base(abs))
 		}
-		return fmt.Sprintf(" %s [%s]", modeLabel, filepath.Base(m.workDir))
+		return prefix + fmt.Sprintf("%s [%s]", modeLabel, filepath.Base(m.workDir))
 	}
-	return " " + modeLabel
+	return prefix + modeLabel
 }
 
 // ---------------------------------------------------------------------------
@@ -814,11 +843,23 @@ func (m *cliModel) renderSuLoading() string {
 // §15 底部快捷键提示条 (Footer Bar)
 // ---------------------------------------------------------------------------
 
+// footerHint represents a clickable hint in the footer bar.
+type footerHint struct {
+	xStart int    // rendered X start position (0-based)
+	xEnd   int    // rendered X end position (exclusive)
+	action string // action to trigger on click
+	key    string // display key (e.g. "Ctrl+k")
+	desc   string // display description (e.g. "命令面板")
+}
+
+// footerHints stores the current frame's footer hint positions for mouse click handling.
+// Populated during renderFooter(), consumed during trackMainLayoutZones().
+var footerHints []footerHint
+
 // renderFooter 渲染底部快捷键提示条。
 // 根据当前状态动态显示最相关的快捷键，避免信息过载。
 func (m *cliModel) renderFooter() string {
-	// 收集当前上下文最相关的快捷键提示
-	var hints []string
+	var hints []footerHint
 
 	if m.panelMode != "" {
 		// 面板打开时：显示面板相关快捷键
@@ -829,90 +870,140 @@ func (m *cliModel) renderFooter() string {
 		switch m.panelMode {
 		case "bgtasks":
 			if m.panelBgViewing {
-				hints = append(hints, m.keyHint("PgUp/PgDn", m.locale.FooterScroll), m.keyHint("Esc", m.locale.FooterBack))
+				hints = append(hints,
+					m.footerHintItem("PgUp/PgDn", m.locale.FooterScroll, "scroll"),
+					m.footerHintItem("Esc", m.locale.FooterBack, "esc"),
+				)
 			} else {
-				hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterLog), m.keyHint("Del", m.locale.FooterKill), m.keyHint("Esc", m.locale.FooterClose))
+				hints = append(hints,
+					m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+					m.footerHintItem("Enter", m.locale.FooterLog, "enter"),
+					m.footerHintItem("Del", m.locale.FooterKill, "delete"),
+					m.footerHintItem("Esc", m.locale.FooterClose, "esc"),
+				)
 			}
 		case "approval":
-			hints = append(hints, m.keyHint("←→", m.locale.FooterNavigate), m.keyHint("y/n", "Quick"), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", "Deny"))
+			hints = append(hints,
+				m.footerHintItem("←→", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("y/n", "Quick", "quick"),
+				m.footerHintItem("Enter", m.locale.FooterSelect, "enter"),
+				m.footerHintItem("Esc", "Deny", "esc"),
+			)
 		case "settings":
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.ctrlKey("s", "Save"), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Ctrl+s", "Save", "ctrl+s"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		case "askuser":
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Space", "Check"), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", m.locale.FooterClose))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Space", "Check", "space"),
+				m.footerHintItem("Enter", m.locale.FooterSelect, "enter"),
+				m.footerHintItem("Esc", m.locale.FooterClose, "esc"),
+			)
 		case "danger":
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", "Confirm"), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Enter", "Confirm", "enter"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		case "runner":
-			hints = append(hints, m.keyHint("↑↓", "Field"), m.keyHint("Enter", "Connect"), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", "Field", "navigate"),
+				m.footerHintItem("Enter", "Connect", "enter"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		default:
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Enter", m.locale.FooterSelect, "enter"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		}
 	} else if m.typing {
-		// 处理中：显示取消快捷键
-		hints = append(hints, m.ctrlKey("c", m.locale.FooterCancel))
+		hints = append(hints, m.footerHintItem("Ctrl+c", m.locale.FooterCancel, "ctrl+c"))
 	} else {
-		// 就绪态：显示核心快捷键
 		if m.textarea.Value() == "" {
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
+			hints = append(hints, m.footerHintItem("Ctrl+k", m.locale.FooterPalette, "ctrl+k"))
 			if !m.isNarrow() {
-				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+				hints = append(hints, m.footerHintItem("tab", m.locale.FooterComplete, "tab"))
 			}
 			if !m.isCompact() {
-				hints = append(hints, m.ctrlKey("e", m.locale.FooterFold))
+				hints = append(hints, m.footerHintItem("Ctrl+e", m.locale.FooterFold, "ctrl+e"))
 			}
 			if m.subscriptionMgr != nil && !m.isNarrow() {
-				hints = append(hints, m.ctrlKey("p", "Subs"))
+				hints = append(hints, m.footerHintItem("Ctrl+p", "Subs", "ctrl+p"))
 			}
 			if !m.isNarrow() {
-				hints = append(hints, m.ctrlKey("t", "Sessions"))
+				hints = append(hints, m.footerHintItem("Ctrl+t", "Sessions", "ctrl+t"))
 			}
 			if m.bgTaskCount > 0 && !m.isCompact() {
-				hints = append(hints, m.keyHint("^", m.locale.FooterBgTasks))
+				hints = append(hints, m.footerHintItem("^", m.locale.FooterBgTasks, "^"))
 			}
 		} else {
-			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline))
+			hints = append(hints, m.footerHintItem("Ctrl+j", m.locale.FooterNewline, "ctrl+j"))
 			if !m.isNarrow() {
-				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+				hints = append(hints, m.footerHintItem("tab", m.locale.FooterComplete, "tab"))
 			}
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
+			hints = append(hints, m.footerHintItem("Ctrl+k", m.locale.FooterPalette, "ctrl+k"))
 		}
 	}
 
 	if len(hints) == 0 {
+		footerHints = nil
 		return ""
 	}
 
-	// §20 使用缓存样式
 	helpHint := m.styles.TextMutedSt.Render("/help")
 	ellipsis := m.styles.TextMutedSt.Render("…")
 	ellipsisW := lipgloss.Width(ellipsis)
+
 	// Progressively drop hints from the end until the footer fits.
-	// The rightmost "/help" is always preserved; extra hints are trimmed
-	// and replaced with "…" when the terminal is too narrow.
 	for len(hints) > 0 {
-		footerText := strings.Join(hints, "  ")
+		footerText, xPositions := m.renderHintsText(hints)
 		footerText = padBetween(footerText, helpHint, m.width)
 		if lipgloss.Width(footerText) <= m.width {
+			// Store X positions for mouse zone tracking
+			for i := range hints {
+				if i < len(xPositions) {
+					hints[i].xStart = xPositions[i]
+					hints[i].xEnd = xPositions[i+1]
+				}
+			}
+			footerHints = hints
 			return m.styles.Footer.Width(m.width).Render(footerText)
 		}
 		hints = hints[:len(hints)-1]
 	}
-	// Even a single hint overflows — show just "… /help"
+
+	footerHints = nil
 	return m.styles.Footer.Width(m.width).Render(
 		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.width)))
 }
 
-// ctrlKey 渲染 Ctrl+X 快捷键标签（灰色键帽 + 彩色描述）
-func (m *cliModel) ctrlKey(key string, desc string) string {
-	k := m.styles.KeyLabelSt.Render("Ctrl+" + key)
-	d := m.styles.KeyDescSt.Render(desc)
-	return k + " " + d
+// footerHintItem creates a footerHint with display text and action.
+func (m *cliModel) footerHintItem(key, desc, action string) footerHint {
+	return footerHint{key: key, desc: desc, action: action}
 }
 
-// keyHint 渲染普通按键标签
-func (m *cliModel) keyHint(key, desc string) string {
-	k := m.styles.KeyLabelSt.Render(key)
-	d := m.styles.KeyDescSt.Render(desc)
-	return k + " " + d
+// renderHintsText renders all hints into a single string and tracks X positions.
+func (m *cliModel) renderHintsText(hints []footerHint) (string, []int) {
+	var sb strings.Builder
+	positions := make([]int, 0, len(hints)+1)
+	positions = append(positions, 0) // start at X=0
+
+	for i, h := range hints {
+		rendered := m.styles.FooterHintLabel.Render(h.key) + " " + m.styles.KeyDescSt.Render(h.desc)
+		if i > 0 {
+			sb.WriteString("  ")
+		}
+		startX := lipgloss.Width(sb.String())
+		positions = append(positions, startX+lipgloss.Width(rendered))
+		sb.WriteString(rendered)
+	}
+
+	return sb.String(), positions
 }
 
 // padBetween 在左右文本之间填充空格，使总宽度达到 width
@@ -961,29 +1052,28 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 	return sb.String()
 }
 
-// Pre-created styles for context bar (avoid per-frame allocation).
-var ctxBarStyles = struct {
+// ctxBarStyles holds theme-derived styles for the context usage progress bar.
+// Rebuilt on each renderContextTopBorder call so theme switches take effect immediately.
+type ctxBarStyles struct {
 	fillGreen  lipgloss.Style
 	fillYellow lipgloss.Style
 	fillRed    lipgloss.Style
 	dim        lipgloss.Style
 	empty      lipgloss.Style
 	threshold  lipgloss.Style
-	label      lipgloss.Style
-	pctGreen   lipgloss.Style
-	pctYellow  lipgloss.Style
-	pctRed     lipgloss.Style
-}{
-	fillGreen:  lipgloss.NewStyle().Foreground(lipgloss.Color("#6bcb77")),
-	fillYellow: lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd93d")),
-	fillRed:    lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")),
-	dim:        lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")).Faint(true),
-	empty:      lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")),
-	threshold:  lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Bold(true),
-	label:      lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
-	pctGreen:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6bcb77")),
-	pctYellow:  lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd93d")),
-	pctRed:     lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")),
+}
+
+func newCtxBarStyles() ctxBarStyles {
+	c := func(s string) color.Color { return lipgloss.Color(s) }
+	t := currentTheme
+	return ctxBarStyles{
+		fillGreen:  lipgloss.NewStyle().Foreground(c(t.Success)),
+		fillYellow: lipgloss.NewStyle().Foreground(c(t.Warning)),
+		fillRed:    lipgloss.NewStyle().Foreground(c(t.Error)),
+		dim:        lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)).Faint(true),
+		empty:      lipgloss.NewStyle().Foreground(c(t.BarEmpty)),
+		threshold:  lipgloss.NewStyle().Foreground(c(t.Error)).Bold(true),
+	}
 }
 
 // renderContextTopBorder replaces the input box top border with a context
@@ -1056,14 +1146,15 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 	}
 
 	// Color selection
+	bs := newCtxBarStyles()
 	var fillSty lipgloss.Style
 	switch {
 	case pct > 0.8:
-		fillSty = ctxBarStyles.fillRed
+		fillSty = bs.fillRed
 	case pct > 0.5:
-		fillSty = ctxBarStyles.fillYellow
+		fillSty = bs.fillYellow
 	default:
-		fillSty = ctxBarStyles.fillGreen
+		fillSty = bs.fillGreen
 	}
 
 	cornerSty := lipgloss.NewStyle().Foreground(borderColor)
@@ -1090,20 +1181,20 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 			before := compressPos - emptyStart
 			after := emptyEnd - compressPos - 1
 			if before > 0 {
-				sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", before)))
+				sb.WriteString(bs.empty.Render(strings.Repeat("─", before)))
 			}
-			sb.WriteString(ctxBarStyles.threshold.Render("┊"))
+			sb.WriteString(bs.threshold.Render("┊"))
 			if after > 0 {
-				sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", after)))
+				sb.WriteString(bs.empty.Render(strings.Repeat("─", after)))
 			}
 		} else {
-			sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", emptyEnd-emptyStart)))
+			sb.WriteString(bs.empty.Render(strings.Repeat("─", emptyEnd-emptyStart)))
 		}
 	}
 
 	// 3. Output reservation — dashed thin line
 	if innerW-outputStart > 0 {
-		sb.WriteString(ctxBarStyles.dim.Render(strings.Repeat("╌", innerW-outputStart)))
+		sb.WriteString(bs.dim.Render(strings.Repeat("╌", innerW-outputStart)))
 	}
 
 	sb.WriteString(cornerSty.Render("╮"))

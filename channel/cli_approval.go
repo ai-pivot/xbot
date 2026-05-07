@@ -146,7 +146,7 @@ func (m *cliModel) viewApprovalPanel() string {
 	// Details
 	warnSt := lipgloss.NewStyle().Foreground(s.PanelHeader.GetForeground()).Bold(true)
 	labelSt := lipgloss.NewStyle().Foreground(s.PanelDesc.GetForeground())
-	valueSt := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
+	valueSt := lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.TextPrimary))
 
 	sb.WriteString(warnSt.Render(fmt.Sprintf("  LLM wants to execute as %q", req.RunAs)))
 	sb.WriteString("\n\n")
@@ -190,8 +190,8 @@ func (m *cliModel) viewApprovalPanel() string {
 	approveLabel := "  Approve (y)  "
 	denyLabel := "  Deny (n)  "
 
-	activeSt := lipgloss.NewStyle().Background(lipgloss.Color("#22c55e")).Foreground(lipgloss.Color("#000000")).Bold(true)
-	activeRedSt := lipgloss.NewStyle().Background(lipgloss.Color("#ef4444")).Foreground(lipgloss.Color("#ffffff")).Bold(true)
+	activeSt := lipgloss.NewStyle().Background(lipgloss.Color(currentTheme.Success)).Foreground(lipgloss.Color(currentTheme.Surface)).Bold(true)
+	activeRedSt := lipgloss.NewStyle().Background(lipgloss.Color(currentTheme.Error)).Foreground(lipgloss.Color(currentTheme.TextPrimary)).Bold(true)
 	inactiveSt := lipgloss.NewStyle().Foreground(s.PanelDesc.GetForeground()).Faint(true)
 
 	var approve, deny string
