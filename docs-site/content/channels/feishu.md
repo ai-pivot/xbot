@@ -20,8 +20,8 @@ weight: 22
 1. 打开 [飞书开放平台](https://open.feishu.cn) → 创建企业自建应用
 2. 记下 **App ID** 和 **App Secret**
 3. 在「事件订阅」中配置：
-   - 请求地址：填写你的服务器地址（公网可达）
-   - 加密策略：如果启用，记下 **Encrypt Key** 和 **Verification Token**；不启用则留空
+   - 订阅方式：选择「使用长连接接收事件」（无需公网 IP）
+   - Encrypt Key / Verification Token：如果启用加密策略则记下，不启用则留空
 4. 添加事件订阅：
    - `im.message.receive_v1`（接收消息）
 5. 发布应用
