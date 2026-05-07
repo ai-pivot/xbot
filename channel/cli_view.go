@@ -346,11 +346,17 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	middleLines = append(middleLines, input)
 	middleBlock := strings.Join(middleLines, "\n")
 
-	// When sidebar is visible, constrain middle block to chatWidth
-	// so status/footer/input don't overflow into sidebar space.
+	// When sidebar is visible, constrain middle block to chatWidth.
+	// lipgloss Width doesn't truncate already-rendered styled content,
+	// so we must clip each line individually with MaxWidth.
 	if showSidebar {
 		cw := m.chatWidth()
-		middleBlock = lipgloss.NewStyle().Width(cw).Render(middleBlock)
+		clipped := make([]string, len(middleLines))
+		clipStyle := lipgloss.NewStyle().MaxWidth(cw)
+		for i, line := range middleLines {
+			clipped[i] = clipStyle.Render(line)
+		}
+		middleBlock = strings.Join(clipped, "\n")
 	}
 
 	// Info bar is always full width
