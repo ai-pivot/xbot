@@ -103,7 +103,9 @@ func (m *cliModel) renderTitleBar() string {
 // and manual placeholder overlay (avoids textarea's built-in placeholder
 // which triggers CJK rendering bugs on Windows Terminal).
 func (m *cliModel) renderInputArea(borderColor color.Color) string {
-	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor)
+	// Use chatWidth so input box fits when sidebar is open
+	w := m.chatWidth()
+	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)
 	inputArea := m.textarea.View()
 
 	// Render placeholder manually when textarea is empty.
@@ -345,19 +347,6 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	}
 	middleLines = append(middleLines, input)
 	middleBlock := strings.Join(middleLines, "\n")
-
-	// When sidebar is visible, constrain middle block to chatWidth.
-	// lipgloss Width doesn't truncate already-rendered styled content,
-	// so we must clip each line individually with MaxWidth.
-	if showSidebar {
-		cw := m.chatWidth()
-		clipped := make([]string, len(middleLines))
-		clipStyle := lipgloss.NewStyle().MaxWidth(cw)
-		for i, line := range middleLines {
-			clipped[i] = clipStyle.Render(line)
-		}
-		middleBlock = strings.Join(clipped, "\n")
-	}
 
 	// Info bar is always full width
 	infoBarLine := ""
@@ -1129,8 +1118,8 @@ func (m *cliModel) renderFooter() string {
 	// Progressively drop hints from the end until the footer fits.
 	for len(hints) > 0 {
 		footerText, xPositions := m.renderHintsText(hints)
-		footerText = padBetween(footerText, helpHint, m.width)
-		if lipgloss.Width(footerText) <= m.width {
+		footerText = padBetween(footerText, helpHint, m.chatWidth())
+		if lipgloss.Width(footerText) <= m.chatWidth() {
 			// Store X positions for mouse zone tracking
 			for i := range hints {
 				if i < len(xPositions) {
@@ -1139,14 +1128,14 @@ func (m *cliModel) renderFooter() string {
 				}
 			}
 			footerHints = hints
-			return m.styles.Footer.Width(m.width).Render(footerText)
+			return m.styles.Footer.Width(m.chatWidth()).Render(footerText)
 		}
 		hints = hints[:len(hints)-1]
 	}
 
 	footerHints = nil
-	return m.styles.Footer.Width(m.width).Render(
-		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.width)))
+	return m.styles.Footer.Width(m.chatWidth()).Render(
+		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.chatWidth())))
 }
 
 // footerHintItem creates a footerHint with display text and action.
