@@ -636,16 +636,6 @@ func (m *cliModel) settingsCursorLine() int {
 			return line
 		}
 		line++
-		// Account for inline overlay lines rendered after cursor item
-		if i == m.panelCursor {
-			if m.panelEdit {
-				line += 3 // input + hint + newline
-			} else if m.panelCombo && len(def.Options) > 0 {
-				maxShow := 8
-				opts := min(len(def.Options), maxShow)
-				line += opts + 1 // option lines + hint
-			}
-		}
 	}
 	return line
 }

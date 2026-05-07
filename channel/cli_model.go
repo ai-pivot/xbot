@@ -273,6 +273,7 @@ type sessionState struct {
 	lastThinking         string
 	turnCancelled        bool
 	typewriterTickActive bool
+	reasoningByIter      map[int]string
 }
 
 // sessionKey returns the map key for the current session.
@@ -304,6 +305,7 @@ func (m *cliModel) saveCurrentSession() {
 		lastThinking:         m.lastThinking,
 		turnCancelled:        m.turnCancelled,
 		typewriterTickActive: m.typewriterTickActive,
+		reasoningByIter:      m.reasoningByIter,
 	}
 }
 
@@ -328,6 +330,7 @@ func (m *cliModel) restoreSession() {
 		m.lastThinking = saved.lastThinking
 		m.turnCancelled = saved.turnCancelled
 		m.typewriterTickActive = saved.typewriterTickActive
+		m.reasoningByIter = saved.reasoningByIter
 		delete(m.savedSessions, key) // clean up
 	} else {
 		// No saved state — reset to idle (NOT cancelled)

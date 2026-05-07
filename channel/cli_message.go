@@ -24,6 +24,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
+	"github.com/rivo/uniseg"
 )
 
 // ---------------------------------------------------------------------------
@@ -2858,7 +2859,7 @@ func expandTabs(s string, tabWidth int) string {
 			col += spaces
 		} else {
 			b.WriteRune(r)
-			col++
+			col += uniseg.StringWidth(string(r))
 		}
 	}
 	return b.String()
@@ -3031,7 +3032,7 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 
 		default:
 			code := ""
-			if len(line) > 1 {
+			if len(line) > 0 {
 				code = line[1:] // strip diff prefix char (space for context lines)
 			}
 			if hl, ok := highlightMap[i]; ok {
@@ -3083,7 +3084,7 @@ func diffHighlightLines(diffLines []string, filePath string, bgAdd, bgDel, bgCtx
 			code = line[1:]
 			bg = bgDel
 		default:
-			if len(line) > 1 {
+			if len(line) > 0 {
 				code = line[1:] // strip diff prefix space for context lines
 			}
 		}
