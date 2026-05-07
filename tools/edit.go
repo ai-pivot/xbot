@@ -701,7 +701,39 @@ func normalizeReplacementIndent(matchedOld, newStr string) string {
 
 	// Normalize each line.
 	newLines := strings.Split(newStr, "\n")
-	lastFileIndent := "" // tracks nearest old-matching line's indent
+
+	// Detect tab width from the file. Look at existing lines that use tabs
+	// and find the common indent delta (e.g. \t vs \t\t = 1 tab per level).
+	// Default to 4 if we can't determine.
+	tabWidth := 4
+	for _, line := range oldLines {
+		indent := leadingWhitespace(line)
+		if strings.ContainsRune(indent, '\t') {
+			// Count tabs
+			tabCount := strings.Count(indent, "\t")
+			if tabCount > 0 {
+				// The visual width of this indent (assuming tabWidth=4)
+				// vs the tab count tells us the ratio
+				break
+			}
+		}
+	}
+
+	// Build a reference: first old line's indent depth in tab equivalents.
+	// This helps us convert new lines' space-indents to correct tab depth.
+	refFileTabDepth := 0
+	refNewSpaceDepth := 0
+	for _, line := range newLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if fIndent, ok := fileIndent[trimmed]; ok {
+			refFileTabDepth = strings.Count(fIndent, "\t")
+			refNewSpaceDepth = len(leadingWhitespace(line))
+			break
+		}
+	}
 
 	for i, line := range newLines {
 		trimmed := strings.TrimSpace(line)
@@ -714,21 +746,27 @@ func normalizeReplacementIndent(matchedOld, newStr string) string {
 		if fIndent, ok := fileIndent[trimmed]; ok {
 			// Line exists in old — use file's exact indent.
 			newLines[i] = fIndent + trimmed
-			lastFileIndent = fIndent
 		} else {
-			// Genuinely new line — check if it already uses tabs.
+			// Genuinely new line.
 			currIndent := leadingWhitespace(line)
 			if strings.ContainsRune(currIndent, '\t') {
 				// Already uses tabs, keep as-is.
-				lastFileIndent = currIndent
-			} else {
+			} else if currIndent != "" && refNewSpaceDepth > 0 {
 				// Has spaces where file uses tabs.
-				// Inherit the nearest old-matching line's indent (peer-level).
-				if lastFileIndent != "" {
-					newLines[i] = lastFileIndent + trimmed
+				// Convert space depth to tab depth using reference ratio.
+				spaceDelta := len(currIndent) - refNewSpaceDepth
+				newTabDepth := refFileTabDepth
+				if spaceDelta > 0 {
+					newTabDepth += (spaceDelta + tabWidth - 1) / tabWidth
+				} else if spaceDelta < 0 {
+					newTabDepth -= (-spaceDelta) / tabWidth
+					if newTabDepth < 0 {
+						newTabDepth = 0
+					}
 				}
-				// If no reference yet, leave as-is (can't determine intent).
+				newLines[i] = strings.Repeat("\t", newTabDepth) + trimmed
 			}
+			// If no reference or empty indent, leave as-is.
 		}
 	}
 

@@ -2814,8 +2814,9 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 	}
 
 	numFmt := fmt.Sprintf("%%%dd", lineNumDigits)
-	lineNumColW := lineNumDigits*2 + 2
-	codeW := maxW - lineNumColW - 2
+	lineNumColW := lineNumDigits*2 + 1        // oldNum + space + newNum
+	prefixW := 2                              // ± + space
+	codeW := maxW - prefixW - lineNumColW - 1 // -1 for space between lineNums and code
 	if codeW < 10 {
 		codeW = 10
 	}
@@ -2823,9 +2824,6 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 	lineNumStyleAdd := lipgloss.NewStyle().Foreground(fgMeta).Background(bgAdd)
 	lineNumStyleDel := lipgloss.NewStyle().Foreground(fgMeta).Background(bgDel)
 	lineNumStyleCtx := lipgloss.NewStyle().Foreground(fgMeta)
-	symStyleAdd := lipgloss.NewStyle().Background(bgAdd).Foreground(fgAdd)
-	symStyleDel := lipgloss.NewStyle().Background(bgDel).Foreground(fgDel)
-	symStyleCtx := lipgloss.NewStyle().Foreground(fgMeta)
 
 	var sb strings.Builder
 	for i, line := range diffLines {
@@ -2850,12 +2848,12 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 				code = hl
 			}
 			code = ansi.Truncate(code, codeW, "")
+			sym := lipgloss.NewStyle().Background(bgAdd).Foreground(fgAdd).Render("+")
 			oldNum := strings.Repeat("\u00a0", lineNumDigits)
 			newNum := fmt.Sprintf(numFmt, newLine)
-			lineNums := lineNumStyleAdd.Render(oldNum + "\u00a0" + newNum + "\u00a0")
-			sym := symStyleAdd.Render("+\u00a0")
+			lineNums := lineNumStyleAdd.Render(oldNum + "\u00a0" + newNum)
 			codeStyled := padBgRight(code, t.SuccessBg, codeW)
-			sb.WriteString(lineNums + sym + codeStyled)
+			sb.WriteString(sym + "\u00a0" + lineNums + "\u00a0" + codeStyled)
 			newLine++
 
 		case strings.HasPrefix(line, "-"):
@@ -2864,12 +2862,12 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 				code = hl
 			}
 			code = ansi.Truncate(code, codeW, "")
+			sym := lipgloss.NewStyle().Background(bgDel).Foreground(fgDel).Render("-")
 			oldNum := fmt.Sprintf(numFmt, oldLine)
 			newNum := strings.Repeat("\u00a0", lineNumDigits)
-			lineNums := lineNumStyleDel.Render(oldNum + "\u00a0" + newNum + "\u00a0")
-			sym := symStyleDel.Render("-\u00a0")
+			lineNums := lineNumStyleDel.Render(oldNum + "\u00a0" + newNum)
 			codeStyled := padBgRight(code, t.ErrorBg, codeW)
-			sb.WriteString(lineNums + sym + codeStyled)
+			sb.WriteString(sym + "\u00a0" + lineNums + "\u00a0" + codeStyled)
 			oldLine++
 
 		default:
@@ -2878,11 +2876,11 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 				code = hl
 			}
 			code = ansi.Truncate(code, codeW, "")
+			sym := lipgloss.NewStyle().Foreground(fgMeta).Render("│")
 			oldNum := fmt.Sprintf(numFmt, oldLine)
 			newNum := fmt.Sprintf(numFmt, newLine)
-			lineNums := lineNumStyleCtx.Render(oldNum + " " + newNum + " ")
-			sym := symStyleCtx.Render("  ")
-			sb.WriteString(lineNums + sym + code)
+			lineNums := lineNumStyleCtx.Render(oldNum + "\u00a0" + newNum)
+			sb.WriteString(sym + "\u00a0" + lineNums + "\u00a0" + code)
 			oldLine++
 			newLine++
 		}
