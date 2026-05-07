@@ -783,24 +783,35 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	// If sidebar is visible, register session item zones and new-session button.
 	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
+	// xShift: when sidebar is on the left, all middleBlock content is shifted right
+	xShift := 0
 	if showSidebar {
-		// Sidebar X range within the viewport Y span
-		sbXEnd := m.sidebarWidth + 4 // border(2) + padding(2) + content
-		sbXStart := 0
 		if m.sidebarPosition == "right" {
-			sbXStart = m.chatWidth()
-			sbXEnd = m.width
-		}
-
-		// Register each session item row
-		for relY, sessionIdx := range sidebarSessionLines {
-			if sessionIdx >= 0 {
-				zb.addX(relY, sbXStart, sbXEnd, "sidebarSession", sessionIdx)
+			// sidebar on right: middleBlock starts at 0, sidebar starts at chatWidth
+			sbXStart := m.chatWidth()
+			sbXEnd := m.width
+			borderOffset := 1 // RoundedBorder top edge
+			for relY, sessionIdx := range sidebarSessionLines {
+				if sessionIdx >= 0 {
+					zb.addX(relY+borderOffset, sbXStart, sbXEnd, "sidebarSession", sessionIdx)
+				}
 			}
-		}
-		// Register "+ New" button
-		if sidebarNewSessionY >= 0 {
-			zb.addX(sidebarNewSessionY, sbXStart, sbXEnd, "sidebarNewSession", 0)
+			if sidebarNewSessionY >= 0 {
+				zb.addX(sidebarNewSessionY+borderOffset, sbXStart, sbXEnd, "sidebarNewSession", 0)
+			}
+		} else {
+			// sidebar on left: middleBlock content starts at sidebarWidth+4
+			sbXEnd := m.sidebarWidth + 4
+			borderOffset := 1 // RoundedBorder top edge
+			for relY, sessionIdx := range sidebarSessionLines {
+				if sessionIdx >= 0 {
+					zb.addX(relY+borderOffset, 0, sbXEnd, "sidebarSession", sessionIdx)
+				}
+			}
+			if sidebarNewSessionY >= 0 {
+				zb.addX(sidebarNewSessionY+borderOffset, 0, sbXEnd, "sidebarNewSession", 0)
+			}
+			xShift = sbXEnd
 		}
 	}
 
@@ -822,7 +833,7 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 		// Register footer hint zones (inline clickable regions)
 		for i, h := range footerHints {
 			if h.xStart >= 0 && h.xEnd > h.xStart {
-				zb.addX(0, h.xStart, h.xEnd, "footerHint", i)
+				zb.addX(0, h.xStart+xShift, h.xEnd+xShift, "footerHint", i)
 			}
 		}
 		zb.y++ // advance past footer line
