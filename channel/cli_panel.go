@@ -991,9 +991,9 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.restoreSession() // restore target session state (or reset to idle)
 					// Do NOT unconditionally override typing/progress/iterationHistory here.
 					// handleSuHistoryLoad (async) will reconcile with authoritative server data.
-					m.inputReady = true
-					m.messageQueue = nil
-					m.queueEditing = false
+					// Only allow input if the restored session is idle. If typing=true,
+					// the agent is still processing and input must be queued, not sent.
+					m.inputReady = !m.typing
 					// Close panel first
 					m.panelMode = ""
 					m.panelSessionItems = nil
@@ -1049,9 +1049,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.restoreSession() // restore target session state (or reset to idle)
 					// Do NOT unconditionally override typing/progress/iterationHistory here.
 					// See note in main session switch path above.
-					m.inputReady = true
-					m.messageQueue = nil
-					m.queueEditing = false
+					m.inputReady = !m.typing
 					m.panelMode = ""
 					m.panelSessionItems = nil
 					var cmds []tea.Cmd
@@ -3496,9 +3494,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			// handleSuHistoryLoad (async) will reconcile with authoritative server data.
 			// For the non-async path, the restored state is the best we have — clearing
 			// typing would block progress when turnCancelled=true from a Ctrl+C'd session.
-			m.inputReady = true
-			m.messageQueue = nil
-			m.queueEditing = false
+			m.inputReady = !m.typing
 			var cmds []tea.Cmd
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 				m.suLoading = true
@@ -3554,9 +3550,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			m.restoreSession()
 			// Do NOT unconditionally override typing/progress/iterationHistory here.
 			// See note in main session switch path above.
-			m.inputReady = true
-			m.messageQueue = nil
-			m.queueEditing = false
+			m.inputReady = !m.typing
 			var cmds []tea.Cmd
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 				m.suLoading = true

@@ -205,14 +205,19 @@ func (s *runState) initProgress() {
 
 // initDynamicInjector sets up the dynamic context injector for CWD change detection.
 func (s *runState) initDynamicInjector() {
-	s.dynamicInjector = NewDynamicContextInjector(func() string {
-		if s.cfg.Session != nil {
-			if dir := s.cfg.Session.GetCurrentDir(); dir != "" {
-				return dir
+	s.dynamicInjector = NewDynamicContextInjectorWithPeers(
+		func() string {
+			if s.cfg.Session != nil {
+				if dir := s.cfg.Session.GetCurrentDir(); dir != "" {
+					return dir
+				}
 			}
-		}
-		return s.cfg.InitialCWD
-	})
+			return s.cfg.InitialCWD
+		},
+		func() string {
+			return buildPeerContextXML(s.cfg.WorkspaceRoot, s.sessionKey)
+		},
+	)
 }
 
 // tickSession advances the round counter for tool activation cleanup.

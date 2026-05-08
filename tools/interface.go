@@ -60,6 +60,9 @@ type ToolContext struct {
 	// PWD 工具优化：当前工作目录（可变，从 session 读取）
 	CurrentDir    string           // 当前工作目录（优先级高于 WorkspaceRoot）
 	SetCurrentDir func(dir string) // 更新 session 中的 cwd
+	// IsWorktreeIsolated indicates this agent is running in an isolated git worktree.
+	// When true, path_guard enforces boundaries even in "none" sandbox mode.
+	IsWorktreeIsolated bool
 
 	// Stream indicates whether the parent Agent is using streaming LLM calls.
 	// SubAgents inherit this from the parent to ensure consistent behavior.
@@ -654,6 +657,8 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	// WebSearch: always available (requires TAVILY_API_KEY)
 	r.RegisterCore(NewFetchTool())
 	r.RegisterCore(&AskUserTool{})
+	// WorktreeTool — multi-agent workspace isolation via git worktrees
+	r.RegisterCore(&WorktreeTool{})
 	// LoadToolsTool 仅在 letta 模式下注册（flat 模式所有工具直接可用）
 	if memoryProvider != "flat" {
 		r.RegisterCore(&LoadToolsTool{})

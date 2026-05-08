@@ -659,8 +659,12 @@ func (f *LLMFactory) SubAgentSemAcquireForUser(senderID string) func(context.Con
 		return nil
 	}
 	return func(ctx context.Context) func() {
-		// Default max concurrent SubAgents: 3
-		cap := parseOrDefault(f.getSetting(senderID, "subagent_max_concurrent"), 3)
+		// subagent_max_concurrent takes priority; fallback to max_concurrent (LLM concurrency),
+		// then to DefaultLLMConcurrency. Previously hardcoded to 3 which caused surprises.
+		cap := parseOrDefault(f.getSetting(senderID, "subagent_max_concurrent"), -1)
+		if cap < 0 {
+			cap = parseOrDefault(f.getSetting(senderID, "max_concurrent"), llm.DefaultLLMConcurrency)
+		}
 		return f.llmSemManager.Acquire(ctx, senderID, "subagent", func() int { return cap })
 	}
 }

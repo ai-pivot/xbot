@@ -1813,6 +1813,19 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 		a.sendAck(msg.Channel, msg.ChatID)
 	}
 
+	// Auto worktree detection: if multiple sessions share the same git repo,
+	// automatically create an isolated worktree to prevent file conflicts.
+	if entry := tools.AutoDetectAndInit(a.workDir, sessionKey(msg.Channel, msg.ChatID)); entry != nil {
+		if entry.WorktreeDir != "" {
+			tenantSession.SetCurrentDir(entry.WorktreeDir)
+			log.Ctx(ctx).WithFields(log.Fields{
+				"worktree": entry.WorktreeDir,
+				"branch":   entry.Branch,
+				"role":     entry.Role,
+			}).Info("Auto worktree isolation enabled")
+		}
+	}
+
 	// 构建 LLM 消息（注入长期记忆、skills）
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {

@@ -61,9 +61,13 @@ func effectiveCWD(ctx *ToolContext) (string, error) {
 // isUnrestricted returns true when path restrictions should be skipped.
 // None sandbox: user has full filesystem access.
 // Remote sandbox: the runner handles its own path enforcement.
+// Worktree isolation: even in none sandbox, boundaries MUST be enforced for worktree agents.
 func isUnrestricted(ctx *ToolContext) bool {
 	if ctx == nil || ctx.Sandbox == nil {
 		return false
+	}
+	if ctx.IsWorktreeIsolated {
+		return false // worktree agents are always restricted to their workspace
 	}
 	name := ctx.Sandbox.Name()
 	return name == "none" || name == "remote"

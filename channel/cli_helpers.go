@@ -311,12 +311,16 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 				m.lastSeenIteration = lastIter
 			}
 		}
-
-		// Deduplicate: remove ALL tool_summary messages. When progress is
-		// active, the progress block owns iteration display — any static
-		// tool_summary would duplicate content with mismatched iteration numbers.
-		m.removeAllToolSummaries()
 	}
+
+	// Deduplicate: remove ALL tool_summary messages. When progress is
+	// active, the progress block owns iteration display — any static
+	// tool_summary would duplicate content with mismatched iteration numbers.
+	// Must run unconditionally: even when IterationHistory is empty (e.g. server
+	// restart or iterationHistories not yet populated), any tool_summary from
+	// loaded DB history must be removed — otherwise completed iterations show as
+	// a static "Tools" block alongside the live progress block.
+	m.removeAllToolSummaries()
 
 	m.invalidateAllCache(false)
 	// Do NOT call updateViewportContent() here — terminal size may not be

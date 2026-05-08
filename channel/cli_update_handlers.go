@@ -822,6 +822,11 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 	if msg.err != nil {
 		m.showSystemMsg(fmt.Sprintf(m.locale.SuLoadFailed, msg.err), feedbackWarning)
+		// Clear pendingUserMsg even on error. If we leave it set, the stale
+		// reference gets saved in sessionState and restored on every subsequent
+		// switch, potentially creating duplicate user messages when history
+		// eventually loads successfully.
+		m.pendingUserMsg = nil
 	} else {
 		for _, hm := range msg.history {
 			cm := cliMessage{
@@ -1047,10 +1052,11 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 	if m.ready && msg.frame >= 20 {
 		// 初始化完成且已展示至少 1 秒（20 帧 × 50ms）
 		m.splashDone = true
-		if m.typing && m.progress != nil && !m.fastTickActive {
+		sessionActive := m.progress != nil && m.progress.Phase != "done"
+		if sessionActive && !m.fastTickActive {
 			m.fastTickActive = true
 			cmds = append(cmds, tickCmd())
-		} else if !m.typing || m.progress == nil {
+		} else if !sessionActive && !m.typing {
 			cmds = append(cmds, idleTickCmd())
 		}
 		return m, tea.Batch(cmds...)
@@ -1058,10 +1064,11 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 	// 兜底上限：~2 秒（40 帧）
 	if msg.frame >= 40 {
 		m.splashDone = true
-		if m.typing && m.progress != nil && !m.fastTickActive {
+		sessionActive := m.progress != nil && m.progress.Phase != "done"
+		if sessionActive && !m.fastTickActive {
 			m.fastTickActive = true
 			cmds = append(cmds, tickCmd())
-		} else if !m.typing || m.progress == nil {
+		} else if !sessionActive && !m.typing {
 			cmds = append(cmds, idleTickCmd())
 		}
 		return m, tea.Batch(cmds...)
@@ -1340,7 +1347,11 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	// Schedule next tick when agent is active or bg tasks are running.
 	// IMPORTANT: only emit ONE tickCmd to prevent exponential message growth
 	// (two tickCmd() would double the message count every 100ms → CPU explosion).
-	busy := m.typing || m.progress != nil
+	// Use server-authoritative progress state instead of client-maintained m.typing.
+	// m.typing can be stale after session switches; m.progress.Phase comes from
+	// the server's progress events and is the ground truth for session activity.
+	sessionActive := m.progress != nil && m.progress.Phase != "done"
+	busy := m.typing || sessionActive
 	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || busy {
 		m.fastTickActive = true
 		cmds = append(cmds, tickCmd())
@@ -1437,12 +1448,13 @@ func (m *cliModel) handleIdleTick() []tea.Cmd {
 	if m.cachedModelName == "" && m.remoteMode {
 		m.refreshCachedModelName()
 	}
-	if !m.typing && m.progress == nil {
+	sessionActive := m.progress != nil && m.progress.Phase != "done"
+	if !sessionActive && !m.typing {
 		m.updatePlaceholder()
 		cmds = append(cmds, idleTickCmd())
 	} else if !m.fastTickActive {
-		// Self-healing: if fast tick chain broke but we're still busy
-		// (typing or progress active), re-arm fast tick.
+		// Self-healing: if fast tick chain broke but session is still active,
+		// re-arm fast tick.
 		m.fastTickActive = true
 		cmds = append(cmds, tickCmd())
 	}
@@ -1476,10 +1488,11 @@ func (m *cliModel) handleSplashDone() []tea.Cmd {
 	if m.cachedModelName == "" && m.remoteMode {
 		m.refreshCachedModelName()
 	}
-	if m.typing && m.progress != nil && !m.fastTickActive {
+	sessionActive := m.progress != nil && m.progress.Phase != "done"
+	if sessionActive && !m.fastTickActive {
 		m.fastTickActive = true
 		cmds = append(cmds, tickCmd())
-	} else if !m.typing || m.progress == nil {
+	} else if !sessionActive && !m.typing {
 		cmds = append(cmds, idleTickCmd())
 	}
 	return cmds

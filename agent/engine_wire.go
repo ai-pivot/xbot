@@ -575,6 +575,10 @@ func (a *Agent) buildSubAgentRunConfig(
 		InitialGroupID:      parentCtx.GroupID,
 		InitialGroupMembers: parentCtx.GroupMembers,
 
+		// Worktree isolation: if the parent is in a worktree, rewrite
+		// WorkspaceRoot to the worktree path and enable isolation.
+		IsWorktreeIsolated: parentCtx.IsWorktreeIsolated,
+
 		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
@@ -582,6 +586,13 @@ func (a *Agent) buildSubAgentRunConfig(
 		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
 
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
+	}
+
+	// If the SubAgent's InitialCWD is inside a worktree directory,
+	// rewrite WorkspaceRoot to the worktree path for path isolation.
+	if strings.Contains(cfg.InitialCWD, ".xbot-worktrees") {
+		cfg.WorkspaceRoot = cfg.InitialCWD
+		cfg.IsWorktreeIsolated = true
 	}
 
 	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户

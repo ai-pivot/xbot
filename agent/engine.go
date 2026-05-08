@@ -73,6 +73,8 @@ type RunConfig struct {
 	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
 	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
 	InitialGroupMembers []string      // 群组成员列表（用于 system prompt 注入）
+	// IsWorktreeIsolated indicates this agent runs in an isolated git worktree.
+	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
 	MaxIterations   int // 0 = 使用默认值 100
@@ -886,6 +888,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		PreferredSandbox:     cfg.PreferredSandbox,
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
+		IsWorktreeIsolated:   cfg.IsWorktreeIsolated,
 
 		// 注入入站消息
 		InjectInbound: cfg.InjectInbound,

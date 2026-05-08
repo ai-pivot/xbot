@@ -275,7 +275,15 @@ type sessionState struct {
 	turnCancelled        bool
 	typewriterTickActive bool
 	reasoningByIter      map[int]string
-	pendingUserMsg       *cliMessage // user message sent but not yet confirmed in DB
+	// Context bar state — preserved across session switches so the
+	// token usage bar doesn't disappear when switching between sessions.
+	lastTokenUsage         *CLITokenUsage
+	cachedMaxContextTokens int
+	cachedCompressRatio    float64
+	cachedMaxOutputTokens  int64
+	pendingUserMsg         *cliMessage // user message sent but not yet confirmed in DB
+	messageQueue           []queuedMsg
+	queueEditing           bool
 	// Per-session LLM configuration (survives session switches)
 	activeSubscriptionID string // subscription ID active in this session
 	activeModel          string // model active in this session (may differ from subscription default)
@@ -299,30 +307,36 @@ func (m *cliModel) saveCurrentSession() {
 		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
-		progress:             m.progress,
-		typing:               m.typing,
-		agentTurnID:          m.agentTurnID,
-		inputReady:           m.inputReady,
-		needFlushQueue:       m.needFlushQueue,
-		lastProgressSeq:      m.lastProgressSeq,
-		twVisible:            m.twVisible,
-		rwVisible:            m.rwVisible,
-		iterationHistory:     m.iterationHistory,
-		lastSeenIteration:    m.lastSeenIteration,
-		streamingMsgIdx:      m.streamingMsgIdx,
-		typingStartTime:      m.typingStartTime,
-		lastReasoning:        m.lastReasoning,
-		lastThinking:         m.lastThinking,
-		turnCancelled:        m.turnCancelled,
-		typewriterTickActive: m.typewriterTickActive,
-		reasoningByIter:      m.reasoningByIter,
-		pendingUserMsg:       m.pendingUserMsg,
-		activeSubscriptionID: m.activeSubID,
-		activeModel:          m.cachedModelName,
-		textareaValue:        m.textarea.Value(),
-		inputHistory:         m.inputHistory,
-		inputHistoryIdx:      m.inputHistoryIdx,
-		inputDraft:           m.inputDraft,
+		progress:               m.progress,
+		typing:                 m.typing,
+		agentTurnID:            m.agentTurnID,
+		inputReady:             m.inputReady,
+		needFlushQueue:         m.needFlushQueue,
+		lastProgressSeq:        m.lastProgressSeq,
+		twVisible:              m.twVisible,
+		rwVisible:              m.rwVisible,
+		iterationHistory:       m.iterationHistory,
+		lastSeenIteration:      m.lastSeenIteration,
+		streamingMsgIdx:        m.streamingMsgIdx,
+		typingStartTime:        m.typingStartTime,
+		lastReasoning:          m.lastReasoning,
+		lastThinking:           m.lastThinking,
+		turnCancelled:          m.turnCancelled,
+		typewriterTickActive:   m.typewriterTickActive,
+		reasoningByIter:        m.reasoningByIter,
+		lastTokenUsage:         m.lastTokenUsage,
+		cachedMaxContextTokens: m.cachedMaxContextTokens,
+		cachedCompressRatio:    m.cachedCompressRatio,
+		cachedMaxOutputTokens:  m.cachedMaxOutputTokens,
+		messageQueue:           m.messageQueue,
+		queueEditing:           m.queueEditing,
+		pendingUserMsg:         m.pendingUserMsg,
+		activeSubscriptionID:   m.activeSubID,
+		activeModel:            m.cachedModelName,
+		textareaValue:          m.textarea.Value(),
+		inputHistory:           m.inputHistory,
+		inputHistoryIdx:        m.inputHistoryIdx,
+		inputDraft:             m.inputDraft,
 	}
 	// Persist todo list for current session
 	if m.todoManager != nil {
@@ -352,6 +366,12 @@ func (m *cliModel) restoreSession() {
 		m.turnCancelled = saved.turnCancelled
 		m.typewriterTickActive = saved.typewriterTickActive
 		m.reasoningByIter = saved.reasoningByIter
+		m.lastTokenUsage = saved.lastTokenUsage
+		m.cachedMaxContextTokens = saved.cachedMaxContextTokens
+		m.cachedCompressRatio = saved.cachedCompressRatio
+		m.cachedMaxOutputTokens = saved.cachedMaxOutputTokens
+		m.messageQueue = saved.messageQueue
+		m.queueEditing = saved.queueEditing
 		m.pendingUserMsg = saved.pendingUserMsg
 		m.activeSubID = saved.activeSubscriptionID
 		m.cachedModelName = saved.activeModel
@@ -392,6 +412,8 @@ func (m *cliModel) restoreSession() {
 		m.turnCancelled = false
 		m.inputReady = false
 		m.needFlushQueue = false
+		m.messageQueue = nil
+		m.queueEditing = false
 		m.lastProgressSeq = 0
 		m.twVisible = 0
 		m.rwVisible = 0
