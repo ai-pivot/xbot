@@ -663,7 +663,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 					parts[i] = m.styles.CompItem.Render(c)
 				}
 			}
-			hint = truncateCompHint(m.styles.CompHint.Render(strings.Join(parts, " · ")), m.width)
+			hint = truncateCompHint(m.styles.CompHint.Render(strings.Join(parts, " · ")), m.chatWidth())
 		} else {
 			var matches []string
 			for _, cmd := range cliCommands {
@@ -672,7 +672,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 				}
 			}
 			if len(matches) > 0 {
-				hint = truncateCompHint(m.styles.CompHintBorder.Render("[Tab] "+strings.Join(matches, " · ")), m.width)
+				hint = truncateCompHint(m.styles.CompHintBorder.Render("[Tab] "+strings.Join(matches, " · ")), m.chatWidth())
 			}
 		}
 		return

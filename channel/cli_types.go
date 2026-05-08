@@ -606,6 +606,7 @@ type CLIChannelConfig struct {
 	AgentInspect         func(roleName, instance string, tailCount int) (string, error)                                                 // 窥探 interactive agent 的最近活动（tail 风格）
 	AgentMessages        func(roleName, instance string) []SessionChatMessage                                                           // 获取 interactive agent 的对话消息
 	ChatCreateFn         func(channelName, senderID, label string) (string, error)                                                      // 创建新 ChatRoom（返回 chatID）
+	SessionsDeleteFn     func(channelName, chatID string) error                                                                         // 删除 session（本地 JSON + 服务端 DB 级联）
 	SessionsList         func() []SessionPanelEntry                                                                                     // 列出所有 session（main + subagent）
 	GetActiveProgressFn  func(channelName, chatID string) *CLIProgressPayload                                                           // 获取目标 session 的活跃进度（session switch 恢复用）
 	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                                   // 获取频道配置（用于 /channel 面板）

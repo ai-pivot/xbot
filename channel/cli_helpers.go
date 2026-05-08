@@ -250,6 +250,14 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	if payload == nil || payload.Phase == "done" {
 		return
 	}
+	// Cross-session guard: reject payload from a different session.
+	// This is defense-in-depth — the caller should pass the correct payload.
+	if payload.ChatID != "" {
+		currentKey := m.channelName + ":" + m.chatID
+		if payload.ChatID != currentKey {
+			return
+		}
+	}
 
 	// Start agent turn (sets typing=true, increments turnID).
 	// Note: startAgentTurn calls resetProgressState which clears m.progress,
@@ -506,8 +514,9 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 	applyTAStyles(&m.textarea, &m.styles)
 	m.ticker.style = lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.Warning))
 	// Rebuild glamour renderer
-	if m.width > 4 {
-		m.renderer = newGlamourRenderer(m.width - 4)
+	cw := m.chatWidth()
+	if cw > 4 {
+		m.renderer = newGlamourRenderer(cw - 4)
 	}
 	// Mark all messages for re-render (new theme = new styles)
 	m.renderCacheValid = false

@@ -1061,6 +1061,7 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 		Type: "stream_content",
 		TS:   time.Now().Unix(),
 		Progress: &WsProgressPayload{
+			ChatID:                 "web:" + chatID,
 			StreamContent:          content,
 			ReasoningStreamContent: reasoning,
 		},
@@ -1877,6 +1878,7 @@ func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) 
 		Type: "stream_content",
 		TS:   time.Now().Unix(),
 		Progress: &WsProgressPayload{
+			ChatID:                 "cli:" + chatID,
 			StreamContent:          content,
 			ReasoningStreamContent: reasoning,
 		},

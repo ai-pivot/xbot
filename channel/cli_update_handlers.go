@@ -712,6 +712,14 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 
 // handleInjectedUserMsg processes user messages injected by the agent (e.g. bg task completion).
 func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
+	// Filter by session: if chatID is set, only apply to matching session.
+	// Legacy messages (chatID="") are always applied for backward compat.
+	if msg.chatID != "" {
+		currentKey := m.channelName + ":" + m.chatID
+		if msg.chatID != currentKey {
+			return nil
+		}
+	}
 	m.messages = append(m.messages, cliMessage{
 		role:      "user",
 		content:   msg.content,
@@ -815,8 +823,21 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 	// if the server says the turn is done or gone, any saved state from
 	// restoreSession() is stale and must be discarded.
 	var cmds []tea.Cmd
+	var acceptProgress bool
+	if msg.activeProgress != nil && msg.activeProgress.Phase != "done" {
+		acceptProgress = true
+		// Cross-session guard: activeProgress from GetActiveProgress RPC
+		// should match the current session. If ChatID is set and doesn't
+		// match, treat as no active progress (fall through to default).
+		if msg.activeProgress.ChatID != "" {
+			currentKey := m.channelName + ":" + m.chatID
+			if msg.activeProgress.ChatID != currentKey {
+				acceptProgress = false
+			}
+		}
+	}
 	switch {
-	case msg.activeProgress != nil && msg.activeProgress.Phase != "done":
+	case acceptProgress:
 		// Turn is still active on the server. Use the server snapshot regardless
 		// of whether restoreSession() also restored state — the server snapshot
 		// has the freshest progress data.
@@ -880,6 +901,15 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// a stale typing=true state, clear it — the server snapshot is authoritative.
 		if m.typing {
 			m.endAgentTurn(m.agentTurnID)
+		}
+		// Independent guard: clear stale progress that restoreSession() may have
+		// restored from a previous visit. The session switch handler sets typing=false
+		// before this async handler runs, so endAgentTurn's typing guard above may
+		// not fire. But progress can still be non-nil → renderProgressBlock would
+		// show a phantom progress block.
+		if m.progress != nil {
+			m.progress = nil
+			m.renderCacheValid = false
 		}
 		// Reload history to pick up messages that arrived while we were viewing
 		// another session (e.g. the assistant's final reply was filtered out by

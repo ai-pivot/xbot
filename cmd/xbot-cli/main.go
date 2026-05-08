@@ -1605,6 +1605,17 @@ func main() {
 		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *channel.CLIProgressPayload {
 			return backend.GetActiveProgress(channelName, chatID)
 		}
+		cliCfg.SessionsDeleteFn = func(channelName, chatID string) error {
+			if backend.IsRemote() {
+				_, err := backend.CallRPC("delete_chat", map[string]string{
+					"channel": channelName,
+					"chat_id": chatID,
+				})
+				return err
+			}
+			cs := sqlite.NewChatService(app.db.Conn())
+			return cs.DeleteChat(channelName, cliSenderID, chatID)
+		}
 		cliCfg.AgentSessionDumpFn = func(chatID string) ([]channel.HistoryMessage, error) {
 			// Try in-memory first (running sessions)
 			dump, ok := backend.GetAgentSessionDumpByFullKey(chatID)
@@ -1702,7 +1713,7 @@ func main() {
 			// Register OnInjectUserMessage callback for bg task notifications
 			app.backend.OnInjectUserMessage(func(content string) {
 				defer clipanic.Recover("main.remote.OnInjectUserMessage", content, false)
-				cliCh.InjectUserMessage(content)
+				cliCh.InjectUserMessage("", content)
 			})
 			// Inject remote bg task callbacks (BgTaskManager is nil in remote mode)
 			bgSessionKey := "cli:" + cliCfg.ChatID

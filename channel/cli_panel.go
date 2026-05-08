@@ -963,10 +963,16 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
 					m.restoreSession() // restore target session state (or reset to idle)
+					m.typing = false
+					m.inputReady = true
+					m.progress = nil
+					m.iterationHistory = nil
+					m.invalidateProgressHistoryCache()
+					m.messageQueue = nil
+					m.queueEditing = false
 					// Close panel first
 					m.panelMode = ""
 					m.panelSessionItems = nil
-					m.relayoutViewport()
 					if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 						m.suLoading = true
 						m.splashFrame = 0
@@ -994,10 +1000,15 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
 					m.restoreSession() // restore target session state (or reset to idle)
-					// Close panel first
+					m.typing = false
+					m.inputReady = true
+					m.progress = nil
+					m.iterationHistory = nil
+					m.invalidateProgressHistoryCache()
+					m.messageQueue = nil
+					m.queueEditing = false
 					m.panelMode = ""
 					m.panelSessionItems = nil
-					m.relayoutViewport()
 					if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 						m.suLoading = true
 						m.splashFrame = 0
@@ -3285,10 +3296,12 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.restoreSession()
 		// Ensure clean state — restored session may have stale typing=true
 		m.typing = false
+		m.inputReady = true
 		m.progress = nil
+		m.iterationHistory = nil
+		m.invalidateProgressHistoryCache()
 		m.messageQueue = nil
 		m.queueEditing = false
-		m.relayoutViewport()
 		m.showTempStatus(fmt.Sprintf("Created session: %s", name))
 	})
 	return nil
@@ -3296,13 +3309,25 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 
 // deleteLocalSession deletes the selected session and switches to default if active.
 func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
+	// 1. Remove from local JSON file (for local dir sessions).
 	ds, err := loadDirSessions(m.workDir)
 	if err != nil {
 		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
 		return
 	}
-	if err := ds.removeSession(entry.Label); err != nil {
-		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+	localRemoved := false
+	if err := ds.removeSession(entry.Label); err == nil {
+		localRemoved = true
+	}
+	// 2. Notify backend to clean up DB (tenant, messages, etc.).
+	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
+		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
+			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session cleanup failed")
+		}
+	}
+	// 3. If backend removed but local JSON didn't have it, still show success.
+	if !localRemoved && (m.channel == nil || m.channel.config.SessionsDeleteFn == nil) {
+		m.showTempStatus(fmt.Sprintf("Not found: %s", entry.Label))
 		return
 	}
 	// If we deleted the active session, switch to default
@@ -3316,8 +3341,6 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.restoreSession()
 	}
 	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
-	// Refresh sessions panel
-	m.openSessionsPanel()
 }
 
 // switchToSession switches to the given session entry directly (used by sidebar click).
@@ -3336,10 +3359,12 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			// Ensure typing is cleared — the restored session may have stale
 			// typing=true from a completed turn. Engine will re-set via turnDone.
 			m.typing = false
+			m.inputReady = true
 			m.progress = nil
+			m.iterationHistory = nil
+			m.invalidateProgressHistoryCache()
 			m.messageQueue = nil
 			m.queueEditing = false
-			m.relayoutViewport()
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 				m.suLoading = true
 				m.splashFrame = 0
@@ -3361,10 +3386,12 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			m.invalidateAllCache(false)
 			m.restoreSession()
 			m.typing = false
+			m.inputReady = true
 			m.progress = nil
+			m.iterationHistory = nil
+			m.invalidateProgressHistoryCache()
 			m.messageQueue = nil
 			m.queueEditing = false
-			m.relayoutViewport()
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 				m.suLoading = true
 				m.splashFrame = 0

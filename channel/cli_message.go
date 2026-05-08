@@ -773,11 +773,14 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		// Intermediate text messages (e.g. thinking content) arrive while the agent
 		// is still running; clearing progress here would hide the progress panel
 		// and make it look like the turn ended prematurely.
+		// IMPORTANT: Do NOT fallback to m.progress.ReasoningStreamContent.
+		// ReasoningStreamContent is a streaming accumulator with no per-iteration
+		// boundary. When handleAgentMessage arrives after the next structured
+		// progress has advanced m.progress.Iteration, ReasoningStreamContent may
+		// still contain the previous iteration's content — causing the previous
+		// iteration's reasoning to be misattributed to m.reasoningByIter[newIter].
 		if turnID == m.agentTurnID && m.progress != nil {
 			reasoning := m.progress.Reasoning
-			if reasoning == "" {
-				reasoning = m.progress.ReasoningStreamContent
-			}
 			if reasoning != "" {
 				m.lastReasoning = reasoning
 				if m.reasoningByIter == nil {
@@ -1020,8 +1023,20 @@ func (m *cliModel) renderProgressBlock() string {
 	if !m.typing && m.progress == nil {
 		return ""
 	}
+	// Cross-session guard: if progress payload carries a ChatID that doesn't match
+	// the currently viewed session, it's stale — discard it entirely. This prevents
+	// phantom progress blocks when switching sessions while another session's agent
+	// is still processing.
+	if m.progress != nil && m.progress.ChatID != "" {
+		currentKey := m.channelName + ":" + m.chatID
+		if m.progress.ChatID != currentKey {
+			m.progress = nil
+			m.typing = false
+			return ""
+		}
+	}
 
-	bubbleWidth := m.width - 4
+	bubbleWidth := m.chatWidth() - 4
 	if bubbleWidth < 10 {
 		bubbleWidth = 10
 	}
@@ -1494,7 +1509,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 			overhead := lipgloss.Width(line) + 2 // +2 for ": "
 			descW := maxWidth - overhead
 			if descW > 0 {
-				line += ": " + truncateToWidth(sa.Desc, descW)
+				line += ": " + truncateToWidth(strings.ReplaceAll(strings.ReplaceAll(sa.Desc, "\n", " "), "\r", ""), descW)
 			}
 		}
 		sb.WriteString(style.Render(line))
@@ -1514,7 +1529,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 // renderHelpPanel 渲染格式化的帮助面板（第 4 轮）。
 // 使用 lipgloss 边框 + 分组布局 + 状态图标，替代纯文本。
 func (m *cliModel) renderHelpPanel() string {
-	contentWidth := m.width - 4
+	contentWidth := m.chatWidth() - 4
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
@@ -1676,11 +1691,13 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	s := &m.styles
 	var sb strings.Builder
 	contentWidth := m.chatWidth() - 4
+	cw := m.chatWidth()
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
 	streamingLabelStyle := s.StreamingLabel
-	systemMsgStyle := s.SystemMsg
-	errorMsgStyle := s.ErrorMsg
+	// Override style widths to chatWidth (sidebar may be open, reducing available space)
+	systemMsgStyle := s.SystemMsg.Width(cw)
+	errorMsgStyle := s.ErrorMsg.Width(cw - 4)
 
 	// 渲染 Markdown（assistant 消息 + 带 markdown 标记的 system 消息）
 	var rendered string
@@ -1689,7 +1706,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// Truncate to glamour wrap width to prevent wrapping.
 		preprocessed := msg.content
 		if msg.role == "assistant" {
-			preprocessed = renderMermaidBlocks(msg.content, m.width-4)
+			preprocessed = renderMermaidBlocks(msg.content, m.chatWidth()-4)
 		}
 		var err error
 		rendered, err = m.renderer.Render(preprocessed)
@@ -1705,8 +1722,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	switch msg.role {
 	case "tool_summary":
-		// §20 使用缓存样式
-		toolSummaryStyle := s.ToolSummary
+		// §20 使用缓存样式（override width to chatWidth for sidebar compat）
+		toolSummaryStyle := s.ToolSummary.Width(cw - 4)
 		toolHeaderStyle := s.ToolHeader
 		toolItemStyle := s.ToolItem
 		toolErrorItemStyle := s.ToolErrorItem
@@ -1994,13 +2011,13 @@ func (m *cliModel) setViewportContent(content string) {
 	// Deduplicate: skip if content and width haven't changed.
 	// During resize storms or high-frequency ticks (busy state), this prevents
 	// O(N*W) hardWrapRunes from running every 100ms on the same content.
-	if content == m.lastViewportContent && m.width == m.lastViewportWidth && m.ready {
+	if content == m.lastViewportContent && m.chatWidth() == m.lastViewportWidth && m.ready {
 		return
 	}
 	m.lastViewportContent = content
-	m.lastViewportWidth = m.width
+	m.lastViewportWidth = m.chatWidth()
 
-	if m.width > 0 {
+	if m.chatWidth() > 0 {
 		// Two-tier wrap: find the cachedHistory boundary in content.
 		// The history portion is stable (doesn't change between ticks) — reuse
 		// its wrapped version to avoid O(N*W) hardWrapRunes on the growing history.
@@ -2009,7 +2026,7 @@ func (m *cliModel) setViewportContent(content string) {
 			historyEnd = len(m.cachedHistory)
 		}
 
-		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == m.width {
+		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == m.chatWidth() {
 			// Fast path: reuse wrapped history, only wrap the dynamic suffix
 			wrappedHistory := m.cachedWrappedHistory
 			dynamicPart := content[historyEnd:]
@@ -2024,7 +2041,7 @@ func (m *cliModel) setViewportContent(content string) {
 							line = trimmed
 						}
 					}
-					wrappedDynamic = append(wrappedDynamic, strings.Split(hardWrapRunes(line, m.width), "\n")...)
+					wrappedDynamic = append(wrappedDynamic, strings.Split(hardWrapRunes(line, m.chatWidth()), "\n")...)
 				}
 			}
 			content = wrappedHistory + strings.Join(wrappedDynamic, "\n")
@@ -2052,7 +2069,7 @@ func (m *cliModel) setViewportContent(content string) {
 						line = trimmed
 					}
 				}
-				wrappedLines := strings.Split(hardWrapRunes(line, m.width), "\n")
+				wrappedLines := strings.Split(hardWrapRunes(line, m.chatWidth()), "\n")
 				if i < historyLineCount {
 					wrappedHistoryParts = append(wrappedHistoryParts, wrappedLines...)
 				}
@@ -2063,7 +2080,7 @@ func (m *cliModel) setViewportContent(content string) {
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
 				m.cachedWrappedHistoryRaw = m.cachedHistory
-				m.cachedWrappedHistoryWidth = m.width
+				m.cachedWrappedHistoryWidth = m.chatWidth()
 			}
 		}
 	}
@@ -2180,7 +2197,7 @@ func (m *cliModel) appendNewMessagesToCache() {
 	if len(m.msgLineOffsets) > 0 {
 		// Approximate: use the line count of cachedHistory at current width.
 		// This is an estimate but sufficient for msgLineOffsets (used for Ctrl+E folding).
-		runningLines = wrappedLineCount(m.cachedHistory, m.width)
+		runningLines = wrappedLineCount(m.cachedHistory, m.chatWidth())
 	}
 
 	startIdx := m.cachedMsgCount
@@ -2190,9 +2207,9 @@ func (m *cliModel) appendNewMessagesToCache() {
 		rendered := m.renderMessage(msg)
 		msg.rendered = rendered
 		msg.dirty = false
-		msg.renderWidth = m.width
+		msg.renderWidth = m.chatWidth()
 		sb.WriteString(rendered)
-		runningLines += wrappedLineCount(rendered, m.width)
+		runningLines += wrappedLineCount(rendered, m.chatWidth())
 	}
 
 	m.cachedHistory = sb.String()
@@ -2223,12 +2240,12 @@ func (m *cliModel) fullRebuild() {
 	for i := range m.messages[:splitIdx] {
 		// §19 记录消息在 viewport 折行后内容中的起始行号
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
-		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != m.width
+		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != m.chatWidth()
 		if needsRender {
 			rendered := m.renderMessage(&m.messages[i])
 			m.messages[i].rendered = rendered
 			m.messages[i].dirty = false
-			m.messages[i].renderWidth = m.width
+			m.messages[i].renderWidth = m.chatWidth()
 		}
 		// Build per-message chunk for line counting (avoids calling
 		// historyBuf.String() on every iteration — the O(N²) full
@@ -2242,7 +2259,7 @@ func (m *cliModel) fullRebuild() {
 		}
 		historyBuf.WriteString(m.messages[i].rendered)
 		// 累加本消息（含搜索指示条）在折行后占用的行数
-		runningLines += wrappedLineCount(chunk, m.width)
+		runningLines += wrappedLineCount(chunk, m.chatWidth())
 	}
 
 	m.cachedHistory = historyBuf.String()
@@ -2339,7 +2356,7 @@ func (m *cliModel) enterSearchMode() {
 	ti.Prompt = "/"
 	ti.CharLimit = 100
 	ti.Focus()
-	w := m.width - 20
+	w := m.chatWidth() - 20
 	if w < 20 {
 		w = 20
 	}

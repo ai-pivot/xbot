@@ -1242,7 +1242,7 @@ func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	}
 	switch c := ch.(type) {
 	case *channel.CLIChannel:
-		c.InjectUserMessage(content)
+		c.InjectUserMessage(channelName+":"+chatID, content)
 	case *channel.RemoteCLIChannel:
 		c.InjectUserMessage(chatID, content)
 	}
