@@ -618,15 +618,17 @@ type CLIChannelConfig struct {
 	PaletteContributor   PaletteContributor                                                                                             // supplies external commands for command palette
 	SidebarWidthOverride int                                                                                                            // --sidebar-width N (0 = use setting/default)
 	NoSidebar            bool                                                                                                           // --no-sidebar
+	TodoManager          *tools.TodoManager                                                                                             // per-session todo persistence
 }
 
 type AgentPanelEntry struct {
-	Role       string
-	Instance   string
-	Running    bool
-	Background bool
-	Task       string // one-shot subagent task (empty for interactive)
-	Preview    string // latest progress/last reply summary for panel display
+	Role         string
+	Instance     string
+	Running      bool
+	Background   bool
+	Task         string // one-shot subagent task (empty for interactive)
+	Preview      string // latest progress/last reply summary for panel display
+	ParentChatID string // parent session chatID (for session isolation filtering)
 }
 
 // SessionPanelEntry represents a session item in the Sessions panel.
@@ -746,6 +748,7 @@ type Subscription struct {
 	BaseURL         string
 	APIKey          string
 	Model           string
+	MaxContext      int
 	MaxOutputTokens int
 	ThinkingMode    string
 	Active          bool

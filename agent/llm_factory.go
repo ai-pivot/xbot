@@ -297,6 +297,40 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 	return nil
 }
 
+// SetSessionLLM sets the LLM client for a specific session (senderID:chatID) only,
+// WITHOUT updating the user-level cache. This allows different sessions to have
+// different active subscriptions/models without affecting each other.
+// If the session already has a cached client, it is replaced.
+func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubscription) error {
+	if chatID == "" || sub == nil {
+		return fmt.Errorf("SetSessionLLM: chatID and sub are required")
+	}
+	cfg := &sqlite.UserLLMConfig{
+		Provider:        sub.Provider,
+		BaseURL:         sub.BaseURL,
+		APIKey:          sub.APIKey,
+		Model:           sub.Model,
+		MaxContext:      sub.MaxContext,
+		MaxOutputTokens: sub.MaxOutputTokens,
+		ThinkingMode:    sub.ThinkingMode,
+	}
+	client, model := f.createClient(cfg)
+	if client == nil {
+		return fmt.Errorf("failed to create LLM client for session %s", chatID)
+	}
+
+	f.mu.Lock()
+	chatK := chatKey(senderID, chatID)
+	f.clients[chatK] = client
+	f.models[chatK] = model
+	f.maxContexts[chatK] = sub.MaxContext
+	f.maxOutputTokens[chatK] = sub.MaxOutputTokens
+	f.thinkingModes[chatK] = sub.ThinkingMode
+	f.mu.Unlock()
+
+	return nil
+}
+
 // SwitchModel switches a user's active model without changing the subscription/LLM client.
 // Persists to DB subscription via the RPC handler. This method updates in-memory cache
 // and clears per-chat caches so GetLLMForChat returns the new model.
@@ -804,6 +838,7 @@ func configSubToLLMSubscription(cs config.SubscriptionConfig) *sqlite.LLMSubscri
 		BaseURL:         cs.BaseURL,
 		APIKey:          cs.APIKey,
 		Model:           cs.Model,
+		MaxContext:      cs.MaxContext,
 		MaxOutputTokens: cs.MaxOutputTokens,
 		ThinkingMode:    cs.ThinkingMode,
 	}

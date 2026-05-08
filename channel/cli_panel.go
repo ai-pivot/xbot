@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"xbot/internal/textarea"
@@ -82,12 +83,13 @@ func (m *cliModel) popPanel() bool {
 
 // panelAgentEntry represents an interactive sub-agent session in the unified panel.
 type panelAgentEntry struct {
-	Role       string // role name (e.g. "explore")
-	Instance   string // instance ID
-	Running    bool   // true = currently executing
-	Background bool   // true = background mode
-	Task       string // one-shot subagent task description
-	Preview    string // latest progress/last reply summary
+	Role         string // role name (e.g. "explore")
+	Instance     string // instance ID
+	Running      bool   // true = currently executing
+	Background   bool   // true = background mode
+	Task         string // one-shot subagent task description
+	Preview      string // latest progress/last reply summary
+	ParentChatID string // parent session chatID for session isolation
 }
 
 // renderSelLine renders a settings panel selected row left-aligned to the given width.
@@ -602,12 +604,23 @@ func (m *cliModel) openBgTasksPanel() {
 	// Fetch tasks — use callback (works for both local and remote mode)
 	m.panelBgTasks = m.listBgTasks()
 
+	// Fetch agents and filter by current session
+	m.panelBgAgents = nil
+	if m.agentListFn != nil {
+		allAgents := m.agentListFn()
+		for _, ag := range allAgents {
+			if ag.ParentChatID == "" || ag.ParentChatID == m.chatID {
+				m.panelBgAgents = append(m.panelBgAgents, ag)
+			}
+		}
+	}
+
 	m.panelBgCursor = 0
 	m.panelBgViewing = false
 	m.panelScrollY = 0
 	m.panelBgLogLines = nil
 	// Clamp cursor
-	totalItems := len(m.panelBgTasks)
+	totalItems := len(m.panelBgTasks) + len(m.panelBgAgents)
 	if totalItems == 0 {
 		m.panelBgCursor = -1
 	} else if m.panelBgCursor >= totalItems {
@@ -2452,6 +2465,13 @@ func (m *cliModel) applyQuickSwitch() {
 			{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: ""},
+			{Key: "sub_max_context", Label: "Max Context", Description: "Default max context tokens (0 = use global default)", Type: SettingTypeNumber, DefaultValue: "0"},
+			{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: "0"},
+			{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: "", Options: []SettingOption{
+				{Label: "Auto (default)", Value: ""},
+				{Label: "Enabled", Value: "enabled"},
+				{Label: "Disabled", Value: "disabled"},
+			}},
 		}
 		// Inject model list into combo for model field
 		if m.channel.modelLister != nil {
@@ -2472,14 +2492,19 @@ func (m *cliModel) applyQuickSwitch() {
 			if name == "" {
 				name = "unnamed"
 			}
+			maxCtx, _ := strconv.Atoi(values["sub_max_context"])
+			maxOut, _ := strconv.Atoi(values["sub_max_output_tokens"])
 			sub := &Subscription{
-				ID:       fmt.Sprintf("sub_%d", time.Now().UnixNano()),
-				Name:     name,
-				Provider: values["sub_provider"],
-				BaseURL:  values["sub_base_url"],
-				APIKey:   values["sub_api_key"],
-				Model:    values["sub_model"],
-				Active:   false,
+				ID:              fmt.Sprintf("sub_%d", time.Now().UnixNano()),
+				Name:            name,
+				Provider:        values["sub_provider"],
+				BaseURL:         values["sub_base_url"],
+				APIKey:          values["sub_api_key"],
+				Model:           values["sub_model"],
+				MaxContext:      maxCtx,
+				MaxOutputTokens: maxOut,
+				ThinkingMode:    values["sub_thinking_mode"],
+				Active:          false,
 			}
 			if err := m.subscriptionMgr.Add(sub); err != nil {
 				m.showTempStatus(fmt.Sprintf("Failed to add subscription: %v", err))
@@ -2576,6 +2601,13 @@ func (m *cliModel) editQuickSwitchEntry() {
 		{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeCombo, DefaultValue: target.Model},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: target.BaseURL},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: target.APIKey},
+		{Key: "sub_max_context", Label: "Max Context", Description: "Default max context tokens (0 = use global default)", Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxContext)},
+		{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxOutputTokens)},
+		{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: target.ThinkingMode, Options: []SettingOption{
+			{Label: "Auto (default)", Value: ""},
+			{Label: "Enabled", Value: "enabled"},
+			{Label: "Disabled", Value: "disabled"},
+		}},
 	}
 	// Inject model list into combo for model field
 	if m.channel.modelLister != nil {
@@ -2589,11 +2621,14 @@ func (m *cliModel) editQuickSwitchEntry() {
 		}
 	}
 	editValues := map[string]string{
-		"sub_name":     target.Name,
-		"sub_provider": target.Provider,
-		"sub_model":    target.Model,
-		"sub_base_url": target.BaseURL,
-		"sub_api_key":  target.APIKey,
+		"sub_name":              target.Name,
+		"sub_provider":          target.Provider,
+		"sub_model":             target.Model,
+		"sub_base_url":          target.BaseURL,
+		"sub_api_key":           target.APIKey,
+		"sub_max_context":       strconv.Itoa(target.MaxContext),
+		"sub_max_output_tokens": strconv.Itoa(target.MaxOutputTokens),
+		"sub_thinking_mode":     target.ThinkingMode,
 	}
 	m.quickSwitchMode = "" // close overlay while editing
 	m.openSettingsPanel(editSchema, editValues, func(values map[string]string) {
@@ -2605,14 +2640,19 @@ func (m *cliModel) editQuickSwitchEntry() {
 		if isMaskedAPIKey(apiKey) {
 			apiKey = target.APIKey
 		}
+		maxCtx, _ := strconv.Atoi(values["sub_max_context"])
+		maxOut, _ := strconv.Atoi(values["sub_max_output_tokens"])
 		updated := &Subscription{
-			ID:       target.ID,
-			Name:     values["sub_name"],
-			Provider: values["sub_provider"],
-			Model:    values["sub_model"],
-			BaseURL:  values["sub_base_url"],
-			APIKey:   apiKey,
-			Active:   target.Active,
+			ID:              target.ID,
+			Name:            values["sub_name"],
+			Provider:        values["sub_provider"],
+			Model:           values["sub_model"],
+			BaseURL:         values["sub_base_url"],
+			APIKey:          apiKey,
+			MaxContext:      maxCtx,
+			MaxOutputTokens: maxOut,
+			ThinkingMode:    values["sub_thinking_mode"],
+			Active:          target.Active,
 		}
 		if err := m.subscriptionMgr.Update(target.ID, updated); err != nil {
 			m.showTempStatus(fmt.Sprintf("Failed to update: %v", err))
@@ -3358,9 +3398,20 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 	switch entry.Type {
 	case "main":
 		if entry.ID != m.chatID {
+			// Close AskUser panel if it belongs to a different session
+			if m.panelMode == "askuser" && m.askUserSession != entry.ID {
+				m.panelMode = ""
+				m.panelItems = nil
+				m.relayoutViewport()
+			}
 			m.saveCurrentSession()
 			m.chatID = entry.ID
 			m.channelName = entry.Channel
+			// Update background task session key for isolation
+			if m.channel != nil {
+				m.channel.bgSessionKey = "cli:" + entry.ID
+				m.channel.updateBgTaskCountFn()
+			}
 			m.messages = nil
 			m.lastTokenUsage = nil
 			m.invalidateAllCache(false)
@@ -3387,9 +3438,20 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			agentChatID += ":" + entry.Instance
 		}
 		if agentChatID != m.chatID {
+			// Close AskUser panel if it doesn't belong to the new agent session
+			if m.panelMode == "askuser" && m.askUserSession != agentChatID {
+				m.panelMode = ""
+				m.panelItems = nil
+				m.relayoutViewport()
+			}
 			m.saveCurrentSession()
 			m.chatID = agentChatID
 			m.channelName = "agent"
+			// Update background task session key for isolation
+			if m.channel != nil {
+				m.channel.bgSessionKey = "agent:" + agentChatID
+				m.channel.updateBgTaskCountFn()
+			}
 			m.messages = nil
 			m.lastTokenUsage = nil
 			m.invalidateAllCache(false)

@@ -1239,6 +1239,7 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		} else {
 			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
+			m.activeSubID = done.subID
 			// Refresh values cache so GetCurrentValues() reflects the new subscription.
 			if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
 				m.channel.config.RefreshValuesCache()

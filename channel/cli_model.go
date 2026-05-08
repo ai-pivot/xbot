@@ -276,6 +276,14 @@ type sessionState struct {
 	typewriterTickActive bool
 	reasoningByIter      map[int]string
 	pendingUserMsg       *cliMessage // user message sent but not yet confirmed in DB
+	// Per-session LLM configuration (survives session switches)
+	activeSubscriptionID string // subscription ID active in this session
+	activeModel          string // model active in this session (may differ from subscription default)
+	// Per-session input state (survives session switches)
+	textareaValue   string   // current textarea content
+	inputHistory    []string // sent message history for Up/Down browsing
+	inputHistoryIdx int      // current position in input history (-1 = not browsing)
+	inputDraft      string   // draft text before entering history browsing
 }
 
 // sessionKey returns the map key for the current session.
@@ -309,6 +317,16 @@ func (m *cliModel) saveCurrentSession() {
 		typewriterTickActive: m.typewriterTickActive,
 		reasoningByIter:      m.reasoningByIter,
 		pendingUserMsg:       m.pendingUserMsg,
+		activeSubscriptionID: m.activeSubID,
+		activeModel:          m.cachedModelName,
+		textareaValue:        m.textarea.Value(),
+		inputHistory:         m.inputHistory,
+		inputHistoryIdx:      m.inputHistoryIdx,
+		inputDraft:           m.inputDraft,
+	}
+	// Persist todo list for current session
+	if m.todoManager != nil {
+		_ = m.todoManager.SaveToFile(key)
 	}
 }
 
@@ -335,6 +353,16 @@ func (m *cliModel) restoreSession() {
 		m.typewriterTickActive = saved.typewriterTickActive
 		m.reasoningByIter = saved.reasoningByIter
 		m.pendingUserMsg = saved.pendingUserMsg
+		m.activeSubID = saved.activeSubscriptionID
+		m.cachedModelName = saved.activeModel
+		m.textarea.SetValue(saved.textareaValue)
+		m.inputHistory = saved.inputHistory
+		m.inputHistoryIdx = saved.inputHistoryIdx
+		m.inputDraft = saved.inputDraft
+		// Load todo list for the restored session
+		if m.todoManager != nil {
+			_ = m.todoManager.LoadFromFile(key)
+		}
 		delete(m.savedSessions, key) // clean up
 	} else {
 		// No saved state — reset to idle (NOT cancelled)
@@ -714,9 +742,12 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel // back-reference to owning channel (set during Start)
-	cachedModelName string      // cached model name for View() performance
-	modelCount      int         // cached model list length for View() performance
+	channel         *CLIChannel        // back-reference to owning channel (set during Start)
+	cachedModelName string             // cached model name for View() performance
+	activeSubID     string             // active subscription ID for current session
+	todoManager     *tools.TodoManager // per-session todo persistence
+	askUserSession  string             // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount      int                // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *CLITokenUsage // last known token usage from progress events

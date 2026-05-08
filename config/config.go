@@ -274,6 +274,7 @@ type SubscriptionConfig struct {
 	BaseURL         string `json:"base_url"`
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
+	MaxContext      int    `json:"max_context,omitempty"`       // 0 = use default
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (8192)
 	ThinkingMode    string `json:"thinking_mode,omitempty"`     // "" = auto, "enabled", "disabled"
 	Active          bool   `json:"active"`
@@ -406,8 +407,13 @@ func mergeJSONPreserveUnknown(existing, structData []byte) ([]byte, error) {
 
 // deepMergeJSON 对两个 JSON 值做深度合并。
 // 如果两者都是 JSON object，递归合并（structVal 的 key 覆盖 existingVal）。
+// 如果 structVal 是 JSON null（Go nil 指针/接口零值），保留 existing 值（防止覆盖）。
 // 否则返回 structVal（直接替换）。
 func deepMergeJSON(existing, structVal json.RawMessage) (json.RawMessage, error) {
+	// structVal 为 null 时保留现有值，防止 Go 零值覆盖磁盘数据
+	if len(structVal) == 0 || string(structVal) == "null" {
+		return existing, nil
+	}
 	var existingObj, structObj map[string]json.RawMessage
 	existingIsObj := json.Unmarshal(existing, &existingObj) == nil
 	structIsObj := json.Unmarshal(structVal, &structObj) == nil

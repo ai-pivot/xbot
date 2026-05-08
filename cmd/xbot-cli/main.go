@@ -191,7 +191,8 @@ func saveCLIConfig(cfg *config.Config) error {
 	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
 	// Only write credentials to config.json if there are no DB subscriptions
 	// (first-run / legacy mode where config.json is the only data source).
-	if len(merged.Subscriptions) == 0 {
+	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
+	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
 		merged.LLM.Provider = cfg.LLM.Provider
 		merged.LLM.BaseURL = cfg.LLM.BaseURL
 		merged.LLM.APIKey = cfg.LLM.APIKey
@@ -2406,14 +2407,16 @@ func (m *configSubscriptionManager) List(_ string) ([]channel.Subscription, erro
 	result := make([]channel.Subscription, len(m.cfg.Subscriptions))
 	for i, s := range m.cfg.Subscriptions {
 		result[i] = channel.Subscription{
-			ID:       s.ID,
-			Name:     s.Name,
-			Provider: s.Provider,
-			BaseURL:  s.BaseURL,
-			APIKey:   s.APIKey,
-			Model:    s.Model,
-			Active:   s.Active,
-			// MaxOutputTokens/ThinkingMode not available from config seeds
+			ID:              s.ID,
+			Name:            s.Name,
+			Provider:        s.Provider,
+			BaseURL:         s.BaseURL,
+			APIKey:          s.APIKey,
+			Model:           s.Model,
+			MaxContext:      s.MaxContext,
+			MaxOutputTokens: s.MaxOutputTokens,
+			ThinkingMode:    s.ThinkingMode,
+			Active:          s.Active,
 		}
 	}
 	return result, nil
@@ -2423,11 +2426,16 @@ func (m *configSubscriptionManager) GetDefault(_ string) (*channel.Subscription,
 	for _, s := range m.cfg.Subscriptions {
 		if s.Active {
 			return &channel.Subscription{
-				ID:       s.ID,
-				Name:     s.Name,
-				Provider: s.Provider,
-				Model:    s.Model,
-				Active:   true,
+				ID:              s.ID,
+				Name:            s.Name,
+				Provider:        s.Provider,
+				BaseURL:         s.BaseURL,
+				APIKey:          s.APIKey,
+				Model:           s.Model,
+				MaxContext:      s.MaxContext,
+				MaxOutputTokens: s.MaxOutputTokens,
+				ThinkingMode:    s.ThinkingMode,
+				Active:          true,
 			}, nil
 		}
 	}
@@ -2436,13 +2444,16 @@ func (m *configSubscriptionManager) GetDefault(_ string) (*channel.Subscription,
 
 func (m *configSubscriptionManager) Add(sub *channel.Subscription) error {
 	m.cfg.Subscriptions = append(m.cfg.Subscriptions, config.SubscriptionConfig{
-		ID:       sub.ID,
-		Name:     sub.Name,
-		Provider: sub.Provider,
-		BaseURL:  sub.BaseURL,
-		APIKey:   sub.APIKey,
-		Model:    sub.Model,
-		Active:   sub.Active,
+		ID:              sub.ID,
+		Name:            sub.Name,
+		Provider:        sub.Provider,
+		BaseURL:         sub.BaseURL,
+		APIKey:          sub.APIKey,
+		Model:           sub.Model,
+		MaxContext:      sub.MaxContext,
+		MaxOutputTokens: sub.MaxOutputTokens,
+		ThinkingMode:    sub.ThinkingMode,
+		Active:          sub.Active,
 	})
 	return m.saveFn()
 }
@@ -2521,6 +2532,7 @@ func (m *configSubscriptionManager) Update(id string, sub *channel.Subscription)
 				m.cfg.Subscriptions[i].APIKey = sub.APIKey
 			}
 			m.cfg.Subscriptions[i].Model = sub.Model
+			m.cfg.Subscriptions[i].MaxContext = sub.MaxContext
 			m.cfg.Subscriptions[i].MaxOutputTokens = sub.MaxOutputTokens
 			m.cfg.Subscriptions[i].ThinkingMode = sub.ThinkingMode
 			// If modifying active subscription, sync cfg.LLM

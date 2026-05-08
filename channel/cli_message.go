@@ -862,6 +862,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 			if len(items) > 0 {
 				m.updateViewportContent()
+				m.askUserSession = m.chatID // bind AskUser to current session
 				m.openAskUserPanel(items, func(answers map[string]string) {
 					// Format answers as tool-call style message
 					var parts []string
