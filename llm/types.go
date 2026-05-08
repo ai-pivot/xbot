@@ -170,6 +170,34 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 	}
 	messages = messages[:n]
 
+	// Pass 5: Remove tool messages whose tool_call_id doesn't appear in any
+	// assistant message's tool_calls. Pass 2 (invalid JSON) and Pass 4
+	// (missing tool response) can strip tool_calls from assistant messages,
+	// leaving orphaned tool messages behind. DeepSeek rejects these with
+	// "Messages with role 'tool' must be a response to a preceding message
+	// with 'tool_calls'".
+	allToolCallIDs := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.Role == "assistant" {
+			for _, tc := range msg.ToolCalls {
+				allToolCallIDs[tc.ID] = true
+			}
+		}
+	}
+	n = 0
+	for _, msg := range messages {
+		if msg.Role == "tool" && !allToolCallIDs[msg.ToolCallID] {
+			log.WithFields(log.Fields{
+				"tool_name":    msg.ToolName,
+				"tool_call_id": msg.ToolCallID,
+			}).Warn("[SanitizeMessages] Stripping orphaned tool message (no matching tool_call in any assistant)")
+			continue
+		}
+		messages[n] = msg
+		n++
+	}
+	messages = messages[:n]
+
 	return messages
 }
 

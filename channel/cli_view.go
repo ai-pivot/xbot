@@ -293,9 +293,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	var status string
 	if m.typing || m.progress != nil {
 		thinkingStatusStyle := m.styles.ThinkingSt
-		progressStyle := m.styles.Progress
-		toolStyle := m.styles.Tool
-		status = thinkingStatusStyle.Render(m.renderProgressStatus(progressStyle, toolStyle))
+		status = thinkingStatusStyle.Render(m.renderProgressStatus())
 	} else if m.checkingUpdate {
 		status = m.styles.ThinkingSt.Render(m.locale.CheckingUpdates)
 	} else if completionsHint != "" {
@@ -380,7 +378,7 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 		h = 5
 	}
 
-	contentW := sw // content width = sidebarWidth; border + padding from SidebarBg style
+	contentW := sw - 4 // SidebarBg: Width(sw) includes border (2 cols) + Padding(0,1) (2 cols)
 
 	// Only render sections that have real content
 	var blocks []string
@@ -430,12 +428,17 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			if label == "" {
 				label = s.ID
 			}
-			maxLen := w - 7 // room for icon + label + " ×" delete button
-			if maxLen < 4 {
-				maxLen = 4
+			// Layout: " ○ label" + padding + " ×" = w columns total.
+			// ALL sessions reserve space for " ×" so that switching active/inactive
+			// never changes the label width (avoids re-truncation and wrapping).
+			deletePart := " ×"
+			deleteVisW := lipgloss.Width(deletePart)
+			maxLabelW := w - 3 - 1 - deleteVisW // " ○ " = 3 cols, 1 col min padding before ×
+			if maxLabelW < 1 {
+				maxLabelW = 1
 			}
-			if len(label) > maxLen {
-				label = label[:maxLen-1] + "…"
+			if lipgloss.Width(label) > maxLabelW {
+				label = truncateToWidth(label, maxLabelW)
 			}
 
 			isActive := i == currentIdx
@@ -446,19 +449,24 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				itemStyle = m.styles.SidebarActive
 			}
 
-			// Render: " ○ label" + right-aligned " ×"
-			// Calculate delete button position
 			labelPart := " " + icon + " " + label
-			deletePart := " ×"
-			deleteXStart := len(labelPart) // approximate: after label
-			deleteXEnd := deleteXStart + len(deletePart)
+			labelVisW := lipgloss.Width(labelPart)
+			padding := w - labelVisW - deleteVisW
+			if padding < 1 {
+				padding = 1
+			}
+
+			// × position (visual X within sidebar content area)
+			deleteX := labelVisW + padding
 
 			b.WriteString(itemStyle.Render(labelPart))
+			b.WriteString(strings.Repeat(" ", padding))
 			if !isActive {
 				b.WriteString(m.styles.TextMutedSt.Render(deletePart))
-				sidebarDeleteXStart = append(sidebarDeleteXStart, deleteXStart)
-				sidebarDeleteXEnd = append(sidebarDeleteXEnd, deleteXEnd)
+				sidebarDeleteXStart = append(sidebarDeleteXStart, deleteX)
+				sidebarDeleteXEnd = append(sidebarDeleteXEnd, deleteX+deleteVisW)
 			} else {
+				// Active: same layout but no × rendered or clickable
 				sidebarDeleteXStart = append(sidebarDeleteXStart, -1)
 				sidebarDeleteXEnd = append(sidebarDeleteXEnd, -1)
 			}
@@ -507,8 +515,16 @@ func (m *cliModel) renderSidebarActive() string {
 // sidebarCurrentIdx returns the index of the currently active session.
 func (m *cliModel) sidebarCurrentIdx() int {
 	entries := m.sidebarSessionEntries()
+	// Prioritize ID match over Active flag — Active can be stale
+	// (e.g. SessionsList callback hardcodes Active=true for main session).
 	for i, e := range entries {
-		if e.Active || e.ID == m.chatID {
+		if e.ID == m.chatID {
+			return i
+		}
+	}
+	// Fallback to Active flag
+	for i, e := range entries {
+		if e.Active {
 			return i
 		}
 	}
@@ -872,7 +888,7 @@ var xbotLogo = []string{
 // renderSplash 渲染启动画面 — 品牌 logo + 版本号 + 加载动画
 func (m *cliModel) renderSplash() string {
 	// 中心化计算
-	screenW := m.width
+	screenW := m.chatWidth()
 	if screenW < 40 {
 		screenW = 40
 	}
@@ -970,7 +986,7 @@ func (m *cliModel) renderSplash() string {
 
 // renderSuLoading 渲染 /su 切换用户后的历史加载画面（复用 splash 动画帧）
 func (m *cliModel) renderSuLoading() string {
-	screenW := m.width
+	screenW := m.chatWidth()
 	if screenW < 40 {
 		screenW = 40
 	}
@@ -1218,11 +1234,8 @@ func padBetween(left, right string, width int) string {
 }
 
 // renderProgressStatus renders a compact one-line status for the status bar.
-func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style) string {
-	s := &m.styles // §20
+func (m *cliModel) renderProgressStatus() string {
 	var sb strings.Builder
-	sb.WriteString(s.Progress.Render(m.ticker.view()))
-	sb.WriteString(" ")
 
 	if m.progress != nil {
 		fmt.Fprintf(&sb, "#%d", m.progress.Iteration)

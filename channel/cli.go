@@ -666,10 +666,11 @@ func (c *CLIChannel) SetCheckpointState(state *hooks.CheckpointState) {
 
 // InjectUserMessage 通知 CLI 有 user 消息被 agent 注入（如 bg task 完成通知）。
 // 在 CLI 界面上显示为一条 user 消息，和用户手动输入的效果一致。
-func (c *CLIChannel) InjectUserMessage(content string) {
+// chatID is the target session's chatID (used for session filtering). Empty = legacy, always apply.
+func (c *CLIChannel) InjectUserMessage(chatID, content string) {
 	if c.program != nil {
 		select {
-		case c.asyncCh <- cliInjectedUserMsg{content: content}:
+		case c.asyncCh <- cliInjectedUserMsg{content: content, chatID: chatID}:
 		default:
 		}
 	}

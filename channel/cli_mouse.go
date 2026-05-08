@@ -65,8 +65,12 @@ func (zb *mouseZoneBuilder) addX(yOffset, xStart, xEnd int, id string, index int
 
 // findZone returns the zone containing the given terminal Y and X coordinates.
 // When XStart/XEnd are negative, the zone spans the full row (X is ignored).
+// Iterates in reverse order so that later-registered (more specific) zones
+// take priority over earlier (broader) ones — e.g. × delete button over
+// the full-row session click zone.
 func (zb *mouseZoneBuilder) findZone(y, x int) (mouseZone, bool) {
-	for _, z := range zb.zones {
+	for i := len(zb.zones) - 1; i >= 0; i-- {
+		z := zb.zones[i]
 		if y >= z.YStart && y <= z.YEnd {
 			if z.XStart < 0 || (x >= z.XStart && x < z.XEnd) {
 				return z, true
@@ -788,6 +792,10 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 	// xShift: when sidebar is on the left, all middleBlock content is shifted right
 	xShift := 0
 	if showSidebar {
+		// SidebarBg has RoundedBorder (1 col) + Padding(0,1) (1 col) = 2 col
+		// offset before content area. Click zones are measured from
+		// content start, so add this offset for screen coordinates.
+		const sidebarContentOffset = 2
 		if m.sidebarPosition == "right" {
 			// sidebar on right: middleBlock starts at 0, sidebar starts at chatWidth
 			sbXStart := m.chatWidth()
@@ -798,7 +806,7 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 					zb.addX(relY+borderOffset, sbXStart, sbXEnd, "sidebarSession", sessionIdx)
 				}
 				if relY < len(sidebarDeleteXStart) && sidebarDeleteXStart[relY] >= 0 {
-					zb.addX(relY+borderOffset, sbXStart+sidebarDeleteXStart[relY], sbXStart+sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
+					zb.addX(relY+borderOffset, sbXStart+sidebarContentOffset+sidebarDeleteXStart[relY], sbXStart+sidebarContentOffset+sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
 				}
 			}
 			if sidebarNewSessionY >= 0 {
@@ -813,7 +821,7 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 					zb.addX(relY+borderOffset, 0, sbXEnd, "sidebarSession", sessionIdx)
 				}
 				if relY < len(sidebarDeleteXStart) && sidebarDeleteXStart[relY] >= 0 {
-					zb.addX(relY+borderOffset, sidebarDeleteXStart[relY], sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
+					zb.addX(relY+borderOffset, sidebarContentOffset+sidebarDeleteXStart[relY], sidebarContentOffset+sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
 				}
 			}
 			if sidebarNewSessionY >= 0 {

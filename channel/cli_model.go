@@ -905,6 +905,7 @@ type cliSwitchLLMDoneMsg struct {
 // cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
 type cliInjectedUserMsg struct {
 	content string
+	chatID  string // session key "channel:chatID", empty for legacy (always apply)
 }
 
 // cliUpdateCheckMsg 更新检查结果消息

@@ -208,6 +208,11 @@ func (m *cliModel) listLocalDirSessions() []SessionPanelEntry {
 	}
 	var entries []SessionPanelEntry
 	for _, s := range ds.sortedSessions() {
+		// Skip default session — it's already shown as the main session
+		// from sessionsListFn (backend). Listing it again would duplicate it.
+		if s.Name == defaultSessionName || s.ChatID == m.defaultChatID {
+			continue
+		}
 		active := s.ChatID == m.chatID
 		entries = append(entries, SessionPanelEntry{
 			ID:      s.ChatID,
