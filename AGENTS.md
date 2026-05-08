@@ -20,6 +20,7 @@
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build
 - `docs/agent/plugin.md` — plugin system architecture, runtimes, integration
+- `docs/agent/worktree.md` — git worktree-based multi-agent workspace isolation, WorktreeRegistry, AutoDetectAndInit, peer discovery, path security
 
 ## Gotchas — MUST READ Before Any Code Change
 
@@ -155,6 +156,14 @@
 - `exec.ExitError.ExitCode()` is cross-platform; avoid `syscall.WaitStatus` type assertion.
 - `signal.Notify(sigCh, syscall.SIGTSTP)` doesn't compile on Windows — use build-tagged files.
 - PowerShell env output is newline-delimited, not null-delimited.
+
+### Worktree
+- **Primary registration must NOT check dirty tree.** `WorktreeTool.init` and `AutoDetectAndInit` both skip dirty check when registering as primary (first agent in repo). Only worktree creation requires a clean tree — `git worktree add` fails on dirty repos.
+- **AutoDetectAndInit runs in `processMessage` before `buildPrompt`.** Session CWD is updated before system prompt construction, so the agent sees the correct worktree path from the start.
+- **`IsWorktreeIsolated` overrides `isUnrestricted()`.** CLI mode (`sandbox="none"`) normally bypasses all path checks, but when `IsWorktreeIsolated=true`, `isUnrestricted()` returns `false` — path boundaries are enforced even for CLI sessions.
+- **Worktree paths must be outside main repo.** Git rejects `git worktree add` inside the main working tree. Paths are placed at `{repo}/../.xbot-worktrees/{role}-{instance}/`.
+- **Worktree creation is serialized via `GlobalWorktreeRegistry.mu`.** Two agents creating worktrees simultaneously would race on `.git/worktrees/` lockfiles.
+- **`go:embed embed_skills/*` auto-discovers new skills.** Adding a directory under `tools/embed_skills/` requires zero code changes — the skill is automatically available.
 
 ## Development Principles
 
