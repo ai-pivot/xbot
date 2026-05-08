@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"xbot/storage/sqlite"
 )
 
 // ParseSettingBool parses a boolean setting value.
@@ -1023,12 +1024,28 @@ func (m *cliModel) handleUsageCommand() {
 		sb.WriteString("No usage data recorded yet.\n")
 	}
 
-	// --- Daily breakdown (last 30 days) ---
-	if len(daily) > 0 {
-		sb.WriteString("\n## Daily Breakdown (last 30 days)\n\n")
-		sb.WriteString("| Date | Model | Input | Output | Cached | Cache%% | Calls |\n")
-		sb.WriteString("|------|-------|-------|--------|--------|--------|-------|\n")
-		for _, d := range daily {
+	// --- Today's usage by model ---
+	today := time.Now().Format("2006-01-02")
+	var todayEntries []sqlite.DailyTokenUsage
+	var todayTotal sqlite.DailyTokenUsage
+	for _, d := range daily {
+		if d.Date == today {
+			todayEntries = append(todayEntries, d)
+			todayTotal.InputTokens += d.InputTokens
+			todayTotal.OutputTokens += d.OutputTokens
+			todayTotal.CachedTokens += d.CachedTokens
+			todayTotal.LLMCallCount += d.LLMCallCount
+			todayTotal.ConversationCount += d.ConversationCount
+		}
+	}
+	if len(todayEntries) > 0 {
+		sb.WriteString("\n## Today's Usage by Model\n\n")
+		sb.WriteString("| Model | Input | Output | Cached | Cache% | Calls |\n")
+		sb.WriteString("|-------|-------|--------|--------|--------|-------|\n")
+		slices.SortFunc(todayEntries, func(a, b sqlite.DailyTokenUsage) int {
+			return int((b.InputTokens + b.OutputTokens) - (a.InputTokens + a.OutputTokens))
+		})
+		for _, d := range todayEntries {
 			model := d.Model
 			if model == "" {
 				model = "(unknown)"
@@ -1037,8 +1054,60 @@ func (m *cliModel) handleUsageCommand() {
 			if d.InputTokens > 0 {
 				cacheRate = fmt.Sprintf("%.0f%%", float64(d.CachedTokens)/float64(d.InputTokens)*100)
 			}
-			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s | %d |\n",
-				d.Date, model,
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d |\n",
+				model,
+				fmtTokens(d.InputTokens),
+				fmtTokens(d.OutputTokens),
+				fmtTokens(d.CachedTokens),
+				cacheRate,
+				d.LLMCallCount,
+			)
+		}
+		// Today's total row
+		totalCacheRate := ""
+		if todayTotal.InputTokens > 0 {
+			totalCacheRate = fmt.Sprintf("%.0f%%", float64(todayTotal.CachedTokens)/float64(todayTotal.InputTokens)*100)
+		}
+		fmt.Fprintf(&sb, "| **Today total** | **%s** | **%s** | **%s** | **%s** | **%d** |\n",
+			fmtTokens(todayTotal.InputTokens),
+			fmtTokens(todayTotal.OutputTokens),
+			fmtTokens(todayTotal.CachedTokens),
+			totalCacheRate,
+			todayTotal.LLMCallCount,
+		)
+	}
+
+	// --- Last 10 days daily summary ---
+	daySummary := make(map[string]*sqlite.DailyTokenUsage)
+	var sortedDates []string
+	for _, d := range daily {
+		if _, ok := daySummary[d.Date]; !ok {
+			daySummary[d.Date] = &sqlite.DailyTokenUsage{Date: d.Date}
+			sortedDates = append(sortedDates, d.Date)
+		}
+		s := daySummary[d.Date]
+		s.InputTokens += d.InputTokens
+		s.OutputTokens += d.OutputTokens
+		s.CachedTokens += d.CachedTokens
+		s.LLMCallCount += d.LLMCallCount
+		s.ConversationCount += d.ConversationCount
+	}
+	// sortedDates is already in date DESC order (daily is ordered by date DESC)
+	if len(sortedDates) > 10 {
+		sortedDates = sortedDates[:10]
+	}
+	if len(sortedDates) > 0 {
+		sb.WriteString("\n## Last 10 Days Summary\n\n")
+		sb.WriteString("| Date | Input | Output | Cached | Cache% | Calls |\n")
+		sb.WriteString("|------|-------|--------|--------|--------|-------|\n")
+		for _, date := range sortedDates {
+			d := daySummary[date]
+			cacheRate := ""
+			if d.InputTokens > 0 {
+				cacheRate = fmt.Sprintf("%.0f%%", float64(d.CachedTokens)/float64(d.InputTokens)*100)
+			}
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d |\n",
+				d.Date,
 				fmtTokens(d.InputTokens),
 				fmtTokens(d.OutputTokens),
 				fmtTokens(d.CachedTokens),

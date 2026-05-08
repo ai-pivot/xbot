@@ -224,3 +224,29 @@ func (m *cliModel) listLocalDirSessions() []SessionPanelEntry {
 	}
 	return entries
 }
+
+// LocalDirSession is an exported view of a local dir session for use by callbacks.
+type LocalDirSession struct {
+	Name   string
+	ChatID string
+}
+
+// ListLocalDirSessions returns all local sessions for a work directory,
+// excluding the default session (which is the workDir itself).
+func ListLocalDirSessions(workDir string) []LocalDirSession {
+	ds, err := loadDirSessions(workDir)
+	if err != nil {
+		return nil
+	}
+	var result []LocalDirSession
+	for _, s := range ds.sortedSessions() {
+		if s.Name == defaultSessionName || s.ChatID == workDir {
+			continue
+		}
+		result = append(result, LocalDirSession{
+			Name:   s.Name,
+			ChatID: s.ChatID,
+		})
+	}
+	return result
+}

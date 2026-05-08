@@ -813,6 +813,23 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			}
 			m.messages = append(m.messages, cm)
 		}
+		// Restore pending user message if it was sent but not yet persisted to DB.
+		// This handles the race where the user sends a message and quickly switches
+		// sessions before the agent's eager-save completes.
+		if m.pendingUserMsg != nil {
+			found := false
+			for _, existing := range m.messages {
+				if existing.role == "user" && existing.content == m.pendingUserMsg.content {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.pendingUserMsg.dirty = true
+				m.messages = append(m.messages, *m.pendingUserMsg)
+			}
+			m.pendingUserMsg = nil
+		}
 		m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitchedHistory, m.senderID, len(msg.history)), feedbackInfo)
 	}
 	m.invalidateAllCache(false)
@@ -952,6 +969,21 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 			}
 		}
 		newMessages = append(newMessages, cm)
+	}
+	// Restore pending user message if missing (same race as handleSuHistoryLoad)
+	if m.pendingUserMsg != nil {
+		found := false
+		for _, existing := range newMessages {
+			if existing.role == "user" && existing.content == m.pendingUserMsg.content {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.pendingUserMsg.dirty = true
+			newMessages = append(newMessages, *m.pendingUserMsg)
+		}
+		m.pendingUserMsg = nil
 	}
 	m.messages = newMessages
 	m.streamingMsgIdx = -1

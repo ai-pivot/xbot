@@ -428,12 +428,18 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			if label == "" {
 				label = s.ID
 			}
-			// Layout: " ○ label" + padding + " ×" = w columns total.
+			// SubAgent entries get a 2-space indent to show parent-child hierarchy.
+			indent := ""
+			if s.Type == "agent" {
+				indent = "  "
+			}
+			// Layout: "[indent] ○ label" + padding + " ×" = w columns total.
 			// ALL sessions reserve space for " ×" so that switching active/inactive
 			// never changes the label width (avoids re-truncation and wrapping).
 			deletePart := " ×"
 			deleteVisW := lipgloss.Width(deletePart)
-			maxLabelW := w - 3 - 1 - deleteVisW // " ○ " = 3 cols, 1 col min padding before ×
+			indentW := lipgloss.Width(indent)
+			maxLabelW := w - indentW - 3 - 1 - deleteVisW // indent + " ○ " = indentW+3 cols, 1 col min padding
 			if maxLabelW < 1 {
 				maxLabelW = 1
 			}
@@ -449,7 +455,7 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				itemStyle = m.styles.SidebarActive
 			}
 
-			labelPart := " " + icon + " " + label
+			labelPart := indent + " " + icon + " " + label
 			labelVisW := lipgloss.Width(labelPart)
 			padding := w - labelVisW - deleteVisW
 			if padding < 1 {
@@ -483,17 +489,14 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 	return b.String()
 }
 
-// sidebarSessionEntries returns all session entries (backend + local dir).
+// sidebarSessionEntries returns all session entries.
+// When sessionsListFn is set, it handles everything (main + local dir + subagents).
+// Otherwise, fall back to local dir sessions only.
 func (m *cliModel) sidebarSessionEntries() []SessionPanelEntry {
-	entries := make([]SessionPanelEntry, 0)
-	// Backend sessions (remote/server)
 	if m.sessionsListFn != nil {
-		entries = append(entries, m.sessionsListFn()...)
+		return m.sessionsListFn()
 	}
-	// Local dir sessions
-	dirEntries := m.listLocalDirSessions()
-	entries = append(entries, dirEntries...)
-	return entries
+	return m.listLocalDirSessions()
 }
 
 func (m *cliModel) renderSidebarActive() string {
@@ -520,6 +523,18 @@ func (m *cliModel) sidebarCurrentIdx() int {
 	for i, e := range entries {
 		if e.ID == m.chatID {
 			return i
+		}
+		// For agent sessions, entry ID uses format "agent:role/instance" but
+		// chatID uses format "channel:parentID/role:instance". Match by
+		// constructing the chatID from entry fields (same as panel code).
+		if e.Type == "agent" {
+			agentChatID := e.Channel + ":" + e.ParentID + "/" + e.Role
+			if e.Instance != "" {
+				agentChatID += ":" + e.Instance
+			}
+			if agentChatID == m.chatID {
+				return i
+			}
 		}
 	}
 	// Fallback to Active flag

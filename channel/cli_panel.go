@@ -881,15 +881,13 @@ func (m *cliModel) openSessionsPanel() {
 	m.panelMode = "sessions"
 	m.relayoutViewport()
 
-	// Server sessions (from backend)
+	// sessionsListFn now handles everything (main + local dir + subagents).
+	// Only fall back to local dir sessions when there's no callback.
 	if m.sessionsListFn != nil {
 		m.panelSessionItems = m.sessionsListFn()
 	} else {
-		m.panelSessionItems = nil
+		m.panelSessionItems = m.listLocalDirSessions()
 	}
-	// Also include local directory sessions (same-directory multi-session)
-	localSessions := m.listLocalDirSessions()
-	m.panelSessionItems = append(m.panelSessionItems, localSessions...)
 	// Position cursor on the currently active session
 	m.panelSessionCursor = 0
 	for i, entry := range m.panelSessionItems {
@@ -2319,11 +2317,22 @@ func (m *cliModel) viewAskUserPanel() string {
 
 			// Other input (single-line)
 			otherLabel := m.locale.PanelOther
+			var prefix string
 			if cursor == numOpts {
-				sb.WriteString(cursorStyle.Render("▸ ") + otherLabel)
+				prefix = cursorStyle.Render("▸ ")
 			} else {
-				sb.WriteString("  " + otherLabel)
+				prefix = "  "
 			}
+			sb.WriteString(prefix + otherLabel)
+			// Resize textinput to fit within panel content width (qWrapWidth)
+			// minus label width and scrollbar column. Without this, textinput
+			// View() can exceed contentWidth causing applyScrollbar's scrollbar
+			// to wrap to next line — symptom: "▐" rendered below the "其他" row.
+			tiWidth := qWrapWidth - lipgloss.Width(prefix+otherLabel) - 1
+			if tiWidth < 10 {
+				tiWidth = 10
+			}
+			m.panelOtherTI.SetWidth(tiWidth)
 			sb.WriteString(m.panelOtherTI.View())
 			sb.WriteString("\n")
 

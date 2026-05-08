@@ -27,6 +27,7 @@
 - **Never `defer` semaphore release inside a loop.** Deadlock when iterations exceed capacity. Release immediately after Generate completes.
 - Non-blocking channel sends: always use `select` with `ctx.Done()` to prevent blocking on full channels during shutdown.
 - **User-scoped semaphores must not be hardcoded to capacity 1 when one sender can own multiple independent chats/sessions (for example remote CLI windows authenticated as `admin`).** Size them from configured concurrency or key them by session, otherwise different windows will block each other and look like a leaked semaphore.
+- **`SetMaxConcurrency` must clear `userSemaphores` cache.** The global semaphore is rebuilt with the new capacity, but `getUserSemaphore` caches per-user channels in a `sync.Map` via `LoadOrStore`. Without `Clear()`, users with custom LLM keep using the cached semaphore with the OLD capacity forever. Symptom: setting max_concurrency to 100 has no visible effect.
 
 ### Subscription & Model Resolution
 - **`user_llm_subscriptions` DB is the single source of truth for ALL LLM config** (provider, model, base_url, api_key, max_output_tokens, thinking_mode). These keys are subscription-scoped — they must NOT appear in `settingHandlerRegistry`, `CLIRuntimeSettingKeys`, or `user_settings` table. Adding them back would cause startup `applyRuntimeSettings` to overwrite DB with stale values (e.g. name→provider, max_output_tokens→8192).

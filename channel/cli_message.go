@@ -256,12 +256,15 @@ func (m *cliModel) sendCancel() {
 
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
 func (m *cliModel) sendToAgent(content string) {
-	m.messages = append(m.messages, cliMessage{
+	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
-	})
+	}
+	m.messages = append(m.messages, userCliMsg)
+	m.pendingUserMsg = &userCliMsg
+	m.savePendingToSessionState()
 	if m.msgBus != nil {
 		m.sendInbound(m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}))
 		m.startAgentTurn()
@@ -284,12 +287,18 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	media := parseFileReferences(content)
 
 	// 添加用户消息到历史
-	m.messages = append(m.messages, cliMessage{
+	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
-	})
+	}
+	m.messages = append(m.messages, userCliMsg)
+
+	// Save as pending user message so it survives session switches before
+	// the agent's eager-save to DB completes. Restored in handleSuHistoryLoad.
+	m.pendingUserMsg = &userCliMsg
+	m.savePendingToSessionState()
 
 	// 更新显示并强制滚动到底部（用户发送新消息时始终可见）
 	m.updateViewportContent()

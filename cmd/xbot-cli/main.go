@@ -1351,62 +1351,65 @@ func main() {
 			var entries []channel.SessionPanelEntry
 			tenants, err := app.backend.ListTenants()
 			seen := make(map[string]bool) // dedup agent sessions by role:instance
-			if err == nil && len(tenants) > 0 {
-				// Only show the current session's tenant and its SubAgents.
-				// Other sessions' agents are not relevant to the current conversation
-				// (Issue #17: sessions panel showed agents from unrelated sessions).
-				allSessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
 
+			// Get ALL subagents across all sessions, then filter to only
+			// sessions related to the current workdir (main + local dir).
+			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
+			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
+			for _, s := range allSubAgents {
+				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
+			}
+
+			// Collect all relevant chatIDs: main session + local dir sessions.
+			type sessionInfo struct {
+				chatID string
+				label  string
+			}
+			var sessions []sessionInfo
+
+			// Main session (from tenants).
+			if err == nil && len(tenants) > 0 {
 				for _, t := range tenants {
-					// Agent tenants (channel="agent") are not real "main" sessions —
-					// they're internal bookkeeping for interactive SubAgent persistence.
-					// Skip them; agent sessions are listed separately via ListInteractiveSessions.
 					if t.Channel == "agent" {
 						continue
 					}
-					// Only include the current session; other workdirs are separate conversations.
 					if t.ChatID != absWorkDir || t.Channel != "cli" {
 						continue
 					}
-					isActive := true // This is the current session
-					label := "主会话  You ↔ Agent"
-					entries = append(entries, channel.SessionPanelEntry{
-						ID:      t.ChatID,
-						Type:    "main",
-						Channel: t.Channel,
-						Label:   label,
-						Active:  isActive,
+					sessions = append(sessions, sessionInfo{
+						chatID: t.ChatID,
+						label:  "主会话  You ↔ Agent",
 					})
-					// SubAgent sessions belonging to this session.
-					for _, s := range allSessions {
-						agentKey := s.Role + ":" + s.Instance
-						if seen[agentKey] {
-							continue
-						}
-						seen[agentKey] = true
-						entries = append(entries, channel.SessionPanelEntry{
-							ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
-							Type:        "agent",
-							Channel:     t.Channel,
-							Role:        s.Role,
-							Instance:    s.Instance,
-							ParentID:    t.ChatID,
-							Running:     s.Running,
-							MessageHint: s.Preview,
-						})
-					}
+					break // only one main session
 				}
-			} else {
-				// Fallback: no tenants available
+			}
+			if len(sessions) == 0 {
+				// Fallback: no tenant found, still show main session.
+				sessions = append(sessions, sessionInfo{
+					chatID: absWorkDir,
+					label:  "主会话  You ↔ Agent",
+				})
+			}
+
+			// Local dir sessions (created from current session).
+			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+				sessions = append(sessions, sessionInfo{
+					chatID: s.ChatID,
+					label:  s.Name,
+				})
+			}
+
+			// Build entries: each session followed by its subagents.
+			for _, sess := range sessions {
+				isActive := sess.chatID == absWorkDir
 				entries = append(entries, channel.SessionPanelEntry{
-					ID:      absWorkDir,
+					ID:      sess.chatID,
 					Type:    "main",
 					Channel: "cli",
-					Label:   "主会话  You ↔ Agent",
-					Active:  true,
+					Label:   sess.label,
+					Active:  isActive,
 				})
-				sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
-				for _, s := range sessions {
+				for _, s := range subsByChatID[sess.chatID] {
 					agentKey := s.Role + ":" + s.Instance
 					if seen[agentKey] {
 						continue
@@ -1418,7 +1421,7 @@ func main() {
 						Channel:     "cli",
 						Role:        s.Role,
 						Instance:    s.Instance,
-						ParentID:    s.ChatID,
+						ParentID:    sess.chatID,
 						Running:     s.Running,
 						MessageHint: s.Preview,
 					})
@@ -2046,44 +2049,97 @@ func main() {
 			if app.backend == nil {
 				return
 			}
-			count := app.backend.CountInteractiveSessions("cli", absWorkDir)
-			sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
-			agentEntries := make([]channel.AgentPanelEntry, len(sessions))
-			// Build sessions panel entries (main + agents) for remote mode.
+			// Get all interactive sessions (empty chatID = all sessions across all workdirs).
+			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
+			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
+			for _, s := range allSubAgents {
+				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
+			}
+
+			// Collect all relevant sessions: main + local dir.
+			type sessionInfo struct {
+				chatID string
+				label  string
+			}
+			var sessions []sessionInfo
+
+			// Main session (from tenants).
+			tenants, err := app.backend.ListTenants()
+			if err == nil && len(tenants) > 0 {
+				for _, t := range tenants {
+					if t.Channel == "agent" {
+						continue
+					}
+					if t.ChatID != absWorkDir || t.Channel != "cli" {
+						continue
+					}
+					sessions = append(sessions, sessionInfo{
+						chatID: t.ChatID,
+						label:  "主会话  You ↔ Agent",
+					})
+					break
+				}
+			}
+			if len(sessions) == 0 {
+				sessions = append(sessions, sessionInfo{
+					chatID: absWorkDir,
+					label:  "主会话  You ↔ Agent",
+				})
+			}
+
+			// Local dir sessions.
+			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+				sessions = append(sessions, sessionInfo{
+					chatID: s.ChatID,
+					label:  s.Name,
+				})
+			}
+
+			// Build entries: each session followed by its subagents.
 			var sessionEntries []channel.SessionPanelEntry
 			seen := make(map[string]bool)
-			sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-				ID:      absWorkDir,
-				Type:    "main",
-				Channel: "cli",
-				Label:   "主会话  You ↔ Agent",
-				Active:  true,
-			})
-			for i, s := range sessions {
-				agentEntries[i] = channel.AgentPanelEntry{
+			for _, sess := range sessions {
+				isActive := sess.chatID == absWorkDir
+				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+					ID:      sess.chatID,
+					Type:    "main",
+					Channel: "cli",
+					Label:   sess.label,
+					Active:  isActive,
+				})
+				for _, s := range subsByChatID[sess.chatID] {
+					agentKey := s.Role + ":" + s.Instance
+					if seen[agentKey] {
+						continue
+					}
+					seen[agentKey] = true
+					sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+						ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
+						Type:        "agent",
+						Channel:     "cli",
+						Role:        s.Role,
+						Instance:    s.Instance,
+						ParentID:    sess.chatID,
+						Running:     s.Running,
+						MessageHint: s.Preview,
+					})
+				}
+			}
+
+			// Build agentEntries for the agent panel (all subagents).
+			agentEntries := make([]channel.AgentPanelEntry, 0, len(allSubAgents))
+			for _, s := range allSubAgents {
+				agentEntries = append(agentEntries, channel.AgentPanelEntry{
 					Role:       s.Role,
 					Instance:   s.Instance,
 					Running:    s.Running,
 					Background: s.Background,
 					Task:       s.Task,
 					Preview:    s.Preview,
-				}
-				agentKey := s.Role + ":" + s.Instance
-				if seen[agentKey] {
-					continue
-				}
-				seen[agentKey] = true
-				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-					ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
-					Type:        "agent",
-					Channel:     "cli",
-					Role:        s.Role,
-					Instance:    s.Instance,
-					ParentID:    absWorkDir,
-					Running:     s.Running,
-					MessageHint: s.Preview,
 				})
 			}
+
+			count := len(allSubAgents)
 			app.agentCacheMu.Lock()
 			app.agentCacheCount = count
 			app.agentCacheList = agentEntries

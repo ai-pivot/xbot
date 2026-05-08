@@ -230,20 +230,11 @@ func (m *cliModel) isYInPanelBox(y int) bool {
 func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		// AskUser split layout: route wheel based on mouse position
+		// AskUser split layout: wheel always scrolls the askuser panel.
+		// The user controls the main viewport via Shift+↑/↓.
 		if m.panelMode == "askuser" {
-			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
-			if found && zone.ID == "askViewport" {
-				// Scroll the main viewport
-				return false, m, nil // unhandled → viewport.Update will process it
-			}
-			// Panel area (any zone inside the ask panel)
-			if found {
-				m.askPanelScrollY = max(0, m.askPanelScrollY-3)
-				return true, m, nil
-			}
-			// No zone hit in askuser panel — try viewport
-			return false, m, nil
+			m.askPanelScrollY = max(0, m.askPanelScrollY-3)
+			return true, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
 		if m.panelMode != "" {
@@ -273,20 +264,11 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 		return false, m, nil
 
 	case tea.MouseWheelDown:
-		// AskUser split layout: route wheel based on mouse position
+		// AskUser split layout: wheel always scrolls the askuser panel.
+		// The user controls the main viewport via Shift+↑/↓.
 		if m.panelMode == "askuser" {
-			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
-			if found && zone.ID == "askViewport" {
-				// Scroll the main viewport
-				return false, m, nil // unhandled → viewport.Update will process it
-			}
-			// Panel area
-			if found {
-				m.askPanelScrollY += 3
-				return true, m, nil
-			}
-			// No zone hit in askuser panel — try viewport
-			return false, m, nil
+			m.askPanelScrollY += 3
+			return true, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
 		if m.panelMode != "" {
@@ -665,11 +647,25 @@ func (m *cliModel) clickApprovalBtn(idx int) (bool, tea.Model, tea.Cmd) {
 
 func (m *cliModel) clickTextarea(x, y int) (bool, tea.Model, tea.Cmd) {
 	// Click on main textarea area — position cursor
-	// Account for InputBox horizontal padding (Padding(0,1))
-	contentX := x - 1
+	// Account for InputBox horizontal padding (Padding(0,1) = 1 col border left)
+	// and sidebar offset when sidebar is on the left.
+	sidebarOffset := 0
+	if m.isWide() && m.sidebarEnabled && m.sidebarVisible && m.sidebarPosition == "left" {
+		// When sidebar is on the left, all middleBlock content (including InputBox)
+		// is shifted right by sidebarWidth + 4 (sidebar + gap between sidebar and chat).
+		// Without this, clicking in the textarea when sidebar is visible on the left
+		// positions the cursor too far right.
+		sidebarOffset = m.sidebarWidth + 4
+	}
+	contentX := x - 1 - sidebarOffset
 	if contentX < 0 {
 		contentX = 0
 	}
+	// y is relative to the InputBox zone top (visual line 0 of the viewport).
+	// ClickAt expects an absolute visual line index in the textarea content,
+	// so add the viewport's scroll offset. Without this, clicking when the
+	// textarea is scrolled down targets the wrong line.
+	y = y + m.textarea.ScrollYOffset()
 	m.textarea.ClickAt(contentX, y)
 	return true, m, nil
 }
@@ -681,6 +677,7 @@ func (m *cliModel) clickPanelTextarea(x, y int) (bool, tea.Model, tea.Cmd) {
 		if contentX < 0 {
 			contentX = 0
 		}
+		y = y + m.panelEditTA.ScrollYOffset()
 		m.panelEditTA.ClickAt(contentX, y)
 	}
 	return true, m, nil
@@ -1024,15 +1021,19 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 	scrollY := m.panelScrollY
 	lineIdx := 0
 
-	// Header + help line
+	// Header + help line — always advance zb.y, only add zone if visible
 	if lineIdx >= scrollY {
 		zb.skip(1)
-	} // else: skip silently
+	} else {
+		zb.skip(1) // scrolled out — must still advance zb.y
+	}
 	lineIdx++
 
 	// Delete confirmation (if shown)
 	if m.panelSessionConfirmDelete {
 		if lineIdx >= scrollY {
+			zb.skip(1)
+		} else {
 			zb.skip(1)
 		}
 		lineIdx++
@@ -1041,6 +1042,8 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 	for i := range m.panelSessionItems {
 		if lineIdx >= scrollY {
 			zb.add(1, "sessionsItem", i)
+		} else {
+			zb.skip(1) // scrolled out — must still advance zb.y
 		}
 		lineIdx++
 	}
@@ -1282,31 +1285,67 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 		return
 	}
 
-	// Tab bar: each tab is clickable
+	// Build complete line map matching viewAskUserPanel() output order.
+	// Each line has an optional zone to register at that position.
+	type askLine struct {
+		zoneID string
+		index  int // zone index (tab idx, option idx, or 0 for submit)
+	}
+	var lines []askLine
+
+	// Tab bar (if multiple questions): each tab on its own line
 	if len(m.panelItems) > 1 {
 		for i := range m.panelItems {
-			zb.add(1, "askUserTab", i)
+			lines = append(lines, askLine{zoneID: "askUserTab", index: i})
 		}
+		lines = append(lines, askLine{}) // blank line after tabs
+		lines = append(lines, askLine{}) // another blank line (viewAskUserPanel emits "\n\n")
 	}
 
 	// Current tab content
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
+		// Question text (may wrap to multiple lines — not tracked as zones)
+		// viewAskUserPanel uses hardWrapRunes with qWrapWidth. We approximate.
+		prefix := "❓ " + item.Question
+		qWrapWidth := m.width - 6
+		if qWrapWidth < 20 {
+			qWrapWidth = 20
+		}
+		questionLines := max(1, strings.Count(hardWrapRunes(prefix, qWrapWidth), "\n")+1)
+		for i := 0; i < questionLines; i++ {
+			lines = append(lines, askLine{})
+		}
+		lines = append(lines, askLine{}) // blank line after question
+
 		if len(item.Options) > 0 {
+			lines = append(lines, askLine{}) // blank line before options (viewAskUserPanel emits "\n" before opts)
 			// Option items
 			for i := range item.Options {
-				zb.add(1, "askUserOption", i)
+				lines = append(lines, askLine{zoneID: "askUserOption", index: i})
 			}
 			// "Other" input
-			if item.Other != "" {
-				zb.skip(1) // "Other:" label
+			lines = append(lines, askLine{}) // other line (not tracked as click zone — textinput handles its own input)
+			// Submit button (only on last tab)
+			if m.panelTab == len(m.panelItems)-1 {
+				lines = append(lines, askLine{zoneID: "askUserSubmit", index: 0})
 			}
 		}
-		// Free input area (textarea) — not tracked for mouse
+		// Free-input mode (no options): textarea, not tracked
 	}
 
-	// Submit button
-	zb.add(1, "askUserSubmit", 0)
+	// Apply scroll offset: skip lines before askPanelScrollY, stop at visible height
+	scrollY := m.askPanelScrollY
+	// visible height is hard to know here; just register all remaining lines.
+	// clampAskUserPanelScroll ensures askPanelScrollY is clamped.
+	for ln := scrollY; ln < len(lines); ln++ {
+		l := lines[ln]
+		if l.zoneID != "" {
+			zb.add(1, l.zoneID, l.index)
+		} else {
+			zb.skip(1)
+		}
+	}
 }
 
 // toggleVal toggles a boolean string value.

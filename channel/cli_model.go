@@ -254,6 +254,9 @@ type suHistoryLoadMsg struct {
 
 // sessionState holds per-session state that should be preserved when switching sessions.
 // Messages are NOT stored here — the DB is the source of truth for history.
+// EXCEPTION: pendingUserMsg saves the most recent user message that was sent to the
+// agent bus but may not yet be persisted to the DB. This prevents user messages from
+// disappearing when quickly switching sessions before the agent's eager-save completes.
 type sessionState struct {
 	progress             *CLIProgressPayload
 	typing               bool
@@ -272,6 +275,7 @@ type sessionState struct {
 	turnCancelled        bool
 	typewriterTickActive bool
 	reasoningByIter      map[int]string
+	pendingUserMsg       *cliMessage // user message sent but not yet confirmed in DB
 }
 
 // sessionKey returns the map key for the current session.
@@ -304,6 +308,7 @@ func (m *cliModel) saveCurrentSession() {
 		turnCancelled:        m.turnCancelled,
 		typewriterTickActive: m.typewriterTickActive,
 		reasoningByIter:      m.reasoningByIter,
+		pendingUserMsg:       m.pendingUserMsg,
 	}
 }
 
@@ -329,6 +334,7 @@ func (m *cliModel) restoreSession() {
 		m.turnCancelled = saved.turnCancelled
 		m.typewriterTickActive = saved.typewriterTickActive
 		m.reasoningByIter = saved.reasoningByIter
+		m.pendingUserMsg = saved.pendingUserMsg
 		delete(m.savedSessions, key) // clean up
 	} else {
 		// No saved state — reset to idle (NOT cancelled)
@@ -349,7 +355,23 @@ func (m *cliModel) restoreSession() {
 		m.twVisible = 0
 		m.rwVisible = 0
 		m.typewriterTickActive = false
+		m.pendingUserMsg = nil
 	}
+}
+
+// savePendingToSessionState syncs m.pendingUserMsg into the saved session state
+// for the current session. Call after setting m.pendingUserMsg to ensure it survives
+// a subsequent saveCurrentSession() call during session switch.
+func (m *cliModel) savePendingToSessionState() {
+	key := m.sessionKey()
+	if m.savedSessions == nil {
+		m.savedSessions = make(map[string]*sessionState)
+	}
+	if existing, ok := m.savedSessions[key]; ok {
+		existing.pendingUserMsg = m.pendingUserMsg
+	}
+	// If no existing state, it'll be created in saveCurrentSession() which
+	// reads m.pendingUserMsg directly.
 }
 
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
@@ -649,8 +671,9 @@ type cliModel struct {
 	// --- §Session state save/restore ---
 	// Per-session saved state so switching sessions doesn't lose in-progress state.
 	// Key = "channelName:chatID". Messages are NOT saved here — DB is source of truth.
-	savedSessions map[string]*sessionState
-	turnCancelled bool // true after Ctrl+C — prevents auto-start on stale progress
+	savedSessions  map[string]*sessionState
+	pendingUserMsg *cliMessage // most recent user message sent but not yet confirmed in DB
+	turnCancelled  bool        // true after Ctrl+C — prevents auto-start on stale progress
 
 	// --- Deterministic rendering: per-turn completion tracking ---
 	// turnDoneFlags tracks whether specific events have been processed for a turn.

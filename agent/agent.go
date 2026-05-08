@@ -1025,6 +1025,11 @@ func (a *Agent) SetMaxConcurrency(n int) {
 	a.globalSemMu.Lock()
 	a.globalSem = make(chan struct{}, n)
 	a.globalSemMu.Unlock()
+	// Clear all cached user-level semaphores so they are recreated with the
+	// new capacity on the next call to getUserSemaphore. Without this, users
+	// with custom LLM keep using the old capacity forever (the cached chan
+	// in userSemaphores sync.Map is never replaced by the old code).
+	a.userSemaphores.Clear()
 }
 func (a *Agent) SetMaxContextTokens(n int) {
 	a.contextManagerMu.Lock()
