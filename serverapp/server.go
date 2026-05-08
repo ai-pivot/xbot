@@ -568,6 +568,7 @@ func Run(args []string) error {
 	// 所有工具注册完成，索引全局工具（用于 search_tools 语义搜索）
 	backend.IndexGlobalTools()
 	backend.LLMFactory().SetModelTiers(cfg.LLM)
+	backend.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	backend.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
 		Delay:    time.Duration(cfg.Agent.LLMRetryDelay),

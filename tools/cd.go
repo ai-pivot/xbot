@@ -418,8 +418,19 @@ func formatSize(bytes int64) string {
 }
 
 func (t *CdTool) executeLocal(ctx *ToolContext, dir string) (*ToolResult, error) {
-	// Resolve relative paths against CurrentDir, then WorkspaceRoot
+	// Expand ~ to user home directory
 	target := dir
+	if strings.HasPrefix(target, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if target == "~" {
+				target = home
+			} else if strings.HasPrefix(target, "~/") {
+				target = filepath.Join(home, target[2:])
+			}
+		}
+	}
+
+	// Resolve relative paths against CurrentDir, then WorkspaceRoot
 	if !filepath.IsAbs(target) {
 		base := ""
 		if ctx != nil && ctx.CurrentDir != "" {
@@ -508,7 +519,18 @@ func (t *CdTool) executeLocal(ctx *ToolContext, dir string) (*ToolResult, error)
 
 // executeWithSandboxAPI changes directory using Sandbox API.
 func (t *CdTool) executeWithSandboxAPI(ctx *ToolContext, dir string) (*ToolResult, error) {
+	// Expand ~ to user home directory
 	target := dir
+	if strings.HasPrefix(target, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if target == "~" {
+				target = home
+			} else if strings.HasPrefix(target, "~/") {
+				target = path.Join(home, target[2:])
+			}
+		}
+	}
+
 	if !path.IsAbs(target) {
 		base := ""
 		if ctx.CurrentDir != "" {
