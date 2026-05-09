@@ -533,6 +533,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		//   /su          — 切回默认身份
 		//   /su <userID> — 切换到指定用户身份
 		//   /su web:<senderID>[:<token>] — 切换到 Web 端用户
+		m.saveCurrentSession()
 		if len(parts) < 2 {
 			if m.senderID == "cli_user" {
 				m.showSystemMsg(m.locale.SuAlreadyDefault, feedbackInfo)
@@ -563,6 +564,17 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 			}
 		}
+		// Reset critical state after identity switch (prevents stale typing/progress/input
+		// from leaking into the new session — same as postRestoreSessionSetup remote path).
+		m.typing = false
+		m.progress = nil
+		m.inputReady = false
+		m.turnCancelled = false
+		m.fastTickActive = false
+		m.typewriterTickActive = false
+		m.tickGen++
+		m.lastProgressSeq = 0
+		m.suPhaseDoneConfirmed = false
 		m.messages = nil
 		m.invalidateAllCache(false)
 		if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
@@ -590,6 +602,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		switch arg {
 		case "new":
 			if m.channel != nil && m.channel.config.ChatCreateFn != nil {
+				m.saveCurrentSession()
 				label := ""
 				if len(parts) > 2 {
 					label = strings.Join(parts[2:], " ")
@@ -600,6 +613,16 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 					return nil
 				}
 				m.chatID = chatID
+				// Reset critical state for new session (mirror postRestoreSessionSetup).
+				m.typing = false
+				m.progress = nil
+				m.inputReady = false
+				m.turnCancelled = false
+				m.fastTickActive = false
+				m.typewriterTickActive = false
+				m.tickGen++
+				m.lastProgressSeq = 0
+				m.suPhaseDoneConfirmed = false
 				m.messages = nil
 				m.lastTokenUsage = nil // clear stale token bar on new session
 				m.invalidateAllCache(false)
@@ -637,7 +660,18 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			}
 		default:
 			// Switch to specific chatID
+			m.saveCurrentSession()
 			m.chatID = arg
+			// Reset critical state after session switch.
+			m.typing = false
+			m.progress = nil
+			m.inputReady = false
+			m.turnCancelled = false
+			m.fastTickActive = false
+			m.typewriterTickActive = false
+			m.tickGen++
+			m.lastProgressSeq = 0
+			m.suPhaseDoneConfirmed = false
 			m.messages = nil
 			m.invalidateAllCache(false)
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
