@@ -420,6 +420,9 @@ func (m *cliModel) restoreSession() {
 		m.rwVisible = 0
 		m.typewriterTickActive = false
 		m.pendingUserMsg = nil
+		m.textarea.SetValue("") // clear input for new/unsaved session
+		m.inputDraft = ""
+		m.inputHistoryIdx = -1
 		// Clear todos — no saved state means no active turn,
 		// but persist unfinished todos from TodoManager so they
 		// remain visible across session switches.
