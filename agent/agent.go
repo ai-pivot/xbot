@@ -2145,6 +2145,14 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		promptWorkDir = ws
 	}
 
+	// For worktree sessions, override promptWorkDir with the worktree path.
+	// The system prompt shows promptWorkDir as the main "工作目录", so the
+	// agent must see the worktree path here to know where it's working.
+	cwd := tenantSession.GetCurrentDir()
+	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
+		promptWorkDir = cwd
+	}
+
 	mc := NewMessageContext(
 		letta.WithUserID(ctx, msg.SenderID),
 		msg.Content,
@@ -2158,7 +2166,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// 注入当前工作目录（CWD）到 prompt
 	// sandbox 模式下 CWD 已经是 sandbox 内路径，无 cd 时默认为 promptWorkDir
-	mc.CWD = tenantSession.GetCurrentDir()
+	mc.CWD = cwd
 	mc.XbotHome = a.xbotHome
 	if mc.CWD == "" {
 		log.WithFields(log.Fields{
