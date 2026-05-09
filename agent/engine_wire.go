@@ -192,6 +192,12 @@ func (a *Agent) buildMainRunConfig(
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
 
+	// Use session CWD for InitialCWD (may differ from a.workDir for worktree sessions).
+	// AutoDetectAndInit in buildPrompt already set the correct CWD on tenantSession.
+	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
+		cfg.InitialCWD = cwd
+	}
+
 	// 保留 FeishuUserID 供 buildToolContext 等处使用
 	cfg.FeishuUserID = feishuUserID
 
