@@ -476,11 +476,29 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			}
 
 			isActive := i == currentIdx
+			// Determine busy state: for current session use m.typing,
+			// for agents use Running, for other main sessions use Busy.
+			isBusy := false
+			if isActive {
+				isBusy = m.typing
+			} else if s.Type == "agent" {
+				isBusy = s.Running
+			} else {
+				isBusy = s.Busy
+			}
+
 			icon := "○"
 			itemStyle := m.styles.SidebarItem
 			if isActive {
-				icon = "●"
+				if isBusy {
+					icon = "◉"
+				} else {
+					icon = "●"
+				}
 				itemStyle = m.styles.SidebarActive
+			} else if isBusy {
+				icon = "◎"
+				itemStyle = m.styles.SidebarBusy
 			}
 
 			labelPart := indent + " " + icon + " " + label

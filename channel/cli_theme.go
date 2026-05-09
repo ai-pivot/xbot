@@ -622,6 +622,7 @@ type cliStyles struct {
 	SidebarItem    lipgloss.Style
 	SidebarActive  lipgloss.Style
 	SidebarHeader  lipgloss.Style
+	SidebarBusy    lipgloss.Style
 	SidebarDivider lipgloss.Style
 	// --- additional surfaces ---
 	BGHoverSt lipgloss.Style // 选中/悬停行背景
@@ -775,6 +776,7 @@ func buildStyles(width int) cliStyles {
 		SidebarItem:    lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
 		SidebarActive:  lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
 		SidebarHeader:  lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		SidebarBusy:    lipgloss.NewStyle().Foreground(c(t.Warning)).Bold(true),
 		SidebarDivider: lipgloss.NewStyle().Foreground(c(t.Border)),
 		// --- additional surfaces ---
 		BGHoverSt: lipgloss.NewStyle().Background(c(t.BGHover)),
