@@ -899,8 +899,17 @@ func (m *cliModel) renderWorkspaceIndicator() string {
 		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(shortName))
 	}
 
-	// No progress or not a worktree — show primary by default.
-	// Will update to worktree indicator when first progress event arrives.
+	// No progress yet — derive from chatID. Named sessions (chatID
+	// has a session name after ':') are likely worktree sessions.
+	// Default session (chatID == workDir) is always primary.
+	if m.chatID != "" && m.chatID != m.workDir {
+		sessionName := m.chatID
+		if idx := strings.LastIndex(m.chatID, ":"); idx > 0 {
+			sessionName = m.chatID[idx+1:]
+		}
+		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(sessionName))
+	}
+
 	return fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("primary"))
 }
 
