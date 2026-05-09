@@ -98,6 +98,9 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - **Sidebar sections**: Sessions (always), Todo (when items exist), Active tasks (when bgTaskCount > 0 or agentCount > 0). Sections stack vertically, separated by blank lines.
 - **Sidebar rendering pattern**: single lipgloss style per line + manual truncation (`truncateToWidth`) + padding to fill width (`lipgloss.Width`). Do NOT use separate styles for icon vs text on the same line — ANSI boundary causes wrapping artifacts in narrow (~26-char) sidebar content area. Follow `renderSidebarSessions` as the reference pattern.
 - **Sidebar width**: `m.sidebarWidth` (default 30), persisted via `sidebar_width` layout key (not in `config.Config` struct — use `saveLayoutToConfig()` for persistence).
+- **Session busy/idle indicators**: sidebar renders different icons for busy vs idle sessions in `renderSidebarSessions`. Current session uses `m.typing`, agent sessions use `entry.Running`, other main sessions use `entry.Busy`. Icons: active+busy → `◉` (Accent color), active+idle → `●` (Accent), inactive+busy → `◎` (Warning/SidebarBusy style), inactive+idle → `○` (TextPrimary). `SidebarBusy` style defined in `cli_theme.go` (Warning color, Bold). CJK width note: `◉`/`◎` same width as `●`/`○` — layout stays stable.
+- **Sessions Panel busy indicators**: `viewSessionsList` in `cli_panel.go` likewise differentiates. Main sessions show `◉`+`⏳` when busy, agent sessions show `⏳` suffix when `Running`. Busy determination mirrors sidebar: current session → `m.typing`, agents → `entry.Running`, others → `entry.Busy`.
+- **`Busy` field data flow**: populated in `SessionPanelEntry` via `SessionsList` callback (`cmd/xbot-cli/main.go`). For main sessions: `app.backend.IsProcessing("cli", chatID)` (works both local and remote). For agents: `entry.Busy = entry.Running`. Remote mode refreshes every 5s via `refreshAgentCache`.
 
 ### CLI TODO Rendering
 
