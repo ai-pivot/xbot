@@ -833,10 +833,6 @@ func (m *cliModel) renderInfoBar() string {
 	// Always show workspace indicator (pinned to left).
 	wsIndicator := m.renderWorkspaceIndicator()
 
-	if !hasTasks && !hasAgents && !hasQueue && wsIndicator == "" {
-		return ""
-	}
-
 	var parts []string
 
 	if hasTasks {
@@ -876,24 +872,21 @@ func (m *cliModel) renderInfoBar() string {
 }
 
 // renderWorkspaceIndicator returns a workspace status string.
-// "🏠 primary" for main workspace, "🌿 <branch>" for worktree sessions.
+// "🏠 primary" for main workspace, "🌿 <name>" for worktree sessions.
 func (m *cliModel) renderWorkspaceIndicator() string {
 	cwd := ""
 	if m.progress != nil {
 		cwd = m.progress.CWD
 	}
-	if cwd == "" {
-		// No progress yet — check if current session might have a worktree
-		return ""
-	}
 
-	if strings.Contains(cwd, ".xbot-worktrees") {
-		// Extract a readable branch name from the CWD
+	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
 		dirName := filepath.Base(cwd)
-		// Shorten: peer-cli--home-user-src-xbot-worktree-20260509-180133 → worktree
 		shortName := shortenWorktreeName(dirName)
 		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(shortName))
 	}
+
+	// No progress or not a worktree — show primary by default.
+	// Will update to worktree indicator when first progress event arrives.
 	return fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("primary"))
 }
 
