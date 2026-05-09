@@ -2096,12 +2096,17 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// Auto worktree detection: if multiple sessions share the same git repo,
 	// automatically create an isolated worktree to prevent file conflicts.
-	// Uses workspaceRoot (per-user/session workspace) not a.workDir (global config),
-	// because in remote TUI mode these are different directories.
+	// Uses tenantSession's CurrentDir (actual working directory), falling back
+	// to workspaceRoot. This correctly handles remote TUI mode where workspaceRoot
+	// is a per-user directory that may not itself be a git repo.
 	sessKey := sessionKey(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
-	if entry := tools.AutoDetectAndInit(workspaceRoot, sessKey); entry != nil {
+	detectDir := tenantSession.GetCurrentDir()
+	if detectDir == "" {
+		detectDir = workspaceRoot
+	}
+	if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil {
 		if entry.WorktreeDir != "" {
 			tenantSession.SetCurrentDir(entry.WorktreeDir)
 			log.Ctx(ctx).WithFields(log.Fields{

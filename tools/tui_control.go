@@ -28,6 +28,7 @@ func (t *TuiControlTool) Description() string {
 	return "Operate the TUI directly: switch sidebar sessions, close sessions, resize sidebar, change themes. " +
 		"Use this whenever the user asks to switch to a different session, close a session, adjust the sidebar width, " +
 		"or change the theme. This is the PRIMARY way to navigate between sessions in the TUI. " +
+		"To CREATE a new session, use CreateChat (type=agent, role=explore, instance=\"name\") instead. " +
 		"Actions: switch_session(chat_id), close_session(chat_id, params.confirm=true), " +
 		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name). " +
 		"To find available sessions to switch to, look at the sessions listed in the sidebar."
@@ -114,6 +115,9 @@ func (t *TuiControlTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 		return NewResult(fmt.Sprintf("Theme changed from %s to %s", prev, params.Theme)), nil
 
 	default:
+		if params.Action == "new_session" || params.Action == "create_session" {
+			return nil, fmt.Errorf("tui_control: to create a new session, use the CreateChat tool instead (type=agent, role=explore, instance=\"debug\"). tui_control only manages existing sessions")
+		}
 		return nil, fmt.Errorf("tui_control: unknown action: %s (valid: switch_session, close_session, set_layout, set_theme)", params.Action)
 	}
 }
