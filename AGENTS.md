@@ -166,12 +166,14 @@
 - PowerShell env output is newline-delimited, not null-delimited.
 
 ### Worktree
-- **Primary registration must NOT check dirty tree.** `WorktreeTool.init` and `AutoDetectAndInit` both skip dirty check when registering as primary (first agent in repo). Only worktree creation requires a clean tree — `git worktree add` fails on dirty repos.
-- **AutoDetectAndInit runs in `processMessage` before `buildPrompt`.** Session CWD is updated before system prompt construction, so the agent sees the correct worktree path from the start.
-- **`IsWorktreeIsolated` overrides `isUnrestricted()`.** CLI mode (`sandbox="none"`) normally bypasses all path checks, but when `IsWorktreeIsolated=true`, `isUnrestricted()` returns `false` — path boundaries are enforced even for CLI sessions.
-- **Worktree paths must be outside main repo.** Git rejects `git worktree add` inside the main working tree. Paths are placed at `{repo}/../.xbot-worktrees/{role}-{instance}/`.
+- **Primary registration must NOT check dirty tree.** `WorktreeTool.init` and `AutoDetectAndInit` both skip dirty check when registering as primary (first agent in repo). Only worktree creation requires `git worktree add` which now uses `--detach HEAD` (works on dirty trees too).
+- **`createWorktree` uses `--detach` not `-b`.** `git worktree add --detach HEAD` followed by `checkout -b` in the worktree. This avoids dirty-tree failures that `-b` would trigger.
+- **AutoDetectAndInit runs in `buildPrompt` (not `processMessage`).** `buildPrompt` is the common code path for ALL message types. Session CWD is updated before system prompt construction.
+- **`IsWorktreeIsolated` overrides `isUnrestricted()`.** CLI mode (`sandbox="none"`) normally bypasses all path checks, but when `IsWorktreeIsolated=true`, `isUnrestricted()` returns `false`.
+- **Worktree paths must be outside main repo.** Git rejects `git worktree add` inside the main working tree. Paths: `{repo}/../.xbot-worktrees/{role}-{instance}/`.
 - **Worktree creation is serialized via `GlobalWorktreeRegistry.mu`.** Two agents creating worktrees simultaneously would race on `.git/worktrees/` lockfiles.
-- **`go:embed embed_skills/*` auto-discovers new skills.** Adding a directory under `tools/embed_skills/` requires zero code changes — the skill is automatically available.
+- **`BuildSystemReminder` takes `sessionKey` parameter.** Used to query `GlobalWorktreeRegistry` for worktree/peer info injected into sys_reminder per iteration.
+- **`go:embed embed_skills/*` auto-discovers new skills.** Adding a directory under `tools/embed_skills/` requires zero code changes.
 
 ## Development Principles
 
