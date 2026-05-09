@@ -390,9 +390,6 @@ func (s *runState) beginIteration(i int) {
 // notifyThinking sends the thinking progress notification.
 func (s *runState) notifyThinking(iteration int) {
 	if s.autoNotify {
-		// Sync token usage before sending progress so the context bar always
-		// reflects the latest tracker state (including post-compression estimates).
-		s.updateTokenUsage()
 		if iteration == 0 {
 			s.notifyProgress("💭")
 		} else {
