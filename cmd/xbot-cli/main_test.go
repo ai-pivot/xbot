@@ -704,6 +704,7 @@ func (b *fakeAgentBackend) Bus() *bus.MessageBus                                
 func (b *fakeAgentBackend) IsRemote() bool                                               { return false }
 func (b *fakeAgentBackend) IsProcessing(string, string) bool                             { return false }
 func (b *fakeAgentBackend) GetActiveProgress(string, string) *channel.CLIProgressPayload { return nil }
+func (b *fakeAgentBackend) GetTodos(string, string) []channel.CLITodoItem                { return nil }
 func (b *fakeAgentBackend) LLMFactory() *agent.LLMFactory                                { return b.factory }
 func (b *fakeAgentBackend) SettingsService() *agent.SettingsService                      { return nil }
 func (b *fakeAgentBackend) MultiSession() *session.MultiTenantSession                    { return nil }

@@ -261,6 +261,11 @@ type suHistoryLoadMsg struct {
 	// context bar still shows the session's last known token usage.
 	tokenPrompt     int64
 	tokenCompletion int64
+	// todos is the server-side TODO list for the target session.
+	// Populated by suLoadHistoryCmd via GetTodosFn RPC.
+	// When non-nil, it overwrites the local TodoManager cache so
+	// the first session switch after TUI startup shows fresh data.
+	todos []CLITodoItem
 }
 
 // sessionState holds per-session state that should be preserved when switching sessions.
@@ -1337,6 +1342,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	chatID := m.chatID
 	channelName := m.channelName
 	progressFn := m.channel.config.GetActiveProgressFn
+	todosFn := m.channel.config.GetTodosFn
 
 	// Agent sessions: load from in-memory interactiveSubAgents (not DB).
 	if channelName == "agent" {
@@ -1349,7 +1355,11 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				if progressFn != nil {
 					activeProgress = progressFn(channelName, chatID)
 				}
-				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress}
+				var todos []CLITodoItem
+				if todosFn != nil {
+					todos = todosFn(channelName, chatID)
+				}
+				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress, todos: todos}
 			}
 		}
 	}
@@ -1368,6 +1378,11 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 		if progressFn != nil {
 			activeProgress = progressFn(channelName, chatID)
 		}
+		// Fetch server-side TODO list to overwrite local cache on first switch.
+		var todos []CLITodoItem
+		if todosFn != nil {
+			todos = todosFn(channelName, chatID)
+		}
 		// Fetch last token state so the context bar shows immediately
 		// even when the session is idle (no active turn).
 		var tokenPrompt, tokenCompletion int64
@@ -1381,6 +1396,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 			activeProgress:  activeProgress,
 			tokenPrompt:     tokenPrompt,
 			tokenCompletion: tokenCompletion,
+			todos:           todos,
 		}
 	}
 }

@@ -53,6 +53,12 @@ type AgentBackend interface {
 	// and streaming content on mid-session reconnect.
 	GetActiveProgress(ch, chatID string) *channel.CLIProgressPayload
 
+	// GetTodos returns the current TODO list for a session from the server's
+	// TodoManager. Unlike GetActiveProgress (which only works during active turns),
+	// this works at any time — idle, active, or between turns. Returns nil if
+	// the session has no todos.
+	GetTodos(ch, chatID string) []channel.CLITodoItem
+
 	// OnProgress registers a callback for streaming progress events from the server.
 	// LocalBackend: no-op (progress flows through dispatcher/channel directly).
 	// RemoteBackend: converts WS progress_structured/stream_content messages to

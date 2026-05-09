@@ -1697,6 +1697,9 @@ func main() {
 		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *channel.CLIProgressPayload {
 			return backend.GetActiveProgress(channelName, chatID)
 		}
+		cliCfg.GetTodosFn = func(channelName, chatID string) []channel.CLITodoItem {
+			return backend.GetTodos(channelName, chatID)
+		}
 		cliCfg.GetTokenStateFn = func(channelName, chatID string) (int64, int64) {
 			pt, ct, err := backend.GetTokenState(channelName, chatID)
 			if err != nil {

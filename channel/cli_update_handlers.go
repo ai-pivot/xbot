@@ -1093,6 +1093,26 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		}
 		// Server says session is idle — enable input.
 		m.inputReady = true
+
+		// Apply server-side todos from the RPC response, overwriting
+		// the local TodoManager cache. This ensures the first session
+		// switch after TUI startup shows fresh data from the server.
+		// nil means "RPC unavailable" (keep local cache).
+		// empty slice means "server has no todos" (clear local cache).
+		if msg.todos != nil {
+			if len(msg.todos) > 0 {
+				m.todos = make([]CLITodoItem, len(msg.todos))
+				copy(m.todos, msg.todos)
+				m.todosDoneCleared = false
+				m.persistTodosToManager()
+			} else {
+				m.todos = nil
+				if m.todoManager != nil {
+					m.todoManager.SetTodos(m.sessionKey(), nil)
+				}
+			}
+			m.relayoutViewport()
+		}
 		// If the restored session has queued messages, schedule a flush.
 		// postRestoreSessionSetup clears needFlushQueue for safety; this is the
 		// authoritative re-enable point after the RPC confirms the session is idle.

@@ -577,6 +577,12 @@ func (b *Backend) GetActiveProgress(ch, chatID string) *channel.CLIProgressPaylo
 	return r
 }
 
+func (b *Backend) GetTodos(ch, chatID string) []channel.CLITodoItem {
+	var r []channel.CLITodoItem
+	_ = b.call(MethodGetTodos, getTodosReq{Channel: ch, ChatID: chatID}, &r)
+	return r
+}
+
 // ── Channel config ────────────────────────────────────────────────────────
 
 func (b *Backend) GetChannelConfigs() (map[string]map[string]string, error) {

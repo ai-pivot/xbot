@@ -657,6 +657,20 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		}
 		return backend.GetActiveProgress(p.Channel, p.ChatID), nil
 	})
+
+	t["get_todos"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		if p.Channel == "" {
+			p.Channel = "web"
+		}
+		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+			return nil, fmt.Errorf("access denied")
+		}
+		return backend.GetTodos(p.Channel, p.ChatID), nil
+	})
 }
 
 // ── Background tasks / tenants ──

@@ -733,6 +733,22 @@ func (t *localTransport) registerHandlers() {
 		return &result, nil
 	})
 
+	h[MethodGetTodos] = rpc1(func(r getTodosReq) ([]channel.CLITodoItem, error) {
+		key := r.Channel + ":" + r.ChatID
+		if a.todoManager == nil {
+			return nil, nil
+		}
+		items := a.todoManager.GetTodos(key)
+		if len(items) == 0 {
+			return nil, nil
+		}
+		result := make([]channel.CLITodoItem, len(items))
+		for i, t := range items {
+			result[i] = channel.CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+		}
+		return result, nil
+	})
+
 	// ── Channel config ────────────────────────────────────────────────────
 
 	h[MethodGetChannelConfig] = rpc0(func() (map[string]map[string]string, error) {
