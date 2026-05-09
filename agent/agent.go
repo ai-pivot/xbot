@@ -986,12 +986,20 @@ func New(cfg Config) (*Agent, error) {
 			ms := agent.multiSession
 			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
 				cwd := ""
+				sessKey := "cli:" + chatID
 				if ms != nil && chatID != "" {
 					if sess, err := ms.GetOrCreateSession("cli", chatID); err == nil {
 						cwd = sess.GetCurrentDir()
 					} else {
 						log.Debugf("[widget-push] GetOrCreateSession failed for cli/%s: %v", chatID, err)
 					}
+				}
+				// For worktree sessions, the registry is the authoritative source.
+				// CWD may not yet be set (before first message) or may be stale
+				// (CLI SetCWD set main workDir during connection). Use the
+				// persisted registry entry which survives restarts.
+				if entry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); entry != nil && entry.WorktreeDir != "" {
+					cwd = entry.WorktreeDir
 				}
 				zones := make(map[string]string, len(zoneNames))
 				for _, z := range zoneNames {
