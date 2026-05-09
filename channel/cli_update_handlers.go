@@ -429,11 +429,6 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 	m.progress = msg.payload
 
-	// Cache token usage for context bar display — every progress event
-	// carries fresh token counts from the agent's updateTokenUsage().
-	if m.progress != nil {
-		m.cacheTokenUsage(m.progress.TokenUsage)
-	}
 	if m.cachedMaxContextTokens == 0 {
 		m.cachedMaxContextTokens = m.resolveMaxContextTokens()
 	}
@@ -469,6 +464,14 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.invalidateAllCache(true)
 		m.viewport.GotoBottom()
 		m.reloadMessagesFromSession()
+	}
+
+	// Cache token usage for context bar display — every progress event
+	// carries fresh token counts from the agent's updateTokenUsage().
+	// Must run after HistoryCompacted so the compressed estimate overwrites
+	// the nil set above, rather than being cleared by it.
+	if m.progress != nil {
+		m.cacheTokenUsage(m.progress.TokenUsage)
 	}
 
 	if msg.payload != nil {
