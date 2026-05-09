@@ -88,6 +88,11 @@ func (c *CLIChannel) Start() error {
 	c.model.debugCaptureMs = c.config.DebugCaptureMs
 	c.model.senderID = "cli_user"
 
+	// CLI-side TodoManager for persisting todos across turns and session switches.
+	// Updated by syncProgressTodos during active turns and consumed by endAgentTurn
+	// and restoreSession to preserve unfinished todos in idle state.
+	c.model.todoManager = tools.NewTodoManager()
+
 	// Apply CLI flag overrides for layout
 	if c.config.SidebarWidthOverride > 0 {
 		c.model.sidebarWidth = c.config.SidebarWidthOverride

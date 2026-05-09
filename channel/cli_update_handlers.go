@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	log "xbot/logger"
+	"xbot/tools"
 )
 
 // handleKeyPress processes key press events in the main update loop.
@@ -518,6 +519,8 @@ func (m *cliModel) syncProgressTodos(payload *CLIProgressPayload) {
 			copy(m.todos, payload.Todos)
 			m.todosDoneCleared = false
 			m.relayoutViewport()
+			// Persist to TodoManager so todos survive turn end and session switches.
+			m.persistTodosToManager()
 		}
 	} else {
 		prevTodoCount := len(m.todos)
@@ -526,6 +529,27 @@ func (m *cliModel) syncProgressTodos(payload *CLIProgressPayload) {
 			m.relayoutViewport()
 		}
 	}
+}
+
+// persistTodosToManager converts m.todos to tools.TodoItem and writes to the
+// CLI-side TodoManager for cross-turn and cross-session persistence.
+func (m *cliModel) persistTodosToManager() {
+	if m.todoManager == nil {
+		return
+	}
+	key := m.sessionKey()
+	if key == "" {
+		return
+	}
+	if len(m.todos) == 0 {
+		m.todoManager.SetTodos(key, nil)
+		return
+	}
+	items := make([]tools.TodoItem, len(m.todos))
+	for i, t := range m.todos {
+		items[i] = tools.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+	}
+	m.todoManager.SetTodos(key, items)
 }
 
 // snapshotIterationChange detects iteration changes and snapshots the previous

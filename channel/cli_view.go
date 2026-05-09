@@ -561,39 +561,53 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 	s := &m.styles
 
 	var sb strings.Builder
-	// Header: "Todo" with count
-	sb.WriteString(s.SidebarHeader.Render("Todo"))
-	fmt.Fprintf(&sb, " %d/%d", done, total)
-
-	// Compact progress bar
+	// Header: "Todo N/M" + progress bar, padded to full width
+	headerLabel := s.SidebarHeader.Render("Todo")
+	fmt.Fprintf(&sb, "%s %d/%d", headerLabel, done, total)
+	sb.WriteString(" ")
 	barWidth := 10
 	filled := 0
 	if total > 0 {
 		filled = done * barWidth / total
 	}
-	sb.WriteString(" ")
 	sb.WriteString(s.TodoFilled.Render(strings.Repeat("█", filled)))
 	sb.WriteString(s.TodoEmpty.Render(strings.Repeat("░", barWidth-filled)))
 
-	// Items — one per line, compact
+	// Items — one per line, single style per line to avoid ANSI boundary
+	// wrapping artifacts in the narrow sidebar. Pattern mirrors
+	// renderSidebarSessions: truncate, pad to width, one style.
 	for _, item := range m.todos {
 		sb.WriteByte('\n')
-		text := item.Text
-		maxTextW := w - 4 // indent(2) + icon(1) + space(1)
-		if maxTextW < 4 {
-			maxTextW = 4
-		}
-		if utf8.RuneCountInString(text) > maxTextW {
-			text = string([]rune(text)[:maxTextW-1]) + "…"
-		}
-		sb.WriteString("  ")
+		icon := "○"
+		var style lipgloss.Style
 		if item.Done {
-			sb.WriteString(s.TodoDone.Render("✓"))
+			icon = "✓"
+			style = s.TodoDone
 		} else {
-			sb.WriteString(s.TodoLabel.Render("○"))
+			style = s.TodoPending
 		}
-		sb.WriteString(" ")
-		sb.WriteString(s.TodoPending.Render(text))
+
+		prefix := "  " + icon + " "
+		prefixW := lipgloss.Width(prefix)
+		maxTextW := w - prefixW
+		if maxTextW < 2 {
+			maxTextW = 2
+		}
+
+		text := item.Text
+		if lipgloss.Width(text) > maxTextW {
+			text = truncateToWidth(text, maxTextW)
+		}
+
+		line := prefix + text
+		lineW := lipgloss.Width(line)
+		linePadding := w - lineW
+		if linePadding < 0 {
+			linePadding = 0
+		}
+
+		sb.WriteString(style.Render(line))
+		sb.WriteString(strings.Repeat(" ", linePadding))
 	}
 
 	return sb.String()
