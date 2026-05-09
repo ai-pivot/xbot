@@ -727,6 +727,12 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 
 // handleAgentMessage 处理 agent 回复
 func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
+	// Persist pending AskUser questions BEFORE session filter, so they survive
+	// session switches and restarts. Only persist if metadata has ask_questions.
+	if msg.WaitingUser && msg.Metadata != nil && msg.Metadata["ask_questions"] != "" && msg.ChatID != "" {
+		m.savePendingAskUser(msg.ChatID, msg.Metadata)
+	}
+
 	// suLoading guard: during session switch in remote mode, discard agent replies.
 	// The RPC (handleSuHistoryLoad) will load the authoritative message history.
 	// Accepting stale replies here would create duplicates or render on empty history.
@@ -934,6 +940,8 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 				m.updateViewportContent()
 				m.askUserSession = m.chatID // bind AskUser to current session
 				m.openAskUserPanel(items, func(answers map[string]string) {
+					// Clean up persisted pending question now that user answered.
+					m.deletePendingAskUser(m.askUserSession)
 					// Format answers as tool-call style message
 					var parts []string
 					for i, item := range items {
@@ -977,6 +985,8 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 					m.startAgentTurn()
 					m.updateViewportContent()
 				}, func() {
+					// Clean up persisted pending question on cancel.
+					m.deletePendingAskUser(m.askUserSession)
 					m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
 					m.typing = false
 					m.updatePlaceholder()
