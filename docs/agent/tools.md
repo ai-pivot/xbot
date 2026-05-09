@@ -23,6 +23,8 @@
 | `none_sandbox.go` | None sandbox (local execution). Uses platform helpers from shell_unix/shell_windows.go |
 | `mcp_common.go` | MCP protocol definitions |
 | `mcp_remote_transport.go` | MCP HTTP transport |
+| `tui_control.go` | **TuiControlTool** — AI operates TUI sidebar/layout/theme via asyncCh |
+| `config_tool.go` | **ConfigTool** — AI reads/modifies config via SettingsSvc auto-injection |
 | `memory_tools.go` | Core memory tools (append/replace/rethink/search/recall) — letta only |
 | `knowledge_tools.go` | Project knowledge tools (write/list) — provider-agnostic |
 | `flat_memory_tools.go` | Flat memory tools (read/write/list) — flat provider only |
@@ -109,3 +111,27 @@ Routes by address prefix:
 - `run_as` (sudo) not supported on Windows — returns error
 - Platform helpers in `shell_unix.go` / `shell_windows.go`: `setProcessAttrs`, `killProcessTree`, `isProcessAlive`, `defaultShell`, `loginShellArgs`
 - `cmdbuilder` uses `defaultShell`/`defaultShellFlag` constants from `shell_default.go` / `shell_windows.go`
+
+## TUI Control & Config Tools (AI-Native)
+
+### tui_control (`tools/tui_control.go`)
+
+Core tool (always loaded). AI operates TUI sidebar, layout, and themes.
+
+**Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`
+
+**Flow**: `Execute()` → `ctx.TUIControl(action, params)` → `CLIChannel.SendTUIControl()` → `asyncCh` → `handleAsyncDrain` → `program.Send` → event loop → `handleSessionControlMsg`
+
+**Remote mode**: Server `RemoteTUICtrlFn` → `RemoteCLIChannel.SendTUIControlRequest()` → WS `tui_control_req` → client `readPump` → goroutine → `SendTUIControl` → asyncCh. ReadPump stays responsive (goroutine wrapper), allowing RPC calls within handlers.
+
+**Persistence**: `handleSessionControlMsg` calls `persistCLISettingsValues` after applying changes. Layout keys (sidebar_width etc.) are written directly to `config.json` via `saveLayoutToConfig()` (they're not in `Config` struct).
+
+### config (`tools/config_tool.go`)
+
+Core tool (always loaded). AI reads/modifies xbot configuration.
+
+**Actions**: `get`, `set`
+
+**Injection**: `buildToolContext` auto-injects `ConfigGet`/`ConfigSet` from `cfg.SettingsSvc`. Works in ALL modes (local + remote via RPC). Does NOT rely on Agent `SetTUICallbacks`.
+
+**Masking**: Sensitive keys (`api_key`, `runner_token`) show `sk-a***` on read. Writes are NOT blocked — users can type API keys anyway.
