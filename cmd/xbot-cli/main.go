@@ -1484,12 +1484,14 @@ func main() {
 			// Build entries: each session followed by its subagents.
 			for _, sess := range sessions {
 				isActive := sess.chatID == absWorkDir
+				mainBusy := app.backend.IsProcessing("cli", sess.chatID)
 				entries = append(entries, channel.SessionPanelEntry{
 					ID:      sess.chatID,
 					Type:    "main",
 					Channel: "cli",
 					Label:   sess.label,
 					Active:  isActive,
+					Busy:    mainBusy,
 				})
 				for _, s := range subsByChatID[sess.chatID] {
 					agentKey := s.Role + ":" + s.Instance
@@ -1505,6 +1507,7 @@ func main() {
 						Instance:    s.Instance,
 						ParentID:    sess.chatID,
 						Running:     s.Running,
+						Busy:        s.Running,
 						MessageHint: s.Preview,
 					})
 				}
@@ -2225,12 +2228,14 @@ func main() {
 			seen := make(map[string]bool)
 			for _, sess := range sessions {
 				isActive := sess.chatID == absWorkDir
+				mainBusy := app.backend.IsProcessing("cli", sess.chatID)
 				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
 					ID:      sess.chatID,
 					Type:    "main",
 					Channel: "cli",
 					Label:   sess.label,
 					Active:  isActive,
+					Busy:    mainBusy,
 				})
 				for _, s := range subsByChatID[sess.chatID] {
 					agentKey := s.Role + ":" + s.Instance
@@ -2246,6 +2251,7 @@ func main() {
 						Instance:    s.Instance,
 						ParentID:    sess.chatID,
 						Running:     s.Running,
+						Busy:        s.Running,
 						MessageHint: s.Preview,
 					})
 				}

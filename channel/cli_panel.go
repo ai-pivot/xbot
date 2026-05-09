@@ -1183,11 +1183,21 @@ func (m *cliModel) viewSessionsList() string {
 		var icon, line string
 		switch entry.Type {
 		case "main":
-			activeMark := ""
+			mainBusy := false
 			if entry.Active {
+				mainBusy = m.typing
+			} else {
+				mainBusy = entry.Busy
+			}
+			activeMark := ""
+			iconChar := "●"
+			if mainBusy {
+				iconChar = "◉"
+				activeMark = " ⏳"
+			} else if entry.Active {
 				activeMark = " ✓"
 			}
-			icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#10b981")).Render("●")
+			icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#10b981")).Render(iconChar)
 			label := entry.Label
 			if label == "" {
 				label = entry.ID
@@ -1225,6 +1235,9 @@ func (m *cliModel) viewSessionsList() string {
 				labelStyle = labelStyle.Faint(true)
 			}
 			line = fmt.Sprintf("%s %s  %s", prefix, statusStyle.Render(statusIcon), labelStyle.Render(label))
+			if entry.Running {
+				line += " ⏳"
+			}
 		default:
 			line = fmt.Sprintf("%s   %s", prefix, entry.Label)
 		}
