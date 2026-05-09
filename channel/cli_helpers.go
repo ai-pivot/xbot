@@ -269,6 +269,11 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	m.startAgentTurn()
 
 	// Apply the progress payload
+	// Preserve CWD from previous progress if the new payload doesn't have one
+	// (stream_content events don't carry CWD and would overwrite it).
+	if payload.CWD == "" && m.progress != nil {
+		payload.CWD = m.progress.CWD
+	}
 	m.progress = payload
 
 	// Cache token usage and max context for ready-status bar display

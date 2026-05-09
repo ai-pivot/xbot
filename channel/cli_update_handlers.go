@@ -419,6 +419,17 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			m.cacheTokenUsage(m.progress.TokenUsage)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
+			if msg.payload.CWD == "" && m.progress != nil {
+				msg.payload.CWD = m.progress.CWD
+			}
+			// Preserve CWD from previous progress if new payload doesn't have it.
+			if msg.payload.CWD == "" && m.progress != nil {
+				msg.payload.CWD = m.progress.CWD
+			}
+			// Preserve CWD from previous progress if new payload doesn't have it.
+			if msg.payload.CWD == "" && m.progress != nil {
+				msg.payload.CWD = m.progress.CWD
+			}
 			m.progress = msg.payload
 		}
 		return
@@ -430,6 +441,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	if msg.payload == nil {
 		m.progress = nil
 		return
+	}
+	// Preserve CWD from previous progress if new payload doesn't have it.
+	if msg.payload.CWD == "" && m.progress != nil {
+		msg.payload.CWD = m.progress.CWD
 	}
 	m.progress = msg.payload
 
