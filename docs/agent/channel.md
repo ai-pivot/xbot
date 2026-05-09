@@ -130,3 +130,13 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **Viewport height**: `layoutViewportHeight()` excludes todo lines from `reservedLines` when `m.sidebarShown()` — viewport expands to fill the space.
 - **Mouse zones**: `trackMainLayoutZones()` skips todo bar zone when `showSidebar` — no dead zone in main view.
 - **Data lifecycle**: `syncProgressTodos` populates `m.todos` from progress events AND persists to `cliModel.todoManager`. `endAgentTurn` restores unfinished todos from TodoManager on turn end. `restoreSession` restores from disk (`LoadFromFile`) on session switch. `saveCurrentSession` persists current todos to disk (`SaveToFile`).
+
+### CLI Remote TODO Sync (`get_todos` RPC)
+
+- **Problem**: On remote TUI startup, the first session switch loaded TODO from local disk cache (`TodoManager.LoadFromFile`). If the local disk was empty or stale (different terminal, server restart, etc.), todos would be missing until the next active turn.
+- **Solution**: New `get_todos` RPC (`MethodGetTodos = "get_todos"`):
+  - **Server side**: `local_transport.go` handler reads from `Agent.todoManager.GetTodos(sessionKey)` and returns `[]CLITodoItem`
+  - **Client side**: `suLoadHistoryCmd` calls `GetTodosFn(channel, chatID)` concurrently with history + progress, populates `suHistoryLoadMsg.todos`
+  - **Application**: `handleSuHistoryLoad` default (idle) branch overwrites `m.todos` + `persistTodosToManager()` with server data. Non-nil empty slice means "server has no todos" → clears local cache too
+- **RPC registration** (8 files): `req_types.go` (constant + struct) → `backend.go` (interface) → `backend_impl.go` (method) → `local_transport.go` (handler) → `rpc_table.go` (route) → `cli_types.go` (callback) → `main.go` (wiring) → test stubs
+- **Adding new RPC methods**: must also stub `GetTodos` in `fakeAgentBackend` (`cmd/xbot-cli/main_test.go`) and `fakeBackend` (`serverapp/server_test.go`) — these implement `AgentBackend` interface and will fail `typecheck` if incomplete
