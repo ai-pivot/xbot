@@ -79,6 +79,7 @@ type dirSession struct {
 	Name      string    `json:"name"`
 	ChatID    string    `json:"chat_id"`
 	CreatedAt time.Time `json:"created_at"`
+	CWD       string    `json:"cwd,omitempty"` // per-session working directory (worktree path, etc.)
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.

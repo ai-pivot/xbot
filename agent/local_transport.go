@@ -310,7 +310,12 @@ func (t *localTransport) registerHandlers() {
 		if err != nil {
 			return err
 		}
-		sess.SetCurrentDir(r.Dir)
+		// Only set CWD if it's empty (initial creation). Session-specific
+		// CWD changes (worktree, Cd tool) must not be overwritten by the
+		// CLI sending the default workDir on every session switch.
+		if sess.GetCurrentDir() == "" {
+			sess.SetCurrentDir(r.Dir)
+		}
 		return nil
 	})
 
