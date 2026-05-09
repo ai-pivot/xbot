@@ -63,7 +63,7 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	}
 
 	if cwd != "" {
-		parts = append(parts, fmt.Sprintf("当前目录: %s", cwd))
+		parts = append(parts, fmt.Sprintf("📂 默认工作目录: %s（你的 Shell 命令默认在此目录执行，Cd 后生效）", cwd))
 	}
 
 	parts = append(parts, fmt.Sprintf("已完成 %d 次工具调用", toolCount))
