@@ -315,10 +315,15 @@ func (t *localTransport) registerHandlers() {
 		// Check persisted WorktreeRegistry first — worktree CWD survives restarts.
 		if sess.GetCurrentDir() == "" {
 			sessKey := r.Channel + ":" + r.ChatID
+			actualDir := r.Dir
 			if persisted := tools.GlobalWorktreeRegistry.GetCWD(sessKey); persisted != "" {
-				sess.SetCurrentDir(persisted)
-			} else {
-				sess.SetCurrentDir(r.Dir)
+				actualDir = persisted
+			}
+			sess.SetCurrentDir(actualDir)
+			// Refresh plugin contexts so script plugins (e.g. git-info)
+			// immediately see the correct workDir after startup/restore.
+			if a.pluginMgr != nil && actualDir != r.Dir {
+				a.pluginMgr.RefreshWorkDir(actualDir)
 			}
 		}
 		return nil
