@@ -119,14 +119,14 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 		return NewResult(fmt.Sprintf("Registered as primary agent for repo %s.\nUsing main project directly (no worktree needed).", repoPath)), nil
 	}
 
-	// Creating a worktree — check for dirty tree first
+	// Creating a worktree — warn if tree is dirty (worktree starts from HEAD)
 	dirty, err := gitIsDirty(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("worktree init: check dirty: %w", err)
 	}
+	dirtyWarning := ""
 	if dirty {
-		return NewResult("Cannot create worktree: the main repository has uncommitted changes.\n" +
-			"Please commit or stash your changes first, then try again."), nil
+		dirtyWarning = "\n⚠️ 主工作区有未提交更改，worktree 将从 HEAD 创建（不含未提交更改）。"
 	}
 
 	branch := generateBranchName(role, instance, params.Task)
@@ -156,9 +156,9 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 	}
 
 	msg := fmt.Sprintf("Worktree created successfully.\n"+
-		"- Repo: %s\n- Worktree: %s\n- Branch: %s\n- Role: %s\n\n"+
+		"- Repo: %s\n- Worktree: %s\n- Branch: %s\n- Role: %s%s\n\n"+
 		"You are now working in an isolated worktree. Other agents in the same repo will not see your changes until merge.",
-		repoPath, worktreePath, branch, role)
+		repoPath, worktreePath, branch, role, dirtyWarning)
 
 	peers := GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
 	if len(peers) > 0 {

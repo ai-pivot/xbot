@@ -34,6 +34,9 @@ func (m *cliModel) isNarrow() bool { return m.width < 60 }
 // isWide returns true when terminal width >= 120 — wide layout with extra info.
 func (m *cliModel) isWide() bool { return m.width >= 120 }
 
+// sidebarShown returns true when the sidebar is currently rendered on screen.
+func (m *cliModel) sidebarShown() bool { return m.isWide() && m.sidebarEnabled && m.sidebarVisible }
+
 // sidebarRenderedWidth returns the actual visual width of the sidebar after rendering.
 // This depends on character widths (e.g. RUNEWIDTH_EASTASIAN makes │ width=2),
 // so we measure it dynamically rather than using a hardcoded formula.
@@ -49,7 +52,7 @@ func (m *cliModel) sidebarRenderedWidth() int {
 
 // chatWidth returns the effective width for the chat viewport, accounting for sidebar.
 func (m *cliModel) chatWidth() int {
-	if m.isWide() && m.sidebarEnabled && m.sidebarVisible {
+	if m.sidebarShown() {
 		w := m.width - m.sidebarRenderedWidth()
 		if w < 20 {
 			w = 20
@@ -335,7 +338,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	infoBar = m.augmentInfoBar(infoBar)
 
 	// Layout assembly — build progressively so empty sections don't add blank lines.
-	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
+	showSidebar := m.sidebarShown()
 
 	// Title bar is always full width
 	var topLines []string
@@ -343,14 +346,17 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 
 	// Middle section: viewport + status + todo + footer + input + infoBar
 	// When sidebar is visible, this whole section is squeezed to chatWidth
+	// and the todo bar moves to the sidebar instead.
 	var middleLines []string
 	middleLines = append(middleLines, m.viewport.View())
 	if status != "" {
 		middleLines = append(middleLines, status)
 	}
-	todoBar := m.renderTodoBar()
-	if todoBar != "" {
-		middleLines = append(middleLines, todoBar)
+	if !showSidebar {
+		todoBar := m.renderTodoBar()
+		if todoBar != "" {
+			middleLines = append(middleLines, todoBar)
+		}
 	}
 	if footer != "" {
 		middleLines = append(middleLines, footer)
@@ -397,6 +403,13 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 
 	// --- Sessions (always shown, clickable) ---
 	blocks = append(blocks, m.renderSidebarSessions(contentW))
+
+	// --- Todo (when sidebar is visible, todo moves here from main view) ---
+	if len(m.todos) > 0 {
+		if st := m.renderSidebarTodo(contentW); st != "" {
+			blocks = append(blocks, st)
+		}
+	}
 
 	// --- Active tasks (only when something is running) ---
 	if m.bgTaskCount > 0 || m.agentCount > 0 {
@@ -528,6 +541,62 @@ func (m *cliModel) renderSidebarActive() string {
 		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf(" ● agents: %d", m.agentCount)))
 	}
 	return b.String()
+}
+
+// renderSidebarTodo renders the TODO list inside the sidebar as a compact section.
+// It adapts the renderTodoBar format for the narrower sidebar content width.
+func (m *cliModel) renderSidebarTodo(w int) string {
+	if len(m.todos) == 0 {
+		return ""
+	}
+
+	done := 0
+	total := len(m.todos)
+	for _, item := range m.todos {
+		if item.Done {
+			done++
+		}
+	}
+
+	s := &m.styles
+
+	var sb strings.Builder
+	// Header: "Todo" with count
+	sb.WriteString(s.SidebarHeader.Render("Todo"))
+	fmt.Fprintf(&sb, " %d/%d", done, total)
+
+	// Compact progress bar
+	barWidth := 10
+	filled := 0
+	if total > 0 {
+		filled = done * barWidth / total
+	}
+	sb.WriteString(" ")
+	sb.WriteString(s.TodoFilled.Render(strings.Repeat("█", filled)))
+	sb.WriteString(s.TodoEmpty.Render(strings.Repeat("░", barWidth-filled)))
+
+	// Items — one per line, compact
+	for _, item := range m.todos {
+		sb.WriteByte('\n')
+		text := item.Text
+		maxTextW := w - 4 // indent(2) + icon(1) + space(1)
+		if maxTextW < 4 {
+			maxTextW = 4
+		}
+		if utf8.RuneCountInString(text) > maxTextW {
+			text = string([]rune(text)[:maxTextW-1]) + "…"
+		}
+		sb.WriteString("  ")
+		if item.Done {
+			sb.WriteString(s.TodoDone.Render("✓"))
+		} else {
+			sb.WriteString(s.TodoLabel.Render("○"))
+		}
+		sb.WriteString(" ")
+		sb.WriteString(s.TodoPending.Render(text))
+	}
+
+	return sb.String()
 }
 
 // sidebarCurrentIdx returns the index of the currently active session.

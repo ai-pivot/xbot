@@ -783,7 +783,7 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 	viewportH := m.layoutViewportHeight()
 
 	// If sidebar is visible, register session item zones and new-session button.
-	showSidebar := m.isWide() && m.sidebarEnabled && m.sidebarVisible
+	showSidebar := m.sidebarShown()
 	// xShift: when sidebar is on the left, all middleBlock content is shifted right
 	// by the actual rendered sidebar width (depends on char widths, e.g. EASTASIAN).
 	xShift := 0
@@ -834,10 +834,12 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 	// status bar: 1 line
 	zb.skip(1)
 
-	// todo bar: variable
-	todoBar := m.renderTodoBar()
-	if todoBar != "" {
-		zb.skip(strings.Count(todoBar, "\n") + 1)
+	// todo bar: variable (only when sidebar is NOT visible — todo moves to sidebar)
+	if !showSidebar {
+		todoBar := m.renderTodoBar()
+		if todoBar != "" {
+			zb.skip(strings.Count(todoBar, "\n") + 1)
+		}
 	}
 
 	// footer: 0 or 1 line

@@ -518,8 +518,9 @@ func (m *cliModel) layoutViewportHeight() int {
 	// 正常模式
 	taBorder := 2 // top + bottom border
 	// 计算 todoBar 占用的行数：标题行(1) + 每个 todo item 一行
+	// 当 sidebar 展开时，todo 在 sidebar 中渲染，不占用主视图空间
 	todoLines := 0
-	if len(m.todos) > 0 {
+	if len(m.todos) > 0 && !m.sidebarShown() {
 		todoLines = 1 + len(m.todos)
 	}
 	// Info bar: 1 line when bg tasks/agents/queue are active OR widget content exists.

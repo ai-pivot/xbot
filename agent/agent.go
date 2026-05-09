@@ -2114,12 +2114,6 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 				"branch":   entry.Branch,
 				"role":     entry.Role,
 			}).Info("Auto worktree isolation enabled")
-		} else if entry.Role == "peer-dirty" {
-			log.Ctx(ctx).WithFields(log.Fields{
-				"repo":    entry.RepoPath,
-				"session": sessKey,
-				"role":    entry.Role,
-			}).Warn("Auto worktree skipped: repo has uncommitted changes, sharing main project")
 		}
 	}
 

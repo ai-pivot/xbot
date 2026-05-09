@@ -200,6 +200,8 @@ func generateBranchName(role, instance, taskHint string) string {
 }
 
 // createWorktree creates a git worktree and returns its path and branch.
+// Uses --detach to work even when the main repo has uncommitted changes.
+// The branch is created afterwards in the worktree via checkout -b.
 // Caller must hold WorktreeRegistry.mu or ensure serialization externally.
 func createWorktree(repoPath, branch string) (worktreePath string, err error) {
 	baseDir := worktreeBaseDir(repoPath)
@@ -212,12 +214,21 @@ func createWorktree(repoPath, branch string) (worktreePath string, err error) {
 		return "", fmt.Errorf("create worktree base dir: %w", err)
 	}
 
-	// git worktree add
+	// Step 1: git worktree add --detach (works even on dirty trees)
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "add",
-		worktreePath, "-b", branch)
+		"--detach", worktreePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	// Step 2: create branch in the new worktree
+	brCmd := exec.Command("git", "-C", worktreePath, "checkout", "-b", branch)
+	brOut, brErr := brCmd.CombinedOutput()
+	if brErr != nil {
+		// Rollback: remove the worktree we just created
+		removeWorktree(repoPath, worktreePath, "")
+		return "", fmt.Errorf("git checkout -b in worktree: %s: %w", strings.TrimSpace(string(brOut)), brErr)
 	}
 
 	return worktreePath, nil
@@ -280,26 +291,6 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 	}
 
 	// Another session is primary → create worktree for this session
-	// Check for dirty tree first
-	dirty, err := gitIsDirty(repoPath)
-	if err != nil || dirty {
-		// Can't create worktree on dirty tree, but still register as peer
-		// so the agent knows about other sessions via peer awareness.
-		entry := &WorktreeEntry{
-			SessionKey:  sessionKey,
-			Role:        "peer-dirty", // indicates sharing main project (no worktree isolation)
-			RepoPath:    repoPath,
-			WorktreeDir: "", // sharing main project
-			Branch:      "",
-			Status:      "working",
-		}
-		if err := GlobalWorktreeRegistry.Register(entry); err != nil {
-			return nil
-		}
-		return entry
-	}
-
-	// Generate unique branch name
 	branch := generateBranchName("peer", sessionKey, "")
 	branch = strings.ReplaceAll(branch, ":", "-") // sessionKey may contain ":"
 
