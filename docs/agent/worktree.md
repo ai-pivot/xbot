@@ -17,6 +17,8 @@ processMessage (agent/agent.go)
   → engine.Run()
     → initDynamicInjector()                      [peer awareness via DynamicContextInjector]
     → buildToolContext()                         [IsWorktreeIsolated → path_guard]
+    → postToolProcessing()                       [per-iteration: BuildSystemReminder]
+      → queries GlobalWorktreeRegistry           [worktree/peer awareness in sys_reminder]
 ```
 
 ## Key Components
@@ -70,6 +72,16 @@ ToolContext field that forces path boundary enforcement:
 ### DynamicContextInjector Extension (`agent/dynamic_context.go`)
 
 Extended with `getPeers` callback. `buildPeerContextXML()` queries `GlobalWorktreeRegistry` for peer entries and formats them as `<peers>` XML injected into tool messages.
+
+### BuildSystemReminder Integration (`agent/reminder.go`)
+
+Per-iteration dynamic reminder that queries `GlobalWorktreeRegistry` for worktree/peer info. Injected into sys_reminder (not cached in sys_prompt):
+
+- **Worktree agent**: shows isolation warning, branch, worktree path, and reminds agent to ask user whether to merge back
+- **Primary agent with peers**: lists active peers with their paths/branches
+- **peer-dirty agent**: warns about shared workspace with no isolation
+
+Uses `sessionKey` parameter to look up the current session in the registry.
 
 ### SubAgent WorkspaceRoot Rewrite (`agent/engine_wire.go`)
 
