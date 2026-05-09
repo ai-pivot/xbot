@@ -143,6 +143,7 @@ func (s *runState) initProgress() {
 			Iteration:      0,
 			ActiveTools:    nil,
 			CompletedTools: nil,
+			CWD:            s.cfg.InitialCWD,
 		}
 		// Seed token usage from DB-restored values so the first progress
 		// event carries real data instead of nil. Without this, the CLI

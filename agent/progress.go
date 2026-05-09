@@ -39,6 +39,9 @@ type StructuredProgress struct {
 	// CLI uses this to rebuild its message list from session storage.
 	HistoryCompacted bool
 
+	// CWD is the agent's current working directory (for worktree indicator in CLI).
+	CWD string
+
 	// SubAgents carries the structured SubAgent tree directly, avoiding
 	// the fragile text-based parsing in ExtractSubAgentTree.
 	SubAgents []SubAgentNode
