@@ -73,34 +73,32 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		parts = append(parts, fmt.Sprintf("TODO: %s", todoSummary))
 	}
 
-	// Worktree awareness: if this session is in an isolated worktree,
-	// remind the agent it's isolated and must merge back when done.
+	// Worktree/peer awareness: always show peer list and collaboration rules
+	// when other agents are working in the same repo (even without worktree).
 	if !isSubAgent && sessionKey != "" {
+		// Find repo path from session key
+		repoPath := ""
 		if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
+			repoPath = entry.RepoPath
 			if entry.WorktreeDir != "" {
 				parts = append(parts, "")
 				parts = append(parts, fmt.Sprintf("⚠️ Worktree 隔离模式 (分支: %s)", entry.Branch))
 				parts = append(parts, fmt.Sprintf("   工作区: %s", entry.WorktreeDir))
 				parts = append(parts, "   你的改动与主工作区隔离，其他 agent 看不到")
 				parts = append(parts, fmt.Sprintf("   完成后请主动询问用户：合并回主工作区（%s）还是继续留在 worktree", entry.RepoPath))
-			} else if entry.Role == "primary" {
-				// Show peers if any
-				peers := tools.GlobalWorktreeRegistry.GetPeers(entry.RepoPath, sessionKey)
-				if len(peers) > 0 {
-					parts = append(parts, "")
-					parts = append(parts, fmt.Sprintf("👥 协作中: %d 个同伴在同一仓库工作", len(peers)))
-					for _, p := range peers {
-						pDir := "主工作区"
-						if p.WorktreeDir != "" {
-							pDir = p.WorktreeDir
-						}
-						parts = append(parts, fmt.Sprintf("   - %s (分支: %s, 位置: %s)", p.SessionKey, p.Branch, pDir))
-					}
-				}
-			} else if entry.Role == "peer-dirty" {
-				parts = append(parts, "")
-				parts = append(parts, "⚠️ 协作中（无 worktree 隔离！共享主工作区，注意文件冲突）")
 			}
+		}
+
+		// Always show peers if any (including shared sessions without worktree)
+		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
+		if len(peers) > 0 {
+			parts = append(parts, "")
+			parts = append(parts, fmt.Sprintf("👥 协作中: %d 个同伴在此仓库工作", len(peers)))
+			for _, p := range peers {
+				parts = append(parts, fmt.Sprintf("   - %s (角色: %s, 分支: %s)", shortenPeerName(p.SessionKey), p.Role, p.Branch))
+			}
+			parts = append(parts, "协作规则: 尊重同伴的修改，改动冲突时优先通过 SendMessage 协商。")
+			parts = append(parts, "如果因同伴正在修改相关代码而无法验证，可 SendMessage 将验证任务委托给同伴。")
 		}
 	}
 
@@ -165,4 +163,12 @@ func extractUserGoal(content string) string {
 		goal = string(runes[:500]) + "..."
 	}
 	return goal
+}
+
+// shortenPeerName shortens a session key for display in peer list.
+func shortenPeerName(sessionKey string) string {
+	if idx := strings.LastIndex(sessionKey, ":"); idx > 0 {
+		return sessionKey[idx+1:]
+	}
+	return sessionKey
 }

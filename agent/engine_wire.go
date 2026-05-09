@@ -198,6 +198,9 @@ func (a *Agent) buildMainRunConfig(
 		cfg.InitialCWD = cwd
 	}
 
+	// Wire peer message injection for inter-session communication.
+	cfg.PeerMessageFn = a.injectPeerMessage
+
 	// 保留 FeishuUserID 供 buildToolContext 等处使用
 	cfg.FeishuUserID = feishuUserID
 

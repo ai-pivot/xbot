@@ -583,8 +583,6 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			m.suLoading = true
 			m.splashFrame = 0
 			return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
-		} else {
-			m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitched, m.chatID), feedbackInfo)
 		}
 
 	case "/ss", "/sessions":

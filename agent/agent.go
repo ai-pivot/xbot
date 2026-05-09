@@ -2104,9 +2104,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// Auto worktree detection: if multiple sessions share the same git repo,
 	// automatically create an isolated worktree to prevent file conflicts.
-	// Uses tenantSession's CurrentDir (actual working directory), falling back
-	// to workspaceRoot. This correctly handles remote TUI mode where workspaceRoot
-	// is a per-user directory that may not itself be a git repo.
+	// Gated behind experimental.auto_worktree config (default: false).
 	sessKey := sessionKey(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
@@ -2114,21 +2112,10 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	if detectDir == "" {
 		detectDir = workspaceRoot
 	}
-	if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil {
-		if entry.WorktreeDir != "" {
-			tenantSession.SetCurrentDir(entry.WorktreeDir)
-			// Also refresh plugin contexts so script plugins (e.g. git-info)
-			// immediately see the worktree directory, not the main workspace.
-			if a.pluginMgr != nil {
-				a.pluginMgr.RefreshWorkDir(entry.WorktreeDir)
-			}
-			log.Ctx(ctx).WithFields(log.Fields{
-				"worktree": entry.WorktreeDir,
-				"branch":   entry.Branch,
-				"role":     entry.Role,
-			}).Info("Auto worktree isolation enabled")
-		}
-	}
+	// Peer awareness: always register this session so other agents can see it.
+	// When auto_worktree is enabled, AutoDetectAndInit handles worktree creation.
+	// When disabled, RegisterPeer provides lightweight session tracking.
+	tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
 
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
@@ -2465,6 +2452,52 @@ func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content strin
 
 // RunSubAgent 实现 tools.SubAgentManager 接口
 // 创建一个独立的子 Agent 循环来执行任务，子 Agent 拥有自己的工具集但不能再创建子 Agent
+
+// injectPeerMessage sends a message to another CLI session (peer-to-peer).
+// If the target is busy, injects as a fake tool result in the current iteration.
+// If idle, pushes as a user message to start a new turn.
+// Returns a delivery status message.
+func (a *Agent) injectPeerMessage(targetSessionKey, content string) string {
+	parts := strings.SplitN(targetSessionKey, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Sprintf("❌ 无效的 peer 会话地址: %s", targetSessionKey)
+	}
+	ch, chatID := parts[0], parts[1]
+
+	// Check if target is busy (has an active Run)
+	cancelKey := targetSessionKey
+	_, busy := a.chatCancelCh.Load(cancelKey)
+
+	if busy {
+		// Target is busy — inject as a fake tool result message
+		msg := llm.NewToolMessage("SendMessage", cancelKey+":peer_msg", "{}", content)
+		sess, err := a.multiSession.GetOrCreateSession(ch, chatID)
+		if err == nil {
+			if err := sess.AddMessage(msg); err == nil {
+				log.WithFields(log.Fields{
+					"from": cancelKey,
+					"to":   targetSessionKey,
+					"busy": true,
+				}).Info("Peer message injected as tool result (target busy)")
+				return fmt.Sprintf("✅ 消息已投递到 %s（对方正在忙碌，消息作为工具结果注入当前迭代）", parts[1])
+			}
+		}
+		return fmt.Sprintf("⚠️ 消息已发送但可能未到达（目标 agent 正在运行中）: %s", parts[1])
+	}
+
+	// Target is idle — push as user message (triggers a new Run)
+	a.injectBgUserMessage(ch, chatID, "peer", fmt.Sprintf(
+		"📨 **来自同伴的消息** (session: %s)\n\n%s",
+		parts[1], content,
+	))
+	log.WithFields(log.Fields{
+		"from": cancelKey,
+		"to":   targetSessionKey,
+		"busy": false,
+	}).Info("Peer message delivered as user message (target idle)")
+	return fmt.Sprintf("✅ 消息已投递到 %s（对方空闲，消息将触发新的对话轮次）", parts[1])
+}
+
 // allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
 func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, instance, model string) (string, error) {
 	cfg := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)

@@ -953,7 +953,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			}
 			m.pendingUserMsg = nil
 		}
-		m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitchedHistory, m.senderID, len(msg.history)), feedbackInfo)
+		// SuSwitchedHistory提示已移除 — 切换session静默完成
 	}
 	m.invalidateAllCache(false)
 	m.viewport.GotoBottom()

@@ -259,6 +259,9 @@ type RunConfig struct {
 	// RefreshPluginWorkDir is called after Cd changes the working directory,
 	// so script plugins (e.g. git-info) can re-execute in the new directory.
 	RefreshPluginWorkDir func(dir string)
+	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
+	// Used by SendMessage tool for busy/idle routing.
+	PeerMessageFn func(targetSessionKey, message string) string
 }
 
 // TodoManagerProvider 提供 TODO 状态查询和清理
@@ -902,6 +905,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
 		IsWorktreeIsolated:   cfg.IsWorktreeIsolated,
+		PeerMessageFn:        cfg.PeerMessageFn,
 
 		// 注入入站消息
 		InjectInbound: cfg.InjectInbound,

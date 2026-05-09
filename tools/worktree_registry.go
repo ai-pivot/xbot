@@ -196,6 +196,36 @@ func (r *WorktreeRegistry) GetCWD(sessionKey string) string {
 	return ""
 }
 
+// RegisterPeer registers a session for peer awareness without creating a worktree.
+// Used when auto_worktree is disabled. Sessions are registered as "shared"
+// to indicate they share the main workspace and agents must coordinate.
+func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
+	if r.GetBySession(sessionKey) != nil {
+		return // already registered
+	}
+	repoPath, err := GitRepoRoot(workDir)
+	if err != nil {
+		return // not a git repo
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.loadRepoLocked(repoPath)
+	if _, exists := r.bySess[sessionKey]; exists {
+		return
+	}
+	entry := &WorktreeEntry{
+		SessionKey:  sessionKey,
+		Role:        "shared",
+		RepoPath:    repoPath,
+		WorktreeDir: "",
+		Branch:      "",
+		Status:      "working",
+	}
+	r.bySess[sessionKey] = entry
+	r.byRepo[repoPath] = append(r.byRepo[repoPath], entry)
+	r.saveRepoLocked(repoPath)
+}
+
 // ensureLoadedBySession tries to load persisted data for the repo that
 // contains this session. Uses the sessionKey format "channel:chatID" to
 // derive a possible repo path.

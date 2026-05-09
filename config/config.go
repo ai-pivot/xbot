@@ -188,6 +188,13 @@ type Config struct {
 	hasPluginsKey bool `json:"-"`
 }
 
+// ExperimentalConfig holds experimental features that may change or be removed.
+type ExperimentalConfig struct {
+	// AutoWorktree enables automatic git worktree creation when multiple agents
+	// work on the same repo. Default: false (opt-in experimental).
+	AutoWorktree bool `json:"auto_worktree,omitempty"`
+}
+
 // PluginConfig configures the plugin system.
 type PluginConfig struct {
 	// Enabled controls whether the plugin system is active.
@@ -239,6 +246,9 @@ type AgentConfig struct {
 	PurgeOldMessages bool `json:"purge_old_messages"`
 
 	MaxSubAgentDepth int `json:"max_sub_agent_depth"`
+
+	// Experimental features
+	Experimental ExperimentalConfig `json:"experimental,omitempty"`
 
 	LLMRetryAttempts int      `json:"llm_retry_attempts"`
 	LLMRetryDelay    Duration `json:"llm_retry_delay"`

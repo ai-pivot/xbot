@@ -63,6 +63,11 @@ type ToolContext struct {
 	// IsWorktreeIsolated indicates this agent is running in an isolated git worktree.
 	// When true, path_guard enforces boundaries even in "none" sandbox mode.
 	IsWorktreeIsolated bool
+	// PeerMessageFn sends a peer-to-peer message to another CLI session.
+	// If target is busy: injects as fake tool result in current iteration.
+	// If target is idle: injects as user message to start a new turn.
+	// Returns a delivery status string.
+	PeerMessageFn func(targetSessionKey, message string) string
 
 	// Stream indicates whether the parent Agent is using streaming LLM calls.
 	// SubAgents inherit this from the parent to ensure consistent behavior.
