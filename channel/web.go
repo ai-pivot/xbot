@@ -512,6 +512,8 @@ type WsProgressPayload struct {
 	ReasoningStreamContent string `json:"reasoning_stream_content,omitempty"`
 	// HistoryCompacted is true after context compression — CLI should reload messages.
 	HistoryCompacted bool `json:"history_compacted,omitempty"`
+	// CWD is the agent's current working directory (for worktree indicator).
+	CWD string `json:"cwd,omitempty"`
 }
 
 // cliProgressToWS converts CLIProgressPayload to WsProgressPayload for WS delivery.
@@ -529,6 +531,7 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 		StreamContent:          p.StreamContent,
 		ReasoningStreamContent: p.ReasoningStreamContent,
 		HistoryCompacted:       p.HistoryCompacted,
+		CWD:                    p.CWD,
 	}
 	for _, t := range p.ActiveTools {
 		wp.ActiveTools = append(wp.ActiveTools, WsToolProgress{
@@ -594,6 +597,7 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 		StreamContent:          p.StreamContent,
 		ReasoningStreamContent: p.ReasoningStreamContent,
 		HistoryCompacted:       p.HistoryCompacted,
+		CWD:                    p.CWD,
 	}
 	for _, t := range p.ActiveTools {
 		cp.ActiveTools = append(cp.ActiveTools, CLIToolProgress{

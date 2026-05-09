@@ -830,7 +830,10 @@ func (m *cliModel) renderInfoBar() string {
 	hasAgents := m.agentCount > 0
 	hasQueue := len(m.messageQueue) > 0
 
-	if !hasTasks && !hasAgents && !hasQueue {
+	// Always show workspace indicator (pinned to left).
+	wsIndicator := m.renderWorkspaceIndicator()
+
+	if !hasTasks && !hasAgents && !hasQueue && wsIndicator == "" {
 		return ""
 	}
 
@@ -856,12 +859,63 @@ func (m *cliModel) renderInfoBar() string {
 
 	// Join sections with muted separators
 	separator := m.styles.TextMutedSt.Render(" · ")
+	pinnedLeft := wsIndicator
 	content := strings.Join(parts, separator)
+	if pinnedLeft != "" {
+		if content != "" {
+			content = pinnedLeft + separator + content
+		} else {
+			content = pinnedLeft
+		}
+	}
 
 	// Left padding of 2 (matching InputBox visual)
 	return lipgloss.NewStyle().
 		PaddingLeft(2).
 		Render(content)
+}
+
+// renderWorkspaceIndicator returns a workspace status string.
+// "🏠 primary" for main workspace, "🌿 <branch>" for worktree sessions.
+func (m *cliModel) renderWorkspaceIndicator() string {
+	cwd := ""
+	if m.progress != nil {
+		cwd = m.progress.CWD
+	}
+	if cwd == "" {
+		// No progress yet — check if current session might have a worktree
+		return ""
+	}
+
+	if strings.Contains(cwd, ".xbot-worktrees") {
+		// Extract a readable branch name from the CWD
+		dirName := filepath.Base(cwd)
+		// Shorten: peer-cli--home-user-src-xbot-worktree-20260509-180133 → worktree
+		shortName := shortenWorktreeName(dirName)
+		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(shortName))
+	}
+	return fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("primary"))
+}
+
+// shortenWorktreeName shortens a worktree directory name for display.
+func shortenWorktreeName(dirName string) string {
+	// dirName format: {role}-{sessionKey_shortened}-{timestamp}
+	// e.g. peer-cli--home-user-src-xbot-worktree-20260509-180133
+	// Show just the role part + short timestamp
+	parts := strings.Split(dirName, "-")
+	if len(parts) > 2 {
+		// Last parts are timestamp: YYYYMMDD-HHMMSS
+		if len(parts) >= 4 {
+			datePart := parts[len(parts)-2] + "-" + parts[len(parts)-1]
+			if len(datePart) == 13 { // YYYYMMDD-HHMMSS
+				return parts[0] + " " + datePart[4:6] + "/" + datePart[6:8] + " " + datePart[9:11] + ":" + datePart[11:13]
+			}
+		}
+	}
+	if len(dirName) > 25 {
+		dirName = dirName[:25] + "…"
+	}
+	return dirName
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.

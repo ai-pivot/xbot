@@ -260,6 +260,7 @@ type CLIProgressPayload struct {
 	ReasoningStreamContent string               // LLM streaming reasoning content (accumulated, for real-time render)
 	IterationHistory       []CLIProgressPayload // completed iteration snapshots (for mid-session reconnect restore)
 	HistoryCompacted       bool                 // true after context compression — CLI should reload messages from session
+	CWD                    string               // agent's current working directory (for worktree indicator)
 }
 
 // CLITokenUsage Token 使用量（对应 agent.TokenUsageSnapshot）
