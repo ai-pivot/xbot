@@ -1506,6 +1506,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Thinking:         s.ThinkingContent,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
+				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
 				payload.ActiveTools = append(payload.ActiveTools, channelpkg.WsToolProgress{
@@ -1563,6 +1564,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Thinking:         s.ThinkingContent,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
+				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
 				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
@@ -1638,6 +1640,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 			Thinking:         s.ThinkingContent,
 			Reasoning:        s.ReasoningContent,
 			HistoryCompacted: s.HistoryCompacted,
+			CWD:              s.CWD,
 		}
 		for _, t := range s.ActiveTools {
 			payload.ActiveTools = append(payload.ActiveTools, channelpkg.WsToolProgress{

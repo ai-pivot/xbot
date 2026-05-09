@@ -646,6 +646,7 @@ type SessionPanelEntry struct {
 	ParentID    string // parent chatID (for agent type)
 	Running     bool   // true = currently active
 	Active      bool   // true = currently selected (main session only)
+	Busy        bool   // true = session is processing (agent thinking/tool_exec, etc.)
 	MessageHint string // preview of last message
 }
 
