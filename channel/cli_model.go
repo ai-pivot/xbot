@@ -1103,6 +1103,12 @@ type cliSettingsSavedMsg struct {
 	layoutChanged bool
 	layoutVals    map[string]string // layout-related settings for field update
 	feedbackMsg   string
+	// syncOnly is true when the message originates from SyncLayoutSettings
+	// (periodic remote cache refresh), not from an explicit user settings save.
+	// When true, context-related caches (maxContextTokens, etc.) must NOT be
+	// invalidated — doing so causes the context bar to flash to solid line
+	// every 5 seconds in remote mode.
+	syncOnly bool
 }
 
 // cliSwitchLLMDoneMsg is sent when an async subscription switch completes.
