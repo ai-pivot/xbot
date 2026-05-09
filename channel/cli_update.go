@@ -570,6 +570,11 @@ func (m *cliModel) relayoutViewport() {
 	// Invalidate render caches so content re-wraps at new width
 	m.renderCacheValid = false
 	m.lastViewportContent = ""
+
+	// Glamour word-wrap matches viewport
+	if cw > 4 {
+		m.renderer = newGlamourRenderer(cw - 4)
+	}
 	m.cachedWrappedHistory = ""
 	m.cachedWrappedHistoryRaw = ""
 	m.cachedWrappedHistoryWidth = 0
