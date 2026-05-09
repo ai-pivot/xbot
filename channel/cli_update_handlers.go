@@ -544,13 +544,12 @@ func (m *cliModel) syncProgressTodos(payload *CLIProgressPayload) {
 			// Persist to TodoManager so todos survive turn end and session switches.
 			m.persistTodosToManager()
 		}
-	} else {
-		prevTodoCount := len(m.todos)
-		m.todos = nil
-		if prevTodoCount > 0 {
-			m.relayoutViewport()
-		}
 	}
+	// When payload.Todos is empty, do NOT clear m.todos.
+	// An empty Todos field only means "this progress event carries no todo data"
+	// (e.g. early thinking phase before todo_write executes), not "todos were deleted".
+	// TODOs are cleared only by: user sending a new message (todosDoneCleared),
+	// turn ending with all done (endAgentTurn), or explicit todo_write([]).
 }
 
 // persistTodosToManager converts m.todos to tools.TodoItem and writes to the
@@ -1099,6 +1098,13 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// authoritative re-enable point after the RPC confirms the session is idle.
 		if len(m.messageQueue) > 0 {
 			m.needFlushQueue = true
+		}
+		// Start a tick chain even when idle, so handleTickMsg can evaluate
+		// sidebarHasBusySessions and animate sidebar spinners for non-active
+		// busy sessions.
+		if !m.fastTickActive {
+			m.fastTickActive = true
+			cmds = append(cmds, m.tickCmd())
 		}
 		// Reload history to pick up messages that arrived while we were viewing
 		// another session (e.g. the assistant's final reply was filtered out by

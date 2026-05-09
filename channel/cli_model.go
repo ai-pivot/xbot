@@ -509,6 +509,11 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 			m.fastTickActive = true
 			cmds = append(cmds, m.tickCmd())
 		}
+		// Also kick a tick when idle: handleTickMsg will check
+		// sidebarHasBusySessions and decide whether to continue.
+		if !m.typing && !m.fastTickActive {
+			cmds = append(cmds, m.tickCmd())
+		}
 	}
 
 	return cmds
