@@ -1326,3 +1326,89 @@ func TestSuHistoryLoad_TypingReconcile_PhaseDoneIsDefault(t *testing.T) {
 		t.Fatalf("Phase=done should set typing=false, got typing=%v", m.typing)
 	}
 }
+
+// TestRemoveLastToolSummary verifies that removeLastToolSummary only removes the
+// LAST tool_summary message, preserving tool_summaries from previous completed turns.
+// Regression: removeAllToolSummaries removed ALL tool_summaries, causing tools blocks
+// from previous completed turns to disappear on session switch while a turn is active.
+func TestRemoveLastToolSummary(t *testing.T) {
+	m := newCLIModel()
+	m.messages = []cliMessage{
+		{role: "user", content: "hello"},
+		{role: "tool_summary", content: ""}, // Turn 1 tools — should be PRESERVED
+		{role: "assistant", content: "result1"},
+		{role: "user", content: "another"},
+		{role: "tool_summary", content: ""}, // Turn 2 tools (active turn) — should be REMOVED
+	}
+
+	// Before: 5 messages
+	if len(m.messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(m.messages))
+	}
+
+	m.removeLastToolSummary()
+
+	// After: 4 messages (only last tool_summary removed)
+	if len(m.messages) != 4 {
+		t.Fatalf("expected 4 messages after removal, got %d", len(m.messages))
+	}
+
+	// Turn 1's tool_summary should remain
+	foundT1 := false
+	for _, msg := range m.messages {
+		if msg.role == "tool_summary" {
+			foundT1 = true
+			break
+		}
+	}
+	if !foundT1 {
+		t.Error("Turn 1's tool_summary was incorrectly removed — previous turns' tools blocks should be preserved")
+	}
+
+	// Verify message order is preserved
+	expected := []string{"user", "tool_summary", "assistant", "user"}
+	for i, exp := range expected {
+		if m.messages[i].role != exp {
+			t.Errorf("message[%d]: expected role=%q, got %q", i, exp, m.messages[i].role)
+		}
+	}
+}
+
+// TestRemoveLastToolSummary_NoToolSummary verifies that removeLastToolSummary is
+// a no-op when there are no tool_summary messages.
+func TestRemoveLastToolSummary_NoToolSummary(t *testing.T) {
+	m := newCLIModel()
+	m.messages = []cliMessage{
+		{role: "user", content: "hello"},
+		{role: "assistant", content: "result"},
+	}
+
+	m.removeLastToolSummary()
+
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 messages unchanged, got %d", len(m.messages))
+	}
+}
+
+// TestRemoveLastToolSummary_OnlyPreservesFirst verifies that with two tool_summaries,
+// only the last one is removed and the first is preserved.
+func TestRemoveLastToolSummary_OnlyPreservesFirst(t *testing.T) {
+	m := newCLIModel()
+	m.messages = []cliMessage{
+		{role: "tool_summary", content: ""}, // first — PRESERVED
+		{role: "assistant", content: "a"},
+		{role: "tool_summary", content: ""}, // last — REMOVED
+	}
+
+	m.removeLastToolSummary()
+
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(m.messages))
+	}
+	if m.messages[0].role != "tool_summary" {
+		t.Error("first tool_summary should be preserved")
+	}
+	if m.messages[1].role != "assistant" {
+		t.Error("assistant should be at position 1")
+	}
+}

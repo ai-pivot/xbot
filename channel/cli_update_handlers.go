@@ -222,7 +222,7 @@ func (m *cliModel) restoreIterationHistory(payload *CLIProgressPayload) {
 			m.lastSeenIteration = lastIter
 		}
 	}
-	m.removeAllToolSummaries()
+	m.removeLastToolSummary()
 }
 
 // carryForwardProgressState preserves transient state across progress updates
@@ -1038,7 +1038,8 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// that don't match the progress block's per-turn iteration numbers.
 		// The active progress block owns iteration display entirely — any
 		// static tool_summary would duplicate content with mismatched numbers.
-		m.removeAllToolSummaries()
+		// Only remove the LAST tool_summary (active turn's); preserve previous turns'.
+		m.removeLastToolSummary()
 
 		// Emit a tickCmd to guarantee the fast tick chain is running,
 		// but only if it's not already active (avoid duplicate chains).

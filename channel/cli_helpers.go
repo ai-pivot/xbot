@@ -323,7 +323,7 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	// restart or iterationHistories not yet populated), any tool_summary from
 	// loaded DB history must be removed — otherwise completed iterations show as
 	// a static "Tools" block alongside the live progress block.
-	m.removeAllToolSummaries()
+	m.removeLastToolSummary()
 
 	// Restore todos from the progress snapshot so the sidebar/todo bar
 	// shows them immediately without waiting for the next live progress event.
@@ -336,19 +336,31 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	m.viewport.GotoBottom()
 }
 
-// dedupToolSummary removes the last tool_summary message from m.messages when
-// restoring active progress. The last tool_summary in messages comes from
-// intermediate assistant messages (postToolProcessing) of the in-progress turn.
-// The progress snapshot's IterationHistory contains the same data plus live state,
-// removeAllToolSummaries removes ALL tool_summary messages from m.messages.
-// Used when restoring active progress on session switch: the progress block
-// owns iteration display entirely, and any static tool_summary from
-// ConvertMessagesToHistory would duplicate content with mismatched iteration numbers.
-func (m *cliModel) removeAllToolSummaries() {
-	m.messages = slices.DeleteFunc(m.messages, func(msg cliMessage) bool {
-		return msg.role == "tool_summary"
-	})
-	m.renderCacheValid = false
+// removeLastToolSummary removes only the LAST tool_summary message from m.messages.
+//
+// When the agent turn is active, ConvertMessagesToHistory produces a tool_summary
+// from intermediate assistant messages of the in-progress turn. The progress
+// block (m.progress + m.iterationHistory) owns iteration display for the active
+// turn — the static tool_summary from ConvertMessagesToHistory would duplicate
+// content with mismatched (globally-cumulative vs per-turn) iteration numbers.
+//
+// Previously removeAllToolSummaries removed ALL tool_summary messages, which
+// also deleted tool blocks from previous completed turns — those have no
+// progress block to replace them. Only the LAST tool_summary (the active turn's)
+// should be removed; previous turns' tool_summaries must be preserved.
+func (m *cliModel) removeLastToolSummary() {
+	// Find the last tool_summary message (closest to end of messages).
+	lastIdx := -1
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].role == "tool_summary" {
+			lastIdx = i
+			break
+		}
+	}
+	if lastIdx >= 0 {
+		m.messages = append(m.messages[:lastIdx], m.messages[lastIdx+1:]...)
+		m.renderCacheValid = false
+	}
 }
 
 // endAgentTurn resets all agent-turn tracking state and returns to idle.
