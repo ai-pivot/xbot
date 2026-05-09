@@ -1417,7 +1417,14 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 	}
 	promptTokens := m.lastTokenUsage.PromptTokens
 	maxTokens := int64(m.cachedMaxContextTokens)
-	if promptTokens <= 0 || maxTokens <= 0 {
+	// Don't bail on promptTokens==0 — show an empty bar instead of flashing
+	// back to the plain border. lastTokenUsage is only cleared by explicit
+	// delete-record RPCs (/clear, /cancel, session reset); during normal
+	// operation a zero prompt count just means no LLM call has completed yet.
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if maxTokens <= 0 {
 		return ""
 	}
 

@@ -413,6 +413,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.ReasoningStreamContent != "" {
 				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
 			}
+			// Refresh lastTokenUsage from current progress so the context bar
+			// stays visible even when structured events are lost to progressCh
+			// coalescing (stream-only events evicting structured events).
+			m.cacheTokenUsage(m.progress.TokenUsage)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
 			m.progress = msg.payload
