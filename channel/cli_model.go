@@ -1058,7 +1058,9 @@ type cliConnStateMsg struct {
 // cliHistoryLoadMsg loads history messages into the model from a goroutine-safe context.
 // Data is pre-converted, so the Update handler only appends and rebuilds viewport.
 type cliHistoryLoadMsg struct {
-	history []cliMessage
+	channelName string
+	chatID      string
+	history     []cliMessage
 }
 
 // cliTickMsg 定时刷新（用于流式输出动画）
@@ -1264,7 +1266,12 @@ func (m *cliModel) reloadMessagesFromSession() {
 		// Send result via async channel (goroutine-safe)
 		if m.channel != nil {
 			select {
-			case m.channel.asyncCh <- cliHistoryReloadMsg{history: history, err: err}:
+			case m.channel.asyncCh <- cliHistoryReloadMsg{
+				channelName: channelName,
+				chatID:      chatID,
+				history:     history,
+				err:         err,
+			}:
 			default:
 				// channel full, drop — next progress event will retry
 			}

@@ -1934,6 +1934,7 @@ func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
 	wsMsg := wsMessage{
 		Type:    "inject_user",
 		Content: content,
+		ChatID:  chatID,
 		TS:      time.Now().Unix(),
 	}
 	if !c.hub.sendToClient(chatID, wsMsg) {
@@ -2078,6 +2079,8 @@ func (c *RemoteCLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 			Type:     "ask_user",
 			ID:       msgID,
 			TS:       time.Now().Unix(),
+			Channel:  msg.Channel,
+			ChatID:   msg.ChatID,
 			Progress: askPayload,
 		}
 		c.hub.sendToClient(targetClientID, askMsg)

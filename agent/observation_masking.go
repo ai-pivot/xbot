@@ -565,6 +565,31 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 		return cmp.Compare(b.chars, a.chars) // descending
 	})
 
+	// 安全网：最后一个 group 绝不能进入候选（理论上 keepGroups 保证
+	// maskCount ≤ len(groups)-keepGroups，但此处显式排除以绝后患）。
+	lastGroupIdx := len(groups) - 1
+	{
+		n := 0
+		for _, cand := range candidates {
+			if cand.groupIdx == lastGroupIdx {
+				log.WithFields(map[string]any{
+					"last_group":   lastGroupIdx,
+					"total_groups": len(groups),
+					"keep_groups":  keepGroups,
+					"mask_count":   maskCount,
+				}).Warn("BUG: last group appeared in mask candidates — safety guard skipped it")
+				continue
+			}
+			candidates[n] = cand
+			n++
+		}
+		candidates = candidates[:n]
+	}
+
+	if len(candidates) == 0 {
+		return messages, 0, nil
+	}
+
 	result := make([]llm.ChatMessage, len(messages))
 	copy(result, messages)
 

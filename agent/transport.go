@@ -34,7 +34,7 @@ type Transport interface {
 	// === Server-push events ===
 	OnOutbound(cb func(bus.OutboundMessage))
 	OnProgress(cb func(*channel.CLIProgressPayload))
-	OnInjectUserMessage(cb func(content string))
+	OnInjectUserMessage(cb func(chatID, content string))
 	OnReconnect(cb func())
 	OnConnStateChange(cb func(state string))
 	OnPluginWidgets(cb func(zones map[string]string, chatID string))

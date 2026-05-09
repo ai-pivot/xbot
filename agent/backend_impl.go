@@ -150,9 +150,11 @@ func (b *Backend) SendInbound(msg bus.InboundMessage) error {
 
 func (b *Backend) OnOutbound(cb func(bus.OutboundMessage))         { b.transport.OnOutbound(cb) }
 func (b *Backend) OnProgress(cb func(*channel.CLIProgressPayload)) { b.transport.OnProgress(cb) }
-func (b *Backend) OnInjectUserMessage(cb func(content string))     { b.transport.OnInjectUserMessage(cb) }
-func (b *Backend) OnReconnect(cb func())                           { b.transport.OnReconnect(cb) }
-func (b *Backend) OnConnStateChange(cb func(state string))         { b.transport.OnConnStateChange(cb) }
+func (b *Backend) OnInjectUserMessage(cb func(chatID, content string)) {
+	b.transport.OnInjectUserMessage(cb)
+}
+func (b *Backend) OnReconnect(cb func())                   { b.transport.OnReconnect(cb) }
+func (b *Backend) OnConnStateChange(cb func(state string)) { b.transport.OnConnStateChange(cb) }
 func (b *Backend) OnPluginWidgets(cb func(zones map[string]string, chatID string)) {
 	b.transport.OnPluginWidgets(cb)
 }

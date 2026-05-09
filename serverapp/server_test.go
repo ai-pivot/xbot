@@ -271,7 +271,7 @@ func (b fakeBackend) IsRemote() bool                                            
 func (b fakeBackend) IsProcessing(_, _ string) bool                                      { return false }
 func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload          { return nil }
 func (b fakeBackend) OnProgress(_ func(*channel.CLIProgressPayload))                     {}
-func (b fakeBackend) OnInjectUserMessage(_ func(string))                                 {}
+func (b fakeBackend) OnInjectUserMessage(_ func(string, string))                         {}
 func (b fakeBackend) OnReconnect(_ func())                                               {}
 func (b fakeBackend) OnConnStateChange(_ func(string))                                   {}
 func (b fakeBackend) OnPluginWidgets(_ func(map[string]string, string))                  {}

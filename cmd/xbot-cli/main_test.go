@@ -692,7 +692,7 @@ func (b *fakeAgentBackend) Stop()                                               
 func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error                         { return nil }
 func (b *fakeAgentBackend) OnOutbound(func(bus.OutboundMessage))                         {}
 func (b *fakeAgentBackend) OnProgress(func(*channel.CLIProgressPayload))                 {}
-func (b *fakeAgentBackend) OnInjectUserMessage(func(string))                             {}
+func (b *fakeAgentBackend) OnInjectUserMessage(func(string, string))                     {}
 func (b *fakeAgentBackend) OnReconnect(func())                                           {}
 func (b *fakeAgentBackend) OnConnStateChange(func(string))                               {}
 func (b *fakeAgentBackend) OnPluginWidgets(func(map[string]string, string))              {}

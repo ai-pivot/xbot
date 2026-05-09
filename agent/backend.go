@@ -62,7 +62,7 @@ type AgentBackend interface {
 	// OnInjectUserMessage registers a callback for injected user messages from the server.
 	// LocalBackend: no-op (injected messages flow through CLIChannel directly).
 	// RemoteBackend: converts WS inject_user messages and calls the callback.
-	OnInjectUserMessage(callback func(content string))
+	OnInjectUserMessage(callback func(chatID, content string))
 
 	// OnReconnect registers a callback invoked after a successful WS reconnect.
 	// Local: no-op.

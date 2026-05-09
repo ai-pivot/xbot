@@ -71,7 +71,7 @@ type RemoteTransport struct {
 	onConnStateCb func(state string)
 
 	// Injected user message callback (for bg task notifications from server)
-	injectUserCb func(content string)
+	injectUserCb func(chatID, content string)
 
 	// Plugin widget push callback (for real-time widget zone updates from server)
 	pluginWidgetsCb func(zones map[string]string, chatID string)
@@ -254,7 +254,7 @@ func (t *RemoteTransport) OnConnStateChange(callback func(state string)) {
 // OnInjectUserMessage registers a callback invoked when the server injects a user
 // message into the CLI (e.g. background task completion notification in remote mode).
 // The CLI displays it as a user message and starts the agent turn display.
-func (t *RemoteTransport) OnInjectUserMessage(callback func(content string)) {
+func (t *RemoteTransport) OnInjectUserMessage(callback func(chatID, content string)) {
 	t.injectUserCb = callback
 }
 
@@ -498,6 +498,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					qJSON, _ := json.Marshal(msg.Progress.Questions)
 					outMsg := bus.OutboundMessage{
 						Channel:     "cli",
+						ChatID:      msg.ChatID,
 						WaitingUser: true,
 						Metadata: map[string]string{
 							"ask_questions": string(qJSON),
@@ -534,7 +535,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 							log.WithField("panic", r).Warn("RemoteTransport inject_user callback panicked")
 						}
 					}()
-					t.injectUserCb(msg.Content)
+					t.injectUserCb(msg.ChatID, msg.Content)
 				}()
 			}
 		case "plugin_widgets":

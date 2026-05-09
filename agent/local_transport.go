@@ -70,7 +70,7 @@ func (t *localTransport) Subscribe(string) error { return nil }
 
 func (t *localTransport) OnOutbound(func(bus.OutboundMessage))            {}
 func (t *localTransport) OnProgress(func(*channel.CLIProgressPayload))    {}
-func (t *localTransport) OnInjectUserMessage(func(string))                {}
+func (t *localTransport) OnInjectUserMessage(func(string, string))        {}
 func (t *localTransport) OnReconnect(func())                              {}
 func (t *localTransport) OnConnStateChange(func(string))                  {}
 func (t *localTransport) OnPluginWidgets(func(map[string]string, string)) {}

@@ -387,10 +387,21 @@ func (c *CLIChannel) SendProgress(chatID string, payload *CLIProgressPayload) {
 	if payload.ChatID == "" {
 		payload.ChatID = chatID
 	}
+
+	// Stream-only events (Phase=="", Iteration==0) are high-frequency
+	// and should never evict structured events that carry TokenUsage
+	// and iteration state for the context bar and progress panel.
+	isStreamOnly := payload.Phase == "" && payload.Iteration == 0
+
 	select {
 	case c.progressCh <- payload:
 	default:
-		// Drain stale, send fresh
+		if isStreamOnly {
+			// Stream-only event: channel has a structured event waiting.
+			// Drop this stream-only event instead of evicting the structured one.
+			return
+		}
+		// Structured event: drain stale (likely stream-only), send fresh
 		select {
 		case <-c.progressCh:
 		default:
@@ -579,7 +590,11 @@ func (c *CLIChannel) LoadHistory(history []HistoryMessage) {
 	// Program is running — send through asyncCh to avoid racing with View()
 	// (glamour is not goroutine-safe).
 	select {
-	case c.asyncCh <- cliHistoryLoadMsg{history: msgs}:
+	case c.asyncCh <- cliHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      c.config.ChatID,
+		history:     msgs,
+	}:
 	default:
 		log.Warn("LoadHistory: asyncCh full, history not applied")
 	}

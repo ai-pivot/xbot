@@ -413,6 +413,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.ReasoningStreamContent != "" {
 				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
 			}
+			// Refresh lastTokenUsage from current progress so the context bar
+			// stays visible even when structured events are lost to progressCh
+			// coalescing (stream-only events evicting structured events).
+			m.cacheTokenUsage(m.progress.TokenUsage)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
 			m.progress = msg.payload
@@ -1607,6 +1611,10 @@ func (m *cliModel) handleSplashDone() []tea.Cmd {
 
 // handleHistoryLoad loads pre-converted history messages into the model.
 func (m *cliModel) handleHistoryLoad(msg cliHistoryLoadMsg) {
+	// Stale guard: discard results from a different session.
+	if msg.channelName != "" && (msg.channelName != m.channelName || msg.chatID != m.chatID) {
+		return
+	}
 	if len(msg.history) > 0 {
 		m.messages = append(m.messages, msg.history...)
 		m.invalidateAllCache(false)
