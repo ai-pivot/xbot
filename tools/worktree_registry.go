@@ -243,7 +243,23 @@ func (r *WorktreeRegistry) saveRepoLocked(repoPath string) {
 // --- Worktree helper functions ---
 
 // GitRepoRoot returns the absolute root of the git repo containing dir.
+// Works correctly in both regular repos and git worktrees (uses git-common-dir).
 func GitRepoRoot(dir string) (string, error) {
+	// Check if this is a git worktree by reading the .git file
+	gitFile := filepath.Join(dir, ".git")
+	content, err := os.ReadFile(gitFile)
+	if err == nil && strings.HasPrefix(string(content), "gitdir:") {
+		// It's a worktree — the .git file points to the main repo's metadata.
+		// Example: "gitdir: /main/repo/.git/worktrees/name\n"
+		gitDirLine := strings.TrimPrefix(string(content), "gitdir:")
+		gitDirLine = strings.TrimSpace(gitDirLine)
+		// .git/worktrees/name → .git is two levels up
+		worktreeMetaDir := filepath.Dir(gitDirLine) // → /main/repo/.git/worktrees
+		gitDir := filepath.Dir(worktreeMetaDir)     // → /main/repo/.git
+		return filepath.Dir(gitDir), nil            // → /main/repo
+	}
+
+	// Regular directory: use git rev-parse
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
 	if err != nil {
