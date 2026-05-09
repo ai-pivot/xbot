@@ -75,6 +75,26 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - **Viewport dirty-check fallback**: tick handler checks `!m.renderCacheValid` when `busy=false` to ensure viewport refreshes after session switch
 - **`removeAllToolSummaries()`** must be called in all progress restore paths to prevent duplicate tool summaries
 
+### CLI Context Bar Rendering
+
+The context bar (top border of input box) replaces the default lipgloss border with a token usage progress bar via `renderContextTopBorder()` in `cli_view.go`.
+
+**Rendering rules:**
+- Returns `""` (plain border) only when `cachedMaxContextTokens <= 0` — meaning the token budget is unknown
+- Once `cachedMaxContextTokens > 0`, the bar ALWAYS renders: filled when `lastTokenUsage` has data, empty (0%) when nil
+- `lastTokenUsage` is only cleared by explicit delete RPCs (`/clear`, `/cancel`, session reset); a zero prompt count during normal operation just means no LLM call has completed yet
+
+**Token state restoration:**
+- **Startup**: `TokenStateLoader` (in `cli.go:Start()`) restores `lastTokenUsage` from DB
+- **Active turn restore**: `handleSuHistoryLoad` → `acceptProgress` branch → `cacheTokenUsage(activeProgress.TokenUsage)`
+- **Idle session switch**: `handleSuHistoryLoad` → `default` branch now falls back to `suHistoryLoadMsg.tokenPrompt`/`tokenCompletion` (fetched via `GetTokenStateFn` in `suLoadHistoryCmd`)
+- **Session save/restore**: `saveCurrentSession()` / `restoreSession()` persist `lastTokenUsage` in `sessionState` across switches
+
+**`cliSettingsSavedMsg.syncOnly`:**
+- `SyncLayoutSettings` (called every 5s in remote mode) sets `syncOnly: true`
+- `handleSettingsSavedMsg` skips context cache reset when `syncOnly` is true
+- Without this flag, the context bar flashes to solid line every 5s in remote mode
+
 ### CLI Progress Panel Rendering
 
 - **`toolLine(icon, label, elapsedStyled, maxWidth)`** helper in `cli_message.go` — unified tool line formatting using `lipgloss.Width()` for precision. All tool rendering sites (historical, completed, active) use this helper. Previous code used `len()` (byte count) and magic number overhead constants (`7 + ...`) which broke on styled/unicode content.
