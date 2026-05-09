@@ -116,13 +116,18 @@ func (s *ObservationMaskStore) SetTenantID(tenantID int64) {
 }
 
 // ensureLoaded 首次访问时从磁盘目录加载所有 mask entries。
+// 内部自动加锁，可安全地在无锁上下文调用。
 func (s *ObservationMaskStore) ensureLoaded() {
-	if s.loaded || s.storeDir == "" {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.loaded {
+	s.loadFromDiskLocked()
+}
+
+// loadFromDiskLocked 从磁盘加载 entries（调用者必须持有 s.mu）。
+// 用于 Mask/Recall/List/Size 锁内二次校验——当 SetTenantID 在 ensureLoaded 与
+// 操作之间清空了 entries 时，重新加载。
+func (s *ObservationMaskStore) loadFromDiskLocked() {
+	if s.loaded || s.storeDir == "" {
 		return
 	}
 	s.loaded = true
@@ -223,6 +228,11 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 二次校验：SetTenantID 可能在 ensureLoaded 和 Lock 之间清空了 entries
+	//（不同用户的 session 或 SubAgent 并发切换了 tenant）。
+	if !s.loaded {
+		s.loadFromDiskLocked()
+	}
 	// 双重容量限制：超条数或超字符数时，淘汰最旧条目
 	contentLen := len([]rune(content))
 	evictedCount := 0
@@ -262,14 +272,18 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 func (s *ObservationMaskStore) Recall(id string) (MaskedObservation, error) {
 	s.ensureLoaded()
 
-	s.mu.RLock()
+	s.mu.Lock()
+	// 二次校验：SetTenantID 可能在 ensureLoaded 和 Lock 之间清空了 entries。
+	if !s.loaded {
+		s.loadFromDiskLocked()
+	}
 	for _, e := range s.entries {
 		if e.ID == id {
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return e, nil
 		}
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	// 内存未找到，尝试从磁盘读取
 	if s.storeDir != "" {
@@ -295,8 +309,11 @@ func (s *ObservationMaskStore) Recall(id string) (MaskedObservation, error) {
 func (s *ObservationMaskStore) List() []MaskedObservation {
 	s.ensureLoaded()
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.loaded {
+		s.loadFromDiskLocked()
+	}
 
 	result := make([]MaskedObservation, len(s.entries))
 	copy(result, s.entries)
@@ -307,8 +324,11 @@ func (s *ObservationMaskStore) List() []MaskedObservation {
 func (s *ObservationMaskStore) Size() int {
 	s.ensureLoaded()
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.loaded {
+		s.loadFromDiskLocked()
+	}
 	return len(s.entries)
 }
 

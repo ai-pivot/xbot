@@ -736,11 +736,11 @@ func (t *localTransport) registerHandlers() {
 	h[MethodGetTodos] = rpc1(func(r getTodosReq) ([]channel.CLITodoItem, error) {
 		key := r.Channel + ":" + r.ChatID
 		if a.todoManager == nil {
-			return nil, nil
+			return []channel.CLITodoItem{}, nil
 		}
 		items := a.todoManager.GetTodos(key)
 		if len(items) == 0 {
-			return nil, nil
+			return []channel.CLITodoItem{}, nil
 		}
 		result := make([]channel.CLITodoItem, len(items))
 		for i, t := range items {

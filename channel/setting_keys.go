@@ -1,5 +1,7 @@
 package channel
 
+import "xbot/tools"
+
 // SettingScope defines where a setting's value is stored and persisted.
 type SettingScope int
 
@@ -33,60 +35,66 @@ type SettingDef struct {
 	Runtime    bool             // If true, requires runtime apply handler (config + backend side-effect)
 	Permission ConfigPermission // AI accessibility level (transient/persistent/manual)
 	Sensitive  bool             // If true, value is masked in AI context and write is blocked
+
+	// AI-native metadata — used by config tool's "list" action to help AI understand settings.
+	// Optional; zero values work for backward compat. New settings should fill these.
+	AIDescription string // Human-readable description for AI (e.g. "Controls the TUI color theme")
+	ValidValues   string // Allowed values hint (e.g. "ocean|default|pastel", "20-100")
+	DefaultValue  string // Default when not configured (for AI context, not enforced)
 }
 
 // AllSettingDefs is the single registry of all known setting keys.
 // Every other scope map, runtime key list, and known-key check is derived from this.
 var AllSettingDefs = []SettingDef{
-	// ── LLM Subscription-scoped fields (persisted in user_llm_subscriptions) ──
-	{Key: "llm_provider", Scope: ScopeSubscription},
-	{Key: "llm_api_key", Scope: ScopeSubscription},
-	{Key: "llm_base_url", Scope: ScopeSubscription},
-	{Key: "llm_model", Scope: ScopeSubscription},
-	{Key: "max_output_tokens", Scope: ScopeSubscription},
-	{Key: "thinking_mode", Scope: ScopeSubscription},
+	// ── LLM Subscription-scoped fields (persisted in user_llm_subscriptions DB) ──
+	{Key: "llm_provider", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "LLM provider name (e.g. openai, deepseek, anthropic)", ValidValues: "openai|deepseek|anthropic|ollama|...", DefaultValue: "openai"},
+	{Key: "llm_api_key", Scope: ScopeSubscription, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked on read)", ValidValues: "any valid API key string"},
+	{Key: "llm_base_url", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "Custom base URL for API endpoint (leave empty for default)", ValidValues: "any valid URL or empty"},
+	{Key: "llm_model", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "Model name to use (e.g. gpt-4o, claude-sonnet-4-20250514)", ValidValues: "any model name supported by the provider"},
+	{Key: "max_output_tokens", Scope: ScopeSubscription, Permission: PermPersistent, AIDescription: "Maximum tokens the LLM can generate per response", ValidValues: "1-131072", DefaultValue: "4096"},
+	{Key: "thinking_mode", Scope: ScopeSubscription, Permission: PermPersistent, AIDescription: "Enable extended reasoning (for supported models)", ValidValues: "true|false", DefaultValue: "true"},
 
 	// ── User-scoped settings (per-user, persisted in user_settings DB) ──
-	{Key: "enable_stream", Scope: ScopeUser},
-	{Key: "enable_masking", Scope: ScopeUser},
+	{Key: "enable_stream", Scope: ScopeUser, Permission: PermTransient, AIDescription: "Show LLM output token-by-token instead of waiting for completion", ValidValues: "true|false", DefaultValue: "true"},
+	{Key: "enable_masking", Scope: ScopeUser, Permission: PermPersistent, AIDescription: "Hide old tool results behind 📂 markers to save context", ValidValues: "true|false", DefaultValue: "true"},
 
 	// ── Global-scoped settings (shared, persisted in config.json) ──
-	{Key: "sandbox_mode", Scope: ScopeGlobal, Runtime: true},
-	{Key: "compression_threshold", Scope: ScopeUser, Runtime: true},
-	{Key: "memory_provider", Scope: ScopeGlobal, Runtime: true},
-	{Key: "tavily_api_key", Scope: ScopeGlobal, Runtime: true},
-	{Key: "default_user", Scope: ScopeGlobal},
-	{Key: "privileged_user", Scope: ScopeGlobal},
+	{Key: "sandbox_mode", Scope: ScopeGlobal, Runtime: true, Permission: PermPersistent, AIDescription: "Execution sandbox type for shell commands", ValidValues: "none|docker|remote", DefaultValue: "none"},
+	{Key: "compression_threshold", Scope: ScopeUser, Runtime: true, Permission: PermPersistent, AIDescription: "Token count at which context compression triggers", ValidValues: "any positive integer", DefaultValue: "0"},
+	{Key: "memory_provider", Scope: ScopeGlobal, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence", ValidValues: "flat|letta", DefaultValue: "flat"},
+	{Key: "tavily_api_key", Scope: ScopeGlobal, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search", ValidValues: "any valid Tavily API key"},
+	{Key: "default_user", Scope: ScopeGlobal, Permission: PermPersistent, AIDescription: "Default username for new sessions", ValidValues: "any valid username"},
+	{Key: "privileged_user", Scope: ScopeGlobal, Permission: PermManual, AIDescription: "Username with full admin access", ValidValues: "any valid username"},
 
 	// ── User-scoped settings (per-user, persisted in user_settings DB) ──
-	{Key: "theme", Scope: ScopeUser},
+	{Key: "theme", Scope: ScopeUser, Permission: PermTransient, AIDescription: "TUI color theme", ValidValues: "default|ocean|pastel|monokai|dracula|solarized|...", DefaultValue: "default"},
 
 	// Layout configuration
-	{Key: "layout_mode", Scope: ScopeUser, Runtime: true},
-	{Key: "sidebar_enabled", Scope: ScopeUser, Runtime: true},
-	{Key: "sidebar_width", Scope: ScopeUser, Runtime: true},
-	{Key: "sidebar_position", Scope: ScopeUser, Runtime: true},
-	{Key: "sidebar_sections", Scope: ScopeUser, Runtime: true},
-	{Key: "chat_max_width", Scope: ScopeUser, Runtime: true},
-	{Key: "chat_center", Scope: ScopeUser, Runtime: true},
+	{Key: "layout_mode", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Chat layout style", ValidValues: "default|compact|wide", DefaultValue: "default"},
+	{Key: "sidebar_enabled", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Show or hide the session sidebar", ValidValues: "true|false", DefaultValue: "true"},
+	{Key: "sidebar_width", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar width in character columns", ValidValues: "15-60", DefaultValue: "20"},
+	{Key: "sidebar_position", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar position relative to chat", ValidValues: "left|right", DefaultValue: "left"},
+	{Key: "sidebar_sections", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Which sections to show in the sidebar", ValidValues: "comma-separated: agents,history,worktrees"},
+	{Key: "chat_max_width", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Maximum width of chat area in columns (0=unlimited)", ValidValues: "0-200", DefaultValue: "0"},
+	{Key: "chat_center", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Center the chat area horizontally", ValidValues: "true|false", DefaultValue: "false"},
 
-	{Key: "language", Scope: ScopeUser},
-	{Key: "context_mode", Scope: ScopeUser, Runtime: true},
-	{Key: "max_iterations", Scope: ScopeUser, Runtime: true},
-	{Key: "max_concurrency", Scope: ScopeUser, Runtime: true},
-	{Key: "max_context_tokens", Scope: ScopeUser, Runtime: true},
-	{Key: "enable_auto_compress", Scope: ScopeUser, Runtime: true}, // legacy alias for context_mode
-	{Key: "runner_server", Scope: ScopeUser},
-	{Key: "runner_token", Scope: ScopeUser},
-	{Key: "runner_workspace", Scope: ScopeUser},
-	{Key: "vanguard_model", Scope: ScopeUser, Runtime: true},
-	{Key: "balance_model", Scope: ScopeUser, Runtime: true},
-	{Key: "swift_model", Scope: ScopeUser, Runtime: true},
+	{Key: "language", Scope: ScopeUser, Permission: PermTransient, AIDescription: "UI language", ValidValues: "zh|en|ja", DefaultValue: "zh"},
+	{Key: "context_mode", Scope: ScopeUser, Runtime: true, Permission: PermPersistent, AIDescription: "How agent handles context window: auto (compress) or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
+	{Key: "max_iterations", Scope: ScopeUser, Runtime: true, Permission: PermPersistent, AIDescription: "Maximum tool-calling iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
+	{Key: "max_concurrency", Scope: ScopeUser, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls per user", ValidValues: "1-100", DefaultValue: "5"},
+	{Key: "max_context_tokens", Scope: ScopeUser, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression", ValidValues: "any positive integer"},
+	{Key: "enable_auto_compress", Scope: ScopeUser, Runtime: true, Permission: PermPersistent, AIDescription: "Legacy alias for context_mode=auto (deprecated)", ValidValues: "true|false"},
+	{Key: "runner_server", Scope: ScopeUser, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
+	{Key: "runner_token", Scope: ScopeUser, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote sandbox runner (masked on read)", ValidValues: "any valid token"},
+	{Key: "runner_workspace", Scope: ScopeUser, Permission: PermPersistent, AIDescription: "Workspace directory on remote runner", ValidValues: "any valid path"},
+	{Key: "vanguard_model", Scope: ScopeUser, Runtime: true, Permission: PermManual, AIDescription: "Model for vanguard tier (strongest, for complex tasks)", ValidValues: "any model name"},
+	{Key: "balance_model", Scope: ScopeUser, Runtime: true, Permission: PermManual, AIDescription: "Model for balance tier (default)", ValidValues: "any model name"},
+	{Key: "swift_model", Scope: ScopeUser, Runtime: true, Permission: PermManual, AIDescription: "Model for swift tier (fast, for simple tasks)", ValidValues: "any model name"},
 
 	// ── Action keys (UI triggers, not persisted) ──
-	{Key: "subscription_manage", Scope: ScopeAction},
-	{Key: "runner_panel", Scope: ScopeAction},
-	{Key: "danger_zone", Scope: ScopeAction},
+	{Key: "subscription_manage", Scope: ScopeAction, AIDescription: "Open the subscription management panel"},
+	{Key: "runner_panel", Scope: ScopeAction, AIDescription: "Open the remote runner configuration panel"},
+	{Key: "danger_zone", Scope: ScopeAction, AIDescription: "Open the danger zone panel (reset/clear data)"},
 }
 
 // init-time derived indexes — built once, used everywhere.
@@ -167,4 +175,35 @@ func IsSubscriptionScopedSettingKey(key string) bool {
 func IsActionSettingKey(key string) bool {
 	_, ok := scopeIndex[ScopeAction][key]
 	return ok
+}
+
+// AllConfigItemsForAI returns all known settings with AI metadata for the config tool's "list" action.
+// Each new setting added to AllSettingDefs automatically appears here — zero extra work.
+func AllConfigItemsForAI() []tools.ConfigListItem {
+	result := make([]tools.ConfigListItem, 0, len(AllSettingDefs))
+	for _, d := range AllSettingDefs {
+		scope := "user"
+		switch d.Scope {
+		case ScopeGlobal:
+			scope = "global"
+		case ScopeSubscription:
+			scope = "subscription"
+		case ScopeAction:
+			scope = "action"
+		}
+		perm := string(d.Permission)
+		if perm == "" {
+			perm = string(PermPersistent) // default
+		}
+		result = append(result, tools.ConfigListItem{
+			Key:         d.Key,
+			Description: d.AIDescription,
+			Permission:  perm,
+			Scope:       scope,
+			ValidValues: d.ValidValues,
+			DefaultVal:  d.DefaultValue,
+			Sensitive:   d.Sensitive,
+		})
+	}
+	return result
 }

@@ -100,6 +100,22 @@ type ToolContext struct {
 
 	// ConfigSet writes a configuration value and returns the previous value (for config tool).
 	ConfigSet func(key, value string) (string, error)
+
+	// ConfigList returns all known configuration items with AI metadata.
+	// Injected from AllSettingDefs via buildToolContext.
+	ConfigList func() []ConfigListItem
+}
+
+// ConfigListItem is a single configuration entry returned by config tool's "list" action.
+type ConfigListItem struct {
+	Key         string `json:"key"`
+	Description string `json:"description"`
+	Permission  string `json:"permission"`
+	Scope       string `json:"scope"`
+	ValidValues string `json:"valid_values,omitempty"`
+	DefaultVal  string `json:"default_value,omitempty"`
+	CurrentVal  string `json:"current_value,omitempty"`
+	Sensitive   bool   `json:"sensitive,omitempty"`
 }
 
 // SubAgentManager SubAgent 管理接口，避免循环依赖

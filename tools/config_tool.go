@@ -15,9 +15,11 @@ type ConfigTool struct{}
 func (t *ConfigTool) Name() string { return "config" }
 
 func (t *ConfigTool) Description() string {
-	return "Read and modify any xbot configuration setting. Use this whenever the user wants to change a setting " +
+	return "Read, list, and modify any xbot configuration setting. " +
+		"Use this whenever the user wants to see available configs, check a setting, or change a setting " +
 		"like max_iterations, context_mode, api_key, provider, theme (prefer tui_control for theme switching), " +
-		"sidebar_width (prefer tui_control), or any other config key. Use 'get' to read current value, 'set' to change it."
+		"sidebar_width (prefer tui_control), or any other config key. " +
+		"Actions: list (see all configs with descriptions), get (key), set (key, value)."
 }
 
 func (t *ConfigTool) Parameters() []llm.ToolParam {
@@ -47,6 +49,14 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 	log.WithFields(log.Fields{"action": params.Action, "key": params.Key}).Debug("config tool called")
 
 	switch params.Action {
+	case "list":
+		if ctx.ConfigList == nil {
+			return nil, fmt.Errorf("config: config list not available")
+		}
+		items := ctx.ConfigList()
+		b, _ := json.MarshalIndent(items, "", "  ")
+		return NewResult(string(b)), nil
+
 	case "get":
 		if ctx.ConfigGet == nil {
 			return nil, fmt.Errorf("config: config service not available")

@@ -419,11 +419,12 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 				}
 				m.todosDoneCleared = false
 			} else {
-				// All todos done — clear display AND underlying TodoManager
-				// so they don't resurrect on next session switch.
+				// All todos done — clear display, underlying TodoManager,
+				// AND disk file so they don't resurrect on next TUI restart.
 				m.todos = nil
 				m.todosDoneCleared = true
 				m.todoManager.SetTodos(key, nil)
+				_ = m.todoManager.SaveToFile(key)
 			}
 		} else {
 			m.todos = nil

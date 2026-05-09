@@ -19,6 +19,7 @@ import (
 	"xbot/storage/vectordb"
 	"xbot/tools"
 
+	channel "xbot/channel"
 	log "xbot/logger"
 )
 
@@ -1055,6 +1056,10 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			}
 			return oldVal, nil
 		}
+	}
+	// Config list: from AllSettingDefs (always available, no RPC needed)
+	tc.ConfigList = func() []tools.ConfigListItem {
+		return channel.AllConfigItemsForAI()
 	}
 
 	return tc
