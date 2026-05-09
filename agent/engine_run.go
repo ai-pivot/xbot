@@ -812,22 +812,10 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	// Offload handles large tool results; a single iteration cannot add enough
 	// tokens to justify delta estimation.
 	totalTokens, tokenSource := s.tokenTracker.GetPromptTokens()
-	skippedNormalMask := false
-	if tokenSource == "no_data" || tokenSource == "restored" {
-		// No real LLM call in this Run yet (new turn, or restored from DB).
-		// Use conservative masking (keepGroups=12) to clean up old previous-turn
-		// tool results without eating into the most recent groups.
-		//
-		// Without this, "restored" goes through the normal path with stale
-		// high token counts from the previous Run, causing keepGroups to drop
-		// to 3–5, which masks the previous turn's last few iterations.
-		// The LLM in the new turn sees 📂[batch:...] placeholders instead of
-		// real tool output → "agent以为没tool call" → terminates.
-		s.maybeMaskObservations(ctx, 0, maxTokens)
-		if tokenSource == "no_data" {
-			return // no token data → skip compression
-		}
-		skippedNormalMask = true // restored: already masked conservatively
+	if tokenSource == "no_data" {
+		// No API token data means we do not know the actual context pressure.
+		// Do not compact or mask based on local guesses.
+		return
 	}
 
 	compressThreshold := 0.9
@@ -855,10 +843,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	}
 
 	// Observation masking (lightweight, no LLM call).
-	// Skip if we already ran conservative masking for restored state.
-	if !skippedNormalMask {
-		s.maybeMaskObservations(ctx, totalTokens, maxTokens)
-	}
+	s.maybeMaskObservations(ctx, totalTokens, maxTokens)
 }
 
 // runCompression performs the actual context compression.
@@ -1154,6 +1139,11 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResponse, iteration int) *RunOutput {
 	// --- Dynamic Context injection (CWD change detection) ---
 	s.dynamicInjector.InjectIfNeeded(s.messages)
+
+	// --- Sync CWD to progress (may change via Cd or worktree cleanup) ---
+	if s.structuredProgress != nil && s.cfg.Session != nil {
+		s.structuredProgress.CWD = s.cfg.Session.GetCurrentDir()
+	}
 
 	// --- System Reminder injection ---
 	if len(response.ToolCalls) > 0 {

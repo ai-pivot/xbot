@@ -389,16 +389,15 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 
 // maybeMaskObservations applies lightweight observation masking when context
 // exceeds 60% of max tokens but hasn't reached compression threshold.
-// When totalTokens is 0 (called from the no_data/restored path at the start
-// of a new turn), the threshold is bypassed — the caller explicitly wants
-// conservative masking regardless of token state.
 func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64, maxTokens int) {
 	if s.cfg.MaskStore == nil {
 		return
 	}
+	if totalTokens <= 0 {
+		return
+	}
 	maskingThreshold := float64(maxTokens) * 0.6
-	// totalTokens=0 是 maybeCompress 的显式信号："新 turn，用保守参数清理旧结果"
-	if totalTokens > 0 && float64(totalTokens) <= maskingThreshold {
+	if float64(totalTokens) <= maskingThreshold {
 		return
 	}
 	keepGroups := calculateKeepGroups(int(totalTokens), maxTokens)
