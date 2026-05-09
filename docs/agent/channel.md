@@ -89,3 +89,21 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - Diff/code background fills must not depend on ordinary trailing spaces: terminal/viewport layers can drop or not paint them. Use NBSP padding (`\u00a0`) with the desired background (see `padBgRight`/`renderBgLine`) for selectable, painted blank cells.
 - Any highlighted/styled content must be measured/truncated with ANSI-aware helpers (`lipgloss.Width`, `ansi.Truncate`), never `len()`/`[]rune` on strings containing ANSI escapes.
 - Tool hints render without the `│` guide prefix. Always pass the actual available container width into hint/body rendering; if a guide prefix is prepended for non-hint bodies, subtract `lipgloss.Width(guide)` first to prevent viewport hard-wrap.
+
+### CLI Sidebar Layout
+
+- **Sidebar is NOT a separate component** — it's part of `cliModel.View()` layout logic. To show/hide: `Ctrl+B` toggles `m.sidebarVisible`, `m.isWide()` checks `width >= 120`. Both feed into `m.sidebarShown()` helper.
+- **Layout**: `sidebar + middleBlock` horizontal join. `middleBlock = viewport + status + [todo] + footer + input + infoBar`. Sidebar height equals middleBlock height.
+- **`sidebarShown()` helper** (`cli_view.go:38`): `m.isWide() && m.sidebarEnabled && m.sidebarVisible`. Use this instead of 4 inline copies of the condition. The 4 sites: `chatWidth()`, `layoutMain()` showSidebar, `layoutViewportHeight()` todo lines exclusion, `trackMainLayoutZones()` todo bar skip.
+- **Sidebar sections**: Sessions (always), Todo (when items exist), Active tasks (when bgTaskCount > 0 or agentCount > 0). Sections stack vertically, separated by blank lines.
+- **Sidebar rendering pattern**: single lipgloss style per line + manual truncation (`truncateToWidth`) + padding to fill width (`lipgloss.Width`). Do NOT use separate styles for icon vs text on the same line — ANSI boundary causes wrapping artifacts in narrow (~26-char) sidebar content area. Follow `renderSidebarSessions` as the reference pattern.
+- **Sidebar width**: `m.sidebarWidth` (default 30), persisted via `sidebar_width` layout key (not in `config.Config` struct — use `saveLayoutToConfig()` for persistence).
+
+### CLI TODO Rendering
+
+- **Two rendering sites, one helper**: `renderSidebarTodo(w int)` for sidebar view, `renderTodoBar()` for main view. Which site renders depends on `m.sidebarShown()`.
+- **Main view**: rendered in `layoutMain()` as part of `middleLines` (between status and footer) when `!showSidebar`. Uses `TodoFilled`/`TodoEmpty`/`TodoDone`/`TodoLabel`/`TodoPending` styles.
+- **Sidebar view**: rendered by `renderSidebarTodo(contentW)` in `renderSidebarForBlock()` when `len(m.todos) > 0`. Compact format: header `Todo N/M ██░░░░░░░░`, items `  ○ text…` with single style per line and manual width padding.
+- **Viewport height**: `layoutViewportHeight()` excludes todo lines from `reservedLines` when `m.sidebarShown()` — viewport expands to fill the space.
+- **Mouse zones**: `trackMainLayoutZones()` skips todo bar zone when `showSidebar` — no dead zone in main view.
+- **Data lifecycle**: `syncProgressTodos` populates `m.todos` from progress events AND persists to `cliModel.todoManager`. `endAgentTurn` restores unfinished todos from TodoManager on turn end. `restoreSession` restores from disk (`LoadFromFile`) on session switch. `saveCurrentSession` persists current todos to disk (`SaveToFile`).
