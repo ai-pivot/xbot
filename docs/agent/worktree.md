@@ -102,7 +102,10 @@ Embedded skill documenting worktree workflows: peer detection, SubAgent mode, Be
 - Branch naming: `agent/{role}/{instance}/{task-hint}`
 - `git worktree add` fails on dirty trees → AutoDetectAndInit returns nil (falls back to main project)
 - Worktree creation is serialized via `GlobalWorktreeRegistry.mu.Lock()` to prevent `.git/worktrees/` lockfile contention
-- **CWD persisted via WorktreeRegistry.** `SetCurrentDir` syncs to `Registry.UpdateCWD`. On restart, `MethodSetCWD` reads persisted CWD from registry before falling back to CLI workDir. Worktree sessions auto-restore correct CWD without waiting for first message.
+- **CWD persisted via WorktreeRegistry.** `SetCurrentDir` syncs to `Registry.UpdateCWD`. On restart, `MethodSetCWD` reads persisted CWD from registry before falling back to CLI workDir.
+- **Experimental: auto_worktree config (default false).** `config.json` → `agent.experimental.auto_worktree`. When enabled, AutoDetectAndInit creates worktrees automatically. When disabled, `RegisterPeer` provides lightweight session tracking for peer awareness without file isolation.
+- **Peer awareness always on.** `BuildSystemReminder` shows all peers from WorktreeRegistry regardless of auto_worktree setting. Collaboration rules: respect peer changes, use SendMessage for verification delegation.
+- **`SendMessage` supports P2P busy/idle routing.** `Agent.injectPeerMessage` checks `chatCancelCh`: busy → injects fake tool result in current iteration, idle → pushes user message to start new turn. Accessible via `PeerMessageFn` on ToolContext. Worktree sessions auto-restore correct CWD without waiting for first message.
 
 ## Path Security
 
