@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,10 +37,32 @@ var GlobalWorktreeRegistry = &WorktreeRegistry{
 	bySess: make(map[string]*WorktreeEntry),
 }
 
+var (
+	loadedMu sync.Mutex
+	loaded   = make(map[string]bool)
+)
+
+// ensureLoaded lazily loads persisted registry data for a repo.
+func (r *WorktreeRegistry) ensureLoaded(repoPath string) {
+	loadedMu.Lock()
+	if loaded[repoPath] {
+		loadedMu.Unlock()
+		return
+	}
+	loaded[repoPath] = true
+	loadedMu.Unlock()
+
+	r.mu.Lock()
+	r.loadRepoLocked(repoPath)
+	r.mu.Unlock()
+}
+
 // Register adds an entry to the registry. Returns error if sessionKey already exists.
 func (r *WorktreeRegistry) Register(entry *WorktreeEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	r.loadRepoLocked(entry.RepoPath)
 
 	if _, exists := r.bySess[entry.SessionKey]; exists {
 		return fmt.Errorf("worktree: session %q already registered", entry.SessionKey)
@@ -47,6 +70,7 @@ func (r *WorktreeRegistry) Register(entry *WorktreeEntry) error {
 
 	r.bySess[entry.SessionKey] = entry
 	r.byRepo[entry.RepoPath] = append(r.byRepo[entry.RepoPath], entry)
+	r.saveRepoLocked(entry.RepoPath)
 	return nil
 }
 
@@ -71,10 +95,12 @@ func (r *WorktreeRegistry) Deregister(sessionKey string) {
 	if len(r.byRepo[entry.RepoPath]) == 0 {
 		delete(r.byRepo, entry.RepoPath)
 	}
+	r.saveRepoLocked(entry.RepoPath)
 }
 
 // GetPeers returns all entries for a repo, excluding the given sessionKey.
 func (r *WorktreeRegistry) GetPeers(repoPath, excludeSessionKey string) []*WorktreeEntry {
+	r.ensureLoaded(repoPath)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -100,6 +126,7 @@ func (r *WorktreeRegistry) GetBySession(sessionKey string) *WorktreeEntry {
 
 // GetPrimary returns the primary entry for a repo, or nil.
 func (r *WorktreeRegistry) GetPrimary(repoPath string) *WorktreeEntry {
+	r.ensureLoaded(repoPath)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, e := range r.byRepo[repoPath] {
@@ -112,6 +139,7 @@ func (r *WorktreeRegistry) GetPrimary(repoPath string) *WorktreeEntry {
 
 // HasPeers returns true if there are other active entries in the repo.
 func (r *WorktreeRegistry) HasPeers(repoPath, excludeSessionKey string) bool {
+	r.ensureLoaded(repoPath)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, e := range r.byRepo[repoPath] {
@@ -124,6 +152,7 @@ func (r *WorktreeRegistry) HasPeers(repoPath, excludeSessionKey string) bool {
 
 // ListRepo returns all entries for a repo (including the caller).
 func (r *WorktreeRegistry) ListRepo(repoPath string) []*WorktreeEntry {
+	r.ensureLoaded(repoPath)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	result := make([]*WorktreeEntry, len(r.byRepo[repoPath]))
@@ -139,12 +168,76 @@ func (r *WorktreeRegistry) UpdateStatus(sessionKey, status string) {
 	defer r.mu.Unlock()
 	if e, ok := r.bySess[sessionKey]; ok {
 		e.Status = status
+		r.saveRepoLocked(e.RepoPath)
 	}
 }
 
 func cloneEntry(e *WorktreeEntry) *WorktreeEntry {
 	c := *e
 	return &c
+}
+
+// --- Persistence ---
+
+type registryFile struct {
+	Entries []*WorktreeEntry `json:"entries"`
+}
+
+func registryPath(repoPath string) string {
+	return filepath.Join(worktreeBaseDir(repoPath), "registry.json")
+}
+
+// loadRepo loads persisted entries for a repo from disk. Caller must hold r.mu.
+func (r *WorktreeRegistry) loadRepoLocked(repoPath string) {
+	path := registryPath(repoPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var rf registryFile
+	if err := json.Unmarshal(data, &rf); err != nil {
+		return
+	}
+	if len(rf.Entries) == 0 {
+		return
+	}
+
+	for _, e := range rf.Entries {
+		if _, exists := r.bySess[e.SessionKey]; exists {
+			continue
+		}
+		if e.WorktreeDir != "" {
+			if _, err := os.Stat(e.WorktreeDir); os.IsNotExist(err) {
+				continue // orphaned worktree dir gone
+			}
+		}
+		r.bySess[e.SessionKey] = e
+		r.byRepo[e.RepoPath] = append(r.byRepo[e.RepoPath], e)
+	}
+}
+
+// saveRepoLocked persists entries for a repo to disk. Caller must hold r.mu.
+func (r *WorktreeRegistry) saveRepoLocked(repoPath string) {
+	entries := r.byRepo[repoPath]
+	if len(entries) == 0 {
+		return
+	}
+
+	rf := registryFile{Entries: entries}
+	data, err := json.MarshalIndent(rf, "", "  ")
+	if err != nil {
+		return
+	}
+
+	path := registryPath(repoPath)
+	dir := filepath.Dir(path)
+	os.MkdirAll(dir, 0755)
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return
+	}
+	os.Rename(tmpPath, path)
 }
 
 // --- Worktree helper functions ---
