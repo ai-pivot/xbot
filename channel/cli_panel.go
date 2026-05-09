@@ -3474,7 +3474,6 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			if len(cmds) > 0 {
 				return true, tea.Batch(cmds...)
 			}
-			m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", entry.Label), feedbackInfo)
 		}
 	case "agent":
 		agentChatID := entry.Channel + ":" + entry.ParentID + "/" + entry.Role
@@ -3514,7 +3513,6 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			if len(cmds) > 0 {
 				return true, tea.Batch(cmds...)
 			}
-			m.showSystemMsg(fmt.Sprintf("✅ 已切换到 agent 会话: %s/%s", entry.Role, entry.Instance), feedbackInfo)
 		}
 	}
 	return true, nil
