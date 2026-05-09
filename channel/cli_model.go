@@ -256,6 +256,11 @@ type suHistoryLoadMsg struct {
 	channelName    string              // target session at time of request
 	chatID         string              // target session at time of request
 	activeProgress *CLIProgressPayload // non-nil if target session has an active agent turn
+	// tokenState holds the last persisted token counts for the session.
+	// Used as fallback when activeProgress is nil (idle session) so the
+	// context bar still shows the session's last known token usage.
+	tokenPrompt     int64
+	tokenCompletion int64
 }
 
 // sessionState holds per-session state that should be preserved when switching sessions.
@@ -732,6 +737,8 @@ type cliModel struct {
 	iterationStartTime     time.Time              // current iteration wall-clock start time
 	fastTickActive         bool                   // true when a fast tick chain (100ms) is running
 	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
+	unreadSessions         map[string]bool        // chatID → has unread results the user hasn't viewed yet
+	lastBusyStates         map[string]bool        // previous busy state per session, for detecting busy→idle transition
 	tickGen                uint64                 // incremented on session switch; stale ticks are discarded
 	typewriterTickActive   bool                   // true when typewriter tick chain (50ms) is running
 	twVisible              int                    // typewriter: runes currently visible in stream content
@@ -1118,6 +1125,8 @@ func newCLIModel() *cliModel {
 		sidebarVisible:  true,
 		sidebarWidth:    20,
 		sidebarPosition: "left",
+		unreadSessions:  make(map[string]bool),
+		lastBusyStates:  make(map[string]bool),
 	}
 }
 
@@ -1351,6 +1360,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 			return suHistoryLoadMsg{err: fmt.Errorf("no dynamic history loader"), channelName: channelName, chatID: chatID}
 		}
 	}
+	tokenFn := m.channel.config.GetTokenStateFn
 	return func() tea.Msg {
 		history, err := loader(channelName, chatID)
 		// Also fetch active progress for seamless session switch recovery.
@@ -1358,7 +1368,20 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 		if progressFn != nil {
 			activeProgress = progressFn(channelName, chatID)
 		}
-		return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress}
+		// Fetch last token state so the context bar shows immediately
+		// even when the session is idle (no active turn).
+		var tokenPrompt, tokenCompletion int64
+		if tokenFn != nil {
+			tokenPrompt, tokenCompletion = tokenFn(channelName, chatID)
+		}
+		return suHistoryLoadMsg{
+			history: history, err: err,
+			channelName:     channelName,
+			chatID:          chatID,
+			activeProgress:  activeProgress,
+			tokenPrompt:     tokenPrompt,
+			tokenCompletion: tokenCompletion,
+		}
 	}
 }
 

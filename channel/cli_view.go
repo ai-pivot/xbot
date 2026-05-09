@@ -494,12 +494,24 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				// Active: always ● — user can see what's happening.
 				icon = "●"
 				itemStyle = m.styles.SidebarActive
+				// Clear unread flag when user is viewing this session.
+				delete(m.unreadSessions, s.ID)
 			} else if isBusy {
 				// Non-active but busy: animated spinner.
 				m.sidebarHasBusySessions = true
 				icon = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
 				itemStyle = m.styles.SidebarBusy
+			} else if m.unreadSessions[s.ID] {
+				// Non-active, idle, but has unread results.
+				icon = "✦"
+				itemStyle = m.styles.SidebarBusy
 			}
+			// Track busy→idle transitions to mark unread.
+			wasBusy := m.lastBusyStates[s.ID]
+			if wasBusy && !isBusy && !isActive {
+				m.unreadSessions[s.ID] = true
+			}
+			m.lastBusyStates[s.ID] = isBusy
 
 			labelPart := indent + " " + icon + " " + label
 			labelVisW := lipgloss.Width(labelPart)

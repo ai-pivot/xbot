@@ -611,6 +611,7 @@ type CLIChannelConfig struct {
 	SessionsListRefresh  func()                                                                                                         // 侧边栏刷新：session 创建/删除后立即调用，确保 sidebar 不显示过期数据
 	SessionsList         func() []SessionPanelEntry                                                                                     // 列出所有 session（main + subagent）
 	GetActiveProgressFn  func(channelName, chatID string) *CLIProgressPayload                                                           // 获取目标 session 的活跃进度（session switch 恢复用）
+	GetTokenStateFn      func(channelName, chatID string) (promptTokens, completionTokens int64)                                        // 获取目标 session 的最后 token 状态（session switch 恢复 context bar 用）
 	TrimHistoryFn        func(channelName, chatID string, cutoff time.Time) error                                                       // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
 	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                                   // 获取频道配置（用于 /channel 面板）
 	ChannelConfigSetFn   func(channel string, values map[string]string) error                                                           // 保存频道配置（用于 /channel 面板）

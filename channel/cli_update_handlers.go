@@ -1120,6 +1120,17 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			})
 		}
 	}
+	// Fallback: restore lastTokenUsage from persisted token state when
+	// active progress didn't provide it (e.g. idle session, first switch
+	// after startup). Without this, the context bar shows 0 until the
+	// first live progress event of the new session.
+	if m.lastTokenUsage == nil && (msg.tokenPrompt > 0 || msg.tokenCompletion > 0) {
+		m.lastTokenUsage = &CLITokenUsage{
+			PromptTokens:     msg.tokenPrompt,
+			CompletionTokens: msg.tokenCompletion,
+			TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
+		}
+	}
 	// Always check for pending AskUser questions after history load.
 	// This covers both active turns (agent paused waiting for user) and
 	// idle sessions (pending from a previous session that was never answered).
