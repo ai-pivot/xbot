@@ -2109,6 +2109,11 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil {
 		if entry.WorktreeDir != "" {
 			tenantSession.SetCurrentDir(entry.WorktreeDir)
+			// Also refresh plugin contexts so script plugins (e.g. git-info)
+			// immediately see the worktree directory, not the main workspace.
+			if a.pluginMgr != nil {
+				a.pluginMgr.RefreshWorkDir(entry.WorktreeDir)
+			}
 			log.Ctx(ctx).WithFields(log.Fields{
 				"worktree": entry.WorktreeDir,
 				"branch":   entry.Branch,
