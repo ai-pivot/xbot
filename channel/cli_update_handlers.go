@@ -997,6 +997,10 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		}
 		m.progress = msg.activeProgress
 
+		// Sync todos from server snapshot so the todo bar shows them
+		// immediately without waiting for the next live progress event.
+		m.syncProgressTodos(msg.activeProgress)
+
 		// Restore token usage from server snapshot so the context bar
 		// doesn't disappear on session switch. Without this, lastTokenUsage
 		// stays nil (cleared by session switch paths) and the context bar
