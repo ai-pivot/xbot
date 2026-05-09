@@ -6,6 +6,7 @@
 package channel
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -1118,4 +1119,210 @@ func stripAnsi(s string) string {
 		i++
 	}
 	return out.String()
+}
+
+// ---------------------------------------------------------------------------
+// handleSuHistoryLoad — typing reconciliation tests
+//
+// These tests verify that handleSuHistoryLoad is the single source of truth
+// for m.typing state after a remote-mode session switch. The invariant:
+// typing must reflect the server RPC response, NOT a hard-coded local default.
+//
+// Regression: sidebar session switching used to force m.typing=false
+// unconditionally in postRestoreSessionSetup. This caused:
+//   - completed iterations rendered as tool_summary instead of progress history
+//   - frozen progress block (fastTick chain dropped because busy=false)
+//   - mismatch between typing state and server reality
+// See docs/agent/channel.md for the full session switch flow.
+// ---------------------------------------------------------------------------
+
+// setupTestRemoteChannel assigns a minimal CLIChannel to m so that
+// handleSuHistoryLoad can access channel config fields (DynamicHistoryLoader,
+// locale strings, etc.) without nil dereference.
+func setupTestRemoteChannel(m *cliModel) {
+	m.channel = &CLIChannel{
+		config: CLIChannelConfig{
+			DynamicHistoryLoader: func(channelName, chatID string) ([]HistoryMessage, error) {
+				return nil, nil // no-op for tests
+			},
+		},
+	}
+	// Build default locale so showSystemMsg / endAgentTurn don't panic.
+	if m.locale.ProcessingPlaceholder == "" {
+		m.locale = newCLIModel().locale
+	}
+}
+
+// TestSuHistoryLoad_TypingReconcile_AcceptProgress verifies that
+// handleSuHistoryLoad sets typing=true when the server responds with
+// an active progress payload (acceptProgress path).
+func TestSuHistoryLoad_TypingReconcile_AcceptProgress(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	// Simulate restored session with typing=false (e.g. fresh connect,
+	// or session that was idle when saved).
+	m.typing = false
+	m.suLoading = true
+
+	payload := &CLIProgressPayload{
+		ChatID:    "cli:/test",
+		Phase:     "executing",
+		Iteration: 2,
+	}
+	msg := suHistoryLoadMsg{
+		channelName:    "cli",
+		chatID:         "/test",
+		activeProgress: payload,
+		err:            nil, // RPC succeeded
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.typing != true {
+		t.Fatalf("expected typing=true after acceptProgress, got typing=%v", m.typing)
+	}
+	if m.progress == nil {
+		t.Fatal("expected progress to be restored from server snapshot, got nil")
+	}
+	if m.suLoading != false {
+		t.Fatalf("expected suLoading=false after handleSuHistoryLoad, got %v", m.suLoading)
+	}
+}
+
+// TestSuHistoryLoad_TypingReconcile_Default verifies that
+// handleSuHistoryLoad sets typing=false when the server has no active
+// turn (default path — turn completed while user was away).
+func TestSuHistoryLoad_TypingReconcile_Default(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	// Simulate restored session with typing=true (old saved state).
+	// Even though the saved state says typing, the server knows better.
+	m.typing = true
+	m.suLoading = true
+
+	msg := suHistoryLoadMsg{
+		channelName:    "cli",
+		chatID:         "/test",
+		activeProgress: nil, // server says: no active turn
+		err:            nil,
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.typing != false {
+		t.Fatalf("expected typing=false after default (no active turn), got typing=%v", m.typing)
+	}
+	if m.progress != nil {
+		t.Fatalf("expected progress=nil after default (no active turn), got %v", m.progress)
+	}
+	if m.suLoading != false {
+		t.Fatalf("expected suLoading=false, got %v", m.suLoading)
+	}
+}
+
+// TestSuHistoryLoad_TypingReconcile_Error verifies that
+// handleSuHistoryLoad sets typing=false on RPC failure.
+// Without server confirmation, idle is the safe fallback —
+// prevents a perpetual spinner from stuck typing=true.
+func TestSuHistoryLoad_TypingReconcile_Error(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	// Simulate restored session with typing=true (saved state).
+	// RPC fails — we cannot know the real state.
+	m.typing = true
+	m.suLoading = true
+
+	msg := suHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      "/test",
+		err:         fmt.Errorf("connection refused"),
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.typing != false {
+		t.Fatalf("expected typing=false after RPC error (safe fallback), got typing=%v", m.typing)
+	}
+	if m.progress != nil {
+		t.Fatalf("expected progress=nil after RPC error, got %v", m.progress)
+	}
+	if m.suLoading != false {
+		t.Fatalf("expected suLoading=false, got %v", m.suLoading)
+	}
+}
+
+// TestSuHistoryLoad_StaleGuardDoesNotTouchState verifies that
+// a stale suHistoryLoadMsg (from a previous session switch) does NOT
+// modify typing or suLoading — it must leave the current session's
+// state untouched.
+func TestSuHistoryLoad_StaleGuardDoesNotTouchState(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	m.typing = true
+	m.suLoading = true
+
+	// Stale message: channelName/chatID doesn't match current session.
+	msg := suHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      "/other-session",
+	}
+
+	cmds := m.handleSuHistoryLoad(msg)
+	if cmds != nil {
+		t.Fatal("expected nil cmds from stale guard (discarded)")
+	}
+	if m.typing != true {
+		t.Fatalf("stale msg should NOT change typing, got typing=%v", m.typing)
+	}
+	if m.suLoading != true {
+		t.Fatalf("stale msg should NOT clear suLoading, got %v", m.suLoading)
+	}
+}
+
+// TestSuHistoryLoad_TypingReconcile_PhaseDoneIsDefault verifies that
+// a server response with Phase="done" takes the default (not acceptProgress)
+// path — the turn ended, so typing must be false.
+func TestSuHistoryLoad_TypingReconcile_PhaseDoneIsDefault(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	m.typing = true // restored hint says typing
+	m.suLoading = true
+
+	payload := &CLIProgressPayload{
+		ChatID:    "cli:/test",
+		Phase:     "done", // turn completed on server
+		Iteration: 5,
+	}
+	msg := suHistoryLoadMsg{
+		channelName:    "cli",
+		chatID:         "/test",
+		activeProgress: payload,
+		err:            nil,
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.typing != false {
+		t.Fatalf("Phase=done should set typing=false, got typing=%v", m.typing)
+	}
 }

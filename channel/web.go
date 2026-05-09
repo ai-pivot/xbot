@@ -2075,6 +2075,12 @@ func (c *RemoteCLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 				}
 			}
 		}
+		log.WithFields(log.Fields{
+			"msg_channel":   msg.Channel,
+			"msg_chatid":    msg.ChatID,
+			"target_client": targetClientID,
+			"num_questions": len(askPayload.Questions),
+		}).Info("RemoteCLIChannel.Send: dispatching ask_user")
 		askMsg := wsMessage{
 			Type:     "ask_user",
 			ID:       msgID,

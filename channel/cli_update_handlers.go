@@ -899,6 +899,11 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// eventually loads successfully.
 		m.pendingUserMsg = nil
 		// RPC failed — no authoritative data. Enable input so the user can retry.
+		// Also force typing=false: restored state was a hint, but without server
+		// confirmation we cannot know the real turn state. Assuming idle is the
+		// safe fallback (prevents perpetual spinner from stuck typing=true).
+		m.typing = false
+		m.progress = nil
 		m.inputReady = true
 	} else {
 		for _, hm := range msg.history {

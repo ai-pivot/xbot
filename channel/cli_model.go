@@ -460,11 +460,25 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	var cmds []tea.Cmd
 
 	if isRemote {
-		// Remote mode: don't trust restored typing/progress state.
-		// Force idle until handleSuHistoryLoad reconciles with server.
-		// The RPC (get_active_progress) is the authoritative source.
-		m.typing = false
-		m.progress = nil
+		// Remote mode: restored state is a hint, not authoritative.
+		// DO NOT force m.typing=false here — the server RPC
+		// (get_active_progress, handled by handleSuHistoryLoad) is the
+		// single source of truth for whether a turn is active. Forcing
+		// typing=false unconditionally causes:
+		//   - Completed iterations rendered as static tool_summary
+		//     instead of progress block history (restoreProgressSnapshot fix)
+		//   - Progress updates ignored because handleProgressMsg skips
+		//     auto-start when m.typing=false && m.progress!=nil (state
+		//     mismatch between typing and server reality)
+		//   - Sidebar switch freezes: typing=false → busy=false →
+		//     tick chain drops to idleTick (3s), missing real-time updates
+		//
+		// Instead, keep the restored typing/progress as a "best guess"
+		// during the suLoading window. handleSuHistoryLoad will reconcile
+		// them with the server response:
+		//   acceptProgress → startAgentTurn() sets typing=true
+		//   default        → endAgentTurn()   sets typing=false
+		m.progress = nil // discard stale snapshot; server provides fresh one
 		m.needFlushQueue = false
 		m.turnCancelled = false
 		m.fastTickActive = false

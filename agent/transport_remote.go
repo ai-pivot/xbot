@@ -495,6 +495,10 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 		case "ask_user":
 			if msg.Progress != nil {
 				if len(msg.Progress.Questions) > 0 {
+					log.WithFields(log.Fields{
+						"msg_chatid":    msg.ChatID,
+						"num_questions": len(msg.Progress.Questions),
+					}).Info("RemoteTransport: dispatching ask_user")
 					qJSON, _ := json.Marshal(msg.Progress.Questions)
 					outMsg := bus.OutboundMessage{
 						Channel:     "cli",

@@ -189,7 +189,16 @@ func (t *WorktreeTool) executeCleanup(ctx *ToolContext) (*ToolResult, error) {
 	}
 
 	GlobalWorktreeRegistry.Deregister(sessionKey)
-	return NewResult(fmt.Sprintf("Worktree cleaned up.\n- Removed: %s\n- Branch deleted: %s", entry.WorktreeDir, entry.Branch)), nil
+
+	// Auto-cd back to the main repo path so the agent doesn't stay in a deleted worktree.
+	if ctx.SetCurrentDir != nil {
+		ctx.SetCurrentDir(entry.RepoPath)
+	}
+	// Also update ToolContext.CurrentDir for immediate effect.
+	ctx.CurrentDir = entry.RepoPath
+
+	return NewResult(fmt.Sprintf("Worktree cleaned up and deregistered.\n- Removed: %s\n- Branch deleted: %s\n\n已自动 cd 回主工作区: %s",
+		entry.WorktreeDir, entry.Branch, entry.RepoPath)), nil
 }
 
 func (t *WorktreeTool) executeStatus(ctx *ToolContext) (*ToolResult, error) {

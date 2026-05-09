@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"xbot/bus"
+	log "xbot/logger"
 	"xbot/version"
 
 	"charm.land/bubbles/v2/textinput"
@@ -733,8 +734,24 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
 		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
+			log.WithFields(log.Fields{
+				"msg_channel":    msg.Channel,
+				"msg_chatid":     msg.ChatID,
+				"my_channelName": m.channelName,
+				"my_chatid":      m.chatID,
+				"waiting_user":   msg.WaitingUser,
+			}).Warn("handleAgentMessage: session filter rejected outbound message")
 			return
 		}
+	} else {
+		log.WithFields(log.Fields{
+			"msg_channel":    msg.Channel,
+			"msg_chatid":     msg.ChatID,
+			"my_channelName": m.channelName,
+			"my_chatid":      m.chatID,
+			"waiting_user":   msg.WaitingUser,
+			"content_len":    len(msg.Content),
+		}).Warn("handleAgentMessage: ChatID empty — filter bypassed, applying to current session")
 	}
 
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
