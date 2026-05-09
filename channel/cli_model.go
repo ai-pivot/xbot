@@ -234,7 +234,8 @@ type tickerTickMsg struct{}
 
 // splashTickMsg 启动画面定时 tick 消息
 type splashTickMsg struct {
-	frame int // 当前帧索引
+	frame int    // 当前帧索引
+	gen   uint64 // tickGen at time of creation; stale ticks are discarded
 }
 
 // debugCaptureMsg triggers a UI capture (dump View() to file).
@@ -506,8 +507,10 @@ func (m *cliModel) savePendingToSessionState() {
 
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
 type cliHistoryReloadMsg struct {
-	history []HistoryMessage
-	err     error
+	channelName string
+	chatID      string
+	history     []HistoryMessage
+	err         error
 }
 
 // cliToastItem 单条 Toast 通知数据
@@ -1201,8 +1204,9 @@ func (m *cliModel) debugCaptureTick() tea.Cmd {
 
 // splashTick 生成启动画面动画的 tick 命令
 func (m *cliModel) splashTick(frame int) tea.Cmd {
+	gen := m.tickGen
 	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
-		return splashTickMsg{frame: frame + 1}
+		return splashTickMsg{frame: frame + 1, gen: gen}
 	})
 }
 

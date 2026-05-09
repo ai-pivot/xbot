@@ -876,12 +876,10 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 // handleSuHistoryLoad processes /su user switch history load results.
 // Returns tea.Cmds to start the tick chain when active progress is restored.
 func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
-	m.suLoading = false
-
 	// Stale result guard: if user switched away from the target session
 	// while the async load was in-flight, discard the result entirely.
-	// Do NOT clear suLoading here — the new session's loading guard is
-	// set by its own postRestoreSessionSetup call.
+	// Do NOT clear suLoading on stale callbacks — the new session's loading
+	// guard is set by its own postRestoreSessionSetup call.
 	if msg.channelName != m.channelName || msg.chatID != m.chatID {
 		return nil
 	}
@@ -1081,9 +1079,9 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			cmds = append(cmds, func() tea.Msg {
 				history, err := loader(ch, cid)
 				if err != nil {
-					return cliHistoryReloadMsg{err: err}
+					return cliHistoryReloadMsg{channelName: ch, chatID: cid, err: err}
 				}
-				return cliHistoryReloadMsg{history: history}
+				return cliHistoryReloadMsg{channelName: ch, chatID: cid, history: history}
 			})
 		}
 	}
@@ -1094,6 +1092,10 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 // Unlike /su which appends, this REPLACES the entire message list because compression
 // may have replaced many old messages with a single [Compacted context] summary.
 func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
+	// Stale guard: discard results from a different session.
+	if msg.channelName != m.channelName || msg.chatID != m.chatID {
+		return
+	}
 	if msg.err != nil {
 		log.WithError(msg.err).Warn("Failed to reload history after compression")
 		return
@@ -1140,6 +1142,10 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 
 // handleSplashTick processes splash animation frames.
 func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
+	// Stale tick from a previous tick chain — discard.
+	if msg.gen != m.tickGen {
+		return m, nil
+	}
 	var cmds []tea.Cmd
 	m.splashFrame = msg.frame
 	if m.suLoading {
