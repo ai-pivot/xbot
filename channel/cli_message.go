@@ -510,7 +510,8 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.sendToAgent(cmd) // 直接透传，agent 层会解析
 
 	case "/new":
-		m.lastTokenUsage = nil // clear context bar immediately
+		m.lastTokenUsage = nil       // clear context bar immediately
+		m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 		m.sendToAgent("/new")
 
 	case "/tasks":
@@ -625,7 +626,8 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				m.lastProgressSeq = 0
 				m.suPhaseDoneConfirmed = false
 				m.messages = nil
-				m.lastTokenUsage = nil // clear stale token bar on new session
+				m.lastTokenUsage = nil       // clear stale token bar on new session
+				m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 				m.invalidateAllCache(false)
 				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
 			} else {
@@ -887,6 +889,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		// §11.5 Session reset: clear messages and token usage bar after /new
 		if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
 			m.lastTokenUsage = nil
+			m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 			m.messages = make([]cliMessage, 0, cliMsgBufSize)
 			m.streamingMsgIdx = -1
 			m.cachedHistory = ""

@@ -700,7 +700,7 @@ func (c *CLIChannel) SyncLayoutSettings(vals map[string]string) {
 	// from background goroutines (refreshRemoteValuesCache) race with
 	// the BubbleTea event loop and cause glamour render panics.
 	select {
-	case c.asyncCh <- cliSettingsSavedMsg{layoutVals: layoutVals, layoutChanged: true}:
+	case c.asyncCh <- cliSettingsSavedMsg{layoutVals: layoutVals, layoutChanged: true, syncOnly: true}:
 	default:
 	}
 }
