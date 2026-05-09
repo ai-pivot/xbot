@@ -1697,6 +1697,13 @@ func main() {
 		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *channel.CLIProgressPayload {
 			return backend.GetActiveProgress(channelName, chatID)
 		}
+		cliCfg.GetTokenStateFn = func(channelName, chatID string) (int64, int64) {
+			pt, ct, err := backend.GetTokenState(channelName, chatID)
+			if err != nil {
+				return 0, 0
+			}
+			return pt, ct
+		}
 		cliCfg.SessionsDeleteFn = func(channelName, chatID string) error {
 			if backend.IsRemote() {
 				_, err := backend.CallRPC("delete_chat", map[string]string{

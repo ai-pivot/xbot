@@ -1188,15 +1188,20 @@ func (m *cliModel) viewSessionsList() string {
 				mainBusy = entry.Busy
 			}
 			iconChar := "●"
+			iconColor := lipgloss.Color("#10b981")
 			if entry.Active {
 				// Active: ● — user sees it, no extra mark needed.
 			} else if mainBusy {
 				// Non-active busy: spinner.
 				iconChar = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
+			} else if m.unreadSessions[entry.ID] {
+				// Non-active idle, but has unread results.
+				iconChar = "✦"
+				iconColor = lipgloss.Color("#f59e0b")
 			} else {
 				iconChar = "○"
 			}
-			icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#10b981")).Render(iconChar)
+			icon = lipgloss.NewStyle().Foreground(iconColor).Render(iconChar)
 			label := entry.Label
 			if label == "" {
 				label = entry.ID
@@ -1212,8 +1217,13 @@ func (m *cliModel) viewSessionsList() string {
 			statusIcon := "●"
 			statusStyle := lipgloss.NewStyle().Foreground(roleColor)
 			if !entry.Running {
-				statusIcon = "◦"
-				statusStyle = statusStyle.Faint(true)
+				if m.unreadSessions[entry.ID] {
+					statusIcon = "✦"
+					statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f59e0b"))
+				} else {
+					statusIcon = "◦"
+					statusStyle = statusStyle.Faint(true)
+				}
 			}
 			label := fmt.Sprintf("🤖 %s/%s", entry.Role, entry.Instance)
 			if entry.MessageHint != "" {
@@ -3454,6 +3464,8 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 	switch entry.Type {
 	case "main":
 		if entry.ID != m.chatID {
+			// Clear unread flag — user is now viewing this session.
+			delete(m.unreadSessions, entry.ID)
 			// Close AskUser panel if it belongs to a different session
 			if m.panelMode == "askuser" && m.askUserSession != entry.ID {
 				m.panelMode = ""
@@ -3493,6 +3505,8 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			agentChatID += ":" + entry.Instance
 		}
 		if agentChatID != m.chatID {
+			// Clear unread flag — user is now viewing this session.
+			delete(m.unreadSessions, entry.ID)
 			// Close AskUser panel if it doesn't belong to the new agent session
 			if m.panelMode == "askuser" && m.askUserSession != agentChatID {
 				m.panelMode = ""
