@@ -102,6 +102,7 @@ Embedded skill documenting worktree workflows: peer detection, SubAgent mode, Be
 - Branch naming: `agent/{role}/{instance}/{task-hint}`
 - `git worktree add` fails on dirty trees → AutoDetectAndInit returns nil (falls back to main project)
 - Worktree creation is serialized via `GlobalWorktreeRegistry.mu.Lock()` to prevent `.git/worktrees/` lockfile contention
+- **CWD persisted via WorktreeRegistry.** `SetCurrentDir` syncs to `Registry.UpdateCWD`. On restart, `MethodSetCWD` reads persisted CWD from registry before falling back to CLI workDir. Worktree sessions auto-restore correct CWD without waiting for first message.
 
 ## Path Security
 
