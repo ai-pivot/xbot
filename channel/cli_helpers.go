@@ -866,9 +866,14 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	// Invalidate cached context settings so they're re-resolved from user settings.
 	// Without this, changing max_context_tokens/max_output_tokens/compression_threshold
 	// in the settings panel has no effect on the context progress bar.
-	m.cachedMaxContextTokens = 0
-	m.cachedMaxOutputTokens = 0
-	m.cachedCompressRatio = 0
+	// Skip this when msg.syncOnly is true — periodic layout syncs from
+	// SyncLayoutSettings (every 5s in remote mode) must NOT reset context
+	// caches, otherwise the context bar flashes to solid line repeatedly.
+	if !msg.syncOnly {
+		m.cachedMaxContextTokens = 0
+		m.cachedMaxOutputTokens = 0
+		m.cachedCompressRatio = 0
+	}
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
 	}
