@@ -325,6 +325,10 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	// a static "Tools" block alongside the live progress block.
 	m.removeAllToolSummaries()
 
+	// Restore todos from the progress snapshot so the sidebar/todo bar
+	// shows them immediately without waiting for the next live progress event.
+	m.syncProgressTodos(payload)
+
 	m.invalidateAllCache(false)
 	// Do NOT call updateViewportContent() here — terminal size may not be
 	// initialized yet (pre-program path), causing panic in truncateToWidth.
@@ -378,11 +382,33 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	// the next turn (from message queue flush) from receiving progress
 	// events, causing Issue #30: queue-flushed messages appear idle.
 	m.turnCancelled = false
-	// Collapse todos on turn end. If all done, clear and mark so stale
-	// progress events don't re-fill them. Otherwise just nil the slice.
-	if m.allTodosDone() {
-		m.todos = nil
-		m.todosDoneCleared = true
+	// Collapse todos on turn end. If all done, fully clear.
+	// Otherwise restore unfinished todos from TodoManager so they
+	// persist across turns and are visible in idle state.
+	if m.todoManager != nil {
+		key := m.sessionKey()
+		if items := m.todoManager.GetTodos(key); len(items) > 0 {
+			allDone := true
+			for _, t := range items {
+				if !t.Done {
+					allDone = false
+					break
+				}
+			}
+			if !allDone {
+				m.todos = make([]CLITodoItem, len(items))
+				for i, t := range items {
+					m.todos[i] = CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+				}
+				m.todosDoneCleared = false
+			} else {
+				m.todos = nil
+				m.todosDoneCleared = true
+			}
+		} else {
+			m.todos = nil
+			m.todosDoneCleared = false
+		}
 	} else {
 		m.todos = nil
 		m.todosDoneCleared = false

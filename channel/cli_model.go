@@ -419,9 +419,25 @@ func (m *cliModel) restoreSession() {
 		m.rwVisible = 0
 		m.typewriterTickActive = false
 		m.pendingUserMsg = nil
-		// Clear todos — no saved state means no active todo list
-		m.todos = nil
-		m.todosDoneCleared = false
+		// Clear todos — no saved state means no active turn,
+		// but persist unfinished todos from TodoManager so they
+		// remain visible across session switches.
+		if m.todoManager != nil {
+			_ = m.todoManager.LoadFromFile(key)
+			if items := m.todoManager.GetTodos(key); len(items) > 0 {
+				m.todos = make([]CLITodoItem, len(items))
+				for i, t := range items {
+					m.todos[i] = CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+				}
+				m.todosDoneCleared = false
+			} else {
+				m.todos = nil
+				m.todosDoneCleared = false
+			}
+		} else {
+			m.todos = nil
+			m.todosDoneCleared = false
+		}
 	}
 }
 
