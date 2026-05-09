@@ -389,21 +389,31 @@ func (c *CLIChannel) SendProgress(chatID string, payload *CLIProgressPayload) {
 	}
 
 	// Stream-only events (Phase=="", Iteration==0) are high-frequency
-	// and should never evict structured events that carry TokenUsage
-	// and iteration state for the context bar and progress panel.
+	// streaming animation updates that carry no structured data. They
+	// should never evict structured events that carry TokenUsage and
+	// iteration state for the context bar and progress panel.
 	isStreamOnly := payload.Phase == "" && payload.Iteration == 0
 
 	select {
 	case c.progressCh <- payload:
 	default:
 		if isStreamOnly {
-			// Stream-only event: channel has a structured event waiting.
-			// Drop this stream-only event instead of evicting the structured one.
+			// Channel has a structured event waiting. Drop this
+			// stream-only event — the structured event is more
+			// important for the context bar and progress panel.
 			return
 		}
-		// Structured event: drain stale (likely stream-only), send fresh
+		// Both old (queued) and new are structured. Drain the old
+		// one, but merge its TokenUsage and CWD into the new one
+		// so context-bar data is never lost to eviction.
 		select {
-		case <-c.progressCh:
+		case old := <-c.progressCh:
+			if payload.TokenUsage == nil && old.TokenUsage != nil {
+				payload.TokenUsage = old.TokenUsage
+			}
+			if payload.CWD == "" && old.CWD != "" {
+				payload.CWD = old.CWD
+			}
 		default:
 		}
 		select {
@@ -848,7 +858,16 @@ func (c *CLIChannel) handleProgressDrain() {
 			select {
 			case c.asyncCh <- cliProgressMsg{payload: payload}:
 			default:
-				// Drop: eventLoop is behind, next progress will be fresher
+				// asyncCh full — event loop is behind. Cache token
+				// usage directly so the context bar doesn't flash
+				// blank before the next progress event arrives.
+				if payload.TokenUsage != nil && payload.TokenUsage.PromptTokens > 0 {
+					c.programMu.Lock()
+					if c.model != nil {
+						c.model.cacheTokenUsage(payload.TokenUsage)
+					}
+					c.programMu.Unlock()
+				}
 			}
 		}
 	}

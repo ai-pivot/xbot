@@ -1475,22 +1475,27 @@ func newCtxBarStyles() ctxBarStyles {
 //
 //	─ filled (color-coded) · ─ free (dim) · ┊ threshold (red bold) · ╌ output reservation (dashed dim)
 //
-// Returns empty string when no token data is available (keep original border).
+// Returns empty string only when cachedMaxContextTokens is unavailable (<=0),
+// meaning the token budget cannot be determined. Once the budget is known,
+// the bar ALWAYS renders — as a filled bar when token data is available,
+// or as an empty bar when lastTokenUsage is nil (e.g. before first LLM call).
+// This prevents the jarring "bar disappears" flash that happened when
+// lastTokenUsage was temporarily nil due to progressCh coalescing.
 func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox string) string {
-	if m.lastTokenUsage == nil || m.cachedMaxContextTokens <= 0 {
+	maxTokens := int64(m.cachedMaxContextTokens)
+	if maxTokens <= 0 {
 		return ""
 	}
-	promptTokens := m.lastTokenUsage.PromptTokens
-	maxTokens := int64(m.cachedMaxContextTokens)
+	var promptTokens int64
+	if m.lastTokenUsage != nil {
+		promptTokens = m.lastTokenUsage.PromptTokens
+	}
 	// Don't bail on promptTokens==0 — show an empty bar instead of flashing
 	// back to the plain border. lastTokenUsage is only cleared by explicit
 	// delete-record RPCs (/clear, /cancel, session reset); during normal
 	// operation a zero prompt count just means no LLM call has completed yet.
 	if promptTokens < 0 {
 		promptTokens = 0
-	}
-	if maxTokens <= 0 {
-		return ""
 	}
 
 	firstLine, _, found := strings.Cut(renderedBox, "\n")
