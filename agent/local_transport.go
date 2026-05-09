@@ -12,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/config"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // localTransport is the in-process "server" for local mode.
@@ -310,11 +311,15 @@ func (t *localTransport) registerHandlers() {
 		if err != nil {
 			return err
 		}
-		// Only set CWD if it's empty (initial creation). Session-specific
-		// CWD changes (worktree, Cd tool) must not be overwritten by the
-		// CLI sending the default workDir on every session switch.
+		// Only set CWD if it's empty (initial creation or server restart).
+		// Check persisted WorktreeRegistry first — worktree CWD survives restarts.
 		if sess.GetCurrentDir() == "" {
-			sess.SetCurrentDir(r.Dir)
+			sessKey := r.Channel + ":" + r.ChatID
+			if persisted := tools.GlobalWorktreeRegistry.GetCWD(sessKey); persisted != "" {
+				sess.SetCurrentDir(persisted)
+			} else {
+				sess.SetCurrentDir(r.Dir)
+			}
 		}
 		return nil
 	})

@@ -172,6 +172,45 @@ func (r *WorktreeRegistry) UpdateStatus(sessionKey, status string) {
 	}
 }
 
+// UpdateCWD updates the WorktreeDir for a session (called from SetCurrentDir).
+// If the session is registered, updates its WorktreeDir and persists.
+func (r *WorktreeRegistry) UpdateCWD(sessionKey, dir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.bySess[sessionKey]
+	if !ok {
+		return // not a worktree session, nothing to persist
+	}
+	e.WorktreeDir = dir
+	r.saveRepoLocked(e.RepoPath)
+}
+
+// GetCWD returns the persisted WorktreeDir for a session, or "".
+func (r *WorktreeRegistry) GetCWD(sessionKey string) string {
+	r.ensureLoadedBySession(sessionKey)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.bySess[sessionKey]; ok && e.WorktreeDir != "" {
+		return e.WorktreeDir
+	}
+	return ""
+}
+
+// ensureLoadedBySession tries to load persisted data for the repo that
+// contains this session. Uses the sessionKey format "channel:chatID" to
+// derive a possible repo path.
+func (r *WorktreeRegistry) ensureLoadedBySession(sessionKey string) {
+	// Try to find the repo path from already-loaded entries or the session key.
+	r.mu.RLock()
+	e, ok := r.bySess[sessionKey]
+	r.mu.RUnlock()
+	if ok {
+		r.ensureLoaded(e.RepoPath)
+		return
+	}
+	// Not loaded yet — will load on first Register/GetPrimary/etc.
+}
+
 func cloneEntry(e *WorktreeEntry) *WorktreeEntry {
 	c := *e
 	return &c

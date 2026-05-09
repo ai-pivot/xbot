@@ -634,8 +634,10 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 // sidebarCurrentIdx returns the index of the currently active session.
 func (m *cliModel) sidebarCurrentIdx() int {
 	entries := m.sidebarSessionEntries()
-	// Prioritize ID match over Active flag — Active can be stale
-	// (e.g. SessionsList callback hardcodes Active=true for main session).
+	// Match by chatID — never fall back to Active flag because it can
+	// be stale (e.g. SessionsList callback hardcodes Active=true for
+	// the main session, which mislabels it as active after switching
+	// to a different session).
 	for i, e := range entries {
 		if e.ID == m.chatID {
 			return i
@@ -651,12 +653,6 @@ func (m *cliModel) sidebarCurrentIdx() int {
 			if agentChatID == m.chatID {
 				return i
 			}
-		}
-	}
-	// Fallback to Active flag
-	for i, e := range entries {
-		if e.Active {
-			return i
 		}
 	}
 	return -1
