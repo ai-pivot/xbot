@@ -1184,18 +1184,17 @@ func (m *cliModel) viewSessionsList() string {
 		switch entry.Type {
 		case "main":
 			mainBusy := false
-			if entry.Active {
-				mainBusy = m.typing
-			} else {
+			if !entry.Active {
 				mainBusy = entry.Busy
 			}
-			activeMark := ""
 			iconChar := "●"
-			if mainBusy {
-				iconChar = "◉"
-				activeMark = " ⏳"
-			} else if entry.Active {
-				activeMark = " ✓"
+			if entry.Active {
+				// Active: ● — user sees it, no extra mark needed.
+			} else if mainBusy {
+				// Non-active busy: spinner.
+				iconChar = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
+			} else {
+				iconChar = "○"
 			}
 			icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#10b981")).Render(iconChar)
 			label := entry.Label
@@ -1207,7 +1206,7 @@ func (m *cliModel) viewSessionsList() string {
 				labelW = 10
 			}
 			label = truncateToWidth(label, labelW)
-			line = fmt.Sprintf("%s %s  %s%s", prefix, icon, label, activeMark)
+			line = fmt.Sprintf("%s %s  %s", prefix, icon, label)
 		case "agent":
 			roleColor := lipgloss.Color(RoleColor(entry.Role))
 			statusIcon := "●"

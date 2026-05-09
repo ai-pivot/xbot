@@ -5,13 +5,16 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/glamour"
+	"strings"
 	"time"
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/internal/textarea"
+	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -149,6 +152,8 @@ var (
 	splashFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	// pulseFrames: pulsing circle — tool completion pulse
 	pulseFrames = []string{"◌", "◎", "◉", "◎", "◌"}
+	// sidebarSpinnerFrames: braille spinner for sidebar busy sessions
+	sidebarSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 )
 
 // errorKeywords — system 消息中的错误检测关键词
@@ -497,6 +502,8 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	} else {
 		// Local mode: restored state is authoritative (no RPC delay).
 		m.inputReady = true
+		// Check for pending AskUser questions from a previous session.
+		cmds = append(cmds, m.checkAndRestorePendingAskUser())
 		// Kick tick chain if restored session has active turn.
 		if m.typing && m.progress != nil && !m.fastTickActive {
 			m.fastTickActive = true
@@ -505,6 +512,81 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	}
 
 	return cmds
+}
+
+// checkAndRestorePendingAskUser checks disk for a pending AskUser question for
+// the current session and opens the panel if found.
+func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
+	if m.channelName == "" || m.chatID == "" {
+		return nil
+	}
+	pu := m.loadPendingAskUser(m.chatID)
+	if pu == nil {
+		return nil
+	}
+	// Don't restore if already in an AskUser panel for this session.
+	if m.panelMode == "askuser" && m.askUserSession == m.chatID {
+		return nil
+	}
+	// Don't restore if currently in another panel mode.
+	if m.panelMode != "" && m.panelMode != "askuser" {
+		return nil
+	}
+
+	// Parse questions from saved metadata.
+	var qs []askQItem
+	if err := json.Unmarshal([]byte(pu.Questions), &qs); err != nil || len(qs) == 0 {
+		log.WithError(err).WithField("chat_id", m.chatID).Warn("Failed to parse pending ask_user questions, removing corrupt file")
+		m.deletePendingAskUser(m.chatID)
+		return nil
+	}
+	items := make([]askItem, len(qs))
+	for i, q := range qs {
+		items[i] = askItem{Question: q.Question, Options: q.Options}
+	}
+
+	requestID := pu.RequestID // capture for callbacks
+
+	log.WithField("chat_id", m.chatID).Info("Restoring pending AskUser panel from disk")
+	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(requestID), m.pendingAskUserOnCancel(requestID))
+	return nil
+}
+
+// pendingAskUserOnAnswer returns a callback for answered pending questions.
+// It sends the answer back and cleans up the persisted file.
+func (m *cliModel) pendingAskUserOnAnswer(requestID string) func(map[string]string) {
+	return func(answers map[string]string) {
+		var parts []string
+		for k, v := range answers {
+			if k == "other_input" {
+				parts = append(parts, v)
+			} else {
+				parts = append(parts, fmt.Sprintf("Q: %s\nA: %s", k, v))
+			}
+		}
+		content := strings.Join(parts, "\n\n")
+		meta := map[string]string{"ask_user_answered": "true"}
+		if requestID != "" {
+			meta["request_id"] = requestID
+		}
+		m.sendInboundWait(m.newInbound(content, meta), 5*time.Second)
+		m.deletePendingAskUser(m.askUserSession)
+		m.startAgentTurn()
+	}
+}
+
+// pendingAskUserOnCancel returns a callback for cancelled pending questions.
+// It cleans up the persisted file and closes the panel.
+func (m *cliModel) pendingAskUserOnCancel(requestID string) func() {
+	return func() {
+		m.deletePendingAskUser(m.askUserSession)
+		m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
+		m.typing = false
+		m.updatePlaceholder()
+		m.inputReady = true
+		m.resetProgressState()
+		m.updateViewportContent()
+	}
 }
 
 // savePendingToSessionState syncs m.pendingUserMsg into the saved session state
@@ -638,18 +720,19 @@ type cliModel struct {
 	isAdminFn       func() bool
 
 	// --- Progress ---
-	progress             *CLIProgressPayload
-	iterationHistory     []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration    int                    // 上次进度事件的迭代号
-	lastProgressSeq      uint64                 // 上次进度事件的序列号（单调递增校验）
-	iterationStartTime   time.Time              // current iteration wall-clock start time
-	fastTickActive       bool                   // true when a fast tick chain (100ms) is running
-	tickGen              uint64                 // incremented on session switch; stale ticks are discarded
-	typewriterTickActive bool                   // true when typewriter tick chain (50ms) is running
-	twVisible            int                    // typewriter: runes currently visible in stream content
-	rwVisible            int                    // typewriter: runes currently visible in reasoning stream content
-	rwCjkSkipTick        bool                   // alternates each tick to halve CJK speed (reasoning)
-	twCjkSkipTick        bool                   // alternates each tick to halve CJK speed (stream)
+	progress               *CLIProgressPayload
+	iterationHistory       []cliIterationSnapshot // 已完成迭代快照
+	lastSeenIteration      int                    // 上次进度事件的迭代号
+	lastProgressSeq        uint64                 // 上次进度事件的序列号（单调递增校验）
+	iterationStartTime     time.Time              // current iteration wall-clock start time
+	fastTickActive         bool                   // true when a fast tick chain (100ms) is running
+	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
+	tickGen                uint64                 // incremented on session switch; stale ticks are discarded
+	typewriterTickActive   bool                   // true when typewriter tick chain (50ms) is running
+	twVisible              int                    // typewriter: runes currently visible in stream content
+	rwVisible              int                    // typewriter: runes currently visible in reasoning stream content
+	rwCjkSkipTick          bool                   // alternates each tick to halve CJK speed (reasoning)
+	twCjkSkipTick          bool                   // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
 	workDir         string // 工作目录（标题栏显示用）

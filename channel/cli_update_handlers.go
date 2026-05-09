@@ -1114,6 +1114,10 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			})
 		}
 	}
+	// Always check for pending AskUser questions after history load.
+	// This covers both active turns (agent paused waiting for user) and
+	// idle sessions (pending from a previous session that was never answered).
+	cmds = append(cmds, m.checkAndRestorePendingAskUser())
 	return cmds
 }
 
@@ -1485,7 +1489,8 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	// the server's progress events and is the ground truth for session activity.
 	sessionActive := m.progress != nil && m.progress.Phase != "done"
 	busy := m.typing || sessionActive
-	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || busy {
+	needsSpinnerTick := busy || m.sidebarHasBusySessions
+	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || needsSpinnerTick {
 		m.fastTickActive = true
 		cmds = append(cmds, m.tickCmd())
 	} else if m.needFlushQueue && len(m.messageQueue) > 0 {
@@ -1498,7 +1503,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.fastTickActive = false
 		cmds = append(cmds, idleTickCmd())
 	}
-	if busy {
+	if needsSpinnerTick {
 		// Advance spinner frame on every tick so the animation stays in sync
 		// with elapsed time display. Previously driven by a separate tickerTickMsg
 		// chain that could break when m.progress briefly went nil.

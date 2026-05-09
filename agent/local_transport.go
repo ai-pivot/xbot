@@ -703,15 +703,12 @@ func (t *localTransport) registerHandlers() {
 	// ── Processing state ──────────────────────────────────────────────────
 
 	h[MethodIsProcessing] = rpc1(func(r isProcessingReq) (bool, error) {
-		prefix := r.Channel + ":" + r.ChatID + ":"
-		found := false
-		a.chatCancelCh.Range(func(key, _ any) bool {
-			if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
-				found = true
-				return false
-			}
-			return true
-		})
+		// Exact key match — cancelKey is stored as channel:chatID
+		// (no trailing colon, no senderID). Prefix matching was broken
+		// because a parent dir prefix (e.g. "cli:/home/xbot:") would
+		// also match child dir keys (e.g. "cli:/home/xbot/worktree").
+		key := r.Channel + ":" + r.ChatID
+		_, found := a.chatCancelCh.Load(key)
 		return found, nil
 	})
 

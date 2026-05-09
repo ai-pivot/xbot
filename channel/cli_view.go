@@ -426,6 +426,7 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 
 func (m *cliModel) renderSidebarSessions(w int) string {
 	// Reset tracking
+	m.sidebarHasBusySessions = false
 	sidebarSessionLines = nil
 	sidebarDeleteXStart = nil
 	sidebarDeleteXEnd = nil
@@ -490,14 +491,13 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			icon := "○"
 			itemStyle := m.styles.SidebarItem
 			if isActive {
-				if isBusy {
-					icon = "◉"
-				} else {
-					icon = "●"
-				}
+				// Active: always ● — user can see what's happening.
+				icon = "●"
 				itemStyle = m.styles.SidebarActive
 			} else if isBusy {
-				icon = "◎"
+				// Non-active but busy: animated spinner.
+				m.sidebarHasBusySessions = true
+				icon = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
 				itemStyle = m.styles.SidebarBusy
 			}
 
