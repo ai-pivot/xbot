@@ -3208,7 +3208,9 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 		case strings.HasPrefix(line, "+"):
 			code := line[1:]
 			if hl, ok := highlightMap[i]; ok {
-				code = hl
+				code = lipgloss.NewStyle().Background(bgAdd).Render(hl)
+			} else {
+				code = lipgloss.NewStyle().Background(bgAdd).Render(code)
 			}
 			code = expandTabs(code, 4)
 			code = ansi.Truncate(code, codeW, "")
@@ -3223,7 +3225,9 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 		case strings.HasPrefix(line, "-"):
 			code := line[1:]
 			if hl, ok := highlightMap[i]; ok {
-				code = hl
+				code = lipgloss.NewStyle().Background(bgDel).Render(hl)
+			} else {
+				code = lipgloss.NewStyle().Background(bgDel).Render(code)
 			}
 			code = expandTabs(code, 4)
 			code = ansi.Truncate(code, codeW, "")
