@@ -1,6 +1,9 @@
 package channel
 
 import (
+	"encoding/json"
+	"path/filepath"
+
 	"charm.land/lipgloss/v2"
 	"fmt"
 	"github.com/muesli/termenv"
@@ -11,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"xbot/config"
 	"xbot/internal/textarea"
 	"xbot/plugin"
 )
@@ -852,10 +856,139 @@ func setTheme(name string) {
 	if t, ok := themeRegistry[name]; ok {
 		currentTheme = t
 		currentThemeName = name
-	} else {
-		currentTheme = &themeMidnight
-		currentThemeName = "midnight"
+		return
 	}
+	// Fallback: try loading external theme from ~/.xbot/themes/<name>.json
+	if t := loadExternalTheme(name); t != nil {
+		currentTheme = t
+		currentThemeName = name
+		return
+	}
+	currentTheme = &themeMidnight
+	currentThemeName = "midnight"
+}
+
+var externalThemesMu sync.Mutex
+var externalThemes = map[string]*cliTheme{}
+
+// loadExternalTheme loads a theme JSON from ~/.xbot/themes/<name>.json.
+// Caches loaded themes for subsequent lookups.
+func loadExternalTheme(name string) *cliTheme {
+	externalThemesMu.Lock()
+	if t, ok := externalThemes[name]; ok {
+		externalThemesMu.Unlock()
+		return t
+	}
+	externalThemesMu.Unlock()
+
+	path := filepath.Join(filepath.Dir(config.ConfigFilePath()), "themes", name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var ext externalThemeJSON
+	if err := json.Unmarshal(data, &ext); err != nil {
+		return nil
+	}
+	t := &cliTheme{
+		TextPrimary:     or(ext.TextPrimary, "#e8eaed"),
+		TextSecondary:   or(ext.TextSecondary, "#9aa0a6"),
+		TextMuted:       or(ext.TextMuted, "#5f6368"),
+		FGMostSubtle:    or(ext.FGMostSubtle, "#3c4043"),
+		FGGuide:         or(ext.FGGuide, "#667eea"),
+		Success:         or(ext.Success, "#81c995"),
+		Warning:         or(ext.Warning, "#fdd663"),
+		Error:           or(ext.Error, "#f28b82"),
+		Info:            or(ext.Info, "#8ab4f8"),
+		Accent:          or(ext.Accent, "#8c9eff"),
+		AccentAlt:       or(ext.AccentAlt, "#c58af9"),
+		BarFilled:       or(ext.BarFilled, "#8c9eff"),
+		BarEmpty:        or(ext.BarEmpty, "#292a3d"),
+		Border:          or(ext.Border, "#3c4043"),
+		TitleText:       or(ext.TitleText, "#e8eaed"),
+		Surface:         or(ext.Surface, "#1e1f2e"),
+		BGPanel:         or(ext.BGPanel, "#252736"),
+		Gradient:        or(ext.Gradient, "#667eea"),
+		ErrorBg:         or(ext.ErrorBg, "#332020"),
+		SuccessBg:       or(ext.SuccessBg, "#1a3325"),
+		WarningBg:       or(ext.WarningBg, "#332d1a"),
+		InfoBg:          or(ext.InfoBg, "#1a2533"),
+		GDocumentText:   or(ext.GDocumentText, "#e8eaed"),
+		GHeadingText:    or(ext.GHeadingText, "#8ab4f8"),
+		GCodeBlock:      or(ext.GCodeBlock, "#1e1f2e"),
+		GCodeText:       or(ext.GCodeText, "#c9d1d9"),
+		GLinkText:       or(ext.GLinkText, "#8ab4f8"),
+		GBlockQuote:     or(ext.GBlockQuote, "#8c9eff"),
+		GListItem:       or(ext.GListItem, "#8ab4f8"),
+		GHorizontalRule: or(ext.GHorizontalRule, "#3c4043"),
+		FGBright:        or(ext.FGBright, "#ffffff"),
+		BGHover:         or(ext.BGHover, "#2d2f3e"),
+		BGInset:         or(ext.BGInset, "#161722"),
+		BGOverlay:       or(ext.BGOverlay, "#0d0e1a"),
+		SuccessMuted:    or(ext.SuccessMuted, "#4a7d5f"),
+		WarningMuted:    or(ext.WarningMuted, "#8a7a3a"),
+		ErrorMuted:      or(ext.ErrorMuted, "#8a4d4d"),
+		InfoMuted:       or(ext.InfoMuted, "#4a6d8a"),
+		AccentStart:     or(ext.AccentStart, ext.Accent),
+		AccentEnd:       or(ext.AccentEnd, ext.AccentAlt),
+	}
+
+	externalThemesMu.Lock()
+	externalThemes[name] = t
+	externalThemesMu.Unlock()
+	return t
+}
+
+// externalThemeJSON is the JSON-serializable theme format for external files.
+// Users only need to specify colors they want to override; defaults fill the rest.
+type externalThemeJSON struct {
+	TextPrimary     string `json:"text_primary"`
+	TextSecondary   string `json:"text_secondary"`
+	TextMuted       string `json:"text_muted"`
+	FGMostSubtle    string `json:"fg_most_subtle"`
+	FGGuide         string `json:"fg_guide"`
+	Success         string `json:"success"`
+	Warning         string `json:"warning"`
+	Error           string `json:"error"`
+	Info            string `json:"info"`
+	Accent          string `json:"accent"`
+	AccentAlt       string `json:"accent_alt"`
+	BarFilled       string `json:"bar_filled"`
+	BarEmpty        string `json:"bar_empty"`
+	Border          string `json:"border"`
+	TitleText       string `json:"title_text"`
+	Surface         string `json:"surface"`
+	BGPanel         string `json:"bg_panel"`
+	Gradient        string `json:"gradient"`
+	ErrorBg         string `json:"error_bg"`
+	SuccessBg       string `json:"success_bg"`
+	WarningBg       string `json:"warning_bg"`
+	InfoBg          string `json:"info_bg"`
+	GDocumentText   string `json:"gdocument_text"`
+	GHeadingText    string `json:"gheading_text"`
+	GCodeBlock      string `json:"gcode_block"`
+	GCodeText       string `json:"gcode_text"`
+	GLinkText       string `json:"glink_text"`
+	GBlockQuote     string `json:"gblock_quote"`
+	GListItem       string `json:"glist_item"`
+	GHorizontalRule string `json:"ghorizontal_rule"`
+	FGBright        string `json:"fg_bright"`
+	BGHover         string `json:"bg_hover"`
+	BGInset         string `json:"bg_inset"`
+	BGOverlay       string `json:"bg_overlay"`
+	SuccessMuted    string `json:"success_muted"`
+	WarningMuted    string `json:"warning_muted"`
+	ErrorMuted      string `json:"error_muted"`
+	InfoMuted       string `json:"info_muted"`
+	AccentStart     string `json:"accent_start"`
+	AccentEnd       string `json:"accent_end"`
+}
+
+func or(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 func ApplyTheme(name string) {
@@ -867,11 +1000,29 @@ func ApplyTheme(name string) {
 	}
 }
 
-// ThemeNames returns the list of available theme names.
+// ThemeNames returns the list of available theme names (built-in + external).
 func ThemeNames() []string {
 	names := make([]string, 0, len(themeRegistry))
 	for name := range themeRegistry {
 		names = append(names, name)
+	}
+	// Scan external themes directory
+	themesDir := filepath.Join(filepath.Dir(config.ConfigFilePath()), "themes")
+	if entries, err := os.ReadDir(themesDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".json")
+			if name == e.Name() {
+				continue // not a .json file
+			}
+			// Don't duplicate built-in names
+			if _, ok := themeRegistry[name]; ok {
+				continue
+			}
+			names = append(names, name)
+		}
 	}
 	return names
 }

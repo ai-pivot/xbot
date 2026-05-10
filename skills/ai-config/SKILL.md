@@ -21,27 +21,23 @@ description: "Guide for AI to configure xbot TUI, themes, subscriptions, and set
 
 ## Theme Creation
 
-Themes are JSON files in `~/.xbot/themes/<name>.json`. To create a custom theme:
+External themes are JSON files in `~/.xbot/themes/<name>.json`. The system loads them automatically when `setTheme` is called.
 
-1. **Check existing themes**: `Shell: ls ~/.xbot/themes/`
-2. **Read a template**: `Shell: cat ~/.xbot/themes/default.json` (if exists)
-3. **Create new theme**: `FileCreate` to `~/.xbot/themes/<name>.json` with the theme JSON
-4. **Switch to new theme**: `tui_control set_theme("<name>")`
+**Correct workflow:**
+1. `FileCreate` the theme JSON to `~/.xbot/themes/<name>.json`
+2. `tui_control set_theme("<name>")` to switch to it
+3. Check `ThemeNames()` includes it (via `Shell: grep -r name ~/.xbot/themes/`)
 
-Theme JSON format:
+**Minimal theme JSON** (only override colors you want to change):
 ```json
 {
-  "name": "my-theme",
-  "colors": {
-    "background": "#1a1b26",
-    "foreground": "#a9b1d6",
-    "cursor": "#c0caf5",
-    "selection": "#33467c"
-  }
+  "accent": "#ff6b6b",
+  "surface": "#1a1a2e",
+  "text_primary": "#e0e0e0"
 }
 ```
 
-If no existing theme files exist, themes are built-in. Use `tui_control set_theme("<name>")` to cycle through built-in themes. Use `config get("theme")` to check current.
+All fields are optional; defaults fill the rest. Full field list: `text_primary`, `text_secondary`, `text_muted`, `fg_most_subtle`, `fg_guide`, `success`, `warning`, `error`, `info`, `accent`, `accent_alt`, `bar_filled`, `bar_empty`, `border`, `title_text`, `surface`, `bg_panel`, `gradient`, `error_bg`, `success_bg`, `warning_bg`, `info_bg`, `gdocument_text`, `gheading_text`, `gcode_block`, `gcode_text`, `glink_text`, `gblock_quote`, `glist_item`, `ghorizontal_rule`, `fg_bright`, `bg_hover`, `bg_inset`, `bg_overlay`, `success_muted`, `warning_muted`, `error_muted`, `info_muted`, `accent_start`, `accent_end`.
 
 ## Slash Commands via send_slash
 
