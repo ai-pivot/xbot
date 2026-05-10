@@ -221,9 +221,9 @@ func AllConfigItemsForAI() []tools.ConfigListItem {
 	return result
 }
 
-// readGlobalConfigValues reads config.json and returns all top-level string values.
-// Used by AllConfigItemsForAI to get current values for global-scoped settings
-// (which are not in user_settings DB).
+// readGlobalConfigValues reads config.json and returns both top-level and nested (llm.*) values.
+// LLM subscription keys are stored as nested "llm": {"provider": ..., "model": ...} in config.json,
+// but SettingDef keys use the flat "llm_provider" naming. This function handles the mapping.
 func readGlobalConfigValues() map[string]string {
 	raw, err := os.ReadFile(config.ConfigFilePath())
 	if err != nil {
@@ -234,6 +234,7 @@ func readGlobalConfigValues() map[string]string {
 		return nil
 	}
 	out := make(map[string]string)
+	// Top-level string values
 	for k, v := range m {
 		switch val := v.(type) {
 		case string:
@@ -242,6 +243,27 @@ func readGlobalConfigValues() map[string]string {
 			out[k] = strconv.Itoa(int(val))
 		case bool:
 			out[k] = strconv.FormatBool(val)
+		}
+	}
+	// Nested llm.* values → both llm_* and bare key names
+	// e.g. config.json {"llm": {"max_output_tokens": 4096}} → both "llm_max_output_tokens" and "max_output_tokens"
+	if llm, ok := m["llm"]; ok {
+		if llmMap, ok := llm.(map[string]interface{}); ok {
+			for k, v := range llmMap {
+				var s string
+				switch val := v.(type) {
+				case string:
+					s = val
+				case float64:
+					s = strconv.Itoa(int(val))
+				case bool:
+					s = strconv.FormatBool(val)
+				default:
+					continue
+				}
+				out["llm_"+k] = s // e.g. "llm_provider"
+				out[k] = s        // e.g. "provider", "max_output_tokens"
+			}
 		}
 	}
 	return out
