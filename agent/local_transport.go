@@ -194,13 +194,6 @@ func (t *localTransport) registerHandlers() {
 		return nil
 	})
 
-	h[MethodSetProxyLLM] = rpcVoid(func(r setProxyLLMReq) error {
-		// ProxyLLM contains non-serializable local objects (interfaces, closures).
-		// This handler exists only for RPC completeness; actual proxy setup
-		// uses Backend.SetProxyLLM() which directly operates on the agent.
-		return fmt.Errorf("set_proxy_llm: not supported via RPC, use Backend.SetProxyLLM() directly")
-	})
-
 	h[MethodClearProxyLLM] = rpcVoid(func(r clearProxyLLMReq) error {
 		a.ClearProxyLLM(r.SenderID)
 		return nil

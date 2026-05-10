@@ -20,24 +20,24 @@ type TodoItem struct {
 
 // ToolProgress represents a single tool's execution progress.
 type ToolProgress struct {
-	Name      string    `json:"name"`
+	Name      string    `json:"name,omitempty"`
 	Label     string    `json:"label,omitempty"`
-	Status    string    `json:"status"`
-	Elapsed   int64     `json:"elapsed"`
-	Iteration int       `json:"iteration"`
+	Status    string    `json:"status,omitempty"`
+	Elapsed   int64     `json:"elapsed_ms,omitempty"`
+	Iteration int       `json:"iteration,omitempty"`
 	Summary   string    `json:"summary,omitempty"`
 	Detail    string    `json:"detail,omitempty"`
 	Args      string    `json:"args,omitempty"`
-	ToolHints string    `json:"tool_hints,omitempty"`
+	ToolHints string    `json:"toolHints,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
 }
 
 // SubAgentInfo represents a sub-agent's structured progress status.
 type SubAgentInfo struct {
 	Role     string         `json:"role"`
-	Instance string         `json:"instance"`
+	Instance string         `json:"instance,omitempty"`
 	Status   string         `json:"status"`
-	Desc     string         `json:"desc"`
+	Desc     string         `json:"desc,omitempty"`
 	Children []SubAgentInfo `json:"children,omitempty"`
 }
 

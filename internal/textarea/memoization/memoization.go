@@ -4,7 +4,6 @@ package memoization
 
 import (
 	"container/list"
-	"fmt"
 	"sync"
 )
 
@@ -101,22 +100,5 @@ func (m *MemoCache[H, T]) Set(h H, value T) {
 	}
 	element := m.evictionList.PushFront(newEntry)
 	m.cache[hashedKey] = element
-}
 
-// HString is a type that implements the Hasher interface for strings.
-// Deprecated: kept for backward compatibility; prefer using fmt.Sprintf directly.
-type HString string
-
-// Hash returns the hash of the string.
-func (h HString) Hash() string {
-	return string(h)
-}
-
-// HInt is a type that implements the Hasher interface for integers.
-// Deprecated: kept for backward compatibility; prefer using fmt.Sprintf directly.
-type HInt int
-
-// Hash returns the hash of the integer.
-func (h HInt) Hash() string {
-	return fmt.Sprintf("%d", int(h))
 }

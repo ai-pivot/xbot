@@ -134,12 +134,14 @@ func (b *Backend) Run(ctx context.Context) error   { return b.transport.Run(ctx)
 
 func (b *Backend) SendInbound(msg bus.InboundMessage) error {
 	return b.transport.SendMessage(protocol.InboundMessage{
-		Content:    msg.Content,
-		Channel:    msg.Channel,
-		ChatID:     msg.ChatID,
-		SenderID:   msg.SenderID,
-		SenderName: msg.SenderName,
-		ChatType:   msg.ChatType,
+		MessagePayload: bus.MessagePayload{
+			Content:    msg.Content,
+			Channel:    msg.Channel,
+			ChatID:     msg.ChatID,
+			SenderID:   msg.SenderID,
+			SenderName: msg.SenderName,
+			ChatType:   msg.ChatType,
+		},
 	})
 }
 

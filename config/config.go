@@ -229,7 +229,6 @@ type AgentConfig struct {
 	MemoryProvider string `json:"memory_provider"`
 	WorkDir        string `json:"work_dir"`
 	PromptFile     string `json:"prompt_file"`
-	SingleUser     bool   `json:"single_user"` // Deprecated: no longer used, kept for config file compatibility
 
 	MCPInactivityTimeout Duration `json:"mcp_inactivity_timeout"`
 	MCPCleanupInterval   Duration `json:"mcp_cleanup_interval"`

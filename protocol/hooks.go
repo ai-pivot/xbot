@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"xbot/tools"
 )
 
 type FileSnapshot struct {
@@ -37,19 +35,19 @@ type ApprovalHandler interface {
 
 type ApprovalState struct {
 	mu      sync.RWMutex
-	handler tools.ApprovalHandler
+	handler ApprovalHandler
 	Timeout time.Duration `json:"timeout"`
 }
 
 // SetHandler replaces the approval handler at runtime.
-func (s *ApprovalState) SetHandler(h tools.ApprovalHandler) {
+func (s *ApprovalState) SetHandler(h ApprovalHandler) {
 	s.mu.Lock()
 	s.handler = h
 	s.mu.Unlock()
 }
 
 // GetHandler returns the current approval handler.
-func (s *ApprovalState) GetHandler() tools.ApprovalHandler {
+func (s *ApprovalState) GetHandler() ApprovalHandler {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.handler
@@ -66,20 +64,21 @@ type CheckpointStore interface {
 	Rewind(turnIdx int) (RewindResult, error)
 	HasChanges(turnIdx int) bool
 	CountChanges(turnIdx int) int
+	Write(snap FileSnapshot) error
 }
 
 type CheckpointState struct {
 	mu      sync.Mutex
-	store   *tools.CheckpointStore
+	store   CheckpointStore
 	turnIdx int
-	pending map[string]tools.FileSnapshot
+	pending map[string]FileSnapshot
 }
 
 // NewCheckpointState creates a CheckpointState backed by the given store.
-func NewCheckpointState(store *tools.CheckpointStore) *CheckpointState {
+func NewCheckpointState(store CheckpointStore) *CheckpointState {
 	return &CheckpointState{
 		store:   store,
-		pending: make(map[string]tools.FileSnapshot),
+		pending: make(map[string]FileSnapshot),
 	}
 }
 
@@ -98,19 +97,19 @@ func (cs *CheckpointState) TurnIdx() int {
 }
 
 // Store returns the underlying CheckpointStore.
-func (cs *CheckpointState) Store() *tools.CheckpointStore {
+func (cs *CheckpointState) Store() CheckpointStore {
 	return cs.store
 }
 
 // SetPending stores a file snapshot for the given path.
-func (cs *CheckpointState) SetPending(filePath string, snap tools.FileSnapshot) {
+func (cs *CheckpointState) SetPending(filePath string, snap FileSnapshot) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.pending[filePath] = snap
 }
 
 // GetAndDeletePending retrieves and removes the snapshot for the given path.
-func (cs *CheckpointState) GetAndDeletePending(filePath string) (tools.FileSnapshot, bool) {
+func (cs *CheckpointState) GetAndDeletePending(filePath string) (FileSnapshot, bool) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	snap, found := cs.pending[filePath]

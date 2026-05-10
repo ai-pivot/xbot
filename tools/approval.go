@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"xbot/protocol"
 )
 
 // contextKey is an unexported type for context keys defined in this package.
@@ -58,23 +60,10 @@ func WorkingDirFromContext(ctx context.Context) string {
 }
 
 // ApprovalRequest represents a pending user approval for a tool execution.
-type ApprovalRequest struct {
-	ToolName string `json:"tool_name"` // e.g., "Shell"
-	ToolArgs string `json:"tool_args"` // JSON arguments (for display)
-	RunAs    string `json:"run_as"`    // Target OS user
-	Reason   string `json:"reason"`    // Human-readable description
-
-	// Extracted details for display (populated by ApprovalHook)
-	Command     string `json:"command,omitempty"`      // Parsed command (possibly truncated for display)
-	FilePath    string `json:"file_path,omitempty"`    // Target file (possibly truncated for display)
-	ArgsSummary string `json:"args_summary,omitempty"` // Extra argument summary for approval UI
-}
+type ApprovalRequest = protocol.ApprovalRequest
 
 // ApprovalResult is the user's decision.
-type ApprovalResult struct {
-	Approved   bool   `json:"approved"`
-	DenyReason string `json:"deny_reason,omitempty"`
-}
+type ApprovalResult = protocol.ApprovalResult
 
 // ApprovalHandler is the channel-agnostic interface for user approval.
 // Each channel (CLI, Web) provides its own implementation.

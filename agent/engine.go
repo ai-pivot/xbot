@@ -834,7 +834,6 @@ func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleNam
 
 	return bus.InboundMessage{
 		From: bus.NewIMAddress(a.channel, a.senderID),
-		To:   bus.NewAgentAddress(a.parentID),
 
 		Channel:    bus.SchemeAgent,
 		Content:    task,

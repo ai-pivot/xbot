@@ -439,7 +439,6 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 
 	inbound := bus.InboundMessage{
 		From:       bus.NewIMAddress("napcat", senderID),
-		To:         bus.NewIMAddress("napcat", chatID),
 		Channel:    "napcat",
 		SenderID:   senderID,
 		SenderName: senderName,
