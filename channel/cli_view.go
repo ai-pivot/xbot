@@ -374,7 +374,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 
 	// Sidebar: spans the full height of the middle section (viewport → infoBar)
 	if showSidebar {
-		sidebar := m.renderSidebarForBlock(middleBlock)
+		sidebar := m.renderSidebarForBlock(middleBlock, m.height-len(topLines))
 		if m.sidebarPosition == "right" {
 			return strings.Join(topLines, "\n") + "\n" +
 				lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar)
@@ -389,16 +389,16 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 // renderSidebarForBlock renders the sidebar that spans the full height of the
 // middle content block (viewport + status + footer + input).
 // The block string is used only to measure height via line counting.
-func (m *cliModel) renderSidebarForBlock(block string) string {
+func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 	sw := m.sidebarWidth
 	if sw < 12 {
 		sw = 12
 	}
 
-	// Measure middle block height, capped to available screen height
+	// Measure middle block height, capped to actual screen area available
 	h := strings.Count(block, "\n") + 1
-	if maxH := m.height - 3; h > maxH {
-		h = maxH
+	if h > availableH {
+		h = availableH
 	}
 	if h < 5 {
 		h = 5
