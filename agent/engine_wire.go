@@ -163,6 +163,29 @@ func (a *Agent) buildBaseRunConfig(
 		// Remote TUI control — detect RemoteCLIChannel and inject WS-based callback
 		RemoteTUICtrlFn: a.buildRemoteTUICtrlFn(channel, chatID),
 
+		// Subscription listing — from LLMFactory
+		ListLLMSubs: func(ch, senderID string) []tools.SubscriptionInfo {
+			if a.llmFactory == nil {
+				return nil
+			}
+			svc := a.llmFactory.GetSubscriptionSvc()
+			if svc == nil {
+				return nil
+			}
+			subs, _ := svc.List(senderID)
+			result := make([]tools.SubscriptionInfo, 0, len(subs))
+			for _, s := range subs {
+				result = append(result, tools.SubscriptionInfo{
+					ID:        s.ID,
+					Name:      s.Name,
+					Provider:  s.Provider,
+					Model:     s.Model,
+					IsDefault: s.IsDefault,
+				})
+			}
+			return result
+		},
+
 		// LLM 并发限流回调（per-tenant）
 		LLMSemAcquire:             llmSemAcquire,
 		EnableConcurrentSubAgents: true,

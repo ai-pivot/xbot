@@ -116,6 +116,9 @@ type ToolContext struct {
 	// IsGlobalKey returns true if the setting key is global-scoped (shared config, admin-only).
 	IsGlobalKey func(key string) bool
 
+	// ListSubscriptions returns all LLM subscriptions for the current user.
+	ListSubscriptions func() []SubscriptionInfo
+
 	// OriginUserIsAdmin is true when the end user has admin privileges.
 	// Global-scoped settings should only be modified when this is true.
 	OriginUserIsAdmin bool
@@ -132,6 +135,15 @@ type ConfigListItem struct {
 	CurrentVal  string `json:"current_value,omitempty"`
 	Sensitive   bool   `json:"sensitive,omitempty"`
 	Source      string `json:"source,omitempty"` // "user_db" | "config_json" | "llm_config"
+}
+
+// SubscriptionInfo is a single LLM subscription entry.
+type SubscriptionInfo struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	IsDefault bool   `json:"is_default"`
 }
 
 // SubAgentManager SubAgent 管理接口，避免循环依赖
