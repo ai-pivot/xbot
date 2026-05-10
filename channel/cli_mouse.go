@@ -481,8 +481,7 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 	default:
 		// text/number/password/textarea: enter edit mode
 		m.panelEdit = true
-		m.panelEditTA.SetValue(m.panelValues[def.Key])
-		m.panelEditTA.CursorEnd()
+		m.panelEditTA = m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
 		m.panelEditTA.Focus()
 		m.ensureSettingsCursorVisible(3)
 		return true, m, nil
