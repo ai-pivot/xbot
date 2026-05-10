@@ -224,16 +224,16 @@ func AllConfigItemsForAI() []tools.ConfigListItem {
 			ValidValues: d.ValidValues,
 			DefaultVal:  d.DefaultValue,
 			Sensitive:   d.Sensitive,
-			CurrentVal:  configValueBySource(d.Key, d.Source),
+			CurrentVal:  ConfigValueBySource(d.Key, d.Source),
 			Source:      sourceName(d.Source),
 		})
 	}
 	return result
 }
 
-// configValueBySource reads a setting's current value from the storage backend
+// ConfigValueBySource reads a setting's current value from the storage backend
 // indicated by the Source field. No special cases, no manual mapping.
-func configValueBySource(key string, source ConfigSource) string {
+func ConfigValueBySource(key string, source ConfigSource) string {
 	raw, err := os.ReadFile(config.ConfigFilePath())
 	if err != nil {
 		return ""
