@@ -688,6 +688,8 @@ func (a *Agent) SpawnInteractiveSession(
 	// the assistant's final reply.
 	if out.Content != "" {
 		ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+	} else {
+		ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
 	}
 	// Carry ReasoningContent to the in-memory message for subsequent turns
 	if out.ReasoningContent != "" && len(ia.messages) > 0 {
@@ -843,6 +845,7 @@ func (a *Agent) SendToInteractiveSession(
 	defer ia.mu.Unlock()
 
 	if out.Error != nil {
+		ia.lastError = out.Error.Error()
 		content := out.Content
 		if content == "" {
 			content = "⚠️ Interactive SubAgent 执行失败。"
@@ -869,6 +872,12 @@ func (a *Agent) SendToInteractiveSession(
 	// handleFinalResponse returns directly without appending to s.messages).
 	if out.Content != "" {
 		ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+	} else {
+		// LLM returned empty response — generate a placeholder so
+		// GetAgentSessionDump shows the session has completed this turn.
+		// Without this, the session shows user2 but no assistant2,
+		// making it look like the SubAgent never replied (Issue #bug3).
+		ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
 	}
 	// Carry ReasoningContent to the in-memory message for subsequent turns
 	if out.ReasoningContent != "" && len(ia.messages) > 0 {

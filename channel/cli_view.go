@@ -509,6 +509,12 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				m.sidebarHasBusySessions = true
 				icon = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
 				itemStyle = m.styles.SidebarBusy
+				// Clear unread when busy — a running session shows a spinner,
+				// not the ✦ unread icon. Without this, a stale sessions list
+				// that briefly returns Running=false can set unread=true via
+				// the busy→idle transition below, and the flag persists even
+				// after the sessions list catches up and shows Running=true again.
+				delete(m.unreadSessions, s.ID)
 			} else if m.unreadSessions[s.ID] {
 				// Non-active, idle, but has unread results.
 				icon = "✦"
