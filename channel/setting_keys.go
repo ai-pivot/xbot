@@ -1,6 +1,13 @@
 package channel
 
-import "xbot/tools"
+import (
+	"encoding/json"
+	"os"
+	"strconv"
+
+	"xbot/config"
+	"xbot/tools"
+)
 
 // SettingScope defines where a setting's value is stored and persisted.
 type SettingScope int
@@ -178,19 +185,23 @@ func IsActionSettingKey(key string) bool {
 }
 
 // AllConfigItemsForAI returns user-facing settings with AI metadata for the config tool's "list" action.
-// LLM subscription keys (ScopeSubscription) and UI action triggers (ScopeAction) are excluded —
-// they are managed through dedicated channels (/set-llm, subscription management, palette).
-// Each new user/global SettingDef automatically appears here — zero extra work.
+// All scopes are included — subscription keys for LLM config, global keys from config.json,
+// and user-scoped keys from user_settings DB. The caller enriches CurrentVal from SettingsSvc.
+// Each new SettingDef automatically appears here — zero extra work.
 func AllConfigItemsForAI() []tools.ConfigListItem {
+	globalVals := readGlobalConfigValues()
 	result := make([]tools.ConfigListItem, 0, len(AllSettingDefs))
 	for _, d := range AllSettingDefs {
-		// Skip subscription-scoped (LLM keys: managed via /set-llm) and action-scoped (UI triggers)
-		if d.Scope == ScopeSubscription || d.Scope == ScopeAction {
+		// Skip action-scoped (UI triggers: subscription_manage, runner_panel, danger_zone)
+		if d.Scope == ScopeAction {
 			continue
 		}
 		scope := "user"
-		if d.Scope == ScopeGlobal {
+		switch d.Scope {
+		case ScopeGlobal:
 			scope = "global"
+		case ScopeSubscription:
+			scope = "subscription"
 		}
 		perm := string(d.Permission)
 		if perm == "" {
@@ -204,7 +215,34 @@ func AllConfigItemsForAI() []tools.ConfigListItem {
 			ValidValues: d.ValidValues,
 			DefaultVal:  d.DefaultValue,
 			Sensitive:   d.Sensitive,
+			CurrentVal:  globalVals[d.Key], // global-scoped: from config.json, user-scoped: caller enriches from SettingsSvc
 		})
 	}
 	return result
+}
+
+// readGlobalConfigValues reads config.json and returns all top-level string values.
+// Used by AllConfigItemsForAI to get current values for global-scoped settings
+// (which are not in user_settings DB).
+func readGlobalConfigValues() map[string]string {
+	raw, err := os.ReadFile(config.ConfigFilePath())
+	if err != nil {
+		return nil
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			out[k] = val
+		case float64:
+			out[k] = strconv.Itoa(int(val))
+		case bool:
+			out[k] = strconv.FormatBool(val)
+		}
+	}
+	return out
 }

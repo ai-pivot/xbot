@@ -1067,13 +1067,16 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// Config list: from AllSettingDefs (always available, no RPC needed)
 	tc.ConfigList = func() []tools.ConfigListItem {
 		items := channel.AllConfigItemsForAI()
-		// Enrich with current values from SettingsSvc
+		// Enrich user-scoped CurrentVal from SettingsSvc; global/subscription come from config.json
 		if cfg.SettingsSvc != nil {
 			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
 				for i := range items {
-					if v, ok := vals[items[i].Key]; ok {
-						items[i].CurrentVal = v
+					// Only override user-scoped items from DB; global/subscription use config.json values
+					if items[i].Scope == "user" {
+						if v, ok := vals[items[i].Key]; ok {
+							items[i].CurrentVal = v
+						}
 					}
 				}
 			}
