@@ -281,18 +281,11 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	// Initial read deadline — if no data (including pongs) in 120s, connection is dead.
 	conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 
-	// Atomically replace connection to avoid race with Stop().
+	// Atomically replace connection and send sync message to avoid
+	// racing with concurrent writes from other goroutines.
 	t.connMu.Lock()
 	old := t.conn
 	t.conn = conn
-	t.connMu.Unlock()
-	if old != nil {
-		old.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "reconnecting"))
-		old.Close()
-	}
-	log.Info("Connected to remote xbot server")
-	t.setConnState("connected")
 
 	// Send sync message so server replays missed events from eventStream buffer.
 	// This enables mid-turn reconnect: a new CLI terminal sees recent progress/stream
@@ -307,6 +300,14 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	if err := conn.WriteJSON(syncMsg); err != nil {
 		log.WithError(err).Warn("Failed to send sync message")
 	}
+	t.connMu.Unlock()
+	if old != nil {
+		old.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "reconnecting"))
+		old.Close()
+	}
+	log.Info("Connected to remote xbot server")
+	t.setConnState("connected")
 
 	return nil
 }
@@ -315,15 +316,14 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 // Must be called after connect() with the business chatID (e.g. "/home/user").
 func (t *RemoteTransport) BindChat(chatID string) error {
 	t.connMu.Lock()
-	conn := t.conn
-	t.connMu.Unlock()
-	if conn == nil {
+	defer t.connMu.Unlock()
+	if t.conn == nil {
 		return fmt.Errorf("not connected to server")
 	}
 	subMsg := wsOutgoingMessage{Type: "subscribe", ChatID: chatID}
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	defer conn.SetWriteDeadline(time.Time{})
-	if err := conn.WriteJSON(subMsg); err != nil {
+	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	defer t.conn.SetWriteDeadline(time.Time{})
+	if err := t.conn.WriteJSON(subMsg); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
 	return nil

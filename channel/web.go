@@ -538,12 +538,14 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 		wp.ActiveTools = append(wp.ActiveTools, WsToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
+			Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 		})
 	}
 	for _, t := range p.CompletedTools {
 		wp.CompletedTools = append(wp.CompletedTools, WsToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
+			Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 		})
 	}
 	for _, t := range p.Todos {
@@ -608,6 +610,9 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 			Elapsed:   t.Elapsed,
 			Iteration: t.Iteration,
 			Summary:   t.Summary,
+			Detail:    t.Detail,
+			Args:      t.Args,
+			ToolHints: t.ToolHints,
 		})
 	}
 	for _, t := range p.CompletedTools {
@@ -618,6 +623,9 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 			Elapsed:   t.Elapsed,
 			Iteration: t.Iteration,
 			Summary:   t.Summary,
+			Detail:    t.Detail,
+			Args:      t.Args,
+			ToolHints: t.ToolHints,
 		})
 	}
 	for _, sa := range p.SubAgents {

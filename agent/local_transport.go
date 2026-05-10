@@ -314,7 +314,7 @@ func (t *localTransport) registerHandlers() {
 			// Refresh plugin contexts so script plugins (e.g. git-info)
 			// immediately see the correct workDir after startup/restore.
 			if a.pluginMgr != nil && actualDir != r.Dir {
-				a.pluginMgr.RefreshWorkDir(actualDir)
+				a.pluginMgr.RefreshWorkDir(actualDir, r.Channel, r.ChatID)
 			}
 		}
 		return nil

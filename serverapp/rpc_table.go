@@ -130,7 +130,7 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		// Refresh plugin workDir so script plugins (e.g. git-info) re-execute
 		// in the new directory after CLI client syncs its CWD.
 		if pm := h.backend.PluginManager(); pm != nil {
-			pm.RefreshWorkDir(p.Dir)
+			pm.RefreshWorkDir(p.Dir, p.Channel, p.ChatID)
 		}
 		return nil
 	})

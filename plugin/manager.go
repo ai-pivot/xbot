@@ -70,6 +70,12 @@ type PluginManager struct {
 	// Stored as atomic.Value[string] for lock-free reads from activate()
 	// (which may be called while pm.mu write lock is held).
 	workDir atomic.Value // stores string
+
+	// pluginChannel and pluginChatID store the last-known channel/chatID
+	// from RefreshWorkDir. They are passed to SetSessionMetadata during
+	// plugin activation so new plugins inherit the correct session identity.
+	pluginChannel atomic.Value // stores string
+	pluginChatID  atomic.Value // stores string
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -120,6 +126,22 @@ func (pm *PluginManager) workDirValue() string {
 	return ""
 }
 
+// pluginChannelValue safely loads the pluginChannel from the atomic value.
+func (pm *PluginManager) pluginChannelValue() string {
+	if v := pm.pluginChannel.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// pluginChatIDValue safely loads the pluginChatID from the atomic value.
+func (pm *PluginManager) pluginChatIDValue() string {
+	if v := pm.pluginChatID.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
 // SetWorkDir sets the agent working directory applied to plugin contexts.
 func (pm *PluginManager) SetWorkDir(wd string) {
 	pm.workDir.Store(wd)
@@ -134,14 +156,16 @@ func (pm *PluginManager) WorkDir() string {
 // Call this when the session CWD changes (e.g. after Cd) so script plugins
 // re-execute in the new directory.
 // Also signals WorkDirAware plugins to immediately refresh their output.
-func (pm *PluginManager) RefreshWorkDir(wd string) {
+func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string) {
 	pm.workDir.Store(wd)
+	pm.pluginChannel.Store(channel)
+	pm.pluginChatID.Store(chatID)
 
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	for _, entry := range pm.entries {
 		if entry.Context != nil {
-			entry.Context.SetSessionMetadata(wd, "", "")
+			entry.Context.SetSessionMetadata(wd, channel, chatID)
 		}
 		// Signal WorkDirAware plugins to immediately re-execute
 		if aware, ok := entry.Plugin.(WorkDirAware); ok {
@@ -569,8 +593,10 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	// context has the correct working directory for script execution.
 	if entry.Context != nil {
 		wd := pm.workDirValue() // atomic read, no lock needed
+		ch := pm.pluginChannelValue()
+		cid := pm.pluginChatIDValue()
 		if wd != "" {
-			entry.Context.SetSessionMetadata(wd, "", "")
+			entry.Context.SetSessionMetadata(wd, ch, cid)
 		}
 	}
 

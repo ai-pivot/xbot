@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 
+	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -70,6 +71,7 @@ func (t *baseTransport) unsubscribe(target *subscription) {
 func (t *baseTransport) emit(ctx context.Context, event protocol.TransportEvent) {
 	payload, err := json.Marshal(event)
 	if err != nil {
+		log.WithError(err).WithField("event_type", event.EventType()).Warn("emit: marshal failed, dropping event")
 		return
 	}
 	env := protocol.EventEnvelope{
