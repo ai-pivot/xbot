@@ -1044,11 +1044,16 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		svc := cfg.SettingsSvc
 		tc.ConfigGet = func(key string) (string, error) {
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
-			if err != nil {
-				return "", err
+			if err == nil {
+				if v, ok := vals[key]; ok {
+					return v, nil
+				}
 			}
-			if v, ok := vals[key]; ok {
-				return v, nil
+			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys
+			if def, ok := channel.GetSettingDef(key); ok {
+				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
+					return channel.ConfigValueBySource(key, def.Source), nil
+				}
 			}
 			return "", fmt.Errorf("config: key %q not found", key)
 		}
