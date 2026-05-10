@@ -3,6 +3,7 @@ package channel
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
@@ -87,9 +88,21 @@ func (m *cliModel) handleMouseMsg(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseClickMsg:
 		handled, model, cmd := m.handleMouseClick(msg)
+		// Unhandled click without Shift → user likely tried to select text,
+		// show hint in title bar.
+		if !handled && msg.Mouse().Mod&tea.ModShift == 0 {
+			m.shiftHintUntil = time.Now().Add(3 * time.Second)
+		}
 		return handled, model, cmd
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
+	case tea.MouseMotionMsg:
+		mouse := msg.Mouse()
+		// Mouse drag without Shift → user tries to drag-select text.
+		if mouse.Button != 0 && mouse.Mod&tea.ModShift == 0 {
+			m.shiftHintUntil = time.Now().Add(3 * time.Second)
+		}
+		return false, m, nil
 	}
 	return false, m, nil
 }

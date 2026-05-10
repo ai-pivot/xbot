@@ -150,8 +150,8 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 				def.Type = SettingTypeCombo
 			}
 		}
-		// Global-scoped settings require admin access — mark read-only for normal users.
-		if !def.ReadOnly && IsGlobalScopedSettingKey(def.Key) {
+		// Global-scoped settings require admin access — mark read-only for non-admin users.
+		if !def.ReadOnly && IsGlobalScopedSettingKey(def.Key) && (m.isAdminFn == nil || !m.isAdminFn()) {
 			def.ReadOnly = true
 		}
 	}
