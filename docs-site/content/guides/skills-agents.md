@@ -26,8 +26,12 @@ Each skill is a directory under `~/.xbot/skills/` (or embedded in the binary):
 | Skill | Description |
 |-------|-------------|
 | `agent-creator` | Create new SubAgent role definitions |
+| `ai-config` | AI-guided configuration: theme, subscriptions, TUI layout, and settings |
 | `debug` | Investigate and fix bugs |
+| `plan` | Smart code planning before modifications |
+| `post-dev` | Post-development cleanup and knowledge updates |
 | `skill-creator` | Create, update, or delete skills |
+| `worktree` | Multi-agent workspace collaboration via git worktrees |
 
 ### Using Skills
 

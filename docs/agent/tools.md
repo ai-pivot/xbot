@@ -135,3 +135,65 @@ Core tool (always loaded). AI reads/modifies xbot configuration.
 **Injection**: `buildToolContext` auto-injects `ConfigGet`/`ConfigSet` from `cfg.SettingsSvc`. Works in ALL modes (local + remote via RPC). Does NOT rely on Agent `SetTUICallbacks`.
 
 **Masking**: Sensitive keys (`api_key`, `runner_token`) show `sk-a***` on read. Writes are NOT blocked — users can type API keys anyway.
+
+## Worktree Tool (`tools/worktree.go`, `tools/worktree_registry.go`)
+
+Git worktree-based multi-agent workspace isolation. When multiple agents work on the same git repository, this tool creates isolated worktrees so agents don't conflict on the same files.
+
+**Actions**: `init`, `cleanup`, `status`
+
+- **init**: Creates a new git worktree for the calling agent, registers it in the global `WorktreeRegistry`. First agent in a repo uses the main project directly (role="primary"). Subsequent agents get their own worktree (role="peer" or "child"). Returns the worktree path.
+- **cleanup**: Removes the worktree and deregisters from the registry.
+- **status**: Lists all active worktrees in the current repo, including peers.
+
+**Registry**: `WorktreeRegistry` (`tools/worktree_registry.go`) is a global singleton tracking all active worktrees by repo path. Supports peer discovery so agents can find each other's workspaces.
+
+## TodoWrite / TodoList Tools (`tools/todo.go`)
+
+Structured TODO management with cross-session persistence.
+
+- **TodoWrite**: Takes an array of `{id, text, done}` items and overwrites the current TODO list.
+- **TodoList**: Returns the current TODO list with completion status.
+
+**Persistence**: CLI's `TodoManager` persists todos to `~/.xbot/todos/{chatID}.json` via `persistTodosToManager()`. Restored on session switch and startup. `syncProgressTodos` synchronizes progress panel todos with the persisted store.
+
+## Cd Tool (`tools/cd.go`)
+
+Changes the agent's working directory. Subsequent tool calls (Shell, Read, Grep, Glob, etc.) execute in the new directory.
+
+**Persistence**: Working directory persists across conversation turns. SubAgents inherit the parent's working directory via `parent_cwd` metadata.
+
+## AskUser Tool (`tools/ask_user.go`)
+
+Allows the agent to ask the user questions and wait for responses. Only available in CLI mode. Supports:
+- Multiple questions in a single call
+- Optional multiple-choice options for each question
+- Multi-line question text
+
+The CLI channel renders questions in an interactive input panel.
+
+## DownloadFile Tool (`tools/download.go`)
+
+Downloads files from URLs or Feishu messages to the local filesystem. Supports:
+- Web/OSS files via signed URLs
+- Feishu files via message_id + file_key
+- Sandbox-aware path resolution
+
+## EventTrigger Tool (`tools/event_trigger.go`)
+
+Manages webhook event subscriptions for external service integration. Actions: `add`, `list`, `remove`, `enable`, `disable`. Returns webhook URLs that external services can POST to. Supports Go template message rendering with event data.
+
+## Other Tools
+
+| Tool | File | Purpose |
+|------|------|---------|
+| `ChatHistory` | `tools/chat_history.go` | Query recent chat message history |
+| `Skill` | `tools/skill.go` | Load skill documentation on demand |
+| `ManageTools` | `tools/manage_tools.go` | Manage MCP servers (add/remove/list/reload) |
+| `task_status` / `task_kill` | `tools/task_tools.go` | Check/terminate background tasks |
+| `recall_masked` | `tools/recall_masked.go` | Retrieve full content of masked observations |
+| `offload_recall` | `tools/offload_recall.go` | Retrieve full content of offloaded tool results |
+| `knowledge_tools` | `tools/knowledge_tools.go` | Read/write project knowledge files |
+| `logs` | `tools/logs.go` | Query agent logs |
+| `WebSearch` | `tools/web_search.go` | Tavily web search |
+| `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |

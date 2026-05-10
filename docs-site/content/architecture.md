@@ -79,7 +79,8 @@ xbot/
 ├── storage/
 │   ├── sqlite/              # SQLite 数据服务层
 │   └── vectordb/            # 向量数据库（chromem-go）
-├── tools/                   # 工具系统
+├── tools/                   # 工具系统（含 Worktree、config、tui_control 等 AI-Native 工具）
+├── plugin/                  # 插件系统（RPC 桥接、运行时、扩展点）
 ├── internal/
 │   ├── runnerclient/        # Runner 客户端（Runner 端使用）
 │   └── runnerproto/         # Runner 协议定义
@@ -171,8 +172,9 @@ type Channel interface {
 - `registryManager` — 市场/共享
 - `settingsSvc` — 用户设置
 - `interactiveSubAgents` — Interactive SubAgent 会话池
-- `hookChain` — 工具执行钩子链（与 SubAgent 共享同一实例）
+- `hookChain` — 工具执行钩子链（与 SubAgent 共享同一实例，已被 `agent/hooks.Manager` 取代）
 - `bgTaskMgr` — 后台任务管理
+- `pluginRegistry` — 插件注册表
 
 ### 2.2 Engine Run 循环
 
@@ -415,33 +417,30 @@ type MemoryProvider interface {
 
 | 分类 | 工具 |
 |------|------|
-| **文件操作** | Read, Edit, Glob, Grep, CD, DownloadFile |
+| **文件操作** | Read, Edit, Glob, Grep, Cd, DownloadFile |
 | **命令执行** | Shell |
 | **搜索** | WebSearch, ChatHistory |
 | **记忆** | save_memory (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
 | **上下文管理** | offload_recall, recall_masked, context_edit |
-| **SubAgent** | SubAgent（一次性 + Interactive） |
+| **SubAgent & 协作** | SubAgent（一次性 + Interactive）, CreateChat, SendMessage, Worktree |
 | **Skill/Agent** | Skill, manage_tools, search_tools, load_tools |
+| **AI-Native 配置** | config（AI 读写配置）, tui_control（AI 操作 TUI 界面） |
 | **卡片** | card_create, card_add_content, card_add_interactive, card_add_container, card_preview, card_send |
-| **任务** | todo_write/todo_list, cron, task_start/task_status/task_cancel |
-| **管理** | Logs, ask_user, OAuth |
+| **任务** | todo_write/todo_list（跨会话持久化）, cron, task_start/task_status/task_cancel |
+| **管理** | Logs, ask_user, OAuth, EventTrigger |
 | **飞书 MCP** | 20+ 工具（多维表格/知识库/文档/云盘） |
 
-### 5.2 HookChain
+### 5.2 Hooks 系统
 
-工具生命周期拦截器，Agent 和 SubAgent 共享同一实例。
+旧的 `ToolHook`/`HookChain` 已由 `agent/hooks/` 中的 `Manager` 取代。
 
-```go
-type ToolHook interface {
-    PreToolUse(ctx, toolName, args) error   // 返回 error 阻止执行
-    PostToolUse(ctx, toolName, args, result, err, elapsed)
-}
-```
+**17 个生命周期事件**: SessionStart, SessionEnd, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch, PermissionRequest, PermissionDenied, SubAgentStart, SubAgentStop, AgentStop, AgentError, PreCompact, PostCompact, CronFired, WebhookReceived
 
-- 默认 hooks: `LoggingHook`（日志）+ `TimingHook`（耗时统计）
-- Pre 遍历所有 hook，**不短路**（记录第一个 error）
-- Post 保证所有 hook 执行（即使前面 panic）
-- 执行前复制 hooks 切片，释放读锁后遍历
+**4 种处理器类型**: command（Shell 命令）、http（HTTP POST）、mcp_tool（MCP 工具调用）、callback（Go 函数）
+
+**决策优先级**（多 handler 冲突时）: `deny > defer > ask > allow`
+
+**配置**: 三层合并（`~/.xbot/hooks.json` → `<project>/.xbot/hooks.json` → `<project>/.xbot/hooks.local.json`），项目级可提交 git。
 
 ### 5.3 工具激活/失效机制
 
@@ -512,8 +511,9 @@ func XbotHome() string {
 
 ### 6.3 运行时配置
 
-- **用户设置**: `user_settings` 表，Web/飞书设置面板修改
-- **用户 LLM**: `user_llm_configs` 表，支持 per-user 自定义 LLM provider/model
+- **用户设置**: `user_settings` 表，Web/飞书/TUI 设置面板修改
+- **LLM 订阅**: `user_llm_subscriptions` 表（Server 模式）或 `config.json` 的 `subscriptions` 数组（CLI 模式），为 LLM 配置的单一真相来源。支持 Model Tiers（vanguard/balance/swift）和运行时切换
+- **AI-Native 配置**: `config` 工具让 Agent 直接读写配置，`tui_control` 工具让 Agent 操作 TUI 界面
 - **Context 模式**: 可运行时热切换（`SetContextMode`）
 - **MaxConcurrency**: 可运行时调整（settings 面板）
 

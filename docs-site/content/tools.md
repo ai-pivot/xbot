@@ -76,7 +76,22 @@ xbot includes ~50 built-in tools the agent can call during conversations. This p
 | Tool | Description |
 |------|-------------|
 | `SubAgent` | Delegate tasks to sub-agents (one-shot or interactive multi-turn) |
+| `CreateChat` | Create agent private chat or moderated group chat (Meeting Mode) |
+| `SendMessage` | Send messages to agents, groups, or IM channels |
 | `Skill` | Discover and load skills from workspace |
+
+## AI-Native Configuration
+
+| Tool | Description |
+|------|-------------|
+| `config` | AI reads/modifies xbot config (config.json & runtime settings). Masks sensitive keys on read. |
+| `tui_control` | AI operates TUI: switch/close sessions, resize sidebar, change theme, send slash commands |
+
+## Multi-Agent Collaboration
+
+| Tool | Description |
+|------|-------------|
+| `Worktree` | Git worktree-based multi-agent workspace isolation. Supports init/cleanup/status. |
 
 ## Background Tasks
 
@@ -99,7 +114,7 @@ xbot includes ~50 built-in tools the agent can call during conversations. This p
 | Tool | Description |
 |------|-------------|
 | `AskUser` | Ask user a multiple-choice question |
-| `TodoWrite` / `TodoList` | In-memory TODO list management per session |
+| `TodoWrite` / `TodoList` | Structured TODO management with cross-session persistence |
 | `Logs` | List/read xbot log files with filtering |
 | `oauth_authorize` | Send OAuth authorization card to user |
 
