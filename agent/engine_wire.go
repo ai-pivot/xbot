@@ -164,27 +164,7 @@ func (a *Agent) buildBaseRunConfig(
 		RemoteTUICtrlFn: a.buildRemoteTUICtrlFn(channel, chatID),
 
 		// Subscription listing — from LLMFactory
-		ListLLMSubs: func(ch, senderID string) []tools.SubscriptionInfo {
-			if a.llmFactory == nil {
-				return nil
-			}
-			svc := a.llmFactory.GetSubscriptionSvc()
-			if svc == nil {
-				return nil
-			}
-			subs, _ := svc.List(senderID)
-			result := make([]tools.SubscriptionInfo, 0, len(subs))
-			for _, s := range subs {
-				result = append(result, tools.SubscriptionInfo{
-					ID:        s.ID,
-					Name:      s.Name,
-					Provider:  s.Provider,
-					Model:     s.Model,
-					IsDefault: s.IsDefault,
-				})
-			}
-			return result
-		},
+		ListLLMSubs: a.listLLMSubsFn(channel),
 
 		// LLM 并发限流回调（per-tenant）
 		LLMSemAcquire:             llmSemAcquire,
@@ -826,6 +806,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
 	cfg.TUICtrlFn = a.tuiCtrlFn
 	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(channel, chatID)
+	cfg.ListLLMSubs = a.listLLMSubsFn(channel)
 
 	var sessionOnce sync.Once
 

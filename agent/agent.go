@@ -393,6 +393,31 @@ func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string
 	}
 }
 
+// listLLMSubsFn returns a subscription listing function for the given channel.
+func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.SubscriptionInfo {
+	if a.llmFactory == nil {
+		return nil
+	}
+	svc := a.llmFactory.GetSubscriptionSvc()
+	if svc == nil {
+		return nil
+	}
+	return func(ch, senderID string) []tools.SubscriptionInfo {
+		subs, _ := svc.List(senderID)
+		result := make([]tools.SubscriptionInfo, 0, len(subs))
+		for _, s := range subs {
+			result = append(result, tools.SubscriptionInfo{
+				ID:        s.ID,
+				Name:      s.Name,
+				Provider:  s.Provider,
+				Model:     s.Model,
+				IsDefault: s.IsDefault,
+			})
+		}
+		return result
+	}
+}
+
 // LLMFactory returns the Agent's LLMFactory (for external injection of callbacks).
 func (a *Agent) LLMFactory() *LLMFactory { return a.llmFactory }
 
