@@ -296,6 +296,13 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	}
 	m.messages = append(m.messages, userCliMsg)
 
+	// User explicitly sent a message — cancel any pending suLoading.
+	// Background history loads are stale once the user initiates a new turn.
+	// If we don't clear suLoading, handleProgressMsg drops ALL progress events
+	// (line 391) and the session never enters typing state.
+	m.suLoading = false
+	m.suPhaseDoneConfirmed = false
+
 	// Save as pending user message so it survives session switches before
 	// the agent's eager-save to DB completes. Restored in handleSuHistoryLoad.
 	m.pendingUserMsg = &userCliMsg
