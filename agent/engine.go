@@ -263,6 +263,8 @@ type RunConfig struct {
 	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
 	// Used by SendMessage tool for busy/idle routing.
 	PeerMessageFn func(targetSessionKey, message string) string
+	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
+	AutoWorktreeEnabled bool
 }
 
 // TodoManagerProvider 提供 TODO 状态查询和清理
@@ -906,6 +908,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
 		IsWorktreeIsolated:   cfg.IsWorktreeIsolated,
+		AutoWorktreeEnabled:  cfg.AutoWorktreeEnabled,
 		PeerMessageFn:        cfg.PeerMessageFn,
 
 		// 注入入站消息

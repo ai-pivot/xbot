@@ -63,6 +63,9 @@ type ToolContext struct {
 	// IsWorktreeIsolated indicates this agent is running in an isolated git worktree.
 	// When true, path_guard enforces boundaries even in "none" sandbox mode.
 	IsWorktreeIsolated bool
+	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
+	// Set from config.Agent.Experimental.AutoWorktree. Default: false.
+	AutoWorktreeEnabled bool
 	// PeerMessageFn sends a peer-to-peer message to another CLI session.
 	// If target is busy: injects as fake tool result in current iteration.
 	// If target is idle: injects as user message to start a new turn.

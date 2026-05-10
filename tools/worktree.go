@@ -88,6 +88,15 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 		return nil, fmt.Errorf("worktree init: %w", err)
 	}
 
+	// Experimental feature gate: worktree creation requires config opt-in.
+	if !ctx.AutoWorktreeEnabled {
+		return NewResult(
+			"⚠️ Worktree 是实验性功能，默认关闭。\n" +
+				"如需启用自动 worktree 隔离，请在 config.json 中设置：\n" +
+				`  "agent": {"experimental": {"auto_worktree": true}}` +
+				"\n\n当前已启用 peer 感知——你可以看到其他 agent 并与之通信。"), nil
+	}
+
 	sessionKey := ctx.Channel + ":" + ctx.ChatID
 	role := params.Role
 	if role == "" {
