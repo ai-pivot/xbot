@@ -661,6 +661,26 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
 
+		// Check for truncated args marker (set by SanitizeMessages Pass 2).
+		// If the tool_call arguments were truncated by max_output_tokens,
+		// return a precise error instead of executing with broken args.
+		var argsCheck map[string]any
+		if json.Unmarshal([]byte(tc.Arguments), &argsCheck) == nil {
+			if _, truncated := argsCheck["_truncated"]; truncated {
+				maxTokens := cfg.MaxOutputTokens
+				if maxTokens == 0 {
+					maxTokens = 8192
+				}
+				return tools.NewErrorResult(fmt.Sprintf(
+					"Error: tool call was truncated (output reached the max_output_tokens limit of %d tokens). "+
+						"The arguments were incomplete and could not be executed. "+
+						"Please split your work into smaller steps: write shorter file contents, "+
+						"or break the task into multiple smaller tool calls.",
+					maxTokens,
+				)), nil
+			}
+		}
+
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
 		if cfg.SettingsSvc != nil {
 			permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
