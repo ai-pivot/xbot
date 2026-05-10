@@ -920,7 +920,17 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		m.progress = nil
 		m.inputReady = true
 	} else {
+		// Build a dedup set from existing messages (role + content hash)
+		existingKeys := make(map[string]bool, len(m.messages))
+		for _, cm := range m.messages {
+			existingKeys[cm.role+"|"+cm.content] = true
+		}
 		for _, hm := range msg.history {
+			key := hm.Role + "|" + hm.Content
+			if existingKeys[key] {
+				continue // already in messages, skip duplicate
+			}
+			existingKeys[key] = true
 			cm := cliMessage{
 				role:      hm.Role,
 				content:   hm.Content,
