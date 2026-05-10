@@ -18,6 +18,7 @@ import (
 	"xbot/memory"
 	"xbot/memory/letta"
 	"xbot/oauth"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/tools"
 )
@@ -1355,11 +1356,11 @@ func convertWsSubAgentTree(nodes []SubAgentNode) []channelpkg.WsSubAgent {
 	return result
 }
 
-// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 channelpkg.CLISubAgent 树。
+// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 protocol.SubAgentInfo 树。
 // resolveSubAgents extracts the SubAgent tree from a ProgressEvent.
 // It prefers the structured SubAgents field (reliable), falling back to
 // text-based ExtractSubAgentTree only if structured data is unavailable.
-func resolveSubAgents(event *ProgressEvent) []channelpkg.CLISubAgent {
+func resolveSubAgents(event *ProgressEvent) []protocol.SubAgentInfo {
 	// Prefer structured data (no fragile text parsing)
 	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
 		return convertCLISubAgentTree(event.Structured.SubAgents)
@@ -1388,14 +1389,14 @@ func resolveWsSubAgents(event *ProgressEvent) []channelpkg.WsSubAgent {
 	return nil
 }
 
-// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 channelpkg.CLISubAgent 树。
-func convertCLISubAgentTree(nodes []SubAgentNode) []channelpkg.CLISubAgent {
+// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 protocol.SubAgentInfo 树。
+func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 	if len(nodes) == 0 {
 		return nil
 	}
-	result := make([]channelpkg.CLISubAgent, len(nodes))
+	result := make([]protocol.SubAgentInfo, len(nodes))
 	for i, n := range nodes {
-		result[i] = channelpkg.CLISubAgent{
+		result[i] = protocol.SubAgentInfo{
 			Role:     n.Role,
 			Instance: n.Instance,
 			Status:   n.Status,
@@ -1443,7 +1444,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 		}
 		s := event.Structured
 		if cliCh != nil {
-			payload := &channelpkg.CLIProgressPayload{
+			payload := &protocol.ProgressEvent{
 				ChatID:           progressKey,
 				Phase:            string(s.Phase),
 				Seq:              s.Seq,
@@ -1454,7 +1455,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
-				payload.ActiveTools = append(payload.ActiveTools, channelpkg.CLIToolProgress{
+				payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
 					Name:      t.Name,
 					Label:     t.Label,
 					Status:    string(t.Status),
@@ -1467,7 +1468,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				})
 			}
 			for _, t := range s.CompletedTools {
-				payload.CompletedTools = append(payload.CompletedTools, channelpkg.CLIToolProgress{
+				payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
 					Name:      t.Name,
 					Label:     t.Label,
 					Status:    string(t.Status),
@@ -1483,13 +1484,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				payload.SubAgents = cliSubAgents
 			}
 			if len(s.Todos) > 0 {
-				payload.Todos = make([]channelpkg.CLITodoItem, len(s.Todos))
+				payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 				for i, td := range s.Todos {
-					payload.Todos[i] = channelpkg.CLITodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+					payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 				}
 			}
 			if s.TokenUsage != nil {
-				payload.TokenUsage = &channelpkg.CLITokenUsage{
+				payload.TokenUsage = &protocol.TokenUsage{
 					PromptTokens:     s.TokenUsage.PromptTokens,
 					CompletionTokens: s.TokenUsage.CompletionTokens,
 					TotalTokens:      s.TokenUsage.TotalTokens,
@@ -1499,7 +1500,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			}
 			cliCh.SendProgress(chatID, payload)
 			// Save snapshot + track iteration history for mid-session reconnect.
-			a.recordIterationSnapshot(progressKey, func(prev *channelpkg.CLIProgressPayload) bool {
+			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
 				return s.Iteration > prev.Iteration && prev.Iteration >= 0
 			})
 			a.lastProgressSnapshot.Store(progressKey, payload)
@@ -1563,7 +1564,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			// Store progress snapshot for remote CLI reconnect recovery.
 			// Without this, GetActiveProgress returns nil after CLI restart
 			// because only the local cliCh path stored snapshots.
-			cliPayload := &channelpkg.CLIProgressPayload{
+			cliPayload := &protocol.ProgressEvent{
 				ChatID:           progressKey,
 				Seq:              s.Seq,
 				Phase:            string(s.Phase),
@@ -1574,13 +1575,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
-				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
+				cliPayload.ActiveTools = append(cliPayload.ActiveTools, protocol.ToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
 					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
-				cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
+				cliPayload.CompletedTools = append(cliPayload.CompletedTools, protocol.ToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
 					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
@@ -1589,13 +1590,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				cliPayload.SubAgents = cliSubAgents
 			}
 			if len(s.Todos) > 0 {
-				cliPayload.Todos = make([]channelpkg.CLITodoItem, len(s.Todos))
+				cliPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
 				for i, td := range s.Todos {
-					cliPayload.Todos[i] = channelpkg.CLITodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+					cliPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 				}
 			}
 			if s.TokenUsage != nil {
-				cliPayload.TokenUsage = &channelpkg.CLITokenUsage{
+				cliPayload.TokenUsage = &protocol.TokenUsage{
 					PromptTokens:     s.TokenUsage.PromptTokens,
 					CompletionTokens: s.TokenUsage.CompletionTokens,
 					TotalTokens:      s.TokenUsage.TotalTokens,
@@ -1603,7 +1604,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
-			a.recordIterationSnapshot(progressKey, func(prev *channelpkg.CLIProgressPayload) bool {
+			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
 				return s.Iteration > prev.Iteration && prev.Iteration >= 0
 			})
 			a.lastProgressSnapshot.Store(progressKey, cliPayload)
@@ -1707,7 +1708,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 		// Track iteration history: when iteration advances, snapshot the
 		// PREVIOUS iteration into the history list for mid-session reconnect.
 		cliSnapshot := payload.ToCLIProgressPayload()
-		a.recordIterationSnapshot(progressKey, func(prev *channelpkg.CLIProgressPayload) bool {
+		a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
 			return s.Iteration > prev.Iteration && prev.Iteration >= 0
 		})
 		// Save current iteration snapshot
@@ -1738,7 +1739,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	streamContentFunc = func(content string) {
 		seq := progressSeq.Add(1)
 		if cliCh != nil {
-			cliCh.SendProgress(chatID, &channelpkg.CLIProgressPayload{ChatID: sessionKey(channel, chatID), Seq: seq, StreamContent: content})
+			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sessionKey(channel, chatID), Seq: seq, StreamContent: content})
 		}
 		if remoteCLICh != nil {
 			remoteCLICh.SendStreamContent(chatID, content, "")
@@ -1750,7 +1751,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	streamReasoningFunc = func(content string) {
 		seq := progressSeq.Add(1)
 		if cliCh != nil {
-			cliCh.SendProgress(chatID, &channelpkg.CLIProgressPayload{ChatID: sessionKey(channel, chatID), Seq: seq, ReasoningStreamContent: content})
+			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sessionKey(channel, chatID), Seq: seq, ReasoningStreamContent: content})
 		}
 		if remoteCLICh != nil {
 			remoteCLICh.SendStreamContent(chatID, "", content)

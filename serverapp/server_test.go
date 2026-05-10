@@ -16,6 +16,7 @@ import (
 	"xbot/event"
 	llm "xbot/llm"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -262,21 +263,19 @@ type fakeBackend struct {
 	factory     *agent.LLMFactory
 }
 
-func (b fakeBackend) Start(_ context.Context) error                                      { return nil }
-func (b fakeBackend) Stop()                                                              {}
-func (b fakeBackend) SendInbound(_ bus.InboundMessage) error                             { return nil }
-func (b fakeBackend) OnOutbound(_ func(bus.OutboundMessage))                             {}
-func (b fakeBackend) Bus() *bus.MessageBus                                               { return nil }
-func (b fakeBackend) IsRemote() bool                                                     { return false }
-func (b fakeBackend) IsProcessing(_, _ string) bool                                      { return false }
-func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload          { return nil }
-func (b fakeBackend) GetTodos(_, _ string) []channel.CLITodoItem                         { return nil }
-func (b fakeBackend) OnProgress(_ func(*channel.CLIProgressPayload))                     {}
-func (b fakeBackend) OnInjectUserMessage(_ func(string, string))                         {}
-func (b fakeBackend) OnReconnect(_ func())                                               {}
-func (b fakeBackend) OnConnStateChange(_ func(string))                                   {}
-func (b fakeBackend) OnPluginWidgets(_ func(map[string]string, string))                  {}
-func (b fakeBackend) Subscribe(_ string) error                                           { return nil }
+func (b fakeBackend) Start(_ context.Context) error          { return nil }
+func (b fakeBackend) Stop()                                  {}
+func (b fakeBackend) SendInbound(_ bus.InboundMessage) error { return nil }
+func (b fakeBackend) Subscribe(_ protocol.EventPattern, _ protocol.EventHandler) func() {
+	return func() {}
+}
+func (b fakeBackend) Bus() *bus.MessageBus                                      { return nil }
+func (b fakeBackend) IsRemote() bool                                            { return false }
+func (b fakeBackend) IsProcessing(_, _ string) bool                             { return false }
+func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload { return nil }
+func (b fakeBackend) GetTodos(_, _ string) []channel.CLITodoItem                { return nil }
+func (b fakeBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
+}
 func (b fakeBackend) ConnState() string                                                  { return "connected" }
 func (b fakeBackend) ServerURL() string                                                  { return "" }
 func (b fakeBackend) Agent() *agent.Agent                                                { return nil }

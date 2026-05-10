@@ -269,11 +269,11 @@ type Agent struct {
 	// lastProgressSnapshot stores the latest CLIProgressPayload per active chat,
 	// updated by ProgressEventHandler during processing. Used by GetActiveProgress
 	// RPC to restore progress state on mid-session reconnect.
-	// key: "channel:chatID" -> *channel.CLIProgressPayload
+	// key: "channel:chatID" -> *protocol.ProgressEvent
 	lastProgressSnapshot sync.Map
 
 	// iterationHistories stores completed iteration snapshots per active chat.
-	// key: "channel:chatID" -> *[]channel.CLIProgressPayload (one per completed iteration)
+	// key: "channel:chatID" -> *[]protocol.ProgressEvent (one per completed iteration)
 	// On turn end, the entry is deleted.
 	iterationHistories sync.Map
 

@@ -1816,21 +1816,51 @@ func main() {
 				})
 				return true
 			})
-			// Forward server responses directly to CLI channel (skip dispatcher
+			// Forward server responses directly to CLI channel via Subscribe (skip dispatcher
 			// since there's no local agent loop — dispatcher would not match "remote" channel)
-			app.backend.OnOutbound(func(msg bus.OutboundMessage) {
-				defer clipanic.Recover("main.remote.OnOutbound", msg, false)
-				cliCh.Send(msg)
+			app.backend.Subscribe(protocol.EventPattern{Type: "outbound"}, func(env protocol.EventEnvelope) {
+				var ev protocol.OutboundEvent
+				if err := json.Unmarshal(env.Payload, &ev); err != nil {
+					return
+				}
+				cliCh.Send(bus.OutboundMessage{
+					Channel: "remote",
+					ChatID:  ev.ChatID,
+					Content: ev.Content,
+				})
 			})
-			// Register OnProgress callback for streaming progress from server
-			app.backend.OnProgress(func(p *channel.CLIProgressPayload) {
-				defer clipanic.Recover("main.remote.OnProgress", p, false)
-				cliCh.SendProgress("cli:"+cliCfg.ChatID, p)
+			// Handle ask_user events separately (WaitingUser=true, Questions JSON in metadata)
+			app.backend.Subscribe(protocol.EventPattern{Type: "ask_user"}, func(env protocol.EventEnvelope) {
+				var ev protocol.AskUserEvent
+				if err := json.Unmarshal(env.Payload, &ev); err != nil {
+					return
+				}
+				meta := map[string]string{"ask_questions": ev.Questions}
+				if ev.RequestID != "" {
+					meta["request_id"] = ev.RequestID
+				}
+				cliCh.Send(bus.OutboundMessage{
+					Channel:     "cli",
+					ChatID:      ev.ChatID,
+					WaitingUser: true,
+					Metadata:    meta,
+				})
 			})
-			// Register OnInjectUserMessage callback for bg task notifications
-			app.backend.OnInjectUserMessage(func(chatID, content string) {
-				defer clipanic.Recover("main.remote.OnInjectUserMessage", content, false)
-				cliCh.InjectUserMessage(chatID, content)
+			// Register progress handler via Subscribe for streaming progress from server
+			app.backend.Subscribe(protocol.EventPattern{Type: "progress"}, func(env protocol.EventEnvelope) {
+				var p channel.CLIProgressPayload
+				if err := json.Unmarshal(env.Payload, &p); err != nil {
+					return
+				}
+				cliCh.SendProgress("cli:"+cliCfg.ChatID, &p)
+			})
+			// Register inject_user handler via Subscribe for bg task notifications
+			app.backend.Subscribe(protocol.EventPattern{Type: "inject_user"}, func(env protocol.EventEnvelope) {
+				var ev protocol.InjectUserEvent
+				if err := json.Unmarshal(env.Payload, &ev); err != nil {
+					return
+				}
+				cliCh.InjectUserMessage(ev.ChatID, ev.Content)
 			})
 			// Inject remote bg task callbacks (BgTaskManager is nil in remote mode)
 			bgSessionKey := "cli:" + cliCfg.ChatID
@@ -1970,7 +2000,7 @@ func main() {
 
 	// Wire AI-Native TUI callback for remote mode (server → client via WS)
 	if app.backend != nil && app.backend.IsRemote() {
-		app.backend.OnTUIControlRequest(func(action string, params map[string]string) (map[string]string, error) {
+		app.backend.SetTUIControlHandler(func(action string, params map[string]string) (map[string]string, error) {
 			return cliCh.SendTUIControl(action, params)
 		})
 	}
@@ -2113,18 +2143,22 @@ func main() {
 			return app.backend.CallRPC(method, params)
 		})
 		cliCh.SetRemotePluginCache(remoteCache)
-		// Register push callback — server pushes widget zone content via
+		// Register push callback via Subscribe — server pushes widget zone content via
 		// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
 		// Filter: only accept pushes targeting our own chatID (absolute path).
 		// Without this, cross-session pushes (e.g. from "admin" chatID)
 		// overwrite our widget content with another window's git status.
-		app.backend.OnPluginWidgets(func(zones map[string]string, pushChatID string) {
-			if pushChatID != "" && pushChatID != remoteChatID {
-				log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", pushChatID, remoteChatID)
+		app.backend.Subscribe(protocol.EventPattern{Type: "plugin_widget"}, func(env protocol.EventEnvelope) {
+			var ev protocol.PluginWidgetEvent
+			if err := json.Unmarshal(env.Payload, &ev); err != nil {
+				return
+			}
+			if ev.ChatID != "" && ev.ChatID != remoteChatID {
+				log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", ev.ChatID, remoteChatID)
 				return // ignore pushes for other sessions
 			}
-			log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", pushChatID, zones["footer"])
-			remoteCache.UpdateZones(zones)
+			log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", ev.ChatID, ev.Zones["footer"])
+			remoteCache.UpdateZones(ev.Zones)
 		})
 		// Initial fetch — push only fires on CHANGES, so we need to
 		// pull the current state once on connect.
@@ -2151,8 +2185,8 @@ func main() {
 			}
 		})
 
-		// Wire reconnect callback to reload history on WS reconnect.
-		app.backend.OnReconnect(func() {
+		// Wire reconnect handler via Subscribe to reload history on WS reconnect.
+		app.backend.Subscribe(protocol.EventPattern{Type: "reconnect"}, func(env protocol.EventEnvelope) {
 			defer clipanic.Recover("main.remote.OnReconnect", nil, false)
 			// Re-subscribe to business chatID for new WS connection.
 			_ = app.backend.BindChat(remoteChatID)
@@ -2177,10 +2211,13 @@ func main() {
 				cliCh.SetProcessing(false)
 			}
 		})
-		// Wire connection state change callback for header bar indicator.
-		app.backend.OnConnStateChange(func(state string) {
-			defer clipanic.Recover("main.remote.OnConnStateChange", state, false)
-			cliCh.SetConnState(state)
+		// Wire connection state change handler via Subscribe for header bar indicator.
+		app.backend.Subscribe(protocol.EventPattern{Type: "conn_state"}, func(env protocol.EventEnvelope) {
+			var ev protocol.ConnStateEvent
+			if err := json.Unmarshal(env.Payload, &ev); err != nil {
+				return
+			}
+			cliCh.SetConnState(ev.State)
 		})
 		// Background goroutine: periodically refresh agent count/list cache
 		// (RPC calls must not happen from BubbleTea event loop → deadlock)

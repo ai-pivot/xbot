@@ -12,6 +12,7 @@ import (
 	"xbot/event"
 	llm "xbot/llm"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/tools"
 )
@@ -33,8 +34,9 @@ type AgentBackend interface {
 	// SendInbound sends a user message to the agent.
 	SendInbound(msg bus.InboundMessage) error
 
-	// OnOutbound registers a callback for agent replies.
-	OnOutbound(callback func(bus.OutboundMessage))
+	// Subscribe registers a handler for protocol events matching the given pattern.
+	// Returns a cancel function to unsubscribe.
+	Subscribe(pattern protocol.EventPattern, handler protocol.EventHandler) (cancel func())
 
 	// Bus returns the message bus (LocalBackend only; RemoteBackend returns nil).
 	Bus() *bus.MessageBus
@@ -51,41 +53,18 @@ type AgentBackend interface {
 	// GetActiveProgress returns the latest progress snapshot for an active turn,
 	// or nil if no turn is active. Used by CLI to restore tool call progress
 	// and streaming content on mid-session reconnect.
-	GetActiveProgress(ch, chatID string) *channel.CLIProgressPayload
+	GetActiveProgress(ch, chatID string) *protocol.ProgressEvent
 
 	// GetTodos returns the current TODO list for a session from the server's
 	// TodoManager. Unlike GetActiveProgress (which only works during active turns),
 	// this works at any time — idle, active, or between turns. Returns nil if
 	// the session has no todos.
-	GetTodos(ch, chatID string) []channel.CLITodoItem
+	GetTodos(ch, chatID string) []protocol.TodoItem
 
-	// OnProgress registers a callback for streaming progress events from the server.
-	// LocalBackend: no-op (progress flows through dispatcher/channel directly).
-	// RemoteBackend: converts WS progress_structured/stream_content messages to
-	// CLIProgressPayload and calls the callback.
-	OnProgress(callback func(*channel.CLIProgressPayload))
-
-	// OnInjectUserMessage registers a callback for injected user messages from the server.
-	// LocalBackend: no-op (injected messages flow through CLIChannel directly).
-	// RemoteBackend: converts WS inject_user messages and calls the callback.
-	OnInjectUserMessage(callback func(chatID, content string))
-
-	// OnReconnect registers a callback invoked after a successful WS reconnect.
-	// Local: no-op.
-	OnReconnect(callback func())
-
-	// OnConnStateChange registers a callback for connection state changes.
-	// States: "connected", "disconnected", "reconnecting".
-	// Local: no-op.
-	OnConnStateChange(callback func(state string))
-
-	// OnPluginWidgets registers a callback for plugin widget zone push.
-	// Local: no-op.
-	OnPluginWidgets(callback func(zones map[string]string, chatID string))
-
-	// OnTUIControlRequest registers a callback for server-initiated TUI control requests.
+	// SetTUIControlHandler registers the handler for server-initiated TUI control requests.
+	// This is an RPC-style request-response (not fire-and-forget).
 	// Local: no-op. Remote: called when server sends a tui_control_req WS message.
-	OnTUIControlRequest(callback func(action string, params map[string]string) (map[string]string, error))
+	SetTUIControlHandler(callback func(action string, params map[string]string) (map[string]string, error))
 
 	// BindChat registers this client to receive events for a chatID.
 	// Local: no-op. Remote: sends subscribe message via WS.
@@ -295,13 +274,13 @@ type AgentBackend interface {
 	ListTenants() ([]TenantInfo, error)
 
 	// ListSubscriptions lists LLM subscriptions.
-	ListSubscriptions(senderID string) ([]channel.Subscription, error)
+	ListSubscriptions(senderID string) ([]protocol.Subscription, error)
 
 	// GetDefaultSubscription gets the default subscription.
-	GetDefaultSubscription(senderID string) (*channel.Subscription, error)
+	GetDefaultSubscription(senderID string) (*protocol.Subscription, error)
 
 	// AddSubscription adds a new subscription.
-	AddSubscription(senderID string, sub channel.Subscription) error
+	AddSubscription(senderID string, sub protocol.Subscription) error
 
 	// RemoveSubscription removes a subscription by ID.
 	RemoveSubscription(id string) error
@@ -313,14 +292,14 @@ type AgentBackend interface {
 	RenameSubscription(id, name string) error
 
 	// UpdateSubscription updates all fields of a subscription.
-	UpdateSubscription(id string, sub channel.Subscription) error
+	UpdateSubscription(id string, sub protocol.Subscription) error
 
 	// SetSubscriptionModel updates the model of a subscription.
 	SetSubscriptionModel(id, model string) error
 
 	// GetHistory retrieves session messages for a channel/chatID pair.
 	// RemoteBackend forwards via RPC; LocalBackend reads from local DB.
-	GetHistory(channel, chatID string) ([]channel.HistoryMessage, error)
+	GetHistory(channel, chatID string) ([]protocol.HistoryMessage, error)
 
 	// GetTokenState retrieves the last API token counts for a session.
 	// Returns (0, 0, nil) when no data is available.

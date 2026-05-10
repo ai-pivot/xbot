@@ -237,7 +237,7 @@ type setSubscriptionModelReq struct {
 	Model string `json:"model"`
 }
 
-// channelSubscriptionJSON mirrors channel.Subscription for JSON transport.
+// channelSubscriptionJSON mirrors protocol.Subscription for JSON transport.
 type channelSubscriptionJSON struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`

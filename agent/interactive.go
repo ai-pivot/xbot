@@ -16,6 +16,7 @@ import (
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
@@ -85,18 +86,18 @@ func (a *Agent) cleanupExpiredSessions() {
 
 // recordIterationSnapshot appends the previous snapshot to iteration history if the
 // shouldAppend predicate returns true. Uses CAS loop to avoid TOCTOU races on sync.Map.
-func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *channelpkg.CLIProgressPayload) bool) {
+func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *protocol.ProgressEvent) bool) {
 	prevSnap, loaded := a.lastProgressSnapshot.Load(key)
 	if !loaded {
 		return
 	}
-	prev := prevSnap.(*channelpkg.CLIProgressPayload)
+	prev := prevSnap.(*protocol.ProgressEvent)
 	if !shouldAppend(prev) {
 		return
 	}
 	for {
-		histPtr, _ := a.iterationHistories.LoadOrStore(key, &[]channelpkg.CLIProgressPayload{})
-		hist := *histPtr.(*[]channelpkg.CLIProgressPayload)
+		histPtr, _ := a.iterationHistories.LoadOrStore(key, &[]protocol.ProgressEvent{})
+		hist := *histPtr.(*[]protocol.ProgressEvent)
 		already := false
 		for _, h := range hist {
 			if h.Iteration == prev.Iteration {
@@ -144,7 +145,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		}
 		s := event.Structured
 
-		cliPayload := &channelpkg.CLIProgressPayload{
+		cliPayload := &protocol.ProgressEvent{
 			ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
 			Iteration: s.Iteration, Thinking: s.ThinkingContent,
 			Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
@@ -212,7 +213,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		}
 
 		// Save snapshot + track iteration history for mid-session reconnect.
-		a.recordIterationSnapshot(agentProgressKey, func(prev *channelpkg.CLIProgressPayload) bool {
+		a.recordIterationSnapshot(agentProgressKey, func(prev *protocol.ProgressEvent) bool {
 			return s.Iteration > prev.Iteration && prev.Iteration >= 0
 		})
 		a.lastProgressSnapshot.Store(agentProgressKey, cliPayload)
@@ -225,18 +226,18 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	if localCh != nil {
 		cfg.StreamContentFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
-			localCh.SendProgress(key, &channelpkg.CLIProgressPayload{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
+			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*channelpkg.CLIProgressPayload)
+				cp := *snap.(*protocol.ProgressEvent)
 				cp.StreamContent = content
 				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
 			}
 		}
 		cfg.StreamReasoningFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
-			localCh.SendProgress(key, &channelpkg.CLIProgressPayload{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
+			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*channelpkg.CLIProgressPayload)
+				cp := *snap.(*protocol.ProgressEvent)
 				cp.ReasoningStreamContent = content
 				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
 			}
@@ -246,7 +247,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			seq := subAgentProgressSeq.Add(1)
 			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*channelpkg.CLIProgressPayload)
+				cp := *snap.(*protocol.ProgressEvent)
 				cp.StreamContent = content
 				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
 			}
@@ -255,7 +256,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			seq := subAgentProgressSeq.Add(1)
 			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*channelpkg.CLIProgressPayload)
+				cp := *snap.(*protocol.ProgressEvent)
 				cp.ReasoningStreamContent = content
 				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
 			}

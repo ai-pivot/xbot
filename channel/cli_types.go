@@ -244,69 +244,19 @@ const (
 // ---------------------------------------------------------------------------
 
 // CLIProgressPayload 结构化进度消息负载（对应 agent.StructuredProgress）。
-type CLIProgressPayload struct {
-	ChatID                 string // session key for routing — CLI filters by m.chatID
-	Seq                    uint64 // monotonic sequence number — linear consistency guarantee
-	Phase                  string
-	Iteration              int
-	ActiveTools            []CLIToolProgress
-	CompletedTools         []CLIToolProgress
-	Thinking               string
-	Reasoning              string // model's reasoning/thinking chain (reasoning_content)
-	SubAgents              []CLISubAgent
-	Todos                  []CLITodoItem
-	TokenUsage             *CLITokenUsage       // Token 用量快照（实时更新）
-	StreamContent          string               // LLM streaming text content (accumulated, for real-time render)
-	ReasoningStreamContent string               // LLM streaming reasoning content (accumulated, for real-time render)
-	IterationHistory       []CLIProgressPayload // completed iteration snapshots (for mid-session reconnect restore)
-	HistoryCompacted       bool                 // true after context compression — CLI should reload messages from session
-	CWD                    string               // agent's current working directory (for worktree indicator)
-}
+type CLIProgressPayload = protocol.ProgressEvent
 
 // CLITokenUsage Token 使用量（对应 agent.TokenUsageSnapshot）
-type CLITokenUsage struct {
-	PromptTokens     int64
-	CompletionTokens int64
-	TotalTokens      int64
-	CacheHitTokens   int64
-	MaxOutputTokens  int64 // output token reservation (for context bar display)
-}
+type CLITokenUsage = protocol.TokenUsage
 
 // CLITodoItem represents a TODO item for CLI display.
-type CLITodoItem struct {
-	ID   int
-	Text string
-	Done bool
-}
+type CLITodoItem = protocol.TodoItem
 
 // CLIToolProgress 单个工具的执行进度。
-type CLIToolProgress struct {
-	Name      string
-	Label     string
-	Status    string
-	Elapsed   int64 // milliseconds (from progress event)
-	Iteration int   // 所属迭代 ID
-	Summary   string
-	Detail    string    // full untruncated tool result (for per-tool body rendering)
-	Args      string    // raw JSON tool arguments (for per-tool rendering)
-	ToolHints string    // markdown hint from plugin or built-in diff
-	StartedAt time.Time // when tool started (for live elapsed timer)
-
-	// Render cache: the final output of renderToolContentBelow, cached to avoid
-	// re-running chroma tokenisation + lipgloss on every 100ms tick.
-	// Only valid when cachedBodyW matches the current viewport width.
-	cachedBody  string
-	cachedBodyW int
-}
+type CLIToolProgress = protocol.ToolProgress
 
 // CLISubAgent 子 Agent 的结构化进度状态。
-type CLISubAgent struct {
-	Role     string
-	Instance string
-	Status   string // "running" | "done" | "error"
-	Desc     string
-	Children []CLISubAgent
-}
+type CLISubAgent = protocol.SubAgentInfo
 
 // cliIterationSnapshot captures a completed iteration for the progress panel.
 type cliIterationSnapshot struct {
@@ -335,21 +285,10 @@ func formatElapsed(ms int64) string {
 // ---------------------------------------------------------------------------
 
 // HistoryIteration 历史迭代快照（用于会话恢复的 tool_summary 渲染）
-type HistoryIteration struct {
-	Iteration   int
-	Thinking    string
-	Reasoning   string
-	Tools       []CLIToolProgress
-	ElapsedWall int64 // wall-clock duration of the iteration (ms)
-}
+type HistoryIteration = protocol.HistoryIteration
 
 // HistoryMessage 历史消息（用于会话恢复）
-type HistoryMessage struct {
-	Role       string // "user", "assistant", "tool_summary", "system"
-	Content    string
-	Timestamp  time.Time
-	Iterations []HistoryIteration // 仅 role=="tool_summary" 时有值，按迭代顺序
-}
+type HistoryMessage = protocol.HistoryMessage
 
 // iterSnapshot mirrors agent.IterationSnapshot for JSON unmarshaling Detail field.
 type iterSnapshot struct {
@@ -748,17 +687,7 @@ type ModelLister interface {
 }
 
 // Subscription represents a LLM subscription for display/selection.
-type Subscription struct {
-	ID              string
-	Name            string
-	Provider        string
-	BaseURL         string
-	APIKey          string
-	Model           string
-	MaxOutputTokens int
-	ThinkingMode    string
-	Active          bool
-}
+type Subscription = protocol.Subscription
 
 // SubscriptionManager manages user LLM subscriptions.
 type SubscriptionManager interface {

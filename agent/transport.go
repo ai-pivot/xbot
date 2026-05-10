@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 
-	"xbot/bus"
-	"xbot/channel"
 	"xbot/protocol"
 )
 
@@ -38,21 +36,10 @@ type Transport interface {
 	// Returns a cancel function to unsubscribe.
 	Subscribe(pattern protocol.EventPattern, handler protocol.EventHandler) (cancel func())
 
-	// === Server-push events (Deprecated: use Subscribe instead) ===
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"outbound"}, handler) instead.
-	OnOutbound(cb func(bus.OutboundMessage))
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"progress"}, handler) instead.
-	OnProgress(cb func(*channel.CLIProgressPayload))
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"inject_user"}, handler) instead.
-	OnInjectUserMessage(cb func(chatID, content string))
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"reconnect"}, handler) instead.
-	OnReconnect(cb func())
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"conn_state"}, handler) instead.
-	OnConnStateChange(cb func(state string))
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"plugin_widget"}, handler) instead.
-	OnPluginWidgets(cb func(zones map[string]string, chatID string))
-	// Deprecated: Use Subscribe(protocol.EventPattern{Type:"tui_control"}, handler) instead.
-	OnTUIControlRequest(cb func(action string, params map[string]string) (map[string]string, error))
+	// === TUI Control (request-response, cannot be expressed as fire-and-forget event) ===
+	// SetTUIControlHandler registers the handler for server-initiated TUI control requests.
+	// The handler receives (action, params) and returns (result, error) via WebSocket RPC.
+	SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error))
 
 	// === State ===
 	ConnState() string
