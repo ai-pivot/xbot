@@ -47,12 +47,12 @@ type SettingDef struct {
 // Every other scope map, runtime key list, and known-key check is derived from this.
 var AllSettingDefs = []SettingDef{
 	// ── LLM Subscription-scoped fields (persisted in user_llm_subscriptions DB) ──
-	{Key: "llm_provider", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "LLM provider name (e.g. openai, deepseek, anthropic)", ValidValues: "openai|deepseek|anthropic|ollama|...", DefaultValue: "openai"},
-	{Key: "llm_api_key", Scope: ScopeSubscription, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked on read)", ValidValues: "any valid API key string"},
-	{Key: "llm_base_url", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "Custom base URL for API endpoint (leave empty for default)", ValidValues: "any valid URL or empty"},
-	{Key: "llm_model", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "Model name to use (e.g. gpt-4o, claude-sonnet-4-20250514)", ValidValues: "any model name supported by the provider"},
-	{Key: "max_output_tokens", Scope: ScopeSubscription, Permission: PermPersistent, AIDescription: "Maximum tokens the LLM can generate per response", ValidValues: "1-131072", DefaultValue: "4096"},
-	{Key: "thinking_mode", Scope: ScopeSubscription, Permission: PermPersistent, AIDescription: "Enable extended reasoning (for supported models)", ValidValues: "true|false", DefaultValue: "true"},
+	{Key: "llm_provider", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "LLM provider (only openai and anthropic are supported)", ValidValues: "openai|anthropic", DefaultValue: "openai"},
+	{Key: "llm_api_key", Scope: ScopeSubscription, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked)", ValidValues: "any valid API key starting with sk-"},
+	{Key: "llm_base_url", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "Custom API base URL (leave empty for default)", ValidValues: "empty or valid HTTPS URL"},
+	{Key: "llm_model", Scope: ScopeSubscription, Permission: PermManual, AIDescription: "Model name to use (provider-specific, e.g. gpt-4o, claude-sonnet-4-20250514)", ValidValues: "provider-specific model ID"},
+	{Key: "max_output_tokens", Scope: ScopeSubscription, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
+	{Key: "thinking_mode", Scope: ScopeSubscription, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode (supported models only)", ValidValues: "true|false", DefaultValue: "true"},
 
 	// ── User-scoped settings (per-user, persisted in user_settings DB) ──
 	{Key: "enable_stream", Scope: ScopeUser, Permission: PermTransient, AIDescription: "Show LLM output token-by-token instead of waiting for completion", ValidValues: "true|false", DefaultValue: "true"},
@@ -67,10 +67,10 @@ var AllSettingDefs = []SettingDef{
 	{Key: "privileged_user", Scope: ScopeGlobal, Permission: PermManual, AIDescription: "Username with full admin access", ValidValues: "any valid username"},
 
 	// ── User-scoped settings (per-user, persisted in user_settings DB) ──
-	{Key: "theme", Scope: ScopeUser, Permission: PermTransient, AIDescription: "TUI color theme", ValidValues: "default|ocean|pastel|monokai|dracula|solarized|...", DefaultValue: "default"},
+	{Key: "theme", Scope: ScopeUser, Permission: PermTransient, AIDescription: "TUI color theme (use tui_control set_theme to switch)", ValidValues: "theme name (see sidebar palette or config list)", DefaultValue: "default"},
 
 	// Layout configuration
-	{Key: "layout_mode", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Chat layout style", ValidValues: "default|compact|wide", DefaultValue: "default"},
+	{Key: "layout_mode", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Chat layout density", ValidValues: "default|compact|wide", DefaultValue: "default"},
 	{Key: "sidebar_enabled", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Show or hide the session sidebar", ValidValues: "true|false", DefaultValue: "true"},
 	{Key: "sidebar_width", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar width in character columns", ValidValues: "15-60", DefaultValue: "20"},
 	{Key: "sidebar_position", Scope: ScopeUser, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar position relative to chat", ValidValues: "left|right", DefaultValue: "left"},
@@ -177,19 +177,20 @@ func IsActionSettingKey(key string) bool {
 	return ok
 }
 
-// AllConfigItemsForAI returns all known settings with AI metadata for the config tool's "list" action.
-// Each new setting added to AllSettingDefs automatically appears here — zero extra work.
+// AllConfigItemsForAI returns user-facing settings with AI metadata for the config tool's "list" action.
+// LLM subscription keys (ScopeSubscription) and UI action triggers (ScopeAction) are excluded —
+// they are managed through dedicated channels (/set-llm, subscription management, palette).
+// Each new user/global SettingDef automatically appears here — zero extra work.
 func AllConfigItemsForAI() []tools.ConfigListItem {
 	result := make([]tools.ConfigListItem, 0, len(AllSettingDefs))
 	for _, d := range AllSettingDefs {
+		// Skip subscription-scoped (LLM keys: managed via /set-llm) and action-scoped (UI triggers)
+		if d.Scope == ScopeSubscription || d.Scope == ScopeAction {
+			continue
+		}
 		scope := "user"
-		switch d.Scope {
-		case ScopeGlobal:
+		if d.Scope == ScopeGlobal {
 			scope = "global"
-		case ScopeSubscription:
-			scope = "subscription"
-		case ScopeAction:
-			scope = "action"
 		}
 		perm := string(d.Permission)
 		if perm == "" {

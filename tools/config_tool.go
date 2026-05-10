@@ -30,6 +30,21 @@ func (t *ConfigTool) Parameters() []llm.ToolParam {
 	}
 }
 
+// isConfigKeyAllowed checks whether a key can be accessed via the config tool.
+// Subscription-scoped (LLM keys) and action-scoped keys are excluded — they have
+// dedicated management paths (/set-llm, subscription management, palette).
+func isConfigKeyAllowed(ctx *ToolContext, key string) bool {
+	if ctx.ConfigList == nil {
+		return true // can't check, allow (defensive)
+	}
+	for _, item := range ctx.ConfigList() {
+		if item.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // maskKeys are masked on read — value is replaced with "***" when returned via get.
 var maskKeys = map[string]bool{
 	"llm_api_key":  true,
@@ -61,6 +76,9 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		if ctx.ConfigGet == nil {
 			return nil, fmt.Errorf("config: config service not available")
 		}
+		if !isConfigKeyAllowed(ctx, params.Key) {
+			return nil, fmt.Errorf("config: %q is not a user config key (LLM settings use /set-llm, subscription settings use /subscription)", params.Key)
+		}
 		val, err := ctx.ConfigGet(params.Key)
 		if err != nil {
 			return nil, fmt.Errorf("config: get %q failed: %w", params.Key, err)
@@ -77,6 +95,9 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		if params.Value == "" {
 			return nil, fmt.Errorf("config: value required for set action")
 		}
+		if !isConfigKeyAllowed(ctx, params.Key) {
+			return nil, fmt.Errorf("config: %q is not a user config key (LLM settings use /set-llm, subscription settings use /subscription)", params.Key)
+		}
 		// Global-scoped settings require admin privileges
 		if ctx.IsGlobalKey != nil && ctx.IsGlobalKey(params.Key) && !ctx.OriginUserIsAdmin {
 			return nil, fmt.Errorf("config: %q is a global setting and can only be modified by an admin", params.Key)
@@ -88,6 +109,6 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		return NewResult(fmt.Sprintf("Updated %s from %s to %s", params.Key, prev, params.Value)), nil
 
 	default:
-		return nil, fmt.Errorf("config: unknown action: %s (valid: get, set)", params.Action)
+		return nil, fmt.Errorf("config: unknown action: %s (valid: list, get, set)", params.Action)
 	}
 }
