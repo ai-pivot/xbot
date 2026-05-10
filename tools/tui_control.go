@@ -29,7 +29,7 @@ func (t *TuiControlTool) Description() string {
 		"Use this whenever the user asks to switch to a different session, close a session, adjust the sidebar width, " +
 		"or change the theme. This is the PRIMARY way to navigate between sessions in the TUI. " +
 		"To CREATE a new session, use CreateChat (type=agent, role=explore, instance=\"name\") instead. " +
-		"To create a custom theme, use FileCreate to write a JSON file to ~/.xbot/themes/<name>.json then switch via set_theme. " +
+		"To create a custom theme, use FileCreate to write a JSON file to ~/.xbot/themes/<name>.json then switch via set_theme. Activate the ai-config skill for the JSON format template. " +
 		"Use send_slash to execute slash commands in the input box (/set-llm, /model, /palette, /context, etc.). " +
 		"Actions: switch_session(chat_id), close_session(chat_id, params.confirm=true), " +
 		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/set-llm ...\"). " +
