@@ -91,7 +91,7 @@ var AllSettingDefs = []SettingDef{
 	// Layout configuration
 	{Key: "layout_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Chat layout density", ValidValues: "default|compact|wide", DefaultValue: "default"},
 	{Key: "sidebar_enabled", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Show or hide sidebar", ValidValues: "true|false", DefaultValue: "true"},
-	{Key: "sidebar_width", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar width in columns", ValidValues: "15-60", DefaultValue: "20"},
+	{Key: "sidebar_width", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar width in columns", ValidValues: "15-60", DefaultValue: "30"},
 	{Key: "sidebar_position", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Sidebar position", ValidValues: "left|right", DefaultValue: "left"},
 	{Key: "sidebar_sections", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Sections shown in sidebar", ValidValues: "comma-separated: agents,history"},
 	{Key: "chat_max_width", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Max chat width in columns", ValidValues: "0-200", DefaultValue: "0"},

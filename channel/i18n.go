@@ -49,6 +49,7 @@ type UILocale struct {
 
 	// --- C. Status bar ---
 	TitleHint             string // "Enter send · Ctrl+J newline · /help"
+	ShiftSelectHint       string // "⇧+drag to select text"
 	ProcessingPlaceholder string // "[Processing...] (Ctrl+C to cancel)"
 	CheckingUpdates       string // "⟳ checking for updates..."
 	StatusReady           string // "● ready"
@@ -245,6 +246,7 @@ func localeZH() *UILocale {
 
 		// --- C. Status bar ---
 		TitleHint:             "Enter 发送 · Ctrl+J 换行 · /help",
+		ShiftSelectHint:       "⇧+拖拽 选择文本",
 		ProcessingPlaceholder: "[处理中...] 输入消息排队 · Ctrl+C 取消",
 		CheckingUpdates:       "⟳ 正在检查更新...",
 		StatusReady:           "◈ 就绪",
@@ -629,17 +631,17 @@ func localeEN() *UILocale {
 		EmergencyQuitHint:     "🚪 Emergency Quit (Ctrl+Z)",
 
 		// --- C. Status bar ---
-		TitleHint:             "Enter send · Ctrl+J newline · /help",
-		ProcessingPlaceholder: "[Processing...] type to queue · Ctrl+C cancel",
-		CheckingUpdates:       "⟳ checking for updates...",
-		StatusReady:           "◈ ready",
-		StatusCompressing:     "compressing",
-		StatusRetrying:        "retrying",
-		StatusDone:            "done",
-		NewContentHint:        "v new content",
-		BgTaskRunning:         "[^ %dt]",
-		AgentRunning:          "[Ctrl+T %da]",
-		TabNoMatch:            "[Tab] no matching files",
+		TitleHint:         "Enter send · Ctrl+J newline · /help",
+		ShiftSelectHint:   "⇧+drag to select text",
+		CheckingUpdates:   "⟳ checking for updates...",
+		StatusReady:       "◈ ready",
+		StatusCompressing: "compressing",
+		StatusRetrying:    "retrying",
+		StatusDone:        "done",
+		NewContentHint:    "v new content",
+		BgTaskRunning:     "[^ %dt]",
+		AgentRunning:      "[Ctrl+T %da]",
+		TabNoMatch:        "[Tab] no matching files",
 
 		// --- C2. Info Bar (bottom status line below input) ---
 
@@ -1010,17 +1012,17 @@ func localeJA() *UILocale {
 		EmergencyQuitHint:     "🚪 緊急終了 (Ctrl+Z)",
 
 		// --- C. Status bar ---
-		TitleHint:             "Enter 送信 · Ctrl+J 改行 · /help",
-		ProcessingPlaceholder: "[処理中...] 入力でキュー · Ctrl+C キャンセル",
-		CheckingUpdates:       "⟳ アップデート確認中...",
-		StatusReady:           "◈ 準備完了",
-		StatusCompressing:     "圧縮中",
-		StatusRetrying:        "リトライ中",
-		StatusDone:            "完了",
-		NewContentHint:        "↓ 新着",
-		BgTaskRunning:         "[^ %dタ]",
-		AgentRunning:          "[Ctrl+T %dエ]",
-		TabNoMatch:            "[Tab] 一致するファイルなし",
+		TitleHint:         "Enter 送信 · Ctrl+J 改行 · /help",
+		ShiftSelectHint:   "⇧+ドラッグでテキスト選択",
+		CheckingUpdates:   "⟳ アップデート確認中...",
+		StatusReady:       "◈ 準備完了",
+		StatusCompressing: "圧縮中",
+		StatusRetrying:    "リトライ中",
+		StatusDone:        "完了",
+		NewContentHint:    "↓ 新着",
+		BgTaskRunning:     "[^ %dタ]",
+		AgentRunning:      "[Ctrl+T %dエ]",
+		TabNoMatch:        "[Tab] 一致するファイルなし",
 
 		// --- C2. Info Bar (bottom status line below input) ---
 

@@ -103,6 +103,11 @@ func (m *cliModel) renderTitleBar() string {
 		}
 	}
 
+	// Shift-select hint: shown when user clicks/drags without Shift (likely trying to select text)
+	if !m.shiftHintUntil.IsZero() && time.Now().Before(m.shiftHintUntil) && m.locale.ShiftSelectHint != "" {
+		titleRight = m.locale.ShiftSelectHint + " · " + titleRight
+	}
+
 	// Narrow: hide /help hint to save space
 	if m.isNarrow() {
 		titleRight = ""
@@ -420,7 +425,7 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 
 	return m.styles.SidebarBg.
 		Width(sw).
-		Height(h).
+		MaxHeight(h).
 		Render(content)
 }
 

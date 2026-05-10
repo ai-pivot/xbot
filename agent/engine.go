@@ -1092,8 +1092,12 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		}
 		return items
 	}
-	// Admin check: determines if user can modify global-scoped settings
-	if cfg.SettingsSvc != nil {
+	// Admin check: determines if user can modify global-scoped settings.
+	// CLI users ("cli" channel with "cli_user" sender) are always admin —
+	// they connect via local TUI or remote TUI with admin token.
+	if cfg.Channel == "cli" && cfg.OriginUserID == "cli_user" {
+		tc.OriginUserIsAdmin = true
+	} else if cfg.SettingsSvc != nil {
 		permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
 		tc.OriginUserIsAdmin = permUsers != nil && cfg.OriginUserID == permUsers.PrivilegedUser
 	}
