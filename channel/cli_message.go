@@ -731,12 +731,10 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		m.savePendingAskUser(msg.ChatID, msg.Metadata)
 	}
 
-	// suLoading guard: during session switch in remote mode, discard agent replies.
-	// The RPC (handleSuHistoryLoad) will load the authoritative message history.
-	// Accepting stale replies here would create duplicates or render on empty history.
-	if m.suLoading {
-		return
-	}
+	// Deduplication in handleSuHistoryLoad prevents message duplication,
+	// so we accept all messages immediately even during suLoading.
+	// This ensures progress/app responses are visible without delay
+	// when the user sends a message right after session switch.
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
 		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
