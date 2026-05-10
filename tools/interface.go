@@ -112,6 +112,13 @@ type ToolContext struct {
 	// ConfigList returns all known configuration items with AI metadata.
 	// Injected from AllSettingDefs via buildToolContext.
 	ConfigList func() []ConfigListItem
+
+	// IsGlobalKey returns true if the setting key is global-scoped (shared config, admin-only).
+	IsGlobalKey func(key string) bool
+
+	// OriginUserIsAdmin is true when the end user has admin privileges.
+	// Global-scoped settings should only be modified when this is true.
+	OriginUserIsAdmin bool
 }
 
 // ConfigListItem is a single configuration entry returned by config tool's "list" action.
