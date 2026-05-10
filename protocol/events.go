@@ -112,6 +112,7 @@ type Subscription struct {
 }
 
 type OutboundEvent struct {
+	Channel   string `json:"channel"`
 	ChatID    string `json:"chat_id"`
 	Content   string `json:"content"`
 	IsPartial bool   `json:"is_partial"`
@@ -158,6 +159,7 @@ func (TUIControlEvent) EventType() string { return "tui_control" }
 func (TUIControlEvent) EventVersion() int { return 1 }
 
 type AskUserEvent struct {
+	Channel   string `json:"channel"`
 	ChatID    string `json:"chat_id"`
 	Questions string `json:"questions"`
 	RequestID string `json:"request_id,omitempty"`

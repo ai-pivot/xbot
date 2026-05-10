@@ -397,6 +397,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 		case "text":
 			// Emit protocol event for new-style subscribers
 			t.emit(ctx, protocol.OutboundEvent{
+				Channel:   msg.Channel,
 				ChatID:    msg.ChatID,
 				Content:   msg.Content,
 				IsPartial: false,
@@ -426,6 +427,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					qJSON, _ := json.Marshal(msg.Progress.Questions)
 					// Emit protocol event for new-style subscribers
 					t.emit(ctx, protocol.AskUserEvent{
+						Channel:   msg.Channel,
 						ChatID:    msg.ChatID,
 						Questions: string(qJSON),
 						RequestID: msg.Progress.RequestID,
@@ -638,6 +640,7 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 					// Notify user after every 3 failures via emit.
 					if consecutiveFailures%3 == 0 {
 						t.emit(ctx, protocol.OutboundEvent{
+							Channel: "cli",
 							ChatID:  "remote",
 							Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
 						})

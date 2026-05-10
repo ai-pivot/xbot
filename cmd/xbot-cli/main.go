@@ -1824,7 +1824,7 @@ func main() {
 					return
 				}
 				cliCh.Send(bus.OutboundMessage{
-					Channel: "remote",
+					Channel: ev.Channel,
 					ChatID:  ev.ChatID,
 					Content: ev.Content,
 				})
@@ -1840,7 +1840,7 @@ func main() {
 					meta["request_id"] = ev.RequestID
 				}
 				cliCh.Send(bus.OutboundMessage{
-					Channel:     "cli",
+					Channel:     ev.Channel,
 					ChatID:      ev.ChatID,
 					WaitingUser: true,
 					Metadata:    meta,
