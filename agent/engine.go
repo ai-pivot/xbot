@@ -1067,14 +1067,17 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// Config list: from AllSettingDefs (always available, no RPC needed)
 	tc.ConfigList = func() []tools.ConfigListItem {
 		items := channel.AllConfigItemsForAI()
-		// Enrich SourceUserDB items from SettingsSvc (user_settings DB)
+		// Only override SourceUserDB items with SettingsSvc values.
+		// SourceConfigJSON and SourceLLMConfig values come from config.json
+		// (set by configValueBySource) and must not be overwritten by stale DB data.
 		if cfg.SettingsSvc != nil {
 			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
 				for i := range items {
-					// SourceUserDB items use DB value; SourceConfigJSON/LLMConfig already set by configValueBySource
-					if v, ok := vals[items[i].Key]; ok && v != "" {
-						items[i].CurrentVal = v
+					if items[i].Source == "user_db" {
+						if v, ok := vals[items[i].Key]; ok && v != "" {
+							items[i].CurrentVal = v
+						}
 					}
 				}
 			}

@@ -225,6 +225,7 @@ func AllConfigItemsForAI() []tools.ConfigListItem {
 			DefaultVal:  d.DefaultValue,
 			Sensitive:   d.Sensitive,
 			CurrentVal:  configValueBySource(d.Key, d.Source),
+			Source:      sourceName(d.Source),
 		})
 	}
 	return result
@@ -270,4 +271,17 @@ func stringVal(v interface{}) string {
 		return strconv.FormatBool(val)
 	}
 	return ""
+}
+
+func sourceName(s ConfigSource) string {
+	switch s {
+	case SourceUserDB:
+		return "user_db"
+	case SourceConfigJSON:
+		return "config_json"
+	case SourceLLMConfig:
+		return "llm_config"
+	default:
+		return "user_db"
+	}
 }

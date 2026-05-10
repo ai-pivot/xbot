@@ -131,6 +131,7 @@ type ConfigListItem struct {
 	DefaultVal  string `json:"default_value,omitempty"`
 	CurrentVal  string `json:"current_value,omitempty"`
 	Sensitive   bool   `json:"sensitive,omitempty"`
+	Source      string `json:"source,omitempty"` // "user_db" | "config_json" | "llm_config"
 }
 
 // SubAgentManager SubAgent 管理接口，避免循环依赖
