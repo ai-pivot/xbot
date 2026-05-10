@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,9 @@ import (
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 	"xbot/tools"
+
+	channel "xbot/channel"
+	log "xbot/logger"
 )
 
 // SubAgentProgressCallback is the type for SubAgent progress callback.
@@ -72,6 +76,8 @@ type RunConfig struct {
 	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
 	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
 	InitialGroupMembers []string      // 群组成员列表（用于 system prompt 注入）
+	// IsWorktreeIsolated indicates this agent runs in an isolated git worktree.
+	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
 	MaxIterations   int // 0 = 使用默认值 100
@@ -152,6 +158,20 @@ type RunConfig struct {
 
 	// SettingsSvc provides access to user settings (nil = settings not available).
 	SettingsSvc *SettingsService
+
+	// TUICtrlFn is called by tui_control tool to operate TUI (CLI channel only).
+	TUICtrlFn func(action string, params map[string]string) (map[string]string, error)
+	// ConfigGetFn is called by config tool to read settings.
+	ConfigGetFn func(key string) (string, error)
+	// ConfigSetFn is called by config tool to write settings.
+	ConfigSetFn func(key, value string) (string, error)
+
+	// RemoteTUICtrlFn is set in buildMainRunConfig for remote CLI mode.
+	// It sends TUI control requests to the remote CLI client via WS.
+	RemoteTUICtrlFn func(action string, params map[string]string) (map[string]string, error)
+
+	// ListLLMSubs returns all LLM subscriptions for the current user.
+	ListLLMSubs func(channel, senderID string) []tools.SubscriptionInfo
 
 	// OffloadStore Layer 1 offload store（nil = 不启用）
 	OffloadStore *OffloadStore
@@ -243,6 +263,11 @@ type RunConfig struct {
 	// RefreshPluginWorkDir is called after Cd changes the working directory,
 	// so script plugins (e.g. git-info) can re-execute in the new directory.
 	RefreshPluginWorkDir func(dir string)
+	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
+	// Used by SendMessage tool for busy/idle routing.
+	PeerMessageFn func(targetSessionKey, message string) string
+	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
+	AutoWorktreeEnabled bool
 }
 
 // TodoManagerProvider 提供 TODO 状态查询和清理
@@ -885,6 +910,9 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		PreferredSandbox:     cfg.PreferredSandbox,
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
+		IsWorktreeIsolated:   cfg.IsWorktreeIsolated,
+		AutoWorktreeEnabled:  cfg.AutoWorktreeEnabled,
+		PeerMessageFn:        cfg.PeerMessageFn,
 
 		// 注入入站消息
 		InjectInbound: cfg.InjectInbound,
@@ -960,6 +988,16 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		if tc.CurrentDir == "" && cfg.InitialCWD != "" {
 			tc.CurrentDir = cfg.InitialCWD
 		}
+		// Final fallback: use WorkingDir if both session CWD and InitialCWD are empty
+		if tc.CurrentDir == "" && cfg.WorkingDir != "" {
+			tc.CurrentDir = cfg.WorkingDir
+		}
+		// Resolve relative CWD to absolute path
+		if tc.CurrentDir != "" && !filepath.IsAbs(tc.CurrentDir) {
+			if abs, err := filepath.Abs(tc.CurrentDir); err == nil {
+				tc.CurrentDir = abs
+			}
+		}
 		tc.SetCurrentDir = func(dir string) {
 			cfg.Session.SetCurrentDir(dir)
 			if cfg.RefreshPluginWorkDir != nil {
@@ -988,6 +1026,89 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	if cfg.InitialGroupID != "" {
 		tc.GroupID = cfg.InitialGroupID
 		tc.GroupMembers = cfg.InitialGroupMembers
+	}
+
+	// Inject TUI/Config callbacks
+	// TUI control: from Agent callback (CLI local mode) or remote WS (CLI remote mode)
+	if cfg.TUICtrlFn != nil {
+		tc.TUIControl = cfg.TUICtrlFn
+	} else if cfg.RemoteTUICtrlFn != nil {
+		tc.TUIControl = cfg.RemoteTUICtrlFn
+	} else {
+		log.WithFields(log.Fields{
+			"channel":   cfg.Channel,
+			"chat_id":   cfg.ChatID,
+			"hasTUI":    cfg.TUICtrlFn != nil,
+			"hasRemote": cfg.RemoteTUICtrlFn != nil,
+		}).Debug("buildToolContext: no TUI control callback available")
+	}
+	// Config read/write: from SettingsSvc (works everywhere: local + remote via RPC)
+	if cfg.SettingsSvc != nil {
+		svc := cfg.SettingsSvc
+		tc.ConfigGet = func(key string) (string, error) {
+			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
+			if err == nil {
+				if v, ok := vals[key]; ok {
+					return v, nil
+				}
+			}
+			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys
+			if def, ok := channel.GetSettingDef(key); ok {
+				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
+					return channel.ConfigValueBySource(key, def.Source), nil
+				}
+			}
+			return "", fmt.Errorf("config: key %q not found", key)
+		}
+		tc.ConfigSet = func(key, value string) (string, error) {
+			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
+			if err != nil {
+				return "", err
+			}
+			oldVal := vals[key]
+			if err := svc.SetSetting(cfg.Channel, cfg.OriginUserID, key, value); err != nil {
+				return "", err
+			}
+			return oldVal, nil
+		}
+	}
+	// Config list: from AllSettingDefs (always available, no RPC needed)
+	tc.ConfigList = func() []tools.ConfigListItem {
+		items := channel.AllConfigItemsForAI()
+		// Only override SourceUserDB items with SettingsSvc values.
+		// SourceConfigJSON and SourceLLMConfig values come from config.json
+		// (set by configValueBySource) and must not be overwritten by stale DB data.
+		if cfg.SettingsSvc != nil {
+			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
+			if err == nil {
+				for i := range items {
+					if items[i].Source == "user_db" {
+						if v, ok := vals[items[i].Key]; ok && v != "" {
+							items[i].CurrentVal = v
+						}
+					}
+				}
+			}
+		}
+		return items
+	}
+	// Admin check: determines if user can modify global-scoped settings.
+	// CLI users ("cli" channel with "cli_user" sender) are always admin —
+	// they connect via local TUI or remote TUI with admin token.
+	if cfg.Channel == "cli" && cfg.OriginUserID == "cli_user" {
+		tc.OriginUserIsAdmin = true
+	} else if cfg.SettingsSvc != nil {
+		permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
+		tc.OriginUserIsAdmin = permUsers != nil && cfg.OriginUserID == permUsers.PrivilegedUser
+	}
+	tc.IsGlobalKey = channel.IsGlobalScopedSettingKey
+
+	// Inject subscription listing
+	tc.ListSubscriptions = func() []tools.SubscriptionInfo {
+		if cfg.ListLLMSubs != nil {
+			return cfg.ListLLMSubs(cfg.Channel, cfg.OriginUserID)
+		}
+		return nil
 	}
 
 	return tc

@@ -188,6 +188,13 @@ type Config struct {
 	hasPluginsKey bool `json:"-"`
 }
 
+// ExperimentalConfig holds experimental features that may change or be removed.
+type ExperimentalConfig struct {
+	// AutoWorktree enables automatic git worktree creation when multiple agents
+	// work on the same repo. Default: false (opt-in experimental).
+	AutoWorktree bool `json:"auto_worktree,omitempty"`
+}
+
 // PluginConfig configures the plugin system.
 type PluginConfig struct {
 	// Enabled controls whether the plugin system is active.
@@ -230,14 +237,18 @@ type AgentConfig struct {
 
 	ContextMode string `json:"context_mode"`
 	// EnableAutoCompress 为 nil 表示 JSON 未写该字段，Load 后与未设置 AGENT_ENABLE_AUTO_COMPRESS 一致，默认启用压缩。
-	EnableAutoCompress   *bool   `json:"enable_auto_compress,omitempty"`
-	MaxContextTokens     int     `json:"max_context_tokens"`
-	CompressionThreshold float64 `json:"compression_threshold"`
-	DynamicMaxTokens     *bool   `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
+	EnableAutoCompress   *bool          `json:"enable_auto_compress,omitempty"`
+	MaxContextTokens     int            `json:"max_context_tokens"`
+	ModelContexts        map[string]int `json:"model_contexts,omitempty"` // model -> max context tokens, overrides MaxContextTokens
+	CompressionThreshold float64        `json:"compression_threshold"`
+	DynamicMaxTokens     *bool          `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
 
 	PurgeOldMessages bool `json:"purge_old_messages"`
 
 	MaxSubAgentDepth int `json:"max_sub_agent_depth"`
+
+	// Experimental features
+	Experimental ExperimentalConfig `json:"experimental,omitempty"`
 
 	LLMRetryAttempts int      `json:"llm_retry_attempts"`
 	LLMRetryDelay    Duration `json:"llm_retry_delay"`
@@ -406,8 +417,13 @@ func mergeJSONPreserveUnknown(existing, structData []byte) ([]byte, error) {
 
 // deepMergeJSON 对两个 JSON 值做深度合并。
 // 如果两者都是 JSON object，递归合并（structVal 的 key 覆盖 existingVal）。
+// 如果 structVal 是 JSON null（Go nil 指针/接口零值），保留 existing 值（防止覆盖）。
 // 否则返回 structVal（直接替换）。
 func deepMergeJSON(existing, structVal json.RawMessage) (json.RawMessage, error) {
+	// structVal 为 null 时保留现有值，防止 Go 零值覆盖磁盘数据
+	if len(structVal) == 0 || string(structVal) == "null" {
+		return existing, nil
+	}
 	var existingObj, structObj map[string]json.RawMessage
 	existingIsObj := json.Unmarshal(existing, &existingObj) == nil
 	structIsObj := json.Unmarshal(structVal, &structObj) == nil

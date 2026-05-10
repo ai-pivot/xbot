@@ -75,6 +75,26 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - **Viewport dirty-check fallback**: tick handler checks `!m.renderCacheValid` when `busy=false` to ensure viewport refreshes after session switch
 - **`removeAllToolSummaries()`** must be called in all progress restore paths to prevent duplicate tool summaries
 
+### CLI Context Bar Rendering
+
+The context bar (top border of input box) replaces the default lipgloss border with a token usage progress bar via `renderContextTopBorder()` in `cli_view.go`.
+
+**Rendering rules:**
+- Returns `""` (plain border) only when `cachedMaxContextTokens <= 0` — meaning the token budget is unknown
+- Once `cachedMaxContextTokens > 0`, the bar ALWAYS renders: filled when `lastTokenUsage` has data, empty (0%) when nil
+- `lastTokenUsage` is only cleared by explicit delete RPCs (`/clear`, `/cancel`, session reset); a zero prompt count during normal operation just means no LLM call has completed yet
+
+**Token state restoration:**
+- **Startup**: `TokenStateLoader` (in `cli.go:Start()`) restores `lastTokenUsage` from DB
+- **Active turn restore**: `handleSuHistoryLoad` → `acceptProgress` branch → `cacheTokenUsage(activeProgress.TokenUsage)`
+- **Idle session switch**: `handleSuHistoryLoad` → `default` branch now falls back to `suHistoryLoadMsg.tokenPrompt`/`tokenCompletion` (fetched via `GetTokenStateFn` in `suLoadHistoryCmd`)
+- **Session save/restore**: `saveCurrentSession()` / `restoreSession()` persist `lastTokenUsage` in `sessionState` across switches
+
+**`cliSettingsSavedMsg.syncOnly`:**
+- `SyncLayoutSettings` (called every 5s in remote mode) sets `syncOnly: true`
+- `handleSettingsSavedMsg` skips context cache reset when `syncOnly` is true
+- Without this flag, the context bar flashes to solid line every 5s in remote mode
+
 ### CLI Progress Panel Rendering
 
 - **`toolLine(icon, label, elapsedStyled, maxWidth)`** helper in `cli_message.go` — unified tool line formatting using `lipgloss.Width()` for precision. All tool rendering sites (historical, completed, active) use this helper. Previous code used `len()` (byte count) and magic number overhead constants (`7 + ...`) which broke on styled/unicode content.
@@ -89,3 +109,34 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - Diff/code background fills must not depend on ordinary trailing spaces: terminal/viewport layers can drop or not paint them. Use NBSP padding (`\u00a0`) with the desired background (see `padBgRight`/`renderBgLine`) for selectable, painted blank cells.
 - Any highlighted/styled content must be measured/truncated with ANSI-aware helpers (`lipgloss.Width`, `ansi.Truncate`), never `len()`/`[]rune` on strings containing ANSI escapes.
 - Tool hints render without the `│` guide prefix. Always pass the actual available container width into hint/body rendering; if a guide prefix is prepended for non-hint bodies, subtract `lipgloss.Width(guide)` first to prevent viewport hard-wrap.
+
+### CLI Sidebar Layout
+
+- **Sidebar is NOT a separate component** — it's part of `cliModel.View()` layout logic. To show/hide: `Ctrl+B` toggles `m.sidebarVisible`, `m.isWide()` checks `width >= 120`. Both feed into `m.sidebarShown()` helper.
+- **Layout**: `sidebar + middleBlock` horizontal join. `middleBlock = viewport + status + [todo] + footer + input + infoBar`. Sidebar height equals middleBlock height.
+- **`sidebarShown()` helper** (`cli_view.go:38`): `m.isWide() && m.sidebarEnabled && m.sidebarVisible`. Use this instead of 4 inline copies of the condition. The 4 sites: `chatWidth()`, `layoutMain()` showSidebar, `layoutViewportHeight()` todo lines exclusion, `trackMainLayoutZones()` todo bar skip.
+- **Sidebar sections**: Sessions (always), Todo (when items exist), Active tasks (when bgTaskCount > 0 or agentCount > 0). Sections stack vertically, separated by blank lines.
+- **Sidebar rendering pattern**: single lipgloss style per line + manual truncation (`truncateToWidth`) + padding to fill width (`lipgloss.Width`). Do NOT use separate styles for icon vs text on the same line — ANSI boundary causes wrapping artifacts in narrow (~26-char) sidebar content area. Follow `renderSidebarSessions` as the reference pattern.
+- **Sidebar width**: `m.sidebarWidth` (default 30), persisted via `sidebar_width` layout key (not in `config.Config` struct — use `saveLayoutToConfig()` for persistence).
+- **Session busy/idle indicators**: sidebar renders different icons for busy vs idle sessions in `renderSidebarSessions`. Current session uses `m.typing`, agent sessions use `entry.Running`, other main sessions use `entry.Busy`. Icons: active+busy → `◉` (Accent color), active+idle → `●` (Accent), inactive+busy → `◎` (Warning/SidebarBusy style), inactive+idle → `○` (TextPrimary). `SidebarBusy` style defined in `cli_theme.go` (Warning color, Bold). CJK width note: `◉`/`◎` same width as `●`/`○` — layout stays stable.
+- **Sessions Panel busy indicators**: `viewSessionsList` in `cli_panel.go` likewise differentiates. Main sessions show `◉`+`⏳` when busy, agent sessions show `⏳` suffix when `Running`. Busy determination mirrors sidebar: current session → `m.typing`, agents → `entry.Running`, others → `entry.Busy`.
+- **`Busy` field data flow**: populated in `SessionPanelEntry` via `SessionsList` callback (`cmd/xbot-cli/main.go`). For main sessions: `app.backend.IsProcessing("cli", chatID)` (works both local and remote). For agents: `entry.Busy = entry.Running`. Remote mode refreshes every 5s via `refreshAgentCache`.
+
+### CLI TODO Rendering
+
+- **Two rendering sites, one helper**: `renderSidebarTodo(w int)` for sidebar view, `renderTodoBar()` for main view. Which site renders depends on `m.sidebarShown()`.
+- **Main view**: rendered in `layoutMain()` as part of `middleLines` (between status and footer) when `!showSidebar`. Uses `TodoFilled`/`TodoEmpty`/`TodoDone`/`TodoLabel`/`TodoPending` styles.
+- **Sidebar view**: rendered by `renderSidebarTodo(contentW)` in `renderSidebarForBlock()` when `len(m.todos) > 0`. Compact format: header `Todo N/M ██░░░░░░░░`, items `  ○ text…` with single style per line and manual width padding.
+- **Viewport height**: `layoutViewportHeight()` excludes todo lines from `reservedLines` when `m.sidebarShown()` — viewport expands to fill the space.
+- **Mouse zones**: `trackMainLayoutZones()` skips todo bar zone when `showSidebar` — no dead zone in main view.
+- **Data lifecycle**: `syncProgressTodos` populates `m.todos` from progress events AND persists to `cliModel.todoManager`. `endAgentTurn` restores unfinished todos from TodoManager on turn end. `restoreSession` restores from disk (`LoadFromFile`) on session switch. `saveCurrentSession` persists current todos to disk (`SaveToFile`).
+
+### CLI Remote TODO Sync (`get_todos` RPC)
+
+- **Problem**: On remote TUI startup, the first session switch loaded TODO from local disk cache (`TodoManager.LoadFromFile`). If the local disk was empty or stale (different terminal, server restart, etc.), todos would be missing until the next active turn.
+- **Solution**: New `get_todos` RPC (`MethodGetTodos = "get_todos"`):
+  - **Server side**: `local_transport.go` handler reads from `Agent.todoManager.GetTodos(sessionKey)` and returns `[]CLITodoItem`
+  - **Client side**: `suLoadHistoryCmd` calls `GetTodosFn(channel, chatID)` concurrently with history + progress, populates `suHistoryLoadMsg.todos`
+  - **Application**: `handleSuHistoryLoad` default (idle) branch overwrites `m.todos` + `persistTodosToManager()` with server data. Non-nil empty slice means "server has no todos" → clears local cache too
+- **RPC registration** (8 files): `req_types.go` (constant + struct) → `backend.go` (interface) → `backend_impl.go` (method) → `local_transport.go` (handler) → `rpc_table.go` (route) → `cli_types.go` (callback) → `main.go` (wiring) → test stubs
+- **Adding new RPC methods**: must also stub `GetTodos` in `fakeAgentBackend` (`cmd/xbot-cli/main_test.go`) and `fakeBackend` (`serverapp/server_test.go`) — these implement `AgentBackend` interface and will fail `typecheck` if incomplete

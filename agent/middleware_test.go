@@ -567,7 +567,7 @@ func TestUserMessageMiddleware(t *testing.T) {
 		if !strings.Contains(mc.UserMessage, "hello world") {
 			t.Error("user message should contain original content")
 		}
-		if !strings.Contains(mc.UserMessage, "Skill") {
+		if !strings.Contains(mc.UserMessage, "tui_control") {
 			t.Error("user message should contain system guidance")
 		}
 	})
@@ -686,7 +686,7 @@ func TestPipeline_FullIntegration(t *testing.T) {
 	if !strings.Contains(userMsg, "hello") {
 		t.Error("user message should contain original content")
 	}
-	if !strings.Contains(userMsg, "Skill") {
+	if !strings.Contains(userMsg, "tui_control") {
 		t.Error("user message should contain system guidance")
 	}
 }

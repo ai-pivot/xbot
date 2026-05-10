@@ -12,6 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	log "xbot/logger"
+	"xbot/storage/sqlite"
 )
 
 // ParseSettingBool parses a boolean setting value.
@@ -88,7 +90,9 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 			// Skip empty values — don't pollute the DB with meaningless entries
 			// that would block DefaultValue from taking effect.
 			if v != "" && isUserScopedSettingKey(k) {
-				_ = m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v)
+				if err := m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v); err != nil {
+					log.WithFields(log.Fields{"key": k, "val": v, "err": err}).Warn("persistCLISettingsValues: SetSetting failed")
+				}
 			}
 		}
 	}
@@ -250,6 +254,14 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	if payload == nil || payload.Phase == "done" {
 		return
 	}
+	// Cross-session guard: reject payload from a different session.
+	// This is defense-in-depth — the caller should pass the correct payload.
+	if payload.ChatID != "" {
+		currentKey := m.channelName + ":" + m.chatID
+		if payload.ChatID != currentKey {
+			return
+		}
+	}
 
 	// Start agent turn (sets typing=true, increments turnID).
 	// Note: startAgentTurn calls resetProgressState which clears m.progress,
@@ -257,6 +269,11 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	m.startAgentTurn()
 
 	// Apply the progress payload
+	// Preserve CWD from previous progress if the new payload doesn't have one
+	// (stream_content events don't carry CWD and would overwrite it).
+	if payload.CWD == "" && m.progress != nil {
+		payload.CWD = m.progress.CWD
+	}
 	m.progress = payload
 
 	// Cache token usage and max context for ready-status bar display
@@ -302,12 +319,20 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 				m.lastSeenIteration = lastIter
 			}
 		}
-
-		// Deduplicate: remove ALL tool_summary messages. When progress is
-		// active, the progress block owns iteration display — any static
-		// tool_summary would duplicate content with mismatched iteration numbers.
-		m.removeAllToolSummaries()
 	}
+
+	// Deduplicate: remove ALL tool_summary messages. When progress is
+	// active, the progress block owns iteration display — any static
+	// tool_summary would duplicate content with mismatched iteration numbers.
+	// Must run unconditionally: even when IterationHistory is empty (e.g. server
+	// restart or iterationHistories not yet populated), any tool_summary from
+	// loaded DB history must be removed — otherwise completed iterations show as
+	// a static "Tools" block alongside the live progress block.
+	m.removeLastToolSummary()
+
+	// Restore todos from the progress snapshot so the sidebar/todo bar
+	// shows them immediately without waiting for the next live progress event.
+	m.syncProgressTodos(payload)
 
 	m.invalidateAllCache(false)
 	// Do NOT call updateViewportContent() here — terminal size may not be
@@ -316,19 +341,31 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 	m.viewport.GotoBottom()
 }
 
-// dedupToolSummary removes the last tool_summary message from m.messages when
-// restoring active progress. The last tool_summary in messages comes from
-// intermediate assistant messages (postToolProcessing) of the in-progress turn.
-// The progress snapshot's IterationHistory contains the same data plus live state,
-// removeAllToolSummaries removes ALL tool_summary messages from m.messages.
-// Used when restoring active progress on session switch: the progress block
-// owns iteration display entirely, and any static tool_summary from
-// ConvertMessagesToHistory would duplicate content with mismatched iteration numbers.
-func (m *cliModel) removeAllToolSummaries() {
-	m.messages = slices.DeleteFunc(m.messages, func(msg cliMessage) bool {
-		return msg.role == "tool_summary"
-	})
-	m.renderCacheValid = false
+// removeLastToolSummary removes only the LAST tool_summary message from m.messages.
+//
+// When the agent turn is active, ConvertMessagesToHistory produces a tool_summary
+// from intermediate assistant messages of the in-progress turn. The progress
+// block (m.progress + m.iterationHistory) owns iteration display for the active
+// turn — the static tool_summary from ConvertMessagesToHistory would duplicate
+// content with mismatched (globally-cumulative vs per-turn) iteration numbers.
+//
+// Previously removeAllToolSummaries removed ALL tool_summary messages, which
+// also deleted tool blocks from previous completed turns — those have no
+// progress block to replace them. Only the LAST tool_summary (the active turn's)
+// should be removed; previous turns' tool_summaries must be preserved.
+func (m *cliModel) removeLastToolSummary() {
+	// Find the last tool_summary message (closest to end of messages).
+	lastIdx := -1
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].role == "tool_summary" {
+			lastIdx = i
+			break
+		}
+	}
+	if lastIdx >= 0 {
+		m.messages = append(m.messages[:lastIdx], m.messages[lastIdx+1:]...)
+		m.renderCacheValid = false
+	}
 }
 
 // endAgentTurn resets all agent-turn tracking state and returns to idle.
@@ -362,11 +399,37 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	// the next turn (from message queue flush) from receiving progress
 	// events, causing Issue #30: queue-flushed messages appear idle.
 	m.turnCancelled = false
-	// Collapse todos on turn end. If all done, clear and mark so stale
-	// progress events don't re-fill them. Otherwise just nil the slice.
-	if m.allTodosDone() {
-		m.todos = nil
-		m.todosDoneCleared = true
+	// Collapse todos on turn end. If all done, fully clear.
+	// Otherwise restore unfinished todos from TodoManager so they
+	// persist across turns and are visible in idle state.
+	if m.todoManager != nil {
+		key := m.sessionKey()
+		if items := m.todoManager.GetTodos(key); len(items) > 0 {
+			allDone := true
+			for _, t := range items {
+				if !t.Done {
+					allDone = false
+					break
+				}
+			}
+			if !allDone {
+				m.todos = make([]CLITodoItem, len(items))
+				for i, t := range items {
+					m.todos[i] = CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+				}
+				m.todosDoneCleared = false
+			} else {
+				// All todos done — clear display, underlying TodoManager,
+				// AND disk file so they don't resurrect on next TUI restart.
+				m.todos = nil
+				m.todosDoneCleared = true
+				m.todoManager.SetTodos(key, nil)
+				_ = m.todoManager.SaveToFile(key)
+			}
+		} else {
+			m.todos = nil
+			m.todosDoneCleared = false
+		}
 	} else {
 		m.todos = nil
 		m.todosDoneCleared = false
@@ -506,8 +569,9 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 	applyTAStyles(&m.textarea, &m.styles)
 	m.ticker.style = lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.Warning))
 	// Rebuild glamour renderer
-	if m.width > 4 {
-		m.renderer = newGlamourRenderer(m.width - 4)
+	cw := m.chatWidth()
+	if cw > 4 {
+		m.renderer = newGlamourRenderer(cw - 4)
 	}
 	// Mark all messages for re-render (new theme = new styles)
 	m.renderCacheValid = false
@@ -714,6 +778,34 @@ func (m *cliModel) applyLanguageChange(lang string) {
 	m.renderCacheValid = false
 }
 
+// applyLayoutConfig updates layout-related model fields from settings values
+// and invalidates the render cache so the viewport relayouts.
+func (m *cliModel) applyLayoutConfig(vals map[string]string) {
+	if v, ok := vals["layout_mode"]; ok && v != "" {
+		m.layoutMode = v
+	}
+	if v, ok := vals["sidebar_enabled"]; ok {
+		m.sidebarEnabled = ParseSettingBool(v)
+	}
+	if v, ok := vals["sidebar_width"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			m.sidebarWidth = n
+		}
+	}
+	if v, ok := vals["sidebar_position"]; ok && v != "" {
+		m.sidebarPosition = v
+	}
+	if v, ok := vals["chat_max_width"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			m.chatMaxWidth = n
+		}
+	}
+	if v, ok := vals["chat_center"]; ok {
+		m.chatCenter = ParseSettingBool(v)
+	}
+	m.renderCacheValid = false
+}
+
 // doSaveSettings runs the settings save callback synchronously and returns
 // a tea.Cmd that sends the result back as cliSettingsSavedMsg.
 // The callback is pure local I/O (config.json write, SQLite write, LLM rebuild)
@@ -725,22 +817,38 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	// Capture feedback string now (m.locale is only safe to read in Update)
 	feedbackMsg := m.locale.SettingsSaved
 
+	// Detect layout changes and collect layout values
+	layoutKeys := map[string]bool{
+		"layout_mode": true, "sidebar_enabled": true, "sidebar_width": true,
+		"sidebar_position": true, "sidebar_sections": true, "chat_max_width": true, "chat_center": true,
+	}
+	layoutChanged := false
+	layoutVals := make(map[string]string)
+	for k, v := range vals {
+		if layoutKeys[k] {
+			layoutChanged = true
+			layoutVals[k] = v
+		}
+	}
+
 	// Run synchronously — all operations are local I/O, no network calls
 	onSubmit(vals)
 
 	return func() tea.Msg {
 		return cliSettingsSavedMsg{
-			themeChanged: hasTheme && theme != "",
-			theme:        theme,
-			langChanged:  hasLang,
-			lang:         lang,
-			feedbackMsg:  feedbackMsg,
+			themeChanged:  hasTheme && theme != "",
+			theme:         theme,
+			langChanged:   hasLang,
+			lang:          lang,
+			layoutChanged: layoutChanged,
+			layoutVals:    layoutVals,
+			feedbackMsg:   feedbackMsg,
 		}
 	}
 }
 
 // handleSettingsSavedMsg processes the async settings save result.
-// Called from Update() to apply theme/locale changes and refresh the viewport.
+// Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	visualChanged := false
 	if msg.themeChanged {
@@ -751,13 +859,22 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		m.applyLanguageChange(msg.lang)
 		visualChanged = true
 	}
+	if msg.layoutChanged {
+		m.applyLayoutConfig(msg.layoutVals)
+		visualChanged = true
+	}
 	m.refreshCachedModelName()
 	// Invalidate cached context settings so they're re-resolved from user settings.
 	// Without this, changing max_context_tokens/max_output_tokens/compression_threshold
 	// in the settings panel has no effect on the context progress bar.
-	m.cachedMaxContextTokens = 0
-	m.cachedMaxOutputTokens = 0
-	m.cachedCompressRatio = 0
+	// Skip this when msg.syncOnly is true — periodic layout syncs from
+	// SyncLayoutSettings (every 5s in remote mode) must NOT reset context
+	// caches, otherwise the context bar flashes to solid line repeatedly.
+	if !msg.syncOnly {
+		m.cachedMaxContextTokens = 0
+		m.cachedMaxOutputTokens = 0
+		m.cachedCompressRatio = 0
+	}
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
 	}
@@ -966,12 +1083,28 @@ func (m *cliModel) handleUsageCommand() {
 		sb.WriteString("No usage data recorded yet.\n")
 	}
 
-	// --- Daily breakdown (last 30 days) ---
-	if len(daily) > 0 {
-		sb.WriteString("\n## Daily Breakdown (last 30 days)\n\n")
-		sb.WriteString("| Date | Model | Input | Output | Cached | Cache%% | Calls |\n")
-		sb.WriteString("|------|-------|-------|--------|--------|--------|-------|\n")
-		for _, d := range daily {
+	// --- Today's usage by model ---
+	today := time.Now().Format("2006-01-02")
+	var todayEntries []sqlite.DailyTokenUsage
+	var todayTotal sqlite.DailyTokenUsage
+	for _, d := range daily {
+		if d.Date == today {
+			todayEntries = append(todayEntries, d)
+			todayTotal.InputTokens += d.InputTokens
+			todayTotal.OutputTokens += d.OutputTokens
+			todayTotal.CachedTokens += d.CachedTokens
+			todayTotal.LLMCallCount += d.LLMCallCount
+			todayTotal.ConversationCount += d.ConversationCount
+		}
+	}
+	if len(todayEntries) > 0 {
+		sb.WriteString("\n## Today's Usage by Model\n\n")
+		sb.WriteString("| Model | Input | Output | Cached | Cache% | Calls |\n")
+		sb.WriteString("|-------|-------|--------|--------|--------|-------|\n")
+		slices.SortFunc(todayEntries, func(a, b sqlite.DailyTokenUsage) int {
+			return int((b.InputTokens + b.OutputTokens) - (a.InputTokens + a.OutputTokens))
+		})
+		for _, d := range todayEntries {
 			model := d.Model
 			if model == "" {
 				model = "(unknown)"
@@ -980,8 +1113,60 @@ func (m *cliModel) handleUsageCommand() {
 			if d.InputTokens > 0 {
 				cacheRate = fmt.Sprintf("%.0f%%", float64(d.CachedTokens)/float64(d.InputTokens)*100)
 			}
-			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s | %d |\n",
-				d.Date, model,
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d |\n",
+				model,
+				fmtTokens(d.InputTokens),
+				fmtTokens(d.OutputTokens),
+				fmtTokens(d.CachedTokens),
+				cacheRate,
+				d.LLMCallCount,
+			)
+		}
+		// Today's total row
+		totalCacheRate := ""
+		if todayTotal.InputTokens > 0 {
+			totalCacheRate = fmt.Sprintf("%.0f%%", float64(todayTotal.CachedTokens)/float64(todayTotal.InputTokens)*100)
+		}
+		fmt.Fprintf(&sb, "| **Today total** | **%s** | **%s** | **%s** | **%s** | **%d** |\n",
+			fmtTokens(todayTotal.InputTokens),
+			fmtTokens(todayTotal.OutputTokens),
+			fmtTokens(todayTotal.CachedTokens),
+			totalCacheRate,
+			todayTotal.LLMCallCount,
+		)
+	}
+
+	// --- Last 10 days daily summary ---
+	daySummary := make(map[string]*sqlite.DailyTokenUsage)
+	var sortedDates []string
+	for _, d := range daily {
+		if _, ok := daySummary[d.Date]; !ok {
+			daySummary[d.Date] = &sqlite.DailyTokenUsage{Date: d.Date}
+			sortedDates = append(sortedDates, d.Date)
+		}
+		s := daySummary[d.Date]
+		s.InputTokens += d.InputTokens
+		s.OutputTokens += d.OutputTokens
+		s.CachedTokens += d.CachedTokens
+		s.LLMCallCount += d.LLMCallCount
+		s.ConversationCount += d.ConversationCount
+	}
+	// sortedDates is already in date DESC order (daily is ordered by date DESC)
+	if len(sortedDates) > 10 {
+		sortedDates = sortedDates[:10]
+	}
+	if len(sortedDates) > 0 {
+		sb.WriteString("\n## Last 10 Days Summary\n\n")
+		sb.WriteString("| Date | Input | Output | Cached | Cache% | Calls |\n")
+		sb.WriteString("|------|-------|--------|--------|--------|-------|\n")
+		for _, date := range sortedDates {
+			d := daySummary[date]
+			cacheRate := ""
+			if d.InputTokens > 0 {
+				cacheRate = fmt.Sprintf("%.0f%%", float64(d.CachedTokens)/float64(d.InputTokens)*100)
+			}
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d |\n",
+				d.Date,
 				fmtTokens(d.InputTokens),
 				fmtTokens(d.OutputTokens),
 				fmtTokens(d.CachedTokens),
@@ -1702,4 +1887,110 @@ func (m *cliModel) applyScrollbar(content string, contentWidth, totalLines, scro
 		}
 	}
 	return b.String()
+}
+
+// handleSessionControlMsg processes AI-triggered TUI session control operations
+// from the tui_control tool. It supports "switch", "close", "layout", and "theme" actions.
+func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
+	switch sc.action {
+	case "switch":
+		if m.sessionsListFn == nil {
+			sc.result <- &cliSessionResult{ok: false, err: "session list not available"}
+			return nil
+		}
+		sessions := m.sessionsListFn()
+		if len(sessions) == 0 {
+			sc.result <- &cliSessionResult{ok: false, err: "no sessions found"}
+			return nil
+		}
+		var best *SessionPanelEntry
+		for i, entry := range sessions {
+			if entry.ID == sc.chatID {
+				best = &sessions[i]
+				break
+			}
+		}
+		if best == nil {
+			lower := strings.ToLower(sc.chatID)
+			for i, entry := range sessions {
+				if strings.Contains(strings.ToLower(entry.Label), lower) ||
+					strings.HasPrefix(strings.ToLower(entry.ID), lower) {
+					best = &sessions[i]
+					break
+				}
+			}
+		}
+		if best == nil {
+			sc.result <- &cliSessionResult{ok: false, err: "session not found: " + sc.chatID}
+			return nil
+		}
+		// Pure frontend switch — return success immediately, let history load async.
+		_, cmd := m.switchToSession(*best)
+		sc.result <- &cliSessionResult{ok: true}
+		return cmd
+
+	case "close":
+		if sc.chatID == m.defaultChatID {
+			sc.result <- &cliSessionResult{ok: false, err: "cannot close main session"}
+			return nil
+		}
+		if sc.params["confirm"] != "true" {
+			sc.result <- &cliSessionResult{ok: false, err: "confirmation_required: close session " + sc.chatID}
+			return nil
+		}
+		sessions := m.sessionsListFn()
+		for _, entry := range sessions {
+			if entry.ID == sc.chatID || strings.Contains(strings.ToLower(entry.Label), strings.ToLower(sc.chatID)) {
+				// RPC: deletes session on server to keep state consistent.
+				// readPump is responsive (goroutine in transport_remote.go), so RPC works.
+				if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
+					if err := m.channel.config.SessionsDeleteFn(entry.Channel, entry.ID); err != nil {
+						sc.result <- &cliSessionResult{ok: false, err: err.Error()}
+						return nil
+					}
+				}
+				sc.result <- &cliSessionResult{ok: true}
+				return nil
+			}
+		}
+		sc.result <- &cliSessionResult{ok: false, err: "session not found: " + sc.chatID}
+
+	case "layout":
+		key := sc.params["key"]
+		val := sc.params["value"]
+		if key == "" || val == "" {
+			sc.result <- &cliSessionResult{ok: false, err: "layout requires key and value"}
+			return nil
+		}
+		m.applyLayoutConfig(map[string]string{key: val})
+		m.relayoutViewport()
+		sc.result <- &cliSessionResult{ok: true}
+		m.persistCLISettingsValues(map[string]string{key: val})
+
+	case "theme":
+		theme := sc.params["theme"]
+		if theme == "" {
+			sc.result <- &cliSessionResult{ok: false, err: "theme requires theme name"}
+			return nil
+		}
+		m.applyThemeAndRebuild(theme)
+		m.renderCacheValid = false
+		m.updateViewportContent()
+		sc.result <- &cliSessionResult{ok: true}
+		m.persistCLISettingsValues(map[string]string{"theme": theme})
+
+	case "send_slash":
+		cmd := sc.params["command"]
+		if cmd == "" {
+			sc.result <- &cliSessionResult{ok: false, err: "command required for send_slash"}
+			return nil
+		}
+		retCmd := m.handleSlashCommand(cmd)
+		sc.result <- &cliSessionResult{ok: true}
+		return retCmd
+
+	default:
+		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}
+	}
+	return nil
 }

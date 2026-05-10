@@ -3,8 +3,10 @@ package channel
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 
 	"xbot/tools"
 )
@@ -14,7 +16,9 @@ import (
 type mouseZone struct {
 	YStart int    // first terminal line (inclusive, 0-based)
 	YEnd   int    // last terminal line (inclusive)
-	ID     string // zone identifier (e.g., "panelItem", "paletteItem", "textarea")
+	XStart int    // first terminal column (inclusive), -1 means full row (default)
+	XEnd   int    // last terminal column (exclusive), -1 means full row (default)
+	ID     string // zone identifier (e.g., "panelItem", "paletteItem", "textarea", "footerHint")
 	Index  int    // item index within zone (e.g., list item index)
 }
 
@@ -31,11 +35,13 @@ func (zb *mouseZoneBuilder) reset() {
 }
 
 // add records a zone at the current Y position with the given height,
-// then advances the Y cursor.
+// then advances the Y cursor. The zone spans the full row width (X is ignored during hit testing).
 func (zb *mouseZoneBuilder) add(h int, id string, index int) {
 	zb.zones = append(zb.zones, mouseZone{
 		YStart: zb.y,
 		YEnd:   zb.y + h - 1,
+		XStart: -1,
+		XEnd:   -1,
 		ID:     id,
 		Index:  index,
 	})
@@ -47,15 +53,33 @@ func (zb *mouseZoneBuilder) skip(n int) {
 	zb.y += n
 }
 
-// findZone returns the zone containing the given terminal Y coordinate, or nil.
-func (zb *mouseZoneBuilder) findZone(y int) *mouseZone {
-	for i := range zb.zones {
-		z := &zb.zones[i]
+// addX registers an inline zone with X-coordinate bounds (for same-row clickable regions).
+func (zb *mouseZoneBuilder) addX(yOffset, xStart, xEnd int, id string, index int) {
+	zb.zones = append(zb.zones, mouseZone{
+		YStart: zb.y + yOffset,
+		YEnd:   zb.y + yOffset,
+		XStart: xStart,
+		XEnd:   xEnd,
+		ID:     id,
+		Index:  index,
+	})
+}
+
+// findZone returns the zone containing the given terminal Y and X coordinates.
+// When XStart/XEnd are negative, the zone spans the full row (X is ignored).
+// Iterates in reverse order so that later-registered (more specific) zones
+// take priority over earlier (broader) ones — e.g. × delete button over
+// the full-row session click zone.
+func (zb *mouseZoneBuilder) findZone(y, x int) (mouseZone, bool) {
+	for i := len(zb.zones) - 1; i >= 0; i-- {
+		z := zb.zones[i]
 		if y >= z.YStart && y <= z.YEnd {
-			return z
+			if z.XStart < 0 || (x >= z.XStart && x < z.XEnd) {
+				return z, true
+			}
 		}
 	}
-	return nil
+	return mouseZone{}, false
 }
 
 // handleMouseMsg dispatches mouse events to the appropriate handler.
@@ -64,17 +88,29 @@ func (m *cliModel) handleMouseMsg(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseClickMsg:
 		handled, model, cmd := m.handleMouseClick(msg)
+		// Unhandled click without Shift → user likely tried to select text,
+		// show hint in title bar.
+		if !handled && msg.Mouse().Mod&tea.ModShift == 0 {
+			m.shiftHintUntil = time.Now().Add(3 * time.Second)
+		}
 		return handled, model, cmd
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
+	case tea.MouseMotionMsg:
+		mouse := msg.Mouse()
+		// Mouse drag without Shift → user tries to drag-select text.
+		if mouse.Button != 0 && mouse.Mod&tea.ModShift == 0 {
+			m.shiftHintUntil = time.Now().Add(3 * time.Second)
+		}
+		return false, m, nil
 	}
 	return false, m, nil
 }
 
 // handleMouseClick processes mouse click events.
 func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea.Cmd) {
-	zone := m.mouseZones.findZone(msg.Y)
-	if zone == nil {
+	zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+	if !found {
 		return false, m, nil
 	}
 
@@ -114,6 +150,12 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickCompletionsItem(zone.Index)
 	case "sessionsItem":
 		return m.clickSessionsItem(zone.Index)
+	case "sidebarSession":
+		return m.clickSidebarSession(zone.Index)
+	case "sidebarDeleteSession":
+		return m.clickSidebarDeleteSession(zone.Index)
+	case "sidebarNewSession":
+		return m.clickSidebarNewSession()
 	case "bgtaskItem":
 		return m.clickBgTasksItem(zone.Index)
 	case "dangerItem":
@@ -122,8 +164,69 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickChannelItem(zone.Index)
 	case "runnerField":
 		return m.clickRunnerField(zone.Index)
+	case "footerHint":
+		return m.clickFooterHint(zone.Index)
 	}
 	return false, m, nil
+}
+
+// clickFooterHint handles mouse clicks on footer hint items.
+// Returns (handled, model, cmd) matching handleMouseClick signature.
+func (m *cliModel) clickFooterHint(index int) (bool, tea.Model, tea.Cmd) {
+	if index < 0 || index >= len(footerHints) {
+		return false, m, nil
+	}
+	action := footerHints[index].action
+
+	switch action {
+	case "ctrl+k":
+		if !m.paletteOpen {
+			m.openCommandPalette()
+		}
+		return true, m, nil
+	case "ctrl+c":
+		m.sendCancel()
+		return true, m, nil
+	case "ctrl+e":
+		m.toggleMessageFold()
+		return true, m, nil
+	case "ctrl+p":
+		if m.subscriptionMgr != nil {
+			m.openQuickSwitch("subscription")
+		}
+		return true, m, nil
+	case "ctrl+t":
+		m.openSessionsPanel()
+		return true, m, nil
+	case "ctrl+j":
+		m.textarea.InsertString("\n")
+		m.autoExpandInput()
+		return true, m, nil
+	case "esc":
+		if m.paletteOpen {
+			m.closeCommandPalette()
+		} else if m.quickSwitchMode != "" {
+			m.quickSwitchMode = ""
+		} else if m.rewindMode {
+			m.rewindMode = false
+		} else if m.panelMode != "" {
+			m.closePanel()
+		}
+		return true, m, nil
+	case "enter":
+		if m.panelMode != "" {
+			return m.clickPanelItem(m.panelCursor)
+		}
+		return true, m, nil
+	case "tab":
+		m.handleTabComplete()
+		return true, m, nil
+	case "^":
+		m.openBgTasksPanel()
+		return true, m, nil
+	default:
+		return false, m, nil
+	}
 }
 
 // isYInPanelBox checks if a Y coordinate falls within the panel box area.
@@ -141,20 +244,11 @@ func (m *cliModel) isYInPanelBox(y int) bool {
 func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		// AskUser split layout: route wheel based on mouse position
+		// AskUser split layout: wheel always scrolls the askuser panel.
+		// The user controls the main viewport via Shift+↑/↓.
 		if m.panelMode == "askuser" {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "askViewport" {
-				// Scroll the main viewport
-				return false, m, nil // unhandled → viewport.Update will process it
-			}
-			// Panel area (any zone inside the ask panel)
-			if zone != nil {
-				m.askPanelScrollY = max(0, m.askPanelScrollY-3)
-				return true, m, nil
-			}
-			// No zone hit in askuser panel — try viewport
-			return false, m, nil
+			m.askPanelScrollY = max(0, m.askPanelScrollY-3)
+			return true, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
 		if m.panelMode != "" {
@@ -165,15 +259,15 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 		}
 		// Check overlays
 		if m.paletteOpen {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "paletteItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "paletteItem" {
 				m.paletteScrollY = max(0, m.paletteScrollY-1)
 				return true, m, nil
 			}
 		}
 		if m.rewindMode {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "rewindItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "rewindItem" {
 				if m.rewindCursor > 0 {
 					m.rewindCursor--
 				}
@@ -184,20 +278,11 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 		return false, m, nil
 
 	case tea.MouseWheelDown:
-		// AskUser split layout: route wheel based on mouse position
+		// AskUser split layout: wheel always scrolls the askuser panel.
+		// The user controls the main viewport via Shift+↑/↓.
 		if m.panelMode == "askuser" {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "askViewport" {
-				// Scroll the main viewport
-				return false, m, nil // unhandled → viewport.Update will process it
-			}
-			// Panel area
-			if zone != nil {
-				m.askPanelScrollY += 3
-				return true, m, nil
-			}
-			// No zone hit in askuser panel — try viewport
-			return false, m, nil
+			m.askPanelScrollY += 3
+			return true, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
 		if m.panelMode != "" {
@@ -207,16 +292,16 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 			}
 		}
 		if m.paletteOpen {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "paletteItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "paletteItem" {
 				maxScroll := max(0, len(m.paletteFiltered)-paletteMaxVisible)
 				m.paletteScrollY = min(maxScroll, m.paletteScrollY+1)
 				return true, m, nil
 			}
 		}
 		if m.rewindMode {
-			zone := m.mouseZones.findZone(msg.Y)
-			if zone != nil && zone.ID == "rewindItem" {
+			zone, found := m.mouseZones.findZone(msg.Y, msg.X)
+			if found && zone.ID == "rewindItem" {
 				if m.rewindCursor < len(m.rewindItems)-1 {
 					m.rewindCursor++
 				}
@@ -396,8 +481,7 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 	default:
 		// text/number/password/textarea: enter edit mode
 		m.panelEdit = true
-		m.panelEditTA.SetValue(m.panelValues[def.Key])
-		m.panelEditTA.CursorEnd()
+		m.panelEditTA = m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
 		m.panelEditTA.Focus()
 		m.ensureSettingsCursorVisible(3)
 		return true, m, nil
@@ -575,12 +659,23 @@ func (m *cliModel) clickApprovalBtn(idx int) (bool, tea.Model, tea.Cmd) {
 // --- Textarea click handler ---
 
 func (m *cliModel) clickTextarea(x, y int) (bool, tea.Model, tea.Cmd) {
-	// Click on main textarea area — position cursor
-	// Account for InputBox horizontal padding (Padding(0,1))
-	contentX := x - 1
+	// x is terminal column (from msg.X). Convert to textarea-relative column.
+	// xShift is the actual rendered sidebar width (measured dynamically to account
+	// for character width variations like RUNEWIDTH_EASTASIAN).
+	// InputBox content offset = visual width of border-left char + padding-left.
+	// Border char width varies: │ is width=1 normally, width=2 with EASTASIAN.
+	inputBox := m.styles.InputBox
+	borderLeftVisW := lipgloss.Width(lipgloss.RoundedBorder().Left)
+	contentOffset := borderLeftVisW + inputBox.GetPaddingLeft()
+	contentX := x - m.xShift - contentOffset
 	if contentX < 0 {
 		contentX = 0
 	}
+	// y is relative to the InputBox zone top (visual line 0 of the viewport).
+	// ClickAt expects an absolute visual line index in the textarea content,
+	// so add the viewport's scroll offset. Without this, clicking when the
+	// textarea is scrolled down targets the wrong line.
+	y = y + m.textarea.ScrollYOffset()
 	m.textarea.ClickAt(contentX, y)
 	return true, m, nil
 }
@@ -592,6 +687,7 @@ func (m *cliModel) clickPanelTextarea(x, y int) (bool, tea.Model, tea.Cmd) {
 		if contentX < 0 {
 			contentX = 0
 		}
+		y = y + m.panelEditTA.ScrollYOffset()
 		m.panelEditTA.ClickAt(contentX, y)
 	}
 	return true, m, nil
@@ -697,28 +793,86 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	// viewport: layoutViewportHeight() lines (wheel handled by viewport automatically)
 	viewportH := m.layoutViewportHeight()
+
+	// If sidebar is visible, register session item zones and new-session button.
+	showSidebar := m.sidebarShown()
+	// xShift: when sidebar is on the left, all middleBlock content is shifted right
+	// by the actual rendered sidebar width (depends on char widths, e.g. EASTASIAN).
+	xShift := 0
+	if showSidebar {
+		// sidebarContentOffset: border left + padding left (in visual columns).
+		// Border char width varies with EASTASIAN: │ is width=1 normally, width=2 with EASTASIAN.
+		sbStyle := m.styles.SidebarBg
+		sbBorderLeftVisW := lipgloss.Width(lipgloss.RoundedBorder().Left)
+		sidebarContentOffset := sbBorderLeftVisW + sbStyle.GetPaddingLeft()
+		sbVisW := m.sidebarRenderedWidth() // actual visual width (accounts for EASTASIAN etc.)
+		if m.sidebarPosition == "right" {
+			// sidebar on right: middleBlock starts at 0, sidebar starts at chatWidth
+			sbXStart := m.chatWidth()
+			sbXEnd := m.width
+			borderOffset := 1 // RoundedBorder top edge
+			for relY, sessionIdx := range sidebarSessionLines {
+				if sessionIdx >= 0 {
+					zb.addX(relY+borderOffset, sbXStart, sbXEnd, "sidebarSession", sessionIdx)
+				}
+				if relY < len(sidebarDeleteXStart) && sidebarDeleteXStart[relY] >= 0 {
+					zb.addX(relY+borderOffset, sbXStart+sidebarContentOffset+sidebarDeleteXStart[relY], sbXStart+sidebarContentOffset+sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
+				}
+			}
+			if sidebarNewSessionY >= 0 {
+				zb.addX(sidebarNewSessionY+borderOffset, sbXStart, sbXEnd, "sidebarNewSession", 0)
+			}
+		} else {
+			// sidebar on left: middleBlock starts at sbVisW
+			borderOffset := 1 // RoundedBorder top edge
+			for relY, sessionIdx := range sidebarSessionLines {
+				if sessionIdx >= 0 {
+					zb.addX(relY+borderOffset, 0, sbVisW, "sidebarSession", sessionIdx)
+				}
+				if relY < len(sidebarDeleteXStart) && sidebarDeleteXStart[relY] >= 0 {
+					zb.addX(relY+borderOffset, sidebarContentOffset+sidebarDeleteXStart[relY], sidebarContentOffset+sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
+				}
+			}
+			if sidebarNewSessionY >= 0 {
+				zb.addX(sidebarNewSessionY+borderOffset, 0, sbVisW, "sidebarNewSession", 0)
+			}
+			xShift = sbVisW
+		}
+	}
+	m.xShift = xShift
+
 	zb.skip(viewportH)
 
 	// status bar: 1 line
 	zb.skip(1)
 
-	// todo bar: variable
-	todoBar := m.renderTodoBar()
-	if todoBar != "" {
-		zb.skip(strings.Count(todoBar, "\n") + 1)
+	// todo bar: variable (only when sidebar is NOT visible — todo moves to sidebar)
+	if !showSidebar {
+		todoBar := m.renderTodoBar()
+		if todoBar != "" {
+			zb.skip(strings.Count(todoBar, "\n") + 1)
+		}
 	}
 
 	// footer: 0 or 1 line
 	footer := m.renderFooter()
 	footer = m.augmentFooter(footer)
 	if footer != "" {
-		zb.skip(1)
+		// Register footer hint zones (inline clickable regions)
+		for i, h := range footerHints {
+			if h.xStart >= 0 && h.xEnd > h.xStart {
+				zb.addX(0, h.xStart+xShift, h.xEnd+xShift, "footerHint", i)
+			}
+		}
+		zb.y++ // advance past footer line
 	}
 
 	// Input box: border top + textarea height + border bottom
 	zb.skip(1) // top border (or context bar replacement)
 
-	// Textarea content lines — interactive (click to position cursor)
+	// Textarea content lines — interactive (click to position cursor).
+	// Full-row zone (XStart=-1): matches any X at textarea Y level.
+	// Coordinate offset is computed via m.xShift + InputBox border in clickTextarea.
 	taH := m.textarea.Height()
 	if taH < 1 {
 		taH = 1
@@ -884,15 +1038,19 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 	scrollY := m.panelScrollY
 	lineIdx := 0
 
-	// Header + help line
+	// Header + help line — always advance zb.y, only add zone if visible
 	if lineIdx >= scrollY {
 		zb.skip(1)
-	} // else: skip silently
+	} else {
+		zb.skip(1) // scrolled out — must still advance zb.y
+	}
 	lineIdx++
 
 	// Delete confirmation (if shown)
 	if m.panelSessionConfirmDelete {
 		if lineIdx >= scrollY {
+			zb.skip(1)
+		} else {
 			zb.skip(1)
 		}
 		lineIdx++
@@ -901,6 +1059,8 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 	for i := range m.panelSessionItems {
 		if lineIdx >= scrollY {
 			zb.add(1, "sessionsItem", i)
+		} else {
+			zb.skip(1) // scrolled out — must still advance zb.y
 		}
 		lineIdx++
 	}
@@ -1142,31 +1302,67 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 		return
 	}
 
-	// Tab bar: each tab is clickable
+	// Build complete line map matching viewAskUserPanel() output order.
+	// Each line has an optional zone to register at that position.
+	type askLine struct {
+		zoneID string
+		index  int // zone index (tab idx, option idx, or 0 for submit)
+	}
+	var lines []askLine
+
+	// Tab bar (if multiple questions): each tab on its own line
 	if len(m.panelItems) > 1 {
 		for i := range m.panelItems {
-			zb.add(1, "askUserTab", i)
+			lines = append(lines, askLine{zoneID: "askUserTab", index: i})
 		}
+		lines = append(lines, askLine{}) // blank line after tabs
+		lines = append(lines, askLine{}) // another blank line (viewAskUserPanel emits "\n\n")
 	}
 
 	// Current tab content
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
+		// Question text (may wrap to multiple lines — not tracked as zones)
+		// viewAskUserPanel uses hardWrapRunes with qWrapWidth. We approximate.
+		prefix := "❓ " + item.Question
+		qWrapWidth := m.width - 6
+		if qWrapWidth < 20 {
+			qWrapWidth = 20
+		}
+		questionLines := max(1, strings.Count(hardWrapRunes(prefix, qWrapWidth), "\n")+1)
+		for i := 0; i < questionLines; i++ {
+			lines = append(lines, askLine{})
+		}
+		lines = append(lines, askLine{}) // blank line after question
+
 		if len(item.Options) > 0 {
+			lines = append(lines, askLine{}) // blank line before options (viewAskUserPanel emits "\n" before opts)
 			// Option items
 			for i := range item.Options {
-				zb.add(1, "askUserOption", i)
+				lines = append(lines, askLine{zoneID: "askUserOption", index: i})
 			}
 			// "Other" input
-			if item.Other != "" {
-				zb.skip(1) // "Other:" label
+			lines = append(lines, askLine{}) // other line (not tracked as click zone — textinput handles its own input)
+			// Submit button (only on last tab)
+			if m.panelTab == len(m.panelItems)-1 {
+				lines = append(lines, askLine{zoneID: "askUserSubmit", index: 0})
 			}
 		}
-		// Free input area (textarea) — not tracked for mouse
+		// Free-input mode (no options): textarea, not tracked
 	}
 
-	// Submit button
-	zb.add(1, "askUserSubmit", 0)
+	// Apply scroll offset: skip lines before askPanelScrollY, stop at visible height
+	scrollY := m.askPanelScrollY
+	// visible height is hard to know here; just register all remaining lines.
+	// clampAskUserPanelScroll ensures askPanelScrollY is clamped.
+	for ln := scrollY; ln < len(lines); ln++ {
+		l := lines[ln]
+		if l.zoneID != "" {
+			zb.add(1, l.zoneID, l.index)
+		} else {
+			zb.skip(1)
+		}
+	}
 }
 
 // toggleVal toggles a boolean string value.
@@ -1199,4 +1395,36 @@ func (m *cliModel) collectAskUserAnswers() map[string]string {
 		}
 	}
 	return answers
+}
+
+// clickSidebarSession handles clicking a session item in the sidebar.
+func (m *cliModel) clickSidebarSession(index int) (bool, tea.Model, tea.Cmd) {
+	entries := m.sidebarSessionEntries()
+	if index < 0 || index >= len(entries) {
+		return false, m, nil
+	}
+	handled, cmd := m.switchToSession(entries[index])
+	return handled, m, cmd
+}
+
+// clickSidebarNewSession handles clicking the "+ New" button in the sidebar.
+func (m *cliModel) clickSidebarNewSession() (bool, tea.Model, tea.Cmd) {
+	cmd := m.showSessionCreateDialog()
+	return true, m, cmd
+}
+
+// clickSidebarDeleteSession handles clicking the "×" delete button on a session item.
+func (m *cliModel) clickSidebarDeleteSession(index int) (bool, tea.Model, tea.Cmd) {
+	entries := m.sidebarSessionEntries()
+	if index < 0 || index >= len(entries) {
+		return false, m, nil
+	}
+	entry := entries[index]
+	// Don't delete the currently active session
+	if entry.ID == m.chatID {
+		m.showTempStatus("Cannot delete the active session")
+		return true, m, nil
+	}
+	m.deleteLocalSession(entry)
+	return true, m, nil
 }

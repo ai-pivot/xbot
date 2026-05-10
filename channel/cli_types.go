@@ -209,22 +209,28 @@ var cliCommands = []string{
 // --- Unified Unicode icons ---
 // 避免 emoji/ASCII/Unicode 混用，统一视觉风格。
 const (
-	IconCheck      = "✓" // 成功/完成
-	IconCross      = "✗" // 错误/失败
-	IconDot        = "●" // 进行中/活跃
-	IconArrow      = "→" // 方向/进度
-	IconBullet     = "•" // 列表项
-	IconWarning    = "⚠" // 警告
-	IconInfo       = "ℹ" // 信息
-	IconSearch     = "🔍" // 搜索
-	IconRobot      = "🤖" // Agent/SubAgent
-	IconRunnerOn   = "🟢" // Runner 在线
-	IconRunnerWait = "🟡" // Runner 连接中
-	IconUser       = "👤" // 用户切换
-	IconGear       = "⚙" // 设置
-	IconCloudOn    = "☁" // 远程已连接
-	IconCloudOff   = "⊘" // 远程已断开
-	IconCloudWait  = "◌" // 远程重连中
+	IconCheck        = "✓" // 成功/完成
+	IconCross        = "✗" // 错误/失败
+	IconDot          = "◉" // 进行中/活跃
+	IconArrow        = "→" // 方向/进度
+	IconBullet       = "•" // 列表项
+	IconWarning      = "⚠" // 警告
+	IconInfo         = "ℹ" // 信息
+	IconSearch       = "◈" // 搜索
+	IconRobot        = "◆" // Agent/SubAgent
+	IconRunnerOn     = "◉" // Runner 在线
+	IconRunnerWait   = "◎" // Runner 连接中
+	IconUser         = "▣" // 用户切换
+	IconGear         = "⚙" // 设置
+	IconCloudOn      = "☁" // 远程已连接
+	IconCloudOff     = "⊘" // 远程已断开
+	IconCloudWait    = "◌" // 远程重连中
+	IconDiamond      = "◈" // 品牌标记（菱形）
+	IconDiamondSolid = "◆" // 焦点/活跃
+	IconDiamondEmpty = "◇" // 非焦点
+	IconGuideActive  = "┊" // 消息引导线（活跃）
+	IconGuideDim     = "┆" // 消息引导线（暗淡）
+	IconDotLine      = "┈" // 点线分隔符
 )
 
 // §19 长消息折叠阈值
@@ -254,6 +260,7 @@ type CLIProgressPayload struct {
 	ReasoningStreamContent string               // LLM streaming reasoning content (accumulated, for real-time render)
 	IterationHistory       []CLIProgressPayload // completed iteration snapshots (for mid-session reconnect restore)
 	HistoryCompacted       bool                 // true after context compression — CLI should reload messages from session
+	CWD                    string               // agent's current working directory (for worktree indicator)
 }
 
 // CLITokenUsage Token 使用量（对应 agent.TokenUsageSnapshot）
@@ -600,8 +607,13 @@ type CLIChannelConfig struct {
 	AgentInspect         func(roleName, instance string, tailCount int) (string, error)                                                 // 窥探 interactive agent 的最近活动（tail 风格）
 	AgentMessages        func(roleName, instance string) []SessionChatMessage                                                           // 获取 interactive agent 的对话消息
 	ChatCreateFn         func(channelName, senderID, label string) (string, error)                                                      // 创建新 ChatRoom（返回 chatID）
+	SessionsDeleteFn     func(channelName, chatID string) error                                                                         // 删除 session（本地 JSON + 服务端 DB 级联）
+	SessionsListRefresh  func()                                                                                                         // 侧边栏刷新：session 创建/删除后立即调用，确保 sidebar 不显示过期数据
 	SessionsList         func() []SessionPanelEntry                                                                                     // 列出所有 session（main + subagent）
 	GetActiveProgressFn  func(channelName, chatID string) *CLIProgressPayload                                                           // 获取目标 session 的活跃进度（session switch 恢复用）
+	GetTodosFn           func(channelName, chatID string) []CLITodoItem                                                                 // 获取目标 session 的服务端 TODO 列表（session switch 覆盖本地缓存用）
+	GetTokenStateFn      func(channelName, chatID string) (promptTokens, completionTokens int64)                                        // 获取目标 session 的最后 token 状态（session switch 恢复 context bar 用）
+	TrimHistoryFn        func(channelName, chatID string, cutoff time.Time) error                                                       // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
 	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                                   // 获取频道配置（用于 /channel 面板）
 	ChannelConfigSetFn   func(channel string, values map[string]string) error                                                           // 保存频道配置（用于 /channel 面板）
 	CreateWebUserFn      func(username string) (password string, err error)                                                             // 创建 Web 用户（admin only，返回自动生成的密码）
@@ -609,15 +621,20 @@ type CLIChannelConfig struct {
 	DeleteWebUserFn      func(username string) error                                                                                    // 删除 Web 用户（admin only）
 	IsAdminFn            func() bool                                                                                                    // 检查当前用户是否 admin
 	PaletteContributor   PaletteContributor                                                                                             // supplies external commands for command palette
+	SidebarWidthOverride int                                                                                                            // --sidebar-width N (0 = use setting/default)
+	NoSidebar            bool                                                                                                           // --no-sidebar
+	TodoManager          *tools.TodoManager                                                                                             // per-session todo persistence
+	SetCWDFn             func(channelName, chatID, dir string) error                                                                    // 会话切换时初始化 CWD
 }
 
 type AgentPanelEntry struct {
-	Role       string
-	Instance   string
-	Running    bool
-	Background bool
-	Task       string // one-shot subagent task (empty for interactive)
-	Preview    string // latest progress/last reply summary for panel display
+	Role         string
+	Instance     string
+	Running      bool
+	Background   bool
+	Task         string // one-shot subagent task (empty for interactive)
+	Preview      string // latest progress/last reply summary for panel display
+	ParentChatID string // parent session chatID (for session isolation filtering)
 }
 
 // SessionPanelEntry represents a session item in the Sessions panel.
@@ -631,6 +648,7 @@ type SessionPanelEntry struct {
 	ParentID    string // parent chatID (for agent type)
 	Running     bool   // true = currently active
 	Active      bool   // true = currently selected (main session only)
+	Busy        bool   // true = session is processing (agent thinking/tool_exec, etc.)
 	MessageHint string // preview of last message
 }
 
@@ -759,6 +777,39 @@ type LLMSubscriber interface {
 	SwitchSubscription(senderID string, sub *Subscription, chatID string) error
 	SwitchModel(senderID, model string)
 	GetDefaultModel() string
+}
+
+// SendTUIControl sends a TUI session control message through asyncCh
+// (the single channel ALL BubbleTea-bound messages go through).
+// handleSessionControlMsg does zero WS RPCs, so no deadlock with the drain.
+func (c *CLIChannel) SendTUIControl(action string, params map[string]string) (map[string]string, error) {
+	resultCh := make(chan *cliSessionResult, 1)
+	msg := cliSessionControlMsg{
+		action: action,
+		params: params,
+		result: resultCh,
+	}
+	if v, ok := params["chat_id"]; ok {
+		msg.chatID = v
+	}
+
+	// Must go through asyncCh — handleAsyncDrain is the ONLY goroutine
+	// that calls program.Send. Direct prog.Send competes for p.msgs.
+	select {
+	case c.asyncCh <- msg:
+	default:
+		return nil, fmt.Errorf("tui_control: asyncCh full")
+	}
+
+	select {
+	case result := <-resultCh:
+		if !result.ok {
+			return nil, fmt.Errorf("%s", result.err)
+		}
+		return map[string]string{"status": "ok"}, nil
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("tui_control: TUI event loop not responding (10s timeout)")
+	}
 }
 
 // NewCLIChannel 创建 CLI 渠道

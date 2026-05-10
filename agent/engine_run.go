@@ -143,6 +143,7 @@ func (s *runState) initProgress() {
 			Iteration:      0,
 			ActiveTools:    nil,
 			CompletedTools: nil,
+			CWD:            s.cfg.InitialCWD,
 		}
 		// Seed token usage from DB-restored values so the first progress
 		// event carries real data instead of nil. Without this, the CLI
@@ -205,14 +206,19 @@ func (s *runState) initProgress() {
 
 // initDynamicInjector sets up the dynamic context injector for CWD change detection.
 func (s *runState) initDynamicInjector() {
-	s.dynamicInjector = NewDynamicContextInjector(func() string {
-		if s.cfg.Session != nil {
-			if dir := s.cfg.Session.GetCurrentDir(); dir != "" {
-				return dir
+	s.dynamicInjector = NewDynamicContextInjectorWithPeers(
+		func() string {
+			if s.cfg.Session != nil {
+				if dir := s.cfg.Session.GetCurrentDir(); dir != "" {
+					return dir
+				}
 			}
-		}
-		return s.cfg.InitialCWD
-	})
+			return s.cfg.InitialCWD
+		},
+		func() string {
+			return buildPeerContextXML(s.cfg.WorkspaceRoot, s.sessionKey)
+		},
+	)
 }
 
 // tickSession advances the round counter for tool activation cleanup.
@@ -807,13 +813,8 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	// tokens to justify delta estimation.
 	totalTokens, tokenSource := s.tokenTracker.GetPromptTokens()
 	if tokenSource == "no_data" {
-		// No API token data yet (first iteration of a new turn). Run observation
-		// masking with the most conservative keepGroups (12) to prevent the first
-		// LLM call from including massive unmasked tool results from the previous
-		// turn. Without this, the context bar spikes on turn boundaries because
-		// the last iteration's tool results were preserved by keepGroups during
-		// the previous turn and were never masked.
-		s.maybeMaskObservations(ctx, 0, maxTokens)
+		// No API token data means we do not know the actual context pressure.
+		// Do not compact or mask based on local guesses.
 		return
 	}
 
@@ -841,7 +842,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		return
 	}
 
-	// Observation masking (lightweight, no LLM call)
+	// Observation masking (lightweight, no LLM call).
 	s.maybeMaskObservations(ctx, totalTokens, maxTokens)
 }
 
@@ -1139,6 +1140,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// --- Dynamic Context injection (CWD change detection) ---
 	s.dynamicInjector.InjectIfNeeded(s.messages)
 
+	// --- Sync CWD to progress (may change via Cd or worktree cleanup) ---
+	if s.structuredProgress != nil && s.cfg.Session != nil {
+		s.structuredProgress.CWD = s.cfg.Session.GetCurrentDir()
+	}
+
 	// --- System Reminder injection ---
 	if len(response.ToolCalls) > 0 {
 		// Strip previous reminder from earlier messages to avoid accumulation
@@ -1161,7 +1167,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			cwd = s.cfg.Session.GetCurrentDir()
 		}
 
-		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd)
+		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey)
 		if reminder != "" && len(s.messages) > 0 {
 			lastIdx := len(s.messages) - 1
 			s.messages[lastIdx].Content += "\n\n" + reminder

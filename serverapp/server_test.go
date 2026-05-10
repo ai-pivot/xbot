@@ -270,8 +270,9 @@ func (b fakeBackend) Bus() *bus.MessageBus                                      
 func (b fakeBackend) IsRemote() bool                                                     { return false }
 func (b fakeBackend) IsProcessing(_, _ string) bool                                      { return false }
 func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload          { return nil }
+func (b fakeBackend) GetTodos(_, _ string) []channel.CLITodoItem                         { return nil }
 func (b fakeBackend) OnProgress(_ func(*channel.CLIProgressPayload))                     {}
-func (b fakeBackend) OnInjectUserMessage(_ func(string))                                 {}
+func (b fakeBackend) OnInjectUserMessage(_ func(string, string))                         {}
 func (b fakeBackend) OnReconnect(_ func())                                               {}
 func (b fakeBackend) OnConnStateChange(_ func(string))                                   {}
 func (b fakeBackend) OnPluginWidgets(_ func(map[string]string, string))                  {}
@@ -367,8 +368,12 @@ func (b fakeBackend) CallRPC(string, any) (json.RawMessage, error) {
 func (b fakeBackend) Run(_ context.Context) error             { return nil }
 func (b fakeBackend) GetLLMConcurrency(_ string) int          { return 0 }
 func (b fakeBackend) SetLLMConcurrency(_ string, _ int) error { return nil }
-func (b fakeBackend) GetContextMode() string                  { return "" }
-func (b fakeBackend) PluginManager() *plugin.PluginManager    { return nil }
+func (b fakeBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
+}
+func (b fakeBackend) OnTUIControlRequest(_ func(action string, params map[string]string) (map[string]string, error)) {
+}
+func (b fakeBackend) GetContextMode() string               { return "" }
+func (b fakeBackend) PluginManager() *plugin.PluginManager { return nil }
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.T) {
 	cfg := newTestConfig()

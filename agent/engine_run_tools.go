@@ -393,6 +393,9 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 	if s.cfg.MaskStore == nil {
 		return
 	}
+	if totalTokens <= 0 {
+		return
+	}
 	maskingThreshold := float64(maxTokens) * 0.6
 	if float64(totalTokens) <= maskingThreshold {
 		return

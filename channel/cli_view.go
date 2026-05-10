@@ -31,6 +31,51 @@ func (m *cliModel) isCompact() bool { return m.width < 80 }
 // isNarrow returns true when terminal width < 60 — minimal layout.
 func (m *cliModel) isNarrow() bool { return m.width < 60 }
 
+// isWide returns true when terminal width >= 120 — wide layout with extra info.
+func (m *cliModel) isWide() bool { return m.width >= 120 }
+
+// sidebarShown returns true when the sidebar is currently rendered on screen.
+func (m *cliModel) sidebarShown() bool { return m.isWide() && m.sidebarEnabled && m.sidebarVisible }
+
+// sidebarRenderedWidth returns the actual visual width of the sidebar after rendering.
+// This depends on character widths (e.g. RUNEWIDTH_EASTASIAN makes │ width=2),
+// so we measure it dynamically rather than using a hardcoded formula.
+func (m *cliModel) sidebarRenderedWidth() int {
+	sw := m.sidebarWidth
+	if sw < 12 {
+		sw = 12
+	}
+	rendered := m.styles.SidebarBg.Width(sw).Height(1).Render("")
+	line := strings.Split(rendered, "\n")[0]
+	return lipgloss.Width(line)
+}
+
+// chatWidth returns the effective width for the chat viewport, accounting for sidebar.
+func (m *cliModel) chatWidth() int {
+	if m.sidebarShown() {
+		w := m.width - m.sidebarRenderedWidth()
+		if w < 20 {
+			w = 20
+		}
+		return w
+	}
+	return m.width
+}
+
+// cliFormatTokenCount formats a token count with K/M/B suffixes for display.
+func cliFormatTokenCount(n int64) string {
+	if n >= 1_000_000_000 {
+		return fmt.Sprintf("%.1fB", float64(n)/1_000_000_000)
+	}
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
 // renderTitleBar builds the top title bar with gradient wordmark, diagonal fill,
 // mode label, hints, runner status, and user identity indicator.
 // In compact mode (<80 cols), extras (runner, user) are hidden.
@@ -58,6 +103,11 @@ func (m *cliModel) renderTitleBar() string {
 		}
 	}
 
+	// Shift-select hint: shown when user clicks/drags without Shift (likely trying to select text)
+	if !m.shiftHintUntil.IsZero() && time.Now().Before(m.shiftHintUntil) && m.locale.ShiftSelectHint != "" {
+		titleRight = m.locale.ShiftSelectHint + " · " + titleRight
+	}
+
 	// Narrow: hide /help hint to save space
 	if m.isNarrow() {
 		titleRight = ""
@@ -73,7 +123,9 @@ func (m *cliModel) renderTitleBar() string {
 // and manual placeholder overlay (avoids textarea's built-in placeholder
 // which triggers CJK rendering bugs on Windows Terminal).
 func (m *cliModel) renderInputArea(borderColor color.Color) string {
-	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor)
+	// Use chatWidth so input box fits when sidebar is open
+	w := m.chatWidth()
+	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)
 	inputArea := m.textarea.View()
 
 	// Render placeholder manually when textarea is empty.
@@ -123,9 +175,9 @@ func (m *cliModel) renderReadyStatus() string {
 	if m.channelName == "agent" {
 		parts := strings.SplitN(m.chatID, "/", 2)
 		if len(parts) == 2 {
-			readyParts = append(readyParts, fmt.Sprintf("🤖 %s", parts[1]))
+			readyParts = append(readyParts, fmt.Sprintf("%s %s", IconRobot, parts[1]))
 		} else {
-			readyParts = append(readyParts, fmt.Sprintf("🤖 %s", m.chatID))
+			readyParts = append(readyParts, fmt.Sprintf("%s %s", IconRobot, m.chatID))
 		}
 	}
 	// Message count
@@ -150,6 +202,17 @@ func (m *cliModel) renderReadyStatus() string {
 		readyParts = readyParts[:2]
 	}
 	leftParts := strings.Join(readyParts, " · ")
+
+	// Wide screen: append token usage
+	if m.isWide() && m.lastTokenUsage != nil {
+		total := m.lastTokenUsage.PromptTokens + m.lastTokenUsage.CompletionTokens
+		if total > 0 {
+			leftParts += fmt.Sprintf("  ·  tokens: %s", cliFormatTokenCount(m.lastTokenUsage.PromptTokens))
+			if m.lastTokenUsage.CompletionTokens > 0 {
+				leftParts += fmt.Sprintf(" + %s", cliFormatTokenCount(m.lastTokenUsage.CompletionTokens))
+			}
+		}
+	}
 
 	return m.styles.ReadyStatus.Render(leftParts)
 }
@@ -250,9 +313,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	var status string
 	if m.typing || m.progress != nil {
 		thinkingStatusStyle := m.styles.ThinkingSt
-		progressStyle := m.styles.Progress
-		toolStyle := m.styles.Tool
-		status = thinkingStatusStyle.Render(m.renderProgressStatus(progressStyle, toolStyle))
+		status = thinkingStatusStyle.Render(m.renderProgressStatus())
 	} else if m.checkingUpdate {
 		status = m.styles.ThinkingSt.Render(m.locale.CheckingUpdates)
 	} else if completionsHint != "" {
@@ -282,23 +343,339 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	infoBar = m.augmentInfoBar(infoBar)
 
 	// Layout assembly — build progressively so empty sections don't add blank lines.
-	var lines []string
-	lines = append(lines, titleBar, m.viewport.View())
+	showSidebar := m.sidebarShown()
+
+	// Title bar is always full width
+	var topLines []string
+	topLines = append(topLines, titleBar)
+
+	// Middle section: viewport + status + todo + footer + input + infoBar
+	// When sidebar is visible, this whole section is squeezed to chatWidth
+	// and the todo bar moves to the sidebar instead.
+	var middleLines []string
+	middleLines = append(middleLines, m.viewport.View())
 	if status != "" {
-		lines = append(lines, status)
+		middleLines = append(middleLines, status)
 	}
-	todoBar := m.renderTodoBar()
-	if todoBar != "" {
-		lines = append(lines, todoBar)
+	if !showSidebar {
+		todoBar := m.renderTodoBar()
+		if todoBar != "" {
+			middleLines = append(middleLines, todoBar)
+		}
 	}
 	if footer != "" {
-		lines = append(lines, footer)
+		middleLines = append(middleLines, footer)
 	}
-	lines = append(lines, input)
+	middleLines = append(middleLines, input)
 	if infoBar != "" {
-		lines = append(lines, infoBar)
+		middleLines = append(middleLines, infoBar)
 	}
-	return strings.Join(lines, "\n")
+	middleBlock := strings.Join(middleLines, "\n")
+
+	// Sidebar: spans the full height of the middle section (viewport → infoBar)
+	if showSidebar {
+		sidebar := m.renderSidebarForBlock(middleBlock, m.height-len(topLines))
+		if m.sidebarPosition == "right" {
+			return strings.Join(topLines, "\n") + "\n" +
+				lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar)
+		}
+		return strings.Join(topLines, "\n") + "\n" +
+			lipgloss.JoinHorizontal(lipgloss.Top, sidebar, middleBlock)
+	}
+
+	return strings.Join(topLines, "\n") + "\n" + middleBlock
+}
+
+// renderSidebarForBlock renders the sidebar that spans the full height of the
+// middle content block (viewport + status + footer + input).
+// The block string is used only to measure height via line counting.
+func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
+	sw := m.sidebarWidth
+	if sw < 12 {
+		sw = 12
+	}
+
+	// Measure middle block height, capped to actual screen area available
+	h := strings.Count(block, "\n") + 1
+	if h > availableH {
+		h = availableH
+	}
+	if h < 5 {
+		h = 5
+	}
+
+	contentW := sw - m.styles.SidebarBg.GetHorizontalFrameSize() // Width(sw) includes border+padding; content = sw - frame
+
+	// Only render sections that have real content
+	var blocks []string
+
+	// --- Sessions (always shown, clickable) ---
+	blocks = append(blocks, m.renderSidebarSessions(contentW))
+
+	// --- Todo (when sidebar is visible, todo moves here from main view) ---
+	if len(m.todos) > 0 {
+		if st := m.renderSidebarTodo(contentW); st != "" {
+			blocks = append(blocks, st)
+		}
+	}
+
+	// --- Active tasks (only when something is running) ---
+	if m.bgTaskCount > 0 || m.agentCount > 0 {
+		blocks = append(blocks, m.renderSidebarActive())
+	}
+
+	content := strings.Join(blocks, "\n\n")
+
+	return m.styles.SidebarBg.
+		Width(sw).
+		Height(h).
+		Render(content)
+}
+
+func (m *cliModel) renderSidebarSessions(w int) string {
+	// Reset tracking
+	m.sidebarHasBusySessions = false
+	sidebarSessionLines = nil
+	sidebarDeleteXStart = nil
+	sidebarDeleteXEnd = nil
+	sidebarNewSessionY = -1
+
+	entries := m.sidebarSessionEntries()
+	currentIdx := m.sidebarCurrentIdx()
+
+	var b strings.Builder
+	b.WriteString(m.styles.SidebarHeader.Render("Sessions"))
+	sidebarSessionLines = append(sidebarSessionLines, -1) // header line
+	sidebarDeleteXStart = append(sidebarDeleteXStart, -1)
+	sidebarDeleteXEnd = append(sidebarDeleteXEnd, -1)
+
+	if len(entries) == 0 {
+		b.WriteByte('\n')
+		b.WriteString(m.styles.TextMutedSt.Render("  (empty)"))
+		sidebarSessionLines = append(sidebarSessionLines, -1)
+		sidebarDeleteXStart = append(sidebarDeleteXStart, -1)
+		sidebarDeleteXEnd = append(sidebarDeleteXEnd, -1)
+	} else {
+		for i, s := range entries {
+			b.WriteByte('\n')
+			label := s.Label
+			if label == "" {
+				label = s.ID
+			}
+			// SubAgent entries get a 2-space indent to show parent-child hierarchy.
+			indent := ""
+			if s.Type == "agent" {
+				indent = "  "
+			}
+			// Layout: "[indent] ○ label" + padding + " ×" = w columns total.
+			// ALL sessions reserve space for " ×" so that switching active/inactive
+			// never changes the label width (avoids re-truncation and wrapping).
+			deletePart := " ×"
+			deleteVisW := lipgloss.Width(deletePart)
+			indentW := lipgloss.Width(indent)
+			// " ○ " visual width varies with EASTASIAN (○ is width 2 in CJK locales).
+			// Both ○ and ● have the same width, so we use ○ for measurement.
+			iconSepW := lipgloss.Width(" ○ ")
+			maxLabelW := w - indentW - iconSepW - 1 - deleteVisW // indent + " ○ " + label + padding(1) + " ×"
+			if maxLabelW < 1 {
+				maxLabelW = 1
+			}
+			if lipgloss.Width(label) > maxLabelW {
+				label = truncateToWidth(label, maxLabelW)
+			}
+
+			isActive := i == currentIdx
+			// Determine busy state: for current session use m.typing,
+			// for agents use Running, for other main sessions use Busy.
+			isBusy := false
+			if isActive {
+				isBusy = m.typing
+			} else if s.Type == "agent" {
+				isBusy = s.Running
+			} else {
+				isBusy = s.Busy
+			}
+
+			icon := "○"
+			itemStyle := m.styles.SidebarItem
+			if isActive {
+				// Active: always ● — user can see what's happening.
+				icon = "●"
+				itemStyle = m.styles.SidebarActive
+				// Clear unread flag when user is viewing this session.
+				delete(m.unreadSessions, s.ID)
+			} else if isBusy {
+				// Non-active but busy: animated spinner.
+				m.sidebarHasBusySessions = true
+				icon = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
+				itemStyle = m.styles.SidebarBusy
+			} else if m.unreadSessions[s.ID] {
+				// Non-active, idle, but has unread results.
+				icon = "✦"
+				itemStyle = m.styles.SidebarBusy
+			}
+			// Track busy→idle transitions to mark unread.
+			wasBusy := m.lastBusyStates[s.ID]
+			if wasBusy && !isBusy && !isActive {
+				m.unreadSessions[s.ID] = true
+			}
+			m.lastBusyStates[s.ID] = isBusy
+
+			labelPart := indent + " " + icon + " " + label
+			labelVisW := lipgloss.Width(labelPart)
+			padding := w - labelVisW - deleteVisW
+			if padding < 1 {
+				padding = 1
+			}
+
+			// × position (visual X within sidebar content area)
+			deleteX := labelVisW + padding
+
+			b.WriteString(itemStyle.Render(labelPart))
+			b.WriteString(strings.Repeat(" ", padding))
+			if !isActive {
+				b.WriteString(m.styles.TextMutedSt.Render(deletePart))
+				sidebarDeleteXStart = append(sidebarDeleteXStart, deleteX)
+				sidebarDeleteXEnd = append(sidebarDeleteXEnd, deleteX+deleteVisW)
+			} else {
+				// Active: same layout but no × rendered or clickable
+				sidebarDeleteXStart = append(sidebarDeleteXStart, -1)
+				sidebarDeleteXEnd = append(sidebarDeleteXEnd, -1)
+			}
+			sidebarSessionLines = append(sidebarSessionLines, i)
+		}
+	}
+
+	// "+ New" button
+	b.WriteByte('\n')
+	b.WriteByte('\n')
+	sidebarNewSessionY = len(sidebarSessionLines) + 1
+	b.WriteString(m.styles.Accent.Bold(true).Render("  + New"))
+
+	return b.String()
+}
+
+// sidebarSessionEntries returns all session entries.
+// When sessionsListFn is set, it handles everything (main + local dir + subagents).
+// Otherwise, fall back to local dir sessions only.
+func (m *cliModel) sidebarSessionEntries() []SessionPanelEntry {
+	if m.sessionsListFn != nil {
+		return m.sessionsListFn()
+	}
+	return m.listLocalDirSessions()
+}
+
+func (m *cliModel) renderSidebarActive() string {
+	var b strings.Builder
+	b.WriteString(m.styles.SidebarHeader.Render("Active"))
+	b.WriteByte('\n')
+	if m.bgTaskCount > 0 {
+		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf(" ● bg tasks: %d", m.bgTaskCount)))
+	}
+	if m.agentCount > 0 {
+		if m.bgTaskCount > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf(" ● agents: %d", m.agentCount)))
+	}
+	return b.String()
+}
+
+// renderSidebarTodo renders the TODO list inside the sidebar as a compact section.
+// It adapts the renderTodoBar format for the narrower sidebar content width.
+func (m *cliModel) renderSidebarTodo(w int) string {
+	if len(m.todos) == 0 {
+		return ""
+	}
+
+	done := 0
+	total := len(m.todos)
+	for _, item := range m.todos {
+		if item.Done {
+			done++
+		}
+	}
+
+	s := &m.styles
+
+	var sb strings.Builder
+	// Header: "Todo N/M" + progress bar, padded to full width
+	headerLabel := s.SidebarHeader.Render("Todo")
+	fmt.Fprintf(&sb, "%s %d/%d", headerLabel, done, total)
+	sb.WriteString(" ")
+	barWidth := 10
+	filled := 0
+	if total > 0 {
+		filled = done * barWidth / total
+	}
+	sb.WriteString(s.TodoFilled.Render(strings.Repeat("█", filled)))
+	sb.WriteString(s.TodoEmpty.Render(strings.Repeat("░", barWidth-filled)))
+
+	// Items — one per line, single style per line to avoid ANSI boundary
+	// wrapping artifacts in the narrow sidebar. Pattern mirrors
+	// renderSidebarSessions: truncate, pad to width, one style.
+	for _, item := range m.todos {
+		sb.WriteByte('\n')
+		icon := "○"
+		var style lipgloss.Style
+		if item.Done {
+			icon = "✓"
+			style = s.TodoDone
+		} else {
+			style = s.TodoPending
+		}
+
+		prefix := "  " + icon + " "
+		prefixW := lipgloss.Width(prefix)
+		maxTextW := w - prefixW
+		if maxTextW < 2 {
+			maxTextW = 2
+		}
+
+		text := item.Text
+		if lipgloss.Width(text) > maxTextW {
+			text = truncateToWidth(text, maxTextW)
+		}
+
+		line := prefix + text
+		lineW := lipgloss.Width(line)
+		linePadding := w - lineW
+		if linePadding < 0 {
+			linePadding = 0
+		}
+
+		sb.WriteString(style.Render(line))
+		sb.WriteString(strings.Repeat(" ", linePadding))
+	}
+
+	return sb.String()
+}
+
+// sidebarCurrentIdx returns the index of the currently active session.
+func (m *cliModel) sidebarCurrentIdx() int {
+	entries := m.sidebarSessionEntries()
+	// Match by chatID — never fall back to Active flag because it can
+	// be stale (e.g. SessionsList callback hardcodes Active=true for
+	// the main session, which mislabels it as active after switching
+	// to a different session).
+	for i, e := range entries {
+		if e.ID == m.chatID {
+			return i
+		}
+		// For agent sessions, entry ID uses format "agent:role/instance" but
+		// chatID uses format "channel:parentID/role:instance". Match by
+		// constructing the chatID from entry fields (same as panel code).
+		if e.Type == "agent" {
+			agentChatID := e.Channel + ":" + e.ParentID + "/" + e.Role
+			if e.Instance != "" {
+				agentChatID += ":" + e.Instance
+			}
+			if agentChatID == m.chatID {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.
@@ -487,9 +864,8 @@ func (m *cliModel) renderInfoBar() string {
 	hasAgents := m.agentCount > 0
 	hasQueue := len(m.messageQueue) > 0
 
-	if !hasTasks && !hasAgents && !hasQueue {
-		return ""
-	}
+	// Always show workspace indicator (pinned to left).
+	wsIndicator := m.renderWorkspaceIndicator()
 
 	var parts []string
 
@@ -513,12 +889,69 @@ func (m *cliModel) renderInfoBar() string {
 
 	// Join sections with muted separators
 	separator := m.styles.TextMutedSt.Render(" · ")
+	pinnedLeft := wsIndicator
 	content := strings.Join(parts, separator)
+	if pinnedLeft != "" {
+		if content != "" {
+			content = pinnedLeft + separator + content
+		} else {
+			content = pinnedLeft
+		}
+	}
 
 	// Left padding of 2 (matching InputBox visual)
 	return lipgloss.NewStyle().
 		PaddingLeft(2).
 		Render(content)
+}
+
+// renderWorkspaceIndicator returns a workspace status string.
+// "🏠 primary" for main workspace, "🌿 <name>" for worktree sessions.
+func (m *cliModel) renderWorkspaceIndicator() string {
+	cwd := ""
+	if m.progress != nil {
+		cwd = m.progress.CWD
+	}
+
+	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
+		dirName := filepath.Base(cwd)
+		shortName := shortenWorktreeName(dirName)
+		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(shortName))
+	}
+
+	// No progress yet — derive from chatID. Named sessions (chatID
+	// has a session name after ':') are likely worktree sessions.
+	// Default session (chatID == workDir) is always primary.
+	if m.chatID != "" && m.chatID != m.workDir {
+		sessionName := m.chatID
+		if idx := strings.LastIndex(m.chatID, ":"); idx > 0 {
+			sessionName = m.chatID[idx+1:]
+		}
+		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(sessionName))
+	}
+
+	return fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("primary"))
+}
+
+// shortenWorktreeName shortens a worktree directory name for display.
+func shortenWorktreeName(dirName string) string {
+	// dirName format: {role}-{sessionKey_shortened}-{timestamp}
+	// e.g. peer-cli--home-user-src-xbot-worktree-20260509-180133
+	// Show just the role part + short timestamp
+	parts := strings.Split(dirName, "-")
+	if len(parts) > 2 {
+		// Last parts are timestamp: YYYYMMDD-HHMMSS
+		if len(parts) >= 4 {
+			datePart := parts[len(parts)-2] + "-" + parts[len(parts)-1]
+			if len(datePart) == 13 { // YYYYMMDD-HHMMSS
+				return parts[0] + " " + datePart[4:6] + "/" + datePart[6:8] + " " + datePart[9:11] + ":" + datePart[11:13]
+			}
+		}
+	}
+	if len(dirName) > 25 {
+		dirName = dirName[:25] + "…"
+	}
+	return dirName
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.
@@ -616,14 +1049,15 @@ func (m *cliModel) titleText() string {
 			modeLabel = fmt.Sprintf("%s xbot remote", cloud)
 		}
 	}
+	prefix := IconDiamond + " "
 	if m.workDir != "" {
 		abs, err := filepath.Abs(m.workDir)
 		if err == nil {
-			return fmt.Sprintf(" %s [%s]", modeLabel, filepath.Base(abs))
+			return prefix + fmt.Sprintf("%s [%s]", modeLabel, filepath.Base(abs))
 		}
-		return fmt.Sprintf(" %s [%s]", modeLabel, filepath.Base(m.workDir))
+		return prefix + fmt.Sprintf("%s [%s]", modeLabel, filepath.Base(m.workDir))
 	}
-	return " " + modeLabel
+	return prefix + modeLabel
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +1091,7 @@ var xbotLogo = []string{
 // renderSplash 渲染启动画面 — 品牌 logo + 版本号 + 加载动画
 func (m *cliModel) renderSplash() string {
 	// 中心化计算
-	screenW := m.width
+	screenW := m.chatWidth()
 	if screenW < 40 {
 		screenW = 40
 	}
@@ -755,7 +1189,7 @@ func (m *cliModel) renderSplash() string {
 
 // renderSuLoading 渲染 /su 切换用户后的历史加载画面（复用 splash 动画帧）
 func (m *cliModel) renderSuLoading() string {
-	screenW := m.width
+	screenW := m.chatWidth()
 	if screenW < 40 {
 		screenW = 40
 	}
@@ -814,11 +1248,39 @@ func (m *cliModel) renderSuLoading() string {
 // §15 底部快捷键提示条 (Footer Bar)
 // ---------------------------------------------------------------------------
 
+// footerHint represents a clickable hint in the footer bar.
+type footerHint struct {
+	xStart int    // rendered X start position (0-based)
+	xEnd   int    // rendered X end position (exclusive)
+	action string // action to trigger on click
+	key    string // display key (e.g. "Ctrl+k")
+	desc   string // display description (e.g. "命令面板")
+}
+
+// footerHints stores the current frame's footer hint positions for mouse click handling.
+// Populated during renderFooter(), consumed during trackMainLayoutZones().
+var footerHints []footerHint
+
+// sidebarSessionLines tracks Y-offsets of each session item row in the sidebar.
+// Populated during renderSidebarSessions, consumed by trackMainLayoutZones.
+// -1 means "no item" (header, blank line, etc).
+var sidebarSessionLines []int
+
+// sidebarNewSessionY tracks the Y-offset of the "+ New" button in the sidebar.
+// -1 means not rendered.
+var sidebarNewSessionY int
+
+// sidebarDeleteXStart tracks the X position of the "×" delete button for each
+// session line. Indexed same as sidebarSessionLines. -1 means no delete button.
+var sidebarDeleteXStart []int
+
+// sidebarDeleteXEnd is the X end of each "×" delete button.
+var sidebarDeleteXEnd []int
+
 // renderFooter 渲染底部快捷键提示条。
 // 根据当前状态动态显示最相关的快捷键，避免信息过载。
 func (m *cliModel) renderFooter() string {
-	// 收集当前上下文最相关的快捷键提示
-	var hints []string
+	var hints []footerHint
 
 	if m.panelMode != "" {
 		// 面板打开时：显示面板相关快捷键
@@ -829,90 +1291,140 @@ func (m *cliModel) renderFooter() string {
 		switch m.panelMode {
 		case "bgtasks":
 			if m.panelBgViewing {
-				hints = append(hints, m.keyHint("PgUp/PgDn", m.locale.FooterScroll), m.keyHint("Esc", m.locale.FooterBack))
+				hints = append(hints,
+					m.footerHintItem("PgUp/PgDn", m.locale.FooterScroll, "scroll"),
+					m.footerHintItem("Esc", m.locale.FooterBack, "esc"),
+				)
 			} else {
-				hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterLog), m.keyHint("Del", m.locale.FooterKill), m.keyHint("Esc", m.locale.FooterClose))
+				hints = append(hints,
+					m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+					m.footerHintItem("Enter", m.locale.FooterLog, "enter"),
+					m.footerHintItem("Del", m.locale.FooterKill, "delete"),
+					m.footerHintItem("Esc", m.locale.FooterClose, "esc"),
+				)
 			}
 		case "approval":
-			hints = append(hints, m.keyHint("←→", m.locale.FooterNavigate), m.keyHint("y/n", "Quick"), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", "Deny"))
+			hints = append(hints,
+				m.footerHintItem("←→", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("y/n", "Quick", "quick"),
+				m.footerHintItem("Enter", m.locale.FooterSelect, "enter"),
+				m.footerHintItem("Esc", "Deny", "esc"),
+			)
 		case "settings":
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.ctrlKey("s", "Save"), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Ctrl+s", "Save", "ctrl+s"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		case "askuser":
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Space", "Check"), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", m.locale.FooterClose))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Space", "Check", "space"),
+				m.footerHintItem("Enter", m.locale.FooterSelect, "enter"),
+				m.footerHintItem("Esc", m.locale.FooterClose, "esc"),
+			)
 		case "danger":
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", "Confirm"), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Enter", "Confirm", "enter"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		case "runner":
-			hints = append(hints, m.keyHint("↑↓", "Field"), m.keyHint("Enter", "Connect"), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", "Field", "navigate"),
+				m.footerHintItem("Enter", "Connect", "enter"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		default:
-			hints = append(hints, m.keyHint("↑↓", m.locale.FooterNavigate), m.keyHint("Enter", m.locale.FooterSelect), m.keyHint("Esc", escLabel))
+			hints = append(hints,
+				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),
+				m.footerHintItem("Enter", m.locale.FooterSelect, "enter"),
+				m.footerHintItem("Esc", escLabel, "esc"),
+			)
 		}
 	} else if m.typing {
-		// 处理中：显示取消快捷键
-		hints = append(hints, m.ctrlKey("c", m.locale.FooterCancel))
+		hints = append(hints, m.footerHintItem("Ctrl+c", m.locale.FooterCancel, "ctrl+c"))
 	} else {
-		// 就绪态：显示核心快捷键
 		if m.textarea.Value() == "" {
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
+			hints = append(hints, m.footerHintItem("Ctrl+k", m.locale.FooterPalette, "ctrl+k"))
 			if !m.isNarrow() {
-				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+				hints = append(hints, m.footerHintItem("tab", m.locale.FooterComplete, "tab"))
 			}
 			if !m.isCompact() {
-				hints = append(hints, m.ctrlKey("e", m.locale.FooterFold))
+				hints = append(hints, m.footerHintItem("Ctrl+e", m.locale.FooterFold, "ctrl+e"))
 			}
 			if m.subscriptionMgr != nil && !m.isNarrow() {
-				hints = append(hints, m.ctrlKey("p", "Subs"))
+				hints = append(hints, m.footerHintItem("Ctrl+p", "Subs", "ctrl+p"))
 			}
 			if !m.isNarrow() {
-				hints = append(hints, m.ctrlKey("t", "Sessions"))
+				hints = append(hints, m.footerHintItem("Ctrl+t", "Sessions", "ctrl+t"))
 			}
 			if m.bgTaskCount > 0 && !m.isCompact() {
-				hints = append(hints, m.keyHint("^", m.locale.FooterBgTasks))
+				hints = append(hints, m.footerHintItem("^", m.locale.FooterBgTasks, "^"))
 			}
 		} else {
-			hints = append(hints, m.ctrlKey("j", m.locale.FooterNewline))
+			hints = append(hints, m.footerHintItem("Ctrl+j", m.locale.FooterNewline, "ctrl+j"))
 			if !m.isNarrow() {
-				hints = append(hints, m.keyHint("tab", m.locale.FooterComplete))
+				hints = append(hints, m.footerHintItem("tab", m.locale.FooterComplete, "tab"))
 			}
-			hints = append(hints, m.ctrlKey("k", m.locale.FooterPalette))
+			hints = append(hints, m.footerHintItem("Ctrl+k", m.locale.FooterPalette, "ctrl+k"))
 		}
 	}
 
 	if len(hints) == 0 {
+		footerHints = nil
 		return ""
 	}
 
-	// §20 使用缓存样式
 	helpHint := m.styles.TextMutedSt.Render("/help")
 	ellipsis := m.styles.TextMutedSt.Render("…")
 	ellipsisW := lipgloss.Width(ellipsis)
+
 	// Progressively drop hints from the end until the footer fits.
-	// The rightmost "/help" is always preserved; extra hints are trimmed
-	// and replaced with "…" when the terminal is too narrow.
 	for len(hints) > 0 {
-		footerText := strings.Join(hints, "  ")
-		footerText = padBetween(footerText, helpHint, m.width)
-		if lipgloss.Width(footerText) <= m.width {
-			return m.styles.Footer.Width(m.width).Render(footerText)
+		footerText, xPositions := m.renderHintsText(hints)
+		footerText = padBetween(footerText, helpHint, m.chatWidth())
+		if lipgloss.Width(footerText) <= m.chatWidth() {
+			// Store X positions for mouse zone tracking
+			for i := range hints {
+				if i < len(xPositions) {
+					hints[i].xStart = xPositions[i]
+					hints[i].xEnd = xPositions[i+1]
+				}
+			}
+			footerHints = hints
+			return m.styles.Footer.Width(m.chatWidth()).Render(footerText)
 		}
 		hints = hints[:len(hints)-1]
 	}
-	// Even a single hint overflows — show just "… /help"
-	return m.styles.Footer.Width(m.width).Render(
-		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.width)))
+
+	footerHints = nil
+	return m.styles.Footer.Width(m.chatWidth()).Render(
+		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.chatWidth())))
 }
 
-// ctrlKey 渲染 Ctrl+X 快捷键标签（灰色键帽 + 彩色描述）
-func (m *cliModel) ctrlKey(key string, desc string) string {
-	k := m.styles.KeyLabelSt.Render("Ctrl+" + key)
-	d := m.styles.KeyDescSt.Render(desc)
-	return k + " " + d
+// footerHintItem creates a footerHint with display text and action.
+func (m *cliModel) footerHintItem(key, desc, action string) footerHint {
+	return footerHint{key: key, desc: desc, action: action}
 }
 
-// keyHint 渲染普通按键标签
-func (m *cliModel) keyHint(key, desc string) string {
-	k := m.styles.KeyLabelSt.Render(key)
-	d := m.styles.KeyDescSt.Render(desc)
-	return k + " " + d
+// renderHintsText renders all hints into a single string and tracks X positions.
+func (m *cliModel) renderHintsText(hints []footerHint) (string, []int) {
+	var sb strings.Builder
+	positions := make([]int, 0, len(hints)+1)
+	positions = append(positions, 0) // start at X=0
+
+	for i, h := range hints {
+		rendered := m.styles.FooterHintLabel.Render(h.key) + " " + m.styles.KeyDescSt.Render(h.desc)
+		if i > 0 {
+			sb.WriteString("  ")
+		}
+		startX := lipgloss.Width(sb.String())
+		positions = append(positions, startX+lipgloss.Width(rendered))
+		sb.WriteString(rendered)
+	}
+
+	return sb.String(), positions
 }
 
 // padBetween 在左右文本之间填充空格，使总宽度达到 width
@@ -925,11 +1437,8 @@ func padBetween(left, right string, width int) string {
 }
 
 // renderProgressStatus renders a compact one-line status for the status bar.
-func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style) string {
-	s := &m.styles // §20
+func (m *cliModel) renderProgressStatus() string {
 	var sb strings.Builder
-	sb.WriteString(s.Progress.Render(m.ticker.view()))
-	sb.WriteString(" ")
 
 	if m.progress != nil {
 		fmt.Fprintf(&sb, "#%d", m.progress.Iteration)
@@ -961,29 +1470,28 @@ func (m *cliModel) renderProgressStatus(progressStyle, toolStyle lipgloss.Style)
 	return sb.String()
 }
 
-// Pre-created styles for context bar (avoid per-frame allocation).
-var ctxBarStyles = struct {
+// ctxBarStyles holds theme-derived styles for the context usage progress bar.
+// Rebuilt on each renderContextTopBorder call so theme switches take effect immediately.
+type ctxBarStyles struct {
 	fillGreen  lipgloss.Style
 	fillYellow lipgloss.Style
 	fillRed    lipgloss.Style
 	dim        lipgloss.Style
 	empty      lipgloss.Style
 	threshold  lipgloss.Style
-	label      lipgloss.Style
-	pctGreen   lipgloss.Style
-	pctYellow  lipgloss.Style
-	pctRed     lipgloss.Style
-}{
-	fillGreen:  lipgloss.NewStyle().Foreground(lipgloss.Color("#6bcb77")),
-	fillYellow: lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd93d")),
-	fillRed:    lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")),
-	dim:        lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")).Faint(true),
-	empty:      lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")),
-	threshold:  lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Bold(true),
-	label:      lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")),
-	pctGreen:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6bcb77")),
-	pctYellow:  lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd93d")),
-	pctRed:     lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")),
+}
+
+func newCtxBarStyles() ctxBarStyles {
+	c := func(s string) color.Color { return lipgloss.Color(s) }
+	t := currentTheme
+	return ctxBarStyles{
+		fillGreen:  lipgloss.NewStyle().Foreground(c(t.Success)),
+		fillYellow: lipgloss.NewStyle().Foreground(c(t.Warning)),
+		fillRed:    lipgloss.NewStyle().Foreground(c(t.Error)),
+		dim:        lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)).Faint(true),
+		empty:      lipgloss.NewStyle().Foreground(c(t.BarEmpty)),
+		threshold:  lipgloss.NewStyle().Foreground(c(t.Error)).Bold(true),
+	}
 }
 
 // renderContextTopBorder replaces the input box top border with a context
@@ -992,15 +1500,27 @@ var ctxBarStyles = struct {
 //
 //	─ filled (color-coded) · ─ free (dim) · ┊ threshold (red bold) · ╌ output reservation (dashed dim)
 //
-// Returns empty string when no token data is available (keep original border).
+// Returns empty string only when cachedMaxContextTokens is unavailable (<=0),
+// meaning the token budget cannot be determined. Once the budget is known,
+// the bar ALWAYS renders — as a filled bar when token data is available,
+// or as an empty bar when lastTokenUsage is nil (e.g. before first LLM call).
+// This prevents the jarring "bar disappears" flash that happened when
+// lastTokenUsage was temporarily nil due to progressCh coalescing.
 func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox string) string {
-	if m.lastTokenUsage == nil || m.cachedMaxContextTokens <= 0 {
+	maxTokens := int64(m.cachedMaxContextTokens)
+	if maxTokens <= 0 {
 		return ""
 	}
-	promptTokens := m.lastTokenUsage.PromptTokens
-	maxTokens := int64(m.cachedMaxContextTokens)
-	if promptTokens <= 0 || maxTokens <= 0 {
-		return ""
+	var promptTokens int64
+	if m.lastTokenUsage != nil {
+		promptTokens = m.lastTokenUsage.PromptTokens
+	}
+	// Don't bail on promptTokens==0 — show an empty bar instead of flashing
+	// back to the plain border. lastTokenUsage is only cleared by explicit
+	// delete-record RPCs (/clear, /cancel, session reset); during normal
+	// operation a zero prompt count just means no LLM call has completed yet.
+	if promptTokens < 0 {
+		promptTokens = 0
 	}
 
 	firstLine, _, found := strings.Cut(renderedBox, "\n")
@@ -1056,14 +1576,15 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 	}
 
 	// Color selection
+	bs := newCtxBarStyles()
 	var fillSty lipgloss.Style
 	switch {
 	case pct > 0.8:
-		fillSty = ctxBarStyles.fillRed
+		fillSty = bs.fillRed
 	case pct > 0.5:
-		fillSty = ctxBarStyles.fillYellow
+		fillSty = bs.fillYellow
 	default:
-		fillSty = ctxBarStyles.fillGreen
+		fillSty = bs.fillGreen
 	}
 
 	cornerSty := lipgloss.NewStyle().Foreground(borderColor)
@@ -1090,20 +1611,20 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 			before := compressPos - emptyStart
 			after := emptyEnd - compressPos - 1
 			if before > 0 {
-				sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", before)))
+				sb.WriteString(bs.empty.Render(strings.Repeat("─", before)))
 			}
-			sb.WriteString(ctxBarStyles.threshold.Render("┊"))
+			sb.WriteString(bs.threshold.Render("┊"))
 			if after > 0 {
-				sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", after)))
+				sb.WriteString(bs.empty.Render(strings.Repeat("─", after)))
 			}
 		} else {
-			sb.WriteString(ctxBarStyles.empty.Render(strings.Repeat("─", emptyEnd-emptyStart)))
+			sb.WriteString(bs.empty.Render(strings.Repeat("─", emptyEnd-emptyStart)))
 		}
 	}
 
 	// 3. Output reservation — dashed thin line
 	if innerW-outputStart > 0 {
-		sb.WriteString(ctxBarStyles.dim.Render(strings.Repeat("╌", innerW-outputStart)))
+		sb.WriteString(bs.dim.Render(strings.Repeat("╌", innerW-outputStart)))
 	}
 
 	sb.WriteString(cornerSty.Render("╮"))

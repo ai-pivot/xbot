@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"xbot/internal/textarea"
@@ -82,12 +83,13 @@ func (m *cliModel) popPanel() bool {
 
 // panelAgentEntry represents an interactive sub-agent session in the unified panel.
 type panelAgentEntry struct {
-	Role       string // role name (e.g. "explore")
-	Instance   string // instance ID
-	Running    bool   // true = currently executing
-	Background bool   // true = background mode
-	Task       string // one-shot subagent task description
-	Preview    string // latest progress/last reply summary
+	Role         string // role name (e.g. "explore")
+	Instance     string // instance ID
+	Running      bool   // true = currently executing
+	Background   bool   // true = background mode
+	Task         string // one-shot subagent task description
+	Preview      string // latest progress/last reply summary
+	ParentChatID string // parent session chatID for session isolation
 }
 
 // renderSelLine renders a settings panel selected row left-aligned to the given width.
@@ -148,8 +150,8 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 				def.Type = SettingTypeCombo
 			}
 		}
-		// Global-scoped settings require admin access — mark read-only for normal users.
-		if !def.ReadOnly && IsGlobalScopedSettingKey(def.Key) {
+		// Global-scoped settings require admin access — mark read-only for non-admin users.
+		if !def.ReadOnly && IsGlobalScopedSettingKey(def.Key) && (m.isAdminFn == nil || !m.isAdminFn()) {
 			def.ReadOnly = true
 		}
 	}
@@ -546,15 +548,22 @@ func (m *cliModel) applyRewind() {
 	// Must be synchronous — Ctrl+Z calls os.Exit(0) which kills all goroutines.
 	// If we used async (go func()), the DELETE might not complete before exit,
 	// leaving the DB in an inconsistent state with modernc.org/sqlite WAL.
-	if m.trimHistoryFn == nil {
-		log.Warn("Rewind: trimHistoryFn is nil, DB messages will NOT be truncated")
-	} else if cutoff.IsZero() {
-		log.Warn("Rewind: cutoff timestamp is zero, DB messages will NOT be truncated")
-	} else {
-		log.WithFields(log.Fields{"cutIdx": cutIdx, "cutoff": cutoff, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages")
+	if m.channel != nil && m.channel.config.TrimHistoryFn != nil {
+		// Dynamic callback with current session's channel+chatID — works across
+		// session switches unlike the static trimHistoryFn which was captured
+		// at TUI startup with the initial chatID.
+		if err := m.channel.config.TrimHistoryFn(m.channelName, m.chatID, cutoff); err != nil {
+			log.WithError(err).Warn("Failed to trim session history after rewind")
+		}
+	} else if m.trimHistoryFn != nil {
+		log.WithFields(log.Fields{"cutIdx": cutIdx, "cutoff": cutoff, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages (legacy callback)")
 		if err := m.trimHistoryFn(cutoff); err != nil {
 			log.WithError(err).Warn("Failed to trim session history after rewind")
 		}
+	} else if cutoff.IsZero() {
+		log.Warn("Rewind: cutoff timestamp is zero, DB messages will NOT be truncated")
+	} else {
+		log.Warn("Rewind: trimHistoryFn is nil, DB messages will NOT be truncated")
 	}
 
 	// Reset cached token counts so maybeCompress doesn't use stale values
@@ -602,12 +611,23 @@ func (m *cliModel) openBgTasksPanel() {
 	// Fetch tasks — use callback (works for both local and remote mode)
 	m.panelBgTasks = m.listBgTasks()
 
+	// Fetch agents and filter by current session
+	m.panelBgAgents = nil
+	if m.agentListFn != nil {
+		allAgents := m.agentListFn()
+		for _, ag := range allAgents {
+			if ag.ParentChatID == "" || ag.ParentChatID == m.chatID {
+				m.panelBgAgents = append(m.panelBgAgents, ag)
+			}
+		}
+	}
+
 	m.panelBgCursor = 0
 	m.panelBgViewing = false
 	m.panelScrollY = 0
 	m.panelBgLogLines = nil
 	// Clamp cursor
-	totalItems := len(m.panelBgTasks)
+	totalItems := len(m.panelBgTasks) + len(m.panelBgAgents)
 	if totalItems == 0 {
 		m.panelBgCursor = -1
 	} else if m.panelBgCursor >= totalItems {
@@ -881,15 +901,13 @@ func (m *cliModel) openSessionsPanel() {
 	m.panelMode = "sessions"
 	m.relayoutViewport()
 
-	// Server sessions (from backend)
+	// sessionsListFn now handles everything (main + local dir + subagents).
+	// Only fall back to local dir sessions when there's no callback.
 	if m.sessionsListFn != nil {
 		m.panelSessionItems = m.sessionsListFn()
 	} else {
-		m.panelSessionItems = nil
+		m.panelSessionItems = m.listLocalDirSessions()
 	}
-	// Also include local directory sessions (same-directory multi-session)
-	localSessions := m.listLocalDirSessions()
-	m.panelSessionItems = append(m.panelSessionItems, localSessions...)
 	// Position cursor on the currently active session
 	m.panelSessionCursor = 0
 	for i, entry := range m.panelSessionItems {
@@ -959,18 +977,30 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.saveCurrentSession() // save current session state
 					m.chatID = entry.ID
 					m.channelName = entry.Channel
+					// Update workdir to match the session's workdir.
+					workDir, _ := ParseChatID(entry.ID)
+					if workDir != "" {
+						m.workDir = workDir
+						if m.channel != nil && m.channel.config.SetCWDFn != nil {
+							_ = m.channel.config.SetCWDFn(entry.Channel, entry.ID, workDir)
+						}
+					}
+					// Update background task session key for isolation
+					if m.channel != nil {
+						m.channel.bgSessionKey = "cli:" + entry.ID
+						m.channel.updateBgTaskCountFn()
+					}
 					m.messages = nil
 					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
+					m.todos = nil // clear stale todos from previous session
+					m.todosDoneCleared = false
 					m.restoreSession() // restore target session state (or reset to idle)
-					// Close panel first
+					cmds := m.postRestoreSessionSetup()
 					m.panelMode = ""
 					m.panelSessionItems = nil
-					m.relayoutViewport()
-					if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
-						m.suLoading = true
-						m.splashFrame = 0
-						return true, m, tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+					if len(cmds) > 0 {
+						return true, m, tea.Batch(cmds...)
 					}
 					m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", entry.Label), feedbackInfo)
 				} else {
@@ -990,18 +1020,30 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.saveCurrentSession() // save current session state
 					m.chatID = agentChatID
 					m.channelName = "agent"
+					// Update workdir to match the parent session's workdir.
+					workDir, _ := ParseChatID(entry.ParentID)
+					if workDir != "" {
+						m.workDir = workDir
+						if m.channel != nil && m.channel.config.SetCWDFn != nil {
+							_ = m.channel.config.SetCWDFn(entry.Channel, entry.ParentID, workDir)
+						}
+					}
+					// Update background task session key for isolation
+					if m.channel != nil {
+						m.channel.bgSessionKey = "agent:" + agentChatID
+						m.channel.updateBgTaskCountFn()
+					}
 					m.messages = nil
 					m.lastTokenUsage = nil // clear stale token bar on session switch
 					m.invalidateAllCache(false)
+					m.todos = nil // clear stale todos from previous session
+					m.todosDoneCleared = false
 					m.restoreSession() // restore target session state (or reset to idle)
-					// Close panel first
+					cmds := m.postRestoreSessionSetup()
 					m.panelMode = ""
 					m.panelSessionItems = nil
-					m.relayoutViewport()
-					if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
-						m.suLoading = true
-						m.splashFrame = 0
-						return true, m, tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+					if len(cmds) > 0 {
+						return true, m, tea.Batch(cmds...)
 					}
 					m.showSystemMsg(fmt.Sprintf("✅ 已切换到 agent 会话: %s/%s", entry.Role, entry.Instance), feedbackInfo)
 				} else {
@@ -1141,11 +1183,25 @@ func (m *cliModel) viewSessionsList() string {
 		var icon, line string
 		switch entry.Type {
 		case "main":
-			activeMark := ""
-			if entry.Active {
-				activeMark = " ✓"
+			mainBusy := false
+			if !entry.Active {
+				mainBusy = entry.Busy
 			}
-			icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#10b981")).Render("●")
+			iconChar := "●"
+			iconColor := lipgloss.Color("#10b981")
+			if entry.Active {
+				// Active: ● — user sees it, no extra mark needed.
+			} else if mainBusy {
+				// Non-active busy: spinner.
+				iconChar = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
+			} else if m.unreadSessions[entry.ID] {
+				// Non-active idle, but has unread results.
+				iconChar = "✦"
+				iconColor = lipgloss.Color("#f59e0b")
+			} else {
+				iconChar = "○"
+			}
+			icon = lipgloss.NewStyle().Foreground(iconColor).Render(iconChar)
 			label := entry.Label
 			if label == "" {
 				label = entry.ID
@@ -1155,14 +1211,19 @@ func (m *cliModel) viewSessionsList() string {
 				labelW = 10
 			}
 			label = truncateToWidth(label, labelW)
-			line = fmt.Sprintf("%s %s  %s%s", prefix, icon, label, activeMark)
+			line = fmt.Sprintf("%s %s  %s", prefix, icon, label)
 		case "agent":
 			roleColor := lipgloss.Color(RoleColor(entry.Role))
 			statusIcon := "●"
 			statusStyle := lipgloss.NewStyle().Foreground(roleColor)
 			if !entry.Running {
-				statusIcon = "◦"
-				statusStyle = statusStyle.Faint(true)
+				if m.unreadSessions[entry.ID] {
+					statusIcon = "✦"
+					statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f59e0b"))
+				} else {
+					statusIcon = "◦"
+					statusStyle = statusStyle.Faint(true)
+				}
 			}
 			label := fmt.Sprintf("🤖 %s/%s", entry.Role, entry.Instance)
 			if entry.MessageHint != "" {
@@ -1183,6 +1244,9 @@ func (m *cliModel) viewSessionsList() string {
 				labelStyle = labelStyle.Faint(true)
 			}
 			line = fmt.Sprintf("%s %s  %s", prefix, statusStyle.Render(statusIcon), labelStyle.Render(label))
+			if entry.Running {
+				line += " ⏳"
+			}
 		default:
 			line = fmt.Sprintf("%s   %s", prefix, entry.Label)
 		}
@@ -2308,11 +2372,22 @@ func (m *cliModel) viewAskUserPanel() string {
 
 			// Other input (single-line)
 			otherLabel := m.locale.PanelOther
+			var prefix string
 			if cursor == numOpts {
-				sb.WriteString(cursorStyle.Render("▸ ") + otherLabel)
+				prefix = cursorStyle.Render("▸ ")
 			} else {
-				sb.WriteString("  " + otherLabel)
+				prefix = "  "
 			}
+			sb.WriteString(prefix + otherLabel)
+			// Resize textinput to fit within panel content width (qWrapWidth)
+			// minus label width and scrollbar column. Without this, textinput
+			// View() can exceed contentWidth causing applyScrollbar's scrollbar
+			// to wrap to next line — symptom: "▐" rendered below the "其他" row.
+			tiWidth := qWrapWidth - lipgloss.Width(prefix+otherLabel) - 1
+			if tiWidth < 10 {
+				tiWidth = 10
+			}
+			m.panelOtherTI.SetWidth(tiWidth)
 			sb.WriteString(m.panelOtherTI.View())
 			sb.WriteString("\n")
 
@@ -2432,6 +2507,12 @@ func (m *cliModel) applyQuickSwitch() {
 			{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: ""},
+			{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: "0"},
+			{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: "", Options: []SettingOption{
+				{Label: "Auto (default)", Value: ""},
+				{Label: "Enabled", Value: "enabled"},
+				{Label: "Disabled", Value: "disabled"},
+			}},
 		}
 		// Inject model list into combo for model field
 		if m.channel.modelLister != nil {
@@ -2452,14 +2533,17 @@ func (m *cliModel) applyQuickSwitch() {
 			if name == "" {
 				name = "unnamed"
 			}
+			maxOut, _ := strconv.Atoi(values["sub_max_output_tokens"])
 			sub := &Subscription{
-				ID:       fmt.Sprintf("sub_%d", time.Now().UnixNano()),
-				Name:     name,
-				Provider: values["sub_provider"],
-				BaseURL:  values["sub_base_url"],
-				APIKey:   values["sub_api_key"],
-				Model:    values["sub_model"],
-				Active:   false,
+				ID:              fmt.Sprintf("sub_%d", time.Now().UnixNano()),
+				Name:            name,
+				Provider:        values["sub_provider"],
+				BaseURL:         values["sub_base_url"],
+				APIKey:          values["sub_api_key"],
+				Model:           values["sub_model"],
+				MaxOutputTokens: maxOut,
+				ThinkingMode:    values["sub_thinking_mode"],
+				Active:          false,
 			}
 			if err := m.subscriptionMgr.Add(sub); err != nil {
 				m.showTempStatus(fmt.Sprintf("Failed to add subscription: %v", err))
@@ -2556,6 +2640,12 @@ func (m *cliModel) editQuickSwitchEntry() {
 		{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeCombo, DefaultValue: target.Model},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: target.BaseURL},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: target.APIKey},
+		{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxOutputTokens)},
+		{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: target.ThinkingMode, Options: []SettingOption{
+			{Label: "Auto (default)", Value: ""},
+			{Label: "Enabled", Value: "enabled"},
+			{Label: "Disabled", Value: "disabled"},
+		}},
 	}
 	// Inject model list into combo for model field
 	if m.channel.modelLister != nil {
@@ -2569,11 +2659,13 @@ func (m *cliModel) editQuickSwitchEntry() {
 		}
 	}
 	editValues := map[string]string{
-		"sub_name":     target.Name,
-		"sub_provider": target.Provider,
-		"sub_model":    target.Model,
-		"sub_base_url": target.BaseURL,
-		"sub_api_key":  target.APIKey,
+		"sub_name":              target.Name,
+		"sub_provider":          target.Provider,
+		"sub_model":             target.Model,
+		"sub_base_url":          target.BaseURL,
+		"sub_api_key":           target.APIKey,
+		"sub_max_output_tokens": strconv.Itoa(target.MaxOutputTokens),
+		"sub_thinking_mode":     target.ThinkingMode,
 	}
 	m.quickSwitchMode = "" // close overlay while editing
 	m.openSettingsPanel(editSchema, editValues, func(values map[string]string) {
@@ -2585,14 +2677,17 @@ func (m *cliModel) editQuickSwitchEntry() {
 		if isMaskedAPIKey(apiKey) {
 			apiKey = target.APIKey
 		}
+		maxOut, _ := strconv.Atoi(values["sub_max_output_tokens"])
 		updated := &Subscription{
-			ID:       target.ID,
-			Name:     values["sub_name"],
-			Provider: values["sub_provider"],
-			Model:    values["sub_model"],
-			BaseURL:  values["sub_base_url"],
-			APIKey:   apiKey,
-			Active:   target.Active,
+			ID:              target.ID,
+			Name:            values["sub_name"],
+			Provider:        values["sub_provider"],
+			Model:           values["sub_model"],
+			BaseURL:         values["sub_base_url"],
+			APIKey:          apiKey,
+			MaxOutputTokens: maxOut,
+			ThinkingMode:    values["sub_thinking_mode"],
+			Active:          target.Active,
 		}
 		if err := m.subscriptionMgr.Update(target.ID, updated); err != nil {
 			m.showTempStatus(fmt.Sprintf("Failed to update: %v", err))
@@ -3278,10 +3373,36 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.saveCurrentSession()
 		m.chatID = chatID
 		m.sessionName = name
+		m.channelName = "cli"
+		// Update workdir and persist CWD for the new session (same as switchToSession)
+		workDir, _ := ParseChatID(chatID)
+		if workDir != "" {
+			m.workDir = workDir
+			if m.channel != nil && m.channel.config.SetCWDFn != nil {
+				_ = m.channel.config.SetCWDFn("cli", chatID, workDir)
+			}
+		}
 		m.messages = nil
 		m.lastTokenUsage = nil
 		m.invalidateAllCache(false)
+		m.todos = nil // clear stale todos from previous session
+		m.todosDoneCleared = false
 		m.restoreSession()
+		// Ensure clean state — restored session may have stale typing=true
+		m.typing = false
+		m.inputReady = true
+		m.progress = nil
+		m.iterationHistory = nil
+		m.invalidateProgressHistoryCache()
+		m.messageQueue = nil
+		m.queueEditing = false
+		// Refresh sessions list cache so sidebar/sessions panel shows the new session
+		if m.sessionsListFn != nil {
+			m.panelSessionItems = m.sessionsListFn()
+		}
+		if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+			m.channel.config.SessionsListRefresh()
+		}
 		m.showTempStatus(fmt.Sprintf("Created session: %s", name))
 	})
 	return nil
@@ -3289,13 +3410,25 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 
 // deleteLocalSession deletes the selected session and switches to default if active.
 func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
+	// 1. Remove from local JSON file (for local dir sessions).
 	ds, err := loadDirSessions(m.workDir)
 	if err != nil {
 		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
 		return
 	}
-	if err := ds.removeSession(entry.Label); err != nil {
-		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+	localRemoved := false
+	if err := ds.removeSession(entry.Label); err == nil {
+		localRemoved = true
+	}
+	// 2. Notify backend to clean up DB (tenant, messages, etc.).
+	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
+		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
+			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session cleanup failed")
+		}
+	}
+	// 3. If backend removed but local JSON didn't have it, still show success.
+	if !localRemoved && (m.channel == nil || m.channel.config.SessionsDeleteFn == nil) {
+		m.showTempStatus(fmt.Sprintf("Not found: %s", entry.Label))
 		return
 	}
 	// If we deleted the active session, switch to default
@@ -3303,12 +3436,110 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.saveCurrentSession()
 		m.chatID = m.defaultChatID
 		m.sessionName = defaultSessionName
+		// Update workdir and persist CWD for the default session
+		m.workDir = m.defaultChatID
+		if m.channel != nil && m.channel.config.SetCWDFn != nil {
+			_ = m.channel.config.SetCWDFn("cli", m.defaultChatID, m.defaultChatID)
+		}
 		m.messages = nil
 		m.lastTokenUsage = nil
 		m.invalidateAllCache(false)
+		m.todos = nil // clear stale todos from deleted session
+		m.todosDoneCleared = false
 		m.restoreSession()
 	}
+	// Refresh sessions list so sidebar/sessions panel reflects the deletion
+	if m.sessionsListFn != nil {
+		m.panelSessionItems = m.sessionsListFn()
+	}
+	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+		m.channel.config.SessionsListRefresh()
+	}
 	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
-	// Refresh sessions panel
-	m.openSessionsPanel()
+}
+
+// switchToSession switches to the given session entry directly (used by sidebar click).
+// Extracted from the sessions panel Enter key handler for reuse.
+func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
+	switch entry.Type {
+	case "main":
+		if entry.ID != m.chatID {
+			// Clear unread flag — user is now viewing this session.
+			delete(m.unreadSessions, entry.ID)
+			// Close AskUser panel if it belongs to a different session
+			if m.panelMode == "askuser" && m.askUserSession != entry.ID {
+				m.panelMode = ""
+				m.panelItems = nil
+				m.relayoutViewport()
+			}
+			m.saveCurrentSession()
+			m.chatID = entry.ID
+			m.channelName = entry.Channel
+			// Update workdir to match the session's workdir.
+			workDir, _ := ParseChatID(entry.ID)
+			if workDir != "" {
+				m.workDir = workDir
+				if m.channel != nil && m.channel.config.SetCWDFn != nil {
+					_ = m.channel.config.SetCWDFn(entry.Channel, entry.ID, workDir)
+				}
+			}
+			// Update background task session key for isolation
+			if m.channel != nil {
+				m.channel.bgSessionKey = "cli:" + entry.ID
+				m.channel.updateBgTaskCountFn()
+			}
+			m.messages = nil
+			m.lastTokenUsage = nil
+			m.invalidateAllCache(false)
+			m.todos = nil // clear stale todos from previous session
+			m.todosDoneCleared = false
+			m.restoreSession()
+			cmds := m.postRestoreSessionSetup()
+			if len(cmds) > 0 {
+				return true, tea.Batch(cmds...)
+			}
+		}
+	case "agent":
+		agentChatID := entry.Channel + ":" + entry.ParentID + "/" + entry.Role
+		if entry.Instance != "" {
+			agentChatID += ":" + entry.Instance
+		}
+		if agentChatID != m.chatID {
+			// Clear unread flag — user is now viewing this session.
+			delete(m.unreadSessions, entry.ID)
+			// Close AskUser panel if it doesn't belong to the new agent session
+			if m.panelMode == "askuser" && m.askUserSession != agentChatID {
+				m.panelMode = ""
+				m.panelItems = nil
+				m.relayoutViewport()
+			}
+			m.saveCurrentSession()
+			m.chatID = agentChatID
+			m.channelName = "agent"
+			// Update workdir to match the parent session's workdir.
+			workDir, _ := ParseChatID(entry.ParentID)
+			if workDir != "" {
+				m.workDir = workDir
+				if m.channel != nil && m.channel.config.SetCWDFn != nil {
+					_ = m.channel.config.SetCWDFn(entry.Channel, entry.ParentID, workDir)
+				}
+			}
+			// Update background task session key for isolation
+			if m.channel != nil {
+				m.channel.bgSessionKey = "agent:" + agentChatID
+				m.channel.updateBgTaskCountFn()
+			}
+			m.messages = nil
+			m.lastTokenUsage = nil
+			m.invalidateAllCache(false)
+			m.todos = nil // clear stale todos from previous session
+			m.todosDoneCleared = false
+			m.restoreSession()
+			cmds := m.postRestoreSessionSetup()
+			if len(cmds) > 0 {
+				return true, tea.Batch(cmds...)
+			}
+		}
+	}
+	return true, nil
 }

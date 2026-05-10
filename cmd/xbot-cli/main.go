@@ -59,6 +59,53 @@ const cliSenderID = "cli_user"
 // refreshRemoteValuesCache fetches current settings from the remote server
 // and updates the local cache. Called from a background goroutine — never from
 // the BubbleTea Update loop (which would freeze the TUI on WS disconnect).
+// configLayoutValue reads a single layout setting from the local config.json.
+// Used as fallback when RPC fails on first refreshRemoteValuesCache call.
+// saveLayoutToConfig writes layout settings (sidebar_width, theme, etc.)
+// directly to config.json. These keys are not in the Config struct and
+// are preserved by SaveToFile's deep merge, but we must write them explicitly.
+func saveLayoutToConfig(vals map[string]string) {
+	path := config.ConfigFilePath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	for k, v := range vals {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0644)
+}
+
+func configLayoutValue(key string) string {
+	raw, err := os.ReadFile(config.ConfigFilePath())
+	if err != nil {
+		return ""
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		if n, ok := v.(float64); ok {
+			return strconv.Itoa(int(n))
+		}
+	}
+	return ""
+}
+
 func (app *cliApp) refreshRemoteValuesCache() {
 	if app.backend == nil {
 		return
@@ -149,6 +196,21 @@ func (app *cliApp) refreshRemoteValuesCache() {
 	app.valuesCache = vals
 	app.valuesCacheMu.Unlock()
 
+	// Merge layout keys from local config.json if missing (RPC may fail on first call)
+	layoutKeys := []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"}
+	for _, k := range layoutKeys {
+		if _, ok := vals[k]; ok {
+			continue
+		}
+		if v := configLayoutValue(k); v != "" {
+			vals[k] = v
+		}
+	}
+
+	if app.cliCh != nil {
+		app.cliCh.SyncLayoutSettings(vals)
+	}
+
 	// Sync tier model mappings to local LLMFactory so SubAgent model resolution
 	// works in remote mode (tier models are now user-scoped, persisted in DB).
 	if app.backend != nil && app.backend.LLMFactory() != nil {
@@ -164,6 +226,7 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		}
 		app.cfg.LLM = llmCfg
 		app.backend.LLMFactory().SetModelTiers(llmCfg)
+		app.backend.LLMFactory().SetModelContexts(app.cfg.Agent.ModelContexts)
 	}
 }
 
@@ -191,7 +254,8 @@ func saveCLIConfig(cfg *config.Config) error {
 	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
 	// Only write credentials to config.json if there are no DB subscriptions
 	// (first-run / legacy mode where config.json is the only data source).
-	if len(merged.Subscriptions) == 0 {
+	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
+	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
 		merged.LLM.Provider = cfg.LLM.Provider
 		merged.LLM.BaseURL = cfg.LLM.BaseURL
 		merged.LLM.APIKey = cfg.LLM.APIKey
@@ -521,6 +585,8 @@ type cliApp struct {
 
 	// Remote-mode background goroutine cancel
 	valuesCancel context.CancelFunc
+
+	cliCh *channel.CLIChannel // for syncing layout settings after cache refresh
 }
 
 // isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置）
@@ -761,6 +827,7 @@ func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 		backend.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 		backend.IndexGlobalTools()
 		backend.LLMFactory().SetModelTiers(cfg.LLM)
+		backend.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 		backend.LLMFactory().SetRetryConfig(llm.RetryConfig{
 			Attempts: uint(cfg.Agent.LLMRetryAttempts),
 			Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
@@ -838,6 +905,8 @@ func main() {
 		fmt.Println("  -p <prompt>         Non-interactive single prompt")
 		fmt.Println("  --token <token>     Token for remote server")
 		fmt.Println("  --workspace <path>  Override workspace")
+		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
+		fmt.Println("  --no-sidebar       Disable sidebar")
 	}
 
 	// Sub-commands: handled before flag parsing.
@@ -863,17 +932,19 @@ func main() {
 	prompt := ""
 	newSession := false
 	var (
-		flagServer     string        // --server ws://host:port (RemoteBackend: agent runs on server)
-		flagShare      string        // --share ws://host:port/ws/userID (Runner mode: tools run locally)
-		flagToken      string        // --token xxx
-		flagWorkspace  string        // --workspace /path (overrides config)
-		flagLocal      bool          // --local force legacy in-process mode
-		flagDebug      bool          // --debug enable UI capture + key injection via SIGUSR1
-		flagDebugInput string        // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
-		flagDebugCapMs int           // --debug-capture-ms 200  UI capture interval in ms (default 1000)
-		flagPProf      bool          // --pprof enable pprof HTTP server
-		flagPProfPort  int           // --pprof-port 6060
-		pprofServer    *pprof.Server // initialized if --pprof flag is set
+		flagServer       string        // --server ws://host:port (RemoteBackend: agent runs on server)
+		flagShare        string        // --share ws://host:port/ws/userID (Runner mode: tools run locally)
+		flagToken        string        // --token xxx
+		flagWorkspace    string        // --workspace /path (overrides config)
+		flagLocal        bool          // --local force legacy in-process mode
+		flagDebug        bool          // --debug enable UI capture + key injection via SIGUSR1
+		flagDebugInput   string        // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
+		flagDebugCapMs   int           // --debug-capture-ms 200  UI capture interval in ms (default 1000)
+		flagPProf        bool          // --pprof enable pprof HTTP server
+		flagPProfPort    int           // --pprof-port 6060
+		pprofServer      *pprof.Server // initialized if --pprof flag is set
+		flagSidebarWidth int           // --sidebar-width 25 (range 16-40)
+		flagNoSidebar    bool          // --no-sidebar
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -936,6 +1007,15 @@ func main() {
 				flagWorkspace = os.Args[i+1]
 				i++
 			}
+		case "--sidebar-width":
+			if len(os.Args) > i+1 {
+				if n, err := strconv.Atoi(os.Args[i+1]); err == nil && n >= 16 && n <= 40 {
+					flagSidebarWidth = n
+				}
+				i++
+			}
+		case "--no-sidebar":
+			flagNoSidebar = true
 		default:
 			if !strings.HasPrefix(os.Args[i], "-") {
 				prompt = os.Args[i]
@@ -996,14 +1076,16 @@ func main() {
 	var tenantSvc *sqlite.TenantService
 
 	cliCfg := channel.CLIChannelConfig{
-		WorkDir:         app.workDir,
-		ChatID:          absWorkDir,
-		RemoteMode:      isRemoteBackend,
-		RemoteServerURL: remoteServerURL,
-		DebugMode:       flagDebug,
-		DebugInput:      flagDebugInput,
-		DebugCaptureMs:  flagDebugCapMs,
-		IsFirstRun:      firstRun,
+		WorkDir:              absWorkDir,
+		ChatID:               absWorkDir,
+		RemoteMode:           isRemoteBackend,
+		RemoteServerURL:      remoteServerURL,
+		DebugMode:            flagDebug,
+		DebugInput:           flagDebugInput,
+		DebugCaptureMs:       flagDebugCapMs,
+		IsFirstRun:           firstRun,
+		SidebarWidthOverride: flagSidebarWidth,
+		NoSidebar:            flagNoSidebar,
 		GetCurrentValues: func() map[string]string {
 			// In remote mode, return cached values — never block the BubbleTea Update loop.
 			// The cache is refreshed asynchronously by refreshRemoteValuesCache().
@@ -1135,10 +1217,30 @@ func main() {
 			}
 			applyCLISettingsToBackend(app.backend, "cli_user", values)
 
+			// Update local cache immediately (no waiting for refreshRemoteValuesCache)
+			app.valuesCacheMu.Lock()
+			for k, v := range values {
+				if app.valuesCache == nil {
+					app.valuesCache = make(map[string]string)
+				}
+				app.valuesCache[k] = v
+			}
+			app.valuesCacheMu.Unlock()
+
+			if app.cliCh != nil {
+				app.cliCh.SyncLayoutSettings(values)
+			}
+
+			// Always save layout to config.json (keys not in Config struct, must write directly)
+			saveLayoutToConfig(values)
+			// Always save to local config.json as fallback cache
+			applyCLISettingsToConfig(app.cfg, values)
+			if err := saveCLIConfig(app.cfg); err != nil {
+				log.Warnf("Failed to save CLI config: %v", err)
+			}
+
 			// ── Local-mode extras ──
 			if !app.backend.IsRemote() {
-				applyCLISettingsToConfig(app.cfg, values)
-				// Model tiers (needs explicit check since config-only)
 				if vanguardChanged || balanceChanged || swiftChanged {
 					app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
 				}
@@ -1146,11 +1248,6 @@ func main() {
 				if v, ok := values["sandbox_mode"]; ok && v != "" {
 					tools.ReinitSandbox(app.cfg.Sandbox, app.workDir)
 					app.backend.SetSandbox(tools.GetSandbox(), v)
-				}
-				applyCLISettingsToBackend(app.backend, cliSenderID, values)
-				loadLLMFromDBSubscription(app.backend, app.cfg)
-				if err := saveCLIConfig(app.cfg); err != nil {
-					log.Warnf("Failed to save config.json: %v", err)
 				}
 				if theme, ok := values["theme"]; ok && theme != "" {
 					if ss := app.backend.SettingsService(); ss != nil {
@@ -1336,62 +1433,67 @@ func main() {
 			var entries []channel.SessionPanelEntry
 			tenants, err := app.backend.ListTenants()
 			seen := make(map[string]bool) // dedup agent sessions by role:instance
-			if err == nil && len(tenants) > 0 {
-				// Only show the current session's tenant and its SubAgents.
-				// Other sessions' agents are not relevant to the current conversation
-				// (Issue #17: sessions panel showed agents from unrelated sessions).
-				allSessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
 
+			// Get ALL subagents across all sessions, then filter to only
+			// sessions related to the current workdir (main + local dir).
+			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
+			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
+			for _, s := range allSubAgents {
+				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
+			}
+
+			// Collect all relevant chatIDs: main session + local dir sessions.
+			type sessionInfo struct {
+				chatID string
+				label  string
+			}
+			var sessions []sessionInfo
+
+			// Main session (from tenants).
+			if err == nil && len(tenants) > 0 {
 				for _, t := range tenants {
-					// Agent tenants (channel="agent") are not real "main" sessions —
-					// they're internal bookkeeping for interactive SubAgent persistence.
-					// Skip them; agent sessions are listed separately via ListInteractiveSessions.
 					if t.Channel == "agent" {
 						continue
 					}
-					// Only include the current session; other workdirs are separate conversations.
 					if t.ChatID != absWorkDir || t.Channel != "cli" {
 						continue
 					}
-					isActive := true // This is the current session
-					label := "主会话  You ↔ Agent"
-					entries = append(entries, channel.SessionPanelEntry{
-						ID:      t.ChatID,
-						Type:    "main",
-						Channel: t.Channel,
-						Label:   label,
-						Active:  isActive,
+					sessions = append(sessions, sessionInfo{
+						chatID: t.ChatID,
+						label:  "主会话  You ↔ Agent",
 					})
-					// SubAgent sessions belonging to this session.
-					for _, s := range allSessions {
-						agentKey := s.Role + ":" + s.Instance
-						if seen[agentKey] {
-							continue
-						}
-						seen[agentKey] = true
-						entries = append(entries, channel.SessionPanelEntry{
-							ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
-							Type:        "agent",
-							Channel:     t.Channel,
-							Role:        s.Role,
-							Instance:    s.Instance,
-							ParentID:    t.ChatID,
-							Running:     s.Running,
-							MessageHint: s.Preview,
-						})
-					}
+					break // only one main session
 				}
-			} else {
-				// Fallback: no tenants available
+			}
+			if len(sessions) == 0 {
+				// Fallback: no tenant found, still show main session.
+				sessions = append(sessions, sessionInfo{
+					chatID: absWorkDir,
+					label:  "主会话  You ↔ Agent",
+				})
+			}
+
+			// Local dir sessions (created from current session).
+			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+				sessions = append(sessions, sessionInfo{
+					chatID: s.ChatID,
+					label:  s.Name,
+				})
+			}
+
+			// Build entries: each session followed by its subagents.
+			for _, sess := range sessions {
+				isActive := sess.chatID == absWorkDir
+				mainBusy := app.backend.IsProcessing("cli", sess.chatID)
 				entries = append(entries, channel.SessionPanelEntry{
-					ID:      absWorkDir,
+					ID:      sess.chatID,
 					Type:    "main",
 					Channel: "cli",
-					Label:   "主会话  You ↔ Agent",
-					Active:  true,
+					Label:   sess.label,
+					Active:  isActive,
+					Busy:    mainBusy,
 				})
-				sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
-				for _, s := range sessions {
+				for _, s := range subsByChatID[sess.chatID] {
 					agentKey := s.Role + ":" + s.Instance
 					if seen[agentKey] {
 						continue
@@ -1403,8 +1505,9 @@ func main() {
 						Channel:     "cli",
 						Role:        s.Role,
 						Instance:    s.Instance,
-						ParentID:    s.ChatID,
+						ParentID:    sess.chatID,
 						Running:     s.Running,
+						Busy:        s.Running,
 						MessageHint: s.Preview,
 					})
 				}
@@ -1585,10 +1688,48 @@ func main() {
 	}
 
 	// Agent session history: load from in-memory interactiveSubAgents (not DB).
+	// refreshAgentCache is declared here at function level (not inside an if block)
+	// so it's accessible from both the SessionsListRefresh callback and the remote
+	// client setup below. Assigned later with = (not :=).
+	var refreshAgentCache func()
 	if app.backend != nil {
 		backend := app.backend
 		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *channel.CLIProgressPayload {
 			return backend.GetActiveProgress(channelName, chatID)
+		}
+		cliCfg.GetTodosFn = func(channelName, chatID string) []channel.CLITodoItem {
+			return backend.GetTodos(channelName, chatID)
+		}
+		cliCfg.GetTokenStateFn = func(channelName, chatID string) (int64, int64) {
+			pt, ct, err := backend.GetTokenState(channelName, chatID)
+			if err != nil {
+				return 0, 0
+			}
+			return pt, ct
+		}
+		cliCfg.SessionsDeleteFn = func(channelName, chatID string) error {
+			if backend.IsRemote() {
+				_, err := backend.CallRPC("delete_chat", map[string]string{
+					"channel": channelName,
+					"chat_id": chatID,
+				})
+				return err
+			}
+			cs := sqlite.NewChatService(app.db.Conn())
+			return cs.DeleteChat(channelName, cliSenderID, chatID)
+		}
+		// sessionsListRefresh will be assigned when refreshAgentCache is defined below.
+		// We defer wiring via a pointer so the closure can capture the later-defined func.
+		cliCfg.SessionsListRefresh = func() {
+			if refreshAgentCache != nil {
+				refreshAgentCache()
+			}
+		}
+		cliCfg.TrimHistoryFn = func(channelName, chatID string, cutoff time.Time) error {
+			return backend.TrimHistory(channelName, chatID, cutoff)
+		}
+		cliCfg.SetCWDFn = func(channelName, chatID, dir string) error {
+			return backend.SetCWD(channelName, chatID, dir)
 		}
 		cliCfg.AgentSessionDumpFn = func(chatID string) ([]channel.HistoryMessage, error) {
 			// Try in-memory first (running sessions)
@@ -1638,6 +1779,7 @@ func main() {
 	}
 
 	cliCh := channel.NewCLIChannel(cliCfg, app.msgBus)
+	app.cliCh = cliCh
 	disp.Register(cliCh)
 
 	// Start pprof HTTP server if --pprof flag is set
@@ -1685,9 +1827,9 @@ func main() {
 				cliCh.SendProgress("cli:"+cliCfg.ChatID, p)
 			})
 			// Register OnInjectUserMessage callback for bg task notifications
-			app.backend.OnInjectUserMessage(func(content string) {
+			app.backend.OnInjectUserMessage(func(chatID, content string) {
 				defer clipanic.Recover("main.remote.OnInjectUserMessage", content, false)
-				cliCh.InjectUserMessage(content)
+				cliCh.InjectUserMessage(chatID, content)
 			})
 			// Inject remote bg task callbacks (BgTaskManager is nil in remote mode)
 			bgSessionKey := "cli:" + cliCfg.ChatID
@@ -1817,6 +1959,21 @@ func main() {
 		}
 	}
 
+	// Wire AI-Native TUI callback (local mode only; config works everywhere via SettingsSvc)
+	if app.backend != nil && !app.backend.IsRemote() {
+		tuiCtrl := func(action string, params map[string]string) (map[string]string, error) {
+			return cliCh.SendTUIControl(action, params)
+		}
+		app.backend.SetTUICallbacks(tuiCtrl, nil, nil)
+	}
+
+	// Wire AI-Native TUI callback for remote mode (server → client via WS)
+	if app.backend != nil && app.backend.IsRemote() {
+		app.backend.OnTUIControlRequest(func(action string, params map[string]string) (map[string]string, error) {
+			return cliCh.SendTUIControl(action, params)
+		})
+	}
+
 	// Apply saved theme at startup.
 	// Local mode can read settings immediately; remote mode must wait until backend.Start()
 	// establishes the WS/RPC connection, otherwise theme fetch races and the UI keeps default
@@ -1827,6 +1984,7 @@ func main() {
 				if t, ok := vals["theme"]; ok && t != "" {
 					channel.ApplyTheme(t)
 				}
+				cliCh.SyncLayoutSettings(vals)
 			}
 		}
 	}
@@ -1899,14 +2057,23 @@ func main() {
 	}
 	clipanic.Go("main.dispatcher.Run", disp.Run)
 
-	// Remote mode: load history from server after WS connection is established.
-	// Use the original CLI tenant key so remote mode can resume the same session
-	// as legacy local mode: channel=cli, chat_id=absWorkDir.
+	// Remote mode: apply layout from local config.json FIRST (instant, no RPC).
 	if app.backend.IsRemote() {
+		layoutVals := map[string]string{}
+		for _, k := range []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"} {
+			if v := configLayoutValue(k); v != "" {
+				layoutVals[k] = v
+			}
+		}
+		if len(layoutVals) > 0 {
+			cliCh.SyncLayoutSettings(layoutVals)
+		}
+		// Async: refresh from server when WS is ready
 		if vals, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
 			if t, ok := vals["theme"]; ok && t != "" {
 				channel.ApplyTheme(t)
 			}
+			cliCh.SyncLayoutSettings(vals)
 		}
 		remoteChatID, _ := filepath.Abs(app.workDir)
 
@@ -2016,48 +2183,104 @@ func main() {
 		})
 		// Background goroutine: periodically refresh agent count/list cache
 		// (RPC calls must not happen from BubbleTea event loop → deadlock)
-		refreshAgentCache := func() {
+		refreshAgentCache = func() {
 			if app.backend == nil {
 				return
 			}
-			count := app.backend.CountInteractiveSessions("cli", absWorkDir)
-			sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
-			agentEntries := make([]channel.AgentPanelEntry, len(sessions))
-			// Build sessions panel entries (main + agents) for remote mode.
+			// Get all interactive sessions (empty chatID = all sessions across all workdirs).
+			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
+			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
+			for _, s := range allSubAgents {
+				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
+			}
+
+			// Collect all relevant sessions: main + local dir.
+			type sessionInfo struct {
+				chatID string
+				label  string
+			}
+			var sessions []sessionInfo
+
+			// Main session (from tenants).
+			tenants, err := app.backend.ListTenants()
+			if err == nil && len(tenants) > 0 {
+				for _, t := range tenants {
+					if t.Channel == "agent" {
+						continue
+					}
+					if t.ChatID != absWorkDir || t.Channel != "cli" {
+						continue
+					}
+					sessions = append(sessions, sessionInfo{
+						chatID: t.ChatID,
+						label:  "主会话  You ↔ Agent",
+					})
+					break
+				}
+			}
+			if len(sessions) == 0 {
+				sessions = append(sessions, sessionInfo{
+					chatID: absWorkDir,
+					label:  "主会话  You ↔ Agent",
+				})
+			}
+
+			// Local dir sessions.
+			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+				sessions = append(sessions, sessionInfo{
+					chatID: s.ChatID,
+					label:  s.Name,
+				})
+			}
+
+			// Build entries: each session followed by its subagents.
 			var sessionEntries []channel.SessionPanelEntry
 			seen := make(map[string]bool)
-			sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-				ID:      absWorkDir,
-				Type:    "main",
-				Channel: "cli",
-				Label:   "主会话  You ↔ Agent",
-				Active:  true,
-			})
-			for i, s := range sessions {
-				agentEntries[i] = channel.AgentPanelEntry{
+			for _, sess := range sessions {
+				isActive := sess.chatID == absWorkDir
+				mainBusy := app.backend.IsProcessing("cli", sess.chatID)
+				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+					ID:      sess.chatID,
+					Type:    "main",
+					Channel: "cli",
+					Label:   sess.label,
+					Active:  isActive,
+					Busy:    mainBusy,
+				})
+				for _, s := range subsByChatID[sess.chatID] {
+					agentKey := s.Role + ":" + s.Instance
+					if seen[agentKey] {
+						continue
+					}
+					seen[agentKey] = true
+					sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+						ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
+						Type:        "agent",
+						Channel:     "cli",
+						Role:        s.Role,
+						Instance:    s.Instance,
+						ParentID:    sess.chatID,
+						Running:     s.Running,
+						Busy:        s.Running,
+						MessageHint: s.Preview,
+					})
+				}
+			}
+
+			// Build agentEntries for the agent panel (all subagents).
+			agentEntries := make([]channel.AgentPanelEntry, 0, len(allSubAgents))
+			for _, s := range allSubAgents {
+				agentEntries = append(agentEntries, channel.AgentPanelEntry{
 					Role:       s.Role,
 					Instance:   s.Instance,
 					Running:    s.Running,
 					Background: s.Background,
 					Task:       s.Task,
 					Preview:    s.Preview,
-				}
-				agentKey := s.Role + ":" + s.Instance
-				if seen[agentKey] {
-					continue
-				}
-				seen[agentKey] = true
-				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-					ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
-					Type:        "agent",
-					Channel:     "cli",
-					Role:        s.Role,
-					Instance:    s.Instance,
-					ParentID:    absWorkDir,
-					Running:     s.Running,
-					MessageHint: s.Preview,
 				})
 			}
+
+			count := len(allSubAgents)
 			app.agentCacheMu.Lock()
 			app.agentCacheCount = count
 			app.agentCacheList = agentEntries
@@ -2324,14 +2547,15 @@ func (m *configSubscriptionManager) List(_ string) ([]channel.Subscription, erro
 	result := make([]channel.Subscription, len(m.cfg.Subscriptions))
 	for i, s := range m.cfg.Subscriptions {
 		result[i] = channel.Subscription{
-			ID:       s.ID,
-			Name:     s.Name,
-			Provider: s.Provider,
-			BaseURL:  s.BaseURL,
-			APIKey:   s.APIKey,
-			Model:    s.Model,
-			Active:   s.Active,
-			// MaxOutputTokens/ThinkingMode not available from config seeds
+			ID:              s.ID,
+			Name:            s.Name,
+			Provider:        s.Provider,
+			BaseURL:         s.BaseURL,
+			APIKey:          s.APIKey,
+			Model:           s.Model,
+			MaxOutputTokens: s.MaxOutputTokens,
+			ThinkingMode:    s.ThinkingMode,
+			Active:          s.Active,
 		}
 	}
 	return result, nil
@@ -2341,11 +2565,15 @@ func (m *configSubscriptionManager) GetDefault(_ string) (*channel.Subscription,
 	for _, s := range m.cfg.Subscriptions {
 		if s.Active {
 			return &channel.Subscription{
-				ID:       s.ID,
-				Name:     s.Name,
-				Provider: s.Provider,
-				Model:    s.Model,
-				Active:   true,
+				ID:              s.ID,
+				Name:            s.Name,
+				Provider:        s.Provider,
+				BaseURL:         s.BaseURL,
+				APIKey:          s.APIKey,
+				Model:           s.Model,
+				MaxOutputTokens: s.MaxOutputTokens,
+				ThinkingMode:    s.ThinkingMode,
+				Active:          true,
 			}, nil
 		}
 	}
@@ -2354,13 +2582,15 @@ func (m *configSubscriptionManager) GetDefault(_ string) (*channel.Subscription,
 
 func (m *configSubscriptionManager) Add(sub *channel.Subscription) error {
 	m.cfg.Subscriptions = append(m.cfg.Subscriptions, config.SubscriptionConfig{
-		ID:       sub.ID,
-		Name:     sub.Name,
-		Provider: sub.Provider,
-		BaseURL:  sub.BaseURL,
-		APIKey:   sub.APIKey,
-		Model:    sub.Model,
-		Active:   sub.Active,
+		ID:              sub.ID,
+		Name:            sub.Name,
+		Provider:        sub.Provider,
+		BaseURL:         sub.BaseURL,
+		APIKey:          sub.APIKey,
+		Model:           sub.Model,
+		MaxOutputTokens: sub.MaxOutputTokens,
+		ThinkingMode:    sub.ThinkingMode,
+		Active:          sub.Active,
 	})
 	return m.saveFn()
 }

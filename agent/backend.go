@@ -53,6 +53,12 @@ type AgentBackend interface {
 	// and streaming content on mid-session reconnect.
 	GetActiveProgress(ch, chatID string) *channel.CLIProgressPayload
 
+	// GetTodos returns the current TODO list for a session from the server's
+	// TodoManager. Unlike GetActiveProgress (which only works during active turns),
+	// this works at any time — idle, active, or between turns. Returns nil if
+	// the session has no todos.
+	GetTodos(ch, chatID string) []channel.CLITodoItem
+
 	// OnProgress registers a callback for streaming progress events from the server.
 	// LocalBackend: no-op (progress flows through dispatcher/channel directly).
 	// RemoteBackend: converts WS progress_structured/stream_content messages to
@@ -62,7 +68,7 @@ type AgentBackend interface {
 	// OnInjectUserMessage registers a callback for injected user messages from the server.
 	// LocalBackend: no-op (injected messages flow through CLIChannel directly).
 	// RemoteBackend: converts WS inject_user messages and calls the callback.
-	OnInjectUserMessage(callback func(content string))
+	OnInjectUserMessage(callback func(chatID, content string))
 
 	// OnReconnect registers a callback invoked after a successful WS reconnect.
 	// Local: no-op.
@@ -76,6 +82,10 @@ type AgentBackend interface {
 	// OnPluginWidgets registers a callback for plugin widget zone push.
 	// Local: no-op.
 	OnPluginWidgets(callback func(zones map[string]string, chatID string))
+
+	// OnTUIControlRequest registers a callback for server-initiated TUI control requests.
+	// Local: no-op. Remote: called when server sends a tui_control_req WS message.
+	OnTUIControlRequest(callback func(action string, params map[string]string) (map[string]string, error))
 
 	// Subscribe registers this client to receive events for a chatID.
 	// Local: no-op. Remote: sends subscribe message via WS.
@@ -100,6 +110,13 @@ type AgentBackend interface {
 
 	// SettingsService returns the settings service.
 	SettingsService() *SettingsService
+
+	// SetTUICallbacks sets the TUI control and config callbacks (CLI only, no-op for remote).
+	SetTUICallbacks(
+		tuiCtrl func(action string, params map[string]string) (map[string]string, error),
+		configGet func(key string) (string, error),
+		configSet func(key, value string) (string, error),
+	)
 
 	// MultiSession returns the multi-tenant session manager.
 	MultiSession() *session.MultiTenantSession

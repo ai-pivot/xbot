@@ -38,7 +38,7 @@ func NewCLIChannel(cfg CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan bus.OutboundMessage, cliMsgBufSize),
 		progressCh: make(chan *CLIProgressPayload, 1), // buffered-1: latest progress wins
-		asyncCh:    make(chan tea.Msg, 64),            // unified async send: progress + outbound
+		asyncCh:    make(chan tea.Msg, 256),           // unified async send: progress + outbound
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -87,6 +87,19 @@ func (c *CLIChannel) Start() error {
 	}
 	c.model.debugCaptureMs = c.config.DebugCaptureMs
 	c.model.senderID = "cli_user"
+
+	// CLI-side TodoManager for persisting todos across turns and session switches.
+	// Updated by syncProgressTodos during active turns and consumed by endAgentTurn
+	// and restoreSession to preserve unfinished todos in idle state.
+	c.model.todoManager = tools.NewTodoManager()
+
+	// Apply CLI flag overrides for layout
+	if c.config.SidebarWidthOverride > 0 {
+		c.model.sidebarWidth = c.config.SidebarWidthOverride
+	}
+	if c.config.NoSidebar {
+		c.model.sidebarEnabled = false
+	}
 
 	// Apply pending injections that were set before model existed
 	if c.pendingTrimHistoryFn != nil {
@@ -374,12 +387,33 @@ func (c *CLIChannel) SendProgress(chatID string, payload *CLIProgressPayload) {
 	if payload.ChatID == "" {
 		payload.ChatID = chatID
 	}
+
+	// Stream-only events (Phase=="", Iteration==0) are high-frequency
+	// streaming animation updates that carry no structured data. They
+	// should never evict structured events that carry TokenUsage and
+	// iteration state for the context bar and progress panel.
+	isStreamOnly := payload.Phase == "" && payload.Iteration == 0
+
 	select {
 	case c.progressCh <- payload:
 	default:
-		// Drain stale, send fresh
+		if isStreamOnly {
+			// Channel has a structured event waiting. Drop this
+			// stream-only event — the structured event is more
+			// important for the context bar and progress panel.
+			return
+		}
+		// Both old (queued) and new are structured. Drain the old
+		// one, but merge its TokenUsage and CWD into the new one
+		// so context-bar data is never lost to eviction.
 		select {
-		case <-c.progressCh:
+		case old := <-c.progressCh:
+			if payload.TokenUsage == nil && old.TokenUsage != nil {
+				payload.TokenUsage = old.TokenUsage
+			}
+			if payload.CWD == "" && old.CWD != "" {
+				payload.CWD = old.CWD
+			}
 		default:
 		}
 		select {
@@ -566,7 +600,11 @@ func (c *CLIChannel) LoadHistory(history []HistoryMessage) {
 	// Program is running — send through asyncCh to avoid racing with View()
 	// (glamour is not goroutine-safe).
 	select {
-	case c.asyncCh <- cliHistoryLoadMsg{history: msgs}:
+	case c.asyncCh <- cliHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      c.config.ChatID,
+		history:     msgs,
+	}:
 	default:
 		log.Warn("LoadHistory: asyncCh full, history not applied")
 	}
@@ -645,6 +683,28 @@ func (c *CLIChannel) SetResetTokenStateFn(fn func()) {
 	c.pendingResetTokenStateFn = fn
 }
 
+// SyncLayoutSettings applies layout settings (sidebar_width, sidebar_position, etc.)
+// from the given values map to the TUI model. Applies directly to model for startup,
+// and also sends through asyncCh for Update() handler.
+func (c *CLIChannel) SyncLayoutSettings(vals map[string]string) {
+	layoutVals := map[string]string{}
+	for _, k := range []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"} {
+		if v, ok := vals[k]; ok {
+			layoutVals[k] = v
+		}
+	}
+	if len(layoutVals) == 0 {
+		return
+	}
+	// Send through asyncCh — the ONLY safe path. Direct model calls
+	// from background goroutines (refreshRemoteValuesCache) race with
+	// the BubbleTea event loop and cause glamour render panics.
+	select {
+	case c.asyncCh <- cliSettingsSavedMsg{layoutVals: layoutVals, layoutChanged: true, syncOnly: true}:
+	default:
+	}
+}
+
 // SetCheckpointState sets the file checkpoint state for /rewind file rollback.
 // If the model hasn't been created yet, the state is cached and applied later.
 func (c *CLIChannel) SetCheckpointState(state *hooks.CheckpointState) {
@@ -658,10 +718,11 @@ func (c *CLIChannel) SetCheckpointState(state *hooks.CheckpointState) {
 
 // InjectUserMessage 通知 CLI 有 user 消息被 agent 注入（如 bg task 完成通知）。
 // 在 CLI 界面上显示为一条 user 消息，和用户手动输入的效果一致。
-func (c *CLIChannel) InjectUserMessage(content string) {
+// chatID is the target session's chatID (used for session filtering). Empty = legacy, always apply.
+func (c *CLIChannel) InjectUserMessage(chatID, content string) {
 	if c.program != nil {
 		select {
-		case c.asyncCh <- cliInjectedUserMsg{content: content}:
+		case c.asyncCh <- cliInjectedUserMsg{content: content, chatID: chatID}:
 		default:
 		}
 	}
@@ -673,12 +734,11 @@ func (c *CLIChannel) updateBgTaskCountFn() {
 		return
 	}
 	if c.bgTaskMgr != nil && c.bgSessionKey != "" {
-		key := c.bgSessionKey
 		c.model.bgTaskCountFn = func() int {
-			return len(c.bgTaskMgr.ListRunning(key))
+			return len(c.bgTaskMgr.ListRunning(c.bgSessionKey))
 		}
 		c.model.bgTaskListFn = func() []*tools.BackgroundTask {
-			return c.bgTaskMgr.ListAllForSession(key)
+			return c.bgTaskMgr.ListAllForSession(c.bgSessionKey)
 		}
 		c.model.bgTaskKillFn = func(taskID string) error {
 			return c.bgTaskMgr.Kill(taskID)
@@ -784,7 +844,9 @@ func (c *CLIChannel) handleOutbound() {
 }
 
 // handleProgressDrain drains the progress coalescing channel and forwards
-// events to the unified asyncCh. Non-blocking — drops stale progress events.
+// handleProgressDrain drains progressCh and forwards non-blockingly
+// to the unified asyncCh. Drops stale progress when event loop is behind
+// (asyncCh full) — the next progress event will be fresher.
 func (c *CLIChannel) handleProgressDrain() {
 	defer c.wg.Done()
 
@@ -796,7 +858,16 @@ func (c *CLIChannel) handleProgressDrain() {
 			select {
 			case c.asyncCh <- cliProgressMsg{payload: payload}:
 			default:
-				// Drop: eventLoop is behind, next progress will be fresher
+				// asyncCh full — event loop is behind. Cache token
+				// usage directly so the context bar doesn't flash
+				// blank before the next progress event arrives.
+				if payload.TokenUsage != nil && payload.TokenUsage.PromptTokens > 0 {
+					c.programMu.Lock()
+					if c.model != nil {
+						c.model.cacheTokenUsage(payload.TokenUsage)
+					}
+					c.programMu.Unlock()
+				}
 			}
 		}
 	}

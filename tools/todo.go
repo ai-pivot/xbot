@@ -2,7 +2,11 @@ package tools
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -30,6 +34,67 @@ func NewTodoManager() *TodoManager {
 		todos:      make(map[string][]TodoItem),
 		maxEntries: 10000, // 默认最多保留 10000 个 session 的 TODO
 	}
+}
+
+// todoDir returns the base directory for TODO persistence files.
+func todoDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".xbot", "todos")
+}
+
+// todoFilePath returns the file path for a given sessionKey.
+func todoFilePath(sessionKey string) string {
+	h := sha256.Sum256([]byte(sessionKey))
+	return filepath.Join(todoDir(), fmt.Sprintf("%x.json", h[:16]))
+}
+
+// SaveToFile persists the TODO list for a session to a JSON file.
+func (m *TodoManager) SaveToFile(sessionKey string) error {
+	m.mu.RLock()
+	items, ok := m.todos[sessionKey]
+	if !ok {
+		m.mu.RUnlock()
+		// Remove file if session has no todos
+		_ = os.Remove(todoFilePath(sessionKey))
+		return nil
+	}
+	// Deep copy to avoid holding lock during I/O
+	saved := make([]TodoItem, len(items))
+	copy(saved, items)
+	m.mu.RUnlock()
+
+	dir := todoDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(todoFilePath(sessionKey), data, 0o600)
+}
+
+// LoadFromFile loads the TODO list for a session from a JSON file.
+// If the file doesn't exist, the session starts with an empty TODO list.
+func (m *TodoManager) LoadFromFile(sessionKey string) error {
+	data, err := os.ReadFile(todoFilePath(sessionKey))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No saved todos, start fresh
+		}
+		return err
+	}
+	var items []TodoItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	m.todos[sessionKey] = items
+	m.mu.Unlock()
+	return nil
 }
 
 // SetTodos 写入/更新指定 session 的 TODO 列表

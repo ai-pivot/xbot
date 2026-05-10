@@ -319,6 +319,11 @@ type Agent struct {
 	// SettingsService for per-user settings
 	settingsSvc *SettingsService
 
+	// TUI control callbacks (set by CLI channel, nil for other channels)
+	tuiCtrlFn   func(action string, params map[string]string) (map[string]string, error)
+	configGetFn func(key string) (string, error)
+	configSetFn func(key, value string) (string, error)
+
 	// channelFinder looks up a channel instance by name (injected from main.go).
 	channelFinder func(name string) (channel.Channel, bool)
 
@@ -349,6 +354,69 @@ func (a *Agent) SetRegistryManager(rm *RegistryManager) { a.registryManager = rm
 
 // SetSettingsService sets the SettingsService (for external injection or override).
 func (a *Agent) SetSettingsService(svc *SettingsService) { a.settingsSvc = svc }
+
+// SetTUICallbacks sets the TUI control and config callbacks (CLI channel only).
+func (a *Agent) SetTUICallbacks(
+	tuiCtrl func(action string, params map[string]string) (map[string]string, error),
+	configGet func(key string) (string, error),
+	configSet func(key, value string) (string, error),
+) {
+	a.tuiCtrlFn = tuiCtrl
+	a.configGetFn = configGet
+	a.configSetFn = configSet
+}
+
+// buildRemoteTUICtrlFn returns a TUIControl callback for remote CLI mode via WS,
+// or nil if no RemoteCLIChannel is registered.
+func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string, params map[string]string) (map[string]string, error) {
+	if a.channelFinder == nil {
+		log.WithField("chan", chanName).Debug("buildRemoteTUICtrlFn: channelFinder is nil")
+		return nil
+	}
+	if chanName != "cli" {
+		log.WithField("chan", chanName).Debug("buildRemoteTUICtrlFn: channel is not cli")
+		return nil
+	}
+	ch, ok := a.channelFinder("cli")
+	if !ok {
+		log.Debug("buildRemoteTUICtrlFn: channelFinder('cli') returned not found")
+		return nil
+	}
+	rc, ok := ch.(*channel.RemoteCLIChannel)
+	if !ok {
+		log.WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel")
+		return nil
+	}
+	log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
+	return func(action string, params map[string]string) (map[string]string, error) {
+		return rc.SendTUIControlRequest(chatID, action, params)
+	}
+}
+
+// listLLMSubsFn returns a subscription listing function for the given channel.
+func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.SubscriptionInfo {
+	if a.llmFactory == nil {
+		return nil
+	}
+	svc := a.llmFactory.GetSubscriptionSvc()
+	if svc == nil {
+		return nil
+	}
+	return func(ch, senderID string) []tools.SubscriptionInfo {
+		subs, _ := svc.List(senderID)
+		result := make([]tools.SubscriptionInfo, 0, len(subs))
+		for _, s := range subs {
+			result = append(result, tools.SubscriptionInfo{
+				ID:        s.ID,
+				Name:      s.Name,
+				Provider:  s.Provider,
+				Model:     s.Model,
+				IsDefault: s.IsDefault,
+			})
+		}
+		return result
+	}
+}
 
 // LLMFactory returns the Agent's LLMFactory (for external injection of callbacks).
 func (a *Agent) LLMFactory() *LLMFactory { return a.llmFactory }
@@ -757,6 +825,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	registry.RegisterCore(&tools.TodoWriteTool{Manager: todoMgr})
 	registry.RegisterCore(&tools.TodoListTool{Manager: todoMgr})
 
+	// Register AI-Native TUI & Config tools as core (always available)
+	registry.RegisterCore(&tools.TuiControlTool{})
+	registry.RegisterCore(&tools.ConfigTool{})
+
 	// Initialize SharedSkillRegistry
 	sharedRegistry := sqlite.NewSharedSkillRegistry(multiSession.DB())
 
@@ -939,12 +1011,20 @@ func New(cfg Config) (*Agent, error) {
 			ms := agent.multiSession
 			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
 				cwd := ""
+				sessKey := "cli:" + chatID
 				if ms != nil && chatID != "" {
 					if sess, err := ms.GetOrCreateSession("cli", chatID); err == nil {
 						cwd = sess.GetCurrentDir()
 					} else {
 						log.Debugf("[widget-push] GetOrCreateSession failed for cli/%s: %v", chatID, err)
 					}
+				}
+				// For worktree sessions, the registry is the authoritative source.
+				// CWD may not yet be set (before first message) or may be stale
+				// (CLI SetCWD set main workDir during connection). Use the
+				// persisted registry entry which survives restarts.
+				if entry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); entry != nil && entry.WorktreeDir != "" {
+					cwd = entry.WorktreeDir
 				}
 				zones := make(map[string]string, len(zoneNames))
 				for _, z := range zoneNames {
@@ -1025,6 +1105,11 @@ func (a *Agent) SetMaxConcurrency(n int) {
 	a.globalSemMu.Lock()
 	a.globalSem = make(chan struct{}, n)
 	a.globalSemMu.Unlock()
+	// Clear all cached user-level semaphores so they are recreated with the
+	// new capacity on the next call to getUserSemaphore. Without this, users
+	// with custom LLM keep using the old capacity forever (the cached chan
+	// in userSemaphores sync.Map is never replaced by the old code).
+	a.userSemaphores.Clear()
 }
 func (a *Agent) SetMaxContextTokens(n int) {
 	a.contextManagerMu.Lock()
@@ -1242,7 +1327,7 @@ func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	}
 	switch c := ch.(type) {
 	case *channel.CLIChannel:
-		c.InjectUserMessage(content)
+		c.InjectUserMessage(channelName+":"+chatID, content)
 	case *channel.RemoteCLIChannel:
 		c.InjectUserMessage(chatID, content)
 	}
@@ -2041,11 +2126,25 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		log.Ctx(ctx).WithError(err).Warn("Failed to get history, using empty history")
 		history = nil
 	}
+
+	// Auto worktree detection: if multiple sessions share the same git repo,
+	// automatically create an isolated worktree to prevent file conflicts.
+	// Gated behind experimental.auto_worktree config (default: false).
+	sessKey := sessionKey(msg.Channel, msg.ChatID)
+	sbUID := sandboxUserID(msg)
+	workspaceRoot := a.workspaceRoot(sbUID)
+	detectDir := tenantSession.GetCurrentDir()
+	if detectDir == "" {
+		detectDir = workspaceRoot
+	}
+	// Peer awareness: always register this session so other agents can see it.
+	// When auto_worktree is enabled, AutoDetectAndInit handles worktree creation.
+	// When disabled, RegisterPeer provides lightweight session tracking.
+	tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
+
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
 	history = llm.SanitizeMessages(history)
-	sbUID := sandboxUserID(msg)
-	workspaceRoot := a.workspaceRoot(sbUID)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
 		return nil, fmt.Errorf("create user workspace: %w", err)
 	}
@@ -2066,6 +2165,14 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		promptWorkDir = ws
 	}
 
+	// For worktree sessions, override promptWorkDir with the worktree path.
+	// The system prompt shows promptWorkDir as the main "工作目录", so the
+	// agent must see the worktree path here to know where it's working.
+	cwd := tenantSession.GetCurrentDir()
+	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
+		promptWorkDir = cwd
+	}
+
 	mc := NewMessageContext(
 		letta.WithUserID(ctx, msg.SenderID),
 		msg.Content,
@@ -2079,7 +2186,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// 注入当前工作目录（CWD）到 prompt
 	// sandbox 模式下 CWD 已经是 sandbox 内路径，无 cd 时默认为 promptWorkDir
-	mc.CWD = tenantSession.GetCurrentDir()
+	mc.CWD = cwd
 	mc.XbotHome = a.xbotHome
 	if mc.CWD == "" {
 		log.WithFields(log.Fields{
@@ -2370,6 +2477,52 @@ func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content strin
 
 // RunSubAgent 实现 tools.SubAgentManager 接口
 // 创建一个独立的子 Agent 循环来执行任务，子 Agent 拥有自己的工具集但不能再创建子 Agent
+
+// injectPeerMessage sends a message to another CLI session (peer-to-peer).
+// If the target is busy, injects as a fake tool result in the current iteration.
+// If idle, pushes as a user message to start a new turn.
+// Returns a delivery status message.
+func (a *Agent) injectPeerMessage(targetSessionKey, content string) string {
+	parts := strings.SplitN(targetSessionKey, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Sprintf("❌ 无效的 peer 会话地址: %s", targetSessionKey)
+	}
+	ch, chatID := parts[0], parts[1]
+
+	// Check if target is busy (has an active Run)
+	cancelKey := targetSessionKey
+	_, busy := a.chatCancelCh.Load(cancelKey)
+
+	if busy {
+		// Target is busy — inject as a fake tool result message
+		msg := llm.NewToolMessage("SendMessage", cancelKey+":peer_msg", "{}", content)
+		sess, err := a.multiSession.GetOrCreateSession(ch, chatID)
+		if err == nil {
+			if err := sess.AddMessage(msg); err == nil {
+				log.WithFields(log.Fields{
+					"from": cancelKey,
+					"to":   targetSessionKey,
+					"busy": true,
+				}).Info("Peer message injected as tool result (target busy)")
+				return fmt.Sprintf("✅ 消息已投递到 %s（对方正在忙碌，消息作为工具结果注入当前迭代）", parts[1])
+			}
+		}
+		return fmt.Sprintf("⚠️ 消息已发送但可能未到达（目标 agent 正在运行中）: %s", parts[1])
+	}
+
+	// Target is idle — push as user message (triggers a new Run)
+	a.injectBgUserMessage(ch, chatID, "peer", fmt.Sprintf(
+		"📨 **来自同伴的消息** (session: %s)\n\n%s",
+		parts[1], content,
+	))
+	log.WithFields(log.Fields{
+		"from": cancelKey,
+		"to":   targetSessionKey,
+		"busy": false,
+	}).Info("Peer message delivered as user message (target idle)")
+	return fmt.Sprintf("✅ 消息已投递到 %s（对方空闲，消息将触发新的对话轮次）", parts[1])
+}
+
 // allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
 func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, instance, model string) (string, error) {
 	cfg := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)

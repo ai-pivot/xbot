@@ -12,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/config"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // localTransport is the in-process "server" for local mode.
@@ -70,10 +71,12 @@ func (t *localTransport) Subscribe(string) error { return nil }
 
 func (t *localTransport) OnOutbound(func(bus.OutboundMessage))            {}
 func (t *localTransport) OnProgress(func(*channel.CLIProgressPayload))    {}
-func (t *localTransport) OnInjectUserMessage(func(string))                {}
+func (t *localTransport) OnInjectUserMessage(func(string, string))        {}
 func (t *localTransport) OnReconnect(func())                              {}
 func (t *localTransport) OnConnStateChange(func(string))                  {}
 func (t *localTransport) OnPluginWidgets(func(map[string]string, string)) {}
+func (t *localTransport) OnTUIControlRequest(cb func(action string, params map[string]string) (map[string]string, error)) {
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -308,7 +311,21 @@ func (t *localTransport) registerHandlers() {
 		if err != nil {
 			return err
 		}
-		sess.SetCurrentDir(r.Dir)
+		// Only set CWD if it's empty (initial creation or server restart).
+		// Check persisted WorktreeRegistry first — worktree CWD survives restarts.
+		if sess.GetCurrentDir() == "" {
+			sessKey := r.Channel + ":" + r.ChatID
+			actualDir := r.Dir
+			if persisted := tools.GlobalWorktreeRegistry.GetCWD(sessKey); persisted != "" {
+				actualDir = persisted
+			}
+			sess.SetCurrentDir(actualDir)
+			// Refresh plugin contexts so script plugins (e.g. git-info)
+			// immediately see the correct workDir after startup/restore.
+			if a.pluginMgr != nil && actualDir != r.Dir {
+				a.pluginMgr.RefreshWorkDir(actualDir)
+			}
+		}
 		return nil
 	})
 
@@ -686,15 +703,12 @@ func (t *localTransport) registerHandlers() {
 	// ── Processing state ──────────────────────────────────────────────────
 
 	h[MethodIsProcessing] = rpc1(func(r isProcessingReq) (bool, error) {
-		prefix := r.Channel + ":" + r.ChatID + ":"
-		found := false
-		a.chatCancelCh.Range(func(key, _ any) bool {
-			if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
-				found = true
-				return false
-			}
-			return true
-		})
+		// Exact key match — cancelKey is stored as channel:chatID
+		// (no trailing colon, no senderID). Prefix matching was broken
+		// because a parent dir prefix (e.g. "cli:/home/xbot:") would
+		// also match child dir keys (e.g. "cli:/home/xbot/worktree").
+		key := r.Channel + ":" + r.ChatID
+		_, found := a.chatCancelCh.Load(key)
 		return found, nil
 	})
 
@@ -717,6 +731,22 @@ func (t *localTransport) registerHandlers() {
 			}
 		}
 		return &result, nil
+	})
+
+	h[MethodGetTodos] = rpc1(func(r getTodosReq) ([]channel.CLITodoItem, error) {
+		key := r.Channel + ":" + r.ChatID
+		if a.todoManager == nil {
+			return []channel.CLITodoItem{}, nil
+		}
+		items := a.todoManager.GetTodos(key)
+		if len(items) == 0 {
+			return []channel.CLITodoItem{}, nil
+		}
+		result := make([]channel.CLITodoItem, len(items))
+		for i, t := range items {
+			result[i] = channel.CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+		}
+		return result, nil
 	})
 
 	// ── Channel config ────────────────────────────────────────────────────

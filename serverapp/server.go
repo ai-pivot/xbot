@@ -568,6 +568,7 @@ func Run(args []string) error {
 	// 所有工具注册完成，索引全局工具（用于 search_tools 语义搜索）
 	backend.IndexGlobalTools()
 	backend.LLMFactory().SetModelTiers(cfg.LLM)
+	backend.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	backend.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
 		Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
@@ -1055,7 +1056,8 @@ func saveServerConfig(cfg *config.Config) error {
 	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
 	// Only write credentials to config.json if there are no DB subscriptions
 	// (first-run / legacy mode where config.json is the only data source).
-	if len(merged.Subscriptions) == 0 {
+	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
+	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
 		merged.LLM.Provider = cfg.LLM.Provider
 		merged.LLM.BaseURL = cfg.LLM.BaseURL
 		merged.LLM.APIKey = cfg.LLM.APIKey

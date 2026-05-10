@@ -78,7 +78,9 @@ Parameters (JSON):
   - action: string (optional), one of "send", "unload", "inspect", "interrupt"
   - model_tier: string (optional), model tier for this call: "vanguard", "swift", or "balance" (default). Overrides the role's model setting.
 
-Available roles are listed in the <available_agents> section of the system prompt.`
+Available roles are listed in the <available_agents> section of the system prompt.
+
+For TUI sidebar session management and layout adjustments, use search_tools to load tui_control. For configuration changes, load config.`
 }
 
 func (t *SubAgentTool) Parameters() []llm.ToolParam {

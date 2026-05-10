@@ -44,18 +44,18 @@ func (a *todoManagerAdapter) ClearTodos(sessionKey string) {
 	a.mgr.SetTodos(sessionKey, nil)
 }
 
-// applyUserMaxContext 如果用户在 Settings 中设置了 max_context，
-// 创建一个新的 ContextManagerConfig 副本并覆盖 MaxContextTokens，
+// applyUserMaxContext 如果模型订阅中设置了 MaxContext，
+// 创建一个新的 ContextManagerConfig 副本覆盖 MaxContextTokens，
 // 避免污染 Agent 级别的原始配置（含 sync.RWMutex）。
+// 模型级别的 MaxContext 优先级高于全局 MaxContextTokens：
+//   - userMaxCtx > 0 → 直接使用模型配置的值
+//   - userMaxCtx == 0 → 回退到全局 base.MaxContextTokens
 func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextManagerConfig {
 	if base == nil {
 		return nil
 	}
-	// userMaxCtx is the model's native context window (from subscription).
-	// base.MaxContextTokens is the user-configured cap (from settings panel, default 200k).
-	// Use the user's cap if set and lower than the model's window, otherwise use the model's.
 	effective := base.MaxContextTokens
-	if userMaxCtx > 0 && (effective <= 0 || userMaxCtx < effective) {
+	if userMaxCtx > 0 {
 		effective = userMaxCtx
 	}
 	if effective <= 0 {
@@ -117,6 +117,7 @@ func (a *Agent) buildBaseRunConfig(
 		PreferredSandbox: a.sandboxMode,
 		Sandbox:          resolveSandbox(a.sandbox, sandboxUserID),
 		SandboxMode:      a.sandboxMode,
+		InitialCWD:       a.workDir, // absolute-resolved at buildToolContext time
 
 		// 循环控制
 		MaxIterations:   a.getMaxIterations(),
@@ -154,6 +155,17 @@ func (a *Agent) buildBaseRunConfig(
 		// SettingsSvc — inherit from Agent
 		SettingsSvc: a.settingsSvc,
 
+		// TUI/Config callbacks — inherit from Agent (CLI local mode)
+		TUICtrlFn:   a.tuiCtrlFn,
+		ConfigGetFn: a.configGetFn,
+		ConfigSetFn: a.configSetFn,
+
+		// Remote TUI control — detect RemoteCLIChannel and inject WS-based callback
+		RemoteTUICtrlFn: a.buildRemoteTUICtrlFn(channel, chatID),
+
+		// Subscription listing — from LLMFactory
+		ListLLMSubs: a.listLLMSubsFn(channel),
+
 		// LLM 并发限流回调（per-tenant）
 		LLMSemAcquire:             llmSemAcquire,
 		EnableConcurrentSubAgents: true,
@@ -182,6 +194,15 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
+
+	// Use session CWD for InitialCWD (may differ from a.workDir for worktree sessions).
+	// AutoDetectAndInit in buildPrompt already set the correct CWD on tenantSession.
+	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
+		cfg.InitialCWD = cwd
+	}
+
+	// Wire peer message injection for inter-session communication.
+	cfg.PeerMessageFn = a.injectPeerMessage
 
 	// 保留 FeishuUserID 供 buildToolContext 等处使用
 	cfg.FeishuUserID = feishuUserID
@@ -574,6 +595,10 @@ func (a *Agent) buildSubAgentRunConfig(
 		InitialGroupID:      parentCtx.GroupID,
 		InitialGroupMembers: parentCtx.GroupMembers,
 
+		// Worktree isolation: if the parent is in a worktree, rewrite
+		// WorkspaceRoot to the worktree path and enable isolation.
+		IsWorktreeIsolated: parentCtx.IsWorktreeIsolated,
+
 		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
@@ -581,6 +606,13 @@ func (a *Agent) buildSubAgentRunConfig(
 		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
 
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
+	}
+
+	// If the SubAgent's InitialCWD is inside a worktree directory,
+	// rewrite WorkspaceRoot to the worktree path for path isolation.
+	if strings.Contains(cfg.InitialCWD, ".xbot-worktrees") {
+		cfg.WorkspaceRoot = cfg.InitialCWD
+		cfg.IsWorktreeIsolated = true
 	}
 
 	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户
@@ -672,6 +704,10 @@ func (a *Agent) buildSubAgentRunConfig(
 	cfg.HookManager = a.hookManager
 	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
+
+	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
+	cfg.TUICtrlFn = a.tuiCtrlFn
+	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(parentCtx.Channel, parentCtx.ChatID)
 	cfg.MessageSender = a.messageSender
 	cfg.RegisterAgentChannel = a.registerAgentChannel
 	cfg.UnregisterAgentChannel = a.unregisterAgentChannel
@@ -766,6 +802,11 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	cfg.HookManager = a.hookManager
 	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
+
+	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
+	cfg.TUICtrlFn = a.tuiCtrlFn
+	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(channel, chatID)
+	cfg.ListLLMSubs = a.listLLMSubsFn(channel)
 
 	var sessionOnce sync.Once
 
@@ -1410,6 +1451,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Thinking:         s.ThinkingContent,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
+				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
 				payload.ActiveTools = append(payload.ActiveTools, channelpkg.CLIToolProgress{
@@ -1471,6 +1513,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Thinking:         s.ThinkingContent,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
+				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
 				payload.ActiveTools = append(payload.ActiveTools, channelpkg.WsToolProgress{
@@ -1528,6 +1571,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Thinking:         s.ThinkingContent,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
+				CWD:              s.CWD,
 			}
 			for _, t := range s.ActiveTools {
 				cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
@@ -1603,6 +1647,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 			Thinking:         s.ThinkingContent,
 			Reasoning:        s.ReasoningContent,
 			HistoryCompacted: s.HistoryCompacted,
+			CWD:              s.CWD,
 		}
 		for _, t := range s.ActiveTools {
 			payload.ActiveTools = append(payload.ActiveTools, channelpkg.WsToolProgress{

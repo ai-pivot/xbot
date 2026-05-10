@@ -692,7 +692,7 @@ func (b *fakeAgentBackend) Stop()                                               
 func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error                         { return nil }
 func (b *fakeAgentBackend) OnOutbound(func(bus.OutboundMessage))                         {}
 func (b *fakeAgentBackend) OnProgress(func(*channel.CLIProgressPayload))                 {}
-func (b *fakeAgentBackend) OnInjectUserMessage(func(string))                             {}
+func (b *fakeAgentBackend) OnInjectUserMessage(func(string, string))                     {}
 func (b *fakeAgentBackend) OnReconnect(func())                                           {}
 func (b *fakeAgentBackend) OnConnStateChange(func(string))                               {}
 func (b *fakeAgentBackend) OnPluginWidgets(func(map[string]string, string))              {}
@@ -704,6 +704,7 @@ func (b *fakeAgentBackend) Bus() *bus.MessageBus                                
 func (b *fakeAgentBackend) IsRemote() bool                                               { return false }
 func (b *fakeAgentBackend) IsProcessing(string, string) bool                             { return false }
 func (b *fakeAgentBackend) GetActiveProgress(string, string) *channel.CLIProgressPayload { return nil }
+func (b *fakeAgentBackend) GetTodos(string, string) []channel.CLITodoItem                { return nil }
 func (b *fakeAgentBackend) LLMFactory() *agent.LLMFactory                                { return b.factory }
 func (b *fakeAgentBackend) SettingsService() *agent.SettingsService                      { return nil }
 func (b *fakeAgentBackend) MultiSession() *session.MultiTenantSession                    { return nil }
@@ -792,16 +793,20 @@ func (b *fakeAgentBackend) SetUserModel(string, string) error         { return n
 func (b *fakeAgentBackend) SetSubscriptionModel(id, model string) error {
 	return b.factory.GetSubscriptionSvc().SetModel(id, model)
 }
-func (b *fakeAgentBackend) SwitchModel(string, string) error                      { return nil }
-func (b *fakeAgentBackend) GetDefaultModel() string                               { return b.defaultModel }
-func (b *fakeAgentBackend) GetUserMaxContext(string) int                          { return 0 }
-func (b *fakeAgentBackend) SetUserMaxContext(string, int) error                   { return nil }
-func (b *fakeAgentBackend) GetUserMaxOutputTokens(string) int                     { return 0 }
-func (b *fakeAgentBackend) SetUserMaxOutputTokens(string, int) error              { return nil }
-func (b *fakeAgentBackend) GetUserThinkingMode(string) string                     { return "" }
-func (b *fakeAgentBackend) SetUserThinkingMode(string, string) error              { return nil }
-func (b *fakeAgentBackend) GetLLMConcurrency(string) int                          { return 0 }
-func (b *fakeAgentBackend) SetLLMConcurrency(string, int) error                   { return nil }
+func (b *fakeAgentBackend) SwitchModel(string, string) error         { return nil }
+func (b *fakeAgentBackend) GetDefaultModel() string                  { return b.defaultModel }
+func (b *fakeAgentBackend) GetUserMaxContext(string) int             { return 0 }
+func (b *fakeAgentBackend) SetUserMaxContext(string, int) error      { return nil }
+func (b *fakeAgentBackend) GetUserMaxOutputTokens(string) int        { return 0 }
+func (b *fakeAgentBackend) SetUserMaxOutputTokens(string, int) error { return nil }
+func (b *fakeAgentBackend) GetUserThinkingMode(string) string        { return "" }
+func (b *fakeAgentBackend) SetUserThinkingMode(string, string) error { return nil }
+func (b *fakeAgentBackend) GetLLMConcurrency(string) int             { return 0 }
+func (b *fakeAgentBackend) SetLLMConcurrency(string, int) error      { return nil }
+func (b *fakeAgentBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
+}
+func (b *fakeAgentBackend) OnTUIControlRequest(_ func(action string, params map[string]string) (map[string]string, error)) {
+}
 func (b *fakeAgentBackend) GetContextMode() string                                { return "" }
 func (b *fakeAgentBackend) PluginManager() *plugin.PluginManager                  { return nil }
 func (b *fakeAgentBackend) GetSettings(string, string) (map[string]string, error) { return nil, nil }

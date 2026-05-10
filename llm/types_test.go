@@ -79,6 +79,36 @@ func TestSanitizeMessages_EmptyAssistant(t *testing.T) {
 			},
 			wantLen: 2, // hello + reply
 		},
+		{
+			name: "Pass 5: strips tool messages orphaned by Pass 2 (invalid JSON tool_call removed)",
+			input: []ChatMessage{
+				NewUserMessage("hello"),
+				{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{
+						{ID: "call_1", Name: "shell", Arguments: `{"command":"ls`}, // invalid JSON (unclosed string)
+						{ID: "call_2", Name: "read", Arguments: "{}"},
+					},
+				},
+				NewToolMessage("shell", "call_1", `{"command":"ls`, "partial result"),
+				NewToolMessage("read", "call_2", "{}", "file content"),
+				NewAssistantMessage("done"),
+			},
+			wantLen: 4, // user + assistant(call_2 only) + tool(call_2) + assistant("done")
+			wantLog: true,
+		},
+		{
+			name: "Pass 5: strips orphaned tool message with no matching tool_call anywhere",
+			input: []ChatMessage{
+				NewUserMessage("hello"),
+				NewAssistantMessage("thinking..."),
+				NewToolMessage("grep", "call_orphan", "{}", "result"),
+				NewAssistantMessage("done"),
+			},
+			wantLen: 3, // user + assistant("thinking") + assistant("done")
+			wantLog: true,
+		},
 	}
 
 	for _, tt := range tests {

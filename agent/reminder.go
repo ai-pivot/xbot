@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
 	"xbot/llm"
+	"xbot/tools"
 )
 
 // systemReminderRe is pre-compiled for stripSystemReminder (called in hot loops).
@@ -13,7 +15,8 @@ var systemReminderRe = regexp.MustCompile(`\n?\n?<system-reminder>[\s\S]*?</syst
 // BuildSystemReminder builds a system reminder appended to the last tool message.
 // agentID "main" = main Agent, otherwise SubAgent.
 // roundToolCalls is the current round's tool calls (used to detect git commit).
-func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string) string {
+// sessionKey is the unique session identifier (used for worktree peer lookup).
+func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -60,7 +63,7 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	}
 
 	if cwd != "" {
-		parts = append(parts, fmt.Sprintf("当前目录: %s", cwd))
+		parts = append(parts, fmt.Sprintf("📂 默认工作目录: %s（你的 Shell 命令默认在此目录执行，Cd 后生效）", cwd))
 	}
 
 	parts = append(parts, fmt.Sprintf("已完成 %d 次工具调用", toolCount))
@@ -68,6 +71,35 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 
 	if todoSummary != "" {
 		parts = append(parts, fmt.Sprintf("TODO: %s", todoSummary))
+	}
+
+	// Worktree/peer awareness: always show peer list and collaboration rules
+	// when other agents are working in the same repo (even without worktree).
+	if !isSubAgent && sessionKey != "" {
+		// Find repo path from session key
+		repoPath := ""
+		if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
+			repoPath = entry.RepoPath
+			if entry.WorktreeDir != "" {
+				parts = append(parts, "")
+				parts = append(parts, fmt.Sprintf("⚠️ Worktree 隔离模式 (分支: %s)", entry.Branch))
+				parts = append(parts, fmt.Sprintf("   工作区: %s", entry.WorktreeDir))
+				parts = append(parts, "   你的改动与主工作区隔离，其他 agent 看不到")
+				parts = append(parts, fmt.Sprintf("   完成后请主动询问用户：合并回主工作区（%s）还是继续留在 worktree", entry.RepoPath))
+			}
+		}
+
+		// Always show peers if any (including shared sessions without worktree)
+		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
+		if len(peers) > 0 {
+			parts = append(parts, "")
+			parts = append(parts, fmt.Sprintf("👥 协作中: %d 个同伴在此仓库工作", len(peers)))
+			for _, p := range peers {
+				parts = append(parts, fmt.Sprintf("   - %s (角色: %s, 分支: %s)", shortenPeerName(p.SessionKey), p.Role, p.Branch))
+			}
+			parts = append(parts, "协作规则: 尊重同伴的修改，改动冲突时优先通过 SendMessage 协商。")
+			parts = append(parts, "如果因同伴正在修改相关代码而无法验证，可 SendMessage 将验证任务委托给同伴。")
+		}
 	}
 
 	parts = append(parts, "行为提醒:")
@@ -131,4 +163,12 @@ func extractUserGoal(content string) string {
 		goal = string(runes[:500]) + "..."
 	}
 	return goal
+}
+
+// shortenPeerName shortens a session key for display in peer list.
+func shortenPeerName(sessionKey string) string {
+	if idx := strings.LastIndex(sessionKey, ":"); idx > 0 {
+		return sessionKey[idx+1:]
+	}
+	return sessionKey
 }

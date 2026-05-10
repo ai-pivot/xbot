@@ -1,6 +1,9 @@
 package channel
 
 import (
+	"encoding/json"
+	"path/filepath"
+
 	"charm.land/lipgloss/v2"
 	"fmt"
 	"github.com/muesli/termenv"
@@ -11,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"xbot/config"
 	"xbot/internal/textarea"
 	"xbot/plugin"
 )
@@ -27,7 +31,7 @@ type cliTheme struct {
 	TextSecondary string // 次要文本
 	TextMuted     string // 弱化文本/占位符
 	FGMostSubtle  string // 最弱文本（引导线轨道、超弱分隔符）
-	FGGuide       string // 引导线（│）颜色
+	FGGuide       string // 引导线（┊）颜色
 	// Semantic
 	Success string // 成功/完成
 	Warning string // 警告/进行中
@@ -58,6 +62,17 @@ type cliTheme struct {
 	GBlockQuote     string // 引用边框色
 	GListItem       string // 列表标记色
 	GHorizontalRule string // 水平分隔线色
+	// --- 新增：扩展色板 (Phase 2: 5-level foreground + 5-level background + accent gradient) ---
+	FGBright     string // 最亮前景（焦点高亮、交互反馈）
+	BGHover      string // 悬停/选中行背景
+	BGInset      string // 深色内嵌背景（代码块、思考框）
+	BGOverlay    string // 覆盖层背景（最深）
+	SuccessMuted string // 次要成功色
+	WarningMuted string // 次要警告色
+	ErrorMuted   string // 次要错误色
+	InfoMuted    string // 次要信息色
+	AccentStart  string // Accent 渐变起始色
+	AccentEnd    string // Accent 渐变终止色
 }
 
 var (
@@ -93,6 +108,16 @@ var (
 		GBlockQuote:     "#c58af9",
 		GListItem:       "#8c9eff",
 		GHorizontalRule: "#667eea",
+		FGBright:        "#ffffff",
+		BGHover:         "#2d2f3e",
+		BGInset:         "#171827",
+		BGOverlay:       "#0d0e1a",
+		SuccessMuted:    "#4a7a5a",
+		WarningMuted:    "#8a7a3a",
+		ErrorMuted:      "#7a4a42",
+		InfoMuted:       "#4a5a7a",
+		AccentStart:     "#8c9eff",
+		AccentEnd:       "#667eea",
 	}
 	themeOcean = cliTheme{
 		// Deep ocean blues with cyan highlights — calm, focused
@@ -126,6 +151,16 @@ var (
 		GBlockQuote:     "#67e8f9",
 		GListItem:       "#22d3ee",
 		GHorizontalRule: "#0ea5e9",
+		FGBright:        "#e0f4ff",
+		BGHover:         "#1a3a4a",
+		BGInset:         "#0a1a2a",
+		BGOverlay:       "#050f18",
+		SuccessMuted:    "#3a7a6a",
+		WarningMuted:    "#8a7a3a",
+		ErrorMuted:      "#7a4a42",
+		InfoMuted:       "#3a5a7a",
+		AccentStart:     "#22d3ee",
+		AccentEnd:       "#0ea5e9",
 	}
 	themeForest = cliTheme{
 		// Nordic forest greens — organic, natural, soothing
@@ -159,6 +194,16 @@ var (
 		GBlockQuote:     "#a3e635",
 		GListItem:       "#4ade80",
 		GHorizontalRule: "#059669",
+		FGBright:        "#e0ffe0",
+		BGHover:         "#1a3a2a",
+		BGInset:         "#0a1a10",
+		BGOverlay:       "#050f08",
+		SuccessMuted:    "#3a6a4a",
+		WarningMuted:    "#7a6a3a",
+		ErrorMuted:      "#6a3a3a",
+		InfoMuted:       "#3a5a4a",
+		AccentStart:     "#4ade80",
+		AccentEnd:       "#22c55e",
 	}
 	themeSunset = cliTheme{
 		// Warm amber/coral palette — energetic, inviting
@@ -192,6 +237,16 @@ var (
 		GBlockQuote:     "#fbbf24",
 		GListItem:       "#fb923c",
 		GHorizontalRule: "#ea580c",
+		FGBright:        "#fff5e0",
+		BGHover:         "#3a2a1a",
+		BGInset:         "#1a1008",
+		BGOverlay:       "#0f0a05",
+		SuccessMuted:    "#5a7a4a",
+		WarningMuted:    "#8a7a3a",
+		ErrorMuted:      "#7a4a3a",
+		InfoMuted:       "#5a5a7a",
+		AccentStart:     "#fb923c",
+		AccentEnd:       "#ea580c",
 	}
 	themeRose = cliTheme{
 		// Soft pink/magenta — modern, playful, expressive
@@ -225,6 +280,16 @@ var (
 		GBlockQuote:     "#c084fc",
 		GListItem:       "#f472b6",
 		GHorizontalRule: "#db2777",
+		FGBright:        "#ffe0f0",
+		BGHover:         "#3a1a2a",
+		BGInset:         "#1a0a15",
+		BGOverlay:       "#0f050a",
+		SuccessMuted:    "#4a6a5a",
+		WarningMuted:    "#8a6a3a",
+		ErrorMuted:      "#7a3a4a",
+		InfoMuted:       "#4a4a7a",
+		AccentStart:     "#f472b6",
+		AccentEnd:       "#db2777",
 	}
 	themeMono = cliTheme{
 		// Clean grayscale with red accent — minimalist, hacker aesthetic
@@ -258,6 +323,16 @@ var (
 		GBlockQuote:     "#8b949e",
 		GListItem:       "#f0f6fc",
 		GHorizontalRule: "#484f58",
+		FGBright:        "#ffffff",
+		BGHover:         "#2a2a2a",
+		BGInset:         "#111111",
+		BGOverlay:       "#080808",
+		SuccessMuted:    "#555555",
+		WarningMuted:    "#666655",
+		ErrorMuted:      "#665555",
+		InfoMuted:       "#555566",
+		AccentStart:     "#f0f6fc",
+		AccentEnd:       "#484f58",
 	}
 	themeNord = cliTheme{
 		// Nord color scheme — arctic, blue-ish, muted elegance
@@ -291,6 +366,16 @@ var (
 		GBlockQuote:     "#b48ead",
 		GListItem:       "#88c0d0",
 		GHorizontalRule: "#5e81ac",
+		FGBright:        "#eceff4",
+		BGHover:         "#3b4252",
+		BGInset:         "#242933",
+		BGOverlay:       "#191d24",
+		SuccessMuted:    "#4c6a5a",
+		WarningMuted:    "#8a7a4a",
+		ErrorMuted:      "#6a4a4a",
+		InfoMuted:       "#4a5a7a",
+		AccentStart:     "#88c0d0",
+		AccentEnd:       "#5e81ac",
 	}
 	themeDracula = cliTheme{
 		// Dracula — deep purple theme with vivid contrast
@@ -324,6 +409,16 @@ var (
 		GBlockQuote:     "#ff79c6",
 		GListItem:       "#bd93f9",
 		GHorizontalRule: "#6272a4",
+		FGBright:        "#f8f8f2",
+		BGHover:         "#343746",
+		BGInset:         "#1a1b26",
+		BGOverlay:       "#0e0f16",
+		SuccessMuted:    "#3a6a5a",
+		WarningMuted:    "#7a6a3a",
+		ErrorMuted:      "#6a3a4a",
+		InfoMuted:       "#4a4a7a",
+		AccentStart:     "#bd93f9",
+		AccentEnd:       "#6272a4",
 	}
 
 	themeCatppuccin = cliTheme{
@@ -358,6 +453,16 @@ var (
 		GBlockQuote:     "#f5c2e7", // Pink
 		GListItem:       "#cba6f7", // Mauve
 		GHorizontalRule: "#89b4fa", // Blue
+		FGBright:        "#cdd6f4",
+		BGHover:         "#313244",
+		BGInset:         "#181825",
+		BGOverlay:       "#11111b",
+		SuccessMuted:    "#4a6a5a",
+		WarningMuted:    "#7a6a3a",
+		ErrorMuted:      "#6a4a4a",
+		InfoMuted:       "#4a5a7a",
+		AccentStart:     "#cba6f7",
+		AccentEnd:       "#89b4fa",
 	}
 
 	themeRegistry = map[string]*cliTheme{
@@ -461,8 +566,8 @@ type cliStyles struct {
 	AssistantGuide lipgloss.Style
 	StreamCursor   lipgloss.Style
 	// --- guide lines (message hierarchy) ---
-	GuideSt    lipgloss.Style // 活跃引导线（│）
-	DimGuideSt lipgloss.Style // 暗淡引导线（已完成的旧消息）
+	GuideSt    lipgloss.Style // 活跃引导线（┊）
+	DimGuideSt lipgloss.Style // 暗淡引导线（┆）
 	// --- thinking box ---
 	ThinkingBox lipgloss.Style // 推理内容折叠面板
 	// --- settings panel ---
@@ -500,6 +605,32 @@ type cliStyles struct {
 	PluginDiscovered lipgloss.Style
 	PluginInactive   lipgloss.Style
 	PluginTransition lipgloss.Style
+	// --- diamond signature system ---
+	DiamondMark  lipgloss.Style // ◈ 品牌标记
+	DiamondFocus lipgloss.Style // ◆ 焦点指示
+	DiamondDim   lipgloss.Style // ◇ 非焦点
+	DotLine      lipgloss.Style // ┈ 点线分隔
+	GuideActive  lipgloss.Style // ┊ 虚线引导线（活跃）
+	GuideDim     lipgloss.Style // ┆ 虚线引导线（暗淡）
+	// --- panel border variants ---
+	PanelBorderSettings lipgloss.Style // Settings: 左粗线风格
+	PanelBorderSessions lipgloss.Style // Sessions: 信息色边框
+	PanelBorderDanger   lipgloss.Style // Danger/Approval: 错误色边框
+	PanelBorderRewind   lipgloss.Style // Rewind: 暗淡边框
+	// --- footer hint zones ---
+	FooterHintLabel lipgloss.Style // 可点击 hint 的按键标签
+	FooterHintHover lipgloss.Style // hint hover 态（下划线）
+	// --- sidebar ---
+	SidebarBg      lipgloss.Style
+	SidebarSection lipgloss.Style
+	SidebarItem    lipgloss.Style
+	SidebarActive  lipgloss.Style
+	SidebarHeader  lipgloss.Style
+	SidebarBusy    lipgloss.Style
+	SidebarDivider lipgloss.Style
+	// --- additional surfaces ---
+	BGHoverSt lipgloss.Style // 选中/悬停行背景
+	BGInsetSt lipgloss.Style // 深色内嵌背景
 	// toolDisplayInfo
 }
 
@@ -591,10 +722,10 @@ func buildStyles(width int) cliStyles {
 		AssistantGuide: lipgloss.NewStyle().Foreground(c(t.Gradient)),
 		StreamCursor:   lipgloss.NewStyle().Foreground(c(t.Warning)).Bold(true),
 		// --- guide lines (message hierarchy) ---
-		GuideSt:    lipgloss.NewStyle().Foreground(c(t.FGGuide)),
-		DimGuideSt: lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)),
+		GuideSt:    lipgloss.NewStyle().Foreground(c(t.FGGuide)),      // ┊ 虚线引导线（活跃）
+		DimGuideSt: lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)), // ┆ 虚线引导线（暗淡）
 		// --- thinking box ---
-		ThinkingBox: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Border)).Padding(0, 1),
+		ThinkingBox: lipgloss.NewStyle().Background(c(t.BGInset)).Padding(0, 1),
 		// --- settings panel ---
 		SettingsDivider: lipgloss.NewStyle().Foreground(c(t.Border)).Faint(true),
 		SettingsCat:     lipgloss.NewStyle().Foreground(c(t.AccentAlt)).Bold(true),
@@ -615,7 +746,7 @@ func buildStyles(width int) cliStyles {
 		TICursor:         lipgloss.NewStyle().Foreground(c(t.Info)),
 		TIPlaceholder:    lipgloss.NewStyle().Foreground(c(t.TextMuted)),
 		// --- key hints (footer) ---
-		KeyLabelSt:       lipgloss.NewStyle().Foreground(c(t.TextMuted)).Bold(true),
+		KeyLabelSt:       lipgloss.NewStyle().Foreground(c(t.TextMuted)).Bold(true).Underline(true),
 		KeyDescSt:        lipgloss.NewStyle().Foreground(c(t.TextSecondary)),
 		ProgressGradient: lipgloss.NewStyle().Foreground(c(t.BarFilled)).Bold(true),
 		ProgressGlow:     lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
@@ -628,6 +759,32 @@ func buildStyles(width int) cliStyles {
 		PluginDiscovered: lipgloss.NewStyle().Foreground(c(t.Warning)),
 		PluginInactive:   lipgloss.NewStyle().Foreground(c(t.TextMuted)),
 		PluginTransition: lipgloss.NewStyle().Foreground(c(t.Warning)).Italic(true),
+		// --- diamond signature system ---
+		DiamondMark:  lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		DiamondFocus: lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		DiamondDim:   lipgloss.NewStyle().Foreground(c(t.TextMuted)),
+		DotLine:      lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)),
+		GuideActive:  lipgloss.NewStyle().Foreground(c(t.FGGuide)),
+		GuideDim:     lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)),
+		// --- panel border variants ---
+		PanelBorderSettings: lipgloss.NewStyle().Width(width).AlignHorizontal(lipgloss.Left).BorderLeft(true).BorderStyle(lipgloss.Border{Left: "▎"}).BorderForeground(c(t.Accent)).Padding(0, 1),
+		PanelBorderSessions: lipgloss.NewStyle().Width(width).AlignHorizontal(lipgloss.Left).Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Info)).Padding(0, 1),
+		PanelBorderDanger:   lipgloss.NewStyle().Width(width).AlignHorizontal(lipgloss.Left).Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Error)).Padding(0, 1),
+		PanelBorderRewind:   lipgloss.NewStyle().Width(width).AlignHorizontal(lipgloss.Left).Border(lipgloss.RoundedBorder()).BorderForeground(c(t.FGMostSubtle)).Padding(0, 1),
+		// --- footer hint zones ---
+		FooterHintLabel: lipgloss.NewStyle().Foreground(c(t.TextMuted)).Bold(true).Underline(true),
+		FooterHintHover: lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true).Underline(true),
+		// --- sidebar ---
+		SidebarBg:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(c(t.Accent)).Padding(0, 1),
+		SidebarSection: lipgloss.NewStyle().Foreground(c(t.TextSecondary)).Bold(true),
+		SidebarItem:    lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
+		SidebarActive:  lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		SidebarHeader:  lipgloss.NewStyle().Foreground(c(t.Accent)).Bold(true),
+		SidebarBusy:    lipgloss.NewStyle().Foreground(c(t.Warning)).Bold(true),
+		SidebarDivider: lipgloss.NewStyle().Foreground(c(t.Border)),
+		// --- additional surfaces ---
+		BGHoverSt: lipgloss.NewStyle().Background(c(t.BGHover)),
+		BGInsetSt: lipgloss.NewStyle().Background(c(t.BGInset)),
 	}
 }
 
@@ -699,10 +856,139 @@ func setTheme(name string) {
 	if t, ok := themeRegistry[name]; ok {
 		currentTheme = t
 		currentThemeName = name
-	} else {
-		currentTheme = &themeMidnight
-		currentThemeName = "midnight"
+		return
 	}
+	// Fallback: try loading external theme from ~/.xbot/themes/<name>.json
+	if t := loadExternalTheme(name); t != nil {
+		currentTheme = t
+		currentThemeName = name
+		return
+	}
+	currentTheme = &themeMidnight
+	currentThemeName = "midnight"
+}
+
+var externalThemesMu sync.Mutex
+var externalThemes = map[string]*cliTheme{}
+
+// loadExternalTheme loads a theme JSON from ~/.xbot/themes/<name>.json.
+// Caches loaded themes for subsequent lookups.
+func loadExternalTheme(name string) *cliTheme {
+	externalThemesMu.Lock()
+	if t, ok := externalThemes[name]; ok {
+		externalThemesMu.Unlock()
+		return t
+	}
+	externalThemesMu.Unlock()
+
+	path := filepath.Join(filepath.Dir(config.ConfigFilePath()), "themes", name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var ext externalThemeJSON
+	if err := json.Unmarshal(data, &ext); err != nil {
+		return nil
+	}
+	t := &cliTheme{
+		TextPrimary:     or(ext.TextPrimary, "#e8eaed"),
+		TextSecondary:   or(ext.TextSecondary, "#9aa0a6"),
+		TextMuted:       or(ext.TextMuted, "#5f6368"),
+		FGMostSubtle:    or(ext.FGMostSubtle, "#3c4043"),
+		FGGuide:         or(ext.FGGuide, "#667eea"),
+		Success:         or(ext.Success, "#81c995"),
+		Warning:         or(ext.Warning, "#fdd663"),
+		Error:           or(ext.Error, "#f28b82"),
+		Info:            or(ext.Info, "#8ab4f8"),
+		Accent:          or(ext.Accent, "#8c9eff"),
+		AccentAlt:       or(ext.AccentAlt, "#c58af9"),
+		BarFilled:       or(ext.BarFilled, "#8c9eff"),
+		BarEmpty:        or(ext.BarEmpty, "#292a3d"),
+		Border:          or(ext.Border, "#3c4043"),
+		TitleText:       or(ext.TitleText, "#e8eaed"),
+		Surface:         or(ext.Surface, "#1e1f2e"),
+		BGPanel:         or(ext.BGPanel, "#252736"),
+		Gradient:        or(ext.Gradient, "#667eea"),
+		ErrorBg:         or(ext.ErrorBg, "#332020"),
+		SuccessBg:       or(ext.SuccessBg, "#1a3325"),
+		WarningBg:       or(ext.WarningBg, "#332d1a"),
+		InfoBg:          or(ext.InfoBg, "#1a2533"),
+		GDocumentText:   or(ext.GDocumentText, "#e8eaed"),
+		GHeadingText:    or(ext.GHeadingText, "#8ab4f8"),
+		GCodeBlock:      or(ext.GCodeBlock, "#1e1f2e"),
+		GCodeText:       or(ext.GCodeText, "#c9d1d9"),
+		GLinkText:       or(ext.GLinkText, "#8ab4f8"),
+		GBlockQuote:     or(ext.GBlockQuote, "#8c9eff"),
+		GListItem:       or(ext.GListItem, "#8ab4f8"),
+		GHorizontalRule: or(ext.GHorizontalRule, "#3c4043"),
+		FGBright:        or(ext.FGBright, "#ffffff"),
+		BGHover:         or(ext.BGHover, "#2d2f3e"),
+		BGInset:         or(ext.BGInset, "#161722"),
+		BGOverlay:       or(ext.BGOverlay, "#0d0e1a"),
+		SuccessMuted:    or(ext.SuccessMuted, "#4a7d5f"),
+		WarningMuted:    or(ext.WarningMuted, "#8a7a3a"),
+		ErrorMuted:      or(ext.ErrorMuted, "#8a4d4d"),
+		InfoMuted:       or(ext.InfoMuted, "#4a6d8a"),
+		AccentStart:     or(ext.AccentStart, ext.Accent),
+		AccentEnd:       or(ext.AccentEnd, ext.AccentAlt),
+	}
+
+	externalThemesMu.Lock()
+	externalThemes[name] = t
+	externalThemesMu.Unlock()
+	return t
+}
+
+// externalThemeJSON is the JSON-serializable theme format for external files.
+// Users only need to specify colors they want to override; defaults fill the rest.
+type externalThemeJSON struct {
+	TextPrimary     string `json:"text_primary"`
+	TextSecondary   string `json:"text_secondary"`
+	TextMuted       string `json:"text_muted"`
+	FGMostSubtle    string `json:"fg_most_subtle"`
+	FGGuide         string `json:"fg_guide"`
+	Success         string `json:"success"`
+	Warning         string `json:"warning"`
+	Error           string `json:"error"`
+	Info            string `json:"info"`
+	Accent          string `json:"accent"`
+	AccentAlt       string `json:"accent_alt"`
+	BarFilled       string `json:"bar_filled"`
+	BarEmpty        string `json:"bar_empty"`
+	Border          string `json:"border"`
+	TitleText       string `json:"title_text"`
+	Surface         string `json:"surface"`
+	BGPanel         string `json:"bg_panel"`
+	Gradient        string `json:"gradient"`
+	ErrorBg         string `json:"error_bg"`
+	SuccessBg       string `json:"success_bg"`
+	WarningBg       string `json:"warning_bg"`
+	InfoBg          string `json:"info_bg"`
+	GDocumentText   string `json:"gdocument_text"`
+	GHeadingText    string `json:"gheading_text"`
+	GCodeBlock      string `json:"gcode_block"`
+	GCodeText       string `json:"gcode_text"`
+	GLinkText       string `json:"glink_text"`
+	GBlockQuote     string `json:"gblock_quote"`
+	GListItem       string `json:"glist_item"`
+	GHorizontalRule string `json:"ghorizontal_rule"`
+	FGBright        string `json:"fg_bright"`
+	BGHover         string `json:"bg_hover"`
+	BGInset         string `json:"bg_inset"`
+	BGOverlay       string `json:"bg_overlay"`
+	SuccessMuted    string `json:"success_muted"`
+	WarningMuted    string `json:"warning_muted"`
+	ErrorMuted      string `json:"error_muted"`
+	InfoMuted       string `json:"info_muted"`
+	AccentStart     string `json:"accent_start"`
+	AccentEnd       string `json:"accent_end"`
+}
+
+func or(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 func ApplyTheme(name string) {
@@ -714,11 +1000,29 @@ func ApplyTheme(name string) {
 	}
 }
 
-// ThemeNames returns the list of available theme names.
+// ThemeNames returns the list of available theme names (built-in + external).
 func ThemeNames() []string {
 	names := make([]string, 0, len(themeRegistry))
 	for name := range themeRegistry {
 		names = append(names, name)
+	}
+	// Scan external themes directory
+	themesDir := filepath.Join(filepath.Dir(config.ConfigFilePath()), "themes")
+	if entries, err := os.ReadDir(themesDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".json")
+			if name == e.Name() {
+				continue // not a .json file
+			}
+			// Don't duplicate built-in names
+			if _, ok := themeRegistry[name]; ok {
+				continue
+			}
+			names = append(names, name)
+		}
 	}
 	return names
 }

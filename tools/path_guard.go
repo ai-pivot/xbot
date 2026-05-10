@@ -61,12 +61,36 @@ func effectiveCWD(ctx *ToolContext) (string, error) {
 // isUnrestricted returns true when path restrictions should be skipped.
 // None sandbox: user has full filesystem access.
 // Remote sandbox: the runner handles its own path enforcement.
+// Worktree isolation: even in none sandbox, boundaries MUST be enforced for worktree agents.
 func isUnrestricted(ctx *ToolContext) bool {
 	if ctx == nil || ctx.Sandbox == nil {
 		return false
 	}
+	if ctx.IsWorktreeIsolated {
+		return false // worktree agents are always restricted to their workspace
+	}
 	name := ctx.Sandbox.Name()
 	return name == "none" || name == "remote"
+}
+
+// expandTilde expands a leading ~ or ~/ to the user's home directory.
+// Returns the input unchanged if expansion fails or path does not start with ~.
+func expandTilde(inputPath string) string {
+	if !strings.HasPrefix(inputPath, "~") {
+		return inputPath
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return inputPath
+	}
+	if inputPath == "~" {
+		return home
+	}
+	if strings.HasPrefix(inputPath, "~/") {
+		return filepath.Join(home, inputPath[2:])
+	}
+	// ~user style not supported
+	return inputPath
 }
 
 // ResolveWritePath 将 inputPath 解析为绝对路径，并校验其在 workspace 写入范围内。
@@ -77,6 +101,9 @@ func ResolveWritePath(ctx *ToolContext, inputPath string) (string, error) {
 	if inputPath == "" {
 		return "", fmt.Errorf("path is required")
 	}
+
+	// Expand ~ to user home directory
+	inputPath = expandTilde(inputPath)
 
 	// Unrestricted mode (none/remote sandbox): skip path checks.
 	if isUnrestricted(ctx) {
@@ -154,6 +181,9 @@ func ResolveReadPath(ctx *ToolContext, inputPath string) (string, error) {
 	if inputPath == "" {
 		return "", fmt.Errorf("path is required")
 	}
+
+	// Expand ~ to user home directory
+	inputPath = expandTilde(inputPath)
 
 	// Unrestricted mode (none/remote sandbox): skip path checks.
 	if isUnrestricted(ctx) {

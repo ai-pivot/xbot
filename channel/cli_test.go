@@ -14,7 +14,6 @@ import (
 	"xbot/llm"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 )
 
 // isTerminal returns true if stdout is connected to a terminal.
@@ -998,13 +997,10 @@ func TestCLIModelRenderProgressStatus(t *testing.T) {
 		{"unknown", "#0"},
 	}
 
-	progressStyle := lipgloss.NewStyle()
-	toolStyle := lipgloss.NewStyle()
-
 	for _, tt := range tests {
 		t.Run(tt.phase, func(t *testing.T) {
 			model.progress = &CLIProgressPayload{Phase: tt.phase}
-			result := model.renderProgressStatus(progressStyle, toolStyle)
+			result := model.renderProgressStatus()
 			if !strings.Contains(result, tt.expected) {
 				t.Errorf("renderProgressStatus(%s) should contain %q, got %q",
 					tt.phase, tt.expected, result)
@@ -1018,10 +1014,7 @@ func TestCLIModelRenderProgressStatusNil(t *testing.T) {
 	model.locale = GetLocale("en")
 	model.progress = nil
 
-	progressStyle := lipgloss.NewStyle()
-	toolStyle := lipgloss.NewStyle()
-
-	result := model.renderProgressStatus(progressStyle, toolStyle)
+	result := model.renderProgressStatus()
 	if !strings.Contains(result, "Thinking") {
 		t.Errorf("renderProgressStatus with nil progress should show a thinking verb, got: %q", result)
 	}
@@ -1034,10 +1027,7 @@ func TestCLIModelRenderProgressStatusWithIteration(t *testing.T) {
 		Iteration: 5,
 	}
 
-	progressStyle := lipgloss.NewStyle()
-	toolStyle := lipgloss.NewStyle()
-
-	result := model.renderProgressStatus(progressStyle, toolStyle)
+	result := model.renderProgressStatus()
 
 	if !strings.Contains(result, "#5") {
 		t.Errorf("renderProgressStatus should show iteration, got: %q", result)
@@ -1052,10 +1042,7 @@ func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 		ActiveTools: []CLIToolProgress{{Name: "read", Label: "Reading file", Elapsed: 100}},
 	}
 
-	progressStyle := lipgloss.NewStyle()
-	toolStyle := lipgloss.NewStyle()
-
-	result := model.renderProgressStatus(progressStyle, toolStyle)
+	result := model.renderProgressStatus()
 
 	// Active tool name is NOT shown in status bar (rendered in progress block instead)
 	// Verify it shows iteration and doesn't crash
@@ -1072,10 +1059,7 @@ func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 		ActiveTools: []CLIToolProgress{{Name: "read", Label: "", Elapsed: 0}},
 	}
 
-	progressStyle := lipgloss.NewStyle()
-	toolStyle := lipgloss.NewStyle()
-
-	result := model.renderProgressStatus(progressStyle, toolStyle)
+	result := model.renderProgressStatus()
 
 	// Active tool name is NOT shown in status bar (rendered in progress block instead)
 	if !strings.Contains(result, "#1") {
@@ -1088,10 +1072,7 @@ func TestCLIModelRenderProgressStatusWithElapsed(t *testing.T) {
 	model.progress = &CLIProgressPayload{Phase: "thinking"}
 	model.typingStartTime = time.Now().Add(-5 * time.Second)
 
-	progressStyle := lipgloss.NewStyle()
-	toolStyle := lipgloss.NewStyle()
-
-	result := model.renderProgressStatus(progressStyle, toolStyle)
+	result := model.renderProgressStatus()
 	if !strings.Contains(result, "s") {
 		t.Errorf("renderProgressStatus should show elapsed time, got: %q", result)
 	}
@@ -1396,7 +1377,9 @@ func TestCLIModelSendMessageEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTickCmd(t *testing.T) {
-	cmd := tickCmd()
+	model := newCLIModel()
+	model.tickGen = 1
+	cmd := model.tickCmd()
 	if cmd == nil {
 		t.Error("tickCmd() returned nil")
 	}

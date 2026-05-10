@@ -49,6 +49,7 @@ const (
 	MethodSetChannelConfig             = "set_channel_config"
 	MethodIsProcessing                 = "is_processing"
 	MethodGetActiveProgress            = "get_active_progress"
+	MethodGetTodos                     = "get_todos"
 	MethodCountInteractiveSessions     = "count_interactive_sessions"
 	MethodListInteractiveSessions      = "list_interactive_sessions"
 	MethodInspectInteractiveSession    = "inspect_interactive_session"
@@ -282,6 +283,11 @@ type isProcessingReq struct {
 }
 
 type getActiveProgressReq struct {
+	Channel string `json:"channel"`
+	ChatID  string `json:"chat_id"`
+}
+
+type getTodosReq struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
 }

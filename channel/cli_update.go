@@ -46,6 +46,12 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		return m, cmd
 	}
 
+	// AI-triggered TUI session control (from tui_control tool via program.Send — same path as mouse clicks)
+	if sc, ok := msg.(cliSessionControlMsg); ok {
+		retCmd := m.handleSessionControlMsg(sc)
+		return m, retCmd
+	}
+
 	// 主题变更通知：重建样式缓存 + glamour 渲染器
 	select {
 	case <-themeChangeCh:
@@ -214,7 +220,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			// handleKeyPress may call sendMessage→startAgentTurn which sets typing=true,
 			// but the early return below skips the wasTyping guard at the end of Update.
 			if cm, ok := model.(*cliModel); ok && !wasTyping && cm.typing && !cm.fastTickActive {
-				keyCmds = append(keyCmds, tickCmd())
+				keyCmds = append(keyCmds, m.tickCmd())
 			}
 			return model, tea.Batch(keyCmds...)
 		}
@@ -232,12 +238,16 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliProgressMsg:
 		m.handleProgressMsg(msg)
-		// Ensure fast tick chain is active when restoring progress (reconnect/switch).
-		// Normal progress events don't need this (tick already running), but restored
-		// snapshots arrive before the idle tick self-heal fires (3s delay).
-		if m.typing && !m.fastTickActive {
+		// Ensure fast tick chain is running when session is active.
+		// Use server-provided progress state (authoritative) rather than
+		// client-maintained m.typing which can be stale after session switches.
+		// Without this, stream-only updates (isStreamOnly path) accumulate
+		// content but never render because the tick chain isn't driving
+		// updateViewportContent.
+		sessionActive := m.progress != nil && m.progress.Phase != "done"
+		if sessionActive && !m.fastTickActive {
 			m.fastTickActive = true
-			cmds = append(cmds, tickCmd())
+			cmds = append(cmds, m.tickCmd())
 		}
 
 	case cliProcessingMsg:
@@ -256,6 +266,9 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// Flush is handled in cliTickMsg instead (next tick after typing=false).
 
 	case cliTickMsg:
+		if msg.gen != m.tickGen {
+			return m, tea.Batch(cmds...) // stale tick from previous chain, discard
+		}
 		cmds = append(cmds, m.handleTickMsg()...)
 
 	case idleTickMsg:
@@ -398,7 +411,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// This is the universal safety net — callers that can return cmds do so
 	// directly, but this catches any missed transitions.
 	if !wasTyping && m.typing && !m.fastTickActive {
-		cmds = append(cmds, tickCmd())
+		cmds = append(cmds, m.tickCmd())
 	}
 
 	// 更新 viewport
@@ -505,8 +518,9 @@ func (m *cliModel) layoutViewportHeight() int {
 	// 正常模式
 	taBorder := 2 // top + bottom border
 	// 计算 todoBar 占用的行数：标题行(1) + 每个 todo item 一行
+	// 当 sidebar 展开时，todo 在 sidebar 中渲染，不占用主视图空间
 	todoLines := 0
-	if len(m.todos) > 0 {
+	if len(m.todos) > 0 && !m.sidebarShown() {
 		todoLines = 1 + len(m.todos)
 	}
 	// Info bar: 1 line when bg tasks/agents/queue are active OR widget content exists.
@@ -533,15 +547,44 @@ func (m *cliModel) layoutViewportHeight() int {
 	return viewportHeight
 }
 
-// relayoutViewport 重新计算并设置 viewport 高度（不重建样式缓存）。
-// 用于 panel 打开/关闭、todo 增减时动态调整布局。
+// relayoutViewport 重新计算并设置 viewport 宽高、textarea 和 glamour。
+// 用于 panel 打开/关闭、todo 增减、sidebar toggle 时动态调整布局。
 // 如果用户之前在底部，调整后继续保持跟随底部。
 func (m *cliModel) relayoutViewport() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	wasAtBottom := m.viewport.AtBottom()
+
+	cw := m.chatWidth()
+
+	m.viewport.SetWidth(cw)
 	m.viewport.SetHeight(m.layoutViewportHeight())
+
+	// Textarea width matches input box content area
+	iw := cw - 8
+	if iw < 10 {
+		iw = 10
+	}
+	iw = iw &^ 1
+	m.textarea.SetWidth(iw)
+
+	// Invalidate render caches so content re-wraps at new width
+	m.renderCacheValid = false
+	m.lastViewportContent = ""
+
+	// Glamour word-wrap matches viewport
+	if cw > 4 {
+		m.renderer = newGlamourRenderer(cw - 4)
+	}
+	m.cachedWrappedHistory = ""
+	m.cachedWrappedHistoryRaw = ""
+	m.cachedWrappedHistoryWidth = 0
+	for i := range m.messages {
+		m.messages[i].dirty = true
+	}
+
+	wasAtBottom := m.viewport.AtBottom()
+	m.updateViewportContent()
 	if wasAtBottom {
 		m.viewport.GotoBottom()
 	}
@@ -569,43 +612,10 @@ func (m *cliModel) handleResize(width, height int) {
 		m.widgetRegistry.RefreshAllWidgets(width, nil)
 	}
 
-	m.viewport.SetWidth(width)
-	m.viewport.SetHeight(m.layoutViewportHeight())
-
-	// InputBox lipgloss style: Width(width-4) includes border(2) + padding(2).
-	// Content area = width-4-2-2 = width-8. Textarea must match this.
-	iw := width - 8
-	if iw < 10 {
-		iw = 10
-	}
-	iw = iw &^ 1 // round down to even for CJK
-	m.textarea.SetWidth(iw)
-
-	// Glamour word-wrap must match viewport width so that lines
-	// don't get re-wrapped by lipgloss (which would lose the margin).
-	if width > 4 {
-		m.renderer = newGlamourRenderer(width - 4)
-	}
+	m.relayoutViewport()
 
 	if !m.ready {
 		m.ready = true
-	}
-
-	// §1 增量渲染：resize 后缓存全部失效
-	m.renderCacheValid = false
-	m.lastViewportContent = "" // force setViewportContent to re-wrap
-	m.cachedWrappedHistory = ""
-	m.cachedWrappedHistoryRaw = ""
-	m.cachedWrappedHistoryWidth = 0
-	for i := range m.messages {
-		m.messages[i].dirty = true
-	}
-
-	// 更新内容（保持用户滚动位置）
-	wasAtBottom := m.viewport.AtBottom()
-	m.updateViewportContent()
-	if wasAtBottom {
-		m.viewport.GotoBottom()
 	}
 }
 
@@ -667,7 +677,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 					parts[i] = m.styles.CompItem.Render(c)
 				}
 			}
-			hint = truncateCompHint(m.styles.CompHint.Render(strings.Join(parts, " · ")), m.width)
+			hint = truncateCompHint(m.styles.CompHint.Render(strings.Join(parts, " · ")), m.chatWidth())
 		} else {
 			var matches []string
 			for _, cmd := range cliCommands {
@@ -676,7 +686,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 				}
 			}
 			if len(matches) > 0 {
-				hint = truncateCompHint(m.styles.CompHintBorder.Render("[Tab] "+strings.Join(matches, " · ")), m.width)
+				hint = truncateCompHint(m.styles.CompHintBorder.Render("[Tab] "+strings.Join(matches, " · ")), m.chatWidth())
 			}
 		}
 		return

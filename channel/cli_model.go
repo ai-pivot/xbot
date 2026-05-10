@@ -5,13 +5,16 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/glamour"
+	"strings"
 	"time"
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/internal/textarea"
+	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -139,10 +142,8 @@ func (m *cliModel) advanceWriterCJK(visible *int, target int, content string, sk
 
 // Ticker frame presets
 var (
-	// dotFrames: braille dot orbit — 8 frames for a smooth clockwise loop
-	dotFrames = []string{
-		"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-	}
+	// diamondPulseFrames: pulsing diamond sweep — thinking/loading spinner
+	diamondPulseFrames = []string{"◇◇◇◇◇", "◇◆◇◇◇", "◇◆◆◇◇", "◇◆◆◆◇", "◇◇◆◆◇", "◇◇◇◆◇"}
 	// waveFrames: rotating crescent moon phases — subagent feel
 	waveFrames = []string{"◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒"}
 	// orbitFrames: spinning orbit — processing feel
@@ -151,6 +152,8 @@ var (
 	splashFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	// pulseFrames: pulsing circle — tool completion pulse
 	pulseFrames = []string{"◌", "◎", "◉", "◎", "◌"}
+	// sidebarSpinnerFrames: braille spinner for sidebar busy sessions
+	sidebarSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 )
 
 // errorKeywords — system 消息中的错误检测关键词
@@ -236,7 +239,8 @@ type tickerTickMsg struct{}
 
 // splashTickMsg 启动画面定时 tick 消息
 type splashTickMsg struct {
-	frame int // 当前帧索引
+	frame int    // 当前帧索引
+	gen   uint64 // tickGen at time of creation; stale ticks are discarded
 }
 
 // debugCaptureMsg triggers a UI capture (dump View() to file).
@@ -252,10 +256,23 @@ type suHistoryLoadMsg struct {
 	channelName    string              // target session at time of request
 	chatID         string              // target session at time of request
 	activeProgress *CLIProgressPayload // non-nil if target session has an active agent turn
+	// tokenState holds the last persisted token counts for the session.
+	// Used as fallback when activeProgress is nil (idle session) so the
+	// context bar still shows the session's last known token usage.
+	tokenPrompt     int64
+	tokenCompletion int64
+	// todos is the server-side TODO list for the target session.
+	// Populated by suLoadHistoryCmd via GetTodosFn RPC.
+	// When non-nil, it overwrites the local TodoManager cache so
+	// the first session switch after TUI startup shows fresh data.
+	todos []CLITodoItem
 }
 
 // sessionState holds per-session state that should be preserved when switching sessions.
 // Messages are NOT stored here — the DB is the source of truth for history.
+// EXCEPTION: pendingUserMsg saves the most recent user message that was sent to the
+// agent bus but may not yet be persisted to the DB. This prevents user messages from
+// disappearing when quickly switching sessions before the agent's eager-save completes.
 type sessionState struct {
 	progress             *CLIProgressPayload
 	typing               bool
@@ -274,6 +291,23 @@ type sessionState struct {
 	turnCancelled        bool
 	typewriterTickActive bool
 	reasoningByIter      map[int]string
+	// Context bar state — preserved across session switches so the
+	// token usage bar doesn't disappear when switching between sessions.
+	lastTokenUsage         *CLITokenUsage
+	cachedMaxContextTokens int
+	cachedCompressRatio    float64
+	cachedMaxOutputTokens  int64
+	pendingUserMsg         *cliMessage // user message sent but not yet confirmed in DB
+	messageQueue           []queuedMsg
+	queueEditing           bool
+	// Per-session LLM configuration (survives session switches)
+	activeSubscriptionID string // subscription ID active in this session
+	activeModel          string // model active in this session (may differ from subscription default)
+	// Per-session input state (survives session switches)
+	textareaValue   string   // current textarea content
+	inputHistory    []string // sent message history for Up/Down browsing
+	inputHistoryIdx int      // current position in input history (-1 = not browsing)
+	inputDraft      string   // draft text before entering history browsing
 }
 
 // sessionKey returns the map key for the current session.
@@ -289,23 +323,40 @@ func (m *cliModel) saveCurrentSession() {
 		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
-		progress:             m.progress,
-		typing:               m.typing,
-		agentTurnID:          m.agentTurnID,
-		inputReady:           m.inputReady,
-		needFlushQueue:       m.needFlushQueue,
-		lastProgressSeq:      m.lastProgressSeq,
-		twVisible:            m.twVisible,
-		rwVisible:            m.rwVisible,
-		iterationHistory:     m.iterationHistory,
-		lastSeenIteration:    m.lastSeenIteration,
-		streamingMsgIdx:      m.streamingMsgIdx,
-		typingStartTime:      m.typingStartTime,
-		lastReasoning:        m.lastReasoning,
-		lastThinking:         m.lastThinking,
-		turnCancelled:        m.turnCancelled,
-		typewriterTickActive: m.typewriterTickActive,
-		reasoningByIter:      m.reasoningByIter,
+		progress:               m.progress,
+		typing:                 m.typing,
+		agentTurnID:            m.agentTurnID,
+		inputReady:             m.inputReady,
+		needFlushQueue:         m.needFlushQueue,
+		lastProgressSeq:        m.lastProgressSeq,
+		twVisible:              m.twVisible,
+		rwVisible:              m.rwVisible,
+		iterationHistory:       m.iterationHistory,
+		lastSeenIteration:      m.lastSeenIteration,
+		streamingMsgIdx:        m.streamingMsgIdx,
+		typingStartTime:        m.typingStartTime,
+		lastReasoning:          m.lastReasoning,
+		lastThinking:           m.lastThinking,
+		turnCancelled:          m.turnCancelled,
+		typewriterTickActive:   m.typewriterTickActive,
+		reasoningByIter:        m.reasoningByIter,
+		lastTokenUsage:         m.lastTokenUsage,
+		cachedMaxContextTokens: m.cachedMaxContextTokens,
+		cachedCompressRatio:    m.cachedCompressRatio,
+		cachedMaxOutputTokens:  m.cachedMaxOutputTokens,
+		messageQueue:           m.messageQueue,
+		queueEditing:           m.queueEditing,
+		pendingUserMsg:         m.pendingUserMsg,
+		activeSubscriptionID:   m.activeSubID,
+		activeModel:            m.cachedModelName,
+		textareaValue:          m.textarea.Value(),
+		inputHistory:           m.inputHistory,
+		inputHistoryIdx:        m.inputHistoryIdx,
+		inputDraft:             m.inputDraft,
+	}
+	// Persist todo list for current session
+	if m.todoManager != nil {
+		_ = m.todoManager.SaveToFile(key)
 	}
 }
 
@@ -331,6 +382,36 @@ func (m *cliModel) restoreSession() {
 		m.turnCancelled = saved.turnCancelled
 		m.typewriterTickActive = saved.typewriterTickActive
 		m.reasoningByIter = saved.reasoningByIter
+		m.lastTokenUsage = saved.lastTokenUsage
+		m.cachedMaxContextTokens = saved.cachedMaxContextTokens
+		m.cachedCompressRatio = saved.cachedCompressRatio
+		m.cachedMaxOutputTokens = saved.cachedMaxOutputTokens
+		m.messageQueue = saved.messageQueue
+		m.queueEditing = saved.queueEditing
+		m.pendingUserMsg = saved.pendingUserMsg
+		m.activeSubID = saved.activeSubscriptionID
+		m.cachedModelName = saved.activeModel
+		m.textarea.SetValue(saved.textareaValue)
+		m.inputHistory = saved.inputHistory
+		m.inputHistoryIdx = saved.inputHistoryIdx
+		m.inputDraft = saved.inputDraft
+		// Load todo list for the restored session and sync to display
+		if m.todoManager != nil {
+			_ = m.todoManager.LoadFromFile(key)
+			if items := m.todoManager.GetTodos(key); len(items) > 0 {
+				m.todos = make([]CLITodoItem, len(items))
+				for i, t := range items {
+					m.todos[i] = CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+				}
+				m.todosDoneCleared = false
+			} else {
+				m.todos = nil
+				m.todosDoneCleared = false
+			}
+		} else {
+			m.todos = nil
+			m.todosDoneCleared = false
+		}
 		delete(m.savedSessions, key) // clean up
 	} else {
 		// No saved state — reset to idle (NOT cancelled)
@@ -347,17 +428,203 @@ func (m *cliModel) restoreSession() {
 		m.turnCancelled = false
 		m.inputReady = false
 		m.needFlushQueue = false
+		m.messageQueue = nil
+		m.queueEditing = false
 		m.lastProgressSeq = 0
 		m.twVisible = 0
 		m.rwVisible = 0
 		m.typewriterTickActive = false
+		m.pendingUserMsg = nil
+		m.textarea.SetValue("") // clear input for new/unsaved session
+		m.inputDraft = ""
+		m.inputHistoryIdx = -1
+		// Clear todos — no saved state means no active turn,
+		// but persist unfinished todos from TodoManager so they
+		// remain visible across session switches.
+		if m.todoManager != nil {
+			_ = m.todoManager.LoadFromFile(key)
+			if items := m.todoManager.GetTodos(key); len(items) > 0 {
+				m.todos = make([]CLITodoItem, len(items))
+				for i, t := range items {
+					m.todos[i] = CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+				}
+				m.todosDoneCleared = false
+			} else {
+				m.todos = nil
+				m.todosDoneCleared = false
+			}
+		} else {
+			m.todos = nil
+			m.todosDoneCleared = false
+		}
 	}
+}
+
+// postRestoreSessionSetup handles the common setup after restoreSession() in all
+// session switch paths. It resets turn state for remote mode (pending RPC authority),
+// sets inputReady appropriately, starts async history loading, and kicks the tick chain
+// if the restored session has an active turn.
+//
+// In remote mode (DynamicHistoryLoader != nil): inputReady=false and typing/progress
+// are reset to idle. The authoritative state comes from handleSuHistoryLoad (RPC).
+// This prevents stale client-side typing/busy state from causing:
+//   - flushMessageQueue sending queued messages before RPC confirms idle
+//   - handleProgressMsg auto-starting a turn on stale progress events
+//   - handleAgentMessage rendering stale replies
+//
+// In local mode: inputReady=true immediately (no async delay, no RPC).
+func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
+	isRemote := m.channel != nil && m.channel.config.DynamicHistoryLoader != nil
+	var cmds []tea.Cmd
+
+	if isRemote {
+		// Remote mode: restored state is a hint, not authoritative.
+		// DO NOT force m.typing=false here — the server RPC
+		// (get_active_progress, handled by handleSuHistoryLoad) is the
+		// single source of truth for whether a turn is active. Forcing
+		// typing=false unconditionally causes:
+		//   - Completed iterations rendered as static tool_summary
+		//     instead of progress block history (restoreProgressSnapshot fix)
+		//   - Progress updates ignored because handleProgressMsg skips
+		//     auto-start when m.typing=false && m.progress!=nil (state
+		//     mismatch between typing and server reality)
+		//   - Sidebar switch freezes: typing=false → busy=false →
+		//     tick chain drops to idleTick (3s), missing real-time updates
+		//
+		// Instead, keep the restored typing/progress as a "best guess"
+		// during the suLoading window. handleSuHistoryLoad will reconcile
+		// them with the server response:
+		//   acceptProgress → startAgentTurn() sets typing=true
+		//   default        → endAgentTurn()   sets typing=false
+		m.progress = nil // discard stale snapshot; server provides fresh one
+		m.needFlushQueue = false
+		m.turnCancelled = false
+		m.fastTickActive = false
+		m.typewriterTickActive = false
+		m.tickGen++ // invalidate any pending ticks from previous chain
+		m.lastProgressSeq = 0
+		m.suPhaseDoneConfirmed = false
+		m.inputReady = false
+
+		m.suLoading = true
+		m.splashFrame = 0
+		cmds = append(cmds, m.splashTick(0), m.suLoadHistoryCmd())
+	} else {
+		// Local mode: restored state is authoritative (no RPC delay).
+		m.inputReady = true
+		// Check for pending AskUser questions from a previous session.
+		cmds = append(cmds, m.checkAndRestorePendingAskUser())
+		// Kick tick chain if restored session has active turn.
+		if m.typing && m.progress != nil && !m.fastTickActive {
+			m.fastTickActive = true
+			cmds = append(cmds, m.tickCmd())
+		}
+		// Also kick a tick when idle: handleTickMsg will check
+		// sidebarHasBusySessions and decide whether to continue.
+		if !m.typing && !m.fastTickActive {
+			cmds = append(cmds, m.tickCmd())
+		}
+	}
+
+	return cmds
+}
+
+// checkAndRestorePendingAskUser checks disk for a pending AskUser question for
+// the current session and opens the panel if found.
+func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
+	if m.channelName == "" || m.chatID == "" {
+		return nil
+	}
+	pu := m.loadPendingAskUser(m.chatID)
+	if pu == nil {
+		return nil
+	}
+	// Don't restore if already in an AskUser panel for this session.
+	if m.panelMode == "askuser" && m.askUserSession == m.chatID {
+		return nil
+	}
+	// Don't restore if currently in another panel mode.
+	if m.panelMode != "" && m.panelMode != "askuser" {
+		return nil
+	}
+
+	// Parse questions from saved metadata.
+	var qs []askQItem
+	if err := json.Unmarshal([]byte(pu.Questions), &qs); err != nil || len(qs) == 0 {
+		log.WithError(err).WithField("chat_id", m.chatID).Warn("Failed to parse pending ask_user questions, removing corrupt file")
+		m.deletePendingAskUser(m.chatID)
+		return nil
+	}
+	items := make([]askItem, len(qs))
+	for i, q := range qs {
+		items[i] = askItem{Question: q.Question, Options: q.Options}
+	}
+
+	requestID := pu.RequestID // capture for callbacks
+
+	log.WithField("chat_id", m.chatID).Info("Restoring pending AskUser panel from disk")
+	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(requestID), m.pendingAskUserOnCancel(requestID))
+	return nil
+}
+
+// pendingAskUserOnAnswer returns a callback for answered pending questions.
+// It sends the answer back and cleans up the persisted file.
+func (m *cliModel) pendingAskUserOnAnswer(requestID string) func(map[string]string) {
+	return func(answers map[string]string) {
+		var parts []string
+		for k, v := range answers {
+			if k == "other_input" {
+				parts = append(parts, v)
+			} else {
+				parts = append(parts, fmt.Sprintf("Q: %s\nA: %s", k, v))
+			}
+		}
+		content := strings.Join(parts, "\n\n")
+		meta := map[string]string{"ask_user_answered": "true"}
+		if requestID != "" {
+			meta["request_id"] = requestID
+		}
+		m.sendInboundWait(m.newInbound(content, meta), 5*time.Second)
+		m.deletePendingAskUser(m.askUserSession)
+		m.startAgentTurn()
+	}
+}
+
+// pendingAskUserOnCancel returns a callback for cancelled pending questions.
+// It cleans up the persisted file and closes the panel.
+func (m *cliModel) pendingAskUserOnCancel(requestID string) func() {
+	return func() {
+		m.deletePendingAskUser(m.askUserSession)
+		m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
+		m.typing = false
+		m.updatePlaceholder()
+		m.inputReady = true
+		m.resetProgressState()
+		m.updateViewportContent()
+	}
+}
+
+// savePendingToSessionState syncs m.pendingUserMsg into the saved session state
+// for the current session. Call after setting m.pendingUserMsg to ensure it survives
+// a subsequent saveCurrentSession() call during session switch.
+func (m *cliModel) savePendingToSessionState() {
+	key := m.sessionKey()
+	if m.savedSessions == nil {
+		m.savedSessions = make(map[string]*sessionState)
+	}
+	if existing, ok := m.savedSessions[key]; ok {
+		existing.pendingUserMsg = m.pendingUserMsg
+	}
+	// If no existing state, it'll be created in saveCurrentSession() which
+	// reads m.pendingUserMsg directly.
 }
 
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
 type cliHistoryReloadMsg struct {
-	history []HistoryMessage
-	err     error
+	channelName string
+	chatID      string
+	history     []HistoryMessage
+	err         error
 }
 
 // cliToastItem 单条 Toast 通知数据
@@ -374,6 +641,21 @@ type cliToastMsg struct {
 
 // cliToastClearMsg Toast 通知自动清除消息（弹出队列头部）
 type cliToastClearMsg struct{}
+
+// cliSessionControlMsg AI-triggered TUI session control message.
+// Sent from tui_control tool via asyncCh to operate sidebar sessions.
+type cliSessionControlMsg struct {
+	action string                 // "switch" | "close"
+	chatID string                 // target session chatID
+	params map[string]string      // extra params (e.g. confirm=true)
+	result chan *cliSessionResult // result channel (tool blocks on this)
+}
+
+// cliSessionResult carries the outcome of a TUI session control operation.
+type cliSessionResult struct {
+	ok  bool
+	err string
+}
 
 // cliModel Bubble Tea 状态模型
 type cliModel struct {
@@ -453,30 +735,35 @@ type cliModel struct {
 	isAdminFn       func() bool
 
 	// --- Progress ---
-	progress             *CLIProgressPayload
-	iterationHistory     []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration    int                    // 上次进度事件的迭代号
-	lastProgressSeq      uint64                 // 上次进度事件的序列号（单调递增校验）
-	iterationStartTime   time.Time              // current iteration wall-clock start time
-	fastTickActive       bool                   // true when a fast tick chain (100ms) is running
-	typewriterTickActive bool                   // true when typewriter tick chain (50ms) is running
-	twVisible            int                    // typewriter: runes currently visible in stream content
-	rwVisible            int                    // typewriter: runes currently visible in reasoning stream content
-	rwCjkSkipTick        bool                   // alternates each tick to halve CJK speed (reasoning)
-	twCjkSkipTick        bool                   // alternates each tick to halve CJK speed (stream)
+	progress               *CLIProgressPayload
+	iterationHistory       []cliIterationSnapshot // 已完成迭代快照
+	lastSeenIteration      int                    // 上次进度事件的迭代号
+	lastProgressSeq        uint64                 // 上次进度事件的序列号（单调递增校验）
+	iterationStartTime     time.Time              // current iteration wall-clock start time
+	fastTickActive         bool                   // true when a fast tick chain (100ms) is running
+	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
+	unreadSessions         map[string]bool        // chatID → has unread results the user hasn't viewed yet
+	lastBusyStates         map[string]bool        // previous busy state per session, for detecting busy→idle transition
+	tickGen                uint64                 // incremented on session switch; stale ticks are discarded
+	typewriterTickActive   bool                   // true when typewriter tick chain (50ms) is running
+	twVisible              int                    // typewriter: runes currently visible in stream content
+	rwVisible              int                    // typewriter: runes currently visible in reasoning stream content
+	rwCjkSkipTick          bool                   // alternates each tick to halve CJK speed (reasoning)
+	twCjkSkipTick          bool                   // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
-	workDir         string // 工作目录（标题栏显示用）
-	remoteMode      bool   // 是否连接 remote backend（标题栏提示用）
-	remoteServerURL string // remote server host for header display (e.g. "host:port")
-	connState       string // WS connection state: "connected"|"disconnected"|"reconnecting"
-	debugMode       bool   // --debug: UI capture + key injection via SIGUSR1
-	debugCaptureMs  int    // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
-	senderID        string // 当前身份 ID（默认 "cli_user"，/su 命令可切换）
-	channelName     string // 当前 channel（默认 "cli"，/su 切换时可能变为 "web"）
-	defaultChatID   string // 默认 chatID（/su 切换回来时恢复）
-	chatID          string // 会话 ID（按工作目录区分）
-	sessionName     string // 当前会话名称（同目录多 session 支持）
+	workDir         string    // 工作目录（标题栏显示用）
+	remoteMode      bool      // 是否连接 remote backend（标题栏提示用）
+	remoteServerURL string    // remote server host for header display (e.g. "host:port")
+	connState       string    // WS connection state: "connected"|"disconnected"|"reconnecting"
+	debugMode       bool      // --debug: UI capture + key injection via SIGUSR1
+	debugCaptureMs  int       // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
+	senderID        string    // 当前身份 ID（默认 "cli_user"，/su 命令可切换）
+	channelName     string    // 当前 channel（默认 "cli"，/su 切换时可能变为 "web"）
+	defaultChatID   string    // 默认 chatID（/su 切换回来时恢复）
+	chatID          string    // 会话 ID（按工作目录区分）
+	sessionName     string    // 当前会话名称（同目录多 session 支持）
+	shiftHintUntil  time.Time // 鼠标无 Shift 操作时显示选中提示的截止时间（zero = 隐藏）
 
 	// --- §1 增量渲染 ---
 	renderCacheValid    bool   // 全局缓存是否有效（resize 后置 false）
@@ -502,6 +789,20 @@ type cliModel struct {
 	cachedCurrentStaticWidth int    // bubbleWidth when cache was built
 	cachedCurrentIter        int    // progress.Iteration when cache was built
 	cachedCurrentStaticFP    uint64 // fingerprint of static content for dirty detection
+
+	// Reasoning/stream/thinking block caches — avoids per-line Style.Render,
+	// lipgloss.Width, and hardWrapRunes on every tick when content is static.
+	cachedReasoningBlock      string // rendered reasoning lines with guides and cursor
+	cachedReasoningBlockFP    uint64 // fingerprint for dirty detection
+	cachedReasoningBlockWidth int    // innerWidth when cache was built
+
+	cachedStreamBlock      string // rendered stream lines with guides and cursor
+	cachedStreamBlockFP    uint64 // fingerprint for dirty detection
+	cachedStreamBlockWidth int    // innerWidth when cache was built
+
+	cachedThinkingBlock      string // rendered thinking lines with guides
+	cachedThinkingBlockFP    uint64 // fingerprint for dirty detection
+	cachedThinkingBlockWidth int    // innerWidth when cache was built
 
 	// --- §2 工具可视化 ---
 	lastCompletedTools []CLIToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
@@ -637,9 +938,10 @@ type cliModel struct {
 	panelSubGeneration int
 
 	// --- §14 Splash 画面 ---
-	splashDone  bool // true = splash 动画结束，进入正常界面
-	splashFrame int  // 当前 splash 动画帧索引
-	suLoading   bool // true = /su 切换用户后正在加载历史，显示 loading 画面
+	splashDone           bool // true = splash 动画结束，进入正常界面
+	splashFrame          int  // 当前 splash 动画帧索引
+	suLoading            bool // true = /su 切换用户后正在加载历史，显示 loading 画面
+	suPhaseDoneConfirmed bool // true = PhaseDone received during suLoading (server confirmed idle)
 
 	// --- §16 Toast 通知队列 ---
 	toasts     []cliToastItem // Toast 队列（头部=当前显示）
@@ -651,8 +953,9 @@ type cliModel struct {
 	// --- §Session state save/restore ---
 	// Per-session saved state so switching sessions doesn't lose in-progress state.
 	// Key = "channelName:chatID". Messages are NOT saved here — DB is source of truth.
-	savedSessions map[string]*sessionState
-	turnCancelled bool // true after Ctrl+C — prevents auto-start on stale progress
+	savedSessions  map[string]*sessionState
+	pendingUserMsg *cliMessage // most recent user message sent but not yet confirmed in DB
+	turnCancelled  bool        // true after Ctrl+C — prevents auto-start on stale progress
 
 	// --- Deterministic rendering: per-turn completion tracking ---
 	// turnDoneFlags tracks whether specific events have been processed for a turn.
@@ -670,6 +973,16 @@ type cliModel struct {
 	// --- Mouse support ---
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
+	// --- Layout configuration ---
+	chatMaxWidth    int    // max content width (0 = unlimited)
+	chatCenter      bool   // center content in middle-width screens
+	layoutMode      string // "auto" / "single" / "dual"
+	sidebarEnabled  bool   // show sidebar in wide screens
+	sidebarWidth    int    // sidebar width in chars
+	sidebarPosition string // "left" / "right"
+	sidebarVisible  bool   // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
+	xShift          int    // sidebar X offset for middleBlock, set during trackMainLayoutZones
+
 	// toolDisplayInfo
 
 	// --- 🥚 Easter Eggs 彩蛋 ---
@@ -684,9 +997,12 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel // back-reference to owning channel (set during Start)
-	cachedModelName string      // cached model name for View() performance
-	modelCount      int         // cached model list length for View() performance
+	channel         *CLIChannel        // back-reference to owning channel (set during Start)
+	cachedModelName string             // cached model name for View() performance
+	activeSubID     string             // active subscription ID for current session
+	todoManager     *tools.TodoManager // per-session todo persistence
+	askUserSession  string             // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount      int                // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *CLITokenUsage // last known token usage from progress events
@@ -786,7 +1102,7 @@ func newCLIModel() *cliModel {
 	renderer := newGlamourRenderer(maxBubbleWidth(80) - 2)
 
 	// Ticker
-	tk := newAnimTicker(dotFrames, currentTheme.Warning)
+	tk := newAnimTicker(diamondPulseFrames, currentTheme.Warning)
 
 	return &cliModel{
 		viewport:        vp,
@@ -807,6 +1123,16 @@ func newCLIModel() *cliModel {
 		inputDraft:      "",
 		senderID:        "cli_user",
 		channelName:     "cli",
+		// Layout defaults
+		chatMaxWidth:    76,
+		chatCenter:      true,
+		layoutMode:      "auto",
+		sidebarEnabled:  true,
+		sidebarVisible:  true,
+		sidebarWidth:    30,
+		sidebarPosition: "left",
+		unreadSessions:  make(map[string]bool),
+		lastBusyStates:  make(map[string]bool),
 	}
 }
 
@@ -852,11 +1178,15 @@ type cliConnStateMsg struct {
 // cliHistoryLoadMsg loads history messages into the model from a goroutine-safe context.
 // Data is pre-converted, so the Update handler only appends and rebuilds viewport.
 type cliHistoryLoadMsg struct {
-	history []cliMessage
+	channelName string
+	chatID      string
+	history     []cliMessage
 }
 
 // cliTickMsg 定时刷新（用于流式输出动画）
-type cliTickMsg struct{}
+type cliTickMsg struct {
+	gen uint64 // tick generation: stale ticks from previous chains are discarded
+}
 
 // typewriterTickMsg 独立的打字机刷新（50ms 间隔，逐 rune 输出）
 type typewriterTickMsg struct{}
@@ -869,11 +1199,19 @@ type cliTempStatusClearMsg struct{}
 
 // cliSettingsSavedMsg settings save completed (async callback result)
 type cliSettingsSavedMsg struct {
-	themeChanged bool
-	theme        string
-	langChanged  bool
-	lang         string
-	feedbackMsg  string
+	themeChanged  bool
+	theme         string
+	langChanged   bool
+	lang          string
+	layoutChanged bool
+	layoutVals    map[string]string // layout-related settings for field update
+	feedbackMsg   string
+	// syncOnly is true when the message originates from SyncLayoutSettings
+	// (periodic remote cache refresh), not from an explicit user settings save.
+	// When true, context-related caches (maxContextTokens, etc.) must NOT be
+	// invalidated — doing so causes the context bar to flash to solid line
+	// every 5 seconds in remote mode.
+	syncOnly bool
 }
 
 // cliSwitchLLMDoneMsg is sent when an async subscription switch completes.
@@ -888,6 +1226,7 @@ type cliSwitchLLMDoneMsg struct {
 // cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
 type cliInjectedUserMsg struct {
 	content string
+	chatID  string // session key "channel:chatID", empty for legacy (always apply)
 }
 
 // cliUpdateCheckMsg 更新检查结果消息
@@ -993,8 +1332,9 @@ func (m *cliModel) debugCaptureTick() tea.Cmd {
 
 // splashTick 生成启动画面动画的 tick 命令
 func (m *cliModel) splashTick(frame int) tea.Cmd {
+	gen := m.tickGen
 	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
-		return splashTickMsg{frame: frame + 1}
+		return splashTickMsg{frame: frame + 1, gen: gen}
 	})
 }
 
@@ -1003,6 +1343,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	chatID := m.chatID
 	channelName := m.channelName
 	progressFn := m.channel.config.GetActiveProgressFn
+	todosFn := m.channel.config.GetTodosFn
 
 	// Agent sessions: load from in-memory interactiveSubAgents (not DB).
 	if channelName == "agent" {
@@ -1015,7 +1356,11 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				if progressFn != nil {
 					activeProgress = progressFn(channelName, chatID)
 				}
-				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress}
+				var todos []CLITodoItem
+				if todosFn != nil {
+					todos = todosFn(channelName, chatID)
+				}
+				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress, todos: todos}
 			}
 		}
 	}
@@ -1026,6 +1371,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 			return suHistoryLoadMsg{err: fmt.Errorf("no dynamic history loader"), channelName: channelName, chatID: chatID}
 		}
 	}
+	tokenFn := m.channel.config.GetTokenStateFn
 	return func() tea.Msg {
 		history, err := loader(channelName, chatID)
 		// Also fetch active progress for seamless session switch recovery.
@@ -1033,7 +1379,26 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 		if progressFn != nil {
 			activeProgress = progressFn(channelName, chatID)
 		}
-		return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress}
+		// Fetch server-side TODO list to overwrite local cache on first switch.
+		var todos []CLITodoItem
+		if todosFn != nil {
+			todos = todosFn(channelName, chatID)
+		}
+		// Fetch last token state so the context bar shows immediately
+		// even when the session is idle (no active turn).
+		var tokenPrompt, tokenCompletion int64
+		if tokenFn != nil {
+			tokenPrompt, tokenCompletion = tokenFn(channelName, chatID)
+		}
+		return suHistoryLoadMsg{
+			history: history, err: err,
+			channelName:     channelName,
+			chatID:          chatID,
+			activeProgress:  activeProgress,
+			tokenPrompt:     tokenPrompt,
+			tokenCompletion: tokenCompletion,
+			todos:           todos,
+		}
 	}
 }
 
@@ -1052,7 +1417,12 @@ func (m *cliModel) reloadMessagesFromSession() {
 		// Send result via async channel (goroutine-safe)
 		if m.channel != nil {
 			select {
-			case m.channel.asyncCh <- cliHistoryReloadMsg{history: history, err: err}:
+			case m.channel.asyncCh <- cliHistoryReloadMsg{
+				channelName: channelName,
+				chatID:      chatID,
+				history:     history,
+				err:         err,
+			}:
 			default:
 				// channel full, drop — next progress event will retry
 			}

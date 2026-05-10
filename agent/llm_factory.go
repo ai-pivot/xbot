@@ -32,7 +32,7 @@ type LLMFactory struct {
 	mu              sync.RWMutex
 	clients         map[string]llm.LLM // senderID -> LLM client
 	models          map[string]string  // senderID -> model name
-	maxContexts     map[string]int     // senderID -> max_context tokens
+	modelContexts   map[string]int     // model name -> max context tokens (from config model_contexts)
 	maxOutputTokens map[string]int     // senderID -> max_output_tokens
 	thinkingModes   map[string]string  // senderID -> thinking_mode
 
@@ -49,7 +49,7 @@ func NewLLMFactory(configSvc *sqlite.UserLLMConfigService, defaultLLM llm.LLM, d
 		defaultModel:    defaultModel,
 		clients:         make(map[string]llm.LLM),
 		models:          make(map[string]string),
-		maxContexts:     make(map[string]int),
+		modelContexts:   make(map[string]int),
 		maxOutputTokens: make(map[string]int),
 		thinkingModes:   make(map[string]string),
 		// hasCustomLLMCache 使用零值 sync.Map，无需初始化
@@ -78,6 +78,24 @@ func (f *LLMFactory) SetRetryConfig(cfg llm.RetryConfig) {
 	f.mu.Unlock()
 }
 
+// SetModelContexts updates the model-level context size overrides.
+// Key is model name, value is max context tokens.
+// When a model is resolved, its context size from this map takes priority over the global MaxContextTokens.
+func (f *LLMFactory) SetModelContexts(m map[string]int) {
+	f.mu.Lock()
+	f.modelContexts = m
+	f.mu.Unlock()
+}
+
+// resolveModelContext returns the model-level max context for the given model,
+// or 0 if no override is configured.
+func (f *LLMFactory) resolveModelContext(model string) int {
+	if model == "" || f.modelContexts == nil {
+		return 0
+	}
+	return f.modelContexts[model]
+}
+
 // GetLLM 获取用户的 LLM 客户端，如果没有自定义配置则返回默认客户端
 // 返回: (LLM客户端, 模型名, maxContext, thinkingMode)
 //
@@ -91,7 +109,7 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string) {
 	f.mu.RLock()
 	if client, ok := f.clients[senderID]; ok {
 		model := f.models[senderID]
-		maxCtx := f.maxContexts[senderID]
+		maxCtx := f.resolveModelContext(model)
 		thinkingMode := f.thinkingModes[senderID]
 		f.mu.RUnlock()
 		return client, model, maxCtx, thinkingMode
@@ -121,11 +139,10 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string) {
 				f.mu.Lock()
 				f.clients[senderID] = client
 				f.models[senderID] = model
-				f.maxContexts[senderID] = sub.MaxContext
 				f.maxOutputTokens[senderID] = sub.MaxOutputTokens
 				f.thinkingModes[senderID] = sub.ThinkingMode
 				f.mu.Unlock()
-				return client, model, sub.MaxContext, sub.ThinkingMode
+				return client, model, f.resolveModelContext(model), sub.ThinkingMode
 			}
 		}
 	}
@@ -152,7 +169,7 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 	f.mu.RLock()
 	if client, ok := f.clients[key]; ok {
 		model := f.models[key]
-		maxCtx := f.maxContexts[key]
+		maxCtx := f.resolveModelContext(model)
 		thinkingMode := f.thinkingModes[key]
 		f.mu.RUnlock()
 		return client, model, maxCtx, thinkingMode
@@ -262,7 +279,6 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 	// Always update user-level cache so GetLLM(senderID) picks it up
 	f.clients[senderID] = client
 	f.models[senderID] = model
-	f.maxContexts[senderID] = sub.MaxContext
 	f.maxOutputTokens[senderID] = sub.MaxOutputTokens
 	f.thinkingModes[senderID] = sub.ThinkingMode
 	// If chatID provided, also cache under per-chat key for chat isolation
@@ -270,7 +286,6 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 		chatK := chatKey(senderID, chatID)
 		f.clients[chatK] = client
 		f.models[chatK] = model
-		f.maxContexts[chatK] = sub.MaxContext
 		f.maxOutputTokens[chatK] = sub.MaxOutputTokens
 		f.thinkingModes[chatK] = sub.ThinkingMode
 	}
@@ -297,6 +312,39 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 	return nil
 }
 
+// SetSessionLLM sets the LLM client for a specific session (senderID:chatID) only,
+// WITHOUT updating the user-level cache. This allows different sessions to have
+// different active subscriptions/models without affecting each other.
+// If the session already has a cached client, it is replaced.
+func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubscription) error {
+	if chatID == "" || sub == nil {
+		return fmt.Errorf("SetSessionLLM: chatID and sub are required")
+	}
+	cfg := &sqlite.UserLLMConfig{
+		Provider:        sub.Provider,
+		BaseURL:         sub.BaseURL,
+		APIKey:          sub.APIKey,
+		Model:           sub.Model,
+		MaxContext:      sub.MaxContext,
+		MaxOutputTokens: sub.MaxOutputTokens,
+		ThinkingMode:    sub.ThinkingMode,
+	}
+	client, model := f.createClient(cfg)
+	if client == nil {
+		return fmt.Errorf("failed to create LLM client for session %s", chatID)
+	}
+
+	f.mu.Lock()
+	chatK := chatKey(senderID, chatID)
+	f.clients[chatK] = client
+	f.models[chatK] = model
+	f.maxOutputTokens[chatK] = sub.MaxOutputTokens
+	f.thinkingModes[chatK] = sub.ThinkingMode
+	f.mu.Unlock()
+
+	return nil
+}
+
 // SwitchModel switches a user's active model without changing the subscription/LLM client.
 // Persists to DB subscription via the RPC handler. This method updates in-memory cache
 // and clears per-chat caches so GetLLMForChat returns the new model.
@@ -308,7 +356,6 @@ func (f *LLMFactory) SwitchModel(senderID, model string) {
 		if strings.HasPrefix(k, prefix) {
 			delete(f.clients, k)
 			delete(f.models, k)
-			delete(f.maxContexts, k)
 			delete(f.maxOutputTokens, k)
 			delete(f.thinkingModes, k)
 		}
@@ -362,7 +409,6 @@ func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	// 清除所有用户缓存，让后续 GetLLM 重新创建客户端
 	f.clients = make(map[string]llm.LLM)
 	f.models = make(map[string]string)
-	f.maxContexts = make(map[string]int)
 	f.maxOutputTokens = make(map[string]int)
 	f.thinkingModes = make(map[string]string)
 }
@@ -403,7 +449,6 @@ func (f *LLMFactory) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model str
 	defer f.mu.Unlock()
 	f.clients[senderID] = proxy
 	f.models[senderID] = model
-	f.maxContexts[senderID] = 0
 	f.maxOutputTokens[senderID] = 0
 	f.thinkingModes[senderID] = ""
 }
@@ -414,7 +459,6 @@ func (f *LLMFactory) ClearProxyLLM(senderID string) {
 	defer f.mu.Unlock()
 	delete(f.clients, senderID)
 	delete(f.models, senderID)
-	delete(f.maxContexts, senderID)
 	delete(f.thinkingModes, senderID)
 }
 
@@ -475,7 +519,6 @@ func (f *LLMFactory) Invalidate(senderID string) {
 		if k == senderID || strings.HasPrefix(k, prefix) {
 			delete(f.clients, k)
 			delete(f.models, k)
-			delete(f.maxContexts, k)
 			delete(f.maxOutputTokens, k)
 			delete(f.thinkingModes, k)
 		}
@@ -488,7 +531,6 @@ func (f *LLMFactory) InvalidateAll() {
 	f.mu.Lock()
 	f.clients = make(map[string]llm.LLM)
 	f.models = make(map[string]string)
-	f.maxContexts = make(map[string]int)
 	f.maxOutputTokens = make(map[string]int)
 	f.thinkingModes = make(map[string]string)
 	f.mu.Unlock()
@@ -617,8 +659,12 @@ func (f *LLMFactory) SubAgentSemAcquireForUser(senderID string) func(context.Con
 		return nil
 	}
 	return func(ctx context.Context) func() {
-		// Default max concurrent SubAgents: 3
-		cap := parseOrDefault(f.getSetting(senderID, "subagent_max_concurrent"), 3)
+		// subagent_max_concurrent takes priority; fallback to max_concurrent (LLM concurrency),
+		// then to DefaultLLMConcurrency. Previously hardcoded to 3 which caused surprises.
+		cap := parseOrDefault(f.getSetting(senderID, "subagent_max_concurrent"), -1)
+		if cap < 0 {
+			cap = parseOrDefault(f.getSetting(senderID, "max_concurrent"), llm.DefaultLLMConcurrency)
+		}
 		return f.llmSemManager.Acquire(ctx, senderID, "subagent", func() int { return cap })
 	}
 }
@@ -675,7 +721,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				source = "tier-exact"
 			}
 			log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: exact match found")
-			return client, resolvedModel, sub.MaxContext, sub.ThinkingMode, true
+			return client, resolvedModel, f.resolveModelContext(resolvedModel), sub.ThinkingMode, true
 		}
 	}
 
@@ -693,7 +739,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				client := f.createClientFromSub(sub, resolvedModel)
 				if client != nil {
 					log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "config-exact"}).Info("[LLM] GetLLMForModel: config sub exact match")
-					return client, resolvedModel, sub.MaxContext, sub.ThinkingMode, true
+					return client, resolvedModel, f.resolveModelContext(resolvedModel), sub.ThinkingMode, true
 				}
 			}
 		}
@@ -725,7 +771,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 							for _, m := range us.CachedModels {
 								if m == resolvedModel {
 									log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
-									return client, resolvedModel, sub.MaxContext, sub.ThinkingMode, true
+									return client, resolvedModel, f.resolveModelContext(resolvedModel), sub.ThinkingMode, true
 								}
 							}
 						}
@@ -804,6 +850,7 @@ func configSubToLLMSubscription(cs config.SubscriptionConfig) *sqlite.LLMSubscri
 		BaseURL:         cs.BaseURL,
 		APIKey:          cs.APIKey,
 		Model:           cs.Model,
+		MaxContext:      0, // context size now resolved at model level via config.model_contexts
 		MaxOutputTokens: cs.MaxOutputTokens,
 		ThinkingMode:    cs.ThinkingMode,
 	}

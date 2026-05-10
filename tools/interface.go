@@ -60,6 +60,17 @@ type ToolContext struct {
 	// PWD 工具优化：当前工作目录（可变，从 session 读取）
 	CurrentDir    string           // 当前工作目录（优先级高于 WorkspaceRoot）
 	SetCurrentDir func(dir string) // 更新 session 中的 cwd
+	// IsWorktreeIsolated indicates this agent is running in an isolated git worktree.
+	// When true, path_guard enforces boundaries even in "none" sandbox mode.
+	IsWorktreeIsolated bool
+	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
+	// Set from config.Agent.Experimental.AutoWorktree. Default: false.
+	AutoWorktreeEnabled bool
+	// PeerMessageFn sends a peer-to-peer message to another CLI session.
+	// If target is busy: injects as fake tool result in current iteration.
+	// If target is idle: injects as user message to start a new turn.
+	// Returns a delivery status string.
+	PeerMessageFn func(targetSessionKey, message string) string
 
 	// Stream indicates whether the parent Agent is using streaming LLM calls.
 	// SubAgents inherit this from the parent to ensure consistent behavior.
@@ -87,6 +98,52 @@ type ToolContext struct {
 	GroupID string
 	// GroupMembers lists all agent addresses in this agent's group (for system prompt injection).
 	GroupMembers []string
+
+	// TUIControl triggers TUI operations from tool goroutines (CLI channel only).
+	// Returns result map and error. Actions: "switch", "close", "layout", "theme".
+	TUIControl func(action string, params map[string]string) (map[string]string, error)
+
+	// ConfigGet reads a configuration value by key (for config tool).
+	ConfigGet func(key string) (string, error)
+
+	// ConfigSet writes a configuration value and returns the previous value (for config tool).
+	ConfigSet func(key, value string) (string, error)
+
+	// ConfigList returns all known configuration items with AI metadata.
+	// Injected from AllSettingDefs via buildToolContext.
+	ConfigList func() []ConfigListItem
+
+	// IsGlobalKey returns true if the setting key is global-scoped (shared config, admin-only).
+	IsGlobalKey func(key string) bool
+
+	// ListSubscriptions returns all LLM subscriptions for the current user.
+	ListSubscriptions func() []SubscriptionInfo
+
+	// OriginUserIsAdmin is true when the end user has admin privileges.
+	// Global-scoped settings should only be modified when this is true.
+	OriginUserIsAdmin bool
+}
+
+// ConfigListItem is a single configuration entry returned by config tool's "list" action.
+type ConfigListItem struct {
+	Key         string `json:"key"`
+	Description string `json:"description"`
+	Permission  string `json:"permission"`
+	Scope       string `json:"scope"`
+	ValidValues string `json:"valid_values,omitempty"`
+	DefaultVal  string `json:"default_value,omitempty"`
+	CurrentVal  string `json:"current_value,omitempty"`
+	Sensitive   bool   `json:"sensitive,omitempty"`
+	Source      string `json:"source,omitempty"` // "user_db" | "config_json" | "llm_config"
+}
+
+// SubscriptionInfo is a single LLM subscription entry.
+type SubscriptionInfo struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	IsDefault bool   `json:"is_default"`
 }
 
 // SubAgentManager SubAgent 管理接口，避免循环依赖
@@ -654,6 +711,8 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	// WebSearch: always available (requires TAVILY_API_KEY)
 	r.RegisterCore(NewFetchTool())
 	r.RegisterCore(&AskUserTool{})
+	// WorktreeTool — multi-agent workspace isolation via git worktrees
+	r.RegisterCore(&WorktreeTool{})
 	// LoadToolsTool 仅在 letta 模式下注册（flat 模式所有工具直接可用）
 	if memoryProvider != "flat" {
 		r.RegisterCore(&LoadToolsTool{})

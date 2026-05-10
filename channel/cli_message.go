@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"xbot/bus"
+	log "xbot/logger"
 	"xbot/version"
 
 	"charm.land/bubbles/v2/textinput"
@@ -256,12 +257,15 @@ func (m *cliModel) sendCancel() {
 
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
 func (m *cliModel) sendToAgent(content string) {
-	m.messages = append(m.messages, cliMessage{
+	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
-	})
+	}
+	m.messages = append(m.messages, userCliMsg)
+	m.pendingUserMsg = &userCliMsg
+	m.savePendingToSessionState()
 	if m.msgBus != nil {
 		m.sendInbound(m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}))
 		m.startAgentTurn()
@@ -284,12 +288,25 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	media := parseFileReferences(content)
 
 	// 添加用户消息到历史
-	m.messages = append(m.messages, cliMessage{
+	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
 		timestamp: time.Now(),
 		dirty:     true,
-	})
+	}
+	m.messages = append(m.messages, userCliMsg)
+
+	// User explicitly sent a message — cancel any pending suLoading.
+	// Background history loads are stale once the user initiates a new turn.
+	// If we don't clear suLoading, handleProgressMsg drops ALL progress events
+	// (line 391) and the session never enters typing state.
+	m.suLoading = false
+	m.suPhaseDoneConfirmed = false
+
+	// Save as pending user message so it survives session switches before
+	// the agent's eager-save to DB completes. Restored in handleSuHistoryLoad.
+	m.pendingUserMsg = &userCliMsg
+	m.savePendingToSessionState()
 
 	// 更新显示并强制滚动到底部（用户发送新消息时始终可见）
 	m.updateViewportContent()
@@ -353,6 +370,16 @@ func (m *cliModel) invalidateProgressHistoryCache() {
 	m.cachedCurrentStaticFP = 0
 	m.cachedCurrentStaticWidth = 0
 	m.cachedCurrentIter = 0
+	// Invalidate reasoning/stream/thinking block caches
+	m.cachedReasoningBlock = ""
+	m.cachedReasoningBlockFP = 0
+	m.cachedReasoningBlockWidth = 0
+	m.cachedStreamBlock = ""
+	m.cachedStreamBlockFP = 0
+	m.cachedStreamBlockWidth = 0
+	m.cachedThinkingBlock = ""
+	m.cachedThinkingBlockFP = 0
+	m.cachedThinkingBlockWidth = 0
 }
 
 // resetProgressState resets iteration tracking for a new agent turn.
@@ -490,7 +517,8 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.sendToAgent(cmd) // 直接透传，agent 层会解析
 
 	case "/new":
-		m.lastTokenUsage = nil // clear context bar immediately
+		m.lastTokenUsage = nil       // clear context bar immediately
+		m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 		m.sendToAgent("/new")
 
 	case "/tasks":
@@ -514,6 +542,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		//   /su          — 切回默认身份
 		//   /su <userID> — 切换到指定用户身份
 		//   /su web:<senderID>[:<token>] — 切换到 Web 端用户
+		m.saveCurrentSession()
 		if len(parts) < 2 {
 			if m.senderID == "cli_user" {
 				m.showSystemMsg(m.locale.SuAlreadyDefault, feedbackInfo)
@@ -544,14 +573,23 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 			}
 		}
+		// Reset critical state after identity switch (prevents stale typing/progress/input
+		// from leaking into the new session — same as postRestoreSessionSetup remote path).
+		m.typing = false
+		m.progress = nil
+		m.inputReady = false
+		m.turnCancelled = false
+		m.fastTickActive = false
+		m.typewriterTickActive = false
+		m.tickGen++
+		m.lastProgressSeq = 0
+		m.suPhaseDoneConfirmed = false
 		m.messages = nil
 		m.invalidateAllCache(false)
 		if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 			m.suLoading = true
 			m.splashFrame = 0
 			return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
-		} else {
-			m.showSystemMsg(fmt.Sprintf(m.locale.SuSwitched, m.chatID), feedbackInfo)
 		}
 
 	case "/ss", "/sessions":
@@ -571,6 +609,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		switch arg {
 		case "new":
 			if m.channel != nil && m.channel.config.ChatCreateFn != nil {
+				m.saveCurrentSession()
 				label := ""
 				if len(parts) > 2 {
 					label = strings.Join(parts[2:], " ")
@@ -581,8 +620,19 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 					return nil
 				}
 				m.chatID = chatID
+				// Reset critical state for new session (mirror postRestoreSessionSetup).
+				m.typing = false
+				m.progress = nil
+				m.inputReady = false
+				m.turnCancelled = false
+				m.fastTickActive = false
+				m.typewriterTickActive = false
+				m.tickGen++
+				m.lastProgressSeq = 0
+				m.suPhaseDoneConfirmed = false
 				m.messages = nil
-				m.lastTokenUsage = nil // clear stale token bar on new session
+				m.lastTokenUsage = nil       // clear stale token bar on new session
+				m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 				m.invalidateAllCache(false)
 				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
 			} else {
@@ -618,7 +668,18 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			}
 		default:
 			// Switch to specific chatID
+			m.saveCurrentSession()
 			m.chatID = arg
+			// Reset critical state after session switch.
+			m.typing = false
+			m.progress = nil
+			m.inputReady = false
+			m.turnCancelled = false
+			m.fastTickActive = false
+			m.typewriterTickActive = false
+			m.tickGen++
+			m.lastProgressSeq = 0
+			m.suPhaseDoneConfirmed = false
 			m.messages = nil
 			m.invalidateAllCache(false)
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
@@ -671,11 +732,37 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 
 // handleAgentMessage 处理 agent 回复
 func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
+	// Persist pending AskUser questions BEFORE session filter, so they survive
+	// session switches and restarts. Only persist if metadata has ask_questions.
+	if msg.WaitingUser && msg.Metadata != nil && msg.Metadata["ask_questions"] != "" && msg.ChatID != "" {
+		m.savePendingAskUser(msg.ChatID, msg.Metadata)
+	}
+
+	// Deduplication in handleSuHistoryLoad prevents message duplication,
+	// so we accept all messages immediately even during suLoading.
+	// This ensures progress/app responses are visible without delay
+	// when the user sends a message right after session switch.
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
 		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
+			log.WithFields(log.Fields{
+				"msg_channel":    msg.Channel,
+				"msg_chatid":     msg.ChatID,
+				"my_channelName": m.channelName,
+				"my_chatid":      m.chatID,
+				"waiting_user":   msg.WaitingUser,
+			}).Warn("handleAgentMessage: session filter rejected outbound message")
 			return
 		}
+	} else {
+		log.WithFields(log.Fields{
+			"msg_channel":    msg.Channel,
+			"msg_chatid":     msg.ChatID,
+			"my_channelName": m.channelName,
+			"my_chatid":      m.chatID,
+			"waiting_user":   msg.WaitingUser,
+			"content_len":    len(msg.Content),
+		}).Warn("handleAgentMessage: ChatID empty — filter bypassed, applying to current session")
 	}
 
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
@@ -773,11 +860,14 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		// Intermediate text messages (e.g. thinking content) arrive while the agent
 		// is still running; clearing progress here would hide the progress panel
 		// and make it look like the turn ended prematurely.
+		// IMPORTANT: Do NOT fallback to m.progress.ReasoningStreamContent.
+		// ReasoningStreamContent is a streaming accumulator with no per-iteration
+		// boundary. When handleAgentMessage arrives after the next structured
+		// progress has advanced m.progress.Iteration, ReasoningStreamContent may
+		// still contain the previous iteration's content — causing the previous
+		// iteration's reasoning to be misattributed to m.reasoningByIter[newIter].
 		if turnID == m.agentTurnID && m.progress != nil {
 			reasoning := m.progress.Reasoning
-			if reasoning == "" {
-				reasoning = m.progress.ReasoningStreamContent
-			}
 			if reasoning != "" {
 				m.lastReasoning = reasoning
 				if m.reasoningByIter == nil {
@@ -808,6 +898,7 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 		// §11.5 Session reset: clear messages and token usage bar after /new
 		if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
 			m.lastTokenUsage = nil
+			m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 			m.messages = make([]cliMessage, 0, cliMsgBufSize)
 			m.streamingMsgIdx = -1
 			m.cachedHistory = ""
@@ -850,7 +941,10 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 			if len(items) > 0 {
 				m.updateViewportContent()
+				m.askUserSession = m.chatID // bind AskUser to current session
 				m.openAskUserPanel(items, func(answers map[string]string) {
+					// Clean up persisted pending question now that user answered.
+					m.deletePendingAskUser(m.askUserSession)
 					// Format answers as tool-call style message
 					var parts []string
 					for i, item := range items {
@@ -894,6 +988,8 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 					m.startAgentTurn()
 					m.updateViewportContent()
 				}, func() {
+					// Clean up persisted pending question on cancel.
+					m.deletePendingAskUser(m.askUserSession)
 					m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
 					m.typing = false
 					m.updatePlaceholder()
@@ -1020,8 +1116,20 @@ func (m *cliModel) renderProgressBlock() string {
 	if !m.typing && m.progress == nil {
 		return ""
 	}
+	// Cross-session guard: if progress payload carries a ChatID that doesn't match
+	// the currently viewed session, it's stale — discard it entirely. This prevents
+	// phantom progress blocks when switching sessions while another session's agent
+	// is still processing.
+	if m.progress != nil && m.progress.ChatID != "" {
+		currentKey := m.channelName + ":" + m.chatID
+		if m.progress.ChatID != currentKey {
+			m.progress = nil
+			m.typing = false
+			return ""
+		}
+	}
 
-	bubbleWidth := m.width - 4
+	bubbleWidth := m.chatWidth() - 4
 	if bubbleWidth < 10 {
 		bubbleWidth = 10
 	}
@@ -1040,10 +1148,10 @@ func (m *cliModel) renderProgressBlock() string {
 	toolErrorStyle := s.ProgressError
 	elapsedStyle := s.ProgressElapsed
 	indentGuide := s.ProgressIndent
-	reasoningGuide := s.ProgressDim // dimmer │ for reasoning
-	thinkingGuide := indentGuide    // normal │ for thinking
-	reasoningW := lipgloss.Width(reasoningGuide.Render("  │ "))
-	thinkingW := lipgloss.Width(thinkingGuide.Render("  │ "))
+	reasoningGuide := s.ProgressDim // dimmer ┊ for reasoning
+	thinkingGuide := indentGuide    // normal ┊ for thinking
+	reasoningW := lipgloss.Width(reasoningGuide.Render("  ┊ "))
+	thinkingW := lipgloss.Width(thinkingGuide.Render("  ┊ "))
 	dimStyle := s.ProgressDim
 
 	var sb strings.Builder
@@ -1069,7 +1177,7 @@ func (m *cliModel) renderProgressBlock() string {
 						continue
 					}
 					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-						histBuf.WriteString(dimStyle.Render(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl)))
+						histBuf.WriteString(dimStyle.Render(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl)))
 						histBuf.WriteString("\n")
 					}
 				}
@@ -1081,7 +1189,7 @@ func (m *cliModel) renderProgressBlock() string {
 						continue
 					}
 					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-						histBuf.WriteString(dimStyle.Render(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl)))
+						histBuf.WriteString(dimStyle.Render(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl)))
 						histBuf.WriteString("\n")
 					}
 				}
@@ -1096,7 +1204,7 @@ func (m *cliModel) renderProgressBlock() string {
 				histBuf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 				histBuf.WriteString("\n")
 				// Render tool body (diff hints or per-tool output)
-				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), innerWidth, true, 0); content != "" {
+				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), innerWidth, true, 0); content != "" {
 					histBuf.WriteString(content)
 					histBuf.WriteString("\n")
 				}
@@ -1183,6 +1291,67 @@ func (m *cliModel) progressStaticFP() uint64 {
 	return h.Sum64()
 }
 
+// reasoningBlockFP computes a fingerprint for the reasoning block cache.
+// Includes cursor blink state since it affects the rendered output.
+func (m *cliModel) reasoningBlockFP(innerWidth, reasoningW, cursorState int) uint64 {
+	if m.progress == nil {
+		return 0
+	}
+	h := fnv.New64a()
+	reasoningText := m.progress.Reasoning
+	if reasoningText == "" {
+		reasoningText = m.progress.ReasoningStreamContent
+	}
+	h.Write([]byte(reasoningText))
+	var eb [8]byte
+	binary.LittleEndian.PutUint64(eb[:], uint64(m.rwVisible))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(innerWidth))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(reasoningW))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(cursorState))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(len([]rune(m.progress.ReasoningStreamContent))))
+	h.Write(eb[:])
+	return h.Sum64()
+}
+
+// streamBlockFP computes a fingerprint for the stream block cache.
+// Includes cursor blink state since it affects the rendered output.
+func (m *cliModel) streamBlockFP(innerWidth, thinkingW, cursorState int) uint64 {
+	if m.progress == nil {
+		return 0
+	}
+	h := fnv.New64a()
+	h.Write([]byte(m.progress.StreamContent))
+	var eb [8]byte
+	binary.LittleEndian.PutUint64(eb[:], uint64(m.twVisible))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(innerWidth))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(thinkingW))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(cursorState))
+	h.Write(eb[:])
+	return h.Sum64()
+}
+
+// thinkingBlockFP computes a fingerprint for the thinking block cache.
+func (m *cliModel) thinkingBlockFP(innerWidth, thinkingW int) uint64 {
+	if m.progress == nil {
+		return 0
+	}
+	h := fnv.New64a()
+	h.Write([]byte(m.progress.Thinking))
+	var eb [8]byte
+	binary.LittleEndian.PutUint64(eb[:], uint64(innerWidth))
+	h.Write(eb[:])
+	binary.LittleEndian.PutUint64(eb[:], uint64(thinkingW))
+	h.Write(eb[:])
+	return h.Sum64()
+}
+
 // getCurrentStaticCache returns the cached rendering of static parts for the
 // current iteration (completed tools, tool content). These are truly static
 // once a tool finishes — no typewriter, no cursor, no elapsed timer.
@@ -1238,7 +1407,7 @@ func (m *cliModel) getCurrentStaticCache(
 	}
 
 	// Tool content (completed + done/error active)
-	guide := reasoningGuide.Render("  │ ")
+	guide := reasoningGuide.Render("  ┊ ")
 	for i := range m.progress.CompletedTools {
 		tool := &m.progress.CompletedTools[i]
 		if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
@@ -1266,16 +1435,16 @@ func (m *cliModel) getCurrentStaticCache(
 
 // renderCurrentIteration renders the current iteration with correct linear order:
 //
-//  1. Reasoning (with typewriter when streaming)
-//  2. Thinking
+//  1. Reasoning (with typewriter when streaming) — cached per cursorState
+//  2. Thinking — cached
 //  3. Completed tools + content (from static cache)
-//  4. Stream content (assistant text output)
+//  4. Stream content (assistant text output) — cached per cursorState
 //  5. Active tools (live elapsed)
 //  6. Phase spinner (only when no content at all)
 //  7. SubAgent tree
 //
-// Only completed tools + tool content are cached (truly static once finished).
-// Everything else is rendered fresh each tick.
+// Reasoning, thinking, and stream blocks are cached to avoid per-line Style.Render,
+// lipgloss.Width, and hardWrapRunes on every tick when content is static.
 func (m *cliModel) renderCurrentIteration(
 	sb *strings.Builder,
 	s *cliStyles,
@@ -1287,70 +1456,92 @@ func (m *cliModel) renderCurrentIteration(
 		return
 	}
 
-	// --- 1. Reasoning ---
+	cursorState := int((m.ticker.ticks / 5) % 2) // 0 or 1, changes every ~500ms
+
+	// --- 1. Reasoning (cached) ---
 	isReasoningStreaming := m.progress.ReasoningStreamContent != "" && m.progress.StreamContent == ""
 	reasoningText := m.progress.Reasoning
 	if reasoningText == "" {
 		reasoningText = m.progress.ReasoningStreamContent
 	}
 	if reasoningText != "" {
-		// Typewriter effect for reasoning streaming
-		if isReasoningStreaming {
-			totalRunes := len([]rune(m.progress.ReasoningStreamContent))
-			runes := []rune(m.progress.ReasoningStreamContent)
-			if m.rwVisible > 0 && m.rwVisible < totalRunes {
-				runes = runes[:m.rwVisible]
-			}
-			reasoningText = string(runes)
-		}
-		lines := strings.Split(reasoningText, "\n")
-		reasoningTyping := isReasoningStreaming && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
-		cursorVisible := reasoningTyping || (m.ticker.ticks/5)%2 == 0
-		for i, line := range lines {
-			line = strings.TrimRight(line, " \t\r")
-			if line == "" {
-				continue
-			}
-			isLastLine := i == len(lines)-1
-			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
-			for j, wl := range wrappedLines {
-				isLast := isLastLine && j == len(wrappedLines)-1
-				guide := reasoningGuide.Render("  │ ")
-				if isLast && isReasoningStreaming {
-					cursorStr := s.StreamCursor.Render("▋")
-					cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
-					if cursorOverflow {
-						sb.WriteString(guide + reasoningStyle.Render(wl))
-						sb.WriteString("\n")
-						if cursorVisible {
-							sb.WriteString(guide + cursorStr)
-						} else {
-							sb.WriteString(guide)
-						}
-					} else if cursorVisible {
-						sb.WriteString(guide + reasoningStyle.Render(wl) + cursorStr)
-					} else {
-						sb.WriteString(guide + reasoningStyle.Render(wl))
-					}
-				} else {
-					sb.WriteString(guide + reasoningStyle.Render(wl))
+		fp := m.reasoningBlockFP(innerWidth, reasoningW, cursorState)
+		if m.cachedReasoningBlock != "" && m.cachedReasoningBlockFP == fp && m.cachedReasoningBlockWidth == innerWidth {
+			sb.WriteString(m.cachedReasoningBlock)
+		} else {
+			var blockBuf strings.Builder
+			// Typewriter effect for reasoning streaming
+			if isReasoningStreaming {
+				totalRunes := len([]rune(m.progress.ReasoningStreamContent))
+				runes := []rune(m.progress.ReasoningStreamContent)
+				if m.rwVisible > 0 && m.rwVisible < totalRunes {
+					runes = runes[:m.rwVisible]
 				}
-				sb.WriteString("\n")
+				reasoningText = string(runes)
 			}
+			lines := strings.Split(reasoningText, "\n")
+			reasoningTyping := isReasoningStreaming && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
+			cursorVisible := reasoningTyping || cursorState == 0
+			for i, line := range lines {
+				line = strings.TrimRight(line, " \t\r")
+				if line == "" {
+					continue
+				}
+				isLastLine := i == len(lines)-1
+				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n")
+				for j, wl := range wrappedLines {
+					isLast := isLastLine && j == len(wrappedLines)-1
+					guide := reasoningGuide.Render("  ┊ ")
+					if isLast && isReasoningStreaming {
+						cursorStr := s.StreamCursor.Render("▋")
+						cursorOverflow := reasoningW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
+						if cursorOverflow {
+							blockBuf.WriteString(guide + reasoningStyle.Render(wl))
+							blockBuf.WriteString("\n")
+							if cursorVisible {
+								blockBuf.WriteString(guide + cursorStr)
+							} else {
+								blockBuf.WriteString(guide)
+							}
+						} else if cursorVisible {
+							blockBuf.WriteString(guide + reasoningStyle.Render(wl) + cursorStr)
+						} else {
+							blockBuf.WriteString(guide + reasoningStyle.Render(wl))
+						}
+					} else {
+						blockBuf.WriteString(guide + reasoningStyle.Render(wl))
+					}
+					blockBuf.WriteString("\n")
+				}
+			}
+			m.cachedReasoningBlock = blockBuf.String()
+			m.cachedReasoningBlockFP = fp
+			m.cachedReasoningBlockWidth = innerWidth
+			sb.WriteString(m.cachedReasoningBlock)
 		}
 	}
 
-	// --- 2. Thinking ---
+	// --- 2. Thinking (cached) ---
 	if m.progress.Thinking != "" {
-		for _, line := range strings.Split(m.progress.Thinking, "\n") {
-			line = strings.TrimRight(line, " \t\r")
-			if line == "" {
-				continue
+		fp := m.thinkingBlockFP(innerWidth, thinkingW)
+		if m.cachedThinkingBlock != "" && m.cachedThinkingBlockFP == fp && m.cachedThinkingBlockWidth == innerWidth {
+			sb.WriteString(m.cachedThinkingBlock)
+		} else {
+			var blockBuf strings.Builder
+			for _, line := range strings.Split(m.progress.Thinking, "\n") {
+				line = strings.TrimRight(line, " \t\r")
+				if line == "" {
+					continue
+				}
+				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
+					blockBuf.WriteString(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl))
+					blockBuf.WriteString("\n")
+				}
 			}
-			for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-				sb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
-				sb.WriteString("\n")
-			}
+			m.cachedThinkingBlock = blockBuf.String()
+			m.cachedThinkingBlockFP = fp
+			m.cachedThinkingBlockWidth = innerWidth
+			sb.WriteString(m.cachedThinkingBlock)
 		}
 	}
 
@@ -1361,50 +1552,60 @@ func (m *cliModel) renderCurrentIteration(
 		sb.WriteString(static)
 	}
 
-	// --- 4. Stream content (assistant text output) ---
+	// --- 4. Stream content (assistant text output, cached) ---
 	hasTools := len(m.progress.ActiveTools) > 0 || len(m.progress.CompletedTools) > 0
 
 	if m.progress.StreamContent != "" {
-		totalRunes := len([]rune(m.progress.StreamContent))
-		runes := []rune(m.progress.StreamContent)
-		if m.twVisible > 0 && m.twVisible < totalRunes {
-			runes = runes[:m.twVisible]
-		}
-		streamText := string(runes)
-		lines := strings.Split(streamText, "\n")
-		typing := m.twVisible < totalRunes
-		cursorVisible := typing || (m.ticker.ticks/5)%2 == 0
-		for i, line := range lines {
-			line = strings.TrimRight(line, " \t\r")
-			if line == "" {
-				continue
+		fp := m.streamBlockFP(innerWidth, thinkingW, cursorState)
+		if m.cachedStreamBlock != "" && m.cachedStreamBlockFP == fp && m.cachedStreamBlockWidth == innerWidth {
+			sb.WriteString(m.cachedStreamBlock)
+		} else {
+			var blockBuf strings.Builder
+			totalRunes := len([]rune(m.progress.StreamContent))
+			runes := []rune(m.progress.StreamContent)
+			if m.twVisible > 0 && m.twVisible < totalRunes {
+				runes = runes[:m.twVisible]
 			}
-			isLastLine := i == len(lines)-1
-			wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
-			for j, wl := range wrappedLines {
-				isLast := isLastLine && j == len(wrappedLines)-1
-				guide := thinkingGuide.Render("  │ ")
-				if isLast {
-					cursorStr := s.StreamCursor.Render("▋")
-					cursorOverflow := thinkingW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
-					if cursorOverflow {
-						sb.WriteString(guide + thinkingStyle.Render(wl))
-						sb.WriteString("\n")
-						if cursorVisible {
-							sb.WriteString(guide + cursorStr)
-						} else {
-							sb.WriteString(guide)
-						}
-					} else if cursorVisible {
-						sb.WriteString(guide + thinkingStyle.Render(wl) + cursorStr)
-					} else {
-						sb.WriteString(guide + thinkingStyle.Render(wl))
-					}
-				} else {
-					sb.WriteString(guide + thinkingStyle.Render(wl))
+			streamText := string(runes)
+			lines := strings.Split(streamText, "\n")
+			typing := m.twVisible < totalRunes
+			cursorVisible := typing || cursorState == 0
+			for i, line := range lines {
+				line = strings.TrimRight(line, " \t\r")
+				if line == "" {
+					continue
 				}
-				sb.WriteString("\n")
+				isLastLine := i == len(lines)-1
+				wrappedLines := strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n")
+				for j, wl := range wrappedLines {
+					isLast := isLastLine && j == len(wrappedLines)-1
+					guide := thinkingGuide.Render("  ┊ ")
+					if isLast {
+						cursorStr := s.StreamCursor.Render("▋")
+						cursorOverflow := thinkingW+lipgloss.Width(wl)+lipgloss.Width("▋") > innerWidth
+						if cursorOverflow {
+							blockBuf.WriteString(guide + thinkingStyle.Render(wl))
+							blockBuf.WriteString("\n")
+							if cursorVisible {
+								blockBuf.WriteString(guide + cursorStr)
+							} else {
+								blockBuf.WriteString(guide)
+							}
+						} else if cursorVisible {
+							blockBuf.WriteString(guide + thinkingStyle.Render(wl) + cursorStr)
+						} else {
+							blockBuf.WriteString(guide + thinkingStyle.Render(wl))
+						}
+					} else {
+						blockBuf.WriteString(guide + thinkingStyle.Render(wl))
+					}
+					blockBuf.WriteString("\n")
+				}
 			}
+			m.cachedStreamBlock = blockBuf.String()
+			m.cachedStreamBlockFP = fp
+			m.cachedStreamBlockWidth = innerWidth
+			sb.WriteString(m.cachedStreamBlock)
 		}
 	} else if !hasTools {
 		// Phase spinner only when no content at all
@@ -1465,7 +1666,7 @@ func (m *cliModel) renderCurrentIteration(
 // captured in the tool summary and shouldn't linger in the progress panel.
 //
 // Uses a prefix-based approach instead of depth-based: each level appends
-// "│   " or "    " to the prefix depending on whether the parent was the last
+// "┊   " or "    " to the prefix depending on whether the parent was the last
 // sibling. This avoids spurious vertical lines after a └── branch.
 func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent, prefix string, maxWidth int) {
 	for i, sa := range agents {
@@ -1494,7 +1695,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 			overhead := lipgloss.Width(line) + 2 // +2 for ": "
 			descW := maxWidth - overhead
 			if descW > 0 {
-				line += ": " + truncateToWidth(sa.Desc, descW)
+				line += ": " + truncateToWidth(strings.ReplaceAll(strings.ReplaceAll(sa.Desc, "\n", " "), "\r", ""), descW)
 			}
 		}
 		sb.WriteString(style.Render(line))
@@ -1504,7 +1705,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 			if isLast {
 				childPrefix += "    "
 			} else {
-				childPrefix += "│   "
+				childPrefix += "┊   "
 			}
 			m.renderSubAgentTree(sb, sa.Children, childPrefix, maxWidth)
 		}
@@ -1514,7 +1715,7 @@ func (m *cliModel) renderSubAgentTree(sb *strings.Builder, agents []CLISubAgent,
 // renderHelpPanel 渲染格式化的帮助面板（第 4 轮）。
 // 使用 lipgloss 边框 + 分组布局 + 状态图标，替代纯文本。
 func (m *cliModel) renderHelpPanel() string {
-	contentWidth := m.width - 4
+	contentWidth := m.chatWidth() - 4
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
@@ -1554,7 +1755,7 @@ func (m *cliModel) renderHelpPanel() string {
 
 // renderToolContentBelow renders tool body content below a tool line.
 // Shows ToolHints (diff) first, then per-tool body (Read/Shell/Grep/Glob output).
-// guide is the prefix for each line (e.g. "  │ ").
+// guide is the prefix for each line (e.g. "  ┊ ").
 // dimmed controls whether the content is dimmed (for history iterations).
 // maxLines caps diff rendering (0 = unlimited). Passed through to renderToolHint.
 // Caches the result on the tool struct to avoid re-running chroma/lipgloss on every tick.
@@ -1640,7 +1841,7 @@ func toolDisplayInfo(tool CLIToolProgress, okStyle, errStyle lipgloss.Style) (la
 // icon and label are plain text; elapsed may be pre-styled with ANSI codes.
 // Returns the formatted string — caller wraps with style.Render().
 func toolLine(icon, label string, elapsedStyled string, maxWidth int) string {
-	prefix := fmt.Sprintf("  │ %s ", icon)
+	prefix := fmt.Sprintf("  ┊ %s ", icon)
 	prefixW := lipgloss.Width(prefix)
 
 	elapsedW := lipgloss.Width(elapsedStyled) // strips ANSI, measures visual width
@@ -1675,12 +1876,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	// §20 使用缓存样式
 	s := &m.styles
 	var sb strings.Builder
-	contentWidth := m.width - 4 // 留边距
+	contentWidth := m.chatWidth() - 4
+	cw := m.chatWidth()
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
 	streamingLabelStyle := s.StreamingLabel
-	systemMsgStyle := s.SystemMsg
-	errorMsgStyle := s.ErrorMsg
+	// Override style widths to chatWidth (sidebar may be open, reducing available space)
+	systemMsgStyle := s.SystemMsg.Width(cw)
+	errorMsgStyle := s.ErrorMsg.Width(cw - 4)
 
 	// 渲染 Markdown（assistant 消息 + 带 markdown 标记的 system 消息）
 	var rendered string
@@ -1689,7 +1892,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// Truncate to glamour wrap width to prevent wrapping.
 		preprocessed := msg.content
 		if msg.role == "assistant" {
-			preprocessed = renderMermaidBlocks(msg.content, m.width-4)
+			preprocessed = renderMermaidBlocks(msg.content, m.chatWidth()-4)
 		}
 		var err error
 		rendered, err = m.renderer.Render(preprocessed)
@@ -1705,8 +1908,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	switch msg.role {
 	case "tool_summary":
-		// §20 使用缓存样式
-		toolSummaryStyle := s.ToolSummary
+		// §20 使用缓存样式（override width to chatWidth for sidebar compat）
+		toolSummaryStyle := s.ToolSummary.Width(cw - 4)
 		toolHeaderStyle := s.ToolHeader
 		toolItemStyle := s.ToolItem
 		toolErrorItemStyle := s.ToolErrorItem
@@ -1734,7 +1937,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			if iterCount > 0 {
 				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
 				toolSb.WriteString("\n")
-				guideW := lipgloss.Width(s.ProgressIndent.Render("  │ "))
+				guideW := lipgloss.Width(s.ProgressIndent.Render("  ┊ "))
 				textW := boxInnerW - guideW
 				for ii := range msg.iterations {
 					it := &msg.iterations[ii]
@@ -1751,7 +1954,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								continue
 							}
 							for _, wl := range strings.Split(hardWrapRunes(line, textW), "\n") {
-								toolSb.WriteString(reasoningGuide.Render("  │ ") + reasoningStyle.Render(wl))
+								toolSb.WriteString(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl))
 								toolSb.WriteString("\n")
 							}
 						}
@@ -1763,7 +1966,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								continue
 							}
 							for _, wl := range strings.Split(hardWrapRunes(line, textW), "\n") {
-								toolSb.WriteString(thinkingGuide.Render("  │ ") + thinkingStyle.Render(wl))
+								toolSb.WriteString(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl))
 								toolSb.WriteString("\n")
 							}
 						}
@@ -1778,7 +1981,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
 						toolSb.WriteString("\n")
 						// Render tool body (diff hints or per-tool output)
-						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), textW, false, 0); content != "" {
+						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), textW, false, 0); content != "" {
 							toolSb.WriteString(content)
 							toolSb.WriteString("\n")
 						}
@@ -1797,7 +2000,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
 					toolSb.WriteString("\n")
 					// Render tool body for flat tool list too
-					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  │ "), boxInnerW, false, 0); content != "" {
+					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), boxInnerW, false, 0); content != "" {
 						toolSb.WriteString(content)
 						toolSb.WriteString("\n")
 					}
@@ -1890,7 +2093,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// assistant 消息 — crush 风格：先构建内容体，再逐行加 guide 前缀
 		// Streaming: bright guide; Completed: dim guide
 		var guideSt lipgloss.Style
-		guideSym := "│ "
+		guideSym := "┊ "
 		if msg.isPartial {
 			guideSt = s.GuideSt
 		} else {
@@ -1994,13 +2197,13 @@ func (m *cliModel) setViewportContent(content string) {
 	// Deduplicate: skip if content and width haven't changed.
 	// During resize storms or high-frequency ticks (busy state), this prevents
 	// O(N*W) hardWrapRunes from running every 100ms on the same content.
-	if content == m.lastViewportContent && m.width == m.lastViewportWidth && m.ready {
+	if content == m.lastViewportContent && m.chatWidth() == m.lastViewportWidth && m.ready {
 		return
 	}
 	m.lastViewportContent = content
-	m.lastViewportWidth = m.width
+	m.lastViewportWidth = m.chatWidth()
 
-	if m.width > 0 {
+	if m.chatWidth() > 0 {
 		// Two-tier wrap: find the cachedHistory boundary in content.
 		// The history portion is stable (doesn't change between ticks) — reuse
 		// its wrapped version to avoid O(N*W) hardWrapRunes on the growing history.
@@ -2009,7 +2212,7 @@ func (m *cliModel) setViewportContent(content string) {
 			historyEnd = len(m.cachedHistory)
 		}
 
-		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == m.width {
+		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == m.chatWidth() {
 			// Fast path: reuse wrapped history, only wrap the dynamic suffix
 			wrappedHistory := m.cachedWrappedHistory
 			dynamicPart := content[historyEnd:]
@@ -2024,7 +2227,7 @@ func (m *cliModel) setViewportContent(content string) {
 							line = trimmed
 						}
 					}
-					wrappedDynamic = append(wrappedDynamic, strings.Split(hardWrapRunes(line, m.width), "\n")...)
+					wrappedDynamic = append(wrappedDynamic, strings.Split(hardWrapRunes(line, m.chatWidth()), "\n")...)
 				}
 			}
 			content = wrappedHistory + strings.Join(wrappedDynamic, "\n")
@@ -2052,7 +2255,7 @@ func (m *cliModel) setViewportContent(content string) {
 						line = trimmed
 					}
 				}
-				wrappedLines := strings.Split(hardWrapRunes(line, m.width), "\n")
+				wrappedLines := strings.Split(hardWrapRunes(line, m.chatWidth()), "\n")
 				if i < historyLineCount {
 					wrappedHistoryParts = append(wrappedHistoryParts, wrappedLines...)
 				}
@@ -2063,7 +2266,7 @@ func (m *cliModel) setViewportContent(content string) {
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
 				m.cachedWrappedHistoryRaw = m.cachedHistory
-				m.cachedWrappedHistoryWidth = m.width
+				m.cachedWrappedHistoryWidth = m.chatWidth()
 			}
 		}
 	}
@@ -2180,7 +2383,7 @@ func (m *cliModel) appendNewMessagesToCache() {
 	if len(m.msgLineOffsets) > 0 {
 		// Approximate: use the line count of cachedHistory at current width.
 		// This is an estimate but sufficient for msgLineOffsets (used for Ctrl+E folding).
-		runningLines = wrappedLineCount(m.cachedHistory, m.width)
+		runningLines = wrappedLineCount(m.cachedHistory, m.chatWidth())
 	}
 
 	startIdx := m.cachedMsgCount
@@ -2190,9 +2393,9 @@ func (m *cliModel) appendNewMessagesToCache() {
 		rendered := m.renderMessage(msg)
 		msg.rendered = rendered
 		msg.dirty = false
-		msg.renderWidth = m.width
+		msg.renderWidth = m.chatWidth()
 		sb.WriteString(rendered)
-		runningLines += wrappedLineCount(rendered, m.width)
+		runningLines += wrappedLineCount(rendered, m.chatWidth())
 	}
 
 	m.cachedHistory = sb.String()
@@ -2223,12 +2426,12 @@ func (m *cliModel) fullRebuild() {
 	for i := range m.messages[:splitIdx] {
 		// §19 记录消息在 viewport 折行后内容中的起始行号
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
-		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != m.width
+		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != m.chatWidth()
 		if needsRender {
 			rendered := m.renderMessage(&m.messages[i])
 			m.messages[i].rendered = rendered
 			m.messages[i].dirty = false
-			m.messages[i].renderWidth = m.width
+			m.messages[i].renderWidth = m.chatWidth()
 		}
 		// Build per-message chunk for line counting (avoids calling
 		// historyBuf.String() on every iteration — the O(N²) full
@@ -2242,7 +2445,7 @@ func (m *cliModel) fullRebuild() {
 		}
 		historyBuf.WriteString(m.messages[i].rendered)
 		// 累加本消息（含搜索指示条）在折行后占用的行数
-		runningLines += wrappedLineCount(chunk, m.width)
+		runningLines += wrappedLineCount(chunk, m.chatWidth())
 	}
 
 	m.cachedHistory = historyBuf.String()
@@ -2339,7 +2542,7 @@ func (m *cliModel) enterSearchMode() {
 	ti.Prompt = "/"
 	ti.CharLimit = 100
 	ti.Focus()
-	w := m.width - 20
+	w := m.chatWidth() - 20
 	if w < 20 {
 		w = 20
 	}
@@ -2407,10 +2610,12 @@ func (m *cliModel) jumpToSearchResult(idx int) {
 	}
 }
 
-// // tickCmd returns a command that periodically refreshes viewport during agent processing.
-func tickCmd() tea.Cmd {
+// tickCmd returns a command that periodically refreshes viewport during agent processing.
+// Captures the current tickGen to detect and discard stale ticks from previous chains.
+func (m *cliModel) tickCmd() tea.Cmd {
+	gen := m.tickGen
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
-		return cliTickMsg{}
+		return cliTickMsg{gen: gen}
 	})
 }
 
@@ -3003,7 +3208,9 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 		case strings.HasPrefix(line, "+"):
 			code := line[1:]
 			if hl, ok := highlightMap[i]; ok {
-				code = hl
+				code = lipgloss.NewStyle().Background(bgAdd).Render(hl)
+			} else {
+				code = lipgloss.NewStyle().Background(bgAdd).Render(code)
 			}
 			code = expandTabs(code, 4)
 			code = ansi.Truncate(code, codeW, "")
@@ -3018,7 +3225,9 @@ func renderDiffStyled(md string, maxW, maxLines int) string {
 		case strings.HasPrefix(line, "-"):
 			code := line[1:]
 			if hl, ok := highlightMap[i]; ok {
-				code = hl
+				code = lipgloss.NewStyle().Background(bgDel).Render(hl)
+			} else {
+				code = lipgloss.NewStyle().Background(bgDel).Render(code)
 			}
 			code = expandTabs(code, 4)
 			code = ansi.Truncate(code, codeW, "")

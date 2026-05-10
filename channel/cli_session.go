@@ -43,6 +43,12 @@ func ParseChatID(chatID string) (workDir, sessionName string) {
 	if !strings.HasPrefix(workDir, "/") && !strings.HasPrefix(workDir, ".") && !strings.HasPrefix(workDir, "~") {
 		return chatID, defaultSessionName
 	}
+	// Resolve relative workDir (e.g. "." from legacy sessions) to absolute path
+	if !filepath.IsAbs(workDir) {
+		if abs, err := filepath.Abs(workDir); err == nil {
+			workDir = abs
+		}
+	}
 	return workDir, sessionName
 }
 
@@ -73,6 +79,7 @@ type dirSession struct {
 	Name      string    `json:"name"`
 	ChatID    string    `json:"chat_id"`
 	CreatedAt time.Time `json:"created_at"`
+	CWD       string    `json:"cwd,omitempty"` // per-session working directory (worktree path, etc.)
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.
@@ -94,6 +101,12 @@ func sessionDirHash(workDir string) string {
 
 // loadDirSessions loads the session list for a given work directory.
 func loadDirSessions(workDir string) (*dirSessions, error) {
+	// Resolve relative workDir to absolute path so ds.Dir is always absolute
+	if !filepath.IsAbs(workDir) {
+		if abs, err := filepath.Abs(workDir); err == nil {
+			workDir = abs
+		}
+	}
 	dir := sessionsDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
@@ -208,6 +221,11 @@ func (m *cliModel) listLocalDirSessions() []SessionPanelEntry {
 	}
 	var entries []SessionPanelEntry
 	for _, s := range ds.sortedSessions() {
+		// Skip default session — it's already shown as the main session
+		// from sessionsListFn (backend). Listing it again would duplicate it.
+		if s.Name == defaultSessionName || s.ChatID == m.defaultChatID {
+			continue
+		}
 		active := s.ChatID == m.chatID
 		entries = append(entries, SessionPanelEntry{
 			ID:      s.ChatID,
@@ -218,4 +236,30 @@ func (m *cliModel) listLocalDirSessions() []SessionPanelEntry {
 		})
 	}
 	return entries
+}
+
+// LocalDirSession is an exported view of a local dir session for use by callbacks.
+type LocalDirSession struct {
+	Name   string
+	ChatID string
+}
+
+// ListLocalDirSessions returns all local sessions for a work directory,
+// excluding the default session (which is the workDir itself).
+func ListLocalDirSessions(workDir string) []LocalDirSession {
+	ds, err := loadDirSessions(workDir)
+	if err != nil {
+		return nil
+	}
+	var result []LocalDirSession
+	for _, s := range ds.sortedSessions() {
+		if s.Name == defaultSessionName || s.ChatID == workDir {
+			continue
+		}
+		result = append(result, LocalDirSession{
+			Name:   s.Name,
+			ChatID: s.ChatID,
+		})
+	}
+	return result
 }

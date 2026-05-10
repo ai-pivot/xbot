@@ -150,11 +150,16 @@ func (b *Backend) SendInbound(msg bus.InboundMessage) error {
 
 func (b *Backend) OnOutbound(cb func(bus.OutboundMessage))         { b.transport.OnOutbound(cb) }
 func (b *Backend) OnProgress(cb func(*channel.CLIProgressPayload)) { b.transport.OnProgress(cb) }
-func (b *Backend) OnInjectUserMessage(cb func(content string))     { b.transport.OnInjectUserMessage(cb) }
-func (b *Backend) OnReconnect(cb func())                           { b.transport.OnReconnect(cb) }
-func (b *Backend) OnConnStateChange(cb func(state string))         { b.transport.OnConnStateChange(cb) }
+func (b *Backend) OnInjectUserMessage(cb func(chatID, content string)) {
+	b.transport.OnInjectUserMessage(cb)
+}
+func (b *Backend) OnReconnect(cb func())                   { b.transport.OnReconnect(cb) }
+func (b *Backend) OnConnStateChange(cb func(state string)) { b.transport.OnConnStateChange(cb) }
 func (b *Backend) OnPluginWidgets(cb func(zones map[string]string, chatID string)) {
 	b.transport.OnPluginWidgets(cb)
+}
+func (b *Backend) OnTUIControlRequest(cb func(action string, params map[string]string) (map[string]string, error)) {
+	b.transport.OnTUIControlRequest(cb)
 }
 func (b *Backend) Subscribe(chatID string) error { return b.transport.Subscribe(chatID) }
 func (b *Backend) ConnState() string             { return b.transport.ConnState() }
@@ -169,6 +174,16 @@ func (b *Backend) IsRemote() bool                    { return b.transport.IsRemo
 func (b *Backend) Bus() *bus.MessageBus              { return b.bus }
 func (b *Backend) LLMFactory() *LLMFactory           { return withAgent(b, (*Agent).LLMFactory) }
 func (b *Backend) SettingsService() *SettingsService { return withAgent(b, (*Agent).SettingsService) }
+
+func (b *Backend) SetTUICallbacks(
+	tuiCtrl func(action string, params map[string]string) (map[string]string, error),
+	configGet func(key string) (string, error),
+	configSet func(key, value string) (string, error),
+) {
+	if b.agent != nil {
+		b.agent.SetTUICallbacks(tuiCtrl, configGet, configSet)
+	}
+}
 func (b *Backend) MultiSession() *session.MultiTenantSession {
 	return withAgent(b, (*Agent).MultiSession)
 }
@@ -559,6 +574,12 @@ func (b *Backend) IsProcessing(ch, chatID string) bool {
 func (b *Backend) GetActiveProgress(ch, chatID string) *channel.CLIProgressPayload {
 	var r *channel.CLIProgressPayload
 	_ = b.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID}, &r)
+	return r
+}
+
+func (b *Backend) GetTodos(ch, chatID string) []channel.CLITodoItem {
+	var r []channel.CLITodoItem
+	_ = b.call(MethodGetTodos, getTodosReq{Channel: ch, ChatID: chatID}, &r)
 	return r
 }
 
