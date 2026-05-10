@@ -170,6 +170,9 @@ type RunConfig struct {
 	// It sends TUI control requests to the remote CLI client via WS.
 	RemoteTUICtrlFn func(action string, params map[string]string) (map[string]string, error)
 
+	// ListLLMSubs returns all LLM subscriptions for the current user.
+	ListLLMSubs func(channel, senderID string) []tools.SubscriptionInfo
+
 	// OffloadStore Layer 1 offload store（nil = 不启用）
 	OffloadStore *OffloadStore
 
@@ -1095,6 +1098,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.OriginUserIsAdmin = permUsers != nil && cfg.OriginUserID == permUsers.PrivilegedUser
 	}
 	tc.IsGlobalKey = channel.IsGlobalScopedSettingKey
+
+	// Inject subscription listing
+	tc.ListSubscriptions = func() []tools.SubscriptionInfo {
+		if cfg.ListLLMSubs != nil {
+			return cfg.ListLLMSubs(cfg.Channel, cfg.OriginUserID)
+		}
+		return nil
+	}
 
 	return tc
 }

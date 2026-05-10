@@ -19,7 +19,8 @@ func (t *ConfigTool) Description() string {
 		"Use this whenever the user wants to see available configs, check a setting, or change a setting " +
 		"like max_iterations, context_mode, api_key, provider, theme (prefer tui_control for theme switching), " +
 		"sidebar_width (prefer tui_control), or any other config key. " +
-		"Actions: list (see all configs with descriptions), get (key), set (key, value)."
+		"Actions: list (see all configs with descriptions), get (key), set (key, value), " +
+		"subscriptions (list all LLM subscriptions)."
 }
 
 func (t *ConfigTool) Parameters() []llm.ToolParam {
@@ -72,6 +73,14 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		b, _ := json.MarshalIndent(items, "", "  ")
 		return NewResult(string(b)), nil
 
+	case "subscriptions":
+		if ctx.ListSubscriptions == nil {
+			return nil, fmt.Errorf("config: subscription listing not available")
+		}
+		subs := ctx.ListSubscriptions()
+		b, _ := json.MarshalIndent(subs, "", "  ")
+		return NewResult(string(b)), nil
+
 	case "get":
 		if ctx.ConfigGet == nil {
 			return nil, fmt.Errorf("config: config service not available")
@@ -109,6 +118,6 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		return NewResult(fmt.Sprintf("Updated %s from %s to %s", params.Key, prev, params.Value)), nil
 
 	default:
-		return nil, fmt.Errorf("config: unknown action: %s (valid: list, get, set)", params.Action)
+		return nil, fmt.Errorf("config: unknown action: %s (valid: list, get, set, subscriptions)", params.Action)
 	}
 }
