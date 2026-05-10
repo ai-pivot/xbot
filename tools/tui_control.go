@@ -30,19 +30,20 @@ func (t *TuiControlTool) Description() string {
 		"or change the theme. This is the PRIMARY way to navigate between sessions in the TUI. " +
 		"To CREATE a new session, use CreateChat (type=agent, role=explore, instance=\"name\") instead. " +
 		"To create a custom theme, use FileCreate to write a JSON file to ~/.xbot/themes/<name>.json then switch via set_theme. " +
+		"Use send_slash to execute slash commands in the input box (/set-llm, /model, /palette, /context, etc.). " +
 		"Actions: switch_session(chat_id), close_session(chat_id, params.confirm=true), " +
-		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name). " +
+		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/set-llm ...\"). " +
 		"To find available sessions to switch to, look at the sessions listed in the sidebar."
 }
 
 func (t *TuiControlTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "action", Type: "string", Description: "Action: switch_session, close_session, set_layout, set_theme", Required: true},
+		{Name: "action", Type: "string", Description: "Action: switch_session, close_session, set_layout, set_theme, send_slash", Required: true},
 		{Name: "chat_id", Type: "string", Description: "Target session chatID (for switch/close)", Required: false},
 		{Name: "key", Type: "string", Description: "Layout key: sidebar_width, sidebar_enabled, etc.", Required: false},
 		{Name: "value", Type: "string", Description: "New value for layout key or theme name", Required: false},
 		{Name: "theme", Type: "string", Description: "Theme name to switch to", Required: false},
-		{Name: "params", Type: "object", Description: "Extra parameters (e.g. {\"confirm\":\"true\"} for close)", Required: false},
+		{Name: "params", Type: "object", Description: "Extra parameters (e.g. {\"confirm\":\"true\"} for close, {\"command\":\"/set-llm ...\"} for send_slash)", Required: false},
 	}
 }
 
@@ -114,6 +115,21 @@ func (t *TuiControlTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 		}
 		prev := res["previous"]
 		return NewResult(fmt.Sprintf("Theme changed from %s to %s", prev, params.Theme)), nil
+
+	case "send_slash":
+		cmd := ""
+		if params.Params != nil {
+			cmd = params.Params["command"]
+		}
+		if cmd == "" {
+			return nil, fmt.Errorf("tui_control: params.command required for send_slash (e.g. {\"command\":\"/set-llm provider=anthropic\"})")
+		}
+		res, err := ctx.TUIControl("send_slash", map[string]string{"command": cmd})
+		if err != nil {
+			return nil, fmt.Errorf("tui_control: send_slash failed: %w", err)
+		}
+		_ = res
+		return NewResult(fmt.Sprintf("Slash command sent: %s", cmd)), nil
 
 	default:
 		if params.Action == "new_session" || params.Action == "create_session" {

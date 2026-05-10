@@ -1979,6 +1979,15 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 		sc.result <- &cliSessionResult{ok: true}
 		m.persistCLISettingsValues(map[string]string{"theme": theme})
 
+	case "send_slash":
+		cmd := sc.params["command"]
+		if cmd == "" {
+			sc.result <- &cliSessionResult{ok: false, err: "command required for send_slash"}
+			return nil
+		}
+		m.sendToAgent(cmd)
+		sc.result <- &cliSessionResult{ok: true}
+
 	default:
 		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}
 	}
