@@ -1985,8 +1985,9 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 			sc.result <- &cliSessionResult{ok: false, err: "command required for send_slash"}
 			return nil
 		}
-		m.sendToAgent(cmd)
+		retCmd := m.handleSlashCommand(cmd)
 		sc.result <- &cliSessionResult{ok: true}
+		return retCmd
 
 	default:
 		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}
