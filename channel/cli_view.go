@@ -395,8 +395,11 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 		sw = 12
 	}
 
-	// Measure middle block height
+	// Measure middle block height, capped to available screen height
 	h := strings.Count(block, "\n") + 1
+	if maxH := m.height - 3; h > maxH {
+		h = maxH
+	}
 	if h < 5 {
 		h = 5
 	}
@@ -425,7 +428,7 @@ func (m *cliModel) renderSidebarForBlock(block string) string {
 
 	return m.styles.SidebarBg.
 		Width(sw).
-		MaxHeight(h).
+		Height(h).
 		Render(content)
 }
 
