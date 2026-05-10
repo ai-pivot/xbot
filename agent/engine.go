@@ -1066,8 +1066,26 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	}
 	// Config list: from AllSettingDefs (always available, no RPC needed)
 	tc.ConfigList = func() []tools.ConfigListItem {
-		return channel.AllConfigItemsForAI()
+		items := channel.AllConfigItemsForAI()
+		// Enrich with current values from SettingsSvc
+		if cfg.SettingsSvc != nil {
+			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
+			if err == nil {
+				for i := range items {
+					if v, ok := vals[items[i].Key]; ok {
+						items[i].CurrentVal = v
+					}
+				}
+			}
+		}
+		return items
 	}
+	// Admin check: determines if user can modify global-scoped settings
+	if cfg.SettingsSvc != nil {
+		permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
+		tc.OriginUserIsAdmin = permUsers != nil && cfg.OriginUserID == permUsers.PrivilegedUser
+	}
+	tc.IsGlobalKey = channel.IsGlobalScopedSettingKey
 
 	return tc
 }

@@ -77,6 +77,10 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		if params.Value == "" {
 			return nil, fmt.Errorf("config: value required for set action")
 		}
+		// Global-scoped settings require admin privileges
+		if ctx.IsGlobalKey != nil && ctx.IsGlobalKey(params.Key) && !ctx.OriginUserIsAdmin {
+			return nil, fmt.Errorf("config: %q is a global setting and can only be modified by an admin", params.Key)
+		}
 		prev, err := ctx.ConfigSet(params.Key, params.Value)
 		if err != nil {
 			return nil, fmt.Errorf("config: set %q failed: %w", params.Key, err)
