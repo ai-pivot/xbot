@@ -143,11 +143,18 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	}
 	// Save iteration history as an assistant message with detail,
 	// so web UI can restore it on page refresh without showing "loading".
+	// Serialize iteration history once and reuse to avoid duplicate JSON marshal
+	var iterationHistoryJSON string
+	if len(out.IterationHistory) > 0 {
+		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+			iterationHistoryJSON = string(jsonBytes)
+		}
+	}
 	if len(out.IterationHistory) > 0 {
 		cancelMsg := llm.NewAssistantMessage("[interrupted]")
 		cancelMsg.DisplayOnly = true
-		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-			cancelMsg.Detail = string(jsonBytes)
+		if iterationHistoryJSON != "" {
+			cancelMsg.Detail = iterationHistoryJSON
 		}
 		if err := tenantSession.AddMessage(cancelMsg); err != nil {
 			log.Ctx(ctx).WithError(err).Warn("Failed to save cancelled iteration history")
@@ -156,8 +163,8 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// Send a minimal outbound so the web channel knows processing ended.
 	meta := map[string]string{"cancelled": "true"}
 	if len(out.IterationHistory) > 0 {
-		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-			meta["progress_history"] = string(jsonBytes)
+		if iterationHistoryJSON != "" {
+			meta["progress_history"] = iterationHistoryJSON
 		}
 	}
 	return &bus.OutboundMessage{

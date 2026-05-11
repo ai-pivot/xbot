@@ -1482,8 +1482,8 @@ func main() {
 			// Local dir sessions (created from current session).
 			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
 				sessions = append(sessions, sessionInfo{
-					chatID: s.ChatID,
-					label:  s.Name,
+					chatID: s.ID,
+					label:  s.Label,
 				})
 			}
 
@@ -2280,8 +2280,8 @@ func main() {
 			// Local dir sessions.
 			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
 				sessions = append(sessions, sessionInfo{
-					chatID: s.ChatID,
-					label:  s.Name,
+					chatID: s.ID,
+					label:  s.Label,
 				})
 			}
 
