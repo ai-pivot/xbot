@@ -195,6 +195,12 @@ func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int
 			aware.OnWorkDirChanged(wd)
 		}
 	}
+
+	// Immediately push updated widget content (bypass debounce).
+	// Script plugins like git-info re-executed via OnWorkDirChanged above
+	// and updated their widget slots; this push ensures the TUI reflects
+	// the new git branch immediately instead of waiting for debounce.
+	pm.widgetRegistry.FireUpdated()
 }
 
 // RefreshTenantID stores the current tenant ID for use during plugin activation.

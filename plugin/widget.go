@@ -57,6 +57,18 @@ func (r *WidgetRegistry) NotifyUpdated() {
 	r.notifyUpdated()
 }
 
+// FireUpdated immediately fires the onUpdated callback WITHOUT debounce.
+// Use this after direct CWD changes (e.g. Cd) where widget content was already
+// regenerated via RefreshWorkDir → OnWorkDirChanged and should be pushed now.
+func (r *WidgetRegistry) FireUpdated() {
+	r.mu.RLock()
+	fn := r.onUpdated
+	r.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 type widgetSlot struct {
 	pluginID string
 	widgetID string
