@@ -18,7 +18,7 @@ const ConfigExportVersion = 1
 // ConfigExport represents the top-level export format for plugin system state.
 type ConfigExport struct {
 	Version    int                 `json:"version"`
-	ExportedAt string              `json:"exportedAt"`
+	ExportedAt string              `json:"exported_at"`
 	Disabled   []string            `json:"disabled"`
 	Plugins    []PluginConfigEntry `json:"plugins"`
 }

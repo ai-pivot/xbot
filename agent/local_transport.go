@@ -11,14 +11,16 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/config"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
-	"xbot/tools"
 )
 
 // localTransport is the in-process "server" for local mode.
 // Its Call() method dispatches to a handler table that directly operates on *Agent.
 // This eliminates all local/remote branching in Backend — every call is a transport.Call().
 type localTransport struct {
+	baseTransport
+
 	agent         *Agent
 	bus           *bus.MessageBus
 	reconfigureFn func(channel string)
@@ -27,9 +29,10 @@ type localTransport struct {
 
 func newLocalTransport(agent *Agent, bus *bus.MessageBus) *localTransport {
 	t := &localTransport{
-		agent:    agent,
-		bus:      bus,
-		handlers: make(map[string]func(json.RawMessage) (json.RawMessage, error), 64),
+		baseTransport: newBaseTransport(),
+		agent:         agent,
+		bus:           bus,
+		handlers:      make(map[string]func(json.RawMessage) (json.RawMessage, error), 64),
 	}
 	t.registerHandlers()
 	return t
@@ -51,7 +54,7 @@ func (t *localTransport) Run(ctx context.Context) error { return t.agent.Run(ctx
 // Communication
 // ---------------------------------------------------------------------------
 
-func (t *localTransport) SendMessage(msg Message) error {
+func (t *localTransport) SendMessage(msg protocol.InboundMessage) error {
 	select {
 	case t.bus.Inbound <- bus.InboundMessage{
 		Content: msg.Content, Channel: msg.Channel, ChatID: msg.ChatID,
@@ -63,19 +66,13 @@ func (t *localTransport) SendMessage(msg Message) error {
 	}
 }
 
-func (t *localTransport) Subscribe(string) error { return nil }
+func (t *localTransport) BindChat(string) error { return nil }
 
 // ---------------------------------------------------------------------------
-// Callbacks (no-op for local mode — events flow through dispatcher directly)
+// TUI control (no-op in local mode — agent handles directly)
 // ---------------------------------------------------------------------------
 
-func (t *localTransport) OnOutbound(func(bus.OutboundMessage))            {}
-func (t *localTransport) OnProgress(func(*channel.CLIProgressPayload))    {}
-func (t *localTransport) OnInjectUserMessage(func(string, string))        {}
-func (t *localTransport) OnReconnect(func())                              {}
-func (t *localTransport) OnConnStateChange(func(string))                  {}
-func (t *localTransport) OnPluginWidgets(func(map[string]string, string)) {}
-func (t *localTransport) OnTUIControlRequest(cb func(action string, params map[string]string) (map[string]string, error)) {
+func (t *localTransport) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
 }
 
 // ---------------------------------------------------------------------------
@@ -196,13 +193,6 @@ func (t *localTransport) registerHandlers() {
 		return nil
 	})
 
-	h[MethodSetProxyLLM] = rpcVoid(func(r setProxyLLMReq) error {
-		// ProxyLLM contains non-serializable local objects (interfaces, closures).
-		// This handler exists only for RPC completeness; actual proxy setup
-		// uses Backend.SetProxyLLM() which directly operates on the agent.
-		return fmt.Errorf("set_proxy_llm: not supported via RPC, use Backend.SetProxyLLM() directly")
-	})
-
 	h[MethodClearProxyLLM] = rpcVoid(func(r clearProxyLLMReq) error {
 		a.ClearProxyLLM(r.SenderID)
 		return nil
@@ -311,20 +301,18 @@ func (t *localTransport) registerHandlers() {
 		if err != nil {
 			return err
 		}
-		// Only set CWD if it's empty (initial creation or server restart).
-		// Check persisted WorktreeRegistry first — worktree CWD survives restarts.
+
+		// If session already has a persisted CWD (restored from disk), keep it.
+		// Otherwise use the requested directory.
 		if sess.GetCurrentDir() == "" {
-			sessKey := r.Channel + ":" + r.ChatID
-			actualDir := r.Dir
-			if persisted := tools.GlobalWorktreeRegistry.GetCWD(sessKey); persisted != "" {
-				actualDir = persisted
-			}
-			sess.SetCurrentDir(actualDir)
-			// Refresh plugin contexts so script plugins (e.g. git-info)
-			// immediately see the correct workDir after startup/restore.
-			if a.pluginMgr != nil && actualDir != r.Dir {
-				a.pluginMgr.RefreshWorkDir(actualDir)
-			}
+			sess.SetCurrentDir(r.Dir)
+		}
+
+		// Always refresh plugin contexts so script plugins see the correct workDir
+		if a.pluginMgr != nil {
+			cwd := sess.GetCurrentDir()
+			a.pluginMgr.RefreshWorkDir(cwd, r.Channel, r.ChatID, sess.TenantID())
+			a.pluginMgr.RefreshTenantID(sess.TenantID())
 		}
 		return nil
 	})
@@ -469,7 +457,7 @@ func (t *localTransport) registerHandlers() {
 
 	// ── Subscriptions ─────────────────────────────────────────────────────
 
-	h[MethodListSubscriptions] = rpc1(func(r listSubscriptionsReq) ([]channel.Subscription, error) {
+	h[MethodListSubscriptions] = rpc1(func(r listSubscriptionsReq) ([]protocol.Subscription, error) {
 		svc := a.llmFactory.GetSubscriptionSvc()
 		if svc == nil {
 			return nil, nil
@@ -478,9 +466,9 @@ func (t *localTransport) registerHandlers() {
 		if err != nil || subs == nil {
 			return nil, err
 		}
-		result := make([]channel.Subscription, len(subs))
+		result := make([]protocol.Subscription, len(subs))
 		for i, s := range subs {
-			result[i] = channel.Subscription{
+			result[i] = protocol.Subscription{
 				ID: s.ID, Name: s.Name, Provider: s.Provider,
 				BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault,
 				MaxOutputTokens: s.MaxOutputTokens, ThinkingMode: s.ThinkingMode,
@@ -489,7 +477,7 @@ func (t *localTransport) registerHandlers() {
 		return result, nil
 	})
 
-	h[MethodGetDefaultSubscription] = rpc1(func(r getDefaultSubscriptionReq) (*channel.Subscription, error) {
+	h[MethodGetDefaultSubscription] = rpc1(func(r getDefaultSubscriptionReq) (*protocol.Subscription, error) {
 		svc := a.llmFactory.GetSubscriptionSvc()
 		if svc == nil {
 			return nil, nil
@@ -498,7 +486,7 @@ func (t *localTransport) registerHandlers() {
 		if err != nil || sub == nil {
 			return nil, err
 		}
-		return &channel.Subscription{
+		return &protocol.Subscription{
 			ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
 			BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault,
 			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
@@ -629,7 +617,7 @@ func (t *localTransport) registerHandlers() {
 		return a.multiSession.GetMemoryStats(context.Background(), r.Channel, r.ChatID, r.SenderID), nil
 	})
 
-	h[MethodGetHistory] = rpc1(func(r getHistoryReq) ([]channel.HistoryMessage, error) {
+	h[MethodGetHistory] = rpc1(func(r getHistoryReq) ([]protocol.HistoryMessage, error) {
 		ms := a.MultiSession()
 		if ms == nil {
 			return nil, fmt.Errorf("multi-session not available")
@@ -712,20 +700,20 @@ func (t *localTransport) registerHandlers() {
 		return found, nil
 	})
 
-	h[MethodGetActiveProgress] = rpc1(func(r getActiveProgressReq) (*channel.CLIProgressPayload, error) {
+	h[MethodGetActiveProgress] = rpc1(func(r getActiveProgressReq) (*protocol.ProgressEvent, error) {
 		key := r.Channel + ":" + r.ChatID
 		v, ok := a.lastProgressSnapshot.Load(key)
 		if !ok {
 			return nil, nil
 		}
-		snapshot := v.(*channel.CLIProgressPayload)
+		snapshot := v.(*protocol.ProgressEvent)
 		// Shallow copy to avoid data race: agent may update snapshot fields
 		// concurrently during json.Marshal.
 		result := *snapshot
 		if histPtr, ok := a.iterationHistories.Load(key); ok {
-			hist := *histPtr.(*[]channel.CLIProgressPayload)
+			hist := *histPtr.(*[]protocol.ProgressEvent)
 			if len(hist) > 0 {
-				result.IterationHistory = make([]channel.CLIProgressPayload, len(hist))
+				result.IterationHistory = make([]protocol.ProgressEvent, len(hist))
 				copy(result.IterationHistory, hist)
 				return &result, nil
 			}
@@ -733,18 +721,18 @@ func (t *localTransport) registerHandlers() {
 		return &result, nil
 	})
 
-	h[MethodGetTodos] = rpc1(func(r getTodosReq) ([]channel.CLITodoItem, error) {
+	h[MethodGetTodos] = rpc1(func(r getTodosReq) ([]protocol.TodoItem, error) {
 		key := r.Channel + ":" + r.ChatID
 		if a.todoManager == nil {
-			return []channel.CLITodoItem{}, nil
+			return []protocol.TodoItem{}, nil
 		}
 		items := a.todoManager.GetTodos(key)
 		if len(items) == 0 {
-			return []channel.CLITodoItem{}, nil
+			return []protocol.TodoItem{}, nil
 		}
-		result := make([]channel.CLITodoItem, len(items))
+		result := make([]protocol.TodoItem, len(items))
 		for i, t := range items {
-			result[i] = channel.CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+			result[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
 		}
 		return result, nil
 	})

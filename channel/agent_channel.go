@@ -37,7 +37,7 @@ func NewAgentChannel(name string, runFn bus.RunFn) *AgentChannel {
 	return &AgentChannel{
 		name:  name,
 		runFn: runFn,
-		inbox: make(chan *rpcRequest, 16),
+		inbox: make(chan *rpcRequest, 32),
 	}
 }
 

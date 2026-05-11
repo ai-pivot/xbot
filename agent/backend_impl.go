@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"xbot/agent/hooks"
@@ -15,6 +14,7 @@ import (
 	"xbot/event"
 	llm "xbot/llm"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/tools"
 
@@ -133,14 +133,15 @@ func (b *Backend) Run(ctx context.Context) error   { return b.transport.Run(ctx)
 // ---------------------------------------------------------------------------
 
 func (b *Backend) SendInbound(msg bus.InboundMessage) error {
-	return b.transport.SendMessage(Message{
-		Content:    msg.Content,
-		Channel:    msg.Channel,
-		ChatID:     msg.ChatID,
-		SenderID:   msg.SenderID,
-		SenderName: msg.SenderName,
-		ChatType:   msg.ChatType,
-		Cancel:     strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel",
+	return b.transport.SendMessage(protocol.InboundMessage{
+		MessagePayload: bus.MessagePayload{
+			Content:    msg.Content,
+			Channel:    msg.Channel,
+			ChatID:     msg.ChatID,
+			SenderID:   msg.SenderID,
+			SenderName: msg.SenderName,
+			ChatType:   msg.ChatType,
+		},
 	})
 }
 
@@ -148,22 +149,17 @@ func (b *Backend) SendInbound(msg bus.InboundMessage) error {
 // Callback setters — pure transport delegation
 // ---------------------------------------------------------------------------
 
-func (b *Backend) OnOutbound(cb func(bus.OutboundMessage))         { b.transport.OnOutbound(cb) }
-func (b *Backend) OnProgress(cb func(*channel.CLIProgressPayload)) { b.transport.OnProgress(cb) }
-func (b *Backend) OnInjectUserMessage(cb func(chatID, content string)) {
-	b.transport.OnInjectUserMessage(cb)
+func (b *Backend) Subscribe(pattern protocol.EventPattern, handler protocol.EventHandler) (cancel func()) {
+	return b.transport.Subscribe(pattern, handler)
 }
-func (b *Backend) OnReconnect(cb func())                   { b.transport.OnReconnect(cb) }
-func (b *Backend) OnConnStateChange(cb func(state string)) { b.transport.OnConnStateChange(cb) }
-func (b *Backend) OnPluginWidgets(cb func(zones map[string]string, chatID string)) {
-	b.transport.OnPluginWidgets(cb)
+
+func (b *Backend) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
+	b.transport.SetTUIControlHandler(cb)
 }
-func (b *Backend) OnTUIControlRequest(cb func(action string, params map[string]string) (map[string]string, error)) {
-	b.transport.OnTUIControlRequest(cb)
-}
-func (b *Backend) Subscribe(chatID string) error { return b.transport.Subscribe(chatID) }
-func (b *Backend) ConnState() string             { return b.transport.ConnState() }
-func (b *Backend) ServerURL() string             { return b.transport.ServerURL() }
+
+func (b *Backend) BindChat(chatID string) error { return b.transport.BindChat(chatID) }
+func (b *Backend) ConnState() string            { return b.transport.ConnState() }
+func (b *Backend) ServerURL() string            { return b.transport.ServerURL() }
 
 // ---------------------------------------------------------------------------
 // Local-only identity & accessors (nil in remote mode)
@@ -431,17 +427,17 @@ func (b *Backend) ListTenants() ([]TenantInfo, error) {
 
 // ── Subscriptions ─────────────────────────────────────────────────────────
 
-func (b *Backend) ListSubscriptions(senderID string) ([]channel.Subscription, error) {
-	var r []channel.Subscription
+func (b *Backend) ListSubscriptions(senderID string) ([]protocol.Subscription, error) {
+	var r []protocol.Subscription
 	return r, b.call(MethodListSubscriptions, listSubscriptionsReq{SenderID: senderID}, &r)
 }
 
-func (b *Backend) GetDefaultSubscription(senderID string) (*channel.Subscription, error) {
-	var r *channel.Subscription
+func (b *Backend) GetDefaultSubscription(senderID string) (*protocol.Subscription, error) {
+	var r *protocol.Subscription
 	return r, b.call(MethodGetDefaultSubscription, getDefaultSubscriptionReq{SenderID: senderID}, &r)
 }
 
-func (b *Backend) AddSubscription(senderID string, sub channel.Subscription) error {
+func (b *Backend) AddSubscription(senderID string, sub protocol.Subscription) error {
 	return b.call(MethodAddSubscription, addSubscriptionReq{
 		SenderID: senderID,
 		Sub: channelSubscriptionJSON{
@@ -461,7 +457,7 @@ func (b *Backend) SetDefaultSubscription(id string, chatID string) error {
 	return b.call(MethodSetDefaultSubscription, setDefaultSubscriptionReq{ID: id, ChatID: chatID}, nil)
 }
 
-func (b *Backend) UpdateSubscription(id string, sub channel.Subscription) error {
+func (b *Backend) UpdateSubscription(id string, sub protocol.Subscription) error {
 	return b.call(MethodUpdateSubscription, updateSubscriptionReq{
 		ID: id,
 		Sub: channelSubscriptionJSON{
@@ -495,8 +491,8 @@ func (b *Backend) GetMemoryStats(ctx context.Context, ch, chatID, senderID strin
 	return r
 }
 
-func (b *Backend) GetHistory(channelName, chatID string) ([]channel.HistoryMessage, error) {
-	var r []channel.HistoryMessage
+func (b *Backend) GetHistory(channelName, chatID string) ([]protocol.HistoryMessage, error) {
+	var r []protocol.HistoryMessage
 	return r, b.call(MethodGetHistory, getHistoryReq{Channel: channelName, ChatID: chatID}, &r)
 }
 
@@ -571,14 +567,14 @@ func (b *Backend) IsProcessing(ch, chatID string) bool {
 	return r
 }
 
-func (b *Backend) GetActiveProgress(ch, chatID string) *channel.CLIProgressPayload {
-	var r *channel.CLIProgressPayload
+func (b *Backend) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
+	var r *protocol.ProgressEvent
 	_ = b.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID}, &r)
 	return r
 }
 
-func (b *Backend) GetTodos(ch, chatID string) []channel.CLITodoItem {
-	var r []channel.CLITodoItem
+func (b *Backend) GetTodos(ch, chatID string) []protocol.TodoItem {
+	var r []protocol.TodoItem
 	_ = b.call(MethodGetTodos, getTodosReq{Channel: ch, ChatID: chatID}, &r)
 	return r
 }

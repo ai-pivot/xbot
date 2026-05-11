@@ -22,6 +22,7 @@ import (
 
 	"xbot/bus"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 
@@ -537,12 +538,14 @@ func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
 		wp.ActiveTools = append(wp.ActiveTools, WsToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
+			Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 		})
 	}
 	for _, t := range p.CompletedTools {
 		wp.CompletedTools = append(wp.CompletedTools, WsToolProgress{
 			Name: t.Name, Label: t.Label, Status: t.Status,
 			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
+			Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 		})
 	}
 	for _, t := range p.Todos {
@@ -607,6 +610,9 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 			Elapsed:   t.Elapsed,
 			Iteration: t.Iteration,
 			Summary:   t.Summary,
+			Detail:    t.Detail,
+			Args:      t.Args,
+			ToolHints: t.ToolHints,
 		})
 	}
 	for _, t := range p.CompletedTools {
@@ -617,6 +623,9 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 			Elapsed:   t.Elapsed,
 			Iteration: t.Iteration,
 			Summary:   t.Summary,
+			Detail:    t.Detail,
+			Args:      t.Args,
+			ToolHints: t.ToolHints,
 		})
 	}
 	for _, sa := range p.SubAgents {
@@ -643,27 +652,11 @@ func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
 	return cp
 }
 
-// WsToolProgress 单个工具的执行进度（对应 agent.ToolProgress）。
-type WsToolProgress struct {
-	Name      string `json:"name,omitempty"`
-	Label     string `json:"label,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Elapsed   int64  `json:"elapsed_ms,omitempty"` // milliseconds
-	Iteration int    `json:"iteration,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	Detail    string `json:"detail,omitempty"`    // full untruncated result
-	Args      string `json:"args,omitempty"`      // raw JSON tool arguments
-	ToolHints string `json:"toolHints,omitempty"` // markdown hint from plugin or built-in diff
-}
+// WsToolProgress 单个工具的执行进度。
+type WsToolProgress = protocol.ToolProgress
 
 // WsSubAgent 子 Agent 的结构化进度状态。
-type WsSubAgent struct {
-	Role     string       `json:"role"`
-	Instance string       `json:"instance,omitempty"`
-	Status   string       `json:"status"` // "running" | "done" | "error"
-	Desc     string       `json:"desc,omitempty"`
-	Children []WsSubAgent `json:"children,omitempty"`
-}
+type WsSubAgent = protocol.SubAgentInfo
 
 // convertCLISubAgentToWS recursively converts CLI SubAgent tree to WS format.
 func convertCLISubAgentToWS(children []CLISubAgent) []WsSubAgent {
@@ -701,21 +694,11 @@ func convertWsSubAgentToCLI(children []WsSubAgent) []CLISubAgent {
 	return result
 }
 
-// WsTokenUsage Token 使用量快照（对应 agent.TokenUsageSnapshot）。
-type WsTokenUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64 `json:"completion_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
-	CacheHitTokens   int64 `json:"cache_hit_tokens,omitempty"`
-	MaxOutputTokens  int64 `json:"max_output_tokens,omitempty"`
-}
+// WsTokenUsage Token 使用量快照。
+type WsTokenUsage = protocol.TokenUsage
 
 // WsTodoItem represents a TODO item for web display.
-type WsTodoItem struct {
-	ID   int    `json:"id"`
-	Text string `json:"text"`
-	Done bool   `json:"done"`
-}
+type WsTodoItem = protocol.TodoItem
 
 type wsClientMessage struct {
 	Type       string   `json:"type"`
@@ -1531,7 +1514,6 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				Time:       time.Now(),
 				RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 				From:       bus.NewIMAddress(msgChannel, msgSenderID),
-				To:         bus.NewIMAddress(msgChannel, msgChatID),
 			}
 			continue
 		case "rpc":
@@ -1683,7 +1665,6 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				Time:       time.Now(),
 				RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 				From:       bus.NewIMAddress(msgChannel, msgSenderID),
-				To:         bus.NewIMAddress(msgChannel, msgChatID),
 				Metadata:   metadata,
 			}
 		case "ask_user_response":
@@ -1704,7 +1685,6 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Time:       time.Now(),
 					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 					From:       bus.NewIMAddress("web", c.userID),
-					To:         bus.NewIMAddress("web", chatID),
 				}
 			} else {
 				// Format answers as indexed Q/A pairs
@@ -1723,7 +1703,6 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Time:       time.Now(),
 					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 					From:       bus.NewIMAddress("web", c.userID),
-					To:         bus.NewIMAddress("web", chatID),
 					Metadata:   map[string]string{"ask_user_answered": "true"},
 				}
 			}

@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"xbot/bus"
-	"xbot/channel"
+	"xbot/protocol"
 )
 
 // Transport is the execution layer. Every Backend method goes through Transport.
@@ -28,31 +27,22 @@ type Transport interface {
 	Call(method string, payload json.RawMessage) (json.RawMessage, error)
 
 	// === Communication ===
-	SendMessage(msg Message) error
-	Subscribe(chatID string) error
+	SendMessage(msg protocol.InboundMessage) error
+	// BindChat registers a chat session for event routing (WS channel subscription).
+	BindChat(chatID string) error
 
-	// === Server-push events ===
-	OnOutbound(cb func(bus.OutboundMessage))
-	OnProgress(cb func(*channel.CLIProgressPayload))
-	OnInjectUserMessage(cb func(chatID, content string))
-	OnReconnect(cb func())
-	OnConnStateChange(cb func(state string))
-	OnPluginWidgets(cb func(zones map[string]string, chatID string))
-	OnTUIControlRequest(cb func(action string, params map[string]string) (map[string]string, error))
+	// === Event subscription (new protocol-based API) ===
+	// Subscribe registers a handler for protocol events matching the given pattern.
+	// Returns a cancel function to unsubscribe.
+	Subscribe(pattern protocol.EventPattern, handler protocol.EventHandler) (cancel func())
+
+	// === TUI Control (request-response, cannot be expressed as fire-and-forget event) ===
+	// SetTUIControlHandler registers the handler for server-initiated TUI control requests.
+	// The handler receives (action, params) and returns (result, error) via WebSocket RPC.
+	SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error))
 
 	// === State ===
 	ConnState() string
 	IsRemote() bool
 	ServerURL() string
-}
-
-// Message is a transport-level message sent to the agent.
-type Message struct {
-	Content    string
-	Channel    string
-	ChatID     string
-	SenderID   string
-	SenderName string
-	ChatType   string
-	Cancel     bool
 }

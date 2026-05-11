@@ -19,6 +19,7 @@ import (
 	"xbot/event"
 	"xbot/llm"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -687,16 +688,15 @@ type fakeAgentBackend struct {
 	defaultSub   *channel.Subscription
 }
 
-func (b *fakeAgentBackend) Start(context.Context) error                                  { return nil }
-func (b *fakeAgentBackend) Stop()                                                        {}
-func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error                         { return nil }
-func (b *fakeAgentBackend) OnOutbound(func(bus.OutboundMessage))                         {}
-func (b *fakeAgentBackend) OnProgress(func(*channel.CLIProgressPayload))                 {}
-func (b *fakeAgentBackend) OnInjectUserMessage(func(string, string))                     {}
-func (b *fakeAgentBackend) OnReconnect(func())                                           {}
-func (b *fakeAgentBackend) OnConnStateChange(func(string))                               {}
-func (b *fakeAgentBackend) OnPluginWidgets(func(map[string]string, string))              {}
-func (b *fakeAgentBackend) Subscribe(string) error                                       { return nil }
+// Compile-time check: fakeAgentBackend implements agent.AgentBackend.
+var _ agent.AgentBackend = (*fakeAgentBackend)(nil)
+
+func (b *fakeAgentBackend) Start(context.Context) error          { return nil }
+func (b *fakeAgentBackend) Stop()                                {}
+func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error { return nil }
+func (b *fakeAgentBackend) Subscribe(protocol.EventPattern, protocol.EventHandler) func() {
+	return func() {}
+}
 func (b *fakeAgentBackend) ConnState() string                                            { return "connected" }
 func (b *fakeAgentBackend) ServerURL() string                                            { return "" }
 func (b *fakeAgentBackend) Agent() *agent.Agent                                          { return nil }
@@ -711,6 +711,7 @@ func (b *fakeAgentBackend) MultiSession() *session.MultiTenantSession           
 func (b *fakeAgentBackend) BgTaskManager() *tools.BackgroundTaskManager                  { return nil }
 func (b *fakeAgentBackend) HookManager() *hooks.Manager                                  { return nil }
 func (b *fakeAgentBackend) ApprovalState() *hooks.ApprovalState                          { return nil }
+func (b *fakeAgentBackend) BindChat(_ string) error                                      { return nil }
 func (b *fakeAgentBackend) SetDirectSend(func(bus.OutboundMessage) (string, error))      {}
 func (b *fakeAgentBackend) SetChannelFinder(func(string) (channel.Channel, bool))        {}
 func (b *fakeAgentBackend) SetChannelPromptProviders(...agent.ChannelPromptProvider)     {}
@@ -805,7 +806,7 @@ func (b *fakeAgentBackend) GetLLMConcurrency(string) int             { return 0 
 func (b *fakeAgentBackend) SetLLMConcurrency(string, int) error      { return nil }
 func (b *fakeAgentBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
 }
-func (b *fakeAgentBackend) OnTUIControlRequest(_ func(action string, params map[string]string) (map[string]string, error)) {
+func (b *fakeAgentBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
 }
 func (b *fakeAgentBackend) GetContextMode() string                                { return "" }
 func (b *fakeAgentBackend) PluginManager() *plugin.PluginManager                  { return nil }

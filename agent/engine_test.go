@@ -1033,14 +1033,6 @@ func TestSpawnAgentAdapter(t *testing.T) {
 		t.Errorf("OriginSenderID() = %q, want %q", capturedMsg.OriginSenderID(), "ou_xxx")
 	}
 
-	// Verify unified addressing
-	if !capturedMsg.From.IsIM() {
-		t.Errorf("From should be IM address, got %v", capturedMsg.From)
-	}
-	if !capturedMsg.To.IsAgent() {
-		t.Errorf("To should be Agent address, got %v", capturedMsg.To)
-	}
-
 	// Verify capabilities are propagated
 	if !capturedMsg.Capabilities["memory"] {
 		t.Error("expected capabilities[memory] = true")

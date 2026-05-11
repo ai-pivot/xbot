@@ -83,7 +83,7 @@ func NewBackgroundTaskManager() *BackgroundTaskManager {
 	return &BackgroundTaskManager{
 		tasks:     make(map[string]*BackgroundTask),
 		sessions:  make(map[string][]string),
-		NotifyCh:  make(chan BgNotification, 16),
+		NotifyCh:  make(chan BgNotification, 64),
 		callbacks: make(map[string][]func(task *BackgroundTask)),
 	}
 }

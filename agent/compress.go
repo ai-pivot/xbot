@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -130,7 +129,7 @@ func extractDialogueFromTail(tail []llm.ChatMessage) []llm.ChatMessage {
 func summarizeToolCall(name, args string) string {
 	switch name {
 	case "Shell":
-		cmd := extractJSONString(args, "command")
+		cmd := ExtractJSONString(args, "command")
 		if cmd == "" {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
@@ -140,29 +139,29 @@ func summarizeToolCall(name, args string) string {
 		}
 		return fmt.Sprintf("- **%s**: `%s`", name, cmd)
 	case "Read":
-		path := extractJSONString(args, "path")
+		path := ExtractJSONString(args, "path")
 		if path == "" {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
 		return fmt.Sprintf("- **%s**: `%s`", name, path)
 	case "Grep":
-		pattern := extractJSONString(args, "pattern")
+		pattern := ExtractJSONString(args, "pattern")
 		if pattern == "" {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
-		include := extractJSONString(args, "include")
+		include := ExtractJSONString(args, "include")
 		if include != "" {
 			return fmt.Sprintf("- **%s**: `%s` in `%s`", name, pattern, include)
 		}
 		return fmt.Sprintf("- **%s**: `%s`", name, pattern)
 	case "Glob":
-		pat := extractJSONString(args, "pattern")
+		pat := ExtractJSONString(args, "pattern")
 		if pat == "" {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
 		return fmt.Sprintf("- **%s**: `%s`", name, pat)
 	case "FileReplace", "FileCreate":
-		path := extractJSONString(args, "path")
+		path := ExtractJSONString(args, "path")
 		if path == "" {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
@@ -172,20 +171,6 @@ func summarizeToolCall(name, args string) string {
 		truncated := truncateArgs(args, 60)
 		return fmt.Sprintf("- **%s**: %s", name, truncated)
 	}
-}
-
-// extractJSONString extracts a string value for the given key from a JSON object.
-// Returns empty string if not found or parsing fails.
-func extractJSONString(jsonStr, key string) string {
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &obj); err != nil {
-		return ""
-	}
-	val, ok := obj[key].(string)
-	if !ok {
-		return ""
-	}
-	return val
 }
 
 // stripOffloadMaskPrefix removes 📂 [offload:...] / 📂 [masked:...] prefix from tool content.

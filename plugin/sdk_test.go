@@ -370,6 +370,7 @@ func (c *sdkMockContext) PluginID() string                                      
 func (c *sdkMockContext) WorkingDir() string                                        { return "" }
 func (c *sdkMockContext) Channel() string                                           { return "" }
 func (c *sdkMockContext) ChatID() string                                            { return "" }
+func (c *sdkMockContext) TenantID() int64                                           { return 0 }
 func (c *sdkMockContext) Logger() Logger                                            { return &sdkMockLogger{} }
 func (c *sdkMockContext) Config() (map[string]any, error)                           { return make(map[string]any), nil }
 func (c *sdkMockContext) SetConfig(key string, value any) error                     { return nil }

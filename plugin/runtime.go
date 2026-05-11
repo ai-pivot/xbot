@@ -242,7 +242,7 @@ type pluginResponse struct {
 	Error      string        `json:"error,omitempty"`
 	Tools      []ToolDef     `json:"tools,omitempty"`
 	Hooks      []hookReg     `json:"hooks,omitempty"`
-	HookResult *HookResult   `json:"hookResult,omitempty"`
+	HookResult *HookResult   `json:"hook_result,omitempty"`
 	Enrichers  []enricherReg `json:"enrichers,omitempty"`
 }
 

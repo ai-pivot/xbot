@@ -8,6 +8,7 @@ const (
 	permControlEnabledKey key = "perm_control_enabled"
 	chatIDKey             key = "chat_id"
 	senderIDKey           key = "sender_id"
+	channelKey            key = "channel"
 )
 
 func WithPermControlEnabled(ctx context.Context, enabled bool) context.Context {
@@ -26,6 +27,22 @@ func WithApprovalTarget(ctx context.Context, chatID, senderID string) context.Co
 	ctx = context.WithValue(ctx, chatIDKey, chatID)
 	ctx = context.WithValue(ctx, senderIDKey, senderID)
 	return ctx
+}
+
+func WithChannel(ctx context.Context, channel string) context.Context {
+	return context.WithValue(ctx, channelKey, channel)
+}
+
+func ChannelFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v := ctx.Value(channelKey); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func ApprovalTargetFromContext(ctx context.Context) (chatID, senderID string) {

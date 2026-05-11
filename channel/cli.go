@@ -21,12 +21,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/google/uuid"
-	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/tools"
 	"xbot/version"
 )
@@ -461,7 +461,7 @@ func (c *CLIChannel) SendToast(text, icon string) {
 
 // SetApprovalState stores the ApprovalState reference so that Start() can wire
 // the CLIApprovalHandler after the tea.Program is created.
-func (c *CLIChannel) SetApprovalState(state *hooks.ApprovalState) {
+func (c *CLIChannel) SetApprovalState(state *protocol.ApprovalState) {
 	c.approvalState = state
 }
 
@@ -550,6 +550,24 @@ func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 		}
 	} else {
 		c.pendingRemotePluginCache = cache
+	}
+}
+
+// CurrentChatID returns the current session chatID from the model.
+// Used by the widget Subscribe handler to filter push events for the correct session.
+func (c *CLIChannel) CurrentChatID() string {
+	if c.model != nil {
+		return c.model.chatID
+	}
+	return ""
+}
+
+// SyncPluginWidgetChatID updates the remote plugin cache's chatID after Cd
+// so that refreshWidgets() RPC fetches widgets for the correct session.
+func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
+	if c.model != nil && c.model.remotePluginCache != nil {
+		c.model.remotePluginCache.UpdateChatID(chatID)
+		c.model.remotePluginCache.Refresh()
 	}
 }
 
@@ -707,7 +725,7 @@ func (c *CLIChannel) SyncLayoutSettings(vals map[string]string) {
 
 // SetCheckpointState sets the file checkpoint state for /rewind file rollback.
 // If the model hasn't been created yet, the state is cached and applied later.
-func (c *CLIChannel) SetCheckpointState(state *hooks.CheckpointState) {
+func (c *CLIChannel) SetCheckpointState(state *protocol.CheckpointState) {
 	c.programMu.Lock()
 	defer c.programMu.Unlock()
 	if c.model != nil {

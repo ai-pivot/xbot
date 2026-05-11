@@ -57,6 +57,18 @@ func (r *WidgetRegistry) NotifyUpdated() {
 	r.notifyUpdated()
 }
 
+// FireUpdated immediately fires the onUpdated callback WITHOUT debounce.
+// Use this after direct CWD changes (e.g. Cd) where widget content was already
+// regenerated via RefreshWorkDir → OnWorkDirChanged and should be pushed now.
+func (r *WidgetRegistry) FireUpdated() {
+	r.mu.RLock()
+	fn := r.onUpdated
+	r.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 type widgetSlot struct {
 	pluginID string
 	widgetID string
@@ -372,8 +384,8 @@ func (r *WidgetRegistry) WidgetInfo() []WidgetInfo {
 }
 
 type WidgetInfo struct {
-	PluginID string `json:"pluginId"`
-	WidgetID string `json:"widgetId"`
+	PluginID string `json:"plugin_id"`
+	WidgetID string `json:"widget_id"`
 	Zone     string `json:"zone"`
 	Priority int    `json:"priority"`
 }
@@ -404,4 +416,19 @@ func joinWidgetSpans(spans []WidgetSpan) string {
 		s += sp.Text
 	}
 	return s
+}
+
+// RenderSessionWidgets renders all widget zones for a session using its CWD.
+// The getCWD callback resolves the working directory for the given chatID.
+// Used by both the WS push path and the plugin_widgets RPC to ensure consistent rendering.
+func RenderSessionWidgets(wr *WidgetRegistry, getCWD func(string) string, chatID string) map[string]string {
+	cwd := ""
+	if getCWD != nil {
+		cwd = getCWD(chatID)
+	}
+	zones := make(map[string]string)
+	for _, z := range []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"} {
+		zones[z] = wr.RenderZoneForWorkDir(z, cwd)
+	}
+	return zones
 }

@@ -1760,11 +1760,6 @@ func (m *cliModel) renderHelpPanel() string {
 // maxLines caps diff rendering (0 = unlimited). Passed through to renderToolHint.
 // Caches the result on the tool struct to avoid re-running chroma/lipgloss on every tick.
 func (m *cliModel) renderToolContentBelow(tool *CLIToolProgress, guide string, bodyW int, dimmed bool, maxLines int) string {
-	// Return cached result if content hasn't changed and width matches.
-	if tool.cachedBody != "" && tool.cachedBodyW == bodyW {
-		return tool.cachedBody
-	}
-
 	var sb strings.Builder
 	guideFn := func(s string) string { return s }
 	if dimmed {
@@ -1817,8 +1812,6 @@ func (m *cliModel) renderToolContentBelow(tool *CLIToolProgress, guide string, b
 	}
 
 	result := strings.TrimRight(sb.String(), "\n")
-	tool.cachedBody = result
-	tool.cachedBodyW = bodyW
 	return result
 }
 

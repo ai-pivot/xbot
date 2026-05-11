@@ -3,9 +3,12 @@ package session
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"xbot/config"
 	"xbot/llm"
 	"xbot/memory"
 	"xbot/storage/sqlite"
@@ -213,15 +216,27 @@ func (s *TenantSession) GetCurrentDir() string {
 	return s.cwd
 }
 
-// SetCurrentDir 设置当前工作目录（PWD 工具优化），并持久化到 WorktreeRegistry
+// SetCurrentDir 设置当前工作目录（PWD 工具优化），并持久化到磁盘。
 func (s *TenantSession) SetCurrentDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cwd = dir
 
-	// Persist CWD to WorktreeRegistry so it survives server restarts.
-	// The registry is already persisted to disk and serves as the
-	// authoritative source for session CWD on reconnect.
-	sessKey := s.channel + ":" + s.chatID
-	tools.GlobalWorktreeRegistry.UpdateCWD(sessKey, dir)
+	// Persist CWD to disk so it survives server restarts.
+	// Write to ~/.xbot/session_cwd/{tenantID}.txt
+	cwdDir := filepath.Join(config.XbotHome(), "session_cwd")
+	if err := os.MkdirAll(cwdDir, 0700); err == nil {
+		cwdFile := filepath.Join(cwdDir, fmt.Sprintf("%d.txt", s.tenantID))
+		_ = os.WriteFile(cwdFile, []byte(dir), 0600)
+	}
+}
+
+// loadPersistedCWD tries to restore CWD from disk after a restart.
+func loadPersistedCWD(tenantID int64) string {
+	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", fmt.Sprintf("%d.txt", tenantID))
+	data, err := os.ReadFile(cwdFile)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

@@ -16,6 +16,7 @@ import (
 	"xbot/channel"
 	"xbot/config"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -124,15 +125,8 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return err
 		}
-		if err := h.backend.SetCWD(p.Channel, p.ChatID, p.Dir); err != nil {
-			return err
-		}
-		// Refresh plugin workDir so script plugins (e.g. git-info) re-execute
-		// in the new directory after CLI client syncs its CWD.
-		if pm := h.backend.PluginManager(); pm != nil {
-			pm.RefreshWorkDir(p.Dir)
-		}
-		return nil
+		// SetCWD internally refreshes plugin workDir with correct tenantID
+		return h.backend.SetCWD(p.Channel, p.ChatID, p.Dir)
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {
 		Namespace string `json:"namespace"`
@@ -857,25 +851,23 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 
 		// Look up the session CWD using the chat_id sent by the CLI client.
 		// Each CLI window has a session keyed by its working directory path.
-		cwd := ""
-		if p.ChatID != "" && backend.MultiSession() != nil {
-			if sess, err := backend.MultiSession().GetOrCreateSession("cli", p.ChatID); err == nil {
-				cwd = sess.GetCurrentDir()
+		getCWD := func(cid string) string {
+			cwd := ""
+			if cid != "" && backend.MultiSession() != nil {
+				if sess, err := backend.MultiSession().GetOrCreateSession("cli", cid); err == nil {
+					cwd = sess.GetCurrentDir()
+				}
 			}
+			return cwd
 		}
+		wr := pm.WidgetRegistry()
 
-		// Render per-workDir — bypass global WidgetRegistry slot content.
-		// Each session's widget is rendered on-the-fly from the script's
-		// per-workDir output cache, so sessions never interfere.
-		zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"}
-		zones := make(map[string]string)
-		for _, z := range zoneNames {
-			zones[z] = pm.RenderZoneForWorkDir(z, cwd)
-		}
+		// Render per-workDir using shared function — same logic as WS push path.
+		zones := plugin.RenderSessionWidgets(wr, getCWD, p.ChatID)
 		return map[string]any{
 			"zones": zones,
-			"infos": pm.WidgetInfoForWorkDir(cwd),
-			"count": pm.WidgetRegistry().Count(),
+			"infos": pm.WidgetInfoForWorkDir(getCWD(p.ChatID)),
+			"count": wr.Count(),
 		}, nil
 	})
 

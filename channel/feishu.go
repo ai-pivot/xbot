@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/internal/ctxkeys"
 	log "xbot/logger"
 	"xbot/prompt"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 
@@ -179,7 +179,7 @@ type FeishuChannel struct {
 	settingsCallbacks SettingsCallbacks
 
 	// Permission control
-	approvalState *hooks.ApprovalState
+	approvalState *protocol.ApprovalState
 	approvalsMu   sync.Mutex
 	approvals     map[string]*feishuPendingApproval
 
@@ -237,7 +237,7 @@ func (f *FeishuChannel) SetCardBuilder(builder *tools.CardBuilder) {
 }
 
 // SetApprovalState stores the ApprovalState reference so Start() can wire a Feishu approval handler.
-func (f *FeishuChannel) SetApprovalState(state *hooks.ApprovalState) {
+func (f *FeishuChannel) SetApprovalState(state *protocol.ApprovalState) {
 	f.approvalState = state
 }
 

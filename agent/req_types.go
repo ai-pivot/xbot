@@ -18,7 +18,6 @@ const (
 	MethodGetUserThinkingMode          = "get_user_thinking_mode"
 	MethodSetLLMConcurrency            = "set_llm_concurrency"
 	MethodGetLLMConcurrency            = "get_llm_concurrency"
-	MethodSetProxyLLM                  = "set_proxy_llm"
 	MethodClearProxyLLM                = "clear_proxy_llm"
 	MethodSetDefaultThinkingMode       = "set_default_thinking_mode"
 	MethodGetDefaultModel              = "get_default_model"
@@ -121,11 +120,6 @@ type setUserThinkingModeReq struct {
 type setLLMConcurrencyReq struct {
 	SenderID string `json:"sender_id"`
 	Personal int    `json:"personal"`
-}
-
-type setProxyLLMReq struct {
-	SenderID string `json:"sender_id"`
-	Model    string `json:"model"`
 }
 
 type setDefaultThinkingModeReq struct {
@@ -237,7 +231,7 @@ type setSubscriptionModelReq struct {
 	Model string `json:"model"`
 }
 
-// channelSubscriptionJSON mirrors channel.Subscription for JSON transport.
+// channelSubscriptionJSON mirrors protocol.Subscription for JSON transport.
 type channelSubscriptionJSON struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`

@@ -59,6 +59,7 @@ type RunConfig struct {
 	OriginUserID string // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等）
 	SenderName   string
 	FeishuUserID string // 非空表示通过飞书身份登录 web（用于 runner 路由）
+	TenantID     int64  // 当前租户 ID（用于 per-tenant 工具可见性）
 
 	// === 工作区 & 沙箱 ===
 	WorkingDir          string   // Agent 工作目录（宿主机）
@@ -262,7 +263,9 @@ type RunConfig struct {
 
 	// RefreshPluginWorkDir is called after Cd changes the working directory,
 	// so script plugins (e.g. git-info) can re-execute in the new directory.
-	RefreshPluginWorkDir func(dir string)
+	// channel and chatID identify the session that triggered the change.
+	// tenantID identifies the current tenant for multi-tenancy.
+	RefreshPluginWorkDir func(dir, channel, chatID string, tenantID int64)
 	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
 	// Used by SendMessage tool for busy/idle routing.
 	PeerMessageFn func(targetSessionKey, message string) string
@@ -656,7 +659,7 @@ func executeWithHooks(
 // Used for SubAgent and other scenarios that don't need session MCP / activation checks.
 func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
-		tool, ok := cfg.Tools.Get(tc.Name)
+		tool, ok := cfg.Tools.GetForTenant(tc.Name, cfg.TenantID)
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
@@ -834,7 +837,6 @@ func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleNam
 
 	return bus.InboundMessage{
 		From: bus.NewIMAddress(a.channel, a.senderID),
-		To:   bus.NewAgentAddress(a.parentID),
 
 		Channel:    bus.SchemeAgent,
 		Content:    task,
@@ -1021,7 +1023,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.SetCurrentDir = func(dir string) {
 			cfg.Session.SetCurrentDir(dir)
 			if cfg.RefreshPluginWorkDir != nil {
-				cfg.RefreshPluginWorkDir(dir)
+				cfg.RefreshPluginWorkDir(dir, cfg.Channel, cfg.ChatID, tc.TenantID)
 			}
 		}
 	} else {

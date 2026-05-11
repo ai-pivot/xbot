@@ -9,25 +9,14 @@ import (
 	"sync"
 
 	log "xbot/logger"
+	"xbot/protocol"
 )
 
 // FileSnapshot records the state of a file before an agent edit.
-type FileSnapshot struct {
-	TurnIdx  int    `json:"turn_idx"`
-	ToolName string `json:"tool_name"`
-	FilePath string `json:"file_path"`
-	Existed  bool   `json:"existed"`
-	// Base64-encoded file content before the edit. Nil/empty if file didn't exist.
-	ContentB64 string `json:"content_b64,omitempty"`
-}
+type FileSnapshot = protocol.FileSnapshot
 
 // RewindResult summarizes the outcome of a rewind operation.
-type RewindResult struct {
-	Restored   []string // files restored to pre-edit state
-	CreatedDel []string // agent-created files that were deleted
-	Skipped    []string // files skipped (too large, sandbox, etc.)
-	Errors     []string // files that failed to restore
-}
+type RewindResult = protocol.RewindResult
 
 // CheckpointStore persists file snapshots as JSONL.
 // Thread-safe: all access is protected by a mutex.
@@ -102,11 +91,11 @@ func (s *CheckpointStore) ReadAll() ([]FileSnapshot, error) {
 
 // Rewind restores files to their state before the given turn index.
 // All file edits from turnIdx onwards are reverted.
-func (s *CheckpointStore) Rewind(turnIdx int) *RewindResult {
+func (s *CheckpointStore) Rewind(turnIdx int) (RewindResult, error) {
 	snapshots, err := s.ReadAll()
 	if err != nil {
 		log.WithError(err).Warn("checkpoint rewind: failed to read snapshots")
-		return &RewindResult{Errors: []string{fmt.Sprintf("read checkpoints: %v", err)}}
+		return RewindResult{Errors: []string{fmt.Sprintf("read checkpoints: %v", err)}}, nil
 	}
 
 	// Filter snapshots from the target turn onwards
@@ -118,7 +107,7 @@ func (s *CheckpointStore) Rewind(turnIdx int) *RewindResult {
 	}
 	if len(affected) == 0 {
 		log.WithField("turnIdx", turnIdx).Debug("checkpoint rewind: no snapshots found at or after turn")
-		return &RewindResult{}
+		return RewindResult{}, nil
 	}
 
 	log.WithFields(log.Fields{"turnIdx": turnIdx, "snapshots": len(affected), "total": len(snapshots)}).Debug("checkpoint rewind: starting")
@@ -131,7 +120,7 @@ func (s *CheckpointStore) Rewind(turnIdx int) *RewindResult {
 		}
 	}
 
-	result := &RewindResult{}
+	result := RewindResult{}
 
 	for filePath, snap := range earliestPerFile {
 		if snap.Existed {
@@ -163,7 +152,7 @@ func (s *CheckpointStore) Rewind(turnIdx int) *RewindResult {
 	// After rewind, truncate the JSONL to only keep pre-turnIdx snapshots
 	s.truncateTo(turnIdx)
 
-	return result
+	return result, nil
 }
 
 // truncateTo removes all snapshots with turnIdx >= cutoff from the JSONL file.

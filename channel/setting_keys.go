@@ -238,7 +238,7 @@ func ConfigValueBySource(key string, source ConfigSource) string {
 	if err != nil {
 		return ""
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
 		return ""
 	}
@@ -251,7 +251,7 @@ func ConfigValueBySource(key string, source ConfigSource) string {
 	case SourceLLMConfig:
 		name := strings.TrimPrefix(key, "llm_")
 		if llm, ok := m["llm"]; ok {
-			if llmMap, ok := llm.(map[string]interface{}); ok {
+			if llmMap, ok := llm.(map[string]any); ok {
 				return stringVal(llmMap[name])
 			}
 		}
@@ -261,7 +261,7 @@ func ConfigValueBySource(key string, source ConfigSource) string {
 	}
 }
 
-func stringVal(v interface{}) string {
+func stringVal(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val

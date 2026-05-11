@@ -95,7 +95,7 @@ func TestCheckpointStore_Rewind(t *testing.T) {
 	os.WriteFile(newPath, []byte("new file content"), 0644)
 
 	// Rewind to before turn 2
-	result := store.Rewind(2)
+	result, _ := store.Rewind(2)
 
 	if len(result.Restored) != 1 {
 		t.Errorf("expected 1 restored, got %d", len(result.Restored))
@@ -152,7 +152,7 @@ func TestCheckpointStore_RewindAll(t *testing.T) {
 	os.WriteFile(fooPath, []byte("modified"), 0644)
 
 	// Rewind everything
-	result := store.Rewind(1)
+	result, _ := store.Rewind(1)
 	if len(result.Restored) != 1 {
 		t.Errorf("expected 1 restored, got %d", len(result.Restored))
 	}

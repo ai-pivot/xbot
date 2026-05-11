@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -59,17 +58,18 @@ type PluginManager struct {
 	configStore  *PluginConfigStore
 	notifier     *PluginEventNotifier
 
+	// Per-tenant event buses for tenant-scoped plugin-to-plugin communication.
+	tenantBuses   map[int64]*PluginEventBus
+	tenantBusesMu sync.RWMutex
+
+	// wiredTenants tracks which tenants have already had their plugin tools wired.
+	wiredTenants   map[int64]bool
+	wiredTenantsMu sync.Mutex
+
 	activationOrder []string // topological activation order (computed after Discover)
 
 	// UI widget registry — shared across all plugins
 	widgetRegistry *WidgetRegistry
-
-	// workDir is the agent's working directory, injected via SetWorkDir.
-	// Used to set PluginContext.WorkingDir() before activation so script
-	// plugins run in the user's workspace (e.g. git repo).
-	// Stored as atomic.Value[string] for lock-free reads from activate()
-	// (which may be called while pm.mu write lock is held).
-	workDir atomic.Value // stores string
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -102,6 +102,7 @@ func NewPluginManager(xbotHome string) *PluginManager {
 		configStore:    NewPluginConfigStore(xbotHome),
 		notifier:       NewPluginEventNotifier(),
 		widgetRegistry: NewWidgetRegistry(),
+		tenantBuses:    make(map[int64]*PluginEventBus),
 	}
 }
 
@@ -112,36 +113,31 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 	pm.runtimeFactory = factory
 }
 
-// workDirValue safely loads the workDir from the atomic value.
-func (pm *PluginManager) workDirValue() string {
-	if v := pm.workDir.Load(); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-// SetWorkDir sets the agent working directory applied to plugin contexts.
+// SetWorkDir is deprecated. PluginManager no longer caches CWD internally.
+// CWD is now managed by TenantSession as the single source of truth.
+// Kept for backward compatibility only.
 func (pm *PluginManager) SetWorkDir(wd string) {
-	pm.workDir.Store(wd)
+	// no-op
 }
 
-// WorkDir returns the current working directory (set by SetWorkDir or RefreshWorkDir).
+// WorkDir is deprecated. Returns empty string.
+// CWD is now managed by TenantSession as the single source of truth.
 func (pm *PluginManager) WorkDir() string {
-	return pm.workDirValue()
+	return ""
 }
 
 // RefreshWorkDir updates the working directory on ALL active plugin contexts.
 // Call this when the session CWD changes (e.g. after Cd) so script plugins
 // re-execute in the new directory.
 // Also signals WorkDirAware plugins to immediately refresh their output.
-func (pm *PluginManager) RefreshWorkDir(wd string) {
-	pm.workDir.Store(wd)
-
+// Widget push is handled by each plugin's notifyUpdated callback after it
+// finishes re-executing (debounce=200ms, effectively immediate).
+func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int64) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	for _, entry := range pm.entries {
 		if entry.Context != nil {
-			entry.Context.SetSessionMetadata(wd, "", "")
+			entry.Context.SetSessionMetadata(wd, channel, chatID, tenantID)
 		}
 		// Signal WorkDirAware plugins to immediately re-execute
 		if aware, ok := entry.Plugin.(WorkDirAware); ok {
@@ -150,9 +146,63 @@ func (pm *PluginManager) RefreshWorkDir(wd string) {
 	}
 }
 
-// Bus returns the plugin event bus.
+// RefreshTenantID is deprecated. PluginManager no longer caches tenant ID internally.
+// CWD and tenant identity are now managed by TenantSession as the single source of truth.
+// Kept for backward compatibility only.
+func (pm *PluginManager) RefreshTenantID(tenantID int64) {
+	// no-op
+}
+
+// IsTenantWired returns true if the given tenant already has its plugin tools wired.
+func (pm *PluginManager) IsTenantWired(tenantID int64) bool {
+	if tenantID == 0 {
+		return true // global tools always wired at startup
+	}
+	pm.wiredTenantsMu.Lock()
+	defer pm.wiredTenantsMu.Unlock()
+	return pm.wiredTenants[tenantID]
+}
+
+// MarkTenantWired records that the given tenant has had its plugin tools wired.
+func (pm *PluginManager) MarkTenantWired(tenantID int64) {
+	if tenantID == 0 {
+		return
+	}
+	pm.wiredTenantsMu.Lock()
+	defer pm.wiredTenantsMu.Unlock()
+	if pm.wiredTenants == nil {
+		pm.wiredTenants = make(map[int64]bool)
+	}
+	pm.wiredTenants[tenantID] = true
+}
+
+// Bus returns the global plugin event bus.
 func (pm *PluginManager) Bus() *PluginEventBus {
 	return pm.bus
+}
+
+// EventBusFor returns a tenant-scoped PluginEventBus. If no bus exists
+// for the given tenantID, a new one is created. This enables per-tenant
+// isolation of plugin-to-plugin events.
+func (pm *PluginManager) EventBusFor(tenantID int64) *PluginEventBus {
+	if tenantID == 0 {
+		return pm.bus
+	}
+	pm.tenantBusesMu.RLock()
+	b, ok := pm.tenantBuses[tenantID]
+	pm.tenantBusesMu.RUnlock()
+	if ok {
+		return b
+	}
+	pm.tenantBusesMu.Lock()
+	defer pm.tenantBusesMu.Unlock()
+	// Double-check under write lock
+	if b, ok = pm.tenantBuses[tenantID]; ok {
+		return b
+	}
+	b = NewPluginEventBus()
+	pm.tenantBuses[tenantID] = b
+	return b
 }
 
 // AuditLog returns the audit logger, or nil if initialization failed.
@@ -425,7 +475,7 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 		}
 
 		// Create PluginContext
-		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore)
+		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm)
 		entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 		// Create runtime instance
@@ -564,15 +614,6 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 		err error
 	}
 	done := make(chan activateResult, 1)
-
-	// Set session metadata (workDir, channel) BEFORE activation so the plugin
-	// context has the correct working directory for script execution.
-	if entry.Context != nil {
-		wd := pm.workDirValue() // atomic read, no lock needed
-		if wd != "" {
-			entry.Context.SetSessionMetadata(wd, "", "")
-		}
-	}
 
 	go func() {
 		var activateErr error
@@ -766,7 +807,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	entry := &PluginEntry{
 		Manifest: &m,
 		Plugin:   p,
-		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
+		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm),
 		State:    StateDiscovered,
 		Dir:      pluginDir,
 	}
@@ -870,7 +911,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 		Manifest: m,
 		State:    StateDiscovered,
 		Dir:      pluginDir,
-		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
+		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm),
 	}
 
 	newEntry.Context.SetWidgetRegistry(pm.widgetRegistry)
@@ -889,7 +930,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 	pm.entries[m.ID] = newEntry
 
-	// Activate if has onStart event (workDir is read via atomic, safe under pm.mu write lock)
+	// Activate if has onStart event
 	if hasActivationEvent(m, "onStart") {
 		if err4 := pm.activate(ctx, newEntry); err4 != nil {
 			pm.notifyEvent(PluginEventError, m.ID, err4, map[string]any{"phase": "reload", "step": "activate"})
@@ -980,7 +1021,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 		Manifest: installedManifest,
 		State:    StateDiscovered,
 		Dir:      targetDir,
-		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore),
+		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore, pm),
 	}
 	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
@@ -1422,13 +1463,13 @@ func (pm *PluginManager) HealthCheck(ctx context.Context) map[string]error {
 
 // PluginMetrics holds aggregate metrics about the plugin system.
 type PluginMetrics struct {
-	TotalPlugins   int   `json:"totalPlugins"`
-	ActivePlugins  int   `json:"activePlugins"`
-	TotalTools     int   `json:"totalTools"`
-	TotalHooks     int   `json:"totalHooks"`
-	TotalEnrichers int   `json:"totalEnrichers"`
-	ToolCallCount  int64 `json:"toolCallCount"` // runtime cumulative tool executions
-	HookCallCount  int64 `json:"hookCallCount"` // runtime cumulative hook dispatches
+	TotalPlugins   int   `json:"total_plugins"`
+	ActivePlugins  int   `json:"active_plugins"`
+	TotalTools     int   `json:"total_tools"`
+	TotalHooks     int   `json:"total_hooks"`
+	TotalEnrichers int   `json:"total_enrichers"`
+	ToolCallCount  int64 `json:"tool_call_count"` // runtime cumulative tool executions
+	HookCallCount  int64 `json:"hook_call_count"` // runtime cumulative hook dispatches
 }
 
 // Metrics returns aggregate metrics about the plugin system.

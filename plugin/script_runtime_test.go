@@ -41,10 +41,10 @@ func newTestScriptPlugin(t *testing.T, entry string) *scriptPlugin {
 
 func newTestPluginContext(t *testing.T, sp *scriptPlugin, workDir string) *pluginContextImpl {
 	t.Helper()
-	pctx := newPluginContext(&sp.manifest, &noopStorage{}, newPluginLogger(sp.manifest.ID), nil, nil)
+	pctx := newPluginContext(&sp.manifest, &noopStorage{}, newPluginLogger(sp.manifest.ID), nil, nil, nil)
 	wr := NewWidgetRegistry()
 	pctx.SetWidgetRegistry(wr)
-	pctx.SetSessionMetadata(workDir, "test-channel", "test-chat")
+	pctx.SetSessionMetadata(workDir, "test-channel", "test-chat", 0)
 	return pctx
 }
 

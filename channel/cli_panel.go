@@ -586,7 +586,8 @@ func (m *cliModel) applyRewind() {
 		if absTurnIdx < 1 {
 			absTurnIdx = 1
 		}
-		m.rewindResult = m.checkpointState.Store().Rewind(absTurnIdx)
+		result, _ := m.checkpointState.Store().Rewind(absTurnIdx)
+		m.rewindResult = &result
 	}
 
 	// Put selected message content into input box

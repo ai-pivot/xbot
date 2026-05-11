@@ -562,7 +562,7 @@ func TestPluginContext_UseMiddleware(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{"tools.register"}
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
 
 	mw := func(ctx context.Context, toolName string, input string, next PluginMiddlewareNext) (*ToolResult, error) {
 		return next(ctx, toolName, input)
@@ -583,7 +583,7 @@ func TestPluginContext_UseMiddleware_NoPermission(t *testing.T) {
 	m := testManifest()
 	m.Permissions = nil // No permissions
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
 
 	err := pc.UseMiddleware(func(ctx context.Context, toolName string, input string, next PluginMiddlewareNext) (*ToolResult, error) {
 		return next(ctx, toolName, input)
@@ -600,7 +600,7 @@ func TestPluginContext_UseMiddleware_Nil(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{"tools.register"}
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
 
 	err := pc.UseMiddleware(nil)
 	if err != nil {
