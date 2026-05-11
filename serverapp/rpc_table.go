@@ -124,15 +124,8 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return err
 		}
-		if err := h.backend.SetCWD(p.Channel, p.ChatID, p.Dir); err != nil {
-			return err
-		}
-		// Refresh plugin workDir so script plugins (e.g. git-info) re-execute
-		// in the new directory after CLI client syncs its CWD.
-		if pm := h.backend.PluginManager(); pm != nil {
-			pm.RefreshWorkDir(p.Dir, p.Channel, p.ChatID, 0)
-		}
-		return nil
+		// SetCWD internally refreshes plugin workDir with correct tenantID
+		return h.backend.SetCWD(p.Channel, p.ChatID, p.Dir)
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {
 		Namespace string `json:"namespace"`
