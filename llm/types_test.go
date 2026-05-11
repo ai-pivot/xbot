@@ -80,14 +80,14 @@ func TestSanitizeMessages_EmptyAssistant(t *testing.T) {
 			wantLen: 2, // hello + reply
 		},
 		{
-			name: "Pass 5: strips tool messages orphaned by Pass 2 (invalid JSON tool_call removed)",
+			name: "Pass 2: fixes tool_call with invalid JSON arguments instead of stripping",
 			input: []ChatMessage{
 				NewUserMessage("hello"),
 				{
 					Role:    "assistant",
 					Content: "",
 					ToolCalls: []ToolCall{
-						{ID: "call_1", Name: "shell", Arguments: `{"command":"ls`}, // invalid JSON (unclosed string)
+						{ID: "call_1", Name: "shell", Arguments: `{"command":"ls`}, // invalid JSON (truncated)
 						{ID: "call_2", Name: "read", Arguments: "{}"},
 					},
 				},
@@ -95,7 +95,7 @@ func TestSanitizeMessages_EmptyAssistant(t *testing.T) {
 				NewToolMessage("read", "call_2", "{}", "file content"),
 				NewAssistantMessage("done"),
 			},
-			wantLen: 4, // user + assistant(call_2 only) + tool(call_2) + assistant("done")
+			wantLen: 5, // user + assistant(both tool_calls, call_1 args fixed) + tool(call_1) + tool(call_2) + assistant("done")
 			wantLog: true,
 		},
 		{

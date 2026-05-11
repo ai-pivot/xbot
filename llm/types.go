@@ -72,28 +72,24 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 	}
 	messages = messages[:n]
 
-	// Pass 2: Strip tool_calls with invalid JSON arguments.
+	// Pass 2: Fix tool_calls with invalid JSON arguments.
 	// Partially streamed tool_calls can have broken JSON (e.g. {"command":"ls without closing).
-	// DeepSeek rejects these with "tool call must be paired" or 400 errors.
+	// Instead of stripping them (which creates unpaired tool results), fix the args to a
+	// valid JSON with a _truncated marker. The tool executor checks this marker before
+	// execution and returns a precise truncation error to the LLM.
 	for i := range messages {
 		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
 			continue
 		}
-		valid := make([]ToolCall, 0, len(messages[i].ToolCalls))
-		for _, tc := range messages[i].ToolCalls {
-			if isValidToolCallArgs(tc.Arguments) {
-				valid = append(valid, tc)
-			} else {
+		for j := range messages[i].ToolCalls {
+			if !isValidToolCallArgs(messages[i].ToolCalls[j].Arguments) {
 				log.WithFields(log.Fields{
-					"tool_name": tc.Name,
-					"tool_id":   tc.ID,
-					"args_len":  len(tc.Arguments),
-				}).Warn("[SanitizeMessages] Stripping tool_call with invalid JSON arguments")
+					"tool_name": messages[i].ToolCalls[j].Name,
+					"tool_id":   messages[i].ToolCalls[j].ID,
+					"args_len":  len(messages[i].ToolCalls[j].Arguments),
+				}).Warn("[SanitizeMessages] Fixing tool_call with invalid JSON arguments (truncated)")
+				messages[i].ToolCalls[j].Arguments = `{"_truncated":true}`
 			}
-		}
-		messages[i].ToolCalls = valid
-		if len(valid) == 0 && messages[i].Content == "" {
-			messages[i].ToolCalls = nil // will be stripped by Pass 1 on next round
 		}
 	}
 
