@@ -85,19 +85,21 @@ func (t *baseTransport) emit(ctx context.Context, event protocol.TransportEvent)
 // dispatch delivers an EventEnvelope to all matching subscribers.
 func (t *baseTransport) dispatch(env protocol.EventEnvelope) {
 	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	// Type-specific subscribers
+	// Snapshot matching subscribers to avoid holding RLock during handler calls.
+	var matched []*subscription
 	for _, sub := range t.subs[env.Type] {
 		if sub.pattern.Matches(env.Type, env.Version) {
-			sub.handler(env)
+			matched = append(matched, sub)
 		}
 	}
-
-	// Wildcard subscribers
 	for _, sub := range t.wildcardSubs {
 		if sub.pattern.Matches(env.Type, env.Version) {
-			sub.handler(env)
+			matched = append(matched, sub)
 		}
+	}
+	t.mu.RUnlock()
+
+	for _, sub := range matched {
+		sub.handler(env)
 	}
 }

@@ -57,13 +57,13 @@ func (b *PluginHookBridge) SetContext(pluginID string, ctx *pluginContextImpl) {
 
 // Dispatch sends an event to all matching plugin hooks.
 // Returns an aggregated HookDecision.
+// Only dispatches to plugins whose session context matches the payload.
 func (b *PluginHookBridge) Dispatch(ctx context.Context, payload *HookPayload) *HookResult {
 	key := string(payload.Event)
 
 	b.mu.RLock()
 	entries := make([]pluginHookEntry, len(b.handlers[key]))
 	copy(entries, b.handlers[key])
-	// Snapshot contexts for tracking (under same RLock)
 	contexts := make(map[string]*pluginContextImpl, len(b.contexts))
 	for k, v := range b.contexts {
 		contexts[k] = v
@@ -81,6 +81,16 @@ func (b *PluginHookBridge) Dispatch(ctx context.Context, payload *HookPayload) *
 		// Check matcher
 		if entry.matcher != "" && payload.ToolName != "" {
 			if !matchToolName(entry.matcher, payload.ToolName) {
+				continue
+			}
+		}
+
+		// Session isolation: skip plugins whose context doesn't match the payload session
+		if bCtx, ok := contexts[entry.pluginID]; ok {
+			if bCtx.Channel() != "" && payload.Channel != "" && bCtx.Channel() != payload.Channel {
+				continue
+			}
+			if bCtx.ChatID() != "" && payload.ChatID != "" && bCtx.ChatID() != payload.ChatID {
 				continue
 			}
 		}

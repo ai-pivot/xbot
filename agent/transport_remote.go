@@ -424,7 +424,11 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 						"msg_chatid":    msg.ChatID,
 						"num_questions": len(msg.Progress.Questions),
 					}).Info("RemoteTransport: dispatching ask_user")
-					qJSON, _ := json.Marshal(msg.Progress.Questions)
+					qJSON, err := json.Marshal(msg.Progress.Questions)
+					if err != nil {
+						log.WithError(err).Warn("RemoteTransport: ask_user marshal failed")
+						break
+					}
 					// Emit protocol event for new-style subscribers
 					t.emit(ctx, protocol.AskUserEvent{
 						Channel:   msg.Channel,

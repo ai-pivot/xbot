@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"xbot/internal/ctxkeys"
 	"xbot/plugin"
 )
 
@@ -31,7 +32,16 @@ func (m *pluginEnricherMiddleware) Process(mc *MessageContext) error {
 		return nil
 	}
 
-	content := m.registry.RunAll(mc.Ctx)
+	// Inject session info into context so enrichers can filter by channel/chatID
+	ctx := mc.Ctx
+	if mc.Channel != "" {
+		ctx = ctxkeys.WithChannel(ctx, mc.Channel)
+	}
+	if mc.ChatID != "" {
+		ctx = ctxkeys.WithApprovalTarget(ctx, mc.ChatID, mc.SenderID)
+	}
+
+	content := m.registry.RunAll(ctx)
 	if content != "" {
 		mc.SystemParts["plugin_enrichers"] = content
 	}
