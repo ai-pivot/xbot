@@ -74,7 +74,7 @@ func TestIsSubscriptionScopedSettingKey(t *testing.T) {
 
 func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T) {
 	model := newCLIModel()
-	model.channel = &CLIChannel{}
+	model.channel = &CLIChannel{config: &CLIChannelConfig{}}
 	model.panelValuesBackup = map[string]string{
 		"theme":    "mono",
 		"language": "en",
@@ -1007,7 +1007,7 @@ func TestMergeCLISettingsValues_OverlaysUserScopedOnly(t *testing.T) {
 	model := newCLIModel()
 	model.channelName = "cli"
 	model.senderID = "cli_user"
-	model.channel = &CLIChannel{settingsSvc: settingsSvc}
+	model.channel = &CLIChannel{config: &CLIChannelConfig{}, settingsSvc: settingsSvc}
 	model.channel.config.GetCurrentValues = func() map[string]string { return cfgVals }
 
 	merged := model.mergeCLISettingsValues()
@@ -1028,7 +1028,7 @@ func TestPersistCLISettingsValues_PersistsUserScopedAndAppliesAll(t *testing.T) 
 	model := newCLIModel()
 	model.channelName = "cli"
 	model.senderID = "cli_user"
-	model.channel = &CLIChannel{settingsSvc: settingsSvc}
+	model.channel = &CLIChannel{config: &CLIChannelConfig{}, settingsSvc: settingsSvc}
 	model.channel.config.ApplySettings = func(vals map[string]string) {
 		for k, v := range vals {
 			applied[k] = v
@@ -1141,7 +1141,7 @@ func stripAnsi(s string) string {
 // locale strings, etc.) without nil dereference.
 func setupTestRemoteChannel(m *cliModel) {
 	m.channel = &CLIChannel{
-		config: CLIChannelConfig{
+		config: &CLIChannelConfig{
 			DynamicHistoryLoader: func(channelName, chatID string) ([]HistoryMessage, error) {
 				return nil, nil // no-op for tests
 			},

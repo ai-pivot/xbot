@@ -56,6 +56,8 @@
 - **`SaveToFile` uses deep JSON merge to preserve unknown fields.** `json.Unmarshal` silently drops fields not in the Go struct. `SaveToFile` reads the existing disk file first and recursively merges struct JSON into it, so user-added custom fields (or future struct fields added in newer versions) survive load→save cycles. Never bypass `SaveToFile` with raw `json.Marshal` writes to config.json.
 
 ### CLI / BubbleTea
+- **`CLIChannelConfig` is ALWAYS passed by pointer, NEVER by value.** `NewCLIChannel(cfg *CLIChannelConfig, ...)` stores the pointer; all later modifications (callbacks like `BindChatFn`, `GetActiveProgressFn`) are immediately visible to the channel. Passing by value (the old code) silently discards any wiring done after construction, causing nil callbacks at runtime. Tests must always initialize `config: &CLIChannelConfig{}`.
+- **`BindChatFn` must be set before `NewCLIChannel`.** The wiring order matters because the channel stores the pointer. All other callbacks (GetActiveProgressFn, GetTodosFn, etc.) follow the same rule — set on `cliCfg` before passing to `NewCLIChannel`.
 - **`parseKeyInput` with modifiers must NOT set `Text` field.** `Key.String()` returns `Text` if non-empty (ultraviolet `key.go:392`), bypassing `Keystroke()`. `{Code:'c', Text:"c", Mod:ModCtrl}.String()` → `"c"` not `"ctrl+c"`, breaking cancel.
 - **Iteration snapshot deduplication**: PhaseDone + handleAgentMessage can both snapshot the same iteration. Always dedup by iteration number, preferring PhaseDone (has reasoning from server).
 - **`ElapsedWall` must be set in ALL snapshot paths** — missing it causes total time to fall back to summing only last iteration's tool.Elapsed.

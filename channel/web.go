@@ -1555,7 +1555,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				continue
 			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
-			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Debug("CLI client subscribed to chatID")
+			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: CLI client subscribed to chatID")
 		case "tui_control_resp":
 			// Remote CLI TUI control response — route to pending request handler
 			if msg.TUIControl != nil && msg.ID != "" && wc.hub.tuiRespFn != nil {
@@ -1932,7 +1932,11 @@ func (c *RemoteCLIChannel) SendProgress(chatID string, payload *WsProgressPayloa
 		Progress: payload,
 	}
 	if !c.hub.sendToClient(chatID, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, progress event buffered")
+		log.WithFields(log.Fields{
+			"chat_id": chatID,
+			"phase":   payload.Phase,
+			"iter":    payload.Iteration,
+		}).Info("Hub SendProgress: no online subscriber, event buffered")
 	}
 }
 

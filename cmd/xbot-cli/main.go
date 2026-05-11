@@ -1703,6 +1703,9 @@ func main() {
 		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *channel.CLIProgressPayload {
 			return backend.GetActiveProgress(channelName, chatID)
 		}
+		cliCfg.BindChatFn = func(chatID string) error {
+			return backend.BindChat(chatID)
+		}
 		cliCfg.GetTodosFn = func(channelName, chatID string) []channel.CLITodoItem {
 			return backend.GetTodos(channelName, chatID)
 		}
@@ -1790,7 +1793,7 @@ func main() {
 		}
 	}
 
-	cliCh := channel.NewCLIChannel(cliCfg, app.msgBus)
+	cliCh := channel.NewCLIChannel(&cliCfg, app.msgBus)
 	app.cliCh = cliCh
 	disp.Register(cliCh)
 

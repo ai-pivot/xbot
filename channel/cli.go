@@ -31,7 +31,7 @@ import (
 	"xbot/version"
 )
 
-func NewCLIChannel(cfg CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
+func NewCLIChannel(cfg *CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
 	return &CLIChannel{
 		config:     cfg,
 		msgBus:     msgBus,

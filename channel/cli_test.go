@@ -29,7 +29,7 @@ func isTerminal() bool {
 
 func TestCLIChannelName(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	if got := ch.Name(); got != "cli" {
 		t.Errorf("CLIChannel.Name() = %q, want %q", got, "cli")
@@ -43,7 +43,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Start in goroutine since it blocks
 	startErr := make(chan error, 1)
@@ -72,7 +72,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 
 func TestCLIChannelSend(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send without starting should still work (messages buffered)
 	msg := bus.OutboundMessage{
@@ -93,7 +93,7 @@ func TestCLIChannelSend(t *testing.T) {
 
 func TestCLIChannelSendPartial(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send partial (streaming) message
 	msg := bus.OutboundMessage{
@@ -114,7 +114,7 @@ func TestCLIChannelSendPartial(t *testing.T) {
 
 func TestCLIChannelSendComplete(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send complete message
 	msg := bus.OutboundMessage{
@@ -135,7 +135,7 @@ func TestCLIChannelSendComplete(t *testing.T) {
 
 func TestCLIChannelSendBufferOverflow(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send more messages than buffer size to test non-blocking behavior
 	for i := 0; i < cliMsgBufSize+10; i++ {
@@ -152,7 +152,7 @@ func TestCLIChannelSendBufferOverflow(t *testing.T) {
 
 func TestCLIChannelSendProgress(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// SendProgress with nil payload should not panic
 	ch.SendProgress("test_chat", nil)
@@ -172,7 +172,7 @@ func TestCLIChannelSendProgress(t *testing.T) {
 
 func TestCLIChannelSendEmptyMessage(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -192,7 +192,7 @@ func TestCLIChannelSendEmptyMessage(t *testing.T) {
 
 func TestCLIChannelSendLongMessage(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Create a very long message
 	longContent := strings.Repeat("This is a long message. ", 1000)
@@ -215,7 +215,7 @@ func TestCLIChannelSendLongMessage(t *testing.T) {
 
 func TestCLIChannelSendWithMetadata(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -236,7 +236,7 @@ func TestCLIChannelSendWithMetadata(t *testing.T) {
 
 func TestCLIChannelSendWithMedia(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -1715,7 +1715,7 @@ func TestCLIModelResetProgressState(t *testing.T) {
 
 func TestCLIChannelImplementsChannelInterface(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// This will fail to compile if CLIChannel doesn't implement Channel
 	var _ Channel = ch
@@ -1727,7 +1727,7 @@ func TestCLIChannelImplementsChannelInterface(t *testing.T) {
 
 func TestCLIChannelConfigEmpty(t *testing.T) {
 	cfg := CLIChannelConfig{}
-	ch := NewCLIChannel(cfg, bus.NewMessageBus())
+	ch := NewCLIChannel(&cfg, bus.NewMessageBus())
 
 	if ch == nil {
 		t.Error("NewCLIChannel with empty config should not return nil")

@@ -508,6 +508,15 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 
 		m.suLoading = true
 		m.splashFrame = 0
+
+		// Subscribe to the new session's chatID on the Hub so server-pushed
+		// events (progress, stream, outbound) are routed to this WS client.
+		if m.channel.config.BindChatFn != nil {
+			_ = m.channel.config.BindChatFn(m.chatID)
+		} else {
+			m.showSystemMsg("⏳ 该会话的消息推送订阅未初始化，进度可能无法实时更新", feedbackWarning)
+		}
+
 		cmds = append(cmds, m.splashTick(0), m.suLoadHistoryCmd())
 	} else {
 		// Local mode: restored state is authoritative (no RPC delay).

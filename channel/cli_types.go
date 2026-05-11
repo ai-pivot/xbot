@@ -564,6 +564,7 @@ type CLIChannelConfig struct {
 	NoSidebar            bool                                                                                                           // --no-sidebar
 	TodoManager          *tools.TodoManager                                                                                             // per-session todo persistence
 	SetCWDFn             func(channelName, chatID, dir string) error                                                                    // 会话切换时初始化 CWD
+	BindChatFn           func(chatID string) error                                                                                      // 订阅 Hub 路由，使服务器推送事件（progress/stream/outbound）到达客户端
 }
 
 type AgentPanelEntry struct {
@@ -597,7 +598,7 @@ type SessionPanelEntry struct {
 
 // CLIChannel CLI 渠道实现
 type CLIChannel struct {
-	config  CLIChannelConfig
+	config  *CLIChannelConfig
 	msgBus  *bus.MessageBus
 	msgChan chan bus.OutboundMessage // 接收 agent 回复的通道
 	workDir string                   // 工作目录
