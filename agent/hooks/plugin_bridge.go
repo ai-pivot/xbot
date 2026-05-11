@@ -46,6 +46,10 @@ func PluginBridgeCallback(bridge *plugin.PluginHookBridge) *CallbackHook {
 				if uid, ok := p["sender_id"].(string); ok {
 					payload.UserID = uid
 				}
+				// Extract tenant ID for multi-tenancy
+				if tid, ok := p["tenant_id"].(int64); ok {
+					payload.TenantID = tid
+				}
 				// Pass tool output to plugins (e.g. for diff plugins)
 				if out, ok := p["tool_output"].(string); ok {
 					payload.ToolOutput = out

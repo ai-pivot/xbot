@@ -123,6 +123,9 @@ type PluginContext interface {
 	// ChatID returns the current chat/session ID.
 	ChatID() string
 
+	// TenantID returns the current tenant ID for multi-tenancy awareness.
+	TenantID() int64
+
 	// Logger returns a namespaced logger for this plugin.
 	Logger() Logger
 
@@ -248,8 +251,12 @@ type pluginContextImpl struct {
 	workingDir string
 	channel    string
 	chatID     string
+	tenantID   int64
 
 	bus *PluginEventBus
+
+	// pm holds a reference to the PluginManager for per-tenant bus lookup.
+	pm *PluginManager
 
 	configStore *PluginConfigStore
 
@@ -278,7 +285,7 @@ type enricherRegistration struct {
 }
 
 // newPluginContext creates a new PluginContext for the given plugin.
-func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger Logger, bus *PluginEventBus, configStore *PluginConfigStore) *pluginContextImpl {
+func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger Logger, bus *PluginEventBus, configStore *PluginConfigStore, pm *PluginManager) *pluginContextImpl {
 	return &pluginContextImpl{
 		pluginID:         manifest.ID,
 		manifest:         manifest,
@@ -289,18 +296,23 @@ func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger 
 		hooks:            make([]hookRegistration, 0),
 		contextEnrichers: make([]enricherRegistration, 0),
 		bus:              bus,
+		pm:               pm,
 		configStore:      configStore,
 		contextValues:    make(map[string]any),
 	}
 }
 
 // SetSessionMetadata updates session-specific metadata.
-func (pc *pluginContextImpl) SetSessionMetadata(workingDir, channel, chatID string) {
+func (pc *pluginContextImpl) SetSessionMetadata(workingDir, channel, chatID string, tenantID int64) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	pc.workingDir = workingDir
 	pc.channel = channel
 	pc.chatID = chatID
+	pc.tenantID = tenantID
+	if pc.pm != nil {
+		pc.bus = pc.pm.EventBusFor(tenantID)
+	}
 }
 
 func (pc *pluginContextImpl) RegisterTool(tool PluginTool) error {
@@ -478,6 +490,11 @@ func (pc *pluginContextImpl) ChatID() string {
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
 	return pc.chatID
+}
+func (pc *pluginContextImpl) TenantID() int64 {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.tenantID
 }
 func (pc *pluginContextImpl) Logger() Logger { return pc.logger }
 

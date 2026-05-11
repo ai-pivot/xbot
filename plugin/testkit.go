@@ -134,7 +134,7 @@ func newTestKitContext(t *testing.T, manifest PluginManifest) *testKitContext {
 	bus := NewPluginEventBus()
 	configStore := (*PluginConfigStore)(nil)
 
-	impl := newPluginContext(&manifest, storage, logger, bus, configStore)
+	impl := newPluginContext(&manifest, storage, logger, bus, configStore, nil)
 
 	return &testKitContext{
 		pluginContextImpl: impl,

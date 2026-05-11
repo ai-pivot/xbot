@@ -263,7 +263,8 @@ type RunConfig struct {
 	// RefreshPluginWorkDir is called after Cd changes the working directory,
 	// so script plugins (e.g. git-info) can re-execute in the new directory.
 	// channel and chatID identify the session that triggered the change.
-	RefreshPluginWorkDir func(dir, channel, chatID string)
+	// tenantID identifies the current tenant for multi-tenancy.
+	RefreshPluginWorkDir func(dir, channel, chatID string, tenantID int64)
 	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
 	// Used by SendMessage tool for busy/idle routing.
 	PeerMessageFn func(targetSessionKey, message string) string
@@ -1021,7 +1022,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.SetCurrentDir = func(dir string) {
 			cfg.Session.SetCurrentDir(dir)
 			if cfg.RefreshPluginWorkDir != nil {
-				cfg.RefreshPluginWorkDir(dir, cfg.Channel, cfg.ChatID)
+				cfg.RefreshPluginWorkDir(dir, cfg.Channel, cfg.ChatID, tc.TenantID)
 			}
 		}
 	} else {

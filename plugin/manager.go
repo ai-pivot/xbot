@@ -59,6 +59,10 @@ type PluginManager struct {
 	configStore  *PluginConfigStore
 	notifier     *PluginEventNotifier
 
+	// Per-tenant event buses for tenant-scoped plugin-to-plugin communication.
+	tenantBuses   map[int64]*PluginEventBus
+	tenantBusesMu sync.RWMutex
+
 	activationOrder []string // topological activation order (computed after Discover)
 
 	// UI widget registry — shared across all plugins
@@ -76,6 +80,11 @@ type PluginManager struct {
 	// plugin activation so new plugins inherit the correct session identity.
 	pluginChannel atomic.Value // stores string
 	pluginChatID  atomic.Value // stores string
+
+	// pluginTenantID stores the last-known tenantID from RefreshWorkDir.
+	// It is passed to SetSessionMetadata during plugin activation so new
+	// plugins inherit the correct tenant identity.
+	pluginTenantID atomic.Value // stores int64
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -108,6 +117,7 @@ func NewPluginManager(xbotHome string) *PluginManager {
 		configStore:    NewPluginConfigStore(xbotHome),
 		notifier:       NewPluginEventNotifier(),
 		widgetRegistry: NewWidgetRegistry(),
+		tenantBuses:    make(map[int64]*PluginEventBus),
 	}
 }
 
@@ -142,6 +152,14 @@ func (pm *PluginManager) pluginChatIDValue() string {
 	return ""
 }
 
+// pluginTenantIDValue safely loads the pluginTenantID from the atomic value.
+func (pm *PluginManager) pluginTenantIDValue() int64 {
+	if v := pm.pluginTenantID.Load(); v != nil {
+		return v.(int64)
+	}
+	return 0
+}
+
 // SetWorkDir sets the agent working directory applied to plugin contexts.
 func (pm *PluginManager) SetWorkDir(wd string) {
 	pm.workDir.Store(wd)
@@ -156,16 +174,17 @@ func (pm *PluginManager) WorkDir() string {
 // Call this when the session CWD changes (e.g. after Cd) so script plugins
 // re-execute in the new directory.
 // Also signals WorkDirAware plugins to immediately refresh their output.
-func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string) {
+func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int64) {
 	pm.workDir.Store(wd)
 	pm.pluginChannel.Store(channel)
 	pm.pluginChatID.Store(chatID)
+	pm.pluginTenantID.Store(tenantID)
 
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	for _, entry := range pm.entries {
 		if entry.Context != nil {
-			entry.Context.SetSessionMetadata(wd, channel, chatID)
+			entry.Context.SetSessionMetadata(wd, channel, chatID, tenantID)
 		}
 		// Signal WorkDirAware plugins to immediately re-execute
 		if aware, ok := entry.Plugin.(WorkDirAware); ok {
@@ -174,9 +193,40 @@ func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string) {
 	}
 }
 
-// Bus returns the plugin event bus.
+// RefreshTenantID stores the current tenant ID for use during plugin activation.
+// Call this when the session tenant changes to ensure newly activated plugins
+// get the correct tenant identity.
+func (pm *PluginManager) RefreshTenantID(tenantID int64) {
+	pm.pluginTenantID.Store(tenantID)
+}
+
+// Bus returns the global plugin event bus.
 func (pm *PluginManager) Bus() *PluginEventBus {
 	return pm.bus
+}
+
+// EventBusFor returns a tenant-scoped PluginEventBus. If no bus exists
+// for the given tenantID, a new one is created. This enables per-tenant
+// isolation of plugin-to-plugin events.
+func (pm *PluginManager) EventBusFor(tenantID int64) *PluginEventBus {
+	if tenantID == 0 {
+		return pm.bus
+	}
+	pm.tenantBusesMu.RLock()
+	b, ok := pm.tenantBuses[tenantID]
+	pm.tenantBusesMu.RUnlock()
+	if ok {
+		return b
+	}
+	pm.tenantBusesMu.Lock()
+	defer pm.tenantBusesMu.Unlock()
+	// Double-check under write lock
+	if b, ok = pm.tenantBuses[tenantID]; ok {
+		return b
+	}
+	b = NewPluginEventBus()
+	pm.tenantBuses[tenantID] = b
+	return b
 }
 
 // AuditLog returns the audit logger, or nil if initialization failed.
@@ -449,7 +499,7 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 		}
 
 		// Create PluginContext
-		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore)
+		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm)
 		entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 		// Create runtime instance
@@ -589,14 +639,15 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	}
 	done := make(chan activateResult, 1)
 
-	// Set session metadata (workDir, channel) BEFORE activation so the plugin
+	// Set session metadata (workDir, channel, tenantID) BEFORE activation so the plugin
 	// context has the correct working directory for script execution.
 	if entry.Context != nil {
 		wd := pm.workDirValue() // atomic read, no lock needed
 		ch := pm.pluginChannelValue()
 		cid := pm.pluginChatIDValue()
+		tid := pm.pluginTenantIDValue()
 		if wd != "" {
-			entry.Context.SetSessionMetadata(wd, ch, cid)
+			entry.Context.SetSessionMetadata(wd, ch, cid, tid)
 		}
 	}
 
@@ -792,7 +843,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	entry := &PluginEntry{
 		Manifest: &m,
 		Plugin:   p,
-		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
+		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm),
 		State:    StateDiscovered,
 		Dir:      pluginDir,
 	}
@@ -896,7 +947,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 		Manifest: m,
 		State:    StateDiscovered,
 		Dir:      pluginDir,
-		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore),
+		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm),
 	}
 
 	newEntry.Context.SetWidgetRegistry(pm.widgetRegistry)
@@ -1006,7 +1057,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 		Manifest: installedManifest,
 		State:    StateDiscovered,
 		Dir:      targetDir,
-		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore),
+		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore, pm),
 	}
 	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 

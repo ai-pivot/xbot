@@ -308,6 +308,9 @@ type ToolCallContext struct {
 	// UserID identifies the user who triggered the tool call.
 	UserID string
 
+	// TenantID identifies the current tenant for multi-tenancy.
+	TenantID int64
+
 	// Ctx carries cancellation and deadline information.
 	Ctx context.Context
 }
@@ -551,6 +554,7 @@ type HookPayload struct {
 	Channel       string         `json:"channel,omitempty"`
 	ChatID        string         `json:"chatId,omitempty"`
 	UserID        string         `json:"userId,omitempty"`
+	TenantID      int64          `json:"tenantId,omitempty"`
 	Extra         map[string]any `json:"extra,omitempty"`
 }
 

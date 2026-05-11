@@ -1861,6 +1861,9 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	if a.maskStore != nil {
 		a.maskStore.SetTenantID(tenantID)
 	}
+	if a.pluginMgr != nil {
+		a.pluginMgr.RefreshTenantID(tenantID)
+	}
 
 	// 缓存消息到聊天历史（用于 ChatHistory 工具查询）
 	a.chatHistory.Add(msg.Channel, msg.ChatID, msg.SenderID, msg.Content)

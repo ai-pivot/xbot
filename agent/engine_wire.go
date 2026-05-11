@@ -269,8 +269,8 @@ func (a *Agent) buildMainRunConfig(
 	// After Cd changes session CWD, refresh all plugin contexts so script plugins
 	// (e.g. git-info) re-execute in the new directory.
 	if a.pluginMgr != nil {
-		cfg.RefreshPluginWorkDir = func(dir, channel, chatID string) {
-			a.pluginMgr.RefreshWorkDir(dir, channel, chatID)
+		cfg.RefreshPluginWorkDir = func(dir, channel, chatID string, tenantID int64) {
+			a.pluginMgr.RefreshWorkDir(dir, channel, chatID, tenantID)
 		}
 	}
 

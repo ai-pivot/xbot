@@ -136,10 +136,11 @@ func (b *PluginToolBridge) Execute(ctx *tools.ToolContext, input string) (*tools
 	// Define the final handler that calls the actual tool
 	final := func(execCtx context.Context, toolName string, toolInput string) (*ToolResult, error) {
 		tcc := &ToolCallContext{
-			Ctx:     execCtx,
-			Channel: ctx.Channel,
-			ChatID:  ctx.ChatID,
-			UserID:  ctx.SenderID,
+			Ctx:      execCtx,
+			Channel:  ctx.Channel,
+			ChatID:   ctx.ChatID,
+			UserID:   ctx.SenderID,
+			TenantID: ctx.TenantID,
 		}
 		return b.adapter.ExecuteWithContext(tcc, toolInput)
 	}
