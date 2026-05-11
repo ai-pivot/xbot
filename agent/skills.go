@@ -117,10 +117,12 @@ func (s *SkillStore) refreshSkills(ctx context.Context, senderID string) ([]Skil
 		}
 
 		for _, e := range entries {
-			if !e.IsDir() {
+			skillDir := filepath.Join(dir, e.Name())
+			// Use os.Stat (not e.IsDir) to follow symlinks.
+			info, err := os.Stat(skillDir)
+			if err != nil || !info.IsDir() {
 				continue
 			}
-			skillDir := filepath.Join(dir, e.Name())
 			skillFile := filepath.Join(skillDir, "SKILL.md")
 			if _, err := os.Stat(skillFile); err != nil {
 				continue
@@ -248,10 +250,12 @@ func (s *SkillStore) scanUserSkills(ctx context.Context, senderID string, merged
 			return // directory doesn't exist or unreadable — not an error
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			skillDir := filepath.Join(userDir, e.Name())
+			// Use os.Stat (not e.IsDir) to follow symlinks.
+			info, err := os.Stat(skillDir)
+			if err != nil || !info.IsDir() {
 				continue
 			}
-			skillDir := filepath.Join(userDir, e.Name())
 			skillFile := filepath.Join(skillDir, "SKILL.md")
 			if _, err := os.Stat(skillFile); err != nil {
 				continue
