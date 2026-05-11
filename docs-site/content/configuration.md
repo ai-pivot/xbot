@@ -19,11 +19,14 @@ weight: 15
 
 ```json
 {
-  "llm": {
-    "provider": "openai",
-    "api_key": "sk-xxx",
-    "model": "gpt-4o"
-  },
+  "subscriptions": [
+    {
+      "name": "default",
+      "provider": "openai",
+      "api_key": "sk-xxx",
+      "model": "gpt-4o"
+    }
+  ],
   "sandbox": {
     "mode": "none"
   }
@@ -32,13 +35,10 @@ weight: 15
 
 ### Server 模式 + 飞书（团队使用）
 
+管理员在 TUI 中通过 `/setup` 创建订阅，配置飞书应用：
+
 ```json
 {
-  "llm": {
-    "provider": "openai",
-    "api_key": "sk-xxx",
-    "model": "gpt-4o"
-  },
   "feishu": {
     "enabled": true,
     "app_id": "cli_xxx",
@@ -52,48 +52,92 @@ weight: 15
 
 ## 完整配置参考
 
-### LLM 配置
+### LLM 订阅配置
+
+xbot 使用**订阅（Subscription）系统**管理 LLM 配置，不再使用全局单一 `llm` 字段。你可以创建多个订阅，在不同场景中切换。
 
 ```json
 {
-  "llm": {
-    "provider": "openai",
-    "api_key": "",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o",
-    "vanguard_model": "",
-    "balance_model": "",
-    "swift_model": "",
-    "max_output_tokens": 0,
-    "thinking_mode": ""
-  }
+  "subscriptions": [
+    {
+      "name": "default",
+      "provider": "openai",
+      "api_key": "sk-xxx",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "vanguard_model": "",
+      "balance_model": "",
+      "swift_model": "",
+      "max_output_tokens": 0,
+      "thinking_mode": "",
+      "active": true
+    }
+  ]
 }
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
+| `name` | string | `"default"` | 订阅名称（用于切换和显示） |
 | `provider` | string | `"openai"` | LLM 提供商：`openai` 或 `anthropic` |
 | `api_key` | string | `""` | API Key |
 | `base_url` | string | `"https://api.openai.com/v1"` | API 地址（兼容服务时修改） |
 | `model` | string | `"gpt-4o"` | 默认模型 |
-| `vanguard_model` | string | `""` | SubAgent vanguard 级别模型 |
-| `balance_model` | string | `""` | SubAgent balance 级别模型 |
-| `swift_model` | string | `""` | SubAgent swift 级别模型 |
+| `vanguard_model` | string | `""` | Vanguard 级别模型（最强推理，SubAgent 用） |
+| `balance_model` | string | `""` | Balance 级别模型（均衡，SubAgent 用） |
+| `swift_model` | string | `""` | Swift 级别模型（快速，SubAgent 用） |
 | `max_output_tokens` | int | `0`（=8192） | 最大输出 token 数 |
 | `thinking_mode` | string | `""`（=auto） | 思考模式：`auto` / `enabled` / `disabled` |
+| `active` | bool | `true` | 是否为当前激活的订阅 |
 
-**使用兼容 API 示例：**
+**Model Tiers**：Vanguard / Balance / Swift 三层模型分级，可按场景选用不同模型：
+- **Vanguard**：最强推理，用于复杂分析任务
+- **Balance**：均衡性能，默认 SubAgent 使用
+- **Swift**：快速轻量，用于简单探索任务
+
+未配置的层自动回退：vanguard → balance → swift。
+
+**使用 DeepSeek 等兼容 API：**
 
 ```json
 {
-  "llm": {
-    "provider": "openai",
-    "api_key": "your-key",
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat"
-  }
+  "subscriptions": [
+    {
+      "name": "DeepSeek",
+      "provider": "openai",
+      "api_key": "your-key",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat"
+    }
+  ]
 }
 ```
+
+**多订阅示例**（在 TUI 中通过 `/model` 切换）：
+
+```json
+{
+  "subscriptions": [
+    {
+      "name": "GPT-4o",
+      "provider": "openai",
+      "api_key": "sk-xxx",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4o",
+      "active": true
+    },
+    {
+      "name": "Claude",
+      "provider": "anthropic",
+      "api_key": "sk-ant-xxx",
+      "model": "claude-sonnet-4-20250514",
+      "active": false
+    }
+  ]
+}
+```
+
+> ⚠️ **Server 模式**：`user_llm_subscriptions` 表中的订阅为单一真相来源，管理员通过 TUI `/setup` 创建后全团队共享。`user_settings` 表不应包含订阅字段（provider, model, api_key 等）。
 
 ### Agent 配置
 
@@ -273,29 +317,22 @@ Server 模式安装时自动配置，一般不需要手动修改。
 
 ### 多 LLM 订阅（CLI 模式）
 
-CLI 模式支持配置多个 LLM 订阅，通过 `/model` 切换：
+CLI 模式支持在 `config.json` 中配置多个 LLM 订阅，通过 `/model` 或 `Ctrl+K → Model` 实时切换。
 
-```json
-{
-  "subscriptions": [
-    {
-      "name": "GPT-4o",
-      "provider": "openai",
-      "api_key": "sk-xxx",
-      "base_url": "https://api.openai.com/v1",
-      "model": "gpt-4o",
-      "active": true
-    },
-    {
-      "name": "Claude",
-      "provider": "anthropic",
-      "api_key": "sk-ant-xxx",
-      "model": "claude-sonnet-4-20250514",
-      "active": false
-    }
-  ]
-}
-```
+订阅的完整字段见上方「LLM 订阅配置」节。
+
+> **Server 模式**：管理员在 TUI 中通过 `/setup` 创建订阅后存储在 `user_llm_subscriptions` 表，全团队共享。团队成员无需在 `config.json` 中配置。
+
+## AI-Native 配置
+
+xbot 的 Agent 可通过内置工具自行调整配置，无需用户手动编辑文件：
+
+| 工具 | 能力 | 示例 |
+|------|------|------|
+| `config` | 读写 xbot 配置（主题、布局、订阅、沙箱等） | 「帮我把主题换成 dracula」→ Agent 调用 `config set theme dracula` |
+| `tui_control` | 操作 TUI 界面（切换会话、调整侧边栏、切换主题等） | 「侧边栏收窄一点」→ Agent 调用 `tui_control set_layout sidebar_width 25` |
+
+`config` 工具读取时会自动屏蔽敏感字段（`api_key` 显示 `sk-a***`），但不阻止写入。
 
 ## Hooks 配置
 

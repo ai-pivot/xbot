@@ -70,7 +70,19 @@ Two modes (`agent/engine_run.go`):
 | `Channel` | `channel/channel.go` | Start, Stop, Send |
 | `MessageMiddleware` | `agent/middleware.go` | Process(mc) |
 | `MemoryProvider` | `memory/memory.go` | Core + Archival memory |
-| `AgentBackend` | `agent/backend.go` | Abstract local/remote agent execution |
+| `AgentBackend` | `agent/backend.go` | Abstract local/remote agent execution (pure RPC client) |
+
+## Subscription System
+
+LLM 配置通过**订阅（Subscription）**系统管理，不再使用全局单一 `llm` 字段。
+
+- **CLI 模式**: 订阅存储在 `~/.xbot/config.json` 的 `subscriptions` 数组中
+- **Server 模式**: 订阅存储在 `user_llm_subscriptions` 表中，为单一真相来源
+- **Model Tiers**: 支持 Vanguard / Balance / Swift 三层模型分级，可按场景选用
+- **Tier Fallback**: 未配置的层自动回退：vanguard → balance → swift
+- **运行时切换**: `/model` 命令或 TUI 面板实时切换订阅和模型
+
+`GetLLMForModel` 必须同时检查 CLI 配置订阅和 DB 订阅。`user_llm_subscriptions` 的字段（provider, model, base_url, api_key, max_output_tokens, thinking_mode）是订阅级作用域，**不得**出现在 `user_settings` 表中。
 
 ## Concurrency Model
 
@@ -183,9 +195,11 @@ CLI connects to server's web channel WebSocket endpoint with query params:
 ## Per-Package Details
 
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management
-- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior
-- `docs/agent/tools.md` — built-in tools, hooks, sandbox types
-- `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters
+- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system
+- `docs/agent/tools.md` — built-in tools, hooks, sandbox types, AI-native config tools
+- `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters, deterministic rendering
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming
-- `docs/agent/gotchas.md` — cross-cutting pitfalls
+- `docs/agent/worktree.md` — git worktree multi-agent workspace isolation
+- `docs/agent/hooks.md` — hooks lifecycle, handler types, configuration
+- `docs/agent/plugin.md` — plugin system, runtimes, RPC bridge

@@ -1069,6 +1069,16 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Only remove the LAST tool_summary (active turn's); preserve previous turns'.
 		m.removeLastToolSummary()
 
+		// Fallback: if server returned Iteration=0 but iteration history
+		// has entries, derive the current iteration from history max.
+		// This handles a server-side quirk where activeProgress.Iteration
+		// is 0 but IterationHistory is populated during SubAgent session
+		// switches (symptom: progress shows #0 while history shows
+		// correct #1, #2, ...).
+		if m.progress != nil && m.progress.Iteration <= 0 && len(m.iterationHistory) > 0 {
+			m.progress.Iteration = m.iterationHistory[len(m.iterationHistory)-1].Iteration
+		}
+
 		// Emit a tickCmd to guarantee the fast tick chain is running,
 		// but only if it's not already active (avoid duplicate chains).
 		// See handleSplashTick for the other half of this guard.

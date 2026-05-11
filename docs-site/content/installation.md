@@ -91,52 +91,57 @@ xbot-cli
 
 ### Setup 向导
 
-首次运行会自动弹出 Setup 向导，分三步配置：
+首次运行会自动弹出 Setup 向导，引导你配置：
 
-**第一步：LLM 配置**
-1. 选择 LLM 提供商（OpenAI / Anthropic）
+**LLM 订阅配置**
+1. 选择 LLM 提供商（OpenAI / Anthropic / 自定义兼容 API）
 2. 输入 API Key（**必填**）
 3. 输入 API 地址（默认 `https://api.openai.com/v1`，使用兼容服务时修改）
-4. 输入模型名称（默认 `gpt-4o`）
-5. Tavily 搜索 Key（可选，不填则无法使用网页搜索）
+4. 选择模型
+5. 配置模型层（Vanguard / Balance / Swift，可按不同场景选用不同模型）
+6. Tavily 搜索 Key（可选，不填则无法使用网页搜索）
 
-> ⚠️ **重要：输入框操作**：用方向键选中输入框 → 按 **Enter** 进入编辑 → 输入内容 → 按 **Enter** 确认。直接打字是不会生效的。
-
-**第二步：环境配置**
+**环境配置**
 - 沙箱模式（默认 `none`，Docker 用户选 `docker`）
 - 记忆模式（默认 `flat`）
 
-**第三步：外观**
+**外观**
 - 配色方案（9 种可选）
 
-配置完成后即可开始对话。随时可用 `/setup` 命令重新配置。
+配置完成后即可开始对话。随时可用 `/setup` 命令或 `Ctrl+K → Setup` 重新配置。
 
 ### 手动编辑配置
 
 配置文件位于 `~/.xbot/config.json`，也可以直接编辑。详见 [配置参考](/xbot/configuration/)。
 
-**OpenAI 或兼容 API 的最小配置：**
+**最小配置（Standalone 模式）：**
 
 ```json
 {
-  "llm": {
-    "provider": "openai",
-    "api_key": "sk-xxx",
-    "model": "gpt-4o"
-  }
+  "subscriptions": [
+    {
+      "name": "default",
+      "provider": "openai",
+      "api_key": "sk-xxx",
+      "model": "gpt-4o"
+    }
+  ]
 }
 ```
 
-**使用 OpenAI 兼容服务（DeepSeek、Qwen、Ollama 等）：**
+**使用 DeepSeek 等兼容 API：**
 
 ```json
 {
-  "llm": {
-    "provider": "openai",
-    "api_key": "your-key",
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat"
-  }
+  "subscriptions": [
+    {
+      "name": "DeepSeek",
+      "provider": "openai",
+      "api_key": "your-key",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat"
+    }
+  ]
 }
 ```
 

@@ -13,9 +13,11 @@ weight: 0
 
 - 🧠 **多轮对话 + 工具调用** — Shell、文件读写、网页搜索、定时任务、子 Agent 委派
 - 📱 **多渠道接入** — 同一个 Agent，飞书 / QQ / 终端 / 浏览器不同入口
-- 🔑 **团队共享 LLM** — 管理员配置一次 API Key，全团队直接使用
+- 🔑 **团队共享 LLM 订阅** — 管理员配置一次，全团队直接使用；支持多订阅切换
+- 🖱️ **全功能 TUI** — 鼠标交互、命令面板(Ctrl+K)、多会话侧边栏、主题系统
 - 🏠 **完全自托管** — 数据不出你的服务器
-- 🧩 **可扩展** — Skills、SubAgents、MCP 协议
+- 🧩 **可扩展** — Skills、SubAgents、MCP 协议、Plugin 系统
+- 🤖 **AI-Native 配置** — Agent 可通过 `config` 和 `tui_control` 工具自行调整配置和界面
 
 ## 我该用哪个渠道
 
@@ -45,15 +47,17 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 ## 架构
 
 ```
-┌──────────┐     ┌──────────────┐     ┌────────┐     ┌──────────┐
-│  飞书    │────▶│  Dispatcher  │────▶│ Agent  │────▶│   LLM    │
-│  QQ      │◀────│  (channel/)  │◀────│ (agent/)│◀────│ (llm/)   │
-│  NapCat  │     └──────────────┘     │        │     └──────────┘
-│  Web     │                          │        │
-│  CLI     │                          │        │────▶ 工具
-└──────────┘                          │        │      (tools/)
-                                      │        │
-                                      │        │────▶ 记忆
-                                      │        │      (memory/)
-                                      └────────┘
+┌──────────┐     ┌──────────────┐     ┌────────────┐     ┌──────────┐
+│  飞书    │────▶│  Dispatcher  │────▶│  Backend    │────▶│   LLM    │
+│  QQ      │◀────│  (channel/)  │◀────│  (RPC)      │◀────│ (llm/)   │
+│  Web     │     └──────────────┘     │             │     └──────────┘
+│  CLI     │                          │  Transport  │
+└──────────┘                          │  (local/    │────▶ 工具
+                                      │   remote)   │      (tools/)
+                                      │             │
+                                      │  Agent Loop │────▶ 记忆
+                                      │  (agent/)   │      (memory/)
+                                      └────────────┘
 ```
+
+核心设计：**Backend** 为纯 RPC 客户端接口（零业务逻辑），**Transport** 层负责实际执行（local 直接调用 Agent，remote 通过 WebSocket 转发）。

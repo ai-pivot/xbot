@@ -330,6 +330,27 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	if m.newContentHint {
 		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
 	}
+	// Scroll-to-top/bottom indicators — subtle, right-aligned, only when scrollable.
+	if m.panelMode == "" {
+		atTop := m.viewport.AtTop()
+		atBottom := m.viewport.AtBottom()
+		var scrollBtns []string
+		scrollSt := m.styles.TextMutedSt
+		if !atTop {
+			scrollBtns = append(scrollBtns, scrollSt.Render("▴"))
+		}
+		if !atBottom {
+			scrollBtns = append(scrollBtns, scrollSt.Render("▾"))
+		}
+		if len(scrollBtns) > 0 {
+			m.scrollHintButtons = strings.Join(scrollBtns, " ")
+			hints = append(hints, m.scrollHintButtons)
+		} else {
+			m.scrollHintButtons = ""
+		}
+	} else {
+		m.scrollHintButtons = ""
+	}
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))
 	}
@@ -509,6 +530,12 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				m.sidebarHasBusySessions = true
 				icon = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
 				itemStyle = m.styles.SidebarBusy
+				// Clear unread when busy — a running session shows a spinner,
+				// not the ✦ unread icon. Without this, a stale sessions list
+				// that briefly returns Running=false can set unread=true via
+				// the busy→idle transition below, and the flag persists even
+				// after the sessions list catches up and shows Running=true again.
+				delete(m.unreadSessions, s.ID)
 			} else if m.unreadSessions[s.ID] {
 				// Non-active, idle, but has unread results.
 				icon = "✦"

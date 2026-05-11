@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.0.40] - 2026-05-10
+
+### Added
+
+- **TUI 视觉设计翻新**: diamond 签名分割线、可点击底部 hint 快捷栏（`/session`、`Ctrl+K`、`Ctrl+N` 等），大幅提升终端交互体验 (#46)
+- **鼠标全功能支持**: TUI 中各区域（侧边栏、消息区、进度面板、设置面板、Palette）完整鼠标交互：点击侧边栏切换会话、滚轮翻页、点击设置项编辑、Palette 选项点击选择 (#44)
+- **AI-Native 配置工具**: 新增 `config` 工具让 Agent 直接读写 xbot 配置（`config.json` 和运行时设置），AI 可自助调整主题、布局、订阅等；新增 `tui_control` 工具让 Agent 操作 TUI 界面（切换会话、关闭会话、调整侧边栏宽度、切换主题、发送 slash 命令）(#46)
+- **Git Worktree 多 Agent 协作**: 新增 `Worktree` 工具 + `WorktreeRegistry`，支持多 Agent 在同一仓库中通过 git worktree 实现工作区隔离，自动分支创建和 peer 发现 (#46)
+- **TODO 持久化**: `TodoWrite` / `TodoList` 工具支持跨会话持久化，Agent 可管理结构化 TODO 列表并在重启后恢复 (#46)
+- **AskUser 持久化**: CLI 中 AskUser 的结果持久化到磁盘，支持跨会话恢复待回答的问题 (#46)
+- **Cd 工具**: Agent 可切换工作目录，后续所有命令在新目录执行，支持 Shell/Read/Grep/Glob 等工具自动跟随
+- **ai-config Skill**: 新增 AI 自助配置 TUI 外观、主题、订阅和设置的 Skill，Agent 可按需加载
+- **worktree Skill**: 新增 git worktree 多 Agent 工作区协作的 Skill
+- **飞书事件订阅长连接模式**: 飞书渠道改用 WebSocket 长连接接收事件，替代 Webhook 模式 (#45)
+- **AgentBackend 纯 RPC 重构**: Backend 作为纯类型化 RPC 客户端，Transport 作为执行层，业务逻辑归零 (#43)
+- **确定性渲染**: CLI 消息按 `agentTurnID+role` 去重，`turnDoneFlags` 追踪轮次完成状态，消除乱序到达导致的消息重复 (#39)
+- **reasoning_content 解耦**: reasoning_content 的往返不再依赖 thinkingMode 配置，流式取消时保留部分内容 (#37)
+- **插件系统增强**: GUI 插件扩展系统新增 RPC 桥接支持远程 CLI (#26)
+
+### Fixed
+
+- **macOS TUI 渲染修复**: 修复 macOS 下 TUI 渲染混乱问题，添加鼠标滚轮支持 (#42)
+- **TUI 渠道配置变更生效**: 修复运行时配置变更后 TUI 不生效的问题 (#41)
+- **Rewind 文件回滚**: 修复重启后 rewind 使用过期 checkpoint 的问题 (#40)
+- **移除 OpenAI 默认值**: 修复残留的 OpenAI 默认 provider/model 配置，Ctrl+N 会话同步修复 (#36)
+- **DeepSeek 流式取消**: 修复流式中断时 tool_call 配对和 unexpected EOF 重试 (#34)
+- **订阅设置 UX**: 首次运行自动默认订阅、模型下拉选择、配置默认值修复 (#33)
+
+### Changed
+
+- **Backend 纯 RPC 架构**: `AgentBackend` 接口方法均为 1-3 行 RPC 调用，零业务逻辑；Transport 层负责实际执行（local 或 remote），大幅简化代码结构
+- **设置面板 Crush-style 内联叠加**: 编辑/下拉覆盖层渲染在光标项正下方，而非列表末尾
+- **面板导航栈**: push/pop 面板导航支持，Palette 进入的设置面板可 ESC 返回 Palette
+- **消息队列刷新逻辑**: 等待 `replyReceived` 确认而非 heuristic，2s 超时回退防队列永久卡住
+
 ## [v0.0.34] - 2026-05-02
 
 ### Added

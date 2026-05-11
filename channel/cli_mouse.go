@@ -166,6 +166,13 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickRunnerField(zone.Index)
 	case "footerHint":
 		return m.clickFooterHint(zone.Index)
+	case "scrollTop":
+		m.viewport.GotoTop()
+		return true, m, nil
+	case "scrollBottom":
+		m.viewport.GotoBottom()
+		m.newContentHint = false
+		return true, m, nil
 	}
 	return false, m, nil
 }
@@ -843,8 +850,30 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	zb.skip(viewportH)
 
-	// status bar: 1 line
-	zb.skip(1)
+	// status bar: 1 line — track scroll buttons if present
+	if m.scrollHintButtons != "" {
+		// The scroll hint is at the far right of the status bar.
+		// Measure its width to place a clickable zone.
+		hintW := lipgloss.Width(m.scrollHintButtons)
+		chatW := m.chatWidth()
+		// Account for possible xShift when sidebar is on the left
+		scrollStartX := xShift + chatW - hintW - 1
+		if scrollStartX < xShift {
+			scrollStartX = xShift
+		}
+		scrollEndX := xShift + chatW
+		// Add two zones: left half for scrollTop, right half for scrollBottom
+		midX := scrollStartX + hintW/2
+		if !m.viewport.AtTop() {
+			zb.addX(0, scrollStartX, midX, "scrollTop", 0)
+		}
+		if !m.viewport.AtBottom() {
+			zb.addX(0, midX, scrollEndX, "scrollBottom", 0)
+		}
+		zb.y++
+	} else {
+		zb.skip(1)
+	}
 
 	// todo bar: variable (only when sidebar is NOT visible — todo moves to sidebar)
 	if !showSidebar {

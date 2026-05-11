@@ -752,18 +752,19 @@ type cliModel struct {
 	twCjkSkipTick          bool                   // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
-	workDir         string    // 工作目录（标题栏显示用）
-	remoteMode      bool      // 是否连接 remote backend（标题栏提示用）
-	remoteServerURL string    // remote server host for header display (e.g. "host:port")
-	connState       string    // WS connection state: "connected"|"disconnected"|"reconnecting"
-	debugMode       bool      // --debug: UI capture + key injection via SIGUSR1
-	debugCaptureMs  int       // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
-	senderID        string    // 当前身份 ID（默认 "cli_user"，/su 命令可切换）
-	channelName     string    // 当前 channel（默认 "cli"，/su 切换时可能变为 "web"）
-	defaultChatID   string    // 默认 chatID（/su 切换回来时恢复）
-	chatID          string    // 会话 ID（按工作目录区分）
-	sessionName     string    // 当前会话名称（同目录多 session 支持）
-	shiftHintUntil  time.Time // 鼠标无 Shift 操作时显示选中提示的截止时间（zero = 隐藏）
+	workDir           string    // 工作目录（标题栏显示用）
+	remoteMode        bool      // 是否连接 remote backend（标题栏提示用）
+	remoteServerURL   string    // remote server host for header display (e.g. "host:port")
+	connState         string    // WS connection state: "connected"|"disconnected"|"reconnecting"
+	debugMode         bool      // --debug: UI capture + key injection via SIGUSR1
+	debugCaptureMs    int       // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
+	senderID          string    // 当前身份 ID（默认 "cli_user"，/su 命令可切换）
+	channelName       string    // 当前 channel（默认 "cli"，/su 切换时可能变为 "web"）
+	defaultChatID     string    // 默认 chatID（/su 切换回来时恢复）
+	chatID            string    // 会话 ID（按工作目录区分）
+	sessionName       string    // 当前会话名称（同目录多 session 支持）
+	shiftHintUntil    time.Time // 鼠标无 Shift 操作时显示选中提示的截止时间（zero = 隐藏）
+	scrollHintButtons string    // "▴ ▾" scroll indicators in status bar, empty when not scrollable
 
 	// --- §1 增量渲染 ---
 	renderCacheValid    bool   // 全局缓存是否有效（resize 后置 false）

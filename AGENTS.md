@@ -4,22 +4,23 @@
 
 ## Quick Reference
 
-- Entry points: `cmd/xbot-cli/` (CLI), `cmd/runner/` (remote sandbox)
+- Entry points: `cmd/xbot-cli/` (CLI), `cmd/runner/` (remote sandbox), `cmd/xbot/` (server)
 - Build: `go build ./...` | Test: `go test ./...` | Lint: `golangci-lint run ./...`
 - Config: `~/.xbot/config.json`, env var overrides
+- Subscriptions: `~/.xbot/config.json` (CLI) or DB `user_llm_subscriptions` (Server) — the single source of truth for LLM config
 - Pre-commit: gofmt → golangci-lint → go build → go test
 
 ## Knowledge Files
 
-- `docs/agent/architecture.md` — package map, message flow, pipeline, Backend/Transport architecture, key interfaces, concurrency
-- `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking
-- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior
-- `docs/agent/tools.md` — built-in tools, hooks system (agent/hooks/), sandbox types
+- `docs/agent/architecture.md` — package map, message flow, pipeline, Backend (pure RPC)/Transport architecture, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
+- `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
+- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system, model tiers (vanguard/balance/swift)
+- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
-- `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters
+- `docs/agent/channel.md` — CLI (BubbleTea TUI), Feishu, Web, QQ adapters, asyncCh pattern, deterministic rendering, mouse support, settings panels
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build
-- `docs/agent/plugin.md` — plugin system architecture, runtimes, integration
+- `docs/agent/plugin.md` — plugin system architecture, runtimes, integration, RPC bridge
 - `docs/agent/worktree.md` — git worktree-based multi-agent workspace isolation, WorktreeRegistry, AutoDetectAndInit, peer discovery, path security
 
 ## Gotchas — MUST READ Before Any Code Change
