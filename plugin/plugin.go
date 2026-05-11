@@ -86,7 +86,7 @@ type PluginManifest struct {
 	// ActivationEvents lists events that trigger plugin activation.
 	// Supports: "onStart", "onTool:<name>", "onHook:<event>", "onCommand:<cmd>"
 	// Empty means onStart.
-	ActivationEvents []string `json:"activationEvents"`
+	ActivationEvents []string `json:"activation_events"`
 
 	// Permissions declares required capabilities.
 	// The plugin can only access APIs for declared permissions.
@@ -123,7 +123,7 @@ type PluginDependency struct {
 type PluginContributes struct {
 	Tools            []ToolContribution         `json:"tools,omitempty"`
 	Hooks            []HookContribution         `json:"hooks,omitempty"`
-	ContextEnrichers []EnricherContribution     `json:"contextEnrichers,omitempty"`
+	ContextEnrichers []EnricherContribution     `json:"context_enrichers,omitempty"`
 	Commands         []CommandContribution      `json:"commands,omitempty"`
 	Configuration    *ConfigurationContribution `json:"configuration,omitempty"`
 	UI               []UISlotContribution       `json:"ui,omitempty"`
@@ -133,7 +133,7 @@ type PluginContributes struct {
 type ToolContribution struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
 // HookContribution describes a lifecycle hook the plugin subscribes to.
@@ -200,7 +200,7 @@ type UISlotContribution struct {
 
 	// RefreshInterval is the suggested polling interval (e.g. "30s").
 	// Only advisory — push-based UpdateWidget is preferred.
-	RefreshInterval string `json:"refreshInterval,omitempty"`
+	RefreshInterval string `json:"refresh_interval,omitempty"`
 
 	// Triggers is a list of hook matchers that trigger an instant script run.
 	// Format: "EventName:Matcher" (e.g. "PostToolUse:Shell*").
@@ -342,7 +342,7 @@ type ToolDef struct {
 	// InputSchema is the auto-generated JSON Schema for tool parameters.
 	// When set, this provides a complete parameter schema for LLM function calling.
 	// Generated automatically by BuildToolDef; manual ToolDef construction leaves this nil.
-	InputSchema map[string]any `json:"inputSchema,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
 // ToJSONSchema returns the tool definition in OpenAI function calling format.
@@ -415,7 +415,7 @@ type ToolResult struct {
 	Content string `json:"content"`
 
 	// IsError indicates the tool execution failed (but the plugin itself ran correctly).
-	IsError bool `json:"isError,omitempty"`
+	IsError bool `json:"is_error,omitempty"`
 
 	// Metadata carries optional key-value pairs for downstream processing.
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -546,15 +546,15 @@ type HookResult struct {
 // HookPayload carries event-specific data to hook handlers.
 type HookPayload struct {
 	Event         HookEvent      `json:"event"`
-	ToolName      string         `json:"toolName,omitempty"`
-	ToolInput     string         `json:"toolInput,omitempty"`
-	ToolOutput    string         `json:"toolOutput,omitempty"`    // tool execution result (PostToolUse only)
-	ToolElapsedMs int64          `json:"toolElapsedMs,omitempty"` // tool execution duration in ms
-	SessionID     string         `json:"sessionId,omitempty"`
+	ToolName      string         `json:"tool_name,omitempty"`
+	ToolInput     string         `json:"tool_input,omitempty"`
+	ToolOutput    string         `json:"tool_output,omitempty"`     // tool execution result (PostToolUse only)
+	ToolElapsedMs int64          `json:"tool_elapsed_ms,omitempty"` // tool execution duration in ms
+	SessionID     string         `json:"session_id,omitempty"`
 	Channel       string         `json:"channel,omitempty"`
-	ChatID        string         `json:"chatId,omitempty"`
-	UserID        string         `json:"userId,omitempty"`
-	TenantID      int64          `json:"tenantId,omitempty"`
+	ChatID        string         `json:"chat_id,omitempty"`
+	UserID        string         `json:"user_id,omitempty"`
+	TenantID      int64          `json:"tenant_id,omitempty"`
 	Extra         map[string]any `json:"extra,omitempty"`
 }
 

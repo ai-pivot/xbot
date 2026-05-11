@@ -688,6 +688,9 @@ type fakeAgentBackend struct {
 	defaultSub   *channel.Subscription
 }
 
+// Compile-time check: fakeAgentBackend implements agent.AgentBackend.
+var _ agent.AgentBackend = (*fakeAgentBackend)(nil)
+
 func (b *fakeAgentBackend) Start(context.Context) error          { return nil }
 func (b *fakeAgentBackend) Stop()                                {}
 func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error { return nil }

@@ -384,8 +384,8 @@ func (r *WidgetRegistry) WidgetInfo() []WidgetInfo {
 }
 
 type WidgetInfo struct {
-	PluginID string `json:"pluginId"`
-	WidgetID string `json:"widgetId"`
+	PluginID string `json:"plugin_id"`
+	WidgetID string `json:"widget_id"`
 	Zone     string `json:"zone"`
 	Priority int    `json:"priority"`
 }

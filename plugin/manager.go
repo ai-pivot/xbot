@@ -1463,13 +1463,13 @@ func (pm *PluginManager) HealthCheck(ctx context.Context) map[string]error {
 
 // PluginMetrics holds aggregate metrics about the plugin system.
 type PluginMetrics struct {
-	TotalPlugins   int   `json:"totalPlugins"`
-	ActivePlugins  int   `json:"activePlugins"`
-	TotalTools     int   `json:"totalTools"`
-	TotalHooks     int   `json:"totalHooks"`
-	TotalEnrichers int   `json:"totalEnrichers"`
-	ToolCallCount  int64 `json:"toolCallCount"` // runtime cumulative tool executions
-	HookCallCount  int64 `json:"hookCallCount"` // runtime cumulative hook dispatches
+	TotalPlugins   int   `json:"total_plugins"`
+	ActivePlugins  int   `json:"active_plugins"`
+	TotalTools     int   `json:"total_tools"`
+	TotalHooks     int   `json:"total_hooks"`
+	TotalEnrichers int   `json:"total_enrichers"`
+	ToolCallCount  int64 `json:"tool_call_count"` // runtime cumulative tool executions
+	HookCallCount  int64 `json:"hook_call_count"` // runtime cumulative hook dispatches
 }
 
 // Metrics returns aggregate metrics about the plugin system.

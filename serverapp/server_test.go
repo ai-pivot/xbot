@@ -263,6 +263,9 @@ type fakeBackend struct {
 	factory     *agent.LLMFactory
 }
 
+// Compile-time check: fakeBackend implements agent.AgentBackend.
+var _ agent.AgentBackend = fakeBackend{}
+
 func (b fakeBackend) Start(_ context.Context) error          { return nil }
 func (b fakeBackend) Stop()                                  {}
 func (b fakeBackend) SendInbound(_ bus.InboundMessage) error { return nil }
