@@ -178,6 +178,8 @@ func (pm *PluginManager) WorkDir() string {
 // Call this when the session CWD changes (e.g. after Cd) so script plugins
 // re-execute in the new directory.
 // Also signals WorkDirAware plugins to immediately refresh their output.
+// Widget push is handled by each plugin's notifyUpdated callback after it
+// finishes re-executing (debounce=200ms, effectively immediate).
 func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int64) {
 	pm.workDir.Store(wd)
 	pm.pluginChannel.Store(channel)
@@ -195,12 +197,6 @@ func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int
 			aware.OnWorkDirChanged(wd)
 		}
 	}
-
-	// Immediately push updated widget content (bypass debounce).
-	// Script plugins like git-info re-executed via OnWorkDirChanged above
-	// and updated their widget slots; this push ensures the TUI reflects
-	// the new git branch immediately instead of waiting for debounce.
-	pm.widgetRegistry.FireUpdated()
 }
 
 // RefreshTenantID stores the current tenant ID for use during plugin activation.
