@@ -2165,8 +2165,8 @@ func main() {
 			if err := json.Unmarshal(env.Payload, &ev); err != nil {
 				return
 			}
-			if ev.ChatID != "" && ev.ChatID != remoteChatID {
-				log.Infof("[widget-recv] REJECT pushChatID=%q != remoteChatID=%q", ev.ChatID, remoteChatID)
+			if ev.ChatID != "" && ev.ChatID != cliCh.CurrentChatID() {
+				log.Infof("[widget-recv] REJECT pushChatID=%q != currentChatID=%q", ev.ChatID, cliCh.CurrentChatID())
 				return // ignore pushes for other sessions
 			}
 			log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", ev.ChatID, ev.Zones["footer"])

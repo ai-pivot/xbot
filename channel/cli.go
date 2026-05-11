@@ -553,6 +553,15 @@ func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 	}
 }
 
+// CurrentChatID returns the current session chatID from the model.
+// Used by the widget Subscribe handler to filter push events for the correct session.
+func (c *CLIChannel) CurrentChatID() string {
+	if c.model != nil {
+		return c.model.chatID
+	}
+	return ""
+}
+
 // SyncPluginWidgetChatID updates the remote plugin cache's chatID after Cd
 // so that refreshWidgets() RPC fetches widgets for the correct session.
 func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
