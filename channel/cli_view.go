@@ -330,6 +330,27 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	if m.newContentHint {
 		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
 	}
+	// Scroll-to-top/bottom indicators — subtle, right-aligned, only when scrollable.
+	if m.panelMode == "" {
+		atTop := m.viewport.AtTop()
+		atBottom := m.viewport.AtBottom()
+		var scrollBtns []string
+		scrollSt := m.styles.TextMutedSt
+		if !atTop {
+			scrollBtns = append(scrollBtns, scrollSt.Render("▴"))
+		}
+		if !atBottom {
+			scrollBtns = append(scrollBtns, scrollSt.Render("▾"))
+		}
+		if len(scrollBtns) > 0 {
+			m.scrollHintButtons = strings.Join(scrollBtns, " ")
+			hints = append(hints, m.scrollHintButtons)
+		} else {
+			m.scrollHintButtons = ""
+		}
+	} else {
+		m.scrollHintButtons = ""
+	}
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))
 	}

@@ -73,23 +73,13 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		parts = append(parts, fmt.Sprintf("TODO: %s", todoSummary))
 	}
 
-	// Worktree/peer awareness: always show peer list and collaboration rules
-	// when other agents are working in the same repo (even without worktree).
+	// Peer awareness: show who else is working in the same repo.
+	// Skip worktree isolation mode details — worktree is opt-in now.
 	if !isSubAgent && sessionKey != "" {
-		// Find repo path from session key
 		repoPath := ""
 		if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
 			repoPath = entry.RepoPath
-			if entry.WorktreeDir != "" {
-				parts = append(parts, "")
-				parts = append(parts, fmt.Sprintf("⚠️ Worktree 隔离模式 (分支: %s)", entry.Branch))
-				parts = append(parts, fmt.Sprintf("   工作区: %s", entry.WorktreeDir))
-				parts = append(parts, "   你的改动与主工作区隔离，其他 agent 看不到")
-				parts = append(parts, fmt.Sprintf("   完成后请主动询问用户：合并回主工作区（%s）还是继续留在 worktree", entry.RepoPath))
-			}
 		}
-
-		// Always show peers if any (including shared sessions without worktree)
 		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
 		if len(peers) > 0 {
 			parts = append(parts, "")
@@ -98,7 +88,6 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 				parts = append(parts, fmt.Sprintf("   - %s (角色: %s, 分支: %s)", shortenPeerName(p.SessionKey), p.Role, p.Branch))
 			}
 			parts = append(parts, "协作规则: 尊重同伴的修改，改动冲突时优先通过 SendMessage 协商。")
-			parts = append(parts, "如果因同伴正在修改相关代码而无法验证，可 SendMessage 将验证任务委托给同伴。")
 		}
 	}
 

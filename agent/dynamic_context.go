@@ -69,9 +69,8 @@ func (d *DynamicContextInjector) InjectIfNeeded(messages []llm.ChatMessage) bool
 	if peersChanged && currentPeers != "" {
 		injection += "\n\n协作状态:\n" + currentPeers +
 			"\n\n你正在与其他 agent 协作修改同一仓库。注意：\n" +
-			"- 你的改动在独立 worktree 中，不会影响同伴\n" +
-			"- 完成后需要与同伴协调合并，使用 SendMessage 主动沟通\n" +
-			"- 合并冲突时与相关同伴直接协商，必要时请用户仲裁"
+			"- 通过 SendMessage 与同伴协商和协调\n" +
+			"- 改动冲突时先与相关同伴直接协商，必要时请用户仲裁"
 	}
 
 	injection += "\n</dynamic-context>"
