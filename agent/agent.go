@@ -1863,6 +1863,14 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 	}
 	if a.pluginMgr != nil {
 		a.pluginMgr.RefreshTenantID(tenantID)
+		// Wire plugin tools for this tenant if not already done
+		if !a.pluginMgr.IsTenantWired(tenantID) {
+			if err := plugin.WirePluginToolsForTenant(a.pluginMgr, a.tools, tenantID); err != nil {
+				log.Ctx(ctx).WithError(err).WithField("tenant_id", tenantID).Warn("Failed to wire plugin tools for tenant")
+			} else {
+				a.pluginMgr.MarkTenantWired(tenantID)
+			}
+		}
 	}
 
 	// 缓存消息到聊天历史（用于 ChatHistory 工具查询）

@@ -263,7 +263,7 @@ func TestRegistry_AsDefinitionsForSession_OnlyCoreToolsByDefault(t *testing.T) {
 	registry.Register(&mockBuiltinTool{name: "read"})
 	registry.Register(&mockMCPTool{name: "search", server: "github", description: "Search"})
 
-	defs := registry.AsDefinitionsForSession("test:chat")
+	defs := registry.AsDefinitionsForSession("test:chat", 0)
 
 	if !hasToolDefinitionName(defs, "load_tools") {
 		t.Fatal("Core tool should always be in definitions")
@@ -287,7 +287,7 @@ func TestRegistry_AsDefinitionsForSession_IncludesActivatedBuiltinTools(t *testi
 
 	registry.ActivateTools("test:chat", []string{"shell"})
 
-	defs := registry.AsDefinitionsForSession("test:chat")
+	defs := registry.AsDefinitionsForSession("test:chat", 0)
 
 	if !hasToolDefinitionName(defs, "load_tools") {
 		t.Fatal("Core tool should be present")
@@ -315,14 +315,14 @@ func TestRegistry_AsDefinitionsForSession_IncludesActivatedSessionMCPTools(t *te
 
 	registry.SetSessionMCPManagerProvider(&mockSessionMCPProvider{manager: sessionMCP})
 
-	defs := registry.AsDefinitionsForSession("test:chat")
+	defs := registry.AsDefinitionsForSession("test:chat", 0)
 	if hasToolDefinitionName(defs, "mcp_github_search") {
 		t.Fatal("Unactivated session MCP tool should be excluded")
 	}
 
 	registry.ActivateTools("test:chat", []string{"mcp_github_search"})
 
-	defs = registry.AsDefinitionsForSession("test:chat")
+	defs = registry.AsDefinitionsForSession("test:chat", 0)
 	if !hasToolDefinitionName(defs, "mcp_github_search") {
 		t.Fatal("Activated session MCP tool should be included")
 	}
@@ -406,7 +406,7 @@ func TestRegistry_ToolExpiry_AfterIdleRounds(t *testing.T) {
 		t.Fatal("Tool should expire after exceeding maxIdleRounds")
 	}
 
-	defs := registry.AsDefinitionsForSession("s")
+	defs := registry.AsDefinitionsForSession("s", 0)
 	if hasToolDefinitionName(defs, "tool_a") {
 		t.Fatal("Expired tool should not appear in definitions")
 	}
@@ -560,14 +560,14 @@ func TestRegistry_AsDefinitionsForSession_ActivatedGlobalMCPToolHasFullParams(t 
 	})
 
 	// 未激活时不应出现
-	defs := registry.AsDefinitionsForSession("test:chat")
+	defs := registry.AsDefinitionsForSession("test:chat", 0)
 	if hasToolDefinitionName(defs, "mcp_github_search") {
 		t.Fatal("Unactivated global MCP tool should NOT be in definitions")
 	}
 
 	// 激活后应出现，且带完整参数
 	registry.ActivateTools("test:chat", []string{"mcp_github_search"})
-	defs = registry.AsDefinitionsForSession("test:chat")
+	defs = registry.AsDefinitionsForSession("test:chat", 0)
 	if !hasToolDefinitionName(defs, "mcp_github_search") {
 		t.Fatal("Activated global MCP tool should be in definitions")
 	}

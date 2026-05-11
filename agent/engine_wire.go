@@ -196,6 +196,9 @@ func (a *Agent) buildMainRunConfig(
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
 
+	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
+	cfg.TenantID = tenantSession.TenantID()
+
 	// Use session CWD for InitialCWD (may differ from a.workDir for worktree sessions).
 	// AutoDetectAndInit in buildPrompt already set the correct CWD on tenantSession.
 	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
@@ -838,6 +841,10 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		}
 		if !ok {
 			tool, ok = a.tools.Get(tc.Name)
+			// Also check tenant-scoped tools if session is available
+			if !ok && cfg.Session != nil {
+				tool, ok = a.tools.GetForTenant(tc.Name, cfg.Session.TenantID())
+			}
 		}
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)

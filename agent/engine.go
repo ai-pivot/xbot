@@ -59,6 +59,7 @@ type RunConfig struct {
 	OriginUserID string // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等）
 	SenderName   string
 	FeishuUserID string // 非空表示通过飞书身份登录 web（用于 runner 路由）
+	TenantID     int64  // 当前租户 ID（用于 per-tenant 工具可见性）
 
 	// === 工作区 & 沙箱 ===
 	WorkingDir          string   // Agent 工作目录（宿主机）
@@ -658,7 +659,7 @@ func executeWithHooks(
 // Used for SubAgent and other scenarios that don't need session MCP / activation checks.
 func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
-		tool, ok := cfg.Tools.Get(tc.Name)
+		tool, ok := cfg.Tools.GetForTenant(tc.Name, cfg.TenantID)
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}

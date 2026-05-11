@@ -223,6 +223,9 @@ type Registry struct {
 	sessionMCPMgr    SessionMCPManagerProvider   // 会话MCP管理器提供者
 	globalMCPCatalog []MCPServerCatalogEntry     // 全局 MCP Server 目录（由 MCPManager.RegisterTools 设置）
 	flatMode         bool                        // flat memory 模式：所有工具均为核心，无需 load_tools
+
+	tenantTools   map[int64]map[string]Tool // tenantID → toolName → Tool（per-tenant 工具）
+	tenantToolsMu sync.RWMutex
 }
 
 // NewRegistry 创建工具注册表
@@ -261,6 +264,24 @@ func (r *Registry) Register(tool Tool) {
 	}
 }
 
+// RegisterForTenant 注册一个工具仅对特定租户可见。
+// tenantID=0 等同于 Register（全局可见）。
+func (r *Registry) RegisterForTenant(tenantID int64, tool Tool) {
+	if tenantID == 0 {
+		r.Register(tool)
+		return
+	}
+	r.tenantToolsMu.Lock()
+	defer r.tenantToolsMu.Unlock()
+	if r.tenantTools == nil {
+		r.tenantTools = make(map[int64]map[string]Tool)
+	}
+	if r.tenantTools[tenantID] == nil {
+		r.tenantTools[tenantID] = make(map[string]Tool)
+	}
+	r.tenantTools[tenantID][tool.Name()] = tool
+}
+
 // RegisterCore 注册核心工具（始终出现在 tool definitions 中，无需激活）
 func (r *Registry) RegisterCore(tool Tool) {
 	r.mu.Lock()
@@ -276,12 +297,27 @@ func (r *Registry) Unregister(name string) {
 	delete(r.globalTools, name)
 }
 
-// Get 获取工具
+// Get 获取工具（先查全局，再查租户）
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	tool, ok := r.globalTools[name]
 	return tool, ok
+}
+
+// GetForTenant 获取工具（先查租户，再查全局）
+func (r *Registry) GetForTenant(name string, tenantID int64) (Tool, bool) {
+	if tenantID != 0 {
+		r.tenantToolsMu.RLock()
+		if tenantTools, ok := r.tenantTools[tenantID]; ok {
+			if tool, found := tenantTools[name]; found {
+				r.tenantToolsMu.RUnlock()
+				return tool, true
+			}
+		}
+		r.tenantToolsMu.RUnlock()
+	}
+	return r.Get(name)
 }
 
 // List 列出所有工具（按名称排序，保证顺序稳定以优化 KV-cache）
@@ -325,15 +361,33 @@ func (r *Registry) SetSessionMCPManagerProvider(provider SessionMCPManagerProvid
 //   - 核心工具始终包含
 //   - 非核心工具仅在激活且未过期（maxIdleRounds 内有使用）时才包含
 //   - 全局 MCP 工具激活后以完整参数 schema 加入（而非 stub 模式的空 params）
-func (r *Registry) AsDefinitionsForSession(sessionKey string) []llm.ToolDefinition {
+//   - tenantID>0 时同时包含该租户的专属工具（与全局合并，租户优先）
+//   - tenantID=0 时仅返回全局工具（向后兼容）
+func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []llm.ToolDefinition {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	active := r.activeToolSet(sessionKey)
 	flatMode := r.flatMode
 
+	// 收集 tenant 专属工具（先获取，在合并时优先）
+	r.mu.RUnlock()
+	var tenantToolMap map[string]Tool
+	if tenantID != 0 {
+		r.tenantToolsMu.RLock()
+		tenantToolMap = r.tenantTools[tenantID]
+		r.tenantToolsMu.RUnlock()
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	seen := make(map[string]bool)
 	var defs []llm.ToolDefinition
-	for _, tool := range r.globalTools {
+
+	// 辅助函数：将 tool 转为 ToolDefinition 加入列表
+	addTool := func(tool Tool) {
+		if seen[tool.Name()] {
+			return
+		}
+		seen[tool.Name()] = true
 		if mcp, isMCP := tool.(mcpSchemaProvider); isMCP {
 			// 全局 MCP 工具：flat 模式直接可见；否则仅在激活后以完整参数 schema 加入
 			if flatMode || active[tool.Name()] {
@@ -343,11 +397,21 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string) []llm.ToolDefiniti
 					params: mcp.fullParams(),
 				})
 			}
-			continue
+			return
 		}
 		if r.coreTools[tool.Name()] || active[tool.Name()] {
 			defs = append(defs, tool)
 		}
+	}
+
+	// 先遍历 tenant 工具（租户优先）
+	for _, tool := range tenantToolMap {
+		addTool(tool)
+	}
+
+	// 再遍历 global 工具
+	for _, tool := range r.globalTools {
+		addTool(tool)
 	}
 
 	// 追加会话 MCP 工具：flat 模式直接可见；否则仅追加已激活工具
@@ -470,6 +534,19 @@ func (r *Registry) Clone() *Registry {
 	for name := range r.coreTools {
 		clone.coreTools[name] = true
 	}
+	// 复制 tenant 工具
+	r.tenantToolsMu.RLock()
+	if len(r.tenantTools) > 0 {
+		clone.tenantTools = make(map[int64]map[string]Tool, len(r.tenantTools))
+		for tid, tools := range r.tenantTools {
+			m := make(map[string]Tool, len(tools))
+			for name, tool := range tools {
+				m[name] = tool
+			}
+			clone.tenantTools[tid] = m
+		}
+	}
+	r.tenantToolsMu.RUnlock()
 	return clone
 }
 

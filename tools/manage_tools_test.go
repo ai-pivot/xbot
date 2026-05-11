@@ -550,7 +550,7 @@ func TestRegistry_AsDefinitionsForSession_FlatModeIncludesSessionMCPTools(t *tes
 	}
 	registry.SetSessionMCPManagerProvider(&mockSessionMCPProvider{manager: sm})
 
-	defs := registry.AsDefinitionsForSession("test:chat")
+	defs := registry.AsDefinitionsForSession("test:chat", 0)
 	if !hasToolDefinitionName(defs, "mcp_demo_ping") {
 		t.Fatalf("expected flat mode to expose session MCP tool immediately")
 	}

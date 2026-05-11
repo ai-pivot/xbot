@@ -63,6 +63,10 @@ type PluginManager struct {
 	tenantBuses   map[int64]*PluginEventBus
 	tenantBusesMu sync.RWMutex
 
+	// wiredTenants tracks which tenants have already had their plugin tools wired.
+	wiredTenants   map[int64]bool
+	wiredTenantsMu sync.Mutex
+
 	activationOrder []string // topological activation order (computed after Discover)
 
 	// UI widget registry — shared across all plugins
@@ -198,6 +202,29 @@ func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int
 // get the correct tenant identity.
 func (pm *PluginManager) RefreshTenantID(tenantID int64) {
 	pm.pluginTenantID.Store(tenantID)
+}
+
+// IsTenantWired returns true if the given tenant already has its plugin tools wired.
+func (pm *PluginManager) IsTenantWired(tenantID int64) bool {
+	if tenantID == 0 {
+		return true // global tools always wired at startup
+	}
+	pm.wiredTenantsMu.Lock()
+	defer pm.wiredTenantsMu.Unlock()
+	return pm.wiredTenants[tenantID]
+}
+
+// MarkTenantWired records that the given tenant has had its plugin tools wired.
+func (pm *PluginManager) MarkTenantWired(tenantID int64) {
+	if tenantID == 0 {
+		return
+	}
+	pm.wiredTenantsMu.Lock()
+	defer pm.wiredTenantsMu.Unlock()
+	if pm.wiredTenants == nil {
+		pm.wiredTenants = make(map[int64]bool)
+	}
+	pm.wiredTenants[tenantID] = true
 }
 
 // Bus returns the global plugin event bus.

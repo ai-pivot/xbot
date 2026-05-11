@@ -184,6 +184,18 @@ var _ tools.Tool = (*PluginToolBridge)(nil)
 //
 // Call this after PluginManager.ActivateAll() or ActivateForEvent().
 func WirePluginTools(pm *PluginManager, registry *tools.Registry) error {
+	return wirePluginToolsInternal(pm, registry, 0)
+}
+
+// WirePluginToolsForTenant scans all active plugins and registers their tools
+// for a specific tenant using RegisterForTenant.
+// tenantID=0 registers globally (same as WirePluginTools).
+func WirePluginToolsForTenant(pm *PluginManager, registry *tools.Registry, tenantID int64) error {
+	return wirePluginToolsInternal(pm, registry, tenantID)
+}
+
+// wirePluginToolsInternal is the shared implementation for both global and per-tenant wiring.
+func wirePluginToolsInternal(pm *PluginManager, registry *tools.Registry, tenantID int64) error {
 	if registry == nil {
 		return fmt.Errorf("plugin: tools.Registry is nil")
 	}
@@ -208,7 +220,7 @@ func WirePluginTools(pm *PluginManager, registry *tools.Registry) error {
 				bridge.middlewareChain = chain
 			}
 
-			registry.Register(bridge)
+			registry.RegisterForTenant(tenantID, bridge)
 			registered++
 		}
 	}
