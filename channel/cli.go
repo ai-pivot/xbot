@@ -553,6 +553,15 @@ func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 	}
 }
 
+// SyncPluginWidgetChatID updates the remote plugin cache's chatID after Cd
+// so that refreshWidgets() RPC fetches widgets for the correct session.
+func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
+	if c.model != nil && c.model.remotePluginCache != nil {
+		c.model.remotePluginCache.UpdateChatID(chatID)
+		c.model.remotePluginCache.Refresh()
+	}
+}
+
 // LoadHistory loads session history into the CLI model.
 // Used by remote mode where history must be fetched via RPC after the WS connection
 // is established. Thread-safe: always goes through asyncCh to avoid racing with

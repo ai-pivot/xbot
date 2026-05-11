@@ -890,6 +890,11 @@ func main() {
 	defer clipanic.Recover("main.main", nil, true)
 	fmt.Printf("xbot CLI %s\n", version.Version)
 
+	// pluginWidgetSyncFn bridges SetCWDFn (inside if app.backend != nil) and
+	// cliCh.SyncPluginWidgetChatID (inside if app.backend.IsRemote()).
+	// Both are in different scopes, so we use a closure variable at main scope.
+	var pluginWidgetSyncFn func(string)
+
 	printHelp := func() {
 		fmt.Println("Usage: xbot-cli [options] [prompt]")
 		fmt.Println()
@@ -1730,7 +1735,13 @@ func main() {
 			return backend.TrimHistory(channelName, chatID, cutoff)
 		}
 		cliCfg.SetCWDFn = func(channelName, chatID, dir string) error {
-			return backend.SetCWD(channelName, chatID, dir)
+			if err := backend.SetCWD(channelName, chatID, dir); err != nil {
+				return err
+			}
+			if pluginWidgetSyncFn != nil {
+				pluginWidgetSyncFn(chatID)
+			}
+			return nil
 		}
 		cliCfg.AgentSessionDumpFn = func(chatID string) ([]channel.HistoryMessage, error) {
 			// Try in-memory first (running sessions)
@@ -2143,6 +2154,7 @@ func main() {
 			return app.backend.CallRPC(method, params)
 		})
 		cliCh.SetRemotePluginCache(remoteCache)
+		pluginWidgetSyncFn = cliCh.SyncPluginWidgetChatID
 		// Register push callback via Subscribe — server pushes widget zone content via
 		// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
 		// Filter: only accept pushes targeting our own chatID (absolute path).

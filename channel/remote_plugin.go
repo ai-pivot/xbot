@@ -85,6 +85,14 @@ func (c *remotePluginCache) UpdateZones(zones map[string]string) {
 	}
 }
 
+// UpdateChatID updates the cached chatID so subsequent refreshWidgets()
+// RPCs fetch widgets for the correct session after Cd.
+func (c *remotePluginCache) UpdateChatID(chatID string) {
+	c.mu.Lock()
+	c.chatID = chatID
+	c.mu.Unlock()
+}
+
 // refreshStatus fetches plugin list/status from server.
 func (c *remotePluginCache) refreshStatus() {
 	if c.callRPC == nil {
