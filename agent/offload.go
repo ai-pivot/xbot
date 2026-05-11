@@ -223,7 +223,7 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 	// This ensures ContentHash matches what InvalidateStaleReads computes,
 	// avoiding false stale when the tool result is truncated by applyLineLimit.
 	if toolName == "Read" {
-		if readPath := extractJSONStringField(args, "path"); readPath != "" {
+		if readPath := ExtractJSONString(args, "path"); readPath != "" {
 			entry.ReadPath = readPath
 			if s.sandbox != nil {
 				if rawData, err := s.sandbox.ReadFile(ctx, readPath, userID); err == nil {
@@ -500,7 +500,7 @@ func generateRuleSummary(toolName, args, content string) string {
 // summarizeRead 生成 Read 工具结果的摘要。
 func summarizeRead(args, content string) string {
 	// 提取文件名
-	path := extractJSONStringField(args, "path")
+	path := ExtractJSONString(args, "path")
 	if path == "" {
 		path = "(unknown)"
 	}
@@ -683,23 +683,6 @@ func summarizeDefault(content string) string {
 	preview := string(runes[:maxPreview])
 	tokens := estimateTokenSize(content, "gpt-4o")
 	return fmt.Sprintf("Content (first %d chars): %s...\n(Size: %d bytes, ~%d tokens)", maxPreview, preview, len(content), tokens)
-}
-
-// extractJSONStringField 从 JSON 字符串中提取指定字符串字段的值。
-func extractJSONStringField(jsonStr, field string) string {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
-		return ""
-	}
-	v, ok := m[field]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
-	return s
 }
 
 // extractFunctionNames 从代码内容中提取函数名（Go, Python, JS 等）。

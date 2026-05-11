@@ -241,7 +241,7 @@ func ApprovalCallback(state *ApprovalState) *CallbackHook {
 			}
 
 			argsJSON := toolArgsToString(pre.ToolInput_)
-			runAs, reason := extractRunAsAndReason(argsJSON)
+			runAs, reason := protocol.ExtractRunAsAndReason(argsJSON)
 
 			if (strings.TrimSpace(runAs) == "") != (strings.TrimSpace(reason) == "") {
 				return &Result{
@@ -294,7 +294,7 @@ func ApprovalCallback(state *ApprovalState) *CallbackHook {
 				RunAs:    runAs,
 			}
 
-			populateApprovalDetails(&req, pre.ToolName_, argsJSON)
+			protocol.PopulateApprovalDetails(&req, pre.ToolName_, argsJSON)
 
 			result, err := handler.RequestApproval(approvalCtx, req)
 			if err != nil {
@@ -313,88 +313,6 @@ func ApprovalCallback(state *ApprovalState) *CallbackHook {
 
 			return &Result{Decision: "allow"}, nil
 		},
-	}
-}
-
-// extractRunAsAndReason parses run_as and reason from JSON tool arguments.
-func extractRunAsAndReason(args string) (runAs, reason string) {
-	var raw struct {
-		RunAs  string `json:"run_as"`
-		Reason string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(args), &raw); err != nil {
-		return "", ""
-	}
-	return raw.RunAs, raw.Reason
-}
-
-// truncateApprovalText truncates s to at most max bytes, appending "..." if
-// truncated. Whitespace is trimmed first.
-func truncateApprovalText(s string, max int) string {
-	s = strings.TrimSpace(s)
-	if max <= 0 || len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
-}
-
-// populateApprovalDetails extracts human-readable details for the approval
-// dialog.
-func populateApprovalDetails(req *tools.ApprovalRequest, toolName, args string) {
-	const maxDisplayLen = 160
-
-	switch toolName {
-	case "Shell":
-		var p struct {
-			Command string `json:"command"`
-			Reason  string `json:"reason"`
-		}
-		if json.Unmarshal([]byte(args), &p) == nil {
-			req.Command = truncateApprovalText(p.Command, maxDisplayLen)
-			req.ArgsSummary = req.Command
-			if strings.TrimSpace(p.Reason) != "" {
-				req.Reason = truncateApprovalText(p.Reason, maxDisplayLen)
-			} else {
-				req.Reason = fmt.Sprintf("Execute command as %q", req.RunAs)
-			}
-		}
-	case "FileCreate":
-		var p struct {
-			Path   string `json:"path"`
-			RunAs  string `json:"run_as"`
-			Reason string `json:"reason"`
-		}
-		if json.Unmarshal([]byte(args), &p) == nil {
-			req.FilePath = truncateApprovalText(p.Path, maxDisplayLen)
-			req.ArgsSummary = req.FilePath
-			if strings.TrimSpace(p.Reason) != "" {
-				req.Reason = truncateApprovalText(p.Reason, maxDisplayLen)
-			} else {
-				req.Reason = fmt.Sprintf("Create file as %q", req.RunAs)
-			}
-		}
-	case "FileReplace":
-		var p struct {
-			Path      string `json:"path"`
-			OldString string `json:"old_string"`
-			NewString string `json:"new_string"`
-			Reason    string `json:"reason"`
-		}
-		if json.Unmarshal([]byte(args), &p) == nil {
-			req.FilePath = truncateApprovalText(p.Path, maxDisplayLen)
-			req.ArgsSummary = fmt.Sprintf("old=%q new=%q", truncateApprovalText(p.OldString, 40), truncateApprovalText(p.NewString, 40))
-			if strings.TrimSpace(p.Reason) != "" {
-				req.Reason = truncateApprovalText(p.Reason, maxDisplayLen)
-			} else {
-				req.Reason = fmt.Sprintf("Modify file as %q", req.RunAs)
-			}
-		}
-	}
-	if req.Reason == "" {
-		req.Reason = fmt.Sprintf("Execute %s as %q", toolName, req.RunAs)
 	}
 }
 

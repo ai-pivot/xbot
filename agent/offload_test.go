@@ -305,9 +305,9 @@ func TestExtractJSONStringField(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := extractJSONStringField(tt.jsonStr, tt.field)
+		got := ExtractJSONString(tt.jsonStr, tt.field)
 		if got != tt.want {
-			t.Errorf("extractJSONStringField(%q, %q) = %q, want %q", tt.jsonStr, tt.field, got, tt.want)
+			t.Errorf("ExtractJSONString(%q, %q) = %q, want %q", tt.jsonStr, tt.field, got, tt.want)
 		}
 	}
 }

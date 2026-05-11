@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"xbot/protocol"
 )
 
 // withPerm is a test helper for injecting perm users into context.
@@ -24,7 +26,7 @@ func TestExtractRunAsAndReason(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		runAs, reason := extractRunAsAndReason(tt.args)
+		runAs, reason := protocol.ExtractRunAsAndReason(tt.args)
 		if runAs != tt.expectedRunAs || reason != tt.expectedReason {
 			t.Errorf("extractRunAsAndReason(%q) = (%q, %q), want (%q, %q)", tt.args, runAs, reason, tt.expectedRunAs, tt.expectedReason)
 		}
@@ -33,7 +35,7 @@ func TestExtractRunAsAndReason(t *testing.T) {
 
 func TestPopulateApprovalDetails(t *testing.T) {
 	req := ApprovalRequest{RunAs: "root"}
-	populateApprovalDetails(&req, "Shell", `{"command": "apt install nginx"}`)
+	protocol.PopulateApprovalDetails(&req, "Shell", `{"command": "apt install nginx"}`)
 	if req.Command != "apt install nginx" {
 		t.Errorf("expected command 'apt install nginx', got %q", req.Command)
 	}
@@ -45,20 +47,20 @@ func TestPopulateApprovalDetails(t *testing.T) {
 	}
 
 	req2 := ApprovalRequest{RunAs: "root"}
-	populateApprovalDetails(&req2, "FileCreate", `{"path": "/etc/test.conf"}`)
+	protocol.PopulateApprovalDetails(&req2, "FileCreate", `{"path": "/etc/test.conf"}`)
 	if req2.FilePath != "/etc/test.conf" {
 		t.Errorf("expected file path '/etc/test.conf', got %q", req2.FilePath)
 	}
 
 	req3 := ApprovalRequest{RunAs: "root"}
-	populateApprovalDetails(&req3, "Shell", `{"command": "apt install nginx", "reason": "Install nginx for reverse proxy"}`)
+	protocol.PopulateApprovalDetails(&req3, "Shell", `{"command": "apt install nginx", "reason": "Install nginx for reverse proxy"}`)
 	if req3.Reason != "Install nginx for reverse proxy" {
 		t.Errorf("expected explicit reason, got %q", req3.Reason)
 	}
 
 	longCmd := "python -c '" + strings.Repeat("x", 300) + "'"
 	req4 := ApprovalRequest{RunAs: "root"}
-	populateApprovalDetails(&req4, "Shell", `{"command": "`+longCmd+`"}`)
+	protocol.PopulateApprovalDetails(&req4, "Shell", `{"command": "`+longCmd+`"}`)
 	if len(req4.Command) > 160 {
 		t.Fatalf("expected truncated command <= 160 chars, got %d", len(req4.Command))
 	}
@@ -96,7 +98,7 @@ func TestTruncateApprovalText(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := truncateApprovalText(tt.input, tt.max)
+		got := protocol.TruncateApprovalText(tt.input, tt.max)
 		if got != tt.want {
 			t.Errorf("truncateApprovalText(%q, %d) = %q, want %q", tt.input, tt.max, got, tt.want)
 		}

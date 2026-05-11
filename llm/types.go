@@ -203,7 +203,7 @@ func isValidToolCallArgs(args string) bool {
 	if args == "" {
 		return true
 	}
-	var dummy interface{}
+	var dummy any
 	return json.Unmarshal([]byte(args), &dummy) == nil
 }
 

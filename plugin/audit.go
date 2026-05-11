@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	log "xbot/logger"
 )
 
 // ---------------------------------------------------------------------------
@@ -76,7 +78,9 @@ func (al *AuditLogger) Log(entry AuditEntry) {
 	data = append(data, '\n')
 	al.mu.Lock()
 	defer al.mu.Unlock()
-	_, _ = al.file.Write(data)
+	if _, err := al.file.Write(data); err != nil {
+		log.WithError(err).Warn("audit: write failed")
+	}
 }
 
 // Query reads the audit log from disk and returns entries matching the filter.

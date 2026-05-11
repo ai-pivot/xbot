@@ -71,7 +71,7 @@ func saveLayoutToConfig(vals map[string]string) {
 	if err != nil {
 		return
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
@@ -92,7 +92,7 @@ func configLayoutValue(key string) string {
 	if err != nil {
 		return ""
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
 		return ""
 	}

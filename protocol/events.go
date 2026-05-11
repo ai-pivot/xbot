@@ -28,7 +28,7 @@ type ToolProgress struct {
 	Summary   string    `json:"summary,omitempty"`
 	Detail    string    `json:"detail,omitempty"`
 	Args      string    `json:"args,omitempty"`
-	ToolHints string    `json:"toolHints,omitempty"`
+	ToolHints string    `json:"tool_hints,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
 }
 
