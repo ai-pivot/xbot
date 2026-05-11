@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -71,24 +70,6 @@ type PluginManager struct {
 
 	// UI widget registry — shared across all plugins
 	widgetRegistry *WidgetRegistry
-
-	// workDir is the agent's working directory, injected via SetWorkDir.
-	// Used to set PluginContext.WorkingDir() before activation so script
-	// plugins run in the user's workspace (e.g. git repo).
-	// Stored as atomic.Value[string] for lock-free reads from activate()
-	// (which may be called while pm.mu write lock is held).
-	workDir atomic.Value // stores string
-
-	// pluginChannel and pluginChatID store the last-known channel/chatID
-	// from RefreshWorkDir. They are passed to SetSessionMetadata during
-	// plugin activation so new plugins inherit the correct session identity.
-	pluginChannel atomic.Value // stores string
-	pluginChatID  atomic.Value // stores string
-
-	// pluginTenantID stores the last-known tenantID from RefreshWorkDir.
-	// It is passed to SetSessionMetadata during plugin activation so new
-	// plugins inherit the correct tenant identity.
-	pluginTenantID atomic.Value // stores int64
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -132,46 +113,17 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 	pm.runtimeFactory = factory
 }
 
-// workDirValue safely loads the workDir from the atomic value.
-func (pm *PluginManager) workDirValue() string {
-	if v := pm.workDir.Load(); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-// pluginChannelValue safely loads the pluginChannel from the atomic value.
-func (pm *PluginManager) pluginChannelValue() string {
-	if v := pm.pluginChannel.Load(); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-// pluginChatIDValue safely loads the pluginChatID from the atomic value.
-func (pm *PluginManager) pluginChatIDValue() string {
-	if v := pm.pluginChatID.Load(); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-// pluginTenantIDValue safely loads the pluginTenantID from the atomic value.
-func (pm *PluginManager) pluginTenantIDValue() int64 {
-	if v := pm.pluginTenantID.Load(); v != nil {
-		return v.(int64)
-	}
-	return 0
-}
-
-// SetWorkDir sets the agent working directory applied to plugin contexts.
+// SetWorkDir is deprecated. PluginManager no longer caches CWD internally.
+// CWD is now managed by TenantSession as the single source of truth.
+// Kept for backward compatibility only.
 func (pm *PluginManager) SetWorkDir(wd string) {
-	pm.workDir.Store(wd)
+	// no-op
 }
 
-// WorkDir returns the current working directory (set by SetWorkDir or RefreshWorkDir).
+// WorkDir is deprecated. Returns empty string.
+// CWD is now managed by TenantSession as the single source of truth.
 func (pm *PluginManager) WorkDir() string {
-	return pm.workDirValue()
+	return ""
 }
 
 // RefreshWorkDir updates the working directory on ALL active plugin contexts.
@@ -181,11 +133,6 @@ func (pm *PluginManager) WorkDir() string {
 // Widget push is handled by each plugin's notifyUpdated callback after it
 // finishes re-executing (debounce=200ms, effectively immediate).
 func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int64) {
-	pm.workDir.Store(wd)
-	pm.pluginChannel.Store(channel)
-	pm.pluginChatID.Store(chatID)
-	pm.pluginTenantID.Store(tenantID)
-
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 	for _, entry := range pm.entries {
@@ -199,11 +146,11 @@ func (pm *PluginManager) RefreshWorkDir(wd, channel, chatID string, tenantID int
 	}
 }
 
-// RefreshTenantID stores the current tenant ID for use during plugin activation.
-// Call this when the session tenant changes to ensure newly activated plugins
-// get the correct tenant identity.
+// RefreshTenantID is deprecated. PluginManager no longer caches tenant ID internally.
+// CWD and tenant identity are now managed by TenantSession as the single source of truth.
+// Kept for backward compatibility only.
 func (pm *PluginManager) RefreshTenantID(tenantID int64) {
-	pm.pluginTenantID.Store(tenantID)
+	// no-op
 }
 
 // IsTenantWired returns true if the given tenant already has its plugin tools wired.
@@ -668,18 +615,6 @@ func (pm *PluginManager) activate(ctx context.Context, entry *PluginEntry) error
 	}
 	done := make(chan activateResult, 1)
 
-	// Set session metadata (workDir, channel, tenantID) BEFORE activation so the plugin
-	// context has the correct working directory for script execution.
-	if entry.Context != nil {
-		wd := pm.workDirValue() // atomic read, no lock needed
-		ch := pm.pluginChannelValue()
-		cid := pm.pluginChatIDValue()
-		tid := pm.pluginTenantIDValue()
-		if wd != "" {
-			entry.Context.SetSessionMetadata(wd, ch, cid, tid)
-		}
-	}
-
 	go func() {
 		var activateErr error
 		func() {
@@ -995,7 +930,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 	pm.entries[m.ID] = newEntry
 
-	// Activate if has onStart event (workDir is read via atomic, safe under pm.mu write lock)
+	// Activate if has onStart event
 	if hasActivationEvent(m, "onStart") {
 		if err4 := pm.activate(ctx, newEntry); err4 != nil {
 			pm.notifyEvent(PluginEventError, m.ID, err4, map[string]any{"phase": "reload", "step": "activate"})

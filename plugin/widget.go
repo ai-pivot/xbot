@@ -417,3 +417,18 @@ func joinWidgetSpans(spans []WidgetSpan) string {
 	}
 	return s
 }
+
+// RenderSessionWidgets renders all widget zones for a session using its CWD.
+// The getCWD callback resolves the working directory for the given chatID.
+// Used by both the WS push path and the plugin_widgets RPC to ensure consistent rendering.
+func RenderSessionWidgets(wr *WidgetRegistry, getCWD func(string) string, chatID string) map[string]string {
+	cwd := ""
+	if getCWD != nil {
+		cwd = getCWD(chatID)
+	}
+	zones := make(map[string]string)
+	for _, z := range []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"} {
+		zones[z] = wr.RenderZoneForWorkDir(z, cwd)
+	}
+	return zones
+}

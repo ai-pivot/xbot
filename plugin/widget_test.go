@@ -292,7 +292,6 @@ func TestScriptPluginE2E(t *testing.T) {
 	pm := NewPluginManager(tmpHome)
 	t.Cleanup(func() { pm.Close() })
 	pm.SetRuntimeFactory(NewCompositeRuntimeFactory())
-	pm.SetWorkDir(tmpHome)
 
 	// Discover
 	discovered, err := pm.Discover(context.Background())
@@ -310,6 +309,10 @@ func TestScriptPluginE2E(t *testing.T) {
 	if pm.ActiveCount() != 1 {
 		t.Fatalf("expected 1 active plugin, got %d", pm.ActiveCount())
 	}
+
+	// RefreshWorkDir sets the working directory on all plugin contexts,
+	// replacing the deprecated SetWorkDir. PluginManager no longer caches CWD.
+	pm.RefreshWorkDir(tmpHome, "", "", 0)
 
 	// Wait for async script execution to complete
 	time.Sleep(100 * time.Millisecond)

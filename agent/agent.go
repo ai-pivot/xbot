@@ -1003,30 +1003,29 @@ func New(cfg Config) (*Agent, error) {
 				return // local CLIChannel handles its own OnUpdated
 			}
 			// Per-session rendering: each chatID may have a different workDir.
-			// We use RenderZoneForWorkDir to render widget content for each
-			// session's working directory independently, avoiding cross-session
-			// overwrites (e.g. git branch from /repo1 overwriting /repo2).
-			zoneNames := []string{"titleBarLeft", "titleBarRight", "statusBarLeft", "statusBarRight", "infoBar", "footer", "toolHint"}
+			// Uses plugin.RenderSessionWidgets — shared with plugin_widgets RPC handler
+			// to ensure consistent rendering across push and pull paths.
 			ms := agent.multiSession
+			wr := pm.WidgetRegistry()
 			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
-				cwd := ""
-				if ms != nil && chatID != "" {
-					if sess, err := ms.GetOrCreateSession("cli", chatID); err == nil {
-						cwd = sess.GetCurrentDir()
+				getCWD := func(cid string) string {
+					cwd := ""
+					if ms != nil && cid != "" {
+						if sess, err := ms.GetOrCreateSession("cli", cid); err == nil {
+							cwd = sess.GetCurrentDir()
+						}
 					}
-				}
-				// Fallback: if session CWD is empty, use persisted WorktreeRegistry entry
-				if cwd == "" {
-					sessKey := "cli:" + chatID
-					if entry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); entry != nil && entry.WorktreeDir != "" {
-						cwd = entry.WorktreeDir
+					// Fallback: if session CWD is empty, use persisted WorktreeRegistry entry
+					if cwd == "" {
+						sessKey := "cli:" + cid
+						if entry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); entry != nil && entry.WorktreeDir != "" {
+							cwd = entry.WorktreeDir
+						}
 					}
+					return cwd
 				}
-				zones := make(map[string]string, len(zoneNames))
-				for _, z := range zoneNames {
-					zones[z] = pm.WidgetRegistry().RenderZoneForWorkDir(z, cwd)
-				}
-				log.Infof("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, cwd, zones["infoBar"], zones["footer"])
+				zones := plugin.RenderSessionWidgets(wr, getCWD, chatID)
+				log.Infof("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, getCWD(chatID), zones["infoBar"], zones["footer"])
 				return zones
 			})
 		})
