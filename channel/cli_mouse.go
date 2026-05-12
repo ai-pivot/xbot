@@ -1213,7 +1213,8 @@ func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
 		}
 	}
 	totalLines := 2 + len(m.quickSwitchList) + sepLines // header + spacer + items + separator
-	totalH := totalLines + 4                            // +2 border +1 newline after box +1 hint
+	// Match viewQuickSwitch's centering formula exactly (listH = N+3+sepLines).
+	totalH := totalLines + 1 // (2+N+sepLines)+1 = N+3+sepLines = view's listH
 	blankLines := max(0, (m.height-totalH)/2)
 
 	zb.skip(blankLines)
