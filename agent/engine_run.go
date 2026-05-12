@@ -436,18 +436,18 @@ func (s *runState) updateTokenUsage() {
 	}
 }
 
-// updateTokenUsageEstimate updates TokenUsage with a local estimate after compression.
-// After ResetAfterCompress(), the tracker has zero values — we use the estimate from
-// the compression pipeline so the CLI context bar shows the reduced token count
-// immediately instead of disappearing until the next API call.
-func (s *runState) updateTokenUsageEstimate(estimatedTokens int64) {
+// setTokenUsageAfterCompress updates TokenUsage with the post-compress token count
+// (from the compression LLM call's API-returned prompt_tokens). After
+// ResetAfterCompress(), the tracker has zero values — this ensures the CLI
+// context bar shows the reduced token count immediately.
+func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 	if s.structuredProgress == nil {
 		return
 	}
 	s.structuredProgress.TokenUsage = &TokenUsageSnapshot{
-		PromptTokens:     estimatedTokens,
+		PromptTokens:     tokenCount,
 		CompletionTokens: 0,
-		TotalTokens:      estimatedTokens,
+		TotalTokens:      tokenCount,
 		CacheHitTokens:   0,
 		MaxOutputTokens:  int64(s.cfg.MaxOutputTokens),
 	}
@@ -528,8 +528,8 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	}
 	s.messages = pipelineResult.NewMessages
 	// Update token estimate so CLI shows reduced context immediately
-	s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
-	// Persist estimated token count in case retry fails and Run ends.
+	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+	// Persist API-returned token count in case retry fails and Run ends.
 	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
 		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
 	}
@@ -537,7 +537,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
 	}
 	if s.autoNotify {
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens (estimated)", pipelineResult.NewTokenCount))
+		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", pipelineResult.NewTokenCount))
 		s.notifyProgress("")
 	}
 
@@ -669,8 +669,8 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					s.messages = pipelineResult.NewMessages
 					s.validateInvariantsAt(ctx, "post_compress_window_exceeded")
 					// Update token estimate so CLI shows reduced context immediately
-					s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
-					// Persist estimated token count in case the retry also fails.
+					s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+					// Persist API-returned token count in case the retry also fails.
 					if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
 						s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
 					}
@@ -915,9 +915,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	// Update token usage estimate so progress events show reduced tokens
 	// immediately instead of showing 0 (from ResetAfterCompress) or stale
 	// pre-compress values until the next LLM API call.
-	s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
+	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
 
-	// Persist the estimated token count so that after a restart, the next Run
+	// Persist the API-returned token count so that after a restart, the next Run
 	// restores an accurate value instead of the pre-compress count. Without this,
 	// ResetAfterCompress zeros the tracker, SaveState skips (no LLM call), and
 	// the DB still holds the old large value → immediate re-compression on restart.
@@ -1026,19 +1026,6 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 	// Reset token tracker so the next iteration gets fresh data from the API
 	if s.tokenTracker != nil {
 		s.tokenTracker.ResetAfterCompress()
-	}
-
-	// Update token estimate from local count so CLI shows reduced context
-	estimatedTokens, _ := llm.CountMessagesTokens(newMessages, s.cfg.Model)
-	s.updateTokenUsageEstimate(int64(estimatedTokens))
-
-	// Persist the estimated token count so restart restores the reduced value
-	// instead of the pre-truncation count (which would trigger immediate re-compression).
-	if s.cfg.SaveContextTokens != nil && estimatedTokens > 0 {
-		s.cfg.SaveContextTokens(int64(estimatedTokens))
-	}
-	if s.cfg.SaveTokenState != nil && estimatedTokens > 0 {
-		s.cfg.SaveTokenState(int64(estimatedTokens), 0)
 	}
 
 	// Persist the truncated history
