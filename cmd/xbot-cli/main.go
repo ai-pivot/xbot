@@ -2152,14 +2152,10 @@ func main() {
 			}
 		}
 
-		if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
-			log.WithError(err).WithField("chat_id", remoteChatID).Warn("Failed to load remote session history")
-		} else {
-			log.WithFields(log.Fields{"chat_id": remoteChatID, "count": len(history)}).Info("CLI loaded remote history via RPC")
-			if len(history) > 0 {
-				cliCh.LoadHistory(history)
-			}
-		}
+		// History + progress are loaded together in the RestoreSession goroutine
+		// below, which uses handleSuHistoryLoad (same path as session switch).
+		// Do NOT load history separately here — that would create tool_summary
+		// messages without progress, causing stale "Tools (#345)" rendering.
 		// Subscribe to business chatID so Hub routes server-pushed events
 		// (progress, stream, outbound) to this WS connection.
 		// Without this, RPC-only sessions never subscribe and all pushed
