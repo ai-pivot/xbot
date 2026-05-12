@@ -151,13 +151,29 @@ func (c *CLIChannel) Start() error {
 		})
 		c.pendingRemotePluginCache = nil
 	}
-	if c.pendingHistory != nil {
-		c.LoadHistory(c.pendingHistory)
+	if c.pendingHistory != nil && c.pendingProgress != nil {
+		// History + progress available — use suHistoryLoadMsg (same as session switch)
+		// to guarantee identical rendering. This is the only correct restore path.
+		hist := c.pendingHistory
+		prog := c.pendingProgress
 		c.pendingHistory = nil
-	}
-	if c.pendingProgress != nil {
-		c.model.restoreProgressSnapshot(c.pendingProgress)
 		c.pendingProgress = nil
+		c.model.handleSuHistoryLoad(suHistoryLoadMsg{
+			history:        hist,
+			channelName:    "cli",
+			chatID:         c.config.ChatID,
+			activeProgress: prog,
+		})
+	} else {
+		// Only history or only progress — use legacy paths
+		if c.pendingHistory != nil {
+			c.LoadHistory(c.pendingHistory)
+			c.pendingHistory = nil
+		}
+		if c.pendingProgress != nil {
+			c.model.restoreProgressSnapshot(c.pendingProgress)
+			c.pendingProgress = nil
+		}
 	}
 	c.model.channelName = "cli"
 	c.model.defaultChatID = c.config.ChatID
