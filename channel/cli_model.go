@@ -506,6 +506,10 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		m.suPhaseDoneConfirmed = false
 		m.inputReady = false
 
+		// Remote mode: load history via RPC. Panel session switches do NOT
+		// go through the RestoreSession goroutine (which only runs at initial
+		// startup in main.go), so suLoadHistoryCmd MUST be called here to
+		// produce a suHistoryLoadMsg that clears suLoading and restores state.
 		m.suLoading = true
 		m.splashFrame = 0
 
@@ -517,25 +521,13 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 			m.showSystemMsg("⏳ 该会话的消息推送订阅未初始化，进度可能无法实时更新", feedbackWarning)
 		}
 
-		// Remote mode: skip suLoadHistoryCmd — RestoreSession goroutine already
-		// loads history + progress via RPC. Calling suLoadHistoryCmd here would
-		// trigger a second handleSuHistoryLoad call, causing duplicate
-		// removeLastToolSummary invocations that delete tool_summaries from
-		// completed turns.
-		// Local mode: restored state is authoritative (no RPC delay).
 		m.inputReady = true
 		// Check for pending AskUser questions from a previous session.
 		cmds = append(cmds, m.checkAndRestorePendingAskUser())
-		// Kick tick chain if restored session has active turn.
-		if m.typing && m.progress != nil && !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
-		// Also kick a tick when idle: handleTickMsg will check
-		// sidebarHasBusySessions and decide whether to continue.
-		if !m.typing && !m.fastTickActive {
-			cmds = append(cmds, m.tickCmd())
-		}
+		// Start splash animation + async history loading.
+		// splashTick drives the loading animation; suLoadHistoryCmd produces
+		// suHistoryLoadMsg which clears suLoading and restores progress.
+		cmds = append(cmds, m.splashTick(0), m.suLoadHistoryCmd())
 	}
 
 	return cmds

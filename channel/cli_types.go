@@ -403,11 +403,30 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		curIterReasoning = ""
 	}
 
+	// lastAssistantTS tracks the timestamp of the last processed assistant
+	// message, used to assign a unique Timestamp to flushPending()-generated
+	// tool_summary messages. Without this, multiple interrupted turns produce
+	// tool_summary messages with zero timestamps, causing dedup to drop all
+	// but the first.
+	var lastAssistantTS time.Time
+	// syntheticIdx provides monotonically-increasing nanosecond offsets to
+	// guarantee unique timestamps for consecutive flushPending() calls when
+	// no real assistant timestamp is available (e.g. all turns interrupted).
+	var syntheticIdx int
+
 	flushPending := func() {
 		finishCurIter()
 		if len(pendingIters) > 0 {
+			ts := lastAssistantTS
+			if ts.IsZero() {
+				// No assistant message in this turn — assign a synthetic
+				// timestamp so each tool_summary gets a unique dedup key.
+				ts = time.Date(2024, 1, 1, 0, 0, 0, syntheticIdx, time.UTC)
+				syntheticIdx++
+			}
 			history = append(history, HistoryMessage{
 				Role:       "tool_summary",
+				Timestamp:  ts,
 				Iterations: pendingIters,
 			})
 			pendingIters = nil
@@ -419,6 +438,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		case "tool":
 			continue
 		case "assistant":
+			lastAssistantTS = m.Timestamp
 			if m.Detail != "" {
 				// Detail has authoritative iteration history. Discard pending iters
 				// from intermediate assistant messages — they lack elapsed/label data.
@@ -492,6 +512,11 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			}
 		default:
 			flushPending()
+			// Reset lastAssistantTS after flushing: the next tool_summary
+			// belongs to a new turn (this default case is typically "user"),
+			// so it should use its own synthetic timestamp if that turn
+			// is also interrupted (no assistant reply).
+			lastAssistantTS = time.Time{}
 			if m.Content != "" {
 				history = append(history, HistoryMessage{
 					Role:      m.Role,

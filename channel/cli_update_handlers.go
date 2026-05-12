@@ -1070,13 +1070,14 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 				}
 			}
 		}
-		// When turn is still active, remove ALL tool_summary messages from
-		// loaded history. ConvertMessagesToHistory produces tool_summary from
-		// intermediate DB messages with globally-cumulative iteration numbers
-		// that don't match the progress block's per-turn iteration numbers.
-		// The active progress block owns iteration display entirely — any
-		// static tool_summary from the active turn would duplicate content.
-		// Remove all tool_summaries after the last user message.
+		// Remove the LAST tool_summary from loaded history. The active
+		// progress block owns the current turn's iteration display — the
+		// static tool_summary from the active turn would duplicate content
+		// and its iteration numbers (globally cumulative from DB) don't
+		// match the progress block's per-turn numbers.
+		// Only the last tool_summary is removed. Previous turns' tool_summaries
+		// (including interrupted turns without assistant replies) are preserved
+		// — they have no live progress panel to replace them.
 		m.removeLastToolSummary()
 
 		// Fallback: if server returned Iteration=0 but iteration history
@@ -1089,13 +1090,14 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			m.progress.Iteration = m.iterationHistory[len(m.iterationHistory)-1].Iteration
 		}
 
-		// Emit a tickCmd to guarantee the fast tick chain is running,
-		// but only if it's not already active (avoid duplicate chains).
-		// See handleSplashTick for the other half of this guard.
-		if !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
+		// Emit a tickCmd to guarantee the fast tick chain is running.
+		// NOTE: do NOT set m.fastTickActive=true here. When handleSuHistoryLoad
+		// is called directly from Start() (not via tea.Msg), the returned cmds
+		// are discarded — the tickCmd never executes. The flag would then lie
+		// to Init(), which skips starting its own tick chain because it sees
+		// fastTickActive=true. Instead, let Init() or the first live progress
+		// event start the tick chain (they check m.typing/m.progress directly).
+		cmds = append(cmds, m.tickCmd())
 		// If the restored progress has stream or reasoning content, start the
 		// typewriter tick immediately. Without this, the cursor won't blink and
 		// streaming content won't animate until the next handleTickMsg cycle.
@@ -1152,10 +1154,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Start a tick chain even when idle, so handleTickMsg can evaluate
 		// sidebarHasBusySessions and animate sidebar spinners for non-active
 		// busy sessions.
-		if !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
+		cmds = append(cmds, m.tickCmd())
 		// Reload history to pick up messages that arrived while we were viewing
 		// another session (e.g. the assistant's final reply was filtered out by
 		// ChatID check during the agent session view).
