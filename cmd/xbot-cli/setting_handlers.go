@@ -66,9 +66,7 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 	"memory_provider": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.MemoryProvider = value },
 	},
-	"tavily_api_key": {
-		ApplyConfig: func(cfg *config.Config, value string) { cfg.TavilyAPIKey = value },
-	},
+	"tavily_api_key": {}, // Stored in user_settings; WebSearchTool reads dynamically via ConfigGet
 
 	// --- Runtime state settings (config + backend side-effects) ---
 	"context_mode": {

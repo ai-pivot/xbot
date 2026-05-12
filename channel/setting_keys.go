@@ -81,7 +81,7 @@ var AllSettingDefs = []SettingDef{
 	{Key: "sandbox_mode", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Execution sandbox type", ValidValues: "none|docker|remote", DefaultValue: "none"},
 	{Key: "compression_threshold", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Token count at which context compression triggers", ValidValues: "any positive integer", DefaultValue: "0"},
 	{Key: "memory_provider", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence", ValidValues: "flat|letta", DefaultValue: "flat"},
-	{Key: "tavily_api_key", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search", ValidValues: "any valid Tavily API key"},
+	{Key: "tavily_api_key", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search (per-user, falls back to config.json)", ValidValues: "any valid Tavily API key"},
 	{Key: "default_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermPersistent, AIDescription: "Default username for new sessions", ValidValues: "any valid username"},
 	{Key: "privileged_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermManual, AIDescription: "Username with full admin access", ValidValues: "any valid username"},
 

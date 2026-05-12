@@ -1076,14 +1076,20 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.ConfigGet = func(key string) (string, error) {
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
-				if v, ok := vals[key]; ok {
+				if v, ok := vals[key]; ok && v != "" {
 					return v, nil
 				}
 			}
-			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys
+			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys.
+			// Also fallback for SourceUserDB keys that may have a default in config.json
+			// (e.g. tavily_api_key can be set globally in config.json as a default).
 			if def, ok := channel.GetSettingDef(key); ok {
 				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
 					return channel.ConfigValueBySource(key, def.Source), nil
+				}
+				// For SourceUserDB keys, try config.json fallback (global defaults)
+				if cfgVal := channel.ConfigValueBySource(key, channel.SourceConfigJSON); cfgVal != "" {
+					return cfgVal, nil
 				}
 			}
 			return "", fmt.Errorf("config: key %q not found", key)
@@ -1113,6 +1119,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		// Only override SourceUserDB items with SettingsSvc values.
 		// SourceConfigJSON and SourceLLMConfig values come from config.json
 		// (set by configValueBySource) and must not be overwritten by stale DB data.
+		// For SourceUserDB items without a DB value, try config.json as fallback.
 		if cfg.SettingsSvc != nil {
 			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
@@ -1120,6 +1127,11 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 					if items[i].Source == "user_db" {
 						if v, ok := vals[items[i].Key]; ok && v != "" {
 							items[i].CurrentVal = v
+						} else if items[i].CurrentVal == "" {
+							// Fallback: try config.json top-level key (e.g. tavily_api_key)
+							if cfgVal := channel.ConfigValueBySource(items[i].Key, channel.SourceConfigJSON); cfgVal != "" {
+								items[i].CurrentVal = cfgVal
+							}
 						}
 					}
 				}

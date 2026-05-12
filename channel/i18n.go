@@ -431,10 +431,6 @@ func localeZH() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "网络搜索服务密钥（可选，留空则无法使用 WebSearch）",
-				Type: SettingTypePassword, Category: "LLM",
-			},
-			{
 				Key: "sandbox_mode", Label: "沙箱模式", Description: "命令执行隔离方式",
 				Type: SettingTypeSelect, Category: "环境", DefaultValue: "none",
 				Options: []SettingOption{
@@ -485,6 +481,10 @@ func localeZH() *UILocale {
 			{
 				Key: "compression_threshold", Label: "压缩阈值", Description: "上下文压缩触发阈值，占最大上下文的比例（默认 0.9）",
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
+			},
+			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "网络搜索服务密钥（个人配置，优先使用；留空则使用全局配置）",
+				Type: SettingTypePassword, Category: "Agent",
 			},
 			{
 				Key: "context_mode", Label: "上下文模式", Description: "控制上下文管理策略",
@@ -812,10 +812,6 @@ func localeEN() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web search service key (optional, leave empty to disable WebSearch)",
-				Type: SettingTypePassword, Category: "LLM",
-			},
-			{
 				Key: "sandbox_mode", Label: "Sandbox Mode", Description: "Command execution isolation method",
 				Type: SettingTypeSelect, Category: "Environment", DefaultValue: "none",
 				Options: []SettingOption{
@@ -866,6 +862,10 @@ func localeEN() *UILocale {
 			{
 				Key: "compression_threshold", Label: "Compression Threshold", Description: "Context compression trigger ratio (default 0.9)",
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
+			},
+			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web search API key (personal config; falls back to global config if empty)",
+				Type: SettingTypePassword, Category: "Agent",
 			},
 			{
 				Key: "context_mode", Label: "Context Mode", Description: "Context management strategy",
@@ -1193,10 +1193,6 @@ func localeJA() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web検索サービスキー（オプション、空の場合 WebSearch は無効）",
-				Type: SettingTypePassword, Category: "LLM",
-			},
-			{
 				Key: "sandbox_mode", Label: "サンドボックスモード", Description: "コマンド実行の分離方法",
 				Type: SettingTypeSelect, Category: "環境", DefaultValue: "none",
 				Options: []SettingOption{
@@ -1247,6 +1243,10 @@ func localeJA() *UILocale {
 			{
 				Key: "compression_threshold", Label: "圧縮閾値", Description: "コンテキスト圧縮のトリガー比率（デフォルト 0.9）",
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
+			},
+			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web検索APIキー（個人設定、空の場合はグローバル設定にフォールバック）",
+				Type: SettingTypePassword, Category: "Agent",
 			},
 			{
 				Key: "context_mode", Label: "コンテキストモード", Description: "コンテキスト管理戦略",
