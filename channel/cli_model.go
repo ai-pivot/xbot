@@ -484,7 +484,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		// single source of truth for whether a turn is active. Forcing
 		// typing=false unconditionally causes:
 		//   - Completed iterations rendered as static tool_summary
-		//     instead of progress block history (restoreProgressSnapshot fix)
+		//     instead of progress block history (handleSuHistoryLoad handles this)
 		//   - Progress updates ignored because handleProgressMsg skips
 		//     auto-start when m.typing=false && m.progress!=nil (state
 		//     mismatch between typing and server reality)
@@ -499,7 +499,6 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		m.progress = nil // discard stale snapshot; server provides fresh one
 		m.needFlushQueue = false
 		m.turnCancelled = false
-		m.fastTickActive = false
 		m.typewriterTickActive = false
 		m.tickGen++ // invalidate any pending ticks from previous chain
 		m.lastProgressSeq = 0
@@ -744,7 +743,6 @@ type cliModel struct {
 	lastSeenIteration      int                    // 上次进度事件的迭代号
 	lastProgressSeq        uint64                 // 上次进度事件的序列号（单调递增校验）
 	iterationStartTime     time.Time              // current iteration wall-clock start time
-	fastTickActive         bool                   // true when a fast tick chain (100ms) is running
 	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
 	unreadSessions         map[string]bool        // chatID → has unread results the user hasn't viewed yet
 	lastBusyStates         map[string]bool        // previous busy state per session, for detecting busy→idle transition
@@ -959,9 +957,10 @@ type cliModel struct {
 	// --- §Session state save/restore ---
 	// Per-session saved state so switching sessions doesn't lose in-progress state.
 	// Key = "channelName:chatID". Messages are NOT saved here — DB is source of truth.
-	savedSessions  map[string]*sessionState
-	pendingUserMsg *cliMessage // most recent user message sent but not yet confirmed in DB
-	turnCancelled  bool        // true after Ctrl+C — prevents auto-start on stale progress
+	savedSessions    map[string]*sessionState
+	pendingUserMsg   *cliMessage       // most recent user message sent but not yet confirmed in DB
+	pendingSuRestore *suHistoryLoadMsg // pre-start restore data, consumed by Init()
+	turnCancelled    bool              // true after Ctrl+C — prevents auto-start on stale progress
 
 	// --- Deterministic rendering: per-turn completion tracking ---
 	// turnDoneFlags tracks whether specific events have been processed for a turn.
@@ -1172,15 +1171,6 @@ type cliProgressMsg struct {
 	payload *protocol.ProgressEvent
 }
 
-// cliProgressRestoreMsg 快照恢复消息（来自 GetActiveProgress RPC）。
-// 不走 seq 去重——它的语义是"合并迭代历史到已有 progress"，
-// 而不是"新的实时事件"。只在以下场景产生：
-//   - 首次连接恢复 active progress
-//   - reconnect 合并 IterationHistory
-type cliProgressRestoreMsg struct {
-	payload *protocol.ProgressEvent
-}
-
 // cliProcessingMsg sets the typing/processing state externally (remote reconnect).
 type cliProcessingMsg struct {
 	processing bool
@@ -1329,15 +1319,19 @@ func (m *cliModel) refreshCachedModelName() {
 // Init 初始化 — 启动 splash 画面动画（最小展示 1 秒）
 func (m *cliModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{textarea.Blink, m.splashTick(0)}
-	// If model was restored with an active turn (e.g. RestoreSession in Start()),
-	// kick the ticker immediately — no one else will start it.
-	if m.typing && m.progress != nil && !m.fastTickActive {
-		m.fastTickActive = true
-		cmds = append(cmds, m.tickCmd())
-	}
-	// Always kick at least one tick for sidebar spinner (checks busy sessions).
-	if !m.fastTickActive {
-		cmds = append(cmds, m.tickCmd())
+	// Always start one tick chain. handleTickMsg decides whether to
+	// continue with fast ticks (busy), slow ticks (idle), or stop.
+	// This replaces the old fastTickActive flag pattern which suffered
+	// from "flag says yes but chain never started" bugs when handlers
+	// set the flag but their returned cmds were discarded.
+	cmds = append(cmds, m.tickCmd())
+	// If RestoreSession cached data before program start, emit it as
+	// a tea.Cmd so handleSuHistoryLoad runs inside the event loop
+	// (cmds are properly batched, not discarded).
+	if m.pendingSuRestore != nil {
+		msg := *m.pendingSuRestore
+		m.pendingSuRestore = nil
+		cmds = append(cmds, func() tea.Msg { return msg })
 	}
 	if m.debugMode {
 		cmds = append(cmds, m.debugCaptureTick())

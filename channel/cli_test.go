@@ -849,11 +849,10 @@ func TestTickChainSelfHealingViaIdleTick(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// Simulate broken tick chain: typing=true but only idle tick arrives
+	// Simulate typing=true but idle tick arrives (e.g. fast chain broke).
+	// handleIdleTick should detect active session and re-arm fast tick.
 	model.typing = true
-	model.fastTickActive = false
 
-	// idleTickMsg with typing=true should re-arm fast tick chain
 	_, cmd := model.Update(idleTickMsg{})
 	if cmd == nil {
 		t.Fatal("idleTickMsg with typing=true should return tickCmd to self-heal")
@@ -866,37 +865,25 @@ func TestTickChainSelfHealingViaProgressMsg(t *testing.T) {
 	model.channelName = "cli"
 	model.chatID = "/test"
 
-	// Progress events should NOT emit tickCmd — that would create duplicate chains.
-	// Self-healing is handled by idleTickMsg (3s safety net).
+	// Progress events should emit tickCmd to ensure the chain is running.
 	model.typing = true
-	model.fastTickActive = false
 
 	_, cmd := model.Update(cliProgressMsg{payload: &protocol.ProgressEvent{
 		Iteration: 1,
 		Phase:     "thinking",
 		ChatID:    "cli:/test",
 	}})
-	// cmd may contain viewport/textarea sub-commands but should NOT contain tickCmd
-	// (we can't easily inspect tea.Cmd contents, but at minimum verify no panic)
-	_ = cmd
+	_ = cmd // no panic, tickCmd is emitted
 }
 
-func TestStartAgentTurnDoesNotDuplicateChain(t *testing.T) {
+func TestStartAgentTurnAndTypingTransition(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-
-	// When chain is already running (fastTickActive=true), startAgentTurn should NOT inject
-	model.fastTickActive = true
-	model.startAgentTurn()
-	if len(model.pendingCmds) > 0 {
-		t.Error("startAgentTurn should not inject tickCmd when chain was already running")
-	}
 
 	// startAgentTurn no longer manages tickCmd directly.
 	// The wasTyping guard at the end of Update() handles idle→typing transitions.
 	// Simulate this via cliProcessingMsg (realistic remote-mode scenario):
 	// server sends SetProcessing(true) → cliProcessingMsg → startAgentTurn.
-	model.fastTickActive = false
 	model.pendingCmds = nil
 	model.typing = false
 	_, cmd := model.Update(cliProcessingMsg{processing: true})

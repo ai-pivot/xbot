@@ -580,7 +580,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.progress = nil
 		m.inputReady = false
 		m.turnCancelled = false
-		m.fastTickActive = false
+
 		m.typewriterTickActive = false
 		m.tickGen++
 		m.lastProgressSeq = 0
@@ -627,7 +627,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				m.progress = nil
 				m.inputReady = false
 				m.turnCancelled = false
-				m.fastTickActive = false
+
 				m.typewriterTickActive = false
 				m.tickGen++
 				m.lastProgressSeq = 0
@@ -678,7 +678,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			m.progress = nil
 			m.inputReady = false
 			m.turnCancelled = false
-			m.fastTickActive = false
+
 			m.typewriterTickActive = false
 			m.tickGen++
 			m.lastProgressSeq = 0

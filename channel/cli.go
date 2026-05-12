@@ -151,8 +151,7 @@ func (c *CLIChannel) Start() error {
 		})
 		c.pendingRemotePluginCache = nil
 	}
-	// Set identity fields BEFORE calling handleSuHistoryLoad — the handler
-	// has a stale-result guard that checks channelName/chatID match.
+	// Set identity fields on the model.
 	c.model.channelName = "cli"
 	c.model.defaultChatID = c.config.ChatID
 	c.model.chatID = c.config.ChatID
@@ -161,29 +160,18 @@ func (c *CLIChannel) Start() error {
 		c.model.sessionName = defaultSessionName
 	}
 
-	if c.pendingHistory != nil && c.pendingProgress != nil {
-		// History + progress available — use suHistoryLoadMsg (same as session switch)
-		// to guarantee identical rendering. This is the only correct restore path.
-		hist := c.pendingHistory
-		prog := c.pendingProgress
-		c.pendingHistory = nil
-		c.pendingProgress = nil
-		c.model.handleSuHistoryLoad(suHistoryLoadMsg{
-			history:        hist,
+	// If RestoreSession ran before Start() (c.model was nil), it cached
+	// data in pendingHistory/pendingProgress. Convert to pendingSuRestore
+	// so Init() emits it as a suHistoryLoadMsg via the event loop.
+	if c.pendingHistory != nil || c.pendingProgress != nil {
+		c.model.pendingSuRestore = &suHistoryLoadMsg{
+			history:        c.pendingHistory,
 			channelName:    "cli",
 			chatID:         c.config.ChatID,
-			activeProgress: prog,
-		})
-	} else {
-		// Only history or only progress — use legacy paths
-		if c.pendingHistory != nil {
-			c.LoadHistory(c.pendingHistory)
-			c.pendingHistory = nil
+			activeProgress: c.pendingProgress,
 		}
-		if c.pendingProgress != nil {
-			c.model.restoreProgressSnapshot(c.pendingProgress)
-			c.pendingProgress = nil
-		}
+		c.pendingHistory = nil
+		c.pendingProgress = nil
 	}
 
 	// Propagate late-injected services to model (set before Start() when model was nil)
@@ -590,75 +578,30 @@ func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
 	}
 }
 
-// LoadHistory loads session history into the CLI model.
-// Used by remote mode where history must be fetched via RPC after the WS connection
-// is established. Thread-safe: always goes through asyncCh to avoid racing with
-// BubbleTea's View (glamour is not goroutine-safe).
-func (c *CLIChannel) LoadHistory(history []HistoryMessage) {
-	if len(history) == 0 {
-		return
-	}
-	// Pre-convert to cliMessage outside the event loop (cheap allocation).
-	msgs := make([]cliMessage, len(history))
-	for i, hm := range history {
-		cm := cliMessage{
-			role:      hm.Role,
-			content:   hm.Content,
-			timestamp: hm.Timestamp,
-			isPartial: false,
-			dirty:     true,
-		}
-		if len(hm.Iterations) > 0 {
-			cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-			for j, hi := range hm.Iterations {
-				cm.iterations[j] = cliIterationSnapshot(hi)
-			}
-		}
-		msgs[i] = cm
-	}
-
-	c.programMu.Lock()
-	defer c.programMu.Unlock()
-	if c.model == nil {
-		// Model not created yet — cache for later application in newCLIModel
-		c.pendingHistory = history
-		log.WithFields(log.Fields{"count": len(history), "chat_id": c.config.ChatID}).Info("Cached remote history (model not ready yet)")
-		return
-	}
-	if c.program == nil {
-		// Program not started yet (ensureModel path) — safe to mutate directly.
-		// View() hasn't been called, so no concurrent rendering.
-		c.model.messages = append(c.model.messages, msgs...)
-		c.model.invalidateAllCache(false)
-		c.model.updateViewportContent()
-		log.WithFields(log.Fields{"count": len(history), "chat_id": c.config.ChatID}).Info("Applied remote history (before program start)")
-		return
-	}
-	// Program is running — send through asyncCh to avoid racing with View()
-	// (glamour is not goroutine-safe).
-	select {
-	case c.asyncCh <- cliHistoryLoadMsg{
-		channelName: "cli",
-		chatID:      c.config.ChatID,
-		history:     msgs,
-	}:
-	default:
-		log.Warn("LoadHistory: asyncCh full, history not applied")
-	}
-}
-
 // RestoreSession restores history + active progress + todos in one atomic step.
 // Uses the same suHistoryLoadMsg path as session switch, guaranteeing identical
 // rendering behavior for initial connect and reconnect.
 func (c *CLIChannel) RestoreSession(history []HistoryMessage, activeProgress *protocol.ProgressEvent, todos []protocol.TodoItem) {
 	c.programMu.Lock()
 	defer c.programMu.Unlock()
-	if c.program == nil {
-		// Program not started — cache everything for Start() to process via
-		// handleSuHistoryLoad (same path as session switch).
-		// Do NOT touch c.model directly here — Start() owns initialization.
+	if c.model == nil {
+		// Model not created yet — cache for Start().
 		c.pendingHistory = history
 		c.pendingProgress = activeProgress
+		return
+	}
+	if c.program == nil {
+		// Program not started yet — cache on model for Init() to consume
+		// via pendingSuRestore. Init() returns a tea.Cmd that emits
+		// suHistoryLoadMsg, guaranteeing the handler's returned cmds
+		// (tickCmd, typewriterTick) are properly batched by BubbleTea.
+		c.model.pendingSuRestore = &suHistoryLoadMsg{
+			history:        history,
+			channelName:    "cli",
+			chatID:         c.config.ChatID,
+			activeProgress: activeProgress,
+			todos:          todos,
+		}
 		return
 	}
 	// Program running — send as suHistoryLoadMsg (same as session switch).
@@ -672,57 +615,6 @@ func (c *CLIChannel) RestoreSession(history []HistoryMessage, activeProgress *pr
 	}:
 	default:
 		log.Warn("RestoreSession: asyncCh full, dropping restore")
-	}
-}
-
-// RestoreInitialProgress applies an active agent turn progress snapshot to the model.
-// Handles both pre-program startup (direct model mutation) and running program
-// (async channel). This is the correct way to inject progress from RPC/reconnect
-// because SendProgress silently drops when c.program is nil (before Start()).
-//
-// Thread-safe: acquires programMu, and only mutates model directly when View()
-// has not been called yet (program == nil).
-func (c *CLIChannel) RestoreInitialProgress(chatID string, payload *protocol.ProgressEvent) {
-	if payload == nil || payload.Phase == "done" {
-		return
-	}
-	if payload.ChatID == "" {
-		payload.ChatID = chatID
-	}
-
-	c.programMu.Lock()
-	defer c.programMu.Unlock()
-
-	if c.model == nil {
-		// Model not created yet — cache for later.
-		c.pendingProgress = payload
-		log.WithFields(log.Fields{
-			"chatID":    chatID,
-			"phase":     payload.Phase,
-			"iteration": payload.Iteration,
-		}).Info("Cached initial progress (model not ready yet)")
-		return
-	}
-
-	if c.program == nil {
-		// Program not started yet — safe to mutate directly.
-		// View() hasn't been called, so no concurrent rendering.
-		c.model.restoreProgressSnapshot(payload)
-		log.WithFields(log.Fields{
-			"chatID":    chatID,
-			"phase":     payload.Phase,
-			"iteration": payload.Iteration,
-		}).Info("Applied initial progress (before program start)")
-		return
-	}
-
-	// Program is running — send as dedicated restore message through asyncCh.
-	// Uses cliProgressRestoreMsg (not cliProgressMsg) to bypass seq dedup:
-	// this is a snapshot merge from GetActiveProgress RPC, not a live event.
-	select {
-	case c.asyncCh <- cliProgressRestoreMsg{payload: payload}:
-	default:
-		log.Warn("RestoreInitialProgress: asyncCh full, progress not applied")
 	}
 }
 

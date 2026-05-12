@@ -1641,7 +1641,7 @@ func main() {
 			}
 		}
 	}
-	// Remote mode: history loaded after backend.Start() via cliCh.LoadHistory()
+	// Remote mode: history loaded via RestoreSession (uses suHistoryLoadMsg path)
 	// (HistoryLoader runs during NewCLIChannel, before WS is connected)
 
 	// 动态历史加载器：按 (channelName, chatID) 加载目标会话历史

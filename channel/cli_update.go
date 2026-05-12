@@ -219,7 +219,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			// wasTyping guard: ensure tick chain starts on idle→typing transition.
 			// handleKeyPress may call sendMessage→startAgentTurn which sets typing=true,
 			// but the early return below skips the wasTyping guard at the end of Update.
-			if cm, ok := model.(*cliModel); ok && !wasTyping && cm.typing && !cm.fastTickActive {
+			if cm, ok := model.(*cliModel); ok && !wasTyping && cm.typing {
 				keyCmds = append(keyCmds, m.tickCmd())
 			}
 			return model, tea.Batch(keyCmds...)
@@ -238,24 +238,6 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliProgressMsg:
 		m.handleProgressMsg(msg)
-		// Ensure fast tick chain is running when session is active.
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
-
-	case cliProgressRestoreMsg:
-		// Restore snapshot from GetActiveProgress RPC — merges IterationHistory
-		// into existing progress without seq dedup. Only overwrites progress
-		// if replay hasn't set a newer one (checked by seq comparison inside
-		// restoreProgressSnapshot).
-		m.restoreProgressSnapshot(msg.payload)
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
 
 	case cliProcessingMsg:
 		if msg.processing && !m.typing {
@@ -417,7 +399,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// handleInjectedUserMsg or cliProcessingMsg), ensure the tick chain is running.
 	// This is the universal safety net — callers that can return cmds do so
 	// directly, but this catches any missed transitions.
-	if !wasTyping && m.typing && !m.fastTickActive {
+	if !wasTyping && m.typing {
 		cmds = append(cmds, m.tickCmd())
 	}
 

@@ -1091,12 +1091,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		}
 
 		// Emit a tickCmd to guarantee the fast tick chain is running.
-		// NOTE: do NOT set m.fastTickActive=true here. When handleSuHistoryLoad
-		// is called directly from Start() (not via tea.Msg), the returned cmds
-		// are discarded — the tickCmd never executes. The flag would then lie
-		// to Init(), which skips starting its own tick chain because it sees
-		// fastTickActive=true. Instead, let Init() or the first live progress
-		// event start the tick chain (they check m.typing/m.progress directly).
+		// Emit a tickCmd to kick the tick chain after restoring.
 		cmds = append(cmds, m.tickCmd())
 		// If the restored progress has stream or reasoning content, start the
 		// typewriter tick immediately. Without this, the cursor won't blink and
@@ -1256,10 +1251,9 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 		// 初始化完成且已展示至少 1 秒（20 帧 × 50ms）
 		m.splashDone = true
 		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
+		if sessionActive {
 			cmds = append(cmds, m.tickCmd())
-		} else if !sessionActive && !m.typing {
+		} else if !m.typing {
 			cmds = append(cmds, idleTickCmd())
 		}
 		return m, tea.Batch(cmds...)
@@ -1268,8 +1262,7 @@ func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
 	if msg.frame >= 40 {
 		m.splashDone = true
 		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
+		if sessionActive {
 			cmds = append(cmds, m.tickCmd())
 		} else if !sessionActive && !m.typing {
 			cmds = append(cmds, idleTickCmd())
@@ -1557,16 +1550,13 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	busy := m.typing || sessionActive
 	needsSpinnerTick := busy || m.sidebarHasBusySessions
 	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || needsSpinnerTick {
-		m.fastTickActive = true
 		cmds = append(cmds, m.tickCmd())
 	} else if m.needFlushQueue && len(m.messageQueue) > 0 {
-		m.fastTickActive = true
 		// Pending queue flush — use fast tick so the queued message
 		// is sent promptly (not waiting 3s for idleTickCmd).
 		cmds = append(cmds, m.tickCmd())
 	} else {
 		// Transition to idle: start low-frequency tick for placeholder rotation
-		m.fastTickActive = false
 		cmds = append(cmds, idleTickCmd())
 	}
 	if needsSpinnerTick {
@@ -1637,11 +1627,8 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 			// (inside sendMessageFromQueue → sendMessage) gets picked up in cmds.
 			return cmds
 		}
-		// Not safe to flush yet — keep fast tick active so we check again soon.
-		if !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
+		// Not safe to flush yet — schedule another tick to retry soon.
+		cmds = append(cmds, m.tickCmd())
 	}
 
 	return cmds
@@ -1659,10 +1646,8 @@ func (m *cliModel) handleIdleTick() []tea.Cmd {
 	if !sessionActive && !m.typing {
 		m.updatePlaceholder()
 		cmds = append(cmds, idleTickCmd())
-	} else if !m.fastTickActive {
-		// Self-healing: if fast tick chain broke but session is still active,
-		// re-arm fast tick.
-		m.fastTickActive = true
+	} else {
+		// Self-healing: if idle tick detected an active session, re-arm fast tick.
 		cmds = append(cmds, m.tickCmd())
 	}
 	return cmds
@@ -1696,8 +1681,7 @@ func (m *cliModel) handleSplashDone() []tea.Cmd {
 		m.refreshCachedModelName()
 	}
 	sessionActive := m.progress != nil && m.progress.Phase != "done"
-	if sessionActive && !m.fastTickActive {
-		m.fastTickActive = true
+	if sessionActive {
 		cmds = append(cmds, m.tickCmd())
 	} else if !sessionActive && !m.typing {
 		cmds = append(cmds, idleTickCmd())
