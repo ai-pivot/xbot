@@ -294,8 +294,13 @@ func (m *cliModel) restoreProgressSnapshot(payload *protocol.ProgressEvent) {
 					m.lastSeenIteration = lastIter
 				}
 			}
+			// IterationHistory has data — progress panel now owns all iteration
+			// display for the active turn. Remove tool_summaries from the active
+			// turn (after last user message) so they don't render as static
+			// "Tools" blocks alongside the live progress panel.
+			m.removeActiveTurnToolSummaries()
 		}
-		m.removeActiveTurnToolSummaries()
+		// If IterationHistory is empty, keep tool_summaries as fallback display.
 		m.invalidateAllCache(false)
 		return
 	}
@@ -362,7 +367,7 @@ func (m *cliModel) restoreProgressSnapshot(payload *protocol.ProgressEvent) {
 	// restart or iterationHistories not yet populated), any tool_summary from
 	// loaded DB history must be removed — otherwise completed iterations show as
 	// a static "Tools" block alongside the live progress block.
-	m.removeActiveTurnToolSummaries()
+	m.removeLastToolSummary()
 
 	// Restore todos from the progress snapshot so the sidebar/todo bar
 	// shows them immediately without waiting for the next live progress event.
@@ -375,24 +380,46 @@ func (m *cliModel) restoreProgressSnapshot(payload *protocol.ProgressEvent) {
 	m.viewport.GotoBottom()
 }
 
-// removeActiveTurnToolSummaries removes tool_summary messages that belong to
-// the currently active agent turn. When progress is active (typing or m.progress
-// exists with phase != done), the progress panel owns iteration display — any
-// tool_summary from the active turn would render as a static "Tools" block
-// alongside the live progress block, duplicating content.
+// removeLastToolSummary removes only the LAST tool_summary message from m.messages.
 //
-// Active-turn tool_summaries are identified as: all tool_summary messages after
-// the last user message. This covers the case where DB history was loaded on
-// reconnect with tool_summaries from an in-progress turn that should be rendered
-// by the progress panel, not as static message blocks.
+// When the agent turn is active, ConvertMessagesToHistory produces a tool_summary
+// from intermediate assistant messages of the in-progress turn. The progress
+// block (m.progress + m.iterationHistory) owns iteration display for the active
+// turn — the static tool_summary from ConvertMessagesToHistory would duplicate
+// content with mismatched (globally-cumulative vs per-turn) iteration numbers.
 //
-// Previous completed turns' tool_summaries (before the last user message) are
+// Only the LAST tool_summary is removed. Previous turns' tool_summaries are
 // preserved — those have no live progress panel to replace them.
+// Earlier tool_summaries in the active turn are also preserved as fallback:
+// if IterationHistory is empty (e.g. reconnect before RPC snapshot arrives),
+// the tool_summary rendering is better than showing nothing at all.
+func (m *cliModel) removeLastToolSummary() {
+	// Find the last tool_summary message (closest to end of messages).
+	lastIdx := -1
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].role == "tool_summary" {
+			lastIdx = i
+			break
+		}
+	}
+	if lastIdx >= 0 {
+		m.messages = append(m.messages[:lastIdx], m.messages[lastIdx+1:]...)
+		m.renderCacheValid = false
+	}
+}
+
+// endAgentTurn resets all agent-turn tracking state and returns to idle.
+// Takes the turnID that triggered this end. If a new turn has already
+// started (turnID != m.agentTurnID), the call is a no-op — this prevents
+// stale completion signals (cliOutboundMsg / PhaseDone) from killing a
+// removeActiveTurnToolSummaries removes tool_summary messages after the last user
+// message. Called only when IterationHistory is available — the progress panel
+// takes over iteration display and the static tool_summary blocks are redundant.
+// Previous turns' tool_summaries (before the last user message) are preserved.
 func (m *cliModel) removeActiveTurnToolSummaries() {
 	if len(m.messages) == 0 {
 		return
 	}
-	// Find the index of the last user message.
 	lastUserIdx := -1
 	for i := len(m.messages) - 1; i >= 0; i-- {
 		if m.messages[i].role == "user" {
@@ -400,15 +427,11 @@ func (m *cliModel) removeActiveTurnToolSummaries() {
 			break
 		}
 	}
-	// If no user message found, scan all messages (edge case: turn started
-	// without a visible user message, e.g. bg notification injection).
 	scanFrom := 0
 	if lastUserIdx >= 0 {
 		scanFrom = lastUserIdx + 1
 	}
-	// Remove all tool_summary messages after the last user message.
-	// Build a new slice without them (preserve order, avoid index shifting).
-	filtered := m.messages[:0] // reuse backing array
+	filtered := m.messages[:0]
 	removed := false
 	for i, msg := range m.messages {
 		if i >= scanFrom && msg.role == "tool_summary" {
@@ -423,10 +446,6 @@ func (m *cliModel) removeActiveTurnToolSummaries() {
 	}
 }
 
-// endAgentTurn resets all agent-turn tracking state and returns to idle.
-// Takes the turnID that triggered this end. If a new turn has already
-// started (turnID != m.agentTurnID), the call is a no-op — this prevents
-// stale completion signals (cliOutboundMsg / PhaseDone) from killing a
 // new turn's animation.
 func (m *cliModel) endAgentTurn(turnID uint64) {
 	if turnID != m.agentTurnID {

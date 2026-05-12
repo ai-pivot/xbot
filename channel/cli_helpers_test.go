@@ -1328,7 +1328,7 @@ func TestSuHistoryLoad_TypingReconcile_PhaseDoneIsDefault(t *testing.T) {
 	}
 }
 
-// TestRemoveLastToolSummary verifies that removeActiveTurnToolSummaries only removes the
+// TestRemoveLastToolSummary verifies that removeLastToolSummary only removes the
 // LAST tool_summary message, preserving tool_summaries from previous completed turns.
 // Regression: removeAllToolSummaries removed ALL tool_summaries, causing tools blocks
 // from previous completed turns to disappear on session switch while a turn is active.
@@ -1347,7 +1347,7 @@ func TestRemoveLastToolSummary(t *testing.T) {
 		t.Fatalf("expected 5 messages, got %d", len(m.messages))
 	}
 
-	m.removeActiveTurnToolSummaries()
+	m.removeLastToolSummary()
 
 	// After: 4 messages (only last tool_summary removed)
 	if len(m.messages) != 4 {
@@ -1375,7 +1375,7 @@ func TestRemoveLastToolSummary(t *testing.T) {
 	}
 }
 
-// TestRemoveLastToolSummary_NoToolSummary verifies that removeActiveTurnToolSummaries is
+// TestRemoveLastToolSummary_NoToolSummary verifies that removeLastToolSummary is
 // a no-op when there are no tool_summary messages.
 func TestRemoveLastToolSummary_NoToolSummary(t *testing.T) {
 	m := newCLIModel()
@@ -1384,7 +1384,7 @@ func TestRemoveLastToolSummary_NoToolSummary(t *testing.T) {
 		{role: "assistant", content: "result"},
 	}
 
-	m.removeActiveTurnToolSummaries()
+	m.removeLastToolSummary()
 
 	if len(m.messages) != 2 {
 		t.Fatalf("expected 2 messages unchanged, got %d", len(m.messages))
@@ -1403,7 +1403,7 @@ func TestRemoveLastToolSummary_OnlyPreservesFirst(t *testing.T) {
 		{role: "tool_summary", content: ""}, // after last user — REMOVED
 	}
 
-	m.removeActiveTurnToolSummaries()
+	m.removeLastToolSummary()
 
 	if len(m.messages) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(m.messages))
