@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"xbot/protocol"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -29,7 +30,7 @@ func isTerminal() bool {
 
 func TestCLIChannelName(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	if got := ch.Name(); got != "cli" {
 		t.Errorf("CLIChannel.Name() = %q, want %q", got, "cli")
@@ -43,7 +44,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Start in goroutine since it blocks
 	startErr := make(chan error, 1)
@@ -72,7 +73,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 
 func TestCLIChannelSend(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send without starting should still work (messages buffered)
 	msg := bus.OutboundMessage{
@@ -93,7 +94,7 @@ func TestCLIChannelSend(t *testing.T) {
 
 func TestCLIChannelSendPartial(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send partial (streaming) message
 	msg := bus.OutboundMessage{
@@ -114,7 +115,7 @@ func TestCLIChannelSendPartial(t *testing.T) {
 
 func TestCLIChannelSendComplete(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send complete message
 	msg := bus.OutboundMessage{
@@ -135,7 +136,7 @@ func TestCLIChannelSendComplete(t *testing.T) {
 
 func TestCLIChannelSendBufferOverflow(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Send more messages than buffer size to test non-blocking behavior
 	for i := 0; i < cliMsgBufSize+10; i++ {
@@ -152,13 +153,13 @@ func TestCLIChannelSendBufferOverflow(t *testing.T) {
 
 func TestCLIChannelSendProgress(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// SendProgress with nil payload should not panic
 	ch.SendProgress("test_chat", nil)
 
 	// SendProgress without program should not panic
-	payload := &CLIProgressPayload{
+	payload := &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 	}
@@ -172,7 +173,7 @@ func TestCLIChannelSendProgress(t *testing.T) {
 
 func TestCLIChannelSendEmptyMessage(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -192,7 +193,7 @@ func TestCLIChannelSendEmptyMessage(t *testing.T) {
 
 func TestCLIChannelSendLongMessage(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// Create a very long message
 	longContent := strings.Repeat("This is a long message. ", 1000)
@@ -215,7 +216,7 @@ func TestCLIChannelSendLongMessage(t *testing.T) {
 
 func TestCLIChannelSendWithMetadata(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -236,7 +237,7 @@ func TestCLIChannelSendWithMetadata(t *testing.T) {
 
 func TestCLIChannelSendWithMedia(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -310,9 +311,9 @@ func TestCLIModelHandleResizeMinimum(t *testing.T) {
 
 func TestCLIModelHandleResizeWithProgress(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase: "tool_exec",
-		ActiveTools: []CLIToolProgress{
+		ActiveTools: []protocol.ToolProgress{
 			{Name: "test", Label: "Testing"},
 		},
 	}
@@ -362,7 +363,7 @@ func TestCLIModelViewWithTyping(t *testing.T) {
 func TestCLIModelViewWithProgress(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 	}
@@ -574,7 +575,7 @@ func TestCLIModelHandleAgentMessageEmptyContent(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// Simulate active progress state
-	model.progress = &CLIProgressPayload{Phase: "thinking"}
+	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
 	model.typing = true
 
 	msg := bus.OutboundMessage{
@@ -684,7 +685,7 @@ func TestCLIModelUpdateProgressMsg(t *testing.T) {
 
 	// Send progress message
 	progMsg := cliProgressMsg{
-		payload: &CLIProgressPayload{
+		payload: &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 1,
 			ChatID:    "cli:/test",
@@ -708,11 +709,11 @@ func TestCLIModelUpdateProgressDone(t *testing.T) {
 	model.chatID = "/test"
 
 	// Set initial progress
-	model.progress = &CLIProgressPayload{Phase: "thinking", ChatID: "cli:/test"}
+	model.progress = &protocol.ProgressEvent{Phase: "thinking", ChatID: "cli:/test"}
 
 	// Send done progress
 	progMsg := cliProgressMsg{
-		payload: &CLIProgressPayload{
+		payload: &protocol.ProgressEvent{
 			Phase:  "done",
 			ChatID: "cli:/test",
 		},
@@ -748,7 +749,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 	model.turnCancelled = true
 
 	progMsg := cliProgressMsg{
-		payload: &CLIProgressPayload{
+		payload: &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 1,
 			ChatID:    "cli:/test",
@@ -770,7 +771,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 	model2.channelName = "cli"
 
 	model2.handleProgressMsg(cliProgressMsg{
-		payload: &CLIProgressPayload{
+		payload: &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 1,
 			ChatID:    "cli:/different",
@@ -798,7 +799,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 	}
 
 	model3.handleProgressMsg(cliProgressMsg{
-		payload: &CLIProgressPayload{
+		payload: &protocol.ProgressEvent{
 			Phase:     "tool_exec",
 			Iteration: 1,
 			ChatID:    "cli:/test",
@@ -829,78 +830,53 @@ func TestCLIModelUpdateTickMsg(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// Tick without typing/progress should NOT schedule another tick
+	// Global tick: just verify no panic in idle state
 	tickMsg := cliTickMsg{}
-	_, cmd := model.Update(tickMsg)
-	// cmd may be non-nil due to spinner/viewport/textarea sub-updates, but
-	// the tick itself should not re-schedule. We just verify no panic.
-	_ = cmd
+	model.Update(tickMsg)
 
-	// Tick with typing active should schedule another tick
+	// Global tick with typing active: should also not panic
 	model.typing = true
-	_, cmd2 := model.Update(tickMsg)
-	if cmd2 == nil {
-		t.Error("Update(tickMsg) with typing=true should return a command")
-	}
+	model.Update(tickMsg)
 }
 
-func TestTickChainSelfHealingViaIdleTick(t *testing.T) {
+func TestGlobalTickUpdatesSpinnerAndProgress(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// Simulate broken tick chain: typing=true but only idle tick arrives
+	// Simulate an active agent turn.
 	model.typing = true
-	model.fastTickActive = false
+	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
 
-	// idleTickMsg with typing=true should re-arm fast tick chain
-	_, cmd := model.Update(idleTickMsg{})
-	if cmd == nil {
-		t.Fatal("idleTickMsg with typing=true should return tickCmd to self-heal")
+	// cliTickMsg from the global goroutine should advance spinner
+	// and NOT panic or return errors.
+	model.Update(cliTickMsg{})
+	if !model.typing {
+		t.Fatal("tick should not change typing state")
 	}
 }
 
-func TestTickChainSelfHealingViaProgressMsg(t *testing.T) {
+func TestGlobalTickAdvancesSplashAnimation(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.channelName = "cli"
-	model.chatID = "/test"
 
-	// Progress events should NOT emit tickCmd — that would create duplicate chains.
-	// Self-healing is handled by idleTickMsg (3s safety net).
-	model.typing = true
-	model.fastTickActive = false
-
-	_, cmd := model.Update(cliProgressMsg{payload: &CLIProgressPayload{
-		Iteration: 1,
-		Phase:     "thinking",
-		ChatID:    "cli:/test",
-	}})
-	// cmd may contain viewport/textarea sub-commands but should NOT contain tickCmd
-	// (we can't easily inspect tea.Cmd contents, but at minimum verify no panic)
-	_ = cmd
+	// Splash not done — tick should advance splashFrame.
+	model.splashDone = false
+	model.Update(cliTickMsg{})
+	if model.splashFrame != 1 {
+		t.Fatalf("expected splashFrame=1, got %d", model.splashFrame)
+	}
 }
 
-func TestStartAgentTurnDoesNotDuplicateChain(t *testing.T) {
+func TestStartAgentTurnAndTypingTransition(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// When chain is already running (fastTickActive=true), startAgentTurn should NOT inject
-	model.fastTickActive = true
-	model.startAgentTurn()
-	if len(model.pendingCmds) > 0 {
-		t.Error("startAgentTurn should not inject tickCmd when chain was already running")
-	}
-
-	// startAgentTurn no longer manages tickCmd directly.
-	// The wasTyping guard at the end of Update() handles idle→typing transitions.
-	// Simulate this via cliProcessingMsg (realistic remote-mode scenario):
-	// server sends SetProcessing(true) → cliProcessingMsg → startAgentTurn.
-	model.fastTickActive = false
-	model.pendingCmds = nil
+	// cliProcessingMsg sets typing=true. In the new global-ticker architecture,
+	// no tickCmd is needed — the global goroutine handles ticks.
 	model.typing = false
-	_, cmd := model.Update(cliProcessingMsg{processing: true})
-	if cmd == nil {
-		t.Fatal("Update should return cmd (tickCmd) after idle→typing transition via wasTyping guard")
+	model.Update(cliProcessingMsg{processing: true})
+	if !model.typing {
+		t.Fatal("cliProcessingMsg should set typing=true")
 	}
 }
 
@@ -999,7 +975,7 @@ func TestCLIModelRenderProgressStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.phase, func(t *testing.T) {
-			model.progress = &CLIProgressPayload{Phase: tt.phase}
+			model.progress = &protocol.ProgressEvent{Phase: tt.phase}
 			result := model.renderProgressStatus()
 			if !strings.Contains(result, tt.expected) {
 				t.Errorf("renderProgressStatus(%s) should contain %q, got %q",
@@ -1022,7 +998,7 @@ func TestCLIModelRenderProgressStatusNil(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusWithIteration(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 5,
 	}
@@ -1036,10 +1012,10 @@ func TestCLIModelRenderProgressStatusWithIteration(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:       "tool_exec",
 		Iteration:   1,
-		ActiveTools: []CLIToolProgress{{Name: "read", Label: "Reading file", Elapsed: 100}},
+		ActiveTools: []protocol.ToolProgress{{Name: "read", Label: "Reading file", Elapsed: 100}},
 	}
 
 	result := model.renderProgressStatus()
@@ -1053,10 +1029,10 @@ func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:       "tool_exec",
 		Iteration:   1,
-		ActiveTools: []CLIToolProgress{{Name: "read", Label: "", Elapsed: 0}},
+		ActiveTools: []protocol.ToolProgress{{Name: "read", Label: "", Elapsed: 0}},
 	}
 
 	result := model.renderProgressStatus()
@@ -1069,7 +1045,7 @@ func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusWithElapsed(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &CLIProgressPayload{Phase: "thinking"}
+	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
 	model.typingStartTime = time.Now().Add(-5 * time.Second)
 
 	result := model.renderProgressStatus()
@@ -1115,13 +1091,13 @@ func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 	model.handleResize(80, 24)
 	model.typing = true
 	model.typingStartTime = time.Now()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 1,
-		ActiveTools: []CLIToolProgress{
+		ActiveTools: []protocol.ToolProgress{
 			{Name: "read_file", Label: "Reading config.go", Status: "running", Elapsed: 1200},
 		},
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "grep", Label: "Searching imports", Status: "done", Elapsed: 300, Iteration: 1},
 		},
 	}
@@ -1147,12 +1123,12 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 		{
 			Iteration: 0,
 			Thinking:  "Analyzing requirements",
-			Tools: []CLIToolProgress{
+			Tools: []protocol.ToolProgress{
 				{Name: "read", Label: "Reading file", Status: "done", Elapsed: 500},
 			},
 		},
 	}
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 	}
@@ -1174,10 +1150,10 @@ func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 	model.handleResize(80, 24)
 	model.typing = true
 	model.typingStartTime = time.Now()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 0,
-		SubAgents: []CLISubAgent{
+		SubAgents: []protocol.SubAgentInfo{
 			{Role: "code-reviewer", Status: "running", Desc: "Reviewing code"},
 			{Role: "test-runner", Status: "done", Desc: "Tests passed"},
 			{Role: "explore", Status: "error", Desc: "429 rate limited"},
@@ -1206,14 +1182,14 @@ func TestCLIModelRenderProgressBlockSubAgentChildren(t *testing.T) {
 	model.handleResize(80, 24)
 	model.typing = true
 	model.typingStartTime = time.Now()
-	model.progress = &CLIProgressPayload{
+	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 0,
-		SubAgents: []CLISubAgent{
+		SubAgents: []protocol.SubAgentInfo{
 			{
 				Role:   "reviewer",
 				Status: "running",
-				Children: []CLISubAgent{
+				Children: []protocol.SubAgentInfo{
 					{Role: "child", Status: "done"},
 				},
 			},
@@ -1376,15 +1352,6 @@ func TestCLIModelSendMessageEmpty(t *testing.T) {
 // Helper Function Tests
 // ---------------------------------------------------------------------------
 
-func TestTickCmd(t *testing.T) {
-	model := newCLIModel()
-	model.tickGen = 1
-	cmd := model.tickCmd()
-	if cmd == nil {
-		t.Error("tickCmd() returned nil")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // cliMessage Tests
 // ---------------------------------------------------------------------------
@@ -1413,21 +1380,21 @@ func TestCLIMessageFields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CLIProgressPayload Tests
+// protocol.ProgressEvent Tests
 // ---------------------------------------------------------------------------
 
-func TestCLIProgressPayloadFields(t *testing.T) {
-	payload := CLIProgressPayload{
+func TestProgressEventFields(t *testing.T) {
+	payload := protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 3,
-		ActiveTools: []CLIToolProgress{
+		ActiveTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Reading", Status: "running", Elapsed: 100},
 		},
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "glob", Label: "Globbing", Status: "done", Elapsed: 50},
 		},
 		Thinking: "Analyzing...",
-		SubAgents: []CLISubAgent{
+		SubAgents: []protocol.SubAgentInfo{
 			{Role: "reviewer", Status: "running", Desc: "Code review"},
 		},
 	}
@@ -1443,8 +1410,8 @@ func TestCLIProgressPayloadFields(t *testing.T) {
 	}
 }
 
-func TestCLIToolProgressFields(t *testing.T) {
-	tool := CLIToolProgress{
+func TestToolProgressFields(t *testing.T) {
+	tool := protocol.ToolProgress{
 		Name:    "read",
 		Label:   "Reading file",
 		Status:  "running",
@@ -1459,12 +1426,12 @@ func TestCLIToolProgressFields(t *testing.T) {
 	}
 }
 
-func TestCLISubAgentFields(t *testing.T) {
-	subAgent := CLISubAgent{
+func TestSubAgentInfoFields(t *testing.T) {
+	subAgent := protocol.SubAgentInfo{
 		Role:     "code-reviewer",
 		Status:   "done",
 		Desc:     "Completed review",
-		Children: []CLISubAgent{},
+		Children: []protocol.SubAgentInfo{},
 	}
 
 	if subAgent.Role != "code-reviewer" {
@@ -1481,7 +1448,7 @@ func TestCLISubAgentFields(t *testing.T) {
 
 func TestMergeSubAgentTrees_EmptyPrev(t *testing.T) {
 	t.Parallel()
-	new := []CLISubAgent{{Role: "explore", Status: "running"}}
+	new := []protocol.SubAgentInfo{{Role: "explore", Status: "running"}}
 	result := mergeSubAgentTrees(nil, new)
 	if len(result) != 1 || result[0].Role != "explore" {
 		t.Fatalf("expected 1 agent, got %v", result)
@@ -1491,7 +1458,7 @@ func TestMergeSubAgentTrees_EmptyPrev(t *testing.T) {
 func TestMergeSubAgentTrees_EmptyNew(t *testing.T) {
 	t.Parallel()
 	// When new is empty, server stopped reporting → completed agents are pruned.
-	prev := []CLISubAgent{{Role: "explore", Status: "done"}}
+	prev := []protocol.SubAgentInfo{{Role: "explore", Status: "done"}}
 	result := mergeSubAgentTrees(prev, nil)
 	if len(result) != 0 {
 		t.Fatalf("expected 0 agents (done pruned), got %v", result)
@@ -1508,11 +1475,11 @@ func TestMergeSubAgentTrees_BothEmpty(t *testing.T) {
 
 func TestMergeSubAgentTrees_MergeUpdates(t *testing.T) {
 	t.Parallel()
-	prev := []CLISubAgent{
+	prev := []protocol.SubAgentInfo{
 		{Role: "explore", Status: "running", Desc: "scanning code"},
 		{Role: "reviewer", Status: "done", Desc: "completed"},
 	}
-	new := []CLISubAgent{
+	new := []protocol.SubAgentInfo{
 		{Role: "explore", Status: "done", Desc: "finished scan"},
 	}
 	result := mergeSubAgentTrees(prev, new)
@@ -1538,7 +1505,7 @@ func TestMergeSubAgentTrees_NoZombieDuplicates(t *testing.T) {
 	t.Parallel()
 	// Simulate the exact zombie bug: prev has a completed SubAgent, new is empty.
 	// New behavior: done agents are pruned immediately.
-	prev := []CLISubAgent{
+	prev := []protocol.SubAgentInfo{
 		{Role: "ministry-works", Status: "done", Desc: "completed"},
 	}
 
@@ -1557,21 +1524,21 @@ func TestMergeSubAgentTrees_NoZombieDuplicates(t *testing.T) {
 
 func TestMergeSubAgentTrees_NestedChildren(t *testing.T) {
 	t.Parallel()
-	prev := []CLISubAgent{
+	prev := []protocol.SubAgentInfo{
 		{
 			Role:   "crown-prince",
 			Status: "running",
-			Children: []CLISubAgent{
+			Children: []protocol.SubAgentInfo{
 				{Role: "explore", Status: "done"},
 				{Role: "secretariat", Status: "running"},
 			},
 		},
 	}
-	new := []CLISubAgent{
+	new := []protocol.SubAgentInfo{
 		{
 			Role:   "crown-prince",
 			Status: "running",
-			Children: []CLISubAgent{
+			Children: []protocol.SubAgentInfo{
 				{Role: "secretariat", Status: "done"},
 			},
 		},
@@ -1639,7 +1606,7 @@ func TestCLIModelIterationAccumulation(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iteration 0: thinking
-	prog0 := cliProgressMsg{payload: &CLIProgressPayload{
+	prog0 := cliProgressMsg{payload: &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 0,
 		ChatID:    "cli:/test",
@@ -1650,18 +1617,18 @@ func TestCLIModelIterationAccumulation(t *testing.T) {
 	}
 
 	// Iteration 0: tool_exec with completed tools
-	prog0b := cliProgressMsg{payload: &CLIProgressPayload{
+	prog0b := cliProgressMsg{payload: &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 0,
 		ChatID:    "cli:/test",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Reading", Status: "done", Elapsed: 100},
 		},
 	}}
 	model.Update(prog0b)
 
 	// Iteration 1: thinking — should snapshot iteration 0
-	prog1 := cliProgressMsg{payload: &CLIProgressPayload{
+	prog1 := cliProgressMsg{payload: &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 		ChatID:    "cli:/test",
@@ -1681,8 +1648,8 @@ func TestCLIModelIterationAccumulation(t *testing.T) {
 func TestCLIModelCollectAllTools(t *testing.T) {
 	model := newCLIModel()
 	model.iterationHistory = []cliIterationSnapshot{
-		{Iteration: 0, Tools: []CLIToolProgress{{Name: "a"}, {Name: "b"}}},
-		{Iteration: 1, Tools: []CLIToolProgress{{Name: "c"}}},
+		{Iteration: 0, Tools: []protocol.ToolProgress{{Name: "a"}, {Name: "b"}}},
+		{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "c"}}},
 	}
 	all := model.collectAllTools()
 	if len(all) != 3 {
@@ -1715,7 +1682,7 @@ func TestCLIModelResetProgressState(t *testing.T) {
 
 func TestCLIChannelImplementsChannelInterface(t *testing.T) {
 	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
 
 	// This will fail to compile if CLIChannel doesn't implement Channel
 	var _ Channel = ch
@@ -1727,7 +1694,7 @@ func TestCLIChannelImplementsChannelInterface(t *testing.T) {
 
 func TestCLIChannelConfigEmpty(t *testing.T) {
 	cfg := CLIChannelConfig{}
-	ch := NewCLIChannel(cfg, bus.NewMessageBus())
+	ch := NewCLIChannel(&cfg, bus.NewMessageBus())
 
 	if ch == nil {
 		t.Error("NewCLIChannel with empty config should not return nil")

@@ -324,32 +324,25 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 
 	// Accumulate status hints
 	var hints []string
+	var hintsBeforeNewContent string // accumulated string before newContentHint
 	if m.tempStatus != "" {
-		hints = append(hints, m.styles.WarningSt.Render(m.tempStatus))
+		rendered := m.styles.WarningSt.Render(m.tempStatus)
+		hints = append(hints, rendered)
+		hintsBeforeNewContent = rendered
 	}
 	if m.newContentHint {
-		hints = append(hints, m.styles.InfoSt.Render(m.locale.NewContentHint))
-	}
-	// Scroll-to-top/bottom indicators — subtle, right-aligned, only when scrollable.
-	if m.panelMode == "" {
-		atTop := m.viewport.AtTop()
-		atBottom := m.viewport.AtBottom()
-		var scrollBtns []string
-		scrollSt := m.styles.TextMutedSt
-		if !atTop {
-			scrollBtns = append(scrollBtns, scrollSt.Render("▴"))
+		rendered := m.styles.InfoSt.Render(m.locale.NewContentHint)
+		m.newContentHintRendered = rendered
+		hints = append(hints, rendered)
+		// Calculate X position: status + "  " + hintsBeforeNewContent + "  "
+		prefix := status
+		if hintsBeforeNewContent != "" {
+			prefix = appendStatusHint(status, hintsBeforeNewContent)
 		}
-		if !atBottom {
-			scrollBtns = append(scrollBtns, scrollSt.Render("▾"))
-		}
-		if len(scrollBtns) > 0 {
-			m.scrollHintButtons = strings.Join(scrollBtns, " ")
-			hints = append(hints, m.scrollHintButtons)
-		} else {
-			m.scrollHintButtons = ""
-		}
+		m.newContentHintXStart = lipgloss.Width(prefix)
 	} else {
-		m.scrollHintButtons = ""
+		m.newContentHintRendered = ""
+		m.newContentHintXStart = 0
 	}
 	if len(hints) > 0 {
 		status = appendStatusHint(status, strings.Join(hints, "  "))

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"xbot/protocol"
 
 	"xbot/bus"
 )
@@ -17,7 +18,7 @@ func initTestModel() *cliModel {
 	return model
 }
 
-func sendProgress(model *cliModel, payload *CLIProgressPayload) {
+func sendProgress(model *cliModel, payload *protocol.ProgressEvent) {
 	if payload.ChatID == "" {
 		payload.ChatID = model.channelName + ":" + model.chatID
 	}
@@ -63,17 +64,17 @@ func TestProgressNoDuplication(t *testing.T) {
 	model.typing = true
 	model.typingStartTime = time.Now()
 
-	sendProgress(model, &CLIProgressPayload{Phase: "thinking", Iteration: 0, Thinking: "A"})
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0, Thinking: "A"})
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "A",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read file", Status: "done", Elapsed: 1000, Iteration: 0},
 		},
 	})
-	sendProgress(model, &CLIProgressPayload{Phase: "thinking", Iteration: 1, Thinking: "B"})
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "B"})
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "B",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 500, Iteration: 1},
 		},
 	})
@@ -101,24 +102,24 @@ func TestProgressRealisticSequence(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0
-	sendProgress(model, &CLIProgressPayload{Phase: "thinking", Iteration: 0, Thinking: "Let me look"})
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0, Thinking: "Let me look"})
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "Let me look",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read config", Status: "done", Elapsed: 500, Iteration: 0},
 			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 300, Iteration: 0},
 		},
 	})
 	// Iter 1
-	sendProgress(model, &CLIProgressPayload{Phase: "thinking", Iteration: 1, Thinking: "Based on results"})
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "Based on results"})
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "Based on results",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "edit", Label: "Fix bug", Status: "done", Elapsed: 200, Iteration: 1},
 		},
 	})
 	// Iter 2: empty thinking (no tools) - this is the bug trigger
-	sendProgress(model, &CLIProgressPayload{Phase: "thinking", Iteration: 2, Thinking: ""})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: ""})
 
 	block := model.renderProgressBlock()
 	assertCount(t, "Read config total", block, "Read config", 1)
@@ -142,21 +143,21 @@ func TestLastCompletedToolsLeak(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0: 1 tool
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "A",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 0},
 		},
 	})
 	// Iter 1: 1 tool
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "B",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 1},
 		},
 	})
 	// Iter 2: empty thinking (triggers iter 1 snapshot, should clear lastCompletedTools)
-	sendProgress(model, &CLIProgressPayload{Phase: "thinking", Iteration: 2, Thinking: ""})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: ""})
 
 	// Verify lastCompletedTools was cleared after iter 1 snapshot
 	if len(model.lastCompletedTools) != 0 {
@@ -179,16 +180,16 @@ func TestErrorToolIterationAttribution(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0: a tool that errors
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "Trying A",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "error", Elapsed: 100, Iteration: 0},
 		},
 	})
 	// Iter 1: a tool that succeeds
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "Trying B",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 1},
 		},
 	})
@@ -236,16 +237,16 @@ func TestCrossIterationToolsFiltered(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0 with tool from iter 0
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "A",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 0},
 		},
 	})
 	// Iter 1 payload that accidentally includes a tool from iter 0 (stale)
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "B",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 0}, // stale from iter 0
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 1},
 		},
@@ -357,9 +358,9 @@ func TestBgDrainCompletedTool_AppearsInIteration(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0: normal tool + bg drain tool in same iteration
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "working",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read file", Status: "done", Elapsed: 100, Iteration: 0},
 			{Name: "background_task_result", Label: "bg:abc123", Status: "done", Elapsed: 30000, Iteration: 0},
 		},
@@ -389,9 +390,9 @@ func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0: bg tool
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 0, Thinking: "working",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "background_task_result", Label: "bg:old", Status: "done", Elapsed: 1000, Iteration: 0},
 		},
 	})
@@ -401,9 +402,9 @@ func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 	assertCount(t, "bg:old at iter 0", block0, "bg:old", 1)
 
 	// Iter 1: bg tool — iter 0 tool should be in history (dimmed), not duplicated in current
-	sendProgress(model, &CLIProgressPayload{
+	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "working",
-		CompletedTools: []CLIToolProgress{
+		CompletedTools: []protocol.ToolProgress{
 			{Name: "background_task_result", Label: "bg:new", Status: "done", Elapsed: 2000, Iteration: 1},
 		},
 	})

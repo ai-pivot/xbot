@@ -114,6 +114,9 @@ var AllSettingDefs = []SettingDef{
 	{Key: "subscription_manage", Scope: ScopeAction, AIDescription: "Open subscription management panel"},
 	{Key: "runner_panel", Scope: ScopeAction, AIDescription: "Open remote runner config panel"},
 	{Key: "danger_zone", Scope: ScopeAction, AIDescription: "Open danger zone panel"},
+
+	// ── Session name (per-chat rename) ──
+	{Key: "session_name", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "重命名当前会话的名称（仅影响当前 chatID）", ValidValues: "1-64 字符，支持中英文数字连字符", DefaultValue: ""},
 }
 
 // init-time derived indexes — built once, used everywhere.

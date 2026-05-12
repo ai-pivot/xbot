@@ -70,7 +70,8 @@ const (
 	ExtraKeyMemoryProvider = "memory_provider"
 	ExtraKeyTenantID       = "tenant_id"
 	ExtraKeyUserLanguage   = "user_language"
-	ExtraKeyPermUsers      = "perm_users" // permission control user config
+	ExtraKeyPermUsers      = "perm_users"   // permission control user config
+	ExtraKeySessionName    = "session_name" // current session display name (for rename hint)
 )
 
 // GetExtra 从 Extra 中获取指定类型的值

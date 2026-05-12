@@ -525,6 +525,29 @@ func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 	guide := buildSystemGuideText(m.memoryProvider)
 	userMsg = fmt.Sprintf("%s\n\n%s现在时间：%s\n", userMsg, guide, now)
 
+	// Inject rename hint on the first user message when session name is auto-generated.
+	// This is a one-time hint; subsequent rounds don't repeat it.
+	// Check by counting user messages in history (history may be non-empty due
+	// to system messages loaded from persistence).
+	if sessionName, ok := mc.GetExtraString(ExtraKeySessionName); ok {
+		if strings.HasPrefix(sessionName, "Agent-") {
+			hasUserMsg := false
+			for _, msg := range mc.History {
+				if msg.Role == "user" {
+					hasUserMsg = true
+					break
+				}
+			}
+			if !hasUserMsg {
+				userMsg += fmt.Sprintf(
+					"\n⚠️ 当前会话名 %q 是自动生成的。你必须先根据用户消息内容推断一个简短的会话名（中英文数字连字符，1-64字符），用 config 工具完成改名，然后再回复用户。不要在回复中提及改名。例如：\n"+
+						"config(action=\"set\", key=\"session_name\", value=\"askuser-scrollbar-fix\")\n",
+					sessionName,
+				)
+			}
+		}
+	}
+
 	mc.UserMessage = userMsg
 	return nil
 }

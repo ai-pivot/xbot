@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"xbot/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ func TestIsSubscriptionScopedSettingKey(t *testing.T) {
 
 func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T) {
 	model := newCLIModel()
-	model.channel = &CLIChannel{}
+	model.channel = &CLIChannel{config: &CLIChannelConfig{}}
 	model.panelValuesBackup = map[string]string{
 		"theme":    "mono",
 		"language": "en",
@@ -466,7 +467,7 @@ func TestStartAgentTurn_ResetsProgressState(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.iterationHistory = []cliIterationSnapshot{
-		{Iteration: 1, Tools: []CLIToolProgress{{Name: "test"}}},
+		{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "test"}}},
 	}
 	model.lastSeenIteration = 5
 
@@ -703,8 +704,8 @@ func TestEnqueueToast_EmptyValues(t *testing.T) {
 func TestIterToolsFlat_WithIterations(t *testing.T) {
 	msg := &cliMessage{
 		iterations: []cliIterationSnapshot{
-			{Iteration: 0, Tools: []CLIToolProgress{{Name: "read"}, {Name: "write"}}},
-			{Iteration: 1, Tools: []CLIToolProgress{{Name: "exec"}}},
+			{Iteration: 0, Tools: []protocol.ToolProgress{{Name: "read"}, {Name: "write"}}},
+			{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "exec"}}},
 		},
 	}
 
@@ -719,7 +720,7 @@ func TestIterToolsFlat_WithIterations(t *testing.T) {
 
 func TestIterToolsFlat_NoIterations(t *testing.T) {
 	msg := &cliMessage{
-		tools: []CLIToolProgress{{Name: "read"}, {Name: "write"}},
+		tools: []protocol.ToolProgress{{Name: "read"}, {Name: "write"}},
 	}
 
 	tools, iterCount := msg.iterToolsFlat()
@@ -747,7 +748,7 @@ func TestIterToolsFlat_IterationsWithEmptyTools(t *testing.T) {
 	msg := &cliMessage{
 		iterations: []cliIterationSnapshot{
 			{Iteration: 0, Tools: nil},
-			{Iteration: 1, Tools: []CLIToolProgress{{Name: "exec"}}},
+			{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "exec"}}},
 		},
 	}
 
@@ -1007,7 +1008,7 @@ func TestMergeCLISettingsValues_OverlaysUserScopedOnly(t *testing.T) {
 	model := newCLIModel()
 	model.channelName = "cli"
 	model.senderID = "cli_user"
-	model.channel = &CLIChannel{settingsSvc: settingsSvc}
+	model.channel = &CLIChannel{config: &CLIChannelConfig{}, settingsSvc: settingsSvc}
 	model.channel.config.GetCurrentValues = func() map[string]string { return cfgVals }
 
 	merged := model.mergeCLISettingsValues()
@@ -1028,7 +1029,7 @@ func TestPersistCLISettingsValues_PersistsUserScopedAndAppliesAll(t *testing.T) 
 	model := newCLIModel()
 	model.channelName = "cli"
 	model.senderID = "cli_user"
-	model.channel = &CLIChannel{settingsSvc: settingsSvc}
+	model.channel = &CLIChannel{config: &CLIChannelConfig{}, settingsSvc: settingsSvc}
 	model.channel.config.ApplySettings = func(vals map[string]string) {
 		for k, v := range vals {
 			applied[k] = v
@@ -1141,7 +1142,7 @@ func stripAnsi(s string) string {
 // locale strings, etc.) without nil dereference.
 func setupTestRemoteChannel(m *cliModel) {
 	m.channel = &CLIChannel{
-		config: CLIChannelConfig{
+		config: &CLIChannelConfig{
 			DynamicHistoryLoader: func(channelName, chatID string) ([]HistoryMessage, error) {
 				return nil, nil // no-op for tests
 			},
@@ -1168,7 +1169,7 @@ func TestSuHistoryLoad_TypingReconcile_AcceptProgress(t *testing.T) {
 	m.typing = false
 	m.suLoading = true
 
-	payload := &CLIProgressPayload{
+	payload := &protocol.ProgressEvent{
 		ChatID:    "cli:/test",
 		Phase:     "executing",
 		Iteration: 2,
@@ -1308,7 +1309,7 @@ func TestSuHistoryLoad_TypingReconcile_PhaseDoneIsDefault(t *testing.T) {
 	m.typing = true // restored hint says typing
 	m.suLoading = true
 
-	payload := &CLIProgressPayload{
+	payload := &protocol.ProgressEvent{
 		ChatID:    "cli:/test",
 		Phase:     "done", // turn completed on server
 		Iteration: 5,
@@ -1390,25 +1391,27 @@ func TestRemoveLastToolSummary_NoToolSummary(t *testing.T) {
 	}
 }
 
-// TestRemoveLastToolSummary_OnlyPreservesFirst verifies that with two tool_summaries,
-// only the last one is removed and the first is preserved.
+// TestRemoveLastToolSummary_OnlyPreservesFirst verifies that tool_summaries
+// before the last user message are preserved, while those after are removed.
 func TestRemoveLastToolSummary_OnlyPreservesFirst(t *testing.T) {
 	m := newCLIModel()
 	m.messages = []cliMessage{
-		{role: "tool_summary", content: ""}, // first — PRESERVED
+		{role: "user", content: "q1"},
+		{role: "tool_summary", content: ""}, // before last user — PRESERVED
 		{role: "assistant", content: "a"},
-		{role: "tool_summary", content: ""}, // last — REMOVED
+		{role: "user", content: "q2"},
+		{role: "tool_summary", content: ""}, // after last user — REMOVED
 	}
 
 	m.removeLastToolSummary()
 
-	if len(m.messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(m.messages))
+	if len(m.messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(m.messages))
 	}
-	if m.messages[0].role != "tool_summary" {
-		t.Error("first tool_summary should be preserved")
+	if m.messages[1].role != "tool_summary" {
+		t.Error("tool_summary before last user should be preserved")
 	}
-	if m.messages[1].role != "assistant" {
-		t.Error("assistant should be at position 1")
+	if m.messages[3].role != "user" {
+		t.Errorf("last message should be user, got %q", m.messages[3].role)
 	}
 }

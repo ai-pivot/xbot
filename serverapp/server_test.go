@@ -272,11 +272,11 @@ func (b fakeBackend) SendInbound(_ bus.InboundMessage) error { return nil }
 func (b fakeBackend) Subscribe(_ protocol.EventPattern, _ protocol.EventHandler) func() {
 	return func() {}
 }
-func (b fakeBackend) Bus() *bus.MessageBus                                      { return nil }
-func (b fakeBackend) IsRemote() bool                                            { return false }
-func (b fakeBackend) IsProcessing(_, _ string) bool                             { return false }
-func (b fakeBackend) GetActiveProgress(_, _ string) *channel.CLIProgressPayload { return nil }
-func (b fakeBackend) GetTodos(_, _ string) []channel.CLITodoItem                { return nil }
+func (b fakeBackend) Bus() *bus.MessageBus                                  { return nil }
+func (b fakeBackend) IsRemote() bool                                        { return false }
+func (b fakeBackend) IsProcessing(_, _ string) bool                         { return false }
+func (b fakeBackend) GetActiveProgress(_, _ string) *protocol.ProgressEvent { return nil }
+func (b fakeBackend) GetTodos(_, _ string) []protocol.TodoItem              { return nil }
 func (b fakeBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
 }
 func (b fakeBackend) ConnState() string                                                  { return "connected" }
@@ -374,6 +374,8 @@ func (b fakeBackend) SetLLMConcurrency(_ string, _ int) error { return nil }
 func (b fakeBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
 }
 func (b fakeBackend) OnTUIControlRequest(_ func(action string, params map[string]string) (map[string]string, error)) {
+}
+func (b fakeBackend) SetChatRenameFn(_ func(chatID, newName string) (oldName string, err error)) {
 }
 func (b fakeBackend) GetContextMode() string               { return "" }
 func (b fakeBackend) PluginManager() *plugin.PluginManager { return nil }

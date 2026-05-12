@@ -977,6 +977,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 				if entry.ID != m.chatID {
 					m.saveCurrentSession() // save current session state
 					m.chatID = entry.ID
+					SetLastActiveSession(m.defaultChatID, entry.ID)
 					m.channelName = entry.Channel
 					// Update workdir to match the session's workdir.
 					workDir, _ := ParseChatID(entry.ID)
@@ -1109,8 +1110,8 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 	// Y: confirm delete (follows D)
 	case (msg.String() == "y" || msg.String() == "Y") && m.panelSessionConfirmDelete:
 		m.panelSessionConfirmDelete = false
-		m.deleteLocalSession(m.panelSessionConfirmEntry)
-		return true, m, nil
+		cmd := m.deleteLocalSession(m.panelSessionConfirmEntry)
+		return true, m, cmd
 
 	// Any other key cancels delete confirmation
 	case m.panelSessionConfirmDelete:
@@ -2384,7 +2385,13 @@ func (m *cliModel) viewAskUserPanel() string {
 			// minus label width and scrollbar column. Without this, textinput
 			// View() can exceed contentWidth causing applyScrollbar's scrollbar
 			// to wrap to next line — symptom: "▐" rendered below the "其他" row.
-			tiWidth := qWrapWidth - lipgloss.Width(prefix+otherLabel) - 1
+			// Resize textinput to fit within panel content width (qWrapWidth)
+			// minus label width and scrollbar column.  The textinput View()
+			// (specifically placeholderView) always outputs Width()+1 chars
+			// (cursor+placeholder+padding), so we need -2 instead of -1.
+			// Without this, the line reaches exactly contentWidth, and the
+			// scrollbar "▐" wraps to the next line.
+			tiWidth := qWrapWidth - lipgloss.Width(prefix+otherLabel) - 2
 			if tiWidth < 10 {
 				tiWidth = 10
 			}
@@ -2790,7 +2797,14 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 	hint := m.styles.PanelHint.Render(" ↑↓ Navigate  Enter Select  E Edit  D Delete  Esc Close")
 
 	// Center vertically
-	listH := len(m.quickSwitchList) + 3 // header + spacer + items + borders(~2)
+	sepLines := 0
+	for _, s := range m.quickSwitchList {
+		if s.ID == "__add__" {
+			sepLines = 1
+			break
+		}
+	}
+	listH := len(m.quickSwitchList) + 3 + sepLines // header + spacer + items + separator + borders(~2)
 	blankLines := max(0, (height-listH)/2)
 	var b strings.Builder
 	for i := 0; i < blankLines; i++ {
@@ -3349,95 +3363,85 @@ func (m *cliModel) openChannelSettingsPanel(channel string) {
 
 // ── Session management (same-directory multi-session) ──
 
-// showSessionCreateDialog shows an input dialog for creating a new session.
+// showSessionCreateDialog creates a new session with an auto-generated name.
 func (m *cliModel) showSessionCreateDialog() tea.Cmd {
-	schema := []SettingDefinition{
-		{Key: "session_name", Label: "Session Name", Description: "Name for the new session (e.g. debug, experiment)", Type: SettingTypeText, DefaultValue: ""},
-	}
 	m.panelMode = "" // close sessions panel
-	m.openSettingsPanel(schema, map[string]string{}, func(values map[string]string) {
-		name := strings.TrimSpace(values["session_name"])
-		if name == "" {
-			m.showTempStatus("Session name cannot be empty")
-			return
+	ds, err := LoadDirSessions(m.workDir)
+	if err != nil {
+		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+		return nil
+	}
+	name, chatID, err := ds.addSessionAuto()
+	if err != nil {
+		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
+		return nil
+	}
+	m.saveCurrentSession()
+	m.chatID = chatID
+	SetLastActiveSession(m.defaultChatID, chatID)
+	m.sessionName = name
+	m.channelName = "cli"
+	// Update workdir and persist CWD for the new session (same as switchToSession)
+	workDir, _ := ParseChatID(chatID)
+	if workDir != "" {
+		m.workDir = workDir
+		if m.channel != nil && m.channel.config.SetCWDFn != nil {
+			_ = m.channel.config.SetCWDFn("cli", chatID, workDir)
 		}
-		ds, err := loadDirSessions(m.workDir)
-		if err != nil {
-			m.showTempStatus(fmt.Sprintf("Failed: %v", err))
-			return
-		}
-		chatID, err := ds.addSession(name)
-		if err != nil {
-			m.showTempStatus(fmt.Sprintf("Failed: %v", err))
-			return
-		}
-		m.saveCurrentSession()
-		m.chatID = chatID
-		m.sessionName = name
-		m.channelName = "cli"
-		// Update workdir and persist CWD for the new session (same as switchToSession)
-		workDir, _ := ParseChatID(chatID)
-		if workDir != "" {
-			m.workDir = workDir
-			if m.channel != nil && m.channel.config.SetCWDFn != nil {
-				_ = m.channel.config.SetCWDFn("cli", chatID, workDir)
-			}
-		}
-		m.messages = nil
-		m.lastTokenUsage = nil
-		m.invalidateAllCache(false)
-		m.todos = nil // clear stale todos from previous session
-		m.todosDoneCleared = false
-		m.restoreSession()
-		// Ensure clean state — restored session may have stale typing=true
-		m.typing = false
-		m.inputReady = true
-		m.progress = nil
-		m.iterationHistory = nil
-		m.invalidateProgressHistoryCache()
-		m.messageQueue = nil
-		m.queueEditing = false
-		// Refresh sessions list cache so sidebar/sessions panel shows the new session
-		if m.sessionsListFn != nil {
-			m.panelSessionItems = m.sessionsListFn()
-		}
-		if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
-			m.channel.config.SessionsListRefresh()
-		}
-		m.showTempStatus(fmt.Sprintf("Created session: %s", name))
-	})
-	return nil
+	}
+	m.messages = nil
+	m.lastTokenUsage = nil
+	m.invalidateAllCache(false)
+	m.todos = nil
+	m.todosDoneCleared = false
+	m.restoreSession()
+	// Unified session setup — handles BindChatFn, suLoadHistoryCmd,
+	// checkAndRestorePendingAskUser, inputReady, etc.
+	cmds := m.postRestoreSessionSetup()
+	// Refresh sessions list cache so sidebar/sessions panel shows the new session
+	if m.sessionsListFn != nil {
+		m.panelSessionItems = m.sessionsListFn()
+	}
+	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+		m.channel.config.SessionsListRefresh()
+	}
+	m.showTempStatus(fmt.Sprintf("Created session: %s", name))
+	return tea.Batch(cmds...)
 }
 
 // deleteLocalSession deletes the selected session and switches to default if active.
-func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
+func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 	// 1. Remove from local JSON file (for local dir sessions).
-	ds, err := loadDirSessions(m.workDir)
-	if err != nil {
-		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
-		return
-	}
+	// Use entry.ID (chatID) for matching, not entry.Label — the display label
+	// may have been renamed in DB but local JSON still has the original auto-name.
 	localRemoved := false
-	if err := ds.removeSession(entry.Label); err == nil {
-		localRemoved = true
-	}
-	// 2. Notify backend to clean up DB (tenant, messages, etc.).
-	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
-		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
-			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session cleanup failed")
+	ds, err := LoadDirSessions(m.workDir)
+	if err == nil {
+		if err := ds.removeSessionByChatID(entry.ID); err == nil {
+			localRemoved = true
 		}
 	}
-	// 3. If backend removed but local JSON didn't have it, still show success.
-	if !localRemoved && (m.channel == nil || m.channel.config.SessionsDeleteFn == nil) {
+	// 2. Notify backend to clean up DB (tenant, messages, etc.).
+	backendRemoved := false
+	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
+		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
+			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
+			m.showTempStatus(fmt.Sprintf("Delete failed: %v", err))
+			return nil
+		}
+		backendRemoved = true
+	}
+	// 3. Neither local nor backend succeeded.
+	if !localRemoved && !backendRemoved {
 		m.showTempStatus(fmt.Sprintf("Not found: %s", entry.Label))
-		return
+		return nil
 	}
 	// If we deleted the active session, switch to default
 	if entry.Active {
 		m.saveCurrentSession()
 		m.chatID = m.defaultChatID
+		SetLastActiveSession(m.defaultChatID, m.defaultChatID)
 		m.sessionName = defaultSessionName
-		// Update workdir and persist CWD for the default session
 		m.workDir = m.defaultChatID
 		if m.channel != nil && m.channel.config.SetCWDFn != nil {
 			_ = m.channel.config.SetCWDFn("cli", m.defaultChatID, m.defaultChatID)
@@ -3445,9 +3449,19 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.messages = nil
 		m.lastTokenUsage = nil
 		m.invalidateAllCache(false)
-		m.todos = nil // clear stale todos from deleted session
+		m.todos = nil
 		m.todosDoneCleared = false
 		m.restoreSession()
+		cmds := m.postRestoreSessionSetup()
+		// Refresh sessions list so sidebar/sessions panel reflects the deletion
+		if m.sessionsListFn != nil {
+			m.panelSessionItems = m.sessionsListFn()
+		}
+		if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+			m.channel.config.SessionsListRefresh()
+		}
+		m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
+		return tea.Batch(cmds...)
 	}
 	// Refresh sessions list so sidebar/sessions panel reflects the deletion
 	if m.sessionsListFn != nil {
@@ -3457,6 +3471,7 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.channel.config.SessionsListRefresh()
 	}
 	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
+	return nil
 }
 
 // switchToSession switches to the given session entry directly (used by sidebar click).
@@ -3475,6 +3490,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			}
 			m.saveCurrentSession()
 			m.chatID = entry.ID
+			SetLastActiveSession(m.defaultChatID, entry.ID)
 			m.channelName = entry.Channel
 			// Update workdir to match the session's workdir.
 			workDir, _ := ParseChatID(entry.ID)

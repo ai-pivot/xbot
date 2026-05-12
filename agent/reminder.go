@@ -16,7 +16,8 @@ var systemReminderRe = regexp.MustCompile(`\n?\n?<system-reminder>[\s\S]*?</syst
 // agentID "main" = main Agent, otherwise SubAgent.
 // roundToolCalls is the current round's tool calls (used to detect git commit).
 // sessionKey is the unique session identifier (used for worktree peer lookup).
-func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string) string {
+// sessionName is the current session display name (used to detect auto-generated names needing rename).
+func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string, sessionName string) string {
 	if len(messages) == 0 {
 		return ""
 	}

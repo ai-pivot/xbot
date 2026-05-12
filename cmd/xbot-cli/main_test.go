@@ -697,27 +697,27 @@ func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error { return nil }
 func (b *fakeAgentBackend) Subscribe(protocol.EventPattern, protocol.EventHandler) func() {
 	return func() {}
 }
-func (b *fakeAgentBackend) ConnState() string                                            { return "connected" }
-func (b *fakeAgentBackend) ServerURL() string                                            { return "" }
-func (b *fakeAgentBackend) Agent() *agent.Agent                                          { return nil }
-func (b *fakeAgentBackend) Bus() *bus.MessageBus                                         { return nil }
-func (b *fakeAgentBackend) IsRemote() bool                                               { return false }
-func (b *fakeAgentBackend) IsProcessing(string, string) bool                             { return false }
-func (b *fakeAgentBackend) GetActiveProgress(string, string) *channel.CLIProgressPayload { return nil }
-func (b *fakeAgentBackend) GetTodos(string, string) []channel.CLITodoItem                { return nil }
-func (b *fakeAgentBackend) LLMFactory() *agent.LLMFactory                                { return b.factory }
-func (b *fakeAgentBackend) SettingsService() *agent.SettingsService                      { return nil }
-func (b *fakeAgentBackend) MultiSession() *session.MultiTenantSession                    { return nil }
-func (b *fakeAgentBackend) BgTaskManager() *tools.BackgroundTaskManager                  { return nil }
-func (b *fakeAgentBackend) HookManager() *hooks.Manager                                  { return nil }
-func (b *fakeAgentBackend) ApprovalState() *hooks.ApprovalState                          { return nil }
-func (b *fakeAgentBackend) BindChat(_ string) error                                      { return nil }
-func (b *fakeAgentBackend) SetDirectSend(func(bus.OutboundMessage) (string, error))      {}
-func (b *fakeAgentBackend) SetChannelFinder(func(string) (channel.Channel, bool))        {}
-func (b *fakeAgentBackend) SetChannelPromptProviders(...agent.ChannelPromptProvider)     {}
-func (b *fakeAgentBackend) RegisterCoreTool(tools.Tool)                                  {}
-func (b *fakeAgentBackend) IndexGlobalTools()                                            {}
-func (b *fakeAgentBackend) CountInteractiveSessions(string, string) int                  { return 0 }
+func (b *fakeAgentBackend) ConnState() string                                        { return "connected" }
+func (b *fakeAgentBackend) ServerURL() string                                        { return "" }
+func (b *fakeAgentBackend) Agent() *agent.Agent                                      { return nil }
+func (b *fakeAgentBackend) Bus() *bus.MessageBus                                     { return nil }
+func (b *fakeAgentBackend) IsRemote() bool                                           { return false }
+func (b *fakeAgentBackend) IsProcessing(string, string) bool                         { return false }
+func (b *fakeAgentBackend) GetActiveProgress(string, string) *protocol.ProgressEvent { return nil }
+func (b *fakeAgentBackend) GetTodos(string, string) []protocol.TodoItem              { return nil }
+func (b *fakeAgentBackend) LLMFactory() *agent.LLMFactory                            { return b.factory }
+func (b *fakeAgentBackend) SettingsService() *agent.SettingsService                  { return nil }
+func (b *fakeAgentBackend) MultiSession() *session.MultiTenantSession                { return nil }
+func (b *fakeAgentBackend) BgTaskManager() *tools.BackgroundTaskManager              { return nil }
+func (b *fakeAgentBackend) HookManager() *hooks.Manager                              { return nil }
+func (b *fakeAgentBackend) ApprovalState() *hooks.ApprovalState                      { return nil }
+func (b *fakeAgentBackend) BindChat(_ string) error                                  { return nil }
+func (b *fakeAgentBackend) SetDirectSend(func(bus.OutboundMessage) (string, error))  {}
+func (b *fakeAgentBackend) SetChannelFinder(func(string) (channel.Channel, bool))    {}
+func (b *fakeAgentBackend) SetChannelPromptProviders(...agent.ChannelPromptProvider) {}
+func (b *fakeAgentBackend) RegisterCoreTool(tools.Tool)                              {}
+func (b *fakeAgentBackend) IndexGlobalTools()                                        {}
+func (b *fakeAgentBackend) CountInteractiveSessions(string, string) int              { return 0 }
 func (b *fakeAgentBackend) ListInteractiveSessions(string, string) []agent.InteractiveSessionInfo {
 	return nil
 }
@@ -807,6 +807,8 @@ func (b *fakeAgentBackend) SetLLMConcurrency(string, int) error      { return ni
 func (b *fakeAgentBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
 }
 func (b *fakeAgentBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
+}
+func (b *fakeAgentBackend) SetChatRenameFn(_ func(chatID, newName string) (oldName string, err error)) {
 }
 func (b *fakeAgentBackend) GetContextMode() string                                { return "" }
 func (b *fakeAgentBackend) PluginManager() *plugin.PluginManager                  { return nil }

@@ -156,16 +156,12 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 	return chatID, nil
 }
 
-// DeleteChat removes a chatroom. The default chat (chatID=senderID) cannot be deleted.
-// Deletes the tenant and all associated data (cascading).
+// DeleteChat removes a chatroom. Deletes the tenant and all associated data (cascading).
 func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
-	if chatID == senderID {
-		return fmt.Errorf("cannot delete the default chat")
-	}
 
 	conn := s.conn
 
-	// Verify ownership
+	// Verify ownership via user_chats table
 	var count int
 	err := conn.QueryRow(
 		"SELECT COUNT(*) FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?",
@@ -174,26 +170,31 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 	if err != nil {
 		return fmt.Errorf("check chat ownership: %w", err)
 	}
-	if count == 0 {
-		return fmt.Errorf("chat not found or not owned by user")
+
+	if count > 0 {
+		// Delete from user_chats (web sessions use this table)
+		_, err = conn.Exec(
+			"DELETE FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?",
+			channel, senderID, chatID,
+		)
+		if err != nil {
+			return fmt.Errorf("delete chat record: %w", err)
+		}
 	}
 
-	// Delete from user_chats
-	_, err = conn.Exec(
-		"DELETE FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?",
-		channel, senderID, chatID,
-	)
-	if err != nil {
-		return fmt.Errorf("delete chat record: %w", err)
-	}
-
-	// Delete tenant (cascades to session_messages, memory, etc.)
-	_, err = conn.Exec(
+	// Delete tenant (cascades to session_messages, memory, etc.) regardless of user_chats.
+	// CLI sessions may not have a user_chats entry but still have tenant data.
+	result, err := conn.Exec(
 		"DELETE FROM tenants WHERE channel = ? AND chat_id = ?",
 		channel, chatID,
 	)
 	if err != nil {
 		return fmt.Errorf("delete tenant: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 && count == 0 {
+		return fmt.Errorf("chat not found")
 	}
 
 	log.WithFields(log.Fields{

@@ -219,9 +219,6 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			// wasTyping guard: ensure tick chain starts on idle→typing transition.
 			// handleKeyPress may call sendMessage→startAgentTurn which sets typing=true,
 			// but the early return below skips the wasTyping guard at the end of Update.
-			if cm, ok := model.(*cliModel); ok && !wasTyping && cm.typing && !cm.fastTickActive {
-				keyCmds = append(keyCmds, m.tickCmd())
-			}
 			return model, tea.Batch(keyCmds...)
 		}
 		// Unhandled key: fall through to post-switch processing
@@ -238,17 +235,6 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliProgressMsg:
 		m.handleProgressMsg(msg)
-		// Ensure fast tick chain is running when session is active.
-		// Use server-provided progress state (authoritative) rather than
-		// client-maintained m.typing which can be stale after session switches.
-		// Without this, stream-only updates (isStreamOnly path) accumulate
-		// content but never render because the tick chain isn't driving
-		// updateViewportContent.
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
 
 	case cliProcessingMsg:
 		if msg.processing && !m.typing {
@@ -266,13 +252,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// Flush is handled in cliTickMsg instead (next tick after typing=false).
 
 	case cliTickMsg:
-		if msg.gen != m.tickGen {
-			return m, tea.Batch(cmds...) // stale tick from previous chain, discard
-		}
 		cmds = append(cmds, m.handleTickMsg()...)
-
-	case idleTickMsg:
-		cmds = append(cmds, m.handleIdleTick()...)
 
 	case cliTempStatusClearMsg:
 		m.tempStatus = ""
@@ -349,14 +329,8 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 		m.updateViewportContent()
 
-	case tickerTickMsg:
-		// Legacy: ticker is now driven by cliTickMsg. Drop stale messages.
-
 	case typewriterTickMsg:
 		cmds = append(cmds, m.handleTypewriterTick()...)
-
-	case splashTickMsg:
-		return m.handleSplashTick(msg)
 
 	case debugCaptureMsg:
 		// --debug: dump current TUI view to file every second
@@ -410,9 +384,6 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// handleInjectedUserMsg or cliProcessingMsg), ensure the tick chain is running.
 	// This is the universal safety net — callers that can return cmds do so
 	// directly, but this catches any missed transitions.
-	if !wasTyping && m.typing && !m.fastTickActive {
-		cmds = append(cmds, m.tickCmd())
-	}
 
 	// 更新 viewport
 	m.viewport, cmd = m.viewport.Update(msg)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"xbot/protocol"
 
 	"xbot/agent"
 	"xbot/channel"
@@ -285,7 +286,7 @@ func buildWebCallbacks(cfg *config.Config, backend agent.AgentBackend, webDB *sq
 		return backend.IsProcessing("web", senderID)
 	}
 	// Wire GetActiveProgress
-	callbacks.GetActiveProgress = func(channel, chatID string) *channel.CLIProgressPayload {
+	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return backend.GetActiveProgress(channel, chatID)
 	}
 	// Wire SessionsList

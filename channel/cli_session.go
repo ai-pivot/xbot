@@ -1,9 +1,11 @@
 package channel
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,8 +73,9 @@ func ValidateSessionName(name string) error {
 // dirSessions stores the list of sessions for a given directory.
 // Persisted to ~/.xbot/sessions/<sha256>.json
 type dirSessions struct {
-	Dir      string       `json:"dir"`
-	Sessions []dirSession `json:"sessions"`
+	Dir        string       `json:"dir"`
+	Sessions   []dirSession `json:"sessions"`
+	LastActive string       `json:"last_active,omitempty"` // chatID of last active session
 }
 
 type dirSession struct {
@@ -99,8 +102,8 @@ func sessionDirHash(workDir string) string {
 	return fmt.Sprintf("%x", h[:8])
 }
 
-// loadDirSessions loads the session list for a given work directory.
-func loadDirSessions(workDir string) (*dirSessions, error) {
+// LoadDirSessions loads the session list for a given work directory.
+func LoadDirSessions(workDir string) (*dirSessions, error) {
 	// Resolve relative workDir to absolute path so ds.Dir is always absolute
 	if !filepath.IsAbs(workDir) {
 		if abs, err := filepath.Abs(workDir); err == nil {
@@ -171,6 +174,40 @@ func (ds *dirSessions) hasSession(name string) bool {
 	return false
 }
 
+// autoNamePrefix is the prefix for auto-generated session names.
+const autoNamePrefix = "Agent-"
+
+// sessionAdj and sessionNoun provide word lists for generating natural-sounding session names
+// like "Agent-brave-fox" or "Agent-calm-stone". 16×16 = 256 unique combinations.
+var (
+	sessionAdj = []string{
+		"brave", "calm", "swift", "keen", "warm", "witty", "sage", "brisk",
+		"cool", "bold", "sharp", "lucid", "sunny", "frank", "deft", "astute",
+	}
+	sessionNoun = []string{
+		"fox", "hawk", "lynx", "dove", "panda", "otter", "falcon", "heron",
+		"stone", "flame", "brook", "cedar", "comet", "coral", "ember", "zephyr",
+	}
+)
+
+// generateSessionName creates a random session name like "Agent-brave-fox".
+func generateSessionName() (string, error) {
+	adjIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(sessionAdj))))
+	if err != nil {
+		return "", err
+	}
+	nounIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(sessionNoun))))
+	if err != nil {
+		return "", err
+	}
+	return autoNamePrefix + sessionAdj[adjIdx.Int64()] + "-" + sessionNoun[nounIdx.Int64()], nil
+}
+
+// IsAutoSessionName returns true if the name looks like an auto-generated session name.
+func IsAutoSessionName(name string) bool {
+	return strings.HasPrefix(name, autoNamePrefix)
+}
+
 // addSession adds a new session to the directory.
 func (ds *dirSessions) addSession(name string) (string, error) {
 	if err := ValidateSessionName(name); err != nil {
@@ -188,26 +225,68 @@ func (ds *dirSessions) addSession(name string) (string, error) {
 	return chatID, ds.save()
 }
 
-// removeSession removes a session (except "default").
-func (ds *dirSessions) removeSession(name string) error {
-	if name == defaultSessionName {
-		return fmt.Errorf("cannot delete default session")
+// addSessionAuto creates a new session with an auto-generated "Agent-xxxxxx" name.
+func (ds *dirSessions) addSessionAuto() (name string, chatID string, err error) {
+	for i := 0; i < 10; i++ {
+		name, err = generateSessionName()
+		if err != nil {
+			return "", "", err
+		}
+		if !ds.hasSession(name) {
+			break
+		}
+		name = ""
+	}
+	if name == "" {
+		return "", "", fmt.Errorf("failed to generate unique session name after 10 attempts")
+	}
+	chatID, err = ds.addSession(name)
+	if err != nil {
+		return "", "", err
+	}
+	return name, chatID, nil
+}
+
+// RenameSession renames a session in the directory (local JSON only).
+func (ds *dirSessions) RenameSession(oldName, newName string) error {
+	if oldName == newName {
+		return nil
+	}
+	if err := ValidateSessionName(newName); err != nil {
+		return err
+	}
+	if ds.hasSession(newName) {
+		return fmt.Errorf("session %q already exists", newName)
 	}
 	for i, s := range ds.Sessions {
-		if s.Name == name {
+		if s.Name == oldName {
+			ds.Sessions[i].Name = newName
+			ds.Sessions[i].ChatID = SessionChatID(ds.Dir, newName)
+			return ds.save()
+		}
+	}
+	return fmt.Errorf("session %q not found", oldName)
+}
+
+// removeSessionByChatID removes a session by its chatID (not display name).
+// Used when the display name may have been renamed in DB but local JSON
+// still has the original auto-name.
+func (ds *dirSessions) removeSessionByChatID(chatID string) error {
+	for i, s := range ds.Sessions {
+		if s.ChatID == chatID {
 			ds.Sessions = append(ds.Sessions[:i], ds.Sessions[i+1:]...)
 			return ds.save()
 		}
 	}
-	return fmt.Errorf("session %q not found", name)
+	return fmt.Errorf("session with chatID %q not found", chatID)
 }
 
-// sortedSessions returns sessions sorted by creation time.
+// sortedSessions returns sessions sorted by creation time (newest first).
 func (ds *dirSessions) sortedSessions() []dirSession {
 	sorted := make([]dirSession, len(ds.Sessions))
 	copy(sorted, ds.Sessions)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].CreatedAt.Before(sorted[j].CreatedAt)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].CreatedAt.After(sorted[j].CreatedAt)
 	})
 	return sorted
 }
@@ -215,17 +294,12 @@ func (ds *dirSessions) sortedSessions() []dirSession {
 // listLocalDirSessions returns all sessions in the current directory from
 // the local session store (used by the sessions panel).
 func (m *cliModel) listLocalDirSessions() []SessionPanelEntry {
-	ds, err := loadDirSessions(m.workDir)
+	ds, err := LoadDirSessions(m.workDir)
 	if err != nil {
 		return nil
 	}
 	var entries []SessionPanelEntry
 	for _, s := range ds.sortedSessions() {
-		// Skip default session — it's already shown as the main session
-		// from sessionsListFn (backend). Listing it again would duplicate it.
-		if s.Name == defaultSessionName || s.ChatID == m.defaultChatID {
-			continue
-		}
 		active := s.ChatID == m.chatID
 		entries = append(entries, SessionPanelEntry{
 			ID:      s.ChatID,
@@ -239,21 +313,40 @@ func (m *cliModel) listLocalDirSessions() []SessionPanelEntry {
 }
 
 // ListLocalDirSessions returns all local sessions for a work directory,
-// excluding the default session (which is the workDir itself).
+// sorted by creation time.
 func ListLocalDirSessions(workDir string) []SessionPanelEntry {
-	ds, err := loadDirSessions(workDir)
+	ds, err := LoadDirSessions(workDir)
 	if err != nil {
 		return nil
 	}
 	var result []SessionPanelEntry
 	for _, s := range ds.sortedSessions() {
-		if s.Name == defaultSessionName || s.ChatID == workDir {
-			continue
-		}
 		result = append(result, SessionPanelEntry{
 			ID:    s.ChatID,
 			Label: s.Name,
 		})
 	}
 	return result
+}
+
+// SetLastActiveSession persists the last active session for a workDir.
+// chatID may be a full chatID (workDir:sessionName) or bare workDir.
+// The workDir is extracted via ParseChatID to ensure correct file lookup.
+func SetLastActiveSession(workDirOrChatID, chatID string) {
+	workDir, _ := ParseChatID(workDirOrChatID)
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return
+	}
+	ds.LastActive = chatID
+	_ = ds.save()
+}
+
+// GetLastActiveSession returns the last active session chatID for a workDir.
+func GetLastActiveSession(workDir string) string {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return ""
+	}
+	return ds.LastActive
 }

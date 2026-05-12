@@ -166,10 +166,7 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickRunnerField(zone.Index)
 	case "footerHint":
 		return m.clickFooterHint(zone.Index)
-	case "scrollTop":
-		m.viewport.GotoTop()
-		return true, m, nil
-	case "scrollBottom":
+	case "scrollToBottom":
 		m.viewport.GotoBottom()
 		m.newContentHint = false
 		return true, m, nil
@@ -850,26 +847,14 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	zb.skip(viewportH)
 
-	// status bar: 1 line — track scroll buttons if present
-	if m.scrollHintButtons != "" {
-		// The scroll hint is at the far right of the status bar.
-		// Measure its width to place a clickable zone.
-		hintW := lipgloss.Width(m.scrollHintButtons)
-		chatW := m.chatWidth()
-		// Account for possible xShift when sidebar is on the left
-		scrollStartX := xShift + chatW - hintW - 1
-		if scrollStartX < xShift {
-			scrollStartX = xShift
-		}
-		scrollEndX := xShift + chatW
-		// Add two zones: left half for scrollTop, right half for scrollBottom
-		midX := scrollStartX + hintW/2
-		if !m.viewport.AtTop() {
-			zb.addX(0, scrollStartX, midX, "scrollTop", 0)
-		}
-		if !m.viewport.AtBottom() {
-			zb.addX(0, midX, scrollEndX, "scrollBottom", 0)
-		}
+	// status bar: 1 line — track "new content" hint if present
+	if m.newContentHintRendered != "" {
+		// The new content hint is rendered inline in the status bar.
+		// Use the pre-calculated X position from layoutMain.
+		hintW := lipgloss.Width(m.newContentHintRendered)
+		hintStartX := xShift + m.newContentHintXStart
+		hintEndX := hintStartX + hintW
+		zb.addX(0, hintStartX, hintEndX, "scrollToBottom", 0)
 		zb.y++
 	} else {
 		zb.skip(1)
@@ -1244,8 +1229,16 @@ func (m *cliModel) trackPaletteZones(zb *mouseZoneBuilder) {
 
 // trackQuickSwitchZones records zones for the quick switch overlay.
 func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
-	totalLines := 2 + len(m.quickSwitchList) // header + spacer + items
-	totalH := totalLines + 2 + 1             // +2 border + 1 hint
+	// Count separator line (present when __add__ entry exists)
+	sepLines := 0
+	for _, s := range m.quickSwitchList {
+		if s.ID == "__add__" {
+			sepLines = 1
+			break
+		}
+	}
+	totalLines := 2 + len(m.quickSwitchList) + sepLines // header + spacer + items + separator
+	totalH := totalLines + 2 + 1                        // +2 border + 1 hint
 	blankLines := max(0, (m.height-totalH)/2)
 
 	zb.skip(blankLines)
@@ -1253,7 +1246,10 @@ func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
 	zb.skip(1) // header
 	zb.skip(1) // spacer
 
-	for i := range m.quickSwitchList {
+	for i, s := range m.quickSwitchList {
+		if s.ID == "__add__" && i > 0 {
+			zb.skip(1) // separator line before __add__
+		}
 		zb.add(1, "quickSwitchItem", i)
 	}
 
@@ -1454,6 +1450,6 @@ func (m *cliModel) clickSidebarDeleteSession(index int) (bool, tea.Model, tea.Cm
 		m.showTempStatus("Cannot delete the active session")
 		return true, m, nil
 	}
-	m.deleteLocalSession(entry)
-	return true, m, nil
+	cmd := m.deleteLocalSession(entry)
+	return true, m, cmd
 }

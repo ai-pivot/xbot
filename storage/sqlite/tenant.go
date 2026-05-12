@@ -111,11 +111,14 @@ func (s *TenantService) GetTenantIDByChannelChatID(channel, chatID string) (int6
 	return tenantID, nil
 }
 
-// ListTenants returns all tenants
+// ListTenants returns all tenants with optional label from user_chats.
 func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(
-		"SELECT id, channel, chat_id, created_at, last_active_at FROM tenants ORDER BY last_active_at DESC",
+		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label, t.created_at, t.last_active_at
+		FROM tenants t
+		LEFT JOIN user_chats c ON c.channel = t.channel AND c.chat_id = t.chat_id
+		ORDER BY t.last_active_at DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants: %w", err)
@@ -126,7 +129,7 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	for rows.Next() {
 		var t TenantInfo
 		var createdAt, lastActiveAt string
-		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &createdAt, &lastActiveAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &createdAt, &lastActiveAt); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		t.CreatedAt = parseSQLiteTime(createdAt)
@@ -144,6 +147,7 @@ type TenantInfo struct {
 	ID           int64
 	Channel      string
 	ChatID       string
+	Label        string `json:"label,omitempty"`
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 }
