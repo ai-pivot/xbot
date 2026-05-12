@@ -574,23 +574,11 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 			}
 		}
-		// Reset critical state after identity switch (prevents stale typing/progress/input
-		// from leaking into the new session — same as postRestoreSessionSetup remote path).
-		m.typing = false
-		m.progress = nil
-		m.inputReady = false
-		m.turnCancelled = false
-
-		m.typewriterTickActive = false
-		m.lastProgressSeq = 0
-		m.suPhaseDoneConfirmed = false
+		// Reset critical state after identity switch, then apply unified setup.
 		m.messages = nil
 		m.invalidateAllCache(false)
-		if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
-			m.suLoading = true
-			m.splashFrame = 0
-			return m.suLoadHistoryCmd()
-		}
+		cmds := m.postRestoreSessionSetup()
+		return tea.Batch(cmds...)
 
 	case "/ss", "/sessions":
 		// /ss — Open Sessions panel
@@ -621,20 +609,14 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 				m.chatID = chatID
 				SetLastActiveSession(m.defaultChatID, chatID)
-				// Reset critical state for new session (mirror postRestoreSessionSetup).
-				m.typing = false
-				m.progress = nil
-				m.inputReady = false
-				m.turnCancelled = false
-
-				m.typewriterTickActive = false
-				m.lastProgressSeq = 0
-				m.suPhaseDoneConfirmed = false
+				// Reset critical state for new session, then apply unified setup.
 				m.messages = nil
-				m.lastTokenUsage = nil       // clear stale token bar on new session
-				m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
+				m.lastTokenUsage = nil
+				m.cachedMaxContextTokens = 0
 				m.invalidateAllCache(false)
+				cmds := m.postRestoreSessionSetup()
 				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
+				return tea.Batch(cmds...)
 			} else {
 				m.showSystemMsg("❌ 当前不支持创建新会话", feedbackInfo)
 			}
@@ -671,23 +653,12 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			m.saveCurrentSession()
 			m.chatID = arg
 			SetLastActiveSession(m.defaultChatID, arg)
-			// Reset critical state after session switch.
-			m.typing = false
-			m.progress = nil
-			m.inputReady = false
-			m.turnCancelled = false
-
-			m.typewriterTickActive = false
-			m.lastProgressSeq = 0
-			m.suPhaseDoneConfirmed = false
+			// Reset critical state after session switch, then apply unified setup.
 			m.messages = nil
 			m.invalidateAllCache(false)
-			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
-				m.suLoading = true
-				m.splashFrame = 0
-				return m.suLoadHistoryCmd()
-			}
+			cmds := m.postRestoreSessionSetup()
 			m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", arg), feedbackInfo)
+			return tea.Batch(cmds...)
 		}
 
 	case "/usage":

@@ -1450,6 +1450,6 @@ func (m *cliModel) clickSidebarDeleteSession(index int) (bool, tea.Model, tea.Cm
 		m.showTempStatus("Cannot delete the active session")
 		return true, m, nil
 	}
-	m.deleteLocalSession(entry)
-	return true, m, nil
+	cmd := m.deleteLocalSession(entry)
+	return true, m, cmd
 }

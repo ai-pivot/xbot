@@ -454,71 +454,43 @@ func (m *cliModel) restoreSession() {
 }
 
 // postRestoreSessionSetup handles the common setup after restoreSession() in all
-// session switch paths. It resets turn state for remote mode (pending RPC authority),
-// sets inputReady appropriately, starts async history loading, and kicks the tick chain
-// if the restored session has an active turn.
+// session switch paths. ALL session switches (panel, /su, /chat, create, delete)
+// must call this — never manually reset state as a substitute.
 //
-// In remote mode (DynamicHistoryLoader != nil): inputReady=false and typing/progress
-// are reset to idle. The authoritative state comes from handleSuHistoryLoad (RPC).
-// This prevents stale client-side typing/busy state from causing:
-//   - flushMessageQueue sending queued messages before RPC confirms idle
-//   - handleProgressMsg auto-starting a turn on stale progress events
-//   - handleAgentMessage rendering stale replies
-//
-// In local mode: inputReady=true immediately (no async delay, no RPC).
+// Resets turn tracking, clears stale progress, subscribes to WS events,
+// starts async history loading, and checks for pending AskUser.
 func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	isRemote := m.channel != nil && m.channel.config.DynamicHistoryLoader != nil
 	var cmds []tea.Cmd
 
 	if isRemote {
-		// Remote mode: restored state is a hint, not authoritative.
-		// DO NOT force m.typing=false here — the server RPC
-		// (get_active_progress, handled by handleSuHistoryLoad) is the
-		// single source of truth for whether a turn is active. Forcing
-		// typing=false unconditionally causes:
-		//   - Completed iterations rendered as static tool_summary
-		//     instead of progress block history (handleSuHistoryLoad handles this)
-		//   - Progress updates ignored because handleProgressMsg skips
-		//     auto-start when m.typing=false && m.progress!=nil (state
-		//     mismatch between typing and server reality)
-		//   - Sidebar switch freezes: typing=false → busy=false →
-		//     tick chain drops to idleTick (3s), missing real-time updates
-		//
-		// Instead, keep the restored typing/progress as a "best guess"
-		// during the suLoading window. handleSuHistoryLoad will reconcile
-		// them with the server response:
-		//   acceptProgress → startAgentTurn() sets typing=true
-		//   default        → endAgentTurn()   sets typing=false
-		m.progress = nil // discard stale snapshot; server provides fresh one
+		// Remote mode: discard all stale client-side turn state.
+		// The server RPC (handleSuHistoryLoad) is the single source of truth.
+		m.progress = nil
+		m.typing = false
 		m.needFlushQueue = false
 		m.turnCancelled = false
 		m.typewriterTickActive = false
 		m.lastProgressSeq = 0
 		m.suPhaseDoneConfirmed = false
-		m.inputReady = false
-
-		// Remote mode: load history via RPC. Panel session switches do NOT
-		// go through the RestoreSession goroutine (which only runs at initial
-		// startup in main.go), so suLoadHistoryCmd MUST be called here to
-		// produce a suHistoryLoadMsg that clears suLoading and restores state.
+		m.inputReady = false // stays false until handleSuHistoryLoad completes
 		m.suLoading = true
 		m.splashFrame = 0
 
-		// Subscribe to the new session's chatID on the Hub so server-pushed
-		// events (progress, stream, outbound) are routed to this WS client.
+		// Subscribe to the new session's chatID on the Hub.
 		if m.channel.config.BindChatFn != nil {
 			_ = m.channel.config.BindChatFn(m.chatID)
 		} else {
 			m.showSystemMsg("⏳ 该会话的消息推送订阅未初始化，进度可能无法实时更新", feedbackWarning)
 		}
 
-		m.inputReady = true
-		// Check for pending AskUser questions from a previous session.
+		// Async history loading — handleSuHistoryLoad sets inputReady=true
+		// and reconciles typing/progress with server state.
 		cmds = append(cmds, m.checkAndRestorePendingAskUser())
-		// Start splash animation + async history loading.
-		// splashTick drives the loading animation; suLoadHistoryCmd produces
-		// suHistoryLoadMsg which clears suLoading and restores progress.
 		cmds = append(cmds, m.suLoadHistoryCmd())
+	} else {
+		// Local mode: restored state is authoritative, no RPC needed.
+		m.inputReady = true
 	}
 
 	return cmds

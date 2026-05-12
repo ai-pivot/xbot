@@ -1110,8 +1110,8 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 	// Y: confirm delete (follows D)
 	case (msg.String() == "y" || msg.String() == "Y") && m.panelSessionConfirmDelete:
 		m.panelSessionConfirmDelete = false
-		m.deleteLocalSession(m.panelSessionConfirmEntry)
-		return true, m, nil
+		cmd := m.deleteLocalSession(m.panelSessionConfirmEntry)
+		return true, m, cmd
 
 	// Any other key cancels delete confirmation
 	case m.panelSessionConfirmDelete:
@@ -3392,17 +3392,12 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	m.messages = nil
 	m.lastTokenUsage = nil
 	m.invalidateAllCache(false)
-	m.todos = nil // clear stale todos from previous session
+	m.todos = nil
 	m.todosDoneCleared = false
 	m.restoreSession()
-	// Ensure clean state — restored session may have stale typing=true
-	m.typing = false
-	m.inputReady = true
-	m.progress = nil
-	m.iterationHistory = nil
-	m.invalidateProgressHistoryCache()
-	m.messageQueue = nil
-	m.queueEditing = false
+	// Unified session setup — handles BindChatFn, suLoadHistoryCmd,
+	// checkAndRestorePendingAskUser, inputReady, etc.
+	cmds := m.postRestoreSessionSetup()
 	// Refresh sessions list cache so sidebar/sessions panel shows the new session
 	if m.sessionsListFn != nil {
 		m.panelSessionItems = m.sessionsListFn()
@@ -3411,11 +3406,11 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.channel.config.SessionsListRefresh()
 	}
 	m.showTempStatus(fmt.Sprintf("Created session: %s", name))
-	return nil
+	return tea.Batch(cmds...)
 }
 
 // deleteLocalSession deletes the selected session and switches to default if active.
-func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
+func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 	// 1. Remove from local JSON file (for local dir sessions).
 	// Use entry.ID (chatID) for matching, not entry.Label — the display label
 	// may have been renamed in DB but local JSON still has the original auto-name.
@@ -3432,14 +3427,14 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
 			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
 			m.showTempStatus(fmt.Sprintf("Delete failed: %v", err))
-			return
+			return nil
 		}
 		backendRemoved = true
 	}
 	// 3. Neither local nor backend succeeded.
 	if !localRemoved && !backendRemoved {
 		m.showTempStatus(fmt.Sprintf("Not found: %s", entry.Label))
-		return
+		return nil
 	}
 	// If we deleted the active session, switch to default
 	if entry.Active {
@@ -3447,7 +3442,6 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.chatID = m.defaultChatID
 		SetLastActiveSession(m.defaultChatID, m.defaultChatID)
 		m.sessionName = defaultSessionName
-		// Update workdir and persist CWD for the default session
 		m.workDir = m.defaultChatID
 		if m.channel != nil && m.channel.config.SetCWDFn != nil {
 			_ = m.channel.config.SetCWDFn("cli", m.defaultChatID, m.defaultChatID)
@@ -3455,9 +3449,19 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.messages = nil
 		m.lastTokenUsage = nil
 		m.invalidateAllCache(false)
-		m.todos = nil // clear stale todos from deleted session
+		m.todos = nil
 		m.todosDoneCleared = false
 		m.restoreSession()
+		cmds := m.postRestoreSessionSetup()
+		// Refresh sessions list so sidebar/sessions panel reflects the deletion
+		if m.sessionsListFn != nil {
+			m.panelSessionItems = m.sessionsListFn()
+		}
+		if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+			m.channel.config.SessionsListRefresh()
+		}
+		m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
+		return tea.Batch(cmds...)
 	}
 	// Refresh sessions list so sidebar/sessions panel reflects the deletion
 	if m.sessionsListFn != nil {
@@ -3467,6 +3471,7 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 		m.channel.config.SessionsListRefresh()
 	}
 	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
+	return nil
 }
 
 // switchToSession switches to the given session entry directly (used by sidebar click).
