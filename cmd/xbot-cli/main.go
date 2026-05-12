@@ -269,6 +269,10 @@ func saveCLIConfig(cfg *config.Config) error {
 	if cfg.CLI.ServerURL != "" || cfg.CLI.Token != "" {
 		merged.CLI = cfg.CLI
 	}
+	// Persist setup completion flag so isFirstRun() won't re-trigger on restart.
+	if cfg.CLISetupCompleted {
+		merged.CLISetupCompleted = true
+	}
 	return config.SaveToFile(path, merged)
 }
 
@@ -1042,6 +1046,7 @@ func main() {
 	}
 
 	// 首次运行检测（仅在交互模式下，传给 TUI 做 setup panel）
+	// Refined AFTER newCLIApp so we can also check DB subscriptions, not just config.json.
 	firstRun := prompt == "" && isFirstRun()
 
 	// 非交互模式
@@ -1069,6 +1074,19 @@ func main() {
 		fmt.Println("Backend: local mode")
 	}
 	defer app.Close()
+
+	// Refine firstRun: config.json check passed, but DB may already have a subscription.
+	// If a subscription exists in DB but config.json lacks cli_setup_completed,
+	// auto-write the marker so the setup panel won't reappear on next startup.
+	if firstRun && app.backend != nil {
+		if sub, err := app.backend.GetDefaultSubscription(cliSenderID); err == nil && sub != nil && sub.APIKey != "" {
+			firstRun = false
+			app.cfg.CLISetupCompleted = true
+			if err := saveCLIConfig(app.cfg); err != nil {
+				log.Warnf("Failed to persist cli_setup_completed after detecting DB subscription: %v", err)
+			}
+		}
+	}
 
 	// Shutdown pprof server on exit
 	if pprofServer != nil {
