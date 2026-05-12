@@ -628,6 +628,58 @@ func (c *CLIChannel) LoadHistory(history []HistoryMessage) {
 	}
 }
 
+// RestoreSession restores history + active progress + todos in one atomic step.
+// Uses the same suHistoryLoadMsg path as session switch, guaranteeing identical
+// rendering behavior for initial connect and reconnect.
+func (c *CLIChannel) RestoreSession(history []HistoryMessage, activeProgress *protocol.ProgressEvent, todos []protocol.TodoItem) {
+	c.programMu.Lock()
+	defer c.programMu.Unlock()
+	if c.program == nil {
+		// Program not started — cache for later application in newCLIModel.
+		if c.model != nil {
+			for _, hm := range history {
+				cm := cliMessage{
+					role:      hm.Role,
+					content:   hm.Content,
+					timestamp: hm.Timestamp,
+					isPartial: false,
+					dirty:     true,
+				}
+				if len(hm.Iterations) > 0 {
+					cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
+					for i, hi := range hm.Iterations {
+						cm.iterations[i] = cliIterationSnapshot(hi)
+					}
+				}
+				c.model.messages = append(c.model.messages, cm)
+			}
+			c.model.invalidateAllCache(false)
+			c.model.updateViewportContent()
+			// Defer progress restore — it will be applied via the first
+			// live progress event or on session switch. Storing as
+			// pendingProgress ensures the model starts in the right state.
+			if activeProgress != nil {
+				c.pendingProgress = activeProgress
+			}
+		} else {
+			c.pendingHistory = history
+		}
+		return
+	}
+	// Program running — send as suHistoryLoadMsg (same as session switch).
+	select {
+	case c.asyncCh <- suHistoryLoadMsg{
+		history:        history,
+		channelName:    "cli",
+		chatID:         c.config.ChatID,
+		activeProgress: activeProgress,
+		todos:          todos,
+	}:
+	default:
+		log.Warn("RestoreSession: asyncCh full, dropping restore")
+	}
+}
+
 // RestoreInitialProgress applies an active agent turn progress snapshot to the model.
 // Handles both pre-program startup (direct model mutation) and running program
 // (async channel). This is the correct way to inject progress from RPC/reconnect

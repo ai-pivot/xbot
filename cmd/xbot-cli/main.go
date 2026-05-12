@@ -2194,26 +2194,28 @@ func main() {
 		// Initial fetch — push only fires on CHANGES, so we need to
 		// pull the current state once on connect.
 		remoteCache.Refresh()
-		// Check if server has an active agent turn for this chat (mid-session reconnect).
-		// Run in goroutine to avoid blocking TUI startup on RPC timeout.
+		// Initial restore: load history + active progress + todos in one atomic
+		// step via RestoreSession (same path as session switch — guaranteed
+		// identical rendering). Run in goroutine to avoid blocking startup.
 		clipanic.Go("main.remote.RestoreActiveProgress", func() {
 			progress := app.backend.GetActiveProgress("cli", remoteChatID)
+			var todos []protocol.TodoItem
 			if progress != nil {
 				log.WithFields(log.Fields{
 					"chatID":    remoteChatID,
 					"phase":     progress.Phase,
 					"iteration": progress.Iteration,
-					"active":    len(progress.ActiveTools),
-					"completed": len(progress.CompletedTools),
 					"histLen":   len(progress.IterationHistory),
 				}).Info("RestoreActiveProgress: restoring progress snapshot")
-				// Use RestoreInitialProgress which handles both pre-program
-				// (direct model mutation) and running-program cases.
-				// SendProgress silently drops when c.program is nil (before Start()).
-				cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
 			} else {
 				log.WithField("chatID", remoteChatID).Info("RestoreActiveProgress: no active progress")
 			}
+			history, err := app.backend.GetHistory("cli", remoteChatID)
+			if err != nil {
+				log.WithError(err).Warn("RestoreActiveProgress: failed to load history")
+				return
+			}
+			cliCh.RestoreSession(history, progress, todos)
 		})
 
 		// Wire reconnect handler via Subscribe to reload history on WS reconnect.
@@ -2227,31 +2229,21 @@ func main() {
 					_ = app.backend.SetCWD("cli", remoteChatID, cwd)
 				}
 			}
-			if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
-				log.WithError(err).Warn("Failed to reload history after reconnect")
-			} else {
-				cliCh.LoadHistory(history)
-			}
-			// Re-check processing state after reconnect. Progress is restored via the
-			// WebSocket event-stream replay path (current iteration's active/completed tools).
-			// However, IterationHistory is NOT in replay events — fetch it via RPC
-			// and merge into the progress model using isRestore (bypasses seq dedup).
-			if app.backend.IsProcessing("cli", remoteChatID) {
-				cliCh.SetProcessing(true)
-				// Async: fetch IterationHistory from server and merge into progress model.
-				clipanic.Go("main.remote.RestoreReconnectHistory", func() {
-					progress := app.backend.GetActiveProgress("cli", remoteChatID)
-					if progress != nil && len(progress.IterationHistory) > 0 {
-						log.WithFields(log.Fields{
-							"chatID":  remoteChatID,
-							"histLen": len(progress.IterationHistory),
-						}).Info("RestoreReconnectHistory: merging iteration history")
-						cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
-					}
-				})
-			} else {
-				cliCh.SetProcessing(false)
-			}
+			// Reconnect: same as initial — load history + progress atomically.
+			clipanic.Go("main.remote.ReconnectRestore", func() {
+				progress := app.backend.GetActiveProgress("cli", remoteChatID)
+				history, err := app.backend.GetHistory("cli", remoteChatID)
+				if err != nil {
+					log.WithError(err).Warn("ReconnectRestore: failed to load history")
+					return
+				}
+				cliCh.RestoreSession(history, progress, nil)
+				if progress != nil {
+					cliCh.SetProcessing(true)
+				} else {
+					cliCh.SetProcessing(false)
+				}
+			})
 		})
 		// Wire connection state change handler via Subscribe for header bar indicator.
 		app.backend.Subscribe(protocol.EventPattern{Type: "conn_state"}, func(env protocol.EventEnvelope) {
