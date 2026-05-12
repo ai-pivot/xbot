@@ -151,6 +151,16 @@ func (c *CLIChannel) Start() error {
 		})
 		c.pendingRemotePluginCache = nil
 	}
+	// Set identity fields BEFORE calling handleSuHistoryLoad — the handler
+	// has a stale-result guard that checks channelName/chatID match.
+	c.model.channelName = "cli"
+	c.model.defaultChatID = c.config.ChatID
+	c.model.chatID = c.config.ChatID
+	c.model.sessionName, _ = ParseChatID(c.config.ChatID)
+	if c.model.sessionName == "" {
+		c.model.sessionName = defaultSessionName
+	}
+
 	if c.pendingHistory != nil && c.pendingProgress != nil {
 		// History + progress available — use suHistoryLoadMsg (same as session switch)
 		// to guarantee identical rendering. This is the only correct restore path.
@@ -174,13 +184,6 @@ func (c *CLIChannel) Start() error {
 			c.model.restoreProgressSnapshot(c.pendingProgress)
 			c.pendingProgress = nil
 		}
-	}
-	c.model.channelName = "cli"
-	c.model.defaultChatID = c.config.ChatID
-	c.model.chatID = c.config.ChatID
-	c.model.sessionName, _ = ParseChatID(c.config.ChatID)
-	if c.model.sessionName == "" {
-		c.model.sessionName = defaultSessionName
 	}
 
 	// Propagate late-injected services to model (set before Start() when model was nil)
@@ -651,35 +654,11 @@ func (c *CLIChannel) RestoreSession(history []HistoryMessage, activeProgress *pr
 	c.programMu.Lock()
 	defer c.programMu.Unlock()
 	if c.program == nil {
-		// Program not started — cache for later application in newCLIModel.
-		if c.model != nil {
-			for _, hm := range history {
-				cm := cliMessage{
-					role:      hm.Role,
-					content:   hm.Content,
-					timestamp: hm.Timestamp,
-					isPartial: false,
-					dirty:     true,
-				}
-				if len(hm.Iterations) > 0 {
-					cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-					for i, hi := range hm.Iterations {
-						cm.iterations[i] = cliIterationSnapshot(hi)
-					}
-				}
-				c.model.messages = append(c.model.messages, cm)
-			}
-			c.model.invalidateAllCache(false)
-			c.model.updateViewportContent()
-			// Defer progress restore — it will be applied via the first
-			// live progress event or on session switch. Storing as
-			// pendingProgress ensures the model starts in the right state.
-			if activeProgress != nil {
-				c.pendingProgress = activeProgress
-			}
-		} else {
-			c.pendingHistory = history
-		}
+		// Program not started — cache everything for Start() to process via
+		// handleSuHistoryLoad (same path as session switch).
+		// Do NOT touch c.model directly here — Start() owns initialization.
+		c.pendingHistory = history
+		c.pendingProgress = activeProgress
 		return
 	}
 	// Program running — send as suHistoryLoadMsg (same as session switch).
