@@ -36,6 +36,10 @@ type LLMFactory struct {
 	maxOutputTokens map[string]int     // senderID -> max_output_tokens
 	thinkingModes   map[string]string  // senderID -> thinking_mode
 
+	// globalMaxTokens overrides MaxOutputTokens for ALL clients created by
+	// createClientFromSub. Set via CLI --max-tokens flag. 0 = no override.
+	globalMaxTokens int
+
 	// hasCustomLLMCache 缓存用户是否有自定义 LLM 配置（避免频繁查数据库）
 	// 使用 sync.Map 保证并发安全
 	hasCustomLLMCache sync.Map
@@ -84,6 +88,15 @@ func (f *LLMFactory) SetRetryConfig(cfg llm.RetryConfig) {
 func (f *LLMFactory) SetModelContexts(m map[string]int) {
 	f.mu.Lock()
 	f.modelContexts = m
+	f.mu.Unlock()
+}
+
+// SetGlobalMaxTokens sets a global override for max_output_tokens that applies to
+// ALL clients created by createClientFromSub (i.e. per-user subscription clients).
+// This is used by the CLI --max-tokens flag. Set to 0 to disable override.
+func (f *LLMFactory) SetGlobalMaxTokens(n int) {
+	f.mu.Lock()
+	f.globalMaxTokens = n
 	f.mu.Unlock()
 }
 
@@ -861,12 +874,19 @@ func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model stri
 	if sub.BaseURL == "" || sub.APIKey == "" {
 		return nil
 	}
+	// globalMaxTokens (from CLI --max-tokens) overrides the subscription value.
+	maxTokens := sub.MaxOutputTokens
+	f.mu.RLock()
+	if f.globalMaxTokens > 0 {
+		maxTokens = f.globalMaxTokens
+	}
+	f.mu.RUnlock()
 	cfg := &sqlite.UserLLMConfig{
 		Provider:        sub.Provider,
 		BaseURL:         sub.BaseURL,
 		APIKey:          sub.APIKey,
 		Model:           model,
-		MaxOutputTokens: sub.MaxOutputTokens,
+		MaxOutputTokens: maxTokens,
 		OnModelsLoaded: func(models []string) {
 			if f.subscriptionSvc != nil && sub.ID != "" {
 				if err := f.subscriptionSvc.UpdateCachedModels(sub.ID, models); err != nil {

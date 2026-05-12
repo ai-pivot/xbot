@@ -247,6 +247,26 @@ func (ds *dirSessions) addSessionAuto() (name string, chatID string, err error) 
 	return name, chatID, nil
 }
 
+// NewAutoSession creates a new auto-named session for the given workDir and
+// immediately persists it as the last active session. Returns the display name,
+// full chatID, and any error.
+func NewAutoSession(workDir string) (name, chatID string, err error) {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return "", "", fmt.Errorf("load sessions: %w", err)
+	}
+	name, chatID, err = ds.addSessionAuto()
+	if err != nil {
+		return "", "", err
+	}
+	ds.LastActive = chatID
+	if err := ds.save(); err != nil {
+		return "", "", fmt.Errorf("save sessions: %w", err)
+	}
+	SetLastActiveSession(workDir, chatID)
+	return name, chatID, nil
+}
+
 // RenameSession renames a session in the directory (local JSON only).
 func (ds *dirSessions) RenameSession(oldName, newName string) error {
 	if oldName == newName {

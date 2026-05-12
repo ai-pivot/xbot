@@ -4,7 +4,10 @@
 // Usage:
 //   xbot-cli               恢复上次会话（默认）
 //   xbot-cli --resume      恢复会话并显示当前状态
-//   xbot-cli --new         开始新会话
+//   xbot-cli --new              开始新会话
+//   xbot-cli --new-session      开始新会话（同 --new）
+//   xbot-cli --max-context N    指定最大上下文 token 数
+//   xbot-cli --max-tokens N     指定最大输出 token 数
 //   xbot-cli <prompt>      非交互模式执行单次 prompt
 //   xbot-cli -p <prompt>   非交互模式执行单次 prompt
 //   echo "hello" | xbot-cli  管道模式
@@ -165,7 +168,10 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		}
 		return "0.9"
 	}()
-	vals["tavily_api_key"] = app.cfg.TavilyAPIKey
+	// ScopeUser keys: tavily_api_key (user_settings → config.json fallback)
+	if _, ok := vals["tavily_api_key"]; !ok {
+		vals["tavily_api_key"] = app.cfg.TavilyAPIKey
+	}
 	// ScopeUser keys (max_iterations, max_concurrency, max_context_tokens):
 	// Primary source is the user_settings DB (written by /set). Only fallback
 	// to config.json when DB has no value (first-run or never changed).
@@ -745,7 +751,7 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 	return cmds
 }
 
-func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
+func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOutputTokens int) *cliApp {
 	cfg := config.Load()
 
 	// If --server was not specified on the command line, fall back to config.
@@ -795,6 +801,16 @@ func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 		syncLLMFromActiveSub(cfg)
 	}
 
+	// Apply CLI flag overrides (after subscription loading so they take precedence).
+	if maxContextTokens > 0 {
+		cfg.Agent.MaxContextTokens = maxContextTokens
+		log.WithField("max_context_tokens", maxContextTokens).Info("CLI --max-context override applied")
+	}
+	if maxOutputTokens > 0 {
+		cfg.LLM.MaxOutputTokens = maxOutputTokens
+		log.WithField("max_output_tokens", maxOutputTokens).Info("CLI --max-tokens override applied")
+	}
+
 	llmClient, err := createLLM(cfg.LLM, llm.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
 		Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
@@ -838,6 +854,9 @@ func newCLIApp(serverURL, token string, forceLocal bool) *cliApp {
 		backend.IndexGlobalTools()
 		backend.LLMFactory().SetModelTiers(cfg.LLM)
 		backend.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
+		if maxOutputTokens > 0 {
+			backend.LLMFactory().SetGlobalMaxTokens(maxOutputTokens)
+		}
 		backend.LLMFactory().SetRetryConfig(llm.RetryConfig{
 			Attempts: uint(cfg.Agent.LLMRetryAttempts),
 			Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
@@ -915,8 +934,10 @@ func main() {
 		fmt.Println()
 		fmt.Println("Options:")
 		fmt.Println("  --help, -h          Show this help")
-		fmt.Println("  --new               Start a new session")
+		fmt.Println("  --new, --new-session  Start a new isolated session (auto-named)")
 		fmt.Println("  --resume            Resume last session (default)")
+		fmt.Println("  --max-context N     Override max context tokens (e.g. 128000)")
+		fmt.Println("  --max-tokens N      Override max output tokens (e.g. 8192)")
 		fmt.Println("  -p <prompt>         Non-interactive single prompt")
 		fmt.Println("  --token <token>     Token for remote server")
 		fmt.Println("  --workspace <path>  Override workspace")
@@ -960,12 +981,14 @@ func main() {
 		pprofServer      *pprof.Server // initialized if --pprof flag is set
 		flagSidebarWidth int           // --sidebar-width 25 (range 16-40)
 		flagNoSidebar    bool          // --no-sidebar
+		flagMaxContext   int           // --max-context N (override max context tokens)
+		flagMaxTokens    int           // --max-tokens N (override max output tokens)
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--resume":
 			// 保留兼容性，行为与默认相同
-		case "--new":
+		case "--new", "--new-session":
 			newSession = true
 		case "-p":
 			if len(os.Args) > i+1 {
@@ -1031,6 +1054,20 @@ func main() {
 			}
 		case "--no-sidebar":
 			flagNoSidebar = true
+		case "--max-context":
+			if len(os.Args) > i+1 {
+				if n, err := strconv.Atoi(os.Args[i+1]); err == nil && n > 0 {
+					flagMaxContext = n
+				}
+				i++
+			}
+		case "--max-tokens":
+			if len(os.Args) > i+1 {
+				if n, err := strconv.Atoi(os.Args[i+1]); err == nil && n > 0 {
+					flagMaxTokens = n
+				}
+				i++
+			}
 		default:
 			if !strings.HasPrefix(os.Args[i], "-") {
 				prompt = os.Args[i]
@@ -1051,21 +1088,21 @@ func main() {
 
 	// 非交互模式
 	if prompt != "" {
-		executeNonInteractive(prompt)
+		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens)
 		return
 	}
 
 	if newSession {
-		fmt.Println("Mode: new session (--new)")
+		fmt.Println("Mode: new session (--new / --new-session)")
 	} else {
-		fmt.Println("Mode: resuming last session (use --new for new session)")
+		fmt.Println("Mode: resuming last session (use --new or --new-session for new session)")
 	}
 	fmt.Println("Starting...")
 
 	if flagLocal {
 		flagServer = ""
 	}
-	app := newCLIApp(flagServer, flagToken, flagLocal)
+	app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens)
 	if flagLocal {
 		fmt.Println("Backend: legacy local mode (--local)")
 	} else if app.backend != nil && app.backend.IsRemote() {
@@ -1098,12 +1135,20 @@ func main() {
 	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
 	absWorkDir, _ := filepath.Abs(app.workDir)
 
-	// Restore last active session on startup.
+	// Restore last active session on startup, unless --new/--new-session is used.
 	// Both local and remote mode use local sessions.json — it's written by
 	// SetLastActiveSession whenever the user switches sessions in the TUI.
 	// RPC is not available here (backend not started yet).
 	initialChatID := absWorkDir
-	if last := channel.GetLastActiveSession(absWorkDir); last != "" {
+	if newSession {
+		// --new/--new-session: unconditionally create a new isolated session.
+		name, chatID, err := channel.NewAutoSession(absWorkDir)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to create new session")
+		}
+		initialChatID = chatID
+		log.WithFields(log.Fields{"chatID": chatID, "name": name}).Info("Created new session")
+	} else if last := channel.GetLastActiveSession(absWorkDir); last != "" {
 		initialChatID = last
 		log.WithFields(log.Fields{"chatID": initialChatID}).Info("Restoring last active session")
 	}
@@ -1160,8 +1205,15 @@ func main() {
 					}
 					return "none"
 				}(),
-				"memory_provider":    app.cfg.Agent.MemoryProvider,
-				"tavily_api_key":     app.cfg.TavilyAPIKey,
+				"memory_provider": app.cfg.Agent.MemoryProvider,
+				"tavily_api_key": func() string {
+					if settings, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
+						if v := settings["tavily_api_key"]; v != "" {
+							return v
+						}
+					}
+					return app.cfg.TavilyAPIKey
+				}(),
 				"context_mode":       app.cfg.Agent.ContextMode,
 				"max_iterations":     fmt.Sprintf("%d", app.cfg.Agent.MaxIterations),
 				"max_concurrency":    fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency),
@@ -2780,8 +2832,8 @@ func red(s string) string {
 }
 
 // executeNonInteractive 非交互模式：单次执行 prompt 并输出到 stdout。
-func executeNonInteractive(prompt string) {
-	app := newCLIApp("", "", true) // non-interactive always uses local backend
+func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int) {
+	app := newCLIApp("", "", true, maxContextTokens, maxOutputTokens) // non-interactive always uses local backend
 	defer app.Close()
 
 	absWorkDir, _ := filepath.Abs(app.workDir)
