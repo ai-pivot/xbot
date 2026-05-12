@@ -1489,13 +1489,16 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 func (m *cliModel) handleTickMsg() []tea.Cmd {
 	var cmds []tea.Cmd
 
-	// Splash / suLoading animation
+	// Splash / suLoading animation — data-ready driven, no artificial delay.
 	if !m.splashDone || m.suLoading {
 		m.splashFrame++
-		if !m.suLoading && m.ready && m.splashFrame >= 20 {
+		// End splash as soon as model is ready and RPC loading is done.
+		if !m.suLoading && m.ready {
 			m.splashDone = true
 		}
-		if m.splashFrame >= 40 && !m.suLoading {
+		// Hard limit: ~3s (30 frames × 100ms) UNCONDITIONAL — safety net
+		// if RPC hangs. User sees the UI instead of staring at splash forever.
+		if m.splashFrame >= 30 {
 			m.splashDone = true
 		}
 	}
