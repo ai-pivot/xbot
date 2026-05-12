@@ -582,7 +582,6 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.turnCancelled = false
 
 		m.typewriterTickActive = false
-		m.tickGen++
 		m.lastProgressSeq = 0
 		m.suPhaseDoneConfirmed = false
 		m.messages = nil
@@ -590,7 +589,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 			m.suLoading = true
 			m.splashFrame = 0
-			return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+			return m.suLoadHistoryCmd()
 		}
 
 	case "/ss", "/sessions":
@@ -629,7 +628,6 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				m.turnCancelled = false
 
 				m.typewriterTickActive = false
-				m.tickGen++
 				m.lastProgressSeq = 0
 				m.suPhaseDoneConfirmed = false
 				m.messages = nil
@@ -680,7 +678,6 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			m.turnCancelled = false
 
 			m.typewriterTickActive = false
-			m.tickGen++
 			m.lastProgressSeq = 0
 			m.suPhaseDoneConfirmed = false
 			m.messages = nil
@@ -688,7 +685,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			if m.channel != nil && m.channel.config.DynamicHistoryLoader != nil {
 				m.suLoading = true
 				m.splashFrame = 0
-				return tea.Batch(m.splashTick(0), m.suLoadHistoryCmd())
+				return m.suLoadHistoryCmd()
 			}
 			m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", arg), feedbackInfo)
 		}
@@ -2612,27 +2609,11 @@ func (m *cliModel) jumpToSearchResult(idx int) {
 	}
 }
 
-// tickCmd returns a command that periodically refreshes viewport during agent processing.
-// Captures the current tickGen to detect and discard stale ticks from previous chains.
-func (m *cliModel) tickCmd() tea.Cmd {
-	gen := m.tickGen
-	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
-		return cliTickMsg{gen: gen}
-	})
-}
-
 // typewriterTickCmd returns a command that advances the typewriter by 1 rune every 50ms.
 // Runs independently from the main tick to give the typewriter its own update frequency.
 func typewriterTickCmd() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
 		return typewriterTickMsg{}
-	})
-}
-
-// idleTickCmd returns a low-frequency tick (3s) for placeholder rotation in idle state.
-func idleTickCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-		return idleTickMsg{}
 	})
 }
 

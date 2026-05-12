@@ -830,65 +830,53 @@ func TestCLIModelUpdateTickMsg(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// Tick without typing/progress should NOT schedule another tick
+	// Global tick: just verify no panic in idle state
 	tickMsg := cliTickMsg{}
-	_, cmd := model.Update(tickMsg)
-	// cmd may be non-nil due to spinner/viewport/textarea sub-updates, but
-	// the tick itself should not re-schedule. We just verify no panic.
-	_ = cmd
+	model.Update(tickMsg)
 
-	// Tick with typing active should schedule another tick
+	// Global tick with typing active: should also not panic
 	model.typing = true
-	_, cmd2 := model.Update(tickMsg)
-	if cmd2 == nil {
-		t.Error("Update(tickMsg) with typing=true should return a command")
-	}
+	model.Update(tickMsg)
 }
 
-func TestTickChainSelfHealingViaIdleTick(t *testing.T) {
+func TestGlobalTickUpdatesSpinnerAndProgress(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// Simulate typing=true but idle tick arrives (e.g. fast chain broke).
-	// handleIdleTick should detect active session and re-arm fast tick.
+	// Simulate an active agent turn.
 	model.typing = true
+	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
 
-	_, cmd := model.Update(idleTickMsg{})
-	if cmd == nil {
-		t.Fatal("idleTickMsg with typing=true should return tickCmd to self-heal")
+	// cliTickMsg from the global goroutine should advance spinner
+	// and NOT panic or return errors.
+	model.Update(cliTickMsg{})
+	if !model.typing {
+		t.Fatal("tick should not change typing state")
 	}
 }
 
-func TestTickChainSelfHealingViaProgressMsg(t *testing.T) {
+func TestGlobalTickAdvancesSplashAnimation(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.channelName = "cli"
-	model.chatID = "/test"
 
-	// Progress events should emit tickCmd to ensure the chain is running.
-	model.typing = true
-
-	_, cmd := model.Update(cliProgressMsg{payload: &protocol.ProgressEvent{
-		Iteration: 1,
-		Phase:     "thinking",
-		ChatID:    "cli:/test",
-	}})
-	_ = cmd // no panic, tickCmd is emitted
+	// Splash not done — tick should advance splashFrame.
+	model.splashDone = false
+	model.Update(cliTickMsg{})
+	if model.splashFrame != 1 {
+		t.Fatalf("expected splashFrame=1, got %d", model.splashFrame)
+	}
 }
 
 func TestStartAgentTurnAndTypingTransition(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 
-	// startAgentTurn no longer manages tickCmd directly.
-	// The wasTyping guard at the end of Update() handles idle→typing transitions.
-	// Simulate this via cliProcessingMsg (realistic remote-mode scenario):
-	// server sends SetProcessing(true) → cliProcessingMsg → startAgentTurn.
-	model.pendingCmds = nil
+	// cliProcessingMsg sets typing=true. In the new global-ticker architecture,
+	// no tickCmd is needed — the global goroutine handles ticks.
 	model.typing = false
-	_, cmd := model.Update(cliProcessingMsg{processing: true})
-	if cmd == nil {
-		t.Fatal("Update should return cmd (tickCmd) after idle→typing transition via wasTyping guard")
+	model.Update(cliProcessingMsg{processing: true})
+	if !model.typing {
+		t.Fatal("cliProcessingMsg should set typing=true")
 	}
 }
 
@@ -1363,15 +1351,6 @@ func TestCLIModelSendMessageEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Helper Function Tests
 // ---------------------------------------------------------------------------
-
-func TestTickCmd(t *testing.T) {
-	model := newCLIModel()
-	model.tickGen = 1
-	cmd := model.tickCmd()
-	if cmd == nil {
-		t.Error("tickCmd() returned nil")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // cliMessage Tests

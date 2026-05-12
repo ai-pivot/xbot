@@ -32,15 +32,38 @@ import (
 )
 
 func NewCLIChannel(cfg *CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
-	return &CLIChannel{
+	ch := &CLIChannel{
 		config:     cfg,
 		msgBus:     msgBus,
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan bus.OutboundMessage, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
-		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound
+		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
 		stopCh:     make(chan struct{}),
 	}
+	// Global ticker goroutine: sends cliTickMsg every 100ms. This is the
+	// SINGLE source of all timed UI updates (splash animation, spinner,
+	// progress timers, queue flush, placeholder rotation). No BubbleTea
+	// cmd chain is needed — eliminating the class of bugs where multiple
+	// cmd chains accumulate and double the tick rate.
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				select {
+				case ch.asyncCh <- cliTickMsg{}:
+				default:
+					// Channel full — drop tick. Next tick will arrive in 100ms.
+					// This prevents blocking the ticker goroutine.
+				}
+			case <-ch.stopCh:
+				return
+			}
+		}
+	}()
+	return ch
 }
 
 // Name 返回渠道名称

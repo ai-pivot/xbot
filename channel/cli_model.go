@@ -235,13 +235,6 @@ func (m *cliModel) cycleModel() {
 }
 
 // tickerTickMsg 是 ticker 定时 tick 消息
-type tickerTickMsg struct{}
-
-// splashTickMsg 启动画面定时 tick 消息
-type splashTickMsg struct {
-	frame int    // 当前帧索引
-	gen   uint64 // tickGen at time of creation; stale ticks are discarded
-}
 
 // debugCaptureMsg triggers a UI capture (dump View() to file).
 type debugCaptureMsg struct{}
@@ -500,7 +493,6 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		m.needFlushQueue = false
 		m.turnCancelled = false
 		m.typewriterTickActive = false
-		m.tickGen++ // invalidate any pending ticks from previous chain
 		m.lastProgressSeq = 0
 		m.suPhaseDoneConfirmed = false
 		m.inputReady = false
@@ -526,7 +518,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		// Start splash animation + async history loading.
 		// splashTick drives the loading animation; suLoadHistoryCmd produces
 		// suHistoryLoadMsg which clears suLoading and restores progress.
-		cmds = append(cmds, m.splashTick(0), m.suLoadHistoryCmd())
+		cmds = append(cmds, m.suLoadHistoryCmd())
 	}
 
 	return cmds
@@ -746,7 +738,6 @@ type cliModel struct {
 	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
 	unreadSessions         map[string]bool        // chatID → has unread results the user hasn't viewed yet
 	lastBusyStates         map[string]bool        // previous busy state per session, for detecting busy→idle transition
-	tickGen                uint64                 // incremented on session switch; stale ticks are discarded
 	typewriterTickActive   bool                   // true when typewriter tick chain (50ms) is running
 	twVisible              int                    // typewriter: runes currently visible in stream content
 	rwVisible              int                    // typewriter: runes currently visible in reasoning stream content
@@ -961,6 +952,7 @@ type cliModel struct {
 	pendingUserMsg   *cliMessage       // most recent user message sent but not yet confirmed in DB
 	pendingSuRestore *suHistoryLoadMsg // pre-start restore data, consumed by Init()
 	turnCancelled    bool              // true after Ctrl+C — prevents auto-start on stale progress
+	idleTickCounter  int               // counts 100ms ticks in idle state; placeholder rotates every 30
 
 	// --- Deterministic rendering: per-turn completion tracking ---
 	// turnDoneFlags tracks whether specific events have been processed for a turn.
@@ -1189,16 +1181,12 @@ type cliHistoryLoadMsg struct {
 	history     []cliMessage
 }
 
-// cliTickMsg 定时刷新（用于流式输出动画）
-type cliTickMsg struct {
-	gen uint64 // tick generation: stale ticks from previous chains are discarded
-}
+// cliTickMsg 全局 ticker 定时刷新消息（100ms 间隔，由全局 goroutine 驱动）。
+// 不再使用 BubbleTea cmd chain，消除了 chain 累积导致 tick 加倍的问题。
+type cliTickMsg struct{}
 
 // typewriterTickMsg 独立的打字机刷新（50ms 间隔，逐 rune 输出）
 type typewriterTickMsg struct{}
-
-// idleTickMsg 低频定时刷新（用于 placeholder 轮转）
-type idleTickMsg struct{}
 
 // cliTempStatusClearMsg 临时状态提示自动清除
 type cliTempStatusClearMsg struct{}
@@ -1316,18 +1304,12 @@ func (m *cliModel) refreshCachedModelName() {
 	}
 }
 
-// Init 初始化 — 启动 splash 画面动画（最小展示 1 秒）
+// Init 初始化。全局 ticker goroutine 已在 NewCLIChannel 中启动，
+// 不需要 Init 启动任何 tick chain。
 func (m *cliModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink, m.splashTick(0)}
-	// Always start one tick chain. handleTickMsg decides whether to
-	// continue with fast ticks (busy), slow ticks (idle), or stop.
-	// This replaces the old fastTickActive flag pattern which suffered
-	// from "flag says yes but chain never started" bugs when handlers
-	// set the flag but their returned cmds were discarded.
-	cmds = append(cmds, m.tickCmd())
+	cmds := []tea.Cmd{textarea.Blink}
 	// If RestoreSession cached data before program start, emit it as
-	// a tea.Cmd so handleSuHistoryLoad runs inside the event loop
-	// (cmds are properly batched, not discarded).
+	// a tea.Cmd so handleSuHistoryLoad runs inside the event loop.
 	if m.pendingSuRestore != nil {
 		msg := *m.pendingSuRestore
 		m.pendingSuRestore = nil
@@ -1347,14 +1329,6 @@ func (m *cliModel) debugCaptureTick() tea.Cmd {
 	}
 	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return debugCaptureMsg{}
-	})
-}
-
-// splashTick 生成启动画面动画的 tick 命令
-func (m *cliModel) splashTick(frame int) tea.Cmd {
-	gen := m.tickGen
-	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
-		return splashTickMsg{frame: frame + 1, gen: gen}
 	})
 }
 

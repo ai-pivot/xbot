@@ -1092,7 +1092,6 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 		// Emit a tickCmd to guarantee the fast tick chain is running.
 		// Emit a tickCmd to kick the tick chain after restoring.
-		cmds = append(cmds, m.tickCmd())
 		// If the restored progress has stream or reasoning content, start the
 		// typewriter tick immediately. Without this, the cursor won't blink and
 		// streaming content won't animate until the next handleTickMsg cycle.
@@ -1149,7 +1148,6 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Start a tick chain even when idle, so handleTickMsg can evaluate
 		// sidebarHasBusySessions and animate sidebar spinners for non-active
 		// busy sessions.
-		cmds = append(cmds, m.tickCmd())
 		// Reload history to pick up messages that arrived while we were viewing
 		// another session (e.g. the assistant's final reply was filtered out by
 		// ChatID check during the agent session view).
@@ -1235,43 +1233,6 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 }
 
 // handleSplashTick processes splash animation frames.
-func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
-	// Stale tick from a previous tick chain — discard.
-	if msg.gen != m.tickGen {
-		return m, nil
-	}
-	var cmds []tea.Cmd
-	m.splashFrame = msg.frame
-	if m.suLoading {
-		// /su 历史加载中，持续动画
-		cmds = append(cmds, m.splashTick(msg.frame))
-		return m, tea.Batch(cmds...)
-	}
-	if m.ready && msg.frame >= 20 {
-		// 初始化完成且已展示至少 1 秒（20 帧 × 50ms）
-		m.splashDone = true
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive {
-			cmds = append(cmds, m.tickCmd())
-		} else if !m.typing {
-			cmds = append(cmds, idleTickCmd())
-		}
-		return m, tea.Batch(cmds...)
-	}
-	// 兜底上限：~2 秒（40 帧）
-	if msg.frame >= 40 {
-		m.splashDone = true
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive {
-			cmds = append(cmds, m.tickCmd())
-		} else if !sessionActive && !m.typing {
-			cmds = append(cmds, idleTickCmd())
-		}
-		return m, tea.Batch(cmds...)
-	}
-	cmds = append(cmds, m.splashTick(msg.frame))
-	return m, tea.Batch(cmds...)
-}
 
 // handleToastMsg enqueues a toast notification.
 func (m *cliModel) handleToastMsg(msg cliToastMsg) []tea.Cmd {
@@ -1519,53 +1480,33 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 
 // handleTickMsg processes the fast tick (100ms) message.
 // Returns tea.Cmds to batch with other commands.
+
+// handleTickMsg processes the global 100ms tick from the goroutine in
+// NewCLIChannel. It handles ALL timed UI updates: splash animation,
+// spinner/progress, queue flush, and placeholder rotation.
+// Returns cmds only for typewriter (separate chain) and queue flush.
+// NEVER returns tickCmd — the global goroutine is the single tick source.
 func (m *cliModel) handleTickMsg() []tea.Cmd {
 	var cmds []tea.Cmd
 
-	// Always refresh bg task count on tick so status bar updates immediately
-	// when a bg task completes (even when no progress event is coming)
-	if m.bgTaskCountFn != nil {
-		prev := m.bgTaskCount
-		m.bgTaskCount = m.bgTaskCountFn()
-		// Force re-render when count changes (e.g. task killed in panel)
-		if m.bgTaskCount != prev {
-			m.renderCacheValid = false
+	// Splash / suLoading animation
+	if !m.splashDone || m.suLoading {
+		m.splashFrame++
+		if !m.suLoading && m.ready && m.splashFrame >= 20 {
+			m.splashDone = true
+		}
+		if m.splashFrame >= 40 && !m.suLoading {
+			m.splashDone = true
 		}
 	}
-	// Refresh agent count on tick
-	if m.agentCountFn != nil {
-		prev := m.agentCount
-		m.agentCount = m.agentCountFn()
-		if m.agentCount != prev {
-			m.renderCacheValid = false
-		}
-	}
-	// Schedule next tick when agent is active or bg tasks are running.
-	// IMPORTANT: only emit ONE tickCmd to prevent exponential message growth
-	// (two tickCmd() would double the message count every 100ms → CPU explosion).
-	// Use server-authoritative progress state instead of client-maintained m.typing.
-	// m.typing can be stale after session switches; m.progress.Phase comes from
-	// the server's progress events and is the ground truth for session activity.
+
+	// Spinner / progress update
 	sessionActive := m.progress != nil && m.progress.Phase != "done"
 	busy := m.typing || sessionActive
 	needsSpinnerTick := busy || m.sidebarHasBusySessions
+
 	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || needsSpinnerTick {
-		cmds = append(cmds, m.tickCmd())
-	} else if m.needFlushQueue && len(m.messageQueue) > 0 {
-		// Pending queue flush — use fast tick so the queued message
-		// is sent promptly (not waiting 3s for idleTickCmd).
-		cmds = append(cmds, m.tickCmd())
-	} else {
-		// Transition to idle: start low-frequency tick for placeholder rotation
-		cmds = append(cmds, idleTickCmd())
-	}
-	if needsSpinnerTick {
-		// Advance spinner frame on every tick so the animation stays in sync
-		// with elapsed time display. Previously driven by a separate tickerTickMsg
-		// chain that could break when m.progress briefly went nil.
 		m.ticker.tick()
-		// Typewriter is now driven by its own typewriterTickMsg chain (50ms).
-		// Start the typewriter chain if there's stream or reasoning content to reveal.
 		hasStreamContent := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
 		hasReasoningContent := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
 		if hasStreamContent || hasReasoningContent {
@@ -1576,43 +1517,20 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		}
 		m.updateViewportContent()
 	} else {
-		// Not busy: stop typewriter chain
 		m.typewriterTickActive = false
-		// Still refresh viewport if messages were added/changed (e.g. assistant
-		// reply arrived via handleAgentMessage after PhaseDone cleared progress).
 		if !m.renderCacheValid {
 			m.updateViewportContent()
 		}
 	}
 
-	// §Q Flush message queue on tick (not in cliProgressMsg/cliOutboundMsg).
-	// This ensures the previous reply is already appended to m.messages before
-	// the queued message gets sent, producing correct order: msg1, reply1, msg2.
-	// Guard: only flush when NOT typing AND the previous turn's reply has been
-	// received (or the previous turn had no assistant reply — e.g. empty cancel).
-	// Also guarded by !suLoading: during session switch in remote mode, typing
-	// and progress are reset to idle but queue flush must wait until the RPC
-	// (handleSuHistoryLoad) reconciles state with the server.
+	// Queue flush
 	if m.needFlushQueue && !m.typing && !m.suLoading && len(m.messageQueue) > 0 {
-		// Check that the previous turn's reply was received before flushing.
-		// The previous turn is the current agentTurnID (endAgentTurn was already
-		// called, but startAgentTurn for the new turn hasn't run yet).
-		// We can flush only if:
-		// 1. replyReceived is true (handleAgentMessage processed the reply), OR
-		// 2. doneProcessed is true AND the turn was cancelled (no reply coming).
-		// 3. Timeout: if doneProcessed has been true for >2s, force flush to
-		//    prevent queue from getting permanently stuck.
 		prevTurnID := m.agentTurnID
 		canFlush := m.isTurnReplyReceived(prevTurnID)
 		if !canFlush && m.isTurnDoneProcessed(prevTurnID) && m.turnCancelled {
-			// Cancelled turn: no assistant reply coming (or empty cancel ack).
-			// The doneProcessed flag means PhaseDone already ran.
 			canFlush = true
 		}
 		if !canFlush && m.isTurnDoneProcessed(prevTurnID) {
-			// Timeout fallback: if PhaseDone arrived >2s ago but no reply,
-			// force flush to prevent the queue from being permanently stuck.
-			// This handles edge cases where the reply is lost or never sent.
 			prevFlag := m.getTurnFlag(prevTurnID)
 			if prevFlag != nil && !prevFlag.doneTime.IsZero() && time.Since(prevFlag.doneTime) > 2*time.Second {
 				log.WithField("turnID", prevTurnID).Warn("Queue flush timeout: forcing flush after 2s without reply")
@@ -1623,37 +1541,27 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		if canFlush {
 			m.needFlushQueue = false
 			m.flushMessageQueue()
-			// Always return after flush so the tickCmd queued by startAgentTurn()
-			// (inside sendMessageFromQueue → sendMessage) gets picked up in cmds.
 			return cmds
 		}
-		// Not safe to flush yet — schedule another tick to retry soon.
-		cmds = append(cmds, m.tickCmd())
 	}
 
-	return cmds
-}
-
-// handleIdleTick processes the low-frequency idle tick for placeholder rotation.
-func (m *cliModel) handleIdleTick() []tea.Cmd {
-	var cmds []tea.Cmd
-	// Low-frequency idle tick: rotate placeholder and keep alive
-	// Remote mode: keep retrying model name fetch until we get one.
-	if m.cachedModelName == "" && m.remoteMode {
-		m.refreshCachedModelName()
-	}
-	sessionActive := m.progress != nil && m.progress.Phase != "done"
-	if !sessionActive && !m.typing {
-		m.updatePlaceholder()
-		cmds = append(cmds, idleTickCmd())
+	// Idle: placeholder rotation (every 30 ticks = ~3s)
+	if !busy && !needsSpinnerTick && m.splashDone {
+		m.idleTickCounter++
+		if m.idleTickCounter >= 30 {
+			m.idleTickCounter = 0
+			if m.cachedModelName == "" && m.remoteMode {
+				m.refreshCachedModelName()
+			}
+			m.updatePlaceholder()
+		}
 	} else {
-		// Self-healing: if idle tick detected an active session, re-arm fast tick.
-		cmds = append(cmds, m.tickCmd())
+		m.idleTickCounter = 0
 	}
+
 	return cmds
 }
 
-// handleTypewriterTick advances the typewriter effect and continues the chain.
 func (m *cliModel) handleTypewriterTick() []tea.Cmd {
 	var cmds []tea.Cmd
 	// Advance typewriter by 1 rune on its own 50ms cadence.
@@ -1680,12 +1588,7 @@ func (m *cliModel) handleSplashDone() []tea.Cmd {
 	if m.cachedModelName == "" && m.remoteMode {
 		m.refreshCachedModelName()
 	}
-	sessionActive := m.progress != nil && m.progress.Phase != "done"
-	if sessionActive {
-		cmds = append(cmds, m.tickCmd())
-	} else if !sessionActive && !m.typing {
-		cmds = append(cmds, idleTickCmd())
-	}
+	_ = m.progress // sessionActive computed for future use
 	return cmds
 }
 
