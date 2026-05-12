@@ -517,8 +517,11 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 			m.showSystemMsg("⏳ 该会话的消息推送订阅未初始化，进度可能无法实时更新", feedbackWarning)
 		}
 
-		cmds = append(cmds, m.splashTick(0), m.suLoadHistoryCmd())
-	} else {
+		// Remote mode: skip suLoadHistoryCmd — RestoreSession goroutine already
+		// loads history + progress via RPC. Calling suLoadHistoryCmd here would
+		// trigger a second handleSuHistoryLoad call, causing duplicate
+		// removeLastToolSummary invocations that delete tool_summaries from
+		// completed turns.
 		// Local mode: restored state is authoritative (no RPC delay).
 		m.inputReady = true
 		// Check for pending AskUser questions from a previous session.
@@ -1334,6 +1337,16 @@ func (m *cliModel) refreshCachedModelName() {
 // Init 初始化 — 启动 splash 画面动画（最小展示 1 秒）
 func (m *cliModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{textarea.Blink, m.splashTick(0)}
+	// If model was restored with an active turn (e.g. RestoreSession in Start()),
+	// kick the ticker immediately — no one else will start it.
+	if m.typing && m.progress != nil && !m.fastTickActive {
+		m.fastTickActive = true
+		cmds = append(cmds, m.tickCmd())
+	}
+	// Always kick at least one tick for sidebar spinner (checks busy sessions).
+	if !m.fastTickActive {
+		cmds = append(cmds, m.tickCmd())
+	}
 	if m.debugMode {
 		cmds = append(cmds, m.debugCaptureTick())
 	}
