@@ -1098,14 +1098,20 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			}
 		}
 
-		// Mark reply as received and reset iteration tracking state
-		m.setTurnReplyReceived(turnID)
-		m.endAgentTurn(turnID)
-		if turnID == m.agentTurnID {
-			m.inputReady = true
-			// §Q 标记需要刷新消息队列（由 Update 循环检查）
-			if len(m.messageQueue) > 0 {
-				m.needFlushQueue = true
+		// Mark reply as received and reset iteration tracking state.
+		// When WaitingUser is true (AskUser), the turn is paused not ended —
+		// endAgentTurn would clear iterationHistory and progress, causing all
+		// previous iterations to disappear. The turn will be ended later when
+		// the agent completes after receiving the user's answer.
+		if !msg.WaitingUser {
+			m.setTurnReplyReceived(turnID)
+			m.endAgentTurn(turnID)
+			if turnID == m.agentTurnID {
+				m.inputReady = true
+				// §Q 标记需要刷新消息队列（由 Update 循环检查）
+				if len(m.messageQueue) > 0 {
+					m.needFlushQueue = true
+				}
 			}
 		}
 

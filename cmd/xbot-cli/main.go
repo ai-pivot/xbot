@@ -2233,11 +2233,22 @@ func main() {
 				cliCh.LoadHistory(history)
 			}
 			// Re-check processing state after reconnect. Progress is restored via the
-			// WebSocket event-stream replay path. Do not also fetch/restore the active
-			// snapshot here: that creates two sources for the same live turn (replayed
-			// progress event + RPC snapshot) and can render duplicate Progress blocks.
+			// WebSocket event-stream replay path (current iteration's active/completed tools).
+			// However, IterationHistory is NOT in replay events — fetch it via RPC
+			// and merge into the progress model using isRestore (bypasses seq dedup).
 			if app.backend.IsProcessing("cli", remoteChatID) {
 				cliCh.SetProcessing(true)
+				// Async: fetch IterationHistory from server and merge into progress model.
+				clipanic.Go("main.remote.RestoreReconnectHistory", func() {
+					progress := app.backend.GetActiveProgress("cli", remoteChatID)
+					if progress != nil && len(progress.IterationHistory) > 0 {
+						log.WithFields(log.Fields{
+							"chatID":  remoteChatID,
+							"histLen": len(progress.IterationHistory),
+						}).Info("RestoreReconnectHistory: merging iteration history")
+						cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
+					}
+				})
 			} else {
 				cliCh.SetProcessing(false)
 			}

@@ -268,6 +268,38 @@ func (m *cliModel) restoreProgressSnapshot(payload *protocol.ProgressEvent) {
 	// Start agent turn (sets typing=true, increments turnID).
 	// Note: startAgentTurn calls resetProgressState which clears m.progress,
 	// but we overwrite it below.
+	// Guard: if progress already exists with a higher seq (e.g. from eventStream
+	// replay), only merge IterationHistory without overwriting the newer state.
+	if m.progress != nil && m.progress.Seq > 0 && payload.Seq > 0 && m.progress.Seq >= payload.Seq {
+		// eventStream replay already set a newer/equal progress — only merge history.
+		if len(payload.IterationHistory) > 0 {
+			for _, ih := range payload.IterationHistory {
+				snap := cliIterationSnapshot{
+					Iteration: ih.Iteration,
+					Thinking:  ih.Thinking,
+					Reasoning: ih.Reasoning,
+					Tools:     ih.CompletedTools,
+				}
+				for i := range snap.Tools {
+					t := &snap.Tools[i]
+					if t.StartedAt.IsZero() && t.Elapsed > 0 {
+						t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
+					}
+				}
+				m.iterationHistory = append(m.iterationHistory, snap)
+			}
+			if len(m.iterationHistory) > 0 {
+				lastIter := m.iterationHistory[len(m.iterationHistory)-1].Iteration
+				if lastIter > m.lastSeenIteration {
+					m.lastSeenIteration = lastIter
+				}
+			}
+		}
+		m.removeLastToolSummary()
+		m.invalidateAllCache(false)
+		return
+	}
+
 	m.startAgentTurn()
 
 	// Apply the progress payload
