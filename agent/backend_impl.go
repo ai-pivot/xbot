@@ -46,6 +46,7 @@ type TenantInfo struct {
 	ID           int64  `json:"id"`
 	Channel      string `json:"channel"`
 	ChatID       string `json:"chat_id"`
+	Label        string `json:"label,omitempty"`
 	CreatedAt    string `json:"created_at"`
 	LastActiveAt string `json:"last_active_at"`
 }
@@ -178,6 +179,11 @@ func (b *Backend) SetTUICallbacks(
 ) {
 	if b.agent != nil {
 		b.agent.SetTUICallbacks(tuiCtrl, configGet, configSet)
+	}
+}
+func (b *Backend) SetChatRenameFn(chatRename func(chatID, newName string) (oldName string, err error)) {
+	if b.agent != nil {
+		b.agent.SetChatRenameFn(chatRename)
 	}
 }
 func (b *Backend) MultiSession() *session.MultiTenantSession {

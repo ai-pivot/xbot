@@ -565,12 +565,44 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
+		// Update last_active_at so we can restore the most recent session on restart.
+		if db := h.backend.MultiSession().DB(); db != nil {
+			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(p.Channel, p.ChatID); err != nil {
+				log.WithError(err).Warn("RPC get_history: failed to update last_active_at")
+			}
+		}
 		history, err := backend.GetHistory(p.Channel, p.ChatID)
 		if err != nil {
 			return nil, err
 		}
 		log.WithFields(log.Fields{"channel": p.Channel, "chat_id": p.ChatID, "count": len(history)}).Info("RPC get_history")
 		return history, nil
+	})
+	t["delete_chat"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		senderID := rpcAuthID(ctx)
+		if p.Channel == "" {
+			p.Channel = "cli"
+		}
+		if p.ChatID == "" {
+			p.ChatID = bizID
+		}
+		if !isAdmin(senderID) && p.ChatID != bizID {
+			return nil, fmt.Errorf("access denied")
+		}
+		if db := h.backend.MultiSession().DB(); db != nil {
+			cs := sqlite.NewChatService(db.Conn())
+			if err := cs.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
+				return nil, fmt.Errorf("delete chat: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("database not available")
+		}
+		log.WithFields(log.Fields{"channel": p.Channel, "chat_id": p.ChatID}).Info("RPC delete_chat")
+		return map[string]string{"status": "ok"}, nil
 	})
 	t["get_token_state"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
@@ -1136,12 +1168,13 @@ func (h *rpcContext) listTenants(ctx context.Context) (any, error) {
 		ID           int64  `json:"id"`
 		Channel      string `json:"channel"`
 		ChatID       string `json:"chat_id"`
+		Label        string `json:"label,omitempty"`
 		CreatedAt    string `json:"created_at"`
 		LastActiveAt string `json:"last_active_at"`
 	}
 	result := make([]tenantJSON, len(tenants))
 	for i, t := range tenants {
-		result[i] = tenantJSON{t.ID, t.Channel, t.ChatID, t.CreatedAt.Format(time.RFC3339), t.LastActiveAt.Format(time.RFC3339)}
+		result[i] = tenantJSON{t.ID, t.Channel, t.ChatID, t.Label, t.CreatedAt.Format(time.RFC3339), t.LastActiveAt.Format(time.RFC3339)}
 	}
 	return result, nil
 }

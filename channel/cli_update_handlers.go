@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"xbot/protocol"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -197,7 +198,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 
 // restoreIterationHistory converts IterationHistory from a reconnect snapshot
 // into local iteration history, bootstrapping tool StartedAt timestamps.
-func (m *cliModel) restoreIterationHistory(payload *CLIProgressPayload) {
+func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
 	if payload == nil || len(payload.IterationHistory) == 0 || len(m.iterationHistory) > 0 {
 		return
 	}
@@ -227,7 +228,7 @@ func (m *cliModel) restoreIterationHistory(payload *CLIProgressPayload) {
 
 // carryForwardProgressState preserves transient state across progress updates
 // (StartedAt timers, CompletedTools, Reasoning/Thinking content, SubAgent trees).
-func (m *cliModel) carryForwardProgressState(prev *CLIProgressPayload) {
+func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	if m.progress == nil {
 		return
 	}
@@ -511,7 +512,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// Accept all completed tools regardless of their Iteration field — they
 		// represent work that finished and should be displayed.
 		if len(msg.payload.CompletedTools) > 0 {
-			m.lastCompletedTools = make([]CLIToolProgress, len(msg.payload.CompletedTools))
+			m.lastCompletedTools = make([]protocol.ToolProgress, len(msg.payload.CompletedTools))
 			copy(m.lastCompletedTools, msg.payload.CompletedTools)
 		}
 		if msg.payload.Phase == "done" {
@@ -522,7 +523,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 }
 
 // syncProgressTodos syncs todo items from the progress payload.
-func (m *cliModel) syncProgressTodos(payload *CLIProgressPayload) {
+func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 	if payload == nil {
 		return
 	}
@@ -537,7 +538,7 @@ func (m *cliModel) syncProgressTodos(payload *CLIProgressPayload) {
 		if m.todosDoneCleared && allDone {
 			// Already cleared by user input; don't re-accept stale all-done list
 		} else {
-			m.todos = make([]CLITodoItem, len(payload.Todos))
+			m.todos = make([]protocol.TodoItem, len(payload.Todos))
 			copy(m.todos, payload.Todos)
 			m.todosDoneCleared = false
 			m.relayoutViewport()
@@ -575,7 +576,7 @@ func (m *cliModel) persistTodosToManager() {
 
 // snapshotIterationChange detects iteration changes and snapshots the previous
 // iteration's tools/reasoning into iteration history.
-func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CLIProgressPayload) {
+func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev *protocol.ProgressEvent) {
 	if payload == nil {
 		return
 	}
@@ -627,7 +628,7 @@ func (m *cliModel) snapshotIterationChange(payload *CLIProgressPayload, prev *CL
 
 // handleProgressDone handles the Phase "done" case: snapshots the final iteration,
 // generates tool summary, resets iteration tracking state, and synthesizes agent messages.
-func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPayload, turnID uint64) {
+func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.ProgressEvent, turnID uint64) {
 	// When turn was cancelled (Ctrl+C), still generate tool_summary from
 	// accumulated iterationHistory so tool records survive rewind operations.
 	// Without this, cancelled turns lose their tool records because iterationHistory
@@ -643,11 +644,11 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 				return s.Iteration == m.lastSeenIteration
 			})
 			if !alreadySnapped {
-				var finalTools []CLIToolProgress
+				var finalTools []protocol.ToolProgress
 				finalTools = append(finalTools, msg.payload.CompletedTools...)
 				for _, t := range msg.payload.ActiveTools {
 					if t.Status == "done" || t.Status == "error" {
-						if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+						if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
 							return existing.Name == t.Name && existing.Label == t.Label
 						}) {
 							finalTools = append(finalTools, t)
@@ -655,7 +656,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 					}
 				}
 				for _, t := range m.lastCompletedTools {
-					if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+					if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
 						return existing.Name == t.Name && existing.Label == t.Label
 					}) {
 						finalTools = append(finalTools, t)
@@ -712,13 +713,13 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 			return s.Iteration == m.lastSeenIteration
 		})
 		if !alreadySnapped {
-			var finalTools []CLIToolProgress
+			var finalTools []protocol.ToolProgress
 			// Check progress.CompletedTools first (set by progressFinalizer)
 			finalTools = append(finalTools, msg.payload.CompletedTools...)
 			// Also include ActiveTools(done) not yet moved by progressFinalizer
 			for _, t := range msg.payload.ActiveTools {
 				if t.Status == "done" || t.Status == "error" {
-					if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+					if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
 						return existing.Name == t.Name && existing.Label == t.Label
 					}) {
 						finalTools = append(finalTools, t)
@@ -727,7 +728,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *CLIProgressPaylo
 			}
 			// Also include any from lastCompletedTools (race safety)
 			for _, t := range m.lastCompletedTools {
-				if !slices.ContainsFunc(finalTools, func(existing CLIToolProgress) bool {
+				if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
 					return existing.Name == t.Name && existing.Label == t.Label
 				}) {
 					finalTools = append(finalTools, t)
@@ -877,17 +878,24 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 // handleUpdateCheck processes update check results.
 func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 	m.checkingUpdate = false
-	if msg.info != nil {
-		m.updateNotice = msg.info
-		if msg.info.HasUpdate {
-			content := fmt.Sprintf(m.locale.UpdateFound, msg.info.Current, msg.info.Latest, msg.info.URL)
-			m.showSystemMsg(content, feedbackInfo)
-		} else {
-			content := fmt.Sprintf(m.locale.UpdateCurrent, msg.info.Current)
-			m.showSystemMsg(content, feedbackInfo)
-		}
-	} else {
+	if msg.info == nil {
 		m.showSystemMsg(m.locale.UpdateFailed, feedbackError)
+		return
+	}
+	m.updateNotice = msg.info
+	// Suppress update notice when an agent turn is active (progress running).
+	// The notice would corrupt the progress panel layout and distract from
+	// the active iteration history the user needs to see.
+	// The notice is still stored in m.updateNotice for manual /update check.
+	if m.typing || (m.progress != nil && m.progress.Phase != "done" && m.progress.Phase != "") {
+		return
+	}
+	if msg.info.HasUpdate {
+		content := fmt.Sprintf(m.locale.UpdateFound, msg.info.Current, msg.info.Latest, msg.info.URL)
+		m.showSystemMsg(content, feedbackInfo)
+	} else {
+		content := fmt.Sprintf(m.locale.UpdateCurrent, msg.info.Current)
+		m.showSystemMsg(content, feedbackInfo)
 	}
 }
 
@@ -920,13 +928,15 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		m.progress = nil
 		m.inputReady = true
 	} else {
-		// Build a dedup set from existing messages (role + content hash)
+		// Build a dedup set from existing messages.
+		// Key uses role + timestamp to handle sequences of identical-role
+		// messages (e.g. multiple tool_summary with empty content).
 		existingKeys := make(map[string]bool, len(m.messages))
 		for _, cm := range m.messages {
-			existingKeys[cm.role+"|"+cm.content] = true
+			existingKeys[cm.role+"|"+cm.timestamp.Format(time.RFC3339Nano)] = true
 		}
 		for _, hm := range msg.history {
-			key := hm.Role + "|" + hm.Content
+			key := hm.Role + "|" + hm.Timestamp.Format(time.RFC3339Nano)
 			if existingKeys[key] {
 				continue // already in messages, skip duplicate
 			}
@@ -1060,13 +1070,14 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 				}
 			}
 		}
-		// When turn is still active, remove ALL tool_summary messages from
-		// loaded history. ConvertMessagesToHistory produces tool_summary from
-		// intermediate DB messages with globally-cumulative iteration numbers
-		// that don't match the progress block's per-turn iteration numbers.
-		// The active progress block owns iteration display entirely — any
-		// static tool_summary would duplicate content with mismatched numbers.
-		// Only remove the LAST tool_summary (active turn's); preserve previous turns'.
+		// Remove the LAST tool_summary from loaded history. The active
+		// progress block owns the current turn's iteration display — the
+		// static tool_summary from the active turn would duplicate content
+		// and its iteration numbers (globally cumulative from DB) don't
+		// match the progress block's per-turn numbers.
+		// Only the last tool_summary is removed. Previous turns' tool_summaries
+		// (including interrupted turns without assistant replies) are preserved
+		// — they have no live progress panel to replace them.
 		m.removeLastToolSummary()
 
 		// Fallback: if server returned Iteration=0 but iteration history
@@ -1079,13 +1090,8 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			m.progress.Iteration = m.iterationHistory[len(m.iterationHistory)-1].Iteration
 		}
 
-		// Emit a tickCmd to guarantee the fast tick chain is running,
-		// but only if it's not already active (avoid duplicate chains).
-		// See handleSplashTick for the other half of this guard.
-		if !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
+		// Emit a tickCmd to guarantee the fast tick chain is running.
+		// Emit a tickCmd to kick the tick chain after restoring.
 		// If the restored progress has stream or reasoning content, start the
 		// typewriter tick immediately. Without this, the cursor won't blink and
 		// streaming content won't animate until the next handleTickMsg cycle.
@@ -1121,7 +1127,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// empty slice means "server has no todos" (clear local cache).
 		if msg.todos != nil {
 			if len(msg.todos) > 0 {
-				m.todos = make([]CLITodoItem, len(msg.todos))
+				m.todos = make([]protocol.TodoItem, len(msg.todos))
 				copy(m.todos, msg.todos)
 				m.todosDoneCleared = false
 				m.persistTodosToManager()
@@ -1142,10 +1148,6 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Start a tick chain even when idle, so handleTickMsg can evaluate
 		// sidebarHasBusySessions and animate sidebar spinners for non-active
 		// busy sessions.
-		if !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		}
 		// Reload history to pick up messages that arrived while we were viewing
 		// another session (e.g. the assistant's final reply was filtered out by
 		// ChatID check during the agent session view).
@@ -1165,7 +1167,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 	// after startup). Without this, the context bar shows 0 until the
 	// first live progress event of the new session.
 	if m.lastTokenUsage == nil && (msg.tokenPrompt > 0 || msg.tokenCompletion > 0) {
-		m.lastTokenUsage = &CLITokenUsage{
+		m.lastTokenUsage = &protocol.TokenUsage{
 			PromptTokens:     msg.tokenPrompt,
 			CompletionTokens: msg.tokenCompletion,
 			TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
@@ -1231,45 +1233,6 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 }
 
 // handleSplashTick processes splash animation frames.
-func (m *cliModel) handleSplashTick(msg splashTickMsg) (tea.Model, tea.Cmd) {
-	// Stale tick from a previous tick chain — discard.
-	if msg.gen != m.tickGen {
-		return m, nil
-	}
-	var cmds []tea.Cmd
-	m.splashFrame = msg.frame
-	if m.suLoading {
-		// /su 历史加载中，持续动画
-		cmds = append(cmds, m.splashTick(msg.frame))
-		return m, tea.Batch(cmds...)
-	}
-	if m.ready && msg.frame >= 20 {
-		// 初始化完成且已展示至少 1 秒（20 帧 × 50ms）
-		m.splashDone = true
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		} else if !sessionActive && !m.typing {
-			cmds = append(cmds, idleTickCmd())
-		}
-		return m, tea.Batch(cmds...)
-	}
-	// 兜底上限：~2 秒（40 帧）
-	if msg.frame >= 40 {
-		m.splashDone = true
-		sessionActive := m.progress != nil && m.progress.Phase != "done"
-		if sessionActive && !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
-		} else if !sessionActive && !m.typing {
-			cmds = append(cmds, idleTickCmd())
-		}
-		return m, tea.Batch(cmds...)
-	}
-	cmds = append(cmds, m.splashTick(msg.frame))
-	return m, tea.Batch(cmds...)
-}
 
 // handleToastMsg enqueues a toast notification.
 func (m *cliModel) handleToastMsg(msg cliToastMsg) []tea.Cmd {
@@ -1314,7 +1277,7 @@ func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
 // it. This is normal — the server only reports actively-running agents. We mark
 // stale running/pending agents as "done" so they don't linger in the progress panel
 // (Issue #29: zombie agents that completed but were never marked done by the server).
-func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
+func mergeSubAgentTrees(prev, new []protocol.SubAgentInfo) []protocol.SubAgentInfo {
 	if len(prev) == 0 {
 		return new
 	}
@@ -1332,7 +1295,7 @@ func mergeSubAgentTrees(prev, new []CLISubAgent) []CLISubAgent {
 		newByKey[key] = i
 	}
 
-	result := make([]CLISubAgent, 0, len(prev)+len(new))
+	result := make([]protocol.SubAgentInfo, 0, len(prev)+len(new))
 
 	// Start with all prev entries, updating those that have new data
 	for _, p := range prev {
@@ -1379,7 +1342,7 @@ func subAgentKey(role, instance string) string {
 // still in running/pending state. This handles the case where the server
 // stops reporting a completed SubAgent — without this, the agent would
 // linger as "running" forever (Issue #29).
-func markDoneIfRunning(sa CLISubAgent) CLISubAgent {
+func markDoneIfRunning(sa protocol.SubAgentInfo) protocol.SubAgentInfo {
 	if sa.Status == "running" || sa.Status == "pending" {
 		sa.Status = "done"
 	}
@@ -1393,8 +1356,8 @@ func markDoneIfRunning(sa CLISubAgent) CLISubAgent {
 // marked "done". This prevents zombie entries from accumulating across
 // iteration boundaries when no new SubAgent data arrives.
 // Agents still "running" or "pending" are kept (they may complete soon).
-func pruneDoneSubAgents(agents []CLISubAgent) []CLISubAgent {
-	var kept []CLISubAgent
+func pruneDoneSubAgents(agents []protocol.SubAgentInfo) []protocol.SubAgentInfo {
+	var kept []protocol.SubAgentInfo
 	for _, a := range agents {
 		a.Children = pruneDoneSubAgents(a.Children)
 		if a.Status != "done" && a.Status != "error" {
@@ -1517,56 +1480,36 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 
 // handleTickMsg processes the fast tick (100ms) message.
 // Returns tea.Cmds to batch with other commands.
+
+// handleTickMsg processes the global 100ms tick from the goroutine in
+// NewCLIChannel. It handles ALL timed UI updates: splash animation,
+// spinner/progress, queue flush, and placeholder rotation.
+// Returns cmds only for typewriter (separate chain) and queue flush.
+// NEVER returns tickCmd — the global goroutine is the single tick source.
 func (m *cliModel) handleTickMsg() []tea.Cmd {
 	var cmds []tea.Cmd
 
-	// Always refresh bg task count on tick so status bar updates immediately
-	// when a bg task completes (even when no progress event is coming)
-	if m.bgTaskCountFn != nil {
-		prev := m.bgTaskCount
-		m.bgTaskCount = m.bgTaskCountFn()
-		// Force re-render when count changes (e.g. task killed in panel)
-		if m.bgTaskCount != prev {
-			m.renderCacheValid = false
+	// Splash / suLoading animation — data-ready driven, no artificial delay.
+	if !m.splashDone || m.suLoading {
+		m.splashFrame++
+		// End splash as soon as model is ready and RPC loading is done.
+		if !m.suLoading && m.ready {
+			m.splashDone = true
+		}
+		// Hard limit: ~3s (30 frames × 100ms) UNCONDITIONAL — safety net
+		// if RPC hangs. User sees the UI instead of staring at splash forever.
+		if m.splashFrame >= 30 {
+			m.splashDone = true
 		}
 	}
-	// Refresh agent count on tick
-	if m.agentCountFn != nil {
-		prev := m.agentCount
-		m.agentCount = m.agentCountFn()
-		if m.agentCount != prev {
-			m.renderCacheValid = false
-		}
-	}
-	// Schedule next tick when agent is active or bg tasks are running.
-	// IMPORTANT: only emit ONE tickCmd to prevent exponential message growth
-	// (two tickCmd() would double the message count every 100ms → CPU explosion).
-	// Use server-authoritative progress state instead of client-maintained m.typing.
-	// m.typing can be stale after session switches; m.progress.Phase comes from
-	// the server's progress events and is the ground truth for session activity.
+
+	// Spinner / progress update
 	sessionActive := m.progress != nil && m.progress.Phase != "done"
 	busy := m.typing || sessionActive
 	needsSpinnerTick := busy || m.sidebarHasBusySessions
+
 	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || needsSpinnerTick {
-		m.fastTickActive = true
-		cmds = append(cmds, m.tickCmd())
-	} else if m.needFlushQueue && len(m.messageQueue) > 0 {
-		m.fastTickActive = true
-		// Pending queue flush — use fast tick so the queued message
-		// is sent promptly (not waiting 3s for idleTickCmd).
-		cmds = append(cmds, m.tickCmd())
-	} else {
-		// Transition to idle: start low-frequency tick for placeholder rotation
-		m.fastTickActive = false
-		cmds = append(cmds, idleTickCmd())
-	}
-	if needsSpinnerTick {
-		// Advance spinner frame on every tick so the animation stays in sync
-		// with elapsed time display. Previously driven by a separate tickerTickMsg
-		// chain that could break when m.progress briefly went nil.
 		m.ticker.tick()
-		// Typewriter is now driven by its own typewriterTickMsg chain (50ms).
-		// Start the typewriter chain if there's stream or reasoning content to reveal.
 		hasStreamContent := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
 		hasReasoningContent := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
 		if hasStreamContent || hasReasoningContent {
@@ -1577,43 +1520,20 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		}
 		m.updateViewportContent()
 	} else {
-		// Not busy: stop typewriter chain
 		m.typewriterTickActive = false
-		// Still refresh viewport if messages were added/changed (e.g. assistant
-		// reply arrived via handleAgentMessage after PhaseDone cleared progress).
 		if !m.renderCacheValid {
 			m.updateViewportContent()
 		}
 	}
 
-	// §Q Flush message queue on tick (not in cliProgressMsg/cliOutboundMsg).
-	// This ensures the previous reply is already appended to m.messages before
-	// the queued message gets sent, producing correct order: msg1, reply1, msg2.
-	// Guard: only flush when NOT typing AND the previous turn's reply has been
-	// received (or the previous turn had no assistant reply — e.g. empty cancel).
-	// Also guarded by !suLoading: during session switch in remote mode, typing
-	// and progress are reset to idle but queue flush must wait until the RPC
-	// (handleSuHistoryLoad) reconciles state with the server.
+	// Queue flush
 	if m.needFlushQueue && !m.typing && !m.suLoading && len(m.messageQueue) > 0 {
-		// Check that the previous turn's reply was received before flushing.
-		// The previous turn is the current agentTurnID (endAgentTurn was already
-		// called, but startAgentTurn for the new turn hasn't run yet).
-		// We can flush only if:
-		// 1. replyReceived is true (handleAgentMessage processed the reply), OR
-		// 2. doneProcessed is true AND the turn was cancelled (no reply coming).
-		// 3. Timeout: if doneProcessed has been true for >2s, force flush to
-		//    prevent queue from getting permanently stuck.
 		prevTurnID := m.agentTurnID
 		canFlush := m.isTurnReplyReceived(prevTurnID)
 		if !canFlush && m.isTurnDoneProcessed(prevTurnID) && m.turnCancelled {
-			// Cancelled turn: no assistant reply coming (or empty cancel ack).
-			// The doneProcessed flag means PhaseDone already ran.
 			canFlush = true
 		}
 		if !canFlush && m.isTurnDoneProcessed(prevTurnID) {
-			// Timeout fallback: if PhaseDone arrived >2s ago but no reply,
-			// force flush to prevent the queue from being permanently stuck.
-			// This handles edge cases where the reply is lost or never sent.
 			prevFlag := m.getTurnFlag(prevTurnID)
 			if prevFlag != nil && !prevFlag.doneTime.IsZero() && time.Since(prevFlag.doneTime) > 2*time.Second {
 				log.WithField("turnID", prevTurnID).Warn("Queue flush timeout: forcing flush after 2s without reply")
@@ -1624,42 +1544,27 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		if canFlush {
 			m.needFlushQueue = false
 			m.flushMessageQueue()
-			// Always return after flush so the tickCmd queued by startAgentTurn()
-			// (inside sendMessageFromQueue → sendMessage) gets picked up in cmds.
 			return cmds
 		}
-		// Not safe to flush yet — keep fast tick active so we check again soon.
-		if !m.fastTickActive {
-			m.fastTickActive = true
-			cmds = append(cmds, m.tickCmd())
+	}
+
+	// Idle: placeholder rotation (every 30 ticks = ~3s)
+	if !busy && !needsSpinnerTick && m.splashDone {
+		m.idleTickCounter++
+		if m.idleTickCounter >= 30 {
+			m.idleTickCounter = 0
+			if m.cachedModelName == "" && m.remoteMode {
+				m.refreshCachedModelName()
+			}
+			m.updatePlaceholder()
 		}
+	} else {
+		m.idleTickCounter = 0
 	}
 
 	return cmds
 }
 
-// handleIdleTick processes the low-frequency idle tick for placeholder rotation.
-func (m *cliModel) handleIdleTick() []tea.Cmd {
-	var cmds []tea.Cmd
-	// Low-frequency idle tick: rotate placeholder and keep alive
-	// Remote mode: keep retrying model name fetch until we get one.
-	if m.cachedModelName == "" && m.remoteMode {
-		m.refreshCachedModelName()
-	}
-	sessionActive := m.progress != nil && m.progress.Phase != "done"
-	if !sessionActive && !m.typing {
-		m.updatePlaceholder()
-		cmds = append(cmds, idleTickCmd())
-	} else if !m.fastTickActive {
-		// Self-healing: if fast tick chain broke but session is still active,
-		// re-arm fast tick.
-		m.fastTickActive = true
-		cmds = append(cmds, m.tickCmd())
-	}
-	return cmds
-}
-
-// handleTypewriterTick advances the typewriter effect and continues the chain.
 func (m *cliModel) handleTypewriterTick() []tea.Cmd {
 	var cmds []tea.Cmd
 	// Advance typewriter by 1 rune on its own 50ms cadence.
@@ -1686,13 +1591,7 @@ func (m *cliModel) handleSplashDone() []tea.Cmd {
 	if m.cachedModelName == "" && m.remoteMode {
 		m.refreshCachedModelName()
 	}
-	sessionActive := m.progress != nil && m.progress.Phase != "done"
-	if sessionActive && !m.fastTickActive {
-		m.fastTickActive = true
-		cmds = append(cmds, m.tickCmd())
-	} else if !sessionActive && !m.typing {
-		cmds = append(cmds, idleTickCmd())
-	}
+	_ = m.progress // sessionActive computed for future use
 	return cmds
 }
 

@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -106,7 +105,7 @@ type WebCallbacks struct {
 	IsProcessing func(senderID string) bool
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
-	GetActiveProgress func(channel, chatID string) *CLIProgressPayload
+	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
 	// LLMSetConfig sets user's personal LLM config.
 	LLMSetConfig func(senderID, provider, baseURL, apiKey, model string, maxOutputTokens int, thinkingMode string) error
 	// LLMDelete reverts user to global LLM config.
@@ -187,557 +186,6 @@ type SessionChatMessage struct {
 // ---------------------------------------------------------------------------
 
 // Hub 管理所有 WebSocket 连接。
-// Routing is by business chatID (e.g. "/home/smith/src/xbot" or feishuUserID).
-// Auth identity (c.userID, e.g. "admin") is NOT used for routing.
-type Hub struct {
-	mu      sync.RWMutex
-	conns   map[string]*Client         // clientID → Client (lifecycle management)
-	subs    map[string]map[string]bool // chatID → set of clientIDs (message routing)
-	offline map[string]*ringBuffer     // chatID → offline message buffer
-	offMu   sync.Mutex
-
-	tuiRespFn func(id string, payload *TUIControlPayload) // set by RemoteCLIChannel
-}
-
-func newHub() *Hub {
-	return &Hub{
-		conns:   make(map[string]*Client),
-		subs:    make(map[string]map[string]bool),
-		offline: make(map[string]*ringBuffer),
-	}
-}
-
-// addClient registers a WS connection for lifecycle management.
-// Use subscribe() to register it for message routing.
-func (h *Hub) addClient(clientID string, c *Client) {
-	h.mu.Lock()
-	h.conns[clientID] = c
-	h.mu.Unlock()
-}
-
-// removeClient removes a WS connection and all its subscriptions.
-func (h *Hub) removeClient(clientID string) {
-	h.mu.Lock()
-	delete(h.conns, clientID)
-	for chatID, clients := range h.subs {
-		delete(clients, clientID)
-		if len(clients) == 0 {
-			delete(h.subs, chatID)
-		}
-	}
-	h.mu.Unlock()
-}
-
-// subscribe registers a client to receive messages for a given chatID.
-// Idempotent — safe to call on every message from the client.
-func (h *Hub) subscribe(clientID, chatID string) {
-	h.mu.Lock()
-	if h.subs[chatID] == nil {
-		h.subs[chatID] = make(map[string]bool)
-		// Flush any offline messages for this chatID
-		h.offMu.Lock()
-		if buf, ok := h.offline[chatID]; ok {
-			msgs := buf.flush()
-			for _, msg := range msgs {
-				if c, ok := h.conns[clientID]; ok {
-					select {
-					case c.sendCh <- msg:
-					default:
-					}
-				}
-			}
-			delete(h.offline, chatID)
-		}
-		h.offMu.Unlock()
-	}
-	h.subs[chatID][clientID] = true
-	h.mu.Unlock()
-}
-
-// sendToClient sends a message to all clients subscribed to a chatID.
-// If no clients are subscribed, buffers the message for later delivery.
-func (h *Hub) sendToClient(chatID string, msg wsMessage) bool {
-	h.mu.RLock()
-	// Copy subscriber keys to a slice to avoid iterating the map while
-	// removeClient() may concurrently delete from it (data race).
-	chatIDs, ok := h.subs[chatID]
-	var subscriberIDs []string
-	if ok {
-		for cid := range chatIDs {
-			subscriberIDs = append(subscriberIDs, cid)
-		}
-	}
-	h.mu.RUnlock()
-
-	sent := false
-	for _, cid := range subscriberIDs {
-		h.mu.RLock()
-		c := h.conns[cid]
-		h.mu.RUnlock()
-		if c == nil {
-			continue
-		}
-		select {
-		case c.sendCh <- msg:
-			sent = true
-		default:
-			// sendCh full, skip
-		}
-	}
-	if !sent {
-		h.offMu.Lock()
-		buf, ok := h.offline[chatID]
-		if !ok {
-			buf = newRingBuffer(webOfflineMsgBufSize)
-			h.offline[chatID] = buf
-		}
-		buf.push(msg)
-		h.offMu.Unlock()
-	}
-	return sent
-}
-
-func (c *Client) closeDone() {
-	c.closeOnce.Do(func() { close(c.done) })
-}
-
-func (h *Hub) stopAll() {
-	h.mu.Lock()
-	for _, c := range h.conns {
-		c.closeDone()
-	}
-	h.conns = make(map[string]*Client)
-	h.subs = make(map[string]map[string]bool)
-	h.mu.Unlock()
-}
-
-// ---------------------------------------------------------------------------
-// Client: a single WebSocket connection
-// ---------------------------------------------------------------------------
-
-// Client represents a single WebSocket client
-type Client struct {
-	conn      *websocket.Conn
-	sendCh    chan wsMessage
-	done      chan struct{}
-	closeOnce sync.Once
-	hub       *Hub
-	userID    string
-	id        string                      // unique client ID (UUID), generated at connection time
-	syncCh    atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
-}
-
-// ---------------------------------------------------------------------------
-// ring buffer for offline messages
-// ---------------------------------------------------------------------------
-
-type ringBuffer struct {
-	buf   []wsMessage
-	size  int
-	head  int
-	tail  int
-	count int
-}
-
-func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{
-		buf:  make([]wsMessage, size),
-		size: size,
-	}
-}
-
-func (rb *ringBuffer) push(msg wsMessage) {
-	if rb.count == rb.size {
-		rb.head = (rb.head + 1) % rb.size
-		rb.count--
-	}
-	rb.buf[rb.tail] = msg
-	rb.tail = (rb.tail + 1) % rb.size
-	rb.count++
-}
-
-func (rb *ringBuffer) flush() []wsMessage {
-	result := make([]wsMessage, 0, rb.count)
-	for rb.count > 0 {
-		result = append(result, rb.buf[rb.head])
-		rb.head = (rb.head + 1) % rb.size
-		rb.count--
-	}
-	rb.head = 0
-	rb.tail = 0
-	return result
-}
-
-// ---------------------------------------------------------------------------
-// Event stream — seq-stamped ring buffer for replay / dedup
-// ---------------------------------------------------------------------------
-
-// eventStream tracks monotonic seq and buffers recent events per chatID.
-// Used for:
-//  1. Dedup: each event carries seq, frontend ignores stale (seq <= lastSeen)
-//  2. Replay: on WS reconnect, server sends events with seq > client's last_seq
-const eventStreamSize = 512
-
-type eventStream struct {
-	seq   atomic.Uint64
-	mu    sync.Mutex
-	buf   []wsMessage // ring buffer of seq-stamped events
-	head  int
-	tail  int
-	count int
-}
-
-func newEventStream() *eventStream {
-	return &eventStream{
-		buf: make([]wsMessage, eventStreamSize),
-	}
-}
-
-// nextSeq atomically increments and returns the new seq.
-func (es *eventStream) nextSeq() uint64 {
-	return es.seq.Add(1)
-}
-
-// lastSeq returns the current seq (0 if no events yet).
-func (es *eventStream) lastSeq() uint64 {
-	return es.seq.Load()
-}
-
-// push appends a seq-stamped event to the ring buffer.
-func (es *eventStream) push(msg wsMessage) {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	if es.count == eventStreamSize {
-		es.head = (es.head + 1) % eventStreamSize
-		es.count--
-	}
-	es.buf[es.tail] = msg
-	es.tail = (es.tail + 1) % eventStreamSize
-	es.count++
-}
-
-// clear drops buffered events without resetting the monotonic sequence.
-// Used on session reset (/new) so reconnect replay cannot resurrect progress
-// events from the previous session.
-func (es *eventStream) clear() {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	es.head = 0
-	es.tail = 0
-	es.count = 0
-}
-
-// eventsAfter returns all buffered events with seq > fromSeq, in order.
-func (es *eventStream) eventsAfter(fromSeq uint64) []wsMessage {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	if es.count == 0 {
-		return nil
-	}
-	var result []wsMessage
-	for i := 0; i < es.count; i++ {
-		idx := (es.head + i) % eventStreamSize
-		if es.buf[idx].Seq > fromSeq {
-			result = append(result, es.buf[idx])
-		}
-	}
-	return result
-}
-
-// getEventStream returns (or creates) the eventStream for a chatID.
-func (wc *WebChannel) getEventStream(chatID string) *eventStream {
-	wc.evtBufMu.Lock()
-	defer wc.evtBufMu.Unlock()
-	if wc.evtBuf == nil {
-		wc.evtBuf = make(map[string]*eventStream)
-	}
-	es, ok := wc.evtBuf[chatID]
-	if !ok {
-		es = newEventStream()
-		wc.evtBuf[chatID] = es
-	}
-	return es
-}
-
-// ---------------------------------------------------------------------------
-// WS protocol messages
-// ---------------------------------------------------------------------------
-
-type wsMessage struct {
-	Type            string             `json:"type"`                       // "text", "progress", "card", "progress_structured", "user_echo", "ask_user", "stream_content", "rpc_response"
-	ID              string             `json:"id,omitempty"`               // UUID or RPC request ID
-	Seq             uint64             `json:"seq,omitempty"`              // monotonic sequence number per chatID for dedup & replay
-	Content         string             `json:"content,omitempty"`          // message content
-	OriginalContent string             `json:"original_content,omitempty"` // user's original text before file processing (for user_echo matching)
-	TS              int64              `json:"ts,omitempty"`               // timestamp
-	Progress        *WsProgressPayload `json:"progress,omitempty"`         // structured progress data
-	ProgressHistory string             `json:"progress_history,omitempty"` // JSON-encoded iteration history for completed turns
-	Channel         string             `json:"channel,omitempty"`
-	ChatID          string             `json:"chat_id,omitempty"`
-	SenderID        string             `json:"sender_id,omitempty"`
-	SenderName      string             `json:"sender_name,omitempty"`
-	ChatType        string             `json:"chat_type,omitempty"`
-	SessionReset    bool               `json:"session_reset,omitempty"` // signals /new — CLI should clear context usage bar
-	// RPC response fields (used when Type == "rpc_response")
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
-	// TUI control fields (used when Type == "tui_control_req" or "tui_control_resp")
-	TUIControl *TUIControlPayload `json:"tui_control,omitempty"`
-}
-
-// TUIControlPayload carries a TUI control request or response over WS.
-type TUIControlPayload struct {
-	Action string            `json:"action"`           // "switch" | "close" | "layout" | "theme"
-	Params map[string]string `json:"params,omitempty"` // action-specific parameters
-	Result map[string]string `json:"result,omitempty"` // response result
-	Error  string            `json:"error,omitempty"`  // response error
-}
-
-// WsProgressPayload — structured progress data (corresponds to agent.StructuredProgress).
-type WsProgressPayload struct {
-	ChatID         string              `json:"chat_id,omitempty"`
-	Seq            uint64              `json:"seq,omitempty"`
-	Phase          string              `json:"phase,omitempty"`
-	Iteration      int                 `json:"iteration"`
-	ActiveTools    []WsToolProgress    `json:"active_tools,omitempty"`
-	CompletedTools []WsToolProgress    `json:"completed_tools,omitempty"`
-	Thinking       string              `json:"thinking,omitempty"`
-	Reasoning      string              `json:"reasoning,omitempty"`
-	SubAgents      []WsSubAgent        `json:"sub_agents,omitempty"`
-	TokenUsage     *WsTokenUsage       `json:"token_usage,omitempty"`
-	Todos          []WsTodoItem        `json:"todos,omitempty"`
-	Questions      []WsAskUserQuestion `json:"questions,omitempty"`
-	RequestID      string              `json:"request_id,omitempty"`
-	// StreamContent carries accumulated LLM streaming text (for CLI RemoteBackend).
-	StreamContent          string `json:"stream_content,omitempty"`
-	ReasoningStreamContent string `json:"reasoning_stream_content,omitempty"`
-	// HistoryCompacted is true after context compression — CLI should reload messages.
-	HistoryCompacted bool `json:"history_compacted,omitempty"`
-	// CWD is the agent's current working directory (for worktree indicator).
-	CWD string `json:"cwd,omitempty"`
-}
-
-// cliProgressToWS converts CLIProgressPayload to WsProgressPayload for WS delivery.
-func cliProgressToWS(p *CLIProgressPayload) *WsProgressPayload {
-	if p == nil {
-		return nil
-	}
-	wp := &WsProgressPayload{
-		ChatID:                 p.ChatID,
-		Seq:                    p.Seq,
-		Phase:                  p.Phase,
-		Iteration:              p.Iteration,
-		Thinking:               p.Thinking,
-		Reasoning:              p.Reasoning,
-		StreamContent:          p.StreamContent,
-		ReasoningStreamContent: p.ReasoningStreamContent,
-		HistoryCompacted:       p.HistoryCompacted,
-		CWD:                    p.CWD,
-	}
-	for _, t := range p.ActiveTools {
-		wp.ActiveTools = append(wp.ActiveTools, WsToolProgress{
-			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
-			Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-		})
-	}
-	for _, t := range p.CompletedTools {
-		wp.CompletedTools = append(wp.CompletedTools, WsToolProgress{
-			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Iteration: t.Iteration, Summary: t.Summary,
-			Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-		})
-	}
-	for _, t := range p.Todos {
-		wp.Todos = append(wp.Todos, WsTodoItem(t))
-	}
-	if p.TokenUsage != nil {
-		wp.TokenUsage = &WsTokenUsage{
-			PromptTokens: p.TokenUsage.PromptTokens, CompletionTokens: p.TokenUsage.CompletionTokens,
-			TotalTokens: p.TokenUsage.TotalTokens, CacheHitTokens: p.TokenUsage.CacheHitTokens,
-			MaxOutputTokens: p.TokenUsage.MaxOutputTokens,
-		}
-	}
-	for _, sa := range p.SubAgents {
-		wp.SubAgents = append(wp.SubAgents, WsSubAgent{
-			Role: sa.Role, Instance: sa.Instance, Status: sa.Status, Desc: sa.Desc,
-			Children: convertCLISubAgentToWS(sa.Children),
-		})
-	}
-	return wp
-}
-
-// GetStreamContent returns the StreamContent field.
-// Used by RemoteBackend to extract stream text from stream_content messages.
-func (p *WsProgressPayload) GetStreamContent() string {
-	if p == nil {
-		return ""
-	}
-	return p.StreamContent
-}
-
-// GetReasoningStreamContent returns the ReasoningStreamContent field.
-// Used by RemoteBackend to extract reasoning from stream_content messages.
-func (p *WsProgressPayload) GetReasoningStreamContent() string {
-	if p == nil {
-		return ""
-	}
-	return p.ReasoningStreamContent
-}
-
-// ToCLIProgressPayload converts WsProgressPayload to CLIProgressPayload format
-// for storage in lastProgressSnapshot (used by GetActiveProgress RPC).
-func (p *WsProgressPayload) ToCLIProgressPayload() *CLIProgressPayload {
-	if p == nil {
-		return nil
-	}
-	cp := &CLIProgressPayload{
-		ChatID:                 p.ChatID,
-		Phase:                  p.Phase,
-		Iteration:              p.Iteration,
-		Thinking:               p.Thinking,
-		Reasoning:              p.Reasoning,
-		StreamContent:          p.StreamContent,
-		ReasoningStreamContent: p.ReasoningStreamContent,
-		HistoryCompacted:       p.HistoryCompacted,
-		CWD:                    p.CWD,
-	}
-	for _, t := range p.ActiveTools {
-		cp.ActiveTools = append(cp.ActiveTools, CLIToolProgress{
-			Name:      t.Name,
-			Label:     t.Label,
-			Status:    t.Status,
-			Elapsed:   t.Elapsed,
-			Iteration: t.Iteration,
-			Summary:   t.Summary,
-			Detail:    t.Detail,
-			Args:      t.Args,
-			ToolHints: t.ToolHints,
-		})
-	}
-	for _, t := range p.CompletedTools {
-		cp.CompletedTools = append(cp.CompletedTools, CLIToolProgress{
-			Name:      t.Name,
-			Label:     t.Label,
-			Status:    t.Status,
-			Elapsed:   t.Elapsed,
-			Iteration: t.Iteration,
-			Summary:   t.Summary,
-			Detail:    t.Detail,
-			Args:      t.Args,
-			ToolHints: t.ToolHints,
-		})
-	}
-	for _, sa := range p.SubAgents {
-		cp.SubAgents = append(cp.SubAgents, CLISubAgent{
-			Role:     sa.Role,
-			Instance: sa.Instance,
-			Status:   sa.Status,
-			Desc:     sa.Desc,
-			Children: convertWsSubAgentToCLI(sa.Children),
-		})
-	}
-	if p.TokenUsage != nil {
-		cp.TokenUsage = &CLITokenUsage{
-			PromptTokens:     p.TokenUsage.PromptTokens,
-			CompletionTokens: p.TokenUsage.CompletionTokens,
-			TotalTokens:      p.TokenUsage.TotalTokens,
-			CacheHitTokens:   p.TokenUsage.CacheHitTokens,
-			MaxOutputTokens:  p.TokenUsage.MaxOutputTokens,
-		}
-	}
-	for _, t := range p.Todos {
-		cp.Todos = append(cp.Todos, CLITodoItem(t))
-	}
-	return cp
-}
-
-// WsToolProgress 单个工具的执行进度。
-type WsToolProgress = protocol.ToolProgress
-
-// WsSubAgent 子 Agent 的结构化进度状态。
-type WsSubAgent = protocol.SubAgentInfo
-
-// convertCLISubAgentToWS recursively converts CLI SubAgent tree to WS format.
-func convertCLISubAgentToWS(children []CLISubAgent) []WsSubAgent {
-	if len(children) == 0 {
-		return nil
-	}
-	result := make([]WsSubAgent, len(children))
-	for i, c := range children {
-		result[i] = WsSubAgent{
-			Role:     c.Role,
-			Instance: c.Instance,
-			Status:   c.Status,
-			Desc:     c.Desc,
-			Children: convertCLISubAgentToWS(c.Children),
-		}
-	}
-	return result
-}
-
-// convertWsSubAgentToCLI recursively converts WS SubAgent tree to CLI format.
-func convertWsSubAgentToCLI(children []WsSubAgent) []CLISubAgent {
-	if len(children) == 0 {
-		return nil
-	}
-	result := make([]CLISubAgent, len(children))
-	for i, c := range children {
-		result[i] = CLISubAgent{
-			Role:     c.Role,
-			Instance: c.Instance,
-			Status:   c.Status,
-			Desc:     c.Desc,
-			Children: convertWsSubAgentToCLI(c.Children),
-		}
-	}
-	return result
-}
-
-// WsTokenUsage Token 使用量快照。
-type WsTokenUsage = protocol.TokenUsage
-
-// WsTodoItem represents a TODO item for web display.
-type WsTodoItem = protocol.TodoItem
-
-type wsClientMessage struct {
-	Type       string   `json:"type"`
-	Content    string   `json:"content"`
-	FileIDs    []string `json:"file_ids,omitempty"`
-	FileNames  []string `json:"file_names,omitempty"`
-	FileSizes  []int64  `json:"file_sizes,omitempty"`
-	UploadKeys []string `json:"upload_keys,omitempty"` // OSS upload keys (for qiniu mode)
-	FileMimes  []string `json:"file_mimes,omitempty"`  // MIME types
-	Channel    string   `json:"channel,omitempty"`
-	ChatID     string   `json:"chat_id,omitempty"`
-	SenderID   string   `json:"sender_id,omitempty"`
-	SenderName string   `json:"sender_name,omitempty"`
-	ChatType   string   `json:"chat_type,omitempty"`
-	// RPC and TUI fields (used when Type == "rpc" or "tui_control_resp")
-	ID         string             `json:"id,omitempty"`
-	Method     string             `json:"method,omitempty"`
-	Params     json.RawMessage    `json:"params,omitempty"`
-	TUIControl *TUIControlPayload `json:"tui_control,omitempty"`
-}
-
-// WsAskUserPayload is the payload for "ask_user" WS messages (agent needs user input).
-type WsAskUserPayload struct {
-	Questions []WsAskUserQuestion `json:"questions"`
-	RequestID string              `json:"request_id,omitempty"`
-}
-
-// WsAskUserQuestion represents a single question in the AskUser flow.
-type WsAskUserQuestion struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
-}
-
-// WsAskUserResponse is the client response to an ask_user prompt.
-type WsAskUserResponse struct {
-	Answers   map[string]string `json:"answers"`   // question index -> answer
-	Cancelled bool              `json:"cancelled"` // true = user cancelled
-}
-
 // ---------------------------------------------------------------------------
 // WebChannel: implements Channel interface
 // ---------------------------------------------------------------------------
@@ -976,7 +424,7 @@ func (wc *WebChannel) Send(msg bus.OutboundMessage) (string, error) {
 		content = ConvertFeishuCard(content)
 	}
 
-	wsMsg := wsMessage{
+	wsMsg := protocol.WSMessage{
 		Type:            msgType,
 		ID:              msgID,
 		Content:         content,
@@ -1006,18 +454,18 @@ func (wc *WebChannel) Send(msg bus.OutboundMessage) (string, error) {
 
 	// AskUser: agent needs user input
 	if msg.WaitingUser {
-		askPayload := &WsProgressPayload{}
+		askPayload := &protocol.ProgressEvent{}
 		if msg.Metadata != nil {
 			askPayload.RequestID = msg.Metadata["request_id"]
 			if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {
-				var qs []WsAskUserQuestion
+				var qs []protocol.AskUserQuestion
 				if json.Unmarshal([]byte(qJSON), &qs) == nil {
 					askPayload.Questions = qs
 				}
 			}
 		}
-		askMsg := wsMessage{
-			Type:     "ask_user",
+		askMsg := protocol.WSMessage{
+			Type:     protocol.MsgTypeAskUser,
 			ID:       msgID,
 			TS:       time.Now().Unix(),
 			Progress: askPayload,
@@ -1028,62 +476,9 @@ func (wc *WebChannel) Send(msg bus.OutboundMessage) (string, error) {
 	return msgID, nil
 }
 
-// SendTUIControlRequest sends a TUI control request to a remote CLI client and blocks
-// waiting for the response. Used by the tui_control tool in remote mode.
-func (c *RemoteCLIChannel) SendTUIControlRequest(chatID string, action string, params map[string]string) (map[string]string, error) {
-	id := fmt.Sprintf("tui-%d", time.Now().UnixNano())
-	ch := make(chan *TUIControlPayload, 1)
-
-	c.tuiPendingMu.Lock()
-	c.tuiPending[id] = ch
-	c.tuiPendingMu.Unlock()
-
-	defer func() {
-		c.tuiPendingMu.Lock()
-		delete(c.tuiPending, id)
-		c.tuiPendingMu.Unlock()
-	}()
-
-	wsMsg := wsMessage{
-		Type: "tui_control_req",
-		ID:   id,
-		TUIControl: &TUIControlPayload{
-			Action: action,
-			Params: params,
-		},
-	}
-	if !c.hub.sendToClient(chatID, wsMsg) {
-		return nil, fmt.Errorf("remote CLI client offline for chat %s", chatID)
-	}
-
-	select {
-	case resp := <-ch:
-		if resp.Error != "" {
-			return nil, fmt.Errorf("%s", resp.Error)
-		}
-		return resp.Result, nil
-	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("tui_control request %s timed out", id)
-	}
-}
-
-// deliverTUIResponse routes a TUI control response from a remote CLI client
-// to the pending request channel.
-func (c *RemoteCLIChannel) deliverTUIResponse(id string, payload *TUIControlPayload) {
-	c.tuiPendingMu.Lock()
-	ch, ok := c.tuiPending[id]
-	c.tuiPendingMu.Unlock()
-	if ok {
-		select {
-		case ch <- payload:
-		default:
-		}
-	}
-}
-
 // stampAndBuffer assigns a monotonic seq to the message and appends it to the
 // per-chatID event stream buffer. Returns the stamped message (ready to send).
-func (wc *WebChannel) stampAndBuffer(chatID string, msg wsMessage) wsMessage {
+func (wc *WebChannel) stampAndBuffer(chatID string, msg protocol.WSMessage) protocol.WSMessage {
 	es := wc.getEventStream(chatID)
 	msg.Seq = es.nextSeq()
 	es.push(msg)
@@ -1092,13 +487,13 @@ func (wc *WebChannel) stampAndBuffer(chatID string, msg wsMessage) wsMessage {
 
 // SendProgress 发送结构化进度事件到 Web 客户端（非阻塞）。
 // 内部通过 hub 的缓冲通道发送，保持调用路径轻量。
-func (wc *WebChannel) SendProgress(chatID string, payload *WsProgressPayload) {
+func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
 	if payload == nil {
 		return
 	}
 
-	wsMsg := wc.stampAndBuffer(chatID, wsMessage{
-		Type:     "progress_structured",
+	wsMsg := wc.stampAndBuffer(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeProgress,
 		TS:       time.Now().Unix(),
 		Progress: payload,
 	})
@@ -1114,10 +509,10 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 	if content == "" && reasoning == "" {
 		return
 	}
-	wsMsg := wc.stampAndBuffer(chatID, wsMessage{
-		Type: "stream_content",
+	wsMsg := wc.stampAndBuffer(chatID, protocol.WSMessage{
+		Type: protocol.MsgTypeStreamContent,
 		TS:   time.Now().Unix(),
-		Progress: &WsProgressPayload{
+		Progress: &protocol.ProgressEvent{
 			ChatID:                 "web:" + chatID,
 			StreamContent:          content,
 			ReasoningStreamContent: reasoning,
@@ -1128,8 +523,8 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 
 // PushRunnerStatus pushes a runner online/offline status change to the Web client.
 func (wc *WebChannel) PushRunnerStatus(chatID, runnerName string, online bool) {
-	wsMsg := wsMessage{
-		Type: "runner_status",
+	wsMsg := protocol.WSMessage{
+		Type: protocol.MsgTypeRunnerStatus,
 		TS:   time.Now().Unix(),
 		Content: func() string {
 			b, _ := json.Marshal(map[string]any{"runner_name": runnerName, "online": online})
@@ -1143,7 +538,7 @@ func (wc *WebChannel) PushRunnerStatus(chatID, runnerName string, online bool) {
 
 // PushSyncProgress pushes a sync progress notification to the Web client.
 func (wc *WebChannel) PushSyncProgress(chatID, phase, message string) {
-	wsMsg := wsMessage{
+	wsMsg := protocol.WSMessage{
 		Type: "sync_progress",
 		TS:   time.Now().Unix(),
 		Content: func() string {
@@ -1236,7 +631,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	client := &Client{
 		conn:   conn,
-		sendCh: make(chan wsMessage, webSendChBufSize),
+		sendCh: make(chan protocol.WSMessage, webSendChBufSize),
 		done:   make(chan struct{}),
 		hub:    wc.hub,
 		userID: senderID,
@@ -1320,21 +715,20 @@ func (wc *WebChannel) replayMissedEvents(client *Client, chatID string) {
 		// No sync message — client is old version. Send current progress snapshot.
 		if wc.callbacks.GetActiveProgress != nil {
 			if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil {
-				wsPayload := cliProgressToWS(p)
 				select {
-				case client.sendCh <- wsMessage{
-					Type:     "progress_structured",
+				case client.sendCh <- protocol.WSMessage{
+					Type:     protocol.MsgTypeProgress,
 					TS:       time.Now().Unix(),
-					Progress: wsPayload,
+					Progress: p,
 				}:
 				default:
 				}
 				if p.StreamContent != "" || p.ReasoningStreamContent != "" {
 					select {
-					case client.sendCh <- wsMessage{
-						Type: "stream_content",
+					case client.sendCh <- protocol.WSMessage{
+						Type: protocol.MsgTypeStreamContent,
 						TS:   time.Now().Unix(),
-						Progress: &WsProgressPayload{
+						Progress: &protocol.ProgressEvent{
 							StreamContent:          p.StreamContent,
 							ReasoningStreamContent: p.ReasoningStreamContent,
 						},
@@ -1367,7 +761,7 @@ func (wc *WebChannel) replayMissedEvents(client *Client, chatID string) {
 	if !replayedProgress && wc.callbacks.GetActiveProgress != nil {
 		if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil {
 			select {
-			case client.sendCh <- wsMessage{Type: "progress_structured", TS: time.Now().Unix(), Progress: cliProgressToWS(p)}:
+			case client.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeProgress, TS: time.Now().Unix(), Progress: p}:
 			default:
 			}
 		}
@@ -1430,7 +824,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 	c.conn.SetPingHandler(func(appData string) error {
 		c.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 		select {
-		case c.sendCh <- wsMessage{Type: "__pong__", Content: appData}:
+		case c.sendCh <- protocol.WSMessage{Type: "__pong__", Content: appData}:
 		default:
 		}
 		return nil
@@ -1457,7 +851,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			return
 		}
 
-		var msg wsClientMessage
+		var msg protocol.WSClientMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			log.WithError(err).Debug("WS invalid message")
 			continue
@@ -1469,7 +863,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		}
 
 		switch msg.Type {
-		case "sync":
+		case protocol.MsgTypeSync:
 			// Client reconnect sync: sends last_seq from history API response.
 			// The replayMissedEvents goroutine is waiting on this.
 			if ch := c.syncCh.Load(); ch != nil {
@@ -1486,7 +880,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				}
 			}
 			continue
-		case "cancel":
+		case protocol.MsgTypeCancel:
 			// Reuse existing /cancel mechanism: push "/cancel" text into msgBus.
 			// Resolve business channel/chatID from WS message fields (same as message handler)
 			// so the cancel key matches the one used during message processing.
@@ -1516,7 +910,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				From:       bus.NewIMAddress(msgChannel, msgSenderID),
 			}
 			continue
-		case "rpc":
+		case protocol.MsgTypeRPC:
 			// CLI RemoteBackend RPC request — dispatch to server-side handler
 			if wc.callbacks.RPCHandler == nil {
 				continue
@@ -1531,7 +925,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				continue
 			}
 			result, rpcErr := wc.callbacks.RPCHandler(rpcReq.Method, rpcReq.Params, c.userID)
-			rpcMsg := wsMessage{Type: "rpc_response", ID: rpcReq.ID}
+			rpcMsg := protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: rpcReq.ID}
 			if rpcErr != nil {
 				rpcMsg.Error = rpcErr.Error()
 			} else if result != nil {
@@ -1543,7 +937,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				log.Warn("RPC response channel full, dropping response to CLI client")
 			}
 			continue
-		case "subscribe":
+		case protocol.MsgTypeSubscribe:
 			// CLI RemoteBackend subscribes to a business chatID so the Hub
 			// can route progress/stream/outbound events to this WS client.
 			// Without this, RPC-only sessions (reconnect) never subscribe,
@@ -1555,13 +949,13 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				continue
 			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
-			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Debug("CLI client subscribed to chatID")
-		case "tui_control_resp":
+			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: CLI client subscribed to chatID")
+		case protocol.MsgTypeTUIControlResp:
 			// Remote CLI TUI control response — route to pending request handler
 			if msg.TUIControl != nil && msg.ID != "" && wc.hub.tuiRespFn != nil {
 				wc.hub.tuiRespFn(msg.ID, msg.TUIControl)
 			}
-		case "message":
+		case protocol.MsgTypeMessage:
 			if msg.Content == "" && len(msg.UploadKeys) == 0 {
 				continue
 			}
@@ -1608,7 +1002,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 
 			// Echo back complete user message (with file info) so frontend can update optimistic message
 			if content != originalContent && len(msg.UploadKeys) > 0 {
-				echoMsg := wsMessage{
+				echoMsg := protocol.WSMessage{
 					Type:            "user_echo",
 					Content:         content,
 					OriginalContent: originalContent,
@@ -1667,8 +1061,8 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				From:       bus.NewIMAddress(msgChannel, msgSenderID),
 				Metadata:   metadata,
 			}
-		case "ask_user_response":
-			var resp WsAskUserResponse
+		case protocol.MsgTypeAskUserResponse:
+			var resp protocol.AskUserResponse
 			if err := json.Unmarshal(raw, &resp); err != nil {
 				log.WithError(err).Debug("WS invalid ask_user_response")
 				continue
@@ -1872,204 +1266,3 @@ func eagerSaveUserMsg(db *sql.DB, userID string, content string) error {
 }
 
 // ---------------------------------------------------------------------------
-// remoteCLIChannel — virtual CLI channel for remote mode (CLI→WS→server)
-// ---------------------------------------------------------------------------
-
-// remoteCLIChannel is a virtual Channel implementation registered as "cli"
-// in the server's dispatcher. It routes outbound messages to the correct
-// WebSocket client via the web channel's hub.
-type RemoteCLIChannel struct {
-	hub *Hub
-
-	// Per-chatID widget zone cache for incremental updates.
-	lastWidgetMu    sync.Mutex
-	lastWidgetZones map[string]map[string]string // chatID → zone → content
-
-	// TUI control pending requests (keyed by request ID)
-	tuiPendingMu sync.Mutex
-	tuiPending   map[string]chan *TUIControlPayload
-}
-
-// NewRemoteCLIChannel creates a virtual CLI channel that shares the given hub.
-func NewRemoteCLIChannel(hub *Hub) *RemoteCLIChannel {
-	rc := &RemoteCLIChannel{
-		hub:        hub,
-		tuiPending: make(map[string]chan *TUIControlPayload),
-	}
-	hub.tuiRespFn = rc.deliverTUIResponse
-	return rc
-}
-
-func (c *RemoteCLIChannel) Name() string { return "cli" }
-
-func (c *RemoteCLIChannel) Start() error { return nil }
-
-func (c *RemoteCLIChannel) Stop() {}
-
-// InjectUserMessage sends an injected user message (e.g. bg task notification)
-// to the remote CLI runner via WebSocket. The runner will display it as a user
-// message in the TUI and use it to start the agent turn display.
-func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
-	wsMsg := wsMessage{
-		Type:    "inject_user",
-		Content: content,
-		ChatID:  chatID,
-		TS:      time.Now().Unix(),
-	}
-	if !c.hub.sendToClient(chatID, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")
-	}
-}
-
-// SendProgress sends structured progress to remote CLI clients via the Hub.
-func (c *RemoteCLIChannel) SendProgress(chatID string, payload *WsProgressPayload) {
-	if payload == nil {
-		return
-	}
-	wsMsg := wsMessage{
-		Type:     "progress_structured",
-		TS:       time.Now().Unix(),
-		Progress: payload,
-	}
-	if !c.hub.sendToClient(chatID, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, progress event buffered")
-	}
-}
-
-// SendStreamContent sends streaming LLM content to remote CLI clients via the Hub.
-func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) {
-	if content == "" && reasoning == "" {
-		return
-	}
-	wsMsg := wsMessage{
-		Type: "stream_content",
-		TS:   time.Now().Unix(),
-		Progress: &WsProgressPayload{
-			ChatID:                 "cli:" + chatID,
-			StreamContent:          content,
-			ReasoningStreamContent: reasoning,
-		},
-	}
-	_ = c.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
-}
-
-// PushPluginWidgetsPerSession pushes widget zone content to each connected CLI
-// client with per-session rendering. The renderFn callback is called once per
-// subscribed chatID to produce session-specific widget content (using the
-// session's workDir for correct git branch, etc.).
-//
-// Performs incremental updates: only sends to chatIDs whose zones actually changed.
-func (c *RemoteCLIChannel) PushPluginWidgetsPerSession(renderFn func(chatID string) map[string]string) {
-	// Collect subscribed chatIDs
-	c.hub.mu.RLock()
-	chatIDs := make([]string, 0, len(c.hub.subs))
-	for chatID := range c.hub.subs {
-		chatIDs = append(chatIDs, chatID)
-	}
-	c.hub.mu.RUnlock()
-
-	for _, chatID := range chatIDs {
-		// Skip non-session chatIDs (e.g. "admin" from web-layer p2p routing).
-		// CLI sessions use absolute paths as chatID; web-layer uses userID.
-		// Pushing to web chatIDs sends stale content to wrong windows.
-		if !strings.HasPrefix(chatID, "/") {
-			continue
-		}
-
-		zones := renderFn(chatID)
-
-		// Incremental: skip if nothing changed for this chatID
-		c.lastWidgetMu.Lock()
-		changed := true
-		if c.lastWidgetZones != nil {
-			if prev, ok := c.lastWidgetZones[chatID]; ok {
-				if len(prev) == len(zones) {
-					changed = false
-					for k, v := range zones {
-						if ov, exists := prev[k]; !exists || ov != v {
-							changed = true
-							break
-						}
-					}
-				}
-			}
-		}
-		if !changed {
-			c.lastWidgetMu.Unlock()
-			continue
-		}
-		if c.lastWidgetZones == nil {
-			c.lastWidgetZones = make(map[string]map[string]string)
-		}
-		c.lastWidgetZones[chatID] = zones
-		c.lastWidgetMu.Unlock()
-
-		b, _ := json.Marshal(zones)
-		wsMsg := wsMessage{
-			Type:    "plugin_widgets",
-			TS:      time.Now().Unix(),
-			ChatID:  chatID, // client uses this to filter cross-session pushes
-			Content: string(b),
-		}
-		_ = c.hub.sendToClient(chatID, wsMsg) // best-effort push
-	}
-}
-
-func (c *RemoteCLIChannel) Send(msg bus.OutboundMessage) (string, error) {
-	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
-
-	content := msg.Content
-	msgType := "text"
-
-	if strings.HasPrefix(content, "__FEISHU_CARD__") {
-		msgType = "card"
-		content = ConvertFeishuCard(content)
-	}
-
-	targetClientID := msg.ChatID
-
-	wsMsg := wsMessage{
-		Type:            msgType,
-		ID:              msgID,
-		Content:         content,
-		TS:              time.Now().Unix(),
-		ProgressHistory: msg.Metadata["progress_history"],
-		Channel:         msg.Channel,
-		ChatID:          msg.ChatID,
-	}
-
-	if !c.hub.sendToClient(targetClientID, wsMsg) {
-		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("CLI WS client offline, message buffered")
-	}
-
-	// AskUser: agent needs user input
-	if msg.WaitingUser {
-		askPayload := &WsProgressPayload{}
-		if msg.Metadata != nil {
-			askPayload.RequestID = msg.Metadata["request_id"]
-			if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {
-				var qs []WsAskUserQuestion
-				if json.Unmarshal([]byte(qJSON), &qs) == nil {
-					askPayload.Questions = qs
-				}
-			}
-		}
-		log.WithFields(log.Fields{
-			"msg_channel":   msg.Channel,
-			"msg_chatid":    msg.ChatID,
-			"target_client": targetClientID,
-			"num_questions": len(askPayload.Questions),
-		}).Info("RemoteCLIChannel.Send: dispatching ask_user")
-		askMsg := wsMessage{
-			Type:     "ask_user",
-			ID:       msgID,
-			TS:       time.Now().Unix(),
-			Channel:  msg.Channel,
-			ChatID:   msg.ChatID,
-			Progress: askPayload,
-		}
-		c.hub.sendToClient(targetClientID, askMsg)
-	}
-
-	return msgID, nil
-}

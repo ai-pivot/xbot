@@ -76,7 +76,7 @@ func TestApplyQuickSwitch(t *testing.T) {
 	model := newCLIModel()
 	model.subscriptionMgr = mgr
 	model.channel = &CLIChannel{
-		config: CLIChannelConfig{
+		config: &CLIChannelConfig{
 			SwitchLLM: func(provider, baseURL, apiKey, model string) error {
 				switchCalled = true
 				switchedProvider = provider
@@ -317,7 +317,7 @@ func TestApplyQuickSwitchNilSwitchLLM(t *testing.T) {
 	model := newCLIModel()
 	model.subscriptionMgr = mgr
 	model.channel = &CLIChannel{
-		config: CLIChannelConfig{
+		config: &CLIChannelConfig{
 			// SwitchLLM is nil
 			GetCurrentValues: func() map[string]string {
 				return map[string]string{}
@@ -365,7 +365,7 @@ func TestApplyQuickSwitchError(t *testing.T) {
 	model := newCLIModel()
 	model.subscriptionMgr = mgr
 	model.channel = &CLIChannel{
-		config: CLIChannelConfig{
+		config: &CLIChannelConfig{
 			SwitchLLM: func(provider, baseURL, apiKey, model string) error {
 				return fmt.Errorf("connection refused")
 			},

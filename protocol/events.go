@@ -50,9 +50,16 @@ type TokenUsage struct {
 	MaxOutputTokens  int64 `json:"max_output_tokens,omitempty"`
 }
 
+// AskUserQuestion represents a single question in the AskUser flow.
+type AskUserQuestion struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+}
+
 // ProgressEvent is the comprehensive structured progress payload.
-// It serves both as a per-iteration event and as the full progress snapshot
-// (replacing the former channel.CLIProgressPayload).
+// It serves both as a per-iteration event and as the full progress snapshot.
+// This is the single source of truth for all progress data across local CLI,
+// remote CLI (WebSocket), and Web channel — no separate WsProgressPayload needed.
 type ProgressEvent struct {
 	// Basic iteration info
 	Iteration   int                `json:"iteration"`
@@ -61,21 +68,23 @@ type ProgressEvent struct {
 	ToolCalls   []ToolCallSnapshot `json:"tool_calls,omitempty"`
 	ElapsedWall int64              `json:"elapsed_wall"`
 
-	// Extended fields (from the former channel.CLIProgressPayload)
-	ChatID                 string          `json:"chat_id,omitempty"`
-	Seq                    uint64          `json:"seq,omitempty"`
-	Phase                  string          `json:"phase,omitempty"`
-	ActiveTools            []ToolProgress  `json:"active_tools,omitempty"`
-	CompletedTools         []ToolProgress  `json:"completed_tools,omitempty"`
-	Thinking               string          `json:"thinking,omitempty"`
-	SubAgents              []SubAgentInfo  `json:"sub_agents,omitempty"`
-	Todos                  []TodoItem      `json:"todos,omitempty"`
-	TokenUsage             *TokenUsage     `json:"token_usage,omitempty"`
-	StreamContent          string          `json:"stream_content,omitempty"`
-	ReasoningStreamContent string          `json:"reasoning_stream_content,omitempty"`
-	IterationHistory       []ProgressEvent `json:"iteration_history,omitempty"`
-	HistoryCompacted       bool            `json:"history_compacted,omitempty"`
-	CWD                    string          `json:"cwd,omitempty"`
+	// Extended fields
+	ChatID                 string            `json:"chat_id,omitempty"`
+	Seq                    uint64            `json:"seq,omitempty"`
+	Phase                  string            `json:"phase,omitempty"`
+	ActiveTools            []ToolProgress    `json:"active_tools,omitempty"`
+	CompletedTools         []ToolProgress    `json:"completed_tools,omitempty"`
+	Thinking               string            `json:"thinking,omitempty"`
+	SubAgents              []SubAgentInfo    `json:"sub_agents,omitempty"`
+	Todos                  []TodoItem        `json:"todos,omitempty"`
+	TokenUsage             *TokenUsage       `json:"token_usage,omitempty"`
+	Questions              []AskUserQuestion `json:"questions,omitempty"`
+	RequestID              string            `json:"request_id,omitempty"`
+	StreamContent          string            `json:"stream_content,omitempty"`
+	ReasoningStreamContent string            `json:"reasoning_stream_content,omitempty"`
+	IterationHistory       []ProgressEvent   `json:"iteration_history,omitempty"`
+	HistoryCompacted       bool              `json:"history_compacted,omitempty"`
+	CWD                    string            `json:"cwd,omitempty"`
 }
 
 func (ProgressEvent) EventType() string { return "progress" }

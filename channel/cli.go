@@ -31,16 +31,39 @@ import (
 	"xbot/version"
 )
 
-func NewCLIChannel(cfg CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
-	return &CLIChannel{
+func NewCLIChannel(cfg *CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
+	ch := &CLIChannel{
 		config:     cfg,
 		msgBus:     msgBus,
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan bus.OutboundMessage, cliMsgBufSize),
-		progressCh: make(chan *CLIProgressPayload, 1), // buffered-1: latest progress wins
-		asyncCh:    make(chan tea.Msg, 256),           // unified async send: progress + outbound
+		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
+		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
 		stopCh:     make(chan struct{}),
 	}
+	// Global ticker goroutine: sends cliTickMsg every 100ms. This is the
+	// SINGLE source of all timed UI updates (splash animation, spinner,
+	// progress timers, queue flush, placeholder rotation). No BubbleTea
+	// cmd chain is needed — eliminating the class of bugs where multiple
+	// cmd chains accumulate and double the tick rate.
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				select {
+				case ch.asyncCh <- cliTickMsg{}:
+				default:
+					// Channel full — drop tick. Next tick will arrive in 100ms.
+					// This prevents blocking the ticker goroutine.
+				}
+			case <-ch.stopCh:
+				return
+			}
+		}
+	}()
+	return ch
 }
 
 // Name 返回渠道名称
@@ -151,20 +174,27 @@ func (c *CLIChannel) Start() error {
 		})
 		c.pendingRemotePluginCache = nil
 	}
-	if c.pendingHistory != nil {
-		c.LoadHistory(c.pendingHistory)
-		c.pendingHistory = nil
-	}
-	if c.pendingProgress != nil {
-		c.model.restoreProgressSnapshot(c.pendingProgress)
-		c.pendingProgress = nil
-	}
+	// Set identity fields on the model.
 	c.model.channelName = "cli"
 	c.model.defaultChatID = c.config.ChatID
 	c.model.chatID = c.config.ChatID
 	c.model.sessionName, _ = ParseChatID(c.config.ChatID)
 	if c.model.sessionName == "" {
 		c.model.sessionName = defaultSessionName
+	}
+
+	// If RestoreSession ran before Start() (c.model was nil), it cached
+	// data in pendingHistory/pendingProgress. Convert to pendingSuRestore
+	// so Init() emits it as a suHistoryLoadMsg via the event loop.
+	if c.pendingHistory != nil || c.pendingProgress != nil {
+		c.model.pendingSuRestore = &suHistoryLoadMsg{
+			history:        c.pendingHistory,
+			channelName:    "cli",
+			chatID:         c.config.ChatID,
+			activeProgress: c.pendingProgress,
+		}
+		c.pendingHistory = nil
+		c.pendingProgress = nil
 	}
 
 	// Propagate late-injected services to model (set before Start() when model was nil)
@@ -219,7 +249,7 @@ func (c *CLIChannel) Start() error {
 	// bar never shows until the first LLM response of the new session.
 	if c.config.TokenStateLoader != nil {
 		if pt, ct := c.config.TokenStateLoader(); pt > 0 {
-			c.model.lastTokenUsage = &CLITokenUsage{
+			c.model.lastTokenUsage = &protocol.TokenUsage{
 				PromptTokens:     pt,
 				CompletionTokens: ct,
 				TotalTokens:      pt + ct,
@@ -380,7 +410,7 @@ func (c *CLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 // ONE goroutine (handleAsyncDrain) calling program.Send(). This prevents multiple
 // senders from competing on the unbuffered p.msgs channel, which would starve
 // the Bubble Tea readLoop (keyboard events) and cause Ctrl+C freeze.
-func (c *CLIChannel) SendProgress(chatID string, payload *CLIProgressPayload) {
+func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
 	if payload == nil || c.program == nil {
 		return
 	}
@@ -571,109 +601,43 @@ func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
 	}
 }
 
-// LoadHistory loads session history into the CLI model.
-// Used by remote mode where history must be fetched via RPC after the WS connection
-// is established. Thread-safe: always goes through asyncCh to avoid racing with
-// BubbleTea's View (glamour is not goroutine-safe).
-func (c *CLIChannel) LoadHistory(history []HistoryMessage) {
-	if len(history) == 0 {
-		return
-	}
-	// Pre-convert to cliMessage outside the event loop (cheap allocation).
-	msgs := make([]cliMessage, len(history))
-	for i, hm := range history {
-		cm := cliMessage{
-			role:      hm.Role,
-			content:   hm.Content,
-			timestamp: hm.Timestamp,
-			isPartial: false,
-			dirty:     true,
-		}
-		if len(hm.Iterations) > 0 {
-			cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-			for j, hi := range hm.Iterations {
-				cm.iterations[j] = cliIterationSnapshot(hi)
-			}
-		}
-		msgs[i] = cm
-	}
-
+// RestoreSession restores history + active progress + todos in one atomic step.
+// Uses the same suHistoryLoadMsg path as session switch, guaranteeing identical
+// rendering behavior for initial connect and reconnect.
+func (c *CLIChannel) RestoreSession(history []HistoryMessage, activeProgress *protocol.ProgressEvent, todos []protocol.TodoItem) {
 	c.programMu.Lock()
 	defer c.programMu.Unlock()
 	if c.model == nil {
-		// Model not created yet — cache for later application in newCLIModel
+		// Model not created yet — cache for Start().
 		c.pendingHistory = history
-		log.WithFields(log.Fields{"count": len(history), "chat_id": c.config.ChatID}).Info("Cached remote history (model not ready yet)")
+		c.pendingProgress = activeProgress
 		return
 	}
 	if c.program == nil {
-		// Program not started yet (ensureModel path) — safe to mutate directly.
-		// View() hasn't been called, so no concurrent rendering.
-		c.model.messages = append(c.model.messages, msgs...)
-		c.model.invalidateAllCache(false)
-		c.model.updateViewportContent()
-		log.WithFields(log.Fields{"count": len(history), "chat_id": c.config.ChatID}).Info("Applied remote history (before program start)")
+		// Program not started yet — cache on model for Init() to consume
+		// via pendingSuRestore. Init() returns a tea.Cmd that emits
+		// suHistoryLoadMsg, guaranteeing the handler's returned cmds
+		// (tickCmd, typewriterTick) are properly batched by BubbleTea.
+		c.model.pendingSuRestore = &suHistoryLoadMsg{
+			history:        history,
+			channelName:    "cli",
+			chatID:         c.config.ChatID,
+			activeProgress: activeProgress,
+			todos:          todos,
+		}
 		return
 	}
-	// Program is running — send through asyncCh to avoid racing with View()
-	// (glamour is not goroutine-safe).
+	// Program running — send as suHistoryLoadMsg (same as session switch).
 	select {
-	case c.asyncCh <- cliHistoryLoadMsg{
-		channelName: "cli",
-		chatID:      c.config.ChatID,
-		history:     msgs,
+	case c.asyncCh <- suHistoryLoadMsg{
+		history:        history,
+		channelName:    "cli",
+		chatID:         c.config.ChatID,
+		activeProgress: activeProgress,
+		todos:          todos,
 	}:
 	default:
-		log.Warn("LoadHistory: asyncCh full, history not applied")
-	}
-}
-
-// RestoreInitialProgress applies an active agent turn progress snapshot to the model.
-// Handles both pre-program startup (direct model mutation) and running program
-// (async channel). This is the correct way to inject progress from RPC/reconnect
-// because SendProgress silently drops when c.program is nil (before Start()).
-//
-// Thread-safe: acquires programMu, and only mutates model directly when View()
-// has not been called yet (program == nil).
-func (c *CLIChannel) RestoreInitialProgress(chatID string, payload *CLIProgressPayload) {
-	if payload == nil || payload.Phase == "done" {
-		return
-	}
-	if payload.ChatID == "" {
-		payload.ChatID = chatID
-	}
-
-	c.programMu.Lock()
-	defer c.programMu.Unlock()
-
-	if c.model == nil {
-		// Model not created yet — cache for later.
-		c.pendingProgress = payload
-		log.WithFields(log.Fields{
-			"chatID":    chatID,
-			"phase":     payload.Phase,
-			"iteration": payload.Iteration,
-		}).Info("Cached initial progress (model not ready yet)")
-		return
-	}
-
-	if c.program == nil {
-		// Program not started yet — safe to mutate directly.
-		// View() hasn't been called, so no concurrent rendering.
-		c.model.restoreProgressSnapshot(payload)
-		log.WithFields(log.Fields{
-			"chatID":    chatID,
-			"phase":     payload.Phase,
-			"iteration": payload.Iteration,
-		}).Info("Applied initial progress (before program start)")
-		return
-	}
-
-	// Program is running — send through asyncCh.
-	select {
-	case c.asyncCh <- cliProgressMsg{payload: payload}:
-	default:
-		log.Warn("RestoreInitialProgress: asyncCh full, progress not applied")
+		log.Warn("RestoreSession: asyncCh full, dropping restore")
 	}
 }
 

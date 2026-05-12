@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"xbot/bus"
-	"xbot/channel"
 	"xbot/protocol"
 
 	"github.com/gorilla/websocket"
@@ -95,41 +94,6 @@ func NewRemoteTransport(cfg RemoteTransportConfig) *RemoteTransport {
 // WS incoming message types (server → client)
 // ---------------------------------------------------------------------------
 
-// wsIncomingMessage represents a message received from the server.
-// Supports all message types: text, progress_structured, stream_content, rpc_response, ask_user.
-type wsIncomingMessage struct {
-	Type            string                     `json:"type"`
-	ID              string                     `json:"id,omitempty"`
-	Content         string                     `json:"content,omitempty"`
-	OriginalContent string                     `json:"original_content,omitempty"`
-	TS              int64                      `json:"ts,omitempty"`
-	Seq             uint64                     `json:"seq,omitempty"`
-	Progress        *channel.WsProgressPayload `json:"progress,omitempty"`
-	ProgressHistory string                     `json:"progress_history,omitempty"`
-	Result          json.RawMessage            `json:"result,omitempty"`
-	Error           string                     `json:"error,omitempty"`
-	Channel         string                     `json:"channel,omitempty"`
-	ChatID          string                     `json:"chat_id,omitempty"`
-	SessionReset    bool                       `json:"session_reset,omitempty"`
-	TUIControl      *channel.TUIControlPayload `json:"tui_control,omitempty"`
-}
-
-// wsOutgoingMessage represents a message sent to the server.
-type wsOutgoingMessage struct {
-	Type       string          `json:"type"`
-	Content    string          `json:"content,omitempty"`
-	ID         string          `json:"id,omitempty"`
-	Method     string          `json:"method,omitempty"`
-	Params     json.RawMessage `json:"params,omitempty"`
-	Channel    string          `json:"channel,omitempty"`
-	ChatID     string          `json:"chat_id,omitempty"`
-	SenderID   string          `json:"sender_id,omitempty"`
-	SenderName string          `json:"sender_name,omitempty"`
-	ChatType   string          `json:"chat_type,omitempty"`
-	// TUI control response (used when Type == "tui_control_resp")
-	TUIControl *channel.TUIControlPayload `json:"tui_control,omitempty"`
-}
-
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -192,7 +156,7 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 		msgType = "cancel"
 	}
 
-	outMsg := wsOutgoingMessage{
+	outMsg := protocol.WSClientMessage{
 		Type:       msgType,
 		Content:    msg.Content,
 		Channel:    msg.Channel,
@@ -294,7 +258,7 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 		Type    string `json:"type"`
 		LastSeq uint64 `json:"last_seq"`
 	}{
-		Type:    "sync",
+		Type:    protocol.MsgTypeSync,
 		LastSeq: t.lastSeq.Load(),
 	}
 	if err := conn.WriteJSON(syncMsg); err != nil {
@@ -320,7 +284,7 @@ func (t *RemoteTransport) BindChat(chatID string) error {
 	if t.conn == nil {
 		return fmt.Errorf("not connected to server")
 	}
-	subMsg := wsOutgoingMessage{Type: "subscribe", ChatID: chatID}
+	subMsg := protocol.WSClientMessage{Type: protocol.MsgTypeSubscribe, ChatID: chatID}
 	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	defer t.conn.SetWriteDeadline(time.Time{})
 	if err := t.conn.WriteJSON(subMsg); err != nil {
@@ -370,6 +334,11 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				delete(t.pending, id)
 			}
 			t.rpcMu.Unlock()
+			// Clear conn so subsequent Call() returns immediately instead of
+			// blocking for 30s on a dead connection (freezes BubbleTea event loop).
+			t.connMu.Lock()
+			t.conn = nil
+			t.connMu.Unlock()
 			select {
 			case t.reconnectCh <- struct{}{}:
 			default:
@@ -377,7 +346,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			t.setConnState("disconnected")
 			return
 		}
-		var msg wsIncomingMessage
+		var msg protocol.WSMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			log.WithError(err).Debug("Invalid WS message from server")
 			continue
@@ -392,9 +361,9 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			}
 		}
 		switch msg.Type {
-		case "rpc_response":
+		case protocol.MsgTypeRPCResponse:
 			t.handleRPCResponse(&msg)
-		case "text":
+		case protocol.MsgTypeText:
 			// Emit protocol event for new-style subscribers
 			t.emit(ctx, protocol.OutboundEvent{
 				Channel:   msg.Channel,
@@ -402,22 +371,22 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				Content:   msg.Content,
 				IsPartial: false,
 			})
-		case "progress_structured":
-			cliPayload := convertWsProgressToCLI(msg.Progress)
+		case protocol.MsgTypeProgress:
+			cliPayload := msg.Progress
 			// Emit full CLIProgressPayload as protocol event
 			if cliPayload != nil {
 				t.emit(ctx, cliPayload)
 			}
-		case "stream_content":
+		case protocol.MsgTypeStreamContent:
 			// Emit full CLIProgressPayload as protocol event
 			if msg.Progress != nil {
 				t.emit(ctx, &protocol.ProgressEvent{
 					ChatID:                 msg.Progress.ChatID,
-					StreamContent:          msg.Progress.GetStreamContent(),
-					ReasoningStreamContent: msg.Progress.GetReasoningStreamContent(),
+					StreamContent:          msg.Progress.StreamContent,
+					ReasoningStreamContent: msg.Progress.ReasoningStreamContent,
 				})
 			}
-		case "ask_user":
+		case protocol.MsgTypeAskUser:
 			if msg.Progress != nil {
 				if len(msg.Progress.Questions) > 0 {
 					log.WithFields(log.Fields{
@@ -438,7 +407,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					})
 				}
 			}
-		case "inject_user":
+		case protocol.MsgTypeInjectUser:
 			// Emit protocol event
 			if msg.Content != "" {
 				t.emit(ctx, protocol.InjectUserEvent{
@@ -446,7 +415,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					Content: msg.Content,
 				})
 			}
-		case "plugin_widgets":
+		case protocol.MsgTypePluginWidgets:
 			// Emit protocol event
 			var zones map[string]string
 			if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
@@ -455,7 +424,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					Zones:  zones,
 				})
 			}
-		case "tui_control_req":
+		case protocol.MsgTypeTUIControlReq:
 			// Server-initiated TUI control request. Process in goroutine so
 			// readPump stays responsive — required for RPC calls within handlers.
 			if t.tuiControlReqCb != nil && msg.TUIControl != nil {
@@ -464,10 +433,10 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				params := msg.TUIControl.Params
 				go func() {
 					result, err := t.tuiControlReqCb(action, params)
-					resp := wsOutgoingMessage{
-						Type: "tui_control_resp",
+					resp := protocol.WSClientMessage{
+						Type: protocol.MsgTypeTUIControlResp,
 						ID:   reqID,
-						TUIControl: &channel.TUIControlPayload{
+						TUIControl: &protocol.TUIControlPayload{
 							Action: action,
 						},
 					}
@@ -496,7 +465,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 	}
 }
 
-func (t *RemoteTransport) handleRPCResponse(msg *wsIncomingMessage) {
+func (t *RemoteTransport) handleRPCResponse(msg *protocol.WSMessage) {
 	if msg.ID == "" {
 		return
 	}
@@ -513,61 +482,6 @@ func (t *RemoteTransport) handleRPCResponse(msg *wsIncomingMessage) {
 			Error:  msg.Error,
 		}
 	}
-}
-
-func convertWsProgressToCLI(wp *channel.WsProgressPayload) *protocol.ProgressEvent {
-	if wp == nil {
-		return nil
-	}
-	payload := &protocol.ProgressEvent{
-		ChatID:                 wp.ChatID,
-		Seq:                    wp.Seq,
-		Phase:                  wp.Phase,
-		Iteration:              wp.Iteration,
-		Thinking:               wp.Thinking,
-		Reasoning:              wp.Reasoning,
-		StreamContent:          wp.StreamContent,
-		ReasoningStreamContent: wp.ReasoningStreamContent,
-		HistoryCompacted:       wp.HistoryCompacted,
-	}
-	for _, t := range wp.ActiveTools {
-		payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
-			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-			Iteration: t.Iteration,
-		})
-	}
-	for _, t := range wp.CompletedTools {
-		payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
-			Name: t.Name, Label: t.Label, Status: t.Status,
-			Elapsed: t.Elapsed, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-			Iteration: t.Iteration,
-		})
-	}
-	for _, sa := range wp.SubAgents {
-		payload.SubAgents = append(payload.SubAgents, convertWsSubAgent(sa))
-	}
-	for _, td := range wp.Todos {
-		payload.Todos = append(payload.Todos, protocol.TodoItem(td))
-	}
-	if wp.TokenUsage != nil {
-		payload.TokenUsage = &protocol.TokenUsage{
-			PromptTokens:     wp.TokenUsage.PromptTokens,
-			CompletionTokens: wp.TokenUsage.CompletionTokens,
-			TotalTokens:      wp.TokenUsage.TotalTokens,
-			CacheHitTokens:   wp.TokenUsage.CacheHitTokens,
-			MaxOutputTokens:  wp.TokenUsage.MaxOutputTokens,
-		}
-	}
-	return payload
-}
-
-func convertWsSubAgent(sa channel.WsSubAgent) protocol.SubAgentInfo {
-	r := protocol.SubAgentInfo{Role: sa.Role, Instance: sa.Instance, Status: sa.Status, Desc: sa.Desc}
-	for _, c := range sa.Children {
-		r.Children = append(r.Children, convertWsSubAgent(c))
-	}
-	return r
 }
 
 // ---------------------------------------------------------------------------
@@ -686,7 +600,7 @@ func (t *RemoteTransport) Call(method string, payload json.RawMessage) (json.Raw
 	t.rpcMu.Lock()
 	t.pending[id] = ch
 	t.rpcMu.Unlock()
-	req := wsOutgoingMessage{Type: "rpc", ID: id, Method: method, Params: payload}
+	req := protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: id, Method: method, Params: payload}
 	// Set write deadline to avoid blocking indefinitely on dead connections.
 	t.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := t.conn.WriteJSON(req); err != nil {

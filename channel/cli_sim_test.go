@@ -34,6 +34,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"xbot/protocol"
 
 	"xbot/bus"
 )
@@ -394,13 +395,13 @@ func (r *simRunner) loadHistory() {
 		if hm.Role == "tool_summary" && len(hm.Iterations) > 0 {
 			iters := make([]cliIterationSnapshot, len(hm.Iterations))
 			for i, it := range hm.Iterations {
-				tools := make([]CLIToolProgress, len(it.Tools))
+				tools := make([]protocol.ToolProgress, len(it.Tools))
 				for j, t := range it.Tools {
 					label := t.Label
 					if label == "" {
 						label = t.Name
 					}
-					tools[j] = CLIToolProgress{
+					tools[j] = protocol.ToolProgress{
 						Name:      t.Name,
 						Label:     label,
 						Status:    t.Status,
@@ -591,7 +592,7 @@ func (r *simRunner) doAgentMsg(idx int, step SimStep) error {
 // doProgress sends a progress event with tools/reasoning/streaming.
 func (r *simRunner) doProgress(idx int, step SimStep) error {
 	m := r.model
-	payload := &CLIProgressPayload{
+	payload := &protocol.ProgressEvent{
 		Phase:                  step.Phase,
 		Iteration:              step.Iteration,
 		Thinking:               step.Thinking,
@@ -616,7 +617,7 @@ func (r *simRunner) doPhaseDone(idx int, step SimStep) error {
 	if len(tools) == 0 {
 		tools = step.Tools
 	}
-	payload := &CLIProgressPayload{
+	payload := &protocol.ProgressEvent{
 		Phase:          "done",
 		Thinking:       step.Thinking,
 		Reasoning:      step.Reasoning,
@@ -1821,12 +1822,12 @@ func (r *simRunner) doHelp(idx int, step SimStep) error {
 // doSubAgent injects SubAgent tree via progress event.
 func (r *simRunner) doSubAgent(idx int, step SimStep) error {
 	m := r.model
-	var agents []CLISubAgent
+	var agents []protocol.SubAgentInfo
 	for _, sa := range step.SubAgents {
 		agents = append(agents, convertSimSubAgent(sa))
 	}
 	if len(agents) > 0 {
-		payload := &CLIProgressPayload{
+		payload := &protocol.ProgressEvent{
 			Phase:     "thinking",
 			SubAgents: agents,
 			ChatID:    m.channelName + ":" + m.chatID,
@@ -2058,14 +2059,14 @@ func (r *simRunner) captureVisibleView() string {
 	return stripAnsi(r.model.viewport.View())
 }
 
-func convertSimTools(tools []SimToolRecord, iteration int) []CLIToolProgress {
-	result := make([]CLIToolProgress, len(tools))
+func convertSimTools(tools []SimToolRecord, iteration int) []protocol.ToolProgress {
+	result := make([]protocol.ToolProgress, len(tools))
 	for i, t := range tools {
 		label := t.Label
 		if label == "" {
 			label = t.Name
 		}
-		result[i] = CLIToolProgress{
+		result[i] = protocol.ToolProgress{
 			Name:      t.Name,
 			Label:     label,
 			Status:    t.Status,
@@ -2076,16 +2077,16 @@ func convertSimTools(tools []SimToolRecord, iteration int) []CLIToolProgress {
 	return result
 }
 
-func convertSimTodos(todos []SimTodoItem) []CLITodoItem {
-	result := make([]CLITodoItem, len(todos))
+func convertSimTodos(todos []SimTodoItem) []protocol.TodoItem {
+	result := make([]protocol.TodoItem, len(todos))
 	for i, t := range todos {
-		result[i] = CLITodoItem(t)
+		result[i] = protocol.TodoItem(t)
 	}
 	return result
 }
 
-func convertSimSubAgent(sa SimSubAgent) CLISubAgent {
-	agent := CLISubAgent{
+func convertSimSubAgent(sa SimSubAgent) protocol.SubAgentInfo {
+	agent := protocol.SubAgentInfo{
 		Role:     sa.Role,
 		Instance: sa.Instance,
 		Status:   sa.Status,

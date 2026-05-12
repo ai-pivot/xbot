@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xbot/protocol"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	log "xbot/logger"
 	"xbot/storage/sqlite"
 )
@@ -226,7 +228,7 @@ func (m *cliModel) startAgentTurn() {
 	// immediate feedback (progress bubble) without waiting for the server's
 	// first progress_structured event (which has network round-trip latency).
 	if m.remoteMode && m.progress == nil {
-		m.progress = &CLIProgressPayload{
+		m.progress = &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 0,
 		}
@@ -246,101 +248,6 @@ func (m *cliModel) startAgentTurn() {
 	m.resetProgressState()
 }
 
-// restoreProgressSnapshot applies a progress snapshot to the model for seamless
-// reconnect/session-switch. Used when CLI reconnects to a running agent turn.
-// Sets the model into typing state with the full iteration history restored.
-// Safe to call before BubbleTea program starts (no channel sends).
-func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
-	if payload == nil || payload.Phase == "done" {
-		return
-	}
-	// Cross-session guard: reject payload from a different session.
-	// This is defense-in-depth — the caller should pass the correct payload.
-	if payload.ChatID != "" {
-		currentKey := m.channelName + ":" + m.chatID
-		if payload.ChatID != currentKey {
-			return
-		}
-	}
-
-	// Start agent turn (sets typing=true, increments turnID).
-	// Note: startAgentTurn calls resetProgressState which clears m.progress,
-	// but we overwrite it below.
-	m.startAgentTurn()
-
-	// Apply the progress payload
-	// Preserve CWD from previous progress if the new payload doesn't have one
-	// (stream_content events don't carry CWD and would overwrite it).
-	if payload.CWD == "" && m.progress != nil {
-		payload.CWD = m.progress.CWD
-	}
-	m.progress = payload
-
-	// Cache token usage and max context for ready-status bar display
-	m.cacheTokenUsage(payload.TokenUsage)
-	if m.cachedMaxContextTokens == 0 {
-		m.cachedMaxContextTokens = m.resolveMaxContextTokens()
-	}
-	if m.cachedMaxOutputTokens == 0 {
-		m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
-	}
-	if m.cachedCompressRatio == 0 {
-		m.cachedCompressRatio = m.resolveCompressRatio()
-	}
-
-	// Restore StartedAt for active tools so live elapsed timers work.
-	for i := range m.progress.ActiveTools {
-		t := &m.progress.ActiveTools[i]
-		if t.StartedAt.IsZero() && t.Elapsed > 0 {
-			t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
-		}
-	}
-
-	// Restore iteration history from the progress snapshot.
-	if len(payload.IterationHistory) > 0 {
-		for _, ih := range payload.IterationHistory {
-			snap := cliIterationSnapshot{
-				Iteration: ih.Iteration,
-				Thinking:  ih.Thinking,
-				Reasoning: ih.Reasoning,
-				Tools:     ih.CompletedTools,
-			}
-			for i := range snap.Tools {
-				t := &snap.Tools[i]
-				if t.StartedAt.IsZero() && t.Elapsed > 0 {
-					t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
-				}
-			}
-			m.iterationHistory = append(m.iterationHistory, snap)
-		}
-		if len(m.iterationHistory) > 0 {
-			lastIter := m.iterationHistory[len(m.iterationHistory)-1].Iteration
-			if lastIter > m.lastSeenIteration {
-				m.lastSeenIteration = lastIter
-			}
-		}
-	}
-
-	// Deduplicate: remove ALL tool_summary messages. When progress is
-	// active, the progress block owns iteration display — any static
-	// tool_summary would duplicate content with mismatched iteration numbers.
-	// Must run unconditionally: even when IterationHistory is empty (e.g. server
-	// restart or iterationHistories not yet populated), any tool_summary from
-	// loaded DB history must be removed — otherwise completed iterations show as
-	// a static "Tools" block alongside the live progress block.
-	m.removeLastToolSummary()
-
-	// Restore todos from the progress snapshot so the sidebar/todo bar
-	// shows them immediately without waiting for the next live progress event.
-	m.syncProgressTodos(payload)
-
-	m.invalidateAllCache(false)
-	// Do NOT call updateViewportContent() here — terminal size may not be
-	// initialized yet (pre-program path), causing panic in truncateToWidth.
-	// View() will rebuild on the next render cycle.
-	m.viewport.GotoBottom()
-}
-
 // removeLastToolSummary removes only the LAST tool_summary message from m.messages.
 //
 // When the agent turn is active, ConvertMessagesToHistory produces a tool_summary
@@ -349,10 +256,11 @@ func (m *cliModel) restoreProgressSnapshot(payload *CLIProgressPayload) {
 // turn — the static tool_summary from ConvertMessagesToHistory would duplicate
 // content with mismatched (globally-cumulative vs per-turn) iteration numbers.
 //
-// Previously removeAllToolSummaries removed ALL tool_summary messages, which
-// also deleted tool blocks from previous completed turns — those have no
-// progress block to replace them. Only the LAST tool_summary (the active turn's)
-// should be removed; previous turns' tool_summaries must be preserved.
+// Only the LAST tool_summary is removed. Previous turns' tool_summaries are
+// preserved — those have no live progress panel to replace them.
+// Earlier tool_summaries in the active turn are also preserved as fallback:
+// if IterationHistory is empty (e.g. reconnect before RPC snapshot arrives),
+// the tool_summary rendering is better than showing nothing at all.
 func (m *cliModel) removeLastToolSummary() {
 	// Find the last tool_summary message (closest to end of messages).
 	lastIdx := -1
@@ -413,9 +321,9 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 				}
 			}
 			if !allDone {
-				m.todos = make([]CLITodoItem, len(items))
+				m.todos = make([]protocol.TodoItem, len(items))
 				for i, t := range items {
-					m.todos[i] = CLITodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+					m.todos[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
 				}
 				m.todosDoneCleared = false
 			} else {
@@ -916,7 +824,7 @@ func (m *cliModel) closePanelAndResume() (bool, tea.Model, tea.Cmd) {
 // iterToolsFlat returns a flat slice of all tools from either msg.iterations
 // or msg.tools, handling the dual-source pattern used in tool_summary rendering.
 // If iterations are present, it also counts them. Returns (tools, iterationCount).
-func (msg *cliMessage) iterToolsFlat() (tools []CLIToolProgress, iterCount int) {
+func (msg *cliMessage) iterToolsFlat() (tools []protocol.ToolProgress, iterCount int) {
 	if len(msg.iterations) > 0 {
 		iterCount = len(msg.iterations)
 		for _, it := range msg.iterations {
@@ -1290,7 +1198,7 @@ func (m *cliModel) handleUserList() {
 
 // cacheTokenUsage caches token usage data for the context bar display.
 // Called from all progress paths to avoid duplication.
-func (m *cliModel) cacheTokenUsage(tu *CLITokenUsage) {
+func (m *cliModel) cacheTokenUsage(tu *protocol.TokenUsage) {
 	if tu != nil && tu.PromptTokens > 0 {
 		m.lastTokenUsage = tu
 		if tu.MaxOutputTokens > 0 {
@@ -1862,15 +1770,14 @@ func (m *cliModel) applyScrollbar(content string, contentWidth, totalLines, scro
 
 	var b strings.Builder
 	for i, line := range lines {
-		// Trim line to contentWidth if wider, then pad to exactly contentWidth.
-		// This ensures the scrollbar always appears at the same column.
 		visW := lipgloss.Width(line)
-		if visW > contentWidth {
-			// Line is too wide — truncate visually.
-			// For simplicity, keep the styled string as-is (it will overflow
-			// the scrollbar column, but this is rare and better than panicking).
-			// Remove trailing whitespace to avoid double-scrollbar.
-			line = strings.TrimRight(line, " ")
+		// Truncate lines that reach or exceed contentWidth to leave room for
+		// at least 1 space padding before the scrollbar.  Without truncation,
+		// the scrollbar overflows PanelBox and wraps to the next line; without
+		// the >= check, lines exactly at contentWidth get forced to padding=1
+		// pushing the scrollbar 1 column right vs other lines (misalignment).
+		if visW >= contentWidth {
+			line = ansi.Truncate(line, contentWidth-1, "")
 			visW = lipgloss.Width(line)
 		}
 		padding := contentWidth - visW

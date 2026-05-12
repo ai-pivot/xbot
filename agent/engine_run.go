@@ -1167,7 +1167,17 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			cwd = s.cfg.Session.GetCurrentDir()
 		}
 
-		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey)
+		// Derive sessionName from chatID (format: workDir or workDir:name).
+		// s.cfg.SessionName is set once at engine creation and becomes stale
+		// when the user switches sessions; chatID always reflects the active one.
+		sessionName := "default"
+		if idx := strings.LastIndex(s.cfg.ChatID, ":"); idx > 0 {
+			workDirPart := s.cfg.ChatID[:idx]
+			if strings.HasPrefix(workDirPart, "/") || strings.HasPrefix(workDirPart, ".") || strings.HasPrefix(workDirPart, "~") {
+				sessionName = s.cfg.ChatID[idx+1:]
+			}
+		}
+		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName)
 		if reminder != "" && len(s.messages) > 0 {
 			lastIdx := len(s.messages) - 1
 			s.messages[lastIdx].Content += "\n\n" + reminder

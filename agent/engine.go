@@ -166,6 +166,12 @@ type RunConfig struct {
 	ConfigGetFn func(key string) (string, error)
 	// ConfigSetFn is called by config tool to write settings.
 	ConfigSetFn func(key, value string) (string, error)
+	// ChatRenameFn is called by config tool to rename current chat session (session_name key).
+	ChatRenameFn func(chatID, newName string) (oldName string, err error)
+
+	// SessionName is the display name for the current session (derived from ChatID).
+	// Used by BuildSystemReminder to detect auto-generated names needing rename.
+	SessionName string
 
 	// RemoteTUICtrlFn is set in buildMainRunConfig for remote CLI mode.
 	// It sends TUI control requests to the remote CLI client via WS.
@@ -1093,6 +1099,13 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			}
 			return oldVal, nil
 		}
+	}
+	// Chat rename: from ChatRenameFn (injected from CLI/server layer)
+	tc.ChatRename = func(newName string) (string, error) {
+		if cfg.ChatRenameFn == nil {
+			return "", fmt.Errorf("chat rename not available")
+		}
+		return cfg.ChatRenameFn(cfg.ChatID, newName)
 	}
 	// Config list: from AllSettingDefs (always available, no RPC needed)
 	tc.ConfigList = func() []tools.ConfigListItem {

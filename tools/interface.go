@@ -109,6 +109,10 @@ type ToolContext struct {
 	// ConfigSet writes a configuration value and returns the previous value (for config tool).
 	ConfigSet func(key, value string) (string, error)
 
+	// ChatRename renames the current chat session (for config tool's session_name key).
+	// Takes the new name, returns the old name.
+	ChatRename func(newName string) (oldName string, err error)
+
 	// ConfigList returns all known configuration items with AI metadata.
 	// Injected from AllSettingDefs via buildToolContext.
 	ConfigList func() []ConfigListItem

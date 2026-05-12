@@ -151,25 +151,25 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 		}
 		for _, t := range s.ActiveTools {
-			cliPayload.ActiveTools = append(cliPayload.ActiveTools, channelpkg.CLIToolProgress{
+			cliPayload.ActiveTools = append(cliPayload.ActiveTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
 			})
 		}
 		for _, t := range s.CompletedTools {
-			cliPayload.CompletedTools = append(cliPayload.CompletedTools, channelpkg.CLIToolProgress{
+			cliPayload.CompletedTools = append(cliPayload.CompletedTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
 			})
 		}
 		if len(s.Todos) > 0 {
-			cliPayload.Todos = make([]channelpkg.CLITodoItem, len(s.Todos))
+			cliPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
 			for i, td := range s.Todos {
-				cliPayload.Todos[i] = channelpkg.CLITodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+				cliPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 			}
 		}
 		if s.TokenUsage != nil {
-			cliPayload.TokenUsage = &channelpkg.CLITokenUsage{
+			cliPayload.TokenUsage = &protocol.TokenUsage{
 				PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
 				TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
 				MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
@@ -179,31 +179,31 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		if localCh != nil {
 			localCh.SendProgress(key, cliPayload)
 		} else if remoteCh != nil {
-			wsPayload := &channelpkg.WsProgressPayload{
+			wsPayload := &protocol.ProgressEvent{
 				ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
 				Iteration: s.Iteration, Thinking: s.ThinkingContent,
 				Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 			}
 			for _, t := range s.ActiveTools {
-				wsPayload.ActiveTools = append(wsPayload.ActiveTools, channelpkg.WsToolProgress{
+				wsPayload.ActiveTools = append(wsPayload.ActiveTools, protocol.ToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
 					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			for _, t := range s.CompletedTools {
-				wsPayload.CompletedTools = append(wsPayload.CompletedTools, channelpkg.WsToolProgress{
+				wsPayload.CompletedTools = append(wsPayload.CompletedTools, protocol.ToolProgress{
 					Name: t.Name, Label: t.Label, Status: string(t.Status),
 					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				})
 			}
 			if len(s.Todos) > 0 {
-				wsPayload.Todos = make([]channelpkg.WsTodoItem, len(s.Todos))
+				wsPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
 				for i, td := range s.Todos {
-					wsPayload.Todos[i] = channelpkg.WsTodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+					wsPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 				}
 			}
 			if s.TokenUsage != nil {
-				wsPayload.TokenUsage = &channelpkg.WsTokenUsage{
+				wsPayload.TokenUsage = &protocol.TokenUsage{
 					PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
 					TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
 					MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
@@ -245,7 +245,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	} else if remoteCh != nil {
 		cfg.StreamContentFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
-			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
+			remoteCh.SendProgress(originChatID, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*protocol.ProgressEvent)
 				cp.StreamContent = content
@@ -254,7 +254,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		}
 		cfg.StreamReasoningFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
-			remoteCh.SendProgress(originChatID, &channelpkg.WsProgressPayload{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
+			remoteCh.SendProgress(originChatID, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*protocol.ProgressEvent)
 				cp.ReasoningStreamContent = content

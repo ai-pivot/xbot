@@ -320,9 +320,10 @@ type Agent struct {
 	settingsSvc *SettingsService
 
 	// TUI control callbacks (set by CLI channel, nil for other channels)
-	tuiCtrlFn   func(action string, params map[string]string) (map[string]string, error)
-	configGetFn func(key string) (string, error)
-	configSetFn func(key, value string) (string, error)
+	tuiCtrlFn    func(action string, params map[string]string) (map[string]string, error)
+	configGetFn  func(key string) (string, error)
+	configSetFn  func(key, value string) (string, error)
+	chatRenameFn func(chatID, newName string) (oldName string, err error)
 
 	// channelFinder looks up a channel instance by name (injected from main.go).
 	channelFinder func(name string) (channel.Channel, bool)
@@ -364,6 +365,11 @@ func (a *Agent) SetTUICallbacks(
 	a.tuiCtrlFn = tuiCtrl
 	a.configGetFn = configGet
 	a.configSetFn = configSet
+}
+
+// SetChatRenameFn sets the chat rename callback (CLI channel only).
+func (a *Agent) SetChatRenameFn(chatRename func(chatID, newName string) (oldName string, err error)) {
+	a.chatRenameFn = chatRename
 }
 
 // buildRemoteTUICtrlFn returns a TUIControl callback for remote CLI mode via WS,
@@ -2211,6 +2217,21 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	mc.Ctx = withPermControlEnabled(mc.Ctx, IsPermControlEnabled(permUsers))
 
 	mc.SetExtra(ExtraKeyTenantID, tenantSession.TenantID())
+
+	// Session name for rename hint (only injected on first user message)
+	_, sessionName := channel.ParseChatID(msg.ChatID)
+	if a.multiSession != nil {
+		if db := a.multiSession.DB(); db != nil {
+			var label string
+			if err := db.Conn().QueryRow(
+				"SELECT label FROM user_chats WHERE channel = ? AND chat_id = ? AND label != '' LIMIT 1",
+				msg.Channel, msg.ChatID,
+			).Scan(&label); err == nil && label != "" {
+				sessionName = label
+			}
+		}
+	}
+	mc.SetExtra(ExtraKeySessionName, sessionName)
 
 	return a.pipeline.Run(mc), nil
 }

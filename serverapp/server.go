@@ -648,6 +648,26 @@ func Run(args []string) error {
 		return disp.SendDirect(msg)
 	})
 	backend.SetChannelFinder(disp.GetChannel)
+
+	// Wire ChatRenameFn: rename session in DB (for remote CLI and server-side agents).
+	// Uses upsert (INSERT ON CONFLICT) to handle both existing and new user_chats rows.
+	// CLI sessions may not have a user_chats row yet — the upsert creates one if needed.
+	if tokenDB != nil {
+		backend.SetChatRenameFn(func(chatID, newName string) (string, error) {
+			_, oldName := channel.ParseChatID(chatID)
+			conn := tokenDB.Conn()
+			_, err := conn.Exec(`
+				INSERT INTO user_chats (channel, sender_id, chat_id, label)
+				VALUES ('cli', ?, ?, ?)
+				ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
+				cliSenderID, chatID, newName, newName,
+			)
+			if err != nil {
+				return "", fmt.Errorf("rename chat in DB: %w", err)
+			}
+			return oldName, nil
+		})
+	}
 	backend.Agent().SetMessageSender(disp)
 	backend.Agent().SetAgentChannelRegistry(
 		func(name string, runFn bus.RunFn) error {

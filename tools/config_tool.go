@@ -107,6 +107,19 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		if !isConfigKeyAllowed(ctx, params.Key) {
 			return nil, fmt.Errorf("config: %q is not a user config key (LLM settings use /set-llm, subscription settings use /subscription)", params.Key)
 		}
+
+		// Special handling for session_name: rename the chat session
+		if params.Key == "session_name" {
+			if ctx.ChatRename == nil {
+				return nil, fmt.Errorf("config: session rename not available")
+			}
+			oldName, err := ctx.ChatRename(params.Value)
+			if err != nil {
+				return nil, fmt.Errorf("config: rename session failed: %w", err)
+			}
+			return NewResult(fmt.Sprintf("会话已从 %s 重命名为 %s", oldName, params.Value)), nil
+		}
+
 		// Global-scoped settings require admin privileges
 		if ctx.IsGlobalKey != nil && ctx.IsGlobalKey(params.Key) && !ctx.OriginUserIsAdmin {
 			return nil, fmt.Errorf("config: %q is a global setting and can only be modified by an admin", params.Key)

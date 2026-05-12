@@ -448,7 +448,7 @@ func (t *localTransport) registerHandlers() {
 		result := make([]TenantInfo, len(tenants))
 		for i, t := range tenants {
 			result[i] = TenantInfo{
-				ID: t.ID, Channel: t.Channel, ChatID: t.ChatID,
+				ID: t.ID, Channel: t.Channel, ChatID: t.ChatID, Label: t.Label,
 				CreatedAt: t.CreatedAt.Format(time.RFC3339), LastActiveAt: t.LastActiveAt.Format(time.RFC3339),
 			}
 		}

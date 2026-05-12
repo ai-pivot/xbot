@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"xbot/bus"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 
 	"github.com/gorilla/websocket"
@@ -321,7 +322,7 @@ func TestWebSocketChat(t *testing.T) {
 	conn := makeWSConnection(t, server.URL, sessionCookie.Name+"="+sessionCookie.Value)
 
 	// Send message
-	if err := conn.WriteJSON(wsClientMessage{Type: "message", Content: "hello"}); err != nil {
+	if err := conn.WriteJSON(protocol.WSClientMessage{Type: "message", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -401,7 +402,7 @@ func TestSendToWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var wsMsg wsMessage
+	var wsMsg protocol.WSMessage
 	json.Unmarshal(raw, &wsMsg)
 	if wsMsg.Content != "Hello from agent!" {
 		t.Errorf("expected 'Hello from agent!', got '%s'", wsMsg.Content)
@@ -476,9 +477,9 @@ func TestConvertFeishuCard(t *testing.T) {
 func TestRingBuffer(t *testing.T) {
 	rb := newRingBuffer(3)
 
-	rb.push(wsMessage{Content: "a"})
-	rb.push(wsMessage{Content: "b"})
-	rb.push(wsMessage{Content: "c"})
+	rb.push(protocol.WSMessage{Content: "a"})
+	rb.push(protocol.WSMessage{Content: "b"})
+	rb.push(protocol.WSMessage{Content: "c"})
 
 	msgs := rb.flush()
 	if len(msgs) != 3 {
@@ -489,10 +490,10 @@ func TestRingBuffer(t *testing.T) {
 	}
 
 	// Overflow: push more than capacity
-	rb.push(wsMessage{Content: "d"})
-	rb.push(wsMessage{Content: "e"})
-	rb.push(wsMessage{Content: "f"})
-	rb.push(wsMessage{Content: "g"}) // should evict "d"
+	rb.push(protocol.WSMessage{Content: "d"})
+	rb.push(protocol.WSMessage{Content: "e"})
+	rb.push(protocol.WSMessage{Content: "f"})
+	rb.push(protocol.WSMessage{Content: "g"}) // should evict "d"
 
 	msgs = rb.flush()
 	if len(msgs) != 3 {
@@ -511,7 +512,7 @@ func TestHubOfflineBuffering(t *testing.T) {
 	hub := newHub()
 
 	chatID := "web-1"
-	msg := wsMessage{Content: "offline msg"}
+	msg := protocol.WSMessage{Content: "offline msg"}
 
 	// Send to unsubscribed chatID → should be buffered
 	ok := hub.sendToClient(chatID, msg)
@@ -526,7 +527,7 @@ func TestHubOfflineBuffering(t *testing.T) {
 
 	// Add client and subscribe → should flush offline messages
 	client := &Client{
-		sendCh: make(chan wsMessage, 10),
+		sendCh: make(chan protocol.WSMessage, 10),
 		done:   make(chan struct{}),
 		id:     "test-client-1",
 	}
@@ -646,7 +647,7 @@ func TestConcurrentSends(t *testing.T) {
 func TestPushPluginWidgetsPerSession_Incremental(t *testing.T) {
 	h := newHub()
 	// Add a client and subscribe to chatID "chat1"
-	cl := &Client{sendCh: make(chan wsMessage, 16)}
+	cl := &Client{sendCh: make(chan protocol.WSMessage, 16)}
 	h.addClient("client1", cl)
 	h.subscribe("client1", "/home/user/test")
 

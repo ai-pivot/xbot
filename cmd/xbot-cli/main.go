@@ -1075,6 +1075,16 @@ func main() {
 	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
 	absWorkDir, _ := filepath.Abs(app.workDir)
 
+	// Restore last active session on startup.
+	// Both local and remote mode use local sessions.json — it's written by
+	// SetLastActiveSession whenever the user switches sessions in the TUI.
+	// RPC is not available here (backend not started yet).
+	initialChatID := absWorkDir
+	if last := channel.GetLastActiveSession(absWorkDir); last != "" {
+		initialChatID = last
+		log.WithFields(log.Fields{"chatID": initialChatID}).Info("Restoring last active session")
+	}
+
 	isRemoteBackend := app.backend.IsRemote()
 	remoteServerURL := app.backend.ServerURL()
 	// Pre-declare tenantSvc so SessionsList closure can capture it.
@@ -1083,7 +1093,7 @@ func main() {
 
 	cliCfg := channel.CLIChannelConfig{
 		WorkDir:              absWorkDir,
-		ChatID:               absWorkDir,
+		ChatID:               initialChatID,
 		RemoteMode:           isRemoteBackend,
 		RemoteServerURL:      remoteServerURL,
 		DebugMode:            flagDebug,
@@ -1435,86 +1445,65 @@ func main() {
 				return entries
 			}
 
-			// Local mode: query backend directly (no RPC, no deadlock risk).
+			// Local mode: all sessions from local JSON, sorted by creation time.
+			// No special treatment for "main" session — all sessions are equal.
 			var entries []channel.SessionPanelEntry
-			tenants, err := app.backend.ListTenants()
 			seen := make(map[string]bool) // dedup agent sessions by role:instance
 
-			// Get ALL subagents across all sessions, then filter to only
-			// sessions related to the current workdir (main + local dir).
+			// Get ALL subagents across all sessions.
 			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
 			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
 			for _, s := range allSubAgents {
 				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
 			}
 
-			// Collect all relevant chatIDs: main session + local dir sessions.
-			type sessionInfo struct {
-				chatID string
-				label  string
-			}
-			var sessions []sessionInfo
-
-			// Main session (from tenants).
-			if err == nil && len(tenants) > 0 {
-				for _, t := range tenants {
-					if t.Channel == "agent" {
-						continue
+			// Build DB label map for override.
+			localLabelMap := map[string]string{}
+			if tenantSvc != nil {
+				if tenants, err := tenantSvc.ListTenants(); err == nil {
+					for _, t := range tenants {
+						if t.Channel == "agent" || t.Label == "" {
+							continue
+						}
+						localLabelMap[t.ChatID] = t.Label
 					}
-					if t.ChatID != absWorkDir || t.Channel != "cli" {
-						continue
-					}
-					sessions = append(sessions, sessionInfo{
-						chatID: t.ChatID,
-						label:  "主会话  You ↔ Agent",
-					})
-					break // only one main session
 				}
 			}
-			if len(sessions) == 0 {
-				// Fallback: no tenant found, still show main session.
-				sessions = append(sessions, sessionInfo{
-					chatID: absWorkDir,
-					label:  "主会话  You ↔ Agent",
-				})
-			}
 
-			// Local dir sessions (created from current session).
+			// All local dir sessions (including default), sorted by creation time.
 			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
-				sessions = append(sessions, sessionInfo{
-					chatID: s.ID,
-					label:  s.Label,
-				})
-			}
-
-			// Build entries: each session followed by its subagents.
-			for _, sess := range sessions {
-				isActive := sess.chatID == absWorkDir
-				mainBusy := app.backend.IsProcessing("cli", sess.chatID)
+				mainBusy := app.backend.IsProcessing("cli", s.ID)
+				sessLabel := s.Label
+				if sessLabel == "default" {
+					sessLabel = "默认会话"
+				}
+				if dbLabel, ok := localLabelMap[s.ID]; ok && dbLabel != "" {
+					sessLabel = dbLabel
+				}
 				entries = append(entries, channel.SessionPanelEntry{
-					ID:      sess.chatID,
+					ID:      s.ID,
 					Type:    "main",
 					Channel: "cli",
-					Label:   sess.label,
-					Active:  isActive,
+					Label:   sessLabel,
+					Active:  s.ID == absWorkDir,
 					Busy:    mainBusy,
 				})
-				for _, s := range subsByChatID[sess.chatID] {
-					agentKey := s.Role + ":" + s.Instance
+				for _, sub := range subsByChatID[s.ID] {
+					agentKey := sub.Role + ":" + sub.Instance
 					if seen[agentKey] {
 						continue
 					}
 					seen[agentKey] = true
 					entries = append(entries, channel.SessionPanelEntry{
-						ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
+						ID:          fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
 						Type:        "agent",
 						Channel:     "cli",
-						Role:        s.Role,
-						Instance:    s.Instance,
-						ParentID:    sess.chatID,
-						Running:     s.Running,
-						Busy:        s.Running,
-						MessageHint: s.Preview,
+						Role:        sub.Role,
+						Instance:    sub.Instance,
+						ParentID:    s.ID,
+						Running:     sub.Running,
+						Busy:        sub.Running,
+						MessageHint: sub.Preview,
 					})
 				}
 			}
@@ -1619,7 +1608,7 @@ func main() {
 	if !app.backend.IsRemote() && app.db != nil {
 		tenantSvc = sqlite.NewTenantService(app.db)
 		cliSessionSvc = sqlite.NewSessionService(app.db)
-		tenantID, err := tenantSvc.GetOrCreateTenantID("cli", absWorkDir)
+		tenantID, err := tenantSvc.GetOrCreateTenantID("cli", initialChatID)
 		if err == nil {
 			cliTenantID = tenantID
 			cliCfg.HistoryLoader = func() ([]channel.HistoryMessage, error) {
@@ -1652,7 +1641,7 @@ func main() {
 			}
 		}
 	}
-	// Remote mode: history loaded after backend.Start() via cliCh.LoadHistory()
+	// Remote mode: history loaded via RestoreSession (uses suHistoryLoadMsg path)
 	// (HistoryLoader runs during NewCLIChannel, before WS is connected)
 
 	// 动态历史加载器：按 (channelName, chatID) 加载目标会话历史
@@ -1684,7 +1673,7 @@ func main() {
 		}
 		// Restore token state from server DB so context bar shows on startup
 		cliCfg.TokenStateLoader = func() (promptTokens, completionTokens int64) {
-			pt, ct, err := backend.GetTokenState("cli", absWorkDir)
+			pt, ct, err := backend.GetTokenState("cli", initialChatID)
 			if err != nil {
 				log.WithError(err).Warn("Failed to load token state from server")
 				return 0, 0
@@ -1700,10 +1689,13 @@ func main() {
 	var refreshAgentCache func()
 	if app.backend != nil {
 		backend := app.backend
-		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *channel.CLIProgressPayload {
+		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *protocol.ProgressEvent {
 			return backend.GetActiveProgress(channelName, chatID)
 		}
-		cliCfg.GetTodosFn = func(channelName, chatID string) []channel.CLITodoItem {
+		cliCfg.BindChatFn = func(chatID string) error {
+			return backend.BindChat(chatID)
+		}
+		cliCfg.GetTodosFn = func(channelName, chatID string) []protocol.TodoItem {
 			return backend.GetTodos(channelName, chatID)
 		}
 		cliCfg.GetTokenStateFn = func(channelName, chatID string) (int64, int64) {
@@ -1757,9 +1749,9 @@ func main() {
 				if len(dump.IterationHistory) > 0 {
 					var iters []channel.HistoryIteration
 					for _, snap := range dump.IterationHistory {
-						var tools []channel.CLIToolProgress
+						var tools []protocol.ToolProgress
 						for _, t := range snap.Tools {
-							tools = append(tools, channel.CLIToolProgress{
+							tools = append(tools, protocol.ToolProgress{
 								Name:      t.Name,
 								Label:     t.Label,
 								Status:    t.Status,
@@ -1790,7 +1782,7 @@ func main() {
 		}
 	}
 
-	cliCh := channel.NewCLIChannel(cliCfg, app.msgBus)
+	cliCh := channel.NewCLIChannel(&cliCfg, app.msgBus)
 	app.cliCh = cliCh
 	disp.Register(cliCh)
 
@@ -1859,7 +1851,7 @@ func main() {
 			})
 			// Register progress handler via Subscribe for streaming progress from server
 			app.backend.Subscribe(protocol.EventPattern{Type: "progress"}, func(env protocol.EventEnvelope) {
-				var p channel.CLIProgressPayload
+				var p protocol.ProgressEvent
 				if err := json.Unmarshal(env.Payload, &p); err != nil {
 					return
 				}
@@ -2007,6 +1999,31 @@ func main() {
 			return cliCh.SendTUIControl(action, params)
 		}
 		app.backend.SetTUICallbacks(tuiCtrl, nil, nil)
+
+		// Wire ChatRenameFn: rename session in local JSON + DB
+		chatRename := func(chatID, newName string) (string, error) {
+			workDir, oldName := channel.ParseChatID(chatID)
+			ds, err := channel.LoadDirSessions(workDir)
+			if err != nil {
+				return "", fmt.Errorf("load sessions: %w", err)
+			}
+			if err := ds.RenameSession(oldName, newName); err != nil {
+				return "", fmt.Errorf("rename local session: %w", err)
+			}
+			// Also update DB label via backend
+			if app.backend != nil {
+				cs := sqlite.NewChatService(app.db.Conn())
+				if err := cs.RenameChat("cli", cliSenderID, chatID, newName); err != nil {
+					log.WithError(err).Warn("Failed to rename chat in DB")
+				}
+			}
+			// Refresh sessions list
+			if cliCfg.SessionsListRefresh != nil {
+				cliCfg.SessionsListRefresh()
+			}
+			return oldName, nil
+		}
+		app.backend.SetChatRenameFn(chatRename)
 	}
 
 	// Wire AI-Native TUI callback for remote mode (server → client via WS)
@@ -2117,7 +2134,7 @@ func main() {
 			}
 			cliCh.SyncLayoutSettings(vals)
 		}
-		remoteChatID, _ := filepath.Abs(app.workDir)
+		remoteChatID := initialChatID
 
 		// Auto-set CWD: if connected to a local server (127.0.0.1/localhost),
 		// sync the CLI's actual cwd to the server session so the agent uses
@@ -2135,14 +2152,10 @@ func main() {
 			}
 		}
 
-		if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
-			log.WithError(err).WithField("chat_id", remoteChatID).Warn("Failed to load remote session history")
-		} else {
-			log.WithFields(log.Fields{"chat_id": remoteChatID, "count": len(history)}).Info("CLI loaded remote history via RPC")
-			if len(history) > 0 {
-				cliCh.LoadHistory(history)
-			}
-		}
+		// History + progress are loaded together in the RestoreSession goroutine
+		// below, which uses handleSuHistoryLoad (same path as session switch).
+		// Do NOT load history separately here — that would create tool_summary
+		// messages without progress, causing stale "Tools (#345)" rendering.
 		// Subscribe to business chatID so Hub routes server-pushed events
 		// (progress, stream, outbound) to this WS connection.
 		// Without this, RPC-only sessions never subscribe and all pushed
@@ -2177,26 +2190,28 @@ func main() {
 		// Initial fetch — push only fires on CHANGES, so we need to
 		// pull the current state once on connect.
 		remoteCache.Refresh()
-		// Check if server has an active agent turn for this chat (mid-session reconnect).
-		// Run in goroutine to avoid blocking TUI startup on RPC timeout.
+		// Initial restore: load history + active progress + todos in one atomic
+		// step via RestoreSession (same path as session switch — guaranteed
+		// identical rendering). Run in goroutine to avoid blocking startup.
 		clipanic.Go("main.remote.RestoreActiveProgress", func() {
 			progress := app.backend.GetActiveProgress("cli", remoteChatID)
+			var todos []protocol.TodoItem
 			if progress != nil {
 				log.WithFields(log.Fields{
 					"chatID":    remoteChatID,
 					"phase":     progress.Phase,
 					"iteration": progress.Iteration,
-					"active":    len(progress.ActiveTools),
-					"completed": len(progress.CompletedTools),
 					"histLen":   len(progress.IterationHistory),
 				}).Info("RestoreActiveProgress: restoring progress snapshot")
-				// Use RestoreInitialProgress which handles both pre-program
-				// (direct model mutation) and running-program cases.
-				// SendProgress silently drops when c.program is nil (before Start()).
-				cliCh.RestoreInitialProgress("cli:"+cliCfg.ChatID, progress)
 			} else {
 				log.WithField("chatID", remoteChatID).Info("RestoreActiveProgress: no active progress")
 			}
+			history, err := app.backend.GetHistory("cli", remoteChatID)
+			if err != nil {
+				log.WithError(err).Warn("RestoreActiveProgress: failed to load history")
+				return
+			}
+			cliCh.RestoreSession(history, progress, todos)
 		})
 
 		// Wire reconnect handler via Subscribe to reload history on WS reconnect.
@@ -2210,20 +2225,21 @@ func main() {
 					_ = app.backend.SetCWD("cli", remoteChatID, cwd)
 				}
 			}
-			if history, err := app.backend.GetHistory("cli", remoteChatID); err != nil {
-				log.WithError(err).Warn("Failed to reload history after reconnect")
-			} else {
-				cliCh.LoadHistory(history)
-			}
-			// Re-check processing state after reconnect. Progress is restored via the
-			// WebSocket event-stream replay path. Do not also fetch/restore the active
-			// snapshot here: that creates two sources for the same live turn (replayed
-			// progress event + RPC snapshot) and can render duplicate Progress blocks.
-			if app.backend.IsProcessing("cli", remoteChatID) {
-				cliCh.SetProcessing(true)
-			} else {
-				cliCh.SetProcessing(false)
-			}
+			// Reconnect: same as initial — load history + progress atomically.
+			clipanic.Go("main.remote.ReconnectRestore", func() {
+				progress := app.backend.GetActiveProgress("cli", remoteChatID)
+				history, err := app.backend.GetHistory("cli", remoteChatID)
+				if err != nil {
+					log.WithError(err).Warn("ReconnectRestore: failed to load history")
+					return
+				}
+				cliCh.RestoreSession(history, progress, nil)
+				if progress != nil {
+					cliCh.SetProcessing(true)
+				} else {
+					cliCh.SetProcessing(false)
+				}
+			})
 		})
 		// Wire connection state change handler via Subscribe for header bar indicator.
 		app.backend.Subscribe(protocol.EventPattern{Type: "conn_state"}, func(env protocol.EventEnvelope) {
@@ -2246,75 +2262,54 @@ func main() {
 				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
 			}
 
-			// Collect all relevant sessions: main + local dir.
-			type sessionInfo struct {
-				chatID string
-				label  string
-			}
-			var sessions []sessionInfo
-
-			// Main session (from tenants).
-			tenants, err := app.backend.ListTenants()
-			if err == nil && len(tenants) > 0 {
+			// All local dir sessions (including default), sorted by creation time.
+			// Override label from DB (ListTenants RPC) when available.
+			tenantMap := map[string]string{}
+			if tenants, err := app.backend.ListTenants(); err == nil {
 				for _, t := range tenants {
 					if t.Channel == "agent" {
 						continue
 					}
-					if t.ChatID != absWorkDir || t.Channel != "cli" {
-						continue
+					if t.Label != "" {
+						tenantMap[t.ChatID] = t.Label
 					}
-					sessions = append(sessions, sessionInfo{
-						chatID: t.ChatID,
-						label:  "主会话  You ↔ Agent",
-					})
-					break
 				}
 			}
-			if len(sessions) == 0 {
-				sessions = append(sessions, sessionInfo{
-					chatID: absWorkDir,
-					label:  "主会话  You ↔ Agent",
-				})
-			}
-
-			// Local dir sessions.
-			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
-				sessions = append(sessions, sessionInfo{
-					chatID: s.ID,
-					label:  s.Label,
-				})
-			}
-
-			// Build entries: each session followed by its subagents.
 			var sessionEntries []channel.SessionPanelEntry
 			seen := make(map[string]bool)
-			for _, sess := range sessions {
-				isActive := sess.chatID == absWorkDir
-				mainBusy := app.backend.IsProcessing("cli", sess.chatID)
+			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+				mainBusy := app.backend.IsProcessing("cli", s.ID)
+				sessLabel := s.Label
+				if sessLabel == "default" {
+					sessLabel = "默认会话"
+				}
+				if dbLabel, ok := tenantMap[s.ID]; ok && dbLabel != "" {
+					sessLabel = dbLabel
+				}
 				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-					ID:      sess.chatID,
+					ID:      s.ID,
 					Type:    "main",
 					Channel: "cli",
-					Label:   sess.label,
-					Active:  isActive,
+					Label:   sessLabel,
+					Active:  s.ID == absWorkDir,
 					Busy:    mainBusy,
 				})
-				for _, s := range subsByChatID[sess.chatID] {
-					agentKey := s.Role + ":" + s.Instance
+				for _, sub := range subsByChatID[s.ID] {
+					agentKey := sub.Role + ":" + sub.Instance
 					if seen[agentKey] {
 						continue
 					}
 					seen[agentKey] = true
 					sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-						ID:          fmt.Sprintf("agent:%s/%s", s.Role, s.Instance),
+						ID:          fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
 						Type:        "agent",
 						Channel:     "cli",
-						Role:        s.Role,
-						Instance:    s.Instance,
-						ParentID:    sess.chatID,
-						Running:     s.Running,
-						Busy:        s.Running,
-						MessageHint: s.Preview,
+						Role:        sub.Role,
+						Instance:    sub.Instance,
+						ParentID:    s.ID,
+						Running:     sub.Running,
+						Busy:        sub.Running,
+						MessageHint: sub.Preview,
 					})
 				}
 			}
