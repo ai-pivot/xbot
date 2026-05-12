@@ -577,6 +577,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		// Reset critical state after identity switch, then apply unified setup.
 		m.messages = nil
 		m.invalidateAllCache(false)
+		m.restoreSession()
 		cmds := m.postRestoreSessionSetup()
 		return tea.Batch(cmds...)
 
@@ -611,9 +612,8 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				SetLastActiveSession(m.defaultChatID, chatID)
 				// Reset critical state for new session, then apply unified setup.
 				m.messages = nil
-				m.lastTokenUsage = nil
-				m.cachedMaxContextTokens = 0
 				m.invalidateAllCache(false)
+				m.restoreSession()
 				cmds := m.postRestoreSessionSetup()
 				m.showSystemMsg(fmt.Sprintf("✅ 新会话已创建: %s", chatID), feedbackInfo)
 				return tea.Batch(cmds...)
@@ -656,6 +656,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			// Reset critical state after session switch, then apply unified setup.
 			m.messages = nil
 			m.invalidateAllCache(false)
+			m.restoreSession()
 			cmds := m.postRestoreSessionSetup()
 			m.showSystemMsg(fmt.Sprintf("✅ 已切换到会话: %s", arg), feedbackInfo)
 			return tea.Batch(cmds...)

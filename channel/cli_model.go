@@ -428,9 +428,15 @@ func (m *cliModel) restoreSession() {
 		m.rwVisible = 0
 		m.typewriterTickActive = false
 		m.pendingUserMsg = nil
+		m.agentTurnID = 0       // prevent stale turnDoneFlags match
 		m.textarea.SetValue("") // clear input for new/unsaved session
 		m.inputDraft = ""
+		m.inputHistory = nil
 		m.inputHistoryIdx = -1
+		m.lastTokenUsage = nil
+		m.cachedMaxContextTokens = 0
+		m.cachedMaxOutputTokens = 0
+		m.cachedCompressRatio = 0
 		// Clear todos — no saved state means no active turn,
 		// but persist unfinished todos from TodoManager so they
 		// remain visible across session switches.
@@ -457,11 +463,17 @@ func (m *cliModel) restoreSession() {
 // session switch paths. ALL session switches (panel, /su, /chat, create, delete)
 // must call this — never manually reset state as a substitute.
 //
-// Resets turn tracking, clears stale progress, subscribes to WS events,
+// Resets turn tracking, clears stale progress/tokens, subscribes to WS events,
 // starts async history loading, and checks for pending AskUser.
 func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	isRemote := m.channel != nil && m.channel.config.DynamicHistoryLoader != nil
 	var cmds []tea.Cmd
+
+	// Clear token display state — new session should not show stale token bar.
+	m.lastTokenUsage = nil
+	m.cachedMaxContextTokens = 0
+	m.cachedMaxOutputTokens = 0
+	m.cachedCompressRatio = 0
 
 	if isRemote {
 		// Remote mode: discard all stale client-side turn state.
