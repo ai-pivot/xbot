@@ -590,7 +590,7 @@ type cliApp struct {
 	cliCh *channel.CLIChannel // for syncing layout settings after cache refresh
 }
 
-// isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置）
+// isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置，且未完成 CLI setup）
 func isFirstRun() bool {
 	configPath := config.ConfigFilePath()
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -599,6 +599,11 @@ func isFirstRun() bool {
 	cfg := config.LoadFromFile(configPath)
 	if cfg == nil {
 		return true
+	}
+	// If setup wizard was already completed, don't show it again.
+	// This flag is set when the user saves LLM credentials via the setup/settings panel.
+	if cfg.CLISetupCompleted {
+		return false
 	}
 	// Check config-level API key
 	if cfg.LLM.APIKey != "" {
@@ -1219,6 +1224,10 @@ func main() {
 				if err := updateActiveSubscription(app.backend, app.cfg, values); err != nil {
 					log.Warnf("Failed to update active subscription: %v", err)
 				}
+				// Mark setup as completed so isFirstRun() won't re-trigger on next startup.
+				// This is needed because LLM credentials are stored in DB (user_llm_subscriptions),
+				// not in config.json, so the config-level API key check won't catch them.
+				app.cfg.CLISetupCompleted = true
 			}
 
 			// ── Non-subscription settings: persist and apply runtime ──

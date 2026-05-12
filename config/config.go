@@ -183,6 +183,12 @@ type Config struct {
 	CLI           CLIConfig            `json:"cli,omitempty"`
 	Plugins       PluginConfig         `json:"plugins,omitempty"`
 
+	// CLISetupCompleted is set to true after the first-run setup wizard
+	// completes successfully. Used by isFirstRun() to avoid showing the
+	// setup panel on every startup when credentials are stored in DB
+	// (user_llm_subscriptions) rather than config.json.
+	CLISetupCompleted bool `json:"cli_setup_completed,omitempty"`
+
 	// hasPluginsKey is true when the JSON file contained a "plugins" key.
 	// Used by Load() to set the default (enabled=true when absent).
 	hasPluginsKey bool `json:"-"`
