@@ -3417,10 +3417,12 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 // deleteLocalSession deletes the selected session and switches to default if active.
 func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) {
 	// 1. Remove from local JSON file (for local dir sessions).
+	// Use entry.ID (chatID) for matching, not entry.Label — the display label
+	// may have been renamed in DB but local JSON still has the original auto-name.
 	localRemoved := false
 	ds, err := LoadDirSessions(m.workDir)
 	if err == nil {
-		if err := ds.removeSession(entry.Label); err == nil {
+		if err := ds.removeSessionByChatID(entry.ID); err == nil {
 			localRemoved = true
 		}
 	}

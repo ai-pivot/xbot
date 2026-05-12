@@ -268,15 +268,17 @@ func (ds *dirSessions) RenameSession(oldName, newName string) error {
 	return fmt.Errorf("session %q not found", oldName)
 }
 
-// removeSession removes a session from the directory.
-func (ds *dirSessions) removeSession(name string) error {
+// removeSessionByChatID removes a session by its chatID (not display name).
+// Used when the display name may have been renamed in DB but local JSON
+// still has the original auto-name.
+func (ds *dirSessions) removeSessionByChatID(chatID string) error {
 	for i, s := range ds.Sessions {
-		if s.Name == name {
+		if s.ChatID == chatID {
 			ds.Sessions = append(ds.Sessions[:i], ds.Sessions[i+1:]...)
 			return ds.save()
 		}
 	}
-	return fmt.Errorf("session %q not found", name)
+	return fmt.Errorf("session with chatID %q not found", chatID)
 }
 
 // sortedSessions returns sessions sorted by creation time (newest first).
