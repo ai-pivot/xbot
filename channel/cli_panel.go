@@ -3376,6 +3376,12 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
 		return nil
 	}
+	// Clean up any residual DB tenant from a previously-deleted session with the
+	// same chatID. This handles edge cases where a prior deletion cleaned local
+	// JSON but failed to clean the DB (e.g., crash, network error during delete).
+	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
+		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
+	}
 	m.saveCurrentSession()
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)
@@ -3411,30 +3417,24 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 
 // deleteLocalSession deletes the selected session and switches to default if active.
 func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
-	// 1. Remove from local JSON file (for local dir sessions).
-	// Use entry.ID (chatID) for matching, not entry.Label — the display label
-	// may have been renamed in DB but local JSON still has the original auto-name.
-	localRemoved := false
-	ds, err := LoadDirSessions(m.workDir)
-	if err == nil {
-		if err := ds.removeSessionByChatID(entry.ID); err == nil {
-			localRemoved = true
-		}
-	}
-	// 2. Notify backend to clean up DB (tenant, messages, etc.).
-	backendRemoved := false
+	// 1. Delete from backend DB FIRST. If this fails, local JSON stays intact
+	// so the user can retry — preventing the inconsistent state where local
+	// JSON is cleaned but DB tenant persists.
 	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
 		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
 			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
 			m.showTempStatus(fmt.Sprintf("Delete failed: %v", err))
 			return nil
 		}
-		backendRemoved = true
 	}
-	// 3. Neither local nor backend succeeded.
-	if !localRemoved && !backendRemoved {
-		m.showTempStatus(fmt.Sprintf("Not found: %s", entry.Label))
-		return nil
+	// 2. Remove from local JSON file (only after DB delete succeeded).
+	// Use entry.ID (chatID) for matching, not entry.Label — the display label
+	// may have been renamed in DB but local JSON still has the original auto-name.
+	ds, err := LoadDirSessions(m.workDir)
+	if err == nil {
+		if err := ds.removeSessionByChatID(entry.ID); err != nil {
+			log.WithError(err).WithField("chatID", entry.ID).Warn("Local session remove failed")
+		}
 	}
 	// If we deleted the active session, switch to default
 	if entry.Active {
