@@ -284,15 +284,22 @@ type LLMConfig struct {
 
 // SubscriptionConfig CLI 订阅配置（存储在 config.json，不存数据库）。
 type SubscriptionConfig struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Model           string `json:"model"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (8192)
-	ThinkingMode    string `json:"thinking_mode,omitempty"`     // "" = auto, "enabled", "disabled"
-	Active          bool   `json:"active"`
+	ID              string                    `json:"id"`
+	Name            string                    `json:"name"`
+	Provider        string                    `json:"provider"`
+	BaseURL         string                    `json:"base_url"`
+	APIKey          string                    `json:"api_key"`
+	Model           string                    `json:"model"`
+	MaxOutputTokens int                       `json:"max_output_tokens,omitempty"` // 0 = use default (8192)
+	ThinkingMode    string                    `json:"thinking_mode,omitempty"`     // "" = auto, "enabled", "disabled"
+	PerModelConfigs map[string]PerModelConfig `json:"per_model_configs,omitempty"` // per-model token overrides
+	Active          bool                      `json:"active"`
+}
+
+// PerModelConfig stores per-model token overrides for CLI config subscriptions.
+type PerModelConfig struct {
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"` // 0 = use subscription default
+	MaxContext      int `json:"max_context,omitempty"`       // 0 = use subscription default
 }
 
 // LogConfig 日志配置

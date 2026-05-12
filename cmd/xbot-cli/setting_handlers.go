@@ -17,7 +17,8 @@ type cliSettingHandler struct {
 	ApplyConfig func(cfg *config.Config, value string)
 	// ApplyBackend applies runtime side effects via the backend.
 	// backend and senderID are always non-nil/non-empty when called.
-	ApplyBackend func(backend agent.AgentBackend, senderID, value string)
+	// chatID is the current session's chat ID (may be empty for global operations).
+	ApplyBackend func(backend agent.AgentBackend, senderID, chatID, value string)
 }
 
 // cliSettingHandlers is the CLI-side counterpart of serverapp.settingHandlerRegistry.
@@ -57,7 +58,7 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 				cfg.Agent.CompressionThreshold = f
 			}
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if f, err := strconv.ParseFloat(value, 64); err == nil && f > 0 {
 				backend.SetCompressionThreshold(f)
 			}
@@ -71,7 +72,7 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 	// --- Runtime state settings (config + backend side-effects) ---
 	"context_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.ContextMode = value },
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			_ = backend.SetContextMode(value)
 		},
 	},
@@ -79,7 +80,7 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.MaxIterations = channel.ParseSettingInt(value, cfg.Agent.MaxIterations)
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				backend.SetMaxIterations(n)
 			}
@@ -89,7 +90,7 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.MaxConcurrency = channel.ParseSettingInt(value, cfg.Agent.MaxConcurrency)
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				backend.SetMaxConcurrency(n)
 			}
@@ -99,9 +100,13 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.MaxContextTokens = channel.ParseSettingInt(value, cfg.Agent.MaxContextTokens)
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if n, err := strconv.Atoi(value); err == nil && n >= 0 {
-				backend.SetMaxContextTokens(n)
+				if chatID != "" {
+					backend.SetMaxContextTokens(n, chatID)
+				} else {
+					backend.SetMaxContextTokens(n)
+				}
 			}
 		},
 	},
@@ -113,7 +118,7 @@ var cliSettingHandlers = map[string]cliSettingHandler{
 			b := channel.ParseSettingBool(value)
 			cfg.Agent.EnableAutoCompress = &b
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if channel.ParseSettingBool(value) {
 				_ = backend.SetContextMode("auto")
 			} else {
@@ -153,7 +158,7 @@ func applyCLISettingsToConfig(cfg *config.Config, values map[string]string) map[
 
 // applyCLISettingsToBackend applies runtime backend side-effects for all recognized keys.
 // context_mode is processed LAST so it correctly overrides enable_auto_compress when both are present.
-func applyCLISettingsToBackend(backend agent.AgentBackend, senderID string, values map[string]string) {
+func applyCLISettingsToBackend(backend agent.AgentBackend, senderID, chatID string, values map[string]string) {
 	// Process all keys except context_mode first
 	for k, v := range values {
 		if k == "context_mode" {
@@ -167,13 +172,13 @@ func applyCLISettingsToBackend(backend agent.AgentBackend, senderID string, valu
 			continue
 		}
 		if h.ApplyBackend != nil {
-			h.ApplyBackend(backend, senderID, v)
+			h.ApplyBackend(backend, senderID, chatID, v)
 		}
 	}
 	// Process context_mode last so it overrides enable_auto_compress
 	if v, ok := values["context_mode"]; ok && v != "" {
 		if h, ok := cliSettingHandlers["context_mode"]; ok && h.ApplyBackend != nil {
-			h.ApplyBackend(backend, senderID, v)
+			h.ApplyBackend(backend, senderID, chatID, v)
 		}
 	}
 }

@@ -229,8 +229,10 @@ func (m *cliModel) cycleModel() {
 	// Switch model on the current subscription (no need to change subscription
 	// since we're already cycling within the current subscription's models).
 	if m.llmSubscriber != nil {
-		m.llmSubscriber.SwitchModel(m.senderID, nextModel)
+		m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
 	}
+	// Persist per-session model choice
+	SaveSessionLLM(m.workDir, m.chatID, m.activeSubID, nextModel)
 	m.updateQuickSwitchModels(nextModel)
 }
 
@@ -437,6 +439,10 @@ func (m *cliModel) restoreSession() {
 		m.cachedMaxContextTokens = 0
 		m.cachedMaxOutputTokens = 0
 		m.cachedCompressRatio = 0
+		// Reset per-session subscription/model state so it doesn't leak from previous session.
+		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
+		m.activeSubID = ""
+		m.cachedModelName = ""
 		// Clear todos — no saved state means no active turn,
 		// but persist unfinished todos from TodoManager so they
 		// remain visible across session switches.
@@ -474,6 +480,50 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	m.cachedMaxContextTokens = 0
 	m.cachedMaxOutputTokens = 0
 	m.cachedCompressRatio = 0
+
+	// Restore per-session model/subscription from disk (persists across TUI restarts).
+	// This only applies when the session wasn't already restored from in-memory cache.
+	if m.activeSubID == "" && m.cachedModelName == "" {
+		savedSubID, savedModel := LoadSessionLLM(m.workDir, m.chatID)
+		if savedSubID != "" || savedModel != "" {
+			if savedSubID != "" && m.subscriptionMgr != nil {
+				// Restore subscription for this session
+				if subs, err := m.subscriptionMgr.List(""); err == nil {
+					for i := range subs {
+						if subs[i].ID == savedSubID {
+							if m.channel != nil && m.channel.config.SwitchLLM != nil {
+								switchFn := m.channel.config.SwitchLLM
+								target := subs[i]
+								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+									return cliSwitchLLMDoneMsg{
+										err:      err,
+										subID:    target.ID,
+										subName:  target.Name,
+										subModel: target.Model,
+										mgr:      m.subscriptionMgr,
+									}
+								})
+							}
+							break
+						}
+					}
+				}
+			}
+			if savedModel != "" {
+				m.activeSubID = savedSubID
+				m.cachedModelName = savedModel
+			}
+		} else {
+			// No per-session override on disk — load global default subscription
+			if m.subscriptionMgr != nil {
+				if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
+					m.activeSubID = defSub.ID
+					m.cachedModelName = defSub.Model
+				}
+			}
+		}
+	}
 
 	if isRemote {
 		// Remote mode: discard all stale client-side turn state.
@@ -1272,12 +1322,23 @@ func isCtrlJ(msg tea.Msg) bool {
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
 // Should be called after channel init, config changes, and settings saves.
+// Prefers per-session override (from disk or in-memory state) over global default.
 func (m *cliModel) refreshCachedModelName() {
 	if m.channel == nil {
 		return
 	}
-	// Single source of truth: read from active subscription (not from settings values)
-	if m.channel.subscriptionMgr != nil {
+	// Prefer per-session model from disk (persistent across restarts)
+	if _, savedModel := LoadSessionLLM(m.workDir, m.chatID); savedModel != "" {
+		m.cachedModelName = savedModel
+		return
+	}
+	// Fallback: in-memory saved state (for sessions that were saved but not yet persisted)
+	if saved, ok := m.savedSessions[m.sessionKey()]; ok && saved.activeModel != "" {
+		m.cachedModelName = saved.activeModel
+		return
+	}
+	// Fallback: only use global default when no per-session override exists
+	if m.cachedModelName == "" && m.channel.subscriptionMgr != nil {
 		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
 			m.cachedModelName = sub.Model
 		}

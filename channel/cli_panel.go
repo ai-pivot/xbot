@@ -218,7 +218,7 @@ func (m *cliModel) openSetupPanel() {
 	m.openSettingsPanel(schema, values, func(vals map[string]string) {
 		// Apply all settings including setup-only keys (provider, api_key, sandbox, memory)
 		if m.channel.config.ApplySettings != nil {
-			m.channel.config.ApplySettings(vals)
+			m.channel.config.ApplySettings(vals, m.chatID)
 		}
 		// NOTE: UI updates (theme/locale/viewport) are handled by
 		// handleSettingsSavedMsg in Update() since this runs in a goroutine.
@@ -2487,11 +2487,20 @@ func (m *cliModel) openQuickSwitch(mode string) {
 		})
 	}
 
-	// Pre-select the active subscription
-	for i, s := range subs {
-		if s.Active {
-			m.quickSwitchCursor = i
-			break
+	// Pre-select the active subscription (per-session, not DB default)
+	if m.activeSubID != "" {
+		for i, s := range subs {
+			if s.ID == m.activeSubID {
+				m.quickSwitchCursor = i
+				break
+			}
+		}
+	} else {
+		for i, s := range subs {
+			if s.Active {
+				m.quickSwitchCursor = i
+				break
+			}
 		}
 	}
 }
@@ -2604,11 +2613,13 @@ func (m *cliModel) applyQuickSwitch() {
 		})
 	case "model":
 		if m.llmSubscriber != nil {
-			m.llmSubscriber.SwitchModel(m.senderID, selected.Model)
+			m.llmSubscriber.SwitchModel(m.senderID, selected.Model, m.chatID)
 			m.cachedModelName = selected.Model
 			m.subGeneration++ // model switch also changes effective subscription state
 			// Update quickSwitchList so the panel reflects the new model
 			m.updateQuickSwitchModels(selected.Model)
+			// Persist per-session model choice so it survives restarts
+			SaveSessionLLM(m.workDir, m.chatID, m.activeSubID, selected.Model)
 			m.showTempStatus(fmt.Sprintf("Model switched to: %s", selected.Model))
 		}
 	}
@@ -2654,6 +2665,7 @@ func (m *cliModel) editQuickSwitchEntry() {
 			{Label: "Enabled", Value: "enabled"},
 			{Label: "Disabled", Value: "disabled"},
 		}},
+		{Key: "__pm_header__", Label: "─── Model-Specific Overrides ───", Description: "Override max tokens and context per model. Set 0 to use subscription default.", Type: SettingTypeText, DefaultValue: ""},
 	}
 	// Inject model list into combo for model field
 	if m.channel.modelLister != nil {
@@ -2664,6 +2676,27 @@ func (m *cliModel) editQuickSwitchEntry() {
 				opts[j] = SettingOption{Label: mdl, Value: mdl}
 			}
 			editSchema[2].Options = opts
+			// Add per-model override rows for known models
+			for _, mdl := range models {
+				pmOut := 0
+				pmCtx := 0
+				if target.PerModelConfigs != nil {
+					if cfg, ok := target.PerModelConfigs[mdl]; ok {
+						pmOut = cfg.MaxOutputTokens
+						pmCtx = cfg.MaxContext
+					}
+				}
+				editSchema = append(editSchema, SettingDefinition{
+					Key: "pm_" + mdl + "_max_output", Label: mdl + " Max Tokens",
+					Description: "Max output tokens for " + mdl + " (0 = use default)",
+					Type:        SettingTypeNumber, DefaultValue: strconv.Itoa(pmOut),
+				})
+				editSchema = append(editSchema, SettingDefinition{
+					Key: "pm_" + mdl + "_max_context", Label: mdl + " Max Context",
+					Description: "Max context tokens for " + mdl + " (0 = use default)",
+					Type:        SettingTypeNumber, DefaultValue: strconv.Itoa(pmCtx),
+				})
+			}
 		}
 	}
 	editValues := map[string]string{
@@ -2686,6 +2719,17 @@ func (m *cliModel) editQuickSwitchEntry() {
 			apiKey = target.APIKey
 		}
 		maxOut, _ := strconv.Atoi(values["sub_max_output_tokens"])
+		// Collect per-model overrides from the form values
+		perModelConfigs := make(map[string]PerModelConfig)
+		if m.channel.modelLister != nil {
+			for _, mdl := range m.channel.modelLister.ListAllModels() {
+				pmOut, _ := strconv.Atoi(values["pm_"+mdl+"_max_output"])
+				pmCtx, _ := strconv.Atoi(values["pm_"+mdl+"_max_context"])
+				if pmOut > 0 || pmCtx > 0 {
+					perModelConfigs[mdl] = PerModelConfig{MaxOutputTokens: pmOut, MaxContext: pmCtx}
+				}
+			}
+		}
 		updated := &Subscription{
 			ID:              target.ID,
 			Name:            values["sub_name"],
@@ -2695,6 +2739,7 @@ func (m *cliModel) editQuickSwitchEntry() {
 			APIKey:          apiKey,
 			MaxOutputTokens: maxOut,
 			ThinkingMode:    values["sub_thinking_mode"],
+			PerModelConfigs: perModelConfigs,
 			Active:          target.Active,
 		}
 		if err := m.subscriptionMgr.Update(target.ID, updated); err != nil {
@@ -2778,7 +2823,11 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			style = m.styles.Accent
 		}
 		active := ""
-		if s.Active {
+		if m.activeSubID != "" {
+			if s.ID == m.activeSubID {
+				active = " ✓"
+			}
+		} else if s.Active {
 			active = " ✓"
 		}
 		name := s.Name

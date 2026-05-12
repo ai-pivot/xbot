@@ -48,7 +48,7 @@ type AgentBackend interface {
 	ListAllModels() []string
 	GetDefaultModel() string
 	SetUserModel(senderID, model string) error
-	SwitchModel(senderID, model string) error
+	SwitchModel(senderID, model, chatID string) error
 	GetContextMode() string
 	SetContextMode(mode string) error
 	SetModelTiers(cfg config.LLMConfig) error
@@ -80,7 +80,7 @@ type AgentBackend interface {
 	SetCWD(ch, chatID, dir string) error
 	SetMaxIterations(n int)
 	SetMaxConcurrency(n int)
-	SetMaxContextTokens(n int)
+	SetMaxContextTokens(n int, chatID ...string)
 	SetCompressionThreshold(f float64)
 	IsProcessing(ch, chatID string) bool
 	GetActiveProgress(ch, chatID string) *protocol.ProgressEvent

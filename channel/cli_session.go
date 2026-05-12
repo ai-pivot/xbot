@@ -79,10 +79,13 @@ type dirSessions struct {
 }
 
 type dirSession struct {
-	Name      string    `json:"name"`
-	ChatID    string    `json:"chat_id"`
-	CreatedAt time.Time `json:"created_at"`
-	CWD       string    `json:"cwd,omitempty"` // per-session working directory (worktree path, etc.)
+	Name             string    `json:"name"`
+	ChatID           string    `json:"chat_id"`
+	CreatedAt        time.Time `json:"created_at"`
+	CWD              string    `json:"cwd,omitempty"`                // per-session working directory (worktree path, etc.)
+	SubscriptionID   string    `json:"subscription_id,omitempty"`    // per-session subscription override
+	Model            string    `json:"model,omitempty"`              // per-session model override (within subscription)
+	MaxContextTokens int       `json:"max_context_tokens,omitempty"` // per-session max context tokens override
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.
@@ -369,4 +372,66 @@ func GetLastActiveSession(workDir string) string {
 		return ""
 	}
 	return ds.LastActive
+}
+
+// SaveSessionLLM persists the subscription and model choice for a specific session.
+// This allows each session to independently use different models across restarts.
+func SaveSessionLLM(workDir, chatID, subscriptionID, model string) {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return
+	}
+	for i := range ds.Sessions {
+		if ds.Sessions[i].ChatID == chatID {
+			ds.Sessions[i].SubscriptionID = subscriptionID
+			ds.Sessions[i].Model = model
+			_ = ds.save()
+			return
+		}
+	}
+}
+
+// LoadSessionLLM restores the subscription and model for a specific session.
+// Returns (subscriptionID, model). Either may be empty if not configured.
+func LoadSessionLLM(workDir, chatID string) (subscriptionID, model string) {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return "", ""
+	}
+	for i := range ds.Sessions {
+		if ds.Sessions[i].ChatID == chatID {
+			return ds.Sessions[i].SubscriptionID, ds.Sessions[i].Model
+		}
+	}
+	return "", ""
+}
+
+// SaveSessionMaxContext persists the per-session max context tokens override.
+func SaveSessionMaxContext(workDir, chatID string, maxCtx int) {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return
+	}
+	for i := range ds.Sessions {
+		if ds.Sessions[i].ChatID == chatID {
+			ds.Sessions[i].MaxContextTokens = maxCtx
+			_ = ds.save()
+			return
+		}
+	}
+}
+
+// LoadSessionMaxContext restores the per-session max context tokens override.
+// Returns 0 if not configured (0 means "use global default").
+func LoadSessionMaxContext(workDir, chatID string) int {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return 0
+	}
+	for i := range ds.Sessions {
+		if ds.Sessions[i].ChatID == chatID {
+			return ds.Sessions[i].MaxContextTokens
+		}
+	}
+	return 0
 }

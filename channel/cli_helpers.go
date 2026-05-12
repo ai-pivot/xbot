@@ -83,7 +83,25 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 			}
 		}
 	}
+	// Per-session max context tokens: load from session file (highest priority for this key).
+	if m.chatID != "" && m.workDir != "" {
+		if mc := LoadSessionMaxContext(m.workDir, m.chatID); mc > 0 {
+			values["max_context_tokens"] = strconv.Itoa(mc)
+		}
+	}
 	return values
+}
+
+// perSessionSettingKeys are settings that should only apply to the current session
+// when changed from a session (chatID non-empty). They are not written to global
+// config/DB, preserving other sessions' independent values.
+var perSessionSettingKeys = map[string]bool{
+	"max_context_tokens": true,
+}
+
+// IsPerSessionSettingKey returns true if the key is a per-session setting.
+func IsPerSessionSettingKey(key string) bool {
+	return perSessionSettingKeys[key]
 }
 
 func (m *cliModel) persistCLISettingsValues(values map[string]string) {
@@ -92,6 +110,18 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 			// Skip empty values — don't pollute the DB with meaningless entries
 			// that would block DefaultValue from taking effect.
 			if v != "" && isUserScopedSettingKey(k) {
+				// Per-session settings: skip global DB write when in a session context,
+				// so the change only affects the current session's runtime.
+				// Instead, persist to the session file for UI recovery across restarts.
+				if perSessionSettingKeys[k] && m.chatID != "" {
+					if k == "max_context_tokens" {
+						if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+							SaveSessionMaxContext(m.workDir, m.chatID, n)
+							m.cachedMaxContextTokens = n
+						}
+					}
+					continue
+				}
 				if err := m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v); err != nil {
 					log.WithFields(log.Fields{"key": k, "val": v, "err": err}).Warn("persistCLISettingsValues: SetSetting failed")
 				}
@@ -99,7 +129,7 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 		}
 	}
 	if m.channel != nil && m.channel.config.ApplySettings != nil {
-		m.channel.config.ApplySettings(values)
+		m.channel.config.ApplySettings(values, m.chatID)
 	}
 }
 
@@ -1209,7 +1239,15 @@ func (m *cliModel) cacheTokenUsage(tu *protocol.TokenUsage) {
 
 // resolveMaxContextTokens returns the max context tokens from settings values.
 // Falls back to 0 if unavailable (context usage display will be hidden).
+// Checks per-session override first, then falls back to global cached values.
 func (m *cliModel) resolveMaxContextTokens() int {
+	// Per-session override (from session file)
+	if m.chatID != "" && m.workDir != "" {
+		if mc := LoadSessionMaxContext(m.workDir, m.chatID); mc > 0 {
+			return mc
+		}
+	}
+	// Global cached value (from GetCurrentValues)
 	if m.channel == nil || m.channel.config.GetCurrentValues == nil {
 		return 0
 	}

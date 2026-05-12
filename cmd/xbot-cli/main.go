@@ -1273,7 +1273,7 @@ func main() {
 				}(),
 			}
 		},
-		ApplySettings: func(values map[string]string) {
+		ApplySettings: func(values map[string]string, chatID string) {
 			if app.backend == nil {
 				return
 			}
@@ -1308,15 +1308,23 @@ func main() {
 				if channel.IsGlobalScopedSettingKey(k) {
 					continue // global-scoped keys not stored in DB
 				}
+				// Per-session settings: skip global DB write when in a session context
+				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+					continue
+				}
 				_ = app.backend.SetSetting("cli", "cli_user", k, v)
 			}
-			applyCLISettingsToBackend(app.backend, "cli_user", values)
+			applyCLISettingsToBackend(app.backend, "cli_user", chatID, values)
 
 			// Update local cache immediately (no waiting for refreshRemoteValuesCache)
 			app.valuesCacheMu.Lock()
 			for k, v := range values {
 				if app.valuesCache == nil {
 					app.valuesCache = make(map[string]string)
+				}
+				// Per-session settings: don't cache globally (other sessions should see their own values)
+				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+					continue
 				}
 				app.valuesCache[k] = v
 			}
@@ -1329,7 +1337,17 @@ func main() {
 			// Always save layout to config.json (keys not in Config struct, must write directly)
 			saveLayoutToConfig(values)
 			// Always save to local config.json as fallback cache
-			applyCLISettingsToConfig(app.cfg, values)
+			// (skip per-session keys when in a session — they're runtime-only)
+			globalValues := values
+			if chatID != "" {
+				globalValues = make(map[string]string, len(values))
+				for k, v := range values {
+					if !channel.IsPerSessionSettingKey(k) {
+						globalValues[k] = v
+					}
+				}
+			}
+			applyCLISettingsToConfig(app.cfg, globalValues)
 			if err := saveCLIConfig(app.cfg); err != nil {
 				log.Warnf("Failed to save CLI config: %v", err)
 			}
@@ -2645,11 +2663,11 @@ func (s *localLLMSubscriber) SwitchSubscription(senderID string, sub *channel.Su
 	return s.backend.SetDefaultSubscription(sub.ID, chatID)
 }
 
-func (s *localLLMSubscriber) SwitchModel(senderID, model string) {
+func (s *localLLMSubscriber) SwitchModel(senderID, model, chatID string) {
 	if senderID == "" {
 		senderID = cliSenderID
 	}
-	if err := s.backend.SwitchModel(senderID, model); err != nil {
+	if err := s.backend.SwitchModel(senderID, model, chatID); err != nil {
 		log.WithError(err).Warn("localLLMSubscriber: SwitchModel failed")
 	}
 }
@@ -2663,6 +2681,30 @@ type configSubscriptionManager struct {
 	cfg      *config.Config
 	saveFn   func() error           // persists config to disk
 	tierSync func(config.LLMConfig) // called after subscription switch to re-sync tier models
+}
+
+// configToProtocolPerModels converts config.PerModelConfigs to protocol.PerModelConfigs.
+func configToProtocolPerModels(src map[string]config.PerModelConfig) map[string]protocol.PerModelConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]protocol.PerModelConfig, len(src))
+	for k, v := range src {
+		dst[k] = protocol.PerModelConfig{MaxOutputTokens: v.MaxOutputTokens, MaxContext: v.MaxContext}
+	}
+	return dst
+}
+
+// protocolToConfigPerModels converts protocol.PerModelConfigs to config.PerModelConfigs.
+func protocolToConfigPerModels(src map[string]protocol.PerModelConfig) map[string]config.PerModelConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]config.PerModelConfig, len(src))
+	for k, v := range src {
+		dst[k] = config.PerModelConfig{MaxOutputTokens: v.MaxOutputTokens, MaxContext: v.MaxContext}
+	}
+	return dst
 }
 
 func newConfigSubscriptionManager(cfg *config.Config, saveFn func() error, tierSync func(config.LLMConfig)) *configSubscriptionManager {
@@ -2681,6 +2723,7 @@ func (m *configSubscriptionManager) List(_ string) ([]channel.Subscription, erro
 			Model:           s.Model,
 			MaxOutputTokens: s.MaxOutputTokens,
 			ThinkingMode:    s.ThinkingMode,
+			PerModelConfigs: configToProtocolPerModels(s.PerModelConfigs),
 			Active:          s.Active,
 		}
 	}
@@ -2699,6 +2742,7 @@ func (m *configSubscriptionManager) GetDefault(_ string) (*channel.Subscription,
 				Model:           s.Model,
 				MaxOutputTokens: s.MaxOutputTokens,
 				ThinkingMode:    s.ThinkingMode,
+				PerModelConfigs: configToProtocolPerModels(s.PerModelConfigs),
 				Active:          true,
 			}, nil
 		}
@@ -2716,6 +2760,7 @@ func (m *configSubscriptionManager) Add(sub *channel.Subscription) error {
 		Model:           sub.Model,
 		MaxOutputTokens: sub.MaxOutputTokens,
 		ThinkingMode:    sub.ThinkingMode,
+		PerModelConfigs: protocolToConfigPerModels(sub.PerModelConfigs),
 		Active:          sub.Active,
 	})
 	return m.saveFn()
@@ -2797,6 +2842,7 @@ func (m *configSubscriptionManager) Update(id string, sub *channel.Subscription)
 			m.cfg.Subscriptions[i].Model = sub.Model
 			m.cfg.Subscriptions[i].MaxOutputTokens = sub.MaxOutputTokens
 			m.cfg.Subscriptions[i].ThinkingMode = sub.ThinkingMode
+			m.cfg.Subscriptions[i].PerModelConfigs = protocolToConfigPerModels(sub.PerModelConfigs)
 			// If modifying active subscription, sync cfg.LLM
 			if m.cfg.Subscriptions[i].Active {
 				syncLLMFromActiveSub(m.cfg)
@@ -3017,8 +3063,8 @@ func (s *remoteLLMSubscriber) SwitchSubscription(senderID string, sub *channel.S
 	return s.backend.SetDefaultSubscription(sub.ID, chatID)
 }
 
-func (s *remoteLLMSubscriber) SwitchModel(senderID, model string) {
-	if err := s.backend.SwitchModel(senderID, model); err != nil {
+func (s *remoteLLMSubscriber) SwitchModel(senderID, model, chatID string) {
+	if err := s.backend.SwitchModel(senderID, model, chatID); err != nil {
 		log.WithError(err).Warn("remoteLLMSubscriber: SwitchModel RPC failed")
 	}
 }

@@ -220,9 +220,14 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		return nil
 	}))
 	t["set_max_context_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		N int `json:"n"`
+		MaxContext int    `json:"max_context"`
+		ChatID     string `json:"chat_id,omitempty"`
 	}) error {
-		h.backend.SetMaxContextTokens(p.N)
+		if p.ChatID != "" {
+			h.backend.SetMaxContextTokens(p.MaxContext, p.ChatID)
+		} else {
+			h.backend.SetMaxContextTokens(p.MaxContext)
+		}
 		return nil
 	}))
 	t["set_compression_threshold"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
@@ -258,11 +263,12 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 		return backend.SetUserModel(rpcBizID(ctx), p.Model)
 	})
 	t["switch_model"] = rpc1void(func(ctx context.Context, p struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		ChatID string `json:"chat_id,omitempty"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		log.WithField("sender_id", bizID).WithField("model", p.Model).Info("RPC switch_model")
-		backend.SwitchModel(bizID, p.Model)
+		log.WithField("sender_id", bizID).WithField("model", p.Model).WithField("chat_id", p.ChatID).Info("RPC switch_model")
+		backend.SwitchModel(bizID, p.Model, p.ChatID)
 		if subSvc := backend.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
 				if err := subSvc.SetModel(sub.ID, p.Model); err != nil {

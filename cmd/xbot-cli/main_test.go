@@ -737,7 +737,7 @@ func (b *fakeAgentBackend) SetContextMode(string) error                    { ret
 func (b *fakeAgentBackend) SetCWD(string, string, string) error            { return nil }
 func (b *fakeAgentBackend) SetMaxIterations(int)                           {}
 func (b *fakeAgentBackend) SetMaxConcurrency(int)                          {}
-func (b *fakeAgentBackend) SetMaxContextTokens(int)                        {}
+func (b *fakeAgentBackend) SetMaxContextTokens(int, ...string)             {}
 func (b *fakeAgentBackend) SetCompressionThreshold(float64)                {}
 func (b *fakeAgentBackend) SetSandbox(tools.Sandbox, string)               {}
 func (b *fakeAgentBackend) GetCardBuilder() *tools.CardBuilder             { return nil }
@@ -794,7 +794,7 @@ func (b *fakeAgentBackend) SetUserModel(string, string) error         { return n
 func (b *fakeAgentBackend) SetSubscriptionModel(id, model string) error {
 	return b.factory.GetSubscriptionSvc().SetModel(id, model)
 }
-func (b *fakeAgentBackend) SwitchModel(string, string) error         { return nil }
+func (b *fakeAgentBackend) SwitchModel(string, string, string) error { return nil }
 func (b *fakeAgentBackend) GetDefaultModel() string                  { return b.defaultModel }
 func (b *fakeAgentBackend) GetUserMaxContext(string) int             { return 0 }
 func (b *fakeAgentBackend) SetUserMaxContext(string, int) error      { return nil }

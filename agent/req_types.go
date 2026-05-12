@@ -100,6 +100,7 @@ type setUserModelReq struct {
 type switchModelReq struct {
 	SenderID string `json:"sender_id"`
 	Model    string `json:"model"`
+	ChatID   string `json:"chat_id,omitempty"`
 }
 
 type setUserMaxContextReq struct {
@@ -233,15 +234,21 @@ type setSubscriptionModelReq struct {
 
 // channelSubscriptionJSON mirrors protocol.Subscription for JSON transport.
 type channelSubscriptionJSON struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Model           string `json:"model"`
-	Active          bool   `json:"active"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	ThinkingMode    string `json:"thinking_mode"`
+	ID              string                        `json:"id"`
+	Name            string                        `json:"name"`
+	Provider        string                        `json:"provider"`
+	BaseURL         string                        `json:"base_url"`
+	APIKey          string                        `json:"api_key"`
+	Model           string                        `json:"model"`
+	Active          bool                          `json:"active"`
+	MaxOutputTokens int                           `json:"max_output_tokens"`
+	ThinkingMode    string                        `json:"thinking_mode"`
+	PerModelConfigs map[string]perModelConfigJSON `json:"per_model_configs,omitempty"`
+}
+
+type perModelConfigJSON struct {
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	MaxContext      int `json:"max_context,omitempty"`
 }
 
 // --- History ---

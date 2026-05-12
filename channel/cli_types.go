@@ -544,7 +544,7 @@ type CLIChannelConfig struct {
 	TokenStateLoader     func() (promptTokens, completionTokens int64)                                                                  // 会话恢复：从 DB 加载上次 Run 的 token 计数
 	AgentSessionDumpFn   func(chatID string) ([]HistoryMessage, error)                                                                  // agent session 切换时从 Agent 内存加载消息
 	GetCurrentValues     func() map[string]string                                                                                       // 获取当前配置值（用于 settings panel 初始值）
-	ApplySettings        func(values map[string]string)                                                                                 // 应用设置变更（写 config.json + 更新运行时状态）
+	ApplySettings        func(values map[string]string, chatID string)                                                                  // 应用设置变更（写 config.json + 更新运行时状态）
 	IsFirstRun           bool                                                                                                           // 首次运行标志，TUI 启动时自动打开 setup panel
 	ClearMemory          func(targetType string) error                                                                                  // 清空记忆（danger zone）
 	GetMemoryStats       func() map[string]string                                                                                       // 获取记忆统计（danger zone）
@@ -700,6 +700,9 @@ type ModelLister interface {
 // Subscription represents a LLM subscription for display/selection.
 type Subscription = protocol.Subscription
 
+// PerModelConfig stores per-model token overrides within a subscription.
+type PerModelConfig = protocol.PerModelConfig
+
 // SubscriptionManager manages user LLM subscriptions.
 type SubscriptionManager interface {
 	List(senderID string) ([]Subscription, error)
@@ -715,7 +718,7 @@ type SubscriptionManager interface {
 // LLMSubscriber switches the active LLM for a user (called when subscription changes).
 type LLMSubscriber interface {
 	SwitchSubscription(senderID string, sub *Subscription, chatID string) error
-	SwitchModel(senderID, model string)
+	SwitchModel(senderID, model, chatID string)
 	GetDefaultModel() string
 }
 

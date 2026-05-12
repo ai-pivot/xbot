@@ -312,7 +312,7 @@ func (b fakeBackend) SetContextMode(_ string) error                             
 func (b fakeBackend) SetCWD(_, _, _ string) error                                    { return nil }
 func (b fakeBackend) SetMaxIterations(_ int)                                         {}
 func (b fakeBackend) SetMaxConcurrency(_ int)                                        {}
-func (b fakeBackend) SetMaxContextTokens(_ int)                                      {}
+func (b fakeBackend) SetMaxContextTokens(_ int, _ ...string)                         {}
 func (b fakeBackend) SetCompressionThreshold(_ float64)                              {}
 func (b fakeBackend) SetSandbox(_ tools.Sandbox, _ string)                           {}
 func (b fakeBackend) GetCardBuilder() *tools.CardBuilder                             { return nil }
@@ -323,7 +323,7 @@ func (b fakeBackend) SetProxyLLM(_ string, _ *llm.ProxyLLM, _ string)           
 func (b fakeBackend) ClearProxyLLM(_ string)                                         {}
 func (b fakeBackend) GetDefaultModel() string                                        { return "" }
 func (b fakeBackend) SetUserModel(_, _ string) error                                 { return nil }
-func (b fakeBackend) SwitchModel(_, _ string) error                                  { return nil }
+func (b fakeBackend) SwitchModel(_, _, _ string) error                               { return nil }
 func (b fakeBackend) GetUserMaxContext(_ string) int                                 { return 0 }
 func (b fakeBackend) SetUserMaxContext(_ string, _ int) error                        { return nil }
 func (b fakeBackend) GetUserMaxOutputTokens(_ string) int                            { return 0 }

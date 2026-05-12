@@ -15,6 +15,20 @@ import (
 	"xbot/storage/sqlite"
 )
 
+// sqliteSubToProtocol converts a sqlite.LLMSubscription to protocol.Subscription.
+func sqliteSubToProtocol(s *sqlite.LLMSubscription) protocol.Subscription {
+	pmc := make(map[string]protocol.PerModelConfig, len(s.PerModelConfigs))
+	for k, v := range s.PerModelConfigs {
+		pmc[k] = protocol.PerModelConfig{MaxOutputTokens: v.MaxOutputTokens, MaxContext: v.MaxContext}
+	}
+	return protocol.Subscription{
+		ID: s.ID, Name: s.Name, Provider: s.Provider,
+		BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault,
+		MaxOutputTokens: s.MaxOutputTokens, ThinkingMode: s.ThinkingMode,
+		PerModelConfigs: pmc,
+	}
+}
+
 // localTransport is the in-process "server" for local mode.
 // Its Call() method dispatches to a handler table that directly operates on *Agent.
 // This eliminates all local/remote branching in Backend — every call is a transport.Call().
@@ -221,7 +235,11 @@ func (t *localTransport) registerHandlers() {
 	})
 
 	h[MethodSwitchModel] = rpcVoid(func(r switchModelReq) error {
-		a.llmFactory.SwitchModel(r.SenderID, r.Model)
+		if r.ChatID != "" {
+			a.llmFactory.SwitchModel(r.SenderID, r.Model, r.ChatID)
+		} else {
+			a.llmFactory.SwitchModel(r.SenderID, r.Model)
+		}
 		return nil
 	})
 
@@ -276,8 +294,15 @@ func (t *localTransport) registerHandlers() {
 		return nil
 	})
 
-	h[MethodSetMaxContextTokens] = rpcVoid(func(r int) error {
-		a.SetMaxContextTokens(r)
+	h[MethodSetMaxContextTokens] = rpcVoid(func(r struct {
+		MaxContext int    `json:"max_context"`
+		ChatID     string `json:"chat_id,omitempty"`
+	}) error {
+		if r.ChatID != "" {
+			a.SetMaxContextTokens(r.MaxContext, r.ChatID)
+		} else {
+			a.SetMaxContextTokens(r.MaxContext)
+		}
 		return nil
 	})
 
@@ -468,11 +493,7 @@ func (t *localTransport) registerHandlers() {
 		}
 		result := make([]protocol.Subscription, len(subs))
 		for i, s := range subs {
-			result[i] = protocol.Subscription{
-				ID: s.ID, Name: s.Name, Provider: s.Provider,
-				BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault,
-				MaxOutputTokens: s.MaxOutputTokens, ThinkingMode: s.ThinkingMode,
-			}
+			result[i] = sqliteSubToProtocol(s)
 		}
 		return result, nil
 	})
@@ -486,11 +507,8 @@ func (t *localTransport) registerHandlers() {
 		if err != nil || sub == nil {
 			return nil, err
 		}
-		return &protocol.Subscription{
-			ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
-			BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault,
-			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
-		}, nil
+		p := sqliteSubToProtocol(sub)
+		return &p, nil
 	})
 
 	h[MethodAddSubscription] = rpcVoid(func(r addSubscriptionReq) error {
@@ -532,17 +550,21 @@ func (t *localTransport) registerHandlers() {
 		if svc == nil {
 			return ErrSubscriptionsUnavailable
 		}
+		sub, err := svc.Get(r.ID)
+		if err != nil || sub == nil {
+			return fmt.Errorf("subscription %s not found", r.ID)
+		}
+		if r.ChatID != "" {
+			// Per-session switch: only update per-chat cache, do NOT modify
+			// the global default subscription or invalidate other sessions.
+			return a.llmFactory.SwitchSubscription(sub.SenderID, sub, r.ChatID)
+		}
+		// Global switch: update DB default + invalidate all caches + set per-user LLM
 		if err := svc.SetDefault(r.ID); err != nil {
 			return err
 		}
-		sub, err := svc.Get(r.ID)
-		if err == nil && sub != nil {
-			a.llmFactory.Invalidate(sub.SenderID)
-			if err := a.llmFactory.SwitchSubscription(sub.SenderID, sub, r.ChatID); err != nil {
-				return err
-			}
-		}
-		return nil
+		a.llmFactory.Invalidate(sub.SenderID)
+		return a.llmFactory.SwitchSubscription(sub.SenderID, sub, "")
 	})
 
 	h[MethodUpdateSubscription] = rpcVoid(func(r updateSubscriptionReq) error {
@@ -563,6 +585,13 @@ func (t *localTransport) registerHandlers() {
 			APIKey: r.Sub.APIKey, Model: r.Sub.Model,
 			MaxContext: existing.MaxContext, MaxOutputTokens: r.Sub.MaxOutputTokens,
 			ThinkingMode: r.Sub.ThinkingMode, IsDefault: r.Sub.Active,
+		}
+		// Convert per-model configs from RPC JSON type to sqlite types
+		if len(r.Sub.PerModelConfigs) > 0 {
+			dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(r.Sub.PerModelConfigs))
+			for k, v := range r.Sub.PerModelConfigs {
+				dbSub.PerModelConfigs[k] = sqlite.PerModelConfig{MaxOutputTokens: v.MaxOutputTokens, MaxContext: v.MaxContext}
+			}
 		}
 		// Never overwrite with a masked key from server RPC transport.
 		if strings.HasSuffix(dbSub.APIKey, "****") && len(dbSub.APIKey) <= 20 {

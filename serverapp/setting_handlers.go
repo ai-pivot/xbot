@@ -18,7 +18,8 @@ type settingHandler struct {
 	ApplyConfig func(cfg *config.Config, value string)
 	// ApplyBackend applies runtime side effects via the backend.
 	// Called after ApplyConfig. Both backend and senderID are non-nil/non-empty.
-	ApplyBackend func(backend agent.AgentBackend, senderID, value string)
+	// chatID is the current session's chat ID (may be empty for global operations).
+	ApplyBackend func(backend agent.AgentBackend, senderID, chatID, value string)
 	// ApplyFull is called with both cfg and backend. Used when the side effect
 	// needs config context (e.g. sandbox reinit needs cfg.Agent.WorkDir).
 	// If set, called instead of the ApplyConfig+ApplyBackend pair.
@@ -72,7 +73,7 @@ var settingHandlerRegistry = map[string]settingHandler{
 				cfg.Agent.CompressionThreshold = f
 			}
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if f, err := strconv.ParseFloat(value, 64); err == nil && f > 0 {
 				backend.SetCompressionThreshold(f)
 			}
@@ -86,7 +87,7 @@ var settingHandlerRegistry = map[string]settingHandler{
 	// --- Runtime state settings (config + backend side-effects) ---
 	"context_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.ContextMode = value },
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			_ = backend.SetContextMode(value)
 		},
 	},
@@ -94,7 +95,7 @@ var settingHandlerRegistry = map[string]settingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.MaxIterations = channel.ParseSettingInt(value, cfg.Agent.MaxIterations)
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				backend.SetMaxIterations(n)
 			}
@@ -104,7 +105,7 @@ var settingHandlerRegistry = map[string]settingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.MaxConcurrency = channel.ParseSettingInt(value, cfg.Agent.MaxConcurrency)
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if n, err := strconv.Atoi(value); err == nil && n > 0 {
 				backend.SetMaxConcurrency(n)
 			}
@@ -114,9 +115,13 @@ var settingHandlerRegistry = map[string]settingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.MaxContextTokens = channel.ParseSettingInt(value, cfg.Agent.MaxContextTokens)
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if n, err := strconv.Atoi(value); err == nil && n >= 0 {
-				backend.SetMaxContextTokens(n)
+				if chatID != "" {
+					backend.SetMaxContextTokens(n, chatID)
+				} else {
+					backend.SetMaxContextTokens(n)
+				}
 			}
 		},
 	},
@@ -128,7 +133,7 @@ var settingHandlerRegistry = map[string]settingHandler{
 			b := channel.ParseSettingBool(value)
 			cfg.Agent.EnableAutoCompress = &b
 		},
-		ApplyBackend: func(backend agent.AgentBackend, senderID, value string) {
+		ApplyBackend: func(backend agent.AgentBackend, senderID, chatID, value string) {
 			if channel.ParseSettingBool(value) {
 				_ = backend.SetContextMode("auto")
 			} else {
@@ -179,7 +184,7 @@ func applyRuntimeSetting(cfg *config.Config, backend agent.AgentBackend, senderI
 			handler.ApplyConfig(cfg, value)
 		}
 		if handler.ApplyBackend != nil && backend != nil {
-			handler.ApplyBackend(backend, senderID, value)
+			handler.ApplyBackend(backend, senderID, "", value)
 		}
 	}
 	if backend != nil && backend.LLMFactory() != nil {
@@ -212,7 +217,7 @@ func applyRuntimeSettings(cfg *config.Config, backend agent.AgentBackend, sender
 				handler.ApplyConfig(cfg, v)
 			}
 			if handler.ApplyBackend != nil && backend != nil {
-				handler.ApplyBackend(backend, senderID, v)
+				handler.ApplyBackend(backend, senderID, "", v)
 			}
 		}
 	}
@@ -226,7 +231,7 @@ func applyRuntimeSettings(cfg *config.Config, backend agent.AgentBackend, sender
 				handler.ApplyConfig(cfg, v)
 			}
 			if handler.ApplyBackend != nil && backend != nil {
-				handler.ApplyBackend(backend, senderID, v)
+				handler.ApplyBackend(backend, senderID, "", v)
 			}
 		}
 	}

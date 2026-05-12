@@ -109,15 +109,22 @@ type HistoryMessage struct {
 
 // Subscription represents an LLM subscription for display/selection.
 type Subscription struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Model           string `json:"model"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
-	ThinkingMode    string `json:"thinking_mode,omitempty"`
-	Active          bool   `json:"active"`
+	ID              string                    `json:"id"`
+	Name            string                    `json:"name"`
+	Provider        string                    `json:"provider"`
+	BaseURL         string                    `json:"base_url"`
+	APIKey          string                    `json:"api_key"`
+	Model           string                    `json:"model"`
+	MaxOutputTokens int                       `json:"max_output_tokens,omitempty"`
+	ThinkingMode    string                    `json:"thinking_mode,omitempty"`
+	PerModelConfigs map[string]PerModelConfig `json:"per_model_configs,omitempty"`
+	Active          bool                      `json:"active"`
+}
+
+// PerModelConfig stores per-model token overrides within a subscription.
+type PerModelConfig struct {
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"` // 0 = use subscription default
+	MaxContext      int `json:"max_context,omitempty"`       // 0 = use subscription default
 }
 
 type OutboundEvent struct {

@@ -30,11 +30,13 @@ type LLMFactory struct {
 
 	// 缓存用户的 LLM 客户端
 	mu              sync.RWMutex
-	clients         map[string]llm.LLM // senderID -> LLM client
-	models          map[string]string  // senderID -> model name
-	modelContexts   map[string]int     // model name -> max context tokens (from config model_contexts)
-	maxOutputTokens map[string]int     // senderID -> max_output_tokens
-	thinkingModes   map[string]string  // senderID -> thinking_mode
+	clients         map[string]llm.LLM                 // senderID -> LLM client
+	models          map[string]string                  // senderID -> model name
+	modelContexts   map[string]int                     // model name -> max context tokens (from config model_contexts)
+	maxOutputTokens map[string]int                     // senderID -> max_output_tokens
+	thinkingModes   map[string]string                  // senderID -> thinking_mode
+	subscriptions   map[string]*sqlite.LLMSubscription // senderID -> cached subscription (for per-model config lookup)
+	perChatMaxCtx   map[string]int                     // chatID -> max_context override (per-session)
 
 	// globalMaxTokens overrides MaxOutputTokens for ALL clients created by
 	// createClientFromSub. Set via CLI --max-tokens flag. 0 = no override.
@@ -56,6 +58,8 @@ func NewLLMFactory(configSvc *sqlite.UserLLMConfigService, defaultLLM llm.LLM, d
 		modelContexts:   make(map[string]int),
 		maxOutputTokens: make(map[string]int),
 		thinkingModes:   make(map[string]string),
+		subscriptions:   make(map[string]*sqlite.LLMSubscription),
+		perChatMaxCtx:   make(map[string]int),
 		// hasCustomLLMCache 使用零值 sync.Map，无需初始化
 	}
 }
@@ -101,12 +105,47 @@ func (f *LLMFactory) SetGlobalMaxTokens(n int) {
 }
 
 // resolveModelContext returns the model-level max context for the given model,
-// or 0 if no override is configured.
+// or 0 if no override is configured. Checks global model_contexts map only.
 func (f *LLMFactory) resolveModelContext(model string) int {
 	if model == "" || f.modelContexts == nil {
 		return 0
 	}
 	return f.modelContexts[model]
+}
+
+// resolveEffectiveModelContext resolves the effective max context for a model,
+// checking (in order): per-model subscription config → global model_contexts map.
+// Returns 0 if no override is configured.
+func (f *LLMFactory) resolveEffectiveModelContext(model string, sub *sqlite.LLMSubscription) int {
+	// Per-model config from subscription takes priority
+	if sub != nil {
+		if pmCtx := sub.GetPerModelMaxContext(model); pmCtx > 0 {
+			return pmCtx
+		}
+	}
+	// Fallback to global model_contexts
+	return f.resolveModelContext(model)
+}
+
+// SetPerChatMaxContext stores a per-session max_context override.
+// This is used when the user changes max_context_tokens in /settings
+// for a specific session without affecting other sessions.
+func (f *LLMFactory) SetPerChatMaxContext(chatID string, maxCtx int) {
+	f.mu.Lock()
+	if maxCtx > 0 {
+		f.perChatMaxCtx[chatID] = maxCtx
+	} else {
+		delete(f.perChatMaxCtx, chatID)
+	}
+	f.mu.Unlock()
+}
+
+// GetPerChatMaxContext returns the per-session max_context override for a chatID.
+// Returns 0 if no override is configured.
+func (f *LLMFactory) GetPerChatMaxContext(chatID string) int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.perChatMaxCtx[chatID]
 }
 
 // GetLLM 获取用户的 LLM 客户端，如果没有自定义配置则返回默认客户端
@@ -122,7 +161,8 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string) {
 	f.mu.RLock()
 	if client, ok := f.clients[senderID]; ok {
 		model := f.models[senderID]
-		maxCtx := f.resolveModelContext(model)
+		sub := f.subscriptions[senderID]
+		maxCtx := f.resolveEffectiveModelContext(model, sub)
 		thinkingMode := f.thinkingModes[senderID]
 		f.mu.RUnlock()
 		return client, model, maxCtx, thinkingMode
@@ -154,8 +194,9 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string) {
 				f.models[senderID] = model
 				f.maxOutputTokens[senderID] = sub.MaxOutputTokens
 				f.thinkingModes[senderID] = sub.ThinkingMode
+				f.subscriptions[senderID] = sub
 				f.mu.Unlock()
-				return client, model, f.resolveModelContext(model), sub.ThinkingMode
+				return client, model, f.resolveEffectiveModelContext(model, sub), sub.ThinkingMode
 			}
 		}
 	}
@@ -182,10 +223,21 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 	f.mu.RLock()
 	if client, ok := f.clients[key]; ok {
 		model := f.models[key]
-		maxCtx := f.resolveModelContext(model)
+		sub := f.subscriptions[key]
+		maxCtx := f.resolveEffectiveModelContext(model, sub)
+		// Per-chat max_context override takes highest priority
+		if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
+			maxCtx = pcCtx
+		}
 		thinkingMode := f.thinkingModes[key]
 		f.mu.RUnlock()
 		return client, model, maxCtx, thinkingMode
+	}
+	// Even without per-chat LLM client, there may be a per-chat max_context override
+	if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
+		f.mu.RUnlock()
+		client, model, _, thinkingMode := f.GetLLM(senderID)
+		return client, model, pcCtx, thinkingMode
 	}
 	f.mu.RUnlock()
 	// No per-chat override — fall back to user-level resolution
@@ -294,6 +346,7 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 	f.models[senderID] = model
 	f.maxOutputTokens[senderID] = sub.MaxOutputTokens
 	f.thinkingModes[senderID] = sub.ThinkingMode
+	f.subscriptions[senderID] = sub
 	// If chatID provided, also cache under per-chat key for chat isolation
 	if chatID != "" {
 		chatK := chatKey(senderID, chatID)
@@ -301,6 +354,7 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 		f.models[chatK] = model
 		f.maxOutputTokens[chatK] = sub.MaxOutputTokens
 		f.thinkingModes[chatK] = sub.ThinkingMode
+		f.subscriptions[chatK] = sub
 	}
 	// For the CLI identity, also update defaultLLM so that GetLLM fallback
 	// (when cache miss and no DB default) returns the currently active
@@ -359,30 +413,46 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubsc
 }
 
 // SwitchModel switches a user's active model without changing the subscription/LLM client.
-// Persists to DB subscription via the RPC handler. This method updates in-memory cache
-// and clears per-chat caches so GetLLMForChat returns the new model.
-func (f *LLMFactory) SwitchModel(senderID, model string) {
+// SwitchModel switches the active model for a user. When chatID is provided,
+// only the per-chat cache is updated (session-scoped); other sessions are unaffected.
+// When chatID is empty, the user-level cache is updated and per-chat caches are cleared
+// (global behavior, backward compatible).
+func (f *LLMFactory) SwitchModel(senderID, model string, chatID ...string) {
 	f.mu.Lock()
-	// Clear per-chat caches so GetLLMForChat falls back to user-level cache
-	prefix := senderID + ":"
-	for k := range f.clients {
-		if strings.HasPrefix(k, prefix) {
-			delete(f.clients, k)
-			delete(f.models, k)
-			delete(f.maxOutputTokens, k)
-			delete(f.thinkingModes, k)
-		}
+	effectiveChatID := ""
+	if len(chatID) > 0 {
+		effectiveChatID = chatID[0]
 	}
-	f.models[senderID] = model
+	if effectiveChatID != "" {
+		// Per-session: only update the specific per-chat cache entry
+		key := chatKey(senderID, effectiveChatID)
+		// Copy user-level subscription to per-chat with new model
+		if sub, ok := f.subscriptions[senderID]; ok {
+			f.subscriptions[key] = sub
+		}
+		f.models[key] = model
+		// Create a new LLM client for this chat with the new model
+		// (will be lazily created on next GetLLMForChat)
+		delete(f.clients, key)
+	} else {
+		// Global: clear all per-chat caches (backward compatible)
+		prefix := senderID + ":"
+		for k := range f.clients {
+			if strings.HasPrefix(k, prefix) {
+				delete(f.clients, k)
+				delete(f.models, k)
+				delete(f.maxOutputTokens, k)
+				delete(f.thinkingModes, k)
+				delete(f.subscriptions, k)
+			}
+		}
+		f.models[senderID] = model
+	}
 	svc := f.subscriptionSvc
 	f.mu.Unlock()
 
-	// Persist model change to the user's default subscription so it survives
-	// cache invalidation and restarts. Without this, Ctrl+N model switch
-	// only updates the in-memory factory cache; the DB subscription's Model
-	// field stays empty/wrong, causing GetLLM to use the wrong model after
-	// any cache clear (e.g. SetDefaults, restart).
-	if svc != nil && senderID != "" {
+	// Persist model change to DB only for global (non-per-session) switches
+	if effectiveChatID == "" && svc != nil && senderID != "" {
 		if sub, err := svc.GetDefault(senderID); err == nil && sub != nil {
 			if sub.Model != model && sub.ID != "" {
 				_ = svc.SetModel(sub.ID, model)
@@ -424,6 +494,8 @@ func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	f.models = make(map[string]string)
 	f.maxOutputTokens = make(map[string]int)
 	f.thinkingModes = make(map[string]string)
+	f.subscriptions = make(map[string]*sqlite.LLMSubscription)
+	f.perChatMaxCtx = make(map[string]int)
 }
 
 // SetDefaultThinkingMode sets the default thinking mode for users without custom config.
@@ -534,6 +606,7 @@ func (f *LLMFactory) Invalidate(senderID string) {
 			delete(f.models, k)
 			delete(f.maxOutputTokens, k)
 			delete(f.thinkingModes, k)
+			delete(f.subscriptions, k)
 		}
 	}
 	f.mu.Unlock()
@@ -546,6 +619,8 @@ func (f *LLMFactory) InvalidateAll() {
 	f.models = make(map[string]string)
 	f.maxOutputTokens = make(map[string]int)
 	f.thinkingModes = make(map[string]string)
+	f.subscriptions = make(map[string]*sqlite.LLMSubscription)
+	f.perChatMaxCtx = make(map[string]int)
 	f.mu.Unlock()
 }
 
@@ -856,7 +931,7 @@ func (f *LLMFactory) buildModelSubscriptionMap(senderID string) map[string]*sqli
 // configSubToLLMSubscription converts a config.SubscriptionConfig to sqlite.LLMSubscription
 // for use in buildModelSubscriptionMap.
 func configSubToLLMSubscription(cs config.SubscriptionConfig) *sqlite.LLMSubscription {
-	return &sqlite.LLMSubscription{
+	sub := &sqlite.LLMSubscription{
 		ID:              cs.ID,
 		Name:            cs.Name,
 		Provider:        cs.Provider,
@@ -867,6 +942,17 @@ func configSubToLLMSubscription(cs config.SubscriptionConfig) *sqlite.LLMSubscri
 		MaxOutputTokens: cs.MaxOutputTokens,
 		ThinkingMode:    cs.ThinkingMode,
 	}
+	// Convert config.PerModelConfig to sqlite.PerModelConfig
+	if len(cs.PerModelConfigs) > 0 {
+		sub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(cs.PerModelConfigs))
+		for k, v := range cs.PerModelConfigs {
+			sub.PerModelConfigs[k] = sqlite.PerModelConfig{
+				MaxOutputTokens: v.MaxOutputTokens,
+				MaxContext:      v.MaxContext,
+			}
+		}
+	}
+	return sub
 }
 
 // createClientFromSub 从订阅创建 LLM 客户端，使用指定的模型名（而非订阅的默认模型）
@@ -874,8 +960,11 @@ func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model stri
 	if sub.BaseURL == "" || sub.APIKey == "" {
 		return nil
 	}
-	// globalMaxTokens (from CLI --max-tokens) overrides the subscription value.
+	// Priority: globalMaxTokens > per-model config > subscription default
 	maxTokens := sub.MaxOutputTokens
+	if pm := sub.GetPerModelMaxTokens(model); pm > 0 {
+		maxTokens = pm
+	}
 	f.mu.RLock()
 	if f.globalMaxTokens > 0 {
 		maxTokens = f.globalMaxTokens

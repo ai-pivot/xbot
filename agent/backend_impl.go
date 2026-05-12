@@ -361,15 +361,24 @@ func (b *Backend) SetUserModel(senderID, model string) error {
 	return b.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, Model: model}, nil)
 }
 
-func (b *Backend) SwitchModel(senderID, model string) error {
-	return b.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model}, nil)
+func (b *Backend) SwitchModel(senderID, model, chatID string) error {
+	return b.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model, ChatID: chatID}, nil)
 }
 
 // ── Runtime config ────────────────────────────────────────────────────────
 
-func (b *Backend) SetMaxIterations(n int)            { b.callVoid(MethodSetMaxIterations, n) }
-func (b *Backend) SetMaxConcurrency(n int)           { b.callVoid(MethodSetMaxConcurrency, n) }
-func (b *Backend) SetMaxContextTokens(n int)         { b.callVoid(MethodSetMaxContextTokens, n) }
+func (b *Backend) SetMaxIterations(n int)  { b.callVoid(MethodSetMaxIterations, n) }
+func (b *Backend) SetMaxConcurrency(n int) { b.callVoid(MethodSetMaxConcurrency, n) }
+func (b *Backend) SetMaxContextTokens(n int, chatID ...string) {
+	chatIDVal := ""
+	if len(chatID) > 0 {
+		chatIDVal = chatID[0]
+	}
+	b.callVoid(MethodSetMaxContextTokens, struct {
+		MaxContext int    `json:"max_context"`
+		ChatID     string `json:"chat_id,omitempty"`
+	}{MaxContext: n, ChatID: chatIDVal})
+}
 func (b *Backend) SetCompressionThreshold(f float64) { b.callVoid(MethodSetCompressionThreshold, f) }
 func (b *Backend) ResetTokenState()                  { b.callVoid(MethodResetTokenState, struct{}{}) }
 func (b *Backend) CleanupCompletedBgTasks(sessionKey string) {
@@ -451,6 +460,7 @@ func (b *Backend) AddSubscription(senderID string, sub protocol.Subscription) er
 			BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 			Model: sub.Model, Active: sub.Active,
 			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
+			PerModelConfigs: protocolToJSONPerModels(sub.PerModelConfigs),
 		},
 	}, nil)
 }
@@ -471,8 +481,21 @@ func (b *Backend) UpdateSubscription(id string, sub protocol.Subscription) error
 			BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 			Model: sub.Model, Active: sub.Active,
 			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
+			PerModelConfigs: protocolToJSONPerModels(sub.PerModelConfigs),
 		},
 	}, nil)
+}
+
+// protocolToJSONPerModels converts protocol.PerModelConfigs to perModelConfigJSON for RPC transport.
+func protocolToJSONPerModels(src map[string]protocol.PerModelConfig) map[string]perModelConfigJSON {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]perModelConfigJSON, len(src))
+	for k, v := range src {
+		dst[k] = perModelConfigJSON{MaxOutputTokens: v.MaxOutputTokens, MaxContext: v.MaxContext}
+	}
+	return dst
 }
 
 func (b *Backend) SetSubscriptionModel(id, model string) error {
