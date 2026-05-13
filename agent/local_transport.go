@@ -923,4 +923,59 @@ func (t *localTransport) registerHandlers() {
 		cs := sqlite.NewChatService(a.MultiSession().DB().Conn())
 		return cs.RenameChat(r.Channel, r.SenderID, r.ChatID, r.NewName)
 	})
+
+	h["get_history"] = rpc1(func(r struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		if r.Channel == "" {
+			r.Channel = "cli"
+		}
+		ms := a.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("session service not available")
+		}
+		db := ms.DB()
+		if db == nil {
+			return nil, fmt.Errorf("database not available")
+		}
+		tenantSvc := sqlite.NewTenantService(db)
+		sessionSvc := sqlite.NewSessionService(db)
+		tid, err := tenantSvc.GetOrCreateTenantID(r.Channel, r.ChatID)
+		if err != nil {
+			return nil, fmt.Errorf("get tenant: %w", err)
+		}
+		msgs, err := sessionSvc.GetAllMessages(tid)
+		if err != nil {
+			return nil, err
+		}
+		return channel.ConvertMessagesToHistory(msgs), nil
+	})
+
+	h["get_token_state"] = rpc1(func(r struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		if r.Channel == "" {
+			r.Channel = "cli"
+		}
+		ms := a.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("session service not available")
+		}
+		db := ms.DB()
+		if db == nil {
+			return nil, fmt.Errorf("database not available")
+		}
+		tenantSvc := sqlite.NewTenantService(db)
+		tid, err := tenantSvc.GetOrCreateTenantID(r.Channel, r.ChatID)
+		if err != nil {
+			return nil, fmt.Errorf("get tenant: %w", err)
+		}
+		pt, ct, err := sqlite.NewMemoryService(db).GetTokenState(context.Background(), tid)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int64{"prompt_tokens": pt, "completion_tokens": ct}, nil
+	})
 }

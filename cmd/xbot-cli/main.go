@@ -1088,10 +1088,12 @@ func main() {
 	app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens)
 	if flagLocal {
 		fmt.Println("Backend: legacy local mode (--local)")
-	} else if app.backend != nil && app.backend.IsRemote() {
-		fmt.Println("Backend: remote server mode")
 	} else {
-		fmt.Println("Backend: local mode")
+		remote := ""
+		if app.backend != nil && app.backend.IsRemote() {
+			remote = " (remote)"
+		}
+		fmt.Printf("Backend: local mode%s\n", remote)
 	}
 	defer app.Close()
 
@@ -1136,7 +1138,6 @@ func main() {
 		log.WithFields(log.Fields{"chatID": initialChatID}).Info("Restoring last active session")
 	}
 
-	isRemoteBackend := app.backend.IsRemote()
 	remoteServerURL := app.backend.ServerURL()
 	// Pre-declare tenantSvc so SessionsList closure can capture it.
 	// Assigned later after backend checks. Closure reads at invocation time.
@@ -1145,7 +1146,7 @@ func main() {
 	cliCfg := channel.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
-		RemoteMode:           isRemoteBackend,
+		RemoteMode:           app.backend.IsRemote(),
 		RemoteServerURL:      remoteServerURL,
 		DebugMode:            flagDebug,
 		DebugInput:           flagDebugInput,
@@ -1350,93 +1351,12 @@ func main() {
 			return result
 		},
 		SessionsList: func() []channel.SessionPanelEntry {
-			// Remote mode: use cached sessions to avoid RPC from BubbleTea Update loop.
-			// The cache is refreshed periodically by refreshAgentCache().
-			if app.backend != nil && app.backend.IsRemote() {
-				app.agentCacheMu.RLock()
-				cached := app.sessionsCacheList
-				app.agentCacheMu.RUnlock()
-				// Append group chats (in-memory, no RPC needed)
-				entries := make([]channel.SessionPanelEntry, len(cached))
-				copy(entries, cached)
-				for _, g := range tools.ListGroups() {
-					status := ""
-					if g.Closed {
-						status = " [closed]"
-					}
-					entries = append(entries, channel.SessionPanelEntry{
-						ID:          g.Name,
-						Type:        "group",
-						Label:       "💬 " + g.Name + status,
-						MessageHint: fmt.Sprintf("%d members", len(g.Members)),
-					})
-				}
-				return entries
-			}
-
-			// Local mode: all sessions from local JSON, sorted by creation time.
-			// No special treatment for "main" session — all sessions are equal.
-			var entries []channel.SessionPanelEntry
-			seen := make(map[string]bool) // dedup agent sessions by role:instance
-
-			// Get ALL subagents across all sessions.
-			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
-			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
-			for _, s := range allSubAgents {
-				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
-			}
-
-			// Build DB label map for override.
-			localLabelMap := map[string]string{}
-			if tenantSvc != nil {
-				if tenants, err := tenantSvc.ListTenants(); err == nil {
-					for _, t := range tenants {
-						if t.Channel == "agent" || t.Label == "" {
-							continue
-						}
-						localLabelMap[t.ChatID] = t.Label
-					}
-				}
-			}
-
-			// All local dir sessions (including default), sorted by creation time.
-			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
-				mainBusy := app.backend.IsProcessing("cli", s.ID)
-				sessLabel := s.Label
-				if sessLabel == "default" {
-					sessLabel = "默认会话"
-				}
-				if dbLabel, ok := localLabelMap[s.ID]; ok && dbLabel != "" {
-					sessLabel = dbLabel
-				}
-				entries = append(entries, channel.SessionPanelEntry{
-					ID:      s.ID,
-					Type:    "main",
-					Channel: "cli",
-					Label:   sessLabel,
-					Active:  s.ID == absWorkDir,
-					Busy:    mainBusy,
-				})
-				for _, sub := range subsByChatID[s.ID] {
-					agentKey := sub.Role + ":" + sub.Instance
-					if seen[agentKey] {
-						continue
-					}
-					seen[agentKey] = true
-					entries = append(entries, channel.SessionPanelEntry{
-						ID:          fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
-						Type:        "agent",
-						Channel:     "cli",
-						Role:        sub.Role,
-						Instance:    sub.Instance,
-						ParentID:    s.ID,
-						Running:     sub.Running,
-						Busy:        sub.Running,
-						MessageHint: sub.Preview,
-					})
-				}
-			}
-			// Append group chats
+			// All modes use cache — refreshed by refreshAgentCache() in background.
+			app.agentCacheMu.RLock()
+			cached := app.sessionsCacheList
+			app.agentCacheMu.RUnlock()
+			entries := make([]channel.SessionPanelEntry, len(cached))
+			copy(entries, cached)
 			for _, g := range tools.ListGroups() {
 				status := ""
 				if g.Closed {
@@ -1531,26 +1451,9 @@ func main() {
 	// Remote mode: history loaded via RestoreSession (uses suHistoryLoadMsg path)
 	// (HistoryLoader runs during NewCLIChannel, before WS is connected)
 
-	// 动态历史加载器：按 (channelName, chatID) 加载目标会话历史
-	// 用于 /su 切换用户、session 面板切换会话、压缩后刷新
-	if tenantSvc != nil && cliSessionSvc != nil {
-		// Local mode: load from session DB directly
-		cliCfg.DynamicHistoryLoader = func(channelName, chatID string) ([]channel.HistoryMessage, error) {
-			if channelName == "" {
-				channelName = "cli"
-			}
-			tid, err := tenantSvc.GetOrCreateTenantID(channelName, chatID)
-			if err != nil {
-				return nil, fmt.Errorf("get tenant: %w", err)
-			}
-			msgs, err := cliSessionSvc.GetAllMessages(tid)
-			if err != nil {
-				return nil, err
-			}
-			return channel.ConvertMessagesToHistory(msgs), nil
-		}
-	} else if app.backend != nil && app.backend.IsRemote() {
-		// Remote mode: load via RPC get_history
+	// Dynamic history loader: all modes use backend.GetHistory
+	// (local: localTransport → DB, remote: WS RPC → server DB)
+	if app.backend != nil {
 		backend := app.backend
 		cliCfg.DynamicHistoryLoader = func(channelName, chatID string) ([]channel.HistoryMessage, error) {
 			if channelName == "" {
@@ -1558,11 +1461,9 @@ func main() {
 			}
 			return backend.GetHistory(channelName, chatID)
 		}
-		// Restore token state from server DB so context bar shows on startup
 		cliCfg.TokenStateLoader = func() (promptTokens, completionTokens int64) {
 			pt, ct, err := backend.GetTokenState("cli", initialChatID)
 			if err != nil {
-				log.WithError(err).Warn("Failed to load token state from server")
 				return 0, 0
 			}
 			return pt, ct
@@ -2122,106 +2023,83 @@ func main() {
 			}
 			cliCh.SetConnState(ev.State)
 		})
-		// Background goroutine: periodically refresh agent count/list cache
-		// (RPC calls must not happen from BubbleTea event loop → deadlock)
-		refreshAgentCache = func() {
-			if app.backend == nil {
-				return
-			}
-			// Get all interactive sessions (empty chatID = all sessions across all workdirs).
-			allSubAgents := app.backend.ListInteractiveSessions("cli", "")
-			subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
-			for _, s := range allSubAgents {
-				subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
-			}
-
-			// All local dir sessions (including default), sorted by creation time.
-			// Override label from DB (ListTenants RPC) when available.
-			tenantMap := map[string]string{}
-			if tenants, err := app.backend.ListTenants(); err == nil {
-				for _, t := range tenants {
-					if t.Channel == "agent" {
-						continue
-					}
-					if t.Label != "" {
-						tenantMap[t.ChatID] = t.Label
-					}
-				}
-			}
-			var sessionEntries []channel.SessionPanelEntry
-			seen := make(map[string]bool)
-			for _, s := range channel.ListLocalDirSessions(absWorkDir) {
-				mainBusy := app.backend.IsProcessing("cli", s.ID)
-				sessLabel := s.Label
-				if sessLabel == "default" {
-					sessLabel = "默认会话"
-				}
-				if dbLabel, ok := tenantMap[s.ID]; ok && dbLabel != "" {
-					sessLabel = dbLabel
-				}
-				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-					ID:      s.ID,
-					Type:    "main",
-					Channel: "cli",
-					Label:   sessLabel,
-					Active:  s.ID == absWorkDir,
-					Busy:    mainBusy,
-				})
-				for _, sub := range subsByChatID[s.ID] {
-					agentKey := sub.Role + ":" + sub.Instance
-					if seen[agentKey] {
-						continue
-					}
-					seen[agentKey] = true
-					sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
-						ID:          fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
-						Type:        "agent",
-						Channel:     "cli",
-						Role:        sub.Role,
-						Instance:    sub.Instance,
-						ParentID:    s.ID,
-						Running:     sub.Running,
-						Busy:        sub.Running,
-						MessageHint: sub.Preview,
-					})
-				}
-			}
-
-			// Build agentEntries for the agent panel (all subagents).
-			agentEntries := make([]channel.AgentPanelEntry, 0, len(allSubAgents))
-			for _, s := range allSubAgents {
-				agentEntries = append(agentEntries, channel.AgentPanelEntry{
-					Role:       s.Role,
-					Instance:   s.Instance,
-					Running:    s.Running,
-					Background: s.Background,
-					Task:       s.Task,
-					Preview:    s.Preview,
-				})
-			}
-
-			count := len(allSubAgents)
-			app.agentCacheMu.Lock()
-			app.agentCacheCount = count
-			app.agentCacheList = agentEntries
-			app.sessionsCacheList = sessionEntries
-			app.agentCacheMu.Unlock()
-		}
-		// Initial seed — don't wait 5s for the first tick.
-		refreshAgentCache()
-		clipanic.Go("main.remote.RefreshAgentCache", func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					refreshAgentCache()
-				}
-			}
-		})
 	}
+
+	// ── Session cache (all modes) ───────────────────────────────────
+	// refreshAgentCache reads sessions/subagents from Backend and updates the
+	// cache used by SessionsList and AgentCount/AgentList.
+	refreshAgentCache = func() {
+		if app.backend == nil {
+			return
+		}
+		allSubAgents := app.backend.ListInteractiveSessions("cli", "")
+		subsByChatID := make(map[string][]agent.InteractiveSessionInfo)
+		for _, s := range allSubAgents {
+			subsByChatID[s.ChatID] = append(subsByChatID[s.ChatID], s)
+		}
+		tenantMap := map[string]string{}
+		if tenants, err := app.backend.ListTenants(); err == nil {
+			for _, t := range tenants {
+				if t.Channel == "agent" || t.Label == "" {
+					continue
+				}
+				tenantMap[t.ChatID] = t.Label
+			}
+		}
+		var sessionEntries []channel.SessionPanelEntry
+		seen := make(map[string]bool)
+		for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+			mainBusy := app.backend.IsProcessing("cli", s.ID)
+			sessLabel := s.Label
+			if sessLabel == "default" {
+				sessLabel = "默认会话"
+			}
+			if dbLabel, ok := tenantMap[s.ID]; ok && dbLabel != "" {
+				sessLabel = dbLabel
+			}
+			sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+				ID: s.ID, Type: "main", Channel: "cli",
+				Label: sessLabel, Active: s.ID == absWorkDir, Busy: mainBusy,
+			})
+			for _, sub := range subsByChatID[s.ID] {
+				agentKey := sub.Role + ":" + sub.Instance
+				if seen[agentKey] {
+					continue
+				}
+				seen[agentKey] = true
+				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+					ID:   fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
+					Type: "agent", Channel: "cli", Role: sub.Role, Instance: sub.Instance,
+					ParentID: s.ID, Running: sub.Running, Busy: sub.Running, MessageHint: sub.Preview,
+				})
+			}
+		}
+		agentEntries := make([]channel.AgentPanelEntry, 0, len(allSubAgents))
+		for _, s := range allSubAgents {
+			agentEntries = append(agentEntries, channel.AgentPanelEntry{
+				Role: s.Role, Instance: s.Instance, Running: s.Running,
+				Background: s.Background, Task: s.Task, Preview: s.Preview,
+			})
+		}
+		app.agentCacheMu.Lock()
+		app.agentCacheCount = len(allSubAgents)
+		app.agentCacheList = agentEntries
+		app.sessionsCacheList = sessionEntries
+		app.agentCacheMu.Unlock()
+	}
+	refreshAgentCache()
+	clipanic.Go("main.RefreshAgentCache", func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshAgentCache()
+			}
+		}
+	})
 
 	// Background goroutine: periodically refresh values cache.
 	// Both local and remote modes use cache for GetCurrentValues.
