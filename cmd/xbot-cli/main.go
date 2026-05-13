@@ -1822,21 +1822,18 @@ func main() {
 		}
 	}
 
-	// 注入 channelFinder 以启用结构化进度事件（工具调用、思考过程等）
-	app.backend.SetDirectSend(disp.SendDirect)
-	app.backend.SetChannelFinder(disp.GetChannel)
-	// Inject sessionStateHandler so agent can push busy/idle and SubAgent
-	// lifecycle events directly to the CLIChannel (local mode). The handler
-	// closure captures the cliCh reference — zero RPC, zero channelFinder.
+	// Wire ALL shared agent callbacks in one place. Both this file and
+	// serverapp/server.go call WireCallbacks with the same positional parameters.
+	// Adding a new parameter changes the signature → compile error at BOTH call sites.
 	if ag := app.backend.Agent(); ag != nil {
-		ag.SetSessionStateHandler(func(ev protocol.SessionEvent) {
-			cliCh.SendSessionState(ev)
-		})
-	}
-	if ag := app.backend.Agent(); ag != nil {
-		ag.SetMessageSender(disp)
-		ag.SetAgentChannelRegistry(
-			func(name string, runFn bus.RunFn) error {
+		ag.WireCallbacks(
+			disp.SendDirect, // directSend
+			disp.GetChannel, // channelFinder
+			func(ev protocol.SessionEvent) { // sessionStateHandler
+				cliCh.SendSessionState(ev)
+			},
+			disp, // messageSender
+			func(name string, runFn bus.RunFn) error { // registerAgentChannel
 				ac := channel.NewAgentChannel(name, runFn)
 				if err := ac.Start(); err != nil {
 					return fmt.Errorf("start AgentChannel %s: %w", name, err)
@@ -1844,9 +1841,7 @@ func main() {
 				disp.Register(ac)
 				return nil
 			},
-			func(name string) {
-				disp.Unregister(name)
-			},
+			disp.Unregister, // unregisterAgentChannel
 		)
 	}
 

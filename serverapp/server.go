@@ -645,10 +645,32 @@ func Run(args []string) error {
 		disp.Register(channel.NewRemoteCLIChannel(webCh.Hub()))
 	}
 
-	backend.SetDirectSend(func(msg bus.OutboundMessage) (string, error) {
-		return disp.SendDirect(msg)
-	})
-	backend.SetChannelFinder(disp.GetChannel)
+	// Wire ALL shared agent callbacks in one place. Both this file and
+	// cmd/xbot-cli/main.go call WireCallbacks with the same positional parameters.
+	// Adding a new parameter changes the signature → compile error at BOTH call sites.
+	backend.Agent().WireCallbacks(
+		func(msg bus.OutboundMessage) (string, error) { // directSend
+			return disp.SendDirect(msg)
+		},
+		disp.GetChannel, // channelFinder
+		func(ev protocol.SessionEvent) { // sessionStateHandler
+			if ch, ok := disp.GetChannel("cli"); ok {
+				if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
+					remoteCLICh.SendSessionState(ev)
+				}
+			}
+		},
+		disp, // messageSender
+		func(name string, runFn bus.RunFn) error { // registerAgentChannel
+			ac := channel.NewAgentChannel(name, runFn)
+			if err := ac.Start(); err != nil {
+				return fmt.Errorf("start AgentChannel %s: %w", name, err)
+			}
+			disp.Register(ac)
+			return nil
+		},
+		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
+	)
 
 	// Wire ChatRenameFn: rename session in DB (for remote CLI and server-side agents).
 	// Uses upsert (INSERT ON CONFLICT) to handle both existing and new user_chats rows.
@@ -691,30 +713,6 @@ func Run(args []string) error {
 			return oldName, nil
 		})
 	}
-	backend.Agent().SetMessageSender(disp)
-	// Inject sessionStateHandler so server-side agent can push busy/idle
-	// and SubAgent lifecycle events to remote CLI clients via WS.
-	// One-time channel resolution (same pattern as buildCLIProgressEventHandler).
-	if ch, ok := disp.GetChannel("cli"); ok {
-		if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
-			backend.Agent().SetSessionStateHandler(func(ev protocol.SessionEvent) {
-				remoteCLICh.SendSessionState(ev)
-			})
-		}
-	}
-	backend.Agent().SetAgentChannelRegistry(
-		func(name string, runFn bus.RunFn) error {
-			ac := channel.NewAgentChannel(name, runFn)
-			if err := ac.Start(); err != nil {
-				return fmt.Errorf("start AgentChannel %s: %w", name, err)
-			}
-			disp.Register(ac)
-			return nil
-		},
-		func(name string) {
-			disp.Unregister(name)
-		},
-	)
 
 	// 设置飞书渠道的 CardBuilder（用于卡片回调处理）
 	if feishuCh != nil {
