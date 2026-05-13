@@ -642,5 +642,43 @@ func (b *Backend) CallRPC(method string, params any) (json.RawMessage, error) {
 	return b.transport.Call(method, payload)
 }
 
+// --- Web Users ---
+
+func (b *Backend) CreateWebUser(username string) (string, error) {
+	var resp struct {
+		Password string `json:"password"`
+	}
+	err := b.call("create_web_user", map[string]string{"username": username}, &resp)
+	return resp.Password, err
+}
+
+func (b *Backend) ListWebUsers() ([]map[string]any, error) {
+	var result []map[string]any
+	raw, err := b.CallRPC("list_web_users", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (b *Backend) DeleteWebUser(username string) error {
+	_, err := b.CallRPC("delete_web_user", map[string]string{"username": username})
+	return err
+}
+
+// --- Chat Management ---
+
+func (b *Backend) DeleteChat(ch, senderID, chatID string) error {
+	_, err := b.CallRPC("delete_chat", map[string]string{
+		"channel":  ch,
+		"senderid": senderID,
+		"chat_id":  chatID,
+	})
+	return err
+}
+
 // Ensure Backend implements AgentBackend.
 var _ AgentBackend = (*Backend)(nil)

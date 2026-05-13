@@ -541,3 +541,9 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 		t.Fatalf("expected switched glm model for cli_user, got %q (LLM factory cached under wrong key)", model)
 	}
 }
+
+// Additional AgentBackend methods for tests
+func (b fakeBackend) CreateWebUser(string) (string, error)    { return "test-pass", nil }
+func (b fakeBackend) ListWebUsers() ([]map[string]any, error) { return nil, nil }
+func (b fakeBackend) DeleteWebUser(string) error              { return nil }
+func (b fakeBackend) DeleteChat(string, string, string) error { return nil }

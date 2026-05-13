@@ -909,3 +909,9 @@ func TestIsCLISubscriptionSettingKey(t *testing.T) {
 		})
 	}
 }
+
+// Additional AgentBackend methods for tests
+func (b *fakeAgentBackend) CreateWebUser(string) (string, error)    { return "test-pass", nil }
+func (b *fakeAgentBackend) ListWebUsers() ([]map[string]any, error) { return nil, nil }
+func (b *fakeAgentBackend) DeleteWebUser(string) error              { return nil }
+func (b *fakeAgentBackend) DeleteChat(string, string, string) error { return nil }

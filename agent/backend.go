@@ -145,6 +145,14 @@ type AgentBackend interface {
 	BindChat(chatID string) error
 	CallRPC(method string, params any) (json.RawMessage, error)
 
+	// --- Web Users ---
+	CreateWebUser(username string) (password string, err error)
+	ListWebUsers() ([]map[string]any, error)
+	DeleteWebUser(username string) error
+
+	// --- Chat Management ---
+	DeleteChat(channel, senderID, chatID string) error
+
 	// --- Channel Config ---
 	GetChannelConfigs() (map[string]map[string]string, error)
 	SetChannelConfig(channel string, values map[string]string) error

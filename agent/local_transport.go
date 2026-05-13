@@ -877,4 +877,40 @@ func (t *localTransport) registerHandlers() {
 		}
 		return nil
 	})
+
+	// ── Web Users ──────────────────────────────────────────────────────────
+
+	h["create_web_user"] = rpc1(func(r struct {
+		Username string `json:"username"`
+	}) (map[string]string, error) {
+		db := a.MultiSession().DB().Conn()
+		_, password, err := channel.CreateWebUser(db, r.Username)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"password": password}, nil
+	})
+
+	h["list_web_users"] = rpc0(func() (any, error) {
+		db := a.MultiSession().DB().Conn()
+		return channel.ListWebUsers(db)
+	})
+
+	h["delete_web_user"] = rpcVoid(func(r struct {
+		Username string `json:"username"`
+	}) error {
+		db := a.MultiSession().DB().Conn()
+		return channel.DeleteWebUser(db, r.Username)
+	})
+
+	// ── Chat Management ──────────────────────────────────────────────────
+
+	h["delete_chat"] = rpcVoid(func(r struct {
+		Channel  string `json:"channel"`
+		SenderID string `json:"senderid"`
+		ChatID   string `json:"chat_id"`
+	}) error {
+		cs := sqlite.NewChatService(a.MultiSession().DB().Conn())
+		return cs.DeleteChat(r.Channel, r.SenderID, r.ChatID)
+	})
 }

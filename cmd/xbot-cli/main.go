@@ -1289,9 +1289,6 @@ func main() {
 			_, keyChanged := values["llm_api_key"]
 			_, modelChanged := values["llm_model"]
 			_, urlChanged := values["llm_base_url"]
-			_, vanguardChanged := values["vanguard_model"]
-			_, balanceChanged := values["balance_model"]
-			_, swiftChanged := values["swift_model"]
 			_, maxOutputChanged := values["max_output_tokens"]
 			_, thinkingChanged := values["thinking_mode"]
 
@@ -1349,37 +1346,20 @@ func main() {
 				log.Warnf("Failed to save CLI config: %v", err)
 			}
 
-			// ── Local-mode extras ──
-			if !app.backend.IsRemote() {
-				if vanguardChanged || balanceChanged || swiftChanged {
+			// ── Local-mode: LLM client rebuild (remote mode handled by server) ──
+			if !app.backend.IsRemote() && llmFieldChanged {
+				if newClient, err := createLLM(app.cfg.LLM, llm.DefaultRetryConfig()); err == nil {
+					app.llmClient = newClient
+					app.backend.LLMFactory().SetDefaults(newClient, app.cfg.LLM.Model)
+					app.backend.LLMFactory().SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
 					app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
-				}
-				// Sandbox reinit (local-only, needs app.workDir closure)
-				if v, ok := values["sandbox_mode"]; ok && v != "" {
-					tools.ReinitSandbox(app.cfg.Sandbox, app.workDir)
-					app.backend.SetSandbox(tools.GetSandbox(), v)
-				}
-				if theme, ok := values["theme"]; ok && theme != "" {
-					if ss := app.backend.SettingsService(); ss != nil {
-						_ = ss.SetSetting("cli", "cli_user", "theme", theme)
-					}
-				}
-				if llmFieldChanged {
-					if newClient, err := createLLM(app.cfg.LLM, llm.DefaultRetryConfig()); err == nil {
-						app.llmClient = newClient
-						app.backend.LLMFactory().SetDefaults(newClient, app.cfg.LLM.Model)
-						app.backend.LLMFactory().SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
-						app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
-					} else {
-						log.Warnf("Failed to rebuild LLM client: %v", err)
-					}
+				} else {
+					log.Warnf("Failed to rebuild LLM client: %v", err)
 				}
 			}
 
-			// ── Remote mode: immediately refresh cache so UI shows new values ──
-			if app.backend.IsRemote() {
-				app.refreshRemoteValuesCache()
-			}
+			// Immediately refresh cache so UI shows new values
+			app.refreshRemoteValuesCache()
 		},
 		ClearMemory: func(targetType string) error {
 			if app.backend == nil {
@@ -1421,42 +1401,29 @@ func main() {
 			if app.backend == nil {
 				return nil, nil, fmt.Errorf("agent not initialized")
 			}
-			if app.backend.IsRemote() {
-				// Remote mode: get data via RPC and convert from map to struct
-				cumMap, err := app.backend.GetUserTokenUsage(senderID)
-				if err != nil {
-					return nil, nil, err
-				}
-				var cumulative *sqlite.UserTokenUsage
-				if cumMap != nil {
-					var u sqlite.UserTokenUsage
-					if b, _ := json.Marshal(cumMap); len(b) > 0 {
-						_ = json.Unmarshal(b, &u)
-					}
-					cumulative = &u
-				}
-				dailyMaps, err := app.backend.GetDailyTokenUsage(senderID, days)
-				if err != nil {
-					return nil, nil, err
-				}
-				var daily []sqlite.DailyTokenUsage
-				for _, dm := range dailyMaps {
-					var d sqlite.DailyTokenUsage
-					if b, _ := json.Marshal(dm); len(b) > 0 {
-						_ = json.Unmarshal(b, &d)
-					}
-					daily = append(daily, d)
-				}
-				return cumulative, daily, nil
-			}
-			ms := app.backend.MultiSession()
-			cumulative, err := ms.GetUserTokenUsage(senderID)
+			cumMap, err := app.backend.GetUserTokenUsage(senderID)
 			if err != nil {
 				return nil, nil, err
 			}
-			daily, err := ms.GetDailyTokenUsage(senderID, days)
+			var cumulative *sqlite.UserTokenUsage
+			if cumMap != nil {
+				var u sqlite.UserTokenUsage
+				if b, _ := json.Marshal(cumMap); len(b) > 0 {
+					_ = json.Unmarshal(b, &u)
+				}
+				cumulative = &u
+			}
+			dailyMaps, err := app.backend.GetDailyTokenUsage(senderID, days)
 			if err != nil {
 				return nil, nil, err
+			}
+			var daily []sqlite.DailyTokenUsage
+			for _, dm := range dailyMaps {
+				var d sqlite.DailyTokenUsage
+				if b, _ := json.Marshal(dm); len(b) > 0 {
+					_ = json.Unmarshal(b, &d)
+				}
+				daily = append(daily, d)
 			}
 			return cumulative, daily, nil
 		},
@@ -1464,21 +1431,11 @@ func main() {
 			if app.backend == nil {
 				return 0
 			}
-			if app.backend.IsRemote() {
-				app.agentCacheMu.RLock()
-				defer app.agentCacheMu.RUnlock()
-				return app.agentCacheCount
-			}
 			return app.backend.CountInteractiveSessions("cli", absWorkDir)
 		},
 		AgentList: func() []channel.AgentPanelEntry {
 			if app.backend == nil {
 				return nil
-			}
-			if app.backend.IsRemote() {
-				app.agentCacheMu.RLock()
-				defer app.agentCacheMu.RUnlock()
-				return app.agentCacheList
 			}
 			sessions := app.backend.ListInteractiveSessions("cli", absWorkDir)
 			entries := make([]channel.AgentPanelEntry, len(sessions))
@@ -1632,61 +1589,19 @@ func main() {
 			if app.backend == nil {
 				return "", fmt.Errorf("agent not initialized")
 			}
-			if app.backend.IsRemote() {
-				result, err := app.backend.CallRPC("create_web_user", map[string]string{"username": username})
-				if err != nil {
-					return "", err
-				}
-				var resp struct {
-					Password string `json:"password"`
-				}
-				if err := json.Unmarshal(result, &resp); err != nil {
-					return "", err
-				}
-				return resp.Password, nil
-			}
-			db := app.backend.MultiSession().DB().Conn()
-			_, password, err := channel.CreateWebUser(db, username)
-			return password, err
+			return app.backend.CreateWebUser(username)
 		},
 		ListWebUsersFn: func() ([]map[string]any, error) {
 			if app.backend == nil {
 				return nil, fmt.Errorf("agent not initialized")
 			}
-			if app.backend.IsRemote() {
-				result, err := app.backend.CallRPC("list_web_users", nil)
-				if err != nil {
-					return nil, err
-				}
-				var users []channel.WebUserInfo
-				if err := json.Unmarshal(result, &users); err != nil {
-					return nil, err
-				}
-				out := make([]map[string]any, len(users))
-				for i, u := range users {
-					out[i] = map[string]any{"id": u.ID, "username": u.Username, "created_at": u.CreatedAt}
-				}
-				return out, nil
-			}
-			users, err := channel.ListWebUsers(app.backend.MultiSession().DB().Conn())
-			if err != nil {
-				return nil, err
-			}
-			out := make([]map[string]any, len(users))
-			for i, u := range users {
-				out[i] = map[string]any{"id": u.ID, "username": u.Username, "created_at": u.CreatedAt}
-			}
-			return out, nil
+			return app.backend.ListWebUsers()
 		},
 		DeleteWebUserFn: func(username string) error {
 			if app.backend == nil {
 				return fmt.Errorf("agent not initialized")
 			}
-			if app.backend.IsRemote() {
-				_, err := app.backend.CallRPC("delete_web_user", map[string]string{"username": username})
-				return err
-			}
-			return channel.DeleteWebUser(app.backend.MultiSession().DB().Conn(), username)
+			return app.backend.DeleteWebUser(username)
 		},
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
@@ -1800,15 +1715,7 @@ func main() {
 			return pt, ct
 		}
 		cliCfg.SessionsDeleteFn = func(channelName, chatID string) error {
-			if backend.IsRemote() {
-				_, err := backend.CallRPC("delete_chat", map[string]string{
-					"channel": channelName,
-					"chat_id": chatID,
-				})
-				return err
-			}
-			cs := sqlite.NewChatService(app.db.Conn())
-			return cs.DeleteChat(channelName, cliSenderID, chatID)
+			return backend.DeleteChat(channelName, cliSenderID, chatID)
 		}
 		// sessionsListRefresh will be assigned when refreshAgentCache is defined below.
 		// We defer wiring via a pointer so the closure can capture the later-defined func.
