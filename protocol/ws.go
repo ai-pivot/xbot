@@ -20,6 +20,7 @@ const (
 	MsgTypeTUIControlReq = "tui_control_req"
 	MsgTypeRunnerStatus  = "runner_status"
 	MsgTypeSyncProgress  = "sync_progress"
+	MsgTypeSession       = "session"
 	MsgTypePong          = "__pong__"
 )
 
@@ -80,6 +81,7 @@ type WSMessage struct {
 	Result          json.RawMessage    `json:"result,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
+	Session         *SessionEvent      `json:"session,omitempty"`
 }
 
 // GetStreamContent returns the StreamContent from the embedded Progress.

@@ -183,3 +183,21 @@ type AskUserEvent struct {
 
 func (AskUserEvent) EventType() string { return "ask_user" }
 func (AskUserEvent) EventVersion() int { return 1 }
+
+// SessionEvent represents a session state change pushed from server to client.
+// Covers busy/idle transitions, session lifecycle (create/delete/rename),
+// and SubAgent lifecycle (started/stopped).
+// Action values: "busy", "idle", "created", "deleted", "renamed",
+// "subagent_started", "subagent_stopped".
+type SessionEvent struct {
+	Channel  string `json:"channel"`
+	ChatID   string `json:"chat_id"`
+	Action   string `json:"action"`
+	Label    string `json:"label,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Instance string `json:"instance,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+}
+
+func (SessionEvent) EventType() string { return "session" }
+func (SessionEvent) EventVersion() int { return 1 }

@@ -24,6 +24,7 @@ import (
 	"xbot/memory"
 	"xbot/memory/letta"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -328,6 +329,10 @@ type Agent struct {
 	// channelFinder looks up a channel instance by name (injected from main.go).
 	channelFinder func(name string) (channel.Channel, bool)
 
+	// sessionStateHandler emits session state change events (injected from main.go).
+	// Called at Run busy/idle transitions and SubAgent create/destroy.
+	sessionStateHandler func(ev protocol.SessionEvent)
+
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
 
 	// PluginManager manages the plugin system lifecycle
@@ -472,6 +477,12 @@ func (a *Agent) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
 	if a.settingsSvc != nil {
 		a.settingsSvc.SetChannelFinder(fn)
 	}
+}
+
+// SetSessionStateHandler sets the callback for emitting session state change events.
+// Called at Run busy/idle transitions and SubAgent lifecycle events.
+func (a *Agent) SetSessionStateHandler(fn func(ev protocol.SessionEvent)) {
+	a.sessionStateHandler = fn
 }
 
 // IsProcessing returns true if there is an active Run for the given sender.
@@ -1681,6 +1692,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		cancelKey := msg.Channel + ":" + msg.ChatID
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
+		// Emit session busy event for instant sidebar push.
+		if a.sessionStateHandler != nil {
+			a.sessionStateHandler(protocol.SessionEvent{
+				Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
+			})
+		}
+
 		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号
 		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
 			select {
@@ -1709,6 +1727,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				reqCancel()
 				a.chatCancelCh.Delete(cancelKey)
 				a.pendingCancel.Delete(cancelKey)
+
+				// Emit session idle event for instant sidebar push.
+				if a.sessionStateHandler != nil {
+					a.sessionStateHandler(protocol.SessionEvent{
+						Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+					})
+				}
 				key := sessionKey(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)

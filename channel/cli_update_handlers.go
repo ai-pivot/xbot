@@ -335,6 +335,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		}).Error("handleProgressMsg: received progress with empty ChatID — this is a programming error")
 		return
 	}
+
 	if msg.payload != nil && msg.payload.ChatID != "" {
 		currentKey := m.channelName + ":" + m.chatID
 		if msg.payload.ChatID != currentKey {
@@ -520,6 +521,47 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		}
 	}
 	m.updateViewportContent()
+}
+
+// handleSessionStateMsg processes server-pushed session state change events.
+// Runs inside BubbleTea Update() — no goroutines, no RPC, no locks.
+func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
+	ev := msg.event
+	log.WithFields(log.Fields{
+		"action":  ev.Action,
+		"chat_id": ev.ChatID,
+		"channel": ev.Channel,
+		"role":    ev.Role,
+	}).Debug("handleSessionStateMsg: received session event")
+	switch ev.Action {
+	case "busy":
+		// Main session started processing.
+		m.liveSessionStates[ev.ChatID] = &liveSessionState{busy: true}
+	case "idle":
+		// Main session finished processing.
+		// Explicitly mark as idle (not delete) — the 30s safety-net poll
+		// may return stale Busy=true from cache, so we need the override.
+		m.liveSessionStates[ev.ChatID] = &liveSessionState{busy: false}
+	case "subagent_started":
+		// SubAgent interactive session created.
+		key := "agent:" + ev.Role + "/" + ev.Instance
+		m.liveSessionStates[key] = &liveSessionState{
+			busy:     true,
+			role:     ev.Role,
+			instance: ev.Instance,
+			parentID: ev.ParentID,
+		}
+	case "subagent_stopped":
+		// SubAgent interactive session destroyed.
+		key := "agent:" + ev.Role + "/" + ev.Instance
+		// Explicitly mark as idle (not delete) — same reason as main session idle.
+		m.liveSessionStates[key] = &liveSessionState{
+			busy:     false,
+			role:     ev.Role,
+			instance: ev.Instance,
+			parentID: ev.ParentID,
+		}
+	}
 }
 
 // syncProgressTodos syncs todo items from the progress payload.

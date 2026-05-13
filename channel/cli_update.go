@@ -236,6 +236,9 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	case cliProgressMsg:
 		m.handleProgressMsg(msg)
 
+	case cliSessionStateMsg:
+		m.handleSessionStateMsg(msg)
+
 	case cliProcessingMsg:
 		if msg.processing && !m.typing {
 			m.startAgentTurn()

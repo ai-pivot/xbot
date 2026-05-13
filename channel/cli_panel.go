@@ -1185,9 +1185,15 @@ func (m *cliModel) viewSessionsList() string {
 		var icon, line string
 		switch entry.Type {
 		case "main":
+			// Determine busy state with liveSessionStates override.
 			mainBusy := false
-			if !entry.Active {
+			if entry.Active {
+				mainBusy = m.typing
+			} else {
 				mainBusy = entry.Busy
+				if ls, ok := m.liveSessionStates[entry.ID]; ok {
+					mainBusy = ls.busy
+				}
 			}
 			iconChar := "●"
 			iconColor := lipgloss.Color("#10b981")
@@ -1216,9 +1222,14 @@ func (m *cliModel) viewSessionsList() string {
 			line = fmt.Sprintf("%s %s  %s", prefix, icon, label)
 		case "agent":
 			roleColor := lipgloss.Color(RoleColor(entry.Role))
+			// Use liveSessionStates for running state if available.
+			agentRunning := entry.Running
+			if ls, ok := m.liveSessionStates[entry.ID]; ok {
+				agentRunning = ls.busy
+			}
 			statusIcon := "●"
 			statusStyle := lipgloss.NewStyle().Foreground(roleColor)
-			if !entry.Running {
+			if !agentRunning {
 				if m.unreadSessions[entry.ID] {
 					statusIcon = "✦"
 					statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f59e0b"))
@@ -1242,11 +1253,11 @@ func (m *cliModel) viewSessionsList() string {
 			}
 			label = truncateToWidth(label, labelW)
 			labelStyle := lipgloss.NewStyle().Foreground(roleColor)
-			if !entry.Running {
+			if !agentRunning {
 				labelStyle = labelStyle.Faint(true)
 			}
 			line = fmt.Sprintf("%s %s  %s", prefix, statusStyle.Render(statusIcon), labelStyle.Render(label))
-			if entry.Running {
+			if agentRunning {
 				line += " ⏳"
 			}
 		default:

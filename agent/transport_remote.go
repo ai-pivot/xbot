@@ -424,6 +424,11 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					Zones:  zones,
 				})
 			}
+		case protocol.MsgTypeSession:
+			// Server-pushed session state change event
+			if msg.Session != nil {
+				t.emit(ctx, *msg.Session)
+			}
 		case protocol.MsgTypeTUIControlReq:
 			// Server-initiated TUI control request. Process in goroutine so
 			// readPump stays responsive — required for RPC calls within handlers.

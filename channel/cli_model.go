@@ -769,18 +769,19 @@ type cliModel struct {
 
 	// --- Progress ---
 	progress               *protocol.ProgressEvent
-	iterationHistory       []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration      int                    // 上次进度事件的迭代号
-	lastProgressSeq        uint64                 // 上次进度事件的序列号（单调递增校验）
-	iterationStartTime     time.Time              // current iteration wall-clock start time
-	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
-	unreadSessions         map[string]bool        // chatID → has unread results the user hasn't viewed yet
-	lastBusyStates         map[string]bool        // previous busy state per session, for detecting busy→idle transition
-	typewriterTickActive   bool                   // true when typewriter tick chain (50ms) is running
-	twVisible              int                    // typewriter: runes currently visible in stream content
-	rwVisible              int                    // typewriter: runes currently visible in reasoning stream content
-	rwCjkSkipTick          bool                   // alternates each tick to halve CJK speed (reasoning)
-	twCjkSkipTick          bool                   // alternates each tick to halve CJK speed (stream)
+	iterationHistory       []cliIterationSnapshot       // 已完成迭代快照
+	lastSeenIteration      int                          // 上次进度事件的迭代号
+	lastProgressSeq        uint64                       // 上次进度事件的序列号（单调递增校验）
+	iterationStartTime     time.Time                    // current iteration wall-clock start time
+	sidebarHasBusySessions bool                         // true when any non-active sidebar session is busy (needs spinner tick)
+	unreadSessions         map[string]bool              // chatID → has unread results the user hasn't viewed yet
+	lastBusyStates         map[string]bool              // previous busy state per session, for detecting busy→idle transition
+	liveSessionStates      map[string]*liveSessionState // server-pushed session state overrides
+	typewriterTickActive   bool                         // true when typewriter tick chain (50ms) is running
+	twVisible              int                          // typewriter: runes currently visible in stream content
+	rwVisible              int                          // typewriter: runes currently visible in reasoning stream content
+	rwCjkSkipTick          bool                         // alternates each tick to halve CJK speed (reasoning)
+	twCjkSkipTick          bool                         // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
 	workDir                string    // 工作目录（标题栏显示用）
@@ -1159,15 +1160,16 @@ func newCLIModel() *cliModel {
 		senderID:        "cli_user",
 		channelName:     "cli",
 		// Layout defaults
-		chatMaxWidth:    76,
-		chatCenter:      true,
-		layoutMode:      "auto",
-		sidebarEnabled:  true,
-		sidebarVisible:  true,
-		sidebarWidth:    30,
-		sidebarPosition: "left",
-		unreadSessions:  make(map[string]bool),
-		lastBusyStates:  make(map[string]bool),
+		chatMaxWidth:      76,
+		chatCenter:        true,
+		layoutMode:        "auto",
+		sidebarEnabled:    true,
+		sidebarVisible:    true,
+		sidebarWidth:      30,
+		sidebarPosition:   "left",
+		unreadSessions:    make(map[string]bool),
+		lastBusyStates:    make(map[string]bool),
+		liveSessionStates: make(map[string]*liveSessionState),
 	}
 }
 
@@ -1209,6 +1211,24 @@ type cliProcessingMsg struct {
 // cliConnStateMsg updates the WS connection state for the header bar indicator.
 type cliConnStateMsg struct {
 	state string // "connected" | "disconnected" | "reconnecting"
+}
+
+// cliSessionStateMsg carries a server-pushed session state change event
+// (busy/idle, subagent started/stopped) into the BubbleTea Update loop.
+type cliSessionStateMsg struct {
+	event protocol.SessionEvent
+}
+
+// liveSessionState holds event-driven session state received from the server
+// via SessionEvent push. This provides instant sidebar updates (<100ms)
+// instead of waiting for the safety-net poll. Keyed by session ID:
+//   - main sessions: chatID
+//   - agent sessions: "agent:role/instance"
+type liveSessionState struct {
+	busy     bool
+	role     string // non-empty for subagent sessions
+	instance string // non-empty for subagent sessions
+	parentID string // parent chatID for subagent sessions
 }
 
 // cliHistoryLoadMsg loads history messages into the model from a goroutine-safe context.

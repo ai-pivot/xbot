@@ -501,13 +501,23 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			isActive := i == currentIdx
 			// Determine busy state: for current session use m.typing,
 			// for agents use Running, for other main sessions use Busy.
+			// Event-driven liveSessionStates (from SessionEvent push) provide
+			// instant updates (sub-100ms) before the safety-net poll catches up.
 			isBusy := false
 			if isActive {
 				isBusy = m.typing
 			} else if s.Type == "agent" {
 				isBusy = s.Running
+				// Check live state for agent sessions
+				if ls, ok := m.liveSessionStates[s.ID]; ok {
+					isBusy = ls.busy
+				}
 			} else {
 				isBusy = s.Busy
+				// Live state takes priority for non-active main sessions
+				if ls, ok := m.liveSessionStates[s.ID]; ok {
+					isBusy = ls.busy
+				}
 			}
 
 			icon := "○"

@@ -465,6 +465,19 @@ func (c *CLIChannel) SetProcessing(processing bool) {
 	}
 }
 
+// SendSessionState delivers a server-pushed session state change event
+// (busy/idle, subagent started/stopped) to the BubbleTea Update loop.
+// Non-blocking — drops if asyncCh is full. The 5s safety-net poll will recover.
+func (c *CLIChannel) SendSessionState(ev protocol.SessionEvent) {
+	if c.program == nil {
+		return
+	}
+	select {
+	case c.asyncCh <- cliSessionStateMsg{event: ev}:
+	default:
+	}
+}
+
 // SetConnState updates the connection state indicator in the header bar.
 // Non-blocking — drops if asyncCh is full.
 func (c *CLIChannel) SetConnState(state string) {

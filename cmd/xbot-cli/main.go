@@ -1825,6 +1825,14 @@ func main() {
 	// 注入 channelFinder 以启用结构化进度事件（工具调用、思考过程等）
 	app.backend.SetDirectSend(disp.SendDirect)
 	app.backend.SetChannelFinder(disp.GetChannel)
+	// Inject sessionStateHandler so agent can push busy/idle and SubAgent
+	// lifecycle events directly to the CLIChannel (local mode). The handler
+	// closure captures the cliCh reference — zero RPC, zero channelFinder.
+	if ag := app.backend.Agent(); ag != nil {
+		ag.SetSessionStateHandler(func(ev protocol.SessionEvent) {
+			cliCh.SendSessionState(ev)
+		})
+	}
 	if ag := app.backend.Agent(); ag != nil {
 		ag.SetMessageSender(disp)
 		ag.SetAgentChannelRegistry(
@@ -2023,6 +2031,15 @@ func main() {
 			}
 			cliCh.SetConnState(ev.State)
 		})
+		// Wire session state handler via Subscribe — server pushes busy/idle
+		// and SubAgent lifecycle events for instant sidebar updates.
+		app.backend.Subscribe(protocol.EventPattern{Type: "session"}, func(env protocol.EventEnvelope) {
+			var ev protocol.SessionEvent
+			if err := json.Unmarshal(env.Payload, &ev); err != nil {
+				return
+			}
+			cliCh.SendSessionState(ev)
+		})
 	}
 
 	// ── Session cache (all modes) ───────────────────────────────────
@@ -2089,7 +2106,7 @@ func main() {
 	}
 	refreshAgentCache()
 	clipanic.Go("main.RefreshAgentCache", func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(30 * time.Second) // Safety-net poll; primary path is SessionEvent push
 		defer ticker.Stop()
 		for {
 			select {
