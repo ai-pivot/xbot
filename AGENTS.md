@@ -16,6 +16,7 @@
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system, model tiers (vanguard/balance/swift)
 - `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types
+- `docs/agent/settings.md` — settings system: single registry (agent/setting_runtime.go), cli_settings.go, UpdatePerModelConfig, subscription-scoped vs user-scoped, runtime apply chain
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
 - `docs/agent/channel.md` — CLI (BubbleTea TUI), Feishu, Web, QQ adapters, asyncCh pattern, deterministic rendering, mouse support, settings panels
 - `docs/agent/memory.md` — letta vs flat providers
@@ -31,10 +32,12 @@
 - **User-scoped semaphores must not be hardcoded to capacity 1 when one sender can own multiple independent chats/sessions (for example remote CLI windows authenticated as `admin`).** Size them from configured concurrency or key them by session, otherwise different windows will block each other and look like a leaked semaphore.
 - **`SetMaxConcurrency` must clear `userSemaphores` cache.** The global semaphore is rebuilt with the new capacity, but `getUserSemaphore` caches per-user channels in a `sync.Map` via `LoadOrStore`. Without `Clear()`, users with custom LLM keep using the cached semaphore with the OLD capacity forever. Symptom: setting max_concurrency to 100 has no visible effect.
 
-### Subscription & Model Resolution
-- **`user_llm_subscriptions` DB is the single source of truth for ALL LLM config** (provider, model, base_url, api_key, max_output_tokens, thinking_mode). These keys are subscription-scoped — they must NOT appear in `settingHandlerRegistry`, `CLIRuntimeSettingKeys`, or `user_settings` table. Adding them back would cause startup `applyRuntimeSettings` to overwrite DB with stale values (e.g. name→provider, max_output_tokens→8192).
-- **CLI subscriptions are in config.json, server subscriptions are in DB (`user_llm_subscriptions`).** `GetLLMForModel` must check both — `configSubsFn` (CLI) and `subscriptionSvc` (DB).
-- **`UpdateCachedModels(subID)` nil-derefs if subID not in DB.** Always nil-check `sub` after `Get()`. Config subs have IDs not in DB.
+### Subscription & Settings
+- **`agent/setting_runtime.go` is the SINGLE source of truth for runtime setting handlers.** Both CLI and server use it. Never create a second handler registry — it will silently diverge.
+- **`backendSubscriptionManager` is the SINGLE SubscriptionManager implementation.** No more local/remote/config variants. All subscription operations go through Backend interface → Transport (local or remote).
+- **Never use `UpdateSubscription` for PerModelConfig changes.** Use `UpdatePerModelConfig(subID, model, pmc)` — it only touches PerModelConfigs, never touches credentials. The old List→modify→Update pattern reads masked keys from the API, then writes them back, destroying real credentials.
+- **`serverapp/rpc_table.go:updateSubscription` starts from EXISTING subscription, only overlays non-masked fields.** Client sends masked keys (****) — the handler preserves real credentials from DB.
+- **`max_context_tokens` is ScopeSubscription.** Stored in `PerModelConfigs[model].MaxContext`, NOT in user_settings DB or config.Agent.MaxContextTokens. Changing it in `/settings` writes to subscription via `UpdatePerModelConfig`.
 - **`OnModelsLoaded` callback runs in `NewOpenAILLM`'s async goroutine** — must be concurrency-safe.
 - **Tier fallback**: unconfigured tier → vanguard→balance→swift chain. Empty tier must NOT return default client with wrong model.
 - **`createClientFromSub` uses sub's credentials with a *different* model** — verify target model is served by that endpoint.
