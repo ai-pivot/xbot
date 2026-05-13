@@ -1077,29 +1077,46 @@ func (h *rpcContext) updateSubscription(ctx context.Context, p struct {
 	if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
 		return fmt.Errorf("subscription not found")
 	}
+	// Start from existing subscription — client never has unmasked credentials,
+	// so we preserve all existing fields and only accept intentional changes.
 	dbSub := &sqlite.LLMSubscription{
-		ID: p.ID, SenderID: existing.SenderID,
-		Name: p.Sub.Name, Provider: p.Sub.Provider, BaseURL: p.Sub.BaseURL,
-		APIKey: p.Sub.APIKey, Model: p.Sub.Model,
-		MaxOutputTokens: p.Sub.MaxOutputTokens,
-		MaxContext:      existing.MaxContext, // top-level MaxContext preserved from DB
-		ThinkingMode:    p.Sub.ThinkingMode, IsDefault: existing.IsDefault,
-		PerModelConfigs: p.Sub.PerModelConfigs,
+		ID: existing.ID, SenderID: existing.SenderID,
+		Name: existing.Name, Provider: existing.Provider, BaseURL: existing.BaseURL,
+		APIKey: existing.APIKey, Model: existing.Model,
+		MaxOutputTokens: existing.MaxOutputTokens,
+		MaxContext:      existing.MaxContext,
+		ThinkingMode:    existing.ThinkingMode, IsDefault: existing.IsDefault,
+		PerModelConfigs: existing.PerModelConfigs,
+		CreatedAt:       existing.CreatedAt, UpdatedAt: existing.UpdatedAt,
 	}
-	// Never overwrite with a masked key from server RPC transport.
-	if strings.HasSuffix(dbSub.APIKey, "****") && len(dbSub.APIKey) <= 20 {
-		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing API key (received masked)")
-		dbSub.APIKey = existing.APIKey
+	// --- Accept only fields the client can legitimately change ---
+	// PerModelConfigs: always accept (max_context per model)
+	if p.Sub.PerModelConfigs != nil {
+		dbSub.PerModelConfigs = p.Sub.PerModelConfigs
 	}
-	// Preserve existing credentials when client sends empty values
-	// (e.g. due to stripped sensitive fields or client-side cache miss).
-	if dbSub.BaseURL == "" && existing.BaseURL != "" {
-		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing base_url (received empty)")
-		dbSub.BaseURL = existing.BaseURL
+	// Name: accept if non-empty
+	if strings.TrimSpace(p.Sub.Name) != "" {
+		dbSub.Name = p.Sub.Name
 	}
-	if dbSub.APIKey == "" && existing.APIKey != "" {
-		log.WithField("sub_id", p.ID).Warn("[RPC] update_subscription: preserving existing api_key (received empty)")
-		dbSub.APIKey = existing.APIKey
+	// ThinkingMode: always accept
+	dbSub.ThinkingMode = p.Sub.ThinkingMode
+	// MaxOutputTokens: always accept
+	dbSub.MaxOutputTokens = p.Sub.MaxOutputTokens
+	// Model: accept if non-empty
+	if strings.TrimSpace(p.Sub.Model) != "" {
+		dbSub.Model = p.Sub.Model
+	}
+	// Provider: accept only if non-empty AND non-masked
+	if strings.TrimSpace(p.Sub.Provider) != "" && !strings.Contains(p.Sub.Provider, "****") {
+		dbSub.Provider = p.Sub.Provider
+	}
+	// BaseURL: accept only if non-empty AND non-masked
+	if strings.TrimSpace(p.Sub.BaseURL) != "" && !strings.Contains(p.Sub.BaseURL, "****") {
+		dbSub.BaseURL = p.Sub.BaseURL
+	}
+	// APIKey: accept only if non-masked (real key from sub panel edit)
+	if p.Sub.APIKey != "" && !strings.HasSuffix(p.Sub.APIKey, "****") {
+		dbSub.APIKey = p.Sub.APIKey
 	}
 	if err := svc.Update(dbSub); err != nil {
 		return err

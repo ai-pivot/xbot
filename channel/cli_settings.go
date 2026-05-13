@@ -69,60 +69,45 @@ func (m *cliModel) readSettings() map[string]string {
 // ── write ────────────────────────────────────────────────────────────
 
 // saveSettings persists changed values to their correct scope.
-// Subscription keys → subscriptionMgr.Update
-// User keys         → settingsSvc.SetSetting
-// Then ApplySettings for runtime effect.
+// IMPORTANT: subscription fields (provider, key, model, etc.) are NOT written here.
+// They go through ApplySettings → updateActiveSubscription which has masked-key protection.
+// This function ONLY writes:
+//   - PerModelConfigs (max_context_tokens) via subscriptionMgr.Update
+//   - User-scoped keys via settingsSvc
+//   - Runtime effects via ApplySettings (with subscription keys stripped)
 func (m *cliModel) saveSettings(values map[string]string) {
 	if m.channel == nil {
 		return
 	}
 
-	// --- Subscription-scoped writes (batch into one Update) ---
-	subChanged := false
-	sub := m.activeSubscription()
-	if sub != nil && m.subscriptionMgr != nil {
-		// Direct subscription fields
-		for _, k := range []string{"llm_provider", "llm_api_key", "llm_base_url", "llm_model", "max_output_tokens", "thinking_mode"} {
-			if v, ok := values[k]; ok {
-				subChanged = true
-				switch k {
-				case "llm_provider":
-					sub.Provider = v
-				case "llm_api_key":
-					if !strings.HasSuffix(v, "****") {
-						sub.APIKey = v
+	// --- PerModelConfigs update (max_context_tokens only) ---
+	if v, ok := values["max_context_tokens"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			if m.subscriptionMgr != nil && m.activeSubID != "" {
+				// Read fresh subscription to preserve all fields (API key etc.)
+				subs, listErr := m.subscriptionMgr.List("")
+				if listErr == nil {
+					for i := range subs {
+						if subs[i].ID == m.activeSubID {
+							if subs[i].PerModelConfigs == nil {
+								subs[i].PerModelConfigs = make(map[string]PerModelConfig)
+							}
+							model := subs[i].Model
+							if model == "" {
+								model = m.cachedModelName
+							}
+							if model != "" {
+								pmc := subs[i].PerModelConfigs[model]
+								pmc.MaxContext = n
+								subs[i].PerModelConfigs[model] = pmc
+								if err := m.subscriptionMgr.Update(subs[i].ID, &subs[i]); err != nil {
+									logrus.WithFields(logrus.Fields{"err": err, "sub": subs[i].ID}).Warn("saveSettings: PerModelConfig update failed")
+								}
+							}
+							break
+						}
 					}
-				case "llm_base_url":
-					sub.BaseURL = v
-				case "llm_model":
-					sub.Model = v
-				case "max_output_tokens":
-					sub.MaxOutputTokens, _ = strconv.Atoi(v)
-				case "thinking_mode":
-					sub.ThinkingMode = v
 				}
-			}
-		}
-		// max_context_tokens → PerModelConfigs[model].MaxContext
-		if v, ok := values["max_context_tokens"]; ok {
-			model := sub.Model
-			if model == "" {
-				model = m.cachedModelName
-			}
-			if model != "" {
-				n, _ := strconv.Atoi(strings.TrimSpace(v))
-				if sub.PerModelConfigs == nil {
-					sub.PerModelConfigs = make(map[string]PerModelConfig)
-				}
-				pmc := sub.PerModelConfigs[model]
-				pmc.MaxContext = n
-				sub.PerModelConfigs[model] = pmc
-				subChanged = true
-			}
-		}
-		if subChanged {
-			if err := m.subscriptionMgr.Update(sub.ID, sub); err != nil {
-				logrus.WithFields(logrus.Fields{"err": err, "sub": sub.ID}).Warn("saveSettings: subscription update failed")
 			}
 		}
 	}
@@ -139,8 +124,17 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	}
 
 	// --- Apply to runtime ---
+	// Strip max_context_tokens from values — already handled above via PerModelConfig.
+	// Subscription fields (provider, key, model, etc.) pass through to ApplySettings
+	// which handles them via updateActiveSubscription with masked-key protection.
 	if m.channel.config.ApplySettings != nil {
-		m.channel.config.ApplySettings(values, m.chatID)
+		runtimeValues := make(map[string]string, len(values))
+		for k, v := range values {
+			if k != "max_context_tokens" {
+				runtimeValues[k] = v
+			}
+		}
+		m.channel.config.ApplySettings(runtimeValues, m.chatID)
 	}
 }
 

@@ -2788,12 +2788,29 @@ func (m *configSubscriptionManager) Rename(id, name string) error {
 func (m *configSubscriptionManager) Update(id string, sub *channel.Subscription) error {
 	for i := range m.cfg.Subscriptions {
 		if m.cfg.Subscriptions[i].ID == id {
-			// Preserve existing API key if the update contains a masked value.
-			savedKey := m.cfg.Subscriptions[i].APIKey
-			m.cfg.Subscriptions[i] = *sub
-			if strings.HasSuffix(sub.APIKey, "****") && len(sub.APIKey) <= 20 {
-				m.cfg.Subscriptions[i].APIKey = savedKey
+			existing := m.cfg.Subscriptions[i]
+			// Preserve credentials: only accept real (non-masked) values from client.
+			if sub.APIKey != "" && !strings.HasSuffix(sub.APIKey, "****") {
+				existing.APIKey = sub.APIKey
 			}
+			if strings.TrimSpace(sub.Provider) != "" && !strings.Contains(sub.Provider, "****") {
+				existing.Provider = sub.Provider
+			}
+			if strings.TrimSpace(sub.BaseURL) != "" && !strings.Contains(sub.BaseURL, "****") {
+				existing.BaseURL = sub.BaseURL
+			}
+			if strings.TrimSpace(sub.Name) != "" {
+				existing.Name = sub.Name
+			}
+			if strings.TrimSpace(sub.Model) != "" {
+				existing.Model = sub.Model
+			}
+			existing.MaxOutputTokens = sub.MaxOutputTokens
+			existing.ThinkingMode = sub.ThinkingMode
+			if sub.PerModelConfigs != nil {
+				existing.PerModelConfigs = sub.PerModelConfigs
+			}
+			m.cfg.Subscriptions[i] = existing
 			// If modifying active subscription, sync cfg.LLM
 			if m.cfg.Subscriptions[i].Active {
 				syncLLMFromActiveSub(m.cfg)
