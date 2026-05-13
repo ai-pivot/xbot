@@ -17,6 +17,7 @@
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system, model tiers (vanguard/balance/swift)
 - `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types
 - `docs/agent/settings.md` — settings system: single registry (agent/setting_runtime.go), cli_settings.go, UpdatePerModelConfig, subscription-scoped vs user-scoped, runtime apply chain
+- `docs/agent/conventions.md` — error handling, logging, testing, naming, build, **local/remote unification**
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
 - `docs/agent/channel.md` — CLI (BubbleTea TUI), Feishu, Web, QQ adapters, asyncCh pattern, deterministic rendering, mouse support, settings panels
 - `docs/agent/memory.md` — letta vs flat providers
