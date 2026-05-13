@@ -727,9 +727,9 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	// SyncLayoutSettings (every 5s in remote mode) must NOT reset context
 	// caches, otherwise the context bar flashes to solid line repeatedly.
 	if !msg.syncOnly {
-		m.cachedMaxContextTokens = 0
-		m.cachedMaxOutputTokens = 0
-		m.cachedCompressRatio = 0
+		m.cachedMaxContextTokens = m.resolveMaxContextTokens()
+		m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
+		m.cachedCompressRatio = m.resolveCompressRatio()
 	}
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
