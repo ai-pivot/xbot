@@ -343,7 +343,10 @@ func (b fakeBackend) RemoveSubscription(_ string) error                         
 func (b fakeBackend) SetDefaultSubscription(_ string, _ string) error                { return nil }
 func (b fakeBackend) RenameSubscription(_, _ string) error                           { return nil }
 func (b fakeBackend) UpdateSubscription(_ string, _ channel.Subscription) error      { return nil }
-func (b fakeBackend) SetSubscriptionModel(_, _ string) error                         { return nil }
+func (b fakeBackend) UpdatePerModelConfig(_ string, _ string, _ protocol.PerModelConfig) error {
+	return nil
+}
+func (b fakeBackend) SetSubscriptionModel(_, _ string) error { return nil }
 func (b fakeBackend) LLMGenerate(_ context.Context, _, _ string, _ []llm.ChatMessage, _ []llm.ToolDefinition, _ string) (*llm.LLMResponse, error) {
 	return nil, nil
 }

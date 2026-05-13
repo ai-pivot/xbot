@@ -41,6 +41,7 @@ const (
 	MethodSetDefaultSubscription       = "set_default_subscription"
 	MethodRenameSubscription           = "rename_subscription"
 	MethodUpdateSubscription           = "update_subscription"
+	MethodUpdatePerModelConfig         = "update_per_model_config"
 	MethodSetSubscriptionModel         = "set_subscription_model"
 	MethodGetHistory                   = "get_history"
 	MethodGetTokenState                = "get_token_state"
@@ -227,6 +228,12 @@ type renameSubscriptionReq struct {
 type updateSubscriptionReq struct {
 	ID  string                  `json:"id"`
 	Sub channelSubscriptionJSON `json:"sub"`
+}
+
+type updatePerModelConfigReq struct {
+	ID     string                  `json:"id"`
+	Model  string                  `json:"model"`
+	Config protocol.PerModelConfig `json:"config"`
 }
 
 type setSubscriptionModelReq struct {

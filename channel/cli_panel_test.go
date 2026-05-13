@@ -60,6 +60,10 @@ func (m *mockSubscriptionManager) Update(id string, sub *Subscription) error {
 	return nil
 }
 
+func (m *mockSubscriptionManager) UpdatePerModelConfig(id, model string, pmc PerModelConfig) error {
+	return nil
+}
+
 // TestApplyQuickSwitch tests that switching a subscription actually calls SwitchLLM.
 func TestApplyQuickSwitch(t *testing.T) {
 	// Track what SwitchLLM received

@@ -596,6 +596,22 @@ func (t *localTransport) registerHandlers() {
 		return nil
 	})
 
+	h[MethodUpdatePerModelConfig] = rpcVoid(func(r updatePerModelConfigReq) error {
+		svc := a.llmFactory.GetSubscriptionSvc()
+		if svc == nil {
+			return ErrSubscriptionsUnavailable
+		}
+		existing, err := svc.Get(r.ID)
+		if err != nil {
+			return fmt.Errorf("subscription %s not found: %w", r.ID, err)
+		}
+		if existing.PerModelConfigs == nil {
+			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
+		}
+		existing.PerModelConfigs[r.Model] = r.Config
+		return svc.Update(existing)
+	})
+
 	h[MethodSetSubscriptionModel] = rpcVoid(func(r setSubscriptionModelReq) error {
 		svc := a.llmFactory.GetSubscriptionSvc()
 		if svc == nil {

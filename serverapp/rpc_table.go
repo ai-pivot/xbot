@@ -399,6 +399,29 @@ func registerSubscriptionHandlers(t rpcTable, h *rpcContext) {
 		return svc.Add(dbSub)
 	})
 	t["update_subscription"] = rpc1void(h.updateSubscription)
+	t["update_per_model_config"] = rpc1void(func(ctx context.Context, p struct {
+		ID     string                `json:"id"`
+		Model  string                `json:"model"`
+		Config sqlite.PerModelConfig `json:"config"`
+	}) error {
+		svc, err := h.requireSubscriptionSvc()
+		if err != nil {
+			return err
+		}
+		existing, err := svc.Get(p.ID)
+		if err != nil {
+			return fmt.Errorf("subscription %s not found: %w", p.ID, err)
+		}
+		bizID := rpcBizID(ctx)
+		if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
+			return fmt.Errorf("subscription not found")
+		}
+		if existing.PerModelConfigs == nil {
+			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
+		}
+		existing.PerModelConfigs[p.Model] = p.Config
+		return svc.Update(existing)
+	})
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		ID string `json:"id"`
 	}) error {

@@ -2791,6 +2791,10 @@ func (m *backendSubscriptionManager) Update(id string, sub *channel.Subscription
 	return m.backend.UpdateSubscription(id, *sub)
 }
 
+func (m *backendSubscriptionManager) UpdatePerModelConfig(id, model string, pmc channel.PerModelConfig) error {
+	return m.backend.UpdatePerModelConfig(id, model, protocol.PerModelConfig(pmc))
+}
+
 // backendLLMSubscriber implements channel.LLMSubscriber via Backend interface.
 // Works identically for both local and remote modes.
 type backendLLMSubscriber struct {

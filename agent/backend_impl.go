@@ -505,6 +505,12 @@ func (b *Backend) UpdateSubscription(id string, sub protocol.Subscription) error
 	}, nil)
 }
 
+func (b *Backend) UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error {
+	return b.call(MethodUpdatePerModelConfig, updatePerModelConfigReq{
+		ID: id, Model: model, Config: pmc,
+	}, nil)
+}
+
 func (b *Backend) SetSubscriptionModel(id, model string) error {
 	return b.call(MethodSetSubscriptionModel, setSubscriptionModelReq{ID: id, Model: model}, nil)
 }

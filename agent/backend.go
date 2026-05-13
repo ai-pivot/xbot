@@ -106,6 +106,7 @@ type AgentBackend interface {
 	SetDefaultSubscription(id string, chatID string) error
 	RenameSubscription(id, name string) error
 	UpdateSubscription(id string, sub protocol.Subscription) error
+	UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error
 	SetSubscriptionModel(id, model string) error
 
 	// --- Interactive SubAgent ---

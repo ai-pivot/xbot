@@ -84,28 +84,17 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	if v, ok := values["max_context_tokens"]; ok {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			if m.subscriptionMgr != nil && m.activeSubID != "" {
-				// Read fresh subscription to preserve all fields (API key etc.)
-				subs, listErr := m.subscriptionMgr.List("")
-				if listErr == nil {
-					for i := range subs {
-						if subs[i].ID == m.activeSubID {
-							if subs[i].PerModelConfigs == nil {
-								subs[i].PerModelConfigs = make(map[string]PerModelConfig)
-							}
-							model := subs[i].Model
-							if model == "" {
-								model = m.cachedModelName
-							}
-							if model != "" {
-								pmc := subs[i].PerModelConfigs[model]
-								pmc.MaxContext = n
-								subs[i].PerModelConfigs[model] = pmc
-								if err := m.subscriptionMgr.Update(subs[i].ID, &subs[i]); err != nil {
-									logrus.WithFields(logrus.Fields{"err": err, "sub": subs[i].ID}).Warn("saveSettings: PerModelConfig update failed")
-								}
-							}
-							break
-						}
+				model := m.cachedModelName
+				if model == "" {
+					// Read model from subscription
+					if sub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
+						model = sub.Model
+					}
+				}
+				if model != "" {
+					pmc := PerModelConfig{MaxContext: n}
+					if err := m.subscriptionMgr.UpdatePerModelConfig(m.activeSubID, model, pmc); err != nil {
+						logrus.WithFields(logrus.Fields{"err": err, "sub": m.activeSubID, "model": model}).Warn("saveSettings: UpdatePerModelConfig failed")
 					}
 				}
 			}
