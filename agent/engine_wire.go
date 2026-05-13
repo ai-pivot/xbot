@@ -1438,12 +1438,13 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 // (both local and remote). Returns nil if no CLI channel is available.
 func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
 	var cliCh *channelpkg.CLIChannel
-	var remoteCLICh *channelpkg.RemoteCLIChannel
+	var remoteCLICh channelpkg.ProgressSender
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder("cli"); ok {
 			if cc, ok := ch.(*channelpkg.CLIChannel); ok {
 				cliCh = cc
-			} else if rc, ok := ch.(*channelpkg.RemoteCLIChannel); ok {
+			} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
+				// RemoteCLIChannel, ChannelCliChannel, or any other ProgressSender
 				remoteCLICh = rc
 			} else {
 				log.WithField("type", fmt.Sprintf("%T", ch)).Warn("buildCLIProgressEventHandler: channelFinder('cli') returned unexpected type")
@@ -1747,11 +1748,11 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 // no channels are available.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
 	var cliCh *channelpkg.CLIChannel
-	var remoteCLICh *channelpkg.RemoteCLIChannel
+	var remoteCLICh channelpkg.ProgressSender
 	if ch, ok := a.channelFinder("cli"); ok {
 		if cc, ok := ch.(*channelpkg.CLIChannel); ok {
 			cliCh = cc
-		} else if rc, ok := ch.(*channelpkg.RemoteCLIChannel); ok {
+		} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 			remoteCLICh = rc
 		}
 	}

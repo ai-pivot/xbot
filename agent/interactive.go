@@ -128,10 +128,10 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		return
 	}
 	var localCh *channelpkg.CLIChannel
-	var remoteCh *channelpkg.RemoteCLIChannel
+	var remoteCh channelpkg.ProgressSender
 	if cc, ok := ch.(*channelpkg.CLIChannel); ok {
 		localCh = cc
-	} else if rc, ok := ch.(*channelpkg.RemoteCLIChannel); ok {
+	} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 		remoteCh = rc
 	}
 	if localCh == nil && remoteCh == nil {
