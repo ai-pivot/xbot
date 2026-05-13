@@ -493,64 +493,152 @@ func GetLastActiveSession(workDir string) string {
 	return ds.LastActive
 }
 
-// SaveSessionLLM persists the subscription and model choice for a specific session.
-// This allows each session to independently use different models across restarts.
-func SaveSessionLLM(workDir, chatID, subscriptionID, model string) {
+// ── Session LLM state: single source of truth ───────────────
+//
+// All per-session LLM state (subscription, model, max_context, max_output)
+// is stored in the dirSession JSON and accessed ONLY through these two functions.
+// This eliminates the "partial write" class of bugs where SaveSessionLLM and
+// SaveSessionMaxContext independently loaded/modified/saved the JSON file,
+// causing race conditions and state desync.
+//
+// RULES:
+//   1. NEVER read dirSession.SubscriptionID/Model/MaxContextTokens directly — use LoadSessionLLMState
+//   2. NEVER write them individually — use SaveSessionLLMState
+//   3. To derive effective max_context for display, use ResolveEffectiveMaxContext
+
+// SessionLLMState bundles ALL per-session LLM state.
+// Zero value means "use global defaults".
+type SessionLLMState struct {
+	SubscriptionID   string // active subscription for this session
+	Model            string // active model within the subscription
+	MaxContextTokens int    // per-session max_context override (0 = derive from sub)
+	MaxOutputTokens  int    // per-session max_output_tokens override (0 = derive from sub)
+}
+
+// IsZero returns true if no LLM state has been configured.
+func (s SessionLLMState) IsZero() bool {
+	return s.SubscriptionID == "" && s.Model == "" && s.MaxContextTokens == 0 && s.MaxOutputTokens == 0
+}
+
+// SaveSessionLLMState atomically writes ALL per-session LLM state to disk.
+// This replaces the old SaveSessionLLM + SaveSessionMaxContext pair.
+// Partial writes are impossible — either all fields are persisted or none.
+func SaveSessionLLMState(workDir, chatID string, state SessionLLMState) {
 	ds, err := LoadDirSessions(workDir)
 	if err != nil {
 		return
 	}
 	for i := range ds.Sessions {
 		if ds.Sessions[i].ChatID == chatID {
-			ds.Sessions[i].SubscriptionID = subscriptionID
-			ds.Sessions[i].Model = model
+			ds.Sessions[i].SubscriptionID = state.SubscriptionID
+			ds.Sessions[i].Model = state.Model
+			ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
 			_ = ds.save()
 			return
 		}
 	}
 }
 
-// LoadSessionLLM restores the subscription and model for a specific session.
-// Returns (subscriptionID, model). Either may be empty if not configured.
-func LoadSessionLLM(workDir, chatID string) (subscriptionID, model string) {
+// LoadSessionLLMState reads ALL per-session LLM state from disk.
+// Returns zero-value SessionLLMState if the session doesn't exist or has no LLM state.
+func LoadSessionLLMState(workDir, chatID string) SessionLLMState {
 	ds, err := LoadDirSessions(workDir)
 	if err != nil {
-		return "", ""
+		return SessionLLMState{}
 	}
 	for i := range ds.Sessions {
 		if ds.Sessions[i].ChatID == chatID {
-			return ds.Sessions[i].SubscriptionID, ds.Sessions[i].Model
+			return SessionLLMState{
+				SubscriptionID:   ds.Sessions[i].SubscriptionID,
+				Model:            ds.Sessions[i].Model,
+				MaxContextTokens: ds.Sessions[i].MaxContextTokens,
+			}
 		}
 	}
-	return "", ""
+	return SessionLLMState{}
 }
 
-// SaveSessionMaxContext persists the per-session max context tokens override.
-func SaveSessionMaxContext(workDir, chatID string, maxCtx int) {
-	ds, err := LoadDirSessions(workDir)
-	if err != nil {
-		return
+// ResolveEffectiveMaxContext derives the effective max_context for a session.
+// Priority (strict, no ambiguity):
+//
+//  1. Session JSON MaxContextTokens (user explicitly set, or inherited from parent)
+//  2. Subscription's PerModelConfigs[model].MaxContext (bound to subscription+model)
+//  3. 0 (caller falls back to schema DefaultValue, typically 200000)
+//
+// This is the ONLY function that should be called to get max_context for display
+// or runtime use. It replaces the old resolveMaxContextTokens which had broken
+// fallback chains through GetCurrentValues().
+func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManager) int {
+	// 1. Session JSON override (highest priority — user manually set this)
+	if state.MaxContextTokens > 0 {
+		return state.MaxContextTokens
 	}
-	for i := range ds.Sessions {
-		if ds.Sessions[i].ChatID == chatID {
-			ds.Sessions[i].MaxContextTokens = maxCtx
-			_ = ds.save()
-			return
+	// 2. Subscription's per-model config
+	if subMgr != nil && state.SubscriptionID != "" {
+		if subs, err := subMgr.List(""); err == nil {
+			for _, sub := range subs {
+				if sub.ID == state.SubscriptionID {
+					model := state.Model
+					if model == "" {
+						model = sub.Model
+					}
+					if model != "" {
+						if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
+							return pmc.MaxContext
+						}
+					}
+					break
+				}
+			}
 		}
 	}
+	// 3. No override found — return 0, caller uses DefaultValue
+	return 0
 }
 
-// LoadSessionMaxContext restores the per-session max context tokens override.
-// Returns 0 if not configured (0 means "use global default").
-func LoadSessionMaxContext(workDir, chatID string) int {
-	ds, err := LoadDirSessions(workDir)
-	if err != nil {
-		return 0
+// ResolveEffectiveMaxOutputTokens derives the effective max_output_tokens for a session.
+func ResolveEffectiveMaxOutputTokens(state SessionLLMState, subMgr SubscriptionManager) int {
+	if state.MaxOutputTokens > 0 {
+		return state.MaxOutputTokens
 	}
-	for i := range ds.Sessions {
-		if ds.Sessions[i].ChatID == chatID {
-			return ds.Sessions[i].MaxContextTokens
+	if subMgr != nil && state.SubscriptionID != "" {
+		if subs, err := subMgr.List(""); err == nil {
+			for _, sub := range subs {
+				if sub.ID == state.SubscriptionID {
+					return sub.MaxOutputTokens
+				}
+			}
 		}
 	}
 	return 0
+}
+
+// ── Legacy compat functions (DEPRECATED, will be removed) ──
+// These are kept temporarily for any code that still calls them.
+// They delegate to the new unified functions.
+
+// SaveSessionLLM persists subscription and model. DEPRECATED: use SaveSessionLLMState.
+func SaveSessionLLM(workDir, chatID, subscriptionID, model string) {
+	state := LoadSessionLLMState(workDir, chatID)
+	state.SubscriptionID = subscriptionID
+	state.Model = model
+	SaveSessionLLMState(workDir, chatID, state)
+}
+
+// LoadSessionLLM restores subscription and model. DEPRECATED: use LoadSessionLLMState.
+func LoadSessionLLM(workDir, chatID string) (subscriptionID, model string) {
+	state := LoadSessionLLMState(workDir, chatID)
+	return state.SubscriptionID, state.Model
+}
+
+// SaveSessionMaxContext persists max_context. DEPRECATED: use SaveSessionLLMState.
+func SaveSessionMaxContext(workDir, chatID string, maxCtx int) {
+	state := LoadSessionLLMState(workDir, chatID)
+	state.MaxContextTokens = maxCtx
+	SaveSessionLLMState(workDir, chatID, state)
+}
+
+// LoadSessionMaxContext restores max_context. DEPRECATED: use LoadSessionLLMState.
+func LoadSessionMaxContext(workDir, chatID string) int {
+	return LoadSessionLLMState(workDir, chatID).MaxContextTokens
 }

@@ -2621,7 +2621,12 @@ func (m *cliModel) applyQuickSwitch() {
 			// Update quickSwitchList so the panel reflects the new model
 			m.updateQuickSwitchModels(selected.Model)
 			// Persist per-session model choice so it survives restarts
-			SaveSessionLLM(m.workDir, m.chatID, m.activeSubID, selected.Model)
+			SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
+				SubscriptionID:   m.activeSubID,
+				Model:            selected.Model,
+				MaxContextTokens: m.cachedMaxContextTokens,
+				MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+			})
 			m.showTempStatus(fmt.Sprintf("Model switched to: %s", selected.Model))
 		}
 	}
@@ -3434,14 +3439,15 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
 	}
 	m.saveCurrentSession()
-	// Inherit parent session's LLM state (subscription + model + max_context).
-	// Without this, new sessions fall back to the global default subscription
-	// which is often wrong when the user has switched per-session.
+	// Inherit parent session's LLM state atomically.
+	// SaveSessionLLMState writes ALL fields (sub, model, maxContext, maxOutput) in one shot.
 	if m.activeSubID != "" {
-		SaveSessionLLM(m.workDir, chatID, m.activeSubID, m.cachedModelName)
-	}
-	if m.cachedMaxContextTokens > 0 {
-		SaveSessionMaxContext(m.workDir, chatID, m.cachedMaxContextTokens)
+		SaveSessionLLMState(m.workDir, chatID, SessionLLMState{
+			SubscriptionID:   m.activeSubID,
+			Model:            m.cachedModelName,
+			MaxContextTokens: m.cachedMaxContextTokens,
+			MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+		})
 	}
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)

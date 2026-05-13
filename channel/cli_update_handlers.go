@@ -1445,20 +1445,20 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		} else {
 			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
-			m.activeSubID = done.subID
-			// Persist per-session subscription choice so it survives restarts
-			SaveSessionLLM(m.workDir, m.chatID, done.subID, done.subModel)
-			// Update max context/output from the new subscription's per-model config.
-			// If the new subscription has an explicit per-model MaxContext, use it.
-			// Otherwise, KEEP the current value — don't destroy user's manual setting.
-			if done.maxCtx > 0 {
-				m.cachedMaxContextTokens = done.maxCtx
-				SaveSessionMaxContext(m.workDir, m.chatID, done.maxCtx)
+			// Build complete session LLM state and persist atomically.
+			// maxContext: use per-model config if available, else keep user's manual setting.
+			maxCtx := done.maxCtx
+			if maxCtx == 0 {
+				maxCtx = m.cachedMaxContextTokens // preserve user's manual setting
 			}
-			// max_output_tokens: subscription-level value always applies
-			if done.maxOutTok > 0 {
-				m.cachedMaxOutputTokens = int64(done.maxOutTok)
+			state := SessionLLMState{
+				SubscriptionID:   done.subID,
+				Model:            done.subModel,
+				MaxContextTokens: maxCtx,
+				MaxOutputTokens:  done.maxOutTok,
 			}
+			SaveSessionLLMState(m.workDir, m.chatID, state)
+			m.applySessionLLMState(state)
 			// Refresh values cache so GetCurrentValues() reflects the new subscription.
 			if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
 				m.channel.config.RefreshValuesCache()

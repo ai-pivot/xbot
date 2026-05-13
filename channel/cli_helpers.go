@@ -72,7 +72,6 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 		}
 	}
 	// User-scoped settings override GetCurrentValues.
-	// Skip empty-string values so DefaultValue in the schema can fill correctly.
 	if m.channel.settingsSvc != nil {
 		vals, err := m.channel.settingsSvc.GetSettings(m.channelName, m.senderID)
 		if err == nil {
@@ -83,8 +82,9 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 			}
 		}
 	}
-	// max_context_tokens: derived from session JSON or subscription's PerModelConfig.
-	// NOT from GetCurrentValues (which may return stale global config values).
+	// ── max_context_tokens: single source of truth ──
+	// Read from session JSON → subscription PerModelConfig → 0 (schema default)
+	// This replaces the old broken chain through GetCurrentValues().
 	if mc := m.resolveMaxContextTokens(); mc > 0 {
 		values["max_context_tokens"] = strconv.Itoa(mc)
 	}
@@ -115,7 +115,10 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 				if perSessionSettingKeys[k] && m.chatID != "" {
 					if k == "max_context_tokens" {
 						if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-							SaveSessionMaxContext(m.workDir, m.chatID, n)
+							// Update max_context in session JSON atomically (preserves sub/model)
+							state := LoadSessionLLMState(m.workDir, m.chatID)
+							state.MaxContextTokens = n
+							SaveSessionLLMState(m.workDir, m.chatID, state)
 							m.cachedMaxContextTokens = n
 						}
 					}
@@ -1237,36 +1240,24 @@ func (m *cliModel) cacheTokenUsage(tu *protocol.TokenUsage) {
 }
 
 // resolveMaxContextTokens returns the max context tokens for the current session.
-// Priority (strict, no ambiguity):
-//  1. Session JSON file (user manually set, or inherited from parent session)
-//  2. Current subscription's PerModelConfigs[model].MaxContext
-//  3. 0 → caller falls back to DefaultValue from schema
+// Delegates to ResolveEffectiveMaxContext — the single source of truth.
+// Priority: session JSON MaxContextTokens → subscription PerModelConfig → 0
 func (m *cliModel) resolveMaxContextTokens() int {
-	// 1. Per-session override (from session file)
-	if m.chatID != "" && m.workDir != "" {
-		if mc := LoadSessionMaxContext(m.workDir, m.chatID); mc > 0 {
-			return mc
-		}
+	if m.chatID == "" || m.workDir == "" {
+		return 0
 	}
-	// 2. Subscription's per-model config — use activeSubID (session-scoped)
-	//    not GetDefault (which returns global default, not per-session)
-	if m.subscriptionMgr != nil && m.activeSubID != "" {
-		if subs, err := m.subscriptionMgr.List(""); err == nil {
-			for _, sub := range subs {
-				if sub.ID == m.activeSubID {
-					model := m.cachedModelName
-					if model == "" {
-						model = sub.Model
-					}
-					if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
-						return pmc.MaxContext
-					}
-					break
-				}
-			}
-		}
-	}
-	return 0
+	state := LoadSessionLLMState(m.workDir, m.chatID)
+	return ResolveEffectiveMaxContext(state, m.subscriptionMgr)
+}
+
+// applySessionLLMState applies a session's LLM state to the in-memory caches.
+// This is the ONLY way to update activeSubID/cachedModelName/cachedMaxContextTokens
+// from a SessionLLMState. Ensures all caches are consistent.
+func (m *cliModel) applySessionLLMState(state SessionLLMState) {
+	m.activeSubID = state.SubscriptionID
+	m.cachedModelName = state.Model
+	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
+	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
 }
 
 // ---------------------------------------------------------------------------

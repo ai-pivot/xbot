@@ -482,16 +482,21 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	m.lastTokenUsage = nil
 	m.cachedCompressRatio = 0
 
-	// Restore per-session model/subscription from disk (persists across TUI restarts).
-	// This only applies when the session wasn't already restored from in-memory cache.
+	// ── Session LLM state restoration ──────────────────────────
+	// Only when in-memory caches are empty (new session or TUI restart).
+	// Uses unified LoadSessionLLMState + applySessionLLMState to ensure
+	// activeSubID, cachedModelName, cachedMaxContextTokens, cachedMaxOutputTokens
+	// are ALWAYS consistent. No scattered field-by-field assignments.
 	if m.activeSubID == "" && m.cachedModelName == "" {
-		savedSubID, savedModel := LoadSessionLLM(m.workDir, m.chatID)
-		if savedSubID != "" || savedModel != "" {
-			if savedSubID != "" && m.subscriptionMgr != nil {
-				// Restore subscription for this session
+		state := LoadSessionLLMState(m.workDir, m.chatID)
+		if !state.IsZero() {
+			// Found persisted LLM state on disk — apply to caches atomically
+			m.applySessionLLMState(state)
+			// Restore the actual LLM client via SwitchLLM (creates new client)
+			if state.SubscriptionID != "" && m.subscriptionMgr != nil {
 				if subs, err := m.subscriptionMgr.List(""); err == nil {
 					for i := range subs {
-						if subs[i].ID == savedSubID {
+						if subs[i].ID == state.SubscriptionID {
 							if m.channel != nil && m.channel.config.SwitchLLM != nil {
 								switchFn := m.channel.config.SwitchLLM
 								target := subs[i]
@@ -511,14 +516,6 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 							break
 						}
 					}
-				}
-			}
-			if savedModel != "" {
-				m.activeSubID = savedSubID
-				m.cachedModelName = savedModel
-				// Restore per-session max_context from disk (set during subscription switch)
-				if mc := LoadSessionMaxContext(m.workDir, m.chatID); mc > 0 {
-					m.cachedMaxContextTokens = mc
 				}
 			}
 		} else {
