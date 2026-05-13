@@ -680,5 +680,15 @@ func (b *Backend) DeleteChat(ch, senderID, chatID string) error {
 	return err
 }
 
+func (b *Backend) RenameChat(ch, senderID, chatID, newName string) error {
+	_, err := b.CallRPC("rename_chat", map[string]string{
+		"channel":  ch,
+		"senderid": senderID,
+		"chat_id":  chatID,
+		"new_name": newName,
+	})
+	return err
+}
+
 // Ensure Backend implements AgentBackend.
 var _ AgentBackend = (*Backend)(nil)

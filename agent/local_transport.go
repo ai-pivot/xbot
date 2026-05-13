@@ -913,4 +913,14 @@ func (t *localTransport) registerHandlers() {
 		cs := sqlite.NewChatService(a.MultiSession().DB().Conn())
 		return cs.DeleteChat(r.Channel, r.SenderID, r.ChatID)
 	})
+
+	h["rename_chat"] = rpcVoid(func(r struct {
+		Channel  string `json:"channel"`
+		SenderID string `json:"senderid"`
+		ChatID   string `json:"chat_id"`
+		NewName  string `json:"new_name"`
+	}) error {
+		cs := sqlite.NewChatService(a.MultiSession().DB().Conn())
+		return cs.RenameChat(r.Channel, r.SenderID, r.ChatID, r.NewName)
+	})
 }

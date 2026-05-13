@@ -652,6 +652,29 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		log.WithFields(log.Fields{"channel": p.Channel, "chat_id": p.ChatID}).Info("RPC delete_chat")
 		return map[string]string{"status": "ok"}, nil
 	})
+	t["rename_chat"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+		NewName string `json:"new_name"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		senderID := rpcAuthID(ctx)
+		if p.Channel == "" {
+			p.Channel = "cli"
+		}
+		if !isAdmin(senderID) && p.ChatID != bizID {
+			return nil, fmt.Errorf("access denied")
+		}
+		if db := h.backend.MultiSession().DB(); db != nil {
+			cs := sqlite.NewChatService(db.Conn())
+			if err := cs.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
+				return nil, fmt.Errorf("rename chat: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("database not available")
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
 	t["get_token_state"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`

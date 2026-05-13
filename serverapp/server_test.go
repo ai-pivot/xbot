@@ -543,7 +543,8 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 }
 
 // Additional AgentBackend methods for tests
-func (b fakeBackend) CreateWebUser(string) (string, error)    { return "test-pass", nil }
-func (b fakeBackend) ListWebUsers() ([]map[string]any, error) { return nil, nil }
-func (b fakeBackend) DeleteWebUser(string) error              { return nil }
-func (b fakeBackend) DeleteChat(string, string, string) error { return nil }
+func (b fakeBackend) CreateWebUser(string) (string, error)            { return "test-pass", nil }
+func (b fakeBackend) ListWebUsers() ([]map[string]any, error)         { return nil, nil }
+func (b fakeBackend) DeleteWebUser(string) error                      { return nil }
+func (b fakeBackend) DeleteChat(string, string, string) error         { return nil }
+func (b fakeBackend) RenameChat(string, string, string, string) error { return nil }

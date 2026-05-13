@@ -426,22 +426,6 @@ func loadLLMFromDBSubscription(backend agent.AgentBackend, cfg *config.Config) b
 	return true
 }
 
-func currentActiveSubscription(backend agent.AgentBackend, cfg *config.Config) *channel.Subscription {
-	if backend != nil {
-		if sub, err := backend.GetDefaultSubscription(cliSenderID); err == nil && sub != nil {
-			return sub
-		}
-	}
-	sourceSubs := localSeedSourceSubscriptions(cfg)
-	for i, sub := range sourceSubs {
-		if sub.Active || (i == 0 && !hasActiveSeedSubscription(sourceSubs)) {
-			sub.Active = true
-			return &sub
-		}
-	}
-	return nil
-}
-
 // updateActiveSubscription updates the current default subscription with LLM field
 // changes from the Settings panel. This is the ONLY path for LLM config changes —
 // user_llm_subscriptions is the single source of truth.
@@ -1170,116 +1154,10 @@ func main() {
 		SidebarWidthOverride: flagSidebarWidth,
 		NoSidebar:            flagNoSidebar,
 		GetCurrentValues: func() map[string]string {
-			// In remote mode, return cached values — never block the BubbleTea Update loop.
-			// The cache is refreshed asynchronously by refreshRemoteValuesCache().
-			if app.backend != nil && app.backend.IsRemote() {
-				app.valuesCacheMu.RLock()
-				cache := app.valuesCache
-				app.valuesCacheMu.RUnlock()
-				return cache
-			}
-			// Local mode: read directly from config (fast, no RPC).
-			activeSub := currentActiveSubscription(app.backend, app.cfg)
-			llmProvider := app.cfg.LLM.Provider
-			llmAPIKey := app.cfg.LLM.APIKey
-			llmModel := app.cfg.LLM.Model
-			llmBaseURL := app.cfg.LLM.BaseURL
-			if activeSub != nil {
-				llmProvider = activeSub.Provider
-				llmAPIKey = activeSub.APIKey
-				llmModel = activeSub.Model
-				llmBaseURL = activeSub.BaseURL
-			}
-			return map[string]string{
-				"llm_provider":   llmProvider,
-				"llm_api_key":    llmAPIKey,
-				"llm_model":      llmModel,
-				"llm_base_url":   llmBaseURL,
-				"vanguard_model": app.cfg.LLM.VanguardModel,
-				"balance_model":  app.cfg.LLM.BalanceModel,
-				"swift_model":    app.cfg.LLM.SwiftModel,
-				"sandbox_mode": func() string {
-					if app.cfg.Sandbox.Mode != "" {
-						return app.cfg.Sandbox.Mode
-					}
-					return "none"
-				}(),
-				"memory_provider": app.cfg.Agent.MemoryProvider,
-				"tavily_api_key": func() string {
-					if settings, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
-						if v := settings["tavily_api_key"]; v != "" {
-							return v
-						}
-					}
-					return app.cfg.TavilyAPIKey
-				}(),
-				"context_mode":    app.cfg.Agent.ContextMode,
-				"max_iterations":  fmt.Sprintf("%d", app.cfg.Agent.MaxIterations),
-				"max_concurrency": fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency),
-				"max_context_tokens": func() string {
-					// Derive from current subscription's per-model config (subscription+model bound).
-					// Falls back to config.Agent.MaxContextTokens only if no subscription is active.
-					if app.backend != nil {
-						if mc := app.backend.GetEffectiveMaxContext("cli_user", ""); mc > 0 {
-							return fmt.Sprintf("%d", mc)
-						}
-					}
-					return fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens)
-				}(),
-				"compression_threshold": func() string {
-					if app.cfg.Agent.CompressionThreshold > 0 {
-						return fmt.Sprintf("%g", app.cfg.Agent.CompressionThreshold)
-					}
-					return "0.9"
-				}(),
-				"max_output_tokens": func() string {
-					// Prefer subscription value (single source of truth)
-					if activeSub != nil && activeSub.MaxOutputTokens > 0 {
-						return fmt.Sprintf("%d", activeSub.MaxOutputTokens)
-					}
-					if app.cfg.LLM.MaxOutputTokens > 0 {
-						return fmt.Sprintf("%d", app.cfg.LLM.MaxOutputTokens)
-					}
-					return "8192"
-				}(),
-				"thinking_mode": func() string {
-					if activeSub != nil && activeSub.ThinkingMode != "" {
-						return activeSub.ThinkingMode
-					}
-					return app.cfg.LLM.ThinkingMode
-				}(),
-				"enable_auto_compress": func() string {
-					if app.cfg.Agent.EnableAutoCompress == nil || *app.cfg.Agent.EnableAutoCompress {
-						return "true"
-					}
-					return "false"
-				}(),
-				"theme": func() string {
-					// Read persisted theme from settings, default to dark
-					if app.backend != nil {
-						if ss := app.backend.SettingsService(); ss != nil {
-							if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
-								if t, ok := vals["theme"]; ok && t != "" {
-									return t
-								}
-							}
-						}
-					}
-					return "midnight"
-				}(),
-				"language": func() string {
-					if app.backend != nil {
-						if ss := app.backend.SettingsService(); ss != nil {
-							if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
-								if l, ok := vals["language"]; ok {
-									return l
-								}
-							}
-						}
-					}
-					return ""
-				}(),
-			}
+			app.valuesCacheMu.RLock()
+			cache := app.valuesCache
+			app.valuesCacheMu.RUnlock()
+			return cache
 		},
 		ApplySettings: func(values map[string]string, chatID string) {
 			if app.backend == nil {
@@ -1614,7 +1492,7 @@ func main() {
 	// 设置历史消息加载器（会话恢复）
 	var cliTenantID int64
 	var cliSessionSvc *sqlite.SessionService
-	if !app.backend.IsRemote() && app.db != nil {
+	if app.backend != nil && app.db != nil {
 		tenantSvc = sqlite.NewTenantService(app.db)
 		cliSessionSvc = sqlite.NewSessionService(app.db)
 		tenantID, err := tenantSvc.GetOrCreateTenantID("cli", initialChatID)
@@ -1994,12 +1872,13 @@ func main() {
 		}
 	}
 
-	// Wire AI-Native TUI callback (local mode only; config works everywhere via SettingsSvc)
-	if app.backend != nil && !app.backend.IsRemote() {
+	// Wire AI-Native TUI callback (both local and remote modes)
+	if app.backend != nil {
 		tuiCtrl := func(action string, params map[string]string) (map[string]string, error) {
 			return cliCh.SendTUIControl(action, params)
 		}
 		app.backend.SetTUICallbacks(tuiCtrl, nil, nil)
+		app.backend.SetTUIControlHandler(tuiCtrl)
 
 		// Wire ChatRenameFn: rename session in local JSON + DB
 		chatRename := func(chatID, newName string) (string, error) {
@@ -2008,7 +1887,6 @@ func main() {
 			if err != nil {
 				return "", fmt.Errorf("load sessions: %w", err)
 			}
-			// Find the session's current display name by chatID (not by parsing chatID)
 			oldName := ds.NameByChatID(chatID)
 			if oldName == "" {
 				return "", fmt.Errorf("session not found for chatID %q", chatID)
@@ -2017,14 +1895,11 @@ func main() {
 			if err != nil {
 				return "", fmt.Errorf("rename local session: %w", err)
 			}
-			// Also update DB label via backend (use actualName after dedup)
 			if app.backend != nil {
-				cs := sqlite.NewChatService(app.db.Conn())
-				if err := cs.RenameChat("cli", cliSenderID, chatID, actualName); err != nil {
+				if err := app.backend.RenameChat("cli", cliSenderID, chatID, actualName); err != nil {
 					log.WithError(err).Warn("Failed to rename chat in DB")
 				}
 			}
-			// Refresh sessions list
 			if cliCfg.SessionsListRefresh != nil {
 				cliCfg.SessionsListRefresh()
 			}
@@ -2033,18 +1908,9 @@ func main() {
 		app.backend.SetChatRenameFn(chatRename)
 	}
 
-	// Wire AI-Native TUI callback for remote mode (server → client via WS)
-	if app.backend != nil && app.backend.IsRemote() {
-		app.backend.SetTUIControlHandler(func(action string, params map[string]string) (map[string]string, error) {
-			return cliCh.SendTUIControl(action, params)
-		})
-	}
-
-	// Apply saved theme at startup.
-	// Local mode can read settings immediately; remote mode must wait until backend.Start()
-	// establishes the WS/RPC connection, otherwise theme fetch races and the UI keeps default
-	// colors until the user re-saves settings.
-	if app.backend != nil && !app.backend.IsRemote() {
+	// Apply saved theme at startup (both local and remote — local is fast,
+	// remote reads from cache populated by refreshRemoteValuesCache).
+	if app.backend != nil {
 		if ss := app.backend.SettingsService(); ss != nil {
 			if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
 				if t, ok := vals["theme"]; ok && t != "" {
@@ -2357,13 +2223,12 @@ func main() {
 		})
 	}
 
-	// Background goroutine: periodically refresh remote values cache
-	// (GetCurrentValues must not call RPC from BubbleTea Update loop)
-	if app.backend != nil && app.backend.IsRemote() {
-		// Initial seed
+	// Background goroutine: periodically refresh values cache.
+	// Both local and remote modes use cache for GetCurrentValues.
+	if app.backend != nil {
 		app.refreshRemoteValuesCache()
 		valuesCtx, valuesCancel := context.WithCancel(context.Background())
-		clipanic.Go("main.remote.RefreshValuesCache", func() {
+		clipanic.Go("main.RefreshValuesCache", func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			for {

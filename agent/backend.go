@@ -152,6 +152,7 @@ type AgentBackend interface {
 
 	// --- Chat Management ---
 	DeleteChat(channel, senderID, chatID string) error
+	RenameChat(channel, senderID, chatID, newName string) error
 
 	// --- Channel Config ---
 	GetChannelConfigs() (map[string]map[string]string, error)
