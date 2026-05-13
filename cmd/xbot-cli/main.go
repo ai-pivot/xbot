@@ -2099,10 +2099,15 @@ func main() {
 
 		// Wire ChatRenameFn: rename session in local JSON + DB
 		chatRename := func(chatID, newName string) (string, error) {
-			workDir, oldName := channel.ParseChatID(chatID)
+			workDir, _ := channel.ParseChatID(chatID)
 			ds, err := channel.LoadDirSessions(workDir)
 			if err != nil {
 				return "", fmt.Errorf("load sessions: %w", err)
+			}
+			// Find the session's current display name by chatID (not by parsing chatID)
+			oldName := ds.NameByChatID(chatID)
+			if oldName == "" {
+				return "", fmt.Errorf("session not found for chatID %q", chatID)
 			}
 			if err := ds.RenameSession(oldName, newName); err != nil {
 				return "", fmt.Errorf("rename local session: %w", err)

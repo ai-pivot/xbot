@@ -654,8 +654,14 @@ func Run(args []string) error {
 	// CLI sessions may not have a user_chats row yet — the upsert creates one if needed.
 	if tokenDB != nil {
 		backend.SetChatRenameFn(func(chatID, newName string) (string, error) {
-			_, oldName := channel.ParseChatID(chatID)
 			conn := tokenDB.Conn()
+			// Look up current label from DB for the old name
+			var oldName string
+			row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, cliSenderID, chatID)
+			_ = row.Scan(&oldName)
+			if oldName == "" {
+				_, oldName = channel.ParseChatID(chatID)
+			}
 			_, err := conn.Exec(`
 				INSERT INTO user_chats (channel, sender_id, chat_id, label)
 				VALUES ('cli', ?, ?, ?)
