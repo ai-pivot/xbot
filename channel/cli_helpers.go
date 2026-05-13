@@ -14,7 +14,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	log "xbot/logger"
 	"xbot/storage/sqlite"
 )
 
@@ -43,117 +42,14 @@ func isMaskedAPIKey(key string) bool {
 }
 
 // Private scope-check wrappers — delegate to the unified registry in setting_keys.go.
-func isUserScopedSettingKey(key string) bool         { return IsUserScopedSettingKey(key) }
 func isSubscriptionScopedSettingKey(key string) bool { return IsSubscriptionScopedSettingKey(key) }
 func cliSettingScope(key string) string              { return SettingScopeOf(key) }
-func (m *cliModel) mergeCLISettingsValues() map[string]string {
-	values := make(map[string]string)
-	if m.channel == nil {
-		return values
-	}
-	// Non-LLM settings from GetCurrentValues (theme, language, tiers, etc.)
-	// Skip empty-string values so DefaultValue in the schema can fill correctly.
-	if m.channel.config.GetCurrentValues != nil {
-		for k, v := range m.channel.config.GetCurrentValues() {
-			if v != "" {
-				values[k] = v
-			}
-		}
-	}
-	// Subscription-scoped settings from active subscription.
-	if m.channel.subscriptionMgr != nil {
-		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
-			values["llm_provider"] = sub.Provider
-			values["llm_api_key"] = sub.APIKey
-			values["llm_base_url"] = sub.BaseURL
-			values["llm_model"] = sub.Model
-			values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
-			values["thinking_mode"] = sub.ThinkingMode
-		}
-	}
-	// User-scoped settings override GetCurrentValues.
-	if m.channel.settingsSvc != nil {
-		vals, err := m.channel.settingsSvc.GetSettings(m.channelName, m.senderID)
-		if err == nil {
-			for k, v := range vals {
-				if v != "" && isUserScopedSettingKey(k) {
-					values[k] = v
-				}
-			}
-		}
-	}
-	// ── max_context_tokens: single source of truth ──
-	// Read from session JSON → subscription PerModelConfig → 0 (schema default)
-	// This replaces the old broken chain through GetCurrentValues().
-	if mc := m.resolveMaxContextTokens(); mc > 0 {
-		values["max_context_tokens"] = strconv.Itoa(mc)
-	}
-	return values
-}
 
-// perSessionSettingKeys are settings that should only apply to the current session
-// when changed from a session (chatID non-empty). They are not written to global
-// config/DB, preserving other sessions' independent values.
-var perSessionSettingKeys = map[string]bool{
-	// max_context_tokens removed from per-session — it's a global user setting
-	// stored in DB like max_iterations. All sessions share the same value.
-	// When user changes it in /settings, it writes to DB immediately.
-	// resolveMaxContextTokens reads from DB via mergeCLISettingsValues.
-}
+// mergeCLISettingsValues delegates to cli_settings.go:readSettings.
+func (m *cliModel) mergeCLISettingsValues() map[string]string { return m.readSettings() }
 
-// IsPerSessionSettingKey returns true if the key is a per-session setting.
-func IsPerSessionSettingKey(key string) bool {
-	return perSessionSettingKeys[key]
-}
-
-func (m *cliModel) persistCLISettingsValues(values map[string]string) {
-	if m.channel != nil && m.channel.settingsSvc != nil {
-		for k, v := range values {
-			// Skip empty values — don't pollute the DB with meaningless entries
-			// that would block DefaultValue from taking effect.
-			if v != "" && isUserScopedSettingKey(k) {
-				// Per-session settings: skip global DB write when in a session context,
-				// so the change only affects the current session's runtime.
-				// Instead, persist to the session file for UI recovery across restarts.
-				// Subscription-scoped settings: write to subscription PerModelConfig.
-				// max_context is a property of (subscription + model), stored in PerModelConfigs.
-				// /settings change → PerModelConfig → sub panel sees it → all sessions share it.
-				if k == "max_context_tokens" {
-					if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-						m.cachedMaxContextTokens = n
-						if m.subscriptionMgr != nil && m.activeSubID != "" && m.cachedModelName != "" {
-							if subs, listErr := m.subscriptionMgr.List(""); listErr == nil {
-								for i := range subs {
-									if subs[i].ID == m.activeSubID {
-										if subs[i].PerModelConfigs == nil {
-											subs[i].PerModelConfigs = make(map[string]PerModelConfig)
-										}
-										pmc := subs[i].PerModelConfigs[m.cachedModelName]
-										pmc.MaxContext = n
-										subs[i].PerModelConfigs[m.cachedModelName] = pmc
-										if err := m.subscriptionMgr.Update(subs[i].ID, &subs[i]); err != nil {
-											log.WithFields(log.Fields{"err": err, "sub": subs[i].ID}).Warn("Failed to update PerModelConfig")
-										}
-										break
-									}
-								}
-							}
-						}
-					}
-				}
-				if perSessionSettingKeys[k] && m.chatID != "" {
-					continue
-				}
-				if err := m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v); err != nil {
-					log.WithFields(log.Fields{"key": k, "val": v, "err": err}).Warn("persistCLISettingsValues: SetSetting failed")
-				}
-			}
-		}
-	}
-	if m.channel != nil && m.channel.config.ApplySettings != nil {
-		m.channel.config.ApplySettings(values, m.chatID)
-	}
-}
+// persistCLISettingsValues delegates to cli_settings.go:saveSettings.
+func (m *cliModel) persistCLISettingsValues(values map[string]string) { m.saveSettings(values) }
 
 // ---------------------------------------------------------------------------
 // Refactored common patterns (方案 B: 提取重复代码)
@@ -1259,24 +1155,8 @@ func (m *cliModel) cacheTokenUsage(tu *protocol.TokenUsage) {
 	}
 }
 
-// resolveMaxContextTokens returns the max context tokens for the current session.
-// max_context is a property of (subscription + model), stored in PerModelConfigs.
-// It is NOT a per-session setting — all sessions using the same (sub+model) see the same value.
-func (m *cliModel) resolveMaxContextTokens() int {
-	if m.activeSubID != "" && m.cachedModelName != "" && m.subscriptionMgr != nil {
-		if subs, err := m.subscriptionMgr.List(""); err == nil {
-			for _, sub := range subs {
-				if sub.ID == m.activeSubID {
-					if pmc, ok := sub.PerModelConfigs[m.cachedModelName]; ok && pmc.MaxContext > 0 {
-						return pmc.MaxContext
-					}
-					break
-				}
-			}
-		}
-	}
-	return 0
-}
+// resolveMaxContextTokens delegates to cli_settings.go:resolveMaxContext.
+func (m *cliModel) resolveMaxContextTokens() int { return m.resolveMaxContext() }
 
 // applySessionLLMState applies a session's LLM state to the in-memory caches.
 // This is the ONLY way to update activeSubID/cachedModelName/cachedMaxContextTokens
