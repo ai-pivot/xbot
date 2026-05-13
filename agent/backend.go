@@ -61,6 +61,10 @@ type AgentBackend interface {
 	GetLLMConcurrency(senderID string) int
 	SetLLMConcurrency(senderID string, personal int) error
 	SetDefaultThinkingMode(mode string) error
+	SetModelContexts(contexts map[string]int) error
+	SetGlobalMaxTokens(maxTokens int) error
+	SetRetryConfig(cfg llm.RetryConfig) error
+	SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error
 	SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string)
 	ClearProxyLLM(senderID string)
 

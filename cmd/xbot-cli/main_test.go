@@ -827,7 +827,13 @@ func (b *fakeAgentBackend) ListModels() []string                                
 func (b *fakeAgentBackend) ListAllModels() []string                               { return nil }
 func (b *fakeAgentBackend) SetModelTiers(config.LLMConfig) error                  { return nil }
 func (b *fakeAgentBackend) SetDefaultThinkingMode(string) error                   { return nil }
-func (b *fakeAgentBackend) GetUserTokenUsage(string) (map[string]any, error)      { return nil, nil }
+func (b *fakeAgentBackend) SetModelContexts(contexts map[string]int) error        { return nil }
+func (b *fakeAgentBackend) SetGlobalMaxTokens(maxTokens int) error                { return nil }
+func (b *fakeAgentBackend) SetRetryConfig(cfg llm.RetryConfig) error              { return nil }
+func (b *fakeAgentBackend) SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error {
+	return nil
+}
+func (b *fakeAgentBackend) GetUserTokenUsage(string) (map[string]any, error) { return nil, nil }
 func (b *fakeAgentBackend) GetDailyTokenUsage(string, int) ([]map[string]any, error) {
 	return nil, nil
 }

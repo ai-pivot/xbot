@@ -353,6 +353,10 @@ func (b fakeBackend) LLMGenerate(_ context.Context, _, _ string, _ []llm.ChatMes
 func (b fakeBackend) LLMModels(_ context.Context, _ string) ([]string, error)            { return nil, nil }
 func (b fakeBackend) SetModelTiers(_ config.LLMConfig) error                             { return nil }
 func (b fakeBackend) SetDefaultThinkingMode(_ string) error                              { return nil }
+func (b fakeBackend) SetModelContexts(_ map[string]int) error                            { return nil }
+func (b fakeBackend) SetGlobalMaxTokens(_ int) error                                     { return nil }
+func (b fakeBackend) SetRetryConfig(_ llm.RetryConfig) error                             { return nil }
+func (b fakeBackend) SetChatLLM(_ string, _ string, _ config.LLMConfig) error            { return nil }
 func (b fakeBackend) ClearMemory(_ context.Context, _, _, _, _ string) error             { return nil }
 func (b fakeBackend) GetMemoryStats(_ context.Context, _, _, _ string) map[string]string { return nil }
 func (b fakeBackend) GetUserTokenUsage(_ string) (map[string]any, error)                 { return nil, nil }

@@ -11,6 +11,7 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/config"
+	llm "xbot/llm"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
@@ -201,6 +202,44 @@ func (t *localTransport) registerHandlers() {
 
 	h[MethodSetDefaultThinkingMode] = rpcVoid(func(r setDefaultThinkingModeReq) error {
 		a.llmFactory.SetDefaultThinkingMode(r.Mode)
+		return nil
+	})
+
+	h[MethodSetModelContexts] = rpcVoid(func(r map[string]int) error {
+		a.llmFactory.SetModelContexts(r)
+		return nil
+	})
+
+	h[MethodSetGlobalMaxTokens] = rpcVoid(func(r setGlobalMaxTokensReq) error {
+		a.llmFactory.SetGlobalMaxTokens(r.MaxTokens)
+		return nil
+	})
+
+	h[MethodSetRetryConfig] = rpcVoid(func(r llm.RetryConfig) error {
+		a.llmFactory.SetRetryConfig(r)
+		return nil
+	})
+
+	h[MethodSetChatLLM] = rpcVoid(func(r setChatLLMReq) error {
+		var inner llm.LLM
+		switch r.Provider {
+		case "anthropic":
+			inner = llm.NewAnthropicLLM(llm.AnthropicConfig{
+				BaseURL:      r.Config.BaseURL,
+				APIKey:       r.Config.APIKey,
+				DefaultModel: r.Config.Model,
+				MaxTokens:    r.Config.MaxOutputTokens,
+			})
+		default:
+			inner = llm.NewOpenAILLM(llm.OpenAIConfig{
+				BaseURL:      r.Config.BaseURL,
+				APIKey:       r.Config.APIKey,
+				DefaultModel: r.Config.Model,
+				MaxTokens:    r.Config.MaxOutputTokens,
+			})
+		}
+		client := llm.NewRetryLLM(inner, llm.DefaultRetryConfig())
+		a.llmFactory.SetChatLLM(r.SenderID, r.ChatID, client, r.Config.Model)
 		return nil
 	})
 

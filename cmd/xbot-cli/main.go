@@ -218,9 +218,9 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		app.cliCh.SyncLayoutSettings(vals)
 	}
 
-	// Sync tier model mappings to local LLMFactory so SubAgent model resolution
-	// works in remote mode (tier models are now user-scoped, persisted in DB).
-	if app.backend != nil && app.backend.LLMFactory() != nil {
+	// Sync tier model mappings via RPC so SubAgent model resolution
+	// works correctly (tier models are user-scoped, persisted in DB).
+	if app.backend != nil {
 		llmCfg := app.cfg.LLM // start from current config
 		if v, ok := vals["vanguard_model"]; ok {
 			llmCfg.VanguardModel = v
@@ -232,8 +232,8 @@ func (app *cliApp) refreshRemoteValuesCache() {
 			llmCfg.SwiftModel = v
 		}
 		app.cfg.LLM = llmCfg
-		app.backend.LLMFactory().SetModelTiers(llmCfg)
-		app.backend.LLMFactory().SetModelContexts(app.cfg.Agent.ModelContexts)
+		app.backend.SetModelTiers(llmCfg)
+		app.backend.SetModelContexts(app.cfg.Agent.ModelContexts)
 	}
 }
 
@@ -388,25 +388,37 @@ func loadLLMFromLocalDB(db *sqlite.DB, cfg *config.Config) bool {
 }
 
 func seedLocalDBSubscriptions(backend agent.AgentBackend, cfg *config.Config) error {
-	if backend == nil || backend.LLMFactory() == nil {
-		return nil
-	}
-	svc := backend.LLMFactory().GetSubscriptionSvc()
-	if svc == nil {
+	if backend == nil {
 		return nil
 	}
 	sourceSubs := localSeedSourceSubscriptions(cfg)
 	if len(sourceSubs) == 0 {
 		return nil
 	}
-	existing, err := svc.List(cliSenderID)
+	existing, err := backend.ListSubscriptions(cliSenderID)
 	if err != nil {
 		return err
 	}
 	if len(existing) > 0 {
 		return nil
 	}
-	return seedSubscriptionsForSender(svc, cliSenderID, sourceSubs)
+	hasActive := hasActiveSeedSubscription(sourceSubs)
+	for i, sc := range sourceSubs {
+		if err := backend.AddSubscription(cliSenderID, protocol.Subscription{
+			ID:              sc.ID,
+			Name:            sc.Name,
+			Provider:        sc.Provider,
+			BaseURL:         sc.BaseURL,
+			APIKey:          sc.APIKey,
+			Model:           sc.Model,
+			MaxOutputTokens: sc.MaxOutputTokens,
+			ThinkingMode:    sc.ThinkingMode,
+			Active:          sc.Active || (i == 0 && !hasActive),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadLLMFromDBSubscription(backend agent.AgentBackend, cfg *config.Config) bool {
@@ -835,12 +847,12 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		}
 		backend.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 		backend.IndexGlobalTools()
-		backend.LLMFactory().SetModelTiers(cfg.LLM)
-		backend.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
+		_ = backend.SetModelTiers(cfg.LLM)
+		_ = backend.SetModelContexts(cfg.Agent.ModelContexts)
 		if maxOutputTokens > 0 {
-			backend.LLMFactory().SetGlobalMaxTokens(maxOutputTokens)
+			_ = backend.SetGlobalMaxTokens(maxOutputTokens)
 		}
-		backend.LLMFactory().SetRetryConfig(llm.RetryConfig{
+		_ = backend.SetRetryConfig(llm.RetryConfig{
 			Attempts: uint(cfg.Agent.LLMRetryAttempts),
 			Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
 			MaxDelay: time.Duration(cfg.Agent.LLMRetryMaxDelay),
@@ -1146,7 +1158,7 @@ func main() {
 	cliCfg := channel.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
-		RemoteMode:           app.backend.IsRemote(),
+		RemoteMode:           false, // unified: always use remote adapter path
 		RemoteServerURL:      remoteServerURL,
 		DebugMode:            flagDebug,
 		DebugInput:           flagDebugInput,
@@ -1225,16 +1237,13 @@ func main() {
 				log.Warnf("Failed to save CLI config: %v", err)
 			}
 
-			// ── Local-mode: LLM client rebuild (remote mode handled by server) ──
-			if !app.backend.IsRemote() && llmFieldChanged {
-				if newClient, err := createLLM(app.cfg.LLM, llm.DefaultRetryConfig()); err == nil {
-					app.llmClient = newClient
-					app.backend.LLMFactory().SetDefaults(newClient, app.cfg.LLM.Model)
-					app.backend.LLMFactory().SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
-					app.backend.LLMFactory().SetModelTiers(app.cfg.LLM)
-				} else {
-					log.Warnf("Failed to rebuild LLM client: %v", err)
-				}
+			// ── LLM config changes applied via RPC (unified local/remote path) ──
+			if llmFieldChanged {
+				app.backend.SetModelTiers(app.cfg.LLM)
+				app.backend.SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
+				app.backend.SetModelContexts(app.cfg.Agent.ModelContexts)
+				app.backend.SetGlobalMaxTokens(app.cfg.LLM.MaxOutputTokens)
+				app.backend.SetRetryConfig(llm.DefaultRetryConfig())
 			}
 
 			// Immediately refresh cache so UI shows new values
@@ -1265,11 +1274,8 @@ func main() {
 			}
 			app.llmClient = client
 			if app.backend != nil {
-				if factory := app.backend.LLMFactory(); factory != nil {
-					// Only cache for this chat — don't affect other CLI windows
-					factory.SetChatLLM(cliSenderID, absWorkDir, client, model)
-					factory.SetModelTiers(app.cfg.LLM)
-				}
+				_ = app.backend.SetChatLLM(absWorkDir, app.cfg.LLM.Provider, app.cfg.LLM)
+				_ = app.backend.SetModelTiers(app.cfg.LLM)
 			}
 			return nil
 		},
@@ -1584,121 +1590,107 @@ func main() {
 
 	// Inject SettingsService for interactive /settings panel
 	if app.backend != nil {
-		if app.backend.IsRemote() {
-			// Remote mode: use RPC-backed adapters
-			cliCh.SetSettingsService(newRemoteSettingsService(app.backend))
-			cliCh.SetModelLister(newRemoteModelLister(app.backend))
-			// Forward user messages to server instead of local bus
-			cliCh.SetSendInboundFn(func(msg bus.InboundMessage) bool {
-				clipanic.Go("main.remote.SendInbound", func() {
-					if err := app.backend.SendInbound(msg); err != nil {
-						log.WithError(err).Warn("Failed to forward message to remote server")
-						// Show a toast so the user knows the message failed to send.
-						cliCh.SendToast("Failed to send message: "+err.Error(), "✗")
-					}
-				})
-				return true
-			})
-			// Forward server responses directly to CLI channel via Subscribe (skip dispatcher
-			// since there's no local agent loop — dispatcher would not match "remote" channel)
-			app.backend.Subscribe(protocol.EventPattern{Type: "outbound"}, func(env protocol.EventEnvelope) {
-				var ev protocol.OutboundEvent
-				if err := json.Unmarshal(env.Payload, &ev); err != nil {
-					return
+		// Unified: use RPC-backed adapters for both local and remote modes
+		cliCh.SetSettingsService(newRemoteSettingsService(app.backend))
+		cliCh.SetModelLister(newRemoteModelLister(app.backend))
+		// Forward user messages to backend (unified local/remote path)
+		cliCh.SetSendInboundFn(func(msg bus.InboundMessage) bool {
+			clipanic.Go("main.SendInbound", func() {
+				if err := app.backend.SendInbound(msg); err != nil {
+					log.WithError(err).Warn("Failed to send message")
+					cliCh.SendToast("Failed to send message: "+err.Error(), "✗")
 				}
-				cliCh.Send(bus.OutboundMessage{
-					Channel: ev.Channel,
-					ChatID:  ev.ChatID,
-					Content: ev.Content,
-				})
 			})
-			// Handle ask_user events separately (WaitingUser=true, Questions JSON in metadata)
-			app.backend.Subscribe(protocol.EventPattern{Type: "ask_user"}, func(env protocol.EventEnvelope) {
-				var ev protocol.AskUserEvent
-				if err := json.Unmarshal(env.Payload, &ev); err != nil {
-					return
-				}
-				meta := map[string]string{"ask_questions": ev.Questions}
-				if ev.RequestID != "" {
-					meta["request_id"] = ev.RequestID
-				}
-				cliCh.Send(bus.OutboundMessage{
-					Channel:     ev.Channel,
-					ChatID:      ev.ChatID,
-					WaitingUser: true,
-					Metadata:    meta,
-				})
-			})
-			// Register progress handler via Subscribe for streaming progress from server
-			app.backend.Subscribe(protocol.EventPattern{Type: "progress"}, func(env protocol.EventEnvelope) {
-				var p protocol.ProgressEvent
-				if err := json.Unmarshal(env.Payload, &p); err != nil {
-					return
-				}
-				cliCh.SendProgress("cli:"+cliCfg.ChatID, &p)
-			})
-			// Register inject_user handler via Subscribe for bg task notifications
-			app.backend.Subscribe(protocol.EventPattern{Type: "inject_user"}, func(env protocol.EventEnvelope) {
-				var ev protocol.InjectUserEvent
-				if err := json.Unmarshal(env.Payload, &ev); err != nil {
-					return
-				}
-				cliCh.InjectUserMessage(ev.ChatID, ev.Content)
-			})
-			// Inject remote bg task callbacks (BgTaskManager is nil in remote mode)
-			bgSessionKey := "cli:" + cliCfg.ChatID
-			cliCh.SetBgTaskRemoteCallbacks(
-				bgSessionKey,
-				func() int { return app.backend.GetBgTaskCount(bgSessionKey) },
-				func() []*tools.BackgroundTask {
-					tasks, _ := app.backend.ListBgTasks(bgSessionKey)
-					if tasks == nil {
-						return nil
-					}
-					result := make([]*tools.BackgroundTask, len(tasks))
-					for i, t := range tasks {
-						result[i] = &tools.BackgroundTask{
-							ID:       t.ID,
-							Command:  t.Command,
-							Status:   tools.BgTaskStatus(t.Status),
-							Output:   t.Output,
-							ExitCode: t.ExitCode,
-							Error:    t.Error,
-						}
-						if sa, err := time.Parse(time.RFC3339, t.StartedAt); err == nil {
-							result[i].StartedAt = sa
-						}
-						if t.FinishedAt != "" {
-							if fa, err := time.Parse(time.RFC3339, t.FinishedAt); err == nil {
-								result[i].FinishedAt = &fa
-							}
-						}
-					}
-					return result
-				},
-				func(taskID string) error { return app.backend.KillBgTask(taskID) },
-				func() { app.backend.CleanupCompletedBgTasks(bgSessionKey) },
-			)
-			// Inject TrimHistoryFn for Ctrl+K session truncation (RPC-backed)
-			cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
-				return app.backend.TrimHistory("cli", cliCfg.ChatID, cutoff)
-			})
-			cliCh.SetResetTokenStateFn(func() {
-				app.backend.ResetTokenState()
-			})
-		} else {
-			// Local mode: use local service objects directly
-			if ss := app.backend.SettingsService(); ss != nil {
-				cliCh.SetSettingsService(ss)
+			return true
+		})
+		// Subscribe to outbound events (unified local/remote path)
+		app.backend.Subscribe(protocol.EventPattern{Type: "outbound"}, func(env protocol.EventEnvelope) {
+			var ev protocol.OutboundEvent
+			if err := json.Unmarshal(env.Payload, &ev); err != nil {
+				return
 			}
-			cliCh.SetModelLister(&cliModelLister{
-				factory:  app.backend.LLMFactory(),
-				cfg:      app.cfg,
-				senderID: cliSenderID,
+			cliCh.Send(bus.OutboundMessage{
+				Channel: ev.Channel,
+				ChatID:  ev.ChatID,
+				Content: ev.Content,
 			})
-			// Inject BgTaskManager for background task display
-			bgSessionKey := "cli:" + cliCfg.ChatID
-			cliCh.SetBgTaskManager(app.backend.BgTaskManager(), bgSessionKey)
+		})
+		// Handle ask_user events separately (WaitingUser=true, Questions JSON in metadata)
+		app.backend.Subscribe(protocol.EventPattern{Type: "ask_user"}, func(env protocol.EventEnvelope) {
+			var ev protocol.AskUserEvent
+			if err := json.Unmarshal(env.Payload, &ev); err != nil {
+				return
+			}
+			meta := map[string]string{"ask_questions": ev.Questions}
+			if ev.RequestID != "" {
+				meta["request_id"] = ev.RequestID
+			}
+			cliCh.Send(bus.OutboundMessage{
+				Channel:     ev.Channel,
+				ChatID:      ev.ChatID,
+				WaitingUser: true,
+				Metadata:    meta,
+			})
+		})
+		// Register progress handler via Subscribe for streaming progress
+		app.backend.Subscribe(protocol.EventPattern{Type: "progress"}, func(env protocol.EventEnvelope) {
+			var p protocol.ProgressEvent
+			if err := json.Unmarshal(env.Payload, &p); err != nil {
+				return
+			}
+			cliCh.SendProgress("cli:"+cliCfg.ChatID, &p)
+		})
+		// Register inject_user handler via Subscribe for bg task notifications
+		app.backend.Subscribe(protocol.EventPattern{Type: "inject_user"}, func(env protocol.EventEnvelope) {
+			var ev protocol.InjectUserEvent
+			if err := json.Unmarshal(env.Payload, &ev); err != nil {
+				return
+			}
+			cliCh.InjectUserMessage(ev.ChatID, ev.Content)
+		})
+		// Inject bg task callbacks via RPC (unified local/remote path)
+		bgSessionKey := "cli:" + cliCfg.ChatID
+		cliCh.SetBgTaskRemoteCallbacks(
+			bgSessionKey,
+			func() int { return app.backend.GetBgTaskCount(bgSessionKey) },
+			func() []*tools.BackgroundTask {
+				tasks, _ := app.backend.ListBgTasks(bgSessionKey)
+				if tasks == nil {
+					return nil
+				}
+				result := make([]*tools.BackgroundTask, len(tasks))
+				for i, t := range tasks {
+					result[i] = &tools.BackgroundTask{
+						ID:       t.ID,
+						Command:  t.Command,
+						Status:   tools.BgTaskStatus(t.Status),
+						Output:   t.Output,
+						ExitCode: t.ExitCode,
+						Error:    t.Error,
+					}
+					if sa, err := time.Parse(time.RFC3339, t.StartedAt); err == nil {
+						result[i].StartedAt = sa
+					}
+					if t.FinishedAt != "" {
+						if fa, err := time.Parse(time.RFC3339, t.FinishedAt); err == nil {
+							result[i].FinishedAt = &fa
+						}
+					}
+				}
+				return result
+			},
+			func(taskID string) error { return app.backend.KillBgTask(taskID) },
+			func() { app.backend.CleanupCompletedBgTasks(bgSessionKey) },
+		)
+		// Inject TrimHistoryFn for Ctrl+K session truncation (RPC-backed, unified path)
+		cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
+			return app.backend.TrimHistory("cli", cliCfg.ChatID, cutoff)
+		})
+		cliCh.SetResetTokenStateFn(func() {
+			app.backend.ResetTokenState()
+		})
+		// LOCAL-ONLY: features that need RPC migration
+		if !app.backend.IsRemote() {
 			// Inject ApprovalState for permission control approval dialog
 			if state := app.backend.ApprovalState(); state != nil {
 				cliCh.SetApprovalState(state)
@@ -1709,15 +1701,8 @@ func main() {
 				cliCh.SetWidgetRegistry(pm.WidgetRegistry())
 			}
 			// Inject CheckpointState for Ctrl+K rewind file rollback.
-			// Use a chatID-specific directory so checkpoints from different
-			// sessions (and different work directories) don't interfere.
-			// On unclean shutdown, old checkpoints could otherwise persist
-			// and cause random-file-deletion bugs when rewinding.
 			sanitized := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(absWorkDir)
 			checkpointDir := filepath.Join(config.XbotHome(), "checkpoints", sanitized)
-			// Scrub stale checkpoints from a previous (possibly unclean) shutdown.
-			// Without this, checkpoints from before restart would be included
-			// when rewinding, causing random file deletions/restorations.
 			os.RemoveAll(checkpointDir)
 			if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
 				if mgr := app.backend.HookManager(); mgr != nil {
@@ -1729,47 +1714,6 @@ func main() {
 			} else {
 				log.WithError(err).Warn("Failed to create checkpoint store")
 			}
-			// Inject TrimHistoryFn for Ctrl+K session truncation
-			if cliTenantID != 0 && cliSessionSvc != nil {
-				cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
-					if cutoff.IsZero() {
-						return nil
-					}
-					_, err := cliSessionSvc.PurgeNewerThanOrEqual(cliTenantID, cutoff)
-					if err != nil {
-						return err
-					}
-					// Restore token state from the last remaining user message's
-					// context_tokens — exact API value, no estimation.
-					memSvc := sqlite.NewMemoryService(app.db)
-					lastCtx, ctxErr := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID)
-					if ctxErr != nil {
-						log.WithError(ctxErr).Warn("Failed to get context tokens after trim, using 0")
-						lastCtx = 0
-					}
-					if err := memSvc.SetTokenState(context.Background(), cliTenantID, lastCtx, 0); err != nil {
-						log.WithError(err).Warn("Failed to restore token state after trim")
-					}
-					return nil
-				})
-			} else {
-				log.WithFields(log.Fields{"tenantID": cliTenantID, "hasSessionSvc": cliSessionSvc != nil, "hasDB": app.db != nil}).Warn("TrimHistoryFn NOT registered — DB truncation will not work")
-			}
-			// Reset cached token state after rewind to prevent stale compress trigger.
-			// Uses exact context_tokens from the last remaining user message.
-			cliCh.SetResetTokenStateFn(func() {
-				if cliTenantID != 0 && app.db != nil {
-					memSvc := sqlite.NewMemoryService(app.db)
-					lastCtx, ctxErr := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID)
-					if ctxErr != nil {
-						log.WithError(ctxErr).Warn("Failed to get context tokens after reset, using 0")
-						lastCtx = 0
-					}
-					if err := memSvc.SetTokenState(context.Background(), cliTenantID, lastCtx, 0); err != nil {
-						log.WithError(err).Warn("Failed to reset token state after rewind")
-					}
-				}
-			})
 		}
 	}
 
@@ -1809,41 +1753,18 @@ func main() {
 		app.backend.SetChatRenameFn(chatRename)
 	}
 
-	// Apply saved theme at startup (both local and remote — local is fast,
-	// remote reads from cache populated by refreshRemoteValuesCache).
+	// Apply saved theme at startup (unified local/remote path via RPC).
 	if app.backend != nil {
-		if ss := app.backend.SettingsService(); ss != nil {
-			if vals, err := ss.GetSettings("cli", "cli_user"); err == nil {
-				if t, ok := vals["theme"]; ok && t != "" {
-					channel.ApplyTheme(t)
-				}
-				cliCh.SyncLayoutSettings(vals)
+		if vals, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
+			if t, ok := vals["theme"]; ok && t != "" {
+				channel.ApplyTheme(t)
 			}
+			cliCh.SyncLayoutSettings(vals)
 		}
 	}
 
-	// Wire ALL shared agent callbacks in one place. Both this file and
-	// serverapp/server.go call WireCallbacks with the same positional parameters.
-	// Adding a new parameter changes the signature → compile error at BOTH call sites.
-	if ag := app.backend.Agent(); ag != nil {
-		ag.WireCallbacks(
-			disp.SendDirect, // directSend
-			disp.GetChannel, // channelFinder
-			func(ev protocol.SessionEvent) { // sessionStateHandler
-				cliCh.SendSessionState(ev)
-			},
-			disp, // messageSender
-			func(name string, runFn bus.RunFn) error { // registerAgentChannel
-				ac := channel.NewAgentChannel(name, runFn)
-				if err := ac.Start(); err != nil {
-					return fmt.Errorf("start AgentChannel %s: %w", name, err)
-				}
-				disp.Register(ac)
-				return nil
-			},
-			disp.Unregister, // unregisterAgentChannel
-		)
-	}
+	// LOCAL-ONLY: WireCallbacks are now injected via newChannelTransport() during construction.
+	// This block was previously needed for direct agent→channel wiring but is now redundant.
 
 	// 注入 CLI 渠道特化 prompt 提供者
 	app.backend.SetChannelPromptProviders(&channel.CliPromptProvider{})
@@ -2134,7 +2055,7 @@ func main() {
 	}
 
 	if newSession {
-		app.msgBus.Inbound <- bus.InboundMessage{
+		msg := bus.InboundMessage{
 			Channel:    "cli",
 			SenderID:   "cli_user",
 			ChatID:     absWorkDir,
@@ -2143,6 +2064,9 @@ func main() {
 			SenderName: "CLI User",
 			Time:       time.Now(),
 			RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+		}
+		if err := app.backend.SendInbound(msg); err != nil {
+			log.WithError(err).Warn("Failed to send newSession message")
 		}
 	}
 
@@ -2172,15 +2096,8 @@ func main() {
 		cliCh.Stop()
 	})
 
-	// Runner Bridge: inject LLM client, model list and provider for runner use
-	if !app.backend.IsRemote() {
-		cliCh.SetRunnerLLM(app.llmClient, func() []string {
-			if app.backend != nil {
-				return app.backend.LLMFactory().ListModels()
-			}
-			return nil
-		}(), app.cfg.LLM.Provider)
-	}
+	// Runner Bridge: inject LLM client, model list and provider for runner use (unified path)
+	cliCh.SetRunnerLLM(app.llmClient, app.backend.ListModels(), app.cfg.LLM.Provider)
 
 	// Multi-subscription support (unified for both local and remote modes)
 	cliCh.SetSubscriptionManager(newBackendSubscriptionManager(app.backend))
@@ -2208,56 +2125,7 @@ func main() {
 // Adapters: bridge config/types to CLI interfaces
 // ---------------------------------------------------------------------------
 
-// cliModelLister wraps LLMFactory + config to implement channel.ModelLister.
-// ListAllModels collects models from default LLM + all config subscriptions.
-type cliModelLister struct {
-	factory  *agent.LLMFactory
-	cfg      *config.Config
-	senderID string
-}
-
-func (l *cliModelLister) ListModels() []string {
-	client, _, _, _ := l.factory.GetLLM(l.senderID)
-	return client.ListModels()
-}
-
-func (l *cliModelLister) EnsureModelsLoaded() {
-	client, _, _, _ := l.factory.GetLLM(l.senderID)
-	if eml, ok := client.(interface{ EnsureModelsLoaded() }); ok {
-		eml.EnsureModelsLoaded()
-	}
-}
-
-func (l *cliModelLister) ListAllModels() []string {
-	seen := make(map[string]bool)
-	var result []string
-	for _, m := range l.factory.ListModels() {
-		if !seen[m] {
-			seen[m] = true
-			result = append(result, m)
-		}
-	}
-	if svc := l.factory.GetSubscriptionSvc(); svc != nil && l.senderID != "" {
-		if subs, err := svc.List(l.senderID); err == nil {
-			for _, sub := range subs {
-				if sub.Model != "" && !seen[sub.Model] {
-					seen[sub.Model] = true
-					result = append(result, sub.Model)
-				}
-			}
-			return result
-		}
-	}
-	for _, sub := range l.cfg.Subscriptions {
-		if sub.Model != "" && !seen[sub.Model] {
-			seen[sub.Model] = true
-			result = append(result, sub.Model)
-		}
-	}
-	return result
-}
-
-// backendSubscriptionManager / backendLLMSubscriber defined in init_backend.go
+// backendSubscriptionManager / backendLLMSubscriber defined below (lines 2408-2488)
 
 // syncLLMFromActiveSub derives cfg.LLM.* from the active config subscription.
 // It is still used by legacy config-backed helper paths and migration logic.

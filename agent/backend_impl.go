@@ -311,6 +311,26 @@ func (b *Backend) SetDefaultThinkingMode(mode string) error {
 	return b.call(MethodSetDefaultThinkingMode, setDefaultThinkingModeReq{Mode: mode}, nil)
 }
 
+func (b *Backend) SetModelContexts(contexts map[string]int) error {
+	return b.call(MethodSetModelContexts, contexts, nil)
+}
+
+func (b *Backend) SetGlobalMaxTokens(maxTokens int) error {
+	return b.call(MethodSetGlobalMaxTokens, setGlobalMaxTokensReq{MaxTokens: maxTokens}, nil)
+}
+
+func (b *Backend) SetRetryConfig(cfg llm.RetryConfig) error {
+	return b.call(MethodSetRetryConfig, cfg, nil)
+}
+
+func (b *Backend) SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error {
+	return b.call(MethodSetChatLLM, setChatLLMReq{
+		ChatID:   chatID,
+		Provider: provider,
+		Config:   llmCfg,
+	}, nil)
+}
+
 func (b *Backend) ClearProxyLLM(senderID string) {
 	b.callVoid(MethodClearProxyLLM, clearProxyLLMReq{SenderID: senderID})
 }

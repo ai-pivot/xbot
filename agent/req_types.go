@@ -1,6 +1,9 @@
 package agent
 
-import "xbot/protocol"
+import (
+	"xbot/config"
+	"xbot/protocol"
+)
 
 // RPC method name constants. Used by both Backend (client) and rpc_table (server)
 // to ensure method name consistency. Any typo is caught at compile time.
@@ -26,6 +29,10 @@ const (
 	MethodListModels                   = "list_models"
 	MethodListAllModels                = "list_all_models"
 	MethodSetModelTiers                = "set_model_tiers"
+	MethodSetModelContexts             = "set_model_contexts"
+	MethodSetGlobalMaxTokens           = "set_global_max_tokens"
+	MethodSetRetryConfig               = "set_retry_config"
+	MethodSetChatLLM                   = "set_chat_llm"
 	MethodClearMemory                  = "clear_memory"
 	MethodGetMemoryStats               = "get_memory_stats"
 	MethodGetUserTokenUsage            = "get_user_token_usage"
@@ -132,6 +139,19 @@ type setDefaultThinkingModeReq struct {
 
 type clearProxyLLMReq struct {
 	SenderID string `json:"sender_id"`
+}
+
+// --- LLMFactory Settings ---
+
+type setGlobalMaxTokensReq struct {
+	MaxTokens int `json:"max_tokens"`
+}
+
+type setChatLLMReq struct {
+	SenderID string           `json:"sender_id,omitempty"`
+	ChatID   string           `json:"chat_id"`
+	Provider string           `json:"provider"`
+	Config   config.LLMConfig `json:"config"`
 }
 
 // --- Settings (RPC) ---
