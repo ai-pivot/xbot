@@ -476,9 +476,10 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	var cmds []tea.Cmd
 
 	// Clear token display state — new session should not show stale token bar.
+	// NOTE: Do NOT clear cachedMaxContextTokens / cachedMaxOutputTokens here.
+	// They are LLM session state, not display artifacts. If restoreSession() got
+	// them from savedSessions, they're correct. If not, we'll load from session JSON below.
 	m.lastTokenUsage = nil
-	m.cachedMaxContextTokens = 0
-	m.cachedMaxOutputTokens = 0
 	m.cachedCompressRatio = 0
 
 	// Restore per-session model/subscription from disk (persists across TUI restarts).

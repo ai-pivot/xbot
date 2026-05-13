@@ -1248,11 +1248,21 @@ func (m *cliModel) resolveMaxContextTokens() int {
 			return mc
 		}
 	}
-	// 2. Subscription's per-model config
-	if m.subscriptionMgr != nil && m.cachedModelName != "" {
-		if sub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
-			if pmc, ok := sub.PerModelConfigs[m.cachedModelName]; ok && pmc.MaxContext > 0 {
-				return pmc.MaxContext
+	// 2. Subscription's per-model config — use activeSubID (session-scoped)
+	//    not GetDefault (which returns global default, not per-session)
+	if m.subscriptionMgr != nil && m.activeSubID != "" {
+		if subs, err := m.subscriptionMgr.List(""); err == nil {
+			for _, sub := range subs {
+				if sub.ID == m.activeSubID {
+					model := m.cachedModelName
+					if model == "" {
+						model = sub.Model
+					}
+					if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
+						return pmc.MaxContext
+					}
+					break
+				}
 			}
 		}
 	}
