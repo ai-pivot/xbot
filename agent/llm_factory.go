@@ -148,6 +148,46 @@ func (f *LLMFactory) GetPerChatMaxContext(chatID string) int {
 	return f.perChatMaxCtx[chatID]
 }
 
+// GetEffectiveMaxContext returns the effective max context tokens for a sender+chat,
+// resolving in priority order: per-chat override → per-model subscription config →
+// global model_contexts map → subscription-level MaxContext → 0.
+// This is the single source of truth for "what max context should the UI show?"
+func (f *LLMFactory) GetEffectiveMaxContext(senderID, chatID string) int {
+	// 1. Per-chat manual override (user explicitly set in /settings)
+	if chatID != "" {
+		if mc := f.perChatMaxCtx[chatID]; mc > 0 {
+			return mc
+		}
+	}
+	// 2. Resolve via subscription's per-model config or global model_contexts
+	key := senderID
+	if chatID != "" {
+		key = chatKey(senderID, chatID)
+	}
+	f.mu.RLock()
+	model := f.models[key]
+	sub := f.subscriptions[key]
+	f.mu.RUnlock()
+	if model != "" {
+		if mc := f.resolveEffectiveModelContext(model, sub); mc > 0 {
+			return mc
+		}
+	}
+	// 3. Subscription-level MaxContext as final fallback
+	if sub != nil && sub.MaxContext > 0 {
+		return sub.MaxContext
+	}
+	return 0
+}
+
+// ClearPerChatMaxContext removes the per-session max_context override.
+// Called when switching subscriptions/models so the value re-derives from the new sub.
+func (f *LLMFactory) ClearPerChatMaxContext(chatID string) {
+	f.mu.Lock()
+	delete(f.perChatMaxCtx, chatID)
+	f.mu.Unlock()
+}
+
 // GetLLM 获取用户的 LLM 客户端，如果没有自定义配置则返回默认客户端
 // 返回: (LLM客户端, 模型名, maxContext, thinkingMode)
 //

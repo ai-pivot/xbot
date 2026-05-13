@@ -81,6 +81,8 @@ type AgentBackend interface {
 	SetMaxIterations(n int)
 	SetMaxConcurrency(n int)
 	SetMaxContextTokens(n int, chatID ...string)
+	GetEffectiveMaxContext(senderID, chatID string) int
+	ClearPerChatMaxContext(chatID string)
 	SetCompressionThreshold(f float64)
 	IsProcessing(ch, chatID string) bool
 	GetActiveProgress(ch, chatID string) *protocol.ProgressEvent

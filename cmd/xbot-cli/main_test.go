@@ -738,6 +738,8 @@ func (b *fakeAgentBackend) SetCWD(string, string, string) error            { ret
 func (b *fakeAgentBackend) SetMaxIterations(int)                           {}
 func (b *fakeAgentBackend) SetMaxConcurrency(int)                          {}
 func (b *fakeAgentBackend) SetMaxContextTokens(int, ...string)             {}
+func (b *fakeAgentBackend) GetEffectiveMaxContext(_, _ string) int         { return 0 }
+func (b *fakeAgentBackend) ClearPerChatMaxContext(_ string)                {}
 func (b *fakeAgentBackend) SetCompressionThreshold(float64)                {}
 func (b *fakeAgentBackend) SetSandbox(tools.Sandbox, string)               {}
 func (b *fakeAgentBackend) GetCardBuilder() *tools.CardBuilder             { return nil }

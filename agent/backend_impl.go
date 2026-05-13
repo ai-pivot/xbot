@@ -381,6 +381,23 @@ func (b *Backend) SetMaxContextTokens(n int, chatID ...string) {
 }
 func (b *Backend) SetCompressionThreshold(f float64) { b.callVoid(MethodSetCompressionThreshold, f) }
 func (b *Backend) ResetTokenState()                  { b.callVoid(MethodResetTokenState, struct{}{}) }
+
+// GetEffectiveMaxContext returns the effective max context from LLMFactory.
+// For local mode this is instant; for remote mode it falls back to 0
+// (remote mode uses the cached values from refreshRemoteValuesCache).
+func (b *Backend) GetEffectiveMaxContext(senderID, chatID string) int {
+	if f := b.LLMFactory(); f != nil {
+		return f.GetEffectiveMaxContext(senderID, chatID)
+	}
+	return 0
+}
+
+// ClearPerChatMaxContext clears the per-session max_context override.
+func (b *Backend) ClearPerChatMaxContext(chatID string) {
+	if f := b.LLMFactory(); f != nil {
+		f.ClearPerChatMaxContext(chatID)
+	}
+}
 func (b *Backend) CleanupCompletedBgTasks(sessionKey string) {
 	b.callVoid(MethodCleanupCompletedBgTasks, cleanupCompletedBgTasksReq{SessionKey: sessionKey})
 }

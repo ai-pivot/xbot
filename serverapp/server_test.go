@@ -313,6 +313,8 @@ func (b fakeBackend) SetCWD(_, _, _ string) error                               
 func (b fakeBackend) SetMaxIterations(_ int)                                         {}
 func (b fakeBackend) SetMaxConcurrency(_ int)                                        {}
 func (b fakeBackend) SetMaxContextTokens(_ int, _ ...string)                         {}
+func (b fakeBackend) GetEffectiveMaxContext(_, _ string) int                         { return 0 }
+func (b fakeBackend) ClearPerChatMaxContext(_ string)                                {}
 func (b fakeBackend) SetCompressionThreshold(_ float64)                              {}
 func (b fakeBackend) SetSandbox(_ tools.Sandbox, _ string)                           {}
 func (b fakeBackend) GetCardBuilder() *tools.CardBuilder                             { return nil }

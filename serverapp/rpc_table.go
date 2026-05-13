@@ -155,7 +155,17 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		// (see saveServerConfig). The value here comes from the user's config file
 		// and is the intended default.
 		if _, ok := result["max_context_tokens"]; !ok {
-			result["max_context_tokens"] = fmt.Sprintf("%d", h.cfg.Agent.MaxContextTokens)
+			// Derive from current subscription's per-model config.
+			// Falls back to config.Agent.MaxContextTokens if no subscription.
+			if h.backend.LLMFactory() != nil {
+				if mc := h.backend.LLMFactory().GetEffectiveMaxContext(bizID, ""); mc > 0 {
+					result["max_context_tokens"] = fmt.Sprintf("%d", mc)
+				} else {
+					result["max_context_tokens"] = fmt.Sprintf("%d", h.cfg.Agent.MaxContextTokens)
+				}
+			} else {
+				result["max_context_tokens"] = fmt.Sprintf("%d", h.cfg.Agent.MaxContextTokens)
+			}
 		}
 		if _, ok := result["max_iterations"]; !ok {
 			result["max_iterations"] = fmt.Sprintf("%d", h.cfg.Agent.MaxIterations)

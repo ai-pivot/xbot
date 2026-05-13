@@ -1207,10 +1207,19 @@ func main() {
 					}
 					return app.cfg.TavilyAPIKey
 				}(),
-				"context_mode":       app.cfg.Agent.ContextMode,
-				"max_iterations":     fmt.Sprintf("%d", app.cfg.Agent.MaxIterations),
-				"max_concurrency":    fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency),
-				"max_context_tokens": fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens),
+				"context_mode":    app.cfg.Agent.ContextMode,
+				"max_iterations":  fmt.Sprintf("%d", app.cfg.Agent.MaxIterations),
+				"max_concurrency": fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency),
+				"max_context_tokens": func() string {
+					// Derive from current subscription's per-model config (subscription+model bound).
+					// Falls back to config.Agent.MaxContextTokens only if no subscription is active.
+					if app.backend != nil {
+						if mc := app.backend.GetEffectiveMaxContext("cli_user", ""); mc > 0 {
+							return fmt.Sprintf("%d", mc)
+						}
+					}
+					return fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens)
+				}(),
 				"compression_threshold": func() string {
 					if app.cfg.Agent.CompressionThreshold > 0 {
 						return fmt.Sprintf("%g", app.cfg.Agent.CompressionThreshold)
