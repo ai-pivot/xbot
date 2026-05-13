@@ -1791,6 +1791,12 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		if hasOpts {
 			if onOther {
 				m.panelOptCursor[m.panelTab] = numOpts - 1
+				m.ensureAskUserCursorVisible()
+				return true, m, nil
+			}
+			if onSubmit {
+				m.panelOptCursor[m.panelTab] = numOpts
+				m.ensureAskUserCursorVisible()
 				return true, m, nil
 			}
 			if cursor > 0 {
@@ -2030,15 +2036,24 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 		return
 	}
 	cursor := m.panelOptCursor[m.panelTab]
-	// Each option takes 1 line. Estimate the line offset of the cursor.
-	// Lines before options: tab bar (if multi) + question + blank line = ~3 lines
-	headerLines := 2
+	// Calculate exact line offset of the cursor by counting actual header lines.
+	// Tab bar: 2 lines (tabs + blank) if multiple questions, 0 otherwise.
+	headerLines := 0
 	if len(m.panelItems) > 1 {
-		headerLines = 4 // tab bar + blank + question + blank
+		headerLines = 2 // tab bar + blank line
 	}
+	// Question: may be multiple lines after hardWrap.
+	qWrapWidth := m.width - 6
+	if qWrapWidth < 20 {
+		qWrapWidth = 20
+	}
+	wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
+	headerLines += strings.Count(wrapped, "\n") + 1 // question lines
+	headerLines++                                   // blank line between question and options
+
 	cursorLine := headerLines + cursor
-	// Visible height (approximate — exact clamp happens in View)
-	askVisibleH := m.panelVisibleHeight()
+	// Visible height — use askUserPanelVisibleHeight for the askuser split layout.
+	askVisibleH := m.askUserPanelVisibleHeight()
 	if askVisibleH <= 0 {
 		return
 	}
@@ -2382,21 +2397,27 @@ func (m *cliModel) viewAskUserPanel() string {
 			}
 			sb.WriteString(prefix + otherLabel)
 			// Resize textinput to fit within panel content width (qWrapWidth)
-			// minus label width and scrollbar column. Without this, textinput
-			// View() can exceed contentWidth causing applyScrollbar's scrollbar
-			// to wrap to next line — symptom: "▐" rendered below the "其他" row.
-			// Resize textinput to fit within panel content width (qWrapWidth)
 			// minus label width and scrollbar column.  The textinput View()
 			// (specifically placeholderView) always outputs Width()+1 chars
 			// (cursor+placeholder+padding), so we need -2 instead of -1.
-			// Without this, the line reaches exactly contentWidth, and the
-			// scrollbar "▐" wraps to the next line.
 			tiWidth := qWrapWidth - lipgloss.Width(prefix+otherLabel) - 2
 			if tiWidth < 10 {
 				tiWidth = 10
 			}
 			m.panelOtherTI.SetWidth(tiWidth)
-			sb.WriteString(m.panelOtherTI.View())
+			// Strip NUL bytes from textinput View(). When the input is empty,
+			// placeholderView() copies the placeholder string into a rune slice
+			// sized to Width()+1 and renders the unwritten slots as \x00.
+			// lipgloss.Width() counts these as 0-width, but lipgloss.Render()
+			// (used by PanelBox) treats them as 1-column during word-wrap,
+			// causing the scrollbar "▐" to wrap to the next line.
+			tiView := strings.Map(func(r rune) rune {
+				if r == 0 {
+					return -1
+				}
+				return r
+			}, m.panelOtherTI.View())
+			sb.WriteString(tiView)
 			sb.WriteString("\n")
 
 			// Submit button (only on last tab)
