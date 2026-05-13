@@ -52,7 +52,6 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 		return values
 	}
 	// Non-LLM settings from GetCurrentValues (theme, language, tiers, etc.)
-	// Skip empty-string values so DefaultValue in the schema can fill correctly.
 	if m.channel.config.GetCurrentValues != nil {
 		for k, v := range m.channel.config.GetCurrentValues() {
 			if v != "" {
@@ -60,15 +59,32 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 			}
 		}
 	}
-	// Subscription-scoped settings from active subscription.
-	if m.channel.subscriptionMgr != nil {
-		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
-			values["llm_provider"] = sub.Provider
-			values["llm_api_key"] = sub.APIKey
-			values["llm_base_url"] = sub.BaseURL
-			values["llm_model"] = sub.Model
-			values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
-			values["thinking_mode"] = sub.ThinkingMode
+	// ── Subscription-scoped settings ──
+	// MUST use the current SESSION's subscription (m.activeSubID), NOT the global default.
+	// The global default (GetDefault) is what new sessions start with, but the user may
+	// have switched per-session. The settings panel must reflect what's actually active.
+	activeSubID := m.activeSubID
+	if activeSubID == "" {
+		// Fallback: no per-session override, use global default
+		if m.channel.subscriptionMgr != nil {
+			if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
+				activeSubID = sub.ID
+			}
+		}
+	}
+	if activeSubID != "" && m.channel.subscriptionMgr != nil {
+		if subs, err := m.channel.subscriptionMgr.List(""); err == nil {
+			for _, sub := range subs {
+				if sub.ID == activeSubID {
+					values["llm_provider"] = sub.Provider
+					values["llm_api_key"] = sub.APIKey
+					values["llm_base_url"] = sub.BaseURL
+					values["llm_model"] = sub.Model
+					values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
+					values["thinking_mode"] = sub.ThinkingMode
+					break
+				}
+			}
 		}
 	}
 	// User-scoped settings override GetCurrentValues.
@@ -83,8 +99,6 @@ func (m *cliModel) mergeCLISettingsValues() map[string]string {
 		}
 	}
 	// ── max_context_tokens: single source of truth ──
-	// Read from session JSON → subscription PerModelConfig → 0 (schema default)
-	// This replaces the old broken chain through GetCurrentValues().
 	if mc := m.resolveMaxContextTokens(); mc > 0 {
 		values["max_context_tokens"] = strconv.Itoa(mc)
 	}
