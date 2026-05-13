@@ -115,6 +115,32 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) {
 				// Per-session settings: skip global DB write when in a session context,
 				// so the change only affects the current session's runtime.
 				// Instead, persist to the session file for UI recovery across restarts.
+				// Subscription-scoped settings: write to subscription PerModelConfig.
+				// max_context is a property of (subscription + model), stored in PerModelConfigs.
+				// /settings change → PerModelConfig → sub panel sees it → all sessions share it.
+				if k == "max_context_tokens" {
+					if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+						m.cachedMaxContextTokens = n
+						if m.subscriptionMgr != nil && m.activeSubID != "" && m.cachedModelName != "" {
+							if subs, listErr := m.subscriptionMgr.List(""); listErr == nil {
+								for i := range subs {
+									if subs[i].ID == m.activeSubID {
+										if subs[i].PerModelConfigs == nil {
+											subs[i].PerModelConfigs = make(map[string]PerModelConfig)
+										}
+										pmc := subs[i].PerModelConfigs[m.cachedModelName]
+										pmc.MaxContext = n
+										subs[i].PerModelConfigs[m.cachedModelName] = pmc
+										if err := m.subscriptionMgr.Update(subs[i].ID, &subs[i]); err != nil {
+											log.WithFields(log.Fields{"err": err, "sub": subs[i].ID}).Warn("Failed to update PerModelConfig")
+										}
+										break
+									}
+								}
+							}
+						}
+					}
+				}
 				if perSessionSettingKeys[k] && m.chatID != "" {
 					continue
 				}
