@@ -2604,11 +2604,13 @@ func (m *cliModel) applyQuickSwitch() {
 		m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 			err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 			return cliSwitchLLMDoneMsg{
-				err:      err,
-				subID:    subID,
-				subName:  subName,
-				subModel: subModel,
-				mgr:      mgr,
+				err:       err,
+				subID:     subID,
+				subName:   subName,
+				subModel:  subModel,
+				maxCtx:    resolveSubMaxContext(target),
+				maxOutTok: resolveSubMaxOutputTokens(target),
+				mgr:       mgr,
 			}
 		})
 	case "model":
@@ -3432,6 +3434,15 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
 	}
 	m.saveCurrentSession()
+	// Inherit parent session's LLM state (subscription + model + max_context).
+	// Without this, new sessions fall back to the global default subscription
+	// which is often wrong when the user has switched per-session.
+	if m.activeSubID != "" {
+		SaveSessionLLM(m.workDir, chatID, m.activeSubID, m.cachedModelName)
+	}
+	if m.cachedMaxContextTokens > 0 {
+		SaveSessionMaxContext(m.workDir, chatID, m.cachedMaxContextTokens)
+	}
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)
 	m.sessionName = name

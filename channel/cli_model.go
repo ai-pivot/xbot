@@ -497,11 +497,13 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 									return cliSwitchLLMDoneMsg{
-										err:      err,
-										subID:    target.ID,
-										subName:  target.Name,
-										subModel: target.Model,
-										mgr:      m.subscriptionMgr,
+										err:       err,
+										subID:     target.ID,
+										subName:   target.Name,
+										subModel:  target.Model,
+										maxCtx:    resolveSubMaxContext(&target),
+										maxOutTok: resolveSubMaxOutputTokens(&target),
+										mgr:       m.subscriptionMgr,
 									}
 								})
 							}
@@ -513,6 +515,10 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 			if savedModel != "" {
 				m.activeSubID = savedSubID
 				m.cachedModelName = savedModel
+				// Restore per-session max_context from disk (set during subscription switch)
+				if mc := LoadSessionMaxContext(m.workDir, m.chatID); mc > 0 {
+					m.cachedMaxContextTokens = mc
+				}
 			}
 		} else {
 			// No per-session override on disk — load global default subscription
@@ -1243,12 +1249,35 @@ type cliSettingsSavedMsg struct {
 }
 
 // cliSwitchLLMDoneMsg is sent when an async subscription switch completes.
+// resolveSubMaxContext returns the per-model max_context from a subscription.
+// Priority: per-model config for the subscription's model → 0 (let global config decide).
+func resolveSubMaxContext(sub *Subscription) int {
+	if sub.Model != "" {
+		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxContext > 0 {
+			return pmc.MaxContext
+		}
+	}
+	return 0
+}
+
+// resolveSubMaxOutputTokens returns the per-model max_output_tokens from a subscription.
+func resolveSubMaxOutputTokens(sub *Subscription) int {
+	if sub.Model != "" {
+		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxOutputTokens > 0 {
+			return pmc.MaxOutputTokens
+		}
+	}
+	return sub.MaxOutputTokens
+}
+
 type cliSwitchLLMDoneMsg struct {
-	err      error
-	subID    string
-	subName  string
-	subModel string
-	mgr      SubscriptionManager
+	err       error
+	subID     string
+	subName   string
+	subModel  string
+	maxCtx    int // per-model max_context from subscription (for session persistence)
+	maxOutTok int // per-model max_output_tokens from subscription
+	mgr       SubscriptionManager
 }
 
 // cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
