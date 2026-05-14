@@ -217,7 +217,11 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithWordWrap(wrapWidth),
+		// Word wrap disabled: glamour breaks English words at spaces and
+		// doesn't understand CJK boundaries, producing ugly splits like
+		// "Adolf\nHitler". All wrapping is handled by hardWrapRunes which
+		// knows about CJK break rules.
+		glamour.WithWordWrap(0),
 	)
 	return r
 }
