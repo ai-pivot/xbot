@@ -7,15 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"xbot/agent/hooks"
 	"xbot/bus"
-	"xbot/channel"
 	"xbot/config"
-	"xbot/event"
 	llm "xbot/llm"
-	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/session"
 	"xbot/tools"
 
 	log "xbot/logger"
@@ -51,24 +46,22 @@ type TenantInfo struct {
 	LastActiveAt string `json:"last_active_at"`
 }
 
-// Backend is the unified AgentBackend implementation.
-// It is a pure typed RPC client — every method goes through transport.Call().
-// The transport decides whether the call executes locally (localTransport)
-// or remotely (RemoteTransport). Backend never branches on mode.
+// Backend is the unified RPC client.
+// Every method goes through transport.Call() — zero local state.
+// Server-side code (serverapp) gets a separate *Agent for direct access.
 type Backend struct {
-	agent     *Agent          // nil in remote mode; for local-only accessors
-	bus       *bus.MessageBus // nil in remote mode
 	transport Transport
 }
 
 // NewBackend creates a local-mode Backend with an in-process Agent.
-func NewBackend(cfg Config) (*Backend, error) {
+// Returns (Backend for RPC, Agent for direct server-side access).
+func NewBackend(cfg Config) (*Backend, *Agent, error) {
 	a, err := New(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lt := newLocalTransport(a, cfg.Bus)
-	return &Backend{agent: a, bus: cfg.Bus, transport: lt}, nil
+	return &Backend{transport: lt}, a, nil
 }
 
 // NewTransportBackend creates a Backend from an existing Transport (remote mode).
@@ -109,16 +102,6 @@ func (b *Backend) callVoid(method string, req any) {
 	if err := b.call(method, req, nil); err != nil {
 		log.WithError(err).WithField("method", method).Warn("Backend: call failed")
 	}
-}
-
-// withAgent returns the result of fn(agent), or zero-value if agent is nil.
-// DEPRECATED: only used by server-side code (serverapp). New code should use RPC.
-func withAgent[T any](b *Backend, fn func(*Agent) T) T {
-	if b.agent == nil {
-		var zero T
-		return zero
-	}
-	return fn(b.agent)
 }
 
 // ---------------------------------------------------------------------------
@@ -162,101 +145,34 @@ func (b *Backend) SetTUIControlHandler(cb func(action string, params map[string]
 func (b *Backend) BindChat(chatID string) error { return b.transport.BindChat(chatID) }
 func (b *Backend) ConnState() string            { return b.transport.ConnState() }
 func (b *Backend) ServerURL() string            { return b.transport.ServerURL() }
+func (b *Backend) IsRemote() bool               { return b.transport.IsRemote() }
 
-// ---------------------------------------------------------------------------
-// Local-only identity & accessors (nil in remote mode)
-// ---------------------------------------------------------------------------
-
-func (b *Backend) Agent() *Agent                     { return b.agent }
-func (b *Backend) IsRemote() bool                    { return b.transport.IsRemote() }
-func (b *Backend) Bus() *bus.MessageBus              { return b.bus }
-func (b *Backend) LLMFactory() *LLMFactory           { return withAgent(b, (*Agent).LLMFactory) }
-func (b *Backend) SettingsService() *SettingsService { return withAgent(b, (*Agent).SettingsService) }
-
-func (b *Backend) SetTUICallbacks(
-	tuiCtrl func(action string, params map[string]string) (map[string]string, error),
-	configGet func(key string) (string, error),
-	configSet func(key, value string) (string, error),
-) {
-	if b.agent != nil {
-		b.agent.SetTUICallbacks(tuiCtrl, configGet, configSet)
-	}
-}
-func (b *Backend) SetChatRenameFn(chatRename func(chatID, newName string) (oldName string, err error)) {
-	if b.agent != nil {
-		b.agent.SetChatRenameFn(chatRename)
-	}
-}
-func (b *Backend) MultiSession() *session.MultiTenantSession {
-	return withAgent(b, (*Agent).MultiSession)
-}
-func (b *Backend) BgTaskManager() *tools.BackgroundTaskManager {
-	return withAgent(b, (*Agent).BgTaskManager)
-}
-func (b *Backend) HookManager() *hooks.Manager          { return withAgent(b, (*Agent).HookManager) }
-func (b *Backend) ApprovalState() *hooks.ApprovalState  { return withAgent(b, (*Agent).ApprovalState) }
-func (b *Backend) PluginManager() *plugin.PluginManager { return withAgent(b, (*Agent).PluginManager) }
-func (b *Backend) GetCardBuilder() *tools.CardBuilder   { return withAgent(b, (*Agent).GetCardBuilder) }
-func (b *Backend) RegistryManager() *RegistryManager    { return withAgent(b, (*Agent).RegistryManager) }
-
-// ---------------------------------------------------------------------------
-// Local-only setters (non-serializable args, no-op in remote mode)
-// ---------------------------------------------------------------------------
-
-func (b *Backend) SetDirectSend(fn func(bus.OutboundMessage) (string, error)) {
-	if b.agent != nil {
-		b.agent.SetDirectSend(fn)
-	}
-}
-
-func (b *Backend) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
-	if b.agent != nil {
-		b.agent.SetChannelFinder(fn)
-	}
-}
-
-func (b *Backend) SetChannelPromptProviders(providers ...ChannelPromptProvider) {
-	if b.agent != nil {
-		b.agent.SetChannelPromptProviders(providers...)
-	}
-}
-
+// RegisterCoreTool/RegisterTool/IndexGlobalTools delegate to localTransport
+// for server-side use. No-op for remote transports.
 func (b *Backend) RegisterCoreTool(tool tools.Tool) {
-	if b.agent != nil {
-		b.agent.RegisterCoreTool(tool)
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.RegisterCoreTool(tool)
 	}
 }
-
-func (b *Backend) IndexGlobalTools() {
-	if b.agent != nil {
-		b.agent.IndexGlobalTools()
-	}
-}
-
 func (b *Backend) RegisterTool(tool tools.Tool) {
-	if b.agent != nil {
-		b.agent.RegisterTool(tool)
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.RegisterTool(tool)
+	}
+}
+func (b *Backend) IndexGlobalTools() {
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.IndexGlobalTools()
 	}
 }
 
-func (b *Backend) SetEventRouter(router *event.Router) {
-	if b.agent != nil {
-		b.agent.SetEventRouter(router)
-	}
-}
-
+// SetSandbox delegates to localTransport for server-side use.
 func (b *Backend) SetSandbox(sb tools.Sandbox, mode string) {
-	if b.agent != nil {
-		b.agent.SetSandbox(sb, mode)
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.SetSandbox(sb, mode)
 	}
 }
 
-func (b *Backend) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
-	if b.agent != nil {
-		b.agent.SetProxyLLM(senderID, proxy, model)
-	}
-}
-
+// SetChannelReconfigureFn delegates to localTransport for server-side use.
 func (b *Backend) SetChannelReconfigureFn(fn func(channel string)) {
 	if lt, ok := b.transport.(*localTransport); ok {
 		lt.reconfigureFn = fn
@@ -708,18 +624,5 @@ func (b *Backend) RenameChat(ch, senderID, chatID, newName string) error {
 	return err
 }
 
-// BackendRPCDeps is the interface that serverapp's RPC handlers need from Backend.
-// Both *Backend and test fakes implement this interface.
-type BackendRPCDeps interface {
-	AgentBackend
-	LLMFactory() *LLMFactory
-	SettingsService() *SettingsService
-	MultiSession() *session.MultiTenantSession
-	BgTaskManager() *tools.BackgroundTaskManager
-	PluginManager() *plugin.PluginManager
-	RegistryManager() *RegistryManager
-	Agent() *Agent
-	SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string)
-}
-
-// Ensure *Backend implements BackendRPCDeps.
+// Ensure Backend implements AgentBackend.
+var _ AgentBackend = (*Backend)(nil)

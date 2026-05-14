@@ -68,7 +68,9 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 
 	// Add subscription via admin path (same as remote CLI does)
 	sub := channel.Subscription{
@@ -121,7 +123,9 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 
 	// Use snake_case keys matching channelSubscriptionJSON — the format the real
 	// backend sends via RPC (backend_impl.go UpdateSubscription).
@@ -177,7 +181,9 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 
 	// Add a subscription first (using snake_case matching real client)
 	addParams, _ := json.Marshal(map[string]any{
@@ -246,7 +252,7 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 	}
 }
 
-func newTestBackendWithSettings(t *testing.T) (agent.BackendRPCDeps, *sqlite.UserSettingsService) {
+func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *agent.Agent, *sqlite.UserSettingsService) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
@@ -255,7 +261,9 @@ func newTestBackendWithSettings(t *testing.T) (agent.BackendRPCDeps, *sqlite.Use
 	t.Cleanup(func() { db.Close() })
 	store := sqlite.NewUserSettingsService(db)
 	agentSvc := agent.NewSettingsService(store)
-	return fakeBackend{settingsSvc: agentSvc}, store
+	ag := &agent.Agent{}
+	ag.SetSettingsService(agentSvc)
+	return fakeBackend{settingsSvc: agentSvc}, ag, store
 }
 
 type fakeBackend struct {
@@ -263,8 +271,8 @@ type fakeBackend struct {
 	factory     *agent.LLMFactory
 }
 
-// Compile-time check: fakeBackend implements agent.BackendRPCDeps.
-var _ agent.BackendRPCDeps = fakeBackend{}
+// Compile-time check: fakeBackend implements agent.AgentBackend.
+var _ agent.AgentBackend = fakeBackend{}
 
 func (b fakeBackend) Start(_ context.Context) error          { return nil }
 func (b fakeBackend) Stop()                                  {}
@@ -391,8 +399,9 @@ func (b fakeBackend) PluginManager() *plugin.PluginManager { return nil }
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.T) {
 	cfg := newTestConfig()
-	backend, store := newTestBackendWithSettings(t)
-	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, backend, "cli", "cli_user"); err != nil {
+	backend, ag, store := newTestBackendWithSettings(t)
+	_ = backend
+	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
 		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
 	}
 	seeded, err := store.Get("cli", "cli_user")
@@ -418,11 +427,12 @@ func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SkipsWhenUserAlreadyHasSettings(t *testing.T) {
 	cfg := newTestConfig()
-	backend, store := newTestBackendWithSettings(t)
+	backend, ag, store := newTestBackendWithSettings(t)
+	_ = backend
 	if err := store.Set("cli", "cli_user", "theme", "mono"); err != nil {
 		t.Fatalf("store.Set() error = %v", err)
 	}
-	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, backend, "cli", "cli_user"); err != nil {
+	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
 		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
 	}
 	vals, err := store.Get("cli", "cli_user")
@@ -436,7 +446,7 @@ func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SkipsWhenUserAlreadyHasSetting
 
 func TestApplyRuntimeSetting_UpdatesConfig(t *testing.T) {
 	cfg := newTestConfig()
-	var backend agent.BackendRPCDeps // nil is fine — we only test cfg mutation
+	var backend agent.AgentBackend // nil is fine — we only test cfg mutation
 	// LLM fields (llm_model, llm_base_url) are no longer handled by
 	// applyRuntimeSetting — they go through update_subscription RPC.
 	// Test a non-LLM config mutation instead.
@@ -456,7 +466,7 @@ func TestAllRuntimeKeysHaveHandlers(t *testing.T) {
 
 func TestApplyRuntimeSetting_WarnsOnUnknownKey(t *testing.T) {
 	cfg := newTestConfig()
-	var backend agent.BackendRPCDeps
+	var backend agent.AgentBackend
 	applyRuntimeSetting(cfg, backend, "cli_user", "totally_unknown_key", "value")
 	// Should not panic, just log a warning
 }
@@ -483,7 +493,9 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 	_, model, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
 		t.Fatalf("expected initial gpt model, got %q", model)
@@ -527,7 +539,9 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 	// Agent calls GetLLM with "cli_user" (business identity)
 	_, model, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {

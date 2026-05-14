@@ -310,22 +310,15 @@ type ChannelTransportConfig struct {
 	Dispatcher  *channel.Dispatcher
 	InitTools   []tools.Tool // Core tools to register during construction
 	LLMSetup    LLMSetupConfig
-
-	// Non-serializable callbacks injected into Agent after construction.
-	// These are function closures that can't go through RPC.
-	// They are set here for local mode, and called during NewChannelBackend.
-	TUICtrl        func(action string, params map[string]string) (map[string]string, error)
-	ChatRenameFn   func(chatID, newName string) (oldName string, err error)
-	PromptProvider ChannelPromptProvider
 }
 
 // NewChannelBackend creates a local-mode Backend with channel-based Transport.
 // This is the unified local mode entry point — CLI never touches Agent directly.
 // All initialization (tools, LLM config, callbacks) happens here.
-func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, error) {
+func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, *Agent, error) {
 	a, err := New(cfg.AgentConfig)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Register core tools
@@ -342,34 +335,9 @@ func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, error) {
 	}
 	a.llmFactory.SetRetryConfig(cfg.LLMSetup.Retry)
 
-	// Inject non-serializable callbacks
-	if cfg.TUICtrl != nil {
-		a.SetTUICallbacks(cfg.TUICtrl, nil, nil)
-	}
-	if cfg.ChatRenameFn != nil {
-		a.SetChatRenameFn(cfg.ChatRenameFn)
-	}
-	if cfg.PromptProvider != nil {
-		a.SetChannelPromptProviders(cfg.PromptProvider)
-	}
-
 	lt := newLocalTransport(a, cfg.AgentConfig.Bus)
 	eventCh := make(chan protocol.WSMessage, 256)
 	ct := newChannelTransport(lt, cfg.Dispatcher, eventCh)
 
-	return &Backend{
-		agent:     nil, // intentionally nil — CLI must not access Agent directly
-		bus:       nil,
-		transport: ct,
-	}, nil
-}
-
-// InternalAgent returns the internal Agent for serverapp compatibility.
-// DEPRECATED: This exists only during the migration period.
-// New code should use Backend RPC methods exclusively.
-func (b *Backend) InternalAgent() *Agent {
-	if ct, ok := b.transport.(*channelTransport); ok {
-		return ct.Agent()
-	}
-	return nil
+	return &Backend{transport: ct}, a, nil
 }

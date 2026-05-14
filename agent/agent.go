@@ -432,6 +432,9 @@ func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.
 // LLMFactory returns the Agent's LLMFactory (for external injection of callbacks).
 func (a *Agent) LLMFactory() *LLMFactory { return a.llmFactory }
 
+// SetLLMFactory sets the LLM factory (used in tests).
+func (a *Agent) SetLLMFactory(f *LLMFactory) { a.llmFactory = f }
+
 // BgTaskManager returns the Agent's BackgroundTaskManager.
 func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
 

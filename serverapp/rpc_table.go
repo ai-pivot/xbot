@@ -27,7 +27,8 @@ import (
 // NOT stored here — this avoids rebuilding the entire table per request.
 type rpcContext struct {
 	cfg     *config.Config
-	backend agent.BackendRPCDeps
+	backend agent.AgentBackend
+	ag      *agent.Agent
 	disp    *channel.Dispatcher
 	msgBus  *bus.MessageBus
 
@@ -55,7 +56,7 @@ func ownOrAdmin(ctx context.Context, chatID string) error {
 }
 
 func (h *rpcContext) requireLLMFactory() error {
-	if h.backend.LLMFactory() == nil {
+	if h.ag == nil || h.ag.LLMFactory() == nil {
 		return fmt.Errorf("LLM factory not available")
 	}
 	return nil
@@ -65,7 +66,7 @@ func (h *rpcContext) requireSubscriptionSvc() (*sqlite.LLMSubscriptionService, e
 	if err := h.requireLLMFactory(); err != nil {
 		return nil, err
 	}
-	svc := h.backend.LLMFactory().GetSubscriptionSvc()
+	svc := h.ag.LLMFactory().GetSubscriptionSvc()
 	if svc == nil {
 		return nil, fmt.Errorf("subscription service not available")
 	}
@@ -73,7 +74,7 @@ func (h *rpcContext) requireSubscriptionSvc() (*sqlite.LLMSubscriptionService, e
 }
 
 func (h *rpcContext) requireMultiSession() error {
-	if h.backend.MultiSession() == nil {
+	if h.ag == nil || h.ag.MultiSession() == nil {
 		return fmt.Errorf("multi-session not available")
 	}
 	return nil
@@ -93,8 +94,8 @@ func resolveChatID(ctx context.Context, chatID string) (string, error) {
 // buildRPCTable constructs the complete RPC dispatch table.
 // The table is built once at startup and reused for every request;
 // per-request identity is injected via context, so no authSenderID/bizID is needed here.
-func buildRPCTable(cfg *config.Config, backend agent.BackendRPCDeps, disp *channel.Dispatcher, msgBus *bus.MessageBus) rpcTable {
-	h := &rpcContext{cfg: cfg, backend: backend, disp: disp, msgBus: msgBus}
+func buildRPCTable(cfg *config.Config, backend agent.AgentBackend, ag *agent.Agent, disp *channel.Dispatcher, msgBus *bus.MessageBus) rpcTable {
+	h := &rpcContext{cfg: cfg, backend: backend, ag: ag, disp: disp, msgBus: msgBus}
 	t := make(rpcTable, 70)
 	registerSettingsHandlers(t, h)
 	registerLLMHandlers(t, h)
@@ -133,13 +134,13 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		SenderID  string `json:"sender_id"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		if err := migrateCLIUserSettingsFromGlobalIfNeeded(h.cfg, h.backend, p.Namespace, bizID); err != nil {
+		if err := migrateCLIUserSettingsFromGlobalIfNeeded(h.cfg, h.ag, p.Namespace, bizID); err != nil {
 			return nil, err
 		}
-		if h.backend.SettingsService() == nil {
+		if h.ag.SettingsService() == nil {
 			return nil, errSettingsUnavailable
 		}
-		result, err := h.backend.SettingsService().GetSettings(p.Namespace, bizID)
+		result, err := h.ag.SettingsService().GetSettings(p.Namespace, bizID)
 		if err != nil {
 			return nil, err
 		}
@@ -157,8 +158,8 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		if _, ok := result["max_context_tokens"]; !ok {
 			// Derive from current subscription's per-model config.
 			// Falls back to config.Agent.MaxContextTokens if no subscription.
-			if h.backend.LLMFactory() != nil {
-				if mc := h.backend.LLMFactory().GetEffectiveMaxContext(bizID, ""); mc > 0 {
+			if h.ag.LLMFactory() != nil {
+				if mc := h.ag.LLMFactory().GetEffectiveMaxContext(bizID, ""); mc > 0 {
 					result["max_context_tokens"] = fmt.Sprintf("%d", mc)
 				} else {
 					result["max_context_tokens"] = fmt.Sprintf("%d", h.cfg.Agent.MaxContextTokens)
@@ -188,7 +189,7 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		Value     string `json:"value"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		if err := migrateCLIUserSettingsFromGlobalIfNeeded(h.cfg, h.backend, p.Namespace, bizID); err != nil {
+		if err := migrateCLIUserSettingsFromGlobalIfNeeded(h.cfg, h.ag, p.Namespace, bizID); err != nil {
 			return err
 		}
 		switch p.Key {
@@ -213,10 +214,10 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 			}
 			return nil
 		}
-		if h.backend.SettingsService() == nil {
+		if h.ag.SettingsService() == nil {
 			return errSettingsUnavailable
 		}
-		if err := h.backend.SettingsService().SetSetting(p.Namespace, bizID, p.Key, p.Value); err != nil {
+		if err := h.ag.SettingsService().SetSetting(p.Namespace, bizID, p.Key, p.Value); err != nil {
 			return err
 		}
 		if isAdmin(rpcAuthID(ctx)) {
@@ -264,13 +265,13 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 	t["get_default_model"] = rpc0(func(ctx context.Context) string {
 		bizID := rpcBizID(ctx)
 		model := ""
-		if subSvc := backend.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
+		if subSvc := h.ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil && sub.Model != "" {
 				model = sub.Model
 			}
 		}
 		if model == "" {
-			_, m, _, _ := backend.LLMFactory().GetLLM(bizID)
+			_, m, _, _ := h.ag.LLMFactory().GetLLM(bizID)
 			model = m
 		}
 		log.WithField("sender_id", bizID).WithField("model", model).Debug("RPC get_default_model")
@@ -288,7 +289,7 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 		bizID := rpcBizID(ctx)
 		log.WithField("sender_id", bizID).WithField("model", p.Model).WithField("chat_id", p.ChatID).Info("RPC switch_model")
 		backend.SwitchModel(bizID, p.Model, p.ChatID)
-		if subSvc := backend.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
+		if subSvc := h.ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
 				if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
 					log.WithError(err).Warn("RPC switch_model: SetModel failed")
@@ -324,39 +325,39 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 	t["set_default_thinking_mode"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`
 	}) error {
-		if backend.LLMFactory() == nil {
+		if h.ag.LLMFactory() == nil {
 			return fmt.Errorf("LLM factory not available")
 		}
-		backend.LLMFactory().SetDefaultThinkingMode(p.Mode)
+		h.ag.LLMFactory().SetDefaultThinkingMode(p.Mode)
 		return nil
 	}))
 	t["list_models"] = rpc0err(func(ctx context.Context) ([]string, error) {
-		if backend.LLMFactory() == nil {
+		if h.ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		client, _, _, _ := backend.LLMFactory().GetLLM(rpcBizID(ctx))
+		client, _, _, _ := h.ag.LLMFactory().GetLLM(rpcBizID(ctx))
 		return client.ListModels(), nil
 	})
 	t["list_all_models"] = rpc0err(func(ctx context.Context) ([]string, error) {
-		if backend.LLMFactory() == nil {
+		if h.ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		models := backend.LLMFactory().ListAllModelsForUser(rpcBizID(ctx))
+		models := h.ag.LLMFactory().ListAllModelsForUser(rpcBizID(ctx))
 		log.WithField("count", len(models)).Debug("RPC list_all_models")
 		return models, nil
 	})
 	t["set_model_tiers"] = h.requireAdmin(rpc1void(func(ctx context.Context, p config.LLMConfig) error {
-		if backend.LLMFactory() == nil {
+		if h.ag.LLMFactory() == nil {
 			return fmt.Errorf("LLM factory not available")
 		}
-		backend.LLMFactory().SetModelTiers(p)
+		h.ag.LLMFactory().SetModelTiers(p)
 		return nil
 	}))
 	t["set_proxy_llm"] = rpc1void(func(ctx context.Context, p struct {
 		Model string `json:"model"`
 	}) error {
-		if backend.LLMFactory() != nil {
-			backend.LLMFactory().SwitchModel(rpcBizID(ctx), p.Model)
+		if h.ag.LLMFactory() != nil {
+			h.ag.LLMFactory().SwitchModel(rpcBizID(ctx), p.Model)
 		}
 		return nil
 	})
@@ -367,6 +368,7 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 
 func registerSubscriptionHandlers(t rpcTable, h *rpcContext) {
 	backend := h.backend
+	_ = backend
 	t["list_subscriptions"] = rpc0err(h.listSubscriptions)
 	t["get_default_subscription"] = rpc0err(h.getDefaultSubscription)
 	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
@@ -439,7 +441,7 @@ func registerSubscriptionHandlers(t rpcTable, h *rpcContext) {
 		if err := svc.Remove(p.ID); err != nil {
 			return err
 		}
-		backend.LLMFactory().Invalidate(sub.SenderID)
+		h.ag.LLMFactory().Invalidate(sub.SenderID)
 		return nil
 	})
 	t["set_default_subscription"] = rpc1void(h.setDefaultSubscription)
@@ -479,7 +481,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if err != nil {
 			return err
 		}
-		return backend.MultiSession().ClearMemory(context.Background(), p.Channel, chatID, p.TargetType, rpcBizID(ctx))
+		return h.ag.MultiSession().ClearMemory(context.Background(), p.Channel, chatID, p.TargetType, rpcBizID(ctx))
 	})
 	t["get_memory_stats"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
@@ -492,13 +494,13 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if err != nil {
 			return nil, err
 		}
-		return backend.MultiSession().GetMemoryStats(context.Background(), p.Channel, chatID, rpcBizID(ctx)), nil
+		return h.ag.MultiSession().GetMemoryStats(context.Background(), p.Channel, chatID, rpcBizID(ctx)), nil
 	})
 	t["get_user_token_usage"] = rpc0err(func(ctx context.Context) (any, error) {
 		if err := h.requireMultiSession(); err != nil {
 			return nil, err
 		}
-		return backend.MultiSession().GetUserTokenUsage(rpcBizID(ctx))
+		return h.ag.MultiSession().GetUserTokenUsage(rpcBizID(ctx))
 	})
 	t["get_daily_token_usage"] = rpc1(func(ctx context.Context, p struct {
 		Days     int    `json:"days"`
@@ -507,7 +509,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if err := h.requireMultiSession(); err != nil {
 			return nil, err
 		}
-		return backend.MultiSession().GetDailyTokenUsage(rpcBizID(ctx), p.Days)
+		return h.ag.MultiSession().GetDailyTokenUsage(rpcBizID(ctx), p.Days)
 	})
 
 	// ── Sub-agents / sessions ──
@@ -614,7 +616,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Update last_active_at so we can restore the most recent session on restart.
-		if db := h.backend.MultiSession().DB(); db != nil {
+		if db := h.ag.MultiSession().DB(); db != nil {
 			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(p.Channel, p.ChatID); err != nil {
 				log.WithError(err).Warn("RPC get_history: failed to update last_active_at")
 			}
@@ -641,7 +643,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if !isAdmin(senderID) && p.ChatID != bizID {
 			return nil, fmt.Errorf("access denied")
 		}
-		if db := h.backend.MultiSession().DB(); db != nil {
+		if db := h.ag.MultiSession().DB(); db != nil {
 			cs := sqlite.NewChatService(db.Conn())
 			if err := cs.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
 				return nil, fmt.Errorf("delete chat: %w", err)
@@ -665,7 +667,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if !isAdmin(senderID) && p.ChatID != bizID {
 			return nil, fmt.Errorf("access denied")
 		}
-		if db := h.backend.MultiSession().DB(); db != nil {
+		if db := h.ag.MultiSession().DB(); db != nil {
 			cs := sqlite.NewChatService(db.Conn())
 			if err := cs.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
 				return nil, fmt.Errorf("rename chat: %w", err)
@@ -686,7 +688,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		ms := backend.MultiSession()
+		ms := h.ag.MultiSession()
 		if ms == nil {
 			return map[string]int64{"prompt_tokens": 0, "completion_tokens": 0}, nil
 		}
@@ -774,6 +776,7 @@ func registerSessionHandlers(t rpcTable, h *rpcContext) {
 
 func registerTaskHandlers(t rpcTable, h *rpcContext) {
 	backend := h.backend
+	_ = backend
 	t["get_bg_task_count"] = rpc1(func(ctx context.Context, p struct {
 		SessionKey string `json:"session_key"`
 	}) (int, error) {
@@ -783,10 +786,10 @@ func registerTaskHandlers(t rpcTable, h *rpcContext) {
 				return 0, fmt.Errorf("access denied")
 			}
 		}
-		if backend.BgTaskManager() == nil {
+		if h.ag.BgTaskManager() == nil {
 			return 0, nil
 		}
-		return len(backend.BgTaskManager().ListRunning(p.SessionKey)), nil
+		return len(h.ag.BgTaskManager().ListRunning(p.SessionKey)), nil
 	})
 	t["list_bg_tasks"] = rpc1(func(ctx context.Context, p struct {
 		SessionKey string `json:"session_key"`
@@ -797,20 +800,20 @@ func registerTaskHandlers(t rpcTable, h *rpcContext) {
 				return nil, fmt.Errorf("access denied")
 			}
 		}
-		if backend.BgTaskManager() == nil {
+		if h.ag.BgTaskManager() == nil {
 			return []struct{}{}, nil
 		}
-		return marshalBgTasks(backend.BgTaskManager().ListAllForSession(p.SessionKey)), nil
+		return marshalBgTasks(h.ag.BgTaskManager().ListAllForSession(p.SessionKey)), nil
 	})
 	t["kill_bg_task"] = rpc1void(func(ctx context.Context, p struct {
 		TaskID string `json:"task_id"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		if backend.BgTaskManager() == nil {
+		if h.ag.BgTaskManager() == nil {
 			return fmt.Errorf("background tasks not available")
 		}
 		if !isAdmin(rpcAuthID(ctx)) {
-			task, err := backend.BgTaskManager().Status(p.TaskID)
+			task, err := h.ag.BgTaskManager().Status(p.TaskID)
 			if err != nil {
 				return fmt.Errorf("access denied: task not found")
 			}
@@ -818,7 +821,7 @@ func registerTaskHandlers(t rpcTable, h *rpcContext) {
 				return fmt.Errorf("access denied")
 			}
 		}
-		return backend.BgTaskManager().Kill(p.TaskID)
+		return h.ag.BgTaskManager().Kill(p.TaskID)
 	})
 	t["cleanup_completed_bg_tasks"] = rpc1(func(ctx context.Context, p struct {
 		SessionKey string `json:"session_key"`
@@ -829,8 +832,8 @@ func registerTaskHandlers(t rpcTable, h *rpcContext) {
 				return false, fmt.Errorf("access denied")
 			}
 		}
-		if backend.BgTaskManager() != nil {
-			backend.BgTaskManager().RemoveCompletedTasks(p.SessionKey)
+		if h.ag.BgTaskManager() != nil {
+			h.ag.BgTaskManager().RemoveCompletedTasks(p.SessionKey)
 		}
 		return true, nil
 	})
@@ -891,19 +894,19 @@ func registerAdminHandlers(t rpcTable, h *rpcContext) {
 	t["create_web_user"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) (any, error) {
-		_, password, err := channel.CreateWebUser(backend.MultiSession().DB().Conn(), p.Username)
+		_, password, err := channel.CreateWebUser(h.ag.MultiSession().DB().Conn(), p.Username)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]string{"password": password}, nil
 	}))
 	t["list_web_users"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
-		return channel.ListWebUsers(backend.MultiSession().DB().Conn())
+		return channel.ListWebUsers(h.ag.MultiSession().DB().Conn())
 	}))
 	t["delete_web_user"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) error {
-		return channel.DeleteWebUser(backend.MultiSession().DB().Conn(), p.Username)
+		return channel.DeleteWebUser(h.ag.MultiSession().DB().Conn(), p.Username)
 	}))
 }
 
@@ -911,9 +914,10 @@ func registerAdminHandlers(t rpcTable, h *rpcContext) {
 
 func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	backend := h.backend
+	_ = backend
 
 	t["plugin_status"] = rpc0err(func(ctx context.Context) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -945,7 +949,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	t["plugin_widgets"] = rpc1(func(ctx context.Context, p struct {
 		ChatID string `json:"chat_id"`
 	}) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return map[string]any{"zones": map[string]string{}, "infos": []struct{}{}}, nil
 		}
@@ -956,8 +960,8 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 		// Each CLI window has a session keyed by its working directory path.
 		getCWD := func(cid string) string {
 			cwd := ""
-			if cid != "" && backend.MultiSession() != nil {
-				if sess, err := backend.MultiSession().GetOrCreateSession("cli", cid); err == nil {
+			if cid != "" && h.ag.MultiSession() != nil {
+				if sess, err := h.ag.MultiSession().GetOrCreateSession("cli", cid); err == nil {
 					cwd = sess.GetCurrentDir()
 				}
 			}
@@ -977,7 +981,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	t["plugin_reload"] = rpc1(func(ctx context.Context, p struct {
 		ID string `json:"id"`
 	}) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -988,7 +992,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	})
 
 	t["plugin_reload_all"] = rpc0err(func(ctx context.Context) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -1001,7 +1005,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	t["plugin_install"] = rpc1(func(ctx context.Context, p struct {
 		SourceDir string `json:"source_dir"`
 	}) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -1018,7 +1022,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	t["plugin_uninstall"] = rpc1(func(ctx context.Context, p struct {
 		ID string `json:"id"`
 	}) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -1029,7 +1033,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	})
 
 	t["plugin_health"] = rpc0err(func(ctx context.Context) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -1046,7 +1050,7 @@ func registerPluginHandlers(t rpcTable, h *rpcContext) {
 	})
 
 	t["plugin_metrics"] = rpc0err(func(ctx context.Context) (any, error) {
-		pm := backend.PluginManager()
+		pm := h.ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
@@ -1167,9 +1171,9 @@ func (h *rpcContext) updateSubscription(ctx context.Context, p struct {
 	if err := svc.Update(dbSub); err != nil {
 		return err
 	}
-	h.backend.LLMFactory().Invalidate(existing.SenderID)
+	h.ag.LLMFactory().Invalidate(existing.SenderID)
 	if existing.IsDefault {
-		h.backend.LLMFactory().SwitchSubscription(bizID, dbSub, "")
+		h.ag.LLMFactory().SwitchSubscription(bizID, dbSub, "")
 	}
 	return nil
 }
@@ -1193,14 +1197,14 @@ func (h *rpcContext) setDefaultSubscription(ctx context.Context, p struct {
 	if p.ChatID != "" {
 		// Per-session switch: only update per-chat cache, do NOT modify
 		// the global default subscription or invalidate other sessions.
-		return h.backend.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub)
+		return h.ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub)
 	}
 	// Global switch: update DB default + invalidate all caches + set per-user LLM
 	if err := svc.SetDefault(p.ID); err != nil {
 		return err
 	}
-	h.backend.LLMFactory().Invalidate(bizID)
-	return h.backend.LLMFactory().SwitchSubscription(bizID, sub, "")
+	h.ag.LLMFactory().Invalidate(bizID)
+	return h.ag.LLMFactory().SwitchSubscription(bizID, sub, "")
 }
 
 func (h *rpcContext) setSubscriptionModel(ctx context.Context, p struct {
@@ -1227,8 +1231,8 @@ func (h *rpcContext) setSubscriptionModel(ctx context.Context, p struct {
 	}
 	if updated != nil {
 		if def, _ := svc.GetDefault(updated.SenderID); def != nil && def.ID == updated.ID {
-			h.backend.LLMFactory().Invalidate(updated.SenderID)
-			if err := h.backend.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
+			h.ag.LLMFactory().Invalidate(updated.SenderID)
+			if err := h.ag.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
 				return err
 			}
 		}
@@ -1238,10 +1242,10 @@ func (h *rpcContext) setSubscriptionModel(ctx context.Context, p struct {
 
 func (h *rpcContext) listTenants(ctx context.Context) (any, error) {
 	bizID := rpcBizID(ctx)
-	if h.backend.MultiSession() == nil {
+	if h.ag.MultiSession() == nil {
 		return []struct{}{}, nil
 	}
-	db := h.backend.MultiSession().DB()
+	db := h.ag.MultiSession().DB()
 	if db == nil {
 		return []struct{}{}, nil
 	}

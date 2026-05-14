@@ -576,6 +576,7 @@ type cliApp struct {
 	msgBus    *bus.MessageBus
 	db        *sqlite.DB
 	backend   *agent.Backend
+	ag        *agent.Agent // in-process Agent (nil in remote mode)
 	disp      *channel.Dispatcher
 	workDir   string
 	xbotHome  string
@@ -687,7 +688,7 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 
 	// 2. Plugin commands from loaded plugins
 	if a.backend != nil {
-		if pm := a.backend.PluginManager(); pm != nil {
+		if pm := a.ag.PluginManager(); pm != nil {
 			for _, p := range pm.ListPlugins() {
 				if p.Manifest == nil || p.Manifest.Contributes == nil {
 					continue
@@ -824,6 +825,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
 	var backend *agent.Backend
+	var ag *agent.Agent
 	disp := channel.NewDispatcher(msgBus)
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
@@ -844,7 +846,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 			XbotHome:        xbotHome,
 			DirectWorkspace: workDir,
 		}
-		backend, err = agent.NewChannelBackend(agent.ChannelTransportConfig{
+		backend, ag, err = agent.NewChannelBackend(agent.ChannelTransportConfig{
 			AgentConfig: bc.AgentConfig(),
 			Dispatcher:  disp,
 			InitTools:   []tools.Tool{tools.NewWebSearchTool(cfg.TavilyAPIKey)},
@@ -871,6 +873,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		msgBus:    msgBus,
 		db:        db,
 		backend:   backend,
+		ag:        ag,
 		disp:      disp,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
@@ -1696,11 +1699,11 @@ func main() {
 			app.backend.ResetTokenState()
 		})
 		// Inject ApprovalState for permission control approval dialog
-		if state := app.backend.ApprovalState(); state != nil {
+		if state := app.ag.ApprovalState(); state != nil {
 			cliCh.SetApprovalState(state)
 		}
 		// Inject PluginManager for /plugin command
-		if pm := app.backend.PluginManager(); pm != nil {
+		if pm := app.ag.PluginManager(); pm != nil {
 			cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
 			cliCh.SetWidgetRegistry(pm.WidgetRegistry())
 		}
@@ -1709,7 +1712,7 @@ func main() {
 		checkpointDir := filepath.Join(config.XbotHome(), "checkpoints", sanitized)
 		os.RemoveAll(checkpointDir)
 		if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
-			if mgr := app.backend.HookManager(); mgr != nil {
+			if mgr := app.ag.HookManager(); mgr != nil {
 				cpState := protocol.NewCheckpointState(cpStore)
 				mgr.RegisterBuiltin(hooks.CheckpointCallback(cpState))
 				cliCh.SetCheckpointState(cpState)
@@ -1725,7 +1728,7 @@ func main() {
 		tuiCtrl := func(action string, params map[string]string) (map[string]string, error) {
 			return cliCh.SendTUIControl(action, params)
 		}
-		app.backend.SetTUICallbacks(tuiCtrl, nil, nil)
+		app.ag.SetTUICallbacks(tuiCtrl, nil, nil)
 		app.backend.SetTUIControlHandler(tuiCtrl)
 
 		// Wire ChatRenameFn: rename session in local JSON + DB
@@ -1753,7 +1756,7 @@ func main() {
 			}
 			return oldName, nil
 		}
-		app.backend.SetChatRenameFn(chatRename)
+		app.ag.SetChatRenameFn(chatRename)
 	}
 
 	// Apply saved theme at startup (unified local/remote path via RPC).
