@@ -1311,7 +1311,31 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		})
 	}
 
+	// Emit subagent_started event for instant sidebar push.
+	if a.sessionStateHandler != nil {
+		a.sessionStateHandler(protocol.SessionEvent{
+			Channel:  originChannel,
+			ChatID:   originChatID,
+			Action:   "subagent_started",
+			Role:     roleName,
+			Instance: oneshotInstance,
+			ParentID: originChatID,
+		})
+	}
+
 	out := Run(subCtx, cfg)
+
+	// Emit subagent_stopped event for instant sidebar update.
+	if a.sessionStateHandler != nil {
+		a.sessionStateHandler(protocol.SessionEvent{
+			Channel:  originChannel,
+			ChatID:   originChatID,
+			Action:   "subagent_stopped",
+			Role:     roleName,
+			Instance: oneshotInstance,
+			ParentID: originChatID,
+		})
+	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"role":     roleName,
