@@ -627,6 +627,10 @@ func (a *Agent) buildSubAgentRunConfig(
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
 		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
 
+		// SubAgent 如果能 spawn 子 Agent，也启用并行执行
+		EnableConcurrentSubAgents: caps.SpawnAgent,
+		SubAgentSem:               a.llmFactory.LLMSemAcquireForUser(originUserID),
+
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
 
