@@ -3,6 +3,7 @@ package channel
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"xbot/bus"
@@ -19,12 +20,17 @@ import (
 // Now: Agent → ChannelCliChannel → eventCh → ChannelTransport → baseTransport → Subscribe handler → cliCh → TUI.
 // Same path as remote mode, but with Go channels instead of WebSocket.
 type ChannelCliChannel struct {
-	eventCh chan<- protocol.WSMessage
+	eventCh      chan<- protocol.WSMessage
+	tuiPendingMu sync.Mutex
+	tuiPending   map[string]chan *protocol.TUIControlPayload
 }
 
 // NewChannelCliChannel creates a ChannelCliChannel that writes to the given event channel.
 func NewChannelCliChannel(eventCh chan<- protocol.WSMessage) *ChannelCliChannel {
-	return &ChannelCliChannel{eventCh: eventCh}
+	return &ChannelCliChannel{
+		eventCh:    eventCh,
+		tuiPending: make(map[string]chan *protocol.TUIControlPayload),
+	}
 }
 
 // Channel interface
@@ -152,5 +158,61 @@ func (c *ChannelCliChannel) SendAskUser(chatID string, ev protocol.AskUserEvent)
 	select {
 	case c.eventCh <- wsMsg:
 	default:
+	}
+}
+
+// SendTUIControlRequest sends a TUI control request via the event channel
+// and waits for a response, following the same request/response pattern as
+// RemoteCLIChannel.SendTUIControlRequest.
+func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, params map[string]string) (map[string]string, error) {
+	id := fmt.Sprintf("tui-%d", time.Now().UnixNano())
+	ch := make(chan *protocol.TUIControlPayload, 1)
+
+	c.tuiPendingMu.Lock()
+	c.tuiPending[id] = ch
+	c.tuiPendingMu.Unlock()
+
+	defer func() {
+		c.tuiPendingMu.Lock()
+		delete(c.tuiPending, id)
+		c.tuiPendingMu.Unlock()
+	}()
+
+	wsMsg := protocol.WSMessage{
+		Type:   protocol.MsgTypeTUIControlReq,
+		ID:     id,
+		ChatID: chatID,
+		TUIControl: &protocol.TUIControlPayload{
+			Action: action,
+			Params: params,
+		},
+	}
+	select {
+	case c.eventCh <- wsMsg:
+	default:
+		return nil, fmt.Errorf("channel cli: event channel full")
+	}
+
+	select {
+	case resp := <-ch:
+		if resp.Error != "" {
+			return nil, fmt.Errorf("%s", resp.Error)
+		}
+		return resp.Result, nil
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("tui_control request %s timed out", id)
+	}
+}
+
+// DeliverTUIResponse routes a TUI control response to the pending request channel.
+func (c *ChannelCliChannel) DeliverTUIResponse(id string, payload *protocol.TUIControlPayload) {
+	c.tuiPendingMu.Lock()
+	ch, ok := c.tuiPending[id]
+	c.tuiPendingMu.Unlock()
+	if ok {
+		select {
+		case ch <- payload:
+		default:
+		}
 	}
 }

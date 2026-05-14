@@ -393,15 +393,20 @@ func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string
 		log.Debug("buildRemoteTUICtrlFn: channelFinder('cli') returned not found")
 		return nil
 	}
-	rc, ok := ch.(*channel.RemoteCLIChannel)
-	if !ok {
-		log.WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel")
-		return nil
+	if rc, ok := ch.(*channel.RemoteCLIChannel); ok {
+		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
+		return func(action string, params map[string]string) (map[string]string, error) {
+			return rc.SendTUIControlRequest(chatID, action, params)
+		}
 	}
-	log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
-	return func(action string, params map[string]string) (map[string]string, error) {
-		return rc.SendTUIControlRequest(chatID, action, params)
+	if cch, ok := ch.(*channel.ChannelCliChannel); ok {
+		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: local CLI TUI control enabled")
+		return func(action string, params map[string]string) (map[string]string, error) {
+			return cch.SendTUIControlRequest(chatID, action, params)
+		}
 	}
+	log.WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel or ChannelCliChannel")
+	return nil
 }
 
 // listLLMSubsFn returns a subscription listing function for the given channel.

@@ -32,14 +32,12 @@ import (
 	"time"
 
 	"xbot/agent"
-	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/clipanic"
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
-	"xbot/plugin"
 	"xbot/pprof"
 	"xbot/protocol"
 	"xbot/serverapp"
@@ -576,7 +574,6 @@ type cliApp struct {
 	msgBus    *bus.MessageBus
 	db        *sqlite.DB
 	backend   *agent.Backend
-	ag        *agent.Agent // in-process Agent (nil in remote mode)
 	disp      *channel.Dispatcher
 	workDir   string
 	xbotHome  string
@@ -687,23 +684,7 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 	}
 
 	// 2. Plugin commands from loaded plugins
-	if a.backend != nil {
-		if pm := a.ag.PluginManager(); pm != nil {
-			for _, p := range pm.ListPlugins() {
-				if p.Manifest == nil || p.Manifest.Contributes == nil {
-					continue
-				}
-				for _, cmd := range p.Manifest.Contributes.Commands {
-					cmds = append(cmds, channel.PaletteExternalCommand{
-						Title:       p.Manifest.Name + ": " + cmd.Name,
-						Description: cmd.Description,
-						Category:    channel.PaletteCategoryPlugins,
-						Content:     cmd.Name + " ",
-					})
-				}
-			}
-		}
-	}
+	// TODO: migrate palette plugin commands to RPC
 
 	// 3. User custom commands from ~/.xbot/commands/*.md (crush-style)
 	if entries, err := os.ReadDir(xbotDir + "/commands"); err == nil {
@@ -825,7 +806,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
 	var backend *agent.Backend
-	var ag *agent.Agent
 	disp := channel.NewDispatcher(msgBus)
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
@@ -846,7 +826,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 			XbotHome:        xbotHome,
 			DirectWorkspace: workDir,
 		}
-		backend, ag, err = agent.NewChannelBackend(agent.ChannelTransportConfig{
+		backend, err = agent.NewChannelBackend(agent.ChannelTransportConfig{
 			AgentConfig: bc.AgentConfig(),
 			Dispatcher:  disp,
 			InitTools:   []tools.Tool{tools.NewWebSearchTool(cfg.TavilyAPIKey)},
@@ -873,7 +853,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		msgBus:    msgBus,
 		db:        db,
 		backend:   backend,
-		ag:        ag,
 		disp:      disp,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
@@ -1108,7 +1087,7 @@ func main() {
 	}
 	app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens)
 	if flagLocal {
-		fmt.Println("Backend: legacy local mode (--local)")
+		fmt.Println("Backend: local mode (--local)")
 	} else {
 		remote := ""
 		if app.backend != nil && app.backend.IsRemote() {
@@ -1698,29 +1677,6 @@ func main() {
 		cliCh.SetResetTokenStateFn(func() {
 			app.backend.ResetTokenState()
 		})
-		// Inject ApprovalState for permission control approval dialog
-		if state := app.ag.ApprovalState(); state != nil {
-			cliCh.SetApprovalState(state)
-		}
-		// Inject PluginManager for /plugin command
-		if pm := app.ag.PluginManager(); pm != nil {
-			cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
-			cliCh.SetWidgetRegistry(pm.WidgetRegistry())
-		}
-		// Inject CheckpointState for Ctrl+K rewind file rollback.
-		sanitized := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(absWorkDir)
-		checkpointDir := filepath.Join(config.XbotHome(), "checkpoints", sanitized)
-		os.RemoveAll(checkpointDir)
-		if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
-			if mgr := app.ag.HookManager(); mgr != nil {
-				cpState := protocol.NewCheckpointState(cpStore)
-				mgr.RegisterBuiltin(hooks.CheckpointCallback(cpState))
-				cliCh.SetCheckpointState(cpState)
-				defer cpStore.Cleanup()
-			}
-		} else {
-			log.WithError(err).Warn("Failed to create checkpoint store")
-		}
 	}
 
 	// Wire AI-Native TUI callback (both local and remote modes)
@@ -1728,35 +1684,7 @@ func main() {
 		tuiCtrl := func(action string, params map[string]string) (map[string]string, error) {
 			return cliCh.SendTUIControl(action, params)
 		}
-		app.ag.SetTUICallbacks(tuiCtrl, nil, nil)
 		app.backend.SetTUIControlHandler(tuiCtrl)
-
-		// Wire ChatRenameFn: rename session in local JSON + DB
-		chatRename := func(chatID, newName string) (string, error) {
-			workDir, _ := channel.ParseChatID(chatID)
-			ds, err := channel.LoadDirSessions(workDir)
-			if err != nil {
-				return "", fmt.Errorf("load sessions: %w", err)
-			}
-			oldName := ds.NameByChatID(chatID)
-			if oldName == "" {
-				return "", fmt.Errorf("session not found for chatID %q", chatID)
-			}
-			actualName, err := ds.RenameSession(oldName, newName)
-			if err != nil {
-				return "", fmt.Errorf("rename local session: %w", err)
-			}
-			if app.backend != nil {
-				if err := app.backend.RenameChat("cli", cliSenderID, chatID, actualName); err != nil {
-					log.WithError(err).Warn("Failed to rename chat in DB")
-				}
-			}
-			if cliCfg.SessionsListRefresh != nil {
-				cliCfg.SessionsListRefresh()
-			}
-			return oldName, nil
-		}
-		app.ag.SetChatRenameFn(chatRename)
 	}
 
 	// Apply saved theme at startup (unified local/remote path via RPC).

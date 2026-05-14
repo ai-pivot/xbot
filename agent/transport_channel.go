@@ -45,6 +45,9 @@ type channelTransport struct {
 	// Events: ChannelCliChannel → eventLoop goroutine
 	eventCh chan protocol.WSMessage
 
+	// Reference to the ChannelCliChannel for TUI control response delivery.
+	cliCh *channel.ChannelCliChannel
+
 	// TUI control
 	tuiCtrlMu sync.Mutex
 	tuiCtrlCb func(string, map[string]string) (map[string]string, error)
@@ -84,6 +87,7 @@ func newChannelTransport(lt *localTransport, disp *channel.Dispatcher, eventCh c
 	// Inject ALL callbacks into Agent during construction — this is the
 	// SINGLE injection point for local mode. No WireCallbacks from CLI.
 	cliCh := channel.NewChannelCliChannel(eventCh)
+	t.cliCh = cliCh
 	ag := lt.agent
 	ag.WireCallbacks(
 		disp.SendDirect,
@@ -271,9 +275,17 @@ func (t *channelTransport) dispatchWSMessage(msg protocol.WSMessage) {
 		t.tuiCtrlMu.Lock()
 		cb := t.tuiCtrlCb
 		t.tuiCtrlMu.Unlock()
-		if cb != nil {
-			// TUI control handled synchronously for simplicity
-			_ = cb
+		if cb != nil && msg.TUIControl != nil {
+			result, err := cb(msg.TUIControl.Action, msg.TUIControl.Params)
+			resp := &protocol.TUIControlPayload{
+				Action: msg.TUIControl.Action,
+			}
+			if err != nil {
+				resp.Error = err.Error()
+			} else {
+				resp.Result = result
+			}
+			t.cliCh.DeliverTUIResponse(msg.ID, resp)
 		}
 	}
 }
@@ -315,10 +327,10 @@ type ChannelTransportConfig struct {
 // NewChannelBackend creates a local-mode Backend with channel-based Transport.
 // This is the unified local mode entry point — CLI never touches Agent directly.
 // All initialization (tools, LLM config, callbacks) happens here.
-func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, *Agent, error) {
+func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, error) {
 	a, err := New(cfg.AgentConfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Register core tools
@@ -339,5 +351,5 @@ func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, *Agent, error) {
 	eventCh := make(chan protocol.WSMessage, 256)
 	ct := newChannelTransport(lt, cfg.Dispatcher, eventCh)
 
-	return &Backend{transport: ct}, a, nil
+	return &Backend{transport: ct}, nil
 }
