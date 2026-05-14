@@ -688,8 +688,10 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 		}
 	}
 
-	// Run synchronously — all operations are local I/O, no network calls
-	onSubmit(vals)
+	// Run the save callback in a goroutine to avoid blocking the TUI.
+	// The callback may do RPC calls (subscription creation, LLM init, model list fetch)
+	// that take seconds on first-run setup.
+	go onSubmit(vals)
 
 	return func() tea.Msg {
 		return cliSettingsSavedMsg{

@@ -305,8 +305,12 @@ func (b *Backend) SwitchModel(senderID, model, chatID string) error {
 
 // ── Runtime config ────────────────────────────────────────────────────────
 
-func (b *Backend) SetMaxIterations(n int)  { b.callVoid(MethodSetMaxIterations, n) }
-func (b *Backend) SetMaxConcurrency(n int) { b.callVoid(MethodSetMaxConcurrency, n) }
+func (b *Backend) SetMaxIterations(n int) {
+	b.callVoid(MethodSetMaxIterations, setMaxIterationsReq{N: n})
+}
+func (b *Backend) SetMaxConcurrency(n int) {
+	b.callVoid(MethodSetMaxConcurrency, setMaxConcurrencyReq{N: n})
+}
 func (b *Backend) SetMaxContextTokens(n int, chatID ...string) {
 	chatIDVal := ""
 	if len(chatID) > 0 {
@@ -317,8 +321,10 @@ func (b *Backend) SetMaxContextTokens(n int, chatID ...string) {
 		ChatID     string `json:"chat_id,omitempty"`
 	}{MaxContext: n, ChatID: chatIDVal})
 }
-func (b *Backend) SetCompressionThreshold(f float64) { b.callVoid(MethodSetCompressionThreshold, f) }
-func (b *Backend) ResetTokenState()                  { b.callVoid(MethodResetTokenState, struct{}{}) }
+func (b *Backend) SetCompressionThreshold(f float64) {
+	b.callVoid(MethodSetCompressionThreshold, setCompressionThresholdReq{Threshold: f})
+}
+func (b *Backend) ResetTokenState() { b.callVoid(MethodResetTokenState, struct{}{}) }
 
 // GetEffectiveMaxContext returns the effective max context for a user/session.
 // Via RPC — works for both local and remote modes.
