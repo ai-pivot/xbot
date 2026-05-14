@@ -26,6 +26,10 @@ func init() {
 // formats when deserializing for backward compatibility with old config files.
 type Duration time.Duration
 
+// DefaultMaxContextTokens is the default context window size (200k tokens)
+// used when no per-model or subscription override is configured.
+const DefaultMaxContextTokens = 200_000
+
 // Duration constants for use in config defaults and comparisons.
 const (
 	Nanosecond  Duration = 1
@@ -895,7 +899,7 @@ func Load() *Config {
 		cfg.Embedding.MaxTokens = 2048
 	}
 	if cfg.Agent.MaxContextTokens == 0 {
-		cfg.Agent.MaxContextTokens = 200000
+		cfg.Agent.MaxContextTokens = DefaultMaxContextTokens
 	}
 	// Plugin system defaults to enabled when config file has no "plugins" section.
 	// When the section exists (even as {}), respect the user's explicit setting.

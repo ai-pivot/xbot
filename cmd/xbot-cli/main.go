@@ -194,7 +194,7 @@ func (app *cliApp) refreshRemoteValuesCache() {
 			if app.cfg.Agent.MaxContextTokens > 0 {
 				return fmt.Sprintf("%d", app.cfg.Agent.MaxContextTokens)
 			}
-			return "200000"
+			return fmt.Sprintf("%d", config.DefaultMaxContextTokens)
 		}()
 	}
 	app.valuesCacheMu.Lock()
@@ -1095,19 +1095,6 @@ func main() {
 	}
 	defer app.Close()
 
-	// Refine firstRun: config.json check passed, but DB may already have a subscription.
-	// If a subscription exists in DB but config.json lacks cli_setup_completed,
-	// auto-write the marker so the setup panel won't reappear on next startup.
-	if firstRun && app.backend != nil {
-		if sub, err := app.backend.GetDefaultSubscription(cliSenderID); err == nil && sub != nil && sub.APIKey != "" {
-			firstRun = false
-			app.cfg.CLISetupCompleted = true
-			if err := saveCLIConfig(app.cfg); err != nil {
-				log.Warnf("Failed to persist cli_setup_completed after detecting DB subscription: %v", err)
-			}
-		}
-	}
-
 	// Shutdown pprof server on exit
 	if pprofServer != nil {
 		defer pprofServer.Shutdown(context.Background())
@@ -1740,6 +1727,18 @@ func main() {
 	// ── Post-Start initialization (unified for all modes) ─────────────
 	// Both local and remote modes run the same initialization.
 	// Only a few items are remote-specific (reconnect, conn_state).
+
+	// Refine firstRun: config.json check passed, but DB may already have a subscription.
+	// Must be after backend.Start() because channelTransport requires the serve()
+	// goroutine to be running for RPC calls (GetDefaultSubscription goes through Call).
+	if firstRun && app.backend != nil {
+		if sub, err := app.backend.GetDefaultSubscription(cliSenderID); err == nil && sub != nil && sub.APIKey != "" {
+			app.cfg.CLISetupCompleted = true
+			if err := saveCLIConfig(app.cfg); err != nil {
+				log.Warnf("Failed to persist cli_setup_completed after detecting DB subscription: %v", err)
+			}
+		}
+	}
 
 	// Apply layout from local config.json FIRST (instant, no RPC).
 	layoutVals := map[string]string{}

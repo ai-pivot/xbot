@@ -447,7 +447,8 @@ func (f *LLMFactory) SwitchModel(senderID, model string, chatID ...string) {
 	svc := f.subscriptionSvc
 	f.mu.Unlock()
 
-	if effectiveChatID == "" && svc != nil && senderID != "" {
+	// Always persist model change to the default subscription so it survives restarts.
+	if svc != nil && senderID != "" {
 		if sub, err := svc.GetDefault(senderID); err == nil && sub != nil && sub.Model != model && sub.ID != "" {
 			_ = svc.SetModel(sub.ID, model)
 		}

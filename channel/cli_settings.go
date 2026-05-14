@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 
+	"xbot/config"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -170,7 +172,7 @@ func (m *cliModel) resolveMaxContext() int {
 	if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
 		return pmc.MaxContext
 	}
-	return 0
+	return config.DefaultMaxContextTokens
 }
 
 // IsPerSessionSettingKey returns true if the key is a per-session setting.

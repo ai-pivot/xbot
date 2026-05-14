@@ -592,8 +592,8 @@ func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManage
 			}
 		}
 	}
-	// 3. No override found — return 0, caller uses DefaultValue
-	return 0
+	// 3. No override found — use global default
+	return config.DefaultMaxContextTokens
 }
 
 // ResolveEffectiveMaxOutputTokens derives the effective max_output_tokens for a session.

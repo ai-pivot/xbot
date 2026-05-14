@@ -1,5 +1,11 @@
 package channel
 
+import (
+	"fmt"
+
+	"xbot/config"
+)
+
 // UILocale holds all UI strings for a given language.
 type UILocale struct {
 	// --- A. System messages ---
@@ -506,8 +512,8 @@ func localeZH() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
 			},
 			{
-				Key: "max_context_tokens", Label: "最大上下文 Token", Description: "上下文最大 token 数（默认 200000）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "200000",
+				Key: "max_context_tokens", Label: "最大上下文 Token", Description: fmt.Sprintf("上下文最大 token 数（默认 %d）", config.DefaultMaxContextTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
 				Key: "max_output_tokens", Label: "最大输出 Token", Description: "单次回复最大 token 数（默认 8192）",
@@ -888,8 +894,8 @@ func localeEN() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
 			},
 			{
-				Key: "max_context_tokens", Label: "Max Context Tokens", Description: "Max context token count (default 200000)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "200000",
+				Key: "max_context_tokens", Label: "Max Context Tokens", Description: fmt.Sprintf("Max context token count (default %d)", config.DefaultMaxContextTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
 				Key: "max_output_tokens", Label: "Max Output Tokens", Description: "Max tokens per response (default 8192)",
@@ -1270,8 +1276,8 @@ func localeJA() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
 			},
 			{
-				Key: "max_context_tokens", Label: "最大コンテキストトークン", Description: "コンテキストの最大トークン数（デフォルト 200000）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "200000",
+				Key: "max_context_tokens", Label: "最大コンテキストトークン", Description: fmt.Sprintf("コンテキストの最大トークン数（デフォルト %d）", config.DefaultMaxContextTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
 				Key: "max_output_tokens", Label: "最大出力トークン", Description: "1回の応答の最大トークン数（デフォルト 8192）",
