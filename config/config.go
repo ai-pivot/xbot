@@ -30,6 +30,9 @@ type Duration time.Duration
 // used when no per-model or subscription override is configured.
 const DefaultMaxContextTokens = 200_000
 
+// DefaultMaxOutputTokens is the default max output tokens (32k) for LLM responses.
+const DefaultMaxOutputTokens = 32_768
+
 // Duration constants for use in config defaults and comparisons.
 const (
 	Nanosecond  Duration = 1
@@ -284,7 +287,7 @@ type LLMConfig struct {
 	VanguardModel   string `json:"vanguard_model,omitempty"`
 	BalanceModel    string `json:"balance_model,omitempty"`
 	SwiftModel      string `json:"swift_model,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (8192)
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (DefaultMaxOutputTokens)
 	ThinkingMode    string `json:"thinking_mode,omitempty"`
 }
 

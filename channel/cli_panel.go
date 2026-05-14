@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xbot/config"
 	"xbot/internal/textarea"
 	"xbot/llm"
 	log "xbot/logger"
@@ -2557,7 +2558,7 @@ func (m *cliModel) applyQuickSwitch() {
 			{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: ""},
-			{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: "0"},
+			{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Default max output tokens (0 = use %d)", config.DefaultMaxOutputTokens), Type: SettingTypeNumber, DefaultValue: "0"},
 			{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: "", Options: []SettingOption{
 				{Label: "Auto (default)", Value: ""},
 				{Label: "Enabled", Value: "enabled"},
@@ -2699,7 +2700,7 @@ func (m *cliModel) editQuickSwitchEntry() {
 		{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeCombo, DefaultValue: target.Model},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: target.BaseURL},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: target.APIKey},
-		{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxOutputTokens)},
+		{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Default max output tokens (0 = use %d)", config.DefaultMaxOutputTokens), Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxOutputTokens)},
 		{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: target.ThinkingMode, Options: []SettingOption{
 			{Label: "Auto (default)", Value: ""},
 			{Label: "Enabled", Value: "enabled"},

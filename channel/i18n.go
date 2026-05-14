@@ -516,8 +516,8 @@ func localeZH() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
-				Key: "max_output_tokens", Label: "最大输出 Token", Description: "单次回复最大 token 数（默认 8192）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "8192",
+				Key: "max_output_tokens", Label: "最大输出 Token", Description: fmt.Sprintf("单次回复最大 token 数（默认 %d）", config.DefaultMaxOutputTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
 			},
 			{
 				Key: "thinking_mode", Label: "思考模式", Description: "模型推理/思维链模式（默认自动）",
@@ -898,8 +898,8 @@ func localeEN() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
-				Key: "max_output_tokens", Label: "Max Output Tokens", Description: "Max tokens per response (default 8192)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "8192",
+				Key: "max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Max tokens per response (default %d)", config.DefaultMaxOutputTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
 			},
 			{
 				Key: "thinking_mode", Label: "Thinking Mode", Description: "Model reasoning/thinking chain mode (default: auto)",
@@ -1280,8 +1280,8 @@ func localeJA() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
-				Key: "max_output_tokens", Label: "最大出力トークン", Description: "1回の応答の最大トークン数（デフォルト 8192）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "8192",
+				Key: "max_output_tokens", Label: "最大出力トークン", Description: fmt.Sprintf("1回の応答の最大トークン数（デフォルト %d）", config.DefaultMaxOutputTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
 			},
 			{
 				Key: "thinking_mode", Label: "思考モード", Description: "モデルの推論/思考チェーンモード（デフォルト: 自動）",

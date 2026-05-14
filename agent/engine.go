@@ -82,7 +82,7 @@ type RunConfig struct {
 
 	// === 循环控制 ===
 	MaxIterations   int // 0 = 使用默认值 100
-	MaxOutputTokens int // 0 = 使用 LLM client 默认值（8192）
+	MaxOutputTokens int // 0 = 使用 LLM client 默认值
 
 	// === 可选能力（nil = 不启用） ===
 
@@ -689,7 +689,7 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 			if _, truncated := argsCheck["_truncated"]; truncated {
 				maxTokens := cfg.MaxOutputTokens
 				if maxTokens == 0 {
-					maxTokens = 8192
+					maxTokens = 32_768 // sync with config.DefaultMaxOutputTokens
 				}
 				return tools.NewErrorResult(fmt.Sprintf(
 					"Error: tool call was truncated (output reached the max_output_tokens limit of %d tokens). "+

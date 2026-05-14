@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"xbot/config"
 	"xbot/version"
 
 	tea "charm.land/bubbletea/v2"
@@ -1601,7 +1602,7 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 
 	maxOutputTokens := m.cachedMaxOutputTokens
 	if maxOutputTokens <= 0 {
-		maxOutputTokens = 8192
+		maxOutputTokens = config.DefaultMaxOutputTokens
 	}
 	promptBudget := maxTokens - maxOutputTokens
 	if promptBudget <= 0 {
