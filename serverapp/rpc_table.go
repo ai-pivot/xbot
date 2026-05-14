@@ -27,7 +27,7 @@ import (
 // NOT stored here — this avoids rebuilding the entire table per request.
 type rpcContext struct {
 	cfg     *config.Config
-	backend agent.AgentBackend
+	backend agent.BackendRPCDeps
 	disp    *channel.Dispatcher
 	msgBus  *bus.MessageBus
 
@@ -93,7 +93,7 @@ func resolveChatID(ctx context.Context, chatID string) (string, error) {
 // buildRPCTable constructs the complete RPC dispatch table.
 // The table is built once at startup and reused for every request;
 // per-request identity is injected via context, so no authSenderID/bizID is needed here.
-func buildRPCTable(cfg *config.Config, backend agent.AgentBackend, disp *channel.Dispatcher, msgBus *bus.MessageBus) rpcTable {
+func buildRPCTable(cfg *config.Config, backend agent.BackendRPCDeps, disp *channel.Dispatcher, msgBus *bus.MessageBus) rpcTable {
 	h := &rpcContext{cfg: cfg, backend: backend, disp: disp, msgBus: msgBus}
 	t := make(rpcTable, 70)
 	registerSettingsHandlers(t, h)

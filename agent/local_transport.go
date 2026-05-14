@@ -813,6 +813,51 @@ func (t *localTransport) registerHandlers() {
 		return result, nil
 	})
 
+	// ── LLM Factory helpers (via RPC) ───────────────────────────────────
+
+	h[MethodGetEffectiveMaxContext] = rpc1(func(r getEffectiveMaxContextReq) (int, error) {
+		return a.llmFactory.GetEffectiveMaxContext(r.SenderID, r.ChatID), nil
+	})
+
+	h[MethodClearPerChatMaxContext] = rpcVoid(func(r clearPerChatMaxContextReq) error {
+		a.llmFactory.ClearPerChatMaxContext(r.ChatID)
+		return nil
+	})
+
+	// ── Session configuration ─────────────────────────────────────────────
+
+	h[MethodSetMaxIterations] = rpcVoid(func(r setMaxIterationsReq) error {
+		a.SetMaxIterations(r.N)
+		return nil
+	})
+
+	h[MethodSetMaxConcurrency] = rpcVoid(func(r setMaxConcurrencyReq) error {
+		a.SetMaxConcurrency(r.N)
+		return nil
+	})
+
+	h[MethodSetMaxContextTokens] = rpcVoid(func(r setMaxContextTokensReq) error {
+		if r.ChatID != "" {
+			a.SetMaxContextTokens(r.MaxContext, r.ChatID)
+		} else {
+			a.SetMaxContextTokens(r.MaxContext)
+		}
+		return nil
+	})
+
+	h[MethodSetCompressionThreshold] = rpcVoid(func(r setCompressionThresholdReq) error {
+		a.SetCompressionThreshold(r.Threshold)
+		return nil
+	})
+
+	h[MethodGetContextMode] = rpc0(func() (string, error) {
+		return a.GetContextMode(), nil
+	})
+
+	h[MethodSetContextMode] = rpcVoid(func(r setContextModeReq) error {
+		return a.SetContextMode(r.Mode)
+	})
+
 	// ── Channel config ────────────────────────────────────────────────────
 
 	h[MethodGetChannelConfig] = rpc0(func() (map[string]map[string]string, error) {

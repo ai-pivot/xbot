@@ -66,6 +66,8 @@ const (
 	MethodGetAgentSessionDump          = "get_agent_session_dump"
 	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
 	MethodListTenants                  = "list_tenants"
+	MethodGetEffectiveMaxContext       = "get_effective_max_context"
+	MethodClearPerChatMaxContext       = "clear_per_chat_max_context"
 	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
 	MethodSetMaxContextTokens          = "set_max_context_tokens"
@@ -98,6 +100,23 @@ type setCWDReq struct {
 
 type setContextModeReq struct {
 	Mode string `json:"mode"`
+}
+
+type setMaxIterationsReq struct {
+	N int `json:"n"`
+}
+
+type setMaxConcurrencyReq struct {
+	N int `json:"n"`
+}
+
+type setMaxContextTokensReq struct {
+	MaxContext int    `json:"max_context"`
+	ChatID     string `json:"chat_id,omitempty"`
+}
+
+type setCompressionThresholdReq struct {
+	Threshold float64 `json:"threshold"`
 }
 
 // --- User Model / LLM ---
@@ -355,6 +374,15 @@ type getAgentSessionDumpReq struct {
 
 type getAgentSessionDumpByFullKeyReq struct {
 	FullKey string `json:"full_key"`
+}
+
+type getEffectiveMaxContextReq struct {
+	SenderID string `json:"sender_id"`
+	ChatID   string `json:"chat_id"`
+}
+
+type clearPerChatMaxContextReq struct {
+	ChatID string `json:"chat_id"`
 }
 
 // --- DirectSend / Channel ---

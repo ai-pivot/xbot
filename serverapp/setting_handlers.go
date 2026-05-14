@@ -14,13 +14,13 @@ import (
 //  3. Done.
 
 // applyRuntimeSetting applies a single setting change and saves server config.
-func applyRuntimeSetting(cfg *config.Config, backend agent.AgentBackend, senderID, key, value string) {
+func applyRuntimeSetting(cfg *config.Config, backend agent.BackendRPCDeps, senderID, key, value string) {
 	agent.ApplyRuntimeSetting(cfg, backend, senderID, key, value)
 	_ = saveServerConfig(cfg)
 }
 
 // applyRuntimeSettings applies a batch of setting changes and saves server config.
-func applyRuntimeSettings(cfg *config.Config, backend agent.AgentBackend, senderID string, values map[string]string) {
+func applyRuntimeSettings(cfg *config.Config, backend agent.BackendRPCDeps, senderID string, values map[string]string) {
 	agent.ApplyRuntimeSettings(cfg, backend, senderID, values)
 	_ = saveServerConfig(cfg)
 }

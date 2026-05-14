@@ -111,7 +111,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 }
 
 // registryCallbacks builds the shared Registry callback closures.
-func registryCallbacks(backend agent.AgentBackend) channel.RegistryCallbacks {
+func registryCallbacks(backend agent.BackendRPCDeps) channel.RegistryCallbacks {
 	return channel.RegistryCallbacks{
 		RegistryBrowse: func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
 			return backend.RegistryManager().Browse(entryType, limit, offset)
@@ -135,7 +135,7 @@ func registryCallbacks(backend agent.AgentBackend) channel.RegistryCallbacks {
 }
 
 // llmCallbacks builds the shared LLM callback closures.
-func llmCallbacks(backend agent.AgentBackend) channel.LLMCallbacks {
+func llmCallbacks(backend agent.BackendRPCDeps) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]string, string) {
 			llmClient, currentModel, _, _ := backend.LLMFactory().GetLLM(senderID)
@@ -221,7 +221,7 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, backend agent.AgentBackend, webDB *sql.DB) channel.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, backend agent.BackendRPCDeps, webDB *sql.DB) channel.WebCallbacks {
 	rc := runnerCallbacks(cfg)
 	regc := registryCallbacks(backend)
 	llmc := llmCallbacks(backend)
@@ -366,7 +366,7 @@ func buildWebCallbacks(cfg *config.Config, backend agent.AgentBackend, webDB *sq
 }
 
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
-func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend) channel.SettingsCallbacks {
+func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.BackendRPCDeps) channel.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
 	regc := registryCallbacks(backend)
 	llmc := llmCallbacks(backend)

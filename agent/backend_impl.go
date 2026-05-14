@@ -111,7 +111,8 @@ func (b *Backend) callVoid(method string, req any) {
 	}
 }
 
-// withAgent returns the result of fn(agent), or zero-value if remote.
+// withAgent returns the result of fn(agent), or zero-value if agent is nil.
+// DEPRECATED: only used by server-side code (serverapp). New code should use RPC.
 func withAgent[T any](b *Backend, fn func(*Agent) T) T {
 	if b.agent == nil {
 		var zero T
@@ -402,21 +403,18 @@ func (b *Backend) SetMaxContextTokens(n int, chatID ...string) {
 func (b *Backend) SetCompressionThreshold(f float64) { b.callVoid(MethodSetCompressionThreshold, f) }
 func (b *Backend) ResetTokenState()                  { b.callVoid(MethodResetTokenState, struct{}{}) }
 
-// GetEffectiveMaxContext returns the effective max context from LLMFactory.
-// For local mode this is instant; for remote mode it falls back to 0
-// (remote mode uses the cached values from refreshRemoteValuesCache).
+// GetEffectiveMaxContext returns the effective max context for a user/session.
+// Via RPC — works for both local and remote modes.
 func (b *Backend) GetEffectiveMaxContext(senderID, chatID string) int {
-	if f := b.LLMFactory(); f != nil {
-		return f.GetEffectiveMaxContext(senderID, chatID)
-	}
-	return 0
+	var r int
+	_ = b.call(MethodGetEffectiveMaxContext, getEffectiveMaxContextReq{SenderID: senderID, ChatID: chatID}, &r)
+	return r
 }
 
 // ClearPerChatMaxContext clears the per-session max_context override.
+// Via RPC — works for both local and remote modes.
 func (b *Backend) ClearPerChatMaxContext(chatID string) {
-	if f := b.LLMFactory(); f != nil {
-		f.ClearPerChatMaxContext(chatID)
-	}
+	b.callVoid(MethodClearPerChatMaxContext, clearPerChatMaxContextReq{ChatID: chatID})
 }
 func (b *Backend) CleanupCompletedBgTasks(sessionKey string) {
 	b.callVoid(MethodCleanupCompletedBgTasks, cleanupCompletedBgTasksReq{SessionKey: sessionKey})
@@ -710,5 +708,18 @@ func (b *Backend) RenameChat(ch, senderID, chatID, newName string) error {
 	return err
 }
 
-// Ensure Backend implements AgentBackend.
-var _ AgentBackend = (*Backend)(nil)
+// BackendRPCDeps is the interface that serverapp's RPC handlers need from Backend.
+// Both *Backend and test fakes implement this interface.
+type BackendRPCDeps interface {
+	AgentBackend
+	LLMFactory() *LLMFactory
+	SettingsService() *SettingsService
+	MultiSession() *session.MultiTenantSession
+	BgTaskManager() *tools.BackgroundTaskManager
+	PluginManager() *plugin.PluginManager
+	RegistryManager() *RegistryManager
+	Agent() *Agent
+	SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string)
+}
+
+// Ensure *Backend implements BackendRPCDeps.

@@ -575,7 +575,8 @@ type cliApp struct {
 	llmClient llm.LLM
 	msgBus    *bus.MessageBus
 	db        *sqlite.DB
-	backend   agent.AgentBackend
+	backend   *agent.Backend
+	disp      *channel.Dispatcher
 	workDir   string
 	xbotHome  string
 
@@ -822,7 +823,8 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
-	var backend agent.AgentBackend
+	var backend *agent.Backend
+	disp := channel.NewDispatcher(msgBus)
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
 		log.WithField("server", serverURL).Info("Using remote backend")
@@ -831,7 +833,8 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 			Token:     token,
 		})
 	} else {
-		// Local mode: agent loop runs in-process
+		// Local mode: agent loop runs in-process via Go channel transport.
+		// Architecturally identical to remote mode — just uses channels instead of WebSocket.
 		bc := agent.BackendConfig{
 			Cfg:             cfg,
 			LLM:             llmClient,
@@ -839,25 +842,27 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 			DBPath:          dbPath,
 			WorkDir:         workDir,
 			XbotHome:        xbotHome,
-			DirectWorkspace: workDir, // CLI: workspace = workDir directly (no per-user subdirectory)
+			DirectWorkspace: workDir,
 		}
-		backend, err = agent.NewBackend(bc.AgentConfig())
+		backend, err = agent.NewChannelBackend(agent.ChannelTransportConfig{
+			AgentConfig: bc.AgentConfig(),
+			Dispatcher:  disp,
+			InitTools:   []tools.Tool{tools.NewWebSearchTool(cfg.TavilyAPIKey)},
+			LLMSetup: agent.LLMSetupConfig{
+				Tiers:     cfg.LLM,
+				Contexts:  cfg.Agent.ModelContexts,
+				MaxTokens: maxOutputTokens,
+				Retry: llm.RetryConfig{
+					Attempts: uint(cfg.Agent.LLMRetryAttempts),
+					Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
+					MaxDelay: time.Duration(cfg.Agent.LLMRetryMaxDelay),
+					Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
+				},
+			},
+		})
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create local backend")
 		}
-		backend.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-		backend.IndexGlobalTools()
-		_ = backend.SetModelTiers(cfg.LLM)
-		_ = backend.SetModelContexts(cfg.Agent.ModelContexts)
-		if maxOutputTokens > 0 {
-			_ = backend.SetGlobalMaxTokens(maxOutputTokens)
-		}
-		_ = backend.SetRetryConfig(llm.RetryConfig{
-			Attempts: uint(cfg.Agent.LLMRetryAttempts),
-			Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
-			MaxDelay: time.Duration(cfg.Agent.LLMRetryMaxDelay),
-			Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
-		})
 	}
 
 	return &cliApp{
@@ -866,6 +871,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		msgBus:    msgBus,
 		db:        db,
 		backend:   backend,
+		disp:      disp,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
 	}
@@ -1127,7 +1133,7 @@ func main() {
 		defer pprofServer.Shutdown(context.Background())
 	}
 
-	disp := channel.NewDispatcher(app.msgBus)
+	disp := app.disp
 
 	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
 	absWorkDir, _ := filepath.Abs(app.workDir)
@@ -1689,31 +1695,28 @@ func main() {
 		cliCh.SetResetTokenStateFn(func() {
 			app.backend.ResetTokenState()
 		})
-		// LOCAL-ONLY: features that need RPC migration
-		if !app.backend.IsRemote() {
-			// Inject ApprovalState for permission control approval dialog
-			if state := app.backend.ApprovalState(); state != nil {
-				cliCh.SetApprovalState(state)
+		// Inject ApprovalState for permission control approval dialog
+		if state := app.backend.ApprovalState(); state != nil {
+			cliCh.SetApprovalState(state)
+		}
+		// Inject PluginManager for /plugin command
+		if pm := app.backend.PluginManager(); pm != nil {
+			cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
+			cliCh.SetWidgetRegistry(pm.WidgetRegistry())
+		}
+		// Inject CheckpointState for Ctrl+K rewind file rollback.
+		sanitized := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(absWorkDir)
+		checkpointDir := filepath.Join(config.XbotHome(), "checkpoints", sanitized)
+		os.RemoveAll(checkpointDir)
+		if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
+			if mgr := app.backend.HookManager(); mgr != nil {
+				cpState := protocol.NewCheckpointState(cpStore)
+				mgr.RegisterBuiltin(hooks.CheckpointCallback(cpState))
+				cliCh.SetCheckpointState(cpState)
+				defer cpStore.Cleanup()
 			}
-			// Inject PluginManager for /plugin command
-			if pm := app.backend.PluginManager(); pm != nil {
-				cliCh.SetPluginManager(func() *plugin.PluginManager { return pm })
-				cliCh.SetWidgetRegistry(pm.WidgetRegistry())
-			}
-			// Inject CheckpointState for Ctrl+K rewind file rollback.
-			sanitized := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(absWorkDir)
-			checkpointDir := filepath.Join(config.XbotHome(), "checkpoints", sanitized)
-			os.RemoveAll(checkpointDir)
-			if cpStore, err := tools.NewCheckpointStore(checkpointDir); err == nil {
-				if mgr := app.backend.HookManager(); mgr != nil {
-					cpState := protocol.NewCheckpointState(cpStore)
-					mgr.RegisterBuiltin(hooks.CheckpointCallback(cpState))
-					cliCh.SetCheckpointState(cpState)
-					defer cpStore.Cleanup()
-				}
-			} else {
-				log.WithError(err).Warn("Failed to create checkpoint store")
-			}
+		} else {
+			log.WithError(err).Warn("Failed to create checkpoint store")
 		}
 	}
 
@@ -1767,46 +1770,47 @@ func main() {
 	// This block was previously needed for direct agent→channel wiring but is now redundant.
 
 	// 注入 CLI 渠道特化 prompt 提供者
-	app.backend.SetChannelPromptProviders(&channel.CliPromptProvider{})
+	// (handled by NewChannelBackend for local mode, not needed for remote)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Remote mode: connect to server with retry loop before starting TUI.
-	// Shows progress to the user instead of silently failing.
-	if app.backend.IsRemote() {
-		fmt.Fprintf(os.Stderr, "\n  Connecting to remote server %s ...\n", app.cfg.CLI.ServerURL)
-		const maxRetries = 5
-		var connectErr error
-		for attempt := 0; attempt < maxRetries; attempt++ {
-			connectErr = app.backend.Start(ctx)
-			if connectErr == nil {
-				fmt.Fprintln(os.Stderr, "  Connected.")
-				break
-			}
-			delay := time.Duration(1<<uint(attempt)) * time.Second
-			if attempt < maxRetries-1 {
-				fmt.Fprintf(os.Stderr, "  Connection failed: %v\n  Retrying in %vs (%d/%d)...\n", connectErr, delay, attempt+1, maxRetries)
-				select {
-				case <-ctx.Done():
-					fmt.Fprintln(os.Stderr, "\n  Cancelled.")
-					app.Close()
-					return
-				case <-time.After(delay):
+	// Start backend: remote mode has retry with progress display;
+	// local mode (channelTransport) connects instantly.
+	if err := app.backend.Start(ctx); err != nil {
+		if app.backend.IsRemote() {
+			// Retry loop for remote connections
+			const maxRetries = 5
+			fmt.Fprintf(os.Stderr, "\n  Connecting to remote server %s ...\n", app.cfg.CLI.ServerURL)
+			var connectErr error
+			for attempt := 0; attempt < maxRetries; attempt++ {
+				connectErr = app.backend.Start(ctx)
+				if connectErr == nil {
+					fmt.Fprintln(os.Stderr, "  Connected.")
+					break
+				}
+				delay := time.Duration(1<<uint(attempt)) * time.Second
+				if attempt < maxRetries-1 {
+					fmt.Fprintf(os.Stderr, "  Connection failed: %v\n  Retrying in %vs (%d/%d)...\n", connectErr, delay, attempt+1, maxRetries)
+					select {
+					case <-ctx.Done():
+						fmt.Fprintln(os.Stderr, "\n  Cancelled.")
+						app.Close()
+						return
+					case <-time.After(delay):
+					}
 				}
 			}
-		}
-		if connectErr != nil {
-			fmt.Fprintf(os.Stderr, "\n  %s\n  Could not connect to server after %d attempts. Please check:\n    1. Server is running (xbot-cli serve)\n    2. Port matches in config (%s)\n    3. Token is correct\n  %s\n\n",
-				red("ERROR: "+connectErr.Error()),
-				maxRetries,
-				config.ConfigFilePath(),
-				red("Exiting."))
-			app.Close()
-			return
-		}
-	} else {
-		if err := app.backend.Start(ctx); err != nil {
+			if connectErr != nil {
+				fmt.Fprintf(os.Stderr, "\n  %s\n  Could not connect to server after %d attempts. Please check:\n    1. Server is running (xbot-cli serve)\n    2. Port matches in config (%s)\n    3. Token is correct\n  %s\n\n",
+					red("ERROR: "+connectErr.Error()),
+					maxRetries,
+					config.ConfigFilePath(),
+					red("Exiting."))
+				app.Close()
+				return
+			}
+		} else {
 			fmt.Fprintf(os.Stderr, "Failed to start backend: %v\n", err)
 			app.Close()
 			return
@@ -1814,119 +1818,103 @@ func main() {
 	}
 	clipanic.Go("main.dispatcher.Run", disp.Run)
 
-	// Remote mode: apply layout from local config.json FIRST (instant, no RPC).
-	if app.backend.IsRemote() {
-		layoutVals := map[string]string{}
-		for _, k := range []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"} {
-			if v := configLayoutValue(k); v != "" {
-				layoutVals[k] = v
-			}
-		}
-		if len(layoutVals) > 0 {
-			cliCh.SyncLayoutSettings(layoutVals)
-		}
-		// Async: refresh from server when WS is ready
-		if vals, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
-			if t, ok := vals["theme"]; ok && t != "" {
-				channel.ApplyTheme(t)
-			}
-			cliCh.SyncLayoutSettings(vals)
-		}
-		remoteChatID := initialChatID
+	// ── Post-Start initialization (unified for all modes) ─────────────
+	// Both local and remote modes run the same initialization.
+	// Only a few items are remote-specific (reconnect, conn_state).
 
-		// Auto-set CWD: if connected to a local server (127.0.0.1/localhost),
-		// sync the CLI's actual cwd to the server session so the agent uses
-		// the correct directory regardless of where the server was started.
-		if isLocalServer(app.cfg.CLI.ServerURL) {
-			if cwd, err := os.Getwd(); err == nil {
-				if err := app.backend.SetCWD("cli", remoteChatID, cwd); err != nil {
-					log.WithError(err).WithField("chat_id", remoteChatID).Warn("Failed to sync CWD to server")
-				} else {
-					log.WithFields(log.Fields{
-						"cwd":     cwd,
-						"chat_id": remoteChatID,
-					}).Info("Synced CLI CWD to local server")
-				}
-			}
+	// Apply layout from local config.json FIRST (instant, no RPC).
+	layoutVals := map[string]string{}
+	for _, k := range []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"} {
+		if v := configLayoutValue(k); v != "" {
+			layoutVals[k] = v
 		}
+	}
+	if len(layoutVals) > 0 {
+		cliCh.SyncLayoutSettings(layoutVals)
+	}
+	// Refresh from server when WS is ready (or from local agent immediately)
+	if vals, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
+		if t, ok := vals["theme"]; ok && t != "" {
+			channel.ApplyTheme(t)
+		}
+		cliCh.SyncLayoutSettings(vals)
+	}
 
-		// History + progress are loaded together in the RestoreSession goroutine
-		// below, which uses handleSuHistoryLoad (same path as session switch).
-		// Do NOT load history separately here — that would create tool_summary
-		// messages without progress, causing stale "Tools (#345)" rendering.
-		// Subscribe to business chatID so Hub routes server-pushed events
-		// (progress, stream, outbound) to this WS connection.
-		// Without this, RPC-only sessions never subscribe and all pushed
-		// events are silently buffered.
-		app.backend.BindChat(remoteChatID)
+	chatID := initialChatID
 
-		// Initialize remote plugin cache for /plugin commands and widget rendering.
-		remoteCache := channel.NewRemotePluginCache(remoteChatID, func(method string, params any) (json.RawMessage, error) {
-			return app.backend.CallRPC(method, params)
-		})
-		cliCh.SetRemotePluginCache(remoteCache)
-		pluginWidgetSyncFn = cliCh.SyncPluginWidgetChatID
-		// Register push callback via Subscribe — server pushes widget zone content via
-		// WebSocket "plugin_widgets" message whenever WidgetRegistry.OnUpdated fires.
-		// Filter: only accept pushes targeting our own chatID (absolute path).
-		// Without this, cross-session pushes (e.g. from "admin" chatID)
-		// overwrite our widget content with another window's git status.
-		app.backend.Subscribe(protocol.EventPattern{Type: "plugin_widget"}, func(env protocol.EventEnvelope) {
-			var ev protocol.PluginWidgetEvent
-			if err := json.Unmarshal(env.Payload, &ev); err != nil {
-				return
-			}
-			pushChatID := strings.TrimPrefix(ev.ChatID, "cli:")
-			curChatID := strings.TrimPrefix(cliCh.CurrentChatID(), "cli:")
-			if pushChatID != "" && curChatID != "" && pushChatID != curChatID {
-				log.Warnf("[widget-recv] REJECT pushChatID=%q != currentChatID=%q", ev.ChatID, cliCh.CurrentChatID())
-				return // ignore pushes for other sessions
-			}
-			log.Infof("[widget-recv] ACCEPT pushChatID=%q footer=%q", ev.ChatID, ev.Zones["footer"])
-			remoteCache.UpdateZones(ev.Zones)
-		})
-		// Initial fetch — push only fires on CHANGES, so we need to
-		// pull the current state once on connect.
-		remoteCache.Refresh()
-		// Initial restore: load history + active progress + todos in one atomic
-		// step via RestoreSession (same path as session switch — guaranteed
-		// identical rendering). Run in goroutine to avoid blocking startup.
-		clipanic.Go("main.remote.RestoreActiveProgress", func() {
-			progress := app.backend.GetActiveProgress("cli", remoteChatID)
-			var todos []protocol.TodoItem
-			if progress != nil {
-				log.WithFields(log.Fields{
-					"chatID":    remoteChatID,
-					"phase":     progress.Phase,
-					"iteration": progress.Iteration,
-					"histLen":   len(progress.IterationHistory),
-				}).Info("RestoreActiveProgress: restoring progress snapshot")
+	// Auto-set CWD: for remote servers, sync the CLI's actual cwd so the
+	// agent uses the correct directory. Local mode already has the workspace set.
+	if app.backend.IsRemote() && isLocalServer(app.cfg.CLI.ServerURL) {
+		if cwd, err := os.Getwd(); err == nil {
+			if err := app.backend.SetCWD("cli", chatID, cwd); err != nil {
+				log.WithError(err).WithField("chat_id", chatID).Warn("Failed to sync CWD to server")
 			} else {
-				log.WithField("chatID", remoteChatID).Info("RestoreActiveProgress: no active progress")
+				log.WithFields(log.Fields{
+					"cwd":     cwd,
+					"chat_id": chatID,
+				}).Info("Synced CLI CWD to local server")
 			}
-			history, err := app.backend.GetHistory("cli", remoteChatID)
-			if err != nil {
-				log.WithError(err).Warn("RestoreActiveProgress: failed to load history")
-				return
-			}
-			cliCh.RestoreSession(history, progress, todos)
-		})
+		}
+	}
 
-		// Wire reconnect handler via Subscribe to reload history on WS reconnect.
+	// BindChat: subscribe to events for the initial chatID.
+	app.backend.BindChat(chatID)
+
+	// Plugin widgets: subscribe to push events for widget zone content.
+	remoteCache := channel.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
+		return app.backend.CallRPC(method, params)
+	})
+	cliCh.SetRemotePluginCache(remoteCache)
+	pluginWidgetSyncFn = cliCh.SyncPluginWidgetChatID
+	app.backend.Subscribe(protocol.EventPattern{Type: "plugin_widget"}, func(env protocol.EventEnvelope) {
+		var ev protocol.PluginWidgetEvent
+		if err := json.Unmarshal(env.Payload, &ev); err != nil {
+			return
+		}
+		pushChatID := strings.TrimPrefix(ev.ChatID, "cli:")
+		curChatID := strings.TrimPrefix(cliCh.CurrentChatID(), "cli:")
+		if pushChatID != "" && curChatID != "" && pushChatID != curChatID {
+			return // ignore pushes for other sessions
+		}
+		remoteCache.UpdateZones(ev.Zones)
+	})
+	remoteCache.Refresh()
+
+	// Initial restore: load history + active progress + todos atomically.
+	clipanic.Go("main.RestoreActiveProgress", func() {
+		progress := app.backend.GetActiveProgress("cli", chatID)
+		var todos []protocol.TodoItem
+		if progress != nil {
+			log.WithFields(log.Fields{
+				"chatID":    chatID,
+				"phase":     progress.Phase,
+				"iteration": progress.Iteration,
+				"histLen":   len(progress.IterationHistory),
+			}).Info("RestoreActiveProgress: restoring progress snapshot")
+		} else {
+			log.WithField("chatID", chatID).Info("RestoreActiveProgress: no active progress")
+		}
+		history, err := app.backend.GetHistory("cli", chatID)
+		if err != nil {
+			log.WithError(err).Warn("RestoreActiveProgress: failed to load history")
+			return
+		}
+		cliCh.RestoreSession(history, progress, todos)
+	})
+
+	// Remote-only: reconnect handler for WS connection drops.
+	if app.backend.IsRemote() {
 		app.backend.Subscribe(protocol.EventPattern{Type: "reconnect"}, func(env protocol.EventEnvelope) {
-			defer clipanic.Recover("main.remote.OnReconnect", nil, false)
-			// Re-subscribe to business chatID for new WS connection.
-			_ = app.backend.BindChat(remoteChatID)
-			// Re-sync CWD on reconnect (server may have restarted, losing in-memory cwd)
+			defer clipanic.Recover("main.OnReconnect", nil, false)
+			_ = app.backend.BindChat(chatID)
 			if isLocalServer(app.cfg.CLI.ServerURL) {
 				if cwd, err := os.Getwd(); err == nil {
-					_ = app.backend.SetCWD("cli", remoteChatID, cwd)
+					_ = app.backend.SetCWD("cli", chatID, cwd)
 				}
 			}
-			// Reconnect: same as initial — load history + progress atomically.
-			clipanic.Go("main.remote.ReconnectRestore", func() {
-				progress := app.backend.GetActiveProgress("cli", remoteChatID)
-				history, err := app.backend.GetHistory("cli", remoteChatID)
+			clipanic.Go("main.ReconnectRestore", func() {
+				progress := app.backend.GetActiveProgress("cli", chatID)
+				history, err := app.backend.GetHistory("cli", chatID)
 				if err != nil {
 					log.WithError(err).Warn("ReconnectRestore: failed to load history")
 					return
@@ -1939,7 +1927,7 @@ func main() {
 				}
 			})
 		})
-		// Wire connection state change handler via Subscribe for header bar indicator.
+		// Connection state change handler for header bar indicator.
 		app.backend.Subscribe(protocol.EventPattern{Type: "conn_state"}, func(env protocol.EventEnvelope) {
 			var ev protocol.ConnStateEvent
 			if err := json.Unmarshal(env.Payload, &ev); err != nil {
@@ -1947,16 +1935,16 @@ func main() {
 			}
 			cliCh.SetConnState(ev.State)
 		})
-		// Wire session state handler via Subscribe — server pushes busy/idle
-		// and SubAgent lifecycle events for instant sidebar updates.
-		app.backend.Subscribe(protocol.EventPattern{Type: "session"}, func(env protocol.EventEnvelope) {
-			var ev protocol.SessionEvent
-			if err := json.Unmarshal(env.Payload, &ev); err != nil {
-				return
-			}
-			cliCh.SendSessionState(ev)
-		})
 	}
+
+	// Session state handler: busy/idle + SubAgent lifecycle events.
+	app.backend.Subscribe(protocol.EventPattern{Type: "session"}, func(env protocol.EventEnvelope) {
+		var ev protocol.SessionEvent
+		if err := json.Unmarshal(env.Payload, &ev); err != nil {
+			return
+		}
+		cliCh.SendSessionState(ev)
+	})
 
 	// ── Session cache (all modes) ───────────────────────────────────
 	// refreshAgentCache reads sessions/subagents from Backend and updates the

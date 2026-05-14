@@ -155,8 +155,8 @@ func ApplyRuntimeSetting(cfg *config.Config, backend AgentBackend, senderID, key
 		return
 	}
 	applyHandler(cfg, backend, senderID, "", handler, value)
-	if backend != nil && backend.LLMFactory() != nil {
-		backend.LLMFactory().SetModelTiers(cfg.LLM)
+	if backend != nil {
+		backend.SetModelTiers(cfg.LLM)
 	}
 }
 
@@ -183,8 +183,8 @@ func ApplyRuntimeSettings(cfg *config.Config, backend AgentBackend, senderID str
 		handler := SettingHandlerRegistry["context_mode"]
 		applyHandler(cfg, backend, senderID, "", handler, v)
 	}
-	if backend != nil && backend.LLMFactory() != nil {
-		backend.LLMFactory().SetModelTiers(cfg.LLM)
+	if backend != nil {
+		backend.SetModelTiers(cfg.LLM)
 	}
 }
 

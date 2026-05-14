@@ -32,7 +32,7 @@ import (
 
 // injectProxyLLM checks if the user's active runner has local LLM configured,
 // and if so, injects a ProxyLLM into the agent's LLM factory.
-func injectProxyLLM(userID string, backend agent.AgentBackend) {
+func injectProxyLLM(userID string, backend agent.BackendRPCDeps) {
 	db := tools.GetRunnerTokenDB()
 	if db == nil {
 		return
@@ -237,7 +237,7 @@ func channelShouldRun(cfg *config.Config, name string) bool {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, backend agent.AgentBackend, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, backend agent.BackendRPCDeps, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
 	var feishuCh *channel.FeishuChannel
 	var webCh *channel.WebChannel
 	if cfg.Feishu.Enabled {
@@ -1038,7 +1038,7 @@ func userScopedSettingsFromGlobalCLI(cfg *config.Config) map[string]string {
 	return vals
 }
 
-func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, backend agent.AgentBackend, namespace, senderID string) error {
+func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, backend agent.BackendRPCDeps, namespace, senderID string) error {
 	if senderID == "" || backend.SettingsService() == nil {
 		return nil
 	}

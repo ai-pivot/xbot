@@ -5,25 +5,19 @@ import (
 	"encoding/json"
 	"time"
 
-	"xbot/agent/hooks"
 	"xbot/bus"
-	"xbot/channel"
 	"xbot/config"
-	"xbot/event"
 	llm "xbot/llm"
-	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/session"
 	"xbot/tools"
 )
 
-// AgentBackend abstracts where the agent loop runs.
-// Backend is the single unified implementation that supports both
-// local (in-process Agent) and remote (WebSocket Transport) modes.
+// AgentBackend is the client-side interface for interacting with an agent.
+// Every method is an RPC call — the agent may run in-process (via Go channels)
+// or on a remote server (via WebSocket). There are zero local-only methods.
 //
-// CLI uses this interface to interact with the agent regardless of location.
-// Management methods may return nil for remote mode (where the operation
-// runs server-side); callers should nil-check as appropriate.
+// Server-side code (serverapp) uses the concrete *Backend type directly,
+// which has additional methods for in-process agent access.
 type AgentBackend interface {
 	// --- Lifecycle ---
 	Start(ctx context.Context) error
@@ -34,16 +28,7 @@ type AgentBackend interface {
 	ConnState() string
 	ServerURL() string
 
-	// --- Agent access ---
-	Agent() *Agent
-	LLMFactory() *LLMFactory
-	SettingsService() *SettingsService
-	PluginManager() *plugin.PluginManager
-	HookManager() *hooks.Manager
-	ApprovalState() *hooks.ApprovalState
-	BgTaskManager() *tools.BackgroundTaskManager
-
-	// --- LLM Management ---
+	// --- LLM Management (all via RPC) ---
 	ListModels() []string
 	ListAllModels() []string
 	GetDefaultModel() string
@@ -65,22 +50,14 @@ type AgentBackend interface {
 	SetGlobalMaxTokens(maxTokens int) error
 	SetRetryConfig(cfg llm.RetryConfig) error
 	SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error
-	SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string)
 	ClearProxyLLM(senderID string)
 
-	// --- Settings ---
+	// --- Settings (via RPC) ---
 	GetSettings(namespace, senderID string) (map[string]string, error)
 	SetSetting(namespace, senderID, key, value string) error
-	SetTUICallbacks(
-		tuiCtrl func(action string, params map[string]string) (map[string]string, error),
-		configGet func(key string) (string, error),
-		configSet func(key, value string) (string, error),
-	)
 	SetTUIControlHandler(callback func(action string, params map[string]string) (map[string]string, error))
-	SetChatRenameFn(chatRename func(chatID, newName string) (oldName string, err error))
 
-	// --- Session ---
-	MultiSession() *session.MultiTenantSession
+	// --- Session (via RPC) ---
 	SetCWD(ch, chatID, dir string) error
 	SetMaxIterations(n int)
 	SetMaxConcurrency(n int)
@@ -92,7 +69,7 @@ type AgentBackend interface {
 	GetActiveProgress(ch, chatID string) *protocol.ProgressEvent
 	GetTodos(ch, chatID string) []protocol.TodoItem
 
-	// --- Memory & History ---
+	// --- Memory & History (via RPC) ---
 	ClearMemory(ctx context.Context, channel, chatID, targetType, senderID string) error
 	GetMemoryStats(ctx context.Context, channel, chatID, senderID string) map[string]string
 	GetHistory(channel, chatID string) ([]protocol.HistoryMessage, error)
@@ -102,7 +79,7 @@ type AgentBackend interface {
 	GetUserTokenUsage(senderID string) (map[string]any, error)
 	GetDailyTokenUsage(senderID string, days int) ([]map[string]any, error)
 
-	// --- Subscriptions ---
+	// --- Subscriptions (via RPC) ---
 	ListSubscriptions(senderID string) ([]protocol.Subscription, error)
 	GetDefaultSubscription(senderID string) (*protocol.Subscription, error)
 	AddSubscription(senderID string, sub protocol.Subscription) error
@@ -113,7 +90,7 @@ type AgentBackend interface {
 	UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error
 	SetSubscriptionModel(id, model string) error
 
-	// --- Interactive SubAgent ---
+	// --- Interactive SubAgent (via RPC) ---
 	CountInteractiveSessions(channelName, chatID string) int
 	ListInteractiveSessions(channelName, chatID string) []InteractiveSessionInfo
 	InspectInteractiveSession(ctx context.Context, roleName, channelName, chatID, instance string, tailCount int) (string, error)
@@ -121,45 +98,37 @@ type AgentBackend interface {
 	GetAgentSessionDump(channelName, chatID, roleName, instance string) (*AgentSessionDump, bool)
 	GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump, bool)
 
-	// --- Background Tasks ---
+	// --- Background Tasks (via RPC) ---
 	GetBgTaskCount(sessionKey string) int
 	ListBgTasks(sessionKey string) ([]BgTaskJSON, error)
 	KillBgTask(taskID string) error
 	CleanupCompletedBgTasks(sessionKey string)
 
-	// --- Tenants ---
+	// --- Tenants (via RPC) ---
 	ListTenants() ([]TenantInfo, error)
 
-	// --- Tools ---
+	// --- Tools (via RPC) ---
 	RegisterCoreTool(tool tools.Tool)
 	RegisterTool(tool tools.Tool)
 	IndexGlobalTools()
 	SetSandbox(sb tools.Sandbox, mode string)
-	GetCardBuilder() *tools.CardBuilder
-	SetEventRouter(router *event.Router)
-	RegistryManager() *RegistryManager
 
-	// --- Communication ---
+	// --- Communication (via Transport) ---
 	SendInbound(msg bus.InboundMessage) error
-	Bus() *bus.MessageBus
-	SetDirectSend(fn func(bus.OutboundMessage) (string, error))
-	SetChannelFinder(fn func(name string) (channel.Channel, bool))
-	SetChannelPromptProviders(providers ...ChannelPromptProvider)
 	Subscribe(pattern protocol.EventPattern, handler protocol.EventHandler) (cancel func())
 	BindChat(chatID string) error
 	CallRPC(method string, params any) (json.RawMessage, error)
 
-	// --- Web Users ---
+	// --- Web Users (via RPC) ---
 	CreateWebUser(username string) (password string, err error)
 	ListWebUsers() ([]map[string]any, error)
 	DeleteWebUser(username string) error
 
-	// --- Chat Management ---
+	// --- Chat Management (via RPC) ---
 	DeleteChat(channel, senderID, chatID string) error
 	RenameChat(channel, senderID, chatID, newName string) error
 
-	// --- Channel Config ---
+	// --- Channel Config (via RPC) ---
 	GetChannelConfigs() (map[string]map[string]string, error)
 	SetChannelConfig(channel string, values map[string]string) error
-	SetChannelReconfigureFn(fn func(channel string))
 }

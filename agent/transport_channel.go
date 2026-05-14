@@ -8,7 +8,10 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/config"
+	llm "xbot/llm"
 	"xbot/protocol"
+	"xbot/tools"
 )
 
 // ---------------------------------------------------------------------------
@@ -173,6 +176,13 @@ func (t *channelTransport) ConnState() string { return "connected" }
 func (t *channelTransport) IsRemote() bool    { return false }
 func (t *channelTransport) ServerURL() string { return "" }
 
+// Agent returns the internal Agent for callback injection.
+// This is ONLY for the construction phase — CLI must not call Agent methods
+// directly after construction.
+func (t *channelTransport) Agent() *Agent {
+	return t.inner.agent
+}
+
 // ---------------------------------------------------------------------------
 // Internal goroutines
 // ---------------------------------------------------------------------------
@@ -278,12 +288,6 @@ func (t *channelTransport) ChannelEventCh() chan<- protocol.WSMessage {
 	return t.eventCh
 }
 
-// Agent returns the internal Agent (for serverapp compatibility only).
-// This accessor will be removed once server-side injection is fully unified.
-func (t *channelTransport) Agent() *Agent {
-	return t.inner.agent
-}
-
 // ensure channelTransport implements Transport at compile time.
 var _ Transport = (*channelTransport)(nil)
 
@@ -291,20 +295,62 @@ var _ Transport = (*channelTransport)(nil)
 // Constructor for Backend
 // ---------------------------------------------------------------------------
 
+// LLMSetupConfig holds LLM configuration for agent initialization.
+type LLMSetupConfig struct {
+	Tiers     config.LLMConfig
+	Contexts  map[string]int
+	MaxTokens int
+	Retry     llm.RetryConfig
+}
+
 // ChannelTransportConfig holds everything needed to create a local-mode Backend
 // with channel-based transport. Passed from CLI main.go.
 type ChannelTransportConfig struct {
 	AgentConfig Config
 	Dispatcher  *channel.Dispatcher
+	InitTools   []tools.Tool // Core tools to register during construction
+	LLMSetup    LLMSetupConfig
+
+	// Non-serializable callbacks injected into Agent after construction.
+	// These are function closures that can't go through RPC.
+	// They are set here for local mode, and called during NewChannelBackend.
+	TUICtrl        func(action string, params map[string]string) (map[string]string, error)
+	ChatRenameFn   func(chatID, newName string) (oldName string, err error)
+	PromptProvider ChannelPromptProvider
 }
 
 // NewChannelBackend creates a local-mode Backend with channel-based Transport.
 // This is the unified local mode entry point — CLI never touches Agent directly.
-// Callbacks are injected during construction (the single injection point).
+// All initialization (tools, LLM config, callbacks) happens here.
 func NewChannelBackend(cfg ChannelTransportConfig) (*Backend, error) {
 	a, err := New(cfg.AgentConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	// Register core tools
+	for _, tool := range cfg.InitTools {
+		a.RegisterCoreTool(tool)
+	}
+	a.IndexGlobalTools()
+
+	// Configure LLM
+	a.llmFactory.SetModelTiers(cfg.LLMSetup.Tiers)
+	a.llmFactory.SetModelContexts(cfg.LLMSetup.Contexts)
+	if cfg.LLMSetup.MaxTokens > 0 {
+		a.llmFactory.SetGlobalMaxTokens(cfg.LLMSetup.MaxTokens)
+	}
+	a.llmFactory.SetRetryConfig(cfg.LLMSetup.Retry)
+
+	// Inject non-serializable callbacks
+	if cfg.TUICtrl != nil {
+		a.SetTUICallbacks(cfg.TUICtrl, nil, nil)
+	}
+	if cfg.ChatRenameFn != nil {
+		a.SetChatRenameFn(cfg.ChatRenameFn)
+	}
+	if cfg.PromptProvider != nil {
+		a.SetChannelPromptProviders(cfg.PromptProvider)
 	}
 
 	lt := newLocalTransport(a, cfg.AgentConfig.Bus)
