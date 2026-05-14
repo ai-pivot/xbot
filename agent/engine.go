@@ -467,7 +467,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	}
 
 	// --- Main loop ---
+	log.Ctx(ctx).WithFields(log.Fields{
+		"chat_id":  s.cfg.ChatID,
+		"max_iter": s.maxIter,
+	}).Debug("Run loop starting")
 	for i := 0; i < s.maxIter; i++ {
+		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration
 		select {
 		case <-ctx.Done():
@@ -490,6 +495,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		response, err := s.callLLM(ctx, retryNotifyCtx)
+		log.Ctx(ctx).WithFields(log.Fields{
+			"iteration": i,
+			"chat_id":   s.cfg.ChatID,
+			"has_tools": response != nil && response.HasToolCalls(),
+			"err":       err,
+		}).Debug("callLLM returned")
 
 		// If ctx was cancelled during LLM call, exit immediately
 		if ctx.Err() != nil {

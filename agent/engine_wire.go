@@ -1313,6 +1313,19 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 
 	out := Run(subCtx, cfg)
 
+	log.Ctx(ctx).WithFields(log.Fields{
+		"role":     roleName,
+		"instance": oneshotInstance,
+		"out_nil":  out == nil,
+		"out_len": func() int {
+			if out != nil {
+				return len(out.Content)
+			}
+			return 0
+		}(),
+		"iterations": len(oneshotIA.iterationHistory),
+	}).Info("oneshot subagent Run() returned")
+
 	// Populate iteration history so inspect can show results after completion
 	oneshotIA.mu.Lock()
 	oneshotIA.running = false
