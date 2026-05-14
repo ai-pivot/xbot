@@ -1612,6 +1612,7 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 		panelVals := m.panelValues
 		m.closePanel()
 		if onSubmit != nil && panelVals != nil {
+			m.settingsSaving = true // block input until cliSettingsSavedMsg arrives
 			return true, m, m.doSaveSettings(onSubmit, panelVals)
 		}
 		return true, m, nil

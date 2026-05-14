@@ -688,12 +688,12 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 		}
 	}
 
-	// Run the save callback in a goroutine to avoid blocking the TUI.
-	// The callback may do RPC calls (subscription creation, LLM init, model list fetch)
-	// that take seconds on first-run setup.
-	go onSubmit(vals)
-
+	// Run onSubmit in the returned tea.Cmd (BubbleTea executes Cmds in a
+	// background goroutine). This avoids blocking the Update loop while
+	// preserving ordering — the TUI shows a "Saving..." overlay and blocks
+	// user input until onSubmit completes and cliSettingsSavedMsg arrives.
 	return func() tea.Msg {
+		onSubmit(vals)
 		return cliSettingsSavedMsg{
 			themeChanged:  hasTheme && theme != "",
 			theme:         theme,
@@ -709,6 +709,7 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 // handleSettingsSavedMsg processes the async settings save result.
 // Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
+	m.settingsSaving = false // unblock user input
 	visualChanged := false
 	if msg.themeChanged {
 		m.applyThemeAndRebuild(msg.theme)

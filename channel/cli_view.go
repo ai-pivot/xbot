@@ -146,6 +146,12 @@ func (m *cliModel) renderTitleBar() string {
 // and manual placeholder overlay (avoids textarea's built-in placeholder
 // which triggers CJK rendering bugs on Windows Terminal).
 func (m *cliModel) renderInputArea(borderColor color.Color) string {
+	// Show saving overlay instead of textarea while settings are being saved
+	if m.settingsSaving {
+		w := m.chatWidth()
+		inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)
+		return inputBoxStyle.Render(lipgloss.NewStyle().Faint(true).Render("  ⏳ Saving settings..."))
+	}
 	// Use chatWidth so input box fits when sidebar is open
 	w := m.chatWidth()
 	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)

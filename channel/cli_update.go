@@ -214,6 +214,9 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// will be forwarded to viewport/textarea at the end of Update().
 
 	case tea.KeyPressMsg:
+		if m.settingsSaving {
+			break // block input while settings are being saved
+		}
 		model, keyCmds, handled := m.handleKeyPress(msg, wasTyping)
 		if handled {
 			// wasTyping guard: ensure tick chain starts on idle→typing transition.
