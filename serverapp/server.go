@@ -645,6 +645,16 @@ func Run(args []string) error {
 		disp.Register(channel.NewRemoteCLIChannel(webCh.Hub()))
 	}
 
+	// sessionStateHandler pushes session state change events to the CLI via WS.
+	// Extracted as a local variable so both WireCallbacks and ChatRenameFn can use it.
+	sessionStateHandler := func(ev protocol.SessionEvent) {
+		if ch, ok := disp.GetChannel("cli"); ok {
+			if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
+				remoteCLICh.SendSessionState(ev)
+			}
+		}
+	}
+
 	// Wire ALL shared agent callbacks in one place. Both this file and
 	// cmd/xbot-cli/main.go call WireCallbacks with the same positional parameters.
 	// Adding a new parameter changes the signature → compile error at BOTH call sites.
@@ -652,15 +662,9 @@ func Run(args []string) error {
 		func(msg bus.OutboundMessage) (string, error) { // directSend
 			return disp.SendDirect(msg)
 		},
-		disp.GetChannel, // channelFinder
-		func(ev protocol.SessionEvent) { // sessionStateHandler
-			if ch, ok := disp.GetChannel("cli"); ok {
-				if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
-					remoteCLICh.SendSessionState(ev)
-				}
-			}
-		},
-		disp, // messageSender
+		disp.GetChannel,     // channelFinder
+		sessionStateHandler, // sessionStateHandler
+		disp,                // messageSender
 		func(name string, runFn bus.RunFn) error { // registerAgentChannel
 			ac := channel.NewAgentChannel(name, runFn)
 			if err := ac.Start(); err != nil {
@@ -710,6 +714,13 @@ func Run(args []string) error {
 			if err != nil {
 				return "", fmt.Errorf("rename chat in DB: %w", err)
 			}
+			// Push renamed event to CLI so sidebar updates immediately.
+			sessionStateHandler(protocol.SessionEvent{
+				Channel: "cli",
+				ChatID:  chatID,
+				Action:  "renamed",
+				Label:   finalName,
+			})
 			return oldName, nil
 		})
 	}

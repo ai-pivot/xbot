@@ -566,6 +566,9 @@ func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
 		}
 		// Session disappeared — trigger async cache refresh so sidebar updates.
 		m.scheduleSessionsRefresh()
+	case "renamed":
+		// Session renamed via config tool or API — trigger cache refresh so sidebar updates immediately.
+		m.scheduleSessionsRefresh()
 	}
 }
 
