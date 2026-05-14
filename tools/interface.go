@@ -103,6 +103,11 @@ type ToolContext struct {
 	// Returns result map and error. Actions: "switch", "close", "layout", "theme".
 	TUIControl func(action string, params map[string]string) (map[string]string, error)
 
+	// PluginReloader reloads all plugins. Returns error on failure.
+	PluginReloader func() error
+	// HooksReloader reloads hooks configuration. Returns error on failure.
+	HooksReloader func() error
+
 	// ConfigGet reads a configuration value by key (for config tool).
 	ConfigGet func(key string) (string, error)
 
