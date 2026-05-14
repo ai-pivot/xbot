@@ -58,9 +58,9 @@ const cliSenderID = "cli_user"
 // saveCLIConfig merges CLI-owned global fields into the latest on-disk config.
 // It intentionally preserves unrelated sections like on-disk subscriptions and
 // existing remote CLI connection settings unless the caller provides overrides.
-// refreshRemoteValuesCache fetches current settings from the remote server
+// refreshRemoteValuesCache fetches current settings from the backend
 // and updates the local cache. Called from a background goroutine — never from
-// the BubbleTea Update loop (which would freeze the TUI on WS disconnect).
+// the BubbleTea Update loop (which would freeze the TUI on slow transport).
 // configLayoutValue reads a single layout setting from the local config.json.
 // Used as fallback when RPC fails on first refreshRemoteValuesCache call.
 // saveLayoutToConfig writes layout settings (sidebar_width, theme, etc.)
@@ -258,7 +258,7 @@ func saveCLIConfig(cfg *config.Config) error {
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
 	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
 	// Only write credentials to config.json if there are no DB subscriptions
-	// (first-run / legacy mode where config.json is the only data source).
+	// (first-run path where config.json is the only data source).
 	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
 	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
 		merged.LLM.Provider = cfg.LLM.Provider
@@ -733,7 +733,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	cfg := config.Load()
 
 	// If --server was not specified on the command line, fall back to config.
-	// --local disables this fallback and forces legacy in-process mode.
+	// --local disables this fallback and forces in-process transport.
 	if !forceLocal {
 		if serverURL == "" && cfg.CLI.ServerURL != "" {
 			serverURL = cfg.CLI.ServerURL
@@ -911,7 +911,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("Modes:")
 		fmt.Println("  default             Auto mode: use remote server if cli.server_url is configured")
-		fmt.Println("  --local             Force legacy local mode (in-process agent, old behavior)")
+		fmt.Println("  --local             Force in-process transport (Go channels, no server needed)")
 		fmt.Println("  --server <ws-url>   Force remote mode and connect to server")
 		fmt.Println("  serve               Run server mode in the same binary")
 		fmt.Println()
@@ -955,7 +955,7 @@ func main() {
 		flagShare        string        // --share ws://host:port/ws/userID (Runner mode: tools run locally)
 		flagToken        string        // --token xxx
 		flagWorkspace    string        // --workspace /path (overrides config)
-		flagLocal        bool          // --local force legacy in-process mode
+		flagLocal        bool          // --local force in-process transport (Go channels)
 		flagDebug        bool          // --debug enable UI capture + key injection via SIGUSR1
 		flagDebugInput   string        // --debug-input "1,enter,ctrl+c" auto-inject key sequence after startup
 		flagDebugCapMs   int           // --debug-capture-ms 200  UI capture interval in ms (default 1000)
@@ -1087,13 +1087,11 @@ func main() {
 	}
 	app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens)
 	if flagLocal {
-		fmt.Println("Backend: local mode (--local)")
+		fmt.Println("Backend: in-process (channel transport)")
+	} else if app.backend != nil && app.backend.IsRemote() {
+		fmt.Printf("Backend: remote (%s)\n", app.cfg.CLI.ServerURL)
 	} else {
-		remote := ""
-		if app.backend != nil && app.backend.IsRemote() {
-			remote = " (remote)"
-		}
-		fmt.Printf("Backend: local mode%s\n", remote)
+		fmt.Println("Backend: in-process (channel transport)")
 	}
 	defer app.Close()
 
@@ -1579,8 +1577,8 @@ func main() {
 	// Inject SettingsService for interactive /settings panel
 	if app.backend != nil {
 		// Unified: use RPC-backed adapters for both local and remote modes
-		cliCh.SetSettingsService(newRemoteSettingsService(app.backend))
-		cliCh.SetModelLister(newRemoteModelLister(app.backend))
+		cliCh.SetSettingsService(newBackendSettingsService(app.backend))
+		cliCh.SetModelLister(newBackendModelLister(app.backend))
 		// Forward user messages to backend (unified local/remote path)
 		cliCh.SetSendInboundFn(func(msg bus.InboundMessage) bool {
 			clipanic.Go("main.SendInbound", func() {
@@ -1687,21 +1685,11 @@ func main() {
 		app.backend.SetTUIControlHandler(tuiCtrl)
 	}
 
-	// Apply saved theme at startup (unified local/remote path via RPC).
-	if app.backend != nil {
-		if vals, err := app.backend.GetSettings("cli", "cli_user"); err == nil {
-			if t, ok := vals["theme"]; ok && t != "" {
-				channel.ApplyTheme(t)
-			}
-			cliCh.SyncLayoutSettings(vals)
-		}
-	}
+	// NOTE: Theme/layout is applied after backend.Start() below (lines ~1767).
+	// Do NOT call backend.GetSettings before Start() — channelTransport
+	// requires serve() goroutine to be running for RPC calls.
 
-	// LOCAL-ONLY: WireCallbacks are now injected via newChannelTransport() during construction.
-	// This block was previously needed for direct agent→channel wiring but is now redundant.
-
-	// 注入 CLI 渠道特化 prompt 提供者
-	// (handled by NewChannelBackend for local mode, not needed for remote)
+	// Channel callbacks are wired through the Backend interface above.
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2044,10 +2032,10 @@ func main() {
 // Adapters: bridge config/types to CLI interfaces
 // ---------------------------------------------------------------------------
 
-// backendSubscriptionManager / backendLLMSubscriber defined below (lines 2408-2488)
+// backendSubscriptionManager / backendLLMSubscriber defined below (~line 2190).
 
 // syncLLMFromActiveSub derives cfg.LLM.* from the active config subscription.
-// It is still used by legacy config-backed helper paths and migration logic.
+// Used as fallback when no DB subscriptions exist (first-run / config-only path).
 func syncLLMFromActiveSub(cfg *config.Config) {
 	for _, sc := range cfg.Subscriptions {
 		if sc.Active {
@@ -2151,45 +2139,45 @@ func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) 
 }
 
 // ---------------------------------------------------------------------------
-// Remote backend adapters — implement CLI interfaces via RPC
+// Backend adapters — implement CLI interfaces via Backend RPC
 // ---------------------------------------------------------------------------
 
-// remoteSettingsService implements channel.SettingsService via RPC.
-type remoteSettingsService struct {
+// backendSettingsService implements channel.SettingsService via Backend RPC.
+type backendSettingsService struct {
 	backend agent.AgentBackend
 }
 
-func newRemoteSettingsService(backend agent.AgentBackend) *remoteSettingsService {
-	return &remoteSettingsService{backend: backend}
+func newBackendSettingsService(backend agent.AgentBackend) *backendSettingsService {
+	return &backendSettingsService{backend: backend}
 }
 
-func (s *remoteSettingsService) GetSettings(namespace, senderID string) (map[string]string, error) {
+func (s *backendSettingsService) GetSettings(namespace, senderID string) (map[string]string, error) {
 	return s.backend.GetSettings(namespace, senderID)
 }
 
-func (s *remoteSettingsService) SetSetting(namespace, senderID, key, value string) error {
+func (s *backendSettingsService) SetSetting(namespace, senderID, key, value string) error {
 	return s.backend.SetSetting(namespace, senderID, key, value)
 }
 
-// remoteModelLister implements channel.ModelLister via RPC.
-type remoteModelLister struct {
+// backendModelLister implements channel.ModelLister via Backend RPC.
+type backendModelLister struct {
 	backend agent.AgentBackend
 }
 
-func newRemoteModelLister(backend agent.AgentBackend) *remoteModelLister {
-	return &remoteModelLister{backend: backend}
+func newBackendModelLister(backend agent.AgentBackend) *backendModelLister {
+	return &backendModelLister{backend: backend}
 }
 
-func (l *remoteModelLister) ListModels() []string {
+func (l *backendModelLister) ListModels() []string {
 	return l.backend.ListModels()
 }
 
-func (l *remoteModelLister) EnsureModelsLoaded() {
+func (l *backendModelLister) EnsureModelsLoaded() {
 	// Remote mode: model list is fetched from the server on demand.
 	// No-op — the server handles caching and freshness.
 }
 
-func (l *remoteModelLister) ListAllModels() []string {
+func (l *backendModelLister) ListAllModels() []string {
 	return l.backend.ListAllModels()
 }
 

@@ -77,11 +77,11 @@ func resolveMemoryProvider(cfg string) string {
 	return cfg
 }
 
-func resolveGlobalSkillsDirs(legacySkillsDir string) []string {
-	if legacySkillsDir == "" {
+func resolveGlobalSkillsDirs(skillsDir string) []string {
+	if skillsDir == "" {
 		return nil
 	}
-	abs, err := filepath.Abs(legacySkillsDir)
+	abs, err := filepath.Abs(skillsDir)
 	if err != nil {
 		return nil
 	}
@@ -1500,8 +1500,9 @@ func (a *Agent) sandboxNameForUser(userID string) string {
 
 // remoteWorkspace returns the remote runner's workspace for the given user.
 // Returns "" if the user is not on a remote sandbox or has no active connection.
-//
-// Deprecated: use sandboxWorkspace instead for all sandbox file operations.
+// Note: sandboxWorkspace covers all sandbox modes (docker/remote/none) but
+// this function is kept for the promptWorkDir fallback path where we need
+// to distinguish remote-runner from in-process docker sandbox.
 func (a *Agent) remoteWorkspace(userID string) string {
 	if a.sandbox == nil {
 		return ""
@@ -1803,7 +1804,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		if response != nil {
 			if response.WaitingUser {
 				// WaitingUser response: send directly with WaitingUser flag set.
-				// Bypass sendMessage (which doesn't support WaitingUser) to avoid metadata hack.
+				// Bypass sendMessage (which doesn't support WaitingUser) since it applies
+				// Patch/Edit logic incompatible with async user interaction.
 				outMsg := bus.OutboundMessage{
 					Channel:     msg.Channel,
 					ChatID:      msg.ChatID,

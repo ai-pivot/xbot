@@ -1500,20 +1500,13 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
 			// Build complete session LLM state and persist atomically.
-			// maxContext resolution order:
-			//   1. Subscription's per-model config (done.maxCtx) — the subscription knows best
-			//   2. Existing session JSON value — user manually set this before switching
-			//   3. 0 — let schema DefaultValue (200000) apply
-			maxCtx := done.maxCtx
-			if maxCtx == 0 {
-				// Subscription has no per-model config. Check if session JSON has a user-set value.
-				existing := LoadSessionLLMState(m.workDir, m.chatID)
-				maxCtx = existing.MaxContextTokens
-			}
+			// maxContext comes from the new subscription's per-model config.
+			// Do NOT fallback to the old session JSON value — that belongs
+			// to the previous subscription and would show a stale context bar.
 			state := SessionLLMState{
 				SubscriptionID:   done.subID,
 				Model:            done.subModel,
-				MaxContextTokens: maxCtx,
+				MaxContextTokens: done.maxCtx,
 				MaxOutputTokens:  done.maxOutTok,
 			}
 			SaveSessionLLMState(m.workDir, m.chatID, state)
@@ -1821,7 +1814,7 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 		if m.allTodosDone() {
 			m.todos = nil
 			m.todosDoneCleared = true
-			m.relayoutViewport() // TODO 清除，恢复 viewport 高度
+			m.relayoutViewport() // recalculate viewport height after clearing todo bar
 		}
 		// 发送消息（彩蛋可能返回动画 cmd）
 		if cmd := m.sendMessage(content); cmd != nil {

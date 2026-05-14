@@ -613,32 +613,5 @@ func ResolveEffectiveMaxOutputTokens(state SessionLLMState, subMgr SubscriptionM
 	return 0
 }
 
-// ── Legacy compat functions (DEPRECATED, will be removed) ──
-// These are kept temporarily for any code that still calls them.
-// They delegate to the new unified functions.
-
-// SaveSessionLLM persists subscription and model. DEPRECATED: use SaveSessionLLMState.
-func SaveSessionLLM(workDir, chatID, subscriptionID, model string) {
-	state := LoadSessionLLMState(workDir, chatID)
-	state.SubscriptionID = subscriptionID
-	state.Model = model
-	SaveSessionLLMState(workDir, chatID, state)
-}
-
-// LoadSessionLLM restores subscription and model. DEPRECATED: use LoadSessionLLMState.
-func LoadSessionLLM(workDir, chatID string) (subscriptionID, model string) {
-	state := LoadSessionLLMState(workDir, chatID)
-	return state.SubscriptionID, state.Model
-}
-
-// SaveSessionMaxContext persists max_context. DEPRECATED: use SaveSessionLLMState.
-func SaveSessionMaxContext(workDir, chatID string, maxCtx int) {
-	state := LoadSessionLLMState(workDir, chatID)
-	state.MaxContextTokens = maxCtx
-	SaveSessionLLMState(workDir, chatID, state)
-}
-
-// LoadSessionMaxContext restores max_context. DEPRECATED: use LoadSessionLLMState.
-func LoadSessionMaxContext(workDir, chatID string) int {
-	return LoadSessionLLMState(workDir, chatID).MaxContextTokens
-}
+// SaveSessionMaxContext and LoadSessionMaxContext have been removed.
+// Use SaveSessionLLMState/LoadSessionLLMState with MaxContextTokens field instead.

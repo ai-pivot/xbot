@@ -13,8 +13,11 @@ import (
 )
 
 // AgentBackend is the client-side interface for interacting with an agent.
-// Every method is an RPC call — the agent may run in-process (via Go channels)
-// or on a remote server (via WebSocket). There are zero local-only methods.
+// Most methods are RPC calls — the agent may run in-process (via Go channels)
+// or on a remote server (via WebSocket). Communication methods (SendInbound,
+// Subscribe, BindChat, etc.) delegate directly to the transport.
+// Tool registration methods (RegisterCoreTool, RegisterTool, etc.) require a
+// local transport and are no-op over remote transports.
 //
 // Server-side code (serverapp) uses the concrete *Backend type directly,
 // which has additional methods for in-process agent access.
@@ -107,7 +110,7 @@ type AgentBackend interface {
 	// --- Tenants (via RPC) ---
 	ListTenants() ([]TenantInfo, error)
 
-	// --- Tools (via RPC) ---
+	// --- Tools (local transport only) ---
 	RegisterCoreTool(tool tools.Tool)
 	RegisterTool(tool tools.Tool)
 	IndexGlobalTools()

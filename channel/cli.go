@@ -99,7 +99,6 @@ func (c *CLIChannel) Start() error {
 	// 初始化 Bubble Tea model
 	c.model = newCLIModel()
 	c.model.channel = c
-	c.model.refreshCachedModelName()
 	c.model.SetMsgBus(c.msgBus)
 	c.model.workDir = c.workDir
 	c.model.remoteMode = c.config.RemoteMode
@@ -182,6 +181,15 @@ func (c *CLIChannel) Start() error {
 	if c.model.sessionName == "" {
 		c.model.sessionName = defaultSessionName
 	}
+
+	// Restore per-session subscription state (activeSubID + cachedModelName)
+	// from Session JSON. Must happen after workDir AND chatID are both set
+	// so LoadSessionLLMState can find the correct session file.
+	c.model.refreshCachedModelName()
+
+	// If a per-session subscription was restored, trigger async SwitchLLM
+	// so the backend also uses the correct LLM.
+	c.model.scheduleSessionLLMRestore()
 
 	// If RestoreSession ran before Start() (c.model was nil), it cached
 	// data in pendingHistory/pendingProgress. Convert to pendingSuRestore

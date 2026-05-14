@@ -232,7 +232,10 @@ func (m *cliModel) cycleModel() {
 		m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
 	}
 	// Persist per-session model choice
-	SaveSessionLLM(m.workDir, m.chatID, m.activeSubID, nextModel)
+	existing := LoadSessionLLMState(m.workDir, m.chatID)
+	existing.SubscriptionID = m.activeSubID
+	existing.Model = nextModel
+	SaveSessionLLMState(m.workDir, m.chatID, existing)
 	m.updateQuickSwitchModels(nextModel)
 }
 
@@ -1377,13 +1380,20 @@ func (m *cliModel) refreshCachedModelName() {
 		return
 	}
 	// Prefer per-session model from disk (persistent across restarts)
-	if _, savedModel := LoadSessionLLM(m.workDir, m.chatID); savedModel != "" {
-		m.cachedModelName = savedModel
+	if state := LoadSessionLLMState(m.workDir, m.chatID); state.Model != "" {
+		m.cachedModelName = state.Model
+		// Also restore activeSubID so the sub panel checkmark is consistent.
+		if state.SubscriptionID != "" {
+			m.activeSubID = state.SubscriptionID
+		}
 		return
 	}
 	// Fallback: in-memory saved state (for sessions that were saved but not yet persisted)
 	if saved, ok := m.savedSessions[m.sessionKey()]; ok && saved.activeModel != "" {
 		m.cachedModelName = saved.activeModel
+		if saved.activeSubscriptionID != "" {
+			m.activeSubID = saved.activeSubscriptionID
+		}
 		return
 	}
 	// Fallback: only use global default when no per-session override exists
@@ -1395,6 +1405,42 @@ func (m *cliModel) refreshCachedModelName() {
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
+	}
+}
+
+// scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when
+// a per-session subscription was restored from Session JSON during startup.
+// This ensures the backend (server or local agent) uses the correct LLM,
+// not just the frontend display.
+func (m *cliModel) scheduleSessionLLMRestore() {
+	if m.activeSubID == "" || m.channel == nil || m.channel.subscriptionMgr == nil {
+		return
+	}
+	if m.channel.config.SwitchLLM == nil {
+		return
+	}
+	subs, err := m.channel.subscriptionMgr.List("")
+	if err != nil {
+		return
+	}
+	for i := range subs {
+		if subs[i].ID == m.activeSubID {
+			switchFn := m.channel.config.SwitchLLM
+			target := subs[i]
+			m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+				err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+				return cliSwitchLLMDoneMsg{
+					err:       err,
+					subID:     target.ID,
+					subName:   target.Name,
+					subModel:  target.Model,
+					maxCtx:    resolveSubMaxContext(&target),
+					maxOutTok: resolveSubMaxOutputTokens(&target),
+					mgr:       m.subscriptionMgr,
+				}
+			})
+			break
+		}
 	}
 }
 

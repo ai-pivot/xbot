@@ -180,7 +180,8 @@ func (b *Backend) SetChannelReconfigureFn(fn func(channel string)) {
 }
 
 // ---------------------------------------------------------------------------
-// RPC methods — every method is a single b.call() / b.callVoid()
+// RPC methods — most are a single b.call() / b.callVoid().
+// (CallRPC is the exception, using transport.Call() directly).
 // ---------------------------------------------------------------------------
 
 // ── Settings ──────────────────────────────────────────────────────────────
