@@ -374,8 +374,6 @@ func Run(args []string) error {
 	}
 	log.WithFields(log.Fields{"provider": cfg.LLM.Provider, "model": cfg.LLM.Model}).Info("LLM client created")
 
-	msgBus := bus.NewMessageBus()
-
 	workDir := cfg.Agent.WorkDir
 	xbotDir := config.XbotHome()
 	dbPath := config.DBFilePath()
@@ -392,34 +390,24 @@ func Run(args []string) error {
 	// 初始化沙箱
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
-	bc := agent.BackendConfig{
-		Cfg:              cfg,
+	// Create ServerCore (shared core for local and remote modes).
+	core, err := NewServerCore(ServerCoreOpts{
+		Config:           cfg,
 		LLM:              llmClient,
-		Bus:              msgBus,
 		DBPath:           dbPath,
 		WorkDir:          workDir,
 		XbotHome:         xbotDir,
 		PersonaIsolation: cfg.Web.PersonaIsolation,
-	}
-	ag, err := agent.New(bc.AgentConfig())
+	})
 	if err != nil {
-		log.WithError(err).Fatal("Failed to create agent")
+		log.WithError(err).Fatal("Failed to create server core")
 	}
 
-	disp := channel.NewDispatcher(msgBus)
-
-	// Server mode: create Backend with DirectBackend + RPCTable.
-	// The server uses RPCTable.Dispatch directly for WS RPC, and
-	// the DirectBackend for RPCHandlerBackend methods.
-	directBackend := agent.NewDirectBackend(ag)
-	rpcTable := BuildRPCTable(cfg, directBackend, ag, disp, msgBus)
-	backend := agent.NewLocalBackend(
-		agent.NewChannelTransport(rpcTable.Dispatch),
-		ag,
-		nil, // runner: server manages Agent.Run() directly
-		nil, // router: server doesn't use EventRouter
-		nil, // callbacks: server sets up callbacks directly on Agent
-	)
+	ag := core.Agent
+	backend := core.Backend
+	rpcTable := core.RPCTable
+	msgBus := core.MsgBus
+	disp := core.Disp
 
 	// Migrate config.json subscriptions into DB for the admin user.
 	// This ensures admin is a normal DB user with real subscriptions,
@@ -486,7 +474,7 @@ func Run(args []string) error {
 			// Remove from vals so applyRuntimeSettings doesn't override it.
 			sandboxFromConfig := cfg.Sandbox.Mode
 			delete(vals, "sandbox_mode")
-			applyRuntimeSettings(cfg, backend, cliSenderID, vals)
+			applyRuntimeSettings(cfg, ag, cliSenderID, vals)
 			// Ensure sandbox_mode stays as config.json set it.
 			if sandboxFromConfig != "" {
 				cfg.Sandbox.Mode = sandboxFromConfig
@@ -503,8 +491,6 @@ func Run(args []string) error {
 			BaseURL: cfg.OAuth.BaseURL,
 		}
 		backend.RegisterCoreTool(oauthTool)
-
-		// 注册 Feishu MCP 工具
 		feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
 		if feishuProvider != nil {
 			feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())

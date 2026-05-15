@@ -13,30 +13,6 @@ import (
 	"xbot/tools"
 )
 
-// RPCHandlerBackend is the narrow interface used by RPCTable handlers
-// and setting runtime handlers. DirectBackend only implements this interface,
-// while the full AgentBackend is implemented by Backend (remote/RPC mode).
-type RPCHandlerBackend interface {
-	GetContextMode() string
-	SetContextMode(mode string) error
-	SetCWD(ch, chatID, dir string) error
-	SetMaxIterations(n int)
-	SetMaxConcurrency(n int)
-	SetMaxContextTokens(n int, chatID ...string)
-	SetCompressionThreshold(f float64)
-	SetSandbox(sb tools.Sandbox, mode string)
-	SetModelTiers(cfg config.LLMConfig) error
-
-	// Session status (access Agent unexported fields)
-	IsProcessing(ch, chatID string) bool
-	GetActiveProgress(ch, chatID string) *protocol.ProgressEvent
-	GetTodos(ch, chatID string) []protocol.TodoItem
-
-	// Channel config (uses reconfigureFn callback)
-	GetChannelConfigs() (map[string]map[string]string, error)
-	SetChannelConfig(channel string, values map[string]string) error
-}
-
 // AgentBackend is the client-side interface for interacting with an agent.
 // Most methods are RPC calls — the agent may run in-process (via ChannelTransport)
 // or on a remote server (via RemoteTransport).

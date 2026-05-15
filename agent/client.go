@@ -1,0 +1,814 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"xbot/bus"
+	"xbot/channel"
+	"xbot/config"
+	llm "xbot/llm"
+	"xbot/protocol"
+	"xbot/tools"
+
+	log "xbot/logger"
+)
+
+// Client is the unified client for both local and remote modes.
+// All methods are RPC calls through Transport.
+//
+// In local mode: Transport = ChannelTransport, events arrive via eventCh.
+// In remote mode: Transport = RemoteTransport, events arrive via WebSocket.
+//
+// Client implements the AgentBackend interface so it can be used as a
+// drop-in replacement for Backend in CLI code.
+type Client struct {
+	transport Transport
+	eventCh   chan protocol.WSMessage // nil in remote mode
+	msgBus    *bus.MessageBus         // nil in remote mode — used by SendInbound
+
+	// Event subscription (shared with baseTransport pattern)
+	base baseTransport
+
+	// Lifecycle management
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// NewClient creates a new Client.
+//
+// Parameters:
+//   - transport: the RPC transport (ChannelTransport for local, RemoteTransport for remote)
+//   - eventCh: channel for receiving server-pushed events (nil for remote mode)
+//   - msgBus: message bus for sending inbound messages (nil for remote mode)
+func NewClient(transport Transport, eventCh chan protocol.WSMessage, msgBus *bus.MessageBus) *Client {
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Client{
+		transport: transport,
+		eventCh:   eventCh,
+		msgBus:    msgBus,
+		base:      newBaseTransport(),
+		ctx:       ctx,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+	}
+	if eventCh != nil {
+		go c.eventLoop()
+	}
+	return c
+}
+
+// ---------------------------------------------------------------------------
+// eventLoop — reads from eventCh and dispatches to subscribers
+// ---------------------------------------------------------------------------
+
+func (c *Client) eventLoop() {
+	defer close(c.done)
+	for {
+		select {
+		case wsMsg, ok := <-c.eventCh:
+			if !ok {
+				return
+			}
+			c.dispatchWSMessage(wsMsg)
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+// dispatchWSMessage converts a WSMessage to the appropriate event type
+// and dispatches to matching subscribers via baseTransport.
+func (c *Client) dispatchWSMessage(msg protocol.WSMessage) {
+	switch msg.Type {
+	case protocol.MsgTypeProgress:
+		if msg.Progress != nil {
+			c.base.emit(c.ctx, msg.Progress)
+		}
+	case protocol.MsgTypeText:
+		c.base.emit(c.ctx, protocol.OutboundEvent{
+			ChatID:  msg.ChatID,
+			Channel: msg.Channel,
+			Content: msg.Content,
+		})
+	case protocol.MsgTypeStreamContent:
+		if msg.Progress != nil {
+			c.base.emit(c.ctx, &protocol.ProgressEvent{
+				ChatID:                 msg.Progress.ChatID,
+				StreamContent:          msg.Progress.StreamContent,
+				ReasoningStreamContent: msg.Progress.ReasoningStreamContent,
+			})
+		}
+	case protocol.MsgTypeAskUser:
+		var ev protocol.AskUserEvent
+		if err := json.Unmarshal([]byte(msg.Content), &ev); err == nil {
+			c.base.emit(c.ctx, ev)
+		}
+	case protocol.MsgTypeInjectUser:
+		c.base.emit(c.ctx, protocol.InjectUserEvent{
+			ChatID:  msg.ChatID,
+			Content: msg.Content,
+		})
+	case protocol.MsgTypeSession:
+		if msg.Session != nil {
+			c.base.emit(c.ctx, *msg.Session)
+		}
+	case protocol.MsgTypePluginWidgets:
+		var zones map[string]string
+		if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
+			c.base.emit(c.ctx, protocol.PluginWidgetEvent{
+				ChatID: msg.ChatID,
+				Zones:  zones,
+			})
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Generic RPC helpers — mirrors Backend.call / callVoid
+// ---------------------------------------------------------------------------
+
+// call marshals req, calls transport, unmarshals into result.
+func (c *Client) call(method string, req any, result any) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("%s: marshal: %w", method, err)
+	}
+	raw, err := c.transport.Call(method, payload)
+	if err != nil {
+		return err
+	}
+	if result != nil && len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, result); err != nil {
+			return fmt.Errorf("%s: unmarshal: %w", method, err)
+		}
+	}
+	return nil
+}
+
+// callVoid is fire-and-forget: errors are logged, not returned.
+func (c *Client) callVoid(method string, req any) {
+	if err := c.call(method, req, nil); err != nil {
+		log.WithError(err).WithField("method", method).Warn("Client: call failed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+// Start initializes the client. For remote mode, starts the transport.
+// For local mode, the eventLoop is already started in NewClient.
+func (c *Client) Start(ctx context.Context) error {
+	// For remote mode, if transport implements AgentRunner, start it.
+	if runner, ok := c.transport.(AgentRunner); ok {
+		return runner.Start(ctx)
+	}
+	return nil
+}
+
+// Stop cancels the client context, stopping the eventLoop.
+func (c *Client) Stop() {
+	c.cancel()
+	if runner, ok := c.transport.(AgentRunner); ok {
+		runner.Stop()
+	}
+}
+
+// Close releases transport resources.
+func (c *Client) Close() error {
+	return c.transport.Close()
+}
+
+// Run blocks until the context is done.
+// For remote mode, delegates to the transport's Run method.
+// For local mode, waits on the done channel or context cancellation.
+func (c *Client) Run(ctx context.Context) error {
+	if runner, ok := c.transport.(AgentRunner); ok {
+		return runner.Run(ctx)
+	}
+	// Local mode: block until context done or client stopped.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Transport identity
+// ---------------------------------------------------------------------------
+
+func (c *Client) IsRemote() bool {
+	if rt, ok := c.transport.(interface{ IsRemote() bool }); ok {
+		return rt.IsRemote()
+	}
+	return false
+}
+
+func (c *Client) ConnState() string {
+	if rt, ok := c.transport.(interface{ ConnState() string }); ok {
+		return rt.ConnState()
+	}
+	return "connected" // local mode is always connected
+}
+
+func (c *Client) ServerURL() string {
+	if rt, ok := c.transport.(interface{ ServerURL() string }); ok {
+		return rt.ServerURL()
+	}
+	return "" // local mode has no server URL
+}
+
+// ---------------------------------------------------------------------------
+// Communication — EventRouter
+// ---------------------------------------------------------------------------
+
+// SendInbound sends a user message to the agent.
+// Local mode: writes to the message bus.
+// Remote mode: sends via WebSocket (RemoteTransport.SendMessage).
+func (c *Client) SendInbound(msg bus.InboundMessage) error {
+	if c.msgBus != nil {
+		// Local mode — write directly to the bus.
+		c.msgBus.Inbound <- msg
+		return nil
+	}
+	// Remote mode — use RemoteTransport.SendMessage if available.
+	type messageSender interface {
+		SendMessage(msg protocol.InboundMessage) error
+	}
+	if sender, ok := c.transport.(messageSender); ok {
+		return sender.SendMessage(protocol.InboundMessage{
+			MessagePayload: bus.MessagePayload{
+				Content:    msg.Content,
+				Channel:    msg.Channel,
+				ChatID:     msg.ChatID,
+				SenderID:   msg.SenderID,
+				SenderName: msg.SenderName,
+				ChatType:   msg.ChatType,
+			},
+		})
+	}
+	return fmt.Errorf("Client: no message bus or remote sender configured")
+}
+
+// Subscribe registers an event handler matching the given pattern.
+func (c *Client) Subscribe(pattern protocol.EventPattern, handler protocol.EventHandler) (cancel func()) {
+	return c.base.Subscribe(pattern, handler)
+}
+
+// BindChat registers this connection to receive events for the given chat.
+// For remote mode, delegates to RemoteTransport.BindChat.
+func (c *Client) BindChat(chatID string) error {
+	type chatBinder interface {
+		BindChat(chatID string) error
+	}
+	if binder, ok := c.transport.(chatBinder); ok {
+		return binder.BindChat(chatID)
+	}
+	return nil // local mode: no-op
+}
+
+// ---------------------------------------------------------------------------
+// Callback injection — forwarded to transport if it supports them
+// ---------------------------------------------------------------------------
+
+func (c *Client) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
+	type tuiSetter interface {
+		SetTUIControlHandler(func(action string, params map[string]string) (map[string]string, error))
+	}
+	if setter, ok := c.transport.(tuiSetter); ok {
+		setter.SetTUIControlHandler(cb)
+	}
+	// Local mode: no-op (handled by ServerCore)
+}
+
+func (c *Client) WireCallbacks(
+	directSend func(msg bus.OutboundMessage) (string, error),
+	channelFinder func(name string) (channel.Channel, bool),
+	sessionStateHandler func(ev protocol.SessionEvent),
+	messageSender bus.MessageSender,
+	registerAgentChannel func(name string, runFn bus.RunFn) error,
+	unregisterAgentChannel func(name string),
+) {
+	type wireSetter interface {
+		WireCallbacks(
+			func(msg bus.OutboundMessage) (string, error),
+			func(name string) (channel.Channel, bool),
+			func(ev protocol.SessionEvent),
+			bus.MessageSender,
+			func(name string, runFn bus.RunFn) error,
+			func(name string),
+		)
+	}
+	if setter, ok := c.transport.(wireSetter); ok {
+		setter.WireCallbacks(directSend, channelFinder, sessionStateHandler, messageSender, registerAgentChannel, unregisterAgentChannel)
+	}
+	// Local mode: no-op (handled by ServerCore)
+}
+
+func (c *Client) SetChatRenameFn(fn func(chatID, newName string) (oldName string, err error)) {
+	type renameSetter interface {
+		SetChatRenameFn(func(chatID, newName string) (oldName string, err error))
+	}
+	if setter, ok := c.transport.(renameSetter); ok {
+		setter.SetChatRenameFn(fn)
+	}
+	// Local mode: no-op (handled by ServerCore)
+}
+
+// ---------------------------------------------------------------------------
+// Tool registration — local-only, no-op for Client
+// ---------------------------------------------------------------------------
+
+func (c *Client) RegisterCoreTool(tool tools.Tool)         {} // handled by ServerCore
+func (c *Client) RegisterTool(tool tools.Tool)             {} // handled by ServerCore
+func (c *Client) IndexGlobalTools()                        {} // handled by ServerCore
+func (c *Client) SetSandbox(sb tools.Sandbox, mode string) {} // handled by ServerCore
+
+// ---------------------------------------------------------------------------
+// Settings (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) GetSettings(namespace, senderID string) (map[string]string, error) {
+	var r map[string]string
+	return r, c.call(MethodGetSettings, getSettingsReq{Namespace: namespace, SenderID: senderID}, &r)
+}
+
+func (c *Client) SetSetting(namespace, senderID, key, value string) error {
+	return c.call(MethodSetSetting, setSettingReq{Namespace: namespace, SenderID: senderID, Key: key, Value: value}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Model / LLM (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) GetDefaultModel() string {
+	var r string
+	_ = c.call(MethodGetDefaultModel, struct{}{}, &r)
+	return r
+}
+
+func (c *Client) GetContextMode() string {
+	var r string
+	_ = c.call(MethodGetContextMode, struct{}{}, &r)
+	return r
+}
+
+func (c *Client) ListModels() []string {
+	var r []string
+	_ = c.call(MethodListModels, struct{}{}, &r)
+	return r
+}
+
+func (c *Client) ListAllModels() []string {
+	var r []string
+	_ = c.call(MethodListAllModels, struct{}{}, &r)
+	return r
+}
+
+func (c *Client) SetModelTiers(cfg config.LLMConfig) error {
+	return c.call(MethodSetModelTiers, cfg, nil)
+}
+
+func (c *Client) SetDefaultThinkingMode(mode string) error {
+	return c.call(MethodSetDefaultThinkingMode, setDefaultThinkingModeReq{Mode: mode}, nil)
+}
+
+func (c *Client) SetModelContexts(contexts map[string]int) error {
+	return c.call(MethodSetModelContexts, contexts, nil)
+}
+
+func (c *Client) SetGlobalMaxTokens(maxTokens int) error {
+	return c.call(MethodSetGlobalMaxTokens, setGlobalMaxTokensReq{MaxTokens: maxTokens}, nil)
+}
+
+func (c *Client) SetRetryConfig(cfg llm.RetryConfig) error {
+	return c.call(MethodSetRetryConfig, cfg, nil)
+}
+
+func (c *Client) SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error {
+	return c.call(MethodSetChatLLM, setChatLLMReq{
+		ChatID:   chatID,
+		Provider: provider,
+		Config:   llmCfg,
+	}, nil)
+}
+
+func (c *Client) ClearProxyLLM(senderID string) {
+	c.callVoid(MethodClearProxyLLM, clearProxyLLMReq{SenderID: senderID})
+}
+
+// ---------------------------------------------------------------------------
+// Per-user settings (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) GetUserMaxContext(senderID string) int {
+	var r int
+	_ = c.call(MethodGetUserMaxContext, getUserMaxContextReq{SenderID: senderID}, &r)
+	return r
+}
+
+func (c *Client) SetUserMaxContext(senderID string, maxContext int) error {
+	return c.call(MethodSetUserMaxContext, setUserMaxContextReq{SenderID: senderID, MaxContext: maxContext}, nil)
+}
+
+func (c *Client) GetUserMaxOutputTokens(senderID string) int {
+	var r int
+	_ = c.call(MethodGetUserMaxOutputTokens, getUserMaxOutputTokensReq{SenderID: senderID}, &r)
+	return r
+}
+
+func (c *Client) SetUserMaxOutputTokens(senderID string, maxTokens int) error {
+	return c.call(MethodSetUserMaxOutputTokens, setUserMaxOutputTokensReq{SenderID: senderID, MaxTokens: maxTokens}, nil)
+}
+
+func (c *Client) GetUserThinkingMode(senderID string) string {
+	var r string
+	_ = c.call(MethodGetUserThinkingMode, getUserThinkingModeReq{SenderID: senderID}, &r)
+	return r
+}
+
+func (c *Client) SetUserThinkingMode(senderID string, mode string) error {
+	return c.call(MethodSetUserThinkingMode, setUserThinkingModeReq{SenderID: senderID, Mode: mode}, nil)
+}
+
+func (c *Client) GetLLMConcurrency(senderID string) int {
+	var r int
+	_ = c.call(MethodGetLLMConcurrency, getLLMConcurrencyReq{SenderID: senderID}, &r)
+	return r
+}
+
+func (c *Client) SetLLMConcurrency(senderID string, personal int) error {
+	return c.call(MethodSetLLMConcurrency, setLLMConcurrencyReq{SenderID: senderID, Personal: personal}, nil)
+}
+
+func (c *Client) SetUserModel(senderID, model string) error {
+	return c.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, Model: model}, nil)
+}
+
+func (c *Client) SwitchModel(senderID, model, chatID string) error {
+	return c.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model, ChatID: chatID}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Runtime config (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) SetMaxIterations(n int) {
+	c.callVoid(MethodSetMaxIterations, setMaxIterationsReq{N: n})
+}
+
+func (c *Client) SetMaxConcurrency(n int) {
+	c.callVoid(MethodSetMaxConcurrency, setMaxConcurrencyReq{N: n})
+}
+
+func (c *Client) SetMaxContextTokens(n int, chatID ...string) {
+	chatIDVal := ""
+	if len(chatID) > 0 {
+		chatIDVal = chatID[0]
+	}
+	c.callVoid(MethodSetMaxContextTokens, struct {
+		MaxContext int    `json:"max_context"`
+		ChatID     string `json:"chat_id,omitempty"`
+	}{MaxContext: n, ChatID: chatIDVal})
+}
+
+func (c *Client) SetCompressionThreshold(f float64) {
+	c.callVoid(MethodSetCompressionThreshold, setCompressionThresholdReq{Threshold: f})
+}
+
+func (c *Client) SetContextMode(mode string) error {
+	return c.call(MethodSetContextMode, setContextModeReq{Mode: mode}, nil)
+}
+
+func (c *Client) SetCWD(ch, chatID, dir string) error {
+	return c.call(MethodSetCWD, setCWDReq{Channel: ch, ChatID: chatID, Dir: dir}, nil)
+}
+
+func (c *Client) ResetTokenState() {
+	c.callVoid(MethodResetTokenState, struct{}{})
+}
+
+func (c *Client) GetEffectiveMaxContext(senderID, chatID string) int {
+	var r int
+	_ = c.call(MethodGetEffectiveMaxContext, getEffectiveMaxContextReq{SenderID: senderID, ChatID: chatID}, &r)
+	return r
+}
+
+func (c *Client) ClearPerChatMaxContext(chatID string) {
+	c.callVoid(MethodClearPerChatMaxContext, clearPerChatMaxContextReq{ChatID: chatID})
+}
+
+// ---------------------------------------------------------------------------
+// Token usage (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) GetUserTokenUsage(senderID string) (map[string]any, error) {
+	var r map[string]any
+	return r, c.call(MethodGetUserTokenUsage, getUserTokenUsageReq{SenderID: senderID}, &r)
+}
+
+func (c *Client) GetDailyTokenUsage(senderID string, days int) ([]map[string]any, error) {
+	var r []map[string]any
+	return r, c.call(MethodGetDailyTokenUsage, getDailyTokenUsageReq{SenderID: senderID, Days: days}, &r)
+}
+
+func (c *Client) GetTokenState(ch, chatID string) (int64, int64, error) {
+	var r struct {
+		Prompt     int64 `json:"prompt_tokens"`
+		Completion int64 `json:"completion_tokens"`
+	}
+	if err := c.call(MethodGetTokenState, getTokenStateReq{Channel: ch, ChatID: chatID}, &r); err != nil {
+		return 0, 0, err
+	}
+	return r.Prompt, r.Completion, nil
+}
+
+// ---------------------------------------------------------------------------
+// Background tasks (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) GetBgTaskCount(sessionKey string) int {
+	var r int
+	_ = c.call(MethodGetBgTaskCount, getBgTaskCountReq{SessionKey: sessionKey}, &r)
+	return r
+}
+
+func (c *Client) ListBgTasks(sessionKey string) ([]BgTaskJSON, error) {
+	var r []BgTaskJSON
+	return r, c.call(MethodListBgTasks, listBgTasksReq{SessionKey: sessionKey}, &r)
+}
+
+func (c *Client) KillBgTask(taskID string) error {
+	return c.call(MethodKillBgTask, killBgTaskReq{TaskID: taskID}, nil)
+}
+
+func (c *Client) CleanupCompletedBgTasks(sessionKey string) {
+	c.callVoid(MethodCleanupCompletedBgTasks, cleanupCompletedBgTasksReq{SessionKey: sessionKey})
+}
+
+// ---------------------------------------------------------------------------
+// Tenants (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) ListTenants() ([]TenantInfo, error) {
+	var r []TenantInfo
+	return r, c.call(MethodListTenants, struct{}{}, &r)
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) ListSubscriptions(senderID string) ([]protocol.Subscription, error) {
+	var r []protocol.Subscription
+	return r, c.call(MethodListSubscriptions, listSubscriptionsReq{SenderID: senderID}, &r)
+}
+
+func (c *Client) GetDefaultSubscription(senderID string) (*protocol.Subscription, error) {
+	var r *protocol.Subscription
+	return r, c.call(MethodGetDefaultSubscription, getDefaultSubscriptionReq{SenderID: senderID}, &r)
+}
+
+func (c *Client) AddSubscription(senderID string, sub protocol.Subscription) error {
+	return c.call(MethodAddSubscription, addSubscriptionReq{
+		SenderID: senderID,
+		Sub: channelSubscriptionJSON{
+			ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
+			BaseURL: sub.BaseURL, APIKey: sub.APIKey,
+			Model: sub.Model, Active: sub.Active,
+			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
+			PerModelConfigs: sub.PerModelConfigs,
+		},
+	}, nil)
+}
+
+func (c *Client) RemoveSubscription(id string) error {
+	return c.call(MethodRemoveSubscription, removeSubscriptionReq{ID: id}, nil)
+}
+
+func (c *Client) SetDefaultSubscription(id string, chatID string) error {
+	return c.call(MethodSetDefaultSubscription, setDefaultSubscriptionReq{ID: id, ChatID: chatID}, nil)
+}
+
+func (c *Client) UpdateSubscription(id string, sub protocol.Subscription) error {
+	return c.call(MethodUpdateSubscription, updateSubscriptionReq{
+		ID: id,
+		Sub: channelSubscriptionJSON{
+			ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
+			BaseURL: sub.BaseURL, APIKey: sub.APIKey,
+			Model: sub.Model, Active: sub.Active,
+			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
+			PerModelConfigs: sub.PerModelConfigs,
+		},
+	}, nil)
+}
+
+func (c *Client) UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error {
+	return c.call(MethodUpdatePerModelConfig, updatePerModelConfigReq{
+		ID: id, Model: model, Config: pmc,
+	}, nil)
+}
+
+func (c *Client) SetSubscriptionModel(id, model string) error {
+	return c.call(MethodSetSubscriptionModel, setSubscriptionModelReq{ID: id, Model: model}, nil)
+}
+
+func (c *Client) RenameSubscription(id, name string) error {
+	return c.call(MethodRenameSubscription, renameSubscriptionReq{ID: id, Name: name}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Memory / History (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) ClearMemory(ctx context.Context, channelName, chatID, targetType, senderID string) error {
+	return c.call(MethodClearMemory, clearMemoryReq{
+		Channel: channelName, ChatID: chatID, TargetType: targetType, SenderID: senderID,
+	}, nil)
+}
+
+func (c *Client) GetMemoryStats(ctx context.Context, ch, chatID, senderID string) map[string]string {
+	var r map[string]string
+	_ = c.call(MethodGetMemoryStats, getMemoryStatsReq{Channel: ch, ChatID: chatID, SenderID: senderID}, &r)
+	return r
+}
+
+func (c *Client) GetHistory(channelName, chatID string) ([]protocol.HistoryMessage, error) {
+	var r []protocol.HistoryMessage
+	return r, c.call(MethodGetHistory, getHistoryReq{Channel: channelName, ChatID: chatID}, &r)
+}
+
+func (c *Client) TrimHistory(ch, chatID string, cutoff time.Time) error {
+	return c.call(MethodTrimHistory, trimHistoryReq{Channel: ch, ChatID: chatID, Cutoff: cutoff.Unix()}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Interactive SubAgent sessions (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) CountInteractiveSessions(channelName, chatID string) int {
+	var r int
+	_ = c.call(MethodCountInteractiveSessions, countInteractiveSessionsReq{ChannelName: channelName, ChatID: chatID}, &r)
+	return r
+}
+
+func (c *Client) ListInteractiveSessions(channelName, chatID string) []InteractiveSessionInfo {
+	var r []InteractiveSessionInfo
+	_ = c.call(MethodListInteractiveSessions, listInteractiveSessionsReq{ChannelName: channelName, ChatID: chatID}, &r)
+	return r
+}
+
+func (c *Client) InspectInteractiveSession(ctx context.Context, roleName, channelName, chatID, instance string, tailCount int) (string, error) {
+	var r string
+	return r, c.call(MethodInspectInteractiveSession, inspectInteractiveSessionReq{
+		RoleName: roleName, ChannelName: channelName,
+		ChatID: chatID, Instance: instance, TailCount: tailCount,
+	}, &r)
+}
+
+func (c *Client) GetSessionMessages(channelName, chatID, roleName, instance string) ([]SessionMessage, bool) {
+	var r struct {
+		Messages []SessionMessage `json:"messages"`
+		OK       bool             `json:"ok"`
+	}
+	if err := c.call(MethodGetSessionMessages, getSessionMessagesReq{
+		ChannelName: channelName, ChatID: chatID, RoleName: roleName, Instance: instance,
+	}, &r); err != nil {
+		return nil, false
+	}
+	return r.Messages, r.OK
+}
+
+func (c *Client) GetAgentSessionDump(channelName, chatID, roleName, instance string) (*AgentSessionDump, bool) {
+	var r struct {
+		Dump *AgentSessionDump `json:"dump"`
+		OK   bool              `json:"ok"`
+	}
+	if err := c.call(MethodGetAgentSessionDump, getAgentSessionDumpReq{
+		ChannelName: channelName, ChatID: chatID, RoleName: roleName, Instance: instance,
+	}, &r); err != nil {
+		return nil, false
+	}
+	return r.Dump, r.OK
+}
+
+func (c *Client) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump, bool) {
+	var r struct {
+		Dump *AgentSessionDump `json:"dump"`
+		OK   bool              `json:"ok"`
+	}
+	if err := c.call(MethodGetAgentSessionDumpByFullKey, getAgentSessionDumpByFullKeyReq{FullKey: fullKey}, &r); err != nil {
+		return nil, false
+	}
+	return r.Dump, r.OK
+}
+
+// ---------------------------------------------------------------------------
+// Processing state (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) IsProcessing(ch, chatID string) bool {
+	var r bool
+	_ = c.call(MethodIsProcessing, isProcessingReq{Channel: ch, ChatID: chatID}, &r)
+	return r
+}
+
+func (c *Client) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
+	var r *protocol.ProgressEvent
+	_ = c.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID}, &r)
+	return r
+}
+
+func (c *Client) GetTodos(ch, chatID string) []protocol.TodoItem {
+	var r []protocol.TodoItem
+	_ = c.call(MethodGetTodos, getTodosReq{Channel: ch, ChatID: chatID}, &r)
+	return r
+}
+
+// ---------------------------------------------------------------------------
+// Channel config (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) GetChannelConfigs() (map[string]map[string]string, error) {
+	var r map[string]map[string]string
+	return r, c.call(MethodGetChannelConfig, struct{}{}, &r)
+}
+
+func (c *Client) SetChannelConfig(channel string, values map[string]string) error {
+	return c.call(MethodSetChannelConfig, setChannelConfigReq{Channel: channel, Values: values}, nil)
+}
+
+// ---------------------------------------------------------------------------
+// Raw RPC
+// ---------------------------------------------------------------------------
+
+func (c *Client) CallRPC(method string, params any) (json.RawMessage, error) {
+	payload, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return c.transport.Call(method, payload)
+}
+
+// ---------------------------------------------------------------------------
+// Web Users (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) CreateWebUser(username string) (string, error) {
+	var resp struct {
+		Password string `json:"password"`
+	}
+	err := c.call("create_web_user", map[string]string{"username": username}, &resp)
+	return resp.Password, err
+}
+
+func (c *Client) ListWebUsers() ([]map[string]any, error) {
+	var result []map[string]any
+	raw, err := c.CallRPC("list_web_users", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *Client) DeleteWebUser(username string) error {
+	_, err := c.CallRPC("delete_web_user", map[string]string{"username": username})
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Chat Management (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) DeleteChat(ch, senderID, chatID string) error {
+	_, err := c.CallRPC("delete_chat", map[string]string{
+		"channel":  ch,
+		"senderid": senderID,
+		"chat_id":  chatID,
+	})
+	return err
+}
+
+func (c *Client) RenameChat(ch, senderID, chatID, newName string) error {
+	_, err := c.CallRPC("rename_chat", map[string]string{
+		"channel":  ch,
+		"senderid": senderID,
+		"chat_id":  chatID,
+		"new_name": newName,
+	})
+	return err
+}
+
+// Ensure Client implements AgentBackend.
+var _ AgentBackend = (*Client)(nil)

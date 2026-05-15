@@ -28,11 +28,13 @@ import (
 // RPCContext holds shared dependencies for RPC handler construction.
 // Exported so that CLI local mode can construct it via BuildRPCTable.
 type RPCContext struct {
-	Cfg     *config.Config
-	Backend agent.RPCHandlerBackend
-	Ag      *agent.Agent
-	Disp    *channel.Dispatcher
-	MsgBus  *bus.MessageBus
+	Cfg    *config.Config
+	Ag     *agent.Agent
+	Disp   *channel.Dispatcher
+	MsgBus *bus.MessageBus
+
+	// reconfigureFn is called after a channel config change (server-side only).
+	reconfigureFn func(channel string)
 
 	// pluginWidgetsMu serializes plugin_widgets RPC calls so concurrent
 	// sessions don't race on the shared PluginContext.workingDir.
@@ -96,8 +98,8 @@ func resolveChatID(ctx context.Context, chatID string) (string, error) {
 // BuildRPCTable constructs the complete RPC dispatch table.
 // The table is built once at startup and reused for every request;
 // per-request identity is injected via context, so no authSenderID/bizID is needed here.
-func BuildRPCTable(cfg *config.Config, backend agent.RPCHandlerBackend, ag *agent.Agent, disp *channel.Dispatcher, msgBus *bus.MessageBus) RPCTable {
-	h := &RPCContext{Cfg: cfg, Backend: backend, Ag: ag, Disp: disp, MsgBus: msgBus}
+func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher, msgBus *bus.MessageBus) RPCTable {
+	h := &RPCContext{Cfg: cfg, Ag: ag, Disp: disp, MsgBus: msgBus}
 	t := make(RPCTable, 70)
 	registerSettingsHandlers(t, h)
 	registerLLMHandlers(t, h)
@@ -113,12 +115,12 @@ func BuildRPCTable(cfg *config.Config, backend agent.RPCHandlerBackend, ag *agen
 
 func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 	t["get_context_mode"] = rpc0(func(ctx context.Context) any {
-		return h.Backend.GetContextMode()
+		return h.Ag.GetContextMode()
 	})
 	t["set_context_mode"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`
 	}) error {
-		return h.Backend.SetContextMode(p.Mode)
+		return h.Ag.SetContextMode(p.Mode)
 	}))
 	t["set_cwd"] = rpc1void(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
@@ -129,7 +131,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 			return err
 		}
 		// SetCWD internally refreshes plugin workDir with correct tenantID
-		return h.Backend.SetCWD(p.Channel, p.ChatID, p.Dir)
+		return h.Ag.SetCWD(p.Channel, p.ChatID, p.Dir)
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {
 		Namespace string `json:"namespace"`
@@ -203,7 +205,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		// the source of truth is config.json.
 		if channel.IsGlobalScopedSettingKey(p.Key) {
 			if isAdmin(rpcAuthID(ctx)) {
-				applyRuntimeSetting(h.Cfg, h.Backend, bizID, p.Key, p.Value)
+				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 			}
 			return nil
 		}
@@ -212,7 +214,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		// The CLI's saveSettings() handles the write via subscriptionMgr.Update().
 		if channel.IsSubscriptionScopedSettingKey(p.Key) {
 			if isAdmin(rpcAuthID(ctx)) {
-				applyRuntimeSetting(h.Cfg, h.Backend, bizID, p.Key, p.Value)
+				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 			}
 			return nil
 		}
@@ -223,7 +225,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 			return err
 		}
 		if isAdmin(rpcAuthID(ctx)) {
-			applyRuntimeSetting(h.Cfg, h.Backend, bizID, p.Key, p.Value)
+			applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 		}
 		return nil
 	})
@@ -232,13 +234,13 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 	t["set_max_iterations"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		N int `json:"n"`
 	}) error {
-		h.Backend.SetMaxIterations(p.N)
+		h.Ag.SetMaxIterations(p.N)
 		return nil
 	}))
 	t["set_max_concurrency"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		N int `json:"n"`
 	}) error {
-		h.Backend.SetMaxConcurrency(p.N)
+		h.Ag.SetMaxConcurrency(p.N)
 		return nil
 	}))
 	t["set_max_context_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
@@ -246,16 +248,16 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		ChatID     string `json:"chat_id,omitempty"`
 	}) error {
 		if p.ChatID != "" {
-			h.Backend.SetMaxContextTokens(p.MaxContext, p.ChatID)
+			h.Ag.SetMaxContextTokens(p.MaxContext, p.ChatID)
 		} else {
-			h.Backend.SetMaxContextTokens(p.MaxContext)
+			h.Ag.SetMaxContextTokens(p.MaxContext)
 		}
 		return nil
 	}))
 	t["set_compression_threshold"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Threshold float64 `json:"threshold"`
 	}) error {
-		h.Backend.SetCompressionThreshold(p.Threshold)
+		h.Ag.SetCompressionThreshold(p.Threshold)
 		return nil
 	}))
 }
@@ -763,7 +765,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != rpcBizID(ctx) {
 			return false, fmt.Errorf("access denied")
 		}
-		return h.Backend.IsProcessing(p.Channel, p.ChatID), nil
+		return h.Ag.IsProcessingByChannel(p.Channel, p.ChatID), nil
 	})
 	t["get_active_progress"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
@@ -776,7 +778,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
-		return h.Backend.GetActiveProgress(p.Channel, p.ChatID), nil
+		return h.Ag.GetActiveProgress(p.Channel, p.ChatID), nil
 	})
 
 	t["get_todos"] = rpc1(func(ctx context.Context, p struct {
@@ -790,7 +792,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
-		return h.Backend.GetTodos(p.Channel, p.ChatID), nil
+		return h.Ag.GetTodos(p.Channel, p.ChatID), nil
 	})
 }
 
@@ -866,22 +868,21 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 
 func registerAdminHandlers(t RPCTable, h *RPCContext) {
 	cfg := h.Cfg
-	backend := h.Backend
 	disp := h.Disp
 	msgBus := h.MsgBus
 
 	t["reset_token_state"] = h.requireAdmin(rpc0void(func(ctx context.Context) error {
-		// no-op in local mode (same as DirectBackend implementation)
+		// no-op in local mode
 		return nil
 	}))
 	t["get_channel_config"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
-		return backend.GetChannelConfigs()
+		return getChannelConfigs()
 	}))
 	t["set_channel_config"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
 		Channel string            `json:"channel"`
 		Values  map[string]string `json:"values"`
 	}) (any, error) {
-		if err := backend.SetChannelConfig(p.Channel, p.Values); err != nil {
+		if err := setChannelConfig(p.Channel, p.Values, h.reconfigureFn); err != nil {
 			return nil, err
 		}
 		enabledVal, ok := p.Values["enabled"]
@@ -936,8 +937,6 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 // ── Plugin system RPCs (remote CLI support) ──
 
 func registerPluginHandlers(t RPCTable, h *RPCContext) {
-	backend := h.Backend
-	_ = backend
 
 	t["plugin_status"] = rpc0err(func(ctx context.Context) (any, error) {
 		pm := h.Ag.PluginManager()
