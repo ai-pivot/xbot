@@ -511,10 +511,14 @@ func (r *Registry) TouchTool(sessionKey, toolName string) {
 }
 
 // IsToolActive 检查工具是否对指定会话可用（核心工具始终返回 true，已过期的返回 false）
+// flat 模式下所有工具（包括 session MCP 工具）始终视为活跃，无需 load_tools 激活。
 func (r *Registry) IsToolActive(sessionKey, toolName string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.coreTools[toolName] {
+		return true
+	}
+	if r.flatMode {
 		return true
 	}
 	lastRound, ok := r.sessionActivated[sessionKey][toolName]
