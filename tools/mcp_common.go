@@ -241,10 +241,13 @@ func buildMinimalExecEnv(envList []string) []string {
 	return env
 }
 
-// getLoginShellEnv runs an interactive login shell command to capture the full environment.
-// Unix: bash -i -l -c 'env -0'
-// The -i flag is needed to source .bashrc, which is where tools like nvm initialize.
-// Without -i, nvm-managed paths (e.g. npx) would be missing from PATH.
+// getLoginShellEnv runs a login shell command to capture the full environment.
+// It uses the same shell detection and argument logic as the Shell tool:
+//
+//	zsh:  zsh -c "source ~/.zshrc 2>/dev/null; env -0"
+//	bash: bash -l -c "env -0"
+//
+// This ensures nvm and other user-configured tools are visible in PATH.
 // Windows: powershell.exe -Command "[Environment]::GetEnvironmentVariables() | ..."
 // Returns empty slice on failure (caller will use fallback).
 func getLoginShellEnv() []string {
@@ -257,7 +260,10 @@ func getLoginShellEnv() []string {
 		cmd = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command",
 			"Get-ChildItem Env: | ForEach-Object { $_.Name + '=' + $_.Value }")
 	} else {
-		cmd = exec.CommandContext(ctx, "bash", "-i", "-l", "-c", "env -0")
+		// Use the same shell detection as Shell tool (defaultShell + LoginShellArgs).
+		shell := defaultShell()
+		args := LoginShellArgs(shell, "env -0")
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
