@@ -22,6 +22,7 @@ import (
 	log "xbot/logger"
 	"xbot/oauth"
 	"xbot/oauth/providers"
+	"xbot/protocol"
 	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -31,7 +32,7 @@ import (
 
 // injectProxyLLM checks if the user's active runner has local LLM configured,
 // and if so, injects a ProxyLLM into the agent's LLM factory.
-func injectProxyLLM(userID string, backend agent.AgentBackend) {
+func injectProxyLLM(userID string, ag *agent.Agent) {
 	db := tools.GetRunnerTokenDB()
 	if db == nil {
 		return
@@ -74,12 +75,12 @@ func injectProxyLLM(userID string, backend agent.AgentBackend) {
 				}
 				model := llm.Model
 				if model == "" {
-					model = backend.GetDefaultModel()
+					model = ag.GetDefaultModel()
 				}
-				backend.SetProxyLLM(userID, proxy, model)
+				ag.SetProxyLLM(userID, proxy, model)
 				log.Infof("ProxyLLM injected for user=%s runner=%s provider=%s", userID, activeName, llm.Provider)
 			} else {
-				backend.ClearProxyLLM(userID)
+				ag.ClearProxyLLM(userID)
 			}
 			return
 		}
@@ -236,7 +237,7 @@ func channelShouldRun(cfg *config.Config, name string) bool {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, backend agent.AgentBackend, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, backend *agent.Backend, ag *agent.Agent, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
 	var feishuCh *channel.FeishuChannel
 	var webCh *channel.WebChannel
 	if cfg.Feishu.Enabled {
@@ -310,7 +311,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				}
 			}
 
-			webCh.SetCallbacks(buildWebCallbacks(cfg, backend, webDB))
+			webCh.SetCallbacks(buildWebCallbacks(cfg, backend, ag, webDB))
 			// Wire up RemoteSandbox callbacks to push real-time status to WebChannel.
 			// In WebChannel, senderID == chatID (see handleWS: client.userID = senderID, chatID := c.userID).
 			sb := tools.GetSandbox()
@@ -321,9 +322,9 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 							webCh.PushRunnerStatus(userID, runnerName, online)
 							// When a runner with local LLM connects/disconnects, update ProxyLLM.
 							if online {
-								injectProxyLLM(userID, backend)
+								injectProxyLLM(userID, ag)
 							} else {
-								backend.ClearProxyLLM(userID)
+								ag.ClearProxyLLM(userID)
 							}
 						}
 						remote.OnSyncProgress = func(userID, phase, message string) {
@@ -400,7 +401,7 @@ func Run(args []string) error {
 		XbotHome:         xbotDir,
 		PersonaIsolation: cfg.Web.PersonaIsolation,
 	}
-	backend, err := agent.NewBackend(bc.AgentConfig())
+	backend, ag, err := agent.NewBackend(bc.AgentConfig())
 	if err != nil {
 		log.WithError(err).Fatal("Failed to create local backend")
 	}
@@ -408,7 +409,7 @@ func Run(args []string) error {
 	// Migrate config.json subscriptions into DB for the admin user.
 	// This ensures admin is a normal DB user with real subscriptions,
 	// so model switches persist across restarts.
-	if subSvc := backend.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
+	if subSvc := ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 		if err := migrateConfigSubscriptions(cfg, subSvc, cliSenderID); err != nil {
 			log.WithError(err).Warn("Failed to migrate config subscriptions to DB")
 		}
@@ -430,13 +431,13 @@ func Run(args []string) error {
 			cfg.LLM.Model = defSub.Model
 			cfg.LLM.MaxOutputTokens = defSub.MaxOutputTokens
 			if newClient, err := createAdminLLM(cfg); err == nil {
-				backend.LLMFactory().SetDefaults(newClient, defSub.Model)
+				ag.LLMFactory().SetDefaults(newClient, defSub.Model)
 				// SetDefaults clears all per-user caches. Re-populate them from
 				// the default subscription so that GetMaxOutputTokens/GetLLM
 				// return correct values for cli_user without waiting for a
 				// SwitchSubscription call.
-				backend.LLMFactory().SetUserMaxOutputTokens(cliSenderID, defSub.MaxOutputTokens)
-				backend.LLMFactory().SetUserThinkingMode(cliSenderID, defSub.ThinkingMode)
+				ag.LLMFactory().SetUserMaxOutputTokens(cliSenderID, defSub.MaxOutputTokens)
+				ag.LLMFactory().SetUserThinkingMode(cliSenderID, defSub.ThinkingMode)
 				log.WithFields(log.Fields{"provider": defSub.Provider, "model": defSub.Model, "max_output_tokens": defSub.MaxOutputTokens}).Info("LLM client synced from DB default subscription")
 			}
 		}
@@ -445,7 +446,7 @@ func Run(args []string) error {
 	// Clean up subscription-scoped keys that were migrated from user_settings
 	// to user_llm_subscriptions. Stale rows in user_settings can overwrite
 	// correct subscription values on startup (e.g. name→provider, max_output_tokens→8192).
-	if ss := backend.SettingsService(); ss != nil {
+	if ss := ag.SettingsService(); ss != nil {
 		cleaned := 0
 		for _, key := range []string{
 			"llm_provider", "llm_api_key", "llm_model", "llm_base_url",
@@ -464,7 +465,7 @@ func Run(args []string) error {
 	// DB is the source of truth — config.json may be stale after user changes.
 	// Exception: sandbox_mode is a server-level config initialized from config.json
 	// by InitSandbox above. DB should NOT override it on startup.
-	if ss := backend.SettingsService(); ss != nil {
+	if ss := ag.SettingsService(); ss != nil {
 		if vals, err := ss.GetSettings("cli", cliSenderID); err == nil {
 			// Preserve config.json sandbox_mode — it was already used by InitSandbox.
 			// Remove from vals so applyRuntimeSettings doesn't override it.
@@ -544,9 +545,9 @@ func Run(args []string) error {
 	}
 
 	// 初始化事件触发系统（Event Trigger System）
-	triggerSvc := sqlite.NewTriggerService(backend.MultiSession().DB())
+	triggerSvc := sqlite.NewTriggerService(ag.MultiSession().DB())
 	eventRouter := event.NewRouter(triggerSvc)
-	backend.SetEventRouter(eventRouter)
+	ag.SetEventRouter(eventRouter)
 
 	webhookBaseURL := cfg.EventWebhook.BaseURL
 	if webhookBaseURL == "" {
@@ -567,9 +568,9 @@ func Run(args []string) error {
 
 	// 所有工具注册完成，索引全局工具（用于 search_tools 语义搜索）
 	backend.IndexGlobalTools()
-	backend.LLMFactory().SetModelTiers(cfg.LLM)
-	backend.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
-	backend.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
+	ag.LLMFactory().SetModelTiers(cfg.LLM)
+	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
+	ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
 		Delay:    time.Duration(cfg.Agent.LLMRetryDelay),
 		MaxDelay: time.Duration(cfg.Agent.LLMRetryMaxDelay),
@@ -589,7 +590,7 @@ func Run(args []string) error {
 	if tokenDB != nil {
 		webDB = tokenDB.Conn()
 	}
-	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, backend, webDB, workDir)
+	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, backend, ag, webDB, workDir)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to register channels")
 	}
@@ -628,7 +629,7 @@ func Run(args []string) error {
 	})
 
 	// Build RPC table once at startup; per-request identity is passed via context.
-	rpcTable := buildRPCTable(cfg, backend, disp, msgBus)
+	rpcTable := buildRPCTable(cfg, backend, ag, disp, msgBus)
 
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
@@ -644,33 +645,27 @@ func Run(args []string) error {
 		disp.Register(channel.NewRemoteCLIChannel(webCh.Hub()))
 	}
 
-	backend.SetDirectSend(func(msg bus.OutboundMessage) (string, error) {
-		return disp.SendDirect(msg)
-	})
-	backend.SetChannelFinder(disp.GetChannel)
-
-	// Wire ChatRenameFn: rename session in DB (for remote CLI and server-side agents).
-	// Uses upsert (INSERT ON CONFLICT) to handle both existing and new user_chats rows.
-	// CLI sessions may not have a user_chats row yet — the upsert creates one if needed.
-	if tokenDB != nil {
-		backend.SetChatRenameFn(func(chatID, newName string) (string, error) {
-			_, oldName := channel.ParseChatID(chatID)
-			conn := tokenDB.Conn()
-			_, err := conn.Exec(`
-				INSERT INTO user_chats (channel, sender_id, chat_id, label)
-				VALUES ('cli', ?, ?, ?)
-				ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-				cliSenderID, chatID, newName, newName,
-			)
-			if err != nil {
-				return "", fmt.Errorf("rename chat in DB: %w", err)
+	// sessionStateHandler pushes session state change events to the CLI via WS.
+	// Extracted as a local variable so both WireCallbacks and ChatRenameFn can use it.
+	sessionStateHandler := func(ev protocol.SessionEvent) {
+		if ch, ok := disp.GetChannel("cli"); ok {
+			if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
+				remoteCLICh.SendSessionState(ev)
 			}
-			return oldName, nil
-		})
+		}
 	}
-	backend.Agent().SetMessageSender(disp)
-	backend.Agent().SetAgentChannelRegistry(
-		func(name string, runFn bus.RunFn) error {
+
+	// Wire ALL shared agent callbacks in one place. Both this file and
+	// cmd/xbot-cli/main.go call WireCallbacks with the same positional parameters.
+	// Adding a new parameter changes the signature → compile error at BOTH call sites.
+	ag.WireCallbacks(
+		func(msg bus.OutboundMessage) (string, error) { // directSend
+			return disp.SendDirect(msg)
+		},
+		disp.GetChannel,     // channelFinder
+		sessionStateHandler, // sessionStateHandler
+		disp,                // messageSender
+		func(name string, runFn bus.RunFn) error { // registerAgentChannel
 			ac := channel.NewAgentChannel(name, runFn)
 			if err := ac.Start(); err != nil {
 				return fmt.Errorf("start AgentChannel %s: %w", name, err)
@@ -678,15 +673,62 @@ func Run(args []string) error {
 			disp.Register(ac)
 			return nil
 		},
-		func(name string) {
-			disp.Unregister(name)
-		},
+		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
 	)
+
+	// Wire ChatRenameFn: rename session in DB (for remote CLI and server-side agents).
+	// Uses upsert (INSERT ON CONFLICT) to handle both existing and new user_chats rows.
+	// CLI sessions may not have a user_chats row yet — the upsert creates one if needed.
+	if tokenDB != nil {
+		ag.SetChatRenameFn(func(chatID, newName string) (string, error) {
+			conn := tokenDB.Conn()
+			// Look up current label from DB for the old name
+			var oldName string
+			row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, cliSenderID, chatID)
+			_ = row.Scan(&oldName)
+			if oldName == "" {
+				_, oldName = channel.ParseChatID(chatID)
+			}
+			// Deduplicate against all other CLI session labels in DB
+			finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
+				rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND label != ''`, cliSenderID)
+				if err != nil {
+					return nil
+				}
+				defer rows.Close()
+				var entries []channel.NameEntry
+				for rows.Next() {
+					var cid, lbl string
+					if err := rows.Scan(&cid, &lbl); err == nil {
+						entries = append(entries, channel.NameEntry{Name: lbl, ChatID: cid})
+					}
+				}
+				return entries
+			})
+			_, err := conn.Exec(`
+				INSERT INTO user_chats (channel, sender_id, chat_id, label)
+				VALUES ('cli', ?, ?, ?)
+				ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
+				cliSenderID, chatID, finalName, finalName,
+			)
+			if err != nil {
+				return "", fmt.Errorf("rename chat in DB: %w", err)
+			}
+			// Push renamed event to CLI so sidebar updates immediately.
+			sessionStateHandler(protocol.SessionEvent{
+				Channel: "cli",
+				ChatID:  chatID,
+				Action:  "renamed",
+				Label:   finalName,
+			})
+			return oldName, nil
+		})
+	}
 
 	// 设置飞书渠道的 CardBuilder（用于卡片回调处理）
 	if feishuCh != nil {
-		feishuCh.SetCardBuilder(backend.GetCardBuilder())
-		if state := backend.ApprovalState(); state != nil {
+		feishuCh.SetCardBuilder(ag.GetCardBuilder())
+		if state := ag.ApprovalState(); state != nil {
 			feishuCh.SetApprovalState(state)
 		}
 
@@ -699,10 +741,10 @@ func Run(args []string) error {
 		}
 
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
-		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, backend))
+		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, backend, ag))
 
 		// 注入飞书渠道特化 prompt 提供者
-		backend.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
+		ag.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
 	}
 
 	// 设置优雅退出（提前声明 ctx，供 OAuth Manager cleanup goroutine 使用）
@@ -1007,11 +1049,11 @@ func userScopedSettingsFromGlobalCLI(cfg *config.Config) map[string]string {
 	return vals
 }
 
-func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, backend agent.AgentBackend, namespace, senderID string) error {
-	if senderID == "" || backend.SettingsService() == nil {
+func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, ag *agent.Agent, namespace, senderID string) error {
+	if senderID == "" || ag.SettingsService() == nil {
 		return nil
 	}
-	existing, err := backend.SettingsService().GetSettings(namespace, senderID)
+	existing, err := ag.SettingsService().GetSettings(namespace, senderID)
 	if err != nil {
 		return err
 	}
@@ -1022,7 +1064,7 @@ func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, backend agent.
 		if strings.TrimSpace(v) == "" {
 			continue
 		}
-		if err := backend.SettingsService().SetSetting(namespace, senderID, k, v); err != nil {
+		if err := ag.SettingsService().SetSetting(namespace, senderID, k, v); err != nil {
 			return fmt.Errorf("seed user setting %s: %w", k, err)
 		}
 	}

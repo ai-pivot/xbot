@@ -11,9 +11,21 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/config"
+	llm "xbot/llm"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
+
+// PerModelConfigs are already protocol.PerModelConfig (type alias), use directly.
+// sqliteSubToProtocol converts a sqlite.LLMSubscription to protocol.Subscription.
+func sqliteSubToProtocol(s *sqlite.LLMSubscription) protocol.Subscription {
+	return protocol.Subscription{
+		ID: s.ID, Name: s.Name, Provider: s.Provider,
+		BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault,
+		MaxOutputTokens: s.MaxOutputTokens, ThinkingMode: s.ThinkingMode,
+		PerModelConfigs: s.PerModelConfigs,
+	}
+}
 
 // localTransport is the in-process "server" for local mode.
 // Its Call() method dispatches to a handler table that directly operates on *Agent.
@@ -69,10 +81,26 @@ func (t *localTransport) SendMessage(msg protocol.InboundMessage) error {
 func (t *localTransport) BindChat(string) error { return nil }
 
 // ---------------------------------------------------------------------------
-// TUI control (no-op in local mode — agent handles directly)
+// Callback injection — forward to Agent (same path as server.go)
 // ---------------------------------------------------------------------------
 
 func (t *localTransport) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
+	t.agent.SetTUICallbacks(cb, nil, nil)
+}
+
+func (t *localTransport) WireCallbacks(
+	directSend func(msg bus.OutboundMessage) (string, error),
+	channelFinder func(name string) (channel.Channel, bool),
+	sessionStateHandler func(ev protocol.SessionEvent),
+	messageSender bus.MessageSender,
+	registerAgentChannel func(name string, runFn bus.RunFn) error,
+	unregisterAgentChannel func(name string),
+) {
+	t.agent.WireCallbacks(directSend, channelFinder, sessionStateHandler, messageSender, registerAgentChannel, unregisterAgentChannel)
+}
+
+func (t *localTransport) SetChatRenameFn(fn func(chatID, newName string) (oldName string, err error)) {
+	t.agent.SetChatRenameFn(fn)
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +118,7 @@ func (t *localTransport) ServerURL() string { return "" }
 func (t *localTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
 	handler, ok := t.handlers[method]
 	if !ok {
-		return nil, fmt.Errorf("RPC method %q not available in standalone mode", method)
+		return nil, fmt.Errorf("RPC method %q not available in local mode", method)
 	}
 	return handler(payload)
 }
@@ -193,6 +221,44 @@ func (t *localTransport) registerHandlers() {
 		return nil
 	})
 
+	h[MethodSetModelContexts] = rpcVoid(func(r map[string]int) error {
+		a.llmFactory.SetModelContexts(r)
+		return nil
+	})
+
+	h[MethodSetGlobalMaxTokens] = rpcVoid(func(r setGlobalMaxTokensReq) error {
+		a.llmFactory.SetGlobalMaxTokens(r.MaxTokens)
+		return nil
+	})
+
+	h[MethodSetRetryConfig] = rpcVoid(func(r llm.RetryConfig) error {
+		a.llmFactory.SetRetryConfig(r)
+		return nil
+	})
+
+	h[MethodSetChatLLM] = rpcVoid(func(r setChatLLMReq) error {
+		var inner llm.LLM
+		switch r.Provider {
+		case "anthropic":
+			inner = llm.NewAnthropicLLM(llm.AnthropicConfig{
+				BaseURL:      r.Config.BaseURL,
+				APIKey:       r.Config.APIKey,
+				DefaultModel: r.Config.Model,
+				MaxTokens:    r.Config.MaxOutputTokens,
+			})
+		default:
+			inner = llm.NewOpenAILLM(llm.OpenAIConfig{
+				BaseURL:      r.Config.BaseURL,
+				APIKey:       r.Config.APIKey,
+				DefaultModel: r.Config.Model,
+				MaxTokens:    r.Config.MaxOutputTokens,
+			})
+		}
+		client := llm.NewRetryLLM(inner, llm.DefaultRetryConfig())
+		a.llmFactory.SetChatLLM(r.SenderID, r.ChatID, client, r.Config.Model)
+		return nil
+	})
+
 	h[MethodClearProxyLLM] = rpcVoid(func(r clearProxyLLMReq) error {
 		a.ClearProxyLLM(r.SenderID)
 		return nil
@@ -221,7 +287,11 @@ func (t *localTransport) registerHandlers() {
 	})
 
 	h[MethodSwitchModel] = rpcVoid(func(r switchModelReq) error {
-		a.llmFactory.SwitchModel(r.SenderID, r.Model)
+		if r.ChatID != "" {
+			a.llmFactory.SwitchModel(r.SenderID, r.Model, r.ChatID)
+		} else {
+			a.llmFactory.SwitchModel(r.SenderID, r.Model)
+		}
 		return nil
 	})
 
@@ -276,8 +346,15 @@ func (t *localTransport) registerHandlers() {
 		return nil
 	})
 
-	h[MethodSetMaxContextTokens] = rpcVoid(func(r int) error {
-		a.SetMaxContextTokens(r)
+	h[MethodSetMaxContextTokens] = rpcVoid(func(r struct {
+		MaxContext int    `json:"max_context"`
+		ChatID     string `json:"chat_id,omitempty"`
+	}) error {
+		if r.ChatID != "" {
+			a.SetMaxContextTokens(r.MaxContext, r.ChatID)
+		} else {
+			a.SetMaxContextTokens(r.MaxContext)
+		}
 		return nil
 	})
 
@@ -468,11 +545,7 @@ func (t *localTransport) registerHandlers() {
 		}
 		result := make([]protocol.Subscription, len(subs))
 		for i, s := range subs {
-			result[i] = protocol.Subscription{
-				ID: s.ID, Name: s.Name, Provider: s.Provider,
-				BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault,
-				MaxOutputTokens: s.MaxOutputTokens, ThinkingMode: s.ThinkingMode,
-			}
+			result[i] = sqliteSubToProtocol(s)
 		}
 		return result, nil
 	})
@@ -486,11 +559,8 @@ func (t *localTransport) registerHandlers() {
 		if err != nil || sub == nil {
 			return nil, err
 		}
-		return &protocol.Subscription{
-			ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
-			BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault,
-			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
-		}, nil
+		p := sqliteSubToProtocol(sub)
+		return &p, nil
 	})
 
 	h[MethodAddSubscription] = rpcVoid(func(r addSubscriptionReq) error {
@@ -532,17 +602,21 @@ func (t *localTransport) registerHandlers() {
 		if svc == nil {
 			return ErrSubscriptionsUnavailable
 		}
+		sub, err := svc.Get(r.ID)
+		if err != nil || sub == nil {
+			return fmt.Errorf("subscription %s not found", r.ID)
+		}
+		if r.ChatID != "" {
+			// Per-session switch: only update per-chat cache, do NOT modify
+			// the global default subscription or invalidate other sessions.
+			return a.llmFactory.SetSessionLLM(sub.SenderID, r.ChatID, sub)
+		}
+		// Global switch: update DB default + invalidate all caches + set per-user LLM
 		if err := svc.SetDefault(r.ID); err != nil {
 			return err
 		}
-		sub, err := svc.Get(r.ID)
-		if err == nil && sub != nil {
-			a.llmFactory.Invalidate(sub.SenderID)
-			if err := a.llmFactory.SwitchSubscription(sub.SenderID, sub, r.ChatID); err != nil {
-				return err
-			}
-		}
-		return nil
+		a.llmFactory.Invalidate(sub.SenderID)
+		return a.llmFactory.SwitchSubscription(sub.SenderID, sub, "")
 	})
 
 	h[MethodUpdateSubscription] = rpcVoid(func(r updateSubscriptionReq) error {
@@ -564,6 +638,8 @@ func (t *localTransport) registerHandlers() {
 			MaxContext: existing.MaxContext, MaxOutputTokens: r.Sub.MaxOutputTokens,
 			ThinkingMode: r.Sub.ThinkingMode, IsDefault: r.Sub.Active,
 		}
+		// PerModelConfigs is now type-aliased — direct assignment.
+		dbSub.PerModelConfigs = r.Sub.PerModelConfigs
 		// Never overwrite with a masked key from server RPC transport.
 		if strings.HasSuffix(dbSub.APIKey, "****") && len(dbSub.APIKey) <= 20 {
 			dbSub.APIKey = existing.APIKey
@@ -573,6 +649,22 @@ func (t *localTransport) registerHandlers() {
 		}
 		a.llmFactory.Invalidate(existing.SenderID)
 		return nil
+	})
+
+	h[MethodUpdatePerModelConfig] = rpcVoid(func(r updatePerModelConfigReq) error {
+		svc := a.llmFactory.GetSubscriptionSvc()
+		if svc == nil {
+			return ErrSubscriptionsUnavailable
+		}
+		existing, err := svc.Get(r.ID)
+		if err != nil {
+			return fmt.Errorf("subscription %s not found: %w", r.ID, err)
+		}
+		if existing.PerModelConfigs == nil {
+			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
+		}
+		existing.PerModelConfigs[r.Model] = r.Config
+		return svc.Update(existing)
 	})
 
 	h[MethodSetSubscriptionModel] = rpcVoid(func(r setSubscriptionModelReq) error {
@@ -737,6 +829,51 @@ func (t *localTransport) registerHandlers() {
 		return result, nil
 	})
 
+	// ── LLM Factory helpers (via RPC) ───────────────────────────────────
+
+	h[MethodGetEffectiveMaxContext] = rpc1(func(r getEffectiveMaxContextReq) (int, error) {
+		return a.llmFactory.GetEffectiveMaxContext(r.SenderID, r.ChatID), nil
+	})
+
+	h[MethodClearPerChatMaxContext] = rpcVoid(func(r clearPerChatMaxContextReq) error {
+		a.llmFactory.ClearPerChatMaxContext(r.ChatID)
+		return nil
+	})
+
+	// ── Session configuration ─────────────────────────────────────────────
+
+	h[MethodSetMaxIterations] = rpcVoid(func(r setMaxIterationsReq) error {
+		a.SetMaxIterations(r.N)
+		return nil
+	})
+
+	h[MethodSetMaxConcurrency] = rpcVoid(func(r setMaxConcurrencyReq) error {
+		a.SetMaxConcurrency(r.N)
+		return nil
+	})
+
+	h[MethodSetMaxContextTokens] = rpcVoid(func(r setMaxContextTokensReq) error {
+		if r.ChatID != "" {
+			a.SetMaxContextTokens(r.MaxContext, r.ChatID)
+		} else {
+			a.SetMaxContextTokens(r.MaxContext)
+		}
+		return nil
+	})
+
+	h[MethodSetCompressionThreshold] = rpcVoid(func(r setCompressionThresholdReq) error {
+		a.SetCompressionThreshold(r.Threshold)
+		return nil
+	})
+
+	h[MethodGetContextMode] = rpc0(func() (string, error) {
+		return a.GetContextMode(), nil
+	})
+
+	h[MethodSetContextMode] = rpcVoid(func(r setContextModeReq) error {
+		return a.SetContextMode(r.Mode)
+	})
+
 	// ── Channel config ────────────────────────────────────────────────────
 
 	h[MethodGetChannelConfig] = rpc0(func() (map[string]map[string]string, error) {
@@ -839,5 +976,106 @@ func (t *localTransport) registerHandlers() {
 			t.reconfigureFn(r.Channel)
 		}
 		return nil
+	})
+
+	// ── Web Users ──────────────────────────────────────────────────────────
+
+	h["create_web_user"] = rpc1(func(r struct {
+		Username string `json:"username"`
+	}) (map[string]string, error) {
+		db := a.MultiSession().DB().Conn()
+		_, password, err := channel.CreateWebUser(db, r.Username)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"password": password}, nil
+	})
+
+	h["list_web_users"] = rpc0(func() (any, error) {
+		db := a.MultiSession().DB().Conn()
+		return channel.ListWebUsers(db)
+	})
+
+	h["delete_web_user"] = rpcVoid(func(r struct {
+		Username string `json:"username"`
+	}) error {
+		db := a.MultiSession().DB().Conn()
+		return channel.DeleteWebUser(db, r.Username)
+	})
+
+	// ── Chat Management ──────────────────────────────────────────────────
+
+	h["delete_chat"] = rpcVoid(func(r struct {
+		Channel  string `json:"channel"`
+		SenderID string `json:"senderid"`
+		ChatID   string `json:"chat_id"`
+	}) error {
+		cs := sqlite.NewChatService(a.MultiSession().DB().Conn())
+		return cs.DeleteChat(r.Channel, r.SenderID, r.ChatID)
+	})
+
+	h["rename_chat"] = rpcVoid(func(r struct {
+		Channel  string `json:"channel"`
+		SenderID string `json:"senderid"`
+		ChatID   string `json:"chat_id"`
+		NewName  string `json:"new_name"`
+	}) error {
+		cs := sqlite.NewChatService(a.MultiSession().DB().Conn())
+		return cs.RenameChat(r.Channel, r.SenderID, r.ChatID, r.NewName)
+	})
+
+	h["get_history"] = rpc1(func(r struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		if r.Channel == "" {
+			r.Channel = "cli"
+		}
+		ms := a.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("session service not available")
+		}
+		db := ms.DB()
+		if db == nil {
+			return nil, fmt.Errorf("database not available")
+		}
+		tenantSvc := sqlite.NewTenantService(db)
+		sessionSvc := sqlite.NewSessionService(db)
+		tid, err := tenantSvc.GetOrCreateTenantID(r.Channel, r.ChatID)
+		if err != nil {
+			return nil, fmt.Errorf("get tenant: %w", err)
+		}
+		msgs, err := sessionSvc.GetAllMessages(tid)
+		if err != nil {
+			return nil, err
+		}
+		return channel.ConvertMessagesToHistory(msgs), nil
+	})
+
+	h["get_token_state"] = rpc1(func(r struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		if r.Channel == "" {
+			r.Channel = "cli"
+		}
+		ms := a.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("session service not available")
+		}
+		db := ms.DB()
+		if db == nil {
+			return nil, fmt.Errorf("database not available")
+		}
+		tenantSvc := sqlite.NewTenantService(db)
+		tid, err := tenantSvc.GetOrCreateTenantID(r.Channel, r.ChatID)
+		if err != nil {
+			return nil, fmt.Errorf("get tenant: %w", err)
+		}
+		pt, ct, err := sqlite.NewMemoryService(db).GetTokenState(context.Background(), tid)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int64{"prompt_tokens": pt, "completion_tokens": ct}, nil
 	})
 }

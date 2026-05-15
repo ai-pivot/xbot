@@ -9,22 +9,28 @@ import (
 
 	"xbot/crypto"
 	log "xbot/logger"
+	"xbot/protocol"
 )
+
+// PerModelConfig stores per-model token overrides within a subscription.
+// Alias to protocol.PerModelConfig — the canonical definition used across all packages.
+type PerModelConfig = protocol.PerModelConfig
 
 // LLMSubscription represents a user's LLM provider subscription.
 type LLMSubscription struct {
-	ID              string   // unique subscription ID
-	SenderID        string   // user ID
-	Name            string   // display name (e.g. "OpenAI GPT-4", "DeepSeek")
-	Provider        string   // LLM provider: "openai", "deepseek", "anthropic", etc.
-	BaseURL         string   // API base URL
-	APIKey          string   // API key (plaintext in struct, encrypted in DB)
-	Model           string   // default model for this subscription
-	MaxContext      int      // max context token limit (0 = use default)
-	MaxOutputTokens int      // max output token limit (0 = use default 8192)
-	ThinkingMode    string   // thinking mode: "" (auto), "enabled", "disabled"
-	IsDefault       bool     // whether this is the active subscription
-	CachedModels    []string // cached model list from API (JSON in DB)
+	ID              string                    // unique subscription ID
+	SenderID        string                    // user ID
+	Name            string                    // display name (e.g. "OpenAI GPT-4", "DeepSeek")
+	Provider        string                    // LLM provider: "openai", "deepseek", "anthropic", etc.
+	BaseURL         string                    // API base URL
+	APIKey          string                    // API key (plaintext in struct, encrypted in DB)
+	Model           string                    // default model for this subscription
+	MaxContext      int                       // max context token limit (0 = use default)
+	MaxOutputTokens int                       // max output token limit (0 = use default 8192)
+	ThinkingMode    string                    // thinking mode: "" (auto), "enabled", "disabled"
+	IsDefault       bool                      // whether this is the active subscription
+	CachedModels    []string                  // cached model list from API (JSON in DB)
+	PerModelConfigs map[string]PerModelConfig // per-model token overrides (JSON in DB)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -46,9 +52,10 @@ func scanSubscription(scanner interface{ Scan(...any) error }, sub *LLMSubscript
 	var isDefault int
 	var createdAt, updatedAt string
 	var cachedModelsJSON string
+	var perModelConfigsJSON string
 	err := scanner.Scan(&sub.ID, &sub.SenderID, &sub.Name, &sub.Provider, &sub.BaseURL,
 		&encryptedAPIKey, &sub.Model, &isDefault, &sub.MaxContext, &sub.MaxOutputTokens, &sub.ThinkingMode,
-		&cachedModelsJSON, &createdAt, &updatedAt)
+		&cachedModelsJSON, &perModelConfigsJSON, &createdAt, &updatedAt)
 	if err != nil {
 		return "", 0, err
 	}
@@ -57,6 +64,9 @@ func scanSubscription(scanner interface{ Scan(...any) error }, sub *LLMSubscript
 	sub.UpdatedAt = parseSQLiteTime(updatedAt)
 	if cachedModelsJSON != "" {
 		_ = json.Unmarshal([]byte(cachedModelsJSON), &sub.CachedModels)
+	}
+	if perModelConfigsJSON != "" && perModelConfigsJSON != "{}" {
+		_ = json.Unmarshal([]byte(perModelConfigsJSON), &sub.PerModelConfigs)
 	}
 	return encryptedAPIKey, isDefault, nil
 }
@@ -78,7 +88,7 @@ func decryptAPIKey(sub *LLMSubscription, encryptedAPIKey string) {
 func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
 			FROM user_llm_subscriptions
 			ORDER BY created_at ASC
 		`)
@@ -104,7 +114,7 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, created_at, updated_at
+			SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
 				FROM user_llm_subscriptions
 				WHERE sender_id = ?
 				ORDER BY created_at ASC
@@ -131,7 +141,7 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
 			FROM user_llm_subscriptions
 			WHERE sender_id = ? AND is_default = 1
 			LIMIT 1
@@ -153,7 +163,7 @@ func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, 
 func (s *LLMSubscriptionService) Get(id string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
 			FROM user_llm_subscriptions
 			WHERE id = ?
 		`, id)
@@ -206,10 +216,16 @@ func (s *LLMSubscriptionService) Add(sub *LLMSubscription) error {
 	if sub.IsDefault {
 		isDefault = 1
 	}
+	perModelConfigsJSON := "{}"
+	if len(sub.PerModelConfigs) > 0 {
+		if data, err := json.Marshal(sub.PerModelConfigs); err == nil {
+			perModelConfigsJSON = string(data)
+		}
+	}
 	_, err = tx.Exec(`
-		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, isDefault, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, now, now)
+		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, per_model_configs, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, isDefault, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, perModelConfigsJSON, now, now)
 	if err != nil {
 		return fmt.Errorf("insert subscription: %w", err)
 	}
@@ -277,13 +293,20 @@ func (s *LLMSubscriptionService) Update(sub *LLMSubscription) error {
 	if sub.IsDefault {
 		isDefault = 1
 	}
+	perModelConfigsJSON := "{}"
+	if len(sub.PerModelConfigs) > 0 {
+		if data, err := json.Marshal(sub.PerModelConfigs); err == nil {
+			perModelConfigsJSON = string(data)
+		}
+	}
 	_, err = tx.Exec(`
 		UPDATE user_llm_subscriptions SET
 		name = ?, provider = ?, base_url = ?, api_key = ?, model = ?,
 		max_context = ?, max_output_tokens = ?, thinking_mode = ?,
+		per_model_configs = ?,
 		is_default = ?, updated_at = ?
 		WHERE id = ? AND sender_id = ?
-	`, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, isDefault, now, sub.ID, sub.SenderID)
+	`, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, perModelConfigsJSON, isDefault, now, sub.ID, sub.SenderID)
 	if err != nil {
 		return fmt.Errorf("update subscription: %w", err)
 	}
@@ -345,6 +368,49 @@ func (s *LLMSubscriptionService) Rename(id, name string) error {
 		return fmt.Errorf("rename subscription: %w", err)
 	}
 	return nil
+}
+
+// UpdatePerModelConfigs updates the per-model token overrides for a subscription.
+// configs is the full map to persist (replaces existing entirely).
+func (s *LLMSubscriptionService) UpdatePerModelConfigs(id string, configs map[string]PerModelConfig) error {
+	configsJSON := "{}"
+	if len(configs) > 0 {
+		data, err := json.Marshal(configs)
+		if err != nil {
+			return fmt.Errorf("marshal per_model_configs: %w", err)
+		}
+		configsJSON = string(data)
+	}
+	conn := s.db.Conn()
+	_, err := conn.Exec("UPDATE user_llm_subscriptions SET per_model_configs = ?, updated_at = datetime('now') WHERE id = ?", configsJSON, id)
+	if err != nil {
+		return fmt.Errorf("update per_model_configs: %w", err)
+	}
+	return nil
+}
+
+// GetPerModelMaxTokens returns the per-model max_output_tokens override for the given subscription and model.
+// Returns 0 if no override is configured (caller should fall back to subscription-level default).
+func (sub *LLMSubscription) GetPerModelMaxTokens(model string) int {
+	if sub.PerModelConfigs == nil || model == "" {
+		return 0
+	}
+	if cfg, ok := sub.PerModelConfigs[model]; ok {
+		return cfg.MaxOutputTokens
+	}
+	return 0
+}
+
+// GetPerModelMaxContext returns the per-model max_context override for the given subscription and model.
+// Returns 0 if no override is configured (caller should fall back to subscription-level default).
+func (sub *LLMSubscription) GetPerModelMaxContext(model string) int {
+	if sub.PerModelConfigs == nil || model == "" {
+		return 0
+	}
+	if cfg, ok := sub.PerModelConfigs[model]; ok {
+		return cfg.MaxContext
+	}
+	return 0
 }
 
 // newULID generates a new ULID string.

@@ -436,18 +436,18 @@ func (s *runState) updateTokenUsage() {
 	}
 }
 
-// updateTokenUsageEstimate updates TokenUsage with a local estimate after compression.
-// After ResetAfterCompress(), the tracker has zero values — we use the estimate from
-// the compression pipeline so the CLI context bar shows the reduced token count
-// immediately instead of disappearing until the next API call.
-func (s *runState) updateTokenUsageEstimate(estimatedTokens int64) {
+// setTokenUsageAfterCompress updates TokenUsage with the post-compress token count
+// (from the compression LLM call's API-returned prompt_tokens). After
+// ResetAfterCompress(), the tracker has zero values — this ensures the CLI
+// context bar shows the reduced token count immediately.
+func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 	if s.structuredProgress == nil {
 		return
 	}
 	s.structuredProgress.TokenUsage = &TokenUsageSnapshot{
-		PromptTokens:     estimatedTokens,
+		PromptTokens:     tokenCount,
 		CompletionTokens: 0,
-		TotalTokens:      estimatedTokens,
+		TotalTokens:      tokenCount,
 		CacheHitTokens:   0,
 		MaxOutputTokens:  int64(s.cfg.MaxOutputTokens),
 	}
@@ -528,9 +528,16 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	}
 	s.messages = pipelineResult.NewMessages
 	// Update token estimate so CLI shows reduced context immediately
-	s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
+	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+	// Persist API-returned token count in case retry fails and Run ends.
+	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
+		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+	}
+	if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
+		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+	}
 	if s.autoNotify {
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens (estimated)", pipelineResult.NewTokenCount))
+		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", pipelineResult.NewTokenCount))
 		s.notifyProgress("")
 	}
 
@@ -662,7 +669,14 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					s.messages = pipelineResult.NewMessages
 					s.validateInvariantsAt(ctx, "post_compress_window_exceeded")
 					// Update token estimate so CLI shows reduced context immediately
-					s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
+					s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+					// Persist API-returned token count in case the retry also fails.
+					if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
+						s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+					}
+					if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
+						s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+					}
 					log.Ctx(ctx).WithFields(log.Fields{
 						"new_msg_count": len(s.messages),
 						"retry":         s.compressRetryCount,
@@ -708,10 +722,11 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			}
 		}
 
-		// Update ThinkingContent so PhaseDone progress carries the final reply.
-		// recordAssistantMsg is not called for final text responses (handleFinalResponse
-		// returns directly), so ThinkingContent must be set here for SubAgent
-		// session viewers that synthesize assistant messages from PhaseDone payload.
+		// Update ThinkingContent and ReasoningContent so PhaseDone progress
+		// carries the final reply and thinking. recordAssistantMsg is not called
+		// for final text responses (handleFinalResponse returns directly), so
+		// both fields must be set here for SubAgent session viewers and CLI
+		// tool_summary rendering.
 		if s.structuredProgress != nil {
 			if cleanContent != "" {
 				s.structuredProgress.ThinkingContent = cleanContent
@@ -724,6 +739,9 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					rc = string(r[:200]) + "…"
 				}
 				s.structuredProgress.ThinkingContent = rc
+			}
+			if response.ReasoningContent != "" {
+				s.structuredProgress.ReasoningContent = response.ReasoningContent
 			}
 		}
 
@@ -801,7 +819,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	// generates a long response.
 	maxOutputTokens := s.cfg.MaxOutputTokens
 	if maxOutputTokens <= 0 {
-		maxOutputTokens = 8192 // defaultMaxOutputTokens
+		maxOutputTokens = 32_768 // sync with config.DefaultMaxOutputTokens
 	}
 	promptBudget := maxTokens - maxOutputTokens
 	if promptBudget <= 0 {
@@ -901,7 +919,18 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	// Update token usage estimate so progress events show reduced tokens
 	// immediately instead of showing 0 (from ResetAfterCompress) or stale
 	// pre-compress values until the next LLM API call.
-	s.updateTokenUsageEstimate(pipelineResult.NewTokenCount)
+	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+
+	// Persist the API-returned token count so that after a restart, the next Run
+	// restores an accurate value instead of the pre-compress count. Without this,
+	// ResetAfterCompress zeros the tracker, SaveState skips (no LLM call), and
+	// the DB still holds the old large value → immediate re-compression on restart.
+	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
+		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+	}
+	if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
+		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+	}
 
 	oldTokenCount := totalTokens
 
@@ -1002,10 +1031,6 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 	if s.tokenTracker != nil {
 		s.tokenTracker.ResetAfterCompress()
 	}
-
-	// Update token estimate from local count so CLI shows reduced context
-	estimatedTokens, _ := llm.CountMessagesTokens(newMessages, s.cfg.Model)
-	s.updateTokenUsageEstimate(int64(estimatedTokens))
 
 	// Persist the truncated history
 	if s.persistence != nil {

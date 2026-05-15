@@ -113,28 +113,28 @@ func TestResolveMemoryProvider(t *testing.T) {
 
 func TestResolveGlobalSkillsDirs(t *testing.T) {
 	tests := []struct {
-		name            string
-		legacySkillsDir string
-		want            []string
+		name      string
+		skillsDir string
+		want      []string
 	}{
 		{
-			name:            "empty returns nil",
-			legacySkillsDir: "",
-			want:            nil,
+			name:      "empty returns nil",
+			skillsDir: "",
+			want:      nil,
 		},
 		{
-			name:            "non-empty returns single-element slice",
-			legacySkillsDir: filepath.Join("path", "to", "skills"),
-			want:            []string{filepath.Join("path", "to", "skills")},
+			name:      "non-empty returns single-element slice",
+			skillsDir: filepath.Join("path", "to", "skills"),
+			want:      []string{filepath.Join("path", "to", "skills")},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveGlobalSkillsDirs(tc.legacySkillsDir)
+			got := resolveGlobalSkillsDirs(tc.skillsDir)
 			if tc.want == nil {
 				if got != nil {
-					t.Errorf("resolveGlobalSkillsDirs(%q) = %v, want nil", tc.legacySkillsDir, got)
+					t.Errorf("resolveGlobalSkillsDirs(%q) = %v, want nil", tc.skillsDir, got)
 				}
 			} else {
 				if len(got) != len(tc.want) {

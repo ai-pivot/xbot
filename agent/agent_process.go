@@ -191,6 +191,23 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		for k, v := range out.Metadata {
 			meta[k] = v
 		}
+		// Persist iteration history to session so it survives restarts,
+		// same pattern as the cancelled path above.
+		var iterationHistoryJSON string
+		if len(out.IterationHistory) > 0 {
+			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+				iterationHistoryJSON = string(jsonBytes)
+				histMsg := llm.NewAssistantMessage("")
+				histMsg.DisplayOnly = true
+				histMsg.Detail = iterationHistoryJSON
+				if err := tenantSession.AddMessage(histMsg); err != nil {
+					log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
+				}
+			}
+			if iterationHistoryJSON != "" {
+				meta["progress_history"] = iterationHistoryJSON
+			}
+		}
 		waitOut := &bus.OutboundMessage{
 			Channel:     msg.Channel,
 			ChatID:      msg.ChatID,

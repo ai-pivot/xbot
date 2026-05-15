@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xbot/config"
 	"xbot/internal/textarea"
 	"xbot/llm"
 	log "xbot/logger"
@@ -218,7 +219,7 @@ func (m *cliModel) openSetupPanel() {
 	m.openSettingsPanel(schema, values, func(vals map[string]string) {
 		// Apply all settings including setup-only keys (provider, api_key, sandbox, memory)
 		if m.channel.config.ApplySettings != nil {
-			m.channel.config.ApplySettings(vals)
+			m.channel.config.ApplySettings(vals, m.chatID)
 		}
 		// NOTE: UI updates (theme/locale/viewport) are handled by
 		// handleSettingsSavedMsg in Update() since this runs in a goroutine.
@@ -1185,9 +1186,15 @@ func (m *cliModel) viewSessionsList() string {
 		var icon, line string
 		switch entry.Type {
 		case "main":
+			// Determine busy state with liveSessionStates override.
 			mainBusy := false
-			if !entry.Active {
+			if entry.Active {
+				mainBusy = m.typing
+			} else {
 				mainBusy = entry.Busy
+				if ls, ok := m.liveSessionStates[entry.ID]; ok {
+					mainBusy = ls.busy
+				}
 			}
 			iconChar := "●"
 			iconColor := lipgloss.Color("#10b981")
@@ -1216,9 +1223,14 @@ func (m *cliModel) viewSessionsList() string {
 			line = fmt.Sprintf("%s %s  %s", prefix, icon, label)
 		case "agent":
 			roleColor := lipgloss.Color(RoleColor(entry.Role))
+			// Use liveSessionStates for running state if available.
+			agentRunning := entry.Running
+			if ls, ok := m.liveSessionStates[entry.ID]; ok {
+				agentRunning = ls.busy
+			}
 			statusIcon := "●"
 			statusStyle := lipgloss.NewStyle().Foreground(roleColor)
-			if !entry.Running {
+			if !agentRunning {
 				if m.unreadSessions[entry.ID] {
 					statusIcon = "✦"
 					statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f59e0b"))
@@ -1242,11 +1254,11 @@ func (m *cliModel) viewSessionsList() string {
 			}
 			label = truncateToWidth(label, labelW)
 			labelStyle := lipgloss.NewStyle().Foreground(roleColor)
-			if !entry.Running {
+			if !agentRunning {
 				labelStyle = labelStyle.Faint(true)
 			}
 			line = fmt.Sprintf("%s %s  %s", prefix, statusStyle.Render(statusIcon), labelStyle.Render(label))
-			if entry.Running {
+			if agentRunning {
 				line += " ⏳"
 			}
 		default:
@@ -1601,6 +1613,7 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 		panelVals := m.panelValues
 		m.closePanel()
 		if onSubmit != nil && panelVals != nil {
+			m.settingsSaving = true // block input until cliSettingsSavedMsg arrives
 			return true, m, m.doSaveSettings(onSubmit, panelVals)
 		}
 		return true, m, nil
@@ -1791,6 +1804,12 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		if hasOpts {
 			if onOther {
 				m.panelOptCursor[m.panelTab] = numOpts - 1
+				m.ensureAskUserCursorVisible()
+				return true, m, nil
+			}
+			if onSubmit {
+				m.panelOptCursor[m.panelTab] = numOpts
+				m.ensureAskUserCursorVisible()
 				return true, m, nil
 			}
 			if cursor > 0 {
@@ -2030,15 +2049,24 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 		return
 	}
 	cursor := m.panelOptCursor[m.panelTab]
-	// Each option takes 1 line. Estimate the line offset of the cursor.
-	// Lines before options: tab bar (if multi) + question + blank line = ~3 lines
-	headerLines := 2
+	// Calculate exact line offset of the cursor by counting actual header lines.
+	// Tab bar: 2 lines (tabs + blank) if multiple questions, 0 otherwise.
+	headerLines := 0
 	if len(m.panelItems) > 1 {
-		headerLines = 4 // tab bar + blank + question + blank
+		headerLines = 2 // tab bar + blank line
 	}
+	// Question: may be multiple lines after hardWrap.
+	qWrapWidth := m.width - 6
+	if qWrapWidth < 20 {
+		qWrapWidth = 20
+	}
+	wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
+	headerLines += strings.Count(wrapped, "\n") + 1 // question lines
+	headerLines++                                   // blank line between question and options
+
 	cursorLine := headerLines + cursor
-	// Visible height (approximate — exact clamp happens in View)
-	askVisibleH := m.panelVisibleHeight()
+	// Visible height — use askUserPanelVisibleHeight for the askuser split layout.
+	askVisibleH := m.askUserPanelVisibleHeight()
 	if askVisibleH <= 0 {
 		return
 	}
@@ -2382,21 +2410,27 @@ func (m *cliModel) viewAskUserPanel() string {
 			}
 			sb.WriteString(prefix + otherLabel)
 			// Resize textinput to fit within panel content width (qWrapWidth)
-			// minus label width and scrollbar column. Without this, textinput
-			// View() can exceed contentWidth causing applyScrollbar's scrollbar
-			// to wrap to next line — symptom: "▐" rendered below the "其他" row.
-			// Resize textinput to fit within panel content width (qWrapWidth)
 			// minus label width and scrollbar column.  The textinput View()
 			// (specifically placeholderView) always outputs Width()+1 chars
 			// (cursor+placeholder+padding), so we need -2 instead of -1.
-			// Without this, the line reaches exactly contentWidth, and the
-			// scrollbar "▐" wraps to the next line.
 			tiWidth := qWrapWidth - lipgloss.Width(prefix+otherLabel) - 2
 			if tiWidth < 10 {
 				tiWidth = 10
 			}
 			m.panelOtherTI.SetWidth(tiWidth)
-			sb.WriteString(m.panelOtherTI.View())
+			// Strip NUL bytes from textinput View(). When the input is empty,
+			// placeholderView() copies the placeholder string into a rune slice
+			// sized to Width()+1 and renders the unwritten slots as \x00.
+			// lipgloss.Width() counts these as 0-width, but lipgloss.Render()
+			// (used by PanelBox) treats them as 1-column during word-wrap,
+			// causing the scrollbar "▐" to wrap to the next line.
+			tiView := strings.Map(func(r rune) rune {
+				if r == 0 {
+					return -1
+				}
+				return r
+			}, m.panelOtherTI.View())
+			sb.WriteString(tiView)
 			sb.WriteString("\n")
 
 			// Submit button (only on last tab)
@@ -2487,11 +2521,20 @@ func (m *cliModel) openQuickSwitch(mode string) {
 		})
 	}
 
-	// Pre-select the active subscription
-	for i, s := range subs {
-		if s.Active {
-			m.quickSwitchCursor = i
-			break
+	// Pre-select the active subscription (per-session, not DB default)
+	if m.activeSubID != "" {
+		for i, s := range subs {
+			if s.ID == m.activeSubID {
+				m.quickSwitchCursor = i
+				break
+			}
+		}
+	} else {
+		for i, s := range subs {
+			if s.Active {
+				m.quickSwitchCursor = i
+				break
+			}
 		}
 	}
 }
@@ -2515,7 +2558,7 @@ func (m *cliModel) applyQuickSwitch() {
 			{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: ""},
 			{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: ""},
-			{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: "0"},
+			{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Default max output tokens (0 = use %d)", config.DefaultMaxOutputTokens), Type: SettingTypeNumber, DefaultValue: "0"},
 			{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: "", Options: []SettingOption{
 				{Label: "Auto (default)", Value: ""},
 				{Label: "Enabled", Value: "enabled"},
@@ -2595,20 +2638,29 @@ func (m *cliModel) applyQuickSwitch() {
 		m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 			err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 			return cliSwitchLLMDoneMsg{
-				err:      err,
-				subID:    subID,
-				subName:  subName,
-				subModel: subModel,
-				mgr:      mgr,
+				err:       err,
+				subID:     subID,
+				subName:   subName,
+				subModel:  subModel,
+				maxCtx:    resolveSubMaxContext(target),
+				maxOutTok: resolveSubMaxOutputTokens(target),
+				mgr:       mgr,
 			}
 		})
 	case "model":
 		if m.llmSubscriber != nil {
-			m.llmSubscriber.SwitchModel(m.senderID, selected.Model)
+			m.llmSubscriber.SwitchModel(m.senderID, selected.Model, m.chatID)
 			m.cachedModelName = selected.Model
 			m.subGeneration++ // model switch also changes effective subscription state
 			// Update quickSwitchList so the panel reflects the new model
 			m.updateQuickSwitchModels(selected.Model)
+			// Persist per-session model choice so it survives restarts
+			SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
+				SubscriptionID:   m.activeSubID,
+				Model:            selected.Model,
+				MaxContextTokens: m.cachedMaxContextTokens,
+				MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+			})
 			m.showTempStatus(fmt.Sprintf("Model switched to: %s", selected.Model))
 		}
 	}
@@ -2648,23 +2700,43 @@ func (m *cliModel) editQuickSwitchEntry() {
 		{Key: "sub_model", Label: "Model", Description: "Model name", Type: SettingTypeCombo, DefaultValue: target.Model},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: SettingTypeText, DefaultValue: target.BaseURL},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: SettingTypePassword, DefaultValue: target.APIKey},
-		{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: "Default max output tokens (0 = use 8192)", Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxOutputTokens)},
+		{Key: "sub_max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Default max output tokens (0 = use %d)", config.DefaultMaxOutputTokens), Type: SettingTypeNumber, DefaultValue: strconv.Itoa(target.MaxOutputTokens)},
 		{Key: "sub_thinking_mode", Label: "Thinking Mode", Description: "Thinking/reasoning mode", Type: SettingTypeSelect, DefaultValue: target.ThinkingMode, Options: []SettingOption{
 			{Label: "Auto (default)", Value: ""},
 			{Label: "Enabled", Value: "enabled"},
 			{Label: "Disabled", Value: "disabled"},
 		}},
+		{Key: "__pm_header__", Label: "─── Model-Specific Overrides ───", Description: "Override max tokens and context per model. Set 0 to use subscription default.", Type: SettingTypeText, DefaultValue: ""},
 	}
-	// Inject model list into combo for model field
-	if m.channel.modelLister != nil {
-		models := m.channel.modelLister.ListAllModels()
-		if len(models) > 0 {
-			opts := make([]SettingOption, len(models))
-			for j, mdl := range models {
-				opts[j] = SettingOption{Label: mdl, Value: mdl}
+	// Build per-model override rows: only models that belong to THIS subscription.
+	// Use target.Model + keys from existing PerModelConfigs (not ListAllModels which
+	// returns models from ALL subscriptions).
+	subModels := make(map[string]bool)
+	if target.Model != "" {
+		subModels[target.Model] = true
+	}
+	for mdl := range target.PerModelConfigs {
+		subModels[mdl] = true
+	}
+	for mdl := range subModels {
+		pmOut := 0
+		pmCtx := 0
+		if target.PerModelConfigs != nil {
+			if cfg, ok := target.PerModelConfigs[mdl]; ok {
+				pmOut = cfg.MaxOutputTokens
+				pmCtx = cfg.MaxContext
 			}
-			editSchema[2].Options = opts
 		}
+		editSchema = append(editSchema, SettingDefinition{
+			Key: "pm_" + mdl + "_max_output", Label: mdl + " Max Tokens",
+			Description: "Max output tokens for " + mdl + " (0 = use default)",
+			Type:        SettingTypeNumber, DefaultValue: strconv.Itoa(pmOut),
+		})
+		editSchema = append(editSchema, SettingDefinition{
+			Key: "pm_" + mdl + "_max_context", Label: mdl + " Max Context",
+			Description: "Max context tokens for " + mdl + " (0 = use default)",
+			Type:        SettingTypeNumber, DefaultValue: strconv.Itoa(pmCtx),
+		})
 	}
 	editValues := map[string]string{
 		"sub_name":              target.Name,
@@ -2686,6 +2758,23 @@ func (m *cliModel) editQuickSwitchEntry() {
 			apiKey = target.APIKey
 		}
 		maxOut, _ := strconv.Atoi(values["sub_max_output_tokens"])
+		// Collect per-model overrides: only models belonging to THIS subscription
+		perModelConfigs := make(map[string]PerModelConfig)
+		for mdl := range target.PerModelConfigs {
+			pmOut, _ := strconv.Atoi(values["pm_"+mdl+"_max_output"])
+			pmCtx, _ := strconv.Atoi(values["pm_"+mdl+"_max_context"])
+			if pmOut > 0 || pmCtx > 0 {
+				perModelConfigs[mdl] = PerModelConfig{MaxOutputTokens: pmOut, MaxContext: pmCtx}
+			}
+		}
+		// Also check the current model (may have been newly added)
+		if modelFromCombo := values["sub_model"]; modelFromCombo != "" {
+			pmOut, _ := strconv.Atoi(values["pm_"+modelFromCombo+"_max_output"])
+			pmCtx, _ := strconv.Atoi(values["pm_"+modelFromCombo+"_max_context"])
+			if pmOut > 0 || pmCtx > 0 {
+				perModelConfigs[modelFromCombo] = PerModelConfig{MaxOutputTokens: pmOut, MaxContext: pmCtx}
+			}
+		}
 		updated := &Subscription{
 			ID:              target.ID,
 			Name:            values["sub_name"],
@@ -2695,6 +2784,7 @@ func (m *cliModel) editQuickSwitchEntry() {
 			APIKey:          apiKey,
 			MaxOutputTokens: maxOut,
 			ThinkingMode:    values["sub_thinking_mode"],
+			PerModelConfigs: perModelConfigs,
 			Active:          target.Active,
 		}
 		if err := m.subscriptionMgr.Update(target.ID, updated); err != nil {
@@ -2778,7 +2868,11 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			style = m.styles.Accent
 		}
 		active := ""
-		if s.Active {
+		if m.activeSubID != "" {
+			if s.ID == m.activeSubID {
+				active = " ✓"
+			}
+		} else if s.Active {
 			active = " ✓"
 		}
 		name := s.Name
@@ -3376,7 +3470,23 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
 		return nil
 	}
+	// Clean up any residual DB tenant from a previously-deleted session with the
+	// same chatID. This handles edge cases where a prior deletion cleaned local
+	// JSON but failed to clean the DB (e.g., crash, network error during delete).
+	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
+		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
+	}
 	m.saveCurrentSession()
+	// Inherit parent session's LLM state atomically.
+	// SaveSessionLLMState writes ALL fields (sub, model, maxContext, maxOutput) in one shot.
+	if m.activeSubID != "" {
+		SaveSessionLLMState(m.workDir, chatID, SessionLLMState{
+			SubscriptionID:   m.activeSubID,
+			Model:            m.cachedModelName,
+			MaxContextTokens: m.cachedMaxContextTokens,
+			MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+		})
+	}
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)
 	m.sessionName = name
@@ -3411,30 +3521,25 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 
 // deleteLocalSession deletes the selected session and switches to default if active.
 func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
-	// 1. Remove from local JSON file (for local dir sessions).
-	// Use entry.ID (chatID) for matching, not entry.Label — the display label
-	// may have been renamed in DB but local JSON still has the original auto-name.
-	localRemoved := false
-	ds, err := LoadDirSessions(m.workDir)
-	if err == nil {
-		if err := ds.removeSessionByChatID(entry.ID); err == nil {
-			localRemoved = true
-		}
-	}
-	// 2. Notify backend to clean up DB (tenant, messages, etc.).
-	backendRemoved := false
+	// 1. Try to delete from backend DB. Ignore "not found" errors — the session
+	// may be local-only (created in CLI JSON but never synced to server/runner).
 	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
 		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
-			log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
-			m.showTempStatus(fmt.Sprintf("Delete failed: %v", err))
-			return nil
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "not found") {
+				log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
+				m.showTempStatus(fmt.Sprintf("Delete failed: %v", err))
+				return nil
+			}
+			// "not found" is fine — session is local-only, proceed to clean local JSON
 		}
-		backendRemoved = true
 	}
-	// 3. Neither local nor backend succeeded.
-	if !localRemoved && !backendRemoved {
-		m.showTempStatus(fmt.Sprintf("Not found: %s", entry.Label))
-		return nil
+	// 2. Remove from local JSON file (always, regardless of backend result).
+	ds, err := LoadDirSessions(m.workDir)
+	if err == nil {
+		if err := ds.removeSessionByChatID(entry.ID); err != nil {
+			log.WithError(err).WithField("chatID", entry.ID).Warn("Local session remove failed")
+		}
 	}
 	// If we deleted the active session, switch to default
 	if entry.Active {

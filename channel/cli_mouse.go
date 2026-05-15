@@ -561,38 +561,13 @@ func (m *cliModel) clickQuickSwitchItem(idx int) (bool, tea.Model, tea.Cmd) {
 		return false, m, nil
 	}
 	m.quickSwitchCursor = idx
-	// Execute selection (same as Enter)
-	return m.selectQuickSwitchItem()
-}
-
-func (m *cliModel) selectQuickSwitchItem() (bool, tea.Model, tea.Cmd) {
-	if m.quickSwitchCursor >= len(m.quickSwitchList) {
-		return true, m, nil
-	}
-	selected := m.quickSwitchList[m.quickSwitchCursor]
-	if selected.ID == "__add__" {
-		// Add new subscription
-		m.quickSwitchMode = ""
-		return true, m, nil
-	}
-	// Apply the selected subscription/model
-	switch m.quickSwitchMode {
-	case "subscription":
-		if m.subscriptionMgr != nil {
-			if err := m.subscriptionMgr.SetDefault(selected.ID, m.chatID); err != nil {
-				m.showSystemMsg(fmt.Sprintf("❌ Failed to switch: %v", err), feedbackError)
-			}
-		}
-	case "model":
-		if m.llmSubscriber != nil {
-			m.llmSubscriber.SwitchModel(m.senderID, selected.ID)
-		}
-	}
-	returnToPanel := m.quickSwitchReturnToPanel
-	m.quickSwitchReturnToPanel = false
-	m.quickSwitchMode = ""
-	if returnToPanel {
-		m.openSettingsFromQuickSwitch()
+	// Use the same full apply logic as keyboard Enter (handles
+	// subscription switch, model switch, async LLM creation, status bar update).
+	m.applyQuickSwitch()
+	if len(m.pendingCmds) > 0 {
+		pending := m.pendingCmds
+		m.pendingCmds = nil
+		return true, m, tea.Batch(pending...)
 	}
 	return true, m, nil
 }
@@ -1238,7 +1213,8 @@ func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
 		}
 	}
 	totalLines := 2 + len(m.quickSwitchList) + sepLines // header + spacer + items + separator
-	totalH := totalLines + 2 + 1                        // +2 border + 1 hint
+	// Match viewQuickSwitch's centering formula exactly (listH = N+3+sepLines).
+	totalH := totalLines + 1 // (2+N+sepLines)+1 = N+3+sepLines = view's listH
 	blankLines := max(0, (m.height-totalH)/2)
 
 	zb.skip(blankLines)

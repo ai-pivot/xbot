@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/protocol"
 
 	"github.com/gorilla/websocket"
@@ -172,6 +173,21 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 // This is an RPC-style request-response mechanism (not fire-and-forget).
 func (t *RemoteTransport) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
 	t.tuiControlReqCb = cb
+}
+
+// WireCallbacks is noop for remote transport — server.go wires these directly on Agent.
+func (t *RemoteTransport) WireCallbacks(
+	func(msg bus.OutboundMessage) (string, error),
+	func(name string) (channel.Channel, bool),
+	func(ev protocol.SessionEvent),
+	bus.MessageSender,
+	func(name string, runFn bus.RunFn) error,
+	func(name string),
+) {
+}
+
+// SetChatRenameFn is noop for remote transport — server.go wires directly on Agent.
+func (t *RemoteTransport) SetChatRenameFn(func(chatID, newName string) (oldName string, err error)) {
 }
 
 // Bus returns nil for RemoteTransport (no local message bus).
@@ -423,6 +439,11 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 					ChatID: msg.ChatID,
 					Zones:  zones,
 				})
+			}
+		case protocol.MsgTypeSession:
+			// Server-pushed session state change event
+			if msg.Session != nil {
+				t.emit(ctx, *msg.Session)
 			}
 		case protocol.MsgTypeTUIControlReq:
 			// Server-initiated TUI control request. Process in goroutine so

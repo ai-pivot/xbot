@@ -24,6 +24,7 @@ import (
 	"xbot/memory"
 	"xbot/memory/letta"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -76,11 +77,11 @@ func resolveMemoryProvider(cfg string) string {
 	return cfg
 }
 
-func resolveGlobalSkillsDirs(legacySkillsDir string) []string {
-	if legacySkillsDir == "" {
+func resolveGlobalSkillsDirs(skillsDir string) []string {
+	if skillsDir == "" {
 		return nil
 	}
-	abs, err := filepath.Abs(legacySkillsDir)
+	abs, err := filepath.Abs(skillsDir)
 	if err != nil {
 		return nil
 	}
@@ -277,6 +278,11 @@ type Agent struct {
 	// On turn end, the entry is deleted.
 	iterationHistories sync.Map
 
+	// builtinProgressSeq stores per-chat atomic seq counters for builtin commands
+	// (/compress, /new) that bypass engine.Run but still need progress events.
+	// key: "channel:chatID" -> *atomic.Uint64
+	builtinProgressSeq sync.Map
+
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
 	// sync.Map provides atomic Load/Store/Delete/LoadOrStore, no additional mutex needed
@@ -327,6 +333,10 @@ type Agent struct {
 
 	// channelFinder looks up a channel instance by name (injected from main.go).
 	channelFinder func(name string) (channel.Channel, bool)
+
+	// sessionStateHandler emits session state change events (injected from main.go).
+	// Called at Run busy/idle transitions and SubAgent create/destroy.
+	sessionStateHandler func(ev protocol.SessionEvent)
 
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
 
@@ -388,15 +398,20 @@ func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string
 		log.Debug("buildRemoteTUICtrlFn: channelFinder('cli') returned not found")
 		return nil
 	}
-	rc, ok := ch.(*channel.RemoteCLIChannel)
-	if !ok {
-		log.WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel")
-		return nil
+	if rc, ok := ch.(*channel.RemoteCLIChannel); ok {
+		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
+		return func(action string, params map[string]string) (map[string]string, error) {
+			return rc.SendTUIControlRequest(chatID, action, params)
+		}
 	}
-	log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
-	return func(action string, params map[string]string) (map[string]string, error) {
-		return rc.SendTUIControlRequest(chatID, action, params)
+	if cch, ok := ch.(*channel.ChannelCliChannel); ok {
+		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: local CLI TUI control enabled")
+		return func(action string, params map[string]string) (map[string]string, error) {
+			return cch.SendTUIControlRequest(chatID, action, params)
+		}
 	}
+	log.WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel or ChannelCliChannel")
+	return nil
 }
 
 // listLLMSubsFn returns a subscription listing function for the given channel.
@@ -426,6 +441,9 @@ func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.
 
 // LLMFactory returns the Agent's LLMFactory (for external injection of callbacks).
 func (a *Agent) LLMFactory() *LLMFactory { return a.llmFactory }
+
+// SetLLMFactory sets the LLM factory (used in tests).
+func (a *Agent) SetLLMFactory(f *LLMFactory) { a.llmFactory = f }
 
 // BgTaskManager returns the Agent's BackgroundTaskManager.
 func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
@@ -472,6 +490,12 @@ func (a *Agent) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
 	if a.settingsSvc != nil {
 		a.settingsSvc.SetChannelFinder(fn)
 	}
+}
+
+// SetSessionStateHandler sets the callback for emitting session state change events.
+// Called at Run busy/idle transitions and SubAgent lifecycle events.
+func (a *Agent) SetSessionStateHandler(fn func(ev protocol.SessionEvent)) {
+	a.sessionStateHandler = fn
 }
 
 // IsProcessing returns true if there is an active Run for the given sender.
@@ -1112,10 +1136,20 @@ func (a *Agent) SetMaxConcurrency(n int) {
 	// in userSemaphores sync.Map is never replaced by the old code).
 	a.userSemaphores.Clear()
 }
-func (a *Agent) SetMaxContextTokens(n int) {
-	a.contextManagerMu.Lock()
-	a.contextManagerConfig.MaxContextTokens = n
-	a.contextManagerMu.Unlock()
+
+// SetMaxContextTokens sets the max context token limit.
+// When chatID is non-empty, only the per-chat override is updated (session-scoped).
+// When chatID is empty, the global agent-level config is updated (backward compatible).
+func (a *Agent) SetMaxContextTokens(n int, chatID ...string) {
+	if len(chatID) > 0 && chatID[0] != "" {
+		// Per-session: store in LLMFactory's per-chat cache
+		a.llmFactory.SetPerChatMaxContext(chatID[0], n)
+	} else {
+		// Global: update agent-level config (backward compatible)
+		a.contextManagerMu.Lock()
+		a.contextManagerConfig.MaxContextTokens = n
+		a.contextManagerMu.Unlock()
+	}
 }
 
 func (a *Agent) SetCompressionThreshold(f float64) {
@@ -1471,8 +1505,9 @@ func (a *Agent) sandboxNameForUser(userID string) string {
 
 // remoteWorkspace returns the remote runner's workspace for the given user.
 // Returns "" if the user is not on a remote sandbox or has no active connection.
-//
-// Deprecated: use sandboxWorkspace instead for all sandbox file operations.
+// Note: sandboxWorkspace covers all sandbox modes (docker/remote/none) but
+// this function is kept for the promptWorkDir fallback path where we need
+// to distinguish remote-runner from in-process docker sandbox.
 func (a *Agent) remoteWorkspace(userID string) string {
 	if a.sandbox == nil {
 		return ""
@@ -1671,6 +1706,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		cancelKey := msg.Channel + ":" + msg.ChatID
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
+		// Emit session busy event for instant sidebar push.
+		if a.sessionStateHandler != nil {
+			a.sessionStateHandler(protocol.SessionEvent{
+				Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
+			})
+		}
+
 		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号
 		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
 			select {
@@ -1699,6 +1741,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				reqCancel()
 				a.chatCancelCh.Delete(cancelKey)
 				a.pendingCancel.Delete(cancelKey)
+
+				// Emit session idle event for instant sidebar push.
+				if a.sessionStateHandler != nil {
+					a.sessionStateHandler(protocol.SessionEvent{
+						Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+					})
+				}
 				key := sessionKey(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)
@@ -1760,7 +1809,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		if response != nil {
 			if response.WaitingUser {
 				// WaitingUser response: send directly with WaitingUser flag set.
-				// Bypass sendMessage (which doesn't support WaitingUser) to avoid metadata hack.
+				// Bypass sendMessage (which doesn't support WaitingUser) since it applies
+				// Patch/Edit logic incompatible with async user interaction.
 				outMsg := bus.OutboundMessage{
 					Channel:     msg.Channel,
 					ChatID:      msg.ChatID,
@@ -2279,6 +2329,70 @@ func (a *Agent) RegisterTool(tool tools.Tool) {
 func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 	a.tools.RegisterCore(tool)
 	log.WithField("tool", tool.Name()).Info("Tool registered")
+}
+
+// emitBuiltinProgress sends a progress event for builtin commands (/compress, /new)
+// that bypass engine.Run. It uses the same CLI channel path as buildCLIProgressEventHandler
+// so the snapshot is stored for mid-session reconnect.
+func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) {
+	progressKey := sessionKey(chName, chatID)
+
+	// Get or create per-chat seq counter. Start at 1 so the first event
+	// is not discarded by the CLI's seq monotonic check (initial lastProgressSeq=0).
+	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
+	seq := seqPtr.(*atomic.Uint64).Add(1)
+
+	payload := &protocol.ProgressEvent{
+		ChatID:    progressKey,
+		Phase:     string(phase),
+		Seq:       seq,
+		Iteration: 0,
+	}
+
+	// Send via CLI channel
+	if a.channelFinder != nil {
+		if ch, ok := a.channelFinder("cli"); ok {
+			if cc, ok := ch.(*channel.CLIChannel); ok {
+				cc.SendProgress(chatID, payload)
+			} else if rc, ok := ch.(channel.ProgressSender); ok {
+				rc.SendProgress(chatID, payload)
+			}
+		}
+	}
+
+	// Store snapshot for mid-session reconnect
+	a.lastProgressSnapshot.Store(progressKey, payload)
+}
+
+// emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
+// Must be called in a defer after emitBuiltinProgress to ensure the CLI ends the turn.
+func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
+	progressKey := sessionKey(chName, chatID)
+
+	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
+	if !ok {
+		return
+	}
+	seq := seqPtr.(*atomic.Uint64).Add(1)
+
+	payload := &protocol.ProgressEvent{
+		ChatID: progressKey,
+		Phase:  string(PhaseDone),
+		Seq:    seq,
+	}
+
+	if a.channelFinder != nil {
+		if ch, ok := a.channelFinder("cli"); ok {
+			if cc, ok := ch.(*channel.CLIChannel); ok {
+				cc.SendProgress(chatID, payload)
+			} else if rc, ok := ch.(channel.ProgressSender); ok {
+				rc.SendProgress(chatID, payload)
+			}
+		}
+	}
+
+	a.lastProgressSnapshot.Delete(progressKey)
+	a.builtinProgressSeq.Delete(progressKey)
 }
 
 // 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。

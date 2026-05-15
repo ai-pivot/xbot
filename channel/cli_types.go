@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/plugin"
@@ -74,6 +75,11 @@ func truncateToWidth(s string, maxWidth int) string {
 // hardWrapRunes wraps a line at maxW columns, breaking at character boundaries.
 // ANSI escape sequences are preserved across wrapped segments.
 // Returns the original line if it fits within maxW.
+//
+// Break rules:
+//   - Break after any space (space stays on current line, next line starts clean).
+//   - Break after any CJK character (CJK chars can wrap at any boundary).
+//   - Otherwise break at the exact column boundary.
 func hardWrapRunes(line string, maxW int) string {
 	if maxW <= 0 {
 		return line
@@ -85,32 +91,69 @@ func hardWrapRunes(line string, maxW int) string {
 	var buf strings.Builder
 	w := 0
 	inEscape := false
+	lastBreakable := -1 // byte offset in buf of last position where we can break after
+
+	// Track active ANSI state so we can replay it on continuation lines.
+	// We record all escape sequences since the last SGR reset (\x1b[0m).
+	var ansiState strings.Builder // accumulated SGR sequences since last reset
+	haveAnsiState := false
+
 	for _, r := range line {
 		if r == '\x1b' {
 			inEscape = true
 			buf.WriteRune(r)
+			ansiState.WriteRune(r)
 			continue
 		}
 		if inEscape {
 			buf.WriteRune(r)
+			ansiState.WriteRune(r)
 			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
 				inEscape = false
+				// Detect SGR reset: \x1b[0m or \x1b[m
+				s := ansiState.String()
+				if strings.HasSuffix(s, "[0m") || strings.HasSuffix(s, "[m") {
+					ansiState.Reset()
+					haveAnsiState = false
+				} else if strings.HasSuffix(s, "m") {
+					haveAnsiState = true
+				}
 			}
 			continue
 		}
 		rw := ansi.StringWidth(string(r))
-		// Safety: if a rune has zero display width (combining chars, control
-		// chars, zero-width joiners), still emit it but don't let it block
-		// line wrapping.  Without this, a run of zero-width runes causes
-		// w to never reach maxW → infinite loop → CPU 100% freeze.
+		// Safety: zero-width runes don't block wrapping.
 		if rw == 0 {
 			buf.WriteRune(r)
 			continue
 		}
+
+		// Mark breakable positions: after space or after CJK character
+		if r == ' ' || isCJK(r) {
+			lastBreakable = buf.Len() + utf8.RuneLen(r)
+		}
+
 		if w+rw > maxW {
-			lines = append(lines, buf.String())
-			buf.Reset()
-			w = 0
+			if lastBreakable > 0 && lastBreakable < buf.Len() {
+				// Break at last breakable position
+				keep := buf.String()[:lastBreakable]
+				rest := buf.String()[lastBreakable:]
+				lines = append(lines, keep)
+				buf.Reset()
+				buf.WriteString(rest)
+				w = lipgloss.Width(rest)
+				lastBreakable = -1
+			} else {
+				// No breakable position found, hard break here
+				lines = append(lines, buf.String())
+				buf.Reset()
+				w = 0
+				lastBreakable = -1
+			}
+			// Replay active ANSI state on continuation line
+			if haveAnsiState {
+				buf.WriteString(ansiState.String())
+			}
 		}
 		buf.WriteRune(r)
 		w += rw
@@ -193,7 +236,11 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithWordWrap(wrapWidth),
+		// Word wrap disabled: glamour breaks English words at spaces and
+		// doesn't understand CJK boundaries, producing ugly splits like
+		// "Adolf\nHitler". All wrapping is handled by hardWrapRunes which
+		// knows about CJK break rules.
+		glamour.WithWordWrap(0),
 	)
 	return r
 }
@@ -544,7 +591,7 @@ type CLIChannelConfig struct {
 	TokenStateLoader     func() (promptTokens, completionTokens int64)                                                                  // 会话恢复：从 DB 加载上次 Run 的 token 计数
 	AgentSessionDumpFn   func(chatID string) ([]HistoryMessage, error)                                                                  // agent session 切换时从 Agent 内存加载消息
 	GetCurrentValues     func() map[string]string                                                                                       // 获取当前配置值（用于 settings panel 初始值）
-	ApplySettings        func(values map[string]string)                                                                                 // 应用设置变更（写 config.json + 更新运行时状态）
+	ApplySettings        func(values map[string]string, chatID string)                                                                  // 应用设置变更（写 config.json + 更新运行时状态）
 	IsFirstRun           bool                                                                                                           // 首次运行标志，TUI 启动时自动打开 setup panel
 	ClearMemory          func(targetType string) error                                                                                  // 清空记忆（danger zone）
 	GetMemoryStats       func() map[string]string                                                                                       // 获取记忆统计（danger zone）
@@ -700,6 +747,9 @@ type ModelLister interface {
 // Subscription represents a LLM subscription for display/selection.
 type Subscription = protocol.Subscription
 
+// PerModelConfig stores per-model token overrides within a subscription.
+type PerModelConfig = protocol.PerModelConfig
+
 // SubscriptionManager manages user LLM subscriptions.
 type SubscriptionManager interface {
 	List(senderID string) ([]Subscription, error)
@@ -710,12 +760,13 @@ type SubscriptionManager interface {
 	SetModel(id, model string) error
 	Rename(id, name string) error
 	Update(id string, sub *Subscription) error
+	UpdatePerModelConfig(id, model string, pmc PerModelConfig) error
 }
 
 // LLMSubscriber switches the active LLM for a user (called when subscription changes).
 type LLMSubscriber interface {
 	SwitchSubscription(senderID string, sub *Subscription, chatID string) error
-	SwitchModel(senderID, model string)
+	SwitchModel(senderID, model, chatID string)
 	GetDefaultModel() string
 }
 

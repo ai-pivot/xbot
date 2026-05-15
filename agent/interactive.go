@@ -128,10 +128,10 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		return
 	}
 	var localCh *channelpkg.CLIChannel
-	var remoteCh *channelpkg.RemoteCLIChannel
+	var remoteCh channelpkg.ProgressSender
 	if cc, ok := ch.(*channelpkg.CLIChannel); ok {
 		localCh = cc
-	} else if rc, ok := ch.(*channelpkg.RemoteCLIChannel); ok {
+	} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 		remoteCh = rc
 	}
 	if localCh == nil && remoteCh == nil {
@@ -342,12 +342,58 @@ func (a *Agent) SpawnInteractiveSession(
 		}, nil
 	}
 
+	// Emit subagent_started event for instant sidebar push.
+	if a.sessionStateHandler != nil {
+		a.sessionStateHandler(protocol.SessionEvent{
+			Channel:  originChannel,
+			ChatID:   originChatID,
+			Action:   "subagent_started",
+			Role:     roleName,
+			Instance: instance,
+			ParentID: originChatID,
+		})
+	}
+
 	// --- 阶段 2：锁外构建 config（不需要锁） ---
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
 
 	cc := CallChainFromContext(ctx)
 	if err := cc.CanSpawn(roleName, a.maxSubAgentDepth); err != nil {
-		a.interactiveSubAgents.Delete(key) // 清理占位符
+		a.interactiveSubAgents.Delete(key)
+
+		// Emit subagent_stopped event for instant sidebar push.
+		if a.sessionStateHandler != nil {
+			// Parse key to extract channel, chatID, role, instance.
+			// key format: "channel:chatID/roleName[:instance]"
+			parts := strings.SplitN(key, ":", 2)
+			chanPart := ""
+			rest := key
+			if len(parts) == 2 {
+				chanPart = parts[0]
+				rest = parts[1]
+			}
+			chatIDAndRole := strings.SplitN(rest, "/", 2)
+			chatIDPart := rest
+			rolePart := ""
+			instPart := ""
+			if len(chatIDAndRole) == 2 {
+				chatIDPart = chatIDAndRole[0]
+				roleAndInst := chatIDAndRole[1]
+				riParts := strings.SplitN(roleAndInst, ":", 2)
+				rolePart = riParts[0]
+				if len(riParts) > 1 {
+					instPart = riParts[1]
+				}
+			}
+			a.sessionStateHandler(protocol.SessionEvent{
+				Channel:  chanPart,
+				ChatID:   chatIDPart,
+				Action:   "subagent_stopped",
+				Role:     rolePart,
+				Instance: instPart,
+				ParentID: chatIDPart,
+			})
+		} // 清理占位符
 		return &bus.OutboundMessage{Content: err.Error(), Error: err}, nil
 	}
 	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
@@ -645,7 +691,15 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 
 	// Foreground mode: execute synchronously
+	placeholder.mu.Lock()
+	placeholder.running = true
+	placeholder.mu.Unlock()
+
 	out := Run(subCtx, cfg)
+
+	placeholder.mu.Lock()
+	placeholder.running = false
+	placeholder.mu.Unlock()
 
 	if out.Error != nil {
 		a.destroyInteractiveSession(key) // 清理占位符 + tenant session
@@ -839,7 +893,16 @@ func (a *Agent) SendToInteractiveSession(
 	}
 
 	preLen := len(cfg.Messages)
+
+	ia.mu.Lock()
+	ia.running = true
+	ia.mu.Unlock()
+
 	out := Run(subCtx, cfg)
+
+	ia.mu.Lock()
+	ia.running = false
+	ia.mu.Unlock()
 
 	// --- 阶段 3：锁内写回结果 ---
 	ia.mu.Lock()

@@ -201,6 +201,9 @@ func truncateArgs(args string, maxLen int) string {
 
 // handleCompress handles the /compress command: manually trigger context compaction.
 func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
+	a.emitBuiltinProgress(msg.Channel, msg.ChatID, PhaseCompressing)
+	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID)
+
 	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
@@ -226,8 +229,6 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	}
 
 	// Always allow manual /compress regardless of threshold — user explicitly requested it.
-
-	_ = a.sendMessage(msg.Channel, msg.ChatID, "🔄 开始压缩上下文...")
 
 	cm := a.GetContextManager()
 
@@ -279,6 +280,21 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	}
 
 	newTokenCount, _ := llm.CountMessagesTokens(result.LLMView, model)
+
+	// Persist the compressed token count so the next Run() restores an accurate
+	// value instead of the pre-compress count. Without this, a restart after
+	// /compress would immediately trigger another compression cycle.
+	if newTokenCount > 0 {
+		if err := tenantSession.SaveContextTokens(int64(newTokenCount)); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to save context tokens after manual compress")
+		}
+		if extras := a.buildToolContextExtras(msg.Channel, msg.ChatID); extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
+			if err := extras.MemorySvc.SetTokenState(context.Background(), extras.TenantID, int64(newTokenCount), 0); err != nil {
+				log.Ctx(ctx).WithError(err).WithField("tenant_id", extras.TenantID).Warn("Failed to persist token state after manual compress")
+			}
+		}
+	}
+
 	if allOk {
 		return &bus.OutboundMessage{
 			Channel: msg.Channel,

@@ -16,7 +16,7 @@ import (
 const (
 	anthropicDefaultBaseURL = "https://api.anthropic.com"
 	anthropicAPIVersion     = "2023-06-01"
-	anthropicMaxTokens      = 8192
+	anthropicMaxTokens      = 32_768
 )
 
 // AnthropicLLM Anthropic Messages API 实现
@@ -35,7 +35,7 @@ type AnthropicConfig struct {
 	BaseURL      string // 默认 https://api.anthropic.com
 	APIKey       string
 	DefaultModel string
-	MaxTokens    int    // 0 = use default (8192)
+	MaxTokens    int    // 0 = use default (anthropicMaxTokens)
 	UserAgent    string // 自定义 User-Agent（留空使用默认值）
 }
 

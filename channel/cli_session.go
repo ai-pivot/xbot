@@ -68,6 +68,48 @@ func ValidateSessionName(name string) error {
 	return nil
 }
 
+// ── Flexible time format for backward compat ──
+
+// flexTime wraps time.Time with JSON unmarshal that accepts both RFC3339 (T-separator)
+// and the space-separator format produced by some older versions.
+// Marshal always outputs RFC3339Nano for consistency.
+type flexTime time.Time
+
+// flexTimeFormats lists time formats accepted during unmarshal, in priority order.
+var flexTimeFormats = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02 15:04:05.999999999Z07:00", // space-separator with nano + zone
+	"2006-01-02 15:04:05Z07:00",           // space-separator with zone
+	"2006-01-02 15:04:05",                 // space-separator without zone
+}
+
+func (ft flexTime) MarshalJSON() ([]byte, error) {
+	return time.Time(ft).MarshalJSON()
+}
+
+func (ft *flexTime) UnmarshalJSON(data []byte) error {
+	// Try standard time.Time unmarshal first (handles RFC3339 + quotes)
+	var t time.Time
+	if err := t.UnmarshalJSON(data); err == nil {
+		*ft = flexTime(t)
+		return nil
+	}
+	// Strip quotes and try space-separator formats
+	s := strings.Trim(string(data), `"`)
+	for _, layout := range flexTimeFormats {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			*ft = flexTime(parsed)
+			return nil
+		}
+	}
+	return fmt.Errorf("flexTime: cannot parse %q", s)
+}
+
+func (ft flexTime) Time() time.Time { return time.Time(ft) }
+
+func (ft flexTime) After(u flexTime) bool { return time.Time(ft).After(time.Time(u)) }
+
 // ── Per-directory session storage ──
 
 // dirSessions stores the list of sessions for a given directory.
@@ -79,10 +121,13 @@ type dirSessions struct {
 }
 
 type dirSession struct {
-	Name      string    `json:"name"`
-	ChatID    string    `json:"chat_id"`
-	CreatedAt time.Time `json:"created_at"`
-	CWD       string    `json:"cwd,omitempty"` // per-session working directory (worktree path, etc.)
+	Name             string   `json:"name"`
+	ChatID           string   `json:"chat_id"`
+	CreatedAt        flexTime `json:"created_at"`
+	CWD              string   `json:"cwd,omitempty"`                // per-session working directory (worktree path, etc.)
+	SubscriptionID   string   `json:"subscription_id,omitempty"`    // per-session subscription override
+	Model            string   `json:"model,omitempty"`              // per-session model override (within subscription)
+	MaxContextTokens int      `json:"max_context_tokens,omitempty"` // per-session max context tokens override
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.
@@ -124,7 +169,7 @@ func LoadDirSessions(workDir string) (*dirSessions, error) {
 				Sessions: []dirSession{{
 					Name:      defaultSessionName,
 					ChatID:    workDir,
-					CreatedAt: time.Now(),
+					CreatedAt: flexTime(time.Now()),
 				}},
 			}, nil
 		}
@@ -140,7 +185,7 @@ func LoadDirSessions(workDir string) (*dirSessions, error) {
 		ds.Sessions = append([]dirSession{{
 			Name:      defaultSessionName,
 			ChatID:    workDir,
-			CreatedAt: time.Now(),
+			CreatedAt: flexTime(time.Now()),
 		}}, ds.Sessions...)
 	}
 	return &ds, nil
@@ -190,6 +235,64 @@ var (
 	}
 )
 
+// DeduplicateSessionName appends a random "-adj-noun" suffix when the desired name
+// already exists in the existingNames set. The excludeChatID's own name is skipped
+// so that renaming a session to its current name is a no-op.
+// Returns the deduplicated name (unchanged if no collision).
+func DeduplicateSessionName(desired string, excludeChatID string, lookup NameLookup) string {
+	names := lookup()
+	// Check collision: any OTHER session has the same name?
+	for _, entry := range names {
+		if entry.Name == desired && entry.ChatID != excludeChatID {
+			goto collide
+		}
+	}
+	return desired
+
+collide:
+	// Pick random adj-noun suffix until unique (max 10 attempts, then fall back to counter).
+	for i := 0; i < 10; i++ {
+		adjIdx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(sessionAdj))))
+		nounIdx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(sessionNoun))))
+		candidate := desired + "-" + sessionAdj[adjIdx.Int64()] + "-" + sessionNoun[nounIdx.Int64()]
+		conflict := false
+		for _, entry := range names {
+			if entry.Name == candidate {
+				conflict = true
+				break
+			}
+		}
+		if !conflict {
+			return candidate
+		}
+	}
+	// Extremely unlikely: fall back to numeric suffix
+	for n := 2; n < 100; n++ {
+		candidate := fmt.Sprintf("%s-%d", desired, n)
+		conflict := false
+		for _, entry := range names {
+			if entry.Name == candidate {
+				conflict = true
+				break
+			}
+		}
+		if !conflict {
+			return candidate
+		}
+	}
+	return desired // give up, shouldn't happen
+}
+
+// NameEntry is a lightweight name/chatID pair used for dedup lookups.
+type NameEntry struct {
+	Name   string
+	ChatID string
+}
+
+// NameLookup returns session name entries for deduplication.
+// Implemented differently for local JSON vs DB.
+type NameLookup func() []NameEntry
+
 // generateSessionName creates a random session name like "Agent-brave-fox".
 func generateSessionName() (string, error) {
 	adjIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(sessionAdj))))
@@ -220,7 +323,7 @@ func (ds *dirSessions) addSession(name string) (string, error) {
 	ds.Sessions = append(ds.Sessions, dirSession{
 		Name:      name,
 		ChatID:    chatID,
-		CreatedAt: time.Now(),
+		CreatedAt: flexTime(time.Now()),
 	})
 	return chatID, ds.save()
 }
@@ -247,25 +350,64 @@ func (ds *dirSessions) addSessionAuto() (name string, chatID string, err error) 
 	return name, chatID, nil
 }
 
+// NewAutoSession creates a new auto-named session for the given workDir and
+// immediately persists it as the last active session. Returns the display name,
+// full chatID, and any error.
+func NewAutoSession(workDir string) (name, chatID string, err error) {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return "", "", fmt.Errorf("load sessions: %w", err)
+	}
+	name, chatID, err = ds.addSessionAuto()
+	if err != nil {
+		return "", "", err
+	}
+	ds.LastActive = chatID
+	if err := ds.save(); err != nil {
+		return "", "", fmt.Errorf("save sessions: %w", err)
+	}
+	SetLastActiveSession(workDir, chatID)
+	return name, chatID, nil
+}
+
 // RenameSession renames a session in the directory (local JSON only).
-func (ds *dirSessions) RenameSession(oldName, newName string) error {
+// If the new name collides with an existing session, a random "-adj-noun" suffix
+// is appended automatically to avoid duplicates.
+func (ds *dirSessions) RenameSession(oldName, newName string) (string, error) {
 	if oldName == newName {
-		return nil
+		return oldName, nil
 	}
 	if err := ValidateSessionName(newName); err != nil {
-		return err
+		return "", err
 	}
-	if ds.hasSession(newName) {
-		return fmt.Errorf("session %q already exists", newName)
-	}
+	// Deduplicate against other sessions in this directory.
 	for i, s := range ds.Sessions {
 		if s.Name == oldName {
-			ds.Sessions[i].Name = newName
-			ds.Sessions[i].ChatID = SessionChatID(ds.Dir, newName)
-			return ds.save()
+			finalName := DeduplicateSessionName(newName, s.ChatID, func() []NameEntry {
+				entries := make([]NameEntry, len(ds.Sessions))
+				for j, sess := range ds.Sessions {
+					entries[j] = NameEntry{Name: sess.Name, ChatID: sess.ChatID}
+				}
+				return entries
+			})
+			ds.Sessions[i].Name = finalName
+			// ChatID is immutable: it's the primary key in DB (tenants table).
+			// Changing it would disconnect the session from its message history.
+			return finalName, ds.save()
 		}
 	}
-	return fmt.Errorf("session %q not found", oldName)
+	return "", fmt.Errorf("session %q not found", oldName)
+}
+
+// NameByChatID returns the display name for a session by its chatID.
+// Returns "" if not found.
+func (ds *dirSessions) NameByChatID(chatID string) string {
+	for _, s := range ds.Sessions {
+		if s.ChatID == chatID {
+			return s.Name
+		}
+	}
+	return ""
 }
 
 // removeSessionByChatID removes a session by its chatID (not display name).
@@ -350,3 +492,126 @@ func GetLastActiveSession(workDir string) string {
 	}
 	return ds.LastActive
 }
+
+// ── Session LLM state: single source of truth ───────────────
+//
+// All per-session LLM state (subscription, model, max_context, max_output)
+// is stored in the dirSession JSON and accessed ONLY through these two functions.
+// This eliminates the "partial write" class of bugs where SaveSessionLLM and
+// SaveSessionMaxContext independently loaded/modified/saved the JSON file,
+// causing race conditions and state desync.
+//
+// RULES:
+//   1. NEVER read dirSession.SubscriptionID/Model/MaxContextTokens directly — use LoadSessionLLMState
+//   2. NEVER write them individually — use SaveSessionLLMState
+//   3. To derive effective max_context for display, use ResolveEffectiveMaxContext
+
+// SessionLLMState bundles ALL per-session LLM state.
+// Zero value means "use global defaults".
+type SessionLLMState struct {
+	SubscriptionID   string // active subscription for this session
+	Model            string // active model within the subscription
+	MaxContextTokens int    // per-session max_context override (0 = derive from sub)
+	MaxOutputTokens  int    // per-session max_output_tokens override (0 = derive from sub)
+}
+
+// IsZero returns true if no LLM state has been configured.
+func (s SessionLLMState) IsZero() bool {
+	return s.SubscriptionID == "" && s.Model == "" && s.MaxContextTokens == 0 && s.MaxOutputTokens == 0
+}
+
+// SaveSessionLLMState atomically writes ALL per-session LLM state to disk.
+// This replaces the old SaveSessionLLM + SaveSessionMaxContext pair.
+// Partial writes are impossible — either all fields are persisted or none.
+func SaveSessionLLMState(workDir, chatID string, state SessionLLMState) {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return
+	}
+	for i := range ds.Sessions {
+		if ds.Sessions[i].ChatID == chatID {
+			ds.Sessions[i].SubscriptionID = state.SubscriptionID
+			ds.Sessions[i].Model = state.Model
+			ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
+			_ = ds.save()
+			return
+		}
+	}
+}
+
+// LoadSessionLLMState reads ALL per-session LLM state from disk.
+// Returns zero-value SessionLLMState if the session doesn't exist or has no LLM state.
+func LoadSessionLLMState(workDir, chatID string) SessionLLMState {
+	ds, err := LoadDirSessions(workDir)
+	if err != nil {
+		return SessionLLMState{}
+	}
+	for i := range ds.Sessions {
+		if ds.Sessions[i].ChatID == chatID {
+			return SessionLLMState{
+				SubscriptionID:   ds.Sessions[i].SubscriptionID,
+				Model:            ds.Sessions[i].Model,
+				MaxContextTokens: ds.Sessions[i].MaxContextTokens,
+			}
+		}
+	}
+	return SessionLLMState{}
+}
+
+// ResolveEffectiveMaxContext derives the effective max_context for a session.
+// Priority (strict, no ambiguity):
+//
+//  1. Session JSON MaxContextTokens (user explicitly set, or inherited from parent)
+//  2. Subscription's PerModelConfigs[model].MaxContext (bound to subscription+model)
+//  3. 0 (caller falls back to schema DefaultValue, typically 200000)
+//
+// This is the ONLY function that should be called to get max_context for display
+// or runtime use. It replaces the old resolveMaxContextTokens which had broken
+// fallback chains through GetCurrentValues().
+func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManager) int {
+	// 1. Session JSON override (highest priority — user manually set this)
+	if state.MaxContextTokens > 0 {
+		return state.MaxContextTokens
+	}
+	// 2. Subscription's per-model config
+	if subMgr != nil && state.SubscriptionID != "" {
+		if subs, err := subMgr.List(""); err == nil {
+			for _, sub := range subs {
+				if sub.ID == state.SubscriptionID {
+					model := state.Model
+					if model == "" {
+						model = sub.Model
+					}
+					if model != "" {
+						if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
+							return pmc.MaxContext
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+	// 3. No override found — use global default
+	return config.DefaultMaxContextTokens
+}
+
+// ResolveEffectiveMaxOutputTokens derives the effective max_output_tokens for a session.
+func ResolveEffectiveMaxOutputTokens(state SessionLLMState, subMgr SubscriptionManager) int {
+	if state.MaxOutputTokens > 0 {
+		return state.MaxOutputTokens
+	}
+	if subMgr != nil && state.SubscriptionID != "" {
+		if subs, err := subMgr.List(""); err == nil {
+			for _, sub := range subs {
+				if sub.ID == state.SubscriptionID {
+					return sub.MaxOutputTokens
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// SaveSessionMaxContext and LoadSessionMaxContext have been removed.
+// Use SaveSessionLLMState/LoadSessionLLMState with MaxContextTokens field instead.

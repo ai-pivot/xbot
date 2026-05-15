@@ -102,6 +102,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		// Ctrl+B: Toggle sidebar (only in wide mode)
 		if m.panelMode == "" && m.isWide() && m.sidebarEnabled {
 			m.sidebarVisible = !m.sidebarVisible
+			m.invalidateLayoutCache()
 			m.relayoutViewport()
 			return m, nil, true
 		}
@@ -335,6 +336,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		}).Error("handleProgressMsg: received progress with empty ChatID — this is a programming error")
 		return
 	}
+
 	if msg.payload != nil && msg.payload.ChatID != "" {
 		currentKey := m.channelName + ":" + m.chatID
 		if msg.payload.ChatID != currentKey {
@@ -375,7 +377,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// Guard: !suLoading — during session switch in remote mode, progress events
 	// from the old session may arrive before the RPC reconciles state. Starting
 	// a turn here would create an inconsistent state with no message history loaded.
-	if !m.typing && !m.suLoading && msg.payload != nil && msg.payload.Phase != "done" {
+	// Guard: panelMode != "askuser" — AskUser panel sets m.typing=false but the
+	// turn is paused (not ended). Late progress events from the engine must not
+	// trigger startAgentTurn → resetProgressState, which clears iterationHistory
+	// and makes all previous iterations disappear.
+	if !m.typing && !m.suLoading && msg.payload != nil && msg.payload.Phase != "done" && m.panelMode != "askuser" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
@@ -520,6 +526,62 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		}
 	}
 	m.updateViewportContent()
+}
+
+// handleSessionStateMsg processes server-pushed session state change events.
+// Runs inside BubbleTea Update() — no goroutines, no RPC, no locks.
+func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
+	ev := msg.event
+	log.WithFields(log.Fields{
+		"action":  ev.Action,
+		"chat_id": ev.ChatID,
+		"channel": ev.Channel,
+		"role":    ev.Role,
+	}).Debug("handleSessionStateMsg: received session event")
+	switch ev.Action {
+	case "busy":
+		// Main session started processing.
+		m.liveSessionStates[ev.ChatID] = &liveSessionState{busy: true}
+	case "idle":
+		// Main session finished processing.
+		// Explicitly mark as idle (not delete) — the 30s safety-net poll
+		// may return stale Busy=true from cache, so we need the override.
+		m.liveSessionStates[ev.ChatID] = &liveSessionState{busy: false}
+	case "subagent_started":
+		// SubAgent interactive session created.
+		key := "agent:" + ev.Role + "/" + ev.Instance
+		m.liveSessionStates[key] = &liveSessionState{
+			busy:     true,
+			role:     ev.Role,
+			instance: ev.Instance,
+			parentID: ev.ParentID,
+		}
+		// New session appeared — trigger async cache refresh so sidebar shows it.
+		m.scheduleSessionsRefresh()
+	case "subagent_stopped":
+		// SubAgent interactive session destroyed.
+		key := "agent:" + ev.Role + "/" + ev.Instance
+		// Explicitly mark as idle (not delete) — same reason as main session idle.
+		m.liveSessionStates[key] = &liveSessionState{
+			busy:     false,
+			role:     ev.Role,
+			instance: ev.Instance,
+			parentID: ev.ParentID,
+		}
+		// Session disappeared — trigger async cache refresh so sidebar updates.
+		m.scheduleSessionsRefresh()
+	case "renamed":
+		// Session renamed via config tool or API — trigger cache refresh so sidebar updates immediately.
+		m.scheduleSessionsRefresh()
+	}
+}
+
+// scheduleSessionsRefresh triggers an immediate session list cache refresh.
+// Called when sessions are created/destroyed via server push events.
+func (m *cliModel) scheduleSessionsRefresh() {
+	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+		m.channel.config.SessionsListRefresh()
+	}
 }
 
 // syncProgressTodos syncs todo items from the progress payload.
@@ -1445,7 +1507,18 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		} else {
 			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
-			m.activeSubID = done.subID
+			// Build complete session LLM state and persist atomically.
+			// maxContext comes from the new subscription's per-model config.
+			// Do NOT fallback to the old session JSON value — that belongs
+			// to the previous subscription and would show a stale context bar.
+			state := SessionLLMState{
+				SubscriptionID:   done.subID,
+				Model:            done.subModel,
+				MaxContextTokens: done.maxCtx,
+				MaxOutputTokens:  done.maxOutTok,
+			}
+			SaveSessionLLMState(m.workDir, m.chatID, state)
+			m.applySessionLLMState(state)
 			// Refresh values cache so GetCurrentValues() reflects the new subscription.
 			if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
 				m.channel.config.RefreshValuesCache()
@@ -1749,7 +1822,7 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 		if m.allTodosDone() {
 			m.todos = nil
 			m.todosDoneCleared = true
-			m.relayoutViewport() // TODO 清除，恢复 viewport 高度
+			m.relayoutViewport() // recalculate viewport height after clearing todo bar
 		}
 		// 发送消息（彩蛋可能返回动画 cmd）
 		if cmd := m.sendMessage(content); cmd != nil {

@@ -48,8 +48,9 @@ func isConfigKeyAllowed(ctx *ToolContext, key string) bool {
 
 // maskKeys are masked on read — value is replaced with "***" when returned via get.
 var maskKeys = map[string]bool{
-	"llm_api_key":  true,
-	"runner_token": true,
+	"llm_api_key":    true,
+	"runner_token":   true,
+	"tavily_api_key": true,
 }
 
 func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) {

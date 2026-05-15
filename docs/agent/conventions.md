@@ -96,3 +96,31 @@ inconsistently. LineInfo.StartColumn accumulated these phantom spaces,
 shifting all cursor calculations. Removing them was a 3-part fix:
 wrap() stops injecting, view() stops trimming, setCursorLineRelative
 uses StartColumn+Width (down) and StartColumn-1 (up).
+
+## Local / Remote Unification
+
+CLI operates in two deployment modes:
+- **Local**: Backend runs in-process, Transport is function calls (zero overhead)
+- **Remote**: Backend runs on xbot-server, Transport is WebSocket RPC
+
+**Principle**: All CLI code goes through `AgentBackend` interface. The Transport
+layer handles routing. CLI should NOT have `IsRemote()` branches except for
+irreducible architectural differences:
+
+| Irreducible Branch | Reason |
+|---|---|
+| `RemoteMode` field | TUI needs to know whether to show connection status |
+| LLM client rebuild | Only local mode has `createLLM()` closure |
+| Remote event subscription | Only remote mode receives WS push events |
+| WS connection lifecycle | Only remote mode connects to server |
+| Local subscription seeding | Only local mode seeds from config.json on first run |
+
+Everything else (settings, history, sessions, web users, chat management, UI callbacks)
+is unified through Backend methods that route via Transport automatically.
+
+**When adding new CLI functionality**:
+1. Add method to `AgentBackend` interface (agent/backend.go)
+2. Implement in Backend (agent/backend_impl.go) using `CallRPC`
+3. Add `localTransport` handler (agent/local_transport.go)
+4. Add server RPC handler (serverapp/rpc_table.go)
+5. No IsRemote() needed in CLI code

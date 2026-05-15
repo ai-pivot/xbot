@@ -68,7 +68,9 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 
 	// Add subscription via admin path (same as remote CLI does)
 	sub := channel.Subscription{
@@ -121,7 +123,9 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 
 	// Use snake_case keys matching channelSubscriptionJSON — the format the real
 	// backend sends via RPC (backend_impl.go UpdateSubscription).
@@ -177,7 +181,9 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 
 	// Add a subscription first (using snake_case matching real client)
 	addParams, _ := json.Marshal(map[string]any{
@@ -246,7 +252,7 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 	}
 }
 
-func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *sqlite.UserSettingsService) {
+func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *agent.Agent, *sqlite.UserSettingsService) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
@@ -255,7 +261,9 @@ func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *sqlite.UserS
 	t.Cleanup(func() { db.Close() })
 	store := sqlite.NewUserSettingsService(db)
 	agentSvc := agent.NewSettingsService(store)
-	return fakeBackend{settingsSvc: agentSvc}, store
+	ag := &agent.Agent{}
+	ag.SetSettingsService(agentSvc)
+	return fakeBackend{settingsSvc: agentSvc}, ag, store
 }
 
 type fakeBackend struct {
@@ -278,6 +286,8 @@ func (b fakeBackend) IsProcessing(_, _ string) bool                         { re
 func (b fakeBackend) GetActiveProgress(_, _ string) *protocol.ProgressEvent { return nil }
 func (b fakeBackend) GetTodos(_, _ string) []protocol.TodoItem              { return nil }
 func (b fakeBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
+}
+func (b fakeBackend) WireCallbacks(func(bus.OutboundMessage) (string, error), func(string) (channel.Channel, bool), func(protocol.SessionEvent), bus.MessageSender, func(string, bus.RunFn) error, func(string)) {
 }
 func (b fakeBackend) ConnState() string                                                  { return "connected" }
 func (b fakeBackend) ServerURL() string                                                  { return "" }
@@ -312,7 +322,9 @@ func (b fakeBackend) SetContextMode(_ string) error                             
 func (b fakeBackend) SetCWD(_, _, _ string) error                                    { return nil }
 func (b fakeBackend) SetMaxIterations(_ int)                                         {}
 func (b fakeBackend) SetMaxConcurrency(_ int)                                        {}
-func (b fakeBackend) SetMaxContextTokens(_ int)                                      {}
+func (b fakeBackend) SetMaxContextTokens(_ int, _ ...string)                         {}
+func (b fakeBackend) GetEffectiveMaxContext(_, _ string) int                         { return 0 }
+func (b fakeBackend) ClearPerChatMaxContext(_ string)                                {}
 func (b fakeBackend) SetCompressionThreshold(_ float64)                              {}
 func (b fakeBackend) SetSandbox(_ tools.Sandbox, _ string)                           {}
 func (b fakeBackend) GetCardBuilder() *tools.CardBuilder                             { return nil }
@@ -323,7 +335,7 @@ func (b fakeBackend) SetProxyLLM(_ string, _ *llm.ProxyLLM, _ string)           
 func (b fakeBackend) ClearProxyLLM(_ string)                                         {}
 func (b fakeBackend) GetDefaultModel() string                                        { return "" }
 func (b fakeBackend) SetUserModel(_, _ string) error                                 { return nil }
-func (b fakeBackend) SwitchModel(_, _ string) error                                  { return nil }
+func (b fakeBackend) SwitchModel(_, _, _ string) error                               { return nil }
 func (b fakeBackend) GetUserMaxContext(_ string) int                                 { return 0 }
 func (b fakeBackend) SetUserMaxContext(_ string, _ int) error                        { return nil }
 func (b fakeBackend) GetUserMaxOutputTokens(_ string) int                            { return 0 }
@@ -341,13 +353,20 @@ func (b fakeBackend) RemoveSubscription(_ string) error                         
 func (b fakeBackend) SetDefaultSubscription(_ string, _ string) error                { return nil }
 func (b fakeBackend) RenameSubscription(_, _ string) error                           { return nil }
 func (b fakeBackend) UpdateSubscription(_ string, _ channel.Subscription) error      { return nil }
-func (b fakeBackend) SetSubscriptionModel(_, _ string) error                         { return nil }
+func (b fakeBackend) UpdatePerModelConfig(_ string, _ string, _ protocol.PerModelConfig) error {
+	return nil
+}
+func (b fakeBackend) SetSubscriptionModel(_, _ string) error { return nil }
 func (b fakeBackend) LLMGenerate(_ context.Context, _, _ string, _ []llm.ChatMessage, _ []llm.ToolDefinition, _ string) (*llm.LLMResponse, error) {
 	return nil, nil
 }
 func (b fakeBackend) LLMModels(_ context.Context, _ string) ([]string, error)            { return nil, nil }
 func (b fakeBackend) SetModelTiers(_ config.LLMConfig) error                             { return nil }
 func (b fakeBackend) SetDefaultThinkingMode(_ string) error                              { return nil }
+func (b fakeBackend) SetModelContexts(_ map[string]int) error                            { return nil }
+func (b fakeBackend) SetGlobalMaxTokens(_ int) error                                     { return nil }
+func (b fakeBackend) SetRetryConfig(_ llm.RetryConfig) error                             { return nil }
+func (b fakeBackend) SetChatLLM(_ string, _ string, _ config.LLMConfig) error            { return nil }
 func (b fakeBackend) ClearMemory(_ context.Context, _, _, _, _ string) error             { return nil }
 func (b fakeBackend) GetMemoryStats(_ context.Context, _, _, _ string) map[string]string { return nil }
 func (b fakeBackend) GetUserTokenUsage(_ string) (map[string]any, error)                 { return nil, nil }
@@ -382,8 +401,9 @@ func (b fakeBackend) PluginManager() *plugin.PluginManager { return nil }
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.T) {
 	cfg := newTestConfig()
-	backend, store := newTestBackendWithSettings(t)
-	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, backend, "cli", "cli_user"); err != nil {
+	backend, ag, store := newTestBackendWithSettings(t)
+	_ = backend
+	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
 		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
 	}
 	seeded, err := store.Get("cli", "cli_user")
@@ -409,11 +429,12 @@ func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SkipsWhenUserAlreadyHasSettings(t *testing.T) {
 	cfg := newTestConfig()
-	backend, store := newTestBackendWithSettings(t)
+	backend, ag, store := newTestBackendWithSettings(t)
+	_ = backend
 	if err := store.Set("cli", "cli_user", "theme", "mono"); err != nil {
 		t.Fatalf("store.Set() error = %v", err)
 	}
-	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, backend, "cli", "cli_user"); err != nil {
+	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
 		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
 	}
 	vals, err := store.Get("cli", "cli_user")
@@ -474,7 +495,9 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 	_, model, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
 		t.Fatalf("expected initial gpt model, got %q", model)
@@ -518,7 +541,9 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 
 	aCfg := &config.Config{}
 	lb := fakeBackend{factory: factory}
-	table := buildRPCTable(aCfg, lb, nil, nil)
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := buildRPCTable(aCfg, lb, ag, nil, nil)
 	// Agent calls GetLLM with "cli_user" (business identity)
 	_, model, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
@@ -536,3 +561,10 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 		t.Fatalf("expected switched glm model for cli_user, got %q (LLM factory cached under wrong key)", model)
 	}
 }
+
+// Additional AgentBackend methods for tests
+func (b fakeBackend) CreateWebUser(string) (string, error)            { return "test-pass", nil }
+func (b fakeBackend) ListWebUsers() ([]map[string]any, error)         { return nil, nil }
+func (b fakeBackend) DeleteWebUser(string) error                      { return nil }
+func (b fakeBackend) DeleteChat(string, string, string) error         { return nil }
+func (b fakeBackend) RenameChat(string, string, string, string) error { return nil }

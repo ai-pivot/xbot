@@ -402,6 +402,20 @@ func noneSandboxExecAsync(ctx context.Context, spec ExecSpec, outputBuf func(str
 	go stream(stdoutPipe)
 	go stream(stderrPipe)
 
+	// Watch for context cancellation: exec.CommandContext only kills the direct
+	// child process (the shell), not its entire process tree. When the context
+	// is cancelled (e.g. by task_kill), we must kill the whole process group
+	// that setProcessAttrs created, so all child processes terminate.
+	var killOnce sync.Once
+	go func() {
+		<-ctx.Done()
+		killOnce.Do(func() {
+			if cmd.Process != nil {
+				killProcessTree(cmd.Process)
+			}
+		})
+	}()
+
 	// Wait for process exit. Use cmd.Process.Wait() instead of cmd.Wait()
 	// because cmd.Wait() blocks until all IO copying completes. If login shell
 	// profile sourcing spawns background children that inherit pipe FDs,

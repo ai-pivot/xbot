@@ -83,6 +83,9 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 
 // handleNewSession 处理 /new 命令：先归档记忆，再清空会话
 func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
+	a.emitBuiltinProgress(msg.Channel, msg.ChatID, PhaseNewing)
+	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID)
+
 	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	messages, err := tenantSession.GetMessages()

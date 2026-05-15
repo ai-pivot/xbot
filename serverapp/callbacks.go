@@ -111,34 +111,34 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 }
 
 // registryCallbacks builds the shared Registry callback closures.
-func registryCallbacks(backend agent.AgentBackend) channel.RegistryCallbacks {
+func registryCallbacks(backend *agent.Backend, ag *agent.Agent) channel.RegistryCallbacks {
 	return channel.RegistryCallbacks{
 		RegistryBrowse: func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
-			return backend.RegistryManager().Browse(entryType, limit, offset)
+			return ag.RegistryManager().Browse(entryType, limit, offset)
 		},
 		RegistryInstall: func(entryType string, id int64, senderID string) error {
-			return backend.RegistryManager().Install(entryType, id, senderID)
+			return ag.RegistryManager().Install(entryType, id, senderID)
 		},
 		RegistryListMy: func(senderID, entryType string) ([]sqlite.SharedEntry, []string, error) {
-			return backend.RegistryManager().ListMy(senderID, entryType)
+			return ag.RegistryManager().ListMy(senderID, entryType)
 		},
 		RegistryPublish: func(entryType, name, senderID string) error {
-			return backend.RegistryManager().Publish(entryType, name, senderID)
+			return ag.RegistryManager().Publish(entryType, name, senderID)
 		},
 		RegistryUnpublish: func(entryType, name, senderID string) error {
-			return backend.RegistryManager().Unpublish(entryType, name, senderID)
+			return ag.RegistryManager().Unpublish(entryType, name, senderID)
 		},
 		RegistryUninstall: func(entryType, name, senderID string) error {
-			return backend.RegistryManager().Uninstall(entryType, name, senderID)
+			return ag.RegistryManager().Uninstall(entryType, name, senderID)
 		},
 	}
 }
 
 // llmCallbacks builds the shared LLM callback closures.
-func llmCallbacks(backend agent.AgentBackend) channel.LLMCallbacks {
+func llmCallbacks(backend *agent.Backend, ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]string, string) {
-			llmClient, currentModel, _, _ := backend.LLMFactory().GetLLM(senderID)
+			llmClient, currentModel, _, _ := ag.LLMFactory().GetLLM(senderID)
 			if llmClient == nil {
 				return nil, currentModel
 			}
@@ -221,10 +221,10 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, backend agent.AgentBackend, webDB *sql.DB) channel.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Agent, webDB *sql.DB) channel.WebCallbacks {
 	rc := runnerCallbacks(cfg)
-	regc := registryCallbacks(backend)
-	llmc := llmCallbacks(backend)
+	regc := registryCallbacks(backend, ag)
+	llmc := llmCallbacks(backend, ag)
 
 	callbacks := channel.WebCallbacks{
 		// Runner callbacks
@@ -366,10 +366,10 @@ func buildWebCallbacks(cfg *config.Config, backend agent.AgentBackend, webDB *sq
 }
 
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
-func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend) channel.SettingsCallbacks {
+func buildFeishuSettingsCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Agent) channel.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	regc := registryCallbacks(backend)
-	llmc := llmCallbacks(backend)
+	regc := registryCallbacks(backend, ag)
+	llmc := llmCallbacks(backend, ag)
 
 	return channel.SettingsCallbacks{
 		// LLM basic callbacks
@@ -397,7 +397,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 
 		// Subscription management
 		LLMListSubscriptions: func(senderID string) ([]channel.Subscription, error) {
-			subs, err := backend.LLMFactory().GetSubscriptionSvc().List(senderID)
+			subs, err := ag.LLMFactory().GetSubscriptionSvc().List(senderID)
 			if err != nil {
 				return nil, err
 			}
@@ -408,7 +408,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 			return result, nil
 		},
 		LLMGetDefaultSubscription: func(senderID string) (*channel.Subscription, error) {
-			sub, err := backend.LLMFactory().GetSubscriptionSvc().GetDefault(senderID)
+			sub, err := ag.LLMFactory().GetSubscriptionSvc().GetDefault(senderID)
 			if err != nil || sub == nil {
 				return nil, err
 			}
@@ -423,7 +423,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 			return &ch, nil
 		},
 		LLMAddSubscription: func(senderID string, sub *channel.Subscription) error {
-			svc := backend.LLMFactory().GetSubscriptionSvc()
+			svc := ag.LLMFactory().GetSubscriptionSvc()
 			newSub := &sqlite.LLMSubscription{
 				SenderID: senderID,
 				Name:     sub.Name,
@@ -440,11 +440,11 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 			if err := svc.Add(newSub); err != nil {
 				return err
 			}
-			backend.LLMFactory().Invalidate(senderID)
+			ag.LLMFactory().Invalidate(senderID)
 			return nil
 		},
 		LLMRemoveSubscription: func(id string) error {
-			svc := backend.LLMFactory().GetSubscriptionSvc()
+			svc := ag.LLMFactory().GetSubscriptionSvc()
 			sub, err := svc.Get(id)
 			if err != nil {
 				return err
@@ -452,26 +452,26 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 			if err := svc.Remove(id); err != nil {
 				return err
 			}
-			backend.LLMFactory().Invalidate(sub.SenderID)
+			ag.LLMFactory().Invalidate(sub.SenderID)
 			return nil
 		},
 		LLMSetDefaultSubscription: func(id string) error {
-			svc := backend.LLMFactory().GetSubscriptionSvc()
+			svc := ag.LLMFactory().GetSubscriptionSvc()
 			if err := svc.SetDefault(id); err != nil {
 				return err
 			}
 			sub, err := svc.Get(id)
 			if err == nil && sub != nil {
-				backend.LLMFactory().Invalidate(sub.SenderID)
+				ag.LLMFactory().Invalidate(sub.SenderID)
 			}
 			return nil
 		},
 		LLMRenameSubscription: func(id, name string) error {
-			return backend.LLMFactory().GetSubscriptionSvc().Rename(id, name)
+			return ag.LLMFactory().GetSubscriptionSvc().Rename(id, name)
 		},
 
 		LLMUpdateSubscription: func(id string, sub *channel.Subscription) error {
-			svc := backend.LLMFactory().GetSubscriptionSvc()
+			svc := ag.LLMFactory().GetSubscriptionSvc()
 			existing, err := svc.Get(id)
 			if err != nil {
 				return err
@@ -486,7 +486,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 			if err := svc.Update(existing); err != nil {
 				return err
 			}
-			backend.LLMFactory().Invalidate(existing.SenderID)
+			ag.LLMFactory().Invalidate(existing.SenderID)
 			return nil
 		},
 
@@ -514,11 +514,11 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 			default:
 				return fmt.Errorf("unknown tier: %s", tier)
 			}
-			backend.LLMFactory().SetModelTiers(cfg.LLM)
+			ag.LLMFactory().SetModelTiers(cfg.LLM)
 			return saveServerConfig(cfg)
 		},
 		LLMListAllModels: func() []string {
-			return backend.LLMFactory().ListAllModelsForUser("")
+			return ag.LLMFactory().ListAllModelsForUser("")
 		},
 
 		// Context mode
@@ -601,10 +601,10 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend agent.AgentBackend
 
 		// Memory
 		MemoryClear: func(senderID, chatID, targetType string) error {
-			return backend.MultiSession().ClearMemory(context.Background(), "feishu", chatID, targetType, senderID)
+			return ag.MultiSession().ClearMemory(context.Background(), "feishu", chatID, targetType, senderID)
 		},
 		MemoryGetStats: func(senderID, chatID string) map[string]string {
-			return backend.MultiSession().GetMemoryStats(context.Background(), "feishu", chatID, senderID)
+			return ag.MultiSession().GetMemoryStats(context.Background(), "feishu", chatID, senderID)
 		},
 	}
 }

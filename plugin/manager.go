@@ -888,6 +888,9 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 	// Delete old entry
 	delete(pm.entries, pluginID)
 
+	// Unregister widgets from old plugin before re-creating.
+	pm.widgetRegistry.UnregisterAll(pluginID)
+
 	// Re-scan only this plugin's directory
 	dirs := DefaultPluginDirs(pm.xbotHome)
 	dirs = append(dirs, pm.extraDirs...)
@@ -947,6 +950,19 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 // ReloadAll deactivates all plugins, clears entries, re-discovers, and re-activates.
 func (pm *PluginManager) ReloadAll(ctx context.Context) error {
 	pm.DeactivateAll(ctx)
+
+	// Collect plugin IDs before clearing entries so we can unregister widgets.
+	pm.mu.RLock()
+	oldIDs := make([]string, 0, len(pm.entries))
+	for id := range pm.entries {
+		oldIDs = append(oldIDs, id)
+	}
+	pm.mu.RUnlock()
+
+	// Unregister all widgets from old plugins before re-discovery.
+	for _, id := range oldIDs {
+		pm.widgetRegistry.UnregisterAll(id)
+	}
 
 	pm.mu.Lock()
 	pm.entries = make(map[string]*PluginEntry)

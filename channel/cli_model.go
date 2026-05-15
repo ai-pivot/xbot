@@ -229,8 +229,13 @@ func (m *cliModel) cycleModel() {
 	// Switch model on the current subscription (no need to change subscription
 	// since we're already cycling within the current subscription's models).
 	if m.llmSubscriber != nil {
-		m.llmSubscriber.SwitchModel(m.senderID, nextModel)
+		m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
 	}
+	// Persist per-session model choice
+	existing := LoadSessionLLMState(m.workDir, m.chatID)
+	existing.SubscriptionID = m.activeSubID
+	existing.Model = nextModel
+	SaveSessionLLMState(m.workDir, m.chatID, existing)
 	m.updateQuickSwitchModels(nextModel)
 }
 
@@ -405,6 +410,7 @@ func (m *cliModel) restoreSession() {
 			m.todos = nil
 			m.todosDoneCleared = false
 		}
+		m.updatePlaceholder()
 		delete(m.savedSessions, key) // clean up
 	} else {
 		// No saved state — reset to idle (NOT cancelled)
@@ -437,6 +443,10 @@ func (m *cliModel) restoreSession() {
 		m.cachedMaxContextTokens = 0
 		m.cachedMaxOutputTokens = 0
 		m.cachedCompressRatio = 0
+		// Reset per-session subscription/model state so it doesn't leak from previous session.
+		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
+		m.activeSubID = ""
+		m.cachedModelName = ""
 		// Clear todos — no saved state means no active turn,
 		// but persist unfinished todos from TodoManager so they
 		// remain visible across session switches.
@@ -456,6 +466,7 @@ func (m *cliModel) restoreSession() {
 			m.todos = nil
 			m.todosDoneCleared = false
 		}
+		m.updatePlaceholder()
 	}
 }
 
@@ -470,10 +481,58 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	var cmds []tea.Cmd
 
 	// Clear token display state — new session should not show stale token bar.
+	// NOTE: Do NOT clear cachedMaxContextTokens / cachedMaxOutputTokens here.
+	// They are LLM session state, not display artifacts. If restoreSession() got
+	// them from savedSessions, they're correct. If not, we'll load from session JSON below.
 	m.lastTokenUsage = nil
-	m.cachedMaxContextTokens = 0
-	m.cachedMaxOutputTokens = 0
 	m.cachedCompressRatio = 0
+
+	// ── Session LLM state restoration ──────────────────────────
+	// Only when in-memory caches are empty (new session or TUI restart).
+	// Uses unified LoadSessionLLMState + applySessionLLMState to ensure
+	// activeSubID, cachedModelName, cachedMaxContextTokens, cachedMaxOutputTokens
+	// are ALWAYS consistent. No scattered field-by-field assignments.
+	if m.activeSubID == "" && m.cachedModelName == "" {
+		state := LoadSessionLLMState(m.workDir, m.chatID)
+		if !state.IsZero() {
+			// Found persisted LLM state on disk — apply to caches atomically
+			m.applySessionLLMState(state)
+			// Restore the actual LLM client via SwitchLLM (creates new client)
+			if state.SubscriptionID != "" && m.subscriptionMgr != nil {
+				if subs, err := m.subscriptionMgr.List(""); err == nil {
+					for i := range subs {
+						if subs[i].ID == state.SubscriptionID {
+							if m.channel != nil && m.channel.config.SwitchLLM != nil {
+								switchFn := m.channel.config.SwitchLLM
+								target := subs[i]
+								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+									return cliSwitchLLMDoneMsg{
+										err:       err,
+										subID:     target.ID,
+										subName:   target.Name,
+										subModel:  target.Model,
+										maxCtx:    resolveSubMaxContext(&target),
+										maxOutTok: resolveSubMaxOutputTokens(&target),
+										mgr:       m.subscriptionMgr,
+									}
+								})
+							}
+							break
+						}
+					}
+				}
+			}
+		} else {
+			// No per-session override on disk — load global default subscription
+			if m.subscriptionMgr != nil {
+				if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
+					m.activeSubID = defSub.ID
+					m.cachedModelName = defSub.Model
+				}
+			}
+		}
+	}
 
 	if isRemote {
 		// Remote mode: discard all stale client-side turn state.
@@ -715,18 +774,19 @@ type cliModel struct {
 
 	// --- Progress ---
 	progress               *protocol.ProgressEvent
-	iterationHistory       []cliIterationSnapshot // 已完成迭代快照
-	lastSeenIteration      int                    // 上次进度事件的迭代号
-	lastProgressSeq        uint64                 // 上次进度事件的序列号（单调递增校验）
-	iterationStartTime     time.Time              // current iteration wall-clock start time
-	sidebarHasBusySessions bool                   // true when any non-active sidebar session is busy (needs spinner tick)
-	unreadSessions         map[string]bool        // chatID → has unread results the user hasn't viewed yet
-	lastBusyStates         map[string]bool        // previous busy state per session, for detecting busy→idle transition
-	typewriterTickActive   bool                   // true when typewriter tick chain (50ms) is running
-	twVisible              int                    // typewriter: runes currently visible in stream content
-	rwVisible              int                    // typewriter: runes currently visible in reasoning stream content
-	rwCjkSkipTick          bool                   // alternates each tick to halve CJK speed (reasoning)
-	twCjkSkipTick          bool                   // alternates each tick to halve CJK speed (stream)
+	iterationHistory       []cliIterationSnapshot       // 已完成迭代快照
+	lastSeenIteration      int                          // 上次进度事件的迭代号
+	lastProgressSeq        uint64                       // 上次进度事件的序列号（单调递增校验）
+	iterationStartTime     time.Time                    // current iteration wall-clock start time
+	sidebarHasBusySessions bool                         // true when any non-active sidebar session is busy (needs spinner tick)
+	unreadSessions         map[string]bool              // chatID → has unread results the user hasn't viewed yet
+	lastBusyStates         map[string]bool              // previous busy state per session, for detecting busy→idle transition
+	liveSessionStates      map[string]*liveSessionState // server-pushed session state overrides
+	typewriterTickActive   bool                         // true when typewriter tick chain (50ms) is running
+	twVisible              int                          // typewriter: runes currently visible in stream content
+	rwVisible              int                          // typewriter: runes currently visible in reasoning stream content
+	rwCjkSkipTick          bool                         // alternates each tick to halve CJK speed (reasoning)
+	twCjkSkipTick          bool                         // alternates each tick to halve CJK speed (stream)
 
 	// --- Session ---
 	workDir                string    // 工作目录（标题栏显示用）
@@ -819,14 +879,15 @@ type cliModel struct {
 
 	// --- §12 Interactive Panel ---
 	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel
-	panelMode     string
-	panelStack    []panelStackEntry // push/pop navigation stack for nested panels
-	panelCursor   int               // settings panel: selected item index
-	panelEdit     bool              // settings panel: editing current item
-	panelScrollY  int               // panel 滚动偏移（手动管理，不依赖 viewport）
-	panelEditTA   textarea.Model    // settings panel: inline editor
-	panelCombo    bool              // settings panel: combo dropdown open
-	panelComboIdx int               // settings panel: combo selected option index
+	panelMode      string
+	settingsSaving bool              // true while onSubmit is running in background; blocks user input
+	panelStack     []panelStackEntry // push/pop navigation stack for nested panels
+	panelCursor    int               // settings panel: selected item index
+	panelEdit      bool              // settings panel: editing current item
+	panelScrollY   int               // panel 滚动偏移（手动管理，不依赖 viewport）
+	panelEditTA    textarea.Model    // settings panel: inline editor
+	panelCombo     bool              // settings panel: combo dropdown open
+	panelComboIdx  int               // settings panel: combo selected option index
 	// --- Panel state backup (for quick switch round-trip) ---
 	panelValuesBackup   map[string]string              // saved panelValues before quick switch
 	panelCursorBackup   int                            // saved panelCursor before quick switch
@@ -963,6 +1024,13 @@ type cliModel struct {
 	sidebarPosition string // "left" / "right"
 	sidebarVisible  bool   // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
 	xShift          int    // sidebar X offset for middleBlock, set during trackMainLayoutZones
+
+	// Cached layout metrics (invalidated on resize / sidebar toggle).
+	// Eliminates repeated lipgloss.Render + ansi.StringWidth per chatWidth() call.
+	cachedSidebarRenderedWidth int // measured visual width of sidebar (0 = not yet computed)
+	cachedSidebarWidthKey      int // sidebarWidth at time of measurement (for invalidation)
+	cachedChatWidth            int // effective chat width (0 = not yet computed)
+	cachedChatWidthKey         int // m.width at time of measurement (for invalidation)
 
 	// toolDisplayInfo
 
@@ -1105,15 +1173,16 @@ func newCLIModel() *cliModel {
 		senderID:        "cli_user",
 		channelName:     "cli",
 		// Layout defaults
-		chatMaxWidth:    76,
-		chatCenter:      true,
-		layoutMode:      "auto",
-		sidebarEnabled:  true,
-		sidebarVisible:  true,
-		sidebarWidth:    30,
-		sidebarPosition: "left",
-		unreadSessions:  make(map[string]bool),
-		lastBusyStates:  make(map[string]bool),
+		chatMaxWidth:      76,
+		chatCenter:        true,
+		layoutMode:        "auto",
+		sidebarEnabled:    true,
+		sidebarVisible:    true,
+		sidebarWidth:      30,
+		sidebarPosition:   "left",
+		unreadSessions:    make(map[string]bool),
+		lastBusyStates:    make(map[string]bool),
+		liveSessionStates: make(map[string]*liveSessionState),
 	}
 }
 
@@ -1157,6 +1226,24 @@ type cliConnStateMsg struct {
 	state string // "connected" | "disconnected" | "reconnecting"
 }
 
+// cliSessionStateMsg carries a server-pushed session state change event
+// (busy/idle, subagent started/stopped) into the BubbleTea Update loop.
+type cliSessionStateMsg struct {
+	event protocol.SessionEvent
+}
+
+// liveSessionState holds event-driven session state received from the server
+// via SessionEvent push. This provides instant sidebar updates (<100ms)
+// instead of waiting for the safety-net poll. Keyed by session ID:
+//   - main sessions: chatID
+//   - agent sessions: "agent:role/instance"
+type liveSessionState struct {
+	busy     bool
+	role     string // non-empty for subagent sessions
+	instance string // non-empty for subagent sessions
+	parentID string // parent chatID for subagent sessions
+}
+
 // cliHistoryLoadMsg loads history messages into the model from a goroutine-safe context.
 // Data is pre-converted, so the Update handler only appends and rebuilds viewport.
 type cliHistoryLoadMsg struct {
@@ -1193,12 +1280,35 @@ type cliSettingsSavedMsg struct {
 }
 
 // cliSwitchLLMDoneMsg is sent when an async subscription switch completes.
+// resolveSubMaxContext returns the per-model max_context from a subscription.
+// Priority: per-model config for the subscription's model → 0 (let global config decide).
+func resolveSubMaxContext(sub *Subscription) int {
+	if sub.Model != "" {
+		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxContext > 0 {
+			return pmc.MaxContext
+		}
+	}
+	return 0
+}
+
+// resolveSubMaxOutputTokens returns the per-model max_output_tokens from a subscription.
+func resolveSubMaxOutputTokens(sub *Subscription) int {
+	if sub.Model != "" {
+		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxOutputTokens > 0 {
+			return pmc.MaxOutputTokens
+		}
+	}
+	return sub.MaxOutputTokens
+}
+
 type cliSwitchLLMDoneMsg struct {
-	err      error
-	subID    string
-	subName  string
-	subModel string
-	mgr      SubscriptionManager
+	err       error
+	subID     string
+	subName   string
+	subModel  string
+	maxCtx    int // per-model max_context from subscription (for session persistence)
+	maxOutTok int // per-model max_output_tokens from subscription
+	mgr       SubscriptionManager
 }
 
 // cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
@@ -1272,12 +1382,30 @@ func isCtrlJ(msg tea.Msg) bool {
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
 // Should be called after channel init, config changes, and settings saves.
+// Prefers per-session override (from disk or in-memory state) over global default.
 func (m *cliModel) refreshCachedModelName() {
 	if m.channel == nil {
 		return
 	}
-	// Single source of truth: read from active subscription (not from settings values)
-	if m.channel.subscriptionMgr != nil {
+	// Prefer per-session model from disk (persistent across restarts)
+	if state := LoadSessionLLMState(m.workDir, m.chatID); state.Model != "" {
+		m.cachedModelName = state.Model
+		// Also restore activeSubID so the sub panel checkmark is consistent.
+		if state.SubscriptionID != "" {
+			m.activeSubID = state.SubscriptionID
+		}
+		return
+	}
+	// Fallback: in-memory saved state (for sessions that were saved but not yet persisted)
+	if saved, ok := m.savedSessions[m.sessionKey()]; ok && saved.activeModel != "" {
+		m.cachedModelName = saved.activeModel
+		if saved.activeSubscriptionID != "" {
+			m.activeSubID = saved.activeSubscriptionID
+		}
+		return
+	}
+	// Fallback: only use global default when no per-session override exists
+	if m.cachedModelName == "" && m.channel.subscriptionMgr != nil {
 		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
 			m.cachedModelName = sub.Model
 		}
@@ -1285,6 +1413,42 @@ func (m *cliModel) refreshCachedModelName() {
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
+	}
+}
+
+// scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when
+// a per-session subscription was restored from Session JSON during startup.
+// This ensures the backend (server or local agent) uses the correct LLM,
+// not just the frontend display.
+func (m *cliModel) scheduleSessionLLMRestore() {
+	if m.activeSubID == "" || m.channel == nil || m.channel.subscriptionMgr == nil {
+		return
+	}
+	if m.channel.config.SwitchLLM == nil {
+		return
+	}
+	subs, err := m.channel.subscriptionMgr.List("")
+	if err != nil {
+		return
+	}
+	for i := range subs {
+		if subs[i].ID == m.activeSubID {
+			switchFn := m.channel.config.SwitchLLM
+			target := subs[i]
+			m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+				err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+				return cliSwitchLLMDoneMsg{
+					err:       err,
+					subID:     target.ID,
+					subName:   target.Name,
+					subModel:  target.Model,
+					maxCtx:    resolveSubMaxContext(&target),
+					maxOutTok: resolveSubMaxOutputTokens(&target),
+					mgr:       m.subscriptionMgr,
+				}
+			})
+			break
+		}
 	}
 }
 
