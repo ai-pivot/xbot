@@ -1030,7 +1030,7 @@ func TestPersistCLISettingsValues_PersistsUserScopedAndAppliesAll(t *testing.T) 
 	model.channelName = "cli"
 	model.senderID = "cli_user"
 	model.channel = &CLIChannel{config: &CLIChannelConfig{}, settingsSvc: settingsSvc}
-	model.channel.config.ApplySettings = func(vals map[string]string) {
+	model.channel.config.ApplySettings = func(vals map[string]string, chatID string) {
 		for k, v := range vals {
 			applied[k] = v
 		}

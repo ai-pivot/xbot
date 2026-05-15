@@ -1,5 +1,11 @@
 package channel
 
+import (
+	"fmt"
+
+	"xbot/config"
+)
+
 // UILocale holds all UI strings for a given language.
 type UILocale struct {
 	// --- A. System messages ---
@@ -54,6 +60,7 @@ type UILocale struct {
 	CheckingUpdates       string // "⟳ checking for updates..."
 	StatusReady           string // "● ready"
 	StatusCompressing     string // "compressing"
+	StatusNewing          string // "resetting session"
 	StatusRetrying        string // "retrying"
 	StatusDone            string // "done"
 	NewContentHint        string // "v new content"
@@ -251,6 +258,7 @@ func localeZH() *UILocale {
 		CheckingUpdates:       "⟳ 正在检查更新...",
 		StatusReady:           "◈ 就绪",
 		StatusCompressing:     "压缩中",
+		StatusNewing:          "重置中",
 		StatusRetrying:        "重试中",
 		StatusDone:            "完成",
 		NewContentHint:        "↓ 新内容",
@@ -431,10 +439,6 @@ func localeZH() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "网络搜索服务密钥（可选，留空则无法使用 WebSearch）",
-				Type: SettingTypePassword, Category: "LLM",
-			},
-			{
 				Key: "sandbox_mode", Label: "沙箱模式", Description: "命令执行隔离方式",
 				Type: SettingTypeSelect, Category: "环境", DefaultValue: "none",
 				Options: []SettingOption{
@@ -487,6 +491,10 @@ func localeZH() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
 			},
 			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "网络搜索服务密钥（个人配置，优先使用；留空则使用全局配置）",
+				Type: SettingTypePassword, Category: "Agent",
+			},
+			{
 				Key: "context_mode", Label: "上下文模式", Description: "控制上下文管理策略",
 				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "auto",
 				Options: []SettingOption{
@@ -504,12 +512,12 @@ func localeZH() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
 			},
 			{
-				Key: "max_context_tokens", Label: "最大上下文 Token", Description: "上下文最大 token 数（默认 200000）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "200000",
+				Key: "max_context_tokens", Label: "最大上下文 Token", Description: fmt.Sprintf("上下文最大 token 数（默认 %d）", config.DefaultMaxContextTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
-				Key: "max_output_tokens", Label: "最大输出 Token", Description: "单次回复最大 token 数（默认 8192）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "8192",
+				Key: "max_output_tokens", Label: "最大输出 Token", Description: fmt.Sprintf("单次回复最大 token 数（默认 %d）", config.DefaultMaxOutputTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
 			},
 			{
 				Key: "thinking_mode", Label: "思考模式", Description: "模型推理/思维链模式（默认自动）",
@@ -636,6 +644,7 @@ func localeEN() *UILocale {
 		CheckingUpdates:   "⟳ checking for updates...",
 		StatusReady:       "◈ ready",
 		StatusCompressing: "compressing",
+		StatusNewing:      "resetting",
 		StatusRetrying:    "retrying",
 		StatusDone:        "done",
 		NewContentHint:    "v new content",
@@ -812,10 +821,6 @@ func localeEN() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web search service key (optional, leave empty to disable WebSearch)",
-				Type: SettingTypePassword, Category: "LLM",
-			},
-			{
 				Key: "sandbox_mode", Label: "Sandbox Mode", Description: "Command execution isolation method",
 				Type: SettingTypeSelect, Category: "Environment", DefaultValue: "none",
 				Options: []SettingOption{
@@ -868,6 +873,10 @@ func localeEN() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
 			},
 			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web search API key (personal config; falls back to global config if empty)",
+				Type: SettingTypePassword, Category: "Agent",
+			},
+			{
 				Key: "context_mode", Label: "Context Mode", Description: "Context management strategy",
 				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "auto",
 				Options: []SettingOption{
@@ -885,12 +894,12 @@ func localeEN() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
 			},
 			{
-				Key: "max_context_tokens", Label: "Max Context Tokens", Description: "Max context token count (default 200000)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "200000",
+				Key: "max_context_tokens", Label: "Max Context Tokens", Description: fmt.Sprintf("Max context token count (default %d)", config.DefaultMaxContextTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
-				Key: "max_output_tokens", Label: "Max Output Tokens", Description: "Max tokens per response (default 8192)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "8192",
+				Key: "max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Max tokens per response (default %d)", config.DefaultMaxOutputTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
 			},
 			{
 				Key: "thinking_mode", Label: "Thinking Mode", Description: "Model reasoning/thinking chain mode (default: auto)",
@@ -1017,6 +1026,7 @@ func localeJA() *UILocale {
 		CheckingUpdates:   "⟳ アップデート確認中...",
 		StatusReady:       "◈ 準備完了",
 		StatusCompressing: "圧縮中",
+		StatusNewing:      "リセット中",
 		StatusRetrying:    "リトライ中",
 		StatusDone:        "完了",
 		NewContentHint:    "↓ 新着",
@@ -1193,10 +1203,6 @@ func localeJA() *UILocale {
 				Type: SettingTypeText, Category: "LLM",
 			},
 			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web検索サービスキー（オプション、空の場合 WebSearch は無効）",
-				Type: SettingTypePassword, Category: "LLM",
-			},
-			{
 				Key: "sandbox_mode", Label: "サンドボックスモード", Description: "コマンド実行の分離方法",
 				Type: SettingTypeSelect, Category: "環境", DefaultValue: "none",
 				Options: []SettingOption{
@@ -1249,6 +1255,10 @@ func localeJA() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
 			},
 			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web検索APIキー（個人設定、空の場合はグローバル設定にフォールバック）",
+				Type: SettingTypePassword, Category: "Agent",
+			},
+			{
 				Key: "context_mode", Label: "コンテキストモード", Description: "コンテキスト管理戦略",
 				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "auto",
 				Options: []SettingOption{
@@ -1266,12 +1276,12 @@ func localeJA() *UILocale {
 				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
 			},
 			{
-				Key: "max_context_tokens", Label: "最大コンテキストトークン", Description: "コンテキストの最大トークン数（デフォルト 200000）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "200000",
+				Key: "max_context_tokens", Label: "最大コンテキストトークン", Description: fmt.Sprintf("コンテキストの最大トークン数（デフォルト %d）", config.DefaultMaxContextTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
 			},
 			{
-				Key: "max_output_tokens", Label: "最大出力トークン", Description: "1回の応答の最大トークン数（デフォルト 8192）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "8192",
+				Key: "max_output_tokens", Label: "最大出力トークン", Description: fmt.Sprintf("1回の応答の最大トークン数（デフォルト %d）", config.DefaultMaxOutputTokens),
+				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
 			},
 			{
 				Key: "thinking_mode", Label: "思考モード", Description: "モデルの推論/思考チェーンモード（デフォルト: 自動）",

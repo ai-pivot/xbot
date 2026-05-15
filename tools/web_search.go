@@ -80,9 +80,18 @@ type TavilySearchResponse struct {
 }
 
 func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
-	// 检查 API Key
-	if t.apiKey == "" {
-		return nil, fmt.Errorf("TAVILY_API_KEY environment variable is not set")
+	// Resolve API key: user_settings → config.json fallback → constructor default
+	apiKey := ""
+	if ctx.ConfigGet != nil {
+		if val, err := ctx.ConfigGet("tavily_api_key"); err == nil && val != "" {
+			apiKey = val
+		}
+	}
+	if apiKey == "" {
+		apiKey = t.apiKey
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("TAVILY_API_KEY not configured: set it via /set tavily_api_key=<key> or config.json")
 	}
 
 	// 解析输入参数
@@ -136,7 +145,7 @@ func (t *WebSearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+t.apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {

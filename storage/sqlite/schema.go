@@ -99,7 +99,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (31);
+INSERT INTO schema_version (version) VALUES (32);
 
 CREATE TABLE runner_tokens (
     user_id     TEXT PRIMARY KEY,

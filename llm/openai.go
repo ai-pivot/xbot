@@ -46,7 +46,7 @@ type OpenAIConfig struct {
 	BaseURL      string
 	APIKey       string
 	DefaultModel string // 默认模型（API 获取失败时的回退模型）
-	MaxTokens    int    // 最大生成 token 数（默认 8192）
+	MaxTokens    int    // 最大生成 token 数（默认 defaultMaxTokens）
 	UserAgent    string // 自定义 User-Agent（留空使用默认值）
 
 	// OnModelsLoadError is called when the async model list API call fails.
@@ -63,7 +63,8 @@ type OpenAIConfig struct {
 }
 
 // defaultMaxTokens 默认最大生成 token 数
-const defaultMaxTokens = 8192
+// Keep in sync with config.DefaultMaxOutputTokens.
+const defaultMaxTokens = 32_768
 
 // NewOpenAILLM 创建 OpenAI LLM 实例
 func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {

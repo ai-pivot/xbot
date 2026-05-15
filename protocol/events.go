@@ -109,15 +109,22 @@ type HistoryMessage struct {
 
 // Subscription represents an LLM subscription for display/selection.
 type Subscription struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Model           string `json:"model"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
-	ThinkingMode    string `json:"thinking_mode,omitempty"`
-	Active          bool   `json:"active"`
+	ID              string                    `json:"id"`
+	Name            string                    `json:"name"`
+	Provider        string                    `json:"provider"`
+	BaseURL         string                    `json:"base_url"`
+	APIKey          string                    `json:"api_key"`
+	Model           string                    `json:"model"`
+	MaxOutputTokens int                       `json:"max_output_tokens,omitempty"`
+	ThinkingMode    string                    `json:"thinking_mode,omitempty"`
+	PerModelConfigs map[string]PerModelConfig `json:"per_model_configs,omitempty"`
+	Active          bool                      `json:"active"`
+}
+
+// PerModelConfig stores per-model token overrides within a subscription.
+type PerModelConfig struct {
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"` // 0 = use subscription default
+	MaxContext      int `json:"max_context,omitempty"`       // 0 = use subscription default
 }
 
 type OutboundEvent struct {
@@ -176,3 +183,21 @@ type AskUserEvent struct {
 
 func (AskUserEvent) EventType() string { return "ask_user" }
 func (AskUserEvent) EventVersion() int { return 1 }
+
+// SessionEvent represents a session state change pushed from server to client.
+// Covers busy/idle transitions, session lifecycle (create/delete/rename),
+// and SubAgent lifecycle (started/stopped).
+// Action values: "busy", "idle", "created", "deleted", "renamed",
+// "subagent_started", "subagent_stopped".
+type SessionEvent struct {
+	Channel  string `json:"channel"`
+	ChatID   string `json:"chat_id"`
+	Action   string `json:"action"`
+	Label    string `json:"label,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Instance string `json:"instance,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+}
+
+func (SessionEvent) EventType() string { return "session" }
+func (SessionEvent) EventVersion() int { return 1 }

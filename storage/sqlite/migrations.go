@@ -131,6 +131,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v32: add per_model_configs to user_llm_subscriptions for per-model token settings
+	if from < 32 {
+		if err := migrateV31ToV32(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v32: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1018,5 +1025,24 @@ func migrateV30ToV31(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v31: added context_tokens to session_messages")
+	return nil
+}
+
+// migrateV31ToV32 adds per_model_configs column to user_llm_subscriptions.
+// This stores per-model token overrides as JSON: {"model-name": {"max_output_tokens": N, "max_context": N}}
+// When a model has a per-model config, it takes priority over the subscription-level defaults.
+func migrateV31ToV32(conn *sql.DB) error {
+	var count int
+	err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'per_model_configs'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = conn.Exec("ALTER TABLE user_llm_subscriptions ADD COLUMN per_model_configs TEXT NOT NULL DEFAULT '{}'")
+		if err != nil {
+			return fmt.Errorf("migrate v31->v32 add per_model_configs: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 32"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v32: added per_model_configs to user_llm_subscriptions")
 	return nil
 }

@@ -1,5 +1,10 @@
 package agent
 
+import (
+	"xbot/config"
+	"xbot/protocol"
+)
+
 // RPC method name constants. Used by both Backend (client) and rpc_table (server)
 // to ensure method name consistency. Any typo is caught at compile time.
 const (
@@ -24,6 +29,10 @@ const (
 	MethodListModels                   = "list_models"
 	MethodListAllModels                = "list_all_models"
 	MethodSetModelTiers                = "set_model_tiers"
+	MethodSetModelContexts             = "set_model_contexts"
+	MethodSetGlobalMaxTokens           = "set_global_max_tokens"
+	MethodSetRetryConfig               = "set_retry_config"
+	MethodSetChatLLM                   = "set_chat_llm"
 	MethodClearMemory                  = "clear_memory"
 	MethodGetMemoryStats               = "get_memory_stats"
 	MethodGetUserTokenUsage            = "get_user_token_usage"
@@ -39,6 +48,7 @@ const (
 	MethodSetDefaultSubscription       = "set_default_subscription"
 	MethodRenameSubscription           = "rename_subscription"
 	MethodUpdateSubscription           = "update_subscription"
+	MethodUpdatePerModelConfig         = "update_per_model_config"
 	MethodSetSubscriptionModel         = "set_subscription_model"
 	MethodGetHistory                   = "get_history"
 	MethodGetTokenState                = "get_token_state"
@@ -56,6 +66,8 @@ const (
 	MethodGetAgentSessionDump          = "get_agent_session_dump"
 	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
 	MethodListTenants                  = "list_tenants"
+	MethodGetEffectiveMaxContext       = "get_effective_max_context"
+	MethodClearPerChatMaxContext       = "clear_per_chat_max_context"
 	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
 	MethodSetMaxContextTokens          = "set_max_context_tokens"
@@ -90,6 +102,23 @@ type setContextModeReq struct {
 	Mode string `json:"mode"`
 }
 
+type setMaxIterationsReq struct {
+	N int `json:"n"`
+}
+
+type setMaxConcurrencyReq struct {
+	N int `json:"n"`
+}
+
+type setMaxContextTokensReq struct {
+	MaxContext int    `json:"max_context"`
+	ChatID     string `json:"chat_id,omitempty"`
+}
+
+type setCompressionThresholdReq struct {
+	Threshold float64 `json:"threshold"`
+}
+
 // --- User Model / LLM ---
 
 type setUserModelReq struct {
@@ -100,6 +129,7 @@ type setUserModelReq struct {
 type switchModelReq struct {
 	SenderID string `json:"sender_id"`
 	Model    string `json:"model"`
+	ChatID   string `json:"chat_id,omitempty"`
 }
 
 type setUserMaxContextReq struct {
@@ -128,6 +158,19 @@ type setDefaultThinkingModeReq struct {
 
 type clearProxyLLMReq struct {
 	SenderID string `json:"sender_id"`
+}
+
+// --- LLMFactory Settings ---
+
+type setGlobalMaxTokensReq struct {
+	MaxTokens int `json:"max_tokens"`
+}
+
+type setChatLLMReq struct {
+	SenderID string           `json:"sender_id,omitempty"`
+	ChatID   string           `json:"chat_id"`
+	Provider string           `json:"provider"`
+	Config   config.LLMConfig `json:"config"`
 }
 
 // --- Settings (RPC) ---
@@ -226,6 +269,12 @@ type updateSubscriptionReq struct {
 	Sub channelSubscriptionJSON `json:"sub"`
 }
 
+type updatePerModelConfigReq struct {
+	ID     string                  `json:"id"`
+	Model  string                  `json:"model"`
+	Config protocol.PerModelConfig `json:"config"`
+}
+
 type setSubscriptionModelReq struct {
 	ID    string `json:"id"`
 	Model string `json:"model"`
@@ -233,16 +282,19 @@ type setSubscriptionModelReq struct {
 
 // channelSubscriptionJSON mirrors protocol.Subscription for JSON transport.
 type channelSubscriptionJSON struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Model           string `json:"model"`
-	Active          bool   `json:"active"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-	ThinkingMode    string `json:"thinking_mode"`
+	ID              string                        `json:"id"`
+	Name            string                        `json:"name"`
+	Provider        string                        `json:"provider"`
+	BaseURL         string                        `json:"base_url"`
+	APIKey          string                        `json:"api_key"`
+	Model           string                        `json:"model"`
+	Active          bool                          `json:"active"`
+	MaxOutputTokens int                           `json:"max_output_tokens"`
+	ThinkingMode    string                        `json:"thinking_mode"`
+	PerModelConfigs map[string]perModelConfigJSON `json:"per_model_configs,omitempty"`
 }
+
+type perModelConfigJSON = protocol.PerModelConfig
 
 // --- History ---
 
@@ -322,6 +374,15 @@ type getAgentSessionDumpReq struct {
 
 type getAgentSessionDumpByFullKeyReq struct {
 	FullKey string `json:"full_key"`
+}
+
+type getEffectiveMaxContextReq struct {
+	SenderID string `json:"sender_id"`
+	ChatID   string `json:"chat_id"`
+}
+
+type clearPerChatMaxContextReq struct {
+	ChatID string `json:"chat_id"`
 }
 
 // --- DirectSend / Channel ---

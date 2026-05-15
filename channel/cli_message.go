@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 	"xbot/bus"
 	log "xbot/logger"
 	"xbot/protocol"
@@ -511,6 +512,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		// 保留本地处理（system 消息样式），发送到 msgBus 但不作为用户气泡
 		if m.msgBus != nil {
 			m.sendInbound(m.newInbound("/compress", nil))
+			m.startAgentTurn()
 		}
 
 	// --- 透传命令（发送到 agent） ---
@@ -767,7 +769,11 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 
 	// Empty content with no waiting user: end turn and flush queue,
 	// but don't append a blank message.
-	if content == "" && !msg.WaitingUser && len(msg.ToolsUsed) == 0 {
+	// Guard: when AskUser panel is open, the turn is paused (not ended).
+	// A late-arriving empty-content outbound (e.g. from engine cleanup) must
+	// not trigger endAgentTurn, which clears iterationHistory and makes all
+	// previous iterations disappear from the viewport.
+	if content == "" && !msg.WaitingUser && len(msg.ToolsUsed) == 0 && m.panelMode != "askuser" {
 		// Persist token usage before clearing progress
 		if m.progress != nil {
 			m.cacheTokenUsage(m.progress.TokenUsage)
@@ -877,8 +883,8 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 			m.cachedWrappedHistory = ""
 			m.cachedWrappedHistoryRaw = ""
 			m.cachedWrappedHistoryWidth = 0
-			// Builtin commands like /new do not emit PhaseDone, so endAgentTurn
-			// is never called by the progress path. End the turn here instead.
+			// PhaseDone from emitBuiltinProgressDone should arrive before this outbound,
+			// so endAgentTurn is usually a no-op (turn already ended). Kept as safety net.
 			m.endAgentTurn(m.agentTurnID)
 			m.invalidateAllCache(true)
 			m.viewport.GotoBottom()
@@ -957,6 +963,19 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 						answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
 					}
 					m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
+					// Persist pre-AskUser iteration history before startAgentTurn clears it.
+					// Without this, iterations 1..N from the first run disappear when
+					// resetProgressState sets m.iterationHistory = nil.
+					if len(m.iterationHistory) > 0 {
+						m.upsertMessageByTurn(turnID, "tool_summary", cliMessage{
+							role:       "tool_summary",
+							content:    "",
+							timestamp:  time.Now(),
+							iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
+							dirty:      true,
+							turnID:     turnID,
+						})
+					}
 					m.startAgentTurn()
 					m.updateViewportContent()
 				}, func() {
@@ -1601,6 +1620,11 @@ func (m *cliModel) renderCurrentIteration(
 				sb.WriteString(m.ticker.viewFrames(orbitFrames))
 				sb.WriteString(thinkingStyle.Render(" compressing..."))
 				sb.WriteString("\n")
+			case "newing":
+				sb.WriteString("  ")
+				sb.WriteString(m.ticker.viewFrames(orbitFrames))
+				sb.WriteString(thinkingStyle.Render(" resetting session..."))
+				sb.WriteString("\n")
 			case "retrying":
 				sb.WriteString("  ")
 				sb.WriteString(m.ticker.viewFrames(orbitFrames))
@@ -2161,6 +2185,74 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	return sb.String()
 }
 
+// wrapPreservingGuide wraps a line at cw columns, preserving any guide prefix
+// (┊) on continuation lines. Guide prefixes are ANSI-colored "┊ " patterns
+// that must be repeated when a line is broken.
+func wrapPreservingGuide(line string, cw int) []string {
+	prefix, rest, pw := splitGuidePrefix(line)
+	if pw == 0 || rest == "" {
+		return strings.Split(hardWrapRunes(line, cw), "\n")
+	}
+	contentW := cw - pw
+	if contentW <= 0 {
+		return []string{line}
+	}
+	wrapped := strings.Split(hardWrapRunes(rest, contentW), "\n")
+	result := make([]string, len(wrapped))
+	for i, w := range wrapped {
+		result[i] = prefix + w
+	}
+	return result
+}
+
+// splitGuidePrefix splits a rendered line into its guide prefix and the rest.
+// Guide lines start with optional spaces then "┊ " (possibly ANSI-colored).
+// Returns (prefix, rest, prefixDisplayWidth). If no guide, returns ("", line, 0).
+func splitGuidePrefix(line string) (prefix, rest string, prefixW int) {
+	i := 0
+	n := len(line)
+	inEscape := false
+	foundPipe := false
+
+	for i < n {
+		b := line[i]
+		if b == '\x1b' {
+			inEscape = true
+			i++
+			continue
+		}
+		if inEscape {
+			i++
+			if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if !foundPipe {
+			if r == '┊' {
+				foundPipe = true
+			} else if r != ' ' {
+				// Not a guide line
+				return "", line, 0
+			}
+		} else {
+			// After ┊, expect a space
+			if r == ' ' {
+				end := i + size
+				prefix = line[:end]
+				rest = line[end:]
+				prefixW = lipgloss.Width(prefix)
+				return
+			}
+			// ┊ not followed by space — not a guide prefix
+			return "", line, 0
+		}
+		i += size
+	}
+	return "", line, 0
+}
+
 // setViewportContent sets viewport content while preserving scroll position.
 // If the user was at the bottom before the update, keep them at the bottom.
 // Lines wider than the viewport are truncated to prevent layout breakage.
@@ -2168,13 +2260,14 @@ func (m *cliModel) setViewportContent(content string) {
 	// Deduplicate: skip if content and width haven't changed.
 	// During resize storms or high-frequency ticks (busy state), this prevents
 	// O(N*W) hardWrapRunes from running every 100ms on the same content.
-	if content == m.lastViewportContent && m.chatWidth() == m.lastViewportWidth && m.ready {
+	cw := m.chatWidth()
+	if content == m.lastViewportContent && cw == m.lastViewportWidth && m.ready {
 		return
 	}
 	m.lastViewportContent = content
-	m.lastViewportWidth = m.chatWidth()
+	m.lastViewportWidth = cw
 
-	if m.chatWidth() > 0 {
+	if cw > 0 {
 		// Two-tier wrap: find the cachedHistory boundary in content.
 		// The history portion is stable (doesn't change between ticks) — reuse
 		// its wrapped version to avoid O(N*W) hardWrapRunes on the growing history.
@@ -2183,7 +2276,7 @@ func (m *cliModel) setViewportContent(content string) {
 			historyEnd = len(m.cachedHistory)
 		}
 
-		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == m.chatWidth() {
+		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == cw {
 			// Fast path: reuse wrapped history, only wrap the dynamic suffix
 			wrappedHistory := m.cachedWrappedHistory
 			dynamicPart := content[historyEnd:]
@@ -2198,7 +2291,7 @@ func (m *cliModel) setViewportContent(content string) {
 							line = trimmed
 						}
 					}
-					wrappedDynamic = append(wrappedDynamic, strings.Split(hardWrapRunes(line, m.chatWidth()), "\n")...)
+					wrappedDynamic = append(wrappedDynamic, wrapPreservingGuide(line, cw)...)
 				}
 			}
 			content = wrappedHistory + strings.Join(wrappedDynamic, "\n")
@@ -2208,9 +2301,6 @@ func (m *cliModel) setViewportContent(content string) {
 			var wrapped []string
 			historyLineCount := 0
 			if historyEnd > 0 {
-				// cachedHistory always ends with \n (message rendering appends it).
-				// strings.Count("\n") already equals the line count in that case.
-				// Only add 1 if cachedHistory has no trailing newline (shouldn't happen in practice).
 				historyLineCount = strings.Count(m.cachedHistory, "\n")
 				if len(m.cachedHistory) > 0 && m.cachedHistory[len(m.cachedHistory)-1] != '\n' {
 					historyLineCount++
@@ -2226,7 +2316,7 @@ func (m *cliModel) setViewportContent(content string) {
 						line = trimmed
 					}
 				}
-				wrappedLines := strings.Split(hardWrapRunes(line, m.chatWidth()), "\n")
+				wrappedLines := wrapPreservingGuide(line, cw)
 				if i < historyLineCount {
 					wrappedHistoryParts = append(wrappedHistoryParts, wrappedLines...)
 				}
@@ -2237,7 +2327,7 @@ func (m *cliModel) setViewportContent(content string) {
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
 				m.cachedWrappedHistoryRaw = m.cachedHistory
-				m.cachedWrappedHistoryWidth = m.chatWidth()
+				m.cachedWrappedHistoryWidth = cw
 			}
 		}
 	}
@@ -2350,11 +2440,12 @@ func (m *cliModel) appendNewMessagesToCache() {
 	sb.WriteString(m.cachedHistory)
 
 	// Calculate starting line offset for new messages
+	cw := m.chatWidth()
 	runningLines := 0
 	if len(m.msgLineOffsets) > 0 {
 		// Approximate: use the line count of cachedHistory at current width.
 		// This is an estimate but sufficient for msgLineOffsets (used for Ctrl+E folding).
-		runningLines = wrappedLineCount(m.cachedHistory, m.chatWidth())
+		runningLines = wrappedLineCount(m.cachedHistory, cw)
 	}
 
 	startIdx := m.cachedMsgCount
@@ -2364,9 +2455,9 @@ func (m *cliModel) appendNewMessagesToCache() {
 		rendered := m.renderMessage(msg)
 		msg.rendered = rendered
 		msg.dirty = false
-		msg.renderWidth = m.chatWidth()
+		msg.renderWidth = cw
 		sb.WriteString(rendered)
-		runningLines += wrappedLineCount(rendered, m.chatWidth())
+		runningLines += wrappedLineCount(rendered, cw)
 	}
 
 	m.cachedHistory = sb.String()
@@ -2394,15 +2485,16 @@ func (m *cliModel) fullRebuild() {
 	// §19 重置消息行号偏移（基于折行后的 viewport 行号）
 	m.msgLineOffsets = m.msgLineOffsets[:0]
 	runningLines := 0
+	cw := m.chatWidth() // cache once for the entire loop
 	for i := range m.messages[:splitIdx] {
 		// §19 记录消息在 viewport 折行后内容中的起始行号
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
-		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != m.chatWidth()
+		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != cw
 		if needsRender {
 			rendered := m.renderMessage(&m.messages[i])
 			m.messages[i].rendered = rendered
 			m.messages[i].dirty = false
-			m.messages[i].renderWidth = m.chatWidth()
+			m.messages[i].renderWidth = cw
 		}
 		// Build per-message chunk for line counting (avoids calling
 		// historyBuf.String() on every iteration — the O(N²) full
@@ -2416,7 +2508,7 @@ func (m *cliModel) fullRebuild() {
 		}
 		historyBuf.WriteString(m.messages[i].rendered)
 		// 累加本消息（含搜索指示条）在折行后占用的行数
-		runningLines += wrappedLineCount(chunk, m.chatWidth())
+		runningLines += wrappedLineCount(chunk, cw)
 	}
 
 	m.cachedHistory = historyBuf.String()

@@ -54,6 +54,7 @@ const (
 	PhaseThinking    ProgressPhase = "thinking"
 	PhaseToolExec    ProgressPhase = "tool_exec"
 	PhaseCompressing ProgressPhase = "compressing"
+	PhaseNewing      ProgressPhase = "newing"
 	PhaseRetrying    ProgressPhase = "retrying"
 	PhaseDone        ProgressPhase = "done"
 )
@@ -784,8 +785,8 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 		}
 		if ownLine != "" {
 			ownLine = strings.TrimPrefix(ownLine, "> ")
-			if len(ownLine) > 80 {
-				desc = string([]rune(ownLine)[:80]) + "…"
+			if runes := []rune(ownLine); len(runes) > 80 {
+				desc = string(runes[:80]) + "…"
 			} else {
 				desc = ownLine
 			}

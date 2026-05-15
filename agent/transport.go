@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
+	"xbot/bus"
+	"xbot/channel"
 	"xbot/protocol"
 )
 
@@ -40,6 +42,19 @@ type Transport interface {
 	// SetTUIControlHandler registers the handler for server-initiated TUI control requests.
 	// The handler receives (action, params) and returns (result, error) via WebSocket RPC.
 	SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error))
+
+	// === Callback injection (local/channelTransport only — remote calls Agent directly) ===
+	// WireCallbacks injects all shared agent callbacks. Noop for remote transport.
+	WireCallbacks(
+		directSend func(msg bus.OutboundMessage) (string, error),
+		channelFinder func(name string) (channel.Channel, bool),
+		sessionStateHandler func(ev protocol.SessionEvent),
+		messageSender bus.MessageSender,
+		registerAgentChannel func(name string, runFn bus.RunFn) error,
+		unregisterAgentChannel func(name string),
+	)
+	// SetChatRenameFn injects the chat rename callback. Noop for remote transport.
+	SetChatRenameFn(fn func(chatID, newName string) (oldName string, err error))
 
 	// === State ===
 	ConnState() string

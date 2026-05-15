@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"xbot/protocol"
+
 	"github.com/joho/godotenv"
 )
 
@@ -23,6 +25,13 @@ func init() {
 // (e.g. "30m0s" instead of 1800000000000). It accepts both string and number
 // formats when deserializing for backward compatibility with old config files.
 type Duration time.Duration
+
+// DefaultMaxContextTokens is the default context window size (200k tokens)
+// used when no per-model or subscription override is configured.
+const DefaultMaxContextTokens = 200_000
+
+// DefaultMaxOutputTokens is the default max output tokens (32k) for LLM responses.
+const DefaultMaxOutputTokens = 32_768
 
 // Duration constants for use in config defaults and comparisons.
 const (
@@ -183,6 +192,12 @@ type Config struct {
 	CLI           CLIConfig            `json:"cli,omitempty"`
 	Plugins       PluginConfig         `json:"plugins,omitempty"`
 
+	// CLISetupCompleted is set to true after the first-run setup wizard
+	// completes successfully. Used by isFirstRun() to avoid showing the
+	// setup panel on every startup when credentials are stored in DB
+	// (user_llm_subscriptions) rather than config.json.
+	CLISetupCompleted bool `json:"cli_setup_completed,omitempty"`
+
 	// hasPluginsKey is true when the JSON file contained a "plugins" key.
 	// Used by Load() to set the default (enabled=true when absent).
 	hasPluginsKey bool `json:"-"`
@@ -272,22 +287,17 @@ type LLMConfig struct {
 	VanguardModel   string `json:"vanguard_model,omitempty"`
 	BalanceModel    string `json:"balance_model,omitempty"`
 	SwiftModel      string `json:"swift_model,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (8192)
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (DefaultMaxOutputTokens)
 	ThinkingMode    string `json:"thinking_mode,omitempty"`
 }
 
 // SubscriptionConfig CLI 订阅配置（存储在 config.json，不存数据库）。
-type SubscriptionConfig struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Model           string `json:"model"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use default (8192)
-	ThinkingMode    string `json:"thinking_mode,omitempty"`     // "" = auto, "enabled", "disabled"
-	Active          bool   `json:"active"`
-}
+// Alias to protocol.Subscription — the canonical definition shared across all packages.
+type SubscriptionConfig = protocol.Subscription
+
+// PerModelConfig stores per-model token overrides within a subscription.
+// Alias to protocol.PerModelConfig — the canonical definition used across all packages.
+type PerModelConfig = protocol.PerModelConfig
 
 // LogConfig 日志配置
 type LogConfig struct {
@@ -892,7 +902,7 @@ func Load() *Config {
 		cfg.Embedding.MaxTokens = 2048
 	}
 	if cfg.Agent.MaxContextTokens == 0 {
-		cfg.Agent.MaxContextTokens = 200000
+		cfg.Agent.MaxContextTokens = DefaultMaxContextTokens
 	}
 	// Plugin system defaults to enabled when config file has no "plugins" section.
 	// When the section exists (even as {}), respect the user's explicit setting.

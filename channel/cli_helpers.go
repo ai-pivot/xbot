@@ -14,7 +14,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	log "xbot/logger"
 	"xbot/storage/sqlite"
 )
 
@@ -43,65 +42,14 @@ func isMaskedAPIKey(key string) bool {
 }
 
 // Private scope-check wrappers — delegate to the unified registry in setting_keys.go.
-func isUserScopedSettingKey(key string) bool         { return IsUserScopedSettingKey(key) }
 func isSubscriptionScopedSettingKey(key string) bool { return IsSubscriptionScopedSettingKey(key) }
 func cliSettingScope(key string) string              { return SettingScopeOf(key) }
-func (m *cliModel) mergeCLISettingsValues() map[string]string {
-	values := make(map[string]string)
-	if m.channel == nil {
-		return values
-	}
-	// Non-LLM settings from GetCurrentValues (theme, language, tiers, etc.)
-	// Skip empty-string values so DefaultValue in the schema can fill correctly.
-	if m.channel.config.GetCurrentValues != nil {
-		for k, v := range m.channel.config.GetCurrentValues() {
-			if v != "" {
-				values[k] = v
-			}
-		}
-	}
-	// Subscription-scoped settings from active subscription.
-	if m.channel.subscriptionMgr != nil {
-		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
-			values["llm_provider"] = sub.Provider
-			values["llm_api_key"] = sub.APIKey
-			values["llm_base_url"] = sub.BaseURL
-			values["llm_model"] = sub.Model
-			values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
-			values["thinking_mode"] = sub.ThinkingMode
-		}
-	}
-	// User-scoped settings override GetCurrentValues.
-	// Skip empty-string values so DefaultValue in the schema can fill correctly.
-	if m.channel.settingsSvc != nil {
-		vals, err := m.channel.settingsSvc.GetSettings(m.channelName, m.senderID)
-		if err == nil {
-			for k, v := range vals {
-				if v != "" && isUserScopedSettingKey(k) {
-					values[k] = v
-				}
-			}
-		}
-	}
-	return values
-}
 
-func (m *cliModel) persistCLISettingsValues(values map[string]string) {
-	if m.channel != nil && m.channel.settingsSvc != nil {
-		for k, v := range values {
-			// Skip empty values — don't pollute the DB with meaningless entries
-			// that would block DefaultValue from taking effect.
-			if v != "" && isUserScopedSettingKey(k) {
-				if err := m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v); err != nil {
-					log.WithFields(log.Fields{"key": k, "val": v, "err": err}).Warn("persistCLISettingsValues: SetSetting failed")
-				}
-			}
-		}
-	}
-	if m.channel != nil && m.channel.config.ApplySettings != nil {
-		m.channel.config.ApplySettings(values)
-	}
-}
+// mergeCLISettingsValues delegates to cli_settings.go:readSettings.
+func (m *cliModel) mergeCLISettingsValues() map[string]string { return m.readSettings() }
+
+// persistCLISettingsValues delegates to cli_settings.go:saveSettings.
+func (m *cliModel) persistCLISettingsValues(values map[string]string) { m.saveSettings(values) }
 
 // ---------------------------------------------------------------------------
 // Refactored common patterns (方案 B: 提取重复代码)
@@ -474,6 +422,7 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 	setTheme(theme)
 	// Rebuild styles cache (same as themeChangeCh handler in Update)
 	m.styles = buildStyles(m.width)
+	m.invalidateLayoutCache() // sidebar styles may have changed
 	applyTAStyles(&m.textarea, &m.styles)
 	m.ticker.style = lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.Warning))
 	// Rebuild glamour renderer
@@ -739,10 +688,12 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 		}
 	}
 
-	// Run synchronously — all operations are local I/O, no network calls
-	onSubmit(vals)
-
+	// Run onSubmit in the returned tea.Cmd (BubbleTea executes Cmds in a
+	// background goroutine). This avoids blocking the Update loop while
+	// preserving ordering — the TUI shows a "Saving..." overlay and blocks
+	// user input until onSubmit completes and cliSettingsSavedMsg arrives.
 	return func() tea.Msg {
+		onSubmit(vals)
 		return cliSettingsSavedMsg{
 			themeChanged:  hasTheme && theme != "",
 			theme:         theme,
@@ -758,6 +709,7 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 // handleSettingsSavedMsg processes the async settings save result.
 // Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
+	m.settingsSaving = false // unblock user input
 	visualChanged := false
 	if msg.themeChanged {
 		m.applyThemeAndRebuild(msg.theme)
@@ -779,9 +731,9 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	// SyncLayoutSettings (every 5s in remote mode) must NOT reset context
 	// caches, otherwise the context bar flashes to solid line repeatedly.
 	if !msg.syncOnly {
-		m.cachedMaxContextTokens = 0
-		m.cachedMaxOutputTokens = 0
-		m.cachedCompressRatio = 0
+		m.cachedMaxContextTokens = m.resolveMaxContextTokens()
+		m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
+		m.cachedCompressRatio = m.resolveCompressRatio()
 	}
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
@@ -1207,19 +1159,17 @@ func (m *cliModel) cacheTokenUsage(tu *protocol.TokenUsage) {
 	}
 }
 
-// resolveMaxContextTokens returns the max context tokens from settings values.
-// Falls back to 0 if unavailable (context usage display will be hidden).
-func (m *cliModel) resolveMaxContextTokens() int {
-	if m.channel == nil || m.channel.config.GetCurrentValues == nil {
-		return 0
-	}
-	values := m.channel.config.GetCurrentValues()
-	if v, ok := values["max_context_tokens"]; ok && v != "" {
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 0
+// resolveMaxContextTokens delegates to cli_settings.go:resolveMaxContext.
+func (m *cliModel) resolveMaxContextTokens() int { return m.resolveMaxContext() }
+
+// applySessionLLMState applies a session's LLM state to the in-memory caches.
+// This is the ONLY way to update activeSubID/cachedModelName/cachedMaxContextTokens
+// from a SessionLLMState. Ensures all caches are consistent.
+func (m *cliModel) applySessionLLMState(state SessionLLMState) {
+	m.activeSubID = state.SubscriptionID
+	m.cachedModelName = state.Model
+	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
+	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
 }
 
 // ---------------------------------------------------------------------------

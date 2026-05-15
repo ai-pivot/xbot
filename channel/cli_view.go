@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"xbot/config"
 	"xbot/version"
 
 	tea "charm.land/bubbletea/v2"
@@ -37,29 +38,52 @@ func (m *cliModel) isWide() bool { return m.width >= 120 }
 // sidebarShown returns true when the sidebar is currently rendered on screen.
 func (m *cliModel) sidebarShown() bool { return m.isWide() && m.sidebarEnabled && m.sidebarVisible }
 
+// invalidateLayoutCache resets cached sidebar/chat width metrics.
+// Must be called on resize, sidebar toggle, sidebarWidth change, or theme change.
+func (m *cliModel) invalidateLayoutCache() {
+	m.cachedSidebarRenderedWidth = 0
+	m.cachedSidebarWidthKey = 0
+	m.cachedChatWidth = 0
+	m.cachedChatWidthKey = 0
+}
+
 // sidebarRenderedWidth returns the actual visual width of the sidebar after rendering.
 // This depends on character widths (e.g. RUNEWIDTH_EASTASIAN makes │ width=2),
-// so we measure it dynamically rather than using a hardcoded formula.
+// so we measure it dynamically — but cache the result until layout changes.
 func (m *cliModel) sidebarRenderedWidth() int {
 	sw := m.sidebarWidth
 	if sw < 12 {
 		sw = 12
 	}
+	if m.cachedSidebarRenderedWidth > 0 && m.cachedSidebarWidthKey == sw {
+		return m.cachedSidebarRenderedWidth
+	}
 	rendered := m.styles.SidebarBg.Width(sw).Height(1).Render("")
 	line := strings.Split(rendered, "\n")[0]
-	return lipgloss.Width(line)
+	w := lipgloss.Width(line)
+	m.cachedSidebarRenderedWidth = w
+	m.cachedSidebarWidthKey = sw
+	return w
 }
 
 // chatWidth returns the effective width for the chat viewport, accounting for sidebar.
+// Result is cached until invalidateLayoutCache() is called.
 func (m *cliModel) chatWidth() int {
+	if m.cachedChatWidth > 0 && m.cachedChatWidthKey == m.width {
+		return m.cachedChatWidth
+	}
+	var w int
 	if m.sidebarShown() {
-		w := m.width - m.sidebarRenderedWidth()
+		w = m.width - m.sidebarRenderedWidth()
 		if w < 20 {
 			w = 20
 		}
-		return w
+	} else {
+		w = m.width
 	}
-	return m.width
+	m.cachedChatWidth = w
+	m.cachedChatWidthKey = m.width
+	return w
 }
 
 // cliFormatTokenCount formats a token count with K/M/B suffixes for display.
@@ -123,6 +147,12 @@ func (m *cliModel) renderTitleBar() string {
 // and manual placeholder overlay (avoids textarea's built-in placeholder
 // which triggers CJK rendering bugs on Windows Terminal).
 func (m *cliModel) renderInputArea(borderColor color.Color) string {
+	// Show saving overlay instead of textarea while settings are being saved
+	if m.settingsSaving {
+		w := m.chatWidth()
+		inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)
+		return inputBoxStyle.Render(lipgloss.NewStyle().Faint(true).Render("  ⏳ Saving settings..."))
+	}
 	// Use chatWidth so input box fits when sidebar is open
 	w := m.chatWidth()
 	inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)
@@ -501,13 +531,23 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			isActive := i == currentIdx
 			// Determine busy state: for current session use m.typing,
 			// for agents use Running, for other main sessions use Busy.
+			// Event-driven liveSessionStates (from SessionEvent push) provide
+			// instant updates (sub-100ms) before the safety-net poll catches up.
 			isBusy := false
 			if isActive {
 				isBusy = m.typing
 			} else if s.Type == "agent" {
 				isBusy = s.Running
+				// Check live state for agent sessions
+				if ls, ok := m.liveSessionStates[s.ID]; ok {
+					isBusy = ls.busy
+				}
 			} else {
 				isBusy = s.Busy
+				// Live state takes priority for non-active main sessions
+				if ls, ok := m.liveSessionStates[s.ID]; ok {
+					isBusy = ls.busy
+				}
 			}
 
 			icon := "○"
@@ -1469,6 +1509,8 @@ func (m *cliModel) renderProgressStatus() string {
 			sb.WriteString(" · " + m.pickVerb(m.ticker.ticks))
 		case "compressing":
 			sb.WriteString(" · " + m.locale.StatusCompressing)
+		case "newing":
+			sb.WriteString(" · " + m.locale.StatusNewing)
 		case "retrying":
 			sb.WriteString(" · " + m.locale.StatusRetrying)
 		default:
@@ -1560,7 +1602,7 @@ func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox s
 
 	maxOutputTokens := m.cachedMaxOutputTokens
 	if maxOutputTokens <= 0 {
-		maxOutputTokens = 8192
+		maxOutputTokens = config.DefaultMaxOutputTokens
 	}
 	promptBudget := maxTokens - maxOutputTokens
 	if promptBudget <= 0 {

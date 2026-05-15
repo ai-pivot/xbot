@@ -95,10 +95,13 @@ func TestSubscriptionPersistence(t *testing.T) {
 		t.Errorf("expected active subscription 'copilot', got %q", activeName)
 	}
 
-	// Simulate SetDefault to switch to "default"
-	mgr := newConfigSubscriptionManager(cfg, saveFn, nil)
-	if err := mgr.SetDefault("default", ""); err != nil {
-		t.Fatalf("SetDefault: %v", err)
+	// Simulate SetDefault to switch to "default" — directly toggle Active flag
+	// (configSubscriptionManager has been removed; this is the same logic)
+	for i := range cfg.Subscriptions {
+		cfg.Subscriptions[i].Active = cfg.Subscriptions[i].ID == "default"
+	}
+	if err := saveFn(); err != nil {
+		t.Fatalf("save after SetDefault: %v", err)
 	}
 
 	// Reload and verify
@@ -737,7 +740,9 @@ func (b *fakeAgentBackend) SetContextMode(string) error                    { ret
 func (b *fakeAgentBackend) SetCWD(string, string, string) error            { return nil }
 func (b *fakeAgentBackend) SetMaxIterations(int)                           {}
 func (b *fakeAgentBackend) SetMaxConcurrency(int)                          {}
-func (b *fakeAgentBackend) SetMaxContextTokens(int)                        {}
+func (b *fakeAgentBackend) SetMaxContextTokens(int, ...string)             {}
+func (b *fakeAgentBackend) GetEffectiveMaxContext(_, _ string) int         { return 0 }
+func (b *fakeAgentBackend) ClearPerChatMaxContext(_ string)                {}
 func (b *fakeAgentBackend) SetCompressionThreshold(float64)                {}
 func (b *fakeAgentBackend) SetSandbox(tools.Sandbox, string)               {}
 func (b *fakeAgentBackend) GetCardBuilder() *tools.CardBuilder             { return nil }
@@ -785,7 +790,11 @@ func (b *fakeAgentBackend) RenameSubscription(id, name string) error {
 func (b *fakeAgentBackend) UpdateSubscription(id string, sub channel.Subscription) error {
 	return b.factory.GetSubscriptionSvc().Update(&sqlite.LLMSubscription{ID: id, SenderID: cliSenderID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode, IsDefault: sub.Active})
 }
-func (b *fakeAgentBackend) RegisterTool(tools.Tool)                   {}
+func (b *fakeAgentBackend) RegisterTool(tools.Tool) {}
+
+func (b *fakeAgentBackend) UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error {
+	return nil
+}
 func (b *fakeAgentBackend) RegistryManager() *agent.RegistryManager   { return nil }
 func (b *fakeAgentBackend) SetProxyLLM(string, *llm.ProxyLLM, string) {}
 func (b *fakeAgentBackend) ClearProxyLLM(string)                      {}
@@ -794,7 +803,7 @@ func (b *fakeAgentBackend) SetUserModel(string, string) error         { return n
 func (b *fakeAgentBackend) SetSubscriptionModel(id, model string) error {
 	return b.factory.GetSubscriptionSvc().SetModel(id, model)
 }
-func (b *fakeAgentBackend) SwitchModel(string, string) error         { return nil }
+func (b *fakeAgentBackend) SwitchModel(string, string, string) error { return nil }
 func (b *fakeAgentBackend) GetDefaultModel() string                  { return b.defaultModel }
 func (b *fakeAgentBackend) GetUserMaxContext(string) int             { return 0 }
 func (b *fakeAgentBackend) SetUserMaxContext(string, int) error      { return nil }
@@ -808,6 +817,8 @@ func (b *fakeAgentBackend) SetTUICallbacks(_ func(action string, params map[stri
 }
 func (b *fakeAgentBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
 }
+func (b *fakeAgentBackend) WireCallbacks(func(bus.OutboundMessage) (string, error), func(string) (channel.Channel, bool), func(protocol.SessionEvent), bus.MessageSender, func(string, bus.RunFn) error, func(string)) {
+}
 func (b *fakeAgentBackend) SetChatRenameFn(_ func(chatID, newName string) (oldName string, err error)) {
 }
 func (b *fakeAgentBackend) GetContextMode() string                                { return "" }
@@ -818,7 +829,13 @@ func (b *fakeAgentBackend) ListModels() []string                                
 func (b *fakeAgentBackend) ListAllModels() []string                               { return nil }
 func (b *fakeAgentBackend) SetModelTiers(config.LLMConfig) error                  { return nil }
 func (b *fakeAgentBackend) SetDefaultThinkingMode(string) error                   { return nil }
-func (b *fakeAgentBackend) GetUserTokenUsage(string) (map[string]any, error)      { return nil, nil }
+func (b *fakeAgentBackend) SetModelContexts(contexts map[string]int) error        { return nil }
+func (b *fakeAgentBackend) SetGlobalMaxTokens(maxTokens int) error                { return nil }
+func (b *fakeAgentBackend) SetRetryConfig(cfg llm.RetryConfig) error              { return nil }
+func (b *fakeAgentBackend) SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error {
+	return nil
+}
+func (b *fakeAgentBackend) GetUserTokenUsage(string) (map[string]any, error) { return nil, nil }
 func (b *fakeAgentBackend) GetDailyTokenUsage(string, int) ([]map[string]any, error) {
 	return nil, nil
 }
@@ -850,16 +867,16 @@ func (b *fakeAgentBackend) CallRPC(string, any) (json.RawMessage, error) {
 func (b *fakeAgentBackend) Run(context.Context) error { return nil }
 
 func TestCLISettingHandlersCoversAllRuntimeKeys(t *testing.T) {
-	missing := missingCLIHandlerKeys()
+	missing := agent.MissingSettingHandlerKeys()
 	if len(missing) > 0 {
-		t.Errorf("cliSettingHandlers is missing handlers for keys in channel.CLIRuntimeSettingKeys: %v\n"+
-			"Add entries to cliSettingHandlers in setting_handlers.go for each missing key.", missing)
+		t.Errorf("SettingHandlerRegistry is missing handlers for keys in channel.CLIRuntimeSettingKeys: %v\n"+
+			"Add entries in agent/setting_runtime.go for each missing key.", missing)
 	}
 }
 
-func TestApplyCLISettingsToConfig(t *testing.T) {
+func TestApplyRuntimeSettings(t *testing.T) {
 	cfg := &config.Config{}
-	handled := applyCLISettingsToConfig(cfg, map[string]string{
+	agent.ApplyRuntimeSettings(cfg, nil, "cli_user", map[string]string{
 		"max_iterations": "50",
 		"context_mode":   "auto",
 	})
@@ -868,12 +885,6 @@ func TestApplyCLISettingsToConfig(t *testing.T) {
 	}
 	if cfg.Agent.ContextMode != "auto" {
 		t.Errorf("context_mode = %q, want %q", cfg.Agent.ContextMode, "auto")
-	}
-	// All keys should be handled
-	for _, k := range []string{"max_iterations", "context_mode"} {
-		if !handled[k] {
-			t.Errorf("expected %q to be handled", k)
-		}
 	}
 }
 
@@ -906,3 +917,10 @@ func TestIsCLISubscriptionSettingKey(t *testing.T) {
 		})
 	}
 }
+
+// Additional AgentBackend methods for tests
+func (b *fakeAgentBackend) CreateWebUser(string) (string, error)            { return "test-pass", nil }
+func (b *fakeAgentBackend) ListWebUsers() ([]map[string]any, error)         { return nil, nil }
+func (b *fakeAgentBackend) DeleteWebUser(string) error                      { return nil }
+func (b *fakeAgentBackend) DeleteChat(string, string, string) error         { return nil }
+func (b *fakeAgentBackend) RenameChat(string, string, string, string) error { return nil }

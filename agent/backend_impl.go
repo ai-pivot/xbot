@@ -7,15 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/config"
-	"xbot/event"
 	llm "xbot/llm"
-	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/session"
 	"xbot/tools"
 
 	log "xbot/logger"
@@ -51,24 +47,22 @@ type TenantInfo struct {
 	LastActiveAt string `json:"last_active_at"`
 }
 
-// Backend is the unified AgentBackend implementation.
-// It is a pure typed RPC client — every method goes through transport.Call().
-// The transport decides whether the call executes locally (localTransport)
-// or remotely (RemoteTransport). Backend never branches on mode.
+// Backend is the unified RPC client.
+// Every method goes through transport.Call() — zero local state.
+// Server-side code (serverapp) gets a separate *Agent for direct access.
 type Backend struct {
-	agent     *Agent          // nil in remote mode; for local-only accessors
-	bus       *bus.MessageBus // nil in remote mode
 	transport Transport
 }
 
 // NewBackend creates a local-mode Backend with an in-process Agent.
-func NewBackend(cfg Config) (*Backend, error) {
+// Returns (Backend for RPC, Agent for direct server-side access).
+func NewBackend(cfg Config) (*Backend, *Agent, error) {
 	a, err := New(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lt := newLocalTransport(a, cfg.Bus)
-	return &Backend{agent: a, bus: cfg.Bus, transport: lt}, nil
+	return &Backend{transport: lt}, a, nil
 }
 
 // NewTransportBackend creates a Backend from an existing Transport (remote mode).
@@ -111,15 +105,6 @@ func (b *Backend) callVoid(method string, req any) {
 	}
 }
 
-// withAgent returns the result of fn(agent), or zero-value if remote.
-func withAgent[T any](b *Backend, fn func(*Agent) T) T {
-	if b.agent == nil {
-		var zero T
-		return zero
-	}
-	return fn(b.agent)
-}
-
 // ---------------------------------------------------------------------------
 // Lifecycle — pure transport delegation
 // ---------------------------------------------------------------------------
@@ -158,104 +143,52 @@ func (b *Backend) SetTUIControlHandler(cb func(action string, params map[string]
 	b.transport.SetTUIControlHandler(cb)
 }
 
+func (b *Backend) WireCallbacks(
+	directSend func(msg bus.OutboundMessage) (string, error),
+	channelFinder func(name string) (channel.Channel, bool),
+	sessionStateHandler func(ev protocol.SessionEvent),
+	messageSender bus.MessageSender,
+	registerAgentChannel func(name string, runFn bus.RunFn) error,
+	unregisterAgentChannel func(name string),
+) {
+	b.transport.WireCallbacks(directSend, channelFinder, sessionStateHandler, messageSender, registerAgentChannel, unregisterAgentChannel)
+}
+
+func (b *Backend) SetChatRenameFn(fn func(chatID, newName string) (oldName string, err error)) {
+	b.transport.SetChatRenameFn(fn)
+}
+
 func (b *Backend) BindChat(chatID string) error { return b.transport.BindChat(chatID) }
 func (b *Backend) ConnState() string            { return b.transport.ConnState() }
 func (b *Backend) ServerURL() string            { return b.transport.ServerURL() }
+func (b *Backend) IsRemote() bool               { return b.transport.IsRemote() }
 
-// ---------------------------------------------------------------------------
-// Local-only identity & accessors (nil in remote mode)
-// ---------------------------------------------------------------------------
-
-func (b *Backend) Agent() *Agent                     { return b.agent }
-func (b *Backend) IsRemote() bool                    { return b.transport.IsRemote() }
-func (b *Backend) Bus() *bus.MessageBus              { return b.bus }
-func (b *Backend) LLMFactory() *LLMFactory           { return withAgent(b, (*Agent).LLMFactory) }
-func (b *Backend) SettingsService() *SettingsService { return withAgent(b, (*Agent).SettingsService) }
-
-func (b *Backend) SetTUICallbacks(
-	tuiCtrl func(action string, params map[string]string) (map[string]string, error),
-	configGet func(key string) (string, error),
-	configSet func(key, value string) (string, error),
-) {
-	if b.agent != nil {
-		b.agent.SetTUICallbacks(tuiCtrl, configGet, configSet)
-	}
-}
-func (b *Backend) SetChatRenameFn(chatRename func(chatID, newName string) (oldName string, err error)) {
-	if b.agent != nil {
-		b.agent.SetChatRenameFn(chatRename)
-	}
-}
-func (b *Backend) MultiSession() *session.MultiTenantSession {
-	return withAgent(b, (*Agent).MultiSession)
-}
-func (b *Backend) BgTaskManager() *tools.BackgroundTaskManager {
-	return withAgent(b, (*Agent).BgTaskManager)
-}
-func (b *Backend) HookManager() *hooks.Manager          { return withAgent(b, (*Agent).HookManager) }
-func (b *Backend) ApprovalState() *hooks.ApprovalState  { return withAgent(b, (*Agent).ApprovalState) }
-func (b *Backend) PluginManager() *plugin.PluginManager { return withAgent(b, (*Agent).PluginManager) }
-func (b *Backend) GetCardBuilder() *tools.CardBuilder   { return withAgent(b, (*Agent).GetCardBuilder) }
-func (b *Backend) RegistryManager() *RegistryManager    { return withAgent(b, (*Agent).RegistryManager) }
-
-// ---------------------------------------------------------------------------
-// Local-only setters (non-serializable args, no-op in remote mode)
-// ---------------------------------------------------------------------------
-
-func (b *Backend) SetDirectSend(fn func(bus.OutboundMessage) (string, error)) {
-	if b.agent != nil {
-		b.agent.SetDirectSend(fn)
-	}
-}
-
-func (b *Backend) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
-	if b.agent != nil {
-		b.agent.SetChannelFinder(fn)
-	}
-}
-
-func (b *Backend) SetChannelPromptProviders(providers ...ChannelPromptProvider) {
-	if b.agent != nil {
-		b.agent.SetChannelPromptProviders(providers...)
-	}
-}
-
+// RegisterCoreTool/RegisterTool/IndexGlobalTools delegate to localTransport
+// for server-side use. No-op for remote transports.
 func (b *Backend) RegisterCoreTool(tool tools.Tool) {
-	if b.agent != nil {
-		b.agent.RegisterCoreTool(tool)
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.RegisterCoreTool(tool)
 	}
 }
-
-func (b *Backend) IndexGlobalTools() {
-	if b.agent != nil {
-		b.agent.IndexGlobalTools()
-	}
-}
-
 func (b *Backend) RegisterTool(tool tools.Tool) {
-	if b.agent != nil {
-		b.agent.RegisterTool(tool)
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.RegisterTool(tool)
+	}
+}
+func (b *Backend) IndexGlobalTools() {
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.IndexGlobalTools()
 	}
 }
 
-func (b *Backend) SetEventRouter(router *event.Router) {
-	if b.agent != nil {
-		b.agent.SetEventRouter(router)
-	}
-}
-
+// SetSandbox delegates to localTransport for server-side use.
 func (b *Backend) SetSandbox(sb tools.Sandbox, mode string) {
-	if b.agent != nil {
-		b.agent.SetSandbox(sb, mode)
+	if lt, ok := b.transport.(*localTransport); ok {
+		lt.agent.SetSandbox(sb, mode)
 	}
 }
 
-func (b *Backend) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
-	if b.agent != nil {
-		b.agent.SetProxyLLM(senderID, proxy, model)
-	}
-}
-
+// SetChannelReconfigureFn delegates to localTransport for server-side use.
 func (b *Backend) SetChannelReconfigureFn(fn func(channel string)) {
 	if lt, ok := b.transport.(*localTransport); ok {
 		lt.reconfigureFn = fn
@@ -263,7 +196,8 @@ func (b *Backend) SetChannelReconfigureFn(fn func(channel string)) {
 }
 
 // ---------------------------------------------------------------------------
-// RPC methods — every method is a single b.call() / b.callVoid()
+// RPC methods — most are a single b.call() / b.callVoid().
+// (CallRPC is the exception, using transport.Call() directly).
 // ---------------------------------------------------------------------------
 
 // ── Settings ──────────────────────────────────────────────────────────────
@@ -309,6 +243,26 @@ func (b *Backend) SetModelTiers(cfg config.LLMConfig) error {
 
 func (b *Backend) SetDefaultThinkingMode(mode string) error {
 	return b.call(MethodSetDefaultThinkingMode, setDefaultThinkingModeReq{Mode: mode}, nil)
+}
+
+func (b *Backend) SetModelContexts(contexts map[string]int) error {
+	return b.call(MethodSetModelContexts, contexts, nil)
+}
+
+func (b *Backend) SetGlobalMaxTokens(maxTokens int) error {
+	return b.call(MethodSetGlobalMaxTokens, setGlobalMaxTokensReq{MaxTokens: maxTokens}, nil)
+}
+
+func (b *Backend) SetRetryConfig(cfg llm.RetryConfig) error {
+	return b.call(MethodSetRetryConfig, cfg, nil)
+}
+
+func (b *Backend) SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error {
+	return b.call(MethodSetChatLLM, setChatLLMReq{
+		ChatID:   chatID,
+		Provider: provider,
+		Config:   llmCfg,
+	}, nil)
 }
 
 func (b *Backend) ClearProxyLLM(senderID string) {
@@ -361,17 +315,46 @@ func (b *Backend) SetUserModel(senderID, model string) error {
 	return b.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, Model: model}, nil)
 }
 
-func (b *Backend) SwitchModel(senderID, model string) error {
-	return b.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model}, nil)
+func (b *Backend) SwitchModel(senderID, model, chatID string) error {
+	return b.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model, ChatID: chatID}, nil)
 }
 
 // ── Runtime config ────────────────────────────────────────────────────────
 
-func (b *Backend) SetMaxIterations(n int)            { b.callVoid(MethodSetMaxIterations, n) }
-func (b *Backend) SetMaxConcurrency(n int)           { b.callVoid(MethodSetMaxConcurrency, n) }
-func (b *Backend) SetMaxContextTokens(n int)         { b.callVoid(MethodSetMaxContextTokens, n) }
-func (b *Backend) SetCompressionThreshold(f float64) { b.callVoid(MethodSetCompressionThreshold, f) }
-func (b *Backend) ResetTokenState()                  { b.callVoid(MethodResetTokenState, struct{}{}) }
+func (b *Backend) SetMaxIterations(n int) {
+	b.callVoid(MethodSetMaxIterations, setMaxIterationsReq{N: n})
+}
+func (b *Backend) SetMaxConcurrency(n int) {
+	b.callVoid(MethodSetMaxConcurrency, setMaxConcurrencyReq{N: n})
+}
+func (b *Backend) SetMaxContextTokens(n int, chatID ...string) {
+	chatIDVal := ""
+	if len(chatID) > 0 {
+		chatIDVal = chatID[0]
+	}
+	b.callVoid(MethodSetMaxContextTokens, struct {
+		MaxContext int    `json:"max_context"`
+		ChatID     string `json:"chat_id,omitempty"`
+	}{MaxContext: n, ChatID: chatIDVal})
+}
+func (b *Backend) SetCompressionThreshold(f float64) {
+	b.callVoid(MethodSetCompressionThreshold, setCompressionThresholdReq{Threshold: f})
+}
+func (b *Backend) ResetTokenState() { b.callVoid(MethodResetTokenState, struct{}{}) }
+
+// GetEffectiveMaxContext returns the effective max context for a user/session.
+// Via RPC — works for both local and remote modes.
+func (b *Backend) GetEffectiveMaxContext(senderID, chatID string) int {
+	var r int
+	_ = b.call(MethodGetEffectiveMaxContext, getEffectiveMaxContextReq{SenderID: senderID, ChatID: chatID}, &r)
+	return r
+}
+
+// ClearPerChatMaxContext clears the per-session max_context override.
+// Via RPC — works for both local and remote modes.
+func (b *Backend) ClearPerChatMaxContext(chatID string) {
+	b.callVoid(MethodClearPerChatMaxContext, clearPerChatMaxContextReq{ChatID: chatID})
+}
 func (b *Backend) CleanupCompletedBgTasks(sessionKey string) {
 	b.callVoid(MethodCleanupCompletedBgTasks, cleanupCompletedBgTasksReq{SessionKey: sessionKey})
 }
@@ -451,6 +434,8 @@ func (b *Backend) AddSubscription(senderID string, sub protocol.Subscription) er
 			BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 			Model: sub.Model, Active: sub.Active,
 			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
+			// PerModelConfigs is now protocol.PerModelConfig alias — use directly.
+			PerModelConfigs: sub.PerModelConfigs,
 		},
 	}, nil)
 }
@@ -471,7 +456,15 @@ func (b *Backend) UpdateSubscription(id string, sub protocol.Subscription) error
 			BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 			Model: sub.Model, Active: sub.Active,
 			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
+			// PerModelConfigs is now protocol.PerModelConfig alias — use directly.
+			PerModelConfigs: sub.PerModelConfigs,
 		},
+	}, nil)
+}
+
+func (b *Backend) UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error {
+	return b.call(MethodUpdatePerModelConfig, updatePerModelConfigReq{
+		ID: id, Model: model, Config: pmc,
 	}, nil)
 }
 
@@ -604,6 +597,54 @@ func (b *Backend) CallRPC(method string, params any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return b.transport.Call(method, payload)
+}
+
+// --- Web Users ---
+
+func (b *Backend) CreateWebUser(username string) (string, error) {
+	var resp struct {
+		Password string `json:"password"`
+	}
+	err := b.call("create_web_user", map[string]string{"username": username}, &resp)
+	return resp.Password, err
+}
+
+func (b *Backend) ListWebUsers() ([]map[string]any, error) {
+	var result []map[string]any
+	raw, err := b.CallRPC("list_web_users", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (b *Backend) DeleteWebUser(username string) error {
+	_, err := b.CallRPC("delete_web_user", map[string]string{"username": username})
+	return err
+}
+
+// --- Chat Management ---
+
+func (b *Backend) DeleteChat(ch, senderID, chatID string) error {
+	_, err := b.CallRPC("delete_chat", map[string]string{
+		"channel":  ch,
+		"senderid": senderID,
+		"chat_id":  chatID,
+	})
+	return err
+}
+
+func (b *Backend) RenameChat(ch, senderID, chatID, newName string) error {
+	_, err := b.CallRPC("rename_chat", map[string]string{
+		"channel":  ch,
+		"senderid": senderID,
+		"chat_id":  chatID,
+		"new_name": newName,
+	})
+	return err
 }
 
 // Ensure Backend implements AgentBackend.

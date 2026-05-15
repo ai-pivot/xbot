@@ -82,7 +82,7 @@ type RunConfig struct {
 
 	// === 循环控制 ===
 	MaxIterations   int // 0 = 使用默认值 100
-	MaxOutputTokens int // 0 = 使用 LLM client 默认值（8192）
+	MaxOutputTokens int // 0 = 使用 LLM client 默认值
 
 	// === 可选能力（nil = 不启用） ===
 
@@ -467,7 +467,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	}
 
 	// --- Main loop ---
+	log.Ctx(ctx).WithFields(log.Fields{
+		"chat_id":  s.cfg.ChatID,
+		"max_iter": s.maxIter,
+	}).Debug("Run loop starting")
 	for i := 0; i < s.maxIter; i++ {
+		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration
 		select {
 		case <-ctx.Done():
@@ -490,6 +495,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		response, err := s.callLLM(ctx, retryNotifyCtx)
+		log.Ctx(ctx).WithFields(log.Fields{
+			"iteration": i,
+			"chat_id":   s.cfg.ChatID,
+			"has_tools": response != nil && response.HasToolCalls(),
+			"err":       err,
+		}).Debug("callLLM returned")
 
 		// If ctx was cancelled during LLM call, exit immediately
 		if ctx.Err() != nil {
@@ -678,7 +689,7 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 			if _, truncated := argsCheck["_truncated"]; truncated {
 				maxTokens := cfg.MaxOutputTokens
 				if maxTokens == 0 {
-					maxTokens = 8192
+					maxTokens = 32_768 // sync with config.DefaultMaxOutputTokens
 				}
 				return tools.NewErrorResult(fmt.Sprintf(
 					"Error: tool call was truncated (output reached the max_output_tokens limit of %d tokens). "+
@@ -1070,20 +1081,38 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			"hasRemote": cfg.RemoteTUICtrlFn != nil,
 		}).Debug("buildToolContext: no TUI control callback available")
 	}
+
+	// Inject reload callbacks for plugins and hooks (used by tui_control reload actions)
+	if cfg.PluginManager != nil {
+		pm := cfg.PluginManager
+		tc.PluginReloader = func() error {
+			return pm.ReloadAll(context.Background())
+		}
+	}
+	if cfg.HookManager != nil {
+		hm := cfg.HookManager
+		tc.HooksReloader = hm.ReloadConfig
+	}
 	// Config read/write: from SettingsSvc (works everywhere: local + remote via RPC)
 	if cfg.SettingsSvc != nil {
 		svc := cfg.SettingsSvc
 		tc.ConfigGet = func(key string) (string, error) {
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
-				if v, ok := vals[key]; ok {
+				if v, ok := vals[key]; ok && v != "" {
 					return v, nil
 				}
 			}
-			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys
+			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys.
+			// Also fallback for SourceUserDB keys that may have a default in config.json
+			// (e.g. tavily_api_key can be set globally in config.json as a default).
 			if def, ok := channel.GetSettingDef(key); ok {
 				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
 					return channel.ConfigValueBySource(key, def.Source), nil
+				}
+				// For SourceUserDB keys, try config.json fallback (global defaults)
+				if cfgVal := channel.ConfigValueBySource(key, channel.SourceConfigJSON); cfgVal != "" {
+					return cfgVal, nil
 				}
 			}
 			return "", fmt.Errorf("config: key %q not found", key)
@@ -1113,6 +1142,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		// Only override SourceUserDB items with SettingsSvc values.
 		// SourceConfigJSON and SourceLLMConfig values come from config.json
 		// (set by configValueBySource) and must not be overwritten by stale DB data.
+		// For SourceUserDB items without a DB value, try config.json as fallback.
 		if cfg.SettingsSvc != nil {
 			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
@@ -1120,6 +1150,11 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 					if items[i].Source == "user_db" {
 						if v, ok := vals[items[i].Key]; ok && v != "" {
 							items[i].CurrentVal = v
+						} else if items[i].CurrentVal == "" {
+							// Fallback: try config.json top-level key (e.g. tavily_api_key)
+							if cfgVal := channel.ConfigValueBySource(items[i].Key, channel.SourceConfigJSON); cfgVal != "" {
+								items[i].CurrentVal = cfgVal
+							}
 						}
 					}
 				}

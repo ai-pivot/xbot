@@ -81,7 +81,7 @@ var AllSettingDefs = []SettingDef{
 	{Key: "sandbox_mode", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Execution sandbox type", ValidValues: "none|docker|remote", DefaultValue: "none"},
 	{Key: "compression_threshold", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Token count at which context compression triggers", ValidValues: "any positive integer", DefaultValue: "0"},
 	{Key: "memory_provider", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence", ValidValues: "flat|letta", DefaultValue: "flat"},
-	{Key: "tavily_api_key", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search", ValidValues: "any valid Tavily API key"},
+	{Key: "tavily_api_key", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search (per-user, falls back to config.json)", ValidValues: "any valid Tavily API key"},
 	{Key: "default_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermPersistent, AIDescription: "Default username for new sessions", ValidValues: "any valid username"},
 	{Key: "privileged_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermManual, AIDescription: "Username with full admin access", ValidValues: "any valid username"},
 
@@ -101,7 +101,7 @@ var AllSettingDefs = []SettingDef{
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
 	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
-	{Key: "max_context_tokens", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression", ValidValues: "any positive integer"},
+	{Key: "max_context_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression (per subscription+model)", ValidValues: "any positive integer"},
 	{Key: "enable_auto_compress", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Legacy alias for context_mode=auto (deprecated)", ValidValues: "true|false"},
 	{Key: "runner_server", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
 	{Key: "runner_token", Scope: ScopeUser, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote runner (masked)", ValidValues: "any valid token"},
@@ -179,6 +179,15 @@ func init() {
 func IsUserScopedSettingKey(key string) bool {
 	_, ok := scopeIndex[ScopeUser][key]
 	return ok
+}
+
+// IsKnownNonRuntimeKey returns true for keys that don't need runtime handling
+// (UI-only, persistence-only, or action keys). These are keys NOT registered
+// in AllSettingDefs. Both CLI and Server use this to avoid warning logs for
+// known harmless keys.
+func IsKnownNonRuntimeKey(key string) bool {
+	_, inDefs := allSettingDefsMap[key]
+	return !inDefs
 }
 
 // IsGlobalScopedSettingKey returns true if the key has ScopeGlobal.

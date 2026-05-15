@@ -214,6 +214,9 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// will be forwarded to viewport/textarea at the end of Update().
 
 	case tea.KeyPressMsg:
+		if m.settingsSaving {
+			break // block input while settings are being saved
+		}
 		model, keyCmds, handled := m.handleKeyPress(msg, wasTyping)
 		if handled {
 			// wasTyping guard: ensure tick chain starts on idle→typing transition.
@@ -235,6 +238,9 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliProgressMsg:
 		m.handleProgressMsg(msg)
+
+	case cliSessionStateMsg:
+		m.handleSessionStateMsg(msg)
 
 	case cliProcessingMsg:
 		if msg.processing && !m.typing {
@@ -573,9 +579,12 @@ func (m *cliModel) handleResize(width, height int) {
 
 	m.width = width
 	m.height = height
+	m.invalidateLayoutCache()
 
 	// §20 重建样式缓存
 	m.styles = buildStyles(width)
+	// Invalidate again after style rebuild (sidebar styles may have changed)
+	m.cachedSidebarRenderedWidth = 0
 
 	// Refresh widget render function with new styles and re-render all widgets
 	if m.widgetRegistry != nil {

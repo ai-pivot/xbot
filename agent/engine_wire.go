@@ -627,6 +627,10 @@ func (a *Agent) buildSubAgentRunConfig(
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
 		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
 
+		// SubAgent 如果能 spawn 子 Agent，也启用并行执行
+		EnableConcurrentSubAgents: caps.SpawnAgent,
+		SubAgentSem:               a.llmFactory.SubAgentSemAcquireForUser(originUserID),
+
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
 
@@ -1307,7 +1311,44 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*bus
 		})
 	}
 
+	// Emit subagent_started event for instant sidebar push.
+	if a.sessionStateHandler != nil {
+		a.sessionStateHandler(protocol.SessionEvent{
+			Channel:  originChannel,
+			ChatID:   originChatID,
+			Action:   "subagent_started",
+			Role:     roleName,
+			Instance: oneshotInstance,
+			ParentID: originChatID,
+		})
+	}
+
 	out := Run(subCtx, cfg)
+
+	// Emit subagent_stopped event for instant sidebar update.
+	if a.sessionStateHandler != nil {
+		a.sessionStateHandler(protocol.SessionEvent{
+			Channel:  originChannel,
+			ChatID:   originChatID,
+			Action:   "subagent_stopped",
+			Role:     roleName,
+			Instance: oneshotInstance,
+			ParentID: originChatID,
+		})
+	}
+
+	log.Ctx(ctx).WithFields(log.Fields{
+		"role":     roleName,
+		"instance": oneshotInstance,
+		"out_nil":  out == nil,
+		"out_len": func() int {
+			if out != nil {
+				return len(out.Content)
+			}
+			return 0
+		}(),
+		"iterations": len(oneshotIA.iterationHistory),
+	}).Info("oneshot subagent Run() returned")
 
 	// Populate iteration history so inspect can show results after completion
 	oneshotIA.mu.Lock()
@@ -1438,12 +1479,13 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 // (both local and remote). Returns nil if no CLI channel is available.
 func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
 	var cliCh *channelpkg.CLIChannel
-	var remoteCLICh *channelpkg.RemoteCLIChannel
+	var remoteCLICh channelpkg.ProgressSender
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder("cli"); ok {
 			if cc, ok := ch.(*channelpkg.CLIChannel); ok {
 				cliCh = cc
-			} else if rc, ok := ch.(*channelpkg.RemoteCLIChannel); ok {
+			} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
+				// RemoteCLIChannel, ChannelCliChannel, or any other ProgressSender
 				remoteCLICh = rc
 			} else {
 				log.WithField("type", fmt.Sprintf("%T", ch)).Warn("buildCLIProgressEventHandler: channelFinder('cli') returned unexpected type")
@@ -1747,11 +1789,11 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 // no channels are available.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
 	var cliCh *channelpkg.CLIChannel
-	var remoteCLICh *channelpkg.RemoteCLIChannel
+	var remoteCLICh channelpkg.ProgressSender
 	if ch, ok := a.channelFinder("cli"); ok {
 		if cc, ok := ch.(*channelpkg.CLIChannel); ok {
 			cliCh = cc
-		} else if rc, ok := ch.(*channelpkg.RemoteCLIChannel); ok {
+		} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 			remoteCLICh = rc
 		}
 	}

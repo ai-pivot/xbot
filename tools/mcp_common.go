@@ -61,6 +61,48 @@ var sharedMCPClient = mcp.NewClient(&mcp.Implementation{
 	Version: "1.0.0",
 }, nil)
 
+// resolveCommand resolves a command name to an absolute path using the given PATH.
+// If the command already contains a path separator or cannot be found, it is
+// returned as-is (exec.Command will report the error later).
+// This is necessary because exec.Command uses the *process* PATH for lookup,
+// not cmd.Env, so when xbot runs as a service with a minimal PATH (e.g. without
+// nvm), commands like "npx" are not found even though cmd.Env contains the
+// correct PATH.
+func resolveCommand(cmd string, pathEnv string) string {
+	// Already an absolute or relative path — leave as-is.
+	if strings.Contains(cmd, "/") {
+		return cmd
+	}
+	if pathEnv == "" {
+		return cmd
+	}
+	// Search each PATH entry manually.
+	for _, dir := range strings.Split(pathEnv, ":") {
+		if dir == "" {
+			continue
+		}
+		candidate := dir + "/" + cmd
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			// Check executable bit on Unix.
+			if fi.Mode().Perm()&0111 != 0 {
+				return candidate
+			}
+		}
+	}
+	return cmd
+}
+
+// extractEnvValue extracts the value of a key from a KEY=VALUE env slice.
+func extractEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return e[len(prefix):]
+		}
+	}
+	return ""
+}
+
 // safeDefaultPATH is the standard system PATH used for MCP server processes
 // instead of leaking the host's full PATH.
 const safeDefaultPATH = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
@@ -200,7 +242,12 @@ func buildMinimalExecEnv(envList []string) []string {
 }
 
 // getLoginShellEnv runs a login shell command to capture the full environment.
-// Unix: bash -l -c 'env -0'
+// It uses the same shell detection and argument logic as the Shell tool:
+//
+//	zsh:  zsh -c "source ~/.zshrc 2>/dev/null; env -0"
+//	bash: bash -l -c "env -0"
+//
+// This ensures nvm and other user-configured tools are visible in PATH.
 // Windows: powershell.exe -Command "[Environment]::GetEnvironmentVariables() | ..."
 // Returns empty slice on failure (caller will use fallback).
 func getLoginShellEnv() []string {
@@ -213,7 +260,10 @@ func getLoginShellEnv() []string {
 		cmd = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command",
 			"Get-ChildItem Env: | ForEach-Object { $_.Name + '=' + $_.Value }")
 	} else {
-		cmd = exec.CommandContext(ctx, "bash", "-l", "-c", "env -0")
+		// Use the same shell detection as Shell tool (defaultShell + LoginShellArgs).
+		shell := defaultShell()
+		args := LoginShellArgs(shell, "env -0")
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -355,12 +405,13 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 		return session, nil
 	default:
 		// None 模式：直接本地执行
-		execCmd = exec.Command(cfg.Command, cfg.Args...)
+		// Build environment first so we can use its PATH to resolve the command.
+		childEnv := buildMinimalExecEnv(envList)
+		childPATH := extractEnvValue(childEnv, "PATH")
+		resolvedCmd := resolveCommand(cfg.Command, childPATH)
+		execCmd = exec.Command(resolvedCmd, cfg.Args...)
+		execCmd.Env = childEnv
 	}
-
-	// Build a minimal safe environment instead of passing os.Environ() which
-	// would leak host secrets (LLM_API_KEY, FEISHU_APP_SECRET, etc.).
-	execCmd.Env = buildMinimalExecEnv(envList)
 
 	// StderrPipe returns a reader that is closed automatically when the process exits,
 	// so the drainStderr goroutine will not leak.

@@ -137,6 +137,23 @@ func (h *Hub) stopAll() {
 	h.mu.Unlock()
 }
 
+// broadcastToAll sends a message to every connected client.
+// Used for global events like session state changes.
+func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
+	h.mu.RLock()
+	clients := make([]*Client, 0, len(h.conns))
+	for _, c := range h.conns {
+		clients = append(clients, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		select {
+		case c.sendCh <- msg:
+		default:
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Client: a single WebSocket connection
 // ---------------------------------------------------------------------------
