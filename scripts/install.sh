@@ -10,6 +10,7 @@ XBOT_HOME="${XBOT_HOME:-$HOME/.xbot}"
 CONFIG_PATH="${CONFIG_PATH:-$XBOT_HOME/config.json}"
 SERVICE_NAME="xbot-server"
 DEFAULT_PORT="${PORT:-8082}"
+CHANNEL="${CHANNEL:-}"  # stable, beta, or nightly
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,18 +42,78 @@ detect_platform() {
     echo "${os}-${arch}"
 }
 
+# Resolve version based on channel.
+# For stable: uses /releases/latest (non-prerelease).
+# For nightly: lists releases, finds latest nightly-* tag.
+# For beta: lists releases, finds latest v*-*beta* tag.
 resolve_version() {
     if [ -n "${VERSION:-}" ]; then
         echo "$VERSION"
         return
     fi
+
+    local ch="${CHANNEL:-stable}"
     local tag
-    tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-    if [ -z "$tag" ]; then
-        tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-    fi
-    [ -n "$tag" ] || error "Failed to determine latest version. Set VERSION env var explicitly."
+
+    case "$ch" in
+        stable)
+            # /releases/latest returns the latest non-prerelease release
+            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            if [ -z "$tag" ]; then
+                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            fi
+            ;;
+        nightly)
+            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"nightly-[^"]*"' | head -1 | tr -d '"')
+            if [ -z "$tag" ]; then
+                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"nightly-[^"]*"' | head -1 | tr -d '"')
+            fi
+            ;;
+        beta)
+            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
+            if [ -z "$tag" ]; then
+                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
+            fi
+            ;;
+        *)
+            error "Unknown channel: $ch. Use 'stable', 'beta', or 'nightly'."
+            ;;
+    esac
+
+    [ -n "$tag" ] || error "Failed to determine latest version for channel '$ch'. Set VERSION env var explicitly."
     echo "$tag"
+}
+
+# Interactive channel selection menu.
+# Sets CHANNEL variable directly.
+ask_channel() {
+    if [ -n "$CHANNEL" ]; then
+        case "$CHANNEL" in
+            stable|beta|nightly) ;;
+            *) error "Invalid CHANNEL='${CHANNEL}'. Use 'stable', 'beta', or 'nightly'." ;;
+        esac
+        return
+    fi
+    # Non-interactive: default to stable
+    if ! [ -c /dev/tty ] 2>/dev/null || ! [ -r /dev/tty ] 2>/dev/null; then
+        info "Non-interactive mode (no /dev/tty). Defaulting to stable channel."
+        info "Set CHANNEL=nightly or CHANNEL=beta to use a different channel."
+        CHANNEL=stable
+        return
+    fi
+    echo ""
+    echo "Choose release channel:"
+    echo "  1) stable   - Official releases (recommended)"
+    echo "  2) beta     - Pre-release versions for testing"
+    echo "  3) nightly  - Latest development builds (may be unstable)"
+    printf "Select [1/2/3] (default 1): "
+    local choice
+    read -r choice </dev/tty || choice=1
+    case "${choice:-1}" in
+        3) CHANNEL=nightly ;;
+        2) CHANNEL=beta ;;
+        *) CHANNEL=stable ;;
+    esac
 }
 
 # Non-interactive: use MODE env var. Interactive: prompt user.
@@ -391,6 +452,23 @@ enable_linger() {
 }
 
 main() {
+    # Parse --channel argument from command line
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --channel)
+                CHANNEL="$2"
+                shift 2
+                ;;
+            --channel=*)
+                CHANNEL="${1#*=}"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
     echo ""
     echo "  ╔══════════════════════════════════════╗"
     echo "  ║         xbot-cli Installer           ║"
@@ -399,10 +477,15 @@ main() {
 
     require_cmd curl
     PLATFORM=$(detect_platform)
+
+    # Ask for channel if not specified (interactive menu)
+    ask_channel
+
     VERSION=$(resolve_version)
     DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
 
     info "Platform:  ${PLATFORM}"
+    info "Channel:   ${CHANNEL}"
     info "Version:   ${VERSION}"
     info "URL:       ${DOWNLOAD_URL}"
     info "Install:   ${INSTALL_PATH}/${BINARY}"

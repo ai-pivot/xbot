@@ -14,10 +14,14 @@
     Install mode: "standalone" (default) or "server-client".
 .PARAMETER Port
     Server port for server-client mode (default 8082).
+.PARAMETER Channel
+    Release channel: "stable" (default), "beta", or "nightly".
 .EXAMPLE
     irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 .EXAMPLE
     .\install.ps1 -Version v0.1.0
+.EXAMPLE
+    .\install.ps1 -Channel nightly
 .EXAMPLE
     .\install.ps1 -Mode server-client -Port 9090
 #>
@@ -26,6 +30,7 @@ param(
     [string]$Version = "",
     [string]$InstallPath = "",
     [string]$Mode = "",
+    [string]$Channel = "",
     [int]$Port = 0,
     [switch]$NonInteractive
 )
@@ -41,6 +46,7 @@ $DEFAULT_PORT = 8082
 # Env var fallback for parameters (GitHub Actions uses env vars)
 if (-not $Mode)    { $Mode = $env:MODE }
 if (-not $Version) { $Version = $env:VERSION }
+if (-not $Channel) { $Channel = $env:CHANNEL }
 
 if (-not $InstallPath) {
     if ($env:INSTALL_PATH) {
@@ -89,16 +95,75 @@ function Get-Platform {
 
 function Get-LatestVersion {
     if ($Version) { return $Version }
-    try {
-        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -Headers @{"User-Agent"="PowerShell"}
-        return $response.tag_name
-    } catch {}
-    try {
-        Write-Warn "No releases found on $REPO, trying fallback $FALLBACK_REPO..."
-        $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases/latest" -Headers @{"User-Agent"="PowerShell"}
-        return $response.tag_name
-    } catch {
-        Write-Err "Failed to determine latest version from both repos. Set -Version explicitly."
+    $ch = if ($Channel) { $Channel.ToLower() } else { "stable" }
+    $headers = @{"User-Agent"="PowerShell"}
+
+    switch ($ch) {
+        "stable" {
+            try {
+                $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -Headers $headers
+                return $response.tag_name
+            } catch {}
+            try {
+                Write-Warn "No releases found on $REPO, trying fallback $FALLBACK_REPO..."
+                $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases/latest" -Headers $headers
+                return $response.tag_name
+            } catch {
+                Write-Err "Failed to determine latest version from both repos. Set -Version explicitly."
+            }
+        }
+        "nightly" {
+            try {
+                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=20" -Headers $headers
+                $nightly = $releases | Where-Object { $_.tag_name -match '^nightly-' } | Select-Object -First 1
+                if ($nightly) { return $nightly.tag_name }
+            } catch {}
+            try {
+                Write-Warn "No nightly found on $REPO, trying fallback $FALLBACK_REPO..."
+                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20" -Headers $headers
+                $nightly = $releases | Where-Object { $_.tag_name -match '^nightly-' } | Select-Object -First 1
+                if ($nightly) { return $nightly.tag_name }
+            } catch {}
+            Write-Err "No nightly release found. Set -Version explicitly."
+        }
+        "beta" {
+            try {
+                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=20" -Headers $headers
+                $beta = $releases | Where-Object { $_.tag_name -match '-beta\.\d+' } | Select-Object -First 1
+                if ($beta) { return $beta.tag_name }
+            } catch {}
+            try {
+                Write-Warn "No beta found on $REPO, trying fallback $FALLBACK_REPO..."
+                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20" -Headers $headers
+                $beta = $releases | Where-Object { $_.tag_name -match '-beta\.\d+' } | Select-Object -First 1
+                if ($beta) { return $beta.tag_name }
+            } catch {}
+            Write-Err "No beta release found. Set -Version explicitly."
+        }
+        default {
+            Write-Err "Unknown channel: $ch. Use 'stable', 'beta', or 'nightly'."
+        }
+    }
+}
+
+function Ask-Channel {
+    if ($Channel) {
+        switch ($Channel.ToLower()) {
+            { $_ -in "stable","beta","nightly" } { return }
+            default { Write-Err "Invalid Channel='${Channel}'. Use 'stable', 'beta', or 'nightly'." }
+        }
+        return
+    }
+    Write-Host ""
+    Write-Host "Choose release channel:" -ForegroundColor Cyan
+    Write-Host "  1) stable   - Official releases (recommended)" -ForegroundColor Cyan
+    Write-Host "  2) beta     - Pre-release versions for testing" -ForegroundColor Cyan
+    Write-Host "  3) nightly  - Latest development builds (may be unstable)" -ForegroundColor Cyan
+    $choice = Read-Host "Select [1/2/3] (default 1)"
+    switch ($choice) {
+        "3" { $script:Channel = "nightly" }
+        "2" { $script:Channel = "beta" }
+        default { $script:Channel = "stable" }
     }
 }
 
@@ -446,10 +511,12 @@ Write-Host "  =======================================" -ForegroundColor Cyan
 Write-Host ""
 
 $platform = Get-Platform
+Ask-Channel
 $tag = Get-LatestVersion
 $downloadUrl = "https://github.com/$REPO/releases/download/$tag/xbot-cli-$platform.exe"
 
 Write-Info "Platform:  $platform"
+Write-Info "Channel:   $Channel"
 Write-Info "Version:   $tag"
 Write-Info "URL:       $downloadUrl"
 Write-Info "Install:   $InstallPath\$BINARY"

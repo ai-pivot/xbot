@@ -956,7 +956,11 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 		content := fmt.Sprintf(m.locale.UpdateFound, msg.info.Current, msg.info.Latest, msg.info.URL)
 		m.showSystemMsg(content, feedbackInfo)
 	} else {
-		content := fmt.Sprintf(m.locale.UpdateCurrent, msg.info.Current)
+		ch := msg.info.Channel
+		if ch == "" {
+			ch = "dev"
+		}
+		content := fmt.Sprintf(m.locale.UpdateCurrent, msg.info.Current, ch)
 		m.showSystemMsg(content, feedbackInfo)
 	}
 }
