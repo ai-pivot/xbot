@@ -110,14 +110,8 @@ func buildRPCTable(cfg *config.Config, backend agent.AgentBackend, ag *agent.Age
 // ── Context / settings / cwd / max-iterations / concurrency / context-tokens ──
 
 func registerSettingsHandlers(t rpcTable, h *rpcContext) {
-	t["get_context_mode"] = rpc0(func(ctx context.Context) any {
-		return h.backend.GetContextMode()
-	})
-	t["set_context_mode"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		Mode string `json:"mode"`
-	}) error {
-		return h.backend.SetContextMode(p.Mode)
-	}))
+	t["get_context_mode"] = h.backendPass("get_context_mode")
+	t["set_context_mode"] = h.adminPass("set_context_mode")
 	t["set_cwd"] = rpc1void(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
@@ -227,18 +221,8 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 	})
 
 	// ── Max iterations / concurrency / context tokens ──
-	t["set_max_iterations"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		N int `json:"n"`
-	}) error {
-		h.backend.SetMaxIterations(p.N)
-		return nil
-	}))
-	t["set_max_concurrency"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		N int `json:"n"`
-	}) error {
-		h.backend.SetMaxConcurrency(p.N)
-		return nil
-	}))
+	t["set_max_iterations"] = h.adminPass("set_max_iterations")
+	t["set_max_concurrency"] = h.adminPass("set_max_concurrency")
 	t["set_max_context_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		MaxContext int    `json:"max_context"`
 		ChatID     string `json:"chat_id,omitempty"`
@@ -250,12 +234,7 @@ func registerSettingsHandlers(t rpcTable, h *rpcContext) {
 		}
 		return nil
 	}))
-	t["set_compression_threshold"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		Threshold float64 `json:"threshold"`
-	}) error {
-		h.backend.SetCompressionThreshold(p.Threshold)
-		return nil
-	}))
+	t["set_compression_threshold"] = h.adminPass("set_compression_threshold")
 }
 
 // ── LLM / model / tier / proxy handlers ──
@@ -277,11 +256,7 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 		log.WithField("sender_id", bizID).WithField("model", model).Debug("RPC get_default_model")
 		return model
 	})
-	t["set_user_model"] = rpc1void(func(ctx context.Context, p struct {
-		Model string `json:"model"`
-	}) error {
-		return backend.SetUserModel(rpcBizID(ctx), p.Model)
-	})
+	t["set_user_model"] = h.backendPass("set_user_model")
 	t["switch_model"] = rpc1void(func(ctx context.Context, p struct {
 		Model  string `json:"model"`
 		ChatID string `json:"chat_id,omitempty"`
@@ -298,30 +273,14 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 		}
 		return nil
 	})
-	t["get_user_max_context"] = rpc0(func(ctx context.Context) int { return backend.GetUserMaxContext(rpcBizID(ctx)) })
-	t["set_user_max_context"] = rpc1void(func(ctx context.Context, p struct {
-		MaxContext int `json:"max_context"`
-	}) error {
-		return backend.SetUserMaxContext(rpcBizID(ctx), p.MaxContext)
-	})
-	t["get_user_max_output_tokens"] = rpc0(func(ctx context.Context) int { return backend.GetUserMaxOutputTokens(rpcBizID(ctx)) })
-	t["set_user_max_output_tokens"] = rpc1void(func(ctx context.Context, p struct {
-		MaxTokens int `json:"max_tokens"`
-	}) error {
-		return backend.SetUserMaxOutputTokens(rpcBizID(ctx), p.MaxTokens)
-	})
-	t["get_user_thinking_mode"] = rpc0(func(ctx context.Context) string { return backend.GetUserThinkingMode(rpcBizID(ctx)) })
-	t["set_user_thinking_mode"] = rpc1void(func(ctx context.Context, p struct {
-		Mode string `json:"mode"`
-	}) error {
-		return backend.SetUserThinkingMode(rpcBizID(ctx), p.Mode)
-	})
-	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return backend.GetLLMConcurrency(rpcBizID(ctx)) })
-	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
-		Personal int `json:"personal"`
-	}) error {
-		return backend.SetLLMConcurrency(rpcBizID(ctx), p.Personal)
-	})
+	t["get_user_max_context"] = h.backendPass("get_user_max_context")
+	t["set_user_max_context"] = h.backendPass("set_user_max_context")
+	t["get_user_max_output_tokens"] = h.backendPass("get_user_max_output_tokens")
+	t["set_user_max_output_tokens"] = h.backendPass("set_user_max_output_tokens")
+	t["get_user_thinking_mode"] = h.backendPass("get_user_thinking_mode")
+	t["set_user_thinking_mode"] = h.backendPass("set_user_thinking_mode")
+	t["get_llm_concurrency"] = h.backendPass("get_llm_concurrency")
+	t["set_llm_concurrency"] = h.backendPass("set_llm_concurrency")
 	t["set_default_thinking_mode"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`
 	}) error {
@@ -361,7 +320,7 @@ func registerLLMHandlers(t rpcTable, h *rpcContext) {
 		}
 		return nil
 	})
-	t["clear_proxy_llm"] = rpc0void(func(ctx context.Context) error { backend.ClearProxyLLM(rpcBizID(ctx)); return nil })
+	t["clear_proxy_llm"] = h.backendPass("clear_proxy_llm")
 }
 
 // ── Subscription CRUD ──
@@ -856,7 +815,7 @@ func registerAdminHandlers(t rpcTable, h *rpcContext) {
 	disp := h.disp
 	msgBus := h.msgBus
 
-	t["reset_token_state"] = h.requireAdmin(rpc0void(func(ctx context.Context) error { backend.ResetTokenState(); return nil }))
+	t["reset_token_state"] = h.adminPass("reset_token_state")
 	t["get_channel_config"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
 		return backend.GetChannelConfigs()
 	}))

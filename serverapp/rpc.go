@@ -86,18 +86,42 @@ func rpc1void[P any](fn func(ctx context.Context, p P) error) rpcHandler {
 	}
 }
 
-func rpc0void(fn func(ctx context.Context) error) rpcHandler {
-	return func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
-		return nil, fn(ctx)
-	}
-}
-
 func (t rpcTable) dispatch(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	h, ok := t[method]
 	if !ok {
 		return nil, fmt.Errorf("unknown RPC method: %s", method)
 	}
 	return h(ctx, params)
+}
+
+// backendPass creates a handler that forwards the request to the backend's
+// local_transport via CallRPC. It injects the authenticated sender_id into
+// the params JSON before forwarding, so local_transport handlers receive the
+// correct identity without each handler extracting it manually.
+func (h *rpcContext) backendPass(method string) rpcHandler {
+	return func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+		injected := injectSenderID(params, rpcBizID(ctx))
+		return h.backend.CallRPC(method, injected)
+	}
+}
+
+// adminPass wraps backendPass with an admin-only check.
+func (h *rpcContext) adminPass(method string) rpcHandler {
+	return h.requireAdmin(h.backendPass(method))
+}
+
+// injectSenderID merges sender_id into the JSON params.
+func injectSenderID(params json.RawMessage, senderID string) json.RawMessage {
+	if params == nil {
+		params = json.RawMessage(`{}`)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(params, &m); err != nil {
+		m = map[string]any{}
+	}
+	m["sender_id"] = senderID
+	out, _ := json.Marshal(m)
+	return out
 }
 
 var errSettingsUnavailable = errors.New("settings service not available")
