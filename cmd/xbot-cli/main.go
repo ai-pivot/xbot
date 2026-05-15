@@ -1744,7 +1744,7 @@ func main() {
 	// Both local and remote modes register callbacks directly on the server-side Agent.
 	// In remote mode, server.go does this. In local mode, we do it here on app.ag.
 	// client.WireCallbacks is no-op for both modes — callbacks live on the server side.
-	if app.client != nil {
+	if app.ag != nil {
 		sessionStateHandler := func(ev protocol.SessionEvent) {
 			cliCh.SendSessionState(ev)
 		}
