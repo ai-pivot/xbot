@@ -573,7 +573,8 @@ type cliApp struct {
 	llmClient llm.LLM
 	msgBus    *bus.MessageBus
 	db        *sqlite.DB
-	client    *agent.Client // unified client (local or remote)
+	client    *agent.Client // unified RPC client (local or remote)
+	ag        *agent.Agent  // server-side agent (for callback injection, same role as server.go)
 	disp      *channel.Dispatcher
 	workDir   string
 	xbotHome  string
@@ -752,6 +753,12 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		log.WithError(err).Fatal("Failed to setup logger")
 	}
 
+	var (
+		ag     *agent.Agent
+		disp   *channel.Dispatcher
+		client *agent.Client
+	)
+
 	msgBus := bus.NewMessageBus()
 
 	if err := storage.MigrateIfNeeded(context.Background(), workDir, dbPath); err != nil {
@@ -805,8 +812,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
-	var client *agent.Client
-	var disp *channel.Dispatcher
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
 		// CLI creates its own msgBus and disp for local event routing.
@@ -832,6 +837,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to create server core")
 		}
+		ag = core.Agent
 
 		// Create event channel for TUI
 		eventCh := make(chan protocol.WSMessage, 256)
@@ -858,6 +864,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		msgBus:    msgBus,
 		db:        db,
 		client:    client,
+		ag:        ag,
 		disp:      disp,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
@@ -1734,14 +1741,15 @@ func main() {
 	// Only a few items are remote-specific (reconnect, conn_state).
 
 	// ── Wire ALL shared agent callbacks (same as serverapp/server.go) ──
-	// Both local and remote modes call the exact same methods with the same positional
-	// parameters. Adding a new parameter changes the signature → compile error at BOTH call sites.
+	// Both local and remote modes register callbacks directly on the server-side Agent.
+	// In remote mode, server.go does this. In local mode, we do it here on app.ag.
+	// client.WireCallbacks is no-op for both modes — callbacks live on the server side.
 	if app.client != nil {
 		sessionStateHandler := func(ev protocol.SessionEvent) {
 			cliCh.SendSessionState(ev)
 		}
 
-		app.client.WireCallbacks(
+		app.ag.WireCallbacks(
 			func(msg bus.OutboundMessage) (string, error) { // directSend
 				return disp.SendDirect(msg)
 			},
@@ -1760,9 +1768,10 @@ func main() {
 		)
 
 		// SetChatRenameFn: rename session in DB. Same logic as server.go.
+		// Registered directly on server-side Agent, same as remote mode does in server.go.
 		if app.db != nil {
 			conn := app.db.Conn()
-			app.client.SetChatRenameFn(func(chatID, newName string) (string, error) {
+			app.ag.SetChatRenameFn(func(chatID, newName string) (string, error) {
 				var oldName string
 				row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, cliSenderID, chatID)
 				_ = row.Scan(&oldName)

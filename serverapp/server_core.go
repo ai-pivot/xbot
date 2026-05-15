@@ -145,6 +145,10 @@ func NewServerCore(opts ServerCoreOpts) (*ServerCore, error) {
 		Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
 	})
 
+	// 6. WireCallbacks and SetChatRenameFn are set by the caller
+	// (CLI main.go or serverapp/server.go), not here.
+	// ServerCore only creates the Agent + RPCTable + Dispatcher.
+
 	return &ServerCore{
 		Agent:    ag,
 		Config:   cfg,

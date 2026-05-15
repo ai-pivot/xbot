@@ -316,7 +316,6 @@ func (c *Client) SetChatRenameFn(fn func(chatID, newName string) (oldName string
 	if setter, ok := c.transport.(renameSetter); ok {
 		setter.SetChatRenameFn(fn)
 	}
-	// Local mode: no-op (handled by ServerCore)
 }
 
 // ---------------------------------------------------------------------------
