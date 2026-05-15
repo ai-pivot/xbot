@@ -132,6 +132,9 @@ func NewServerCore(opts ServerCoreOpts) (*ServerCore, error) {
 		log.WithField("admin_chat_id", adminChatID).Info("Logs tool registered (admin only)")
 	}
 
+	// Index all registered tools so the agent knows about them.
+	ag.IndexGlobalTools()
+
 	// 5. Configure LLM.
 	ag.LLMFactory().SetModelTiers(cfg.LLM)
 	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)

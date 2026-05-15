@@ -72,6 +72,7 @@ const (
 	MethodSetMaxConcurrency            = "set_max_concurrency"
 	MethodSetMaxContextTokens          = "set_max_context_tokens"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
+	MethodApplyRuntimeSettings         = "apply_runtime_settings"
 )
 
 // --- Settings ---
@@ -378,6 +379,10 @@ type getEffectiveMaxContextReq struct {
 
 type clearPerChatMaxContextReq struct {
 	ChatID string `json:"chat_id"`
+}
+
+type applyRuntimeSettingsReq struct {
+	Values map[string]string `json:"values"`
 }
 
 // --- DirectSend / Channel ---

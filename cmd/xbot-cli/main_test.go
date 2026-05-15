@@ -718,8 +718,6 @@ func (b *fakeAgentBackend) BindChat(_ string) error                             
 func (b *fakeAgentBackend) SetDirectSend(func(bus.OutboundMessage) (string, error))  {}
 func (b *fakeAgentBackend) SetChannelFinder(func(string) (channel.Channel, bool))    {}
 func (b *fakeAgentBackend) SetChannelPromptProviders(...agent.ChannelPromptProvider) {}
-func (b *fakeAgentBackend) RegisterCoreTool(tools.Tool)                              {}
-func (b *fakeAgentBackend) IndexGlobalTools()                                        {}
 func (b *fakeAgentBackend) CountInteractiveSessions(string, string) int              { return 0 }
 func (b *fakeAgentBackend) ListInteractiveSessions(string, string) []agent.InteractiveSessionInfo {
 	return nil
@@ -744,7 +742,6 @@ func (b *fakeAgentBackend) SetMaxContextTokens(int, ...string)             {}
 func (b *fakeAgentBackend) GetEffectiveMaxContext(_, _ string) int         { return 0 }
 func (b *fakeAgentBackend) ClearPerChatMaxContext(_ string)                {}
 func (b *fakeAgentBackend) SetCompressionThreshold(float64)                {}
-func (b *fakeAgentBackend) SetSandbox(tools.Sandbox, string)               {}
 func (b *fakeAgentBackend) GetCardBuilder() *tools.CardBuilder             { return nil }
 func (b *fakeAgentBackend) SetEventRouter(*event.Router)                   {}
 func (b *fakeAgentBackend) GetBgTaskCount(string) int                      { return 0 }
@@ -790,8 +787,6 @@ func (b *fakeAgentBackend) RenameSubscription(id, name string) error {
 func (b *fakeAgentBackend) UpdateSubscription(id string, sub channel.Subscription) error {
 	return b.factory.GetSubscriptionSvc().Update(&sqlite.LLMSubscription{ID: id, SenderID: cliSenderID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode, IsDefault: sub.Active})
 }
-func (b *fakeAgentBackend) RegisterTool(tools.Tool) {}
-
 func (b *fakeAgentBackend) UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error {
 	return nil
 }

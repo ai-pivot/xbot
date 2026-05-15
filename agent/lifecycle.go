@@ -11,7 +11,6 @@ import (
 	"xbot/config"
 	llm "xbot/llm"
 	"xbot/protocol"
-	"xbot/tools"
 )
 
 // Sentinel errors for service availability checks.
@@ -142,12 +141,6 @@ type AgentBackend interface {
 
 	// --- Tenants (via RPC) ---
 	ListTenants() ([]TenantInfo, error)
-
-	// --- Tools (local mode only — direct Agent access) ---
-	RegisterCoreTool(tool tools.Tool)
-	RegisterTool(tool tools.Tool)
-	IndexGlobalTools()
-	SetSandbox(sb tools.Sandbox, mode string)
 
 	// --- Communication (delegated to EventRouter) ---
 	SendInbound(msg bus.InboundMessage) error

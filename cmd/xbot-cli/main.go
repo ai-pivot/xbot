@@ -573,9 +573,7 @@ type cliApp struct {
 	llmClient llm.LLM
 	msgBus    *bus.MessageBus
 	db        *sqlite.DB
-	client    *agent.Client         // unified client (local or remote)
-	core      *serverapp.ServerCore // local-mode core (nil in remote mode)
-	ag        *agent.Agent          // local-mode agent (nil in remote mode)
+	client    *agent.Client // unified client (local or remote)
 	disp      *channel.Dispatcher
 	workDir   string
 	xbotHome  string
@@ -808,8 +806,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
 	var client *agent.Client
-	var core *serverapp.ServerCore
-	var ag *agent.Agent
 	var disp *channel.Dispatcher
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
@@ -822,10 +818,10 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		client = agent.NewClient(transport, nil, nil)
 		disp = channel.NewDispatcher(msgBus)
 	} else {
-		// Local mode: ServerCore + InProcessTransport + Client.
+		// Local mode: ServerCore + ChannelTransport + Client.
 		// ServerCore owns the msgBus and disp — CLI reuses them.
-		var coreErr error
-		core, coreErr = serverapp.NewServerCore(serverapp.ServerCoreOpts{
+		// core is a local variable only used during init; not stored in cliApp.
+		core, coreErr := serverapp.NewServerCore(serverapp.ServerCoreOpts{
 			Config:           cfg,
 			LLM:              llmClient,
 			DBPath:           dbPath,
@@ -836,21 +832,11 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to create server core")
 		}
-		ag = core.Agent
-
-		// Override max output tokens if CLI flag specified
-		if maxOutputTokens > 0 {
-			ag.LLMFactory().SetGlobalMaxTokens(maxOutputTokens)
-		}
-
-		// Register additional CLI-only tools
-		core.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-		core.IndexGlobalTools()
 
 		// Create event channel for TUI
 		eventCh := make(chan protocol.WSMessage, 256)
 
-		// InProcessTransport wraps ServerCore's HandleRPC
+		// ChannelTransport wraps ServerCore's HandleRPC
 		transport := agent.NewChannelTransport(core.HandleRPC)
 
 		// Client is the unified interface
@@ -859,6 +845,11 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Use ServerCore's disp and msgBus
 		msgBus = core.MsgBus
 		disp = core.Disp
+
+		// Apply CLI flag overrides via RPC
+		if maxOutputTokens > 0 {
+			_ = client.SetGlobalMaxTokens(maxOutputTokens)
+		}
 	}
 
 	return &cliApp{
@@ -867,8 +858,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		msgBus:    msgBus,
 		db:        db,
 		client:    client,
-		core:      core,
-		ag:        ag,
 		disp:      disp,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
@@ -1199,7 +1188,7 @@ func main() {
 				}
 				_ = app.client.SetSetting("cli", "cli_user", k, v)
 			}
-			agent.ApplyRuntimeSettings(app.cfg, app.ag, "cli_user", values)
+			app.client.ApplyRuntimeSettings(values)
 			// Persist non-subscription settings to config.json
 
 			// Update local cache immediately (no waiting for refreshRemoteValuesCache)

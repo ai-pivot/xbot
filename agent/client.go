@@ -11,7 +11,6 @@ import (
 	"xbot/config"
 	llm "xbot/llm"
 	"xbot/protocol"
-	"xbot/tools"
 
 	log "xbot/logger"
 )
@@ -324,15 +323,6 @@ func (c *Client) SetChatRenameFn(fn func(chatID, newName string) (oldName string
 }
 
 // ---------------------------------------------------------------------------
-// Tool registration — local-only, no-op for Client
-// ---------------------------------------------------------------------------
-
-func (c *Client) RegisterCoreTool(tool tools.Tool)         {} // handled by ServerCore
-func (c *Client) RegisterTool(tool tools.Tool)             {} // handled by ServerCore
-func (c *Client) IndexGlobalTools()                        {} // handled by ServerCore
-func (c *Client) SetSandbox(sb tools.Sandbox, mode string) {} // handled by ServerCore
-
-// ---------------------------------------------------------------------------
 // Settings (via RPC)
 // ---------------------------------------------------------------------------
 
@@ -482,6 +472,12 @@ func (c *Client) SetMaxContextTokens(n int, chatID ...string) {
 
 func (c *Client) SetCompressionThreshold(f float64) {
 	c.callVoid(MethodSetCompressionThreshold, setCompressionThresholdReq{Threshold: f})
+}
+
+// ApplyRuntimeSettings applies a batch of setting changes via RPC.
+// The server-side handler calls agent.ApplyRuntimeSettings + saveServerConfig.
+func (c *Client) ApplyRuntimeSettings(values map[string]string) {
+	c.callVoid(MethodApplyRuntimeSettings, applyRuntimeSettingsReq{Values: values})
 }
 
 func (c *Client) SetContextMode(mode string) error {

@@ -15,6 +15,7 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/config"
+	llm_pkg "xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/storage/sqlite"
@@ -369,6 +370,45 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		return nil
 	})
 	t["clear_proxy_llm"] = rpc0void(func(ctx context.Context) error { h.Ag.ClearProxyLLM(rpcBizID(ctx)); return nil })
+	t["set_global_max_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		MaxTokens int `json:"max_tokens"`
+	}) error {
+		if h.Ag.LLMFactory() == nil {
+			return fmt.Errorf("LLM factory not available")
+		}
+		h.Ag.LLMFactory().SetGlobalMaxTokens(p.MaxTokens)
+		return nil
+	}))
+	t["set_model_contexts"] = h.requireAdmin(rpc1void(func(ctx context.Context, p map[string]int) error {
+		if h.Ag.LLMFactory() == nil {
+			return fmt.Errorf("LLM factory not available")
+		}
+		h.Ag.LLMFactory().SetModelContexts(p)
+		return nil
+	}))
+	t["set_retry_config"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		Attempts uint          `json:"attempts"`
+		Delay    time.Duration `json:"delay"`
+		MaxDelay time.Duration `json:"max_delay"`
+		Timeout  time.Duration `json:"timeout"`
+	}) error {
+		if h.Ag.LLMFactory() == nil {
+			return fmt.Errorf("LLM factory not available")
+		}
+		h.Ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
+			Attempts: p.Attempts,
+			Delay:    p.Delay,
+			MaxDelay: p.MaxDelay,
+			Timeout:  p.Timeout,
+		})
+		return nil
+	}))
+	t["apply_runtime_settings"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		Values map[string]string `json:"values"`
+	}) error {
+		applyRuntimeSettings(h.Cfg, h.Ag, rpcBizID(ctx), p.Values)
+		return nil
+	}))
 }
 
 // ── Subscription CRUD ──
