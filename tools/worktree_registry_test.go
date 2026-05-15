@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,8 @@ import (
 )
 
 // newTestGitRepo creates a temporary git repo and returns its path.
+// The returned path is normalized via git rev-parse to ensure consistent
+// formatting across platforms (e.g. Windows 8.3 short paths vs full paths).
 func newTestGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -28,7 +31,13 @@ func newTestGitRepo(t *testing.T) string {
 	// Remove hooks so pre-commit doesn't run in temp repos.
 	_ = os.RemoveAll(filepath.Join(dir, ".git", "hooks"))
 	run("git", "commit", "--allow-empty", "-m", "init")
-	return dir
+
+	// Normalize via git rev-parse so the returned path matches what
+	// GitRepoRoot() returns inside RegisterPeer (avoids Windows 8.3 vs
+	// full path mismatch).
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(out))
 }
 
 // newTestRegistry creates a fresh WorktreeRegistry for testing.
