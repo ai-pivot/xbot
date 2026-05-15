@@ -838,7 +838,9 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		eventCh := make(chan protocol.WSMessage, 256)
 
 		// ChannelTransport wraps RPCTable dispatch
-		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable))
+		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
+			return serverapp.WithRPCCtx(context.Background(), "cli_user", "cli_user")
+		})
 
 		// Client is the unified interface
 		client = agent.NewClient(transport, eventCh, coreMsgBus)
