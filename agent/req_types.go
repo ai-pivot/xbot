@@ -10,6 +10,7 @@ import (
 const (
 	MethodGetSettings                  = "get_settings"
 	MethodSetSetting                   = "set_setting"
+	MethodSendInbound                  = "send_inbound"
 	MethodSetCWD                       = "set_cwd"
 	MethodSetContextMode               = "set_context_mode"
 	MethodGetContextMode               = "get_context_mode"

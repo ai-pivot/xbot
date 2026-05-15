@@ -431,7 +431,7 @@ func Run(args []string) error {
 		}
 	}
 
-	ag, rpcTable, disp, msgBus, err = InitServer(cfg, llmClient, dbPath, workDir, xbotDir, cfg.Web.PersonaIsolation, channelReconfigureFn)
+	ag, rpcTable, disp, msgBus, err = InitServer(cfg, llmClient, dbPath, workDir, xbotDir, cfg.Web.PersonaIsolation, channelReconfigureFn, nil)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to init server")
 	}
@@ -700,15 +700,7 @@ func Run(args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// 启动出站消息分发
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.WithField("panic", r).Error("Dispatcher panicked\n" + string(debug.Stack()))
-			}
-		}()
-		disp.Run()
-	}()
+	// Dispatcher.Run() is already started by InitServer.
 
 	// 启动所有渠道
 	for name, ch := range getChannels(disp) {

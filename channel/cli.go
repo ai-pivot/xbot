@@ -31,10 +31,9 @@ import (
 	"xbot/version"
 )
 
-func NewCLIChannel(cfg *CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
+func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 	ch := &CLIChannel{
 		config:     cfg,
-		msgBus:     msgBus,
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan bus.OutboundMessage, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
@@ -99,7 +98,6 @@ func (c *CLIChannel) Start() error {
 	// 初始化 Bubble Tea model
 	c.model = newCLIModel()
 	c.model.channel = c
-	c.model.SetMsgBus(c.msgBus)
 	c.model.workDir = c.workDir
 	c.model.remoteMode = c.config.RemoteMode
 	c.model.remoteServerURL = c.config.RemoteServerURL

@@ -115,6 +115,35 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 // ── Context / settings / cwd / max-iterations / concurrency / context-tokens ──
 
 func registerSettingsHandlers(t RPCTable, h *RPCContext) {
+	// send_inbound routes an inbound message through the message bus.
+	// Used by Client.SendInbound in local mode so CLI never touches msgBus directly.
+	t["send_inbound"] = rpc1(func(ctx context.Context, p struct {
+		Channel    string            `json:"channel"`
+		ChatID     string            `json:"chat_id"`
+		Content    string            `json:"content"`
+		SenderID   string            `json:"sender_id"`
+		SenderName string            `json:"sender_name"`
+		ChatType   string            `json:"chat_type"`
+		RequestID  string            `json:"request_id"`
+		Metadata   map[string]string `json:"metadata,omitempty"`
+	}) (any, error) {
+		msg := bus.InboundMessage{
+			Channel:    p.Channel,
+			ChatID:     p.ChatID,
+			Content:    p.Content,
+			SenderID:   p.SenderID,
+			SenderName: p.SenderName,
+			ChatType:   p.ChatType,
+			RequestID:  p.RequestID,
+			Metadata:   p.Metadata,
+		}
+		select {
+		case h.MsgBus.Inbound <- msg:
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("inbound channel full")
+		}
+	})
 	t["get_context_mode"] = rpc0(func(ctx context.Context) any {
 		return h.Ag.GetContextMode()
 	})

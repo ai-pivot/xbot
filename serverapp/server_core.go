@@ -13,6 +13,8 @@ import (
 	"xbot/config"
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
+	"xbot/storage"
 	"xbot/tools"
 )
 
@@ -21,15 +23,30 @@ import (
 // The Agent is created and managed internally — callers never access it directly.
 //
 // Both CLI local mode and server remote mode call this.
-// The caller is responsible for:
-//   - Registering the CLI/WS channel with the returned Dispatcher
-//   - HTTP/WS listening (server mode only)
-func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbotHome string, personaIsolation bool, reconfigureFn func(string)) (
+// When eventCh is non-nil (local CLI mode), a localEventBridge is created and
+// registered with the Dispatcher so that server→CLI events flow through eventCh.
+// When eventCh is nil (server mode), no bridge is created; server.go registers
+// its own RemoteCLIChannel later.
+//
+// The Dispatcher's Run() goroutine is started inside InitServer for all modes.
+func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbotHome string, personaIsolation bool, reconfigureFn func(string), eventCh chan protocol.WSMessage) (
 	ag *agent.Agent, rpcTable RPCTable, disp *channel.Dispatcher, msgBus *bus.MessageBus, err error) {
 
 	// 1. Create MessageBus and Dispatcher.
 	msgBus = bus.NewMessageBus()
 	disp = channel.NewDispatcher(msgBus)
+
+	// 2. Register localEventBridge when eventCh is provided (local CLI mode).
+	if eventCh != nil {
+		bridge := &localEventBridge{eventCh: eventCh}
+		disp.Register(bridge)
+	}
+
+	// 1b. Migrate data to SQLite if needed (one-time migration from old formats).
+	// Must run BEFORE agent.New (which opens the DB via session.NewMultiTenant).
+	if err := storage.MigrateIfNeeded(context.Background(), workDir, dbPath); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("migrate data: %w", err)
+	}
 
 	// 2. Create Agent.
 	embBaseURL := cfg.Embedding.BaseURL
@@ -85,6 +102,18 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		return nil, nil, nil, nil, fmt.Errorf("create agent: %w", err)
 	}
 
+	// 2c. Migrate flat memory from SQLite tables to MD files (if needed).
+	// This is a one-time migration; must run after agent opens the DB (via
+	// session.NewMultiTenant) but before any session access.
+	storage.MigrateMemoryToFiles(dbPath)
+
+	// 2c. Set runner token DB for per-user runner token persistence.
+	// The Agent opens the DB internally via session.NewMultiTenant(cfg.DBPath);
+	// we retrieve the *sql.DB from MultiSession to avoid a second sqlite.Open.
+	if db := ag.MultiSession().DB(); db != nil {
+		tools.SetRunnerTokenDB(db.Conn())
+	}
+
 	// 3. Create RPCTable.
 	rpcTable = BuildRPCTable(cfg, ag, disp, msgBus, reconfigureFn)
 
@@ -136,7 +165,10 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 			log.WithError(err).Error("Agent loop exited with error")
 		}
 	}()
-	log.Info("Agent loop started")
+
+	// 8. Start dispatcher goroutine (reads from msgBus.Outbound and
+	// dispatches to registered channels — including localEventBridge in local mode).
+	go disp.Run()
 
 	return ag, rpcTable, disp, msgBus, nil
 }
@@ -145,4 +177,50 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 // Used by ChannelTransport in local mode.
 func DispatchRPC(table RPCTable) func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 	return table.Dispatch
+}
+
+// ---------------------------------------------------------------------------
+// localEventBridge — bridges server-side Dispatcher to CLI's eventCh
+// ---------------------------------------------------------------------------
+
+// localEventBridge implements channel.Channel. It is registered with the
+// Dispatcher so that all outbound messages for the "cli" channel are forwarded
+// as protocol.WSMessage to eventCh, which the Client reads in its eventLoop.
+//
+// This is the critical piece that decouples CLI from server internals:
+// the CLI never touches msgBus or disp directly — events flow through eventCh.
+type localEventBridge struct {
+	eventCh chan protocol.WSMessage
+}
+
+func (b *localEventBridge) Name() string { return "cli" }
+
+func (b *localEventBridge) Start() error { return nil }
+
+func (b *localEventBridge) Stop() {}
+
+func (b *localEventBridge) Send(msg bus.OutboundMessage) (string, error) {
+	// Convert OutboundMessage → WSMessage and push to eventCh.
+	// The Client.eventLoop reads from eventCh and dispatches via dispatchWSMessage.
+	wsMsg := protocol.WSMessage{
+		Type:    protocol.MsgTypeText,
+		Content: msg.Content,
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+	}
+	if msg.WaitingUser {
+		// ask_user events use a different type so the client can distinguish them.
+		wsMsg.Type = protocol.MsgTypeAskUser
+		if msg.Metadata != nil {
+			if q, ok := msg.Metadata["ask_questions"]; ok {
+				wsMsg.Content = q
+			}
+		}
+	}
+	select {
+	case b.eventCh <- wsMsg:
+	default:
+		log.WithField("chat_id", msg.ChatID).Warn("localEventBridge: eventCh full, dropping message")
+	}
+	return "", nil
 }

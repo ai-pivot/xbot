@@ -18,13 +18,39 @@ import (
 	"xbot/llm"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+// UserTokenUsage represents a user's cumulative token usage.
+// Mirror of sqlite.UserTokenUsage — used in CLIChannelConfig.UsageQuery callback
+// so that cmd/xbot-cli does not need to import the sqlite package.
+type UserTokenUsage struct {
+	SenderID          string `json:"sender_id"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	TotalTokens       int64  `json:"total_tokens"`
+	CachedTokens      int64  `json:"cached_tokens"`
+	ConversationCount int64  `json:"conversation_count"`
+	LLMCallCount      int64  `json:"llm_call_count"`
+}
+
+// DailyTokenUsage represents token usage for a specific day+model.
+// Mirror of sqlite.DailyTokenUsage — used in CLIChannelConfig.UsageQuery callback
+// so that cmd/xbot-cli does not need to import the sqlite package.
+type DailyTokenUsage struct {
+	Date              string `json:"date"` // YYYY-MM-DD
+	SenderID          string `json:"sender_id"`
+	Model             string `json:"model"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	CachedTokens      int64  `json:"cached_tokens"`
+	ConversationCount int64  `json:"conversation_count"`
+	LLMCallCount      int64  `json:"llm_call_count"`
+}
 
 const (
 	cliMsgBufSize = 100
@@ -579,49 +605,49 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 
 // CLIChannelConfig CLI 渠道配置
 type CLIChannelConfig struct {
-	WorkDir              string                                                                                                         // 工作目录（用于标题栏显示）
-	ChatID               string                                                                                                         // 会话 ID（按工作目录区分）
-	RemoteMode           bool                                                                                                           // 是否为 remote backend 模式（用于标题栏/轻提示）
-	RemoteServerURL      string                                                                                                         // remote server URL (for header display, e.g. "ws://host:port")
-	DebugMode            bool                                                                                                           // --debug: UI capture + key injection via SIGUSR1
-	DebugInput           string                                                                                                         // --debug-input "1,enter,ctrl+c": auto-inject key sequence after startup
-	DebugCaptureMs       int                                                                                                            // --debug-capture-ms 200: UI capture interval in ms (default 1000)
-	HistoryLoader        func() ([]HistoryMessage, error)                                                                               // 会话恢复：加载历史消息
-	DynamicHistoryLoader func(channelName, chatID string) ([]HistoryMessage, error)                                                     // /su 切换用户后加载目标用户历史
-	TokenStateLoader     func() (promptTokens, completionTokens int64)                                                                  // 会话恢复：从 DB 加载上次 Run 的 token 计数
-	AgentSessionDumpFn   func(chatID string) ([]HistoryMessage, error)                                                                  // agent session 切换时从 Agent 内存加载消息
-	GetCurrentValues     func() map[string]string                                                                                       // 获取当前配置值（用于 settings panel 初始值）
-	ApplySettings        func(values map[string]string, chatID string)                                                                  // 应用设置变更（写 config.json + 更新运行时状态）
-	IsFirstRun           bool                                                                                                           // 首次运行标志，TUI 启动时自动打开 setup panel
-	ClearMemory          func(targetType string) error                                                                                  // 清空记忆（danger zone）
-	GetMemoryStats       func() map[string]string                                                                                       // 获取记忆统计（danger zone）
-	SwitchLLM            func(provider, baseURL, apiKey, model string) error                                                            // 切换活跃 LLM（config + factory + save）
-	RefreshValuesCache   func()                                                                                                         // 刷新 GetCurrentValues 缓存（sub 切换后调用）
-	UsageQuery           func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error) // 查询 token 用量
-	AgentCount           func() int                                                                                                     // 获取活跃的 interactive agent 数量
-	AgentList            func() []AgentPanelEntry                                                                                       // 列出活跃 interactive agents（用于 panel 展示）
-	AgentInspect         func(roleName, instance string, tailCount int) (string, error)                                                 // 窥探 interactive agent 的最近活动（tail 风格）
-	AgentMessages        func(roleName, instance string) []SessionChatMessage                                                           // 获取 interactive agent 的对话消息
-	ChatCreateFn         func(channelName, senderID, label string) (string, error)                                                      // 创建新 ChatRoom（返回 chatID）
-	SessionsDeleteFn     func(channelName, chatID string) error                                                                         // 删除 session（本地 JSON + 服务端 DB 级联）
-	SessionsListRefresh  func()                                                                                                         // 侧边栏刷新：session 创建/删除后立即调用，确保 sidebar 不显示过期数据
-	SessionsList         func() []SessionPanelEntry                                                                                     // 列出所有 session（main + subagent）
-	GetActiveProgressFn  func(channelName, chatID string) *protocol.ProgressEvent                                                       // 获取目标 session 的活跃进度（session switch 恢复用）
-	GetTodosFn           func(channelName, chatID string) []protocol.TodoItem                                                           // 获取目标 session 的服务端 TODO 列表（session switch 覆盖本地缓存用）
-	GetTokenStateFn      func(channelName, chatID string) (promptTokens, completionTokens int64)                                        // 获取目标 session 的最后 token 状态（session switch 恢复 context bar 用）
-	TrimHistoryFn        func(channelName, chatID string, cutoff time.Time) error                                                       // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
-	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                                   // 获取频道配置（用于 /channel 面板）
-	ChannelConfigSetFn   func(channel string, values map[string]string) error                                                           // 保存频道配置（用于 /channel 面板）
-	CreateWebUserFn      func(username string) (password string, err error)                                                             // 创建 Web 用户（admin only，返回自动生成的密码）
-	ListWebUsersFn       func() ([]map[string]any, error)                                                                               // 列出所有 Web 用户
-	DeleteWebUserFn      func(username string) error                                                                                    // 删除 Web 用户（admin only）
-	IsAdminFn            func() bool                                                                                                    // 检查当前用户是否 admin
-	PaletteContributor   PaletteContributor                                                                                             // supplies external commands for command palette
-	SidebarWidthOverride int                                                                                                            // --sidebar-width N (0 = use setting/default)
-	NoSidebar            bool                                                                                                           // --no-sidebar
-	TodoManager          *tools.TodoManager                                                                                             // per-session todo persistence
-	SetCWDFn             func(channelName, chatID, dir string) error                                                                    // 会话切换时初始化 CWD
-	BindChatFn           func(chatID string) error                                                                                      // 订阅 Hub 路由，使服务器推送事件（progress/stream/outbound）到达客户端
+	WorkDir              string                                                                                           // 工作目录（用于标题栏显示）
+	ChatID               string                                                                                           // 会话 ID（按工作目录区分）
+	RemoteMode           bool                                                                                             // 是否为 remote backend 模式（用于标题栏/轻提示）
+	RemoteServerURL      string                                                                                           // remote server URL (for header display, e.g. "ws://host:port")
+	DebugMode            bool                                                                                             // --debug: UI capture + key injection via SIGUSR1
+	DebugInput           string                                                                                           // --debug-input "1,enter,ctrl+c": auto-inject key sequence after startup
+	DebugCaptureMs       int                                                                                              // --debug-capture-ms 200: UI capture interval in ms (default 1000)
+	HistoryLoader        func() ([]HistoryMessage, error)                                                                 // 会话恢复：加载历史消息
+	DynamicHistoryLoader func(channelName, chatID string) ([]HistoryMessage, error)                                       // /su 切换用户后加载目标用户历史
+	TokenStateLoader     func() (promptTokens, completionTokens int64)                                                    // 会话恢复：从 DB 加载上次 Run 的 token 计数
+	AgentSessionDumpFn   func(chatID string) ([]HistoryMessage, error)                                                    // agent session 切换时从 Agent 内存加载消息
+	GetCurrentValues     func() map[string]string                                                                         // 获取当前配置值（用于 settings panel 初始值）
+	ApplySettings        func(values map[string]string, chatID string)                                                    // 应用设置变更（写 config.json + 更新运行时状态）
+	IsFirstRun           bool                                                                                             // 首次运行标志，TUI 启动时自动打开 setup panel
+	ClearMemory          func(targetType string) error                                                                    // 清空记忆（danger zone）
+	GetMemoryStats       func() map[string]string                                                                         // 获取记忆统计（danger zone）
+	SwitchLLM            func(provider, baseURL, apiKey, model string) error                                              // 切换活跃 LLM（config + factory + save）
+	RefreshValuesCache   func()                                                                                           // 刷新 GetCurrentValues 缓存（sub 切换后调用）
+	UsageQuery           func(senderID string, days int) (cumulative *UserTokenUsage, daily []DailyTokenUsage, err error) // 查询 token 用量
+	AgentCount           func() int                                                                                       // 获取活跃的 interactive agent 数量
+	AgentList            func() []AgentPanelEntry                                                                         // 列出活跃 interactive agents（用于 panel 展示）
+	AgentInspect         func(roleName, instance string, tailCount int) (string, error)                                   // 窥探 interactive agent 的最近活动（tail 风格）
+	AgentMessages        func(roleName, instance string) []SessionChatMessage                                             // 获取 interactive agent 的对话消息
+	ChatCreateFn         func(channelName, senderID, label string) (string, error)                                        // 创建新 ChatRoom（返回 chatID）
+	SessionsDeleteFn     func(channelName, chatID string) error                                                           // 删除 session（本地 JSON + 服务端 DB 级联）
+	SessionsListRefresh  func()                                                                                           // 侧边栏刷新：session 创建/删除后立即调用，确保 sidebar 不显示过期数据
+	SessionsList         func() []SessionPanelEntry                                                                       // 列出所有 session（main + subagent）
+	GetActiveProgressFn  func(channelName, chatID string) *protocol.ProgressEvent                                         // 获取目标 session 的活跃进度（session switch 恢复用）
+	GetTodosFn           func(channelName, chatID string) []protocol.TodoItem                                             // 获取目标 session 的服务端 TODO 列表（session switch 覆盖本地缓存用）
+	GetTokenStateFn      func(channelName, chatID string) (promptTokens, completionTokens int64)                          // 获取目标 session 的最后 token 状态（session switch 恢复 context bar 用）
+	TrimHistoryFn        func(channelName, chatID string, cutoff time.Time) error                                         // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
+	ChannelConfigGetFn   func() (map[string]map[string]string, error)                                                     // 获取频道配置（用于 /channel 面板）
+	ChannelConfigSetFn   func(channel string, values map[string]string) error                                             // 保存频道配置（用于 /channel 面板）
+	CreateWebUserFn      func(username string) (password string, err error)                                               // 创建 Web 用户（admin only，返回自动生成的密码）
+	ListWebUsersFn       func() ([]map[string]any, error)                                                                 // 列出所有 Web 用户
+	DeleteWebUserFn      func(username string) error                                                                      // 删除 Web 用户（admin only）
+	IsAdminFn            func() bool                                                                                      // 检查当前用户是否 admin
+	PaletteContributor   PaletteContributor                                                                               // supplies external commands for command palette
+	SidebarWidthOverride int                                                                                              // --sidebar-width N (0 = use setting/default)
+	NoSidebar            bool                                                                                             // --no-sidebar
+	TodoManager          *tools.TodoManager                                                                               // per-session todo persistence
+	SetCWDFn             func(channelName, chatID, dir string) error                                                      // 会话切换时初始化 CWD
+	BindChatFn           func(chatID string) error                                                                        // 订阅 Hub 路由，使服务器推送事件（progress/stream/outbound）到达客户端
 }
 
 type AgentPanelEntry struct {
@@ -656,7 +682,6 @@ type SessionPanelEntry struct {
 // CLIChannel CLI 渠道实现
 type CLIChannel struct {
 	config  *CLIChannelConfig
-	msgBus  *bus.MessageBus
 	msgChan chan bus.OutboundMessage // 接收 agent 回复的通道
 	workDir string                   // 工作目录
 

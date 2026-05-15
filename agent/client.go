@@ -23,7 +23,6 @@ import (
 type Client struct {
 	transport Transport
 	eventCh   chan protocol.WSMessage // nil in remote mode
-	msgBus    *bus.MessageBus         // nil in remote mode — used by SendInbound
 
 	// Event subscription (shared with baseTransport pattern)
 	base baseTransport
@@ -39,19 +38,28 @@ type Client struct {
 // Parameters:
 //   - transport: the RPC transport (ChannelTransport for local, RemoteTransport for remote)
 //   - eventCh: channel for receiving server-pushed events (nil for remote mode)
-//   - msgBus: message bus for sending inbound messages (nil for remote mode)
-func NewClient(transport Transport, eventCh chan protocol.WSMessage, msgBus *bus.MessageBus) *Client {
+func NewClient(transport Transport, eventCh chan protocol.WSMessage) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		transport: transport,
 		eventCh:   eventCh,
-		msgBus:    msgBus,
 		base:      newBaseTransport(),
 		ctx:       ctx,
 		cancel:    cancel,
 		done:      make(chan struct{}),
 	}
-	if eventCh != nil {
+	// Start eventLoop if eventCh is available (local mode via ChannelTransport)
+	// or if the transport provides one via EventCh().
+	ch := eventCh
+	if ch == nil {
+		if evt, ok := transport.(interface {
+			EventCh() chan protocol.WSMessage
+		}); ok {
+			ch = evt.EventCh()
+		}
+	}
+	if ch != nil {
+		c.eventCh = ch
 		go c.eventLoop()
 	}
 	return c
@@ -227,31 +235,31 @@ func (c *Client) ServerURL() string {
 // ---------------------------------------------------------------------------
 
 // SendInbound sends a user message to the agent.
-// Local mode: writes to the message bus.
-// Remote mode: sends via WebSocket (RemoteTransport.SendMessage).
+// Both local and remote mode: routes through RPC.
+// Local mode: send_inbound RPC handler writes to msgBus.Inbound.
+// Remote mode: uses RemoteTransport.SendMessage if available.
 func (c *Client) SendInbound(msg bus.InboundMessage) error {
-	if c.msgBus != nil {
-		// Local mode — write directly to the bus.
-		c.msgBus.Inbound <- msg
-		return nil
+	// Remote mode — use WebSocket SendMessage.
+	if c.eventCh == nil {
+		type messageSender interface {
+			SendMessage(msg protocol.InboundMessage) error
+		}
+		if sender, ok := c.transport.(messageSender); ok {
+			return sender.SendMessage(protocol.InboundMessage{
+				MessagePayload: bus.MessagePayload{
+					Content:    msg.Content,
+					Channel:    msg.Channel,
+					ChatID:     msg.ChatID,
+					SenderID:   msg.SenderID,
+					SenderName: msg.SenderName,
+					ChatType:   msg.ChatType,
+				},
+			})
+		}
+		return fmt.Errorf("Client: no remote sender configured")
 	}
-	// Remote mode — use RemoteTransport.SendMessage if available.
-	type messageSender interface {
-		SendMessage(msg protocol.InboundMessage) error
-	}
-	if sender, ok := c.transport.(messageSender); ok {
-		return sender.SendMessage(protocol.InboundMessage{
-			MessagePayload: bus.MessagePayload{
-				Content:    msg.Content,
-				Channel:    msg.Channel,
-				ChatID:     msg.ChatID,
-				SenderID:   msg.SenderID,
-				SenderName: msg.SenderName,
-				ChatType:   msg.ChatType,
-			},
-		})
-	}
-	return fmt.Errorf("Client: no message bus or remote sender configured")
+	// Local mode — use RPC (send_inbound handler writes to msgBus.Inbound).
+	return c.call(MethodSendInbound, msg, nil)
 }
 
 // Subscribe registers an event handler matching the given pattern.

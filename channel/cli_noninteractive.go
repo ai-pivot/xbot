@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
 	"xbot/bus"
 	log "xbot/logger"
 )
@@ -14,19 +15,18 @@ import (
 
 // NonInteractiveChannel 非交互模式渠道，用于管道/参数模式。
 // 收到完整消息后打印到 stdout 并设置退出标志。
+// NOTE: msgBus is no longer used — kept as struct for compatibility with tests.
 type NonInteractiveChannel struct {
-	msgBus   *bus.MessageBus
 	msgCh    chan bus.OutboundMessage
 	done     chan struct{}
 	doneOnce sync.Once // ensures close(done) is called exactly once
 }
 
 // NewNonInteractiveChannel 创建非交互模式渠道
-func NewNonInteractiveChannel(msgBus *bus.MessageBus) *NonInteractiveChannel {
+func NewNonInteractiveChannel() *NonInteractiveChannel {
 	ch := &NonInteractiveChannel{
-		msgBus: msgBus,
-		msgCh:  make(chan bus.OutboundMessage, 64),
-		done:   make(chan struct{}),
+		msgCh: make(chan bus.OutboundMessage, 64),
+		done:  make(chan struct{}),
 	}
 	// 启动消息接收 goroutine
 	go ch.run()

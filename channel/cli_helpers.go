@@ -14,7 +14,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"xbot/storage/sqlite"
 )
 
 // ParseSettingBool parses a boolean setting value.
@@ -945,8 +944,8 @@ func (m *cliModel) handleUsageCommand() {
 
 	// --- Today's usage by model ---
 	today := time.Now().Format("2006-01-02")
-	var todayEntries []sqlite.DailyTokenUsage
-	var todayTotal sqlite.DailyTokenUsage
+	var todayEntries []DailyTokenUsage
+	var todayTotal DailyTokenUsage
 	for _, d := range daily {
 		if d.Date == today {
 			todayEntries = append(todayEntries, d)
@@ -961,7 +960,7 @@ func (m *cliModel) handleUsageCommand() {
 		sb.WriteString("\n## Today's Usage by Model\n\n")
 		sb.WriteString("| Model | Input | Output | Cached | Cache% | Calls |\n")
 		sb.WriteString("|-------|-------|--------|--------|--------|-------|\n")
-		slices.SortFunc(todayEntries, func(a, b sqlite.DailyTokenUsage) int {
+		slices.SortFunc(todayEntries, func(a, b DailyTokenUsage) int {
 			return int((b.InputTokens + b.OutputTokens) - (a.InputTokens + a.OutputTokens))
 		})
 		for _, d := range todayEntries {
@@ -997,11 +996,11 @@ func (m *cliModel) handleUsageCommand() {
 	}
 
 	// --- Last 10 days daily summary ---
-	daySummary := make(map[string]*sqlite.DailyTokenUsage)
+	daySummary := make(map[string]*DailyTokenUsage)
 	var sortedDates []string
 	for _, d := range daily {
 		if _, ok := daySummary[d.Date]; !ok {
-			daySummary[d.Date] = &sqlite.DailyTokenUsage{Date: d.Date}
+			daySummary[d.Date] = &DailyTokenUsage{Date: d.Date}
 			sortedDates = append(sortedDates, d.Date)
 		}
 		s := daySummary[d.Date]

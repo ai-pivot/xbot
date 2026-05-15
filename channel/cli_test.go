@@ -29,8 +29,7 @@ func isTerminal() bool {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelName(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	if got := ch.Name(); got != "cli" {
 		t.Errorf("CLIChannel.Name() = %q, want %q", got, "cli")
@@ -43,8 +42,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 		t.Skip("Skipping - requires TTY")
 	}
 
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Start in goroutine since it blocks
 	startErr := make(chan error, 1)
@@ -72,8 +70,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelSend(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send without starting should still work (messages buffered)
 	msg := bus.OutboundMessage{
@@ -93,8 +90,7 @@ func TestCLIChannelSend(t *testing.T) {
 }
 
 func TestCLIChannelSendPartial(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send partial (streaming) message
 	msg := bus.OutboundMessage{
@@ -114,8 +110,7 @@ func TestCLIChannelSendPartial(t *testing.T) {
 }
 
 func TestCLIChannelSendComplete(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send complete message
 	msg := bus.OutboundMessage{
@@ -135,8 +130,7 @@ func TestCLIChannelSendComplete(t *testing.T) {
 }
 
 func TestCLIChannelSendBufferOverflow(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send more messages than buffer size to test non-blocking behavior
 	for i := 0; i < cliMsgBufSize+10; i++ {
@@ -152,8 +146,7 @@ func TestCLIChannelSendBufferOverflow(t *testing.T) {
 }
 
 func TestCLIChannelSendProgress(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// SendProgress with nil payload should not panic
 	ch.SendProgress("test_chat", nil)
@@ -172,8 +165,7 @@ func TestCLIChannelSendProgress(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelSendEmptyMessage(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -192,8 +184,7 @@ func TestCLIChannelSendEmptyMessage(t *testing.T) {
 }
 
 func TestCLIChannelSendLongMessage(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Create a very long message
 	longContent := strings.Repeat("This is a long message. ", 1000)
@@ -215,8 +206,7 @@ func TestCLIChannelSendLongMessage(t *testing.T) {
 }
 
 func TestCLIChannelSendWithMetadata(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -236,8 +226,7 @@ func TestCLIChannelSendWithMetadata(t *testing.T) {
 }
 
 func TestCLIChannelSendWithMedia(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	msg := bus.OutboundMessage{
 		Channel:   "cli",
@@ -269,14 +258,19 @@ func TestCLIModelInit(t *testing.T) {
 	}
 }
 
-func TestCLIModelSetMsgBus(t *testing.T) {
+func TestCLIModelSendInboundFn(t *testing.T) {
 	model := newCLIModel()
-	msgBus := bus.NewMessageBus()
+	called := false
+	model.sendInboundFn = func(msg bus.InboundMessage) bool {
+		called = true
+		return true
+	}
 
-	model.SetMsgBus(msgBus)
-
-	if model.msgBus != msgBus {
-		t.Error("SetMsgBus() did not set msgBus correctly")
+	if !model.sendInbound(bus.InboundMessage{Content: "test"}) {
+		t.Error("sendInbound() returned false")
+	}
+	if !called {
+		t.Error("sendInboundFn was not called")
 	}
 }
 
@@ -656,10 +650,9 @@ func TestCLIModelUpdateCtrlCWhileTyping(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.typing = true
-	model.msgBus = bus.NewMessageBus()
-
-	// Drain the inbound channel in background
-	go func() { <-model.msgBus.Inbound }()
+	model.sendInboundFn = func(msg bus.InboundMessage) bool {
+		return true
+	}
 
 	keyMsg := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	_, _ = model.Update(keyMsg)
@@ -902,7 +895,7 @@ func TestCLIModelUpdateEnterKeyWithContent(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.inputReady = true
-	model.msgBus = bus.NewMessageBus()
+	model.sendInboundFn = func(msg bus.InboundMessage) bool { return true }
 
 	// Set textarea content
 	model.textarea.SetValue("Hello world")
@@ -1291,15 +1284,13 @@ func TestCLIModelUpdateViewportContentAssistantMessage(t *testing.T) {
 func TestCLIModelSendMessage(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	msgBus := bus.NewMessageBus()
-	model.msgBus = msgBus
 
-	// Start goroutine to receive message
+	// Capture inbound message via sendInboundFn
 	received := make(chan bus.InboundMessage, 1)
-	go func() {
-		msg := <-msgBus.Inbound
+	model.sendInboundFn = func(msg bus.InboundMessage) bool {
 		received <- msg
-	}()
+		return true
+	}
 
 	model.sendMessage("Hello agent")
 
@@ -1322,10 +1313,10 @@ func TestCLIModelSendMessage(t *testing.T) {
 	}
 }
 
-func TestCLIModelSendMessageNoMsgBus(t *testing.T) {
+func TestCLIModelSendMessageNoSendInboundFn(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	// msgBus is nil
+	// sendInboundFn is nil
 
 	model.sendMessage("Hello agent")
 
@@ -1338,7 +1329,7 @@ func TestCLIModelSendMessageNoMsgBus(t *testing.T) {
 func TestCLIModelSendMessageEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.msgBus = bus.NewMessageBus()
+	model.sendInboundFn = func(msg bus.InboundMessage) bool { return true }
 
 	model.sendMessage("")
 
@@ -1681,8 +1672,7 @@ func TestCLIModelResetProgressState(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelImplementsChannelInterface(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// This will fail to compile if CLIChannel doesn't implement Channel
 	var _ Channel = ch
@@ -1694,7 +1684,7 @@ func TestCLIChannelImplementsChannelInterface(t *testing.T) {
 
 func TestCLIChannelConfigEmpty(t *testing.T) {
 	cfg := CLIChannelConfig{}
-	ch := NewCLIChannel(&cfg, bus.NewMessageBus())
+	ch := NewCLIChannel(&cfg)
 
 	if ch == nil {
 		t.Error("NewCLIChannel with empty config should not return nil")

@@ -16,7 +16,6 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 	"xbot/version"
 )
@@ -728,8 +727,7 @@ type cliModel struct {
 	typing            bool                          // agent 是否正在回复
 	typingStartTime   time.Time                     // 本次处理开始时间
 	inputReady        bool                          // 输入就绪状态（agent 回复期间禁止发送）
-	msgBus            *bus.MessageBus               // 消息总线引用
-	sendInboundFn     func(bus.InboundMessage) bool // remote mode: forward to server via backend.SendInbound
+	sendInboundFn     func(bus.InboundMessage) bool // forward to server via backend.SendInbound
 	tempStatus        string                        // 临时状态提示（自动过期）
 	pendingCmds       []tea.Cmd                     // commands queued by helpers (auto-drained in Update)
 	shouldQuit        bool                          // Smart quit: quit after current operation completes
@@ -758,7 +756,7 @@ type cliModel struct {
 	sessionsListFn  func() []SessionPanelEntry                                     // callback to list all sessions for Sessions panel
 
 	// --- Usage query ---
-	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
+	usageQueryFn func(senderID string, days int) (cumulative *UserTokenUsage, daily []DailyTokenUsage, err error)
 
 	// --- Plugin management ---
 	pluginMgrFn       func() *plugin.PluginManager
@@ -1184,11 +1182,6 @@ func newCLIModel() *cliModel {
 		lastBusyStates:    make(map[string]bool),
 		liveSessionStates: make(map[string]*liveSessionState),
 	}
-}
-
-// SetMsgBus 设置消息总线（用于发送用户消息）
-func (m *cliModel) SetMsgBus(msgBus *bus.MessageBus) {
-	m.msgBus = msgBus
 }
 
 // SetSubscriptionMgr sets the subscription manager for quick switch.

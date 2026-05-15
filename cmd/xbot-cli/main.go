@@ -41,8 +41,6 @@ import (
 	"xbot/pprof"
 	"xbot/protocol"
 	"xbot/serverapp"
-	"xbot/storage"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 	"xbot/version"
 
@@ -325,66 +323,6 @@ func hasActiveSeedSubscription(subs []config.SubscriptionConfig) bool {
 	return false
 }
 
-func seedSubscriptionsForSender(svc *sqlite.LLMSubscriptionService, senderID string, subs []config.SubscriptionConfig) error {
-	if svc == nil || len(subs) == 0 {
-		return nil
-	}
-	hasActive := hasActiveSeedSubscription(subs)
-	for i, sub := range subs {
-		if err := svc.Add(&sqlite.LLMSubscription{
-			ID:              sub.ID,
-			SenderID:        senderID,
-			Name:            sub.Name,
-			Provider:        sub.Provider,
-			BaseURL:         sub.BaseURL,
-			APIKey:          sub.APIKey,
-			Model:           sub.Model,
-			MaxOutputTokens: sub.MaxOutputTokens,
-			ThinkingMode:    sub.ThinkingMode,
-			IsDefault:       sub.Active || (i == 0 && !hasActive),
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func seedLocalDBSubscriptionsFromConfig(db *sqlite.DB, cfg *config.Config) error {
-	if db == nil {
-		return nil
-	}
-	svc := sqlite.NewLLMSubscriptionService(db)
-	sourceSubs := localSeedSourceSubscriptions(cfg)
-	if len(sourceSubs) == 0 {
-		return nil
-	}
-	existing, err := svc.List(cliSenderID)
-	if err != nil {
-		return err
-	}
-	if len(existing) > 0 {
-		return nil
-	}
-	return seedSubscriptionsForSender(svc, cliSenderID, sourceSubs)
-}
-
-func loadLLMFromLocalDB(db *sqlite.DB, cfg *config.Config) bool {
-	if db == nil {
-		return false
-	}
-	llmCfg, err := sqlite.NewUserLLMConfigService(db).GetConfig(cliSenderID)
-	if err != nil || llmCfg == nil {
-		return false
-	}
-	cfg.LLM.Provider = llmCfg.Provider
-	cfg.LLM.BaseURL = llmCfg.BaseURL
-	cfg.LLM.APIKey = llmCfg.APIKey
-	cfg.LLM.Model = llmCfg.Model
-	cfg.LLM.MaxOutputTokens = llmCfg.MaxOutputTokens
-	cfg.LLM.ThinkingMode = llmCfg.ThinkingMode
-	return true
-}
-
 func seedLocalDBSubscriptions(client *agent.Client, cfg *config.Config) error {
 	if client == nil {
 		return nil
@@ -571,10 +509,7 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 type cliApp struct {
 	cfg       *config.Config
 	llmClient llm.LLM
-	msgBus    *bus.MessageBus
-	db        *sqlite.DB
 	client    *agent.Client // unified RPC client (local or remote)
-	disp      *channel.Dispatcher
 	workDir   string
 	xbotHome  string
 
@@ -742,7 +677,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 			token = cfg.CLI.Token
 		}
 	}
-	localMode := serverURL == ""
 
 	workDir := cfg.Agent.WorkDir
 	xbotHome := config.XbotHome()
@@ -752,37 +686,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		log.WithError(err).Fatal("Failed to setup logger")
 	}
 
-	var (
-		disp   *channel.Dispatcher
-		client *agent.Client
-	)
-
-	msgBus := bus.NewMessageBus()
-
-	if err := storage.MigrateIfNeeded(context.Background(), workDir, dbPath); err != nil {
-		log.WithError(err).Fatal("Failed to migrate data to SQLite")
-	}
-
-	// Migrate flat memory from SQLite tables to MD files (if needed)
-	storage.MigrateMemoryToFiles(dbPath)
-
-	db, err := sqlite.Open(dbPath)
-	if err != nil {
-		log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
-	} else {
-		tools.SetRunnerTokenDB(db.Conn())
-	}
-
-	if localMode {
-		if err := seedLocalDBSubscriptionsFromConfig(db, cfg); err != nil {
-			log.WithError(err).Warn("Failed to seed local DB subscriptions from config")
-		}
-		if !loadLLMFromLocalDB(db, cfg) {
-			syncLLMFromActiveSub(cfg)
-		}
-	} else {
-		syncLLMFromActiveSub(cfg)
-	}
+	var client *agent.Client
 
 	// Apply CLI flag overrides (after subscription loading so they take precedence).
 	if maxContextTokens > 0 {
@@ -812,40 +716,36 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 	if serverURL != "" {
 		// Remote mode: agent loop runs on the server
-		// CLI creates its own msgBus and disp for local event routing.
 		log.WithField("server", serverURL).Info("Using remote backend")
 		transport := agent.NewRemoteTransport(agent.RemoteTransportConfig{
 			ServerURL: serverURL,
 			Token:     token,
 		})
-		client = agent.NewClient(transport, nil, nil)
-		disp = channel.NewDispatcher(msgBus)
+		client = agent.NewClient(transport, nil)
 	} else {
 		// Local mode: InitServer + ChannelTransport + Client.
-		// InitServer owns the msgBus and disp — CLI reuses them.
-		var rpcTable serverapp.RPCTable
-		var coreDisp *channel.Dispatcher
-		var coreMsgBus *bus.MessageBus
-		var coreErr error
-		_, rpcTable, coreDisp, coreMsgBus, coreErr = serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil)
+		// Create eventCh first — shared between localEventBridge (server side) and Client (CLI side).
+		eventCh := make(chan protocol.WSMessage, 256)
+		_, rpcTable, _, _, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
 
-		// Create event channel for TUI
-		eventCh := make(chan protocol.WSMessage, 256)
-
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
 			return serverapp.WithRPCCtx(context.Background(), "admin", "cli_user")
-		})
+		}, eventCh)
 
-		// Client is the unified interface
-		client = agent.NewClient(transport, eventCh, coreMsgBus)
+		// Client is the unified interface — eventCh provides server→CLI events
+		client = agent.NewClient(transport, eventCh)
 
-		// Use InitServer's disp and msgBus
-		msgBus = coreMsgBus
-		disp = coreDisp
+		// Seed subscriptions from config via RPC (no direct DB access)
+		if err := seedLocalDBSubscriptions(client, cfg); err != nil {
+			log.WithError(err).Warn("Failed to seed local DB subscriptions from config")
+		}
+		if !loadLLMFromDBSubscription(client, cfg) {
+			syncLLMFromActiveSub(cfg)
+		}
 
 		// Apply CLI flag overrides via RPC
 		if maxOutputTokens > 0 {
@@ -856,10 +756,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	return &cliApp{
 		cfg:       cfg,
 		llmClient: llmClient,
-		msgBus:    msgBus,
-		db:        db,
 		client:    client,
-		disp:      disp,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
 	}
@@ -872,9 +769,6 @@ func (app *cliApp) Close() {
 	}
 	if app.client != nil {
 		app.client.Stop()
-	}
-	if app.db != nil {
-		app.db.Close()
 	}
 	log.Close()
 }
@@ -1106,8 +1000,6 @@ func main() {
 		defer pprofServer.Shutdown(context.Background())
 	}
 
-	disp := app.disp
-
 	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
 	absWorkDir, _ := filepath.Abs(app.workDir)
 
@@ -1130,9 +1022,6 @@ func main() {
 	}
 
 	remoteServerURL := app.client.ServerURL()
-	// Pre-declare tenantSvc so SessionsList closure can capture it.
-	// Assigned later after backend checks. Closure reads at invocation time.
-	var tenantSvc *sqlite.TenantService
 
 	cliCfg := channel.CLIChannelConfig{
 		WorkDir:              absWorkDir,
@@ -1261,7 +1150,7 @@ func main() {
 		RefreshValuesCache: func() {
 			app.refreshRemoteValuesCache()
 		},
-		UsageQuery: func(senderID string, days int) (*sqlite.UserTokenUsage, []sqlite.DailyTokenUsage, error) {
+		UsageQuery: func(senderID string, days int) (*channel.UserTokenUsage, []channel.DailyTokenUsage, error) {
 			if app.client == nil {
 				return nil, nil, fmt.Errorf("agent not initialized")
 			}
@@ -1269,9 +1158,9 @@ func main() {
 			if err != nil {
 				return nil, nil, err
 			}
-			var cumulative *sqlite.UserTokenUsage
+			var cumulative *channel.UserTokenUsage
 			if cumMap != nil {
-				var u sqlite.UserTokenUsage
+				var u channel.UserTokenUsage
 				if b, _ := json.Marshal(cumMap); len(b) > 0 {
 					_ = json.Unmarshal(b, &u)
 				}
@@ -1281,9 +1170,9 @@ func main() {
 			if err != nil {
 				return nil, nil, err
 			}
-			var daily []sqlite.DailyTokenUsage
+			var daily []channel.DailyTokenUsage
 			for _, dm := range dailyMaps {
-				var d sqlite.DailyTokenUsage
+				var d channel.DailyTokenUsage
 				if b, _ := json.Marshal(dm); len(b) > 0 {
 					_ = json.Unmarshal(b, &d)
 				}
@@ -1395,49 +1284,7 @@ func main() {
 	}
 
 	// 设置历史消息加载器（会话恢复）
-	var cliTenantID int64
-	var cliSessionSvc *sqlite.SessionService
-	if app.client != nil && app.db != nil {
-		tenantSvc = sqlite.NewTenantService(app.db)
-		cliSessionSvc = sqlite.NewSessionService(app.db)
-		tenantID, err := tenantSvc.GetOrCreateTenantID("cli", initialChatID)
-		if err == nil {
-			cliTenantID = tenantID
-			cliCfg.HistoryLoader = func() ([]channel.HistoryMessage, error) {
-				msgs, err := cliSessionSvc.GetAllMessages(cliTenantID)
-				if err != nil {
-					return nil, err
-				}
-				return channel.ConvertMessagesToHistory(msgs), nil
-			}
-			// Restore token state from DB so the context bar shows immediately
-			// on startup (not just after the first LLM call of the new session).
-			// Restore token state for context bar display, preferring exact
-			// per-message context_tokens over tenant_state (which may contain
-			// stale estimated values from the old DetectTruncation code).
-			cliMemSvc := sqlite.NewMemoryService(app.db)
-			cliCfg.TokenStateLoader = func() (promptTokens, completionTokens int64) {
-				// Prefer exact context_tokens from last user message
-				if cliSessionSvc != nil && cliTenantID != 0 {
-					if lastCtx, err := cliSessionSvc.GetLastUserMessageContextTokens(cliTenantID); err == nil && lastCtx > 0 {
-						return lastCtx, 0
-					}
-				}
-				// Fallback to tenant_state
-				pt, ct, err := cliMemSvc.GetTokenState(context.Background(), cliTenantID)
-				if err != nil {
-					log.WithError(err).Warn("Failed to load token state")
-					return 0, 0
-				}
-				return pt, ct
-			}
-		}
-	}
-	// Remote mode: history loaded via RestoreSession (uses suHistoryLoadMsg path)
-	// (HistoryLoader runs during NewCLIChannel, before WS is connected)
-
-	// Dynamic history loader: all modes use backend.GetHistory
-	// (local: localTransport → DB, remote: WS RPC → server DB)
+	// All modes use RPC-backed loaders (unified local/remote path).
 	if app.client != nil {
 		backend := app.client
 		cliCfg.DynamicHistoryLoader = func(channelName, chatID string) ([]channel.HistoryMessage, error) {
@@ -1547,9 +1394,10 @@ func main() {
 		}
 	}
 
-	cliCh := channel.NewCLIChannel(&cliCfg, app.msgBus)
+	cliCh := channel.NewCLIChannel(&cliCfg)
 	app.cliCh = cliCh
-	disp.Register(cliCh)
+	// NOTE: No disp.Register(cliCh) — localEventBridge (registered inside InitServer)
+	// handles server→CLI events via eventCh. Remote mode: events come via WS.
 
 	// Start pprof HTTP server if --pprof flag is set
 	if flagPProf {
@@ -1728,7 +1576,7 @@ func main() {
 			return
 		}
 	}
-	clipanic.Go("main.dispatcher.Run", disp.Run)
+	// NOTE: No disp.Run() — InitServer starts the dispatcher goroutine internally.
 
 	// ── Post-Start initialization (unified for all modes) ─────────────
 	// Both local and remote modes run the same initialization.
@@ -2070,14 +1918,28 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int)
 
 	absWorkDir, _ := filepath.Abs(app.workDir)
 
-	nonIntCh := channel.NewNonInteractiveChannel(app.msgBus)
-	disp := app.disp
-	disp.Register(nonIntCh)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = app.client.Start(ctx)
-	go disp.Run()
+
+	// Subscribe to outbound events to print to stdout
+	done := make(chan struct{})
+	var once sync.Once
+	var prevContent string
+	app.client.Subscribe(protocol.EventPattern{Type: "outbound"}, func(env protocol.EventEnvelope) {
+		var ev protocol.OutboundEvent
+		if err := json.Unmarshal(env.Payload, &ev); err != nil {
+			return
+		}
+		content := ev.Content
+		// Output the full content; on subsequent events output the diff
+		if len(content) > len(prevContent) {
+			fmt.Print(content[len(prevContent):])
+		}
+		prevContent = content
+		// First complete (non-partial) outbound message signals done
+		once.Do(func() { close(done) })
+	})
 
 	// Send message through unified RPC path (same as interactive mode)
 	_ = app.client.SendInbound(bus.InboundMessage{
@@ -2091,7 +1953,8 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int)
 		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 	})
 
-	nonIntCh.WaitDone()
+	<-done
+	fmt.Println()
 }
 
 // setupLogger 配置日志（CLI 模式：仅文件输出，不干扰终端 TUI）。

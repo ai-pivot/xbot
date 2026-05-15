@@ -218,16 +218,7 @@ func (m *cliModel) sendInbound(msg bus.InboundMessage) bool {
 	if m.sendInboundFn != nil {
 		return m.sendInboundFn(msg)
 	}
-	if m.msgBus == nil {
-		return false
-	}
-	select {
-	case m.msgBus.Inbound <- msg:
-		return true
-	default:
-		// Channel full — agent is backlogged. Drop to prevent TUI freeze.
-		return false
-	}
+	return false
 }
 
 // sendInboundWait sends a message to the agent's inbound channel with a timeout.
@@ -237,15 +228,7 @@ func (m *cliModel) sendInboundWait(msg bus.InboundMessage, timeout time.Duration
 	if m.sendInboundFn != nil {
 		return m.sendInboundFn(msg)
 	}
-	if m.msgBus == nil {
-		return false
-	}
-	select {
-	case m.msgBus.Inbound <- msg:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
+	return false
 }
 
 // sendCancel sends a cancel request to the agent and adds a system notification.
@@ -268,10 +251,8 @@ func (m *cliModel) sendToAgent(content string) {
 	m.messages = append(m.messages, userCliMsg)
 	m.pendingUserMsg = &userCliMsg
 	m.savePendingToSessionState()
-	if m.msgBus != nil {
-		m.sendInbound(m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}))
-		m.startAgentTurn()
-	}
+	m.sendInbound(m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}))
+	m.startAgentTurn()
 }
 
 // sendMessage 发送用户消息，返回可能需要执行的 tea.Cmd（如彩蛋动画 tick）。
@@ -316,18 +297,10 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	m.newContentHint = false
 
 	// 发送到消息总线
-	if m.msgBus != nil {
-		msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
-		msg.Media = media
-		m.sendInbound(msg)
-		m.startAgentTurn()
-	} else if m.sendInboundFn != nil {
-		// Remote mode: msgBus is nil but sendInboundFn is set
-		msg := m.newInbound(content, nil)
-		msg.Media = media
-		m.sendInbound(msg)
-		m.startAgentTurn()
-	}
+	msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
+	msg.Media = media
+	m.sendInbound(msg)
+	m.startAgentTurn()
 	return nil
 }
 
@@ -509,11 +482,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.enterSearchMode()
 
 	case "/compress":
-		// 保留本地处理（system 消息样式），发送到 msgBus 但不作为用户气泡
-		if m.msgBus != nil {
-			m.sendInbound(m.newInbound("/compress", nil))
-			m.startAgentTurn()
-		}
+		// 保留本地处理（system 消息样式），发送但不作为用户气泡
+		m.sendInbound(m.newInbound("/compress", nil))
+		m.startAgentTurn()
 
 	// --- 透传命令（发送到 agent） ---
 	case "/context":
@@ -934,10 +905,8 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 					// Send to agent as tool result replacement (not a new user message).
 					// Use blocking send with timeout — ask_user answers are critical:
 					// if dropped, the agent hangs indefinitely waiting for a response.
-					if m.msgBus != nil {
-						if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
-							m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
-						}
+					if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
+						m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
 					}
 					// Render as tool call style (not user message)
 					m.messages = append(m.messages, cliMessage{

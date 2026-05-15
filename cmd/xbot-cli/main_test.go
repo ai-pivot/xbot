@@ -821,7 +821,7 @@ func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMe
 }
 
 func newTestClient(tr *fakeTransport) *agent.Client {
-	return agent.NewClient(tr, nil, nil)
+	return agent.NewClient(tr, nil)
 }
 
 func TestCLISettingHandlersCoversAllRuntimeKeys(t *testing.T) {
