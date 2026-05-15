@@ -452,12 +452,11 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 }
 
 // pruneOrphanWorktrees cleans up worktree metadata for directories that no longer exist.
-// AutoDetectAndInit checks whether the current session needs worktree isolation.
-// It is called automatically at session start (before buildPrompt).
+// AutoDetectAndInit creates an isolated git worktree for the current session.
+// Called automatically at session start when auto_worktree is enabled.
 //
-// - If no other sessions are active in the repo → registers this session as primary (no worktree).
-// - If another session is already primary → creates a worktree for this session.
-// - Returns the worktree entry (primary or peer), or nil if not a git repo.
+// Every session gets its own worktree — no primary concept. All agents are equal peers.
+// Returns the worktree entry, or nil if not a git repo or worktree creation fails.
 func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 	// Check if in a git repo
 	repoPath, err := GitRepoRoot(workDir)
@@ -470,23 +469,7 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 		return entry
 	}
 
-	// Is there already a primary?
-	primary := GlobalWorktreeRegistry.GetPrimary(repoPath)
-	if primary == nil {
-		// First session → register as primary
-		entry := &WorktreeEntry{
-			SessionKey: sessionKey,
-			Role:       "primary",
-			RepoPath:   repoPath,
-			Status:     "working",
-		}
-		if err := GlobalWorktreeRegistry.Register(entry); err != nil {
-			return nil
-		}
-		return entry
-	}
-
-	// Another session is primary → create worktree for this session
+	// All sessions get a worktree — no primary concept.
 	branch := generateBranchName("peer", sessionKey, "")
 	branch = strings.ReplaceAll(branch, ":", "-") // sessionKey may contain ":"
 

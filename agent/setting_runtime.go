@@ -161,6 +161,13 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	"sidebar_sections": {},
 	"chat_max_width":   {},
 	"chat_center":      {},
+
+	// --- Worktree isolation ---
+	"auto_worktree": {
+		ApplyConfig: func(cfg *config.Config, value string) {
+			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
+		},
+	},
 }
 
 // ApplyRuntimeSetting applies a single setting change to the in-memory config and agent.
