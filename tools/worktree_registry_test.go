@@ -122,33 +122,30 @@ func TestRegisterPeer_DifferentRepos(t *testing.T) {
 	assert.Equal(t, "primary", e2.Role, "first session in repo2 should be primary")
 }
 
-func TestRegisterPeer_PersistenceAndReload(t *testing.T) {
+func TestRegisterPeer_NotPersistedToDisk(t *testing.T) {
 	repoPath := newTestGitRepo(t)
 	reg := newTestRegistry()
 
 	reg.RegisterPeer("cli:repo:session-1", repoPath)
 	reg.RegisterPeer("cli:repo:session-2", repoPath)
 
-	// Verify persistence file was created
+	// RegisterPeer entries are runtime-only — no persistence file should be created.
 	persistPath := registryPath(repoPath)
-	data, err := os.ReadFile(persistPath)
-	require.NoError(t, err, "registry should be persisted to disk")
-	t.Logf("persisted: %s", data)
+	_, err := os.ReadFile(persistPath)
+	assert.True(t, os.IsNotExist(err), "RegisterPeer entries should NOT be persisted to disk")
 
-	// Load into a fresh registry
+	// A fresh registry should NOT see the old entries via loadRepoLocked.
 	reg2 := newTestRegistry()
-	reg2.RegisterPeer("cli:repo:session-3", repoPath) // triggers loadRepoLocked
+	reg2.RegisterPeer("cli:repo:session-3", repoPath) // triggers loadRepoLocked internally
 
-	// All 3 sessions should be visible
-	e1 := reg2.GetBySession("cli:repo:session-1")
-	e2 := reg2.GetBySession("cli:repo:session-2")
+	// Old entries from reg1 are NOT visible — they were runtime-only.
+	assert.Nil(t, reg2.GetBySession("cli:repo:session-1"), "old runtime entries should not survive reload")
+	assert.Nil(t, reg2.GetBySession("cli:repo:session-2"), "old runtime entries should not survive reload")
+
+	// New entry IS visible (in memory).
 	e3 := reg2.GetBySession("cli:repo:session-3")
-	require.NotNil(t, e1)
-	require.NotNil(t, e2)
 	require.NotNil(t, e3)
-	assert.Equal(t, "primary", e1.Role)
-	assert.Equal(t, "peer", e2.Role)
-	assert.Equal(t, "peer", e3.Role, "third session after reload should also be peer")
+	assert.Equal(t, "primary", e3.Role, "fresh registry should assign primary to first session")
 }
 
 func TestRegisterPeer_GetPrimary(t *testing.T) {

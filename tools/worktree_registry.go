@@ -200,6 +200,9 @@ func (r *WorktreeRegistry) GetCWD(sessionKey string) string {
 // Used when auto_worktree is disabled. The first session in a repo is registered
 // as "primary"; subsequent sessions are registered as "peer" (sharing the main
 // workspace, no file isolation).
+//
+// Entries created by RegisterPeer are NOT persisted to disk — they are runtime-only
+// peer awareness data that becomes stale across process restarts.
 func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	if r.GetBySession(sessionKey) != nil {
 		return // already registered
@@ -233,7 +236,8 @@ func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	}
 	r.bySess[sessionKey] = entry
 	r.byRepo[repoPath] = append(r.byRepo[repoPath], entry)
-	r.saveRepoLocked(repoPath)
+	// Do NOT saveRepoLocked: peer-awareness entries are runtime-only.
+	// Only entries with real worktrees (WorktreeDir != "") need persistence.
 }
 
 // ensureLoadedBySession tries to load persisted data for the repo that
@@ -289,6 +293,10 @@ func (r *WorktreeRegistry) loadRepoLocked(repoPath string) {
 			if _, err := os.Stat(e.WorktreeDir); os.IsNotExist(err) {
 				continue // orphaned worktree dir gone
 			}
+		} else {
+			// Entries without worktrees are runtime-only peer awareness data
+			// from a previous process. Skip them — they become stale on restart.
+			continue
 		}
 		r.bySess[e.SessionKey] = e
 		r.byRepo[e.RepoPath] = append(r.byRepo[e.RepoPath], e)
