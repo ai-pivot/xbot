@@ -197,8 +197,9 @@ func (r *WorktreeRegistry) GetCWD(sessionKey string) string {
 }
 
 // RegisterPeer registers a session for peer awareness without creating a worktree.
-// Used when auto_worktree is disabled. Sessions are registered as "shared"
-// to indicate they share the main workspace and agents must coordinate.
+// Used when auto_worktree is disabled. The first session in a repo is registered
+// as "primary"; subsequent sessions are registered as "peer" (sharing the main
+// workspace, no file isolation).
 func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	if r.GetBySession(sessionKey) != nil {
 		return // already registered
@@ -213,9 +214,18 @@ func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	if _, exists := r.bySess[sessionKey]; exists {
 		return
 	}
+	// Determine role: first session → primary, others → peer.
+	// Must check inline (not via GetPrimary) because we already hold mu.Lock.
+	role := "primary"
+	for _, e := range r.byRepo[repoPath] {
+		if e.Role == "primary" {
+			role = "peer"
+			break
+		}
+	}
 	entry := &WorktreeEntry{
 		SessionKey:  sessionKey,
-		Role:        "shared",
+		Role:        role,
 		RepoPath:    repoPath,
 		WorktreeDir: "",
 		Branch:      "",
