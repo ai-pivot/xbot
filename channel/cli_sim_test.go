@@ -35,8 +35,6 @@ import (
 	"testing"
 	"time"
 	"xbot/protocol"
-
-	"xbot/bus"
 )
 
 // ─── Scenario types ────────────────────────────────────────────────
@@ -579,7 +577,7 @@ func (r *simRunner) doUserMsg(idx int, step SimStep) error {
 // doAgentMsg sends an agent (outbound) message.
 func (r *simRunner) doAgentMsg(idx int, step SimStep) error {
 	m := r.model
-	outMsg := bus.OutboundMessage{
+	outMsg := OutboundMsg{
 		Content:   step.Content,
 		IsPartial: step.IsPartial,
 	}

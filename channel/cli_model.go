@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/glamour"
 	"strings"
 	"time"
-	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/internal/textarea"
 	log "xbot/logger"
@@ -723,16 +722,16 @@ type cliModel struct {
 	ready           bool                  // 是否已初始化
 
 	// --- Agent state ---
-	agentTurnID       uint64                        // monotonically increasing turn counter
-	typing            bool                          // agent 是否正在回复
-	typingStartTime   time.Time                     // 本次处理开始时间
-	inputReady        bool                          // 输入就绪状态（agent 回复期间禁止发送）
-	sendInboundFn     func(bus.InboundMessage) bool // forward to server via backend.SendInbound
-	tempStatus        string                        // 临时状态提示（自动过期）
-	pendingCmds       []tea.Cmd                     // commands queued by helpers (auto-drained in Update)
-	shouldQuit        bool                          // Smart quit: quit after current operation completes
-	trimHistoryFn     func(cutoff time.Time) error  // /rewind: delete DB messages at or after cutoff timestamp
-	resetTokenStateFn func()                        // /rewind: clear stale prompt/completion token counts
+	agentTurnID       uint64                       // monotonically increasing turn counter
+	typing            bool                         // agent 是否正在回复
+	typingStartTime   time.Time                    // 本次处理开始时间
+	inputReady        bool                         // 输入就绪状态（agent 回复期间禁止发送）
+	sendInboundFn     func(InboundMsg) bool        // forward to server via backend.SendInbound
+	tempStatus        string                       // 临时状态提示（自动过期）
+	pendingCmds       []tea.Cmd                    // commands queued by helpers (auto-drained in Update)
+	shouldQuit        bool                         // Smart quit: quit after current operation completes
+	trimHistoryFn     func(cutoff time.Time) error // /rewind: delete DB messages at or after cutoff timestamp
+	resetTokenStateFn func()                       // /rewind: clear stale prompt/completion token counts
 
 	// --- Message queue (typing 期间排队的消息) ---
 	messageQueue   []queuedMsg // 排队等待发送的消息（绑定 chatID 防止跨 session 误投）
@@ -741,11 +740,11 @@ type cliModel struct {
 	needFlushQueue bool        // true = handleAgentMessage 后需要刷新队列
 
 	// --- Background tasks ---
-	bgTaskCount     int                            // running background tasks (0 = no indicator)
-	bgTaskCountFn   func() int                     // callback to get current bg task count (set by channel)
-	bgTaskListFn    func() []*tools.BackgroundTask // callback to list running tasks (remote mode)
-	bgTaskKillFn    func(taskID string) error      // callback to kill a task (remote mode)
-	bgTaskCleanupFn func()                         // callback to cleanup completed tasks (remote mode)
+	bgTaskCount     int                       // running background tasks (0 = no indicator)
+	bgTaskCountFn   func() int                // callback to get current bg task count (set by channel)
+	bgTaskListFn    func() []*BgTask          // callback to list running tasks (remote mode)
+	bgTaskKillFn    func(taskID string) error // callback to kill a task (remote mode)
+	bgTaskCleanupFn func()                    // callback to cleanup completed tasks (remote mode)
 
 	// --- Interactive agents ---
 	agentCount      int                                                            // active interactive agent sessions (0 = no indicator)
@@ -860,7 +859,7 @@ type cliModel struct {
 	rewindMode      bool                      // true = rewind overlay active
 	rewindItems     []rewindItem              // candidate user messages for rewind selection
 	rewindCursor    int                       // selected index in rewindItems
-	rewindResult    *tools.RewindResult       // result of the last rewind operation (for display)
+	rewindResult    *protocol.RewindResult    // result of the last rewind operation (for display)
 	checkpointState *protocol.CheckpointState // file checkpoint state for rewind file rollback (nil = no file tracking)
 
 	// --- §10 TODO 进度条 ---
@@ -901,8 +900,8 @@ type cliModel struct {
 	askPanelTotalLines int                  // cached total line count for scroll clamping
 	panelSchema        []SettingDefinition  // settings panel: schema copy
 	// --- Approval panel ---
-	approvalRequest      *tools.ApprovalRequest // pending approval request
-	approvalResultCh     chan<- tools.ApprovalResult
+	approvalRequest      *protocol.ApprovalRequest // pending approval request
+	approvalResultCh     chan<- protocol.ApprovalResult
 	approvalCursor       int                             // 0=approve, 1=deny
 	approvalDenyInput    textinput.Model                 // deny reason input
 	approvalEnteringDeny bool                            // true when editing deny reason
@@ -913,10 +912,10 @@ type cliModel struct {
 	panelOnCancel        func()                          // callback on cancel
 
 	// --- Bg Tasks Panel ---
-	panelBgTasks   []*tools.BackgroundTask // cached task list
-	panelBgAgents  []panelAgentEntry       // cached agent list
-	panelBgCursor  int                     // selected item index (tasks first, then agents)
-	panelBgViewing bool                    // true = viewing log of selected task
+	panelBgTasks   []*BgTask         // cached task list
+	panelBgAgents  []panelAgentEntry // cached agent list
+	panelBgCursor  int               // selected item index (tasks first, then agents)
+	panelBgViewing bool              // true = viewing log of selected task
 
 	panelBgLogLines []string // cached log lines for viewing
 
@@ -1200,7 +1199,7 @@ func (m *cliModel) SetLLMSubscriber(sub LLMSubscriber) {
 
 // cliOutboundMsg 从 agent 收到的消息
 type cliOutboundMsg struct {
-	msg bus.OutboundMessage
+	msg OutboundMsg
 }
 
 // cliProgressMsg 实时进度更新消息（来自 WS eventStream 或本地 Transport）。

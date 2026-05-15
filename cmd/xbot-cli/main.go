@@ -44,7 +44,6 @@ import (
 	"xbot/tools"
 	"xbot/version"
 
-	"github.com/google/uuid"
 	"github.com/mattn/go-isatty"
 )
 
@@ -1421,9 +1420,9 @@ func main() {
 		cliCh.SetSettingsService(newBackendSettingsService(app.client))
 		cliCh.SetModelLister(newBackendModelLister(app.client))
 		// Forward user messages to backend (unified local/remote path)
-		cliCh.SetSendInboundFn(func(msg bus.InboundMessage) bool {
+		cliCh.SetSendInboundFn(func(msg channel.InboundMsg) bool {
 			clipanic.Go("main.SendInbound", func() {
-				if err := app.client.SendInbound(msg); err != nil {
+				if err := app.client.SendInbound(msg.Channel, msg.ChatID, msg.Content, msg.SenderID, msg.SenderName, msg.ChatType, msg.Metadata); err != nil {
 					log.WithError(err).Warn("Failed to send message")
 					cliCh.SendToast("Failed to send message: "+err.Error(), "✗")
 				}
@@ -1480,17 +1479,17 @@ func main() {
 		cliCh.SetBgTaskRemoteCallbacks(
 			bgSessionKey,
 			func() int { return app.client.GetBgTaskCount(bgSessionKey) },
-			func() []*tools.BackgroundTask {
+			func() []*channel.BgTask {
 				tasks, _ := app.client.ListBgTasks(bgSessionKey)
 				if tasks == nil {
 					return nil
 				}
-				result := make([]*tools.BackgroundTask, len(tasks))
+				result := make([]*channel.BgTask, len(tasks))
 				for i, t := range tasks {
-					result[i] = &tools.BackgroundTask{
+					result[i] = &channel.BgTask{
 						ID:       t.ID,
 						Command:  t.Command,
-						Status:   tools.BgTaskStatus(t.Status),
+						Status:   channel.BgTaskStatus(t.Status),
 						Output:   t.Output,
 						ExitCode: t.ExitCode,
 						Error:    t.Error,
@@ -1818,17 +1817,7 @@ func main() {
 	}
 
 	if newSession {
-		msg := bus.InboundMessage{
-			Channel:    "cli",
-			SenderID:   "cli_user",
-			ChatID:     absWorkDir,
-			ChatType:   "p2p",
-			Content:    "/new",
-			SenderName: "CLI User",
-			Time:       time.Now(),
-			RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-		}
-		if err := app.client.SendInbound(msg); err != nil {
+		if err := app.client.SendInbound("cli", absWorkDir, "/new", "cli_user", "CLI User", "p2p", nil); err != nil {
 			log.WithError(err).Warn("Failed to send newSession message")
 		}
 	}
@@ -1942,16 +1931,7 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int)
 	})
 
 	// Send message through unified RPC path (same as interactive mode)
-	_ = app.client.SendInbound(bus.InboundMessage{
-		Channel:    "cli",
-		SenderID:   "cli_user",
-		ChatID:     absWorkDir,
-		ChatType:   "p2p",
-		Content:    prompt,
-		SenderName: "CLI User",
-		Time:       time.Now(),
-		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-	})
+	_ = app.client.SendInbound("cli", absWorkDir, prompt, "cli_user", "CLI User", "p2p", nil)
 
 	<-done
 	fmt.Println()

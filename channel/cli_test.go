@@ -261,12 +261,12 @@ func TestCLIModelInit(t *testing.T) {
 func TestCLIModelSendInboundFn(t *testing.T) {
 	model := newCLIModel()
 	called := false
-	model.sendInboundFn = func(msg bus.InboundMessage) bool {
+	model.sendInboundFn = func(msg InboundMsg) bool {
 		called = true
 		return true
 	}
 
-	if !model.sendInbound(bus.InboundMessage{Content: "test"}) {
+	if !model.sendInbound(InboundMsg{Content: "test"}) {
 		t.Error("sendInbound() returned false")
 	}
 	if !called {
@@ -392,7 +392,7 @@ func TestCLIModelHandleAgentMessage(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// Test complete message
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   "Hello from agent",
 		IsPartial: false,
 	}
@@ -421,7 +421,7 @@ func TestCLIModelHandleAgentMessagePartial(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// First partial message
-	msg1 := bus.OutboundMessage{
+	msg1 := OutboundMsg{
 		Content:   "Thinking...",
 		IsPartial: true,
 	}
@@ -435,7 +435,7 @@ func TestCLIModelHandleAgentMessagePartial(t *testing.T) {
 	}
 
 	// Second partial (update)
-	msg2 := bus.OutboundMessage{
+	msg2 := OutboundMsg{
 		Content:   "Still thinking...",
 		IsPartial: true,
 	}
@@ -447,7 +447,7 @@ func TestCLIModelHandleAgentMessagePartial(t *testing.T) {
 	}
 
 	// Complete message
-	msg3 := bus.OutboundMessage{
+	msg3 := OutboundMsg{
 		Content:   "Final answer",
 		IsPartial: false,
 	}
@@ -470,7 +470,7 @@ func TestCLIModelHandleAgentMessageMultiplePartials(t *testing.T) {
 
 	// Multiple partial updates
 	for i := 0; i < 5; i++ {
-		msg := bus.OutboundMessage{
+		msg := OutboundMsg{
 			Content:   "Partial content " + string(rune('A'+i)),
 			IsPartial: true,
 		}
@@ -482,7 +482,7 @@ func TestCLIModelHandleAgentMessageMultiplePartials(t *testing.T) {
 	}
 
 	// Complete
-	model.handleAgentMessage(bus.OutboundMessage{
+	model.handleAgentMessage(OutboundMsg{
 		Content:   "Final",
 		IsPartial: false,
 	})
@@ -498,7 +498,7 @@ func TestCLIModelHandleAgentMessageWithFeishuCard(t *testing.T) {
 
 	// Test Feishu card conversion
 	cardContent := `__FEISHU_CARD__:id:{"header":{"title":{"content":"Card Title"}},"elements":[]}`
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   cardContent,
 		IsPartial: false,
 	}
@@ -519,7 +519,7 @@ func TestCLIModelHandleAgentMessageFeishuCardWithElements(t *testing.T) {
 	model.handleResize(80, 24)
 
 	cardContent := `__FEISHU_CARD__:id:{"header":{"title":{"content":"Test"}},"elements":[{"tag":"markdown","content":"**bold** text"},{"tag":"div","text":"plain"}]}`
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   cardContent,
 		IsPartial: false,
 	}
@@ -545,7 +545,7 @@ func TestSessionResetClearsMessages(t *testing.T) {
 	}
 
 	// Agent responds with session_reset metadata
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   "New session started",
 		IsPartial: false,
 		Metadata:  map[string]string{"session_reset": "true"},
@@ -572,7 +572,7 @@ func TestCLIModelHandleAgentMessageEmptyContent(t *testing.T) {
 	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
 	model.typing = true
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   "",
 		IsPartial: false,
 	}
@@ -596,7 +596,7 @@ func TestCLIModelHandleAgentMessageMarkdownContent(t *testing.T) {
 	model.handleResize(80, 24)
 
 	markdownContent := "# Header\n\n**Bold** and *italic* text\n\n- List item 1\n- List item 2"
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   markdownContent,
 		IsPartial: false,
 	}
@@ -650,7 +650,7 @@ func TestCLIModelUpdateCtrlCWhileTyping(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.typing = true
-	model.sendInboundFn = func(msg bus.InboundMessage) bool {
+	model.sendInboundFn = func(msg InboundMsg) bool {
 		return true
 	}
 
@@ -878,7 +878,7 @@ func TestCLIModelUpdateOutboundMsg(t *testing.T) {
 	model.handleResize(80, 24)
 
 	outMsg := cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:   "Test message",
 			IsPartial: false,
 		},
@@ -895,7 +895,7 @@ func TestCLIModelUpdateEnterKeyWithContent(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.inputReady = true
-	model.sendInboundFn = func(msg bus.InboundMessage) bool { return true }
+	model.sendInboundFn = func(msg InboundMsg) bool { return true }
 
 	// Set textarea content
 	model.textarea.SetValue("Hello world")
@@ -1286,8 +1286,8 @@ func TestCLIModelSendMessage(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// Capture inbound message via sendInboundFn
-	received := make(chan bus.InboundMessage, 1)
-	model.sendInboundFn = func(msg bus.InboundMessage) bool {
+	received := make(chan InboundMsg, 1)
+	model.sendInboundFn = func(msg InboundMsg) bool {
 		received <- msg
 		return true
 	}
@@ -1329,7 +1329,7 @@ func TestCLIModelSendMessageNoSendInboundFn(t *testing.T) {
 func TestCLIModelSendMessageEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.sendInboundFn = func(msg bus.InboundMessage) bool { return true }
+	model.sendInboundFn = func(msg InboundMsg) bool { return true }
 
 	model.sendMessage("")
 

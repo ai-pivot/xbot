@@ -14,7 +14,6 @@ import (
 	"xbot/internal/textarea"
 	"xbot/llm"
 	log "xbot/logger"
-	"xbot/tools"
 )
 
 // --- §12 Interactive Panel ---
@@ -638,12 +637,26 @@ func (m *cliModel) openBgTasksPanel() {
 }
 
 // listBgTasks returns running background tasks via callback or direct access.
-func (m *cliModel) listBgTasks() []*tools.BackgroundTask {
+func (m *cliModel) listBgTasks() []*BgTask {
 	if m.bgTaskListFn != nil {
 		return m.bgTaskListFn()
 	}
 	if m.channel != nil && m.channel.bgTaskMgr != nil {
-		return m.channel.bgTaskMgr.ListRunning(m.channel.bgSessionKey)
+		tasks := m.channel.bgTaskMgr.ListRunning(m.channel.bgSessionKey)
+		result := make([]*BgTask, len(tasks))
+		for i, t := range tasks {
+			result[i] = &BgTask{
+				ID:         t.ID,
+				Command:    t.Command,
+				Status:     BgTaskStatus(t.Status),
+				StartedAt:  t.StartedAt,
+				FinishedAt: t.FinishedAt,
+				Output:     t.Output,
+				ExitCode:   t.ExitCode,
+				Error:      t.Error,
+			}
+		}
+		return result
 	}
 	return nil
 }
@@ -752,16 +765,16 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		// Kill selected running task
 		if m.panelBgCursor >= 0 && m.panelBgCursor < len(m.panelBgTasks) {
 			task := m.panelBgTasks[m.panelBgCursor]
-			if task.Status == tools.BgTaskRunning {
+			if task.Status == BgTaskRunning {
 				if err := m.killBgTask(task.ID); err != nil {
 					m.showTempStatus(fmt.Sprintf(m.locale.KillFailed, err))
 					return true, m, m.clearTempStatusCmd()
 				}
 				// Refresh list after kill, filter out killed tasks
 				m.panelBgTasks = m.listBgTasks()
-				var running []*tools.BackgroundTask
+				var running []*BgTask
 				for _, t := range m.panelBgTasks {
-					if t.Status == tools.BgTaskRunning {
+					if t.Status == BgTaskRunning {
 						running = append(running, t)
 					}
 				}
@@ -825,7 +838,7 @@ func (m *cliModel) viewBgTaskList() string {
 			statusIcon := "●"
 			statusStyle := s.ProgressRunning
 			switch task.Status {
-			case tools.BgTaskDone:
+			case BgTaskDone:
 				if task.Error != "" || task.ExitCode != 0 {
 					statusIcon = "✗"
 					statusStyle = s.ProgressError
@@ -833,7 +846,7 @@ func (m *cliModel) viewBgTaskList() string {
 					statusIcon = "✓"
 					statusStyle = s.ProgressDone
 				}
-			case tools.BgTaskKilled:
+			case BgTaskKilled:
 				statusIcon = "✗"
 				statusStyle = s.ProgressError
 			}

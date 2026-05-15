@@ -35,7 +35,7 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 	ch := &CLIChannel{
 		config:     cfg,
 		workDir:    cfg.WorkDir,
-		msgChan:    make(chan bus.OutboundMessage, cliMsgBufSize),
+		msgChan:    make(chan OutboundMsg, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
 		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
 		stopCh:     make(chan struct{}),
@@ -400,10 +400,22 @@ func (c *CLIChannel) Stop() {
 func (c *CLIChannel) Send(msg bus.OutboundMessage) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
+	// Convert bus type to local OutboundMsg for internal processing.
+	local := OutboundMsg{
+		Channel:     msg.Channel,
+		ChatID:      msg.ChatID,
+		Content:     msg.Content,
+		Metadata:    msg.Metadata,
+		WaitingUser: msg.WaitingUser,
+		IsPartial:   msg.IsPartial,
+		ToolsUsed:   msg.ToolsUsed,
+		Media:       msg.Media,
+	}
+
 	// 发送到消息通道，由 handleOutbound 处理
-	log.WithField("msg_id", msgID).WithField("content_len", len(msg.Content)).Debug("CLIChannel.Send: queuing")
+	log.WithField("msg_id", msgID).WithField("content_len", len(local.Content)).Debug("CLIChannel.Send: queuing")
 	select {
-	case c.msgChan <- msg:
+	case c.msgChan <- local:
 	default:
 		log.Warn("CLI message channel full, dropping message")
 	}
@@ -517,7 +529,7 @@ func (c *CLIChannel) SetApprovalState(state *protocol.ApprovalState) {
 // SetSendInboundFn overrides the default sendInbound behavior.
 // In remote mode, this forwards user messages to the server via backend.SendInbound
 // instead of the local bus (which has no agent loop).
-func (c *CLIChannel) SetSendInboundFn(fn func(bus.InboundMessage) bool) {
+func (c *CLIChannel) SetSendInboundFn(fn func(InboundMsg) bool) {
 	c.pendingSendInboundFn = fn
 }
 
@@ -531,7 +543,7 @@ func (c *CLIChannel) SetBgTaskManager(mgr *tools.BackgroundTaskManager, sessionK
 // SetBgTaskRemoteCallbacks configures remote-mode background task callbacks.
 // Used when BgTaskManager is not available (remote CLI mode) to enable
 // background task display and management via RPC.
-func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() int, listFn func() []*tools.BackgroundTask, killFn func(taskID string) error, cleanupFn func()) {
+func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() int, listFn func() []*BgTask, killFn func(taskID string) error, cleanupFn func()) {
 	c.bgSessionKey = sessionKey
 	c.bgTaskKill = killFn
 	if c.model != nil {
@@ -738,8 +750,22 @@ func (c *CLIChannel) updateBgTaskCountFn() {
 		c.model.bgTaskCountFn = func() int {
 			return len(c.bgTaskMgr.ListRunning(c.bgSessionKey))
 		}
-		c.model.bgTaskListFn = func() []*tools.BackgroundTask {
-			return c.bgTaskMgr.ListAllForSession(c.bgSessionKey)
+		c.model.bgTaskListFn = func() []*BgTask {
+			tasks := c.bgTaskMgr.ListAllForSession(c.bgSessionKey)
+			result := make([]*BgTask, len(tasks))
+			for i, t := range tasks {
+				result[i] = &BgTask{
+					ID:         t.ID,
+					Command:    t.Command,
+					Status:     BgTaskStatus(t.Status),
+					StartedAt:  t.StartedAt,
+					FinishedAt: t.FinishedAt,
+					Output:     t.Output,
+					ExitCode:   t.ExitCode,
+					Error:      t.Error,
+				}
+			}
+			return result
 		}
 		c.model.bgTaskKillFn = func(taskID string) error {
 			return c.bgTaskMgr.Kill(taskID)

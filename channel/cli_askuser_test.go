@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 	"xbot/protocol"
-
-	"xbot/bus"
 )
 
 // TestAskUserIterationVisibility reproduces the bug:
@@ -50,7 +48,7 @@ func TestAskUserIterationVisibility(t *testing.T) {
 		{"question": "Can you see the iterations?", "options": []string{"yes", "no"}},
 	})
 	model.Update(cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:     "两次迭代完成，现在用 AskUser 提问：",
 			WaitingUser: true,
 			Metadata: map[string]string{
@@ -120,7 +118,7 @@ func TestAskUserIterationSurvivesAnswer(t *testing.T) {
 		{"question": "Can you see the iterations?", "options": []string{"yes", "no"}},
 	})
 	model.Update(cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:     "AskUser question",
 			WaitingUser: true,
 			Metadata: map[string]string{

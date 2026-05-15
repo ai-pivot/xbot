@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"xbot/bus"
@@ -12,6 +13,7 @@ import (
 	llm "xbot/llm"
 	"xbot/protocol"
 
+	"github.com/google/uuid"
 	log "xbot/logger"
 )
 
@@ -238,7 +240,10 @@ func (c *Client) ServerURL() string {
 // Both local and remote mode: routes through RPC.
 // Local mode: send_inbound RPC handler writes to msgBus.Inbound.
 // Remote mode: uses RemoteTransport.SendMessage if available.
-func (c *Client) SendInbound(msg bus.InboundMessage) error {
+//
+// Parameters are flat fields to decouple callers from bus.InboundMessage.
+// Time and RequestID are generated internally.
+func (c *Client) SendInbound(ch, chatID, content, senderID, senderName, chatType string, metadata map[string]string) error {
 	// Remote mode — use WebSocket SendMessage.
 	if c.eventCh == nil {
 		type messageSender interface {
@@ -247,19 +252,38 @@ func (c *Client) SendInbound(msg bus.InboundMessage) error {
 		if sender, ok := c.transport.(messageSender); ok {
 			return sender.SendMessage(protocol.InboundMessage{
 				MessagePayload: bus.MessagePayload{
-					Content:    msg.Content,
-					Channel:    msg.Channel,
-					ChatID:     msg.ChatID,
-					SenderID:   msg.SenderID,
-					SenderName: msg.SenderName,
-					ChatType:   msg.ChatType,
+					Content:    content,
+					Channel:    ch,
+					ChatID:     chatID,
+					SenderID:   senderID,
+					SenderName: senderName,
+					ChatType:   chatType,
+					Metadata:   metadata,
 				},
 			})
 		}
 		return fmt.Errorf("Client: no remote sender configured")
 	}
 	// Local mode — use RPC (send_inbound handler writes to msgBus.Inbound).
-	return c.call(MethodSendInbound, msg, nil)
+	return c.call(MethodSendInbound, struct {
+		Channel    string            `json:"channel"`
+		ChatID     string            `json:"chat_id"`
+		Content    string            `json:"content"`
+		SenderID   string            `json:"sender_id"`
+		SenderName string            `json:"sender_name"`
+		ChatType   string            `json:"chat_type"`
+		RequestID  string            `json:"request_id"`
+		Metadata   map[string]string `json:"metadata,omitempty"`
+	}{
+		Channel:    ch,
+		ChatID:     chatID,
+		Content:    content,
+		SenderID:   senderID,
+		SenderName: senderName,
+		ChatType:   chatType,
+		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+		Metadata:   metadata,
+	}, nil)
 }
 
 // Subscribe registers an event handler matching the given pattern.

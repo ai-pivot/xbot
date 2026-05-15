@@ -14,11 +14,83 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
-	"xbot/bus"
+
 	"xbot/llm"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/tools"
+)
+
+// ---------------------------------------------------------------------------
+// CLI-local message types (decoupled from bus package)
+// ---------------------------------------------------------------------------
+
+// InboundMsg represents a user message from CLI to server.
+// This is the CLI-local equivalent of bus.InboundMessage, containing only
+// the fields needed by the CLI channel.
+type InboundMsg struct {
+	Channel    string            `json:"channel"`
+	ChatID     string            `json:"chat_id"`
+	Content    string            `json:"content"`
+	SenderID   string            `json:"sender_id"`
+	SenderName string            `json:"sender_name"`
+	ChatType   string            `json:"chat_type"`
+	RequestID  string            `json:"request_id"`
+	Media      []string          `json:"media,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+// OutboundMsg represents a server response to CLI.
+// This is the CLI-local equivalent of bus.OutboundMessage, containing only
+// the fields needed by the CLI channel for display.
+type OutboundMsg struct {
+	Channel     string            `json:"channel"`
+	ChatID      string            `json:"chat_id"`
+	Content     string            `json:"content"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	WaitingUser bool              `json:"waiting_user"`
+	IsPartial   bool              `json:"is_partial"`
+	ToolsUsed   []string          `json:"tools_used,omitempty"`
+	Media       []string          `json:"media,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// CLI-local background task types (decoupled from tools package)
+// ---------------------------------------------------------------------------
+
+// BgTaskStatus represents the status of a background task.
+type BgTaskStatus string
+
+const (
+	BgTaskRunning BgTaskStatus = "running"
+	BgTaskDone    BgTaskStatus = "done"
+	BgTaskError   BgTaskStatus = "error"
+	BgTaskKilled  BgTaskStatus = "killed"
+)
+
+// BgTask represents a background task for CLI display.
+// This is the CLI-local equivalent of tools.BackgroundTask, containing only
+// the fields needed for task panel rendering.
+type BgTask struct {
+	ID         string       `json:"id"`
+	Command    string       `json:"command"`
+	Status     BgTaskStatus `json:"status"`
+	StartedAt  time.Time    `json:"started_at"`
+	FinishedAt *time.Time   `json:"finished_at,omitempty"`
+	Output     string       `json:"output"`
+	ExitCode   int          `json:"exit_code"`
+	Error      string       `json:"error,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// CLI-local metadata constants (decoupled from bus package)
+// ---------------------------------------------------------------------------
+
+const (
+	// MetadataReplyPolicy controls how Agent should behave before final reply.
+	MetadataReplyPolicy = "reply_policy"
+
+	ReplyPolicyOptional = "optional"
 )
 
 // ---------------------------------------------------------------------------
@@ -682,8 +754,8 @@ type SessionPanelEntry struct {
 // CLIChannel CLI 渠道实现
 type CLIChannel struct {
 	config  *CLIChannelConfig
-	msgChan chan bus.OutboundMessage // 接收 agent 回复的通道
-	workDir string                   // 工作目录
+	msgChan chan OutboundMsg // 接收 agent 回复的通道
+	workDir string           // 工作目录
 
 	// Bubble Tea
 	program   *tea.Program
@@ -742,10 +814,10 @@ type CLIChannel struct {
 	pendingHistory           []HistoryMessage        // remote mode: cached history before model is ready
 	pendingProgress          *protocol.ProgressEvent // remote mode: cached progress before model is ready
 	pendingCheckpointState   *protocol.CheckpointState
-	pendingSendInboundFn     func(bus.InboundMessage) bool
+	pendingSendInboundFn     func(InboundMsg) bool
 	// Pending remote bg task callbacks (set before model exists in remote mode)
 	pendingBgTaskCountFn     func() int
-	pendingBgTaskListFn      func() []*tools.BackgroundTask
+	pendingBgTaskListFn      func() []*BgTask
 	pendingBgTaskKillFn      func(taskID string) error // remote mode: forward to server
 	pendingBgTaskCleanupFn   func()                    // remote mode: cleanup completed tasks
 	pendingPluginMgrFn       func() *plugin.PluginManager
