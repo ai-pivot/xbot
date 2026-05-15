@@ -13,18 +13,21 @@ import (
 	"xbot/config"
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
 // InitServer creates the core server components:
-// Agent, RPCTable, Dispatcher, and MessageBus.
+// RPCTable, Dispatcher, and MessageBus.
+//
+// It creates the Agent internally, wires its callbacks,
+// and starts the agent loop. The caller never touches the Agent directly.
 //
 // Both CLI local mode and server remote mode call this.
 // The caller is responsible for:
-//   - Calling ag.WireCallbacks()
-//   - Calling ag.SetChatRenameFn()
-//   - Registering additional tools (OAuth, Feishu MCP, etc.)
-//   - Starting the agent loop (ag.Run)
+//   - Registering the CLI/WS channel with the returned Dispatcher
+//   - Calling SetSessionStateHandler after the channel is created
+//   - Calling SetChatRenameFn if needed (local CLI mode)
 //   - HTTP/WS listening (server mode only)
 func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbotHome string, personaIsolation bool, reconfigureFn func(string)) (
 	ag *agent.Agent, rpcTable RPCTable, disp *channel.Dispatcher, msgBus *bus.MessageBus, err error) {
@@ -112,7 +115,52 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
 	})
 
+	// 6. Wire agent callbacks (sessionStateHandler set later via SetSessionStateHandler).
+	ag.WireCallbacks(
+		func(msg bus.OutboundMessage) (string, error) { // directSend
+			return disp.SendDirect(msg)
+		},
+		disp.GetChannel, // channelFinder
+		nil,             // sessionStateHandler — set later via SetSessionStateHandler
+		disp,            // messageSender
+		func(name string, runFn bus.RunFn) error { // registerAgentChannel
+			ac := channel.NewAgentChannel(name, runFn)
+			if err := ac.Start(); err != nil {
+				return fmt.Errorf("start AgentChannel %s: %w", name, err)
+			}
+			disp.Register(ac)
+			return nil
+		},
+		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
+	)
+
+	// 7. Start agent loop.
+	// The agent blocks on msgBus.Inbound until a message arrives,
+	// so it's safe to start before sessionStateHandler is set —
+	// the handler is only called when processing outbound events,
+	// which happens after the first user message.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer cancel()
+		if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
+			log.WithError(err).Error("Agent loop exited with error")
+		}
+	}()
+	log.Info("Agent loop started")
+
 	return ag, rpcTable, disp, msgBus, nil
+}
+
+// SetSessionStateHandler is a convenience function that calls
+// ag.SetSessionStateHandler. CLI uses this after creating cliCh.
+func SetSessionStateHandler(ag *agent.Agent, fn func(ev protocol.SessionEvent)) {
+	ag.SetSessionStateHandler(fn)
+}
+
+// SetChatRenameFn is a convenience function that calls
+// ag.SetChatRenameFn. CLI uses this after creating the DB.
+func SetChatRenameFn(ag *agent.Agent, fn func(chatID, newName string) (oldName string, err error)) {
+	ag.SetChatRenameFn(fn)
 }
 
 // DispatchRPC dispatches an RPC request to the given RPCTable.

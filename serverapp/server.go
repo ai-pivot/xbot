@@ -639,7 +639,8 @@ func Run(args []string) error {
 	}
 
 	// sessionStateHandler pushes session state change events to the CLI via WS.
-	// Extracted as a local variable so both WireCallbacks and ChatRenameFn can use it.
+	// InitServer already called WireCallbacks with nil sessionStateHandler;
+	// we set it here after the RemoteCLIChannel is registered.
 	sessionStateHandler := func(ev protocol.SessionEvent) {
 		if ch, ok := disp.GetChannel("cli"); ok {
 			if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
@@ -647,27 +648,7 @@ func Run(args []string) error {
 			}
 		}
 	}
-
-	// Wire ALL shared agent callbacks in one place. Both this file and
-	// cmd/xbot-cli/main.go call WireCallbacks with the same positional parameters.
-	// Adding a new parameter changes the signature → compile error at BOTH call sites.
-	ag.WireCallbacks(
-		func(msg bus.OutboundMessage) (string, error) { // directSend
-			return disp.SendDirect(msg)
-		},
-		disp.GetChannel,     // channelFinder
-		sessionStateHandler, // sessionStateHandler
-		disp,                // messageSender
-		func(name string, runFn bus.RunFn) error { // registerAgentChannel
-			ac := channel.NewAgentChannel(name, runFn)
-			if err := ac.Start(); err != nil {
-				return fmt.Errorf("start AgentChannel %s: %w", name, err)
-			}
-			disp.Register(ac)
-			return nil
-		},
-		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
-	)
+	SetSessionStateHandler(ag, sessionStateHandler)
 
 	// Wire ChatRenameFn: rename session in DB (for remote CLI and server-side agents).
 	// Uses upsert (INSERT ON CONFLICT) to handle both existing and new user_chats rows.
@@ -822,19 +803,7 @@ func Run(args []string) error {
 		}).Info("Webhook event server started")
 	}
 
-	// 启动 Agent 循环
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.WithField("panic", r).Error("Agent loop panicked\n" + string(debug.Stack()))
-				// 触发优雅退出，避免僵尸进程
-				sigCh <- syscall.SIGTERM
-			}
-		}()
-		if err := ag.Run(ctx); err != nil && ctx.Err() == nil {
-			log.WithError(err).Error("Agent loop exited with error")
-		}
-	}()
+	// Agent loop already started by InitServer.
 
 	log.Info("xbot started successfully")
 	fmt.Println("🤖 xbot is running. Press Ctrl+C to stop.")

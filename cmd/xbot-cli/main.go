@@ -839,7 +839,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
-			return serverapp.WithRPCCtx(context.Background(), "cli_user", "cli_user")
+			return serverapp.WithRPCCtx(context.Background(), "admin", "cli_user")
 		})
 
 		// Client is the unified interface
@@ -1737,38 +1737,19 @@ func main() {
 	// Both local and remote modes run the same initialization.
 	// Only a few items are remote-specific (reconnect, conn_state).
 
-	// ── Wire ALL shared agent callbacks (same as serverapp/server.go) ──
-	// Both local and remote modes register callbacks directly on the server-side Agent.
-	// In remote mode, server.go does this. In local mode, we do it here on app.ag.
-	// client.WireCallbacks is no-op for both modes — callbacks live on the server side.
+	// ── Wire CLI-specific callbacks (sessionStateHandler, SetChatRenameFn) ──
+	// InitServer already called WireCallbacks (with nil sessionStateHandler)
+	// and started ag.Run. We only set the CLI-specific callbacks here.
 	if app.ag != nil {
 		sessionStateHandler := func(ev protocol.SessionEvent) {
 			cliCh.SendSessionState(ev)
 		}
-
-		app.ag.WireCallbacks(
-			func(msg bus.OutboundMessage) (string, error) { // directSend
-				return disp.SendDirect(msg)
-			},
-			disp.GetChannel,     // channelFinder
-			sessionStateHandler, // sessionStateHandler
-			disp,                // messageSender
-			func(name string, runFn bus.RunFn) error { // registerAgentChannel
-				ac := channel.NewAgentChannel(name, runFn)
-				if err := ac.Start(); err != nil {
-					return fmt.Errorf("start AgentChannel %s: %w", name, err)
-				}
-				disp.Register(ac)
-				return nil
-			},
-			func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
-		)
+		serverapp.SetSessionStateHandler(app.ag, sessionStateHandler)
 
 		// SetChatRenameFn: rename session in DB. Same logic as server.go.
-		// Registered directly on server-side Agent, same as remote mode does in server.go.
 		if app.db != nil {
 			conn := app.db.Conn()
-			app.ag.SetChatRenameFn(func(chatID, newName string) (string, error) {
+			serverapp.SetChatRenameFn(app.ag, func(chatID, newName string) (string, error) {
 				var oldName string
 				row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, cliSenderID, chatID)
 				_ = row.Scan(&oldName)
@@ -1808,7 +1789,7 @@ func main() {
 				return oldName, nil
 			})
 		}
-	} // end WireCallbacks + SetChatRenameFn
+	} // end sessionStateHandler + SetChatRenameFn
 
 	// Refine firstRun: config.json check passed, but DB may already have a subscription.
 	// Must be after backend.Start() because channelTransport requires the serve()
