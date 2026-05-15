@@ -2290,7 +2290,6 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
 		if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
 			tenantSession.SetCurrentDir(entry.WorktreeDir)
-			detectDir = entry.WorktreeDir
 		}
 	} else {
 		tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
