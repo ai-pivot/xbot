@@ -77,6 +77,9 @@ type RemoteTransport struct {
 	rpcMu      sync.Mutex
 	pending    map[string]chan *rpcResponse
 	rpcCounter atomic.Int64
+
+	// eventCh forwards raw WS messages to Client.eventLoop for unified dispatch.
+	eventCh chan protocol.WSMessage
 }
 
 // RemoteTransportConfig holds the configuration for connecting to a remote server.
@@ -94,6 +97,7 @@ func NewRemoteTransport(cfg RemoteTransportConfig) *RemoteTransport {
 		done:          make(chan struct{}),
 		reconnectCh:   make(chan struct{}, 1),
 		pending:       make(map[string]chan *rpcResponse),
+		eventCh:       make(chan protocol.WSMessage, 256),
 	}
 }
 
@@ -150,6 +154,11 @@ func (t *RemoteTransport) Call(method string, payload json.RawMessage) (json.Raw
 		t.rpcMu.Unlock()
 		return nil, fmt.Errorf("RPC %s: backend stopped", method)
 	}
+}
+
+// EventCh returns the channel for raw WS messages, used by Client.eventLoop.
+func (t *RemoteTransport) EventCh() chan protocol.WSMessage {
+	return t.eventCh
 }
 
 // Close stops the WebSocket connection.
@@ -463,73 +472,22 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				}
 			}
 		}
-		t.dispatchServerMessage(ctx, &msg)
-	}
-}
 
-// dispatchServerMessage routes a single server message to the appropriate handler.
-func (t *RemoteTransport) dispatchServerMessage(ctx context.Context, msg *protocol.WSMessage) {
-	switch msg.Type {
-	case protocol.MsgTypeRPCResponse:
-		t.handleRPCResponse(msg)
-	case protocol.MsgTypeText:
-		t.emit(ctx, protocol.OutboundEvent{
-			Channel:   msg.Channel,
-			ChatID:    msg.ChatID,
-			Content:   msg.Content,
-			IsPartial: false,
-		})
-	case protocol.MsgTypeProgress:
-		if msg.Progress != nil {
-			t.emit(ctx, msg.Progress)
-		}
-	case protocol.MsgTypeStreamContent:
-		if msg.Progress != nil {
-			t.emit(ctx, &protocol.ProgressEvent{
-				ChatID:                 msg.Progress.ChatID,
-				StreamContent:          msg.Progress.StreamContent,
-				ReasoningStreamContent: msg.Progress.ReasoningStreamContent,
-			})
-		}
-	case protocol.MsgTypeAskUser:
-		if msg.Progress != nil && len(msg.Progress.Questions) > 0 {
-			log.WithFields(log.Fields{
-				"msg_chatid":    msg.ChatID,
-				"num_questions": len(msg.Progress.Questions),
-			}).Info("RemoteTransport: dispatching ask_user")
-			qJSON, err := json.Marshal(msg.Progress.Questions)
-			if err != nil {
-				log.WithError(err).Warn("RemoteTransport: ask_user marshal failed")
+		// RPC responses are handled inline (match pending callers).
+		// TUI control requests need WS write-back, handled inline.
+		// All other events are forwarded to Client.eventLoop via eventCh.
+		switch msg.Type {
+		case protocol.MsgTypeRPCResponse:
+			t.handleRPCResponse(&msg)
+		case protocol.MsgTypeTUIControlReq:
+			t.handleTUIControlRequest(ctx, &msg)
+		default:
+			select {
+			case t.eventCh <- msg:
+			case <-ctx.Done():
 				return
 			}
-			t.emit(ctx, protocol.AskUserEvent{
-				Channel:   msg.Channel,
-				ChatID:    msg.ChatID,
-				Questions: string(qJSON),
-				RequestID: msg.Progress.RequestID,
-			})
 		}
-	case protocol.MsgTypeInjectUser:
-		if msg.Content != "" {
-			t.emit(ctx, protocol.InjectUserEvent{
-				ChatID:  msg.ChatID,
-				Content: msg.Content,
-			})
-		}
-	case protocol.MsgTypePluginWidgets:
-		var zones map[string]string
-		if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
-			t.emit(ctx, protocol.PluginWidgetEvent{
-				ChatID: msg.ChatID,
-				Zones:  zones,
-			})
-		}
-	case protocol.MsgTypeSession:
-		if msg.Session != nil {
-			t.emit(ctx, *msg.Session)
-		}
-	case protocol.MsgTypeTUIControlReq:
-		t.handleTUIControlRequest(ctx, msg)
 	}
 }
 
@@ -563,12 +521,12 @@ func (t *RemoteTransport) handleTUIControlRequest(ctx context.Context, msg *prot
 			t.connMu.Unlock()
 		}()
 	}
-	// Emit protocol event
+	// Forward TUI control event to Client.eventLoop
 	if msg.TUIControl != nil {
-		t.emit(ctx, protocol.TUIControlEvent{
-			Action: msg.TUIControl.Action,
-			Params: msg.TUIControl.Params,
-		})
+		select {
+		case t.eventCh <- protocol.WSMessage{Type: protocol.MsgTypeTUIControlReq, TUIControl: msg.TUIControl}:
+		default:
+		}
 	}
 }
 

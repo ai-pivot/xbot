@@ -130,6 +130,13 @@ func (c *Client) dispatchWSMessage(msg protocol.WSMessage) {
 				Zones:  zones,
 			})
 		}
+	case protocol.MsgTypeTUIControlReq:
+		if msg.TUIControl != nil {
+			c.base.emit(c.ctx, protocol.TUIControlEvent{
+				Action: msg.TUIControl.Action,
+				Params: msg.TUIControl.Params,
+			})
+		}
 	}
 }
 
