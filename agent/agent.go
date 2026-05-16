@@ -1419,6 +1419,8 @@ func (a *Agent) resetSessionState(key string) {
 
 // injectCLIUserMessage sends a user message to the CLI channel if available.
 // Used by background notification handlers to display messages in the CLI UI.
+// Supports all three CLI channel types via UserMessageInjector interface:
+// CLIChannel (local), RemoteCLIChannel (websocket), ChannelCliChannel (in-process server).
 func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if a.channelFinder == nil {
 		return
@@ -1427,11 +1429,15 @@ func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if !ok {
 		return
 	}
-	switch c := ch.(type) {
-	case *channel.CLIChannel:
-		c.InjectUserMessage(channelName+":"+chatID, content)
-	case *channel.RemoteCLIChannel:
-		c.InjectUserMessage(chatID, content)
+	if injector, ok := ch.(channel.UserMessageInjector); ok {
+		switch ch.(type) {
+		case *channel.CLIChannel:
+			// Local mode: chatID needs "channel:chatID" format
+			injector.InjectUserMessage(channelName+":"+chatID, content)
+		default:
+			// Remote/ChannelCli: chatID is plain chatID
+			injector.InjectUserMessage(chatID, content)
+		}
 	}
 }
 
