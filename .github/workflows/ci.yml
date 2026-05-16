@@ -112,26 +112,3 @@ jobs:
         working-directory: web
         run: yarn build
 
-  # Trigger nightly release after CI passes on master push
-  nightly:
-    name: Nightly Release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [lint, build, test, build-windows, test-windows, frontend]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Trigger nightly release workflow
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'release.yml',
-              ref: 'master',
-              inputs: {
-                channel: 'nightly'
-              }
-            })

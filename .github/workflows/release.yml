@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - master           # nightly: auto on merge
     tags:
       - 'v*'             # stable: v1.2.3  /  beta: v1.2.3-beta.1
   workflow_dispatch:
@@ -31,7 +33,14 @@ jobs:
     steps:
       - id: meta
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "branch" ]]; then
+            # push to master → nightly
+            DATE=$(date -u +%Y%m%d)
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "version=nightly-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "channel=nightly" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            # push tag → stable or beta
             TAG="${{ github.ref_name }}"
             echo "version=${TAG}" >> "$GITHUB_OUTPUT"
             if [[ "$TAG" == *"-"* ]]; then
@@ -40,6 +49,7 @@ jobs:
               echo "channel=stable" >> "$GITHUB_OUTPUT"
             fi
           else
+            # workflow_dispatch → manual nightly or beta
             CH="${{ github.event.inputs.channel }}"
             DATE=$(date -u +%Y%m%d)
             if [[ "$CH" == "nightly" ]]; then
