@@ -12,7 +12,8 @@ test:
 	go test -v -race -coverprofile=coverage.out ./...
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
-LDFLAGS := -X xbot/version.Version=$(VERSION) -X xbot/version.Commit=$(shell git rev-parse --short HEAD) -X xbot/version.BuildTime=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+CHANNEL := $(shell git branch --show-current 2>/dev/null | sed 's/master/stable/' | sed 's/.*/stable/' | head -1)
+LDFLAGS := -X xbot/version.Version=$(VERSION) -X xbot/version.Commit=$(shell git rev-parse --short HEAD) -X xbot/version.BuildTime=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) -X xbot/version.Channel=$(CHANNEL)
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) .
