@@ -594,6 +594,7 @@ func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
 	requestID := pu.RequestID // capture for callbacks
 
 	log.WithField("chat_id", m.chatID).Info("Restoring pending AskUser panel from disk")
+	m.askUserSession = m.chatID // bind AskUser to current session
 	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(requestID), m.pendingAskUserOnCancel(requestID))
 	return nil
 }
@@ -624,8 +625,10 @@ func (m *cliModel) pendingAskUserOnAnswer(requestID string) func(map[string]stri
 // pendingAskUserOnCancel returns a callback for cancelled pending questions.
 // It cleans up the persisted file and closes the panel.
 func (m *cliModel) pendingAskUserOnCancel(requestID string) func() {
+	// Capture chatID at panel open time, not at cancel time.
+	chatID := m.askUserSession
 	return func() {
-		m.deletePendingAskUser(m.askUserSession)
+		m.deletePendingAskUser(chatID)
 		m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
 		m.typing = false
 		m.updatePlaceholder()
