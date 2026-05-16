@@ -1,28 +1,17 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"xbot/agent"
-	"xbot/agent/hooks"
-	"xbot/bus"
 	"xbot/channel"
 	"xbot/clipanic"
 	"xbot/config"
-	"xbot/event"
-	"xbot/llm"
-	"xbot/plugin"
-	"xbot/protocol"
-	"xbot/session"
 	"xbot/storage/sqlite"
-	"xbot/tools"
 )
 
 func TestAppendCLIPanicLogIncludesMainContext(t *testing.T) {
@@ -358,9 +347,7 @@ func TestLoadLLMFromDBSubscriptionPrefersDB(t *testing.T) {
 		}},
 	}
 
-	factory := agent.NewLLMFactory(sqlite.NewUserLLMConfigService(db), nil, "")
-	factory.SetSubscriptionSvc(svc)
-	backend := &fakeAgentBackend{factory: factory, defaultModel: "db-model", defaultSub: &channel.Subscription{ID: "db-sub", Name: "db", Provider: "openai", BaseURL: "https://db.example/v1", APIKey: "db-key", Model: "db-model", Active: true}}
+	backend := newTestClient(&fakeTransport{subSvc: svc, defaultModel: "db-model", defaultSub: &channel.Subscription{ID: "db-sub", Name: "db", Provider: "openai", BaseURL: "https://db.example/v1", APIKey: "db-key", Model: "db-model", Active: true}})
 
 	loadLLMFromDBSubscription(backend, cfg)
 
@@ -380,9 +367,7 @@ func TestSeedLocalDBSubscriptionsOnlyWhenDBEmpty(t *testing.T) {
 	defer db.Close()
 
 	svc := sqlite.NewLLMSubscriptionService(db)
-	factory := agent.NewLLMFactory(sqlite.NewUserLLMConfigService(db), nil, "")
-	factory.SetSubscriptionSvc(svc)
-	backend := &fakeAgentBackend{factory: factory, defaultModel: ""}
+	backend := newTestClient(&fakeTransport{subSvc: svc, defaultModel: ""})
 
 	cfg := &config.Config{Subscriptions: []config.SubscriptionConfig{{
 		ID:       "cfg-sub",
@@ -685,186 +670,159 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	}
 }
 
-type fakeAgentBackend struct {
-	factory      *agent.LLMFactory
+// fakeTransport implements agent.Transport for tests, delegating subscription RPCs to sqlite.
+type fakeTransport struct {
+	subSvc       *sqlite.LLMSubscriptionService
 	defaultModel string
 	defaultSub   *channel.Subscription
 }
 
-// Compile-time check: fakeAgentBackend implements agent.AgentBackend.
-var _ agent.AgentBackend = (*fakeAgentBackend)(nil)
+func (t *fakeTransport) Close() error { return nil }
 
-func (b *fakeAgentBackend) Start(context.Context) error          { return nil }
-func (b *fakeAgentBackend) Stop()                                {}
-func (b *fakeAgentBackend) SendInbound(bus.InboundMessage) error { return nil }
-func (b *fakeAgentBackend) Subscribe(protocol.EventPattern, protocol.EventHandler) func() {
-	return func() {}
-}
-func (b *fakeAgentBackend) ConnState() string                                        { return "connected" }
-func (b *fakeAgentBackend) ServerURL() string                                        { return "" }
-func (b *fakeAgentBackend) Agent() *agent.Agent                                      { return nil }
-func (b *fakeAgentBackend) Bus() *bus.MessageBus                                     { return nil }
-func (b *fakeAgentBackend) IsRemote() bool                                           { return false }
-func (b *fakeAgentBackend) IsProcessing(string, string) bool                         { return false }
-func (b *fakeAgentBackend) GetActiveProgress(string, string) *protocol.ProgressEvent { return nil }
-func (b *fakeAgentBackend) GetTodos(string, string) []protocol.TodoItem              { return nil }
-func (b *fakeAgentBackend) LLMFactory() *agent.LLMFactory                            { return b.factory }
-func (b *fakeAgentBackend) SettingsService() *agent.SettingsService                  { return nil }
-func (b *fakeAgentBackend) MultiSession() *session.MultiTenantSession                { return nil }
-func (b *fakeAgentBackend) BgTaskManager() *tools.BackgroundTaskManager              { return nil }
-func (b *fakeAgentBackend) HookManager() *hooks.Manager                              { return nil }
-func (b *fakeAgentBackend) ApprovalState() *hooks.ApprovalState                      { return nil }
-func (b *fakeAgentBackend) BindChat(_ string) error                                  { return nil }
-func (b *fakeAgentBackend) SetDirectSend(func(bus.OutboundMessage) (string, error))  {}
-func (b *fakeAgentBackend) SetChannelFinder(func(string) (channel.Channel, bool))    {}
-func (b *fakeAgentBackend) SetChannelPromptProviders(...agent.ChannelPromptProvider) {}
-func (b *fakeAgentBackend) RegisterCoreTool(tools.Tool)                              {}
-func (b *fakeAgentBackend) IndexGlobalTools()                                        {}
-func (b *fakeAgentBackend) CountInteractiveSessions(string, string) int              { return 0 }
-func (b *fakeAgentBackend) ListInteractiveSessions(string, string) []agent.InteractiveSessionInfo {
-	return nil
-}
-func (b *fakeAgentBackend) InspectInteractiveSession(context.Context, string, string, string, string, int) (string, error) {
-	return "", nil
-}
-func (b *fakeAgentBackend) GetSessionMessages(string, string, string, string) ([]agent.SessionMessage, bool) {
-	return nil, false
-}
-func (b *fakeAgentBackend) GetAgentSessionDump(string, string, string, string) (*agent.AgentSessionDump, bool) {
-	return nil, false
-}
-func (b *fakeAgentBackend) GetAgentSessionDumpByFullKey(string) (*agent.AgentSessionDump, bool) {
-	return nil, false
-}
-func (b *fakeAgentBackend) SetContextMode(string) error                    { return nil }
-func (b *fakeAgentBackend) SetCWD(string, string, string) error            { return nil }
-func (b *fakeAgentBackend) SetMaxIterations(int)                           {}
-func (b *fakeAgentBackend) SetMaxConcurrency(int)                          {}
-func (b *fakeAgentBackend) SetMaxContextTokens(int, ...string)             {}
-func (b *fakeAgentBackend) GetEffectiveMaxContext(_, _ string) int         { return 0 }
-func (b *fakeAgentBackend) ClearPerChatMaxContext(_ string)                {}
-func (b *fakeAgentBackend) SetCompressionThreshold(float64)                {}
-func (b *fakeAgentBackend) SetSandbox(tools.Sandbox, string)               {}
-func (b *fakeAgentBackend) GetCardBuilder() *tools.CardBuilder             { return nil }
-func (b *fakeAgentBackend) SetEventRouter(*event.Router)                   {}
-func (b *fakeAgentBackend) GetBgTaskCount(string) int                      { return 0 }
-func (b *fakeAgentBackend) ListBgTasks(string) ([]agent.BgTaskJSON, error) { return nil, nil }
-func (b *fakeAgentBackend) KillBgTask(string) error                        { return nil }
-func (b *fakeAgentBackend) CleanupCompletedBgTasks(string)                 {}
-func (b *fakeAgentBackend) ListTenants() ([]agent.TenantInfo, error)       { return nil, nil }
-func (b *fakeAgentBackend) ListSubscriptions(senderID string) ([]channel.Subscription, error) {
-	svc := b.factory.GetSubscriptionSvc()
-	subs, err := svc.List(senderID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]channel.Subscription, len(subs))
-	for i, s := range subs {
-		out[i] = channel.Subscription{ID: s.ID, Name: s.Name, Provider: s.Provider, BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault}
-	}
-	return out, nil
-}
-func (b *fakeAgentBackend) GetDefaultSubscription(senderID string) (*channel.Subscription, error) {
-	if b.defaultSub != nil {
-		return b.defaultSub, nil
-	}
-	svc := b.factory.GetSubscriptionSvc()
-	sub, err := svc.GetDefault(senderID)
-	if err != nil || sub == nil {
-		return nil, err
-	}
-	return &channel.Subscription{ID: sub.ID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault}, nil
-}
-func (b *fakeAgentBackend) AddSubscription(senderID string, sub channel.Subscription) error {
-	return b.factory.GetSubscriptionSvc().Add(&sqlite.LLMSubscription{ID: sub.ID, SenderID: senderID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, IsDefault: sub.Active})
-}
-func (b *fakeAgentBackend) RemoveSubscription(id string) error {
-	return b.factory.GetSubscriptionSvc().Remove(id)
-}
-func (b *fakeAgentBackend) SetDefaultSubscription(id string, _ string) error {
-	return b.factory.GetSubscriptionSvc().SetDefault(id)
-}
-func (b *fakeAgentBackend) RenameSubscription(id, name string) error {
-	return b.factory.GetSubscriptionSvc().Rename(id, name)
-}
-func (b *fakeAgentBackend) UpdateSubscription(id string, sub channel.Subscription) error {
-	return b.factory.GetSubscriptionSvc().Update(&sqlite.LLMSubscription{ID: id, SenderID: cliSenderID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode, IsDefault: sub.Active})
-}
-func (b *fakeAgentBackend) RegisterTool(tools.Tool) {}
+func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
+	switch method {
+	case agent.MethodListSubscriptions:
+		var req struct {
+			SenderID string `json:"sender_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		subs, err := t.subSvc.List(req.SenderID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]channel.Subscription, len(subs))
+		for i, s := range subs {
+			out[i] = channel.Subscription{ID: s.ID, Name: s.Name, Provider: s.Provider, BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault}
+		}
+		return json.Marshal(out)
 
-func (b *fakeAgentBackend) UpdatePerModelConfig(id, model string, pmc protocol.PerModelConfig) error {
-	return nil
+	case agent.MethodGetDefaultSubscription:
+		var req struct {
+			SenderID string `json:"sender_id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		if t.defaultSub != nil {
+			return json.Marshal(t.defaultSub)
+		}
+		sub, err := t.subSvc.GetDefault(req.SenderID)
+		if err != nil || sub == nil {
+			return json.Marshal(nil)
+		}
+		return json.Marshal(&channel.Subscription{ID: sub.ID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault})
+
+	case agent.MethodAddSubscription:
+		var req struct {
+			SenderID string `json:"sender_id"`
+			Sub      struct {
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				Provider        string `json:"provider"`
+				BaseURL         string `json:"base_url"`
+				APIKey          string `json:"api_key"`
+				Model           string `json:"model"`
+				Active          bool   `json:"active"`
+				MaxOutputTokens int    `json:"max_output_tokens"`
+				ThinkingMode    string `json:"thinking_mode"`
+			} `json:"sub"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		err := t.subSvc.Add(&sqlite.LLMSubscription{
+			ID: req.Sub.ID, SenderID: req.SenderID, Name: req.Sub.Name,
+			Provider: req.Sub.Provider, BaseURL: req.Sub.BaseURL, APIKey: req.Sub.APIKey,
+			Model: req.Sub.Model, IsDefault: req.Sub.Active,
+		})
+		return json.RawMessage("null"), err
+
+	case agent.MethodRemoveSubscription:
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		return json.RawMessage("null"), t.subSvc.Remove(req.ID)
+
+	case agent.MethodSetDefaultSubscription:
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		return json.RawMessage("null"), t.subSvc.SetDefault(req.ID)
+
+	case agent.MethodRenameSubscription:
+		var req struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		return json.RawMessage("null"), t.subSvc.Rename(req.ID, req.Name)
+
+	case agent.MethodUpdateSubscription:
+		var req struct {
+			ID  string `json:"id"`
+			Sub struct {
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				Provider        string `json:"provider"`
+				BaseURL         string `json:"base_url"`
+				APIKey          string `json:"api_key"`
+				Model           string `json:"model"`
+				Active          bool   `json:"active"`
+				MaxOutputTokens int    `json:"max_output_tokens"`
+				ThinkingMode    string `json:"thinking_mode"`
+			} `json:"sub"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		err := t.subSvc.Update(&sqlite.LLMSubscription{
+			ID: req.ID, SenderID: cliSenderID, Name: req.Sub.Name,
+			Provider: req.Sub.Provider, BaseURL: req.Sub.BaseURL, APIKey: req.Sub.APIKey,
+			Model: req.Sub.Model, MaxOutputTokens: req.Sub.MaxOutputTokens,
+			ThinkingMode: req.Sub.ThinkingMode, IsDefault: req.Sub.Active,
+		})
+		return json.RawMessage("null"), err
+
+	case agent.MethodSetSubscriptionModel:
+		var req struct {
+			ID    string `json:"id"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, err
+		}
+		return json.RawMessage("null"), t.subSvc.SetModel(req.ID, req.Model)
+
+	case agent.MethodUpdatePerModelConfig:
+		return json.RawMessage("null"), nil
+
+	case agent.MethodGetUserMaxOutputTokens:
+		return json.RawMessage("0"), nil
+
+	case agent.MethodGetUserThinkingMode:
+		return json.RawMessage(`""`), nil
+
+	case agent.MethodGetDefaultModel:
+		return json.RawMessage(`"` + t.defaultModel + `"`), nil
+
+	default:
+		return json.RawMessage("null"), nil
+	}
 }
-func (b *fakeAgentBackend) RegistryManager() *agent.RegistryManager   { return nil }
-func (b *fakeAgentBackend) SetProxyLLM(string, *llm.ProxyLLM, string) {}
-func (b *fakeAgentBackend) ClearProxyLLM(string)                      {}
-func (b *fakeAgentBackend) SetDefaultModel(string)                    {}
-func (b *fakeAgentBackend) SetUserModel(string, string) error         { return nil }
-func (b *fakeAgentBackend) SetSubscriptionModel(id, model string) error {
-	return b.factory.GetSubscriptionSvc().SetModel(id, model)
+
+func newTestClient(tr *fakeTransport) *agent.Client {
+	return agent.NewClient(tr, nil)
 }
-func (b *fakeAgentBackend) SwitchModel(string, string, string) error { return nil }
-func (b *fakeAgentBackend) GetDefaultModel() string                  { return b.defaultModel }
-func (b *fakeAgentBackend) GetUserMaxContext(string) int             { return 0 }
-func (b *fakeAgentBackend) SetUserMaxContext(string, int) error      { return nil }
-func (b *fakeAgentBackend) GetUserMaxOutputTokens(string) int        { return 0 }
-func (b *fakeAgentBackend) SetUserMaxOutputTokens(string, int) error { return nil }
-func (b *fakeAgentBackend) GetUserThinkingMode(string) string        { return "" }
-func (b *fakeAgentBackend) SetUserThinkingMode(string, string) error { return nil }
-func (b *fakeAgentBackend) GetLLMConcurrency(string) int             { return 0 }
-func (b *fakeAgentBackend) SetLLMConcurrency(string, int) error      { return nil }
-func (b *fakeAgentBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
-}
-func (b *fakeAgentBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
-}
-func (b *fakeAgentBackend) WireCallbacks(func(bus.OutboundMessage) (string, error), func(string) (channel.Channel, bool), func(protocol.SessionEvent), bus.MessageSender, func(string, bus.RunFn) error, func(string)) {
-}
-func (b *fakeAgentBackend) SetChatRenameFn(_ func(chatID, newName string) (oldName string, err error)) {
-}
-func (b *fakeAgentBackend) GetContextMode() string                                { return "" }
-func (b *fakeAgentBackend) PluginManager() *plugin.PluginManager                  { return nil }
-func (b *fakeAgentBackend) GetSettings(string, string) (map[string]string, error) { return nil, nil }
-func (b *fakeAgentBackend) SetSetting(string, string, string, string) error       { return nil }
-func (b *fakeAgentBackend) ListModels() []string                                  { return nil }
-func (b *fakeAgentBackend) ListAllModels() []string                               { return nil }
-func (b *fakeAgentBackend) SetModelTiers(config.LLMConfig) error                  { return nil }
-func (b *fakeAgentBackend) SetDefaultThinkingMode(string) error                   { return nil }
-func (b *fakeAgentBackend) SetModelContexts(contexts map[string]int) error        { return nil }
-func (b *fakeAgentBackend) SetGlobalMaxTokens(maxTokens int) error                { return nil }
-func (b *fakeAgentBackend) SetRetryConfig(cfg llm.RetryConfig) error              { return nil }
-func (b *fakeAgentBackend) SetChatLLM(chatID string, provider string, llmCfg config.LLMConfig) error {
-	return nil
-}
-func (b *fakeAgentBackend) GetUserTokenUsage(string) (map[string]any, error) { return nil, nil }
-func (b *fakeAgentBackend) GetDailyTokenUsage(string, int) ([]map[string]any, error) {
-	return nil, nil
-}
-func (b *fakeAgentBackend) ClearMemory(context.Context, string, string, string, string) error {
-	return nil
-}
-func (b *fakeAgentBackend) GetMemoryStats(context.Context, string, string, string) map[string]string {
-	return nil
-}
-func (b *fakeAgentBackend) GetHistory(string, string) ([]channel.HistoryMessage, error) {
-	return nil, nil
-}
-func (b *fakeAgentBackend) GetTokenState(string, string) (int64, int64, error) {
-	return 0, 0, nil
-}
-func (b *fakeAgentBackend) TrimHistory(string, string, time.Time) error { return nil }
-func (b *fakeAgentBackend) ResetTokenState()                            {}
-func (b *fakeAgentBackend) GetChannelConfigs() (map[string]map[string]string, error) {
-	return nil, nil
-}
-func (b *fakeAgentBackend) SetChannelConfig(channel string, values map[string]string) error {
-	return nil
-}
-func (b *fakeAgentBackend) SetChannelReconfigureFn(func(string)) {}
-func (b *fakeAgentBackend) Close() error                         { return nil }
-func (b *fakeAgentBackend) CallRPC(string, any) (json.RawMessage, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (b *fakeAgentBackend) Run(context.Context) error { return nil }
 
 func TestCLISettingHandlersCoversAllRuntimeKeys(t *testing.T) {
 	missing := agent.MissingSettingHandlerKeys()
@@ -917,10 +875,3 @@ func TestIsCLISubscriptionSettingKey(t *testing.T) {
 		})
 	}
 }
-
-// Additional AgentBackend methods for tests
-func (b *fakeAgentBackend) CreateWebUser(string) (string, error)            { return "test-pass", nil }
-func (b *fakeAgentBackend) ListWebUsers() ([]map[string]any, error)         { return nil, nil }
-func (b *fakeAgentBackend) DeleteWebUser(string) error                      { return nil }
-func (b *fakeAgentBackend) DeleteChat(string, string, string) error         { return nil }
-func (b *fakeAgentBackend) RenameChat(string, string, string, string) error { return nil }

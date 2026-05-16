@@ -254,7 +254,7 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 		},
 		Agent: AgentConfig{
 			MaxIterations:    2000,
-			MaxConcurrency:   3,
+			MaxConcurrency:   100,
 			MemoryProvider:   "flat",
 			WorkDir:          "/ipfs_flash/test",
 			PromptFile:       "CLAUDE.md",

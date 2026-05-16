@@ -10,6 +10,7 @@ import (
 const (
 	MethodGetSettings                  = "get_settings"
 	MethodSetSetting                   = "set_setting"
+	MethodSendInbound                  = "send_inbound"
 	MethodSetCWD                       = "set_cwd"
 	MethodSetContextMode               = "set_context_mode"
 	MethodGetContextMode               = "get_context_mode"
@@ -72,6 +73,7 @@ const (
 	MethodSetMaxConcurrency            = "set_max_concurrency"
 	MethodSetMaxContextTokens          = "set_max_context_tokens"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
+	MethodApplyRuntimeSettings         = "apply_runtime_settings"
 )
 
 // --- Settings ---
@@ -108,11 +110,6 @@ type setMaxIterationsReq struct {
 
 type setMaxConcurrencyReq struct {
 	N int `json:"n"`
-}
-
-type setMaxContextTokensReq struct {
-	MaxContext int    `json:"max_context"`
-	ChatID     string `json:"chat_id,omitempty"`
 }
 
 type setCompressionThresholdReq struct {
@@ -383,6 +380,10 @@ type getEffectiveMaxContextReq struct {
 
 type clearPerChatMaxContextReq struct {
 	ChatID string `json:"chat_id"`
+}
+
+type applyRuntimeSettingsReq struct {
+	Values map[string]string `json:"values"`
 }
 
 // --- DirectSend / Channel ---

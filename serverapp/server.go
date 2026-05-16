@@ -22,7 +22,6 @@ import (
 	log "xbot/logger"
 	"xbot/oauth"
 	"xbot/oauth/providers"
-	"xbot/protocol"
 	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -237,7 +236,7 @@ func channelShouldRun(cfg *config.Config, name string) bool {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, backend *agent.Backend, ag *agent.Agent, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
 	var feishuCh *channel.FeishuChannel
 	var webCh *channel.WebChannel
 	if cfg.Feishu.Enabled {
@@ -311,7 +310,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				}
 			}
 
-			webCh.SetCallbacks(buildWebCallbacks(cfg, backend, ag, webDB))
+			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
 			// Wire up RemoteSandbox callbacks to push real-time status to WebChannel.
 			// In WebChannel, senderID == chatID (see handleWS: client.userID = senderID, chatID := c.userID).
 			sb := tools.GetSandbox()
@@ -374,8 +373,6 @@ func Run(args []string) error {
 	}
 	log.WithFields(log.Fields{"provider": cfg.LLM.Provider, "model": cfg.LLM.Model}).Info("LLM client created")
 
-	msgBus := bus.NewMessageBus()
-
 	workDir := cfg.Agent.WorkDir
 	xbotDir := config.XbotHome()
 	dbPath := config.DBFilePath()
@@ -392,18 +389,51 @@ func Run(args []string) error {
 	// 初始化沙箱
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
-	bc := agent.BackendConfig{
-		Cfg:              cfg,
-		LLM:              llmClient,
-		Bus:              msgBus,
-		DBPath:           dbPath,
-		WorkDir:          workDir,
-		XbotHome:         xbotDir,
-		PersonaIsolation: cfg.Web.PersonaIsolation,
+	// Pre-declare so the channelReconfigureFn closure can reference them by pointer.
+	// The closure is only invoked at runtime (never during InitServer), so the
+	// nil→non-nil transition after InitServer returns is safe.
+	var (
+		ag       *agent.Agent
+		rpcTable RPCTable
+		disp     *channel.Dispatcher
+		msgBus   *bus.MessageBus
+	)
+
+	// channelReconfigureFn is called after a channel config change (server-side only).
+	channelReconfigureFn := func(name string) {
+		if disp == nil || msgBus == nil {
+			return
+		}
+		cfg := config.LoadFromFile(config.ConfigFilePath())
+		if cfg == nil {
+			return
+		}
+		_, running := disp.GetChannel(name)
+		shouldRun := channelShouldRun(cfg, name)
+		if shouldRun && !running {
+			if ch := createChannelInstance(name, cfg, msgBus); ch != nil {
+				disp.Register(ch)
+				go func(n string, c any) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.WithField("channel", n).Error("Dynamic channel start panicked\n" + string(debug.Stack()))
+						}
+					}()
+					if sc, ok := c.(interface{ Start() error }); ok {
+						if err := sc.Start(); err != nil {
+							log.WithError(err).WithField("channel", n).Error("Dynamic channel failed")
+						}
+					}
+				}(ch.Name(), ch)
+			}
+		} else if !shouldRun && running {
+			disp.Unregister(name)
+		}
 	}
-	backend, ag, err := agent.NewBackend(bc.AgentConfig())
+
+	ag, rpcTable, disp, msgBus, err = InitServer(cfg, llmClient, dbPath, workDir, xbotDir, cfg.Web.PersonaIsolation, channelReconfigureFn, nil)
 	if err != nil {
-		log.WithError(err).Fatal("Failed to create local backend")
+		log.WithError(err).Fatal("Failed to init server")
 	}
 
 	// Migrate config.json subscriptions into DB for the admin user.
@@ -471,7 +501,7 @@ func Run(args []string) error {
 			// Remove from vals so applyRuntimeSettings doesn't override it.
 			sandboxFromConfig := cfg.Sandbox.Mode
 			delete(vals, "sandbox_mode")
-			applyRuntimeSettings(cfg, backend, cliSenderID, vals)
+			applyRuntimeSettings(cfg, ag, cliSenderID, vals)
 			// Ensure sandbox_mode stays as config.json set it.
 			if sandboxFromConfig != "" {
 				cfg.Sandbox.Mode = sandboxFromConfig
@@ -487,60 +517,58 @@ func Run(args []string) error {
 			Manager: oauthManager,
 			BaseURL: cfg.OAuth.BaseURL,
 		}
-		backend.RegisterCoreTool(oauthTool)
-
-		// 注册 Feishu MCP 工具
+		ag.RegisterCoreTool(oauthTool)
 		feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
 		if feishuProvider != nil {
 			feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())
 		}
-		backend.RegisterTool(&feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BitableRecordTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BitableListTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.BitableRecordTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.BitableListTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
 
 		// Wiki tools
-		backend.RegisterTool(&feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
 
 		// Document tools
-		backend.RegisterTool(&feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxCreateTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxCreateTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
 
 		// Search tools
-		backend.RegisterTool(&feishu_mcp.SearchWikiTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.SearchWikiTool{MCP: feishuMCP})
 
 		// Drive tools
-		backend.RegisterTool(&feishu_mcp.UploadFileTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.ListFilesTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.AddPermissionTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.UploadFileTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.ListFilesTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.AddPermissionTool{MCP: feishuMCP})
 
 		// Message resource tools
-		backend.RegisterTool(&feishu_mcp.DownloadFileTool{MCP: feishuMCP})
-		backend.RegisterTool(&feishu_mcp.SendFileTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.DownloadFileTool{MCP: feishuMCP})
+		ag.RegisterTool(&feishu_mcp.SendFileTool{MCP: feishuMCP})
 
 		log.Info("OAuth and Feishu MCP tools registered")
 	}
 
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
-	backend.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	backend.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	backend.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
+	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
+	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
+	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 
 	// 注册 Logs 工具（仅管理员可用）
 	adminChatID := cfg.Admin.ChatID
 	if adminChatID != "" {
 		logsTool := tools.NewLogsTool(adminChatID)
-		backend.RegisterCoreTool(logsTool)
+		ag.RegisterCoreTool(logsTool)
 		log.WithField("admin_chat_id", adminChatID).Info("Logs tool registered (admin only)")
 	}
 
@@ -553,7 +581,7 @@ func Run(args []string) error {
 	if webhookBaseURL == "" {
 		webhookBaseURL = fmt.Sprintf("http://%s:%d", cfg.EventWebhook.Host, cfg.EventWebhook.Port)
 	}
-	backend.RegisterCoreTool(tools.NewEventTriggerTool(eventRouter, webhookBaseURL))
+	ag.RegisterCoreTool(tools.NewEventTriggerTool(eventRouter, webhookBaseURL))
 
 	var webhookServer *event.WebhookServer
 	if cfg.EventWebhook.Enable {
@@ -567,7 +595,7 @@ func Run(args []string) error {
 	}
 
 	// 所有工具注册完成，索引全局工具（用于 search_tools 语义搜索）
-	backend.IndexGlobalTools()
+	ag.IndexGlobalTools()
 	ag.LLMFactory().SetModelTiers(cfg.LLM)
 	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
@@ -584,57 +612,21 @@ func Run(args []string) error {
 		tools.SetRunnerTokenDB(tokenDB.Conn())
 	}
 
-	disp := channel.NewDispatcher(msgBus)
-
 	var webDB *sql.DB
 	if tokenDB != nil {
 		webDB = tokenDB.Conn()
 	}
-	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, backend, ag, webDB, workDir)
+	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, ag, webDB, workDir)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to register channels")
 	}
 
-	// Wire channel reconfiguration: when TUI channel config changes, restart
-	// the affected channel so it picks up the new configuration immediately.
-	backend.SetChannelReconfigureFn(func(name string) {
-		if disp == nil || msgBus == nil {
-			return
-		}
-		cfg := config.LoadFromFile(config.ConfigFilePath())
-		if cfg == nil {
-			return
-		}
-		_, running := disp.GetChannel(name)
-		shouldRun := channelShouldRun(cfg, name)
-		if shouldRun && !running {
-			if ch := createChannelInstance(name, cfg, msgBus); ch != nil {
-				disp.Register(ch)
-				go func(n string, c any) {
-					defer func() {
-						if r := recover(); r != nil {
-							log.WithField("channel", n).Error("Dynamic channel start panicked\n" + string(debug.Stack()))
-						}
-					}()
-					if sc, ok := c.(interface{ Start() error }); ok {
-						if err := sc.Start(); err != nil {
-							log.WithError(err).WithField("channel", n).Error("Dynamic channel failed")
-						}
-					}
-				}(ch.Name(), ch)
-			}
-		} else if !shouldRun && running {
-			disp.Unregister(name)
-		}
-	})
-
-	// Build RPC table once at startup; per-request identity is passed via context.
-	rpcTable := buildRPCTable(cfg, backend, ag, disp, msgBus)
+	// channelReconfigureFn was moved before InitServer call and passed as parameter.
 
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
 		webCh.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-			return handleCLIRPC(rpcTable, method, params, senderID)
+			return HandleCLIRPC(rpcTable, method, params, senderID)
 		})
 	}
 
@@ -645,85 +637,8 @@ func Run(args []string) error {
 		disp.Register(channel.NewRemoteCLIChannel(webCh.Hub()))
 	}
 
-	// sessionStateHandler pushes session state change events to the CLI via WS.
-	// Extracted as a local variable so both WireCallbacks and ChatRenameFn can use it.
-	sessionStateHandler := func(ev protocol.SessionEvent) {
-		if ch, ok := disp.GetChannel("cli"); ok {
-			if remoteCLICh, ok := ch.(*channel.RemoteCLIChannel); ok {
-				remoteCLICh.SendSessionState(ev)
-			}
-		}
-	}
-
-	// Wire ALL shared agent callbacks in one place. Both this file and
-	// cmd/xbot-cli/main.go call WireCallbacks with the same positional parameters.
-	// Adding a new parameter changes the signature → compile error at BOTH call sites.
-	ag.WireCallbacks(
-		func(msg bus.OutboundMessage) (string, error) { // directSend
-			return disp.SendDirect(msg)
-		},
-		disp.GetChannel,     // channelFinder
-		sessionStateHandler, // sessionStateHandler
-		disp,                // messageSender
-		func(name string, runFn bus.RunFn) error { // registerAgentChannel
-			ac := channel.NewAgentChannel(name, runFn)
-			if err := ac.Start(); err != nil {
-				return fmt.Errorf("start AgentChannel %s: %w", name, err)
-			}
-			disp.Register(ac)
-			return nil
-		},
-		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
-	)
-
-	// Wire ChatRenameFn: rename session in DB (for remote CLI and server-side agents).
-	// Uses upsert (INSERT ON CONFLICT) to handle both existing and new user_chats rows.
-	// CLI sessions may not have a user_chats row yet — the upsert creates one if needed.
-	if tokenDB != nil {
-		ag.SetChatRenameFn(func(chatID, newName string) (string, error) {
-			conn := tokenDB.Conn()
-			// Look up current label from DB for the old name
-			var oldName string
-			row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, cliSenderID, chatID)
-			_ = row.Scan(&oldName)
-			if oldName == "" {
-				_, oldName = channel.ParseChatID(chatID)
-			}
-			// Deduplicate against all other CLI session labels in DB
-			finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
-				rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND label != ''`, cliSenderID)
-				if err != nil {
-					return nil
-				}
-				defer rows.Close()
-				var entries []channel.NameEntry
-				for rows.Next() {
-					var cid, lbl string
-					if err := rows.Scan(&cid, &lbl); err == nil {
-						entries = append(entries, channel.NameEntry{Name: lbl, ChatID: cid})
-					}
-				}
-				return entries
-			})
-			_, err := conn.Exec(`
-				INSERT INTO user_chats (channel, sender_id, chat_id, label)
-				VALUES ('cli', ?, ?, ?)
-				ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-				cliSenderID, chatID, finalName, finalName,
-			)
-			if err != nil {
-				return "", fmt.Errorf("rename chat in DB: %w", err)
-			}
-			// Push renamed event to CLI so sidebar updates immediately.
-			sessionStateHandler(protocol.SessionEvent{
-				Channel: "cli",
-				ChatID:  chatID,
-				Action:  "renamed",
-				Label:   finalName,
-			})
-			return oldName, nil
-		})
-	}
+	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.
+	// No external injection needed — Agent uses its own channelFinder + multiSession.DB().
 
 	// 设置飞书渠道的 CardBuilder（用于卡片回调处理）
 	if feishuCh != nil {
@@ -741,7 +656,7 @@ func Run(args []string) error {
 		}
 
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
-		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, backend, ag))
+		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, ag))
 
 		// 注入飞书渠道特化 prompt 提供者
 		ag.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
@@ -756,9 +671,9 @@ func Run(args []string) error {
 		// 启动 OAuth flow 定期清理 goroutine
 		oauthManager.Start(ctx)
 
-		oauthServer.SetSendFunc(func(channel, chatID, content string) error {
-			_, err := disp.SendDirect(bus.OutboundMessage{
-				Channel: channel,
+		oauthServer.SetSendFunc(func(chName, chatID, content string) error {
+			_, err := disp.SendDirect(channel.OutboundMsg{
+				Channel: chName,
 				ChatID:  chatID,
 				Content: content,
 			})
@@ -785,15 +700,7 @@ func Run(args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// 启动出站消息分发
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.WithField("panic", r).Error("Dispatcher panicked\n" + string(debug.Stack()))
-			}
-		}()
-		disp.Run()
-	}()
+	// Dispatcher.Run() is already started by InitServer.
 
 	// 启动所有渠道
 	for name, ch := range getChannels(disp) {
@@ -829,19 +736,7 @@ func Run(args []string) error {
 		}).Info("Webhook event server started")
 	}
 
-	// 启动 Agent 循环
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.WithField("panic", r).Error("Agent loop panicked\n" + string(debug.Stack()))
-				// 触发优雅退出，避免僵尸进程
-				sigCh <- syscall.SIGTERM
-			}
-		}()
-		if err := backend.Run(ctx); err != nil && ctx.Err() == nil {
-			log.WithError(err).Error("Agent loop exited with error")
-		}
-	}()
+	// Agent loop already started by InitServer.
 
 	log.Info("xbot started successfully")
 	fmt.Println("🤖 xbot is running. Press Ctrl+C to stop.")
@@ -865,8 +760,8 @@ func Run(args []string) error {
 	}
 
 	// 等待 agent loop 退出后再继续关闭
-	if backend != nil {
-		backend.Close()
+	if ag != nil {
+		ag.Close()
 	}
 
 	// 关闭沙箱（清理 Docker 容器等资源）
@@ -985,7 +880,7 @@ func sendStartupNotify(disp *channel.Dispatcher, cfg *config.Config) {
 	)
 
 	for i := 0; i < 3; i++ {
-		_, err := disp.SendDirect(bus.OutboundMessage{
+		_, err := disp.SendDirect(channel.OutboundMsg{
 			Channel: cfg.StartupNotify.Channel,
 			ChatID:  cfg.StartupNotify.ChatID,
 			Content: content,

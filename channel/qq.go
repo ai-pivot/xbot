@@ -950,7 +950,7 @@ var qqMentionRegex = regexp.MustCompile(`<@!?\d+>`)
 // ---------------------------------------------------------------------------
 
 // Send 发送消息到 QQ，返回平台消息 ID
-func (q *QQChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (q *QQChannel) Send(msg OutboundMsg) (string, error) {
 	if msg.Content == "" {
 		return "", nil
 	}

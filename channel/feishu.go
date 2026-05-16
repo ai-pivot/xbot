@@ -368,7 +368,7 @@ func (f *FeishuChannel) getUserName(openID string) string {
 }
 
 // Send 发送消息到飞书，返回平台消息 ID
-func (f *FeishuChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (f *FeishuChannel) Send(msg OutboundMsg) (string, error) {
 	if f.client == nil {
 		return "", fmt.Errorf("feishu client not initialized")
 	}
@@ -1671,7 +1671,7 @@ const askUserActionPrefix = "askuser_"
 // sendAskUserCard builds and sends an interactive card for AskUser questions.
 // Registers pending state so that subsequent text messages or card callbacks
 // are routed as answers instead of new conversation turns.
-func (f *FeishuChannel) sendAskUserCard(msg bus.OutboundMessage) (string, error) {
+func (f *FeishuChannel) sendAskUserCard(msg OutboundMsg) (string, error) {
 	var questions []askQItem
 	if msg.Metadata != nil {
 		if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {

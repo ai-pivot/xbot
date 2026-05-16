@@ -15,7 +15,7 @@ import (
 type MockChannel struct {
 	name    string
 	msgBus  *bus.MessageBus
-	outbox  []bus.OutboundMessage
+	outbox  []OutboundMsg
 	mu      sync.RWMutex
 	stopped chan struct{}
 	stopMu  sync.Once
@@ -42,7 +42,7 @@ func (mc *MockChannel) Stop() {
 }
 
 // Send records the outbound message in the internal outbox.
-func (mc *MockChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (mc *MockChannel) Send(msg OutboundMsg) (string, error) {
 	mc.mu.Lock()
 	mc.outbox = append(mc.outbox, msg)
 	mc.mu.Unlock()
@@ -110,16 +110,16 @@ func (mc *MockChannel) SimulateInbound(msg bus.InboundMessage) {
 // --- Assertion helpers ---
 
 // Outbox returns a copy of all recorded outbound messages.
-func (mc *MockChannel) Outbox() []bus.OutboundMessage {
+func (mc *MockChannel) Outbox() []OutboundMsg {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
-	result := make([]bus.OutboundMessage, len(mc.outbox))
+	result := make([]OutboundMsg, len(mc.outbox))
 	copy(result, mc.outbox)
 	return result
 }
 
 // LastOutbound returns the most recent outbound message, or nil if empty.
-func (mc *MockChannel) LastOutbound() *bus.OutboundMessage {
+func (mc *MockChannel) LastOutbound() *OutboundMsg {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	if len(mc.outbox) == 0 {

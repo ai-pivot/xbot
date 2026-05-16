@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/llm"
 	"xbot/session"
 )
@@ -24,13 +25,13 @@ func formatTokenCount(n int64) string {
 }
 
 // handleContextInfo 处理 /context info 命令：显示当前 token 数和组成
-func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
+func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	_, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	// 使用 buildPrompt 获取完整上下文（包含 system、skills、memory 等）
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "获取上下文失败，请重试。",
@@ -117,7 +118,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 		}
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: content,
@@ -125,7 +126,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 }
 
 // handleContextMode 处理 /context mode 子命令
-func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, modeStr string) (*bus.OutboundMessage, error) {
+func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, modeStr string) (*channel.OutboundMsg, error) {
 	cfg := a.contextManagerConfig
 
 	if modeStr == "" {
@@ -135,7 +136,7 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 		if stats.IsRuntimeOverride {
 			overrideInfo = fmt.Sprintf("（运行时覆盖，默认为 %s）", stats.DefaultMode)
 		}
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("当前上下文模式: %s %s", cfg.EffectiveMode(), overrideInfo),
@@ -146,7 +147,7 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 	if target == "default" {
 		cfg.ResetRuntimeMode()
 		a.SetContextManager(NewContextManager(cfg))
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("已恢复默认上下文模式: %s", cfg.DefaultMode),
@@ -154,7 +155,7 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 	}
 
 	if !IsValidContextMode(target) {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "无效模式。可选: phase1, none, default",
@@ -165,7 +166,7 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 	cfg.SetRuntimeMode(target)
 	a.SetContextManager(NewContextManager(cfg))
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: fmt.Sprintf("已切换上下文模式: %s", target),

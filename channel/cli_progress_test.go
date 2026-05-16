@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 	"xbot/protocol"
-
-	"xbot/bus"
 )
 
 // initTestModel creates a model with channelName/chatID set for progress tests.
@@ -28,7 +26,7 @@ func sendProgress(model *cliModel, payload *protocol.ProgressEvent) {
 func sendDone(model *cliModel, content string) {
 	model.typing = false
 	model.Update(cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:   content,
 			IsPartial: false,
 		},

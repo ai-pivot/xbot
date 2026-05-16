@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"xbot/bus"
+	"xbot/channel"
 )
 
 // Command defines the interface for slash commands and other quick commands
@@ -26,7 +27,7 @@ type Command interface {
 
 	// Execute runs the command and returns an outbound message (or nil to suppress reply).
 	// The command receives the full Agent context to access sessions, tools, etc.
-	Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error)
+	Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error)
 
 	// Concurrent reports whether this command can safely run concurrently with
 	// normal message processing. Stateless commands (e.g., /version, /help)

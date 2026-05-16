@@ -6,8 +6,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"xbot/bus"
 )
 
 func TestAgentChannelRPC(t *testing.T) {
@@ -23,7 +21,7 @@ func TestAgentChannelRPC(t *testing.T) {
 	}
 	defer ac.Stop()
 
-	msg := bus.OutboundMessage{Content: "hello"}
+	msg := OutboundMsg{Content: "hello"}
 	result, err := ac.Send(msg)
 	if err != nil {
 		t.Fatalf("Send: %v", err)
@@ -50,7 +48,7 @@ func TestAgentChannelMultipleRPC(t *testing.T) {
 
 	// Sequential sends — each should get its own reply
 	for i := 0; i < 5; i++ {
-		msg := bus.OutboundMessage{Content: "task" + time.Now().String()}
+		msg := OutboundMsg{Content: "task" + time.Now().String()}
 		result, err := ac.Send(msg)
 		if err != nil {
 			t.Fatalf("Send %d: %v", i, err)
@@ -74,7 +72,7 @@ func TestAgentChannelClosed(t *testing.T) {
 	ac.Stop()
 
 	// Send after close should fail
-	_, err := ac.Send(bus.OutboundMessage{Content: "hello"})
+	_, err := ac.Send(OutboundMsg{Content: "hello"})
 	if err == nil {
 		t.Error("expected error after Stop")
 	}
@@ -106,7 +104,7 @@ func TestAgentChannelRunFnError(t *testing.T) {
 	}
 	defer ac.Stop()
 
-	result, err := ac.Send(bus.OutboundMessage{Content: "fail"})
+	result, err := ac.Send(OutboundMsg{Content: "fail"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -133,7 +131,7 @@ func TestAgentChannelContextCancellation(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ac.Send(bus.OutboundMessage{Content: "block"})
+		ac.Send(OutboundMsg{Content: "block"})
 	}()
 
 	// Wait for runFn to start
@@ -174,7 +172,7 @@ func TestAgentChannelInDispatcher(t *testing.T) {
 	disp.Register(ac)
 
 	// Send via Dispatcher
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel: "agent:test/dispatch",
 		Content: "hello dispatcher",
 	}
@@ -209,7 +207,7 @@ func TestAgentChannelConcurrentSends(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			result, err := ac.Send(bus.OutboundMessage{Content: "task"})
+			result, err := ac.Send(OutboundMsg{Content: "task"})
 			if err != nil {
 				t.Errorf("Send %d: %v", idx, err)
 				return

@@ -111,7 +111,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 }
 
 // registryCallbacks builds the shared Registry callback closures.
-func registryCallbacks(backend *agent.Backend, ag *agent.Agent) channel.RegistryCallbacks {
+func registryCallbacks(ag *agent.Agent) channel.RegistryCallbacks {
 	return channel.RegistryCallbacks{
 		RegistryBrowse: func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
 			return ag.RegistryManager().Browse(entryType, limit, offset)
@@ -135,7 +135,7 @@ func registryCallbacks(backend *agent.Backend, ag *agent.Agent) channel.Registry
 }
 
 // llmCallbacks builds the shared LLM callback closures.
-func llmCallbacks(backend *agent.Backend, ag *agent.Agent) channel.LLMCallbacks {
+func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]string, string) {
 			llmClient, currentModel, _, _ := ag.LLMFactory().GetLLM(senderID)
@@ -145,31 +145,31 @@ func llmCallbacks(backend *agent.Backend, ag *agent.Agent) channel.LLMCallbacks 
 			return llmClient.ListModels(), currentModel
 		},
 		LLMSet: func(senderID, model string) error {
-			return backend.SetUserModel(senderID, model)
+			return ag.SetUserModel(senderID, model)
 		},
 		LLMGetMaxContext: func(senderID string) int {
-			return backend.GetUserMaxContext(senderID)
+			return ag.GetUserMaxContext(senderID)
 		},
 		LLMSetMaxContext: func(senderID string, maxContext int) error {
-			return backend.SetUserMaxContext(senderID, maxContext)
+			return ag.SetUserMaxContext(senderID, maxContext)
 		},
 		LLMGetMaxOutputTokens: func(senderID string) int {
-			return backend.GetUserMaxOutputTokens(senderID)
+			return ag.GetUserMaxOutputTokens(senderID)
 		},
 		LLMSetMaxOutputTokens: func(senderID string, maxTokens int) error {
-			return backend.SetUserMaxOutputTokens(senderID, maxTokens)
+			return ag.SetUserMaxOutputTokens(senderID, maxTokens)
 		},
 		LLMGetThinkingMode: func(senderID string) string {
-			return backend.GetUserThinkingMode(senderID)
+			return ag.GetUserThinkingMode(senderID)
 		},
 		LLMSetThinkingMode: func(senderID string, mode string) error {
-			return backend.SetUserThinkingMode(senderID, mode)
+			return ag.SetUserThinkingMode(senderID, mode)
 		},
 		LLMGetPersonalConcurrency: func(senderID string) int {
-			return backend.GetLLMConcurrency(senderID)
+			return ag.GetLLMConcurrency(senderID)
 		},
 		LLMSetPersonalConcurrency: func(senderID string, personal int) error {
-			return backend.SetLLMConcurrency(senderID, personal)
+			return ag.SetLLMConcurrency(senderID, personal)
 		},
 	}
 }
@@ -221,10 +221,10 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Agent, webDB *sql.DB) channel.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) channel.WebCallbacks {
 	rc := runnerCallbacks(cfg)
-	regc := registryCallbacks(backend, ag)
-	llmc := llmCallbacks(backend, ag)
+	regc := registryCallbacks(ag)
+	llmc := llmCallbacks(ag)
 
 	callbacks := channel.WebCallbacks{
 		// Runner callbacks
@@ -283,15 +283,15 @@ func buildWebCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Age
 
 	// Wire IsProcessing
 	callbacks.IsProcessing = func(senderID string) bool {
-		return backend.IsProcessing("web", senderID)
+		return ag.IsProcessing(senderID)
 	}
 	// Wire GetActiveProgress
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
-		return backend.GetActiveProgress(channel, chatID)
+		return ag.GetActiveProgress(channel, chatID)
 	}
 	// Wire SessionsList
 	callbacks.SessionsList = func(senderID string) []channel.SessionInfo {
-		sessions := backend.ListInteractiveSessions("web", senderID)
+		sessions := ag.ListInteractiveSessions("web", senderID)
 		result := make([]channel.SessionInfo, len(sessions))
 		for i, s := range sessions {
 			result[i] = channel.ChatRoom{
@@ -309,7 +309,7 @@ func buildWebCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Age
 	}
 	// Wire SessionMessages
 	callbacks.SessionMessages = func(senderID, roleName, instance string) ([]channel.SessionChatMessage, bool) {
-		msgs, ok := backend.GetSessionMessages("web", senderID, roleName, instance)
+		msgs, ok := ag.GetSessionMessages("web", senderID, roleName, instance)
 		if !ok {
 			return nil, false
 		}
@@ -366,10 +366,10 @@ func buildWebCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Age
 }
 
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
-func buildFeishuSettingsCallbacks(cfg *config.Config, backend *agent.Backend, ag *agent.Agent) channel.SettingsCallbacks {
+func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	regc := registryCallbacks(backend, ag)
-	llmc := llmCallbacks(backend, ag)
+	regc := registryCallbacks(ag)
+	llmc := llmCallbacks(ag)
 
 	return channel.SettingsCallbacks{
 		// LLM basic callbacks
@@ -523,10 +523,10 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, backend *agent.Backend, ag
 
 		// Context mode
 		ContextModeGet: func() string {
-			return backend.GetContextMode()
+			return ag.GetContextMode()
 		},
 		ContextModeSet: func(mode string) error {
-			return backend.SetContextMode(mode)
+			return ag.SetContextMode(mode)
 		},
 
 		// Registry

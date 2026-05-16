@@ -153,8 +153,13 @@ func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 }
 
 // sessionKey helper
+// Uses AgentID to isolate TODOs between main Agent and SubAgents.
+// SubAgent AgentID is "parentID/roleName", main Agent is typically "main".
 func (m *TodoManager) sessionKey(ctx *ToolContext) string {
 	if ctx.Channel != "" && ctx.ChatID != "" {
+		if ctx.AgentID != "" {
+			return ctx.AgentID + ":" + ctx.Channel + ":" + ctx.ChatID
+		}
 		return ctx.Channel + ":" + ctx.ChatID
 	}
 	return ""

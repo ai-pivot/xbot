@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"xbot/bus"
 	"xbot/protocol"
 
 	"github.com/google/uuid"
@@ -223,7 +222,7 @@ func (c *RemoteCLIChannel) PushPluginWidgetsPerSession(renderFn func(chatID stri
 	}
 }
 
-func (c *RemoteCLIChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (c *RemoteCLIChannel) Send(msg OutboundMsg) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	content := msg.Content

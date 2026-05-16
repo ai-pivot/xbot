@@ -12,7 +12,7 @@
 
 ## Knowledge Files
 
-- `docs/agent/architecture.md` — package map, message flow, pipeline, Backend (pure RPC)/Transport architecture, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
+- `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system, model tiers (vanguard/balance/swift)
 - `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types
@@ -140,16 +140,18 @@
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
 
 ### Backend/Transport Architecture
-- **Backend is a pure typed RPC client** (agent/backend_impl.go). Every method is 1-3 lines calling `b.call(method, req, &result)` or `b.callVoid(method, req)`. There is NO business logic branching — zero `if agent != nil` in RPC methods.
-- **Transport is the execution layer** (agent/transport.go). `localTransport` (agent/local_transport.go) has a handler table that executes business logic directly on `*Agent`. `RemoteTransport` (agent/transport_remote.go) sends JSON-RPC over WebSocket. Backend never knows which one it's using.
-- **Handler table uses generic helpers**: `rpc0`, `rpc1`, `rpcVoid`, `rpcVoid0` eliminate JSON marshal/unmarshal boilerplate. Adding a new RPC method = 1 constant in req_types.go + 1 handler in local_transport.go + 1 method in backend_impl.go.
-- **Request types** (agent/req_types.go) define typed structs + RPC method name constants (`MethodXxx`) for compile-time safety. Use them instead of bare strings.
-- **Adding new transports** (gRPC, MCP) only requires implementing ~12 Transport interface methods.
+- **CLI always uses Client → Transport → Server, even in local mode.** Client (agent/client.go) is a pure RPC client — every method is `Transport.Call("method", params)`.
+- **Transport is the pure transmission layer** (agent/transport.go). Only 2 methods: `Call(method, payload)` and `Close()`. `ChannelTransport` (agent/transport_channel.go) dispatches directly to `ServerCore.HandleRPC`. `RemoteTransport` (agent/transport_remote.go) sends JSON-RPC over WebSocket.
+- **ServerCore** (serverapp/server_core.go) is the shared server core for both local and remote modes. Owns Agent + RPCTable + Dispatcher + Bus. Created by CLI (local mode) and server.go (remote mode).
+- **RPCTable is the single handler truth source** (serverapp/rpc_table.go). Handlers access `h.Ag` (the *Agent) directly — no intermediate Backend/DirectBackend layer.
+- **Lifecycle interfaces** (agent/lifecycle.go): AgentRunner, EventRouter, CallbackRegistry — only used by the legacy Backend struct for remote mode.
+- **Adding a new RPC method**: 1 handler in rpc_table.go (using h.Ag) + 1 method in client.go (Transport.Call) + 1 MethodXxx constant in req_types.go.
+- **Adding new transports** (gRPC, MCP) only requires implementing 2 Transport methods (Call + Close).
 
 ### Channel Configuration
 - **TUI channel config changes require live channel restart.** Writing config.json is not enough — Feishu/Web/QQ/NapCat channels are created once at startup via `registerChannels()`. `SetChannelConfig()` now calls `reconfigureFn` (set by server.go) to start/stop the affected channel. Any new channel type must be added to both `channelShouldRun()` and `createChannelInstance()`.
 - **Key naming must be consistent across all channels.** Web used `enable` while Feishu/QQ/NapCat used `enabled` — the RPC handler only checked `enabled`, so web changes were silently ignored. All channels now use `enabled` (with backward compat for `enable`).
-- **New backend methods must be added to `AgentBackend` interface, not `LocalBackend` only.** `SetChannelReconfigureFn` was originally a `*LocalBackend`-only method, requiring a type assertion in server.go. This breaks the abstraction — `AgentBackend` is the contract. Both `LocalBackend` and `RemoteBackend` must implement any functional method. RemoteBackend gets a no-op when the server handles the behavior via RPC.
+- **New client methods must be added to `*Client` in `agent/client.go`.** The `Client` struct is the unified RPC client used by both CLI and server modes. Both local (ChannelTransport) and remote (RemoteTransport) modes go through the same RPC path.
 - **Command hooks disabled by default** — requires `enable_command_hooks: true` in config.
 - **Max 10 handlers per event**, total timeout 60s. Excess silently truncated with warning log.
 

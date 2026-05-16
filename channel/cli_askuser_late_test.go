@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 	"xbot/protocol"
-
-	"xbot/bus"
 )
 
 // TestAskUserLateProgressClearsState reproduces the real-world bug:
@@ -47,7 +45,7 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 		{"question": "Can you see the iterations?", "options": []string{"yes", "no"}},
 	})
 	model.Update(cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:     "AskUser question",
 			WaitingUser: true,
 			Metadata: map[string]string{
@@ -119,7 +117,7 @@ func TestAskUserTickPreservesIterations(t *testing.T) {
 		{"question": "Test?", "options": []string{"yes", "no"}},
 	})
 	model.Update(cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:     "AskUser",
 			WaitingUser: true,
 			Metadata:    map[string]string{"ask_questions": string(askQuestions)},

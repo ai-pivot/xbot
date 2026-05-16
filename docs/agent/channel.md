@@ -142,4 +142,4 @@ The context bar (top border of input box) replaces the default lipgloss border w
   - **Client side**: `suLoadHistoryCmd` calls `GetTodosFn(channel, chatID)` concurrently with history + progress, populates `suHistoryLoadMsg.todos`
   - **Application**: `handleSuHistoryLoad` default (idle) branch overwrites `m.todos` + `persistTodosToManager()` with server data. Non-nil empty slice means "server has no todos" → clears local cache too
 - **RPC registration** (8 files): `req_types.go` (constant + struct) → `backend.go` (interface) → `backend_impl.go` (method) → `local_transport.go` (handler) → `rpc_table.go` (route) → `cli_types.go` (callback) → `main.go` (wiring) → test stubs
-- **Adding new RPC methods**: must also stub `GetTodos` in `fakeAgentBackend` (`cmd/xbot-cli/main_test.go`) and `fakeBackend` (`serverapp/server_test.go`) — these implement `AgentBackend` interface and will fail `typecheck` if incomplete
+- **Adding new RPC methods**: add a method to `*Client` in `agent/client.go`, and handle the method in `serverapp/rpc_table.go`. For tests, update `fakeTransport` in `cmd/xbot-cli/main_test.go` to handle the new method in its `Call` switch.

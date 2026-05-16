@@ -46,24 +46,35 @@ func (d *Dispatcher) Run() {
 				log.Info("Outbound channel closed, dispatcher exiting")
 				return
 			}
+			outMsg := OutboundMsg{
+				Channel:     msg.Channel,
+				ChatID:      msg.ChatID,
+				Content:     msg.Content,
+				Media:       msg.Media,
+				Metadata:    msg.Metadata,
+				IsPartial:   msg.IsPartial,
+				WaitingUser: msg.WaitingUser,
+				ToolsUsed:   msg.ToolsUsed,
+				Error:       msg.Error,
+			}
 			d.mu.RLock()
-			ch, ok := d.channels[msg.Channel]
+			ch, ok := d.channels[outMsg.Channel]
 			d.mu.RUnlock()
 			if !ok {
-				log.WithField("channel", msg.Channel).Warn("Unknown channel, dropping message")
+				log.WithField("channel", outMsg.Channel).Warn("Unknown channel, dropping message")
 				continue
 			}
 			if _, err := func() (ret string, err error) {
 				defer func() {
 					if r := recover(); r != nil {
-						clipanic.Report("channel.Dispatcher.Send", msg, r)
-						log.WithField("channel", msg.Channel).Errorf("Channel.Send panic: %v", r)
-						err = fmt.Errorf("channel %s panic: %v", msg.Channel, r)
+						clipanic.Report("channel.Dispatcher.Send", outMsg, r)
+						log.WithField("channel", outMsg.Channel).Errorf("Channel.Send panic: %v", r)
+						err = fmt.Errorf("channel %s panic: %v", outMsg.Channel, r)
 					}
 				}()
-				return ch.Send(msg)
+				return ch.Send(outMsg)
 			}(); err != nil {
-				log.WithError(err).WithField("channel", msg.Channel).Error("Failed to send message")
+				log.WithError(err).WithField("channel", outMsg.Channel).Error("Failed to send message")
 			}
 		}
 	}
@@ -98,7 +109,7 @@ func (d *Dispatcher) Unregister(name string) {
 
 // SendMessage implements bus.MessageSender.
 func (d *Dispatcher) SendMessage(channelName, chatID, content string) (string, error) {
-	return d.SendDirect(bus.OutboundMessage{
+	return d.SendDirect(OutboundMsg{
 		Channel: channelName,
 		ChatID:  chatID,
 		Content: content,
@@ -109,7 +120,7 @@ func (d *Dispatcher) SendMessage(channelName, chatID, content string) (string, e
 var _ bus.MessageSender = (*Dispatcher)(nil)
 
 // SendDirect 同步发送消息到指定渠道，返回平台消息 ID
-func (d *Dispatcher) SendDirect(msg bus.OutboundMessage) (string, error) {
+func (d *Dispatcher) SendDirect(msg OutboundMsg) (string, error) {
 	d.mu.RLock()
 	ch, ok := d.channels[msg.Channel]
 	d.mu.RUnlock()

@@ -70,7 +70,13 @@ Two modes (`agent/engine_run.go`):
 | `Channel` | `channel/channel.go` | Start, Stop, Send |
 | `MessageMiddleware` | `agent/middleware.go` | Process(mc) |
 | `MemoryProvider` | `memory/memory.go` | Core + Archival memory |
-| `AgentBackend` | `agent/backend.go` | Abstract local/remote agent execution (pure RPC client) |
+| `AgentBackend` | `agent/backend.go` | Legacy interface — being replaced by Client (agent/client.go) |
+| `Transport` | `agent/transport.go` | Pure transmission: Call(method, payload) → (response, error) |
+| `AgentRunner` | `agent/lifecycle.go` | Agent lifecycle: Start/Stop/Run (legacy, for Backend) |
+| `EventRouter` | `agent/lifecycle.go` | Message/event routing (legacy, for Backend) |
+| `CallbackRegistry` | `agent/lifecycle.go` | Callback injection (legacy, for Backend) |
+| `ServerCore` | `serverapp/server_core.go` | Shared server core: Agent + RPCTable + Bus (local & remote) |
+| `Client` | `agent/client.go` | Unified RPC client: all methods = Transport.Call() |
 
 ## Subscription System
 

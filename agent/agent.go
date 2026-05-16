@@ -253,7 +253,7 @@ type Agent struct {
 	userSemaphores sync.Map // map[string]chan struct{}
 
 	commands         *CommandRegistry                          // 指令注册表
-	directSend       func(bus.OutboundMessage) (string, error) // 同步发送，绕过 bus 以获取 message_id
+	directSend       func(channel.OutboundMsg) (string, error) // 同步发送，绕过 bus 以获取 message_id
 	sessionMsgIDs    sync.Map                                  // key: "channel:chatID" -> 当前 session 已发消息 ID（用于 Patch 更新）
 	sessionReplyTo   sync.Map                                  // key: "channel:chatID" -> 用户入站消息 ID（用于首条回复的 reply 模式）
 	sessionFinalSent sync.Map                                  // key: "channel:chatID" -> bool, 工具已发送最终回复（如卡片），后续 sendMessage 跳过
@@ -326,17 +326,15 @@ type Agent struct {
 	settingsSvc *SettingsService
 
 	// TUI control callbacks (set by CLI channel, nil for other channels)
-	tuiCtrlFn    func(action string, params map[string]string) (map[string]string, error)
-	configGetFn  func(key string) (string, error)
-	configSetFn  func(key, value string) (string, error)
-	chatRenameFn func(chatID, newName string) (oldName string, err error)
+	tuiCtrlFn   func(action string, params map[string]string) (map[string]string, error)
+	configGetFn func(key string) (string, error)
+	configSetFn func(key, value string) (string, error)
 
 	// channelFinder looks up a channel instance by name (injected from main.go).
 	channelFinder func(name string) (channel.Channel, bool)
 
-	// sessionStateHandler emits session state change events (injected from main.go).
-	// Called at Run busy/idle transitions and SubAgent create/destroy.
-	sessionStateHandler func(ev protocol.SessionEvent)
+	// cliSenderID is the sender_id used for CLI channel DB operations.
+	cliSenderID string
 
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
 
@@ -375,11 +373,6 @@ func (a *Agent) SetTUICallbacks(
 	a.tuiCtrlFn = tuiCtrl
 	a.configGetFn = configGet
 	a.configSetFn = configSet
-}
-
-// SetChatRenameFn sets the chat rename callback (CLI channel only).
-func (a *Agent) SetChatRenameFn(chatRename func(chatID, newName string) (oldName string, err error)) {
-	a.chatRenameFn = chatRename
 }
 
 // buildRemoteTUICtrlFn returns a TUIControl callback for remote CLI mode via WS,
@@ -492,10 +485,77 @@ func (a *Agent) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
 	}
 }
 
-// SetSessionStateHandler sets the callback for emitting session state change events.
-// Called at Run busy/idle transitions and SubAgent lifecycle events.
-func (a *Agent) SetSessionStateHandler(fn func(ev protocol.SessionEvent)) {
-	a.sessionStateHandler = fn
+// emitSessionState pushes a session state event to the CLI channel.
+// Uses channelFinder to locate the "cli" channel and type-asserts to SessionStateSender.
+func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
+	if a.channelFinder == nil {
+		return
+	}
+	ch, ok := a.channelFinder("cli")
+	if !ok {
+		return
+	}
+	if sender, ok := ch.(channel.SessionStateSender); ok {
+		sender.SendSessionState(ev)
+	}
+}
+
+// renameSession renames a chat session in DB and pushes the state change.
+// Uses multiSession.DB() for DB access and emitSessionState for notification.
+func (a *Agent) renameSession(chatID, newName string) (oldName string, err error) {
+	if a.multiSession == nil {
+		return "", fmt.Errorf("renameSession: no multiSession DB")
+	}
+	db := a.multiSession.DB()
+	if db == nil {
+		return "", fmt.Errorf("renameSession: no DB connection")
+	}
+	conn := db.Conn()
+
+	// Get old name
+	row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, a.cliSenderID, chatID)
+	_ = row.Scan(&oldName)
+	if oldName == "" {
+		_, oldName = channel.ParseChatID(chatID)
+	}
+
+	// Deduplicate
+	finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
+		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND label != ''`, a.cliSenderID)
+		if err != nil {
+			return nil
+		}
+		defer rows.Close()
+		var entries []channel.NameEntry
+		for rows.Next() {
+			var cid, lbl string
+			if err := rows.Scan(&cid, &lbl); err == nil {
+				entries = append(entries, channel.NameEntry{Name: lbl, ChatID: cid})
+			}
+		}
+		return entries
+	})
+
+	// Update DB
+	_, err = conn.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label)
+		VALUES ('cli', ?, ?, ?)
+		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
+		a.cliSenderID, chatID, finalName, finalName,
+	)
+	if err != nil {
+		return "", fmt.Errorf("rename chat in DB: %w", err)
+	}
+
+	// Push state change
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: "cli",
+		ChatID:  chatID,
+		Action:  "renamed",
+		Label:   finalName,
+	})
+
+	return oldName, nil
 }
 
 // IsProcessing returns true if there is an active Run for the given sender.
@@ -623,6 +683,9 @@ type Config struct {
 	PluginEnabled         bool     // Enable plugin system
 	PluginDirs            []string // Additional plugin directories
 	PluginDisabledPlugins []string // Plugin IDs to disable
+
+	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
+	CLISenderID string
 }
 
 // initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
@@ -915,6 +978,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.MaxSubAgentDepth <= 0 {
 		cfg.MaxSubAgentDepth = 6
 	}
+	if cfg.CLISenderID == "" {
+		cfg.CLISenderID = "cli_user"
+	}
 
 	// 2. 初始化存储和注册表
 	skillStore, agentStore, chatHistory, registry, cardBuilder := initStores(cfg)
@@ -967,7 +1033,8 @@ func New(cfg Config) (*Agent, error) {
 			}
 			return mgr
 		}(),
-		bgTaskMgr: tools.NewBackgroundTaskManager(),
+		bgTaskMgr:   tools.NewBackgroundTaskManager(),
+		cliSenderID: cfg.CLISenderID,
 	}
 
 	// 5. 初始化各类服务（修改 agent 指针）
@@ -1242,7 +1309,7 @@ func (a *Agent) SetLLMConcurrency(senderID string, personal int) error {
 }
 
 // SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）
-func (a *Agent) SetDirectSend(fn func(bus.OutboundMessage) (string, error)) {
+func (a *Agent) SetDirectSend(fn func(channel.OutboundMsg) (string, error)) {
 	a.directSend = fn
 }
 
@@ -1638,7 +1705,12 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 					}
 					if response != nil {
 						if sendErr := a.sendMessage(m.Channel, m.ChatID, response.Content, response.Metadata); sendErr != nil {
-							a.bus.Outbound <- *response
+							a.bus.Outbound <- bus.OutboundMessage{
+								Channel: response.Channel,
+								ChatID:  response.ChatID,
+								Content: response.Content,
+								Media:   response.Media,
+							}
 						}
 					}
 				})
@@ -1699,7 +1771,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		}
 
 		// 创建 per-request cancel context
-		var response *bus.OutboundMessage
+		var response *channel.OutboundMsg
 		var err error
 		cancelCh := make(chan struct{}, 1)
 		// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
@@ -1707,11 +1779,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		a.chatCancelCh.Store(cancelKey, cancelCh)
 
 		// Emit session busy event for instant sidebar push.
-		if a.sessionStateHandler != nil {
-			a.sessionStateHandler(protocol.SessionEvent{
-				Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
-			})
-		}
+		a.emitSessionState(protocol.SessionEvent{
+			Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
+		})
 
 		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号
 		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
@@ -1743,11 +1813,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				a.pendingCancel.Delete(cancelKey)
 
 				// Emit session idle event for instant sidebar push.
-				if a.sessionStateHandler != nil {
-					a.sessionStateHandler(protocol.SessionEvent{
-						Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
-					})
-				}
+				a.emitSessionState(protocol.SessionEvent{
+					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+				})
 				key := sessionKey(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)
@@ -1811,18 +1879,18 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// WaitingUser response: send directly with WaitingUser flag set.
 				// Bypass sendMessage (which doesn't support WaitingUser) since it applies
 				// Patch/Edit logic incompatible with async user interaction.
-				outMsg := bus.OutboundMessage{
+				busMsg := bus.OutboundMessage{
 					Channel:     msg.Channel,
 					ChatID:      msg.ChatID,
 					Content:     response.Content,
 					WaitingUser: true,
 					Metadata:    response.Metadata,
 				}
-				if outMsg.Metadata == nil {
-					outMsg.Metadata = make(map[string]string)
+				if busMsg.Metadata == nil {
+					busMsg.Metadata = make(map[string]string)
 				}
 				select {
-				case a.bus.Outbound <- outMsg:
+				case a.bus.Outbound <- busMsg:
 				default:
 					log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
 				}
@@ -1853,7 +1921,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 // processMessage 处理单条入站消息
 
-func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// 使用消息携带的 requestID（在渠道收到消息时生成），如果没有则生成新的
 	reqID := msg.RequestID
 	if reqID == "" {
@@ -2085,7 +2153,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*bu
 }
 
 // processCronMessage 处理 cron 触发消息（不带历史上下文，使用专用系统提示词）
-func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// 注入 requestID（如果 processMessage 未注入）
 	if log.RequestID(ctx) == "" {
 		ctx = log.WithRequestID(ctx, log.NewRequestID())
@@ -2142,7 +2210,7 @@ func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) 
 		metadata = msg.Metadata
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel:  msg.Channel,
 		ChatID:   msg.ChatID,
 		Content:  finalContent,
@@ -2399,16 +2467,16 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
 // 工具发送最终回复（如飞书卡片）时同样 Patch 更新，但标记 session 为"已完成"，后续调用自动跳过。
 // sendMessage 向 IM 渠道发送消息。
 // 通过 directSend 直连或 bus.Outbound 广播。
-func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[string]string) error {
-	key := sessionKey(channel, chatID)
+func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
+	key := sessionKey(chName, chatID)
 
 	// 工具已发送最终回复 → 跳过后续所有消息（进度更新、LLM 最终回复等）
 	if _, sent := a.sessionFinalSent.Load(key); sent {
 		return nil
 	}
 
-	msg := bus.OutboundMessage{
-		Channel: channel,
+	msg := channel.OutboundMsg{
+		Channel: chName,
 		ChatID:  chatID,
 		Content: content,
 	}
@@ -2439,7 +2507,7 @@ func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[str
 
 		log.WithField("send_channel", msg.Channel).
 			WithField("send_chat_id", msg.ChatID).
-			WithField("orig_channel", channel).
+			WithField("orig_channel", chName).
 			WithField("orig_chat_id", chatID).
 			WithField("is_final", isFinal).
 			Info("sendMessage directSend dispatch")
@@ -2458,7 +2526,13 @@ func (a *Agent) sendMessage(channel, chatID, content string, metadata ...map[str
 
 	// 降级：directSend 不可用时走 bus（无消息更新跟踪）
 	select {
-	case a.bus.Outbound <- msg:
+	case a.bus.Outbound <- bus.OutboundMessage{
+		Channel:  msg.Channel,
+		ChatID:   msg.ChatID,
+		Content:  msg.Content,
+		Media:    msg.Media,
+		Metadata: msg.Metadata,
+	}:
 		return nil
 	default:
 		return fmt.Errorf("message bus outbound channel is full")
@@ -2687,7 +2761,7 @@ func (a *Agent) addReaction(msg bus.InboundMessage) {
 		return
 	}
 
-	_, err := a.directSend(bus.OutboundMessage{
+	_, err := a.directSend(channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Metadata: map[string]string{

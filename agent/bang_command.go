@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"xbot/bus"
+	"xbot/channel"
 	log "xbot/logger"
 	"xbot/tools"
 )
@@ -46,7 +47,7 @@ func sandboxUserID(msg bus.InboundMessage) string {
 
 // handleBangCommand executes a quick shell command (triggered by `!` prefix)
 // and returns the result directly, bypassing LLM.
-func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, command string) (*bus.OutboundMessage, error) {
+func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, command string) (*channel.OutboundMsg, error) {
 	sbUID := sandboxUserID(msg)
 	log.WithFields(log.Fields{
 		"channel":      msg.Channel,
@@ -88,7 +89,7 @@ func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, c
 		}
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: content,

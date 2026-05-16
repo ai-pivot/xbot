@@ -21,22 +21,19 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/google/uuid"
-	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/tools"
 	"xbot/version"
 )
 
-func NewCLIChannel(cfg *CLIChannelConfig, msgBus *bus.MessageBus) *CLIChannel {
+func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 	ch := &CLIChannel{
 		config:     cfg,
-		msgBus:     msgBus,
 		workDir:    cfg.WorkDir,
-		msgChan:    make(chan bus.OutboundMessage, cliMsgBufSize),
+		msgChan:    make(chan OutboundMsg, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
 		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
 		stopCh:     make(chan struct{}),
@@ -99,7 +96,6 @@ func (c *CLIChannel) Start() error {
 	// 初始化 Bubble Tea model
 	c.model = newCLIModel()
 	c.model.channel = c
-	c.model.SetMsgBus(c.msgBus)
 	c.model.workDir = c.workDir
 	c.model.remoteMode = c.config.RemoteMode
 	c.model.remoteServerURL = c.config.RemoteServerURL
@@ -113,7 +109,7 @@ func (c *CLIChannel) Start() error {
 	// CLI-side TodoManager for persisting todos across turns and session switches.
 	// Updated by syncProgressTodos during active turns and consumed by endAgentTurn
 	// and restoreSession to preserve unfinished todos in idle state.
-	c.model.todoManager = tools.NewTodoManager()
+	c.model.todoManager = newCliTodoManager()
 
 	// Apply CLI flag overrides for layout
 	if c.config.SidebarWidthOverride > 0 {
@@ -399,7 +395,7 @@ func (c *CLIChannel) Stop() {
 }
 
 // Send 发送消息到 CLI（实现 Channel 接口）
-func (c *CLIChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (c *CLIChannel) Send(msg OutboundMsg) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	// 发送到消息通道，由 handleOutbound 处理
@@ -519,21 +515,14 @@ func (c *CLIChannel) SetApprovalState(state *protocol.ApprovalState) {
 // SetSendInboundFn overrides the default sendInbound behavior.
 // In remote mode, this forwards user messages to the server via backend.SendInbound
 // instead of the local bus (which has no agent loop).
-func (c *CLIChannel) SetSendInboundFn(fn func(bus.InboundMessage) bool) {
+func (c *CLIChannel) SetSendInboundFn(fn func(InboundMsg) bool) {
 	c.pendingSendInboundFn = fn
-}
-
-// SetBgTaskManager configures the background task manager for status display.
-func (c *CLIChannel) SetBgTaskManager(mgr *tools.BackgroundTaskManager, sessionKey string) {
-	c.bgTaskMgr = mgr
-	c.bgSessionKey = sessionKey
-	c.updateBgTaskCountFn()
 }
 
 // SetBgTaskRemoteCallbacks configures remote-mode background task callbacks.
 // Used when BgTaskManager is not available (remote CLI mode) to enable
 // background task display and management via RPC.
-func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() int, listFn func() []*tools.BackgroundTask, killFn func(taskID string) error, cleanupFn func()) {
+func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() int, listFn func() []*BgTask, killFn func(taskID string) error, cleanupFn func()) {
 	c.bgSessionKey = sessionKey
 	c.bgTaskKill = killFn
 	if c.model != nil {
@@ -735,17 +724,6 @@ func (c *CLIChannel) InjectUserMessage(chatID, content string) {
 func (c *CLIChannel) updateBgTaskCountFn() {
 	if c.model == nil {
 		return
-	}
-	if c.bgTaskMgr != nil && c.bgSessionKey != "" {
-		c.model.bgTaskCountFn = func() int {
-			return len(c.bgTaskMgr.ListRunning(c.bgSessionKey))
-		}
-		c.model.bgTaskListFn = func() []*tools.BackgroundTask {
-			return c.bgTaskMgr.ListAllForSession(c.bgSessionKey)
-		}
-		c.model.bgTaskKillFn = func(taskID string) error {
-			return c.bgTaskMgr.Kill(taskID)
-		}
 	}
 	// Wire agent count/list callbacks
 	if c.config.AgentCount != nil {

@@ -18,9 +18,9 @@ import (
 	log "xbot/logger"
 )
 
-// ---------------------------------------------------------------------------
+// ==========================================================================
 // RPC protocol types (shared between Transport client and server handler)
-// ---------------------------------------------------------------------------
+// ==========================================================================
 
 // rpcResponse is sent by the server back to the client.
 type rpcResponse struct {
@@ -30,13 +30,19 @@ type rpcResponse struct {
 	Error  string          `json:"error,omitempty"`  // error message (empty = success)
 }
 
-// ---------------------------------------------------------------------------
-// RemoteTransport — WebSocket-based transport for remote CLI
-// ---------------------------------------------------------------------------
+// ==========================================================================
+// RemoteTransport type definition & constructor
+// ==========================================================================
 
 // RemoteTransport connects to a remote xbot server via WebSocket.
-// It implements the Transport interface: sending messages, RPC calls,
-// and receiving server-pushed events (progress, stream, outbound).
+// It implements the Transport interface by composing:
+//   - Transport interface: Call, Close (WebSocket RPC transport)
+//   - AgentRunner interface: Start, Stop, Run (lifecycle management)
+//   - EventRouter interface: SendMessage, BindChat, Subscribe, ConnState (event routing)
+//   - CallbackRegistry interface: WireCallbacks, SetTUIControlHandler
+//
+// Internal WebSocket plumbing (connect, readPump, pingLoop, reconnectLoop)
+// is grouped at the bottom of this file.
 type RemoteTransport struct {
 	baseTransport
 
@@ -71,6 +77,9 @@ type RemoteTransport struct {
 	rpcMu      sync.Mutex
 	pending    map[string]chan *rpcResponse
 	rpcCounter atomic.Int64
+
+	// eventCh forwards raw WS messages to Client.eventLoop for unified dispatch.
+	eventCh chan protocol.WSMessage
 }
 
 // RemoteTransportConfig holds the configuration for connecting to a remote server.
@@ -88,18 +97,103 @@ func NewRemoteTransport(cfg RemoteTransportConfig) *RemoteTransport {
 		done:          make(chan struct{}),
 		reconnectCh:   make(chan struct{}, 1),
 		pending:       make(map[string]chan *rpcResponse),
+		eventCh:       make(chan protocol.WSMessage, 256),
 	}
 }
 
-// ---------------------------------------------------------------------------
-// WS incoming message types (server → client)
-// ---------------------------------------------------------------------------
+// ==========================================================================
+// Transport interface (Call + Close)
+// Satisfies the RPC transport contract used by Backend for all server-side
+// method invocations (ListModels, GetSettings, etc.).
+// ==========================================================================
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// Call sends an RPC request and waits for a response.
+// method is the RPC method name. payload is already marshaled JSON (json.RawMessage).
+func (t *RemoteTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
+	// Lock order: connMu → rpcMu (never reverse, to prevent deadlock).
+	t.connMu.Lock()
+	if t.conn == nil {
+		t.connMu.Unlock()
+		return nil, fmt.Errorf("not connected to server")
+	}
+	id := fmt.Sprintf("rpc-%d", t.rpcCounter.Add(1))
+	ch := make(chan *rpcResponse, 1)
+	t.rpcMu.Lock()
+	t.pending[id] = ch
+	t.rpcMu.Unlock()
+	req := protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: id, Method: method, Params: payload}
+	// Set write deadline to avoid blocking indefinitely on dead connections.
+	t.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := t.conn.WriteJSON(req); err != nil {
+		t.conn.SetWriteDeadline(time.Time{})
+		t.connMu.Unlock()
+		t.rpcMu.Lock()
+		delete(t.pending, id)
+		t.rpcMu.Unlock()
+		return nil, fmt.Errorf("send RPC %s: %w", method, err)
+	}
+	t.conn.SetWriteDeadline(time.Time{})
+	t.connMu.Unlock()
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("RPC %s: connection closed", method)
+		}
+		if resp.Error != "" {
+			return nil, fmt.Errorf("RPC %s: %s", method, resp.Error)
+		}
+		return resp.Result, nil
+	case <-time.After(30 * time.Second):
+		t.rpcMu.Lock()
+		delete(t.pending, id)
+		t.rpcMu.Unlock()
+		return nil, fmt.Errorf("RPC %s: timeout", method)
+	case <-t.done:
+		t.rpcMu.Lock()
+		delete(t.pending, id)
+		t.rpcMu.Unlock()
+		return nil, fmt.Errorf("RPC %s: backend stopped", method)
+	}
+}
 
-// Start connects to the remote server via WebSocket and starts the read pump.
+// EventCh returns the channel for raw WS messages, used by Client.eventLoop.
+func (t *RemoteTransport) EventCh() chan protocol.WSMessage {
+	return t.eventCh
+}
+
+// Close stops the WebSocket connection.
+func (t *RemoteTransport) Close() error {
+	t.Stop()
+	return nil
+}
+
+// handleRPCResponse dispatches an incoming RPC response to the waiting caller.
+func (t *RemoteTransport) handleRPCResponse(msg *protocol.WSMessage) {
+	if msg.ID == "" {
+		return
+	}
+	t.rpcMu.Lock()
+	ch, ok := t.pending[msg.ID]
+	if ok {
+		delete(t.pending, msg.ID)
+	}
+	t.rpcMu.Unlock()
+	if ok {
+		ch <- &rpcResponse{
+			ID:     msg.ID,
+			Result: msg.Result,
+			Error:  msg.Error,
+		}
+	}
+}
+
+// ==========================================================================
+// AgentRunner interface (Start + Stop + Run)
+// Manages the transport lifecycle: establish connection, run goroutines,
+// and block until context cancellation.
+// ==========================================================================
+
+// Start connects to the remote server via WebSocket and starts background goroutines.
 func (t *RemoteTransport) Start(ctx context.Context) error {
 	if err := t.connect(ctx); err != nil {
 		return fmt.Errorf("connect to %s: %w", t.serverURL, err)
@@ -111,7 +205,7 @@ func (t *RemoteTransport) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop closes the WebSocket connection.
+// Stop closes the WebSocket connection and unblocks all pending RPC calls.
 func (t *RemoteTransport) Stop() {
 	t.closeOnce.Do(func() {
 		close(t.done)
@@ -137,9 +231,17 @@ func (t *RemoteTransport) Stop() {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Message I/O
-// ---------------------------------------------------------------------------
+// Run blocks until the context is cancelled.
+func (t *RemoteTransport) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// ==========================================================================
+// EventRouter interface (SendMessage + BindChat + Subscribe + ConnState)
+// Handles outbound event routing and inbound message dispatch.
+// Subscribe is inherited from baseTransport.
+// ==========================================================================
 
 // SendMessage sends a user message to the remote server via WebSocket.
 func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
@@ -169,35 +271,22 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 	return t.conn.WriteJSON(outMsg)
 }
 
-// SetTUIControlHandler registers the TUI control request handler for remote mode.
-// This is an RPC-style request-response mechanism (not fire-and-forget).
-func (t *RemoteTransport) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
-	t.tuiControlReqCb = cb
+// BindChat registers this connection to receive events for chatID.
+// Must be called after connect() with the business chatID (e.g. "/home/user").
+func (t *RemoteTransport) BindChat(chatID string) error {
+	t.connMu.Lock()
+	defer t.connMu.Unlock()
+	if t.conn == nil {
+		return fmt.Errorf("not connected to server")
+	}
+	subMsg := protocol.WSClientMessage{Type: protocol.MsgTypeSubscribe, ChatID: chatID}
+	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	defer t.conn.SetWriteDeadline(time.Time{})
+	if err := t.conn.WriteJSON(subMsg); err != nil {
+		return fmt.Errorf("subscribe: %w", err)
+	}
+	return nil
 }
-
-// WireCallbacks is noop for remote transport — server.go wires these directly on Agent.
-func (t *RemoteTransport) WireCallbacks(
-	func(msg bus.OutboundMessage) (string, error),
-	func(name string) (channel.Channel, bool),
-	func(ev protocol.SessionEvent),
-	bus.MessageSender,
-	func(name string, runFn bus.RunFn) error,
-	func(name string),
-) {
-}
-
-// SetChatRenameFn is noop for remote transport — server.go wires directly on Agent.
-func (t *RemoteTransport) SetChatRenameFn(func(chatID, newName string) (oldName string, err error)) {
-}
-
-// Bus returns nil for RemoteTransport (no local message bus).
-func (t *RemoteTransport) Bus() *bus.MessageBus { return nil }
-
-// IsRemote returns true — the agent loop runs on the server.
-func (t *RemoteTransport) IsRemote() bool { return true }
-
-// ServerURL returns the configured server URL for display purposes.
-func (t *RemoteTransport) ServerURL() string { return t.serverURL }
 
 // ConnState returns the current connection state string.
 func (t *RemoteTransport) ConnState() string {
@@ -213,15 +302,45 @@ func (t *RemoteTransport) setConnState(state string) {
 	t.connState = state
 	t.connMu.Unlock()
 	if prev != state {
-		// Emit protocol event for new-style subscribers
 		t.emit(context.Background(), protocol.ConnStateEvent{State: state})
 	}
 }
 
-// ---------------------------------------------------------------------------
-// WebSocket connection
-// ---------------------------------------------------------------------------
+// IsRemote returns true — the agent loop runs on the server.
+func (t *RemoteTransport) IsRemote() bool { return true }
 
+// ServerURL returns the configured server URL for display purposes.
+func (t *RemoteTransport) ServerURL() string { return t.serverURL }
+
+// ==========================================================================
+// CallbackRegistry interface (SetTUIControlHandler + WireCallbacks)
+// These methods satisfy Client callback requirements.
+// WireCallbacks is no-op for remote transport —
+// the server wires these directly on the Agent.
+// ==========================================================================
+
+// SetTUIControlHandler registers the TUI control request handler for remote mode.
+// This is an RPC-style request-response mechanism (not fire-and-forget).
+func (t *RemoteTransport) SetTUIControlHandler(cb func(action string, params map[string]string) (map[string]string, error)) {
+	t.tuiControlReqCb = cb
+}
+
+// WireCallbacks is noop for remote transport — server.go wires these directly on Agent.
+func (t *RemoteTransport) WireCallbacks(
+	func(msg channel.OutboundMsg) (string, error),
+	func(name string) (channel.Channel, bool),
+	bus.MessageSender,
+	func(name string, runFn bus.RunFn) error,
+	func(name string),
+) {
+}
+
+// ==========================================================================
+// WebSocket connection management (internal)
+// connect, readPump, pingLoop, reconnectLoop — the low-level WS plumbing.
+// ==========================================================================
+
+// connect establishes a WebSocket connection to the server.
 func (t *RemoteTransport) connect(ctx context.Context) error {
 	u, err := url.Parse(t.serverURL)
 	if err != nil {
@@ -292,27 +411,7 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	return nil
 }
 
-// BindChat registers this connection to receive events for chatID.
-// Must be called after connect() with the business chatID (e.g. "/home/user").
-func (t *RemoteTransport) BindChat(chatID string) error {
-	t.connMu.Lock()
-	defer t.connMu.Unlock()
-	if t.conn == nil {
-		return fmt.Errorf("not connected to server")
-	}
-	subMsg := protocol.WSClientMessage{Type: protocol.MsgTypeSubscribe, ChatID: chatID}
-	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	defer t.conn.SetWriteDeadline(time.Time{})
-	if err := t.conn.WriteJSON(subMsg); err != nil {
-		return fmt.Errorf("subscribe: %w", err)
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// Read pump — dispatches server messages
-// ---------------------------------------------------------------------------
-
+// readPump reads messages from the WebSocket connection and dispatches them.
 func (t *RemoteTransport) readPump(ctx context.Context) {
 	defer t.readPumpWg.Done()
 	for {
@@ -338,9 +437,6 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				log.WithError(err).Info("WS connection closed")
 			}
 			// Unblock all pending RPC callers so they don't hang until timeout.
-			// Use non-blocking write instead of close(ch) to avoid double-close
-			// panic if Stop() runs concurrently (both hold rpcMu but close on
-			// buffered-chan can still race if channel is already drained).
 			t.rpcMu.Lock()
 			for id, ch := range t.pending {
 				select {
@@ -376,138 +472,63 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				}
 			}
 		}
+
+		// RPC responses are handled inline (match pending callers).
+		// TUI control requests need WS write-back, handled inline.
+		// All other events are forwarded to Client.eventLoop via eventCh.
 		switch msg.Type {
 		case protocol.MsgTypeRPCResponse:
 			t.handleRPCResponse(&msg)
-		case protocol.MsgTypeText:
-			// Emit protocol event for new-style subscribers
-			t.emit(ctx, protocol.OutboundEvent{
-				Channel:   msg.Channel,
-				ChatID:    msg.ChatID,
-				Content:   msg.Content,
-				IsPartial: false,
-			})
-		case protocol.MsgTypeProgress:
-			cliPayload := msg.Progress
-			// Emit full CLIProgressPayload as protocol event
-			if cliPayload != nil {
-				t.emit(ctx, cliPayload)
+		case protocol.MsgTypeTUIControlReq:
+			t.handleTUIControlRequest(ctx, &msg)
+		default:
+			select {
+			case t.eventCh <- msg:
+			case <-ctx.Done():
+				return
 			}
-		case protocol.MsgTypeStreamContent:
-			// Emit full CLIProgressPayload as protocol event
-			if msg.Progress != nil {
-				t.emit(ctx, &protocol.ProgressEvent{
-					ChatID:                 msg.Progress.ChatID,
-					StreamContent:          msg.Progress.StreamContent,
-					ReasoningStreamContent: msg.Progress.ReasoningStreamContent,
-				})
+		}
+	}
+}
+
+// handleTUIControlRequest processes a server-initiated TUI control request.
+func (t *RemoteTransport) handleTUIControlRequest(ctx context.Context, msg *protocol.WSMessage) {
+	// Process in goroutine so readPump stays responsive — required for RPC calls within handlers.
+	if t.tuiControlReqCb != nil && msg.TUIControl != nil {
+		reqID := msg.ID
+		action := msg.TUIControl.Action
+		params := msg.TUIControl.Params
+		go func() {
+			result, err := t.tuiControlReqCb(action, params)
+			resp := protocol.WSClientMessage{
+				Type: protocol.MsgTypeTUIControlResp,
+				ID:   reqID,
+				TUIControl: &protocol.TUIControlPayload{
+					Action: action,
+				},
 			}
-		case protocol.MsgTypeAskUser:
-			if msg.Progress != nil {
-				if len(msg.Progress.Questions) > 0 {
-					log.WithFields(log.Fields{
-						"msg_chatid":    msg.ChatID,
-						"num_questions": len(msg.Progress.Questions),
-					}).Info("RemoteTransport: dispatching ask_user")
-					qJSON, err := json.Marshal(msg.Progress.Questions)
-					if err != nil {
-						log.WithError(err).Warn("RemoteTransport: ask_user marshal failed")
-						break
-					}
-					// Emit protocol event for new-style subscribers
-					t.emit(ctx, protocol.AskUserEvent{
-						Channel:   msg.Channel,
-						ChatID:    msg.ChatID,
-						Questions: string(qJSON),
-						RequestID: msg.Progress.RequestID,
-					})
+			if err != nil {
+				resp.TUIControl.Error = err.Error()
+			} else {
+				resp.TUIControl.Result = result
+			}
+			t.connMu.Lock()
+			if t.conn != nil {
+				if writeErr := t.conn.WriteJSON(resp); writeErr != nil {
+					log.WithError(writeErr).Debug("Failed to send tui_control_resp")
 				}
 			}
-		case protocol.MsgTypeInjectUser:
-			// Emit protocol event
-			if msg.Content != "" {
-				t.emit(ctx, protocol.InjectUserEvent{
-					ChatID:  msg.ChatID,
-					Content: msg.Content,
-				})
-			}
-		case protocol.MsgTypePluginWidgets:
-			// Emit protocol event
-			var zones map[string]string
-			if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
-				t.emit(ctx, protocol.PluginWidgetEvent{
-					ChatID: msg.ChatID,
-					Zones:  zones,
-				})
-			}
-		case protocol.MsgTypeSession:
-			// Server-pushed session state change event
-			if msg.Session != nil {
-				t.emit(ctx, *msg.Session)
-			}
-		case protocol.MsgTypeTUIControlReq:
-			// Server-initiated TUI control request. Process in goroutine so
-			// readPump stays responsive — required for RPC calls within handlers.
-			if t.tuiControlReqCb != nil && msg.TUIControl != nil {
-				reqID := msg.ID
-				action := msg.TUIControl.Action
-				params := msg.TUIControl.Params
-				go func() {
-					result, err := t.tuiControlReqCb(action, params)
-					resp := protocol.WSClientMessage{
-						Type: protocol.MsgTypeTUIControlResp,
-						ID:   reqID,
-						TUIControl: &protocol.TUIControlPayload{
-							Action: action,
-						},
-					}
-					if err != nil {
-						resp.TUIControl.Error = err.Error()
-					} else {
-						resp.TUIControl.Result = result
-					}
-					t.connMu.Lock()
-					if t.conn != nil {
-						if writeErr := t.conn.WriteJSON(resp); writeErr != nil {
-							log.WithError(writeErr).Debug("Failed to send tui_control_resp")
-						}
-					}
-					t.connMu.Unlock()
-				}()
-			}
-			// Emit protocol event
-			if msg.TUIControl != nil {
-				t.emit(ctx, protocol.TUIControlEvent{
-					Action: msg.TUIControl.Action,
-					Params: msg.TUIControl.Params,
-				})
-			}
+			t.connMu.Unlock()
+		}()
+	}
+	// Forward TUI control event to Client.eventLoop
+	if msg.TUIControl != nil {
+		select {
+		case t.eventCh <- protocol.WSMessage{Type: protocol.MsgTypeTUIControlReq, TUIControl: msg.TUIControl}:
+		default:
 		}
 	}
 }
-
-func (t *RemoteTransport) handleRPCResponse(msg *protocol.WSMessage) {
-	if msg.ID == "" {
-		return
-	}
-	t.rpcMu.Lock()
-	ch, ok := t.pending[msg.ID]
-	if ok {
-		delete(t.pending, msg.ID)
-	}
-	t.rpcMu.Unlock()
-	if ok {
-		ch <- &rpcResponse{
-			ID:     msg.ID,
-			Result: msg.Result,
-			Error:  msg.Error,
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Ping loop — sends WebSocket pings to keep connection alive
-// ---------------------------------------------------------------------------
 
 // pingLoop sends WebSocket pings every 25 seconds.
 // The server sends pings every 30s and expects pongs within 60s.
@@ -539,10 +560,7 @@ func (t *RemoteTransport) sendPing() {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Reconnect
-// ---------------------------------------------------------------------------
-
+// reconnectLoop handles exponential-backoff reconnection with event replay.
 func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 	for {
 		select {
@@ -601,69 +619,4 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// RPC call (Transport interface)
-// ---------------------------------------------------------------------------
-
-// Call sends an RPC request and waits for a response (implements Transport interface).
-// method is the RPC method name. payload is already marshaled JSON (json.RawMessage).
-func (t *RemoteTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
-	// Lock order: connMu → rpcMu (never reverse, to prevent deadlock).
-	t.connMu.Lock()
-	if t.conn == nil {
-		t.connMu.Unlock()
-		return nil, fmt.Errorf("not connected to server")
-	}
-	id := fmt.Sprintf("rpc-%d", t.rpcCounter.Add(1))
-	ch := make(chan *rpcResponse, 1)
-	t.rpcMu.Lock()
-	t.pending[id] = ch
-	t.rpcMu.Unlock()
-	req := protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: id, Method: method, Params: payload}
-	// Set write deadline to avoid blocking indefinitely on dead connections.
-	t.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := t.conn.WriteJSON(req); err != nil {
-		t.conn.SetWriteDeadline(time.Time{})
-		t.connMu.Unlock()
-		t.rpcMu.Lock()
-		delete(t.pending, id)
-		t.rpcMu.Unlock()
-		return nil, fmt.Errorf("send RPC %s: %w", method, err)
-	}
-	t.conn.SetWriteDeadline(time.Time{})
-	t.connMu.Unlock()
-	select {
-	case resp, ok := <-ch:
-		if !ok {
-			return nil, fmt.Errorf("RPC %s: connection closed", method)
-		}
-		if resp.Error != "" {
-			return nil, fmt.Errorf("RPC %s: %s", method, resp.Error)
-		}
-		return resp.Result, nil
-	case <-time.After(30 * time.Second):
-		t.rpcMu.Lock()
-		delete(t.pending, id)
-		t.rpcMu.Unlock()
-		return nil, fmt.Errorf("RPC %s: timeout", method)
-	case <-t.done:
-		t.rpcMu.Lock()
-		delete(t.pending, id)
-		t.rpcMu.Unlock()
-		return nil, fmt.Errorf("RPC %s: backend stopped", method)
-	}
-}
-
-// Close stops the WebSocket connection (implements Transport interface).
-func (t *RemoteTransport) Close() error {
-	t.Stop()
-	return nil
-}
-
-// Run blocks until the context is cancelled (implements Transport interface).
-func (t *RemoteTransport) Run(ctx context.Context) error {
-	<-ctx.Done()
-	return ctx.Err()
 }

@@ -1,25 +1,15 @@
 package serverapp
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"xbot/agent"
-	"xbot/agent/hooks"
-	"xbot/bus"
 	"xbot/channel"
 	"xbot/config"
-	"xbot/event"
 	llm "xbot/llm"
-	"xbot/plugin"
-	"xbot/protocol"
-	"xbot/session"
 	"xbot/storage/sqlite"
-	"xbot/tools"
 )
 
 func newTestConfig() *config.Config {
@@ -67,10 +57,9 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 	factory.SetSubscriptionSvc(subSvc)
 
 	aCfg := &config.Config{}
-	lb := fakeBackend{factory: factory}
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)
-	table := buildRPCTable(aCfg, lb, ag, nil, nil)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
 
 	// Add subscription via admin path (same as remote CLI does)
 	sub := channel.Subscription{
@@ -78,7 +67,7 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 		BaseURL: "https://api.openai.com/v1", APIKey: "sk-test", Model: "gpt-4",
 	}
 	addParams, _ := json.Marshal(map[string]any{"sub": sub})
-	if _, err := handleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+	if _, err := HandleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
 		t.Fatalf("add_subscription: %v", err)
 	}
 
@@ -86,7 +75,7 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 	// Before fix: senderIDFromParams falls back to "admin" → empty list
 	// After fix: should return the subscription
 	listParams, _ := json.Marshal(map[string]string{"sender_id": ""})
-	raw, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	raw, err := HandleCLIRPC(table, "list_subscriptions", listParams, "admin")
 	if err != nil {
 		t.Fatalf("list_subscriptions: %v", err)
 	}
@@ -122,10 +111,9 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 	factory.SetSubscriptionSvc(subSvc)
 
 	aCfg := &config.Config{}
-	lb := fakeBackend{factory: factory}
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)
-	table := buildRPCTable(aCfg, lb, ag, nil, nil)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
 
 	// Use snake_case keys matching channelSubscriptionJSON — the format the real
 	// backend sends via RPC (backend_impl.go UpdateSubscription).
@@ -138,13 +126,13 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 			"model":    "gpt-5.5",
 		},
 	})
-	if _, err := handleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+	if _, err := HandleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
 		t.Fatalf("add_subscription: %v", err)
 	}
 
 	// List and verify base_url/api_key are preserved
 	listParams, _ := json.Marshal(map[string]string{"sender_id": ""})
-	raw, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	raw, err := HandleCLIRPC(table, "list_subscriptions", listParams, "admin")
 	if err != nil {
 		t.Fatalf("list_subscriptions: %v", err)
 	}
@@ -180,10 +168,9 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 	factory.SetSubscriptionSvc(subSvc)
 
 	aCfg := &config.Config{}
-	lb := fakeBackend{factory: factory}
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)
-	table := buildRPCTable(aCfg, lb, ag, nil, nil)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
 
 	// Add a subscription first (using snake_case matching real client)
 	addParams, _ := json.Marshal(map[string]any{
@@ -195,13 +182,13 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 			"model":    "gpt-5.5",
 		},
 	})
-	if _, err := handleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+	if _, err := HandleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
 		t.Fatalf("add_subscription: %v", err)
 	}
 
 	// Get the subscription ID via list
 	listParams, _ := json.Marshal(map[string]string{"sender_id": ""})
-	listRaw, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	listRaw, err := HandleCLIRPC(table, "list_subscriptions", listParams, "admin")
 	if err != nil {
 		t.Fatalf("list_subscriptions: %v", err)
 	}
@@ -225,12 +212,12 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 			"thinking_mode":     "",
 		},
 	})
-	if _, err := handleCLIRPC(table, "update_subscription", updateParams, "admin"); err != nil {
+	if _, err := HandleCLIRPC(table, "update_subscription", updateParams, "admin"); err != nil {
 		t.Fatalf("update_subscription: %v", err)
 	}
 
 	// Verify base_url and api_key are preserved
-	listRaw2, err := handleCLIRPC(table, "list_subscriptions", listParams, "admin")
+	listRaw2, err := HandleCLIRPC(table, "list_subscriptions", listParams, "admin")
 	if err != nil {
 		t.Fatalf("list_subscriptions after update: %v", err)
 	}
@@ -252,7 +239,7 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 	}
 }
 
-func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *agent.Agent, *sqlite.UserSettingsService) {
+func newTestBackendWithSettings(t *testing.T) (*agent.Agent, *sqlite.UserSettingsService) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
@@ -263,146 +250,12 @@ func newTestBackendWithSettings(t *testing.T) (agent.AgentBackend, *agent.Agent,
 	agentSvc := agent.NewSettingsService(store)
 	ag := &agent.Agent{}
 	ag.SetSettingsService(agentSvc)
-	return fakeBackend{settingsSvc: agentSvc}, ag, store
+	return ag, store
 }
-
-type fakeBackend struct {
-	settingsSvc *agent.SettingsService
-	factory     *agent.LLMFactory
-}
-
-// Compile-time check: fakeBackend implements agent.AgentBackend.
-var _ agent.AgentBackend = fakeBackend{}
-
-func (b fakeBackend) Start(_ context.Context) error          { return nil }
-func (b fakeBackend) Stop()                                  {}
-func (b fakeBackend) SendInbound(_ bus.InboundMessage) error { return nil }
-func (b fakeBackend) Subscribe(_ protocol.EventPattern, _ protocol.EventHandler) func() {
-	return func() {}
-}
-func (b fakeBackend) Bus() *bus.MessageBus                                  { return nil }
-func (b fakeBackend) IsRemote() bool                                        { return false }
-func (b fakeBackend) IsProcessing(_, _ string) bool                         { return false }
-func (b fakeBackend) GetActiveProgress(_, _ string) *protocol.ProgressEvent { return nil }
-func (b fakeBackend) GetTodos(_, _ string) []protocol.TodoItem              { return nil }
-func (b fakeBackend) SetTUIControlHandler(_ func(action string, params map[string]string) (map[string]string, error)) {
-}
-func (b fakeBackend) WireCallbacks(func(bus.OutboundMessage) (string, error), func(string) (channel.Channel, bool), func(protocol.SessionEvent), bus.MessageSender, func(string, bus.RunFn) error, func(string)) {
-}
-func (b fakeBackend) ConnState() string                                                  { return "connected" }
-func (b fakeBackend) ServerURL() string                                                  { return "" }
-func (b fakeBackend) Agent() *agent.Agent                                                { return nil }
-func (b fakeBackend) LLMFactory() *agent.LLMFactory                                      { return b.factory }
-func (b fakeBackend) SettingsService() *agent.SettingsService                            { return b.settingsSvc }
-func (b fakeBackend) MultiSession() *session.MultiTenantSession                          { return nil }
-func (b fakeBackend) BgTaskManager() *tools.BackgroundTaskManager                        { return nil }
-func (b fakeBackend) HookManager() *hooks.Manager                                        { return nil }
-func (b fakeBackend) ApprovalState() *hooks.ApprovalState                                { return nil }
-func (b fakeBackend) BindChat(_ string) error                                            { return nil }
-func (b fakeBackend) SetDirectSend(_ func(bus.OutboundMessage) (string, error))          {}
-func (b fakeBackend) SetChannelFinder(_ func(string) (channel.Channel, bool))            {}
-func (b fakeBackend) SetChannelPromptProviders(_ ...agent.ChannelPromptProvider)         {}
-func (b fakeBackend) RegisterCoreTool(_ tools.Tool)                                      {}
-func (b fakeBackend) IndexGlobalTools()                                                  {}
-func (b fakeBackend) CountInteractiveSessions(_, _ string) int                           { return 0 }
-func (b fakeBackend) ListInteractiveSessions(_, _ string) []agent.InteractiveSessionInfo { return nil }
-func (b fakeBackend) InspectInteractiveSession(_ context.Context, _, _, _, _ string, _ int) (string, error) {
-	return "", nil
-}
-func (b fakeBackend) GetSessionMessages(_, _, _, _ string) ([]agent.SessionMessage, bool) {
-	return nil, false
-}
-func (b fakeBackend) GetAgentSessionDump(_, _, _, _ string) (*agent.AgentSessionDump, bool) {
-	return nil, false
-}
-func (b fakeBackend) GetAgentSessionDumpByFullKey(_ string) (*agent.AgentSessionDump, bool) {
-	return nil, false
-}
-func (b fakeBackend) SetContextMode(_ string) error                                  { return nil }
-func (b fakeBackend) SetCWD(_, _, _ string) error                                    { return nil }
-func (b fakeBackend) SetMaxIterations(_ int)                                         {}
-func (b fakeBackend) SetMaxConcurrency(_ int)                                        {}
-func (b fakeBackend) SetMaxContextTokens(_ int, _ ...string)                         {}
-func (b fakeBackend) GetEffectiveMaxContext(_, _ string) int                         { return 0 }
-func (b fakeBackend) ClearPerChatMaxContext(_ string)                                {}
-func (b fakeBackend) SetCompressionThreshold(_ float64)                              {}
-func (b fakeBackend) SetSandbox(_ tools.Sandbox, _ string)                           {}
-func (b fakeBackend) GetCardBuilder() *tools.CardBuilder                             { return nil }
-func (b fakeBackend) SetEventRouter(_ *event.Router)                                 {}
-func (b fakeBackend) RegisterTool(_ tools.Tool)                                      {}
-func (b fakeBackend) RegistryManager() *agent.RegistryManager                        { return nil }
-func (b fakeBackend) SetProxyLLM(_ string, _ *llm.ProxyLLM, _ string)                {}
-func (b fakeBackend) ClearProxyLLM(_ string)                                         {}
-func (b fakeBackend) GetDefaultModel() string                                        { return "" }
-func (b fakeBackend) SetUserModel(_, _ string) error                                 { return nil }
-func (b fakeBackend) SwitchModel(_, _, _ string) error                               { return nil }
-func (b fakeBackend) GetUserMaxContext(_ string) int                                 { return 0 }
-func (b fakeBackend) SetUserMaxContext(_ string, _ int) error                        { return nil }
-func (b fakeBackend) GetUserMaxOutputTokens(_ string) int                            { return 0 }
-func (b fakeBackend) SetUserMaxOutputTokens(_ string, _ int) error                   { return nil }
-func (b fakeBackend) GetUserThinkingMode(_ string) string                            { return "" }
-func (b fakeBackend) SetUserThinkingMode(_, _ string) error                          { return nil }
-func (b fakeBackend) ListModels() []string                                           { return nil }
-func (b fakeBackend) ListAllModels() []string                                        { return nil }
-func (b fakeBackend) GetSettings(_, _ string) (map[string]string, error)             { return nil, nil }
-func (b fakeBackend) SetSetting(_, _, _, _ string) error                             { return nil }
-func (b fakeBackend) ListSubscriptions(_ string) ([]channel.Subscription, error)     { return nil, nil }
-func (b fakeBackend) GetDefaultSubscription(_ string) (*channel.Subscription, error) { return nil, nil }
-func (b fakeBackend) AddSubscription(_ string, _ channel.Subscription) error         { return nil }
-func (b fakeBackend) RemoveSubscription(_ string) error                              { return nil }
-func (b fakeBackend) SetDefaultSubscription(_ string, _ string) error                { return nil }
-func (b fakeBackend) RenameSubscription(_, _ string) error                           { return nil }
-func (b fakeBackend) UpdateSubscription(_ string, _ channel.Subscription) error      { return nil }
-func (b fakeBackend) UpdatePerModelConfig(_ string, _ string, _ protocol.PerModelConfig) error {
-	return nil
-}
-func (b fakeBackend) SetSubscriptionModel(_, _ string) error { return nil }
-func (b fakeBackend) LLMGenerate(_ context.Context, _, _ string, _ []llm.ChatMessage, _ []llm.ToolDefinition, _ string) (*llm.LLMResponse, error) {
-	return nil, nil
-}
-func (b fakeBackend) LLMModels(_ context.Context, _ string) ([]string, error)            { return nil, nil }
-func (b fakeBackend) SetModelTiers(_ config.LLMConfig) error                             { return nil }
-func (b fakeBackend) SetDefaultThinkingMode(_ string) error                              { return nil }
-func (b fakeBackend) SetModelContexts(_ map[string]int) error                            { return nil }
-func (b fakeBackend) SetGlobalMaxTokens(_ int) error                                     { return nil }
-func (b fakeBackend) SetRetryConfig(_ llm.RetryConfig) error                             { return nil }
-func (b fakeBackend) SetChatLLM(_ string, _ string, _ config.LLMConfig) error            { return nil }
-func (b fakeBackend) ClearMemory(_ context.Context, _, _, _, _ string) error             { return nil }
-func (b fakeBackend) GetMemoryStats(_ context.Context, _, _, _ string) map[string]string { return nil }
-func (b fakeBackend) GetUserTokenUsage(_ string) (map[string]any, error)                 { return nil, nil }
-func (b fakeBackend) GetDailyTokenUsage(_ string, _ int) ([]map[string]any, error)       { return nil, nil }
-func (b fakeBackend) GetBgTaskCount(_ string) int                                        { return 0 }
-func (b fakeBackend) ListBgTasks(_ string) ([]agent.BgTaskJSON, error)                   { return nil, nil }
-func (b fakeBackend) KillBgTask(_ string) error                                          { return nil }
-func (b fakeBackend) CleanupCompletedBgTasks(_ string)                                   {}
-func (b fakeBackend) ListTenants() ([]agent.TenantInfo, error)                           { return nil, nil }
-func (b fakeBackend) GetHistory(_, _ string) ([]channel.HistoryMessage, error)           { return nil, nil }
-func (b fakeBackend) GetTokenState(_, _ string) (int64, int64, error)                    { return 0, 0, nil }
-func (b fakeBackend) TrimHistory(_, _ string, _ time.Time) error                         { return nil }
-func (b fakeBackend) ResetTokenState()                                                   {}
-func (b fakeBackend) GetChannelConfigs() (map[string]map[string]string, error)           { return nil, nil }
-func (b fakeBackend) SetChannelConfig(channel string, values map[string]string) error    { return nil }
-func (b fakeBackend) SetChannelReconfigureFn(func(string))                               {}
-func (b fakeBackend) Close() error                                                       { return nil }
-func (b fakeBackend) CallRPC(string, any) (json.RawMessage, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (b fakeBackend) Run(_ context.Context) error             { return nil }
-func (b fakeBackend) GetLLMConcurrency(_ string) int          { return 0 }
-func (b fakeBackend) SetLLMConcurrency(_ string, _ int) error { return nil }
-func (b fakeBackend) SetTUICallbacks(_ func(action string, params map[string]string) (map[string]string, error), _ func(key string) (string, error), _ func(key, value string) (string, error)) {
-}
-func (b fakeBackend) OnTUIControlRequest(_ func(action string, params map[string]string) (map[string]string, error)) {
-}
-func (b fakeBackend) SetChatRenameFn(_ func(chatID, newName string) (oldName string, err error)) {
-}
-func (b fakeBackend) GetContextMode() string               { return "" }
-func (b fakeBackend) PluginManager() *plugin.PluginManager { return nil }
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.T) {
 	cfg := newTestConfig()
-	backend, ag, store := newTestBackendWithSettings(t)
-	_ = backend
+	ag, store := newTestBackendWithSettings(t)
 	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
 		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
 	}
@@ -429,8 +282,7 @@ func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.
 
 func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SkipsWhenUserAlreadyHasSettings(t *testing.T) {
 	cfg := newTestConfig()
-	backend, ag, store := newTestBackendWithSettings(t)
-	_ = backend
+	ag, store := newTestBackendWithSettings(t)
 	if err := store.Set("cli", "cli_user", "theme", "mono"); err != nil {
 		t.Fatalf("store.Set() error = %v", err)
 	}
@@ -448,11 +300,11 @@ func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SkipsWhenUserAlreadyHasSetting
 
 func TestApplyRuntimeSetting_UpdatesConfig(t *testing.T) {
 	cfg := newTestConfig()
-	var backend agent.AgentBackend // nil is fine — we only test cfg mutation
+	var ag *agent.Agent // nil is fine — we only test cfg mutation
 	// LLM fields (llm_model, llm_base_url) are no longer handled by
 	// applyRuntimeSetting — they go through update_subscription RPC.
 	// Test a non-LLM config mutation instead.
-	applyRuntimeSetting(cfg, backend, "cli_user", "max_concurrency", "99")
+	applyRuntimeSetting(cfg, ag, "cli_user", "max_concurrency", "99")
 	if cfg.Agent.MaxConcurrency != 99 {
 		t.Fatalf("max_concurrency = %d, want %d", cfg.Agent.MaxConcurrency, 99)
 	}
@@ -468,8 +320,8 @@ func TestAllRuntimeKeysHaveHandlers(t *testing.T) {
 
 func TestApplyRuntimeSetting_WarnsOnUnknownKey(t *testing.T) {
 	cfg := newTestConfig()
-	var backend agent.AgentBackend
-	applyRuntimeSetting(cfg, backend, "cli_user", "totally_unknown_key", "value")
+	var ag *agent.Agent
+	applyRuntimeSetting(cfg, ag, "cli_user", "totally_unknown_key", "value")
 	// Should not panic, just log a warning
 }
 
@@ -494,18 +346,17 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 	}
 
 	aCfg := &config.Config{}
-	lb := fakeBackend{factory: factory}
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)
-	table := buildRPCTable(aCfg, lb, ag, nil, nil)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
 	_, model, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
 		t.Fatalf("expected initial gpt model, got %q", model)
 	}
 
 	params, _ := json.Marshal(map[string]string{"id": "sub-glm"})
-	if _, err := handleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
-		t.Fatalf("handleCLIRPC set_default_subscription: %v", err)
+	if _, err := HandleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
+		t.Fatalf("HandleCLIRPC set_default_subscription: %v", err)
 	}
 	_, model, _, _ = factory.GetLLM("cli_user")
 	if model != "glm-5.1" {
@@ -540,10 +391,9 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	}
 
 	aCfg := &config.Config{}
-	lb := fakeBackend{factory: factory}
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)
-	table := buildRPCTable(aCfg, lb, ag, nil, nil)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
 	// Agent calls GetLLM with "cli_user" (business identity)
 	_, model, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
@@ -552,8 +402,8 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 
 	// RPC call with WS auth "admin", no sender_id in params (matches real CLI behavior)
 	params, _ := json.Marshal(map[string]string{"id": "sub-glm"})
-	if _, err := handleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
-		t.Fatalf("handleCLIRPC set_default_subscription: %v", err)
+	if _, err := HandleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
+		t.Fatalf("HandleCLIRPC set_default_subscription: %v", err)
 	}
 	// The key assertion: GetLLM("cli_user") must see the new model
 	_, model, _, _ = factory.GetLLM("cli_user")
@@ -561,10 +411,3 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 		t.Fatalf("expected switched glm model for cli_user, got %q (LLM factory cached under wrong key)", model)
 	}
 }
-
-// Additional AgentBackend methods for tests
-func (b fakeBackend) CreateWebUser(string) (string, error)            { return "test-pass", nil }
-func (b fakeBackend) ListWebUsers() ([]map[string]any, error)         { return nil, nil }
-func (b fakeBackend) DeleteWebUser(string) error                      { return nil }
-func (b fakeBackend) DeleteChat(string, string, string) error         { return nil }
-func (b fakeBackend) RenameChat(string, string, string, string) error { return nil }

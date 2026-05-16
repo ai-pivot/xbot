@@ -38,7 +38,7 @@ Channel → MessageBus → Dispatcher → Agent → LLM → Tools
 **Core components:**
 - **bus/** — Inbound/Outbound message channels
 - **channel/** — IM adapters (CLI BubbleTea, Feishu, QQ, NapCat/OneBot 11, Web), dispatcher routes messages
-- **agent/** — Agent loop: LLM → tool calls → response. Also contains middleware pipeline and `AgentBackend` abstraction
+- **agent/** — Agent loop: LLM → tool calls → response. Also contains middleware pipeline and `Client` RPC abstraction
 - **llm/** — LLM clients (OpenAI-compatible, Anthropic), retry wrapper, streaming
 - **tools/** — Tool registry; implement `Tool` interface and register in `DefaultRegistry()`
 - **memory/** — Memory providers: `flat` (default) or `letta` (three-tier MemGPT)
@@ -58,9 +58,8 @@ Channel → MessageBus → Dispatcher → Agent → LLM → Tools
 2. Execute tools, append results
 3. Repeat until max iterations (default `2000`)
 
-**AgentBackend** (`agent/backend.go`):
-- `LocalBackend` — In-process agent loop (default for server and `xbot-cli --local`)
-- `RemoteBackend` — CLI connects to remote server via WebSocket; agent loop runs server-side
+**Client** (`agent/client.go`):
+- `Client` — Unified RPC client for both local (ChannelTransport) and remote (RemoteTransport) modes
 - Both implement the same interface so CLI code works identically regardless of mode
 
 **System Prompt Pipeline** (`agent/middleware.go`):

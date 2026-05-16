@@ -10,14 +10,11 @@ import (
 	"github.com/charmbracelet/glamour"
 	"strings"
 	"time"
-	"xbot/bus"
 	"xbot/clipanic"
 	"xbot/internal/textarea"
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
-	"xbot/tools"
 	"xbot/version"
 )
 
@@ -398,9 +395,7 @@ func (m *cliModel) restoreSession() {
 			_ = m.todoManager.LoadFromFile(key)
 			if items := m.todoManager.GetTodos(key); len(items) > 0 {
 				m.todos = make([]protocol.TodoItem, len(items))
-				for i, t := range items {
-					m.todos[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
-				}
+				copy(m.todos, items)
 				m.todosDoneCleared = false
 			} else {
 				m.todos = nil
@@ -454,9 +449,7 @@ func (m *cliModel) restoreSession() {
 			_ = m.todoManager.LoadFromFile(key)
 			if items := m.todoManager.GetTodos(key); len(items) > 0 {
 				m.todos = make([]protocol.TodoItem, len(items))
-				for i, t := range items {
-					m.todos[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
-				}
+				copy(m.todos, items)
 				m.todosDoneCleared = false
 			} else {
 				m.todos = nil
@@ -601,6 +594,7 @@ func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
 	requestID := pu.RequestID // capture for callbacks
 
 	log.WithField("chat_id", m.chatID).Info("Restoring pending AskUser panel from disk")
+	m.askUserSession = m.chatID // bind AskUser to current session
 	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(requestID), m.pendingAskUserOnCancel(requestID))
 	return nil
 }
@@ -631,8 +625,10 @@ func (m *cliModel) pendingAskUserOnAnswer(requestID string) func(map[string]stri
 // pendingAskUserOnCancel returns a callback for cancelled pending questions.
 // It cleans up the persisted file and closes the panel.
 func (m *cliModel) pendingAskUserOnCancel(requestID string) func() {
+	// Capture chatID at panel open time, not at cancel time.
+	chatID := m.askUserSession
 	return func() {
-		m.deletePendingAskUser(m.askUserSession)
+		m.deletePendingAskUser(chatID)
 		m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
 		m.typing = false
 		m.updatePlaceholder()
@@ -663,6 +659,15 @@ type cliHistoryReloadMsg struct {
 	chatID      string
 	history     []HistoryMessage
 	err         error
+}
+
+// cliTokenRefreshMsg refreshes the context bar after compression.
+// Pushed through asyncCh by refreshTokenStateAfterReload.
+type cliTokenRefreshMsg struct {
+	channelName     string
+	chatID          string
+	tokenPrompt     int64
+	tokenCompletion int64
 }
 
 // cliToastItem 单条 Toast 通知数据
@@ -724,17 +729,16 @@ type cliModel struct {
 	ready           bool                  // 是否已初始化
 
 	// --- Agent state ---
-	agentTurnID       uint64                        // monotonically increasing turn counter
-	typing            bool                          // agent 是否正在回复
-	typingStartTime   time.Time                     // 本次处理开始时间
-	inputReady        bool                          // 输入就绪状态（agent 回复期间禁止发送）
-	msgBus            *bus.MessageBus               // 消息总线引用
-	sendInboundFn     func(bus.InboundMessage) bool // remote mode: forward to server via backend.SendInbound
-	tempStatus        string                        // 临时状态提示（自动过期）
-	pendingCmds       []tea.Cmd                     // commands queued by helpers (auto-drained in Update)
-	shouldQuit        bool                          // Smart quit: quit after current operation completes
-	trimHistoryFn     func(cutoff time.Time) error  // /rewind: delete DB messages at or after cutoff timestamp
-	resetTokenStateFn func()                        // /rewind: clear stale prompt/completion token counts
+	agentTurnID       uint64                       // monotonically increasing turn counter
+	typing            bool                         // agent 是否正在回复
+	typingStartTime   time.Time                    // 本次处理开始时间
+	inputReady        bool                         // 输入就绪状态（agent 回复期间禁止发送）
+	sendInboundFn     func(InboundMsg) bool        // forward to server via backend.SendInbound
+	tempStatus        string                       // 临时状态提示（自动过期）
+	pendingCmds       []tea.Cmd                    // commands queued by helpers (auto-drained in Update)
+	shouldQuit        bool                         // Smart quit: quit after current operation completes
+	trimHistoryFn     func(cutoff time.Time) error // /rewind: delete DB messages at or after cutoff timestamp
+	resetTokenStateFn func()                       // /rewind: clear stale prompt/completion token counts
 
 	// --- Message queue (typing 期间排队的消息) ---
 	messageQueue   []queuedMsg // 排队等待发送的消息（绑定 chatID 防止跨 session 误投）
@@ -743,11 +747,11 @@ type cliModel struct {
 	needFlushQueue bool        // true = handleAgentMessage 后需要刷新队列
 
 	// --- Background tasks ---
-	bgTaskCount     int                            // running background tasks (0 = no indicator)
-	bgTaskCountFn   func() int                     // callback to get current bg task count (set by channel)
-	bgTaskListFn    func() []*tools.BackgroundTask // callback to list running tasks (remote mode)
-	bgTaskKillFn    func(taskID string) error      // callback to kill a task (remote mode)
-	bgTaskCleanupFn func()                         // callback to cleanup completed tasks (remote mode)
+	bgTaskCount     int                       // running background tasks (0 = no indicator)
+	bgTaskCountFn   func() int                // callback to get current bg task count (set by channel)
+	bgTaskListFn    func() []*BgTask          // callback to list running tasks (remote mode)
+	bgTaskKillFn    func(taskID string) error // callback to kill a task (remote mode)
+	bgTaskCleanupFn func()                    // callback to cleanup completed tasks (remote mode)
 
 	// --- Interactive agents ---
 	agentCount      int                                                            // active interactive agent sessions (0 = no indicator)
@@ -758,7 +762,7 @@ type cliModel struct {
 	sessionsListFn  func() []SessionPanelEntry                                     // callback to list all sessions for Sessions panel
 
 	// --- Usage query ---
-	usageQueryFn func(senderID string, days int) (cumulative *sqlite.UserTokenUsage, daily []sqlite.DailyTokenUsage, err error)
+	usageQueryFn func(senderID string, days int) (cumulative *UserTokenUsage, daily []DailyTokenUsage, err error)
 
 	// --- Plugin management ---
 	pluginMgrFn       func() *plugin.PluginManager
@@ -862,7 +866,7 @@ type cliModel struct {
 	rewindMode      bool                      // true = rewind overlay active
 	rewindItems     []rewindItem              // candidate user messages for rewind selection
 	rewindCursor    int                       // selected index in rewindItems
-	rewindResult    *tools.RewindResult       // result of the last rewind operation (for display)
+	rewindResult    *protocol.RewindResult    // result of the last rewind operation (for display)
 	checkpointState *protocol.CheckpointState // file checkpoint state for rewind file rollback (nil = no file tracking)
 
 	// --- §10 TODO 进度条 ---
@@ -903,8 +907,8 @@ type cliModel struct {
 	askPanelTotalLines int                  // cached total line count for scroll clamping
 	panelSchema        []SettingDefinition  // settings panel: schema copy
 	// --- Approval panel ---
-	approvalRequest      *tools.ApprovalRequest // pending approval request
-	approvalResultCh     chan<- tools.ApprovalResult
+	approvalRequest      *protocol.ApprovalRequest // pending approval request
+	approvalResultCh     chan<- protocol.ApprovalResult
 	approvalCursor       int                             // 0=approve, 1=deny
 	approvalDenyInput    textinput.Model                 // deny reason input
 	approvalEnteringDeny bool                            // true when editing deny reason
@@ -915,10 +919,10 @@ type cliModel struct {
 	panelOnCancel        func()                          // callback on cancel
 
 	// --- Bg Tasks Panel ---
-	panelBgTasks   []*tools.BackgroundTask // cached task list
-	panelBgAgents  []panelAgentEntry       // cached agent list
-	panelBgCursor  int                     // selected item index (tasks first, then agents)
-	panelBgViewing bool                    // true = viewing log of selected task
+	panelBgTasks   []*BgTask         // cached task list
+	panelBgAgents  []panelAgentEntry // cached agent list
+	panelBgCursor  int               // selected item index (tasks first, then agents)
+	panelBgViewing bool              // true = viewing log of selected task
 
 	panelBgLogLines []string // cached log lines for viewing
 
@@ -1046,12 +1050,12 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel        // back-reference to owning channel (set during Start)
-	cachedModelName string             // cached model name for View() performance
-	activeSubID     string             // active subscription ID for current session
-	todoManager     *tools.TodoManager // per-session todo persistence
-	askUserSession  string             // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
-	modelCount      int                // cached model list length for View() performance
+	channel         *CLIChannel     // back-reference to owning channel (set during Start)
+	cachedModelName string          // cached model name for View() performance
+	activeSubID     string          // active subscription ID for current session
+	todoManager     *cliTodoManager // per-session todo persistence
+	askUserSession  string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount      int             // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *protocol.TokenUsage // last known token usage from progress events
@@ -1186,11 +1190,6 @@ func newCLIModel() *cliModel {
 	}
 }
 
-// SetMsgBus 设置消息总线（用于发送用户消息）
-func (m *cliModel) SetMsgBus(msgBus *bus.MessageBus) {
-	m.msgBus = msgBus
-}
-
 // SetSubscriptionMgr sets the subscription manager for quick switch.
 func (m *cliModel) SetSubscriptionMgr(mgr SubscriptionManager) {
 	m.subscriptionMgr = mgr
@@ -1207,7 +1206,7 @@ func (m *cliModel) SetLLMSubscriber(sub LLMSubscriber) {
 
 // cliOutboundMsg 从 agent 收到的消息
 type cliOutboundMsg struct {
-	msg bus.OutboundMessage
+	msg OutboundMsg
 }
 
 // cliProgressMsg 实时进度更新消息（来自 WS eventStream 或本地 Transport）。

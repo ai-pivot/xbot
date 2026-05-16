@@ -13,6 +13,7 @@ import (
 
 	"xbot/agent/hooks"
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/llm"
 	"xbot/tools"
 )
@@ -974,9 +975,9 @@ func TestSpawnAgentAdapter(t *testing.T) {
 	var capturedMsg bus.InboundMessage
 
 	adapter := &spawnAgentAdapter{
-		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 			capturedMsg = msg
-			return &bus.OutboundMessage{
+			return &channel.OutboundMsg{
 				Content: "task completed",
 			}, nil
 		},
@@ -1048,8 +1049,8 @@ func TestSpawnAgentAdapter(t *testing.T) {
 
 func TestSpawnAgentAdapter_ErrorPropagation(t *testing.T) {
 	adapter := &spawnAgentAdapter{
-		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-			return &bus.OutboundMessage{
+		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+			return &channel.OutboundMsg{
 				Content: "partial result",
 				Error:   context.Canceled,
 			}, nil
@@ -1088,9 +1089,9 @@ func TestBuildToolContext(t *testing.T) {
 		InjectInbound: func(ch, cid, sid, content string) {
 			injectCalled = true
 		},
-		SpawnAgent: func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+		SpawnAgent: func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 			called = true
-			return &bus.OutboundMessage{Content: "ok"}, nil
+			return &channel.OutboundMsg{Content: "ok"}, nil
 		},
 
 		// 工作区 & 沙箱

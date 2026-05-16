@@ -8,13 +8,14 @@ import (
 	"strings"
 
 	"xbot/bus"
+	"xbot/channel"
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/session"
 )
 
 // handlePromptQuery 构建完整提示词并写入文件发送给用户（dryrun，不调用 LLM）
-func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
+func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	// 提取 /prompt 之后的 query 内容（先 trim 再截取，与 cmd 解析对齐）
 	trimmed := strings.TrimSpace(msg.Content)
 	query := strings.TrimSpace(trimmed[len("/prompt"):])
@@ -74,7 +75,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 		}
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: fmt.Sprintf("[prompt-dryrun.md](%s)", promptFile),
@@ -82,7 +83,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 }
 
 // handleNewSession 处理 /new 命令：先归档记忆，再清空会话
-func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
+func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	a.emitBuiltinProgress(msg.Channel, msg.ChatID, PhaseNewing)
 	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID)
 
@@ -90,7 +91,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 
 	messages, err := tenantSession.GetMessages()
 	if err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "获取会话消息失败，请重试。",
@@ -115,7 +116,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 			ArchiveAll:       true,
 		})
 		if !result.OK {
-			return &bus.OutboundMessage{
+			return &channel.OutboundMsg{
 				Channel: msg.Channel,
 				ChatID:  msg.ChatID,
 				Content: "记忆归档失败，会话未重置，请重试。",
@@ -151,7 +152,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 		}
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: "会话已重置，记忆已归档。",

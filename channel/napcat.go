@@ -584,7 +584,7 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 // ---------------------------------------------------------------------------
 
 // Send 发送消息到 NapCat
-func (n *NapCatChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (n *NapCatChannel) Send(msg OutboundMsg) (string, error) {
 	if msg.Content == "" && len(msg.Media) == 0 {
 		return "", nil
 	}

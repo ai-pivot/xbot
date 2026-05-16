@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
-	"xbot/tools"
+	"xbot/protocol"
 )
 
 // mouseZone represents a clickable region on screen.
@@ -612,7 +612,7 @@ func (m *cliModel) clickApprovalBtn(idx int) (bool, tea.Model, tea.Cmd) {
 	}
 	if idx == 0 {
 		// Approve
-		m.approvalResultCh <- tools.ApprovalResult{Approved: true}
+		m.approvalResultCh <- protocol.ApprovalResult{Approved: true}
 		m.approvalRequest = nil
 		m.panelMode = ""
 		return true, m, nil
@@ -622,7 +622,7 @@ func (m *cliModel) clickApprovalBtn(idx int) (bool, tea.Model, tea.Cmd) {
 		if m.approvalEnteringDeny {
 			// Submit deny with reason
 			reason := m.approvalDenyInput.Value()
-			m.approvalResultCh <- tools.ApprovalResult{Approved: false, DenyReason: reason}
+			m.approvalResultCh <- protocol.ApprovalResult{Approved: false, DenyReason: reason}
 			m.approvalRequest = nil
 			m.panelMode = ""
 			return true, m, nil

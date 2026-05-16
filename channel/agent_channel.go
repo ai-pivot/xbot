@@ -91,7 +91,7 @@ func (ac *AgentChannel) Stop() {
 }
 
 // Send delivers a message to the SubAgent and waits for the reply (RPC).
-func (ac *AgentChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (ac *AgentChannel) Send(msg OutboundMsg) (string, error) {
 	replyCh := make(chan string, 1)
 	req := &rpcRequest{task: msg.Content, replyCh: replyCh}
 

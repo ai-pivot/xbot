@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/session"
@@ -128,7 +129,7 @@ func (a *Agent) drainRemainingBgNotifications() {
 // handleCancelledRun persists un-saved engine messages and iteration history
 // when a Run is cancelled, then returns a minimal OutboundMessage so the
 // channel knows processing ended.
-func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) (*bus.OutboundMessage, error) {
+func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	// Save any un-persisted engine messages from the interrupted iteration.
 	for _, em := range out.EngineMessages {
 		if err := assertNoSystemPersist(em); err != nil {
@@ -167,7 +168,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 			meta["progress_history"] = iterationHistoryJSON
 		}
 	}
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel:  msg.Channel,
 		ChatID:   msg.ChatID,
 		Content:  "",
@@ -180,7 +181,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 // - Empty content with mandatory reply: send warning
 // - Empty content with optional reply: clear progress state
 // - Normal: persist assistant message, send, add reaction
-func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession, replyPolicy string) (*bus.OutboundMessage, error) {
+func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession, replyPolicy string) (*channel.OutboundMsg, error) {
 	finalContent := out.Content
 	waitingUser := out.WaitingUser
 
@@ -208,7 +209,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 				meta["progress_history"] = iterationHistoryJSON
 			}
 		}
-		waitOut := &bus.OutboundMessage{
+		waitOut := &channel.OutboundMsg{
 			Channel:     msg.Channel,
 			ChatID:      msg.ChatID,
 			Content:     finalContent,
@@ -235,7 +236,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		}).Info("Optional reply policy: no final response generated, skipping outbound")
 		// Send an empty outbound to clear TUI progress state.
 		if ch, ok := a.channelFinder(msg.Channel); ok {
-			ch.Send(bus.OutboundMessage{
+			ch.Send(channel.OutboundMsg{
 				Channel: msg.Channel,
 				ChatID:  msg.ChatID,
 				Content: "",
@@ -263,7 +264,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	}
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent, sendMeta); err != nil {
 		log.Ctx(ctx).WithError(err).Error("Failed to send final response via sendMessage")
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: finalContent,

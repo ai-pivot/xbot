@@ -33,7 +33,7 @@ func TestMockChannel_SendRecordsOutbound(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	mc := NewMockChannel("test", msgBus)
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel: "test",
 		ChatID:  "chat1",
 		Content: "hello world",
@@ -62,7 +62,7 @@ func TestMockChannel_MultipleSends(t *testing.T) {
 	mc := NewMockChannel("test", msgBus)
 
 	for i := 0; i < 5; i++ {
-		_, err := mc.Send(bus.OutboundMessage{
+		_, err := mc.Send(OutboundMsg{
 			Channel: "test",
 			Content: "msg" + string(rune('0'+i)),
 		})
@@ -88,8 +88,8 @@ func TestMockChannel_Clear(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	mc := NewMockChannel("test", msgBus)
 
-	mc.Send(bus.OutboundMessage{Channel: "test", Content: "a"})
-	mc.Send(bus.OutboundMessage{Channel: "test", Content: "b"})
+	mc.Send(OutboundMsg{Channel: "test", Content: "a"})
+	mc.Send(OutboundMsg{Channel: "test", Content: "b"})
 	if mc.OutboxCount() != 2 {
 		t.Fatalf("pre-clear: OutboxCount() = %d, want 2", mc.OutboxCount())
 	}
@@ -206,7 +206,7 @@ func TestMockChannel_WaitForOutbound(t *testing.T) {
 	// Send a message in a goroutine
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		mc.Send(bus.OutboundMessage{Channel: "test", Content: "delayed"})
+		mc.Send(OutboundMsg{Channel: "test", Content: "delayed"})
 	}()
 
 	if !mc.WaitForOutbound(2 * time.Second) {
@@ -218,10 +218,10 @@ func TestMockChannel_OutboxIsSnapshot(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	mc := NewMockChannel("test", msgBus)
 
-	mc.Send(bus.OutboundMessage{Channel: "test", Content: "first"})
+	mc.Send(OutboundMsg{Channel: "test", Content: "first"})
 	outbox1 := mc.Outbox()
 
-	mc.Send(bus.OutboundMessage{Channel: "test", Content: "second"})
+	mc.Send(OutboundMsg{Channel: "test", Content: "second"})
 	outbox2 := mc.Outbox()
 
 	// outbox1 should be a snapshot, not affected by subsequent sends

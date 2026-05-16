@@ -123,7 +123,7 @@ type RunConfig struct {
 
 	// SpawnAgent SubAgent 创建能力（nil = 不能创建子 Agent）
 	// 输入输出都是统一消息：InboundMessage → OutboundMessage
-	SpawnAgent func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error)
+	SpawnAgent func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error)
 
 	// OAuthHandler OAuth 自动触发处理器（nil = 不处理 OAuth）
 	// 返回 (content, handled)：handled=true 时用 content 替换工具错误
@@ -288,8 +288,8 @@ type TodoManagerProvider interface {
 
 // InteractiveCallbacks 主 Agent 提供给 buildToolContext 的 interactive 回调。
 type InteractiveCallbacks struct {
-	SpawnFn     func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error)
-	SendFn      func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error)
+	SpawnFn     func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channel.OutboundMsg, error)
+	SendFn      func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channel.OutboundMsg, error)
 	UnloadFn    func(ctx context.Context, roleName, instance string) error
 	InterruptFn func(ctx context.Context, roleName, instance string) error
 	InspectFn   func(ctx context.Context, roleName, instance string, tail int) (string, error)
@@ -321,7 +321,7 @@ var readOnlyTools = map[string]bool{
 // It extends OutboundMessage with internal messages needed for post-run processing
 // (e.g., SubAgent memory consolidation).
 type RunOutput struct {
-	*bus.OutboundMessage
+	*channel.OutboundMsg
 	// Messages contains the full conversation messages from the Run loop.
 	// Only populated when Memory is set in RunConfig (used for memorize after exit).
 	Messages []llm.ChatMessage
@@ -476,7 +476,7 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		// Check for cancellation before starting each iteration
 		select {
 		case <-ctx.Done():
-			out := s.buildOutput(&bus.OutboundMessage{
+			out := s.buildOutput(&channel.OutboundMsg{
 				Channel: s.cfg.Channel,
 				ChatID:  s.cfg.ChatID,
 				Content: "Agent was cancelled.",
@@ -504,7 +504,7 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 
 		// If ctx was cancelled during LLM call, exit immediately
 		if ctx.Err() != nil {
-			out := s.buildOutput(&bus.OutboundMessage{
+			out := s.buildOutput(&channel.OutboundMsg{
 				Channel: s.cfg.Channel,
 				ChatID:  s.cfg.ChatID,
 				Content: "Agent was cancelled.",
@@ -564,7 +564,7 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 			// to DB and cause API errors on the next Run.
 			// Also strips invalid assistant messages (empty content + no tool_calls).
 			s.messages = llm.SanitizeMessages(s.messages)
-			out := s.buildOutput(&bus.OutboundMessage{
+			out := s.buildOutput(&channel.OutboundMsg{
 				Channel: s.cfg.Channel,
 				ChatID:  s.cfg.ChatID,
 				Content: "Agent was cancelled.",
@@ -725,15 +725,15 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 // 这使得 SubAgentTool 零改动：它仍然调用 SubAgentManager.RunSubAgent()，
 // 而 adapter 内部完成 string ↔ InboundMessage/OutboundMessage 转换。
 type spawnAgentAdapter struct {
-	spawnFn  func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error)
+	spawnFn  func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error)
 	parentID string
 	channel  string
 	chatID   string
 	senderID string
 
 	// Interactive mode callbacks (nil = interactive not supported)
-	interactiveSpawnFn     func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error)
-	interactiveSendFn      func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error)
+	interactiveSpawnFn     func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channel.OutboundMsg, error)
+	interactiveSendFn      func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channel.OutboundMsg, error)
 	interactiveUnloadFn    func(ctx context.Context, roleName, instance string) error
 	interactiveInterruptFn func(ctx context.Context, roleName, instance string) error
 	interactiveInspectFn   func(ctx context.Context, roleName, instance string, tail int) (string, error)

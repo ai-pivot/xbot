@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/tools"
 )
 
 func TestSpawnAgentAdapter_InteractiveSpawn_NilCallback(t *testing.T) {
 	adapter := &spawnAgentAdapter{
-		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-			return &bus.OutboundMessage{Content: "ok"}, nil
+		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+			return &channel.OutboundMsg{Content: "ok"}, nil
 		},
 		parentID: "main",
 		channel:  "feishu",
@@ -62,12 +63,12 @@ func TestSpawnAgentAdapter_InteractiveUnload_NilCallback(t *testing.T) {
 func TestSpawnAgentAdapter_InteractiveSpawn_Success(t *testing.T) {
 	var capturedRole string
 	adapter := &spawnAgentAdapter{
-		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-			return &bus.OutboundMessage{Content: "spawned"}, nil
+		spawnFn: func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+			return &channel.OutboundMsg{Content: "spawned"}, nil
 		},
-		interactiveSpawnFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+		interactiveSpawnFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 			capturedRole = roleName
-			return &bus.OutboundMessage{Content: "interactive spawned"}, nil
+			return &channel.OutboundMsg{Content: "interactive spawned"}, nil
 		},
 		parentID: "main",
 		channel:  "feishu",
@@ -94,8 +95,8 @@ func TestSpawnAgentAdapter_InteractiveSpawn_Success(t *testing.T) {
 
 func TestSpawnAgentAdapter_InteractiveSend_Success(t *testing.T) {
 	adapter := &spawnAgentAdapter{
-		interactiveSendFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-			return &bus.OutboundMessage{Content: "sent " + msg.Content}, nil
+		interactiveSendFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+			return &channel.OutboundMsg{Content: "sent " + msg.Content}, nil
 		},
 		parentID: "main",
 		channel:  "feishu",

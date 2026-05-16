@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-	"xbot/bus"
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/version"
@@ -160,17 +159,16 @@ func isDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// newInbound creates a bus.InboundMessage with common fields pre-filled.
+// newInbound creates an InboundMsg with common fields pre-filled.
 // metadata can be nil.
-func (m *cliModel) newInbound(content string, metadata map[string]string) bus.InboundMessage {
-	return bus.InboundMessage{
+func (m *cliModel) newInbound(content string, metadata map[string]string) InboundMsg {
+	return InboundMsg{
 		Channel:    m.channelName,
 		SenderID:   m.senderID,
 		ChatID:     m.chatID,
 		ChatType:   "p2p",
 		Content:    content,
 		SenderName: "CLI User",
-		Time:       time.Now(),
 		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 		Metadata:   metadata,
 	}
@@ -214,38 +212,21 @@ func (m *cliModel) appendSystemStyled(content string) {
 // Uses non-blocking send to prevent the BubbleTea event loop from freezing
 // if the channel is full (e.g., agent is busy with a long LLM call).
 // Returns false if the message was dropped.
-func (m *cliModel) sendInbound(msg bus.InboundMessage) bool {
+func (m *cliModel) sendInbound(msg InboundMsg) bool {
 	if m.sendInboundFn != nil {
 		return m.sendInboundFn(msg)
 	}
-	if m.msgBus == nil {
-		return false
-	}
-	select {
-	case m.msgBus.Inbound <- msg:
-		return true
-	default:
-		// Channel full — agent is backlogged. Drop to prevent TUI freeze.
-		return false
-	}
+	return false
 }
 
 // sendInboundWait sends a message to the agent's inbound channel with a timeout.
 // Use for critical messages (ask_user answers) that MUST be delivered.
 // Returns false if the message couldn't be sent within the deadline.
-func (m *cliModel) sendInboundWait(msg bus.InboundMessage, timeout time.Duration) bool {
+func (m *cliModel) sendInboundWait(msg InboundMsg, timeout time.Duration) bool {
 	if m.sendInboundFn != nil {
 		return m.sendInboundFn(msg)
 	}
-	if m.msgBus == nil {
-		return false
-	}
-	select {
-	case m.msgBus.Inbound <- msg:
-		return true
-	case <-time.After(timeout):
-		return false
-	}
+	return false
 }
 
 // sendCancel sends a cancel request to the agent and adds a system notification.
@@ -268,10 +249,8 @@ func (m *cliModel) sendToAgent(content string) {
 	m.messages = append(m.messages, userCliMsg)
 	m.pendingUserMsg = &userCliMsg
 	m.savePendingToSessionState()
-	if m.msgBus != nil {
-		m.sendInbound(m.newInbound(content, map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}))
-		m.startAgentTurn()
-	}
+	m.sendInbound(m.newInbound(content, map[string]string{MetadataReplyPolicy: ReplyPolicyOptional}))
+	m.startAgentTurn()
 }
 
 // sendMessage 发送用户消息，返回可能需要执行的 tea.Cmd（如彩蛋动画 tick）。
@@ -316,18 +295,10 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	m.newContentHint = false
 
 	// 发送到消息总线
-	if m.msgBus != nil {
-		msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
-		msg.Media = media
-		m.sendInbound(msg)
-		m.startAgentTurn()
-	} else if m.sendInboundFn != nil {
-		// Remote mode: msgBus is nil but sendInboundFn is set
-		msg := m.newInbound(content, nil)
-		msg.Media = media
-		m.sendInbound(msg)
-		m.startAgentTurn()
-	}
+	msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
+	msg.Media = media
+	m.sendInbound(msg)
+	m.startAgentTurn()
 	return nil
 }
 
@@ -509,11 +480,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.enterSearchMode()
 
 	case "/compress":
-		// 保留本地处理（system 消息样式），发送到 msgBus 但不作为用户气泡
-		if m.msgBus != nil {
-			m.sendInbound(m.newInbound("/compress", nil))
-			m.startAgentTurn()
-		}
+		// 保留本地处理（system 消息样式），发送但不作为用户气泡
+		m.sendInbound(m.newInbound("/compress", nil))
+		m.startAgentTurn()
 
 	// --- 透传命令（发送到 agent） ---
 	case "/context":
@@ -705,7 +674,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 }
 
 // handleAgentMessage 处理 agent 回复
-func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
+func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 	// Persist pending AskUser questions BEFORE session filter, so they survive
 	// session switches and restarts. Only persist if metadata has ask_questions.
 	if msg.WaitingUser && msg.Metadata != nil && msg.Metadata["ask_questions"] != "" && msg.ChatID != "" {
@@ -934,10 +903,8 @@ func (m *cliModel) handleAgentMessage(msg bus.OutboundMessage) {
 					// Send to agent as tool result replacement (not a new user message).
 					// Use blocking send with timeout — ask_user answers are critical:
 					// if dropped, the agent hangs indefinitely waiting for a response.
-					if m.msgBus != nil {
-						if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
-							m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
-						}
+					if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
+						m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
 					}
 					// Render as tool call style (not user message)
 					m.messages = append(m.messages, cliMessage{

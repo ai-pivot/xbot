@@ -3,7 +3,6 @@ package agent
 import (
 	"xbot/bus"
 	"xbot/channel"
-	"xbot/protocol"
 )
 
 // WireCallbacks injects ALL shared callbacks into the agent.
@@ -16,9 +15,8 @@ import (
 // Callbacks that differ between local/server (e.g. ChatRenameFn, TUICallbacks)
 // should NOT go here — use individual Set* methods for those.
 func (a *Agent) WireCallbacks(
-	directSend func(msg bus.OutboundMessage) (string, error),
+	directSend func(msg channel.OutboundMsg) (string, error),
 	channelFinder func(name string) (channel.Channel, bool),
-	sessionStateHandler func(ev protocol.SessionEvent),
 	messageSender bus.MessageSender,
 	registerAgentChannel func(name string, runFn bus.RunFn) error,
 	unregisterAgentChannel func(name string),
@@ -28,7 +26,6 @@ func (a *Agent) WireCallbacks(
 	if a.settingsSvc != nil {
 		a.settingsSvc.SetChannelFinder(channelFinder)
 	}
-	a.sessionStateHandler = sessionStateHandler
 	a.messageSender = messageSender
 	a.registerAgentChannel = registerAgentChannel
 	a.unregisterAgentChannel = unregisterAgentChannel

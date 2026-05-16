@@ -11,7 +11,6 @@ import (
 	"time"
 	"xbot/protocol"
 
-	"xbot/bus"
 	"xbot/llm"
 
 	tea "charm.land/bubbletea/v2"
@@ -29,8 +28,7 @@ func isTerminal() bool {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelName(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	if got := ch.Name(); got != "cli" {
 		t.Errorf("CLIChannel.Name() = %q, want %q", got, "cli")
@@ -43,8 +41,7 @@ func TestCLIChannelStartStop(t *testing.T) {
 		t.Skip("Skipping - requires TTY")
 	}
 
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Start in goroutine since it blocks
 	startErr := make(chan error, 1)
@@ -72,11 +69,10 @@ func TestCLIChannelStartStop(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelSend(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send without starting should still work (messages buffered)
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   "Hello, CLI!",
@@ -93,11 +89,10 @@ func TestCLIChannelSend(t *testing.T) {
 }
 
 func TestCLIChannelSendPartial(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send partial (streaming) message
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   "Thinking...",
@@ -114,11 +109,10 @@ func TestCLIChannelSendPartial(t *testing.T) {
 }
 
 func TestCLIChannelSendComplete(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send complete message
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   "Final response",
@@ -135,12 +129,11 @@ func TestCLIChannelSendComplete(t *testing.T) {
 }
 
 func TestCLIChannelSendBufferOverflow(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Send more messages than buffer size to test non-blocking behavior
 	for i := 0; i < cliMsgBufSize+10; i++ {
-		msg := bus.OutboundMessage{
+		msg := OutboundMsg{
 			Content: "message",
 		}
 		_, err := ch.Send(msg)
@@ -152,8 +145,7 @@ func TestCLIChannelSendBufferOverflow(t *testing.T) {
 }
 
 func TestCLIChannelSendProgress(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// SendProgress with nil payload should not panic
 	ch.SendProgress("test_chat", nil)
@@ -172,10 +164,9 @@ func TestCLIChannelSendProgress(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelSendEmptyMessage(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   "", // empty content
@@ -192,13 +183,12 @@ func TestCLIChannelSendEmptyMessage(t *testing.T) {
 }
 
 func TestCLIChannelSendLongMessage(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// Create a very long message
 	longContent := strings.Repeat("This is a long message. ", 1000)
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   longContent,
@@ -215,10 +205,9 @@ func TestCLIChannelSendLongMessage(t *testing.T) {
 }
 
 func TestCLIChannelSendWithMetadata(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   "Message with metadata",
@@ -236,10 +225,9 @@ func TestCLIChannelSendWithMetadata(t *testing.T) {
 }
 
 func TestCLIChannelSendWithMedia(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Channel:   "cli",
 		ChatID:    "cli_user",
 		Content:   "Message with media",
@@ -269,14 +257,19 @@ func TestCLIModelInit(t *testing.T) {
 	}
 }
 
-func TestCLIModelSetMsgBus(t *testing.T) {
+func TestCLIModelSendInboundFn(t *testing.T) {
 	model := newCLIModel()
-	msgBus := bus.NewMessageBus()
+	called := false
+	model.sendInboundFn = func(msg InboundMsg) bool {
+		called = true
+		return true
+	}
 
-	model.SetMsgBus(msgBus)
-
-	if model.msgBus != msgBus {
-		t.Error("SetMsgBus() did not set msgBus correctly")
+	if !model.sendInbound(InboundMsg{Content: "test"}) {
+		t.Error("sendInbound() returned false")
+	}
+	if !called {
+		t.Error("sendInboundFn was not called")
 	}
 }
 
@@ -398,7 +391,7 @@ func TestCLIModelHandleAgentMessage(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// Test complete message
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   "Hello from agent",
 		IsPartial: false,
 	}
@@ -427,7 +420,7 @@ func TestCLIModelHandleAgentMessagePartial(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// First partial message
-	msg1 := bus.OutboundMessage{
+	msg1 := OutboundMsg{
 		Content:   "Thinking...",
 		IsPartial: true,
 	}
@@ -441,7 +434,7 @@ func TestCLIModelHandleAgentMessagePartial(t *testing.T) {
 	}
 
 	// Second partial (update)
-	msg2 := bus.OutboundMessage{
+	msg2 := OutboundMsg{
 		Content:   "Still thinking...",
 		IsPartial: true,
 	}
@@ -453,7 +446,7 @@ func TestCLIModelHandleAgentMessagePartial(t *testing.T) {
 	}
 
 	// Complete message
-	msg3 := bus.OutboundMessage{
+	msg3 := OutboundMsg{
 		Content:   "Final answer",
 		IsPartial: false,
 	}
@@ -476,7 +469,7 @@ func TestCLIModelHandleAgentMessageMultiplePartials(t *testing.T) {
 
 	// Multiple partial updates
 	for i := 0; i < 5; i++ {
-		msg := bus.OutboundMessage{
+		msg := OutboundMsg{
 			Content:   "Partial content " + string(rune('A'+i)),
 			IsPartial: true,
 		}
@@ -488,7 +481,7 @@ func TestCLIModelHandleAgentMessageMultiplePartials(t *testing.T) {
 	}
 
 	// Complete
-	model.handleAgentMessage(bus.OutboundMessage{
+	model.handleAgentMessage(OutboundMsg{
 		Content:   "Final",
 		IsPartial: false,
 	})
@@ -504,7 +497,7 @@ func TestCLIModelHandleAgentMessageWithFeishuCard(t *testing.T) {
 
 	// Test Feishu card conversion
 	cardContent := `__FEISHU_CARD__:id:{"header":{"title":{"content":"Card Title"}},"elements":[]}`
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   cardContent,
 		IsPartial: false,
 	}
@@ -525,7 +518,7 @@ func TestCLIModelHandleAgentMessageFeishuCardWithElements(t *testing.T) {
 	model.handleResize(80, 24)
 
 	cardContent := `__FEISHU_CARD__:id:{"header":{"title":{"content":"Test"}},"elements":[{"tag":"markdown","content":"**bold** text"},{"tag":"div","text":"plain"}]}`
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   cardContent,
 		IsPartial: false,
 	}
@@ -551,7 +544,7 @@ func TestSessionResetClearsMessages(t *testing.T) {
 	}
 
 	// Agent responds with session_reset metadata
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   "New session started",
 		IsPartial: false,
 		Metadata:  map[string]string{"session_reset": "true"},
@@ -578,7 +571,7 @@ func TestCLIModelHandleAgentMessageEmptyContent(t *testing.T) {
 	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
 	model.typing = true
 
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   "",
 		IsPartial: false,
 	}
@@ -602,7 +595,7 @@ func TestCLIModelHandleAgentMessageMarkdownContent(t *testing.T) {
 	model.handleResize(80, 24)
 
 	markdownContent := "# Header\n\n**Bold** and *italic* text\n\n- List item 1\n- List item 2"
-	msg := bus.OutboundMessage{
+	msg := OutboundMsg{
 		Content:   markdownContent,
 		IsPartial: false,
 	}
@@ -656,10 +649,9 @@ func TestCLIModelUpdateCtrlCWhileTyping(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.typing = true
-	model.msgBus = bus.NewMessageBus()
-
-	// Drain the inbound channel in background
-	go func() { <-model.msgBus.Inbound }()
+	model.sendInboundFn = func(msg InboundMsg) bool {
+		return true
+	}
 
 	keyMsg := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	_, _ = model.Update(keyMsg)
@@ -885,7 +877,7 @@ func TestCLIModelUpdateOutboundMsg(t *testing.T) {
 	model.handleResize(80, 24)
 
 	outMsg := cliOutboundMsg{
-		msg: bus.OutboundMessage{
+		msg: OutboundMsg{
 			Content:   "Test message",
 			IsPartial: false,
 		},
@@ -902,7 +894,7 @@ func TestCLIModelUpdateEnterKeyWithContent(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.inputReady = true
-	model.msgBus = bus.NewMessageBus()
+	model.sendInboundFn = func(msg InboundMsg) bool { return true }
 
 	// Set textarea content
 	model.textarea.SetValue("Hello world")
@@ -1291,15 +1283,13 @@ func TestCLIModelUpdateViewportContentAssistantMessage(t *testing.T) {
 func TestCLIModelSendMessage(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	msgBus := bus.NewMessageBus()
-	model.msgBus = msgBus
 
-	// Start goroutine to receive message
-	received := make(chan bus.InboundMessage, 1)
-	go func() {
-		msg := <-msgBus.Inbound
+	// Capture inbound message via sendInboundFn
+	received := make(chan InboundMsg, 1)
+	model.sendInboundFn = func(msg InboundMsg) bool {
 		received <- msg
-	}()
+		return true
+	}
 
 	model.sendMessage("Hello agent")
 
@@ -1322,10 +1312,10 @@ func TestCLIModelSendMessage(t *testing.T) {
 	}
 }
 
-func TestCLIModelSendMessageNoMsgBus(t *testing.T) {
+func TestCLIModelSendMessageNoSendInboundFn(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	// msgBus is nil
+	// sendInboundFn is nil
 
 	model.sendMessage("Hello agent")
 
@@ -1338,7 +1328,7 @@ func TestCLIModelSendMessageNoMsgBus(t *testing.T) {
 func TestCLIModelSendMessageEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.msgBus = bus.NewMessageBus()
+	model.sendInboundFn = func(msg InboundMsg) bool { return true }
 
 	model.sendMessage("")
 
@@ -1681,8 +1671,7 @@ func TestCLIModelResetProgressState(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIChannelImplementsChannelInterface(t *testing.T) {
-	msgBus := bus.NewMessageBus()
-	ch := NewCLIChannel(&CLIChannelConfig{}, msgBus)
+	ch := NewCLIChannel(&CLIChannelConfig{})
 
 	// This will fail to compile if CLIChannel doesn't implement Channel
 	var _ Channel = ch
@@ -1694,7 +1683,7 @@ func TestCLIChannelImplementsChannelInterface(t *testing.T) {
 
 func TestCLIChannelConfigEmpty(t *testing.T) {
 	cfg := CLIChannelConfig{}
-	ch := NewCLIChannel(&cfg, bus.NewMessageBus())
+	ch := NewCLIChannel(&cfg)
 
 	if ch == nil {
 		t.Error("NewCLIChannel with empty config should not return nil")

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"xbot/agent/hooks"
-	"xbot/bus"
+	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
 
@@ -346,8 +346,8 @@ func (s *runState) setupRetryNotify(ctx context.Context) context.Context {
 }
 
 // buildOutput creates a RunOutput from an OutboundMessage.
-func (s *runState) buildOutput(ob *bus.OutboundMessage) *RunOutput {
-	out := &RunOutput{OutboundMessage: ob}
+func (s *runState) buildOutput(ob *channel.OutboundMsg) *RunOutput {
+	out := &RunOutput{OutboundMsg: ob}
 	if s.cfg.Memory != nil {
 		out.Messages = s.messages
 	}
@@ -409,7 +409,7 @@ func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 	}
 	if systemCount != 1 {
 		log.Ctx(ctx).WithField("system_count", systemCount).Error("assert: LLM messages must have exactly one system message")
-		return s.buildOutput(&bus.OutboundMessage{
+		return s.buildOutput(&channel.OutboundMsg{
 			Channel: s.cfg.Channel,
 			ChatID:  s.cfg.ChatID,
 			Content: "内部错误：system 消息数量异常",
@@ -580,7 +580,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 		})
 	}
 	if ctx.Err() != nil {
-		return s.buildOutput(&bus.OutboundMessage{
+		return s.buildOutput(&channel.OutboundMsg{
 			Channel:   s.cfg.Channel,
 			ChatID:    s.cfg.ChatID,
 			Content:   "Agent was cancelled.",
@@ -602,7 +602,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 			"agent_id":  s.cfg.AgentID,
 			"iteration": iteration + 1,
 		}).Warnf("LLM failed, returning partial result: %v", err)
-		return s.buildOutput(&bus.OutboundMessage{
+		return s.buildOutput(&channel.OutboundMsg{
 			Channel:   s.cfg.Channel,
 			ChatID:    s.cfg.ChatID,
 			Content:   partialContent + "\n\n> ⚠️ LLM 调用失败 (" + summarizeRetryError(err) + ")，以上为部分结果。",
@@ -610,7 +610,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 		})
 	}
 	userErrMsg := fmt.Sprintf("❌ LLM 服务调用失败 (%s)，请稍后重试。", summarizeRetryError(err))
-	return s.buildOutput(&bus.OutboundMessage{
+	return s.buildOutput(&channel.OutboundMsg{
 		Channel:   s.cfg.Channel,
 		ChatID:    s.cfg.ChatID,
 		Content:   userErrMsg,
@@ -694,7 +694,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			}
 
 			// Phase 3: All recovery attempts failed
-			out := s.buildOutput(&bus.OutboundMessage{
+			out := s.buildOutput(&channel.OutboundMsg{
 				Channel:   s.cfg.Channel,
 				ChatID:    s.cfg.ChatID,
 				Content:   "⚠️ Context window exceeded. Use /new to start a new conversation.",
@@ -745,7 +745,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			}
 		}
 
-		out := s.buildOutput(&bus.OutboundMessage{
+		out := s.buildOutput(&channel.OutboundMsg{
 			Channel:     s.cfg.Channel,
 			ChatID:      s.cfg.ChatID,
 			Content:     output,
@@ -1229,7 +1229,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// Check if any tool marked as waiting for user response
 	if s.waitingUser {
 		log.Ctx(ctx).Info("Tool is waiting for user response, ending loop without additional reply")
-		outMsg := &bus.OutboundMessage{
+		outMsg := &channel.OutboundMsg{
 			Channel:     s.cfg.Channel,
 			ChatID:      s.cfg.ChatID,
 			ToolsUsed:   s.toolsUsed,
@@ -1359,7 +1359,7 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 
 // buildMaxIterOutput creates the output for when max iterations is reached.
 func (s *runState) buildMaxIterOutput() *RunOutput {
-	return s.buildOutput(&bus.OutboundMessage{
+	return s.buildOutput(&channel.OutboundMsg{
 		Channel:   s.cfg.Channel,
 		ChatID:    s.cfg.ChatID,
 		Content:   "已达到最大迭代次数，请重新描述你的需求。",

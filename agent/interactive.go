@@ -313,7 +313,7 @@ func (a *Agent) SpawnInteractiveSession(
 	ctx context.Context,
 	roleName string,
 	msg bus.InboundMessage,
-) (*bus.OutboundMessage, error) {
+) (*channelpkg.OutboundMsg, error) {
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	instance := msg.Metadata["instance_id"]
 	background := msg.Metadata["background"] == "true"
@@ -337,22 +337,20 @@ func (a *Agent) SpawnInteractiveSession(
 		placeholder.parentKey = parentKey
 	}
 	if _, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
-		return &bus.OutboundMessage{
+		return &channelpkg.OutboundMsg{
 			Content: fmt.Sprintf("interactive session for role %q already exists, use action=\"send\" to continue or action=\"unload\" to end it", roleName),
 		}, nil
 	}
 
 	// Emit subagent_started event for instant sidebar push.
-	if a.sessionStateHandler != nil {
-		a.sessionStateHandler(protocol.SessionEvent{
-			Channel:  originChannel,
-			ChatID:   originChatID,
-			Action:   "subagent_started",
-			Role:     roleName,
-			Instance: instance,
-			ParentID: originChatID,
-		})
-	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel:  originChannel,
+		ChatID:   originChatID,
+		Action:   "subagent_started",
+		Role:     roleName,
+		Instance: instance,
+		ParentID: originChatID,
+	})
 
 	// --- 阶段 2：锁外构建 config（不需要锁） ---
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
@@ -362,39 +360,37 @@ func (a *Agent) SpawnInteractiveSession(
 		a.interactiveSubAgents.Delete(key)
 
 		// Emit subagent_stopped event for instant sidebar push.
-		if a.sessionStateHandler != nil {
-			// Parse key to extract channel, chatID, role, instance.
-			// key format: "channel:chatID/roleName[:instance]"
-			parts := strings.SplitN(key, ":", 2)
-			chanPart := ""
-			rest := key
-			if len(parts) == 2 {
-				chanPart = parts[0]
-				rest = parts[1]
+		// Parse key to extract channel, chatID, role, instance.
+		// key format: "channel:chatID/roleName[:instance]"
+		parts := strings.SplitN(key, ":", 2)
+		chanPart := ""
+		rest := key
+		if len(parts) == 2 {
+			chanPart = parts[0]
+			rest = parts[1]
+		}
+		chatIDAndRole := strings.SplitN(rest, "/", 2)
+		chatIDPart := rest
+		rolePart := ""
+		instPart := ""
+		if len(chatIDAndRole) == 2 {
+			chatIDPart = chatIDAndRole[0]
+			roleAndInst := chatIDAndRole[1]
+			riParts := strings.SplitN(roleAndInst, ":", 2)
+			rolePart = riParts[0]
+			if len(riParts) > 1 {
+				instPart = riParts[1]
 			}
-			chatIDAndRole := strings.SplitN(rest, "/", 2)
-			chatIDPart := rest
-			rolePart := ""
-			instPart := ""
-			if len(chatIDAndRole) == 2 {
-				chatIDPart = chatIDAndRole[0]
-				roleAndInst := chatIDAndRole[1]
-				riParts := strings.SplitN(roleAndInst, ":", 2)
-				rolePart = riParts[0]
-				if len(riParts) > 1 {
-					instPart = riParts[1]
-				}
-			}
-			a.sessionStateHandler(protocol.SessionEvent{
-				Channel:  chanPart,
-				ChatID:   chatIDPart,
-				Action:   "subagent_stopped",
-				Role:     rolePart,
-				Instance: instPart,
-				ParentID: chatIDPart,
-			})
-		} // 清理占位符
-		return &bus.OutboundMessage{Content: err.Error(), Error: err}, nil
+		}
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:  chanPart,
+			ChatID:   chatIDPart,
+			Action:   "subagent_stopped",
+			Role:     rolePart,
+			Instance: instPart,
+			ParentID: chatIDPart,
+		}) // 清理占位符
+		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
 	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
 
@@ -685,7 +681,7 @@ func (a *Agent) SpawnInteractiveSession(
 			"background": true,
 		}).Info("Interactive session spawned in background")
 
-		return &bus.OutboundMessage{
+		return &channelpkg.OutboundMsg{
 			Content: fmt.Sprintf("Interactive sub-agent %q (instance=%q) started in background. Use action=\"inspect\" to check progress, action=\"send\" to send messages, action=\"interrupt\" to interrupt, or action=\"unload\" to terminate.", roleName, instance),
 		}, nil
 	}
@@ -710,7 +706,7 @@ func (a *Agent) SpawnInteractiveSession(
 		}
 		content += fmt.Sprintf("\n\n> ❌ SubAgent Error: %v", out.Error)
 		out.Content = content
-		return out.OutboundMessage, nil
+		return out.OutboundMsg, nil
 	}
 
 	// --- 阶段 4：替换占位符为完整 session 数据 ---
@@ -774,7 +770,7 @@ func (a *Agent) SpawnInteractiveSession(
 		"messages": len(ia.messages),
 	}).Info("Interactive session spawned")
 
-	return out.OutboundMessage, nil
+	return out.OutboundMsg, nil
 }
 
 // SendToInteractiveSession 向已有的 interactive session 发送新消息。
@@ -782,7 +778,7 @@ func (a *Agent) SendToInteractiveSession(
 	ctx context.Context,
 	roleName string,
 	msg bus.InboundMessage,
-) (*bus.OutboundMessage, error) {
+) (*channelpkg.OutboundMsg, error) {
 	originChannel, originChatID, _ := resolveOriginIDs(msg)
 	instance := msg.Metadata["instance_id"]
 
@@ -790,7 +786,7 @@ func (a *Agent) SendToInteractiveSession(
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
-		return &bus.OutboundMessage{
+		return &channelpkg.OutboundMsg{
 			Content: fmt.Sprintf("no active interactive session for role %q, use interactive=true to create one first", roleName),
 		}, nil
 	}
@@ -798,7 +794,7 @@ func (a *Agent) SendToInteractiveSession(
 	ia, ok := val.(*interactiveAgent)
 	if !ok || ia == nil {
 		a.interactiveSubAgents.Delete(key)
-		return &bus.OutboundMessage{
+		return &channelpkg.OutboundMsg{
 			Content: fmt.Sprintf("corrupted interactive session for role %q", roleName),
 		}, nil
 	}
@@ -809,14 +805,14 @@ func (a *Agent) SendToInteractiveSession(
 	// Guard: reject send while a background Run is in progress
 	if ia.running {
 		ia.mu.Unlock()
-		return &bus.OutboundMessage{
+		return &channelpkg.OutboundMsg{
 			Content: fmt.Sprintf("interactive session for role %q (instance=%q) is currently running. Use action=\"interrupt\" first, or wait for it to finish, then send.", roleName, instance),
 		}, nil
 	}
 
 	if ia.cfg == nil {
 		ia.mu.Unlock()
-		return &bus.OutboundMessage{
+		return &channelpkg.OutboundMsg{
 			Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
 		}, nil
 	}
@@ -916,7 +912,7 @@ func (a *Agent) SendToInteractiveSession(
 		}
 		content += fmt.Sprintf("\n\n> ❌ SubAgent Error: %v", out.Error)
 		out.Content = content
-		return out.OutboundMessage, nil
+		return out.OutboundMsg, nil
 	}
 
 	// 追加新增对话消息到 ia.messages
@@ -968,7 +964,7 @@ func (a *Agent) SendToInteractiveSession(
 		}
 	}
 
-	return out.OutboundMessage, nil
+	return out.OutboundMsg, nil
 }
 
 // InterruptInteractiveSession cancels the current running iteration of an interactive session.

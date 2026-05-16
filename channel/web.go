@@ -412,7 +412,7 @@ func (wc *WebChannel) Stop() {
 
 // Send 发送消息到 Web 客户端（非阻塞）
 
-func (wc *WebChannel) Send(msg bus.OutboundMessage) (string, error) {
+func (wc *WebChannel) Send(msg OutboundMsg) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	content := msg.Content

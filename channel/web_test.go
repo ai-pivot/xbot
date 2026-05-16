@@ -383,7 +383,7 @@ func TestSendToWebSocket(t *testing.T) {
 	}
 
 	// Send a message to the client
-	msgID, err := wc.Send(bus.OutboundMessage{
+	msgID, err := wc.Send(OutboundMsg{
 		Channel: "web",
 		ChatID:  "web-1", // matches senderID format
 		Content: "Hello from agent!",
@@ -599,7 +599,7 @@ func TestConcurrentSends(t *testing.T) {
 			// Send must not block — this is the key invariant
 			done := make(chan string, 1)
 			go func() {
-				id, _ := wc.Send(bus.OutboundMessage{
+				id, _ := wc.Send(OutboundMsg{
 					Channel: "web",
 					ChatID:  "web-1",
 					Content: "concurrent msg",

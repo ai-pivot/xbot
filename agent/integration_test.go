@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/llm"
 	"xbot/memory"
 	"xbot/tools"
@@ -966,9 +967,9 @@ func TestIntegration_SubAgent_BasicLifecycle(t *testing.T) {
 
 	cfg := env.buildRunConfig(messages)
 	cfg.MaxIterations = 10
-	cfg.SpawnAgent = func(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+	cfg.SpawnAgent = func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 		atomic.AddInt32(&spawnCalled, 1)
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "Code looks good. No issues found.",

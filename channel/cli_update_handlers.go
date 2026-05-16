@@ -10,7 +10,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	log "xbot/logger"
-	"xbot/tools"
 )
 
 // handleKeyPress processes key press events in the main update loop.
@@ -615,8 +614,8 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 	// turn ending with all done (endAgentTurn), or explicit todo_write([]).
 }
 
-// persistTodosToManager converts m.todos to tools.TodoItem and writes to the
-// CLI-side TodoManager for cross-turn and cross-session persistence.
+// persistTodosToManager writes m.todos to the CLI-side todoManager
+// for cross-turn and cross-session persistence.
 func (m *cliModel) persistTodosToManager() {
 	if m.todoManager == nil {
 		return
@@ -629,10 +628,9 @@ func (m *cliModel) persistTodosToManager() {
 		m.todoManager.SetTodos(key, nil)
 		return
 	}
-	items := make([]tools.TodoItem, len(m.todos))
-	for i, t := range m.todos {
-		items[i] = tools.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
-	}
+	// m.todos is already []protocol.TodoItem, pass directly.
+	items := make([]protocol.TodoItem, len(m.todos))
+	copy(items, m.todos)
 	m.todoManager.SetTodos(key, items)
 }
 
@@ -1292,6 +1290,11 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
 	log.WithField("count", len(newMessages)).Info("History reloaded after compression")
+
+	// Refresh token state so the context bar updates immediately after compression.
+	// Without this, the bar stays at the pre-compression (high) value or nil
+	// until the next progress event arrives.
+	m.refreshTokenStateAfterReload()
 }
 
 // handleSplashTick processes splash animation frames.
@@ -1896,4 +1899,34 @@ func (m *cliModel) handleShiftDown() (tea.Model, []tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+// refreshTokenStateAfterReload fetches the latest token state via RPC
+// after a history reload (compression). Pushes the result through asyncCh
+// so the context bar updates immediately without waiting for the next
+// progress event.
+func (m *cliModel) refreshTokenStateAfterReload() {
+	tokenFn := m.channel.config.GetTokenStateFn
+	if tokenFn == nil {
+		return
+	}
+	ch := m.channel
+	chatID := m.chatID
+	channelName := m.channelName
+	go func() {
+		prompt, completion := tokenFn(channelName, chatID)
+		if prompt <= 0 && completion <= 0 {
+			return
+		}
+		msg := cliTokenRefreshMsg{
+			channelName:     channelName,
+			chatID:          chatID,
+			tokenPrompt:     prompt,
+			tokenCompletion: completion,
+		}
+		select {
+		case ch.asyncCh <- msg:
+		default:
+		}
+	}()
 }

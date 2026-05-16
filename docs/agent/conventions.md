@@ -100,8 +100,23 @@ uses StartColumn+Width (down) and StartColumn-1 (up).
 ## Local / Remote Unification
 
 CLI operates in two deployment modes:
-- **Local**: Backend runs in-process, Transport is function calls (zero overhead)
-- **Remote**: Backend runs on xbot-server, Transport is WebSocket RPC
+- **Local**: Backend runs in-process, Transport is `ChannelTransport` (direct function calls to RPCTable, zero overhead)
+- **Remote**: Backend runs on xbot-server, Transport is `RemoteTransport` (WebSocket RPC)
+
+**Architecture (post Transport refactor)**:
+
+```
+Transport (2 methods: Call + Close) — pure transmission layer
+  ├── ChannelTransport: in-process → RPCTable.Dispatch
+  └── RemoteTransport: WebSocket RPC to xbot-server
+
+AgentRunner + EventRouter + CallbackRegistry — lifecycle separation
+  ├── LocalLifecycle: in-process (agent/bus/eventCh)
+  └── RemoteTransport: also implements all three interfaces
+
+DirectBackend: replaces old localTransport handler table
+  → calls Agent methods directly, used by RPCTable in server-side handlers
+```
 
 **Principle**: All CLI code goes through `AgentBackend` interface. The Transport
 layer handles routing. CLI should NOT have `IsRemote()` branches except for
@@ -120,7 +135,7 @@ is unified through Backend methods that route via Transport automatically.
 
 **When adding new CLI functionality**:
 1. Add method to `AgentBackend` interface (agent/backend.go)
-2. Implement in Backend (agent/backend_impl.go) using `CallRPC`
-3. Add `localTransport` handler (agent/local_transport.go)
-4. Add server RPC handler (serverapp/rpc_table.go)
+2. Implement in Backend (agent/backend_impl.go) using `CallRPC` (auto-routes via Transport)
+3. Add `DirectBackend` method (agent/direct_backend.go) for local mode
+4. Add server RPC handler (serverapp/rpc_table.go) — single truth source for both modes
 5. No IsRemote() needed in CLI code

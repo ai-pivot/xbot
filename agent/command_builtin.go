@@ -21,7 +21,7 @@ func (c *newCmd) Aliases() []string   { return nil }
 func (c *newCmd) Match(s string) bool { return strings.ToLower(s) == "/new" }
 func (c *newCmd) Concurrent() bool    { return false } // mutates session
 
-func (c *newCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *newCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
 		return nil, err
@@ -38,12 +38,12 @@ func (c *versionCmd) Aliases() []string   { return nil }
 func (c *versionCmd) Match(s string) bool { return strings.ToLower(s) == "/version" }
 func (c *versionCmd) Concurrent() bool    { return true } // stateless
 
-func (c *versionCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *versionCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	info := version.Info()
 	if version.Commit != "" {
 		info += "\ncommit: " + version.Commit
 	}
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: info,
@@ -59,8 +59,8 @@ func (c *helpCmd) Aliases() []string   { return nil }
 func (c *helpCmd) Match(s string) bool { return strings.ToLower(s) == "/help" }
 func (c *helpCmd) Concurrent() bool    { return true } // stateless
 
-func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-	return &bus.OutboundMessage{
+func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: "xbot 命令:\n" +
@@ -93,7 +93,7 @@ func (c *promptCmd) Match(s string) bool {
 }
 func (c *promptCmd) Concurrent() bool { return true } // read-only snapshot, no real-time requirement
 
-func (c *promptCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *promptCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
 		return nil, err
@@ -113,7 +113,7 @@ func (c *setLLMCmd) Match(s string) bool {
 }
 func (c *setLLMCmd) Concurrent() bool { return false } // mutates LLM config
 
-func (c *setLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *setLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleSetLLM(ctx, msg)
 }
 
@@ -126,7 +126,7 @@ func (c *getLLMCmd) Aliases() []string   { return nil }
 func (c *getLLMCmd) Match(s string) bool { return strings.ToLower(s) == "/llm" }
 func (c *getLLMCmd) Concurrent() bool    { return true } // read-only
 
-func (c *getLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *getLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleGetLLM(ctx, msg)
 }
 
@@ -139,7 +139,7 @@ func (c *unsetLLMCmd) Aliases() []string   { return nil }
 func (c *unsetLLMCmd) Match(s string) bool { return strings.ToLower(s) == "/unset-llm" }
 func (c *unsetLLMCmd) Concurrent() bool    { return false } // mutates LLM config
 
-func (c *unsetLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *unsetLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleUnsetLLM(ctx, msg)
 }
 
@@ -152,7 +152,7 @@ func (c *compressCmd) Aliases() []string   { return nil }
 func (c *compressCmd) Match(s string) bool { return strings.ToLower(s) == "/compress" }
 func (c *compressCmd) Concurrent() bool    { return false } // mutates session
 
-func (c *compressCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *compressCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
 		return nil, err
@@ -172,7 +172,7 @@ func (c *contextInfoCmd) Match(s string) bool {
 }
 func (c *contextInfoCmd) Concurrent() bool { return true } // read-only
 
-func (c *contextInfoCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *contextInfoCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func (c *contextModeCmd) Match(s string) bool {
 }
 func (c *contextModeCmd) Concurrent() bool { return false } // mutates runtime mode
 
-func (c *contextModeCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *contextModeCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	modeStr := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(content), "/context mode"))
 	return a.handleContextMode(ctx, msg, modeStr)
@@ -207,7 +207,7 @@ func (c *modelsCmd) Aliases() []string   { return nil }
 func (c *modelsCmd) Match(s string) bool { return strings.ToLower(s) == "/models" }
 func (c *modelsCmd) Concurrent() bool    { return true } // read-only
 
-func (c *modelsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *modelsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleModels(ctx, msg)
 }
 
@@ -223,7 +223,7 @@ func (c *setModelCmd) Match(s string) bool {
 }
 func (c *setModelCmd) Concurrent() bool { return false } // mutates LLM config
 
-func (c *setModelCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *setModelCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleSetModel(ctx, msg)
 }
 
@@ -239,7 +239,7 @@ func (c *bangCmd) Match(s string) bool {
 }
 func (c *bangCmd) Concurrent() bool { return true } // runs in sandbox, no session mutation
 
-func (c *bangCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *bangCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	cmd, _ := isBangCommand(msg.Content)
 	return a.handleBangCommand(ctx, msg, cmd)
 }
@@ -256,26 +256,26 @@ func (c *publishCmd) Match(s string) bool {
 }
 func (c *publishCmd) Concurrent() bool { return false }
 
-func (c *publishCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *publishCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	args := strings.TrimPrefix(strings.ToLower(content), "/publish ")
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/publish skill|agent <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/publish skill|agent <name>`"}, nil
 	}
 	entryType := parts[0]
 	name := parts[1]
 	if entryType != "skill" && entryType != "agent" {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "类型必须是 skill 或 agent"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "类型必须是 skill 或 agent"}, nil
 	}
 	if a.registryManager == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 	err := a.registryManager.Publish(entryType, name, msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("发布失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("发布失败：%v", err)}, nil
 	}
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已发布", entryType, name)}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已发布", entryType, name)}, nil
 }
 
 // --- /unpublish ---
@@ -290,23 +290,23 @@ func (c *unpublishCmd) Match(s string) bool {
 }
 func (c *unpublishCmd) Concurrent() bool { return false }
 
-func (c *unpublishCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *unpublishCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	args := strings.TrimPrefix(strings.ToLower(content), "/unpublish ")
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/unpublish skill|agent <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/unpublish skill|agent <name>`"}, nil
 	}
 	entryType := parts[0]
 	name := parts[1]
 	if a.registryManager == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 	err := a.registryManager.Unpublish(entryType, name, msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("取消发布失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("取消发布失败：%v", err)}, nil
 	}
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已取消发布", entryType, name)}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已取消发布", entryType, name)}, nil
 }
 
 // --- /browse ---
@@ -321,21 +321,21 @@ func (c *browseCmd) Match(s string) bool {
 }
 func (c *browseCmd) Concurrent() bool { return true }
 
-func (c *browseCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *browseCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	entryType := strings.TrimPrefix(strings.ToLower(content), "/browse ")
 	entryType = strings.TrimSpace(entryType)
 
 	if a.registryManager == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 
 	entries, err := a.registryManager.Browse(entryType, 20, 0)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("浏览失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("浏览失败：%v", err)}, nil
 	}
 	if len(entries) == 0 {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "🏪 市场暂无公开的 Skill/Agent"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "🏪 市场暂无公开的 Skill/Agent"}, nil
 	}
 
 	var sb strings.Builder
@@ -351,7 +351,7 @@ func (c *browseCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessag
 		}
 		fmt.Fprintf(&sb, "   安装：`/install %s %d`\n\n", e.Type, e.ID)
 	}
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
 }
 
 // --- /install ---
@@ -366,26 +366,26 @@ func (c *installCmd) Match(s string) bool {
 }
 func (c *installCmd) Concurrent() bool { return false }
 
-func (c *installCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *installCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	args := strings.TrimPrefix(strings.ToLower(content), "/install ")
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/install skill|agent <id>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/install skill|agent <id>`"}, nil
 	}
 	entryType := parts[0]
 	id, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "ID 必须是数字"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "ID 必须是数字"}, nil
 	}
 	if a.registryManager == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 	err = a.registryManager.Install(entryType, id, msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
 	}
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s #%d 已安装", entryType, id)}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s #%d 已安装", entryType, id)}, nil
 }
 
 // --- /uninstall ---
@@ -400,23 +400,23 @@ func (c *uninstallCmd) Match(s string) bool {
 }
 func (c *uninstallCmd) Concurrent() bool { return false }
 
-func (c *uninstallCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *uninstallCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	args := strings.TrimPrefix(strings.ToLower(content), "/uninstall ")
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/uninstall skill|agent <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/uninstall skill|agent <name>`"}, nil
 	}
 	entryType := parts[0]
 	name := parts[1]
 	if a.registryManager == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 	err := a.registryManager.Uninstall(entryType, name, msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("卸载失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("卸载失败：%v", err)}, nil
 	}
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已卸载", entryType, name)}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已卸载", entryType, name)}, nil
 }
 
 // --- /my ---
@@ -431,13 +431,13 @@ func (c *myCmd) Match(s string) bool {
 }
 func (c *myCmd) Concurrent() bool { return true }
 
-func (c *myCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *myCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	content := strings.TrimSpace(msg.Content)
 	subject := strings.TrimPrefix(strings.ToLower(content), "/my ")
 	subject = strings.TrimSpace(subject)
 
 	if a.registryManager == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 
 	entryType := ""
@@ -447,12 +447,12 @@ func (c *myCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (
 	case "agents":
 		entryType = "agent"
 	default:
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/my skills` 或 `/my agents`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/my skills` 或 `/my agents`"}, nil
 	}
 
 	published, installed, err := a.registryManager.ListMy(msg.SenderID, entryType)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("查询失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("查询失败：%v", err)}, nil
 	}
 
 	var sb strings.Builder
@@ -478,7 +478,7 @@ func (c *myCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (
 		fmt.Fprintf(&sb, "暂无数据。使用 `/browse %s` 浏览市场。\n", subject)
 	}
 
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
 }
 
 // --- /settings ---
@@ -493,13 +493,13 @@ func (c *settingsCmd) Match(s string) bool {
 }
 func (c *settingsCmd) Concurrent() bool { return true }
 
-func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	if msg.ChatType == "group" {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 设置仅限私聊使用，请私信我发送 /settings"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 设置仅限私聊使用，请私信我发送 /settings"}, nil
 	}
 
 	if a.settingsSvc == nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "SettingsService 未初始化"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "SettingsService 未初始化"}, nil
 	}
 
 	content := strings.TrimSpace(msg.Content)
@@ -510,7 +510,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	if strings.HasPrefix(args, "set ") {
 		setParts := strings.Fields(strings.TrimPrefix(args, "set "))
 		if len(setParts) < 2 {
-			return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/settings set <key> <value>`"}, nil
+			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/settings set <key> <value>`"}, nil
 		}
 		key := setParts[0]
 		value := strings.Join(setParts[1:], " ")
@@ -530,7 +530,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 				for _, def := range schema {
 					validKeys = append(validKeys, def.Key)
 				}
-				return &bus.OutboundMessage{
+				return &channel.OutboundMsg{
 					Channel: msg.Channel, ChatID: msg.ChatID,
 					Content: fmt.Sprintf("未知设置项: %q\n可用设置项: %s", key, strings.Join(validKeys, ", ")),
 				}, nil
@@ -539,9 +539,9 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 
 		err := a.settingsSvc.SetSetting(msg.Channel, msg.SenderID, key, value)
 		if err != nil {
-			return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("设置失败：%v", err)}, nil
+			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("设置失败：%v", err)}, nil
 		}
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s = %s", key, value)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s = %s", key, value)}, nil
 	}
 
 	// /settings (list) — 检测飞书渠道使用交互式卡片，其他渠道使用 markdown
@@ -550,13 +550,13 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 			if fc, ok := ch.(*channel.FeishuChannel); ok {
 				card, err := fc.BuildSettingsCard(ctx, msg.SenderID, msg.ChatID, "basic")
 				if err != nil {
-					return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("构建设置卡片失败：%v", err)}, nil
+					return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("构建设置卡片失败：%v", err)}, nil
 				}
 				cardJSON, err := json.Marshal(card)
 				if err != nil {
-					return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("序列化设置卡片失败：%v", err)}, nil
+					return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("序列化设置卡片失败：%v", err)}, nil
 				}
-				return &bus.OutboundMessage{
+				return &channel.OutboundMsg{
 					Channel: msg.Channel,
 					ChatID:  msg.ChatID,
 					Content: "__FEISHU_CARD__::" + string(cardJSON),
@@ -568,9 +568,9 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	// Fallback: 非 Feishu 渠道使用 markdown UI
 	ui, err := a.settingsSvc.GetSettingsUI(msg.Channel, msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("获取设置失败：%v", err)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("获取设置失败：%v", err)}, nil
 	}
-	return &bus.OutboundMessage{Channel: msg.Channel, ChatID: msg.ChatID, Content: ui}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: ui}, nil
 }
 
 // --- /menu ---
@@ -582,8 +582,8 @@ func (c *menuCmd) Aliases() []string   { return nil }
 func (c *menuCmd) Match(s string) bool { return strings.ToLower(s) == "/menu" }
 func (c *menuCmd) Concurrent() bool    { return true }
 
-func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
-	return &bus.OutboundMessage{
+func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: "## 🏠 主菜单\n\n" +

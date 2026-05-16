@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"xbot/bus"
 	"xbot/protocol"
 )
 
@@ -35,11 +34,11 @@ func NewChannelCliChannel(eventCh chan<- protocol.WSMessage) *ChannelCliChannel 
 
 // Channel interface
 
-func (c *ChannelCliChannel) Name() string                                    { return "cli" }
-func (c *ChannelCliChannel) Start() error                                    { return nil }
-func (c *ChannelCliChannel) Stop()                                           {}
-func (c *ChannelCliChannel) SetChatID(string)                                {}
-func (c *ChannelCliChannel) SetSendInboundFn(func(bus.InboundMessage) error) {}
+func (c *ChannelCliChannel) Name() string                            { return "cli" }
+func (c *ChannelCliChannel) Start() error                            { return nil }
+func (c *ChannelCliChannel) Stop()                                   {}
+func (c *ChannelCliChannel) SetChatID(string)                        {}
+func (c *ChannelCliChannel) SetSendInboundFn(func(InboundMsg) error) {}
 
 // ProgressSender is implemented by channels that can send progress events
 // to remote or in-process clients (RemoteCLIChannel, ChannelCliChannel).
@@ -49,7 +48,14 @@ type ProgressSender interface {
 	SendStreamContent(chatID, content, reasoning string)
 }
 
-func (c *ChannelCliChannel) Send(msg bus.OutboundMessage) (string, error) {
+// SessionStateSender is implemented by channels that can receive session
+// state change events (e.g. busy/idle, subagent lifecycle, rename).
+// Used by Agent internally to push state without external callbacks.
+type SessionStateSender interface {
+	SendSessionState(ev protocol.SessionEvent)
+}
+
+func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
 	wsMsg := protocol.WSMessage{
 		Type:    protocol.MsgTypeText,
 		TS:      time.Now().Unix(),

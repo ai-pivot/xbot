@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"xbot/bus"
+	"xbot/channel"
 	"xbot/storage/sqlite"
 )
 
@@ -99,10 +100,10 @@ func parseSetLLMArgs(args string) []string {
 	return parts
 }
 
-func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// Security: warn in group chat to avoid exposing API key
 	if msg.ChatType == "group" {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "⚠️ 安全提醒：此命令涉及 API Key 等敏感信息，请通过私聊发送 /set-llm，避免在群聊中暴露密钥。",
@@ -114,7 +115,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 	args := strings.TrimSpace(trimmed[len("/set-llm"):])
 
 	if args == "" {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: setLLMUsage,
@@ -180,7 +181,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 
 	// Validate required fields
 	if cfg.Provider == "" || cfg.BaseURL == "" || cfg.APIKey == "" {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("错误: 必须提供 provider, base_url 和 api_key 参数。\n\n%s", setLLMUsage),
@@ -195,7 +196,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 
 	// Save configuration
 	if err := a.llmConfigSvc.SetConfig(cfg); err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("保存配置失败: %v", err),
@@ -221,7 +222,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 		thinkingModeStr = "\n- Thinking Mode: auto"
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: fmt.Sprintf("LLM 配置已保存:\n- Provider: %s\n- Base URL: %s\n- API Key: %s\n- Model: %s%s%s%s",
@@ -230,10 +231,10 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 }
 
 // handleGetLLM handles /llm command to show current user's LLM configuration
-func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	cfg, err := a.llmConfigSvc.GetConfig(msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("查询配置失败: %v", err),
@@ -241,7 +242,7 @@ func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 	}
 
 	if cfg == nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "当前未配置自定义 LLM，使用系统默认配置。\n\n使用 /set-llm 命令设置你的专属 LLM 配置。",
@@ -261,7 +262,7 @@ func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.
 		extraFields += "\n- Thinking Mode: auto"
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: fmt.Sprintf("当前 LLM 配置:\n- Provider: %s\n- Base URL: %s\n- API Key: %s\n- Model: %s%s",
@@ -365,11 +366,11 @@ func maskAPIKey(key string) string {
 }
 
 // handleUnsetLLM handles /unset-llm command to remove user's LLM configuration
-func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// Check if user has a custom config
 	cfg, err := a.llmConfigSvc.GetConfig(msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("查询配置失败: %v", err),
@@ -377,7 +378,7 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*bu
 	}
 
 	if cfg == nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "当前未配置自定义 LLM，无需清除。",
@@ -386,7 +387,7 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*bu
 
 	// Delete the config
 	if err := a.llmConfigSvc.DeleteConfig(msg.SenderID); err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("清除配置失败: %v", err),
@@ -397,7 +398,7 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*bu
 	a.llmFactory.Invalidate(msg.SenderID)
 	a.llmFactory.InvalidateCustomLLMCache(msg.SenderID)
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: "已清除自定义 LLM 配置，将使用系统默认配置。",
@@ -405,14 +406,14 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*bu
 }
 
 // handleModels handles /models command to list available models for current user's LLM
-func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// Get user's LLM client
 	llmClient, currentModel, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	// Get available models
 	models := llmClient.ListModels()
 	if len(models) == 0 {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "当前 API 未返回可用模型列表。\n\n如果你使用自定义 LLM，请确保 /set-llm 配置正确。",
@@ -432,7 +433,7 @@ func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*bus.
 
 	fmt.Fprintf(&sb, "\n共 %d 个模型。使用 /set-model <model> 切换模型。", len(models))
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: sb.String(),
@@ -440,13 +441,13 @@ func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*bus.
 }
 
 // handleSetModel handles /set-model command to change the model for user's LLM
-func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*bus.OutboundMessage, error) {
+func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// Parse command arguments
 	trimmed := strings.TrimSpace(msg.Content)
 	args := strings.TrimSpace(trimmed[len("/set-model"):])
 
 	if args == "" {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "用法: /set-model <model>\n\n示例:\n  /set-model gpt-4\n  /set-model deepseek-chat\n  /set-model claude-3-5-sonnet-20241022\n\n使用 /models 查看可用模型列表。",
@@ -456,7 +457,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*bu
 	// Get current config
 	cfg, err := a.llmConfigSvc.GetConfig(msg.SenderID)
 	if err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("查询配置失败: %v", err),
@@ -464,7 +465,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*bu
 	}
 
 	if cfg == nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: "当前未配置自定义 LLM。\n\n请先使用 /set-llm 设置你的 LLM 配置。",
@@ -477,7 +478,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*bu
 
 	// Save configuration
 	if err := a.llmConfigSvc.SetConfig(cfg); err != nil {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("保存配置失败: %v", err),
@@ -488,14 +489,14 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*bu
 	a.llmFactory.Invalidate(msg.SenderID)
 
 	if oldModel == "" {
-		return &bus.OutboundMessage{
+		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
 			Content: fmt.Sprintf("模型已设置为: %s", cfg.Model),
 		}, nil
 	}
 
-	return &bus.OutboundMessage{
+	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: fmt.Sprintf("模型已从 %s 切换为: %s", oldModel, cfg.Model),
