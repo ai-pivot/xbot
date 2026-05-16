@@ -1446,7 +1446,15 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.multiSession.StartCleanupRoutine()
 
-	a.cronSch.SetInjectFunc(a.injectInbound)
+	a.cronSch.SetInjectFunc(func(channel, chatID, senderID, content string) {
+		// Mirror injectBgUserMessage pattern: notify TUI first, then inject to agent.
+		// Without injectCLIUserMessage, the TUI never receives a cliInjectedUserMsg,
+		// so no user message appears and startAgentTurn is never called via that path.
+		// The progress auto-start alone is insufficient — it lacks the user message
+		// in m.messages, causing the turn to display without context.
+		a.injectCLIUserMessage(channel, chatID, fmt.Sprintf("⏰ [定时任务] %s", content))
+		a.injectInbound(channel, chatID, senderID, content)
+	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
 	if a.eventRouter != nil {
