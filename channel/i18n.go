@@ -216,8 +216,8 @@ func localeZH() *UILocale {
 		AskCancelled:   "已取消提问",
 		SetupComplete:  "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。",
 		SetupLettaNote: "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在配置或环境变量中设置嵌入端点",
-		UpdateFound:    "发现新版本: %s → %s\n升级命令: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "当前版本 %s 已是最新",
+		UpdateFound:    "发现新版本: %s → %s (stable)\n升级命令: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:  "当前版本 %s (channel: %s) 已是最新",
 		UpdateFailed:   "更新检查失败（网络超时或无法连接 GitHub API）",
 
 		// --- B. Panel text ---
@@ -603,8 +603,8 @@ func localeEN() *UILocale {
 		AskCancelled:   "Question cancelled",
 		SetupComplete:  "✅ Initial setup complete. Use /settings to configure, /setup to re-run.",
 		SetupLettaNote: "\n\n[!] letta memory mode requires embedding service:\n  1. Install Ollama: https://ollama.ai\n  2. Pull embedding model: `ollama pull nomic-embed-text`\n  3. Set embedding endpoint in config or env",
-		UpdateFound:    "New version available: %s → %s\nUpdate command: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "Current version %s is up to date",
+		UpdateFound:    "New version available: %s → %s (stable)\nUpdate command: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:  "Current version %s (channel: %s) is up to date",
 		UpdateFailed:   "Update check failed (network timeout or unable to connect to GitHub API)",
 
 		// --- B. Panel text ---
@@ -985,8 +985,8 @@ func localeJA() *UILocale {
 		AskCancelled:   "質問をキャンセルしました",
 		SetupComplete:  "✅ 初期設定が完了しました。/settings で設定変更、/setup で再設定。",
 		SetupLettaNote: "\n\n[!] letta メモリモードには埋め込みサービスが必要です:\n  1. Ollama をインストール: https://ollama.ai\n  2. 埋め込みモデルを取得: `ollama pull nomic-embed-text`\n  3. 設定または環境変数で埋め込みエンドポイントを設定",
-		UpdateFound:    "新しいバージョン: %s → %s\nアップデート: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "現在のバージョン %s は最新です",
+		UpdateFound:    "新しいバージョン: %s → %s (stable)\nアップデート: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:  "現在のバージョン %s (channel: %s) は最新です",
 		UpdateFailed:   "アップデート確認に失敗（ネットワークタイムアウトまたは GitHub API に接続できません）",
 
 		// --- B. Panel text ---

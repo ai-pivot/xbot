@@ -1195,7 +1195,7 @@ func (m *cliModel) renderSplash() string {
 	lines = append(lines, "")
 
 	// 版本号居中
-	versionText := versionStyle.Render(fmt.Sprintf("xbot %s · %s", version.Version, version.Commit))
+	versionText := versionStyle.Render(fmt.Sprintf("xbot %s · %s · %s", version.Version, version.Channel, version.Commit))
 	vW := lipgloss.Width(versionText)
 	vPad := (screenW - vW) / 2
 	if vPad < 0 {
