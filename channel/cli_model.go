@@ -661,6 +661,15 @@ type cliHistoryReloadMsg struct {
 	err         error
 }
 
+// cliTokenRefreshMsg refreshes the context bar after compression.
+// Pushed through asyncCh by refreshTokenStateAfterReload.
+type cliTokenRefreshMsg struct {
+	channelName     string
+	chatID          string
+	tokenPrompt     int64
+	tokenCompletion int64
+}
+
 // cliToastItem 单条 Toast 通知数据
 type cliToastItem struct {
 	text string

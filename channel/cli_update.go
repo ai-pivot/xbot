@@ -11,6 +11,7 @@ import (
 
 	"xbot/clipanic"
 	log "xbot/logger"
+	"xbot/protocol"
 )
 
 // Update 处理消息
@@ -357,6 +358,15 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliHistoryReloadMsg:
 		m.handleHistoryReload(msg)
+
+	case cliTokenRefreshMsg:
+		if msg.tokenPrompt > 0 || msg.tokenCompletion > 0 {
+			m.lastTokenUsage = &protocol.TokenUsage{
+				PromptTokens:     msg.tokenPrompt,
+				CompletionTokens: msg.tokenCompletion,
+				TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
+			}
+		}
 
 	case cliToastClearMsg:
 		cmds = append(cmds, m.handleToastClear(msg)...)

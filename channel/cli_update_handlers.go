@@ -1290,6 +1290,11 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
 	log.WithField("count", len(newMessages)).Info("History reloaded after compression")
+
+	// Refresh token state so the context bar updates immediately after compression.
+	// Without this, the bar stays at the pre-compression (high) value or nil
+	// until the next progress event arrives.
+	m.refreshTokenStateAfterReload()
 }
 
 // handleSplashTick processes splash animation frames.
@@ -1894,4 +1899,34 @@ func (m *cliModel) handleShiftDown() (tea.Model, []tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+// refreshTokenStateAfterReload fetches the latest token state via RPC
+// after a history reload (compression). Pushes the result through asyncCh
+// so the context bar updates immediately without waiting for the next
+// progress event.
+func (m *cliModel) refreshTokenStateAfterReload() {
+	tokenFn := m.channel.config.GetTokenStateFn
+	if tokenFn == nil {
+		return
+	}
+	ch := m.channel
+	chatID := m.chatID
+	channelName := m.channelName
+	go func() {
+		prompt, completion := tokenFn(channelName, chatID)
+		if prompt <= 0 && completion <= 0 {
+			return
+		}
+		msg := cliTokenRefreshMsg{
+			channelName:     channelName,
+			chatID:          chatID,
+			tokenPrompt:     prompt,
+			tokenCompletion: completion,
+		}
+		select {
+		case ch.asyncCh <- msg:
+		default:
+		}
+	}()
 }
