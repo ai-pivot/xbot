@@ -269,9 +269,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 			}
 			if !allDone {
 				m.todos = make([]protocol.TodoItem, len(items))
-				for i, t := range items {
-					m.todos[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
-				}
+				copy(m.todos, items)
 				m.todosDoneCleared = false
 			} else {
 				// All todos done — clear display, underlying TodoManager,

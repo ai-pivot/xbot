@@ -15,7 +15,6 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/tools"
 	"xbot/version"
 )
 
@@ -396,9 +395,7 @@ func (m *cliModel) restoreSession() {
 			_ = m.todoManager.LoadFromFile(key)
 			if items := m.todoManager.GetTodos(key); len(items) > 0 {
 				m.todos = make([]protocol.TodoItem, len(items))
-				for i, t := range items {
-					m.todos[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
-				}
+				copy(m.todos, items)
 				m.todosDoneCleared = false
 			} else {
 				m.todos = nil
@@ -452,9 +449,7 @@ func (m *cliModel) restoreSession() {
 			_ = m.todoManager.LoadFromFile(key)
 			if items := m.todoManager.GetTodos(key); len(items) > 0 {
 				m.todos = make([]protocol.TodoItem, len(items))
-				for i, t := range items {
-					m.todos[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
-				}
+				copy(m.todos, items)
 				m.todosDoneCleared = false
 			} else {
 				m.todos = nil
@@ -1043,12 +1038,12 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel        // back-reference to owning channel (set during Start)
-	cachedModelName string             // cached model name for View() performance
-	activeSubID     string             // active subscription ID for current session
-	todoManager     *tools.TodoManager // per-session todo persistence
-	askUserSession  string             // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
-	modelCount      int                // cached model list length for View() performance
+	channel         *CLIChannel     // back-reference to owning channel (set during Start)
+	cachedModelName string          // cached model name for View() performance
+	activeSubID     string          // active subscription ID for current session
+	todoManager     *cliTodoManager // per-session todo persistence
+	askUserSession  string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount      int             // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *protocol.TokenUsage // last known token usage from progress events

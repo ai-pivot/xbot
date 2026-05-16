@@ -23,9 +23,9 @@ import (
 // The Agent is created and managed internally — callers never access it directly.
 //
 // Both CLI local mode and server remote mode call this.
-// When eventCh is non-nil (local CLI mode), a localEventBridge is created and
+// When eventCh is non-nil (local CLI mode), a ChannelCliChannel is created and
 // registered with the Dispatcher so that server→CLI events flow through eventCh.
-// When eventCh is nil (server mode), no bridge is created; server.go registers
+// When eventCh is nil (server mode), no channel is created; server.go registers
 // its own RemoteCLIChannel later.
 //
 // The Dispatcher's Run() goroutine is started inside InitServer for all modes.
@@ -36,10 +36,9 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	msgBus = bus.NewMessageBus()
 	disp = channel.NewDispatcher(msgBus)
 
-	// 2. Register localEventBridge when eventCh is provided (local CLI mode).
+	// 2. Register ChannelCliChannel when eventCh is provided (local CLI mode).
 	if eventCh != nil {
-		bridge := &localEventBridge{eventCh: eventCh}
-		disp.Register(bridge)
+		disp.Register(channel.NewChannelCliChannel(eventCh))
 	}
 
 	// 1b. Migrate data to SQLite if needed (one-time migration from old formats).
@@ -167,7 +166,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	}()
 
 	// 8. Start dispatcher goroutine (reads from msgBus.Outbound and
-	// dispatches to registered channels — including localEventBridge in local mode).
+	// dispatches to registered channels — including ChannelCliChannel in local mode).
 	go disp.Run()
 
 	return ag, rpcTable, disp, msgBus, nil
@@ -177,50 +176,4 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 // Used by ChannelTransport in local mode.
 func DispatchRPC(table RPCTable) func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 	return table.Dispatch
-}
-
-// ---------------------------------------------------------------------------
-// localEventBridge — bridges server-side Dispatcher to CLI's eventCh
-// ---------------------------------------------------------------------------
-
-// localEventBridge implements channel.Channel. It is registered with the
-// Dispatcher so that all outbound messages for the "cli" channel are forwarded
-// as protocol.WSMessage to eventCh, which the Client reads in its eventLoop.
-//
-// This is the critical piece that decouples CLI from server internals:
-// the CLI never touches msgBus or disp directly — events flow through eventCh.
-type localEventBridge struct {
-	eventCh chan protocol.WSMessage
-}
-
-func (b *localEventBridge) Name() string { return "cli" }
-
-func (b *localEventBridge) Start() error { return nil }
-
-func (b *localEventBridge) Stop() {}
-
-func (b *localEventBridge) Send(msg channel.OutboundMsg) (string, error) {
-	// Convert OutboundMessage → WSMessage and push to eventCh.
-	// The Client.eventLoop reads from eventCh and dispatches via dispatchWSMessage.
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeText,
-		Content: msg.Content,
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-	}
-	if msg.WaitingUser {
-		// ask_user events use a different type so the client can distinguish them.
-		wsMsg.Type = protocol.MsgTypeAskUser
-		if msg.Metadata != nil {
-			if q, ok := msg.Metadata["ask_questions"]; ok {
-				wsMsg.Content = q
-			}
-		}
-	}
-	select {
-	case b.eventCh <- wsMsg:
-	default:
-		log.WithField("chat_id", msg.ChatID).Warn("localEventBridge: eventCh full, dropping message")
-	}
-	return "", nil
 }

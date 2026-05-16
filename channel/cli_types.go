@@ -18,7 +18,6 @@ import (
 	"xbot/llm"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/tools"
 )
 
 // ---------------------------------------------------------------------------
@@ -718,7 +717,7 @@ type CLIChannelConfig struct {
 	PaletteContributor   PaletteContributor                                                                               // supplies external commands for command palette
 	SidebarWidthOverride int                                                                                              // --sidebar-width N (0 = use setting/default)
 	NoSidebar            bool                                                                                             // --no-sidebar
-	TodoManager          *tools.TodoManager                                                                               // per-session todo persistence
+	TodoManager          *cliTodoManager                                                                                  // per-session todo persistence
 	SetCWDFn             func(channelName, chatID, dir string) error                                                      // 会话切换时初始化 CWD
 	BindChatFn           func(chatID string) error                                                                        // 订阅 Hub 路由，使服务器推送事件（progress/stream/outbound）到达客户端
 }
@@ -795,7 +794,6 @@ type CLIChannel struct {
 	llmSubscriber   LLMSubscriber       // switches active LLM (propagated to model)
 
 	// Background tasks
-	bgTaskMgr  *tools.BackgroundTaskManager
 	bgTaskKill func(taskID string) error // remote mode: RPC-backed kill
 
 	// Runner LLM access

@@ -641,23 +641,6 @@ func (m *cliModel) listBgTasks() []*BgTask {
 	if m.bgTaskListFn != nil {
 		return m.bgTaskListFn()
 	}
-	if m.channel != nil && m.channel.bgTaskMgr != nil {
-		tasks := m.channel.bgTaskMgr.ListRunning(m.channel.bgSessionKey)
-		result := make([]*BgTask, len(tasks))
-		for i, t := range tasks {
-			result[i] = &BgTask{
-				ID:         t.ID,
-				Command:    t.Command,
-				Status:     BgTaskStatus(t.Status),
-				StartedAt:  t.StartedAt,
-				FinishedAt: t.FinishedAt,
-				Output:     t.Output,
-				ExitCode:   t.ExitCode,
-				Error:      t.Error,
-			}
-		}
-		return result
-	}
 	return nil
 }
 
@@ -666,10 +649,6 @@ func (m *cliModel) listBgTasks() []*BgTask {
 func (m *cliModel) cleanupCompletedBgTasks() {
 	if m.bgTaskCleanupFn != nil {
 		m.bgTaskCleanupFn()
-		return
-	}
-	if m.channel != nil && m.channel.bgTaskMgr != nil {
-		m.channel.bgTaskMgr.RemoveCompletedTasks(m.channel.bgSessionKey)
 	}
 }
 
@@ -677,9 +656,6 @@ func (m *cliModel) cleanupCompletedBgTasks() {
 func (m *cliModel) killBgTask(taskID string) error {
 	if m.bgTaskKillFn != nil {
 		return m.bgTaskKillFn(taskID)
-	}
-	if m.channel != nil && m.channel.bgTaskMgr != nil {
-		return m.channel.bgTaskMgr.Kill(taskID)
 	}
 	return fmt.Errorf("background tasks not available")
 }

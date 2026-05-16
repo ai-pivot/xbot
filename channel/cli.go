@@ -26,7 +26,6 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/tools"
 	"xbot/version"
 )
 
@@ -110,7 +109,7 @@ func (c *CLIChannel) Start() error {
 	// CLI-side TodoManager for persisting todos across turns and session switches.
 	// Updated by syncProgressTodos during active turns and consumed by endAgentTurn
 	// and restoreSession to preserve unfinished todos in idle state.
-	c.model.todoManager = tools.NewTodoManager()
+	c.model.todoManager = newCliTodoManager()
 
 	// Apply CLI flag overrides for layout
 	if c.config.SidebarWidthOverride > 0 {
@@ -520,13 +519,6 @@ func (c *CLIChannel) SetSendInboundFn(fn func(InboundMsg) bool) {
 	c.pendingSendInboundFn = fn
 }
 
-// SetBgTaskManager configures the background task manager for status display.
-func (c *CLIChannel) SetBgTaskManager(mgr *tools.BackgroundTaskManager, sessionKey string) {
-	c.bgTaskMgr = mgr
-	c.bgSessionKey = sessionKey
-	c.updateBgTaskCountFn()
-}
-
 // SetBgTaskRemoteCallbacks configures remote-mode background task callbacks.
 // Used when BgTaskManager is not available (remote CLI mode) to enable
 // background task display and management via RPC.
@@ -732,31 +724,6 @@ func (c *CLIChannel) InjectUserMessage(chatID, content string) {
 func (c *CLIChannel) updateBgTaskCountFn() {
 	if c.model == nil {
 		return
-	}
-	if c.bgTaskMgr != nil && c.bgSessionKey != "" {
-		c.model.bgTaskCountFn = func() int {
-			return len(c.bgTaskMgr.ListRunning(c.bgSessionKey))
-		}
-		c.model.bgTaskListFn = func() []*BgTask {
-			tasks := c.bgTaskMgr.ListAllForSession(c.bgSessionKey)
-			result := make([]*BgTask, len(tasks))
-			for i, t := range tasks {
-				result[i] = &BgTask{
-					ID:         t.ID,
-					Command:    t.Command,
-					Status:     BgTaskStatus(t.Status),
-					StartedAt:  t.StartedAt,
-					FinishedAt: t.FinishedAt,
-					Output:     t.Output,
-					ExitCode:   t.ExitCode,
-					Error:      t.Error,
-				}
-			}
-			return result
-		}
-		c.model.bgTaskKillFn = func(taskID string) error {
-			return c.bgTaskMgr.Kill(taskID)
-		}
 	}
 	// Wire agent count/list callbacks
 	if c.config.AgentCount != nil {
