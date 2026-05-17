@@ -193,6 +193,10 @@ func (app *cliApp) refreshRemoteValuesCache() {
 			return fmt.Sprintf("%d", config.DefaultMaxContextTokens)
 		}()
 	}
+	// Experimental: auto_worktree
+	if _, ok := vals["auto_worktree"]; !ok {
+		vals["auto_worktree"] = strconv.FormatBool(app.cfg.Agent.Experimental.AutoWorktree)
+	}
 	app.valuesCacheMu.Lock()
 	app.valuesCache = vals
 	app.valuesCacheMu.Unlock()

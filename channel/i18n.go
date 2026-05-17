@@ -585,6 +585,8 @@ func localeZH() *UILocale {
 			{Key: "privileged_user", Label: "特权用户", Description: "LLM 以此用户执行时需要人工审批。留空则禁止提权。需配置 NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
 			// Runner panel entry (display-only, triggers panel switch)
 			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "Runner"},
+			// Experimental features
+			{Key: "auto_worktree", Label: "自动 Worktree 隔离", Description: "每个会话自动创建独立的 git worktree，避免多 agent 同时修改同一文件。需要 git 仓库。", Type: SettingTypeToggle, Category: "实验性", DefaultValue: "false"},
 			// Danger zone entry (display-only, triggers panel switch)
 			{Key: "danger_zone", Label: "⚠️ 危险区 — 清空记忆", Type: SettingTypeText, Category: "危险"},
 		},
@@ -967,6 +969,8 @@ func localeEN() *UILocale {
 			{Key: "privileged_user", Label: "Privileged User", Description: "OS user that requires human approval when used by LLM. Leave empty to block privilege escalation. Requires NOPASSWD sudoers", Type: SettingTypeText, Category: "Permissions"},
 			// Runner panel entry (display-only, triggers panel switch)
 			{Key: "runner_panel", Label: "🔧 Runner Manager", Type: SettingTypeText, Category: "Runner"},
+			// Experimental features
+			{Key: "auto_worktree", Label: "Auto Worktree Isolation", Description: "Automatically create an isolated git worktree for each session, preventing multi-agent file conflicts. Requires a git repository.", Type: SettingTypeToggle, Category: "Experimental", DefaultValue: "false"},
 			// Danger zone entry (display-only, triggers panel switch)
 			{Key: "danger_zone", Label: "⚠️ Danger Zone — Clear Memory", Type: SettingTypeText, Category: "Danger"},
 		},
@@ -1349,6 +1353,8 @@ func localeJA() *UILocale {
 			{Key: "privileged_user", Label: "特権ユーザー", Description: "LLMが使用時に人間の承認が必要なOSユーザー。空の場合は権限昇格を禁止。NOPASSWD sudoersが必要", Type: SettingTypeText, Category: "権限"},
 			// Runner panel entry (display-only, triggers panel switch)
 			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "Runner"},
+			// Experimental features
+			{Key: "auto_worktree", Label: "自動 Worktree 分離", Description: "各セッションに独立した git worktree を自動作成し、マルチエージェントのファイル競合を防止します。git リポジトリが必要です。", Type: SettingTypeToggle, Category: "実験的", DefaultValue: "false"},
 			// Danger zone entry (display-only, triggers panel switch)
 			{Key: "danger_zone", Label: "⚠️ 危険エリア — 記憶クリア", Type: SettingTypeText, Category: "危険"},
 		},
