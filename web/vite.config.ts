@@ -26,6 +26,8 @@ export default defineConfig({
     },
   },
   build: {
+    // Raise chunk size warning limit since mermaid is inherently large
+    chunkSizeWarningLimit: 3000,
     rollupOptions: {
       output: {
         manualChunks(id) {

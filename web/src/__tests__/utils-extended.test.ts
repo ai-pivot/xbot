@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
-import { formatTime, createResetProgress } from '../utils'
+import { formatTime, createResetProgress, exportAsMarkdown, exportAsJSON } from '../utils'
 import { useRetry } from '../hooks/useNetworkStatus'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -148,5 +148,56 @@ describe('useRetry', () => {
       expect((err as Error).message).toBe('always fail')
     }
     expect(fn).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ─── exportAsMarkdown ───
+
+describe('exportAsMarkdown', () => {
+  it('formats messages as markdown', () => {
+    const messages = [
+      { id: '1', type: 'user' as const, content: 'Hello' },
+      { id: '2', type: 'assistant' as const, content: 'Hi there' },
+    ]
+    const result = exportAsMarkdown(messages)
+    expect(result).toContain('👤 User')
+    expect(result).toContain('🤖 Assistant')
+    expect(result).toContain('Hello')
+    expect(result).toContain('Hi there')
+    expect(result).toContain('---')
+  })
+
+  it('includes export date in header', () => {
+    const result = exportAsMarkdown([])
+    expect(result).toContain('# Chat Export')
+  })
+
+  it('handles system messages', () => {
+    const messages = [
+      { id: '1', type: 'system' as const, content: 'System msg' },
+    ]
+    const result = exportAsMarkdown(messages)
+    expect(result).toContain('📋 System')
+  })
+})
+
+// ─── exportAsJSON ───
+
+describe('exportAsJSON', () => {
+  it('exports messages as valid JSON', () => {
+    const messages = [
+      { id: '1', type: 'user' as const, content: 'Hello', ts: 12345 },
+    ]
+    const result = exportAsJSON(messages)
+    const parsed = JSON.parse(result)
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0].id).toBe('1')
+    expect(parsed[0].type).toBe('user')
+    expect(parsed[0].content).toBe('Hello')
+  })
+
+  it('pretty-prints with 2-space indent', () => {
+    const result = exportAsJSON([])
+    expect(result).toBe('[]')
   })
 })
