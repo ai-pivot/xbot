@@ -37,14 +37,14 @@ export default function ConfirmDialog({
         <p className="confirm-dialog-message">{message}</p>
         <div className="confirm-dialog-actions">
           <button
-            className="confirm-dialog-btn confirm-dialog-btn-cancel"
+            className="confirm-dialog-btn confirm-dialog-btn-cancel" aria-label="取消"
             onClick={onCancel}
           >
             {cancelLabel}
           </button>
           <button
             ref={confirmBtnRef}
-            className="confirm-dialog-btn confirm-dialog-btn-confirm"
+            className="confirm-dialog-btn confirm-dialog-btn-confirm" aria-label="确定"
             onClick={onConfirm}
           >
             {confirmLabel}

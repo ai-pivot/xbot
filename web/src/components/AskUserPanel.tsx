@@ -77,7 +77,7 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
                 <button
                   key={i}
                   onClick={() => submitAnswer(opt)}
-                  className="w-full text-left px-4 py-2.5 rounded-lg border border-slate-600 text-sm text-slate-200 hover:bg-blue-500/10 hover:border-blue-500/50 transition-colors"
+                  className="w-full text-left px-4 py-2.5 rounded-lg border border-slate-600 aria-label={opt} text-sm text-slate-200 hover:bg-blue-500/10 hover:border-blue-500/50 transition-colors"
                 >
                   {opt}
                 </button>
@@ -99,7 +99,7 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
               />
               <button
                 onClick={() => submitAnswer(inputRef.current?.value || '')}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition-colors" aria-label="提交回答"
               >
                 提交
               </button>
@@ -110,7 +110,7 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
           {currentQ > 0 ? (
             <button
               onClick={() => setCurrentQ(prev => prev - 1)}
-              className="text-xs text-slate-400 hover:text-white transition-colors"
+              className="text-xs text-slate-400 hover:text-white transition-colors" aria-label="上一题"
             >
               ← 上一题
             </button>
@@ -119,7 +119,7 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
           )}
           <button
             onClick={() => onCancel(answers)}
-            className="text-xs text-red-400 hover:text-red-300 transition-colors"
+            className="text-xs text-red-400 hover:text-red-300 transition-colors" aria-label="取消回答"
           >
             取消
           </button>

@@ -166,7 +166,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white font-medium py-2 rounded-lg transition-colors"
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white font-medium py-2 rounded-lg transition-colors" aria-label={loading ? "加载中" : showFeishu ? "飞书登录" : isRegister ? "注册" : "登录"}
           >
             {loading ? '...' : showFeishu ? '飞书登录' : isRegister ? '注册' : '登录'}
           </button>
