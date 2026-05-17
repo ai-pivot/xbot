@@ -78,7 +78,19 @@ func TestTodoManager_SessionKey_BackwardsCompatible(t *testing.T) {
 		t.Errorf("sessionKey without AgentID = %q, want %q", key, "cli:session-1")
 	}
 
-	// 有 AgentID 时应使用 AgentID:Channel:ChatID
+	// 主 Agent AgentID="main"（不含 "/"），保持 Channel:ChatID 不变
+	ctx1b := &ToolContext{
+		Ctx:     context.Background(),
+		AgentID: "main",
+		Channel: "cli",
+		ChatID:  "session-1",
+	}
+	key1b := mgr.sessionKey(ctx1b)
+	if key1b != "cli:session-1" {
+		t.Errorf("sessionKey with main AgentID = %q, want %q", key1b, "cli:session-1")
+	}
+
+	// SubAgent AgentID 含 "/"，使用 AgentID:Channel:ChatID
 	ctx2 := &ToolContext{
 		Ctx:     context.Background(),
 		AgentID: "main/explore",
@@ -87,7 +99,7 @@ func TestTodoManager_SessionKey_BackwardsCompatible(t *testing.T) {
 	}
 	key2 := mgr.sessionKey(ctx2)
 	if key2 != "main/explore:cli:session-1" {
-		t.Errorf("sessionKey with AgentID = %q, want %q", key2, "main/explore:cli:session-1")
+		t.Errorf("sessionKey with SubAgent AgentID = %q, want %q", key2, "main/explore:cli:session-1")
 	}
 
 	// 无 Channel/ChatID 时返回空
