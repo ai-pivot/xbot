@@ -17,6 +17,7 @@ import ContextMenu from '../components/ContextMenu'
 
 // ─── Media Player ───
 import { AudioPlayer, VideoPlayer } from '../components/MediaPlayer'
+import { MediaPlayerProvider } from '../contexts/MediaPlayerContext'
 
 // ─── Onboarding ───
 import OnboardingTip from '../components/OnboardingTip'
@@ -407,19 +408,19 @@ describe('mediaPlayer formatTime logic', () => {
 
 describe('AudioPlayer', () => {
   it('renders audio player with testid', () => {
-    render(<AudioPlayer src="/test.mp3" fileName="test.mp3" />)
+    render(<MediaPlayerProvider><AudioPlayer src="/test.mp3" fileName="test.mp3" /></MediaPlayerProvider>)
     expect(screen.getByTestId('audio-player')).toBeInTheDocument()
   })
 
   it('renders play button', () => {
-    render(<AudioPlayer src="/test.mp3" />)
+    render(<MediaPlayerProvider><AudioPlayer src="/test.mp3" /></MediaPlayerProvider>)
     expect(screen.getByTestId('audio-play-btn')).toBeInTheDocument()
   })
 })
 
 describe('VideoPlayer', () => {
   it('renders video player with testid', () => {
-    render(<VideoPlayer src="/test.mp4" fileName="test.mp4" />)
+    render(<MediaPlayerProvider><VideoPlayer src="/test.mp4" fileName="test.mp4" /></MediaPlayerProvider>)
     expect(screen.getByTestId('video-player')).toBeInTheDocument()
   })
 })

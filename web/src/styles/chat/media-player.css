@@ -360,3 +360,333 @@
 [data-theme="light"] .media-player-error-text {
   color: rgba(0, 0, 0, 0.45);
 }
+
+/* ========================================================================== */
+/* Playback Rate Selector                                                     */
+/* ========================================================================== */
+
+.media-player-rate-selector {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.media-player-rate-btn {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.media-player-rate-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.media-player-rate-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: rgba(30, 30, 30, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 100px;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.media-player-rate-option {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.media-player-rate-option:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+}
+
+.media-player-rate-option-active {
+  color: #6366f1;
+  font-weight: 600;
+}
+
+.media-player-rate-option-active:hover {
+  color: #818cf8;
+}
+
+/* Light theme rate selector */
+[data-theme="light"] .media-player-rate-btn {
+  color: rgba(0, 0, 0, 0.65);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] .media-player-rate-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="light"] .media-player-rate-menu {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .media-player-rate-option {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+[data-theme="light"] .media-player-rate-option:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: rgba(0, 0, 0, 0.9);
+}
+
+[data-theme="light"] .media-player-rate-option-active {
+  color: #6366f1;
+}
+
+/* ========================================================================== */
+/* Progress Bar Drag State                                                    */
+/* ========================================================================== */
+
+.media-player-progress-dragging {
+  cursor: grabbing;
+}
+
+.media-player-progress-dragging .media-player-progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.media-player-progress-dragging .media-player-progress-filled {
+  background: #818cf8;
+}
+
+[data-theme="light"] .media-player-progress-dragging .media-player-progress-bar {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] .media-player-progress-dragging .media-player-progress-filled {
+  background: #818cf8;
+}
+
+/* Drag tooltip */
+.media-player-progress-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.95);
+  color: white;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="light"] .media-player-progress-tooltip {
+  background: rgba(30, 30, 30, 0.9);
+  color: white;
+}
+
+/* ========================================================================== */
+/* Audio Player Extra Controls Row                                            */
+/* ========================================================================== */
+
+.media-player-audio-extra-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ========================================================================== */
+/* Keyboard Help Panel                                                        */
+/* ========================================================================== */
+
+.keyboard-help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.keyboard-help-panel {
+  background: rgba(30, 30, 35, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 0;
+  min-width: 380px;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="light"] .keyboard-help-panel {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.15);
+  color: rgba(0, 0, 0, 0.8);
+}
+
+.keyboard-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.keyboard-help-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.keyboard-help-close-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.keyboard-help-close-btn:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="light"] .keyboard-help-close-btn {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] .keyboard-help-close-btn:hover {
+  color: rgba(0, 0, 0, 0.8);
+}
+
+.keyboard-help-body {
+  padding: 12px 20px;
+}
+
+.keyboard-help-group {
+  margin-bottom: 16px;
+}
+
+.keyboard-help-group:last-child {
+  margin-bottom: 0;
+}
+
+.keyboard-help-group-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+[data-theme="light"] .keyboard-help-group-title {
+  color: rgba(0, 0, 0, 0.35);
+}
+
+.keyboard-help-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.keyboard-help-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.keyboard-help-key {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  min-width: 36px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+[data-theme="light"] .keyboard-help-key {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.keyboard-help-desc {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+[data-theme="light"] .keyboard-help-desc {
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.keyboard-help-footer {
+  padding: 10px 20px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+.keyboard-help-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.keyboard-help-hint kbd {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 10px;
+}
+
+[data-theme="light"] .keyboard-help-footer {
+  border-top-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .keyboard-help-hint {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="light"] .keyboard-help-hint kbd {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.08);
+}

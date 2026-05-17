@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, useEffect, memo } from 'react'
 import { useTranslation } from '../i18n'
+import { useMediaPlayerContext } from '../contexts/MediaPlayerContext'
 
 /* -------------------------------------------------------------------------- */
 /*  Fullscreen helpers (vendor-prefixed compat)                                */
@@ -182,32 +183,37 @@ function ProgressBar({
   duration,
   buffered,
   onSeek,
+  formatTime,
   testId,
 }: {
   currentTime: number
   duration: number
   buffered: number
   onSeek: (time: number) => void
+  formatTime?: (seconds: number) => string
   testId: string
 }) {
   const barRef = useRef<HTMLDivElement>(null)
+  const [dragging, setDragging] = useState(false)
+  const [dragTime, setDragTime] = useState<number | null>(null)
 
   const seekFromEvent = useCallback(
-    (clientX: number) => {
+    (clientX: number): number | null => {
       const bar = barRef.current
-      if (!bar || !duration) return
+      if (!bar || !duration) return null
       const rect = bar.getBoundingClientRect()
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-      onSeek(ratio * duration)
+      return ratio * duration
     },
-    [duration, onSeek],
+    [duration],
   )
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      seekFromEvent(e.clientX)
+      const time = seekFromEvent(e.clientX)
+      if (time !== null) onSeek(time)
     },
-    [seekFromEvent],
+    [seekFromEvent, onSeek],
   )
 
   const handleKeyDown = useCallback(
@@ -225,14 +231,94 @@ function ProgressBar({
     [currentTime, duration, onSeek],
   )
 
+  // Mouse drag
+  useEffect(() => {
+    if (!dragging) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const bar = barRef.current
+      if (!bar || !duration) return
+      const rect = bar.getBoundingClientRect()
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+      const time = ratio * duration
+      setDragTime(time)
+      onSeek(time)
+    }
+
+    const handleMouseUp = () => {
+      setDragging(false)
+      setDragTime(null)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [dragging, duration, onSeek])
+
+  // Touch drag
+  useEffect(() => {
+    if (!dragging) return
+
+    const handleTouchMove = (e: TouchEvent) => {
+      const touch = e.touches[0]
+      if (!touch) return
+      const bar = barRef.current
+      if (!bar || !duration) return
+      const rect = bar.getBoundingClientRect()
+      const ratio = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width))
+      const time = ratio * duration
+      setDragTime(time)
+      onSeek(time)
+    }
+
+    const handleTouchEnd = () => {
+      setDragging(false)
+      setDragTime(null)
+    }
+
+    window.addEventListener('touchmove', handleTouchMove)
+    window.addEventListener('touchend', handleTouchEnd)
+    return () => {
+      window.removeEventListener('touchmove', handleTouchMove)
+      window.removeEventListener('touchend', handleTouchEnd)
+    }
+  }, [dragging, duration, onSeek])
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setDragging(true)
+    const time = seekFromEvent(e.clientX)
+    if (time !== null) {
+      setDragTime(time)
+      onSeek(time)
+    }
+  }, [seekFromEvent, onSeek])
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0]
+    if (!touch) return
+    setDragging(true)
+    const time = seekFromEvent(touch.clientX)
+    if (time !== null) {
+      setDragTime(time)
+      onSeek(time)
+    }
+  }, [seekFromEvent, onSeek])
+
   const pct = duration > 0 ? (currentTime / duration) * 100 : 0
   const bufPct = duration > 0 ? (buffered / duration) * 100 : 0
+  const previewPct = dragTime !== null && duration > 0 ? (dragTime / duration) * 100 : pct
 
   return (
     <div
       ref={barRef}
-      className="media-player-progress"
+      className={`media-player-progress${dragging ? ' media-player-progress-dragging' : ''}`}
       onClick={handleClick}
+      onMouseDown={handleMouseDown}
+      onTouchStart={handleTouchStart}
       onKeyDown={handleKeyDown}
       tabIndex={0}
       data-testid={testId}
@@ -244,8 +330,71 @@ function ProgressBar({
     >
       <div className="media-player-progress-bar">
         {bufPct > 0 && <div className="media-player-progress-buffered" style={{ width: `${bufPct}%` }} />}
-        <div className="media-player-progress-filled" style={{ width: `${pct}%` }} />
+        <div className="media-player-progress-filled" style={{ width: `${previewPct}%` }} />
+        {dragging && dragTime !== null && formatTime && (
+          <div className="media-player-progress-tooltip" style={{ left: `${previewPct}%` }}>
+            {formatTime(dragTime)}
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Playback rate selector                                                    */
+/* -------------------------------------------------------------------------- */
+
+const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2]
+
+function PlaybackRateSelector({
+  currentRate,
+  onRateChange,
+}: {
+  currentRate: number
+  onRateChange: (rate: number) => void
+}) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div className="media-player-rate-selector" ref={menuRef}>
+      <button
+        className="media-player-rate-btn"
+        onClick={() => setOpen(o => !o)}
+        aria-label={t('playbackRate')}
+        data-testid="playback-rate-btn"
+      >
+        {currentRate}x
+      </button>
+      {open && (
+        <div className="media-player-rate-menu" role="menu">
+          {PLAYBACK_RATES.map(rate => (
+            <button
+              key={rate}
+              className={`media-player-rate-option${rate === currentRate ? ' media-player-rate-option-active' : ''}`}
+              onClick={() => { onRateChange(rate); setOpen(false) }}
+              role="menuitem"
+              data-testid={`playback-rate-${rate}`}
+            >
+              {rate === 1 ? `${t('normalSpeed')} (1x)` : `${rate}x`}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -269,13 +418,48 @@ export const AudioPlayer = memo(function AudioPlayer({ src, fileName }: AudioPla
     buffered,
     volume,
     muted,
+    playbackRate,
     error,
     togglePlay,
     seek,
     setVolume,
     toggleMute,
+    setPlaybackRate,
     formatTime,
   } = useMediaPlayer({ src })
+
+  // Player mutual exclusion
+  const { registerPlayer, unregisterPlayer, activePlayerId, setActive } = useMediaPlayerContext()
+  const playerIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const id = registerPlayer()
+    playerIdRef.current = id
+    return () => {
+      unregisterPlayer(id)
+      playerIdRef.current = null
+    }
+  }, [registerPlayer, unregisterPlayer])
+
+  // Pause when another player becomes active
+  useEffect(() => {
+    if (activePlayerId !== null && playerIdRef.current && activePlayerId !== playerIdRef.current && playing) {
+      const el = mediaRef.current
+      if (el && !el.paused) {
+        el.pause()
+      }
+    }
+  }, [activePlayerId, playing, mediaRef])
+
+  const handleTogglePlay = useCallback(() => {
+    if (playerIdRef.current) {
+      const el = mediaRef.current
+      if (el && el.paused) {
+        setActive(playerIdRef.current, () => { if (mediaRef.current && !mediaRef.current.paused) mediaRef.current.pause() })
+      }
+    }
+    togglePlay()
+  }, [togglePlay, setActive, mediaRef])
 
   const handleVolumeChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -298,7 +482,7 @@ export const AudioPlayer = memo(function AudioPlayer({ src, fileName }: AudioPla
 
       <button
         className="media-player-audio-play-btn"
-        onClick={togglePlay}
+        onClick={handleTogglePlay}
         data-testid="audio-play-btn"
         aria-label={playing ? t('pause') : t('play')}
       >
@@ -309,7 +493,7 @@ export const AudioPlayer = memo(function AudioPlayer({ src, fileName }: AudioPla
         {fileName && <div className="media-player-audio-filename">{fileName}</div>}
 
         <div className="media-player-audio-controls">
-          <ProgressBar currentTime={currentTime} duration={duration} buffered={buffered} onSeek={seek} testId="audio-progress-bar" />
+          <ProgressBar currentTime={currentTime} duration={duration} buffered={buffered} onSeek={seek} formatTime={formatTime} testId="audio-progress-bar" />
           <div className="media-player-time">
             <span>{formatTime(currentTime)}</span>
             <span>{formatTime(duration)}</span>
@@ -317,26 +501,29 @@ export const AudioPlayer = memo(function AudioPlayer({ src, fileName }: AudioPla
         </div>
       </div>
 
-      <div className="media-player-audio-volume">
-        <button
-          className="media-player-audio-volume-btn"
-          onClick={toggleMute}
-          data-testid="audio-mute-btn"
-          aria-label={muted ? t('unmute') : t('mute')}
-        >
-          <span aria-hidden="true">{muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}</span>
-        </button>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.05}
-          value={muted ? 0 : volume}
-          onChange={handleVolumeChange}
-          className="media-player-volume-slider"
-          aria-label={t('volume')}
-          data-testid="audio-volume-slider"
-        />
+      <div className="media-player-audio-extra-controls">
+        <PlaybackRateSelector currentRate={playbackRate} onRateChange={setPlaybackRate} />
+        <div className="media-player-audio-volume">
+          <button
+            className="media-player-audio-volume-btn"
+            onClick={toggleMute}
+            data-testid="audio-mute-btn"
+            aria-label={muted ? t('unmute') : t('mute')}
+          >
+            <span aria-hidden="true">{muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}</span>
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={muted ? 0 : volume}
+            onChange={handleVolumeChange}
+            className="media-player-volume-slider"
+            aria-label={t('volume')}
+            data-testid="audio-volume-slider"
+          />
+        </div>
       </div>
     </div>
   )
@@ -365,12 +552,47 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
     duration,
     buffered,
     muted,
+    playbackRate,
     error,
     togglePlay,
     seek,
     toggleMute,
+    setPlaybackRate,
     formatTime,
   } = useMediaPlayer({ src })
+
+  // Player mutual exclusion
+  const { registerPlayer, unregisterPlayer, activePlayerId, setActive } = useMediaPlayerContext()
+  const playerIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const id = registerPlayer()
+    playerIdRef.current = id
+    return () => {
+      unregisterPlayer(id)
+      playerIdRef.current = null
+    }
+  }, [registerPlayer, unregisterPlayer])
+
+  // Pause when another player becomes active
+  useEffect(() => {
+    if (activePlayerId !== null && playerIdRef.current && activePlayerId !== playerIdRef.current && playing) {
+      const el = mediaRef.current
+      if (el && !el.paused) {
+        el.pause()
+      }
+    }
+  }, [activePlayerId, playing, mediaRef])
+
+  const handleTogglePlay = useCallback(() => {
+    if (playerIdRef.current) {
+      const el = mediaRef.current
+      if (el && el.paused) {
+        setActive(playerIdRef.current, () => { if (mediaRef.current && !mediaRef.current.paused) mediaRef.current.pause() })
+      }
+    }
+    togglePlay()
+  }, [togglePlay, setActive, mediaRef])
 
   // Track fullscreen state via event
   useEffect(() => {
@@ -429,9 +651,9 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
   }, [])
 
   const handleVideoClick = useCallback(() => {
-    togglePlay()
+    handleTogglePlay()
     showControls()
-  }, [togglePlay, showControls])
+  }, [handleTogglePlay, showControls])
 
   if (error) {
     return (
@@ -463,13 +685,13 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
 
       <div className="media-player-video-controls">
         <div className="media-player-video-progress-row">
-          <ProgressBar currentTime={currentTime} duration={duration} buffered={buffered} onSeek={seek} testId="video-progress-bar" />
+          <ProgressBar currentTime={currentTime} duration={duration} buffered={buffered} onSeek={seek} formatTime={formatTime} testId="video-progress-bar" />
         </div>
 
         <div className="media-player-video-controls-row">
           <button
             className="media-player-video-btn"
-            onClick={(e) => { e.stopPropagation(); togglePlay() }}
+            onClick={(e) => { e.stopPropagation(); handleTogglePlay() }}
             data-testid="video-play-btn"
             aria-label={playing ? t('pause') : t('play')}
           >
@@ -483,6 +705,8 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
           {fileName && <span className="media-player-video-filename">{fileName}</span>}
 
           <div className="media-player-video-controls-spacer" />
+
+          <PlaybackRateSelector currentRate={playbackRate} onRateChange={setPlaybackRate} />
 
           <button
             className="media-player-video-btn"

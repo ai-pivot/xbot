@@ -437,6 +437,48 @@ const en: Record<I18nKey, string> = {
   pip: 'Picture-in-Picture',
   exitPip: 'Exit Picture-in-Picture',
 
+  // ─── Media Player Enhancements (Batch 6) ───
+  playbackRate: 'Playback Speed',
+  rate0_5: '0.5x',
+  rate0_75: '0.75x',
+  rate1: '1x',
+  rate1_25: '1.25x',
+  rate1_5: '1.5x',
+  rate2: '2x',
+
+  // ─── Keyboard Navigation ───
+  keyboardHelp: 'Keyboard Shortcuts',
+  vimNavigation: 'Vim Navigation',
+  navigation: 'Navigation',
+  actions: 'Actions',
+  mediaControl: 'Media Control',
+  scrollDown: 'Scroll Down',
+  scrollUp: 'Scroll Up',
+  goToTop: 'Go to Top',
+  goToBottom: 'Go to Bottom',
+  halfPageUp: 'Half Page Up',
+  halfPageDown: 'Half Page Down',
+  toggleKeyboardHelp: 'Keyboard Help',
+  playPause: 'Play/Pause',
+  seekBackForward: 'Seek Back/Forward',
+  volumeUpDown: 'Volume Up/Down',
+
+  // ─── Bookmarks & Theme ───
+  bookmarkMessage: 'Bookmark Message',
+  bookmarks: 'Bookmarks',
+  themeEditor: 'Theme Editor',
+  customTheme: 'Custom Theme',
+  importTheme: 'Import Theme',
+  exportTheme: 'Export Theme',
+  previewTheme: 'Preview Theme',
+  resetTheme: 'Reset Theme',
+  safeArea: 'Safe Area',
+  foldScreen: 'Fold Screen',
+  landscapeMode: 'Landscape Mode',
+  noBookmarks: 'No Bookmarks',
+  jumpToBookmark: 'Jump',
+  removeBookmark: 'Remove Bookmark',
+
 }
 
 export default en

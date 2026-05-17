@@ -435,6 +435,48 @@ const zhCN = {
   pip: '画中画',
   exitPip: '退出画中画',
 
+  // ─── Media Player Enhancements (Batch 6) ───
+  playbackRate: '播放速率',
+  rate0_5: '0.5x',
+  rate0_75: '0.75x',
+  rate1: '1x',
+  rate1_25: '1.25x',
+  rate1_5: '1.5x',
+  rate2: '2x',
+
+  // ─── Keyboard Navigation ───
+  keyboardHelp: '键盘快捷键',
+  vimNavigation: 'Vim 导航',
+  navigation: '导航',
+  actions: '操作',
+  mediaControl: '媒体控制',
+  scrollDown: '向下滚动',
+  scrollUp: '向上滚动',
+  goToTop: '跳到顶部',
+  goToBottom: '跳到底部',
+  halfPageUp: '向上翻半页',
+  halfPageDown: '向下翻半页',
+  toggleKeyboardHelp: '键盘帮助',
+  playPause: '播放/暂停',
+  seekBackForward: '快进/快退',
+  volumeUpDown: '音量调节',
+
+  // ─── Bookmarks & Theme ───
+  bookmarkMessage: '收藏消息',
+  bookmarks: '书签',
+  themeEditor: '主题编辑器',
+  customTheme: '自定义主题',
+  importTheme: '导入主题',
+  exportTheme: '导出主题',
+  previewTheme: '预览主题',
+  resetTheme: '重置主题',
+  safeArea: '安全区域',
+  foldScreen: '折叠屏',
+  landscapeMode: '横屏模式',
+  noBookmarks: '暂无书签',
+  jumpToBookmark: '跳转',
+  removeBookmark: '取消收藏',
+
 } as const
 
 export type I18nKey = keyof typeof zhCN
