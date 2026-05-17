@@ -27,6 +27,7 @@ import SwipeableMessage from './components/SwipeableMessage'
 import ContextMenu, { type ContextMenuItem } from './components/ContextMenu'
 import AskUserPanel from './components/AskUserPanel'
 import FileUpload, { uploadFile, usePasteUpload, type PendingFile } from './components/FileUpload'
+import { AudioPlayer, VideoPlayer } from './components/MediaPlayer'
 
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 const SearchPanel = lazy(() => import('./components/SearchPanel'))
@@ -119,6 +120,24 @@ function AttachmentCard({ attachment, onPreview }: { attachment: ParsedAttachmen
           <span className="truncate">{attachment.name}</span>
           {attachment.size != null && <span>{formatFileSize(attachment.size)}</span>}
         </div>
+      </div>
+    )
+  }
+
+  // Audio media detection
+  if (attachment.url && /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(attachment.name)) {
+    return (
+      <div className="attachment-card attachment-media">
+        <AudioPlayer src={attachment.url} fileName={attachment.name} />
+      </div>
+    )
+  }
+
+  // Video media detection
+  if (attachment.url && /\.(mp4|webm|mov|avi|mkv)$/i.test(attachment.name)) {
+    return (
+      <div className="attachment-card attachment-media">
+        <VideoPlayer src={attachment.url} fileName={attachment.name} />
       </div>
     )
   }

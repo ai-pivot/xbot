@@ -94,6 +94,14 @@
   color: rgba(255, 255, 255, 0.5);
 }
 
+
+/* ---- Media attachment wrapper ---- */
+.attachment-media {
+  background: transparent;
+  border: none;
+  padding: 0;
+  max-width: 400px;
+}
 /* ---- Light theme overrides ---- */
 [data-theme="light"] .attachment-image {
   background: rgba(0, 0, 0, 0.04);
