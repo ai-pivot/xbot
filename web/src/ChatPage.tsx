@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -20,37 +21,6 @@ const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 const SearchPanel = lazy(() => import('./components/SearchPanel'))
 
 const codeBlockComponents = getCodeBlockProps()
-
-// --- Lazy rendering: only render when element enters viewport ---
-// Use `eager` to skip IntersectionObserver (for turns near bottom that need instant render).
-function LazyTurn({ children, eager }: { children: React.ReactNode; eager?: boolean }) {
-  const ref = useRef<HTMLDivElement | null>(null)
-  const [visible, setVisible] = useState(() => eager ?? false)
-
-  useEffect(() => {
-    if (eager) return
-    const el = ref.current
-    if (!el) return
-    const container = el.parentElement
-    // Skip IntersectionObserver for small message lists — overhead not worth it
-    if ((container?.children.length ?? 0) < 30) {
-      const raf = requestAnimationFrame(() => setVisible(true))
-      return () => cancelAnimationFrame(raf)
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisible(true); observer.disconnect() } },
-      { rootMargin: '300px 0px' }  // pre-render slightly before entering viewport
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [eager])
-
-  return (
-    <div ref={ref}>
-      {visible ? children : <div className="h-6" />}
-    </div>
-  )
-}
 
 interface ChatPageProps {
   onLogout: () => void
@@ -278,7 +248,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   }, [])
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // --- Scroll management ---
   const isNearBottom = useCallback(() => {
@@ -610,6 +579,17 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   const turns = useMemo(() => groupMessagesIntoTurns(messages), [messages])
 
+  // --- Virtual scrolling via @tanstack/react-virtual ---
+  const virtualizer = useVirtualizer({
+    count: turns.length,
+    getScrollElement: () => messagesContainerRef.current,
+    estimateSize: (index) => {
+      const turn = turns[index]
+      return turn?.type === 'user' ? 80 : 200
+    },
+    overscan: 5,
+  })
+
   return (
     <div className={`flex flex-col h-screen bg-slate-900${dragActive ? ' drag-active' : ''}`}
          onDragOver={handleDragOver}
@@ -746,7 +726,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       <div
         ref={messagesContainerRef}
         onScroll={handleContainerScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 chat-messages"
+        className="flex-1 overflow-y-auto px-4 py-4 chat-messages"
         role="main"
         aria-label="消息"
       >
@@ -766,60 +746,65 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           </div>
         )}
 
-        {(() => {
-          const eagerCount = 6 // always render last N turns (avoids lazy-load vs scroll conflict)
-          return turns.map((turn, i) => {
-            const isLatestTurn = i === turns.length - 1
-            const isEager = i >= turns.length - eagerCount
-            // Only bind live progress to the latest assistant turn if we are
-            // actively processing a request. After a page refresh the last
-            // historical assistant turn would otherwise steal the progress.
-            const isActive = loading || progress !== null
-            if (turn.type === 'user') {
-		              const content = (
-		                <div className="flex justify-end" data-msg-id={turn.message.id}>
-		                  <div className="max-w-[80%] rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm">
-			                    <UserMessageContent content={turn.message.content} />
-		                    {turn.message.ts && (
-		                      <div className="text-xs mt-1 text-right text-blue-200/50">
-		                        {formatTime(turn.message.ts)}
-		                      </div>
-		                    )}
-		                  </div>
-		                </div>
-		              )
+        {/* Virtualized message list */}
+        {turns.length > 0 && (
+          <div
+            style={{
+              height: virtualizer.getTotalSize(),
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {virtualizer.getVirtualItems().map((virtualItem) => {
+              const turn = turns[virtualItem.index]
+              const isLatestTurn = virtualItem.index === turns.length - 1
+              const isActive = loading || progress !== null
 
-              return (isLatestTurn || isEager) ? (
-                <div key={turn.message.id}>{content}</div>
-              ) : (
-                <LazyTurn key={turn.message.id}>{content}</LazyTurn>
+              return (
+                <div
+                  key={turn.type === 'user' ? turn.message.id : turn.messages[0].id}
+                  data-index={virtualItem.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualItem.start}px)`,
+                  }}
+                >
+                  {turn.type === 'user' ? (
+                    <div className="flex justify-end mb-4" data-msg-id={turn.message.id}>
+                      <div className="max-w-[80%] rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm">
+                        <UserMessageContent content={turn.message.content} />
+                        {turn.message.ts && (
+                         <div className="text-xs mt-1 text-right text-blue-200/50">
+                           {formatTime(turn.message.ts)}
+                         </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mb-4" data-msg-id={turn.messages[0].id}>
+                      <AssistantTurn
+                        messages={turn.messages}
+                        progress={isLatestTurn && isActive ? progress : null}
+                        liveIterations={isLatestTurn && isActive ? liveIterations : undefined}
+                        loading={isLatestTurn && isActive && loading}
+                        savedProgress={turn.messages[turn.messages.length - 1]?.savedProgress ?? null}
+                      />
+                    </div>
+                  )}
+                </div>
               )
-            }
-            // Assistant turn — last one gets live progress & loading
-            const turnSavedProgress = turn.messages[turn.messages.length - 1]?.savedProgress ?? null
-            const assistantContent = (
-              <div data-msg-id={turn.messages[0].id} key={turn.messages[0].id}>
-                <AssistantTurn
-                  messages={turn.messages}
-                  progress={isLatestTurn && isActive ? progress : null}
-                  liveIterations={isLatestTurn && isActive ? liveIterations : undefined}
-                  loading={isLatestTurn && isActive && loading}
-                  savedProgress={turnSavedProgress}
-                />
-              </div>
-            )
-            return (isLatestTurn || isEager) ? assistantContent : (
-              <LazyTurn key={turn.messages[0].id}>{assistantContent}</LazyTurn>
-            )
-          })
-        })()}
+            })}
+          </div>
+        )}
 
         {/* Standalone progress when no assistant turn exists yet (e.g. right after user sends a message) */}
         {messages.length > 0 && messages[messages.length - 1].type === 'user' && (progress || loading) && (
           <ProgressPanel progress={progress} liveIterations={liveIterations} loading={loading} />
         )}
-
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Scroll to bottom button */}
