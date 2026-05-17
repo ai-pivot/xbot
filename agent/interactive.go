@@ -595,9 +595,14 @@ func (a *Agent) SpawnInteractiveSession(
 			}()
 
 			out := Run(runCtx, cfg)
-			runCancel()
 
+			// Check cancellation BEFORE calling runCancel().
+			// runCancel() cancels the context, making runCtx.Err() always non-nil.
+			// We need to know if Run() was cancelled externally (parent unload,
+			// agent shutdown) vs completed naturally — only externally cancelled
+			// sessions should be destroyed.
 			cancelled := runCtx.Err() != nil
+			runCancel()
 
 			// Notify parent agent about completion
 			if notifyMgr != nil {
