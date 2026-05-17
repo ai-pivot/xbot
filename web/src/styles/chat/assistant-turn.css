@@ -167,3 +167,60 @@
 [data-theme="light"] .collapsible-fade-mask {
   background: linear-gradient(to top, rgba(255, 255, 255, 0.9), transparent);
 }
+
+/* ─── Collapsible Content ─── */
+
+.collapsible-wrapper {
+  position: relative;
+}
+
+.collapsible-content {
+  position: relative;
+  transition: max-height 0.3s ease;
+}
+
+.collapsible-collapsed {
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.collapsible-fade-mask {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(transparent, var(--color-surface, #1e293b));
+  pointer-events: none;
+}
+
+[data-theme="light"] .collapsible-fade-mask {
+  background: linear-gradient(transparent, var(--color-surface, #f8fafc));
+}
+
+.collapsible-toggle {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #64748b);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.collapsible-toggle:hover {
+  color: var(--color-text-secondary, #94a3b8);
+}
+
+.collapsible-chevron {
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+
+.collapsible-chevron-open {
+  transform: rotate(90deg);
+}

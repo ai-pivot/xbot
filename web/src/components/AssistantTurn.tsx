@@ -1,5 +1,5 @@
 import { useTranslation } from '../i18n'
-import { useState, useEffect, useRef, memo } from 'react'
+import { useState, memo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { getCodeBlockProps } from './CodeBlock'
@@ -11,45 +11,8 @@ import ReplyPreview from './ReplyPreview'
 import { formatElapsed, computeDisplayIterations } from '../utils'
 
 
-import { COLLAPSE_LINE_THRESHOLD } from '../constants'
+import CollapsibleContent from './CollapsibleContent'
 
-function CollapsibleMessage({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(true)
-  const ref = useRef<HTMLDivElement>(null)
-  const [tooLong, setTooLong] = useState(false)
-  const { t } = useTranslation()
-
-  useEffect(() => {
-    if (ref.current) {
-      // Use scrollHeight for accurate measurement even when max-h clips the content
-      const lineHeight = parseFloat(getComputedStyle(ref.current).lineHeight) || 20
-      const lineCount = Math.ceil(ref.current.scrollHeight / lineHeight)
-      setTooLong(lineCount > COLLAPSE_LINE_THRESHOLD)
-    }
-  }, [children])
-
-  if (!tooLong) return <>{children}</>
-
-  return (
-    <div ref={ref}>
-      <div
-        className={`relative ${collapsed ? 'max-h-80 overflow-hidden' : ''}`}
-      >
-        {children}
-        {collapsed && (
-          <div className="collapsible-fade-mask" />
-        )}
-      </div>
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="mt-1 text-xs text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1"
-      >
-        <span className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}>▸</span>
-        {collapsed ? t('expandAll') : t('collapse')}
-      </button>
-    </div>
-  )
-}
 
 // Memoized thinking display — only re-renders when content actually changes
 const ThinkingBlock = memo(({ content }: { content: string }) => (
@@ -337,7 +300,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         {/* Main text content — always visible */}
         {textMsgs.length > 0 && (
           <div className="assistant-turn-content">
-            <CollapsibleMessage>
+            <CollapsibleContent>
               {textMsgs.map((msg) => (
                 <div key={msg.id} className="markdown-body">
                   <Markdown components={codeBlockComponents} remarkPlugins={[remarkGfm]}>
@@ -345,7 +308,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
                   </Markdown>
                 </div>
               ))}
-            </CollapsibleMessage>
+            </CollapsibleContent>
           </div>
         )}
 
