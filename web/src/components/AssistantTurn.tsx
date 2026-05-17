@@ -3,10 +3,13 @@ import { useState, useMemo, memo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import remarkFootnotes from 'remark-footnotes'
 import rehypeKatex from 'rehype-katex'
 import { getCodeBlockProps } from './CodeBlock'
 import Lightbox from './Lightbox'
+
+// Pre-built plugins array for Markdown rendering
+const remarkPluginsList = [remarkGfm, remarkMath]
+const rehypePluginsList = [rehypeKatex]
 import MessageActions from './MessageActions'
 import type { WsProgressPayload, IterationSnapshot } from './ProgressPanel'
 import { CompletedIteration, BouncingDots, SubAgentTree } from './ProgressPanel'
@@ -175,7 +178,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
             <div className="space-y-2 pl-1">
               {thinkingMsgs.map((msg) => (
                 <div key={msg.id} className="text-sm text-slate-400 italic">
-                  <Markdown components={codeBlockProps} remarkPlugins={[remarkGfm, remarkMath, remarkFootnotes as any]} rehypePlugins={[rehypeKatex]}>
+                  <Markdown components={codeBlockProps} remarkPlugins={remarkPluginsList} rehypePlugins={rehypePluginsList}>
                     {msg.content.replace(/^💭\s*/, '')}
                   </Markdown>
                 </div>
@@ -310,7 +313,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
             <CollapsibleContent>
               {textMsgs.map((msg) => (
                 <div key={msg.id} className="markdown-body">
-                  <Markdown components={codeBlockProps} remarkPlugins={[remarkGfm, remarkMath, remarkFootnotes as any]} rehypePlugins={[rehypeKatex]}>
+                  <Markdown components={codeBlockProps} remarkPlugins={remarkPluginsList} rehypePlugins={rehypePluginsList}>
                     {msg.content}
                   </Markdown>
                 </div>
