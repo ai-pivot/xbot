@@ -1,4 +1,5 @@
 import type { PresetCommand } from '../../types'
+import type { I18nKey } from '../../i18n'
 
 // ── Types ──
 
@@ -85,7 +86,7 @@ export const LS_KEYS: Record<string, string> = {
   language: 'xbot-language',
 }
 
-export const TABS: { id: TabId; labelKey: string; icon: string }[] = [
+export const TABS: { id: TabId; labelKey: I18nKey; icon: string }[] = [
   { id: 'appearance', labelKey: 'tabAppearance' as const, icon: '🎨' },
   { id: 'sessions', labelKey: 'tabSessions' as const, icon: '💬' },
   { id: 'presets', labelKey: 'tabPresets' as const, icon: '⚡' },

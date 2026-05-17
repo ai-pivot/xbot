@@ -75,7 +75,7 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
                   : 'text-slate-400 hover:text-white hover:bg-slate-700'
               }`}
             >
-              {tab.icon} {t(tab.labelKey as any)}
+              {tab.icon} {t(tab.labelKey)}
             </button>
           ))}
         </div>

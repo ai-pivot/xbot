@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useTranslation } from '../i18n'
+import { useTranslation, type I18nKey } from '../i18n'
 import type { ShowToastFn } from './settings/shared'
 
 export interface PendingFile {
@@ -61,14 +61,14 @@ export function uploadFile(file: File): Promise<PendingFile & { ok: boolean; err
 }
 
 /** Map internal error codes to i18n keys */
-const ERROR_KEY_MAP: Record<string, string> = {
+const ERROR_KEY_MAP: Record<string, I18nKey> = {
   '__FILE_TOO_LARGE__': 'fileTooLarge',
   '__UPLOAD_FAILED__': 'uploadFailed',
   '__UPLOAD_RESPONSE_ERROR__': 'uploadResponseError',
 }
 
 /** Resolve an upload error to a user-facing i18n string */
-export function resolveUploadError(error: string, t: (key: any) => string): string {
+export function resolveUploadError(error: string, t: (key: I18nKey) => string): string {
   const key = ERROR_KEY_MAP[error]
   return key ? t(key) : error
 }
