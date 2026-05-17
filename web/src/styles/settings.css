@@ -1,20 +1,5 @@
 /* ========================================================================== */
-/* Settings Panel                                                            */
-/* ========================================================================== */
-
-[data-theme="light"] .settings-panel {
-  background: #ffffff;
-  border-left-color: #cbd5e1;
-}
-
-[data-theme="light"] .settings-select {
-  background: #f1f5f9;
-  color: #0f172a;
-  border-color: #cbd5e1;
-}
-
-/* ========================================================================== */
-/* Settings Panel                                                             */
+/* Settings Panel — CSS Variables only, no hardcoded colors                   */
 /* ========================================================================== */
 
 .settings-backdrop {
@@ -31,8 +16,8 @@
   right: 0;
   width: min(420px, 90vw);
   height: 100vh;
-  background: #1e293b;
-  border-left: 1px solid #334155;
+  background: var(--xbot-bg-secondary);
+  border-left: 1px solid var(--xbot-border);
   padding: 20px 24px;
   z-index: 101;
   display: flex;
@@ -51,7 +36,7 @@
 
 .settings-label {
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--xbot-text-secondary);
   font-weight: 500;
 }
 
@@ -59,9 +44,9 @@
   width: 100%;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid #475569;
-  background: #0f172a;
-  color: #e2e8f0;
+  border: 1px solid var(--xbot-border-light);
+  background: var(--xbot-bg-input);
+  color: var(--xbot-text-primary);
   font-size: 14px;
   outline: none;
   cursor: pointer;
@@ -69,65 +54,33 @@
 }
 
 .settings-select:focus {
-  border-color: #3b82f6;
+  border-color: var(--xbot-accent-blue);
 }
 
 .settings-close-btn {
   margin-top: auto;
   padding: 10px;
   border-radius: 8px;
-  border: 1px solid #475569;
+  border: 1px solid var(--xbot-border-light);
   background: transparent;
-  color: #94a3b8;
+  color: var(--xbot-text-secondary);
   font-size: 14px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .settings-close-btn:hover {
-  background: #334155;
-  color: #e2e8f0;
+  background: var(--xbot-bg-elevated);
+  color: var(--xbot-text-primary);
 }
 
-[data-theme="light"] .settings-item {
-  gap: 8px;
-}
-[data-theme="light"] .settings-label {
-  color: #78716c;
-}
-[data-theme="light"] .settings-close-btn {
-  border-color: #d6d3d1;
-  color: #78716c;
-}
-[data-theme="light"] .settings-close-btn:hover {
-  background: #f5f5f0;
-  color: #1c1917;
-  border-color: #a8a29e;
-}
-[data-theme="light"] .settings-section {
-  background: #fafaf9;
-  border: 1px solid #e7e5e4;
-  box-shadow: 0 1px 3px rgba(28,25,23,0.04);
-}
-[data-theme="light"] .settings-section-title {
-  color: #a8a29e;
-}
-[data-theme="light"] .settings-input {
-  background: #ffffff;
-  color: #1c1917;
-  border-color: #d6d3d1;
-  box-shadow: 0 1px 2px rgba(28,25,23,0.04);
-}
-[data-theme="light"] .settings-input:hover {
-  border-color: #a8a29e;
-}
-[data-theme="light"] .settings-input:focus {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+.settings-close-btn:focus-visible {
+  outline: 2px solid var(--xbot-accent-blue);
+  outline-offset: 2px;
 }
 
 .settings-section {
-  background: #0f172a;
+  background: var(--xbot-bg-input);
   border-radius: 10px;
   padding: 14px;
   display: flex;
@@ -138,7 +91,7 @@
 .settings-section-title {
   font-size: 13px;
   font-weight: 600;
-  color: #64748b;
+  color: var(--xbot-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -147,9 +100,9 @@
   width: 100%;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid #475569;
-  background: #1e293b;
-  color: #e2e8f0;
+  border: 1px solid var(--xbot-border-light);
+  background: var(--xbot-bg-secondary);
+  color: var(--xbot-text-primary);
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s;
@@ -157,33 +110,16 @@
 }
 
 .settings-input:focus {
-  border-color: #3b82f6;
+  border-color: var(--xbot-accent-blue);
+}
+
+.settings-input:focus-visible {
+  outline: 2px solid var(--xbot-accent-blue);
+  outline-offset: 2px;
 }
 
 .settings-input::placeholder {
-  color: #475569;
-}
-
-[data-theme="light"] .settings-section {
-  background: #e2e8f0;
-}
-
-[data-theme="light"] .settings-section-title {
-  color: #64748b;
-}
-
-[data-theme="light"] .settings-input {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #1e293b;
-}
-
-[data-theme="light"] .settings-input::placeholder {
-  color: #94a3b8;
-}
-
-[data-theme="light"] .settings-input:focus {
-  border-color: #3b82f6;
+  color: var(--xbot-text-placeholder);
 }
 
 .settings-code-block {
@@ -191,9 +127,9 @@
   width: 100%;
   padding: 10px 40px 10px 12px;
   border-radius: 8px;
-  border: 1px solid #475569;
-  background: #0f172a;
-  color: #a5f3fc;
+  border: 1px solid var(--xbot-border-light);
+  background: var(--xbot-bg-code);
+  color: var(--xbot-text-code);
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   line-height: 1.5;
@@ -201,17 +137,11 @@
   box-sizing: border-box;
 }
 
-[data-theme="light"] .settings-code-block {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-  color: #0e7490;
-}
-
 .settings-copy-btn {
   position: absolute;
   top: 8px;
   right: 8px;
-  background: rgba(51, 65, 85, 0.6);
+  background: var(--xbot-bg-copy-btn);
   border: none;
   border-radius: 6px;
   padding: 4px 6px;
@@ -219,18 +149,16 @@
   font-size: 14px;
   line-height: 1;
   transition: background 0.2s;
+  color: var(--xbot-text-primary);
 }
 
 .settings-copy-btn:hover {
-  background: rgba(71, 85, 105, 0.8);
+  background: var(--xbot-bg-copy-btn-hover);
 }
 
-[data-theme="light"] .settings-copy-btn {
-  background: rgba(203, 213, 225, 0.6);
-}
-
-[data-theme="light"] .settings-copy-btn:hover {
-  background: rgba(203, 213, 225, 0.9);
+.settings-copy-btn:focus-visible {
+  outline: 2px solid var(--xbot-accent-blue);
+  outline-offset: 2px;
 }
 
 .settings-action-btn {
@@ -239,17 +167,22 @@
   gap: 6px;
   padding: 8px 16px;
   border-radius: 8px;
-  border: 1px solid #475569;
-  background: #334155;
-  color: #e2e8f0;
+  border: 1px solid var(--xbot-border-light);
+  background: var(--xbot-bg-elevated);
+  color: var(--xbot-text-primary);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .settings-action-btn:hover:not(:disabled) {
-  background: #475569;
-  border-color: #64748b;
+  background: var(--xbot-border-light);
+  border-color: var(--xbot-text-muted);
+}
+
+.settings-action-btn:focus-visible {
+  outline: 2px solid var(--xbot-accent-blue);
+  outline-offset: 2px;
 }
 
 .settings-action-btn:disabled {
@@ -258,14 +191,53 @@
 }
 
 .settings-action-danger {
-  color: #fca5a5;
-  border-color: #7f1d1d;
-  background: rgba(127, 29, 29, 0.3);
+  color: var(--xbot-text-danger);
+  border-color: var(--xbot-border-danger);
+  background: var(--xbot-bg-danger);
 }
 
 .settings-action-danger:hover:not(:disabled) {
   background: rgba(153, 27, 27, 0.4);
   border-color: #991b1b;
+}
+
+/* ---- Light theme overrides (minimal — CSS variables handle most) ---- */
+
+[data-theme="light"] .settings-panel {
+  background: #ffffff;
+  border-left-color: #cbd5e1;
+}
+
+[data-theme="light"] .settings-select {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .settings-item {
+  gap: 8px;
+}
+
+[data-theme="light"] .settings-section {
+  background: #fafaf9;
+  border: 1px solid #e7e5e4;
+  box-shadow: 0 1px 3px rgba(28,25,23,0.04);
+}
+
+[data-theme="light"] .settings-input {
+  background: #ffffff;
+  color: #1c1917;
+  border-color: #d6d3d1;
+  box-shadow: 0 1px 2px rgba(28,25,23,0.04);
+}
+
+[data-theme="light"] .settings-input:hover {
+  border-color: #a8a29e;
+}
+
+[data-theme="light"] .settings-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
 }
 
 [data-theme="light"] .settings-action-btn {
@@ -288,13 +260,11 @@
   background: rgba(254, 202, 202, 0.6);
 }
 
+/* ---- Animations ---- */
+
 @keyframes settings-slide-in {
-  from {
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(0);
-  }
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
 }
 
 @keyframes settings-fade-in {
@@ -302,7 +272,7 @@
   to { opacity: 1; }
 }
 
-/* ---- Settings Panel Exit Animation ---- */
+/* Settings Panel Exit Animation */
 
 .settings-panel-exit {
   animation: settings-slide-out 0.2s ease-in forwards !important;
@@ -313,14 +283,8 @@
 }
 
 @keyframes settings-slide-out {
-  from {
-    opacity: 1;
-    transform: translateX(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateX(20px);
-  }
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(20px); }
 }
 
 @keyframes settings-backdrop-out {

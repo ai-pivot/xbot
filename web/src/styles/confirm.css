@@ -15,8 +15,8 @@
 }
 
 .confirm-dialog-panel {
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--xbot-bg-secondary);
+  border: 1px solid var(--xbot-border);
   border-radius: 16px;
   padding: 24px;
   max-width: 360px;
@@ -27,7 +27,7 @@
 
 .confirm-dialog-message {
   font-size: 14px;
-  color: #e2e8f0;
+  color: var(--xbot-text-primary);
   margin: 0 0 20px 0;
   line-height: 1.5;
 }
@@ -48,16 +48,16 @@
 }
 
 .confirm-dialog-btn-cancel {
-  background: #334155;
-  color: #94a3b8;
+  background: var(--xbot-bg-elevated);
+  color: var(--xbot-text-secondary);
 }
 .confirm-dialog-btn-cancel:hover {
-  background: #475569;
-  color: #e2e8f0;
+  background: var(--xbot-border-light);
+  color: var(--xbot-text-primary);
 }
 
 .confirm-dialog-btn-confirm {
-  background: #dc2626;
+  background: var(--xbot-color-error);
   color: white;
 }
 .confirm-dialog-btn-confirm:hover {
@@ -95,6 +95,6 @@
 }
 
 [data-theme="light"] .confirm-dialog-btn-confirm {
-  background: #dc2626;
+  background: var(--xbot-color-error);
   color: white;
 }

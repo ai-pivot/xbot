@@ -8,13 +8,13 @@
   border-radius: 4px;
   background: transparent;
   border: none;
-  color: #94a3b8;
+  color: var(--xbot-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
 }
 .sidebar-btn:hover {
-  background: #334155;
-  color: #e2e8f0;
+  background: var(--xbot-bg-elevated);
+  color: var(--xbot-text-primary);
 }
 
 .sidebar-item {
@@ -36,7 +36,7 @@
 .sidebar-delete-btn {
   display: none;
   font-size: 10px;
-  color: #475569;
+  color: var(--xbot-border-light);
   background: none;
   border: none;
   cursor: pointer;
@@ -52,21 +52,21 @@
 
 .sidebar-rename-input {
   flex: 1;
-  background: #1e293b;
-  border: 1px solid #475569;
+  background: var(--xbot-bg-secondary);
+  border: 1px solid var(--xbot-border-light);
   border-radius: 4px;
-  color: #e2e8f0;
+  color: var(--xbot-text-primary);
   font-size: 12px;
   padding: 1px 4px;
   outline: none;
 }
 .sidebar-rename-input:focus {
-  border-color: #6366f1;
+  border-color: var(--xbot-accent);
 }
 
 .sidebar-refresh-btn {
   font-size: 10px;
-  color: #64748b;
+  color: var(--xbot-text-muted);
   background: none;
   border: none;
   cursor: pointer;
@@ -76,7 +76,7 @@
   transition: color 0.15s;
 }
 .sidebar-refresh-btn:hover {
-  color: #cbd5e1;
+  color: var(--xbot-bg-elevated);
 }
 .sidebar-refresh-btn:disabled {
   cursor: default;
@@ -112,7 +112,7 @@
   color: #1c1917;
 }
 [data-theme="light"] .sidebar-rename-input:focus {
-  border-color: #6366f1;
+  border-color: var(--xbot-accent);
 }
 
 [data-theme="light"] .sidebar-refresh-btn {
@@ -127,7 +127,7 @@
   background: rgba(30, 41, 59, 0.5);
   border: 1px solid rgba(51, 65, 85, 0.4);
   border-radius: 6px;
-  color: #e2e8f0;
+  color: var(--xbot-text-primary);
   font-size: 12px;
   padding: 4px 8px;
   outline: none;
@@ -135,10 +135,10 @@
   transition: border-color 0.15s;
 }
 .sidebar-search::placeholder {
-  color: #64748b;
+  color: var(--xbot-text-muted);
 }
 .sidebar-search:focus {
-  border-color: #6366f1;
+  border-color: var(--xbot-accent);
 }
 
 [data-theme="light"] .sidebar-search {
@@ -150,5 +150,5 @@
   color: #a8a29e;
 }
 [data-theme="light"] .sidebar-search:focus {
-  border-color: #6366f1;
+  border-color: var(--xbot-accent);
 }

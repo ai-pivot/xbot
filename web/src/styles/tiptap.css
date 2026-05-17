@@ -1,9 +1,5 @@
 /* ========================================================================== */
-/* Tiptap Editor Styles                                                      */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/* Tiptap Editor Styles                                                       */
+/* Tiptap Editor Styles — CSS Variables only                                  */
 /* ========================================================================== */
 
 .tiptap-wrapper {
@@ -11,16 +7,16 @@
   display: flex;
   align-items: flex-end;
   gap: 0;
-  background: #334155;
-  border: 1px solid #475569;
+  background: var(--xbot-bg-secondary);
+  border: 1px solid var(--xbot-border-light);
   border-radius: 12px;
   overflow: hidden;
   transition: border-color 0.2s;
 }
 
 .tiptap-wrapper:focus-within {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 1px #3b82f6;
+  border-color: var(--xbot-accent-blue);
+  box-shadow: 0 0 0 1px var(--xbot-accent-blue);
 }
 
 /* Editor area */
@@ -44,7 +40,7 @@
 .tiptap-wrapper .tiptap-editor p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
-  color: #64748b;
+  color: var(--xbot-text-muted);
   pointer-events: none;
   height: 0;
   font-style: normal;
@@ -53,23 +49,23 @@
 /* Paragraph in editor */
 .tiptap-wrapper .tiptap-editor p {
   margin: 0.25em 0;
-  color: #f1f5f9;
+  color: var(--xbot-text-primary);
   font-size: 0.9em;
   line-height: 1.5;
 }
 
 /* Code in editor */
 .tiptap-wrapper .tiptap-editor code {
-  background: #1e293b;
+  background: var(--xbot-bg-primary);
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 0.85em;
-  color: #93c5fd;
+  color: var(--xbot-text-link);
 }
 
 /* Preformatted / code blocks in editor */
 .tiptap-wrapper .tiptap-editor pre {
-  background: #0f172a;
+  background: var(--xbot-bg-primary);
   border-radius: 6px;
   padding: 8px 12px;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
@@ -90,7 +86,7 @@
 }
 
 .tiptap-wrapper .tiptap-editor ul[data-type="taskList"] li label input[type="checkbox"] {
-  accent-color: #3b82f6;
+  accent-color: var(--xbot-accent-blue);
   margin-top: 3px;
 }
 
@@ -101,7 +97,7 @@
   justify-content: center;
   width: 40px;
   align-self: stretch;
-  background: #2563eb;
+  background: var(--xbot-accent-blue);
   color: white;
   border: none;
   cursor: pointer;
@@ -115,79 +111,18 @@
   background: #1d4ed8;
 }
 
+.tiptap-send-btn:focus-visible {
+  outline: 2px solid var(--xbot-accent);
+  outline-offset: -2px;
+}
+
 .tiptap-send-btn:disabled {
-  background: #475569;
-  color: #64748b;
+  background: var(--xbot-border-light);
+  color: var(--xbot-text-muted);
   cursor: not-allowed;
 }
 
-/* Cancel button */
-.cancel-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  min-height: 44px;
-  background: #dc2626;
-  color: white;
-  border: none;
-  border-radius: 12px;
-  cursor: pointer;
-  font-size: 16px;
-  transition: background 0.2s;
-  flex-shrink: 0;
-}
-
-.cancel-btn:hover {
-  background: #b91c1c;
-}
-
-/* ---- Light Theme Overrides ---- */
-
-/* Tiptap editor in light mode — soft ivory, not pure white */
-[data-theme="light"] .tiptap-wrapper {
-  background: #f7f5f2 !important;
-  border-color: #cdc9c3 !important;
-  box-shadow: 0 1px 3px rgba(28,25,23,0.08), 0 1px 2px rgba(28,25,23,0.04) !important;
-}
-[data-theme="light"] .tiptap-wrapper .tiptap-editor {
-  background: rgba(247,245,242,0.8) !important;
-  color: #1c1917 !important;
-}
-[data-theme="light"] .tiptap-wrapper .tiptap-editor p {
-  color: #1c1917;
-}
-[data-theme="light"] .tiptap-wrapper .tiptap-editor code {
-  background: #e2dfda;
-  color: #1c1917;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.9em;
-}
-[data-theme="light"] .tiptap-wrapper .tiptap-editor pre {
-  background: #eae7e2;
-  border: 1px solid #ddd9d4;
-  border-radius: 8px;
-}
-[data-theme="light"] .tiptap-wrapper .tiptap-editor p.is-editor-empty:first-child::before {
-  color: #a8a29e;
-}
-
-/* Send button in light mode */
-[data-theme="light"] .tiptap-send-btn:disabled {
-  background: #cdc9c3;
-  color: #a8a29e;
-}
-
-[data-theme="light"] .cancel-btn {
-  background: #dc2626;
-}
-
-/* ---- Cancel Button Enhancement ---- */
-
-/* ========================================================================== */
-/* Cancel Button Enhancement                                                   */
-/* ========================================================================== */
+/* ---- Cancel Button ---- */
 
 .cancel-btn {
   display: flex;
@@ -208,4 +143,53 @@
   background: rgba(239, 68, 68, 0.25);
   border-color: rgba(239, 68, 68, 0.5);
   box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
+}
+
+.cancel-btn:focus-visible {
+  outline: 2px solid var(--xbot-color-error);
+  outline-offset: 2px;
+}
+
+/* ---- Light Theme Overrides ---- */
+
+[data-theme="light"] .tiptap-wrapper {
+  background: #f7f5f2 !important;
+  border-color: #cdc9c3 !important;
+  box-shadow: 0 1px 3px rgba(28,25,23,0.08), 0 1px 2px rgba(28,25,23,0.04) !important;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor {
+  background: rgba(247,245,242,0.8) !important;
+  color: #1c1917 !important;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor p {
+  color: #1c1917;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor code {
+  background: #e2dfda;
+  color: #1c1917;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor pre {
+  background: #eae7e2;
+  border: 1px solid #ddd9d4;
+  border-radius: 8px;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor p.is-editor-empty:first-child::before {
+  color: #a8a29e;
+}
+
+[data-theme="light"] .tiptap-send-btn:disabled {
+  background: #cdc9c3;
+  color: #a8a29e;
+}
+
+[data-theme="light"] .cancel-btn {
+  background: #dc2626;
 }

@@ -40,7 +40,7 @@
   padding: 6px 10px;
   background: rgba(15, 23, 42, 0.5);
   border: none;
-  color: #e2e8f0;
+  color: var(--xbot-text-primary);
   cursor: pointer;
   user-select: none;
   transition: background 0.15s ease;
@@ -53,7 +53,7 @@
 /* Chevron — merged from 2 definitions */
 .assistant-turn-chevron {
   font-size: 10px;
-  color: #64748b;
+  color: var(--xbot-text-muted);
   transition: transform 0.2s ease;
   display: inline-block;
 }
@@ -82,7 +82,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid #334155;
+  border-bottom: 1px solid var(--xbot-border);
 }
 
 .assistant-turn-loading {
@@ -135,7 +135,7 @@
 }
 
 [data-theme="light"] .assistant-turn-section {
-  border-bottom-color: #e2e8f0;
+  border-bottom-color: var(--xbot-text-primary);
 }
 
 [data-theme="light"] .assistant-turn-section-header {
@@ -147,7 +147,7 @@
 }
 
 [data-theme="light"] .assistant-turn-live-phase {
-  border-bottom-color: #e2e8f0;
+  border-bottom-color: var(--xbot-text-primary);
 }
 
 [data-theme="light"] .assistant-turn-cursor {

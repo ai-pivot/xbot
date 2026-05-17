@@ -32,6 +32,22 @@ body {
   --xbot-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);
   --xbot-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.2);
   --xbot-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+  /* Extended variables for complete theme coverage */
+  --xbot-bg-input: #0f172a;
+  --xbot-bg-code: #0f172a;
+  --xbot-text-code: #a5f3fc;
+  --xbot-text-placeholder: #475569;
+  --xbot-text-link: #60a5fa;
+  --xbot-color-success: #16a34a;
+  --xbot-color-error: #dc2626;
+  --xbot-color-warning: #ca8a04;
+  --xbot-text-danger: #fca5a5;
+  --xbot-bg-danger: rgba(127, 29, 29, 0.3);
+  --xbot-border-danger: #7f1d1d;
+  --xbot-scrollbar-thumb: #334155;
+  --xbot-scrollbar-thumb-hover: #475569;
+  --xbot-bg-copy-btn: rgba(51, 65, 85, 0.6);
+  --xbot-bg-copy-btn-hover: rgba(71, 85, 105, 0.8);
 }
 
 [data-theme="light"] {
@@ -63,11 +79,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: var(--xbot-scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: var(--xbot-scrollbar-thumb-hover);
 }
 
 /* ========================================================================== */
@@ -87,6 +103,7 @@ body {
   --xbot-shadow-sm: 0 1px 2px rgba(28,25,23,0.05);
   --xbot-shadow-md: 0 4px 12px rgba(28,25,23,0.08);
   --xbot-shadow-lg: 0 8px 24px rgba(28,25,23,0.12);
+  /* Extended variables for light theme */  --xbot-bg-input: #f8fafc;  --xbot-bg-code: #f1f5f9;  --xbot-text-code: #0e7490;  --xbot-text-placeholder: #94a3b8;  --xbot-text-link: #2563eb;  --xbot-color-success: #16a34a;  --xbot-color-error: #dc2626;  --xbot-color-warning: #ca8a04;  --xbot-text-danger: #dc2626;  --xbot-bg-danger: rgba(254, 226, 226, 0.5);  --xbot-border-danger: #fca5a5;  --xbot-scrollbar-thumb: #cbd5e1;  --xbot-scrollbar-thumb-hover: #94a3b8;  --xbot-bg-copy-btn: rgba(203, 213, 225, 0.6);  --xbot-bg-copy-btn-hover: rgba(203, 213, 225, 0.9);
 }
 
 [data-theme="light"] body {
@@ -305,6 +322,63 @@ body, .markdown-body, .tiptap-wrapper .tiptap-editor p {
   width: 4px;
 }
 .absolute.top-full.left-0 .max-h-64::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: var(--xbot-scrollbar-thumb-hover);
   border-radius: 2px;
+}
+
+/* ========================================================================== */
+/* Accessibility — Focus Styles & Screen Reader Support                       */
+/* ========================================================================== */
+
+/* Global focus-visible for all interactive elements */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--xbot-accent-blue);
+  outline-offset: 2px;
+}
+
+/* Remove default outline for mouse users (focus:not(:focus-visible)) */
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Skip-to-content link for keyboard users */
+.skip-to-content {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--xbot-accent-blue);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 0 0 8px 8px;
+  font-size: 14px;
+  z-index: 99999;
+  text-decoration: none;
+  transition: top 0.2s;
+}
+
+.skip-to-content:focus {
+  top: 0;
+}
+
+/* Screen reader only utility class */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }

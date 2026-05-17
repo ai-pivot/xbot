@@ -8,9 +8,9 @@
   justify-content: center;
   width: 40px;
   min-height: 40px;
-  background: #334155;
-  color: #94a3b8;
-  border: 1px solid #475569;
+  background: var(--xbot-bg-elevated);
+  color: var(--xbot-text-secondary);
+  border: 1px solid var(--xbot-border-light);
   border-radius: 12px;
   cursor: pointer;
   font-size: 16px;
@@ -20,7 +20,7 @@
 
 .file-upload-btn:hover:not(:disabled) {
   background: #475569;
-  color: #e2e8f0;
+  color: var(--xbot-text-primary);
 }
 
 .file-upload-btn:disabled {
@@ -34,9 +34,9 @@
   gap: 6px;
   padding: 4px 10px;
   border-radius: 6px;
-  background: #1e293b;
-  color: #94a3b8;
-  border: 1px solid #334155;
+  background: var(--xbot-bg-secondary);
+  color: var(--xbot-text-secondary);
+  border: 1px solid var(--xbot-border);
   font-size: 13px;
   max-width: 200px;
 }
@@ -50,7 +50,7 @@
 .file-tag-remove {
   background: none;
   border: none;
-  color: #64748b;
+  color: var(--xbot-text-muted);
   cursor: pointer;
   font-size: 14px;
   padding: 0;
@@ -64,7 +64,7 @@
 
 /* Drag active state */
 .drag-active .tiptap-wrapper {
-  border-color: #3b82f6 !important;
+  border-color: var(--xbot-accent-blue) !important;
   border-style: dashed !important;
   background: rgba(59, 130, 246, 0.05);
 }

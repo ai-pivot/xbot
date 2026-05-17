@@ -7,6 +7,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import { useChatMessageHandler } from './hooks/useChatMessageHandler'
 import { useToast } from './contexts/ToastContext'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useNetworkStatus } from './hooks/useNetworkStatus'
 import type { TiptapEditorHandle } from './components/TiptapEditor'
 import type { PresetCommand, Message, Turn } from './types'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
@@ -308,6 +309,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     send: wsSend,
     disconnect: wsDisconnect,
   } = useWebSocket({ onMessage, lastSeqRef })
+
+  // --- Network status (browser online/offline) ---
+  const { online } = useNetworkStatus(connected, reconnecting, serverStopped)
 
   // --- Load history (extracted for reuse on chat switch) ---
   const loadHistory = useCallback(() => {
@@ -639,6 +643,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
          onPaste={handlePaste}
     >
 
+      <a href="#messages-container" className="skip-to-content">跳到主内容</a>
       {/* Drag overlay */}
       {dragActive && (
         <div className="drag-overlay" data-testid="drag-overlay">
@@ -712,14 +717,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           <button
             onClick={handleSearchToggle}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
-            title="搜索 (Ctrl+K)"
+            title="搜索 (Ctrl+K)" aria-label="搜索历史消息"
           >
             🔍
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
-            title="设置"
+            title="设置" aria-label="打开设置"
           >
             ⚙️
           </button>
@@ -753,6 +758,12 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       {reconnecting && !connected && (
         <div className="bg-yellow-900/40 border-b border-yellow-800/50 px-4 py-2 text-center text-sm text-yellow-400">
           ⚠️ 连接断开，正在尝试重连...
+        </div>
+      )}
+      {/* Offline banner */}
+      {!online && (
+        <div className="bg-gray-900/60 border-b border-gray-700/50 px-4 py-2 text-center text-sm text-gray-400" role="status" aria-live="polite">
+          📶 网络已断开，部分功能不可用
         </div>
       )}
 

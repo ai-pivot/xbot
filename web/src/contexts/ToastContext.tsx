@@ -52,7 +52,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ toasts, showToast, removeToast }}>
       {children}
       {/* Unified toast rendering layer */}
-      <div className="toast-container">
+      <div className="toast-container" aria-live="polite" aria-atomic="false">
         {toasts.map(toast => (
           <div
             key={toast.id}
