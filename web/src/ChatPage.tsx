@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useChatMessageHandler } from './hooks/useChatMessageHandler'
 import { useToast } from './contexts/ToastContext'
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import type { TiptapEditorHandle } from './components/TiptapEditor'
 import type { PresetCommand, Message, Turn } from './types'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
@@ -575,6 +576,34 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setSearchOpen(prev => !prev)
   }, [])
 
+
+  // --- Global keyboard shortcuts ---
+  useKeyboardShortcuts([
+    {
+      key: 'k',
+      ctrl: true,
+      handler: handleSearchToggle,
+      description: 'Toggle search panel',
+    },
+    {
+      key: 'Escape',
+      enabled: askUser !== null,
+      handler: () => { setAskUser(null); wsSend({ type: 'ask_user_response', answers: {}, cancelled: true }) },
+      description: 'Cancel AskUser dialog',
+    },
+    {
+      key: 'Escape',
+      enabled: searchOpen,
+      handler: () => setSearchOpen(false),
+      description: 'Close search panel',
+    },
+    {
+      key: 'Escape',
+      enabled: settingsOpen,
+      handler: () => setSettingsOpen(false),
+      description: 'Close settings panel',
+    },
+  ])
   const turns = useMemo(() => groupMessagesIntoTurns(messages), [messages])
 
   // --- Virtual scrolling via @tanstack/react-virtual ---

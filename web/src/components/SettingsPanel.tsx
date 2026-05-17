@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { useToast } from '../contexts/ToastContext'
 import type { PresetCommand } from '../types'
@@ -25,15 +25,7 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
   // Unified toast via context
   const { showToast } = useToast()
 
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [open, onClose])
+  // Note: Escape key handling is managed by global useKeyboardShortcuts in ChatPage
 
   if (!open) return null
 
