@@ -75,6 +75,8 @@ func (r *WorktreeRegistry) Register(entry *WorktreeEntry) error {
 }
 
 // Deregister removes an entry and cleans up empty repo buckets.
+// For entries with physical worktrees, use CleanupSession instead which also
+// removes the git worktree and branch.
 func (r *WorktreeRegistry) Deregister(sessionKey string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,6 +98,21 @@ func (r *WorktreeRegistry) Deregister(sessionKey string) {
 		delete(r.byRepo, entry.RepoPath)
 	}
 	r.saveRepoLocked(entry.RepoPath)
+}
+
+// CleanupSession removes a session's worktree registration and, if the session
+// has a physical worktree (WorktreeDir != ""), deletes the git worktree and branch.
+// This is the correct method to call when a session is deleted/closed.
+func (r *WorktreeRegistry) CleanupSession(sessionKey string) {
+	entry := r.GetBySession(sessionKey)
+	if entry == nil {
+		return
+	}
+	// Remove physical worktree + branch if present
+	if entry.WorktreeDir != "" && entry.RepoPath != "" && entry.Branch != "" {
+		_ = removeWorktree(entry.RepoPath, entry.WorktreeDir, entry.Branch)
+	}
+	r.Deregister(sessionKey)
 }
 
 // GetPeers returns all entries for a repo, excluding the given sessionKey.
@@ -488,6 +505,11 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 // Every session gets its own worktree — no primary concept. All agents are equal peers.
 // Returns the worktree entry, or nil if not a git repo or worktree creation fails.
 func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
+	return autoDetectAndInitInto(workDir, sessionKey, GlobalWorktreeRegistry)
+}
+
+// autoDetectAndInitInto is the testable core that accepts a custom registry.
+func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *WorktreeEntry {
 	// Check if in a git repo
 	repoPath, err := GitRepoRoot(workDir)
 	if err != nil {
@@ -495,7 +517,7 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 	}
 
 	// Already registered?
-	if entry := GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
+	if entry := reg.GetBySession(sessionKey); entry != nil {
 		return entry
 	}
 
@@ -504,9 +526,9 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 	branch = strings.ReplaceAll(branch, ":", "-") // sessionKey may contain ":"
 
 	// Serialize worktree creation
-	GlobalWorktreeRegistry.mu.Lock()
+	reg.mu.Lock()
 	worktreePath, err := createWorktree(repoPath, branch)
-	GlobalWorktreeRegistry.mu.Unlock()
+	reg.mu.Unlock()
 	if err != nil {
 		return nil
 	}
@@ -519,7 +541,7 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 		Branch:      branch,
 		Status:      "working",
 	}
-	if err := GlobalWorktreeRegistry.Register(entry); err != nil {
+	if err := reg.Register(entry); err != nil {
 		removeWorktree(repoPath, worktreePath, branch)
 		return nil
 	}
