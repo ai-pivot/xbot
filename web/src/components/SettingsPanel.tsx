@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 
 import { useToast } from '../contexts/ToastContext'
 import type { PresetCommand } from '../types'
@@ -21,28 +21,47 @@ interface SettingsPanelProps {
 export default function SettingsPanel({ open, onClose, onNicknameChange, onPresetsChange }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<TabId>('appearance')
   const [saving, setSaving] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   // Unified toast via context
   const { showToast } = useToast()
 
+  const handleClose = () => {
+    setClosing(true)
+    // Notify parent after animation starts; parent sets open=false
+    // which completes the unmount via the (!open && !closing) guard
+    setTimeout(onClose, 200)
+  }
+
+  const handleAnimationEnd = () => {
+    if (closing) setClosing(false)
+  }
+
+  // Reset closing state when re-opened
+  if (open && closing) setClosing(false)
+
   // Note: Escape key handling is managed by global useKeyboardShortcuts in ChatPage
 
-  if (!open) return null
+  if (!open && !closing) return null
 
   return (
     <>
       {/* Backdrop */}
       <div
-        className="settings-backdrop"
-        onClick={onClose}
+        className={`settings-backdrop${closing ? " settings-backdrop-exit" : ""}`}
+        onClick={handleClose}
       />
       {/* Panel */}
-      <div className="settings-panel" role="dialog" aria-modal="true" aria-label="设置">
+      <div ref={panelRef}
+        className={`settings-panel${closing ? " settings-panel-exit" : ""}`}
+        role="dialog" aria-modal="true" aria-label="设置"
+        onAnimationEnd={handleAnimationEnd}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-bold text-white">⚙️ 设置</h2>
           <div className="flex items-center gap-2">
             {saving && <span className="text-xs text-slate-500">保存中...</span>}
-            <button className="settings-close-btn text-sm" onClick={onClose} aria-label="关闭设置">✕</button>
+            <button className="settings-close-btn text-sm" onClick={handleClose} data-testid="settings-close-btn" aria-label="关闭设置">✕</button>
           </div>
         </div>
 

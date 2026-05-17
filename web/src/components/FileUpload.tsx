@@ -119,6 +119,7 @@ export default function FileUpload({ onUpload, disabled, showToast }: FileUpload
   return (
     <button
       className="file-upload-btn"
+      data-testid="file-upload-btn"
       onClick={() => inputRef.current?.click()}
       disabled={disabled || uploading}
       title="上传文件"

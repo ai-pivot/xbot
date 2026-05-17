@@ -187,13 +187,14 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
 
   return (
     <div className="flex justify-start">
-      <div className="assistant-turn-container group relative">
+      <div className="assistant-turn-container group relative" data-testid="assistant-turn">
         {/* Copy button — visible on hover */}
         {textMsgs.length > 0 && !loading && (
           <button
             onClick={handleCopy}
             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded text-xs bg-slate-700/60 hover:bg-slate-600/80 text-slate-300 hover:text-white backdrop-blur-sm"
             title="复制内容"
+            data-testid="copy-btn"
           >
             {copied ? '✓' : '📋'}
           </button>

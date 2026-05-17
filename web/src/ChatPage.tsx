@@ -198,6 +198,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [dragActive, setDragActive] = useState(false)
+  const dragCountRef = useRef(0)
   const [nickname, setNickname] = useState<string>(() => localStorage.getItem('xbot-nickname') || '')
   const editorRef = useRef<TiptapEditorHandle>(null)
   const [presets, setPresets] = useState<PresetCommand[]>([])
@@ -526,18 +527,24 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    dragCountRef.current++
     setDragActive(true)
   }, [])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setDragActive(false)
+    dragCountRef.current--
+    if (dragCountRef.current <= 0) {
+      dragCountRef.current = 0
+      setDragActive(false)
+    }
   }, [])
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    dragCountRef.current = 0
     setDragActive(false)
 
     const files = e.dataTransfer.files
@@ -618,12 +625,23 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   })
 
   return (
-    <div className={`flex flex-col h-screen bg-slate-900${dragActive ? ' drag-active' : ''}`}
+    <div className="flex flex-col h-screen bg-slate-900"
          onDragOver={handleDragOver}
          onDragLeave={handleDragLeave}
          onDrop={handleDrop}
          onPaste={handlePaste}
     >
+
+      {/* Drag overlay */}
+      {dragActive && (
+        <div className="drag-overlay" data-testid="drag-overlay">
+          <div className="drag-overlay-content">
+            <span className="text-4xl">📂</span>
+            <span className="text-lg font-medium mt-2">拖拽文件到此处上传</span>
+            <span className="text-sm opacity-60 mt-1">支持图片、文档、代码等文件</span>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700">
         <div className="flex items-center gap-3">
@@ -664,11 +682,12 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               {modelDropdownOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />
-                  <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-64 overflow-y-auto">
+                  <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-64 overflow-y-auto" role="listbox" aria-label="模型选择">
                     {availableModels.map(model => (
                       <button
                         key={model}
                         onClick={() => handleModelSwitch(model)}
+                        role="option"
                         className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-700 transition-colors ${
                           model === currentModel ? 'text-blue-400 bg-blue-500/10' : 'text-slate-300'
                         }`}
@@ -758,6 +777,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         className="flex-1 overflow-y-auto px-4 py-4 chat-messages"
         role="main"
         aria-label="消息"
+        data-testid="messages-container"
       >
         {messages.length === 0 && !loading && (
           <div className="text-center py-20 animate-fade-in">
@@ -794,6 +814,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                   key={turn.type === 'user' ? turn.message.id : turn.messages[0].id}
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
+                  className="msg-fade-in"
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -842,6 +863,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           onClick={() => { setAutoScroll(true); requestAnimationFrame(() => scrollToBottom('smooth')) }}
           className="scroll-to-bottom-btn"
           aria-label="滚动到底部"
+          data-testid="scroll-to-bottom-btn"
         >
           ↓ 新消息
         </button>
@@ -906,6 +928,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               onClick={handleCancel}
               className="cancel-btn"
               title="停止生成"
+              data-testid="cancel-btn"
             >
               ⏹
             </button>
