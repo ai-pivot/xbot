@@ -156,6 +156,8 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickSidebarDeleteSession(zone.Index)
 	case "sidebarNewSession":
 		return m.clickSidebarNewSession()
+		case "sidebarBgTask":
+		return m.clickSidebarBgTask(zone.Index)
 	case "bgtaskItem":
 		return m.clickBgTasksItem(zone.Index)
 	case "dangerItem":
@@ -798,8 +800,17 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 					zb.addX(relY+borderOffset, sbXStart+sidebarContentOffset+sidebarDeleteXStart[relY], sbXStart+sidebarContentOffset+sidebarDeleteXEnd[relY], "sidebarDeleteSession", sessionIdx)
 				}
 			}
-			if sidebarNewSessionY >= 0 {
+		if sidebarNewSessionY >= 0 {
 				zb.addX(sidebarNewSessionY+borderOffset, sbXStart, sbXEnd, "sidebarNewSession", 0)
+			}
+			// Bg task zones in sidebar's Active section
+			if sidebarActiveSectionOffset >= 0 {
+				for relY, taskIdx := range sidebarBgTaskLines {
+					if taskIdx >= 0 {
+						absY := sidebarActiveSectionOffset + 1 + relY // +1 for header line
+						zb.addX(absY+borderOffset, sbXStart, sbXEnd, "sidebarBgTask", taskIdx)
+					}
+				}
 			}
 		} else {
 			// sidebar on left: middleBlock starts at sbVisW
@@ -814,6 +825,15 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 			}
 			if sidebarNewSessionY >= 0 {
 				zb.addX(sidebarNewSessionY+borderOffset, 0, sbVisW, "sidebarNewSession", 0)
+			}
+			// Bg task zones in sidebar's Active section
+			if sidebarActiveSectionOffset >= 0 {
+				for relY, taskIdx := range sidebarBgTaskLines {
+					if taskIdx >= 0 {
+						absY := sidebarActiveSectionOffset + 1 + relY // +1 for header line
+						zb.addX(absY+borderOffset, 0, sbVisW, "sidebarBgTask", taskIdx)
+					}
+				}
 			}
 			xShift = sbVisW
 		}
@@ -1426,6 +1446,37 @@ func (m *cliModel) clickSidebarDeleteSession(index int) (bool, tea.Model, tea.Cm
 		m.showTempStatus("Cannot delete the active session")
 		return true, m, nil
 	}
-	cmd := m.deleteLocalSession(entry)
-	return true, m, cmd
+cmd := m.deleteLocalSession(entry)
+ return true, m, cmd
+}
+
+// clickSidebarBgTask handles clicking a background task item in the sidebar.
+// Opens the bgtasks panel in log-viewing mode directly.
+// Pushes a main-view (mode="") entry onto the navigator stack so ESC
+// closes the panel entirely instead of showing the task list.
+func (m *cliModel) clickSidebarBgTask(index int) (bool, tea.Model, tea.Cmd) {
+	// Open the bg tasks panel first (sets up task list, panel mode, etc.)
+	m.openBgTasksPanel()
+
+	// Validate index against the panel's task list
+	if index < 0 || index >= len(m.panelBgTasks) {
+		return true, m, nil
+	}
+
+	// Select the clicked task and enter log view
+	m.panelBgCursor = index
+	task := m.panelBgTasks[index]
+	m.panelBgLogLines = splitLines(task.Output)
+	if len(m.panelBgLogLines) == 0 {
+		m.panelBgLogLines = []string{"(no output)"}
+	}
+	m.panelBgViewing = true
+	m.panelScrollY = 0
+	m.panelBgLogFollow = true
+
+	// Push main-view onto navigator stack so ESC from log view
+	// closes the panel entirely (popPanel restores mode="" = main view).
+	m.panelStack = append(m.panelStack, panelStackEntry{mode: ""})
+
+	return true, m, nil
 }

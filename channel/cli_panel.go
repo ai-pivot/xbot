@@ -332,6 +332,7 @@ func (m *cliModel) closePanel() {
 	m.panelBgViewing = false
 	m.panelScrollY = 0
 	m.panelBgLogLines = nil
+	m.panelBgLogFollow = false
 	// Danger zone cleanup
 	m.panelDangerItems = nil
 	m.panelDangerCursor = 0
@@ -628,6 +629,7 @@ func (m *cliModel) openBgTasksPanel() {
 	m.panelBgViewing = false
 	m.panelScrollY = 0
 	m.panelBgLogLines = nil
+	m.panelBgLogFollow = false
 	// Clamp cursor
 	totalItems := len(m.panelBgTasks) + len(m.panelBgAgents)
 	if totalItems == 0 {
@@ -669,32 +671,41 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	totalItems := len(m.panelBgTasks)
 
 	// Log viewing sub-mode
-	if m.panelBgViewing {
+		if m.panelBgViewing {
 		switch {
 		case msg.Code == tea.KeyEsc || msg.String() == "ctrl+c":
+			// If navigator stack has a parent (e.g. sidebar direct-click),
+			// pop back to it (which closes the panel to main view).
+			// Otherwise, just exit log view back to task list.
+			if !m.popPanel() {
 			m.panelBgViewing = false
 			m.panelScrollY = 0
 			m.panelBgLogLines = nil
+			}
 			return true, m, nil
 		case msg.Code == tea.KeyUp:
 			m.panelScrollY -= 5
 			if m.panelScrollY < 0 {
 				m.panelScrollY = 0
 			}
+			m.panelBgLogFollow = false
 			return true, m, nil
-		case msg.Code == tea.KeyDown:
+			case msg.Code == tea.KeyDown:
 			m.panelScrollY += 5
+			m.panelBgLogFollow = false
 			return true, m, nil
-		case msg.Code == tea.KeyPgUp:
+			case msg.Code == tea.KeyPgUp:
 			m.panelScrollY -= m.panelVisibleHeight()
 			if m.panelScrollY < 0 {
 				m.panelScrollY = 0
 			}
+			m.panelBgLogFollow = false
 			return true, m, nil
-		default:
+			default:
 			// PgDn: bubbletea doesn't have a constant, match by string
 			if msg.String() == "pgdown" {
 				m.panelScrollY += m.panelVisibleHeight()
+				m.panelBgLogFollow = false
 				return true, m, nil
 			}
 		}
@@ -735,6 +746,7 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			}
 			m.panelBgViewing = true
 			m.panelScrollY = 0
+			m.panelBgLogFollow = true
 		}
 		return true, m, nil
 
@@ -858,6 +870,7 @@ func (m *cliModel) viewBgTaskList() string {
 
 // viewBgTaskLog renders the log viewer for a selected task.
 // Returns the FULL content — scrolling is handled by the outer clampPanelScroll + cli_view.go slicing.
+// Refreshes task data on each render so the log updates in real-time while the task runs.
 func (m *cliModel) viewBgTaskLog() string {
 	// §20 使用缓存样式
 	s := &m.styles
@@ -867,8 +880,25 @@ func (m *cliModel) viewBgTaskLog() string {
 		contentW = 20
 	}
 
+	// Refresh task list to get latest output for running tasks
+	latestTasks := m.listBgTasks()
+
 	var title string
-	if m.panelBgCursor >= 0 && m.panelBgCursor < len(m.panelBgTasks) {
+	if m.panelBgCursor >= 0 && m.panelBgCursor < len(latestTasks) {
+		task := latestTasks[m.panelBgCursor]
+		cmd := truncateToWidth(task.Command, contentW-12)
+		title = fmt.Sprintf(m.locale.BgTaskLogTitle, task.ID, cmd)
+		// Update log lines from latest task output
+		oldCount := len(m.panelBgLogLines)
+		m.panelBgLogLines = splitLines(task.Output)
+		newCount := len(m.panelBgLogLines)
+		// Follow-tail: auto-scroll when new lines appear
+		if m.panelBgLogFollow && newCount > oldCount {
+			visibleH := m.panelVisibleHeight() - 1 // -1 for header line
+			m.panelScrollY = max(0, newCount-visibleH)
+		}
+	} else if m.panelBgCursor >= 0 && m.panelBgCursor < len(m.panelBgTasks) {
+		// Fallback to cached task list if refresh returned empty
 		task := m.panelBgTasks[m.panelBgCursor]
 		cmd := truncateToWidth(task.Command, contentW-12)
 		title = fmt.Sprintf(m.locale.BgTaskLogTitle, task.ID, cmd)
@@ -881,7 +911,11 @@ func (m *cliModel) viewBgTaskLog() string {
 	sb.WriteString(help)
 	sb.WriteString("\n")
 
-	for _, line := range m.panelBgLogLines {
+	lines := m.panelBgLogLines
+	if len(lines) == 0 {
+		lines = []string{"(no output yet)"}
+	}
+	for _, line := range lines {
 		sb.WriteString(truncateToWidth(line, contentW))
 		sb.WriteString("\n")
 	}

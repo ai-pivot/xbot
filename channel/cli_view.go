@@ -465,7 +465,20 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 
 	// --- Active tasks (only when something is running) ---
 	if m.bgTaskCount > 0 || m.agentCount > 0 {
-		blocks = append(blocks, m.renderSidebarActive())
+		// Calculate line offset of the Active section within the sidebar content.
+		// Each block contributes its line count, and blocks are separated by "\n\n" (1 extra line).
+		sidebarActiveSectionOffset = 0
+		for i, blk := range blocks {
+			if i > 0 {
+				sidebarActiveSectionOffset++ // separator "\n\n" adds 1 line
+			}
+			sidebarActiveSectionOffset += strings.Count(blk, "\n") + 1
+		}
+		// The "\n\n" separator before the Active block itself adds 1 more line.
+		sidebarActiveSectionOffset++
+		blocks = append(blocks, m.renderSidebarActive(contentW))
+	} else {
+		sidebarActiveSectionOffset = -1
 	}
 
 	content := strings.Join(blocks, "\n\n")
@@ -625,19 +638,53 @@ func (m *cliModel) sidebarSessionEntries() []SessionPanelEntry {
 	return m.listLocalDirSessions()
 }
 
-func (m *cliModel) renderSidebarActive() string {
+func (m *cliModel) renderSidebarActive(w int) string {
+	// Reset tracking
+	sidebarBgTaskLines = nil
+
 	var b strings.Builder
-	b.WriteString(m.styles.SidebarHeader.Render("Active"))
-	b.WriteByte('\n')
+	b.WriteString(m.styles.SidebarHeader.Render("Tasks"))
+
 	if m.bgTaskCount > 0 {
-		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf(" ● bg tasks: %d", m.bgTaskCount)))
-	}
-	if m.agentCount > 0 {
-		if m.bgTaskCount > 0 {
+		// List individual bg tasks so user can click to view log
+		tasks := m.listBgTasks()
+		if len(tasks) == 0 {
+			// Fallback to summary if list is unavailable
 			b.WriteByte('\n')
+			b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf("  bg tasks: %d", m.bgTaskCount)))
+			sidebarBgTaskLines = append(sidebarBgTaskLines, -1)
+		} else {
+			for i, task := range tasks {
+				b.WriteByte('\n')
+				// Layout: " <command>" padded to width w
+				maxCmdW := w - 2 // 2 for leading "  "
+				if maxCmdW < 5 {
+					maxCmdW = 5
+				}
+				cmd := task.Command
+				if lipgloss.Width(cmd) > maxCmdW {
+					cmd = truncateToWidth(cmd, maxCmdW)
+				}
+				line := "  " + cmd
+				lineVisW := lipgloss.Width(line)
+				padding := w - lineVisW
+				if padding < 0 {
+					padding = 0
+				}
+				b.WriteString(m.styles.SidebarItem.Render(line + strings.Repeat(" ", padding)))
+				sidebarBgTaskLines = append(sidebarBgTaskLines, i)
+			}
 		}
-		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf(" ● agents: %d", m.agentCount)))
+	} else {
+		sidebarBgTaskLines = nil
 	}
+
+	if m.agentCount > 0 {
+		b.WriteByte('\n')
+		b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf("  agents: %d", m.agentCount)))
+		// Agent lines are not individually clickable (use agents panel instead)
+	}
+
 	return b.String()
 }
 
@@ -1338,6 +1385,16 @@ var sidebarDeleteXStart []int
 
 // sidebarDeleteXEnd is the X end of each "×" delete button.
 var sidebarDeleteXEnd []int
+
+// sidebarBgTaskLines tracks Y-offsets of each bg task row in the sidebar's "Active" section.
+// Populated during renderSidebarActive, consumed by trackMainLayoutZones.
+// -1 means "no task" (header, blank line, etc).
+var sidebarBgTaskLines []int
+
+// sidebarActiveSectionOffset tracks the Y-offset of the "Active" section header
+// within the sidebar content. Used by trackMainLayoutZones to register bg task zones.
+// -1 means not rendered.
+var sidebarActiveSectionOffset int
 
 // renderFooter 渲染底部快捷键提示条。
 // 根据当前状态动态显示最相关的快捷键，避免信息过载。
