@@ -19,9 +19,12 @@ function App() {
   }, [])
 
   if (authed === null) {
+    const theme = savedTheme
+    const isDark = theme !== 'light'
     return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-900 text-slate-400">
-        Loading...
+      <div className={`flex flex-col items-center justify-center min-h-screen gap-3 ${isDark ? 'bg-slate-900 text-slate-400' : 'bg-stone-100 text-stone-400'}`}>
+        <div className="w-6 h-6 border-2 border-current border-t-transparent rounded-full animate-spin" />
+        <span className="text-sm">Loading...</span>
       </div>
     )
   }

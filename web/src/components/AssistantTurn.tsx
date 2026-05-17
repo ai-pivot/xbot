@@ -125,6 +125,8 @@ function isThinkingContent(content: string): boolean {
 }
 
 export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress }: AssistantTurnProps) {
+  const [copied, setCopied] = useState(false)
+
   // Classify messages
   const thinkingMsgs: Message[] = []
   const textMsgs: Message[] = []
@@ -135,6 +137,15 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
     } else {
       textMsgs.push(msg)
     }
+  }
+
+  const handleCopy = () => {
+    const text = textMsgs.map(m => m.content).join('\n\n')
+    if (!text) return
+    navigator.clipboard.writeText(text).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 2000) },
+      () => { /* clipboard unavailable (e.g. HTTP) */ },
+    )
   }
 
   // Use live progress when loading, fall back to savedProgress for completed turns
@@ -176,7 +187,17 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
 
   return (
     <div className="flex justify-start">
-      <div className="assistant-turn-container">
+      <div className="assistant-turn-container group relative">
+        {/* Copy button — visible on hover */}
+        {textMsgs.length > 0 && !loading && (
+          <button
+            onClick={handleCopy}
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded text-xs bg-slate-700/60 hover:bg-slate-600/80 text-slate-300 hover:text-white backdrop-blur-sm"
+            title="复制内容"
+          >
+            {copied ? '✓' : '📋'}
+          </button>
+        )}
         {/* Collapsible: Thinking section */}
         {thinkingMsgs.length > 0 && (
           <CollapsibleSection icon="💭" title="思考过程" badge={thinkingMsgs.length} className="thinking-section">

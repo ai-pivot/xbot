@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, lazy, Suspense } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -12,11 +12,11 @@ import ProgressPanel from './components/ProgressPanel'
 import AssistantTurn from './components/AssistantTurn'
 import ChatSidebar from './components/ChatSidebar'
 import TiptapEditor from './components/TiptapEditor'
-import SearchPanel from './components/SearchPanel'
 import AskUserPanel from './components/AskUserPanel'
 import FileUpload, { uploadFile, usePasteUpload, type PendingFile } from './components/FileUpload'
 
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
+const SearchPanel = lazy(() => import('./components/SearchPanel'))
 
 const codeBlockComponents = getCodeBlockProps()
 
@@ -848,6 +848,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setSearchOpen(prev => !prev)
   }, [])
 
+  const turns = useMemo(() => groupMessagesIntoTurns(messages), [messages])
+
   return (
     <div className={`flex flex-col h-screen bg-slate-900${dragActive ? ' drag-active' : ''}`}
          onDragOver={handleDragOver}
@@ -938,12 +940,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       </header>
 
       {/* Search panel */}
-      <SearchPanel
-        open={searchOpen}
-        onClose={() => setSearchOpen(false)}
-        onToggle={handleSearchToggle}
-        messagesContainerRef={messagesContainerRef}
-      />
+      <Suspense fallback={null}>
+        <SearchPanel
+          open={searchOpen}
+          onClose={() => setSearchOpen(false)}
+          onToggle={handleSearchToggle}
+          messagesContainerRef={messagesContainerRef}
+        />
+      </Suspense>
 
       {/* Disconnected / Reconnecting banner */}
       {!connected && serverStopped && (
@@ -987,15 +991,22 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         aria-label="消息"
       >
         {messages.length === 0 && !loading && (
-          <div className="text-center py-20">
-            <div className="text-4xl mb-3 opacity-40">🤖</div>
-            <p className="text-slate-500 text-sm">开始一段对话</p>
-            <p className="text-slate-600 text-xs mt-1">发送消息开始与 AI 助手交流</p>
+          <div className="text-center py-20 animate-fade-in">
+            <div className="text-5xl mb-4 opacity-30">🤖</div>
+            <p className="text-slate-400 text-base font-medium mb-2">开始一段对话</p>
+            <p className="text-slate-500 text-sm mb-8">发送消息开始与 AI 助手交流</p>
+            <div className="flex flex-col items-center gap-2 text-xs text-slate-600">
+              <span className="px-3 py-1 rounded-full bg-slate-800/50 border border-slate-700/50">
+                按 <kbd className="px-1 py-0.5 rounded bg-slate-700/60 text-slate-400 font-mono text-[10px]">Ctrl+K</kbd> 搜索历史消息
+              </span>
+              <span className="px-3 py-1 rounded-full bg-slate-800/50 border border-slate-700/50">
+                输入 <kbd className="px-1 py-0.5 rounded bg-slate-700/60 text-slate-400 font-mono text-[10px]">/</kbd> 查看快捷指令
+              </span>
+            </div>
           </div>
         )}
 
         {(() => {
-          const turns = groupMessagesIntoTurns(messages)
           const eagerCount = 6 // always render last N turns (avoids lazy-load vs scroll conflict)
           return turns.map((turn, i) => {
             const isLatestTurn = i === turns.length - 1
