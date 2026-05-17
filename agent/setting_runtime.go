@@ -161,6 +161,13 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	"sidebar_sections": {},
 	"chat_max_width":   {},
 	"chat_center":      {},
+
+	// --- Worktree isolation ---
+	"auto_worktree": {
+		ApplyConfig: func(cfg *config.Config, value string) {
+			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
+		},
+	},
 }
 
 // ApplyRuntimeSetting applies a single setting change to the in-memory config and agent.
@@ -205,6 +212,19 @@ func ApplyRuntimeSettings(cfg *config.Config, ag *Agent, senderID string, values
 	}
 	if ag != nil {
 		ag.LLMFactory().SetModelTiers(cfg.LLM)
+	}
+}
+
+// ApplyRuntimeSettingsLocal applies setting changes to the in-memory config only
+// (no agent backend side effects). Used by the CLI process to update its local cfg
+// copy before persisting to config.json.
+func ApplyRuntimeSettingsLocal(cfg *config.Config, values map[string]string) {
+	for k, v := range values {
+		handler, ok := SettingHandlerRegistry[k]
+		if !ok || handler.ApplyConfig == nil {
+			continue
+		}
+		handler.ApplyConfig(cfg, v)
 	}
 }
 

@@ -1768,10 +1768,17 @@ func (m *cliModel) renderToolContentBelow(tool *protocol.ToolProgress, guide str
 			guideW := lipgloss.Width(g)
 			for _, line := range strings.Split(body, "\n") {
 				// Final safety net: ensure guide + rendered line fits within bodyW.
-				// Tool body renderers (renderGrepBody etc.) truncate to bodyContentW,
-				// but lipgloss.Style.Render() may change effective width.
+				// Tool body renderers (renderShellBody etc.) wrap to bodyContentW,
+				// but lipgloss.Style.Render() may change effective width. Use hardWrapRunes
+				// so overflow lines wrap (preserving content) instead of truncating.
 				if visW := lipgloss.Width(line); guideW+visW > bodyW {
-					line = truncateToWidth(line, bodyW-guideW)
+					wrapped := hardWrapRunes(line, bodyW-guideW)
+					for _, wl := range strings.Split(wrapped, "\n") {
+						sb.WriteString(g)
+						sb.WriteString(wl)
+						sb.WriteString("\n")
+					}
+					continue
 				}
 				sb.WriteString(g)
 				sb.WriteString(line)
@@ -2929,22 +2936,41 @@ func (m *cliModel) renderShellBody(tool protocol.ToolProgress, maxW int, t cliTh
 
 	// Show command
 	if command != "" {
-		command = ansi.Truncate(command, maxW-3, "") + "..."
-		sb.WriteString(lipgloss.NewStyle().Foreground(fgPrompt).Render("$ " + command))
-		sb.WriteString("\n")
+		commandLine := "$ " + ansi.Truncate(command, maxW-5, "") + "..."
+		for _, wl := range strings.Split(hardWrapRunes(commandLine, maxW), "\n") {
+			sb.WriteString(lipgloss.NewStyle().Foreground(fgPrompt).Render(wl))
+			sb.WriteString("\n")
+		}
 	}
 
-	// Show output (truncated)
+	// Show output (wrapped to fit)
+	// Progress bars (tqdm etc.) use \r to overwrite the same line.
+	// When captured as output, \r-embedded lines confuse the terminal:
+	// \r moves cursor to column 0, overwriting the guide prefix.
+	// Strategy: for each output line, keep only the content after the
+	// last \r (i.e. the final visual state), then wrap normally.
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
 	displayLines := lines
 	if len(displayLines) > toolBodyMaxLines {
 		displayLines = displayLines[:toolBodyMaxLines]
 	}
+	outputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary))
 	for _, line := range displayLines {
-		line = ansi.Truncate(line, maxW, "")
-		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary)).Render(line))
-		sb.WriteString("\n")
+		// Strip carriage-return overwrites: keep only the final visual
+		// state (content after the last \r). This handles progress bars
+		// (tqdm etc.) whose output contains multiple \r-separated frames.
+		if idx := strings.LastIndex(line, "\r"); idx >= 0 {
+			line = line[idx+1:]
+		}
+		// Skip empty lines after \r stripping (fully overwritten frames)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		for _, wl := range strings.Split(hardWrapRunes(line, maxW), "\n") {
+			sb.WriteString(outputStyle.Render(wl))
+			sb.WriteString("\n")
+		}
 	}
 	if totalLines > toolBodyMaxLines {
 		hidden := totalLines - toolBodyMaxLines
@@ -2974,10 +3000,12 @@ func (m *cliModel) renderGrepBody(tool protocol.ToolProgress, maxW int, t cliThe
 	}
 
 	var sb strings.Builder
+	grepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary))
 	for _, line := range displayLines {
-		line = ansi.Truncate(line, maxW, "")
-		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary)).Render(line))
-		sb.WriteString("\n")
+		for _, wl := range strings.Split(hardWrapRunes(line, maxW), "\n") {
+			sb.WriteString(grepStyle.Render(wl))
+			sb.WriteString("\n")
+		}
 	}
 	if totalLines > toolBodyMaxLines {
 		hidden := totalLines - toolBodyMaxLines
@@ -3008,11 +3036,15 @@ func (m *cliModel) renderGlobBody(tool protocol.ToolProgress, maxW int, t cliThe
 	}
 
 	var sb strings.Builder
+	indentStyle := lipgloss.NewStyle().Foreground(fgMeta)
+	fileStyle := lipgloss.NewStyle().Foreground(fgFile)
 	for _, line := range displayLines {
-		line = ansi.Truncate(line, maxW, "")
-		sb.WriteString(lipgloss.NewStyle().Foreground(fgMeta).Render("  "))
-		sb.WriteString(lipgloss.NewStyle().Foreground(fgFile).Render(line))
-		sb.WriteString("\n")
+		// Account for "  " indent: wrap file path to maxW-2, then prepend indent.
+		for _, wl := range strings.Split(hardWrapRunes(line, maxW-2), "\n") {
+			sb.WriteString(indentStyle.Render("  "))
+			sb.WriteString(fileStyle.Render(wl))
+			sb.WriteString("\n")
+		}
 	}
 	if totalLines > toolBodyMaxLines {
 		hidden := totalLines - toolBodyMaxLines

@@ -97,6 +97,9 @@ var AllSettingDefs = []SettingDef{
 	{Key: "chat_max_width", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Max chat width in columns", ValidValues: "0-200", DefaultValue: "0"},
 	{Key: "chat_center", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Center chat area", ValidValues: "true|false", DefaultValue: "false"},
 
+	// ── Worktree isolation ──
+	{Key: "auto_worktree", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Automatically create isolated git worktrees for each session (no shared workspace)", ValidValues: "true|false", DefaultValue: "false"},
+
 	{Key: "language", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "UI language", ValidValues: "zh|en|ja", DefaultValue: "zh"},
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
 	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},

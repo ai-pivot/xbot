@@ -197,8 +197,12 @@ func (r *WorktreeRegistry) GetCWD(sessionKey string) string {
 }
 
 // RegisterPeer registers a session for peer awareness without creating a worktree.
-// Used when auto_worktree is disabled. Sessions are registered as "shared"
-// to indicate they share the main workspace and agents must coordinate.
+// Used when auto_worktree is disabled. The first session in a repo is registered
+// as "primary"; subsequent sessions are registered as "peer" (sharing the main
+// workspace, no file isolation).
+//
+// Entries created by RegisterPeer are NOT persisted to disk — they are runtime-only
+// peer awareness data that becomes stale across process restarts.
 func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	if r.GetBySession(sessionKey) != nil {
 		return // already registered
@@ -213,9 +217,18 @@ func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	if _, exists := r.bySess[sessionKey]; exists {
 		return
 	}
+	// Determine role: first session → primary, others → peer.
+	// Must check inline (not via GetPrimary) because we already hold mu.Lock.
+	role := "primary"
+	for _, e := range r.byRepo[repoPath] {
+		if e.Role == "primary" {
+			role = "peer"
+			break
+		}
+	}
 	entry := &WorktreeEntry{
 		SessionKey:  sessionKey,
-		Role:        "shared",
+		Role:        role,
 		RepoPath:    repoPath,
 		WorktreeDir: "",
 		Branch:      "",
@@ -223,7 +236,8 @@ func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 	}
 	r.bySess[sessionKey] = entry
 	r.byRepo[repoPath] = append(r.byRepo[repoPath], entry)
-	r.saveRepoLocked(repoPath)
+	// Do NOT saveRepoLocked: peer-awareness entries are runtime-only.
+	// Only entries with real worktrees (WorktreeDir != "") need persistence.
 }
 
 // ensureLoadedBySession tries to load persisted data for the repo that
@@ -279,6 +293,10 @@ func (r *WorktreeRegistry) loadRepoLocked(repoPath string) {
 			if _, err := os.Stat(e.WorktreeDir); os.IsNotExist(err) {
 				continue // orphaned worktree dir gone
 			}
+		} else {
+			// Entries without worktrees are runtime-only peer awareness data
+			// from a previous process. Skip them — they become stale on restart.
+			continue
 		}
 		r.bySess[e.SessionKey] = e
 		r.byRepo[e.RepoPath] = append(r.byRepo[e.RepoPath], e)
@@ -311,6 +329,35 @@ func (r *WorktreeRegistry) saveRepoLocked(repoPath string) {
 
 // --- Worktree helper functions ---
 
+// gitEnvBlocklist contains GIT_* variables that must be stripped from
+// subprocess environments so that git commands operate on the intended
+// directory instead of the parent repo (e.g. during pre-commit hooks).
+var gitEnvBlocklist = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+}
+
+// cleanGitEnv returns os.Environ() with git plumbing variables removed.
+func cleanGitEnv() []string {
+	var env []string
+	for _, e := range os.Environ() {
+		strip := false
+		for _, prefix := range gitEnvBlocklist {
+			if strings.HasPrefix(e, prefix+"=") {
+				strip = true
+				break
+			}
+		}
+		if !strip {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
 // GitRepoRoot returns the absolute root of the git repo containing dir.
 // Works correctly in both regular repos and git worktrees (uses git-common-dir).
 func GitRepoRoot(dir string) (string, error) {
@@ -330,6 +377,7 @@ func GitRepoRoot(dir string) (string, error) {
 
 	// Regular directory: use git rev-parse
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	cmd.Env = cleanGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %w", err)
@@ -434,12 +482,11 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 }
 
 // pruneOrphanWorktrees cleans up worktree metadata for directories that no longer exist.
-// AutoDetectAndInit checks whether the current session needs worktree isolation.
-// It is called automatically at session start (before buildPrompt).
+// AutoDetectAndInit creates an isolated git worktree for the current session.
+// Called automatically at session start when auto_worktree is enabled.
 //
-// - If no other sessions are active in the repo → registers this session as primary (no worktree).
-// - If another session is already primary → creates a worktree for this session.
-// - Returns the worktree entry (primary or peer), or nil if not a git repo.
+// Every session gets its own worktree — no primary concept. All agents are equal peers.
+// Returns the worktree entry, or nil if not a git repo or worktree creation fails.
 func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 	// Check if in a git repo
 	repoPath, err := GitRepoRoot(workDir)
@@ -452,23 +499,7 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 		return entry
 	}
 
-	// Is there already a primary?
-	primary := GlobalWorktreeRegistry.GetPrimary(repoPath)
-	if primary == nil {
-		// First session → register as primary
-		entry := &WorktreeEntry{
-			SessionKey: sessionKey,
-			Role:       "primary",
-			RepoPath:   repoPath,
-			Status:     "working",
-		}
-		if err := GlobalWorktreeRegistry.Register(entry); err != nil {
-			return nil
-		}
-		return entry
-	}
-
-	// Another session is primary → create worktree for this session
+	// All sessions get a worktree — no primary concept.
 	branch := generateBranchName("peer", sessionKey, "")
 	branch = strings.ReplaceAll(branch, ":", "-") // sessionKey may contain ":"
 
