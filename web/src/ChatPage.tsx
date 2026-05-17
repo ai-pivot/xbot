@@ -189,6 +189,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const progressRef = useRef<WsProgressPayload | null>(null) // sync ref to avoid stale closures
   const reasoningRef = useRef<string>('') // accumulated reasoning from stream_content
   const streamingContentRef = useRef<string>('') // accumulated content from stream_content
+  const loadHistoryIdRef = useRef(0) // race protection for loadHistory
   const resetProgress = createResetProgress({
     setProgress: (v) => setProgress(v),
     setLiveIterations: setLiveIterationsSync,
@@ -317,9 +318,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   // --- Load history (extracted for reuse on chat switch) ---
   const loadHistory = useCallback(() => {
+    const currentId = ++loadHistoryIdRef.current
     fetch('/api/history')
       .then((r) => r.json())
       .then((data) => {
+        if (loadHistoryIdRef.current !== currentId) return // race protection: discard stale response
         if (data.ok && data.messages) {
           const hist: Message[] = data.messages
             .filter((m: { role: string; content?: string; tool_calls?: string; detail?: string; display_only?: number }) => {
@@ -400,7 +403,10 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           }, 100)
         }
       })
-      .catch((err) => { console.warn('[ChatPage] failed to load history:', err) })
+      .catch((err) => {
+        if (loadHistoryIdRef.current !== currentId) return
+        console.warn('[ChatPage] failed to load history:', err)
+      })
     fetchContextInfo()
   }, [scrollToBottom, fetchContextInfo])
 
