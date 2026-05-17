@@ -363,6 +363,74 @@ const en: Record<I18nKey, string> = {
   hoursAgo: '{n}h ago',
   daysAgo: '{n}d ago',
 
+  // ─── Image Brightness ───
+  imageBrightnessLabel: 'Image Brightness',
+  imageBrightnessHint: 'Adjust image brightness in dark mode',
+
+  // ─── Upload Queue (Batch 2) ───
+  uploadQueue: 'Upload Queue',
+  uploadProgress: '{percent}%',
+  uploadComplete: 'Upload complete',
+  uploadCancelled: 'Upload cancelled',
+  uploadRetrying: 'Retrying...',
+  cancelUpload: 'Cancel upload',
+  retryUpload: 'Retry upload',
+  queueEmpty: 'No uploads in queue',
+  uploading: 'Uploading...',
+  uploadError: 'Upload error',
+  filesSelected: '{count} files selected',
+  uploadAll: 'Upload All',
+  clearCompleted: 'Clear completed',
+  uploadSpeed: '{speed}/s',
+  uploadRemaining: '{time} remaining',
+  parallelUploads: 'Parallel uploads',
+  uploadPaused: 'Paused',
+  pauseUpload: 'Pause',
+  resumeUpload: 'Resume',
+
+  // ─── Swipe & Context Menu (Batch 3) ───
+  swipeToReply: '← Swipe to reply',
+  doubleClickToReply: 'Double-click to reply',
+  copyMessageLink: 'Copy message link',
+  quoteMessage: 'Quote',
+  forwardMessage: 'Forward',
+  messageActions: 'Message actions',
+  pinMessage: 'Pin',
+  unpinMessage: 'Unpin',
+
+  // ─── Command Palette (Batch 4) ───
+  commandPalette: 'Command Palette',
+  commandPaletteHint: 'Type a command or search...',
+  commandPaletteTabCommands: 'Commands',
+  commandPaletteTabSearch: 'Search',
+  noMatchingCommands: 'No matching commands',
+  quickActions: 'Quick Actions',
+  openCommandPalette: 'Ctrl+K Command Palette',
+  runCommand: 'Run',
+
+  // ─── Onboarding (Batch 4) ───
+  onboardingTip: '💡 Press Ctrl+K to open the command palette for quick search and actions',
+  onboardingDismiss: 'Got it',
+  onboardingPrev: 'Previous',
+  onboardingNext: 'Next',
+  onboardingDone: 'Get started',
+
+  // ─── Media Player (Batch 5) ───
+  audioPlayer: 'Audio Player',
+  videoPlayer: 'Video Player',
+  play: 'Play',
+  pause: 'Pause',
+  volume: 'Volume',
+  mute: 'Mute',
+  unmute: 'Unmute',
+  fullscreen: 'Fullscreen',
+  exitFullscreen: 'Exit Fullscreen',
+  mediaNotSupported: 'Browser does not support this media format',
+  playbackSpeed: 'Playback Speed',
+  normalSpeed: 'Normal',
+  pip: 'Picture-in-Picture',
+  exitPip: 'Exit Picture-in-Picture',
+
 }
 
 export default en

@@ -48,6 +48,7 @@ body {
   --xbot-scrollbar-thumb-hover: #475569;
   --xbot-bg-copy-btn: rgba(51, 65, 85, 0.6);
   --xbot-bg-copy-btn-hover: rgba(71, 85, 105, 0.8);
+  --xbot-img-brightness: 1;
 }
 
 [data-theme="light"] {

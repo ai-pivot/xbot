@@ -30,6 +30,8 @@
   max-height: 200px;
   object-fit: cover;
   cursor: pointer;
+  filter: brightness(var(--xbot-img-brightness, 1));
+  transition: filter 0.2s ease;
 }
 
 .attachment-meta {
@@ -138,6 +140,8 @@
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   cursor: default;
+  filter: brightness(var(--xbot-img-brightness, 1));
+  transition: filter 0.2s ease;
 }
 
 .image-preview-close {

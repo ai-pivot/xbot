@@ -361,6 +361,74 @@ const zhCN = {
   hoursAgo: '{n}小时前',
   daysAgo: '{n}天前',
 
+  // ─── Image Brightness ───
+  imageBrightnessLabel: '图片亮度',
+  imageBrightnessHint: '调整暗色模式下图片显示亮度',
+
+  // ─── Upload Queue (Batch 2) ───
+  uploadQueue: '上传队列',
+  uploadProgress: '{percent}%',
+  uploadComplete: '上传完成',
+  uploadCancelled: '上传已取消',
+  uploadRetrying: '重试中...',
+  cancelUpload: '取消上传',
+  retryUpload: '重试上传',
+  queueEmpty: '暂无上传任务',
+  uploading: '上传中...',
+  uploadError: '上传出错',
+  filesSelected: '已选择 {count} 个文件',
+  uploadAll: '全部上传',
+  clearCompleted: '清除已完成',
+  uploadSpeed: '{speed}/s',
+  uploadRemaining: '剩余 {time}',
+  parallelUploads: '并行上传数',
+  uploadPaused: '已暂停',
+  pauseUpload: '暂停',
+  resumeUpload: '继续',
+
+  // ─── Swipe & Context Menu (Batch 3) ───
+  swipeToReply: '← 滑动回复',
+  doubleClickToReply: '双击回复',
+  copyMessageLink: '复制消息链接',
+  quoteMessage: '引用',
+  forwardMessage: '转发',
+  messageActions: '消息操作',
+  pinMessage: '置顶',
+  unpinMessage: '取消置顶',
+
+  // ─── Command Palette (Batch 4) ───
+  commandPalette: '命令面板',
+  commandPaletteHint: '输入命令或搜索...',
+  commandPaletteTabCommands: '命令',
+  commandPaletteTabSearch: '搜索',
+  noMatchingCommands: '无匹配命令',
+  quickActions: '快捷操作',
+  openCommandPalette: 'Ctrl+K 命令面板',
+  runCommand: '执行',
+
+  // ─── Onboarding (Batch 4) ───
+  onboardingTip: '💡 按 Ctrl+K 打开命令面板，快速搜索和执行操作',
+  onboardingDismiss: '知道了',
+  onboardingPrev: '上一步',
+  onboardingNext: '下一步',
+  onboardingDone: '开始使用',
+
+  // ─── Media Player (Batch 5) ───
+  audioPlayer: '音频播放器',
+  videoPlayer: '视频播放器',
+  play: '播放',
+  pause: '暂停',
+  volume: '音量',
+  mute: '静音',
+  unmute: '取消静音',
+  fullscreen: '全屏',
+  exitFullscreen: '退出全屏',
+  mediaNotSupported: '浏览器不支持此媒体格式',
+  playbackSpeed: '播放速度',
+  normalSpeed: '正常',
+  pip: '画中画',
+  exitPip: '退出画中画',
+
 } as const
 
 export type I18nKey = keyof typeof zhCN

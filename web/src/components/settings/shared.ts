@@ -14,6 +14,7 @@ export interface UserSettings {
   nickname: string
   language: Language
   preset_commands?: string
+  image_brightness?: number
 }
 
 export interface MarketEntry {
@@ -77,6 +78,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   font_size: 'medium',
   nickname: '',
   language: 'zh-CN',
+  image_brightness: 1,
 }
 
 export const LS_KEYS: Record<string, string> = {
@@ -84,6 +86,7 @@ export const LS_KEYS: Record<string, string> = {
   font_size: 'xbot-font-size',
   nickname: 'xbot-nickname',
   language: 'xbot-language',
+  image_brightness: 'xbot-image-brightness',
 }
 
 export const TABS: { id: TabId; labelKey: I18nKey; icon: string }[] = [
@@ -107,7 +110,9 @@ export type { PresetCommand }
 
 export function lsGet<K extends keyof UserSettings>(key: K, fallback: UserSettings[K]): UserSettings[K] {
   const raw = localStorage.getItem(LS_KEYS[key])
-  return (raw as UserSettings[K]) || fallback
+  if (raw === null || raw === undefined) return fallback
+  if (typeof fallback === 'number') return Number(raw) as UserSettings[K]
+  return raw as UserSettings[K]
 }
 
 export function lsSet<K extends keyof UserSettings>(key: K, value: UserSettings[K]) {
