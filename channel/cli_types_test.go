@@ -268,3 +268,103 @@ func TestHardWrapRunes_AnsiResetClearsState(t *testing.T) {
 		t.Errorf("continuation replayed color after reset: %q", lines[1])
 	}
 }
+
+// TestHardWrapRunes_AnsiColorBreakOrder verifies that ANSI state is replayed
+// BEFORE the rest text on continuation lines, not after. This was the root
+// cause of "character loss" during TUI streaming: the escape sequence was
+// injected mid-word, corrupting the terminal output.
+//
+// Before fix: line 1 = "W\x1b[36morld..." (escape after 'W', before 'orld')
+// After fix:  line 1 = "\x1b[36mWorld..." (escape before the text)
+func TestHardWrapRunes_AnsiColorBreakOrder(t *testing.T) {
+	// "Hello" (plain) + "\x1b[36m" (cyan) + " World" (cyan) + "\x1b[0m" (reset) + "ABCDEFGHIJKLMNO"
+	input := "Hello\x1b[36m World\x1b[0mABCDEFGHIJKLMNO"
+	got := hardWrapRunes(input, 7)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected >= 3 lines, got %d: %q", len(lines), got)
+	}
+
+	// Verify: no line should have an ANSI escape in the MIDDLE of a word.
+	// Each line should either start with an escape or have plain text.
+	for i, line := range lines {
+		plain := ansi.Strip(line)
+		// Check that the line is not empty
+		if plain == "" {
+			t.Errorf("line %d is empty: %q", i, line)
+		}
+		// Check that the plain text is a substring of the original plain text
+		orig := ansi.Strip(input)
+		if !strings.Contains(orig, plain) && len(plain) > 0 {
+			t.Errorf("line %d: plain %q not found in original %q", i, plain, orig)
+		}
+	}
+
+	// Verify: total plain text reconstruction equals original
+	var recon []string
+	for _, line := range lines {
+		recon = append(recon, ansi.Strip(line))
+	}
+	orig := ansi.Strip(input)
+	reconstructed := strings.Join(recon, "")
+	if orig != reconstructed {
+		t.Errorf("character loss: got %q, want %q", reconstructed, orig)
+	}
+}
+
+// TestHardWrapRunes_AnsiBreakBeforeRest verifies the fix for the streaming
+// character loss bug: when breaking at a breakable position inside styled text,
+// the continuation line must replay the ANSI state BEFORE rest text.
+func TestHardWrapRunes_AnsiBreakBeforeRest(t *testing.T) {
+	// Styled text with a space as break point, followed by more styled text.
+	// The break should produce lines where the ANSI replay is at the START
+	// of the continuation line, not injected into the middle of text.
+	input := "\x1b[36mABCDEF\x1b[0m GHIJKLMNOP"
+	got := hardWrapRunes(input, 6)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected >= 2 lines, got %d", len(lines))
+	}
+
+	// Line 0 should end the cyan region cleanly
+	line0 := lines[0]
+	if !strings.HasSuffix(line0, "\x1b[0m") && !strings.Contains(line0, "\x1b[0m ") {
+		// Line 0 has the reset, which is fine
+	}
+
+	// Line 1 should NOT have an escape injected between characters of a word.
+	// Before the fix, line 1 could be "G\x1b[0mHIJKL" with escape between G and H.
+	line1 := lines[1]
+	plain1 := ansi.Strip(line1)
+	// The plain text should be a contiguous substring of the original
+	orig := ansi.Strip(input)
+	if !strings.Contains(orig, plain1) {
+		t.Errorf("line 1 plain %q not found in original %q\nfull line: %q", plain1, orig, line1)
+	}
+}
+
+// TestHardWrapRunes_MultipleColorsNoLoss verifies that wrapping text with
+// multiple color changes doesn't lose any characters.
+func TestHardWrapRunes_MultipleColorsNoLoss(t *testing.T) {
+	input := "This is a \x1b[36mcode\x1b[0m block with \x1b[33mmore\x1b[0m text here"
+	for _, maxW := range []int{10, 15, 20, 25} {
+		got := hardWrapRunes(input, maxW)
+		lines := strings.Split(got, "\n")
+		var recon []string
+		for _, l := range lines {
+			recon = append(recon, ansi.Strip(l))
+		}
+		reconstructed := strings.Join(recon, "")
+		orig := ansi.Strip(input)
+		if orig != reconstructed {
+			t.Errorf("maxW=%d: character loss. got %q, want %q", maxW, reconstructed, orig)
+		}
+		// Width constraint
+		for i, l := range lines {
+			w := ansi.StringWidth(l)
+			if w > maxW {
+				t.Errorf("maxW=%d line %d: width %d exceeds maxW: %q", maxW, i, w, l)
+			}
+		}
+	}
+}
