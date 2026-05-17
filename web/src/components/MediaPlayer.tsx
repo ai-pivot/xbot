@@ -19,7 +19,7 @@ function exitFS(): Promise<void> {
   return Promise.reject(new Error('Fullscreen not supported'))
 }
 
-function isFullscreen(): boolean {
+function checkFullscreen(): boolean {
   return !!(document.fullscreenElement ?? (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement)
 }
 
@@ -32,7 +32,7 @@ interface UseMediaPlayerOptions {
 }
 
 interface UseMediaPlayerReturn {
-  mediaRef: React.RefObject<HTMLAudioElement | HTMLVideoElement>
+  mediaRef: React.RefObject<HTMLAudioElement | HTMLVideoElement | null>
   playing: boolean
   currentTime: number
   duration: number
@@ -374,7 +374,7 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
 
   // Track fullscreen state via event
   useEffect(() => {
-    const handler = () => setIsFullscreen(isFullscreen())
+    const handler = () => setIsFullscreen(checkFullscreen())
     document.addEventListener('fullscreenchange', handler)
     document.addEventListener('webkitfullscreenchange', handler)
     return () => {
@@ -421,7 +421,7 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
   const toggleFullscreen = useCallback(() => {
     const el = containerRef.current
     if (!el) return
-    if (isFullscreen()) {
+    if (checkFullscreen()) {
       exitFS()
     } else {
       requestFS(el)

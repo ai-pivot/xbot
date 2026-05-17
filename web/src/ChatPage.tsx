@@ -30,7 +30,6 @@ import FileUpload, { uploadFile, usePasteUpload, type PendingFile } from './comp
 import { AudioPlayer, VideoPlayer } from './components/MediaPlayer'
 
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
-const SearchPanel = lazy(() => import('./components/SearchPanel'))
 const CommandPalette = lazy(() => import('./components/CommandPalette'))
 import OnboardingTip from './components/OnboardingTip'
 
@@ -728,11 +727,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   // --- Paste handler (for images) ---
   const handlePaste = usePasteUpload(handleFileUploaded, loading, showToast)
-
-  // --- Search toggle callback (stable for SearchPanel) ---
-  const handleSearchToggle = useCallback(() => {
-    setSearchOpen(prev => !prev)
-  }, [])
 
 
   // --- Global keyboard shortcuts ---

@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { useTranslation } from '../i18n'
+import { useTranslation, type I18nKey } from '../i18n'
 
 const ONBOARDING_KEY = 'xbot-onboarding-done'
 
 interface Step {
-  titleKey: string
-  descKey: string
+  titleKey: I18nKey
+  descKey: I18nKey
   icon: string
 }
 
