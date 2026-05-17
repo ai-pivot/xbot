@@ -103,6 +103,9 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
     return () => window.removeEventListener('runner-status-change', handler)
   }, [fetchRunners])
 
+  // Shell-quote a string for safe terminal paste
+  const shellQuote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'"
+
   // Build connect command for a runner
   const buildCommand = useCallback((runner: RunnerInfo) => {
     // Prefer server-provided ws_url, fall back to deriving from serverUrl or window.location
@@ -115,12 +118,12 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
     }
     // Use server-provided sender_id (e.g. "web-1"), not hardcoded "web-0"
     const sid = serverSenderId || 'web-0'
-    let cmd = `./xbot-runner --server ${wsBase}/ws/${sid} --token ${runner.token}`
+    let cmd = `./xbot-runner --server ${shellQuote(wsBase + '/ws/' + sid)} --token ${shellQuote(runner.token)}`
     if (runner.mode === 'docker' && runner.docker_image) {
-      cmd += ` --mode docker --docker-image ${runner.docker_image}`
+      cmd += ` --mode docker --docker-image ${shellQuote(runner.docker_image)}`
     }
     if (runner.workspace) {
-      cmd += ` --workspace ${runner.workspace}`
+      cmd += ` --workspace ${shellQuote(runner.workspace)}`
     }
     return cmd
   }, [serverWsUrl, serverUrl, serverSenderId])
@@ -339,7 +342,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
               type="text"
               className="settings-input"
               placeholder={t('runnerNamePlaceholder')}
-              maxLength={50}
+              maxLength={64}
               value={formName}
               onChange={e => setFormName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleCreate() }}
