@@ -164,7 +164,7 @@ export function getCodeBlockProps() {
           type="checkbox"
           disabled
           checked={!!props.checked}
-          style={{ margin: '0 6px 0 0', accentColor: '#3b82f6', cursor: 'default', pointerEvents: 'none' }}
+          className="xbot-checkbox"
         />
       )
     },
@@ -173,7 +173,7 @@ export function getCodeBlockProps() {
 
       if (hasCheckbox) {
         return (
-          <li style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
+          <li className="xbot-task-item">
             {props.children}
           </li>
         )
@@ -182,13 +182,7 @@ export function getCodeBlockProps() {
       if (props.className && /task-list-item/.test(props.className)) {
         return (
           <li
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              listStyle: 'none',
-              marginLeft: '-1.5em',
-            }}
-            className={props.className}
+            className={`xbot-task-list-item ${props.className || ''}`}
           >
             {props.children}
           </li>

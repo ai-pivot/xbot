@@ -176,3 +176,30 @@ describe('Message with replyTo', () => {
     expect(msg.replyTo!.content.length).toBe(80)
   })
 })
+
+// ─── R10 Tests ───
+
+import * as constants from '../constants'
+
+describe('constants.ts exports', () => {
+  it('should export all shared constants', () => {
+    expect(constants.REPLY_PREVIEW_LENGTH).toBe(80)
+    expect(constants.REPLY_INDICATOR_LENGTH).toBe(60)
+    expect(constants.NOTIFICATION_PREVIEW_LENGTH).toBe(100)
+    expect(constants.PRESET_TOOLTIP_LENGTH).toBe(50)
+    expect(constants.PRESET_CONTENT_PREVIEW_LENGTH).toBe(40)
+    expect(constants.ERROR_PREVIEW_LENGTH).toBe(200)
+    expect(constants.VIRTUAL_ROW_HEIGHT_USER).toBe(80)
+    expect(constants.VIRTUAL_ROW_HEIGHT_ASSISTANT).toBe(200)
+    expect(constants.COLLAPSE_LINE_THRESHOLD).toBe(20)
+    expect(constants.CODEBLOCK_COLLAPSE_LINES).toBe(30)
+  })
+
+  it('all constants should be positive numbers', () => {
+    const values = Object.values(constants)
+    for (const v of values) {
+      expect(typeof v).toBe('number')
+      expect(v).toBeGreaterThan(0)
+    }
+  })
+})

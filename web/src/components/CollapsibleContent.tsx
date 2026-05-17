@@ -21,6 +21,9 @@ const CollapsibleContent = memo(function CollapsibleContent({
   const [tooLong, setTooLong] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const measuredRef = useRef(false)
+  const tooLongRef = useRef(false)
+  const thresholdRef = useRef(threshold)
+  thresholdRef.current = threshold
   const { t } = useTranslation()
 
   const checkOverflow = useCallback(() => {
@@ -28,24 +31,24 @@ const CollapsibleContent = memo(function CollapsibleContent({
     if (!el) return
     const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20
     const lineCount = Math.ceil(el.scrollHeight / lineHeight)
-    const isTooLong = lineCount > threshold
-    // Only transition from false→true or when content changes (measuredRef reset)
-    if (isTooLong !== tooLong || !measuredRef.current) {
+    const isTooLong = lineCount > thresholdRef.current
+    if (isTooLong !== tooLongRef.current || !measuredRef.current) {
+      tooLongRef.current = isTooLong
       setTooLong(isTooLong)
       measuredRef.current = true
     }
-  }, [threshold, tooLong])
+  }, []) // stable: uses refs internally
 
   // Use ResizeObserver for reliable overflow detection
   useEffect(() => {
     const el = contentRef.current
     if (!el) return
 
-    // Initial check
+    // Reset measured flag when children change to allow re-evaluation
+    measuredRef.current = false
     checkOverflow()
 
     const observer = new ResizeObserver(() => {
-      // Reset measured flag on resize to allow re-evaluation
       measuredRef.current = false
       checkOverflow()
     })

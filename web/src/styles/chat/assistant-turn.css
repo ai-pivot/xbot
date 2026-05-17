@@ -154,20 +154,6 @@
   background: #2563eb;
 }
 
-/* Collapsible message fade mask — light theme fix */
-.collapsible-fade-mask {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 64px;
-  background: linear-gradient(to top, rgba(30, 41, 59, 0.9), transparent);
-  pointer-events: none;
-}
-[data-theme="light"] .collapsible-fade-mask {
-  background: linear-gradient(to top, rgba(255, 255, 255, 0.9), transparent);
-}
-
 /* ─── Collapsible Content ─── */
 
 .collapsible-wrapper {

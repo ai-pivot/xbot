@@ -273,3 +273,25 @@
   color: #1e293b;
   border-color: #d1cdc7;
 }
+
+/* ─── Markdown table/checkbox utility classes ─── */
+
+.xbot-checkbox {
+  margin: 0 6px 0 0;
+  accent-color: #3b82f6;
+  cursor: default;
+  pointer-events: none;
+}
+
+.xbot-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.xbot-task-list-item {
+  display: flex;
+  align-items: flex-start;
+  list-style: none;
+  margin-left: -1.5em;
+}
