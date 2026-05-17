@@ -30,6 +30,8 @@ import FileUpload, { uploadFile, usePasteUpload, type PendingFile } from './comp
 
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 const SearchPanel = lazy(() => import('./components/SearchPanel'))
+const CommandPalette = lazy(() => import('./components/CommandPalette'))
+import OnboardingTip from './components/OnboardingTip'
 
 const codeBlockComponents = getCodeBlockProps()
 
@@ -221,6 +223,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [replyingTo, setReplyingTo] = useState<{ id: string; content: string; type: 'user' | 'assistant' } | null>(null)
   const [contextInfo, setContextInfo] = useState<{ prompt_tokens: number; max_tokens: number; usage_pct: number; source: string } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
 
@@ -718,8 +721,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     {
       key: 'k',
       ctrl: true,
-      handler: handleSearchToggle,
-      description: 'Toggle search panel',
+      handler: () => setCommandPaletteOpen(prev => !prev),
+      description: 'Toggle command palette',
     },
     {
       key: 'Escape',
@@ -764,6 +767,15 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     },
     overscan: 5,
   })
+
+  // --- Command palette items ---
+  const commandItems = useMemo(() => [
+    { id: 'clear', label: '/clear', icon: '🗑️', description: t('cmdClear'), action: () => { handleSend('/clear') } },
+    { id: 'new', label: '/new', icon: '✨', description: t('cmdNew'), action: () => { handleSend('/new') } },
+    { id: 'help', label: '/help', icon: '❓', description: t('cmdHelp'), action: () => { handleSend('/help') } },
+    { id: 'settings', label: t('settings'), icon: '⚙️', description: t('openSettings'), action: () => { setSettingsOpen(true) } },
+    { id: 'search', label: t('searchHistory'), icon: '🔍', description: t('searchHistory'), action: () => {} },
+  ], [t, handleSend])
 
   // --- Scroll to message (for reply navigation) ---
   const handleScrollToMessage = useCallback((msgId: string) => {
@@ -864,7 +876,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={handleSearchToggle}
+            onClick={() => { setCommandPaletteOpen(true) }}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
             title={t('searchKbHint')} aria-label={t('searchHistory')}
           >
@@ -907,12 +919,12 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         onReorder={tabManager.reorderTabs}
       />
 
-      {/* Search panel */}
+      {/* Command palette (replaces SearchPanel) */}
       <Suspense fallback={null}>
-        <SearchPanel
-          open={searchOpen}
-          onClose={() => setSearchOpen(false)}
-          
+        <CommandPalette
+          open={commandPaletteOpen}
+          onClose={() => setCommandPaletteOpen(false)}
+          commands={commandItems}
           messagesContainerRef={messagesContainerRef}
           virtualizer={virtualizer}
           turns={turns}
@@ -1265,6 +1277,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           />
         </div>
       )}
+      <OnboardingTip />
     </div>
   )
 }

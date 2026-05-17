@@ -414,6 +414,12 @@ const en: Record<I18nKey, string> = {
   onboardingPrev: 'Previous',
   onboardingNext: 'Next',
   onboardingDone: 'Get started',
+  onboardingStep1Title: 'Input Box',
+  onboardingStep1Desc: 'Type messages to chat with AI',
+  onboardingStep2Title: 'File Upload',
+  onboardingStep2Desc: 'Drag & drop or paste to upload files',
+  onboardingStep3Title: 'Command Palette',
+  onboardingStep3Desc: 'Press Ctrl+K for quick search and actions',
 
   // ─── Media Player (Batch 5) ───
   audioPlayer: 'Audio Player',

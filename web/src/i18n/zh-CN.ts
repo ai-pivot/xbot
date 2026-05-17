@@ -412,6 +412,12 @@ const zhCN = {
   onboardingPrev: '上一步',
   onboardingNext: '下一步',
   onboardingDone: '开始使用',
+  onboardingStep1Title: '输入框',
+  onboardingStep1Desc: '输入消息与 AI 对话',
+  onboardingStep2Title: '文件上传',
+  onboardingStep2Desc: '支持拖拽或粘贴上传文件',
+  onboardingStep3Title: '命令面板',
+  onboardingStep3Desc: '按 Ctrl+K 快速搜索和执行操作',
 
   // ─── Media Player (Batch 5) ───
   audioPlayer: '音频播放器',
