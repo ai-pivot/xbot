@@ -20,11 +20,10 @@ func (a *Agent) SetCWD(ch, chatID, dir string) error {
 	if err != nil {
 		return err
 	}
-	// If session already has a persisted CWD (restored from disk), keep it.
-	// Otherwise use the requested directory.
-	if sess.GetCurrentDir() == "" {
-		sess.SetCurrentDir(dir)
-	}
+	// Set CWD — always accept the caller's value. The persisted CWD
+	// (loadPersistedCWD) is only a fallback for channels that never call
+	// SetCWD (e.g. Feishu, Web). CLI callers always sync their terminal CWD.
+	sess.SetCurrentDir(dir)
 	// Always refresh plugin contexts so script plugins see the correct workDir
 	if a.pluginMgr != nil {
 		cwd := sess.GetCurrentDir()

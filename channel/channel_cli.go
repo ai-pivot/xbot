@@ -73,10 +73,38 @@ func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
 	}
 	select {
 	case c.eventCh <- wsMsg:
-		return "", nil
 	default:
 		return "", fmt.Errorf("channel cli: event channel full")
 	}
+
+	// AskUser: agent needs user input. Send as separate MsgTypeAskUser
+	// so dispatchWSMessage can route it to the "ask_user" subscriber,
+	// mirroring RemoteCLIChannel.Send() behavior.
+	if msg.WaitingUser {
+		askEv := protocol.AskUserEvent{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+		}
+		if msg.Metadata != nil {
+			askEv.RequestID = msg.Metadata["request_id"]
+			askEv.Questions = msg.Metadata["ask_questions"]
+		}
+		data, _ := json.Marshal(askEv)
+		askMsg := protocol.WSMessage{
+			Type:    protocol.MsgTypeAskUser,
+			TS:      time.Now().Unix(),
+			ChatID:  msg.ChatID,
+			Content: string(data),
+		}
+		select {
+		case c.eventCh <- askMsg:
+		default:
+			// AskUser is critical — log but don't silently drop
+			return "", fmt.Errorf("channel cli: event channel full, ask_user dropped")
+		}
+	}
+
+	return "", nil
 }
 
 // SendProgress converts a progress event to WSMessage and pushes to the event channel.
@@ -153,21 +181,6 @@ func (c *ChannelCliChannel) InjectUserMessage(chatID, content string) {
 		TS:      time.Now().Unix(),
 		ChatID:  chatID,
 		Content: content,
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
-	}
-}
-
-// SendAskUser pushes an ask_user event.
-func (c *ChannelCliChannel) SendAskUser(chatID string, ev protocol.AskUserEvent) {
-	data, _ := json.Marshal(ev)
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeAskUser,
-		TS:      time.Now().Unix(),
-		ChatID:  chatID,
-		Content: string(data),
 	}
 	select {
 	case c.eventCh <- wsMsg:

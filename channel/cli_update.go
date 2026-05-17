@@ -510,12 +510,10 @@ func (m *cliModel) layoutViewportHeight() int {
 	if len(m.todos) > 0 && !m.sidebarShown() {
 		todoLines = 1 + len(m.todos)
 	}
-	// Info bar: 1 line when bg tasks/agents/queue are active OR widget content exists.
-	// (Widget content may fill the info bar even when no system indicators are active.)
-	infoBarLines := 0
-	if m.bgTaskCount > 0 || m.agentCount > 0 || len(m.messageQueue) > 0 || m.resolveWidgetZone("infoBar") != "" {
-		infoBarLines = 1
-	}
+	// Info bar: always reserve 1 line. renderInfoBar() always produces
+	// output (at minimum the workspace indicator), so the viewport must
+	// account for it.
+	infoBarLines := 1
 	reservedLines := fixedLines + taBorder + m.textarea.Height() + todoLines + infoBarLines
 	// §20b 小终端适配：极小窗口下动态缩减布局
 	if height < 12 {

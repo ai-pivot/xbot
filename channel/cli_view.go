@@ -917,8 +917,10 @@ func (m *cliModel) allTodosDone() bool {
 
 // renderInfoBar renders a sleek bottom status line below the input box
 // showing background tasks, active subagents, and pending queue —
-// inspired by lazygit's and Warp's status panels.
-// Only renders when there are active items (no "empty" state noise).
+// renderInfoBar builds the info bar below the input box.
+// Always produces output (at minimum the workspace indicator) so the user
+// can see which workspace/session they're in. layoutViewportHeight reserves
+// a matching line via infoBarLines=1.
 func (m *cliModel) renderInfoBar() string {
 	hasTasks := m.bgTaskCount > 0
 	hasAgents := m.agentCount > 0
