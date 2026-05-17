@@ -517,7 +517,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   // --- Logout ---
   const handleLogout = async () => {
     wsDisconnect()
-    await fetch('/api/auth/logout', { method: 'POST' })
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } catch { /* best effort — proceed to logout anyway */ }
     onLogout()
   }
 

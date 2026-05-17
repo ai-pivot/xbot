@@ -55,6 +55,9 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
     return () => window.removeEventListener('keydown', handler)
   }, [answers, onCancel])
 
+  const currentQuestion = askUser.questions[currentQ]
+  if (!currentQuestion) return null
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 askuser-backdrop" role="dialog" aria-modal="true" aria-label={t('agentNeedsInput')} onClick={(e) => {
       if (e.target === e.currentTarget) {
@@ -72,14 +75,15 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
           </span>
         </div>
         <div className="px-5 py-4">
-          <p className="text-sm text-slate-200 mb-4">{askUser.questions[currentQ].question}</p>
-          {askUser.questions[currentQ].options && askUser.questions[currentQ].options!.length > 0 ? (
+          <p className="text-sm text-slate-200 mb-4">{currentQuestion.question}</p>
+          {currentQuestion.options && currentQuestion.options!.length > 0 ? (
             <div className="space-y-2">
               {askUser.questions[currentQ].options!.map((opt, i) => (
                 <button
                   key={i}
                   onClick={() => submitAnswer(opt)}
-                  className="w-full text-left px-4 py-2.5 rounded-lg border border-slate-600 aria-label={opt} text-sm text-slate-200 hover:bg-blue-500/10 hover:border-blue-500/50 transition-colors"
+                  className="w-full text-left px-4 py-2.5 rounded-lg border border-slate-600 text-sm text-slate-200 hover:bg-blue-500/10 hover:border-blue-500/50 transition-colors"
+                  aria-label={opt}
                 >
                   {opt}
                 </button>

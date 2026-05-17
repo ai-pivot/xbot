@@ -1,4 +1,4 @@
-import { useEffect, useRef, useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { useTranslation } from '../i18n'
 
@@ -75,7 +75,7 @@ function useTheme() {
 }
 
 export function MermaidBlock({ code }: { code: string }) {
-  const containerRef = useRef<HTMLDivElement>(null)
+  // containerRef removed — not needed for dangerouslySetInnerHTML rendering
   const uniqueId = useId().replace(/:/g, '_')
   const [error, setError] = useState<string | null>(null)
   const [svg, setSvg] = useState<string>('')
@@ -128,7 +128,7 @@ export function MermaidBlock({ code }: { code: string }) {
   return (
     <div
       className="mermaid-wrapper"
-      ref={containerRef}
+      
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   )

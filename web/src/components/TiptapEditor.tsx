@@ -30,8 +30,8 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
   function TiptapEditor({ onSend, disabled, connected, currentModel, onCancel }, ref) {
   const [hasContent, setHasContent] = useState(false)
   const connectedRef = useRef(connected)
+  connectedRef.current = connected  // Direct render-time assignment (React 19 pattern)
   const { t } = useTranslation()
-  useEffect(() => { connectedRef.current = connected }, [connected])
 
   // Input history (newest first, like bash history)
   const inputHistoryRef = useRef<string[]>([])
@@ -42,7 +42,7 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
 
   // Refs to access t() in Tiptap editor config (created once)
   const tRef = useRef(t)
-  useEffect(() => { tRef.current = t }, [t])
+  tRef.current = t  // Direct render-time assignment
 
   const editor = useEditor({
     extensions: [

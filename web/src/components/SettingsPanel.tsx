@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
 import { useToast } from '../contexts/ToastContext'
 import { useTranslation } from '../i18n'
@@ -23,6 +23,11 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
   const [activeTab, setActiveTab] = useState<TabId>('appearance')
   const [saving, setSaving] = useState(false)
   const [closing, setClosing] = useState(false)
+
+  // Reset closing state when panel re-opens
+  useEffect(() => {
+    if (open && closing) setClosing(false)
+  }, [open, closing])
   const panelRef = useRef<HTMLDivElement>(null)
 
   const { showToast } = useToast()
@@ -37,7 +42,7 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
     if (closing) setClosing(false)
   }
 
-  if (open && closing) setClosing(false)
+
 
   if (!open && !closing) return null
 

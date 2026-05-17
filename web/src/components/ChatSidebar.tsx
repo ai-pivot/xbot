@@ -1,5 +1,5 @@
 import { useTranslation } from '../i18n'
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 
 interface ChatInfo {

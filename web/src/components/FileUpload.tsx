@@ -116,17 +116,19 @@ export default function FileUpload({ onUpload, disabled, showToast }: FileUpload
     if (!files || files.length === 0) return
     setUploading(true)
 
-    for (const file of Array.from(files)) {
-      const result = await uploadFile(file)
-      if (result.ok) {
-        onUpload({ id: result.id, name: result.name, size: result.size, mime: result.mime, uploadKey: result.uploadKey, isOSS: result.isOSS })
-      } else {
-        showToast(resolveUploadError(result.error || "", t), 'error')
+    try {
+      for (const file of Array.from(files)) {
+        const result = await uploadFile(file)
+        if (result.ok) {
+          onUpload({ id: result.id, name: result.name, size: result.size, mime: result.mime, uploadKey: result.uploadKey, isOSS: result.isOSS })
+        } else {
+          showToast(resolveUploadError(result.error || "", t), 'error')
+        }
       }
+    } finally {
+      setUploading(false)
+      if (inputRef.current) inputRef.current.value = ''
     }
-
-    setUploading(false)
-    if (inputRef.current) inputRef.current.value = ''
   }
 
   return (
