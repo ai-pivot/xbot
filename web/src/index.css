@@ -1,11 +1,12 @@
 @import "tailwindcss";
 
 @import "./styles/base.css";
+@import "./styles/mobile.css";
 @import "./styles/markdown.css";
 @import "./styles/tiptap.css";
 @import "./styles/codeblock.css";
 @import "./styles/settings.css";
-@import "./styles/chat.css";
+@import "./styles/chat/index.css";
 @import "./styles/progress.css";
 @import "./styles/sidebar.css";
 @import "./styles/runner.css";

@@ -1,0 +1,38 @@
+/* ========================================================================== */
+/* Scroll to Bottom Button                                                    */
+/* ========================================================================== */
+
+.scroll-to-bottom-btn {
+  position: fixed;
+  bottom: 100px;
+  right: 24px;
+  left: unset;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(71, 85, 105, 0.5);
+  color: #e2e8f0;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
+  transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  animation: scroll-btn-appear 0.3s ease-out;
+  z-index: 40;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: rgba(51, 65, 85, 0.9);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  transform: translateY(-2px);
+}
+
+/* ---- Light theme overrides ---- */
+[data-theme="light"] .scroll-to-bottom-btn {
+  background: rgba(241, 245, 249, 0.95);
+  color: #2563eb;
+  border-color: #cbd5e1;
+}
+[data-theme="light"] .scroll-to-bottom-btn:hover {
+  border-color: #2563eb;
+}
