@@ -1004,7 +1004,15 @@ func main() {
 	}
 
 	// 用工作目录绝对路径作为 ChatID，不同目录有不同的会话
-	absWorkDir, _ := filepath.Abs(app.workDir)
+	// Prefer os.Getwd() (actual terminal cwd) over config agent.work_dir.
+	// config work_dir may be ~ or some other non-project directory, but the user
+	// typically launches xbot-cli from the project root. Using os.Getwd() ensures
+	// chatID and session workDir match the actual project directory.
+	workDir := app.workDir
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		workDir = cwd
+	}
+	absWorkDir, _ := filepath.Abs(workDir)
 
 	// Restore last active session on startup, unless --new/--new-session is used.
 	// Both local and remote mode use local sessions.json — it's written by
