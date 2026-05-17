@@ -1,3 +1,4 @@
+import { REPLY_PREVIEW_LENGTH, REPLY_INDICATOR_LENGTH, NOTIFICATION_PREVIEW_LENGTH, PRESET_TOOLTIP_LENGTH, VIRTUAL_ROW_HEIGHT_USER, VIRTUAL_ROW_HEIGHT_ASSISTANT } from './constants'
 import { useTranslation } from './i18n'
 import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -349,7 +350,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     const lastMsg = messages[messages.length - 1]
     if (lastMsg && lastMsg.type === 'assistant' && !loading) {
       sendNotif(t('newMessageNotification'), {
-        body: lastMsg.content.slice(0, 100) || '...',
+        body: lastMsg.content.slice(0, NOTIFICATION_PREVIEW_LENGTH) || '...',
       })
     }
   }, [messages, loading, sendNotif])
@@ -512,7 +513,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       type: 'user',
       content,
       ts: Math.floor(Date.now() / 1000),
-      ...(replyingTo ? { replyTo: { id: replyingTo.id, content: replyingTo.content.slice(0, 80), type: replyingTo.type } } : {}),
+      ...(replyingTo ? { replyTo: { id: replyingTo.id, content: replyingTo.content.slice(0, REPLY_PREVIEW_LENGTH), type: replyingTo.type } } : {}),
     }
     setReplyingTo(null)
     setMessages((prev) => [...prev, userMsg])
@@ -748,7 +749,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     getScrollElement: () => messagesContainerRef.current,
     estimateSize: (index) => {
       const turn = turns[index]
-      return turn?.type === 'user' ? 80 : 200
+      return turn?.type === 'user' ? VIRTUAL_ROW_HEIGHT_USER : VIRTUAL_ROW_HEIGHT_ASSISTANT
     },
     overscan: 5,
   })
@@ -1087,7 +1088,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                 className="preset-chip"
                 onClick={() => handlePresetClick(p)}
                 disabled={loading || !connected}
-                title={p.content.length > 50 ? p.content.slice(0, 50) + '...' : p.content}
+                title={p.content.length > PRESET_TOOLTIP_LENGTH ? p.content.slice(0, PRESET_TOOLTIP_LENGTH) + '...' : p.content}
               >
                 {p.icon || '⚡'} {p.label}
               </button>
@@ -1101,7 +1102,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           <div className="reply-indicator-content">
             <span>↩️ {t('replyingTo')}:</span>
             <span className="reply-indicator-preview">
-              {replyingTo.content.length > 60 ? replyingTo.content.slice(0, 60) + '...' : replyingTo.content}
+              {replyingTo.content.length > REPLY_INDICATOR_LENGTH ? replyingTo.content.slice(0, REPLY_INDICATOR_LENGTH) + '...' : replyingTo.content}
             </span>
           </div>
           <button className="reply-indicator-cancel" onClick={handleCancelReply}>

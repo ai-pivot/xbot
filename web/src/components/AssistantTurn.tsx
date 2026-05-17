@@ -11,7 +11,7 @@ import ReplyPreview from './ReplyPreview'
 import { formatElapsed, computeDisplayIterations } from '../utils'
 
 
-const COLLAPSE_THRESHOLD = 20 // lines
+import { COLLAPSE_LINE_THRESHOLD } from '../constants'
 
 function CollapsibleMessage({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(true)
@@ -24,7 +24,7 @@ function CollapsibleMessage({ children }: { children: React.ReactNode }) {
       // Use scrollHeight for accurate measurement even when max-h clips the content
       const lineHeight = parseFloat(getComputedStyle(ref.current).lineHeight) || 20
       const lineCount = Math.ceil(ref.current.scrollHeight / lineHeight)
-      setTooLong(lineCount > COLLAPSE_THRESHOLD)
+      setTooLong(lineCount > COLLAPSE_LINE_THRESHOLD)
     }
   }, [children])
 

@@ -1,3 +1,4 @@
+import { PRESET_CONTENT_PREVIEW_LENGTH } from '../../constants'
 import { useTranslation } from '../../i18n'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEffect, useState, useCallback } from 'react'
@@ -183,7 +184,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
                     <span className="preset-item-icon">{p.icon || '⚡'}</span>
                     <div className="preset-item-info">
                       <span className="preset-item-label">{p.label}</span>
-                      <span className="preset-item-content">{p.content.length > 40 ? p.content.slice(0, 40) + '...' : p.content}</span>
+                      <span className="preset-item-content">{p.content.length > PRESET_CONTENT_PREVIEW_LENGTH ? p.content.slice(0, PRESET_CONTENT_PREVIEW_LENGTH) + '...' : p.content}</span>
                     </div>
                   </div>
                   <div className="preset-item-actions">

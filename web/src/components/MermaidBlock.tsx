@@ -1,3 +1,4 @@
+import { ERROR_PREVIEW_LENGTH } from '../constants'
 import { useEffect, useId, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { useTranslation } from '../i18n'
@@ -94,7 +95,7 @@ export function MermaidBlock({ code }: { code: string }) {
       .catch((err) => {
         if (!cancelled) {
           const msg = err?.message || String(err)
-          setError(msg.length > 200 ? msg.slice(0, 200) + '...' : msg)
+          setError(msg.length > ERROR_PREVIEW_LENGTH ? msg.slice(0, ERROR_PREVIEW_LENGTH) + '...' : msg)
         }
       })
 

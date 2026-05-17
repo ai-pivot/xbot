@@ -1,7 +1,6 @@
 import { useTranslation } from '../i18n'
 import type { ReplyInfo } from '../types'
-
-const PREVIEW_MAX_LENGTH = 80
+import { REPLY_PREVIEW_LENGTH } from '../constants'
 
 interface ReplyPreviewProps {
   replyTo: ReplyInfo
@@ -10,8 +9,8 @@ interface ReplyPreviewProps {
 
 export default function ReplyPreview({ replyTo, onClick }: ReplyPreviewProps) {
   const { t } = useTranslation()
-  const preview = replyTo.content.length > PREVIEW_MAX_LENGTH
-    ? replyTo.content.slice(0, PREVIEW_MAX_LENGTH) + '...'
+  const preview = replyTo.content.length > REPLY_PREVIEW_LENGTH
+    ? replyTo.content.slice(0, REPLY_PREVIEW_LENGTH) + '...'
     : replyTo.content
   const icon = replyTo.type === 'user' ? '👤' : '🤖'
 
