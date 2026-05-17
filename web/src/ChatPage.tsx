@@ -32,7 +32,7 @@ interface ChatPageProps {
 
 
 
-function groupMessagesIntoTurns(messages: Message[]): Turn[] {
+export function groupMessagesIntoTurns(messages: Message[]): Turn[] {
   const turns: Turn[] = []
   let currentAssistant: Message[] = []
 
@@ -55,7 +55,7 @@ function groupMessagesIntoTurns(messages: Message[]): Turn[] {
 
 // --- Attachment parsing & rendering ---
 
-interface ParsedAttachment {
+export interface ParsedAttachment {
   type: 'image' | 'file'
   name: string
   url?: string
@@ -65,7 +65,7 @@ interface ParsedAttachment {
 
 const reAttachment = /<(image|file)\s+([^>]*?)\/?>/gi
 
-function parseAttachments(content: string): { attachments: ParsedAttachment[]; cleanContent: string } {
+export function parseAttachments(content: string): { attachments: ParsedAttachment[]; cleanContent: string } {
   const attachments: ParsedAttachment[] = []
   let cleanContent = content
 
