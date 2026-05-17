@@ -151,16 +151,17 @@ func (c *ChannelCliChannel) SendToast(msg string) {
 }
 
 // SendStreamContent pushes a stream content event.
+// Mirrors RemoteCLIChannel.SendStreamContent: the Progress.ChatID carries
+// the "cli:" prefix expected by handleProgressMsg's session filter.
 func (c *ChannelCliChannel) SendStreamContent(chatID, content, reasoning string) {
 	if content == "" && reasoning == "" {
 		return
 	}
 	wsMsg := protocol.WSMessage{
-		Type:   protocol.MsgTypeStreamContent,
-		TS:     time.Now().Unix(),
-		ChatID: chatID,
+		Type: protocol.MsgTypeStreamContent,
+		TS:   time.Now().Unix(),
 		Progress: &protocol.ProgressEvent{
-			ChatID:                 chatID,
+			ChatID:                 "cli:" + chatID,
 			StreamContent:          content,
 			ReasoningStreamContent: reasoning,
 		},
