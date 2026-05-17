@@ -150,6 +150,17 @@
   outline-offset: 2px;
 }
 
+/* ---- Preview Mode ---- */
+.tiptap-preview-mode .tiptap-editor {
+  cursor: default;
+  opacity: 0.9;
+  max-height: 300px;
+}
+
+.tiptap-preview-mode .tiptap-editor p.is-editor-empty:first-child::before {
+  content: none;
+}
+
 /* ---- Light Theme Overrides ---- */
 
 [data-theme="light"] .tiptap-wrapper {

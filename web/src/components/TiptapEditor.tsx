@@ -29,6 +29,7 @@ export interface TiptapEditorHandle {
 const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
   function TiptapEditor({ onSend, disabled, connected, currentModel, onCancel }, ref) {
   const [hasContent, setHasContent] = useState(false)
+  const [previewMode, setPreviewMode] = useState(false)
   const connectedRef = useRef(connected)
   connectedRef.current = connected  // Direct render-time assignment (React 19 pattern)
   const { t } = useTranslation()
@@ -137,10 +138,13 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
   })
 
   useEffect(() => {
-    if (editor) {
+    if (!editor) return
+    if (previewMode) {
+      editor.setEditable(false)
+    } else {
       editor.setEditable(!disabled && connected)
     }
-  }, [editor, disabled, connected])
+  }, [editor, previewMode, disabled, connected])
 
   useImperativeHandle(ref, () => ({
     setContent: (md: string) => {
@@ -179,7 +183,24 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
 
   return (
     <div className="tiptap-wrapper relative">
-      <div style={{ flex: 1, minWidth: 0 }}>
+      {/* Edit/Preview toggle */}
+      <div className="absolute top-1 right-12 flex gap-0.5 z-10">
+        <button
+          onClick={() => setPreviewMode(false)}
+          className={`px-2 py-0.5 text-[10px] rounded-t ${!previewMode ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+          title={t('edit')}
+        >
+          {t('edit')}
+        </button>
+        <button
+          onClick={() => setPreviewMode(true)}
+          className={`px-2 py-0.5 text-[10px] rounded-t ${previewMode ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+          title={t('preview')}
+        >
+          {t('preview')}
+        </button>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }} className={previewMode ? 'tiptap-preview-mode' : ''}>
         <EditorContent editor={editor} />
       </div>
       <button

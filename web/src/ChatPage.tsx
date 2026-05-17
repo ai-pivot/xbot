@@ -12,7 +12,7 @@ import { useNetworkStatus } from './hooks/useNetworkStatus'
 import type { TiptapEditorHandle } from './components/TiptapEditor'
 import type { PresetCommand, Message, Turn } from './types'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
-import { formatTime, formatFileSize, normalizeIterationHistory, createResetProgress } from './utils'
+import { formatTime, formatFileSize, normalizeIterationHistory, createResetProgress, exportAsMarkdown, exportAsJSON, downloadFile } from './utils'
 import { getCodeBlockProps } from './components/CodeBlock'
 import ProgressPanel from './components/ProgressPanel'
 import AssistantTurn from './components/AssistantTurn'
@@ -217,6 +217,19 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   // Unified toast via context
   const { showToast } = useToast()
+
+  // --- Export callbacks ---
+  const handleExportMarkdown = useCallback(() => {
+    const md = exportAsMarkdown(messages)
+    const date = new Date().toISOString().slice(0, 10)
+    downloadFile(md, `chat-${date}.md`, 'text/markdown')
+  }, [messages])
+
+  const handleExportJSON = useCallback(() => {
+    const json = exportAsJSON(messages)
+    const date = new Date().toISOString().slice(0, 10)
+    downloadFile(json, `chat-${date}.json`, 'application/json')
+  }, [messages])
 
   const handleModelSwitch = useCallback(async (model: string) => {
     setModelDropdownOpen(false)
@@ -795,6 +808,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             setContextInfo(null)
           }}
           currentChatID={currentChatID}
+          onExportMarkdown={handleExportMarkdown}
+          onExportJSON={handleExportJSON}
         />
         <div className="flex flex-col flex-1 min-w-0">
 

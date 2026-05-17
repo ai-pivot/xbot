@@ -14,9 +14,11 @@ interface ChatSidebarProps {
   onSwitchChat: (chatID: string) => void
   onNewChat: () => void
   currentChatID: string
+  onExportMarkdown?: () => void
+  onExportJSON?: () => void
 }
 
-export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID }: ChatSidebarProps) {
+export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 640)
@@ -276,6 +278,23 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
           {loading ? '...' : '🔄 刷新'}
         </button>
       </div>
+      {/* Export */}
+      {(onExportMarkdown || onExportJSON) && (
+        <div className="border-t border-slate-700/50 px-2 py-1">
+          <div className="flex gap-1">
+            {onExportMarkdown && (
+              <button onClick={onExportMarkdown} className="sidebar-refresh-btn flex-1" title={t('exportMarkdown')}>
+                📝 MD
+              </button>
+            )}
+            {onExportJSON && (
+              <button onClick={onExportJSON} className="sidebar-refresh-btn flex-1" title={t('exportJSON')}>
+                📋 JSON
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <ConfirmDialog
         open={confirmDelete !== null}
         message="确定要删除此会话吗？此操作不可撤销。"

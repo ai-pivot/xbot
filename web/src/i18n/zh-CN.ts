@@ -305,6 +305,11 @@ const zhCN = {
   // ─── Misc ───
   refreshPageHint: '请刷新页面重新连接',
   delete: '删除',
+  exportMarkdown: '导出 Markdown',
+  exportJSON: '导出 JSON',
+  exportChat: '导出会话',
+  edit: '编辑',
+  preview: '预览',
   returnToLogin: '返回登录',
 } as const
 

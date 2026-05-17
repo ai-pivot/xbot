@@ -1,5 +1,6 @@
 import type React from 'react'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
+import type { Message } from './types'
 
 /**
  * Format milliseconds into a human-readable string.
@@ -160,4 +161,48 @@ export function computeDisplayIterations(
       summary: t.summary,
     })),
   }].sort((a, b) => a.iteration - b.iteration)
+}
+
+// ── Chat Export Utilities ──
+
+/**
+ * Export messages as Markdown format.
+ */
+export function exportAsMarkdown(messages: Message[]): string {
+  const date = new Date().toLocaleString()
+  const lines = [`# Chat Export — ${date}`, '']
+  for (const msg of messages) {
+    const role = msg.type === 'user' ? '👤 User' : msg.type === 'assistant' ? '🤖 Assistant' : '📋 System'
+    lines.push(`## ${role}`, '')
+    lines.push(msg.content)
+    lines.push('')
+    lines.push('---')
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Export messages as JSON format.
+ */
+export function exportAsJSON(messages: Message[]): string {
+  return JSON.stringify(messages.map(m => ({
+    id: m.id,
+    type: m.type,
+    content: m.content,
+    ts: m.ts,
+  })), null, 2)
+}
+
+/**
+ * Trigger a browser download for the given content.
+ */
+export function downloadFile(content: string, filename: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
 }

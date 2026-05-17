@@ -307,6 +307,11 @@ const en: Record<I18nKey, string> = {
   // ─── Misc ───
   refreshPageHint: 'Please refresh the page to reconnect',
   delete: 'Delete',
+  exportMarkdown: 'Export Markdown',
+  exportJSON: 'Export JSON',
+  exportChat: 'Export Chat',
+  edit: 'Edit',
+  preview: 'Preview',
   returnToLogin: 'Return to login',
 }
 
