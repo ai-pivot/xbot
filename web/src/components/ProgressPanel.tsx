@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useState } from 'react'
 import { formatElapsed } from '../utils'
 
@@ -117,6 +118,7 @@ export function SubAgentTree({ agents }: { agents: WsSubAgent[] }) {
 }
 
 function ThinkingOrb() {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center gap-3 px-2 py-1">
       <div className="thinking-orb">
@@ -125,7 +127,7 @@ function ThinkingOrb() {
         <div className="thinking-orb-ring thinking-orb-ring-3" />
         <div className="thinking-orb-core" />
       </div>
-      <span className="text-[11px] text-slate-500 italic animate-pulse">思考中...</span>
+      <span className="text-[11px] text-slate-500 italic animate-pulse">{t("thinking")}</span>
     </div>
   )
 }

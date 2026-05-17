@@ -85,13 +85,13 @@ export const LS_KEYS: Record<string, string> = {
   language: 'xbot-language',
 }
 
-export const TABS: { id: TabId; label: string; icon: string }[] = [
-  { id: 'appearance', label: '外观', icon: '🎨' },
-  { id: 'sessions', label: '会话', icon: '💬' },
-  { id: 'presets', label: '快捷指令', icon: '⚡' },
-  { id: 'llm', label: 'LLM', icon: '🧠' },
-  { id: 'runner', label: 'Runner', icon: '🖥️' },
-  { id: 'market', label: '市场', icon: '🏪' },
+export const TABS: { id: TabId; labelKey: string; icon: string }[] = [
+  { id: 'appearance', labelKey: 'tabAppearance' as const, icon: '🎨' },
+  { id: 'sessions', labelKey: 'tabSessions' as const, icon: '💬' },
+  { id: 'presets', labelKey: 'tabPresets' as const, icon: '⚡' },
+  { id: 'llm', labelKey: 'tabLLM' as const, icon: '🧠' },
+  { id: 'runner', labelKey: 'tabRunner' as const, icon: '🖥️' },
+  { id: 'market', labelKey: 'tabMarket' as const, icon: '🏪' },
 ]
 
 export const PROVIDER_OPTIONS = [

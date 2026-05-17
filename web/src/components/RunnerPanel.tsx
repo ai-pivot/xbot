@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useEffect, useState, useCallback, useRef } from 'react'
 
 // ── Constants ──
@@ -42,6 +43,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
   const [formMode, setFormMode] = useState<'native' | 'docker'>('native')
   const [formDockerImage, setFormDockerImage] = useState('ubuntu:22.04')
   const [formWorkspace, setFormWorkspace] = useState('')
+  const { t } = useTranslation()
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -218,7 +220,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
   if (loading) {
     return (
       <div className="settings-section">
-        <div className="settings-section-title">🖥️ 工作环境</div>
+        <div className="settings-section-title">{t('workspaceEnv')}</div>
         <div className="text-center py-6 text-slate-500 text-sm">加载中...</div>
       </div>
     )
@@ -226,7 +228,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
 
   return (
     <div className="settings-section">
-      <div className="settings-section-title">🖥️ 工作环境</div>
+      <div className="settings-section-title">{t('workspaceEnv')}</div>
       <p className="text-xs text-slate-500 mb-3">
         管理远程 Runner，点击卡片切换活跃环境。
       </p>
@@ -235,8 +237,8 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
       {runners.length === 0 && !showAddForm ? (
         <div className="text-center py-6 text-slate-500">
           <p className="text-2xl mb-2">🖥️</p>
-          <p className="text-sm">尚未添加工作环境</p>
-          <p className="text-xs text-slate-600 mt-1">添加 Runner 后可远程执行命令</p>
+          <p className="text-sm">{t('noRunners')}</p>
+          <p className="text-xs text-slate-600 mt-1">{t('addRunnerHint')}</p>
         </div>
       ) : (
         <div className="runner-list">
@@ -256,7 +258,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
                   <span className={`runner-status-dot ${runner.online ? 'runner-dot-online' : 'runner-dot-offline'}`} />
                   <span className="runner-name">{runner.name}</span>
                   {activeRunner === runner.name && (
-                    <span className="runner-active-badge">活跃</span>
+                    <span className="runner-active-badge">{t('activeBadge')}</span>
                   )}
                 </div>
                 <div className="runner-card-menu-wrap" ref={menuRef}>

@@ -1,3 +1,4 @@
+import { useTranslation } from '../../i18n'
 import { useEffect, useState, useCallback } from 'react'
 
 import type { MarketEntry, MyMarketEntry } from './shared'
@@ -8,6 +9,7 @@ export default function MarketTab() {
   const [marketEntries, setMarketEntries] = useState<MarketEntry[]>([])
   const [myMarketEntries, setMyMarketEntries] = useState<MyMarketEntry[]>([])
   const [marketLoading, setMarketLoading] = useState(false)
+  const { t } = useTranslation()
 
   const loadMarket = useCallback(async () => {
     setMarketLoading(true)
@@ -96,7 +98,7 @@ export default function MarketTab() {
 
   return (
     <div className={sectionClass}>
-      <div className={sectionTitleClass}>🏪 Agent 市场</div>
+      <div className={sectionTitleClass}>{t("marketTitle")}</div>
       <div className="market-tab-bar">
         <button
           className={`market-tab ${marketType === 'agent' ? 'active' : ''}`}

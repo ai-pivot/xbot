@@ -1,3 +1,4 @@
+import { useTranslation } from '../../i18n'
 import { useEffect, useState, useCallback } from 'react'
 
 import type { SessionInfo, SessionMessage } from './shared'
@@ -42,12 +43,13 @@ export default function SessionsTab() {
     if (selectedSession) fetchSessionMessages(selectedSession)
   }, [selectedSession, fetchSessionMessages])
 
+  const { t } = useTranslation()
   const sectionClass = 'settings-section'
   const sectionTitleClass = 'settings-section-title'
 
   return (
     <div className={sectionClass}>
-      <div className={sectionTitleClass}>💬 ChatRooms</div>
+      <div className={sectionTitleClass}>{t("chatRooms")}</div>
       <p className="text-xs text-slate-500 mb-3">
         所有对话都是 ChatRoom — 人↔Agent、Agent↔Agent 统一管理。
       </p>
@@ -101,9 +103,9 @@ export default function SessionsTab() {
           </div>
 
           {sessionMessagesLoading ? (
-            <div className="text-center py-4 text-slate-500 text-sm">加载中...</div>
+            <div className="text-center py-4 text-slate-500 text-sm">{t('loadingDots')}</div>
           ) : sessionMessages.length === 0 ? (
-            <div className="text-center py-4 text-slate-500 text-sm">暂无消息记录</div>
+            <div className="text-center py-4 text-slate-500 text-sm">{t('noMessages')}</div>
           ) : (
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {sessionMessages.map((msg, i) => (
@@ -131,11 +133,11 @@ export default function SessionsTab() {
       ) : (
         /* ── ChatRoom 列表 ── */
         sessionsLoading ? (
-          <div className="text-center py-6 text-slate-500 text-sm">加载中...</div>
+          <div className="text-center py-6 text-slate-500 text-sm">{t('loadingDots')}</div>
         ) : sessions.length === 0 ? (
           <div className="text-center py-6 text-slate-500">
             <p className="text-2xl mb-2">📭</p>
-            <p className="text-sm">暂无 ChatRoom</p>
+            <p className="text-sm">{t('noChatRooms')}</p>
           </div>
         ) : (
           <div className="space-y-2">

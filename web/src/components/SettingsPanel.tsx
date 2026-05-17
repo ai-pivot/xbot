@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 
 import { useToast } from '../contexts/ToastContext'
+import { useTranslation } from '../i18n'
 import type { PresetCommand } from '../types'
 import type { TabId } from './settings/shared'
 import { TABS } from './settings/shared'
@@ -24,13 +25,11 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
   const [closing, setClosing] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Unified toast via context
   const { showToast } = useToast()
+  const { t } = useTranslation()
 
   const handleClose = () => {
     setClosing(true)
-    // Notify parent after animation starts; parent sets open=false
-    // which completes the unmount via the (!open && !closing) guard
     setTimeout(onClose, 200)
   }
 
@@ -38,34 +37,28 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
     if (closing) setClosing(false)
   }
 
-  // Reset closing state when re-opened
   if (open && closing) setClosing(false)
-
-  // Note: Escape key handling is managed by global useKeyboardShortcuts in ChatPage
 
   if (!open && !closing) return null
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className={`settings-backdrop${closing ? " settings-backdrop-exit" : ""}`}
         onClick={handleClose}
       />
-      {/* Panel */}
       <div ref={panelRef}
         className={`settings-panel${closing ? " settings-panel-exit" : ""}`}
-        role="dialog" aria-modal="true" aria-label="设置"
+        role="dialog" aria-modal="true" aria-label={t('settings')}
         onAnimationEnd={handleAnimationEnd}>
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">⚙️ 设置</h2>
+          <h2 className="text-lg font-bold text-white">{t('settings')}</h2>
           <div className="flex items-center gap-2">
-            {saving && <span className="text-xs text-slate-500">保存中...</span>}
-            <button className="settings-close-btn text-sm" onClick={handleClose} data-testid="settings-close-btn" aria-label="关闭设置">✕</button>
+            {saving && <span className="text-xs text-slate-500">{t('saving')}</span>}
+            <button className="settings-close-btn text-sm" onClick={handleClose} data-testid="settings-close-btn" aria-label={t('closeSettings')}>✕</button>
           </div>
         </div>
 
-        {/* Tabs */}
         <div className="flex gap-1 p-1 bg-slate-700/50 rounded-lg flex-shrink-0">
           {TABS.map((tab) => (
             <button
@@ -77,12 +70,11 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
                   : 'text-slate-400 hover:text-white hover:bg-slate-700'
               }`}
             >
-              {tab.icon} {tab.label}
+              {tab.icon} {t(tab.labelKey as any)}
             </button>
           ))}
         </div>
 
-        {/* Scrollable content area */}
         <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
 
         {activeTab === 'appearance' && (
@@ -107,7 +99,7 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
           <MarketTab />
         )}
 
-        </div>{/* end scrollable content */}
+        </div>
       </div>
     </>
   )

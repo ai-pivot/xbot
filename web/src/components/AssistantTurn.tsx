@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useState, useEffect, useRef, memo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -14,6 +15,7 @@ function CollapsibleMessage({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(true)
   const ref = useRef<HTMLDivElement>(null)
   const [tooLong, setTooLong] = useState(false)
+  const { t } = useTranslation()
 
   useEffect(() => {
     if (ref.current) {
@@ -41,7 +43,7 @@ function CollapsibleMessage({ children }: { children: React.ReactNode }) {
         className="mt-1 text-xs text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1"
       >
         <span className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}>▸</span>
-        {collapsed ? '展开全部' : '折叠'}
+        {collapsed ? t('expandAll') : t('collapse')}
       </button>
     </div>
   )
@@ -126,6 +128,7 @@ function isThinkingContent(content: string): boolean {
 
 export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress }: AssistantTurnProps) {
   const [copied, setCopied] = useState(false)
+  const { t } = useTranslation()
 
   // Classify messages
   const thinkingMsgs: Message[] = []
@@ -193,7 +196,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
           <button
             onClick={handleCopy}
             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded text-xs bg-slate-700/60 hover:bg-slate-600/80 text-slate-300 hover:text-white backdrop-blur-sm"
-            title="复制内容"
+            title={t("copyContent")}
             data-testid="copy-btn"
           >
             {copied ? '✓' : '📋'}
@@ -201,7 +204,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         )}
         {/* Collapsible: Thinking section */}
         {thinkingMsgs.length > 0 && (
-          <CollapsibleSection icon="💭" title="思考过程" badge={thinkingMsgs.length} className="thinking-section">
+          <CollapsibleSection icon="💭" title={t("thinkingProcess")} badge={thinkingMsgs.length} className="thinking-section">
             <div className="space-y-2 pl-1">
               {thinkingMsgs.map((msg) => (
                 <div key={msg.id} className="text-sm text-slate-400 italic">
@@ -218,7 +221,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         {loading && (displayLiveIterations.length ?? 0) > 0 && (
           <CollapsibleSection
             icon="📋"
-            title="迭代过程"
+            title={t("iterationProcess")}
             badge={displayLiveIterations.length}
             defaultOpen={true}
           >
@@ -323,7 +326,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         {!loading && messages.length > 0 && messages[messages.length - 1]?.iterationHistory && messages[messages.length - 1].iterationHistory!.length > 0 && (
           <CollapsibleSection
             icon="📋"
-            title="迭代过程"
+            title={t("iterationProcess")}
             badge={messages[messages.length - 1].iterationHistory!.length}
           >
             <div className="divide-y divide-slate-700/30">

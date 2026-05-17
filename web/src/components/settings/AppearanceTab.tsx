@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 
 import type { ShowToastFn, Theme, FontSize, Language, UserSettings } from './shared'
-import { lsGet, lsSet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS } from './shared'
+import { lsGet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS } from './shared'
+import { useTranslation } from '../../i18n'
 
 interface AppearanceTabProps {
   showToast: ShowToastFn
@@ -14,6 +15,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
   const [fontSize, setFontSize] = useState<FontSize>(() => lsGet('font_size', DEFAULT_SETTINGS.font_size))
   const [nickname, setNickname] = useState<string>(() => lsGet('nickname', DEFAULT_SETTINGS.nickname))
   const [language, setLanguage] = useState<Language>(() => lsGet('language', DEFAULT_SETTINGS.language))
+  const { t, setLocale } = useTranslation()
 
   // Load settings from server on mount
   useEffect(() => {
@@ -28,45 +30,33 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
   // Apply theme
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
-    lsSet('theme', theme)
   }, [theme])
 
   // Apply font size
   useEffect(() => {
     document.documentElement.style.setProperty('--xbot-font-size', FONT_SIZE_MAP[fontSize])
-    lsSet('font_size', fontSize)
   }, [fontSize])
-
-  // Persist nickname locally
-  useEffect(() => {
-    lsSet('nickname', nickname)
-  }, [nickname])
-
-  // Persist language locally
-  useEffect(() => {
-    lsSet('language', language)
-  }, [language])
 
   const handleSave = useCallback(async (updates: Partial<UserSettings>) => {
     onSavingChange?.(true)
     const ok = await saveSettings(updates)
     onSavingChange?.(false)
     if (ok) {
-      showToast('设置已保存', 'success')
+      showToast(t('settingsSaved'), 'success')
     } else {
-      showToast('保存失败，请重试', 'error')
+      showToast(t('saveFailed'), 'error')
     }
-  }, [showToast, onSavingChange])
+  }, [showToast, onSavingChange, t])
 
   const sectionClass = 'settings-section'
   const sectionTitleClass = 'settings-section-title'
 
   return (
     <div className={sectionClass}>
-      <div className={sectionTitleClass}>🎨 外观 Appearance</div>
+      <div className={sectionTitleClass}>{t('appearanceTitle')}</div>
 
       <div className="settings-item">
-        <label className="settings-label">主题 Theme</label>
+        <label className="settings-label">{t('themeLabel')}</label>
         <select
           className="settings-select"
           value={theme}
@@ -76,13 +66,13 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
             handleSave({ theme: v, font_size: fontSize, nickname, language })
           }}
         >
-          <option value="dark">深色 Dark</option>
-          <option value="light">浅色 Light</option>
+          <option value="dark">{t('dark')}</option>
+          <option value="light">{t('light')}</option>
         </select>
       </div>
 
       <div className="settings-item">
-        <label className="settings-label">字体大小 Font Size</label>
+        <label className="settings-label">{t('fontSizeLabel')}</label>
         <select
           className="settings-select"
           value={fontSize}
@@ -92,18 +82,18 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
             handleSave({ theme, font_size: v, nickname, language })
           }}
         >
-          <option value="small">小 Small</option>
-          <option value="medium">中 Medium</option>
-          <option value="large">大 Large</option>
+          <option value="small">{t('smallSize')}</option>
+          <option value="medium">{t('mediumSize')}</option>
+          <option value="large">{t('largeSize')}</option>
         </select>
       </div>
 
       <div className="settings-item">
-        <label className="settings-label">昵称 Nickname</label>
+        <label className="settings-label">{t('nicknameLabel')}</label>
         <input
           type="text"
           className="settings-input"
-          placeholder="输入昵称..."
+          placeholder={t('enterNickname')}
           maxLength={32}
           value={nickname}
           onChange={(e) => setNickname(e.target.value)}
@@ -120,13 +110,15 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
       </div>
 
       <div className="settings-item">
-        <label className="settings-label">语言 Language</label>
+        <label className="settings-label">{t('languageLabel')}</label>
         <select
           className="settings-select"
           value={language}
           onChange={(e) => {
             const v = e.target.value as Language
             setLanguage(v)
+            // Update I18nProvider context to trigger immediate re-render
+            setLocale(v)
             handleSave({ theme, font_size: fontSize, nickname, language: v })
           }}
         >

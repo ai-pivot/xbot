@@ -1,3 +1,4 @@
+import { useTranslation } from '../../i18n'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEffect, useState, useCallback } from 'react'
 
@@ -60,6 +61,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
   }, [presetList, savePresets])
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const { t } = useTranslation()
 
   const requestPresetDelete = (id: string) => setConfirmDeleteId(id)
 
@@ -97,7 +99,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
       onCancel={() => setConfirmDeleteId(null)}
     />
     <div className={sectionClass}>
-      <div className={sectionTitleClass}>⚡ 快捷指令 Preset Commands</div>
+      <div className={sectionTitleClass}>{t('presetsTitle')} Preset Commands</div>
       <p className="text-xs text-slate-500 mb-3">
         配置常用指令，在聊天输入框上方快速触发。最多 20 条。
       </p>
@@ -171,7 +173,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
           {presetList.length === 0 ? (
             <div className="text-center py-6 text-slate-500">
               <p className="text-2xl mb-2">📭</p>
-              <p className="text-sm">暂无快捷指令</p>
+              <p className="text-sm">{t('noPresets')}</p>
             </div>
           ) : (
             <div className="preset-list">

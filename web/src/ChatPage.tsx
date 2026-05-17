@@ -1,3 +1,4 @@
+import { useTranslation } from './i18n'
 import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import Markdown from 'react-markdown'
@@ -169,6 +170,7 @@ function UserMessageContent({ content, onPreview }: { content: string; onPreview
 }
 
 export default function ChatPage({ onLogout }: ChatPageProps) {
+  const { t } = useTranslation()
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState<WsProgressPayload | null>(null)
@@ -227,12 +229,12 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       const data = await resp.json()
       if (data.ok) {
         setCurrentModel(model)
-        showToast(`已切换到 ${model}`, 'success')
+        showToast(t('switchedToModel', { model }), 'success')
       } else {
-        showToast(data.error || '切换失败', 'error')
+        showToast(data.error || t('switchFailed'), 'error')
       }
     } catch {
-      showToast('切换失败', 'error')
+      showToast(t('switchFailed'), 'error')
     }
   }, [currentModel, showToast])
 
@@ -419,21 +421,21 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         resetProgress()
         setLoading(false)
         fetch('/api/history', { method: 'DELETE' }).catch((err) => { console.warn('[ChatPage] failed to clear history:', err) })
-        showToast('对话已清空', 'info')
+        showToast(t('conversationCleared'), 'info')
         return
       }
       if (cmd === '/new') {
         setMessages([])
         resetProgress()
         setLoading(false)
-        showToast('新对话', 'info')
+        showToast(t('newConversation'), 'info')
         return
       }
       if (cmd === '/help') {
         const helpMsg: Message = {
           id: `help-${Date.now()}`,
           type: 'system',
-          content: `## 可用命令\n\n| 命令 | 说明 |\n|------|------|\n| /clear | 清空对话 |\n| /new | 新对话 |\n| /compact | 压缩上下文 |\n| /help | 显示帮助 |\n| /cancel | 取消当前生成 |`,
+          content: `## ${t("helpTitle")}\n\n| /clear | ${t("cmdClear")} |\n| /new | ${t("cmdNew")} |\n| /compact | ${t("cmdCompact")} |\n| /help | ${t("cmdHelp")} |\n| /cancel | ${t("cancelGeneration")} |`,
           ts: Math.floor(Date.now() / 1000),
         }
         setMessages(prev => [...prev, helpMsg])
@@ -560,7 +562,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       if (result.ok) {
         handleFileUploaded({ id: result.id, name: result.name, size: result.size, mime: result.mime, uploadKey: result.uploadKey, isOSS: result.isOSS })
       } else {
-        showToast(result.error || '上传失败', 'error')
+        showToast(result.error || t('uploadFailed'), 'error')
       }
     }
   }, [handleFileUploaded, showToast])
@@ -643,14 +645,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
          onPaste={handlePaste}
     >
 
-      <a href="#messages-container" className="skip-to-content">跳到主内容</a>
+      <a href="#messages-container" className="skip-to-content">{t('skipToContent')}</a>
       {/* Drag overlay */}
       {dragActive && (
         <div className="drag-overlay" data-testid="drag-overlay">
           <div className="drag-overlay-content">
             <span className="text-4xl">📂</span>
-            <span className="text-lg font-medium mt-2">拖拽文件到此处上传</span>
-            <span className="text-sm opacity-60 mt-1">支持图片、文档、代码等文件</span>
+            <span className="text-lg font-medium mt-2">{t('dragToUpload')}</span>
+            <span className="text-sm opacity-60 mt-1">{t('dragSupportedTypes')}</span>
           </div>
         </div>
       )}
@@ -675,7 +677,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                 contextInfo.usage_pct > 50 ? 'bg-yellow-900/50 text-yellow-400' :
                 'bg-green-900/50 text-green-400'
               }`}
-              title={`上下文使用: ${contextInfo.prompt_tokens.toLocaleString()} / ${contextInfo.max_tokens.toLocaleString()} tokens`}
+              title={t("contextUsageTitle", { prompt: contextInfo.prompt_tokens.toLocaleString(), max: contextInfo.max_tokens.toLocaleString() })}
             >
               📊 {(contextInfo.prompt_tokens / 1000).toFixed(1)}K/{(contextInfo.max_tokens / 1000).toFixed(0)}K ({contextInfo.usage_pct.toFixed(1)}%)
             </span>
@@ -686,7 +688,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               <button
                 onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
                 className="text-xs px-2 py-0.5 rounded-full bg-slate-700/50 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors flex items-center gap-1"
-                title="切换模型"
+                title={t('switchModel')}
               >
                 🧠 {currentModel || 'default'}
                 <span className="text-[10px]">▾</span>
@@ -694,7 +696,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               {modelDropdownOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />
-                  <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-64 overflow-y-auto" role="listbox" aria-label="模型选择">
+                  <div className="absolute top-full left-0 mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-64 overflow-y-auto" role="listbox" aria-label={t('modelSelect')}>
                     {availableModels.map(model => (
                       <button
                         key={model}
@@ -717,14 +719,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           <button
             onClick={handleSearchToggle}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
-            title="搜索 (Ctrl+K)" aria-label="搜索历史消息"
+            title="搜索 (Ctrl+K)" aria-label={t('searchHistory')}
           >
             🔍
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
-            title="设置" aria-label="打开设置"
+            title={t('settings')} aria-label={t('openSettings')}
           >
             ⚙️
           </button>
@@ -794,14 +796,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         onScroll={handleContainerScroll}
         className="flex-1 overflow-y-auto px-4 py-4 chat-messages"
         role="main"
-        aria-label="消息"
+        aria-label={t('messagesAriaLabel')}
         data-testid="messages-container"
       >
         {messages.length === 0 && !loading && (
           <div className="text-center py-20 animate-fade-in">
             <div className="text-5xl mb-4 opacity-30">🤖</div>
-            <p className="text-slate-400 text-base font-medium mb-2">开始一段对话</p>
-            <p className="text-slate-500 text-sm mb-8">发送消息开始与 AI 助手交流</p>
+            <p className="text-slate-400 text-base font-medium mb-2">{t('startConversation')}</p>
+            <p className="text-slate-500 text-sm mb-8">{t('sendFirstMessage')}</p>
             <div className="flex flex-col items-center gap-2 text-xs text-slate-600">
               <span className="px-3 py-1 rounded-full bg-slate-800/50 border border-slate-700/50">
                 按 <kbd className="px-1 py-0.5 rounded bg-slate-700/60 text-slate-400 font-mono text-[10px]">Ctrl+K</kbd> 搜索历史消息
@@ -880,7 +882,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         <button
           onClick={() => { setAutoScroll(true); requestAnimationFrame(() => scrollToBottom('smooth')) }}
           className="scroll-to-bottom-btn"
-          aria-label="滚动到底部"
+          aria-label={t('scrollToBottom')}
           data-testid="scroll-to-bottom-btn"
         >
           ↓ 新消息
@@ -919,7 +921,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                     <button
                       className="file-tag-remove"
                       onClick={() => handleFileRemove(f.id)}
-                      title="移除"
+                      title={t("remove")}
                     >
                       ✕
                     </button>
@@ -945,7 +947,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             <button
               onClick={handleCancel}
               className="cancel-btn"
-              title="停止生成"
+              title={t("stopGeneration")}
               data-testid="cancel-btn"
             >
               ⏹
@@ -981,7 +983,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           className="image-preview-overlay"
           onClick={() => setPreviewImage(null)}
           role="dialog"
-          aria-label="图片预览"
+          aria-label={t('imagePreview')}
         >
           <button
             className="image-preview-close"
@@ -990,7 +992,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           >✕</button>
           <img
             src={previewImage}
-            alt="预览"
+            alt={t("imagePreviewAlt")}
             className="image-preview-img"
             onClick={e => e.stopPropagation()}
           />

@@ -1,3 +1,4 @@
+import { useTranslation } from '../../i18n'
 import ConfirmDialog from '../ConfirmDialog'
 import { useEffect, useState, useCallback } from 'react'
 
@@ -80,14 +81,14 @@ export default function LLMTab({ showToast }: LLMTabProps) {
         setLlmFormMaxOutputTokens('')
         setLlmFormThinkingMode('auto')
         await fetchLLMConfig()
-        showToast('配置已保存', 'success')
+        showToast(t('configSaved'), 'success')
       } else {
         setLlmError(data.error || '保存失败')
         showToast(data.error || '保存失败', 'error')
       }
     } catch {
       setLlmError('网络错误')
-      showToast('网络错误', 'error')
+      showToast(t('networkError'), 'error')
     }
     setLlmSaving(false)
   }, [llmFormProvider, llmFormBaseUrl, llmFormApiKey, llmFormModel, llmFormMaxOutputTokens, llmFormThinkingMode, fetchLLMConfig, showToast])
@@ -104,19 +105,20 @@ export default function LLMTab({ showToast }: LLMTabProps) {
       const data = await resp.json()
       if (data.ok) {
         await fetchLLMConfig()
-        showToast('模型已切换', 'success')
+        showToast(t('modelSwitched'), 'success')
       } else {
         setLlmError(data.error || '切换模型失败')
         showToast(data.error || '切换模型失败', 'error')
       }
     } catch {
       setLlmError('网络错误')
-      showToast('网络错误', 'error')
+      showToast(t('networkError'), 'error')
     }
     setLlmSaving(false)
   }, [fetchLLMConfig, showToast])
 
   const [confirmLLMDelete, setConfirmLLMDelete] = useState(false)
+  const { t } = useTranslation()
 
   const requestLLMDelete = () => setConfirmLLMDelete(true)
 
@@ -135,14 +137,14 @@ export default function LLMTab({ showToast }: LLMTabProps) {
         setLlmFormModel('')
         setLlmFormMaxOutputTokens('')
         setLlmFormThinkingMode('auto')
-        showToast('配置已删除', 'success')
+        showToast(t('configDeleted'), 'success')
       } else {
         setLlmError(data.error || '删除失败')
         showToast(data.error || '删除失败', 'error')
       }
     } catch {
       setLlmError('网络错误')
-      showToast('网络错误', 'error')
+      showToast(t('networkError'), 'error')
     }
     setLlmSaving(false)
   }, [fetchLLMConfig, showToast])
@@ -161,11 +163,11 @@ export default function LLMTab({ showToast }: LLMTabProps) {
         setLlmError(data.error || '保存失败')
         showToast(data.error || '保存失败', 'error')
       } else {
-        showToast('配置已保存', 'success')
+        showToast(t('configSaved'), 'success')
       }
     } catch {
       setLlmError('网络错误')
-      showToast('网络错误', 'error')
+      showToast(t('networkError'), 'error')
     }
     setLlmMaxContextSaving(false)
   }, [llmMaxContext, showToast])
@@ -183,7 +185,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
       onCancel={() => setConfirmLLMDelete(false)}
     />
     <div className={sectionClass}>
-      <div className={sectionTitleClass}>🧠 个人 LLM 配置</div>
+      <div className={sectionTitleClass}>{t('llmTitle')}</div>
 
       {llmConfigLoading ? (
         <div className="text-center py-6 text-slate-500 text-sm">加载中...</div>

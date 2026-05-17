@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 
@@ -23,6 +24,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   const [renameValue, setRenameValue] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const { t } = useTranslation()
 
   // Responsive mobile detection
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
@@ -127,7 +129,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       <button
         className="chat-sidebar-toggle"
         onClick={() => { setCollapsed(false); fetchChats() }}
-        title="展开会话列表"
+        title={t("expandSidebar")}
       >
         💬 <span className="sidebar-count">{chats.length}</span>
       </button>
@@ -141,17 +143,17 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
         <div className="chat-sidebar-mobile" role="navigation" aria-label="会话列表" data-testid="sidebar">
           {/* Header */}
           <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
-            <span className="text-sm font-medium text-slate-300">💬 会话</span>
+            <span className="text-sm font-medium text-slate-300">{t("chatSessions")}</span>
             <div className="flex items-center gap-1">
-              <button onClick={handleCreate} className="sidebar-btn" title="新建会话">+</button>
-              <button onClick={() => setCollapsed(true)} className="sidebar-btn" title="收起">✕</button>
+              <button onClick={handleCreate} className="sidebar-btn" title={t("newSession")}>+</button>
+              <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>✕</button>
             </div>
           </div>
           {/* Search */}
           <div className="px-3 py-1 border-b border-slate-700/50">
             <input
               className="sidebar-search"
-              placeholder="搜索会话..."
+              placeholder={t('searchPlaceholder')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               onClick={e => e.stopPropagation()}
@@ -160,7 +162,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
           {/* List */}
           <div className="flex-1 overflow-y-auto py-1">
             {loading ? (
-              <div className="text-center py-4 text-slate-500 text-xs">加载中...</div>
+              <div className="text-center py-4 text-slate-500 text-xs">{t('sidebarLoading')}</div>
             ) : (
               filteredChats.map((chat) => (
                 <div
@@ -183,11 +185,11 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
                       <span
                         className="text-xs truncate flex-1 text-slate-300"
                         onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
-                      >{chat.label || '未命名'}</span>
+                      >{chat.label || t('unnamedSession')}</span>
                     )}
                     {chat.is_current && <span className="text-[10px] text-indigo-400 shrink-0">●</span>}
                     {!chat.is_current && (
-                      <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label="删除会话">✕</button>
+                      <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>✕</button>
                     )}
                   </div>
                   {chat.preview && <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>}
@@ -205,10 +207,10 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     <div className="flex flex-col w-56 bg-slate-900/80 border-r border-slate-700/50 shrink-0" role="navigation" aria-label="会话列表" data-testid="sidebar">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
-        <span className="text-sm font-medium text-slate-300">💬 会话</span>
+        <span className="text-sm font-medium text-slate-300">{t("chatSessions")}</span>
         <div className="flex items-center gap-1">
-          <button onClick={handleCreate} className="sidebar-btn" title="新建会话">+</button>
-          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title="收起">◀</button>
+          <button onClick={handleCreate} className="sidebar-btn" title={t("newSession")}>+</button>
+          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>◀</button>
         </div>
       </div>
 
@@ -216,7 +218,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       <div className="px-3 py-1">
         <input
           className="sidebar-search"
-          placeholder="搜索会话..."
+          placeholder={t('searchPlaceholder')}
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
         />
@@ -225,9 +227,9 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       {/* Chat List */}
       <div className="flex-1 overflow-y-auto py-1">
         {loading ? (
-          <div className="text-center py-4 text-slate-500 text-xs">加载中...</div>
+          <div className="text-center py-4 text-slate-500 text-xs">{t('sidebarLoading')}</div>
         ) : chats.length === 0 ? (
-          <div className="text-center py-4 text-slate-500 text-xs">暂无会话</div>
+          <div className="text-center py-4 text-slate-500 text-xs">{t('noSessions')}</div>
         ) : (
           chats.map((chat) => (
             <div
@@ -250,10 +252,10 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
                   <span
                     className="text-xs truncate flex-1 text-slate-300"
                     onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
-                  >{chat.label || '未命名'}</span>
+                  >{chat.label || t('unnamedSession')}</span>
                 )}
                 {chat.is_current && (
-                  <span className="text-[10px] text-indigo-400 shrink-0">当前</span>
+                  <span className="text-[10px] text-indigo-400 shrink-0">{t('currentSession')}</span>
                 )}
                 {!chat.is_current && (
                   <button
@@ -270,7 +272,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
 
       {/* Refresh */}
       <div className="border-t border-slate-700/50 px-2 py-1">
-        <button onClick={fetchChats} disabled={loading} className="sidebar-refresh-btn" aria-label="刷新会话列表">
+        <button onClick={fetchChats} disabled={loading} className="sidebar-refresh-btn" aria-label={t("refreshSessions")}>
           {loading ? '...' : '🔄 刷新'}
         </button>
       </div>

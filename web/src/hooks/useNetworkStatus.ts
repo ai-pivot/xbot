@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 export interface NetworkStatus {
@@ -42,13 +43,14 @@ export function useNetworkToasts(
   _wsConnected: boolean,
   showToast: (msg: string, type?: 'info' | 'error' | 'success') => void,
 ): void {
+  const { t } = useTranslation()
   const prevOnlineRef = useRef(online)
 
   useEffect(() => {
     if (!prevOnlineRef.current && online) {
-      showToast('📶 网络已恢复', 'success')
+      showToast(t('backOnline'), 'success')
     } else if (prevOnlineRef.current && !online) {
-      showToast('📶 网络已断开，部分功能不可用', 'error')
+      showToast(t('offlineMessage'), 'error')
     }
     prevOnlineRef.current = online
   }, [online, showToast])
