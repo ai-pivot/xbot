@@ -1,7 +1,6 @@
 package channel
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -14,10 +13,9 @@ import (
 // into WSMessage events pushed to an event channel, which ChannelTransport
 // reads and dispatches to subscribers.
 //
-// This replaces the local-mode pattern where Agent directly called
-// cliCh.SendProgress() → progressCh → asyncCh → TUI.
-// Now: Agent → ChannelCliChannel → eventCh → ChannelTransport → baseTransport → Subscribe handler → cliCh → TUI.
-// Same path as remote mode, but with Go channels instead of WebSocket.
+// Message construction is delegated to cliMessageBuilder (cli_msg_builder.go)
+// so the WSMessage format is identical to RemoteCLIChannel — only the
+// transport differs (Go channel vs WebSocket).
 type ChannelCliChannel struct {
 	eventCh      chan<- protocol.WSMessage
 	tuiPendingMu sync.Mutex
@@ -51,7 +49,6 @@ type ProgressSender interface {
 // UserMessageInjector is implemented by channels that support injecting
 // user messages from background sources (cron, bg task notifications).
 // Used by agent's injectCLIUserMessage for type assertion.
-// All three CLI channel types implement this: CLIChannel, RemoteCLIChannel, ChannelCliChannel.
 type UserMessageInjector interface {
 	InjectUserMessage(chatID, content string)
 }
@@ -63,137 +60,68 @@ type SessionStateSender interface {
 	SendSessionState(ev protocol.SessionEvent)
 }
 
-func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeText,
-		TS:      time.Now().Unix(),
-		Content: msg.Content,
-		ChatID:  msg.ChatID,
-		Channel: msg.Channel,
-	}
+// sendMsg pushes a WSMessage to the event channel. Returns error if full.
+func (c *ChannelCliChannel) sendMsg(msg protocol.WSMessage) error {
 	select {
-	case c.eventCh <- wsMsg:
+	case c.eventCh <- msg:
+		return nil
 	default:
-		return "", fmt.Errorf("channel cli: event channel full")
+		return fmt.Errorf("channel cli: event channel full")
 	}
+}
 
-	// AskUser: agent needs user input. Send as separate MsgTypeAskUser
-	// so dispatchWSMessage can route it to the "ask_user" subscriber,
-	// mirroring RemoteCLIChannel.Send() behavior.
-	if msg.WaitingUser {
-		askEv := protocol.AskUserEvent{
-			Channel: msg.Channel,
-			ChatID:  msg.ChatID,
-		}
-		if msg.Metadata != nil {
-			askEv.RequestID = msg.Metadata["request_id"]
-			askEv.Questions = msg.Metadata["ask_questions"]
-		}
-		data, _ := json.Marshal(askEv)
-		askMsg := protocol.WSMessage{
-			Type:    protocol.MsgTypeAskUser,
-			TS:      time.Now().Unix(),
-			ChatID:  msg.ChatID,
-			Content: string(data),
-		}
-		select {
-		case c.eventCh <- askMsg:
-		default:
-			// AskUser is critical — log but don't silently drop
-			return "", fmt.Errorf("channel cli: event channel full, ask_user dropped")
+// sendMsgBestEffort pushes a WSMessage, silently dropping if full.
+func (c *ChannelCliChannel) sendMsgBestEffort(msg protocol.WSMessage) {
+	select {
+	case c.eventCh <- msg:
+	default:
+	}
+}
+
+func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
+	if err := c.sendMsg(cliMsg.buildTextMsg(msg)); err != nil {
+		return "", err
+	}
+	if askMsg := cliMsg.buildAskUserMsg(msg); askMsg != nil {
+		if err := c.sendMsg(*askMsg); err != nil {
+			return "", err
 		}
 	}
-
 	return "", nil
 }
 
-// SendProgress converts a progress event to WSMessage and pushes to the event channel.
 func (c *ChannelCliChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
-	if payload == nil {
-		return
-	}
-	wsMsg := protocol.WSMessage{
-		Type:     protocol.MsgTypeProgress,
-		TS:       time.Now().Unix(),
-		Progress: payload,
-		ChatID:   chatID,
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
+	if msg := cliMsg.buildProgressMsg(chatID, payload); msg != nil {
+		c.sendMsgBestEffort(*msg)
 	}
 }
 
-// SendSessionState pushes a session state change event.
 func (c *ChannelCliChannel) SendSessionState(ev protocol.SessionEvent) {
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeSession,
-		TS:      time.Now().Unix(),
-		Session: &ev,
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
-	}
+	c.sendMsgBestEffort(cliMsg.buildSessionStateMsg(ev))
 }
 
-// SendToast pushes a toast notification event.
 func (c *ChannelCliChannel) SendToast(msg string) {
-	wsMsg := protocol.WSMessage{
+	c.sendMsgBestEffort(protocol.WSMessage{
 		Type:    protocol.MsgTypeText,
 		TS:      time.Now().Unix(),
 		Content: msg,
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
-	}
+	})
 }
 
-// SendStreamContent pushes a stream content event.
-// Mirrors RemoteCLIChannel.SendStreamContent: the Progress.ChatID carries
-// the "cli:" prefix expected by handleProgressMsg's session filter.
 func (c *ChannelCliChannel) SendStreamContent(chatID, content, reasoning string) {
-	if content == "" && reasoning == "" {
-		return
-	}
-	wsMsg := protocol.WSMessage{
-		Type: protocol.MsgTypeStreamContent,
-		TS:   time.Now().Unix(),
-		Progress: &protocol.ProgressEvent{
-			ChatID:                 "cli:" + chatID,
-			StreamContent:          content,
-			ReasoningStreamContent: reasoning,
-		},
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
+	if msg := cliMsg.buildStreamContentMsg(chatID, content, reasoning); msg != nil {
+		c.sendMsgBestEffort(*msg)
 	}
 }
 
-// SetConnState is a no-op for in-process channel — always connected.
 func (c *ChannelCliChannel) SetConnState(string) {}
 
-// InjectUserMessage pushes an inject_user event.
 func (c *ChannelCliChannel) InjectUserMessage(chatID, content string) {
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeInjectUser,
-		TS:      time.Now().Unix(),
-		ChatID:  chatID,
-		Content: content,
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
-	}
+	c.sendMsgBestEffort(cliMsg.buildInjectUserMsg(chatID, content))
 }
 
-// SendTUIControlRequest sends a TUI control request via the event channel
-// and waits for a response, following the same request/response pattern as
-// RemoteCLIChannel.SendTUIControlRequest.
 func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, params map[string]string) (map[string]string, error) {
-	id := fmt.Sprintf("tui-%d", time.Now().UnixNano())
+	id := cliMsg.generateTUIID()
 	ch := make(chan *protocol.TUIControlPayload, 1)
 
 	c.tuiPendingMu.Lock()
@@ -206,19 +134,8 @@ func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, 
 		c.tuiPendingMu.Unlock()
 	}()
 
-	wsMsg := protocol.WSMessage{
-		Type:   protocol.MsgTypeTUIControlReq,
-		ID:     id,
-		ChatID: chatID,
-		TUIControl: &protocol.TUIControlPayload{
-			Action: action,
-			Params: params,
-		},
-	}
-	select {
-	case c.eventCh <- wsMsg:
-	default:
-		return nil, fmt.Errorf("channel cli: event channel full")
+	if err := c.sendMsg(cliMsg.buildTUIControlReqMsg(id, chatID, action, params)); err != nil {
+		return nil, err
 	}
 
 	select {
@@ -227,12 +144,11 @@ func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, 
 			return nil, fmt.Errorf("%s", resp.Error)
 		}
 		return resp.Result, nil
-	case <-time.After(10 * time.Second):
+	case <-time.After(tuiRespTimeout):
 		return nil, fmt.Errorf("tui_control request %s timed out", id)
 	}
 }
 
-// DeliverTUIResponse routes a TUI control response to the pending request channel.
 func (c *ChannelCliChannel) DeliverTUIResponse(id string, payload *protocol.TUIControlPayload) {
 	c.tuiPendingMu.Lock()
 	ch, ok := c.tuiPending[id]
