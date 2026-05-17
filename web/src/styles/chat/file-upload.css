@@ -88,3 +88,175 @@
   border-color: #2563eb;
   background: rgba(37, 99, 235, 0.05);
 }
+
+/* ========================================================================== */
+/* Upload Queue                                                               */
+/* ========================================================================== */
+
+.upload-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--xbot-bg-secondary);
+  border-radius: 10px;
+  border: 1px solid var(--xbot-border);
+}
+
+.upload-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--xbot-bg-elevated);
+  border: 1px solid var(--xbot-border-light);
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.upload-queue-item--uploading {
+  border-color: var(--xbot-accent-blue);
+}
+
+.upload-queue-item--done {
+  opacity: 0.6;
+}
+
+.upload-queue-item--error {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.upload-queue-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.upload-queue-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.upload-queue-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--xbot-text-primary);
+}
+
+.upload-queue-size {
+  font-size: 11px;
+  color: var(--xbot-text-muted);
+}
+
+.upload-queue-progress-track {
+  width: 60px;
+  height: 4px;
+  background: var(--xbot-border);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.upload-queue-progress-bar {
+  height: 100%;
+  background: var(--xbot-accent-blue);
+  border-radius: 2px;
+  transition: width 0.2s;
+}
+
+.upload-queue-status {
+  font-size: 11px;
+  color: var(--xbot-text-muted);
+  flex-shrink: 0;
+  min-width: 40px;
+  text-align: right;
+}
+
+.upload-queue-status--done {
+  color: #22c55e;
+}
+
+.upload-queue-status--error {
+  color: #ef4444;
+}
+
+.upload-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.upload-queue-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--xbot-text-muted);
+  transition: all 0.15s;
+  padding: 0;
+  line-height: 1;
+}
+
+.upload-queue-action-btn:hover:not(:disabled) {
+  background: var(--xbot-bg-secondary);
+  color: var(--xbot-text-primary);
+  border-color: var(--xbot-border);
+}
+
+.upload-queue-action-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.upload-queue-retry-btn:hover:not(:disabled) {
+  color: #f59e0b;
+  border-color: #f59e0b;
+}
+
+.upload-queue-remove-btn:hover:not(:disabled) {
+  color: #ef4444;
+  border-color: #ef4444;
+}
+
+/* ---- Light theme overrides ---- */
+[data-theme="light"] .upload-queue {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .upload-queue-item {
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .upload-queue-item--uploading {
+  border-color: #2563eb;
+}
+
+[data-theme="light"] .upload-queue-item--error {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.04);
+}
+
+[data-theme="light"] .upload-queue-progress-track {
+  background: #e2e8f0;
+}
+
+[data-theme="light"] .upload-queue-action-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
