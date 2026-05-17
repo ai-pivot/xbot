@@ -14,6 +14,50 @@
   }
 }
 
+/* 平板（641px - 1024px） */
+@media (min-width: 641px) and (max-width: 1024px) {
+  /* 消息区域适度 padding */
+  .chat-messages {
+    padding: 16px 16px !important;
+  }
+
+  /* 用户消息最大宽度 85% */
+  .flex.justify-end > div {
+    max-width: 85% !important;
+  }
+
+  /* 助手消息 */
+  .assistant-turn-container {
+    max-width: 95% !important;
+  }
+
+  /* 输入区域宽度 */
+  .max-w-4xl {
+    max-width: 95% !important;
+  }
+
+  /* 预设栏适度紧凑 */
+  .preset-bar {
+    padding: 8px 12px !important;
+    gap: 8px !important;
+  }
+
+  /* Sidebar 宽度适配 */
+  .chat-sidebar {
+    width: 260px !important;
+  }
+
+  /* 设置面板适配 */
+  .settings-overlay {
+    max-width: 90vw !important;
+  }
+
+  /* 代码块适度圆角 */
+  .xbot-codeblock {
+    border-radius: 10px !important;
+  }
+}
+
 @media (max-width: 640px) {
   /* Header 更紧凑 */
   header {
@@ -126,12 +170,6 @@
   /* Runner 卡片 */
   .runner-card {
     padding: 10px !important;
-  }
-
-  /* Toast 通知 */
-  .fixed.top-4.right-4 {
-    right: 8px !important;
-    left: 8px !important;
   }
 
   /* Sidebar toggle button on mobile */
