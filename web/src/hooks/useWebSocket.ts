@@ -10,6 +10,8 @@ export interface UseWebSocketOptions {
   onMessage: (data: WebSocketMessage) => void
   /** Initial seq value (e.g. from history API's last_seq). Updated internally. */
   initialSeq?: number
+  /** External ref for last_seq coordination. If omitted, an internal ref is used. */
+  lastSeqRef?: React.MutableRefObject<number>
 }
 
 export interface UseWebSocketReturn {
@@ -27,7 +29,7 @@ export interface UseWebSocketReturn {
 }
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
-  const { onMessage, initialSeq } = options
+  const { onMessage, initialSeq, lastSeqRef: externalLastSeqRef } = options
 
   const [connected, setConnected] = useState(false)
   const [reconnecting, setReconnecting] = useState(true) // true = initial connecting state
@@ -37,7 +39,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const intentionalCloseRef = useRef(false)
   const reconnectDelayRef = useRef(1000)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastSeqRef = useRef<number>(initialSeq ?? 0)
+  const internalLastSeqRef = useRef<number>(initialSeq ?? 0)
+  const lastSeqRef = externalLastSeqRef ?? internalLastSeqRef
 
   // Stable ref for onMessage to avoid re-creating connect on every render.
   const onMessageRef = useRef(onMessage)

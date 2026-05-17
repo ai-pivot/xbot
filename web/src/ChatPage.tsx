@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } fro
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { useWebSocket, type WebSocketMessage } from './hooks/useWebSocket'
+import { useWebSocket } from './hooks/useWebSocket'
+import { useChatMessageHandler } from './hooks/useChatMessageHandler'
 import type { TiptapEditorHandle } from './components/TiptapEditor'
 import type { PresetCommand, Message, Turn } from './types'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
@@ -324,260 +325,19 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   }, [])
 
   // --- WebSocket hook ---
+  const lastSeqRef = useRef(0)
+  const { onMessage } = useChatMessageHandler({
+    setMessages, setLoading, setProgress, setAskUser,
+    prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
+    fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
+  })
   const {
     connected,
     reconnecting,
     serverStopped,
     send: wsSend,
     disconnect: wsDisconnect,
-    lastSeqRef,
-  } = useWebSocket({
-    onMessage: useCallback((data: WebSocketMessage) => {
-      switch (data.type) {
-        case 'progress':
-          setLoading(true)
-          break
-
-        case 'progress_structured':
-          {
-            let p: WsProgressPayload = data.progress as WsProgressPayload
-            const prevIter = prevIterationRef.current
-            const prevProgress = progressRef.current
-
-            if (prevProgress && p.iteration === prevProgress.iteration) {
-              const nextThinking = (p.thinking || '').trim()
-              const prevThinking = (prevProgress.thinking || '').trim()
-              p = {
-                ...p,
-                thinking: nextThinking.length > 0 ? p.thinking : prevProgress.thinking,
-                completed_tools: (p.completed_tools?.length ?? 0) > 0
-                  ? p.completed_tools
-                  : (prevProgress.completed_tools ?? []),
-              }
-              if (nextThinking.length === 0 && prevThinking.length > 0) {
-                p.thinking = prevProgress.thinking
-              }
-            }
-
-            if (prevIter >= 0 && p.iteration > prevIter && prevProgress) {
-              const allTools = [
-                ...(prevProgress.completed_tools ?? []),
-                ...(prevProgress.active_tools ?? []),
-              ].map(t => ({
-                name: t.name,
-                label: t.label,
-                status: t.status,
-                elapsed_ms: t.elapsed_ms,
-              }))
-              const snapThinking = reasoningRef.current.trim() || prevProgress.thinking || ''
-              setLiveIterationsSync(prev => {
-                const merged = normalizeIterationHistory([
-                  ...prev,
-                  {
-                    iteration: prevIter,
-                    thinking: snapThinking,
-                    tools: allTools,
-                  },
-                ])
-                return merged
-              })
-              reasoningRef.current = ''
-            }
-
-            if (p.iteration > 0 && (p.completed_tools?.length ?? 0) > 0) {
-              const inferredPrev = p.iteration - 1
-              setLiveIterationsSync(prev => {
-                const hasPrev = prev.some((s) => s.iteration === inferredPrev)
-                if (hasPrev) return prev
-                return normalizeIterationHistory([
-                  ...prev,
-                  {
-                    iteration: inferredPrev,
-                    tools: (p.completed_tools ?? []).map((t) => ({
-                      name: t.name,
-                      label: t.label,
-                      status: t.status,
-                      elapsed_ms: t.elapsed_ms,
-                    })),
-                  },
-                ])
-              })
-            }
-
-            prevIterationRef.current = p.iteration
-            progressRef.current = p
-            setProgress(p)
-          }
-          setLoading(true)
-          break
-
-        case 'stream_content': {
-          const reasoning = (data.progress as Record<string, string>)?.reasoning_stream_content || ''
-          const content = (data.progress as Record<string, string>)?.stream_content || ''
-          if (!reasoning && !content) break
-
-          if (reasoning) {
-            reasoningRef.current = reasoning
-            if (progressRef.current) {
-              progressRef.current = { ...progressRef.current, thinking: reasoningRef.current }
-              setProgress({ ...progressRef.current })
-            } else {
-              const p: WsProgressPayload = {
-                phase: 'thinking',
-                iteration: prevIterationRef.current >= 0 ? prevIterationRef.current : 0,
-                thinking: reasoningRef.current,
-                active_tools: [],
-                completed_tools: [],
-              }
-              progressRef.current = p
-              prevIterationRef.current = p.iteration
-              setProgress(p)
-            }
-          }
-
-          if (content) {
-            streamingContentRef.current = content
-            setMessages(prev => {
-              const last = prev[prev.length - 1]
-              if (last && last.id === '__streaming__') {
-                if (last.content === content) return prev
-                return [...prev.slice(0, -1), { ...last, content: content }]
-              }
-              return [...prev, {
-                id: '__streaming__',
-                type: 'assistant' as const,
-                content: content,
-              }]
-            })
-          }
-
-          setLoading(true)
-          break
-        }
-
-        case 'text':
-        case 'card': {
-          const accumulatedReasoning = reasoningRef.current.trim()
-          const progressSnap = progressRef.current
-            ? {
-                ...progressRef.current,
-                thinking: progressRef.current.thinking || accumulatedReasoning,
-                active_tools: [],
-              } as WsProgressPayload
-            : accumulatedReasoning
-              ? ({
-                  phase: 'done' as const,
-                  iteration: prevIterationRef.current >= 0 ? prevIterationRef.current : 0,
-                  thinking: accumulatedReasoning,
-                  active_tools: [],
-                  completed_tools: [],
-                } as WsProgressPayload)
-              : null
-
-          const snapThinking = accumulatedReasoning || progressSnap?.thinking || ''
-          const currentSnap = progressSnap ? (() => {
-            const allTools = [
-              ...(progressSnap.completed_tools ?? []),
-            ].map(t => ({
-              name: t.name,
-              label: t.label,
-              status: t.status,
-              elapsed_ms: t.elapsed_ms,
-              summary: t.summary,
-            }))
-            return {
-              iteration: prevIterationRef.current,
-              thinking: snapThinking,
-              tools: allTools,
-            }
-          })() : null
-
-          const currentLive = liveIterationsRef.current ?? []
-          let localHistory: IterationSnapshot[] = [...currentLive]
-          if (currentSnap) localHistory.push(currentSnap)
-          localHistory = normalizeIterationHistory(localHistory)
-
-          setLiveIterationsSync([])
-
-          localHistory = normalizeIterationHistory(localHistory)
-
-          let finalHistory = localHistory
-          if (data.progress_history) {
-            try {
-              const serverHistory = normalizeIterationHistory(JSON.parse(data.progress_history as string))
-              if (serverHistory.length > 0) {
-                finalHistory = serverHistory
-              }
-            } catch {
-              // keep local snapshots
-            }
-          }
-
-          resetProgress()
-          lastSeqRef.current = 0
-          setLoading(false)
-
-          const finalContent = streamingContentRef.current || (data.content as string) || ''
-          streamingContentRef.current = ''
-
-          setMessages((prev) => {
-            const filtered = prev.filter(m => m.id !== '__streaming__')
-            const msg: Message = {
-              id: (data.id as string) || `ws-${Date.now()}`,
-              type: data.type === 'card' ? 'system' : 'assistant',
-              content: finalContent,
-              ts: data.ts as number | undefined,
-              savedProgress: progressSnap,
-              iterationHistory: finalHistory.length > 0 ? finalHistory : undefined,
-            }
-            return [...filtered, msg]
-          })
-          fetchContextInfo()
-          break
-        }
-
-        case 'user_echo': {
-          if (data.original_content) {
-            setMessages((prev) => prev.map((m) =>
-              m.type === 'user' && m.content === (data.original_content as string)
-                ? { ...m, content: data.content as string }
-                : m
-            ))
-          }
-          break
-        }
-
-        case 'ask_user': {
-          const questions = (data.progress as Record<string, unknown>)?.questions || []
-          if (Array.isArray(questions) && questions.length > 0) {
-            setAskUser({ questions: questions as { question: string; options?: string[] }[], answers: {}, currentQ: 0 })
-          }
-          break
-        }
-
-        case 'runner_status': {
-          try {
-            const detail = data.content ? JSON.parse(data.content as string) : {}
-            window.dispatchEvent(new CustomEvent('runner-status-change', {
-              detail: { runnerName: detail.runner_name, online: detail.online },
-            }))
-          } catch { /* ignore */ }
-          break
-        }
-
-        case 'sync_progress': {
-          try {
-            const detail = data.content ? JSON.parse(data.content as string) : {}
-            if (detail.message) showToast(detail.message, detail.phase === 'done' ? 'success' : 'info')
-          } catch { /* ignore */ }
-          break
-        }
-
-        default:
-          break
-      }
-    }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast]),
-  })
+  } = useWebSocket({ onMessage, lastSeqRef })
 
   // --- Load history (extracted for reuse on chat switch) ---
   const loadHistory = useCallback(() => {
