@@ -1,17 +1,20 @@
 /**
  * i18n Constants — zh-CN
  * Centralized Chinese text constants for the Web UI.
- * Extract all hardcoded user-facing strings here for future i18n support.
+ * Every user-facing string must have a key here.
  */
 const zhCN = {
-  // App
+  // ─── App ───
   appName: 'xbot',
   appSubtitle: '智能对话助手',
+  loading: 'Loading...',
+  logoutBtn: '退出登录',
+  skipToContent: '跳到主内容',
 
-  // Auth
+  // ─── Auth ───
   login: '登录',
   register: '注册',
-  logout: 'Logout',
+  logout: '退出登录',
   username: '用户名',
   password: '密码',
   loginFailed: '登录失败',
@@ -24,14 +27,17 @@ const zhCN = {
   hasAccount: '已有账号？登录',
   createAccount: '创建账号',
   feishuLogin: '飞书登录',
+  feishuAccountLogin: '飞书账号登录',
   feishuLoginFailed: '飞书登录失败',
   feishuUserId: '飞书用户 ID',
   feishuPassword: '关联的 Web 账号密码',
+  feishuPasswordLabel: 'Web 密码',
   feishuBindHint: '需要先在飞书中绑定 Web 账号，使用绑定时设置的密码登录。',
+  feishuPlaceholder: 'ou_xxx 或 open_id',
   backToPasswordLogin: '← 返回账号密码登录',
-  loginViaFeishu: '通过飞书用户 ID 登入',
+  loginViaFeishu: '通过飞书用户 ID 登录 →',
 
-  // Chat
+  // ─── Chat ───
   startConversation: '开始一段对话',
   sendFirstMessage: '发送消息开始与 AI 助手交流',
   searchHistory: '搜索历史消息',
@@ -46,18 +52,29 @@ const zhCN = {
   conversationCleared: '对话已清空',
   newConversation: '新对话',
   copyContent: '复制内容',
-  copied: '✓ Copied',
+  copied: '✓ 已复制',
   copyCode: '复制代码',
+  searchKbHint: '搜索历史消息',
+  commandHint: '查看快捷指令',
+  switchedToModel: '已切换到 {model}',
+  openSettings: '打开设置',
+  messagesAriaLabel: '消息',
+  imagePreview: '图片预览',
+  closePreview: '关闭预览',
+  imagePreviewAlt: '预览',
+  cancelGeneration: '取消当前生成',
+  helpTitle: '可用命令',
 
-  // Status
+  // ─── Status ───
   connected: '● Connected',
   connectingStatus: '◐ Connecting...',
   disconnected: '○ Disconnected',
   serverDisconnected: '⛔ 服务已断开，请刷新页面重新连接',
   reconnecting: '⚠️ 连接断开，正在尝试重连...',
   contextUsage: '上下文使用',
+  contextUsageTitle: '上下文使用: {prompt} / {max} tokens',
 
-  // Settings
+  // ─── Settings ───
   settings: '⚙️ 设置',
   closeSettings: '关闭设置',
   saving: '保存中...',
@@ -74,13 +91,15 @@ const zhCN = {
   nickname: '昵称',
   switchModel: '切换模型',
   modelSelect: '模型选择',
+  settingsSaved: '设置已保存',
+  saveFailed: '保存失败，请重试',
 
-  // Search
+  // ─── Search ───
   searchMessages: '搜索消息历史...',
   searching: '搜索中...',
   noResults: '未找到匹配结果',
 
-  // File upload
+  // ─── File upload ───
   uploadFile: '上传文件',
   uploadFailed: '上传失败',
   fileTooLarge: '文件超过 10MB 限制',
@@ -89,55 +108,195 @@ const zhCN = {
   dragSupportedTypes: '支持图片、文档、代码等文件',
   remove: '移除',
 
-  // Commands
+  // ─── Commands ───
   cmdClear: '清空对话',
   cmdNew: '新对话',
   cmdCompact: '压缩上下文',
   cmdHelp: '显示帮助',
   cmdCancel: '取消当前生成',
-  helpTitle: '可用命令',
 
-  // AskUser
+  // ─── AskUser ───
   agentNeedsInput: 'Agent 需要你的输入',
   inputAnswer: '输入你的回答...',
   submit: '提交',
   previousQuestion: '← 上一题',
   cancel: '取消',
 
-  // Progress
+  // ─── Progress ───
   thinking: '思考中...',
   rendering: '渲染图表中...',
+  executingTool: '执行工具...',
+  processing: '处理中...',
+  preparing: '准备中...',
 
-  // Mermaid
+  // ─── Mermaid ───
   mermaidRenderFailed: 'Mermaid 渲染失败',
 
-  // Image / File
+  // ─── Image / File ───
   image: '图片',
   file: '文件',
 
-  // Confirm dialog
+  // ─── Confirm dialog ───
   confirm: '确定',
 
-  // Sidebar
+  // ─── Sidebar ───
   searchPlaceholder: '搜索会话...',
+  expandSidebar: '展开会话列表',
+  chatSessions: '💬 会话',
+  newSession: '新建会话',
+  collapseSidebar: '收起',
+  unnamedSession: '未命名',
+  currentSession: '当前',
+  refreshSessions: '🔄 刷新',
+  noSessions: '暂无会话',
+  deleteSession: '删除会话',
+  renameSession: '重命名',
+  confirmDeleteSession: '确定要删除此会话吗？此操作不可撤销。',
+  sidebarLoading: '加载中...',
 
-  // Errors
+  // ─── Errors ───
   switchFailed: '切换失败',
 
-  // Runner
+  // ─── Runner ───
   local: '本地',
+  workspaceEnv: '🖥️ 工作环境',
+  manageRunners: '管理远程 Runner，点击卡片切换活跃环境。',
+  noRunners: '尚未添加工作环境',
+  addRunnerHint: '添加 Runner 后可远程执行命令',
+  activeBadge: '活跃',
+  dockerSandbox: '🐳 Docker Sandbox (内置)',
+  builtinEnv: '内置环境',
+  copyConnectCommand: '复制连接命令',
+  copiedCommand: '已复制!',
+  deleteRunner: '删除',
+  confirmDeleteRunner: '确认删除',
+  confirmDeleteRunnerText: '确定要删除 {name} 吗？',
+  runnerOnlineWarning: '⚠️ 此 Runner 当前在线，删除后将断开连接。',
+  runnerName: '名称',
+  runnerNamePlaceholder: '例如：MacBook Pro',
+  runMode: '运行模式',
+  nativeMode: '🖥️ 原生',
+  dockerMode: '🐳 Docker',
+  dockerImage: 'Docker 镜像',
+  workspace: '工作目录',
+  workspacePlaceholder: '例如：/home/user/project（留空则由 Runner 自动设定）',
+  workspaceHint: 'Runner 连接后将使用此目录作为工作区',
+  creating: '⏳ 创建中...',
+  create: '✨ 创建',
+  addWorkspace: '➕ 添加工作环境',
 
-  // Offline
+  // ─── Offline ───
   offlineMessage: '📶 网络已断开，部分功能不可用',
   backOnline: '📶 网络已恢复',
 
-  // Error boundary
+  // ─── Error boundary ───
   errorBoundaryTitle: '页面出错了',
   errorBoundaryMessage: '发生了意外错误，请尝试刷新页面。',
   errorBoundaryRetry: '重试',
+  refreshPage: '刷新页面',
+  errorDetails: '错误详情',
 
-  // Tokens
+  // ─── Tokens ───
   tokens: 'tokens',
+
+  // ─── Appearance Tab ───
+  appearanceTitle: '🎨 外观',
+  themeLabel: '主题',
+  fontSizeLabel: '字体大小',
+  nicknameLabel: '昵称',
+  languageLabel: '语言',
+  smallSize: '小',
+  mediumSize: '中',
+  largeSize: '大',
+  enterNickname: '输入昵称...',
+
+  // ─── Sessions Tab ───
+  chatRooms: '💬 ChatRooms',
+  chatRoomDesc: '所有对话都是 ChatRoom — 人↔Agent、Agent↔Agent 统一管理。',
+  backToList: '← 返回列表',
+  mainSession: '👤 主会话',
+  agentSession: '🤖 Agent',
+  running: '运行中',
+  completed: '已完成',
+  noMessages: '暂无消息记录',
+  noChatRooms: '暂无 ChatRoom',
+  loadingDots: '加载中...',
+  refresh: '🔄 刷新',
+
+  // ─── LLM Tab ───
+  llmTitle: '🧠 个人 LLM 配置',
+  fetchConfigFailed: '获取配置失败',
+  providerLabel: '提供商',
+  currentModelLabel: '当前模型',
+  usingPersonalModel: '当前使用个人模型。可切换模型或删除配置以恢复系统默认。',
+  addLLMConfig: '添加个人 LLM 配置',
+  baseURLRequired: 'Base URL 和 API Key 为必填项',
+  configSaved: '配置已保存',
+  modelSwitched: '模型已切换',
+  switchModelFailed: '切换模型失败',
+  configDeleted: '配置已删除',
+  deleteFailed: '删除失败',
+  deleteLLMConfig: '确认删除个人 LLM 配置？删除后将恢复使用系统默认模型。',
+  deleteConfig: '删除配置',
+  addConfig: '添加配置',
+  saveConfig: '保存配置',
+  save: '保存',
+  defaultModel: '默认',
+  apiKeyMasked: '••••••••',
+  maxContextLabel: '最大上下文 Tokens',
+  maxOutputLabel: '最大输出 Tokens',
+  thinkingModeLabel: '思考模式',
+  thinkingAuto: '自动',
+  thinkingOn: '开启',
+  thinkingOff: '关闭',
+  baseURLLabel: 'Base URL',
+  apiKeyLabel: 'API Key',
+  modelLabel: '模型',
+  enterModelName: '输入模型名称...',
+
+  // ─── Presets Tab ───
+  presetsTitle: '⚡ 快捷指令',
+  presetsDesc: '配置常用指令，在聊天输入框上方快速触发。最多 20 条。',
+  presetIcon: '图标',
+  presetLabel: '名称',
+  presetContent: '内容',
+  presetContentPlaceholder: '点击后发送的内容...',
+  fillMode: '填充模式（填入输入框而非直接发送）',
+  savePreset: '💾 保存',
+  confirmDeletePreset: '确认删除此快捷指令？',
+  noPresets: '暂无快捷指令',
+  moveUp: '上移',
+  moveDown: '下移',
+  editPreset: '编辑',
+  deletePreset: '删除',
+
+  // ─── Market Tab ───
+  marketTitle: '🏪 市场',
+  publishSuccess: '发布成功',
+  unpublishSuccess: '已取消发布',
+  installSuccess: '安装成功',
+  uninstallSuccess: '卸载成功',
+  installFailed: '安装失败',
+  uninstallFailed: '卸载失败',
+
+  // ─── AssistantTurn ───
+  thinkingProcess: '思考过程',
+  iterationProcess: '迭代过程',
+  expandAll: '展开全部',
+  collapse: '折叠',
+
+  // ─── Tab labels ───
+  tabAppearance: '外观',
+  tabSessions: '会话',
+  tabPresets: '快捷指令',
+  tabLLM: 'LLM',
+  tabRunner: 'Runner',
+  tabMarket: '市场',
+
+  // ─── Misc ───
+  refreshPageHint: '请刷新页面重新连接',
+  delete: '删除',
+  returnToLogin: '返回登录',
 } as const
 
 export type I18nKey = keyof typeof zhCN
