@@ -135,3 +135,29 @@ export function createResetProgress(params: ResetProgressParams): () => void {
     params.streamingContentRef.current = ''
   }
 }
+
+/**
+ * Compute display iterations by inferring a previous-iteration snapshot from progress.
+ * Shared by AssistantTurn and ProgressPanel.
+ */
+export function computeDisplayIterations(
+  baseIterations: IterationSnapshot[] | undefined,
+  progress: WsProgressPayload | null,
+): IterationSnapshot[] {
+  const base = baseIterations ?? []
+  if (!progress || progress.iteration <= 0 || (progress.completed_tools?.length ?? 0) === 0) {
+    return base
+  }
+  const prevIteration = progress.iteration - 1
+  if (base.some(s => s.iteration === prevIteration)) return base
+  return [...base, {
+    iteration: prevIteration,
+    tools: (progress.completed_tools ?? []).map(t => ({
+      name: t.name,
+      label: t.label,
+      status: t.status,
+      elapsed_ms: t.elapsed_ms,
+      summary: t.summary,
+    })),
+  }].sort((a, b) => a.iteration - b.iteration)
+}

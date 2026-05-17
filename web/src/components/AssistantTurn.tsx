@@ -6,7 +6,7 @@ import { getCodeBlockProps } from './CodeBlock'
 import type { WsProgressPayload, IterationSnapshot } from './ProgressPanel'
 import { CompletedIteration, BouncingDots, SubAgentTree } from './ProgressPanel'
 import type { Message } from '../types'
-import { formatElapsed } from '../utils'
+import { formatElapsed, computeDisplayIterations } from '../utils'
 
 
 const COLLAPSE_THRESHOLD = 20 // lines
@@ -165,24 +165,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
     : effectiveProgress?.phase === 'done' ? '✅'
     : null
 
-  const baseLiveIterations = liveIterations ?? []
-  let displayLiveIterations = baseLiveIterations
-  if (progress && progress.iteration > 0 && (progress.completed_tools?.length ?? 0) > 0) {
-    const prevIteration = progress.iteration - 1
-    const hasPrev = baseLiveIterations.some((s) => s.iteration === prevIteration)
-    if (!hasPrev) {
-      displayLiveIterations = [...baseLiveIterations, {
-        iteration: prevIteration,
-        tools: (progress.completed_tools ?? []).map((t) => ({
-          name: t.name,
-          label: t.label,
-          status: t.status,
-          elapsed_ms: t.elapsed_ms,
-          summary: t.summary,
-        })),
-      }].sort((a, b) => a.iteration - b.iteration)
-    }
-  }
+  const displayLiveIterations = computeDisplayIterations(liveIterations, progress)
 
   const currentThinking = (progress?.thinking || '').trim()
   const seenThinkings = new Set(displayLiveIterations.map(s => (s.thinking || '').trim()).filter(Boolean))

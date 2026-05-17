@@ -359,7 +359,8 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
       default:
         break
     }
-  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refs and setState setters are stable by React guarantee
+  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast])
 
   return { onMessage }
 }

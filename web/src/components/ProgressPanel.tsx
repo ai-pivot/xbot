@@ -1,6 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useState } from 'react'
-import { formatElapsed } from '../utils'
+import { formatElapsed, computeDisplayIterations } from '../utils'
 
 interface WsToolProgress {
   name: string
@@ -266,17 +266,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
   if (!progress) return null
 
   const isActive = progress.phase !== 'done'
-  const baseLiveIterations = liveIterations ?? []
-  let displayLiveIterations = baseLiveIterations
-  if (progress.iteration > 0 && (progress.completed_tools?.length ?? 0) > 0) {
-    const prevIteration = progress.iteration - 1
-    if (!baseLiveIterations.some(s => s.iteration === prevIteration)) {
-      displayLiveIterations = [...baseLiveIterations, {
-        iteration: prevIteration,
-        tools: (progress.completed_tools ?? []).map(t => ({ name: t.name, label: t.label, status: t.status, elapsed_ms: t.elapsed_ms, summary: t.summary })),
-      }].sort((a, b) => a.iteration - b.iteration)
-    }
-  }
+  const displayLiveIterations = computeDisplayIterations(liveIterations, progress)
 
   const activeTools = progress.active_tools?.filter(t => t.status !== 'done' && t.status !== 'error') ?? []
   const hasActiveTools = activeTools.length > 0
