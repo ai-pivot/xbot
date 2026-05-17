@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { groupMessagesIntoTurns, parseAttachments } from '../ChatPage'
-import type { Message } from '../types'
+import type { Message, ReplyInfo } from '../types'
 
 // ─── groupMessagesIntoTurns ───
 
@@ -121,5 +121,58 @@ describe('parseAttachments', () => {
     const { attachments } = parseAttachments(content)
     expect(attachments).toHaveLength(1)
     expect(attachments[0].name).toBe('doc.pdf')
+  })
+})
+
+// ─── ReplyInfo type ───
+
+describe('ReplyInfo type', () => {
+  it('creates valid ReplyInfo objects', () => {
+    const reply: ReplyInfo = { id: 'msg-1', content: 'Hello', type: 'user' }
+    expect(reply.id).toBe('msg-1')
+    expect(reply.content).toBe('Hello')
+    expect(reply.type).toBe('user')
+  })
+})
+
+// ─── Message with replyTo ───
+
+describe('Message with replyTo', () => {
+  it('accepts optional replyTo field', () => {
+    const msg: Message = {
+      id: 'msg-1',
+      type: 'user',
+      content: 'Reply to you',
+      replyTo: { id: 'msg-0', content: 'Original', type: 'assistant' },
+    }
+    expect(msg.replyTo).toBeDefined()
+    expect(msg.replyTo!.id).toBe('msg-0')
+  })
+
+  it('message without replyTo is valid', () => {
+    const msg: Message = { id: 'msg-1', type: 'user', content: 'No reply' }
+    expect(msg.replyTo).toBeUndefined()
+  })
+
+  it('groupMessagesIntoTurns preserves replyTo', () => {
+    const messages: Message[] = [
+      { id: 'msg-0', type: 'assistant', content: 'Original answer' },
+      { id: 'msg-1', type: 'user', content: 'Follow up', replyTo: { id: 'msg-0', content: 'Original answer', type: 'assistant' } },
+    ]
+    const turns = groupMessagesIntoTurns(messages)
+    expect(turns).toHaveLength(2)
+    const userTurn = turns[1] as { type: 'user'; message: Message }
+    expect(userTurn.message.replyTo?.id).toBe('msg-0')
+  })
+
+  it('replyTo content can be truncated', () => {
+    const longContent = 'A'.repeat(200)
+    const msg: Message = {
+      id: 'msg-1',
+      type: 'user',
+      content: 'Reply',
+      replyTo: { id: 'msg-0', content: longContent.slice(0, 80), type: 'assistant' },
+    }
+    expect(msg.replyTo!.content.length).toBe(80)
   })
 })
