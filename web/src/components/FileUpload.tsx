@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import type { ShowToastFn } from './settings/shared'
 
 export interface PendingFile {
   id: string        // file_id from server (local mode) or upload_key (qiniu mode)
@@ -9,28 +10,7 @@ export interface PendingFile {
   isOSS?: boolean     // true if uploaded to cloud OSS
 }
 
-interface FileUploadProps {
-  onUpload: (file: PendingFile) => void
-  onRemove: (fileId: string) => void
-  disabled: boolean
-}
-
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
-
-function showToast(message: string) {
-  // Remove existing toasts
-  document.querySelectorAll('.file-upload-toast').forEach((el) => el.remove())
-
-  const toast = document.createElement('div')
-  toast.className = 'file-upload-toast'
-  toast.textContent = message
-  document.body.appendChild(toast)
-
-  setTimeout(() => {
-    toast.classList.add('file-upload-toast-hide')
-    setTimeout(() => toast.remove(), 300)
-  }, 3000)
-}
 
 export function uploadFile(file: File): Promise<PendingFile & { ok: boolean; error?: string }> {
   return new Promise((resolve) => {
@@ -82,7 +62,11 @@ export function uploadFile(file: File): Promise<PendingFile & { ok: boolean; err
 }
 
 // Hook to handle files from paste events
-export function usePasteUpload(onUpload: (file: PendingFile) => void, disabled: boolean) {
+export function usePasteUpload(
+  onUpload: (file: PendingFile) => void,
+  disabled: boolean,
+  showToast: ShowToastFn,
+) {
   const handlePaste = async (e: React.ClipboardEvent | ClipboardEvent) => {
     if (disabled) return
     const clipboardEvent = e as ClipboardEvent
@@ -98,13 +82,19 @@ export function usePasteUpload(onUpload: (file: PendingFile) => void, disabled: 
     if (result.ok) {
       onUpload({ id: result.id, name: result.name, size: result.size, mime: result.mime, uploadKey: result.uploadKey, isOSS: result.isOSS })
     } else {
-      showToast(result.error || '上传失败')
+      showToast(result.error || '上传失败', 'error')
     }
   }
   return handlePaste
 }
 
-export default function FileUpload({ onUpload, disabled }: Omit<FileUploadProps, 'onRemove'>) {
+interface FileUploadProps {
+  onUpload: (file: PendingFile) => void
+  disabled: boolean
+  showToast: ShowToastFn
+}
+
+export default function FileUpload({ onUpload, disabled, showToast }: FileUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
 
@@ -117,7 +107,7 @@ export default function FileUpload({ onUpload, disabled }: Omit<FileUploadProps,
       if (result.ok) {
         onUpload({ id: result.id, name: result.name, size: result.size, mime: result.mime, uploadKey: result.uploadKey, isOSS: result.isOSS })
       } else {
-        showToast(result.error || '上传失败')
+        showToast(result.error || '上传失败', 'error')
       }
     }
 

@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 
+import { useToast } from '../contexts/ToastContext'
 import type { PresetCommand } from '../types'
-import type { TabId, ToastState } from './settings/shared'
+import type { TabId } from './settings/shared'
 import { TABS } from './settings/shared'
 import AppearanceTab from './settings/AppearanceTab'
 import SessionsTab from './settings/SessionsTab'
@@ -21,12 +22,8 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
   const [activeTab, setActiveTab] = useState<TabId>('appearance')
   const [saving, setSaving] = useState(false)
 
-  const [toast, setToast] = useState<ToastState | null>(null)
-  const showToast = useCallback((message: string, type: 'info' | 'error' | 'success' = 'info') => {
-    const id = Date.now()
-    setToast({ id, message, type })
-    setTimeout(() => setToast(null), 2500)
-  }, [])
+  // Unified toast via context
+  const { showToast } = useToast()
 
   // Close on Escape
   useEffect(() => {
@@ -101,16 +98,6 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
 
         </div>{/* end scrollable content */}
       </div>
-      {/* Toast notification */}
-      {toast && (
-        <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded-lg shadow-lg text-sm toast-enter ${
-          toast.type === 'error' ? 'bg-red-500/90 text-white' :
-          toast.type === 'success' ? 'bg-green-500/90 text-white' :
-          'bg-slate-700/90 text-slate-200 border border-slate-600'
-        }`}>
-          {toast.message}
-        </div>
-      )}
     </>
   )
 }

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 
 import { useWebSocket } from './hooks/useWebSocket'
 import { useChatMessageHandler } from './hooks/useChatMessageHandler'
+import { useToast } from './contexts/ToastContext'
 import type { TiptapEditorHandle } from './components/TiptapEditor'
 import type { PresetCommand, Message, Turn } from './types'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
@@ -200,18 +201,15 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const editorRef = useRef<TiptapEditorHandle>(null)
   const [presets, setPresets] = useState<PresetCommand[]>([])
   const [askUser, setAskUser] = useState<{ questions: { question: string; options?: string[] }[]; answers: Record<string, string>; currentQ: number } | null>(null)
-  const [toasts, setToasts] = useState<{ id: number; message: string; type: 'info' | 'error' | 'success' }[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false)
   const [currentChatID, setCurrentChatID] = useState<string>('')
   const [contextInfo, setContextInfo] = useState<{ prompt_tokens: number; max_tokens: number; usage_pct: number; source: string } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
-  const showToast = useCallback((message: string, type: 'info' | 'error' | 'success' = 'info') => {
-    const id = Date.now()
-    setToasts(prev => [...prev, { id, message, type }])
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000)
-  }, [])
+
+  // Unified toast via context
+  const { showToast } = useToast()
 
   const handleModelSwitch = useCallback(async (model: string) => {
     setModelDropdownOpen(false)
@@ -473,7 +471,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     wsSend(payload)
 
     setTimeout(() => scrollToBottom(isNearBottom() ? 'instant' : 'smooth'), 50)
-  }, [scrollToBottom, isNearBottom, pendingFiles])
+  }, [scrollToBottom, isNearBottom, pendingFiles, wsSend, resetProgress, showToast])
 
   // --- Cancel generation ---
   const handleCancel = useCallback(() => {
@@ -570,7 +568,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   }, [wsSend])
 
   // --- Paste handler (for images) ---
-  const handlePaste = usePasteUpload(handleFileUploaded, loading)
+  const handlePaste = usePasteUpload(handleFileUploaded, loading, showToast)
 
   // --- Search toggle callback (stable for SearchPanel) ---
   const handleSearchToggle = useCallback(() => {
@@ -684,8 +682,10 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         <SearchPanel
           open={searchOpen}
           onClose={() => setSearchOpen(false)}
-          onToggle={handleSearchToggle}
+          
           messagesContainerRef={messagesContainerRef}
+          virtualizer={virtualizer}
+          turns={turns}
         />
       </Suspense>
 
@@ -870,6 +870,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           <FileUpload
             onUpload={handleFileUploaded}
             disabled={loading}
+            showToast={showToast}
           />
           {loading && (
             <button
@@ -885,40 +886,24 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 	      </div>{/* end flex-1 inner column */}
 	      </div>{/* end ChatSidebar + content row */}
 
-	      {/* Toast notifications */}
-      <div className="fixed top-4 right-4 z-50 space-y-2">
-        {toasts.map(toast => (
-          <div
-            key={toast.id}
-            className={`px-4 py-2 rounded-lg shadow-lg text-sm toast-enter ${
-              toast.type === 'error' ? 'bg-red-500/90 text-white' :
-              toast.type === 'success' ? 'bg-green-500/90 text-white' :
-              'bg-slate-700/90 text-slate-200 border border-slate-600'
-            }`}
-          >
-            {toast.message}
-          </div>
-        ))}
-      </div>
+	      {/* AskUser interaction panel */}
+	      {askUser && (
+	        <AskUserPanel
+	          askUser={askUser}
+	          onSubmit={handleAskUserSubmit}
+	          onCancel={handleAskUserCancel}
+	        />
+	      )}
 
-      {/* AskUser interaction panel */}
-      {askUser && (
-        <AskUserPanel
-          askUser={askUser}
-          onSubmit={handleAskUserSubmit}
-          onCancel={handleAskUserCancel}
-        />
-      )}
-
-      {/* Settings panel */}
-      <Suspense fallback={null}>
-        <SettingsPanel
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
-          onNicknameChange={(n) => setNickname(n)}
-          onPresetsChange={setPresets}
-        />
-      </Suspense>
+	      {/* Settings panel */}
+	      <Suspense fallback={null}>
+	        <SettingsPanel
+	          open={settingsOpen}
+	          onClose={() => setSettingsOpen(false)}
+	          onNicknameChange={(n) => setNickname(n)}
+	          onPresetsChange={setPresets}
+	        />
+	      </Suspense>
     </div>
   )
 }
