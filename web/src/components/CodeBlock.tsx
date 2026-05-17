@@ -1,58 +1,6 @@
-import { useState, useMemo, memo } from 'react'
-import hljs from 'highlight.js/lib/core'
+import { useState, useMemo, useEffect, memo } from 'react'
+import { hljs, ensureLanguage, isLanguageRegistered, escapeHtml } from '../highlight'
 import { MermaidBlock } from './MermaidBlock'
-import javascript from 'highlight.js/lib/languages/javascript'
-import typescript from 'highlight.js/lib/languages/typescript'
-import go from 'highlight.js/lib/languages/go'
-import python from 'highlight.js/lib/languages/python'
-import bash from 'highlight.js/lib/languages/bash'
-import json from 'highlight.js/lib/languages/json'
-import yaml from 'highlight.js/lib/languages/yaml'
-import css from 'highlight.js/lib/languages/css'
-import xml from 'highlight.js/lib/languages/xml'
-import markdown from 'highlight.js/lib/languages/markdown'
-import sql from 'highlight.js/lib/languages/sql'
-import rust from 'highlight.js/lib/languages/rust'
-import java from 'highlight.js/lib/languages/java'
-import cpp from 'highlight.js/lib/languages/cpp'
-import diff from 'highlight.js/lib/languages/diff'
-import 'highlight.js/styles/github-dark.css'
-
-hljs.registerLanguage('javascript', javascript)
-hljs.registerLanguage('js', javascript)
-hljs.registerLanguage('typescript', typescript)
-hljs.registerLanguage('ts', typescript)
-hljs.registerLanguage('go', go)
-hljs.registerLanguage('python', python)
-hljs.registerLanguage('py', python)
-hljs.registerLanguage('bash', bash)
-hljs.registerLanguage('sh', bash)
-hljs.registerLanguage('shell', bash)
-hljs.registerLanguage('json', json)
-hljs.registerLanguage('yaml', yaml)
-hljs.registerLanguage('yml', yaml)
-hljs.registerLanguage('css', css)
-hljs.registerLanguage('html', xml)
-hljs.registerLanguage('xml', xml)
-hljs.registerLanguage('svg', xml)
-hljs.registerLanguage('markdown', markdown)
-hljs.registerLanguage('md', markdown)
-hljs.registerLanguage('sql', sql)
-hljs.registerLanguage('rust', rust)
-hljs.registerLanguage('rs', rust)
-hljs.registerLanguage('java', java)
-hljs.registerLanguage('cpp', cpp)
-hljs.registerLanguage('c', cpp)
-hljs.registerLanguage('diff', diff)
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-}
 
 interface CodeBlockProps {
   className?: string
@@ -61,6 +9,7 @@ interface CodeBlockProps {
 
 const CodeBlock = memo(function CodeBlock({ className, children }: CodeBlockProps) {
   const [copied, setCopied] = useState(false)
+  const [langReady, setLangReady] = useState(false)
 
   const codeText = typeof children === 'string' ? children.trim() : String(children ?? '')
 
@@ -68,9 +17,31 @@ const CodeBlock = memo(function CodeBlock({ className, children }: CodeBlockProp
   const langMatch = className?.match(/language-(\w+)/)
   const lang = langMatch ? langMatch[1] : ''
 
+  // Track whether the language has been loaded (for lazy languages)
+  useEffect(() => {
+    if (!lang || codeText.length > 5000) {
+      setLangReady(false)
+      return
+    }
+    if (isLanguageRegistered(lang)) {
+      setLangReady(true)
+      return
+    }
+    // Lazy-load the language
+    setLangReady(false)
+    let cancelled = false
+    ensureLanguage(lang).then((ok) => {
+      if (!cancelled && ok) setLangReady(true)
+    })
+    return () => { cancelled = true }
+  }, [lang, codeText.length])
+
   const highlighted = useMemo(() => {
     // Skip highlighting for long code or missing language
     if (!lang || codeText.length > 5000) {
+      return escapeHtml(codeText)
+    }
+    if (!langReady && !isLanguageRegistered(lang)) {
       return escapeHtml(codeText)
     }
     try {
@@ -81,7 +52,7 @@ const CodeBlock = memo(function CodeBlock({ className, children }: CodeBlockProp
       // fallback to escaped plain text
     }
     return escapeHtml(codeText)
-  }, [codeText, lang])
+  }, [codeText, lang, langReady])
 
   const handleCopy = async () => {
     try {
@@ -206,7 +177,19 @@ export function getCodeBlockProps() {
       return <>{props.children}</>
     },
     table(props: { children?: React.ReactNode }) {
-      return <div className="table-wrapper"><table>{props.children}</table></div>
+      return (
+        <div className="overflow-x-auto my-2">
+          <table className="min-w-full text-sm border-collapse">
+            {props.children}
+          </table>
+        </div>
+      )
+    },
+    th(props: { children?: React.ReactNode }) {
+      return <th className="border border-slate-600 px-3 py-1.5 text-left text-xs font-medium text-slate-300 bg-slate-700/50">{props.children}</th>
+    },
+    td(props: { children?: React.ReactNode }) {
+      return <td className="border border-slate-600 px-3 py-1.5 text-xs text-slate-300">{props.children}</td>
     },
   }
 }
