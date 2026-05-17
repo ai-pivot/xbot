@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, memo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { getCodeBlockProps } from './CodeBlock'
+import MessageActions from './MessageActions'
 import type { WsProgressPayload, IterationSnapshot } from './ProgressPanel'
 import { CompletedIteration, BouncingDots, SubAgentTree } from './ProgressPanel'
 import type { Message } from '../types'
@@ -64,6 +65,8 @@ interface AssistantTurnProps {
   loading: boolean
   // Saved progress from a completed response (for showing intermediate process collapsed)
   savedProgress?: WsProgressPayload | null
+  onDelete?: () => void
+  onRegenerate?: () => void
 }
 
 
@@ -126,7 +129,7 @@ function isThinkingContent(content: string): boolean {
   return false
 }
 
-export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress }: AssistantTurnProps) {
+export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress, onDelete, onRegenerate }: AssistantTurnProps) {
   const [copied, setCopied] = useState(false)
   const { t } = useTranslation()
 
@@ -174,16 +177,14 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
   return (
     <div className="flex justify-start">
       <div className="assistant-turn-container group relative" data-testid="assistant-turn">
-        {/* Copy button — visible on hover */}
+        {/* Message actions — visible on hover */}
         {textMsgs.length > 0 && !loading && (
-          <button
-            onClick={handleCopy}
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 rounded text-xs bg-slate-700/60 hover:bg-slate-600/80 text-slate-300 hover:text-white backdrop-blur-sm"
-            title={t("copyContent")}
-            data-testid="copy-btn"
-          >
-            {copied ? '✓' : '📋'}
-          </button>
+          <MessageActions
+            onCopy={handleCopy}
+            onDelete={onDelete}
+            onRegenerate={onRegenerate}
+            copied={copied}
+          />
         )}
         {/* Collapsible: Thinking section */}
         {thinkingMsgs.length > 0 && (

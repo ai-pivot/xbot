@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import type { Turn } from '../types'
 import { useTranslation } from '../i18n'
+import { splitByQuery } from '../utils/highlight'
 
 interface SearchResult {
   id: number
@@ -125,23 +126,32 @@ export default function SearchPanel({ open, onClose, messagesContainerRef, virtu
           {searchLoading && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">{t('searching')}</span>}
         </div>
         {searchResults.length > 0 && (
-          <div className="mt-2 max-h-64 overflow-y-auto space-y-1">
-            {searchResults.map(hit => (
-              <div
-                key={hit.id}
-                className="px-3 py-2 rounded-lg bg-slate-700/50 hover:bg-slate-700 cursor-pointer text-sm"
-                onClick={() => handleResultClick(hit)}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-slate-400">{hit.role === 'user' ? '👤' : '🤖'}</span>
-                  {hit.created_at && <span className="text-xs text-slate-500">{new Date(hit.created_at).toLocaleString()}</span>}
+          <>
+            <div className="flex items-center justify-between mt-2 mb-1">
+              <span className="text-xs text-slate-500">{t('searchResults', { count: searchResults.length })}</span>
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-1">
+              {searchResults.map(hit => (
+                <div
+                  key={hit.id}
+                  className="px-3 py-2 rounded-lg bg-slate-700/50 hover:bg-slate-700 cursor-pointer text-sm"
+                  onClick={() => handleResultClick(hit)}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-medium text-slate-400">{hit.role === 'user' ? '👤' : '🤖'}</span>
+                    {hit.created_at && <span className="text-xs text-slate-500">{new Date(hit.created_at).toLocaleString()}</span>}
+                  </div>
+                  <div className="text-slate-300 text-xs line-clamp-2 whitespace-pre-wrap break-words">
+                    {searchQuery ? splitByQuery(hit.snippet, searchQuery).map((part, i) =>
+                      part.isMatch
+                        ? <mark key={i} className="bg-yellow-400/30 text-yellow-200 rounded px-0.5">{part.text}</mark>
+                        : <span key={i}>{part.text}</span>
+                    ) : hit.snippet}
+                  </div>
                 </div>
-                <div className="text-slate-300 text-xs line-clamp-2 whitespace-pre-wrap break-words">
-                  {hit.snippet}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
         {searchQuery && !searchLoading && searchResults.length === 0 && (
           <div className="mt-2 text-center text-xs text-slate-500">{t('noResults')}</div>

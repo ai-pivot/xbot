@@ -293,6 +293,15 @@ const zhCN = {
   tabRunner: 'Runner',
   tabMarket: '市场',
 
+  // ─── Message Actions ───
+  deleteMessage: '删除消息',
+  regenerate: '重新生成',
+  messageDeleted: '消息已删除',
+  regenerateFailed: '重新生成失败',
+
+  // ─── Search ───
+  searchResults: '{count} 个结果',
+
   // ─── Misc ───
   refreshPageHint: '请刷新页面重新连接',
   delete: '删除',

@@ -295,6 +295,15 @@ const en: Record<I18nKey, string> = {
   tabRunner: 'Runner',
   tabMarket: 'Market',
 
+  // ─── Message Actions ───
+  deleteMessage: 'Delete Message',
+  regenerate: 'Regenerate',
+  messageDeleted: 'Message Deleted',
+  regenerateFailed: 'Regeneration Failed',
+
+  // ─── Search ───
+  searchResults: '{count} results',
+
   // ─── Misc ───
   refreshPageHint: 'Please refresh the page to reconnect',
   delete: 'Delete',
