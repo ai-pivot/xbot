@@ -17,14 +17,14 @@ describe('TabBar', () => {
 
   it('renders nothing when tabs array is empty', () => {
     const { container } = render(
-      <TabBar tabs={[]} activeTabId="" onTabClick={vi.fn()} onTabClose={vi.fn()} />
+      <TabBar tabs={[]} activeTabId="" onTabClick={vi.fn()} onTabClose={vi.fn()} onReorder={vi.fn()} />
     )
     expect(container.innerHTML).toBe('')
   })
 
   it('renders all tabs with correct labels', () => {
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={vi.fn()} />
+      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={vi.fn()} onReorder={vi.fn()} />
     )
     expect(screen.getByText('Session 1')).toBeInTheDocument()
     expect(screen.getByText('Session 2')).toBeInTheDocument()
@@ -33,7 +33,7 @@ describe('TabBar', () => {
 
   it('highlights the active tab', () => {
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-2" onTabClick={vi.fn()} onTabClose={vi.fn()} />
+      <TabBar tabs={mockTabs} activeTabId="chat-2" onTabClick={vi.fn()} onTabClose={vi.fn()} onReorder={vi.fn()} />
     )
     const activeTab = screen.getByTestId('tab-item-chat-2')
     expect(activeTab.className).toContain('tab-item-active')
@@ -42,7 +42,7 @@ describe('TabBar', () => {
   it('calls onTabClick when tab label is clicked', () => {
     const handleClick = vi.fn()
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={handleClick} onTabClose={vi.fn()} />
+      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={handleClick} onTabClose={vi.fn()} onReorder={vi.fn()} />
     )
     fireEvent.click(screen.getByText('Session 2'))
     expect(handleClick).toHaveBeenCalledWith('chat-2')
@@ -51,7 +51,7 @@ describe('TabBar', () => {
   it('calls onTabClose when close button is clicked', () => {
     const handleClose = vi.fn()
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={handleClose} />
+      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={handleClose} onReorder={vi.fn()} />
     )
     // Find close buttons - they have ✕ text
     const closeButtons = screen.getAllByText('✕')
@@ -63,7 +63,7 @@ describe('TabBar', () => {
     const handleClick = vi.fn()
     const handleClose = vi.fn()
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={handleClick} onTabClose={handleClose} />
+      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={handleClick} onTabClose={handleClose} onReorder={vi.fn()} />
     )
     const closeButtons = screen.getAllByText('✕')
     fireEvent.click(closeButtons[0])
@@ -73,14 +73,14 @@ describe('TabBar', () => {
 
   it('renders tab bar with role="tablist"', () => {
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={vi.fn()} />
+      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={vi.fn()} onReorder={vi.fn()} />
     )
     expect(screen.getByRole('tablist')).toBeInTheDocument()
   })
 
   it('renders each tab with role="tab"', () => {
     render(
-      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={vi.fn()} />
+      <TabBar tabs={mockTabs} activeTabId="chat-1" onTabClick={vi.fn()} onTabClose={vi.fn()} onReorder={vi.fn()} />
     )
     const tabs = screen.getAllByRole('tab')
     expect(tabs).toHaveLength(3)

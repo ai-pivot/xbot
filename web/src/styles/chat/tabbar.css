@@ -90,6 +90,31 @@
   color: var(--color-danger, #f87171);
 }
 
+/* ─── Drag & Drop ─── */
+
+.tab-item[draggable="true"] {
+  cursor: grab;
+}
+
+.tab-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.tab-item-dragging {
+  opacity: 0.4;
+}
+
+.tab-item-drop-target {
+  box-shadow: inset 3px 0 0 0 var(--color-primary, #60a5fa);
+}
+
+/* Only enable drag on devices with precise pointer (mouse/trackpad) */
+@media (hover: none) and (pointer: coarse) {
+  .tab-item[draggable="true"] {
+    cursor: pointer;
+  }
+}
+
 @media (max-width: 640px) {
   .tab-item {
     max-width: 120px;

@@ -46,6 +46,7 @@ export interface UseTabManagerReturn {
   closeTab: (chatId: string) => void
   switchTab: (chatId: string) => void
   renameTab: (chatId: string, label: string) => void
+  reorderTabs: (fromIndex: number, toIndex: number) => void
 }
 
 /**
@@ -110,5 +111,15 @@ export function useTabManager(
     setTabs(prev => prev.map(t => t.chatId === chatId ? { ...t, label } : t))
   }, [])
 
-  return { tabs, activeTabId, openTab, closeTab, switchTab, renameTab }
+  const reorderTabs = useCallback((fromIndex: number, toIndex: number) => {
+    setTabs(prev => {
+      if (fromIndex === toIndex) return prev
+      const next = [...prev]
+      const [moved] = next.splice(fromIndex, 1)
+      next.splice(toIndex, 0, moved)
+      return next
+    })
+  }, [])
+
+  return { tabs, activeTabId, openTab, closeTab, switchTab, renameTab, reorderTabs }
 }

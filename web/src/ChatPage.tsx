@@ -891,6 +891,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         activeTabId={tabManager.activeTabId}
         onTabClick={tabManager.switchTab}
         onTabClose={tabManager.closeTab}
+        onReorder={tabManager.reorderTabs}
       />
 
       {/* Search panel */}
