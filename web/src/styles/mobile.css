@@ -265,3 +265,185 @@
     font-size: 0.9em;
   }
 }
+
+/* ====== Foldable Screen Support ====== */
+
+/* 折叠屏展开状态 — 宽屏模式 */
+@media (min-width: 1024px) and (max-width: 1280px) and (orientation: portrait) {
+  /* 消息区域适度 padding */
+  .chat-messages {
+    padding: 16px 32px !important;
+  }
+  /* 输入区域加宽 */
+  .max-w-4xl {
+    max-width: 85% !important;
+  }
+  /* Sidebar 展开宽度 */
+  .chat-sidebar {
+    width: 320px !important;
+  }
+  /* 设置面板宽度 */
+  .settings-overlay {
+    max-width: 70vw !important;
+  }
+}
+
+/* 折叠屏 Spanned 模式 (Dual Screen API) */
+@media (spanning: single-fold-vertical) {
+  .chat-messages {
+    padding: 16px env(fold-left, 16px) 16px env(fold-right, 16px) !important;
+  }
+}
+
+@media (spanning: single-fold-horizontal) {
+  .chat-messages {
+    padding: env(fold-top, 16px) 16px env(fold-bottom, 16px) !important;
+  }
+  /* 输入区域避免被折叠区域遮挡 */
+  .px-4.py-3.bg-slate-800 {
+    padding-bottom: env(fold-bottom, 12px) !important;
+  }
+}
+
+/* ====== Landscape Mode ====== */
+
+@media (max-height: 500px) and (orientation: landscape) {
+  /* Header 高度压缩 */
+  header {
+    padding: 4px 12px !important;
+    min-height: 40px !important;
+  }
+  header h1 {
+    font-size: 0.875rem !important;
+  }
+  
+  /* 消息区域全高 */
+  .chat-messages {
+    padding: 8px 16px !important;
+  }
+  
+  /* 输入区域紧凑 */
+  .px-4.py-3.bg-slate-800 {
+    padding: 6px 12px !important;
+  }
+  .tiptap-wrapper .tiptap-editor {
+    max-height: 60px !important;
+    padding: 6px 10px !important;
+  }
+  
+  /* 预设栏紧凑 */
+  .preset-bar {
+    padding: 4px 8px !important;
+    gap: 4px !important;
+  }
+  .preset-chip {
+    font-size: 11px !important;
+    padding: 2px 8px !important;
+  }
+  
+  /* 进度面板半透明 */
+  .progress-panel-active {
+    max-height: 120px !important;
+    overflow-y: auto !important;
+  }
+  
+  /* 设置面板宽度限制 */
+  .settings-overlay {
+    max-height: 100vh !important;
+  }
+  
+  /* 侧边栏宽度 */
+  .chat-sidebar {
+    width: 240px !important;
+  }
+  .chat-sidebar-mobile {
+    width: 240px !important;
+  }
+  
+  /* Scroll to bottom 按钮位置 */
+  .scroll-to-bottom-btn {
+    bottom: 60px !important;
+  }
+  
+  /* Sidebar toggle */
+  .chat-sidebar-toggle {
+    bottom: 60px !important;
+  }
+  
+  /* 代码块高度限制 */
+  .xbot-codeblock pre {
+    max-height: 200px !important;
+  }
+  
+  /* 灯箱 toolbar 紧凑 */
+  .lightbox-toolbar {
+    padding: 4px 8px !important;
+  }
+}
+
+/* ====== Safe Area (iPhone Notch / Home Indicator) ====== */
+
+/* 为整个应用添加安全区域内边距 */
+@supports (padding: env(safe-area-inset-top)) {
+  /* Header 顶部安全距离 */
+  header {
+    padding-top: calc(8px + env(safe-area-inset-top)) !important;
+  }
+  
+  /* 底部输入区域安全距离 */
+  .px-4.py-3.bg-slate-800 {
+    padding-bottom: calc(8px + env(safe-area-inset-bottom)) !important;
+    padding-left: calc(16px + env(safe-area-inset-left)) !important;
+    padding-right: calc(16px + env(safe-area-inset-right)) !important;
+  }
+  
+  /* Sidebar 左侧安全距离 */
+  .chat-sidebar {
+    padding-left: env(safe-area-inset-left) !important;
+  }
+  
+  /* 设置面板安全距离 */
+  .settings-overlay {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left) !important;
+  }
+  
+  /* 侧边栏 overlay */
+  .chat-sidebar-mobile {
+    padding-left: env(safe-area-inset-left) !important;
+  }
+  
+  /* 灯箱全屏模式安全距离 */
+  .lightbox-overlay {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left) !important;
+  }
+  
+  /* Scroll to bottom 按钮避免安全区域 */
+  .scroll-to-bottom-btn {
+    bottom: calc(70px + env(safe-area-inset-bottom)) !important;
+    right: calc(16px + env(safe-area-inset-right)) !important;
+  }
+  
+  /* Sidebar toggle 避免 safe area */
+  .chat-sidebar-toggle {
+    bottom: calc(70px + env(safe-area-inset-bottom)) !important;
+    left: calc(12px + env(safe-area-inset-left)) !important;
+  }
+  
+  /* AskUser 弹窗安全距离 */
+  .askuser-panel {
+    margin: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)) !important;
+  }
+  
+  /* 键盘帮助面板安全距离 */
+  .keyboard-help-panel {
+    margin: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left) !important;
+  }
+  
+  /* 书签面板安全距离 */
+  .bookmark-panel {
+    margin: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left) !important;
+  }
+}
+
+/* ====== Viewport meta tag helper ====== */
+/* 确保在 index.html 中 viewport meta 包含 viewport-fit=cover */
