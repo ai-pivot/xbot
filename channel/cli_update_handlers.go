@@ -1588,7 +1588,19 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	busy := m.typing || sessionActive
 	needsSpinnerTick := busy || m.sidebarHasBusySessions
 
-	if (m.bgTaskCountFn != nil && m.bgTaskCount > 0) || (m.agentCountFn != nil && m.agentCount > 0) || needsSpinnerTick {
+	// Refresh bg task / agent counts every tick so the infobar and sidebar
+	// stay accurate even when the agent is idle (no progress messages flowing).
+	prevBg := m.bgTaskCount
+	prevAgent := m.agentCount
+	if m.bgTaskCountFn != nil {
+		m.bgTaskCount = m.bgTaskCountFn()
+	}
+	if m.agentCountFn != nil {
+		m.agentCount = m.agentCountFn()
+	}
+	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
+
+	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick {
 		m.ticker.tick()
 		hasStreamContent := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
 		hasReasoningContent := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
@@ -1601,7 +1613,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.updateViewportContent()
 	} else {
 		m.typewriterTickActive = false
-		if !m.renderCacheValid {
+		if !m.renderCacheValid || countsChanged {
 			m.updateViewportContent()
 		}
 	}
