@@ -93,7 +93,7 @@ function parseAttachments(content: string): { attachments: ParsedAttachment[]; c
   return { attachments, cleanContent }
 }
 
-function AttachmentCard({ attachment }: { attachment: ParsedAttachment }) {
+function AttachmentCard({ attachment, onPreview }: { attachment: ParsedAttachment; onPreview?: (url: string) => void }) {
   if (attachment.type === 'image' && attachment.url) {
     return (
       <div className="attachment-card attachment-image">
@@ -102,7 +102,7 @@ function AttachmentCard({ attachment }: { attachment: ParsedAttachment }) {
           alt={attachment.name}
           className="attachment-img"
           loading="lazy"
-          onClick={() => window.open(attachment.url, '_blank')}
+          onClick={() => onPreview?.(attachment.url!) || window.open(attachment.url, '_blank')}
         />
         <div className="attachment-meta">
           <span className="truncate">{attachment.name}</span>
@@ -136,7 +136,7 @@ function AttachmentCard({ attachment }: { attachment: ParsedAttachment }) {
   )
 }
 
-function UserMessageContent({ content }: { content: string }) {
+function UserMessageContent({ content, onPreview }: { content: string; onPreview?: (url: string) => void }) {
   const { attachments, cleanContent } = parseAttachments(content)
 
   // If no attachments found, render as normal markdown
@@ -153,7 +153,7 @@ function UserMessageContent({ content }: { content: string }) {
     if (match) {
       const idx = parseInt(match[1], 10)
       if (idx < attachments.length) {
-        elements.push(<AttachmentCard key={`att-${idx}`} attachment={attachments[idx]} />)
+        elements.push(<AttachmentCard key={`att-${idx}`} attachment={attachments[idx]} onPreview={onPreview} />)
       }
     } else if (part.trim()) {
       elements.push(
@@ -209,6 +209,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [currentChatID, setCurrentChatID] = useState<string>('')
   const [contextInfo, setContextInfo] = useState<{ prompt_tokens: number; max_tokens: number; usage_pct: number; source: string } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
 
   // Unified toast via context
   const { showToast } = useToast()
@@ -610,6 +611,12 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       handler: () => setSettingsOpen(false),
       description: 'Close settings panel',
     },
+    {
+      key: 'Escape',
+      enabled: previewImage !== null,
+      handler: () => setPreviewImage(null),
+      description: 'Close image preview',
+    },
   ])
   const turns = useMemo(() => groupMessagesIntoTurns(messages), [messages])
 
@@ -826,7 +833,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                   {turn.type === 'user' ? (
                     <div className="flex justify-end mb-4" data-msg-id={turn.message.id}>
                       <div className="max-w-[80%] rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm">
-                        <UserMessageContent content={turn.message.content} />
+                        <UserMessageContent content={turn.message.content} onPreview={(url) => setPreviewImage(url)} />
                         {turn.message.ts && (
                          <div className="text-xs mt-1 text-right text-blue-200/50">
                            {formatTime(turn.message.ts)}
@@ -956,6 +963,28 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 	          onPresetsChange={setPresets}
 	        />
 	      </Suspense>
+
+      {/* Image preview lightbox */}
+      {previewImage && (
+        <div
+          className="image-preview-overlay"
+          onClick={() => setPreviewImage(null)}
+          role="dialog"
+          aria-label="图片预览"
+        >
+          <button
+            className="image-preview-close"
+            onClick={() => setPreviewImage(null)}
+            aria-label="关闭预览"
+          >✕</button>
+          <img
+            src={previewImage}
+            alt="预览"
+            className="image-preview-img"
+            onClick={e => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   )
 }

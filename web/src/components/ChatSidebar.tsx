@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import ConfirmDialog from './ConfirmDialog'
 
 interface ChatInfo {
   chat_id: string
@@ -21,6 +22,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
   // Responsive mobile detection
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
@@ -75,9 +77,13 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     } catch (err) { console.warn('[ChatSidebar] createChat failed:', err) }
   }
 
-  const handleDelete = async (e: React.MouseEvent, chatID: string) => {
+  const handleDelete = (e: React.MouseEvent, chatID: string) => {
     e.stopPropagation()
-    if (!confirm('确定要删除此会话吗？')) return
+    setConfirmDelete(chatID)
+  }
+
+  const executeDelete = async (chatID: string) => {
+    setConfirmDelete(null)
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}`, { method: 'DELETE' })
       // If deleting current chat, switch to first remaining
@@ -268,6 +274,12 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
           {loading ? '...' : '🔄 刷新'}
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        message="确定要删除此会话吗？此操作不可撤销。"
+        onConfirm={() => confirmDelete && executeDelete(confirmDelete)}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   )
 }

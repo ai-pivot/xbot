@@ -1,3 +1,4 @@
+import ConfirmDialog from '../ConfirmDialog'
 import { useEffect, useState, useCallback } from 'react'
 
 import type { ShowToastFn, LLMConfig } from './shared'
@@ -115,8 +116,12 @@ export default function LLMTab({ showToast }: LLMTabProps) {
     setLlmSaving(false)
   }, [fetchLLMConfig, showToast])
 
-  const handleLLMDelete = useCallback(async () => {
-    if (!confirm('确认删除个人 LLM 配置？删除后将恢复使用系统默认模型。')) return
+  const [confirmLLMDelete, setConfirmLLMDelete] = useState(false)
+
+  const requestLLMDelete = () => setConfirmLLMDelete(true)
+
+  const executeLLMDelete = useCallback(async () => {
+    setConfirmLLMDelete(false)
     setLlmSaving(true)
     setLlmError('')
     try {
@@ -170,6 +175,13 @@ export default function LLMTab({ showToast }: LLMTabProps) {
   const providerLabel = PROVIDER_OPTIONS.find(p => p.value === llmConfig?.provider)?.label || llmConfig?.provider
 
   return (
+    <>
+    <ConfirmDialog
+      open={confirmLLMDelete}
+      message="确认删除个人 LLM 配置？删除后将恢复使用系统默认模型。"
+      onConfirm={executeLLMDelete}
+      onCancel={() => setConfirmLLMDelete(false)}
+    />
     <div className={sectionClass}>
       <div className={sectionTitleClass}>🧠 个人 LLM 配置</div>
 
@@ -215,7 +227,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
           <div className="flex gap-2 mt-3">
             <button
               className="settings-action-btn settings-action-danger"
-              onClick={handleLLMDelete}
+              onClick={requestLLMDelete}
               disabled={llmSaving}
             >
               🗑️ 删除配置
@@ -367,5 +379,6 @@ export default function LLMTab({ showToast }: LLMTabProps) {
       )}
 
     </div>
+    </>
   )
 }

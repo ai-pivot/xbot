@@ -1,3 +1,4 @@
+import ConfirmDialog from '../ConfirmDialog'
 import { useEffect, useState, useCallback } from 'react'
 
 import type { PresetCommand } from '../../types'
@@ -58,8 +59,14 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
     if (ok) setEditingPreset(null)
   }, [presetList, savePresets])
 
-  const handlePresetDelete = useCallback(async (id: string) => {
-    if (!confirm('确认删除此快捷指令？')) return
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+
+  const requestPresetDelete = (id: string) => setConfirmDeleteId(id)
+
+  const executePresetDelete = useCallback(async () => {
+    if (!confirmDeleteId) return
+    const id = confirmDeleteId
+    setConfirmDeleteId(null)
     const newList = presetList
       .filter(p => p.id !== id)
       .map((p, i) => ({ ...p, sort: i }))
@@ -82,6 +89,13 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
   const sectionTitleClass = 'settings-section-title'
 
   return (
+    <>
+    <ConfirmDialog
+      open={confirmDeleteId !== null}
+      message="确认删除此快捷指令？"
+      onConfirm={executePresetDelete}
+      onCancel={() => setConfirmDeleteId(null)}
+    />
     <div className={sectionClass}>
       <div className={sectionTitleClass}>⚡ 快捷指令 Preset Commands</div>
       <p className="text-xs text-slate-500 mb-3">
@@ -191,7 +205,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
                     >✏️</button>
                     <button
                       className="preset-action-btn preset-action-delete"
-                      onClick={() => handlePresetDelete(p.id)}
+                      onClick={() => requestPresetDelete(p.id)}
                       title="删除"
                       disabled={presetSaving}
                     >🗑️</button>
@@ -210,5 +224,6 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
         </>
       )}
     </div>
+    </>
   )
 }

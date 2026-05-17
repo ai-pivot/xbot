@@ -115,3 +115,53 @@
 [data-theme="light"] .attachment-file-icon {
   background: #e2e8f0;
 }
+
+/* ---- Image Preview Lightbox ---- */
+
+.image-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  animation: image-preview-fade-in 0.2s ease-out;
+}
+
+.image-preview-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.image-preview-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: white;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.image-preview-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+@keyframes image-preview-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
