@@ -19,4 +19,19 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('/react-dom/') || id.includes('/react/')) return 'vendor-react'
+            if (id.includes('/@tiptap/') || id.includes('/tiptap-markdown/')) return 'vendor-tiptap'
+            if (id.includes('/react-markdown/') || id.includes('/remark-gfm/')) return 'vendor-markdown'
+            if (id.includes('/highlight.js/') || id.includes('/lowlight/')) return 'vendor-highlight'
+            if (id.includes('/mermaid/')) return 'vendor-mermaid'
+          }
+        },
+      },
+    },
+  },
 })
