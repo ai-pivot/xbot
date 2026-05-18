@@ -64,9 +64,9 @@ resolve_version() {
             fi
             ;;
         nightly)
-            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"nightly-[^"]*"' | head -1 | tr -d '"')
+            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
             if [ -z "$tag" ]; then
-                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"nightly-[^"]*"' | head -1 | tr -d '"')
+                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
             fi
             ;;
         beta)

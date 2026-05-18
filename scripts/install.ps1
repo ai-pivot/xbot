@@ -115,13 +115,13 @@ function Get-LatestVersion {
         "nightly" {
             try {
                 $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=20" -Headers $headers
-                $nightly = $releases | Where-Object { $_.tag_name -match '^nightly-' } | Select-Object -First 1
+                $nightly = $releases | Where-Object { $_.tag_name -eq 'nightly' -or $_.tag_name -match '^nightly-' } | Select-Object -First 1
                 if ($nightly) { return $nightly.tag_name }
             } catch {}
             try {
                 Write-Warn "No nightly found on $REPO, trying fallback $FALLBACK_REPO..."
                 $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20" -Headers $headers
-                $nightly = $releases | Where-Object { $_.tag_name -match '^nightly-' } | Select-Object -First 1
+                $nightly = $releases | Where-Object { $_.tag_name -eq 'nightly' -or $_.tag_name -match '^nightly-' } | Select-Object -First 1
                 if ($nightly) { return $nightly.tag_name }
             } catch {}
             Write-Err "No nightly release found. Set -Version explicitly."
