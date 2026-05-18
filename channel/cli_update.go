@@ -61,6 +61,19 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	default:
 	}
 
+	// Terminal color profile detected by BubbleTea.
+	// Cache it and rebuild styles so muted/dim colors stay visible on
+	// low-color terminals (e.g. Linux console with ANSI 16-color).
+	if cpMsg, ok := msg.(tea.ColorProfileMsg); ok {
+		prev := terminalProfile
+		terminalProfile = cpMsg.Profile
+		if terminalProfile != prev {
+			m.styles = buildStyles(m.width)
+			m.updateViewportContent()
+		}
+		return m, nil
+	}
+
 	// Model list load error notification from LLM goroutines
 	select {
 	case err := <-modelsLoadErrorCh:

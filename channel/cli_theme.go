@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"fmt"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/muesli/termenv"
 	"hash/fnv"
 	"image/color"
@@ -22,6 +23,12 @@ import (
 func init() {
 	termenv.SetDefaultOutput(termenv.NewOutput(os.Stdout, termenv.WithTTY(false)))
 }
+
+// terminalProfile stores the detected terminal color profile.
+// Updated when BubbleTea sends ColorProfileMsg. Used by buildStyles
+// to ensure muted/dim colors remain visible on low-color terminals
+// (e.g. Linux console with ANSI 16-color profile).
+var terminalProfile colorprofile.Profile
 
 // Theme system — semantic color palette with foreground/background layering.
 // All schemes are designed for dark terminal backgrounds.
@@ -636,6 +643,19 @@ type cliStyles struct {
 
 func buildStyles(width int) cliStyles {
 	t := currentTheme
+
+	// On low-color terminals (ANSI 16-color, e.g. Linux console / VT),
+	// dark muted colors like "#5f6368" get downgraded to black by
+	// colorprofile.Convert16, becoming invisible on dark backgrounds.
+	// Override these theme colors with ANSI-safe equivalents that are
+	// guaranteed visible.
+	if terminalProfile == colorprofile.ANSI {
+		t.TextMuted = "7"     // light gray — clearly visible on black bg
+		t.TextSecondary = "7" // light gray
+		t.FGMostSubtle = "8"  // bright black (dark gray) — faint but visible
+		t.FGGuide = "8"       // bright black for guide lines
+	}
+
 	c := func(s string) color.Color { return lipgloss.Color(s) }
 	cw := width - 4
 	if cw < 10 {
@@ -670,7 +690,7 @@ func buildStyles(width int) cliStyles {
 		ProgressError:    lipgloss.NewStyle().Foreground(c(t.Error)),
 		ProgressElapsed:  lipgloss.NewStyle().Foreground(c(t.TextSecondary)).Faint(true),
 		ProgressIndent:   lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
-		ProgressDim:      lipgloss.NewStyle().Faint(true),
+		ProgressDim:      lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)).Faint(true),
 		ProgressBlock:    lipgloss.NewStyle().Padding(0, 1).Width(cw),
 		Accent:           lipgloss.NewStyle().Foreground(c(t.Accent)),
 		TextMutedSt:      lipgloss.NewStyle().Foreground(c(t.TextMuted)),
