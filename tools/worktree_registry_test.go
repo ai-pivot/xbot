@@ -180,3 +180,127 @@ func TestRegisterPeer_GetPrimary(t *testing.T) {
 	require.NotNil(t, primary)
 	assert.Equal(t, "cli:repo:session-1", primary.SessionKey, "primary should remain the first session")
 }
+
+func TestCleanupSession_PeerOnly(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	// Register two peer-awareness sessions (no physical worktrees)
+	reg.RegisterPeer("cli:repo:session-1", repoPath)
+	reg.RegisterPeer("cli:repo:session-2", repoPath)
+
+	require.Len(t, reg.ListRepo(repoPath), 2)
+
+	// Cleanup session-2 (peer, no worktree)
+	reg.CleanupSession("cli:repo:session-2")
+
+	assert.Nil(t, reg.GetBySession("cli:repo:session-2"), "cleaned session should be gone")
+	assert.NotNil(t, reg.GetBySession("cli:repo:session-1"), "other session should remain")
+	assert.Len(t, reg.ListRepo(repoPath), 1, "only one session should remain")
+}
+
+func TestCleanupSession_PeerOnly_NotRegistered(t *testing.T) {
+	reg := newTestRegistry()
+	// Should not panic on nonexistent session
+	reg.CleanupSession("cli:repo:nonexistent")
+}
+
+func TestCleanupSession_WithWorktree(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	// Use AutoDetectAndInit to create a real worktree for session-1
+	entry := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	require.NotNil(t, entry, "AutoDetectAndInit should succeed")
+	require.NotEmpty(t, entry.WorktreeDir, "should have a worktree dir")
+
+	// Register a second peer-awareness session
+	reg.RegisterPeer("cli:repo:session-2", repoPath)
+
+	// Verify both are registered
+	require.Len(t, reg.ListRepo(repoPath), 2)
+
+	// Verify worktree dir exists on disk
+	_, err := os.Stat(entry.WorktreeDir)
+	require.NoError(t, err, "worktree dir should exist before cleanup")
+
+	// Cleanup session-1 (has physical worktree)
+	reg.CleanupSession("cli:repo:session-1")
+
+	// Registry entry should be gone
+	assert.Nil(t, reg.GetBySession("cli:repo:session-1"), "cleaned session should be gone from registry")
+
+	// session-2 should remain
+	assert.NotNil(t, reg.GetBySession("cli:repo:session-2"), "other session should remain")
+
+	// Worktree dir should be removed from disk
+	_, err = os.Stat(entry.WorktreeDir)
+	assert.True(t, os.IsNotExist(err), "worktree dir should be removed after CleanupSession")
+
+	// Git worktree should be gone from `git worktree list`
+	out, _ := exec.Command("git", "-C", repoPath, "worktree", "list").Output()
+	assert.NotContains(t, string(out), entry.WorktreeDir, "worktree should not appear in git worktree list")
+}
+
+func TestCleanupSession_AllSessions(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	reg.RegisterPeer("cli:repo:session-1", repoPath)
+	reg.RegisterPeer("cli:repo:session-2", repoPath)
+	reg.RegisterPeer("cli:repo:session-3", repoPath)
+
+	require.Len(t, reg.ListRepo(repoPath), 3)
+
+	// Cleanup all
+	reg.CleanupSession("cli:repo:session-1")
+	reg.CleanupSession("cli:repo:session-2")
+	reg.CleanupSession("cli:repo:session-3")
+
+	assert.Empty(t, reg.ListRepo(repoPath), "repo should have no sessions after all cleaned up")
+}
+
+func TestAutoDetectAndInit_SetsWorktreeDir(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	entry := autoDetectAndInitInto(repoPath, "cli:repo:main-session", reg)
+	require.NotNil(t, entry)
+
+	// Worktree dir should be under the base dir
+	baseDir := filepath.Join(filepath.Dir(repoPath), ".xbot-worktrees")
+	assert.Contains(t, entry.WorktreeDir, baseDir, "worktree should be under base dir")
+
+	// Worktree dir should exist on disk
+	info, err := os.Stat(entry.WorktreeDir)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+
+	// Worktree should be a valid git worktree
+	gitFile := filepath.Join(entry.WorktreeDir, ".git")
+	data, err := os.ReadFile(gitFile)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(data), "gitdir:"), ".git file should point to main repo")
+}
+
+func TestAutoDetectAndInit_CleanupThenRecreate(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	// Create worktree for session-1
+	entry1 := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	require.NotNil(t, entry1)
+
+	// Cleanup it
+	reg.CleanupSession("cli:repo:session-1")
+	assert.Nil(t, reg.GetBySession("cli:repo:session-1"))
+
+	// Create a new worktree for session-2 — should succeed without conflict
+	entry2 := autoDetectAndInitInto(repoPath, "cli:repo:session-2", reg)
+	require.NotNil(t, entry2)
+	assert.NotEqual(t, entry1.WorktreeDir, entry2.WorktreeDir, "new worktree should be a different dir")
+
+	// Old worktree dir should be gone
+	_, err := os.Stat(entry1.WorktreeDir)
+	assert.True(t, os.IsNotExist(err), "old worktree dir should be cleaned up")
+}
