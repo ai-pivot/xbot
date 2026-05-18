@@ -460,6 +460,7 @@ func createWorktree(repoPath, branch string) (worktreePath string, err error) {
 	// Step 1: git worktree add --detach (works even on dirty trees)
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "add",
 		"--detach", worktreePath)
+	cmd.Env = cleanGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), err)
@@ -467,6 +468,7 @@ func createWorktree(repoPath, branch string) (worktreePath string, err error) {
 
 	// Step 2: create branch in the new worktree
 	brCmd := exec.Command("git", "-C", worktreePath, "checkout", "-b", branch)
+	brCmd.Env = cleanGitEnv()
 	brOut, brErr := brCmd.CombinedOutput()
 	if brErr != nil {
 		// Rollback: remove the worktree we just created
@@ -482,6 +484,7 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 	// Remove worktree (--force handles dirty state)
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "remove",
 		worktreePath, "--force")
+	cmd.Env = cleanGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree remove: %s: %w", strings.TrimSpace(string(out)), err)
@@ -489,6 +492,7 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 
 	// Delete branch
 	delCmd := exec.Command("git", "-C", repoPath, "branch", "-d", branch)
+	delCmd.Env = cleanGitEnv()
 	delOut, delErr := delCmd.CombinedOutput()
 	if delErr != nil {
 		// Non-fatal: branch may already be merged/deleted
