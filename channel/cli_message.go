@@ -1846,6 +1846,10 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	s := &m.styles
 	var sb strings.Builder
 	contentWidth := m.chatWidth() - 4
+	// chatUsableWidth: unified right boundary for user msg content.
+	// Aligns with assistant body right edge (guide(2) + content(cw-4) = cw-2),
+	// leaving 2 cols right padding so content doesn't touch the viewport edge.
+	chatUsableWidth := m.chatWidth() - 2
 	cw := m.chatWidth()
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
@@ -2022,11 +2026,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 	case "user":
 		// 用户消息上方：右侧柔和光点分隔，与 assistant 的左侧竖线形成对称
-		dotSep := s.UserDotSep.Width(contentWidth).Align(lipgloss.Right).Render("···")
+		dotSep := s.UserDotSep.Width(chatUsableWidth).Align(lipgloss.Right).Render("···")
 		sb.WriteString(dotSep)
 		sb.WriteString("\n")
 		label := userLabelStyle.Render("You")
-		header := s.UserHeader.Width(contentWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
+		header := s.UserHeader.Width(chatUsableWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
 		sb.WriteString(header)
 		sb.WriteString("\n")
 		// 用户消息：右对齐气泡效果
@@ -2039,11 +2043,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				maxWidth = w
 			}
 		}
-		maxBubble := contentWidth * 3 / 4
+		maxBubble := chatUsableWidth * 3 / 4
 		userStyle := s.UserContent
 		if maxWidth <= maxBubble {
 			// 内容够窄，左填充实现气泡靠右
-			userStyle = s.UserContent.PaddingLeft(contentWidth - maxWidth)
+			userStyle = s.UserContent.PaddingLeft(chatUsableWidth - maxWidth)
 		}
 		// CRITICAL: lipgloss Render pads ALL lines to maxWidth including trailing
 		// spaces. When contentWidth is close to terminal width, the padded lines
