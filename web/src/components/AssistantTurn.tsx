@@ -186,7 +186,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
 
         {/* Collapsible: Thinking section */}
         {thinkingMsgs.length > 0 && (
-          <CollapsibleSection icon="💭" title={t("thinkingProcess")} badge={thinkingMsgs.length} className="thinking-section">
+          <CollapsibleSection icon="💭" title={t("thinkingProcess")} badge={thinkingMsgs.length} defaultOpen={false} className="thinking-section">
             <div className="space-y-2 pl-1">
               {thinkingMsgs.map((msg) => (
                 <div key={msg.id} className="text-sm text-slate-400 italic">
@@ -310,7 +310,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
             icon="📋"
             title={t("iterationProcess")}
             badge={messages[messages.length - 1].iterationHistory!.length}
-            defaultOpen={true}
+            defaultOpen={false}
           >
             <div className="divide-y divide-slate-700/30">
               {messages[messages.length - 1].iterationHistory!.map((snap) => (

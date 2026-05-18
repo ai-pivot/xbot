@@ -25,6 +25,7 @@ export interface UseChatMessageHandlerParams {
   lastSeqRef: React.MutableRefObject<number>
   setTodos: React.Dispatch<React.SetStateAction<{ id: number; text: string; done: boolean }[]>>
   setSubAgents: React.Dispatch<React.SetStateAction<WsSubAgent[]>>
+  currentChatIDRef: React.MutableRefObject<string>
 }
 
 // --- Individual handlers ---
@@ -335,10 +336,19 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
     setMessages, setLoading, setProgress, setAskUser,
     prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
     fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
-    setTodos, setSubAgents,
+    setTodos, setSubAgents, currentChatIDRef,
   } = params
 
   const onMessage = useCallback((data: WebSocketMessage) => {
+    // Filter messages by chatID in multi-chatroom mode.
+    // If the WS message carries a chat_id that doesn't match the current active chat,
+    // skip it to prevent messages from different chatrooms from leaking into the UI.
+    const msgChatID = data.chat_id as string | undefined
+    const activeChatID = currentChatIDRef.current
+    if (msgChatID && activeChatID && msgChatID !== activeChatID) {
+      return
+    }
+
     switch (data.type) {
       case 'progress':
         handleProgress(setLoading)
@@ -404,7 +414,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
       default:
         break
     }
-  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef, setTodos, setSubAgents])
+  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef, setTodos, setSubAgents, currentChatIDRef])
 
   return { onMessage }
 }

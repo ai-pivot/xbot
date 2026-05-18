@@ -386,7 +386,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setMessages, setLoading, setProgress, setAskUser,
     prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
     fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
-    setTodos, setSubAgents,
+    setTodos, setSubAgents, currentChatIDRef,
   })
   const {
     connected,
@@ -444,6 +444,10 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       .then((data) => {
         if (loadHistoryIdRef.current !== currentId) return // race protection: discard stale response
         if (data.ok && data.messages) {
+          // Recover currentChatID from backend on page refresh
+          if (data.chat_id && !currentChatIDRef.current) {
+            setCurrentChatID(data.chat_id)
+          }
           const hist: Message[] = data.messages
             .filter((m: { role: string; content?: string; tool_calls?: string; detail?: string; display_only?: number }) => {
               if (m.role === 'tool') return false
@@ -557,11 +561,29 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         return
       }
       if (cmd === '/new') {
-        setMessages([])
-        resetProgress()
-        setTodos([])
-        setSubAgents([])
-        setLoading(false)
+        // Create a new chatroom via REST API (aligned with sidebar handleCreate)
+        ;(async () => {
+          try {
+            const resp = await fetch('/api/chats', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ label: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}` }),
+            })
+            const data = await resp.json()
+            if (data.ok && data.chat_id) {
+              await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
+              setCurrentChatID(data.chat_id)
+              setMessages([])
+              resetProgress()
+              setTodos([])
+              setSubAgents([])
+              setLoading(false)
+              setContextInfo(null)
+              streamingContentRef.current = ''
+              reasoningRef.current = ''
+            }
+          } catch (err) { console.warn('[ChatPage] /new createChat failed:', err) }
+        })()
         showToast(t('newConversation'), 'info')
         return
       }
@@ -624,7 +646,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   // --- Cancel generation ---
   const handleCancel = useCallback(() => {
-    wsSend({ type: 'cancel' })
+    wsSend({ type: 'cancel', channel: 'web', chat_id: currentChatIDRef.current || undefined })
     setLoading(false)
     resetProgress()
     // Remove streaming placeholder if present
@@ -760,7 +782,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   // --- AskUser callbacks ---
   const handleAskUserSubmit = useCallback((answers: Record<string, string>) => {
-    wsSend({ type: 'ask_user_response', answers, cancelled: false })
+    wsSend({ type: 'ask_user_response', answers, cancelled: false, channel: 'web', chat_id: currentChatIDRef.current || undefined })
     setAskUser(null)
   }, [wsSend])
 
@@ -769,6 +791,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       type: 'ask_user_response',
       answers,
       cancelled: true,
+      channel: 'web',
+      chat_id: currentChatIDRef.current || undefined,
     })
     setAskUser(null)
   }, [wsSend])

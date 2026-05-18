@@ -22,6 +22,7 @@ type historyResponse struct {
 	Processing     bool          `json:"processing,omitempty"`      // true if backend is actively processing a request
 	ActiveProgress *histProgress `json:"active_progress,omitempty"` // live progress snapshot for in-progress turns
 	LastSeq        uint64        `json:"last_seq,omitempty"`        // seq of active_progress snapshot (for WS sync)
+	ChatID         string        `json:"chat_id,omitempty"`         // current active chatID (for page-refresh recovery)
 	Error          string        `json:"error,omitempty"`
 	Deleted        int64         `json:"deleted,omitempty"`
 }
@@ -91,7 +92,7 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 	).Scan(&tenantID)
 	if err != nil {
 		// No tenant yet = no history
-		writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: nil})
+		writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: nil, ChatID: chatID})
 		return
 	}
 
@@ -201,15 +202,18 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 		lastSeq = es.lastSeq()
 	}
 
-	writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: messages, Processing: processing, ActiveProgress: activeProgress, LastSeq: lastSeq})
+	writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: messages, Processing: processing, ActiveProgress: activeProgress, LastSeq: lastSeq, ChatID: chatID})
 }
 
 // handleHistoryDelete clears all messages for the current user.
 func (wc *WebChannel) handleHistoryDelete(w http.ResponseWriter, r *http.Request, senderID string) {
+	// Use the currently active chatID (respects chat switching)
+	chatID := wc.getCurrentChatID(senderID)
+
 	// Find tenant ID for this web user
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", senderID,
+		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
 	).Scan(&tenantID)
 	if err != nil {
 		// No tenant yet = nothing to delete
@@ -1490,6 +1494,49 @@ func (wc *WebChannel) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 		delete(wc.userCurrentChat, senderID)
 	}
 	wc.userCurrentChatMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleChatRename handles POST /api/chats/{chatID}/rename — rename a chatroom.
+func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	chatID := r.PathValue("chatID")
+	if chatID == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "chat_id is required")
+		return
+	}
+
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Label == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "label is required")
+		return
+	}
+
+	if wc.callbacks.ChatRename == nil {
+		jsonErrorResponse(w, http.StatusNotImplemented, "chat rename not available")
+		return
+	}
+
+	if err := wc.callbacks.ChatRename(senderID, chatID, req.Label); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

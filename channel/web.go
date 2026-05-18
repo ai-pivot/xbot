@@ -341,6 +341,7 @@ func (wc *WebChannel) Start() error {
 	// Chatroom API
 	mux.HandleFunc("/api/chats", wc.authMiddleware(wc.handleChats))
 	mux.HandleFunc("/api/chats/{chatID}/switch", wc.authMiddleware(wc.handleChatSwitch))
+	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authMiddleware(wc.handleChatRename))
 	mux.HandleFunc("/api/chats/{chatID}", wc.authMiddleware(wc.handleChatDelete))
 	mux.HandleFunc("/api/context-info", wc.authMiddleware(wc.handleContextInfo))
 
@@ -1043,7 +1044,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
 			trimmed := strings.TrimSpace(content)
 			if msgChannel != "cli" && (len(trimmed) <= 1 || trimmed[0] != '!') {
-				if err := eagerSaveUserMsg(wc.db, msgSenderID, content); err != nil {
+				if err := eagerSaveUserMsg(wc.db, msgChatID, content); err != nil {
 					log.WithError(err).Warn("Failed to eager-save user message")
 				}
 				metadata["user_msg_eager_saved"] = "true"
@@ -1068,13 +1069,19 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				log.WithError(err).Debug("WS invalid ask_user_response")
 				continue
 			}
+			// Resolve business channel/chatID (same as message/cancel handlers)
+			// so the response routes to the correct chatroom session.
+			respChatID := chatID
+			if msg.Channel != "" && msg.ChatID != "" {
+				respChatID = msg.ChatID
+			}
 			if resp.Cancelled {
 				// User cancelled — send /cancel equivalent
 				wc.msgBus.Inbound <- bus.InboundMessage{
 					Channel:    "web",
 					SenderID:   c.userID,
 					SenderName: username,
-					ChatID:     chatID,
+					ChatID:     respChatID,
 					ChatType:   "p2p",
 					Content:    "/cancel",
 					Time:       time.Now(),
@@ -1092,7 +1099,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Channel:    "web",
 					SenderID:   c.userID,
 					SenderName: username,
-					ChatID:     chatID,
+					ChatID:     respChatID,
 					ChatType:   "p2p",
 					Content:    content,
 					Time:       time.Now(),
