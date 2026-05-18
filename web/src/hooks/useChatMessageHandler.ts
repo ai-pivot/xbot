@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import type { WebSocketMessage } from './useWebSocket'
 import type { Message } from '../types'
-import type { WsProgressPayload, IterationSnapshot } from '../components/ProgressPanel'
+import type { WsProgressPayload, IterationSnapshot, WsSubAgent } from '../components/ProgressPanel'
 import { normalizeIterationHistory } from '../utils'
 
 export interface UseChatMessageHandlerParams {
@@ -23,6 +23,8 @@ export interface UseChatMessageHandlerParams {
   setLiveIterationsSync: (updater: IterationSnapshot[] | ((prev: IterationSnapshot[]) => IterationSnapshot[])) => void
   showToast: (message: string, type: 'info' | 'error' | 'success') => void
   lastSeqRef: React.MutableRefObject<number>
+  setTodos: React.Dispatch<React.SetStateAction<{ id: number; text: string; done: boolean }[]>>
+  setSubAgents: React.Dispatch<React.SetStateAction<WsSubAgent[]>>
 }
 
 // --- Individual handlers ---
@@ -41,6 +43,8 @@ function handleProgressStructured(
   setLiveIterationsSync: (updater: IterationSnapshot[] | ((prev: IterationSnapshot[]) => IterationSnapshot[])) => void,
   setProgress: React.Dispatch<React.SetStateAction<WsProgressPayload | null>>,
   setLoading: React.Dispatch<React.SetStateAction<boolean>>,
+  setTodos: React.Dispatch<React.SetStateAction<{ id: number; text: string; done: boolean }[]>>,
+  setSubAgents: React.Dispatch<React.SetStateAction<WsSubAgent[]>>,
 ) {
   let p: WsProgressPayload = data.progress as WsProgressPayload
   const prevIter = prevIterationRef.current
@@ -109,6 +113,18 @@ function handleProgressStructured(
   prevIterationRef.current = p.iteration
   progressRef.current = p
   setProgress(p)
+
+  // Extract todos — only update when data is present (non-empty)
+  // Empty todos field doesn't clear existing state (matches TUI behavior)
+  if (p.todos && p.todos.length > 0) {
+    setTodos(p.todos)
+  }
+
+  // Extract sub_agents — only update when data is present
+  if (p.sub_agents && p.sub_agents.length > 0) {
+    setSubAgents(p.sub_agents)
+  }
+
   setLoading(true)
 }
 
@@ -309,6 +325,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
     setMessages, setLoading, setProgress, setAskUser,
     prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
     fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
+    setTodos, setSubAgents,
   } = params
 
   const onMessage = useCallback((data: WebSocketMessage) => {
@@ -321,6 +338,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
         handleProgressStructured(
           data, prevIterationRef, progressRef, reasoningRef,
           setLiveIterationsSync, setProgress, setLoading,
+          setTodos, setSubAgents,
         )
         break
 
@@ -356,10 +374,27 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
         handleSyncProgress(data, showToast)
         break
 
+      // [Reserved] subagent_started / subagent_stopped events
+      // Backend currently only sends these to CLI channel via emitSessionState.
+      // When web backend forwards these events, uncomment and implement:
+      // case 'subagent_started': {
+      //   const role = (data as Record<string, string>).role
+      //   const instance = (data as Record<string, string>).instance
+      //   const task = (data as Record<string, string>).task
+      //   // Incremental: add running SubAgent
+      //   break
+      // }
+      // case 'subagent_stopped': {
+      //   const role = (data as Record<string, string>).role
+      //   const instance = (data as Record<string, string>).instance
+      //   // Update matching SubAgent status to done
+      //   break
+      // }
+
       default:
         break
     }
-  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef])
+  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef, setTodos, setSubAgents])
 
   return { onMessage }
 }

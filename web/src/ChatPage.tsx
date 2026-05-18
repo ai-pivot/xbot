@@ -17,6 +17,9 @@ import { useNotification } from './hooks/useNotification'
 import ReplyPreview from './components/ReplyPreview'
 import TabBar from './components/TabBar'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
+import type { WsSubAgent } from './components/ProgressPanel'
+import { TodoBar } from './components/TodoBar'
+import { SubAgentPanel } from './components/SubAgentPanel'
 import { formatRelativeTime, formatFileSize, normalizeIterationHistory, createResetProgress, exportAsMarkdown, exportAsJSON, downloadFile } from './utils'
 import { getCodeBlockProps } from './components/CodeBlock'
 import ProgressPanel from './components/ProgressPanel'
@@ -252,6 +255,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [threadParentMsg, setThreadParentMsg] = useState<Message | null>(null)
   const [threadMessages, setThreadMessages] = useState<Record<string, ThreadMessage[]>>({})
   const [notificationOpen, setNotificationOpen] = useState(false)
+  const [todos, setTodos] = useState<{ id: number; text: string; done: boolean }[]>([])
+  const [subAgents, setSubAgents] = useState<WsSubAgent[]>([])
   const { play: playSound } = useSoundFeedback()
   const { addNotification } = useNotificationContext()
 
@@ -380,6 +385,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setMessages, setLoading, setProgress, setAskUser,
     prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
     fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
+    setTodos, setSubAgents,
   })
   const {
     connected,
@@ -463,6 +469,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           const lastIsUser = hist.length > 0 && hist[hist.length - 1].type === 'user'
           if (isProcessing && lastIsUser) {
             setLoading(true)
+          } else {
+            // Backend is idle — force clear any stale loading state (e.g. after page refresh)
+            setLoading(false)
+            resetProgress()
+            streamingContentRef.current = ''
           }
           if (isProcessing && data.active_progress) {
             const ap = data.active_progress
@@ -533,6 +544,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setCurrentChatID(chatId)
     setMessages([])
     resetProgress()
+    setTodos([])
+    setSubAgents([])
     setLoading(false)
     setTimeout(() => loadHistory(), 100)
   }, [loadHistory, resetProgress])
@@ -540,6 +553,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const handleTabNew = useCallback(() => {
     setMessages([])
     resetProgress()
+    setTodos([])
+    setSubAgents([])
     setLoading(false)
     setContextInfo(null)
   }, [resetProgress])
@@ -556,6 +571,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         // Clear both frontend state and backend history
         setMessages([])
         resetProgress()
+        setTodos([])
+        setSubAgents([])
         setLoading(false)
         fetch('/api/history', { method: 'DELETE' }).catch((err) => { console.warn('[ChatPage] failed to clear history:', err) })
         showToast(t('conversationCleared'), 'info')
@@ -564,6 +581,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       if (cmd === '/new') {
         setMessages([])
         resetProgress()
+        setTodos([])
+        setSubAgents([])
         setLoading(false)
         showToast(t('newConversation'), 'info')
         return
@@ -591,6 +610,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setReplyingTo(null)
     setMessages((prev) => [...prev, userMsg])
     resetProgress()
+    setTodos([])
+    setSubAgents([])
     setLoading(true)
     setAutoScroll(true)
 
@@ -1017,6 +1038,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             setCurrentChatID(chatID)
             setMessages([])
             resetProgress()
+            setTodos([])
+            setSubAgents([])
             setLoading(false)
             // Open tab for this chat
             tabManager.openTab(chatID, '')
@@ -1026,6 +1049,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           onNewChat={() => {
             setMessages([])
             resetProgress()
+            setTodos([])
+            setSubAgents([])
             setLoading(false)
             setContextInfo(null)
           }}
@@ -1034,6 +1059,12 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           onExportJSON={handleExportJSON}
         />
         <div className="flex flex-col flex-1 min-w-0">
+
+      {/* Persistent TodoBar — visible across turns, cleared on new user message */}
+      {todos.length > 0 && <TodoBar todos={todos} />}
+
+      {/* Persistent SubAgentPanel — visible across turns, cleared on new user message */}
+      {subAgents.length > 0 && <SubAgentPanel agents={subAgents} />}
 
       {/* Messages */}
       <div
@@ -1094,53 +1125,41 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                       onSwipeRight={() => handleReplyToMessage(turn.message.id, turn.message.content, 'user')}
                       className="flex justify-end mb-4"
                     >
-                      <div className="group relative" data-msg-id={turn.message.id}>
-                        <div className="max-w-[80%] ml-auto">
-                          {turn.message.replyTo && (
-                            <div className="flex justify-end mb-1">
-                              <div className="max-w-full">
-                                <ReplyPreview
-                                  replyTo={turn.message.replyTo}
-                                  onClick={() => handleScrollToMessage(turn.message.replyTo!.id)}
-                                />
-                              </div>
-                            </div>
-                          )}
-                          <div className="rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm relative"
-                               onContextMenu={(e) => {
-                                 e.preventDefault()
-                                 setContextMenu({
-                                   x: e.clientX,
-                                   y: e.clientY,
-                                   items: [
-                                     { label: t('replyMessage'), icon: '↩️', onClick: () => handleReplyToMessage(turn.message.id, turn.message.content, 'user') },
-                                     { label: t('replyInThread'), icon: '💬', onClick: () => handleOpenThread(turn.message) },
-                                     { label: t('deleteMessage'), icon: '🗑️', onClick: () => handleDeleteMessage(turn.message.id), danger: true },
-                                   ],
-                                 })
-                               }}
-                          >
-                            <UserMessageContent content={turn.message.content} onPreview={(url) => setPreviewImage(url)} />
-                            {turn.message.ts && (
-                             <div className="text-xs mt-1 text-right text-blue-200/50 flex items-center justify-end gap-1">
-                               <span>{formatRelativeTime(turn.message.ts * 1000)}</span>
-                               {turn.message.status === 'sending' && <span className="animate-pulse">⏳</span>}
-                               {turn.message.status === 'failed' && <span className="text-red-300">❌ {t('sendFailed')}</span>}
-                               {turn.message.edited && <span className="italic">{t('edited')}</span>}
-                             </div>
-                            )}
-                            {/* User message actions — reply only */}
-                            <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                onClick={() => handleReplyToMessage(turn.message.id, turn.message.content, 'user')}
-                                className="px-2 py-1 rounded text-xs bg-blue-500/60 hover:bg-blue-400/80 text-blue-100 hover:text-white backdrop-blur-sm"
-                                title={t('replyMessage')}
-                                data-testid="user-reply-btn"
-                              >
-                                ↩️
-                              </button>
+                      <div data-msg-id={turn.message.id}>
+                        {turn.message.replyTo && (
+                          <div className="flex justify-end mb-1">
+                            <div className="max-w-full">
+                              <ReplyPreview
+                                replyTo={turn.message.replyTo}
+                                onClick={() => handleScrollToMessage(turn.message.replyTo!.id)}
+                              />
                             </div>
                           </div>
+                        )}
+                        <div className="rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm relative ml-auto"
+                             style={{ width: 'fit-content', overflowWrap: 'break-word' }}
+                             onContextMenu={(e) => {
+                               e.preventDefault()
+                               setContextMenu({
+                                 x: e.clientX,
+                                 y: e.clientY,
+                                 items: [
+                                   { label: t('replyMessage'), icon: '↩️', onClick: () => handleReplyToMessage(turn.message.id, turn.message.content, 'user') },
+                                   { label: t('replyInThread'), icon: '💬', onClick: () => handleOpenThread(turn.message) },
+                                   { label: t('deleteMessage'), icon: '🗑️', onClick: () => handleDeleteMessage(turn.message.id), danger: true },
+                                 ],
+                               })
+                             }}
+                        >
+                          <UserMessageContent content={turn.message.content} onPreview={(url) => setPreviewImage(url)} />
+                          {turn.message.ts && (
+                           <div className="text-xs mt-1 text-right text-blue-200/50 flex items-center justify-end gap-1">
+                             <span>{formatRelativeTime(turn.message.ts * 1000)}</span>
+                             {turn.message.status === 'sending' && <span className="animate-pulse">⏳</span>}
+                             {turn.message.status === 'failed' && <span className="text-red-300">❌ {t('sendFailed')}</span>}
+                             {turn.message.edited && <span className="italic">{t('edited')}</span>}
+                           </div>
+                          )}
                         </div>
                       </div>
                     </SwipeableMessage>
