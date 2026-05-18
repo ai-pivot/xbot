@@ -2148,13 +2148,16 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 
 		// Render all body lines with guide prefix.
-		// Reset ANSI state after guide to prevent inline code background color
-		// from bleeding into the guide prefix (┊ gets colored by glamour's bg).
+		// ANSI reset before guide: clears inline code background color inherited
+		// from the previous body line (hardWrapRunes doesn't add trailing reset
+		// when breaking inside an inline code span, so bg color leaks forward).
+		// ANSI reset after guide: prevents guide foreground from mixing with
+		// body line ANSI styles.
 		// Right-align: body content width = contentWidth (same as user msg "You"),
 		// so guide(2) + body(cw-4) leaves 2 cols right padding.
 		const ansiReset = "\x1b[0m"
 		for _, l := range bodyLines {
-			sb.WriteString(guideSt.Render(guideSym) + ansiReset)
+			sb.WriteString(ansiReset + guideSt.Render(guideSym) + ansiReset)
 			sb.WriteString(l)
 			sb.WriteString("\n")
 		}
