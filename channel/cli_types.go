@@ -196,6 +196,15 @@ func hardWrapRunes(line string, maxW int) string {
 	var ansiState strings.Builder // accumulated SGR sequences since last reset
 	haveAnsiState := false
 
+	// Snapshot of ansiState at the lastBreakable position.
+	// When breaking at lastBreakable, rest already contains escape sequences
+	// that came after the break point. If we blindly replay the CURRENT
+	// ansiState (which accumulated more escapes since lastBreakable),
+	// we inject escape sequences into the middle of rest's text,
+	// corrupting the terminal output and causing visible "character loss".
+	var breakAnsiState string
+	breakHaveAnsi := false
+
 	for _, r := range line {
 		if r == '\x1b' {
 			inEscape = true
@@ -229,6 +238,14 @@ func hardWrapRunes(line string, maxW int) string {
 		// Mark breakable positions: after space or after CJK character
 		if r == ' ' || isCJK(r) {
 			lastBreakable = buf.Len() + utf8.RuneLen(r)
+			// Snapshot ANSI state at this breakable position so we can
+			// replay the correct state on the continuation line.
+			if haveAnsiState {
+				breakAnsiState = ansiState.String()
+			} else {
+				breakAnsiState = ""
+			}
+			breakHaveAnsi = haveAnsiState
 		}
 
 		if w+rw > maxW {
@@ -238,8 +255,15 @@ func hardWrapRunes(line string, maxW int) string {
 				rest := buf.String()[lastBreakable:]
 				lines = append(lines, keep)
 				buf.Reset()
+				// Replay ANSI state BEFORE rest so the continuation line
+				// inherits the correct color/style. Without this, the replay
+				// ends up AFTER rest's text, corrupting the terminal output
+				// (ANSI escape injected mid-word causes visible "character loss").
+				if breakHaveAnsi {
+					buf.WriteString(breakAnsiState)
+				}
 				buf.WriteString(rest)
-				w = lipgloss.Width(rest)
+				w = lipgloss.Width(buf.String())
 				lastBreakable = -1
 			} else {
 				// No breakable position found, hard break here
@@ -247,10 +271,12 @@ func hardWrapRunes(line string, maxW int) string {
 				buf.Reset()
 				w = 0
 				lastBreakable = -1
-			}
-			// Replay active ANSI state on continuation line
-			if haveAnsiState {
-				buf.WriteString(ansiState.String())
+				// For hard breaks, the current ansiState is correct —
+				// no escape sequences were accumulated between buf.String()
+				// and this point (the current rune hasn't been written yet).
+				if haveAnsiState {
+					buf.WriteString(ansiState.String())
+				}
 			}
 		}
 		buf.WriteRune(r)

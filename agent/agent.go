@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"xbot/config"
+
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/channel"
@@ -2289,10 +2291,17 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	if detectDir == "" {
 		detectDir = workspaceRoot
 	}
-	// Peer awareness: always register this session so other agents can see it.
-	// When auto_worktree is enabled, AutoDetectAndInit handles worktree creation.
-	// When disabled, RegisterPeer provides lightweight session tracking.
-	tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
+	// Peer awareness / auto worktree: register this session for collaboration.
+	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
+	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
+	cfgPath := filepath.Join(a.xbotHome, "config.json")
+	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
+		if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+			tenantSession.SetCurrentDir(entry.WorktreeDir)
+		}
+	} else {
+		tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
+	}
 
 	// When auto_worktree is enabled, attempt automatic worktree isolation.
 	// AutoDetectAndInit creates a worktree for this session if another session

@@ -2,6 +2,11 @@
 
 BINARY_NAME := xbot
 
+# Worktree-safe: go build's VCS stamping fails in git worktrees
+# (it cd's to the main repo which is locked by the worktree).
+# Override with: make install-cli GOFLAGS=
+GOFLAGS ?= -buildvcs=false
+
 fmt:
 	go fmt ./...
 
@@ -16,13 +21,13 @@ CHANNEL := $(shell git branch --show-current 2>/dev/null | sed 's/master/stable/
 LDFLAGS := -X xbot/version.Version=$(VERSION) -X xbot/version.Commit=$(shell git rev-parse --short HEAD) -X xbot/version.BuildTime=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) -X xbot/version.Channel=$(CHANNEL)
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) .
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) .
 
 run: build
 	./$(BINARY_NAME)
 
 dev:
-	go run -ldflags "$(LDFLAGS)" .
+	go run $(GOFLAGS) -ldflags "$(LDFLAGS)" .
 
 clean:
 	rm -f $(BINARY_NAME) coverage.out
@@ -45,6 +50,6 @@ web-dev:
 	cd web && yarn dev
 
 install-cli:
-	go build -ldflags "$(LDFLAGS)" -o /tmp/xbot-cli ./cmd/xbot-cli
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o /tmp/xbot-cli ./cmd/xbot-cli
 	sudo mv /tmp/xbot-cli /usr/local/bin/
 

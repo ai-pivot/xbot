@@ -84,6 +84,9 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	"tavily_api_key": {}, // Stored in user_settings; WebSearchTool reads dynamically
 
 	"auto_worktree": {
+		ApplyConfig: func(cfg *config.Config, value string) {
+			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
+		},
 		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
 			if ag == nil {
 				return
@@ -214,6 +217,19 @@ func ApplyRuntimeSettings(cfg *config.Config, ag *Agent, senderID string, values
 	}
 	if ag != nil {
 		ag.LLMFactory().SetModelTiers(cfg.LLM)
+	}
+}
+
+// ApplyRuntimeSettingsLocal applies setting changes to the in-memory config only
+// (no agent backend side effects). Used by the CLI process to update its local cfg
+// copy before persisting to config.json.
+func ApplyRuntimeSettingsLocal(cfg *config.Config, values map[string]string) {
+	for k, v := range values {
+		handler, ok := SettingHandlerRegistry[k]
+		if !ok || handler.ApplyConfig == nil {
+			continue
+		}
+		handler.ApplyConfig(cfg, v)
 	}
 }
 

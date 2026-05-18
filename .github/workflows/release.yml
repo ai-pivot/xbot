@@ -218,7 +218,7 @@ jobs:
         working-directory: dist
         run: sha256sum * > ../checksums.txt
 
-      - name: Determine prerelease flag
+      - name: Determine prerelease flag and release tag
         id: prerelease
         run: |
           CHANNEL="${{ needs.prepare.outputs.channel }}"
@@ -227,13 +227,25 @@ jobs:
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
+          # Nightly uses a fixed tag so the release is overwritten each run.
+          # Stable/beta keep unique tags (v1.2.3, beta-YYYYMMDD).
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            echo "release_tag=nightly" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_tag=${{ needs.prepare.outputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare.outputs.version }}
+          tag_name: ${{ steps.prerelease.outputs.release_tag }}
           prerelease: ${{ steps.prerelease.outputs.prerelease }}
           generate_release_notes: true
+          body: |
+            ## ${{ needs.prepare.outputs.version }}
+
+            Commit: `${{ env.COMMIT }}`
+            Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
           files: |
             dist/xbot-cli-linux-amd64
             dist/xbot-cli-linux-arm64

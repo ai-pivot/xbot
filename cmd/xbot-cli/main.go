@@ -197,6 +197,11 @@ func (app *cliApp) refreshRemoteValuesCache() {
 	app.valuesCache = vals
 	app.valuesCacheMu.Unlock()
 
+	// Sync all DB values back to app.cfg so saveCLIConfig persists them.
+	// This ensures CLI-side config stays in sync with user_settings DB
+	// regardless of which setting was changed.
+	agent.ApplyRuntimeSettingsLocal(app.cfg, vals)
+
 	// Merge layout keys from local config.json if missing (RPC may fail on first call)
 	layoutKeys := []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"}
 	for _, k := range layoutKeys {
@@ -1616,18 +1621,18 @@ func main() {
 
 	chatID := initialChatID
 
-	// Auto-set CWD: for remote servers, sync the CLI's actual cwd so the
-	// agent uses the correct directory. Local mode already has the workspace set.
-	if app.client.IsRemote() && isLocalServer(app.cfg.CLI.ServerURL) {
-		if cwd, err := os.Getwd(); err == nil {
-			if err := app.client.SetCWD("cli", chatID, cwd); err != nil {
-				log.WithError(err).WithField("chat_id", chatID).Warn("Failed to sync CWD to server")
-			} else {
-				log.WithFields(log.Fields{
-					"cwd":     cwd,
-					"chat_id": chatID,
-				}).Info("Synced CLI CWD to local server")
-			}
+	// Auto-set CWD: sync the CLI's actual cwd so the agent uses the
+	// correct directory. Both local and remote modes need this — local mode's
+	// cfg.Agent.WorkDir defaults to "." (process root), and sessions may have
+	// a stale persisted CWD from a previous run.
+	if cwd, err := os.Getwd(); err == nil {
+		if err := app.client.SetCWD("cli", chatID, cwd); err != nil {
+			log.WithError(err).WithField("chat_id", chatID).Warn("Failed to sync CWD")
+		} else {
+			log.WithFields(log.Fields{
+				"cwd":     cwd,
+				"chat_id": chatID,
+			}).Info("Synced CLI CWD")
 		}
 	}
 

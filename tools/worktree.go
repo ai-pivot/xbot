@@ -23,8 +23,7 @@ so agents don't conflict on the same files. Also supports listing and cleanup.
 
 ### init
 Create a new git worktree for the current agent. Registers it in the global registry.
-- The first agent in a repo uses the main project directly (role="primary").
-- Subsequent agents get their own worktree (role="peer" or "child").
+- Every session gets its own worktree — all agents are equal peers.
 - Returns the worktree path. You should then Cd to it.
 
 Parameters: {"action": "init", "role": "peer", "instance": "debug", "task": "fix auth bug"}
@@ -92,7 +91,8 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 	if !ctx.AutoWorktreeEnabled {
 		return NewResult(
 			"⚠️ Worktree 是实验性功能，默认关闭。\n" +
-				"如需启用自动 worktree 隔离，请在 config.json 中设置：\n" +
+				"如需启用自动 worktree 隔离，请在 /settings 中设置 `auto_worktree = true`，\n" +
+				"或在 config.json 中设置：\n" +
 				`  "agent": {"experimental": {"auto_worktree": true}}` +
 				"\n\n当前已启用 peer 感知——你可以看到其他 agent 并与之通信。"), nil
 	}
@@ -112,23 +112,7 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 			existing.Role, existing.WorktreeDir, existing.Branch)), nil
 	}
 
-	primary := GlobalWorktreeRegistry.GetPrimary(repoPath)
-	if primary == nil {
-		entry := &WorktreeEntry{
-			SessionKey:  sessionKey,
-			Role:        "primary",
-			RepoPath:    repoPath,
-			WorktreeDir: "",
-			Branch:      "",
-			Status:      "working",
-		}
-		if err := GlobalWorktreeRegistry.Register(entry); err != nil {
-			return nil, fmt.Errorf("worktree init: register primary: %w", err)
-		}
-		return NewResult(fmt.Sprintf("Registered as primary agent for repo %s.\nUsing main project directly (no worktree needed).", repoPath)), nil
-	}
-
-	// Creating a worktree — warn if tree is dirty (worktree starts from HEAD)
+	// All sessions get a worktree — no primary concept.
 	dirty, err := gitIsDirty(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("worktree init: check dirty: %w", err)

@@ -14,7 +14,7 @@ import (
 )
 
 func (c *RemoteCLIChannel) SendTUIControlRequest(chatID string, action string, params map[string]string) (map[string]string, error) {
-	id := fmt.Sprintf("tui-%d", time.Now().UnixNano())
+	id := cliMsg.generateTUIID()
 	ch := make(chan *protocol.TUIControlPayload, 1)
 
 	c.tuiPendingMu.Lock()
@@ -27,14 +27,7 @@ func (c *RemoteCLIChannel) SendTUIControlRequest(chatID string, action string, p
 		c.tuiPendingMu.Unlock()
 	}()
 
-	wsMsg := protocol.WSMessage{
-		Type: protocol.MsgTypeTUIControlReq,
-		ID:   id,
-		TUIControl: &protocol.TUIControlPayload{
-			Action: action,
-			Params: params,
-		},
-	}
+	wsMsg := cliMsg.buildTUIControlReqMsg(id, chatID, action, params)
 	if !c.hub.sendToClient(chatID, wsMsg) {
 		return nil, fmt.Errorf("remote CLI client offline for chat %s", chatID)
 	}
@@ -45,7 +38,7 @@ func (c *RemoteCLIChannel) SendTUIControlRequest(chatID string, action string, p
 			return nil, fmt.Errorf("%s", resp.Error)
 		}
 		return resp.Result, nil
-	case <-time.After(10 * time.Second):
+	case <-time.After(tuiRespTimeout):
 		return nil, fmt.Errorf("tui_control request %s timed out", id)
 	}
 }
@@ -99,15 +92,9 @@ func (c *RemoteCLIChannel) Start() error { return nil }
 func (c *RemoteCLIChannel) Stop() {}
 
 // InjectUserMessage sends an injected user message (e.g. bg task notification)
-// to the remote CLI runner via WebSocket. The runner will display it as a user
-// message in the TUI and use it to start the agent turn display.
+// to the remote CLI runner via WebSocket.
 func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeInjectUser,
-		Content: content,
-		ChatID:  chatID,
-		TS:      time.Now().Unix(),
-	}
+	wsMsg := cliMsg.buildInjectUserMsg(chatID, content)
 	if !c.hub.sendToClient(chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")
 	}
@@ -115,49 +102,27 @@ func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
 
 // SendProgress sends structured progress to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
-	if payload == nil {
-		return
-	}
-	wsMsg := protocol.WSMessage{
-		Type:     protocol.MsgTypeProgress,
-		TS:       time.Now().Unix(),
-		Progress: payload,
-	}
-	if !c.hub.sendToClient(chatID, wsMsg) {
-		log.WithFields(log.Fields{
-			"chat_id": chatID,
-			"phase":   payload.Phase,
-			"iter":    payload.Iteration,
-		}).Info("Hub SendProgress: no online subscriber, event buffered")
+	if msg := cliMsg.buildProgressMsg(chatID, payload); msg != nil {
+		if !c.hub.sendToClient(chatID, *msg) {
+			log.WithFields(log.Fields{
+				"chat_id": chatID,
+				"phase":   payload.Phase,
+				"iter":    payload.Iteration,
+			}).Info("Hub SendProgress: no online subscriber, event buffered")
+		}
 	}
 }
 
 // SendSessionState sends a session state change event to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendSessionState(ev protocol.SessionEvent) {
-	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeSession,
-		TS:      time.Now().Unix(),
-		Session: &ev,
-	}
-	// Broadcast to all connected clients — session state is global, not per-chat.
-	c.hub.broadcastToAll(wsMsg)
+	c.hub.broadcastToAll(cliMsg.buildSessionStateMsg(ev))
 }
 
 // SendStreamContent sends streaming LLM content to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) {
-	if content == "" && reasoning == "" {
-		return
+	if msg := cliMsg.buildStreamContentMsg(chatID, content, reasoning); msg != nil {
+		_ = c.hub.sendToClient(chatID, *msg) // stream events are ephemeral, safe to drop
 	}
-	wsMsg := protocol.WSMessage{
-		Type: protocol.MsgTypeStreamContent,
-		TS:   time.Now().Unix(),
-		Progress: &protocol.ProgressEvent{
-			ChatID:                 "cli:" + chatID,
-			StreamContent:          content,
-			ReasoningStreamContent: reasoning,
-		},
-	}
-	_ = c.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
 }
 
 // PushPluginWidgetsPerSession pushes widget zone content to each connected CLI
@@ -235,48 +200,26 @@ func (c *RemoteCLIChannel) Send(msg OutboundMsg) (string, error) {
 
 	targetClientID := msg.ChatID
 
-	wsMsg := protocol.WSMessage{
-		Type:            msgType,
-		ID:              msgID,
-		Content:         content,
-		TS:              time.Now().Unix(),
-		ProgressHistory: msg.Metadata["progress_history"],
-		Channel:         msg.Channel,
-		ChatID:          msg.ChatID,
-		Metadata:        msg.Metadata,
-	}
+	// Build base text message, then overlay remote-specific fields
+	wsMsg := cliMsg.buildTextMsg(msg)
+	wsMsg.ID = msgID
+	wsMsg.Type = msgType
+	wsMsg.Content = content
+	wsMsg.ProgressHistory = msg.Metadata["progress_history"]
 
 	if !c.hub.sendToClient(targetClientID, wsMsg) {
 		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("CLI WS client offline, message buffered")
 	}
 
-	// AskUser: agent needs user input
-	if msg.WaitingUser {
-		askPayload := &protocol.ProgressEvent{}
-		if msg.Metadata != nil {
-			askPayload.RequestID = msg.Metadata["request_id"]
-			if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {
-				var qs []protocol.AskUserQuestion
-				if json.Unmarshal([]byte(qJSON), &qs) == nil {
-					askPayload.Questions = qs
-				}
-			}
-		}
+	// AskUser: reuse shared builder
+	if askMsg := cliMsg.buildAskUserMsg(msg); askMsg != nil {
+		askMsg.ID = msgID
 		log.WithFields(log.Fields{
 			"msg_channel":   msg.Channel,
 			"msg_chatid":    msg.ChatID,
 			"target_client": targetClientID,
-			"num_questions": len(askPayload.Questions),
 		}).Info("RemoteCLIChannel.Send: dispatching ask_user")
-		askMsg := protocol.WSMessage{
-			Type:     protocol.MsgTypeAskUser,
-			ID:       msgID,
-			TS:       time.Now().Unix(),
-			Channel:  msg.Channel,
-			ChatID:   msg.ChatID,
-			Progress: askPayload,
-		}
-		c.hub.sendToClient(targetClientID, askMsg)
+		c.hub.sendToClient(targetClientID, *askMsg)
 	}
 
 	return msgID, nil
