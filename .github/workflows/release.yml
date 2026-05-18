@@ -70,12 +70,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "yarn"
-          cache-dependency-path: web/yarn.lock
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
 
       - name: Build
         working-directory: web
-        run: yarn install --frozen-lockfile && yarn build
+        run: npm ci && npm run build
 
       - name: Package
         run: mkdir -p dist && tar czf dist/xbot-web-dist.tar.gz -C web/dist .

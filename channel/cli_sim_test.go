@@ -3125,3 +3125,68 @@ func TestSimEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// TestSimInlineCodeNotSplit verifies that inline code and long identifiers
+// are NOT split across lines during rendering. Regression test for:
+//   - glamour word-wrap breaking `build:sim-sdk:x86_64` into `build:sim-\nsdk:`
+//   - hardWrapRunes treating \n as 0-width and not resetting column counter,
+//     causing "1. C\nWD key" bogus breaks in multi-line input
+//   - hardWrapRunes breaking at space/CJK boundaries (lastBreakable) instead
+//     of pure hard-wrap at column boundaries
+func TestSimInlineCodeNotSplit(t *testing.T) {
+	// Exact message from DB (ID 266051, tenant_id=1218) — single-line, 180 cols,
+	// no newlines. Glamour's word-wrap previously split `build:sim-sdk:x86_64`.
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 20},
+		Steps: []SimStep{
+			{Action: "agent_msg", Content: "已修复推送到 MR !270。之前删 aarch64 时误把 `release:sim-sdk:` 的 job 头也删了，导致其内容合并进了 `build:sim-sdk:x86_64` 形成自依赖。现在补回了完整的 `release:sim-sdk:` job 定义。"},
+			{Action: "snapshot", Label: "inline_code_not_split"},
+			// build:sim-sdk:x86_64 must appear as a complete substring
+			{Action: "assert", Contains: "build:sim-sdk:x86_64"},
+			// release:sim-sdk: must appear as a complete substring
+			{Action: "assert", Contains: "release:sim-sdk:"},
+			// These broken forms must NOT appear
+			{Action: "assert", NotContains: "release:sim-\nsdk"},
+			{Action: "assert", NotContains: "build:sim-\nsdk"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("inline code not split scenario failed: %s", result.Error)
+	}
+	for _, a := range result.Assertions {
+		if !a.Passed {
+			t.Errorf("assertion failed: step=%d type=%s pattern=%q", a.Step, a.Type, a.Pattern)
+		}
+	}
+}
+
+// TestSimMultilineNoBogusBreak verifies that multi-line messages (\n) are
+// wrapped independently per line. Previously hardWrapRunes carried column
+// counter w across \n boundaries, causing "1. C\nWD key" breaks.
+func TestSimMultilineNoBogusBreak(t *testing.T) {
+	scenario := SimScenario{
+		Config: SimConfig{Width: 120, Height: 30},
+		Steps: []SimStep{
+			{Action: "agent_msg", Content: "分析结果：这两处改动 feat 分支是旧版，master #67 已经做了相反方向的修正（更正确），所以不应该合并。\n\n1. CWD key：master #67 用 SHA256(channel:chatID)，feat 分支用 tenantID → #67 修复了多会话 CWD 互覆盖的问题\n2. cleanGitEnv：master #67 加上了，feat 分支移除了 → #67 修复了 worktree GIT_DIR 泄漏\n3. removeLastToolSummary guard：master #67 加上了，feat 分支没有 → #67 修复了 Ctrl+C 迭代丢失\n\n所以这三个都不需要 cherry-pick 进 PR。"},
+			{Action: "snapshot", Label: "multiline_no_bogus_break"},
+			// These identifiers must NOT be split by word-wrap or bogus \n handling
+			{Action: "assert", NotContains: "1. C\nWD key"},
+			{Action: "assert", NotContains: "2. c\nleanGitEnv"},
+			// CWD and cleanGitEnv must appear as substrings (not split)
+			{Action: "assert", Contains: "CWD key"},
+			{Action: "assert", Contains: "cleanGitEnv"},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("multiline no bogus break scenario failed: %s", result.Error)
+	}
+	for _, a := range result.Assertions {
+		if !a.Passed {
+			t.Errorf("assertion failed: step=%d type=%s pattern=%q", a.Step, a.Type, a.Pattern)
+		}
+	}
+}

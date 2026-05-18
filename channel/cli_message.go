@@ -1846,6 +1846,10 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	s := &m.styles
 	var sb strings.Builder
 	contentWidth := m.chatWidth() - 4
+	// chatUsableWidth: unified right boundary for user msg content.
+	// Aligns with assistant body right edge (guide(2) + content(cw-4) = cw-2),
+	// leaving 2 cols right padding so content doesn't touch the viewport edge.
+	chatUsableWidth := m.chatWidth() - 2
 	cw := m.chatWidth()
 	timeStyle := s.Time
 	userLabelStyle := s.UserLabel
@@ -2022,11 +2026,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 	case "user":
 		// 用户消息上方：右侧柔和光点分隔，与 assistant 的左侧竖线形成对称
-		dotSep := s.UserDotSep.Width(contentWidth).Align(lipgloss.Right).Render("···")
+		dotSep := s.UserDotSep.Width(chatUsableWidth).Align(lipgloss.Right).Render("···")
 		sb.WriteString(dotSep)
 		sb.WriteString("\n")
 		label := userLabelStyle.Render("You")
-		header := s.UserHeader.Width(contentWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
+		header := s.UserHeader.Width(chatUsableWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
 		sb.WriteString(header)
 		sb.WriteString("\n")
 		// 用户消息：右对齐气泡效果
@@ -2039,11 +2043,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				maxWidth = w
 			}
 		}
-		maxBubble := contentWidth * 3 / 4
+		maxBubble := chatUsableWidth * 3 / 4
 		userStyle := s.UserContent
 		if maxWidth <= maxBubble {
 			// 内容够窄，左填充实现气泡靠右
-			userStyle = s.UserContent.PaddingLeft(contentWidth - maxWidth)
+			userStyle = s.UserContent.PaddingLeft(chatUsableWidth - maxWidth)
 		}
 		// CRITICAL: lipgloss Render pads ALL lines to maxWidth including trailing
 		// spaces. When contentWidth is close to terminal width, the padded lines
@@ -2129,10 +2133,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		}
 
-		// Main content — trim trailing newlines so cursor stays inline
+		// Main content — trim trailing newlines so cursor stays inline.
+		// Wrap each line to contentWidth (= cw-4) so guide(2) + body(cw-4) = cw-2,
+		// leaving 2 cols right padding aligned with user msg "You" position.
 		trimmed := strings.TrimRight(displayContent, "\n")
 		if trimmed != "" {
-			bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
+			for _, l := range strings.Split(trimmed, "\n") {
+				bodyLines = append(bodyLines, strings.Split(hardWrapRunes(l, contentWidth), "\n")...)
+			}
 		}
 
 		// Streaming cursor
@@ -2143,9 +2151,17 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		}
 
-		// Render all body lines with guide prefix
+		// Render all body lines with guide prefix.
+		// ANSI reset before guide: clears inline code background color inherited
+		// from the previous body line (hardWrapRunes doesn't add trailing reset
+		// when breaking inside an inline code span, so bg color leaks forward).
+		// ANSI reset after guide: prevents guide foreground from mixing with
+		// body line ANSI styles.
+		// Right-align: body content width = contentWidth (same as user msg "You"),
+		// so guide(2) + body(cw-4) leaves 2 cols right padding.
+		const ansiReset = "\x1b[0m"
 		for _, l := range bodyLines {
-			sb.WriteString(guideSt.Render(guideSym))
+			sb.WriteString(ansiReset + guideSt.Render(guideSym) + ansiReset)
 			sb.WriteString(l)
 			sb.WriteString("\n")
 		}

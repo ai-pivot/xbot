@@ -1502,8 +1502,8 @@ func (m *cliModel) renderFooter() string {
 	// Progressively drop hints from the end until the footer fits.
 	for len(hints) > 0 {
 		footerText, xPositions := m.renderHintsText(hints)
-		footerText = padBetween(footerText, helpHint, m.chatWidth())
-		if lipgloss.Width(footerText) <= m.chatWidth() {
+		footerText = padBetween(footerText, helpHint, m.chatWidth()-2)
+		if lipgloss.Width(footerText) <= m.chatWidth()-2 {
 			// Store X positions for mouse zone tracking
 			for i := range hints {
 				if i < len(xPositions) {
@@ -1512,14 +1512,14 @@ func (m *cliModel) renderFooter() string {
 				}
 			}
 			footerHints = hints
-			return m.styles.Footer.Width(m.chatWidth()).Render(footerText)
+			return m.styles.Footer.Width(m.chatWidth() - 2).Render(footerText)
 		}
 		hints = hints[:len(hints)-1]
 	}
 
 	footerHints = nil
-	return m.styles.Footer.Width(m.chatWidth()).Render(
-		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.chatWidth())))
+	return m.styles.Footer.Width(m.chatWidth() - 2).Render(
+		padBetween(ellipsis, helpHint, max(ellipsisW+lipgloss.Width(helpHint)+1, m.chatWidth()-2)))
 }
 
 // footerHintItem creates a footerHint with display text and action.

@@ -105,6 +105,8 @@ Follow `code-reviewer.md` quality standard:
 - ✅ Edge case handling
 - ❌ Avoid generic descriptions like "analyze code" — specify how
 
+**🚫 NEVER use absolute paths** (e.g. `/home/user/...`, `/opt/...`) in agent definition files. Use relative paths, environment variables (`$HOME`, `$XBOT_SRC`), or let the agent discover paths at runtime. Absolute paths break portability across machines.
+
 ### Step 6: Verify
 
 List available agents to confirm:

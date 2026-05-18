@@ -141,9 +141,7 @@ func TestHardWrapRunes_CJKWrap(t *testing.T) {
 }
 
 func TestHardWrapRunes_CJKWithSpaces_NoWordWrap(t *testing.T) {
-	// "你好abc 你好abc" — space should NOT be a wrap point.
-	// 你(2)+好(2)+a(1)+b(1)+c(1)+ (1)+你(2) = 10 cols → fills exactly to width 10
-	// 好(2) would make 12 > 10 → wrap
+	// Pure hard-wrap: width=10, "你好abc 你好abc" (你2+好2+a1+b1+c1+空1+你2=10, 好2+a1+b1+c1=5)
 	input := "你好abc 你好abc"
 	got := hardWrapRunes(input, 10)
 	lines := splitLines(got)
@@ -152,21 +150,21 @@ func TestHardWrapRunes_CJKWithSpaces_NoWordWrap(t *testing.T) {
 	}
 	w1 := ansi.StringWidth(lines[0])
 	if w1 != 10 {
-		t.Errorf("line 1: expected width 10 (filled to boundary), got %d (%q)", w1, lines[0])
+		t.Errorf("line 1: expected width 10 (hard-filled), got %d (%q)", w1, lines[0])
 	}
-	// Space must stay on line 1 — no word-wrap at space
-	if ansi.StringWidth(lines[0]) < 10 && lines[0] == "你好abc" {
-		t.Errorf("line 1 wrapped at space (word-wrap), expected hard-wrap: %q", lines[0])
+	// Space stays on line 1, "你" at end of line 1
+	if lines[0] != "你好abc 你" {
+		t.Errorf("line 1: expected %q, got %q", "你好abc 你", lines[0])
 	}
 }
 
 func TestHardWrapRunes_CJKWithMultipleSpaces(t *testing.T) {
-	// "你好 世界 你好" = 2+2+1+2+1+1+2+2 = 13 cols
-	// width = 6: 你(2)+好(2)+ (1) = 5, 世(2) → 7>6 wrap
+	// Pure hard-wrap: width=6, "你好 世界 你好" (你2+好2+空1=5, 世2→7>6 → wrap after 你好 )
 	input := "你好 世界 你好"
 	got := hardWrapRunes(input, 6)
 	lines := splitLines(got)
 	w1 := ansi.StringWidth(lines[0])
+	// 你(2)+好(2)+空(1) = 5, 世(2) makes 7>6, so line 1 = "你好 " = width 5
 	if w1 != 5 {
 		t.Errorf("line 1: expected width 5, got %d (%q)", w1, lines[0])
 	}
@@ -200,7 +198,7 @@ func TestHardWrapRunes_DoubleWidthAtBoundary(t *testing.T) {
 
 func TestHardWrapRunes_CJKEnglishMix(t *testing.T) {
 	// "阿道夫·希特勒（Adolf Hitler）" mixed CJK + English.
-	// At width 10, should break at CJK boundaries, not mid-English-word.
+	// Pure hard-wrap at width 10 — breaks at exact column boundary.
 	input := "阿道夫·希特勒（Adolf Hitler）"
 	got := hardWrapRunes(input, 10)
 	lines := splitLines(got)
@@ -210,31 +208,81 @@ func TestHardWrapRunes_CJKEnglishMix(t *testing.T) {
 			t.Errorf("line %d: width %d exceeds 10: %q", i, w, line)
 		}
 	}
-	// Verify no English word is split across lines (e.g. "Adolf\nHitler")
+	// Verify no character loss
+	var recon []string
 	for _, line := range lines {
-		trimmed := strings.TrimRight(line, " ")
-		if strings.HasSuffix(trimmed, "Adol") || strings.HasSuffix(trimmed, "Hitle") {
-			t.Errorf("English word split across lines: %q", line)
-		}
+		recon = append(recon, ansi.Strip(line))
+	}
+	reconstructed := strings.Join(recon, "")
+	orig := ansi.Strip(input)
+	if orig != reconstructed {
+		t.Errorf("character loss: got %q, want %q", reconstructed, orig)
+	}
+}
+
+// TestHardWrapRunes_MultilineInput verifies that multi-line input (\n) is
+// handled correctly — each line is wrapped independently, and \n boundaries
+// are preserved. Previously the wrap loop treated \n as 0-width and continued
+// the column counter, causing bogus breaks like "1. C\nWD key".
+func TestHardWrapRunes_MultilineInput(t *testing.T) {
+	// Simulate AskUser question: first line fills width, then blank line,
+	// then numbered list that must not be broken mid-word.
+	line1 := "❓ " + strings.Repeat("a", 77) // 80 cols
+	line3 := "1. CWD key：master #67 用 SHA256(channel:chatID)"
+	input := line1 + "\n\n" + line3
+
+	got := hardWrapRunes(input, 80)
+	outputLines := splitLines(got)
+
+	// First line should be unchanged
+	if outputLines[0] != line1 {
+		t.Errorf("line 0: expected %q, got %q", line1, outputLines[0])
+	}
+	// Blank line preserved
+	if outputLines[1] != "" {
+		t.Errorf("line 1: expected blank, got %q", outputLines[1])
+	}
+	// "1. CWD key" must not be split — line3 is 49 cols, fits in 80
+	if outputLines[2] != line3 {
+		t.Errorf("line 2: expected %q, got %q", line3, outputLines[2])
+	}
+}
+
+// TestHardWrapRunes_MultilineWrapEachLine verifies that when BOTH lines
+// exceed maxW, each is wrapped independently at column boundaries.
+func TestHardWrapRunes_MultilineWrapEachLine(t *testing.T) {
+	input := strings.Repeat("a", 10) + "\n" + strings.Repeat("b", 10)
+	got := hardWrapRunes(input, 5)
+	lines := splitLines(got)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != "aaaaa" {
+		t.Errorf("line 0: expected \"aaaaa\", got %q", lines[0])
+	}
+	if lines[1] != "aaaaa" {
+		t.Errorf("line 1: expected \"aaaaa\", got %q", lines[1])
+	}
+	if lines[2] != "bbbbb" {
+		t.Errorf("line 2: expected \"bbbbb\", got %q", lines[2])
+	}
+	if lines[3] != "bbbbb" {
+		t.Errorf("line 3: expected \"bbbbb\", got %q", lines[3])
 	}
 }
 
 func TestHardWrapRunes_SpaceBreak(t *testing.T) {
-	// "hello world foo" at width 8 → break at space after "hello"
+	// Pure hard-wrap: "hello world foo" at width 8 → "hello wo" (8), "rld foo" (7)
 	got := hardWrapRunes("hello world foo", 8)
 	lines := splitLines(got)
 	if len(lines) < 2 {
 		t.Fatalf("expected >= 2 lines, got %d: %v", len(lines), lines)
 	}
-	// First line should be "hello " (break at space, space stays on line 1)
-	if !strings.HasPrefix(lines[0], "hello") {
-		t.Errorf("line 1: expected to start with 'hello', got %q", lines[0])
+	if lines[0] != "hello wo" {
+		t.Errorf("line 1: expected %q, got %q", "hello wo", lines[0])
 	}
-	// "world" should not be split
-	for _, line := range lines {
-		if strings.Contains(line, "wor") && !strings.Contains(line, "world") && !strings.Contains(line, "world ") {
-			t.Errorf("word 'world' was split: %q", line)
-		}
+	if lines[1] != "rld foo" {
+		t.Errorf("line 2: expected %q, got %q", "rld foo", lines[1])
 	}
 }
 
@@ -312,13 +360,10 @@ func TestHardWrapRunes_AnsiColorBreakOrder(t *testing.T) {
 	}
 }
 
-// TestHardWrapRunes_AnsiBreakBeforeRest verifies the fix for the streaming
-// character loss bug: when breaking at a breakable position inside styled text,
-// the continuation line must replay the ANSI state BEFORE rest text.
+// TestHardWrapRunes_AnsiBreakBeforeRest verifies that ANSI state is replayed
+// on continuation lines during pure hard-wrap.
 func TestHardWrapRunes_AnsiBreakBeforeRest(t *testing.T) {
-	// Styled text with a space as break point, followed by more styled text.
-	// The break should produce lines where the ANSI replay is at the START
-	// of the continuation line, not injected into the middle of text.
+	// Styled text with a reset, followed by plain text — pure hard-wrap at col 6.
 	input := "\x1b[36mABCDEF\x1b[0m GHIJKLMNOP"
 	got := hardWrapRunes(input, 6)
 	lines := strings.Split(got, "\n")
@@ -326,18 +371,15 @@ func TestHardWrapRunes_AnsiBreakBeforeRest(t *testing.T) {
 		t.Fatalf("expected >= 2 lines, got %d", len(lines))
 	}
 
-	// Line 0 should end the cyan region cleanly — no assertion needed,
-	// as missing reset is acceptable.
-	_ = lines[0]
-
-	// Line 1 should NOT have an escape injected between characters of a word.
-	// Before the fix, line 1 could be "G\x1b[0mHIJKL" with escape between G and H.
-	line1 := lines[1]
-	plain1 := ansi.Strip(line1)
-	// The plain text should be a contiguous substring of the original
+	// Verify no character loss
+	var recon []string
+	for _, line := range lines {
+		recon = append(recon, ansi.Strip(line))
+	}
+	reconstructed := strings.Join(recon, "")
 	orig := ansi.Strip(input)
-	if !strings.Contains(orig, plain1) {
-		t.Errorf("line 1 plain %q not found in original %q\nfull line: %q", plain1, orig, line1)
+	if orig != reconstructed {
+		t.Errorf("character loss: got %q, want %q", reconstructed, orig)
 	}
 }
 

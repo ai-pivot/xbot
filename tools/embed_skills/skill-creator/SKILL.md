@@ -107,7 +107,7 @@ Skill(name=my-skill, action=load, file=references/api-spec.md)
 **Body:**
 - Keep under 300 lines (auto-truncated beyond this)
 - Imperative form, concise — only include what the LLM doesn't already know
-- Relative paths for internal references (`scripts/run.sh`, not absolute paths)
+- **🚫 NEVER use absolute paths** (e.g. `/home/user/...`, `/opt/...`). Use relative paths for internal references (`scripts/run.sh`), environment variables (`$XBOT_SRC`, `$HOME`), or runtime discovery (`Skill(action=list_files)` to get paths). Absolute paths break portability across machines.
 
 **Scripts:**
 - Shebangs: `#!/usr/bin/env bash` or `#!/usr/bin/env python3`

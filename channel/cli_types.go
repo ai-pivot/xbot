@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"xbot/llm"
 	"xbot/plugin"
@@ -172,13 +171,22 @@ func truncateToWidth(s string, maxWidth int) string {
 
 // hardWrapRunes wraps a line at maxW columns, breaking at character boundaries.
 // ANSI escape sequences are preserved across wrapped segments.
+// Multi-line input (\n) is split first; each line is wrapped independently.
 // Returns the original line if it fits within maxW.
-//
-// Break rules:
-//   - Break after any space (space stays on current line, next line starts clean).
-//   - Break after any CJK character (CJK chars can wrap at any boundary).
-//   - Otherwise break at the exact column boundary.
 func hardWrapRunes(line string, maxW int) string {
+	if maxW <= 0 {
+		return line
+	}
+	inputLines := strings.Split(line, "\n")
+	var wrapped []string
+	for _, l := range inputLines {
+		wrapped = append(wrapped, hardWrapSingleLine(l, maxW))
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+// hardWrapSingleLine wraps a single line (no \n) at maxW columns.
+func hardWrapSingleLine(line string, maxW int) string {
 	if maxW <= 0 {
 		return line
 	}
@@ -189,21 +197,11 @@ func hardWrapRunes(line string, maxW int) string {
 	var buf strings.Builder
 	w := 0
 	inEscape := false
-	lastBreakable := -1 // byte offset in buf of last position where we can break after
 
 	// Track active ANSI state so we can replay it on continuation lines.
 	// We record all escape sequences since the last SGR reset (\x1b[0m).
 	var ansiState strings.Builder // accumulated SGR sequences since last reset
 	haveAnsiState := false
-
-	// Snapshot of ansiState at the lastBreakable position.
-	// When breaking at lastBreakable, rest already contains escape sequences
-	// that came after the break point. If we blindly replay the CURRENT
-	// ansiState (which accumulated more escapes since lastBreakable),
-	// we inject escape sequences into the middle of rest's text,
-	// corrupting the terminal output and causing visible "character loss".
-	var breakAnsiState string
-	breakHaveAnsi := false
 
 	for _, r := range line {
 		if r == '\x1b' {
@@ -235,48 +233,13 @@ func hardWrapRunes(line string, maxW int) string {
 			continue
 		}
 
-		// Mark breakable positions: after space or after CJK character
-		if r == ' ' || isCJK(r) {
-			lastBreakable = buf.Len() + utf8.RuneLen(r)
-			// Snapshot ANSI state at this breakable position so we can
-			// replay the correct state on the continuation line.
-			if haveAnsiState {
-				breakAnsiState = ansiState.String()
-			} else {
-				breakAnsiState = ""
-			}
-			breakHaveAnsi = haveAnsiState
-		}
-
 		if w+rw > maxW {
-			if lastBreakable > 0 && lastBreakable < buf.Len() {
-				// Break at last breakable position
-				keep := buf.String()[:lastBreakable]
-				rest := buf.String()[lastBreakable:]
-				lines = append(lines, keep)
-				buf.Reset()
-				// Replay ANSI state BEFORE rest so the continuation line
-				// inherits the correct color/style. Without this, the replay
-				// ends up AFTER rest's text, corrupting the terminal output
-				// (ANSI escape injected mid-word causes visible "character loss").
-				if breakHaveAnsi {
-					buf.WriteString(breakAnsiState)
-				}
-				buf.WriteString(rest)
-				w = lipgloss.Width(buf.String())
-				lastBreakable = -1
-			} else {
-				// No breakable position found, hard break here
-				lines = append(lines, buf.String())
-				buf.Reset()
-				w = 0
-				lastBreakable = -1
-				// For hard breaks, the current ansiState is correct —
-				// no escape sequences were accumulated between buf.String()
-				// and this point (the current rune hasn't been written yet).
-				if haveAnsiState {
-					buf.WriteString(ansiState.String())
-				}
+			// Hard break at column boundary
+			lines = append(lines, buf.String())
+			buf.Reset()
+			w = 0
+			if haveAnsiState {
+				buf.WriteString(ansiState.String())
 			}
 		}
 		buf.WriteRune(r)
@@ -360,12 +323,12 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		// Glamour handles table column sizing and paragraph wrapping.
-		// hardWrapRunes serves as a safety net for lines that still exceed
-		// viewport width (e.g. long URLs) but should not be the primary
-		// wrapping mechanism — it doesn't understand table structure and
-		// would break separator/alignment lines.
-		glamour.WithWordWrap(wrapWidth),
+		// Disable glamour's word-wrap — it breaks inline code (`build:sim-sdk:x86_64`
+		// gets split at `sim-\nsdk:`). Instead, hardWrapRunes wraps at exact column
+		// boundaries after glamour renders styles (colors, inline code bg, etc).
+		// Table structure is NOT affected: glamour still renders table markup,
+		// separator lines are plain ASCII that hardWrapRunes handles correctly.
+		glamour.WithWordWrap(0),
 	)
 	return r
 }
