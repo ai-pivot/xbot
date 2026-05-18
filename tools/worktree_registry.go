@@ -500,8 +500,15 @@ func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
 	}
 
 	// All sessions get a worktree — no primary concept.
-	branch := generateBranchName("peer", sessionKey, "")
-	branch = strings.ReplaceAll(branch, ":", "-") // sessionKey may contain ":"
+	// Use short session name (after last ":") to keep branch names readable.
+	shortName := sessionKey
+	if idx := strings.LastIndex(sessionKey, ":"); idx >= 0 {
+		shortName = sessionKey[idx+1:]
+	}
+	// Further shorten: strip common prefixes like "Agent-"
+	shortName = strings.TrimPrefix(shortName, "Agent-")
+	branch := fmt.Sprintf("wt/%s/%s", shortName, time.Now().Format("20060102-150405"))
+	branch = strings.ReplaceAll(branch, ":", "-")
 
 	// Serialize worktree creation
 	GlobalWorktreeRegistry.mu.Lock()
