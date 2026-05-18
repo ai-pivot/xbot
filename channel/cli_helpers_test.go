@@ -36,6 +36,7 @@ func TestCLISettingScope_KnownKeys(t *testing.T) {
 		"danger_zone":         "action",
 		"definitely_unknown":  "unknown",
 	}
+
 	for key, want := range cases {
 		if got := cliSettingScope(key); got != want {
 			t.Fatalf("cliSettingScope(%q) = %q, want %q", key, got, want)
@@ -1413,5 +1414,28 @@ func TestRemoveLastToolSummary_OnlyPreservesFirst(t *testing.T) {
 	}
 	if m.messages[3].role != "user" {
 		t.Errorf("last message should be user, got %q", m.messages[3].role)
+	}
+}
+
+// TestRemoveLastToolSummary_PriorTurnWithUserAfter verifies that a tool_summary
+// from a Ctrl+C-interrupted turn is NOT removed when there is a subsequent user
+// message (i.e. the tool_summary belongs to a prior turn, not the active one).
+// Regression: removeLastToolSummary unconditionally removed the last tool_summary,
+// causing interrupted iterations to disappear on session switch.
+func TestRemoveLastToolSummary_PriorTurnWithUserAfter(t *testing.T) {
+	m := newCLIModel()
+	m.messages = []cliMessage{
+		{role: "user", content: "check system info"},
+		{role: "tool_summary", content: ""}, // Ctrl+C interrupted turn — must be PRESERVED
+		{role: "user", content: "continue"}, // new user message after interrupt
+	}
+
+	m.removeLastToolSummary()
+
+	if len(m.messages) != 3 {
+		t.Fatalf("expected 3 messages (tool_summary preserved), got %d", len(m.messages))
+	}
+	if m.messages[1].role != "tool_summary" {
+		t.Error("Ctrl+C tool_summary should be preserved when a user message follows it")
 	}
 }

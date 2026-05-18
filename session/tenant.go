@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -217,23 +218,32 @@ func (s *TenantSession) GetCurrentDir() string {
 }
 
 // SetCurrentDir 设置当前工作目录（PWD 工具优化），并持久化到磁盘。
+// 按 channel:chatID 唯一标识持久化，同一用户的多个会话互不干扰。
 func (s *TenantSession) SetCurrentDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cwd = dir
 
 	// Persist CWD to disk so it survives server restarts.
-	// Write to ~/.xbot/session_cwd/{tenantID}.txt
+	// Keyed by session (channel:chatID) not tenantID — multiple sessions
+	// under the same user must have independent CWDs.
 	cwdDir := filepath.Join(config.XbotHome(), "session_cwd")
 	if err := os.MkdirAll(cwdDir, 0700); err == nil {
-		cwdFile := filepath.Join(cwdDir, fmt.Sprintf("%d.txt", s.tenantID))
+		cwdFile := filepath.Join(cwdDir, sessionCwdFileName(s.channel, s.chatID))
 		_ = os.WriteFile(cwdFile, []byte(dir), 0600)
 	}
 }
 
+// sessionCwdFileName returns a safe filename for the given session.
+// Uses SHA256 hash of "channel:chatID" to avoid filesystem-unsafe characters.
+func sessionCwdFileName(channel, chatID string) string {
+	h := sha256.Sum256([]byte(channel + ":" + chatID))
+	return fmt.Sprintf("%x.txt", h[:16])
+}
+
 // loadPersistedCWD tries to restore CWD from disk after a restart.
-func loadPersistedCWD(tenantID int64) string {
-	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", fmt.Sprintf("%d.txt", tenantID))
+func loadPersistedCWD(channel, chatID string) string {
+	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", sessionCwdFileName(channel, chatID))
 	data, err := os.ReadFile(cwdFile)
 	if err != nil {
 		return ""

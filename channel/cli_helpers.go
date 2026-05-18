@@ -218,10 +218,21 @@ func (m *cliModel) removeLastToolSummary() {
 			break
 		}
 	}
-	if lastIdx >= 0 {
-		m.messages = append(m.messages[:lastIdx], m.messages[lastIdx+1:]...)
-		m.renderCacheValid = false
+	if lastIdx < 0 {
+		return
 	}
+	// Guard: only remove if the tool_summary belongs to the current active turn.
+	// If there is a user message AFTER the last tool_summary, the tool_summary
+	// belongs to a previous turn (e.g. a Ctrl+C interrupted turn) and must be
+	// preserved — removing it would erase iteration history that the active
+	// progress block does NOT replace.
+	for i := lastIdx + 1; i < len(m.messages); i++ {
+		if m.messages[i].role == "user" {
+			return // tool_summary belongs to a prior turn — do not remove
+		}
+	}
+	m.messages = append(m.messages[:lastIdx], m.messages[lastIdx+1:]...)
+	m.renderCacheValid = false
 }
 
 // endAgentTurn resets all agent-turn tracking state and returns to idle.
