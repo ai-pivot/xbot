@@ -63,45 +63,25 @@ func TestDrainRemainingBgNotifications_Synchronous(t *testing.T) {
 	}
 
 	// Use Start() to create a task with proper sessionKey.
-	// The execFn blocks until we close doneCh, so we control completion timing.
-	doneCh := make(chan struct{})
-	task := mgr.Start("cli:test-chat", "user-1", "echo hello", func(ctx context.Context, outputBuf func(string)) (int, error) {
+	// execFn completes immediately so the notification is sent to NotifyCh.
+	_ = mgr.Start("cli:test-chat", "user-1", "echo hello", func(ctx context.Context, outputBuf func(string)) (int, error) {
 		outputBuf("hello output")
-		<-doneCh // block until test signals completion
 		return 0, nil
 	})
 
-	// Wait for the task to complete (triggered by closing doneCh)
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		close(doneCh)
-	}()
-
-	// Wait for the task to be done
-	timeout := time.After(5 * time.Second)
-	for {
-		bgTask, _ := mgr.Status(task.ID)
-		if bgTask.Status == tools.BgTaskDone {
-			break
-		}
-		select {
-		case <-timeout:
-			t.Fatal("timed out waiting for task to complete")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	// The notification was sent to NotifyCh by the task goroutine.
-	// Read it from NotifyCh and buffer it (simulating bgNotifyLoop behavior).
+	// Wait for the notification from NotifyCh — this is the synchronization
+	// point that guarantees all task fields are fully written (no data race).
+	var notif tools.BgNotification
 	select {
-	case notif := <-mgr.NotifyCh:
-		a.bgRunPendingMu.Lock()
-		a.bgRunPending = append(a.bgRunPending, notif)
-		a.bgRunPendingMu.Unlock()
-	case <-time.After(2 * time.Second):
+	case notif = <-mgr.NotifyCh:
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for notification from NotifyCh")
 	}
+
+	// Buffer the notification (as bgNotifyLoop would do)
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, notif)
+	a.bgRunPendingMu.Unlock()
 
 	// Drain should process synchronously — by the time drain returns,
 	// the notification should already be in bus.Inbound
@@ -150,42 +130,23 @@ func TestDrainBeforeBgRunActiveClears(t *testing.T) {
 	// Simulate: Run is active, notification is buffered
 	atomic.StoreInt32(&a.bgRunActive, 1)
 
-	doneCh := make(chan struct{})
-	task := mgr.Start("cli:test-chat-2", "user-1", "long-task", func(ctx context.Context, outputBuf func(string)) (int, error) {
+	_ = mgr.Start("cli:test-chat-2", "user-1", "long-task", func(ctx context.Context, outputBuf func(string)) (int, error) {
 		outputBuf("task output")
-		<-doneCh
 		return 0, nil
 	})
 
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		close(doneCh)
-	}()
-
-	// Wait for task completion
-	timeout := time.After(5 * time.Second)
-	for {
-		bgTask, _ := mgr.Status(task.ID)
-		if bgTask.Status == tools.BgTaskDone {
-			break
-		}
-		select {
-		case <-timeout:
-			t.Fatal("timed out waiting for task to complete")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	// Read notification from NotifyCh and buffer it
+	// Wait for notification from NotifyCh (synchronization point — no race)
+	var notif tools.BgNotification
 	select {
-	case notif := <-mgr.NotifyCh:
-		a.bgRunPendingMu.Lock()
-		a.bgRunPending = append(a.bgRunPending, notif)
-		a.bgRunPendingMu.Unlock()
-	case <-time.After(2 * time.Second):
+	case notif = <-mgr.NotifyCh:
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for notification from NotifyCh")
 	}
+
+	// Buffer the notification (as bgNotifyLoop would do while bgRunActive==1)
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, notif)
+	a.bgRunPendingMu.Unlock()
 
 	// First drain (before bgRunActive=0) — should process synchronously
 	a.drainRemainingBgNotifications()
