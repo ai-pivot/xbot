@@ -2303,8 +2303,14 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	if autoWorktree {
 		// Every session gets its own git worktree — all agents are equal peers.
-		if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-			tenantSession.SetCurrentDir(entry.WorktreeDir)
+		// Only switch CWD when the session is not already inside a worktree.
+		// Once the session has a worktree CWD, the user may cd within it and
+		// we must not reset their location on every iteration.
+		existingCWD := tenantSession.GetCurrentDir()
+		if !strings.Contains(existingCWD, ".xbot-worktrees") {
+			if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+				tenantSession.SetCurrentDir(entry.WorktreeDir)
+			}
 		}
 	} else {
 		// Peer awareness without file isolation: register session in-memory only.
