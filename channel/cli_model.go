@@ -924,7 +924,8 @@ type cliModel struct {
 	panelBgCursor  int               // selected item index (tasks first, then agents)
 	panelBgViewing bool              // true = viewing log of selected task
 
-	panelBgLogLines []string // cached log lines for viewing
+	panelBgLogLines  []string // cached log lines for viewing
+	panelBgLogFollow bool     // auto-scroll to bottom on new output (follow-tail)
 
 	// --- Sessions Panel ---
 	panelSessionItems         []SessionPanelEntry // cached session list
