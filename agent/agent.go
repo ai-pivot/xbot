@@ -237,6 +237,9 @@ type Agent struct {
 	// SubAgent 深度控制
 	maxSubAgentDepth int
 
+	// autoWorktree enables automatic git worktree creation for peer sessions.
+	autoWorktree bool
+
 	// Cron service and scheduler
 	cronSvc *sqlite.CronService
 	cronSch *cron.Scheduler
@@ -684,6 +687,10 @@ type Config struct {
 	PluginDirs            []string // Additional plugin directories
 	PluginDisabledPlugins []string // Plugin IDs to disable
 
+	// AutoWorktree enables automatic git worktree creation when multiple
+	// sessions share the same repo. Set from config.Agent.Experimental.AutoWorktree.
+	AutoWorktree bool
+
 	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
 	CLISenderID string
 }
@@ -1017,6 +1024,7 @@ func New(cfg Config) (*Agent, error) {
 		directWorkspace:    cfg.DirectWorkspace,
 		globalSkillDirs:    resolveGlobalSkillsDirs(cfg.SkillsDir),
 		maxSubAgentDepth:   cfg.MaxSubAgentDepth,
+		autoWorktree:       cfg.AutoWorktree,
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
@@ -2285,6 +2293,26 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// When auto_worktree is enabled, AutoDetectAndInit handles worktree creation.
 	// When disabled, RegisterPeer provides lightweight session tracking.
 	tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
+
+	// When auto_worktree is enabled, attempt automatic worktree isolation.
+	// AutoDetectAndInit creates a worktree for this session if another session
+	// is already primary in the same repo. It also updates the session CWD
+	// so all subsequent tool operations use the isolated worktree path.
+	// Read from user_settings dynamically so runtime changes take effect immediately.
+	autoWorktree := a.autoWorktree // fallback from startup config
+	if a.settingsSvc != nil {
+		if vals, err := a.settingsSvc.GetSettings(msg.Channel, msg.SenderID); err == nil {
+			if v, ok := vals["auto_worktree"]; ok {
+				autoWorktree = strings.EqualFold(v, "true") || v == "1"
+			}
+		}
+	}
+	if autoWorktree {
+		if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+			// Switch session CWD to the worktree so tools operate in isolation.
+			tenantSession.SetCurrentDir(entry.WorktreeDir)
+		}
+	}
 
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.

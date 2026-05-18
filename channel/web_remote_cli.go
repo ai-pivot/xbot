@@ -243,6 +243,7 @@ func (c *RemoteCLIChannel) Send(msg OutboundMsg) (string, error) {
 		ProgressHistory: msg.Metadata["progress_history"],
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
+		Metadata:        msg.Metadata,
 	}
 
 	if !c.hub.sendToClient(targetClientID, wsMsg) {

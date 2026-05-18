@@ -65,11 +65,12 @@ type SessionStateSender interface {
 
 func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
 	wsMsg := protocol.WSMessage{
-		Type:    protocol.MsgTypeText,
-		TS:      time.Now().Unix(),
-		Content: msg.Content,
-		ChatID:  msg.ChatID,
-		Channel: msg.Channel,
+		Type:     protocol.MsgTypeText,
+		TS:       time.Now().Unix(),
+		Content:  msg.Content,
+		ChatID:   msg.ChatID,
+		Channel:  msg.Channel,
+		Metadata: msg.Metadata,
 	}
 	select {
 	case c.eventCh <- wsMsg:

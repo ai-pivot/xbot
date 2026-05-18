@@ -433,6 +433,7 @@ func (wc *WebChannel) Send(msg OutboundMsg) (string, error) {
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
 		SessionReset:    msg.Metadata != nil && msg.Metadata["session_reset"] == "true",
+		Metadata:        msg.Metadata,
 	}
 
 	targetClientID := msg.ChatID

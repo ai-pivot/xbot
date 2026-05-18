@@ -83,6 +83,15 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	},
 	"tavily_api_key": {}, // Stored in user_settings; WebSearchTool reads dynamically
 
+	"auto_worktree": {
+		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
+			if ag == nil {
+				return
+			}
+			ag.autoWorktree = channel.ParseSettingBool(value)
+		},
+	},
+
 	// --- Runtime state settings (config + agent side-effects) ---
 	"context_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.ContextMode = value },
