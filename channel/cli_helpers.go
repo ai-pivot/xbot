@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"xbot/protocol"
+	"xbot/tools"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -1803,6 +1804,9 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 						return nil
 					}
 				}
+				// Clean up worktree / peer registration for closed session.
+				sessionKey := "cli:" + entry.ID
+				tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
 				sc.result <- &cliSessionResult{ok: true}
 				return nil
 			}

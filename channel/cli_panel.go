@@ -14,6 +14,7 @@ import (
 	"xbot/internal/textarea"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/tools"
 )
 
 // --- §12 Interactive Panel ---
@@ -3530,6 +3531,9 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 			log.WithError(err).WithField("chatID", entry.ID).Warn("Local session remove failed")
 		}
 	}
+	// 3. Clean up worktree / peer registration for this session.
+	sessionKey := "cli:" + entry.ID
+	tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
 	// If we deleted the active session, switch to default
 	if entry.Active {
 		m.saveCurrentSession()
