@@ -1043,7 +1043,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
 			trimmed := strings.TrimSpace(content)
 			if msgChannel != "cli" && (len(trimmed) <= 1 || trimmed[0] != '!') {
-				if err := eagerSaveUserMsg(wc.db, msgSenderID, content); err != nil {
+				if err := eagerSaveUserMsg(wc.db, msgChatID, content); err != nil {
 					log.WithError(err).Warn("Failed to eager-save user message")
 				}
 				metadata["user_msg_eager_saved"] = "true"
