@@ -2129,10 +2129,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		}
 
-		// Main content — trim trailing newlines so cursor stays inline
+		// Main content — trim trailing newlines so cursor stays inline.
+		// Wrap each line to contentWidth (= cw-4) so guide(2) + body(cw-4) = cw-2,
+		// leaving 2 cols right padding aligned with user msg "You" position.
 		trimmed := strings.TrimRight(displayContent, "\n")
 		if trimmed != "" {
-			bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
+			for _, l := range strings.Split(trimmed, "\n") {
+				bodyLines = append(bodyLines, strings.Split(hardWrapRunes(l, contentWidth), "\n")...)
+			}
 		}
 
 		// Streaming cursor
@@ -2143,9 +2147,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		}
 
-		// Render all body lines with guide prefix
+		// Render all body lines with guide prefix.
+		// Reset ANSI state after guide to prevent inline code background color
+		// from bleeding into the guide prefix (┊ gets colored by glamour's bg).
+		// Right-align: body content width = contentWidth (same as user msg "You"),
+		// so guide(2) + body(cw-4) leaves 2 cols right padding.
+		const ansiReset = "\x1b[0m"
 		for _, l := range bodyLines {
-			sb.WriteString(guideSt.Render(guideSym))
+			sb.WriteString(guideSt.Render(guideSym) + ansiReset)
 			sb.WriteString(l)
 			sb.WriteString("\n")
 		}
