@@ -264,7 +264,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const handleOpenThread = useCallback((msg: Message) => {
     setThreadParentMsg(msg)
     setThreadOpen(true)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleSendThreadReply = useCallback((parentId: string, content: string) => {
@@ -409,7 +408,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       }
     }
     prevMessageCountRef.current = currentCount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length, playSound, addNotification])
 
   // --- Desktop notification on new assistant message when backgrounded (original logic) ---

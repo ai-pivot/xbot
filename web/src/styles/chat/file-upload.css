@@ -62,13 +62,6 @@
   color: #ef4444;
 }
 
-/* Drag active state */
-.drag-active .tiptap-wrapper {
-  border-color: var(--xbot-accent-blue) !important;
-  border-style: dashed !important;
-  background: rgba(59, 130, 246, 0.05);
-}
-
 /* ---- Light theme overrides ---- */
 [data-theme="light"] .file-upload-btn {
   background: #e2e8f0;
@@ -82,11 +75,6 @@
   background: #e2e8f0;
   color: #334155;
   border-color: #cbd5e1;
-}
-
-[data-theme="light"] .drag-active .tiptap-wrapper {
-  border-color: #2563eb;
-  background: rgba(37, 99, 235, 0.05);
 }
 
 /* ========================================================================== */
@@ -115,19 +103,6 @@
   border: 1px solid var(--xbot-border-light);
   font-size: 13px;
   transition: background 0.15s;
-}
-
-.upload-queue-item--uploading {
-  border-color: var(--xbot-accent-blue);
-}
-
-.upload-queue-item--done {
-  opacity: 0.6;
-}
-
-.upload-queue-item--error {
-  border-color: #ef4444;
-  background: rgba(239, 68, 68, 0.06);
 }
 
 .upload-queue-icon {
@@ -177,14 +152,6 @@
   flex-shrink: 0;
   min-width: 40px;
   text-align: right;
-}
-
-.upload-queue-status--done {
-  color: #22c55e;
-}
-
-.upload-queue-status--error {
-  color: #ef4444;
 }
 
 .upload-queue-actions {
@@ -241,15 +208,6 @@
 [data-theme="light"] .upload-queue-item {
   background: #ffffff;
   border-color: #e2e8f0;
-}
-
-[data-theme="light"] .upload-queue-item--uploading {
-  border-color: #2563eb;
-}
-
-[data-theme="light"] .upload-queue-item--error {
-  border-color: #ef4444;
-  background: rgba(239, 68, 68, 0.04);
 }
 
 [data-theme="light"] .upload-queue-progress-track {

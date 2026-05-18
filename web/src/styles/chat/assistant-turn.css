@@ -77,18 +77,6 @@
   padding: 12px 16px;
 }
 
-.assistant-turn-live-phase {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--xbot-border);
-}
-
-.assistant-turn-loading {
-  padding: 12px 16px;
-}
-
 /* Streaming indicator — merged from 2 definitions */
 .assistant-turn-streaming-indicator {
   display: flex;
@@ -144,10 +132,6 @@
 
 [data-theme="light"] .assistant-turn-section-header:hover {
   background: rgba(241, 245, 249, 0.8);
-}
-
-[data-theme="light"] .assistant-turn-live-phase {
-  border-bottom-color: var(--xbot-text-primary);
 }
 
 [data-theme="light"] .assistant-turn-cursor {
