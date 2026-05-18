@@ -12,10 +12,8 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useNetworkStatus } from './hooks/useNetworkStatus'
 import type { TiptapEditorHandle } from './components/TiptapEditor'
 import type { PresetCommand, Message, Turn, ThreadMessage } from './types'
-import { useTabManager } from './hooks/useTabManager'
 import { useNotification } from './hooks/useNotification'
 import ReplyPreview from './components/ReplyPreview'
-import TabBar from './components/TabBar'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
 import type { WsSubAgent } from './components/ProgressPanel'
 import { TodoBar } from './components/TodoBar'
@@ -245,6 +243,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false)
   const [currentChatID, setCurrentChatID] = useState<string>('')
+  const currentChatIDRef = useRef(currentChatID)
+  // Keep ref in sync with state
+  currentChatIDRef.current = currentChatID
   const [replyingTo, setReplyingTo] = useState<{ id: string; content: string; type: 'user' | 'assistant' } | null>(null)
   const [contextInfo, setContextInfo] = useState<{ prompt_tokens: number; max_tokens: number; usage_pct: number; source: string } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -442,15 +443,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       .then((r) => r.json())
       .then((data) => {
         if (loadHistoryIdRef.current !== currentId) return // race protection: discard stale response
-        // Debug: log raw messages to diagnose assistant message visibility issues
-        if (data.ok && data.messages) {
-          const assistantMsgs = data.messages.filter((m: { role: string }) => m.role === 'assistant')
-          console.log('[loadHistory] total:', data.messages.length, 'assistant:', assistantMsgs.length,
-            'processing:', data.processing,
-            assistantMsgs.map((m: { id: number; content?: string; tool_calls?: string; detail?: string }) => ({
-              id: m.id, hasContent: !!(m.content && m.content.trim()), hasToolCalls: !!m.tool_calls, hasDetail: !!m.detail
-            })))
-        }
         if (data.ok && data.messages) {
           const hist: Message[] = data.messages
             .filter((m: { role: string; content?: string; tool_calls?: string; detail?: string; display_only?: number }) => {
@@ -547,30 +539,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     loadHistory()
   }, [loadHistory])
 
-  // --- Tab manager for multi-session tabs ---
-  const handleTabSwitch = useCallback((chatId: string) => {
-    setCurrentChatID(chatId)
-    setMessages([])
-    resetProgress()
-    setTodos([])
-    setSubAgents([])
-    setLoading(false)
-    streamingContentRef.current = ''
-    reasoningRef.current = ''
-    loadHistory()
-  }, [loadHistory, resetProgress])
-
-  const handleTabNew = useCallback(() => {
-    setMessages([])
-    resetProgress()
-    setTodos([])
-    setSubAgents([])
-    setLoading(false)
-    setContextInfo(null)
-  }, [resetProgress])
-
-  const tabManager = useTabManager(handleTabSwitch, handleTabNew)
-
   // --- Send message ---
   const handleSend = useCallback((content: string) => {
     // Slash commands
@@ -625,9 +593,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setLoading(true)
     setAutoScroll(true)
 
-    const payload: { type: string; content: string; file_ids?: string[]; file_names?: string[]; file_sizes?: number[]; upload_keys?: string[]; file_mimes?: string[] } = {
+    const payload: { type: string; content: string; channel?: string; chat_id?: string; file_ids?: string[]; file_names?: string[]; file_sizes?: number[]; upload_keys?: string[]; file_mimes?: string[] } = {
       type: 'message',
       content,
+      channel: 'web',
+      chat_id: currentChatIDRef.current || undefined,
     }
     if (pendingFiles.length > 0) {
       // Separate local files from OSS files
@@ -1001,15 +971,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         </div>
       </header>
 
-      {/* Tab bar */}
-      <TabBar
-        tabs={tabManager.tabs}
-        activeTabId={tabManager.activeTabId}
-        onTabClick={tabManager.switchTab}
-        onTabClose={tabManager.closeTab}
-        onReorder={tabManager.reorderTabs}
-      />
-
       {/* Command palette (replaces SearchPanel) */}
       <Suspense fallback={null}>
         <CommandPalette
@@ -1053,7 +1014,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             setLoading(false)
             streamingContentRef.current = ''
             reasoningRef.current = ''
-            tabManager.openTab(chatID, '')
             loadHistory()
           }}
           onNewChat={() => {

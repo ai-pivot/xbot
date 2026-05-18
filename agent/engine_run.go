@@ -1250,14 +1250,10 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		return s.buildOutput(outMsg)
 	}
 
-	// --- Final persistence for text-only replies (no tool calls) ---
-	// IncrementalPersist is called inside the tool-call loop, but pure text
-	// replies (no tool calls) exit the loop without persisting the assistant message.
-	// This ensures every completed turn is persisted regardless of response type.
-	s.persistence.IncrementalPersist(s.messages)
-
 	return nil
 }
+
+// injectBgTaskNotification injects a bg task completion as a synthetic tool call/result pair.
 func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, bgTask *tools.BackgroundTask) {
 	bgContent := tools.FormatBgTaskCompletion(bgTask, "")
 	bgAssistantMsg := llm.ChatMessage{

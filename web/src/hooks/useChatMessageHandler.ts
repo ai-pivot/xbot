@@ -48,7 +48,7 @@ function handleProgressStructured(
   reasoningRef: React.MutableRefObject<string>,
   setLiveIterationsSync: (updater: IterationSnapshot[] | ((prev: IterationSnapshot[]) => IterationSnapshot[])) => void,
   setProgress: React.Dispatch<React.SetStateAction<WsProgressPayload | null>>,
-  setLoading: React.Dispatch<React.SetStateAction<boolean>>,
+  _setLoading: React.Dispatch<React.SetStateAction<boolean>>,
   setTodos: React.Dispatch<React.SetStateAction<{ id: number; text: string; done: boolean }[]>>,
   setSubAgents: React.Dispatch<React.SetStateAction<WsSubAgent[]>>,
 ) {
@@ -131,9 +131,10 @@ function handleProgressStructured(
     setSubAgents(p.sub_agents)
   }
 
-  // Only keep loading if already active — don't activate from replayed events.
-  // Loading is activated by handleSend/loadHistory(processing=true), deactivated by handleTextCard.
-  setLoading(prev => prev)}
+  // Loading state is managed by: handleSend (set true), loadHistory (set true if processing, false if idle), handleTextCard (set false).
+  // WS progress/stream events should NOT alter loading state — prevents stale replayed events from incorrectly entering typing state.
+  // setLoading intentionally not called here.
+}
 
 function handleStreamContent(
   data: WebSocketMessage,
@@ -143,7 +144,7 @@ function handleStreamContent(
   streamingContentRef: React.MutableRefObject<string>,
   setProgress: React.Dispatch<React.SetStateAction<WsProgressPayload | null>>,
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
-  setLoading: React.Dispatch<React.SetStateAction<boolean>>,
+  _setLoading: React.Dispatch<React.SetStateAction<boolean>>,
 ) {
   const reasoning = (data.progress as Record<string, string>)?.reasoning_stream_content || ''
   const content = (data.progress as Record<string, string>)?.stream_content || ''
@@ -184,9 +185,10 @@ function handleStreamContent(
     })
   }
 
-  // Only keep loading if already active — don't activate from replayed events.
-  // Loading is activated by handleSend/loadHistory(processing=true), deactivated by handleTextCard.
-  setLoading(prev => prev)}
+  // Loading state is managed by: handleSend (set true), loadHistory (set true if processing, false if idle), handleTextCard (set false).
+  // WS progress/stream events should NOT alter loading state — prevents stale replayed events from incorrectly entering typing state.
+  // setLoading intentionally not called here.
+}
 
 function handleTextCard(
   data: WebSocketMessage,

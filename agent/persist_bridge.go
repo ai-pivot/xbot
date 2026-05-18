@@ -31,18 +31,12 @@ func NewPersistenceBridge(sess *session.TenantSession, initialCount int) *Persis
 // Updates lastPersistedCount on success.
 // Returns nil if session is nil or all messages already persisted.
 func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error {
-	if b.session == nil {
-		log.WithField("msg_count", len(messages)).Warn("[persist-bridge] session is nil, skipping IncrementalPersist")
+	if b.session == nil || len(messages) <= b.lastPersistedCount {
 		return nil
 	}
-	if len(messages) <= b.lastPersistedCount {
-		return nil
-	}
-	newCount := len(messages) - b.lastPersistedCount
 	persistOk := true
 	for _, msg := range messages[b.lastPersistedCount:] {
 		if msg.Role == "system" {
-			newCount--
 			continue
 		}
 		persistMsg := msg
@@ -50,22 +44,13 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 			persistMsg.Content = stripSystemReminder(persistMsg.Content)
 		}
 		if err := b.session.AddMessage(persistMsg); err != nil {
-			log.WithError(err).WithFields(log.Fields{
-				"role":   msg.Role,
-				"tenant": b.session.TenantID(),
-			}).Error("Failed to persist message to session")
+			log.WithError(err).Error("Failed to persist message to session")
 			persistOk = false
 			break
 		}
 	}
 	if persistOk {
 		b.lastPersistedCount = len(messages)
-		log.WithFields(log.Fields{
-			"new":       newCount,
-			"total":     len(messages),
-			"persisted": b.lastPersistedCount,
-			"tenant_id": b.session.TenantID(),
-		}).Debug("[persist-bridge] IncrementalPersist OK")
 	}
 	return nil
 }
