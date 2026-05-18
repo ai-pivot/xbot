@@ -602,6 +602,13 @@ func (c *CLIChannel) CurrentChatID() string {
 	return ""
 }
 
+// BgSessionKey returns the current background task session key.
+// This is dynamically read so that closures capturing it always use the latest value
+// after session switches (which update c.bgSessionKey via cli_panel.go).
+func (c *CLIChannel) BgSessionKey() string {
+	return c.bgSessionKey
+}
+
 // SyncPluginWidgetChatID updates the remote plugin cache's chatID after Cd
 // so that refreshWidgets() RPC fetches widgets for the correct session.
 func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
