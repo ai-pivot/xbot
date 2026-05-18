@@ -171,8 +171,22 @@ func truncateToWidth(s string, maxWidth int) string {
 
 // hardWrapRunes wraps a line at maxW columns, breaking at character boundaries.
 // ANSI escape sequences are preserved across wrapped segments.
+// Multi-line input (\n) is split first; each line is wrapped independently.
 // Returns the original line if it fits within maxW.
 func hardWrapRunes(line string, maxW int) string {
+	if maxW <= 0 {
+		return line
+	}
+	inputLines := strings.Split(line, "\n")
+	var wrapped []string
+	for _, l := range inputLines {
+		wrapped = append(wrapped, hardWrapSingleLine(l, maxW))
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+// hardWrapSingleLine wraps a single line (no \n) at maxW columns.
+func hardWrapSingleLine(line string, maxW int) string {
 	if maxW <= 0 {
 		return line
 	}

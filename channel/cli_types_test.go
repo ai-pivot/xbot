@@ -220,6 +220,57 @@ func TestHardWrapRunes_CJKEnglishMix(t *testing.T) {
 	}
 }
 
+// TestHardWrapRunes_MultilineInput verifies that multi-line input (\n) is
+// handled correctly — each line is wrapped independently, and \n boundaries
+// are preserved. Previously the wrap loop treated \n as 0-width and continued
+// the column counter, causing bogus breaks like "1. C\nWD key".
+func TestHardWrapRunes_MultilineInput(t *testing.T) {
+	// Simulate AskUser question: first line fills width, then blank line,
+	// then numbered list that must not be broken mid-word.
+	line1 := "❓ " + strings.Repeat("a", 77) // 80 cols
+	line3 := "1. CWD key：master #67 用 SHA256(channel:chatID)"
+	input := line1 + "\n\n" + line3
+
+	got := hardWrapRunes(input, 80)
+	outputLines := splitLines(got)
+
+	// First line should be unchanged
+	if outputLines[0] != line1 {
+		t.Errorf("line 0: expected %q, got %q", line1, outputLines[0])
+	}
+	// Blank line preserved
+	if outputLines[1] != "" {
+		t.Errorf("line 1: expected blank, got %q", outputLines[1])
+	}
+	// "1. CWD key" must not be split — line3 is 49 cols, fits in 80
+	if outputLines[2] != line3 {
+		t.Errorf("line 2: expected %q, got %q", line3, outputLines[2])
+	}
+}
+
+// TestHardWrapRunes_MultilineWrapEachLine verifies that when BOTH lines
+// exceed maxW, each is wrapped independently at column boundaries.
+func TestHardWrapRunes_MultilineWrapEachLine(t *testing.T) {
+	input := strings.Repeat("a", 10) + "\n" + strings.Repeat("b", 10)
+	got := hardWrapRunes(input, 5)
+	lines := splitLines(got)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != "aaaaa" {
+		t.Errorf("line 0: expected \"aaaaa\", got %q", lines[0])
+	}
+	if lines[1] != "aaaaa" {
+		t.Errorf("line 1: expected \"aaaaa\", got %q", lines[1])
+	}
+	if lines[2] != "bbbbb" {
+		t.Errorf("line 2: expected \"bbbbb\", got %q", lines[2])
+	}
+	if lines[3] != "bbbbb" {
+		t.Errorf("line 3: expected \"bbbbb\", got %q", lines[3])
+	}
+}
+
 func TestHardWrapRunes_SpaceBreak(t *testing.T) {
 	// Pure hard-wrap: "hello world foo" at width 8 → "hello wo" (8), "rld foo" (7)
 	got := hardWrapRunes("hello world foo", 8)
