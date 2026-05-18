@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -43,16 +44,16 @@ func TestIsWorkDirPath(t *testing.T) {
 func TestParseChatID_Unix(t *testing.T) {
 	tests := []struct {
 		chatID      string
-		wantWorkDir string
+		wantWorkDir string // empty = skip workDir check (OS-dependent resolution)
 		wantSession string
 	}{
 		// No session name → default
 		{"/home/user/project", "/home/user/project", "default"},
-		// With session name
-		{"/home/user/project:Agent-brave-fox", "/home/user/project", "Agent-brave-fox"},
-		{"/home/user/project:my-session", "/home/user/project", "my-session"},
-		// Tilde
-		{"~/project:my-session", "", "my-session"}, // workDir gets resolved by filepath.Abs
+		// With session name — workDir is OS-dependent after filepath.Abs
+		{"/home/user/project:Agent-brave-fox", "", "Agent-brave-fox"},
+		{"/home/user/project:my-session", "", "my-session"},
+		// Tilde — workDir gets resolved by filepath.Abs
+		{"~/project:my-session", "", "my-session"},
 		// No colon at all
 		{"/tmp", "/tmp", "default"},
 	}
@@ -60,8 +61,17 @@ func TestParseChatID_Unix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.chatID, func(t *testing.T) {
 			workDir, sessionName := ParseChatID(tt.chatID)
-			if tt.wantWorkDir != "" && workDir != tt.wantWorkDir {
-				t.Errorf("workDir = %q, want %q", workDir, tt.wantWorkDir)
+			if tt.wantWorkDir != "" {
+				// Resolve expected workDir the same way ParseChatID does
+				expected := tt.wantWorkDir
+				if !filepath.IsAbs(expected) {
+					if abs, err := filepath.Abs(expected); err == nil {
+						expected = abs
+					}
+				}
+				if workDir != expected {
+					t.Errorf("workDir = %q, want %q", workDir, expected)
+				}
 			}
 			if sessionName != tt.wantSession {
 				t.Errorf("sessionName = %q, want %q", sessionName, tt.wantSession)
@@ -177,8 +187,14 @@ func TestParseChatID_UnixRoundTrip(t *testing.T) {
 	}
 
 	gotWorkDir, gotSession := ParseChatID(chatID)
-	if gotWorkDir != workDir {
-		t.Errorf("round-trip workDir = %q, want %q", gotWorkDir, workDir)
+	// On Windows, filepath.Abs resolves Unix-style paths to Windows paths.
+	// Use filepath.Abs to compute the expected workDir for cross-platform compat.
+	expectedWorkDir := workDir
+	if abs, err := filepath.Abs(workDir); err == nil {
+		expectedWorkDir = abs
+	}
+	if gotWorkDir != expectedWorkDir {
+		t.Errorf("round-trip workDir = %q, want %q", gotWorkDir, expectedWorkDir)
 	}
 	if gotSession != sessionName {
 		t.Errorf("round-trip sessionName = %q, want %q", gotSession, sessionName)
