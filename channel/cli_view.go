@@ -654,10 +654,27 @@ func (m *cliModel) renderSidebarActive(w int) string {
 			b.WriteString(m.styles.SidebarItem.Render(fmt.Sprintf("  bg tasks: %d", m.bgTaskCount)))
 			sidebarBgTaskLines = append(sidebarBgTaskLines, -1)
 		} else {
+			s := &m.styles
 			for i, task := range tasks {
 				b.WriteByte('\n')
-				// Layout: " <command>" padded to width w
-				maxCmdW := w - 2 // 2 for leading "  "
+				// Status icon: ● running, ✓ done, ✗ error/killed
+				icon, iconStyle := "●", s.ProgressRunning
+				switch task.Status {
+				case BgTaskDone:
+					if task.Error != "" || task.ExitCode != 0 {
+						icon, iconStyle = "✗", s.ProgressError
+					} else {
+						icon, iconStyle = "✓", s.ProgressDone
+					}
+				case BgTaskKilled:
+					icon, iconStyle = "✗", s.ProgressError
+				case BgTaskError:
+					icon, iconStyle = "✗", s.ProgressError
+				}
+				// Layout: " <icon> <command>" padded to width w
+				iconRendered := iconStyle.Render(icon)
+				iconW := lipgloss.Width(iconRendered)
+				maxCmdW := w - 2 - iconW - 1 // 2 for leading spaces, 1 for space after icon
 				if maxCmdW < 5 {
 					maxCmdW = 5
 				}
@@ -665,7 +682,7 @@ func (m *cliModel) renderSidebarActive(w int) string {
 				if lipgloss.Width(cmd) > maxCmdW {
 					cmd = truncateToWidth(cmd, maxCmdW)
 				}
-				line := "  " + cmd
+				line := "  " + iconRendered + " " + cmd
 				lineVisW := lipgloss.Width(line)
 				padding := w - lineVisW
 				if padding < 0 {

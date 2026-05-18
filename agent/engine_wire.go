@@ -474,6 +474,17 @@ func (a *Agent) buildSubAgentRunConfig(
 	if cwd == "" {
 		cwd = workDir
 	}
+
+	// Worktree isolation: if the parent's CWD is inside a worktree directory,
+	// rewrite workDir to the worktree path so the SubAgent's system prompt
+	// shows the correct workspace and all path resolution uses worktree-relative paths.
+	// This must happen before system prompt construction (below) so the prompt
+	// displays the worktree as "工作目录".
+	isWorktreeIsolated := parentCtx.IsWorktreeIsolated
+	if strings.Contains(cwd, ".xbot-worktrees") {
+		workDir = cwd
+		isWorktreeIsolated = true
+	}
 	cwdPart := "\n- 当前目录：" + cwd
 
 	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）
@@ -632,7 +643,8 @@ func (a *Agent) buildSubAgentRunConfig(
 
 		// Worktree isolation: if the parent is in a worktree, rewrite
 		// WorkspaceRoot to the worktree path and enable isolation.
-		IsWorktreeIsolated: parentCtx.IsWorktreeIsolated,
+		// (Already computed above before system prompt construction.)
+		IsWorktreeIsolated: isWorktreeIsolated,
 
 		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
@@ -647,11 +659,11 @@ func (a *Agent) buildSubAgentRunConfig(
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
 
-	// If the SubAgent's InitialCWD is inside a worktree directory,
+	// If the SubAgent's CWD is inside a worktree directory,
 	// rewrite WorkspaceRoot to the worktree path for path isolation.
-	if strings.Contains(cfg.InitialCWD, ".xbot-worktrees") {
-		cfg.WorkspaceRoot = cfg.InitialCWD
-		cfg.IsWorktreeIsolated = true
+	// (workDir was already rewritten above before system prompt construction.)
+	if isWorktreeIsolated {
+		cfg.WorkspaceRoot = workDir
 	}
 
 	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户

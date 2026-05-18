@@ -1488,12 +1488,13 @@ func main() {
 			cliCh.InjectUserMessage(ev.ChatID, ev.Content)
 		})
 		// Inject bg task callbacks via RPC (unified local/remote path)
-		bgSessionKey := "cli:" + cliCfg.ChatID
+		// Closures read bgSessionKey dynamically via cliCh.BgSessionKey()
+		// so they always use the current session's key after session switches.
 		cliCh.SetBgTaskRemoteCallbacks(
-			bgSessionKey,
-			func() int { return app.client.GetBgTaskCount(bgSessionKey) },
+			"cli:"+cliCfg.ChatID,
+			func() int { return app.client.GetBgTaskCount(cliCh.BgSessionKey()) },
 			func() []*channel.BgTask {
-				tasks, _ := app.client.ListBgTasks(bgSessionKey)
+				tasks, _ := app.client.ListBgTasks(cliCh.BgSessionKey())
 				if tasks == nil {
 					return nil
 				}
@@ -1519,7 +1520,7 @@ func main() {
 				return result
 			},
 			func(taskID string) error { return app.client.KillBgTask(taskID) },
-			func() { app.client.CleanupCompletedBgTasks(bgSessionKey) },
+			func() { app.client.CleanupCompletedBgTasks(cliCh.BgSessionKey()) },
 		)
 		// Inject TrimHistoryFn for Ctrl+K session truncation (RPC-backed, unified path)
 		cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
