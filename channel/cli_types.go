@@ -323,12 +323,12 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		// Glamour handles table column sizing and paragraph wrapping.
-		// hardWrapRunes serves as a safety net for lines that still exceed
-		// viewport width (e.g. long URLs) but should not be the primary
-		// wrapping mechanism — it doesn't understand table structure and
-		// would break separator/alignment lines.
-		glamour.WithWordWrap(wrapWidth),
+		// Disable glamour's word-wrap — it breaks inline code (`build:sim-sdk:x86_64`
+		// gets split at `sim-\nsdk:`). Instead, hardWrapRunes wraps at exact column
+		// boundaries after glamour renders styles (colors, inline code bg, etc).
+		// Table structure is NOT affected: glamour still renders table markup,
+		// separator lines are plain ASCII that hardWrapRunes handles correctly.
+		glamour.WithWordWrap(0),
 	)
 	return r
 }
