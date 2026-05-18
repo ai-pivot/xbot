@@ -1,57 +1,19 @@
-import { useState } from 'react'
-import hljs from 'highlight.js/lib/core'
+import { useState, useMemo, useEffect, memo } from 'react'
+import { hljs, ensureLanguage, isLanguageRegistered, escapeHtml } from '../highlight'
 import { MermaidBlock } from './MermaidBlock'
-import javascript from 'highlight.js/lib/languages/javascript'
-import typescript from 'highlight.js/lib/languages/typescript'
-import go from 'highlight.js/lib/languages/go'
-import python from 'highlight.js/lib/languages/python'
-import bash from 'highlight.js/lib/languages/bash'
-import json from 'highlight.js/lib/languages/json'
-import yaml from 'highlight.js/lib/languages/yaml'
-import css from 'highlight.js/lib/languages/css'
-import xml from 'highlight.js/lib/languages/xml'
-import markdown from 'highlight.js/lib/languages/markdown'
-import sql from 'highlight.js/lib/languages/sql'
-import rust from 'highlight.js/lib/languages/rust'
-import java from 'highlight.js/lib/languages/java'
-import cpp from 'highlight.js/lib/languages/cpp'
-import diff from 'highlight.js/lib/languages/diff'
-import 'highlight.js/styles/github-dark.css'
-
-hljs.registerLanguage('javascript', javascript)
-hljs.registerLanguage('js', javascript)
-hljs.registerLanguage('typescript', typescript)
-hljs.registerLanguage('ts', typescript)
-hljs.registerLanguage('go', go)
-hljs.registerLanguage('python', python)
-hljs.registerLanguage('py', python)
-hljs.registerLanguage('bash', bash)
-hljs.registerLanguage('sh', bash)
-hljs.registerLanguage('shell', bash)
-hljs.registerLanguage('json', json)
-hljs.registerLanguage('yaml', yaml)
-hljs.registerLanguage('yml', yaml)
-hljs.registerLanguage('css', css)
-hljs.registerLanguage('html', xml)
-hljs.registerLanguage('xml', xml)
-hljs.registerLanguage('svg', xml)
-hljs.registerLanguage('markdown', markdown)
-hljs.registerLanguage('md', markdown)
-hljs.registerLanguage('sql', sql)
-hljs.registerLanguage('rust', rust)
-hljs.registerLanguage('rs', rust)
-hljs.registerLanguage('java', java)
-hljs.registerLanguage('cpp', cpp)
-hljs.registerLanguage('c', cpp)
-hljs.registerLanguage('diff', diff)
+import { useTranslation } from '../i18n'
+import { CODEBLOCK_COLLAPSE_LINES } from '../constants'
 
 interface CodeBlockProps {
   className?: string
   children?: string
 }
 
-function CodeBlock({ className, children }: CodeBlockProps) {
+const CodeBlock = memo(function CodeBlock({ className, children }: CodeBlockProps) {
   const [copied, setCopied] = useState(false)
+  const [langReady, setLangReady] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
+  const { t } = useTranslation()
 
   const codeText = typeof children === 'string' ? children.trim() : String(children ?? '')
 
@@ -59,16 +21,46 @@ function CodeBlock({ className, children }: CodeBlockProps) {
   const langMatch = className?.match(/language-(\w+)/)
   const lang = langMatch ? langMatch[1] : ''
 
-  let highlighted = codeText
-  try {
-    if (lang && hljs.getLanguage(lang)) {
-      highlighted = hljs.highlight(codeText, { language: lang }).value
-    } else {
-      highlighted = hljs.highlightAuto(codeText).value
+  const lines = codeText.split('\n')
+  const lineCount = lines.length
+  const shouldCollapse = lineCount > CODEBLOCK_COLLAPSE_LINES
+
+  // Track whether the language has been loaded (for lazy languages)
+  useEffect(() => {
+    if (!lang || codeText.length > 5000) {
+      setLangReady(false)
+      return
     }
-  } catch {
-    highlighted = codeText
-  }
+    if (isLanguageRegistered(lang)) {
+      setLangReady(true)
+      return
+    }
+    // Lazy-load the language
+    setLangReady(false)
+    let cancelled = false
+    ensureLanguage(lang).then((ok) => {
+      if (!cancelled && ok) setLangReady(true)
+    })
+    return () => { cancelled = true }
+  }, [lang, codeText.length])
+
+  const highlighted = useMemo(() => {
+    // Skip highlighting for long code or missing language
+    if (!lang || codeText.length > 5000) {
+      return escapeHtml(codeText)
+    }
+    if (!langReady && !isLanguageRegistered(lang)) {
+      return escapeHtml(codeText)
+    }
+    try {
+      if (hljs.getLanguage(lang)) {
+        return hljs.highlight(codeText, { language: lang }).value
+      }
+    } catch {
+      // fallback to escaped plain text
+    }
+    return escapeHtml(codeText)
+  }, [codeText, lang, langReady])
 
   const handleCopy = async () => {
     try {
@@ -88,22 +80,45 @@ function CodeBlock({ className, children }: CodeBlockProps) {
     }
   }
 
-  const lineCount = codeText.split('\n').length
-
   return (
     <div className="xbot-codeblock">
       <div className="xbot-codeblock-header">
-        <span>{lang || 'code'}{lineCount > 1 && <span className="ml-2 text-slate-600 text-[10px]">{lineCount} lines</span>}</span>
-        <button onClick={handleCopy} className="xbot-codeblock-copy">
-          {copied ? '✓ Copied' : 'Copy'}
-        </button>
+        <span>
+          {lang || 'code'}
+          {lineCount > 1 && <span className="xbot-codeblock-linecount">{lineCount} lines</span>}
+        </span>
+        <div className="xbot-codeblock-actions">
+          {shouldCollapse && (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              className="xbot-codeblock-collapse-btn"
+              aria-expanded={!collapsed}
+              data-testid="codeblock-collapse-btn"
+            >
+              {collapsed ? t('expandCodeBlock', { lines: String(lineCount) }) : t('collapseCodeBlock')}
+            </button>
+          )}
+          <button onClick={handleCopy} className="xbot-codeblock-copy" aria-label={t('copyCode')} data-testid="codeblock-copy-btn">
+            {copied ? t('copied') : 'Copy'}
+          </button>
+        </div>
       </div>
-      <pre className="xbot-codeblock-pre">
-        <code dangerouslySetInnerHTML={{ __html: highlighted }} />
-      </pre>
+      <div className={`xbot-codeblock-body ${collapsed && shouldCollapse ? 'xbot-codebody-collapsed' : ''}`}>
+        <pre className="xbot-codeblock-pre">
+          {/* Line numbers column */}
+          <code className="xbot-codeblock-linenums" aria-hidden="true">
+            {lines.map((_, i) => (
+              <div key={i}>{i + 1}</div>
+            ))}
+          </code>
+          {/* Code column */}
+          <code className="xbot-codeblock-code" dangerouslySetInnerHTML={{ __html: highlighted }} />
+        </pre>
+        {collapsed && shouldCollapse && <div className="xbot-codeblock-collapsed-mask" />}
+      </div>
     </div>
   )
-}
+})
 
 // Check if a React node tree contains a checkbox element
 function containsCheckbox(children: React.ReactNode): boolean {
@@ -120,8 +135,21 @@ function containsCheckbox(children: React.ReactNode): boolean {
   return false
 }
 
+/** Interactive checkbox — local toggle state, purely visual */
+const InteractiveCheckbox = memo(function InteractiveCheckbox({ checked: initialChecked }: { checked?: boolean }) {
+  const [checked, setChecked] = useState(!!initialChecked)
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={() => setChecked(!checked)}
+      className="xbot-checkbox xbot-checkbox-interactive"
+    />
+  )
+})
+
 // Returns components for react-markdown's components prop
-export function getCodeBlockProps() {
+export function getCodeBlockProps(onImageClick?: (src: string, alt: string) => void) {
   return {
     code(props: { className?: string; children?: React.ReactNode; inline?: boolean }) {
       const lang = props.className?.replace('language-', '')
@@ -138,19 +166,30 @@ export function getCodeBlockProps() {
 
       // Mermaid diagram — render as SVG instead of code block
       if (lang === 'mermaid') {
-        // Dynamic import to avoid loading mermaid bundle unless needed
         return <MermaidBlock code={codeStr} />
+      }
+
+      // Latex/math — skip code block, render as plain text (KaTeX handles $...$ syntax)
+      if (lang === 'latex' || lang === 'math') {
+        return <code className="xbot-inline-code">{codeStr}</code>
       }
 
       return <CodeBlock className={props.className}>{codeStr}</CodeBlock>
     },
     checkbox(props: { checked?: boolean }) {
+      return <InteractiveCheckbox checked={props.checked} />
+    },
+    img(props: { src?: string; alt?: string }) {
       return (
-        <input
-          type="checkbox"
-          disabled
-          checked={!!props.checked}
-          style={{ margin: '0 6px 0 0', accentColor: '#3b82f6', cursor: 'default', pointerEvents: 'none' }}
+        <img
+          src={props.src}
+          alt={props.alt || ''}
+          loading="lazy"
+          className="xbot-lazy-img"
+          onClick={() => {
+            if (props.src && onImageClick) onImageClick(props.src, props.alt || '')
+          }}
+          style={{ cursor: 'zoom-in' }}
         />
       )
     },
@@ -159,23 +198,16 @@ export function getCodeBlockProps() {
 
       if (hasCheckbox) {
         return (
-          <li style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
+          <li className="xbot-task-item">
             {props.children}
           </li>
         )
       }
 
-      // react-markdown checkbox plugin uses className "task-list-item checked" for [x]
       if (props.className && /task-list-item/.test(props.className)) {
         return (
           <li
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              listStyle: 'none',
-              marginLeft: '-1.5em',
-            }}
-            className={props.className}
+            className={`xbot-task-list-item ${props.className || ''}`}
           >
             {props.children}
           </li>
@@ -188,12 +220,22 @@ export function getCodeBlockProps() {
       return <a href={props.href} target="_blank" rel="noopener noreferrer">{props.children}</a>
     },
     pre(props: { children?: React.ReactNode }) {
-      // Unwrap react-markdown's outer <pre> — the code component already
-      // renders its own container (.xbot-codeblock / .mermaid-wrapper / etc.)
       return <>{props.children}</>
     },
     table(props: { children?: React.ReactNode }) {
-      return <div className="table-wrapper"><table>{props.children}</table></div>
+      return (
+        <div className="overflow-x-auto my-2">
+          <table className="min-w-full text-sm border-collapse">
+            {props.children}
+          </table>
+        </div>
+      )
+    },
+    th(props: { children?: React.ReactNode }) {
+      return <th className="border border-slate-600 px-3 py-1.5 text-left text-xs font-medium text-slate-300 bg-slate-700/50">{props.children}</th>
+    },
+    td(props: { children?: React.ReactNode }) {
+      return <td className="border border-slate-600 px-3 py-1.5 text-xs text-slate-300">{props.children}</td>
     },
   }
 }

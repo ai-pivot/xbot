@@ -1,0 +1,16 @@
+{
+  "name": "xbot",
+  "short_name": "xbot",
+  "description": "AI 智能对话助手",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

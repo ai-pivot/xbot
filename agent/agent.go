@@ -239,6 +239,9 @@ type Agent struct {
 	// SubAgent 深度控制
 	maxSubAgentDepth int
 
+	// autoWorktree enables automatic git worktree creation for peer sessions.
+	autoWorktree bool
+
 	// Cron service and scheduler
 	cronSvc *sqlite.CronService
 	cronSch *cron.Scheduler
@@ -686,6 +689,10 @@ type Config struct {
 	PluginDirs            []string // Additional plugin directories
 	PluginDisabledPlugins []string // Plugin IDs to disable
 
+	// AutoWorktree enables automatic git worktree creation when multiple
+	// sessions share the same repo. Set from config.Agent.Experimental.AutoWorktree.
+	AutoWorktree bool
+
 	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
 	CLISenderID string
 }
@@ -1019,6 +1026,7 @@ func New(cfg Config) (*Agent, error) {
 		directWorkspace:    cfg.DirectWorkspace,
 		globalSkillDirs:    resolveGlobalSkillsDirs(cfg.SkillsDir),
 		maxSubAgentDepth:   cfg.MaxSubAgentDepth,
+		autoWorktree:       cfg.AutoWorktree,
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
@@ -2275,7 +2283,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// Auto worktree detection: if multiple sessions share the same git repo,
 	// automatically create an isolated worktree to prevent file conflicts.
-	// Gated behind experimental.auto_worktree config (default: false).
+	// Gated behind auto_worktree user setting (default: false).
 	sessKey := sessionKey(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
@@ -2286,10 +2294,14 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Peer awareness / auto worktree: register this session for collaboration.
 	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
 	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
+	// Uses config.json (master authority) — changes take effect on restart.
+	// AutoDetectAndInit already skips re-creation if the session is already registered.
 	cfgPath := filepath.Join(a.xbotHome, "config.json")
 	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
-		if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-			tenantSession.SetCurrentDir(entry.WorktreeDir)
+		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
+			if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+				tenantSession.SetCurrentDir(entry.WorktreeDir)
+			}
 		}
 	} else {
 		tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)

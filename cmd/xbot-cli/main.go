@@ -1448,9 +1448,10 @@ func main() {
 				return
 			}
 			cliCh.Send(channel.OutboundMsg{
-				Channel: ev.Channel,
-				ChatID:  ev.ChatID,
-				Content: ev.Content,
+				Channel:  ev.Channel,
+				ChatID:   ev.ChatID,
+				Content:  ev.Content,
+				Metadata: ev.Metadata,
 			})
 		})
 		// Handle ask_user events separately (WaitingUser=true, Questions JSON in metadata)

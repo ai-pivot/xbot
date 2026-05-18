@@ -1,0 +1,299 @@
+/* ========================================================================== */
+/* Code Block Styles                                                         */
+/* ========================================================================== */
+
+/* Inline code (dark mode default) */
+.xbot-inline-code {
+  background: var(--xbot-bg-secondary);
+  color: var(--xbot-text-primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* User message bubble inline code: override for blue background */
+.bg-blue-600 .xbot-inline-code,
+.bg-blue-700 .xbot-inline-code {
+  background: rgba(255,255,255,0.25);
+  color: #fff;
+}
+
+/* ---- Enhanced Code Block (dark) ---- */
+
+.xbot-codeblock {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: border-color 0.2s ease;
+  margin: 0.5em 0;
+}
+
+.xbot-codeblock:hover {
+  border-color: rgba(71, 85, 105, 0.7);
+}
+
+.xbot-codeblock-header {
+  background: linear-gradient(135deg, #1e293b, #0f172a);
+  padding: 6px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+  font-size: 12px;
+  color: var(--xbot-text-muted);
+}
+
+.xbot-codeblock-linecount {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--xbot-text-muted);
+}
+
+.xbot-codeblock-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.xbot-codeblock-copy,
+.xbot-codeblock-collapse-btn {
+  background: rgba(71, 85, 105, 0.3);
+  border: none;
+  color: var(--xbot-text-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.xbot-codeblock-copy:hover,
+.xbot-codeblock-collapse-btn:hover {
+  background: rgba(71, 85, 105, 0.5);
+  color: var(--xbot-text-primary);
+}
+
+/* ─── Code Body (line numbers + code side by side) ─── */
+
+.xbot-codeblock-body {
+  position: relative;
+}
+
+.xbot-codeblock-pre {
+  margin: 0;
+  padding: 12px 16px 12px 0;
+  overflow-x: auto;
+  background: #0d1117;
+  font-size: 13px;
+  line-height: 1.6;
+  display: flex;
+}
+
+.xbot-codeblock-linenums {
+  flex-shrink: 0;
+  padding: 0 12px 0 16px;
+  text-align: right;
+  color: rgba(100, 116, 139, 0.5);
+  user-select: none;
+  border-right: 1px solid rgba(51, 65, 85, 0.2);
+  margin-right: 12px;
+  font-size: inherit;
+  line-height: inherit;
+  font-family: inherit;
+  background: transparent;
+}
+
+.xbot-codeblock-code {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.875em;
+  border-radius: 0;
+}
+
+/* ─── Code Block Collapse ─── */
+
+.xbot-codebody-collapsed {
+  max-height: 360px; /* ~15 lines at 24px line-height */
+  overflow: hidden;
+}
+
+.xbot-codeblock-collapsed-mask {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(transparent, #0d1117);
+  pointer-events: none;
+}
+
+/* ─── Inline code enhancement ─── */
+
+.xbot-inline-code {
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.6));
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+  border: 1px solid rgba(51, 65, 85, 0.3);
+  color: #93c5fd;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Light Theme Overrides ---- */
+
+[data-theme="light"] .hljs {
+  color: #24292e;
+  background: transparent;
+}
+[data-theme="light"] .hljs-comment,
+[data-theme="light"] .hljs-quote {
+  color: #6a737d;
+  font-style: italic;
+}
+[data-theme="light"] .hljs-keyword,
+[data-theme="light"] .hljs-selector-tag,
+[data-theme="light"] .hljs-type {
+  color: #d73a49;
+}
+[data-theme="light"] .hljs-string,
+[data-theme="light"] .hljs-addition {
+  color: #22863a;
+}
+[data-theme="light"] .hljs-number,
+[data-theme="light"] .hljs-literal {
+  color: #005cc5;
+}
+[data-theme="light"] .hljs-built_in,
+[data-theme="light"] .hljs-builtin-name {
+  color: #e36209;
+}
+[data-theme="light"] .hljs-function .hljs-title,
+[data-theme="light"] .hljs-title.function_ {
+  color: #6f42c1;
+}
+[data-theme="light"] .hljs-variable,
+[data-theme="light"] .hljs-attr {
+  color: #e36209;
+}
+[data-theme="light"] .hljs-params {
+  color: #24292e;
+}
+[data-theme="light"] .hljs-meta {
+  color: #735c0f;
+}
+[data-theme="light"] .hljs-deletion {
+  color: #b31d28;
+  background: #ffeef0;
+}
+[data-theme="light"] .hljs-addition {
+  color: #22863a;
+  background: #f0fff4;
+}
+[data-theme="light"] .hljs-symbol,
+[data-theme="light"] .hljs-bullet {
+  color: #005cc5;
+}
+[data-theme="light"] .hljs-regexp {
+  color: #032f62;
+}
+[data-theme="light"] .hljs-selector-class {
+  color: #6f42c1;
+}
+[data-theme="light"] .hljs-selector-id {
+  color: #005cc5;
+}
+[data-theme="light"] .hljs-name,
+[data-theme="light"] .hljs-tag {
+  color: #22863a;
+}
+[data-theme="light"] .hljs-attribute {
+  color: #005cc5;
+}
+[data-theme="light"] .hljs-section {
+  color: #005cc5;
+  font-weight: bold;
+}
+[data-theme="light"] .hljs-link {
+  color: #032f62;
+  text-decoration: underline;
+}
+
+
+/* Light mode overrides for code blocks */
+[data-theme="light"] .xbot-codeblock {
+  border-color: #d1cdc7;
+  box-shadow: 0 2px 8px rgba(28, 25, 23, 0.08);
+}
+
+[data-theme="light"] .xbot-codeblock:hover {
+  border-color: #bbb7b0;
+}
+
+[data-theme="light"] .xbot-codeblock-header {
+  background: linear-gradient(135deg, #e2dfda, #ddd9d4);
+  color: #57534e;
+  border-bottom-color: #d1cdc7;
+}
+
+[data-theme="light"] .xbot-codeblock-pre {
+  background: #edeae5;
+}
+
+[data-theme="light"] .xbot-codeblock-copy,
+[data-theme="light"] .xbot-codeblock-collapse-btn {
+  color: #78716c;
+  background: rgba(28, 25, 23, 0.06);
+}
+
+[data-theme="light"] .xbot-codeblock-copy:hover,
+[data-theme="light"] .xbot-codeblock-collapse-btn:hover {
+  color: #3d3833;
+  background: rgba(28, 25, 23, 0.12);
+}
+
+[data-theme="light"] .xbot-codeblock-linenums {
+  color: rgba(100, 100, 100, 0.4);
+  border-right-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .xbot-codeblock-collapsed-mask {
+  background: linear-gradient(transparent, #edeae5);
+}
+
+[data-theme="light"] .xbot-inline-code {
+  background: #e2dfda;
+  color: #1e293b;
+  border-color: #d1cdc7;
+}
+
+/* ─── Markdown table/checkbox utility classes ─── */
+
+.xbot-checkbox {
+  margin: 0 6px 0 0;
+  accent-color: #3b82f6;
+}
+.xbot-checkbox-interactive {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.xbot-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.xbot-task-list-item {
+  display: flex;
+  align-items: flex-start;
+  list-style: none;
+  margin-left: -1.5em;
+}

@@ -1,0 +1,206 @@
+/* ========================================================================== */
+/* Tiptap Editor Styles — CSS Variables only                                  */
+/* ========================================================================== */
+
+.tiptap-wrapper {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  background: var(--xbot-bg-secondary);
+  border: 1px solid var(--xbot-border-light);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+
+.tiptap-wrapper:focus-within {
+  border-color: var(--xbot-accent-blue);
+  box-shadow: 0 0 0 1px var(--xbot-accent-blue);
+}
+
+/* Editor area */
+.tiptap-wrapper .tiptap-editor {
+  flex: 1;
+  min-height: 24px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 10px 14px;
+}
+
+.tiptap-wrapper .tiptap-editor > *:first-child {
+  margin-top: 0;
+}
+
+.tiptap-wrapper .tiptap-editor > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Placeholder */
+.tiptap-wrapper .tiptap-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--xbot-text-muted);
+  pointer-events: none;
+  height: 0;
+  font-style: normal;
+}
+
+/* Paragraph in editor */
+.tiptap-wrapper .tiptap-editor p {
+  margin: 0.25em 0;
+  color: var(--xbot-text-primary);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+/* Code in editor */
+.tiptap-wrapper .tiptap-editor code {
+  background: var(--xbot-bg-primary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  color: var(--xbot-text-link);
+}
+
+/* Preformatted / code blocks in editor */
+.tiptap-wrapper .tiptap-editor pre {
+  background: var(--xbot-bg-primary);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.85em;
+  overflow-x: auto;
+}
+
+/* Task list in editor */
+.tiptap-wrapper .tiptap-editor ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.tiptap-wrapper .tiptap-editor ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.tiptap-wrapper .tiptap-editor ul[data-type="taskList"] li label input[type="checkbox"] {
+  accent-color: var(--xbot-accent-blue);
+  margin-top: 3px;
+}
+
+/* Send button inside tiptap wrapper */
+.tiptap-send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  align-self: stretch;
+  background: var(--xbot-accent-blue);
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  border-radius: 0 12px 12px 0;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.tiptap-send-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.tiptap-send-btn:focus-visible {
+  outline: 2px solid var(--xbot-accent);
+  outline-offset: -2px;
+}
+
+.tiptap-send-btn:disabled {
+  background: var(--xbot-border-light);
+  color: var(--xbot-text-muted);
+  cursor: not-allowed;
+}
+
+/* ---- Cancel Button ---- */
+
+.cancel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.15s ease;
+}
+
+.cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
+}
+
+.cancel-btn:focus-visible {
+  outline: 2px solid var(--xbot-color-error);
+  outline-offset: 2px;
+}
+
+/* ---- Preview Mode ---- */
+.tiptap-preview-mode .tiptap-editor {
+  cursor: default;
+  opacity: 0.9;
+  max-height: 300px;
+}
+
+.tiptap-preview-mode .tiptap-editor p.is-editor-empty:first-child::before {
+  content: none;
+}
+
+/* ---- Light Theme Overrides ---- */
+
+[data-theme="light"] .tiptap-wrapper {
+  background: #f7f5f2 !important;
+  border-color: #cdc9c3 !important;
+  box-shadow: 0 1px 3px rgba(28,25,23,0.08), 0 1px 2px rgba(28,25,23,0.04) !important;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor {
+  background: rgba(247,245,242,0.8) !important;
+  color: #1c1917 !important;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor p {
+  color: #1c1917;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor code {
+  background: #e2dfda;
+  color: #1c1917;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor pre {
+  background: #eae7e2;
+  border: 1px solid #ddd9d4;
+  border-radius: 8px;
+}
+
+[data-theme="light"] .tiptap-wrapper .tiptap-editor p.is-editor-empty:first-child::before {
+  color: #a8a29e;
+}
+
+[data-theme="light"] .tiptap-send-btn:disabled {
+  background: #cdc9c3;
+  color: #a8a29e;
+}
+
+[data-theme="light"] .cancel-btn {
+  background: #dc2626;
+}

@@ -1,0 +1,54 @@
+/* ========================================================================== */
+/* AskUser Panel Styles                                                      */
+/* ========================================================================== */
+
+/* ========================================================================== */
+/* AskUser Panel Animation                                                     */
+/* ========================================================================== */
+
+.askuser-backdrop {
+  animation: askuser-fade-in 0.2s ease-out;
+}
+
+.askuser-panel {
+  animation: askuser-slide-up 0.25s ease-out;
+}
+
+@keyframes askuser-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes askuser-slide-up {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ---- Light Theme Overrides ---- */
+
+/* AskUser panel — lighter bg, softer borders */
+[data-theme="light"] .askuser-panel {
+  background: #ffffff;
+  border-color: #cdc9c3;
+}
+[data-theme="light"] .askuser-panel .border-slate-700 {
+  border-color: #e2dfda !important;
+}
+[data-theme="light"] .askuser-panel .text-white {
+  color: #1c1917 !important;
+}
+[data-theme="light"] .askuser-panel .text-slate-200 {
+  color: #3d3833 !important;
+}
+[data-theme="light"] .askuser-panel .text-slate-400 {
+  color: #78716c !important;
+}
+[data-theme="light"] .askuser-panel .border-slate-600 {
+  border-color: #cdc9c3 !important;
+}
+[data-theme="light"] .askuser-panel .bg-slate-700 {
+  background: #e2dfda !important;
+}
+[data-theme="light"] .askuser-panel .placeholder-slate-400::placeholder {
+  color: #a8a29e !important;
+}

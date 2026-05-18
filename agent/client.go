@@ -96,9 +96,10 @@ func (c *Client) dispatchWSMessage(msg protocol.WSMessage) {
 		}
 	case protocol.MsgTypeText:
 		c.base.emit(c.ctx, protocol.OutboundEvent{
-			ChatID:  msg.ChatID,
-			Channel: msg.Channel,
-			Content: msg.Content,
+			ChatID:   msg.ChatID,
+			Channel:  msg.Channel,
+			Content:  msg.Content,
+			Metadata: msg.Metadata,
 		})
 	case protocol.MsgTypeStreamContent:
 		if msg.Progress != nil {

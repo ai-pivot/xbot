@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from '../i18n'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import ConfirmDialog from './ConfirmDialog'
 
 interface ChatInfo {
   chat_id: string
@@ -12,14 +14,34 @@ interface ChatSidebarProps {
   onSwitchChat: (chatID: string) => void
   onNewChat: () => void
   currentChatID: string
+  onExportMarkdown?: () => void
+  onExportJSON?: () => void
 }
 
-export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID }: ChatSidebarProps) {
+export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 640)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const { t } = useTranslation()
+
+  // Responsive mobile detection
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
+  const isMobileRef = useRef(isMobile)
+  useEffect(() => {
+    isMobileRef.current = isMobile
+  }, [isMobile])
+  useEffect(() => {
+    const mql = window.matchMedia('(max-width: 640px)')
+    const handler = (e: MediaQueryListEvent) => {
+      setIsMobile(e.matches)
+    }
+    mql.addEventListener('change', handler)
+    return () => mql.removeEventListener('change', handler)
+  }, [])
 
   const fetchChats = useCallback(async () => {
     setLoading(true)
@@ -27,7 +49,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       const resp = await fetch('/api/chats')
       const data = await resp.json()
       if (data.ok) setChats(data.chats || [])
-    } catch { /* ignored */ }
+    } catch (err) { console.warn('[ChatSidebar] fetchChats failed:', err) }
     setLoading(false)
   }, [])
 
@@ -37,9 +59,9 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}/switch`, { method: 'POST' })
       onSwitchChat(chatID)
-      // Auto-collapse on mobile after switch
-      if (window.innerWidth < 640) setCollapsed(true)
-    } catch { /* ignored */ }
+      fetchChats()
+      if (isMobileRef.current) setCollapsed(true)
+    } catch (err) { console.warn('[ChatSidebar] switchChat failed:', err) }
   }
 
   const handleCreate = async () => {
@@ -47,35 +69,45 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       const resp = await fetch('/api/chats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: '' }),
+        body: JSON.stringify({ label: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}` }),
       })
       const data = await resp.json()
       if (data.ok && data.chat_id) {
+        // Switch to the new chat (this triggers loadHistory via onSwitchChat)
         await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
         onSwitchChat(data.chat_id)
         fetchChats()
-        if (window.innerWidth < 640) setCollapsed(true)
+        if (isMobileRef.current) setCollapsed(true)
       }
-    } catch { /* ignored */ }
+    } catch (err) { console.warn('[ChatSidebar] createChat failed:', err) }
   }
 
-  const handleDelete = async (e: React.MouseEvent, chatID: string) => {
+  const handleDelete = (e: React.MouseEvent, chatID: string) => {
     e.stopPropagation()
-    if (!confirm('确定要删除此会话吗？')) return
+    setConfirmDelete(chatID)
+  }
+
+  const executeDelete = async (chatID: string) => {
+    setConfirmDelete(null)
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}`, { method: 'DELETE' })
-      // If deleting current chat, switch to first remaining
-      if (chatID === currentChatID) {
-        fetchChats()
-        const remaining = chats.filter(c => c.chat_id !== chatID)
-        if (remaining.length > 0) {
-          await fetch(`/api/chats/${encodeURIComponent(remaining[0].chat_id)}/switch`, { method: 'POST' })
-          onSwitchChat(remaining[0].chat_id)
+      // Refresh chat list first, then decide what to switch to
+      const resp = await fetch('/api/chats')
+      const data = await resp.json()
+      if (data.ok) {
+        const remaining: ChatInfo[] = (data.chats || []).filter((c: ChatInfo) => c.chat_id !== chatID)
+        setChats(remaining)
+        if (chatID === currentChatID) {
+          if (remaining.length > 0) {
+            await fetch(`/api/chats/${encodeURIComponent(remaining[0].chat_id)}/switch`, { method: 'POST' })
+            onSwitchChat(remaining[0].chat_id)
+          } else {
+            // No chats left — create a new one
+            _onNewChat()
+          }
         }
-      } else {
-        fetchChats()
       }
-    } catch { /* ignored */ }
+    } catch (err) { console.warn('[ChatSidebar] deleteChat failed:', err) }
   }
 
   const handleRename = async (e: React.KeyboardEvent, chatID: string) => {
@@ -89,19 +121,23 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
         body: JSON.stringify({ label }),
       })
       fetchChats()
-    } catch { /* ignored */ }
+    } catch (err) { console.warn('[ChatSidebar] renameChat failed:', err) }
     setRenamingId(null)
   }
 
-  // Mobile overlay mode
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 640
+  // Mobile overlay mode (isMobile is now reactive state)
+
+  // Filter chats by search query
+  const filteredChats = searchQuery.trim()
+    ? chats.filter(c => (c.label || '未命名').toLowerCase().includes(searchQuery.toLowerCase()) || (c.preview || '').toLowerCase().includes(searchQuery.toLowerCase()))
+    : chats
 
   if (collapsed) {
     return (
       <button
         className="chat-sidebar-toggle"
         onClick={() => { setCollapsed(false); fetchChats() }}
-        title="展开会话列表"
+        title={t("expandSidebar")}
       >
         💬 <span className="sidebar-count">{chats.length}</span>
       </button>
@@ -112,21 +148,31 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   if (isMobile) {
     return (
       <div className="chat-sidebar-overlay" onClick={(e) => { if (e.target === e.currentTarget) setCollapsed(true) }}>
-        <div className="chat-sidebar-mobile">
+        <div className="chat-sidebar-mobile" role="navigation" aria-label="会话列表" data-testid="sidebar">
           {/* Header */}
           <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
-            <span className="text-sm font-medium text-slate-300">💬 会话</span>
+            <span className="text-sm font-medium text-slate-300">{t("chatSessions")}</span>
             <div className="flex items-center gap-1">
-              <button onClick={handleCreate} className="sidebar-btn" title="新建会话">+</button>
-              <button onClick={() => setCollapsed(true)} className="sidebar-btn" title="收起">✕</button>
+              <button onClick={handleCreate} className="sidebar-btn" title={t("newSession")}>+</button>
+              <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>✕</button>
             </div>
+          </div>
+          {/* Search */}
+          <div className="px-3 py-1 border-b border-slate-700/50">
+            <input
+              className="sidebar-search"
+              placeholder={t('searchPlaceholder')}
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onClick={e => e.stopPropagation()}
+            />
           </div>
           {/* List */}
           <div className="flex-1 overflow-y-auto py-1">
             {loading ? (
-              <div className="text-center py-4 text-slate-500 text-xs">加载中...</div>
+              <div className="text-center py-4 text-slate-500 text-xs">{t('sidebarLoading')}</div>
             ) : (
-              chats.map((chat) => (
+              filteredChats.map((chat) => (
                 <div
                   key={chat.chat_id}
                   className={`sidebar-item ${chat.is_current ? 'sidebar-item-active' : ''}`}
@@ -147,11 +193,11 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
                       <span
                         className="text-xs truncate flex-1 text-slate-300"
                         onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
-                      >{chat.label || '未命名'}</span>
+                      >{chat.label || t('unnamedSession')}</span>
                     )}
                     {chat.is_current && <span className="text-[10px] text-indigo-400 shrink-0">●</span>}
                     {!chat.is_current && (
-                      <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn">✕</button>
+                      <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>✕</button>
                     )}
                   </div>
                   {chat.preview && <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>}
@@ -166,22 +212,32 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
 
   // Desktop: inline sidebar
   return (
-    <div className="flex flex-col w-56 bg-slate-900/80 border-r border-slate-700/50 shrink-0">
+    <div className="flex flex-col w-56 bg-slate-900/80 border-r border-slate-700/50 shrink-0" role="navigation" aria-label="会话列表" data-testid="sidebar">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
-        <span className="text-sm font-medium text-slate-300">💬 会话</span>
+        <span className="text-sm font-medium text-slate-300">{t("chatSessions")}</span>
         <div className="flex items-center gap-1">
-          <button onClick={handleCreate} className="sidebar-btn" title="新建会话">+</button>
-          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title="收起">◀</button>
+          <button onClick={handleCreate} className="sidebar-btn" title={t("newSession")}>+</button>
+          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>◀</button>
         </div>
+      </div>
+
+      {/* Search */}
+      <div className="px-3 py-1">
+        <input
+          className="sidebar-search"
+          placeholder={t('searchPlaceholder')}
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+        />
       </div>
 
       {/* Chat List */}
       <div className="flex-1 overflow-y-auto py-1">
         {loading ? (
-          <div className="text-center py-4 text-slate-500 text-xs">加载中...</div>
+          <div className="text-center py-4 text-slate-500 text-xs">{t('sidebarLoading')}</div>
         ) : chats.length === 0 ? (
-          <div className="text-center py-4 text-slate-500 text-xs">暂无会话</div>
+          <div className="text-center py-4 text-slate-500 text-xs">{t('noSessions')}</div>
         ) : (
           chats.map((chat) => (
             <div
@@ -204,10 +260,10 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
                   <span
                     className="text-xs truncate flex-1 text-slate-300"
                     onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
-                  >{chat.label || '未命名'}</span>
+                  >{chat.label || t('unnamedSession')}</span>
                 )}
                 {chat.is_current && (
-                  <span className="text-[10px] text-indigo-400 shrink-0">当前</span>
+                  <span className="text-[10px] text-indigo-400 shrink-0">{t('currentSession')}</span>
                 )}
                 {!chat.is_current && (
                   <button
@@ -224,10 +280,33 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
 
       {/* Refresh */}
       <div className="border-t border-slate-700/50 px-2 py-1">
-        <button onClick={fetchChats} disabled={loading} className="sidebar-refresh-btn">
+        <button onClick={fetchChats} disabled={loading} className="sidebar-refresh-btn" aria-label={t("refreshSessions")}>
           {loading ? '...' : '🔄 刷新'}
         </button>
       </div>
+      {/* Export */}
+      {(onExportMarkdown || onExportJSON) && (
+        <div className="border-t border-slate-700/50 px-2 py-1">
+          <div className="flex gap-1">
+            {onExportMarkdown && (
+              <button onClick={onExportMarkdown} className="sidebar-refresh-btn flex-1" title={t('exportMarkdown')}>
+                📝 MD
+              </button>
+            )}
+            {onExportJSON && (
+              <button onClick={onExportJSON} className="sidebar-refresh-btn flex-1" title={t('exportJSON')}>
+                📋 JSON
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        message="确定要删除此会话吗？此操作不可撤销。"
+        onConfirm={() => confirmDelete && executeDelete(confirmDelete)}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   )
 }

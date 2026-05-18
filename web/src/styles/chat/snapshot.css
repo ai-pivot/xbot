@@ -1,0 +1,63 @@
+/* Snapshot Share */
+.snapshot-share {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.snapshot-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  transition: all 0.15s;
+}
+.snapshot-btn:hover:not(:disabled) {
+  background: rgba(51, 65, 85, 0.5);
+  color: #e2e8f0;
+}
+.snapshot-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.snapshot-error {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.snapshot-success {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+  font-size: 11px;
+  white-space: nowrap;
+  animation: snapshot-fade-in 0.2s ease;
+}
+@keyframes snapshot-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+[data-theme="light"] .snapshot-error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+[data-theme="light"] .snapshot-success {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}

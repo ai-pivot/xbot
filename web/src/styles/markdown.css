@@ -1,0 +1,166 @@
+/* ========================================================================== */
+/* Markdown Content Styling                                                  */
+/* ========================================================================== */
+
+/* Markdown content styling */
+.markdown-body h1 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0; }
+.markdown-body h2 { font-size: 1.3em; font-weight: 600; margin: 0.5em 0; }
+.markdown-body h3 { font-size: 1.1em; font-weight: 600; margin: 0.5em 0; }
+.markdown-body h4 { font-size: 1em; font-weight: 600; margin: 0.5em 0; }
+.markdown-body p { margin: 0.4em 0; line-height: 1.65; }
+/* Inline code within markdown (not inside code blocks) */
+.markdown-body code {
+  background: var(--xbot-bg-secondary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+/* Fallback <pre> for un-enhanced code blocks (rare) */
+.markdown-body pre:not(.xbot-codeblock-pre) {
+  background: #0d1117;
+  padding: 12px 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+  border: 1px solid rgba(51, 65, 85, 0.4);
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.5em;
+  margin: 0.3em 0;
+}
+.markdown-body li { margin: 0.2em 0; line-height: 1.6; }
+.markdown-body li > ul, .markdown-body li > ol { margin: 0.1em 0; }
+.markdown-body blockquote {
+  border-left: 3px solid var(--xbot-border-light);
+  padding-left: 12px;
+  color: var(--xbot-text-secondary);
+  margin: 0.5em 0;
+}
+.markdown-body a {
+  color: var(--xbot-text-link);
+  text-decoration: underline;
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--xbot-border);
+  margin: 1em 0;
+}
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 0.5em 0;
+}
+/* Markdown table styling */
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0;
+  font-size: 0.92em;
+}
+.markdown-body thead th {
+  background: var(--xbot-bg-secondary);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 14px;
+  border: 1px solid var(--xbot-border);
+  white-space: nowrap;
+}
+.markdown-body tbody td {
+  padding: 7px 14px;
+  border: 1px solid var(--xbot-border);
+  vertical-align: top;
+}
+.markdown-body tbody tr:hover {
+  background: var(--xbot-bg-hover);
+}
+.markdown-body tbody tr:nth-child(even) {
+  background: var(--xbot-bg-surface);
+}
+
+/* Mermaid diagram container */
+.markdown-body .mermaid-wrapper {
+  background: var(--xbot-bg-secondary);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.markdown-body .mermaid-wrapper svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* KaTeX formula styling */
+.markdown-body .katex-display {
+  margin: 0.8em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown-body .katex {
+  font-size: 1.05em;
+}
+[data-theme="light"] .markdown-body .katex {
+  color: #1e293b;
+}
+
+.markdown-body sup a[id^="user-content-fnref-"],
+.markdown-body sup a[href^="#user-content-fn"] {
+  color: var(--xbot-text-link);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+/* Lazy-loaded image styling */
+.markdown-body img.xbot-lazy-img {
+  cursor: zoom-in;
+  transition: opacity 0.2s ease;
+}
+
+/* ---- Light Theme Overrides ---- */
+
+[data-theme="light"] .markdown-body code {
+  background: #ddd9d4;
+  color: #1e293b;
+}
+[data-theme="light"] .markdown-body pre:not(.xbot-codeblock-pre) {
+  background: #eae7e2;
+  border-color: #d1cdc7;
+}
+[data-theme="light"] .markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
+[data-theme="light"] .markdown-body blockquote {
+  border-left-color: #cdc9c3;
+  color: #57534e;
+}
+[data-theme="light"] .markdown-body a {
+  color: #2563eb;
+}
+
+[data-theme="light"] .markdown-body hr {
+  border-top-color: #cdc9c3;
+}
+[data-theme="light"] .markdown-body thead th {
+  background: #ddd9d4;
+  border-color: #cdc9c3;
+}
+[data-theme="light"] .markdown-body tbody td {
+  border-color: #cdc9c3;
+}
+[data-theme="light"] .markdown-body tbody tr:hover {
+  background: rgba(234,231,226,0.8);
+}
+[data-theme="light"] .markdown-body tbody tr:nth-child(even) {
+  background: rgba(234,231,226,0.4);
+}
+[data-theme="light"] .mermaid-wrapper {
+  background: #eae7e2;
+}

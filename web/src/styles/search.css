@@ -1,0 +1,31 @@
+/* ========================================================================== */
+/* Search Highlight Styles                                                   */
+/* ========================================================================== */
+
+/* Search result highlight animation */
+.search-highlight {
+  animation: search-highlight-pulse 0.6s ease-out 3;
+  outline: 2px solid rgba(59, 130, 246, 0.6);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+@keyframes search-highlight-pulse {
+  0%, 100% { outline-color: rgba(59, 130, 246, 0.2); }
+  50% { outline-color: rgba(59, 130, 246, 0.7); }
+}
+
+/* ---- Light Theme Overrides ---- */
+
+/* Search highlight — darker outline for light bg */
+[data-theme="light"] .search-highlight {
+  outline-color: rgba(37, 99, 235, 0.5);
+  border-radius: 12px;
+}
+@keyframes search-highlight-pulse-light {
+  0%, 100% { outline-color: rgba(37, 99, 235, 0.2); }
+  50% { outline-color: rgba(37, 99, 235, 0.6); }
+}
+[data-theme="light"] .search-highlight {
+  animation-name: search-highlight-pulse-light;
+}

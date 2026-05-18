@@ -1,0 +1,64 @@
+/* ========================================================================== */
+/* Unified Toast Notification System                                          */
+/* ========================================================================== */
+
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 400px;
+}
+
+.toast-item {
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+  cursor: pointer;
+  word-break: break-word;
+  animation: toast-slide-in 0.3s ease-out;
+  backdrop-filter: blur(8px);
+}
+
+.toast-info {
+  background: rgba(51, 65, 85, 0.92);
+  color: var(--xbot-text-primary);
+  border: 1px solid rgba(100, 116, 139, 0.3);
+}
+
+.toast-error {
+  background: rgba(220, 38, 38, 0.92);
+  color: #fff;
+}
+
+.toast-success {
+  background: rgba(22, 163, 74, 0.92);
+  color: #fff;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .toast-container {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+  }
+}

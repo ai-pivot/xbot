@@ -78,6 +78,7 @@ type WSMessage struct {
 	SenderName      string             `json:"sender_name,omitempty"`
 	ChatType        string             `json:"chat_type,omitempty"`
 	SessionReset    bool               `json:"session_reset,omitempty"`
+	Metadata        map[string]string  `json:"metadata,omitempty"`
 	Result          json.RawMessage    `json:"result,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`

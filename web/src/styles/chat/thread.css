@@ -1,0 +1,169 @@
+/* Thread Panel */
+.thread-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100vh;
+  background: #0f172a;
+  border-left: 1px solid #1e293b;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  animation: thread-slide-in 0.2s ease-out;
+}
+@keyframes thread-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+.thread-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.thread-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 0;
+}
+.thread-meta {
+  font-size: 11px;
+  color: #64748b;
+}
+.thread-header-actions {
+  display: flex;
+  gap: 4px;
+}
+.thread-close-btn, .thread-delete-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  transition: all 0.15s;
+}
+.thread-close-btn:hover, .thread-delete-btn:hover {
+  background: rgba(51, 65, 85, 0.5);
+  color: #e2e8f0;
+}
+.thread-delete-btn:hover {
+  color: #f87171;
+}
+.thread-parent {
+  padding: 12px 16px;
+  border-bottom: 1px solid #1e293b;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.thread-parent-author {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.thread-parent-content {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.thread-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.thread-empty {
+  text-align: center;
+  padding: 24px;
+  color: #475569;
+  font-size: 13px;
+}
+.thread-message {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.5);
+}
+.thread-message-author {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.thread-message-content {
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.thread-message-time {
+  font-size: 10px;
+  color: #475569;
+  margin-top: 4px;
+}
+.thread-input-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+.thread-input {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 13px;
+  outline: none;
+}
+.thread-input:focus {
+  border-color: #3b82f6;
+}
+.thread-send-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: #3b82f6;
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.thread-send-btn:hover:not(:disabled) {
+  background: #2563eb;
+}
+.thread-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Light theme */
+[data-theme="light"] .thread-panel {
+  background: #ffffff;
+  border-left-color: #e2e8f0;
+}
+[data-theme="light"] .thread-header {
+  border-bottom-color: #e2e8f0;
+}
+[data-theme="light"] .thread-title { color: #1e293b; }
+[data-theme="light"] .thread-parent { border-bottom-color: #e2e8f0; }
+[data-theme="light"] .thread-parent-content { color: #475569; }
+[data-theme="light"] .thread-message { background: rgba(241, 245, 249, 0.8); }
+[data-theme="light"] .thread-message-content { color: #334155; }
+[data-theme="light"] .thread-input-form { border-top-color: #e2e8f0; }
+[data-theme="light"] .thread-input { background: #f8fafc; border-color: #e2e8f0; color: #1e293b; }

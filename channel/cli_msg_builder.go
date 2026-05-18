@@ -19,11 +19,12 @@ var cliMsg = cliMessageBuilder{}
 // buildTextMsg creates a text outbound message.
 func (cliMessageBuilder) buildTextMsg(msg OutboundMsg) protocol.WSMessage {
 	return protocol.WSMessage{
-		Type:    protocol.MsgTypeText,
-		TS:      time.Now().Unix(),
-		Content: msg.Content,
-		ChatID:  msg.ChatID,
-		Channel: msg.Channel,
+		Type:     protocol.MsgTypeText,
+		TS:       time.Now().Unix(),
+		Content:  msg.Content,
+		ChatID:   msg.ChatID,
+		Channel:  msg.Channel,
+		Metadata: msg.Metadata,
 	}
 }
 

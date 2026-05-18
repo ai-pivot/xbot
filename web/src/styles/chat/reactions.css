@@ -1,0 +1,94 @@
+/* Message Reactions */
+.message-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-top: 4px;
+}
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(51, 65, 85, 0.5);
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.reaction-chip:hover {
+  background: rgba(71, 85, 105, 0.6);
+  border-color: rgba(100, 116, 139, 0.5);
+}
+.reaction-chip-active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+.reaction-count {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+.reaction-add-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: transparent;
+  border: 1px dashed rgba(100, 116, 139, 0.3);
+  font-size: 12px;
+  cursor: pointer;
+  color: #64748b;
+  transition: all 0.15s ease;
+}
+.reaction-add-btn:hover {
+  background: rgba(51, 65, 85, 0.3);
+  border-color: rgba(100, 116, 139, 0.5);
+  color: #94a3b8;
+}
+.reaction-picker-container {
+  position: relative;
+}
+.reaction-picker {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  z-index: 50;
+}
+.reaction-picker-item {
+  padding: 4px 6px;
+  border-radius: 8px;
+  font-size: 18px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  transition: background 0.1s;
+}
+.reaction-picker-item:hover {
+  background: rgba(71, 85, 105, 0.5);
+}
+
+/* Light theme overrides */
+[data-theme="light"] .reaction-chip {
+  background: rgba(226, 232, 240, 0.8);
+  border-color: rgba(203, 213, 225, 0.8);
+}
+[data-theme="light"] .reaction-chip-active {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+[data-theme="light"] .reaction-picker {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+}

@@ -7,6 +7,7 @@ import TaskItem from '@tiptap/extension-task-item'
 import { Markdown } from 'tiptap-markdown'
 import { common, createLowlight } from 'lowlight'
 import { useEffect, useRef, useState, useImperativeHandle, useCallback, forwardRef } from 'react'
+import { useTranslation } from '../i18n'
 
 const lowlight = createLowlight(common)
 
@@ -29,17 +30,25 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
   function TiptapEditor({ onSend, disabled, connected, currentModel, onCancel }, ref) {
   const [hasContent, setHasContent] = useState(false)
   const connectedRef = useRef(connected)
-  useEffect(() => { connectedRef.current = connected }, [connected])
+  connectedRef.current = connected  // Direct render-time assignment (React 19 pattern)
+  const { t } = useTranslation()
 
   // Input history (newest first, like bash history)
   const inputHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef(-1)
 
+  // Stable ref for handleSend to avoid stale closure in editor handleKeyDown.
+  const handleSendRef = useRef<() => void>(() => {})
+
+  // Refs to access t() in Tiptap editor config (created once)
+  const tRef = useRef(t)
+  tRef.current = t  // Direct render-time assignment
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ codeBlock: false }),
       Placeholder.configure({
-        placeholder: () => connectedRef.current ? '输入消息... (Shift+Enter 换行)' : '连接中...',
+        placeholder: () => connectedRef.current ? tRef.current('inputPlaceholder') : tRef.current('connecting'),
       }),
       CodeBlockLowlight.configure({ lowlight }),
       TaskList,
@@ -60,7 +69,7 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
         // Enter = send (without Shift/Ctrl/Cmd)
         if (event.key === 'Enter' && !event.shiftKey && !(event.ctrlKey || event.metaKey)) {
           event.preventDefault()
-          handleSend()
+          handleSendRef.current()
           return true
         }
 
@@ -128,9 +137,8 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
   })
 
   useEffect(() => {
-    if (editor) {
-      editor.setEditable(!disabled && connected)
-    }
+    if (!editor) return
+    editor.setEditable(!disabled && connected)
   }, [editor, disabled, connected])
 
   useImperativeHandle(ref, () => ({
@@ -146,8 +154,7 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
 
   const handleSend = useCallback(() => {
     if (!editor) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const md = (editor.storage as any).markdown.getMarkdown()
+    const md = (editor.storage as { markdown?: { getMarkdown: () => string } }).markdown?.getMarkdown() ?? ''
     if (!md.trim()) return
 
     // Add to history (deduplicate with first entry)
@@ -166,6 +173,9 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
     editor.commands.focus()
   }, [editor, onSend])
 
+  // Keep ref in sync with latest handleSend
+  handleSendRef.current = handleSend
+
   return (
     <div className="tiptap-wrapper relative">
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -175,7 +185,8 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
         onClick={handleSend}
         disabled={!connected || disabled || !hasContent}
         className="tiptap-send-btn"
-        title="发送"
+        title={t('send')}
+        aria-label={t('sendMessage')}
       >
         ➤
       </button>

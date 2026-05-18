@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useTranslation } from '../i18n'
+import { useState, memo } from 'react'
+import { formatElapsed, computeDisplayIterations } from '../utils'
 
 interface WsToolProgress {
   name: string
@@ -52,10 +54,6 @@ interface ProgressPanelProps {
   loading: boolean
 }
 
-function formatElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
 
 // --- SubAgent Tree Component ---
 
@@ -120,6 +118,7 @@ export function SubAgentTree({ agents }: { agents: WsSubAgent[] }) {
 }
 
 function ThinkingOrb() {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center gap-3 px-2 py-1">
       <div className="thinking-orb">
@@ -128,7 +127,7 @@ function ThinkingOrb() {
         <div className="thinking-orb-ring thinking-orb-ring-3" />
         <div className="thinking-orb-core" />
       </div>
-      <span className="text-[11px] text-slate-500 italic animate-pulse">思考中...</span>
+      <span className="text-[11px] text-slate-500 italic animate-pulse">{t("thinking")}</span>
     </div>
   )
 }
@@ -146,7 +145,7 @@ export function BouncingDots({ text }: { text?: string }) {
   )
 }
 
-export function CompletedIteration({ snap }: { snap: IterationSnapshot }) {
+export const CompletedIteration = memo(function CompletedIteration({ snap }: { snap: IterationSnapshot }) {
   const hasThinking = !!(snap.thinking || '').trim()
   const hasReasoning = !!(snap.reasoning || '').trim()
   const hasTools = (snap.tools ?? []).length > 0
@@ -188,7 +187,7 @@ export function CompletedIteration({ snap }: { snap: IterationSnapshot }) {
       {isEmpty && <BouncingDots />}
     </div>
   )
-}
+})
 
 
 function formatTokenCount(n: number): string {
@@ -267,17 +266,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
   if (!progress) return null
 
   const isActive = progress.phase !== 'done'
-  const baseLiveIterations = liveIterations ?? []
-  let displayLiveIterations = baseLiveIterations
-  if (progress.iteration > 0 && (progress.completed_tools?.length ?? 0) > 0) {
-    const prevIteration = progress.iteration - 1
-    if (!baseLiveIterations.some(s => s.iteration === prevIteration)) {
-      displayLiveIterations = [...baseLiveIterations, {
-        iteration: prevIteration,
-        tools: (progress.completed_tools ?? []).map(t => ({ name: t.name, label: t.label, status: t.status, elapsed_ms: t.elapsed_ms, summary: t.summary })),
-      }].sort((a, b) => a.iteration - b.iteration)
-    }
-  }
+  const displayLiveIterations = computeDisplayIterations(liveIterations, progress)
 
   const activeTools = progress.active_tools?.filter(t => t.status !== 'done' && t.status !== 'error') ?? []
   const hasActiveTools = activeTools.length > 0

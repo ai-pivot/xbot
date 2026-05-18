@@ -1,56 +1,25 @@
-import { useState, useEffect, useRef, memo } from 'react'
+import { useTranslation } from '../i18n'
+import { useState, useMemo, memo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import { getCodeBlockProps } from './CodeBlock'
+import Lightbox from './Lightbox'
+
+// Pre-built plugins array for Markdown rendering
+const remarkPluginsList = [remarkGfm, remarkMath]
+const rehypePluginsList = [rehypeKatex]
+import MessageActions from './MessageActions'
+import MessageReactions from './MessageReactions'
 import type { WsProgressPayload, IterationSnapshot } from './ProgressPanel'
 import { CompletedIteration, BouncingDots, SubAgentTree } from './ProgressPanel'
+import type { Message } from '../types'
+import ReplyPreview from './ReplyPreview'
+import { formatElapsed, computeDisplayIterations } from '../utils'
 
 
-const COLLAPSE_THRESHOLD = 20 // lines
-
-function CollapsibleMessage({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(true)
-  const ref = useRef<HTMLDivElement>(null)
-  const [tooLong, setTooLong] = useState(false)
-
-  useEffect(() => {
-    if (ref.current) {
-      // Use scrollHeight for accurate measurement even when max-h clips the content
-      const lineHeight = parseFloat(getComputedStyle(ref.current).lineHeight) || 20
-      const lineCount = Math.ceil(ref.current.scrollHeight / lineHeight)
-      setTooLong(lineCount > COLLAPSE_THRESHOLD)
-    }
-  }, [children])
-
-  if (!tooLong) return <>{children}</>
-
-  return (
-    <div ref={ref}>
-      <div
-        className={`relative ${collapsed ? 'max-h-80 overflow-hidden' : ''}`}
-      >
-        {children}
-        {collapsed && (
-          <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-slate-800/90 to-transparent pointer-events-none" />
-        )}
-      </div>
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="mt-1 text-xs text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1"
-      >
-        <span className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}>▸</span>
-        {collapsed ? '展开全部' : '折叠'}
-      </button>
-    </div>
-  )
-}
-interface Message {
-  id: string
-  type: 'user' | 'assistant' | 'system'
-  content: string
-  ts?: number
-  iterationHistory?: IterationSnapshot[] | null
-}
+import CollapsibleContent from './CollapsibleContent'
 
 
 // Memoized thinking display — only re-renders when content actually changes
@@ -68,15 +37,20 @@ interface AssistantTurnProps {
   loading: boolean
   // Saved progress from a completed response (for showing intermediate process collapsed)
   savedProgress?: WsProgressPayload | null
+  onDelete?: () => void
+  onRegenerate?: () => void
+  onReply?: () => void
+  /** Scroll to a message by ID (for reply click) */
+  onScrollToMessage?: (id: string) => void
+  /** Streaming content length for progress display */
+  streamingLength?: number
+  /** Double-click to reply */
+  onDoubleClickReply?: () => void
+  /** Toggle a reaction on this message */
+  onToggleReaction?: (emoji: string) => void
 }
 
 
-const codeBlockComponents = getCodeBlockProps()
-
-function formatElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
-}
 
 /** Collapsible section with a header bar */
 function CollapsibleSection({
@@ -135,7 +109,12 @@ function isThinkingContent(content: string): boolean {
   return false
 }
 
-export default function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress }: AssistantTurnProps) {
+export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress, onDelete, onRegenerate, onReply, onScrollToMessage, streamingLength, onDoubleClickReply, onToggleReaction }: AssistantTurnProps) {
+  const [copied, setCopied] = useState(false)
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
+  const codeBlockProps = useMemo(() => getCodeBlockProps((src, alt) => setLightbox({ src, alt })), [])
+  const { t } = useTranslation()
+
   // Classify messages
   const thinkingMsgs: Message[] = []
   const textMsgs: Message[] = []
@@ -146,6 +125,15 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
     } else {
       textMsgs.push(msg)
     }
+  }
+
+  const handleCopy = () => {
+    const text = textMsgs.map(m => m.content).join('\n\n')
+    if (!text) return
+    navigator.clipboard.writeText(text).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 2000) },
+      () => { /* clipboard unavailable (e.g. HTTP) */ },
+    )
   }
 
   // Use live progress when loading, fall back to savedProgress for completed turns
@@ -162,39 +150,47 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
     : effectiveProgress?.phase === 'done' ? '✅'
     : null
 
-  const baseLiveIterations = liveIterations ?? []
-  let displayLiveIterations = baseLiveIterations
-  if (progress && progress.iteration > 0 && (progress.completed_tools?.length ?? 0) > 0) {
-    const prevIteration = progress.iteration - 1
-    const hasPrev = baseLiveIterations.some((s) => s.iteration === prevIteration)
-    if (!hasPrev) {
-      displayLiveIterations = [...baseLiveIterations, {
-        iteration: prevIteration,
-        tools: (progress.completed_tools ?? []).map((t) => ({
-          name: t.name,
-          label: t.label,
-          status: t.status,
-          elapsed_ms: t.elapsed_ms,
-          summary: t.summary,
-        })),
-      }].sort((a, b) => a.iteration - b.iteration)
-    }
-  }
+  const displayLiveIterations = computeDisplayIterations(liveIterations, progress)
 
   const currentThinking = (progress?.thinking || '').trim()
   const seenThinkings = new Set(displayLiveIterations.map(s => (s.thinking || '').trim()).filter(Boolean))
   const shouldShowCurrentThinking = currentThinking.length > 0 && !seenThinkings.has(currentThinking)
 
   return (
-    <div className="flex justify-start">
-      <div className="assistant-turn-container">
+    <div className="flex justify-start w-full">
+      <div className="assistant-turn-container group relative flex-1 min-w-0" data-testid="assistant-turn" onDoubleClick={onDoubleClickReply}>
+        {/* Message actions — visible on hover */}
+        {textMsgs.length > 0 && !loading && (
+          <MessageActions
+            onCopy={handleCopy}
+            onDelete={onDelete}
+            onRegenerate={onRegenerate}
+            onReply={onReply}
+            copied={copied}
+          />
+        )}
+        {/* Reactions */}
+        {textMsgs.length > 0 && !loading && onToggleReaction && (
+          <MessageReactions
+            reactions={textMsgs[textMsgs.length - 1].reactions || []}
+            onToggle={onToggleReaction}
+          />
+        )}
+        {/* Reply preview */}
+        {textMsgs.length > 0 && textMsgs[0].replyTo && onScrollToMessage && (
+          <ReplyPreview
+            replyTo={textMsgs[0].replyTo}
+            onClick={() => onScrollToMessage(textMsgs[0].replyTo!.id)}
+          />
+        )}
+
         {/* Collapsible: Thinking section */}
         {thinkingMsgs.length > 0 && (
-          <CollapsibleSection icon="💭" title="思考过程" badge={thinkingMsgs.length} className="thinking-section">
+          <CollapsibleSection icon="💭" title={t("thinkingProcess")} badge={thinkingMsgs.length} defaultOpen={false} className="thinking-section">
             <div className="space-y-2 pl-1">
               {thinkingMsgs.map((msg) => (
                 <div key={msg.id} className="text-sm text-slate-400 italic">
-                  <Markdown components={codeBlockComponents} remarkPlugins={[remarkGfm]}>
+                  <Markdown components={codeBlockProps} remarkPlugins={remarkPluginsList} rehypePlugins={rehypePluginsList}>
                     {msg.content.replace(/^💭\s*/, '')}
                   </Markdown>
                 </div>
@@ -207,7 +203,7 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
         {loading && (displayLiveIterations.length ?? 0) > 0 && (
           <CollapsibleSection
             icon="📋"
-            title="迭代过程"
+            title={t("iterationProcess")}
             badge={displayLiveIterations.length}
             defaultOpen={true}
           >
@@ -283,7 +279,7 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
                 <div className="flex items-center gap-2 px-2 py-1">
                   <BouncingDots />
                   <span className="text-xs text-slate-500 italic">
-                    {progress.phase === 'thinking' ? '思考中...' : progress.phase === 'tool_exec' ? '执行工具...' : '处理中...'}
+                    {progress.phase === 'thinking' ? t('thinking') : progress.phase === 'tool_exec' ? t('executingTool') : t('processing')}
                   </span>
                 </div>
               ) : null}
@@ -301,7 +297,7 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
         {loading && (!progress || progress.phase === 'done') && (
           <div className="mb-2 rounded border border-slate-700/30 overflow-hidden">
             <div className="px-3 py-2">
-              <BouncingDots text="准备中..." />
+              <BouncingDots text={t('preparing')} />
             </div>
           </div>
         )}
@@ -312,8 +308,9 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
         {!loading && messages.length > 0 && messages[messages.length - 1]?.iterationHistory && messages[messages.length - 1].iterationHistory!.length > 0 && (
           <CollapsibleSection
             icon="📋"
-            title="迭代过程"
+            title={t("iterationProcess")}
             badge={messages[messages.length - 1].iterationHistory!.length}
+            defaultOpen={false}
           >
             <div className="divide-y divide-slate-700/30">
               {messages[messages.length - 1].iterationHistory!.map((snap) => (
@@ -326,15 +323,15 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
         {/* Main text content — always visible */}
         {textMsgs.length > 0 && (
           <div className="assistant-turn-content">
-            <CollapsibleMessage>
+            <CollapsibleContent>
               {textMsgs.map((msg) => (
                 <div key={msg.id} className="markdown-body">
-                  <Markdown components={codeBlockComponents} remarkPlugins={[remarkGfm]}>
+                  <Markdown components={codeBlockProps} remarkPlugins={remarkPluginsList} rehypePlugins={rehypePluginsList}>
                     {msg.content}
                   </Markdown>
                 </div>
               ))}
-            </CollapsibleMessage>
+            </CollapsibleContent>
           </div>
         )}
 
@@ -351,9 +348,21 @@ export default function AssistantTurn({ messages, progress, liveIterations, load
         {loading && textMsgs.length > 0 && (
           <div className="assistant-turn-streaming-indicator">
             <span className="assistant-turn-cursor" />
+            {streamingLength != null && streamingLength > 0 && (
+              <span className="text-xs text-slate-500 ml-2">{streamingLength} chars</span>
+            )}
           </div>
         )}
+
+        {/* Edited indicator */}
+        {!loading && textMsgs.length > 0 && textMsgs[textMsgs.length - 1]?.edited && (
+          <div className="text-xs text-slate-600 mt-1 italic">(edited)</div>
+        )}
       </div>
+      {/* Lightbox portal */}
+      {lightbox && (
+        <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />
+      )}
     </div>
   )
-}
+})

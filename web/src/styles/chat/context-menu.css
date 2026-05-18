@@ -1,0 +1,96 @@
+/* ========================================================================== */
+/* Context Menu (right-click / long-press)                                    */
+/* ========================================================================== */
+
+.context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 160px;
+  max-width: 260px;
+  background: var(--color-surface, #1e293b);
+  border: 1px solid rgba(71, 85, 105, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(12px);
+  padding: 4px;
+  animation: context-menu-appear 0.12s ease-out;
+}
+
+@keyframes context-menu-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary, #cbd5e1);
+  font-size: 0.875rem;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.1s ease, color 0.1s ease;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.context-menu-item:hover,
+.context-menu-item:focus-visible {
+  background: rgba(71, 85, 105, 0.3);
+  color: var(--color-text-primary, #f1f5f9);
+  outline: none;
+}
+
+.context-menu-item-danger {
+  color: #f87171;
+}
+
+.context-menu-item-danger:hover,
+.context-menu-item-danger:focus-visible {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+
+.context-menu-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+  width: 1.25rem;
+  text-align: center;
+}
+
+/* Light theme */
+[data-theme="light"] .context-menu {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .context-menu-item {
+  color: #334155;
+}
+
+[data-theme="light"] .context-menu-item:hover,
+[data-theme="light"] .context-menu-item:focus-visible {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+[data-theme="light"] .context-menu-item-danger {
+  color: #dc2626;
+}
+
+[data-theme="light"] .context-menu-item-danger:hover,
+[data-theme="light"] .context-menu-item-danger:focus-visible {
+  background: rgba(239, 68, 68, 0.08);
+  color: #b91c1c;
+}

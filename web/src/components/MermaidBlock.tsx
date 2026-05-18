@@ -1,8 +1,16 @@
-import { useEffect, useRef, useId, useState } from 'react'
+import { ERROR_PREVIEW_LENGTH } from '../constants'
+import { useEffect, useId, useState } from 'react'
+import DOMPurify from 'dompurify'
+import { useTranslation } from '../i18n'
 
 let mermaidModule: typeof import('mermaid').default | null = null
 let mermaidLoadPromise: Promise<typeof import('mermaid').default> | null = null
 let lastMermaidTheme: string | null = null
+
+const PURIFY_CONFIG = {
+  USE_PROFILES: { svg: true },
+  ADD_TAGS: ['foreignObject'],
+}
 
 async function getMermaid(): Promise<typeof import('mermaid').default> {
   if (!mermaidLoadPromise) {
@@ -68,11 +76,12 @@ function useTheme() {
 }
 
 export function MermaidBlock({ code }: { code: string }) {
-  const containerRef = useRef<HTMLDivElement>(null)
+  // containerRef removed — not needed for dangerouslySetInnerHTML rendering
   const uniqueId = useId().replace(/:/g, '_')
   const [error, setError] = useState<string | null>(null)
   const [svg, setSvg] = useState<string>('')
   const theme = useTheme()
+  const { t } = useTranslation()
 
   useEffect(() => {
     let cancelled = false
@@ -81,19 +90,17 @@ export function MermaidBlock({ code }: { code: string }) {
     getMermaid()
       .then((mermaid) => mermaid.render(id, code.trim()))
       .then(({ svg }) => {
-        if (!cancelled) setSvg(svg)
+        if (!cancelled) setSvg(DOMPurify.sanitize(svg, PURIFY_CONFIG) as string)
       })
       .catch((err) => {
         if (!cancelled) {
-          // mermaid sometimes throws on invalid syntax
           const msg = err?.message || String(err)
-          setError(msg.length > 200 ? msg.slice(0, 200) + '...' : msg)
+          setError(msg.length > ERROR_PREVIEW_LENGTH ? msg.slice(0, ERROR_PREVIEW_LENGTH) + '...' : msg)
         }
       })
 
     return () => {
       cancelled = true
-      // Clean up all temporary elements mermaid creates (SVG + defs)
       const ids = [id, `${id}-d`]
       ids.forEach((eid) => {
         const el = document.getElementById(eid)
@@ -105,7 +112,7 @@ export function MermaidBlock({ code }: { code: string }) {
   if (error) {
     return (
       <div className="rounded-lg bg-red-900/20 border border-red-800/40 p-3 text-sm text-red-400">
-        <div className="font-semibold mb-1">Mermaid 渲染失败</div>
+        <div className="font-semibold mb-1">{t('mermaidRenderFailed')}</div>
         <pre className="text-xs overflow-x-auto whitespace-pre-wrap">{error}</pre>
       </div>
     )
@@ -114,7 +121,7 @@ export function MermaidBlock({ code }: { code: string }) {
   if (!svg) {
     return (
       <div className="mermaid-wrapper animate-pulse">
-        <div className="text-sm text-slate-400">渲染图表中...</div>
+        <div className="text-sm text-slate-400">{t('rendering')}</div>
       </div>
     )
   }
@@ -122,7 +129,7 @@ export function MermaidBlock({ code }: { code: string }) {
   return (
     <div
       className="mermaid-wrapper"
-      ref={containerRef}
+      
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   )

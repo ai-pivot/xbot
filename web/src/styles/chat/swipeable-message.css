@@ -1,0 +1,74 @@
+/* ========================================================================== */
+/* Swipeable Message (mobile touch gestures)                                  */
+/* ========================================================================== */
+
+.swipeable-message {
+  position: relative;
+  overflow: hidden;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.swipeable-actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 0;
+}
+
+.swipeable-action-reply {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-left: 24px;
+  gap: 8px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: white;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.swipeable-action-delete {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 24px;
+  gap: 8px;
+  background: linear-gradient(135deg, #dc2626, #991b1b);
+  color: white;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.swipeable-action-visible {
+  opacity: 1;
+}
+
+.swipeable-action-icon {
+  font-size: 1.25rem;
+}
+
+.swipeable-action-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.swipeable-content {
+  position: relative;
+  z-index: 1;
+  will-change: transform;
+  display: flex;
+  justify-content: flex-end;
+}

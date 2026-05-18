@@ -128,10 +128,11 @@ type PerModelConfig struct {
 }
 
 type OutboundEvent struct {
-	Channel   string `json:"channel"`
-	ChatID    string `json:"chat_id"`
-	Content   string `json:"content"`
-	IsPartial bool   `json:"is_partial"`
+	Channel   string            `json:"channel"`
+	ChatID    string            `json:"chat_id"`
+	Content   string            `json:"content"`
+	IsPartial bool              `json:"is_partial"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 func (OutboundEvent) EventType() string { return "outbound" }

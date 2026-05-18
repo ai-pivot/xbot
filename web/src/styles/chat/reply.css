@@ -1,0 +1,95 @@
+/* ─── Reply Preview ─── */
+
+.reply-preview {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  background: var(--color-surface-alt, rgba(71, 85, 105, 0.2));
+  border-radius: 6px;
+  padding: 0;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  border: none;
+  width: 100%;
+  text-align: left;
+  overflow: hidden;
+}
+
+.reply-preview:hover {
+  background: var(--color-surface-hover, rgba(71, 85, 105, 0.35));
+}
+
+.reply-preview-bar {
+  width: 3px;
+  min-height: 100%;
+  background: var(--color-primary, #60a5fa);
+  border-radius: 3px 0 0 3px;
+  flex-shrink: 0;
+}
+
+.reply-preview-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reply-preview-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.reply-preview-text {
+  font-size: 12px;
+  color: var(--color-text-secondary, #94a3b8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Reply indicator above input */
+.reply-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--color-surface-alt, rgba(71, 85, 105, 0.2));
+  border-radius: 8px 8px 0 0;
+  margin-bottom: -2px;
+  border: 1px solid var(--color-border, rgba(100, 116, 139, 0.3));
+  border-bottom: none;
+}
+
+.reply-indicator-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #94a3b8);
+}
+
+.reply-indicator-preview {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reply-indicator-cancel {
+  font-size: 12px;
+  color: var(--color-text-muted, #64748b);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.reply-indicator-cancel:hover {
+  color: var(--color-text, #e2e8f0);
+}

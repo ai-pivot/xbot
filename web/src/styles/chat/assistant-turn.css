@@ -1,0 +1,196 @@
+/* ========================================================================== */
+/* Assistant Turn (Codex-style) — merged from 3 duplicate definitions         */
+/* ========================================================================== */
+
+.assistant-turn-container {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 16px;
+  padding: 12px 16px;
+  max-width: 85%;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  transition: box-shadow 0.3s ease;
+  overflow: hidden;
+}
+
+.assistant-turn-container:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+/* Sections — merged from 2 definitions */
+.assistant-turn-section {
+  border: 1px solid rgba(51, 65, 85, 0.3);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.assistant-turn-section:hover {
+  border-color: rgba(71, 85, 105, 0.5);
+}
+
+/* Section header — merged from 2 definitions */
+.assistant-turn-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.5);
+  border: none;
+  color: var(--xbot-text-primary);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.assistant-turn-section-header:hover {
+  background: rgba(15, 23, 42, 0.8);
+}
+
+/* Chevron — merged from 2 definitions */
+.assistant-turn-chevron {
+  font-size: 10px;
+  color: var(--xbot-text-muted);
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+
+.assistant-turn-chevron-open {
+  transform: rotate(90deg);
+}
+
+/* Section body — merged from 2 definitions */
+.assistant-turn-section-body {
+  padding: 8px;
+  animation: section-expand 0.2s ease-out;
+}
+
+.thinking-section .assistant-turn-section-body {
+  padding-left: 20px;
+  padding-bottom: 14px;
+}
+
+.assistant-turn-content {
+  padding: 12px 16px;
+}
+
+/* Streaming indicator — merged from 2 definitions */
+.assistant-turn-streaming-indicator {
+  display: flex;
+  align-items: center;
+  padding: 4px 0;
+  height: 20px;
+}
+
+/* Cursor — merged from 2 definitions */
+.assistant-turn-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: #60a5fa;
+  border-radius: 1px;
+  animation: cursor-blink 1s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.5);
+  vertical-align: text-bottom;
+  margin-left: 2px;
+}
+
+/* Collapsible message gradient */
+.assistant-turn-content .relative .bg-gradient-to-t {
+  pointer-events: none;
+}
+
+/* Progress panel */
+.progress-panel-active {
+  animation: pulse-border 2s ease-in-out infinite;
+}
+
+.progress-fade-in {
+  animation: progress-appear 0.25s ease-out;
+}
+
+.tool-pulse {
+  animation: tool-pulse 1.5s ease-in-out infinite;
+}
+
+/* ---- Light theme overrides ---- */
+[data-theme="light"] .assistant-turn-container {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .assistant-turn-section {
+  border-bottom-color: #cbd5e1;
+}
+
+[data-theme="light"] .assistant-turn-section-header {
+  color: #0f172a;
+}
+
+[data-theme="light"] .assistant-turn-section-header:hover {
+  background: rgba(241, 245, 249, 0.8);
+}
+
+[data-theme="light"] .assistant-turn-cursor {
+  background: #2563eb;
+}
+
+/* ─── Collapsible Content ─── */
+
+.collapsible-wrapper {
+  position: relative;
+}
+
+.collapsible-content {
+  position: relative;
+  transition: max-height 0.3s ease;
+}
+
+.collapsible-collapsed {
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.collapsible-fade-mask {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(transparent, #1e293b);
+  pointer-events: none;
+}
+
+[data-theme="light"] .collapsible-fade-mask {
+  background: linear-gradient(transparent, #f8fafc);
+}
+
+.collapsible-toggle {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #64748b;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.collapsible-toggle:hover {
+  color: #94a3b8;
+}
+
+.collapsible-chevron {
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+
+.collapsible-chevron-open {
+  transform: rotate(90deg);
+}

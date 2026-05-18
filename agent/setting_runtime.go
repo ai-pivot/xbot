@@ -83,6 +83,18 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	},
 	"tavily_api_key": {}, // Stored in user_settings; WebSearchTool reads dynamically
 
+	"auto_worktree": {
+		ApplyConfig: func(cfg *config.Config, value string) {
+			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
+		},
+		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
+			if ag == nil {
+				return
+			}
+			ag.autoWorktree = channel.ParseSettingBool(value)
+		},
+	},
+
 	// --- Runtime state settings (config + agent side-effects) ---
 	"context_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.ContextMode = value },
@@ -161,13 +173,6 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	"sidebar_sections": {},
 	"chat_max_width":   {},
 	"chat_center":      {},
-
-	// --- Worktree isolation ---
-	"auto_worktree": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
-		},
-	},
 }
 
 // ApplyRuntimeSetting applies a single setting change to the in-memory config and agent.
