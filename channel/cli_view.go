@@ -467,11 +467,11 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 	// --- Todo (when sidebar is visible, todo moves here from main view) ---
 	if len(m.todos) > 0 {
 		if m.sidebarCollapsedSections["todo"] {
-			sidebarSectionHeaders["todo"] = countBlockLines(blocks)
+			sidebarSectionHeaders["todo"] = nextBlockOffset(blocks)
 			blocks = append(blocks, m.renderSidebarSectionHeader("Todo", true))
 		} else {
 			if st := m.renderSidebarTodo(contentW); st != "" {
-				sidebarSectionHeaders["todo"] = countBlockLines(blocks)
+				sidebarSectionHeaders["todo"] = nextBlockOffset(blocks)
 				blocks = append(blocks, st)
 			}
 		}
@@ -480,13 +480,12 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 	// --- Active tasks (only when something is running) ---
 	if m.bgTaskCount > 0 || m.agentCount > 0 {
 		if m.sidebarCollapsedSections["tasks"] {
-			sidebarSectionHeaders["tasks"] = countBlockLines(blocks)
+			sidebarSectionHeaders["tasks"] = nextBlockOffset(blocks)
 			blocks = append(blocks, m.renderSidebarSectionHeader("Tasks", true))
 			sidebarActiveSectionOffset = -1
 		} else {
 			// Calculate line offset of the Active section within the sidebar content.
-			// Each block contributes its line count, and blocks are separated by "\n\n" (1 extra line).
-			sidebarActiveSectionOffset = countBlockLines(blocks)
+			sidebarActiveSectionOffset = nextBlockOffset(blocks)
 			sidebarSectionHeaders["tasks"] = sidebarActiveSectionOffset
 			blocks = append(blocks, m.renderSidebarActive(contentW))
 		}
@@ -523,6 +522,16 @@ func countBlockLines(blocks []string) int {
 		n += strings.Count(blk, "\n") + 1
 	}
 	return n
+}
+
+// nextBlockOffset returns the Y-offset where the NEXT block would start
+// if appended to blocks via strings.Join(append(blocks, ...), "\n\n").
+// It accounts for the extra "\n\n" separator that precedes the new block.
+func nextBlockOffset(blocks []string) int {
+	if len(blocks) == 0 {
+		return 0
+	}
+	return countBlockLines(blocks) + 1 // +1 for the separator before the next block
 }
 
 func (m *cliModel) renderSidebarSessions(w int) string {
