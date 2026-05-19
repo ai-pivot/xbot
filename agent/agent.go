@@ -2312,12 +2312,18 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
 	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
 	// Uses config.json (master authority) — changes take effect on restart.
-	// AutoDetectAndInit already skips re-creation if the session is already registered.
+	// AutoDetectAndInit is idempotent: returns existing entry if session already registered.
 	cfgPath := filepath.Join(a.xbotHome, "config.json")
 	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
 		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
-			if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-				tenantSession.SetCurrentDir(entry.WorktreeDir)
+			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+				// Only override CWD for brand new worktrees (first creation).
+				// On restart, AutoDetectAndInit returns existing entry with created=false,
+				// so the user's last CWD (restored by loadPersistedCWD) is preserved —
+				// even if they Cd'd out of the worktree.
+				if created {
+					tenantSession.SetCurrentDir(entry.WorktreeDir)
+				}
 			}
 		}
 	} else {
