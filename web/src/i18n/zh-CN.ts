@@ -558,6 +558,29 @@ const zhCN = {
   soundChime: '铃声',
   soundPop: '弹出音',
 
+  // ─── Task Panel & Info Bar ───
+  taskPanelTitle: '任务与活动',
+  taskTabOverview: '概览',
+  taskTabTodos: '待办',
+  taskTabAgents: '代理',
+  taskStatusRunning: '代理正在处理...',
+  taskStatusIdle: '空闲',
+  taskPanelEmpty: '没有活跃的任务或代理',
+  todoTitle: '待办',
+  agentsTitle: '代理',
+  noTodos: '没有待办事项',
+  noAgents: '没有活跃代理',
+  tasks: '任务',
+  commandPalette: '命令',
+  infoBarLabel: '状态栏',
+  workspace: '当前工作区',
+  processing: '处理中',
+  todoProgress: '待办进度',
+  activeAgents: '活跃代理',
+  queuedMessages: '排队消息',
+  inputHistoryUp: '上一条消息',
+  inputHistoryDown: '下一条消息',
+
 } as const
 
 export type I18nKey = keyof typeof zhCN

@@ -560,6 +560,29 @@ const en: Record<I18nKey, string> = {
   soundChime: 'Chime',
   soundPop: 'Pop',
 
+  // ─── Task Panel & Info Bar ───
+  taskPanelTitle: 'Tasks & Activity',
+  taskTabOverview: 'Overview',
+  taskTabTodos: 'Todos',
+  taskTabAgents: 'Agents',
+  taskStatusRunning: 'Agent is working...',
+  taskStatusIdle: 'Idle',
+  taskPanelEmpty: 'No active tasks or agents',
+  todoTitle: 'Todo',
+  agentsTitle: 'Agents',
+  noTodos: 'No active todos',
+  noAgents: 'No active agents',
+  tasks: 'Tasks',
+  commandPalette: 'Commands',
+  infoBarLabel: 'Status bar',
+  workspace: 'Current workspace',
+  processing: 'Processing',
+  todoProgress: 'Todo progress',
+  activeAgents: 'Active agents',
+  queuedMessages: 'Queued messages',
+  inputHistoryUp: 'Previous message',
+  inputHistoryDown: 'Next message',
+
 }
 
 export default en

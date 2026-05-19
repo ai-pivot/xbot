@@ -18,6 +18,10 @@ import type { WsProgressPayload, IterationSnapshot } from './components/Progress
 import type { WsSubAgent } from './components/ProgressPanel'
 import { TodoBar } from './components/TodoBar'
 import { SubAgentPanel } from './components/SubAgentPanel'
+import { ContextUsageBar } from './components/ContextUsageBar'
+import { InfoBar } from './components/InfoBar'
+import { TaskPanel } from './components/TaskPanel'
+import { useInputHistory } from './hooks/useInputHistory'
 import { formatRelativeTime, formatFileSize, normalizeIterationHistory, createResetProgress, exportAsMarkdown, exportAsJSON, downloadFile } from './utils'
 import { getCodeBlockProps } from './components/CodeBlock'
 import ProgressPanel from './components/ProgressPanel'
@@ -258,6 +262,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [todos, setTodos] = useState<{ id: number; text: string; done: boolean }[]>([])
   const [subAgents, setSubAgents] = useState<WsSubAgent[]>([])
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false)
+  const [messageQueue, setMessageQueue] = useState<number>(0)
+  const inputHistory = useInputHistory(100)
   const { play: playSound } = useSoundFeedback()
   const { addNotification } = useNotificationContext()
 
@@ -641,6 +648,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
     wsSend(payload)
 
+    // Record in input history
+    inputHistory.addEntry(content)
+
     setTimeout(() => scrollToBottom(isNearBottom() ? 'instant' : 'smooth'), 50)
   }, [scrollToBottom, isNearBottom, pendingFiles, wsSend, resetProgress, showToast, replyingTo])
 
@@ -810,6 +820,18 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       description: 'Toggle command palette',
     },
     {
+      key: 't',
+      ctrl: true,
+      handler: () => setTaskPanelOpen(prev => !prev),
+      description: 'Toggle task panel',
+    },
+    {
+      key: 'Escape',
+      enabled: taskPanelOpen,
+      handler: () => setTaskPanelOpen(false),
+      description: 'Close task panel',
+    },
+    {
       key: 'Escape',
       enabled: askUser !== null,
       handler: () => { setAskUser(null); wsSend({ type: 'ask_user_response', answers: {}, cancelled: true }) },
@@ -860,6 +882,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     { id: 'help', label: '/help', icon: '❓', description: t('cmdHelp'), action: () => { handleSend('/help') } },
     { id: 'settings', label: t('settings'), icon: '⚙️', description: t('openSettings'), action: () => { setSettingsOpen(true) } },
     { id: 'search', label: t('searchHistory'), icon: '🔍', description: t('searchHistory'), action: () => {} },
+    { id: 'tasks', label: t('taskPanelTitle'), icon: '⚡', description: 'Ctrl+T', action: () => { setTaskPanelOpen(true) } },
   ], [t, handleSend])
 
   // --- Scroll to message (for reply navigation) ---
@@ -960,6 +983,13 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <button
+           onClick={() => { setTaskPanelOpen(true) }}
+           className="text-sm text-slate-400 hover:text-white transition-colors p-1"
+           title={t('tasks') + ' (Ctrl+T)'} aria-label={t('tasks')}
+          >
+           ⚡
+          </button>
           <button
             onClick={() => { setCommandPaletteOpen(true) }}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
@@ -1279,6 +1309,16 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
       {/* Input area */}
       <div className={`px-4 py-3 bg-slate-800 border-t border-slate-700 ${replyingTo ? 'border-t-0' : ''}`}>
+        {/* Context usage bar (visual progress bar above input) */}
+        {contextInfo && contextInfo.max_tokens > 0 && (
+          <div className="-mt-1 -mx-4 mb-2">
+            <ContextUsageBar
+              promptTokens={contextInfo.prompt_tokens}
+              maxTokens={contextInfo.max_tokens}
+              usagePct={contextInfo.usage_pct}
+            />
+          </div>
+        )}
         <div className="flex items-end gap-3 max-w-4xl mx-auto">
           <div className="flex-1">
             {/* Pending files preview */}
@@ -1326,6 +1366,23 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 	      </div>
 	      </div>{/* end flex-1 inner column */}
 	      </div>{/* end ChatSidebar + content row */}
+
+	      {/* InfoBar — status bar below the input area */}
+	      <InfoBar
+	      		todos={todos}
+	      		subAgents={subAgents}
+	      		messageQueue={messageQueue}
+	      		loading={loading}
+	      />
+
+	      {/* Task Panel — slide-out task overview (Ctrl+T) */}
+	      <TaskPanel
+	      		open={taskPanelOpen}
+	      		onClose={() => setTaskPanelOpen(false)}
+	      		todos={todos}
+	      		subAgents={subAgents}
+	      		loading={loading}
+	      />
 
 	      {/* AskUser interaction panel */}
 	      {askUser && (
