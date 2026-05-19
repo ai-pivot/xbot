@@ -303,6 +303,10 @@ type sessionState struct {
 	inputHistory    []string // sent message history for Up/Down browsing
 	inputHistoryIdx int      // current position in input history (-1 = not browsing)
 	inputDraft      string   // draft text before entering history browsing
+	// Per-session background task count (survives session switches).
+	// Refreshed from bgTaskCountFn on restore and tick; stored here so the
+	// infobar and sidebar show the correct count immediately after a switch.
+	bgTaskCount int
 }
 
 // sessionKey returns the map key for the current session.
@@ -348,6 +352,7 @@ func (m *cliModel) saveCurrentSession() {
 		inputHistory:           m.inputHistory,
 		inputHistoryIdx:        m.inputHistoryIdx,
 		inputDraft:             m.inputDraft,
+		bgTaskCount:            m.bgTaskCount,
 	}
 	// Persist todo list for current session
 	if m.todoManager != nil {
@@ -390,6 +395,13 @@ func (m *cliModel) restoreSession() {
 		m.inputHistory = saved.inputHistory
 		m.inputHistoryIdx = saved.inputHistoryIdx
 		m.inputDraft = saved.inputDraft
+		// Restore bg task count from saved state, then re-query from backend
+		// so the count is fresh (tasks may have completed while switched away).
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		} else {
+			m.bgTaskCount = saved.bgTaskCount
+		}
 		// Load todo list for the restored session and sync to display
 		if m.todoManager != nil {
 			_ = m.todoManager.LoadFromFile(key)
@@ -442,6 +454,12 @@ func (m *cliModel) restoreSession() {
 		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
 		m.activeSubID = ""
 		m.cachedModelName = ""
+		// Reset bg task count from backend for this session
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		} else {
+			m.bgTaskCount = 0
+		}
 		// Clear todos — no saved state means no active turn,
 		// but persist unfinished todos from TodoManager so they
 		// remain visible across session switches.
