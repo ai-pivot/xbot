@@ -1859,9 +1859,13 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 			sc.result <- &cliSessionResult{ok: false, err: "command required for send_slash"}
 			return nil
 		}
-		retCmd := m.handleSlashCommand(cmd)
+		// Return success IMMEDIATELY to unblock the caller (agent goroutine).
+		// handleSlashCommand may call back into the agent via sendToAgent (non-blocking)
+		// or run local handlers that invoke agent RPC (e.g. usageQueryFn → agent RPC).
+		// If we don't release the caller first, the RPC callback deadlocks because
+		// the agent goroutine is blocked in SendTUIControl waiting on resultCh.
 		sc.result <- &cliSessionResult{ok: true}
-		return retCmd
+		return m.handleSlashCommand(cmd)
 
 	default:
 		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}
