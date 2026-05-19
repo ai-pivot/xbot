@@ -1443,14 +1443,12 @@ func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 		return
 	}
 	if injector, ok := ch.(channel.UserMessageInjector); ok {
-		switch ch.(type) {
-		case *channel.CLIChannel:
-			// Local mode: chatID needs "channel:chatID" format
-			injector.InjectUserMessage(channelName+":"+chatID, content)
-		default:
-			// Remote/ChannelCli: chatID is plain chatID
-			injector.InjectUserMessage(chatID, content)
-		}
+		// All channels use "channel:chatID" format — TUI's handleInjectedUserMsg
+		// filters by m.channelName+":"+m.chatID. Without the prefix, the injected
+		// message is silently dropped in both local mode (via ChannelCliChannel→eventCh
+		// →Client→CLIChannel.asyncCh) and remote mode (via RemoteCLIChannel→WS→Client→
+		// CLIChannel.asyncCh).
+		injector.InjectUserMessage(channelName+":"+chatID, content)
 	}
 }
 
