@@ -1326,18 +1326,16 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 	// Build complete line map matching viewAskUserPanel() output order.
 	// Each line has an optional zone to register at that position.
 	type askLine struct {
-		zoneID string
-		index  int // zone index (tab idx, option idx, or 0 for submit)
+		zoneID    string
+		index     int
+		isTabLine bool // special: all tabs on one line, use addX
 	}
 	var lines []askLine
 
-	// Tab bar (if multiple questions): each tab on its own line
+	// Tab bar (if multiple questions): all tabs rendered on ONE line by viewAskUserPanel().
 	if len(m.panelItems) > 1 {
-		for i := range m.panelItems {
-			lines = append(lines, askLine{zoneID: "askUserTab", index: i})
-		}
-		lines = append(lines, askLine{}) // blank line after tabs
-		lines = append(lines, askLine{}) // another blank line (viewAskUserPanel emits "\n\n")
+		lines = append(lines, askLine{isTabLine: true})
+		lines = append(lines, askLine{}) // blank line ("\n\n" → 1 blank after tab line)
 	}
 
 	// Current tab content
@@ -1354,16 +1352,17 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 		for i := 0; i < questionLines; i++ {
 			lines = append(lines, askLine{})
 		}
-		lines = append(lines, askLine{}) // blank line after question
+		// ONE blank line after question (viewAskUserPanel writes "\n" to end the
+		// question, then another "\n" for hasOpts/textarea = 1 blank line total).
+		lines = append(lines, askLine{})
 
 		if len(item.Options) > 0 {
-			lines = append(lines, askLine{}) // blank line before options (viewAskUserPanel emits "\n" before opts)
 			// Option items
 			for i := range item.Options {
 				lines = append(lines, askLine{zoneID: "askUserOption", index: i})
 			}
-			// "Other" input
-			lines = append(lines, askLine{}) // other line (not tracked as click zone — textinput handles its own input)
+			// "Other" input (not tracked as click zone — textinput handles its own input)
+			lines = append(lines, askLine{})
 			// Submit button (only on last tab)
 			if m.panelTab == len(m.panelItems)-1 {
 				lines = append(lines, askLine{zoneID: "askUserSubmit", index: 0})
@@ -1374,11 +1373,29 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 
 	// Apply scroll offset: skip lines before askPanelScrollY, stop at visible height
 	scrollY := m.askPanelScrollY
-	// visible height is hard to know here; just register all remaining lines.
-	// clampAskUserPanelScroll ensures askPanelScrollY is clamped.
-	for ln := scrollY; ln < len(lines); ln++ {
+	visibleH := m.askUserPanelVisibleHeight()
+	end := len(lines)
+	if end > scrollY+visibleH {
+		end = scrollY + visibleH
+	}
+
+	for ln := scrollY; ln < end; ln++ {
 		l := lines[ln]
-		if l.zoneID != "" {
+		if l.isTabLine {
+			// All tabs on one line — register each with X bounds.
+			// PanelBox border(1) + padding(1) = 2 chars before content.
+			x := 2
+			for i := range m.panelItems {
+				label := fmt.Sprintf(" %d ", i+1)
+				w := len(label)
+				zb.addX(0, x, x+w, "askUserTab", i)
+				x += w
+				if i < len(m.panelItems)-1 {
+					x += 1 // separator "│"
+				}
+			}
+			zb.skip(1) // tab line
+		} else if l.zoneID != "" {
 			zb.add(1, l.zoneID, l.index)
 		} else {
 			zb.skip(1)
