@@ -1287,6 +1287,7 @@ type cliSettingsSavedMsg struct {
 	layoutChanged bool
 	layoutVals    map[string]string // layout-related settings for field update
 	feedbackMsg   string
+	savedModel    string // model name from saved values (avoids GetDefault RPC timing issues)
 	// syncOnly is true when the message originates from SyncLayoutSettings
 	// (periodic remote cache refresh), not from an explicit user settings save.
 	// When true, context-related caches (maxContextTokens, etc.) must NOT be
