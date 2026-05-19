@@ -459,6 +459,13 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 	// --- Sessions (always shown, clickable) ---
 	sidebarSectionHeaders["sessions"] = 0
 	if m.sidebarCollapsedSections["sessions"] {
+		// Must reset tracking vars even when collapsed, otherwise stale
+		// zone data from the previous frame causes wrong click targets.
+		sidebarSessionLines = nil
+		sidebarDeleteXStart = nil
+		sidebarDeleteXEnd = nil
+		sidebarNewSessionY = -1
+		m.sidebarHasBusySessions = false
 		blocks = append(blocks, m.renderSidebarSectionHeader("Sessions", true))
 	} else {
 		blocks = append(blocks, m.renderSidebarSessions(contentW))
@@ -483,6 +490,7 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 			sidebarSectionHeaders["tasks"] = nextBlockOffset(blocks)
 			blocks = append(blocks, m.renderSidebarSectionHeader("Tasks", true))
 			sidebarActiveSectionOffset = -1
+			sidebarBgTaskLines = nil // clear stale zone data
 		} else {
 			sidebarActiveSectionOffset = nextBlockOffset(blocks)
 			sidebarSectionHeaders["tasks"] = sidebarActiveSectionOffset
