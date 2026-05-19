@@ -2136,15 +2136,10 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// Main content — trim trailing newlines so cursor stays inline.
 		// Wrap each line to contentWidth (= cw-4) so guide(2) + body(cw-4) = cw-2,
 		// leaving 2 cols right padding aligned with user msg "You" position.
-		// Table lines are truncated (not wrapped) to preserve column structure.
 		trimmed := strings.TrimRight(displayContent, "\n")
 		if trimmed != "" {
 			for _, l := range strings.Split(trimmed, "\n") {
-				if isTableLine(l) {
-					bodyLines = append(bodyLines, truncateStyledLine(l, contentWidth))
-				} else {
-					bodyLines = append(bodyLines, strings.Split(hardWrapRunes(l, contentWidth), "\n")...)
-				}
+				bodyLines = append(bodyLines, strings.Split(hardWrapRunes(l, contentWidth), "\n")...)
 			}
 		}
 

@@ -251,46 +251,6 @@ func hardWrapSingleLine(line string, maxW int) string {
 	return strings.Join(lines, "\n")
 }
 
-// truncateStyledLine truncates a styled line to maxW columns (ANSI-aware).
-// Unlike hardWrapRunes, it does NOT wrap — excess is dropped and ANSI state
-// is closed with a reset. Used for table rows where wrapping would destroy
-// column alignment.
-func truncateStyledLine(line string, maxW int) string {
-	if maxW <= 0 || lipgloss.Width(line) <= maxW {
-		return line
-	}
-	var buf strings.Builder
-	w := 0
-	inEscape := false
-	for _, r := range line {
-		if r == '\x1b' {
-			inEscape = true
-			buf.WriteRune(r)
-			continue
-		}
-		if inEscape {
-			buf.WriteRune(r)
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		rw := ansi.StringWidth(string(r))
-		if w+rw > maxW {
-			break
-		}
-		buf.WriteRune(r)
-		w += rw
-	}
-	return buf.String() + "\x1b[0m"
-}
-
-// isTableLine returns true if a rendered line looks like part of a table
-// (contains box-drawing characters used by glamour/lipgloss table rendering).
-func isTableLine(line string) bool {
-	return strings.ContainsAny(ansi.Strip(line), "│─┼┌┐└┘├┤┬┴")
-}
-
 // Document.Margin=0 prevents misalignment inside lipgloss bubbles.
 // WordWrap is set to the available width so glamour can calculate proper
 // table column widths and wrap cell content within cells.
