@@ -505,17 +505,18 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 // Called automatically at session start when auto_worktree is enabled.
 //
 // Every session gets its own worktree — no primary concept. All agents are equal peers.
-// Returns the worktree entry, or nil if not a git repo or worktree creation fails.
-func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
+// Returns (entry, created): entry is non-nil on success; created is true only when a
+// new worktree was physically created (false when returning an existing entry from disk).
+func AutoDetectAndInit(workDir, sessionKey string) (*WorktreeEntry, bool) {
 	return autoDetectAndInitInto(workDir, sessionKey, GlobalWorktreeRegistry)
 }
 
 // autoDetectAndInitInto is the testable core that accepts a custom registry.
-func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *WorktreeEntry {
+func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) (*WorktreeEntry, bool) {
 	// Check if in a git repo
 	repoPath, err := GitRepoRoot(workDir)
 	if err != nil {
-		return nil // not a git repo
+		return nil, false // not a git repo
 	}
 
 	// Ensure persisted data is loaded so we detect existing sessions
@@ -524,7 +525,7 @@ func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *W
 
 	// Already registered?
 	if entry := reg.GetBySession(sessionKey); entry != nil {
-		return entry
+		return entry, false
 	}
 
 	// All sessions get a worktree — no primary concept.
@@ -543,7 +544,7 @@ func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *W
 	worktreePath, err := createWorktree(repoPath, branch)
 	reg.mu.Unlock()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	entry := &WorktreeEntry{
@@ -559,9 +560,9 @@ func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *W
 		// Safety net: Register loaded from disk and found existing entry.
 		// Return it for idempotent behavior across restarts.
 		if existing := reg.GetBySession(sessionKey); existing != nil {
-			return existing
+			return existing, false
 		}
-		return nil
+		return nil, false
 	}
-	return entry
+	return entry, true
 }

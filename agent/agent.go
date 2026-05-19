@@ -2316,11 +2316,12 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	cfgPath := filepath.Join(a.xbotHome, "config.json")
 	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
 		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
-			if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-				// Only override CWD for brand new sessions (no persisted CWD).
-				// On restart, the user's last CWD is already restored by loadPersistedCWD
-				// and must not be overwritten — the user may have Cd'd out of the worktree.
-				if tenantSession.GetCurrentDir() == "" {
+			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+				// Only override CWD for brand new worktrees (first creation).
+				// On restart, AutoDetectAndInit returns existing entry with created=false,
+				// so the user's last CWD (restored by loadPersistedCWD) is preserved —
+				// even if they Cd'd out of the worktree.
+				if created {
 					tenantSession.SetCurrentDir(entry.WorktreeDir)
 				}
 			}
