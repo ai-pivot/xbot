@@ -30,9 +30,10 @@ func (t *TuiControlTool) Description() string {
 		"or change the theme. This is the PRIMARY way to navigate between sessions in the TUI. " +
 		"To CREATE a new session, use CreateChat (type=agent, role=explore, instance=\"name\") instead. " +
 		"To create a custom theme, use FileCreate to write a JSON file to ~/.xbot/themes/<name>.json then switch via set_theme. Activate the ai-config skill for the JSON format template. " +
-		"Use send_slash to execute slash commands in the input box (/set-llm, /model, /palette, /context, etc.). " +
+		"Use send_slash ONLY for pure-TUI operations (/palette, /settings, /rewind, /tasks, /clear, etc.). " +
+		"DO NOT use send_slash for /usage, /set-llm, /set-model, /models, /new, /compress, /context — these are agent-level commands handled natively. " +
 		"Actions: switch_session(chat_id), close_session(chat_id, params.confirm=true), " +
-		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/set-llm ...\"), " +
+		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/palette\"), " +
 		"reload_plugins(), reload_hooks(). " +
 		"Use reload_plugins after creating or modifying plugin files to hot-reload all plugins. " +
 		"Use reload_hooks after modifying hooks.json to reload hook configuration without restart. " +
@@ -125,7 +126,7 @@ func (t *TuiControlTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 			cmd = params.Params["command"]
 		}
 		if cmd == "" {
-			return nil, fmt.Errorf("tui_control: params.command required for send_slash (e.g. {\"command\":\"/set-llm provider=anthropic\"})")
+			return nil, fmt.Errorf("tui_control: params.command required for send_slash (e.g. {\"command\":\"/palette\"})")
 		}
 		res, err := ctx.TUIControl("send_slash", map[string]string{"command": cmd})
 		if err != nil {

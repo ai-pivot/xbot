@@ -634,7 +634,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		}
 
 	case "/usage":
-		m.handleUsageCommand()
+		m.sendToAgent(cmd) // passthrough to agent-level /usage handler
 
 	case "/channel":
 		m.openChannelPanel()

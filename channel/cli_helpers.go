@@ -888,6 +888,9 @@ func (m *cliModel) enqueueToast(text, icon string) tea.Cmd {
 }
 
 // handleUsageCommand renders token usage statistics for the current user.
+// Now handled by agent-level /usage command; kept for future send_slash/remote use.
+//
+//nolint:unused
 func (m *cliModel) handleUsageCommand() {
 	if m.usageQueryFn == nil {
 		m.showSystemMsg("Usage tracking not available", feedbackWarning)
@@ -1052,6 +1055,8 @@ func (m *cliModel) handleUsageCommand() {
 // formatTokenCount is defined in cli_view.go — do not duplicate here.
 
 // fmtTokens formats large token counts with K/M suffixes for usage tables.
+//
+//nolint:unused
 func fmtTokens(n int64) string {
 	if n >= 1_000_000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
@@ -1854,9 +1859,13 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 			sc.result <- &cliSessionResult{ok: false, err: "command required for send_slash"}
 			return nil
 		}
-		retCmd := m.handleSlashCommand(cmd)
+		// Return success IMMEDIATELY to unblock the caller (agent goroutine).
+		// handleSlashCommand may call back into the agent via sendToAgent (non-blocking)
+		// or run local handlers that invoke agent RPC (e.g. usageQueryFn → agent RPC).
+		// If we don't release the caller first, the RPC callback deadlocks because
+		// the agent goroutine is blocked in SendTUIControl waiting on resultCh.
 		sc.result <- &cliSessionResult{ok: true}
-		return retCmd
+		return m.handleSlashCommand(cmd)
 
 	default:
 		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}
