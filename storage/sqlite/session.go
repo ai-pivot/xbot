@@ -21,9 +21,22 @@ func NewSessionService(db *DB) *SessionService {
 	return &SessionService{db: db}
 }
 
+// conn returns the underlying database connection.
+// Returns an error if the database has been closed (nil connection).
+func (s *SessionService) conn() (*sql.DB, error) {
+	c := s.db.Conn()
+	if c == nil {
+		return nil, fmt.Errorf("database connection is closed")
+	}
+	return c, nil
+}
+
 // AddMessage adds a message to a tenant's session
 func (s *SessionService) AddMessage(tenantID int64, msg llm.ChatMessage) error {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
 
 	var toolCallsJSON sql.NullString
 	if len(msg.ToolCalls) > 0 {
@@ -44,7 +57,7 @@ func (s *SessionService) AddMessage(tenantID int64, msg llm.ChatMessage) error {
 		displayOnly = 1
 	}
 
-	_, err := conn.Exec(`
+	_, err = conn.Exec(`
 			INSERT INTO session_messages
 			(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, display_only, reasoning_content, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -69,7 +82,10 @@ func (s *SessionService) AddMessage(tenantID int64, msg llm.ChatMessage) error {
 //
 // Returns sql.ErrNoRows if no matching message exists.
 func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID, content string) error {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
 	res, err := conn.Exec(`
 		UPDATE session_messages SET content = ?
 		WHERE id = (
@@ -98,14 +114,17 @@ func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 // Tool messages between them are included to maintain context continuity.
 // display_only messages (e.g. cron results) are excluded from LLM context.
 func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
 
 	// Find the boundary: the Nth user message from the end (0-indexed offset = limit - 1).
 	// This way the window is measured in user-message turns, not raw row count,
 	// so multi-iteration assistant messages don't squeeze out real conversation history.
 	// Exclude display_only messages from boundary calculation.
 	var boundaryID sql.NullInt64
-	err := conn.QueryRow(`
+	err = conn.QueryRow(`
 		SELECT id FROM session_messages
 		WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
 		ORDER BY id DESC
@@ -148,7 +167,10 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 // into the user's long-term memory summary. If future features need to retrieve cron
 // execution history, a dedicated query (without the display_only filter) should be added.
 func (s *SessionService) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := conn.Query(`
 		SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
 		FROM session_messages
@@ -165,9 +187,12 @@ func (s *SessionService) GetAllMessages(tenantID int64) ([]llm.ChatMessage, erro
 
 // GetMessagesCount returns the number of messages for a tenant
 func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
 	var count int
-	err := conn.QueryRow(
+	err = conn.QueryRow(
 		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ?",
 		tenantID,
 	).Scan(&count)
@@ -182,9 +207,12 @@ func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
 // (which include tool calls, assistant iterations, etc.).
 // Excludes display_only messages (cron results).
 func (s *SessionService) GetUserMessageCount(tenantID int64) (int, error) {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
 	var count int
-	err := conn.QueryRow(
+	err = conn.QueryRow(
 		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0",
 		tenantID,
 	).Scan(&count)
@@ -196,7 +224,10 @@ func (s *SessionService) GetUserMessageCount(tenantID int64) (int, error) {
 
 // Clear removes all messages for a tenant
 func (s *SessionService) Clear(tenantID int64) error {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
 	result, err := conn.Exec("DELETE FROM session_messages WHERE tenant_id = ?", tenantID)
 	if err != nil {
 		return fmt.Errorf("clear session messages: %w", err)
@@ -215,12 +246,15 @@ func (s *SessionService) PurgeOldMessages(tenantID int64, keepCount int) (int64,
 	if keepCount <= 0 {
 		return 0, nil
 	}
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
 
 	// Find the ID of the message at position `keepCount` from the end (i.e., the oldest message to keep).
 	// Messages with ID < cutoff will be deleted.
 	var cutoffID sql.NullInt64
-	err := conn.QueryRow(`
+	err = conn.QueryRow(`
 		SELECT id FROM session_messages
 		WHERE tenant_id = ?
 		ORDER BY id DESC
@@ -264,7 +298,10 @@ func (s *SessionService) PurgeNewerThanOrEqual(tenantID int64, cutoff time.Time)
 	if cutoff.IsZero() {
 		return 0, nil
 	}
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
 	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
 	// We must compare against the same string format — passing time.Time directly causes
 	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
@@ -293,7 +330,10 @@ func (s *SessionService) PurgeNewerThan(tenantID int64, cutoff time.Time) (int64
 	if cutoff.IsZero() {
 		return 0, nil
 	}
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
 	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
 	// We must compare against the same string format — passing time.Time directly causes
 	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
@@ -318,7 +358,10 @@ func (s *SessionService) PurgeNewerThan(tenantID int64, cutoff time.Time) (int64
 // UpdateMessageContent updates the content of the Nth message (0-indexed) for a tenant.
 // Used by observation masking to persist masked content back to session.
 func (s *SessionService) UpdateMessageContent(tenantID int64, messageIndex int, content string) error {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
 	result, err := conn.Exec(`
 		UPDATE session_messages SET content = ?
 		WHERE tenant_id = ? AND id = (
@@ -343,7 +386,10 @@ func (s *SessionService) UpdateMessageContent(tenantID int64, messageIndex int, 
 // The index corresponds to the ordering used by GetAllMessages (which excludes display_only messages).
 // Used by context_edit persistence to sync in-memory edits back to the database.
 func (s *SessionService) UpdateMessageContentNonDisplayOnly(tenantID int64, messageIndex int, content string) error {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
 	result, err := conn.Exec(`
 		UPDATE session_messages SET content = ?
 		WHERE tenant_id = ? AND id = (
@@ -368,7 +414,10 @@ func (s *SessionService) UpdateMessageContentNonDisplayOnly(tenantID int64, mess
 // user-role message for a tenant. This records the exact API prompt_tokens at the
 // time that user message was sent, enabling precise token accounting for rewind.
 func (s *SessionService) UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
 	result, err := conn.Exec(`
 UPDATE session_messages SET context_tokens = ?
 WHERE id = (
@@ -391,9 +440,12 @@ ORDER BY id DESC LIMIT 1
 // non-display-only user message for a tenant. Used by rewind to restore accurate
 // token state. Returns (0, nil) if no user message or context_tokens is 0.
 func (s *SessionService) GetLastUserMessageContextTokens(tenantID int64) (int64, error) {
-	conn := s.db.Conn()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
 	var tokens sql.NullInt64
-	err := conn.QueryRow(`
+	err = conn.QueryRow(`
 SELECT context_tokens FROM session_messages
 WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
 ORDER BY id DESC LIMIT 1
