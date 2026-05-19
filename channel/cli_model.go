@@ -1366,6 +1366,13 @@ type cliPluginUninstallResultMsg struct {
 // and the TUI should re-render to show the new content.
 type cliWidgetUpdateMsg struct{}
 
+// cliModelDiscoverMsg triggers a delayed auto-discover retry for the model name.
+// Sent when the initial refreshCachedModelName fails to find a model (e.g. LLM
+// client not yet ready after setup). The handler retries the auto-discover logic.
+type cliModelDiscoverMsg struct {
+	attempt int // retry attempt number (0-based)
+}
+
 // isCtrlEnter 检测 Ctrl+Enter 按键。
 // 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：
 //   - CSI u 协议: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
@@ -1445,6 +1452,41 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
 	}
+}
+
+// scheduleModelDiscoverRetry returns a tea.Cmd that sends a delayed
+// cliModelDiscoverMsg to retry auto-discovering the model name.
+// Used when ListModels returns empty (e.g. LLM client not ready after setup).
+func (m *cliModel) scheduleModelDiscoverRetry(attempt int) tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return cliModelDiscoverMsg{attempt: attempt}
+	})
+}
+
+// handleModelDiscoverMsg processes a delayed model auto-discover retry.
+func (m *cliModel) handleModelDiscoverMsg(msg cliModelDiscoverMsg) tea.Cmd {
+	if m.cachedModelName != "" {
+		return nil // already resolved
+	}
+	// Retry auto-discover
+	if m.channel != nil && m.channel.modelLister != nil {
+		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+			m.cachedModelName = models[0]
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			}
+			existing := LoadSessionLLMState(m.workDir, m.chatID)
+			existing.Model = models[0]
+			SaveSessionLLMState(m.workDir, m.chatID, existing)
+			m.updateViewportContent()
+			return nil
+		}
+	}
+	// Max 5 retries (15s total)
+	if msg.attempt < 5 {
+		return m.scheduleModelDiscoverRetry(msg.attempt + 1)
+	}
+	return nil
 }
 
 // scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when
