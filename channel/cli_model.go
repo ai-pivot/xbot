@@ -15,6 +15,7 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/tools"
 	"xbot/version"
 )
 
@@ -1021,14 +1022,15 @@ type cliModel struct {
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
 	// --- Layout configuration ---
-	chatMaxWidth    int    // max content width (0 = unlimited)
-	chatCenter      bool   // center content in middle-width screens
-	layoutMode      string // "auto" / "single" / "dual"
-	sidebarEnabled  bool   // show sidebar in wide screens
-	sidebarWidth    int    // sidebar width in chars
-	sidebarPosition string // "left" / "right"
-	sidebarVisible  bool   // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
-	xShift          int    // sidebar X offset for middleBlock, set during trackMainLayoutZones
+	chatMaxWidth             int             // max content width (0 = unlimited)
+	chatCenter               bool            // center content in middle-width screens
+	layoutMode               string          // "auto" / "single" / "dual"
+	sidebarEnabled           bool            // show sidebar in wide screens
+	sidebarWidth             int             // sidebar width in chars
+	sidebarPosition          string          // "left" / "right"
+	sidebarVisible           bool            // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
+	sidebarCollapsedSections map[string]bool // per-section collapse state: "sessions"/"todo"/"tasks" → true=collapsed
+	xShift                   int             // sidebar X offset for middleBlock, set during trackMainLayoutZones
 
 	// Cached layout metrics (invalidated on resize / sidebar toggle).
 	// Eliminates repeated lipgloss.Render + ansi.StringWidth per chatWidth() call.
@@ -1178,16 +1180,17 @@ func newCLIModel() *cliModel {
 		senderID:        "cli_user",
 		channelName:     "cli",
 		// Layout defaults
-		chatMaxWidth:      76,
-		chatCenter:        true,
-		layoutMode:        "auto",
-		sidebarEnabled:    true,
-		sidebarVisible:    true,
-		sidebarWidth:      30,
-		sidebarPosition:   "left",
-		unreadSessions:    make(map[string]bool),
-		lastBusyStates:    make(map[string]bool),
-		liveSessionStates: make(map[string]*liveSessionState),
+		chatMaxWidth:             76,
+		chatCenter:               true,
+		layoutMode:               "auto",
+		sidebarEnabled:           true,
+		sidebarVisible:           true,
+		sidebarWidth:             30,
+		sidebarPosition:          "left",
+		sidebarCollapsedSections: make(map[string]bool),
+		unreadSessions:           make(map[string]bool),
+		lastBusyStates:           make(map[string]bool),
+		liveSessionStates:        make(map[string]*liveSessionState),
 	}
 }
 
@@ -1570,4 +1573,24 @@ func (m *cliModel) reloadMessagesFromSession() {
 			}
 		}
 	})
+}
+
+// toggleSidebarSection toggles the collapse state of a sidebar section and persists to preferences.
+func (m *cliModel) toggleSidebarSection(section string) {
+	if m.sidebarCollapsedSections[section] {
+		delete(m.sidebarCollapsedSections, section)
+	} else {
+		m.sidebarCollapsedSections[section] = true
+	}
+	m.saveSidebarCollapsedPrefs()
+}
+
+// saveSidebarCollapsedPrefs persists the current sidebar section collapse state to preferences.json.
+func (m *cliModel) saveSidebarCollapsedPrefs() {
+	if m.workDir == "" {
+		return
+	}
+	prefs := tools.LoadPreferences(m.workDir, m.senderID)
+	prefs.SidebarCollapsed = m.sidebarCollapsedSections
+	_ = tools.SavePreferences(m.workDir, m.senderID, prefs)
 }

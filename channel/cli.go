@@ -26,6 +26,7 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/tools"
 	"xbot/version"
 )
 
@@ -105,6 +106,12 @@ func (c *CLIChannel) Start() error {
 	}
 	c.model.debugCaptureMs = c.config.DebugCaptureMs
 	c.model.senderID = "cli_user"
+
+	// Load per-user UI preferences (sidebar collapse state, etc.)
+	prefs := tools.LoadPreferences(c.workDir, c.model.senderID)
+	if len(prefs.SidebarCollapsed) > 0 {
+		c.model.sidebarCollapsedSections = prefs.SidebarCollapsed
+	}
 
 	// CLI-side TodoManager for persisting todos across turns and session switches.
 	// Updated by syncProgressTodos during active turns and consumed by endAgentTurn
