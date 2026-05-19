@@ -17,6 +17,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.24.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/avast/retry-go/v5 v5.0.0
+	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
@@ -45,7 +46,6 @@ require (
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
@@ -100,3 +100,5 @@ require (
 )
 
 replace github.com/pgavlin/mermaid-ascii => github.com/Chronostasys/mermaid-ascii v0.0.0-20260416173126-a903e2a57055
+
+replace github.com/muesli/reflow => github.com/Chronostasys/reflow v0.3.1-0.20260519024006-4372fc20e6e2
