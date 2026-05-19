@@ -690,7 +690,7 @@ func buildStyles(width int) cliStyles {
 		ProgressError:    lipgloss.NewStyle().Foreground(c(t.Error)),
 		ProgressElapsed:  lipgloss.NewStyle().Foreground(c(t.TextSecondary)).Faint(true),
 		ProgressIndent:   lipgloss.NewStyle().Foreground(c(t.TextPrimary)),
-		ProgressDim:      lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)).Faint(true),
+		ProgressDim:      lipgloss.NewStyle().Foreground(c(t.FGMostSubtle)),
 		ProgressBlock:    lipgloss.NewStyle().Padding(0, 1).Width(cw),
 		Accent:           lipgloss.NewStyle().Foreground(c(t.Accent)),
 		TextMutedSt:      lipgloss.NewStyle().Foreground(c(t.TextMuted)),
