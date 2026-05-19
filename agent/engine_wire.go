@@ -81,7 +81,7 @@ func (a *Agent) buildBaseRunConfig(
 	senderName string,
 	sandboxUserID string,
 ) (RunConfig, int) {
-	sessionKey := channel + ":" + chatID
+	sessionKey := qualifyChatID(channel, chatID)
 
 	llmClient, model, userMaxCtx, thinkingMode := a.llmFactory.GetLLMForChat(senderID, chatID)
 
@@ -215,7 +215,7 @@ func (a *Agent) buildMainRunConfig(
 	autoNotify bool,
 ) RunConfig {
 	channel, chatID, senderID, senderName := msg.Channel, msg.ChatID, msg.SenderID, msg.SenderName
-	sessionKey := channel + ":" + chatID
+	sessionKey := qualifyChatID(channel, chatID)
 
 	// 飞书身份登录 web 时，用飞书用户 ID 作为沙箱用户 ID，
 	// 确保 web 端与飞书端共用同一个 Docker 容器和工作区。
@@ -786,7 +786,7 @@ func (a *Agent) buildSubAgentRunConfig(
 // 包含 session MCP 查找、激活检查、工具使用追踪等完整逻辑。
 // 这是主 Agent 和 Cron 使用的执行器，SubAgent 使用 defaultToolExecutor。
 func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
-	sessionKey := channel + ":" + chatID
+	sessionKey := qualifyChatID(channel, chatID)
 
 	// Pre-build RunConfig outside closure to avoid reallocating on every tool call.
 	// Only ctx (from the caller) changes per-call; all config fields are stable.
@@ -1520,14 +1520,14 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 	log.WithFields(log.Fields{
 		"hasCliCh":       cliCh != nil,
 		"hasRemoteCLICh": remoteCLICh != nil,
-		"progressKey":    sessionKey(channel, chatID),
+		"progressKey":    qualifyChatID(channel, chatID),
 	}).Info("buildCLIProgressEventHandler: cli channel resolution")
 
 	if cliCh == nil && remoteCLICh == nil {
 		return nil
 	}
 
-	progressKey := sessionKey(channel, chatID)
+	progressKey := qualifyChatID(channel, chatID)
 	return func(event *ProgressEvent) {
 		if event == nil || event.Structured == nil {
 			return
@@ -1724,7 +1724,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 		log.WithField("channel", channel).Warn("Web channel found but type assertion failed, skipping ProgressEventHandler")
 		return nil
 	}
-	progressKey := sessionKey(channel, chatID)
+	progressKey := qualifyChatID(channel, chatID)
 	return func(event *ProgressEvent) {
 		if event == nil || event.Structured == nil {
 			return
@@ -1828,7 +1828,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	streamContentFunc = func(content string) {
 		seq := progressSeq.Add(1)
 		if cliCh != nil {
-			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sessionKey(channel, chatID), Seq: seq, StreamContent: content})
+			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: qualifyChatID(channel, chatID), Seq: seq, StreamContent: content})
 		}
 		if remoteCLICh != nil {
 			remoteCLICh.SendStreamContent(chatID, content, "")
@@ -1840,7 +1840,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	streamReasoningFunc = func(content string) {
 		seq := progressSeq.Add(1)
 		if cliCh != nil {
-			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sessionKey(channel, chatID), Seq: seq, ReasoningStreamContent: content})
+			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: qualifyChatID(channel, chatID), Seq: seq, ReasoningStreamContent: content})
 		}
 		if remoteCLICh != nil {
 			remoteCLICh.SendStreamContent(chatID, "", content)

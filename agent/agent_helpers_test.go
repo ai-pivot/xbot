@@ -56,7 +56,7 @@ func TestFormatErrorForUser(t *testing.T) {
 // sessionKey
 // ---------------------------------------------------------------------------
 
-func TestSessionKey(t *testing.T) {
+func TestQualifyChatID(t *testing.T) {
 	tests := []struct {
 		name    string
 		channel string
@@ -73,9 +73,9 @@ func TestSessionKey(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionKey(tc.channel, tc.chatID)
+			got := qualifyChatID(tc.channel, tc.chatID)
 			if got != tc.want {
-				t.Errorf("sessionKey(%q, %q) = %q, want %q", tc.channel, tc.chatID, got, tc.want)
+				t.Errorf("qualifyChatID(%q, %q) = %q, want %q", tc.channel, tc.chatID, got, tc.want)
 			}
 		})
 	}

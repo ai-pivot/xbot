@@ -295,7 +295,7 @@ func (a *Agent) destroyInteractiveSession(key string) {
 // instance 为空时，行为与旧版一致（向后兼容）。
 // 设置 instance 后，同一个 role 可以创建多个独立的 interactive session。
 func interactiveKey(channel, chatID, roleName, instance string) string {
-	key := channel + ":" + chatID + "/" + roleName
+	key := qualifyChatID(channel, chatID) + "/" + roleName
 	if instance != "" {
 		key += ":" + instance
 	}
@@ -1307,7 +1307,7 @@ func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, sen
 // 返回格式："roleName" 或 "roleName:instance"。
 func (a *Agent) GetActiveInteractiveRoles(channel, chatID string) []string {
 	var roles []string
-	prefix := channel + ":" + chatID + "/"
+	prefix := qualifyChatID(channel, chatID) + "/"
 	a.interactiveSubAgents.Range(func(k, v any) bool {
 		key, ok := k.(string)
 		if !ok {
@@ -1337,7 +1337,7 @@ func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID 
 	}
 	if len(keysToClean) > 0 {
 		log.WithFields(log.Fields{
-			"session": channel + ":" + chatID,
+			"session": qualifyChatID(channel, chatID),
 			"roles":   keysToClean,
 		}).Info("Cleaned up all interactive sessions")
 	}
@@ -1378,7 +1378,7 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 	a.cleanupExpiredSessions()
 	var prefix string
 	if chatID != "" {
-		prefix = channel + ":" + chatID + "/"
+		prefix = qualifyChatID(channel, chatID) + "/"
 	} else {
 		prefix = channel + ":"
 	}

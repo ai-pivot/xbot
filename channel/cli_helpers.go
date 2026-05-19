@@ -17,6 +17,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// qualifyChatID combines channel name and chatID into the "channel:chatID" format
+// used throughout the codebase as the canonical session key.
+func qualifyChatID(channel, chatID string) string {
+	return channel + ":" + chatID
+}
+
 // ParseSettingBool parses a boolean setting value.
 // Accepts "true", "1", "yes" (case-insensitive) as true; everything else as false.
 // Shared between serverapp and cmd/xbot-cli for consistent behavior.

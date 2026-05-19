@@ -145,7 +145,7 @@ func (s *TenantSession) String() string {
 
 // GetSessionKey 返回会话唯一标识
 func (s *TenantSession) GetSessionKey() string {
-	return s.channel + ":" + s.chatID
+	return sessKey(s.channel, s.chatID)
 }
 
 // MarkActive 更新会话活跃时间
@@ -237,7 +237,7 @@ func (s *TenantSession) SetCurrentDir(dir string) {
 // sessionCwdFileName returns a safe filename for the given session.
 // Uses SHA256 hash of "channel:chatID" to avoid filesystem-unsafe characters.
 func sessionCwdFileName(channel, chatID string) string {
-	h := sha256.Sum256([]byte(channel + ":" + chatID))
+	h := sha256.Sum256([]byte(sessKey(channel, chatID)))
 	return fmt.Sprintf("%x.txt", h[:16])
 }
 
