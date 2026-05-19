@@ -101,4 +101,4 @@ require (
 
 replace github.com/pgavlin/mermaid-ascii => github.com/Chronostasys/mermaid-ascii v0.0.0-20260416173126-a903e2a57055
 
-replace github.com/muesli/reflow => github.com/Chronostasys/reflow v0.3.1-0.20260519024006-4372fc20e6e2
+replace github.com/muesli/reflow => github.com/Chronostasys/reflow v0.3.1-0.20260519024808-b26b9324b36a
