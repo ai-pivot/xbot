@@ -109,9 +109,7 @@ func (c *CLIChannel) Start() error {
 
 	// Load per-user UI preferences (sidebar collapse state, etc.)
 	prefs := tools.LoadPreferences(c.workDir, c.model.senderID)
-	if len(prefs.SidebarCollapsed) > 0 {
-		c.model.sidebarCollapsedSections = prefs.SidebarCollapsed
-	}
+	c.model.sidebarCollapsedSections = prefs.SidebarCollapsed
 
 	// CLI-side TodoManager for persisting todos across turns and session switches.
 	// Updated by syncProgressTodos during active turns and consumed by endAgentTurn
@@ -730,6 +728,7 @@ func (c *CLIChannel) InjectUserMessage(chatID, content string) {
 		select {
 		case c.asyncCh <- cliInjectedUserMsg{content: content, chatID: chatID}:
 		default:
+			log.WithField("chat_id", chatID).Warn("CLIChannel.InjectUserMessage: asyncCh full, dropping injected user message")
 		}
 	}
 }

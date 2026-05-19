@@ -91,18 +91,23 @@ func (c *RemoteCLIChannel) Start() error { return nil }
 
 func (c *RemoteCLIChannel) Stop() {}
 
+// stripChannelPrefix extracts the plain chatID from a "channel:chatID" qualified key.
+// If no colon is present, returns the input unchanged.
+// Used by RemoteCLIChannel to map qualified keys to Hub subscriber keys.
+func stripChannelPrefix(qualifiedID string) string {
+	if idx := strings.Index(qualifiedID, ":"); idx >= 0 {
+		return qualifiedID[idx+1:]
+	}
+	return qualifiedID
+}
+
 // InjectUserMessage sends an injected user message (e.g. bg task notification)
 // to the remote CLI runner via WebSocket.
 // chatID may be in "channel:chatID" format (from injectCLIUserMessage) — we strip
 // the channel prefix for the Hub subscriber lookup while preserving the full key
 // in the WSMessage so the client-side TUI session filter matches correctly.
 func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
-	// Hub subscribers are registered with plain chatID (e.g. "/home/user/tmp"),
-	// but callers pass "cli:/home/user/tmp" for TUI session filtering.
-	hubKey := chatID
-	if idx := strings.Index(chatID, ":"); idx >= 0 {
-		hubKey = chatID[idx+1:]
-	}
+	hubKey := stripChannelPrefix(chatID)
 	wsMsg := cliMsg.buildInjectUserMsg(chatID, content)
 	if !c.hub.sendToClient(hubKey, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")

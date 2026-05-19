@@ -1439,26 +1439,33 @@ func (a *Agent) resetSessionState(key string) {
 	a.sessionFinalSent.Delete(key)
 }
 
+// qualifyChatID combines channel name and chatID into the "channel:chatID" format
+// used by TUI session filtering (handleInjectedUserMsg). All inject paths must
+// use this helper instead of inline string concatenation.
+func qualifyChatID(channel, chatID string) string {
+	return channel + ":" + chatID
+}
+
 // injectCLIUserMessage sends a user message to the CLI channel if available.
 // Used by background notification handlers to display messages in the CLI UI.
 // Supports all three CLI channel types via UserMessageInjector interface:
 // CLIChannel (local), RemoteCLIChannel (websocket), ChannelCliChannel (in-process server).
 func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if a.channelFinder == nil {
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channelFinder is nil, skipping")
 		return
 	}
 	ch, ok := a.channelFinder(channelName)
 	if !ok {
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Warn("injectCLIUserMessage: channel not found via channelFinder")
 		return
 	}
-	if injector, ok := ch.(channel.UserMessageInjector); ok {
-		// All channels use "channel:chatID" format — TUI's handleInjectedUserMsg
-		// filters by m.channelName+":"+m.chatID. Without the prefix, the injected
-		// message is silently dropped in both local mode (via ChannelCliChannel→eventCh
-		// →Client→CLIChannel.asyncCh) and remote mode (via RemoteCLIChannel→WS→Client→
-		// CLIChannel.asyncCh).
-		injector.InjectUserMessage(channelName+":"+chatID, content)
+	injector, ok := ch.(channel.UserMessageInjector)
+	if !ok {
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channel does not implement UserMessageInjector")
+		return
 	}
+	injector.InjectUserMessage(qualifyChatID(channelName, chatID), content)
 }
 
 // Run 启动 Agent 循环，持续消费入站消息。
@@ -1473,13 +1480,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.multiSession.StartCleanupRoutine()
 
 	a.cronSch.SetInjectFunc(func(channel, chatID, senderID, content string) {
-		// Mirror injectBgUserMessage pattern: notify TUI first, then inject to agent.
-		// Without injectCLIUserMessage, the TUI never receives a cliInjectedUserMsg,
-		// so no user message appears and startAgentTurn is never called via that path.
-		// The progress auto-start alone is insufficient — it lacks the user message
-		// in m.messages, causing the turn to display without context.
-		a.injectCLIUserMessage(channel, chatID, fmt.Sprintf("⏰ [定时任务] %s", content))
-		a.injectInbound(channel, chatID, senderID, content)
+		// Cron injects via injectBgUserMessage to ensure both TUI notification
+		// (injectCLIUserMessage) and agent processing (injectInbound) happen together.
+		// The content passed to TUI includes a ⏰ prefix for visual distinction;
+		// the content passed to agent is the raw cron message.
+		a.injectBgUserMessage(channel, chatID, senderID, content)
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
@@ -2619,13 +2624,18 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	select {
 	case a.bus.Inbound <- msg:
 	case <-a.agentCtx.Done():
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: agent context done, dropping message")
 	}
 }
 
 // injectEventMessage 向入站队列注入事件触发的消息。
 // Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop，
 // 并设置 EventSource/EventTrigger 元数据。
+// 同时通过 injectCLIUserMessage 通知 TUI 显示。
 func (a *Agent) injectEventMessage(msg event.Message) {
+	// Notify TUI — event messages should be visible in the UI
+	a.injectCLIUserMessage(msg.Channel, msg.ChatID, fmt.Sprintf("📡 [Event] %s", msg.Content))
+
 	inbound := bus.InboundMessage{
 		Channel:      msg.Channel,
 		SenderID:     msg.SenderID,
@@ -2640,6 +2650,7 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 	select {
 	case a.bus.Inbound <- inbound:
 	case <-a.agentCtx.Done():
+		log.WithFields(log.Fields{"channel": msg.Channel, "chat_id": msg.ChatID}).Warn("injectEventMessage: agent context done, dropping message")
 	}
 }
 
@@ -2747,6 +2758,11 @@ func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
 // content as a user message. It reads senderID from the notification to preserve
 // correct sender context (workspace, sandbox, memory, LLM config).
 // All bg notification handlers MUST use this function — never call injectInbound directly.
+//
+// Both TUI notification (injectCLIUserMessage) and agent processing (injectInbound)
+// are called together. Without injectCLIUserMessage, the TUI never receives a
+// cliInjectedUserMsg, so no user message appears — only the progress auto-start
+// fires, which lacks the user message in m.messages.
 func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
 	a.injectCLIUserMessage(channelName, chatID, content)
 	a.injectInbound(channelName, chatID, senderID, content)
