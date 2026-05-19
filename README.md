@@ -43,6 +43,39 @@ curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/instal
 irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
 
+<details>
+<summary>🇨🇳 国内用户（无需翻墙）</summary>
+
+通过公共 CDN 镜像加速，零配置即可安装：
+
+```bash
+# Linux / macOS（选一个能用的镜像）
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
+# 或
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
+```
+
+```powershell
+# Windows PowerShell（选一个能用的镜像）
+irm https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
+# 或
+irm https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
+```
+
+脚本会自动检测可用的镜像并代理所有 GitHub 下载。也可手动指定镜像：
+
+```bash
+# Linux / macOS
+GH_MIRROR=ghfast.top bash scripts/install-cn.sh
+```
+
+```powershell
+# Windows
+$env:GH_MIRROR="ghfast.top"; .\scripts\install-cn.ps1
+```
+
+</details>
+
 指定安装路径：
 
 ```bash

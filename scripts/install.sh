@@ -4,6 +4,9 @@ set -euo pipefail
 REPO="ai-pivot/xbot"
 FALLBACK_REPO="CjiW/xbot"
 BINARY="xbot-cli"
+# GitHub CDN mirror for users behind the GFW (set by install-cn.sh or manually)
+# e.g. GH_MIRROR=ghfast.top  →  https://ghfast.top/https://github.com/...
+GH_MIRROR="${GH_MIRROR:-}"
 # Default to user-local install (no sudo required)
 INSTALL_PATH="${INSTALL_PATH:-$HOME/.local/bin}"
 XBOT_HOME="${XBOT_HOME:-$HOME/.xbot}"
@@ -23,6 +26,19 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"
+}
+
+# Proxy a GitHub URL through the configured CDN mirror (if any).
+# Usage: gh_url "https://github.com/ai-pivot/xbot/releases/download/v1.0/file"
+# If GH_MIRROR is set, returns "https://${GH_MIRROR}/https://github.com/..."
+# Otherwise returns the original URL unchanged.
+gh_url() {
+    local url="$1"
+    if [ -n "$GH_MIRROR" ]; then
+        echo "https://${GH_MIRROR}/${url}"
+    else
+        echo "$url"
+    fi
 }
 
 detect_platform() {
@@ -58,21 +74,21 @@ resolve_version() {
     case "$ch" in
         stable)
             # /releases/latest returns the latest non-prerelease release
-            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${REPO}/releases/latest")" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
             if [ -z "$tag" ]; then
-                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+                tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${FALLBACK_REPO}/releases/latest")" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
             fi
             ;;
         nightly)
-            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
+            tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
             if [ -z "$tag" ]; then
-                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
+                tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
             fi
             ;;
         beta)
-            tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
+            tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
             if [ -z "$tag" ]; then
-                tag=$(curl -fsSL "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
+                tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
             fi
             ;;
         *)
@@ -318,9 +334,9 @@ download_web_dist() {
     if [ -t 2 ]; then
         curl_progress="--progress-bar"
     fi
-    if curl -fSL ${curl_progress} "$dist_url" | tar xzf - -C "$target_dir" 2>/dev/null; then
+    if curl -fSL ${curl_progress} "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
         info "Web UI installed to ${target_dir} ✓"
-    elif curl -fSL ${curl_progress} "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz" | tar xzf - -C "$target_dir" 2>/dev/null; then
+    elif curl -fSL ${curl_progress} "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
         warn "Web UI downloaded from fallback repo ${FALLBACK_REPO}"
         info "Web UI installed to ${target_dir} ✓"
     else
@@ -490,6 +506,9 @@ main() {
     info "URL:       ${DOWNLOAD_URL}"
     info "Install:   ${INSTALL_PATH}/${BINARY}"
     info "Config:    ${CONFIG_PATH}"
+    if [ -n "$GH_MIRROR" ]; then
+        info "Mirror:    ${GH_MIRROR} (GitHub CDN proxy)"
+    fi
     echo ""
 
     ask_mode
@@ -510,19 +529,19 @@ main() {
     fi
     # Try new repo first; fall back to old repo if release not found
     # (during migration from CjiW/xbot → ai-pivot/xbot)
-    if ! curl -fSL ${curl_progress} -o "${TMPDIR}/${BINARY}" "$DOWNLOAD_URL" 2>/dev/null; then
+    if ! curl -fSL ${curl_progress} -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")" 2>/dev/null; then
         FALLBACK_URL="https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
         warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
         DOWNLOAD_URL="$FALLBACK_URL"
-        if ! curl -fSL ${curl_progress} -o "${TMPDIR}/${BINARY}" "$DOWNLOAD_URL"; then
+        if ! curl -fSL ${curl_progress} -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
             error "Download failed from both repos. Check the version and platform."
         fi
     fi
 
     if command -v shasum >/dev/null 2>&1; then
         info "Verifying checksum..."
-        curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
-            || curl -fsSL "https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/checksums.txt" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
+        curl -fsSL "$(gh_url "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
+            || curl -fsSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
             || warn "Checksum file not found, skipping verification."
         if [ -f "${TMPDIR}/checksums.txt" ]; then
             expected=$(grep "xbot-cli-${PLATFORM}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
