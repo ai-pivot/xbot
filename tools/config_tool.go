@@ -21,9 +21,9 @@ func (t *ConfigTool) Description() string {
 		"sidebar_width (prefer tui_control), or any other config key. " +
 		"Actions: list (see all configs with descriptions), get (key), set (key, value), " +
 		"subscriptions (list all LLM subscriptions). " +
-		"NOTE: To switch the active model, use tui_control send_slash with /set-model <model>. " +
+		"NOTE: To switch the active model, tell the user to run /set-model <model>. " +
 		"To configure a custom LLM provider, tell the user to run /set-llm directly. " +
-		"To view token usage stats, use tui_control send_slash with /usage."
+		"To view token usage, tell the user to run /usage."
 }
 
 func (t *ConfigTool) Parameters() []llm.ToolParam {

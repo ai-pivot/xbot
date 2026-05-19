@@ -75,6 +75,7 @@ func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (
 			"/set-model <model> — 设置当前使用的模型\n" +
 			"/compress — 手动触发上下文压缩\n" +
 			"/context mode [phase1|none|default] — 查看/切换压缩模式\n" +
+			"/usage — 查看 token 用量统计\n" +
 			"/cancel — 取消当前正在处理的请求\n" +
 			"!<command> — 快捷执行命令（跳过 LLM，直接在 sandbox 中运行）",
 	}, nil
@@ -157,6 +158,19 @@ func (c *compressCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return nil, err
 	}
 	return a.handleCompress(ctx, msg, tenantSession)
+}
+
+// --- /usage ---
+
+type usageCmd struct{}
+
+func (c *usageCmd) Name() string        { return "/usage" }
+func (c *usageCmd) Aliases() []string   { return nil }
+func (c *usageCmd) Match(s string) bool { return strings.ToLower(s) == "/usage" }
+func (c *usageCmd) Concurrent() bool    { return true } // read-only DB query
+
+func (c *usageCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	return a.handleUsage(ctx, msg)
 }
 
 // --- /context info --- (read-only, concurrent)
@@ -606,6 +620,7 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&unsetLLMCmd{})
 	r.Register(&getLLMCmd{})
 	r.Register(&compressCmd{})
+	r.Register(&usageCmd{})
 	r.Register(&contextModeCmd{}) // 先注册（更精确的匹配优先）
 	r.Register(&contextInfoCmd{}) // 后注册（更宽泛的匹配）
 	r.Register(&modelsCmd{})

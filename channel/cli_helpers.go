@@ -888,6 +888,9 @@ func (m *cliModel) enqueueToast(text, icon string) tea.Cmd {
 }
 
 // handleUsageCommand renders token usage statistics for the current user.
+// Now handled by agent-level /usage command; kept for future send_slash/remote use.
+//
+//nolint:unused
 func (m *cliModel) handleUsageCommand() {
 	if m.usageQueryFn == nil {
 		m.showSystemMsg("Usage tracking not available", feedbackWarning)
@@ -1052,6 +1055,8 @@ func (m *cliModel) handleUsageCommand() {
 // formatTokenCount is defined in cli_view.go — do not duplicate here.
 
 // fmtTokens formats large token counts with K/M suffixes for usage tables.
+//
+//nolint:unused
 func fmtTokens(n int64) string {
 	if n >= 1_000_000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
