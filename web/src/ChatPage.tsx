@@ -263,7 +263,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [todos, setTodos] = useState<{ id: number; text: string; done: boolean }[]>([])
   const [subAgents, setSubAgents] = useState<WsSubAgent[]>([])
   const [taskPanelOpen, setTaskPanelOpen] = useState(false)
-  const [messageQueue, setMessageQueue] = useState<number>(0)
+  const [messageQueue, _setMessageQueue] = useState<number>(0)
   const inputHistory = useInputHistory(100)
   const { play: playSound } = useSoundFeedback()
   const { addNotification } = useNotificationContext()

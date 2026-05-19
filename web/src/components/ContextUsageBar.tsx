@@ -17,7 +17,7 @@ export const ContextUsageBar = memo(function ContextUsageBar({
   maxTokens,
   usagePct,
 }: ContextUsageBarProps) {
-  const t = useTranslation()
+  const { t } = useTranslation()
 
   if (maxTokens <= 0) return null
 

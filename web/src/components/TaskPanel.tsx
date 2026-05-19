@@ -23,7 +23,7 @@ export const TaskPanel = memo(function TaskPanel({
   subAgents,
   loading,
 }: TaskPanelProps) {
-  const t = useTranslation()
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<'overview' | 'todos' | 'agents'>('overview')
 
   if (!open) return null
@@ -41,7 +41,7 @@ export const TaskPanel = memo(function TaskPanel({
           <h2 className="task-panel-title">
             ⚡ {t('taskPanelTitle')}
           </h2>
-          <button className="task-panel-close" onClick={onClose} aria-label={t('close')}>
+          <button className="task-panel-close" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
@@ -190,7 +190,7 @@ export const TaskPanel = memo(function TaskPanel({
         {/* Footer with shortcuts */}
         <div className="task-panel-footer">
           <span className="text-[10px] text-slate-600">
-            <kbd className="info-bar-kbd">Esc</kbd> {t('close')}
+            <kbd className="info-bar-kbd">Esc</kbd> Close
           </span>
         </div>
       </div>

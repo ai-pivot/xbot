@@ -23,7 +23,7 @@ export const InfoBar = memo(function InfoBar({
   loading,
   workspace,
 }: InfoBarProps) {
-  const t = useTranslation()
+  const { t } = useTranslation()
 
   const runningAgents = countByStatus(subAgents, 'running')
   const totalAgents = countAll(subAgents)
