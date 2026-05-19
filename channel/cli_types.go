@@ -251,7 +251,6 @@ func hardWrapSingleLine(line string, maxW int) string {
 	return strings.Join(lines, "\n")
 }
 
-// newGlamourRenderer creates a glamour Markdown renderer.
 // Document.Margin=0 prevents misalignment inside lipgloss bubbles.
 // WordWrap is set to the available width so glamour can calculate proper
 // table column widths and wrap cell content within cells.
@@ -323,12 +322,12 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		// Disable glamour's word-wrap — it breaks inline code (`build:sim-sdk:x86_64`
-		// gets split at `sim-\nsdk:`). Instead, hardWrapRunes wraps at exact column
-		// boundaries after glamour renders styles (colors, inline code bg, etc).
-		// Table structure is NOT affected: glamour still renders table markup,
-		// separator lines are plain ASCII that hardWrapRunes handles correctly.
-		glamour.WithWordWrap(0),
+		// WordWrap tells glamour the available width so it can size tables correctly.
+		// Glamour's word-wrap breaks inline code (`build:sim-sdk:x86_64` at hyphen
+		// boundaries), so we also do post-processing: hardWrapRunes wraps non-table
+		// text at exact column boundaries after glamour renders styles, while table
+		// lines are truncated (not wrapped) to preserve structure.
+		glamour.WithWordWrap(wrapWidth),
 	)
 	return r
 }

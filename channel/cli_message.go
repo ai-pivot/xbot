@@ -2134,13 +2134,13 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 
 		// Main content — trim trailing newlines so cursor stays inline.
-		// Wrap each line to contentWidth (= cw-4) so guide(2) + body(cw-4) = cw-2,
-		// leaving 2 cols right padding aligned with user msg "You" position.
+		// glamour already handles word-wrap via WithWordWrap(wrapWidth),
+		// including CJK-aware line breaking (via forked muesli/reflow).
+		// No additional hard-wrap needed — it would double-wrap and
+		// break table structure.
 		trimmed := strings.TrimRight(displayContent, "\n")
 		if trimmed != "" {
-			for _, l := range strings.Split(trimmed, "\n") {
-				bodyLines = append(bodyLines, strings.Split(hardWrapRunes(l, contentWidth), "\n")...)
-			}
+			bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
 		}
 
 		// Streaming cursor

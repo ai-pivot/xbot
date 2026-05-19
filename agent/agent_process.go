@@ -109,19 +109,37 @@ func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNoti
 	}
 }
 
-// drainRemainingBgNotifications drains any bg notifications that arrived
-// after Run's last iteration and processes them as user messages (idle path).
-func (a *Agent) drainRemainingBgNotifications() {
+// drainSessionBgNotifications drains bg notifications matching the given session key
+// and processes them synchronously. Other sessions' notifications are left in
+// bgRunPending for their own Run loops to pick up via wireBgNotificationDrain.
+// Processing synchronously ensures notifications are injected into bus.Inbound
+// before processMessage returns, allowing chatProcessLoop to pick them up immediately.
+func (a *Agent) drainSessionBgNotifications(sessionKey string) {
 	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
+	pending := a.bgRunPending
 	a.bgRunPending = nil
 	a.bgRunPendingMu.Unlock()
-	for _, notif := range remaining {
+
+	var mine, others []tools.BgNotification
+	for _, n := range pending {
+		if n.SessionKey() == sessionKey {
+			mine = append(mine, n)
+		} else {
+			others = append(others, n)
+		}
+	}
+	// Put other sessions' notifications back
+	if len(others) > 0 {
+		a.bgRunPendingMu.Lock()
+		a.bgRunPending = append(a.bgRunPending, others...)
+		a.bgRunPendingMu.Unlock()
+	}
+	for _, notif := range mine {
 		switch n := notif.(type) {
 		case *tools.BackgroundTask:
-			go a.processBgNotification(n)
+			a.processBgNotification(n)
 		case *tools.SubAgentBgNotify:
-			go a.processSubAgentBgNotification(n)
+			a.processSubAgentBgNotification(n)
 		}
 	}
 }
