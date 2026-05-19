@@ -703,6 +703,10 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	// user input until onSubmit completes and cliSettingsSavedMsg arrives.
 	return func() tea.Msg {
 		onSubmit(vals)
+		// Capture the model name directly from the saved values.
+		// This avoids a second GetDefault RPC which may not yet reflect
+		// the newly created subscription (especially on first setup).
+		savedModel := vals["llm_model"]
 		return cliSettingsSavedMsg{
 			themeChanged:  hasTheme && theme != "",
 			theme:         theme,
@@ -711,6 +715,7 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 			layoutChanged: layoutChanged,
 			layoutVals:    layoutVals,
 			feedbackMsg:   feedbackMsg,
+			savedModel:    savedModel,
 		}
 	}
 }
@@ -733,6 +738,11 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		visualChanged = true
 	}
 	m.refreshCachedModelName()
+	// If model name is still empty after refresh (e.g. GetDefault RPC race on
+	// first setup), use the model name directly from the saved values.
+	if m.cachedModelName == "" && msg.savedModel != "" {
+		m.cachedModelName = msg.savedModel
+	}
 	// Invalidate cached context settings so they're re-resolved from user settings.
 	// Without this, changing max_context_tokens/max_output_tokens/compression_threshold
 	// in the settings panel has no effect on the context progress bar.
@@ -751,6 +761,11 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		m.invalidateAllCache(true)
 	} else {
 		m.updateViewportContent()
+	}
+	// If model name is still empty after refresh (e.g. LLM client not ready after
+	// first setup), schedule a delayed auto-discover retry.
+	if m.cachedModelName == "" {
+		return m.scheduleModelDiscoverRetry(0)
 	}
 	return nil
 }

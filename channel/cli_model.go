@@ -524,6 +524,20 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 					m.cachedModelName = defSub.Model
 				}
 			}
+			// Auto-discover: if model name is still empty after loading default sub,
+			// try listing available models and pick the first one.
+			if m.cachedModelName == "" && m.channel != nil && m.channel.modelLister != nil {
+				m.channel.modelLister.EnsureModelsLoaded()
+				if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+					m.cachedModelName = models[0]
+					if m.llmSubscriber != nil {
+						m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+					}
+					existing := LoadSessionLLMState(m.workDir, m.chatID)
+					existing.Model = models[0]
+					SaveSessionLLMState(m.workDir, m.chatID, existing)
+				}
+			}
 		}
 	}
 
@@ -1051,12 +1065,14 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel     // back-reference to owning channel (set during Start)
-	cachedModelName string          // cached model name for View() performance
-	activeSubID     string          // active subscription ID for current session
-	todoManager     *cliTodoManager // per-session todo persistence
-	askUserSession  string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
-	modelCount      int             // cached model list length for View() performance
+	channel             *CLIChannel     // back-reference to owning channel (set during Start)
+	cachedModelName     string          // cached model name for View() performance
+	modelNameZoneXStart int             // rendered X start of model name in status bar (-1 = not rendered)
+	modelNameZoneXEnd   int             // rendered X end of model name in status bar (exclusive)
+	activeSubID         string          // active subscription ID for current session
+	todoManager         *cliTodoManager // per-session todo persistence
+	askUserSession      string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount          int             // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *protocol.TokenUsage // last known token usage from progress events
@@ -1271,6 +1287,7 @@ type cliSettingsSavedMsg struct {
 	layoutChanged bool
 	layoutVals    map[string]string // layout-related settings for field update
 	feedbackMsg   string
+	savedModel    string // model name from saved values (avoids GetDefault RPC timing issues)
 	// syncOnly is true when the message originates from SyncLayoutSettings
 	// (periodic remote cache refresh), not from an explicit user settings save.
 	// When true, context-related caches (maxContextTokens, etc.) must NOT be
@@ -1350,6 +1367,13 @@ type cliPluginUninstallResultMsg struct {
 // and the TUI should re-render to show the new content.
 type cliWidgetUpdateMsg struct{}
 
+// cliModelDiscoverMsg triggers a delayed auto-discover retry for the model name.
+// Sent when the initial refreshCachedModelName fails to find a model (e.g. LLM
+// client not yet ready after setup). The handler retries the auto-discover logic.
+type cliModelDiscoverMsg struct {
+	attempt int // retry attempt number (0-based)
+}
+
 // isCtrlEnter 检测 Ctrl+Enter 按键。
 // 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：
 //   - CSI u 协议: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
@@ -1410,10 +1434,60 @@ func (m *cliModel) refreshCachedModelName() {
 			m.cachedModelName = sub.Model
 		}
 	}
+	// Auto-discover: if model name is still empty, try listing available models
+	// and pick the first one.
+	if m.cachedModelName == "" && m.channel.modelLister != nil {
+		m.channel.modelLister.EnsureModelsLoaded()
+		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+			m.cachedModelName = models[0]
+			// Persist the discovered model
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			}
+			existing := LoadSessionLLMState(m.workDir, m.chatID)
+			existing.Model = models[0]
+			SaveSessionLLMState(m.workDir, m.chatID, existing)
+		}
+	}
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
 	}
+}
+
+// scheduleModelDiscoverRetry returns a tea.Cmd that sends a delayed
+// cliModelDiscoverMsg to retry auto-discovering the model name.
+// Used when ListModels returns empty (e.g. LLM client not ready after setup).
+func (m *cliModel) scheduleModelDiscoverRetry(attempt int) tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return cliModelDiscoverMsg{attempt: attempt}
+	})
+}
+
+// handleModelDiscoverMsg processes a delayed model auto-discover retry.
+func (m *cliModel) handleModelDiscoverMsg(msg cliModelDiscoverMsg) tea.Cmd {
+	if m.cachedModelName != "" {
+		return nil // already resolved
+	}
+	// Retry auto-discover
+	if m.channel != nil && m.channel.modelLister != nil {
+		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+			m.cachedModelName = models[0]
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			}
+			existing := LoadSessionLLMState(m.workDir, m.chatID)
+			existing.Model = models[0]
+			SaveSessionLLMState(m.workDir, m.chatID, existing)
+			m.updateViewportContent()
+			return nil
+		}
+	}
+	// Max 5 retries (15s total)
+	if msg.attempt < 5 {
+		return m.scheduleModelDiscoverRetry(msg.attempt + 1)
+	}
+	return nil
 }
 
 // scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when

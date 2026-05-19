@@ -220,11 +220,23 @@ func (m *cliModel) renderReadyStatus() string {
 		readyParts = append(readyParts, fmt.Sprintf("%d msg%s", msgCount, s))
 	}
 	// Model name (cached, avoids per-frame lookup)
+	m.modelNameZoneXStart = -1
+	m.modelNameZoneXEnd = -1
 	if m.cachedModelName != "" {
 		modelHint := m.cachedModelName
+		// Track X position of the model name part for click detection.
+		// The model name is: prefixBeforeModel + modelHint
+		// where prefixBeforeModel = join(readyParts without modelHint) + " · "
+		modelHintIdx := len(readyParts) // index where model hint will be appended
+		prefixBeforeModel := ""
+		if modelHintIdx > 0 {
+			prefixBeforeModel = strings.Join(readyParts, " · ") + " · "
+		}
 		if m.modelCount > 1 && !m.isCompact() {
 			modelHint += " [Ctrl+N]"
 		}
+		m.modelNameZoneXStart = lipgloss.Width(prefixBeforeModel)
+		m.modelNameZoneXEnd = m.modelNameZoneXStart + lipgloss.Width(modelHint)
 		readyParts = append(readyParts, modelHint)
 	}
 	// Narrow screen: drop msg count to save space
@@ -1575,6 +1587,16 @@ func padBetween(left, right string, width int) string {
 // renderProgressStatus renders a compact one-line status for the status bar.
 func (m *cliModel) renderProgressStatus() string {
 	var sb strings.Builder
+
+	// Model name (show during iteration)
+	m.modelNameZoneXStart = -1
+	m.modelNameZoneXEnd = -1
+	if m.cachedModelName != "" {
+		m.modelNameZoneXStart = 0
+		sb.WriteString(m.cachedModelName)
+		m.modelNameZoneXEnd = lipgloss.Width(sb.String())
+		sb.WriteString(" · ")
+	}
 
 	if m.progress != nil {
 		fmt.Fprintf(&sb, "#%d", m.progress.Iteration)

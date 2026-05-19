@@ -168,6 +168,9 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickRunnerField(zone.Index)
 	case "footerHint":
 		return m.clickFooterHint(zone.Index)
+	case "modelName":
+		m.cycleModel()
+		return true, m, nil
 	case "scrollToBottom":
 		m.viewport.GotoBottom()
 		m.newContentHint = false
@@ -842,7 +845,11 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	zb.skip(viewportH)
 
-	// status bar: 1 line — track "new content" hint if present
+	// status bar: 1 line — track clickable model name and "new content" hint
+	// Model name zone is tracked in both ready and progress status bars.
+	if m.modelNameZoneXStart >= 0 && m.modelNameZoneXEnd > m.modelNameZoneXStart {
+		zb.addX(0, m.modelNameZoneXStart+xShift, m.modelNameZoneXEnd+xShift, "modelName", 0)
+	}
 	if m.newContentHintRendered != "" {
 		// The new content hint is rendered inline in the status bar.
 		// Use the pre-calculated X position from layoutMain.
