@@ -13,7 +13,7 @@ import (
 type UserPreferences struct {
 	// Sidebar section collapse state. Key = section name ("sessions", "todo", "tasks"),
 	// Value = true means collapsed. Sections not in the map are expanded by default.
-	SidebarCollapsed map[string]bool `json:"sidebar_collapsed,omitempty"`
+	SidebarCollapsed map[string]bool `json:"sidebar_collapsed"`
 }
 
 // preferencesMu guards concurrent file access per user path.
@@ -53,7 +53,11 @@ func SavePreferences(workDir, senderID string, p UserPreferences) error {
 		return err
 	}
 
-	// Deep merge: read existing file first to preserve unknown fields
+	// Deep merge: read existing file first to preserve unknown fields.
+	// For map-valued fields that we own entirely (like sidebar_collapsed),
+	// delete them from existing before merge so they get replaced wholesale
+	// instead of recursively merged — otherwise removing keys from the map
+	// (e.g. un-collapsing a section) is silently lost.
 	var existing map[string]any
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &existing)
@@ -62,6 +66,14 @@ func SavePreferences(workDir, senderID string, p UserPreferences) error {
 	var incoming map[string]any
 	raw, _ := json.Marshal(p)
 	_ = json.Unmarshal(raw, &incoming)
+
+	// Keys present in incoming that are maps — remove from existing first
+	// so deepMerge replaces them wholesale rather than recursing.
+	for k, sv := range incoming {
+		if _, isMap := sv.(map[string]any); isMap {
+			delete(existing, k)
+		}
+	}
 
 	merged := deepMerge(existing, incoming)
 
