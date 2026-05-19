@@ -524,6 +524,20 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 					m.cachedModelName = defSub.Model
 				}
 			}
+			// Auto-discover: if model name is still empty after loading default sub,
+			// try listing available models and pick the first one.
+			if m.cachedModelName == "" && m.channel != nil && m.channel.modelLister != nil {
+				m.channel.modelLister.EnsureModelsLoaded()
+				if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+					m.cachedModelName = models[0]
+					if m.llmSubscriber != nil {
+						m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+					}
+					existing := LoadSessionLLMState(m.workDir, m.chatID)
+					existing.Model = models[0]
+					SaveSessionLLMState(m.workDir, m.chatID, existing)
+				}
+			}
 		}
 	}
 
@@ -1051,12 +1065,14 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel     // back-reference to owning channel (set during Start)
-	cachedModelName string          // cached model name for View() performance
-	activeSubID     string          // active subscription ID for current session
-	todoManager     *cliTodoManager // per-session todo persistence
-	askUserSession  string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
-	modelCount      int             // cached model list length for View() performance
+	channel             *CLIChannel     // back-reference to owning channel (set during Start)
+	cachedModelName     string          // cached model name for View() performance
+	modelNameZoneXStart int             // rendered X start of model name in status bar (-1 = not rendered)
+	modelNameZoneXEnd   int             // rendered X end of model name in status bar (exclusive)
+	activeSubID         string          // active subscription ID for current session
+	todoManager         *cliTodoManager // per-session todo persistence
+	askUserSession      string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount          int             // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *protocol.TokenUsage // last known token usage from progress events
@@ -1408,6 +1424,21 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.cachedModelName == "" && m.channel.subscriptionMgr != nil {
 		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
 			m.cachedModelName = sub.Model
+		}
+	}
+	// Auto-discover: if model name is still empty, try listing available models
+	// and pick the first one.
+	if m.cachedModelName == "" && m.channel.modelLister != nil {
+		m.channel.modelLister.EnsureModelsLoaded()
+		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+			m.cachedModelName = models[0]
+			// Persist the discovered model
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			}
+			existing := LoadSessionLLMState(m.workDir, m.chatID)
+			existing.Model = models[0]
+			SaveSessionLLMState(m.workDir, m.chatID, existing)
 		}
 	}
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
