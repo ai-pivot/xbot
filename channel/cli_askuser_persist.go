@@ -25,7 +25,7 @@ func pendingAskUserDir() string {
 }
 
 func pendingAskUserKey(channelName, chatID string) string {
-	h := sha256.Sum256([]byte(channelName + ":" + chatID))
+	h := sha256.Sum256([]byte(qualifyChatID(channelName, chatID)))
 	return hex.EncodeToString(h[:])
 }
 

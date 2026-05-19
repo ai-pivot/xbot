@@ -312,7 +312,7 @@ type sessionState struct {
 
 // sessionKey returns the map key for the current session.
 func (m *cliModel) sessionKey() string {
-	return m.channelName + ":" + m.chatID
+	return qualifyChatID(m.channelName, m.chatID)
 }
 
 // saveCurrentSession saves the current session's live state into the savedSessions map.

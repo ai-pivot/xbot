@@ -65,12 +65,6 @@ func formatErrorForUser(err error) string {
 	return fmt.Sprintf("处理消息时发生错误: %v", err)
 }
 
-// sessionKey builds the canonical session key from channel and chatID.
-// Used throughout the agent for tracking message state, cancellation, etc.
-func sessionKey(channel, chatID string) string {
-	return channel + ":" + chatID
-}
-
 // resolveMemoryProvider returns the effective memory provider, defaulting to "flat".
 func resolveMemoryProvider(cfg string) string {
 	if cfg == "" {
@@ -1726,7 +1720,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 				clipanic.Go("agent.chatWorker.concurrentCommand", func() {
 					// 清除 sessionFinalSent：command 不走 processMessage，
 					// 需要手动清除否则 sendMessage 会被拦截
-					cmdKey := sessionKey(m.Channel, m.ChatID)
+					cmdKey := qualifyChatID(m.Channel, m.ChatID)
 					a.resetSessionState(cmdKey)
 
 					response, err := c.Execute(ctx, a, m)
@@ -1855,7 +1849,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				a.emitSessionState(protocol.SessionEvent{
 					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
 				})
-				key := sessionKey(msg.Channel, msg.ChatID)
+				key := qualifyChatID(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)
 				<-sem // 释放槽位
@@ -1998,7 +1992,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// 初始化 session 消息跟踪：清除旧的已发消息 ID，记录入站消息 ID 用于首条回复
-	key := sessionKey(msg.Channel, msg.ChatID)
+	key := qualifyChatID(msg.Channel, msg.ChatID)
 	a.resetSessionState(key)
 	if msg.Metadata != nil && msg.Metadata["message_id"] != "" {
 		a.sessionReplyTo.Store(key, msg.Metadata["message_id"])
@@ -2144,7 +2138,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// Wire drain callback so Run loop can inject bg notifications as tool messages.
 	// Only return notifications matching THIS session's key. Other sessions' notifications
 	// are put back into the pending list to prevent cross-session contamination.
-	currentSessionKey := sessionKey(msg.Channel, msg.ChatID)
+	currentSessionKey := qualifyChatID(msg.Channel, msg.ChatID)
 	cfg.DrainBgNotifications = a.wireBgNotificationDrain(currentSessionKey)
 
 	// Emit SessionStart event (notification, non-blocking)
@@ -2219,7 +2213,7 @@ func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) 
 	}).Infof("Processing cron message: %s", tools.Truncate(msg.Content, 80))
 
 	// 清除旧的 session 状态，确保 cron 消息可以正常发送
-	key := sessionKey(msg.Channel, msg.ChatID)
+	key := qualifyChatID(msg.Channel, msg.ChatID)
 	a.resetSessionState(key)
 
 	// 使用创建者的工作区路径
@@ -2313,7 +2307,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Auto worktree detection: if multiple sessions share the same git repo,
 	// automatically create an isolated worktree to prevent file conflicts.
 	// Gated behind auto_worktree user setting (default: false).
-	sessKey := sessionKey(msg.Channel, msg.ChatID)
+	sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
 	detectDir := tenantSession.GetCurrentDir()
@@ -2353,7 +2347,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		log.Ctx(ctx).WithError(err).Warn("Failed to configure session MCP scope")
 	}
 	if len(newTools) > 0 {
-		sessKey := sessionKey(msg.Channel, msg.ChatID)
+		sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 		a.tools.ActivateTools(sessKey, newTools)
 		log.Ctx(ctx).WithField("tools", len(newTools)).Info("Auto-activated new personal MCP tools")
 	}
@@ -2473,7 +2467,7 @@ func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 // that bypass engine.Run. It uses the same CLI channel path as buildCLIProgressEventHandler
 // so the snapshot is stored for mid-session reconnect.
 func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) {
-	progressKey := sessionKey(chName, chatID)
+	progressKey := qualifyChatID(chName, chatID)
 
 	// Get or create per-chat seq counter. Start at 1 so the first event
 	// is not discarded by the CLI's seq monotonic check (initial lastProgressSeq=0).
@@ -2505,7 +2499,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
 // Must be called in a defer after emitBuiltinProgress to ensure the CLI ends the turn.
 func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
-	progressKey := sessionKey(chName, chatID)
+	progressKey := qualifyChatID(chName, chatID)
 
 	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
 	if !ok {
@@ -2538,7 +2532,7 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
 // sendMessage 向 IM 渠道发送消息。
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
-	key := sessionKey(chName, chatID)
+	key := qualifyChatID(chName, chatID)
 
 	// 工具已发送最终回复 → 跳过后续所有消息（进度更新、LLM 最终回复等）
 	if _, sent := a.sessionFinalSent.Load(key); sent {
