@@ -118,7 +118,9 @@ Routes by address prefix:
 
 Core tool (always loaded). AI operates TUI sidebar, layout, and themes.
 
-**Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`
+**Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`, `send_slash`, `reload_plugins`, `reload_hooks`
+
+**send_slash**: Executes TUI-only slash commands (`/palette`, `/settings`, `/rewind`, `/tasks`, `/usage`, `/clear`, etc.). Do NOT use `send_slash` for agent-level commands like `/set-llm`, `/set-model`, `/models`, `/new`, `/compress` — those are handled automatically as regular messages.
 
 **Flow**: `Execute()` → `ctx.TUIControl(action, params)` → `CLIChannel.SendTUIControl()` → `asyncCh` → `handleAsyncDrain` → `program.Send` → event loop → `handleSessionControlMsg`
 
@@ -130,7 +132,9 @@ Core tool (always loaded). AI operates TUI sidebar, layout, and themes.
 
 Core tool (always loaded). AI reads/modifies xbot configuration.
 
-**Actions**: `get`, `set`
+**Actions**: `list`, `get`, `set`, `subscriptions`
+
+**LLM model operations**: To switch the active model → `tui_control send_slash` with `/set-model <model>`. To configure a custom LLM provider → tell user to run `/set-llm` directly. To view token usage → `tui_control send_slash` with `/usage`. Do NOT use `config set` for LLM-related settings — they have dedicated paths.
 
 **Injection**: `buildToolContext` auto-injects `ConfigGet`/`ConfigSet` from `cfg.SettingsSvc`. Works in ALL modes (local + remote via RPC). Does NOT rely on Agent `SetTUICallbacks`.
 
