@@ -141,8 +141,9 @@ func (a *Agent) buildBaseRunConfig(
 		MaxIterations:   a.getMaxIterations(),
 		MaxOutputTokens: a.llmFactory.GetMaxOutputTokens(senderID),
 
-		// Auto worktree: read from user_settings dynamically so runtime changes
-		// take effect without restart. Fallback to startup config value.
+		// Auto worktree: read from user_settings DB (per-user scope).
+		// Same source as /settings panel and agent.go buildPrompt.
+		// No fallback to global config — auto_worktree is a user-level setting.
 		AutoWorktreeEnabled: func() bool {
 			if a.settingsSvc != nil {
 				if vals, err := a.settingsSvc.GetSettings(channel, senderID); err == nil {
@@ -151,7 +152,7 @@ func (a *Agent) buildBaseRunConfig(
 					}
 				}
 			}
-			return a.autoWorktree
+			return false
 		}(),
 
 		// Session

@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"xbot/config"
-
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/channel"
@@ -2317,10 +2315,18 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Peer awareness / auto worktree: register this session for collaboration.
 	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
 	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
-	// Uses config.json (master authority) — changes take effect on restart.
+	// Reads from user_settings DB (per-user scope) — same source as engine_wire.go
+	// and the /settings panel. No fallback to global config.json.
 	// AutoDetectAndInit is idempotent: returns existing entry if session already registered.
-	cfgPath := filepath.Join(a.xbotHome, "config.json")
-	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
+	autoWorktree := false
+	if a.settingsSvc != nil {
+		if vals, err := a.settingsSvc.GetSettings(msg.Channel, msg.SenderID); err == nil {
+			if v, ok := vals["auto_worktree"]; ok {
+				autoWorktree = strings.EqualFold(v, "true") || v == "1"
+			}
+		}
+	}
+	if autoWorktree {
 		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
 			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
 				// Only override CWD for brand new worktrees (first creation).
