@@ -20,7 +20,10 @@ func (t *ConfigTool) Description() string {
 		"like max_iterations, context_mode, api_key, provider, theme (prefer tui_control for theme switching), " +
 		"sidebar_width (prefer tui_control), or any other config key. " +
 		"Actions: list (see all configs with descriptions), get (key), set (key, value), " +
-		"subscriptions (list all LLM subscriptions)."
+		"subscriptions (list all LLM subscriptions). " +
+		"NOTE: To switch the active model, tell the user to run /set-model <model>. " +
+		"To configure a custom LLM provider, tell the user to run /set-llm directly. " +
+		"To view token usage, tell the user to run /usage."
 }
 
 func (t *ConfigTool) Parameters() []llm.ToolParam {

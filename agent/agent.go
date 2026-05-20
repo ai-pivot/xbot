@@ -65,12 +65,6 @@ func formatErrorForUser(err error) string {
 	return fmt.Sprintf("处理消息时发生错误: %v", err)
 }
 
-// sessionKey builds the canonical session key from channel and chatID.
-// Used throughout the agent for tracking message state, cancellation, etc.
-func sessionKey(channel, chatID string) string {
-	return channel + ":" + chatID
-}
-
 // resolveMemoryProvider returns the effective memory provider, defaulting to "flat".
 func resolveMemoryProvider(cfg string) string {
 	if cfg == "" {
@@ -520,8 +514,17 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 	}
 	conn := db.Conn()
 
+	// Look up channel & sender from DB (works for both CLI and web chats)
+	var ch, senderID string
+	row := conn.QueryRow(`SELECT channel, sender_id FROM user_chats WHERE chat_id = ? LIMIT 1`, chatID)
+	if err := row.Scan(&ch, &senderID); err != nil {
+		// Fallback for CLI sessions not yet in user_chats
+		ch = "cli"
+		senderID = a.cliSenderID
+	}
+
 	// Get old name
-	row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, a.cliSenderID, chatID)
+	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
 	_ = row.Scan(&oldName)
 	if oldName == "" {
 		_, oldName = channel.ParseChatID(chatID)
@@ -529,7 +532,7 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 
 	// Deduplicate
 	finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
-		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND label != ''`, a.cliSenderID)
+		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ? AND label != ''`, ch, senderID)
 		if err != nil {
 			return nil
 		}
@@ -547,9 +550,9 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 	// Update DB
 	_, err = conn.Exec(`
 		INSERT INTO user_chats (channel, sender_id, chat_id, label)
-		VALUES ('cli', ?, ?, ?)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-		a.cliSenderID, chatID, finalName, finalName,
+		ch, senderID, chatID, finalName, finalName,
 	)
 	if err != nil {
 		return "", fmt.Errorf("rename chat in DB: %w", err)
@@ -557,7 +560,7 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 
 	// Push state change
 	a.emitSessionState(protocol.SessionEvent{
-		Channel: "cli",
+		Channel: ch,
 		ChatID:  chatID,
 		Action:  "renamed",
 		Label:   finalName,
@@ -1430,28 +1433,33 @@ func (a *Agent) resetSessionState(key string) {
 	a.sessionFinalSent.Delete(key)
 }
 
+// qualifyChatID combines channel name and chatID into the "channel:chatID" format
+// used by TUI session filtering (handleInjectedUserMsg). All inject paths must
+// use this helper instead of inline string concatenation.
+func qualifyChatID(channel, chatID string) string {
+	return channel + ":" + chatID
+}
+
 // injectCLIUserMessage sends a user message to the CLI channel if available.
 // Used by background notification handlers to display messages in the CLI UI.
 // Supports all three CLI channel types via UserMessageInjector interface:
 // CLIChannel (local), RemoteCLIChannel (websocket), ChannelCliChannel (in-process server).
 func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if a.channelFinder == nil {
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channelFinder is nil, skipping")
 		return
 	}
 	ch, ok := a.channelFinder(channelName)
 	if !ok {
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Warn("injectCLIUserMessage: channel not found via channelFinder")
 		return
 	}
-	if injector, ok := ch.(channel.UserMessageInjector); ok {
-		switch ch.(type) {
-		case *channel.CLIChannel:
-			// Local mode: chatID needs "channel:chatID" format
-			injector.InjectUserMessage(channelName+":"+chatID, content)
-		default:
-			// Remote/ChannelCli: chatID is plain chatID
-			injector.InjectUserMessage(chatID, content)
-		}
+	injector, ok := ch.(channel.UserMessageInjector)
+	if !ok {
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channel does not implement UserMessageInjector")
+		return
 	}
+	injector.InjectUserMessage(qualifyChatID(channelName, chatID), content)
 }
 
 // Run 启动 Agent 循环，持续消费入站消息。
@@ -1466,13 +1474,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.multiSession.StartCleanupRoutine()
 
 	a.cronSch.SetInjectFunc(func(channel, chatID, senderID, content string) {
-		// Mirror injectBgUserMessage pattern: notify TUI first, then inject to agent.
-		// Without injectCLIUserMessage, the TUI never receives a cliInjectedUserMsg,
-		// so no user message appears and startAgentTurn is never called via that path.
-		// The progress auto-start alone is insufficient — it lacks the user message
-		// in m.messages, causing the turn to display without context.
-		a.injectCLIUserMessage(channel, chatID, fmt.Sprintf("⏰ [定时任务] %s", content))
-		a.injectInbound(channel, chatID, senderID, content)
+		// Cron injects via injectBgUserMessage to ensure both TUI notification
+		// (injectCLIUserMessage) and agent processing (injectInbound) happen together.
+		// The content passed to TUI includes a ⏰ prefix for visual distinction;
+		// the content passed to agent is the raw cron message.
+		a.injectBgUserMessage(channel, chatID, senderID, content)
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
@@ -1714,7 +1720,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 				clipanic.Go("agent.chatWorker.concurrentCommand", func() {
 					// 清除 sessionFinalSent：command 不走 processMessage，
 					// 需要手动清除否则 sendMessage 会被拦截
-					cmdKey := sessionKey(m.Channel, m.ChatID)
+					cmdKey := qualifyChatID(m.Channel, m.ChatID)
 					a.resetSessionState(cmdKey)
 
 					response, err := c.Execute(ctx, a, m)
@@ -1843,7 +1849,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				a.emitSessionState(protocol.SessionEvent{
 					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
 				})
-				key := sessionKey(msg.Channel, msg.ChatID)
+				key := qualifyChatID(msg.Channel, msg.ChatID)
 				a.lastProgressSnapshot.Delete(key)
 				a.iterationHistories.Delete(key)
 				<-sem // 释放槽位
@@ -1986,7 +1992,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// 初始化 session 消息跟踪：清除旧的已发消息 ID，记录入站消息 ID 用于首条回复
-	key := sessionKey(msg.Channel, msg.ChatID)
+	key := qualifyChatID(msg.Channel, msg.ChatID)
 	a.resetSessionState(key)
 	if msg.Metadata != nil && msg.Metadata["message_id"] != "" {
 		a.sessionReplyTo.Store(key, msg.Metadata["message_id"])
@@ -2132,7 +2138,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// Wire drain callback so Run loop can inject bg notifications as tool messages.
 	// Only return notifications matching THIS session's key. Other sessions' notifications
 	// are put back into the pending list to prevent cross-session contamination.
-	currentSessionKey := sessionKey(msg.Channel, msg.ChatID)
+	currentSessionKey := qualifyChatID(msg.Channel, msg.ChatID)
 	cfg.DrainBgNotifications = a.wireBgNotificationDrain(currentSessionKey)
 
 	// Emit SessionStart event (notification, non-blocking)
@@ -2207,7 +2213,7 @@ func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) 
 	}).Infof("Processing cron message: %s", tools.Truncate(msg.Content, 80))
 
 	// 清除旧的 session 状态，确保 cron 消息可以正常发送
-	key := sessionKey(msg.Channel, msg.ChatID)
+	key := qualifyChatID(msg.Channel, msg.ChatID)
 	a.resetSessionState(key)
 
 	// 使用创建者的工作区路径
@@ -2301,7 +2307,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Auto worktree detection: if multiple sessions share the same git repo,
 	// automatically create an isolated worktree to prevent file conflicts.
 	// Gated behind auto_worktree user setting (default: false).
-	sessKey := sessionKey(msg.Channel, msg.ChatID)
+	sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
 	detectDir := tenantSession.GetCurrentDir()
@@ -2312,12 +2318,18 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
 	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
 	// Uses config.json (master authority) — changes take effect on restart.
-	// AutoDetectAndInit already skips re-creation if the session is already registered.
+	// AutoDetectAndInit is idempotent: returns existing entry if session already registered.
 	cfgPath := filepath.Join(a.xbotHome, "config.json")
 	if cfg := config.LoadFromFile(cfgPath); cfg != nil && cfg.Agent.Experimental.AutoWorktree {
 		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
-			if entry := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-				tenantSession.SetCurrentDir(entry.WorktreeDir)
+			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
+				// Only override CWD for brand new worktrees (first creation).
+				// On restart, AutoDetectAndInit returns existing entry with created=false,
+				// so the user's last CWD (restored by loadPersistedCWD) is preserved —
+				// even if they Cd'd out of the worktree.
+				if created {
+					tenantSession.SetCurrentDir(entry.WorktreeDir)
+				}
 			}
 		}
 	} else {
@@ -2335,7 +2347,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		log.Ctx(ctx).WithError(err).Warn("Failed to configure session MCP scope")
 	}
 	if len(newTools) > 0 {
-		sessKey := sessionKey(msg.Channel, msg.ChatID)
+		sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 		a.tools.ActivateTools(sessKey, newTools)
 		log.Ctx(ctx).WithField("tools", len(newTools)).Info("Auto-activated new personal MCP tools")
 	}
@@ -2455,7 +2467,7 @@ func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 // that bypass engine.Run. It uses the same CLI channel path as buildCLIProgressEventHandler
 // so the snapshot is stored for mid-session reconnect.
 func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) {
-	progressKey := sessionKey(chName, chatID)
+	progressKey := qualifyChatID(chName, chatID)
 
 	// Get or create per-chat seq counter. Start at 1 so the first event
 	// is not discarded by the CLI's seq monotonic check (initial lastProgressSeq=0).
@@ -2487,7 +2499,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
 // Must be called in a defer after emitBuiltinProgress to ensure the CLI ends the turn.
 func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
-	progressKey := sessionKey(chName, chatID)
+	progressKey := qualifyChatID(chName, chatID)
 
 	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
 	if !ok {
@@ -2520,7 +2532,7 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
 // sendMessage 向 IM 渠道发送消息。
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
-	key := sessionKey(chName, chatID)
+	key := qualifyChatID(chName, chatID)
 
 	// 工具已发送最终回复 → 跳过后续所有消息（进度更新、LLM 最终回复等）
 	if _, sent := a.sessionFinalSent.Load(key); sent {
@@ -2606,13 +2618,18 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	select {
 	case a.bus.Inbound <- msg:
 	case <-a.agentCtx.Done():
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: agent context done, dropping message")
 	}
 }
 
 // injectEventMessage 向入站队列注入事件触发的消息。
 // Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop，
 // 并设置 EventSource/EventTrigger 元数据。
+// 同时通过 injectCLIUserMessage 通知 TUI 显示。
 func (a *Agent) injectEventMessage(msg event.Message) {
+	// Notify TUI — event messages should be visible in the UI
+	a.injectCLIUserMessage(msg.Channel, msg.ChatID, fmt.Sprintf("📡 [Event] %s", msg.Content))
+
 	inbound := bus.InboundMessage{
 		Channel:      msg.Channel,
 		SenderID:     msg.SenderID,
@@ -2627,6 +2644,7 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 	select {
 	case a.bus.Inbound <- inbound:
 	case <-a.agentCtx.Done():
+		log.WithFields(log.Fields{"channel": msg.Channel, "chat_id": msg.ChatID}).Warn("injectEventMessage: agent context done, dropping message")
 	}
 }
 
@@ -2734,6 +2752,11 @@ func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
 // content as a user message. It reads senderID from the notification to preserve
 // correct sender context (workspace, sandbox, memory, LLM config).
 // All bg notification handlers MUST use this function — never call injectInbound directly.
+//
+// Both TUI notification (injectCLIUserMessage) and agent processing (injectInbound)
+// are called together. Without injectCLIUserMessage, the TUI never receives a
+// cliInjectedUserMsg, so no user message appears — only the progress auto-start
+// fires, which lacks the user message in m.messages.
 func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
 	a.injectCLIUserMessage(channelName, chatID, content)
 	a.injectInbound(channelName, chatID, senderID, content)

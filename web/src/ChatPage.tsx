@@ -880,7 +880,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   }, [turns, virtualizer])
 
   return (
-    <div className="flex flex-col h-screen bg-slate-900"
+    <div className="flex flex-col h-screen bg-slate-900 chat-app"
          onDragOver={handleDragOver}
          onDragLeave={handleDragLeave}
          onDrop={handleDrop}
@@ -899,7 +899,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         </div>
       )}
       {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700">
+      <header className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700 header-bar">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-bold text-white">🤖 xbot{nickname ? ` · ${nickname}` : ''}</h1>
           <span className={`text-xs px-2 py-0.5 rounded-full ${
@@ -1027,7 +1027,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       )}
 
       {/* Main content: ChatSidebar + messages */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 app-body">
         <ChatSidebar
           onSwitchChat={(chatID: string) => {
             setCurrentChatID(chatID)
@@ -1067,7 +1067,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       <div
         ref={messagesContainerRef}
         onScroll={handleContainerScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 chat-messages"
+        className="flex-1 overflow-y-auto px-4 py-4 chat-messages messages-area"
         role="main"
         aria-label={t('messagesAriaLabel')}
         data-testid="messages-container"
@@ -1133,7 +1133,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                             </div>
                           </div>
                         )}
-                        <div className="rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm relative ml-auto"
+                        <div className="rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm relative ml-auto user-msg"
                              style={{ width: 'fit-content', overflowWrap: 'break-word' }}
                              onContextMenu={(e) => {
                                e.preventDefault()
@@ -1278,7 +1278,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       )}
 
       {/* Input area */}
-      <div className={`px-4 py-3 bg-slate-800 border-t border-slate-700 ${replyingTo ? 'border-t-0' : ''}`}>
+      <div className={`px-4 py-3 bg-slate-800 border-t border-slate-700 input-bar ${replyingTo ? 'border-t-0' : ''}`}>
         <div className="flex items-end gap-3 max-w-4xl mx-auto">
           <div className="flex-1">
             {/* Pending files preview */}

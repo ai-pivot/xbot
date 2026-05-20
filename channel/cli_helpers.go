@@ -17,6 +17,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// qualifyChatID combines channel name and chatID into the "channel:chatID" format
+// used throughout the codebase as the canonical session key.
+func qualifyChatID(channel, chatID string) string {
+	return channel + ":" + chatID
+}
+
 // ParseSettingBool parses a boolean setting value.
 // Accepts "true", "1", "yes" (case-insensitive) as true; everything else as false.
 // Shared between serverapp and cmd/xbot-cli for consistent behavior.
@@ -703,6 +709,10 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	// user input until onSubmit completes and cliSettingsSavedMsg arrives.
 	return func() tea.Msg {
 		onSubmit(vals)
+		// Capture the model name directly from the saved values.
+		// This avoids a second GetDefault RPC which may not yet reflect
+		// the newly created subscription (especially on first setup).
+		savedModel := vals["llm_model"]
 		return cliSettingsSavedMsg{
 			themeChanged:  hasTheme && theme != "",
 			theme:         theme,
@@ -711,6 +721,7 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 			layoutChanged: layoutChanged,
 			layoutVals:    layoutVals,
 			feedbackMsg:   feedbackMsg,
+			savedModel:    savedModel,
 		}
 	}
 }
@@ -733,6 +744,11 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		visualChanged = true
 	}
 	m.refreshCachedModelName()
+	// If model name is still empty after refresh (e.g. GetDefault RPC race on
+	// first setup), use the model name directly from the saved values.
+	if m.cachedModelName == "" && msg.savedModel != "" {
+		m.cachedModelName = msg.savedModel
+	}
 	// Invalidate cached context settings so they're re-resolved from user settings.
 	// Without this, changing max_context_tokens/max_output_tokens/compression_threshold
 	// in the settings panel has no effect on the context progress bar.
@@ -751,6 +767,11 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		m.invalidateAllCache(true)
 	} else {
 		m.updateViewportContent()
+	}
+	// If model name is still empty after refresh (e.g. LLM client not ready after
+	// first setup), schedule a delayed auto-discover retry.
+	if m.cachedModelName == "" {
+		return m.scheduleModelDiscoverRetry(0)
 	}
 	return nil
 }
@@ -888,6 +909,9 @@ func (m *cliModel) enqueueToast(text, icon string) tea.Cmd {
 }
 
 // handleUsageCommand renders token usage statistics for the current user.
+// Now handled by agent-level /usage command; kept for future send_slash/remote use.
+//
+//nolint:unused
 func (m *cliModel) handleUsageCommand() {
 	if m.usageQueryFn == nil {
 		m.showSystemMsg("Usage tracking not available", feedbackWarning)
@@ -1052,6 +1076,8 @@ func (m *cliModel) handleUsageCommand() {
 // formatTokenCount is defined in cli_view.go — do not duplicate here.
 
 // fmtTokens formats large token counts with K/M suffixes for usage tables.
+//
+//nolint:unused
 func fmtTokens(n int64) string {
 	if n >= 1_000_000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
@@ -1854,9 +1880,13 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 			sc.result <- &cliSessionResult{ok: false, err: "command required for send_slash"}
 			return nil
 		}
-		retCmd := m.handleSlashCommand(cmd)
+		// Return success IMMEDIATELY to unblock the caller (agent goroutine).
+		// handleSlashCommand may call back into the agent via sendToAgent (non-blocking)
+		// or run local handlers that invoke agent RPC (e.g. usageQueryFn → agent RPC).
+		// If we don't release the caller first, the RPC callback deadlocks because
+		// the agent goroutine is blocked in SendTUIControl waiting on resultCh.
 		sc.result <- &cliSessionResult{ok: true}
-		return retCmd
+		return m.handleSlashCommand(cmd)
 
 	default:
 		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}

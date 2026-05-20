@@ -220,11 +220,23 @@ func (m *cliModel) renderReadyStatus() string {
 		readyParts = append(readyParts, fmt.Sprintf("%d msg%s", msgCount, s))
 	}
 	// Model name (cached, avoids per-frame lookup)
+	m.modelNameZoneXStart = -1
+	m.modelNameZoneXEnd = -1
 	if m.cachedModelName != "" {
 		modelHint := m.cachedModelName
+		// Track X position of the model name part for click detection.
+		// The model name is: prefixBeforeModel + modelHint
+		// where prefixBeforeModel = join(readyParts without modelHint) + " · "
+		modelHintIdx := len(readyParts) // index where model hint will be appended
+		prefixBeforeModel := ""
+		if modelHintIdx > 0 {
+			prefixBeforeModel = strings.Join(readyParts, " · ") + " · "
+		}
 		if m.modelCount > 1 && !m.isCompact() {
 			modelHint += " [Ctrl+N]"
 		}
+		m.modelNameZoneXStart = lipgloss.Width(prefixBeforeModel)
+		m.modelNameZoneXEnd = m.modelNameZoneXStart + lipgloss.Width(modelHint)
 		readyParts = append(readyParts, modelHint)
 	}
 	// Narrow screen: drop msg count to save space
@@ -450,33 +462,52 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 
 	contentW := sw - m.styles.SidebarBg.GetHorizontalFrameSize() // Width(sw) includes border+padding; content = sw - frame
 
+	// Reset section header tracking for click-to-collapse
+	sidebarSectionHeaders = make(map[string]int)
+
 	// Only render sections that have real content
 	var blocks []string
 
 	// --- Sessions (always shown, clickable) ---
-	blocks = append(blocks, m.renderSidebarSessions(contentW))
+	sidebarSectionHeaders["sessions"] = 0
+	if m.sidebarCollapsedSections["sessions"] {
+		// Must reset tracking vars even when collapsed, otherwise stale
+		// zone data from the previous frame causes wrong click targets.
+		sidebarSessionLines = nil
+		sidebarDeleteXStart = nil
+		sidebarDeleteXEnd = nil
+		sidebarNewSessionY = -1
+		m.sidebarHasBusySessions = false
+		blocks = append(blocks, m.renderSidebarSectionHeader("Sessions", true))
+	} else {
+		blocks = append(blocks, m.renderSidebarSessions(contentW))
+	}
 
 	// --- Todo (when sidebar is visible, todo moves here from main view) ---
 	if len(m.todos) > 0 {
-		if st := m.renderSidebarTodo(contentW); st != "" {
-			blocks = append(blocks, st)
+		if m.sidebarCollapsedSections["todo"] {
+			sidebarSectionHeaders["todo"] = nextBlockOffset(blocks)
+			blocks = append(blocks, m.renderSidebarSectionHeader("Todo", true))
+		} else {
+			if st := m.renderSidebarTodo(contentW); st != "" {
+				sidebarSectionHeaders["todo"] = nextBlockOffset(blocks)
+				blocks = append(blocks, st)
+			}
 		}
 	}
 
 	// --- Active tasks (only when something is running) ---
 	if m.bgTaskCount > 0 || m.agentCount > 0 {
-		// Calculate line offset of the Active section within the sidebar content.
-		// Each block contributes its line count, and blocks are separated by "\n\n" (1 extra line).
-		sidebarActiveSectionOffset = 0
-		for i, blk := range blocks {
-			if i > 0 {
-				sidebarActiveSectionOffset++ // separator "\n\n" adds 1 line
-			}
-			sidebarActiveSectionOffset += strings.Count(blk, "\n") + 1
+		if m.sidebarCollapsedSections["tasks"] {
+			sidebarSectionHeaders["tasks"] = nextBlockOffset(blocks)
+			blocks = append(blocks, m.renderSidebarSectionHeader("Tasks", true))
+			sidebarActiveSectionOffset = -1
+			sidebarBgTaskLines = nil // clear stale zone data
+		} else {
+			sidebarActiveSectionOffset = nextBlockOffset(blocks)
+			sidebarSectionHeaders["tasks"] = sidebarActiveSectionOffset
+			blocks = append(blocks, m.renderSidebarActive(contentW))
 		}
-		// The "\n\n" separator before the Active block itself adds 1 more line.
-		sidebarActiveSectionOffset++
-		blocks = append(blocks, m.renderSidebarActive(contentW))
 	} else {
 		sidebarActiveSectionOffset = -1
 	}
@@ -487,6 +518,39 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 		Width(sw).
 		Height(h).
 		Render(content)
+}
+
+// renderSidebarSectionHeader renders a collapsed section header with a ▸ indicator.
+// Clicking it will expand the section.
+func (m *cliModel) renderSidebarSectionHeader(label string, collapsed bool) string {
+	indicator := "▾" // expanded
+	if collapsed {
+		indicator = "▸"
+	}
+	return m.styles.SidebarHeader.Render(indicator + " " + label)
+}
+
+// countBlockLines returns the total number of visual lines consumed by the blocks so far,
+// accounting for "\n\n" separators between blocks.
+func countBlockLines(blocks []string) int {
+	n := 0
+	for i, blk := range blocks {
+		if i > 0 {
+			n++ // separator "\n\n" adds 1 line
+		}
+		n += strings.Count(blk, "\n") + 1
+	}
+	return n
+}
+
+// nextBlockOffset returns the Y-offset where the NEXT block would start
+// if appended via strings.Join(append(blocks, ...), "\n\n").
+// It accounts for the extra "\n\n" separator that precedes the new block.
+func nextBlockOffset(blocks []string) int {
+	if len(blocks) == 0 {
+		return 0
+	}
+	return countBlockLines(blocks) + 1 // +1 for the separator before the next block
 }
 
 func (m *cliModel) renderSidebarSessions(w int) string {
@@ -501,7 +565,7 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 	currentIdx := m.sidebarCurrentIdx()
 
 	var b strings.Builder
-	b.WriteString(m.styles.SidebarHeader.Render("Sessions"))
+	b.WriteString(m.renderSidebarSectionHeader("Sessions", false))
 	sidebarSessionLines = append(sidebarSessionLines, -1) // header line
 	sidebarDeleteXStart = append(sidebarDeleteXStart, -1)
 	sidebarDeleteXEnd = append(sidebarDeleteXEnd, -1)
@@ -643,7 +707,7 @@ func (m *cliModel) renderSidebarActive(w int) string {
 	sidebarBgTaskLines = nil
 
 	var b strings.Builder
-	b.WriteString(m.styles.SidebarHeader.Render("Tasks"))
+	b.WriteString(m.renderSidebarSectionHeader("Tasks", false))
 
 	if m.bgTaskCount > 0 {
 		// List individual bg tasks so user can click to view log
@@ -723,8 +787,8 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 	s := &m.styles
 
 	var sb strings.Builder
-	// Header: "Todo N/M" + progress bar, padded to full width
-	headerLabel := s.SidebarHeader.Render("Todo")
+	// Header: "▾ Todo N/M" + progress bar, padded to full width
+	headerLabel := m.renderSidebarSectionHeader("Todo", false)
 	fmt.Fprintf(&sb, "%s %d/%d", headerLabel, done, total)
 	sb.WriteString(" ")
 	barWidth := 10
@@ -1413,6 +1477,14 @@ var sidebarBgTaskLines []int
 // -1 means not rendered.
 var sidebarActiveSectionOffset int
 
+// sidebarSectionHeaders tracks Y-offsets of each section header for click-to-collapse.
+// Key = section name ("sessions", "todo", "tasks"), Value = Y line offset within sidebar content.
+var sidebarSectionHeaders map[string]int
+
+func init() {
+	sidebarSectionHeaders = make(map[string]int)
+}
+
 // renderFooter 渲染底部快捷键提示条。
 // 根据当前状态动态显示最相关的快捷键，避免信息过载。
 func (m *cliModel) renderFooter() string {
@@ -1575,6 +1647,16 @@ func padBetween(left, right string, width int) string {
 // renderProgressStatus renders a compact one-line status for the status bar.
 func (m *cliModel) renderProgressStatus() string {
 	var sb strings.Builder
+
+	// Model name (show during iteration)
+	m.modelNameZoneXStart = -1
+	m.modelNameZoneXEnd = -1
+	if m.cachedModelName != "" {
+		m.modelNameZoneXStart = 0
+		sb.WriteString(m.cachedModelName)
+		m.modelNameZoneXEnd = lipgloss.Width(sb.String())
+		sb.WriteString(" · ")
+	}
 
 	if m.progress != nil {
 		fmt.Fprintf(&sb, "#%d", m.progress.Iteration)

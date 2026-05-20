@@ -412,6 +412,9 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 
 	// Cleanup completed TODOs on exit
 	defer s.cleanupTodos()
+	// Cleanup completed background tasks on exit to prevent stale tasks from
+	// accumulating indefinitely across multiple agent turns.
+	defer s.cleanupBgTasks()
 
 	// Sync ContextEditor reference
 	s.messages = s.syncMessages(s.messages)

@@ -316,8 +316,9 @@ type NameEntry struct {
 // Implemented differently for local JSON vs DB.
 type NameLookup func() []NameEntry
 
-// generateSessionName creates a random session name like "Agent-brave-fox".
-func generateSessionName() (string, error) {
+// GenerateSessionName creates a random session name like "Agent-brave-fox".
+// Exported so storage/sqlite can use it for web chat default labels.
+func GenerateSessionName() (string, error) {
 	adjIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(sessionAdj))))
 	if err != nil {
 		return "", err
@@ -354,7 +355,7 @@ func (ds *dirSessions) addSession(name string) (string, error) {
 // addSessionAuto creates a new session with an auto-generated "Agent-xxxxxx" name.
 func (ds *dirSessions) addSessionAuto() (name string, chatID string, err error) {
 	for i := 0; i < 10; i++ {
-		name, err = generateSessionName()
+		name, err = GenerateSessionName()
 		if err != nil {
 			return "", "", err
 		}

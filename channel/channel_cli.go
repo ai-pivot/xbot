@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -70,11 +71,12 @@ func (c *ChannelCliChannel) sendMsg(msg protocol.WSMessage) error {
 	}
 }
 
-// sendMsgBestEffort pushes a WSMessage, silently dropping if full.
+// sendMsgBestEffort pushes a WSMessage, logging a warning if full.
 func (c *ChannelCliChannel) sendMsgBestEffort(msg protocol.WSMessage) {
 	select {
 	case c.eventCh <- msg:
 	default:
+		log.WithFields(log.Fields{"type": msg.Type, "chat_id": msg.ChatID}).Warn("ChannelCliChannel: eventCh full, dropping message")
 	}
 }
 

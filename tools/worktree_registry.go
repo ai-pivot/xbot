@@ -26,31 +26,29 @@ type WorktreeEntry struct {
 // It is the single source of truth for peer discovery and is shared
 // between WorktreeTool (writer) and DynamicContextInjector (reader).
 type WorktreeRegistry struct {
-	mu     sync.RWMutex
-	byRepo map[string][]*WorktreeEntry // repoPath → entries
-	bySess map[string]*WorktreeEntry   // sessionKey → entry
+	mu       sync.RWMutex
+	byRepo   map[string][]*WorktreeEntry // repoPath → entries
+	bySess   map[string]*WorktreeEntry   // sessionKey → entry
+	loaded   map[string]bool             // repoPath → whether persisted data has been loaded
+	loadedMu sync.Mutex                  // protects loaded
 }
 
 // GlobalWorktreeRegistry is the singleton registry used by all components.
 var GlobalWorktreeRegistry = &WorktreeRegistry{
 	byRepo: make(map[string][]*WorktreeEntry),
 	bySess: make(map[string]*WorktreeEntry),
+	loaded: make(map[string]bool),
 }
-
-var (
-	loadedMu sync.Mutex
-	loaded   = make(map[string]bool)
-)
 
 // ensureLoaded lazily loads persisted registry data for a repo.
 func (r *WorktreeRegistry) ensureLoaded(repoPath string) {
-	loadedMu.Lock()
-	if loaded[repoPath] {
-		loadedMu.Unlock()
+	r.loadedMu.Lock()
+	if r.loaded[repoPath] {
+		r.loadedMu.Unlock()
 		return
 	}
-	loaded[repoPath] = true
-	loadedMu.Unlock()
+	r.loaded[repoPath] = true
+	r.loadedMu.Unlock()
 
 	r.mu.Lock()
 	r.loadRepoLocked(repoPath)
@@ -507,22 +505,27 @@ func removeWorktree(repoPath, worktreePath, branch string) error {
 // Called automatically at session start when auto_worktree is enabled.
 //
 // Every session gets its own worktree — no primary concept. All agents are equal peers.
-// Returns the worktree entry, or nil if not a git repo or worktree creation fails.
-func AutoDetectAndInit(workDir, sessionKey string) *WorktreeEntry {
+// Returns (entry, created): entry is non-nil on success; created is true only when a
+// new worktree was physically created (false when returning an existing entry from disk).
+func AutoDetectAndInit(workDir, sessionKey string) (*WorktreeEntry, bool) {
 	return autoDetectAndInitInto(workDir, sessionKey, GlobalWorktreeRegistry)
 }
 
 // autoDetectAndInitInto is the testable core that accepts a custom registry.
-func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *WorktreeEntry {
+func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) (*WorktreeEntry, bool) {
 	// Check if in a git repo
 	repoPath, err := GitRepoRoot(workDir)
 	if err != nil {
-		return nil // not a git repo
+		return nil, false // not a git repo
 	}
+
+	// Ensure persisted data is loaded so we detect existing sessions
+	// from a previous process (restart recovery).
+	reg.ensureLoaded(repoPath)
 
 	// Already registered?
 	if entry := reg.GetBySession(sessionKey); entry != nil {
-		return entry
+		return entry, false
 	}
 
 	// All sessions get a worktree — no primary concept.
@@ -541,7 +544,7 @@ func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *W
 	worktreePath, err := createWorktree(repoPath, branch)
 	reg.mu.Unlock()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	entry := &WorktreeEntry{
@@ -554,7 +557,12 @@ func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) *W
 	}
 	if err := reg.Register(entry); err != nil {
 		removeWorktree(repoPath, worktreePath, branch)
-		return nil
+		// Safety net: Register loaded from disk and found existing entry.
+		// Return it for idempotent behavior across restarts.
+		if existing := reg.GetBySession(sessionKey); existing != nil {
+			return existing, false
+		}
+		return nil, false
 	}
-	return entry
+	return entry, true
 }

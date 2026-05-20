@@ -423,13 +423,17 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 		addTool(tool)
 	}
 
-	// 追加会话 MCP 工具：flat 模式直接可见；否则仅追加已激活工具
+	// 追加会话 MCP 工具：flat 模式直接可见（含完整参数 schema）；否则仅追加已激活工具
 	if r.sessionMCPMgr != nil {
 		if sm := r.sessionMCPMgr.GetSessionMCPManager(sessionKey); sm != nil {
 			if flatMode {
 				for _, tool := range sm.GetSessionTools() {
-					if def, ok := tool.(llm.ToolDefinition); ok {
-						defs = append(defs, def)
+					if mcp, ok := tool.(mcpSchemaProvider); ok {
+						defs = append(defs, &mcpToolDefinition{
+							name:   tool.Name(),
+							desc:   tool.Description(),
+							params: mcp.fullParams(),
+						})
 					}
 				}
 			} else {

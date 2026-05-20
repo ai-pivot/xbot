@@ -1,19 +1,60 @@
 @import "tailwindcss";
 
+@theme {
+  --color-slate-50: #f5f5f7;
+  --color-slate-100: #e5e5ea;
+  --color-slate-200: #d1d1d6;
+  --color-slate-300: #aeaeb2;
+  --color-slate-400: #8e8e93;
+  --color-slate-500: #6e6e73;
+  --color-slate-600: #48484a;
+  --color-slate-700: #3a3a3c;
+  --color-slate-800: #2c2c2e;
+  --color-slate-900: #1c1c1e;
+  --color-slate-950: #000000;
+
+  --color-gray-50: #f5f5f7;
+  --color-gray-100: #e5e5ea;
+  --color-gray-200: #d1d1d6;
+  --color-gray-300: #aeaeb2;
+  --color-gray-400: #8e8e93;
+  --color-gray-500: #6e6e73;
+  --color-gray-600: #48484a;
+  --color-gray-700: #3a3a3c;
+  --color-gray-800: #2c2c2e;
+  --color-gray-900: #1c1c1e;
+  --color-gray-950: #000000;
+
+  --color-blue-300: #64d2ff;
+  --color-blue-400: #409cff;
+  --color-blue-500: #007AFF;
+  --color-blue-600: #007AFF;
+  --color-blue-700: #0071e3;
+  --color-blue-800: #0055b3;
+
+  --color-indigo-400: #7c7aff;
+  --color-indigo-500: #5e5ce6;
+  --color-indigo-600: #5856d6;
+
+  --color-green-400: #30d158;
+  --color-green-900: #1a3a24;
+  --color-red-400: #ff453a;
+  --color-red-800: #5c1a1a;
+  --color-red-900: #3a1010;
+  --color-yellow-400: #ffd60a;
+  --color-yellow-500: #ffcc00;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Inter', 'Noto Sans SC', 'PingFang SC', sans-serif;
+}
+
 @import "./styles/base.css";
 @import "./styles/mobile.css";
 @import "./styles/markdown.css";
 @import "./styles/tiptap.css";
 @import "./styles/codeblock.css";
-@import "./styles/settings.css";
 @import "./styles/chat/index.css";
-@import "./styles/progress.css";
 @import "./styles/sidebar.css";
-@import "./styles/runner.css";
-@import "./styles/login.css";
-@import "./styles/search.css";
-@import "./styles/askuser.css";
-@import "./styles/confirm.css";
-@import "./styles/lightbox.css";
-@import "./styles/theme-editor.css";
+@import "./styles/settings.css";
 @import "./styles/bookmark.css";
+@import "./styles/confirm.css";
+@import "./styles/theme.css";

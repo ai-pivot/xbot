@@ -247,6 +247,15 @@ func (s *runState) cleanupTodos() {
 	}
 }
 
+// cleanupBgTasks removes completed background tasks for the session.
+// Called via defer from Run() to prevent stale completed tasks from
+// accumulating indefinitely across multiple agent turns.
+func (s *runState) cleanupBgTasks() {
+	if s.cfg.BgTaskManager != nil && s.sessionKey != "" {
+		s.cfg.BgTaskManager.RemoveCompletedTasks(s.sessionKey)
+	}
+}
+
 // recordMetrics records conversation metrics. Called via defer from Run().
 func (s *runState) recordMetrics() {
 	GlobalMetrics.RecordConversation(s.localIterCount, s.localToolCalls, s.localLLMCalls, s.localInputTokens, s.localOutputTokens)
