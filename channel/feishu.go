@@ -1727,8 +1727,8 @@ func (f *FeishuChannel) sendAskUserCard(msg OutboundMsg) (string, error) {
 }
 
 // buildAskUserCard constructs a Feishu interactive card for AskUser questions.
-// Questions with options become button groups; questions without options show
-// as markdown prompts with a text reply expected.
+// Uses schema V2 with column_set + interactive_container for buttons,
+// matching the settings card pattern (tag:action is unsupported in V2).
 func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 	elements := []map[string]any{}
 
@@ -1744,25 +1744,20 @@ func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 		})
 
 		if len(q.Options) > 0 {
-			// Options as buttons
-			action := fmt.Sprintf("%sq%d_opt", askUserActionPrefix, i)
+			// Options as buttons, wrapped in column_set (V2 compatible)
 			buttons := []map[string]any{}
 			for _, opt := range q.Options {
 				buttons = append(buttons, map[string]any{
 					"tag":  "button",
 					"text": map[string]any{"tag": "plain_text", "content": opt},
 					"type": "primary",
-					"value": map[string]any{
-						"ask_user_action": action,
+					"value": map[string]string{
+						"ask_user_action": fmt.Sprintf("%sq%d_opt", askUserActionPrefix, i),
 						"answer":          opt,
 					},
 				})
 			}
-			elements = append(elements, map[string]any{
-				"tag":     "action",
-				"actions": buttons,
-				"layout":  "flow",
-			})
+			elements = append(elements, wrapButtonsInColumns(buttons))
 		} else {
 			// Open question: hint for text reply
 			elements = append(elements, map[string]any{
@@ -1777,29 +1772,32 @@ func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 		}
 	}
 
-	// Cancel button
-	elements = append(elements, map[string]any{
-		"tag": "hr",
-	})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "",
-	})
-	elements = append(elements, map[string]any{
-		"tag": "action",
-		"actions": []map[string]any{{
+	// Reject and Cancel buttons
+	elements = append(elements, map[string]any{"tag": "hr"})
+	elements = append(elements, wrapButtonsInColumns([]map[string]any{
+		{
+			"tag":  "button",
+			"text": map[string]any{"tag": "plain_text", "content": "Reject"},
+			"type": "danger",
+			"value": map[string]string{
+				"ask_user_action": askUserActionPrefix + "reject",
+			},
+		},
+		{
 			"tag":  "button",
 			"text": map[string]any{"tag": "plain_text", "content": "Cancel"},
-			"type": "danger",
-			"value": map[string]any{
+			"type": "default",
+			"value": map[string]string{
 				"ask_user_action": askUserActionPrefix + "cancel",
 			},
-		}},
-		"layout": "flow",
-	})
+		},
+	}))
 
 	return map[string]any{
 		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
 		"header": map[string]any{
 			"title": map[string]any{
 				"tag":     "plain_text",
@@ -1807,7 +1805,9 @@ func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 			},
 			"template": "blue",
 		},
-		"elements": elements,
+		"body": map[string]any{
+			"elements": elements,
+		},
 	}
 }
 
@@ -1851,6 +1851,26 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 			To:        bus.NewIMAddress("feishu", chatID),
 		}
 		return f.buildAskUserAnsweredCard(pending, "Cancelled", "grey"), true
+	}
+
+	// Handle reject — user explicitly declines to answer
+	if actionVal == askUserActionPrefix+"reject" {
+		log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Info("AskUser rejected via card")
+		content := fmt.Sprintf("Q: %s\nA: Rejected", pending.Questions[0].Question)
+		f.msgBus.Inbound <- bus.InboundMessage{
+			Channel:    "feishu",
+			SenderID:   senderID,
+			SenderName: "",
+			ChatID:     chatID,
+			ChatType:   "p2p",
+			Content:    content,
+			Time:       time.Now(),
+			RequestID:  log.NewRequestID(),
+			From:       bus.NewIMAddress("feishu", senderID),
+			To:         bus.NewIMAddress("feishu", chatID),
+			Metadata:   map[string]string{"ask_user_answered": "true"},
+		}
+		return f.buildAskUserAnsweredCard(pending, "Rejected", "red"), true
 	}
 
 	// Handle option button click
@@ -1953,8 +1973,11 @@ func (f *FeishuChannel) tryResolveAskUserByText(askKey, text, senderID, senderNa
 // buildAskUserAnsweredCard returns a card response shown after the user answers or cancels.
 func (f *FeishuChannel) buildAskUserAnsweredCard(pending *feishuPendingAskUser, answer, template string) *callback.CardActionTriggerResponse {
 	summary := "Answered"
-	if template == "grey" {
+	switch template {
+	case "grey":
 		summary = "Cancelled"
+	case "red":
+		summary = "Rejected"
 	}
 
 	elements := []map[string]any{}
@@ -1977,6 +2000,9 @@ func (f *FeishuChannel) buildAskUserAnsweredCard(pending *feishuPendingAskUser, 
 
 	cardData := map[string]any{
 		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
 		"header": map[string]any{
 			"title": map[string]any{
 				"tag":     "plain_text",
@@ -1984,7 +2010,9 @@ func (f *FeishuChannel) buildAskUserAnsweredCard(pending *feishuPendingAskUser, 
 			},
 			"template": template,
 		},
-		"elements": elements,
+		"body": map[string]any{
+			"elements": elements,
+		},
 	}
 
 	return &callback.CardActionTriggerResponse{

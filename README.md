@@ -40,7 +40,7 @@
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
 
 <details>
@@ -57,9 +57,9 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/
 
 ```powershell
 # Windows PowerShell（选一个能用的镜像）
-irm https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $s=try{irm https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 -TimeoutSec 30}catch{}; if($s){iex $s}else{Write-Host '[ERROR] 下载失败，请尝试其他镜像' -ForegroundColor Red}
 # 或
-irm https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $s=try{irm https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 -TimeoutSec 30}catch{}; if($s){iex $s}else{Write-Host '[ERROR] 下载失败，请尝试其他镜像' -ForegroundColor Red}
 ```
 
 脚本会自动检测可用的镜像并代理所有 GitHub 下载。也可手动指定镜像：
