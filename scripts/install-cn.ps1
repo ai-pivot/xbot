@@ -80,7 +80,12 @@ function Find-InstallScript {
         Write-Info "Trying to download install.ps1 from $proxiedUrl..."
         try {
             Invoke-WebRequest -Uri $proxiedUrl -OutFile $tmpFile -TimeoutSec 30 -UseBasicParsing
-            return $tmpFile
+            # Verify the download is a real PowerShell script (not an error page)
+            $firstLine = Get-Content $tmpFile -TotalCount 1 -ErrorAction SilentlyContinue
+            if ($firstLine -and $firstLine.TrimStart().StartsWith("<#")) {
+                return $tmpFile
+            }
+            Write-Warn "Downloaded file is not a valid PowerShell script, trying next source..."
         } catch {}
     }
 
