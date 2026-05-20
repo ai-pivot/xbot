@@ -64,7 +64,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       const resp = await fetch('/api/chats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}` }),
+        body: JSON.stringify({ label: '' }),
       })
       const data = await resp.json()
       if (data.ok && data.chat_id) {

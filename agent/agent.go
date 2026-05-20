@@ -520,8 +520,17 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 	}
 	conn := db.Conn()
 
+	// Look up channel & sender from DB (works for both CLI and web chats)
+	var ch, senderID string
+	row := conn.QueryRow(`SELECT channel, sender_id FROM user_chats WHERE chat_id = ? LIMIT 1`, chatID)
+	if err := row.Scan(&ch, &senderID); err != nil {
+		// Fallback for CLI sessions not yet in user_chats
+		ch = "cli"
+		senderID = a.cliSenderID
+	}
+
 	// Get old name
-	row := conn.QueryRow(`SELECT label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND chat_id = ?`, a.cliSenderID, chatID)
+	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
 	_ = row.Scan(&oldName)
 	if oldName == "" {
 		_, oldName = channel.ParseChatID(chatID)
@@ -529,7 +538,7 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 
 	// Deduplicate
 	finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
-		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = 'cli' AND sender_id = ? AND label != ''`, a.cliSenderID)
+		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ? AND label != ''`, ch, senderID)
 		if err != nil {
 			return nil
 		}
@@ -547,9 +556,9 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 	// Update DB
 	_, err = conn.Exec(`
 		INSERT INTO user_chats (channel, sender_id, chat_id, label)
-		VALUES ('cli', ?, ?, ?)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-		a.cliSenderID, chatID, finalName, finalName,
+		ch, senderID, chatID, finalName, finalName,
 	)
 	if err != nil {
 		return "", fmt.Errorf("rename chat in DB: %w", err)
@@ -557,7 +566,7 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 
 	// Push state change
 	a.emitSessionState(protocol.SessionEvent{
-		Channel: "cli",
+		Channel: ch,
 		ChatID:  chatID,
 		Action:  "renamed",
 		Label:   finalName,
