@@ -28,7 +28,7 @@
   justify-content: flex-start;
   padding-left: 24px;
   gap: 8px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  background: #007AFF;
   color: white;
   opacity: 0;
   transition: opacity 0.15s ease;

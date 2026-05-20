@@ -196,7 +196,7 @@
 
 [data-theme="light"] .command-palette-tabs button.active {
   color: #1e293b;
-  border-bottom-color: #2563eb;
+  border-bottom-color: #007AFF;
 }
 
 [data-theme="light"] .command-palette-input {

@@ -30,9 +30,9 @@
 /* ---- Light theme overrides ---- */
 [data-theme="light"] .scroll-to-bottom-btn {
   background: rgba(241, 245, 249, 0.95);
-  color: #2563eb;
+  color: #007AFF;
   border-color: #cbd5e1;
 }
 [data-theme="light"] .scroll-to-bottom-btn:hover {
-  border-color: #2563eb;
+  border-color: #007AFF;
 }

@@ -117,7 +117,7 @@
 }
 
 .onboarding-btn-next:hover {
-  background: #2563eb;
+  background: #007AFF;
 }
 
 /* Light theme */
@@ -157,10 +157,10 @@
 }
 
 [data-theme="light"] .onboarding-btn-next {
-  background: #2563eb;
+  background: #007AFF;
   color: #fff;
 }
 
 [data-theme="light"] .onboarding-btn-next:hover {
-  background: #1d4ed8;
+  background: #007AFF;
 }

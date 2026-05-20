@@ -1,14 +1,15 @@
 /* ========================================================================== */
-/* User Message Bubble                                                        */
+/* User Message Bubble — Apple style                                           */
 /* ========================================================================== */
 
-/* User message gradient */
+/* User message — flat Apple blue */
 .flex.justify-end > .max-w-\[80\%\] {
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  box-shadow: 0 2px 12px rgba(37, 99, 235, 0.3);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  background: #007AFF !important;
+  border-radius: 18px 18px 18px 4px !important;
+  box-shadow: none !important;
+  transition: none !important;
 }
 
 .flex.justify-end > .max-w-\[80\%\]:hover {
-  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+  box-shadow: none !important;
 }

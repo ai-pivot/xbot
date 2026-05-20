@@ -1,0 +1,259 @@
+/* ========================================================================== */
+/* Theme — Apple Futuristic Chat                                               */
+/* Zero glow, zero shadow, zero gradient. Pure Apple minimalism.               */
+/* ========================================================================== */
+
+.chat-app { background: transparent !important; }
+
+/* ═══ HEADER — 44px iOS standard ═══ */
+.header-bar {
+  background: rgba(28,28,30,0.88) !important;
+  backdrop-filter: saturate(200%) blur(40px) !important;
+  -webkit-backdrop-filter: saturate(200%) blur(40px) !important;
+  border-bottom: 0.5px solid rgba(255,255,255,0.08) !important;
+  position: relative;
+  padding: 0 16px !important;
+  height: 44px !important;
+}
+.header-bar::after { display: none !important; }
+.header-bar h1 {
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--text-primary) !important;
+  -webkit-text-fill-color: unset !important;
+  background: none !important;
+  filter: none !important;
+  font-size: 15px !important;
+}
+.header-bar > * { gap: 4px !important; }
+.header-bar span { font-size: 13px !important; }
+
+.app-body { background: transparent !important; }
+.messages-area { background: transparent !important; animation: fadeIn 0.2s ease; }
+
+/* Consistent 8px gap between messages */
+.messages-area > div { margin-bottom: 8px !important; }
+.messages-area > div:last-child { margin-bottom: 0 !important; }
+
+/* ═══ AI MESSAGE ═══ */
+.assistant-msg {
+  color: var(--text-primary) !important;
+  line-height: 1.65 !important;
+  font-size: 15px !important;
+  letter-spacing: -0.01em !important;
+}
+
+/* ═══ USER BUBBLE — Solid Apple blue, no shadow ═══ */
+.user-msg {
+  background: #007AFF !important;
+  border: none !important;
+  color: #ffffff !important;
+  border-radius: 18px 18px 18px 4px !important;
+  box-shadow: none !important;
+  position: relative;
+  padding: 8px 14px !important;
+}
+.user-msg::before, .user-msg::after { display: none !important; }
+.user-msg .text-blue-200\/50 { color: rgba(255,255,255,0.7) !important; }
+
+/* ═══ INPUT BAR ═══ */
+.input-bar {
+  background: rgba(28,28,30,0.88) !important;
+  backdrop-filter: saturate(200%) blur(40px) !important;
+  -webkit-backdrop-filter: saturate(200%) blur(40px) !important;
+  border-top: 0.5px solid rgba(255,255,255,0.06) !important;
+  position: relative;
+  padding: 10px 20px 16px !important;
+}
+.input-bar::before { display: none !important; }
+.input-bar textarea {
+  background: rgba(0,0,0,0.25) !important;
+  border: none !important;
+  border-radius: 24px !important;
+  color: var(--text-primary) !important;
+  padding: 10px 48px 10px 16px !important;
+  font-size: 15px !important;
+  min-height: 38px !important;
+  transition: background 0.15s !important;
+  resize: none !important;
+  box-shadow: none !important;
+  line-height: 1.4 !important;
+}
+.input-bar textarea:focus {
+  background: rgba(0,0,0,0.4) !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+.input-bar textarea::placeholder { color: var(--text-tertiary) !important; }
+
+/* ═══ SEND BUTTON — Clean circle, no glow ═══ */
+.input-bar button[type="submit"],
+.input-bar .send-btn {
+  background: #007AFF !important;
+  border: none !important;
+  color: #fff !important;
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+  transition: opacity 0.15s !important;
+  animation: none !important;
+}
+.input-bar button[type="submit"]:hover,
+.input-bar .send-btn:hover { opacity: 0.85 !important; transform: none !important; animation: none !important; }
+.input-bar button[type="submit"]:active,
+.input-bar .send-btn:active { opacity: 0.7 !important; }
+.input-bar button[type="submit"]:disabled,
+.input-bar .send-btn:disabled { opacity: 0.3 !important; background: #6e6e73 !important; animation: none !important; }
+
+/* ═══ LOGIN PAGE ═══ */
+.login-container { background: #000 !important; }
+.login-card {
+  background: #1c1c1e !important;
+  border: none !important;
+  border-radius: var(--radius-xl) !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5) !important;
+  position: relative; overflow: hidden;
+}
+.login-card::before { display: none !important; }
+.login-card h1 { color: var(--text-primary) !important; -webkit-text-fill-color: unset !important; background: none !important; font-weight: 600 !important; }
+.login-card input {
+  background: rgba(0,0,0,0.3) !important;
+  border: 0.5px solid rgba(255,255,255,0.1) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm) !important;
+}
+.login-card input:focus {
+  border-color: #007AFF !important;
+  box-shadow: none !important;
+}
+.login-card button[type="submit"],
+.login-card .login-btn {
+  background: #007AFF !important;
+  color: #fff !important;
+  box-shadow: none !important;
+  border-radius: var(--radius-sm) !important;
+  font-weight: 500 !important;
+}
+.login-card button[type="submit"]:hover,
+.login-card .login-btn:hover { opacity: 0.9 !important; filter: none !important; }
+
+/* ═══ STATUS BADGES ═══ */
+.header-bar [class*="bg-green"] { background: rgba(48,209,88,0.15) !important; border: none !important; box-shadow: none !important; }
+.header-bar [class*="bg-yellow"] { background: rgba(255,214,10,0.15) !important; border: none !important; box-shadow: none !important; }
+.header-bar [class*="bg-red"] { background: rgba(255,69,58,0.15) !important; border: none !important; box-shadow: none !important; }
+
+/* ═══ ONBOARDING ═══ */
+.onboarding-card, .onboarding-overlay {
+  background: #1c1c1e !important;
+  border: none !important;
+  border-radius: var(--radius-xl) !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5) !important;
+  position: relative; overflow: hidden;
+}
+.onboarding-card::before { display: none !important; }
+
+/* ═══ DRAG OVERLAY ═══ */
+.drag-overlay {
+  background: rgba(10,132,255,0.04) !important;
+  border: 2px dashed rgba(255,255,255,0.15) !important;
+}
+
+/* ═══ TEXT COLORS ═══ */
+.text-slate-400 { color: var(--text-secondary) !important; }
+.text-slate-500 { color: var(--text-tertiary) !important; }
+.text-slate-600 { color: var(--text-placeholder) !important; }
+
+/* ═══ HEADER BUTTONS ═══ */
+.header-bar [class*="bg-slate-700"] {
+  background: rgba(255,255,255,0.06) !important;
+  border: none !important;
+  color: var(--text-secondary) !important;
+  border-radius: var(--radius-sm) !important;
+}
+.header-bar [class*="bg-slate-700"]:hover {
+  background: rgba(255,255,255,0.1) !important;
+  color: var(--text-primary) !important;
+}
+.header-bar [class*="text-blue-4"] { color: #007AFF !important; text-shadow: none !important; }
+.header-bar [class*="bg-blue-5"] { background: rgba(10,132,255,0.1) !important; }
+.header-bar [class*="text-slate-4"]:not([class*="bg-slate"]) {
+  color: var(--text-tertiary) !important;
+}
+.header-bar [class*="text-slate-4"]:hover { color: var(--text-secondary) !important; text-shadow: none !important; }
+
+/* ═══ UTILITY ═══ */
+.glow-text { color: #007AFF !important; -webkit-text-fill-color: unset !important; background: none !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* LIGHT MODE OVERRIDES — Apple light palette                                    */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] .header-bar {
+  background: rgba(255,255,255,0.88) !important;
+  border-bottom-color: rgba(0,0,0,0.08) !important;
+}
+[data-theme="light"] .input-bar {
+  background: rgba(255,255,255,0.88) !important;
+  border-top-color: rgba(0,0,0,0.06) !important;
+}
+[data-theme="light"] .input-bar textarea {
+  background: rgba(0,0,0,0.04) !important;
+}
+[data-theme="light"] .input-bar textarea:focus {
+  background: rgba(0,0,0,0.06) !important;
+}
+[data-theme="light"] .user-msg {
+  background: #007AFF !important;
+  color: #ffffff !important;
+}
+[data-theme="light"] .assistant-msg {
+  color: var(--text-primary) !important;
+}
+/* AI response card */
+[data-theme="light"] .assistant-card,
+[data-theme="light"] .assistant-turn-card,
+[data-theme="light"] [class*="bg-slate-800"] {
+  background: #f2f2f7 !important;
+  border-color: rgba(0,0,0,0.06) !important;
+}
+/* Login */
+[data-theme="light"] .login-container { background: #f5f5f7 !important; }
+[data-theme="light"] .login-card {
+  background: #ffffff !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.1) !important;
+}
+[data-theme="light"] .login-card input {
+  background: rgba(0,0,0,0.03) !important;
+  border-color: rgba(0,0,0,0.1) !important;
+  color: var(--text-primary) !important;
+}
+/* Status badges */
+[data-theme="light"] .header-bar [class*="bg-green"] { background: rgba(48,209,88,0.12) !important; }
+[data-theme="light"] .header-bar [class*="bg-yellow"] { background: rgba(255,214,10,0.12) !important; }
+[data-theme="light"] .header-bar [class*="bg-red"] { background: rgba(255,69,58,0.12) !important; }
+/* Header buttons */
+[data-theme="light"] .header-bar [class*="bg-slate-700"] {
+  background: rgba(0,0,0,0.04) !important;
+  color: var(--text-secondary) !important;
+}
+[data-theme="light"] .header-bar [class*="bg-slate-700"]:hover {
+  background: rgba(0,0,0,0.08) !important;
+}
+/* Drag overlay */
+[data-theme="light"] .drag-overlay {
+  background: rgba(10,132,255,0.04) !important;
+  border-color: rgba(0,0,0,0.15) !important;
+}
+/* Scrollbar */
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12) !important; }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2) !important; }
+/* Onboarding — override the !important dark bg from theme.css */
+[data-theme="light"] .onboarding-card,
+[data-theme="light"] .onboarding-overlay {
+  background: rgba(255,255,255,0.95) !important;
+  border-color: rgba(0,0,0,0.08) !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.1) !important;
+}
+[data-theme="light"] .onboarding-step-title { color: #1d1d1f !important; }
+[data-theme="light"] .onboarding-step-desc { color: #86868b !important; }
