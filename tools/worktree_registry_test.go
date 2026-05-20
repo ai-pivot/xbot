@@ -463,3 +463,68 @@ func TestCreateWorktree_BasedOnRemoteMain(t *testing.T) {
 	// Clean up
 	reg.CleanupSession("cli:repo:session-test")
 }
+
+// TestResolveRemoteMainBranch_PicksNewestMultiRemote verifies that when a repo
+// has multiple remotes (e.g. "gl" and "origin"), resolveRemoteMainBranch picks
+// the remote whose default branch has the newest commit — not just the first
+// one alphabetically.
+func TestResolveRemoteMainBranch_PicksNewestMultiRemote(t *testing.T) {
+	run := func(dir, name string, args ...string) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		cmd.Env = append(cleanGitEnv(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s %v: %s", name, args, out)
+	}
+
+	// Create two bare "origin" repos
+	upstreamDir := t.TempDir()
+	run("", "git", "init", "--bare", upstreamDir)
+	// Create a working repo, push initial commit, then clone twice
+	workDir := t.TempDir()
+	run(workDir, "git", "clone", upstreamDir, ".")
+	_ = os.RemoveAll(filepath.Join(workDir, ".git", "hooks"))
+	run(workDir, "git", "commit", "--allow-empty", "-m", "init")
+	run(workDir, "git", "push", "origin", "master")
+	// Set HEAD so symbolic-ref works
+	run(upstreamDir, "git", "symbolic-ref", "HEAD", "refs/heads/master")
+
+	// Now create the test clone
+	cloneDir := t.TempDir()
+	run("", "git", "clone", upstreamDir, cloneDir)
+	_ = os.RemoveAll(filepath.Join(cloneDir, ".git", "hooks"))
+
+	// Normalize
+	out, err := exec.Command("git", "-C", cloneDir, "rev-parse", "--show-toplevel").Output()
+	require.NoError(t, err)
+	clonePath := strings.TrimSpace(string(out))
+
+	// Add a second remote (simulating "gl") that points to a STALE bare repo
+	staleDir := t.TempDir()
+	run("", "git", "init", "--bare", staleDir)
+	run(staleDir, "git", "symbolic-ref", "HEAD", "refs/heads/master")
+	// Push the initial commit to the stale remote too
+	run(clonePath, "git", "remote", "add", "gl", staleDir)
+	run(clonePath, "git", "push", "gl", "master")
+
+	// Now add a NEW commit on the origin remote (simulate upstream advancing)
+	run(workDir, "git", "commit", "--allow-empty", "-m", "newer commit on origin")
+	run(workDir, "git", "push", "origin", "master")
+
+	// Fetch origin (not gl) so origin has the newer commit
+	run(clonePath, "git", "fetch", "origin")
+
+	// Verify: gl/master is older, origin/master is newer
+	glDate, _ := exec.Command("git", "-C", clonePath, "log", "-1", "--format=%cI", "gl/master").Output()
+	originDate, _ := exec.Command("git", "-C", clonePath, "log", "-1", "--format=%cI", "origin/master").Output()
+	assert.True(t, strings.TrimSpace(string(originDate)) >= strings.TrimSpace(string(glDate)),
+		"origin/master should be at least as new as gl/master")
+
+	// resolveRemoteMainBranch should pick origin/master (newer), NOT gl/master
+	ref := resolveRemoteMainBranch(clonePath)
+	assert.Equal(t, "origin/master", ref,
+		"should pick the remote with the newest default branch commit, not first alphabetically")
+}

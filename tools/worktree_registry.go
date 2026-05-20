@@ -440,27 +440,76 @@ func generateBranchName(role, instance, taskHint string) string {
 	return fmt.Sprintf("agent/%s/%s/%s", sanitize(role), sanitize(instance), task)
 }
 
-// resolveRemoteMainBranch fetches the latest refs from the remote and returns
-// the remote-tracking ref for the default branch (e.g. "origin/master").
-// Returns ("", nil) when the repo has no remote or detection fails — callers
-// should fall back to using local HEAD.
+// resolveRemoteMainBranch fetches the latest refs from ALL remotes and returns
+// the remote-tracking ref for the default branch of the most up-to-date remote
+// (e.g. "origin/master"). When multiple remotes exist, picks the one whose
+// default branch has the newest commit timestamp.
+// Returns "" when the repo has no remote or detection fails — callers should
+// fall back to using local HEAD.
 func resolveRemoteMainBranch(repoPath string) string {
-	// Step 1: detect first remote (typically "origin")
+	// Step 1: list all remotes
 	remoteCmd := exec.Command("git", "-C", repoPath, "remote")
 	remoteCmd.Env = cleanGitEnv()
 	out, err := remoteCmd.Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		return "" // no remote configured
 	}
-	remote := strings.Fields(strings.TrimSpace(string(out)))[0]
+	remotes := strings.Fields(strings.TrimSpace(string(out)))
 
-	// Step 2: fetch latest from remote (best-effort, don't fail on network errors)
-	fetchCmd := exec.Command("git", "-C", repoPath, "fetch", remote)
-	fetchCmd.Env = cleanGitEnv()
-	_ = fetchCmd.Run() // ignore errors — use cached refs if offline
+	// Step 2: fetch all remotes (best-effort, don't fail on network errors)
+	for _, remote := range remotes {
+		fetchCmd := exec.Command("git", "-C", repoPath, "fetch", remote)
+		fetchCmd.Env = cleanGitEnv()
+		_ = fetchCmd.Run() // ignore errors — use cached refs if offline
+	}
 
-	// Step 3: detect default branch via remote HEAD symref
-	// git symbolic-ref refs/remotes/origin/HEAD → refs/remotes/origin/master
+	// Step 3: for each remote, detect its default branch and collect
+	// (remote, branch, commitDate) tuples. Pick the one with the newest commit.
+	// Among equal dates, prefer remote named "origin" as tiebreaker.
+	type remoteCandidate struct {
+		ref        string // e.g. "origin/master"
+		remote     string // e.g. "origin"
+		commitDate string // ISO date for comparison
+	}
+	var best remoteCandidate
+
+	for _, remote := range remotes {
+		branch := detectRemoteDefaultBranch(repoPath, remote)
+		if branch == "" {
+			continue
+		}
+		ref := remote + "/" + branch
+
+		// Get committer date of this remote ref
+		dateCmd := exec.Command("git", "-C", repoPath, "log", "-1", "--format=%cI", ref)
+		dateCmd.Env = cleanGitEnv()
+		dateOut, dateErr := dateCmd.Output()
+		if dateErr != nil {
+			continue
+		}
+		date := strings.TrimSpace(string(dateOut))
+
+		pick := false
+		if best.commitDate == "" {
+			pick = true
+		} else if date > best.commitDate {
+			pick = true
+		} else if date == best.commitDate && remote == "origin" && best.remote != "origin" {
+			pick = true // tiebreaker: prefer "origin"
+		}
+
+		if pick {
+			best = remoteCandidate{ref: ref, remote: remote, commitDate: date}
+		}
+	}
+
+	return best.ref
+}
+
+// detectRemoteDefaultBranch resolves the default branch name for a single remote.
+// Uses symbolic-ref first, then falls back to probing common names.
+func detectRemoteDefaultBranch(repoPath, remote string) string {
+	// Try symbolic-ref: refs/remotes/origin/HEAD → refs/remotes/origin/master
 	symRef := "refs/remotes/" + remote + "/HEAD"
 	symCmd := exec.Command("git", "-C", repoPath, "symbolic-ref", symRef)
 	symCmd.Env = cleanGitEnv()
@@ -469,7 +518,7 @@ func resolveRemoteMainBranch(repoPath string) string {
 		ref := strings.TrimSpace(string(symOut))
 		prefix := "refs/remotes/" + remote + "/"
 		if branch := strings.TrimPrefix(ref, prefix); branch != ref && branch != "" {
-			return remote + "/" + branch
+			return branch
 		}
 	}
 
@@ -479,11 +528,11 @@ func resolveRemoteMainBranch(repoPath string) string {
 			"refs/remotes/"+remote+"/"+candidate)
 		revCmd.Env = cleanGitEnv()
 		if err := revCmd.Run(); err == nil {
-			return remote + "/" + candidate
+			return candidate
 		}
 	}
 
-	return "" // no remote main branch found
+	return ""
 }
 
 // createWorktree creates a git worktree and returns its path and branch.
