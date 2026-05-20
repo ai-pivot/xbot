@@ -244,6 +244,112 @@ func TestLatexToUnicode_NoMath(t *testing.T) {
 	}
 }
 
+func TestLatexToUnicode_AlignmentMarkers(t *testing.T) {
+	// &= should become just =
+	got := latexToUnicode(`\sin(α + β) &= \sinα\cosβ + \cosα\sinβ`)
+	if strings.Contains(got, "&=") {
+		t.Errorf("&= not stripped: got %q", got)
+	}
+	if !strings.Contains(got, "= sin") {
+		t.Errorf("alignment: got %q", got)
+	}
+	// Multi-line with & alignment
+	got = latexToUnicode(`f(x) &= x^2 \\ g(x) &= x + 1`)
+	if strings.Contains(got, "&") {
+		t.Errorf("& remnant: got %q", got)
+	}
+}
+
+func TestLatexToUnicode_MathFunctions(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{`\sin(x)`, "sin(x)"},
+		{`\cos^2(x) + \sin^2(x) = 1`, "cos²(x) + sin²(x) = 1"},
+		{`\log_{10}(x)`, "log₁₀(x)"},
+		{`\lim_{x \to \infty}`, "limₓ → ∞"},
+		{`\exp(i\theta)`, "exp(iθ)"},
+	}
+	for _, tt := range tests {
+		got := latexToUnicode(tt.input)
+		if got != tt.want {
+			t.Errorf("mathfunc(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestLatexToUnicode_Accents(t *testing.T) {
+	tests := []struct {
+		input   string
+		contain string
+	}{
+		{`\hat{x}`, "x̂"},
+		{`\vec{F}`, "F⃗"},
+		{`\bar{x}`, "x̄"},
+		{`\dot{x}`, "ẋ"},
+		{`\ddot{x}`, "ẍ"},
+		{`\tilde{n}`, "ñ"},
+	}
+	for _, tt := range tests {
+		got := latexToUnicode(tt.input)
+		if !strings.Contains(got, tt.contain) {
+			t.Errorf("accent(%q) = %q, expected %q", tt.input, got, tt.contain)
+		}
+	}
+}
+
+func TestLatexToUnicode_Brackets(t *testing.T) {
+	tests := []struct {
+		input   string
+		contain string
+	}{
+		{`\langle x, y \rangle`, "⟨ x, y ⟩"},
+		{`\lfloor x \rfloor`, "⌊ x ⌋"},
+		{`\lceil x \rceil`, "⌈ x ⌉"},
+	}
+	for _, tt := range tests {
+		got := latexToUnicode(tt.input)
+		if !strings.Contains(got, tt.contain) {
+			t.Errorf("bracket(%q) = %q, expected %q", tt.input, got, tt.contain)
+		}
+	}
+}
+
+func TestLatexToUnicode_Binomial(t *testing.T) {
+	got := latexToUnicode(`\binom{n}{k}`)
+	if !strings.Contains(got, "(n k)") {
+		t.Errorf("binomial: got %q", got)
+	}
+}
+
+func TestLatexToUnicode_LineBreaks(t *testing.T) {
+	got := latexToUnicode(`x^2 + y^2 \\ = r^2`)
+	if !strings.Contains(got, "\n") {
+		t.Errorf("linebreak: got %q", got)
+	}
+}
+
+func TestLatexToUnicode_Environments(t *testing.T) {
+	got := latexToUnicode(`\begin{cases} x & y \\ z & w \end{cases}`)
+	if strings.Contains(got, "begin") || strings.Contains(got, "end") {
+		t.Errorf("env not stripped: got %q", got)
+	}
+}
+
+func TestLatexToUnicode_Schrodinger(t *testing.T) {
+	got := latexToUnicode(`i\hbar \frac{\partial}{\partial t} \Psi(r, t) = \left[ -\frac{\hbar^2}{2m}\nabla^2 + V(r) \right] \Psi(r, t)`)
+	if strings.Contains(got, "{") || strings.Contains(got, "frac") {
+		t.Errorf("Schrödinger stray braces: got %q", got)
+	}
+	if !strings.Contains(got, "iℏ") || !strings.Contains(got, "∂/∂ t") {
+		t.Errorf("Schrödinger content: got %q", got)
+	}
+	if strings.Contains(got, "≤ft") {
+		t.Errorf("Schrödinger \\left[ bug: got %q", got)
+	}
+}
+
 func TestLatexToUnicode_EscapeChars(t *testing.T) {
 	tests := []struct {
 		input string

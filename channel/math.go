@@ -92,23 +92,37 @@ func latexToUnicode(src string) string {
 	// 1. Line breaks: \\ → newline (before symbol replacement eats them)
 	out = lineBreakRe.ReplaceAllString(out, "\n")
 
-	// 2. Unwrap text-style commands that take a braced argument:
+	// 2. Alignment markers: &= → =, & → space (LaTeX align env)
+	//    Must happen before symbol replacement.
+	out = strings.ReplaceAll(out, "&=", "=")
+	out = strings.ReplaceAll(out, "&", " ")
+
+	// 3. Unwrap text-style commands that take a braced argument:
 	//    \text{prime} → prime,  \mathrm{x} → x
 	//    Must happen BEFORE subscript/superscript so the content is plain text.
 	out = unwrapTextCommands(out)
 
-	// 3. Named Greek letters (longest-first)
+	// 4. Named Greek letters (longest-first)
 	out = replaceLongestFirst(out, greekLetters)
 
-	// 4. Named operators + delimiters merged into one longest-first pass.
+	// 5. Named operators + delimiters merged into one longest-first pass.
 	//    CRITICAL: \left[ (7 chars) must beat \le (3 chars).
-	//    When separate, operators ran first and \le ate the start of \left.
 	out = replaceLongestFirst(out, mergedOperators)
 
-	// 5. Named arrows
+	// 6. Named arrows
 	out = replaceLongestFirst(out, arrows)
 
-	// 6. Whitespace commands
+	// 7. Math functions: \sin, \cos, \log, \det, etc.
+	//    These are just words — strip the backslash.
+	out = mathFuncRe.ReplaceAllString(out, "$1")
+
+	// 8. Accents: \hat{x} → x̂, \vec{x} → x⃗, etc.
+	out = renderAccents(out)
+
+	// 9. Binomial: \binom{n}{k} → (n k)
+	out = renderBinomials(out)
+
+	// 10. Whitespace commands
 	out = strings.ReplaceAll(out, `\,`, " ")
 	out = strings.ReplaceAll(out, `\;`, " ")
 	out = strings.ReplaceAll(out, `\quad`, "  ")
@@ -116,16 +130,16 @@ func latexToUnicode(src string) string {
 	out = strings.ReplaceAll(out, `\ `, " ")
 	out = strings.ReplaceAll(out, `~`, " ")
 
-	// 7. Structural constructs — brace-aware parsing
+	// 11. Structural constructs — brace-aware parsing
 	out = renderFractions(out)
 	out = renderSquareRoots(out)
 	out = renderOver(out)
 
-	// 8. Superscripts / subscripts — brace-aware
+	// 12. Superscripts / subscripts — brace-aware
 	out = renderSuperscripts(out)
 	out = renderSubscripts(out)
 
-	// 9. Strip remaining bare text-style commands (no braces left)
+	// 13. Strip remaining bare text-style commands (no braces left)
 	for _, cmd := range []string{
 		`\text`, `\mathrm`, `\mathbf`, `\mathit`, `\mathcal`,
 		`\mathbb`, `\mathfrak`, `\mathsf`, `\mathtt`,
@@ -136,13 +150,16 @@ func latexToUnicode(src string) string {
 		out = strings.ReplaceAll(out, cmd, "")
 	}
 
-	// 10. Remove leftover braces iteratively (innermost first)
+	// 14. Remove leftover braces iteratively (innermost first)
 	out = removeBraces(out)
 
-	// 11. Remaining \cmd → strip backslash
+	// 15. Remaining \cmd → strip backslash
 	out = unknownCmdRe.ReplaceAllString(out, "$1")
 
-	return strings.TrimSpace(out)
+	// 16. Clean up multiple spaces and leading/trailing whitespace per line
+	out = cleanSpaces(out)
+
+	return out
 }
 
 // replaceLongestFirst replaces all keys in m with values,
@@ -177,8 +194,95 @@ func sortedKeysByLenDesc(m map[string]string) []string {
 var envRe = regexp.MustCompile(`\\(?:begin|end)\{[^}]*}`)
 
 // lineBreakRe matches LaTeX line breaks \\ (but not \{ or other escapes).
-// Must handle \\ at end of line and mid-expression.
 var lineBreakRe = regexp.MustCompile(`\\\\\s*`)
+
+// mathFuncRe matches standard math function names: \sin, \cos, \log, etc.
+var mathFuncRe = regexp.MustCompile(`\\(sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|coth|ln|log|exp|lim|sup|inf|det|dim|ker|deg|gcd|min|max|arg|hom|Pr|sgn|mod|bmod|pmod)\b`)
+
+// accentCmdRe matches \hat{x}, \vec{x}, etc. — applies combining Unicode.
+var accentCmdRe = regexp.MustCompile(`\\(hat|check|breve|acute|grave|tilde|bar|vec|dot|ddot|ring|widehat|widetilde|overline|underline|overrightarrow|overleftarrow)\{([^{}]*)}`)
+
+var accentMap = map[string]string{
+	"hat":            "\u0302", // ̂
+	"check":          "\u030C", // ̌
+	"breve":          "\u0306", // ̆
+	"acute":          "\u0301", // ́
+	"grave":          "\u0300", // ̀
+	"tilde":          "\u0303", // ̃
+	"widehat":        "\u0302",
+	"widetilde":      "\u0303",
+	"bar":            "\u0304", // ̄
+	"overline":       "\u0304",
+	"underline":      "\u0332", // ̲
+	"vec":            "\u20D7", // ⃗
+	"overrightarrow": "\u20D7",
+	"overleftarrow":  "\u20D6", // ⃖
+	"dot":            "\u0307", // ̇
+	"ddot":           "\u0308", // ̈
+	"ring":           "\u030A", // ̊
+}
+
+func renderAccents(s string) string {
+	return accentCmdRe.ReplaceAllStringFunc(s, func(match string) string {
+		sub := accentCmdRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		cmd, content := sub[1], sub[2]
+		if combining, ok := accentMap[cmd]; ok {
+			// Apply combining char to first rune of content
+			runes := []rune(content)
+			if len(runes) == 0 {
+				return content
+			}
+			var buf strings.Builder
+			buf.WriteRune(runes[0])
+			buf.WriteString(combining)
+			for _, r := range runes[1:] {
+				buf.WriteRune(r)
+			}
+			return buf.String()
+		}
+		return content
+	})
+}
+
+// binomRe matches \binom{n}{k} and \tbinom{n}{k}.
+func renderBinomials(s string) string {
+	for {
+		idx := strings.Index(s, `\binom{`)
+		if idx < 0 {
+			if idx = strings.Index(s, `\tbinom{`); idx < 0 {
+				break
+			}
+		}
+		// Find cmd start
+		cmdStart := idx
+		pos := idx
+		// Skip \binom or \tbinom
+		for pos < len(s) && s[pos] != '{' {
+			pos++
+		}
+		if pos >= len(s) {
+			break
+		}
+		n, afterN := extractBraced(s, pos)
+		if afterN == pos {
+			break
+		}
+		kPos := skipSpaces(s, afterN)
+		if kPos >= len(s) || s[kPos] != '{' {
+			break
+		}
+		k, afterK := extractBraced(s, kPos)
+		if afterK == kPos {
+			break
+		}
+		replacement := "(" + n + " " + k + ")"
+		s = s[:cmdStart] + replacement + s[afterK:]
+	}
+	return s
+}
 
 // textCmdRe matches \text{content}, \mathrm{content}, etc. — unwraps the
 // braced argument, keeping only the inner text. This prevents subscript
@@ -456,6 +560,20 @@ func removeBraces(s string) string {
 	return s
 }
 
+// multiSpaceRe collapses 3+ consecutive spaces to 2.
+var multiSpaceRe = regexp.MustCompile(` {3,}`)
+
+// cleanSpaces collapses multiple spaces and trims each line.
+func cleanSpaces(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = multiSpaceRe.ReplaceAllString(line, "  ")
+		line = strings.TrimSpace(line)
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
 // =====================================================================
 // Symbol tables
 // =====================================================================
@@ -486,6 +604,15 @@ var mergedOperators = map[string]string{
 	`\left.`: "", `\right.`: "",
 	`\bigl(`: "(", `\bigr)`: ")",
 	`\Bigl(`: "(", `\Bigr)`: ")",
+	`\left\lvert`: "|", `\right\rvert`: "|",
+	`\left\langle`: "⟨", `\right\rangle`: "⟩",
+	// Bracket symbols
+	`\langle`: "⟨", `\rangle`: "⟩",
+	`\lfloor`: "⌊", `\rfloor`: "⌋",
+	`\lceil`: "⌈", `\rceil`: "⌉",
+	`\lbrace`: "{", `\rbrace`: "}",
+	`\lvert`: "|", `\rvert`: "|",
+	`\Vert`: "‖", `\vert`: "|",
 	// Core operators
 	`\sum`: "∑", `\prod`: "∏", `\coprod`: "∐",
 	`\oint`: "∮", `\iiint`: "∭", `\iint`: "∬", `\int`: "∫",
@@ -506,8 +633,25 @@ var mergedOperators = map[string]string{
 	`\aleph`: "ℵ", `\wp`: "℘", `\prime`: "′",
 	`\dagger`: "†", `\ddagger`: "‡",
 	`\cdots`: "⋯", `\ldots`: "…", `\vdots`: "⋮", `\ddots`: "⋱",
-	// Symbols previously missing
-	`\mid`: "∣", `\vert`: "|", `\Vert`: "‖",
+	// Additional operators
+	`\mid`:     "∣",
+	`\implies`: "⟹", `\iff`: "⟺", `\impliedby`: "⟸",
+	`\therefore`: "∴", `\because`: "∵",
+	`\surd`: "√",
+	`\cong`: "≅", `\doteq`: "≐",
+	`\lesssim`: "≲", `\gtrsim`: "≳",
+	`\prec`: "≺", `\succ`: "≻",
+	`\bowtie`: "⋈",
+	`\uplus`:  "⊎", `\setminus`: "∖",
+	`\wr`:      "≀",
+	`\diamond`: "◇",
+	`\Join`:    "⋈",
+	`\bigcirc`: "◯",
+	`\amalg`:   "∐",
+	`\sharp`:   "♯", `\flat`: "♭", `\natural`: "♮",
+	`\Box`: "□", `\Diamond`: "◇",
+	`\clubsuit`: "♣", `\diamondsuit`: "♦", `\heartsuit`: "♥", `\spadesuit`: "♠",
+	// Sizing — just strip these
 	`\big`: "", `\Big`: "", `\bigg`: "", `\Bigg`: "",
 	// Escaped special chars
 	`\%`: "%", `\&`: "&", `\#`: "#", `\_`: "_",
