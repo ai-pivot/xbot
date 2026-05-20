@@ -84,7 +84,7 @@ func TestLatexToUnicode_SquareRoots(t *testing.T) {
 		want  string
 	}{
 		{`\sqrt{x}`, "√x"},
-		{`\sqrt[3]{8}`, "3√8"},
+		{`\sqrt[3]{8}`, "³√8"},
 		{`\sqrt{a^2 + b^2}`, "√a² + b²"},
 	}
 	for _, tt := range tests {
@@ -149,6 +149,34 @@ func TestLatexToUnicode_ComplexExpressions(t *testing.T) {
 	got = latexToUnicode(`e^{i\pi} + 1 = 0`)
 	if !strings.Contains(got, "eⁱπ") {
 		t.Errorf("Euler: got %q, expected eⁱπ", got)
+	}
+
+	// Maxwell's equations — the key test that motivated the rewrite
+	got = latexToUnicode(`\nabla \cdot E = \frac{\rho}{\epsilon_0}`)
+	// Key assertions: no stray braces, no "frac" remnant, has ∇ and / (fraction)
+	if strings.Contains(got, "{") || strings.Contains(got, "frac") {
+		t.Errorf("Maxwell Gauss 1 has stray braces/frac: got %q", got)
+	}
+	if !strings.Contains(got, "∇") || !strings.Contains(got, "E =") || !strings.Contains(got, "/") {
+		t.Errorf("Maxwell Gauss 1: got %q", got)
+	}
+
+	got = latexToUnicode(`\nabla \times B = \mu_0 J + \mu_0 \epsilon_0 \frac{\partial E}{\partial t}`)
+	if strings.Contains(got, "{") || strings.Contains(got, "frac") {
+		t.Errorf("Maxwell Ampere has stray braces/frac: got %q", got)
+	}
+	if !strings.Contains(got, "∇ × B") || !strings.Contains(got, "∂ E/∂ t") {
+		t.Errorf("Maxwell Ampere: got %q", got)
+	}
+
+	// Nested frac: \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+	got = latexToUnicode(`\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}`)
+	if !strings.Contains(got, "±") || !strings.Contains(got, "√") || !strings.Contains(got, "/2a") {
+		t.Errorf("Nested quadratic: got %q", got)
+	}
+	// Should NOT contain stray braces or "frac"
+	if strings.Contains(got, "{") || strings.Contains(got, "frac") {
+		t.Errorf("Nested quadratic has stray braces/frac: got %q", got)
 	}
 }
 

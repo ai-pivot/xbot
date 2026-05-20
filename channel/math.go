@@ -11,24 +11,13 @@ import (
 var mathBlockRe = regexp.MustCompile(`(?s)\$\$\s*(.*?)\s*\$\$`)
 
 // mathInlineRe matches $...$ inline math.
-// Requirements for a valid match:
-//   - Content must contain at least one backslash command (\xx) or
-//     a superscript/subscript (^, _) or a Unicode math indicator.
-//   - This prevents matching currency like "$10 and $20".
-//   - Content must not span multiple lines.
-//
-// Since Go RE2 lacks lookbehind, we use a simple pattern and validate
-// content quality in the replacement function.
+// Broad match; validated in replacement via looksLikeMath.
 var mathInlineRe = regexp.MustCompile(`\$([^\$\n]+?)\$`)
 
 // renderMathBlocks pre-processes markdown content containing LaTeX math
 // expressions, converting them to Unicode/plain-text representations that
-// the terminal can display. It follows the same pre-processing pattern as
+// the terminal can display. Follows the same pre-processing pattern as
 // renderMermaidBlocks.
-//
-// Block math ($$...$$) is rendered into a ``` code block so glamour
-// preserves whitespace alignment. Inline math ($...$) is rendered inline
-// with Unicode symbols.
 func renderMathBlocks(content string, maxW int) string {
 	// Phase 1: block math → code block
 	content = mathBlockRe.ReplaceAllStringFunc(content, func(match string) string {
@@ -77,39 +66,37 @@ func truncateMathLines(s string, maxW int) string {
 	return strings.Join(lines, "\n")
 }
 
-// latexToUnicode converts a LaTeX math expression to a Unicode/plain-text
-// representation suitable for terminal display. It handles the most common
-// constructs: Greek letters, operators, sub/superscripts, fractions,
-// square roots, summations, integrals, and basic formatting.
+// hasMath detects whether content contains LaTeX math expressions.
+func hasMath(content string) bool {
+	return mathBlockRe.MatchString(content) || mathInlineRe.MatchString(content)
+}
+
+// looksLikeMath returns true if the content between $ delimiters looks like
+// a LaTeX math expression rather than plain text with dollar signs (currency).
+var mathIndicatorRe = regexp.MustCompile(`\\[a-zA-Z]|\^|_|[{}]`)
+
+func looksLikeMath(s string) bool {
+	return mathIndicatorRe.MatchString(s)
+}
+
+// =====================================================================
+// latexToUnicode — core LaTeX → Unicode converter
+// =====================================================================
+
 func latexToUnicode(src string) string {
-	// Apply transformations in order — order matters for nested constructs.
 	out := src
 
-	// 1. Named Greek letters: \alpha → α, \beta → β, etc.
+	// 1. Named Greek letters (longest-first to avoid partial match)
 	out = replaceLongestFirst(out, greekLetters)
 
-	// 2. Named operators: \sum → ∑, \int → ∫, etc.
-	//    Must be longest-first to avoid \in matching before \int, \leq before \le, etc.
+	// 2. Named operators (longest-first: \int before \in, \leq before \le)
 	out = replaceLongestFirst(out, operators)
 
-	// 3. Named arrows: \rightarrow → →, etc.
+	// 3. Named arrows
 	out = replaceLongestFirst(out, arrows)
 
-	// 4. Bracket delimiters (multi-char sequences)
-	out = strings.ReplaceAll(out, `\left(`, "(")
-	out = strings.ReplaceAll(out, `\right)`, ")")
-	out = strings.ReplaceAll(out, `\left[`, "[")
-	out = strings.ReplaceAll(out, `\right]`, "]")
-	out = strings.ReplaceAll(out, `\left\{`, "{")
-	out = strings.ReplaceAll(out, `\right\}`, "}")
-	out = strings.ReplaceAll(out, `\left|`, "|")
-	out = strings.ReplaceAll(out, `\right|`, "|")
-	out = strings.ReplaceAll(out, `\bigl(`, "(")
-	out = strings.ReplaceAll(out, `\bigr)`, ")")
-	out = strings.ReplaceAll(out, `\Bigl(`, "(")
-	out = strings.ReplaceAll(out, `\Bigr)`, ")")
-	out = strings.ReplaceAll(out, `\left.`, "")
-	out = strings.ReplaceAll(out, `\right.`, "")
+	// 4. Bracket delimiters
+	out = replaceLongestFirst(out, delimiters)
 
 	// 5. Whitespace commands
 	out = strings.ReplaceAll(out, `\,`, " ")
@@ -119,207 +106,201 @@ func latexToUnicode(src string) string {
 	out = strings.ReplaceAll(out, `\ `, " ")
 	out = strings.ReplaceAll(out, `~`, " ")
 
-	// 6. Structural constructs
+	// 6. Structural constructs — use brace-aware parsing, NOT regex
 	out = renderFractions(out)
 	out = renderSquareRoots(out)
+	out = renderOver(out)
 
-	// 7. Superscripts: ^{...} and single-char ^x
+	// 7. Superscripts / subscripts — brace-aware
 	out = renderSuperscripts(out)
-
-	// 8. Subscripts: _{...} and single-char _x
 	out = renderSubscripts(out)
 
-	// 9. Cleanup text commands
-	out = strings.ReplaceAll(out, `\text{`, "")
-	out = strings.ReplaceAll(out, `\mathrm{`, "")
-	out = strings.ReplaceAll(out, `\mathbf{`, "")
-	out = strings.ReplaceAll(out, `\mathit{`, "")
-	out = strings.ReplaceAll(out, `\mathcal{`, "")
-	out = strings.ReplaceAll(out, `\operatorname{`, "")
-	out = strings.ReplaceAll(out, `\text`, "")
-	out = strings.ReplaceAll(out, `\mathrm`, "")
-	out = strings.ReplaceAll(out, `\mathbf`, "")
-	out = strings.ReplaceAll(out, `\displaystyle`, "")
-	out = strings.ReplaceAll(out, `\limits`, "")
+	// 8. Cleanup text-style commands
+	for _, cmd := range []string{
+		`\text`, `\mathrm`, `\mathbf`, `\mathit`, `\mathcal`,
+		`\mathbb`, `\mathfrak`, `\mathsf`, `\mathtt`,
+		`\operatorname`, `\mathrm`, `\textbf`, `\textit`,
+		`\displaystyle`, `\textstyle`, `\scriptstyle`,
+		`\limits`, `\nolimits`,
+	} {
+		out = strings.ReplaceAll(out, cmd, "")
+	}
 
-	// 10. Remove leftover braces from processed constructs
+	// 9. Remove leftover braces iteratively (innermost first)
 	out = removeBraces(out)
 
-	// 11. Remaining \cmd that we didn't handle → keep as-is (strip backslash)
+	// 10. Remaining \cmd → strip backslash
 	out = unknownCmdRe.ReplaceAllString(out, "$1")
 
 	return strings.TrimSpace(out)
 }
 
-// replaceLongestFirst replaces all keys in the map with their values,
-// processing longest keys first to prevent partial matches (e.g. \int before \in).
+// replaceLongestFirst replaces all keys in m with values,
+// processing longest keys first to prevent partial matches.
 func replaceLongestFirst(s string, m map[string]string) string {
-	// Sort keys by length descending
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	// Simple insertion sort by length descending
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && len(keys[j]) > len(keys[j-1]); j-- {
-			keys[j], keys[j-1] = keys[j-1], keys[j]
-		}
-	}
+	keys := sortedKeysByLenDesc(m)
 	for _, k := range keys {
 		s = strings.ReplaceAll(s, k, m[k])
 	}
 	return s
 }
 
-// ---------- Greek Letters ----------
-
-var greekLetters = map[string]string{
-	`\alpha`:      "α",
-	`\beta`:       "β",
-	`\gamma`:      "γ",
-	`\delta`:      "δ",
-	`\epsilon`:    "ε",
-	`\varepsilon`: "ε",
-	`\zeta`:       "ζ",
-	`\eta`:        "η",
-	`\theta`:      "θ",
-	`\vartheta`:   "ϑ",
-	`\iota`:       "ι",
-	`\kappa`:      "κ",
-	`\lambda`:     "λ",
-	`\mu`:         "μ",
-	`\nu`:         "ν",
-	`\xi`:         "ξ",
-	`\pi`:         "π",
-	`\varpi`:      "ϖ",
-	`\rho`:        "ρ",
-	`\sigma`:      "σ",
-	`\tau`:        "τ",
-	`\upsilon`:    "υ",
-	`\phi`:        "φ",
-	`\varphi`:     "φ",
-	`\chi`:        "χ",
-	`\psi`:        "ψ",
-	`\omega`:      "ω",
-	// Uppercase
-	`\Gamma`:   "Γ",
-	`\Delta`:   "Δ",
-	`\Theta`:   "Θ",
-	`\Lambda`:  "Λ",
-	`\Xi`:      "Ξ",
-	`\Pi`:      "Π",
-	`\Sigma`:   "Σ",
-	`\Upsilon`: "Υ",
-	`\Phi`:     "Φ",
-	`\Psi`:     "Ψ",
-	`\Omega`:   "Ω",
+func sortedKeysByLenDesc(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// insertion sort by length descending
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && len(keys[j]) > len(keys[j-1]); j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
 }
 
-// ---------- Operators ----------
+// =====================================================================
+// Brace-aware structural parsers
+// =====================================================================
 
-var operators = map[string]string{
-	`\sum`:        "∑",
-	`\prod`:       "∏",
-	`\coprod`:     "∐",
-	`\oint`:       "∮",
-	`\iiint`:      "∭",
-	`\iint`:       "∬",
-	`\int`:        "∫",
-	`\partial`:    "∂",
-	`\nabla`:      "∇",
-	`\infty`:      "∞",
-	`\pm`:         "±",
-	`\mp`:         "∓",
-	`\times`:      "×",
-	`\div`:        "÷",
-	`\cdot`:       "·",
-	`\circ`:       "∘",
-	`\bullet`:     "•",
-	`\star`:       "★",
-	`\approx`:     "≈",
-	`\neq`:        "≠",
-	`\leq`:        "≤",
-	`\geq`:        "≥",
-	`\le`:         "≤",
-	`\ge`:         "≥",
-	`\ll`:         "≪",
-	`\gg`:         "≫",
-	`\equiv`:      "≡",
-	`\sim`:        "∼",
-	`\simeq`:      "≃",
-	`\propto`:     "∝",
-	`\perp`:       "⊥",
-	`\parallel`:   "∥",
-	`\angle`:      "∠",
-	`\triangle`:   "△",
-	`\square`:     "□",
-	`\subseteq`:   "⊆",
-	`\supseteq`:   "⊇",
-	`\subset`:     "⊂",
-	`\supset`:     "⊃",
-	`\notin`:      "∉",
-	`\in`:         "∈",
-	`\cup`:        "∪",
-	`\cap`:        "∩",
-	`\emptyset`:   "∅",
-	`\varnothing`: "∅",
-	`\forall`:     "∀",
-	`\exists`:     "∃",
-	`\neg`:        "¬",
-	`\land`:       "∧",
-	`\lor`:        "∨",
-	`\oplus`:      "⊕",
-	`\otimes`:     "⊗",
-	`\odot`:       "⊙",
-	`\hbar`:       "ℏ",
-	`\ell`:        "ℓ",
-	`\Re`:         "ℜ",
-	`\Im`:         "ℑ",
-	`\aleph`:      "ℵ",
-	`\wp`:         "℘",
-	`\prime`:      "′",
-	`\dagger`:     "†",
-	`\ddagger`:    "‡",
-	`\cdots`:      "⋯",
-	`\ldots`:      "…",
-	`\vdots`:      "⋮",
-	`\ddots`:      "⋱",
-	`\%`:          "%",
-	`\&`:          "&",
-	`\#`:          "#",
-	`\_`:          "_",
-	`\{`:          "{",
-	`\}`:          "}",
+// extractBraced finds the content inside {…} starting at position pos.
+// Handles nested braces correctly. Returns the inner content and the
+// end position (index after closing }). Returns ("", pos) if no match.
+func extractBraced(s string, pos int) (content string, end int) {
+	if pos >= len(s) || s[pos] != '{' {
+		return "", pos
+	}
+	depth := 1
+	i := pos + 1
+	for i < len(s) && depth > 0 {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+		i++
+	}
+	if depth != 0 {
+		return "", pos // unmatched brace
+	}
+	return s[pos+1 : i-1], i
 }
 
-// ---------- Arrows ----------
+// renderFractions converts \frac{num}{den} and \dfrac{num}{den} to num/den.
+// Uses brace-aware parsing to handle nested braces correctly.
+func renderFractions(s string) string {
+	for {
+		idx := fracCmdIndex(s)
+		if idx < 0 {
+			break
+		}
+		// Find the opening brace of numerator
+		numStart := skipSpaces(s, idx)
+		if numStart >= len(s) || s[numStart] != '{' {
+			break
+		}
+		num, afterNum := extractBraced(s, numStart)
+		if afterNum == numStart {
+			break
+		}
+		denStart := skipSpaces(s, afterNum)
+		if denStart >= len(s) || s[denStart] != '{' {
+			break
+		}
+		den, afterDen := extractBraced(s, denStart)
+		if afterDen == denStart {
+			break
+		}
 
-var arrows = map[string]string{
-	`\rightarrow`:     "→",
-	`\to`:             "→",
-	`\leftarrow`:      "←",
-	`\gets`:           "←",
-	`\leftrightarrow`: "↔",
-	`\Rightarrow`:     "⇒",
-	`\Leftarrow`:      "⇐",
-	`\Leftrightarrow`: "⇔",
-	`\uparrow`:        "↑",
-	`\downarrow`:      "↓",
-	`\updownarrow`:    "↕",
-	`\Uparrow`:        "⇑",
-	`\Downarrow`:      "⇓",
-	`\Updownarrow`:    "⇕",
-	`\mapsto`:         "↦",
-	`\hookrightarrow`: "↪",
-	`\nearrow`:        "↗",
-	`\searrow`:        "↘",
-	`\swarrow`:        "↙",
-	`\nwarrow`:        "↖",
-	`\rightharpoonup`: "⇀",
-	`\leftharpoonup`:  "↼",
+		cmdStart := fracCmdStart(s, idx)
+		replacement := num + "/" + den
+		s = s[:cmdStart] + replacement + s[afterDen:]
+	}
+	return s
 }
 
-// ---------- Superscript / Subscript ----------
+// fracCmdIndex finds the index of '{' right after \frac or \dfrac.
+func fracCmdIndex(s string) int {
+	for _, prefix := range []string{`\dfrac{`, `\frac{`} {
+		if i := strings.Index(s, prefix); i >= 0 {
+			return i + len(prefix) - 1 // index of '{'
+		}
+	}
+	return -1
+}
+
+func fracCmdStart(s string, braceIdx int) int {
+	// Walk back from braceIdx to find the \ that starts \frac or \dfrac
+	sub := s[:braceIdx+1]
+	for _, prefix := range []string{`\dfrac{`, `\frac{`} {
+		if strings.HasSuffix(sub, prefix) {
+			return len(sub) - len(prefix)
+		}
+	}
+	return 0
+}
+
+func skipSpaces(s string, i int) int {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return i
+}
+
+// renderSquareRoots converts \sqrt{x} → √x and \sqrt[n]{x} → ⁿ√x.
+// Brace-aware for nested content.
+func renderSquareRoots(s string) string {
+	for {
+		idx := strings.Index(s, `\sqrt`)
+		if idx < 0 {
+			break
+		}
+		pos := idx + len(`\sqrt`)
+		var indexStr string
+
+		// Optional [n] index
+		if pos < len(s) && s[pos] == '[' {
+			endBracket := strings.IndexByte(s[pos:], ']')
+			if endBracket > 0 {
+				indexStr = s[pos+1 : pos+endBracket]
+				// Convert index to superscript
+				indexStr = toSuperscript(indexStr)
+				pos = pos + endBracket + 1
+			}
+		}
+
+		pos = skipSpaces(s, pos)
+		if pos >= len(s) || s[pos] != '{' {
+			break
+		}
+		content, afterContent := extractBraced(s, pos)
+		if afterContent == pos {
+			break
+		}
+
+		replacement := indexStr + "√" + content
+		s = s[:idx] + replacement + s[afterContent:]
+	}
+	return s
+}
+
+// renderOver converts \over (LaTeX infix fraction: {a \over b} → a/b).
+func renderOver(s string) string {
+	return overRe.ReplaceAllStringFunc(s, func(match string) string {
+		sub := overRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		return strings.TrimSpace(sub[1]) + "/" + strings.TrimSpace(sub[2])
+	})
+}
+
+var overRe = regexp.MustCompile(`\{([^{}]*)\s*\\over\s*([^{}]*)}`)
+
+// =====================================================================
+// Superscript / Subscript
+// =====================================================================
 
 var superscriptDigits = map[rune]rune{
 	'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
@@ -338,120 +319,87 @@ var subscriptDigits = map[rune]rune{
 	'i': 'ᵢ', 'j': 'ⱼ', 'r': 'ᵣ', 'u': 'ᵤ', 'v': 'ᵥ',
 }
 
-// fracRe matches \frac{num}{den} or \dfrac{num}{den}.
-var fracRe = regexp.MustCompile(`\\(?:d)?frac\{([^}]*)}\{([^}]*)}`)
-
-// sqrtRe matches \sqrt[n]{content} or \sqrt{content}.
-var sqrtRe = regexp.MustCompile(`\\sqrt(?:\[(\w+)\])?\{([^}]*)}`)
-
-// supRe matches ^{content} (braced multi-char superscript).
-var supBraceRe = regexp.MustCompile(`\^{([^}]+)}`)
-
-// supSingleRe matches ^x (single-char superscript, not a brace).
-var supSingleRe = regexp.MustCompile(`\^([^\\{_\s])`)
-
-// subBraceRe matches _{content} (braced multi-char subscript).
-var subBraceRe = regexp.MustCompile(`_{([^}]+)}`)
-
-// subSingleRe matches _x (single-char subscript, not a brace).
-var subSingleRe = regexp.MustCompile(`_([^\\{^\s])`)
-
-// unknownCmdRe matches remaining \word commands.
-var unknownCmdRe = regexp.MustCompile(`\\([a-zA-Z]+)`)
-
-// renderFractions converts \frac{a}{b} → a/b.
-func renderFractions(s string) string {
-	return fracRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := fracRe.FindStringSubmatch(match)
-		if len(sub) < 3 {
-			return match
-		}
-		num := strings.TrimSpace(sub[1])
-		den := strings.TrimSpace(sub[2])
-		if num == "" || den == "" {
-			return match
-		}
-		return num + "/" + den
-	})
-}
-
-// renderSquareRoots converts \sqrt{x} → √x and \sqrt[n]{x} → ⁿ√x.
-func renderSquareRoots(s string) string {
-	return sqrtRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := sqrtRe.FindStringSubmatch(match)
-		if len(sub) < 3 {
-			return match
-		}
-		index := strings.TrimSpace(sub[1])
-		content := strings.TrimSpace(sub[2])
-		if index != "" {
-			return index + "√" + content
-		}
-		return "√" + content
-	})
-}
-
-// renderSuperscripts converts ^{2} → ², ^n → ⁿ, etc.
+// renderSuperscripts converts ^{...} and ^x to superscript Unicode.
+// Brace-aware for nested content like ^{i\pi}.
 func renderSuperscripts(s string) string {
-	// First: braced multi-char ^{content}
-	s = supBraceRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := supBraceRe.FindStringSubmatch(match)
-		if len(sub) < 2 {
-			return match
-		}
-		return toSuperscript(sub[1])
-	})
-	// Then: single-char ^x
-	s = supSingleRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := supSingleRe.FindStringSubmatch(match)
-		if len(sub) < 2 {
-			return match
-		}
-		return toSuperscript(sub[1])
-	})
+	// Braced: ^{...}
+	s = renderPowOrSub(s, '^', toSuperscript)
+	// Single-char: ^x (not followed by { or \)
+	s = renderPowOrSubSingle(s, '^', toSuperscript)
 	return s
 }
 
-// renderSubscripts converts _{2} → ₂, _i → ᵢ, etc.
+// renderSubscripts converts _{...} and _x to subscript Unicode.
 func renderSubscripts(s string) string {
-	// First: braced multi-char _{content}
-	s = subBraceRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := subBraceRe.FindStringSubmatch(match)
-		if len(sub) < 2 {
-			return match
-		}
-		return toSubscript(sub[1])
-	})
-	// Then: single-char _x
-	s = subSingleRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := subSingleRe.FindStringSubmatch(match)
-		if len(sub) < 2 {
-			return match
-		}
-		return toSubscript(sub[1])
-	})
+	// Braced: _{...}
+	s = renderPowOrSub(s, '_', toSubscript)
+	// Single-char: _x
+	s = renderPowOrSubSingle(s, '_', toSubscript)
 	return s
 }
 
-// toSuperscript converts a string to superscript Unicode where possible.
-// Characters without a superscript equivalent are kept as-is (no fallback prefix).
+// renderPowOrSub handles ^{...} or _{...} with brace-aware parsing.
+func renderPowOrSub(s string, marker byte, convert func(string) string) string {
+	for {
+		idx := indexOfMarkerBrace(s, marker)
+		if idx < 0 {
+			break
+		}
+		braceStart := idx + 1
+		if braceStart >= len(s) || s[braceStart] != '{' {
+			break
+		}
+		content, afterContent := extractBraced(s, braceStart)
+		if afterContent == braceStart {
+			break
+		}
+		replacement := convert(content)
+		s = s[:idx] + replacement + s[afterContent:]
+	}
+	return s
+}
+
+// renderPowOrSubSingle handles ^x or _x (single char, no braces).
+var singlePowRe = regexp.MustCompile(`\^([^\\{_\s])`)
+var singleSubRe = regexp.MustCompile(`_([^\\{^\s])`)
+
+func renderPowOrSubSingle(s string, marker byte, convert func(string) string) string {
+	var re *regexp.Regexp
+	if marker == '^' {
+		re = singlePowRe
+	} else {
+		re = singleSubRe
+	}
+	return re.ReplaceAllStringFunc(s, func(match string) string {
+		sub := re.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		return convert(sub[1])
+	})
+}
+
+func indexOfMarkerBrace(s string, marker byte) int {
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == marker && i+1 < len(s) && s[i+1] == '{' {
+			return i
+		}
+	}
+	return -1
+}
+
 func toSuperscript(s string) string {
 	var buf strings.Builder
-	allConverted := true
 	for _, r := range s {
 		if sr, ok := superscriptDigits[r]; ok {
 			buf.WriteRune(sr)
 		} else {
 			buf.WriteRune(r)
-			allConverted = false
 		}
 	}
-	_ = allConverted
 	return buf.String()
 }
 
-// toSubscript converts a string to subscript Unicode where possible.
-// Characters without a subscript equivalent are kept as-is (no fallback prefix).
 func toSubscript(s string) string {
 	var buf strings.Builder
 	for _, r := range s {
@@ -464,43 +412,84 @@ func toSubscript(s string) string {
 	return buf.String()
 }
 
-// removeBraces strips remaining { and } that are not needed for display.
-// It uses a simple heuristic: remove braces that wrap content without
-// any surrounding command context.
+// =====================================================================
+// Brace cleanup
+// =====================================================================
+
+// removeBraces iteratively strips the innermost {content} pairs.
+var innerBraceRe = regexp.MustCompile(`\{([^{}]*)}`)
+
 func removeBraces(s string) string {
-	// Iteratively remove { } pairs. This is conservative — we only
-	// remove when the content inside is plain text without nested braces.
-	for strings.Contains(s, "{") {
-		next := bracePairRe.ReplaceAllStringFunc(s, func(match string) string {
-			// Strip the outer braces
-			inner := match[1 : len(match)-1]
-			if !strings.ContainsAny(inner, "{}") {
-				return inner
-			}
-			return match
-		})
+	for i := 0; i < 10; i++ {
+		next := innerBraceRe.ReplaceAllString(s, "$1")
 		if next == s {
-			break // no progress, stop
+			break
 		}
 		s = next
 	}
 	return s
 }
 
-// bracePairRe matches the innermost {content} pair (no nested braces inside).
-var bracePairRe = regexp.MustCompile(`\{([^{}]*)}`)
+// =====================================================================
+// Symbol tables
+// =====================================================================
 
-// hasMath detects whether content contains LaTeX math expressions.
-func hasMath(content string) bool {
-	return mathBlockRe.MatchString(content) || mathInlineRe.MatchString(content)
+var unknownCmdRe = regexp.MustCompile(`\\([a-zA-Z]+)`)
+
+var greekLetters = map[string]string{
+	`\alpha`: "α", `\beta`: "β", `\gamma`: "γ", `\delta`: "δ",
+	`\epsilon`: "ε", `\varepsilon`: "ε", `\zeta`: "ζ", `\eta`: "η",
+	`\theta`: "θ", `\vartheta`: "ϑ", `\iota`: "ι", `\kappa`: "κ",
+	`\lambda`: "λ", `\mu`: "μ", `\nu`: "ν", `\xi`: "ξ",
+	`\pi`: "π", `\varpi`: "ϖ", `\rho`: "ρ", `\sigma`: "σ",
+	`\tau`: "τ", `\upsilon`: "υ", `\phi`: "φ", `\varphi`: "φ",
+	`\chi`: "χ", `\psi`: "ψ", `\omega`: "ω",
+	`\Gamma`: "Γ", `\Delta`: "Δ", `\Theta`: "Θ", `\Lambda`: "Λ",
+	`\Xi`: "Ξ", `\Pi`: "Π", `\Sigma`: "Σ", `\Upsilon`: "Υ",
+	`\Phi`: "Φ", `\Psi`: "Ψ", `\Omega`: "Ω",
 }
 
-// looksLikeMath returns true if the content between $ delimiters looks like
-// a LaTeX math expression rather than plain text with dollar signs (currency).
-// Heuristics: contains backslash commands, superscripts (^), subscripts (_),
-// or common math operators.
-var mathIndicatorRe = regexp.MustCompile(`\\[a-zA-Z]|\^|_|[{}]|\\[+\-=\{\}_#%&]`)
+var operators = map[string]string{
+	`\sum`: "∑", `\prod`: "∏", `\coprod`: "∐",
+	`\oint`: "∮", `\iiint`: "∭", `\iint`: "∬", `\int`: "∫",
+	`\partial`: "∂", `\nabla`: "∇", `\infty`: "∞",
+	`\pm`: "±", `\mp`: "∓", `\times`: "×", `\div`: "÷",
+	`\cdot`: "·", `\circ`: "∘", `\bullet`: "•", `\star`: "★",
+	`\approx`: "≈", `\neq`: "≠", `\leq`: "≤", `\geq`: "≥",
+	`\le`: "≤", `\ge`: "≥", `\ll`: "≪", `\gg`: "≫",
+	`\equiv`: "≡", `\sim`: "∼", `\simeq`: "≃", `\propto`: "∝",
+	`\perp`: "⊥", `\parallel`: "∥", `\angle`: "∠",
+	`\triangle`: "△", `\square`: "□",
+	`\subseteq`: "⊆", `\supseteq`: "⊇", `\subset`: "⊂", `\supset`: "⊃",
+	`\notin`: "∉", `\in`: "∈",
+	`\cup`: "∪", `\cap`: "∩", `\emptyset`: "∅", `\varnothing`: "∅",
+	`\forall`: "∀", `\exists`: "∃", `\neg`: "¬", `\land`: "∧", `\lor`: "∨",
+	`\oplus`: "⊕", `\otimes`: "⊗", `\odot`: "⊙",
+	`\hbar`: "ℏ", `\ell`: "ℓ", `\Re`: "ℜ", `\Im`: "ℑ",
+	`\aleph`: "ℵ", `\wp`: "℘", `\prime`: "′",
+	`\dagger`: "†", `\ddagger`: "‡",
+	`\cdots`: "⋯", `\ldots`: "…", `\vdots`: "⋮", `\ddots`: "⋱",
+	`\%`: "%", `\&`: "&", `\#`: "#", `\_`: "_",
+	`\{`: "{", `\}`: "}",
+}
 
-func looksLikeMath(s string) bool {
-	return mathIndicatorRe.MatchString(s)
+var arrows = map[string]string{
+	`\rightarrow`: "→", `\to`: "→", `\leftarrow`: "←", `\gets`: "←",
+	`\leftrightarrow`: "↔",
+	`\Rightarrow`:     "⇒", `\Leftarrow`: "⇐", `\Leftrightarrow`: "⇔",
+	`\uparrow`: "↑", `\downarrow`: "↓", `\updownarrow`: "↕",
+	`\Uparrow`: "⇑", `\Downarrow`: "⇓", `\Updownarrow`: "⇕",
+	`\mapsto`: "↦", `\hookrightarrow`: "↪",
+	`\nearrow`: "↗", `\searrow`: "↘", `\swarrow`: "↙", `\nwarrow`: "↖",
+	`\rightharpoonup`: "⇀", `\leftharpoonup`: "↼",
+}
+
+var delimiters = map[string]string{
+	`\left(`: "(", `\right)`: ")",
+	`\left[`: "[", `\right]`: "]",
+	`\left\{`: "{", `\right\}`: "}",
+	`\left|`: "|", `\right|`: "|",
+	`\bigl(`: "(", `\bigr)`: ")",
+	`\Bigl(`: "(", `\Bigr)`: ")",
+	`\left.`: "", `\right.`: "",
 }
