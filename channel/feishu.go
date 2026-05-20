@@ -1727,8 +1727,8 @@ func (f *FeishuChannel) sendAskUserCard(msg OutboundMsg) (string, error) {
 }
 
 // buildAskUserCard constructs a Feishu interactive card for AskUser questions.
-// Questions with options become button groups; questions without options show
-// as markdown prompts with a text reply expected.
+// Uses schema V2 with column_set + interactive_container for buttons,
+// matching the settings card pattern (tag:action is unsupported in V2).
 func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 	elements := []map[string]any{}
 
@@ -1744,25 +1744,20 @@ func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 		})
 
 		if len(q.Options) > 0 {
-			// Options as buttons
-			action := fmt.Sprintf("%sq%d_opt", askUserActionPrefix, i)
+			// Options as buttons, wrapped in column_set (V2 compatible)
 			buttons := []map[string]any{}
 			for _, opt := range q.Options {
 				buttons = append(buttons, map[string]any{
 					"tag":  "button",
 					"text": map[string]any{"tag": "plain_text", "content": opt},
 					"type": "primary",
-					"value": map[string]any{
-						"ask_user_action": action,
+					"value": map[string]string{
+						"ask_user_action": fmt.Sprintf("%sq%d_opt", askUserActionPrefix, i),
 						"answer":          opt,
 					},
 				})
 			}
-			elements = append(elements, map[string]any{
-				"tag":     "action",
-				"actions": buttons,
-				"layout":  "flow",
-			})
+			elements = append(elements, wrapButtonsInColumns(buttons))
 		} else {
 			// Open question: hint for text reply
 			elements = append(elements, map[string]any{
@@ -1778,35 +1773,25 @@ func (f *FeishuChannel) buildAskUserCard(questions []askQItem) map[string]any {
 	}
 
 	// Reject and Cancel buttons
-	elements = append(elements, map[string]any{
-		"tag": "hr",
-	})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "",
-	})
-	elements = append(elements, map[string]any{
-		"tag": "action",
-		"actions": []map[string]any{
-			{
-				"tag":  "button",
-				"text": map[string]any{"tag": "plain_text", "content": "Reject"},
-				"type": "danger",
-				"value": map[string]any{
-					"ask_user_action": askUserActionPrefix + "reject",
-				},
-			},
-			{
-				"tag":  "button",
-				"text": map[string]any{"tag": "plain_text", "content": "Cancel"},
-				"type": "default",
-				"value": map[string]any{
-					"ask_user_action": askUserActionPrefix + "cancel",
-				},
+	elements = append(elements, map[string]any{"tag": "hr"})
+	elements = append(elements, wrapButtonsInColumns([]map[string]any{
+		{
+			"tag":  "button",
+			"text": map[string]any{"tag": "plain_text", "content": "Reject"},
+			"type": "danger",
+			"value": map[string]string{
+				"ask_user_action": askUserActionPrefix + "reject",
 			},
 		},
-		"layout": "flow",
-	})
+		{
+			"tag":  "button",
+			"text": map[string]any{"tag": "plain_text", "content": "Cancel"},
+			"type": "default",
+			"value": map[string]string{
+				"ask_user_action": askUserActionPrefix + "cancel",
+			},
+		},
+	}))
 
 	return map[string]any{
 		"schema": "2.0",
