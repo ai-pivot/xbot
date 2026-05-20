@@ -1095,6 +1095,18 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			}
 		case "context_edit":
 			GlobalMetrics.ContextEditEvents.Add(1)
+		case "memory_write":
+			GlobalMetrics.MemoryWrites.Add(1)
+		case "Read":
+			// Track reads of docs/agent/ knowledge files
+			var args struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal([]byte(tc.Arguments), &args) == nil {
+				if strings.HasPrefix(args.Path, "docs/agent/") || strings.Contains(args.Path, "/docs/agent/") {
+					GlobalMetrics.DocsAgentReads.Add(1)
+				}
+			}
 		}
 	}
 

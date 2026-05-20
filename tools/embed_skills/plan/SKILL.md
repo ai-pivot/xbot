@@ -21,7 +21,7 @@ Break complex tasks into actionable, verifiable implementation plans before writ
 Goal: Fully understand the request and the relevant codebase before proposing anything.
 
 - Parse the user's request: what is the desired outcome, what are the constraints, what is the scope?
-- Read AGENT.md and relevant knowledge files first (architecture, conventions, gotchas).
+- Read AGENTS.md and relevant knowledge files first (architecture, conventions, gotchas).
 - Use `Grep`/`Glob`/`Read` to trace code paths, find dependencies, and understand existing patterns.
 - Identify all files that will be affected.
 - If anything is unclear, ask the user a focused question before proceeding.

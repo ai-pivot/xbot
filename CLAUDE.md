@@ -65,7 +65,7 @@ Channel → MessageBus → Dispatcher → Agent → LLM → Tools
 **System Prompt Pipeline** (`agent/middleware.go`):
 Ordered `MessageMiddleware` chain registered in `agent/context.go:initPipelines()`:
 - `00_base` — Render prompt.md template
-- `05_project_context` — Load `AGENT.md` from CWD into system prompt
+- `05_project_context` — Load `AGENTS.md` from CWD into system prompt
 - `10_skills` — Inject skill catalog
 - `15_agents` — Inject subagent catalog
 - `14_perm_control` — OS user permission control
@@ -83,7 +83,7 @@ Ordered `MessageMiddleware` chain registered in `agent/context.go:initPipelines(
 
 ## Critical Gotchas
 
-These are documented in `AGENT.md`; read it before any code change.
+These are documented in `AGENTS.md`; read it before any code change.
 
 ### Concurrency
 - **Never `defer` semaphore release inside a loop.** Release immediately after `Generate` completes, or iterations exceeding capacity deadlock.

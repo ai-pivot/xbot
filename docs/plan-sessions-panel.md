@@ -86,7 +86,7 @@
 
 - [ ] **4.1** 删除 `openBgTasksPanel` 中关于 Agent 列表的代码
 - [ ] **4.2** 编译 + 测试通过
-- [ ] **4.3** 更新 AGENT.md knowledge files
+- [ ] **4.3** 更新 AGENTS.md knowledge files
 
 ## 验证方案
 

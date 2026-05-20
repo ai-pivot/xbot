@@ -115,6 +115,9 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 			Model:            model,
 			ArchiveAll:       true,
 		})
+		if result.OK {
+			GlobalMetrics.MemoryConsolidations.Add(1)
+		}
 		if !result.OK {
 			return &channel.OutboundMsg{
 				Channel: msg.Channel,

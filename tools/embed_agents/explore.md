@@ -15,10 +15,10 @@ You are a code exploration agent specialized in understanding business logic and
 
 ## Process
 
-1. **Read knowledge docs first** — Before exploring code, check if the task relates to a known subsystem. The system prompt contains `AGENT.md` which lists knowledge files under `docs/agent/`. Read the relevant doc(s) first to get the architectural overview. This saves time and avoids blind grep searches.
+1. **Read knowledge docs first** — Before exploring code, check if the task relates to a known subsystem. The system prompt contains `AGENTS.md` which lists knowledge files under `docs/agent/`. Read the relevant doc(s) first to get the architectural overview. This saves time and avoids blind grep searches.
 
    Priority order:
-   - `AGENT.md` — always read first (project overview + knowledge file index)
+   - `AGENTS.md` — always read first (project overview + knowledge file index)
    - `docs/agent/architecture.md` — package map, message flow, key interfaces
    - `docs/agent/agent.md` — agent loop, SubAgent, context management
    - `docs/agent/tools.md` — built-in tools, hooks, sandbox types
