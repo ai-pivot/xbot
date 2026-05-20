@@ -82,7 +82,7 @@
 .input-bar textarea:focus {
   background: rgba(0,0,0,0.4) !important;
   outline: none !important;
-  box-shadow: none !important;
+  box-shadow: 0 0 0 2px rgba(0,122,255,0.3) !important;
 }
 .input-bar textarea::placeholder { color: var(--text-tertiary) !important; }
 
@@ -144,12 +144,13 @@
 .header-bar [class*="bg-red"] { background: rgba(255,69,58,0.15) !important; border: none !important; box-shadow: none !important; }
 
 /* ═══ ONBOARDING ═══ */
-.onboarding-card, .onboarding-overlay {
+/* Only style the card — overlay must keep position:fixed from onboarding.css */
+.onboarding-card {
   background: #1c1c1e !important;
   border: none !important;
   border-radius: var(--radius-xl) !important;
   box-shadow: 0 20px 60px rgba(0,0,0,0.5) !important;
-  position: relative; overflow: hidden;
+  overflow: hidden;
 }
 .onboarding-card::before { display: none !important; }
 
@@ -202,6 +203,7 @@
 }
 [data-theme="light"] .input-bar textarea:focus {
   background: rgba(0,0,0,0.06) !important;
+  box-shadow: 0 0 0 2px rgba(0,122,255,0.2) !important;
 }
 [data-theme="light"] .user-msg {
   background: #007AFF !important;
@@ -248,9 +250,8 @@
 /* Scrollbar */
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12) !important; }
 [data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2) !important; }
-/* Onboarding — override the !important dark bg from theme.css */
-[data-theme="light"] .onboarding-card,
-[data-theme="light"] .onboarding-overlay {
+/* Onboarding — only style the card, keep overlay fixed */
+[data-theme="light"] .onboarding-card {
   background: rgba(255,255,255,0.95) !important;
   border-color: rgba(0,0,0,0.08) !important;
   box-shadow: 0 20px 60px rgba(0,0,0,0.1) !important;

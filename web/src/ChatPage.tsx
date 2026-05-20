@@ -1073,20 +1073,20 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         data-testid="messages-container"
       >
         {messages.length === 0 && !loading && (
-          <div className="text-center py-20 animate-fade-in">
-            <div className="text-5xl mb-4 opacity-30">🤖</div>
-            <p className="text-slate-400 text-base font-medium mb-2">{t('startConversation')}</p>
-            <p className="text-slate-500 text-sm mb-8">{t('sendFirstMessage')}</p>
-            <div className="flex flex-col items-center gap-2 text-xs text-slate-600">
-              <span className="px-3 py-1 rounded-full bg-slate-800/50 border border-slate-700/50">
-                {t("searchKbHint")}
-              </span>
-              <span className="px-3 py-1 rounded-full bg-slate-800/50 border border-slate-700/50">
-                {t("commandHint")}
-              </span>
+          <div className="text-center py-20 animate-fade-in select-none">
+            <div className="text-7xl mb-8 opacity-15">🤖</div>
+            <p className="text-xl font-semibold mb-3" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>{t('startConversation')}</p>
+            <p className="text-sm mb-12" style={{ color: 'var(--text-tertiary)', maxWidth: 320, margin: '0 auto 48px' }}>{t('sendFirstMessage')}</p>
+            <div className="flex flex-col items-center gap-3" style={{ color: 'var(--text-secondary)' }}>
+              <div className="px-5 py-2.5 rounded-xl text-xs font-medium flex items-center gap-2" style={{ background: 'var(--bg-secondary)', border: '0.5px solid var(--border)' }}>
+               <span>⌨️</span> {t("searchKbHint")}
+              </div>
+              <div className="px-5 py-2.5 rounded-xl text-xs font-medium flex items-center gap-2" style={{ background: 'var(--bg-secondary)', border: '0.5px solid var(--border)' }}>
+               <span>⚡</span> {t("commandHint")}
+              </div>
             </div>
           </div>
-        )}
+         )}
 
         {/* Virtualized message list */}
         {turns.length > 0 && (

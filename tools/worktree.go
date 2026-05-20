@@ -24,7 +24,7 @@ so agents don't conflict on the same files. Also supports listing and cleanup.
 ### init
 Create a new git worktree for the current agent. Registers it in the global registry.
 - Every session gets its own worktree — all agents are equal peers.
-- Returns the worktree path. You should then Cd to it.
+ Returns the worktree path and auto-cd into it.
 
 Parameters: {"action": "init", "role": "peer", "instance": "debug", "task": "fix auth bug"}
 
@@ -87,15 +87,9 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 		return nil, fmt.Errorf("worktree init: %w", err)
 	}
 
-	// Experimental feature gate: worktree creation requires config opt-in.
-	if !ctx.AutoWorktreeEnabled {
-		return NewResult(
-			"⚠️ Worktree 是实验性功能，默认关闭。\n" +
-				"如需启用自动 worktree 隔离，请在 /settings 中设置 `auto_worktree = true`，\n" +
-				"或在 config.json 中设置：\n" +
-				`  "agent": {"experimental": {"auto_worktree": true}}` +
-				"\n\n当前已启用 peer 感知——你可以看到其他 agent 并与之通信。"), nil
-	}
+	// auto_worktree gate only controls automatic creation (AutoDetectAndInit).
+	// Explicit Worktree(init) calls always create the worktree — the agent
+	// consciously chose to call this tool, regardless of the config setting.
 
 	sessionKey := ctx.Channel + ":" + ctx.ChatID
 	role := params.Role
@@ -147,10 +141,12 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 	if ctx.SetCurrentDir != nil {
 		ctx.SetCurrentDir(worktreePath)
 	}
+	// Update ToolContext.CurrentDir for immediate effect in subsequent tool calls.
+	ctx.CurrentDir = worktreePath
 
 	msg := fmt.Sprintf("Worktree created successfully.\n"+
 		"- Repo: %s\n- Worktree: %s\n- Branch: %s\n- Role: %s%s\n\n"+
-		"You are now working in an isolated worktree. Other agents in the same repo will not see your changes until merge.",
+		"已自动 cd 到 worktree 目录。你现在在隔离的工作区中工作，其他 agent 不会看到你的更改，直到合并。",
 		repoPath, worktreePath, branch, role, dirtyWarning)
 
 	peers := GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
