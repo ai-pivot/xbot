@@ -242,7 +242,7 @@ type settingsResponse struct {
 }
 
 type updateSettingsRequest struct {
-	Settings map[string]string `json:"settings"`
+	Settings map[string]interface{} `json:"settings"`
 }
 
 // handleSettings handles GET/PUT /api/settings
@@ -307,19 +307,33 @@ func (wc *WebChannel) handleUpdateSettings(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	const maxSettingValueLen = 32768 // 32KB per setting value
+
+	// Convert all values to strings (front-end may send numbers/bools)
+	settings := make(map[string]string, len(req.Settings))
 	for k, v := range req.Settings {
-		if len(v) > maxSettingValueLen {
+		var sv string
+		switch val := v.(type) {
+		case string:
+			sv = val
+		case float64, int, int64, bool:
+			sv = fmt.Sprintf("%v", val)
+		case nil:
+			sv = ""
+		default:
+			sv = fmt.Sprintf("%v", val)
+		}
+		if len(sv) > 32768 {
 			writeJSON(w, http.StatusBadRequest, settingsResponse{
 				OK:    false,
-				Error: fmt.Sprintf("setting %q value too large (max %d bytes)", k, maxSettingValueLen),
+				Error: fmt.Sprintf("setting %q value too large (max 32768 bytes)", k),
 			})
 			return
 		}
+		settings[k] = sv
 	}
 
 	now := time.Now().Unix()
-	for k, v := range req.Settings {
+	for k, v := range settings {
 		_, err := wc.db.Exec(
 			"INSERT OR REPLACE INTO user_settings (channel, sender_id, key, value, updated_at) VALUES ('web', ?, ?, ?, ?)",
 			senderID, k, v, now,

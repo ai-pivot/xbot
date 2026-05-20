@@ -91,4 +91,10 @@ mermaid-ascii
 ultraviolet
 .VSCodeCounter/
 .config/
+# Screenshots & reference images
+web/hd-*.png
+web/*.png
+web/*.jpg
+web/*.jpeg
+
 .xbot-worktrees/

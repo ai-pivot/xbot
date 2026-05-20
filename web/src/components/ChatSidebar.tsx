@@ -28,17 +28,12 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const { t } = useTranslation()
 
-  // Responsive mobile detection
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
   const isMobileRef = useRef(isMobile)
-  useEffect(() => {
-    isMobileRef.current = isMobile
-  }, [isMobile])
+  useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   useEffect(() => {
     const mql = window.matchMedia('(max-width: 640px)')
-    const handler = (e: MediaQueryListEvent) => {
-      setIsMobile(e.matches)
-    }
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
     mql.addEventListener('change', handler)
     return () => mql.removeEventListener('change', handler)
   }, [])
@@ -73,7 +68,6 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       })
       const data = await resp.json()
       if (data.ok && data.chat_id) {
-        // Switch to the new chat (this triggers loadHistory via onSwitchChat)
         await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
         onSwitchChat(data.chat_id)
         fetchChats()
@@ -91,7 +85,6 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     setConfirmDelete(null)
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}`, { method: 'DELETE' })
-      // Refresh chat list first, then decide what to switch to
       const resp = await fetch('/api/chats')
       const data = await resp.json()
       if (data.ok) {
@@ -102,7 +95,6 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
             await fetch(`/api/chats/${encodeURIComponent(remaining[0].chat_id)}/switch`, { method: 'POST' })
             onSwitchChat(remaining[0].chat_id)
           } else {
-            // No chats left — create a new one
             _onNewChat()
           }
         }
@@ -125,188 +117,78 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     setRenamingId(null)
   }
 
-  // Mobile overlay mode (isMobile is now reactive state)
-
-  // Filter chats by search query
   const filteredChats = searchQuery.trim()
-    ? chats.filter(c => (c.label || '未命名').toLowerCase().includes(searchQuery.toLowerCase()) || (c.preview || '').toLowerCase().includes(searchQuery.toLowerCase()))
+    ? chats.filter(c => (c.label || '').toLowerCase().includes(searchQuery.toLowerCase()) || (c.preview || '').toLowerCase().includes(searchQuery.toLowerCase()))
     : chats
 
   if (collapsed) {
     return (
-      <button
-        className="chat-sidebar-toggle"
-        onClick={() => { setCollapsed(false); fetchChats() }}
-        title={t("expandSidebar")}
-      >
+      <button className="chat-sidebar-toggle" onClick={() => { setCollapsed(false); fetchChats() }} title={t("expandSidebar")}>
         💬 <span className="sidebar-count">{chats.length}</span>
       </button>
     )
   }
 
-  // Mobile: render as overlay
-  if (isMobile) {
-    return (
-      <div className="chat-sidebar-overlay" onClick={(e) => { if (e.target === e.currentTarget) setCollapsed(true) }}>
-        <div className="chat-sidebar-mobile" role="navigation" aria-label="会话列表" data-testid="sidebar">
-          {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
-            <span className="text-sm font-medium text-slate-300">{t("chatSessions")}</span>
-            <div className="flex items-center gap-1">
-              <button onClick={handleCreate} className="sidebar-btn" title={t("newSession")}>+</button>
-              <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>✕</button>
-            </div>
-          </div>
-          {/* Search */}
-          <div className="px-3 py-1 border-b border-slate-700/50">
-            <input
-              className="sidebar-search"
-              placeholder={t('searchPlaceholder')}
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              onClick={e => e.stopPropagation()}
-            />
-          </div>
-          {/* List */}
-          <div className="flex-1 overflow-y-auto py-1">
-            {loading ? (
-              <div className="text-center py-4 text-slate-500 text-xs">{t('sidebarLoading')}</div>
-            ) : (
-              filteredChats.map((chat) => (
-                <div
-                  key={chat.chat_id}
-                  className={`sidebar-item ${chat.is_current ? 'sidebar-item-active' : ''}`}
-                  onClick={() => handleSwitch(chat.chat_id)}
-                >
-                  <div className="flex items-center gap-1">
-                    {renamingId === chat.chat_id ? (
-                      <input
-                        className="sidebar-rename-input"
-                        value={renameValue}
-                        onChange={e => setRenameValue(e.target.value)}
-                        onKeyDown={e => handleRename(e, chat.chat_id)}
-                        onBlur={() => setRenamingId(null)}
-                        autoFocus
-                        onClick={e => e.stopPropagation()}
-                      />
-                    ) : (
-                      <span
-                        className="text-xs truncate flex-1 text-slate-300"
-                        onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
-                      >{chat.label || t('unnamedSession')}</span>
-                    )}
-                    {chat.is_current && <span className="text-[10px] text-indigo-400 shrink-0">●</span>}
-                    {!chat.is_current && (
-                      <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>✕</button>
-                    )}
-                  </div>
-                  {chat.preview && <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // Desktop: inline sidebar
-  return (
-    <div className="flex flex-col w-56 bg-slate-900/80 border-r border-slate-700/50 shrink-0" role="navigation" aria-label="会话列表" data-testid="sidebar">
+  const sidebarContent = (
+    <>
+    <div className="sidebar-panel" role="navigation" aria-label="会话列表" data-testid="sidebar">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50">
-        <span className="text-sm font-medium text-slate-300">{t("chatSessions")}</span>
-        <div className="flex items-center gap-1">
-          <button onClick={handleCreate} className="sidebar-btn" title={t("newSession")}>+</button>
-          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>◀</button>
+      <div className="sidebar-header">
+        <span className="sidebar-header-title">{t("chatSessions")}</span>
+        <div className="sidebar-header-actions">
+          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>◁</button>
         </div>
       </div>
+
+      {/* New Chat */}
+      <button className="sidebar-new-btn" onClick={handleCreate}>
+        <span style={{ fontSize: 16 }}>+</span> {t("newSession")}
+      </button>
 
       {/* Search */}
-      <div className="px-3 py-1">
-        <input
-          className="sidebar-search"
-          placeholder={t('searchPlaceholder')}
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-        />
+      <div className="sidebar-search-wrap">
+        <input className="sidebar-search" placeholder={t('searchPlaceholder')} value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
       </div>
 
       {/* Chat List */}
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="sidebar-list">
         {loading ? (
-          <div className="text-center py-4 text-slate-500 text-xs">{t('sidebarLoading')}</div>
+          <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>{t('sidebarLoading')}</div>
         ) : chats.length === 0 ? (
-          <div className="text-center py-4 text-slate-500 text-xs">{t('noSessions')}</div>
+          <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>{t('noSessions')}</div>
         ) : (
-          chats.map((chat) => (
-            <div
-              key={chat.chat_id}
-              className={`sidebar-item group ${chat.is_current ? 'sidebar-item-active' : ''}`}
-              onClick={() => handleSwitch(chat.chat_id)}
-            >
-              <div className="flex items-center gap-1">
-                {renamingId === chat.chat_id ? (
-                  <input
-                    className="sidebar-rename-input"
-                    value={renameValue}
-                    onChange={e => setRenameValue(e.target.value)}
-                    onKeyDown={e => handleRename(e, chat.chat_id)}
-                    onBlur={() => setRenamingId(null)}
-                    autoFocus
-                    onClick={e => e.stopPropagation()}
-                  />
-                ) : (
-                  <span
-                    className="text-xs truncate flex-1 text-slate-300"
-                    onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}
-                  >{chat.label || t('unnamedSession')}</span>
-                )}
-                {chat.is_current && (
-                  <span className="text-[10px] text-indigo-400 shrink-0">{t('currentSession')}</span>
-                )}
-                {!chat.is_current && (
-                  <button
-                    onClick={(e) => handleDelete(e, chat.chat_id)}
-                    className="sidebar-delete-btn"
-                  >✕</button>
-                )}
-              </div>
-              {chat.preview && <div className="text-[10px] text-slate-500 mt-0.5 truncate">{chat.preview}</div>}
+          filteredChats.map((chat) => (
+            <div key={chat.chat_id} className={`sidebar-item ${chat.is_current ? 'sidebar-item-active' : ''}`} onClick={() => handleSwitch(chat.chat_id)}>
+              {renamingId === chat.chat_id ? (
+                <input className="sidebar-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => handleRename(e, chat.chat_id)} onBlur={() => setRenamingId(null)} autoFocus onClick={e => e.stopPropagation()} />
+              ) : (
+                <>
+                  <span className="sidebar-chatname" onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}>{chat.label || t('unnamedSession')}</span>
+                  {chat.is_current && <span className="sidebar-current-dot" />}
+                </>
+              )}
+              {!chat.is_current && <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>×</button>}
             </div>
           ))
         )}
       </div>
 
-      {/* Refresh */}
-      <div className="border-t border-slate-700/50 px-2 py-1">
-        <button onClick={fetchChats} disabled={loading} className="sidebar-refresh-btn" aria-label={t("refreshSessions")}>
-          {loading ? '...' : '🔄 刷新'}
-        </button>
+      {/* Footer */}
+      <div className="sidebar-footer">
+        <button onClick={fetchChats} disabled={loading} className="sidebar-footer-btn">↻ {loading ? '...' : t('refreshSessions')}</button>
+        {onExportMarkdown && <button onClick={onExportMarkdown} className="sidebar-footer-btn" title={t('exportMarkdown')}>↓ MD</button>}
+        {onExportJSON && <button onClick={onExportJSON} className="sidebar-footer-btn" title={t('exportJSON')}>↓ JSON</button>}
       </div>
-      {/* Export */}
-      {(onExportMarkdown || onExportJSON) && (
-        <div className="border-t border-slate-700/50 px-2 py-1">
-          <div className="flex gap-1">
-            {onExportMarkdown && (
-              <button onClick={onExportMarkdown} className="sidebar-refresh-btn flex-1" title={t('exportMarkdown')}>
-                📝 MD
-              </button>
-            )}
-            {onExportJSON && (
-              <button onClick={onExportJSON} className="sidebar-refresh-btn flex-1" title={t('exportJSON')}>
-                📋 JSON
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      <ConfirmDialog
-        open={confirmDelete !== null}
-        message="确定要删除此会话吗？此操作不可撤销。"
-        onConfirm={() => confirmDelete && executeDelete(confirmDelete)}
-        onCancel={() => setConfirmDelete(null)}
-      />
     </div>
+
+    {/* ConfirmDialog rendered OUTSIDE sidebar to avoid backdrop-filter containment */}
+    <ConfirmDialog open={confirmDelete !== null} message="确定要删除此会话吗？此操作不可撤销。" onConfirm={() => confirmDelete && executeDelete(confirmDelete)} onCancel={() => setConfirmDelete(null)} />
+  </>
   )
+
+  if (isMobile) {
+    return <div className="chat-sidebar-overlay" onClick={(e) => { if (e.target === e.currentTarget) setCollapsed(true) }}>{sidebarContent}</div>
+  }
+
+  return sidebarContent
 }
