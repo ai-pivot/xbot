@@ -32,9 +32,11 @@ require_cmd() {
 # Usage: gh_url "https://github.com/ai-pivot/xbot/releases/download/v1.0/file"
 # If GH_MIRROR is set, returns "https://${GH_MIRROR}/https://github.com/..."
 # Otherwise returns the original URL unchanged.
+# NOTE: CDN mirrors only proxy github.com / raw.githubusercontent.com,
+# NOT api.github.com — API calls always go direct.
 gh_url() {
     local url="$1"
-    if [ -n "$GH_MIRROR" ]; then
+    if [ -n "$GH_MIRROR" ] && echo "$url" | grep -qv 'api\.github\.com'; then
         echo "https://${GH_MIRROR}/${url}"
     else
         echo "$url"

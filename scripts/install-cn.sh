@@ -88,7 +88,7 @@ fi
 echo ""
 
 # Step 2: Check for local install.sh (cloned repo)
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 if [ -f "${script_dir}/install.sh" ]; then
     INSTALL_SH="${script_dir}/install.sh"
     info "Using local install.sh from repository"

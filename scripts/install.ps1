@@ -49,8 +49,10 @@ $GhMirror = $env:GH_MIRROR
 
 # Proxy a GitHub URL through the configured CDN mirror (if any).
 # If $GhMirror is set, returns "https://${GhMirror}/${Url}"; otherwise returns $Url unchanged.
+# NOTE: CDN mirrors only proxy github.com / raw.githubusercontent.com,
+# NOT api.github.com — API calls always go direct.
 function Get-GhUrl([string]$Url) {
-    if ($GhMirror) { "https://${GhMirror}/${Url}" } else { $Url }
+    if ($GhMirror -and $Url -notmatch 'api\.github\.com') { "https://${GhMirror}/${Url}" } else { $Url }
 }
 
 # Env var fallback for parameters (GitHub Actions uses env vars)
