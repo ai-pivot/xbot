@@ -108,7 +108,7 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	slices.Sort(orderedNames)
 
 	var sb strings.Builder
-	sb.WriteString("# Available Agents (SubAgents)\n\n")
+	sb.WriteString("## Available Agents (SubAgents)\n\n")
 	sb.WriteString("SubAgents are independent workers with their own tools and context, specialized for specific roles. Delegate tasks to them via the `SubAgent` tool.\n\n")
 
 	// 注入目录路径，供 agent-creator 参考新建位置

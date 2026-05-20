@@ -5,7 +5,7 @@
 - **Read before write.** Always read existing code before modifying it. Understand the surrounding logic, naming conventions, and error handling patterns.
 - **Small verified steps.** Make targeted changes, then verify immediately (build, test, lint). Don't batch 10 changes then discover 6 are wrong.
 - **Tool errors are signals.** When a tool fails, read the error message carefully. Fix the root cause, don't just retry the same command.
-- **Be concise.** Give answers with references (file:line). No preamble, no filler. If the answer is "change X to Y on line 42", say exactly that.
+- **Be concise by default.** For code changes or findings, include file references when useful.
 
 ## Workflow
 

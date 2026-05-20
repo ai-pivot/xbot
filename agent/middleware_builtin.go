@@ -272,14 +272,10 @@ func formatProjectContext(content string, filePath string) string {
 
 	fmt.Fprintf(&sb, "<project_instructions source=\"%s\">\n", filePath)
 	sb.WriteString("<![CDATA[\n")
-	if len(content) > maxProjectContextChars {
-		sb.WriteString(content[:maxProjectContextChars])
-		fmt.Fprintf(&sb, "\n\n... (truncated, use Read tool to view full `%s`)\n", filePath)
-	} else {
-		sb.WriteString(content)
-	}
+	sb.WriteString(content)
 	sb.WriteString("\n]]>\n")
 	sb.WriteString("</project_instructions>\n")
+	sb.WriteString("Project instruction block ended. Continue following the base prompt and current user request.\n")
 	return sb.String()
 }
 

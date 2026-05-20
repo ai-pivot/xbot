@@ -651,14 +651,21 @@ func TestFormatProjectContext(t *testing.T) {
 		}
 	})
 
-	t.Run("truncates_long_content", func(t *testing.T) {
+	t.Run("never_truncates", func(t *testing.T) {
 		longContent := strings.Repeat("x", maxProjectContextChars+5000)
 		got := formatProjectContext(longContent, "AGENTS.md")
-		if len(got) > maxProjectContextChars+1200 { // allow for header/footer/wrapper
-			t.Errorf("expected truncation, got len=%d", len(got))
+		if !strings.Contains(got, longContent) {
+			t.Error("should contain the full content without truncation")
 		}
-		if !strings.Contains(got, "truncated") {
-			t.Error("should contain truncation notice")
+		if strings.Contains(got, "truncated") {
+			t.Error("should not contain truncation notice")
+		}
+	})
+
+	t.Run("block_ended_marker", func(t *testing.T) {
+		got := formatProjectContext("hello", "AGENTS.md")
+		if !strings.Contains(got, "Project instruction block ended") {
+			t.Error("should contain block-ended marker after CDATA")
 		}
 	})
 }

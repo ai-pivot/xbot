@@ -184,7 +184,7 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string) stri
 	}
 
 	var sb strings.Builder
-	sb.WriteString("# Available Skills\n\n")
+	sb.WriteString("## Available Skills\n\n")
 	sb.WriteString("Skills are specialized guidance documents for specific tasks. Activate when the task matches by using the `Skill` tool to load detailed instructions.\n")
 	sb.WriteString("When a user's message starts with `/xxxx`, prioritize finding a matching skill name and activate it before processing the request.\n\n")
 
