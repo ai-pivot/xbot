@@ -371,3 +371,95 @@ func TestAutoDetectAndInit_IdempotentInMemory(t *testing.T) {
 	assert.Equal(t, entry1.Branch, entry2.Branch,
 		"second call should return same branch")
 }
+
+// newTestGitRepoWithRemote creates a local git repo ("origin") and a clone
+// of it. Returns (originPath, clonePath). The clone has a remote "origin"
+// pointing to the local origin repo, and the symbolic-ref HEAD is set up.
+func newTestGitRepoWithRemote(t *testing.T) (originPath, clonePath string) {
+	t.Helper()
+	run := func(dir, name string, args ...string) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		cmd.Env = append(cleanGitEnv(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s %v: %s", name, args, out)
+	}
+
+	// Create the "origin" repo
+	originDir := t.TempDir()
+	run(originDir, "git", "init", "-b", "master")
+	_ = os.RemoveAll(filepath.Join(originDir, ".git", "hooks"))
+	run(originDir, "git", "commit", "--allow-empty", "-m", "initial commit on master")
+
+	// Normalize origin path
+	out, err := exec.Command("git", "-C", originDir, "rev-parse", "--show-toplevel").Output()
+	require.NoError(t, err)
+	originPath = strings.TrimSpace(string(out))
+
+	// Clone it — this sets up the remote HEAD symref properly
+	cloneDir := t.TempDir()
+	run("", "git", "clone", originPath, cloneDir)
+	_ = os.RemoveAll(filepath.Join(cloneDir, ".git", "hooks"))
+
+	// Normalize clone path
+	out, err = exec.Command("git", "-C", cloneDir, "rev-parse", "--show-toplevel").Output()
+	require.NoError(t, err)
+	clonePath = strings.TrimSpace(string(out))
+
+	return originPath, clonePath
+}
+
+func TestResolveRemoteMainBranch_WithRemote(t *testing.T) {
+	_, clonePath := newTestGitRepoWithRemote(t)
+
+	// The clone should detect "origin/master"
+	ref := resolveRemoteMainBranch(clonePath)
+	assert.Equal(t, "origin/master", ref, "should detect remote main branch")
+}
+
+func TestResolveRemoteMainBranch_NoRemote(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+
+	// No remote configured — should return ""
+	ref := resolveRemoteMainBranch(repoPath)
+	assert.Equal(t, "", ref, "repo without remote should return empty")
+}
+
+func TestCreateWorktree_BasedOnRemoteMain(t *testing.T) {
+	originPath, clonePath := newTestGitRepoWithRemote(t)
+
+	// Add a commit on master in origin AFTER clone
+	run := func(dir, name string, args ...string) {
+		cmd := exec.Command(name, args...)
+		cmd.Dir = dir
+		cmd.Env = append(cleanGitEnv(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s %v: %s", name, args, out)
+	}
+
+	// Create a file in origin and commit
+	testFile := filepath.Join(originPath, "new-file.txt")
+	require.NoError(t, os.WriteFile(testFile, []byte("from remote"), 0644))
+	run(originPath, "git", "add", "new-file.txt")
+	run(originPath, "git", "commit", "-m", "add new-file on remote master")
+
+	// Now create a worktree from the clone — should fetch and get the new commit
+	reg := newTestRegistry()
+	entry, created := autoDetectAndInitInto(clonePath, "cli:repo:session-test", reg)
+	require.NotNil(t, entry, "AutoDetectAndInit should succeed")
+	require.True(t, created, "should create a new worktree")
+
+	// The worktree should contain new-file.txt (fetched from remote)
+	data, err := os.ReadFile(filepath.Join(entry.WorktreeDir, "new-file.txt"))
+	require.NoError(t, err, "worktree should contain file from remote main branch")
+	assert.Equal(t, "from remote", string(data))
+
+	// Clean up
+	reg.CleanupSession("cli:repo:session-test")
+}

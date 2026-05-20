@@ -119,7 +119,7 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 	}
 	dirtyWarning := ""
 	if dirty {
-		dirtyWarning = "\n⚠️ 主工作区有未提交更改，worktree 将从 HEAD 创建（不含未提交更改）。"
+		dirtyWarning = "\n⚠️ 主工作区有未提交更改，worktree 将从远程主分支最新状态创建（不含未提交更改）。"
 	}
 
 	branch := generateBranchName(role, instance, params.Task)

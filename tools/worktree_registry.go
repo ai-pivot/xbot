@@ -440,9 +440,56 @@ func generateBranchName(role, instance, taskHint string) string {
 	return fmt.Sprintf("agent/%s/%s/%s", sanitize(role), sanitize(instance), task)
 }
 
+// resolveRemoteMainBranch fetches the latest refs from the remote and returns
+// the remote-tracking ref for the default branch (e.g. "origin/master").
+// Returns ("", nil) when the repo has no remote or detection fails — callers
+// should fall back to using local HEAD.
+func resolveRemoteMainBranch(repoPath string) string {
+	// Step 1: detect first remote (typically "origin")
+	remoteCmd := exec.Command("git", "-C", repoPath, "remote")
+	remoteCmd.Env = cleanGitEnv()
+	out, err := remoteCmd.Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return "" // no remote configured
+	}
+	remote := strings.Fields(strings.TrimSpace(string(out)))[0]
+
+	// Step 2: fetch latest from remote (best-effort, don't fail on network errors)
+	fetchCmd := exec.Command("git", "-C", repoPath, "fetch", remote)
+	fetchCmd.Env = cleanGitEnv()
+	_ = fetchCmd.Run() // ignore errors — use cached refs if offline
+
+	// Step 3: detect default branch via remote HEAD symref
+	// git symbolic-ref refs/remotes/origin/HEAD → refs/remotes/origin/master
+	symRef := "refs/remotes/" + remote + "/HEAD"
+	symCmd := exec.Command("git", "-C", repoPath, "symbolic-ref", symRef)
+	symCmd.Env = cleanGitEnv()
+	symOut, err := symCmd.Output()
+	if err == nil {
+		ref := strings.TrimSpace(string(symOut))
+		prefix := "refs/remotes/" + remote + "/"
+		if branch := strings.TrimPrefix(ref, prefix); branch != ref && branch != "" {
+			return remote + "/" + branch
+		}
+	}
+
+	// Fallback: try common branch names against cached remote refs
+	for _, candidate := range []string{"main", "master"} {
+		revCmd := exec.Command("git", "-C", repoPath, "rev-parse", "--verify",
+			"refs/remotes/"+remote+"/"+candidate)
+		revCmd.Env = cleanGitEnv()
+		if err := revCmd.Run(); err == nil {
+			return remote + "/" + candidate
+		}
+	}
+
+	return "" // no remote main branch found
+}
+
 // createWorktree creates a git worktree and returns its path and branch.
-// Uses --detach to work even when the main repo has uncommitted changes.
-// The branch is created afterwards in the worktree via checkout -b.
+// The worktree is always based on the latest remote main branch (fetched
+// from origin before creation). Falls back to local HEAD when no remote
+// is configured.
 // Caller must hold WorktreeRegistry.mu or ensure serialization externally.
 func createWorktree(repoPath, branch string) (worktreePath string, err error) {
 	baseDir := worktreeBaseDir(repoPath)
@@ -455,9 +502,17 @@ func createWorktree(repoPath, branch string) (worktreePath string, err error) {
 		return "", fmt.Errorf("create worktree base dir: %w", err)
 	}
 
-	// Step 1: git worktree add --detach (works even on dirty trees)
+	// Resolve start point: prefer latest remote main branch over local HEAD.
+	// This ensures every new worktree starts from the freshest upstream state
+	// rather than a stale local checkout.
+	startPoint := "HEAD"
+	if remoteRef := resolveRemoteMainBranch(repoPath); remoteRef != "" {
+		startPoint = remoteRef
+	}
+
+	// Step 1: git worktree add --detach <path> <startPoint>
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "add",
-		"--detach", worktreePath)
+		"--detach", worktreePath, startPoint)
 	cmd.Env = cleanGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {

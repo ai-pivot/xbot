@@ -61,8 +61,8 @@ Called automatically from `processMessage` (agent/agent.go) BEFORE `buildPrompt`
 
 1. Check if workDir is a git repo (`GitRepoRoot`)
 2. If session already registered → no-op
-3. If no primary in registry → register as primary (no worktree)
-4. If primary exists → check dirty tree → `git worktree add` → register as peer
+3. Generate unique branch name from session key + timestamp
+4. `createWorktree` → fetch latest remote main branch → `git worktree add --detach <path> <remote/main-branch>` → `git checkout -b <branch>` → register as peer
 
 On success, `tenantSession.SetCurrentDir(worktreePath)` updates CWD before system prompt construction.
 
@@ -100,6 +100,7 @@ Embedded skill documenting worktree workflows: peer detection, SubAgent mode, Be
 
 - Worktree paths MUST be outside the main repo: `{repo}/../.xbot-worktrees/{role}-{instance}/`
 - Branch naming: `agent/{role}/{instance}/{task-hint}`
+- **Every new worktree starts from the latest remote main branch.** `createWorktree` calls `resolveRemoteMainBranch` which (1) fetches from the first remote, (2) detects the default branch via `refs/remotes/<remote>/HEAD` symbolic ref (falls back to checking `main`/`master`), then uses `<remote>/<main-branch>` as the start point. Falls back to local HEAD when no remote is configured.
 - `git worktree add` fails on dirty trees → AutoDetectAndInit returns nil (falls back to main project)
 - Worktree creation is serialized via `GlobalWorktreeRegistry.mu.Lock()` to prevent `.git/worktrees/` lockfile contention
 - **CWD persisted via session_cwd files.** `SetCurrentDir` writes to `~/.xbot/session_cwd/{hash}.txt`. On restart, `loadPersistedCWD` restores the CWD. `SetCWD` (terminal sync from CLI startup) only overwrites when the session has no persisted CWD (new session) or when the persisted directory no longer exists (stale). This ensures user-initiated `Cd` tool paths survive restarts even when they differ from the terminal launch dir.
@@ -136,3 +137,4 @@ Conflict resolution:
 - **Primary registration must NOT check dirty tree.** Only worktree creation requires a clean tree.
 - **AutoDetectAndInit depends on `a.workDir`**, not the session's CWD. For CLI sessions this is the repo root.
 - **`go:embed embed_skills/*`** picks up the worktree skill directory automatically — no code change needed for new embed skills.
+- **`resolveRemoteMainBranch` fetch is best-effort.** Network errors are silently ignored — cached remote refs are used instead. For repos without any remote, `createWorktree` falls back to local HEAD (same as pre-fetch behavior).
