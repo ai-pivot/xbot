@@ -7,11 +7,11 @@
 .PARAMETER GhMirror
     Force a specific mirror host (e.g. "ghfast.top").
 .EXAMPLE
-    # One-liner via ghfast.top (default)
-    irm https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
+    # One-liner via ghfast.top (default, with TLS 1.2 + null guard)
+    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $s=try{irm https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 -TimeoutSec 30}catch{}; if($s){iex $s}else{Write-Host '[ERROR] 下载失败，请尝试其他镜像' -ForegroundColor Red}
 .EXAMPLE
     # One-liner via gh-proxy.com
-    irm https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
+    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $s=try{irm https://gh-proxy.com/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 -TimeoutSec 30}catch{}; if($s){iex $s}else{Write-Host '[ERROR] 下载失败，请尝试其他镜像' -ForegroundColor Red}
 .EXAMPLE
     # From a cloned repo
     .\install-cn.ps1
@@ -25,6 +25,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Ensure TLS 1.2+ for GitHub / CDN downloads (Windows PowerShell defaults to TLS 1.0)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
 
 # Default mirror candidates — ordered by reliability in mainland China
 $DefaultMirrors = @("ghfast.top", "gh-proxy.com", "ghps.cc")
@@ -48,13 +51,16 @@ function Try-Download {
         [string]$Dest       # local file path to write to
     )
 
+    if (-not $Dest) { return $null }
+
     $url = if ($Mirror) { "https://${Mirror}/${RawUrl}" } else { $RawUrl }
 
     Write-Info "Trying to download from $url..."
     try {
         Invoke-WebRequest -Uri $url -OutFile $Dest -TimeoutSec 30 -UseBasicParsing
         # Verify the download is a real PowerShell script (not an error page)
-        $firstLine = Get-Content $Dest -TotalCount 1 -ErrorAction SilentlyContinue
+        if (-not (Test-Path $Dest)) { return $null }
+        $firstLine = Get-Content -Path $Dest -TotalCount 1 -ErrorAction SilentlyContinue
         if ($firstLine -and $firstLine.TrimStart().StartsWith("<#")) {
             return $Dest
         }
@@ -85,8 +91,8 @@ if (-not $GhMirror) {
 Write-Host ""
 
 # Step 2: Check for local install.ps1 (cloned repo)
-$scriptDir = Split-Path -Parent $MyInvocation.PSCommandPath
-if (-not $scriptDir) { $scriptDir = $PSScriptRoot }
+$scriptDir = if ($MyInvocation.PSCommandPath) { Split-Path -Parent $MyInvocation.PSCommandPath } else { $PSScriptRoot }
+if (-not $scriptDir) { $scriptDir = "" }
 $installScript = $null
 
 if ($scriptDir) {
@@ -125,7 +131,11 @@ if (-not $installScript) {
     }
 
     if (-not $installScript) {
-        Write-Err "Failed to download install.ps1. Check your network or set -GhMirror manually."
+        Write-Host ""
+        Write-Host "[ERROR] 无法下载安装脚本，所有镜像均不可用。" -ForegroundColor Red
+        Write-Host "  请检查网络连接后重试，或手动下载 install.ps1" -ForegroundColor Yellow
+        Write-Host "  也可以尝试: `$env:GH_MIRROR='gh-proxy.com'; .\install-cn.ps1" -ForegroundColor Yellow
+        throw "下载 install.ps1 失败"
     }
 }
 
