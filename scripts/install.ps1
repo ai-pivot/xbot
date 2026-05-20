@@ -43,6 +43,16 @@ $BINARY = "xbot-cli.exe"
 $SERVICE_NAME = "xbot-server"
 $DEFAULT_PORT = 8082
 
+# GitHub CDN mirror for users behind the GFW (set by install-cn.ps1 or manually)
+# e.g. $env:GH_MIRROR="ghfast.top" → https://ghfast.top/https://github.com/...
+$GhMirror = $env:GH_MIRROR
+
+# Proxy a GitHub URL through the configured CDN mirror (if any).
+# If $GhMirror is set, returns "https://${GhMirror}/${Url}"; otherwise returns $Url unchanged.
+function Get-GhUrl([string]$Url) {
+    if ($GhMirror) { "https://${GhMirror}/${Url}" } else { $Url }
+}
+
 # Env var fallback for parameters (GitHub Actions uses env vars)
 if (-not $Mode)    { $Mode = $env:MODE }
 if (-not $Version) { $Version = $env:VERSION }
@@ -101,12 +111,12 @@ function Get-LatestVersion {
     switch ($ch) {
         "stable" {
             try {
-                $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -Headers $headers
+                $response = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$REPO/releases/latest") -Headers $headers
                 return $response.tag_name
             } catch {}
             try {
                 Write-Warn "No releases found on $REPO, trying fallback $FALLBACK_REPO..."
-                $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases/latest" -Headers $headers
+                $response = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$FALLBACK_REPO/releases/latest") -Headers $headers
                 return $response.tag_name
             } catch {
                 Write-Err "Failed to determine latest version from both repos. Set -Version explicitly."
@@ -114,13 +124,13 @@ function Get-LatestVersion {
         }
         "nightly" {
             try {
-                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=20" -Headers $headers
+                $releases = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$REPO/releases?per_page=20") -Headers $headers
                 $nightly = $releases | Where-Object { $_.tag_name -eq 'nightly' -or $_.tag_name -match '^nightly-' } | Select-Object -First 1
                 if ($nightly) { return $nightly.tag_name }
             } catch {}
             try {
                 Write-Warn "No nightly found on $REPO, trying fallback $FALLBACK_REPO..."
-                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20" -Headers $headers
+                $releases = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20") -Headers $headers
                 $nightly = $releases | Where-Object { $_.tag_name -eq 'nightly' -or $_.tag_name -match '^nightly-' } | Select-Object -First 1
                 if ($nightly) { return $nightly.tag_name }
             } catch {}
@@ -128,13 +138,13 @@ function Get-LatestVersion {
         }
         "beta" {
             try {
-                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=20" -Headers $headers
+                $releases = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$REPO/releases?per_page=20") -Headers $headers
                 $beta = $releases | Where-Object { $_.tag_name -match '-beta\.\d+' } | Select-Object -First 1
                 if ($beta) { return $beta.tag_name }
             } catch {}
             try {
                 Write-Warn "No beta found on $REPO, trying fallback $FALLBACK_REPO..."
-                $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20" -Headers $headers
+                $releases = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20") -Headers $headers
                 $beta = $releases | Where-Object { $_.tag_name -match '-beta\.\d+' } | Select-Object -First 1
                 if ($beta) { return $beta.tag_name }
             } catch {}
@@ -521,6 +531,9 @@ Write-Info "Version:   $tag"
 Write-Info "URL:       $downloadUrl"
 Write-Info "Install:   $InstallPath\$BINARY"
 Write-Info "Config:    $ConfigPath"
+if ($GhMirror) {
+    Write-Info "Mirror:    $GhMirror (GitHub CDN proxy)"
+}
 Write-Host ""
 
 $selectedMode = Ask-Mode
@@ -540,13 +553,13 @@ if (-not (Test-Path $InstallPath)) {
 Write-Info "Downloading..."
 $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-cli-download.exe"
 try {
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
+    Invoke-WebRequest -Uri (Get-GhUrl $downloadUrl) -OutFile $tmpFile -UseBasicParsing
 } catch {
     Write-Warn "Download from $REPO failed, trying fallback $FALLBACK_REPO..."
     $fallbackUrl = "https://github.com/$FALLBACK_REPO/releases/download/$tag/xbot-cli-$platform.exe"
     $downloadUrl = $fallbackUrl
     try {
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
+        Invoke-WebRequest -Uri (Get-GhUrl $downloadUrl) -OutFile $tmpFile -UseBasicParsing
     } catch {
         Write-Err "Download failed from both repos: $_"
     }
@@ -555,7 +568,7 @@ try {
 $checksumUrl = "https://github.com/$REPO/releases/download/$tag/checksums.txt"
 try {
     $checksumFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-checksums.txt"
-    Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumFile -UseBasicParsing
+    Invoke-WebRequest -Uri (Get-GhUrl $checksumUrl) -OutFile $checksumFile -UseBasicParsing
     $expectedLine = Get-Content $checksumFile | Where-Object { $_ -match "xbot-cli-$platform" }
     if ($expectedLine) {
         $expectedHash = ($expectedLine -split "\s+")[0]
@@ -572,7 +585,7 @@ try {
     try {
         $fallbackChecksumUrl = "https://github.com/$FALLBACK_REPO/releases/download/$tag/checksums.txt"
         $checksumFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-checksums.txt"
-        Invoke-WebRequest -Uri $fallbackChecksumUrl -OutFile $checksumFile -UseBasicParsing
+        Invoke-WebRequest -Uri (Get-GhUrl $fallbackChecksumUrl) -OutFile $checksumFile -UseBasicParsing
         $expectedLine = Get-Content $checksumFile | Where-Object { $_ -match "xbot-cli-$platform" }
         if ($expectedLine) {
             $expectedHash = ($expectedLine -split "\s+")[0]
