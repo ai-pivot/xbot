@@ -2,14 +2,12 @@
 .SYNOPSIS
     xbot-cli installer for mainland China (CDN mirror mode)
 .DESCRIPTION
-    Automatically selects a reachable GitHub CDN mirror and proxies all
-    downloads through it.  Zero configuration required.
+    Proxies all GitHub downloads through a CDN mirror.
+    Default mirror: ghfast.top (verified working in mainland China).
 .PARAMETER GhMirror
     Force a specific mirror host (e.g. "ghfast.top").
-.PARAMETER MirrorList
-    Space-separated list of mirrors to try (override defaults).
 .EXAMPLE
-    # One-liner via ghfast.top
+    # One-liner via ghfast.top (default)
     irm https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.ps1 | iex
 .EXAMPLE
     # One-liner via gh-proxy.com
@@ -23,8 +21,7 @@
 #>
 
 param(
-    [string]$GhMirror = "",
-    [string]$MirrorList = ""
+    [string]$GhMirror = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,59 +34,31 @@ function Write-Warn  { param([string]$Msg) Write-Host "[WARN] $Msg" -ForegroundC
 function Write-Err   { param([string]$Msg) Write-Host "[ERROR] $Msg" -ForegroundColor Red; throw $Msg }
 
 # ---------------------------------------------------------------------------
-# Detect the best reachable mirror (3s timeout per candidate)
+# Download install.ps1 through a mirror, with content validation.
+# Returns the local file path on success, or $null on failure.
 # ---------------------------------------------------------------------------
-function Select-Mirror {
-    param([string[]]$Candidates)
-    foreach ($m in $Candidates) {
-        try {
-            $null = Invoke-WebRequest -Uri "https://$m/https://github.com" `
-                -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
-            return $m
-        } catch {}
-    }
-    return ""
-}
-
-# ---------------------------------------------------------------------------
-# Locate the real install.ps1 (local repo or download via mirror)
-# ---------------------------------------------------------------------------
-function Find-InstallScript {
-    param([string]$SelectedMirror)
-
-    # 1. Check if install.ps1 exists alongside this script (cloned repo)
-    $scriptDir = Split-Path -Parent $MyInvocation.PSCommandPath
-    if (-not $scriptDir) { $scriptDir = $PSScriptRoot }
-    if ($scriptDir) {
-        $localInstall = Join-Path $scriptDir "install.ps1"
-        if (Test-Path $localInstall) {
-            Write-Info "Using local install.ps1 from repository"
-            return $localInstall
-        }
-    }
-
-    # 2. Download install.ps1 through the selected mirror
-    $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-install.ps1"
-    $urls = @(
-        "https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1",
-        "https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.ps1"
+function Try-Download {
+    param(
+        [string]$Mirror,    # e.g. "ghfast.top" or "" (direct)
+        [string]$RawUrl,    # e.g. "https://raw.githubusercontent.com/..."
+        [string]$Dest       # local file path to write to
     )
 
-    foreach ($rawUrl in $urls) {
-        $proxiedUrl = if ($SelectedMirror) { "https://${SelectedMirror}/${rawUrl}" } else { $rawUrl }
-        Write-Info "Trying to download install.ps1 from $proxiedUrl..."
-        try {
-            Invoke-WebRequest -Uri $proxiedUrl -OutFile $tmpFile -TimeoutSec 30 -UseBasicParsing
-            # Verify the download is a real PowerShell script (not an error page)
-            $firstLine = Get-Content $tmpFile -TotalCount 1 -ErrorAction SilentlyContinue
-            if ($firstLine -and $firstLine.TrimStart().StartsWith("<#")) {
-                return $tmpFile
-            }
-            Write-Warn "Downloaded file is not a valid PowerShell script, trying next source..."
-        } catch {}
-    }
+    $url = if ($Mirror) { "https://${Mirror}/${RawUrl}" } else { $RawUrl }
 
-    Write-Err "Failed to download install.ps1. Check your network or set -GhMirror manually."
+    Write-Info "Trying to download from $url..."
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $Dest -TimeoutSec 30 -UseBasicParsing
+        # Verify the download is a real PowerShell script (not an error page)
+        $firstLine = Get-Content $Dest -TotalCount 1 -ErrorAction SilentlyContinue
+        if ($firstLine -and $firstLine.TrimStart().StartsWith("<#")) {
+            return $Dest
+        }
+        Write-Warn "Downloaded file is not a valid PowerShell script, trying next..."
+        return $null
+    } catch {
+        return $null
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -101,27 +70,62 @@ Write-Host "     xbot-cli Installer (China Mirror Mode)" -ForegroundColor Cyan
 Write-Host "  ===============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Step 1: Select mirror (unless user forced one via param or env var)
+# Step 1: Determine mirror
 if (-not $GhMirror) { $GhMirror = $env:GH_MIRROR }
 if (-not $GhMirror) {
-    Write-Info "Auto-detecting best CDN mirror..."
-    $mirrors = if ($MirrorList) { $MirrorList -split "\s+" } else { $DefaultMirrors }
-    $GhMirror = Select-Mirror -Candidates $mirrors
-}
-
-if ($GhMirror) {
-    Write-Info "Using mirror: $GhMirror"
+    $GhMirror = "ghfast.top"
+    Write-Info "Using default mirror: $GhMirror"
 } else {
-    Write-Warn "No CDN mirror reachable -- will try direct GitHub."
-    Write-Warn "If download fails, set mirror manually:"
-    Write-Warn '  $env:GH_MIRROR="ghfast.top"; .\install-cn.ps1'
+    Write-Info "Using mirror: $GhMirror"
 }
 Write-Host ""
 
-# Step 2: Find the real install.ps1
-$installScript = Find-InstallScript -SelectedMirror $GhMirror
+# Step 2: Check for local install.ps1 (cloned repo)
+$scriptDir = Split-Path -Parent $MyInvocation.PSCommandPath
+if (-not $scriptDir) { $scriptDir = $PSScriptRoot }
+$installScript = $null
 
-# Step 3: Set GH_MIRROR env var and run install.ps1
+if ($scriptDir) {
+    $localInstall = Join-Path $scriptDir "install.ps1"
+    if (Test-Path $localInstall) {
+        Write-Info "Using local install.ps1 from repository"
+        $installScript = $localInstall
+    }
+}
+
+# Step 3: Download install.ps1 — try all mirrors with fallback
+if (-not $installScript) {
+    $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-install.ps1"
+    $urls = @(
+        "https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1",
+        "https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.ps1"
+    )
+
+    # Build mirror list: selected mirror first, then defaults, then direct
+    $mirrorsToTry = @($GhMirror)
+    foreach ($m in $DefaultMirrors) {
+        if ($m -ne $GhMirror) { $mirrorsToTry += $m }
+    }
+    $mirrorsToTry += ""  # direct (no mirror)
+
+    foreach ($m in $mirrorsToTry) {
+        foreach ($rawUrl in $urls) {
+            $result = Try-Download -Mirror $m -RawUrl $rawUrl -Dest $tmpFile
+            if ($result) {
+                $GhMirror = $m  # update to the one that actually worked
+                $installScript = $result
+                break
+            }
+        }
+        if ($installScript) { break }
+    }
+
+    if (-not $installScript) {
+        Write-Err "Failed to download install.ps1. Check your network or set -GhMirror manually."
+    }
+}
+
+# Step 4: Set GH_MIRROR env var and run install.ps1
 $env:GH_MIRROR = $GhMirror
 Write-Info "Launching installer..."
 Write-Host ""
