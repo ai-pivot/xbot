@@ -378,3 +378,62 @@ func TestSessionService_PurgeNewerThanOrEqual_MultiCycle(t *testing.T) {
 		t.Errorf("after cycle 3: first message = %q, want %q", remaining[0].Content, "U1")
 	}
 }
+
+func TestSessionService_ClosedDB_NoPanic(t *testing.T) {
+	// Regression test: SessionService methods must return errors (not panic)
+	// when the underlying DB connection has been closed.
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+
+	tenantSvc := NewTenantService(db)
+	sessionSvc := NewSessionService(db)
+
+	// Create tenant while DB is still open
+	tenantID, err := tenantSvc.GetOrCreateTenantID("test", "chat_closed")
+	if err != nil {
+		t.Fatalf("Failed to create tenant: %v", err)
+	}
+
+	// Close the DB — simulates shutdown while an agent is still running
+	db.Close()
+
+	// All write methods must return an error, not panic
+	if err := sessionSvc.AddMessage(tenantID, llm.NewUserMessage("hello")); err == nil {
+		t.Error("expected error from AddMessage after DB close")
+	}
+	if err := sessionSvc.ReplaceToolMessage(tenantID, "tool", "id", "content"); err == nil {
+		t.Error("expected error from ReplaceToolMessage after DB close")
+	}
+	if err := sessionSvc.Clear(tenantID); err == nil {
+		t.Error("expected error from Clear after DB close")
+	}
+	if err := sessionSvc.UpdateMessageContent(tenantID, 0, "x"); err == nil {
+		t.Error("expected error from UpdateMessageContent after DB close")
+	}
+	if err := sessionSvc.UpdateMessageContentNonDisplayOnly(tenantID, 0, "x"); err == nil {
+		t.Error("expected error from UpdateMessageContentNonDisplayOnly after DB close")
+	}
+	if err := sessionSvc.UpdateUserMessageContextTokens(tenantID, 100); err == nil {
+		t.Error("expected error from UpdateUserMessageContextTokens after DB close")
+	}
+
+	// Read methods must also return errors
+	if _, err := sessionSvc.GetHistory(tenantID, 10); err == nil {
+		t.Error("expected error from GetHistory after DB close")
+	}
+	if _, err := sessionSvc.GetAllMessages(tenantID); err == nil {
+		t.Error("expected error from GetAllMessages after DB close")
+	}
+	if _, err := sessionSvc.GetMessagesCount(tenantID); err == nil {
+		t.Error("expected error from GetMessagesCount after DB close")
+	}
+	if _, err := sessionSvc.GetUserMessageCount(tenantID); err == nil {
+		t.Error("expected error from GetUserMessageCount after DB close")
+	}
+	if _, err := sessionSvc.GetLastUserMessageContextTokens(tenantID); err == nil {
+		t.Error("expected error from GetLastUserMessageContextTokens after DB close")
+	}
+}
