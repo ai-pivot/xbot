@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -523,6 +524,11 @@ func toOpenAITools(tools []ToolDefinition) []openai.ChatCompletionToolUnionParam
 				required = append(required, p.Name)
 			}
 		}
+		// Sort required array for deterministic JSON serialization.
+		// MCP tool parameters come from map iteration (non-deterministic order),
+		// which produces different "required" arrays across requests,
+		// breaking API-side prefix caching.
+		slices.Sort(required)
 		params := map[string]any{
 			"type":       "object",
 			"properties": properties,
