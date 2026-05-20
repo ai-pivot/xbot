@@ -29,9 +29,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 REPO="ai-pivot/xbot"
 FALLBACK_REPO="CjiW/xbot"
+DEFAULT_MIRRORS="ghfast.top gh-proxy.com ghps.cc"
 # GitHub ref (branch/tag) to download install.sh from.
-# Defaults to master; can be overridden for testing: GITHUB_REF=my-branch
-GITHUB_REF="${GITHUB_REF:-master}"
+# Defaults to master; can be overridden for testing: --ref=my-branch
+GITHUB_REF="master"
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -84,11 +85,14 @@ echo "  ╚═══════════════════════
 echo ""
 
 # ---------------------------------------------------------------------------
-# Parse --ref argument (for testing non-master branches)
+# Parse --ref argument (for testing non-master branches) and strip it
+# so it doesn't get passed through to install.sh.
 # ---------------------------------------------------------------------------
+PASS_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --ref=*) GITHUB_REF="${arg#--ref=}" ;;
+        *) PASS_ARGS+=("$arg") ;;
     esac
 done
 
@@ -142,4 +146,4 @@ export GH_MIRROR
 info "Launching installer..."
 echo ""
 
-bash "$INSTALL_SH" "$@"
+bash "$INSTALL_SH" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"
