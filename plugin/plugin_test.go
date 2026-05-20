@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -6120,12 +6121,21 @@ func TestWidgetRegistry_RenderZoneForContext_EmptyZone(t *testing.T) {
 func TestScriptPlugin_OnWorkDirChanged_PendingDirs(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := filepath.Join(dir, "test.sh")
-	os.WriteFile(script, []byte("#!/bin/bash\necho \"ok|test\"\n"), 0o755)
+
+	var entry string
+	if runtime.GOOS == "windows" {
+		script := filepath.Join(dir, "test.bat")
+		os.WriteFile(script, []byte("@echo ok|test"), 0o644)
+		entry = script
+	} else {
+		script := filepath.Join(dir, "test.sh")
+		os.WriteFile(script, []byte("#!/bin/sh\necho \"ok|test\"\n"), 0o755)
+		entry = "sh " + script
+	}
 
 	m := testManifest()
 	m.Runtime = "script"
-	m.Entry = "bash test.sh"
+	m.Entry = entry
 	m.Contributes = &PluginContributes{
 		UI: []UISlotContribution{
 			{ID: "w1", Slot: "infoBar", Priority: 10},
