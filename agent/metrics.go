@@ -38,6 +38,12 @@ type AgentMetrics struct {
 	TotalToolErrors atomic.Int64 // 工具执行错误次数
 	TotalLLMErrors  atomic.Int64 // LLM 调用错误次数
 
+	// === 记忆/知识指标 ===
+	MemoryRecalls        atomic.Int64 // Recall() 调用次数（MemoryMiddleware 注入 system prompt）
+	MemoryWrites         atomic.Int64 // memory_write 工具调用次数
+	MemoryConsolidations atomic.Int64 // Memorize() consolidation 成功次数
+	DocsAgentReads       atomic.Int64 // Read 工具读取 docs/agent/ 路径次数
+
 	// === 去重追踪（回调率基于唯一 item 计算） ===
 	recalledOffloadIDs sync.Map // string -> struct{}，已回调的唯一 offload ID
 	recalledMaskedIDs  sync.Map // string -> struct{}，已回调的唯一 mask ID
@@ -101,6 +107,12 @@ type MetricsSnapshot struct {
 	// 效率
 	TotalToolErrors int64
 	TotalLLMErrors  int64
+
+	// 记忆/知识
+	MemoryRecalls        int64
+	MemoryWrites         int64
+	MemoryConsolidations int64
+	DocsAgentReads       int64
 
 	// 计算指标
 	AvgTokensPerIter float64 // 平均每次迭代输入 token 数
@@ -185,6 +197,11 @@ func (m *AgentMetrics) Snapshot() MetricsSnapshot {
 
 		TotalToolErrors: m.TotalToolErrors.Load(),
 		TotalLLMErrors:  m.TotalLLMErrors.Load(),
+
+		MemoryRecalls:        m.MemoryRecalls.Load(),
+		MemoryWrites:         m.MemoryWrites.Load(),
+		MemoryConsolidations: m.MemoryConsolidations.Load(),
+		DocsAgentReads:       m.DocsAgentReads.Load(),
 	}
 
 	// 计算指标
@@ -343,6 +360,18 @@ func (s MetricsSnapshot) FormatMarkdown() string {
 			fmt.Fprintf(&sb, "🔍 摘要精化率：%.1f%%（%d / %d 压缩）← 精化率高说明压缩摘要质量差\n",
 				s.SummaryRefineRate*100, s.SummaryRefines, s.CompressEvents)
 		}
+	} else {
+		sb.WriteString("暂无数据\n")
+	}
+
+	// ── 知识系统 ──
+	sb.WriteString("\n📚 **知识系统**\n──────────────\n")
+	hasKnowledge := s.MemoryRecalls > 0 || s.MemoryWrites > 0 || s.MemoryConsolidations > 0 || s.DocsAgentReads > 0
+	if hasKnowledge {
+		fmt.Fprintf(&sb, "🧠 Memory Recall：%d 次（system prompt 注入）\n", s.MemoryRecalls)
+		fmt.Fprintf(&sb, "✏️ Memory Writes：%d 次\n", s.MemoryWrites)
+		fmt.Fprintf(&sb, "🔄 Consolidations：%d 次（/new 时合并）\n", s.MemoryConsolidations)
+		fmt.Fprintf(&sb, "📖 docs/agent Reads：%d 次（Read 工具读取知识文件）\n", s.DocsAgentReads)
 	} else {
 		sb.WriteString("暂无数据\n")
 	}

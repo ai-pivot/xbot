@@ -26,7 +26,7 @@
 | `tui_control.go` | **TuiControlTool** — AI operates TUI sidebar/layout/theme via asyncCh |
 | `config_tool.go` | **ConfigTool** — AI reads/modifies config via SettingsSvc auto-injection |
 | `memory_tools.go` | Core memory tools (append/replace/rethink/search/recall) — letta only |
-| `knowledge_tools.go` | Project knowledge tools (write/list) — provider-agnostic |
+| `knowledge_tools.go` | Shared file-write helper (writeFileSandboxAware) — knowledge tools removed, project knowledge via AGENTS.md + docs/agent/ |
 | `flat_memory_tools.go` | Flat memory tools (read/write/list) — flat provider only |
 | `context_edit.go` | ContextEdit tool (conversation history surgery) |
 | `cron.go` | Cron tool (scheduled tasks) |
@@ -197,7 +197,7 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `task_status` / `task_kill` | `tools/task_tools.go` | Check/terminate background tasks |
 | `recall_masked` | `tools/recall_masked.go` | Retrieve full content of masked observations |
 | `offload_recall` | `tools/offload_recall.go` | Retrieve full content of offloaded tool results |
-| `knowledge_tools` | `tools/knowledge_tools.go` | Read/write project knowledge files |
+| `knowledge_tools` | `tools/knowledge_tools.go` | ~~Removed~~ — project knowledge now via AGENTS.md + docs/agent/ using standard Read/FileReplace |
 | `logs` | `tools/logs.go` | Query agent logs |
 | `WebSearch` | `tools/web_search.go` | Tavily web search |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |

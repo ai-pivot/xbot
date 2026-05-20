@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,31 +47,38 @@ func TestFlatMemory_Recall_WithContent(t *testing.T) {
 	if result == "" {
 		t.Fatal("Expected non-empty result")
 	}
-	// Should contain "Core Memory" header and the content
-	if result == "" {
-		t.Error("Expected non-empty result")
+	if !strings.Contains(result, "Core Memory") {
+		t.Errorf("Expected 'Core Memory' header, got: %s", result)
+	}
+	if !strings.Contains(result, "User likes Go") {
+		t.Errorf("Expected memory content, got: %s", result)
 	}
 }
 
-func TestFlatMemory_Recall_WithKnowledgeFiles(t *testing.T) {
+func TestFlatMemory_Recall_Truncation(t *testing.T) {
 	memDir, tenantID := setupTestDir(t)
 	m := New(tenantID, memDir)
 
-	// Write MEMORY.md
-	os.WriteFile(filepath.Join(memDir, memoryFileName), []byte("Core facts"), 0o644)
-
-	// Create knowledge files
-	knowledgeDir := filepath.Join(memDir, "knowledge")
-	os.MkdirAll(knowledgeDir, 0o755)
-	os.WriteFile(filepath.Join(knowledgeDir, "gotchas.md"), []byte("Windows VT issues"), 0o644)
+	// Write MEMORY.md that exceeds maxMemoryChars
+	longContent := strings.Repeat("x", 1500)
+	memoryPath := filepath.Join(memDir, memoryFileName)
+	if err := os.WriteFile(memoryPath, []byte(longContent), 0o644); err != nil {
+		t.Fatalf("Failed to write MEMORY.md: %v", err)
+	}
 
 	result, err := m.Recall(context.Background(), "any query")
 	if err != nil {
 		t.Fatalf("Recall failed: %v", err)
 	}
-	// Should list knowledge files
 	if result == "" {
 		t.Fatal("Expected non-empty result")
+	}
+	if !strings.Contains(result, "truncated") {
+		t.Errorf("Expected truncation hint, got: %s", result)
+	}
+	// Should be approximately maxMemoryChars + header
+	if len(result) > 1200 {
+		t.Errorf("Result too long, expected truncation: got %d chars", len(result))
 	}
 }
 

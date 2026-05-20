@@ -286,8 +286,8 @@ func TestProjectContextMiddleware(t *testing.T) {
 		if !strings.Contains(got, content) {
 			t.Errorf("system part should contain %q, got %q", content, got)
 		}
-		if !strings.Contains(got, "Project Context") {
-			t.Error("system part should contain 'Project Context' heading")
+		if !strings.Contains(got, "Project Instructions") {
+			t.Error("system part should contain 'Project Instructions' heading")
 		}
 	})
 
@@ -630,22 +630,31 @@ func TestIsPermControlEnabled(t *testing.T) {
 
 func TestFormatProjectContext(t *testing.T) {
 	t.Run("short_content", func(t *testing.T) {
-		got := formatProjectContext("hello world", "AGENT.md")
+		got := formatProjectContext("hello world", "AGENTS.md")
 		if !strings.Contains(got, "hello world") {
 			t.Error("should contain the content")
 		}
-		if !strings.Contains(got, "AGENT.md") {
+		if !strings.Contains(got, "AGENTS.md") {
 			t.Error("should contain the file path")
 		}
-		if !strings.Contains(got, "Project Context") {
-			t.Error("should contain 'Project Context'")
+		if !strings.Contains(got, "Project Instructions") {
+			t.Error("should contain 'Project Instructions'")
+		}
+		if !strings.Contains(got, "<![CDATA[") {
+			t.Error("should contain CDATA opening")
+		}
+		if !strings.Contains(got, "]]>") {
+			t.Error("should contain CDATA closing")
+		}
+		if !strings.Contains(got, "</project_instructions>") {
+			t.Error("should contain XML closing tag")
 		}
 	})
 
 	t.Run("truncates_long_content", func(t *testing.T) {
 		longContent := strings.Repeat("x", maxProjectContextChars+5000)
-		got := formatProjectContext(longContent, "AGENT.md")
-		if len(got) > maxProjectContextChars+600 { // allow for header/footer
+		got := formatProjectContext(longContent, "AGENTS.md")
+		if len(got) > maxProjectContextChars+1200 { // allow for header/footer/wrapper
 			t.Errorf("expected truncation, got len=%d", len(got))
 		}
 		if !strings.Contains(got, "truncated") {

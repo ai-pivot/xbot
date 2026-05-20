@@ -1156,11 +1156,13 @@ func (a *Agent) consolidateSubAgentMemory(
 	subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 	memCtx := letta.WithUserID(ctx, subSenderID)
 
-	if _, err := mem.Memorize(memCtx, memInput); err != nil {
+	if result, err := mem.Memorize(memCtx, memInput); err != nil {
 		log.Ctx(ctx).WithError(err).WithFields(log.Fields{
 			"role":      roleName,
 			"tenant_id": extras.TenantID,
 		}).Warn("SubAgent memory consolidation failed")
+	} else if result.OK {
+		GlobalMetrics.MemoryConsolidations.Add(1)
 	}
 }
 

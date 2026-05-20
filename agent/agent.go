@@ -809,11 +809,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		log.Info("Flat memory tools registered (core)")
 	}
 
-	// 项目记忆工具：所有 provider 都注册（provider-agnostic）
-	for _, tool := range tools.KnowledgeTools() {
-		registry.RegisterCore(tool)
-	}
-	log.Info("Knowledge tools registered (core)")
+	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
 
 	// 初始化指令注册表
 	a.commands = NewCommandRegistry()
