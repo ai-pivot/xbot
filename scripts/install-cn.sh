@@ -75,7 +75,6 @@ find_install_sh() {
     # 2. Download install.sh through the selected mirror
     local tmpdir
     tmpdir=$(mktemp -d)
-    # trap cleanup in the caller (main) so tmpdir lives until install.sh finishes
 
     local install_sh="${tmpdir}/install.sh"
     local urls=(
@@ -90,11 +89,17 @@ find_install_sh() {
         else
             proxied_url="$raw_url"
         fi
-        info "Trying to download install.sh from ${proxied_url}..."
+        # NOTE: redirect to stderr so these messages don't pollute
+        # the stdout capture in:  INSTALL_SH=$(find_install_sh)
+        info "Trying to download install.sh from ${proxied_url}..." >&2
         if curl -fsSL --connect-timeout 10 --max-time 30 -o "$install_sh" "$proxied_url" 2>/dev/null; then
-            chmod +x "$install_sh"
-            echo "$install_sh"
-            return
+            # Verify the download is a real shell script (not an empty/error page)
+            if [ -s "$install_sh" ] && head -1 "$install_sh" 2>/dev/null | grep -qE '^#!'; then
+                chmod +x "$install_sh"
+                echo "$install_sh"
+                return
+            fi
+            warn "Downloaded file is not a valid shell script, trying next source..." >&2
         fi
     done
 
