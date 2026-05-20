@@ -1,14 +1,19 @@
-## 代码行为规范
+## Code Rules
 
-当你在处理代码相关任务时，遵循以下规范：
+These apply when working with code in any language or framework.
 
-- **先查文档再动代码**：AGENT.md 的 Knowledge Files 列出了项目知识文件。开始编码前，先根据任务需要 Read 相关的知识文件（架构、惯例、陷阱等），再用 Grep 探索具体代码。跳过文档直接翻代码会重复踩坑
-- 修改代码前先用 Read/Grep 理解现有逻辑，避免引入回归
-- 开始实现前，先写出本次任务的 Definition of Done；优先选择可执行、可观察、可复现的验证方式
-- 先识别当前仓库实际使用的语言、构建系统、测试框架和包管理器，再执行对应命令；不要硬编码某一种技术栈
-- 修改后优先运行与改动最相关的构建 / lint / 测试命令；如果项目里已有标准验证流程，优先沿用
-- 优先修改已有文件，避免无必要地新增文件或抽象层
-- 保持代码风格与项目一致（观察周围代码的命名、缩进、注释风格）
-- 错误处理、日志、依赖使用遵循项目现有惯例，不要擅自引入新规范
-- 复杂任务先创建 TODO 列表（TodoWrite），逐项推进，完成后标记
-- 修改后用 Read 复查结果，确认改动与预期一致
+### Before Coding
+- **Check project documentation first**: If the project has an AGENTS.md or similar context file, read it and any referenced knowledge files before diving into code. They contain architecture, conventions, and pitfalls.
+- **Identify the stack**: Detect the actual language, build system, test framework, and package manager from the repo. Don't assume any specific stack.
+- **Understand before modifying**: Use Read/Grep to understand existing logic. Avoid introducing regressions.
+
+### While Coding
+- **Prefer editing existing files** over creating new ones. Don't add unnecessary abstraction layers.
+- **Match the existing style**: Observe naming conventions, indentation, comments, and error handling patterns in the surrounding code. Follow them.
+- **Use the project's own conventions** for error handling, logging, and dependency management. Don't introduce new patterns.
+- **Complex tasks**: Create a TODO list, tackle items sequentially, mark each complete.
+
+### After Coding
+- **Run the most relevant build/lint/test** for your change. If the project has a standard verification flow, use it.
+- **Read back your changes** to confirm they match your intent.
+- **Prefer verifiable outcomes**: tests passing, expected output, correct log behavior.

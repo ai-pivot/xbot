@@ -1,6 +1,6 @@
 ---
 name: post-dev
-description: "Post-development cleanup: update AGENT.md and knowledge files to reflect code changes. MUST activate before git commit (or when user asks to commit/push). Also activate after any code modification that adds/removes files, changes architecture, or modifies core behavior."
+description: "Post-development cleanup: update AGENTS.md and docs/agent/ knowledge files to reflect code changes. MUST activate before git commit (or when user asks to commit/push). Also activate after any code modification that adds/removes files, changes architecture, or modifies core behavior."
 ---
 
 # Knowledge Management
@@ -9,27 +9,27 @@ Maintain a living knowledge base so future sessions (with zero memory) can work 
 
 ## Iron Rules
 
-1. **Every file referenced in AGENT.md MUST exist on disk.** Before adding a reference, create the file. Before removing a file, remove its reference. Broken references are worse than no references.
-2. **Knowledge files are the primary deliverable, not AGENT.md.** AGENT.md is just an index. When you learn something non-obvious, write it into the appropriate knowledge file. Only update AGENT.md's index entry if the file list changed.
-3. **Read before write.** Before updating any knowledge file, read it first. Before creating AGENT.md references, verify the target file exists.
-4. **Do NOT copy the structure from this skill into AGENT.md.** Every project is different. Observe the actual project structure and document what exists, not what a template says should exist.
+1. **Every file referenced in AGENTS.md MUST exist on disk.** Before adding a reference, create the file. Before removing a file, remove its reference. Broken references are worse than no references.
+2. **Knowledge files (docs/agent/) are the primary deliverable, not AGENTS.md.** AGENTS.md is just an index. When you learn something non-obvious, write it into the appropriate knowledge file. Only update AGENTS.md's index entry if the file list changed.
+3. **Read before write.** Before updating any knowledge file, read it first. Before creating AGENTS.md references, verify the target file exists.
+4. **Do NOT copy the structure from this skill into AGENTS.md.** Every project is different. Observe the actual project structure and document what exists, not what a template says should exist.
 
 ## Two-Layer Architecture
 
 ```
-AGENT.md (auto-injected into prompt — the single source of truth)
+AGENTS.md (auto-injected into prompt — the single source of truth)
   → project summary, build commands, architecture overview
   → GOTCHAS: critical pitfalls written directly here (no separate file)
   → Knowledge Files index: tells you WHERE to look for details
   → should make you want to Read specific files, not answer questions directly
 
-Knowledge files (the actual knowledge, on disk)
+docs/agent/ (the actual knowledge, on disk — use Read/FileReplace/FileCreate)
   → agent reads them with Read tool when needed
   → each file is self-contained on one topic
-  → AGENT.md references them; agent uses them
+  → AGENTS.md references them; agent uses them
 ```
 
-## AGENT.md
+## AGENTS.md
 
 Auto-loaded into system prompt (up to 10000 chars). Keep it concise but information-dense.
 
@@ -49,13 +49,13 @@ What does NOT belong:
 - Information already in README
 - Minor/niche gotchas that are package-specific → put those in the relevant knowledge file
 
-## Knowledge Files
+## Knowledge Files (docs/agent/)
 
 These are where the real knowledge lives. **Create them freely — one file per topic, no need to consolidate.** More small files is better than fewer large ones.
 
 ### Directory Structure
 
-Mirror the repository's directory structure under the knowledge root (e.g. `docs/agent/`). This makes it trivial to find the right file:
+Mirror the repository's directory structure under `docs/agent/`. This makes it trivial to find the right file:
 
 ```
 docs/agent/                    ← knowledge root
@@ -66,13 +66,9 @@ docs/agent/                    ← knowledge root
   llm.md                       ← llm/ package: OpenAI, Anthropic, retry, streaming
   tools.md                     ← tools/ package: built-in tools, sandbox, hooks
   memory.md                    ← memory/ package: letta, flat, providers
-  session.md                   ← session/ package: multi-tenant sessions
-  storage.md                   ← storage/ package: SQLite, vector DB
-  config.md                    ← config/ package: JSON config, env overrides
-  prompt.md                    ← prompt/ package: templates, embed, rendering
 ```
 
-When you explore a new subsystem or package, create its knowledge file. Don't worry about having too many — future sessions will use AGENT.md's index to find exactly the right file.
+When you explore a new subsystem or package, create its knowledge file. Don't worry about having too many — future sessions will use AGENTS.md's index to find exactly the right file.
 
 ### When to create a new knowledge file
 
@@ -90,19 +86,19 @@ When you explore a new subsystem or package, create its knowledge file. Don't wo
 
 After completing a task, update knowledge:
 
-1. **Did I encounter or fix a gotcha/pitfall? → Write it directly into AGENT.md's GOTCHAS section.** Critical gotchas (crashes, silent data loss, hours-wasting traps) go into AGENT.md so they're always visible without opening extra files. Package-specific/niche gotchas can go into the relevant knowledge file instead.
-2. Did I learn something about the codebase (APIs, dependencies, conventions, architecture)? → Write it into the relevant knowledge file
-3. Did the file/knowledge list change? → Update AGENT.md's Knowledge Files index
+1. **Did I encounter or fix a gotcha/pitfall? → Write it directly into AGENTS.md's GOTCHAS section.** Critical gotchas (crashes, silent data loss, hours-wasting traps) go into AGENTS.md so they're always visible without opening extra files. Package-specific/niche gotchas can go into the relevant knowledge file instead.
+2. Did I learn something about the codebase (APIs, dependencies, conventions, architecture)? → Write it into the relevant knowledge file under `docs/agent/`
+3. Did the file/knowledge list change? → Update AGENTS.md's Knowledge Files index
 4. Did any existing documentation become stale due to my changes? → Update it in place
-5. Did I add gotchas to AGENT.md? → Remove `docs/agent/gotchas.md` if it exists and all its content has been migrated to AGENT.md. AGENT.md should be the single source of truth for critical pitfalls.
+5. Did I add gotchas to AGENTS.md? → Remove redundant entries from docs/agent/ if they're now fully covered in AGENTS.md. AGENTS.md should be the single source of truth for critical pitfalls.
 
 **Default to updating.** Every session should leave the knowledge base more accurate than it found it. The only exception is truly trivial changes (typo fixes, comment-only edits).
 
 ## Accuracy Maintenance
 
 - Before writing: Read the existing file first
-- After writing: Verify AGENT.md references match actual files on disk
-- When deleting/renaming files: Update all references in AGENT.md and other knowledge files
+- After writing: Verify AGENTS.md references match actual files on disk
+- When deleting/renaming files: Update all references in AGENTS.md and other knowledge files
 - Do NOT just append — revise outdated content
 - Keep each file focused on one topic; split when a file grows beyond ~200 lines
-- After significant updates: spot-check that AGENT.md index entries match actual files on disk
+- After significant updates: spot-check that AGENTS.md index entries match actual files on disk

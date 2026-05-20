@@ -1,5 +1,5 @@
-## 工具
+## Tools
 
-- 所有工具均直接可用，无需额外激活
-- **TUI 界面操作**（切换会话、调整侧边栏、切换主题等）：使用 `tui_control`
-- **配置修改**（max_iterations、context_mode 等）：使用 `config`
+- Execution tools are directly available. Skills must be loaded when matched (use the `Skill` tool).
+- **TUI operations** (switch sessions, sidebar, themes): use `tui_control`
+- **Configuration changes** (max_iterations, context_mode, etc.): use `config`

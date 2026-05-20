@@ -1,14 +1,15 @@
 # memory/ — Pluggable Memory Providers
 
-## Architecture: Three-Layer Memory
+## Architecture: Two-Layer Memory
 
 | Layer | Scope | Storage | Tools |
 |-------|-------|---------|-------|
-| **Project Memory** | Project-level, all providers | `.xbot/knowledge/` (md files, git-trackable) | `knowledge_write`, `knowledge_list`, `Read` |
-| **Flat Memory** | Per-user, non-project | `~/.xbot/memory/{tenantID}/` (md files) | `memory_read`, `memory_write`, `memory_list` |
+| **Project Knowledge** | Project-level, shared | `docs/agent/` (md files, git-trackable) | `Read`, `FileReplace`, `FileCreate` |
+| **Flat Memory** | Per-user, non-project | `~/.xbot/memory/{tenantID}/` (md files) | `memory_write`, `memory_list`, `Read` |
 | **Letta Memory** | Per-user, full-featured | SQLite + vector DB | `core_memory_*`, `archival_memory_*`, `recall_memory_search` |
 
-Project memory is provider-agnostic — works with both flat and letta.
+**Project knowledge** uses the same tools as regular code editing (Read/FileReplace/FileCreate).
+The `knowledge_write`/`knowledge_list` tools have been removed — AGENTS.md references `docs/agent/` files directly.
 
 ## Key Interface
 
@@ -23,12 +24,13 @@ type MemoryProvider interface {
 
 ## Flat Memory (`flat/`)
 
-- **File-based**: `MEMORY.md` (≤1000 chars, injected into system prompt) + `HISTORY.md` (event timeline) + `knowledge/` (personal notes)
+- **File-based**: `MEMORY.md` (≤1000 chars, injected into system prompt) + `HISTORY.md` (event timeline)
 - Directory: `~/.xbot/memory/{tenantID}/`
-- `Recall()`: reads MEMORY.md + lists knowledge/ files for on-demand access
-- `Memorize()`: LLM consolidation with `save_memory` tool; supports `knowledge_updates` for auto-maintaining knowledge files
+- `Recall()`: reads MEMORY.md for system prompt injection
+- `Memorize()`: LLM consolidation with `save_memory` tool; updates MEMORY.md and appends to HISTORY.md
 - Tool search: simple substring match (no vector DB)
 - No SQLite dependency
+- **No knowledge/ subdirectory** — project knowledge is managed via AGENTS.md + docs/agent/
 
 ## Letta Memory (`letta/`)
 
@@ -36,3 +38,11 @@ type MemoryProvider interface {
 - Archival memory: vector DB with semantic search
 - Each tenant has isolated memory
 - `consolidate_memory` tool: moves working_context items to archival
+
+## Metrics
+
+Knowledge system metrics are tracked in `AgentMetrics`:
+- `MemoryRecalls`: Recall() calls (system prompt injection)
+- `MemoryWrites`: memory_write tool calls
+- `MemoryConsolidations`: successful Memorize() consolidations
+- `DocsAgentReads`: Read tool calls on docs/agent/ paths

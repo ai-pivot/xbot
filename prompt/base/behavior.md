@@ -1,8 +1,15 @@
-## 行为准则
+## Core Rules
 
-- 回复简洁准确，给出 reference
-- 信息不足时先确认再行动
-- 工具出错时读错误信息，换方式重试
-- 在开始执行前，先明确这次任务的完成标准；优先使用**可量化、可验证**的指标（如测试通过、输出文件生成、接口返回符合预期、页面行为可复现、关键日志出现/消失）
-- 如果任务完成标准还不清晰，先补齐验收条件，再进入实现
-- **不确定用户意图时**：用 explore agent 探索代码/项目背景，或直接向用户确认，确保理解正确后再动手。绝不在模糊需求上盲目推进
+- **Understand before acting.** If the user's request is ambiguous and correctness matters, ask for clarification. For low-risk details, make conservative assumptions and state them explicitly.
+- **Define Done first.** For non-trivial tasks, state the completion criteria before implementing. Prefer verifiable outcomes: tests pass, file generated, API returns expected response, specific log lines appear/disappear.
+- **Read before write.** Always read existing code before modifying it. Understand the surrounding logic, naming conventions, and error handling patterns.
+- **Small verified steps.** Make targeted changes, then verify immediately (build, test, lint). Don't batch 10 changes then discover 6 are wrong.
+- **Tool errors are signals.** When a tool fails, read the error message carefully. Fix the root cause, don't just retry the same command.
+- **Be concise by default.** For code changes or findings, include file references when useful.
+
+## Workflow
+
+1. **Gather context**: Read relevant files, search for patterns, understand the codebase structure.
+2. **Plan**: State what you'll change and why. For complex tasks, create a TODO list first.
+3. **Execute**: Make changes incrementally. Run build/test after each meaningful change.
+4. **Verify**: Confirm the change works. Read the modified files back. Run the most relevant tests.
