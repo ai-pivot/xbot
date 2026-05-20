@@ -49,8 +49,10 @@ $GhMirror = $env:GH_MIRROR
 
 # Proxy a GitHub URL through the configured CDN mirror (if any).
 # If $GhMirror is set, returns "https://${GhMirror}/${Url}"; otherwise returns $Url unchanged.
+# NOTE: CDN mirrors only proxy github.com / raw.githubusercontent.com,
+# NOT api.github.com — API calls always go direct.
 function Get-GhUrl([string]$Url) {
-    if ($GhMirror) { "https://${GhMirror}/${Url}" } else { $Url }
+    if ($GhMirror -and $Url -notmatch 'api\.github\.com') { "https://${GhMirror}/${Url}" } else { $Url }
 }
 
 # Env var fallback for parameters (GitHub Actions uses env vars)
@@ -123,18 +125,9 @@ function Get-LatestVersion {
             }
         }
         "nightly" {
-            try {
-                $releases = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$REPO/releases?per_page=20") -Headers $headers
-                $nightly = $releases | Where-Object { $_.tag_name -eq 'nightly' -or $_.tag_name -match '^nightly-' } | Select-Object -First 1
-                if ($nightly) { return $nightly.tag_name }
-            } catch {}
-            try {
-                Write-Warn "No nightly found on $REPO, trying fallback $FALLBACK_REPO..."
-                $releases = Invoke-RestMethod -Uri (Get-GhUrl "https://api.github.com/repos/$FALLBACK_REPO/releases?per_page=20") -Headers $headers
-                $nightly = $releases | Where-Object { $_.tag_name -eq 'nightly' -or $_.tag_name -match '^nightly-' } | Select-Object -First 1
-                if ($nightly) { return $nightly.tag_name }
-            } catch {}
-            Write-Err "No nightly release found. Set -Version explicitly."
+            # CI uses a fixed "nightly" tag — no API call needed.
+            # This avoids requiring api.github.com access from China.
+            return "nightly"
         }
         "beta" {
             try {
