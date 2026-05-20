@@ -29,6 +29,10 @@ $ErrorActionPreference = "Stop"
 # Default mirror candidates — ordered by reliability in mainland China
 $DefaultMirrors = @("ghfast.top", "gh-proxy.com", "ghps.cc")
 
+# GitHub ref (branch/tag) to download install.ps1 from.
+# Defaults to master; can be overridden for testing: $env:GITHUB_REF="my-branch"
+$GitHubRef = if ($env:GITHUB_REF) { $env:GITHUB_REF } else { "master" }
+
 function Write-Info  { param([string]$Msg) Write-Host "[INFO] $Msg" -ForegroundColor Green }
 function Write-Warn  { param([string]$Msg) Write-Host "[WARN] $Msg" -ForegroundColor Yellow }
 function Write-Err   { param([string]$Msg) Write-Host "[ERROR] $Msg" -ForegroundColor Red; throw $Msg }
@@ -97,8 +101,8 @@ if ($scriptDir) {
 if (-not $installScript) {
     $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-install.ps1"
     $urls = @(
-        "https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1",
-        "https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.ps1"
+        "https://raw.githubusercontent.com/ai-pivot/xbot/${GitHubRef}/scripts/install.ps1",
+        "https://raw.githubusercontent.com/CjiW/xbot/${GitHubRef}/scripts/install.ps1"
     )
 
     # Build mirror list: selected mirror first, then defaults, then direct

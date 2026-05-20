@@ -220,7 +220,7 @@ write_config_jq() {
     fi
 
     # Ensure top-level sections exist
-    jq '{server: .server // {}, web: .web // {}, cli: .cli // {}, admin: .admin // {}, agent: .agent // {}} * .' \
+    jq '{server: (.server // {}), web: (.web // {}), cli: (.cli // {}), admin: (.admin // {}), agent: (.agent // {})} * .' \
         "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
 
     _set_if_missing() {
@@ -332,13 +332,9 @@ download_web_dist() {
     local dist_url="https://github.com/${REPO}/releases/download/${version}/xbot-web-dist.tar.gz"
     info "Downloading Web UI frontend..."
     mkdir -p "$target_dir"
-    local curl_progress=""
-    if [ -t 2 ]; then
-        curl_progress="--progress-bar"
-    fi
-    if curl -fSL ${curl_progress} "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
+    if curl -fSL "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
         info "Web UI installed to ${target_dir} ✓"
-    elif curl -fSL ${curl_progress} "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
+    elif curl -fSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
         warn "Web UI downloaded from fallback repo ${FALLBACK_REPO}"
         info "Web UI installed to ${target_dir} ✓"
     else
@@ -525,17 +521,13 @@ main() {
     info "Downloading..."
     TMPDIR=$(mktemp -d)
     trap 'rm -rf "$TMPDIR"' EXIT
-    local curl_progress=""
-    if [ -t 2 ]; then
-        curl_progress="--progress-bar"
-    fi
     # Try new repo first; fall back to old repo if release not found
     # (during migration from CjiW/xbot → ai-pivot/xbot)
-    if ! curl -fSL ${curl_progress} -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")" 2>/dev/null; then
+    if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
         FALLBACK_URL="https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
         warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
         DOWNLOAD_URL="$FALLBACK_URL"
-        if ! curl -fSL ${curl_progress} -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
+        if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
             error "Download failed from both repos. Check the version and platform."
         fi
     fi
@@ -620,7 +612,8 @@ main() {
     if ! command -v "$BINARY" >/dev/null 2>&1; then
         echo ""
         warn "Note: ${INSTALL_PATH} is not yet in your shell PATH."
-        warn "  Restart your shell or run: export PATH=\"${INSTALL_PATH}:\$PATH\""
+        warn "  Run: source ~/.bashrc"
+        warn "  Or restart your shell."
     fi
     echo ""
 }
