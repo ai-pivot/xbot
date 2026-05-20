@@ -11,13 +11,17 @@ import (
 	"xbot/storage/sqlite"
 )
 
-const setLLMUsage = `用法: /set-llm provider=<provider> base_url=<url> api_key=<key> [model=<model>] [max_context=<tokens>] [max_output_tokens=<tokens>] [thinking_mode=<mode>]
+const setLLMUsage = `设置自定义 LLM API
 
-参数说明:
+用法: /set-llm provider=<provider> base_url=<url> api_key=<key> [model=<model>] [max_context=<tokens>] [max_output_tokens=<tokens>] [thinking_mode=<mode>]
+
+必填参数:
   provider      - LLM 提供商: anthropic 或 openai/deepseek/zhipu 等 OpenAI 兼容服务
   base_url      - API 基础地址
   api_key       - API 密钥
-  model         - 模型名称（可选）
+
+可选参数:
+  model         - 模型名称（可选，不填则使用默认模型）
   max_context   - 最大上下文 token 数（可选，0 表示不限制）
   thinking_mode - 思考模式（可选，各厂商格式不同）:
                   DeepSeek/OpenAI reasoning:

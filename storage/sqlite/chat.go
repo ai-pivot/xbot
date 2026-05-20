@@ -1,8 +1,10 @@
 package sqlite
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"math/big"
 	"time"
 
 	log "xbot/logger"
@@ -139,7 +141,12 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 	}
 
 	if label == "" {
-		label = "新会话"
+		autoName, err := generateChatLabel()
+		if err != nil {
+			label = "新会话"
+		} else {
+			label = autoName
+		}
 	}
 
 	_, err := conn.Exec(
@@ -222,6 +229,28 @@ func (s *ChatService) RenameChat(channel, senderID, chatID, label string) error 
 		label, channel, senderID, chatID,
 	)
 	return err
+}
+
+// generateChatLabel creates a random session label like "Agent-brave-fox".
+// Mirrors channel.GenerateSessionName to avoid import cycles.
+func generateChatLabel() (string, error) {
+	adjs := []string{
+		"brave", "calm", "swift", "keen", "warm", "witty", "sage", "brisk",
+		"cool", "bold", "sharp", "lucid", "sunny", "frank", "deft", "astute",
+	}
+	nouns := []string{
+		"fox", "hawk", "lynx", "dove", "panda", "otter", "falcon", "heron",
+		"stone", "flame", "brook", "cedar", "comet", "coral", "ember", "zephyr",
+	}
+	adjIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(adjs))))
+	if err != nil {
+		return "", err
+	}
+	nounIdx, err := rand.Int(rand.Reader, big.NewInt(int64(len(nouns))))
+	if err != nil {
+		return "", err
+	}
+	return "Agent-" + adjs[adjIdx.Int64()] + "-" + nouns[nounIdx.Int64()], nil
 }
 
 func truncate(s string, maxRunes int) string {

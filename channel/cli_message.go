@@ -634,7 +634,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		}
 
 	case "/usage":
-		m.handleUsageCommand()
+		m.sendToAgent(cmd) // passthrough to agent-level /usage handler
 
 	case "/channel":
 		m.openChannelPanel()
@@ -1085,7 +1085,7 @@ func (m *cliModel) renderProgressBlock() string {
 	// phantom progress blocks when switching sessions while another session's agent
 	// is still processing.
 	if m.progress != nil && m.progress.ChatID != "" {
-		currentKey := m.channelName + ":" + m.chatID
+		currentKey := qualifyChatID(m.channelName, m.chatID)
 		if m.progress.ChatID != currentKey {
 			m.progress = nil
 			m.typing = false

@@ -48,6 +48,7 @@ func newTestRegistry() *WorktreeRegistry {
 	return &WorktreeRegistry{
 		bySess: make(map[string]*WorktreeEntry),
 		byRepo: make(map[string][]*WorktreeEntry),
+		loaded: make(map[string]bool),
 	}
 }
 
@@ -210,8 +211,9 @@ func TestCleanupSession_WithWorktree(t *testing.T) {
 	reg := newTestRegistry()
 
 	// Use AutoDetectAndInit to create a real worktree for session-1
-	entry := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	entry, created := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
 	require.NotNil(t, entry, "AutoDetectAndInit should succeed")
+	require.True(t, created, "first init should create a new worktree")
 	require.NotEmpty(t, entry.WorktreeDir, "should have a worktree dir")
 
 	// Register a second peer-awareness session
@@ -264,7 +266,7 @@ func TestAutoDetectAndInit_SetsWorktreeDir(t *testing.T) {
 	repoPath := newTestGitRepo(t)
 	reg := newTestRegistry()
 
-	entry := autoDetectAndInitInto(repoPath, "cli:repo:main-session", reg)
+	entry, _ := autoDetectAndInitInto(repoPath, "cli:repo:main-session", reg)
 	require.NotNil(t, entry)
 
 	// Worktree dir should be under the base dir
@@ -288,7 +290,7 @@ func TestAutoDetectAndInit_CleanupThenRecreate(t *testing.T) {
 	reg := newTestRegistry()
 
 	// Create worktree for session-1
-	entry1 := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	entry1, _ := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
 	require.NotNil(t, entry1)
 
 	// Cleanup it
@@ -296,11 +298,76 @@ func TestAutoDetectAndInit_CleanupThenRecreate(t *testing.T) {
 	assert.Nil(t, reg.GetBySession("cli:repo:session-1"))
 
 	// Create a new worktree for session-2 — should succeed without conflict
-	entry2 := autoDetectAndInitInto(repoPath, "cli:repo:session-2", reg)
+	entry2, _ := autoDetectAndInitInto(repoPath, "cli:repo:session-2", reg)
 	require.NotNil(t, entry2)
 	assert.NotEqual(t, entry1.WorktreeDir, entry2.WorktreeDir, "new worktree should be a different dir")
 
 	// Old worktree dir should be gone
 	_, err := os.Stat(entry1.WorktreeDir)
 	assert.True(t, os.IsNotExist(err), "old worktree dir should be cleaned up")
+}
+
+// TestAutoDetectAndInit_IdempotentAcrossRestart simulates a process restart
+// by creating a new registry and verifying that the same session returns
+// its existing worktree entry without creating a new one.
+func TestAutoDetectAndInit_IdempotentAcrossRestart(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg1 := newTestRegistry()
+
+	// Create a worktree with registry 1 (simulates first process)
+	entry1, created1 := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg1)
+	require.NotNil(t, entry1, "AutoDetectAndInit should succeed on first call")
+	require.True(t, created1, "first init should create a new worktree")
+	require.NotEmpty(t, entry1.WorktreeDir, "should have a worktree dir")
+
+	// Verify worktree dir exists
+	_, err := os.Stat(entry1.WorktreeDir)
+	require.NoError(t, err, "worktree dir should exist")
+
+	// Simulate restart: create a fresh registry (process memory is gone,
+	// but persisted registry.json is still on disk).
+	reg2 := newTestRegistry()
+
+	// The new registry should find the existing entry from disk
+	entry2, created2 := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg2)
+	require.NotNil(t, entry2, "AutoDetectAndInit should return existing entry after restart")
+	assert.False(t, created2, "restart should return existing entry, not create new one")
+
+	// Must return the SAME worktree (not a new one)
+	assert.Equal(t, entry1.WorktreeDir, entry2.WorktreeDir,
+		"idempotent init should return the existing worktree dir")
+	assert.Equal(t, entry1.Branch, entry2.Branch,
+		"idempotent init should return the existing branch")
+
+	// Verify no second worktree was created
+	baseDir := filepath.Join(filepath.Dir(repoPath), ".xbot-worktrees")
+	entries, _ := os.ReadDir(baseDir)
+	worktreeCount := 0
+	for _, e := range entries {
+		if e.IsDir() && strings.Contains(e.Name(), "session-1") {
+			worktreeCount++
+		}
+	}
+	assert.Equal(t, 1, worktreeCount,
+		"should not create a second worktree for the same session")
+}
+
+// TestAutoDetectAndInit_IdempotentInMemory verifies that calling
+// autoDetectAndInitInto twice on the same registry returns the same entry.
+func TestAutoDetectAndInit_IdempotentInMemory(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	entry1, created1 := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	require.NotNil(t, entry1)
+	assert.True(t, created1, "first call should create worktree")
+
+	entry2, created2 := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	require.NotNil(t, entry2)
+	assert.False(t, created2, "second call should return existing entry")
+
+	assert.Equal(t, entry1.WorktreeDir, entry2.WorktreeDir,
+		"second call should return same worktree")
+	assert.Equal(t, entry1.Branch, entry2.Branch,
+		"second call should return same branch")
 }

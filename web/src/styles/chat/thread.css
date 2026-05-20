@@ -145,7 +145,7 @@
   transition: background 0.15s;
 }
 .thread-send-btn:hover:not(:disabled) {
-  background: #2563eb;
+  background: #007AFF;
 }
 .thread-send-btn:disabled {
   opacity: 0.5;

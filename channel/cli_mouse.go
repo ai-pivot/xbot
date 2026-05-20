@@ -158,6 +158,8 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickSidebarNewSession()
 	case "sidebarBgTask":
 		return m.clickSidebarBgTask(zone.Index)
+	case "sidebarSectionHeader":
+		return m.clickSidebarSectionHeader(zone.ID)
 	case "bgtaskItem":
 		return m.clickBgTasksItem(zone.Index)
 	case "dangerItem":
@@ -168,10 +170,17 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickRunnerField(zone.Index)
 	case "footerHint":
 		return m.clickFooterHint(zone.Index)
+	case "modelName":
+		m.cycleModel()
+		return true, m, nil
 	case "scrollToBottom":
 		m.viewport.GotoBottom()
 		m.newContentHint = false
 		return true, m, nil
+	}
+	// Handle prefixed zone IDs (e.g. "sidebarSectionHeader:sessions")
+	if strings.HasPrefix(zone.ID, "sidebarSectionHeader:") {
+		return m.clickSidebarSectionHeader(zone.ID)
 	}
 	return false, m, nil
 }
@@ -787,11 +796,21 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 		sbBorderLeftVisW := lipgloss.Width(lipgloss.RoundedBorder().Left)
 		sidebarContentOffset := sbBorderLeftVisW + sbStyle.GetPaddingLeft()
 		sbVisW := m.sidebarRenderedWidth() // actual visual width (accounts for EASTASIAN etc.)
+
+		// Helper to register section header zones
+		registerSectionHeaders := func(xStart, xEnd int, borderOffset int) {
+			for section, relY := range sidebarSectionHeaders {
+				zoneID := "sidebarSectionHeader:" + section
+				zb.addX(relY+borderOffset, xStart, xEnd, zoneID, 0)
+			}
+		}
+
 		if m.sidebarPosition == "right" {
 			// sidebar on right: middleBlock starts at 0, sidebar starts at chatWidth
 			sbXStart := m.chatWidth()
 			sbXEnd := m.width
 			borderOffset := 1 // RoundedBorder top edge
+			registerSectionHeaders(sbXStart, sbXEnd, borderOffset)
 			for relY, sessionIdx := range sidebarSessionLines {
 				if sessionIdx >= 0 {
 					zb.addX(relY+borderOffset, sbXStart, sbXEnd, "sidebarSession", sessionIdx)
@@ -815,6 +834,7 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 		} else {
 			// sidebar on left: middleBlock starts at sbVisW
 			borderOffset := 1 // RoundedBorder top edge
+			registerSectionHeaders(0, sbVisW, borderOffset)
 			for relY, sessionIdx := range sidebarSessionLines {
 				if sessionIdx >= 0 {
 					zb.addX(relY+borderOffset, 0, sbVisW, "sidebarSession", sessionIdx)
@@ -842,7 +862,11 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	zb.skip(viewportH)
 
-	// status bar: 1 line — track "new content" hint if present
+	// status bar: 1 line — track clickable model name and "new content" hint
+	// Model name zone is tracked in both ready and progress status bars.
+	if m.modelNameZoneXStart >= 0 && m.modelNameZoneXEnd > m.modelNameZoneXStart {
+		zb.addX(0, m.modelNameZoneXStart+xShift, m.modelNameZoneXEnd+xShift, "modelName", 0)
+	}
 	if m.newContentHintRendered != "" {
 		// The new content hint is rendered inline in the status bar.
 		// Use the pre-calculated X position from layoutMain.
@@ -1465,6 +1489,18 @@ func (m *cliModel) clickSidebarDeleteSession(index int) (bool, tea.Model, tea.Cm
 	}
 	cmd := m.deleteLocalSession(entry)
 	return true, m, cmd
+}
+
+// clickSidebarSectionHeader handles clicking a sidebar section header to toggle collapse.
+// The zoneID format is "sidebarSectionHeader:<section>" where section is "sessions", "todo", or "tasks".
+func (m *cliModel) clickSidebarSectionHeader(zoneID string) (bool, tea.Model, tea.Cmd) {
+	const prefix = "sidebarSectionHeader:"
+	if !strings.HasPrefix(zoneID, prefix) {
+		return false, m, nil
+	}
+	section := strings.TrimPrefix(zoneID, prefix)
+	m.toggleSidebarSection(section)
+	return true, m, nil
 }
 
 // clickSidebarBgTask handles clicking a background task item in the sidebar.

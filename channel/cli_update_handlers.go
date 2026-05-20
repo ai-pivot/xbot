@@ -337,7 +337,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 
 	if msg.payload != nil && msg.payload.ChatID != "" {
-		currentKey := m.channelName + ":" + m.chatID
+		currentKey := qualifyChatID(m.channelName, m.chatID)
 		if msg.payload.ChatID != currentKey {
 			return
 		}
@@ -879,13 +879,15 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	// suLoading guard: during session switch in remote mode, discard injected messages.
 	// They belong to the previous session's context; the RPC will handle state.
 	if m.suLoading {
+		log.WithFields(log.Fields{"msg_chat_id": msg.chatID}).Debug("handleInjectedUserMsg: suLoading, discarding (session switch in progress)")
 		return nil
 	}
 	// Filter by session: if chatID is set, only apply to matching session.
 	// Legacy messages (chatID="") are always applied for backward compat.
 	if msg.chatID != "" {
-		currentKey := m.channelName + ":" + m.chatID
+		currentKey := qualifyChatID(m.channelName, m.chatID)
 		if msg.chatID != currentKey {
+			log.WithFields(log.Fields{"msg_chat_id": msg.chatID, "current_key": currentKey}).Debug("handleInjectedUserMsg: session filter mismatch, discarding")
 			return nil
 		}
 	}
@@ -1057,7 +1059,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// should match the current session. If ChatID is set and doesn't
 		// match, treat as no active progress (fall through to default).
 		if msg.activeProgress.ChatID != "" {
-			currentKey := m.channelName + ":" + m.chatID
+			currentKey := qualifyChatID(m.channelName, m.chatID)
 			if msg.activeProgress.ChatID != currentKey {
 				acceptProgress = false
 			}

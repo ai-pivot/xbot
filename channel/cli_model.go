@@ -15,6 +15,7 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/tools"
 	"xbot/version"
 )
 
@@ -303,11 +304,15 @@ type sessionState struct {
 	inputHistory    []string // sent message history for Up/Down browsing
 	inputHistoryIdx int      // current position in input history (-1 = not browsing)
 	inputDraft      string   // draft text before entering history browsing
+	// Per-session background task count (survives session switches).
+	// Refreshed from bgTaskCountFn on restore and tick; stored here so the
+	// infobar and sidebar show the correct count immediately after a switch.
+	bgTaskCount int
 }
 
 // sessionKey returns the map key for the current session.
 func (m *cliModel) sessionKey() string {
-	return m.channelName + ":" + m.chatID
+	return qualifyChatID(m.channelName, m.chatID)
 }
 
 // saveCurrentSession saves the current session's live state into the savedSessions map.
@@ -348,6 +353,7 @@ func (m *cliModel) saveCurrentSession() {
 		inputHistory:           m.inputHistory,
 		inputHistoryIdx:        m.inputHistoryIdx,
 		inputDraft:             m.inputDraft,
+		bgTaskCount:            m.bgTaskCount,
 	}
 	// Persist todo list for current session
 	if m.todoManager != nil {
@@ -390,6 +396,13 @@ func (m *cliModel) restoreSession() {
 		m.inputHistory = saved.inputHistory
 		m.inputHistoryIdx = saved.inputHistoryIdx
 		m.inputDraft = saved.inputDraft
+		// Restore bg task count from saved state, then re-query from backend
+		// so the count is fresh (tasks may have completed while switched away).
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		} else {
+			m.bgTaskCount = saved.bgTaskCount
+		}
 		// Load todo list for the restored session and sync to display
 		if m.todoManager != nil {
 			_ = m.todoManager.LoadFromFile(key)
@@ -442,6 +455,12 @@ func (m *cliModel) restoreSession() {
 		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
 		m.activeSubID = ""
 		m.cachedModelName = ""
+		// Reset bg task count from backend for this session
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		} else {
+			m.bgTaskCount = 0
+		}
 		// Clear todos — no saved state means no active turn,
 		// but persist unfinished todos from TodoManager so they
 		// remain visible across session switches.
@@ -522,6 +541,20 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 				if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
 					m.activeSubID = defSub.ID
 					m.cachedModelName = defSub.Model
+				}
+			}
+			// Auto-discover: if model name is still empty after loading default sub,
+			// try listing available models and pick the first one.
+			if m.cachedModelName == "" && m.channel != nil && m.channel.modelLister != nil {
+				m.channel.modelLister.EnsureModelsLoaded()
+				if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+					m.cachedModelName = models[0]
+					if m.llmSubscriber != nil {
+						m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+					}
+					existing := LoadSessionLLMState(m.workDir, m.chatID)
+					existing.Model = models[0]
+					SaveSessionLLMState(m.workDir, m.chatID, existing)
 				}
 			}
 		}
@@ -1021,14 +1054,15 @@ type cliModel struct {
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
 	// --- Layout configuration ---
-	chatMaxWidth    int    // max content width (0 = unlimited)
-	chatCenter      bool   // center content in middle-width screens
-	layoutMode      string // "auto" / "single" / "dual"
-	sidebarEnabled  bool   // show sidebar in wide screens
-	sidebarWidth    int    // sidebar width in chars
-	sidebarPosition string // "left" / "right"
-	sidebarVisible  bool   // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
-	xShift          int    // sidebar X offset for middleBlock, set during trackMainLayoutZones
+	chatMaxWidth             int             // max content width (0 = unlimited)
+	chatCenter               bool            // center content in middle-width screens
+	layoutMode               string          // "auto" / "single" / "dual"
+	sidebarEnabled           bool            // show sidebar in wide screens
+	sidebarWidth             int             // sidebar width in chars
+	sidebarPosition          string          // "left" / "right"
+	sidebarVisible           bool            // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
+	sidebarCollapsedSections map[string]bool // per-section collapse state: "sessions"/"todo"/"tasks" → true=collapsed
+	xShift                   int             // sidebar X offset for middleBlock, set during trackMainLayoutZones
 
 	// Cached layout metrics (invalidated on resize / sidebar toggle).
 	// Eliminates repeated lipgloss.Render + ansi.StringWidth per chatWidth() call.
@@ -1051,12 +1085,14 @@ type cliModel struct {
 	matrixBuffer    [][]rune      // Matrix 字符缓冲区
 	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
 
-	channel         *CLIChannel     // back-reference to owning channel (set during Start)
-	cachedModelName string          // cached model name for View() performance
-	activeSubID     string          // active subscription ID for current session
-	todoManager     *cliTodoManager // per-session todo persistence
-	askUserSession  string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
-	modelCount      int             // cached model list length for View() performance
+	channel             *CLIChannel     // back-reference to owning channel (set during Start)
+	cachedModelName     string          // cached model name for View() performance
+	modelNameZoneXStart int             // rendered X start of model name in status bar (-1 = not rendered)
+	modelNameZoneXEnd   int             // rendered X end of model name in status bar (exclusive)
+	activeSubID         string          // active subscription ID for current session
+	todoManager         *cliTodoManager // per-session todo persistence
+	askUserSession      string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
+	modelCount          int             // cached model list length for View() performance
 
 	// Context usage display (persisted across turns for ready-status bar)
 	lastTokenUsage         *protocol.TokenUsage // last known token usage from progress events
@@ -1178,16 +1214,17 @@ func newCLIModel() *cliModel {
 		senderID:        "cli_user",
 		channelName:     "cli",
 		// Layout defaults
-		chatMaxWidth:      76,
-		chatCenter:        true,
-		layoutMode:        "auto",
-		sidebarEnabled:    true,
-		sidebarVisible:    true,
-		sidebarWidth:      30,
-		sidebarPosition:   "left",
-		unreadSessions:    make(map[string]bool),
-		lastBusyStates:    make(map[string]bool),
-		liveSessionStates: make(map[string]*liveSessionState),
+		chatMaxWidth:             76,
+		chatCenter:               true,
+		layoutMode:               "auto",
+		sidebarEnabled:           true,
+		sidebarVisible:           true,
+		sidebarWidth:             30,
+		sidebarPosition:          "left",
+		sidebarCollapsedSections: make(map[string]bool),
+		unreadSessions:           make(map[string]bool),
+		lastBusyStates:           make(map[string]bool),
+		liveSessionStates:        make(map[string]*liveSessionState),
 	}
 }
 
@@ -1271,6 +1308,7 @@ type cliSettingsSavedMsg struct {
 	layoutChanged bool
 	layoutVals    map[string]string // layout-related settings for field update
 	feedbackMsg   string
+	savedModel    string // model name from saved values (avoids GetDefault RPC timing issues)
 	// syncOnly is true when the message originates from SyncLayoutSettings
 	// (periodic remote cache refresh), not from an explicit user settings save.
 	// When true, context-related caches (maxContextTokens, etc.) must NOT be
@@ -1350,6 +1388,13 @@ type cliPluginUninstallResultMsg struct {
 // and the TUI should re-render to show the new content.
 type cliWidgetUpdateMsg struct{}
 
+// cliModelDiscoverMsg triggers a delayed auto-discover retry for the model name.
+// Sent when the initial refreshCachedModelName fails to find a model (e.g. LLM
+// client not yet ready after setup). The handler retries the auto-discover logic.
+type cliModelDiscoverMsg struct {
+	attempt int // retry attempt number (0-based)
+}
+
 // isCtrlEnter 检测 Ctrl+Enter 按键。
 // 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：
 //   - CSI u 协议: \x1b[13;5u   (kitty, Ghostty, Windows Terminal)
@@ -1410,10 +1455,60 @@ func (m *cliModel) refreshCachedModelName() {
 			m.cachedModelName = sub.Model
 		}
 	}
+	// Auto-discover: if model name is still empty, try listing available models
+	// and pick the first one.
+	if m.cachedModelName == "" && m.channel.modelLister != nil {
+		m.channel.modelLister.EnsureModelsLoaded()
+		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+			m.cachedModelName = models[0]
+			// Persist the discovered model
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			}
+			existing := LoadSessionLLMState(m.workDir, m.chatID)
+			existing.Model = models[0]
+			SaveSessionLLMState(m.workDir, m.chatID, existing)
+		}
+	}
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
 	}
+}
+
+// scheduleModelDiscoverRetry returns a tea.Cmd that sends a delayed
+// cliModelDiscoverMsg to retry auto-discovering the model name.
+// Used when ListModels returns empty (e.g. LLM client not ready after setup).
+func (m *cliModel) scheduleModelDiscoverRetry(attempt int) tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return cliModelDiscoverMsg{attempt: attempt}
+	})
+}
+
+// handleModelDiscoverMsg processes a delayed model auto-discover retry.
+func (m *cliModel) handleModelDiscoverMsg(msg cliModelDiscoverMsg) tea.Cmd {
+	if m.cachedModelName != "" {
+		return nil // already resolved
+	}
+	// Retry auto-discover
+	if m.channel != nil && m.channel.modelLister != nil {
+		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+			m.cachedModelName = models[0]
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			}
+			existing := LoadSessionLLMState(m.workDir, m.chatID)
+			existing.Model = models[0]
+			SaveSessionLLMState(m.workDir, m.chatID, existing)
+			m.updateViewportContent()
+			return nil
+		}
+	}
+	// Max 5 retries (15s total)
+	if msg.attempt < 5 {
+		return m.scheduleModelDiscoverRetry(msg.attempt + 1)
+	}
+	return nil
 }
 
 // scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when
@@ -1570,4 +1665,24 @@ func (m *cliModel) reloadMessagesFromSession() {
 			}
 		}
 	})
+}
+
+// toggleSidebarSection toggles the collapse state of a sidebar section and persists to preferences.
+func (m *cliModel) toggleSidebarSection(section string) {
+	if m.sidebarCollapsedSections[section] {
+		delete(m.sidebarCollapsedSections, section)
+	} else {
+		m.sidebarCollapsedSections[section] = true
+	}
+	m.saveSidebarCollapsedPrefs()
+}
+
+// saveSidebarCollapsedPrefs persists the current sidebar section collapse state to preferences.json.
+func (m *cliModel) saveSidebarCollapsedPrefs() {
+	if m.workDir == "" {
+		return
+	}
+	prefs := tools.LoadPreferences(m.workDir, m.senderID)
+	prefs.SidebarCollapsed = m.sidebarCollapsedSections
+	_ = tools.SavePreferences(m.workDir, m.senderID, prefs)
 }

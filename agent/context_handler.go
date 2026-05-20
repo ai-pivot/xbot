@@ -3,11 +3,15 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
+	"time"
 
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/llm"
 	"xbot/session"
+	"xbot/storage/sqlite"
 )
 
 // formatTokenCount formats a token count for display (e.g. 1234567 → "1.2M").
@@ -170,5 +174,117 @@ func (a *Agent) handleContextMode(ctx context.Context, msg bus.InboundMessage, m
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: fmt.Sprintf("已切换上下文模式: %s", target),
+	}, nil
+}
+
+// handleUsage handles /usage command: shows token usage statistics.
+// Uses multiSession directly (no RPC), so it's safe to call from agent goroutine.
+func (a *Agent) handleUsage(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.multiSession == nil {
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: "Usage tracking not available",
+		}, nil
+	}
+
+	cumulative, err := a.multiSession.GetUserTokenUsage(msg.SenderID)
+	if err != nil {
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: fmt.Sprintf("Failed to query usage: %v", err),
+		}, nil
+	}
+
+	daily, _ := a.multiSession.GetDailyTokenUsage(msg.SenderID, 30)
+
+	var sb strings.Builder
+	sb.WriteString("# Token Usage\n\n")
+
+	if cumulative != nil && cumulative.TotalTokens > 0 {
+		usageDays := 0
+		if len(daily) > 0 {
+			earliest := daily[len(daily)-1].Date
+			if first, err := time.Parse("2006-01-02", earliest); err == nil {
+				usageDays = int(time.Since(first).Hours()/24) + 1
+			}
+		}
+
+		sb.WriteString("## Summary\n\n")
+		sb.WriteString("| | |\n|---|---|\n")
+		fmt.Fprintf(&sb, "| **Total tokens** | **%s** |\n", formatTokenCount(cumulative.TotalTokens))
+		fmt.Fprintf(&sb, "| Input | %s |\n", formatTokenCount(cumulative.InputTokens))
+		fmt.Fprintf(&sb, "| Output | %s |\n", formatTokenCount(cumulative.OutputTokens))
+		fmt.Fprintf(&sb, "| Cached | %s |\n", formatTokenCount(cumulative.CachedTokens))
+		fmt.Fprintf(&sb, "| Conversations | %d |\n", cumulative.ConversationCount)
+		fmt.Fprintf(&sb, "| LLM calls | %d |\n", cumulative.LLMCallCount)
+		if usageDays > 0 {
+			fmt.Fprintf(&sb, "| **Usage duration** | **%d days** |\n", usageDays)
+			avgDaily := cumulative.TotalTokens / int64(usageDays)
+			fmt.Fprintf(&sb, "| Avg daily tokens | %s |\n", formatTokenCount(avgDaily))
+		}
+
+		sb.WriteString("\n### Analysis\n\n")
+		sb.WriteString("| | |\n|---|---|\n")
+		if cumulative.InputTokens > 0 {
+			cacheRate := float64(cumulative.CachedTokens) / float64(cumulative.InputTokens) * 100
+			fmt.Fprintf(&sb, "| **Cache hit rate** | **%.1f%%** |\n", cacheRate)
+			nonCachedInput := cumulative.InputTokens - cumulative.CachedTokens
+			fmt.Fprintf(&sb, "| Actual input (non-cached) | %s |\n", formatTokenCount(nonCachedInput))
+		}
+		if cumulative.LLMCallCount > 0 {
+			avgIn := cumulative.InputTokens / cumulative.LLMCallCount
+			avgOut := cumulative.OutputTokens / cumulative.LLMCallCount
+			fmt.Fprintf(&sb, "| Avg input/call | %s |\n", formatTokenCount(avgIn))
+			fmt.Fprintf(&sb, "| Avg output/call | %s |\n", formatTokenCount(avgOut))
+		}
+		if cumulative.ConversationCount > 0 {
+			avgCalls := float64(cumulative.LLMCallCount) / float64(cumulative.ConversationCount)
+			fmt.Fprintf(&sb, "| Avg calls/conversation | %.1f |\n", avgCalls)
+		}
+	} else {
+		sb.WriteString("No usage data recorded yet.\n")
+	}
+
+	// Today's usage by model
+	today := time.Now().Format("2006-01-02")
+	var todayEntries []sqlite.DailyTokenUsage
+	for _, d := range daily {
+		if d.Date == today {
+			todayEntries = append(todayEntries, d)
+		}
+	}
+	if len(todayEntries) > 0 {
+		sb.WriteString("\n## Today's Usage by Model\n\n")
+		sb.WriteString("| Model | Input | Output | Cached | Cache% | Calls |\n")
+		sb.WriteString("|-------|-------|--------|--------|--------|-------|\n")
+		slices.SortFunc(todayEntries, func(a, b sqlite.DailyTokenUsage) int {
+			return int((b.InputTokens + b.OutputTokens) - (a.InputTokens + a.OutputTokens))
+		})
+		for _, d := range todayEntries {
+			model := d.Model
+			if model == "" {
+				model = "(unknown)"
+			}
+			cacheRate := ""
+			if d.InputTokens > 0 {
+				cacheRate = fmt.Sprintf("%.0f%%", float64(d.CachedTokens)/float64(d.InputTokens)*100)
+			}
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d |\n",
+				model,
+				formatTokenCount(d.InputTokens),
+				formatTokenCount(d.OutputTokens),
+				formatTokenCount(d.CachedTokens),
+				cacheRate,
+				d.LLMCallCount,
+			)
+		}
+	}
+
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: sb.String(),
 	}, nil
 }

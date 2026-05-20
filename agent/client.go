@@ -138,6 +138,8 @@ func (c *Client) dispatchWSMessage(msg protocol.WSMessage) {
 				Params: msg.TUIControl.Params,
 			})
 		}
+	default:
+		log.WithFields(log.Fields{"type": msg.Type, "chat_id": msg.ChatID}).Warn("dispatchWSMessage: unknown message type, dropping")
 	}
 }
 

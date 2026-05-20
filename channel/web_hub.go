@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	log "xbot/logger"
 	"xbot/protocol"
 
 	"github.com/gorilla/websocket"
@@ -69,6 +70,7 @@ func (h *Hub) subscribe(clientID, chatID string) {
 					select {
 					case c.sendCh <- msg:
 					default:
+						log.WithFields(log.Fields{"client_id": clientID, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.subscribe flush: sendCh full, dropping buffered message")
 					}
 				}
 			}
@@ -101,13 +103,14 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 		c := h.conns[cid]
 		h.mu.RUnlock()
 		if c == nil {
+			log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID}).Debug("Hub.sendToClient: subscriber conn nil, skipping")
 			continue
 		}
 		select {
 		case c.sendCh <- msg:
 			sent = true
 		default:
-			// sendCh full, skip
+			log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message")
 		}
 	}
 	if !sent {
@@ -150,6 +153,7 @@ func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
 		select {
 		case c.sendCh <- msg:
 		default:
+			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToAll: sendCh full, skipping")
 		}
 	}
 }
