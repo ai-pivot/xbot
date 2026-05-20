@@ -27,7 +27,11 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Mirror configuration — ordered by reliability in mainland China
 # ---------------------------------------------------------------------------
-DEFAULT_MIRRORS="ghfast.top gh-proxy.com ghps.cc"
+REPO="ai-pivot/xbot"
+FALLBACK_REPO="CjiW/xbot"
+# GitHub ref (branch/tag) to download install.sh from.
+# Defaults to master; can be overridden for testing: GITHUB_REF=my-branch
+GITHUB_REF="${GITHUB_REF:-master}"
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -100,8 +104,8 @@ else
     install_sh="${tmpdir}/install.sh"
 
     urls=(
-        "https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh"
-        "https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.sh"
+        "https://raw.githubusercontent.com/ai-pivot/xbot/${GITHUB_REF}/scripts/install.sh"
+        "https://raw.githubusercontent.com/CjiW/xbot/${GITHUB_REF}/scripts/install.sh"
     )
 
     found=false
