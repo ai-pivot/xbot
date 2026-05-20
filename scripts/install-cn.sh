@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # install-cn.sh — xbot installer for mainland China users
 #
-# Automatically selects a reachable GitHub CDN mirror and proxies all
-# downloads through it.  Zero configuration required.
+# Proxies all GitHub downloads through a CDN mirror.
+# Default mirror: ghfast.top (verified working in mainland China).
 #
 # Usage (one-liner — pick any mirror that works for you):
 #
-#   # Option 1: via ghfast.top
+#   # Option 1: via ghfast.top (default)
 #   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
 #
 #   # Option 2: via gh-proxy.com
@@ -18,7 +18,6 @@
 #
 # Environment variables (all optional):
 #   GH_MIRROR   — force a specific mirror host (e.g. ghfast.top)
-#   MIRROR_LIST — space-separated list of mirrors to try (override defaults)
 #   All variables from install.sh (INSTALL_PATH, MODE, CHANNEL, VERSION, etc.)
 #
 set -euo pipefail
@@ -42,68 +41,31 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Detect the best reachable mirror (3s timeout per candidate)
+# Download a file through a mirror, with content validation.
+# Returns 0 on success, 1 on failure.
+# All log messages go to stderr to keep stdout clean.
 # ---------------------------------------------------------------------------
-pick_mirror() {
-    local mirrors="${MIRROR_LIST:-$DEFAULT_MIRRORS}"
+try_download() {
+    local mirror="$1"       # e.g. "ghfast.top" or "" (direct)
+    local raw_url="$2"      # e.g. "https://raw.githubusercontent.com/..."
+    local dest="$3"         # local file path to write to
 
-    for m in $mirrors; do
-        if curl -fsSL --connect-timeout 3 --max-time 5 -o /dev/null \
-            "https://${m}/https://github.com" 2>/dev/null; then
-            echo "$m"
-            return
-        fi
-    done
-
-    # All mirrors failed
-    echo ""
-}
-
-# ---------------------------------------------------------------------------
-# Locate the real install.sh (local repo or download via mirror)
-# ---------------------------------------------------------------------------
-find_install_sh() {
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-    # 1. Check if install.sh exists alongside this script (cloned repo)
-    if [ -f "${script_dir}/install.sh" ]; then
-        echo "${script_dir}/install.sh"
-        return
+    local url
+    if [ -n "$mirror" ]; then
+        url="https://${mirror}/${raw_url}"
+    else
+        url="$raw_url"
     fi
 
-    # 2. Download install.sh through the selected mirror
-    local tmpdir
-    tmpdir=$(mktemp -d)
-
-    local install_sh="${tmpdir}/install.sh"
-    local urls=(
-        "https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh"
-        "https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.sh"
-    )
-
-    for raw_url in "${urls[@]}"; do
-        local proxied_url
-        if [ -n "${GH_MIRROR:-}" ]; then
-            proxied_url="https://${GH_MIRROR}/${raw_url}"
-        else
-            proxied_url="$raw_url"
+    info "Trying to download from ${url}..." >&2
+    if curl -fsSL --connect-timeout 10 --max-time 30 -o "$dest" "$url" 2>/dev/null; then
+        # Verify the download is a real shell script (not an empty/error page)
+        if [ -s "$dest" ] && head -1 "$dest" 2>/dev/null | grep -qE '^#!'; then
+            return 0
         fi
-        # NOTE: redirect to stderr so these messages don't pollute
-        # the stdout capture in:  INSTALL_SH=$(find_install_sh)
-        info "Trying to download install.sh from ${proxied_url}..." >&2
-        if curl -fsSL --connect-timeout 10 --max-time 30 -o "$install_sh" "$proxied_url" 2>/dev/null; then
-            # Verify the download is a real shell script (not an empty/error page)
-            if [ -s "$install_sh" ] && head -1 "$install_sh" 2>/dev/null | grep -qE '^#!'; then
-                chmod +x "$install_sh"
-                echo "$install_sh"
-                return
-            fi
-            warn "Downloaded file is not a valid shell script, trying next source..." >&2
-        fi
-    done
-
-    error "Failed to download install.sh. Please check your network or set GH_MIRROR manually."
+        warn "Downloaded file is not a valid shell script, trying next..." >&2
+    fi
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -115,24 +77,50 @@ echo "  ║     xbot-cli Installer (China Mirror Mode)      ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo ""
 
-# Step 1: Select mirror (unless user forced one)
+# Step 1: Determine mirror
 if [ -z "${GH_MIRROR:-}" ]; then
-    info "Auto-detecting best CDN mirror..."
-    GH_MIRROR=$(pick_mirror)
-fi
-
-if [ -n "$GH_MIRROR" ]; then
-    info "Using mirror: ${CYAN}${GH_MIRROR}${NC}"
+    GH_MIRROR="ghfast.top"
+    info "Using default mirror: ${CYAN}${GH_MIRROR}${NC}"
 else
-    warn "No CDN mirror reachable — will try direct GitHub."
-    warn "If download fails, set GH_MIRROR manually:"
-    warn "  GH_MIRROR=ghfast.top bash scripts/install-cn.sh"
+    info "Using mirror: ${CYAN}${GH_MIRROR}${NC}"
 fi
 
 echo ""
 
-# Step 2: Find the real install.sh
-INSTALL_SH=$(find_install_sh)
+# Step 2: Check for local install.sh (cloned repo)
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${script_dir}/install.sh" ]; then
+    INSTALL_SH="${script_dir}/install.sh"
+    info "Using local install.sh from repository"
+else
+    # Download install.sh — try all mirrors with fallback
+    tmpdir=$(mktemp -d)
+    install_sh="${tmpdir}/install.sh"
+
+    urls=(
+        "https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh"
+        "https://raw.githubusercontent.com/CjiW/xbot/master/scripts/install.sh"
+    )
+
+    found=false
+
+    # Try the selected mirror first, then all others, then direct
+    for m in "$GH_MIRROR" $DEFAULT_MIRRORS ""; do
+        for raw_url in "${urls[@]}"; do
+            if try_download "$m" "$raw_url" "$install_sh"; then
+                GH_MIRROR="$m"  # update to the one that actually worked
+                chmod +x "$install_sh"
+                INSTALL_SH="$install_sh"
+                found=true
+                break 2
+            fi
+        done
+    done
+
+    if [ "$found" = false ]; then
+        error "Failed to download install.sh. Please check your network or set GH_MIRROR manually."
+    fi
+fi
 
 # Step 3: Run install.sh with GH_MIRROR set (it uses gh_url() internally)
 export GH_MIRROR
