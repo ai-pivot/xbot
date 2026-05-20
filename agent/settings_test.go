@@ -88,3 +88,93 @@ func TestSettingsServiceSubmitSettingsTextMode(t *testing.T) {
 		t.Error("expected error for invalid format")
 	}
 }
+
+func TestGetEffectiveSetting(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	svc := NewSettingsService(store)
+
+	// Case 1: No value in DB → returns schema default
+	got := svc.GetEffectiveSetting("cli", "user1", "auto_worktree")
+	if got != "false" {
+		t.Errorf("expected default 'false', got %q", got)
+	}
+
+	// Case 2: Value set in DB → returns DB value
+	if err := svc.SetSetting("cli", "user1", "auto_worktree", "true"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got = svc.GetEffectiveSetting("cli", "user1", "auto_worktree")
+	if got != "true" {
+		t.Errorf("expected 'true', got %q", got)
+	}
+
+	// Case 3: Different user → no DB value, returns default
+	got = svc.GetEffectiveSetting("cli", "user2", "auto_worktree")
+	if got != "false" {
+		t.Errorf("expected default 'false' for user2, got %q", got)
+	}
+
+	// Case 4: Unknown key → returns "" (no default)
+	got = svc.GetEffectiveSetting("cli", "user1", "nonexistent_key_xyz")
+	if got != "" {
+		t.Errorf("expected empty for unknown key, got %q", got)
+	}
+}
+
+func TestGetEffectiveSettingBool(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	svc := NewSettingsService(store)
+
+	// Default: "false" → bool false
+	if svc.GetEffectiveSettingBool("cli", "user1", "auto_worktree") {
+		t.Error("expected false for default auto_worktree")
+	}
+
+	// Set to "true"
+	svc.SetSetting("cli", "user1", "auto_worktree", "true")
+	if !svc.GetEffectiveSettingBool("cli", "user1", "auto_worktree") {
+		t.Error("expected true after setting auto_worktree=true")
+	}
+
+	// Various falsy values
+	for _, v := range []string{"", "false", "False", "0", "no"} {
+		svc.SetSetting("cli", "user1", "auto_worktree", v)
+		if svc.GetEffectiveSettingBool("cli", "user1", "auto_worktree") {
+			t.Errorf("expected false for value %q", v)
+		}
+	}
+
+	// Truthy: "1"
+	svc.SetSetting("cli", "user1", "auto_worktree", "1")
+	if !svc.GetEffectiveSettingBool("cli", "user1", "auto_worktree") {
+		t.Error("expected true for value '1'")
+	}
+}
+
+func TestGetEffectiveSetting_NilService(t *testing.T) {
+	var svc *SettingsService
+	// Nil service should return schema default, not panic
+	got := svc.GetEffectiveSetting("cli", "user1", "auto_worktree")
+	if got != "false" {
+		t.Errorf("expected default 'false' from nil service, got %q", got)
+	}
+	if svc.GetEffectiveSettingBool("cli", "user1", "auto_worktree") {
+		t.Error("expected false from nil service")
+	}
+}

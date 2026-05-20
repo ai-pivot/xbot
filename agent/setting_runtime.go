@@ -87,12 +87,6 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) {
 			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
 		},
-		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
-			if ag == nil {
-				return
-			}
-			ag.autoWorktree = channel.ParseSettingBool(value)
-		},
 	},
 
 	// --- Runtime state settings (config + agent side-effects) ---

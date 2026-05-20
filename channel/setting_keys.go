@@ -106,7 +106,6 @@ var AllSettingDefs = []SettingDef{
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
 	{Key: "max_context_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression (per subscription+model)", ValidValues: "any positive integer"},
 	{Key: "enable_auto_compress", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Legacy alias for context_mode=auto (deprecated)", ValidValues: "true|false"},
-	{Key: "auto_worktree", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Automatically create git worktree for each session in the same repo", ValidValues: "true|false", DefaultValue: "false"},
 	{Key: "runner_server", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
 	{Key: "runner_token", Scope: ScopeUser, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote runner (masked)", ValidValues: "any valid token"},
 	{Key: "runner_workspace", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Workspace dir on remote runner", ValidValues: "any valid path"},
@@ -145,6 +144,24 @@ func init() {
 func GetSettingDef(key string) (SettingDef, bool) {
 	d, ok := allSettingDefsMap[key]
 	return d, ok
+}
+
+// GetSettingDefaultValue returns the DefaultValue for a key from AllSettingDefs.
+// Returns "" for unknown keys or keys with no default.
+func GetSettingDefaultValue(key string) string {
+	if d, ok := allSettingDefsMap[key]; ok {
+		return d.DefaultValue
+	}
+	return ""
+}
+
+// IsUserDBSetting returns true if the key's Source is SourceUserDB
+// (stored in user_settings table, readable via settingsSvc).
+func IsUserDBSetting(key string) bool {
+	if d, ok := allSettingDefsMap[key]; ok {
+		return d.Source == SourceUserDB
+	}
+	return false
 }
 
 // SettingScopeOf returns the scope of a setting key. Returns ("unknown") for unrecognized keys.

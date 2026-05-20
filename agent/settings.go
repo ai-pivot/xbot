@@ -61,6 +61,43 @@ func (s *SettingsService) GetPermUsers(channelName, senderID string) *PermUsersC
 	return config
 }
 
+// GetEffectiveSetting returns the current effective value for a setting key.
+// This is the SINGLE correct way to read a user-scoped setting from agent code.
+//
+// Resolution order:
+//  1. user_settings DB (settingsSvc) — the live per-user value
+//  2. DefaultValue from AllSettingDefs schema — the declared default
+//
+// No fallback to config.json, Agent struct fields, or any other source.
+// This ensures the read path matches the write path (/settings panel → DB).
+func (s *SettingsService) GetEffectiveSetting(channelName, senderID, key string) string {
+	if s != nil && s.store != nil {
+		if vals, err := s.store.Get(channelName, senderID); err == nil {
+			if v, ok := vals[key]; ok {
+				return v
+			}
+		}
+	}
+	return channel.GetSettingDefaultValue(key)
+}
+
+// GetEffectiveSettingBool returns the effective value parsed as bool.
+// Returns false for "", "false", "0", "no" (case-insensitive). All other values → true.
+func (s *SettingsService) GetEffectiveSettingBool(channelName, senderID, key string) bool {
+	v := s.GetEffectiveSetting(channelName, senderID, key)
+	return ParseSettingBool(v)
+}
+
+// ParseSettingBool parses a setting value as bool.
+func ParseSettingBool(v string) bool {
+	switch strings.ToLower(v) {
+	case "", "false", "0", "no":
+		return false
+	default:
+		return true
+	}
+}
+
 // SetSetting sets a single setting value.
 func (s *SettingsService) SetSetting(channelName, senderID, key, value string) error {
 	if s == nil || s.store == nil {

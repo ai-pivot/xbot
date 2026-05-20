@@ -389,18 +389,29 @@ func TestScriptPlugin_EnvInjection(t *testing.T) {
 	dir := t.TempDir()
 	workDir := t.TempDir() // must exist — cmd.Dir = workDir
 
-	// Write a small script that prints env vars injected by runScript
-	script := filepath.Join(dir, "env.sh")
-	os.WriteFile(script, []byte(`#!/bin/bash
+	// Write a script that prints env vars injected by runScript.
+	// Cross-platform: Windows uses .bat with %VAR% syntax, Unix uses /bin/sh.
+	var scriptPath, entry string
+	if runtime.GOOS == "windows" {
+		scriptPath = filepath.Join(dir, "env.bat")
+		os.WriteFile(scriptPath, []byte(
+			"@echo WORKDIR=%XBOT_WORK_DIR% TOOL=%XBOT_TOOL_NAME% OUTPUT=%XBOT_TOOL_OUTPUT% INPUT=%XBOT_TOOL_INPUT%",
+		), 0o644)
+		entry = scriptPath
+	} else {
+		scriptPath = filepath.Join(dir, "env.sh")
+		os.WriteFile(scriptPath, []byte(`#!/bin/sh
 echo "WORKDIR=$XBOT_WORK_DIR TOOL=$XBOT_TOOL_NAME OUTPUT=$XBOT_TOOL_OUTPUT INPUT=$XBOT_TOOL_INPUT"
 `), 0o755)
+		entry = "sh " + scriptPath
+	}
 
 	m := PluginManifest{
 		ID:          "com.test.env",
 		Name:        "env-test",
 		Version:     "1.0.0",
 		Runtime:     RuntimeScript,
-		Entry:       "bash env.sh",
+		Entry:       entry,
 		Permissions: []string{PermUIContribute},
 		Contributes: &PluginContributes{
 			UI: []UISlotContribution{
