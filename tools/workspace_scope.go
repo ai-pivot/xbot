@@ -50,6 +50,12 @@ func UserMCPConfigPath(workDir, senderID string) string {
 	return filepath.Join(UserRoot(workDir, senderID), "mcp.json")
 }
 
+// UserPreferencesPath returns the per-user UI preferences JSON path:
+// {workDir}/.xbot/users/{sender}/preferences.json
+func UserPreferencesPath(workDir, senderID string) string {
+	return filepath.Join(UserRoot(workDir, senderID), "preferences.json")
+}
+
 // UserAgentsRoot returns the user-private agents directory.
 func UserAgentsRoot(workDir, senderID string) string {
 	return filepath.Join(UserWorkspaceRoot(workDir, senderID), "agents")
