@@ -332,9 +332,9 @@ download_web_dist() {
     local dist_url="https://github.com/${REPO}/releases/download/${version}/xbot-web-dist.tar.gz"
     info "Downloading Web UI frontend..."
     mkdir -p "$target_dir"
-    if curl -fSL --progress-bar "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
+    if curl -fSL "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
         info "Web UI installed to ${target_dir} ✓"
-    elif curl -fSL --progress-bar "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
+    elif curl -fSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
         warn "Web UI downloaded from fallback repo ${FALLBACK_REPO}"
         info "Web UI installed to ${target_dir} ✓"
     else
@@ -523,11 +523,11 @@ main() {
     trap 'rm -rf "$TMPDIR"' EXIT
     # Try new repo first; fall back to old repo if release not found
     # (during migration from CjiW/xbot → ai-pivot/xbot)
-    if ! curl -fSL --progress-bar -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
+    if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
         FALLBACK_URL="https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
         warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
         DOWNLOAD_URL="$FALLBACK_URL"
-        if ! curl -fSL --progress-bar -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
+        if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
             error "Download failed from both repos. Check the version and platform."
         fi
     fi
