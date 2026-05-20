@@ -17,7 +17,7 @@
 .PARAMETER Channel
     Release channel: "stable" (default), "beta", or "nightly".
 .EXAMPLE
-    irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
+    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 .EXAMPLE
     .\install.ps1 -Version v0.1.0
 .EXAMPLE
@@ -36,6 +36,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Ensure TLS 1.2+ for GitHub downloads (Windows PowerShell defaults to TLS 1.0)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
 
 $REPO = "ai-pivot/xbot"
 $FALLBACK_REPO = "CjiW/xbot"
