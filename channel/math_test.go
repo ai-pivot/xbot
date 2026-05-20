@@ -169,6 +169,61 @@ func TestLatexToUnicode_ComplexExpressions(t *testing.T) {
 		t.Errorf("Maxwell Ampere: got %q", got)
 	}
 
+	// ---- User-reported bugs (real LLM output) ----
+
+	// Bug: \left[ was rendered as ≤ft[ because \le matched first
+	got = latexToUnicode(`\left[ -\hbar^2/2m \nabla^2 + V(r) \right]`)
+	if strings.Contains(got, "≤ft") || strings.Contains(got, "\\left") {
+		t.Errorf("\\left[ bug: got %q", got)
+	}
+	if !strings.Contains(got, "[") || !strings.Contains(got, "]") {
+		t.Errorf("\\left/right brackets: got %q", got)
+	}
+
+	// Bug: \left( not rendered
+	got = latexToUnicode(`n! \sim \sqrt{2\pi n} \left( n/e \right)^n`)
+	if strings.Contains(got, "≤ft") || strings.Contains(got, "\\left") {
+		t.Errorf("\\left( bug: got %q", got)
+	}
+
+	// Bug: \mid not rendered
+	got = latexToUnicode(`P(A \mid B) = \frac{P(B \mid A) P(A)}{P(B)}`)
+	if strings.Contains(got, "{") || strings.Contains(got, "frac") {
+		t.Errorf("Bayes stray braces: got %q", got)
+	}
+	if !strings.Contains(got, "P(A") || !strings.Contains(got, "/P(B)") {
+		t.Errorf("Bayes: got %q", got)
+	}
+	// \mid should be replaced (not left as literal "mid")
+	if strings.Contains(got, "mid") {
+		t.Errorf("\\mid not replaced: got %q", got)
+	}
+
+	// Bug: \text{prime} inside _{} was subscripted to ₜₑₓₜₚᵣᵢₘₑ
+	got = latexToUnicode(`\prod_{\text{prime}}`)
+	// \text{prime} should unwrap to plain "prime" before subscript
+	// So the subscript should be ₚᵣᵢₘₑ (all letters subscripted) NOT ₜₑₓₜₚᵣᵢₘₑ
+	if strings.Contains(got, "ₜₑₓₜ") {
+		t.Errorf("\\text subscript bug: got %q, should NOT contain ₜₑₓₜ", got)
+	}
+	// Should contain subscript p (ₚ) from "prime"
+	if !strings.Contains(got, "ₚ") {
+		t.Errorf("\\text subscript missing: got %q", got)
+	}
+	// Should NOT contain literal word "text"
+	if strings.Contains(got, "text") {
+		t.Errorf("\\text not unwrapped: got %q", got)
+	}
+
+	// Bug: \\ line breaks not handled
+	got = latexToUnicode(`f(x) = \begin{cases} x^2 \\ x+1 \end{cases}`)
+	if !strings.Contains(got, "\n") {
+		t.Errorf("line break: got %q, expected newline", got)
+	}
+	if strings.Contains(got, "begin") || strings.Contains(got, "end") || strings.Contains(got, "cases") {
+		t.Errorf("env remnants: got %q", got)
+	}
+
 	// Nested frac: \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
 	got = latexToUnicode(`\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}`)
 	if !strings.Contains(got, "±") || !strings.Contains(got, "√") || !strings.Contains(got, "/2a") {

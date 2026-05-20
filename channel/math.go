@@ -86,19 +86,29 @@ func looksLikeMath(s string) bool {
 func latexToUnicode(src string) string {
 	out := src
 
-	// 1. Named Greek letters (longest-first to avoid partial match)
+	// 0. Strip LaTeX environments early: \begin{cases}, \end{aligned}, etc.
+	out = envRe.ReplaceAllString(out, "")
+
+	// 1. Line breaks: \\ → newline (before symbol replacement eats them)
+	out = lineBreakRe.ReplaceAllString(out, "\n")
+
+	// 2. Unwrap text-style commands that take a braced argument:
+	//    \text{prime} → prime,  \mathrm{x} → x
+	//    Must happen BEFORE subscript/superscript so the content is plain text.
+	out = unwrapTextCommands(out)
+
+	// 3. Named Greek letters (longest-first)
 	out = replaceLongestFirst(out, greekLetters)
 
-	// 2. Named operators (longest-first: \int before \in, \leq before \le)
-	out = replaceLongestFirst(out, operators)
+	// 4. Named operators + delimiters merged into one longest-first pass.
+	//    CRITICAL: \left[ (7 chars) must beat \le (3 chars).
+	//    When separate, operators ran first and \le ate the start of \left.
+	out = replaceLongestFirst(out, mergedOperators)
 
-	// 3. Named arrows
+	// 5. Named arrows
 	out = replaceLongestFirst(out, arrows)
 
-	// 4. Bracket delimiters
-	out = replaceLongestFirst(out, delimiters)
-
-	// 5. Whitespace commands
+	// 6. Whitespace commands
 	out = strings.ReplaceAll(out, `\,`, " ")
 	out = strings.ReplaceAll(out, `\;`, " ")
 	out = strings.ReplaceAll(out, `\quad`, "  ")
@@ -106,30 +116,30 @@ func latexToUnicode(src string) string {
 	out = strings.ReplaceAll(out, `\ `, " ")
 	out = strings.ReplaceAll(out, `~`, " ")
 
-	// 6. Structural constructs — use brace-aware parsing, NOT regex
+	// 7. Structural constructs — brace-aware parsing
 	out = renderFractions(out)
 	out = renderSquareRoots(out)
 	out = renderOver(out)
 
-	// 7. Superscripts / subscripts — brace-aware
+	// 8. Superscripts / subscripts — brace-aware
 	out = renderSuperscripts(out)
 	out = renderSubscripts(out)
 
-	// 8. Cleanup text-style commands
+	// 9. Strip remaining bare text-style commands (no braces left)
 	for _, cmd := range []string{
 		`\text`, `\mathrm`, `\mathbf`, `\mathit`, `\mathcal`,
 		`\mathbb`, `\mathfrak`, `\mathsf`, `\mathtt`,
-		`\operatorname`, `\mathrm`, `\textbf`, `\textit`,
+		`\operatorname`, `\textbf`, `\textit`,
 		`\displaystyle`, `\textstyle`, `\scriptstyle`,
 		`\limits`, `\nolimits`,
 	} {
 		out = strings.ReplaceAll(out, cmd, "")
 	}
 
-	// 9. Remove leftover braces iteratively (innermost first)
+	// 10. Remove leftover braces iteratively (innermost first)
 	out = removeBraces(out)
 
-	// 10. Remaining \cmd → strip backslash
+	// 11. Remaining \cmd → strip backslash
 	out = unknownCmdRe.ReplaceAllString(out, "$1")
 
 	return strings.TrimSpace(out)
@@ -162,6 +172,22 @@ func sortedKeysByLenDesc(m map[string]string) []string {
 // =====================================================================
 // Brace-aware structural parsers
 // =====================================================================
+
+// envRe strips \begin{xxx} and \end{xxx} environment markers.
+var envRe = regexp.MustCompile(`\\(?:begin|end)\{[^}]*}`)
+
+// lineBreakRe matches LaTeX line breaks \\ (but not \{ or other escapes).
+// Must handle \\ at end of line and mid-expression.
+var lineBreakRe = regexp.MustCompile(`\\\\\s*`)
+
+// textCmdRe matches \text{content}, \mathrm{content}, etc. — unwraps the
+// braced argument, keeping only the inner text. This prevents subscript
+// conversion from mangling words like "prime" into ₚᵣᵢₘₑ.
+var textCmdRe = regexp.MustCompile(`\\(?:text|mathrm|mathbf|mathit|mathcal|mathbb|mathfrak|mathsf|mathtt|operatorname|textbf|textit)\{([^{}]*)}`)
+
+func unwrapTextCommands(s string) string {
+	return textCmdRe.ReplaceAllString(s, "$1")
+}
 
 // extractBraced finds the content inside {…} starting at position pos.
 // Handles nested braces correctly. Returns the inner content and the
@@ -449,7 +475,18 @@ var greekLetters = map[string]string{
 	`\Phi`: "Φ", `\Psi`: "Ψ", `\Omega`: "Ω",
 }
 
-var operators = map[string]string{
+// mergedOperators = operators + delimiters merged into a single map
+// so that longest-first replacement handles \left[ (7ch) > \le (3ch).
+var mergedOperators = map[string]string{
+	// Delimiters (longer keys first implicitly via longest-first sort)
+	`\left\{`: "{", `\right\}`: "}",
+	`\left(`: "(", `\right)`: ")",
+	`\left[`: "[", `\right]`: "]",
+	`\left|`: "|", `\right|`: "|",
+	`\left.`: "", `\right.`: "",
+	`\bigl(`: "(", `\bigr)`: ")",
+	`\Bigl(`: "(", `\Bigr)`: ")",
+	// Core operators
 	`\sum`: "∑", `\prod`: "∏", `\coprod`: "∐",
 	`\oint`: "∮", `\iiint`: "∭", `\iint`: "∬", `\int`: "∫",
 	`\partial`: "∂", `\nabla`: "∇", `\infty`: "∞",
@@ -469,6 +506,10 @@ var operators = map[string]string{
 	`\aleph`: "ℵ", `\wp`: "℘", `\prime`: "′",
 	`\dagger`: "†", `\ddagger`: "‡",
 	`\cdots`: "⋯", `\ldots`: "…", `\vdots`: "⋮", `\ddots`: "⋱",
+	// Symbols previously missing
+	`\mid`: "∣", `\vert`: "|", `\Vert`: "‖",
+	`\big`: "", `\Big`: "", `\bigg`: "", `\Bigg`: "",
+	// Escaped special chars
 	`\%`: "%", `\&`: "&", `\#`: "#", `\_`: "_",
 	`\{`: "{", `\}`: "}",
 }
@@ -482,14 +523,4 @@ var arrows = map[string]string{
 	`\mapsto`: "↦", `\hookrightarrow`: "↪",
 	`\nearrow`: "↗", `\searrow`: "↘", `\swarrow`: "↙", `\nwarrow`: "↖",
 	`\rightharpoonup`: "⇀", `\leftharpoonup`: "↼",
-}
-
-var delimiters = map[string]string{
-	`\left(`: "(", `\right)`: ")",
-	`\left[`: "[", `\right]`: "]",
-	`\left\{`: "{", `\right\}`: "}",
-	`\left|`: "|", `\right|`: "|",
-	`\bigl(`: "(", `\bigr)`: ")",
-	`\Bigl(`: "(", `\Bigr)`: ")",
-	`\left.`: "", `\right.`: "",
 }
