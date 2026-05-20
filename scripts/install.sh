@@ -62,7 +62,8 @@ detect_platform() {
 
 # Resolve version based on channel.
 # For stable: uses /releases/latest (non-prerelease).
-# For nightly: lists releases, finds latest nightly-* tag.
+# For nightly: fixed tag "nightly" (CI overwrites it each merge to master).
+#   Falls back to API lookup only if the fixed tag download fails.
 # For beta: lists releases, finds latest v*-*beta* tag.
 resolve_version() {
     if [ -n "${VERSION:-}" ]; then
@@ -82,10 +83,9 @@ resolve_version() {
             fi
             ;;
         nightly)
-            tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
-            if [ -z "$tag" ]; then
-                tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${FALLBACK_REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -oE '"nightly(-[^"]*)?"' | head -1 | tr -d '"')
-            fi
+            # CI uses a fixed "nightly" tag — no API call needed.
+            # This avoids requiring api.github.com access from China.
+            tag="nightly"
             ;;
         beta)
             tag=$(curl -fsSL "$(gh_url "https://api.github.com/repos/${REPO}/releases?per_page=20")" 2>/dev/null | grep '"tag_name"' | grep -o '"v[^"]*-beta\.[0-9]*"' | head -1 | tr -d '"')
