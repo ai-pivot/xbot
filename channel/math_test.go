@@ -563,3 +563,94 @@ func TestLatexToUnicode_MatrixRendering(t *testing.T) {
 		t.Errorf("matrix should have newlines: %q", got)
 	}
 }
+
+func TestLatexToUnicode_MatrixMultiColumn(t *testing.T) {
+	src := `\begin{bmatrix}
+a_{11} & a_{12} & a_{13} \\
+a_{21} & a_{22} & a_{23} \\
+a_{31} & a_{32} & a_{33}
+\end{bmatrix}`
+	got := renderLaTeX(src)
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), got)
+	}
+	// No blank lines
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			t.Errorf("blank line at %d", i)
+		}
+	}
+	// Columns should be aligned: split by spaces, column positions match
+	// Each line has the pattern: a₁₁ <spaces> a₁₂ <spaces> a₁₃
+	// The second column (a₁₂, a₂₂, a₃₂) should start at the same display col
+	col2Start := func(line string) int {
+		// Find second group of non-space after first group
+		inFirst := false
+		spaceAfterFirst := false
+		w := 0
+		for _, r := range line {
+			if r != ' ' {
+				if spaceAfterFirst {
+					return w
+				}
+				inFirst = true
+			} else if inFirst {
+				spaceAfterFirst = true
+			}
+			w++
+		}
+		return -1
+	}
+	c0 := col2Start(lines[0])
+	c1 := col2Start(lines[1])
+	c2 := col2Start(lines[2])
+	if c0 < 0 || c1 < 0 || c2 < 0 {
+		t.Fatalf("could not find column 2 in output:\n%s", got)
+	}
+	if c1 != c0 || c2 != c0 {
+		t.Errorf("column 2 not aligned: line0=%d line1=%d line2=%d\n%s", c0, c1, c2, got)
+	}
+	// Verify no env remnants
+	if strings.Contains(got, "begin") || strings.Contains(got, "end") || strings.Contains(got, "bmatrix") {
+		t.Errorf("env remnants: %q", got)
+	}
+}
+
+func TestLatexToUnicode_FullMatrixEquation(t *testing.T) {
+	src := `\begin{bmatrix}
+a_{11} & a_{12} & a_{13} \\
+a_{21} & a_{22} & a_{23} \\
+a_{31} & a_{32} & a_{33}
+\end{bmatrix}
+\begin{bmatrix}
+x_1 \\ x_2 \\ x_3
+\end{bmatrix}
+=
+\begin{bmatrix}
+a_{11}x_1 + a_{12}x_2 + a_{13}x_3 \\
+a_{21}x_1 + a_{22}x_2 + a_{23}x_3 \\
+a_{31}x_1 + a_{32}x_2 + a_{33}x_3
+\end{bmatrix}`
+	got := renderLaTeX(src)
+	// Should produce 10 lines: 3 (matrix1) + 3 (vector) + 1 (=) + 3 (result)
+	lines := strings.Split(got, "\n")
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 lines, got %d:\n%s", len(lines), got)
+	}
+	// No blank lines
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			t.Errorf("blank line at %d", i)
+		}
+	}
+	// Matrix 3x3 columns aligned
+	// Vector lines have no & (no alignment marker)
+	// Result lines have no & (single column)
+	if !strings.Contains(lines[0], "a₁₁") || !strings.Contains(lines[0], "a₁₃") {
+		t.Errorf("matrix row 0: %q", lines[0])
+	}
+	if !strings.Contains(lines[6], "=") {
+		t.Errorf("expected = on line 6: %q", lines[6])
+	}
+}

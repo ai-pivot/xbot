@@ -86,8 +86,10 @@ func cleanSpaces(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// alignLines pads lines so content after \x00 markers aligns.
-// The parser emits \x00 for each & alignment marker.
+// alignLines pads columns so that &-separated cells align in each group.
+// The parser emits \x00 for each & alignment marker. Lines may have
+// multiple \x00 markers (matrix columns). Each column is padded to
+// the max display-width of that column across the group.
 func alignLines(s string) string {
 	if !strings.ContainsRune(s, '\x00') {
 		return s
@@ -102,28 +104,55 @@ func alignLines(s string) string {
 		for i < len(lines) && strings.ContainsRune(lines[i], '\x00') {
 			i++
 		}
-		// Find max display-width before marker in group
-		maxW := 0
-		for j := start; j < i; j++ {
-			idx := strings.IndexRune(lines[j], '\x00')
-			if idx >= 0 {
-				w := ansi.StringWidth(lines[j][:idx])
-				if w > maxW {
-					maxW = w
+		alignGroup(lines, start, i)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// alignGroup pads a contiguous group of lines [start, end) so that
+// each \x00-delimited column is aligned by display width.
+func alignGroup(lines []string, start, end int) {
+	// Split each line into columns by \x00
+	cols := make([][]string, end-start)
+	maxCols := 0
+	for j := start; j < end; j++ {
+		parts := strings.Split(lines[j], "\x00")
+		cols[j-start] = parts
+		if len(parts) > maxCols {
+			maxCols = len(parts)
+		}
+	}
+	// For each column index, find max display width
+	colWidths := make([]int, maxCols)
+	for c := 0; c < maxCols; c++ {
+		for j := range cols {
+			if c < len(cols[j]) {
+				w := ansi.StringWidth(cols[j][c])
+				if w > colWidths[c] {
+					colWidths[c] = w
 				}
 			}
 		}
-		// Pad each line to maxW
-		for j := start; j < i; j++ {
-			idx := strings.IndexRune(lines[j], '\x00')
-			if idx >= 0 {
-				w := ansi.StringWidth(lines[j][:idx])
-				pad := maxW - w
-				lines[j] = lines[j][:idx] + strings.Repeat(" ", pad) + lines[j][idx+1:]
+	}
+	// Rebuild each line with padding
+	for j := start; j < end; j++ {
+		var buf strings.Builder
+		parts := cols[j-start]
+		for c, part := range parts {
+			if c > 0 {
+				buf.WriteString(" ") // column separator space
+			}
+			buf.WriteString(part)
+			if c < len(parts)-1 {
+				// Pad to column width
+				w := ansi.StringWidth(part)
+				if w < colWidths[c] {
+					buf.WriteString(strings.Repeat(" ", colWidths[c]-w))
+				}
 			}
 		}
+		lines[j] = buf.String()
 	}
-	return strings.Join(lines, "\n")
 }
 
 // ─── Recursive-descent parser ───
@@ -323,6 +352,10 @@ func (p *parser) parseEscape() string {
 		if p.pos < len(p.input) && p.peek() == '{' {
 			p.pos++
 			p.readUntilRune('}')
+		}
+		// Consume trailing newline to avoid blank lines
+		if p.pos < len(p.input) && p.input[p.pos] == '\n' {
+			p.pos++
 		}
 		return ""
 	}
