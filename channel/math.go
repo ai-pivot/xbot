@@ -73,12 +73,17 @@ func renderLaTeX(src string) string {
 	raw := p.parseTop()
 	raw = cleanSpaces(raw)
 	raw = alignLines(raw)
+	raw = renderEnvironments(raw)
 	return strings.TrimRight(raw, "\n")
 }
 
 func cleanSpaces(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
+		// Skip ENV marker lines
+		if strings.ContainsRune(line, '\x01') {
+			continue
+		}
 		line = multiSpaceRe.ReplaceAllString(line, "  ")
 		line = strings.TrimRight(line, " \t")
 		lines[i] = line
@@ -86,22 +91,169 @@ func cleanSpaces(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// ─── Environment rendering (brackets + side-by-side) ───
+
+// envBlock represents a parsed block between ENV markers or plain text.
+type envBlock struct {
+	lines []string
+	env   string // "bmatrix", "pmatrix", "" for plain text
+}
+
+// envBrackets maps environment names to bracket pairs.
+var envBrackets = map[string][2]string{
+	"bmatrix": {"[", "]"},
+	"pmatrix": {"(", ")"},
+	"vmatrix": {"|", "|"},
+	"Vmatrix": {"‖", "‖"},
+	"Bmatrix": {"{", "}"},
+}
+
+// renderEnvironments processes ENV markers: adds brackets to matrix blocks
+// and renders adjacent blocks side-by-side.
+func renderEnvironments(s string) string {
+	if !strings.ContainsRune(s, '\x01') {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	blocks := parseBlocks(lines)
+	if len(blocks) == 0 {
+		return s
+	}
+
+	// Add brackets to env blocks
+	for i := range blocks {
+		if bk, ok := envBrackets[blocks[i].env]; ok {
+			left, right := bk[0], bk[1]
+			for j := range blocks[i].lines {
+				blocks[i].lines[j] = left + " " + blocks[i].lines[j] + " " + right
+			}
+		}
+	}
+
+	// Render all adjacent blocks side-by-side
+	return renderRow(blocks)
+}
+
+// parseBlocks splits lines into blocks using ENV markers.
+func parseBlocks(lines []string) []envBlock {
+	var blocks []envBlock
+	var current *envBlock
+
+	for _, line := range lines {
+		if strings.ContainsRune(line, '\x01') {
+			if strings.HasPrefix(line, "\x01ENV:") {
+				envName := line[strings.IndexByte(line, ':')+1:]
+				if idx := strings.IndexByte(envName, '\x02'); idx >= 0 {
+					envName = envName[:idx]
+				}
+				current = &envBlock{env: envName}
+			} else if strings.HasPrefix(line, "\x01/ENV:") {
+				if current != nil && len(current.lines) > 0 {
+					blocks = append(blocks, *current)
+				}
+				current = nil
+			}
+			continue
+		}
+		if current != nil {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				current.lines = append(current.lines, line)
+			}
+		} else if strings.TrimSpace(line) != "" {
+			blocks = append(blocks, envBlock{lines: []string{line}})
+		}
+	}
+	if current != nil && len(current.lines) > 0 {
+		blocks = append(blocks, *current)
+	}
+	return blocks
+}
+
+// renderRow renders blocks side-by-side, centering shorter blocks vertically.
+func renderRow(blocks []envBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	if len(blocks) == 1 {
+		return strings.Join(blocks[0].lines, "\n")
+	}
+
+	// Find max height
+	maxH := 0
+	for _, b := range blocks {
+		if len(b.lines) > maxH {
+			maxH = len(b.lines)
+		}
+	}
+
+	// Compute display width of each block (max line width)
+	widths := make([]int, len(blocks))
+	for i, b := range blocks {
+		for _, line := range b.lines {
+			w := ansi.StringWidth(line)
+			if w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+
+	// Pad each block vertically (center) and horizontally (to block width)
+	padded := make([][]string, len(blocks))
+	for i, b := range blocks {
+		topPad := (maxH - len(b.lines)) / 2
+		var paddedLines []string
+		blank := strings.Repeat(" ", widths[i])
+		for j := 0; j < topPad; j++ {
+			paddedLines = append(paddedLines, blank)
+		}
+		for _, line := range b.lines {
+			w := ansi.StringWidth(line)
+			if w < widths[i] {
+				line += strings.Repeat(" ", widths[i]-w)
+			}
+			paddedLines = append(paddedLines, line)
+		}
+		for j := topPad + len(b.lines); j < maxH; j++ {
+			paddedLines = append(paddedLines, blank)
+		}
+		padded[i] = paddedLines
+	}
+
+	// Interleave lines from all blocks
+	var out strings.Builder
+	for row := 0; row < maxH; row++ {
+		if row > 0 {
+			out.WriteRune('\n')
+		}
+		for col := 0; col < len(blocks); col++ {
+			out.WriteString(padded[col][row])
+			if col < len(blocks)-1 {
+				out.WriteString(" ")
+			}
+		}
+	}
+	return out.String()
+}
+
 // alignLines pads columns so that &-separated cells align in each group.
 // The parser emits \x00 for each & alignment marker. Lines may have
 // multiple \x00 markers (matrix columns). Each column is padded to
 // the max display-width of that column across the group.
+// Lines containing \x01 (ENV markers) are skipped.
 func alignLines(s string) string {
 	if !strings.ContainsRune(s, '\x00') {
 		return s
 	}
 	lines := strings.Split(s, "\n")
 	for i := 0; i < len(lines); {
-		if !strings.ContainsRune(lines[i], '\x00') {
+		// Skip lines without \x00 or with ENV markers
+		if !strings.ContainsRune(lines[i], '\x00') || strings.ContainsRune(lines[i], '\x01') {
 			i++
 			continue
 		}
 		start := i
-		for i < len(lines) && strings.ContainsRune(lines[i], '\x00') {
+		for i < len(lines) && strings.ContainsRune(lines[i], '\x00') && !strings.ContainsRune(lines[i], '\x01') {
 			i++
 		}
 		alignGroup(lines, start, i)
@@ -348,16 +500,22 @@ func (p *parser) parseEscape() string {
 		}
 		return ""
 	case "begin", "end":
+		isEnd := name == "end"
 		p.skipSpaces()
+		envName := ""
 		if p.pos < len(p.input) && p.peek() == '{' {
 			p.pos++
-			p.readUntilRune('}')
+			envName = p.readUntilRune('}')
 		}
 		// Consume trailing newline to avoid blank lines
 		if p.pos < len(p.input) && p.input[p.pos] == '\n' {
 			p.pos++
 		}
-		return ""
+		prefix := "\n\x01ENV:"
+		if isEnd {
+			prefix = "\n\x01/ENV:"
+		}
+		return prefix + envName + "\x02\n"
 	}
 
 	// --- Symbol lookup ---

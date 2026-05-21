@@ -633,24 +633,23 @@ a_{21}x_1 + a_{22}x_2 + a_{23}x_3 \\
 a_{31}x_1 + a_{32}x_2 + a_{33}x_3
 \end{bmatrix}`
 	got := renderLaTeX(src)
-	// Should produce 10 lines: 3 (matrix1) + 3 (vector) + 1 (=) + 3 (result)
+	// Side-by-side rendering: 3 lines (all matrices rendered horizontally)
 	lines := strings.Split(got, "\n")
-	if len(lines) != 10 {
-		t.Fatalf("expected 10 lines, got %d:\n%s", len(lines), got)
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (side-by-side), got %d:\n%s", len(lines), got)
 	}
-	// No blank lines
+	// All lines should have brackets
 	for i, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			t.Errorf("blank line at %d", i)
+		if !strings.Contains(line, "[") || !strings.Contains(line, "]") {
+			t.Errorf("line %d missing brackets: %q", i, line)
 		}
 	}
-	// Matrix 3x3 columns aligned
-	// Vector lines have no & (no alignment marker)
-	// Result lines have no & (single column)
-	if !strings.Contains(lines[0], "a₁₁") || !strings.Contains(lines[0], "a₁₃") {
-		t.Errorf("matrix row 0: %q", lines[0])
+	// Middle line should have =
+	if !strings.Contains(lines[1], "=") {
+		t.Errorf("middle line should have =: %q", lines[1])
 	}
-	if !strings.Contains(lines[6], "=") {
-		t.Errorf("expected = on line 6: %q", lines[6])
+	// First and third lines should NOT have =
+	if strings.Contains(lines[0], "=") || strings.Contains(lines[2], "=") {
+		t.Errorf("= should only be on middle line:\n%s", got)
 	}
 }
