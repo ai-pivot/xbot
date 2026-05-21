@@ -254,7 +254,9 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
 
           {isActive && (
             <div className="iteration-item">
-              <div className="iteration-header">#{progress.iteration}</div>
+              {progress.iteration > 0 && (
+                <div className="iteration-header">#{progress.iteration}</div>
+              )}
 
               {shouldShowCurrentThinking && (
                 <div className="iteration-block iteration-reasoning">
@@ -263,7 +265,13 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
                 </div>
               )}
 
-              {progress.phase === 'thinking' && !progress.thinking && <BouncingDots text="thinking…" />}
+              {/* Initial thinking state — show premium orb instead of plain dots */}
+              {progress.phase === 'thinking' && !progress.thinking && progress.iteration === 0 && !hasActiveTools && (
+                <ThinkingOrb />
+              )}
+
+              {/* Subsequent thinking with no content — compact dots */}
+              {progress.phase === 'thinking' && !progress.thinking && (progress.iteration > 0 || hasActiveTools) && <BouncingDots text="thinking…" />}
 
               {hasActiveTools && activeTools.map((tool, i) => (
                 <div key={`${tool.name}-${i}`} className="iteration-tool">
@@ -306,7 +314,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
               <SubAgentTree agents={progress.sub_agents} />
             </div>
           )}
-          {progress.token_usage && <TokenUsageBar tokenUsage={progress.token_usage} />}
+          {progress.token_usage && progress.token_usage.total_tokens > 0 && (progress.iteration > 0 || (progress.token_usage.completion_tokens ?? 0) > 200) && <TokenUsageBar tokenUsage={progress.token_usage} />}
           {progress.todos && progress.todos.length > 0 && <TodoList todos={progress.todos} />}
         </div>
       </div>
