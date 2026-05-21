@@ -556,6 +556,23 @@ func (n *SubAgentBgNotify) SessionKey() string { return n.Key }
 // SenderID implements BgNotification.
 func (n *SubAgentBgNotify) SenderID() string { return n.Sid }
 
+// CronFired is a background notification for cron job triggers.
+// Implements BgNotification so it flows through the same NotifyCh → bgNotifyLoop
+// → bgRunPending → drain pipeline as bg task completions.
+// This unifies cron and bg task injection: both respect the busy/idle split
+// (busy → tool message, idle → user message with immediate TUI display).
+type CronFired struct {
+	Key     string // channel:chatID for routing
+	Sid     string // original user ID that created the cron job
+	Message string // cron job message (the prompt to execute)
+}
+
+// SessionKey implements BgNotification.
+func (c *CronFired) SessionKey() string { return c.Key }
+
+// SenderID implements BgNotification.
+func (c *CronFired) SenderID() string { return c.Sid }
+
 // SendSubAgentNotify sends a subagent notification through BgTaskManager.NotifyCh.
 // Safe to call from any goroutine. Drops silently if channel is full or closed.
 func (m *BackgroundTaskManager) SendSubAgentNotify(n *SubAgentBgNotify) {
@@ -573,6 +590,22 @@ func (m *BackgroundTaskManager) SendSubAgentNotify(n *SubAgentBgNotify) {
 			"instance": n.Instance,
 			"type":     n.Type,
 		}).Warn("Bg subagent notify channel full, dropping notification")
+	}
+}
+
+// SendCronFired sends a cron fired notification through BgTaskManager.NotifyCh.
+// Safe to call from any goroutine. Drops silently if channel is full or closed.
+func (m *BackgroundTaskManager) SendCronFired(c *CronFired) {
+	if m.NotifyCh == nil {
+		return
+	}
+	defer func() {
+		recover()
+	}()
+	select {
+	case m.NotifyCh <- c:
+	default:
+		log.WithField("key", c.Key).Warn("Cron fired notify channel full, dropping notification")
 	}
 }
 

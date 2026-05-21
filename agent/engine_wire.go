@@ -372,19 +372,6 @@ func (a *Agent) buildMainRunConfig(
 	return cfg
 }
 
-// buildCronRunConfig 为 Cron 消息构建 RunConfig。
-// Cron 消息不需要自动压缩、进度通知、session 持久化。
-func (a *Agent) buildCronRunConfig(
-	_ context.Context,
-	msg bus.InboundMessage,
-	messages []llm.ChatMessage,
-) RunConfig {
-	channel, chatID, senderID := msg.Channel, msg.ChatID, msg.SenderID
-
-	cfg, _ := a.buildBaseRunConfig(channel, chatID, senderID, messages, "", senderID)
-	return cfg
-}
-
 // buildSubAgentRunConfig 为 SubAgent 构建 RunConfig。
 // SubAgent 使用独立工具集、无 session、有压缩（独立 ContextManager）、无进度通知。
 // Phase 2: SubAgent 通过 RunConfig 继承父 Agent 的工作区配置，

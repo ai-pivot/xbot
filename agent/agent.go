@@ -1479,12 +1479,13 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.multiSession.StartCleanupRoutine()
 
-	a.cronSch.SetInjectFunc(func(channel, chatID, senderID, content string) {
-		// Cron injects via injectBgUserMessage to ensure both TUI notification
-		// (injectCLIUserMessage) and agent processing (injectInbound) happen together.
-		// The content passed to TUI includes a ⏰ prefix for visual distinction;
-		// the content passed to agent is the raw cron message.
-		a.injectBgUserMessage(channel, chatID, senderID, content)
+	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
+		sessionKey := channel + ":" + chatID
+		a.bgTaskMgr.SendCronFired(&tools.CronFired{
+			Key:     sessionKey,
+			Sid:     senderID,
+			Message: message,
+		})
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
@@ -2038,11 +2039,6 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		msg.Content += ref.String()
 	}
 
-	// Cron 消息使用独立处理流程（不带历史上下文，不参与消息更新跟踪）
-	if msg.IsCron {
-		return a.processCronMessage(ctx, msg)
-	}
-
 	// 初始化 session 消息跟踪：清除旧的已发消息 ID，记录入站消息 ID 用于首条回复
 	key := qualifyChatID(msg.Channel, msg.ChatID)
 	a.resetSessionState(key)
@@ -2233,102 +2229,6 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	return a.handleRunOutput(ctx, msg, out, tenantSession, replyPolicy)
-}
-
-// processCronMessage 处理 cron 触发消息（不带历史上下文，使用专用系统提示词）
-func (a *Agent) processCronMessage(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	// 注入 requestID（如果 processMessage 未注入）
-	if log.RequestID(ctx) == "" {
-		ctx = log.WithRequestID(ctx, log.NewRequestID())
-	}
-
-	log.Ctx(ctx).WithFields(log.Fields{
-		"channel":   msg.Channel,
-		"chat_id":   msg.ChatID,
-		"sender_id": msg.SenderID,
-	}).Infof("Processing cron message: %s", tools.Truncate(msg.Content, 80))
-
-	// 清除旧的 session 状态，确保 cron 消息可以正常发送
-	key := qualifyChatID(msg.Channel, msg.ChatID)
-	a.resetSessionState(key)
-
-	// 使用创建者的工作区路径
-	senderID := msg.SenderID
-	workspaceRoot := a.workspaceRoot(senderID)
-	if err := a.ensureWorkspace(ctx, workspaceRoot, senderID); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to create cron user workspace")
-	}
-
-	// 构建 cron 专用消息（无历史上下文）
-	mc := NewCronMessageContext(msg.Content)
-	messages := a.cronPipeline.Run(mc)
-
-	// 运行 Agent 循环（统一 Run，cron 不需要自动压缩和进度通知）
-	cronMsg := msg
-	cronMsg.SenderID = senderID
-	cronCfg := a.buildCronRunConfig(ctx, cronMsg, messages)
-	cronOut := Run(ctx, cronCfg)
-	if cronOut.Error != nil {
-		return nil, cronOut.Error
-	}
-	finalContent := cronOut.Content
-
-	if finalContent == "" {
-		finalContent = "定时任务已执行，但无输出内容。"
-	}
-
-	// 如果工具已发送最终回复（如卡片），跳过后续文本回复
-	if _, sent := a.sessionFinalSent.Load(key); sent {
-		log.Ctx(ctx).Info("Cron: tool already sent final reply (card), skipping text reply")
-		a.persistCronMessages(ctx, msg, finalContent)
-		return nil, nil
-	}
-
-	// 持久化 cron 消息到 session（web 端用户下次进入可见）
-	a.persistCronMessages(ctx, msg, finalContent)
-
-	// 保留原始消息 ID 以支持回复模式
-	metadata := make(map[string]string)
-	if msg.Metadata != nil {
-		metadata = msg.Metadata
-	}
-
-	return &channel.OutboundMsg{
-		Channel:  msg.Channel,
-		ChatID:   msg.ChatID,
-		Content:  finalContent,
-		Metadata: metadata,
-	}, nil
-}
-
-// persistCronMessages 将 cron 消息持久化到 session，使 web 端用户下次进入时可见。
-// 对于非 web 渠道（如飞书），消息已通过 IM 平台持久化，无需额外保存。
-func (a *Agent) persistCronMessages(ctx context.Context, msg bus.InboundMessage, assistantContent string) {
-	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
-	if err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to get session for cron message persistence")
-		return
-	}
-
-	cronUserMsg := llm.NewUserMessage("[定时任务] " + msg.Content)
-	cronUserMsg.Timestamp = msg.Time
-	cronUserMsg.DisplayOnly = true
-	if err := tenantSession.AddMessage(cronUserMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to persist cron user message")
-	}
-
-	if assistantContent != "" {
-		cronAssistantMsg := llm.NewAssistantMessage(assistantContent)
-		cronAssistantMsg.DisplayOnly = true
-		if err := tenantSession.AddMessage(cronAssistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to persist cron assistant message")
-		}
-	}
-
-	log.Ctx(ctx).WithFields(log.Fields{
-		"channel": msg.Channel,
-		"chat_id": msg.ChatID,
-	}).Debug("Cron messages persisted to session")
 }
 
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
@@ -2647,7 +2547,6 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 		ChatID:    chatID,
 		Content:   content,
 		Time:      time.Now(),
-		IsCron:    false,
 		RequestID: log.NewRequestID(),
 	}
 	select {
@@ -2671,7 +2570,6 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 		ChatID:       msg.ChatID,
 		Content:      msg.Content,
 		Time:         time.Now(),
-		IsCron:       false,
 		RequestID:    log.NewRequestID(),
 		EventSource:  msg.EventSource,
 		EventTrigger: msg.EventTrigger,
@@ -2754,6 +2652,26 @@ func (a *Agent) processBgNotification(task *tools.BackgroundTask) {
 	}).Info("Bg task notification: injecting as user message")
 
 	a.injectBgUserMessage(channelName, chatID, task.SenderID(), content)
+}
+
+// processCronFiredNotification handles a cron fired notification when no Run() is active.
+// It parses the session key and injects the cron message as a user message via injectBgUserMessage.
+func (a *Agent) processCronFiredNotification(c *tools.CronFired) {
+	parts := strings.SplitN(c.SessionKey(), ":", 2)
+	if len(parts) != 2 {
+		log.WithField("session_key", c.SessionKey()).Warn("CronFired notification: invalid session key")
+		return
+	}
+	channelName, chatID := parts[0], parts[1]
+	content := fmt.Sprintf("⏰ [定时任务触发] %s", c.Message)
+
+	log.WithFields(log.Fields{
+		"channel": channelName,
+		"chat_id": chatID,
+		"message": tools.Truncate(c.Message, 80),
+	}).Info("CronFired notification: injecting as user message")
+
+	a.injectBgUserMessage(channelName, chatID, c.SenderID(), content)
 }
 
 // processSubAgentBgNotification handles a bg subagent notification when no Run() is active.
