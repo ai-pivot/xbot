@@ -59,8 +59,8 @@ interface ProgressPanelProps {
 
 function SubAgentIcon({ status }: { status: string }) {
   switch (status) {
-    case 'done': return <span className="text-green-400">✅</span>
-    case 'error': return <span className="text-red-400">❌</span>
+    case 'done': return <span>✅</span>
+    case 'error': return <span>❌</span>
     case 'pending': return <span className="subagent-pulse">⏳</span>
     default: return <span className="subagent-spin">🔄</span>
   }
@@ -76,30 +76,18 @@ function SubAgentNode({ node, depth = 0 }: { node: WsSubAgent; depth?: number })
     <div className="subagent-node" style={{ marginLeft: depth > 0 ? '16px' : 0 }}>
       <div
         className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-colors ${
-          isRunning
-            ? 'subagent-node-running'
-            : isPending
-              ? 'subagent-node-pending'
-              : 'hover:bg-slate-700/30'
+          isRunning ? 'subagent-node-running' : isPending ? 'subagent-node-pending' : 'subagent-node-idle'
         }`}
         onClick={() => hasChildren && setExpanded(!expanded)}
       >
         <SubAgentIcon status={node.status} />
-        <span className="font-medium text-xs text-slate-200 flex-shrink-0">{node.role}</span>
-        {node.desc && (
-          <span className="text-[11px] text-slate-400 truncate flex-1">{node.desc}</span>
-        )}
-        {hasChildren && (
-          <span className={`text-slate-500 text-xs transition-transform ${expanded ? 'rotate-90' : ''}`}>
-            ▸
-          </span>
-        )}
+        <span className="subagent-role">{node.role}</span>
+        {node.desc && <span className="subagent-desc">{node.desc}</span>}
+        {hasChildren && <span className={`subagent-chevron ${expanded ? 'subagent-chevron-open' : ''}`}>▸</span>}
       </div>
       {expanded && hasChildren && (
         <div className="mt-0.5">
-          {node.children!.map((child, i) => (
-            <SubAgentNode key={`${child.role}-${i}`} node={child} depth={depth + 1} />
-          ))}
+          {node.children!.map((child, i) => <SubAgentNode key={`${child.role}-${i}`} node={child} depth={depth + 1} />)}
         </div>
       )}
     </div>
@@ -110,9 +98,7 @@ export function SubAgentTree({ agents }: { agents: WsSubAgent[] }) {
   if (!agents || agents.length === 0) return null
   return (
     <div className="subagent-tree">
-      {agents.map((agent, i) => (
-        <SubAgentNode key={`${agent.role}-${i}`} node={agent} />
-      ))}
+      {agents.map((agent, i) => <SubAgentNode key={`${agent.role}-${i}`} node={agent} />)}
     </div>
   )
 }
@@ -120,27 +106,27 @@ export function SubAgentTree({ agents }: { agents: WsSubAgent[] }) {
 function ThinkingOrb() {
   const { t } = useTranslation()
   return (
-    <div className="flex items-center gap-3 px-2 py-1">
+    <div className="thinking-orb-row">
       <div className="thinking-orb">
         <div className="thinking-orb-ring thinking-orb-ring-1" />
         <div className="thinking-orb-ring thinking-orb-ring-2" />
         <div className="thinking-orb-ring thinking-orb-ring-3" />
         <div className="thinking-orb-core" />
       </div>
-      <span className="text-[11px] text-slate-500 italic animate-pulse">{t("thinking")}</span>
+      <span className="thinking-label">{t("thinking")}</span>
     </div>
   )
 }
 
 export function BouncingDots({ text }: { text?: string }) {
   return (
-    <div className="flex items-center gap-2 px-2 py-1">
+    <div className="bouncing-dots-row">
       <span className="thinking-dots">
         <span className="thinking-dot" style={{ animationDelay: '0ms' }} />
         <span className="thinking-dot" style={{ animationDelay: '160ms' }} />
         <span className="thinking-dot" style={{ animationDelay: '320ms' }} />
       </span>
-      {text && <span className="text-[11px] text-slate-500 italic">{text}</span>}
+      {text && <span className="bouncing-dots-text">{text}</span>}
     </div>
   )
 }
@@ -151,18 +137,18 @@ export const CompletedIteration = memo(function CompletedIteration({ snap }: { s
   const hasTools = (snap.tools ?? []).length > 0
   const isEmpty = !hasThinking && !hasReasoning && !hasTools
   return (
-    <div className="px-3 py-2 border-b border-slate-700/30 last:border-b-0">
-      <div className="flex items-center gap-1 text-[11px] text-slate-600/90 font-mono mb-1">#{snap.iteration}</div>
+    <div className="iteration-item">
+      <div className="iteration-header">#{snap.iteration}</div>
       {hasReasoning && (
-        <div className="px-2 py-1.5 mb-1 rounded bg-indigo-500/10 border-l-2 border-indigo-500/40">
-          <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5">💭 Reasoning</div>
-          <div className="text-xs text-indigo-300/90 whitespace-pre-wrap break-words">{snap.reasoning}</div>
+        <div className="iteration-block iteration-reasoning">
+          <div className="iteration-block-label">💭 Reasoning</div>
+          <div className="iteration-block-text">{snap.reasoning}</div>
         </div>
       )}
       {hasThinking && (
-        <div className="px-2 py-1.5 mb-1 rounded bg-amber-500/10 border-l-2 border-amber-500/40">
-          <div className="text-[10px] text-amber-400/70 font-medium mb-0.5">💡 Thinking</div>
-          <div className="text-xs text-amber-300/80 italic whitespace-pre-wrap break-words">{snap.thinking}</div>
+        <div className="iteration-block iteration-thinking">
+          <div className="iteration-block-label">💡 Thinking</div>
+          <div className="iteration-block-text italic">{snap.thinking}</div>
         </div>
       )}
       {hasTools && (
@@ -170,15 +156,13 @@ export const CompletedIteration = memo(function CompletedIteration({ snap }: { s
           {(snap.tools ?? []).map((tool, i) => {
             const icon = tool.status === 'error' ? '❌' : '✅'
             return (
-              <div key={`${snap.iteration}-${i}`} className="px-2 py-1 text-sm">
+              <div key={`${snap.iteration}-${i}`} className="iteration-tool">
                 <div className="flex items-center gap-2">
                   <span>{icon}</span>
-                  <span className="font-mono text-xs text-slate-400 flex-1 truncate">{tool.label || tool.name}</span>
-                  {tool.elapsed_ms != null && tool.elapsed_ms > 0 && <span className="text-xs text-slate-500 font-mono">{formatElapsed(tool.elapsed_ms)}</span>}
+                  <span className="iteration-tool-name">{tool.label || tool.name}</span>
+                  {tool.elapsed_ms != null && tool.elapsed_ms > 0 && <span className="iteration-tool-time">{formatElapsed(tool.elapsed_ms)}</span>}
                 </div>
-                {tool.summary && (
-                  <div className="text-[10px] text-slate-500 truncate pl-5 mt-0.5">{tool.summary}</div>
-                )}
+                {tool.summary && <div className="iteration-tool-summary">{tool.summary}</div>}
               </div>
             )
           })}
@@ -198,24 +182,12 @@ function formatTokenCount(n: number): string {
 
 function TokenUsageBar({ tokenUsage }: { tokenUsage: NonNullable<WsProgressPayload['token_usage']> }) {
   return (
-    <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] font-mono text-slate-500 border-t border-slate-700/30 mt-1">
-      <span className="flex items-center gap-1">
-        <span className="text-blue-400">in</span>
-        <span>{formatTokenCount(tokenUsage.prompt_tokens)}</span>
-      </span>
-      <span className="flex items-center gap-1">
-        <span className="text-green-400">out</span>
-        <span>{formatTokenCount(tokenUsage.completion_tokens)}</span>
-      </span>
-      <span className="flex items-center gap-1">
-        <span className="text-slate-400">total</span>
-        <span className="text-slate-300">{formatTokenCount(tokenUsage.total_tokens)}</span>
-      </span>
+    <div className="token-usage-bar">
+      <span className="token-usage-item"><span className="token-label-in">in</span> {formatTokenCount(tokenUsage.prompt_tokens)}</span>
+      <span className="token-usage-item"><span className="token-label-out">out</span> {formatTokenCount(tokenUsage.completion_tokens)}</span>
+      <span className="token-usage-item"><span className="token-label-total">total</span> <span className="token-value">{formatTokenCount(tokenUsage.total_tokens)}</span></span>
       {tokenUsage.cache_hit_tokens > 0 && (
-        <span className="flex items-center gap-1">
-          <span className="text-amber-400">cache</span>
-          <span>{formatTokenCount(tokenUsage.cache_hit_tokens)}</span>
-        </span>
+        <span className="token-usage-item"><span className="token-label-cache">cache</span> {formatTokenCount(tokenUsage.cache_hit_tokens)}</span>
       )}
     </div>
   )
@@ -227,37 +199,31 @@ function TodoList({ todos }: { todos: NonNullable<WsProgressPayload['todos']> })
   const progress = total > 0 ? (done / total) * 100 : 0
 
   return (
-    <div className="px-3 py-2 border-t border-slate-700/30">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[11px] font-medium text-slate-400">📋 TODO {done}/{total}</span>
-        <span className="text-[10px] text-slate-500">{Math.round(progress)}%</span>
+    <div className="todo-section">
+      <div className="todo-header">
+        <span className="todo-title">📋 TODO {done}/{total}</span>
+        <span className="todo-percent">{Math.round(progress)}%</span>
       </div>
-      <div className="w-full bg-slate-700/50 rounded-full h-1.5 mb-2">
-        <div
-          className="bg-gradient-to-r from-blue-500 to-green-400 h-1.5 rounded-full transition-all duration-500 ease-out"
-          style={{ width: `${progress}%` }}
-        />
+      <div className="todo-progress-track">
+        <div className="todo-progress-bar" style={{ width: `${progress}%` }} />
       </div>
-      <div className="space-y-0.5 max-h-32 overflow-y-auto">
+      <div className="todo-items">
         {todos.map(todo => (
-          <div key={todo.id} className="flex items-center gap-2 text-xs">
-            <span className={todo.done ? 'text-green-400' : 'text-slate-500'}>
-              {todo.done ? '✅' : '⬜'}
-            </span>
-            <span className={`truncate ${todo.done ? 'text-slate-500 line-through' : 'text-slate-300'}`}>
-              {todo.text}
-            </span>
+          <div key={todo.id} className={`todo-item ${todo.done ? 'todo-item-done' : ''}`}>
+            <span className="todo-check">{todo.done ? '✅' : '⬜'}</span>
+            <span className="todo-text">{todo.text}</span>
           </div>
         ))}
       </div>
     </div>
   )
 }
+
 export default function ProgressPanel({ progress, liveIterations, loading }: ProgressPanelProps) {
   if (!progress && loading) {
     return (
       <div className="flex justify-start">
-        <div className="bg-slate-800/80 border border-slate-700/50 rounded-2xl px-5 py-4 backdrop-blur-sm shadow-lg shadow-blue-500/5">
+        <div className="progress-card progress-card-thinking">
           <ThinkingOrb />
         </div>
       </div>
@@ -274,7 +240,6 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
   const seenThinkings = new Set(displayLiveIterations.map(s => (s.thinking || '').trim()).filter(Boolean))
   const shouldShowCurrentThinking = currentThinking.length > 0 && !seenThinkings.has(currentThinking)
 
-  // Track whether the current iteration shows any visible content
   const hasVisibleContent = shouldShowCurrentThinking
     || hasActiveTools
     || (progress.phase === 'thinking' && !progress.thinking)
@@ -283,28 +248,30 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
 
   return (
     <div className="flex justify-start progress-fade-in">
-      <div className={`max-w-[80%] w-full rounded-xl border overflow-hidden ${isActive ? 'border-blue-800/50 bg-slate-800/90 progress-panel-active' : 'border-slate-700 bg-slate-800'}`}>
-        <div className="divide-y divide-slate-700/30">
+      <div className={`progress-card ${isActive ? 'progress-card-active' : 'progress-card-done'}`}>
+        <div className="progress-inner">
           {displayLiveIterations.map(snap => <CompletedIteration key={snap.iteration} snap={snap} />)}
 
           {isActive && (
-            <div className="px-3 py-2">
-              <div className="flex items-center gap-1 text-[11px] text-slate-600/90 font-mono mb-1">#{progress.iteration}</div>
+            <div className="iteration-item">
+              <div className="iteration-header">#{progress.iteration}</div>
 
               {shouldShowCurrentThinking && (
-                <div className="px-2 py-1.5 mb-1 rounded bg-indigo-500/10 border-l-2 border-indigo-500/40">
-                  <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5">💭 Reasoning</div>
-                  <div className="text-xs text-indigo-300/90 whitespace-pre-wrap break-words">{progress.thinking}</div>
+                <div className="iteration-block iteration-reasoning">
+                  <div className="iteration-block-label">💭 Reasoning</div>
+                  <div className="iteration-block-text">{progress.thinking}</div>
                 </div>
               )}
 
               {progress.phase === 'thinking' && !progress.thinking && <BouncingDots text="thinking…" />}
 
               {hasActiveTools && activeTools.map((tool, i) => (
-                <div key={`${tool.name}-${i}`} className="flex items-center gap-2 px-2 py-1 text-sm">
-                  <span className="tool-pulse">⏳</span>
-                  <span className="font-mono text-xs text-slate-400 flex-1 truncate">{tool.label || tool.name}</span>
-                  {tool.elapsed_ms > 0 && <span className="text-xs text-slate-500 font-mono shrink-0">{formatElapsed(tool.elapsed_ms)}</span>}
+                <div key={`${tool.name}-${i}`} className="iteration-tool">
+                  <div className="flex items-center gap-2">
+                    <span className="tool-pulse">⏳</span>
+                    <span className="iteration-tool-name">{tool.label || tool.name}</span>
+                    {tool.elapsed_ms > 0 && <span className="iteration-tool-time">{formatElapsed(tool.elapsed_ms)}</span>}
+                  </div>
                 </div>
               ))}
 
@@ -313,40 +280,34 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
                 const last = completed.length > 0 ? completed[completed.length - 1] : null
                 if (!last) return <BouncingDots text="executing…" />
                 return (
-                  <div className="flex items-center gap-2 px-2 py-1 text-sm">
-                    <span>{last.status === 'done' ? '✅' : '❌'}</span>
-                    <span className="font-mono text-xs flex-1 truncate text-slate-400">{last.label || last.name}</span>
-                    {last.elapsed_ms != null && last.elapsed_ms > 0 && <span className="text-xs text-slate-500 font-mono shrink-0">{formatElapsed(last.elapsed_ms)}</span>}
+                  <div className="iteration-tool">
+                    <div className="flex items-center gap-2">
+                      <span>{last.status === 'done' ? '✅' : '❌'}</span>
+                      <span className="iteration-tool-name">{last.label || last.name}</span>
+                      {last.elapsed_ms != null && last.elapsed_ms > 0 && <span className="iteration-tool-time">{formatElapsed(last.elapsed_ms)}</span>}
+                    </div>
                   </div>
                 )
               })()}
 
               {['compressing', 'retrying'].includes(progress.phase) && (
-                <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-slate-500">
+                <div className="iteration-phase-text">
                   <span>{progress.phase === 'compressing' ? '📦' : '🔄'}</span>
                   <span>{progress.phase}…</span>
                 </div>
               )}
 
-              {/* Catch-all: nothing matched above → show animated dots */}
               {!hasVisibleContent && <BouncingDots />}
             </div>
           )}
 
-          {/* SubAgent tree */}
           {progress.sub_agents && progress.sub_agents.length > 0 && (
-            <div className="px-3 py-2 border-t border-slate-700/30">
+            <div className="progress-sub-section">
               <SubAgentTree agents={progress.sub_agents} />
             </div>
           )}
-          {/* Token usage */}
-          {progress.token_usage && (
-            <TokenUsageBar tokenUsage={progress.token_usage} />
-          )}
-          {/* TODO list */}
-          {progress.todos && progress.todos.length > 0 && (
-            <TodoList todos={progress.todos} />
-          )}
+          {progress.token_usage && <TokenUsageBar tokenUsage={progress.token_usage} />}
+          {progress.todos && progress.todos.length > 0 && <TodoList todos={progress.todos} />}
         </div>
       </div>
     </div>
