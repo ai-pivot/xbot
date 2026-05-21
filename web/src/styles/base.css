@@ -78,6 +78,7 @@ body {
   --xbot-bg-surface: var(--bg-secondary);
   --xbot-text-code: var(--accent);
   --xbot-bg-code: rgba(0,0,0,0.4);
+  --xbot-color-error: #dc2626;
   --xbot-bg-copy-btn: var(--bg-hover);
   --xbot-bg-copy-btn-hover: var(--bg-active);
   --xbot-img-brightness: 1;

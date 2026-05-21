@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 
 import type { ShowToastFn, Theme, FontSize, Language, UserSettings } from './shared'
-import { lsGet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS } from './shared'
+import { lsGet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS, LS_KEYS } from './shared'
 import { useTranslation } from '../../i18n'
 import { useSoundFeedback } from '../../hooks/useSoundFeedback'
 
@@ -48,6 +48,12 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
   }, [imageBrightness])
 
   const handleSave = useCallback(async (updates: Partial<UserSettings>) => {
+    // Persist each setting to localStorage so App.tsx can read it on next load
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined && LS_KEYS[key]) {
+        localStorage.setItem(LS_KEYS[key], String(value))
+      }
+    }
     onSavingChange?.(true)
     const ok = await saveSettings(updates)
     onSavingChange?.(false)
