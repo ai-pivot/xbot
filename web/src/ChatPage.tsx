@@ -1073,15 +1073,18 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         data-testid="messages-container"
       >
         {messages.length === 0 && !loading && (
-          <div className="text-center py-20 animate-fade-in select-none">
-            <div className="text-7xl mb-8 opacity-15">🤖</div>
+          <div className="text-center py-20 animate-fade-in select-none empty-state-container">
+            <div className="empty-state-icon-wrapper">
+              <div className="empty-state-icon-bg"></div>
+              <div className="empty-state-icon">🤖</div>
+            </div>
             <p className="text-xl font-semibold mb-3" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>{t('startConversation')}</p>
             <p className="text-sm mb-12" style={{ color: 'var(--text-tertiary)', maxWidth: 320, margin: '0 auto 48px' }}>{t('sendFirstMessage')}</p>
-            <div className="flex flex-col items-center gap-3" style={{ color: 'var(--text-secondary)' }}>
-              <div className="px-5 py-2.5 rounded-xl text-xs font-medium flex items-center gap-2" style={{ background: 'var(--bg-secondary)', border: '0.5px solid var(--border)' }}>
+            <div className="flex flex-col items-center gap-3">
+              <div className="empty-state-action-btn">
                <span>⌨️</span> {t("searchKbHint")}
               </div>
-              <div className="px-5 py-2.5 rounded-xl text-xs font-medium flex items-center gap-2" style={{ background: 'var(--bg-secondary)', border: '0.5px solid var(--border)' }}>
+              <div className="empty-state-action-btn">
                <span>⚡</span> {t("commandHint")}
               </div>
             </div>
