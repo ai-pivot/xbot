@@ -186,6 +186,8 @@ func hardWrapRunes(line string, maxW int) string {
 }
 
 // hardWrapSingleLine wraps a single line (no \n) at maxW columns.
+// It prefers breaking at word boundaries (spaces) and CJK character boundaries
+// over hard-cutting in the middle of a word. ANSI escape sequences are preserved.
 func hardWrapSingleLine(line string, maxW int) string {
 	if maxW <= 0 {
 		return line
@@ -193,62 +195,164 @@ func hardWrapSingleLine(line string, maxW int) string {
 	if lipgloss.Width(line) <= maxW {
 		return line
 	}
+
+	segs := tokenizeLine(line)
+
 	var lines []string
 	var buf strings.Builder
 	w := 0
-	inEscape := false
 
-	// Track active ANSI state so we can replay it on continuation lines.
-	// We record all escape sequences since the last SGR reset (\x1b[0m).
-	var ansiState strings.Builder // accumulated SGR sequences since last reset
-	haveAnsiState := false
-
-	for _, r := range line {
-		if r == '\x1b' {
-			inEscape = true
-			buf.WriteRune(r)
-			ansiState.WriteRune(r)
-			continue
-		}
-		if inEscape {
-			buf.WriteRune(r)
-			ansiState.WriteRune(r)
-			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
-				inEscape = false
-				// Detect SGR reset: \x1b[0m or \x1b[m
-				s := ansiState.String()
-				if strings.HasSuffix(s, "[0m") || strings.HasSuffix(s, "[m") {
-					ansiState.Reset()
-					haveAnsiState = false
-				} else if strings.HasSuffix(s, "m") {
-					haveAnsiState = true
+	for _, seg := range segs {
+		switch seg.kind {
+		case segANSI:
+			buf.WriteString(seg.s)
+		case segSpace:
+			// Spaces are treated like regular characters — hard-break at column boundary
+			for _, r := range seg.s {
+				rw := ansi.StringWidth(string(r))
+				if w+rw > maxW && buf.Len() > 0 {
+					lines = append(lines, buf.String())
+					buf.Reset()
+					w = 0
+					if seg.ansiState != "" {
+						buf.WriteString(seg.ansiState)
+					}
 				}
+				buf.WriteRune(r)
+				w += rw
 			}
-			continue
-		}
-		rw := ansi.StringWidth(string(r))
-		// Safety: zero-width runes don't block wrapping.
-		if rw == 0 {
-			buf.WriteRune(r)
-			continue
-		}
-
-		if w+rw > maxW {
-			// Hard break at column boundary
-			lines = append(lines, buf.String())
-			buf.Reset()
-			w = 0
-			if haveAnsiState {
-				buf.WriteString(ansiState.String())
+		case segCJK:
+			for _, r := range seg.s {
+				rw := ansi.StringWidth(string(r))
+				if w+rw > maxW && buf.Len() > 0 {
+					lines = append(lines, buf.String())
+					buf.Reset()
+					w = 0
+					if seg.ansiState != "" {
+						buf.WriteString(seg.ansiState)
+					}
+				}
+				buf.WriteRune(r)
+				w += rw
+			}
+		default: // segOther: latin, digits, punctuation — hard-break rune by rune
+			for _, r := range seg.s {
+				rw := ansi.StringWidth(string(r))
+				if w+rw > maxW && buf.Len() > 0 {
+					lines = append(lines, buf.String())
+					buf.Reset()
+					w = 0
+					if seg.ansiState != "" {
+						buf.WriteString(seg.ansiState)
+					}
+				}
+				buf.WriteRune(r)
+				w += rw
 			}
 		}
-		buf.WriteRune(r)
-		w += rw
 	}
 	if buf.Len() > 0 {
 		lines = append(lines, buf.String())
 	}
 	return strings.Join(lines, "\n")
+}
+
+// --- Line segment tokenizer for smart wrapping ---
+
+type segKind int
+
+const (
+	segANSI  segKind = iota // ANSI escape sequence (0 display width)
+	segSpace                // whitespace (spaces, tabs)
+	segCJK                  // CJK ideograph/hangul/kana — can break anywhere
+	segOther                // Latin, digits, punctuation — keep together
+)
+
+type seg struct {
+	kind      segKind
+	s         string
+	w         int // display width
+	ansiState string
+}
+
+// isCJKRune returns true for runes that allow line breaks on either side.
+func isCJKRune(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) || // Han
+		(r >= 0x3400 && r <= 0x4DBF) || // Extension A
+		(r >= 0x20000 && r <= 0x2A6DF) || // Extension B
+		(r >= 0x3040 && r <= 0x309F) || // Hiragana
+		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
+		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul syllables
+		(r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK compat ideographs
+		(r >= 0xFF01 && r <= 0xFF60) || // Fullwidth forms
+		(r >= 0x3000 && r <= 0x303F) // CJK punctuation
+}
+
+// tokenizeLine splits a line into typed segments for smart wrapping.
+func tokenizeLine(line string) []seg {
+	var segs []seg
+	var cur seg
+	var ansiState strings.Builder
+	haveAnsi := false
+	inEscape := false
+
+	flush := func() {
+		if len(cur.s) > 0 {
+			cur.w = ansi.StringWidth(cur.s)
+			if haveAnsi {
+				cur.ansiState = ansiState.String()
+			}
+			segs = append(segs, cur)
+			cur = seg{}
+		}
+	}
+
+	classify := func(r rune) segKind {
+		if r == ' ' || r == '\t' {
+			return segSpace
+		}
+		if isCJKRune(r) {
+			return segCJK
+		}
+		return segOther
+	}
+
+	for _, r := range line {
+		if r == '\x1b' {
+			if cur.kind != segANSI && cur.kind != 0 {
+				flush()
+			}
+			cur.kind = segANSI
+			cur.s += string(r)
+			ansiState.WriteRune(r)
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			cur.s += string(r)
+			ansiState.WriteRune(r)
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+				s := ansiState.String()
+				if strings.HasSuffix(s, "[0m") || strings.HasSuffix(s, "[m") {
+					ansiState.Reset()
+					haveAnsi = false
+				} else if strings.HasSuffix(s, "m") {
+					haveAnsi = true
+				}
+			}
+			continue
+		}
+		k := classify(r)
+		if k != cur.kind {
+			flush()
+		}
+		cur.kind = k
+		cur.s += string(r)
+	}
+	flush()
+	return segs
 }
 
 // Document.Margin=0 prevents misalignment inside lipgloss bubbles.
