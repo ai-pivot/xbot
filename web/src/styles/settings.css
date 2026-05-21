@@ -84,9 +84,18 @@
 .settings-content textarea {
   background: var(--bg-base) !important;
   border: 1px solid var(--border) !important;
-  border-radius: var(--radius-sm) !important;
+  border-radius: 10px !important;
   color: var(--text-primary) !important; font-size: 13px !important;
-  outline: none !important; transition: border-color 0.15s !important;
+  padding: 8px 12px !important;
+  outline: none !important; transition: border-color 0.2s, box-shadow 0.2s !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+}
+.settings-content select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  padding-right: 30px !important;
 }
 .settings-content input:focus,
 .settings-content select:focus,
@@ -98,13 +107,15 @@
 .settings-content button[type="submit"],
 .settings-content .btn-primary,
 .settings-content .save-btn {
-  background: var(--accent) !important; color: #fff !important;
+  background: linear-gradient(180deg, #5bb8ff 0%, #0055b3 100%) !important; color: #fff !important;
   border: none !important; border-radius: var(--radius-md) !important;
-  transition: filter 0.15s !important;
+  font-weight: 500 !important; letter-spacing: -0.01em !important;
+  box-shadow: 0 2px 8px rgba(0,85,179,0.25) !important;
+  transition: all 0.2s ease !important;
 }
 .settings-content button[type="submit"]:hover,
 .settings-content .btn-primary:hover,
-.settings-content .save-btn:hover { filter: brightness(1.1) !important; }
+.settings-content .save-btn:hover { box-shadow: 0 4px 16px rgba(0,85,179,0.35) !important; transform: translateY(-1px) !important; }
 
 .settings-panel h2, .settings-panel .panel-title {
   font-size: 17px !important; font-weight: 600 !important;

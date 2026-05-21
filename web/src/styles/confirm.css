@@ -87,7 +87,7 @@
 
 [data-theme="light"] .confirm-dialog-btn-cancel {
   background: #e2e8f0;
-  color: var(--xbot-border-light);
+  color: #475569;
 }
 [data-theme="light"] .confirm-dialog-btn-cancel:hover {
   background: #cbd5e1;
