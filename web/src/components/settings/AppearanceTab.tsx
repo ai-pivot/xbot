@@ -20,7 +20,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
   const { t, setLocale } = useTranslation()
   const { config: soundConfig, updateConfig: updateSoundConfig, toggleEnabled: toggleSoundEnabled } = useSoundFeedback()
 
-  // Load settings from server on mount
+  // Load settings from server on mount — sync to localStorage for next page load
   useEffect(() => {
     fetchSettings().then((s) => {
       setTheme(s.theme as Theme)
@@ -29,22 +29,37 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
       setLanguage(s.language as Language)
       const ib = s.image_brightness !== undefined ? Number(s.image_brightness) : undefined
       if (ib !== undefined && !isNaN(ib)) setImageBrightness(ib)
+      // Sync server settings → localStorage so App.tsx reads correctly on refresh
+      localStorage.setItem('xbot-theme', s.theme)
+      localStorage.setItem('xbot-font-size', s.font_size)
+      localStorage.setItem('xbot-language', s.language)
+      if (s.nickname) localStorage.setItem('xbot-nickname', s.nickname)
+      if (ib !== undefined) localStorage.setItem('xbot-image-brightness', String(ib))
     })
   }, [])
 
-  // Apply theme
+  // Apply theme + persist to localStorage so App.tsx reads it on next load
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('xbot-theme', theme)
   }, [theme])
 
-  // Apply font size
+  // Apply font size + persist
   useEffect(() => {
     document.documentElement.style.setProperty('--xbot-font-size', FONT_SIZE_MAP[fontSize])
+    localStorage.setItem('xbot-font-size', fontSize)
   }, [fontSize])
 
-  // Apply image brightness
+  // Apply language + persist
+  useEffect(() => {
+    setLocale(language)
+    localStorage.setItem('xbot-language', language)
+  }, [language, setLocale])
+
+  // Apply image brightness + persist
   useEffect(() => {
     document.documentElement.style.setProperty('--xbot-img-brightness', String(imageBrightness))
+    localStorage.setItem('xbot-image-brightness', String(imageBrightness))
   }, [imageBrightness])
 
   const handleSave = useCallback(async (updates: Partial<UserSettings>) => {

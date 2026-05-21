@@ -17,16 +17,37 @@ initWebVitals()
 
 function App() {
   const [authed, setAuthed] = useState<boolean | null>(null)
-  const { t } = useTranslation()
+  const { t, setLocale } = useTranslation()
 
   useEffect(() => {
     // Check if already logged in by trying to fetch history
     fetch('/api/history')
       .then((r) => {
         setAuthed(r.ok)
+        // Sync theme from server so it matches even if localStorage is stale
+        if (r.ok) {
+          fetch('/api/settings')
+            .then((sr) => sr.json())
+            .then((data) => {
+              if (data.ok && data.settings) {
+                const s = data.settings
+                if (s.theme && s.theme !== savedTheme) {
+                  localStorage.setItem('xbot-theme', s.theme)
+                  document.documentElement.setAttribute('data-theme', s.theme)
+                }
+                if (s.language) {
+                  localStorage.setItem('xbot-language', s.language)
+                  setLocale(s.language)
+                }
+                if (s.font_size) localStorage.setItem('xbot-font-size', s.font_size)
+                if (s.image_brightness) localStorage.setItem('xbot-image-brightness', String(s.image_brightness))
+              }
+            })
+            .catch(() => {/* ignore */})
+        }
       })
       .catch(() => setAuthed(false))
-  }, [])
+  }, [setLocale])
 
   if (authed === null) {
     const theme = savedTheme
