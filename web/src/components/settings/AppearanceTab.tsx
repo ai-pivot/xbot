@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 
 import type { ShowToastFn, Theme, FontSize, Language, UserSettings } from './shared'
-import { lsGet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS } from './shared'
+import { lsGet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS, LS_KEYS } from './shared'
 import { useTranslation } from '../../i18n'
 import { useSoundFeedback } from '../../hooks/useSoundFeedback'
 
@@ -20,7 +20,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
   const { t, setLocale } = useTranslation()
   const { config: soundConfig, updateConfig: updateSoundConfig, toggleEnabled: toggleSoundEnabled } = useSoundFeedback()
 
-  // Load settings from server on mount
+  // Load settings from server on mount — sync to localStorage for next page load
   useEffect(() => {
     fetchSettings().then((s) => {
       setTheme(s.theme as Theme)
@@ -29,25 +29,46 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
       setLanguage(s.language as Language)
       const ib = s.image_brightness !== undefined ? Number(s.image_brightness) : undefined
       if (ib !== undefined && !isNaN(ib)) setImageBrightness(ib)
+      // Sync server settings → localStorage so App.tsx reads correctly on refresh
+      localStorage.setItem('xbot-theme', s.theme)
+      localStorage.setItem('xbot-font-size', s.font_size)
+      localStorage.setItem('xbot-language', s.language)
+      if (s.nickname) localStorage.setItem('xbot-nickname', s.nickname)
+      if (ib !== undefined) localStorage.setItem('xbot-image-brightness', String(ib))
     })
   }, [])
 
-  // Apply theme
+  // Apply theme + persist to localStorage so App.tsx reads it on next load
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('xbot-theme', theme)
   }, [theme])
 
-  // Apply font size
+  // Apply font size + persist
   useEffect(() => {
     document.documentElement.style.setProperty('--xbot-font-size', FONT_SIZE_MAP[fontSize])
+    localStorage.setItem('xbot-font-size', fontSize)
   }, [fontSize])
 
-  // Apply image brightness
+  // Apply language + persist
+  useEffect(() => {
+    setLocale(language)
+    localStorage.setItem('xbot-language', language)
+  }, [language, setLocale])
+
+  // Apply image brightness + persist
   useEffect(() => {
     document.documentElement.style.setProperty('--xbot-img-brightness', String(imageBrightness))
+    localStorage.setItem('xbot-image-brightness', String(imageBrightness))
   }, [imageBrightness])
 
   const handleSave = useCallback(async (updates: Partial<UserSettings>) => {
+    // Persist each setting to localStorage so App.tsx can read it on next load
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined && LS_KEYS[key]) {
+        localStorage.setItem(LS_KEYS[key], String(value))
+      }
+    }
     onSavingChange?.(true)
     const ok = await saveSettings(updates)
     onSavingChange?.(false)
@@ -154,19 +175,21 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
             onBlur={() => {
               handleSave({ theme, font_size: fontSize, nickname, language, image_brightness: imageBrightness })
             }}
-            className="flex-1 accent-indigo-500"
+            className="flex-1"
+                style={{ accentColor: 'var(--accent)' }}
           />
-          <span className="text-xs text-slate-400 w-10 text-right">{imageBrightness.toFixed(1)}</span>
+          <span className="text-xs w-10 text-right" style={{ color: 'var(--text-tertiary)' }}>{imageBrightness.toFixed(1)}</span>
         </div>
-        <p className="text-xs text-slate-500 mt-1">{t('imageBrightnessHint')}</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>{t('imageBrightnessHint')}</p>
       </div>
 
       {/* Sound Feedback Settings */}
-      <div className="settings-item mt-4 pt-4 border-t border-slate-700/50">
+      <div className="settings-item mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="flex items-center justify-between mb-2">
           <label className="settings-label">{t('soundFeedback')}</label>
           <button
-            className={`px-3 py-1 text-xs rounded-full transition-colors ${soundConfig.enabled ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}
+            className={`px-3 py-1 text-xs rounded-full transition-colors`}
+            style={{ background: soundConfig.enabled ? 'var(--accent)' : 'var(--bg-hover)', color: soundConfig.enabled ? '#fff' : 'var(--text-tertiary)' }}
             onClick={toggleSoundEnabled}
             data-testid="sound-toggle"
           >
@@ -178,7 +201,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
           <div className="space-y-3 mt-2">
             {/* Volume */}
             <div className="flex items-center gap-3">
-              <label className="text-xs text-slate-400 w-16">{t('soundVolume')}</label>
+              <label className="text-xs w-16" style={{ color: 'var(--text-tertiary)' }}>{t('soundVolume')}</label>
               <input
                 type="range"
                 min="0.1"
@@ -186,14 +209,15 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
                 step="0.1"
                 value={soundConfig.volume}
                 onChange={(e) => updateSoundConfig({ volume: Number(e.target.value) })}
-                className="flex-1 accent-indigo-500"
+                className="flex-1"
+                style={{ accentColor: 'var(--accent)' }}
               />
-              <span className="text-xs text-slate-400 w-8 text-right">{Math.round(soundConfig.volume * 100)}%</span>
-            </div>
+              <span className="text-xs w-8 text-right" style={{ color: 'var(--text-tertiary)' }}>{Math.round(soundConfig.volume * 100)}%</span>
+             </div>
 
-            {/* Sent sound */}
-            <div className="flex items-center gap-3">
-              <label className="text-xs text-slate-400 w-16">{t('soundSent')}</label>
+             {/* Sent sound */}
+             <div className="flex items-center gap-3">
+              <label className="text-xs w-16" style={{ color: 'var(--text-tertiary)' }}>{t('soundSent')}</label>
               <select
                 className="settings-select text-xs flex-1"
                 value={soundConfig.sentSound}
@@ -208,7 +232,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
 
             {/* Receive sound */}
             <div className="flex items-center gap-3">
-              <label className="text-xs text-slate-400 w-16">{t('soundReceive')}</label>
+              <label className="text-xs w-16" style={{ color: 'var(--text-tertiary)' }}>{t('soundReceive')}</label>
               <select
                 className="settings-select text-xs flex-1"
                 value={soundConfig.receiveSound}
@@ -223,7 +247,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
 
             {/* Notify sound */}
             <div className="flex items-center gap-3">
-              <label className="text-xs text-slate-400 w-16">{t('soundNotify')}</label>
+              <label className="text-xs w-16" style={{ color: 'var(--text-tertiary)' }}>{t('soundNotify')}</label>
               <select
                 className="settings-select text-xs flex-1"
                 value={soundConfig.notifySound}
@@ -239,7 +263,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
         )}
       </div>
 
-      <div className="settings-item mt-4 pt-4 border-t border-slate-700/50">
+      <div className="settings-item mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="flex gap-2 flex-wrap">
           <button
             className="settings-btn-secondary text-xs"

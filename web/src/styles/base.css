@@ -78,6 +78,7 @@ body {
   --xbot-bg-surface: var(--bg-secondary);
   --xbot-text-code: var(--accent);
   --xbot-bg-code: rgba(0,0,0,0.4);
+  --xbot-color-error: #dc2626;
   --xbot-bg-copy-btn: var(--bg-hover);
   --xbot-bg-copy-btn-hover: var(--bg-active);
   --xbot-img-brightness: 1;
@@ -87,7 +88,7 @@ body {
 [data-theme="light"] {
   --bg-base: #ffffff; --bg-secondary: #f2f2f7; --bg-tertiary: #e5e5ea; --bg-elevated: #d1d1d6;
   --bg-hover: rgba(0,0,0,0.04); --bg-active: rgba(0,0,0,0.08);
-  --text-primary: #1d1d1f; --text-secondary: #86868b; --text-tertiary: #aeaeb2; --text-placeholder: #c7c7cc;
+  --text-primary: #1d1d1f; --text-secondary: #6e6e73; --text-tertiary: #8e8e93; --text-placeholder: #c7c7cc;
   --accent: #007aff; --accent-secondary: #5856d6; --accent-hover: #0071e3;
   --border: rgba(0,0,0,0.08); --border-hover: rgba(0,0,0,0.15);
   --glass-bg: rgba(255,255,255,0.72); --glass-border: rgba(0,0,0,0.08); --glass-blur: 40px;
@@ -136,3 +137,10 @@ body {
 .toast-error { background: rgba(255,69,58,0.15); color: #ff453a; border: 1px solid rgba(255,69,58,0.2); }
 button { font-family: inherit; }
 fieldset { border-width: 0; }
+
+/* ─── Premium Micro-interactions ─── */
+a, button, [role="button"], input, select, textarea, [tabindex] {
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.15s ease, transform 0.1s ease;
+}
+button:active { transform: scale(0.98); }
+button:disabled { transform: none; }

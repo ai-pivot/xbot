@@ -101,7 +101,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
     />
     <div className={sectionClass}>
       <div className={sectionTitleClass}>{t('presetsTitle')} Preset Commands</div>
-      <p className="text-xs text-slate-500 mb-3">
+      <p className="settings-desc mb-3">
         配置常用指令，在聊天输入框上方快速触发。最多 20 条。
       </p>
 
@@ -140,7 +140,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
               value={editingPreset.content}
               onChange={(e) => setEditingPreset({ ...editingPreset, content: e.target.value })}
             />
-            <p className="text-xs text-slate-600 mt-1">{editingPreset.content.length}/2000</p>
+            <p className="settings-muted mt-1">{editingPreset.content.length}/2000</p>
           </div>
           <div className="settings-item">
             <label className="settings-label flex items-center gap-2">
@@ -172,7 +172,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
         /* ── 列表视图 ── */
         <>
           {presetList.length === 0 ? (
-            <div className="text-center py-6 text-slate-500">
+            <div className="settings-loading">
               <p className="text-2xl mb-2">📭</p>
               <p className="text-sm">{t('noPresets')}</p>
             </div>

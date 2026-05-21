@@ -1866,6 +1866,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		preprocessed := msg.content
 		if msg.role == "assistant" {
 			preprocessed = renderMermaidBlocks(msg.content, m.chatWidth()-4)
+			preprocessed = renderMathBlocks(preprocessed, m.chatWidth()-4)
 		}
 		var err error
 		rendered, err = m.renderer.Render(preprocessed)

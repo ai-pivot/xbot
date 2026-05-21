@@ -131,12 +131,12 @@ export default function MarketTab() {
 
       {marketSubTab === 'browse' && (
         marketLoading ? (
-          <div className="text-center py-8 text-slate-500">
+          <div className="settings-loading">
             <div className="market-spinner" />
             <p className="text-xs mt-2">加载中...</p>
           </div>
         ) : marketEntries.length === 0 ? (
-          <div className="text-center py-8 text-slate-500">
+          <div className="settings-loading">
             <p className="text-3xl mb-3">📭</p>
             <p className="text-sm">暂无可用条目</p>
           </div>
@@ -170,12 +170,12 @@ export default function MarketTab() {
 
       {marketSubTab === 'mine' && (
         marketLoading ? (
-          <div className="text-center py-8 text-slate-500">
+          <div className="settings-loading">
             <div className="market-spinner" />
             <p className="text-xs mt-2">加载中...</p>
           </div>
         ) : myMarketEntries.length === 0 ? (
-          <div className="text-center py-8 text-slate-500">
+          <div className="settings-loading">
             <p className="text-3xl mb-3">📭</p>
             <p className="text-sm">暂无自己的{marketType === 'skill' ? ' Skill' : ' Agent'}</p>
           </div>

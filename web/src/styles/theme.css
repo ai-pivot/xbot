@@ -82,61 +82,78 @@
 .input-bar textarea:focus {
   background: rgba(0,0,0,0.4) !important;
   outline: none !important;
-  box-shadow: none !important;
+  box-shadow: 0 0 0 2px rgba(0,122,255,0.3) !important;
 }
 .input-bar textarea::placeholder { color: var(--text-tertiary) !important; }
 
-/* ═══ SEND BUTTON — Clean circle, no glow ═══ */
+/* ═══ SEND BUTTON — Apple blue circle with depth ═══ */
 .input-bar button[type="submit"],
 .input-bar .send-btn {
-  background: #007AFF !important;
+  background: linear-gradient(180deg, #339dff 0%, #0066d6 100%) !important;
   border: none !important;
   color: #fff !important;
   width: 30px !important;
   height: 30px !important;
   border-radius: 50% !important;
-  box-shadow: none !important;
-  transition: opacity 0.15s !important;
+  box-shadow: 0 1px 3px rgba(0,102,214,0.35) !important;
+  transition: all 0.2s ease !important;
   animation: none !important;
 }
 .input-bar button[type="submit"]:hover,
-.input-bar .send-btn:hover { opacity: 0.85 !important; transform: none !important; animation: none !important; }
+.input-bar .send-btn:hover { 
+  box-shadow: 0 2px 8px rgba(0,102,214,0.45) !important;
+  transform: scale(1.05) !important;
+  animation: none !important; 
+}
 .input-bar button[type="submit"]:active,
-.input-bar .send-btn:active { opacity: 0.7 !important; }
+.input-bar .send-btn:active { opacity: 0.8 !important; transform: scale(0.95) !important; }
 .input-bar button[type="submit"]:disabled,
 .input-bar .send-btn:disabled { opacity: 0.3 !important; background: #6e6e73 !important; animation: none !important; }
 
 /* ═══ LOGIN PAGE ═══ */
 .login-container { background: #000 !important; }
 .login-card {
-  background: #1c1c1e !important;
-  border: none !important;
+  background: rgba(28,28,30,0.92) !important;
+  border: 0.5px solid rgba(255,255,255,0.1) !important;
   border-radius: var(--radius-xl) !important;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5) !important;
+  box-shadow:
+    0 0 0 0.5px rgba(255,255,255,0.05),
+    0 8px 32px rgba(0,0,0,0.3),
+    0 32px 64px rgba(0,0,0,0.2) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
   position: relative; overflow: hidden;
 }
 .login-card::before { display: none !important; }
-.login-card h1 { color: var(--text-primary) !important; -webkit-text-fill-color: unset !important; background: none !important; font-weight: 600 !important; }
+.login-card h1 { color: var(--text-primary) !important; -webkit-text-fill-color: unset !important; background: none !important; font-weight: 600 !important; letter-spacing: -0.02em !important; }
 .login-card input {
-  background: rgba(0,0,0,0.3) !important;
-  border: 0.5px solid rgba(255,255,255,0.1) !important;
+  background: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(255,255,255,0.08) !important;
   color: var(--text-primary) !important;
-  border-radius: var(--radius-sm) !important;
+  border-radius: 12px !important;
+  transition: border-color 0.25s ease, background 0.2s ease, box-shadow 0.25s ease !important;
 }
 .login-card input:focus {
-  border-color: #007AFF !important;
-  box-shadow: none !important;
+  border-color: rgba(0,122,255,0.6) !important;
+  box-shadow: 0 0 0 3.5px rgba(0,122,255,0.12) !important;
+  outline: none !important;
 }
 .login-card button[type="submit"],
 .login-card .login-btn {
-  background: #007AFF !important;
+  background: linear-gradient(180deg, #339dff 0%, #0066d6 100%) !important;
   color: #fff !important;
-  box-shadow: none !important;
-  border-radius: var(--radius-sm) !important;
-  font-weight: 500 !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 4px 16px rgba(0,102,214,0.3) !important;
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  transition: all 0.2s ease !important;
 }
 .login-card button[type="submit"]:hover,
-.login-card .login-btn:hover { opacity: 0.9 !important; filter: none !important; }
+.login-card .login-btn:hover { 
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2), 0 8px 24px rgba(0,102,214,0.4) !important;
+}
+.login-card button[type="submit"]:active,
+.login-card .login-btn:active { transform: scale(0.98) !important; }
 
 /* ═══ STATUS BADGES ═══ */
 .header-bar [class*="bg-green"] { background: rgba(48,209,88,0.15) !important; border: none !important; box-shadow: none !important; }
@@ -144,12 +161,18 @@
 .header-bar [class*="bg-red"] { background: rgba(255,69,58,0.15) !important; border: none !important; box-shadow: none !important; }
 
 /* ═══ ONBOARDING ═══ */
-.onboarding-card, .onboarding-overlay {
-  background: #1c1c1e !important;
-  border: none !important;
+/* Only style the card — overlay must keep position:fixed from onboarding.css */
+.onboarding-card {
+  background: rgba(28,28,30,0.95) !important;
+  border: 0.5px solid rgba(255,255,255,0.1) !important;
   border-radius: var(--radius-xl) !important;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5) !important;
-  position: relative; overflow: hidden;
+  box-shadow:
+    0 0 0 0.5px rgba(255,255,255,0.06),
+    0 8px 32px rgba(0,0,0,0.4),
+    0 32px 64px rgba(0,0,0,0.3) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+  overflow: hidden;
 }
 .onboarding-card::before { display: none !important; }
 
@@ -202,6 +225,7 @@
 }
 [data-theme="light"] .input-bar textarea:focus {
   background: rgba(0,0,0,0.06) !important;
+  box-shadow: 0 0 0 2px rgba(0,122,255,0.2) !important;
 }
 [data-theme="light"] .user-msg {
   background: #007AFF !important;
@@ -218,15 +242,25 @@
   border-color: rgba(0,0,0,0.06) !important;
 }
 /* Login */
-[data-theme="light"] .login-container { background: #f5f5f7 !important; }
+[data-theme="light"] .login-container { background: linear-gradient(135deg, #dfe6f0 0%, #f2f2f7 50%, #e8e8f0 100%) !important; }
 [data-theme="light"] .login-card {
-  background: #ffffff !important;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.1) !important;
+  background: rgba(255,255,255,0.82) !important;
+  border: 0.5px solid rgba(0,0,0,0.06) !important;
+  box-shadow:
+    0 0 0 0.5px rgba(0,0,0,0.03),
+    0 8px 32px rgba(0,0,0,0.06),
+    0 32px 64px rgba(0,0,0,0.04) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
 }
 [data-theme="light"] .login-card input {
   background: rgba(0,0,0,0.03) !important;
   border-color: rgba(0,0,0,0.1) !important;
   color: var(--text-primary) !important;
+}
+[data-theme="light"] .login-card button[type="submit"] {
+  background: linear-gradient(180deg, #339dff 0%, #0066d6 100%) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 4px 16px rgba(0,102,214,0.25) !important;
 }
 /* Status badges */
 [data-theme="light"] .header-bar [class*="bg-green"] { background: rgba(48,209,88,0.12) !important; }
@@ -248,12 +282,86 @@
 /* Scrollbar */
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12) !important; }
 [data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2) !important; }
-/* Onboarding — override the !important dark bg from theme.css */
-[data-theme="light"] .onboarding-card,
-[data-theme="light"] .onboarding-overlay {
-  background: rgba(255,255,255,0.95) !important;
-  border-color: rgba(0,0,0,0.08) !important;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.1) !important;
+/* Onboarding — only style the card, keep overlay fixed */
+[data-theme="light"] .onboarding-card {
+  background: rgba(255,255,255,0.85) !important;
+  border: 0.5px solid rgba(0,0,0,0.08) !important;
+  box-shadow:
+    0 0 0 0.5px rgba(0,0,0,0.03),
+    0 8px 32px rgba(0,0,0,0.06),
+    0 32px 64px rgba(0,0,0,0.04) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
 }
 [data-theme="light"] .onboarding-step-title { color: #1d1d1f !important; }
 [data-theme="light"] .onboarding-step-desc { color: #86868b !important; }
+
+/* ═══ EMPTY STATE — Premium 10/10 ═══ */
+.empty-state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-top: 10vh;
+}
+.empty-state-icon-wrapper {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin-bottom: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.empty-state-icon-bg {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 40%, rgba(0,122,255,0.12) 0%, rgba(0,122,255,0.04) 50%, transparent 70%);
+  animation: empty-icon-breathe 4s ease-in-out infinite;
+}
+.empty-state-icon {
+  position: relative;
+  font-size: 56px;
+  line-height: 1;
+  opacity: 0.7;
+  z-index: 1;
+  filter: drop-shadow(0 0 12px rgba(0,122,255,0.3));
+}
+.empty-state-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 0.5px solid var(--border);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.empty-state-action-btn:hover {
+  background: var(--bg-tertiary, var(--bg-secondary));
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(0,122,255,0.12);
+  color: var(--text-primary);
+}
+
+@keyframes empty-icon-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.8; }
+}
+
+[data-theme="light"] .empty-state-icon-bg {
+  background: radial-gradient(circle at 40% 40%, rgba(0,122,255,0.08) 0%, rgba(0,122,255,0.02) 50%, transparent 70%);
+}
+[data-theme="light"] .empty-state-icon {
+  opacity: 0.45;
+}
+[data-theme="light"] .empty-state-action-btn:hover {
+  box-shadow: 0 2px 12px rgba(0,122,255,0.08);
+}

@@ -50,7 +50,7 @@ export default function SessionsTab() {
   return (
     <div className={sectionClass}>
       <div className={sectionTitleClass}>{t("chatRooms")}</div>
-      <p className="text-xs text-slate-500 mb-3">
+      <p className="settings-desc mb-3">
         所有对话都是 ChatRoom — 人↔Agent、Agent↔Agent 统一管理。
       </p>
 
@@ -75,54 +75,45 @@ export default function SessionsTab() {
       {selectedSession ? (
         /* ── 查看 ChatRoom 消息 ── */
         <div>
-          <div className="flex items-center gap-2 mb-3 p-2 rounded-lg bg-slate-800/50">
-            <span className={`text-xs px-1.5 py-0.5 rounded ${
-              selectedSession.type === 'main'
-                ? 'bg-emerald-900/50 text-emerald-400'
-                : 'bg-indigo-900/50 text-indigo-400'
-            }`}>
+          <div className="settings-session-card">
+            <span className="settings-badge" style={selectedSession.type === 'main' ? { background: 'rgba(34,197,94,0.15)', color: '#16a34a' } : { background: 'rgba(99,102,241,0.15)', color: '#6366f1' }}>
               {selectedSession.type === 'main' ? '👤 主会话' : '🤖 Agent'}
             </span>
-            <span className="text-sm font-medium text-slate-200">
+            <span className="settings-value" style={{ fontSize: 14 }}>
               {selectedSession.label}
             </span>
             {selectedSession.members && (
-              <span className="text-xs text-slate-500">
+              <span className="settings-muted">
                 {selectedSession.members}
               </span>
             )}
             {selectedSession.type !== 'main' && (
-              <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${
-                selectedSession.running
-                  ? 'bg-green-900/50 text-green-400'
-                  : 'bg-slate-700 text-slate-400'
-              }`}>
+              <span className={`settings-badge ml-auto ${selectedSession.running ? 'settings-badge-active' : 'settings-badge-inactive'}`}>
                 {selectedSession.running ? '运行中' : '已完成'}
               </span>
             )}
           </div>
 
           {sessionMessagesLoading ? (
-            <div className="text-center py-4 text-slate-500 text-sm">{t('loadingDots')}</div>
+            <div className="settings-loading" style={{ padding: '16px 0' }}>{t('loadingDots')}</div>
           ) : sessionMessages.length === 0 ? (
-            <div className="text-center py-4 text-slate-500 text-sm">{t('noMessages')}</div>
+            <div className="settings-loading" style={{ padding: '16px 0' }}>{t('noMessages')}</div>
           ) : (
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {sessionMessages.map((msg, i) => (
                 <div
                   key={i}
-                  className={`p-2 rounded-lg text-sm ${
-                    msg.role === 'user'
-                      ? 'bg-blue-900/20 border-l-2 border-blue-500 ml-4'
-                      : msg.role === 'system'
-                      ? 'bg-yellow-900/20 border-l-2 border-yellow-500 mr-4 text-xs'
-                      : 'bg-slate-800/50 border-l-2 border-indigo-500 mr-4'
-                  }`}
+                  className="settings-session-item"
+                  style={{
+                    borderLeftColor: msg.role === 'user' ? '#3b82f6' : msg.role === 'system' ? '#eab308' : '#6366f1',
+                    marginLeft: msg.role === 'user' ? '16px' : '0',
+                    marginRight: msg.role !== 'user' ? '16px' : '0',
+                  }}
                 >
-                  <div className="text-xs text-slate-500 mb-1">
+                  <div className="settings-muted mb-1">
                     {msg.role === 'user' ? '👤 User' : msg.role === 'system' ? '⚙️ System' : '🤖 Assistant'}
                   </div>
-                  <div className="text-slate-300 whitespace-pre-wrap break-words" style={{maxHeight: '200px', overflowY: 'auto'}}>
+                  <div className="settings-value" style={{ fontSize: 13, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto' }}>
                     {msg.content}
                   </div>
                 </div>
@@ -133,48 +124,40 @@ export default function SessionsTab() {
       ) : (
         /* ── ChatRoom 列表 ── */
         sessionsLoading ? (
-          <div className="text-center py-6 text-slate-500 text-sm">{t('loadingDots')}</div>
-        ) : sessions.length === 0 ? (
-          <div className="text-center py-6 text-slate-500">
-            <p className="text-2xl mb-2">📭</p>
-            <p className="text-sm">{t('noChatRooms')}</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {sessions.map((s) => (
+           <div className="settings-loading">{t('loadingDots')}</div>
+          ) : sessions.length === 0 ? (
+           <div className="settings-loading">
+             <p className="text-2xl mb-2">📭</p>
+             <p style={{ fontSize: 14 }}>{t('noChatRooms')}</p>
+           </div>
+          ) : (
+           <div className="space-y-2">
+             {sessions.map((s) => (
               <div
                 key={s.id}
-                className="p-3 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 cursor-pointer transition-colors"
+                className="settings-list-item"
                 onClick={() => setSelectedSession(s)}
               >
                 <div className="flex items-center gap-2">
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    s.type === 'main'
-                      ? 'bg-emerald-900/50 text-emerald-400'
-                      : 'bg-indigo-900/50 text-indigo-400'
-                  }`}>
-                    {s.type === 'main' ? '👤' : '🤖'}
+                  <span className="settings-badge" style={s.type === 'main' ? { background: 'rgba(34,197,94,0.15)', color: '#16a34a' } : { background: 'rgba(99,102,241,0.15)', color: '#6366f1' }}>
+                   {s.type === 'main' ? '👤' : '🤖'}
                   </span>
-                  <span className="text-sm font-medium text-slate-200">{s.label}</span>
+                  <span className="settings-value" style={{ fontSize: 14 }}>{s.label}</span>
                   {s.members && (
-                    <span className="text-xs text-slate-500">{s.members}</span>
+                   <span className="settings-muted">{s.members}</span>
                   )}
                   {s.type !== 'main' && (
-                    <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${
-                      s.running
-                        ? 'bg-green-900/50 text-green-400'
-                        : 'bg-slate-700 text-slate-400'
-                    }`}>
-                      {s.running ? '运行中' : '已完成'}
-                    </span>
+                   <span className={`settings-badge ml-auto ${s.running ? 'settings-badge-active' : 'settings-badge-inactive'}`}>
+                     {s.running ? '运行中' : '已完成'}
+                   </span>
                   )}
                 </div>
                 {s.preview && (
-                  <div className="text-xs text-slate-500 mt-1 truncate">{s.preview}</div>
+                  <div className="settings-muted mt-1 truncate">{s.preview}</div>
                 )}
               </div>
-            ))}
-          </div>
+             ))}
+           </div>
         )
       )}
     </div>

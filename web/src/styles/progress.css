@@ -1,254 +1,391 @@
 /* ========================================================================== */
-/* SubAgent Tree Styles                                                      */
+/* Progress Panel — Premium Apple Style                                        */
 /* ========================================================================== */
 
-/* ========================================================================== */
-/* SubAgent Tree Styles                                                       */
-/* ========================================================================== */
-
-@keyframes subagent-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+/* ---- Card ---- */
+.progress-card {
+  max-width: 80%;
+  width: 100%;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+.progress-card-thinking {
+  border-radius: 20px;
+  padding: 20px 24px;
+  border-color: rgba(0, 122, 255, 0.2);
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.04) 0%, var(--bg-secondary) 100%) !important;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 122, 255, 0.08),
+    0 4px 20px rgba(0, 0, 0, 0.12),
+    0 12px 40px rgba(0, 122, 255, 0.06);
+}
+.progress-card-active {
+  border-color: rgba(0, 122, 255, 0.25);
+  box-shadow: 0 4px 20px rgba(0, 122, 255, 0.06);
+  animation: progress-card-pulse 2.5s ease-in-out infinite;
+}
+.progress-card-done {
+  opacity: 0.85;
 }
 
-@keyframes subagent-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+@keyframes progress-card-pulse {
+  0%, 100% { border-color: rgba(0, 122, 255, 0.2); box-shadow: 0 4px 20px rgba(0, 122, 255, 0.04); }
+  50% { border-color: rgba(0, 122, 255, 0.4); box-shadow: 0 4px 24px rgba(0, 122, 255, 0.1); }
 }
 
-.subagent-pulse {
-  animation: subagent-pulse 1.5s ease-in-out infinite;
-  display: inline-block;
-}
-
-.subagent-spin {
-  animation: subagent-spin 2s linear infinite;
-  display: inline-block;
-}
-
-.subagent-tree {
+.progress-inner {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+}
+.progress-inner > .iteration-item { border-bottom: 0.5px solid var(--border); }
+.progress-inner > .iteration-item:last-child { border-bottom: none; }
+
+/* ---- Iteration ---- */
+.iteration-item {
+  padding: 10px 14px;
+}
+.iteration-header {
+  font-size: 11px;
+  font-family: 'SF Mono', ui-monospace, monospace;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+  opacity: 0.7;
 }
 
-.subagent-node {
-  position: relative;
+/* Reasoning/Thinking blocks */
+.iteration-block {
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  border-left: 2.5px solid;
+}
+.iteration-reasoning {
+  background: rgba(88, 86, 214, 0.08);
+  border-left-color: rgba(88, 86, 214, 0.5);
+}
+.iteration-thinking {
+  background: rgba(255, 159, 10, 0.06);
+  border-left-color: rgba(255, 159, 10, 0.5);
+}
+.iteration-block-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-bottom: 3px;
+}
+.iteration-reasoning .iteration-block-label { color: rgba(88, 86, 214, 0.7); }
+.iteration-thinking .iteration-block-label { color: rgba(255, 159, 10, 0.7); }
+.iteration-block-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.iteration-block-text.italic { font-style: italic; }
+
+/* Tool rows */
+.iteration-tool {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.iteration-tool-name {
+  font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.iteration-tool-time {
+  font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.iteration-tool-summary {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding-left: 20px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.subagent-node-running {
-  background: rgba(59, 130, 246, 0.08);
-  border-left: 2px solid rgba(59, 130, 246, 0.4);
+/* Phase text (compressing/retrying) */
+.iteration-phase-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
 
-.subagent-node-pending {
-  background: rgba(148, 163, 184, 0.05);
-  border-left: 2px solid rgba(148, 163, 184, 0.3);
+/* ---- Thinking Orb & Dots ---- */
+.thinking-orb-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
 }
-
-/* ========================================================================== */
-/* SubAgent Animations                                                       */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/* SubAgent Animations                                                         */
-/* ========================================================================== */
-
-.subagent-spin {
-  display: inline-block;
-  animation: subagent-rotate 2s linear infinite;
+.thinking-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  animation: thinking-label-pulse 2s ease-in-out infinite;
 }
-
-@keyframes subagent-rotate {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.subagent-pulse {
-  display: inline-block;
-  animation: subagent-pulse-anim 1.5s ease-in-out infinite;
-}
-
-@keyframes subagent-pulse-anim {
-  0%, 100% { opacity: 0.5; }
+@keyframes thinking-label-pulse {
+  0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
 }
 
-.subagent-node-running {
-  background: rgba(59, 130, 246, 0.08);
-  border-left: 2px solid rgba(59, 130, 246, 0.4);
+.bouncing-dots-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+.bouncing-dots-text {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-style: italic;
 }
 
-.subagent-node-pending {
-  border-left: 2px solid rgba(100, 116, 139, 0.3);
+/* ---- SubAgent Tree ---- */
+.subagent-node-idle {
+  border-radius: 6px;
+  transition: background 0.15s ease;
 }
-
-/* ========================================================================== */
-/* Enhanced Thinking Animation (Orb)                                         */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/* Enhanced Thinking Animation (Orb)                                           */
-/* ========================================================================== */
-
-.thinking-orb {
-  position: relative;
-  width: 28px;
-  height: 28px;
+.subagent-node-idle:hover { background: rgba(255, 255, 255, 0.03); }
+.subagent-role {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
   flex-shrink: 0;
 }
+.subagent-desc {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.subagent-chevron {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.subagent-chevron-open { transform: rotate(90deg); }
 
+.progress-sub-section {
+  padding: 8px 14px;
+  border-top: 0.5px solid var(--border);
+}
+
+/* ---- Token Usage Bar ---- */
+.token-usage-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  font-size: 11px;
+  font-family: 'SF Mono', ui-monospace, monospace;
+  color: var(--text-tertiary);
+  border-top: 0.5px solid var(--border);
+}
+.token-usage-item { display: flex; align-items: center; gap: 3px; }
+.token-label-in { color: #5bb8ff; font-weight: 500; }
+.token-label-out { color: #30d158; font-weight: 500; }
+.token-label-total { color: var(--text-tertiary); }
+.token-label-cache { color: #ff9f0a; font-weight: 500; }
+.token-value { color: var(--text-primary); font-weight: 500; }
+
+/* ---- TODO Section ---- */
+.todo-section {
+  padding: 10px 14px;
+  border-top: 0.5px solid var(--border);
+}
+.todo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.todo-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+.todo-percent {
+  font-size: 10px;
+  font-family: 'SF Mono', ui-monospace, monospace;
+  color: var(--text-tertiary);
+}
+.todo-progress-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.todo-progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #5bb8ff 0%, #30d158 100%);
+  transition: width 0.5s ease-out;
+  box-shadow: 0 0 8px rgba(91, 184, 255, 0.3);
+}
+.todo-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 128px;
+  overflow-y: auto;
+}
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.todo-item-done .todo-text {
+  text-decoration: line-through;
+  color: var(--text-tertiary);
+}
+.todo-check { flex-shrink: 0; }
+.todo-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Thinking Orb animation — Premium 10/10 ---- */
+.thinking-orb {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
 .thinking-orb-core {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 8px;
-  height: 8px;
-  background: radial-gradient(circle, #60a5fa, #3b82f6);
+  top: 50%; left: 50%;
+  width: 14px; height: 14px;
+  margin: -7px 0 0 -7px;
+  background: radial-gradient(circle at 35% 35%, #b4dfff 0%, #5bb8ff 25%, #007AFF 55%, #003d7a 100%);
   border-radius: 50%;
-  transform: translate(-50%, -50%);
-  box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  box-shadow:
+    0 0 8px 3px rgba(91,184,255,0.7),
+    0 0 20px 6px rgba(0,122,255,0.35),
+    0 0 40px 10px rgba(0,122,255,0.12);
+  animation: orb-pulse 2s ease-in-out infinite;
 }
-
-.thinking-orb-sm .thinking-orb-core {
-  width: 6px;
-  height: 6px;
-}
-
 .thinking-orb-ring {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  top: 50%; left: 50%;
+  border: 2px solid rgba(91,184,255,0.4);
   border-radius: 50%;
-  border: 1.5px solid transparent;
-  transform: translate(-50%, -50%);
+  animation: orb-ring-expand 2.8s ease-out infinite;
+  box-shadow: 0 0 8px rgba(91,184,255,0.15);
+}
+.thinking-orb-ring-1 { width: 18px; height: 18px; margin: -9px 0 0 -9px; animation-delay: 0s; }
+.thinking-orb-ring-2 { width: 18px; height: 18px; margin: -9px 0 0 -9px; animation-delay: 0.9s; }
+.thinking-orb-ring-3 { width: 18px; height: 18px; margin: -9px 0 0 -9px; animation-delay: 1.8s; }
+
+@keyframes orb-pulse {
+  0%, 100% { opacity: 0.8; transform: scale(1); box-shadow: 0 0 6px 2px rgba(0,122,255,0.5), 0 0 16px 4px rgba(0,122,255,0.2); }
+  50% { opacity: 1; transform: scale(1.15); box-shadow: 0 0 10px 3px rgba(0,122,255,0.7), 0 0 24px 6px rgba(0,122,255,0.3); }
+}
+@keyframes orb-ring-expand {
+  0% { width: 12px; height: 12px; margin: -6px 0 0 -6px; opacity: 0.7; border-color: rgba(0,122,255,0.5); }
+  100% { width: 36px; height: 36px; margin: -18px 0 0 -18px; opacity: 0; border-color: rgba(0,122,255,0); }
 }
 
-.thinking-orb-ring-1 {
-  width: 100%;
-  height: 100%;
-  border-top-color: rgba(96, 165, 250, 0.8);
-  border-right-color: rgba(96, 165, 250, 0.3);
-  animation: orb-spin 1.2s linear infinite;
-}
-
-.thinking-orb-ring-2 {
-  width: 80%;
-  height: 80%;
-  border-bottom-color: rgba(34, 197, 94, 0.6);
-  border-left-color: rgba(34, 197, 94, 0.2);
-  animation: orb-spin 1.8s linear infinite reverse;
-}
-
-.thinking-orb-ring-3 {
-  width: 60%;
-  height: 60%;
-  border-top-color: rgba(168, 85, 247, 0.5);
-  animation: orb-spin 2.4s linear infinite;
-}
-
-@keyframes orb-spin {
-  from { transform: translate(-50%, -50%) rotate(0deg); }
-  to { transform: translate(-50%, -50%) rotate(360deg); }
-}
-
-/* ========================================================================== */
-/* Enhanced Thinking Dots                                                    */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/* Enhanced Thinking Dots                                                      */
-/* ========================================================================== */
-
+/* ---- Thinking dots animation ---- */
 .thinking-dots {
-  display: flex;
-  gap: 4px;
-  align-items: center;
+  display: inline-flex;
+  gap: 3px;
 }
-
 .thinking-dot {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: #64748b;
-  animation: dot-wave 1.4s ease-in-out infinite;
+  background: var(--accent);
+  animation: thinking-dot-bounce 1.4s ease-in-out infinite;
+}
+@keyframes thinking-dot-bounce {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1.1); }
 }
 
-@keyframes dot-wave {
-  0%, 80%, 100% {
-    transform: scale(0.6);
-    opacity: 0.4;
-  }
-  40% {
-    transform: scale(1);
-    opacity: 1;
-    background: #60a5fa;
-    box-shadow: 0 0 6px rgba(96, 165, 250, 0.5);
-  }
+/* SubAgent spinner/pulse */
+.subagent-spin { display: inline-block; animation: subagent-spin-anim 1.2s linear infinite; }
+@keyframes subagent-spin-anim { to { transform: rotate(360deg); } }
+.subagent-pulse { display: inline-block; animation: subagent-pulse-anim 1.5s ease-in-out infinite; }
+@keyframes subagent-pulse-anim {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
-
-/* ========================================================================== */
-/* Enhanced Tool Pulse Animation                                             */
-/* ========================================================================== */
-
-/* ========================================================================== */
-/* Enhanced Tool Pulse Animation                                               */
-/* ========================================================================== */
-
-.tool-pulse {
-  display: inline-block;
-  animation: tool-glow 2s ease-in-out infinite;
+.subagent-node-running {
+  background: rgba(0, 122, 255, 0.06);
+  border-radius: 6px;
 }
-
-@keyframes tool-glow {
-  0%, 100% { opacity: 0.7; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.15); box-shadow: 0 0 4px rgba(59, 130, 246, 0.3); }
+.subagent-node-pending {
+  background: rgba(255, 159, 10, 0.04);
+  border-radius: 6px;
 }
 
 /* ---- Light Theme Overrides ---- */
-
-/* Thinking orb — softer glow for light backgrounds */
+[data-theme="light"] .progress-card-active {
+  box-shadow: 0 4px 20px rgba(0, 122, 255, 0.04);
+}
+[data-theme="light"] .progress-card-thinking {
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.03) 0%, rgba(255,255,255,0.85) 100%) !important;
+  border-color: rgba(0, 122, 255, 0.12) !important;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.04),
+    0 4px 20px rgba(0, 0, 0, 0.04),
+    0 12px 40px rgba(0, 122, 255, 0.04) !important;
+}
+[data-theme="light"] .thinking-label {
+  color: #3a3a3c;
+}
 [data-theme="light"] .thinking-orb-core {
-  background: radial-gradient(circle, #3b82f6, #2563eb);
-  box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+  background: radial-gradient(circle, #7cc4ff 0%, #007AFF 60%, #004080 100%);
+  box-shadow: 0 0 6px 2px rgba(0,122,255,0.4), 0 0 14px 4px rgba(0,122,255,0.15);
 }
-[data-theme="light"] .thinking-orb-ring-1 {
-  border-top-color: rgba(59, 130, 246, 0.7);
-  border-right-color: rgba(59, 130, 246, 0.2);
+[data-theme="light"] .iteration-reasoning {
+  background: rgba(88, 86, 214, 0.04);
+  border-left-color: rgba(88, 86, 214, 0.35);
 }
-[data-theme="light"] .thinking-orb-ring-2 {
-  border-bottom-color: rgba(22, 163, 74, 0.5);
-  border-left-color: rgba(22, 163, 74, 0.15);
+[data-theme="light"] .iteration-thinking {
+  background: rgba(255, 159, 10, 0.04);
+  border-left-color: rgba(255, 159, 10, 0.35);
 }
-[data-theme="light"] .thinking-orb-ring-3 {
-  border-top-color: rgba(126, 34, 206, 0.4);
-}
+[data-theme="light"] .iteration-reasoning .iteration-block-label { color: rgba(88, 86, 214, 0.6); }
+[data-theme="light"] .iteration-thinking .iteration-block-label { color: rgba(255, 159, 10, 0.55); }
+[data-theme="light"] .subagent-node-idle:hover { background: rgba(0, 0, 0, 0.03); }
+[data-theme="light"] .subagent-node-running { background: rgba(0, 122, 255, 0.04); }
+[data-theme="light"] .subagent-node-pending { background: rgba(255, 159, 10, 0.03); }
+[data-theme="light"] .todo-progress-track { background: rgba(0, 0, 0, 0.06); }
+[data-theme="light"] .todo-progress-bar { box-shadow: 0 0 6px rgba(0, 122, 255, 0.15); }
+[data-theme="light"] .token-label-in { color: #007AFF; }
+[data-theme="light"] .token-label-out { color: #34c759; }
+[data-theme="light"] .token-label-cache { color: #ff9f0a; }
 
-[data-theme="light"] .thinking-dot {
-  background: #a8a29e;
-}
-[data-theme="light"] .thinking-dot {
-  animation-name: dot-wave-light;
-}
-@keyframes dot-wave-light {
-  0%, 80%, 100% {
-    transform: scale(0.6);
-    opacity: 0.4;
-    background: #a8a29e;
-  }
-  40% {
-    transform: scale(1);
-    opacity: 1;
-    background: #2563eb;
-    box-shadow: 0 0 4px rgba(37, 99, 235, 0.3);
-  }
-}
 
-/* SubAgent nodes */
-[data-theme="light"] .subagent-node-running {
-  background: rgba(37, 99, 235, 0.06);
-  border-left-color: rgba(37, 99, 235, 0.3);
-}
-[data-theme="light"] .subagent-node-pending {
-  border-left-color: rgba(168, 162, 158, 0.4);
-}
+/* ========================================================================== */

@@ -6,10 +6,14 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { getCodeBlockProps } from './CodeBlock'
 import Lightbox from './Lightbox'
+import type { PluggableList } from 'unified'
 
 // Pre-built plugins array for Markdown rendering
-const remarkPluginsList = [remarkGfm, remarkMath]
-const rehypePluginsList = [rehypeKatex]
+// remark-math: single-dollar inline math disabled to prevent false positives
+//   (e.g. "$景$" in Chinese text triggers KaTeX unicodeTextInMathMode warnings → infinite re-render)
+// rehype-katex: suppress strict warnings to prevent console spam causing layout thrash
+const remarkPluginsList: PluggableList = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]
+const rehypePluginsList: PluggableList = [[rehypeKatex, { strict: false, trust: false, throwOnError: false }]]
 import MessageActions from './MessageActions'
 import MessageReactions from './MessageReactions'
 import type { WsProgressPayload, IterationSnapshot } from './ProgressPanel'

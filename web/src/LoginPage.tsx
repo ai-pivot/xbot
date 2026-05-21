@@ -81,23 +81,24 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-slate-900 px-4">
+    <div className="flex items-center justify-center min-h-screen px-4 login-container" style={{ background: 'var(--bg-base)' }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">🤖 {t('appName')}</h1>
-          <p className="text-slate-400 text-sm">{t('appSubtitle')}</p>
+          <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>🤖 {t('appName')}</h1>
+          <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>{t('appSubtitle')}</p>
         </div>
 
         <form
           onSubmit={handleSubmit}
-          className="bg-slate-800 rounded-xl p-6 shadow-lg border border-slate-700"
+          className="rounded-2xl p-8 shadow-lg"
+          style={{ background: 'var(--bg-secondary)', border: '0.5px solid var(--border)' }}
         >
-          <h2 className="text-lg font-semibold text-white mb-4">
+          <h2 className="text-lg font-semibold mb-5" style={{ color: 'var(--text-primary)' }}>
             {showFeishu ? t('feishuAccountLogin') : isRegister ? t('createAccount') : t('login')}
           </h2>
 
           {error && (
-            <div className="bg-red-900/30 border border-red-800 text-red-300 text-sm rounded-lg px-3 py-2 mb-4">
+            <div className="rounded-xl px-3 py-2 mb-4 text-sm" style={{ background: 'var(--xbot-bg-danger)', border: '0.5px solid var(--xbot-border-danger)', color: 'var(--xbot-text-danger)' }}>
               {error}
             </div>
           )}
@@ -105,12 +106,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           {showFeishu ? (
             <>
               <div className="mb-4">
-                <label className="block text-sm text-slate-300 mb-1">{t('feishuUserId')}</label>
+                <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>{t('feishuUserId')}</label>
                 <input
                   type="text"
                   value={feishuUserId}
                   onChange={(e) => setFeishuUserId(e.target.value)}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded-xl px-3.5 py-3 text-sm focus:outline-none"
+                  style={{ background: 'var(--xbot-bg-input)', border: '0.5px solid var(--border)', color: 'var(--text-primary)' }}
                   placeholder={t('feishuPlaceholder')}
                   required
                   maxLength={128}
@@ -118,31 +120,33 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               </div>
 
               <div className="mb-6">
-                <label className="block text-sm text-slate-300 mb-1">{t('feishuPasswordLabel')}</label>
+                <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>{t('feishuPasswordLabel')}</label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded-xl px-3.5 py-3 text-sm focus:outline-none"
+                  style={{ background: 'var(--xbot-bg-input)', border: '0.5px solid var(--border)', color: 'var(--text-primary)' }}
                   placeholder={t('feishuPassword')}
                   required
                   maxLength={128}
                 />
               </div>
 
-              <p className="text-xs text-slate-500 mb-4">
+              <p className="text-xs mb-4" style={{ color: 'var(--text-tertiary)' }}>
                 {t('feishuBindHint')}
               </p>
             </>
           ) : (
             <>
               <div className="mb-4">
-                <label className="block text-sm text-slate-300 mb-1">{t('username')}</label>
+                <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>{t('username')}</label>
                 <input
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded-xl px-3.5 py-3 text-sm focus:outline-none"
+                  style={{ background: 'var(--xbot-bg-input)', border: '0.5px solid var(--border)', color: 'var(--text-primary)' }}
                   placeholder={t('enterUsername')}
                   required
                   maxLength={64}
@@ -150,12 +154,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               </div>
 
               <div className="mb-6">
-                <label className="block text-sm text-slate-300 mb-1">{t('password')}</label>
+                <label className="block text-sm mb-1.5" style={{ color: 'var(--text-secondary)' }}>{t('password')}</label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="w-full rounded-xl px-3.5 py-3 text-sm focus:outline-none"
+                  style={{ background: 'var(--xbot-bg-input)', border: '0.5px solid var(--border)', color: 'var(--text-primary)' }}
                   placeholder={t('enterPassword')}
                   required
                   maxLength={128}
@@ -167,30 +172,33 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 text-white font-medium py-2 rounded-lg transition-colors"
+            className="w-full font-semibold py-3 rounded-xl transition-all"
+            style={{ background: loading ? 'var(--text-placeholder)' : 'linear-gradient(180deg, #5bb8ff 0%, #0055b3 100%)', color: '#fff', boxShadow: loading ? 'none' : '0 1px 3px rgba(0,0,0,0.15), 0 4px 16px rgba(0,85,179,0.35)' }}
             aria-label={loading ? t('loading') : showFeishu ? t('feishuLogin') : isRegister ? t('register') : t('login')}
           >
             {loading ? '...' : showFeishu ? t('feishuLogin') : isRegister ? t('register') : t('login')}
           </button>
 
           {!showFeishu && !inviteOnly && (
-            <div className="mt-4 text-center">
+            <div className="mt-5 text-center">
               <button
                 type="button"
                 onClick={() => { setIsRegister(!isRegister); setError('') }}
-                className="text-sm text-blue-400 hover:text-blue-300"
+                className="text-sm transition-colors"
+                style={{ color: 'var(--accent)' }}
               >
                 {isRegister ? t('hasAccount') : t('noAccount')}
               </button>
             </div>
           )}
 
-          <div className="mt-4 text-center">
+          <div className="mt-5 text-center">
             {showFeishu ? (
               <button
                 type="button"
                 onClick={() => { setShowFeishu(false); setError('') }}
-                className="text-xs text-slate-500 hover:text-slate-400"
+                className="text-xs transition-colors"
+                style={{ color: 'var(--text-tertiary)' }}
               >
                 {t('backToPasswordLogin')}
               </button>
@@ -198,7 +206,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               <button
                 type="button"
                 onClick={() => { setShowFeishu(true); setError('') }}
-                className="text-xs text-slate-500 hover:text-slate-400"
+                className="text-xs transition-colors"
+                style={{ color: 'var(--text-tertiary)' }}
               >
                 {t('loginViaFeishu')}
               </button>

@@ -57,4 +57,6 @@
 @import "./styles/settings.css";
 @import "./styles/bookmark.css";
 @import "./styles/confirm.css";
+@import "./styles/login.css";
+@import "./styles/progress.css";
 @import "./styles/theme.css";
