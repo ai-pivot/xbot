@@ -8,8 +8,8 @@ github.com/BurntSushi/toml v1.3.2 h1:o7IhLm0Msx3BaB+n3Ag7L8EVlByGnpq14C4YWiu/gL8
 github.com/BurntSushi/toml v1.3.2/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
 github.com/Chronostasys/mermaid-ascii v0.0.0-20260416173126-a903e2a57055 h1:t5hOy3vbSmXZ+VLHIvk5RiVym82QnEoOe3qWOe38SrQ=
 github.com/Chronostasys/mermaid-ascii v0.0.0-20260416173126-a903e2a57055/go.mod h1:k0/VCoO+6S9CkqpfQA04++cjZkWLidbyW+ZgRfCGNJY=
-github.com/Chronostasys/reflow v0.3.1-0.20260521033821-f9d01d4944f2 h1:lDKdD0sCPvEqsGhxw0ji2DHGG3Rk228UVNw95lNieMA=
-github.com/Chronostasys/reflow v0.3.1-0.20260521033821-f9d01d4944f2/go.mod h1:mEMWZ0nzoGlTCHkXp5ljOWhHi1tjvtDGh7wuT1Thhsk=
+github.com/Chronostasys/reflow v0.3.1-0.20260521035225-da5ac8cc751e h1:BoK6lDLrnlp5QP3uIyy/gR1TQOETcc2zUJC4g9xMC6g=
+github.com/Chronostasys/reflow v0.3.1-0.20260521035225-da5ac8cc751e/go.mod h1:mEMWZ0nzoGlTCHkXp5ljOWhHi1tjvtDGh7wuT1Thhsk=
 github.com/JohannesKaufmann/dom v0.2.0 h1:1bragmEb19K8lHAqgFgqCpiPCFEZMTXzOIEjuxkUfLQ=
 github.com/JohannesKaufmann/dom v0.2.0/go.mod h1:57iSUl5RKric4bUkgos4zu6Xt5LMHUnw3TF1l5CbGZo=
 github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0 h1:mklaPbT4f/EiDr1Q+zPrEt9lgKAkVrIBtWf33d9GpVA=
