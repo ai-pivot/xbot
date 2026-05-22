@@ -173,7 +173,9 @@ func (s *SkillStore) refreshSkills(ctx context.Context, senderID string) ([]Skil
 
 // GetSkillsCatalog returns a formatted catalog of all available skills for the system prompt.
 // The LLM uses the Read tool to load a skill's SKILL.md when the task matches its description.
-func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string) string {
+// projectDir is the session's workspace root; if non-empty, skills under {projectDir}/.xbot/skills/
+// are scanned as an additional layer (between global and user-private).
+func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, projectDir ...string) string {
 	skills, err := s.ListSkills(ctx, senderID)
 	if err != nil {
 		log.WithError(err).Warn("Failed to list skills for catalog")
@@ -181,6 +183,16 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string) stri
 	}
 	if len(skills) == 0 {
 		return ""
+	}
+
+	// Scan project-local skills if projectDir is provided
+	var projectSkills []SkillInfo
+	pDir := ""
+	if len(projectDir) > 0 {
+		pDir = projectDir[0]
+	}
+	if pDir != "" {
+		projectSkills = s.scanProjectSkills(pDir, skills)
 	}
 
 	var sb strings.Builder
@@ -192,13 +204,68 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string) stri
 	if len(s.globalDirs) > 0 {
 		fmt.Fprintf(&sb, "**Skills 存储目录**: %s\n\n", s.globalDirs[0])
 	}
+	// 注入项目本地目录提示
+	if pDir != "" {
+		fmt.Fprintf(&sb, "**项目 Skills 目录**: %s\n\n", filepath.Join(pDir, ".xbot", "skills"))
+	}
 
 	sb.WriteString("<available_skills>\n")
 	for _, sk := range skills {
 		fmt.Fprintf(&sb, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <dir>%s</dir>\n  </skill>\n", sk.Name, sk.Description, sk.Path)
 	}
+	// Append project-local skills (not yet in the merged list)
+	for _, sk := range projectSkills {
+		fmt.Fprintf(&sb, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <dir>%s</dir>\n  </skill>\n", sk.Name, sk.Description, sk.Path)
+	}
 	sb.WriteString("</available_skills>\n")
 	return sb.String()
+}
+
+// scanProjectSkills scans {projectDir}/.xbot/skills/ for project-local skills.
+// Returns skills that are NOT already present in the existing list (avoids duplicates).
+func (s *SkillStore) scanProjectSkills(projectDir string, existing []SkillInfo) []SkillInfo {
+	projectSkillsDir := filepath.Join(projectDir, ".xbot", "skills")
+	entries, err := os.ReadDir(projectSkillsDir)
+	if err != nil {
+		return nil // directory doesn't exist — not an error
+	}
+
+	// Build set of existing names for dedup
+	existingNames := make(map[string]bool, len(existing))
+	for _, sk := range existing {
+		existingNames[sk.Name] = true
+	}
+
+	var result []SkillInfo
+	for _, e := range entries {
+		skillDir := filepath.Join(projectSkillsDir, e.Name())
+		info, err := os.Stat(skillDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		skillFile := filepath.Join(skillDir, "SKILL.md")
+		if _, err := os.Stat(skillFile); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(skillFile)
+		if err != nil {
+			continue
+		}
+		name, description := parseSkillFrontmatter(data)
+		if name == "" {
+			name = e.Name()
+		}
+		// Skip if already present from global/embedded/user
+		if existingNames[name] {
+			continue
+		}
+		result = append(result, SkillInfo{
+			Name:        name,
+			Description: description,
+			Path:        skillDir,
+		})
+	}
+	return result
 }
 
 // InvalidateCache clears the skill cache for all users, forcing a rescan on the next ListSkills call.
