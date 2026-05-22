@@ -16,11 +16,19 @@ skills/{skill-name}/
 └── assets/               # Optional: templates, config files
 ```
 
-**IMPORTANT**: Create skills under the directory shown in the system prompt's **"Skills 存储目录"** line (e.g. `/opt/xbot/.xbot/skills/`). Do NOT use the current working directory or project root — the running xbot instance only scans its configured skills directory.
+**IMPORTANT**: Skills can be created in two locations:
 
-To find the correct path, look at the system prompt section `# Available Skills` → `**Skills 存储目录**`.
+1. **Global skills** — Create under the directory shown in the system prompt's **"Skills 存储目录"** line (e.g. `~/.xbot/skills/`). These are available in ALL projects and sessions. This is the default choice for general-purpose skills.
 
-Alternatively, use `Skill(name=skill-creator, action=list_files)` to get this skill's own directory, then derive the parent as the skills root.
+2. **Project-local skills** — Create under the current project's `.xbot/skills/` directory (e.g. `<project-root>/.xbot/skills/{skill-name}/`). These are ONLY available when working inside that project. This is ideal for project-specific workflows, domain-specific skills, or team-shared skills that live alongside the code.
+
+   To determine the project root, check the system prompt's **"📂 默认工作目录"** or the **"项目 Skills 目录"** line if present.
+
+   **When to use project-local**: the skill is specific to this codebase, uses project conventions, references project files, or should be version-controlled with the project (commit the `.xbot/skills/` directory).
+
+The system prompt also shows a **"项目 Skills 目录"** line when project-local skills are detected — use this path when creating project-local skills.
+
+To find the correct path, look at the system prompt section `# Available Skills` → `**Skills 存储目录**` (global) and `**项目 Skills 目录**` (project-local).
 
 ## Lifecycle
 

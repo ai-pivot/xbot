@@ -18,7 +18,19 @@ Ask the user:
 
 ### Step 2: Create Agent File
 
-**IMPORTANT**: Create agent files in the correct agents directory, NOT in the current working directory. Use the system prompt's **"Agents 存储目录"** path (each agent's `<dir>` field also shows its definition location; `embed` means built-in). For example, if Agents 存储目录 is `/opt/xbot/.xbot/agents`, create files as `/opt/xbot/.xbot/agents/{agent-name}.md`.
+**IMPORTANT**: Agents can be created in two locations:
+
+1. **Global agents** — Create in the system prompt's **"Agents 存储目录"** path (e.g. `~/.xbot/agents/{agent-name}.md`). These are available in ALL projects and sessions. This is the default choice for general-purpose agents.
+
+2. **Project-local agents** — Create in the current project's `.xbot/agents/` directory (e.g. `<project-root>/.xbot/agents/{agent-name}.md`). These are ONLY available when working inside that project. This is ideal for project-specific roles, domain-specialized agents, or team-shared agents that live alongside the code.
+
+   To determine the project root, check the system prompt's **"📂 默认工作目录"** or the **"项目 Agents 目录"** line if present.
+
+   **When to use project-local**: the agent is specific to this codebase, understands project conventions, works with project-specific tools/workflows, or should be version-controlled with the project (commit the `.xbot/agents/` directory).
+
+The system prompt also shows a **"项目 Agents 目录"** line when project-local agents are detected — use this path when creating project-local agents.
+
+Each agent's `<dir>` field in the system prompt also shows its definition location; `embed` means built-in.
 
 Agent definition uses YAML frontmatter + Markdown body:
 
@@ -111,7 +123,8 @@ Follow `code-reviewer.md` quality standard:
 
 List available agents to confirm:
 ```bash
-ls -la agents/
+ls -la ~/.xbot/agents/           # global agents
+ls -la .xbot/agents/             # project-local agents (if applicable)
 ```
 
 ## Agent Naming Convention
