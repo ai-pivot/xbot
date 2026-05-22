@@ -2008,12 +2008,23 @@ func wrap(runes []rune, width int) [][]rune {
 	i := 0
 	for i < len(runes) {
 		r := runes[i]
+
+		// Use uniseg to extract grapheme clusters, which keep multi-rune
+		// emoji sequences (ZWJ, variation selectors, skin tone modifiers)
+		// together as a single unit. This prevents breaking emoji like
+		// 👨‍👩‍👧‍👦 into incomplete fragments.
+		rest := string(runes[i:])
+		cluster, _, _, _ := uniseg.StepString(rest, 0)
+		clusterRunes := len([]rune(cluster))
+
 		switch {
-		case isCJK(r):
-			// CJK characters break individually: each character is a potential
-			// line break point. No word accumulation is needed.
-			addRune(r)
-			i++
+		case clusterRunes > 1 || isCJK(r):
+			// Grapheme cluster (emoji sequence) or CJK character:
+			// treat as a single unit that breaks individually.
+			for j := 0; j < clusterRunes && i < len(runes); j++ {
+				addRune(runes[i])
+				i++
+			}
 
 		case unicode.IsSpace(r):
 			// Whitespace is a break point but does not force a wrap by itself.

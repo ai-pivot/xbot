@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/rivo/uniseg"
 	"strings"
 	"sync"
 	"time"
@@ -185,9 +186,9 @@ func hardWrapRunes(line string, maxW int) string {
 	return strings.Join(wrapped, "\n")
 }
 
-// hardWrapSingleLine wraps a single line (no \n) at maxW columns.
-// It prefers breaking at word boundaries (spaces) and CJK character boundaries
-// over hard-cutting in the middle of a word. ANSI escape sequences are preserved.
+// hardWrapSingleLine wraps a single line to fit within maxW columns.
+// It processes by grapheme clusters to preserve multi-rune emoji sequences
+// (ZWJ, variation selectors, skin tone). ANSI escapes are preserved.
 func hardWrapSingleLine(line string, maxW int) string {
 	if maxW <= 0 {
 		return line
@@ -196,164 +197,60 @@ func hardWrapSingleLine(line string, maxW int) string {
 		return line
 	}
 
-	segs := tokenizeLine(line)
-
-	var lines []string
+	var wrapped []string
 	var buf strings.Builder
 	w := 0
 
-	for _, seg := range segs {
-		switch seg.kind {
-		case segANSI:
-			buf.WriteString(seg.s)
-		case segSpace:
-			// Spaces are treated like regular characters — hard-break at column boundary
-			for _, r := range seg.s {
-				rw := ansi.StringWidth(string(r))
-				if w+rw > maxW && buf.Len() > 0 {
-					lines = append(lines, buf.String())
-					buf.Reset()
-					w = 0
-					if seg.ansiState != "" {
-						buf.WriteString(seg.ansiState)
-					}
+	remaining := line
+	var ansiState string
+	for len(remaining) > 0 {
+		if remaining[0] == '\x1b' {
+			i := 1
+			for i < len(remaining) {
+				c := remaining[i]
+				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+					i++
+					break
 				}
-				buf.WriteRune(r)
-				w += rw
+				i++
 			}
-		case segCJK:
-			for _, r := range seg.s {
-				rw := ansi.StringWidth(string(r))
-				if w+rw > maxW && buf.Len() > 0 {
-					lines = append(lines, buf.String())
-					buf.Reset()
-					w = 0
-					if seg.ansiState != "" {
-						buf.WriteString(seg.ansiState)
-					}
-				}
-				buf.WriteRune(r)
-				w += rw
+			seq := remaining[:i]
+			buf.WriteString(seq)
+			remaining = remaining[i:]
+			if strings.HasSuffix(seq, "[0m") || strings.HasSuffix(seq, "[m") {
+				ansiState = ""
+			} else if strings.HasSuffix(seq, "m") {
+				ansiState = seq
 			}
-		default: // segOther: latin, digits, punctuation — hard-break rune by rune
-			for _, r := range seg.s {
-				rw := ansi.StringWidth(string(r))
-				if w+rw > maxW && buf.Len() > 0 {
-					lines = append(lines, buf.String())
-					buf.Reset()
-					w = 0
-					if seg.ansiState != "" {
-						buf.WriteString(seg.ansiState)
-					}
-				}
-				buf.WriteRune(r)
-				w += rw
+			continue
+		}
+
+		cluster, next, _, _ := uniseg.StepString(remaining, 0)
+		cw := ansi.StringWidth(cluster)
+
+		if w+cw > maxW && buf.Len() > 0 {
+			wrapped = append(wrapped, buf.String())
+			buf.Reset()
+			w = 0
+			if ansiState != "" {
+				buf.WriteString(ansiState)
 			}
 		}
+		buf.WriteString(cluster)
+		w += cw
+		remaining = next
 	}
 	if buf.Len() > 0 {
-		lines = append(lines, buf.String())
+		wrapped = append(wrapped, buf.String())
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(wrapped, "\n")
 }
 
 // --- Line segment tokenizer for smart wrapping ---
 
-type segKind int
-
-const (
-	segANSI  segKind = iota // ANSI escape sequence (0 display width)
-	segSpace                // whitespace (spaces, tabs)
-	segCJK                  // CJK ideograph/hangul/kana — can break anywhere
-	segOther                // Latin, digits, punctuation — keep together
-)
-
-type seg struct {
-	kind      segKind
-	s         string
-	w         int // display width
-	ansiState string
-}
-
 // isCJKRune returns true for runes that allow line breaks on either side.
-func isCJKRune(r rune) bool {
-	return (r >= 0x4E00 && r <= 0x9FFF) || // Han
-		(r >= 0x3400 && r <= 0x4DBF) || // Extension A
-		(r >= 0x20000 && r <= 0x2A6DF) || // Extension B
-		(r >= 0x3040 && r <= 0x309F) || // Hiragana
-		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
-		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul syllables
-		(r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
-		(r >= 0xF900 && r <= 0xFAFF) || // CJK compat ideographs
-		(r >= 0xFF01 && r <= 0xFF60) || // Fullwidth forms
-		(r >= 0x3000 && r <= 0x303F) // CJK punctuation
-}
 
 // tokenizeLine splits a line into typed segments for smart wrapping.
-func tokenizeLine(line string) []seg {
-	var segs []seg
-	var cur seg
-	var ansiState strings.Builder
-	haveAnsi := false
-	inEscape := false
-
-	flush := func() {
-		if len(cur.s) > 0 {
-			cur.w = ansi.StringWidth(cur.s)
-			if haveAnsi {
-				cur.ansiState = ansiState.String()
-			}
-			segs = append(segs, cur)
-			cur = seg{}
-		}
-	}
-
-	classify := func(r rune) segKind {
-		if r == ' ' || r == '\t' {
-			return segSpace
-		}
-		if isCJKRune(r) {
-			return segCJK
-		}
-		return segOther
-	}
-
-	for _, r := range line {
-		if r == '\x1b' {
-			if cur.kind != segANSI && cur.kind != 0 {
-				flush()
-			}
-			cur.kind = segANSI
-			cur.s += string(r)
-			ansiState.WriteRune(r)
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			cur.s += string(r)
-			ansiState.WriteRune(r)
-			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
-				inEscape = false
-				s := ansiState.String()
-				if strings.HasSuffix(s, "[0m") || strings.HasSuffix(s, "[m") {
-					ansiState.Reset()
-					haveAnsi = false
-				} else if strings.HasSuffix(s, "m") {
-					haveAnsi = true
-				}
-			}
-			continue
-		}
-		k := classify(r)
-		if k != cur.kind {
-			flush()
-		}
-		cur.kind = k
-		cur.s += string(r)
-	}
-	flush()
-	return segs
-}
 
 // Document.Margin=0 prevents misalignment inside lipgloss bubbles.
 // WordWrap is set to the available width so glamour can calculate proper
