@@ -865,7 +865,15 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	}).Info("maybeCompress check")
 
 	if needCompress {
-		s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+		// Respect ContextManager mode: mode=none means auto-compression is disabled.
+		// Without this guard, maybeCompress bypasses ShouldCompress() and attempts
+		// compression even when the ContextManager is a noopManager, which returns
+		// "auto compression is disabled (mode=none)" error.
+		if cm.Mode() == ContextModeNone {
+			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
+		} else {
+			s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+		}
 		return
 	}
 

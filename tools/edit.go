@@ -35,17 +35,19 @@ func (t *FileCreateTool) Name() string {
 func (t *FileCreateTool) Description() string {
 	return `Create a new file.
 Required: path, content
-Creates the file (and parent directories if needed). Returns error if file already exists.
+Creates the file (and parent directories if needed). Returns error if file already exists, unless rewrite is set to true.
 
 Examples:
 - {"path": "hello.txt", "content": "Hello!"}
-- {"path": "src/main.go", "content": "package main\n\nfunc main() {}"}`
+- {"path": "src/main.go", "content": "package main\n\nfunc main() {}"}
+- {"path": "config.yaml", "content": "key: value", "rewrite": true}`
 }
 
 func (t *FileCreateTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "path", Type: "string", Description: "File path to create (relative to working directory or absolute)", Required: true},
 		{Name: "content", Type: "string", Description: "Content to write to the new file", Required: true},
+		{Name: "rewrite", Type: "boolean", Description: "Set to true to allow overwriting an existing file. Default is false.", Required: false},
 		{Name: "run_as", Type: "string", Description: "OS username to execute as. Requires permission control to be enabled. Only effective in none sandbox mode.", Required: false},
 		{Name: "reason", Type: "string", Description: "Optional human-readable reason shown in approval requests when approval is required.", Required: false},
 	}
@@ -54,6 +56,7 @@ func (t *FileCreateTool) Parameters() []llm.ToolParam {
 type FileCreateParams struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Rewrite bool   `json:"rewrite"`
 	RunAs   string `json:"run_as"`
 	Reason  string `json:"reason"`
 }
@@ -79,14 +82,20 @@ func (t *FileCreateTool) Execute(ctx *ToolContext, input string) (*ToolResult, e
 
 	if shouldUseSandbox(ctx) {
 		sandboxPath := resolveSandboxPath(ctx, params.Path)
-		return t.sandboxCreate(ctx, sandboxPath, params.Content)
+		return t.sandboxCreate(ctx, sandboxPath, params.Content, params.Rewrite)
 	}
 	return t.executeLocal(ctx, *params)
 }
 
-func (t *FileCreateTool) sandboxCreate(ctx *ToolContext, path, content string) (*ToolResult, error) {
-	if err := sandboxWriteNewFile(ctx, path, content); err != nil {
-		return nil, err
+func (t *FileCreateTool) sandboxCreate(ctx *ToolContext, path, content string, rewrite bool) (*ToolResult, error) {
+	if !rewrite {
+		if err := sandboxWriteNewFile(ctx, path, content); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := sandboxWriteFile(ctx, path, content); err != nil {
+			return nil, err
+		}
 	}
 	summary := fmt.Sprintf("File created successfully: %s", path)
 	return &ToolResult{Summary: summary, Tips: tipFileCreated}, nil
@@ -100,7 +109,9 @@ func (t *FileCreateTool) executeLocal(ctx *ToolContext, params FileCreateParams)
 
 	// Check if file already exists
 	if _, err := os.Stat(filePath); err == nil {
-		return nil, fmt.Errorf("file already exists: %s (use FileReplace to modify existing files)", filePath)
+		if !params.Rewrite {
+			return nil, fmt.Errorf("file already exists: %s (use FileReplace to modify existing files, or set rewrite=true to overwrite)", filePath)
+		}
 	}
 
 	// Create parent directories if needed
