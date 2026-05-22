@@ -214,10 +214,6 @@ func (app *cliApp) refreshRemoteValuesCache() {
 		}
 	}
 
-	if app.cliCh != nil {
-		app.cliCh.SyncLayoutSettings(vals)
-	}
-
 	// Sync tier model mappings via RPC so SubAgent model resolution
 	// works correctly (tier models are user-scoped, persisted in DB).
 	if app.client != nil {
@@ -528,9 +524,7 @@ type cliApp struct {
 	valuesCache   map[string]string
 
 	// Remote-mode background goroutine cancel
-	valuesCancel context.CancelFunc
 
-	cliCh *channel.CLIChannel // for syncing layout settings after cache refresh
 }
 
 // isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置，且未完成 CLI setup）
@@ -773,9 +767,6 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 // Close 释放资源。
 func (app *cliApp) Close() {
-	if app.valuesCancel != nil {
-		app.valuesCancel()
-	}
 	if app.client != nil {
 		app.client.Stop()
 	}
@@ -1127,10 +1118,6 @@ func main() {
 			}
 			app.valuesCacheMu.Unlock()
 
-			if app.cliCh != nil {
-				app.cliCh.SyncLayoutSettings(values)
-			}
-
 			// Always save layout to config.json (keys not in Config struct, must write directly)
 			saveLayoutToConfig(values)
 			if err := saveCLIConfig(app.cfg); err != nil {
@@ -1427,7 +1414,6 @@ func main() {
 	}
 
 	cliCh := channel.NewCLIChannel(&cliCfg)
-	app.cliCh = cliCh
 	// NOTE: No disp.Register(cliCh) — localEventBridge (registered inside InitServer)
 	// handles server→CLI events via eventCh. Remote mode: events come via WS.
 
@@ -1639,14 +1625,14 @@ func main() {
 		}
 	}
 	if len(layoutVals) > 0 {
-		cliCh.SyncLayoutSettings(layoutVals)
+		cliCh.ApplyInitialLayout(layoutVals)
 	}
 	// Refresh from server when WS is ready (or from local agent immediately)
 	if vals, err := app.client.GetSettings("cli", "cli_user"); err == nil {
 		if t, ok := vals["theme"]; ok && t != "" {
 			channel.ApplyTheme(t)
 		}
-		cliCh.SyncLayoutSettings(vals)
+		cliCh.ApplyInitialLayout(vals)
 	}
 
 	chatID := initialChatID
@@ -1831,24 +1817,10 @@ func main() {
 		}
 	})
 
-	// Background goroutine: periodically refresh values cache.
-	// Both local and remote modes use cache for GetCurrentValues.
+	// Initial values cache population (event-driven from now on, no polling).
+	// Cache is refreshed on: settings panel save, subscription switch, config tool set.
 	if app.client != nil {
 		app.refreshRemoteValuesCache()
-		valuesCtx, valuesCancel := context.WithCancel(context.Background())
-		clipanic.Go("main.RefreshValuesCache", func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					app.refreshRemoteValuesCache()
-				case <-valuesCtx.Done():
-					return
-				}
-			}
-		})
-		app.valuesCancel = valuesCancel
 	}
 
 	sigCh := make(chan os.Signal, 1)
