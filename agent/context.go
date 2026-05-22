@@ -150,11 +150,6 @@ func enrichPromptData(data PromptData) PromptData {
 	data.Environment = prompt.Environment
 	data.CodeRules = prompt.CodeRules
 
-	// Append absolute working directory to Environment section
-	if data.CWD != "" {
-		data.Environment += fmt.Sprintf("\n- **Current Working Directory**: `%s`", resolveAbsolutePath(data.CWD))
-	}
-
 	switch data.MemoryProvider {
 	case "letta":
 		data.Tools = prompt.ToolsLetta
