@@ -2,12 +2,36 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"xbot/llm"
 	"xbot/tools"
 )
+
+// resolveAbsolutePath expands ~ and resolves . / .. to an absolute path.
+func resolveAbsolutePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	// Expand ~/...
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, path[2:])
+		}
+	} else if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home
+		}
+	}
+	// Resolve . and .. to absolute path
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return path
+}
 
 // systemReminderRe is pre-compiled for stripSystemReminder (called in hot loops).
 var systemReminderRe = regexp.MustCompile(`\n?\n?<system-reminder>[\s\S]*?</system-reminder>`)
@@ -64,6 +88,8 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	}
 
 	if cwd != "" {
+		// Always resolve to absolute path — never show ~ or . in cwd.
+		cwd = resolveAbsolutePath(cwd)
 		parts = append(parts, fmt.Sprintf("📂 默认工作目录: %s（你的 Shell 命令默认在此目录执行，Cd 后生效）", cwd))
 	}
 

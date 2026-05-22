@@ -1167,6 +1167,10 @@ func newCLIModel() *cliModel {
 	ta.SetHeight(minTaHeight)
 	initStyles := buildStyles(76)
 	applyTAStyles(&ta, &initStyles)
+	// Disable textarea's virtual (block) cursor. We use BubbleTea's real
+	// terminal cursor instead — this avoids a double-cursor and ensures IME
+	// candidate windows anchor to the correct position during streaming output.
+	ta.SetVirtualCursor(false)
 
 	// Keep textarea's native newline bindings intact.
 	// Plain Enter is intercepted by the outer CLI handler and used for send,
@@ -1664,6 +1668,9 @@ func (m *cliModel) reloadMessagesFromSession() {
 
 // toggleSidebarSection toggles the collapse state of a sidebar section and persists to preferences.
 func (m *cliModel) toggleSidebarSection(section string) {
+	if m.sidebarCollapsedSections == nil {
+		m.sidebarCollapsedSections = make(map[string]bool)
+	}
 	if m.sidebarCollapsedSections[section] {
 		delete(m.sidebarCollapsedSections, section)
 	} else {
