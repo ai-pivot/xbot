@@ -697,6 +697,12 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 	var client *agent.Client
 
+	// Seed cfg.LLM from the active config subscription so createLLM uses
+	// the correct BaseURL/APIKey. Without this, cfg.LLM may contain a
+	// stale/placeholder URL while the real credentials live in config.Subscriptions.
+	// This prevents "Model list load failed: Get https://api.example.com" errors
+	// in --local mode on startup.
+	syncLLMFromActiveSub(cfg)
 	// Apply CLI flag overrides (after subscription loading so they take precedence).
 	if maxContextTokens > 0 {
 		cfg.Agent.MaxContextTokens = maxContextTokens
@@ -756,6 +762,17 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 			syncLLMFromActiveSub(cfg)
 		}
 
+		// Sync runtime settings from DB to the Agent.
+		// The Agent's ContextManager and other runtime state were created from
+		// config.json values during InitServer. But user settings (enable_auto_compress,
+		// context_mode, max_iterations, etc.) live in the DB and may differ.
+		// Without this sync, the Agent runs with stale config.json defaults — e.g.
+		// noopManager (mode=none) even though DB says "Auto Compress: On".
+		if dbSettings, err := client.GetSettings("cli", "cli_user"); err == nil && len(dbSettings) > 0 {
+			agent.ApplyRuntimeSettingsLocal(cfg, dbSettings)
+			client.ApplyRuntimeSettings(dbSettings)
+			log.WithField("keys", len(dbSettings)).Debug("Local mode: synced DB settings to Agent")
+		}
 		// Apply CLI flag overrides via RPC
 		if maxOutputTokens > 0 {
 			_ = client.SetGlobalMaxTokens(maxOutputTokens)

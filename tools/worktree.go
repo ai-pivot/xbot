@@ -151,17 +151,17 @@ func (t *WorktreeTool) executeInit(ctx *ToolContext, params WorktreeParams) (*To
 	ctx.CurrentDir = worktreePath
 
 	msg := fmt.Sprintf("Worktree created successfully.\n"+
-		"- Repo: %s\n- Worktree: %s\n- Branch: %s\n- Role: %s%s\n\n"+
-		"已自动 cd 到 worktree 目录。你现在在隔离的工作区中工作，其他 agent 不会看到你的更改，直到合并。",
-		repoPath, worktreePath, branch, role, dirtyWarning)
+		"- Worktree: `%s`\n- Branch: `%s`\n- Role: %s%s\n\n"+
+		"已自动 cd 到 worktree 目录。所有文件读写、Shell 命令都在此隔离工作区内执行。\n"+
+		"不要使用主仓库路径访问或修改文件，其他 agent 不会看到你的更改，直到合并。",
+		worktreePath, branch, role, dirtyWarning)
 
 	peers := GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
 	if len(peers) > 0 {
-		msg += "\n\nActive peers in this repo:"
+		msg += "\n\nActive peers (use `SendMessage(to=\"<SessionKey>\", ...)` to communicate):"
 		for _, p := range peers {
-			msg += fmt.Sprintf("\n- %s (%s) on branch %s [%s]", p.SessionKey, p.Role, p.Branch, p.Status)
+			msg += fmt.Sprintf("\n- `%s` (%s) on branch `%s` [%s]", p.SessionKey, p.Role, p.Branch, p.Status)
 		}
-		msg += "\n\nUse SendMessage to communicate with peers when merging."
 	}
 
 	return NewResult(msg), nil
