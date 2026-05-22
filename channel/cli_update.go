@@ -374,10 +374,18 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliTokenRefreshMsg:
 		if msg.tokenPrompt > 0 || msg.tokenCompletion > 0 {
-			m.lastTokenUsage = &protocol.TokenUsage{
-				PromptTokens:     msg.tokenPrompt,
-				CompletionTokens: msg.tokenCompletion,
-				TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
+			// Only accept the DB value if we don't have a more recent value
+			// from engine progress events. After compression, the async
+			// refreshTokenStateAfterReload goroutine may read a stale value
+			// from DB (the compressed token count) while engine has already
+			// pushed the real post-LLM-call value via progress events.
+			// Accept when: nil (no data yet) or DB value is HIGHER (genuinely newer).
+			if m.lastTokenUsage == nil || msg.tokenPrompt > m.lastTokenUsage.PromptTokens {
+				m.lastTokenUsage = &protocol.TokenUsage{
+					PromptTokens:     msg.tokenPrompt,
+					CompletionTokens: msg.tokenCompletion,
+					TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
+				}
 			}
 		}
 
