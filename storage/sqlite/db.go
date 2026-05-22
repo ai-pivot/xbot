@@ -22,7 +22,7 @@ type DB struct {
 	mu   sync.RWMutex
 }
 
-const schemaVersion = 32
+const schemaVersion = 33
 
 // Open opens or creates a SQLite database at the given path
 // If the database doesn't exist, it will be created with the required schema
@@ -53,6 +53,13 @@ func Open(path string) (*DB, error) {
 	if _, err := conn.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
+	}
+	// 启用外键约束：确保 ON DELETE CASCADE 生效。
+	// SQLite 默认关闭外键约束，导致 DeleteTenant 时关联数据不被级联删除，
+	// 造成 session_messages 等表大量孤儿数据膨胀。
+	if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
 	db := &DB{

@@ -265,7 +265,8 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 }
 
 // destroyInteractiveSession removes all resources for an interactive SubAgent session:
-// interactiveSubAgents entry, progress snapshot/iteration history, and tenant session (DB).
+// interactiveSubAgents entry, progress snapshot/iteration history, tenant session (DB),
+// offload data, and mask data on disk.
 // This ensures the next SubAgent with the same role/instance starts with a clean slate.
 func (a *Agent) destroyInteractiveSession(key string) {
 	// Auto-cleanup group membership: remove this agent from its group,
@@ -283,6 +284,15 @@ func (a *Agent) destroyInteractiveSession(key string) {
 	agentProgressKey := "agent:" + key
 	a.lastProgressSnapshot.Delete(agentProgressKey)
 	a.iterationHistories.Delete(agentProgressKey)
+
+	// Clean up offload data for this agent session.
+	// The session key format matches qualifyChatID("agent", key) = "agent:key".
+	offloadKey := qualifyChatID("agent", key)
+	if a.offloadStore != nil {
+		a.offloadStore.CleanSession(offloadKey)
+	}
+	// Note: mask cleanup is handled by CleanStale periodic timer — mask dirs are keyed by
+	// numeric tenant ID which is not available here. CleanStale removes dirs older than 7 days.
 
 	// Destroy tenant session (cache + DB with CASCADE to messages)
 	if a.multiSession != nil {

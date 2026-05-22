@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+// ensureTenants inserts tenant rows for the given IDs so foreign key constraints are satisfied.
+// Only needed in tests that use synthetic tenant IDs.
+func ensureTenants(t *testing.T, db *DB, tenantIDs ...int64) {
+	t.Helper()
+	conn := db.Conn()
+	for _, id := range tenantIDs {
+		_, err := conn.Exec(
+			"INSERT OR IGNORE INTO tenants (id, channel, chat_id, created_at, last_active_at) VALUES (?, 'test', ?, datetime('now'), datetime('now'))",
+			id, id,
+		)
+		if err != nil {
+			t.Fatalf("Failed to create tenant %d: %v", id, err)
+		}
+	}
+}
+
 // TestCoreMemoryService_PersonaPerTenant tests that persona is per-tenant isolated.
 // Each tenant/Agent/SubAgent has its own independent persona block.
 func TestCoreMemoryService_PersonaPerTenant(t *testing.T) {
@@ -19,6 +35,7 @@ func TestCoreMemoryService_PersonaPerTenant(t *testing.T) {
 
 	tenantID1 := int64(100)
 	tenantID2 := int64(200)
+	ensureTenants(t, db, 0, tenantID1, tenantID2)
 
 	// Initialize both tenants
 	if err := svc.InitBlocks(tenantID1, ""); err != nil {
@@ -81,6 +98,7 @@ func TestCoreMemoryService_HumanCrossTenant(t *testing.T) {
 	tenantID1 := int64(100)
 	tenantID2 := int64(200)
 	userID := "ou_123"
+	ensureTenants(t, db, 0, tenantID1, tenantID2)
 
 	// Initialize both tenants
 	if err := svc.InitBlocks(tenantID1, userID); err != nil {
@@ -131,6 +149,7 @@ func TestCoreMemoryService_WorkingContextPerTenant(t *testing.T) {
 
 	tenantID1 := int64(100)
 	tenantID2 := int64(200)
+	ensureTenants(t, db, 0, tenantID1, tenantID2)
 
 	// Initialize both tenants
 	if err := svc.InitBlocks(tenantID1, ""); err != nil {
@@ -189,6 +208,7 @@ func TestCoreMemoryService_ReadWriteConsistency(t *testing.T) {
 
 	tenantID := int64(100)
 	userID := "ou_123"
+	ensureTenants(t, db, 0, tenantID)
 
 	if err := svc.InitBlocks(tenantID, userID); err != nil {
 		t.Fatalf("InitBlocks failed: %v", err)
@@ -248,6 +268,7 @@ func TestCoreMemoryService_DefaultBlocks(t *testing.T) {
 
 	tenantID := int64(100)
 	userID := "ou_123"
+	ensureTenants(t, db, 0, tenantID)
 
 	if err := svc.InitBlocks(tenantID, userID); err != nil {
 		t.Fatalf("InitBlocks failed: %v", err)
@@ -291,6 +312,7 @@ func TestCoreMemoryService_CharLimit(t *testing.T) {
 	svc := NewCoreMemoryService(db)
 
 	tenantID := int64(100)
+	ensureTenants(t, db, 0, tenantID)
 
 	if err := svc.InitBlocks(tenantID, ""); err != nil {
 		t.Fatalf("InitBlocks failed: %v", err)
@@ -322,6 +344,7 @@ func TestCoreMemoryService_DifferentUsersDifferentHuman(t *testing.T) {
 	tenantID := int64(100)
 	userID1 := "ou_123"
 	userID2 := "ou_456"
+	ensureTenants(t, db, 0, tenantID)
 
 	// Initialize for both users
 	if err := svc.InitBlocks(tenantID, userID1); err != nil {
@@ -371,6 +394,9 @@ func TestCoreMemoryService_MigrationKeepsLongestHuman(t *testing.T) {
 	defer db.Close()
 
 	conn := db.Conn()
+
+	// Create parent tenants for foreign key constraints
+	ensureTenants(t, db, 0, 1, 2, 100)
 
 	// Create table manually (simulating old schema)
 	_, err = conn.Exec(`
@@ -490,6 +516,9 @@ func TestCoreMemoryService_PersonaFallbackFromTenant0(t *testing.T) {
 	defer db.Close()
 
 	conn := db.Conn()
+
+	// Create parent tenants for foreign key constraints (0 = shared, 200 = per-tenant)
+	ensureTenants(t, db, 0, 5, 200)
 
 	// Manually create table and insert persona at tenantID=0 (simulates legacy v1 state)
 	_, err = conn.Exec(`

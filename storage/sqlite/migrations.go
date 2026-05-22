@@ -138,6 +138,15 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v33: clean orphaned rows from tables with foreign keys to tenants.
+	// Before this version, PRAGMA foreign_keys was OFF, so ON DELETE CASCADE never fired.
+	// This migration removes all orphaned data and then VACUUMs to reclaim disk space.
+	if from < 33 {
+		if err := migrateV32ToV33(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v33: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1044,5 +1053,79 @@ func migrateV31ToV32(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v32: added per_model_configs to user_llm_subscriptions")
+	return nil
+}
+
+// orphanTables lists all tables that have a tenant_id foreign key to tenants(id).
+// Used by migrateV32ToV33 to clean up orphaned rows left by disabled foreign keys.
+var orphanTables = []string{
+	"session_messages",
+	"tenant_state",
+	"core_memory_blocks",
+	"long_term_memory",
+	"event_history",
+	"archival_memory",
+}
+
+// migrateV32ToV33 cleans orphaned rows from all tables with foreign keys to tenants.
+// Before v33, PRAGMA foreign_keys was OFF, so ON DELETE CASCADE never fired when tenants
+// were deleted. This left behind orphaned rows (tenant_id pointing to non-existent tenants)
+// that accumulated over time, sometimes comprising 77%+ of total rows in session_messages.
+//
+// The migration:
+//  1. Deletes all orphaned rows from FK-linked tables.
+//  2. Runs VACUUM to reclaim the freed disk space back to the OS.
+//  3. Enables foreign_keys pragma for the current connection (also set in Open() for future).
+func migrateV32ToV33(conn *sql.DB) error {
+	// Enable foreign keys so CASCADE works for future deletes.
+	if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("enable foreign keys: %w", err)
+	}
+
+	// Ensure the shared tenant (id=0) exists for core_memory human blocks.
+	// Human blocks are stored at tenant_id=0 as shared cross-tenant data.
+	// Without this row, FK constraints on core_memory_blocks would block
+	// any InitBlocks call that creates human blocks.
+	conn.Exec("INSERT OR IGNORE INTO tenants (id, channel, chat_id, created_at, last_active_at) VALUES (0, '_shared', '_shared', datetime('now'), datetime('now'))")
+
+	// Clean orphaned rows from each FK-linked table.
+	totalOrphans := 0
+	for _, table := range orphanTables {
+		result, err := conn.Exec(
+			fmt.Sprintf("DELETE FROM %s WHERE tenant_id NOT IN (SELECT id FROM tenants)", table),
+		)
+		if err != nil {
+			// Table might not exist in older DBs; skip silently.
+			log.WithError(err).WithField("table", table).Debug("Skipping orphan cleanup for table")
+			continue
+		}
+		rows, _ := result.RowsAffected()
+		if rows > 0 {
+			totalOrphans += int(rows)
+			log.WithFields(log.Fields{
+				"table":  table,
+				"orphan": rows,
+			}).Info("Cleaned orphaned rows from table")
+		}
+	}
+
+	// Also clean orphaned event_history_fts (virtual table matching event_history).
+	// FTS tables don't have FK constraints, but their rows mirror event_history orphans.
+	if _, err := conn.Exec("DELETE FROM event_history_fts WHERE rowid NOT IN (SELECT id FROM event_history)"); err != nil {
+		log.WithError(err).Debug("Skipping orphan cleanup for event_history_fts")
+	}
+
+	if totalOrphans > 0 {
+		log.WithField("total_orphans", totalOrphans).Info("Running VACUUM to reclaim disk space after orphan cleanup")
+		if _, err := conn.Exec("VACUUM"); err != nil {
+			// VACUUM failure is non-fatal: data is cleaned, just space not reclaimed.
+			log.WithError(err).Warn("VACUUM failed after orphan cleanup (space not reclaimed)")
+		}
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 33"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.WithField("orphan_rows_cleaned", totalOrphans).Info("Database migrated to v33: cleaned orphaned data, enabled foreign keys")
 	return nil
 }

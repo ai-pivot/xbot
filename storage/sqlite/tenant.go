@@ -118,6 +118,7 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label, t.created_at, t.last_active_at
 		FROM tenants t
 		LEFT JOIN user_chats c ON c.channel = t.channel AND c.chat_id = t.chat_id
+		WHERE t.channel != '_shared'
 		ORDER BY t.last_active_at DESC`,
 	)
 	if err != nil {

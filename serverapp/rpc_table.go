@@ -741,6 +741,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		} else {
 			return nil, fmt.Errorf("database not available")
 		}
+		// Clean up offload files for the deleted session.
+		h.Ag.CleanupSessionFiles(p.Channel, p.ChatID)
 		log.WithFields(log.Fields{"channel": p.Channel, "chat_id": p.ChatID}).Info("RPC delete_chat")
 		return map[string]string{"status": "ok"}, nil
 	})

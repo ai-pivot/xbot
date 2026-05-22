@@ -322,6 +322,9 @@ type Agent struct {
 	// maskStore manages observation masking storage
 	maskStore *ObservationMaskStore
 
+	// cleanupStopCh signals the periodic cleanup goroutine to stop
+	cleanupStopCh chan struct{}
+
 	// contextEditor 管理上下文编辑（Context Editing 工具）
 	contextEditor *ContextEditor
 
@@ -871,7 +874,6 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		MaxResultBytes:  10240,
 		CleanupAgeDays:  7,
 	})
-	go a.offloadStore.CleanStale()
 
 	// Inject sandbox into OffloadStore for remote mode file hash computation
 	if a.sandbox != nil {
@@ -888,7 +890,11 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	}
 	a.maskStore = NewObservationMaskStore(200)
 	a.maskStore.SetBaseDir(maskDir)
-	go a.maskStore.CleanStale(7)
+
+	// Start periodic cleanup for offload and mask data.
+	// Runs immediately at startup, then every 6 hours.
+	a.cleanupStopCh = make(chan struct{})
+	go a.periodicCleanup()
 
 	// 注册 offload_recall 工具（需要 OffloadStore 依赖注入）
 	if a.offloadStore != nil {
@@ -1382,6 +1388,11 @@ func (a *Agent) Close() error {
 	// Cancel agent-level context to stop background subagents
 	if a.agentCancel != nil {
 		a.agentCancel()
+	}
+	// Stop periodic cleanup goroutine
+	if a.cleanupStopCh != nil {
+		close(a.cleanupStopCh)
+		a.cleanupStopCh = nil
 	}
 	// Deactivate all plugins before shutting down subsystems
 	if a.pluginMgr != nil {
@@ -2825,6 +2836,44 @@ func (a *Agent) ProcessDirect(ctx context.Context, content string) (string, erro
 		return "", nil
 	}
 	return resp.Content, nil
+}
+
+// CleanupSessionFiles removes offload data for a session identified by (channel, chatID).
+// Called from delete_chat RPC handler and CLI session deletion to ensure disk-stored
+// offload data is cleaned when a session is removed from DB.
+// Mask data cleanup relies on the periodic CleanStale timer which removes dirs
+// older than 7 days (mask dirs are keyed by numeric tenant ID, not session key).
+func (a *Agent) CleanupSessionFiles(channel, chatID string) {
+	sessionKey := qualifyChatID(channel, chatID)
+	if a.offloadStore != nil {
+		a.offloadStore.CleanSession(sessionKey)
+	}
+}
+
+// periodicCleanup runs offload and mask stale cleanup on a 6-hour ticker.
+// Runs once immediately at startup, then periodically until cleanupStopCh is closed.
+func (a *Agent) periodicCleanup() {
+	a.doCleanup()
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.cleanupStopCh:
+			return
+		case <-ticker.C:
+			a.doCleanup()
+		}
+	}
+}
+
+// doCleanup runs stale cleanup for offload and mask stores.
+func (a *Agent) doCleanup() {
+	if a.offloadStore != nil {
+		a.offloadStore.CleanStale()
+	}
+	if a.maskStore != nil {
+		a.maskStore.CleanStale(7)
+	}
 }
 
 // formatToolProgress generates a human-readable one-line summary of a tool call for progress display.
