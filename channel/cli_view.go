@@ -15,6 +15,64 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
+// textarea cursor for IME candidate window positioning.
+// Only valid when the main layout is active (no panels/palettes).
+//
+// It uses textarea.Cursor() for CJK-correct internal coordinates (CharOffset
+// uses uniseg.StringWidth), then adds the screen layout offsets.
+func (m *cliModel) computeInputCursorScreenPos() (x, y int, ok bool) {
+	// Only compute for main layout where textarea is visible
+	if m.panelMode != "" || m.paletteOpen || m.quickSwitchMode != "" || m.rewindMode || m.searchMode {
+		return 0, 0, false
+	}
+	// Textarea is not rendered when settings are being saved
+	if m.settingsSaving {
+		return 0, 0, false
+	}
+
+	// textarea.Cursor() returns nil when virtual cursor is enabled.
+	// We call SetVirtualCursor(false) elsewhere so this returns a real cursor.
+	taCur := m.textarea.Cursor()
+	if taCur == nil {
+		return 0, 0, false
+	}
+
+	// --- Compute Y (screen row) ---
+	// Layout: titleBar(1) + viewport(vpH) + status(1) + [todoBar(N)] + [footer(0/1)] + inputBox
+	y = 1                         // titleBar
+	y += m.layoutViewportHeight() // viewport
+	y++                           // status bar
+
+	// todo bar (only when sidebar is NOT visible)
+	if !m.sidebarShown() {
+		if todoBar := m.renderTodoBar(); todoBar != "" {
+			y += strings.Count(todoBar, "\n") + 1
+		}
+	}
+	// footer
+	if footer := m.augmentFooter(m.renderFooter()); footer != "" {
+		y++
+	}
+
+	// InputBox: top border → textarea content
+	// InputBox uses RoundedBorder + Padding(0,1).
+	// The textarea's Cursor().Y is relative to textarea top-left (0-based).
+	// InputBox top border adds 1 line before textarea content.
+	inputBox := m.styles.InputBox
+	y += inputBox.GetBorderTopSize() + inputBox.GetPaddingTop()
+	y += taCur.Y
+
+	// --- Compute X (screen column) ---
+	// textarea.Cursor().X already includes: CharOffset + prompt + lineNumber + base border/padding.
+	// We need to add: xShift (sidebar) + InputBox border-left + InputBox padding-left.
+	x = m.xShift
+	x += inputBox.GetBorderLeftSize() + inputBox.GetPaddingLeft()
+	x += taCur.X
+
+	return x, y, true
+}
+
 // appendStatusHint appends a styled hint to the status line, with proper spacing.
 func appendStatusHint(status, hint string) string {
 	if hint == "" {
@@ -159,6 +217,8 @@ func (m *cliModel) renderInputArea(borderColor color.Color) string {
 	inputArea := m.textarea.View()
 
 	// Render placeholder manually when textarea is empty.
+	// No cursor block is rendered here — BubbleTea's real terminal cursor
+	// is positioned at this location via v.Cursor in View().
 	if m.textarea.Value() == "" && m.placeholderText != "" {
 		taHeight := minTaHeight
 		if h := m.textarea.Height(); h > 0 {
@@ -170,11 +230,7 @@ func (m *cliModel) renderInputArea(borderColor color.Color) string {
 		}
 		phRunes := []rune(ph)
 		if len(phRunes) > 0 {
-			first := string(phRunes[0])
-			rest := string(phRunes[1:])
-			cursorColor := m.styles.TACursor.GetForeground()
-			cursor := lipgloss.NewStyle().Foreground(cursorColor).Reverse(true).Render(first)
-			phRendered := cursor + m.styles.PlaceholderSt.Render(rest)
+			phRendered := m.styles.PlaceholderSt.Render(string(phRunes))
 			lines := make([]string, taHeight)
 			lines[0] = phRendered
 			for i := 1; i < taHeight; i++ {
@@ -997,6 +1053,17 @@ func (m *cliModel) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
+
+	// Set real cursor position to match textarea cursor.
+	// This is essential for IME candidate window positioning:
+	// without it, the terminal's real cursor drifts during streaming
+	// output, causing the IME candidate popup to jump around.
+	if cx, cy, ok := m.computeInputCursorScreenPos(); ok {
+		v.Cursor = tea.NewCursor(cx, cy)
+		v.Cursor.Shape = tea.CursorBar // bar cursor for text input
+		v.Cursor.Blink = true
+		v.Cursor.Color = m.styles.TACursor.GetForeground()
+	}
 
 	// Command palette overlay (highest priority — hides everything)
 	if m.paletteOpen {
