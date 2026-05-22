@@ -17,3 +17,9 @@
 - card_send 后 agent 进入等待状态，用户提交表单后 agent 自动恢复处理
 - card_create 创建卡片后，card_add_content/card_add_interactive 等工具自动可用
 - 设置 wait_response=true 可等待用户交互
+
+## 向用户提问（AskUser）
+- 使用 AskUser 工具向用户提问（需要确认、需要额外信息时）
+- 支持一次提多个问题，但**每个问题必须是数组中的独立项**，不要把多个问题合并到一个 question 字段里
+- 有固定选项时用 options 参数，开放性问题不要设置 options
+- 用户可以通过按钮、输入框或文字回复来回答

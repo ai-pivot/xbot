@@ -17,7 +17,12 @@ type AskUserTool struct{}
 func (t *AskUserTool) Name() string { return "AskUser" }
 
 func (t *AskUserTool) Description() string {
-	return "Ask the user a question and wait for their response. Use this when you need confirmation, clarification, or additional information from the user. Only available in CLI mode. Supports optional choices for multiple-choice questions."
+	return `Ask the user a question and wait for their response. Use this when you need confirmation, clarification, or additional information from the user. Supports optional choices for multiple-choice questions.
+
+CRITICAL: Each question MUST be a separate item in the array. Do NOT combine multiple questions into a single question string.
+BAD:  [{"question": "1. Which theme? 2. What layout?", "options": ["dark","light"]}]
+GOOD: [{"question": "Which theme?", "options": ["dark","light"]}, {"question": "What layout?"}]
+Each item gets its own answer. Options only apply to the question they belong to.`
 }
 
 func (t *AskUserTool) Parameters() []llm.ToolParam {
@@ -25,7 +30,7 @@ func (t *AskUserTool) Parameters() []llm.ToolParam {
 		{
 			Name:        "questions",
 			Type:        "array",
-			Description: `Array of questions to ask the user. Each item is an object with "question" (string, required, supports multi-line) and "options" (array of strings, optional) fields. Example: [{"question":"Choose a theme","options":["dark","light"]},{"question":"Any other preferences?"}]`,
+			Description: `Array of questions to ask the user. Each item is an object with "question" (string, required, supports multi-line) and "options" (array of strings, optional) fields. Each question MUST be a separate array item — never merge multiple questions into one string. Example: [{"question":"Choose a theme","options":["dark","light"]},{"question":"Any other preferences?"}]`,
 			Required:    true,
 			Items: &llm.ToolParamItems{
 				Type: "object",
