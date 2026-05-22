@@ -688,10 +688,12 @@ func (c *CLIChannel) SetResetTokenStateFn(fn func()) {
 	c.pendingResetTokenStateFn = fn
 }
 
-// SyncLayoutSettings applies layout settings (sidebar_width, sidebar_position, etc.)
-// from the given values map to the TUI model. Applies directly to model for startup,
-// and also sends through asyncCh for Update() handler.
-func (c *CLIChannel) SyncLayoutSettings(vals map[string]string) {
+// ApplyInitialLayout applies layout settings (sidebar_width, sidebar_position, etc.)
+// from the given values map to the TUI model. Called once at startup before the
+// BubbleTea event loop starts. No polling needed — layout changes from settings
+// panel go through doSaveSettings → cliSettingsSavedMsg, and tui_control uses
+// handleSessionControlMsg directly.
+func (c *CLIChannel) ApplyInitialLayout(vals map[string]string) {
 	layoutVals := map[string]string{}
 	for _, k := range []string{"sidebar_width", "sidebar_enabled", "sidebar_position", "chat_max_width", "chat_center", "layout_mode"} {
 		if v, ok := vals[k]; ok {
@@ -701,16 +703,18 @@ func (c *CLIChannel) SyncLayoutSettings(vals map[string]string) {
 	if len(layoutVals) == 0 {
 		return
 	}
-	// Send through asyncCh — the ONLY safe path. Direct model calls
-	// from background goroutines (refreshRemoteValuesCache) race with
-	// the BubbleTea event loop and cause glamour render panics.
+	// Before program starts: apply directly to model
+	if c.model != nil {
+		c.model.applyLayoutConfig(layoutVals)
+		return
+	}
+	// After program starts: route through asyncCh for Update() handler
 	select {
-	case c.asyncCh <- cliSettingsSavedMsg{layoutVals: layoutVals, layoutChanged: true, syncOnly: true}:
+	case c.asyncCh <- cliSettingsSavedMsg{layoutVals: layoutVals, layoutChanged: true}:
 	default:
 	}
 }
 
-// SetCheckpointState sets the file checkpoint state for /rewind file rollback.
 // If the model hasn't been created yet, the state is cached and applied later.
 func (c *CLIChannel) SetCheckpointState(state *protocol.CheckpointState) {
 	c.programMu.Lock()
