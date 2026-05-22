@@ -530,7 +530,13 @@ func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 	}
 
 	guide := buildSystemGuideText(m.memoryProvider)
-	userMsg = fmt.Sprintf("%s\n\n%s现在时间：%s\n", userMsg, guide, now)
+
+	// Build system guide suffix: always show absolute working directory.
+	cwdLine := ""
+	if mc.CWD != "" {
+		cwdLine = fmt.Sprintf("\n工作目录: %s", resolveAbsolutePath(mc.CWD))
+	}
+	userMsg = fmt.Sprintf("%s\n\n%s%s\n现在时间：%s\n", userMsg, guide, cwdLine, now)
 
 	// Inject rename hint on the first user message when session name is auto-generated.
 	// This is a one-time hint; subsequent rounds don't repeat it.
