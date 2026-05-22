@@ -1674,6 +1674,9 @@ func (m *cliModel) reloadMessagesFromSession() {
 
 // toggleSidebarSection toggles the collapse state of a sidebar section and persists to preferences.
 func (m *cliModel) toggleSidebarSection(section string) {
+	if m.sidebarCollapsedSections == nil {
+		m.sidebarCollapsedSections = make(map[string]bool)
+	}
 	if m.sidebarCollapsedSections[section] {
 		delete(m.sidebarCollapsedSections, section)
 	} else {
