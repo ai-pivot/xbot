@@ -501,7 +501,7 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	// 注入可用 agent 目录（只在 spawn_agent=true 时注入）
 	if caps.SpawnAgent {
-		if agentsCatalog := a.agents.GetAgentsCatalog(ctx, parentCtx.SenderID); agentsCatalog != "" {
+		if agentsCatalog := a.agents.GetAgentsCatalog(ctx, parentCtx.SenderID, workDir); agentsCatalog != "" {
 			sysPrompt += "\n" + agentsCatalog
 		}
 	}
@@ -511,7 +511,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	if originUserID == "" {
 		originUserID = parentCtx.SenderID
 	}
-	if skillsCatalog := a.skills.GetSkillsCatalog(ctx, originUserID); skillsCatalog != "" {
+	if skillsCatalog := a.skills.GetSkillsCatalog(ctx, originUserID, workDir); skillsCatalog != "" {
 		sysPrompt += "\n" + skillsCatalog
 	}
 

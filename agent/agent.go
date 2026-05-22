@@ -2326,8 +2326,14 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		mc.CWD = promptWorkDir
 	}
 
-	mc.SetExtra(ExtraKeySkillsCatalog, a.skills.GetSkillsCatalog(ctx, msg.SenderID))
-	mc.SetExtra(ExtraKeyAgentsCatalog, a.agents.GetAgentsCatalog(ctx, msg.SenderID))
+	// Determine projectDir for project-local skill/agent scanning
+	projectDir := cwd // use session CWD as project root
+	if projectDir == "" {
+		projectDir = promptWorkDir
+	}
+
+	mc.SetExtra(ExtraKeySkillsCatalog, a.skills.GetSkillsCatalog(ctx, msg.SenderID, projectDir))
+	mc.SetExtra(ExtraKeyAgentsCatalog, a.agents.GetAgentsCatalog(ctx, msg.SenderID, projectDir))
 	mc.SetExtra(ExtraKeyMemoryProvider, tenantSession.Memory())
 	permUsers := a.settingsSvc.GetPermUsers(msg.Channel, msg.SenderID)
 	mc.SetExtra(ExtraKeyPermUsers, permUsers)

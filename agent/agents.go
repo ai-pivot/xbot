@@ -35,11 +35,13 @@ func (s *AgentStore) userAgentsDir(senderID string) string {
 // GetAgentsCatalog returns a formatted catalog of all available agents for the system prompt.
 // Scans embedded agents first, then global agents, then user-private agents;
 // same-name agents are overridden by later sources (user > global > embedded).
-func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) string {
+// projectDir is the session's workspace root; if non-empty, agents under {projectDir}/.xbot/agents/
+// are scanned as an additional layer (highest priority).
+func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string, projectDir ...string) string {
 	type agentInfo struct {
 		name string
 		role tools.SubAgentRole
-		dir  string // 定义文件所在目录："embed" / 全局目录 / 用户目录
+		dir  string // 定义文件所在目录："embed" / 全局目录 / 用户目录 / 项目目录
 	}
 
 	merged := make(map[string]agentInfo)
@@ -63,6 +65,16 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	sources := []string{s.globalDir}
 	if senderID != "" {
 		sources = append(sources, s.userAgentsDir(senderID))
+	}
+
+	// 3. 扫描项目本地目录（最高优先级）
+	pDir := ""
+	if len(projectDir) > 0 {
+		pDir = projectDir[0]
+	}
+	if pDir != "" {
+		projectAgentsDir := filepath.Join(pDir, ".xbot", "agents")
+		sources = append(sources, projectAgentsDir)
 	}
 
 	for i, dir := range sources {
@@ -114,6 +126,10 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string) stri
 	// 注入目录路径，供 agent-creator 参考新建位置
 	if s.globalDir != "" {
 		fmt.Fprintf(&sb, "**Agents 存储目录**: %s\n\n", s.globalDir)
+	}
+	// 注入项目本地目录提示
+	if pDir != "" {
+		fmt.Fprintf(&sb, "**项目 Agents 目录**: %s\n\n", filepath.Join(pDir, ".xbot", "agents"))
 	}
 
 	sb.WriteString("<available_agents>\n")
