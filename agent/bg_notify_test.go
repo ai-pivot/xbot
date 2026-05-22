@@ -552,3 +552,202 @@ func requireEventual(t *testing.T, timeout, interval time.Duration, check func()
 		time.Sleep(interval)
 	}
 }
+
+// ==================== CronFired Notification ====================
+
+// TestDrainAndProcessNotifications_CronFired verifies that drainAndProcessNotifications
+// processes a CronFired notification and injects it into bus.Inbound with the ⏰ prefix.
+func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{
+		bus:       bus.NewMessageBus(),
+		agentCtx:  ctx,
+		bgTaskMgr: mgr,
+	}
+
+	// Buffer a CronFired notification
+	cronNotif := &tools.CronFired{
+		Key:     "cli:test-chat",
+		Sid:     "user-1",
+		Message: "check server status",
+	}
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, cronNotif)
+	a.bgRunPendingMu.Unlock()
+
+	a.drainAndProcessNotifications("cli:test-chat")
+
+	select {
+	case msg := <-a.bus.Inbound:
+		if msg.ChatID != "test-chat" {
+			t.Errorf("ChatID = %q, want %q", msg.ChatID, "test-chat")
+		}
+		if msg.Channel != "cli" {
+			t.Errorf("Channel = %q, want %q", msg.Channel, "cli")
+		}
+		// Must have the ⏰ prefix from processCronFiredNotification
+		if !containsPrefix(msg.Content, "⏰") {
+			t.Errorf("Content should contain ⏰ prefix, got: %q", msg.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainAndProcessNotifications should have injected CronFired into bus.Inbound")
+	}
+
+	// Verify nothing left in bgRunPending
+	a.bgRunPendingMu.Lock()
+	remaining := a.bgRunPending
+	a.bgRunPendingMu.Unlock()
+	if len(remaining) != 0 {
+		t.Errorf("bgRunPending should be empty after draining, got %d items", len(remaining))
+	}
+}
+
+// TestBgNotifyLoop_CronFired_BuffersAndSignals verifies that CronFired goes through
+// the bgNotifyLoop buffering pipeline (not processed directly) and signals the session.
+func TestBgNotifyLoop_CronFired_BuffersAndSignals(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{
+		bus:       bus.NewMessageBus(),
+		agentCtx:  ctx,
+		bgTaskMgr: mgr,
+	}
+
+	chatKey := "cli:test-chat"
+
+	// Register a bgSessionState (as chatWorker would)
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(chatKey, ss)
+	defer a.bgSessionStates.Delete(chatKey)
+
+	// Start bgNotifyLoop
+	go a.bgNotifyLoop()
+
+	// Send a CronFired through NotifyCh
+	mgr.SendCronFired(&tools.CronFired{
+		Key:     chatKey,
+		Sid:     "user-1",
+		Message: "run backups",
+	})
+
+	// Wait for the notification to be signaled
+	select {
+	case <-ss.notifyCh:
+		// Got signal — bgNotifyLoop buffered and signaled
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for notification signal — bgNotifyLoop didn't buffer CronFired")
+	}
+
+	// Verify notification is in bgRunPending (not processed directly)
+	a.bgRunPendingMu.Lock()
+	pending := a.bgRunPending
+	a.bgRunPendingMu.Unlock()
+
+	if len(pending) == 0 {
+		t.Fatal("bgRunPending should have the CronFired notification")
+	}
+
+	// Verify it's actually a CronFired
+	found := false
+	for _, n := range pending {
+		if cf, ok := n.(*tools.CronFired); ok {
+			if cf.Message == "run backups" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("bgRunPending should contain the CronFired notification with correct message")
+	}
+
+	// Nothing should have been sent to bus.Inbound (no direct processing)
+	select {
+	case <-a.bus.Inbound:
+		t.Fatal("bgNotifyLoop should NOT have sent anything to bus.Inbound — only buffers")
+	default:
+		// Correct — nothing was injected directly
+	}
+}
+
+// TestDrainAndProcessNotifications_MixedTypes verifies that drainAndProcessNotifications
+// handles both bg task completions and CronFired notifications in the same drain cycle.
+func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{
+		bus:       bus.NewMessageBus(),
+		agentCtx:  ctx,
+		bgTaskMgr: mgr,
+	}
+
+	chatKey := "cli:test-chat"
+
+	// Start a bg task — it will complete immediately
+	_ = mgr.Start(chatKey, "user-1", "echo hello", func(ctx context.Context, outputBuf func(string)) (int, error) {
+		outputBuf("hello output")
+		return 0, nil
+	})
+
+	// Collect the bg task notification
+	var bgNotif tools.BgNotification
+	select {
+	case bgNotif = <-mgr.NotifyCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for bg task notification")
+	}
+
+	// Buffer both bg task and CronFired notifications
+	cronNotif := &tools.CronFired{
+		Key:     chatKey,
+		Sid:     "user-1",
+		Message: "check health",
+	}
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, bgNotif, cronNotif)
+	a.bgRunPendingMu.Unlock()
+
+	a.drainAndProcessNotifications(chatKey)
+
+	// Should receive 2 messages in bus.Inbound
+	var msgs []bus.InboundMessage
+	timeout := time.After(2 * time.Second)
+	for len(msgs) < 2 {
+		select {
+		case msg := <-a.bus.Inbound:
+			msgs = append(msgs, msg)
+		case <-timeout:
+			t.Fatalf("expected 2 messages in bus.Inbound, got %d", len(msgs))
+		}
+	}
+
+	// One should be a cron message (⏰ prefix), one should be a bg task message
+	hasCron := false
+	hasBgTask := false
+	for _, msg := range msgs {
+		if containsPrefix(msg.Content, "⏰") {
+			hasCron = true
+		} else {
+			hasBgTask = true
+		}
+	}
+	if !hasCron {
+		t.Error("expected one message with ⏰ prefix (cron)")
+	}
+	if !hasBgTask {
+		t.Error("expected one message without ⏰ prefix (bg task)")
+	}
+
+	t.Logf("SUCCESS: both bg task and CronFired notifications processed in mixed drain")
+}
+
+// containsPrefix checks if s starts with the given prefix string.
+func containsPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}

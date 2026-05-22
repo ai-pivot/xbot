@@ -16,7 +16,7 @@ type MessagePayload struct {
 
 	Metadata  map[string]string `json:"metadata,omitempty"`
 	Time      time.Time         `json:"time"`
-	IsCron    bool              `json:"is_cron,omitempty"`
+	IsCron    bool              `json:"is_cron,omitempty"` // Deprecated: cron now uses same pipeline as regular messages
 	RequestID string            `json:"request_id,omitempty"`
 
 	EventSource  string `json:"event_source,omitempty"`
@@ -78,7 +78,7 @@ type InboundMessage struct {
 	// === 元数据 ===
 	Metadata  map[string]string // 渠道/调用方特定元数据
 	Time      time.Time
-	IsCron    bool   // 是否由 cron 定时任务触发
+	IsCron    bool   // Deprecated: cron now uses same pipeline as regular messages. Kept for backward compat.
 	RequestID string // 请求追踪 ID（UUID 无横线），在渠道收到消息时生成
 
 	// Event-triggered metadata (generalization beyond IsCron)

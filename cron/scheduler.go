@@ -10,17 +10,26 @@ import (
 	"xbot/storage/sqlite"
 )
 
-// InjectFunc is the function type for injecting messages into the agent
+// InjectFunc is the function type for injecting messages into the agent.
+// Deprecated: use NotifyCronFunc for the unified bg notification pipeline.
 type InjectFunc func(channel, chatID, senderID, content string)
 
-// Scheduler manages the cron job scheduling loop
+// NotifyCronFunc pushes a cron fired notification into the background notification
+// pipeline (BgTaskManager.NotifyCh). When set, cron triggers reuse the same
+// busy/idle routing as bg task completions.
+type NotifyCronFunc func(channel, chatID, senderID, message string)
+
+// Scheduler manages the cron job scheduling loop.
+// Cron jobs are fired via NotifyCronFunc through the bg notification pipeline,
+// reusing the same routing as bg task completions (busy → tool message, idle → user message).
 type Scheduler struct {
-	cronSvc    *sqlite.CronService
-	injectFunc InjectFunc
-	stopCh     chan struct{}
-	once       sync.Once // 共用 once 保证 Start 和 StartDelayed 互斥：只有第一个调用者会启动调度器
-	running    bool
-	mu         sync.Mutex
+	cronSvc      *sqlite.CronService
+	injectFunc   InjectFunc     // deprecated, kept for tests
+	notifyCronFn NotifyCronFunc // preferred: unified bg notification pipeline
+	stopCh       chan struct{}
+	once         sync.Once
+	running      bool
+	mu           sync.Mutex
 }
 
 // NewScheduler creates a new Scheduler
@@ -36,6 +45,15 @@ func (s *Scheduler) SetInjectFunc(fn InjectFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.injectFunc = fn
+}
+
+// SetNotifyCronFunc sets the function that pushes cron notifications into the
+// bg notification pipeline. When set, cron triggers reuse the same busy/idle
+// routing as bg task completions.
+func (s *Scheduler) SetNotifyCronFunc(fn NotifyCronFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifyCronFn = fn
 }
 
 // Start starts the scheduler loop
@@ -174,10 +192,11 @@ func (s *Scheduler) runLoop() {
 // checkAndFire checks for due jobs and fires them
 func (s *Scheduler) checkAndFire(now time.Time) {
 	s.mu.Lock()
+	notifyCronFn := s.notifyCronFn
 	injectFunc := s.injectFunc
 	s.mu.Unlock()
 
-	if injectFunc == nil {
+	if notifyCronFn == nil && injectFunc == nil {
 		return
 	}
 
@@ -188,21 +207,14 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 	}
 
 	for _, job := range jobs {
-		// Skip jobs not yet due
 		if now.Before(job.NextRun) {
 			continue
 		}
 
-		// Skip one-shot jobs that were already fired (LastTrigger is set).
-		// One-shot jobs with NextRun in the past and no LastTrigger were never
-		// executed (e.g. missed during downtime) — they should fall through to
-		// the firing logic below, not be silently removed.
 		if job.OneShot && job.LastTrigger != nil {
 			continue
 		}
 
-		// Prevent double-firing: check if this job was already triggered very recently
-		// This handles edge cases where the job runs again within the same second
 		if job.LastTrigger != nil && now.Sub(*job.LastTrigger) < time.Second {
 			log.WithFields(log.Fields{
 				"job_id":       job.ID,
@@ -211,14 +223,17 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 			continue
 		}
 
-		// Fire the job
 		log.WithFields(log.Fields{
 			"job_id":  job.ID,
 			"channel": job.Channel,
 			"chat_id": job.ChatID,
 		}).Info("Cron job fired")
 
-		injectFunc(job.Channel, job.ChatID, job.SenderID, job.Message)
+		if notifyCronFn != nil {
+			notifyCronFn(job.Channel, job.ChatID, job.SenderID, job.Message)
+		} else {
+			injectFunc(job.Channel, job.ChatID, job.SenderID, job.Message)
+		}
 
 		// Record trigger time for deduplication
 		if err := s.cronSvc.UpdateLastTrigger(job.ID, now); err != nil {

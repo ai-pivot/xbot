@@ -1243,6 +1243,8 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 				s.injectBgTaskNotification(ctx, iteration, n)
 			case *tools.SubAgentBgNotify:
 				s.injectSubAgentBgNotification(ctx, iteration, n)
+			case *tools.CronFired:
+				s.injectCronFiredNotification(ctx, iteration, n)
 			}
 		}
 	}
@@ -1369,6 +1371,51 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
 			Name:      toolName,
 			Label:     fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance),
+			Status:    ToolDone,
+			Iteration: iteration,
+		})
+		if s.autoNotify {
+			s.notifyProgress("")
+		}
+	}
+}
+
+// injectCronFiredNotification injects a cron fired notification as a synthetic tool call/result pair.
+// Cron messages are injected as tool results so the LLM can act on them during the current Run.
+func (s *runState) injectCronFiredNotification(ctx context.Context, iteration int, c *tools.CronFired) {
+	bgContent := fmt.Sprintf("⏰ A scheduled cron job has fired.\n\nMessage: %s", c.Message)
+	toolName := "cron_fired"
+	toolID := "cron_" + c.SessionKey()
+	assistantMsg := llm.ChatMessage{
+		Role:    "assistant",
+		Content: "A scheduled cron job has fired. Let me process it.",
+		ToolCalls: []llm.ToolCall{{
+			ID:   toolID,
+			Name: toolName,
+		}},
+	}
+	if s.cfg.OffloadStore != nil {
+		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", bgContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
+			bgContent = offloaded.Summary
+			GlobalMetrics.OffloadEvents.Add(1)
+			GlobalMetrics.OffloadedItems.Add(1)
+		}
+	}
+	toolMsg := llm.NewToolMessage(toolName, toolID, "", bgContent)
+	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
+	log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
+
+	if s.cfg.Session != nil {
+		_ = s.cfg.Session.AddMessage(assistantMsg)
+		_ = s.cfg.Session.AddMessage(toolMsg)
+		s.persistence.MarkAllPersisted(len(s.messages))
+	}
+
+	// Show in TUI progress block
+	if s.structuredProgress != nil {
+		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
+			Name:      toolName,
+			Label:     "cron",
 			Status:    ToolDone,
 			Iteration: iteration,
 		})
