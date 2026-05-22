@@ -653,6 +653,25 @@ func TestFileCreateTool_LocalMode(t *testing.T) {
 			t.Errorf("error should mention 'already exists', got: %v", err)
 		}
 	})
+
+	t.Run("rewrite=false returns error for existing file", func(t *testing.T) {
+		_, err := tool.Execute(ctx, `{"path": "hello.txt", "content": "nope", "rewrite": false}`)
+		if err == nil {
+			t.Fatal("expected error for existing file without rewrite")
+		}
+	})
+
+	t.Run("rewrite=true overwrites existing file", func(t *testing.T) {
+		result, err := tool.Execute(ctx, `{"path": "hello.txt", "content": "rewritten", "rewrite": true}`)
+		if err != nil {
+			t.Fatalf("rewrite=true should succeed, got: %v", err)
+		}
+		content, _ := os.ReadFile(filepath.Join(ws, "hello.txt"))
+		if string(content) != "rewritten" {
+			t.Errorf("got %q, want %q", string(content), "rewritten")
+		}
+		_ = result
+	})
 }
 
 // ============================================================================
