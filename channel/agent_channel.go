@@ -50,20 +50,35 @@ func (ac *AgentChannel) Start() error {
 	ac.cancel = cancel
 
 	ac.wg.Go(func() {
-		defer clipanic.Recover("channel.AgentChannel.Start", nil, false)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case req := <-ac.inbox:
-				result, err := ac.runFn(ctx, req.task)
-				if err != nil {
-					result = "Error: " + err.Error()
-				}
-				select {
-				case req.replyCh <- result:
-				case <-ctx.Done():
-				}
+				// Recover inside the loop body so a panic in runFn
+				// doesn't kill the processing goroutine. Without this,
+				// a panic strands all pending requests (their replyCh
+				// never receives) and the AgentChannel hangs permanently.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							clipanic.Report("channel.AgentChannel.runFn", ac.name, r)
+							errMsg := fmt.Sprintf("panic: %v", r)
+							select {
+							case req.replyCh <- errMsg:
+							case <-ctx.Done():
+							}
+						}
+					}()
+					result, err := ac.runFn(ctx, req.task)
+					if err != nil {
+						result = "Error: " + err.Error()
+					}
+					select {
+					case req.replyCh <- result:
+					case <-ctx.Done():
+					}
+				}()
 			}
 		}
 	})
