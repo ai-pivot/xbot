@@ -3,6 +3,7 @@ import ConfirmDialog from '../ConfirmDialog'
 import { useEffect, useState, useCallback } from 'react'
 
 import type { ShowToastFn, LLMConfig } from './shared'
+import { IconTrash, IconPlus, IconAlert, IconSave, IconClock } from '../Icons'
 import { PROVIDER_OPTIONS } from './shared'
 
 interface LLMTabProps {
@@ -232,7 +233,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
               onClick={requestLLMDelete}
               disabled={llmSaving}
             >
-              🗑️ 删除配置
+              <IconTrash className="inline" /> 删除配置
             </button>
           </div>
 
@@ -257,7 +258,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
             className="settings-action-btn w-full mt-2"
             onClick={() => setLlmConfig(null)}
           >
-            ➕ 添加配置
+            <IconPlus className="inline" /> 添加配置
           </button>
         </>
       ) : (
@@ -300,7 +301,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
               value={llmFormApiKey}
               onChange={(e) => setLlmFormApiKey(e.target.value)}
             />
-            <p className="settings-muted mt-1">⚠️ API Key 仅存储在服务端，不会返回到前端</p>
+            <p className="settings-muted mt-1"><IconAlert className="inline" /> API Key 仅存储在服务端，不会返回到前端</p>
           </div>
 
           <div className="settings-item">
@@ -347,7 +348,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
             onClick={handleLLMAdd}
             disabled={llmSaving}
           >
-            {llmSaving ? '保存中...' : '💾 保存配置'}
+            {llmSaving ? '保存中...' : <><IconSave className="inline" /> 保存配置</>}
           </button>
         </>
       )}
@@ -371,7 +372,7 @@ export default function LLMTab({ showToast }: LLMTabProps) {
               onClick={handleLLMMaxContextSave}
               disabled={llmMaxContextSaving}
             >
-              {llmMaxContextSaving ? '⏳' : '💾'} 保存
+              {llmMaxContextSaving ? <IconClock className="inline" /> : <IconSave className="inline" />} 保存
             </button>
           </div>
           <div className="settings-muted mt-1">

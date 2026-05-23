@@ -7,16 +7,16 @@
   display: flex;
   align-items: flex-end;
   gap: 0;
-  background: var(--xbot-bg-secondary);
-  border: 1px solid var(--xbot-border-light);
-  border-radius: 12px;
-  overflow: hidden;
-  transition: border-color 0.2s;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  transition: none;
 }
 
 .tiptap-wrapper:focus-within {
-  border-color: var(--xbot-accent-blue);
-  box-shadow: 0 0 0 1px var(--xbot-accent-blue);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 /* Editor area */
@@ -90,36 +90,48 @@
   margin-top: 3px;
 }
 
-/* Send button inside tiptap wrapper */
+/* Send button — solid circle, fixed bottom-right */
 .tiptap-send-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  align-self: stretch;
-  background: var(--xbot-accent-blue);
-  color: white;
+  width: 32px;
+  height: 32px;
+  align-self: flex-end;
+  margin-bottom: 4px;
+  margin-right: 4px;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
   border: none;
   cursor: pointer;
-  font-size: 16px;
-  border-radius: 0 12px 12px 0;
-  transition: background 0.2s;
+  border-radius: 50%;
+  transition: opacity 0.2s, transform 0.15s;
   flex-shrink: 0;
 }
 
 .tiptap-send-btn:hover:not(:disabled) {
-  background: #1d4ed8;
+  transform: scale(1.08);
 }
 
 .tiptap-send-btn:focus-visible {
   outline: 2px solid var(--xbot-accent);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 
-.tiptap-send-btn:disabled {
-  background: var(--xbot-border-light);
-  color: var(--xbot-text-muted);
-  cursor: not-allowed;
+.tiptap-send-btn:disabled:not(.tiptap-stop-btn) {
+  cursor: default;
+  transform: none;
+}
+
+/* Stop button — same solid circle */
+.tiptap-stop-btn {
+  background: var(--btn-primary-bg) !important;
+  color: var(--btn-primary-fg) !important;
+  cursor: pointer;
+}
+
+.tiptap-stop-btn:hover {
+  transform: scale(1.08);
 }
 
 /* ---- Cancel Button ---- */
@@ -164,13 +176,13 @@
 /* ---- Light Theme Overrides ---- */
 
 [data-theme="light"] .tiptap-wrapper {
-  background: #f7f5f2 !important;
-  border-color: #cdc9c3 !important;
-  box-shadow: 0 1px 3px rgba(28,25,23,0.08), 0 1px 2px rgba(28,25,23,0.04) !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
 [data-theme="light"] .tiptap-wrapper .tiptap-editor {
-  background: rgba(247,245,242,0.8) !important;
+  background: transparent !important;
   color: #1c1917 !important;
 }
 
@@ -179,7 +191,7 @@
 }
 
 [data-theme="light"] .tiptap-wrapper .tiptap-editor code {
-  background: #e2dfda;
+  background: rgba(0,0,0,0.06);
   color: #1c1917;
   padding: 2px 6px;
   border-radius: 4px;
@@ -187,8 +199,8 @@
 }
 
 [data-theme="light"] .tiptap-wrapper .tiptap-editor pre {
-  background: #eae7e2;
-  border: 1px solid #ddd9d4;
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.08);
   border-radius: 8px;
 }
 
@@ -196,9 +208,19 @@
   color: #a8a29e;
 }
 
-[data-theme="light"] .tiptap-send-btn:disabled {
-  background: #cdc9c3;
-  color: #a8a29e;
+[data-theme="light"] .tiptap-send-btn {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+}
+[data-theme="light"] .tiptap-send-btn:hover:not(:disabled) {
+  transform: scale(1.08);
+}
+[data-theme="light"] .tiptap-send-btn:disabled:not(.tiptap-stop-btn) {
+  cursor: default;
+}
+[data-theme="light"] .tiptap-stop-btn {
+  background: var(--btn-primary-bg) !important;
+  color: var(--btn-primary-fg) !important;
 }
 
 [data-theme="light"] .cancel-btn {

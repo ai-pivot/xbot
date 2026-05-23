@@ -1,4 +1,5 @@
 import { useState, memo } from 'react'
+import { IconCopy, IconCheck } from './Icons'
 
 export interface TodoItem {
   id: number
@@ -39,7 +40,7 @@ export const TodoBar = memo(function TodoBar({ todos }: TodoBarProps) {
         aria-expanded={!collapsed}
         aria-label={`TODO ${done}/${total}`}
       >
-        <span className="text-xs flex-shrink-0">📋</span>
+        <span className="text-xs flex-shrink-0"><IconCopy /></span>
         <span className={`text-xs font-semibold flex-shrink-0 ${allDone ? 'text-green-400' : 'text-slate-300'}`}>
           TODO
         </span>
@@ -69,7 +70,7 @@ export const TodoBar = memo(function TodoBar({ todos }: TodoBarProps) {
           {todos.map(todo => (
             <div key={todo.id} className="flex items-center gap-2 text-xs leading-relaxed">
               <span className={`flex-shrink-0 ${todo.done ? 'text-green-400' : 'text-slate-500'}`}>
-                {todo.done ? '✓' : '○'}
+                {todo.done ? <IconCheck className="inline" /> : <span style={{width:10,height:10,borderRadius:'50%',display:'inline-block',border:'1.5px solid currentColor',verticalAlign:'middle'}} />}
               </span>
               <span className={`truncate ${
                 todo.done

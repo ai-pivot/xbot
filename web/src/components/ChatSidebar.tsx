@@ -1,5 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { IconChat } from './Icons'
 import ConfirmDialog from './ConfirmDialog'
 
 interface ChatInfo {
@@ -124,7 +125,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   if (collapsed) {
     return (
       <button className="chat-sidebar-toggle" onClick={() => { setCollapsed(false); fetchChats() }} title={t("expandSidebar")}>
-        💬 <span className="sidebar-count">{chats.length}</span>
+        <IconChat className="inline" /> <span className="sidebar-count">{chats.length}</span>
       </button>
     )
   }

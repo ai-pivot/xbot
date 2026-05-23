@@ -4,6 +4,7 @@ import type { Turn, Message } from '../types'
 import { useTranslation } from '../i18n'
 import type { I18nKey } from '../i18n'
 import { splitByQuery } from '../utils/highlight'
+import { IconUser, IconBot } from './Icons'
 
 interface SearchResult {
   id: string
@@ -183,7 +184,7 @@ export default function SearchPanel({ open, onClose, messagesContainerRef, virtu
   }
 
   return (
-    <div className="bg-slate-800/95 border-b border-slate-700 px-4 py-3 backdrop-blur-sm" role="search" aria-label={t('searchMessages')}>
+    <div className="search-panel" role="search" aria-label={t('searchMessages')}>
       <div className="max-w-2xl mx-auto">
         <div className="relative">
           <input
@@ -195,7 +196,7 @@ export default function SearchPanel({ open, onClose, messagesContainerRef, virtu
             onKeyDown={e => { if (e.key === 'Escape') onClose() }}
             placeholder={t('searchMessages')}
             autoFocus
-            className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-400 focus:outline-none focus:border-blue-500"
+            className="w-full px-4 py-2 rounded-lg text-sm placeholder:text-slate-400 focus:outline-none"
           />
         </div>
 
@@ -266,7 +267,7 @@ export default function SearchPanel({ open, onClose, messagesContainerRef, virtu
                   onClick={() => handleResultClick(hit)}
                 >
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-medium text-slate-400">{hit.role === 'user' ? '👤' : '🤖'}</span>
+                    <span className="text-xs font-medium text-slate-400">{hit.role === 'user' ? <IconUser className="inline" /> : <IconBot className="inline" />}</span>
                     {hit.created_at && <span className="text-xs text-slate-500">{new Date(hit.created_at).toLocaleString()}</span>}
                     <button
                       className="text-xs text-slate-500 hover:text-slate-300 ml-auto"

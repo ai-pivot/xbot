@@ -7,7 +7,7 @@
 
 /* ═══ HEADER — 44px iOS standard ═══ */
 .header-bar {
-  background: rgba(28,28,30,0.88) !important;
+  background: var(--glass-chat) !important;
   backdrop-filter: saturate(200%) blur(40px) !important;
   -webkit-backdrop-filter: saturate(200%) blur(40px) !important;
   border-bottom: 0.5px solid rgba(255,255,255,0.08) !important;
@@ -29,7 +29,12 @@
 .header-bar span { font-size: 13px !important; }
 
 .app-body { background: transparent !important; }
-.messages-area { background: transparent !important; animation: fadeIn 0.2s ease; }
+.messages-area {
+  background: var(--bg-chat) !important;
+  animation: fadeIn 0.2s ease;
+  padding-left: 5% !important;
+  padding-right: 5% !important;
+}
 
 /* Consistent 12px gap between messages for breathing room */
 .messages-area > div { margin-bottom: 12px !important; }
@@ -43,77 +48,62 @@
   letter-spacing: -0.01em !important;
 }
 
-/* ═══ USER BUBBLE — Solid Apple blue, subtle depth ═══ */
+/* ═══ USER BUBBLE — right-aligned, 90% column, subtle dark ═══ */
 .user-msg {
-  background: #007AFF !important;
+  background: var(--bg-user-bubble) !important;
   border: none !important;
-  color: #ffffff !important;
+  color: var(--text-user-bubble) !important;
   border-radius: 20px 20px 20px 6px !important;
-  box-shadow: 0 1px 4px rgba(0,122,255,0.25), 0 4px 12px rgba(0,0,0,0.15) !important;
+  box-shadow: none !important;
   position: relative;
   padding: 10px 16px !important;
+  width: fit-content !important;
+  max-width: 100% !important;
+  margin-left: auto !important;
+  margin-right: 0 !important;
 }
 .user-msg::before, .user-msg::after { display: none !important; }
-.user-msg .text-blue-200\/50 { color: rgba(255,255,255,0.7) !important; }
+.user-msg .text-blue-200\/50 { color: rgba(255,255,255,0.5) !important; }
 
-/* ═══ INPUT BAR ═══ */
+/* ═══ INPUT BAR — transparent container ═══ */
 .input-bar {
-  background: rgba(28,28,30,0.88) !important;
-  backdrop-filter: saturate(200%) blur(40px) !important;
-  -webkit-backdrop-filter: saturate(200%) blur(40px) !important;
-  border-top: 0.5px solid rgba(255,255,255,0.06) !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-top: none !important;
   position: relative;
   padding: 10px 20px 16px !important;
 }
 .input-bar::before { display: none !important; }
-.input-bar textarea {
-  background: rgba(0,0,0,0.25) !important;
-  border: none !important;
-  border-radius: 24px !important;
-  color: var(--text-primary) !important;
-  padding: 10px 48px 10px 16px !important;
-  font-size: 15px !important;
-  min-height: 38px !important;
-  transition: background 0.15s !important;
-  resize: none !important;
-  box-shadow: none !important;
-  line-height: 1.4 !important;
-}
-.input-bar textarea:focus {
-  background: rgba(0,0,0,0.4) !important;
-  outline: none !important;
-  box-shadow: 0 0 0 2px rgba(0,122,255,0.3) !important;
-}
-.input-bar textarea::placeholder { color: var(--text-tertiary) !important; }
 
-/* ═══ SEND BUTTON — Apple blue circle with depth ═══ */
+/* ═══ SEND BUTTON — solid circle, themed bg ═══ */
 .input-bar button[type="submit"],
 .input-bar .send-btn {
-  background: linear-gradient(180deg, #339dff 0%, #0066d6 100%) !important;
+  background: var(--btn-primary-bg) !important;
   border: none !important;
-  color: #fff !important;
-  width: 30px !important;
-  height: 30px !important;
+  color: var(--btn-primary-fg) !important;
+  width: 32px !important;
+  height: 32px !important;
   border-radius: 50% !important;
-  box-shadow: 0 1px 3px rgba(0,102,214,0.35) !important;
-  transition: all 0.2s ease !important;
+  box-shadow: none !important;
+  transition: opacity 0.2s, transform 0.15s !important;
   animation: none !important;
 }
 .input-bar button[type="submit"]:hover,
 .input-bar .send-btn:hover { 
-  box-shadow: 0 2px 8px rgba(0,102,214,0.45) !important;
+  opacity: 0.85 !important;
   transform: scale(1.05) !important;
   animation: none !important; 
 }
 .input-bar button[type="submit"]:active,
-.input-bar .send-btn:active { opacity: 0.8 !important; transform: scale(0.95) !important; }
+.input-bar .send-btn:active { opacity: 0.7 !important; transform: scale(0.95) !important; }
 .input-bar button[type="submit"]:disabled,
-.input-bar .send-btn:disabled { opacity: 0.3 !important; background: #6e6e73 !important; animation: none !important; }
+.input-bar .send-btn:disabled { opacity: 1 !important; background: var(--btn-primary-bg) !important; animation: none !important; }
 
 /* ═══ LOGIN PAGE ═══ */
 .login-container { background: #000 !important; }
 .login-card {
-  background: rgba(28,28,30,0.92) !important;
+  background: var(--glass-chat-heavy) !important;
   border: 0.5px solid rgba(255,255,255,0.1) !important;
   border-radius: var(--radius-xl) !important;
   box-shadow:
@@ -163,7 +153,7 @@
 /* ═══ ONBOARDING ═══ */
 /* Only style the card — overlay must keep position:fixed from onboarding.css */
 .onboarding-card {
-  background: rgba(28,28,30,0.95) !important;
+  background: var(--glass-chat-heavy) !important;
   border: 0.5px solid rgba(255,255,255,0.1) !important;
   border-radius: var(--radius-xl) !important;
   box-shadow:
@@ -212,39 +202,50 @@
 /* LIGHT MODE OVERRIDES — Apple light palette                                    */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
+[data-theme="light"] .messages-area {
+  background: var(--bg-chat) !important;
+}
 [data-theme="light"] .header-bar {
-  background: rgba(255,255,255,0.88) !important;
+  background: var(--glass-chat) !important;
   border-bottom-color: rgba(0,0,0,0.08) !important;
 }
 [data-theme="light"] .input-bar {
-  background: rgba(255,255,255,0.88) !important;
-  border-top-color: rgba(0,0,0,0.06) !important;
+  background: transparent !important;
+  border-top: none !important;
 }
-[data-theme="light"] .input-bar textarea {
-  background: rgba(0,0,0,0.04) !important;
+[data-theme="light"] .input-bar-inner {
+  background: var(--bg-input);
+  border-color: rgba(0,0,0,0.08);
 }
-[data-theme="light"] .input-bar textarea:focus {
-  background: rgba(0,0,0,0.06) !important;
-  box-shadow: 0 0 0 2px rgba(0,122,255,0.2) !important;
+[data-theme="light"] .input-bar button[type="submit"],
+[data-theme="light"] .input-bar .send-btn {
+  background: var(--btn-primary-bg) !important;
+  color: var(--btn-primary-fg) !important;
 }
+[data-theme="light"] .input-bar button[type="submit"]:hover,
+[data-theme="light"] .input-bar .send-btn:hover {
+  opacity: 0.85 !important;
+}
+[data-theme="light"] .input-bar button[type="submit"]:disabled,
+[data-theme="light"] .input-bar .send-btn:disabled { background: var(--btn-primary-bg) !important; }
 [data-theme="light"] .user-msg {
-  background: #007AFF !important;
-  color: #ffffff !important;
+  background: var(--bg-user-bubble) !important;
+  color: var(--text-user-bubble) !important;
 }
 [data-theme="light"] .assistant-msg {
   color: var(--text-primary) !important;
 }
-/* AI response card */
+/* AI response card — transparent, no bubble */
 [data-theme="light"] .assistant-card,
 [data-theme="light"] .assistant-turn-card,
 [data-theme="light"] [class*="bg-slate-800"] {
-  background: #f2f2f7 !important;
-  border-color: rgba(0,0,0,0.06) !important;
+  background: transparent !important;
+  border-color: transparent !important;
 }
 /* Login */
 [data-theme="light"] .login-container { background: linear-gradient(135deg, #dfe6f0 0%, #f2f2f7 50%, #e8e8f0 100%) !important; }
 [data-theme="light"] .login-card {
-  background: rgba(255,255,255,0.82) !important;
+  background: var(--glass-chat-heavy) !important;
   border: 0.5px solid rgba(0,0,0,0.06) !important;
   box-shadow:
     0 0 0 0.5px rgba(0,0,0,0.03),
@@ -284,7 +285,7 @@
 [data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2) !important; }
 /* Onboarding — only style the card, keep overlay fixed */
 [data-theme="light"] .onboarding-card {
-  background: rgba(255,255,255,0.85) !important;
+  background: var(--glass-chat-heavy) !important;
   border: 0.5px solid rgba(0,0,0,0.08) !important;
   box-shadow:
     0 0 0 0.5px rgba(0,0,0,0.03),

@@ -1,4 +1,5 @@
 import { useState, memo } from 'react'
+import { IconBot } from './Icons'
 import { SubAgentTree, type WsSubAgent } from './ProgressPanel'
 
 export interface SubAgentPanelProps {
@@ -27,7 +28,7 @@ export const SubAgentPanel = memo(function SubAgentPanel({ agents }: SubAgentPan
         aria-expanded={!collapsed}
         aria-label={`Agents ${running}/${total}`}
       >
-        <span className="text-xs flex-shrink-0">🤖</span>
+        <span className="text-xs flex-shrink-0"><IconBot className="inline" /></span>
         <span className="text-xs font-semibold text-slate-300 flex-shrink-0">Agents</span>
         <span className="text-[11px] text-slate-500 font-mono flex-shrink-0">{running}/{total}</span>
         {running > 0 && (

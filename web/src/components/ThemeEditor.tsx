@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from '../i18n'
+import { IconCopy, IconRefresh, IconX, IconSave, IconDownload } from './Icons'
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                     */
@@ -267,7 +268,7 @@ export default function ThemeEditor({ open, onClose }: ThemeEditorProps) {
         <div className="theme-editor-header">
           <h2 className="theme-editor-title">🎨 {t('themeEditor')}</h2>
           <button className="theme-editor-close" onClick={onClose} aria-label={t('closeSettings')}>
-            ✕
+            <IconX className="inline" />
           </button>
         </div>
 
@@ -301,16 +302,16 @@ export default function ThemeEditor({ open, onClose }: ThemeEditorProps) {
         {/* Actions */}
         <div className="theme-editor-actions">
           <button className="theme-editor-btn theme-editor-btn-primary" onClick={handleSave}>
-            💾 {t('save')}
+            <IconSave className="inline" /> {t('save')}
           </button>
           <button className="theme-editor-btn" onClick={handleExport}>
-            📋 {t('exportTheme')}
+            <IconCopy className="inline" /> {t('exportTheme')}
           </button>
           <button className="theme-editor-btn" onClick={handleImport}>
-            📥 {t('importTheme')}
+            <IconDownload className="inline" /> {t('importTheme')}
           </button>
           <button className="theme-editor-btn theme-editor-btn-danger" onClick={handleReset}>
-            🔄 {t('resetTheme')}
+            <IconRefresh className="inline" /> {t('resetTheme')}
           </button>
         </div>
 

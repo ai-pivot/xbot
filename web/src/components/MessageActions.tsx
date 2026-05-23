@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useTranslation } from '../i18n'
+import { IconCopy, IconRefresh, IconTrash, IconReply, IconCheck, IconBookmark } from './Icons'
 
 interface MessageActionsProps {
   onCopy: () => void
@@ -23,7 +24,7 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
         title={t('copyContent')}
         data-testid="copy-btn"
       >
-        {copied ? '✓' : '📋'}
+        {copied ? <IconCheck className="inline" /> : <IconCopy />}
       </button>
 
       {/* More actions menu */}
@@ -50,7 +51,7 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
                     role="menuitem"
                     data-testid="reply-btn"
                   >
-                    ↩️ {t('replyMessage')}
+                    <IconReply className="inline" /> {t('replyMessage')}
                   </button>
                 )}
                 {onSnapshot && (
@@ -60,7 +61,7 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
                     role="menuitem"
                     data-testid="snapshot-btn"
                   >
-                    📸 {t('takeSnapshot')}
+                    <IconBookmark className="inline" /> {t('takeSnapshot')}
                   </button>
                 )}
                 {onRegenerate && (
@@ -70,7 +71,7 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
                     role="menuitem"
                     data-testid="regenerate-btn"
                   >
-                    🔄 {t('regenerate')}
+                    <IconRefresh className="inline" /> {t('regenerate')}
                   </button>
                 )}
                 {onDelete && (
@@ -80,7 +81,7 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
                     role="menuitem"
                     data-testid="delete-btn"
                   >
-                    🗑️ {t('deleteMessage')}
+                    <IconTrash className="inline" /> {t('deleteMessage')}
                   </button>
                 )}
               </div>

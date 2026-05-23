@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react'
 
 import type { PresetCommand } from '../../types'
 import type { ShowToastFn } from './shared'
+import { IconSave, IconInbox, IconEdit, IconTrash, IconPlus } from '../Icons'
 import { fetchSettings, saveSettings } from './shared'
 
 interface PresetsTabProps {
@@ -158,7 +159,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
               onClick={() => handlePresetSave(editingPreset)}
               disabled={!editingPreset.label.trim() || !editingPreset.content.trim() || presetSaving}
             >
-              {presetSaving ? '保存中...' : '💾 保存'}
+              {presetSaving ? '保存中...' : <><IconSave className="inline" /> 保存</>}
             </button>
             <button
               className="settings-action-btn settings-action-danger"
@@ -173,7 +174,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
         <>
           {presetList.length === 0 ? (
             <div className="settings-loading">
-              <p className="text-2xl mb-2">📭</p>
+              <p className="text-2xl mb-2"><IconInbox className="inline" style={{width:28,height:28}} /></p>
               <p className="text-sm">{t('noPresets')}</p>
             </div>
           ) : (
@@ -205,13 +206,13 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
                       onClick={() => setEditingPreset({ ...p })}
                       title="编辑"
                       disabled={presetSaving}
-                    >✏️</button>
+                    ><IconEdit className="inline" /></button>
                     <button
                       className="preset-action-btn preset-action-delete"
                       onClick={() => requestPresetDelete(p.id)}
                       title="删除"
                       disabled={presetSaving}
-                    >🗑️</button>
+                    ><IconTrash className="inline" /></button>
                   </div>
                 </div>
               ))}
@@ -222,7 +223,7 @@ export default function PresetsTab({ onPresetsChange }: PresetsTabProps) {
             onClick={handlePresetAdd}
             disabled={presetList.length >= 20 || presetSaving}
           >
-            ➕ 新增指令 {presetList.length > 0 ? `(${presetList.length}/20)` : ''}
+            <IconPlus className="inline" /> 新增指令 {presetList.length > 0 ? `(${presetList.length}/20)` : ''}
           </button>
         </>
       )}

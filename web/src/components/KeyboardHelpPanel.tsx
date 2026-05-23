@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, memo } from 'react'
 import { useTranslation, type I18nKey } from '../i18n'
+import { IconX } from './Icons'
 
 interface ShortcutGroup {
   title: string
@@ -79,7 +80,7 @@ export const KeyboardHelpPanel = memo(function KeyboardHelpPanel() {
         <div className="keyboard-help-header">
           <h3>{t('keyboardHelp')}</h3>
           <button className="keyboard-help-close-btn" onClick={close} aria-label="Close">
-            ✕
+            <IconX className="inline" />
           </button>
         </div>
 

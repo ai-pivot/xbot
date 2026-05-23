@@ -1,5 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { IconCopy, IconTrash, IconBot, IconPlus, IconClock } from './Icons'
 
 // ── Constants ──
 const BUILTIN_DOCKER_NAME = '__docker__'
@@ -239,7 +240,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
       {/* Runner cards */}
       {runners.length === 0 && !showAddForm ? (
         <div className="text-center py-6 text-slate-500">
-          <p className="text-2xl mb-2">🖥️</p>
+          <p className="text-2xl mb-2"><IconBot style={{width:28,height:28}} /></p>
           <p className="text-sm">{t('noRunners')}</p>
           <p className="text-xs text-slate-600 mt-1">{t('addRunnerHint')}</p>
         </div>
@@ -283,7 +284,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
                           setMenuOpen(null)
                         }}
                       >
-                        📋 {copied === runner.name ? t('copiedCommand') : t('copyConnectCommand')}
+                        <IconCopy className="inline" /> {copied === runner.name ? t('copiedCommand') : t('copyConnectCommand')}
                       </button>
                       <button
                         className="runner-menu-item runner-menu-item-danger"
@@ -292,7 +293,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
                           setMenuOpen(null)
                         }}
                       >
-                        🗑️ {t("deleteRunner")}
+                        <IconTrash className="inline" /> {t("deleteRunner")}
                       </button>
                     </div>
                   )}
@@ -325,7 +326,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
                       handleCopyCommand(runner)
                     }}
                     title={t('copyConnectCommand')}
-                  >📋</button>
+                  ><IconCopy /></button>
                 </div>
               )}
             </div>
@@ -415,7 +416,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
           className="settings-action-btn w-full mt-3"
           onClick={() => setShowAddForm(true)}
         >
-          ➕ {t("addWorkspace")}
+          <IconPlus className="inline" /> {t("addWorkspace")}
         </button>
       )}
 
@@ -446,7 +447,7 @@ export default function RunnerPanel({ serverUrl, wsUrl, senderId }: RunnerPanelP
                 onClick={() => handleDelete(deleteConfirm)}
                 disabled={actionLoading}
               >
-                {actionLoading ? '⏳' : '🗑️ {t("deleteRunner")}'}
+                {actionLoading ? <IconClock className="inline" /> : <><IconTrash className="inline" /> {t("deleteRunner")}</>}
               </button>
             </div>
           </div>

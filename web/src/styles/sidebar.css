@@ -21,7 +21,7 @@
   height: 100%; max-height: 100%;
   box-sizing: border-box;
   display: flex; flex-direction: column;
-  background: rgba(28,28,30,0.92) !important;
+  background: var(--glass-chat-heavy) !important;
   backdrop-filter: saturate(180%) blur(20px) !important;
   border-right: 0.5px solid rgba(255,255,255,0.06) !important;
   overflow: hidden;
@@ -176,7 +176,7 @@
 
 /* ═══ LIGHT MODE ═══ */
 [data-theme="light"] .sidebar-panel {
-  background: rgba(242,242,247,0.92) !important;
+  background: var(--glass-chat-heavy) !important;
   border-right-color: rgba(0,0,0,0.06) !important;
 }
 [data-theme="light"] .sidebar-chatname { color: rgba(0,0,0,0.55) !important; }
@@ -196,7 +196,7 @@
 [data-theme="light"] .sidebar-delete-btn:hover { color: #ff453a !important; }
 [data-theme="light"] .sidebar-rename-input { background: rgba(0,0,0,0.04) !important; color: var(--text-primary) !important; }
 [data-theme="light"] .chat-sidebar-toggle {
-  background: rgba(255,255,255,0.85) !important;
+  background: var(--glass-chat-heavy) !important;
   border-color: rgba(0,0,0,0.08) !important;
   color: var(--text-secondary) !important;
 }

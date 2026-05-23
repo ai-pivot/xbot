@@ -1,4 +1,5 @@
 import { useTranslation } from '../i18n'
+import { IconRefresh, IconCheck, IconX } from './Icons'
 import {
   type UploadQueueItem,
   getFileIcon,
@@ -34,13 +35,13 @@ export default function UploadQueue({ queue, onRemove, onRetry, onMove }: Upload
         const isDone = item.status === 'done'
 
         // Status label: use existing i18n keys where possible
-        let statusText: string
+        let statusText: React.ReactNode
         if (isUploading) {
           statusText = `${item.progress}%`
         } else if (isDone) {
-          statusText = '✓'
+          statusText = <IconCheck className="inline" />
         } else if (isError) {
-          statusText = '✗'
+          statusText = <IconX className="inline" />
         } else {
           statusText = '…'
         }
@@ -84,7 +85,7 @@ export default function UploadQueue({ queue, onRemove, onRetry, onMove }: Upload
                   title={t('retryUpload') as string}
                   data-testid="upload-queue-retry"
                 >
-                  🔄
+                  <IconRefresh />
                 </button>
               )}
               <button
@@ -111,7 +112,7 @@ export default function UploadQueue({ queue, onRemove, onRetry, onMove }: Upload
                 title={t('remove') as string}
                 data-testid="upload-queue-remove"
               >
-                ✕
+                <IconX className="inline" />
               </button>
             </div>
           </div>

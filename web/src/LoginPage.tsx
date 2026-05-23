@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from './i18n'
+import { IconBot } from './components/Icons'
 
 interface LoginPageProps {
   onLogin: () => void
@@ -84,7 +85,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     <div className="flex items-center justify-center min-h-screen px-4 login-container" style={{ background: 'var(--bg-base)' }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>🤖 {t('appName')}</h1>
+          <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}><IconBot className="inline" style={{width:28,height:28}} /> {t('appName')}</h1>
           <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>{t('appSubtitle')}</p>
         </div>
 

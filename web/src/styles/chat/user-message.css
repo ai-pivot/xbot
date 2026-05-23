@@ -1,15 +1,19 @@
 /* ========================================================================== */
-/* User Message Bubble — Apple style                                           */
+/* User Message Bubble — right-aligned, subtle dark                            */
 /* ========================================================================== */
 
-/* User message — softer Apple blue with subtle depth */
-.flex.justify-end > .max-w-\[80\%\] {
-  background: #007AFF !important;
+/* User bubble: fit-content, right-aligned, dark */
+.user-msg {
+  width: fit-content !important;
+  max-width: 100% !important;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  background: var(--bg-user-bubble) !important;
   border-radius: 20px 20px 20px 6px !important;
-  box-shadow: 0 1px 4px rgba(0,122,255,0.25), 0 4px 12px rgba(0,0,0,0.15) !important;
-  transition: box-shadow 0.2s ease !important;
+  box-shadow: none !important;
+  transition: background 0.15s ease !important;
 }
 
-.flex.justify-end > .max-w-\[80\%\]:hover {
-  box-shadow: 0 2px 8px rgba(0,122,255,0.3), 0 6px 16px rgba(0,0,0,0.18) !important;
+.user-msg:hover {
+  background: #353535 !important;
 }

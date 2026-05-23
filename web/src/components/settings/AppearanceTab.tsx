@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { IconRefresh, IconUpload, IconDownload } from '../Icons'
 
 import type { ShowToastFn, Theme, FontSize, Language, UserSettings } from './shared'
 import { lsGet, fetchSettings, saveSettings, FONT_SIZE_MAP, DEFAULT_SETTINGS, LS_KEYS } from './shared'
@@ -278,7 +279,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
               URL.revokeObjectURL(url)
             }}
           >
-            📤 {t('exportSettings')}
+            <IconUpload className="inline" /> {t('exportSettings')}
           </button>
           <button
             className="settings-btn-secondary text-xs"
@@ -312,7 +313,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
               input.click()
             }}
           >
-            📥 {t('importSettings')}
+            <IconDownload className="inline" /> {t('importSettings')}
           </button>
           <button
             className="settings-btn-secondary text-xs"
@@ -334,7 +335,7 @@ export default function AppearanceTab({ showToast, onNicknameChange, onSavingCha
               showToast(t('settingsReset'), 'success')
             }}
           >
-            🔄 {t('resetToDefaults')}
+            <IconRefresh className="inline" /> {t('resetToDefaults')}
           </button>
         </div>
       </div>

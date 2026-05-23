@@ -182,13 +182,17 @@ const TiptapEditor = forwardRef<TiptapEditorHandle, TiptapEditorProps>(
         <EditorContent editor={editor} />
       </div>
       <button
-        onClick={handleSend}
-        disabled={!connected || disabled || !hasContent}
-        className="tiptap-send-btn"
-        title={t('send')}
-        aria-label={t('sendMessage')}
+        onClick={disabled && onCancel ? onCancel : handleSend}
+        disabled={!disabled && (!connected || !hasContent)}
+        className={`tiptap-send-btn ${disabled && onCancel ? 'tiptap-stop-btn' : ''}`}
+        title={disabled && onCancel ? t('stopGeneration') : t('send')}
+        aria-label={disabled && onCancel ? t('stopGeneration') : t('sendMessage')}
       >
-        ➤
+        {disabled && onCancel ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 3l-8 9h5v9h6v-9h5z"/></svg>
+        )}
       </button>
       {currentModel && (
         <span className="absolute bottom-1 left-3 text-[11px] text-slate-500 truncate pointer-events-none select-none">

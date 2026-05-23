@@ -164,3 +164,26 @@
 [data-theme="light"] .notification-item-title { color: #1e293b; }
 [data-theme="light"] .notification-item-text { color: #475569; }
 [data-theme="light"] .notification-read .notification-item-title { color: #94a3b8; }
+
+/* Status indicator dots */
+.notification-dot-success {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--success);
+}
+.notification-dot-danger {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--danger);
+}
+.notification-dot-warning {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--warning);
+}

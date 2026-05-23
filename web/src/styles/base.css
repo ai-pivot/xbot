@@ -18,18 +18,18 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #1c1c1e;
+  background: var(--bg-chat);
   position: relative;
 }
 
 [data-theme="light"] body { background: #f5f5f7; color: #1d1d1f; }
-[data-theme="light"] #root { background: #f5f5f7; }
+[data-theme="light"] #root { background: var(--bg-chat); }
 
 .skip-to-content { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; z-index: -1; }
 
 /* ─── Design Tokens ─── */
 :root {
-  --bg-base: #1c1c1e;
+  --bg-base: #151517;
   --bg-secondary: #2c2c2e;
   --bg-tertiary: #3a3a3c;
   --bg-elevated: #48484a;
@@ -60,6 +60,15 @@ body {
   --glass-bg: rgba(30,30,32,0.72);
   --glass-border: rgba(255,255,255,0.1);
   --glass-blur: 40px;
+  --bg-chat: #151517;
+  --bg-assistant: transparent;
+  --bg-input: #212121;
+  --bg-user-bubble: #2f2f2f;
+  --text-user-bubble: #e5e5e5;
+  --btn-primary-bg: #ffffff;
+  --btn-primary-fg: #000000;
+  --glass-chat: rgba(21,21,23,0.88);
+  --glass-chat-heavy: rgba(21,21,23,0.95);
   --xbot-bg-secondary: var(--bg-secondary);
   --xbot-bg-input: rgba(0,0,0,0.3);
   --xbot-bg-elevated: var(--bg-hover);
@@ -92,6 +101,15 @@ body {
   --accent: #007aff; --accent-secondary: #5856d6; --accent-hover: #0071e3;
   --border: rgba(0,0,0,0.08); --border-hover: rgba(0,0,0,0.15);
   --glass-bg: rgba(255,255,255,0.72); --glass-border: rgba(0,0,0,0.08); --glass-blur: 40px;
+  --bg-chat: #ffffff;
+  --bg-assistant: transparent;
+  --bg-input: #f4f4f4;
+  --bg-user-bubble: #f4f4f4;
+  --text-user-bubble: #1d1d1f;
+  --btn-primary-bg: #000000;
+  --btn-primary-fg: #ffffff;
+  --glass-chat: rgba(255,255,255,0.88);
+  --glass-chat-heavy: rgba(255,255,255,0.95);
   --xbot-bg-secondary: #f2f2f7; --xbot-bg-input: rgba(0,0,0,0.04);
 }
 

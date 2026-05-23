@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, memo
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { IconTrash, IconSparkles, IconHelp, IconSettings, IconSearch, IconReply, IconChat, IconRefresh, IconCopy, IconBot, IconPackage, IconClock, IconX, IconCheck, IconZap, IconKeyboard, IconList, IconVolume, IconPaperclip, IconBolt, IconEdit } from './components/Icons'
 
 import { useWebSocket } from './hooks/useWebSocket'
 import { useChatMessageHandler } from './hooks/useChatMessageHandler'
@@ -154,13 +155,13 @@ function AttachmentCard({ attachment, onPreview }: { attachment: ParsedAttachmen
       className="attachment-card attachment-file"
     >
       <div className="attachment-file-icon">
-        {attachment.name.match(/\.(pdf)$/i) ? '📄' :
-         attachment.name.match(/\.(doc|docx)$/i) ? '📝' :
-         attachment.name.match(/\.(xls|xlsx|csv)$/i) ? '📊' :
-         attachment.name.match(/\.(zip|tar|gz|rar|7z)$/i) ? '📦' :
-         attachment.name.match(/\.(mp4|avi|mov|mkv)$/i) ? '🎬' :
-         attachment.name.match(/\.(mp3|wav|flac)$/i) ? '🎵' :
-         '📎'}
+        {attachment.name.match(/\.(pdf)$/i) ? <IconPackage className="inline" /> :
+         attachment.name.match(/\.(doc|docx)$/i) ? <IconEdit className="inline" /> :
+         attachment.name.match(/\.(xls|xlsx|csv)$/i) ? <IconList className="inline" /> :
+         attachment.name.match(/\.(zip|tar|gz|rar|7z)$/i) ? <IconPackage className="inline" /> :
+         attachment.name.match(/\.(mp4|avi|mov|mkv)$/i) ? <IconBolt className="inline" /> :
+         attachment.name.match(/\.(mp3|wav|flac)$/i) ? <IconVolume className="inline" /> :
+         <IconPaperclip className="inline" />}
       </div>
       <div className="attachment-file-info">
         <span className="truncate">{attachment.name}</span>
@@ -917,11 +918,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
 
   // --- Command palette items ---
   const commandItems = useMemo(() => [
-    { id: 'clear', label: '/clear', icon: '🗑️', description: t('cmdClear'), action: () => { handleSend('/clear') } },
-    { id: 'new', label: '/new', icon: '✨', description: t('cmdNew'), action: () => { handleSend('/new') } },
-    { id: 'help', label: '/help', icon: '❓', description: t('cmdHelp'), action: () => { handleSend('/help') } },
-    { id: 'settings', label: t('settings'), icon: '⚙️', description: t('openSettings'), action: () => { setSettingsOpen(true) } },
-    { id: 'search', label: t('searchHistory'), icon: '🔍', description: t('searchHistory'), action: () => {} },
+    { id: 'clear', label: '/clear', icon: <IconTrash />, description: t('cmdClear'), action: () => { handleSend('/clear') } },
+    { id: 'new', label: '/new', icon: <IconSparkles />, description: t('cmdNew'), action: () => { handleSend('/new') } },
+    { id: 'help', label: '/help', icon: <IconHelp />, description: t('cmdHelp'), action: () => { handleSend('/help') } },
+    { id: 'settings', label: t('settings'), icon: <IconSettings />, description: t('openSettings'), action: () => { setSettingsOpen(true) } },
+    { id: 'search', label: t('searchHistory'), icon: <IconSearch />, description: t('searchHistory'), action: () => {} },
   ], [t, handleSend])
 
   // --- Scroll to message (for reply navigation) ---
@@ -954,7 +955,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       {dragActive && (
         <div className="drag-overlay" data-testid="drag-overlay">
           <div className="drag-overlay-content">
-            <span className="text-4xl">📂</span>
+            <span className="text-4xl"><IconPackage style={{width:36,height:36}} /></span>
             <span className="text-lg font-medium mt-2">{t('dragToUpload')}</span>
             <span className="text-sm opacity-60 mt-1">{t('dragSupportedTypes')}</span>
           </div>
@@ -963,7 +964,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700 header-bar">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-white">🤖 xbot{nickname ? ` · ${nickname}` : ''}</h1>
+          <h1 className="text-lg font-bold text-white flex items-center gap-1.5"><IconBot className="inline" style={{width:20,height:20}} /> xbot{nickname ? ` · ${nickname}` : ''}</h1>
           <span className={`text-xs px-2 py-0.5 rounded-full ${
             connected
               ? 'bg-green-900/50 text-green-400'
@@ -985,7 +986,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               }`}
               title={t("contextUsageTitle", { prompt: contextInfo.prompt_tokens.toLocaleString(), max: contextInfo.max_tokens.toLocaleString() })}
             >
-              📊 {(contextInfo.prompt_tokens / 1000).toFixed(1)}K/{(contextInfo.max_tokens / 1000).toFixed(0)}K ({contextInfo.usage_pct.toFixed(1)}%)
+              <IconSparkles className="inline" /> {(contextInfo.prompt_tokens / 1000).toFixed(1)}K/{(contextInfo.max_tokens / 1000).toFixed(0)}K ({contextInfo.usage_pct.toFixed(1)}%)
             </span>
           )}
           {/* Model selector */}
@@ -1012,7 +1013,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                           model === currentModel ? 'text-blue-400 bg-blue-500/10' : 'text-slate-300'
                         }`}
                       >
-                        {model === currentModel && '✓ '}{model}
+                        {model === currentModel && <IconCheck className="inline" />}{model}
                       </button>
                     ))}
                   </div>
@@ -1034,7 +1035,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
             title={t('settings')} aria-label={t('openSettings')}
           >
-            ⚙️
+            <IconSettings />
           </button>
           {notifPermission === 'default' && (
             <button
@@ -1138,16 +1139,16 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           <div className="text-center py-20 animate-fade-in select-none empty-state-container">
             <div className="empty-state-icon-wrapper">
               <div className="empty-state-icon-bg"></div>
-              <div className="empty-state-icon">🤖</div>
+              <div className="empty-state-icon"><IconBot style={{width:32,height:32}} /></div>
             </div>
             <p className="text-xl font-semibold mb-3" style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>{t('startConversation')}</p>
             <p className="text-sm mb-12" style={{ color: 'var(--text-tertiary)', maxWidth: 320, margin: '0 auto 48px' }}>{t('sendFirstMessage')}</p>
             <div className="flex flex-col items-center gap-3">
               <div className="empty-state-action-btn">
-               <span>⌨️</span> {t("searchKbHint")}
+               <span><IconKeyboard className="inline" /></span> {t("searchKbHint")}
               </div>
               <div className="empty-state-action-btn">
-               <span>⚡</span> {t("commandHint")}
+               <span><IconZap className="inline" /></span> {t("commandHint")}
               </div>
             </div>
           </div>
@@ -1205,9 +1206,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                                  x: e.clientX,
                                  y: e.clientY,
                                  items: [
-                                   { label: t('replyMessage'), icon: '↩️', onClick: () => handleReplyToMessage(turn.message.id, turn.message.content, 'user') },
-                                   { label: t('replyInThread'), icon: '💬', onClick: () => handleOpenThread(turn.message) },
-                                   { label: t('deleteMessage'), icon: '🗑️', onClick: () => handleDeleteMessage(turn.message.id), danger: true },
+                                   { label: t('replyMessage'), icon: <IconReply />, onClick: () => handleReplyToMessage(turn.message.id, turn.message.content, 'user') },
+                                   { label: t('replyInThread'), icon: <IconChat />, onClick: () => handleOpenThread(turn.message) },
+                                   { label: t('deleteMessage'), icon: <IconTrash />, onClick: () => handleDeleteMessage(turn.message.id), danger: true },
                                  ],
                                })
                              }}
@@ -1216,8 +1217,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                           {turn.message.ts && (
                            <div className="text-xs mt-1 text-right text-blue-200/50 flex items-center justify-end gap-1">
                              <span>{formatRelativeTime(turn.message.ts * 1000)}</span>
-                             {turn.message.status === 'sending' && <span className="animate-pulse">⏳</span>}
-                             {turn.message.status === 'failed' && <span className="text-red-300">❌ {t('sendFailed')}</span>}
+                             {turn.message.status === 'sending' && <span className="animate-pulse"><IconClock className="inline" /></span>}
+                             {turn.message.status === 'failed' && <span className="text-red-300"><IconX className="inline" /> {t('sendFailed')}</span>}
                              {turn.message.edited && <span className="italic">{t('edited')}</span>}
                            </div>
                           )}
@@ -1233,11 +1234,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                           x: e.clientX,
                           y: e.clientY,
                           items: [
-                            { label: t('replyMessage'), icon: '↩️', onClick: () => handleReplyToMessage(last.id, last.content, 'assistant') },
-                            { label: t('replyInThread'), icon: '💬', onClick: () => handleOpenThread(last) },
-                            { label: t('regenerate'), icon: '🔄', onClick: () => handleRegenerate(turn.messages[0].id) },
-                            { label: t('copyContent'), icon: '📋', onClick: () => { navigator.clipboard.writeText(turn.messages.map(m => m.content).join('\n\n')) } },
-                            { label: t('deleteMessage'), icon: '🗑️', onClick: () => handleDeleteMessage(turn.messages[0].id), danger: true },
+                            { label: t('replyMessage'), icon: <IconReply />, onClick: () => handleReplyToMessage(last.id, last.content, 'assistant') },
+                            { label: t('replyInThread'), icon: <IconChat />, onClick: () => handleOpenThread(last) },
+                            { label: t('regenerate'), icon: <IconRefresh />, onClick: () => handleRegenerate(turn.messages[0].id) },
+                            { label: t('copyContent'), icon: <IconCopy />, onClick: () => { navigator.clipboard.writeText(turn.messages.map(m => m.content).join('\n\n')) } },
+                            { label: t('deleteMessage'), icon: <IconTrash />, onClick: () => handleDeleteMessage(turn.messages[0].id), danger: true },
                           ],
                         })
                       }}
@@ -1260,26 +1261,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                         }}
                         onScrollToMessage={handleScrollToMessage}
                         streamingLength={isLatestTurn && isActive ? streamingContentRef.current.length : undefined}
-                        onToggleReaction={(emoji: string) => {
-                          const last = turn.messages[turn.messages.length - 1]
-                          if (!last) return
-                          const existing = last.reactions || []
-                          const reaction = existing.find(r => r.emoji === emoji)
-                          let updated: typeof existing
-                          if (reaction) {
-                            if (reaction.byMe) {
-                              const newUsers = reaction.users.filter(u => u !== 'me')
-                              updated = newUsers.length === 0
-                                ? existing.filter(r => r.emoji !== emoji)
-                                : existing.map(r => r.emoji === emoji ? { ...r, users: newUsers, byMe: false } : r)
-                            } else {
-                              updated = existing.map(r => r.emoji === emoji ? { ...r, users: [...r.users, 'me'], byMe: true } : r)
-                            }
-                          } else {
-                            updated = [...existing, { id: `r-${last.id}-${emoji}`, emoji, users: ['me'], byMe: true }]
-                          }
-                          setMessages(prev => prev.map(m => m.id === last.id ? { ...m, reactions: updated } : m))
-                        }}
                       />
                     </div>
                   )}
@@ -1330,21 +1311,26 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       {replyingTo && (
         <div className="reply-indicator px-4" data-testid="reply-indicator">
           <div className="reply-indicator-content">
-            <span>↩️ {t('replyingTo')}:</span>
+            <span><IconReply className="inline" /> {t('replyingTo')}:</span>
             <span className="reply-indicator-preview">
               {replyingTo.content.length > REPLY_INDICATOR_LENGTH ? replyingTo.content.slice(0, REPLY_INDICATOR_LENGTH) + '...' : replyingTo.content}
             </span>
           </div>
           <button className="reply-indicator-cancel" onClick={handleCancelReply}>
-            ✕
+            <IconX className="inline" />
           </button>
         </div>
       )}
 
       {/* Input area */}
-      <div className={`px-4 py-3 bg-slate-800 border-t border-slate-700 input-bar ${replyingTo ? 'border-t-0' : ''}`}>
-        <div className="flex items-end gap-3 max-w-4xl mx-auto">
-          <div className="flex-1">
+      <div className={`px-4 py-3 input-bar ${replyingTo ? 'border-t-0' : ''}`}>
+        <div className="input-bar-inner max-w-4xl mx-auto">
+          <FileUpload
+            onUpload={handleFileUploaded}
+            disabled={loading}
+            showToast={showToast}
+          />
+          <div className="flex-1 min-w-0">
             {/* Pending files preview */}
             {pendingFiles.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2">
@@ -1356,7 +1342,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                       onClick={() => handleFileRemove(f.id)}
                       title={t("remove")}
                     >
-                      ✕
+                      <IconX className="inline" />
                     </button>
                   </div>
                 ))}
@@ -1371,23 +1357,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               onCancel={handleCancel}
             />
           </div>
-          <FileUpload
-            onUpload={handleFileUploaded}
-            disabled={loading}
-            showToast={showToast}
-          />
-          {loading && (
-            <button
-              onClick={handleCancel}
-              className="cancel-btn"
-              title={t("stopGeneration")}
-              data-testid="cancel-btn"
-            >
-              ⏹
-            </button>
-          )}
         </div>
-	      </div>
+       </div>
 	      </div>{/* end flex-1 inner column */}
 	      </div>{/* end ChatSidebar + content row */}
 
@@ -1430,7 +1401,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             className="image-preview-close"
             onClick={() => setPreviewImage(null)}
             aria-label={t('closePreview')}
-          >✕</button>
+          ><IconX className="inline" /></button>
           <img
             src={previewImage}
             alt={t("imagePreviewAlt")}

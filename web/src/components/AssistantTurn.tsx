@@ -1,8 +1,9 @@
 import { useTranslation } from '../i18n'
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, memo, type ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import { IconList, IconThinking, IconZap, IconPackage, IconCheck, IconX, IconClock, IconLightbulb, IconRefresh } from './Icons'
 import rehypeKatex from 'rehype-katex'
 import { getCodeBlockProps } from './CodeBlock'
 import Lightbox from './Lightbox'
@@ -15,7 +16,7 @@ import type { PluggableList } from 'unified'
 const remarkPluginsList: PluggableList = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]
 const rehypePluginsList: PluggableList = [[rehypeKatex, { strict: false, trust: false, throwOnError: false }]]
 import MessageActions from './MessageActions'
-import MessageReactions from './MessageReactions'
+
 import type { WsProgressPayload, IterationSnapshot } from './ProgressPanel'
 import { CompletedIteration, BouncingDots, SubAgentTree } from './ProgressPanel'
 import type { Message } from '../types'
@@ -29,7 +30,7 @@ import CollapsibleContent from './CollapsibleContent'
 // Memoized thinking display — only re-renders when content actually changes
 const ThinkingBlock = memo(({ content }: { content: string }) => (
   <div className="px-2 py-1.5 rounded bg-indigo-500/10 border-l-2 border-indigo-500/40">
-    <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5">💭 Reasoning</div>
+    <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5"><IconThinking className="inline" /> Reasoning</div>
     <div className="text-xs text-indigo-300/90 whitespace-pre-wrap break-words">{content}</div>
   </div>
 ))
@@ -50,8 +51,7 @@ interface AssistantTurnProps {
   streamingLength?: number
   /** Double-click to reply */
   onDoubleClickReply?: () => void
-  /** Toggle a reaction on this message */
-  onToggleReaction?: (emoji: string) => void
+
 }
 
 
@@ -65,7 +65,7 @@ function CollapsibleSection({
   children,
   className = '',
 }: {
-  icon: string
+  icon: ReactNode
   title: string
   badge?: string | number
   defaultOpen?: boolean
@@ -113,7 +113,7 @@ function isThinkingContent(content: string): boolean {
   return false
 }
 
-export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress, onDelete, onRegenerate, onReply, onScrollToMessage, streamingLength, onDoubleClickReply, onToggleReaction }: AssistantTurnProps) {
+export default memo(function AssistantTurn({ messages, progress, liveIterations, loading, savedProgress, onDelete, onRegenerate, onReply, onScrollToMessage, streamingLength, onDoubleClickReply }: AssistantTurnProps) {
   const [copied, setCopied] = useState(false)
   const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
   const codeBlockProps = useMemo(() => getCodeBlockProps((src, alt) => setLightbox({ src, alt })), [])
@@ -147,11 +147,11 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
     : false
 
   // Determine phase display
-  const phaseIcon = effectiveProgress?.phase === 'thinking' ? '💭'
-    : effectiveProgress?.phase === 'tool_exec' ? '⚡'
-    : effectiveProgress?.phase === 'compressing' ? '📦'
-    : effectiveProgress?.phase === 'retrying' ? '🔄'
-    : effectiveProgress?.phase === 'done' ? '✅'
+  const phaseIcon = effectiveProgress?.phase === 'thinking' ? <IconThinking className="inline" />
+    : effectiveProgress?.phase === 'tool_exec' ? <IconZap className="inline" />
+    : effectiveProgress?.phase === 'compressing' ? <IconPackage className="inline" />
+    : effectiveProgress?.phase === 'retrying' ? <IconRefresh className="inline" />
+    : effectiveProgress?.phase === 'done' ? <IconCheck className="inline" />
     : null
 
   const displayLiveIterations = computeDisplayIterations(liveIterations, progress)
@@ -173,13 +173,6 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
             copied={copied}
           />
         )}
-        {/* Reactions */}
-        {textMsgs.length > 0 && !loading && onToggleReaction && (
-          <MessageReactions
-            reactions={textMsgs[textMsgs.length - 1].reactions || []}
-            onToggle={onToggleReaction}
-          />
-        )}
         {/* Reply preview */}
         {textMsgs.length > 0 && textMsgs[0].replyTo && onScrollToMessage && (
           <ReplyPreview
@@ -190,7 +183,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
 
         {/* Collapsible: Thinking section */}
         {thinkingMsgs.length > 0 && (
-          <CollapsibleSection icon="💭" title={t("thinkingProcess")} badge={thinkingMsgs.length} defaultOpen={false} className="thinking-section">
+          <CollapsibleSection icon={<IconList />} title={t("thinkingProcess")} badge={thinkingMsgs.length} defaultOpen={false} className="thinking-section">
             <div className="space-y-2 pl-1">
               {thinkingMsgs.map((msg) => (
                 <div key={msg.id} className="text-sm text-slate-400 italic">
@@ -206,7 +199,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         {/* Live completed iterations (during loading) */}
         {loading && (displayLiveIterations.length ?? 0) > 0 && (
           <CollapsibleSection
-            icon="📋"
+            icon={<IconList />}
             title={t("iterationProcess")}
             badge={displayLiveIterations.length}
             defaultOpen={true}
@@ -219,13 +212,13 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
                   </div>
                   {snap.reasoning && (
                     <div className="px-2 py-1.5 mb-1 rounded bg-indigo-500/10 border-l-2 border-indigo-500/40">
-                      <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5">💭 Reasoning</div>
+                      <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5"><IconThinking className="inline" /> Reasoning</div>
                       <div className="text-xs text-indigo-300/90 whitespace-pre-wrap break-words">{snap.reasoning}</div>
                     </div>
                   )}
                   {snap.thinking && (
                     <div className="px-2 py-1.5 mb-1 rounded bg-amber-500/10 border-l-2 border-amber-500/40">
-                      <div className="text-[10px] text-amber-400/70 font-medium mb-0.5">💡 Thinking</div>
+                      <div className="text-[10px] text-amber-400/70 font-medium mb-0.5"><IconLightbulb className="inline" /> Thinking</div>
                       <div className="text-xs text-amber-300/80 italic whitespace-pre-wrap break-words">{snap.thinking}</div>
                     </div>
                   )}
@@ -233,7 +226,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
                     {snap.tools.map((tool, i) => (
                       <div key={`${snap.iteration}-${i}`} className="px-2 py-1 text-sm">
                         <div className="flex items-center gap-2">
-                          <span>{tool.status === 'error' ? '❌' : '✅'}</span>
+                          {tool.status === 'error' ? <IconX className="inline" /> : <IconCheck className="inline" />}
                           <span className="font-mono text-xs text-slate-400 flex-1 truncate">
                             {tool.label || tool.name}
                           </span>
@@ -269,7 +262,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
                 <div className="space-y-0.5">
                   {progress.active_tools!.map((tool, i) => (
                     <div key={`active-${i}`} className="flex items-center gap-2 px-2 py-1 text-sm">
-                      <span className="tool-pulse">⏳</span>
+                      <span className="tool-pulse"><IconClock className="inline" /></span>
                       <span className="font-mono text-xs text-slate-400 flex-1 truncate">
                         {tool.label || tool.name}
                       </span>
@@ -311,7 +304,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         {/* Collapsible: Iteration history (from saved snapshots) */}
         {!loading && messages.length > 0 && messages[messages.length - 1]?.iterationHistory && messages[messages.length - 1].iterationHistory!.length > 0 && (
           <CollapsibleSection
-            icon="📋"
+            icon={<IconList />}
             title={t("iterationProcess")}
             badge={messages[messages.length - 1].iterationHistory!.length}
             defaultOpen={false}

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useToast } from '../contexts/ToastContext'
 import { useTranslation } from '../i18n'
 import type { PresetCommand } from '../types'
+import { IconX } from './Icons'
 import type { TabId } from './settings/shared'
 import { TABS } from './settings/shared'
 import AppearanceTab from './settings/AppearanceTab'
@@ -70,7 +71,7 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
           <h2 style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.01em' }}>{t('settings')}</h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {saving && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('saving')}</span>}
-            <button className="settings-close-btn" onClick={onClose} data-testid="settings-close-btn" aria-label={t('closeSettings')}>×</button>
+            <button className="settings-close-btn" onClick={onClose} data-testid="settings-close-btn" aria-label={t('closeSettings')}><IconX className="inline" /></button>
           </div>
         </div>
 
