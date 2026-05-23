@@ -1,7 +1,7 @@
 import { REPLY_PREVIEW_LENGTH, REPLY_INDICATOR_LENGTH, NOTIFICATION_PREVIEW_LENGTH, PRESET_TOOLTIP_LENGTH, VIRTUAL_ROW_HEIGHT_USER, VIRTUAL_ROW_HEIGHT_ASSISTANT } from './constants'
 import { useTranslation } from './i18n'
 import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, memo } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -222,7 +222,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const reasoningRef = useRef<string>('') // accumulated reasoning from stream_content
   const streamingContentRef = useRef<string>('') // accumulated content from stream_content
   const loadHistoryIdRef = useRef(0) // race protection for loadHistory
-  const virtualizerRef = useRef<any>(null) // ref for scroll-to-bottom in loadHistory
+  const virtualizerRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null) // ref for scroll-to-bottom in loadHistory
   const turnsCountRef = useRef(0) // track turns count for scroll-to-bottom
   const resetProgress = createResetProgress({
     setProgress: (v) => setProgress(v),
