@@ -2171,9 +2171,21 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	sb.WriteString("\n\n")
 
 	// §19 计算渲染后行数（每次 dirty 重算）
-	msg.renderedLines = strings.Count(sb.String(), "\n") + 1
+	// Sanitize rendered output: strip \r carriage-return overwrites per line.
+	// This is the final rendering-layer safety net — ensures progress bar
+	// output (tqdm, curl etc.) from any source (old offload, history, network)
+	// never corrupts the TUI layout.
+	raw := sb.String()
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		if idx := strings.LastIndex(line, "\r"); idx >= 0 {
+			lines[i] = line[idx+1:]
+		}
+	}
+	cleaned := strings.Join(lines, "\n")
+	msg.renderedLines = strings.Count(cleaned, "\n") + 1
 
-	return sb.String()
+	return cleaned
 }
 
 // wrapPreservingGuide wraps a line at cw columns, preserving any guide prefix
