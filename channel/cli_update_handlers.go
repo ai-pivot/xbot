@@ -1862,7 +1862,9 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 // handleShiftUp handles Shift+Up for queue recall and input history browsing.
 func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 	// Shift+Up: recall queued message for editing / browse input history.
-	if m.panelMode == "" && m.textarea.Value() != "" {
+	// When actively browsing history (inputHistoryIdx >= 0), allow continued
+	// scrolling even though textarea has content (from the previous history entry).
+	if m.panelMode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
 		return m, nil, true
 	}
 	if !m.viewport.AtBottom() {
@@ -1881,9 +1883,9 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 	}
 	if m.panelMode == "" && !m.typing {
 		// 空输入时浏览历史
-		if m.textarea.Value() == "" && len(m.inputHistory) > 0 {
+		if (m.textarea.Value() == "" || m.inputHistoryIdx >= 0) && len(m.inputHistory) > 0 {
 			if m.inputHistoryIdx == -1 {
-				m.inputDraft = "" // 保存空草稿
+				m.inputDraft = m.textarea.Value() // 保存当前草稿
 				m.inputHistoryIdx = 0
 			} else if m.inputHistoryIdx < len(m.inputHistory)-1 {
 				m.inputHistoryIdx++
@@ -1899,7 +1901,8 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 // handleShiftDown handles Shift+Down for reverse input history browsing.
 func (m *cliModel) handleShiftDown() (tea.Model, []tea.Cmd, bool) {
 	// Shift+Down: browse input history backwards.
-	if m.panelMode == "" && m.textarea.Value() != "" {
+	// Only block when NOT in history browsing mode AND textarea has content.
+	if m.panelMode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
 		return m, nil, true
 	}
 	if !m.viewport.AtBottom() {
