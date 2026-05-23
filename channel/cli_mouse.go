@@ -1519,7 +1519,7 @@ func (m *cliModel) clickSidebarBgTask(index int) (bool, tea.Model, tea.Cmd) {
 	// Select the clicked task and enter log view
 	m.panelBgCursor = index
 	task := m.panelBgTasks[index]
-	m.panelBgLogLines = splitLines(task.Output)
+	m.panelBgLogLines = sanitizeOutputLines(task.Output)
 	if len(m.panelBgLogLines) == 0 {
 		m.panelBgLogLines = []string{"(no output)"}
 	}

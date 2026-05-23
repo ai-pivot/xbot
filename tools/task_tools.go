@@ -206,7 +206,9 @@ func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string 
 	if outputOverride != "" {
 		fmt.Fprintf(&sb, "\n%s", outputOverride)
 	} else if task.Output != "" {
-		output := task.Output
+		// Sanitize \r overwrites and ANSI escape sequences so that progress
+		// bar output (tqdm, curl, etc.) renders cleanly in the TUI.
+		output := SanitizeOutput(task.Output)
 		// Truncate large output to avoid bloating context
 		const maxOutputLen = 2000
 		if len(output) > maxOutputLen {

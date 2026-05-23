@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 	"xbot/config"
 	"xbot/internal/textarea"
 	"xbot/llm"
@@ -740,7 +741,7 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		if m.panelBgCursor >= 0 && m.panelBgCursor < len(m.panelBgTasks) {
 			// Task entry: view output log
 			task := m.panelBgTasks[m.panelBgCursor]
-			m.panelBgLogLines = splitLines(task.Output)
+			m.panelBgLogLines = sanitizeOutputLines(task.Output)
 			if len(m.panelBgLogLines) == 0 {
 				m.panelBgLogLines = []string{"(no output)"}
 			}
@@ -890,7 +891,7 @@ func (m *cliModel) viewBgTaskLog() string {
 		title = fmt.Sprintf(m.locale.BgTaskLogTitle, task.ID, cmd)
 		// Update log lines from latest task output
 		oldCount := len(m.panelBgLogLines)
-		m.panelBgLogLines = splitLines(task.Output)
+		m.panelBgLogLines = sanitizeOutputLines(task.Output)
 		newCount := len(m.panelBgLogLines)
 		// Follow-tail: auto-scroll when new lines appear
 		if m.panelBgLogFollow && newCount > oldCount {
@@ -1372,6 +1373,21 @@ func (m *cliModel) viewDangerPanel() string {
 	}
 
 	return sb.String()
+}
+
+// sanitizeOutputLine sanitizes a single output line for safe TUI rendering.
+// Delegates to the shared tools.SanitizeOutputLine which handles \r
+// carriage-return overwrites (progress bars like tqdm) and ANSI escape
+// sequences (color codes, cursor movement).
+func sanitizeOutputLine(line string) string {
+	return tools.SanitizeOutputLine(line)
+}
+
+// sanitizeOutputLines splits raw process output into sanitized display lines.
+// Delegates to tools.SanitizeOutputLines for \r stripping, ANSI removal, and
+// empty-line filtering.
+func sanitizeOutputLines(raw string) []string {
+	return tools.SanitizeOutputLines(raw)
 }
 
 // splitLines splits a string into lines, preserving trailing empty line.

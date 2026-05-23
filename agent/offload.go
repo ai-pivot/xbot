@@ -631,6 +631,11 @@ func summarizeShell(content string) string {
 	const maxLineRunes = 500
 	const lineTruncSuffix = "...(truncated, %d chars)"
 	for _, l := range lines[len(lines)-showCount:] {
+		// Sanitize \r overwrites and ANSI escape sequences from progress bars
+		l = tools.SanitizeOutputLine(l)
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
 		runes := []rune(l)
 		if len(runes) > maxLineRunes {
 			suffix := fmt.Sprintf(lineTruncSuffix, len(runes))
@@ -674,15 +679,23 @@ func summarizeGlob(content string) string {
 
 // summarizeDefault 生成默认摘要。
 func summarizeDefault(content string) string {
-	runes := []rune(content)
+	// Sanitize per-line to handle \r overwrites and ANSI escape sequences.
+	// Using SanitizeOutputLine on the entire multi-line string would be wrong
+	// because it finds the LAST \r globally and strips everything before it.
+	lines := tools.SanitizeOutputLines(content)
+	var contentClean string
+	if len(lines) > 0 {
+		contentClean = strings.Join(lines, "\n")
+	}
+	runes := []rune(contentClean)
 	maxPreview := 300
 	if len(runes) <= maxPreview {
-		return fmt.Sprintf("Content: %s\n(Size: %d bytes, ~%d tokens)", content, len(content), estimateTokenSize(content, "gpt-4o"))
+		return fmt.Sprintf("Content: %s\n(Size: %d bytes, ~%d tokens)", contentClean, len(contentClean), estimateTokenSize(contentClean, "gpt-4o"))
 	}
 
 	preview := string(runes[:maxPreview])
-	tokens := estimateTokenSize(content, "gpt-4o")
-	return fmt.Sprintf("Content (first %d chars): %s...\n(Size: %d bytes, ~%d tokens)", maxPreview, preview, len(content), tokens)
+	tokens := estimateTokenSize(contentClean, "gpt-4o")
+	return fmt.Sprintf("Content (first %d chars): %s...\n(Size: %d bytes, ~%d tokens)", maxPreview, preview, len(contentClean), tokens)
 }
 
 // extractFunctionNames 从代码内容中提取函数名（Go, Python, JS 等）。
