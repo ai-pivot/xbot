@@ -2270,6 +2270,11 @@ func (m *cliModel) setViewportContent(content string) {
 	m.lastViewportContent = content
 	m.lastViewportWidth = cw
 
+	// Since we wrap all lines to cw, maxLineWidth is at most cw.
+	// We pass cw as the precomputed max width to bypass viewport's
+	// expensive maxLineWidth() scan (ansi.StringWidth on every line).
+	maxW := cw
+	var lines []string // pre-split lines to avoid viewport's strings.Split
 	if cw > 0 {
 		// Two-tier wrap: find the cachedHistory boundary in content.
 		// The history portion is stable (doesn't change between ticks) — reuse
@@ -2283,7 +2288,8 @@ func (m *cliModel) setViewportContent(content string) {
 			// Fast path: reuse wrapped history, only wrap the dynamic suffix
 			wrappedHistory := m.cachedWrappedHistory
 			dynamicPart := content[historyEnd:]
-			var wrappedDynamic []string
+			historyLines := strings.Split(wrappedHistory, "\n")
+			lines = historyLines
 			if dynamicPart != "" {
 				for _, line := range strings.Split(dynamicPart, "\n") {
 					trimmed := strings.TrimRight(line, " \t")
@@ -2294,14 +2300,13 @@ func (m *cliModel) setViewportContent(content string) {
 							line = trimmed
 						}
 					}
-					wrappedDynamic = append(wrappedDynamic, wrapPreservingGuide(line, cw)...)
+					wrapped := wrapPreservingGuide(line, cw)
+					lines = append(lines, wrapped...)
 				}
 			}
-			content = wrappedHistory + strings.Join(wrappedDynamic, "\n")
 		} else {
 			// Slow path: wrap everything and cache the history portion
-			lines := strings.Split(content, "\n")
-			var wrapped []string
+			rawLines := strings.Split(content, "\n")
 			historyLineCount := 0
 			if historyEnd > 0 {
 				historyLineCount = strings.Count(m.cachedHistory, "\n")
@@ -2310,7 +2315,7 @@ func (m *cliModel) setViewportContent(content string) {
 				}
 			}
 			var wrappedHistoryParts []string
-			for i, line := range lines {
+			for i, line := range rawLines {
 				trimmed := strings.TrimRight(line, " \t")
 				if trimmed != line {
 					visualW := lipgloss.Width(line)
@@ -2319,13 +2324,12 @@ func (m *cliModel) setViewportContent(content string) {
 						line = trimmed
 					}
 				}
-				wrappedLines := wrapPreservingGuide(line, cw)
+				wrapped := wrapPreservingGuide(line, cw)
 				if i < historyLineCount {
-					wrappedHistoryParts = append(wrappedHistoryParts, wrappedLines...)
+					wrappedHistoryParts = append(wrappedHistoryParts, wrapped...)
 				}
-				wrapped = append(wrapped, wrappedLines...)
+				lines = append(lines, wrapped...)
 			}
-			content = strings.Join(wrapped, "\n")
 			// Cache the wrapped history portion for next tick
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
@@ -2333,9 +2337,15 @@ func (m *cliModel) setViewportContent(content string) {
 				m.cachedWrappedHistoryWidth = cw
 			}
 		}
+	} else {
+		lines = strings.Split(content, "\n")
 	}
+
 	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(content)
+	// Use SetContentLines with pre-split lines to avoid viewport's internal
+	// strings.Split. We also bypass the expensive maxLineWidth scan inside
+	// SetContentLines by directly setting the internal lines and width.
+	viewportSetLinesBypassMaxWidth(&m.viewport, lines, maxW)
 	if atBottom {
 		m.viewport.GotoBottom()
 		m.newContentHint = false

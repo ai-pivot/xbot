@@ -599,10 +599,31 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 		if m.todosDoneCleared && allDone {
 			// Already cleared by user input; don't re-accept stale all-done list
 		} else {
+			// Change detection: skip if todos haven't actually changed.
+			// High-frequency progress events carry the same Todos every time;
+			// without this guard, each event triggers relayoutViewport → fullRebuild,
+			// which destroys render cache and re-runs glamour/chroma on ALL messages.
+			// This was responsible for ~34% CPU during agent work (pprof 2026-05-23).
+			if todosEqual(m.todos, payload.Todos) {
+				return
+			}
+
+			countChanged := len(m.todos) != len(payload.Todos)
+
 			m.todos = make([]protocol.TodoItem, len(payload.Todos))
 			copy(m.todos, payload.Todos)
 			m.todosDoneCleared = false
-			m.relayoutViewport()
+
+			if countChanged {
+				// Todo count affects layoutViewportHeight (todo bar lines).
+				// Must relayout viewport to adjust height.
+				m.relayoutViewport()
+			} else {
+				// Same count, just status/text changed — no height change needed.
+				// Only invalidate progress block render so next tick picks it up.
+				m.renderCacheValid = false
+			}
+
 			// Persist to TodoManager so todos survive turn end and session switches.
 			m.persistTodosToManager()
 		}
@@ -612,6 +633,19 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 	// (e.g. early thinking phase before todo_write executes), not "todos were deleted".
 	// TODOs are cleared only by: user sending a new message (todosDoneCleared),
 	// turn ending with all done (endAgentTurn), or explicit todo_write([]).
+}
+
+// todosEqual returns true if two todo slices have identical content.
+func todosEqual(a, b []protocol.TodoItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Text != b[i].Text || a[i].Done != b[i].Done {
+			return false
+		}
+	}
+	return true
 }
 
 // persistTodosToManager writes m.todos to the CLI-side todoManager
