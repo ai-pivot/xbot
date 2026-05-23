@@ -1,26 +1,28 @@
 /* ========================================================================== */
 /* Assistant Turn — Apple Futuristic                                           */
-/* Clean, no shadow, no glow, subtle background                               */
+/* Subtle depth, generous spacing, refined typography                          */
 /* ========================================================================== */
 
 .assistant-turn-container {
   background: #2c2c2e !important;
   border: 1px solid #3a3a3c !important;
-  border-radius: 18px !important;
-  padding: 14px 18px !important;
+  border-radius: 20px !important;
+  padding: 20px 24px !important;
   max-width: 80%;
   backdrop-filter: none !important;
-  box-shadow: none !important;
-  transition: none !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.08) !important;
+  transition: box-shadow 0.2s ease !important;
   overflow: hidden;
 }
-.assistant-turn-container:hover { box-shadow: none !important; }
+.assistant-turn-container:hover {
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15), 0 6px 16px rgba(0,0,0,0.1) !important;
+}
 
 /* Sections */
 .assistant-turn-section {
   border: 0.5px solid rgba(255,255,255,0.06) !important;
-  border-radius: 8px !important;
-  margin-bottom: 6px !important;
+  border-radius: 10px !important;
+  margin-bottom: 8px !important;
   overflow: hidden;
   transition: border-color 0.15s ease !important;
 }
@@ -29,7 +31,7 @@
 /* Section header */
 .assistant-turn-section-header {
   display: flex; align-items: center; justify-content: space-between;
-  width: 100%; padding: 6px 10px;
+  width: 100%; padding: 8px 12px;
   background: rgba(255,255,255,0.03) !important;
   border: none !important;
   color: var(--text-secondary) !important;
@@ -49,17 +51,17 @@
 
 /* Section body */
 .assistant-turn-section-body {
-  padding: 8px !important;
+  padding: 10px 12px !important;
   animation: section-expand 0.15s ease-out;
 }
 .thinking-section .assistant-turn-section-body {
-  padding-left: 18px; padding-bottom: 12px;
+  padding-left: 20px; padding-bottom: 14px;
 }
 
 .assistant-turn-content {
   padding: 4px 0 !important;
   font-size: 15px !important;
-  line-height: 1.65 !important;
+  line-height: 1.7 !important;
   color: var(--text-primary) !important;
 }
 
@@ -90,6 +92,10 @@
 /* Light theme */
 [data-theme="light"] .assistant-turn-container {
   background: #f2f2f7 !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03) !important;
+}
+[data-theme="light"] .assistant-turn-container:hover {
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.04) !important;
 }
 [data-theme="light"] .assistant-turn-section {
   border-color: rgba(0,0,0,0.06) !important;
@@ -103,7 +109,7 @@
 }
 [data-theme="light"] .assistant-turn-cursor { background: #007aff !important; }
 
-/* Collapsible Content */
+/* Collapsible Content — legacy styles kept for compatibility */
 .collapsible-wrapper { position: relative; }
 .collapsible-content { position: relative; transition: max-height 0.3s ease; }
 .collapsible-collapsed { max-height: 320px; overflow: hidden; }

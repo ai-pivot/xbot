@@ -222,6 +222,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const reasoningRef = useRef<string>('') // accumulated reasoning from stream_content
   const streamingContentRef = useRef<string>('') // accumulated content from stream_content
   const loadHistoryIdRef = useRef(0) // race protection for loadHistory
+  const virtualizerRef = useRef<ReturnType<typeof useVirtualizer> | null>(null) // ref for scrollToIndex in loadHistory
+  const turnsCountRef = useRef(0) // track turns count for scroll-to-bottom
   const resetProgress = createResetProgress({
     setProgress: (v) => setProgress(v),
     setLiveIterations: setLiveIterationsSync,
@@ -558,17 +560,27 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           if (data.last_seq) {
             lastSeqRef.current = data.last_seq
           }
-          // Final scroll-to-bottom after all messages have loaded and rendered.
-          // Use a longer delay to let the virtualizer finish measuring all elements.
-          // Then clear loadingHistoryRef so the scroll handler can resume.
-          setTimeout(() => {
-            scrollToBottom('instant')
-            requestAnimationFrame(() => scrollToBottom('instant'))
-            // Let virtualizer settle before re-enabling scroll handler
-            setTimeout(() => {
+          // Scroll to bottom after history loads. The virtualizer's total size starts
+          // from estimates and grows as items are measured, so a single scrollTo may
+          // not reach the true bottom. We retry until the scroll position stabilizes.
+          let scrollAttempts = 0
+          const maxScrollAttempts = 20
+          const scrollHistoryToBottom = () => {
+            const el = messagesContainerRef.current
+            if (!el) return
+            const prevTop = el.scrollTop
+            el.scrollTo({ top: el.scrollHeight, behavior: 'instant' as ScrollBehavior })
+            // If scrollTop didn't change (already at max) or we've tried enough, done
+            scrollAttempts++
+            if ((el.scrollTop === prevTop && el.scrollTop > 0) || scrollAttempts >= maxScrollAttempts) {
               loadingHistoryRef.current = false
-            }, 2000)
-          }, 300)
+              autoScrollRef.current = true
+              setAutoScroll(true)
+              return
+            }
+            requestAnimationFrame(scrollHistoryToBottom)
+          }
+          setTimeout(scrollHistoryToBottom, 300)
         }
       })
       .catch((err) => {
@@ -881,6 +893,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     },
   ])
   const turns = useMemo(() => groupMessagesIntoTurns(messages), [messages])
+  turnsCountRef.current = turns.length
 
   // --- Virtual scrolling via @tanstack/react-virtual ---
   const virtualizer = useVirtualizer({
@@ -900,6 +913,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       if (el) el.scrollTo({ top: offset, behavior: 'instant' as ScrollBehavior })
     },
   })
+  virtualizerRef.current = virtualizer
 
   // --- Command palette items ---
   const commandItems = useMemo(() => [
@@ -1158,7 +1172,6 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                   key={turn.type === 'user' ? turn.message.id : turn.messages[0].id}
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
-                  className="msg-fade-in"
                   style={{
                     position: 'absolute',
                     top: 0,

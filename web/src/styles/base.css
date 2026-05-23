@@ -95,8 +95,7 @@ body {
   --xbot-bg-secondary: #f2f2f7; --xbot-bg-input: rgba(0,0,0,0.04);
 }
 
-[data-theme="light"] .markdown-body pre { background: #f2f2f7 !important; }
-
+[data-theme="light"] .markdown-body pre:not(.xbot-codeblock-pre) { background: #f2f2f7 !important; }
 [data-theme="light"] .markdown-body code { background: rgba(0,0,0,0.05); }
 
 ::selection { background: rgba(10,132,255,0.3); color: #fff; }
@@ -114,8 +113,8 @@ body {
 .markdown-body a:hover { text-decoration: underline; }
 .markdown-body blockquote { border-left: 3px solid var(--accent); margin: 0.5em 0; padding: 0.2em 1em; background: var(--accent-subtle); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .markdown-body code { background: var(--bg-secondary); padding: 2px 6px; border-radius: 6px; font-size: 0.88em; }
-.markdown-body pre { background: #000 !important; border-radius: var(--radius-md); padding: 1em; overflow-x: auto; margin: 0.5em 0; }
-.markdown-body pre code { background: none; padding: 0; }
+.markdown-body pre:not(.xbot-codeblock-pre) { background: #000 !important; border-radius: var(--radius-md); padding: 1em; overflow-x: auto; margin: 0.5em 0; }
+.markdown-body pre:not(.xbot-codeblock-pre) code { background: none; padding: 0; }
 .markdown-body table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
 .markdown-body th,.markdown-body td { border: 1px solid var(--border); padding: 6px 10px; }
 .markdown-body th { background: var(--bg-hover); }

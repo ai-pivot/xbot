@@ -9,6 +9,7 @@ import (
 	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/session"
 )
 
@@ -207,7 +208,12 @@ func truncateArgs(args string, maxLen int) string {
 // handleCompress handles the /compress command: manually trigger context compaction.
 func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	a.emitBuiltinProgress(msg.Channel, msg.ChatID, PhaseCompressing)
-	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID)
+	// Capture the post-compress token count so the deferred PhaseDone
+	// can carry it in the progress event and update the TUI context bar.
+	var compressTokenUsage *protocol.TokenUsage
+	defer func() {
+		a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, compressTokenUsage)
+	}()
 
 	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
@@ -266,6 +272,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	if err := tenantSession.Clear(); err != nil {
 		log.Ctx(ctx).WithError(err).Warn("Failed to clear session for compression")
 		newTokenCount, _ := llm.CountMessagesTokens(result.LLMView, model)
+		compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
@@ -285,6 +292,9 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	}
 
 	newTokenCount, _ := llm.CountMessagesTokens(result.LLMView, model)
+
+	// Set the token usage for the deferred PhaseDone so the CLI context bar updates.
+	compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
 
 	// Persist the compressed token count so the next Run() restores an accurate
 	// value instead of the pre-compress count. Without this, a restart after
