@@ -258,7 +258,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     const next = currentTheme === 'dark' ? 'light' : 'dark'
     setCurrentTheme(next)
     document.documentElement.setAttribute('data-theme', next)
-    try { localStorage.setItem('theme', next) } catch {}
+    try { localStorage.setItem('theme', next) } catch { /* noop */ }
   }, [currentTheme])
   const [contextInfo, setContextInfo] = useState<{ prompt_tokens: number; max_tokens: number; usage_pct: number; source: string } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
