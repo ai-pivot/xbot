@@ -241,3 +241,46 @@
 .settings-list-item:hover {
   background: var(--bg-hover);
 }
+
+/* ═══ Settings Form Items — label left, control right ═══ */
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  flex-wrap: wrap;
+}
+.settings-item + .settings-item {
+  border-top: 1px solid var(--border);
+}
+/* Multi-line items (range slider, etc.) wrap vertically */
+.settings-item p,
+.settings-item .text-xs.mt-1 {
+  flex-basis: 100%;
+  order: 3;
+}
+.settings-label {
+  font-size: 13px;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.settings-select,
+.settings-item > .settings-input {
+  width: auto;
+  min-width: 140px;
+  max-width: 50%;
+}
+/* Textarea items: vertical layout */
+.settings-item:has(textarea) {
+  flex-direction: column;
+  align-items: stretch;
+}
+.settings-item:has(textarea) .settings-input {
+  max-width: 100%;
+}
+/* Range slider fills remaining space */
+.settings-item .flex.items-center {
+  flex: 1;
+  min-width: 0;
+}
