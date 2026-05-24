@@ -1285,8 +1285,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                           </div>
                         )}
                         <div className="rounded-xl px-4 py-3 bg-blue-600 text-white markdown-body text-sm relative ml-auto user-msg"
-                             style={{ width: 'fit-content', overflowWrap: 'break-word' }}
+                             style={{ width: 'fit-content', overflowWrap: 'break-word', userSelect: 'text' }}
                              onContextMenu={(e) => {
+                               // Allow native context menu when text is selected (for copy)
+                               const selection = window.getSelection()
+                               if (selection && selection.toString().trim().length > 0) return
                                e.preventDefault()
                                setContextMenu({
                                  x: e.clientX,
@@ -1300,20 +1303,23 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                              }}
                         >
                           <UserMessageContent content={turn.message.content} onPreview={(url) => setPreviewImage(url)} />
-                          {turn.message.ts && (
-                           <div className="text-xs mt-1 text-right text-blue-200/50 flex items-center justify-end gap-1">
-                             <span>{formatRelativeTime(turn.message.ts * 1000)}</span>
-                             {turn.message.status === 'sending' && <span className="animate-pulse"><IconClock className="inline" /></span>}
-                             {turn.message.status === 'failed' && <span className="text-red-300"><IconX className="inline" /> {t('sendFailed')}</span>}
-                             {turn.message.edited && <span className="italic">{t('edited')}</span>}
-                           </div>
-                          )}
                         </div>
+                        {turn.message.ts && (
+                         <div className="user-msg-timestamp">
+                           <span>{formatRelativeTime(turn.message.ts * 1000)}</span>
+                           {turn.message.status === 'sending' && <span className="animate-pulse"><IconClock className="inline" /></span>}
+                           {turn.message.status === 'failed' && <span className="text-red-400"><IconX className="inline" /> {t('sendFailed')}</span>}
+                           {turn.message.edited && <span className="italic">{t('edited')}</span>}
+                         </div>
+                        )}
                       </div>
                     </SwipeableMessage>
                   ) : (
                     <div className="mb-4" data-msg-id={turn.messages[0].id}
                       onContextMenu={(e) => {
+                        // Allow native context menu when text is selected (for copy)
+                        const selection = window.getSelection()
+                        if (selection && selection.toString().trim().length > 0) return
                         e.preventDefault()
                         const last = turn.messages[turn.messages.length - 1]
                         setContextMenu({
