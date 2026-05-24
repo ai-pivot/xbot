@@ -30,6 +30,9 @@ type CompressPipelineParams struct {
 	OffloadSessionKey string
 	// MaskStore is cleaned after compression (nil = skip).
 	MaskStore *ObservationMaskStore
+	// CompactRetention controls how many archived generations to keep.
+	// 0 = keep all, -1 = disable archiving (hard delete). Default: 3.
+	CompactRetention int
 	// AccumulateUsage is called with the compress result to add to local metrics.
 	AccumulateUsage func(*CompressResult)
 	// SyncMessages syncs the ContextEditor reference when messages change.
@@ -90,7 +93,7 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	}
 
 	if params.Persistence != nil {
-		if ok, _ := params.Persistence.RewriteAfterCompress(result.SessionView, len(newMessages)); !ok {
+		if ok, _ := params.Persistence.RewriteAfterCompress(result.SessionView, len(newMessages), params.CompactRetention); !ok {
 			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
 		}
 	}

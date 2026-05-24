@@ -20,21 +20,24 @@ CREATE TABLE tenants (
 );
 
 CREATE TABLE session_messages (
-	    id INTEGER PRIMARY KEY AUTOINCREMENT,
-	    tenant_id INTEGER NOT NULL,
-	    role TEXT NOT NULL,
-	    content TEXT NOT NULL,
-	    tool_call_id TEXT,
-	    tool_name TEXT,
-	    tool_arguments TEXT,
-	    tool_calls TEXT,
-	    detail TEXT,
-	    display_only INTEGER DEFAULT 0,
-	    context_tokens INTEGER DEFAULT 0,
-	    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-	    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
-	);
-CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     tenant_id INTEGER NOT NULL,
+     role TEXT NOT NULL,
+     content TEXT NOT NULL,
+     tool_call_id TEXT,
+     tool_name TEXT,
+     tool_arguments TEXT,
+     tool_calls TEXT,
+     detail TEXT,
+     display_only INTEGER DEFAULT 0,
+     context_tokens INTEGER DEFAULT 0,
+     is_archived INTEGER DEFAULT 0,
+     compact_generation INTEGER DEFAULT 0,
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+ );
+ CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
+ CREATE INDEX idx_session_messages_tenant_active ON session_messages(tenant_id, is_archived, id);
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,

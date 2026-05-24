@@ -222,6 +222,8 @@ type Agent struct {
 	maxIterations    int
 	purgeOldMessages bool
 
+	compactRetention int // number of archived generations to keep (0=unlimited, default=3)
+
 	skills             *SkillStore
 	agents             *AgentStore
 	chatHistory        *tools.ChatHistoryStore // 聊天历史缓存
@@ -698,6 +700,10 @@ type Config struct {
 	// 压缩后清理旧消息
 	PurgeOldMessages bool // 压缩后自动删除旧消息（默认 false）
 
+	// CompactRetention controls how many archived generations to keep after compression.
+	// 0 = keep all, -1 = disable archiving (hard delete). Default: 3.
+	CompactRetention int
+
 	// OffloadDir: offload 文件存储目录（默认 ~/.xbot/offload_store）
 	OffloadDir string
 
@@ -1032,6 +1038,7 @@ func New(cfg Config) (*Agent, error) {
 		maxIterations:    cfg.MaxIterations,
 		maxConcurrency:   cfg.MaxConcurrency,
 		purgeOldMessages: cfg.PurgeOldMessages,
+		compactRetention: cfg.CompactRetention,
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -2245,9 +2252,9 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
 // 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
 func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) ([]llm.ChatMessage, error) {
-	history, err := tenantSession.GetMessages()
+	history, err := tenantSession.GetActiveMessages()
 	if err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to get history, using empty history")
+		log.Ctx(ctx).WithError(err).Warn("Failed to get active history, using empty history")
 		history = nil
 	}
 

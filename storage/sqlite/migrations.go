@@ -138,16 +138,24 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
-	// v33: clean orphaned rows from tables with foreign keys to tenants.
-	// Before this version, PRAGMA foreign_keys was OFF, so ON DELETE CASCADE never fired.
-	// This migration removes all orphaned data and then VACUUMs to reclaim disk space.
-	if from < 33 {
-		if err := migrateV32ToV33(db.Conn()); err != nil {
-			return fmt.Errorf("migrate to v33: %w", err)
-		}
-	}
+ // v33: clean orphaned rows from tables with foreign keys to tenants.
+ // Before this version, PRAGMA foreign_keys was OFF, so ON DELETE CASCADE never fired.
+ // This migration removes all orphaned data and then VACUUMs to reclaim disk space.
+ if from < 33 {
+  if err := migrateV32ToV33(db.Conn()); err != nil {
+   return fmt.Errorf("migrate to v33: %w", err)
+  }
+ }
 
-	return nil
+ // v34: add is_archived and compact_generation to session_messages for
+ // soft-delete compression archiving.
+ if from < 34 {
+  if err := migrateV33ToV34(db.Conn()); err != nil {
+   return fmt.Errorf("migrate to v34: %w", err)
+  }
+ }
+
+ return nil
 }
 
 // migrateV1ToV2 adds the user_profiles table.
@@ -1127,5 +1135,37 @@ func migrateV32ToV33(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.WithField("orphan_rows_cleaned", totalOrphans).Info("Database migrated to v33: cleaned orphaned data, enabled foreign keys")
+	return nil
+}
+
+// migrateV33ToV34 adds is_archived and compact_generation columns to session_messages
+// for soft-delete compression archiving, plus an index for efficient active-message queries.
+func migrateV33ToV34(conn *sql.DB) error {
+	// Add is_archived column
+	var count int
+	err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('session_messages') WHERE name = 'is_archived'").Scan(&count)
+	if err == nil && count == 0 {
+		if _, err := conn.Exec("ALTER TABLE session_messages ADD COLUMN is_archived INTEGER DEFAULT 0"); err != nil {
+			return fmt.Errorf("migrate v33->v34 add is_archived: %w", err)
+		}
+	}
+
+	// Add compact_generation column
+	err = conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('session_messages') WHERE name = 'compact_generation'").Scan(&count)
+	if err == nil && count == 0 {
+		if _, err := conn.Exec("ALTER TABLE session_messages ADD COLUMN compact_generation INTEGER DEFAULT 0"); err != nil {
+			return fmt.Errorf("migrate v33->v34 add compact_generation: %w", err)
+		}
+	}
+
+	// Add index for active message queries (tenant_id + is_archived + id)
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_session_messages_tenant_active ON session_messages(tenant_id, is_archived, id)`); err != nil {
+		return fmt.Errorf("migrate v33->v34 create index: %w", err)
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 34"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v34: added is_archived and compact_generation to session_messages")
 	return nil
 }

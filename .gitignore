@@ -98,3 +98,4 @@ web/*.jpg
 web/*.jpeg
 
 .xbot-worktrees/
+xbot.db

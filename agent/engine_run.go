@@ -528,6 +528,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		OffloadStore:      s.cfg.OffloadStore,
 		OffloadSessionKey: s.offloadSessionKey,
 		MaskStore:         s.cfg.MaskStore,
+		CompactRetention:  s.cfg.CompactRetention,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
 	})
@@ -663,14 +664,15 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					cm.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 				}
 				pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-					CM:              cm,
-					Messages:        s.messages,
-					LLMClient:       s.cfg.LLMClient,
-					Model:           s.cfg.Model,
-					TokenTracker:    s.tokenTracker,
-					Persistence:     s.persistence,
-					AccumulateUsage: s.accumulateCompressUsage,
-					SyncMessages:    s.syncMessages,
+					CM:               cm,
+					Messages:         s.messages,
+					LLMClient:        s.cfg.LLMClient,
+					Model:            s.cfg.Model,
+					TokenTracker:     s.tokenTracker,
+					Persistence:      s.persistence,
+					CompactRetention: s.cfg.CompactRetention,
+					AccumulateUsage:  s.accumulateCompressUsage,
+					SyncMessages:     s.syncMessages,
 				})
 				if compressErr != nil {
 					log.Ctx(ctx).WithError(compressErr).Warn("Compression failed after context_window_exceeded, trying aggressive truncation")
@@ -920,6 +922,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		OffloadStore:      s.cfg.OffloadStore,
 		OffloadSessionKey: s.offloadSessionKey,
 		MaskStore:         s.cfg.MaskStore,
+		CompactRetention:  s.cfg.CompactRetention,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
 	})
@@ -1052,7 +1055,7 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 	// Persist the truncated history
 	if s.persistence != nil {
 		s.persistence.RewriteAfterCompress(
-			newMessages, len(newMessages),
+		newMessages, len(newMessages), s.cfg.CompactRetention,
 		)
 	}
 

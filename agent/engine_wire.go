@@ -236,6 +236,9 @@ func (a *Agent) buildMainRunConfig(
 	// 主 Agent 特有字段
 	cfg.Session = tenantSession
 
+	// 传递压缩归档保留代数
+	cfg.CompactRetention = a.compactRetention
+
 	// Token 状态持久化：Run() 结束后写入 DB，重启后恢复
 	if extras := cfg.ToolContextExtras; extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
 		memSvc := extras.MemorySvc

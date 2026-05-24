@@ -122,11 +122,11 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 	// Find the boundary: the Nth user message from the end (0-indexed offset = limit - 1).
 	// This way the window is measured in user-message turns, not raw row count,
 	// so multi-iteration assistant messages don't squeeze out real conversation history.
-	// Exclude display_only messages from boundary calculation.
+	// Exclude display_only messages and archived messages from boundary calculation.
 	var boundaryID sql.NullInt64
 	err = conn.QueryRow(`
 		SELECT id FROM session_messages
-		WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
+		WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0 AND COALESCE(is_archived, 0) = 0
 		ORDER BY id DESC
 		LIMIT 1 OFFSET ?
 	`, tenantID, limit-1).Scan(&boundaryID)
@@ -135,21 +135,21 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 	}
 
 	var rows *sql.Rows
-	if boundaryID.Valid {
+		if boundaryID.Valid {
 		rows, err = conn.Query(`
 			SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
 				FROM session_messages
-				WHERE tenant_id = ? AND id >= ? AND COALESCE(display_only, 0) = 0
+				WHERE tenant_id = ? AND id >= ? AND COALESCE(display_only, 0) = 0 AND COALESCE(is_archived, 0) = 0
 				ORDER BY id ASC
 			`, tenantID, boundaryID.Int64)
-	} else {
+		} else {
 		rows, err = conn.Query(`
 				SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
 				FROM session_messages
-				WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
+				WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0 AND COALESCE(is_archived, 0) = 0
 				ORDER BY id ASC
 			`, tenantID)
-	}
+		}
 	if err != nil {
 		return nil, fmt.Errorf("query session history: %w", err)
 	}
@@ -159,33 +159,55 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 }
 
 // GetAllMessages retrieves all non-display-only messages for a tenant.
-// Used by memory consolidation and context building.
+// Used by UI history display, memory consolidation, and context building.
 //
 // Design decision: display_only messages (e.g. cron task results) are intentionally
 // excluded because they are produced by an independent agent loop with no shared
 // conversation context. Including them in consolidation would inject unrelated content
 // into the user's long-term memory summary. If future features need to retrieve cron
 // execution history, a dedicated query (without the display_only filter) should be added.
+// Archived messages (pre-compression snapshots) are INCLUDED so the UI can show full history.
 func (s *SessionService) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
-	conn, err := s.conn()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := conn.Query(`
-		SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
-		FROM session_messages
-		WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
-		ORDER BY id ASC
-	`, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("query all session messages: %w", err)
-	}
-	defer rows.Close()
+ conn, err := s.conn()
+ if err != nil {
+  return nil, err
+ }
+ rows, err := conn.Query(`
+   SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
+   FROM session_messages
+   WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
+   ORDER BY id ASC
+  `, tenantID)
+ if err != nil {
+  return nil, fmt.Errorf("query all session messages: %w", err)
+ }
+ defer rows.Close()
 
-	return s.scanMessages(rows)
+ return s.scanMessages(rows)
 }
 
-// GetMessagesCount returns the number of messages for a tenant
+// GetActiveMessages retrieves non-display-only, non-archived messages for a tenant.
+// Used by LLM context building (buildPrompt) to exclude pre-compression snapshots.
+func (s *SessionService) GetActiveMessages(tenantID int64) ([]llm.ChatMessage, error) {
+ conn, err := s.conn()
+ if err != nil {
+  return nil, err
+ }
+ rows, err := conn.Query(`
+   SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
+   FROM session_messages
+   WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0 AND COALESCE(is_archived, 0) = 0
+   ORDER BY id ASC
+  `, tenantID)
+ if err != nil {
+  return nil, fmt.Errorf("query active session messages: %w", err)
+ }
+ defer rows.Close()
+
+ return s.scanMessages(rows)
+}
+
+// GetMessagesCount returns the number of messages for a tenant (including archived)
 func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
 	conn, err := s.conn()
 	if err != nil {
@@ -508,5 +530,97 @@ func (s *SessionService) scanMessages(rows *sql.Rows) ([]llm.ChatMessage, error)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
-	return messages, nil
+return messages, nil
+}
+
+// ArchiveForCompress marks all non-archived messages for a tenant as archived,
+// assigning them the next compact_generation number.
+// Returns the new generation number.
+// This replaces Clear() during compression to preserve original messages.
+func (s *SessionService) ArchiveForCompress(tenantID int64) (int, error) {
+ conn, err := s.conn()
+ if err != nil {
+  return 0, err
+ }
+
+ // Get current max generation for this tenant
+ var maxGen sql.NullInt64
+ err = conn.QueryRow(`
+  SELECT MAX(compact_generation) FROM session_messages
+  WHERE tenant_id = ? AND COALESCE(is_archived, 0) = 1
+ `, tenantID).Scan(&maxGen)
+ if err != nil {
+  return 0, fmt.Errorf("query max compact_generation: %w", err)
+ }
+
+ newGen := 1
+ if maxGen.Valid {
+  newGen = int(maxGen.Int64) + 1
+ }
+
+ result, err := conn.Exec(`
+  UPDATE session_messages
+  SET is_archived = 1, compact_generation = ?
+  WHERE tenant_id = ? AND COALESCE(is_archived, 0) = 0
+ `, newGen, tenantID)
+ if err != nil {
+  return 0, fmt.Errorf("archive messages for compress: %w", err)
+ }
+ rows, _ := result.RowsAffected()
+ log.WithFields(log.Fields{
+  "tenant_id":           tenantID,
+  "archived_messages":   rows,
+  "compact_generation":  newGen,
+ }).Info("Archived messages for compression")
+ return newGen, nil
+}
+
+// PurgeArchivedGenerations deletes archived messages whose compact_generation
+// is outside the retention window. keepGenerations=0 means keep all (no purge).
+// For example, with keepGenerations=3 and current max generation=5,
+// generations 1 and 2 are deleted.
+func (s *SessionService) PurgeArchivedGenerations(tenantID int64, keepGenerations int) (int64, error) {
+ if keepGenerations <= 0 {
+  return 0, nil
+ }
+ conn, err := s.conn()
+ if err != nil {
+  return 0, err
+ }
+
+ // Find the minimum generation to keep
+ var maxGen sql.NullInt64
+ err = conn.QueryRow(`
+  SELECT MAX(compact_generation) FROM session_messages
+  WHERE tenant_id = ? AND COALESCE(is_archived, 0) = 1
+ `, tenantID).Scan(&maxGen)
+ if err != nil {
+  return 0, fmt.Errorf("query max archived generation: %w", err)
+ }
+ if !maxGen.Valid {
+  return 0, nil
+ }
+
+ cutoffGen := int(maxGen.Int64) - keepGenerations + 1
+ if cutoffGen <= 0 {
+  return 0, nil // nothing to purge
+ }
+
+ result, err := conn.Exec(`
+  DELETE FROM session_messages
+  WHERE tenant_id = ? AND COALESCE(is_archived, 0) = 1 AND compact_generation < ?
+ `, tenantID, cutoffGen)
+ if err != nil {
+  return 0, fmt.Errorf("purge archived generations: %w", err)
+ }
+ rows, _ := result.RowsAffected()
+ if rows > 0 {
+  log.WithFields(log.Fields{
+   "tenant_id":       tenantID,
+   "purged":          rows,
+   "cutoff_gen":      cutoffGen,
+   "keep_generations": keepGenerations,
+  }).Info("Purged old archived message generations")
+ }
+ return rows, nil
 }

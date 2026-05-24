@@ -255,6 +255,7 @@ type AgentConfig struct {
 	MaxContextTokens     int            `json:"max_context_tokens"`
 	ModelContexts        map[string]int `json:"model_contexts,omitempty"` // model -> max context tokens, overrides MaxContextTokens
 	CompressionThreshold float64        `json:"compression_threshold"`
+	CompactRetention     int            `json:"compact_retention"` // number of archived generations to keep (0=unlimited, default=3)
 	DynamicMaxTokens     *bool          `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
 
 	PurgeOldMessages bool `json:"purge_old_messages"`
@@ -911,6 +912,9 @@ func Load() *Config {
 	}
 	if cfg.Agent.CompressionThreshold == 0 {
 		cfg.Agent.CompressionThreshold = 0.9
+	}
+	if cfg.Agent.CompactRetention == 0 {
+		cfg.Agent.CompactRetention = 3
 	}
 	if cfg.Agent.MaxSubAgentDepth == 0 {
 		cfg.Agent.MaxSubAgentDepth = 6

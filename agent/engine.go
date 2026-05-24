@@ -109,6 +109,10 @@ type RunConfig struct {
 	// ContextManagerConfig 上下文管理器配置（Phase 2 智能触发需要访问 MaxContextTokens 等）
 	ContextManagerConfig *ContextManagerConfig
 
+	// CompactRetention controls how many archived generations to keep after compression.
+	// 0 = keep all, -1 = disable archiving (hard delete). Default: 3.
+	CompactRetention int
+
 	// SendFunc 向 IM 渠道发送消息（nil = 不能发消息）
 	SendFunc func(channel, chatID, content string, metadata ...map[string]string) error
 

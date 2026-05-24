@@ -211,7 +211,7 @@ func TestRewriteAfterCompress_NilSession(t *testing.T) {
 		{Role: "user", Content: "compressed summary"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 10)
+	ok, err := b.RewriteAfterCompress(sessionView, 10, 3)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
@@ -227,7 +227,7 @@ func TestRewriteAfterCompress_NilSession(t *testing.T) {
 func TestRewriteAfterCompress_NilSession_EmptyView(t *testing.T) {
 	b := NewPersistenceBridge(nil, 5)
 
-	ok, err := b.RewriteAfterCompress(nil, 10)
+	ok, err := b.RewriteAfterCompress(nil, 10, 3)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
@@ -249,7 +249,7 @@ func TestRewriteAfterCompress_NilSession_WithMixedMessages(t *testing.T) {
 		{Role: "assistant", Content: "response"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 8)
+	ok, err := b.RewriteAfterCompress(sessionView, 8, 3)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
@@ -269,7 +269,7 @@ func TestRewriteAfterCompress_NilSession_ZeroMsgCount(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 0)
+	ok, err := b.RewriteAfterCompress(sessionView, 0, 3)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
@@ -288,7 +288,7 @@ func TestRewriteAfterCompress_NilSession_LargeMsgCount(t *testing.T) {
 		{Role: "user", Content: "summary"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 500)
+	ok, err := b.RewriteAfterCompress(sessionView, 500, 3)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}

@@ -63,20 +63,35 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 	return nil
 }
 
-// RewriteAfterCompress clears the session and re-adds all compressed messages.
-// Used after context compression when the entire session must be rewritten.
+// RewriteAfterCompress archives current messages and re-adds all compressed messages.
+// Used after context compression to preserve original messages for retrieval.
+// If compactRetention < 0, falls back to hard delete (legacy behavior).
 // Strips <system-reminder> and <dynamic-context> blocks before writing to prevent
 // transient injection artifacts from being persisted.
 // Updates lastPersistedCount to totalMsgCount on success.
 // Returns (true, nil) on success, (false, err) on partial/total failure.
-func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, totalMsgCount int) (bool, error) {
+func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, totalMsgCount int, compactRetention int) (bool, error) {
 	if b.session == nil {
 		return true, nil
 	}
-	if err := b.session.Clear(); err != nil {
-		log.WithError(err).Warn("Failed to clear session for compression, skipping persistence")
-		return false, err
+
+	if compactRetention < 0 {
+		// Legacy behavior: hard delete
+		if err := b.session.Clear(); err != nil {
+			log.WithError(err).Warn("Failed to clear session for compression, skipping persistence")
+			return false, err
+		}
+	} else {
+		// Archive current messages (soft delete)
+		if _, err := b.session.ArchiveForCompress(); err != nil {
+			log.WithError(err).Warn("Failed to archive messages for compression, falling back to clear")
+			if clearErr := b.session.Clear(); clearErr != nil {
+				log.WithError(clearErr).Warn("Failed to clear session for compression, skipping persistence")
+				return false, clearErr
+			}
+		}
 	}
+
 	allOk := true
 	for _, msg := range sessionView {
 		if err := assertNoSystemPersist(msg); err != nil {
@@ -96,6 +111,14 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 			break
 		}
 	}
+
+	// Purge old archived generations beyond retention window
+	if allOk && compactRetention > 0 {
+		if _, err := b.session.PurgeArchivedGenerations(compactRetention); err != nil {
+			log.WithError(err).Warn("Failed to purge old archived generations")
+		}
+	}
+
 	if allOk {
 		b.lastPersistedCount = totalMsgCount
 		return true, nil

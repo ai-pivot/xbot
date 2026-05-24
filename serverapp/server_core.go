@@ -92,6 +92,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		ContextMode:           agent.ContextMode(cfg.Agent.ContextMode),
 		MaxSubAgentDepth:      cfg.Agent.MaxSubAgentDepth,
 		PurgeOldMessages:      cfg.Agent.PurgeOldMessages,
+		CompactRetention:      cfg.Agent.CompactRetention,
 		SandboxIdleTimeout:    time.Duration(cfg.Sandbox.IdleTimeout),
 		PersonaIsolation:      personaIsolation,
 		OffloadDir:            offloadDir,

@@ -46,9 +46,14 @@ func (s *TenantSession) GetHistory(maxMessages int) ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetHistory(s.tenantID, maxMessages)
 }
 
-// GetMessages retrieves all messages for this tenant
+// GetMessages retrieves all messages for this tenant (including archived for UI display)
 func (s *TenantSession) GetMessages() ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetAllMessages(s.tenantID)
+}
+
+// GetActiveMessages retrieves non-archived messages for this tenant (for LLM context building)
+func (s *TenantSession) GetActiveMessages() ([]llm.ChatMessage, error) {
+	return s.sessionSvc.GetActiveMessages(s.tenantID)
 }
 
 // Len returns the number of messages in this tenant's session
@@ -79,6 +84,19 @@ func (s *TenantSession) SetLastConsolidated(n int) error {
 // Clear removes all messages from this tenant's session
 func (s *TenantSession) Clear() error {
 	return s.sessionSvc.Clear(s.tenantID)
+}
+
+// ArchiveForCompress marks all current messages as archived for a compression cycle.
+// Returns the new compact_generation number.
+// The caller should then insert compressed SessionView messages.
+func (s *TenantSession) ArchiveForCompress() (int, error) {
+	return s.sessionSvc.ArchiveForCompress(s.tenantID)
+}
+
+// PurgeArchivedGenerations deletes archived message generations beyond the retention window.
+// keepGenerations=0 means keep all archived messages (no purge).
+func (s *TenantSession) PurgeArchivedGenerations(keepGenerations int) (int64, error) {
+	return s.sessionSvc.PurgeArchivedGenerations(s.tenantID, keepGenerations)
 }
 
 // PurgeOldMessages deletes messages older than the most recent `keepCount` messages.
