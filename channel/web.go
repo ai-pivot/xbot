@@ -1259,12 +1259,17 @@ func eagerSaveUserMsg(db *sql.DB, userID string, content string) error {
 	// Dedup by checking if the very last message for this tenant is an identical
 	// user message saved within the last 2 seconds (handles page-refresh double-submit).
 	// We do NOT dedup by content alone — users may send the same text legitimately.
+	// IMPORTANT: wrap both sides in datetime() for correct comparison.
+	// created_at stores RFC3339 with timezone (e.g. '2026-05-24T14:00:00+08:00'),
+	// while datetime(?, '-2 seconds') returns UTC without timezone (e.g. '2026-05-24 05:59:58').
+	// Raw string comparison of 'T' > ' ' makes the check always TRUE, breaking the 2s window
+	// and deduping ALL duplicate-content messages regardless of time gap.
 	_, err = tx.Exec(`INSERT INTO session_messages (tenant_id, role, content, created_at)
 	SELECT ?, 'user', ?, ?
 	WHERE NOT EXISTS (
 	SELECT 1 FROM session_messages
 	WHERE tenant_id = ? AND role = 'user' AND content = ?
-	  AND created_at > datetime(?, '-2 seconds')
+	  AND datetime(created_at) > datetime(?, '-2 seconds')
 	ORDER BY id DESC LIMIT 1
 	)`, tenantID, content, now, tenantID, content, now)
 	if err != nil {

@@ -55,6 +55,8 @@
 - **`CollectStreamWithCallback` must return partial content on `ctx.Done()`, not nil.** When user cancels streaming mid-reasoning, returning nil loses accumulated `reasoning_content` and partial `tool_calls`. The partial tool_calls may have broken JSON arguments, which then pass through `SanitizeMessages` Pass 2 for cleanup. Returning nil also prevents the engine from properly recording the cancellation state.
 - **MCP stdio `exec.Command` uses process PATH, not `cmd.Env`.** Go's `exec.Command("npx", ...)` resolves the executable using the *process* PATH (`os.Getenv("PATH")`), ignoring `cmd.Env`. When xbot runs as a service with minimal PATH, tools like npx/nvm are invisible. `ConnectStdioServer` now calls `resolveCommand()` to pre-resolve the absolute path using the login shell PATH from `getLoginShellEnv()`. Also, `getLoginShellEnv` uses `bash -i -l` (interactive login shell) because `bash -l` alone skips `.bashrc` where nvm initializes.
 
+- **SQLite `datetime()` comparison with RFC3339 strings is a silent trap.** `created_at` stores `2026-05-24T14:00:00+08:00` (RFC3339 with timezone). `datetime(?, '-2 seconds')` returns `2026-05-24 05:59:58` (UTC, no timezone). Raw string comparison: `'T'` (0x54) > `' '` (0x20) at position 10, so `created_at > datetime(?)` is **always TRUE**, breaking any time-window dedup/filter. Always wrap both sides in `datetime()`: `datetime(created_at) > datetime(?, '-2 seconds')`.
+
 ### Startup
 - `NewOpenAILLM` loads model list asynchronously. `ListModels()` returns fallback immediately.
 - Settings save is synchronous — all local I/O, no network calls.

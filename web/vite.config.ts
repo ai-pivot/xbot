@@ -18,11 +18,13 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:18082',
         changeOrigin: true,
+        secure: true,
       },
       '/ws': {
         target: 'ws://127.0.0.1:18082',
         ws: true,
         changeOrigin: true,
+        secure: true,
       },
     },
   },

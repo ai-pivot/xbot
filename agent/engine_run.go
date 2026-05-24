@@ -1201,12 +1201,13 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 
 	// --- System Reminder injection ---
 	if len(response.ToolCalls) > 0 {
-		// Strip previous reminder from earlier messages to avoid accumulation
+		// Strip ALL previous reminders from earlier messages to ensure only
+		// the latest one survives. Must not break on first non-reminder —
+		// intervening assistant/user messages can split reminder-bearing
+		// tool messages, leaving older reminders alive past the break point.
 		for idx := len(s.messages) - 2; idx >= 0; idx-- {
 			if strings.Contains(s.messages[idx].Content, "<system-reminder>") {
 				s.messages[idx].Content = stripSystemReminder(s.messages[idx].Content)
-			} else {
-				break
 			}
 		}
 

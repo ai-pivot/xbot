@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import type { WebSocketMessage } from './useWebSocket'
 import type { Message } from '../types'
 import type { WsProgressPayload, IterationSnapshot, WsSubAgent } from '../components/ProgressPanel'
-import { normalizeIterationHistory } from '../utils'
+import { normalizeIterationHistory, sanitizeStreamContent } from '../utils'
 
 export interface UseChatMessageHandlerParams {
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
@@ -57,6 +57,8 @@ function handleProgressStructured(
   const prevIter = prevIterationRef.current
   const prevProgress = progressRef.current
 
+  // Preserve thinking from previous progress when new one is empty
+  // (race between structured progress and stream_content)
   if (prevProgress && p.iteration === prevProgress.iteration) {
     const nextThinking = (p.thinking || '').trim()
     const prevThinking = (prevProgress.thinking || '').trim()
@@ -72,7 +74,31 @@ function handleProgressStructured(
     }
   }
 
-  if (prevIter >= 0 && p.iteration > prevIter && prevProgress) {
+  // Server-side iteration_history is authoritative (from GetActiveProgress snapshot
+  // on reconnect). When present, use it to restore liveIterations instead of
+  // trying to infer from previous state. This matches TUI's restoreIterationHistory.
+  const serverIterHistory = (p as Record<string, unknown>).iteration_history as
+    | { iteration: number; thinking?: string; reasoning?: string; completed_tools?: { name: string; label?: string; status: string; summary?: string }[] }[]
+    | undefined
+
+  if (serverIterHistory && serverIterHistory.length > 0) {
+    const restoredIterations: IterationSnapshot[] = serverIterHistory.map(iter => ({
+      iteration: iter.iteration,
+      thinking: iter.thinking || '',
+      reasoning: iter.reasoning || '',
+      tools: (iter.completed_tools || []).map(t => ({
+        name: t.name,
+        label: t.label,
+        status: t.status,
+        summary: t.summary,
+      })),
+    }))
+    // Use server history as authoritative source — replace any locally inferred data.
+    // This is critical for WS reconnect where the server sends a full snapshot via
+    // GetActiveProgress that includes all completed iterations.
+    setLiveIterationsSync(normalizeIterationHistory(restoredIterations))
+  } else if (prevIter >= 0 && p.iteration > prevIter && prevProgress) {
+    // No server-side history — infer from local state (normal live progress flow)
     const allTools = [
       ...(prevProgress.completed_tools ?? []),
       ...(prevProgress.active_tools ?? []),
@@ -97,7 +123,9 @@ function handleProgressStructured(
     reasoningRef.current = ''
   }
 
-  if (p.iteration > 0 && (p.completed_tools?.length ?? 0) > 0) {
+  // Infer previous iteration from completed_tools if we haven't seen a transition yet.
+  // Only do this when there's no server-side history (avoid overwriting authoritative data).
+  if (!serverIterHistory && p.iteration > 0 && (p.completed_tools?.length ?? 0) > 0) {
     const inferredPrev = p.iteration - 1
     setLiveIterationsSync(prev => {
       const hasPrev = prev.some((s) => s.iteration === inferredPrev)
@@ -132,9 +160,20 @@ function handleProgressStructured(
     setSubAgents(p.sub_agents)
   }
 
-  // Loading state is managed by: handleSend (set true), loadHistory (set true if processing, false if idle), handleTextCard (set false).
-  // WS progress/stream events should NOT alter loading state — prevents stale replayed events from incorrectly entering typing state.
-  // setLoading intentionally not called here.
+  // Loading state: normally managed by handleSend/loadHistory/handleTextCard only.
+  // Exception: WS reconnect sends progress snapshot with Phase != "done" while loading
+  // is false (WS disconnect may have cleared it). Activate loading to restore the
+  // in-progress turn's typing indicator. Matches TUI's acceptProgress path which
+  // calls startAgentTurn() on reconnect.
+  // Guard: only activate when Phase is explicitly a non-done phase to avoid false
+  // activation from stale/done events.
+  const phase = (p as Record<string, unknown>).phase as string | undefined
+  if (phase && phase !== 'done' && phase !== '') {
+    _setLoading(prev => {
+      if (prev) return true // already loading
+      return true // activate loading for in-progress turn on reconnect
+    })
+  }
 }
 
 function handleStreamContent(
@@ -148,7 +187,12 @@ function handleStreamContent(
   _setLoading: React.Dispatch<React.SetStateAction<boolean>>,
 ) {
   const reasoning = (data.progress as Record<string, string>)?.reasoning_stream_content || ''
-  const content = (data.progress as Record<string, string>)?.stream_content || ''
+  const rawContent = (data.progress as Record<string, string>)?.stream_content || ''
+  // Sanitize: strip <system-reminder>, <think/>, <tool_call/> blocks that
+  // some models echo back as text output. The TUI only shows stream_content
+  // as a transient typing indicator so it's not visible; Web renders it as a
+  // full message so it must be cleaned.
+  const content = rawContent ? sanitizeStreamContent(rawContent) : ''
   if (!reasoning && !content) return
 
   if (reasoning) {
@@ -200,7 +244,6 @@ function handleTextCard(
   liveIterationsRef: React.MutableRefObject<IterationSnapshot[]>,
   setLiveIterationsSync: (updater: IterationSnapshot[] | ((prev: IterationSnapshot[]) => IterationSnapshot[])) => void,
   resetProgress: () => void,
-  lastSeqRef: React.MutableRefObject<number>,
   setLoading: React.Dispatch<React.SetStateAction<boolean>>,
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
   fetchContextInfo: () => void,
@@ -262,10 +305,15 @@ function handleTextCard(
   }
 
   resetProgress()
-  lastSeqRef.current = 0
+  // Do NOT reset lastSeqRef to 0 — that causes the next WS reconnect to replay
+  // the entire ring buffer (up to 512 events) instead of only new events.
+  // The seq counter is monotonic and the ring buffer handles wraparound naturally.
   setLoading(false)
 
-  const finalContent = streamingContentRef.current || (data.content as string) || ''
+  // Use server-provided content as the authoritative final text.
+  // Sanitize to strip <system-reminder>, <think/> blocks etc.
+  // streamingContentRef is only a fallback when the server doesn't send content.
+  const finalContent = sanitizeStreamContent((data.content as string) || streamingContentRef.current || '')
   streamingContentRef.current = ''
 
   setMessages((prev) => {
@@ -374,7 +422,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
         handleTextCard(
           data, prevIterationRef, progressRef, reasoningRef,
           streamingContentRef, liveIterationsRef, setLiveIterationsSync,
-          resetProgress, lastSeqRef, setLoading, setMessages, fetchContextInfo,
+          resetProgress, setLoading, setMessages, fetchContextInfo,
         )
         break
 

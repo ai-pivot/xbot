@@ -217,3 +217,25 @@ export function downloadFile(content: string, filename: string, mimeType: string
   a.click()
   URL.revokeObjectURL(url)
 }
+
+/**
+ * Strip internal/system content artifacts from LLM output that should
+ * never be shown to the user in the Web UI. These include:
+ * - <system-reminder>...</system-reminder> blocks (system prompt injections)
+ * - <think|thinking>...</think|thinking> blocks (reasoning traces)
+ * - <tool_call|tool_result> blocks if model emits them
+ *
+ * The TUI avoids this by showing stream_content only as a transient typing
+ * indicator. The Web UI renders it as a full message, so it must be cleaned.
+ */
+const SYSTEM_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g
+const THINK_BLOCK_RE = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi
+const TOOL_BLOCK_RE = /<tool_call[\s\S]*?<\/tool_call>/gi
+
+export function sanitizeStreamContent(text: string): string {
+  return text
+    .replace(SYSTEM_REMINDER_RE, '')
+    .replace(THINK_BLOCK_RE, '')
+    .replace(TOOL_BLOCK_RE, '')
+    .trim()
+}

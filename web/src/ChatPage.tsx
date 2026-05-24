@@ -18,7 +18,8 @@ import ReplyPreview from './components/ReplyPreview'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
 import type { WsSubAgent } from './components/ProgressPanel'
 import { TodoBar } from './components/TodoBar'
-import { formatRelativeTime, formatFileSize, normalizeIterationHistory, createResetProgress, exportAsMarkdown, exportAsJSON, downloadFile } from './utils'
+import { SubAgentPanel } from './components/SubAgentPanel'
+import { formatRelativeTime, formatFileSize, normalizeIterationHistory, createResetProgress, exportAsMarkdown, exportAsJSON, downloadFile, sanitizeStreamContent } from './utils'
 import { getCodeBlockProps } from './components/CodeBlock'
 import ProgressPanel from './components/ProgressPanel'
 import AssistantTurn from './components/AssistantTurn'
@@ -498,23 +499,49 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             .filter((m: { role: string; content?: string; tool_calls?: string; detail?: string; display_only?: number }) => {
               if (m.role === 'tool') return false
               if (m.role === 'assistant' && m.tool_calls && !m.detail) return false
-              if (m.role === 'assistant' && m.display_only && !m.content && !m.detail) return false
+              if (m.role === 'assistant' && m.display_only && !m.detail) return false
               return true
             })
-            .map((m: { id: number; role: string; content: string; detail?: string; created_at?: string }) => {
+            .map((m: { id: number; role: string; content: string; detail?: string; display_only?: number; created_at?: string }) => {
               const msg: Message = {
                 id: `hist-${m.id}`,
                 type: m.role === 'user' ? 'user' : m.role === 'assistant' ? 'assistant' : 'system',
                 content: m.content,
                 ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : undefined,
               }
+              // display_only messages (e.g. cron results): never show content
+              if (m.display_only) {
+                msg.content = ''
+              }
               if (m.detail) {
                 try {
                   msg.iterationHistory = normalizeIterationHistory(JSON.parse(m.detail))
                 } catch { /* ignore */ }
               }
+              // Compressed tool summary detection:
+              // After context compression, extractDialogueFromTail creates assistant
+              // messages whose content is a textified version of tool calls/results.
+              // These exist for LLM context (replacing dropped tool result messages)
+              // but should NOT be shown in the UI — the structured iteration history
+              // (Detail) on the final assistant message already provides this info.
+              // Heuristic: assistant msg with no tool_calls, no detail, content starts
+              // with tool summary pattern ("- **ToolName**:"), AND is long (>500 chars).
+              // Short messages or messages starting with normal text are never stripped.
+              if (m.role === 'assistant' && msg.content && !m.tool_calls && !m.detail && msg.content.length > 500) {
+                const startsWithToolSummary = /^\s*-\s*\*\*\w+\*\*:/.test(msg.content)
+                if (startsWithToolSummary) {
+                  msg.content = ''
+                }
+              }
+              // Also sanitize any remaining content
+              if (msg.content) {
+                msg.content = sanitizeStreamContent(msg.content)
+              }
               return msg
             })
+            // Filter out assistant messages with empty content and no iteration history.
+            // These are compressed tool summaries (for LLM context) that were stripped above.
+            .filter((m: Message) => !(m.type === 'assistant' && !m.content && !m.iterationHistory))
           setMessages(hist)
           const isProcessing = data.processing === true
           if (isProcessing) {
@@ -537,19 +564,41 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               completed_tools: (ap.completed_tools || []).map((t: { name: string; label: string; status: string; summary: string }) => ({
                 name: t.name, label: t.label, status: t.status, summary: t.summary,
               })),
+              ...(ap.todos ? { todos: ap.todos } : {}),
+              ...(ap.sub_agents ? { sub_agents: ap.sub_agents } : {}),
+              ...(ap.token_usage ? { token_usage: ap.token_usage } : {}),
             }
             prevIterationRef.current = ap.iteration || 0
             if (ap.thinking) {
               reasoningRef.current = ap.thinking
             }
             setProgress(progressRef.current)
+            // Restore todos from active_progress snapshot
+            if (ap.todos && ap.todos.length > 0) {
+              setTodos(ap.todos)
+            }
+            // Restore sub_agents from active_progress snapshot
+            if (ap.sub_agents && ap.sub_agents.length > 0) {
+              setSubAgents(ap.sub_agents)
+            }
             if (ap.stream_content) {
-              streamingContentRef.current = ap.stream_content
-              setMessages(prev => [...prev, {
-                id: '__streaming__',
-                type: 'assistant' as const,
-                content: ap.stream_content,
-              }])
+              // Only create __streaming__ if the agent is still generating text and
+              // no final assistant message has been persisted yet. The stream_content
+              // contains accumulated LLM text including tool descriptions — if the
+              // history already has the final text card, showing stream_content would
+              // duplicate the message with polluted content.
+              const lastMsg = msgs[msgs.length - 1]
+              const lastIsAssistant = lastMsg && (lastMsg.role === 'assistant' || lastMsg.type === 'assistant')
+              const streamIsSubsetOfLast = lastIsAssistant && lastMsg.content &&
+                ap.stream_content.includes(lastMsg.content.slice(0, 80))
+              if (!lastIsAssistant || !streamIsSubsetOfLast) {
+                streamingContentRef.current = sanitizeStreamContent(ap.stream_content)
+                setMessages(prev => [...prev, {
+                  id: '__streaming__',
+                  type: 'assistant' as const,
+                  content: sanitizeStreamContent(ap.stream_content),
+                }])
+              }
             }
             if (ap.iteration_history && ap.iteration_history.length > 0) {
               const restoredIterations: IterationSnapshot[] = ap.iteration_history.map(
@@ -671,7 +720,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       ...(replyingTo ? { replyTo: { id: replyingTo.id, content: replyingTo.content.slice(0, REPLY_PREVIEW_LENGTH), type: replyingTo.type } } : {}),
     }
     setReplyingTo(null)
-    setMessages((prev) => [...prev, userMsg])
+    // Clean up any stale __streaming__ message from a previous turn that didn't
+    // complete normally (e.g. WS disconnect, /cancel). Without this, the stale
+    // streaming message persists and gets rendered as an orphan assistant reply
+    // to the old user message.
+    setMessages((prev) => {
+      const cleaned = prev.filter(m => m.id !== '__streaming__')
+      return [...cleaned, userMsg]
+    })
     resetProgress()
     setTodos([])
     setSubAgents([])

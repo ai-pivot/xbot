@@ -286,6 +286,7 @@ const en: Record<I18nKey, string> = {
 
   // ─── AssistantTurn ───
   thinkingProcess: 'Thinking process',
+  intermediateOutput: 'Intermediate output',
   iterationProcess: 'Iteration process',
   expandAll: 'Expand all',
   collapse: 'Collapse',
