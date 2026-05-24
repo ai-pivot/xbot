@@ -1,6 +1,7 @@
 import { useTranslation } from '../i18n'
 import { useState, memo } from 'react'
 import { formatElapsed, computeDisplayIterations } from '../utils'
+import { IconCopy, IconRefresh, IconCheck, IconX, IconClock, IconThinking, IconLightbulb, IconPackage } from './Icons'
 
 interface WsToolProgress {
   name: string
@@ -59,10 +60,10 @@ interface ProgressPanelProps {
 
 function SubAgentIcon({ status }: { status: string }) {
   switch (status) {
-    case 'done': return <span>✅</span>
-    case 'error': return <span>❌</span>
-    case 'pending': return <span className="subagent-pulse">⏳</span>
-    default: return <span className="subagent-spin">🔄</span>
+    case 'done': return <IconCheck className="inline" />
+    case 'error': return <IconX className="inline" />
+    case 'pending': return <span className="subagent-pulse"><IconClock className="inline" /></span>
+    default: return <span className="subagent-spin"><IconRefresh /></span>
   }
 }
 
@@ -141,24 +142,24 @@ export const CompletedIteration = memo(function CompletedIteration({ snap }: { s
       <div className="iteration-header">#{snap.iteration}</div>
       {hasReasoning && (
         <div className="iteration-block iteration-reasoning">
-          <div className="iteration-block-label">💭 Reasoning</div>
+          <div className="iteration-block-label"><IconThinking className="inline" /> Reasoning</div>
           <div className="iteration-block-text">{snap.reasoning}</div>
         </div>
       )}
       {hasThinking && (
         <div className="iteration-block iteration-thinking">
-          <div className="iteration-block-label">💡 Thinking</div>
+          <div className="iteration-block-label"><IconLightbulb className="inline" /> Thinking</div>
           <div className="iteration-block-text italic">{snap.thinking}</div>
         </div>
       )}
       {hasTools && (
         <div className="space-y-0.5">
           {(snap.tools ?? []).map((tool, i) => {
-            const icon = tool.status === 'error' ? '❌' : '✅'
+            const icon = tool.status === 'error' ? <IconX className="inline" /> : <IconCheck className="inline" />
             return (
               <div key={`${snap.iteration}-${i}`} className="iteration-tool">
                 <div className="flex items-center gap-2">
-                  <span>{icon}</span>
+                  {icon}
                   <span className="iteration-tool-name">{tool.label || tool.name}</span>
                   {tool.elapsed_ms != null && tool.elapsed_ms > 0 && <span className="iteration-tool-time">{formatElapsed(tool.elapsed_ms)}</span>}
                 </div>
@@ -201,7 +202,7 @@ function TodoList({ todos }: { todos: NonNullable<WsProgressPayload['todos']> })
   return (
     <div className="todo-section">
       <div className="todo-header">
-        <span className="todo-title">📋 TODO {done}/{total}</span>
+        <span className="todo-title"><IconCopy className="inline" /> TODO {done}/{total}</span>
         <span className="todo-percent">{Math.round(progress)}%</span>
       </div>
       <div className="todo-progress-track">
@@ -210,7 +211,7 @@ function TodoList({ todos }: { todos: NonNullable<WsProgressPayload['todos']> })
       <div className="todo-items">
         {todos.map(todo => (
           <div key={todo.id} className={`todo-item ${todo.done ? 'todo-item-done' : ''}`}>
-            <span className="todo-check">{todo.done ? '✅' : '⬜'}</span>
+            <span className="todo-check">{todo.done ? <IconCheck className="inline" /> : <span style={{width:14,height:14,borderRadius:'50%',display:'inline-block',border:'1.5px solid currentColor',verticalAlign:'middle'}} />}</span>
             <span className="todo-text">{todo.text}</span>
           </div>
         ))}
@@ -260,7 +261,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
 
               {shouldShowCurrentThinking && (
                 <div className="iteration-block iteration-reasoning">
-                  <div className="iteration-block-label">💭 Reasoning</div>
+                  <div className="iteration-block-label"><IconThinking className="inline" /> Reasoning</div>
                   <div className="iteration-block-text">{progress.thinking}</div>
                 </div>
               )}
@@ -276,7 +277,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
               {hasActiveTools && activeTools.map((tool, i) => (
                 <div key={`${tool.name}-${i}`} className="iteration-tool">
                   <div className="flex items-center gap-2">
-                    <span className="tool-pulse">⏳</span>
+                    <span className="tool-pulse"><IconClock className="inline" /></span>
                     <span className="iteration-tool-name">{tool.label || tool.name}</span>
                     {tool.elapsed_ms > 0 && <span className="iteration-tool-time">{formatElapsed(tool.elapsed_ms)}</span>}
                   </div>
@@ -290,7 +291,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
                 return (
                   <div className="iteration-tool">
                     <div className="flex items-center gap-2">
-                      <span>{last.status === 'done' ? '✅' : '❌'}</span>
+                      {last.status === 'done' ? <IconCheck className="inline" /> : <IconX className="inline" />}
                       <span className="iteration-tool-name">{last.label || last.name}</span>
                       {last.elapsed_ms != null && last.elapsed_ms > 0 && <span className="iteration-tool-time">{formatElapsed(last.elapsed_ms)}</span>}
                     </div>
@@ -300,7 +301,7 @@ export default function ProgressPanel({ progress, liveIterations, loading }: Pro
 
               {['compressing', 'retrying'].includes(progress.phase) && (
                 <div className="iteration-phase-text">
-                  <span>{progress.phase === 'compressing' ? '📦' : '🔄'}</span>
+                  {progress.phase === 'compressing' ? <IconPackage className="inline" /> : <IconRefresh className="inline" />}
                   <span>{progress.phase}…</span>
                 </div>
               )}

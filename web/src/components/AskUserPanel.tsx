@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect, useState } from 'react'
+import { IconThinking } from './Icons'
 import { useTranslation } from '../i18n'
 
 interface AskUserQuestion {
@@ -67,7 +68,7 @@ export default function AskUserPanel({ askUser, onSubmit, onCancel }: AskUserPan
       <div className="bg-slate-800 border border-slate-600 rounded-2xl shadow-2xl max-w-lg w-full mx-4 askuser-panel">
         <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-            <span className="text-lg">🤔</span>
+            <IconThinking className="inline" style={{width:20,height:20}} />
             {t('agentNeedsInput')}
           </h3>
           <span className="text-xs text-slate-400">

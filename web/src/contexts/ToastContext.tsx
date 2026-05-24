@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from 'react'
+import { IconX, IconCheck } from '../components/Icons'
 
 export interface ToastItem {
   id: number
@@ -64,8 +65,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             onClick={() => removeToast(toast.id)}
             role="alert"
           >
-            {toast.type === 'error' && '❌ '}
-            {toast.type === 'success' && '✅ '}
+            {toast.type === 'error' && <IconX className="inline" />}
+            {toast.type === 'success' && <IconCheck className="inline" />}
             {toast.message}
           </div>
         ))}

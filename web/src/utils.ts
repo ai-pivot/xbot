@@ -172,7 +172,7 @@ export function exportAsMarkdown(messages: Message[]): string {
   const date = new Date().toLocaleString()
   const lines = [`# Chat Export — ${date}`, '']
   for (const msg of messages) {
-    const role = msg.type === 'user' ? '👤 User' : msg.type === 'assistant' ? '🤖 Assistant' : '📋 System'
+    const role = msg.type === 'user' ? 'User' : msg.type === 'assistant' ? 'Assistant' : 'System'
     lines.push(`## ${role}`, '')
     lines.push(msg.content)
     lines.push('')

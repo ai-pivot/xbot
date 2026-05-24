@@ -1,8 +1,8 @@
-import { useEffect, useRef, memo } from 'react'
+import { useEffect, useRef, memo, type ReactNode } from 'react'
 
 export interface ContextMenuItem {
   label: string
-  icon?: string
+  icon?: ReactNode
   onClick: () => void
   danger?: boolean
 }

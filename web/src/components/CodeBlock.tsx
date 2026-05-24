@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, memo } from 'react'
 import { hljs, ensureLanguage, isLanguageRegistered, escapeHtml } from '../highlight'
 import { MermaidBlock } from './MermaidBlock'
 import { useTranslation } from '../i18n'
+import { IconCopy, IconCheck } from './Icons'
 
 interface CodeBlockProps {
   className?: string
@@ -20,7 +21,6 @@ const CodeBlock = memo(function CodeBlock({ className, children }: CodeBlockProp
   const lang = langMatch ? langMatch[1] : ''
 
   const lines = codeText.split('\n')
-  const lineCount = lines.length
 
   // Track whether the language has been loaded (for lazy languages)
   useEffect(() => {
@@ -80,13 +80,13 @@ const CodeBlock = memo(function CodeBlock({ className, children }: CodeBlockProp
   return (
     <div className="xbot-codeblock">
       <div className="xbot-codeblock-header">
-        <span>
+        <span className="xbot-codeblock-lang">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           {lang || 'code'}
-          {lineCount > 1 && <span className="xbot-codeblock-linecount">{lineCount} lines</span>}
         </span>
         <div className="xbot-codeblock-actions">
           <button onClick={handleCopy} className="xbot-codeblock-copy" aria-label={t('copyCode')} data-testid="codeblock-copy-btn">
-            {copied ? t('copied') : 'Copy'}
+            {copied ? <IconCheck /> : <IconCopy />}
           </button>
         </div>
       </div>

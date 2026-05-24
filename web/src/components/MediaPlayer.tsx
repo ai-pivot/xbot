@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect, memo } from 'react'
 import { useTranslation } from '../i18n'
 import { useMediaPlayerContext } from '../contexts/MediaPlayerContext'
+import { IconVolumeX, IconVolume, IconMaximize, IconMinimize } from './Icons'
 
 /* -------------------------------------------------------------------------- */
 /*  Fullscreen helpers (vendor-prefixed compat)                                */
@@ -510,7 +511,7 @@ export const AudioPlayer = memo(function AudioPlayer({ src, fileName }: AudioPla
             data-testid="audio-mute-btn"
             aria-label={muted ? t('unmute') : t('mute')}
           >
-            <span aria-hidden="true">{muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}</span>
+            <span aria-hidden="true">{muted || volume === 0 ? <IconVolumeX className="inline" /> : <IconVolume className="inline" />}</span>
           </button>
           <input
             type="range"
@@ -714,7 +715,7 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
             data-testid="video-mute-btn"
             aria-label={muted ? t('unmute') : t('mute')}
           >
-            <span aria-hidden="true">{muted ? '🔇' : '🔊'}</span>
+            <span aria-hidden="true">{muted ? <IconVolumeX className="inline" /> : <IconVolume className="inline" />}</span>
           </button>
 
           <button
@@ -723,7 +724,7 @@ export const VideoPlayer = memo(function VideoPlayer({ src, fileName }: VideoPla
             data-testid="video-fullscreen-btn"
             aria-label={isFullscreen ? t('exitFullscreen') : t('fullscreen')}
           >
-            <span aria-hidden="true">{isFullscreen ? '⊡' : '⛶'}</span>
+            <span aria-hidden="true">{isFullscreen ? <IconMinimize className="inline" /> : <IconMaximize className="inline" />}</span>
           </button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from '../i18n'
 import { useSnapshot } from '../hooks/useSnapshot'
+import { IconBookmark, IconCheck } from './Icons'
 import type { Message } from '../types'
 
 interface SnapshotShareProps {
@@ -39,14 +40,14 @@ export default function SnapshotShare({ message, onDone }: SnapshotShareProps) {
         title={t('takeSnapshot')}
         data-testid="snapshot-btn"
       >
-        📸
+        <IconBookmark className="inline" />
       </button>
       {snapshotError && (
         <div className="snapshot-error" data-testid="snapshot-error">{snapshotError}</div>
       )}
       {showPreview && (
         <div className="snapshot-success" data-testid="snapshot-success">
-          ✓ {t('snapshotCopied')}
+          <IconCheck className="inline" /> {t('snapshotCopied')}
         </div>
       )}
     </div>

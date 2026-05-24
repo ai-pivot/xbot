@@ -1,5 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { IconRefresh, IconPlus, IconSearch, IconSidebarCollapse, IconSidebarExpand } from './Icons'
 import ConfirmDialog from './ConfirmDialog'
 
 interface ChatInfo {
@@ -16,9 +17,11 @@ interface ChatSidebarProps {
   currentChatID: string
   onExportMarkdown?: () => void
   onExportJSON?: () => void
+  connected?: boolean
+  reconnecting?: boolean
 }
 
-export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON }: ChatSidebarProps) {
+export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON, connected = true, reconnecting = false }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 640)
@@ -122,21 +125,37 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     : chats
 
   if (collapsed) {
+    const status = connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'
     return (
-      <button className="chat-sidebar-toggle" onClick={() => { setCollapsed(false); fetchChats() }} title={t("expandSidebar")}>
-        💬 <span className="sidebar-count">{chats.length}</span>
-      </button>
+      <div className="sidebar-floating-bar">
+        <span className="sidebar-floating-brand">xbot</span>
+        <span className="sidebar-status-dot" data-status={status} />
+        <button className="sidebar-floating-btn" onClick={() => { setCollapsed(false); fetchChats() }} title={t("expandSidebar")} aria-label={t("expandSidebar")}>
+          <IconSidebarExpand />
+        </button>
+        <button className="sidebar-floating-btn" onClick={handleCreate} title={t("newSession")} aria-label={t("newSession")}>
+          <IconPlus />
+        </button>
+        <button className="sidebar-floating-btn" onClick={() => { setCollapsed(false); fetchChats() }} title={t("searchHistory")} aria-label={t("searchHistory")}>
+          <IconSearch />
+        </button>
+      </div>
     )
   }
 
   const sidebarContent = (
     <>
     <div className="sidebar-panel" role="navigation" aria-label="会话列表" data-testid="sidebar">
+      {/* Brand + Status */}
+      <div className="sidebar-brand">
+        <span className="sidebar-brand-name">xbot</span>
+        <span className="sidebar-status-dot" data-status={connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'} />
+      </div>
       {/* Header */}
       <div className="sidebar-header">
         <span className="sidebar-header-title">{t("chatSessions")}</span>
         <div className="sidebar-header-actions">
-          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}>◁</button>
+          <button onClick={() => setCollapsed(true)} className="sidebar-btn" title={t("collapseSidebar")}><IconSidebarCollapse /></button>
         </div>
       </div>
 
@@ -175,7 +194,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
 
       {/* Footer */}
       <div className="sidebar-footer">
-        <button onClick={fetchChats} disabled={loading} className="sidebar-footer-btn">↻ {loading ? '...' : t('refreshSessions')}</button>
+        <button onClick={fetchChats} disabled={loading} className="sidebar-footer-btn"><IconRefresh className="inline" /> {loading ? '...' : t('refreshSessions')}</button>
         {onExportMarkdown && <button onClick={onExportMarkdown} className="sidebar-footer-btn" title={t('exportMarkdown')}>↓ MD</button>}
         {onExportJSON && <button onClick={onExportJSON} className="sidebar-footer-btn" title={t('exportJSON')}>↓ JSON</button>}
       </div>
