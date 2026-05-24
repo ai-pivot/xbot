@@ -85,23 +85,6 @@
   letter-spacing: -0.01em !important;
 }
 
-/* ═══ USER BUBBLE — right-aligned, 90% column, subtle dark ═══ */
-.user-msg {
-  background: var(--bg-user-bubble) !important;
-  border: none !important;
-  color: var(--text-user-bubble) !important;
-  border-radius: 20px 20px 20px 6px !important;
-  box-shadow: none !important;
-  position: relative;
-  padding: 10px 16px !important;
-  width: fit-content !important;
-  max-width: 100% !important;
-  margin-left: auto !important;
-  margin-right: 0 !important;
-}
-.user-msg::before, .user-msg::after { display: none !important; }
-.user-msg .text-blue-200\/50 { color: rgba(255,255,255,0.5) !important; }
-
 /* ═══ INPUT BAR — transparent container ═══ */
 .input-bar {
   background: transparent !important;
@@ -274,10 +257,6 @@
 }
 [data-theme="light"] .input-bar button[type="submit"]:disabled,
 [data-theme="light"] .input-bar .send-btn:disabled { background: var(--btn-primary-bg) !important; }
-[data-theme="light"] .user-msg {
-  background: var(--bg-user-bubble) !important;
-  color: var(--text-user-bubble) !important;
-}
 [data-theme="light"] .assistant-msg {
   color: var(--text-primary) !important;
 }
