@@ -2450,7 +2450,8 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
 // Must be called in a defer after emitBuiltinProgress to ensure the CLI ends the turn.
-func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
+// tokenUsage is optional — when provided, it updates the CLI's context indicator bar.
+func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *protocol.TokenUsage) {
 	progressKey := qualifyChatID(chName, chatID)
 
 	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
@@ -2460,9 +2461,10 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string) {
 	seq := seqPtr.(*atomic.Uint64).Add(1)
 
 	payload := &protocol.ProgressEvent{
-		ChatID: progressKey,
-		Phase:  string(PhaseDone),
-		Seq:    seq,
+		ChatID:     progressKey,
+		Phase:      string(PhaseDone),
+		Seq:        seq,
+		TokenUsage: tokenUsage,
 	}
 
 	if a.channelFinder != nil {

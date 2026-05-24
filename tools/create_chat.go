@@ -130,7 +130,15 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 	addr := "agent:" + params.Role + "/" + params.Instance
 	if ctx.RegisterAgentChannel != nil {
 		sendFn := func(sendCtx context.Context, msg string) (string, error) {
-			return im.SendInteractive(ctx, msg, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
+			// Use a copy of the ToolContext with the AgentChannel's
+			// long-lived context. The original ctx.Ctx belongs to the
+			// CreateChat tool call and is cancelled when that tool
+			// returns. Without this, SendInteractive would use a
+			// cancelled context, causing Run() to fail immediately
+			// or hang on subsequent SendMessage calls.
+			sendToolCtx := *ctx
+			sendToolCtx.Ctx = sendCtx
+			return im.SendInteractive(&sendToolCtx, msg, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 		}
 		if regErr := ctx.RegisterAgentChannel(addr, sendFn); regErr != nil {
 			result += fmt.Sprintf("\n\nWarning: AgentChannel registration failed: %v", regErr)

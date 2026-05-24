@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -222,5 +223,42 @@ func TestAgentChannelConcurrentSends(t *testing.T) {
 
 	if completed.Load() != 10 {
 		t.Errorf("expected 10 completions, got %d", completed.Load())
+	}
+}
+
+func TestAgentChannelPanicRecovery(t *testing.T) {
+	// Verify that a panic in runFn does NOT kill the processing goroutine.
+	// The next request should succeed normally.
+	callCount := int32(0)
+	runFn := func(ctx context.Context, task string) (string, error) {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			panic("intentional test panic")
+		}
+		return "ok: " + task, nil
+	}
+
+	ch := NewAgentChannel("test-panic", runFn)
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer ch.Stop()
+
+	// First call: should trigger panic, recover, and return error message.
+	result1, err := ch.Send(OutboundMsg{Content: "req1"})
+	if err != nil {
+		t.Fatalf("Send should not return error even after panic: %v", err)
+	}
+	if !strings.Contains(result1, "panic:") {
+		t.Errorf("expected panic error message, got: %s", result1)
+	}
+
+	// Second call: should succeed normally, proving the goroutine survived.
+	result2, err := ch.Send(OutboundMsg{Content: "req2"})
+	if err != nil {
+		t.Fatalf("second Send failed: %v", err)
+	}
+	if result2 != "ok: req2" {
+		t.Errorf("expected 'ok: req2', got: %s", result2)
 	}
 }

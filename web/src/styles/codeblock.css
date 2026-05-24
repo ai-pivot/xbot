@@ -30,6 +30,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   transition: border-color 0.2s ease;
   margin: 0.5em 0;
+  background: #0d1117;
 }
 
 .xbot-codeblock:hover {
@@ -38,13 +39,15 @@
 
 .xbot-codeblock-header {
   background: linear-gradient(135deg, #1e293b, #0f172a);
-  padding: 6px 12px;
+  padding: 8px 14px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+  border-bottom: 1px solid rgba(51, 65, 85, 0.4);
   font-size: 12px;
-  color: var(--xbot-text-muted);
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
 }
 
 .xbot-codeblock-linecount {
@@ -59,8 +62,7 @@
   gap: 8px;
 }
 
-.xbot-codeblock-copy,
-.xbot-codeblock-collapse-btn {
+.xbot-codeblock-copy {
   background: rgba(71, 85, 105, 0.3);
   border: none;
   color: var(--xbot-text-secondary);
@@ -72,8 +74,7 @@
   white-space: nowrap;
 }
 
-.xbot-codeblock-copy:hover,
-.xbot-codeblock-collapse-btn:hover {
+.xbot-codeblock-copy:hover {
   background: rgba(71, 85, 105, 0.5);
   color: var(--xbot-text-primary);
 }
@@ -88,7 +89,7 @@
   margin: 0;
   padding: 12px 16px 12px 0;
   overflow-x: auto;
-  background: #0d1117;
+  background: transparent;
   font-size: 13px;
   line-height: 1.6;
   display: flex;
@@ -96,7 +97,7 @@
 
 .xbot-codeblock-linenums {
   flex-shrink: 0;
-  padding: 0 12px 0 16px;
+  padding: 0 12px 0 8px;
   text-align: right;
   color: rgba(100, 116, 139, 0.5);
   user-select: none;
@@ -117,22 +118,7 @@
   border-radius: 0;
 }
 
-/* ─── Code Block Collapse ─── */
 
-.xbot-codebody-collapsed {
-  max-height: 360px; /* ~15 lines at 24px line-height */
-  overflow: hidden;
-}
-
-.xbot-codeblock-collapsed-mask {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 60px;
-  background: linear-gradient(transparent, #0d1117);
-  pointer-events: none;
-}
 
 /* ─── Inline code enhancement ─── */
 
@@ -148,6 +134,31 @@
 }
 
 /* ---- Light Theme Overrides ---- */
+
+/* ── Dark mode syntax highlighting — vibrant One Dark Pro palette ── */
+.hljs { color: #abb2bf; background: transparent; }
+.hljs-comment, .hljs-quote { color: #5c6370; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-type { color: #c678dd; }
+.hljs-string, .hljs-addition, .hljs-template-tag, .hljs-template-variable { color: #98c379; }
+.hljs-number, .hljs-literal { color: #d19a66; }
+.hljs-built_in, .hljs-builtin-name { color: #e5c07b; }
+.hljs-function .hljs-title, .hljs-title.function_ { color: #61afef; }
+.hljs-variable, .hljs-attr { color: #e06c75; }
+.hljs-params { color: #abb2bf; }
+.hljs-meta { color: #61afef; }
+.hljs-deletion { color: #e06c75; background: rgba(224,108,117,0.1); }
+.hljs-symbol, .hljs-bullet { color: #56b6c2; }
+.hljs-regexp { color: #98c379; }
+.hljs-selector-class { color: #e5c07b; }
+.hljs-selector-id { color: #61afef; }
+.hljs-name, .hljs-tag { color: #e06c75; }
+.hljs-attribute { color: #d19a66; }
+.hljs-section { color: #61afef; font-weight: bold; }
+.hljs-link { color: #56b6c2; text-decoration: underline; }
+.hljs-title { color: #61afef; }
+.hljs-number { color: #d19a66; }
+.hljs-operator { color: #56b6c2; }
+.hljs-property { color: #e06c75; }
 
 [data-theme="light"] .hljs {
   color: #24292e;
@@ -231,6 +242,7 @@
 [data-theme="light"] .xbot-codeblock {
   border-color: #d1cdc7;
   box-shadow: 0 2px 8px rgba(28, 25, 23, 0.08);
+  background: #edeae5;
 }
 
 [data-theme="light"] .xbot-codeblock:hover {
@@ -244,17 +256,15 @@
 }
 
 [data-theme="light"] .xbot-codeblock-pre {
-  background: #edeae5;
+  background: transparent;
 }
 
-[data-theme="light"] .xbot-codeblock-copy,
-[data-theme="light"] .xbot-codeblock-collapse-btn {
+[data-theme="light"] .xbot-codeblock-copy {
   color: #78716c;
   background: rgba(28, 25, 23, 0.06);
 }
 
-[data-theme="light"] .xbot-codeblock-copy:hover,
-[data-theme="light"] .xbot-codeblock-collapse-btn:hover {
+[data-theme="light"] .xbot-codeblock-copy:hover {
   color: #3d3833;
   background: rgba(28, 25, 23, 0.12);
 }
@@ -264,9 +274,7 @@
   border-right-color: rgba(0, 0, 0, 0.08);
 }
 
-[data-theme="light"] .xbot-codeblock-collapsed-mask {
-  background: linear-gradient(transparent, #edeae5);
-}
+
 
 [data-theme="light"] .xbot-inline-code {
   background: #e2dfda;

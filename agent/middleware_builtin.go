@@ -530,7 +530,7 @@ func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 	}
 
 	guide := buildSystemGuideText(m.memoryProvider)
-	userMsg = fmt.Sprintf("%s\n\n%s现在时间：%s\n", userMsg, guide, now)
+	userMsg = fmt.Sprintf("%s\n\n%s\n现在时间：%s\n", userMsg, guide, now)
 
 	// Inject rename hint on the first user message when session name is auto-generated.
 	// This is a one-time hint; subsequent rounds don't repeat it.

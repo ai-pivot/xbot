@@ -794,7 +794,7 @@ func (a *Agent) SendToInteractiveSession(
 	roleName string,
 	msg bus.InboundMessage,
 ) (*channelpkg.OutboundMsg, error) {
-	originChannel, originChatID, _ := resolveOriginIDs(msg)
+	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	instance := msg.Metadata["instance_id"]
 
 	key := interactiveKey(originChannel, originChatID, roleName, instance)
@@ -901,6 +901,36 @@ func (a *Agent) SendToInteractiveSession(
 	} else {
 		// Background 模式：禁用进度穿透
 		cfg.ProgressNotifier = nil
+
+		// Re-wire OnIterationSnapshot for incremental history updates
+		// (same as SpawnInteractiveSession does for the initial Run).
+		sessionKey := originChannel + ":" + originChatID
+		notifyMgr := a.bgTaskMgr
+		cfg.OnIterationSnapshot = func(snap IterationSnapshot) {
+			ia.mu.Lock()
+			ia.iterationHistory = append(ia.iterationHistory, snap)
+			ia.mu.Unlock()
+
+			if notifyMgr != nil {
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
+				for _, t := range snap.Tools {
+					fmt.Fprintf(&sb, "- %s [%s, %dms]", t.Name, t.Status, t.ElapsedMS)
+					if t.Summary != "" {
+						fmt.Fprintf(&sb, " %s", t.Summary)
+					}
+					sb.WriteString("\n")
+				}
+				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+					Key:      sessionKey,
+					Type:     tools.SubAgentBgNotifyProgress,
+					Role:     roleName,
+					Instance: instance,
+					Content:  sb.String(),
+					Sid:      originSender,
+				})
+			}
+		}
 	}
 
 	preLen := len(cfg.Messages)
@@ -909,6 +939,87 @@ func (a *Agent) SendToInteractiveSession(
 	ia.running = true
 	ia.mu.Unlock()
 
+	if ia.background {
+		// Background agents: run asynchronously (same as initial spawn).
+		// Without this, SubAgent(action="send") blocks the caller's tool
+		// execution for the entire duration of Run() — which can be minutes.
+		// The caller gets an immediate acknowledgment, and the result is
+		// delivered via BgTaskMgr notification when Run() completes.
+		go func() {
+			startTime := time.Now()
+			defer func() {
+				if r := recover(); r != nil {
+					clipanic.Report("agent.interactive.SendBackground", fmt.Sprintf("%s:%s", roleName, instance), r)
+					ia.mu.Lock()
+					ia.running = false
+					ia.lastError = fmt.Sprintf("panic: %v", r)
+					ia.mu.Unlock()
+					if a.bgTaskMgr != nil {
+						sessionKey := originChannel + ":" + originChatID
+						a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+							Key:      sessionKey,
+							Type:     tools.SubAgentBgNotifyCompleted,
+							Role:     roleName,
+							Instance: instance,
+							Content:  fmt.Sprintf("Panic: %v", r),
+							Elapsed:  time.Since(startTime),
+							Sid:      originSender,
+						})
+					}
+				}
+			}()
+
+			out := Run(subCtx, cfg)
+
+			ia.mu.Lock()
+			ia.running = false
+			ia.mu.Unlock()
+
+			// Notify parent via BgTaskManager (same as initial spawn).
+			if a.bgTaskMgr != nil {
+				content := out.Content
+				if out.Error != nil {
+					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
+				}
+				if len(content) > 2000 {
+					content = content[:2000] + "... [truncated, use inspect for details]"
+				}
+				sessionKey := originChannel + ":" + originChatID
+				a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+					Key:      sessionKey,
+					Type:     tools.SubAgentBgNotifyCompleted,
+					Role:     roleName,
+					Instance: instance,
+					Content:  content,
+					Elapsed:  time.Since(startTime),
+					Sid:      originSender,
+				})
+			}
+
+			// --- Write back results (same as 阶段 3 below, but for async path) ---
+			ia.mu.Lock()
+			defer ia.mu.Unlock()
+
+			if out.Error != nil {
+				ia.lastError = out.Error.Error()
+				ia.lastReply = out.Content
+			} else {
+				ia.lastError = ""
+				ia.lastReply = out.Content
+				// Append new messages from Run() to ia.messages
+				if preLen > 0 && len(cfg.Messages) > preLen {
+					newFromRun := cfg.Messages[preLen:]
+					ia.messages = append(ia.messages, newFromRun...)
+				}
+			}
+		}()
+
+		return &channelpkg.OutboundMsg{
+			Content: fmt.Sprintf("Message sent to background agent %q (instance=%q). Results will be notified when complete.", roleName, instance),
+		}, nil
+	}
+
+	// Foreground agents: run synchronously (blocks caller until complete)
 	out := Run(subCtx, cfg)
 
 	ia.mu.Lock()

@@ -2171,9 +2171,21 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	sb.WriteString("\n\n")
 
 	// §19 计算渲染后行数（每次 dirty 重算）
-	msg.renderedLines = strings.Count(sb.String(), "\n") + 1
+	// Sanitize rendered output: strip \r carriage-return overwrites per line.
+	// This is the final rendering-layer safety net — ensures progress bar
+	// output (tqdm, curl etc.) from any source (old offload, history, network)
+	// never corrupts the TUI layout.
+	raw := sb.String()
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		if idx := strings.LastIndex(line, "\r"); idx >= 0 {
+			lines[i] = line[idx+1:]
+		}
+	}
+	cleaned := strings.Join(lines, "\n")
+	msg.renderedLines = strings.Count(cleaned, "\n") + 1
 
-	return sb.String()
+	return cleaned
 }
 
 // wrapPreservingGuide wraps a line at cw columns, preserving any guide prefix
@@ -2258,6 +2270,11 @@ func (m *cliModel) setViewportContent(content string) {
 	m.lastViewportContent = content
 	m.lastViewportWidth = cw
 
+	// Since we wrap all lines to cw, maxLineWidth is at most cw.
+	// We pass cw as the precomputed max width to bypass viewport's
+	// expensive maxLineWidth() scan (ansi.StringWidth on every line).
+	maxW := cw
+	var lines []string // pre-split lines to avoid viewport's strings.Split
 	if cw > 0 {
 		// Two-tier wrap: find the cachedHistory boundary in content.
 		// The history portion is stable (doesn't change between ticks) — reuse
@@ -2271,7 +2288,8 @@ func (m *cliModel) setViewportContent(content string) {
 			// Fast path: reuse wrapped history, only wrap the dynamic suffix
 			wrappedHistory := m.cachedWrappedHistory
 			dynamicPart := content[historyEnd:]
-			var wrappedDynamic []string
+			historyLines := strings.Split(wrappedHistory, "\n")
+			lines = historyLines
 			if dynamicPart != "" {
 				for _, line := range strings.Split(dynamicPart, "\n") {
 					trimmed := strings.TrimRight(line, " \t")
@@ -2282,14 +2300,13 @@ func (m *cliModel) setViewportContent(content string) {
 							line = trimmed
 						}
 					}
-					wrappedDynamic = append(wrappedDynamic, wrapPreservingGuide(line, cw)...)
+					wrapped := wrapPreservingGuide(line, cw)
+					lines = append(lines, wrapped...)
 				}
 			}
-			content = wrappedHistory + strings.Join(wrappedDynamic, "\n")
 		} else {
 			// Slow path: wrap everything and cache the history portion
-			lines := strings.Split(content, "\n")
-			var wrapped []string
+			rawLines := strings.Split(content, "\n")
 			historyLineCount := 0
 			if historyEnd > 0 {
 				historyLineCount = strings.Count(m.cachedHistory, "\n")
@@ -2298,7 +2315,7 @@ func (m *cliModel) setViewportContent(content string) {
 				}
 			}
 			var wrappedHistoryParts []string
-			for i, line := range lines {
+			for i, line := range rawLines {
 				trimmed := strings.TrimRight(line, " \t")
 				if trimmed != line {
 					visualW := lipgloss.Width(line)
@@ -2307,13 +2324,12 @@ func (m *cliModel) setViewportContent(content string) {
 						line = trimmed
 					}
 				}
-				wrappedLines := wrapPreservingGuide(line, cw)
+				wrapped := wrapPreservingGuide(line, cw)
 				if i < historyLineCount {
-					wrappedHistoryParts = append(wrappedHistoryParts, wrappedLines...)
+					wrappedHistoryParts = append(wrappedHistoryParts, wrapped...)
 				}
-				wrapped = append(wrapped, wrappedLines...)
+				lines = append(lines, wrapped...)
 			}
-			content = strings.Join(wrapped, "\n")
 			// Cache the wrapped history portion for next tick
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
@@ -2321,9 +2337,15 @@ func (m *cliModel) setViewportContent(content string) {
 				m.cachedWrappedHistoryWidth = cw
 			}
 		}
+	} else {
+		lines = strings.Split(content, "\n")
 	}
+
 	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(content)
+	// Use SetContentLines with pre-split lines to avoid viewport's internal
+	// strings.Split. We also bypass the expensive maxLineWidth scan inside
+	// SetContentLines by directly setting the internal lines and width.
+	viewportSetLinesBypassMaxWidth(&m.viewport, lines, maxW)
 	if atBottom {
 		m.viewport.GotoBottom()
 		m.newContentHint = false
@@ -2964,8 +2986,7 @@ func (m *cliModel) renderShellBody(tool protocol.ToolProgress, maxW int, t cliTh
 	// Progress bars (tqdm etc.) use \r to overwrite the same line.
 	// When captured as output, \r-embedded lines confuse the terminal:
 	// \r moves cursor to column 0, overwriting the guide prefix.
-	// Strategy: for each output line, keep only the content after the
-	// last \r (i.e. the final visual state), then wrap normally.
+	// sanitizeOutputLine handles \r stripping and ANSI removal.
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
 	displayLines := lines
@@ -2974,13 +2995,8 @@ func (m *cliModel) renderShellBody(tool protocol.ToolProgress, maxW int, t cliTh
 	}
 	outputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(t.TextPrimary))
 	for _, line := range displayLines {
-		// Strip carriage-return overwrites: keep only the final visual
-		// state (content after the last \r). This handles progress bars
-		// (tqdm etc.) whose output contains multiple \r-separated frames.
-		if idx := strings.LastIndex(line, "\r"); idx >= 0 {
-			line = line[idx+1:]
-		}
-		// Skip empty lines after \r stripping (fully overwritten frames)
+		line = sanitizeOutputLine(line)
+		// Skip empty lines after sanitization (fully overwritten frames)
 		if strings.TrimSpace(line) == "" {
 			continue
 		}

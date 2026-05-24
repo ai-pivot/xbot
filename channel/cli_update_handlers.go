@@ -599,10 +599,31 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 		if m.todosDoneCleared && allDone {
 			// Already cleared by user input; don't re-accept stale all-done list
 		} else {
+			// Change detection: skip if todos haven't actually changed.
+			// High-frequency progress events carry the same Todos every time;
+			// without this guard, each event triggers relayoutViewport → fullRebuild,
+			// which destroys render cache and re-runs glamour/chroma on ALL messages.
+			// This was responsible for ~34% CPU during agent work (pprof 2026-05-23).
+			if todosEqual(m.todos, payload.Todos) {
+				return
+			}
+
+			countChanged := len(m.todos) != len(payload.Todos)
+
 			m.todos = make([]protocol.TodoItem, len(payload.Todos))
 			copy(m.todos, payload.Todos)
 			m.todosDoneCleared = false
-			m.relayoutViewport()
+
+			if countChanged {
+				// Todo count affects layoutViewportHeight (todo bar lines).
+				// Must relayout viewport to adjust height.
+				m.relayoutViewport()
+			} else {
+				// Same count, just status/text changed — no height change needed.
+				// Only invalidate progress block render so next tick picks it up.
+				m.renderCacheValid = false
+			}
+
 			// Persist to TodoManager so todos survive turn end and session switches.
 			m.persistTodosToManager()
 		}
@@ -612,6 +633,19 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 	// (e.g. early thinking phase before todo_write executes), not "todos were deleted".
 	// TODOs are cleared only by: user sending a new message (todosDoneCleared),
 	// turn ending with all done (endAgentTurn), or explicit todo_write([]).
+}
+
+// todosEqual returns true if two todo slices have identical content.
+func todosEqual(a, b []protocol.TodoItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Text != b[i].Text || a[i].Done != b[i].Done {
+			return false
+		}
+	}
+	return true
 }
 
 // persistTodosToManager writes m.todos to the CLI-side todoManager
@@ -1862,7 +1896,9 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 // handleShiftUp handles Shift+Up for queue recall and input history browsing.
 func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 	// Shift+Up: recall queued message for editing / browse input history.
-	if m.panelMode == "" && m.textarea.Value() != "" {
+	// When actively browsing history (inputHistoryIdx >= 0), allow continued
+	// scrolling even though textarea has content (from the previous history entry).
+	if m.panelMode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
 		return m, nil, true
 	}
 	if !m.viewport.AtBottom() {
@@ -1881,9 +1917,9 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 	}
 	if m.panelMode == "" && !m.typing {
 		// 空输入时浏览历史
-		if m.textarea.Value() == "" && len(m.inputHistory) > 0 {
+		if (m.textarea.Value() == "" || m.inputHistoryIdx >= 0) && len(m.inputHistory) > 0 {
 			if m.inputHistoryIdx == -1 {
-				m.inputDraft = "" // 保存空草稿
+				m.inputDraft = m.textarea.Value() // 保存当前草稿
 				m.inputHistoryIdx = 0
 			} else if m.inputHistoryIdx < len(m.inputHistory)-1 {
 				m.inputHistoryIdx++
@@ -1899,7 +1935,8 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 // handleShiftDown handles Shift+Down for reverse input history browsing.
 func (m *cliModel) handleShiftDown() (tea.Model, []tea.Cmd, bool) {
 	// Shift+Down: browse input history backwards.
-	if m.panelMode == "" && m.textarea.Value() != "" {
+	// Only block when NOT in history browsing mode AND textarea has content.
+	if m.panelMode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
 		return m, nil, true
 	}
 	if !m.viewport.AtBottom() {

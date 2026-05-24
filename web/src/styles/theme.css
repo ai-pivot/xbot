@@ -31,27 +31,27 @@
 .app-body { background: transparent !important; }
 .messages-area { background: transparent !important; animation: fadeIn 0.2s ease; }
 
-/* Consistent 8px gap between messages */
-.messages-area > div { margin-bottom: 8px !important; }
+/* Consistent 12px gap between messages for breathing room */
+.messages-area > div { margin-bottom: 12px !important; }
 .messages-area > div:last-child { margin-bottom: 0 !important; }
 
 /* ═══ AI MESSAGE ═══ */
 .assistant-msg {
   color: var(--text-primary) !important;
-  line-height: 1.65 !important;
+  line-height: 1.7 !important;
   font-size: 15px !important;
   letter-spacing: -0.01em !important;
 }
 
-/* ═══ USER BUBBLE — Solid Apple blue, no shadow ═══ */
+/* ═══ USER BUBBLE — Solid Apple blue, subtle depth ═══ */
 .user-msg {
   background: #007AFF !important;
   border: none !important;
   color: #ffffff !important;
-  border-radius: 18px 18px 18px 4px !important;
-  box-shadow: none !important;
+  border-radius: 20px 20px 20px 6px !important;
+  box-shadow: 0 1px 4px rgba(0,122,255,0.25), 0 4px 12px rgba(0,0,0,0.15) !important;
   position: relative;
-  padding: 8px 14px !important;
+  padding: 10px 16px !important;
 }
 .user-msg::before, .user-msg::after { display: none !important; }
 .user-msg .text-blue-200\/50 { color: rgba(255,255,255,0.7) !important; }

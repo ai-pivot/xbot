@@ -561,12 +561,18 @@ func (m *cliModel) layoutViewportHeight() int {
 // relayoutViewport 重新计算并设置 viewport 宽高、textarea 和 glamour。
 // 用于 panel 打开/关闭、todo 增减、sidebar toggle 时动态调整布局。
 // 如果用户之前在底部，调整后继续保持跟随底部。
+//
+// Optimized: only invalidates render caches when viewport width actually
+// changes. Height-only changes (e.g. todo bar appearing/disappearing,
+// panel open/close) just resize the viewport without rebuilding all messages.
+// This avoids O(N) fullRebuild on every endAgentTurn / handleProgressDone.
 func (m *cliModel) relayoutViewport() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
 
 	cw := m.chatWidth()
+	oldWidth := m.viewport.Width()
 
 	m.viewport.SetWidth(cw)
 	m.viewport.SetHeight(m.layoutViewportHeight())
@@ -579,19 +585,25 @@ func (m *cliModel) relayoutViewport() {
 	iw = iw &^ 1
 	m.textarea.SetWidth(iw)
 
-	// Invalidate render caches so content re-wraps at new width
-	m.renderCacheValid = false
-	m.lastViewportContent = ""
+	widthChanged := cw != oldWidth
 
-	// Glamour word-wrap matches viewport
-	if cw > 4 {
-		m.renderer = newGlamourRenderer(cw - 4)
-	}
-	m.cachedWrappedHistory = ""
-	m.cachedWrappedHistoryRaw = ""
-	m.cachedWrappedHistoryWidth = 0
-	for i := range m.messages {
-		m.messages[i].dirty = true
+	// Only invalidate render caches when width changes.
+	// Height-only changes don't affect message rendering — just viewport scrolling.
+	if widthChanged {
+		// Invalidate render caches so content re-wraps at new width
+		m.renderCacheValid = false
+		m.lastViewportContent = ""
+
+		// Glamour word-wrap matches viewport
+		if cw > 4 {
+			m.renderer = newGlamourRenderer(cw - 4)
+		}
+		m.cachedWrappedHistory = ""
+		m.cachedWrappedHistoryRaw = ""
+		m.cachedWrappedHistoryWidth = 0
+		for i := range m.messages {
+			m.messages[i].dirty = true
+		}
 	}
 
 	wasAtBottom := m.viewport.AtBottom()

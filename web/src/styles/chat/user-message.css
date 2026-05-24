@@ -2,14 +2,14 @@
 /* User Message Bubble — Apple style                                           */
 /* ========================================================================== */
 
-/* User message — flat Apple blue */
+/* User message — softer Apple blue with subtle depth */
 .flex.justify-end > .max-w-\[80\%\] {
   background: #007AFF !important;
-  border-radius: 18px 18px 18px 4px !important;
-  box-shadow: none !important;
-  transition: none !important;
+  border-radius: 20px 20px 20px 6px !important;
+  box-shadow: 0 1px 4px rgba(0,122,255,0.25), 0 4px 12px rgba(0,0,0,0.15) !important;
+  transition: box-shadow 0.2s ease !important;
 }
 
 .flex.justify-end > .max-w-\[80\%\]:hover {
-  box-shadow: none !important;
+  box-shadow: 0 2px 8px rgba(0,122,255,0.3), 0 6px 16px rgba(0,0,0,0.18) !important;
 }
