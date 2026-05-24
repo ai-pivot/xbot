@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from '../i18n'
+import { IconTrash, IconX, IconUser, IconBot } from './Icons'
 import type { ThreadMessage, Message } from '../types'
 
 interface ThreadPanelProps {
@@ -52,11 +53,11 @@ export default function ThreadPanel({ open, onClose, parentMessage, threadMessag
         <div className="thread-header-actions">
           {onDeleteThread && (
             <button onClick={onDeleteThread} className="thread-delete-btn" title={t('deleteThread')} data-testid="thread-delete-btn">
-              🗑️
+              <IconTrash className="inline" />
             </button>
           )}
           <button onClick={onClose} className="thread-close-btn" title={t('closeThread')} data-testid="thread-close-btn">
-            ✕
+            <IconX className="inline" />
           </button>
         </div>
       </div>
@@ -64,7 +65,7 @@ export default function ThreadPanel({ open, onClose, parentMessage, threadMessag
       {/* Parent message */}
       <div className="thread-parent">
         <div className="thread-parent-author">
-          {parentMessage.type === 'user' ? '👤' : '🤖'}
+          {parentMessage.type === 'user' ? <IconUser className="inline" /> : <IconBot className="inline" />}
         </div>
         <div className="thread-parent-content">
           {parentMessage.content.slice(0, 200)}
@@ -80,7 +81,7 @@ export default function ThreadPanel({ open, onClose, parentMessage, threadMessag
         {threadMessages.map(msg => (
           <div key={msg.id} className="thread-message" data-testid={`thread-msg-${msg.id}`}>
             <div className="thread-message-author">
-              {msg.type === 'user' ? '👤' : '🤖'} {msg.author || (msg.type === 'user' ? 'You' : 'AI')}
+              {msg.type === 'user' ? <IconUser className="inline" /> : <IconBot className="inline" />} {msg.author || (msg.type === 'user' ? 'You' : 'AI')}
             </div>
             <div className="thread-message-content">{msg.content}</div>
             <div className="thread-message-time">

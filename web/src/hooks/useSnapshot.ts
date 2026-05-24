@@ -38,7 +38,7 @@ export function useSnapshot(): UseSnapshotReturn {
       const headerHeight = 48
       const footerHeight = 36
       const timestamp = message.ts ? new Date(message.ts).toLocaleString() : new Date().toLocaleString()
-      const roleLabel = message.type === 'user' ? '👤 User' : '🤖 Assistant'
+      const roleLabel = message.type === 'user' ? 'User' : 'Assistant'
 
       // Wrap text into lines
       ctx.font = '14px "SF Mono", "Cascadia Code", "Fira Code", monospace'

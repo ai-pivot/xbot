@@ -1,4 +1,5 @@
 import { useTranslation } from '../i18n'
+import { IconUser, IconBot } from './Icons'
 import type { ReplyInfo } from '../types'
 import { REPLY_PREVIEW_LENGTH } from '../constants'
 
@@ -12,7 +13,7 @@ export default function ReplyPreview({ replyTo, onClick }: ReplyPreviewProps) {
   const preview = replyTo.content.length > REPLY_PREVIEW_LENGTH
     ? replyTo.content.slice(0, REPLY_PREVIEW_LENGTH) + '...'
     : replyTo.content
-  const icon = replyTo.type === 'user' ? '👤' : '🤖'
+  const icon = replyTo.type === 'user' ? <IconUser className="inline" /> : <IconBot className="inline" />
 
   return (
     <button

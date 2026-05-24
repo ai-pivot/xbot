@@ -1,5 +1,35 @@
+/* Search panel — matches input bar background */
+.search-panel {
+  background: var(--bg-input);
+  border-bottom: none;
+  padding: 10px 20px 14px;
+}
+
+[data-theme="light"] .search-panel {
+  background: var(--bg-input);
+}
+
+/* Search input inside panel */
+.search-panel input[type="text"] {
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 20px !important;
+  color: #e5e5e5 !important;
+  padding: 8px 16px !important;
+}
+.search-panel input[type="text"]:focus {
+  border-color: rgba(255,255,255,0.15) !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+[data-theme="light"] .search-panel input[type="text"] {
+  background: rgba(0,0,0,0.04) !important;
+  border-color: rgba(0,0,0,0.08) !important;
+  color: #1d1d1f !important;
+}
+
 /* ========================================================================== */
-/* Search Highlight Styles                                                   */
+/* Search Highlight Styles                                                    */
 /* ========================================================================== */
 
 /* Search result highlight animation */

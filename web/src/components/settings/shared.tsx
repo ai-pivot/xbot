@@ -1,5 +1,7 @@
 import type { PresetCommand } from '../../types'
 import type { I18nKey } from '../../i18n'
+import type { ReactNode } from 'react'
+import { IconPalette, IconChat, IconZap, IconBrain, IconBot, IconStore } from '../Icons'
 
 // ── Types ──
 
@@ -89,13 +91,13 @@ export const LS_KEYS: Record<string, string> = {
   image_brightness: 'xbot-image-brightness',
 }
 
-export const TABS: { id: TabId; labelKey: I18nKey; icon: string }[] = [
-  { id: 'appearance', labelKey: 'tabAppearance' as const, icon: '🎨' },
-  { id: 'sessions', labelKey: 'tabSessions' as const, icon: '💬' },
-  { id: 'presets', labelKey: 'tabPresets' as const, icon: '⚡' },
-  { id: 'llm', labelKey: 'tabLLM' as const, icon: '🧠' },
-  { id: 'runner', labelKey: 'tabRunner' as const, icon: '🖥️' },
-  { id: 'market', labelKey: 'tabMarket' as const, icon: '🏪' },
+export const TABS: { id: TabId; labelKey: I18nKey; icon: ReactNode }[] = [
+  { id: 'appearance', labelKey: 'tabAppearance' as const, icon: <IconPalette /> },
+  { id: 'sessions', labelKey: 'tabSessions' as const, icon: <IconChat /> },
+  { id: 'presets', labelKey: 'tabPresets' as const, icon: <IconZap /> },
+  { id: 'llm', labelKey: 'tabLLM' as const, icon: <IconBrain /> },
+  { id: 'runner', labelKey: 'tabRunner' as const, icon: <IconBot /> },
+  { id: 'market', labelKey: 'tabMarket' as const, icon: <IconStore /> },
 ]
 
 export const PROVIDER_OPTIONS = [

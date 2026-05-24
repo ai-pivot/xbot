@@ -45,7 +45,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
       return (
         <div className="flex flex-col items-center justify-center min-h-screen gap-4 p-8"
              style={{ background: 'var(--xbot-bg-primary)', color: 'var(--xbot-text-primary)' }}>
-          <div className="text-4xl">😵</div>
+          <div className="text-4xl" style={{color:'var(--xbot-text-secondary)'}}>!</div>
           <h2 className="text-lg font-semibold">{t('errorBoundaryTitle')}</h2>
           <p className="text-sm max-w-md text-center" style={{ color: 'var(--xbot-text-secondary)' }}>
             {t('errorBoundaryMessage')}

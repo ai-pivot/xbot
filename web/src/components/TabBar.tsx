@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { useTranslation } from '../i18n'
 import type { Tab } from '../hooks/useTabManager'
+import { IconX } from './Icons'
 
 interface TabBarProps {
   tabs: Tab[]
@@ -95,7 +96,7 @@ export default function TabBar({ tabs, activeTabId, onTabClick, onTabClose, onRe
                 title={t('closeTab')}
                 aria-label={`${t('closeTab')} ${tab.label}`}
               >
-                ✕
+                <IconX className="inline" />
               </button>
             </div>
           )

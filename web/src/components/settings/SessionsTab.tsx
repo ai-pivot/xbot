@@ -1,5 +1,6 @@
 import { useTranslation } from '../../i18n'
 import { useEffect, useState, useCallback } from 'react'
+import { IconRefresh, IconUser, IconBot, IconInbox, IconSettings } from '../Icons'
 
 import type { SessionInfo, SessionMessage } from './shared'
 
@@ -60,7 +61,7 @@ export default function SessionsTab() {
           onClick={fetchSessions}
           disabled={sessionsLoading}
         >
-          {sessionsLoading ? '加载中...' : '🔄 刷新'}
+          {sessionsLoading ? '加载中...' : <><IconRefresh className="inline" /> 刷新</>}
         </button>
         {selectedSession && (
           <button
@@ -77,7 +78,7 @@ export default function SessionsTab() {
         <div>
           <div className="settings-session-card">
             <span className="settings-badge" style={selectedSession.type === 'main' ? { background: 'rgba(34,197,94,0.15)', color: '#16a34a' } : { background: 'rgba(99,102,241,0.15)', color: '#6366f1' }}>
-              {selectedSession.type === 'main' ? '👤 主会话' : '🤖 Agent'}
+              {selectedSession.type === 'main' ? <><IconUser className="inline" /> 主会话</> : <><IconBot className="inline" /> Agent</>}
             </span>
             <span className="settings-value" style={{ fontSize: 14 }}>
               {selectedSession.label}
@@ -111,7 +112,7 @@ export default function SessionsTab() {
                   }}
                 >
                   <div className="settings-muted mb-1">
-                    {msg.role === 'user' ? '👤 User' : msg.role === 'system' ? '⚙️ System' : '🤖 Assistant'}
+                    {msg.role === 'user' ? <><IconUser className="inline" /> User</> : msg.role === 'system' ? <><IconSettings className="inline" /> System</> : <><IconBot className="inline" /> Assistant</>}
                   </div>
                   <div className="settings-value" style={{ fontSize: 13, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto' }}>
                     {msg.content}
@@ -127,7 +128,7 @@ export default function SessionsTab() {
            <div className="settings-loading">{t('loadingDots')}</div>
           ) : sessions.length === 0 ? (
            <div className="settings-loading">
-             <p className="text-2xl mb-2">📭</p>
+             <p className="text-2xl mb-2"><IconInbox className="inline" style={{width:28,height:28}} /></p>
              <p style={{ fontSize: 14 }}>{t('noChatRooms')}</p>
            </div>
           ) : (
@@ -140,7 +141,7 @@ export default function SessionsTab() {
               >
                 <div className="flex items-center gap-2">
                   <span className="settings-badge" style={s.type === 'main' ? { background: 'rgba(34,197,94,0.15)', color: '#16a34a' } : { background: 'rgba(99,102,241,0.15)', color: '#6366f1' }}>
-                   {s.type === 'main' ? '👤' : '🤖'}
+                   {s.type === 'main' ? <IconUser className="inline" /> : <IconBot className="inline" />}
                   </span>
                   <span className="settings-value" style={{ fontSize: 14 }}>{s.label}</span>
                   {s.members && (

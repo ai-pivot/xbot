@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from '../i18n'
+import { IconBookmark, IconTrash, IconInbox, IconX } from './Icons'
 import type { Bookmark } from '../hooks/useBookmarks'
 
 /* -------------------------------------------------------------------------- */
@@ -51,15 +52,15 @@ export default function BookmarkPanel({ bookmarks, onRemove, onClearAll, onJump 
       >
         {/* Header */}
         <div className="bookmark-header">
-          <h2 className="bookmark-title">📑 {t('bookmarks')}</h2>
+          <h2 className="bookmark-title"><IconBookmark className="inline" /> {t('bookmarks')}</h2>
           <div className="bookmark-header-actions">
             {bookmarks.length > 0 && (
               <button className="bookmark-btn bookmark-btn-danger" onClick={onClearAll}>
-                🗑️ {t('delete')}
+                <IconTrash className="inline" /> {t('delete')}
               </button>
             )}
             <button className="bookmark-close" onClick={() => setOpen(false)} aria-label={t('closeSettings')}>
-              ✕
+              <IconX className="inline" />
             </button>
           </div>
         </div>
@@ -68,7 +69,7 @@ export default function BookmarkPanel({ bookmarks, onRemove, onClearAll, onJump 
         <div className="bookmark-list">
           {bookmarks.length === 0 ? (
             <div className="bookmark-empty">
-              <span className="bookmark-empty-icon">📭</span>
+              <span className="bookmark-empty-icon"><IconInbox className="inline" style={{width:28,height:28}} /></span>
               <p>{t('noBookmarks')}</p>
             </div>
           ) : (
@@ -99,7 +100,7 @@ export default function BookmarkPanel({ bookmarks, onRemove, onClearAll, onJump 
                     onClick={() => onRemove(bm.messageId)}
                     title={t('removeBookmark')}
                   >
-                    ✕
+                    <IconX className="inline" />
                   </button>
                 </div>
               </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from '../i18n'
 import { useNotificationContext } from '../contexts/NotificationContext'
+import { IconSettings, IconChat, IconReply, IconCheck, IconTrash, IconPin, IconX } from './Icons'
 import type { NotificationItem } from '../types'
 
 interface NotificationPanelProps {
@@ -19,14 +20,14 @@ export default function NotificationPanel({ open, onClose }: NotificationPanelPr
 
   const getIcon = (type: NotificationItem['type']) => {
     switch (type) {
-      case 'message': return '💬'
-      case 'reply': return '↩️'
+      case 'message': return <IconChat className="inline" />
+      case 'reply': return <IconReply className="inline" />
       case 'mention': return '@'
-      case 'ws_connected': return '🟢'
-      case 'ws_disconnected': return '🔴'
-      case 'ws_reconnecting': return '🟡'
-      case 'system': return '⚙️'
-      default: return '📌'
+      case 'ws_connected': return <span className="notification-dot-success" />
+      case 'ws_disconnected': return <span className="notification-dot-danger" />
+      case 'ws_reconnecting': return <span className="notification-dot-warning" />
+      case 'system': return <IconSettings />
+      default: return <IconPin className="inline" />
     }
   }
 
@@ -37,12 +38,12 @@ export default function NotificationPanel({ open, onClose }: NotificationPanelPr
         <h3 className="notification-title">{t('notificationCenter')}</h3>
         <div className="notification-header-actions">
           <button onClick={markAllRead} className="notification-action-btn" title={t('markAllRead')} data-testid="mark-all-read-btn">
-            ✅
+            <IconCheck className="inline" />
           </button>
           <button onClick={clearNotifications} className="notification-action-btn" title={t('clearNotifications')} data-testid="clear-notifications-btn">
-            🗑️
+            <IconTrash className="inline" />
           </button>
-          <button onClick={onClose} className="notification-close-btn" data-testid="notification-close-btn">✕</button>
+          <button onClick={onClose} className="notification-close-btn" data-testid="notification-close-btn"><IconX className="inline" /></button>
         </div>
       </div>
 

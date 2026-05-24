@@ -11,6 +11,8 @@ const en: Record<I18nKey, string> = {
   appSubtitle: 'AI Chat Assistant',
   loading: 'Loading...',
   logoutBtn: 'Logout',
+  lightMode: 'Switch to light mode',
+  darkMode: 'Switch to dark mode',
   skipToContent: 'Skip to content',
 
   // ─── Auth ───
@@ -77,7 +79,8 @@ const en: Record<I18nKey, string> = {
   contextUsageTitle: 'Context usage: {prompt} / {max} tokens',
 
   // ─── Settings ───
-  settings: '⚙️ Settings',
+  settings: 'Settings',
+  settingsTitle: 'Settings',
   closeSettings: 'Close settings',
   saving: 'Saving...',
   appearance: 'Appearance',
@@ -144,12 +147,12 @@ const en: Record<I18nKey, string> = {
   // ─── Sidebar ───
   searchPlaceholder: 'Search sessions...',
   expandSidebar: 'Expand session list',
-  chatSessions: '💬 Sessions',
+  chatSessions: 'Sessions',
   newSession: 'New session',
   collapseSidebar: 'Collapse',
   unnamedSession: 'Unnamed',
   currentSession: 'Current',
-  refreshSessions: '🔄 Refresh',
+  refreshSessions: 'Refresh',
   noSessions: 'No sessions',
   deleteSession: 'Delete session',
   renameSession: 'Rename',
@@ -161,7 +164,7 @@ const en: Record<I18nKey, string> = {
 
   // ─── Runner ───
   local: 'Local',
-  workspaceEnv: '🖥️ Workspace',
+  workspaceEnv: 'Workspace',
   manageRunners: 'Manage remote Runners. Click a card to switch the active environment.',
   noRunners: 'No workspaces added',
   addRunnerHint: 'Add a Runner to execute commands remotely',
@@ -177,7 +180,7 @@ const en: Record<I18nKey, string> = {
   runnerName: 'Name',
   runnerNamePlaceholder: 'e.g. MacBook Pro',
   runMode: 'Run mode',
-  nativeMode: '🖥️ Native',
+  nativeMode: 'Native',
   dockerMode: '🐳 Docker',
   dockerImage: 'Docker Image',
   workspace: 'Workspace',
@@ -202,7 +205,7 @@ const en: Record<I18nKey, string> = {
   tokens: 'tokens',
 
   // ─── Appearance Tab ───
-  appearanceTitle: '🎨 Appearance',
+  appearanceTitle: 'Appearance',
   themeLabel: 'Theme',
   fontSizeLabel: 'Font Size',
   nicknameLabel: 'Nickname',
@@ -213,7 +216,7 @@ const en: Record<I18nKey, string> = {
   enterNickname: 'Enter nickname...',
 
   // ─── Sessions Tab ───
-  chatRooms: '💬 ChatRooms',
+  chatRooms: 'ChatRooms',
   chatRoomDesc: 'All conversations are ChatRooms — Person↔Agent, Agent↔Agent unified management.',
   backToList: '← Back to list',
   mainSession: '👤 Main',
@@ -223,10 +226,10 @@ const en: Record<I18nKey, string> = {
   noMessages: 'No messages',
   noChatRooms: 'No ChatRooms',
   loadingDots: 'Loading...',
-  refresh: '🔄 Refresh',
+  refresh: 'Refresh',
 
   // ─── LLM Tab ───
-  llmTitle: '🧠 Personal LLM Config',
+  llmTitle: 'Personal LLM Config',
   fetchConfigFailed: 'Failed to load config',
   providerLabel: 'Provider',
   currentModelLabel: 'Current model',
@@ -257,7 +260,7 @@ const en: Record<I18nKey, string> = {
   enterModelName: 'Enter model name...',
 
   // ─── Presets Tab ───
-  presetsTitle: '⚡ Presets',
+  presetsTitle: 'Presets',
   presetsDesc: 'Configure quick commands for fast access in the chat input. Max 20 entries.',
   presetIcon: 'Icon',
   presetLabel: 'Label',
@@ -273,7 +276,7 @@ const en: Record<I18nKey, string> = {
   deletePreset: 'Delete',
 
   // ─── Market Tab ───
-  marketTitle: '🏪 Market',
+  marketTitle: 'Market',
   publishSuccess: 'Published',
   unpublishSuccess: 'Unpublished',
   installSuccess: 'Installed',
@@ -550,7 +553,7 @@ const en: Record<I18nKey, string> = {
   // ─── Sound Feedback (Round 14) ───
   soundFeedback: 'Sound Feedback',
   soundOn: '🔊 Sound on',
-  soundOff: '🔇 Sound off',
+  soundOff: 'Sound off',
   soundVolume: 'Volume',
   soundType: 'Sound Type',
   soundSent: 'Sent sound',

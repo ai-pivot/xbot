@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, memo } from 'react'
+import { IconReply, IconTrash } from './Icons'
 
 const SWIPE_THRESHOLD = 60
 const LOCK_RATIO = 1.5 // horizontal must be > 1.5× vertical to lock
@@ -99,14 +100,14 @@ export default memo(function SwipeableMessage({
         {/* Right side: reply (blue) — revealed when swiping right */}
         {onSwipeRight && (
           <div className={`swipeable-action-reply ${leftAction ? 'swipeable-action-visible' : ''}`}>
-            <span className="swipeable-action-icon">↩️</span>
+            <span className="swipeable-action-icon"><IconReply /></span>
             <span className="swipeable-action-label">Reply</span>
           </div>
         )}
         {/* Left side: delete (red) — revealed when swiping left */}
         {onSwipeLeft && (
           <div className={`swipeable-action-delete ${rightAction ? 'swipeable-action-visible' : ''}`}>
-            <span className="swipeable-action-icon">🗑️</span>
+            <span className="swipeable-action-icon"><IconTrash /></span>
             <span className="swipeable-action-label">Delete</span>
           </div>
         )}

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useToast } from '../contexts/ToastContext'
 import { useTranslation } from '../i18n'
 import type { PresetCommand } from '../types'
+import { IconX, IconSettings } from './Icons'
 import type { TabId } from './settings/shared'
 import { TABS } from './settings/shared'
 import AppearanceTab from './settings/AppearanceTab'
@@ -62,15 +63,15 @@ export default function SettingsPanel({ open, onClose, onNicknameChange, onPrese
         className={`settings-panel${animating === 'out' ? " settings-panel-exit" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label={t('settings')}
+        aria-label={t('settingsTitle')}
         onAnimationEnd={handlePanelAnimEnd}
       >
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.01em' }}>{t('settings')}</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.01em' }}><IconSettings className="inline" /> {t('settingsTitle')}</h2>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {saving && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('saving')}</span>}
-            <button className="settings-close-btn" onClick={onClose} data-testid="settings-close-btn" aria-label={t('closeSettings')}>×</button>
+            <button className="settings-close-btn" onClick={onClose} data-testid="settings-close-btn" aria-label={t('closeSettings')}><IconX className="inline" /></button>
           </div>
         </div>
 

@@ -1,5 +1,6 @@
 import { useTranslation } from '../../i18n'
 import { useEffect, useState, useCallback } from 'react'
+import { IconCopy, IconBot, IconPackage, IconInbox, IconCheck, IconSettings } from '../Icons'
 
 import type { MarketEntry, MyMarketEntry } from './shared'
 
@@ -104,13 +105,13 @@ export default function MarketTab() {
           className={`market-tab ${marketType === 'agent' ? 'active' : ''}`}
           onClick={() => { setMarketType('agent'); setMarketSubTab('browse'); }}
         >
-          🤖 Agent
+          <IconBot className="inline" /> Agent
         </button>
         <button
           className={`market-tab ${marketType === 'skill' ? 'active' : ''}`}
           onClick={() => { setMarketType('skill'); setMarketSubTab('browse'); }}
         >
-          🛠️ Skill
+          <IconSettings className="inline" /> Skill
         </button>
       </div>
       {/* Sub tabs: browse / mine */}
@@ -119,13 +120,13 @@ export default function MarketTab() {
           className={`market-tab market-sub-tab ${marketSubTab === 'browse' ? 'active' : ''}`}
           onClick={() => setMarketSubTab('browse')}
         >
-          📦 市场
+          <IconPackage className="inline" /> 市场
         </button>
         <button
           className={`market-tab market-sub-tab ${marketSubTab === 'mine' ? 'active' : ''}`}
           onClick={() => setMarketSubTab('mine')}
         >
-          📋 我的
+          <IconCopy className="inline" /> 我的
         </button>
       </div>
 
@@ -137,7 +138,7 @@ export default function MarketTab() {
           </div>
         ) : marketEntries.length === 0 ? (
           <div className="settings-loading">
-            <p className="text-3xl mb-3">📭</p>
+            <p className="text-3xl mb-3"><IconInbox className="inline" style={{width:28,height:28}} /></p>
             <p className="text-sm">暂无可用条目</p>
           </div>
         ) : (
@@ -176,7 +177,7 @@ export default function MarketTab() {
           </div>
         ) : myMarketEntries.length === 0 ? (
           <div className="settings-loading">
-            <p className="text-3xl mb-3">📭</p>
+            <p className="text-3xl mb-3"><IconInbox className="inline" style={{width:28,height:28}} /></p>
             <p className="text-sm">暂无自己的{marketType === 'skill' ? ' Skill' : ' Agent'}</p>
           </div>
         ) : (
@@ -187,7 +188,7 @@ export default function MarketTab() {
                   <div className="market-entry-info">
                     <span className="market-entry-name">{entry.name}</span>
                     <span className={`market-entry-status ${entry.published ? 'published' : 'unpublished'}`}>
-                      {entry.published ? '✅ 已上架' : '⚪ 未上架'}
+                      {entry.published ? <><IconCheck className="inline" /> 已上架</> : <><span style={{width:10,height:10,borderRadius:'50%',display:'inline-block',border:'1.5px solid currentColor',verticalAlign:'middle'}} /> 未上架</>}
                     </span>
                   </div>
                   {entry.published ? (

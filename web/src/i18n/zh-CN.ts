@@ -9,6 +9,8 @@ const zhCN = {
   appSubtitle: '智能对话助手',
   loading: 'Loading...',
   logoutBtn: '退出登录',
+  lightMode: '切换浅色模式',
+  darkMode: '切换深色模式',
   skipToContent: '跳到主内容',
 
   // ─── Auth ───
@@ -75,7 +77,8 @@ const zhCN = {
   contextUsageTitle: '上下文使用: {prompt} / {max} tokens',
 
   // ─── Settings ───
-  settings: '⚙️ 设置',
+  settings: '设置',
+  settingsTitle: '设置',
   closeSettings: '关闭设置',
   saving: '保存中...',
   appearance: '外观',
@@ -142,12 +145,12 @@ const zhCN = {
   // ─── Sidebar ───
   searchPlaceholder: '搜索会话...',
   expandSidebar: '展开会话列表',
-  chatSessions: '💬 会话',
+  chatSessions: '会话',
   newSession: '新建会话',
   collapseSidebar: '收起',
   unnamedSession: '未命名',
   currentSession: '当前',
-  refreshSessions: '🔄 刷新',
+  refreshSessions: '刷新',
   noSessions: '暂无会话',
   deleteSession: '删除会话',
   renameSession: '重命名',
@@ -159,7 +162,7 @@ const zhCN = {
 
   // ─── Runner ───
   local: '本地',
-  workspaceEnv: '🖥️ 工作环境',
+  workspaceEnv: '工作环境',
   manageRunners: '管理远程 Runner，点击卡片切换活跃环境。',
   noRunners: '尚未添加工作环境',
   addRunnerHint: '添加 Runner 后可远程执行命令',
@@ -175,7 +178,7 @@ const zhCN = {
   runnerName: '名称',
   runnerNamePlaceholder: '例如：MacBook Pro',
   runMode: '运行模式',
-  nativeMode: '🖥️ 原生',
+  nativeMode: '原生',
   dockerMode: '🐳 Docker',
   dockerImage: 'Docker 镜像',
   workspace: '工作目录',
@@ -200,7 +203,7 @@ const zhCN = {
   tokens: 'tokens',
 
   // ─── Appearance Tab ───
-  appearanceTitle: '🎨 外观',
+  appearanceTitle: '外观',
   themeLabel: '主题',
   fontSizeLabel: '字体大小',
   nicknameLabel: '昵称',
@@ -211,7 +214,7 @@ const zhCN = {
   enterNickname: '输入昵称...',
 
   // ─── Sessions Tab ───
-  chatRooms: '💬 ChatRooms',
+  chatRooms: 'ChatRooms',
   chatRoomDesc: '所有对话都是 ChatRoom — 人↔Agent、Agent↔Agent 统一管理。',
   backToList: '← 返回列表',
   mainSession: '👤 主会话',
@@ -221,10 +224,10 @@ const zhCN = {
   noMessages: '暂无消息记录',
   noChatRooms: '暂无 ChatRoom',
   loadingDots: '加载中...',
-  refresh: '🔄 刷新',
+  refresh: '刷新',
 
   // ─── LLM Tab ───
-  llmTitle: '🧠 个人 LLM 配置',
+  llmTitle: '个人 LLM 配置',
   fetchConfigFailed: '获取配置失败',
   providerLabel: '提供商',
   currentModelLabel: '当前模型',
@@ -255,7 +258,7 @@ const zhCN = {
   enterModelName: '输入模型名称...',
 
   // ─── Presets Tab ───
-  presetsTitle: '⚡ 快捷指令',
+  presetsTitle: '快捷指令',
   presetsDesc: '配置常用指令，在聊天输入框上方快速触发。最多 20 条。',
   presetIcon: '图标',
   presetLabel: '名称',
@@ -271,7 +274,7 @@ const zhCN = {
   deletePreset: '删除',
 
   // ─── Market Tab ───
-  marketTitle: '🏪 市场',
+  marketTitle: '市场',
   publishSuccess: '发布成功',
   unpublishSuccess: '已取消发布',
   installSuccess: '安装成功',
@@ -548,7 +551,7 @@ const zhCN = {
   // ─── Sound Feedback (Round 14) ───
   soundFeedback: '声音反馈',
   soundOn: '🔊 声音已开启',
-  soundOff: '🔇 声音已关闭',
+  soundOff: '声音已关闭',
   soundVolume: '音量',
   soundType: '音效类型',
   soundSent: '发送音效',

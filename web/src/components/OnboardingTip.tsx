@@ -1,18 +1,19 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslation, type I18nKey } from '../i18n'
+import { IconChat, IconPaperclip, IconKeyboard } from './Icons'
 
 const ONBOARDING_KEY = 'xbot-onboarding-done'
 
 interface Step {
   titleKey: I18nKey
   descKey: I18nKey
-  icon: string
+  icon: ReactNode
 }
 
 const steps: Step[] = [
-  { titleKey: 'onboardingStep1Title', descKey: 'onboardingStep1Desc', icon: '💬' },
-  { titleKey: 'onboardingStep2Title', descKey: 'onboardingStep2Desc', icon: '📎' },
-  { titleKey: 'onboardingStep3Title', descKey: 'onboardingStep3Desc', icon: '⌨️' },
+  { titleKey: 'onboardingStep1Title', descKey: 'onboardingStep1Desc', icon: <IconChat /> },
+  { titleKey: 'onboardingStep2Title', descKey: 'onboardingStep2Desc', icon: <IconPaperclip /> },
+  { titleKey: 'onboardingStep3Title', descKey: 'onboardingStep3Desc', icon: <IconKeyboard /> },
 ]
 
 export default function OnboardingTip() {

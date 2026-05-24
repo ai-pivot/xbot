@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import type { Turn } from '../types'
 import { useTranslation } from '../i18n'
 import { splitByQuery } from '../utils/highlight'
+import { IconUser, IconBot } from './Icons'
 
 export interface CommandItem {
   id: string
   label: string
-  icon: string
+  icon: ReactNode
   description?: string
   action: () => void
 }
@@ -313,7 +314,7 @@ export default function CommandPalette({
                     >
                       <div className="command-palette-search-result-header">
                         <span className="command-palette-search-result-role">
-                          {hit.role === 'user' ? '👤' : '🤖'}
+                          {hit.role === 'user' ? <IconUser className="inline" /> : <IconBot className="inline" />}
                         </span>
                         {hit.created_at && (
                           <span className="command-palette-search-result-time">
