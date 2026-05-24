@@ -67,28 +67,28 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
           {menuOpen && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-              <div className="absolute left-0 bottom-full mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]" role="menu" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false) }}>
-                {onSnapshot && (
+              <div className="message-actions-popup" role="menu" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false) }}>
+                 {onSnapshot && (
                   <button
-                    onClick={() => { onSnapshot(); setMenuOpen(false) }}
-                    className="w-full text-left px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-colors flex items-center gap-2"
-                    role="menuitem"
-                    data-testid="snapshot-btn"
+                   onClick={() => { onSnapshot(); setMenuOpen(false) }}
+                   className="message-actions-popup-item"
+                   role="menuitem"
+                   data-testid="snapshot-btn"
                   >
-                    <IconBookmark className="inline" /> {t('takeSnapshot')}
+                   <IconBookmark className="inline" /> {t('takeSnapshot')}
                   </button>
-                )}
-                {onDelete && (
+                 )}
+                 {onDelete && (
                   <button
-                    onClick={() => { onDelete(); setMenuOpen(false) }}
-                    className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 transition-colors flex items-center gap-2"
-                    role="menuitem"
-                    data-testid="delete-btn"
+                   onClick={() => { onDelete(); setMenuOpen(false) }}
+                   className="message-actions-popup-item message-actions-popup-danger"
+                   role="menuitem"
+                   data-testid="delete-btn"
                   >
-                    <IconTrash className="inline" /> {t('deleteMessage')}
+                   <IconTrash className="inline" /> {t('deleteMessage')}
                   </button>
-                )}
-              </div>
+                 )}
+                </div>
             </>
           )}
         </div>
