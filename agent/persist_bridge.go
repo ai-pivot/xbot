@@ -1,12 +1,17 @@
 package agent
 
 import (
+	"regexp"
 	"strings"
 
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/session"
 )
+
+// dynamicContextRe matches <dynamic-context>...</dynamic-context> blocks for stripping
+// before persistence (same pattern as systemReminderRe in reminder.go).
+var dynamicContextRe = regexp.MustCompile(`\n?\n?<dynamic-context>[\s\S]*?</dynamic-context>`)
 
 // PersistenceBridge manages incremental session persistence for a Run() execution.
 // It replaces the scattered lastPersistedCount field and inline persistence logic
@@ -43,6 +48,9 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 		if strings.Contains(persistMsg.Content, "<system-reminder>") {
 			persistMsg.Content = stripSystemReminder(persistMsg.Content)
 		}
+		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
+			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
+		}
 		if err := b.session.AddMessage(persistMsg); err != nil {
 			log.WithError(err).Error("Failed to persist message to session")
 			persistOk = false
@@ -57,6 +65,8 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 
 // RewriteAfterCompress clears the session and re-adds all compressed messages.
 // Used after context compression when the entire session must be rewritten.
+// Strips <system-reminder> and <dynamic-context> blocks before writing to prevent
+// transient injection artifacts from being persisted.
 // Updates lastPersistedCount to totalMsgCount on success.
 // Returns (true, nil) on success, (false, err) on partial/total failure.
 func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, totalMsgCount int) (bool, error) {
@@ -72,7 +82,15 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 		if err := assertNoSystemPersist(msg); err != nil {
 			continue
 		}
-		if err := b.session.AddMessage(msg); err != nil {
+		// Strip transient injection artifacts before persisting
+		persistMsg := msg
+		if strings.Contains(persistMsg.Content, "<system-reminder>") {
+			persistMsg.Content = stripSystemReminder(persistMsg.Content)
+		}
+		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
+			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
+		}
+		if err := b.session.AddMessage(persistMsg); err != nil {
 			log.WithError(err).Error("Partial write during compression, session may be corrupted")
 			allOk = false
 			break

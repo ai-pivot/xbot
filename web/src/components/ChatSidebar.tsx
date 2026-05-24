@@ -21,18 +21,18 @@ interface ChatSidebarProps {
 export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
-  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 640)
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const { t } = useTranslation()
 
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640)
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
   const isMobileRef = useRef(isMobile)
   useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
   useEffect(() => {
-    const mql = window.matchMedia('(max-width: 640px)')
+    const mql = window.matchMedia('(max-width: 768px)')
     const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
     mql.addEventListener('change', handler)
     return () => mql.removeEventListener('change', handler)

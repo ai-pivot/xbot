@@ -281,6 +281,7 @@ const zhCN = {
 
   // ─── AssistantTurn ───
   thinkingProcess: '思考过程',
+  intermediateOutput: '中间过程',
   iterationProcess: '迭代过程',
   expandAll: '展开全部',
   collapse: '折叠',

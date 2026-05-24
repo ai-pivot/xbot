@@ -15,13 +15,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:9999',
+        target: 'https://xbot.pivotlang.tech',
         changeOrigin: true,
+        secure: true,
       },
       '/ws': {
-        target: 'ws://localhost:9999',
+        target: 'wss://xbot.pivotlang.tech',
         ws: true,
         changeOrigin: true,
+        secure: true,
       },
     },
   },

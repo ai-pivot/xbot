@@ -4,7 +4,6 @@
 /* ========================================================================== */
 
 .chat-sidebar-toggle {
-  position: fixed; top: 12px; left: 12px; z-index: 40;
   padding: 8px 12px;
   background: rgba(30,30,30,0.85) !important;
   backdrop-filter: saturate(180%) blur(20px) !important;
@@ -12,12 +11,18 @@
   border-radius: var(--radius-sm) !important;
   color: var(--text-secondary) !important;
   cursor: pointer; transition: all 0.15s !important; font-size: 14px;
+  /* On desktop (>768px): normal flex child, not fixed */
+  position: static;
+}
+@media (max-width: 768px) {
+  /* On mobile/tablet: fixed floating button */
+  .chat-sidebar-toggle { position: fixed; top: 12px; left: 12px; z-index: 40; }
 }
 .chat-sidebar-toggle:hover { color: var(--text-primary) !important; }
 .sidebar-count { color: #007AFF !important; font-weight: 600; }
 
 .sidebar-panel {
-  width: 280px; min-width: 280px;
+  width: 280px; min-width: 280px; flex-shrink: 0;
   height: 100%; max-height: 100%;
   box-sizing: border-box;
   display: flex; flex-direction: column;

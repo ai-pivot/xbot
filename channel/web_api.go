@@ -157,11 +157,14 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 		processing = wc.callbacks.IsProcessing(senderID)
 	}
 
-	// If processing, attach the live progress snapshot so frontend can
-	// restore iteration state immediately (no need to wait for WS reconnect).
+	// Always attempt to get active progress snapshot, regardless of IsProcessing.
+	// IsProcessing only returns true during an active Run, but lastProgressSnapshot
+	// persists after Run completes. This ensures the frontend can restore state
+	// even if the user refreshes between Runs (agent just finished but progress
+	// data is still available).
 	var activeProgress *histProgress
-	if processing && wc.callbacks.GetActiveProgress != nil {
-		if p := wc.callbacks.GetActiveProgress("web", senderID); p != nil {
+	if wc.callbacks.GetActiveProgress != nil {
+		if p := wc.callbacks.GetActiveProgress("web", senderID); p != nil && p.Phase != "done" {
 			hp := &histProgress{
 				Phase:         p.Phase,
 				Iteration:     p.Iteration,

@@ -3,6 +3,7 @@ import { useState, useMemo, memo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import { sanitizeStreamContent } from '../utils'
 import rehypeKatex from 'rehype-katex'
 import { getCodeBlockProps } from './CodeBlock'
 import Lightbox from './Lightbox'
@@ -122,12 +123,34 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
   // Classify messages
   const thinkingMsgs: Message[] = []
   const textMsgs: Message[] = []
+  const intermediateMsgs: Message[] = []
 
   for (const msg of messages) {
     if (isThinkingContent(msg.content)) {
       thinkingMsgs.push(msg)
+    } else if (msg.content.trim() === '' && msg.iterationHistory) {
+      // Content cleared (tool narration stripped) but has structured iteration history.
+      // Skip as text — iteration panel will show the structured data via savedProgress.
     } else {
       textMsgs.push(msg)
+    }
+  }
+
+  // When multiple text messages exist, only the LAST one with substantial content
+  // is the final reply. Earlier messages are intermediate LLM output (tool narration,
+  // progress descriptions, system-reminder artifacts) that should be collapsed.
+  if (textMsgs.length > 1) {
+    // Find the last message with real content (non-empty, non-whitespace)
+    let lastContentIdx = -1
+    for (let i = textMsgs.length - 1; i >= 0; i--) {
+      if (textMsgs[i].content.trim().length > 0) {
+        lastContentIdx = i
+        break
+      }
+    }
+    if (lastContentIdx > 0) {
+      // Move everything before the last content message to intermediate
+      intermediateMsgs.push(...textMsgs.splice(0, lastContentIdx))
     }
   }
 
@@ -321,6 +344,19 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
                 <CompletedIteration key={snap.iteration} snap={snap} />
               ))}
             </div>
+          </CollapsibleSection>
+        )}
+
+        {/* Intermediate LLM output (tool narration, progress) — collapsed by default */}
+        {intermediateMsgs.length > 0 && (
+          <CollapsibleSection icon="📝" title={t('intermediateOutput')} badge={intermediateMsgs.length}>
+            {intermediateMsgs.map((msg) => (
+              <div key={msg.id} className="markdown-body text-sm opacity-60">
+                <Markdown components={codeBlockProps} remarkPlugins={remarkPluginsList} rehypePlugins={rehypePluginsList}>
+                  {sanitizeStreamContent(msg.content)}
+                </Markdown>
+              </div>
+            ))}
           </CollapsibleSection>
         )}
 
