@@ -2,17 +2,6 @@
 /* Code Block Styles                                                         */
 /* ========================================================================== */
 
-/* Inline code (dark mode default) */
-.xbot-inline-code {
-  background: var(--xbot-bg-secondary);
-  color: var(--xbot-text-primary);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.9em;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
 /* User message bubble inline code: override for blue background */
 .bg-blue-600 .xbot-inline-code,
 .bg-blue-700 .xbot-inline-code {
