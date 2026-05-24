@@ -67,8 +67,11 @@ body {
   --text-user-bubble: #e5e5e5;
   --btn-primary-bg: #ffffff;
   --btn-primary-fg: #000000;
+  --btn-fg: #ffffff;
+  --btn-fg-muted: rgba(255,255,255,0.45);
   --glass-chat: rgba(21,21,23,0.88);
   --glass-chat-heavy: rgba(21,21,23,0.95);
+  --bg-sidebar: #1b1b1c;
   --xbot-bg-secondary: var(--bg-secondary);
   --xbot-bg-input: rgba(0,0,0,0.3);
   --xbot-bg-elevated: var(--bg-hover);
@@ -108,8 +111,11 @@ body {
   --text-user-bubble: #1d1d1f;
   --btn-primary-bg: #000000;
   --btn-primary-fg: #ffffff;
+  --btn-fg: #000000;
+  --btn-fg-muted: rgba(0,0,0,0.45);
   --glass-chat: rgba(255,255,255,0.88);
   --glass-chat-heavy: rgba(255,255,255,0.95);
+  --bg-sidebar: #f9fafb;
   --xbot-bg-secondary: #f2f2f7; --xbot-bg-input: rgba(0,0,0,0.04);
 }
 

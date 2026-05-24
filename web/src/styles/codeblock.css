@@ -30,7 +30,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   transition: border-color 0.2s ease;
   margin: 0.5em 0;
-  background: #0d1117;
+  background: #181818;
 }
 
 .xbot-codeblock:hover {
@@ -38,16 +38,27 @@
 }
 
 .xbot-codeblock-header {
-  background: linear-gradient(135deg, #1e293b, #0f172a);
-  padding: 8px 14px;
+  background: #181818;
+  padding: 6px 14px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+  border-bottom: none;
   font-size: 12px;
-  font-weight: 600;
-  color: #94a3b8;
+  font-weight: 500;
+  color: var(--btn-fg-muted);
   letter-spacing: 0.02em;
+}
+
+.xbot-codeblock-lang {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.6;
+}
+
+.xbot-codeblock-lang svg {
+  flex-shrink: 0;
 }
 
 .xbot-codeblock-linecount {
@@ -63,20 +74,20 @@
 }
 
 .xbot-codeblock-copy {
-  background: rgba(71, 85, 105, 0.3);
+  background: none;
   border: none;
-  color: var(--xbot-text-secondary);
-  padding: 2px 8px;
+  color: var(--btn-fg-muted);
+  padding: 4px;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 11px;
-  transition: all 0.15s ease;
-  white-space: nowrap;
+  transition: color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .xbot-codeblock-copy:hover {
-  background: rgba(71, 85, 105, 0.5);
-  color: var(--xbot-text-primary);
+  color: var(--btn-fg);
 }
 
 /* ─── Code Body (line numbers + code side by side) ─── */
@@ -240,19 +251,19 @@
 
 /* Light mode overrides for code blocks */
 [data-theme="light"] .xbot-codeblock {
-  border-color: #d1cdc7;
-  box-shadow: 0 2px 8px rgba(28, 25, 23, 0.08);
-  background: #edeae5;
+  border-color: #e0e0e0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  background: #f9f9f9;
 }
 
 [data-theme="light"] .xbot-codeblock:hover {
-  border-color: #bbb7b0;
+  border-color: #ccc;
 }
 
 [data-theme="light"] .xbot-codeblock-header {
-  background: linear-gradient(135deg, #e2dfda, #ddd9d4);
-  color: #57534e;
-  border-bottom-color: #d1cdc7;
+  background: #f9f9f9;
+  color: #78716c;
+  border-bottom: none;
 }
 
 [data-theme="light"] .xbot-codeblock-pre {
@@ -261,12 +272,10 @@
 
 [data-theme="light"] .xbot-codeblock-copy {
   color: #78716c;
-  background: rgba(28, 25, 23, 0.06);
 }
 
 [data-theme="light"] .xbot-codeblock-copy:hover {
-  color: #3d3833;
-  background: rgba(28, 25, 23, 0.12);
+  color: #1d1d1f;
 }
 
 [data-theme="light"] .xbot-codeblock-linenums {

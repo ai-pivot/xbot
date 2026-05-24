@@ -11,6 +11,8 @@ const en: Record<I18nKey, string> = {
   appSubtitle: 'AI Chat Assistant',
   loading: 'Loading...',
   logoutBtn: 'Logout',
+  lightMode: 'Switch to light mode',
+  darkMode: 'Switch to dark mode',
   skipToContent: 'Skip to content',
 
   // ─── Auth ───
@@ -150,7 +152,7 @@ const en: Record<I18nKey, string> = {
   collapseSidebar: 'Collapse',
   unnamedSession: 'Unnamed',
   currentSession: 'Current',
-  refreshSessions: '🔄 Refresh',
+  refreshSessions: 'Refresh',
   noSessions: 'No sessions',
   deleteSession: 'Delete session',
   renameSession: 'Rename',
@@ -224,7 +226,7 @@ const en: Record<I18nKey, string> = {
   noMessages: 'No messages',
   noChatRooms: 'No ChatRooms',
   loadingDots: 'Loading...',
-  refresh: '🔄 Refresh',
+  refresh: 'Refresh',
 
   // ─── LLM Tab ───
   llmTitle: 'Personal LLM Config',

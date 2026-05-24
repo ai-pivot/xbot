@@ -3,7 +3,7 @@ import { useState, useMemo, memo, type ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import { IconList, IconThinking, IconZap, IconPackage, IconCheck, IconX, IconClock, IconLightbulb, IconRefresh } from './Icons'
+import { IconList, IconThinking, IconZap, IconPackage, IconCheck, IconClock, IconRefresh } from './Icons'
 import rehypeKatex from 'rehype-katex'
 import { getCodeBlockProps } from './CodeBlock'
 import Lightbox from './Lightbox'
@@ -162,17 +162,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
 
   return (
     <div className="flex justify-start w-full">
-      <div className="assistant-turn-container group relative flex-1 min-w-0" data-testid="assistant-turn" onDoubleClick={onDoubleClickReply}>
-        {/* Message actions — visible on hover */}
-        {textMsgs.length > 0 && !loading && (
-          <MessageActions
-            onCopy={handleCopy}
-            onDelete={onDelete}
-            onRegenerate={onRegenerate}
-            onReply={onReply}
-            copied={copied}
-          />
-        )}
+      <div className="assistant-turn-container flex-1 min-w-0" data-testid="assistant-turn" onDoubleClick={onDoubleClickReply}>
         {/* Reply preview */}
         {textMsgs.length > 0 && textMsgs[0].replyTo && onScrollToMessage && (
           <ReplyPreview
@@ -205,43 +195,7 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
             defaultOpen={true}
           >
             <div className="divide-y divide-slate-700/30">
-              {displayLiveIterations.map(snap => (
-                <div key={snap.iteration} className="px-3 py-2">
-                  <div className="text-[11px] text-slate-600/90 font-mono mb-1">
-                    #{snap.iteration}
-                  </div>
-                  {snap.reasoning && (
-                    <div className="px-2 py-1.5 mb-1 rounded bg-indigo-500/10 border-l-2 border-indigo-500/40">
-                      <div className="text-[10px] text-indigo-400/70 font-medium mb-0.5"><IconThinking className="inline" /> Reasoning</div>
-                      <div className="text-xs text-indigo-300/90 whitespace-pre-wrap break-words">{snap.reasoning}</div>
-                    </div>
-                  )}
-                  {snap.thinking && (
-                    <div className="px-2 py-1.5 mb-1 rounded bg-amber-500/10 border-l-2 border-amber-500/40">
-                      <div className="text-[10px] text-amber-400/70 font-medium mb-0.5"><IconLightbulb className="inline" /> Thinking</div>
-                      <div className="text-xs text-amber-300/80 italic whitespace-pre-wrap break-words">{snap.thinking}</div>
-                    </div>
-                  )}
-                  <div className="space-y-0.5">
-                    {snap.tools.map((tool, i) => (
-                      <div key={`${snap.iteration}-${i}`} className="px-2 py-1 text-sm">
-                        <div className="flex items-center gap-2">
-                          {tool.status === 'error' ? <IconX className="inline" /> : <IconCheck className="inline" />}
-                          <span className="font-mono text-xs text-slate-400 flex-1 truncate">
-                            {tool.label || tool.name}
-                          </span>
-                          {tool.elapsed_ms != null && tool.elapsed_ms > 0 && (
-                            <span className="text-xs text-slate-500 font-mono">{formatElapsed(tool.elapsed_ms)}</span>
-                          )}
-                        </div>
-                        {tool.summary && (
-                          <div className="text-[10px] text-slate-500 truncate pl-5 mt-0.5">{tool.summary}</div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
+              {displayLiveIterations.map(snap => <CompletedIteration key={snap.iteration} snap={snap} />)}
             </div>
           </CollapsibleSection>
         )}
@@ -354,6 +308,17 @@ export default memo(function AssistantTurn({ messages, progress, liveIterations,
         {/* Edited indicator */}
         {!loading && textMsgs.length > 0 && textMsgs[textMsgs.length - 1]?.edited && (
           <div className="text-xs text-slate-600 mt-1 italic">(edited)</div>
+        )}
+
+        {/* Message actions — bottom-left, always visible */}
+        {textMsgs.length > 0 && !loading && (
+          <MessageActions
+            onCopy={handleCopy}
+            onDelete={onDelete}
+            onRegenerate={onRegenerate}
+            onReply={onReply}
+            copied={copied}
+          />
         )}
       </div>
       {/* Lightbox portal */}

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, memo
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { IconTrash, IconSparkles, IconHelp, IconSettings, IconSearch, IconReply, IconChat, IconRefresh, IconCopy, IconBot, IconPackage, IconClock, IconX, IconCheck, IconZap, IconKeyboard, IconList, IconVolume, IconPaperclip, IconBolt, IconEdit, IconBrain, IconBell } from './components/Icons'
+import { IconTrash, IconSparkles, IconHelp, IconSettings, IconSearch, IconReply, IconChat, IconRefresh, IconCopy, IconBot, IconPackage, IconClock, IconX, IconCheck, IconZap, IconKeyboard, IconList, IconVolume, IconPaperclip, IconBolt, IconEdit, IconBrain, IconBell, IconLogout, IconSun, IconMoon } from './components/Icons'
 
 import { useWebSocket } from './hooks/useWebSocket'
 import { useChatMessageHandler } from './hooks/useChatMessageHandler'
@@ -18,7 +18,6 @@ import ReplyPreview from './components/ReplyPreview'
 import type { WsProgressPayload, IterationSnapshot } from './components/ProgressPanel'
 import type { WsSubAgent } from './components/ProgressPanel'
 import { TodoBar } from './components/TodoBar'
-import { SubAgentPanel } from './components/SubAgentPanel'
 import { formatRelativeTime, formatFileSize, normalizeIterationHistory, createResetProgress, exportAsMarkdown, exportAsJSON, downloadFile } from './utils'
 import { getCodeBlockProps } from './components/CodeBlock'
 import ProgressPanel from './components/ProgressPanel'
@@ -239,7 +238,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [dragActive, setDragActive] = useState(false)
   const dragCountRef = useRef(0)
-  const [nickname, setNickname] = useState<string>(() => localStorage.getItem('xbot-nickname') || '')
+  const [_nickname, setNickname] = useState<string>(() => localStorage.getItem('xbot-nickname') || '')
   const editorRef = useRef<TiptapEditorHandle>(null)
   const [presets, setPresets] = useState<PresetCommand[]>([])
   const [askUser, setAskUser] = useState<{ questions: { question: string; options?: string[] }[]; answers: Record<string, string>; currentQ: number } | null>(null)
@@ -251,6 +250,16 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   // Keep ref in sync with state
   currentChatIDRef.current = currentChatID
   const [replyingTo, setReplyingTo] = useState<{ id: string; content: string; type: 'user' | 'assistant' } | null>(null)
+  const [logoutConfirm, setLogoutConfirm] = useState(false)
+  const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>(() =>
+    (document.documentElement.getAttribute('data-theme') as 'dark' | 'light') || 'dark'
+  )
+  const toggleTheme = useCallback(() => {
+    const next = currentTheme === 'dark' ? 'light' : 'dark'
+    setCurrentTheme(next)
+    document.documentElement.setAttribute('data-theme', next)
+    try { localStorage.setItem('theme', next) } catch {}
+  }, [currentTheme])
   const [contextInfo, setContextInfo] = useState<{ prompt_tokens: number; max_tokens: number; usage_pct: number; source: string } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -262,6 +271,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [todos, setTodos] = useState<{ id: number; text: string; done: boolean }[]>([])
   const [subAgents, setSubAgents] = useState<WsSubAgent[]>([])
+  void subAgents // consumed by progress handler via setSubAgents
   const { play: playSound } = useSoundFeedback()
   const { addNotification } = useNotificationContext()
 
@@ -943,13 +953,46 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   }, [turns, virtualizer])
 
   return (
-    <div className="flex flex-col h-screen bg-slate-900 chat-app"
+    <div className="flex h-screen bg-slate-900 chat-app"
          onDragOver={handleDragOver}
          onDragLeave={handleDragLeave}
          onDrop={handleDrop}
          onPaste={handlePaste}
     >
 
+      {/* Sidebar — full height */}
+      <ChatSidebar
+        connected={connected}
+        reconnecting={reconnecting}
+        onSwitchChat={(chatID: string) => {
+            setCurrentChatID(chatID)
+            setMessages([])
+            resetProgress()
+            setTodos([])
+            setSubAgents([])
+            setLoading(false)
+            streamingContentRef.current = ''
+            reasoningRef.current = ''
+            loadHistory()
+          }}
+          onNewChat={() => {
+            setCurrentChatID('')
+            setMessages([])
+            resetProgress()
+            setTodos([])
+            setSubAgents([])
+            setLoading(false)
+            setContextInfo(null)
+            streamingContentRef.current = ''
+            reasoningRef.current = ''
+          }}
+          currentChatID={currentChatID}
+          onExportMarkdown={handleExportMarkdown}
+          onExportJSON={handleExportJSON}
+      />
+
+      {/* Right column: header + chat content */}
+      <div className="flex-1 flex flex-col min-w-0">
       <a href="#messages-container" className="skip-to-content">{t('skipToContent')}</a>
       {/* Drag overlay */}
       {dragActive && (
@@ -964,18 +1007,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 bg-slate-800 border-b border-slate-700 header-bar">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-white flex items-center gap-1.5"><IconBot className="inline" style={{width:20,height:20}} /> xbot{nickname ? ` · ${nickname}` : ''}</h1>
-          <span className={`text-xs px-2 py-0.5 rounded-full ${
-            connected
-              ? 'bg-green-900/50 text-green-400'
-              : reconnecting
-                ? 'bg-yellow-900/50 text-yellow-400'
-                : 'bg-red-900/50 text-red-400'
-          }`} role="status">
-            {connected ? t('connected') : reconnecting
-              ? `${t('reconnecting')} ${reconnectAttempt > 0 ? `(attempt ${reconnectAttempt}${nextReconnectIn > 0 ? `, ${nextReconnectIn}s` : ''})` : ''}`
-              : t('disconnected')}
-          </span>
+
           {/* Context indicator */}
           {contextInfo && contextInfo.max_tokens > 0 && (
             <span
@@ -1024,6 +1056,14 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={toggleTheme}
+            className="text-sm text-slate-400 hover:text-white transition-colors p-1"
+            title={currentTheme === 'dark' ? t('lightMode') : t('darkMode')}
+            aria-label={currentTheme === 'dark' ? t('lightMode') : t('darkMode')}
+          >
+            {currentTheme === 'dark' ? <IconSun /> : <IconMoon />}
+          </button>
+          <button
             onClick={() => { setCommandPaletteOpen(true) }}
             className="text-sm text-slate-400 hover:text-white transition-colors p-1"
             title={t('searchKbHint')} aria-label={t('searchHistory')}
@@ -1049,14 +1089,36 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               <IconBell />
             </button>
           )}
-          <button
-            onClick={handleLogout}
-            className="text-sm text-slate-400 hover:text-white transition-colors p-1"
-          >
-            {t('logoutBtn')}
-          </button>
+          {logoutConfirm ? (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleLogout}
+                className="text-xs text-red-400 hover:text-red-300 transition-colors px-2 py-1"
+                data-testid="logout-confirm-btn"
+              >
+                {t('confirm')}
+              </button>
+              <button
+                onClick={() => setLogoutConfirm(false)}
+                className="text-xs text-slate-400 hover:text-white transition-colors px-1 py-1"
+              >
+                {t('cancel')}
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setLogoutConfirm(true)}
+              className="text-sm text-slate-400 hover:text-white transition-colors p-1"
+              title={t('logoutBtn')}
+              aria-label={t('logoutBtn')}
+              data-testid="logout-btn"
+            >
+              <IconLogout />
+            </button>
+          )}
         </div>
       </header>
+
 
       {/* Command palette (replaces SearchPanel) */}
       <Suspense fallback={null}>
@@ -1089,42 +1151,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         </div>
       )}
 
-      {/* Main content: ChatSidebar + messages */}
-      <div className="flex flex-1 min-h-0 app-body">
-        <ChatSidebar
-          onSwitchChat={(chatID: string) => {
-            setCurrentChatID(chatID)
-            setMessages([])
-            resetProgress()
-            setTodos([])
-            setSubAgents([])
-            setLoading(false)
-            streamingContentRef.current = ''
-            reasoningRef.current = ''
-            loadHistory()
-          }}
-          onNewChat={() => {
-            setCurrentChatID('')
-            setMessages([])
-            resetProgress()
-            setTodos([])
-            setSubAgents([])
-            setLoading(false)
-            setContextInfo(null)
-            streamingContentRef.current = ''
-            reasoningRef.current = ''
-          }}
-          currentChatID={currentChatID}
-          onExportMarkdown={handleExportMarkdown}
-          onExportJSON={handleExportJSON}
-        />
-        <div className="flex flex-col flex-1 min-w-0">
+              <div className="flex flex-col flex-1 min-w-0 min-h-0">
+
 
       {/* Persistent TodoBar — visible across turns, cleared on new user message */}
       {todos.length > 0 && <TodoBar todos={todos} />}
-
-      {/* Persistent SubAgentPanel — visible across turns, cleared on new user message */}
-      {subAgents.length > 0 && <SubAgentPanel agents={subAgents} />}
 
       {/* Messages */}
       <div
@@ -1359,8 +1390,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           </div>
         </div>
        </div>
-	      </div>{/* end flex-1 inner column */}
-	      </div>{/* end ChatSidebar + content row */}
+	      
+        </div>{/* end messages wrapper */}
+      </div>{/* end right column */}
 
 	      {/* AskUser interaction panel */}
 	      {askUser && (

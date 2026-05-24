@@ -40,6 +40,43 @@
 .messages-area > div { margin-bottom: 12px !important; }
 .messages-area > div:last-child { margin-bottom: 0 !important; }
 
+/* ═══ MESSAGE ACTIONS BAR — bottom-left, always visible ═══ */
+.message-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-top: 6px;
+  margin-top: 4px;
+  position: relative;
+}
+
+.message-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  color: var(--btn-fg-muted);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.message-action-btn:hover {
+  color: var(--btn-fg);
+  background: rgba(255,255,255,0.06);
+}
+
+[data-theme="light"] .message-action-btn {
+  color: var(--btn-fg-muted);
+}
+[data-theme="light"] .message-action-btn:hover {
+  color: var(--btn-fg);
+  background: rgba(0,0,0,0.04);
+}
+
 /* ═══ AI MESSAGE ═══ */
 .assistant-msg {
   color: var(--text-primary) !important;
@@ -176,6 +213,15 @@
 .text-slate-400 { color: var(--text-secondary) !important; }
 .text-slate-500 { color: var(--text-tertiary) !important; }
 .text-slate-600 { color: var(--text-placeholder) !important; }
+
+/* ═══ HEADER / TOOLBAR BUTTONS — unified foreground ═══ */
+.header-bar button,
+.header-bar .text-slate-400 {
+  color: var(--btn-fg-muted) !important;
+}
+.header-bar button:hover {
+  color: var(--btn-fg) !important;
+}
 
 /* ═══ HEADER BUTTONS ═══ */
 .header-bar [class*="bg-slate-700"] {

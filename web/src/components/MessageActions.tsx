@@ -16,24 +16,48 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
-    <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-      {/* Copy button */}
+    <div className="message-actions-bar">
+      {/* Copy */}
       <button
         onClick={onCopy}
-        className="px-2 py-1 rounded text-xs bg-slate-700/60 hover:bg-slate-600/80 text-slate-300 hover:text-white backdrop-blur-sm"
+        className="message-action-btn"
         title={t('copyContent')}
         data-testid="copy-btn"
       >
-        {copied ? <IconCheck className="inline" /> : <IconCopy />}
+        {copied ? <IconCheck /> : <IconCopy />}
       </button>
 
-      {/* More actions menu */}
-      {(onDelete || onRegenerate || onReply || onSnapshot) && (
+      {/* Reply */}
+      {onReply && (
+        <button
+          onClick={onReply}
+          className="message-action-btn"
+          title={t('replyMessage')}
+          data-testid="reply-btn"
+        >
+          <IconReply />
+        </button>
+      )}
+
+      {/* Regenerate */}
+      {onRegenerate && (
+        <button
+          onClick={onRegenerate}
+          className="message-action-btn"
+          title={t('regenerate')}
+          data-testid="regenerate-btn"
+        >
+          <IconRefresh />
+        </button>
+      )}
+
+      {/* More actions (snapshot, delete) */}
+      {(onSnapshot || onDelete) && (
         <div className="relative">
           <button
             onClick={() => setMenuOpen(!menuOpen)}
-            className="px-2 py-1 rounded text-xs bg-slate-700/60 hover:bg-slate-600/80 text-slate-300 hover:text-white backdrop-blur-sm"
-            title="More actions"
+            className="message-action-btn"
+            title="More"
             data-testid="more-actions-btn"
             aria-expanded={menuOpen}
             aria-haspopup="menu"
@@ -43,17 +67,7 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
           {menuOpen && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-              <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]" role="menu" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false) }}>
-                 {onReply && (
-                  <button
-                    onClick={() => { onReply(); setMenuOpen(false) }}
-                    className="w-full text-left px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-colors flex items-center gap-2"
-                    role="menuitem"
-                    data-testid="reply-btn"
-                  >
-                    <IconReply className="inline" /> {t('replyMessage')}
-                  </button>
-                )}
+              <div className="absolute left-0 bottom-full mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]" role="menu" onKeyDown={(e) => { if (e.key === 'Escape') setMenuOpen(false) }}>
                 {onSnapshot && (
                   <button
                     onClick={() => { onSnapshot(); setMenuOpen(false) }}
@@ -62,16 +76,6 @@ export default function MessageActions({ onCopy, onDelete, onRegenerate, onReply
                     data-testid="snapshot-btn"
                   >
                     <IconBookmark className="inline" /> {t('takeSnapshot')}
-                  </button>
-                )}
-                {onRegenerate && (
-                  <button
-                    onClick={() => { onRegenerate(); setMenuOpen(false) }}
-                    className="w-full text-left px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-colors flex items-center gap-2"
-                    role="menuitem"
-                    data-testid="regenerate-btn"
-                  >
-                    <IconRefresh className="inline" /> {t('regenerate')}
                   </button>
                 )}
                 {onDelete && (

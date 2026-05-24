@@ -129,3 +129,18 @@ export const IconPalette = memo((props: IconProps) => (
 export const IconStore = memo((props: IconProps) => (
   <svg {...s} {...props}><path d="M3 9l1-4h16l1 4"/><path d="M3 9v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9"/><path d="M9 22V9"/><path d="M15 22V9"/><path d="M3 9h18"/></svg>
 ))
+export const IconSidebarCollapse = memo((props: IconProps) => (
+  <svg {...s} {...props}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><polyline points="14 9 12 12 14 15"/></svg>
+))
+export const IconSidebarExpand = memo((props: IconProps) => (
+  <svg {...s} {...props}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/><polyline points="10 9 12 12 10 15"/></svg>
+))
+export const IconLogout = memo((props: IconProps) => (
+  <svg {...s} {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+))
+export const IconSun = memo((props: IconProps) => (
+  <svg {...s} {...props}><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+))
+export const IconMoon = memo((props: IconProps) => (
+  <svg {...s} {...props}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+))

@@ -9,6 +9,8 @@ const zhCN = {
   appSubtitle: '智能对话助手',
   loading: 'Loading...',
   logoutBtn: '退出登录',
+  lightMode: '切换浅色模式',
+  darkMode: '切换深色模式',
   skipToContent: '跳到主内容',
 
   // ─── Auth ───
@@ -148,7 +150,7 @@ const zhCN = {
   collapseSidebar: '收起',
   unnamedSession: '未命名',
   currentSession: '当前',
-  refreshSessions: '🔄 刷新',
+  refreshSessions: '刷新',
   noSessions: '暂无会话',
   deleteSession: '删除会话',
   renameSession: '重命名',
@@ -222,7 +224,7 @@ const zhCN = {
   noMessages: '暂无消息记录',
   noChatRooms: '暂无 ChatRoom',
   loadingDots: '加载中...',
-  refresh: '🔄 刷新',
+  refresh: '刷新',
 
   // ─── LLM Tab ───
   llmTitle: '个人 LLM 配置',
