@@ -211,17 +211,17 @@ export function getCodeBlockProps(onImageClick?: (src: string, alt: string) => v
     table(props: { children?: React.ReactNode }) {
       return (
         <div className="overflow-x-auto my-2">
-          <table className="min-w-full text-sm border-collapse">
+          <table>
             {props.children}
           </table>
         </div>
       )
     },
     th(props: { children?: React.ReactNode }) {
-      return <th className="border border-slate-600 px-3 py-1.5 text-left text-xs font-medium text-slate-300 bg-slate-700/50">{props.children}</th>
+      return <th className="px-3 py-2 text-left font-semibold">{props.children}</th>
     },
     td(props: { children?: React.ReactNode }) {
-      return <td className="border border-slate-600 px-3 py-1.5 text-xs text-slate-300">{props.children}</td>
+      return <td className="px-3 py-2">{props.children}</td>
     },
   }
 }
