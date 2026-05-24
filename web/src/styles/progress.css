@@ -336,9 +336,6 @@
 }
 [data-theme="light"] .progress-card-thinking {
 }
-    0 4px 20px rgba(0, 0, 0, 0.04),
-    0 12px 40px rgba(0, 122, 255, 0.04) !important;
-}
 [data-theme="light"] .thinking-label {
   color: #3a3a3c;
 }
