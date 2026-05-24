@@ -501,7 +501,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               if (m.role === 'assistant' && m.display_only && !m.detail) return false
               return true
             })
-            .map((m: { id: number; role: string; content: string; detail?: string; display_only?: number; created_at?: string }) => {
+            .map((m: { id: number; role: string; content: string; detail?: string; display_only?: number; tool_calls?: string; created_at?: string }) => {
               const msg: Message = {
                 id: `hist-${m.id}`,
                 type: m.role === 'user' ? 'user' : m.role === 'assistant' ? 'assistant' : 'system',
@@ -586,8 +586,8 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               // contains accumulated LLM text including tool descriptions — if the
               // history already has the final text card, showing stream_content would
               // duplicate the message with polluted content.
-              const lastMsg = msgs[msgs.length - 1]
-              const lastIsAssistant = lastMsg && (lastMsg.role === 'assistant' || lastMsg.type === 'assistant')
+              const lastMsg = hist[hist.length - 1]
+              const lastIsAssistant = lastMsg && lastMsg.type === 'assistant'
               const streamIsSubsetOfLast = lastIsAssistant && lastMsg.content &&
                 ap.stream_content.includes(lastMsg.content.slice(0, 80))
               if (!lastIsAssistant || !streamIsSubsetOfLast) {

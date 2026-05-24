@@ -77,7 +77,7 @@ function handleProgressStructured(
   // Server-side iteration_history is authoritative (from GetActiveProgress snapshot
   // on reconnect). When present, use it to restore liveIterations instead of
   // trying to infer from previous state. This matches TUI's restoreIterationHistory.
-  const serverIterHistory = (p as Record<string, unknown>).iteration_history as
+  const serverIterHistory = (p as unknown as Record<string, unknown>).iteration_history as
     | { iteration: number; thinking?: string; reasoning?: string; completed_tools?: { name: string; label?: string; status: string; summary?: string }[] }[]
     | undefined
 
@@ -167,7 +167,7 @@ function handleProgressStructured(
   // calls startAgentTurn() on reconnect.
   // Guard: only activate when Phase is explicitly a non-done phase to avoid false
   // activation from stale/done events.
-  const phase = (p as Record<string, unknown>).phase as string | undefined
+  const phase = (p as unknown as Record<string, unknown>).phase as string | undefined
   if (phase && phase !== 'done' && phase !== '') {
     _setLoading(prev => {
       if (prev) return true // already loading
