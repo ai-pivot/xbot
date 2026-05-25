@@ -1099,6 +1099,36 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			}
 		}
 	}
+	log.WithFields(log.Fields{
+		"channelName":       msg.channelName,
+		"chatID":            msg.chatID,
+		"hasActiveProgress": msg.activeProgress != nil,
+		"progressPhase": func() string {
+			if msg.activeProgress != nil {
+				return msg.activeProgress.Phase
+			} else {
+				return "nil"
+			}
+		}(),
+		"progressChatID": func() string {
+			if msg.activeProgress != nil {
+				return msg.activeProgress.ChatID
+			} else {
+				return "nil"
+			}
+		}(),
+		"progressIter": func() int {
+			if msg.activeProgress != nil {
+				return msg.activeProgress.Iteration
+			} else {
+				return -1
+			}
+		}(),
+		"suPhaseDone":    m.suPhaseDoneConfirmed,
+		"currentKey":     qualifyChatID(m.channelName, m.chatID),
+		"acceptProgress": acceptProgress,
+		"historyLen":     len(msg.history),
+	}).Info("DEBUG_SESSION handleSuHistoryLoad decision")
 	switch {
 	case acceptProgress:
 		// Turn is still active on the server. Use the server snapshot regardless

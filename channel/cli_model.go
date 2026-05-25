@@ -1597,12 +1597,46 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 		dumpFn := m.channel.config.AgentSessionDumpFn
 		if dumpFn != nil {
 			return func() tea.Msg {
+				log.WithFields(log.Fields{
+					"channelName": channelName,
+					"chatID":      chatID,
+					"dumpFn":      dumpFn != nil,
+					"progressFn":  progressFn != nil,
+				}).Info("DEBUG_SESSION suLoadHistoryCmd agent session start")
 				history, err := dumpFn(chatID)
 				// Agent sessions don't have GetActiveProgress, but try anyway
 				var activeProgress *protocol.ProgressEvent
 				if progressFn != nil {
 					activeProgress = progressFn(channelName, chatID)
 				}
+				log.WithFields(log.Fields{
+					"channelName": channelName,
+					"chatID":      chatID,
+					"historyLen":  len(history),
+					"hasProgress": activeProgress != nil,
+					"progressPhase": func() string {
+						if activeProgress != nil {
+							return activeProgress.Phase
+						} else {
+							return "nil"
+						}
+					}(),
+					"progressChatID": func() string {
+						if activeProgress != nil {
+							return activeProgress.ChatID
+						} else {
+							return "nil"
+						}
+					}(),
+					"progressIter": func() int {
+						if activeProgress != nil {
+							return activeProgress.Iteration
+						} else {
+							return -1
+						}
+					}(),
+					"err": err,
+				}).Info("DEBUG_SESSION suLoadHistoryCmd agent session result")
 				var todos []protocol.TodoItem
 				if todosFn != nil {
 					todos = todosFn(channelName, chatID)

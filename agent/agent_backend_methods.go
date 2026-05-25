@@ -6,6 +6,8 @@ import (
 
 	"xbot/config"
 	"xbot/protocol"
+
+	log "xbot/logger"
 )
 
 // SetCWD sets the current working directory for a session.
@@ -60,11 +62,25 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	key := ch + ":" + chatID
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
+		log.WithFields(log.Fields{
+			"ch":     ch,
+			"chatID": chatID,
+			"key":    key,
+		}).Info("DEBUG_SESSION GetActiveProgress: snapshot not found")
 		return nil
 	}
 	snapshot := v.(*protocol.ProgressEvent)
 	// Shallow copy to avoid data race: agent may update snapshot fields concurrently.
 	result := *snapshot
+
+	log.WithFields(log.Fields{
+		"ch":             ch,
+		"chatID":         chatID,
+		"key":            key,
+		"snapshotPhase":  result.Phase,
+		"snapshotIter":   result.Iteration,
+		"snapshotChatID": result.ChatID,
+	}).Info("DEBUG_SESSION GetActiveProgress: snapshot loaded")
 
 	// Agent sessions: correct Phase from authoritative running state.
 	// interactiveSubAgents stores entries keyed by interactiveKey (e.g. "cli:/cwd/role:inst"),
@@ -74,29 +90,74 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	// means the turn truly ended. Oneshot SubAgents don't need this either — their
 	// progress is embedded in the parent session's live engine state.
 	if ch == "agent" {
-		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded {
+		entry, loaded := a.interactiveSubAgents.Load(chatID)
+		log.WithFields(log.Fields{
+			"chatID":     chatID,
+			"loaded":     loaded,
+			"lookupWith": "chatID",
+		}).Info("DEBUG_SESSION GetActiveProgress: interactiveSubAgents lookup (by chatID)")
+		if loaded {
 			ia := entry.(*interactiveAgent)
 			ia.mu.Lock()
 			isRunning := ia.running
 			ia.mu.Unlock()
+			log.WithFields(log.Fields{
+				"chatID":      chatID,
+				"isRunning":   isRunning,
+				"phase":       result.Phase,
+				"needCorrect": isRunning && result.Phase == "done",
+			}).Info("DEBUG_SESSION GetActiveProgress: running state")
 			if isRunning && result.Phase == "done" {
 				// Agent still running between iterations. Restore last active Phase
 				// from iteration history.
 				corrected := false
 				if histPtr, ok := a.iterationHistories.Load(key); ok {
 					hist := *histPtr.(*[]protocol.ProgressEvent)
+					log.WithFields(log.Fields{
+						"key":     key,
+						"histLen": len(hist),
+					}).Info("DEBUG_SESSION GetActiveProgress: iteration history")
 					for i := len(hist) - 1; i >= 0; i-- {
 						if hist[i].Phase != "done" {
 							result.Phase = hist[i].Phase
 							corrected = true
+							log.WithFields(log.Fields{
+								"newPhase": result.Phase,
+								"histIdx":  i,
+							}).Info("DEBUG_SESSION GetActiveProgress: corrected Phase from history")
 							break
 						}
 					}
+				} else {
+					log.Info("DEBUG_SESSION GetActiveProgress: no iteration history found")
 				}
 				if !corrected {
 					result.Phase = "running"
+					log.Info("DEBUG_SESSION GetActiveProgress: fallback to Phase=running")
 				}
 			}
+		} else {
+			// Also try with key (agent:cli:...) in case format differs
+			entry2, loaded2 := a.interactiveSubAgents.Load(key)
+			log.WithFields(log.Fields{
+				"key":    key,
+				"loaded": loaded2,
+			}).Info("DEBUG_SESSION GetActiveProgress: interactiveSubAgents lookup (by key)")
+			if loaded2 {
+				_ = entry2
+			}
+			// Debug: dump all keys in interactiveSubAgents
+			a.interactiveSubAgents.Range(func(k, v any) bool {
+				ia := v.(*interactiveAgent)
+				ia.mu.Lock()
+				r := ia.running
+				ia.mu.Unlock()
+				log.WithFields(log.Fields{
+					"storedKey": k,
+					"running":   r,
+				}).Info("DEBUG_SESSION GetActiveProgress: interactiveSubAgents entry")
+				return true
+			})
 		}
 	}
 
