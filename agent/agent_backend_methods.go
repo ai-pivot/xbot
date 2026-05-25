@@ -65,6 +65,41 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	snapshot := v.(*protocol.ProgressEvent)
 	// Shallow copy to avoid data race: agent may update snapshot fields concurrently.
 	result := *snapshot
+
+	// Agent sessions: correct Phase from authoritative running state.
+	// interactiveSubAgents stores entries keyed by interactiveKey (e.g. "cli:/cwd/role:inst"),
+	// which is chatID (no "agent:" prefix). Load with chatID directly.
+	// When running=true but Phase="done" (between iterations), correct the Phase
+	// so CLI correctly shows busy. Main sessions don't need this — their PhaseDone
+	// means the turn truly ended. Oneshot SubAgents don't need this either — their
+	// progress is embedded in the parent session's live engine state.
+	if ch == "agent" {
+		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded {
+			ia := entry.(*interactiveAgent)
+			ia.mu.Lock()
+			isRunning := ia.running
+			ia.mu.Unlock()
+			if isRunning && result.Phase == "done" {
+				// Agent still running between iterations. Restore last active Phase
+				// from iteration history.
+				corrected := false
+				if histPtr, ok := a.iterationHistories.Load(key); ok {
+					hist := *histPtr.(*[]protocol.ProgressEvent)
+					for i := len(hist) - 1; i >= 0; i-- {
+						if hist[i].Phase != "done" {
+							result.Phase = hist[i].Phase
+							corrected = true
+							break
+						}
+					}
+				}
+				if !corrected {
+					result.Phase = "running"
+				}
+			}
+		}
+	}
+
 	if histPtr, ok := a.iterationHistories.Load(key); ok {
 		hist := *histPtr.(*[]protocol.ProgressEvent)
 		if len(hist) > 0 {

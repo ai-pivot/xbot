@@ -586,8 +586,19 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		cmds = append(cmds, m.checkAndRestorePendingAskUser())
 		cmds = append(cmds, m.suLoadHistoryCmd())
 	} else {
-		// Local mode: restored state is authoritative, no RPC needed.
-		m.inputReady = true
+		// Local mode: for regular CLI sessions, restored state is authoritative.
+		// Agent sessions also need suLoadHistoryCmd (uses AgentSessionDumpFn
+		// for in-memory agent state, not DB RPC) to load progress + history.
+		if m.channelName == "agent" {
+			m.progress = nil
+			m.typing = false
+			m.lastProgressSeq = 0
+			m.inputReady = false
+			m.suLoading = true
+			cmds = append(cmds, m.suLoadHistoryCmd())
+		} else {
+			m.inputReady = true
+		}
 	}
 
 	return cmds
