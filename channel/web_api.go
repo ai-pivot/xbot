@@ -164,7 +164,7 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 	// data is still available).
 	var activeProgress *histProgress
 	if wc.callbacks.GetActiveProgress != nil {
-		if p := wc.callbacks.GetActiveProgress("web", senderID); p != nil && p.Phase != "done" {
+		if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil && p.Phase != "done" {
 			hp := &histProgress{
 				Phase:         p.Phase,
 				Iteration:     p.Iteration,
@@ -201,7 +201,7 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 
 	// Include current event stream seq so frontend can WS sync from this point
 	var lastSeq uint64
-	if es := wc.getEventStream(senderID); es != nil {
+	if es := wc.getEventStream(chatID); es != nil {
 		lastSeq = es.lastSeq()
 	}
 
@@ -283,7 +283,12 @@ func (wc *WebChannel) handleGetSettings(w http.ResponseWriter, r *http.Request, 
 		if err := rows.Scan(&k, &v); err != nil {
 			continue
 		}
-		settings[k] = v
+		// Mask sensitive values — never expose credentials to the browser
+		if isSensitiveSettingKey(k) {
+			settings[k] = "***"
+		} else {
+			settings[k] = v
+		}
 	}
 
 	writeJSON(w, http.StatusOK, settingsResponse{OK: true, Settings: settings})
@@ -478,9 +483,16 @@ func (wc *WebChannel) handleRunners(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, runnersListResponse{OK: false, Error: "list failed"})
 			return
 		}
+		// Mask sensitive fields before sending to frontend
+		maskedRunners := make([]tools.RunnerInfo, len(runners))
+		for i, r := range runners {
+			maskedRunners[i] = r
+			maskedRunners[i].Token = maskSensitive(r.Token)
+			maskedRunners[i].LLMAPIKey = maskSensitive(r.LLMAPIKey)
+		}
 		writeJSON(w, http.StatusOK, runnersListResponse{
 			OK:       true,
-			Runners:  runners,
+			Runners:  maskedRunners,
 			WsURL:    wc.config.PublicURL,
 			SenderID: senderID,
 		})
@@ -566,9 +578,8 @@ func (wc *WebChannel) handleRunnerByName(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Extract runner name from URL: /api/runners/{name}
-	name := strings.TrimPrefix(r.URL.Path, "/api/runners/")
-	name = strings.TrimSuffix(name, "/")
+	// Extract runner name from URL path parameter
+	name := r.PathValue("name")
 	// Reject paths that look like other endpoints
 	if name == "active" || name == "" {
 		jsonErrorResponse(w, http.StatusNotFound, "not found")
@@ -1166,9 +1177,11 @@ func (wc *WebChannel) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find tenant ID for this web user
+	// Use the currently active chatID (respects chat switching)
+	chatID := wc.getCurrentChatID(senderID)
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", senderID,
+		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
 	).Scan(&tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, searchResponse{OK: true, Results: nil})
@@ -1359,9 +1372,11 @@ func (wc *WebChannel) handleSessionMessages(w http.ResponseWriter, r *http.Reque
 
 // handleMainSessionMessages returns the main conversation history as session messages.
 func (wc *WebChannel) handleMainSessionMessages(w http.ResponseWriter, r *http.Request, senderID string) {
+	// Use the currently active chatID (respects chat switching)
+	chatID := wc.getCurrentChatID(senderID)
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", senderID,
+		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
 	).Scan(&tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}})
@@ -1370,25 +1385,28 @@ func (wc *WebChannel) handleMainSessionMessages(w http.ResponseWriter, r *http.R
 
 	limit := 50
 	var boundaryID sql.NullInt64
-	_ = wc.db.QueryRow(`
+	if err := wc.db.QueryRow(`
 			SELECT id FROM session_messages
 			WHERE tenant_id = ? AND role = 'user'
-			ORDER BY id DESC LIMIT 1 OFFSET ?`, tenantID, limit).Scan(&boundaryID)
+			ORDER BY id DESC LIMIT 1 OFFSET ?`, tenantID, limit).Scan(&boundaryID); err != nil && err != sql.ErrNoRows {
+		jsonErrorResponse(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	var rows *sql.Rows
 	if boundaryID.Valid {
 		rows, err = wc.db.Query(`
-				SELECT role, content FROM session_messages
-				WHERE tenant_id = ? AND id >= ? AND role IN ('user', 'assistant')
-				ORDER BY id ASC`, tenantID, boundaryID.Int64)
+			SELECT role, content FROM session_messages
+			WHERE tenant_id = ? AND id >= ? AND role IN ('user', 'assistant')
+			ORDER BY id ASC`, tenantID, boundaryID.Int64)
 	} else {
 		rows, err = wc.db.Query(`
-				SELECT role, content FROM session_messages
-				WHERE tenant_id = ? AND role IN ('user', 'assistant')
-				ORDER BY id ASC`, tenantID)
+			SELECT role, content FROM session_messages
+			WHERE tenant_id = ? AND role IN ('user', 'assistant')
+			ORDER BY id ASC`, tenantID)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}})
+		jsonErrorResponse(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	defer rows.Close()
@@ -1470,6 +1488,13 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership check: user can only switch to their own default chat (chatID == senderID)
+	// or to a chat they own in user_chats table.
+	if !wc.userOwnsChat(senderID, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+		return
+	}
+
 	wc.userCurrentChatMu.Lock()
 	wc.userCurrentChat[senderID] = chatID
 	wc.userCurrentChatMu.Unlock()
@@ -1497,6 +1522,12 @@ func (wc *WebChannel) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 
 	if wc.callbacks.ChatDelete == nil {
 		jsonErrorResponse(w, http.StatusNotImplemented, "chat deletion not available")
+		return
+	}
+
+	// Ownership check: user can only delete their own chats
+	if !wc.userOwnsChat(senderID, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 		return
 	}
 
@@ -1530,6 +1561,12 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 	chatID := r.PathValue("chatID")
 	if chatID == "" {
 		jsonErrorResponse(w, http.StatusBadRequest, "chat_id is required")
+		return
+	}
+
+	// Ownership check: user can only rename their own chats
+	if !wc.userOwnsChat(senderID, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 		return
 	}
 
@@ -1630,4 +1667,53 @@ func (wc *WebChannel) getCurrentChatID(senderID string) string {
 		return id
 	}
 	return senderID
+}
+
+// userOwnsChat checks whether senderID owns the given chatID.
+// A user owns their default chat (chatID == senderID) or a chat in user_chats.
+func (wc *WebChannel) userOwnsChat(senderID, chatID string) bool {
+	// Default chat: chatID == senderID
+	if chatID == senderID {
+		return true
+	}
+	// Check user_chats table for ownership
+	if wc.db != nil {
+		var count int
+		err := wc.db.QueryRow(
+			"SELECT COUNT(*) FROM user_chats WHERE channel = 'web' AND sender_id = ? AND chat_id = ?",
+			senderID, chatID,
+		).Scan(&count)
+		if err == nil && count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// maskSensitive masks a sensitive string for display, showing only first 4 chars.
+// Returns "***" for empty strings.
+func maskSensitive(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:4] + "***"
+}
+
+// sensitiveSettingKeys caches the set of keys marked Sensitive in AllSettingDefs.
+var sensitiveSettingKeys = func() map[string]bool {
+	m := make(map[string]bool)
+	for _, def := range AllSettingDefs {
+		if def.Sensitive {
+			m[def.Key] = true
+		}
+	}
+	return m
+}()
+
+// isSensitiveSettingKey returns true if the key is marked sensitive in setting definitions.
+func isSensitiveSettingKey(key string) bool {
+	return sensitiveSettingKeys[key]
 }

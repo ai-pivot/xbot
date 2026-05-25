@@ -116,7 +116,12 @@ func newRunState(cfg RunConfig) *runState {
 		}
 	}
 
-	autoNotify := cfg.ProgressNotifier != nil
+	// autoNotify gates progress dispatch (notifyProgress, progressLines updates).
+	// Either ProgressNotifier (legacy text-based) or ProgressEventHandler (structured)
+	// is sufficient to enable progress events. This decouples the two dispatch paths:
+	// ProgressNotifier sends text lines to parent agent; ProgressEventHandler sends
+	// structured events to channels. Neither should gate the other.
+	autoNotify := cfg.ProgressNotifier != nil || cfg.ProgressEventHandler != nil
 	batchProgressByIteration := cfg.Channel == "web"
 
 	return &runState{
@@ -324,7 +329,9 @@ func (s *runState) notifyProgress(extra string) {
 	if s.structuredProgress != nil {
 		thinking = s.structuredProgress.ThinkingContent
 	}
-	s.cfg.ProgressNotifier([]string{buf.String()}, thinking)
+	if s.cfg.ProgressNotifier != nil {
+		s.cfg.ProgressNotifier([]string{buf.String()}, thinking)
+	}
 	if s.cfg.ProgressEventHandler != nil && s.structuredProgress != nil {
 		s.progressMu.Lock()
 		snapshot := make([]string, len(s.progressLines))
@@ -449,7 +456,27 @@ func (s *runState) updateTokenUsage() {
 // (from the compression LLM call's API-returned prompt_tokens). After
 // ResetAfterCompress(), the tracker has zero values — this ensures the CLI
 // context bar shows the reduced token count immediately.
+//
+// It also updates the token tracker so maybeCompress can still evaluate
+// the compressed count on the next iteration. Without this, ResetAfterCompress
+// zeros the tracker, GetPromptTokens returns "no_data", and maybeCompress
+// skips entirely — even when the compressed count is still above the threshold.
+// The CLI bar shows the compressed count past the threshold marker, but
+// compression never re-triggers until the next real LLM call provides data.
+//
+// hadLLMCall stays false so SaveState skips (buildOutput uses the tracker
+// value for LastPromptTokens, but SaveState's guard prevents overwriting
+// the DB with a non-API-round value). The engine already calls
+// SaveTokenState(compressedCount, 0) directly after compression.
 func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
+	// Update token tracker so maybeCompress can evaluate post-compress state.
+	// Do NOT set hadLLMCall — SaveState must skip so buildOutput's SaveState
+	// doesn't overwrite the DB with a non-API-round value. The engine already
+	// calls SaveTokenState(compressedCount, 0) directly after compression,
+	// so the DB is already correct.
+	if tokenCount > 0 && s.tokenTracker != nil {
+		s.tokenTracker.SetAfterCompress(tokenCount)
+	}
 	if s.structuredProgress == nil {
 		return
 	}

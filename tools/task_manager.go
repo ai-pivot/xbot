@@ -573,6 +573,56 @@ func (c *CronFired) SessionKey() string { return c.Key }
 // SenderID implements BgNotification.
 func (c *CronFired) SenderID() string { return c.Sid }
 
+// ---------------------------------------------------------------------------
+// AsyncMessageNotification — unified type for all async message injection.
+// Peer messages, webhook events, and other external injections flow through
+// this type via the same bgRunPending → drain pipeline as bg tasks and cron.
+//
+// Busy: injected as synthetic tool call/result pair in Run loop.
+// Idle: injected as user message via injectInbound.
+// ---------------------------------------------------------------------------
+
+// AsyncSource constants identify the origin of an async message.
+const (
+	AsyncSourcePeer   = "peer_message"
+	AsyncSourceEvent  = "event_trigger"
+	AsyncSourceSystem = "system"
+)
+
+// AsyncMessageNotification is a BgNotification that wraps an arbitrary async message.
+// Implements BgNotification so it flows through bgNotifyLoop → bgRunPending → drain.
+type AsyncMessageNotification struct {
+	Key     string // channel:chatID for routing
+	Sid     string // sender ID (user who owns the session, or resolved sender)
+	Content string // message content
+	Source  string // one of AsyncSource* constants
+}
+
+// SessionKey implements BgNotification.
+func (n *AsyncMessageNotification) SessionKey() string { return n.Key }
+
+// SenderID implements BgNotification.
+func (n *AsyncMessageNotification) SenderID() string { return n.Sid }
+
+// SendAsyncMessage sends an async message notification through BgTaskManager.NotifyCh.
+// Safe to call from any goroutine. Drops silently if channel is full or closed.
+func (m *BackgroundTaskManager) SendAsyncMessage(n *AsyncMessageNotification) {
+	if m.NotifyCh == nil {
+		return
+	}
+	defer func() {
+		recover() // send on closed channel panics — safe to ignore during shutdown
+	}()
+	select {
+	case m.NotifyCh <- n:
+	default:
+		log.WithFields(log.Fields{
+			"source": n.Source,
+			"key":    n.Key,
+		}).Warn("Async message notify channel full, dropping notification")
+	}
+}
+
 // SendSubAgentNotify sends a subagent notification through BgTaskManager.NotifyCh.
 // Safe to call from any goroutine. Drops silently if channel is full or closed.
 func (m *BackgroundTaskManager) SendSubAgentNotify(n *SubAgentBgNotify) {

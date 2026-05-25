@@ -316,7 +316,7 @@ func (wc *WebChannel) Start() error {
 	// Multi-runner API
 	mux.HandleFunc("/api/runners", wc.authMiddleware(wc.handleRunners))
 	mux.HandleFunc("/api/runners/active", wc.authMiddleware(wc.handleRunnerActive))
-	mux.HandleFunc("/api/runners/", wc.authMiddleware(wc.handleRunnerByName))
+	mux.HandleFunc("/api/runners/{name}", wc.authMiddleware(wc.handleRunnerByName))
 
 	// Market API
 	mux.HandleFunc("/api/market", wc.authMiddleware(wc.handleMarket))
@@ -434,7 +434,8 @@ func (wc *WebChannel) Send(msg OutboundMsg) (string, error) {
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
 		SessionReset:    msg.Metadata != nil && msg.Metadata["session_reset"] == "true",
-		Metadata:        msg.Metadata,
+		// Only forward frontend-relevant metadata keys — avoid leaking internal
+		// keys like feishu_user_id, request_id, cancelled, etc.
 	}
 
 	targetClientID := msg.ChatID
@@ -631,6 +632,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isCLI := r.URL.Query().Get("client_type") == "cli"
 	client := &Client{
 		conn:   conn,
 		sendCh: make(chan protocol.WSMessage, webSendChBufSize),
@@ -638,6 +640,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		hub:    wc.hub,
 		userID: senderID,
 		id:     strings.ReplaceAll(uuid.New().String(), "-", ""),
+		isCLI:  isCLI,
 	}
 
 	wc.hub.addClient(client.id, client)
@@ -646,7 +649,6 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	// CLI clients skip this — they subscribe to their business chatID (absolute path)
 	// via an explicit "subscribe" message after connection. Subscribing CLI clients to
 	// senderID ("admin") causes cross-session widget pushes to overwrite other windows.
-	isCLI := r.URL.Query().Get("client_type") == "cli"
 	if !isCLI {
 		chatID := senderID // p2p mode: chatID == senderID
 		wc.hub.subscribe(client.id, chatID)
@@ -702,7 +704,9 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 
 // replayMissedEvents replays buffered events with seq > client's last_seq.
 // Waits up to 2s for the client's sync message, then replays.
-func (wc *WebChannel) replayMissedEvents(client *Client, chatID string) {
+func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
+	// Resolve the user's currently active chatID (respects chat switching)
+	chatID := wc.getCurrentChatID(senderID)
 	// The client sends sync immediately after WS connect.
 	// If no sync arrives within 2s, send current state anyway (backward compat).
 	syncCh := make(chan uint64, 1)
@@ -890,7 +894,9 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			msgChatID := chatID
 			msgSenderID := c.userID
 			msgSenderName := username
-			if msg.Channel != "" && msg.ChatID != "" {
+			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
+				// Only CLI relay connections may override channel/chatID/sender.
+				// Web browser clients must use their authenticated identity.
 				msgChannel = msg.Channel
 				msgChatID = msg.ChatID
 				if msg.SenderID != "" {
@@ -950,8 +956,16 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			if err := json.Unmarshal(raw, &subMsg); err != nil || subMsg.ChatID == "" {
 				continue
 			}
+			// Authorization: only allow subscribing to own chatID.
+			// Web users can only subscribe to their senderID; CLI users
+			// (identified by query param client_type=cli) can subscribe
+			// to their business chatID (workspace path).
+			if !c.isCLI && subMsg.ChatID != c.userID {
+				log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
+				continue
+			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
-			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: CLI client subscribed to chatID")
+			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: client subscribed to chatID")
 		case protocol.MsgTypeTUIControlResp:
 			// Remote CLI TUI control response — route to pending request handler
 			if msg.TUIControl != nil && msg.ID != "" && wc.hub.tuiRespFn != nil {
@@ -1018,7 +1032,9 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			msgSenderName := username
 			msgChatID := chatID
 			msgChatType := "p2p"
-			if msg.Channel != "" && msg.ChatID != "" {
+			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
+				// Only CLI relay connections may override channel/chatID/sender.
+				// Web browser clients must use their authenticated identity.
 				msgChannel = msg.Channel
 				msgChatID = msg.ChatID
 				if msg.SenderID != "" {

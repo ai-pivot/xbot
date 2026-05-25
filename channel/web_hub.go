@@ -142,7 +142,7 @@ func (h *Hub) stopAll() {
 
 // broadcastToAll sends a message to every connected client.
 // Used for global events like session state changes.
-func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
+func (h *Hub) broadcastToAll(msg protocol.WSMessage) { //nolint:unused
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
 	for _, c := range h.conns {
@@ -154,6 +154,26 @@ func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
 		case c.sendCh <- msg:
 		default:
 			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToAll: sendCh full, skipping")
+		}
+	}
+}
+
+// broadcastToCLI sends a message only to CLI-type clients.
+// Used for session state events that are only relevant to remote CLI sessions.
+func (h *Hub) broadcastToCLI(msg protocol.WSMessage) {
+	h.mu.RLock()
+	var clients []*Client
+	for _, c := range h.conns {
+		if c.isCLI {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		select {
+		case c.sendCh <- msg:
+		default:
+			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToCLI: sendCh full, skipping")
 		}
 	}
 }
@@ -172,6 +192,7 @@ type Client struct {
 	userID    string
 	id        string                      // unique client ID (UUID), generated at connection time
 	syncCh    atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
+	isCLI     bool                        // true if client_type=cli (runner token auth)
 }
 
 // ---------------------------------------------------------------------------

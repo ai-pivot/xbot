@@ -129,7 +129,7 @@ func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.Progres
 
 // SendSessionState sends a session state change event to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendSessionState(ev protocol.SessionEvent) {
-	c.hub.broadcastToAll(cliMsg.buildSessionStateMsg(ev))
+	c.hub.broadcastToCLI(cliMsg.buildSessionStateMsg(ev))
 }
 
 // SendStreamContent sends streaming LLM content to remote CLI clients via the Hub.

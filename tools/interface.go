@@ -796,6 +796,9 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	// CreateChatTool — creates agent private chats and moderated group chats.
 	r.RegisterCore(&CreateChatTool{})
 	r.RegisterCore(&SendMessageTool{})
+	r.RegisterCore(&JoinGroupTool{})
+	r.RegisterCore(&LeaveGroupTool{})
+	r.RegisterCore(&ListGroupMembersTool{})
 	r.RegisterCore(&SkillTool{})
 	r.RegisterCore(&TaskStatusTool{})
 	r.RegisterCore(&TaskKillTool{})

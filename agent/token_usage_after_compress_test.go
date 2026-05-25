@@ -116,3 +116,87 @@ func assertTokenUsage(t *testing.T, state *runState, stage string, expected int6
 		t.Errorf("%s: TokenUsage.PromptTokens = %d, want %d — %s", stage, got, expected, msg)
 	}
 }
+
+// TestSetTokenUsageAfterCompress_UpdatesTracker verifies that after compression,
+// the token tracker is also updated so that maybeCompress can still evaluate
+// the compressed count. Without this fix, ResetAfterCompress zeros the tracker,
+// GetPromptTokens returns "no_data", and maybeCompress skips — even when the
+// compressed count is still above the threshold (Bug 2).
+func TestSetTokenUsageAfterCompress_UpdatesTracker(t *testing.T) {
+	tracker := NewTokenTracker(170000, 5000)
+
+	state := &runState{
+		cfg: RunConfig{
+			MaxOutputTokens: 4096,
+		},
+		messages: []llm.ChatMessage{
+			llm.NewSystemMessage("system"),
+			llm.NewUserMessage("hello"),
+		},
+		tokenTracker:       tracker,
+		structuredProgress: &StructuredProgress{},
+		autoNotify:         false,
+	}
+
+	// Step 1: Compression resets the tracker
+	tracker.ResetAfterCompress()
+
+	// Before fix: tracker has 0 tokens, source = "no_data"
+	val, source := tracker.GetPromptTokens()
+	if val != 0 || source != "no_data" {
+		t.Fatalf("after ResetAfterCompress: got (%d, %q), want (0, \"no_data\")", val, source)
+	}
+
+	// Step 2: setTokenUsageAfterCompress updates both structuredProgress AND tracker
+	compressedTokens := int64(60000)
+	state.setTokenUsageAfterCompress(compressedTokens)
+
+	// Tracker should now have the compressed count, source = "restored" (not "api")
+	val, source = tracker.GetPromptTokens()
+	if val != compressedTokens {
+		t.Errorf("tracker.PromptTokens = %d, want %d", val, compressedTokens)
+	}
+	if source == "no_data" {
+		t.Errorf("tracker source = %q, should NOT be \"no_data\" after setTokenUsageAfterCompress", source)
+	}
+	if source != "restored" {
+		t.Errorf("tracker source = %q, want \"restored\" (hadLLMCall must stay false)", source)
+	}
+
+	// hadLLMCall must be false so SaveState skips (prevents DB overwrite of
+	// the correct compressed value that was already saved by SaveTokenState)
+	if tracker.HadLLMCall() {
+		t.Error("tracker.HadLLMCall() = true, want false (SaveState must skip)")
+	}
+
+	// Step 3: Subsequent LLM call overwrites tracker with real API value
+	realTokens := int64(65000)
+	tracker.RecordLLMCall(realTokens, 800)
+	val, source = tracker.GetPromptTokens()
+	if val != realTokens {
+		t.Errorf("after RecordLLMCall: tracker.PromptTokens = %d, want %d", val, realTokens)
+	}
+	if source != "api" {
+		t.Errorf("after RecordLLMCall: source = %q, want \"api\"", source)
+	}
+
+	// Step 4: SaveState should now write (hadLLMCall=true)
+	saved := false
+	tracker.SaveState(func(p, c int64) { saved = true })
+	if !saved {
+		t.Error("SaveState should write after RecordLLMCall")
+	}
+
+	// Step 5: But SaveState should have SKIPPED before RecordLLMCall
+	// Use SetAfterCompress (the same API the engine uses) to verify
+	// SaveState skips when hadLLMCall=false after compression.
+	tracker2 := NewTokenTracker(170000, 5000)
+	tracker2.ResetAfterCompress()
+	tracker2.SetAfterCompress(compressedTokens) // same as setTokenUsageAfterCompress does
+	// hadLLMCall is still false
+	saved2 := false
+	tracker2.SaveState(func(p, c int64) { saved2 = true })
+	if saved2 {
+		t.Error("SaveState should skip when hadLLMCall=false (after compression, before next LLM call)")
+	}
+}

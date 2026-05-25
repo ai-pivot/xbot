@@ -49,6 +49,37 @@ func TestParseMentions(t *testing.T) {
 	}
 }
 
+func TestParseMentionsBoundaryCases(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		// Bare "agent:" without slash — should be rejected
+		{"@agent: what", nil},
+		// "agent:role" without instance slash — should be rejected
+		{"@agent:reviewer what", nil},
+		// Trailing colon
+		{"@agent:", nil},
+		// At end of string, valid format
+		{"text @agent:role/r1", []string{"agent:role/r1"}},
+		// Multiple valid + invalid mixed
+		{"@agent:reviewer/r1 @agent:noslash @agent:tester/t2", []string{"agent:reviewer/r1", "agent:tester/t2"}},
+	}
+
+	for _, tt := range tests {
+		result := parseMentions(tt.input)
+		if len(result) != len(tt.expected) {
+			t.Errorf("parseMentions(%q): expected %v, got %v", tt.input, tt.expected, result)
+			continue
+		}
+		for i, addr := range result {
+			if addr != tt.expected[i] {
+				t.Errorf("parseMentions(%q)[%d]: expected %q, got %q", tt.input, i, tt.expected[i], addr)
+			}
+		}
+	}
+}
+
 func TestParseAgentAddress(t *testing.T) {
 	tests := []struct {
 		addr     string

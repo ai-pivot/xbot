@@ -56,6 +56,9 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 }
 
 // GetActiveProgress returns the latest progress snapshot for the given channel:chatID.
+// For agent sessions, corrects Phase from the authoritative running state in
+// interactiveSubAgents when the agent is between iterations (Phase="done" but
+// still running). This unifies the busy/idle logic across all session types.
 func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	key := ch + ":" + chatID
 	v, ok := a.lastProgressSnapshot.Load(key)
@@ -65,6 +68,36 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	snapshot := v.(*protocol.ProgressEvent)
 	// Shallow copy to avoid data race: agent may update snapshot fields concurrently.
 	result := *snapshot
+
+	// Agent sessions: correct Phase from authoritative running state.
+	// interactiveSubAgents stores entries keyed by interactiveKey (no "agent:" prefix),
+	// so we look up with chatID directly. When running=true but Phase="done"
+	// (between iterations), correct Phase from iteration history.
+	if ch == "agent" {
+		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded {
+			ia := entry.(*interactiveAgent)
+			ia.mu.Lock()
+			isRunning := ia.running
+			ia.mu.Unlock()
+			if isRunning && result.Phase == "done" {
+				corrected := false
+				if histPtr, ok := a.iterationHistories.Load(key); ok {
+					hist := *histPtr.(*[]protocol.ProgressEvent)
+					for i := len(hist) - 1; i >= 0; i-- {
+						if hist[i].Phase != "done" {
+							result.Phase = hist[i].Phase
+							corrected = true
+							break
+						}
+					}
+				}
+				if !corrected {
+					result.Phase = "running"
+				}
+			}
+		}
+	}
+
 	if histPtr, ok := a.iterationHistories.Load(key); ok {
 		hist := *histPtr.(*[]protocol.ProgressEvent)
 		if len(hist) > 0 {

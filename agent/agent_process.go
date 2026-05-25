@@ -141,6 +141,8 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 			a.processSubAgentBgNotification(n)
 		case *tools.CronFired:
 			a.processCronFiredNotification(n)
+		case *tools.AsyncMessageNotification:
+			a.processAsyncMessageNotification(n)
 		}
 	}
 }

@@ -2580,24 +2580,8 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 // 并设置 EventSource/EventTrigger 元数据。
 // 同时通过 injectCLIUserMessage 通知 TUI 显示。
 func (a *Agent) injectEventMessage(msg event.Message) {
-	// Notify TUI — event messages should be visible in the UI
-	a.injectCLIUserMessage(msg.Channel, msg.ChatID, fmt.Sprintf("📡 [Event] %s", msg.Content))
-
-	inbound := bus.InboundMessage{
-		Channel:      msg.Channel,
-		SenderID:     msg.SenderID,
-		ChatID:       msg.ChatID,
-		Content:      msg.Content,
-		Time:         time.Now(),
-		RequestID:    log.NewRequestID(),
-		EventSource:  msg.EventSource,
-		EventTrigger: msg.EventTrigger,
-	}
-	select {
-	case a.bus.Inbound <- inbound:
-	case <-a.agentCtx.Done():
-		log.WithFields(log.Fields{"channel": msg.Channel, "chat_id": msg.ChatID}).Warn("injectEventMessage: agent context done, dropping message")
-	}
+	// Route through unified async message pipeline
+	a.injectAsyncMessage(msg.Channel, msg.ChatID, msg.SenderID, msg.Content, tools.AsyncSourceEvent)
 }
 
 // bgNotifyLoop routes background notifications from BgTaskManager.NotifyCh.
@@ -2725,6 +2709,24 @@ func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
 	a.injectBgUserMessage(channelName, chatID, n.SenderID(), content)
 }
 
+// processAsyncMessageNotification handles an async message notification when
+// the target session is idle (no active Run). Injects as user message with
+// TUI notification and correct senderID for LLM subscription resolution.
+func (a *Agent) processAsyncMessageNotification(n *tools.AsyncMessageNotification) {
+	parts := strings.SplitN(n.SessionKey(), ":", 2)
+	if len(parts) != 2 {
+		log.WithField("session_key", n.SessionKey()).Warn("Async message notification: invalid session key")
+		return
+	}
+	channelName, chatID := parts[0], parts[1]
+	log.WithFields(log.Fields{
+		"source":  n.Source,
+		"channel": channelName,
+		"chat_id": chatID,
+	}).Info("Async message notification: injecting as user message (idle)")
+	a.injectBgUserMessage(channelName, chatID, n.SenderID(), n.Content)
+}
+
 // injectBgUserMessage is the unified entry point for injecting background notification
 // content as a user message. It reads senderID from the notification to preserve
 // correct sender context (workspace, sandbox, memory, LLM config).
@@ -2745,6 +2747,60 @@ func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content strin
 // RunSubAgent 实现 tools.SubAgentManager 接口
 // 创建一个独立的子 Agent 循环来执行任务，子 Agent 拥有自己的工具集但不能再创建子 Agent
 
+// injectAsyncMessage is the UNIFIED entry point for all async message injection.
+// Used by peer messages, webhook events, and any other external source.
+// Routes through bgRunPending → drain pipeline, same as bg task completions.
+//
+// Busy: injected as synthetic tool call/result pair in Run loop (immediate, non-blocking).
+// Idle: injected as user message via injectInbound (triggers new turn).
+//
+// Always notifies TUI for visibility.
+func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source string) string {
+	sessionKey := channel + ":" + chatID
+
+	// Resolve real senderID if not provided
+	if senderID == "" {
+		senderID = a.resolveSenderForSession(channel, chatID)
+	}
+
+	// Route through the same bgRunPending → drain pipeline as bg tasks.
+	// This guarantees:
+	// - Busy: injected as tool result on Run loop's goroutine (no data race)
+	// - Idle: injected as user message with correct TUI notification
+	a.bgTaskMgr.SendAsyncMessage(&tools.AsyncMessageNotification{
+		Key:     sessionKey,
+		Sid:     senderID,
+		Content: content,
+		Source:  source,
+	})
+
+	return fmt.Sprintf("✅ queued for %s", sessionKey)
+}
+
+// resolveSenderForSession looks up the real user ID (senderID) that owns a session.
+// This is needed by injectPeerMessage to use the correct LLM subscription when
+// injecting a user message into an idle target session.
+// Returns "admin" as fallback for CLI sessions when DB lookup fails.
+func (a *Agent) resolveSenderForSession(channel, chatID string) string {
+	if a.multiSession != nil {
+		if db := a.multiSession.DB(); db != nil {
+			var senderID string
+			err := db.Conn().QueryRow(
+				"SELECT sender_id FROM user_chats WHERE channel = ? AND chat_id = ? LIMIT 1",
+				channel, chatID,
+			).Scan(&senderID)
+			if err == nil && senderID != "" {
+				return senderID
+			}
+		}
+	}
+	// Fallback: for CLI channels, the default senderID is "admin"
+	if channel == "cli" {
+		return "admin"
+	}
+	return channel
+}
+
 // injectPeerMessage sends a message to another CLI session (peer-to-peer).
 // If the target is busy, injects as a fake tool result in the current iteration.
 // If idle, pushes as a user message to start a new turn.
@@ -2752,42 +2808,10 @@ func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content strin
 func (a *Agent) injectPeerMessage(targetSessionKey, content string) string {
 	parts := strings.SplitN(targetSessionKey, ":", 2)
 	if len(parts) != 2 {
-		return fmt.Sprintf("❌ 无效的 peer 会话地址: %s", targetSessionKey)
+		return fmt.Sprintf("❌ invalid peer session address: %s", targetSessionKey)
 	}
 	ch, chatID := parts[0], parts[1]
-
-	// Check if target is busy (has an active Run)
-	cancelKey := targetSessionKey
-	_, busy := a.chatCancelCh.Load(cancelKey)
-
-	if busy {
-		// Target is busy — inject as a fake tool result message
-		msg := llm.NewToolMessage("SendMessage", cancelKey+":peer_msg", "{}", content)
-		sess, err := a.multiSession.GetOrCreateSession(ch, chatID)
-		if err == nil {
-			if err := sess.AddMessage(msg); err == nil {
-				log.WithFields(log.Fields{
-					"from": cancelKey,
-					"to":   targetSessionKey,
-					"busy": true,
-				}).Info("Peer message injected as tool result (target busy)")
-				return fmt.Sprintf("✅ 消息已投递到 %s（对方正在忙碌，消息作为工具结果注入当前迭代）", parts[1])
-			}
-		}
-		return fmt.Sprintf("⚠️ 消息已发送但可能未到达（目标 agent 正在运行中）: %s", parts[1])
-	}
-
-	// Target is idle — push as user message (triggers a new Run)
-	a.injectBgUserMessage(ch, chatID, "peer", fmt.Sprintf(
-		"📨 **来自同伴的消息** (session: %s)\n\n%s",
-		parts[1], content,
-	))
-	log.WithFields(log.Fields{
-		"from": cancelKey,
-		"to":   targetSessionKey,
-		"busy": false,
-	}).Info("Peer message delivered as user message (target idle)")
-	return fmt.Sprintf("✅ 消息已投递到 %s（对方空闲，消息将触发新的对话轮次）", parts[1])
+	return a.injectAsyncMessage(ch, chatID, "", content, tools.AsyncSourcePeer)
 }
 
 // allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）

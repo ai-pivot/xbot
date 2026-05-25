@@ -1331,10 +1331,17 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	m.viewport.GotoBottom()
 	log.WithField("count", len(newMessages)).Info("History reloaded after compression")
 
-	// Refresh token state so the context bar updates immediately after compression.
-	// Without this, the bar stays at the pre-compression (high) value or nil
-	// until the next progress event arrives.
-	m.refreshTokenStateAfterReload()
+	// NOTE: do NOT call refreshTokenStateAfterReload() here.
+	// The HistoryCompacted handler in handleProgressMsg already calls
+	// cacheTokenUsage(m.progress.TokenUsage) synchronously, which sets
+	// the compressed token count from the engine's progress event.
+	// refreshTokenStateAfterReload was an async DB read that could race:
+	// it reads the compressed value (e.g. 20k) from DB and sends
+	// cliTokenRefreshMsg, which can arrive after post-compression LLM
+	// iterations have pushed the count back up (e.g. 50k). The guard
+	// (msg.tokenPrompt > m.lastTokenUsage.PromptTokens) should reject
+	// lower values, but the async nature introduces unnecessary risk
+	// with no benefit — the synchronous cacheTokenUsage already handles it.
 }
 
 // handleSplashTick processes splash animation frames.
@@ -1954,34 +1961,4 @@ func (m *cliModel) handleShiftDown() (tea.Model, []tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
-}
-
-// refreshTokenStateAfterReload fetches the latest token state via RPC
-// after a history reload (compression). Pushes the result through asyncCh
-// so the context bar updates immediately without waiting for the next
-// progress event.
-func (m *cliModel) refreshTokenStateAfterReload() {
-	tokenFn := m.channel.config.GetTokenStateFn
-	if tokenFn == nil {
-		return
-	}
-	ch := m.channel
-	chatID := m.chatID
-	channelName := m.channelName
-	go func() {
-		prompt, completion := tokenFn(channelName, chatID)
-		if prompt <= 0 && completion <= 0 {
-			return
-		}
-		msg := cliTokenRefreshMsg{
-			channelName:     channelName,
-			chatID:          chatID,
-			tokenPrompt:     prompt,
-			tokenCompletion: completion,
-		}
-		select {
-		case ch.asyncCh <- msg:
-		default:
-		}
-	}()
 }

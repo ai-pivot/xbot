@@ -467,10 +467,10 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   useEffect(() => {
     const currentCount = messages.length
     if (currentCount <= prevMsgCountRef2.current) {
-      prevMessageCountRef.current = currentCount
+      prevMsgCountRef2.current = currentCount
       return
     }
-    prevMessageCountRef.current = currentCount
+    prevMsgCountRef2.current = currentCount
     // Only notify for new assistant messages (not user messages or system messages)
     const lastMsg = messages[messages.length - 1]
     if (lastMsg && lastMsg.type === 'assistant' && !loading) {
@@ -681,21 +681,30 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
               body: JSON.stringify({ label: `Chat ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}` }),
             })
             const data = await resp.json()
-            if (data.ok && data.chat_id) {
-              await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
-              setCurrentChatID(data.chat_id)
-              setMessages([])
-              resetProgress()
-              setTodos([])
-              setSubAgents([])
-              setLoading(false)
-              setContextInfo(null)
-              streamingContentRef.current = ''
-              reasoningRef.current = ''
+            if (!data.ok || !data.chat_id) {
+              showToast(data.error || t('regenerateFailed'), 'error')
+              return
             }
-          } catch (err) { console.warn('[ChatPage] /new createChat failed:', err) }
+            const switchResp = await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
+            if (!switchResp.ok) {
+              showToast(t('regenerateFailed'), 'error')
+              return
+            }
+            // Only clear state after backend confirms switch
+            setCurrentChatID(data.chat_id)
+            setMessages([])
+            resetProgress()
+            setTodos([])
+            setSubAgents([])
+            setLoading(false)
+            setContextInfo(null)
+            streamingContentRef.current = ''
+            reasoningRef.current = ''
+          } catch (err) {
+            console.warn('[ChatPage] /new createChat failed:', err)
+            showToast(t('regenerateFailed'), 'error')
+          }
         })()
-        showToast(t('newConversation'), 'info')
         return
       }
       if (cmd === '/help') {
@@ -807,7 +816,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     setLoading(true)
     setAutoScroll(true); autoScrollRef.current = true
     // Resend the user message
-    wsSend({ type: 'message', content: userContent })
+    wsSend({ type: 'message', content: userContent, chat_id: currentChatIDRef.current || undefined })
   }, [messages, wsSend, resetProgress, showToast])
 
   // --- Reply helpers ---

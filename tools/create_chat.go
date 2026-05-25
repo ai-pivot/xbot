@@ -196,15 +196,18 @@ func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatPar
 			continue
 		}
 		if ctx.RegisterAgentChannel != nil {
+			// Capture loop-local copies for the closure. The closure must not
+			// mutate the shared ctx — it creates a shallow copy and swaps only
+			// the context field, avoiding data races when multiple sendFns run
+			// concurrently (multiple @mentions in the same group).
 			sendFn := func(sendCtx context.Context, msg string) (string, error) {
-				// Replace ctx.Ctx with the AgentChannel's long-lived context.
+				// Shallow-copy ctx to avoid mutating the original.
 				// The original ctx.Ctx (from tool execution) is cancelled when
 				// the tool returns, but sendFn may be called much later via
 				// SendMessage → Dispatcher → AgentChannel.
-				oldCtx := ctx.Ctx
-				ctx.Ctx = sendCtx
-				defer func() { ctx.Ctx = oldCtx }()
-				return im.SendInteractive(ctx, msg, role, roleDef.SystemPrompt, roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
+				localCtx := *ctx
+				localCtx.Ctx = sendCtx
+				return im.SendInteractive(&localCtx, msg, role, roleDef.SystemPrompt, roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
 			}
 			if regErr := ctx.RegisterAgentChannel(memberAddr, sendFn); regErr != nil {
 				spawnWarnings = append(spawnWarnings, fmt.Sprintf("[WARN] register %s: %v", memberAddr, regErr))

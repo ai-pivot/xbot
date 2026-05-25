@@ -371,6 +371,10 @@ func (wc *WebChannel) validateSession(r *http.Request) *sessionInfo {
 // authMiddleware wraps a handler with session validation
 func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Limit request body size for all non-GET requests to prevent memory abuse
+		if r.Method != http.MethodGet {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+		}
 		si := wc.validateSession(r)
 		if si == nil {
 			jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")

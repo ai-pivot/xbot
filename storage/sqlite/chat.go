@@ -260,3 +260,20 @@ func truncate(s string, maxRunes int) string {
 	}
 	return string(runes[:maxRunes-3]) + "..."
 }
+
+// GetSenderForChat looks up the sender_id (user) that owns a given chat session.
+// Returns ("", nil) if no owner found (session not in DB).
+func (s *ChatService) GetSenderForChat(channel, chatID string) (string, error) {
+	var senderID string
+	err := s.conn.QueryRow(
+		"SELECT sender_id FROM user_chats WHERE channel = ? AND chat_id = ? LIMIT 1",
+		channel, chatID,
+	).Scan(&senderID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("get sender for chat: %w", err)
+	}
+	return senderID, nil
+}

@@ -97,10 +97,13 @@ type RunConfig struct {
 	// 主 Agent 场景下为空（与 SessionKey 相同）。
 	RootSessionKey string
 
-	// ProgressNotifier 进度通知回调（nil = 不通知）
+	// ProgressNotifier 进度通知回调（text-based, 用于通知父 Agent）。
+	// autoNotify 由 ProgressNotifier 或 ProgressEventHandler 的存在决定，
+	// 两者独立：ProgressNotifier 不再是 ProgressEventHandler 的门控条件。
 	ProgressNotifier func(lines []string, thinking string)
 
-	// ProgressEventHandler 结构化进度事件回调（nil = 不发送）
+	// ProgressEventHandler 结构化进度事件回调（用于推送到 CLI/Web 等通道）。
+	// 设置此字段即可启用 autoNotify，无需同时设置 ProgressNotifier。
 	ProgressEventHandler func(event *ProgressEvent)
 
 	// ContextManager 上下文管理器（nil = 不压缩）

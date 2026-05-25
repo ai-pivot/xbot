@@ -30,11 +30,34 @@ func (t *TokenTracker) RecordLLMCall(prompt, completion int64) {
 // All fields are zeroed — the tracker returns "no_data" until the next LLM API call
 // provides real token counts. This prevents infinite compression loops caused by
 // inaccurate local estimates being treated as authoritative.
+//
+// IMPORTANT: After calling ResetAfterCompress, callers must call SetAfterCompress
+// with the actual compressed token count (from the compression LLM call's API
+// response). Without this, GetPromptTokens returns "no_data" and maybeCompress
+// skips entirely on the next iteration — even when the compressed count is still
+// above the compression threshold.
 func (t *TokenTracker) ResetAfterCompress() {
 	t.promptTokens = 0
 	t.completionTokens = 0
 	t.hadLLMCall = false
 	t.restoredFromDB = false
+}
+
+// SetAfterCompress sets the prompt token count after compression, while keeping
+// hadLLMCall=false so SaveState skips. This is the compressed count from the
+// compression LLM call's API-returned prompt_tokens — NOT a local estimate.
+//
+// After this call:
+//   - GetPromptTokens() returns (tokenCount, "restored") — passes the "no_data"
+//     guard in maybeCompress while staying subject to the 5-iteration cooldown.
+//   - SaveState() still skips (hadLLMCall=false) — the engine calls
+//     SaveTokenState directly after compression, so the DB is already correct.
+func (t *TokenTracker) SetAfterCompress(tokenCount int64) {
+	t.promptTokens = tokenCount
+	t.completionTokens = 0
+	// Do NOT set hadLLMCall. This keeps SaveState() skipping, which is correct
+	// because the engine already called SaveTokenState(compressedCount, 0)
+	// directly after the compression LLM call completed.
 }
 
 // MarkRestoredFromDB marks that token counts were restored from DB/session.

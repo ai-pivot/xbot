@@ -828,6 +828,9 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	// Pre-build Letta memory extras (involves GetOrCreateSession + LettaMemory lookup).
 	cfg.ToolContextExtras = a.buildToolContextExtras(channel, chatID)
 
+	// Wire peer message injection for inter-session communication.
+	cfg.PeerMessageFn = a.injectPeerMessage
+
 	// Inherit hook manager from Agent.
 	cfg.HookManager = a.hookManager
 	cfg.PluginManager = a.pluginMgr

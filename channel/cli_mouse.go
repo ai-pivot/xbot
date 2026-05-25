@@ -533,11 +533,9 @@ func (m *cliModel) clickAskUserSubmit() (bool, tea.Model, tea.Cmd) {
 	if m.panelMode != "askuser" || m.panelOnAnswer == nil {
 		return false, m, nil
 	}
-	// Simulate Enter key on askuser panel
-	answers := m.collectAskUserAnswers()
-	m.panelOnAnswer(answers)
-	m.panelMode = ""
-	return true, m, nil
+	// Reuse the same submission logic as keyboard Enter (collectAskAnswers
+	// uses "q%d" keys matching what panelOnAnswer callbacks expect).
+	return m.submitAskAnswers()
 }
 
 // --- Palette click handlers ---
@@ -1433,30 +1431,6 @@ func toggleVal(s string) string {
 		return "false"
 	}
 	return "true"
-}
-
-// collectAskUserAnswers collects answers from the askuser panel.
-func (m *cliModel) collectAskUserAnswers() map[string]string {
-	answers := make(map[string]string)
-	for i, item := range m.panelItems {
-		if len(item.Options) > 0 {
-			var selected []string
-			for idx, opt := range item.Options {
-				if m.panelOptSel[i] != nil && m.panelOptSel[i][idx] {
-					selected = append(selected, opt)
-				}
-			}
-			// Check "Other" input
-			if m.panelOtherTI.Value() != "" {
-				selected = append(selected, m.panelOtherTI.Value())
-			}
-			// Join multiple selections
-			answers[fmt.Sprintf("%d", i)] = strings.Join(selected, ",")
-		} else {
-			answers[fmt.Sprintf("%d", i)] = m.panelAnswerTA.Value()
-		}
-	}
-	return answers
 }
 
 // clickSidebarSession handles clicking a session item in the sidebar.

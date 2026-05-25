@@ -209,7 +209,9 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 					MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
 				}
 			}
-			remoteCh.SendProgress(originChatID, wsPayload)
+			// Route progress to the agent session's hub key (interactiveKey format)
+			// so the remote CLI client subscribed to this agent session receives it.
+			remoteCh.SendProgress(key, wsPayload)
 		}
 
 		// Save snapshot + track iteration history for mid-session reconnect.
@@ -245,7 +247,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	} else if remoteCh != nil {
 		cfg.StreamContentFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
-			remoteCh.SendProgress(originChatID, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
+			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*protocol.ProgressEvent)
 				cp.StreamContent = content
@@ -254,7 +256,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		}
 		cfg.StreamReasoningFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
-			remoteCh.SendProgress(originChatID, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
+			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*protocol.ProgressEvent)
 				cp.ReasoningStreamContent = content
@@ -494,6 +496,10 @@ func (a *Agent) SpawnInteractiveSession(
 			})
 		}
 	}
+	// Background mode: no ProgressNotifier needed — autoNotify in engine.Run()
+	// now derives from ProgressEventHandler too, not just ProgressNotifier.
+	// wireSubAgentCLIProgress already sets ProgressEventHandler for background
+	// mode, so progress events will flow to the CLI channel automatically.
 
 	// --- 阶段 3：执行 Run ---
 	preLen := len(cfg.Messages)

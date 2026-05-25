@@ -373,6 +373,15 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.handleHistoryReload(msg)
 
 	case cliTokenRefreshMsg:
+		// Session guard: reject stale refresh from a different session.
+		// After compression, the old session's async goroutine may push a
+		// cliTokenRefreshMsg that arrives after the user has switched to
+		// another session. Without this guard, the stale data overwrites
+		// the current session's token usage, causing the context bar to
+		// "jump back" to the old compressed count.
+		if msg.channelName != m.channelName || msg.chatID != m.chatID {
+			break
+		}
 		if msg.tokenPrompt > 0 || msg.tokenCompletion > 0 {
 			// Only accept the DB value if we don't have a more recent value
 			// from engine progress events. After compression, the async
