@@ -688,6 +688,19 @@ func (a *Agent) SpawnInteractiveSession(
 			if len(out.Messages) > preLen {
 				newMsgs = append(newMsgs, out.Messages[preLen:]...)
 			}
+			// Append final assistant reply so GetAgentSessionDumpByFullKey returns it.
+			// out.Messages (from Run) excludes the final text-only response — it's only
+			// in out.Content. Without this, switching away and back loses the assistant's
+			// final reply (same fix as foreground path below).
+			if out.Content != "" {
+				newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
+			} else {
+				newMsgs = append(newMsgs, llm.NewAssistantMessage("(empty response)"))
+			}
+			// Carry ReasoningContent to the in-memory message for subsequent turns
+			if out.ReasoningContent != "" && len(newMsgs) > 0 {
+				newMsgs[len(newMsgs)-1].ReasoningContent = out.ReasoningContent
+			}
 			placeholder.messages = newMsgs
 			if len(cfg.Messages) > 0 {
 				placeholder.systemPrompt = cfg.Messages[0]

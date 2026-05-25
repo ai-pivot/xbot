@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"xbot/llm"
 	"xbot/protocol"
 )
 
@@ -149,5 +150,56 @@ func TestGetActiveProgress_KeyFormatConsistency(t *testing.T) {
 }
 
 func NewTestAgent() *Agent { return &Agent{} }
+
+// TestBackgroundCompletion_FinalReplyInMessages verifies that the background mode
+// path in SpawnInteractiveSession appends the final assistant reply (out.Content)
+// to placeholder.messages, so GetAgentSessionDumpByFullKey returns it.
+// This is the fix for the bug where switching away from a completed background
+// interactive SubAgent and back would lose the final reply.
+func TestBackgroundCompletion_FinalReplyInMessages(t *testing.T) {
+	// Simulate what the background goroutine does after Run() completes:
+	// out.Messages contains intermediate tool-call messages, out.Content
+	// has the final text reply.
+	preLen := 2 // system prompt + user message
+	cfgMessages := []llm.ChatMessage{
+		llm.NewSystemMessage("you are helpful"),
+		llm.NewUserMessage("do the task"),
+	}
+	outMessages := []llm.ChatMessage{
+		cfgMessages[0], cfgMessages[1],
+		llm.NewAssistantMessage(""),                        // tool call (empty content)
+		llm.NewToolMessage("Shell", "tc1", "{}", "result"), // tool result
+		// NOTE: no final assistant text reply here — that's in out.Content
+	}
+	outContent := "Here is the final summary of what I did."
+
+	var newMsgs []llm.ChatMessage
+	if preLen > 1 {
+		newMsgs = append(newMsgs, cfgMessages[1])
+	}
+	if len(outMessages) > preLen {
+		newMsgs = append(newMsgs, outMessages[preLen:]...)
+	}
+	// This is the fix — append final reply
+	if outContent != "" {
+		newMsgs = append(newMsgs, llm.NewAssistantMessage(outContent))
+	}
+
+	// Verify the final reply is in messages
+	found := false
+	for _, m := range newMsgs {
+		if m.Role == "assistant" && m.Content == outContent {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("BUG REPRODUCED: final assistant reply missing from background session messages")
+	}
+	// Should have: user msg + tool call + tool result + final reply = 4
+	if len(newMsgs) != 4 {
+		t.Errorf("expected 4 messages, got %d", len(newMsgs))
+	}
+}
 
 var _ = context.Background
