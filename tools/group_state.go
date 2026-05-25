@@ -85,16 +85,18 @@ func RemoveMember(groupName, memberAddr string) bool {
 	}
 	gm.mu.Lock()
 	defer gm.mu.Unlock()
+	found := false
 	for i, m := range gm.Members {
 		if m == memberAddr {
 			gm.Members = append(gm.Members[:i], gm.Members[i+1:]...)
+			found = true
 			break
 		}
 	}
-	if len(gm.Members) == 0 {
-		DeleteGroup(groupName)
+	if found && len(gm.Members) == 0 {
+		DeleteGroup(groupName) // group auto-cleanup when empty
 	}
-	return true
+	return found
 }
 
 // GroupSummary is a lightweight snapshot for CLI listing.
@@ -258,6 +260,8 @@ func DeletePeerGroup(name string) {
 // Caller must hold at least RLock on peerGroupStore.mu.
 // Instead of spawning a goroutine per mutation, this uses a single timer
 // that coalesces rapid mutations into one disk write (100ms debounce).
+// The actual write happens asynchronously after the caller releases the lock
+// (peerGroupSaveDebounce delay), so savePeerGroups() can safely acquire RLock.
 const peerGroupSaveDebounce = 100 * time.Millisecond
 
 func savePeerGroupsLocked() {
@@ -272,6 +276,20 @@ func savePeerGroupsLocked() {
 		peerGroupSaveTimer.timer = nil
 		peerGroupSaveTimer.mu.Unlock()
 	})
+}
+
+// FlushPeerGroups flushes any pending debounced write to disk synchronously.
+// Call during graceful shutdown to prevent data loss (e.g., Agent.Close).
+func FlushPeerGroups() {
+	peerGroupSaveTimer.mu.Lock()
+	if peerGroupSaveTimer.timer != nil {
+		peerGroupSaveTimer.timer.Stop()
+		peerGroupSaveTimer.timer = nil
+		peerGroupSaveTimer.mu.Unlock()
+		savePeerGroups() // synchronous write
+		return
+	}
+	peerGroupSaveTimer.mu.Unlock()
 }
 
 // Join adds a member to the peer group. Returns false if already a member.
