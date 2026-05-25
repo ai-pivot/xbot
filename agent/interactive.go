@@ -120,13 +120,7 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 // ChatID. This enables Ctrl+T session switching to show real-time progress for both
 // interactive and one-shot SubAgents.
 func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig) {
-	log.WithFields(log.Fields{
-		"key":           key,
-		"originChatID":  originChatID,
-		"channelFinder": a.channelFinder != nil,
-	}).Info("DEBUG_SESSION wireSubAgentCLIProgress called")
 	if a.channelFinder == nil {
-		log.Info("DEBUG_SESSION wireSubAgentCLIProgress: channelFinder is nil, returning")
 		return
 	}
 	ch, ok := a.channelFinder("cli")
@@ -501,6 +495,14 @@ func (a *Agent) SpawnInteractiveSession(
 				cb(detail)
 			})
 		}
+	} else {
+		// Background mode: ProgressNotifier MUST be set to enable autoNotify
+		// in engine.Run(). Without it, autoNotify=false and ALL progress events
+		// are silently dropped — ProgressEventHandler is never called, no
+		// snapshots are stored, and GetActiveProgress returns nil.
+		// This is why oneshot SubAgents work (foreground → ProgressNotifier set)
+		// but background interactive SubAgents show idle when viewed.
+		cfg.ProgressNotifier = func(lines []string, thinking string) {}
 	}
 
 	// --- 阶段 3：执行 Run ---

@@ -1044,15 +1044,6 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 				if entry.Instance != "" {
 					agentChatID += ":" + entry.Instance
 				}
-				log.WithFields(log.Fields{
-					"agentChatID":    agentChatID,
-					"channelName":    "agent",
-					"entry.Channel":  entry.Channel,
-					"entry.ParentID": entry.ParentID,
-					"entry.Role":     entry.Role,
-					"entry.Instance": entry.Instance,
-					"entry.Running":  entry.Running,
-				}).Info("DEBUG_SESSION panel switch to agent session")
 				if agentChatID != m.chatID {
 					m.saveCurrentSession() // save current session state
 					m.chatID = agentChatID
