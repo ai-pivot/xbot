@@ -42,6 +42,7 @@ const zhCN = {
   // ─── Chat ───
   startConversation: '开始一段对话',
   sendFirstMessage: '发送消息开始与 AI 助手交流',
+  loadingHistory: '加载中...',
   searchHistory: '搜索历史消息',
   viewCommands: '查看快捷指令',
   inputPlaceholder: '输入消息... (Shift+Enter 换行)',

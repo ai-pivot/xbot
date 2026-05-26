@@ -57,8 +57,20 @@ func (h *Hub) removeClient(clientID string) {
 
 // subscribe registers a client to receive messages for a given chatID.
 // Idempotent — safe to call on every message from the client.
+// Removes any previous subscription for this client (single-chat-per-connection model).
 func (h *Hub) subscribe(clientID, chatID string) {
 	h.mu.Lock()
+	// Remove old subscription(s) for this client (single active chat per WS connection).
+	// Without this, the client accumulates subscriptions to multiple chatIDs and
+	// receives events from sessions the user has already switched away from.
+	for cid, clients := range h.subs {
+		if cid != chatID && clients[clientID] {
+			delete(clients, clientID)
+			if len(clients) == 0 {
+				delete(h.subs, cid)
+			}
+		}
+	}
 	if h.subs[chatID] == nil {
 		h.subs[chatID] = make(map[string]bool)
 		// Flush any offline messages for this chatID
@@ -142,7 +154,7 @@ func (h *Hub) stopAll() {
 
 // broadcastToAll sends a message to every connected client.
 // Used for global events like session state changes.
-func (h *Hub) broadcastToAll(msg protocol.WSMessage) { //nolint:unused
+func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
 	for _, c := range h.conns {

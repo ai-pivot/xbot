@@ -272,6 +272,10 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const [todos, setTodos] = useState<{ id: number; text: string; done: boolean }[]>([])
   const [subAgents, setSubAgents] = useState<WsSubAgent[]>([])
   void subAgents // consumed by progress handler via setSubAgents
+  // Session status map: chatID → { busy, lastAction }
+  const [sessionStates, setSessionStates] = useState<Record<string, { busy: boolean; lastAction: string }>>({})
+  const [unreadSessions, setUnreadSessions] = useState<Set<string>>(new Set())
+  const lastBusyStates = useRef<Record<string, boolean>>({})
   const { play: playSound } = useSoundFeedback()
   const { addNotification } = useNotificationContext()
 
@@ -371,6 +375,25 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   // Also skips entirely during history load (virtualizer is actively measuring).
   const scrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadingHistoryRef = useRef(false)
+  const [loadingHistory, setLoadingHistory] = useState(false)
+  const scrollToBottomAfterHistoryRef = useRef(false)
+  // After loadingHistory turns false, scroll to bottom on the next paint cycle
+  // when the virtualizer has rendered and measured items.
+  useEffect(() => {
+    if (loadingHistory || !scrollToBottomAfterHistoryRef.current) return
+    scrollToBottomAfterHistoryRef.current = false
+    // Double-rAF: first paint renders the virtual list, second measures items
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const v = virtualizerRef.current
+        if (v && v.options.count > 0) {
+          v.scrollToIndex(v.options.count - 1, { align: 'end', behavior: 'instant' })
+        }
+        autoScrollRef.current = true
+        setAutoScroll(true)
+      })
+    })
+  }, [loadingHistory])
   const handleContainerScroll = useCallback(() => {
     // Skip during history load — virtualizer is actively measuring items
     if (loadingHistoryRef.current) return
@@ -404,7 +427,20 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     // Skip if not active AND no new messages — prevents reflow-triggered scrolls
     if (!isActive && !hasNewMessages) return
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
-    scrollRafRef.current = requestAnimationFrame(() => scrollToBottom('instant'))
+    // Use double-rAF to ensure the virtualizer has measured the latest DOM
+    // before we scroll. A single rAF fires before measureElement callbacks,
+    // so scrollHeight is stale during streaming content growth.
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = requestAnimationFrame(() => {
+        const v = virtualizerRef.current
+        if (v && v.options.count > 0) {
+          // Use virtualizer's scrollToIndex for correct positioning after
+          // item measurement. scrollTo(scrollHeight) can be wrong when the
+          // virtualizer's total size hasn't been updated yet.
+          v.scrollToIndex(v.options.count - 1, { align: 'end', behavior: 'instant' })
+        }
+      })
+    })
     return () => { if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current) }
   }, [messages, progress, scrollToBottom, loading])
 
@@ -425,13 +461,52 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       .catch((err) => { console.warn('[ChatPage] failed to fetch context info:', err) })
   }, [])
 
+  // --- Session event handler (busy/idle/unread tracking) ---
+  const handleSessionEvent = useCallback((ev: { chat_id: string; action: string; label?: string }) => {
+    const chatID = ev.chat_id
+    const action = ev.action
+
+    if (action === 'busy') {
+      setSessionStates(prev => ({ ...prev, [chatID]: { busy: true, lastAction: action } }))
+      // If session becomes busy again, clear unread
+      setUnreadSessions(prev => { const next = new Set(prev); next.delete(chatID); return next })
+      // Sync loading state: if this is the active session, set loading
+      if (chatID === currentChatIDRef.current) {
+        setLoading(true)
+      }
+    } else if (action === 'idle') {
+      setSessionStates(prev => ({ ...prev, [chatID]: { busy: false, lastAction: action } }))
+      // Detect busy→idle transition: mark as unread if not the active session
+      if (lastBusyStates.current[chatID] && chatID !== currentChatIDRef.current) {
+        setUnreadSessions(prev => new Set(prev).add(chatID))
+      }
+      // Sync loading state: if this is the active session, clear loading
+      if (chatID === currentChatIDRef.current) {
+        setLoading(false)
+        turnDoneRef.current = true
+      }
+    } else if (action === 'deleted') {
+      setSessionStates(prev => {
+        const next = { ...prev }
+        delete next[chatID]
+        return next
+      })
+      setUnreadSessions(prev => { const next = new Set(prev); next.delete(chatID); return next })
+    } else if (action === 'created' || action === 'renamed') {
+      // Future: could update session list or labels — no state change needed for now
+    }
+    lastBusyStates.current[chatID] = action === 'busy'
+  }, [])
+
   // --- WebSocket hook ---
   const lastSeqRef = useRef(0)
+  const turnDoneRef = useRef(false)
   const { onMessage } = useChatMessageHandler({
     setMessages, setLoading, setProgress, setAskUser,
     prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
     fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
-    setTodos, setSubAgents, currentChatIDRef,
+    setTodos, setSubAgents, currentChatIDRef, turnDoneRef,
+    onSessionEvent: handleSessionEvent,
   })
   const {
     connected,
@@ -485,6 +560,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const loadHistory = useCallback(() => {
     const currentId = ++loadHistoryIdRef.current
     loadingHistoryRef.current = true
+    setLoadingHistory(true)
     fetch('/api/history')
       .then((r) => r.json())
       .then((data) => {
@@ -545,9 +621,11 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           const isProcessing = data.processing === true
           if (isProcessing) {
             setLoading(true)
+            turnDoneRef.current = false
           } else {
             // Backend is idle — force clear any stale loading state (e.g. after page refresh)
             setLoading(false)
+            turnDoneRef.current = true
             resetProgress()
             streamingContentRef.current = ''
           }
@@ -619,32 +697,23 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           if (data.last_seq) {
             lastSeqRef.current = data.last_seq
           }
-          // Scroll to bottom after history loads. The virtualizer's total size starts
-          // from estimates and grows as items are measured, so a single scrollTo may
-          // not reach the true bottom. We retry until the scroll position stabilizes.
-          let scrollAttempts = 0
-          const maxScrollAttempts = 20
-          const scrollHistoryToBottom = () => {
-            const el = messagesContainerRef.current
-            if (!el) return
-            const prevTop = el.scrollTop
-            el.scrollTo({ top: el.scrollHeight, behavior: 'instant' as ScrollBehavior })
-            // If scrollTop didn't change (already at max) or we've tried enough, done
-            scrollAttempts++
-            if ((el.scrollTop === prevTop && el.scrollTop > 0) || scrollAttempts >= maxScrollAttempts) {
-              loadingHistoryRef.current = false
-              autoScrollRef.current = true
-              setAutoScroll(true)
-              return
-            }
-            requestAnimationFrame(scrollHistoryToBottom)
-          }
-          setTimeout(scrollHistoryToBottom, 300)
+          // Set flag so the useEffect scrolls to bottom after the virtual list renders.
+          // We first set loadingHistory=false to un-hide the virtual list, then the
+          // useEffect detects the change and scrolls via virtualizer.scrollToIndex.
+          loadingHistoryRef.current = false
+          scrollToBottomAfterHistoryRef.current = true
+          setLoadingHistory(false)
+        } else {
+          // No messages or non-ok response — still need to clear loading state
+          loadingHistoryRef.current = false
+          setLoadingHistory(false)
         }
       })
       .catch((err) => {
         if (loadHistoryIdRef.current !== currentId) return
         console.warn('[ChatPage] failed to load history:', err)
+        loadingHistoryRef.current = false
+        setLoadingHistory(false)
       })
     fetchContextInfo()
   }, [scrollToBottom, fetchContextInfo])
@@ -666,6 +735,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         resetProgress()
         setTodos([])
         setSubAgents([])
+        turnDoneRef.current = true
         setLoading(false)
         fetch('/api/history', { method: 'DELETE' }).catch((err) => { console.warn('[ChatPage] failed to clear history:', err) })
         showToast(t('conversationCleared'), 'info')
@@ -696,6 +766,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             resetProgress()
             setTodos([])
             setSubAgents([])
+            turnDoneRef.current = true
             setLoading(false)
             setContextInfo(null)
             streamingContentRef.current = ''
@@ -739,6 +810,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     resetProgress()
     setTodos([])
     setSubAgents([])
+    turnDoneRef.current = false
     setLoading(true)
     setAutoScroll(true); autoScrollRef.current = true
 
@@ -775,6 +847,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const handleCancel = useCallback(() => {
     wsSend({ type: 'cancel', channel: 'web', chat_id: currentChatIDRef.current || undefined })
     setLoading(false)
+    turnDoneRef.current = true
     resetProgress()
     // Remove streaming placeholder if present
     setMessages(prev => prev.filter(m => m.id !== '__streaming__'))
@@ -813,6 +886,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
     // Remove everything from user message onward
     setMessages(prev => prev.slice(0, userIdx))
     resetProgress()
+    turnDoneRef.current = false
     setLoading(true)
     setAutoScroll(true); autoScrollRef.current = true
     // Resend the user message
@@ -1028,15 +1102,26 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
       <ChatSidebar
         connected={connected}
         reconnecting={reconnecting}
+        sessionStates={sessionStates}
+        unreadSessions={unreadSessions}
         onSwitchChat={(chatID: string) => {
             setCurrentChatID(chatID)
             setMessages([])
             resetProgress()
             setTodos([])
             setSubAgents([])
+            turnDoneRef.current = true
             setLoading(false)
             streamingContentRef.current = ''
             reasoningRef.current = ''
+            // Clear unread for the target session
+            setUnreadSessions(prev => { const next = new Set(prev); next.delete(chatID); return next })
+            // Switch Hub subscription to the new chatID so events from the
+            // old session stop arriving. Without this, progress/stream events
+            // from the old session leak into the new session's UI.
+            if (chatID) {
+              wsSend({ type: 'subscribe', chat_id: chatID })
+            }
             loadHistory()
           }}
           onNewChat={() => {
@@ -1045,6 +1130,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             resetProgress()
             setTodos([])
             setSubAgents([])
+            turnDoneRef.current = true
             setLoading(false)
             setContextInfo(null)
             streamingContentRef.current = ''
@@ -1249,8 +1335,18 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           </div>
          )}
 
+        {/* History loading spinner */}
+        {loadingHistory && (
+          <div className="history-loading-overlay">
+            <div className="history-loading-spinner">
+              <div className="history-spinner-ring"></div>
+              <span className="history-spinner-text">{t('loadingHistory') || 'Loading...'}</span>
+            </div>
+          </div>
+        )}
+
         {/* Virtualized message list */}
-        {turns.length > 0 && (
+        {turns.length > 0 && !loadingHistory && (
           <div
             style={{
               height: virtualizer.getTotalSize(),

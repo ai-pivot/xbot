@@ -93,12 +93,26 @@ func (t *SkillTool) resolveSkill(ctx *ToolContext, name string) (skillDir, displ
 			filepath.Join(sandboxBaseDir(ctx), ".skills"),
 		}
 	} else {
-		// None sandbox: search global dirs first, then workspace-relative dirs
+		// Search order:
+		// 1. Global skill dirs (server config, e.g. ~/.xbot/skills)
+		// 2. WorkspaceRoot-relative dirs
+		// 3. Session CWD-relative dirs (CurrentDir from Cd/PWD)
+		// Project-local skills live in .xbot/skills/ (same directory as .xbot/agents/).
 		bases = append(bases, ctx.SkillsDirs...)
-		bases = append(bases,
-			filepath.Join(ctx.WorkspaceRoot, "skills"),
-			filepath.Join(ctx.WorkspaceRoot, ".skills"),
-		)
+		if ctx.WorkspaceRoot != "" {
+			bases = append(bases,
+				filepath.Join(ctx.WorkspaceRoot, ".xbot", "skills"),
+				filepath.Join(ctx.WorkspaceRoot, "skills"),
+				filepath.Join(ctx.WorkspaceRoot, ".skills"),
+			)
+		}
+		if ctx.CurrentDir != "" {
+			bases = append(bases,
+				filepath.Join(ctx.CurrentDir, ".xbot", "skills"),
+				filepath.Join(ctx.CurrentDir, "skills"),
+				filepath.Join(ctx.CurrentDir, ".skills"),
+			)
+		}
 	}
 
 	// Direct match

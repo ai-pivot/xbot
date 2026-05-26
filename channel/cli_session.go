@@ -60,12 +60,17 @@ func ParseChatID(chatID string) (workDir, sessionName string) {
 	if idx <= 0 || idx == len(chatID)-1 {
 		return chatID, defaultSessionName
 	}
-	workDir = chatID[:idx]
-	sessionName = chatID[idx+1:]
+
+	prefix := chatID[:idx]
+	suffix := chatID[idx+1:]
+
 	// Validate: workDir should look like an absolute or relative path
-	if !isWorkDirPath(workDir) {
+	if !isWorkDirPath(prefix) {
 		return chatID, defaultSessionName
 	}
+
+	workDir = prefix
+	sessionName = suffix
 	// Resolve relative workDir (e.g. "." from legacy sessions) to absolute path.
 	// Skip for Windows absolute paths (drive letter) since filepath.IsAbs
 	// returns false for them on non-Windows OS.

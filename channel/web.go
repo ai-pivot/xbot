@@ -238,6 +238,20 @@ type sessionInfo struct {
 	expires      time.Time
 }
 
+// Compile-time interface assertion.
+var _ SessionStateSender = (*WebChannel)(nil)
+
+// SendSessionState implements SessionStateSender.
+// Broadcasts session events (busy/idle/etc.) to all connected web clients
+// so the sidebar can show status for all sessions.
+func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
+	wc.hub.broadcastToAll(protocol.WSMessage{
+		Type:    protocol.MsgTypeSession,
+		TS:      time.Now().Unix(),
+		Session: &ev,
+	})
+}
+
 // NewWebChannel 创建 Web 渠道
 func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 	return &WebChannel{
@@ -844,7 +858,12 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		feishuUserID = si.feishuUserID
 	}
 
-	chatID := c.userID // p2p mode
+	// NOTE: chatID is NOT resolved once here. It was previously set to
+	// c.userID and frozen for the lifetime of the WS connection, which
+	// meant chat switching via POST /api/chats/{id}/switch had no effect
+	// on WS message routing — messages went to the old (default) session.
+	// Now each message handler resolves chatID dynamically via
+	// wc.getCurrentChatID(c.userID) so chat switches take effect immediately.
 
 	for {
 		_, raw, err := c.conn.ReadMessage()
@@ -891,7 +910,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// Resolve business channel/chatID from WS message fields (same as message handler)
 			// so the cancel key matches the one used during message processing.
 			msgChannel := "web"
-			msgChatID := chatID
+			msgChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
 			msgSenderID := c.userID
 			msgSenderName := username
 			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
@@ -946,23 +965,25 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			continue
 		case protocol.MsgTypeSubscribe:
-			// CLI RemoteBackend subscribes to a business chatID so the Hub
-			// can route progress/stream/outbound events to this WS client.
-			// Without this, RPC-only sessions (reconnect) never subscribe,
-			// and all server-pushed events are silently buffered.
+			// Subscribe to a business chatID so the Hub can route
+			// progress/stream/outbound events to this WS client.
 			var subMsg struct {
 				ChatID string `json:"chat_id"`
 			}
 			if err := json.Unmarshal(raw, &subMsg); err != nil || subMsg.ChatID == "" {
 				continue
 			}
-			// Authorization: only allow subscribing to own chatID.
-			// Web users can only subscribe to their senderID; CLI users
-			// (identified by query param client_type=cli) can subscribe
-			// to their business chatID (workspace path).
-			if !c.isCLI && subMsg.ChatID != c.userID {
-				log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
-				continue
+			// Authorization: web clients may subscribe to any chatID they own
+			// (verified via userCurrentChat or owned chatroom list). CLI users
+			// can subscribe to their business chatID (workspace path).
+			if !c.isCLI {
+				// Web client: allow subscribing to the user's current active chat
+				// (set via POST /api/chats/{id}/switch) or their default senderID.
+				activeChatID := wc.getCurrentChatID(c.userID)
+				if subMsg.ChatID != c.userID && subMsg.ChatID != activeChatID {
+					log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
+					continue
+				}
 			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
 			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: client subscribed to chatID")
@@ -1024,13 +1045,13 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					OriginalContent: originalContent,
 					TS:              time.Now().Unix(),
 				}
-				wc.hub.sendToClient(chatID, echoMsg)
+				wc.hub.sendToClient(wc.getCurrentChatID(c.userID), echoMsg)
 			}
 
 			msgChannel := "web"
 			msgSenderID := c.userID
 			msgSenderName := username
-			msgChatID := chatID
+			msgChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
 			msgChatType := "p2p"
 			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
 				// Only CLI relay connections may override channel/chatID/sender.
@@ -1087,7 +1108,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			// Resolve business channel/chatID (same as message/cancel handlers)
 			// so the response routes to the correct chatroom session.
-			respChatID := chatID
+			respChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
 			if msg.Channel != "" && msg.ChatID != "" {
 				respChatID = msg.ChatID
 			}

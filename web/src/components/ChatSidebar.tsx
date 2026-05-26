@@ -19,9 +19,11 @@ interface ChatSidebarProps {
   onExportJSON?: () => void
   connected?: boolean
   reconnecting?: boolean
+  sessionStates?: Record<string, { busy: boolean; lastAction: string }>
+  unreadSessions?: Set<string>
 }
 
-export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON, connected = true, reconnecting = false }: ChatSidebarProps) {
+export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON, connected = true, reconnecting = false, sessionStates, unreadSessions }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768)
@@ -176,19 +178,32 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
         ) : chats.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>{t('noSessions')}</div>
         ) : (
-          filteredChats.map((chat) => (
-            <div key={chat.chat_id} className={`sidebar-item ${chat.is_current ? 'sidebar-item-active' : ''}`} onClick={() => handleSwitch(chat.chat_id)}>
+          filteredChats.map((chat) => {
+              const isBusy = sessionStates?.[chat.chat_id]?.busy ?? false
+              const isUnread = unreadSessions?.has(chat.chat_id) ?? false
+              const isActive = chat.is_current
+              return (
+            <div key={chat.chat_id} className={`sidebar-item ${isActive ? 'sidebar-item-active' : ''} ${isUnread ? 'sidebar-item-unread' : ''}`} onClick={() => handleSwitch(chat.chat_id)}>
               {renamingId === chat.chat_id ? (
                 <input className="sidebar-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => handleRename(e, chat.chat_id)} onBlur={() => setRenamingId(null)} autoFocus onClick={e => e.stopPropagation()} />
               ) : (
                 <>
+                  {/* Status dot — always rendered to maintain alignment */}
+                  <span className={
+                    isBusy ? 'sidebar-busy-dot'
+                    : isActive ? 'sidebar-current-dot'
+                    : isUnread ? 'sidebar-unread-dot'
+                    : 'sidebar-idle-dot'
+                  } />
                   <span className="sidebar-chatname" onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}>{chat.label || t('unnamedSession')}</span>
-                  {chat.is_current && <span className="sidebar-current-dot" />}
+                  {/* Delete button — always reserve space to keep alignment */}
+                  {!isActive && <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>×</button>}
+                  {isActive && <span className="sidebar-delete-spacer" />}
                 </>
               )}
-              {!chat.is_current && <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>×</button>}
             </div>
-          ))
+              )
+            })
         )}
       </div>
 

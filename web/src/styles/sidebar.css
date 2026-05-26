@@ -149,11 +149,49 @@
 .sidebar-item-active .sidebar-chatname { color: rgba(255,255,255,0.95) !important; font-weight: 500 !important; }
 .sidebar-item-active::before { display: none !important; }
 
-/* Current dot */
+/* Status dots — all same size for alignment */
+/* Idle dot — invisible placeholder to maintain alignment */
+.sidebar-idle-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+/* Current dot — solid blue */
 .sidebar-current-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: #007AFF !important;
   flex-shrink: 0;
+}
+
+/* Busy dot — pulsing cyan with glow */
+.sidebar-busy-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #22d3ee !important;
+  box-shadow: 0 0 6px 2px rgba(34, 211, 238, 0.5);
+  flex-shrink: 0;
+  animation: session-busy-pulse 1.2s ease-in-out infinite;
+}
+
+/* Unread dot — static purple */
+.sidebar-unread-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #a78bfa !important;
+  box-shadow: 0 0 4px 1px rgba(167, 139, 250, 0.4);
+  flex-shrink: 0;
+}
+
+/* Unread item highlight */
+.sidebar-item-unread {
+  background: rgba(167, 139, 250, 0.06) !important;
+}
+.sidebar-item-unread .sidebar-chatname {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+@keyframes session-busy-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.85); }
 }
 
 /* Delete */
@@ -167,6 +205,11 @@
 }
 .sidebar-item:hover .sidebar-delete-btn { opacity: 1 !important; }
 .sidebar-delete-btn:hover { color: #ff453a !important; }
+/* Spacer for active items — same size as delete button to keep alignment */
+.sidebar-delete-spacer {
+  width: 24px; height: 24px;
+  flex-shrink: 0;
+}
 
 /* Rename */
 .sidebar-rename-input {
@@ -284,3 +327,9 @@
   color: var(--text-primary);
 }
 [data-theme="light"] .chat-sidebar-overlay { background: rgba(0,0,0,0.15) !important; }
+
+/* Light mode — session status indicators */
+[data-theme="light"] .sidebar-busy-dot { background: #0284c7 !important; }
+[data-theme="light"] .sidebar-unread-dot { background: #7c3aed !important; }
+[data-theme="light"] .sidebar-item-unread { background: rgba(124, 58, 237, 0.06) !important; }
+[data-theme="light"] .sidebar-item-unread .sidebar-chatname { color: rgba(0, 0, 0, 0.75) !important; }

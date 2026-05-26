@@ -501,18 +501,20 @@ func (a *Agent) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
 	}
 }
 
-// emitSessionState pushes a session state event to the CLI channel.
-// Uses channelFinder to locate the "cli" channel and type-asserts to SessionStateSender.
+// emitSessionState pushes a session state event to CLI and Web channels.
+// Uses channelFinder to locate channels and type-asserts to SessionStateSender.
 func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
 	if a.channelFinder == nil {
 		return
 	}
-	ch, ok := a.channelFinder("cli")
-	if !ok {
-		return
-	}
-	if sender, ok := ch.(channel.SessionStateSender); ok {
-		sender.SendSessionState(ev)
+	for _, name := range []string{"cli", "web"} {
+		ch, ok := a.channelFinder(name)
+		if !ok {
+			continue
+		}
+		if sender, ok := ch.(channel.SessionStateSender); ok {
+			sender.SendSessionState(ev)
+		}
 	}
 }
 

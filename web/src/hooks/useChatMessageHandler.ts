@@ -26,6 +26,8 @@ export interface UseChatMessageHandlerParams {
   setTodos: React.Dispatch<React.SetStateAction<{ id: number; text: string; done: boolean }[]>>
   setSubAgents: React.Dispatch<React.SetStateAction<WsSubAgent[]>>
   currentChatIDRef: React.MutableRefObject<string>
+  turnDoneRef: React.MutableRefObject<boolean>
+  onSessionEvent?: (ev: { chat_id: string; action: string; label?: string; role?: string; instance?: string; parent_id?: string }) => void
 }
 
 // --- Individual handlers ---
@@ -52,6 +54,7 @@ function handleProgressStructured(
   _setLoading: React.Dispatch<React.SetStateAction<boolean>>,
   setTodos: React.Dispatch<React.SetStateAction<{ id: number; text: string; done: boolean }[]>>,
   setSubAgents: React.Dispatch<React.SetStateAction<WsSubAgent[]>>,
+  turnDoneRef: React.MutableRefObject<boolean>,
 ) {
   let p: WsProgressPayload = data.progress as WsProgressPayload
   const prevIter = prevIterationRef.current
@@ -167,8 +170,10 @@ function handleProgressStructured(
   // calls startAgentTurn() on reconnect.
   // Guard: only activate when Phase is explicitly a non-done phase to avoid false
   // activation from stale/done events.
+  // Guard: do NOT activate if the turn has already ended (text/card received) —
+  // a late progress_structured arriving after the final reply must not re-activate loading.
   const phase = (p as unknown as Record<string, unknown>).phase as string | undefined
-  if (phase && phase !== 'done' && phase !== '') {
+  if (phase && phase !== 'done' && phase !== '' && !turnDoneRef.current) {
     _setLoading(prev => {
       if (prev) return true // already loading
       return true // activate loading for in-progress turn on reconnect
@@ -247,6 +252,7 @@ function handleTextCard(
   setLoading: React.Dispatch<React.SetStateAction<boolean>>,
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
   fetchContextInfo: () => void,
+  turnDoneRef: React.MutableRefObject<boolean>,
 ) {
   const accumulatedReasoning = reasoningRef.current.trim()
   const progressSnap = progressRef.current
@@ -309,6 +315,8 @@ function handleTextCard(
   // the entire ring buffer (up to 512 events) instead of only new events.
   // The seq counter is monotonic and the ring buffer handles wraparound naturally.
   setLoading(false)
+  // Mark turn as done so late progress_structured events don't re-activate loading
+  turnDoneRef.current = true
 
   // Use server-provided content as the authoritative final text.
   // Sanitize to strip <system-reminder>, <think/> blocks etc.
@@ -384,16 +392,20 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
     setMessages, setLoading, setProgress, setAskUser,
     prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef,
     fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, lastSeqRef,
-    setTodos, setSubAgents, currentChatIDRef,
+    setTodos, setSubAgents, currentChatIDRef, turnDoneRef,
   } = params
 
   const onMessage = useCallback((data: WebSocketMessage) => {
     // Filter messages by chatID in multi-chatroom mode.
     // If the WS message carries a chat_id that doesn't match the current active chat,
     // skip it to prevent messages from different chatrooms from leaking into the UI.
+    // Messages WITHOUT chat_id (e.g. some progress events) from a different session
+    // can leak through — skip those too if we have an active chatID to filter against.
+    // EXCEPTION: "session" type messages carry status info about ALL sessions
+    // and must not be filtered by chatID.
     const msgChatID = data.chat_id as string | undefined
     const activeChatID = currentChatIDRef.current
-    if (msgChatID && activeChatID && msgChatID !== activeChatID) {
+    if (data.type !== 'session' && msgChatID && activeChatID && msgChatID !== activeChatID) {
       return
     }
 
@@ -406,7 +418,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
         handleProgressStructured(
           data, prevIterationRef, progressRef, reasoningRef,
           setLiveIterationsSync, setProgress, setLoading,
-          setTodos, setSubAgents,
+          setTodos, setSubAgents, turnDoneRef,
         )
         break
 
@@ -422,7 +434,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
         handleTextCard(
           data, prevIterationRef, progressRef, reasoningRef,
           streamingContentRef, liveIterationsRef, setLiveIterationsSync,
-          resetProgress, setLoading, setMessages, fetchContextInfo,
+          resetProgress, setLoading, setMessages, fetchContextInfo, turnDoneRef,
         )
         break
 
@@ -441,6 +453,21 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
       case 'sync_progress':
         handleSyncProgress(data, showToast)
         break
+
+      case 'session': {
+        const ev = (data.session || data.payload) as {
+          chat_id: string
+          action: string
+          label?: string
+          role?: string
+          instance?: string
+          parent_id?: string
+        }
+        if (params.onSessionEvent) {
+          params.onSessionEvent(ev)
+        }
+        break
+      }
 
       // [Reserved] subagent_started / subagent_stopped events
       // Backend currently only sends these to CLI channel via emitSessionState.
@@ -462,7 +489,7 @@ export function useChatMessageHandler(params: UseChatMessageHandlerParams) {
       default:
         break
     }
-  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef, setTodos, setSubAgents, currentChatIDRef])
+  }, [fetchContextInfo, resetProgress, setLiveIterationsSync, showToast, setMessages, setLoading, setProgress, setAskUser, prevIterationRef, progressRef, reasoningRef, streamingContentRef, liveIterationsRef, lastSeqRef, setTodos, setSubAgents, currentChatIDRef, turnDoneRef])
 
   return { onMessage }
 }

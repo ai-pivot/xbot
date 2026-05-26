@@ -15,6 +15,7 @@ import (
 	"xbot/internal/textarea"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/session"
 	"xbot/tools"
 )
 
@@ -3510,9 +3511,9 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
 		return nil
 	}
-	// Clean up any residual DB tenant from a previously-deleted session with the
-	// same chatID. This handles edge cases where a prior deletion cleaned local
-	// JSON but failed to clean the DB (e.g., crash, network error during delete).
+	// With UUID-based session IDs, we don't need to clean up residual DB tenants
+	// since UUIDs are guaranteed to be unique. However, we still clean up any
+	// existing session data to ensure a completely fresh start.
 	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
 		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
 	}
@@ -3539,11 +3540,8 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 			_ = m.channel.config.SetCWDFn("cli", chatID, workDir)
 		}
 	}
-	m.messages = nil
-	m.lastTokenUsage = nil
-	m.invalidateAllCache(false)
-	m.todos = nil
-	m.todosDoneCleared = false
+	// Reset ALL session state to prevent inheritance from deleted sessions
+	m.resetToIdleState()
 	m.restoreSession()
 	// Unified session setup — handles BindChatFn, suLoadHistoryCmd,
 	// checkAndRestorePendingAskUser, inputReady, etc.
@@ -3584,6 +3582,9 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 	// 3. Clean up worktree / peer registration for this session.
 	sessionKey := "cli:" + entry.ID
 	tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
+	// 3b. Clean up persisted CWD so a future session with the same chatID
+	// (e.g. the default workDir-based session) does not inherit a stale CWD.
+	session.DeletePersistedCWD("cli", entry.ID)
 	// If we deleted the active session, switch to default
 	if entry.Active {
 		m.saveCurrentSession()
@@ -3594,11 +3595,8 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 		if m.channel != nil && m.channel.config.SetCWDFn != nil {
 			_ = m.channel.config.SetCWDFn("cli", m.defaultChatID, m.defaultChatID)
 		}
-		m.messages = nil
-		m.lastTokenUsage = nil
+		m.resetToIdleState()
 		m.invalidateAllCache(false)
-		m.todos = nil
-		m.todosDoneCleared = false
 		m.restoreSession()
 		cmds := m.postRestoreSessionSetup()
 		// Refresh sessions list so sidebar/sessions panel reflects the deletion
@@ -3611,14 +3609,6 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 		m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
 		return tea.Batch(cmds...)
 	}
-	// Refresh sessions list so sidebar/sessions panel reflects the deletion
-	if m.sessionsListFn != nil {
-		m.panelSessionItems = m.sessionsListFn()
-	}
-	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
-		m.channel.config.SessionsListRefresh()
-	}
-	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
 	return nil
 }
 

@@ -44,6 +44,7 @@ const en: Record<I18nKey, string> = {
   // ─── Chat ───
   startConversation: 'Start a conversation',
   sendFirstMessage: 'Send a message to start chatting with the AI assistant',
+  loadingHistory: 'Loading...',
   searchHistory: 'Search history',
   viewCommands: 'View commands',
   inputPlaceholder: 'Type a message... (Shift+Enter for new line)',

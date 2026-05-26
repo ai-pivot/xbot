@@ -250,3 +250,12 @@ func loadPersistedCWD(channel, chatID string) string {
 	}
 	return string(data)
 }
+
+// DeletePersistedCWD removes the persisted CWD file for a session.
+// Must be called when a session is deleted so that a future session with
+// the same chatID (e.g. the default workDir-based session) does not inherit
+// a stale working directory.
+func DeletePersistedCWD(channel, chatID string) {
+	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", sessionCwdFileName(channel, chatID))
+	_ = os.Remove(cwdFile)
+}

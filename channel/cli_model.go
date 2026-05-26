@@ -4,10 +4,10 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 	"encoding/json"
 	"fmt"
-	"github.com/charmbracelet/glamour"
 	"strings"
 	"time"
 	"xbot/clipanic"
@@ -480,6 +480,179 @@ func (m *cliModel) restoreSession() {
 		}
 		m.updatePlaceholder()
 	}
+}
+
+// resetToIdleState resets ALL model state to a clean idle state.
+// Used when switching to a session with no saved state (new session,
+// deleted session, default session after deletion).
+// This replaces the old inline state reset blocks that were duplicated
+// across deleteLocalSession and other paths.
+func (m *cliModel) resetToIdleState() {
+	// --- Core Message State ---
+	m.messages = nil
+	m.lastTokenUsage = nil
+	m.streamingMsgIdx = -1
+	m.newContentHint = false
+	m.renderCacheValid = false
+	m.cachedHistory = ""
+	m.cachedMsgCount = 0
+	m.lastViewportContent = ""
+	m.lastViewportWidth = 0
+	m.cachedWrappedHistory = ""
+	m.cachedWrappedHistoryRaw = ""
+	m.cachedWrappedHistoryWidth = 0
+	m.cachedProgressHistory = ""
+	m.cachedProgressHistoryLen = 0
+	m.cachedProgressHistoryWidth = 0
+	m.cachedCurrentStatic = ""
+	m.cachedCurrentStaticWidth = 0
+	m.cachedCurrentIter = 0
+	m.cachedCurrentStaticFP = 0
+	m.cachedReasoningBlock = ""
+	m.cachedReasoningBlockFP = 0
+	m.cachedReasoningBlockWidth = 0
+	m.cachedStreamBlock = ""
+	m.cachedStreamBlockFP = 0
+	m.cachedStreamBlockWidth = 0
+	m.cachedThinkingBlock = ""
+	m.cachedThinkingBlockFP = 0
+	m.cachedThinkingBlockWidth = 0
+
+	// --- Agent State ---
+	m.agentTurnID = 0
+	m.typing = false
+	m.typingStartTime = time.Time{}
+	m.inputReady = false
+	m.lastCompletedTools = nil
+	m.lastReasoning = ""
+	m.reasoningByIter = make(map[int]string)
+	m.lastThinking = ""
+
+	// --- Message Queue ---
+	m.messageQueue = nil
+	m.queueEditing = false
+	m.queueEditBuf = ""
+	m.needFlushQueue = false
+	m.pendingToolSummary = nil
+
+	// --- Progress State ---
+	m.progress = nil
+	m.iterationHistory = nil
+	m.lastSeenIteration = 0
+	m.lastProgressSeq = 0
+	m.iterationStartTime = time.Time{}
+
+	// --- TODO State ---
+	m.todos = nil
+	m.todosDoneCleared = false
+	m.toolSummaryExpanded = false
+
+	// --- UI State ---
+	m.completions = nil
+	m.compIdx = 0
+	m.fileCompletions = nil
+	m.fileCompIdx = 0
+	m.fileCompActive = false
+	m.rewindMode = false
+	m.rewindItems = nil
+	m.rewindCursor = 0
+	m.rewindResult = nil
+	m.checkpointState = nil
+
+	// --- Panel State ---
+	m.panelMode = ""
+	m.settingsSaving = false
+	m.panelStack = nil
+	m.panelCursor = 0
+	m.panelEdit = false
+	m.panelScrollY = 0
+	m.panelEditTA = textarea.Model{}
+	m.panelCombo = false
+	m.panelComboIdx = 0
+	m.panelItems = nil
+	m.panelTab = 0
+	m.panelOptSel = make(map[int]map[int]bool)
+	m.panelOptCursor = make(map[int]int)
+	m.panelAnswerTA = textarea.Model{}
+	m.panelOtherTI = textinput.Model{}
+	m.askPanelScrollY = 0
+	m.askPanelTotalLines = 0
+	m.panelSchema = nil
+	m.approvalRequest = nil
+	m.approvalResultCh = nil
+	m.approvalCursor = 0
+	m.approvalDenyInput = textinput.Model{}
+	m.approvalEnteringDeny = false
+	m.panelValues = make(map[string]string)
+	m.panelPrevProvider = ""
+	m.panelOnSubmit = nil
+	m.panelOnAnswer = nil
+	m.panelOnCancel = nil
+	m.panelBgTasks = nil
+	m.panelBgAgents = nil
+	m.panelBgCursor = 0
+	m.panelBgViewing = false
+	m.panelBgLogLines = nil
+	m.panelBgLogFollow = false
+	m.panelSessionItems = nil
+	m.panelSessionCursor = 0
+	m.panelSessionViewing = false
+	m.panelSessionConfirmDelete = false
+	m.panelSessionConfirmEntry = SessionPanelEntry{}
+	m.panelDangerItems = nil
+	m.panelDangerCursor = 0
+	m.panelDangerConfirm = false
+	m.panelDangerInput = textinput.Model{}
+	m.panelDangerOnExec = nil
+	m.panelRunnerServerTI = textinput.Model{}
+	m.panelRunnerTokenTI = textinput.Model{}
+	m.panelRunnerWorkspace = textinput.Model{}
+	m.panelRunnerEditField = 0
+	m.updateNotice = nil
+	m.checkingUpdate = false
+	m.panelChannelItems = nil
+	m.panelChannelCursor = 0
+	m.panelChannelCfg = make(map[string]map[string]string)
+
+	// --- Quick Switch State ---
+	m.quickSwitchMode = ""
+	m.quickSwitchList = nil
+	m.quickSwitchCursor = 0
+	m.quickSwitchReturnToPanel = false
+
+	// --- Command Palette ---
+	m.paletteOpen = false
+	m.paletteInput = textinput.Model{}
+	m.paletteItems = nil
+	m.paletteFiltered = nil
+	m.paletteCursor = 0
+	m.paletteScrollY = 0
+	m.paletteActiveCategory = ""
+	m.paletteContributor = nil
+
+	// --- Typewriter State ---
+	m.typewriterTickActive = false
+	m.twVisible = 0
+	m.rwVisible = 0
+	m.rwCjkSkipTick = false
+	m.twCjkSkipTick = false
+
+	// --- Other State ---
+	m.inputHistory = nil
+	m.inputHistoryIdx = -1
+	m.inputDraft = ""
+	m.placeholderText = ""
+	m.tempStatus = ""
+	m.pendingCmds = nil
+	m.bgTaskCount = 0
+	m.agentCount = 0
+
+	// --- Per-session LLM state (prevents leaking from previous session) ---
+	m.activeSubID = ""
+	m.cachedModelName = ""
+	m.cachedMaxContextTokens = 0
+	m.cachedMaxOutputTokens = 0
+	m.cachedCompressRatio = 0
 }
 
 // postRestoreSessionSetup handles the common setup after restoreSession() in all

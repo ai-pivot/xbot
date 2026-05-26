@@ -1745,11 +1745,7 @@ func (m *cliModel) renderToolContentBelow(tool *protocol.ToolProgress, guide str
 			hintW = 1
 		}
 		if r, err := m.renderToolHint(tool.ToolHints, hintW, maxLines); err == nil && r != "" {
-			guideW := lipgloss.Width(g)
 			for _, line := range strings.Split(r, "\n") {
-				if visW := lipgloss.Width(line); guideW+visW > bodyW {
-					line = truncateToWidth(line, bodyW-guideW)
-				}
 				sb.WriteString(g)
 				sb.WriteString(line)
 				sb.WriteString("\n")
@@ -2188,24 +2184,30 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 	return cleaned
 }
 
-// wrapPreservingGuide wraps a line at cw columns, preserving any guide prefix
-// (┊) on continuation lines. Guide prefixes are ANSI-colored "┊ " patterns
-// that must be repeated when a line is broken.
+// wrapPreservingGuide handles viewport-level line wrapping.
+// Guide lines (starting with "┊ ") were already word-wrapped by glamour (with CJK-aware
+// reflow), so we skip hardWrapRunes to avoid breaking CJK text at character boundaries.
+// Non-guide lines may need hardWrapRunes as a safety net for long ANSI-styled content.
 func wrapPreservingGuide(line string, cw int) []string {
 	prefix, rest, pw := splitGuidePrefix(line)
 	if pw == 0 || rest == "" {
+		// Non-guide line: apply hard wrap as safety net
 		return strings.Split(hardWrapRunes(line, cw), "\n")
 	}
+	// Guide line: glamour already wrapped content to (cw - 4) width.
+	// Guide prefix is 2 cols, so total = 2 + (cw-4) = cw-2, which fits.
+	// Return as-is to preserve glamour's CJK-aware wrapping.
+	// Only truncate if a line is somehow still too wide (defensive).
+	if lipgloss.Width(line) <= cw {
+		return []string{line}
+	}
+	// Defensive: if still too wide, truncate (don't hard-wrap — that breaks CJK)
 	contentW := cw - pw
 	if contentW <= 0 {
 		return []string{line}
 	}
-	wrapped := strings.Split(hardWrapRunes(rest, contentW), "\n")
-	result := make([]string, len(wrapped))
-	for i, w := range wrapped {
-		result[i] = prefix + w
-	}
-	return result
+	truncated := truncateToWidth(rest, contentW)
+	return []string{prefix + truncated}
 }
 
 // splitGuidePrefix splits a rendered line into its guide prefix and the rest.
