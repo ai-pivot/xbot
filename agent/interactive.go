@@ -981,11 +981,23 @@ func (a *Agent) SendToInteractiveSession(
 	ia.mu.Lock()
 	ia.running = true
 	// For background mode, create a cancellable context so UnloadInteractiveSession
-	// can cancel the running goroutine. Without this, unload calls ia.cancelCurrent()
-	// which is nil (cleared after the initial spawn completed), leaving the goroutine
-	// running even after the parent thinks it's been unloaded.
+	// can cancel the running goroutine. Must derive from the agent lifecycle context
+	// (a.agentCtx), NOT from subCtx — subCtx inherits the parent's tool execution
+	// deadline, which would kill the background goroutine when the parent's tool
+	// call times out. Same pattern as the initial spawn path above.
 	if ia.background {
-		runCtx, runCancel := context.WithCancel(subCtx)
+		var bgBase context.Context
+		if ctx.Value(bgSessionCtxKey{}) != nil {
+			// Nested: parent is a bg session → derive from parent's lifecycle
+			bgBase = ctx
+		} else {
+			// First level: derive from Agent lifecycle (no deadline)
+			bgBase = a.agentCtx
+		}
+		if bgBase == nil {
+			bgBase = context.Background()
+		}
+		runCtx, runCancel := context.WithCancel(bgBase)
 		subCtx = runCtx
 		ia.cancelCurrent = runCancel
 	}

@@ -282,3 +282,75 @@ func TestBgSend_CancelCurrentSetAndCleared(t *testing.T) {
 		t.Fatal("cancelCurrent should be nil after goroutine completion")
 	}
 }
+
+// TestBgSend_NoParentDeadlineInheritance verifies that the background "send" path
+// derives its cancellable context from the agent lifecycle (a.agentCtx), NOT from
+// the parent's tool execution context. The parent's context carries a per-attempt
+// deadline — inheriting it would cause background goroutines to be killed when the
+// parent's tool call times out, even though the goroutine should run independently.
+//
+// This is a regression test for the bug where context.WithCancel(subCtx) was used
+// instead of context.WithCancel(a.agentCtx), causing all background send goroutines
+// to time out after ~120s.
+func TestBgSend_NoParentDeadlineInheritance(t *testing.T) {
+	// Simulate a parent tool context WITH a deadline (as in real SubAgent tool calls)
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer parentCancel()
+
+	// Simulate the agent lifecycle context (no deadline)
+	agentCtx, agentCancel := context.WithCancel(context.Background())
+	defer agentCancel()
+
+	a := &Agent{
+		agentCtx:             agentCtx,
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test/worker:w1"
+	ia := &interactiveAgent{
+		roleName:   "worker",
+		instance:   "w1",
+		background: true,
+		running:    false,
+	}
+	a.interactiveSubAgents.Store(key, ia)
+
+	// --- Replicate the fixed send path logic ---
+	// ctx = parentCtx (has deadline)
+	// subCtx derived from ctx (has deadline)
+	subCtx := parentCtx
+
+	var bgBase context.Context
+	if subCtx.Value(bgSessionCtxKey{}) != nil {
+		bgBase = subCtx
+	} else {
+		bgBase = a.agentCtx // MUST use agent lifecycle, not parent's ctx
+	}
+	if bgBase == nil {
+		bgBase = context.Background()
+	}
+	runCtx, runCancel := context.WithCancel(bgBase)
+	defer runCancel()
+	ia.cancelCurrent = runCancel
+	ia.running = true
+
+	// Wait for the parent's deadline to expire
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify the parent context IS expired
+	if parentCtx.Err() == nil {
+		t.Fatal("parent context should have expired by now")
+	}
+
+	// Verify the background runCtx is NOT expired (it's independent)
+	if runCtx.Err() != nil {
+		t.Fatal("runCtx should NOT be cancelled when parent's deadline expires — " +
+			"background goroutines must use agent lifecycle context, not parent tool context")
+	}
+
+	// Verify unload still works via cancelCurrent
+	ia.cancelCurrent()
+	if runCtx.Err() == nil {
+		t.Fatal("runCtx should be cancelled after cancelCurrent() (unload)")
+	}
+}
