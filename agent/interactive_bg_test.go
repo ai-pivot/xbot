@@ -7,6 +7,89 @@ import (
 	"time"
 )
 
+// TestCleanupExpiredSessions_RunningSessionNotDestroyed verifies that
+// cleanupExpiredSessions does NOT destroy sessions with running==true.
+// This is a regression test for the bug where a foreground SubAgent running
+// for >30 min was destroyed by the TTL cleaner while the parent agent was
+// still blocked waiting for Run() to return — leaving the parent stuck forever.
+func TestCleanupExpiredSessions_RunningSessionNotDestroyed(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test-session/ministry-works:fix-rv-call"
+
+	// Simulate a running session with old lastUsed (35 minutes ago — past TTL)
+	placeholder := &interactiveAgent{
+		roleName: "ministry-works",
+		instance: "fix-rv-call",
+		lastUsed: time.Now().Add(-35 * time.Minute), // past TTL
+		running:  true,
+	}
+	a.interactiveSubAgents.Store(key, placeholder)
+
+	// Cleanup should NOT destroy this session because running==true
+	a.cleanupExpiredSessions()
+
+	_, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		t.Fatal("running session was destroyed by cleanup — parent agent's SubAgent tool call would be stuck forever")
+	}
+}
+
+// TestCleanupExpiredSessions_IdleSessionCleanedUp verifies that idle (non-running)
+// sessions past TTL are properly cleaned up.
+func TestCleanupExpiredSessions_IdleSessionCleanedUp(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test-session/explore:idle-agent"
+
+	// Simulate an idle session with old lastUsed (35 minutes ago — past TTL)
+	idle := &interactiveAgent{
+		roleName: "explore",
+		instance: "idle-agent",
+		lastUsed: time.Now().Add(-35 * time.Minute),
+		running:  false,
+	}
+	a.interactiveSubAgents.Store(key, idle)
+
+	// Cleanup SHOULD destroy this session
+	a.cleanupExpiredSessions()
+
+	_, ok := a.interactiveSubAgents.Load(key)
+	if ok {
+		t.Fatal("idle session past TTL was NOT cleaned up")
+	}
+}
+
+// TestCleanupExpiredSessions_RecentSessionNotDestroyed verifies that recent
+// sessions (within TTL) are not cleaned up regardless of running state.
+func TestCleanupExpiredSessions_RecentSessionNotDestroyed(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test-session/explore:fresh"
+
+	// Simulate a recent idle session (5 minutes ago — within TTL)
+	fresh := &interactiveAgent{
+		roleName: "explore",
+		instance: "fresh",
+		lastUsed: time.Now().Add(-5 * time.Minute),
+		running:  false,
+	}
+	a.interactiveSubAgents.Store(key, fresh)
+
+	a.cleanupExpiredSessions()
+
+	_, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		t.Fatal("session within TTL was incorrectly cleaned up")
+	}
+}
+
 // TestBgSession_NaturalCompletion_SessionPreserved verifies that a background
 // interactive session is NOT destroyed when Run() completes naturally (i.e. the
 // context was not cancelled externally). This is a regression test for the bug

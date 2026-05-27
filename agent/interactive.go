@@ -56,6 +56,8 @@ const interactiveSessionTTL = 30 * time.Minute
 
 // cleanupExpiredSessions 清理所有过期的 interactive SubAgent 会话。
 // sync.Map 本身并发安全，调用方不需要持有任何额外的锁。
+// 跳过 running==true 的会话：正在执行 Run() 的 session 即使 lastUsed 较旧也不应被清理，
+// 否则父 agent 的 SubAgent 工具调用会永远阻塞（Run() 是同步阻塞的）。
 func (a *Agent) cleanupExpiredSessions() {
 	now := time.Now()
 	a.interactiveSubAgents.Range(func(k, v any) bool {
@@ -64,10 +66,18 @@ func (a *Agent) cleanupExpiredSessions() {
 			a.interactiveSubAgents.Delete(k)
 			return true
 		}
-		// 读取 lastUsed 需要加锁，避免与 SendToInteractiveSession 的写入竞争
+		// 读取 lastUsed 和 running 需要加锁，避免与 Run()/SendToInteractiveSession 的写入竞争
 		ia.mu.Lock()
 		lastUsed := ia.lastUsed
+		running := ia.running
 		ia.mu.Unlock()
+
+		// 正在执行的 session 绝不清理：即使 lastUsed 很旧，
+		// 父 agent 可能正在同步等待 Run() 返回。销毁会导致父 agent 永久卡死。
+		if running {
+			return true
+		}
+
 		if now.Sub(lastUsed) > interactiveSessionTTL {
 			key, ok := k.(string)
 			if !ok {
