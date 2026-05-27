@@ -32,6 +32,7 @@
 - Non-blocking channel sends: always use `select` with `ctx.Done()` to prevent blocking on full channels during shutdown.
 - **User-scoped semaphores must not be hardcoded to capacity 1 when one sender can own multiple independent chats/sessions (for example remote CLI windows authenticated as `admin`).** Size them from configured concurrency or key them by session, otherwise different windows will block each other and look like a leaked semaphore.
 - **`SetMaxConcurrency` must clear `userSemaphores` cache.** The global semaphore is rebuilt with the new capacity, but `getUserSemaphore` caches per-user channels in a `sync.Map` via `LoadOrStore`. Without `Clear()`, users with custom LLM keep using the cached semaphore with the OLD capacity forever. Symptom: setting max_concurrency to 100 has no visible effect.
+- **`cancelChildSessions` must only cancel sessions with matching `parentKey`.** The old code called `cancelCurrent()` on ALL interactive sessions inside the `Range` loop before checking `parentKey`. This killed sibling/peer background agents when any single agent was unloaded or panicked — all N peer agents die simultaneously at whatever time the first one finishes. The `parentKey` check must happen BEFORE `cancelCurrent()`.
 
 ### Subscription & Settings
 - **`agent/setting_runtime.go` is the SINGLE source of truth for runtime setting handlers.** Both CLI and server use it. Never create a second handler registry — it will silently diverge.

@@ -354,3 +354,70 @@ func TestBgSend_NoParentDeadlineInheritance(t *testing.T) {
 		t.Fatal("runCtx should be cancelled after cancelCurrent() (unload)")
 	}
 }
+
+// TestCancelChildSessions_OnlyTargetsChildren verifies that cancelChildSessions
+// only cancels contexts of sessions with matching parentKey, NOT all sessions.
+// This is a regression test for the bug where cancelChildSessions called
+// cancelCurrent() on EVERY interactive session regardless of parentKey.
+// When 5 peer bg agents were running and any one was unloaded/panicked,
+// all 5 were cancelled simultaneously — manifesting as "all agents die at ~7min".
+func TestCancelChildSessions_OnlyTargetsChildren(t *testing.T) {
+	a := &Agent{
+		agentCtx:             context.Background(),
+		interactiveSubAgents: sync.Map{},
+	}
+
+	// Create 3 peer-level sessions (same parent "root", different roles)
+	type testSession struct {
+		key       string
+		ia        *interactiveAgent
+		runCtx    context.Context
+		runCancel context.CancelFunc
+		role      string
+	}
+	var sessions []testSession
+
+	for _, role := range []string{"worker-a", "worker-b", "worker-c"} {
+		key := "cli:test/" + role + ":inst1"
+		runCtx, runCancel := context.WithCancel(context.Background())
+		ia := &interactiveAgent{
+			roleName:      role,
+			instance:      "inst1",
+			background:    true,
+			running:       true,
+			cancelCurrent: runCancel,
+			parentKey:     "cli:test/root:main", // all share same parent
+		}
+		a.interactiveSubAgents.Store(key, ia)
+		sessions = append(sessions, testSession{key: key, ia: ia, runCtx: runCtx, runCancel: runCancel, role: role})
+	}
+
+	// Create 1 unrelated session (different parent)
+	unrelatedKey := "cli:test/unrelated:x1"
+	unrelatedCtx, unrelatedCancel := context.WithCancel(context.Background())
+	defer unrelatedCancel()
+	unrelatedIA := &interactiveAgent{
+		roleName:      "unrelated",
+		instance:      "x1",
+		background:    true,
+		running:       true,
+		cancelCurrent: unrelatedCancel,
+		parentKey:     "cli:test/other-parent:main", // different parent
+	}
+	a.interactiveSubAgents.Store(unrelatedKey, unrelatedIA)
+
+	// Simulate cancelling children of "cli:test/root:main"
+	a.cancelChildSessions("cli:test/root:main")
+
+	// All 3 peer sessions should be cancelled (they share the parent)
+	for _, s := range sessions {
+		if s.runCtx.Err() == nil {
+			t.Errorf("session %s should have been cancelled", s.role)
+		}
+	}
+
+	// The unrelated session should NOT be cancelled
+	if unrelatedCtx.Err() != nil {
+		t.Fatal("unrelated session was cancelled — cancelChildSessions must only target children with matching parentKey, not ALL sessions")
+	}
+}

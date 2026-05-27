@@ -1405,8 +1405,14 @@ func (a *Agent) cancelChildSessions(parentKey string) {
 		}
 		childIA.mu.Lock()
 		pk := childIA.parentKey
-		if childIA.cancelCurrent != nil {
-			childIA.cancelCurrent()
+		// Only cancel/destroy sessions that are CHILDREN of the parent being cleaned up.
+		// The old code called cancelCurrent() on ALL sessions regardless of parentKey,
+		// which killed sibling/peer background agents when any single agent was unloaded
+		// or cancelled — the root cause of "all 5 bg agents die at 7 minutes".
+		if pk == parentKey {
+			if childIA.cancelCurrent != nil {
+				childIA.cancelCurrent()
+			}
 		}
 		childIA.mu.Unlock()
 		if pk == parentKey {
