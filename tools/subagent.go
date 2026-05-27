@@ -170,13 +170,11 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		return nil, fmt.Errorf("unknown role: %s, see <available_agents> in system prompt", params.Role)
 	}
 
-	// Resolve model: model_tier param > role.Model > "balance" (default)
+	// Resolve model: model_tier param > role.Model > "" (inherit parent)
+	// 传空字符串给 buildSubAgentRunConfig，让其通过 GetLLM(originUserID) 继承父 Agent 的模型。
 	effectiveModel := role.Model
 	if params.ModelTier != "" {
 		effectiveModel = params.ModelTier
-	}
-	if effectiveModel == "" {
-		effectiveModel = "balance"
 	}
 
 	if ctx.Manager == nil {

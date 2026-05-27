@@ -726,6 +726,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		}
 		m.streamingMsgIdx = -1
 		m.progress = nil
+		m.typing = false // clear typing indicator immediately after cancel
 		m.renderCacheValid = false
 		m.updateViewportContent()
 		return
