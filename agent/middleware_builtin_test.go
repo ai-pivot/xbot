@@ -439,6 +439,7 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		err := m.Process(mc)
 		if err == nil {
 			t.Fatal("expected error when Recall fails")
+			return
 		}
 		if !strings.Contains(err.Error(), "recall memory") {
 			t.Errorf("error should wrap recall memory, got: %v", err)

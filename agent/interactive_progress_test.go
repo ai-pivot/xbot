@@ -96,6 +96,7 @@ func TestGetActiveProgress_BackgroundInteractive(t *testing.T) {
 	result := a.GetActiveProgress("agent", interactiveKey)
 	if result == nil {
 		t.Fatal("GetActiveProgress returned nil")
+		return
 	}
 	if result.Phase == "done" {
 		t.Errorf("BUG REPRODUCED: Phase=%q for running agent between iterations", result.Phase)
@@ -112,6 +113,7 @@ func TestGetActiveProgress_BackgroundInteractive_FinishedAgent(t *testing.T) {
 	result := a.GetActiveProgress("agent", key)
 	if result == nil {
 		t.Fatal("nil")
+		return
 	}
 	if result.Phase != "done" {
 		t.Errorf("stopped agent should have Phase=done, got %q", result.Phase)
@@ -139,6 +141,7 @@ func TestGetActiveProgress_KeyFormatConsistency(t *testing.T) {
 	result := a.GetActiveProgress("agent", interactiveKey)
 	if result == nil {
 		t.Fatal("snapshot lookup failed — key format mismatch")
+		return
 	}
 
 	if _, loaded := a.interactiveSubAgents.Load(interactiveKey); !loaded {

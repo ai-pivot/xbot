@@ -55,6 +55,7 @@ func TestLoadHooksConfig_NoFiles(t *testing.T) {
 	}
 	if cfg == nil {
 		t.Fatal("expected non-nil config")
+		return
 	}
 	if len(cfg.Hooks) != 0 {
 		t.Fatalf("expected empty hooks map, got %d entries", len(cfg.Hooks))

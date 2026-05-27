@@ -30,6 +30,7 @@ func TestSpawnAgentAdapter_InteractiveSpawn_NilCallback(t *testing.T) {
 	}, "task", "reviewer", "You are a reviewer", nil, tools.SubAgentCapabilities{}, "", "")
 	if err == nil {
 		t.Fatal("expected error when interactive callbacks are nil")
+		return
 	}
 	if err.Error() != "interactive mode not supported" {
 		t.Errorf("error = %q, want %q", err.Error(), "interactive mode not supported")
@@ -152,6 +153,7 @@ func TestSpawnAgentAdapter_InteractiveUnload_Error(t *testing.T) {
 	}, "reviewer", "")
 	if err == nil {
 		t.Fatal("expected error")
+		return
 	}
 	if err.Error() != "no such session" {
 		t.Errorf("error = %q", err.Error())

@@ -9,6 +9,7 @@ import (
 func TestGlobalMetricsInit(t *testing.T) {
 	if GlobalMetrics == nil {
 		t.Fatal("GlobalMetrics should be initialized")
+		return
 	}
 	if GlobalMetrics.StartTime.IsZero() {
 		t.Error("StartTime should not be zero")

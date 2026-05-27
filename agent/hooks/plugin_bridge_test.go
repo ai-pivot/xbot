@@ -66,6 +66,7 @@ func TestPluginBridgeCallback_PreToolUse(t *testing.T) {
 	// Verify payload conversion
 	if capturedPayload == nil {
 		t.Fatal("expected payload to be captured")
+		return
 	}
 	if capturedPayload.ToolName != "Shell" {
 		t.Errorf("expected ToolName 'Shell', got %q", capturedPayload.ToolName)
