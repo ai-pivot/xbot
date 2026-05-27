@@ -343,31 +343,35 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 	return retry.NewWithData[*LLMResponse](
 		r.retryOptions(ctx, "Retrying stream request")...,
 	).Do(func() (*LLMResponse, error) {
-		attemptCtx, cancel := r.perAttemptCtx(ctx)
-		defer cancel()
+		// Streaming does NOT use perAttemptCtx. A per-attempt deadline would
+		// bind to the underlying HTTP connection via ctx, causing active streams
+		// to be killed mid-generation when total elapsed time exceeds the deadline
+		// (e.g., 120s for a long DeepSeek reasoning response).
+		//
+		// Instead, we pass the parent ctx directly to GenerateStream. The stream
+		// collection phase uses CollectStreamWithCallback's built-in idle timeout
+		// (120s without any chunk), which correctly handles:
+		//   - Connection hangs (no first chunk within 120s)
+		//   - Mid-stream hangs (no chunk for 120s after the last one)
+		//   - Active streams of any duration (timer resets on every chunk)
+		//
+		// Connection establishment (DNS + TCP + TLS) is bounded by the HTTP
+		// client's own transport timeout, not by context deadline.
 
-		// GenerateStream (specifically NewStreaming inside it) blocks
-		// during connection establishment (DNS + TCP + TLS handshake).
-		// On first request this can take seconds. The SDK passes ctx
-		// to the HTTP client, but TLS handshake cancellation is not
-		// guaranteed in all Go/OS TLS implementations. Wrapping in a
-		// goroutine + select on ctx.Done() guarantees immediate return
-		// when the user presses Ctrl+C, without waiting for the TLS
-		// handshake to complete or timeout.
 		type genResult struct {
 			ch  <-chan StreamEvent
 			err error
 		}
 		resultCh := make(chan genResult, 1)
 		go func() {
-			ch, err2 := streaming.GenerateStream(attemptCtx, model, messages, tools, thinkingMode)
+			ch, err2 := streaming.GenerateStream(ctx, model, messages, tools, thinkingMode)
 			resultCh <- genResult{ch, err2}
 		}()
 
 		var eventCh <-chan StreamEvent
 		select {
-		case <-attemptCtx.Done():
-			return nil, attemptCtx.Err()
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case r := <-resultCh:
 			if r.err != nil {
 				return nil, r.err
@@ -375,8 +379,6 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 			eventCh = r.ch
 		}
 
-		// Pass parent ctx (no artificial deadline) for collection.
-		// CollectStreamWithCallback has its own idle timeout for hung streams.
 		if streamContentFn != nil || streamReasoningFn != nil {
 			return CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn)
 		}

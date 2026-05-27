@@ -883,15 +883,9 @@ func (a *Agent) SendToInteractiveSession(
 
 	ia.lastUsed = time.Now()
 
-	cfg := *ia.cfg // 浅拷贝 RunConfig 模板
-	originUserID := cfg.OriginUserID
-	if originUserID == "" {
-		originUserID = cfg.SenderID
-	}
-	llmClient, model, _, thinkingMode := a.llmFactory.GetLLM(originUserID)
-	cfg.LLMClient = llmClient
-	cfg.Model = model
-	cfg.ThinkingMode = thinkingMode
+	cfg := *ia.cfg // 浅拷贝 RunConfig 模板（已有正确的 LLMClient + Model + ThinkingMode）
+	// 不再无条件用 GetLLM 覆盖：ia.cfg 在 spawn 时已通过 buildSubAgentRunConfig
+	// 正确解析了角色/tier 对应的 LLM，直接复用即可。
 
 	var newMessages []llm.ChatMessage
 	newMessages = append(newMessages, ia.systemPrompt)
@@ -1045,7 +1039,7 @@ func (a *Agent) SendToInteractiveSession(
 				})
 			}
 
-			// --- Write back results (same as 阶段 3 below, but for async path) ---
+			// --- Write back results (mirrors foreground 阶段 3 below) ---
 			ia.mu.Lock()
 			defer ia.mu.Unlock()
 
@@ -1055,10 +1049,49 @@ func (a *Agent) SendToInteractiveSession(
 			} else {
 				ia.lastError = ""
 				ia.lastReply = out.Content
-				// Append new messages from Run() to ia.messages
-				if preLen > 0 && len(cfg.Messages) > preLen {
-					newFromRun := cfg.Messages[preLen:]
-					ia.messages = append(ia.messages, newFromRun...)
+
+				// Include the user message sent via action=send so GetAgentSessionDump shows it.
+				// cfg.Messages[preLen-1] is the last element before Run, which is the user message
+				// appended at line ~670 (newMessages = append(..., llm.NewUserMessage(msg.Content)))
+				if preLen > 0 {
+					lastBeforeRun := cfg.Messages[preLen-1]
+					if lastBeforeRun.Role == "user" {
+						ia.messages = append(ia.messages, lastBeforeRun)
+					}
+				}
+				// Append messages produced during Run (tool calls, tool results, etc.)
+				if len(out.Messages) > preLen {
+					ia.messages = append(ia.messages, out.Messages[preLen:]...)
+				}
+				// Append final assistant reply (missing from out.Messages when
+				// handleFinalResponse returns directly without appending to s.messages).
+				if out.Content != "" {
+					ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+				} else {
+					ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
+				}
+				// Carry ReasoningContent to the in-memory message for subsequent turns
+				if out.ReasoningContent != "" && len(ia.messages) > 0 {
+					ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
+				}
+				// Save iteration history for inspect
+				if len(out.IterationHistory) > 0 {
+					ia.iterationHistory = append(ia.iterationHistory, out.IterationHistory...)
+				}
+			}
+
+			// Persist final assistant message with iteration history as Detail,
+			// same as foreground path below and the main agent does in handleInboundMessage.
+			if cfg.Session != nil && out.Content != "" {
+				assistantMsg := llm.NewAssistantMessage(out.Content)
+				assistantMsg.ReasoningContent = out.ReasoningContent
+				if len(out.IterationHistory) > 0 {
+					if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+						assistantMsg.Detail = string(jsonBytes)
+					}
+				}
+				if err := cfg.Session.AddMessage(assistantMsg); err != nil {
+					log.Ctx(ctx).WithError(err).Warn("Failed to save bg send agent assistant message with detail")
 				}
 			}
 		}()
