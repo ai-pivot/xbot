@@ -1869,10 +1869,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
 		})
 
-		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号
+		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号。
+		// Track whether we consumed one so we can cancel the context synchronously
+		// before processMessage starts — relying solely on the goroutine below
+		// races with processMessage on the first message after restart.
+		hadPending := false
 		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
 			select {
 			case cancelCh <- struct{}{}:
+				hadPending = true
 				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
 			default:
 			}
@@ -1880,7 +1885,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 		reqCtx, reqCancel := context.WithCancel(ctx)
 
-		// 监听 cancel 信号
+		// Synchronous cancel: if a pending cancel was consumed above, cancel
+		// the context NOW before processMessage starts. reqCancel is idempotent
+		// (called again in defer) and guarantees processMessage receives an
+		// already-canceled context, avoiding the LLM call entirely.
+		if hadPending {
+			reqCancel()
+		}
+
+		// 监听 cancel 信号（处理 processMessage 运行期间到达的 cancel）
 		clipanic.Go("agent.chatProcessLoop.cancelListener", func() {
 			select {
 			case <-cancelCh:
