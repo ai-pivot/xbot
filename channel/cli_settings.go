@@ -196,14 +196,17 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	}
 
 	// --- Apply to runtime ---
-	// Strip ALL subscription-scoped keys AND max_context_tokens.
-	// These are already handled above via subscriptionMgr.Update / UpdatePerModelConfig.
-	// Only non-subscription runtime-affecting keys (language, theme, compression_threshold,
-	// sandbox_mode, etc.) pass through to ApplySettings.
+	// Strip subscription-scoped keys (provider, key, model, etc.) — already handled above.
+	// Exception: max_context_tokens is subscription-scoped but ALSO needs to reach
+	// ApplyRuntimeSetting → Agent.SetMaxContextTokens so the new value propagates to
+	// LLMFactory.perChatMaxCtx immediately. Without this, maybeCompress uses the old
+	// cached max_context until the session cache expires.
 	if m.channel.config.ApplySettings != nil {
 		runtimeValues := make(map[string]string, len(values))
 		for k, v := range values {
-			if k != "max_context_tokens" && !isSubscriptionScopedSettingKey(k) {
+			if k == "max_context_tokens" {
+				runtimeValues[k] = v
+			} else if !isSubscriptionScopedSettingKey(k) {
 				runtimeValues[k] = v
 			}
 		}

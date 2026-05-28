@@ -497,7 +497,15 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
 		}
 		existing.PerModelConfigs[p.Model] = p.Config
-		return svc.Update(existing)
+		if err := svc.Update(existing); err != nil {
+			return err
+		}
+		// Invalidate the user-level LLM cache so GetLLMForChat picks up the
+		// new PerModelConfigs.MaxContext on the next buildBaseRunConfig.
+		// Without this, the old max_context value persists in the cached llmEntry
+		// and maybeCompress uses stale limits.
+		h.Ag.LLMFactory().InvalidateSender(bizID)
+		return nil
 	})
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		ID string `json:"id"`
