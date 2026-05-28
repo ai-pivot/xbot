@@ -734,6 +734,19 @@ func (a *Agent) buildSubAgentRunConfig(
 	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
 
+	// SaveTokenState: persist token counts so GetTokenState RPC returns
+	// correct values when the TUI switches to a SubAgent session.
+	// Without this, the context bar shows 0 (empty) for SubAgent sessions.
+	if extras := cfg.ToolContextExtras; extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
+		memSvc := extras.MemorySvc
+		tenantID := extras.TenantID
+		cfg.SaveTokenState = func(promptTokens, completionTokens int64) {
+			if err := memSvc.SetTokenState(context.Background(), tenantID, promptTokens, completionTokens); err != nil {
+				log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to persist subagent token state")
+			}
+		}
+	}
+
 	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
 	cfg.TUICtrlFn = a.tuiCtrlFn
 	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(parentCtx.Channel, parentCtx.ChatID)

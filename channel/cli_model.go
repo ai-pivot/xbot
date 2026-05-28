@@ -1776,6 +1776,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	channelName := m.channelName
 	progressFn := m.channel.config.GetActiveProgressFn
 	todosFn := m.channel.config.GetTodosFn
+	tokenFn := m.channel.config.GetTokenStateFn
 
 	// Agent sessions: load from in-memory interactiveSubAgents (not DB).
 	if channelName == "agent" {
@@ -1791,7 +1792,15 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				if todosFn != nil {
 					todos = todosFn(channelName, chatID)
 				}
-				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress, todos: todos}
+				// Fetch token state for SubAgent sessions so the context bar
+				// shows correct usage on session switch. Without this, the
+				// agent path returned tokenPrompt=0, making the context bar
+				// appear empty even when the SubAgent has used most of its context.
+				var tokenPrompt, tokenCompletion int64
+				if tokenFn != nil {
+					tokenPrompt, tokenCompletion = tokenFn(channelName, chatID)
+				}
+				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress, todos: todos, tokenPrompt: tokenPrompt, tokenCompletion: tokenCompletion}
 			}
 		}
 	}
@@ -1802,7 +1811,6 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 			return suHistoryLoadMsg{err: fmt.Errorf("no dynamic history loader"), channelName: channelName, chatID: chatID}
 		}
 	}
-	tokenFn := m.channel.config.GetTokenStateFn
 	return func() tea.Msg {
 		history, err := loader(channelName, chatID)
 		// Also fetch active progress for seamless session switch recovery.
