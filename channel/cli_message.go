@@ -857,6 +857,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			m.cachedWrappedHistory = ""
 			m.cachedWrappedHistoryRaw = ""
 			m.cachedWrappedHistoryWidth = 0
+			m.cachedHistoryLines = nil
 			// PhaseDone from emitBuiltinProgressDone should arrive before this outbound,
 			// so endAgentTurn is usually a no-op (turn already ended). Kept as safety net.
 			m.endAgentTurn(m.agentTurnID)
@@ -1256,6 +1257,13 @@ func (m *cliModel) renderProgressBlock() string {
 func (m *cliModel) progressBlockFullFP(preRender string, bubbleWidth int) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(preRender))
+	return h.Sum64()
+}
+
+// fnvHash64 returns a fast FNV-1a hash of s for O(1) dirty detection.
+func fnvHash64(s string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(s))
 	return h.Sum64()
 }
 
@@ -2330,11 +2338,13 @@ func (m *cliModel) setViewportContent(content string) {
 		}
 
 		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == cw {
-			// Fast path: reuse wrapped history, only wrap the dynamic suffix
-			wrappedHistory := m.cachedWrappedHistory
+			// Fast path: reuse cached history lines (avoids O(N) strings.Split every tick).
+			// cachedHistoryLines is pre-split; only the dynamic suffix needs wrap.
+			if len(m.cachedHistoryLines) > 0 {
+				lines = make([]string, len(m.cachedHistoryLines))
+				copy(lines, m.cachedHistoryLines)
+			}
 			dynamicPart := content[historyEnd:]
-			historyLines := strings.Split(wrappedHistory, "\n")
-			lines = historyLines
 			if dynamicPart != "" {
 				for _, line := range strings.Split(dynamicPart, "\n") {
 					trimmed := strings.TrimRight(line, " \t")
@@ -2375,9 +2385,10 @@ func (m *cliModel) setViewportContent(content string) {
 				}
 				lines = append(lines, wrapped...)
 			}
-			// Cache the wrapped history portion for next tick
+			// Cache the wrapped history portion (both string and []string) for next tick
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
+				m.cachedHistoryLines = wrappedHistoryParts
 				m.cachedWrappedHistoryRaw = m.cachedHistory
 				m.cachedWrappedHistoryWidth = cw
 			}
@@ -2396,6 +2407,25 @@ func (m *cliModel) setViewportContent(content string) {
 		m.newContentHint = false
 	} else {
 		m.newContentHint = true
+	}
+}
+
+// trimToolSummaryPayload releases large fields (ToolHints, Detail, Args) from
+// tool_summary messages after rendering. The rendered output is cached in
+// msg.rendered, so these multi-KB strings are no longer needed. Without this,
+// N iterations × M tools × avg_diff_size causes O(N*M) GC pressure — the GC
+// must scan all surviving strings every collection cycle, consuming CPU
+// proportional to total iterations rather than viewport height.
+func (m *cliModel) trimToolSummaryPayload(msg *cliMessage) {
+	if msg.role != "tool_summary" || msg.dirty {
+		return
+	}
+	for i := range msg.iterations {
+		for k := range msg.iterations[i].Tools {
+			msg.iterations[i].Tools[k].ToolHints = ""
+			msg.iterations[i].Tools[k].Detail = ""
+			msg.iterations[i].Tools[k].Args = ""
+		}
 	}
 }
 
@@ -2452,10 +2482,27 @@ func (m *cliModel) updateViewportContent() {
 
 	// 快速路径：缓存有效 + 无流式消息 + 消息数未变，只刷新 progress block（tick 场景）
 	if m.renderCacheValid && m.streamingMsgIdx < 0 && m.cachedMsgCount == len(m.messages) {
+		progressBlock := m.renderProgressBlock()
+		rewindBlock := m.renderRewindResultBlock()
+		// When only progress/rewind blocks changed (typical tick scenario), avoid
+		// O(total_content) string construction. Use FNV fingerprints for O(1)
+		// dirty detection. cachedProgressBlockFP is computed inside renderProgressBlock.
+		progressFP := m.cachedProgressBlockFP
+		rewindFP := fnvHash64(rewindBlock)
+		cachedHistoryLen := len(m.cachedHistory)
+		if cachedHistoryLen == m.lastTickHistoryLen &&
+			m.lastTickProgressFP == progressFP &&
+			m.lastTickRewindFP == rewindFP {
+			return
+		}
+		m.lastTickHistoryLen = cachedHistoryLen
+		m.lastTickProgressFP = progressFP
+		m.lastTickRewindFP = rewindFP
+
 		var sb strings.Builder
 		sb.WriteString(m.cachedHistory)
-		sb.WriteString(m.renderProgressBlock())
-		sb.WriteString(m.renderRewindResultBlock())
+		sb.WriteString(progressBlock)
+		sb.WriteString(rewindBlock)
 		m.setViewportContent(sb.String())
 		return
 	}
@@ -2514,6 +2561,8 @@ func (m *cliModel) appendNewMessagesToCache() {
 		msg.rendered = rendered
 		msg.dirty = false
 		msg.renderWidth = cw
+		// Release large fields from tool_summary iterations after rendering.
+		m.trimToolSummaryPayload(msg)
 		sb.WriteString(rendered)
 		runningLines += wrappedLineCount(rendered, cw)
 	}
@@ -2553,6 +2602,11 @@ func (m *cliModel) fullRebuild() {
 			m.messages[i].rendered = rendered
 			m.messages[i].dirty = false
 			m.messages[i].renderWidth = cw
+			// Release large fields from tool_summary iterations after rendering.
+			// The rendered output is cached in msg.rendered — ToolHints (diff),
+			// Detail (tool output), and Args (raw JSON) are no longer needed.
+			// Keeping them alive causes O(iterations × tool_size) GC pressure.
+			m.trimToolSummaryPayload(&m.messages[i])
 		}
 		// Build per-message chunk for line counting (avoids calling
 		// historyBuf.String() on every iteration — the O(N²) full
