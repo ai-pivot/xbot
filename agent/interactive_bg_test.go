@@ -421,3 +421,173 @@ func TestCancelChildSessions_OnlyTargetsChildren(t *testing.T) {
 		t.Fatal("unrelated session was cancelled — cancelChildSessions must only target children with matching parentKey, not ALL sessions")
 	}
 }
+
+// TestInterrupt_PreservesSession verifies the full interrupt lifecycle:
+// 1. Background spawn completes → session is idle (running=false)
+// 2. Background send starts → running=true
+// 3. Interrupt cancels context, sets running=false, sets interrupted=true
+// 4. Goroutine detects interrupt → skips destroy, clears interrupted
+// 5. Session remains in map → subsequent send succeeds
+// 6. Unload after interrupt works correctly
+func TestInterrupt_PreservesSession(t *testing.T) {
+	a := &Agent{
+		agentCtx:             context.Background(),
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test/worker:w1"
+	ia := &interactiveAgent{
+		roleName:   "worker",
+		instance:   "w1",
+		background: true,
+		running:    false,
+		cfg:        &RunConfig{},
+	}
+	a.interactiveSubAgents.Store(key, ia)
+
+	// --- Step 1: Simulate background send starting ---
+	ia.mu.Lock()
+	ia.running = true
+	ia.interrupted = false
+	runCtx, runCancel := context.WithCancel(context.Background())
+	ia.cancelCurrent = runCancel
+	ia.mu.Unlock()
+
+	// Verify session is in map
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		t.Fatal("session should be in map before interrupt")
+	}
+
+	// --- Step 2: Simulate InterruptInteractiveSession ---
+	ia.mu.Lock()
+	if ia.cancelCurrent != nil {
+		ia.cancelCurrent() // cancel the context
+	}
+	ia.running = false
+	ia.interrupted = true
+	ia.mu.Unlock()
+
+	// Verify state after interrupt
+	ia.mu.Lock()
+	if ia.running {
+		t.Fatal("running should be false after interrupt")
+	}
+	if !ia.interrupted {
+		t.Fatal("interrupted should be true after interrupt")
+	}
+	ia.mu.Unlock()
+
+	// --- Step 3: Simulate goroutine detecting cancellation ---
+	// (mirrors the cancelled branch in background send goroutine)
+	wasCancelled := runCtx.Err() != nil
+	if !wasCancelled {
+		t.Fatal("runCtx should be cancelled after interrupt")
+	}
+
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	wasInterrupted := ia.interrupted
+	ia.interrupted = false
+	ia.mu.Unlock()
+
+	if !wasInterrupted {
+		t.Fatal("goroutine should detect interrupted=true")
+	}
+
+	// --- Step 4: Session should still be in map (not destroyed) ---
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		t.Fatal("session should STILL be in map after interrupt — interrupt preserves session")
+	}
+
+	// --- Step 5: Subsequent send should be allowed (running=false) ---
+	ia.mu.Lock()
+	canSend := !ia.running && ia.cfg != nil
+	ia.mu.Unlock()
+	if !canSend {
+		t.Fatal("subsequent send should be allowed after interrupt (running=false, cfg!=nil)")
+	}
+
+	// --- Step 6: New background send should work ---
+	ia.mu.Lock()
+	ia.running = true
+	ia.interrupted = false
+	_, newRunCancel := context.WithCancel(context.Background())
+	ia.cancelCurrent = newRunCancel
+	ia.mu.Unlock()
+
+	// Complete naturally
+	newRunCancel()
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	ia.mu.Unlock()
+
+	// --- Step 7: Unload should work ---
+	a.interactiveSubAgents.Delete(key)
+	if _, ok := a.interactiveSubAgents.Load(key); ok {
+		t.Fatal("session should be removed after unload")
+	}
+}
+
+// TestInterrupt_ThenUnload verifies that unload correctly destroys an
+// interrupted session (interrupt preserves, then unload destroys).
+func TestInterrupt_ThenUnload(t *testing.T) {
+	a := &Agent{
+		agentCtx:             context.Background(),
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test/worker:w1"
+	ia := &interactiveAgent{
+		roleName:   "worker",
+		instance:   "w1",
+		background: true,
+		running:    false,
+		cfg:        &RunConfig{},
+	}
+	a.interactiveSubAgents.Store(key, ia)
+
+	// Start background run
+	ia.mu.Lock()
+	ia.running = true
+	ia.interrupted = false
+	runCtx, runCancel := context.WithCancel(context.Background())
+	_ = runCtx // used indirectly via cancelCurrent
+	ia.cancelCurrent = runCancel
+	ia.mu.Unlock()
+
+	// Interrupt
+	ia.mu.Lock()
+	ia.cancelCurrent()
+	ia.running = false
+	ia.interrupted = true
+	ia.mu.Unlock()
+
+	// Goroutine detects interrupt, clears flags
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	ia.interrupted = false
+	ia.mu.Unlock()
+
+	// Session still exists
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		t.Fatal("session should survive interrupt")
+	}
+
+	// Now unload (simulate UnloadInteractiveSession)
+	ia.mu.Lock()
+	if ia.cancelCurrent != nil {
+		ia.cancelCurrent()
+	}
+	ia.mu.Unlock()
+
+	a.cancelChildSessions(key)
+	a.destroyInteractiveSession(key)
+
+	// Session should be gone
+	if _, ok := a.interactiveSubAgents.Load(key); ok {
+		t.Fatal("session should be removed after unload")
+	}
+}

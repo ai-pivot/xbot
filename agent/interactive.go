@@ -45,6 +45,7 @@ type interactiveAgent struct {
 	running          bool                // 当前是否有 Run 在执行
 	background       bool                // 是否后台模式
 	cancelCurrent    context.CancelFunc  // 当前运行的取消函数（nil = idle）
+	interrupted      bool                // set by InterruptInteractiveSession, read by goroutine to skip destroy
 	parentKey        string              // parent session key (for cascade cleanup on unload/cancel)
 	lastError        string              // 最近一次错误
 	lastReply        string              // 最近一次回复摘要
@@ -654,8 +655,28 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 
 			if cancelled {
-				// Context was cancelled (parent unloaded, agent shutdown, etc.)
-				// Clean up children and remove self from panel.
+				// Context was cancelled. Two possible causes:
+				// 1. InterruptInteractiveSession → ia.interrupted=true → keep session alive for future send
+				// 2. UnloadInteractiveSession / agent shutdown → ia.interrupted=false → destroy session
+				placeholder.mu.Lock()
+				wasInterrupted := placeholder.interrupted
+				placeholder.running = false
+				placeholder.cancelCurrent = nil
+				placeholder.interrupted = false // reset for next send
+				placeholder.mu.Unlock()
+
+				if wasInterrupted {
+					// Interrupt: session stays for future "send" interactions.
+					// Run() was cut short; don't save partial results.
+					log.WithFields(log.Fields{
+						"role":     roleName,
+						"instance": instance,
+						"key":      key,
+					}).Info("Background interactive session interrupted, session preserved for future send")
+					return
+				}
+
+				// Unload/shutdown: clean up children and remove self from panel.
 				// Check if key still exists — UnloadInteractiveSession may have
 				// already cleaned up this session, preventing duplicate cleanup.
 				if _, ok := a.interactiveSubAgents.Load(key); !ok {
@@ -980,6 +1001,7 @@ func (a *Agent) SendToInteractiveSession(
 
 	ia.mu.Lock()
 	ia.running = true
+	ia.interrupted = false // clear any stale interrupt flag from previous Run
 	// For background mode, create a cancellable context so UnloadInteractiveSession
 	// can cancel the running goroutine. Must derive from the agent lifecycle context
 	// (a.agentCtx), NOT from subCtx — subCtx inherits the parent's tool execution
@@ -1036,10 +1058,34 @@ func (a *Agent) SendToInteractiveSession(
 
 			out := Run(subCtx, cfg)
 
+			// Check if the context was cancelled (interrupt or unload).
+			// Must check BEFORE clearing cancelCurrent so we can read ia.interrupted.
+			// subCtx is derived from context.WithCancel, so subCtx.Err() tells us.
+			wasCancelled := subCtx.Err() != nil
+
 			ia.mu.Lock()
 			ia.running = false
 			ia.cancelCurrent = nil
+			wasInterrupted := ia.interrupted
+			ia.interrupted = false // reset for next send
 			ia.mu.Unlock()
+
+			if wasCancelled {
+				if wasInterrupted {
+					// Interrupt: session stays for future "send" interactions.
+					log.WithFields(log.Fields{
+						"role":     roleName,
+						"instance": instance,
+					}).Info("Background send interrupted, session preserved for future send")
+					return
+				}
+				// Unload/shutdown: session was already destroyed by UnloadInteractiveSession.
+				log.WithFields(log.Fields{
+					"role":     roleName,
+					"instance": instance,
+				}).Info("Background send cancelled (unload/shutdown)")
+				return
+			}
 
 			// Notify parent via BgTaskManager (same as initial spawn).
 			if a.bgTaskMgr != nil {
@@ -1225,6 +1271,11 @@ func (a *Agent) InterruptInteractiveSession(
 	}
 
 	ia.cancelCurrent()
+	// Mark as not running immediately so subsequent send/unload can proceed
+	// without waiting for the background goroutine to detect cancellation.
+	// The goroutine will see runCtx.Err() != nil and know it was interrupted.
+	ia.running = false
+	ia.interrupted = true
 	log.WithFields(log.Fields{
 		"role":     roleName,
 		"instance": instance,
