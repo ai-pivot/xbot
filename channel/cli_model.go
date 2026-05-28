@@ -257,6 +257,11 @@ type suHistoryLoadMsg struct {
 	// context bar still shows the session's last known token usage.
 	tokenPrompt     int64
 	tokenCompletion int64
+	// LLM state for TUI status bar rendering (model name, context limits, etc.)
+	modelName        string
+	maxContextTokens int64
+	maxOutputTokens  int64
+	compressRatio    float64
 	// todos is the server-side TODO list for the target session.
 	// Populated by suLoadHistoryCmd via GetTodosFn RPC.
 	// When non-nil, it overwrites the local TodoManager cache so
@@ -1794,6 +1799,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	// Agent sessions: load from in-memory interactiveSubAgents (not DB).
 	if channelName == "agent" {
 		dumpFn := m.channel.config.AgentSessionDumpFn
+		llmStateFn := m.channel.config.AgentSessionLLMStateFn
 		if dumpFn != nil {
 			return func() tea.Msg {
 				history, err := dumpFn(chatID)
@@ -1805,15 +1811,24 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				if todosFn != nil {
 					todos = todosFn(channelName, chatID)
 				}
-				// Fetch token state for SubAgent sessions so the context bar
-				// shows correct usage on session switch. Without this, the
-				// agent path returned tokenPrompt=0, making the context bar
-				// appear empty even when the SubAgent has used most of its context.
-				var tokenPrompt, tokenCompletion int64
-				if tokenFn != nil {
-					tokenPrompt, tokenCompletion = tokenFn(channelName, chatID)
+				// Fetch LLM state from agent for SubAgent session status bar
+				var modelName string
+				var maxCtx, maxOut, tokPrompt, tokComp int64
+				var compRatio float64
+				if llmStateFn != nil {
+					modelName, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
 				}
-				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress, todos: todos, tokenPrompt: tokenPrompt, tokenCompletion: tokenCompletion}
+				// Fallback token state from DB if agent didn't provide it
+				if tokPrompt == 0 && tokenFn != nil {
+					tokPrompt, tokComp = tokenFn(channelName, chatID)
+				}
+				return suHistoryLoadMsg{
+					history: history, err: err, channelName: channelName, chatID: chatID,
+					activeProgress: activeProgress, todos: todos,
+					tokenPrompt: tokPrompt, tokenCompletion: tokComp,
+					modelName: modelName, maxContextTokens: maxCtx,
+					maxOutputTokens: maxOut, compressRatio: compRatio,
+				}
 			}
 		}
 	}

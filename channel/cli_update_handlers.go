@@ -1273,6 +1273,22 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
 		}
 	}
+	// Restore LLM state for TUI status bar (model name, context limits, etc.)
+	// For SubAgent sessions, these come from AgentSessionDump. For normal
+	// sessions, they come from LoadSessionLLMState. Without this, the status
+	// bar shows the parent agent's model name and context limits.
+	if msg.modelName != "" {
+		m.cachedModelName = msg.modelName
+	}
+	if msg.maxContextTokens > 0 {
+		m.cachedMaxContextTokens = int(msg.maxContextTokens)
+	}
+	if msg.maxOutputTokens > 0 {
+		m.cachedMaxOutputTokens = msg.maxOutputTokens
+	}
+	if msg.compressRatio > 0 {
+		m.cachedCompressRatio = msg.compressRatio
+	}
 	// Always check for pending AskUser questions after history load.
 	// This covers both active turns (agent paused waiting for user) and
 	// idle sessions (pending from a previous session that was never answered).

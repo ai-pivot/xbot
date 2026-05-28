@@ -50,6 +50,43 @@ type interactiveAgent struct {
 	lastError        string              // 最近一次错误
 	lastReply        string              // 最近一次回复摘要
 	task             string              // one-shot subagent 的任务描述（交互式为空）
+	promptTokens     int64               // last known prompt token count (for TUI status bar)
+	completionTokens int64               // last known completion token count (for TUI status bar)
+}
+
+// modelName returns the LLM model name. Must be called with ia.mu held.
+func (ia *interactiveAgent) modelName() string {
+	if ia.cfg == nil {
+		return ""
+	}
+	return ia.cfg.Model
+}
+
+// maxContextTokens returns the effective max context for this session.
+// Must be called with ia.mu held.
+func (ia *interactiveAgent) maxContextTokens() int64 {
+	if ia.cfg == nil || ia.cfg.ContextManagerConfig == nil {
+		return 0
+	}
+	return int64(ia.cfg.ContextManagerConfig.MaxContextTokens)
+}
+
+// maxOutputTokens returns the max output tokens for this session.
+// Must be called with ia.mu held.
+func (ia *interactiveAgent) maxOutputTokens() int64 {
+	if ia.cfg == nil {
+		return 0
+	}
+	return int64(ia.cfg.MaxOutputTokens)
+}
+
+// compressRatio returns the compression trigger threshold.
+// Must be called with ia.mu held.
+func (ia *interactiveAgent) compressRatio() float64 {
+	if ia.cfg == nil || ia.cfg.ContextManagerConfig == nil {
+		return 0
+	}
+	return ia.cfg.ContextManagerConfig.CompressionThreshold
 }
 
 // interactiveSessionTTL 是 interactive SubAgent 会话的生存时间。
@@ -721,13 +758,14 @@ func (a *Agent) SpawnInteractiveSession(
 
 			placeholder.running = false
 			placeholder.cancelCurrent = nil
+			placeholder.lastReply = out.Content
+			placeholder.promptTokens = out.LastPromptTokens
+			placeholder.completionTokens = out.LastCompletionTokens
 
 			if out.Error != nil {
 				placeholder.lastError = out.Error.Error()
-				placeholder.lastReply = out.Content
 			} else {
 				placeholder.lastError = ""
-				placeholder.lastReply = out.Content
 			}
 
 			// Iteration history was incrementally updated via OnIterationSnapshot during Run().
@@ -1176,6 +1214,8 @@ func (a *Agent) SendToInteractiveSession(
 			} else {
 				ia.lastError = ""
 				ia.lastReply = out.Content
+				ia.promptTokens = out.LastPromptTokens
+				ia.completionTokens = out.LastCompletionTokens
 
 				// out.Messages comes from Run()'s s.messages — the engine's
 				// internal message list. If compression happened during Run(),
@@ -1824,10 +1864,19 @@ type SessionMessage struct {
 }
 
 // AgentSessionDump contains the full state of an interactive SubAgent session
-// for rendering in a viewer. Includes messages and iteration snapshots.
+// for rendering in a viewer. Includes messages, iteration snapshots, and
+// all metadata needed by the TUI status bar (model name, context limits, token usage).
 type AgentSessionDump struct {
 	Messages         []SessionMessage    `json:"messages"`
 	IterationHistory []IterationSnapshot `json:"iterations"`
+
+	// Status bar metadata — used by TUI to render context bar, model name, etc.
+	ModelName        string  `json:"modelName,omitempty"`
+	MaxContextTokens int64   `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int64   `json:"maxOutputTokens,omitempty"`
+	CompressRatio    float64 `json:"compressRatio,omitempty"`
+	PromptTokens     int64   `json:"promptTokens,omitempty"`
+	CompletionTokens int64   `json:"completionTokens,omitempty"`
 }
 
 // GetAgentSessionDump returns the full session state for viewer rendering.
@@ -1869,6 +1918,12 @@ func (a *Agent) GetAgentSessionDump(channel, chatID, roleName, instance string) 
 	return &AgentSessionDump{
 		Messages:         msgs,
 		IterationHistory: iters,
+		ModelName:        ia.modelName(),
+		MaxContextTokens: ia.maxContextTokens(),
+		MaxOutputTokens:  ia.maxOutputTokens(),
+		CompressRatio:    ia.compressRatio(),
+		PromptTokens:     ia.promptTokens,
+		CompletionTokens: ia.completionTokens,
 	}, true
 }
 
@@ -1911,6 +1966,12 @@ func (a *Agent) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump,
 	return &AgentSessionDump{
 		Messages:         msgs,
 		IterationHistory: iters,
+		ModelName:        ia.modelName(),
+		MaxContextTokens: ia.maxContextTokens(),
+		MaxOutputTokens:  ia.maxOutputTokens(),
+		CompressRatio:    ia.compressRatio(),
+		PromptTokens:     ia.promptTokens,
+		CompletionTokens: ia.completionTokens,
 	}, true
 }
 
