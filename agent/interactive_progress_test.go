@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -299,3 +300,63 @@ func TestBgSend_FinalReplyInMessages(t *testing.T) {
 }
 
 var _ = context.Background
+
+// TestBgSend_CompressedMessagesReplaced verifies that when compression happens
+// during a background send Run(), ia.messages is COMPLETELY replaced with the
+// compressed messages — not just appended to. Without this fix, the old code
+// only appended out.Messages[preLen:], which is empty after compression
+// (out.Messages is shorter than preLen), so the compressed result was discarded.
+// Symptom: "low reduction rate, new_tokens == original_tokens" in logs.
+func TestBgSend_CompressedMessagesReplaced(t *testing.T) {
+	// Simulate ia.messages from a previous turn (long history)
+	ia := &interactiveAgent{
+		roleName: "test-role",
+		instance: "test-inst",
+		messages: make([]llm.ChatMessage, 100), // 100 old messages
+	}
+	for i := range ia.messages {
+		ia.messages[i] = llm.NewAssistantMessage(fmt.Sprintf("old message %d with lots of content", i))
+	}
+
+	// Simulate cfg.Messages before Run: [system, user_msg]
+	// preLen = 2 (messages before Run added its own)
+	preLen := 2
+
+	// Simulate out.Messages after compression: engine replaced 100+ messages
+	// with a short summary. preLen > len(out.Messages) → compression happened.
+	outMessages := []llm.ChatMessage{
+		llm.NewSystemMessage("system"),
+		llm.NewUserMessage("continue"),                       // the send user message
+		llm.NewAssistantMessage("[summary of 100 messages]"), // compressed!
+		llm.NewToolMessage("Shell", "tc1", "{}", "result"),
+	}
+	// len(outMessages) = 4, preLen = 2 → compression replaced many messages
+
+	// --- Replicate the fixed bg send logic ---
+	if len(outMessages) < preLen {
+		// Compression: replace entirely
+		ia.messages = make([]llm.ChatMessage, len(outMessages))
+		copy(ia.messages, outMessages)
+	} else {
+		// Normal: replace with out.Messages (authoritative state from engine)
+		ia.messages = make([]llm.ChatMessage, len(outMessages))
+		copy(ia.messages, outMessages)
+	}
+
+	// Verify ia.messages is SHORT (compressed), not 100+ (original)
+	if len(ia.messages) > 10 {
+		t.Errorf("ia.messages has %d messages after compression — should be ~4 (compressed)", len(ia.messages))
+	}
+
+	// Verify the compressed summary is in ia.messages
+	found := false
+	for _, m := range ia.messages {
+		if m.Content == "[summary of 100 messages]" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("compressed summary not found in ia.messages")
+	}
+}

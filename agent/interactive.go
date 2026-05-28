@@ -733,22 +733,35 @@ func (a *Agent) SpawnInteractiveSession(
 			// Iteration history was incrementally updated via OnIterationSnapshot during Run().
 			// out.IterationHistory contains the same snapshots, no need to overwrite.
 
-			// Store messages
+			// Store messages: use out.Messages as the authoritative state.
+			// If compression happened during Run(), out.Messages is the compressed
+			// list (much shorter than the original). We must use it entirely,
+			// not just append from preLen onward — otherwise compression results
+			// are discarded and ia.messages keeps growing forever.
 			var newMsgs []llm.ChatMessage
-			// Include the original user message so GetAgentSessionDump shows it
-			if preLen > 1 {
-				newMsgs = append(newMsgs, cfg.Messages[1])
-			}
-			if len(out.Messages) > preLen {
-				newMsgs = append(newMsgs, out.Messages[preLen:]...)
+			if len(out.Messages) < preLen {
+				// Compression happened: replace entirely with compressed messages
+				newMsgs = make([]llm.ChatMessage, len(out.Messages))
+				copy(newMsgs, out.Messages)
+			} else {
+				// Normal case: include original user message + messages from Run
+				if preLen > 1 {
+					newMsgs = append(newMsgs, cfg.Messages[1])
+				}
+				if len(out.Messages) > preLen {
+					newMsgs = append(newMsgs, out.Messages[preLen:]...)
+				}
 			}
 			// Append final assistant reply so GetAgentSessionDumpByFullKey returns it.
 			// out.Messages (from Run) excludes the final text-only response — it's only
 			// in out.Content. Without this, switching away and back loses the assistant's
 			// final reply (same fix as foreground path below).
 			if out.Content != "" {
-				newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
-			} else {
+				// Check if the last message is already this assistant reply
+				if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Content != out.Content || newMsgs[len(newMsgs)-1].Role != "assistant" {
+					newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
+				}
+			} else if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Role != "assistant" {
 				newMsgs = append(newMsgs, llm.NewAssistantMessage("(empty response)"))
 			}
 			// Carry ReasoningContent to the in-memory message for subsequent turns
@@ -1164,24 +1177,40 @@ func (a *Agent) SendToInteractiveSession(
 				ia.lastError = ""
 				ia.lastReply = out.Content
 
-				// Include the user message sent via action=send so GetAgentSessionDump shows it.
-				// cfg.Messages[preLen-1] is the last element before Run, which is the user message
-				// appended at line ~670 (newMessages = append(..., llm.NewUserMessage(msg.Content)))
-				if preLen > 0 {
-					lastBeforeRun := cfg.Messages[preLen-1]
-					if lastBeforeRun.Role == "user" {
-						ia.messages = append(ia.messages, lastBeforeRun)
-					}
-				}
-				// Append messages produced during Run (tool calls, tool results, etc.)
-				if len(out.Messages) > preLen {
-					ia.messages = append(ia.messages, out.Messages[preLen:]...)
-				}
-				// Append final assistant reply (missing from out.Messages when
-				// handleFinalResponse returns directly without appending to s.messages).
-				if out.Content != "" {
-					ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+				// out.Messages comes from Run()'s s.messages — the engine's
+				// internal message list. If compression happened during Run(),
+				// out.Messages is the COMPRESSED list (much shorter than the
+				// original). We must replace ia.messages entirely, not append.
+				//
+				// Detection: if out.Messages is shorter than preLen (the number
+				// of messages BEFORE Run started), compression must have happened.
+				// Even without compression, using out.Messages as the full
+				// replacement is correct — it contains the authoritative state
+				// from the engine (including any tool calls/results/assistant
+				// messages produced during Run).
+				if len(out.Messages) < preLen || len(out.Messages) == 0 {
+					// Compression happened (or edge case): replace entirely.
+					ia.messages = make([]llm.ChatMessage, len(out.Messages))
+					copy(ia.messages, out.Messages)
 				} else {
+					// Normal case (no compression): append new messages from Run.
+					// The user message was already in cfg.Messages[preLen-1] which
+					// was appended by the caller before Run() — but Run() copies
+					// cfg.Messages, so out.Messages includes everything from the start.
+					// Replace ia.messages with out.Messages to keep them in sync.
+					ia.messages = make([]llm.ChatMessage, len(out.Messages))
+					copy(ia.messages, out.Messages)
+				}
+
+				// Append final assistant reply if not already in out.Messages.
+				// handleFinalResponse returns directly without appending to s.messages,
+				// so out.Messages may not contain the final text reply.
+				if out.Content != "" {
+					// Check if the last message is already this assistant reply
+					if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content || ia.messages[len(ia.messages)-1].Role != "assistant" {
+						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+					}
+				} else if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Role != "assistant" {
 					ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
 				}
 				// Carry ReasoningContent to the in-memory message for subsequent turns
@@ -1190,7 +1219,7 @@ func (a *Agent) SendToInteractiveSession(
 				}
 				// Save iteration history for inspect
 				if len(out.IterationHistory) > 0 {
-					ia.iterationHistory = append(ia.iterationHistory, out.IterationHistory...)
+					ia.iterationHistory = out.IterationHistory
 				}
 			}
 
