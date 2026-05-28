@@ -271,7 +271,8 @@ type Agent struct {
 	sessionFinalSent sync.Map                                  // key: "channel:chatID" -> bool, 工具已发送最终回复（如卡片），后续 sendMessage 跳过
 
 	// per-request cancel: 用于 /cancel 取消当前正在处理的请求
-	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
+	// key: "channel:chatID" -> context.CancelFunc
+	// 直接存储 CancelFunc，消除 channel buffer full 问题。
 	chatCancelCh sync.Map
 
 	// pendingCancel: 当 /cancel 到达时 cancelCh 尚未注册（消息还在排队或等信号量），
@@ -1566,17 +1567,11 @@ func (a *Agent) Run(ctx context.Context) error {
 				cancelKey := msg.Channel + ":" + msg.ChatID
 				cancelMeta := map[string]string{"cancelled": "true"}
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
-				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
-					select {
-					case ch.(chan struct{}) <- struct{}{}:
-						log.Info("Cancel signal sent to processing goroutine")
-						_ = a.sendMessage(msg.Channel, msg.ChatID, "Request cancelled.", cancelMeta)
-					default:
-						// cancel 信号已发过
-						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
-					}
+				if fn, ok := a.chatCancelCh.Load(cancelKey); ok {
+					fn.(context.CancelFunc)()
+					log.Info("Cancel sent directly via CancelFunc")
+					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request cancelled.", cancelMeta)
 				} else {
-					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
 					a.pendingCancel.Store(cancelKey, true)
 					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
 					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request queued for cancellation.", cancelMeta)
@@ -1859,58 +1854,30 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		// 创建 per-request cancel context
 		var response *channel.OutboundMsg
 		var err error
-		cancelCh := make(chan struct{}, 1)
 		// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
 		cancelKey := msg.Channel + ":" + msg.ChatID
-		a.chatCancelCh.Store(cancelKey, cancelCh)
 
 		// Emit session busy event for instant sidebar push.
 		a.emitSessionState(protocol.SessionEvent{
 			Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
 		})
 
-		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号。
-		// Track whether we consumed one so we can cancel the context synchronously
-		// before processMessage starts — relying solely on the goroutine below
-		// races with processMessage on the first message after restart.
+		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即取消。
 		hadPending := false
 		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
-			select {
-			case cancelCh <- struct{}{}:
-				hadPending = true
-				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
-			default:
-			}
+			hadPending = true
+			log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel")
 		}
 
 		reqCtx, reqCancel := context.WithCancel(ctx)
+		// 直接存 CancelFunc，/cancel handler 调用它（无 channel，无线程切换，无 buffer full）
+		a.chatCancelCh.Store(cancelKey, reqCancel)
 
-		// Synchronous cancel: if a pending cancel was consumed above, cancel
-		// the context NOW before processMessage starts. reqCancel is idempotent
-		// (called again in defer) and guarantees processMessage receives an
-		// already-canceled context, avoiding the LLM call entirely.
 		if hadPending {
 			reqCancel()
 		}
 
-		// 监听 cancel 信号（处理 processMessage 运行期间到达的 cancel）。
-		// Loop to handle multiple cancel requests — the goroutine was previously
-		// a single select{}, which exited after the first cancel. If the user
-		// pressed Ctrl+C again (because the agent didn't appear to stop), the
-		// channel reader was gone and subsequent sends got "buffer full".
-		clipanic.Go("agent.chatProcessLoop.cancelListener", func() {
-			for {
-				select {
-				case <-cancelCh:
-					reqCancel()
-				// reqCancel is idempotent — calling it multiple times is safe.
-				// Drain any additional signals that arrived between calls.
-				case <-reqCtx.Done():
-					return
-				}
-			}
-		})
-
+		// /cancel 直接调用 reqCancel（已存入 chatCancelCh），无需 listener goroutine。
 		// 执行消息处理，完成后检查是否被取消
 		// 注意：必须在 reqCancel() 调用前检查，否则 reqCtx.Err() 总是返回 Canceled
 		wasCancelled := false
