@@ -698,40 +698,31 @@ func (c *Client) InspectInteractiveSession(ctx context.Context, roleName, channe
 }
 
 func (c *Client) GetSessionMessages(channelName, chatID, roleName, instance string) ([]SessionMessage, bool) {
-	var r struct {
-		Messages []SessionMessage `json:"messages"`
-		OK       bool             `json:"ok"`
-	}
+	var msgs []SessionMessage
 	if err := c.call(MethodGetSessionMessages, getSessionMessagesReq{
 		ChannelName: channelName, ChatID: chatID, RoleName: roleName, Instance: instance,
-	}, &r); err != nil {
+	}, &msgs); err != nil {
 		return nil, false
 	}
-	return r.Messages, r.OK
+	return msgs, len(msgs) > 0
 }
 
 func (c *Client) GetAgentSessionDump(channelName, chatID, roleName, instance string) (*AgentSessionDump, bool) {
-	var r struct {
-		Dump *AgentSessionDump `json:"dump"`
-		OK   bool              `json:"ok"`
-	}
+	var dump AgentSessionDump
 	if err := c.call(MethodGetAgentSessionDump, getAgentSessionDumpReq{
 		ChannelName: channelName, ChatID: chatID, RoleName: roleName, Instance: instance,
-	}, &r); err != nil {
+	}, &dump); err != nil {
 		return nil, false
 	}
-	return r.Dump, r.OK
+	return &dump, len(dump.Messages) > 0
 }
 
 func (c *Client) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump, bool) {
-	var r struct {
-		Dump *AgentSessionDump `json:"dump"`
-		OK   bool              `json:"ok"`
-	}
-	if err := c.call(MethodGetAgentSessionDumpByFullKey, getAgentSessionDumpByFullKeyReq{FullKey: fullKey}, &r); err != nil {
+	var dump AgentSessionDump
+	if err := c.call(MethodGetAgentSessionDumpByFullKey, getAgentSessionDumpByFullKeyReq{FullKey: fullKey}, &dump); err != nil {
 		return nil, false
 	}
-	return r.Dump, r.OK
+	return &dump, len(dump.Messages) > 0
 }
 
 // ---------------------------------------------------------------------------
