@@ -60,10 +60,10 @@ func TestGetLLMForModel_NilSubscriptionSvc(t *testing.T) {
 	f.defaultThinkingMode = "auto"
 
 	// No subscriptionSvc + explicit model → model not found in any subscription,
-	// fallback to default client with its OWN model (not the target model).
+	// fallback to default client with the RESOLVED model (not the default model).
 	_, model, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
-	if model != "default-model" {
-		t.Errorf("model = %q, want default-model (fallback uses default client's model)", model)
+	if model != "claude-opus-4-20250115" {
+		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved model preserved in fallback)", model)
 	}
 	if usedCustom {
 		t.Error("usedCustom should be false when model not found in any subscription")
@@ -193,17 +193,17 @@ func TestGetLLMForModel_TierResolution(t *testing.T) {
 	if usedCustom {
 		t.Error("usedCustom should be false when model not found in any subscription")
 	}
-	if model != "default-model" {
-		t.Errorf("model = %q, want default-model (fallback)", model)
+	if model != "claude-opus-4-20250115" {
+		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved tier model)", model)
 	}
 
-	// Non-tier model with no subscriptionSvc → same fallback
+	// Non-tier model with no subscriptionSvc → returns the model name itself
 	_, model, _, _, usedCustom = f.GetLLMForModel("user1", "gpt-4o")
 	if usedCustom {
 		t.Error("usedCustom should be false when model not found in any subscription")
 	}
-	if model != "default-model" {
-		t.Errorf("model = %q, want default-model (fallback)", model)
+	if model != "gpt-4o" {
+		t.Errorf("model = %q, want gpt-4o (non-tier model, returned as-is)", model)
 	}
 }
 
@@ -439,8 +439,8 @@ func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 }
 
 // TestGetLLMForModel_ConfigSubNoMatch verifies that when configSubsFn returns
-// subscriptions but none match the resolved tier model, it falls back to the
-// default LLM (usedCustom=false, model=default-model).
+// subscriptions with different Model fields, it still tries to use them with
+// the resolved model name (OpenAI-compatible endpoints can serve any model).
 func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
@@ -450,7 +450,7 @@ func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 		VanguardModel: "gpt-4o",
 	})
 
-	// Config sub has a different model — no match
+	// Config sub has a different model — but still usable with gpt-4o
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
 		return []config.SubscriptionConfig{
 			{
@@ -465,14 +465,14 @@ func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 	})
 
 	client, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
-	if usedCustom {
-		t.Error("usedCustom should be false when no config sub matches resolved model")
+	if !usedCustom {
+		t.Error("usedCustom should be true when config sub can serve the resolved model")
 	}
-	if model != "default-model" {
-		t.Errorf("model = %q, want %q (fallback to default)", model, "default-model")
+	if model != "gpt-4o" {
+		t.Errorf("model = %q, want %q (resolved tier model)", model, "gpt-4o")
 	}
 	if client == nil {
-		t.Error("client should not be nil (fallback default client)")
+		t.Error("client should not be nil")
 	}
 }
 
@@ -527,8 +527,8 @@ func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
 			if usedCustom {
 				t.Error("usedCustom should be false when config sub has empty credentials")
 			}
-			if model != "default-model" {
-				t.Errorf("model = %q, want %q (fallback to default)", model, "default-model")
+			if model != "gpt-4o" {
+				t.Errorf("model = %q, want %q (resolved tier model preserved in fallback)", model, "gpt-4o")
 			}
 		})
 	}

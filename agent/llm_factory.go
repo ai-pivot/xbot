@@ -732,9 +732,48 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 		}
 	}
 
-	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM")
-	client, defaultModel, maxCtx, tm := f.GetLLM(senderID)
-	return client, defaultModel, maxCtx, tm, false
+	// No subscription for the resolved model. Try using any available
+	// subscription with the resolved model as the requested model name.
+	// OpenAI-compatible endpoints can serve arbitrary model names even if
+	// they're not in cached_models. This prevents the tier system from
+	// silently falling back to the parent's model and confusing the user.
+	f.mu.RLock()
+	getConfigSubs2 := f.configSubsFn
+	f.mu.RUnlock()
+	if getConfigSubs2 != nil {
+		for _, cs := range getConfigSubs2() {
+			if cs.BaseURL == "" || cs.APIKey == "" {
+				continue
+			}
+			sub := configSubToLLMSubscription(cs)
+			client := f.createClientFromSub(sub, resolvedModel)
+			if client != nil {
+				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
+				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+			}
+		}
+	}
+	if f.subscriptionSvc != nil && senderID != "" {
+		subs, err := f.subscriptionSvc.List(senderID)
+		if err == nil {
+			for _, sub := range subs {
+				if sub.BaseURL == "" || sub.APIKey == "" {
+					continue
+				}
+				client := f.createClientFromSub(sub, resolvedModel)
+				if client != nil {
+					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
+					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+				}
+			}
+		}
+	}
+
+	// Last resort: use parent LLM but keep the resolved model name so the
+	// TUI status bar shows what was requested, not the fallback model.
+	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM with resolved model name")
+	client, _, maxCtx, tm := f.GetLLM(senderID)
+	return client, resolvedModel, maxCtx, tm, false
 }
 
 func (f *LLMFactory) buildModelSubscriptionMap(senderID string) map[string]*sqlite.LLMSubscription {
