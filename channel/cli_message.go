@@ -1302,6 +1302,11 @@ func (m *cliModel) progressBlockCompositeFP(elapsedSec int64, bubbleWidth int) u
 	h.Write(eb[:])
 	binary.LittleEndian.PutUint64(eb[:], m.cachedStreamBlockFP)
 	h.Write(eb[:])
+	// Spinner tick count — ensures pulse/phase animations update every 100ms.
+	// Without this, the cache stays stable for a whole second (elapsedSec is
+	// quantized) and the spinner freezes.
+	binary.LittleEndian.PutUint64(eb[:], uint64(m.ticker.ticks))
+	h.Write(eb[:])
 	// Active tools (dynamic — changes every tick during tool execution)
 	if m.progress != nil {
 		for _, t := range m.progress.ActiveTools {

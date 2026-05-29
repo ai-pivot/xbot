@@ -9,23 +9,22 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/plugin"
-
-	log "xbot/logger"
 )
 
 // ---------------------------------------------------------------------------
 // grpcChannelBridge — wraps a gRPC plugin process as channel.Channel
+//
+// Phase 2: uses bidirectional multiplexer for inbound push.
+// The plugin pushes "channel_inbound" messages to xbot via stdout.
+// The readLoop in GrpcPluginProcess routes them to our InboundHandler.
+// No polling needed.
 // ---------------------------------------------------------------------------
 
-// grpcChannelBridge implements channel.Channel by delegating to the plugin
-// process via JSON-over-stdio. It also implements channel.ChannelProvider
-// so it can be registered with the ChannelProviderRegistry.
 type grpcChannelBridge struct {
 	process *plugin.GrpcPluginProcess
 	decl    *plugin.ChannelProviderDecl
 	msgBus  *bus.MessageBus
-
-	stopCh chan struct{}
+	stopCh  chan struct{}
 }
 
 // Compile-time checks
@@ -42,7 +41,12 @@ func (b *grpcChannelBridge) Name() string {
 
 func (b *grpcChannelBridge) CreateChannel(cfg map[string]string, msgBus *bus.MessageBus) (channel.Channel, error) {
 	b.msgBus = msgBus
+	b.stopCh = make(chan struct{})
 
+	// Register our inbound handler — readLoop will call it for "channel_inbound" messages.
+	b.process.SetInboundHandler(b.handleInbound)
+
+	// Tell the plugin to start the channel.
 	resp, err := b.process.Call(context.Background(), &plugin.PluginRequest{
 		Method: "channel_start",
 		Params: map[string]any{"config": cfg},
@@ -54,8 +58,6 @@ func (b *grpcChannelBridge) CreateChannel(cfg map[string]string, msgBus *bus.Mes
 		return nil, fmt.Errorf("channel_start error: %s", resp.Error)
 	}
 
-	b.stopCh = make(chan struct{})
-	go b.pollInboundLoop()
 	return b, nil
 }
 
@@ -195,64 +197,67 @@ func (b *grpcChannelBridge) DeleteMessage(ctx context.Context, chatID, messageID
 }
 
 // ---------------------------------------------------------------------------
-// Inbound polling
+// Inbound handler — called by readLoop when plugin pushes channel_inbound
 // ---------------------------------------------------------------------------
 
-func (b *grpcChannelBridge) pollInboundLoop() {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-b.stopCh:
-			return
-		case <-ticker.C:
-			resp, err := b.process.Call(context.Background(), &plugin.PluginRequest{
-				Method: "channel_poll",
-			})
-			if err != nil {
-				if !b.process.IsRunning() {
-					return
-				}
-				continue
-			}
-			if resp.Error != "" || resp.Result == "" || resp.Result == "null" || resp.Result == "[]" {
-				continue
-			}
-			b.dispatchInbound(resp.Result)
-		}
+// handleInbound is the InboundHandler registered on the GrpcPluginProcess.
+// It processes "channel_inbound" messages from the plugin and routes them
+// to bus.Inbound.
+func (b *grpcChannelBridge) handleInbound(msg *plugin.PluginInbound) {
+	if msg.Method != "channel_inbound" {
+		return
 	}
-}
-
-func (b *grpcChannelBridge) dispatchInbound(result string) {
 	if b.msgBus == nil {
 		return
 	}
 
-	var messages []struct {
-		ChatID     string   `json:"chat_id"`
-		SenderID   string   `json:"sender_id"`
-		SenderName string   `json:"sender_name"`
-		Content    string   `json:"content"`
-		ChatType   string   `json:"chat_type"`
-		Media      []string `json:"media,omitempty"`
+	// Parse messages array from params.
+	// Single message: {"method":"channel_inbound","params":{"chat_id":"...","content":"..."}}
+	// Batch: {"method":"channel_inbound","params":{"messages":[{...},{...}]}}
+	if rawMessages, ok := msg.Params["messages"]; ok {
+		// Batch mode
+		if arr, ok := rawMessages.([]any); ok {
+			for _, item := range arr {
+				if m, ok := item.(map[string]any); ok {
+					b.pushInboundMessage(m)
+				}
+			}
+		}
+	} else {
+		// Single message mode — params IS the message
+		b.pushInboundMessage(msg.Params)
 	}
-	if err := json.Unmarshal([]byte(result), &messages); err != nil {
-		log.WithField("channel", b.decl.Name).Warn("Failed to parse inbound messages: ", err)
-		return
+}
+
+func (b *grpcChannelBridge) pushInboundMessage(params map[string]any) {
+	chatID, _ := params["chat_id"].(string)
+	senderID, _ := params["sender_id"].(string)
+	senderName, _ := params["sender_name"].(string)
+	content, _ := params["content"].(string)
+	chatType, _ := params["chat_type"].(string)
+	if chatType == "" {
+		chatType = "p2p"
 	}
 
-	for _, m := range messages {
-		b.msgBus.Inbound <- bus.InboundMessage{
-			Channel:    b.decl.Name,
-			SenderID:   m.SenderID,
-			SenderName: m.SenderName,
-			ChatID:     m.ChatID,
-			ChatType:   m.ChatType,
-			Content:    m.Content,
-			Media:      m.Media,
-			Time:       time.Now(),
+	// Parse media if present
+	var media []string
+	if rawMedia, ok := params["media"].([]any); ok {
+		for _, m := range rawMedia {
+			if s, ok := m.(string); ok {
+				media = append(media, s)
+			}
 		}
+	}
+
+	b.msgBus.Inbound <- bus.InboundMessage{
+		Channel:    b.decl.Name,
+		SenderID:   senderID,
+		SenderName: senderName,
+		ChatID:     chatID,
+		ChatType:   chatType,
+		Content:    content,
+		Media:      media,
+		Time:       time.Now(),
 	}
 }
 

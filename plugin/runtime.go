@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,17 +43,43 @@ func (nr *NativeRuntime) Create(manifest *PluginManifest, dir string) (Plugin, e
 }
 
 // ---------------------------------------------------------------------------
-// gRPC Runtime — external process plugins
+// gRPC Runtime — external process plugins (Phase 2: bidirectional multiplexer)
 // ---------------------------------------------------------------------------
 
+// pendingCall tracks an in-flight request waiting for its response.
+type pendingCall struct {
+	done chan struct{}
+	resp *PluginResponse
+	err  error
+}
+
+// InboundHandler processes asynchronous messages pushed by the plugin process.
+// Registered via GrpcPluginProcess.SetInboundHandler.
+type InboundHandler func(msg *PluginInbound)
+
 // GrpcPluginProcess manages an external plugin process communicating via
-// JSON-over-stdin/stdout protocol.
+// JSON-over-stdin/stdout protocol with bidirectional multiplexing.
+//
+// Phase 2 architecture:
+//   - A single readLoop goroutine reads all stdout lines from the plugin.
+//   - Lines with "method" field are inbound messages → routed to InboundHandler.
+//   - Lines with "result"/"error" (no "method") are responses → routed to pending Call().
+//   - Call() writes a request and waits on a pendingCall channel; readLoop delivers.
+//
+// This allows plugins to push channel_inbound messages at any time without polling.
 type GrpcPluginProcess struct {
-	cmd     *exec.Cmd
-	stdin   *jsonLineWriter
-	stdout  *jsonLineReader
+	cmd    *exec.Cmd
+	stdin  *jsonLineWriter
+	stdout *jsonLineReader
+
 	mu      sync.Mutex
 	running bool
+
+	// Multiplexer state (protected by muxMu)
+	muxMu          sync.Mutex
+	pending        *pendingCall   // at most one in-flight call (request-response protocol)
+	inboundHandler InboundHandler // called for inbound messages
+
 }
 
 // NewGRPCRuntime creates a factory for gRPC plugin processes.
@@ -77,7 +104,7 @@ type grpcPlugin struct {
 	manifest        PluginManifest
 	dir             string
 	process         *GrpcPluginProcess
-	ChannelProvider *ChannelProviderDecl // exported: set during Activate if plugin provides a channel
+	ChannelProvider *ChannelProviderDecl
 }
 
 func (g *grpcPlugin) Manifest() PluginManifest {
@@ -90,6 +117,9 @@ func (g *grpcPlugin) Activate(ctx PluginContext) error {
 		return fmt.Errorf("start plugin process: %w", err)
 	}
 	g.process = proc
+
+	// Start the bidirectional readLoop before making any calls.
+	go proc.readLoop()
 
 	// Send activate command to the external process
 	req := &PluginRequest{
@@ -148,7 +178,6 @@ func (g *grpcPlugin) Activate(ctx PluginContext) error {
 		}
 		g.ChannelProvider = cp
 
-		// Use RegisterChannelProvider callback to avoid plugin→channel import cycle.
 		if err := ctx.RegisterChannelProvider(cp); err != nil {
 			proc.Stop()
 			return fmt.Errorf("register channel provider %q: %w", cp.Name, err)
@@ -255,6 +284,7 @@ type PluginRequest struct {
 }
 
 // PluginResponse is a JSON-over-stdio response from the plugin process.
+// Response lines have "result" or "error" but NO "method" field.
 type PluginResponse struct {
 	Result     string        `json:"result,omitempty"`
 	Error      string        `json:"error,omitempty"`
@@ -264,8 +294,16 @@ type PluginResponse struct {
 	Enrichers  []enricherReg `json:"enrichers,omitempty"`
 
 	// ChannelProvider declares that this plugin provides a custom channel.
-	// Only meaningful in the "activate" response.
 	ChannelProvider *ChannelProviderDecl `json:"channel_provider,omitempty"`
+}
+
+// PluginInbound represents an asynchronous message pushed by the plugin.
+// Inbound lines have "method" field but NO "result" or "error".
+// Currently supported methods:
+//   - "channel_inbound": plugin pushes user messages to xbot agent.
+type PluginInbound struct {
+	Method string         `json:"method"`
+	Params map[string]any `json:"params,omitempty"`
 }
 
 type hookReg struct {
@@ -285,7 +323,6 @@ type ChannelProviderDecl struct {
 }
 
 // GetChannelProviderDecl extracts the channel provider declaration from a grpcPlugin.
-// Returns nil if the plugin does not provide a channel.
 func GetChannelProviderDecl(p Plugin) *ChannelProviderDecl {
 	gp, ok := p.(*grpcPlugin)
 	if !ok {
@@ -295,7 +332,6 @@ func GetChannelProviderDecl(p Plugin) *ChannelProviderDecl {
 }
 
 // GetProcess returns the GrpcPluginProcess for a grpcPlugin, or nil.
-// Used by serverapp's channel bridge to call the plugin process.
 func GetProcess(p Plugin) *GrpcPluginProcess {
 	if gp, ok := p.(*grpcPlugin); ok {
 		return gp.process
@@ -344,7 +380,18 @@ func startPluginProcess(entry, executable string, args []string, dir string) (*G
 
 const pluginCallTimeout = 30 * time.Second
 
+// SetInboundHandler registers a callback for asynchronous inbound messages
+// from the plugin (e.g., channel_inbound). Must be called before readLoop starts
+// or while no readLoop is running (thread-safe via muxMu).
+func (p *GrpcPluginProcess) SetInboundHandler(handler InboundHandler) {
+	p.muxMu.Lock()
+	defer p.muxMu.Unlock()
+	p.inboundHandler = handler
+}
+
 // Call sends a request to the plugin process and waits for the response.
+// Thread-safe: only one Call can be in-flight at a time (stdin is sequential).
+// The readLoop goroutine delivers the response.
 func (p *GrpcPluginProcess) Call(ctx context.Context, req *PluginRequest) (*PluginResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -353,32 +400,115 @@ func (p *GrpcPluginProcess) Call(ctx context.Context, req *PluginRequest) (*Plug
 		return nil, fmt.Errorf("plugin process not running")
 	}
 
+	// Write request to stdin (under p.mu to serialize writes)
 	if err := p.stdin.write(req); err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	done := make(chan *PluginResponse, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		resp := &PluginResponse{}
-		if err := p.stdout.read(resp); err != nil {
-			errCh <- err
-			return
-		}
-		done <- resp
-	}()
+	// Register pending call for readLoop to deliver response
+	pc := &pendingCall{done: make(chan struct{})}
 
+	p.muxMu.Lock()
+	p.pending = pc
+	p.muxMu.Unlock()
+
+	// Wait for response (delivered by readLoop) or timeout/cancel
 	select {
-	case resp := <-done:
-		return resp, nil
-	case err := <-errCh:
-		return nil, err
+	case <-pc.done:
+		return pc.resp, pc.err
 	case <-ctx.Done():
+		p.clearPending()
 		p.stopLocked()
 		return nil, ctx.Err()
 	case <-time.After(pluginCallTimeout):
+		p.clearPending()
 		p.stopLocked()
 		return nil, fmt.Errorf("plugin call timeout (%v)", pluginCallTimeout)
+	}
+}
+
+func (p *GrpcPluginProcess) clearPending() {
+	p.muxMu.Lock()
+	p.pending = nil
+	p.muxMu.Unlock()
+}
+
+// readLoop is the bidirectional multiplexer. It reads all lines from the
+// plugin's stdout and routes them:
+//   - Response (has "result"/"error", no "method") → deliver to pending Call()
+//   - Inbound (has "method", no "result"/"error")  → deliver to InboundHandler
+//
+// Runs as a background goroutine, started by Activate().
+func (p *GrpcPluginProcess) readLoop() {
+	for {
+		// Read next line from stdout
+		line, err := p.stdout.readLine()
+		if err != nil {
+			// Process exited or error — fail any pending call
+			p.muxMu.Lock()
+			if p.pending != nil {
+				p.pending.err = fmt.Errorf("plugin stdout closed: %w", err)
+				close(p.pending.done)
+				p.pending = nil
+			}
+			p.muxMu.Unlock()
+
+			p.mu.Lock()
+			if p.running {
+				log.WithField("plugin", "grpc").Warn("Plugin stdout closed: ", err)
+			}
+			p.mu.Unlock()
+			return
+		}
+
+		// Peek at the line to determine type: response vs inbound
+		var peek struct {
+			Method string `json:"method"`
+			Result string `json:"result"`
+			Error  string `json:"error"`
+		}
+		if jsonErr := json.Unmarshal(line, &peek); jsonErr != nil {
+			log.WithField("plugin", "grpc").Warn("Failed to parse plugin stdout line: ", jsonErr)
+			continue
+		}
+
+		if peek.Method != "" && peek.Result == "" && peek.Error == "" {
+			// Inbound message from plugin (e.g., "channel_inbound")
+			var inbound PluginInbound
+			if err := json.Unmarshal(line, &inbound); err != nil {
+				log.WithField("plugin", "grpc").Warn("Failed to parse inbound: ", err)
+				continue
+			}
+			p.muxMu.Lock()
+			handler := p.inboundHandler
+			p.muxMu.Unlock()
+			if handler != nil {
+				handler(&inbound)
+			}
+		} else {
+			// Response to a pending Call
+			var resp PluginResponse
+			if err := json.Unmarshal(line, &resp); err != nil {
+				// Still try to deliver as error
+				p.muxMu.Lock()
+				if p.pending != nil {
+					p.pending.err = fmt.Errorf("parse response: %w", err)
+					close(p.pending.done)
+					p.pending = nil
+				}
+				p.muxMu.Unlock()
+				continue
+			}
+
+			p.muxMu.Lock()
+			pc := p.pending
+			if pc != nil {
+				pc.resp = &resp
+				close(pc.done)
+				p.pending = nil
+			}
+			p.muxMu.Unlock()
+		}
 	}
 }
 
