@@ -450,9 +450,18 @@ func Run(args []string) error {
 	plugin.SetChannelProviderRegistrar(func(provider any) error {
 		cp, ok := provider.(channel.ChannelProvider)
 		if !ok {
-			return fmt.Errorf("provider does not implement channel.ChannelProvider")
+			return fmt.Errorf("provider does not implement channel.ChannelProvider (got %T)", provider)
 		}
 		return channelProviderReg.Register(cp)
+	})
+
+	// Register the gRPC channel bridge factory: creates grpcChannelBridge from
+	// ChannelProviderDecl + GrpcPluginProcess, implementing full channel.ChannelProvider.
+	plugin.SetGrpcChannelBridgeFactory(func(decl *plugin.ChannelProviderDecl, process *plugin.GrpcPluginProcess) (any, error) {
+		return &grpcChannelBridge{
+			decl:    decl,
+			process: process,
+		}, nil
 	})
 
 	// Pre-declare so the channelReconfigureFn closure can reference them by pointer.

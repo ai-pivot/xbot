@@ -169,7 +169,7 @@ func (g *grpcPlugin) Activate(ctx PluginContext) error {
 		}
 	}
 
-	// If the plugin declares a channel_provider, register it via callback.
+	// If the plugin declares a channel_provider, create a bridge and register it.
 	if resp.ChannelProvider != nil {
 		cp := resp.ChannelProvider
 		if cp.Name == "" {
@@ -178,7 +178,15 @@ func (g *grpcPlugin) Activate(ctx PluginContext) error {
 		}
 		g.ChannelProvider = cp
 
-		if err := ctx.RegisterChannelProvider(cp); err != nil {
+		// Create a channel.ChannelProvider bridge via the factory registered by serverapp.
+		// The bridge wraps our process + decl into a full channel.ChannelProvider implementation.
+		bridge, err := CreateGrpcChannelBridge(cp, proc)
+		if err != nil {
+			proc.Stop()
+			return fmt.Errorf("create grpc channel bridge: %w", err)
+		}
+
+		if err := ctx.RegisterChannelProvider(bridge); err != nil {
 			proc.Stop()
 			return fmt.Errorf("register channel provider %q: %w", cp.Name, err)
 		}

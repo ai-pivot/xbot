@@ -1,6 +1,9 @@
 package plugin
 
 import (
+	"fmt"
+	"sync"
+
 	log "xbot/logger"
 )
 
@@ -11,13 +14,43 @@ import (
 type ChannelProviderRegistrar func(provider any) error
 
 // globalChannelProviderRegistrar 是全局 ChannelProvider 注册回调。
-// 由 serverapp 在初始化时通过 SetChannelProviderRegistrar 设置。
 var globalChannelProviderRegistrar ChannelProviderRegistrar
 
 // SetChannelProviderRegistrar 设置全局 ChannelProvider 注册回调。
-// 在 serverapp.Run() 中调用，将 plugin 包连接到 ChannelProviderRegistry。
 func SetChannelProviderRegistrar(fn ChannelProviderRegistrar) {
 	globalChannelProviderRegistrar = fn
+}
+
+// GrpcChannelBridgeFactory creates a channel.ChannelProvider from a gRPC
+// plugin's ChannelProviderDecl + GrpcPluginProcess. Registered by serverapp
+// to create grpcChannelBridge instances without plugin→channel import cycle.
+type GrpcChannelBridgeFactory func(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error)
+
+var (
+	grpcBridgeFactoryMu sync.RWMutex
+	grpcBridgeFactory   GrpcChannelBridgeFactory
+)
+
+// SetGrpcChannelBridgeFactory registers the factory that wraps gRPC plugin
+// channel declarations into full channel.ChannelProvider implementations.
+// Called by serverapp during initialization.
+func SetGrpcChannelBridgeFactory(fn GrpcChannelBridgeFactory) {
+	grpcBridgeFactoryMu.Lock()
+	defer grpcBridgeFactoryMu.Unlock()
+	grpcBridgeFactory = fn
+}
+
+// CreateGrpcChannelBridge calls the registered factory to create a
+// channel.ChannelProvider from a gRPC plugin's channel declaration.
+func CreateGrpcChannelBridge(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error) {
+	grpcBridgeFactoryMu.RLock()
+	fn := grpcBridgeFactory
+	grpcBridgeFactoryMu.RUnlock()
+
+	if fn == nil {
+		return nil, fmt.Errorf("grpc channel bridge factory not registered (serverapp not initialized?)")
+	}
+	return fn(decl, process)
 }
 
 // WireChannelProviders 将所有已激活插件的 ChannelProvider
@@ -65,7 +98,6 @@ func WireChannelProviders(pm *PluginManager) {
 }
 
 // CollectChannelProviders 收集所有插件的 ChannelProvider（不注册到 registry）。
-// 用于测试或需要延迟注册的场景。
 func CollectChannelProviders(pm *PluginManager) []any {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
