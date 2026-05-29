@@ -18,14 +18,15 @@ import (
 	"xbot/protocol"
 )
 
+// RPCTableDispatcher is the interface needed by the channel provider to
+// dispatch RPC calls from plugin→xbot. Satisfied by *RPCTable.
+type RPCTableDispatcher interface {
+	Dispatch(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
+}
+
 // ---------------------------------------------------------------------------
 // grpcPluginChannelProvider — channel.ChannelProvider backed by a separate
 // plugin process communicating via bidirectional JSON-RPC over stdin/stdout.
-//
-// Unlike the old grpcChannelBridge which reused the plugin's activation
-// process, this provider spawns a DEDICATED process for the channel.
-// The process communicates using the WS JSON-RPC protocol (same as remote CLI),
-// giving it access to the full RPC surface.
 // ---------------------------------------------------------------------------
 
 type grpcPluginChannelProvider struct {
@@ -38,6 +39,17 @@ type grpcPluginChannelProvider struct {
 }
 
 var _ channel.ChannelProvider = (*grpcPluginChannelProvider)(nil)
+
+// NewGrpcPluginChannelProvider creates a grpcPluginChannelProvider with the
+// given declaration and RPC dispatch table. Used by both CLI and server modes.
+func NewGrpcPluginChannelProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher) *grpcPluginChannelProvider {
+	return &grpcPluginChannelProvider{
+		decl: decl,
+		rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+			return rpcTable.Dispatch(ctx, method, payload)
+		},
+	}
+}
 
 func (p *grpcPluginChannelProvider) Name() string {
 	return p.decl.Name
@@ -67,7 +79,6 @@ func (p *grpcPluginChannelProvider) CreateChannel(cfg map[string]string, msgBus 
 	p.mu.Unlock()
 
 	// Send initial config to the plugin as an event.
-	// The plugin reads this and knows its configuration.
 	configMsg := protocol.WSMessage{
 		Type: "channel_config",
 	}
@@ -139,7 +150,6 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, err
 	if decl.Executable != "" {
 		cmd = exec.Command(decl.Executable, decl.Args...)
 	} else {
-		// Parse entry as command string (same logic as plugin/runtime.go).
 		parts := strings.Fields(decl.Entry)
 		if len(parts) == 0 {
 			return nil, fmt.Errorf("empty entry command for channel %s", decl.Name)

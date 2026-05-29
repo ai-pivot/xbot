@@ -37,6 +37,7 @@ import (
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/pprof"
 	"xbot/protocol"
 	"xbot/serverapp"
@@ -748,6 +749,13 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
+
+		// Register ChannelProviderFactory for gRPC channel plugins.
+		// In server mode this is done in server.go's Run(); CLI mode must also
+		// register it so plugins declaring channel_provider can activate.
+		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.GrpcPluginProcess) (any, error) {
+			return serverapp.NewGrpcPluginChannelProvider(decl, rpcTable), nil
+		})
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {

@@ -7,7 +7,7 @@
   "runtime": "grpc",
   "entry": "python3 main.py",
   "activationEvents": ["onStart"],
-  "permissions": ["tools.register"],
+  "permissions": ["channels.register"],
   "contributes": {
     "channelProvider": {
       "name": "echo",
