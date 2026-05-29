@@ -178,9 +178,14 @@ func (g *grpcPlugin) Activate(ctx PluginContext) error {
 		}
 		g.ChannelProvider = cp
 
-		// Create a channel.ChannelProvider bridge via the factory registered by serverapp.
-		// The bridge wraps our process + decl into a full channel.ChannelProvider implementation.
-		bridge, err := CreateGrpcChannelBridge(cp, proc)
+		// Populate entry info from manifest for spawning a separate channel process.
+		cp.Entry = g.manifest.Entry
+		cp.Executable = g.manifest.Executable
+		cp.Args = g.manifest.Args
+		cp.Dir = g.dir
+
+		// Create a channel.ChannelProvider via the factory registered by serverapp.
+		bridge, err := CreateChannelProvider(cp, proc)
 		if err != nil {
 			proc.Stop()
 			return fmt.Errorf("create grpc channel bridge: %w", err)
@@ -328,6 +333,13 @@ type enricherReg struct {
 type ChannelProviderDecl struct {
 	Name         string           `json:"name"`
 	ConfigSchema []map[string]any `json:"config_schema,omitempty"`
+
+	// Entry info for spawning a separate channel process.
+	// Populated by xbot from the plugin manifest during activation.
+	Entry      string   `json:"-"` // not serialized to plugin
+	Executable string   `json:"-"`
+	Args       []string `json:"-"`
+	Dir        string   `json:"-"`
 }
 
 // GetChannelProviderDecl extracts the channel provider declaration from a grpcPlugin.

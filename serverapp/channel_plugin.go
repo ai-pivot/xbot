@@ -1,0 +1,171 @@
+package serverapp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"sync"
+
+	"xbot/agent"
+	"xbot/bus"
+	"xbot/channel"
+	"xbot/plugin"
+
+	log "xbot/logger"
+	"xbot/protocol"
+)
+
+// ---------------------------------------------------------------------------
+// grpcPluginChannelProvider — channel.ChannelProvider backed by a separate
+// plugin process communicating via bidirectional JSON-RPC over stdin/stdout.
+//
+// Unlike the old grpcChannelBridge which reused the plugin's activation
+// process, this provider spawns a DEDICATED process for the channel.
+// The process communicates using the WS JSON-RPC protocol (same as remote CLI),
+// giving it access to the full RPC surface.
+// ---------------------------------------------------------------------------
+
+type grpcPluginChannelProvider struct {
+	decl    *plugin.ChannelProviderDecl
+	msgBus  *bus.MessageBus
+	rpcDisp func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
+
+	mu   sync.Mutex
+	conn *agent.GrpcPluginTransport
+}
+
+var _ channel.ChannelProvider = (*grpcPluginChannelProvider)(nil)
+
+func (p *grpcPluginChannelProvider) Name() string {
+	return p.decl.Name
+}
+
+func (p *grpcPluginChannelProvider) CreateChannel(cfg map[string]string, msgBus *bus.MessageBus) (channel.Channel, error) {
+	p.msgBus = msgBus
+
+	// Spawn a dedicated process for the channel.
+	proc, err := spawnChannelProcess(p.decl)
+	if err != nil {
+		return nil, fmt.Errorf("spawn channel process: %w", err)
+	}
+
+	// Create the bidirectional transport.
+	eventCh := make(chan protocol.WSMessage, 256)
+	transport := agent.NewGrpcPluginTransport(agent.GrpcPluginTransportConfig{
+		Name:     p.decl.Name,
+		Stdin:    proc.stdinPipe,
+		Stdout:   proc.stdoutPipe,
+		Dispatch: p.rpcDisp,
+		EventCh:  eventCh,
+	})
+
+	p.mu.Lock()
+	p.conn = transport
+	p.mu.Unlock()
+
+	// Send initial config to the plugin as an event.
+	// The plugin reads this and knows its configuration.
+	configMsg := protocol.WSMessage{
+		Type: "channel_config",
+	}
+	if cfgBytes, err := json.Marshal(cfg); err == nil {
+		configMsg.Metadata = map[string]string{"config": string(cfgBytes)}
+	}
+	if err := transport.PushEvent(configMsg); err != nil {
+		log.WithError(err).WithField("channel", p.decl.Name).Warn("Failed to push initial config")
+	}
+
+	return transport, nil
+}
+
+func (p *grpcPluginChannelProvider) ConfigSchema() []channel.SettingDefinition {
+	schema := make([]channel.SettingDefinition, 0, len(p.decl.ConfigSchema))
+	for _, s := range p.decl.ConfigSchema {
+		sd := channel.SettingDefinition{
+			Key:          strVal(s["key"]),
+			Label:        strVal(s["label"]),
+			Description:  strVal(s["description"]),
+			Type:         channel.SettingType(strVal(s["type"])),
+			DefaultValue: strVal(s["default_value"]),
+			Category:     strVal(s["category"]),
+		}
+		if v, ok := s["read_only"]; ok {
+			sd.ReadOnly = boolVal(v)
+		}
+		if opts, ok := s["options"].([]any); ok {
+			for _, o := range opts {
+				if m, ok := o.(map[string]any); ok {
+					sd.Options = append(sd.Options, channel.SettingOption{
+						Label: strVal(m["label"]),
+						Value: strVal(m["value"]),
+					})
+				}
+			}
+		}
+		schema = append(schema, sd)
+	}
+	return schema
+}
+
+func (p *grpcPluginChannelProvider) IsEnabled(cfg map[string]string) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg["enabled"] == "true"
+}
+
+// GetTransport returns the active transport, if any.
+func (p *grpcPluginChannelProvider) GetTransport() *agent.GrpcPluginTransport {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conn
+}
+
+// ---------------------------------------------------------------------------
+// channelProcess — manages the lifecycle of a channel plugin process.
+// ---------------------------------------------------------------------------
+
+type channelProcess struct {
+	cmd        *exec.Cmd
+	stdinPipe  io.WriteCloser
+	stdoutPipe io.Reader
+}
+
+func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, error) {
+	var cmd *exec.Cmd
+	if decl.Executable != "" {
+		cmd = exec.Command(decl.Executable, decl.Args...)
+	} else {
+		// Parse entry as command string (same logic as plugin/runtime.go).
+		parts := strings.Fields(decl.Entry)
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("empty entry command for channel %s", decl.Name)
+		}
+		cmd = exec.Command(parts[0], parts[1:]...)
+	}
+	cmd.Dir = decl.Dir
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start channel process: %w", err)
+	}
+
+	log.WithField("channel", decl.Name).WithField("pid", cmd.Process.Pid).Info("Channel process spawned")
+
+	return &channelProcess{
+		cmd:        cmd,
+		stdinPipe:  stdinPipe,
+		stdoutPipe: stdoutPipe,
+	}, nil
+}

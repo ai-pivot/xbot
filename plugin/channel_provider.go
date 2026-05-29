@@ -21,34 +21,33 @@ func SetChannelProviderRegistrar(fn ChannelProviderRegistrar) {
 	globalChannelProviderRegistrar = fn
 }
 
-// GrpcChannelBridgeFactory creates a channel.ChannelProvider from a gRPC
-// plugin's ChannelProviderDecl + GrpcPluginProcess. Registered by serverapp
-// to create grpcChannelBridge instances without plugin→channel import cycle.
-type GrpcChannelBridgeFactory func(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error)
+// ChannelProviderFactory creates a channel.ChannelProvider from a gRPC plugin's
+// ChannelProviderDecl. Registered by serverapp to create provider instances
+// without plugin→channel import cycle.
+type ChannelProviderFactory func(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error)
 
 var (
-	grpcBridgeFactoryMu sync.RWMutex
-	grpcBridgeFactory   GrpcChannelBridgeFactory
+	channelProviderFactoryMu sync.RWMutex
+	channelProviderFactory   ChannelProviderFactory
 )
 
-// SetGrpcChannelBridgeFactory registers the factory that wraps gRPC plugin
-// channel declarations into full channel.ChannelProvider implementations.
-// Called by serverapp during initialization.
-func SetGrpcChannelBridgeFactory(fn GrpcChannelBridgeFactory) {
-	grpcBridgeFactoryMu.Lock()
-	defer grpcBridgeFactoryMu.Unlock()
-	grpcBridgeFactory = fn
+// SetChannelProviderFactory registers the factory that creates channel.ChannelProvider
+// instances from plugin channel declarations. Called by serverapp during initialization.
+func SetChannelProviderFactory(fn ChannelProviderFactory) {
+	channelProviderFactoryMu.Lock()
+	defer channelProviderFactoryMu.Unlock()
+	channelProviderFactory = fn
 }
 
-// CreateGrpcChannelBridge calls the registered factory to create a
+// CreateChannelProvider calls the registered factory to create a
 // channel.ChannelProvider from a gRPC plugin's channel declaration.
-func CreateGrpcChannelBridge(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error) {
-	grpcBridgeFactoryMu.RLock()
-	fn := grpcBridgeFactory
-	grpcBridgeFactoryMu.RUnlock()
+func CreateChannelProvider(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error) {
+	channelProviderFactoryMu.RLock()
+	fn := channelProviderFactory
+	channelProviderFactoryMu.RUnlock()
 
 	if fn == nil {
-		return nil, fmt.Errorf("grpc channel bridge factory not registered (serverapp not initialized?)")
+		return nil, fmt.Errorf("channel provider factory not registered (serverapp not initialized?)")
 	}
 	return fn(decl, process)
 }

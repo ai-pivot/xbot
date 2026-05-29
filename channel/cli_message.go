@@ -1086,6 +1086,64 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 // renderProgressBlock renders the iteration progress panel for the viewport.
 // The output is cached via fingerprint — the expensive blockStyle.Render()
 // (lipgloss border wrapping with ANSI width calculation on every character)
+// renderHistoryRange renders a slice of iteration snapshots into buf.
+// Extracted from renderProgressBlock to enable incremental rebuild — when only
+// the last iteration is new, we render just that one instead of all N.
+func (m *cliModel) renderHistoryRange(
+	buf *strings.Builder,
+	snaps []cliIterationSnapshot,
+	innerWidth, reasoningW, thinkingW int,
+	reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle,
+	iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle lipgloss.Style,
+	s *cliStyles,
+) {
+	for j := range snaps {
+		snap := &snaps[j]
+		buf.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
+		buf.WriteString("\n")
+		if snap.Reasoning != "" {
+			for _, line := range strings.Split(snap.Reasoning, "\n") {
+				line = strings.TrimRight(line, " \t\r")
+				if line == "" {
+					continue
+				}
+				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
+					buf.WriteString(dimStyle.Render(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl)))
+					buf.WriteString("\n")
+				}
+			}
+		}
+		if snap.Thinking != "" {
+			for _, line := range strings.Split(snap.Thinking, "\n") {
+				line = strings.TrimRight(line, " \t\r")
+				if line == "" {
+					continue
+				}
+				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
+					buf.WriteString(dimStyle.Render(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl)))
+					buf.WriteString("\n")
+				}
+			}
+		}
+		for k := range snap.Tools {
+			tool := &snap.Tools[k]
+			label, icon, sty := toolDisplayInfo(*tool, toolDoneStyle, toolErrorStyle)
+			var elapsedStyled string
+			if tool.Elapsed > 0 {
+				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
+			}
+			buf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
+			buf.WriteString("\n")
+			if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), innerWidth, true, 0); content != "" {
+				buf.WriteString(content)
+				buf.WriteString("\n")
+			}
+		}
+	}
+}
+
+// renderProgressBlock renders the full progress panel showing completed
+// iterations (dimmed) and the current iteration. An internal cache ensures it
 // only runs when the content actually changes. Elapsed is quantized to whole
 // seconds so the cache stays stable across 100ms ticks.
 func (m *cliModel) renderProgressBlock() string {
@@ -1144,54 +1202,21 @@ func (m *cliModel) renderProgressBlock() string {
 
 	// Render completed iterations (dimmed) — use cache to avoid re-running
 	// chroma/lipgloss on every 100ms tick (major CPU saver for long sessions).
+	// Incremental rebuild: only render newly added iterations and append to cache.
 	if m.cachedProgressHistoryLen == len(m.iterationHistory) && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistory != "" {
 		sb.WriteString(m.cachedProgressHistory)
-	} else {
+	} else if m.cachedProgressHistoryLen > 0 && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistoryLen < len(m.iterationHistory) {
+		// Incremental: only render new iterations [cachedProgressHistoryLen:]
 		var histBuf strings.Builder
-		for j := range m.iterationHistory {
-			snap := &m.iterationHistory[j]
-			histBuf.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
-			histBuf.WriteString("\n")
-			if snap.Reasoning != "" {
-				for _, line := range strings.Split(snap.Reasoning, "\n") {
-					line = strings.TrimRight(line, " \t\r")
-					if line == "" {
-						continue
-					}
-					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-						histBuf.WriteString(dimStyle.Render(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl)))
-						histBuf.WriteString("\n")
-					}
-				}
-			}
-			if snap.Thinking != "" {
-				for _, line := range strings.Split(snap.Thinking, "\n") {
-					line = strings.TrimRight(line, " \t\r")
-					if line == "" {
-						continue
-					}
-					for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-						histBuf.WriteString(dimStyle.Render(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl)))
-						histBuf.WriteString("\n")
-					}
-				}
-			}
-			for k := range snap.Tools {
-				tool := &snap.Tools[k]
-				label, icon, sty := toolDisplayInfo(*tool, toolDoneStyle, toolErrorStyle)
-				var elapsedStyled string
-				if tool.Elapsed > 0 {
-					elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
-				}
-				histBuf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
-				histBuf.WriteString("\n")
-				// Render tool body (diff hints or per-tool output)
-				if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), innerWidth, true, 0); content != "" {
-					histBuf.WriteString(content)
-					histBuf.WriteString("\n")
-				}
-			}
-		}
+		m.renderHistoryRange(&histBuf, m.iterationHistory[m.cachedProgressHistoryLen:], innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, s)
+		m.cachedProgressHistory += histBuf.String()
+		m.cachedProgressHistoryLen = len(m.iterationHistory)
+		m.cachedProgressHistoryFP = fnvHash64(m.cachedProgressHistory)
+		sb.WriteString(m.cachedProgressHistory)
+	} else {
+		// Full rebuild (width changed or cache invalidation)
+		var histBuf strings.Builder
+		m.renderHistoryRange(&histBuf, m.iterationHistory, innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, s)
 		m.cachedProgressHistory = histBuf.String()
 		m.cachedProgressHistoryLen = len(m.iterationHistory)
 		m.cachedProgressHistoryWidth = bubbleWidth

@@ -388,6 +388,17 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				continue
 			}
 			disp.Register(ch)
+
+			// If the channel is a GrpcPluginTransport, start its readLoop
+			// for bidirectional JSON-RPC communication.
+			if transport, ok := ch.(*agent.GrpcPluginTransport); ok {
+				if err := transport.Start(); err != nil {
+					log.WithError(err).WithField("channel", name).Error("Failed to start plugin transport")
+					continue
+				}
+				go transport.Run(context.Background())
+			}
+
 			log.WithField("channel", name).Info("Plugin channel registered")
 		}
 	}
@@ -455,12 +466,21 @@ func Run(args []string) error {
 		return channelProviderReg.Register(cp)
 	})
 
-	// Register the gRPC channel bridge factory: creates grpcChannelBridge from
-	// ChannelProviderDecl + GrpcPluginProcess, implementing full channel.ChannelProvider.
-	plugin.SetGrpcChannelBridgeFactory(func(decl *plugin.ChannelProviderDecl, process *plugin.GrpcPluginProcess) (any, error) {
-		return &grpcChannelBridge{
-			decl:    decl,
-			process: process,
+	// Register the gRPC channel provider factory: creates grpcPluginChannelProvider
+	// from ChannelProviderDecl. The provider spawns a dedicated process for the channel
+	// and uses bidirectional JSON-RPC over stdin/stdout.
+	// rpcTablePtr is set later after InitServer, but the factory is called during
+	// InitServer (plugin activation). The dispatch function resolves lazily.
+	var rpcTablePtr *RPCTable
+	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.GrpcPluginProcess) (any, error) {
+		return &grpcPluginChannelProvider{
+			decl: decl,
+			rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+				if rpcTablePtr == nil {
+					return nil, fmt.Errorf("rpc table not available")
+				}
+				return rpcTablePtr.Dispatch(ctx, method, payload)
+			},
 		}, nil
 	})
 
@@ -510,6 +530,11 @@ func Run(args []string) error {
 	if err != nil {
 		log.WithError(err).Fatal("Failed to init server")
 	}
+
+	// Set the rpcTablePtr for the channel provider factory.
+	// Plugin activation happens during InitServer, so the factory was already called
+	// with the lazy dispatch function. Now the RPCTable is available.
+	rpcTablePtr = &rpcTable
 
 	// Migrate config.json subscriptions into DB for the admin user.
 	// This ensures admin is a normal DB user with real subscriptions,

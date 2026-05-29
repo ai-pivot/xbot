@@ -201,3 +201,52 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `logs` | `tools/logs.go` | Query agent logs |
 | `WebSearch` | `tools/web_search.go` | Tavily web search |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |
+
+## GrpcPluginTransport (`agent/transport_grpc.go`)
+
+Bidirectional JSON-RPC over stdin/stdout for gRPC plugin channel providers. Replaces the old `serverapp/channel_bridge_grpc.go` approach where the plugin's activation process was reused for channel communication.
+
+### Architecture
+
+```
+xbot (serverapp)                    Plugin (separate process)
+┌─────────────────┐                 ┌─────────────────┐
+│ RPCTable        │◄───stdout───────│ Plugin main loop │
+│ (dispatch)      │─────stdin──────►│ (JSON-RPC)       │
+│ GrpcPlugin      │                 │ HTTP server /    │
+│ Transport       │◄──eventCh───────│ bot framework    │
+└─────────────────┘                 └─────────────────┘
+```
+
+### Protocol (identical to WS)
+
+- Plugin → xbot (RPC request): `{"id":"1","method":"send_inbound","params":{...}}`
+- Plugin → xbot (RPC response): `{"id":"1","result":{...}}`
+- xbot → Plugin (event push): `{"type":"progress","progress":{...}}`
+- xbot → Plugin (RPC request): `{"id":"2","method":"channel_send","params":{...}}`
+
+### Key Interfaces
+
+- `channel.Channel`: registered in Dispatcher for message routing
+- `channel.ProgressSender`: push progress/stream events
+- `channel.SessionStateSender`: push session state changes
+- `channel.UserMessageInjector`: inject background messages
+
+### Lifecycle
+
+1. Plugin activates → declares `channel_provider` in activation response
+2. `serverapp/channel_plugin.go` (`grpcPluginChannelProvider`) spawns a **dedicated** process
+3. `GrpcPluginTransport` wraps the process stdin/stdout as JSON-RPC channel
+4. `readLoop()` routes incoming messages: RPC requests → RPCTable dispatch, RPC responses → pending calls
+5. `eventPushLoop()` pushes WSMessage events from xbot to plugin
+6. Channel is registered in Dispatcher, receives outbound messages via `Send()`
+
+### Related Files
+
+| File | Purpose |
+|------|---------|
+| `agent/transport_grpc.go` | Core transport: GrpcPluginTransport + processIO abstraction |
+| `serverapp/channel_plugin.go` | grpcPluginChannelProvider: spawns process, creates transport |
+| `serverapp/channel_helpers.go` | Shared helpers: strVal, boolVal for config parsing |
+| `plugin/channel_provider.go` | ChannelProviderFactory: creates provider from plugin decl |
+| `plugin/examples/echo-channel/` | Example plugin: HTTP echo server over JSON-RPC |

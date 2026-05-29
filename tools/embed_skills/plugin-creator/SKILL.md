@@ -161,14 +161,28 @@ fi
 
 ## gRPC Channel Plugin
 
-gRPC plugins run as independent child processes, communicating with xbot via JSON-over-stdin/stdout. This is how you add new channels like Telegram, Discord, Slack, etc.
+gRPC plugins run as independent child processes, communicating with xbot via **bidirectional JSON-RPC over stdin/stdout** (same protocol as WebSocket clients). This is how you add new channels like Telegram, Discord, Slack, etc.
+
+### Architecture
+
+```
+xbot (serverapp)                    Plugin (separate process)
+┌─────────────────┐                 ┌─────────────────┐
+│ RPCTable        │◄───stdout───────│ Plugin main loop │
+│ (dispatch)      │─────stdin──────►│ (JSON-RPC)       │
+│ GrpcPlugin      │                 │ HTTP server /    │
+│ Transport       │◄──eventCh───────│ bot framework    │
+└─────────────────┘                 └─────────────────┘
+```
+
+The channel runs in a **dedicated process** (separate from the plugin activation process). It has full access to xbot's RPC surface — same as a remote CLI client over WebSocket.
 
 ### Structure
 
 ```
 my-channel/
 ├── plugin.json       # Manifest (runtime: "grpc")
-└── my-channel-bin    # Compiled binary (any language)
+└── main.py           # Any language — Python, Go, Node, etc.
 ```
 
 ### plugin.json
@@ -180,61 +194,85 @@ my-channel/
   "version": "1.0.0",
   "description": "Telegram bot channel for xbot",
   "runtime": "grpc",
-  "entry": "./my-channel-bin",
-  "permissions": ["channels.register"]
+  "entry": "python3 main.py",
+  "permissions": ["channels.register"],
+  "contributes": {
+    "channelProvider": {
+      "name": "telegram",
+      "config_schema": [
+        {"key": "enabled", "label": "Enable", "type": "toggle", "default_value": "false"},
+        {"key": "bot_token", "label": "Bot Token", "type": "password", "default_value": ""}
+      ]
+    }
+  }
 }
 ```
 
 **Key fields:**
 - `runtime`: Must be `"grpc"` for channel plugins
-- `entry`: Relative path to the binary (resolved from plugin directory)
+- `entry`: Command to run (e.g. `"python3 main.py"`, `"./my-binary"`)
 - `permissions`: Must include `"channels.register"`
+- `contributes.channelProvider`: Channel declaration with name and config_schema
 
-### Protocol: xbot → Plugin (request-response)
+### Protocol: Bidirectional JSON-RPC (same as WebSocket)
 
-xbot sends JSON lines to plugin's stdin, plugin responds with JSON lines to stdout.
+All communication is JSON lines over stdin/stdout. Messages follow the WS protocol:
 
-| Method | Required | Description |
-|--------|----------|-------------|
-| `activate` | ✅ | Return channel_provider declaration |
-| `channel_start` | ✅ | Start channel with config |
-| `channel_stop` | ✅ | Stop channel |
-| `channel_send` | ✅ | Deliver agent reply to user |
-| `channel_history` | ❌ | Load platform conversation history |
-| `channel_update_message` | ❌ | Edit previously sent message |
-| `channel_delete_message` | ❌ | Delete previously sent message |
-| `channel_poll` | ❌ | Legacy Phase 1 polling (return `[]`) |
-| `deactivate` | ✅ | Plugin shutdown |
-
-### Protocol: Plugin → xbot (async push)
-
-Plugin can push messages to xbot at any time by writing JSON to stdout:
-
+**Plugin → xbot (RPC request):**
 ```json
-{"method": "channel_inbound", "params": {"chat_id": "xxx", "content": "hello", "sender_id": "user1", "sender_name": "User"}}
+{"id":"plugin-1","method":"send_inbound","params":{"channel":"telegram","chat_id":"chat1","content":"hello","sender_id":"user1","sender_name":"User","chat_type":"p2p"}}
 ```
 
-Batch mode (multiple messages):
+**xbot → Plugin (event push — no id):**
 ```json
-{"method": "channel_inbound", "params": {"messages": [{"chat_id": "c1", "content": "hi", "sender_id": "u1"}, {"chat_id": "c2", "content": "hey", "sender_id": "u2"}]}}
+{"type":"progress_structured","chat_id":"chat1","progress":{"phase":"thinking"}}
+{"type":"stream_content","chat_id":"chat1","content":"Hello! "}
+{"type":"text","chat_id":"chat1","content":"Hello! How can I help you?"}
+{"type":"session","session":{"channel":"telegram","chat_id":"chat1","action":"busy"}}
 ```
 
-### activate Response Format
-
-The `activate` response must include `channel_provider` declaration:
-
+**xbot → Plugin (RPC request — has id + method):**
 ```json
-{
-  "result": "ok",
-  "channel_provider": {
-    "name": "telegram",
-    "config_schema": [
-      {"key": "enabled", "label": "启用", "type": "toggle", "defaultValue": "false", "category": "Telegram"},
-      {"key": "bot_token", "label": "Bot Token", "type": "password", "defaultValue": "", "category": "Telegram"}
-    ]
-  }
-}
+{"id":"srv-1","method":"channel_send","params":{"chat_id":"chat1","content":"Agent reply"}}
 ```
+
+**Plugin → xbot (RPC response — has id, no method):**
+```json
+{"id":"srv-1","result":"ok"}
+```
+
+### Available RPC Methods (Plugin → xbot)
+
+| Method | Description |
+|--------|-------------|
+| `send_inbound` | Send user message to agent |
+| `get_history` | Get conversation history |
+| `list_sessions` | List available sessions |
+| `set_cwd` | Set working directory |
+| All standard RPC methods | Full access to RPCTable |
+
+### Event Types (xbot → Plugin)
+
+| Type | Description |
+|------|-------------|
+| `channel_config` | Initial config push (metadata.config = JSON config) |
+| `progress_structured` | Progress events (thinking, tools, etc.) |
+| `stream_content` | Streaming text + reasoning content |
+| `text` | Final agent reply |
+| `session` | Session state changes (busy/idle) |
+| `inject_user` | Background message injection |
+| `card` | Rich card message |
+| `ask_user` | Ask user question |
+| `plugin_widgets` | Plugin widget update |
+
+### Activation Flow
+
+1. Plugin process starts → xbot sends `{"method":"activate","params":{}}` (old protocol)
+2. Plugin responds with `{"result":"ok","channel_provider":{...}}`
+3. xbot **spawns a separate process** for the channel (using `entry` from manifest)
+4. The new process receives JSON-RPC over stdin/stdout
+5. First event is `channel_config` with the channel configuration
+6. Plugin starts its HTTP server/bot framework and begins forwarding messages
 
 ### config_schema Types
 
@@ -244,88 +282,57 @@ The `activate` response must include `channel_provider` declaration:
 | `text` | Text input |
 | `password` | Masked text input |
 | `select` | Dropdown (needs `options` array) |
+| `number` | Number input |
 
-### channel_start Request
+### Minimal Channel Plugin (Python)
 
-```json
-{"method": "channel_start", "params": {"config": {"enabled": "true", "port": "9876", "bot_token": "xxx"}}}
-```
+```python
+#!/usr/bin/env python3
+import sys, json, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-### channel_send Request
+def write_stdout(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
-```json
-{"method": "channel_send", "params": {"chat_id": "xxx", "content": "Agent reply text", "is_partial": false, "waiting_user": false}}
-```
-
-### channel_history Request/Response
-
-Request:
-```json
-{"method": "channel_history", "params": {"chat_id": "xxx", "limit": 50}}
-```
-
-Response:
-```json
-{"result": "[{\"message_id\":\"1\",\"sender_id\":\"u1\",\"content\":\"hello\",\"is_bot\":false,\"time\":\"2026-01-01T00:00:00Z\"}]"}
-```
-
-### Minimal Channel Plugin (Go)
-
-```go
-package main
-
-import (
-    "bufio"
-    "encoding/json"
-    "fmt"
-    "io"
-    "os"
-)
-
-type request struct {
-    Method string         `json:"method"`
-    Params map[string]any `json:"params,omitempty"`
-}
-
-func main() {
-    dec := json.NewDecoder(bufio.NewReader(os.Stdin))
-    enc := json.NewEncoder(os.Stdout)
-
-    for {
-        var req request
-        if err := dec.Decode(&req); err != nil {
-            if err == io.EOF { return }
-            fmt.Fprintf(os.Stderr, "read error: %v\n", err)
-            return
+def send_inbound(chat_id, content, sender_id="user", sender_name="User"):
+    write_stdout({
+        "id": f"plugin-{id(content)}",
+        "method": "send_inbound",
+        "params": {
+            "channel": "mychannel",
+            "chat_id": chat_id,
+            "content": content,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "chat_type": "p2p",
         }
+    })
 
-        switch req.Method {
-        case "activate":
-            enc.Encode(map[string]any{
-                "result": "ok",
-                "channel_provider": map[string]any{
-                    "name": "mychannel",
-                    "config_schema": []map[string]any{
-                        {"key": "enabled", "label": "Enable", "type": "toggle", "defaultValue": "false"},
-                    },
-                },
-            })
-        case "channel_start":
-            // Initialize your channel here (start HTTP server, bot client, etc.)
-            enc.Encode(map[string]any{"result": "ok"})
-        case "channel_send":
-            // Deliver agent reply to user
-            enc.Encode(map[string]any{"result": "ok"})
-        case "channel_stop":
-            enc.Encode(map[string]any{"result": "ok"})
-        case "deactivate":
-            enc.Encode(map[string]any{"result": "ok"})
-            return
-        default:
-            enc.Encode(map[string]any{"error": fmt.Sprintf("unknown method: %s", req.Method)})
-        }
-    }
-}
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        if body:
+            send_inbound("default", body)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok\n")
+    def log_message(self, *a): pass
+
+for line in sys.stdin:
+    msg = json.loads(line.strip())
+    if msg.get("method") == "activate":
+        write_stdout({"result": "ok", "channel_provider": {
+            "name": "mychannel",
+            "config_schema": [
+                {"key": "enabled", "label": "Enable", "type": "toggle", "default_value": "false"},
+                {"key": "port", "label": "Port", "type": "number", "default_value": "9876"},
+            ]
+        }})
+    elif msg.get("type") == "channel_config":
+        config = json.loads(msg.get("metadata", {}).get("config", "{}"))
+        port = int(config.get("port", "9876"))
+        HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 ```
 
 ### Config Storage
@@ -377,7 +384,9 @@ This hot-reloads all plugins without restarting the CLI. Alternatively, user can
 - Widget output is limited in size — keep it short
 - Plugin ID must be unique across all plugins
 - Script output without `style|` prefix is treated as plain text
-- gRPC channel plugins: `entry` path is relative to the plugin directory
-- gRPC plugins must respond to every request with a JSON line (even if just `{"result":"ok"}`)
-- gRPC plugins can push `channel_inbound` at any time without waiting for a request (bidirectional)
+- gRPC channel plugins: `entry` command spawns a **dedicated** process for the channel (separate from activation)
+- gRPC plugins use bidirectional JSON-RPC (same as WS protocol), NOT the old request-response protocol
+- Plugin must handle both old-style activation (`{"method":"activate"}`) and new-style JSON-RPC events
+- gRPC plugins receive `channel_config` event with initial configuration, NOT `channel_start` request
+- gRPC plugins send `send_inbound` RPC to push messages, NOT `channel_inbound` async push
 - Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`
