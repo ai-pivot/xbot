@@ -3002,7 +3002,18 @@ func TestPluginManager_UninstallPlugin(t *testing.T) {
 	}
 
 	// Verify directory removed
-	if _, err := os.Stat(expectedDir); !os.IsNotExist(err) {
+	// On Windows, RemoveAll can fail if file handles are still open;
+	// retry briefly before failing.
+	removed := false
+	for range 5 {
+		if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
+			removed = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+		os.RemoveAll(expectedDir)
+	}
+	if !removed {
 		t.Error("plugin directory still exists after uninstall")
 	}
 }
