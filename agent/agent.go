@@ -1152,7 +1152,7 @@ func New(cfg Config) (*Agent, error) {
 					return cwd
 				}
 				zones := plugin.RenderSessionWidgets(wr, getCWD, chatID)
-				log.Infof("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, getCWD(chatID), zones["infoBar"], zones["footer"])
+				log.Debugf("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, getCWD(chatID), zones["infoBar"], zones["footer"])
 				return zones
 			})
 		})

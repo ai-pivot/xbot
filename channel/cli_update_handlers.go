@@ -978,6 +978,10 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 		m.showSystemMsg(m.locale.UpdateFailed, feedbackError)
 		return
 	}
+	// Dev builds and non-stable channels skip the check — don't show any message.
+	if msg.info.Skipped {
+		return
+	}
 	m.updateNotice = msg.info
 	// Suppress update notice when an agent turn is active (progress running).
 	// The notice would corrupt the progress panel layout and distract from

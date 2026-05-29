@@ -277,6 +277,9 @@ type hookRegistration struct {
 	Event   HookEvent
 	Matcher string
 	Handler HookHandler
+	// Global marks hooks that are session-agnostic (bypass session isolation).
+	// Set by subscribeTrigger for script plugins that manage per-workDir state.
+	Global bool
 }
 
 type enricherRegistration struct {
@@ -375,6 +378,16 @@ func (pc *pluginContextImpl) OnError(handler HookHandler) error {
 }
 
 func (pc *pluginContextImpl) OnEvent(event HookEvent, matcher string, handler HookHandler) error {
+	return pc.onEvent(event, matcher, handler, false)
+}
+
+// OnGlobalEvent registers a session-agnostic hook that bypasses session isolation.
+// Used by script plugin triggers that manage per-workDir state internally.
+func (pc *pluginContextImpl) OnGlobalEvent(event HookEvent, matcher string, handler HookHandler) error {
+	return pc.onEvent(event, matcher, handler, true)
+}
+
+func (pc *pluginContextImpl) onEvent(event HookEvent, matcher string, handler HookHandler, global bool) error {
 	if !pc.perm.Has(PermHooksSubscribe) {
 		return &PermissionError{
 			PluginID:   pc.pluginID,
@@ -391,6 +404,7 @@ func (pc *pluginContextImpl) OnEvent(event HookEvent, matcher string, handler Ho
 		Event:   event,
 		Matcher: matcher,
 		Handler: handler,
+		Global:  global,
 	})
 	pc.logger.Info("Hook registered", Field{Key: "event", Value: string(event)}, Field{Key: "matcher", Value: matcher})
 	return nil

@@ -172,13 +172,32 @@ bug where session B (non-git dir) would overwrite session A's (git repo) content
 3. Push path uses `RenderZoneForWorkDir(zone, workDir)` per chatID
 4. Each client receives only its session-specific widget content
 
+### Script Plugin Triggers Are Global Hooks
+Script plugin triggers (from `plugin.json` triggers) are registered as **global hooks**
+via `registerGlobalHook()` / `pluginContextImpl.onEvent(..., global=true)`. This means:
+
+- They bypass session isolation in `bridge.Dispatch` (the `ChatID != payload.ChatID`
+  check that would otherwise silently skip them)
+- They fire regardless of which session triggered the hook event
+- This is safe because script plugins manage per-workDir output caches internally
+  and the push path renders per-session content via `RenderZoneForWorkDir`
+
+Without this, in multi-session remote CLI, only the session that last called
+`RefreshWorkDir` would receive hook triggers; all other sessions' triggers would
+be silently filtered, falling back to the 30s ticker only.
+
+### Change Detection in runAndUpdate
+`runAndUpdate()` snapshots outputs before re-running scripts, then compares
+afterward. Only calls `NotifyUpdated()` when at least one output actually changed.
+This avoids unnecessary WebSocket pushes on every 30s ticker when nothing changed.
+
 ### Debounce
 `WidgetRegistry.SetDebounce(d)` coalesces rapid widget updates into a single
 push notification. Default: disabled (immediate). Server-side uses 200ms.
 
 ### Incremental Updates
-`PushPluginWidgets` compares new zones against last-pushed content and skips
-the push if nothing changed. Reduces WebSocket traffic for idle sessions.
+`PushPluginWidgetsPerSession` compares new zones against last-pushed content and skips
+the push if nothing changed for that chatID. Reduces WebSocket traffic for idle sessions.
 
 ### Per-WorkDir Isolation
 `RenderZoneForWorkDir(zone, workDir)` renders widgets using workDir-specific

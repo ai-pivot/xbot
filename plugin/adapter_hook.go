@@ -24,6 +24,11 @@ type pluginHookEntry struct {
 	pluginID string
 	matcher  string
 	handler  HookHandler
+	// global marks hooks that are session-agnostic (e.g. script plugin triggers
+	// that manage per-workDir state internally). Global hooks bypass session
+	// isolation in Dispatch — they fire regardless of which session triggered
+	// the event, because they produce per-session output via RenderForWorkDir.
+	global bool
 }
 
 // NewPluginHookBridge creates a new hook bridge.
@@ -35,14 +40,19 @@ func NewPluginHookBridge() *PluginHookBridge {
 }
 
 // Register adds a plugin hook subscription.
-func (b *PluginHookBridge) Register(pluginID string, event HookEvent, matcher string, handler HookHandler) {
+// If global is true, the hook bypasses session isolation checks in Dispatch.
+// Use global for session-agnostic hooks (e.g. script plugin triggers that
+// manage per-workDir state and produce per-session output via RenderForWorkDir).
+func (b *PluginHookBridge) Register(pluginID string, event HookEvent, matcher string, handler HookHandler, global ...bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	isGlobal := len(global) > 0 && global[0]
 	key := string(event)
 	b.handlers[key] = append(b.handlers[key], pluginHookEntry{
 		pluginID: pluginID,
 		matcher:  matcher,
 		handler:  handler,
+		global:   isGlobal,
 	})
 	log.WithField("plugin", pluginID).WithField("event", string(event)).
 		Debug("Plugin hook registered")
@@ -85,13 +95,18 @@ func (b *PluginHookBridge) Dispatch(ctx context.Context, payload *HookPayload) *
 			}
 		}
 
-		// Session isolation: skip plugins whose context doesn't match the payload session
-		if bCtx, ok := contexts[entry.pluginID]; ok {
-			if bCtx.Channel() != "" && payload.Channel != "" && bCtx.Channel() != payload.Channel {
-				continue
-			}
-			if bCtx.ChatID() != "" && payload.ChatID != "" && bCtx.ChatID() != payload.ChatID {
-				continue
+		// Session isolation: skip plugins whose context doesn't match the payload session.
+		// Global hooks (e.g. script plugin triggers with per-workDir output caches)
+		// bypass this check — they are session-agnostic and handle multi-session
+		// rendering correctly via RenderForWorkDir.
+		if !entry.global {
+			if bCtx, ok := contexts[entry.pluginID]; ok {
+				if bCtx.Channel() != "" && payload.Channel != "" && bCtx.Channel() != payload.Channel {
+					continue
+				}
+				if bCtx.ChatID() != "" && payload.ChatID != "" && bCtx.ChatID() != payload.ChatID {
+					continue
+				}
 			}
 		}
 

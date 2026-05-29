@@ -290,6 +290,14 @@ func (p *scriptPlugin) runAndUpdate() {
 	}
 	log.Debugf("[plugin:%s] runAndUpdate: workDirs=%v", p.manifest.ID, workDirs)
 
+	// Snapshot current outputs for change detection (before eviction + re-run).
+	p.outputMu.RLock()
+	prevOutputs := make(map[string]string, len(p.outputs))
+	for k, v := range p.outputs {
+		prevOutputs[k] = v
+	}
+	p.outputMu.RUnlock()
+
 	// Evict stale entries: remove outputs for directories that no longer exist.
 	// Prevents unbounded map growth when users Cd through temp dirs.
 	// os.Stat is cheap and only runs every refresh tick (default 30s).
@@ -316,12 +324,26 @@ func (p *scriptPlugin) runAndUpdate() {
 		p.outputMu.Unlock()
 	}
 
-	// Trigger WidgetRegistry notification WITHOUT writing to the global slot cache.
-	// The global cache is session-agnostic and causes cross-session overwrites.
-	// Instead, the push path and RPC path use RenderZoneForWorkDir which reads
-	// from the per-workDir output cache directly.
-	if p.widgetReg != nil {
-		p.widgetReg.NotifyUpdated()
+	// Change detection: only notify if any output actually changed.
+	// Avoids unnecessary WebSocket pushes when script output is identical.
+	changed := false
+	p.outputMu.RLock()
+	for _, wd := range workDirs {
+		if p.outputs[wd] != prevOutputs[wd] {
+			changed = true
+			break
+		}
+	}
+	// Also check for evicted entries
+	if !changed && len(p.outputs) != len(prevOutputs) {
+		changed = true
+	}
+	p.outputMu.RUnlock()
+
+	if changed {
+		if p.widgetReg != nil {
+			p.widgetReg.NotifyUpdated()
+		}
 	}
 }
 
@@ -345,7 +367,7 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 			p.lastHookMu.Lock()
 			p.lastHook = hp
 			p.lastHookMu.Unlock()
-			log.Infof("[plugin:%s] trigger fired: tool=%s", p.manifest.ID, hp.ToolName)
+			log.Debugf("[plugin:%s] trigger fired: tool=%s", p.manifest.ID, hp.ToolName)
 		}
 
 		if len(p.syncWidgets) > 0 {
@@ -356,7 +378,7 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 				wd = p.pctx.WorkingDir()
 			}
 			output, err := p.runScript(wd)
-			log.Infof("[plugin:%s] hint sync: wd=%s len=%d", p.manifest.ID, wd, len(output))
+			log.Debugf("[plugin:%s] hint sync: wd=%s len=%d", p.manifest.ID, wd, len(output))
 			if err == nil && output != "" {
 				p.outputMu.Lock()
 				if p.outputs == nil {
@@ -386,35 +408,50 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 	}
 
 	switch event {
+	// Script plugin triggers are session-agnostic: they manage per-workDir output
+	// caches and produce per-session content via RenderForWorkDir. Register them
+	// as global hooks so bridge.Dispatch doesn't filter them by session.
 	case "PreToolUse":
-		return ctx.OnPreToolUse(matcher, triggerFn)
+		return registerGlobalHook(ctx, HookPreToolUse, matcher, triggerFn)
 	case "PostToolUse":
-		return ctx.OnPostToolUse(matcher, triggerFn)
+		return registerGlobalHook(ctx, HookPostToolUse, matcher, triggerFn)
 	case "PostToolUseFailure":
-		return ctx.OnEvent(HookPostToolUseError, matcher, triggerFn)
+		return registerGlobalHook(ctx, HookPostToolUseError, matcher, triggerFn)
 	case "UserPromptSubmit":
-		return ctx.OnEvent(HookUserPromptSubmit, "", triggerFn)
+		return registerGlobalHook(ctx, HookUserPromptSubmit, "", triggerFn)
 	case "AgentStop":
-		return ctx.OnAgentStop(triggerFn)
+		return registerGlobalHook(ctx, HookAgentStop, "", triggerFn)
 	case "SessionStart":
-		return ctx.OnSessionStart(triggerFn)
+		return registerGlobalHook(ctx, HookSessionStart, "", triggerFn)
 	case "SessionEnd":
-		return ctx.OnSessionEnd(triggerFn)
+		return registerGlobalHook(ctx, HookSessionEnd, "", triggerFn)
 	case "SubAgentStart":
-		return ctx.OnEvent(HookSubAgentStart, "", triggerFn)
+		return registerGlobalHook(ctx, HookSubAgentStart, "", triggerFn)
 	case "SubAgentStop":
-		return ctx.OnEvent(HookSubAgentStop, "", triggerFn)
+		return registerGlobalHook(ctx, HookSubAgentStop, "", triggerFn)
 	case "PreCompact":
-		return ctx.OnEvent(HookPreCompact, "", triggerFn)
+		return registerGlobalHook(ctx, HookPreCompact, "", triggerFn)
 	case "PostCompact":
-		return ctx.OnEvent(HookPostCompact, "", triggerFn)
+		return registerGlobalHook(ctx, HookPostCompact, "", triggerFn)
 	case "CronFired":
-		return ctx.OnEvent(HookCronFired, "", triggerFn)
+		return registerGlobalHook(ctx, HookCronFired, "", triggerFn)
 	case "WebhookReceived":
-		return ctx.OnEvent(HookWebhookReceived, "", triggerFn)
+		return registerGlobalHook(ctx, HookWebhookReceived, "", triggerFn)
 	default:
 		return fmt.Errorf("unsupported trigger event %q", event)
 	}
+}
+
+// registerGlobalHook registers a script plugin trigger hook as session-agnostic.
+// Script plugin triggers are global because they manage per-workDir output caches
+// and produce per-session content via RenderForWorkDir — they don't need session
+// isolation and would break if filtered by chatID (multi-session remote CLI).
+func registerGlobalHook(ctx PluginContext, event HookEvent, matcher string, handler HookHandler) error {
+	if impl, ok := ctx.(*pluginContextImpl); ok {
+		return impl.onEvent(event, matcher, handler, true)
+	}
+	// Fallback: non-impl context (shouldn't happen for script plugins)
+	return ctx.OnEvent(event, matcher, handler)
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +506,7 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 		log.Infof("[plugin:%s] runScript(%s) failed: %v", p.manifest.ID, workDir, err)
 		return "", fmt.Errorf("script %q: %w", p.manifest.Entry, err)
 	}
-	log.Infof("[plugin:%s] runScript(%s) output: %s", p.manifest.ID, workDir, strings.TrimSpace(string(out)))
+	log.Debugf("[plugin:%s] runScript(%s) output: %s", p.manifest.ID, workDir, strings.TrimSpace(string(out)))
 
 	trimmed := strings.TrimSpace(string(out))
 	// For "md|" and "diff|" prefixes, preserve full multi-line output

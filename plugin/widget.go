@@ -53,7 +53,7 @@ func (r *WidgetRegistry) NotifyUpdated() {
 	fn := r.onUpdated
 	dur := r.debounceDur
 	r.mu.RUnlock()
-	log.Infof("[NotifyUpdated] fn=%v debounce=%v", fn != nil, dur)
+	log.Debugf("[NotifyUpdated] fn=%v debounce=%v", fn != nil, dur)
 	r.notifyUpdated()
 }
 
@@ -135,14 +135,14 @@ func (r *WidgetRegistry) notifyUpdated() {
 	fn := r.onUpdated
 	dur := r.debounceDur
 	r.mu.RUnlock()
-	log.Infof("[notifyUpdated] fn=%v debounce=%v", fn != nil, dur)
+	log.Debugf("[notifyUpdated] fn=%v debounce=%v", fn != nil, dur)
 	if fn == nil {
 		return
 	}
 
 	if dur <= 0 {
 		// No debounce — fire immediately
-		log.Infof("[notifyUpdated] firing immediately")
+		log.Debugf("[notifyUpdated] firing immediately")
 		fn()
 		return
 	}
@@ -153,7 +153,7 @@ func (r *WidgetRegistry) notifyUpdated() {
 		r.debounceTimer.Stop()
 	}
 	r.debounceTimer = time.AfterFunc(dur, func() {
-		log.Infof("[notifyUpdated] debounce fired after %v", dur)
+		log.Debugf("[notifyUpdated] debounce fired after %v", dur)
 		fn()
 	})
 	r.debounceMu.Unlock()

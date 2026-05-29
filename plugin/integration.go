@@ -246,7 +246,7 @@ func WirePluginHooks(bridge *PluginHookBridge, pm *PluginManager) {
 		}
 		bridge.SetContext(entry.Manifest.ID, entry.Context)
 		for _, hook := range entry.Context.GetHooks() {
-			bridge.Register(entry.Manifest.ID, hook.Event, hook.Matcher, hook.Handler)
+			bridge.Register(entry.Manifest.ID, hook.Event, hook.Matcher, hook.Handler, hook.Global)
 		}
 	}
 }

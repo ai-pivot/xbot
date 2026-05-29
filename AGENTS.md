@@ -148,6 +148,7 @@
 - **Old `ToolHook`/`HookChain` is gone.** Replaced by `agent/hooks/Manager`. Any code referencing `HookChain`, `ToolHook`, `executeWithHooks` is stale.
 - **Manager.Emit() is shared across Agent + SubAgents** (same instance). Must be concurrency-safe.
 - **Decision priority**: `deny > defer > ask > allow`. Low-priority layer deny cannot be overridden by high-priority allow.
+- **Script plugin triggers are global hooks** (`hookRegistration.Global=true`). `bridge.Dispatch` skips session isolation for them — they manage per-workDir state and must fire for all sessions. Without this, multi-session remote CLI silently drops triggers for all but the last session that called `RefreshWorkDir`.
 
 ### Backend/Transport Architecture
 - **CLI always uses Client → Transport → Server, even in local mode.** Client (agent/client.go) is a pure RPC client — every method is `Transport.Call("method", params)`.
