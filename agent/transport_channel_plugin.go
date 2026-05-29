@@ -16,7 +16,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// GrpcPluginTransport — bidirectional JSON-RPC over stdin/stdout
+// ChannelPluginTransport — bidirectional JSON-RPC over stdin/stdout
 //
 // Wraps a plugin process's stdin/stdout pipes as a full-duplex JSON-RPC
 // channel. The plugin acts as a full RPC client (like remote CLI over WS),
@@ -30,11 +30,11 @@ import (
 //   - xbot → Plugin (RPC response): {"id":"2","result":"ok"}  (for plugin's requests)
 // ---------------------------------------------------------------------------
 
-// GrpcPluginTransport manages bidirectional JSON-RPC with a plugin process.
+// ChannelPluginTransport manages bidirectional JSON-RPC with a plugin process.
 // It implements channel.Channel for registration in the Dispatcher,
 // channel.ProgressSender and channel.SessionStateSender for event push,
 // and channel.UserMessageInjector for background message injection.
-type GrpcPluginTransport struct {
+type ChannelPluginTransport struct {
 	name    string
 	process processIO
 
@@ -102,8 +102,8 @@ func (p *stdioPipes) close() error {
 	return nil
 }
 
-// GrpcPluginTransportConfig holds configuration for creating a GrpcPluginTransport.
-type GrpcPluginTransportConfig struct {
+// ChannelPluginTransportConfig holds configuration for creating a ChannelPluginTransport.
+type ChannelPluginTransportConfig struct {
 	// Name is the channel name (from ChannelProviderDecl.Name).
 	Name string
 
@@ -122,9 +122,9 @@ type GrpcPluginTransportConfig struct {
 	EventCh chan protocol.WSMessage
 }
 
-// NewGrpcPluginTransport creates a new GrpcPluginTransport from config.
-func NewGrpcPluginTransport(cfg GrpcPluginTransportConfig) *GrpcPluginTransport {
-	return &GrpcPluginTransport{
+// NewChannelPluginTransport creates a new ChannelPluginTransport from config.
+func NewChannelPluginTransport(cfg ChannelPluginTransportConfig) *ChannelPluginTransport {
+	return &ChannelPluginTransport{
 		name:     cfg.Name,
 		process:  newStdioPipes(cfg.Stdin, cfg.Stdout),
 		dispatch: cfg.Dispatch,
@@ -134,10 +134,10 @@ func NewGrpcPluginTransport(cfg GrpcPluginTransportConfig) *GrpcPluginTransport 
 	}
 }
 
-// NewGrpcPluginTransportWithIO creates a GrpcPluginTransport with a custom processIO
+// NewChannelPluginTransportWithIO creates a ChannelPluginTransport with a custom processIO
 // (for testing).
-func NewGrpcPluginTransportWithIO(name string, pio processIO, dispatch func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error), eventCh chan protocol.WSMessage) *GrpcPluginTransport {
-	return &GrpcPluginTransport{
+func NewChannelPluginTransportWithIO(name string, pio processIO, dispatch func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error), eventCh chan protocol.WSMessage) *ChannelPluginTransport {
+	return &ChannelPluginTransport{
 		name:     name,
 		process:  pio,
 		dispatch: dispatch,
@@ -148,7 +148,7 @@ func NewGrpcPluginTransportWithIO(name string, pio processIO, dispatch func(ctx 
 }
 
 // EventCh returns the event channel for pushing WSMessage events to the plugin.
-func (t *GrpcPluginTransport) EventCh() chan protocol.WSMessage {
+func (t *ChannelPluginTransport) EventCh() chan protocol.WSMessage {
 	return t.eventCh
 }
 
@@ -158,7 +158,7 @@ func (t *GrpcPluginTransport) EventCh() chan protocol.WSMessage {
 
 // Call sends an RPC request from xbot to the plugin and waits for the response.
 // Used for server→plugin calls (e.g., channel_send equivalent).
-func (t *GrpcPluginTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (t *ChannelPluginTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
 	id := fmt.Sprintf("srv-%d", t.rpcID.Add(1))
 	ch := make(chan *rpcResponse, 1)
 
@@ -181,34 +181,34 @@ func (t *GrpcPluginTransport) Call(method string, payload json.RawMessage) (json
 		t.pendingMu.Lock()
 		delete(t.pending, id)
 		t.pendingMu.Unlock()
-		return nil, fmt.Errorf("grpc transport: write RPC %s: %w", method, err)
+		return nil, fmt.Errorf("channel plugin transport: write RPC %s: %w", method, err)
 	}
 
 	select {
 	case resp, ok := <-ch:
 		if !ok {
-			return nil, fmt.Errorf("grpc transport: RPC %s: connection closed", method)
+			return nil, fmt.Errorf("channel plugin transport: RPC %s: connection closed", method)
 		}
 		if resp.Error != "" {
-			return nil, fmt.Errorf("grpc transport: RPC %s: %s", method, resp.Error)
+			return nil, fmt.Errorf("channel plugin transport: RPC %s: %s", method, resp.Error)
 		}
 		return resp.Result, nil
 	case <-time.After(30 * time.Second):
 		t.pendingMu.Lock()
 		delete(t.pending, id)
 		t.pendingMu.Unlock()
-		return nil, fmt.Errorf("grpc transport: RPC %s: timeout", method)
+		return nil, fmt.Errorf("channel plugin transport: RPC %s: timeout", method)
 	case <-t.closeCh:
 		t.pendingMu.Lock()
 		delete(t.pending, id)
 		t.pendingMu.Unlock()
-		return nil, fmt.Errorf("grpc transport: RPC %s: transport closed", method)
+		return nil, fmt.Errorf("channel plugin transport: RPC %s: transport closed", method)
 	}
 }
 
 // PushEvent writes a WSMessage event to the plugin's stdin.
 // Used for progress, stream_content, session state, etc.
-func (t *GrpcPluginTransport) PushEvent(msg protocol.WSMessage) error {
+func (t *ChannelPluginTransport) PushEvent(msg protocol.WSMessage) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 	return t.process.stdinWrite(msg)
@@ -220,22 +220,22 @@ func (t *GrpcPluginTransport) PushEvent(msg protocol.WSMessage) error {
 
 // compile-time checks
 var (
-	_ channel.Channel             = (*GrpcPluginTransport)(nil)
-	_ channel.ProgressSender      = (*GrpcPluginTransport)(nil)
-	_ channel.SessionStateSender  = (*GrpcPluginTransport)(nil)
-	_ channel.UserMessageInjector = (*GrpcPluginTransport)(nil)
+	_ channel.Channel             = (*ChannelPluginTransport)(nil)
+	_ channel.ProgressSender      = (*ChannelPluginTransport)(nil)
+	_ channel.SessionStateSender  = (*ChannelPluginTransport)(nil)
+	_ channel.UserMessageInjector = (*ChannelPluginTransport)(nil)
 )
 
-func (t *GrpcPluginTransport) Name() string                                    { return t.name }
-func (t *GrpcPluginTransport) SetChatID(string)                                {}
-func (t *GrpcPluginTransport) SetSendInboundFn(func(channel.InboundMsg) error) {}
+func (t *ChannelPluginTransport) Name() string                                    { return t.name }
+func (t *ChannelPluginTransport) SetChatID(string)                                {}
+func (t *ChannelPluginTransport) SetSendInboundFn(func(channel.InboundMsg) error) {}
 
-func (t *GrpcPluginTransport) Start() error {
+func (t *ChannelPluginTransport) Start() error {
 	go t.eventPushLoop()
 	return nil
 }
 
-func (t *GrpcPluginTransport) Stop() {
+func (t *ChannelPluginTransport) Stop() {
 	t.closeOnce.Do(func() {
 		close(t.closeCh)
 		// Unblock all pending RPC callers.
@@ -253,7 +253,7 @@ func (t *GrpcPluginTransport) Stop() {
 
 // Send implements channel.Channel.Send.
 // Converts the OutboundMsg to a WSMessage and pushes it to the plugin.
-func (t *GrpcPluginTransport) Send(msg channel.OutboundMsg) (string, error) {
+func (t *ChannelPluginTransport) Send(msg channel.OutboundMsg) (string, error) {
 	meta := msg.Metadata
 	if meta == nil {
 		meta = make(map[string]string)
@@ -278,7 +278,7 @@ func (t *GrpcPluginTransport) Send(msg channel.OutboundMsg) (string, error) {
 // channel.ProgressSender interface
 // ---------------------------------------------------------------------------
 
-func (t *GrpcPluginTransport) SendProgress(chatID string, payload *protocol.ProgressEvent) {
+func (t *ChannelPluginTransport) SendProgress(chatID string, payload *protocol.ProgressEvent) {
 	msg := protocol.WSMessage{
 		Type:     protocol.MsgTypeProgress,
 		ChatID:   chatID,
@@ -289,7 +289,7 @@ func (t *GrpcPluginTransport) SendProgress(chatID string, payload *protocol.Prog
 	}
 }
 
-func (t *GrpcPluginTransport) SendStreamContent(chatID, content, reasoning string) {
+func (t *ChannelPluginTransport) SendStreamContent(chatID, content, reasoning string) {
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeStreamContent,
 		ChatID:  chatID,
@@ -309,7 +309,7 @@ func (t *GrpcPluginTransport) SendStreamContent(chatID, content, reasoning strin
 // channel.SessionStateSender interface
 // ---------------------------------------------------------------------------
 
-func (t *GrpcPluginTransport) SendSessionState(ev protocol.SessionEvent) {
+func (t *ChannelPluginTransport) SendSessionState(ev protocol.SessionEvent) {
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		Session: &ev,
@@ -323,7 +323,7 @@ func (t *GrpcPluginTransport) SendSessionState(ev protocol.SessionEvent) {
 // channel.UserMessageInjector interface
 // ---------------------------------------------------------------------------
 
-func (t *GrpcPluginTransport) InjectUserMessage(chatID, content string) {
+func (t *ChannelPluginTransport) InjectUserMessage(chatID, content string) {
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeInjectUser,
 		ChatID:  chatID,
@@ -339,14 +339,14 @@ func (t *GrpcPluginTransport) InjectUserMessage(chatID, content string) {
 // ---------------------------------------------------------------------------
 
 // Close stops the transport and releases resources.
-func (t *GrpcPluginTransport) Close() error {
+func (t *ChannelPluginTransport) Close() error {
 	t.Stop()
 	return t.process.close()
 }
 
 // Run starts the readLoop that reads JSON-RPC from the plugin's stdout.
 // Blocks until the context is cancelled or the plugin stdout is closed.
-func (t *GrpcPluginTransport) Run(ctx context.Context) {
+func (t *ChannelPluginTransport) Run(ctx context.Context) {
 	t.readLoop(ctx)
 }
 
@@ -357,7 +357,7 @@ func (t *GrpcPluginTransport) Run(ctx context.Context) {
 // readLoop reads JSON lines from plugin stdout and routes them:
 //   - RPC response (has "id" + "result"/"error", no "method") → deliver to pending Call
 //   - RPC request (has "id" + "method") → dispatch via RPCTable, write response back
-func (t *GrpcPluginTransport) readLoop(ctx context.Context) {
+func (t *ChannelPluginTransport) readLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -391,7 +391,7 @@ func (t *GrpcPluginTransport) readLoop(ctx context.Context) {
 }
 
 // handleIncoming routes an incoming JSON message from the plugin.
-func (t *GrpcPluginTransport) handleIncoming(raw json.RawMessage) {
+func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 	// Peek at the message to determine type.
 	var peek struct {
 		ID     string          `json:"id"`
@@ -415,7 +415,7 @@ func (t *GrpcPluginTransport) handleIncoming(raw json.RawMessage) {
 }
 
 // handlePluginRPC dispatches an RPC request from the plugin to xbot's RPCTable.
-func (t *GrpcPluginTransport) handlePluginRPC(id, method string, raw json.RawMessage) {
+func (t *ChannelPluginTransport) handlePluginRPC(id, method string, raw json.RawMessage) {
 	// Extract params from the raw message.
 	var req struct {
 		Params json.RawMessage `json:"params"`
@@ -437,7 +437,7 @@ func (t *GrpcPluginTransport) handlePluginRPC(id, method string, raw json.RawMes
 }
 
 // handlePluginResponse delivers a response from the plugin to a pending xbot→plugin call.
-func (t *GrpcPluginTransport) handlePluginResponse(id string, result json.RawMessage, errMsg string) {
+func (t *ChannelPluginTransport) handlePluginResponse(id string, result json.RawMessage, errMsg string) {
 	t.pendingMu.Lock()
 	ch, ok := t.pending[id]
 	if ok {
@@ -454,7 +454,7 @@ func (t *GrpcPluginTransport) handlePluginResponse(id string, result json.RawMes
 }
 
 // writeRPCResponse writes an RPC response back to the plugin's stdin.
-func (t *GrpcPluginTransport) writeRPCResponse(id string, result json.RawMessage, errMsg string) {
+func (t *ChannelPluginTransport) writeRPCResponse(id string, result json.RawMessage, errMsg string) {
 	resp := rpcResponse{
 		Type:   protocol.MsgTypeRPCResponse,
 		ID:     id,
@@ -469,7 +469,7 @@ func (t *GrpcPluginTransport) writeRPCResponse(id string, result json.RawMessage
 }
 
 // eventPushLoop reads from eventCh and pushes WSMessage events to the plugin.
-func (t *GrpcPluginTransport) eventPushLoop() {
+func (t *ChannelPluginTransport) eventPushLoop() {
 	for {
 		select {
 		case <-t.closeCh:

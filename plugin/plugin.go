@@ -68,7 +68,7 @@ type PluginManifest struct {
 	Homepage string `json:"homepage,omitempty"`
 
 	// Runtime specifies the plugin execution environment.
-	// Valid values: "native", "grpc" (future: "wasm")
+	// Valid values: "native", "stdio" (or "grpc" for backward compat) (future: "wasm")
 	Runtime RuntimeType `json:"runtime"`
 
 	// Entry is the plugin entry point.
@@ -261,8 +261,13 @@ const (
 	// RuntimeNative runs the plugin in-process as Go code.
 	RuntimeNative RuntimeType = "native"
 
-	// RuntimeGRPC runs the plugin as an external process communicating via gRPC.
+	// RuntimeGRPC runs the plugin as an external process communicating via JSON/stdio.
+	// Deprecated: use RuntimeStdio instead. "grpc" is preserved for backward compatibility.
 	RuntimeGRPC RuntimeType = "grpc"
+
+	// RuntimeStdio runs the plugin as an external process communicating via JSON over stdin/stdout.
+	// This is the recommended name; RuntimeGRPC is an alias for backward compatibility.
+	RuntimeStdio RuntimeType = "stdio"
 
 	// RuntimeWASM runs the plugin in a WASM sandbox (Phase 2).
 	RuntimeWASM RuntimeType = "wasm"

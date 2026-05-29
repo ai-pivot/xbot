@@ -85,15 +85,15 @@ func (m *mockProcessIO) getWritten() []any {
 	return result
 }
 
-// TestGrpcPluginTransport_Send verifies that Send pushes a WSMessage to the plugin.
-func TestGrpcPluginTransport_Send(t *testing.T) {
+// TestChannelPluginTransport_Send verifies that Send pushes a WSMessage to the plugin.
+func TestChannelPluginTransport_Send(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	_, err := transport.Send(channel.OutboundMsg{
 		Channel: "test",
@@ -121,15 +121,15 @@ func TestGrpcPluginTransport_Send(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_PushEvent verifies event pushing.
-func TestGrpcPluginTransport_PushEvent(t *testing.T) {
+// TestChannelPluginTransport_PushEvent verifies event pushing.
+func TestChannelPluginTransport_PushEvent(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	err := transport.PushEvent(protocol.WSMessage{
 		Type:   protocol.MsgTypeProgress,
@@ -148,15 +148,15 @@ func TestGrpcPluginTransport_PushEvent(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_SendProgress verifies the ProgressSender interface.
-func TestGrpcPluginTransport_SendProgress(t *testing.T) {
+// TestChannelPluginTransport_SendProgress verifies the ProgressSender interface.
+func TestChannelPluginTransport_SendProgress(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	transport.SendProgress("chat1", &protocol.ProgressEvent{
 		Phase: "tool",
@@ -175,8 +175,8 @@ func TestGrpcPluginTransport_SendProgress(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_HandlePluginRPC verifies plugin→xbot RPC dispatch.
-func TestGrpcPluginTransport_HandlePluginRPC(t *testing.T) {
+// TestChannelPluginTransport_HandlePluginRPC verifies plugin→xbot RPC dispatch.
+func TestChannelPluginTransport_HandlePluginRPC(t *testing.T) {
 	pio := newMockProcessIO()
 	type dispatchResult struct {
 		method string
@@ -188,7 +188,7 @@ func TestGrpcPluginTransport_HandlePluginRPC(t *testing.T) {
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	// Simulate plugin sending an RPC request.
 	pluginRequest := map[string]any{
@@ -243,15 +243,15 @@ func TestGrpcPluginTransport_HandlePluginRPC(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_HandlePluginResponse verifies response delivery to pending calls.
-func TestGrpcPluginTransport_HandlePluginResponse(t *testing.T) {
+// TestChannelPluginTransport_HandlePluginResponse verifies response delivery to pending calls.
+func TestChannelPluginTransport_HandlePluginResponse(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	// Start a Call in a goroutine.
 	callDone := make(chan error, 1)
@@ -282,15 +282,15 @@ func TestGrpcPluginTransport_HandlePluginResponse(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_Close verifies cleanup.
-func TestGrpcPluginTransport_Close(t *testing.T) {
+// TestChannelPluginTransport_Close verifies cleanup.
+func TestChannelPluginTransport_Close(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	err := transport.Close()
 	if err != nil {
@@ -302,15 +302,15 @@ func TestGrpcPluginTransport_Close(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_EventPushLoop verifies the event push loop.
-func TestGrpcPluginTransport_EventPushLoop(t *testing.T) {
+// TestChannelPluginTransport_EventPushLoop verifies the event push loop.
+func TestChannelPluginTransport_EventPushLoop(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	// Start the transport (starts event push loop).
 	if err := transport.Start(); err != nil {
@@ -343,15 +343,15 @@ func TestGrpcPluginTransport_EventPushLoop(t *testing.T) {
 	transport.Stop()
 }
 
-// TestGrpcPluginTransport_SessionState verifies SessionStateSender.
-func TestGrpcPluginTransport_SessionState(t *testing.T) {
+// TestChannelPluginTransport_SessionState verifies SessionStateSender.
+func TestChannelPluginTransport_SessionState(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	transport.SendSessionState(protocol.SessionEvent{
 		Channel: "test",
@@ -372,15 +372,15 @@ func TestGrpcPluginTransport_SessionState(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_InjectUserMessage verifies UserMessageInjector.
-func TestGrpcPluginTransport_InjectUserMessage(t *testing.T) {
+// TestChannelPluginTransport_InjectUserMessage verifies UserMessageInjector.
+func TestChannelPluginTransport_InjectUserMessage(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	transport.InjectUserMessage("chat1", "scheduled task done")
 
@@ -400,15 +400,15 @@ func TestGrpcPluginTransport_InjectUserMessage(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_ReadLoopExitsOnContext verifies readLoop exits cleanly.
-func TestGrpcPluginTransport_ReadLoopExitsOnContext(t *testing.T) {
+// TestChannelPluginTransport_ReadLoopExitsOnContext verifies readLoop exits cleanly.
+func TestChannelPluginTransport_ReadLoopExitsOnContext(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -429,15 +429,15 @@ func TestGrpcPluginTransport_ReadLoopExitsOnContext(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_StreamContent verifies SendStreamContent.
-func TestGrpcPluginTransport_StreamContent(t *testing.T) {
+// TestChannelPluginTransport_StreamContent verifies SendStreamContent.
+func TestChannelPluginTransport_StreamContent(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	transport.SendStreamContent("chat1", "Hello ", "thinking about...")
 
@@ -460,15 +460,15 @@ func TestGrpcPluginTransport_StreamContent(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_CallOnClosedTransport verifies Call returns error on closed transport.
-func TestGrpcPluginTransport_CallOnClosedTransport(t *testing.T) {
+// TestChannelPluginTransport_CallOnClosedTransport verifies Call returns error on closed transport.
+func TestChannelPluginTransport_CallOnClosedTransport(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	// Close the transport first.
 	transport.Stop()
@@ -480,15 +480,15 @@ func TestGrpcPluginTransport_CallOnClosedTransport(t *testing.T) {
 	}
 }
 
-// TestGrpcPluginTransport_ChannelInterface verifies all Channel interface methods.
-func TestGrpcPluginTransport_ChannelInterface(t *testing.T) {
+// TestChannelPluginTransport_ChannelInterface verifies all Channel interface methods.
+func TestChannelPluginTransport_ChannelInterface(t *testing.T) {
 	pio := newMockProcessIO()
 	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal("ok")
 	}
 	eventCh := make(chan protocol.WSMessage, 10)
 
-	transport := NewGrpcPluginTransportWithIO("test", pio, dispatch, eventCh)
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
 
 	// Name
 	if transport.Name() != "test" {

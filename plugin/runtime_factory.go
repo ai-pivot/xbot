@@ -9,19 +9,19 @@ import (
 // ---------------------------------------------------------------------------
 
 // NewCompositeRuntimeFactory creates a RuntimeFactory that handles all
-// runtime types: native (in-process Go), grpc (external JSON process),
+// runtime types: native (in-process Go), stdio (external JSON/stdio process),
 // and script (simple periodic script execution).
 func NewCompositeRuntimeFactory() RuntimeFactory {
 	return &compositeRuntimeFactory{
 		native: NewNativeRuntime(),
-		grpc:   NewGRPCRuntime(),
+		stdio:  NewStdioRuntime(),
 		script: NewScriptRuntime(),
 	}
 }
 
 type compositeRuntimeFactory struct {
 	native RuntimeFactory
-	grpc   RuntimeFactory
+	stdio  RuntimeFactory
 	script RuntimeFactory
 }
 
@@ -29,11 +29,11 @@ func (f *compositeRuntimeFactory) Create(manifest *PluginManifest, dir string) (
 	switch manifest.Runtime {
 	case RuntimeNative:
 		return f.native.Create(manifest, dir)
-	case RuntimeGRPC:
-		return f.grpc.Create(manifest, dir)
+	case RuntimeGRPC, RuntimeStdio:
+		return f.stdio.Create(manifest, dir)
 	case RuntimeScript:
 		return f.script.Create(manifest, dir)
 	default:
-		return nil, fmt.Errorf("unsupported runtime: %q (supported: native, gRPC, script)", manifest.Runtime)
+		return nil, fmt.Errorf("unsupported runtime: %q (supported: native, stdio/grpc, script)", manifest.Runtime)
 	}
 }

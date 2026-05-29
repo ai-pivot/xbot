@@ -389,9 +389,9 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 			disp.Register(ch)
 
-			// If the channel is a GrpcPluginTransport, start its readLoop
+			// If the channel is a ChannelPluginTransport, start its readLoop
 			// for bidirectional JSON-RPC communication.
-			if transport, ok := ch.(*agent.GrpcPluginTransport); ok {
+			if transport, ok := ch.(*agent.ChannelPluginTransport); ok {
 				if err := transport.Start(); err != nil {
 					log.WithError(err).WithField("channel", name).Error("Failed to start plugin transport")
 					continue
@@ -466,14 +466,14 @@ func Run(args []string) error {
 		return channelProviderReg.Register(cp)
 	})
 
-	// Register the gRPC channel provider factory: creates grpcPluginChannelProvider
+	// Register the gRPC channel provider factory: creates stdioChannelPluginProvider
 	// from ChannelProviderDecl. The provider spawns a dedicated process for the channel
 	// and uses bidirectional JSON-RPC over stdin/stdout.
 	// rpcTablePtr is set later after InitServer, but the factory is called during
 	// InitServer (plugin activation). The dispatch function resolves lazily.
 	var rpcTablePtr *RPCTable
-	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.GrpcPluginProcess) (any, error) {
-		return &grpcPluginChannelProvider{
+	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
+		return &stdioChannelPluginProvider{
 			decl: decl,
 			rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 				if rpcTablePtr == nil {

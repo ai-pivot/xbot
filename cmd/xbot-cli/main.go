@@ -73,7 +73,7 @@ func registerCLIPluginChannels(disp *channel.Dispatcher, msgBus *bus.MessageBus,
 			continue
 		}
 		disp.Register(ch)
-		if transport, ok := ch.(*agent.GrpcPluginTransport); ok {
+		if transport, ok := ch.(*agent.ChannelPluginTransport); ok {
 			if err := transport.Start(); err != nil {
 				log.WithError(err).WithField("channel", name).Warn("Failed to start plugin transport")
 				continue
@@ -782,8 +782,8 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		}
 
 		// Register ChannelProviderFactory for gRPC channel plugins.
-		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.GrpcPluginProcess) (any, error) {
-			return serverapp.NewGrpcPluginChannelProvider(decl, rpcTable), nil
+		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
+			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable), nil
 		})
 
 		// Register plugin channels in the Dispatcher (equivalent to registerChannels() in server mode).

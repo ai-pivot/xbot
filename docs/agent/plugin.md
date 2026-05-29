@@ -13,13 +13,13 @@
 | `permissions.go` | Permission checker (includes bus.plugin gate) |
 | `storage.go` | Per-plugin KV storage (JSON file based) |
 | `eventbus.go` | PluginEventBus — in-process pub/sub with panic recovery |
-| `runtime.go` | Native + gRPC runtime factories |
+| `runtime.go` | Native + stdio runtime factories |
 | `runtime_wasm_skel.go` | WASM runtime skeleton (Phase 2, wazero placeholder) |
 | `integration.go` | WireAll, PluginToolBridge, PluginHookBridge — integration with xbot subsystems |
 | `adapter_tool.go` | PluginToolAdapter, SimplePluginTool, BuildToolDef |
 | `adapter_hook.go` | PluginHookBridge, hook dispatch, matcher |
 | `adapter_enricher.go` | EnricherRegistry |
-| `json.go` | JSON line protocol helpers (for gRPC runtime) |
+| `json.go` | JSON line protocol helpers (for stdio runtime) |
 | `examples/hello-world/` | Example plugin demonstrating the API |
 | `examples/git-info/` | Git status widget plugin (triggers on Shell/Cd/FileReplace etc.) |
 | `examples/file-diff/` | Diff summary widget plugin (triggers on FileReplace/FileCreate) |
@@ -35,7 +35,7 @@
 
 ### Plugin Interface
 - Manifest() → Activate(PluginContext) → Deactivate(PluginContext)
-- 三种运行时：native (in-process), gRPC (external process), wasm (sandbox, Phase 2 skeleton)
+- 三种运行时：native (in-process), stdio (external process, `"grpc"` alias for backward compat), wasm (sandbox, Phase 2 skeleton)
 
 ### PluginContext
 - 安全子集接口：RegisterTool, OnPreToolUse/OnPostToolUse, EnrichContext, Storage, Logger

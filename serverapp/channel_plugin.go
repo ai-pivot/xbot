@@ -25,25 +25,25 @@ type RPCTableDispatcher interface {
 }
 
 // ---------------------------------------------------------------------------
-// grpcPluginChannelProvider — channel.ChannelProvider backed by a separate
+// stdioChannelPluginProvider — channel.ChannelProvider backed by a separate
 // plugin process communicating via bidirectional JSON-RPC over stdin/stdout.
 // ---------------------------------------------------------------------------
 
-type grpcPluginChannelProvider struct {
+type stdioChannelPluginProvider struct {
 	decl    *plugin.ChannelProviderDecl
 	msgBus  *bus.MessageBus
 	rpcDisp func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
 
 	mu   sync.Mutex
-	conn *agent.GrpcPluginTransport
+	conn *agent.ChannelPluginTransport
 }
 
-var _ channel.ChannelProvider = (*grpcPluginChannelProvider)(nil)
+var _ channel.ChannelProvider = (*stdioChannelPluginProvider)(nil)
 
-// NewGrpcPluginChannelProvider creates a grpcPluginChannelProvider with the
+// NewStdioChannelPluginProvider creates a stdioChannelPluginProvider with the
 // given declaration and RPC dispatch table. Used by both CLI and server modes.
-func NewGrpcPluginChannelProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher) *grpcPluginChannelProvider {
-	return &grpcPluginChannelProvider{
+func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher) *stdioChannelPluginProvider {
+	return &stdioChannelPluginProvider{
 		decl: decl,
 		rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 			return rpcTable.Dispatch(ctx, method, payload)
@@ -51,11 +51,11 @@ func NewGrpcPluginChannelProvider(decl *plugin.ChannelProviderDecl, rpcTable RPC
 	}
 }
 
-func (p *grpcPluginChannelProvider) Name() string {
+func (p *stdioChannelPluginProvider) Name() string {
 	return p.decl.Name
 }
 
-func (p *grpcPluginChannelProvider) CreateChannel(cfg map[string]string, msgBus *bus.MessageBus) (channel.Channel, error) {
+func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus *bus.MessageBus) (channel.Channel, error) {
 	p.msgBus = msgBus
 
 	// Spawn a dedicated process for the channel.
@@ -66,7 +66,7 @@ func (p *grpcPluginChannelProvider) CreateChannel(cfg map[string]string, msgBus 
 
 	// Create the bidirectional transport.
 	eventCh := make(chan protocol.WSMessage, 256)
-	transport := agent.NewGrpcPluginTransport(agent.GrpcPluginTransportConfig{
+	transport := agent.NewChannelPluginTransport(agent.ChannelPluginTransportConfig{
 		Name:     p.decl.Name,
 		Stdin:    proc.stdinPipe,
 		Stdout:   proc.stdoutPipe,
@@ -92,7 +92,7 @@ func (p *grpcPluginChannelProvider) CreateChannel(cfg map[string]string, msgBus 
 	return transport, nil
 }
 
-func (p *grpcPluginChannelProvider) ConfigSchema() []channel.SettingDefinition {
+func (p *stdioChannelPluginProvider) ConfigSchema() []channel.SettingDefinition {
 	schema := make([]channel.SettingDefinition, 0, len(p.decl.ConfigSchema))
 	for _, s := range p.decl.ConfigSchema {
 		sd := channel.SettingDefinition{
@@ -121,7 +121,7 @@ func (p *grpcPluginChannelProvider) ConfigSchema() []channel.SettingDefinition {
 	return schema
 }
 
-func (p *grpcPluginChannelProvider) IsEnabled(cfg map[string]string) bool {
+func (p *stdioChannelPluginProvider) IsEnabled(cfg map[string]string) bool {
 	if cfg == nil {
 		return false
 	}
@@ -129,7 +129,7 @@ func (p *grpcPluginChannelProvider) IsEnabled(cfg map[string]string) bool {
 }
 
 // GetTransport returns the active transport, if any.
-func (p *grpcPluginChannelProvider) GetTransport() *agent.GrpcPluginTransport {
+func (p *stdioChannelPluginProvider) GetTransport() *agent.ChannelPluginTransport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.conn

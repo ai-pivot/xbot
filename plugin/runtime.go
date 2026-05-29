@@ -54,10 +54,10 @@ type pendingCall struct {
 }
 
 // InboundHandler processes asynchronous messages pushed by the plugin process.
-// Registered via GrpcPluginProcess.SetInboundHandler.
+// Registered via StdioPluginProcess.SetInboundHandler.
 type InboundHandler func(msg *PluginInbound)
 
-// GrpcPluginProcess manages an external plugin process communicating via
+// StdioPluginProcess manages an external plugin process communicating via
 // JSON-over-stdin/stdout protocol with bidirectional multiplexing.
 //
 // Phase 2 architecture:
@@ -67,7 +67,7 @@ type InboundHandler func(msg *PluginInbound)
 //   - Call() writes a request and waits on a pendingCall channel; readLoop delivers.
 //
 // This allows plugins to push channel_inbound messages at any time without polling.
-type GrpcPluginProcess struct {
+type StdioPluginProcess struct {
 	cmd    *exec.Cmd
 	stdin  *jsonLineWriter
 	stdout *jsonLineReader
@@ -82,36 +82,36 @@ type GrpcPluginProcess struct {
 
 }
 
-// NewGRPCRuntime creates a factory for gRPC plugin processes.
-func NewGRPCRuntime() RuntimeFactory {
-	return &grpcRuntimeFactory{}
+// NewStdioRuntime creates a factory for gRPC plugin processes.
+func NewStdioRuntime() RuntimeFactory {
+	return &stdioRuntimeFactory{}
 }
 
-type grpcRuntimeFactory struct{}
+type stdioRuntimeFactory struct{}
 
-func (f *grpcRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
+func (f *stdioRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
 	if manifest.Entry == "" {
 		return nil, fmt.Errorf("grpc plugin %s: entry command is required", manifest.ID)
 	}
-	return &grpcPlugin{
+	return &stdioPlugin{
 		manifest: *manifest,
 		dir:      dir,
 	}, nil
 }
 
-// grpcPlugin implements Plugin for external gRPC/stdio processes.
-type grpcPlugin struct {
+// stdioPlugin implements Plugin for external gRPC/stdio processes.
+type stdioPlugin struct {
 	manifest        PluginManifest
 	dir             string
-	process         *GrpcPluginProcess
+	process         *StdioPluginProcess
 	ChannelProvider *ChannelProviderDecl
 }
 
-func (g *grpcPlugin) Manifest() PluginManifest {
+func (g *stdioPlugin) Manifest() PluginManifest {
 	return g.manifest
 }
 
-func (g *grpcPlugin) Activate(ctx PluginContext) error {
+func (g *stdioPlugin) Activate(ctx PluginContext) error {
 	proc, err := startPluginProcess(g.manifest.Entry, g.manifest.Executable, g.manifest.Args, g.dir)
 	if err != nil {
 		return fmt.Errorf("start plugin process: %w", err)
@@ -200,7 +200,7 @@ func (g *grpcPlugin) Activate(ctx PluginContext) error {
 	return nil
 }
 
-func (g *grpcPlugin) Deactivate(ctx PluginContext) error {
+func (g *stdioPlugin) Deactivate(ctx PluginContext) error {
 	if g.process == nil {
 		return nil
 	}
@@ -213,7 +213,7 @@ func (g *grpcPlugin) Deactivate(ctx PluginContext) error {
 	return nil
 }
 
-func (g *grpcPlugin) makeRemoteHookHandler(event, matcher string) HookHandler {
+func (g *stdioPlugin) makeRemoteHookHandler(event, matcher string) HookHandler {
 	return func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		req := &PluginRequest{
 			Method: "hook",
@@ -238,7 +238,7 @@ func (g *grpcPlugin) makeRemoteHookHandler(event, matcher string) HookHandler {
 }
 
 // makeRemoteEnricher creates a ContextEnricher that calls the remote plugin process.
-func (g *grpcPlugin) makeRemoteEnricher(name string) ContextEnricher {
+func (g *stdioPlugin) makeRemoteEnricher(name string) ContextEnricher {
 	return func(ctx context.Context) (string, error) {
 		req := &PluginRequest{
 			Method: "enrich",
@@ -261,7 +261,7 @@ func (g *grpcPlugin) makeRemoteEnricher(name string) ContextEnricher {
 type remoteTool struct {
 	def      ToolDef
 	pluginID string
-	process  *GrpcPluginProcess
+	process  *StdioPluginProcess
 }
 
 func (rt *remoteTool) Definition() ToolDef {
@@ -342,18 +342,18 @@ type ChannelProviderDecl struct {
 	Dir        string   `json:"-"`
 }
 
-// GetChannelProviderDecl extracts the channel provider declaration from a grpcPlugin.
+// GetChannelProviderDecl extracts the channel provider declaration from a stdioPlugin.
 func GetChannelProviderDecl(p Plugin) *ChannelProviderDecl {
-	gp, ok := p.(*grpcPlugin)
+	gp, ok := p.(*stdioPlugin)
 	if !ok {
 		return nil
 	}
 	return gp.ChannelProvider
 }
 
-// GetProcess returns the GrpcPluginProcess for a grpcPlugin, or nil.
-func GetProcess(p Plugin) *GrpcPluginProcess {
-	if gp, ok := p.(*grpcPlugin); ok {
+// GetProcess returns the StdioPluginProcess for a stdioPlugin, or nil.
+func GetProcess(p Plugin) *StdioPluginProcess {
+	if gp, ok := p.(*stdioPlugin); ok {
 		return gp.process
 	}
 	return nil
@@ -363,7 +363,7 @@ func GetProcess(p Plugin) *GrpcPluginProcess {
 // Process lifecycle
 // ---------------------------------------------------------------------------
 
-func startPluginProcess(entry, executable string, args []string, dir string) (*GrpcPluginProcess, error) {
+func startPluginProcess(entry, executable string, args []string, dir string) (*StdioPluginProcess, error) {
 	var cmd *exec.Cmd
 	if executable != "" {
 		cmd = exec.Command(executable, args...)
@@ -390,7 +390,7 @@ func startPluginProcess(entry, executable string, args []string, dir string) (*G
 		return nil, fmt.Errorf("start process: %w", err)
 	}
 
-	return &GrpcPluginProcess{
+	return &StdioPluginProcess{
 		cmd:     cmd,
 		stdin:   &jsonLineWriter{w: stdinPipe},
 		stdout:  newJSONLineReader(stdoutPipe),
@@ -403,7 +403,7 @@ const pluginCallTimeout = 30 * time.Second
 // SetInboundHandler registers a callback for asynchronous inbound messages
 // from the plugin (e.g., channel_inbound). Must be called before readLoop starts
 // or while no readLoop is running (thread-safe via muxMu).
-func (p *GrpcPluginProcess) SetInboundHandler(handler InboundHandler) {
+func (p *StdioPluginProcess) SetInboundHandler(handler InboundHandler) {
 	p.muxMu.Lock()
 	defer p.muxMu.Unlock()
 	p.inboundHandler = handler
@@ -412,7 +412,7 @@ func (p *GrpcPluginProcess) SetInboundHandler(handler InboundHandler) {
 // Call sends a request to the plugin process and waits for the response.
 // Thread-safe: only one Call can be in-flight at a time (stdin is sequential).
 // The readLoop goroutine delivers the response.
-func (p *GrpcPluginProcess) Call(ctx context.Context, req *PluginRequest) (*PluginResponse, error) {
+func (p *StdioPluginProcess) Call(ctx context.Context, req *PluginRequest) (*PluginResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -447,7 +447,7 @@ func (p *GrpcPluginProcess) Call(ctx context.Context, req *PluginRequest) (*Plug
 	}
 }
 
-func (p *GrpcPluginProcess) clearPending() {
+func (p *StdioPluginProcess) clearPending() {
 	p.muxMu.Lock()
 	p.pending = nil
 	p.muxMu.Unlock()
@@ -459,7 +459,7 @@ func (p *GrpcPluginProcess) clearPending() {
 //   - Inbound (has "method", no "result"/"error")  → deliver to InboundHandler
 //
 // Runs as a background goroutine, started by Activate().
-func (p *GrpcPluginProcess) readLoop() {
+func (p *StdioPluginProcess) readLoop() {
 	for {
 		// Read next line from stdout
 		line, err := p.stdout.readLine()
@@ -475,7 +475,7 @@ func (p *GrpcPluginProcess) readLoop() {
 
 			p.mu.Lock()
 			if p.running {
-				log.WithField("plugin", "grpc").Warn("Plugin stdout closed: ", err)
+				log.WithField("plugin", "stdio").Warn("Plugin stdout closed: ", err)
 			}
 			p.mu.Unlock()
 			return
@@ -488,7 +488,7 @@ func (p *GrpcPluginProcess) readLoop() {
 			Error  string `json:"error"`
 		}
 		if jsonErr := json.Unmarshal(line, &peek); jsonErr != nil {
-			log.WithField("plugin", "grpc").Warn("Failed to parse plugin stdout line: ", jsonErr)
+			log.WithField("plugin", "stdio").Warn("Failed to parse plugin stdout line: ", jsonErr)
 			continue
 		}
 
@@ -496,7 +496,7 @@ func (p *GrpcPluginProcess) readLoop() {
 			// Inbound message from plugin (e.g., "channel_inbound")
 			var inbound PluginInbound
 			if err := json.Unmarshal(line, &inbound); err != nil {
-				log.WithField("plugin", "grpc").Warn("Failed to parse inbound: ", err)
+				log.WithField("plugin", "stdio").Warn("Failed to parse inbound: ", err)
 				continue
 			}
 			p.muxMu.Lock()
@@ -533,14 +533,14 @@ func (p *GrpcPluginProcess) readLoop() {
 }
 
 // Stop kills the plugin process.
-func (p *GrpcPluginProcess) Stop() {
+func (p *StdioPluginProcess) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.stopLocked()
 }
 
 // IsRunning returns whether the plugin process is still alive.
-func (p *GrpcPluginProcess) IsRunning() bool {
+func (p *StdioPluginProcess) IsRunning() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.running
@@ -548,7 +548,7 @@ func (p *GrpcPluginProcess) IsRunning() bool {
 
 // stopLocked kills the process without acquiring the lock.
 // Caller must hold p.mu.
-func (p *GrpcPluginProcess) stopLocked() {
+func (p *StdioPluginProcess) stopLocked() {
 	if p.running {
 		_ = p.cmd.Process.Kill()
 		_ = p.cmd.Wait()

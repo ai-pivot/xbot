@@ -15,7 +15,7 @@
 - `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system, model tiers (vanguard/balance/swift)
-- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, GrpcPluginTransport (gRPC channel plugin transport)
+- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, ChannelPluginTransport (stdio channel plugin transport)
 - `docs/agent/settings.md` — settings system: single registry (agent/setting_runtime.go), cli_settings.go, UpdatePerModelConfig, subscription-scoped vs user-scoped, runtime apply chain
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build, **local/remote unification**
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
@@ -162,8 +162,8 @@
 - **Lifecycle interfaces** (agent/lifecycle.go): AgentRunner, EventRouter, CallbackRegistry — only used by the legacy Backend struct for remote mode.
 - **Adding a new RPC method**: 1 handler in rpc_table.go (using h.Ag) + 1 method in client.go (Transport.Call) + 1 MethodXxx constant in req_types.go.
 - **Adding new transports** (gRPC, MCP) only requires implementing 2 Transport methods (Call + Close).
-- **GrpcPluginTransport (`agent/transport_grpc.go`) is a separate concept from Transport.** It wraps a channel plugin process's stdin/stdout as a bidirectional JSON-RPC channel (not an agent Transport). The plugin acts as a full RPC client (like remote CLI over WS). Created by `grpcPluginChannelProvider` (`serverapp/channel_plugin.go`) which spawns a **dedicated** process — NOT the same process used for plugin activation. The old `grpcChannelBridge` in `serverapp/channel_bridge_grpc.go` is deleted.
-- **`ChannelProviderFactory` replaces `GrpcChannelBridgeFactory`.** Renamed in `plugin/channel_provider.go`. The factory is set by serverapp during init with a lazy RPCTable reference (plugins activate during `InitServer` before RPCTable exists).
+- **ChannelPluginTransport (`agent/transport_channel_plugin.go`) is a separate concept from Transport.** It wraps a channel plugin process's stdin/stdout as a bidirectional JSON-RPC channel (not an agent Transport). The plugin acts as a full RPC client (like remote CLI over WS). Created by `stdioChannelPluginProvider` (`serverapp/channel_plugin.go`) which spawns a **dedicated** process — NOT the same process used for plugin activation.
+- **`ChannelProviderFactory` replaces the old `GrpcChannelBridgeFactory`.** Defined in `plugin/channel_provider.go`. The factory is set by serverapp during init with a lazy RPCTable reference (plugins activate during `InitServer` before RPCTable exists).
 
 ### Channel Configuration
 - **TUI channel config changes require live channel restart.** Writing config.json is not enough — Feishu/Web/QQ/NapCat channels are created once at startup via `registerChannels()`. `SetChannelConfig()` now calls `reconfigureFn` (set by server.go) to start/stop the affected channel. Any new channel type must be added to both `channelShouldRun()` and `createChannelInstance()`.

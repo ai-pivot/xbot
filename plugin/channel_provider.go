@@ -24,7 +24,7 @@ func SetChannelProviderRegistrar(fn ChannelProviderRegistrar) {
 // ChannelProviderFactory creates a channel.ChannelProvider from a gRPC plugin's
 // ChannelProviderDecl. Registered by serverapp to create provider instances
 // without plugin→channel import cycle.
-type ChannelProviderFactory func(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error)
+type ChannelProviderFactory func(decl *ChannelProviderDecl, process *StdioPluginProcess) (any, error)
 
 var (
 	channelProviderFactoryMu sync.RWMutex
@@ -41,7 +41,7 @@ func SetChannelProviderFactory(fn ChannelProviderFactory) {
 
 // CreateChannelProvider calls the registered factory to create a
 // channel.ChannelProvider from a gRPC plugin's channel declaration.
-func CreateChannelProvider(decl *ChannelProviderDecl, process *GrpcPluginProcess) (any, error) {
+func CreateChannelProvider(decl *ChannelProviderDecl, process *StdioPluginProcess) (any, error) {
 	channelProviderFactoryMu.RLock()
 	fn := channelProviderFactory
 	channelProviderFactoryMu.RUnlock()
