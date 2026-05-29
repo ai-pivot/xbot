@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	log "xbot/logger"
 )
@@ -199,6 +201,12 @@ type Logger interface {
 	Info(msg string, fields ...Field)
 	Warn(msg string, fields ...Field)
 	Error(msg string, fields ...Field)
+
+	// Formatted variants.
+	Debugf(format string, args ...any)
+	Infof(format string, args ...any)
+	Warnf(format string, args ...any)
+	Errorf(format string, args ...any)
 
 	// WithField returns a new Logger that pre-binds an additional field.
 	// Pre-bound fields are merged with per-call fields on each log call.
@@ -747,32 +755,81 @@ func (d *deniedStorage) Clear() error {
 }
 
 // ---------------------------------------------------------------------------
-// Default Logger — wraps logrus
+// Default Logger — per-plugin log file + global logrus fallback
 // ---------------------------------------------------------------------------
 
-// pluginLogger wraps the global logger with a plugin namespace.
+// pluginLogger writes structured logs to a per-plugin log file (daily-rotating)
+// AND also writes to the global logrus logger for backward compatibility.
+// This ensures plugin logs are both isolated (per-plugin file) and aggregated
+// (in the main xbot log file).
 type pluginLogger struct {
-	id string
+	id      string
+	fileOut io.Writer // per-plugin rotateWriter (may be nil if creation failed)
 }
 
-func newPluginLogger(pluginID string) *pluginLogger {
-	return &pluginLogger{id: pluginID}
+// newPluginLogger creates a plugin logger that writes to both the per-plugin
+// log file and the global logrus logger.
+func newPluginLogger(pluginID string, logMgr *pluginLogManager) *pluginLogger {
+	pl := &pluginLogger{id: pluginID}
+	if logMgr != nil {
+		if rw, err := logMgr.GetWriter(pluginID); err == nil {
+			pl.fileOut = rw
+		}
+	}
+	return pl
+}
+
+func (l *pluginLogger) writeToFile(level, msg string, fields []Field) {
+	if l.fileOut == nil {
+		return
+	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	line := fmt.Sprintf("%s [%s] plugin=%s", now, level, l.id)
+	for _, f := range fields {
+		line += fmt.Sprintf(" %s=%v", f.Key, f.Value)
+	}
+	line += " " + msg + "\n"
+	l.fileOut.Write([]byte(line)) // ignore error — logging must not block
 }
 
 func (l *pluginLogger) Debug(msg string, fields ...Field) {
-	log.WithFields(l.buildFields(fields)).Debug(msg)
+	log.WithFields(l.buildLogrusFields(fields)).Debug(msg)
+	l.writeToFile("DEBUG", msg, fields)
 }
 
 func (l *pluginLogger) Info(msg string, fields ...Field) {
-	log.WithFields(l.buildFields(fields)).Info(msg)
+	log.WithFields(l.buildLogrusFields(fields)).Info(msg)
+	l.writeToFile("INFO", msg, fields)
 }
 
 func (l *pluginLogger) Warn(msg string, fields ...Field) {
-	log.WithFields(l.buildFields(fields)).Warn(msg)
+	log.WithFields(l.buildLogrusFields(fields)).Warn(msg)
+	l.writeToFile("WARN", msg, fields)
 }
 
 func (l *pluginLogger) Error(msg string, fields ...Field) {
-	log.WithFields(l.buildFields(fields)).Error(msg)
+	log.WithFields(l.buildLogrusFields(fields)).Error(msg)
+	l.writeToFile("ERROR", msg, fields)
+}
+
+func (l *pluginLogger) Debugf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	l.Debug(msg)
+}
+
+func (l *pluginLogger) Infof(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	l.Info(msg)
+}
+
+func (l *pluginLogger) Warnf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	l.Warn(msg)
+}
+
+func (l *pluginLogger) Errorf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	l.Error(msg)
 }
 
 func (l *pluginLogger) WithField(key string, value any) Logger {
@@ -783,9 +840,8 @@ func (l *pluginLogger) WithFields(fields ...Field) Logger {
 	return &loggerWithFields{parent: l, fields: fields}
 }
 
-// buildFields constructs structured log fields including the plugin namespace
-// and any additional fields passed by the plugin.
-func (l *pluginLogger) buildFields(fields []Field) log.Fields {
+// buildLogrusFields constructs logrus Fields including the plugin namespace.
+func (l *pluginLogger) buildLogrusFields(fields []Field) log.Fields {
 	f := log.Fields{"plugin": l.id}
 	for _, field := range fields {
 		f[field.Key] = field.Value
@@ -831,6 +887,19 @@ func (l *loggerWithFields) Warn(msg string, fields ...Field) {
 }
 func (l *loggerWithFields) Error(msg string, fields ...Field) {
 	l.parent.Error(msg, l.mergeFields(fields)...)
+}
+
+func (l *loggerWithFields) Debugf(format string, args ...any) {
+	l.parent.Debugf(format, args...)
+}
+func (l *loggerWithFields) Infof(format string, args ...any) {
+	l.parent.Infof(format, args...)
+}
+func (l *loggerWithFields) Warnf(format string, args ...any) {
+	l.parent.Warnf(format, args...)
+}
+func (l *loggerWithFields) Errorf(format string, args ...any) {
+	l.parent.Errorf(format, args...)
 }
 
 func (l *loggerWithFields) mergeFields(callFields []Field) []Field {

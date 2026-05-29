@@ -567,7 +567,7 @@ func TestPluginContext_UseMiddleware(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{"tools.register"}
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	mw := func(ctx context.Context, toolName string, input string, next PluginMiddlewareNext) (*ToolResult, error) {
 		return next(ctx, toolName, input)
@@ -588,7 +588,7 @@ func TestPluginContext_UseMiddleware_NoPermission(t *testing.T) {
 	m := testManifest()
 	m.Permissions = nil // No permissions
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.UseMiddleware(func(ctx context.Context, toolName string, input string, next PluginMiddlewareNext) (*ToolResult, error) {
 		return next(ctx, toolName, input)
@@ -606,7 +606,7 @@ func TestPluginContext_UseMiddleware_Nil(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{"tools.register"}
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.UseMiddleware(nil)
 	if err != nil {
@@ -695,6 +695,19 @@ func (l *captureLogger) Warn(msg string, fields ...Field) {
 }
 func (l *captureLogger) Error(msg string, fields ...Field) {
 	l.entries = append(l.entries, captureLogEntry{msg: msg, fields: fields})
+}
+
+func (l *captureLogger) Debugf(format string, args ...any) {
+	l.entries = append(l.entries, captureLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *captureLogger) Infof(format string, args ...any) {
+	l.entries = append(l.entries, captureLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *captureLogger) Warnf(format string, args ...any) {
+	l.entries = append(l.entries, captureLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *captureLogger) Errorf(format string, args ...any) {
+	l.entries = append(l.entries, captureLogEntry{msg: fmt.Sprintf(format, args...)})
 }
 
 func (l *captureLogger) WithField(key string, value any) Logger {

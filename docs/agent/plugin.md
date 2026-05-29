@@ -5,7 +5,9 @@
 | File | Purpose |
 |------|---------|
 | `plugin.go` | Plugin interface, PluginManifest, PluginTool, PluginToolV2, ToolCallContext, PluginDependency |
-| `context.go` | PluginContext interface + implementations + type-safe Storage helpers + event bus + error callback |
+| `audit.go` | AuditLogger — daily-rotating JSONL audit trail with per-plugin query |
+| `plog.go` | Per-plugin log infrastructure: rotateWriter, pluginLogManager, unified cleanup |
+| `context.go` | PluginContext interface + implementations + type-safe Storage helpers + event bus + error callback + per-plugin Logger |
 | `manager.go` | PluginManager — discovery, lifecycle, reload, install, uninstall, watchConfig, health, metrics, String |
 | `manifest.go` | Manifest parsing, validation, dependency validation |
 | `permissions.go` | Permission checker (includes bus.plugin gate) |
@@ -40,6 +42,7 @@
 - Type-safe Storage: StorageInt/StorageBool/StorageJSON/StorageGetJSON — 避免手动类型转换
 - Event Bus: Subscribe/Publish (需要 bus.plugin + bus.read/bus.write 权限)
 - Error Callback: OnPluginError 注册插件级错误回调 (非 tool 错误)
+- Logger: per-plugin 日志文件 + 全局 logrus 双写，支持 Debugf/Infof/Warnf/Errorf 格式化
 
 ### Plugin States
 - StateDiscovered → StateActive → StateDeactivating → StateInactive
@@ -207,3 +210,48 @@ caches so multiple CLI windows in different git repos see correct branch info.
 `HookPayload` now carries `ToolOutput` and `ToolElapsedMs` fields from
 `PostToolUseEvent`. This enables plugins to inspect tool results (e.g. diff
 plugins reading FileReplace output).
+
+## Per-Plugin Logging System
+
+Each plugin writes to its own daily-rotated log file, with unified cleanup.
+
+### Architecture
+
+```
+plugin/plog.go
+  ├── rotateWriter        — daily-rotating io.Writer (custom suffix: .log/.jsonl)
+  ├── pluginLogManager    — manages per-plugin rotateWriters + single cleanup goroutine
+  ├── cleanLogDir         — shared cleanup for .log/.jsonl files by maxAge
+  └── multiWriter         — dynamic writer list (add/remove at runtime)
+
+plugin/context.go
+  └── pluginLogger        — dual-writes: per-plugin file + global logrus (backward compat)
+```
+
+### Log File Locations
+
+| Component | Path Pattern | Rotation |
+|-----------|-------------|----------|
+| Plugin logs | `~/.xbot/plugins/<id>/logs/<id>-YYYY-MM-DD.log` | Daily |
+| Audit logs | `~/.xbot/plugins/audit-YYYY-MM-DD.jsonl` | Daily |
+
+### Design Decisions
+
+- **Single cleanup goroutine**: `pluginLogManager.cleanupLoop()` runs hourly, scans all
+  `~/.xbot/plugins/*/logs/` subdirectories + audit directory. Default maxAge: 7 days.
+- **Dual-write**: `pluginLogger` writes to per-plugin file AND global logrus. Main log
+  file still shows all plugin logs (backward compat). Per-plugin files are for isolation.
+- **rotateWriter is standalone**: Implemented in plugin package (not reusing logger.dailyRotateFile)
+  to avoid circular dependency (plugin → logger → plugin would be circular).
+- **Logger interface extended**: Added `Debugf/Infof/Warnf/Errorf` formatted methods.
+  All Logger implementations (pluginLogger, loggerWithFields, testLogger, captureLogger,
+  sdkMockLogger) must implement these.
+- **No lumberjack dependency**: Pure stdlib rotation by date (same as main logger).
+
+### Integration Points
+
+- `PluginManager` creates `pluginLogManager` in `NewPluginManager()`
+- `Discover()` calls `newPluginLogger(id, pm.logMgr)` which gets a per-plugin rotateWriter
+- `PluginManager.Close()` calls `logMgr.CloseAll()` to stop cleanup goroutine + close writers
+- AuditLogger uses `newRotateWriterWithSuffix(dir, "audit", ".jsonl")` for daily rotation
+

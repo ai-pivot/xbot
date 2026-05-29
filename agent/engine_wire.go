@@ -1896,9 +1896,10 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 	}
 }
 
-// buildStreamCallbacks resolves CLI, Web, and source-channel (e.g. plugin) channels
-// and returns stream content and reasoning stream callbacks.
-// Returns nil, nil if streaming is disabled or no channels are available.
+// buildStreamCallbacks resolves CLI and Web channels and returns stream content
+// and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
+// no channels are available.
+// Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
 	var cliCh *channelpkg.CLIChannel
 	var remoteCLICh channelpkg.ProgressSender
@@ -1916,16 +1917,6 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 
-	// Also resolve the source channel as a ProgressSender (for plugin channels like TG).
-	var srcProgressCh channelpkg.ProgressSender
-	if channel != "cli" && channel != "web" && a.channelFinder != nil {
-		if ch, ok := a.channelFinder(channel); ok {
-			if ps, ok := ch.(channelpkg.ProgressSender); ok {
-				srcProgressCh = ps
-			}
-		}
-	}
-
 	streamContentFunc = func(content string) {
 		seq := progressSeq.Add(1)
 		if cliCh != nil {
@@ -1936,9 +1927,6 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 		if webCh != nil {
 			webCh.SendStreamContent(chatID, content, "")
-		}
-		if srcProgressCh != nil {
-			srcProgressCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: qualifyChatID(channel, chatID), Seq: seq, StreamContent: content})
 		}
 	}
 	streamReasoningFunc = func(content string) {
@@ -1951,9 +1939,6 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 		if webCh != nil {
 			webCh.SendStreamContent(chatID, "", content)
-		}
-		if srcProgressCh != nil {
-			srcProgressCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: qualifyChatID(channel, chatID), Seq: seq, ReasoningStreamContent: content})
 		}
 	}
 	return streamContentFunc, streamReasoningFunc

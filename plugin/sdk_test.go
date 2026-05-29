@@ -405,6 +405,18 @@ func (l *sdkMockLogger) Warn(msg string, fields ...Field) {
 func (l *sdkMockLogger) Error(msg string, fields ...Field) {
 	l.entries = append(l.entries, sdkLogEntry{msg: msg, fields: fields})
 }
+func (l *sdkMockLogger) Debugf(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *sdkMockLogger) Infof(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *sdkMockLogger) Warnf(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *sdkMockLogger) Errorf(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
 
 func (l *sdkMockLogger) WithField(key string, value any) Logger {
 	return &loggerWithFields{parent: l, fields: []Field{{Key: key, Value: value}}}

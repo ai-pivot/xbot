@@ -52,6 +52,26 @@ func (l *testLogger) Error(msg string, fields ...Field) {
 	l.t.Errorf("[ERROR] %s %s", msg, formatFields(fields))
 }
 
+func (l *testLogger) Debugf(format string, args ...any) {
+	l.t.Helper()
+	l.t.Logf("[DEBUG] %s", fmt.Sprintf(format, args...))
+}
+
+func (l *testLogger) Infof(format string, args ...any) {
+	l.t.Helper()
+	l.t.Logf("[INFO] %s", fmt.Sprintf(format, args...))
+}
+
+func (l *testLogger) Warnf(format string, args ...any) {
+	l.t.Helper()
+	l.t.Logf("[WARN] %s", fmt.Sprintf(format, args...))
+}
+
+func (l *testLogger) Errorf(format string, args ...any) {
+	l.t.Helper()
+	l.t.Errorf("[ERROR] %s", fmt.Sprintf(format, args...))
+}
+
 func (l *testLogger) WithField(key string, value any) Logger {
 	return &loggerWithFields{parent: l, fields: []Field{{Key: key, Value: value}}}
 }
