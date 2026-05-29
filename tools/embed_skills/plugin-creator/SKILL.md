@@ -1,16 +1,16 @@
 ---
 name: plugin-creator
-description: Create, modify, and manage xbot plugins. Use when the user asks to create a plugin, set up script plugins, configure widgets, or register custom tools via plugins.
+description: Create, modify, and manage xbot plugins. Use when the user asks to create a plugin, set up script plugins, configure widgets, register custom tools via plugins, or create channel plugins.
 ---
 
 # Plugin Creator
 
-Create and manage xbot plugins. Script plugins are the easiest type — just a `plugin.json` + bash script.
+Create and manage xbot plugins.
 
 ## When to Activate
 
 - User wants to create/modify/delete plugins
-- User wants to add custom tools, widgets, or context enrichers
+- User wants to add custom tools, widgets, context enrichers, or channels
 - User asks about plugin system configuration
 
 ## Plugin Types
@@ -19,15 +19,17 @@ Create and manage xbot plugins. Script plugins are the easiest type — just a `
 |------|-----------|----------|
 | **script** | Low | Shell-based plugins: widgets, notifications, simple tools |
 | **native** | Medium | Go in-process plugins (requires compilation) |
-| **grpc** | High | External process plugins (Python, etc.) |
+| **grpc** | High | External process plugins: channels, Python/Go/any language |
 
-**Prefer script plugins** — they require only `plugin.json` + a bash script.
+**Prefer script plugins** for widgets and hooks. **Use gRPC for channel plugins.**
 
 ## Plugin Location
 
 - User plugins: `~/.xbot/plugins/<plugin-id>/`
 - Project plugins: `<project>/.xbot/plugins/<plugin-id>/`
 - Built-in examples: `plugin/examples/`
+
+**IMPORTANT**: The directory name MUST match the plugin ID in `plugin.json`. For example, if `"id": "my.telegram"`, the directory must be `~/.xbot/plugins/my.telegram/`.
 
 ## Script Plugin Structure
 
@@ -112,8 +114,9 @@ echo "dim|no repo"
 | `storage.shared` | Cross-plugin shared storage |
 | `network.outbound` | Make network requests |
 | `ui.contribute` | Contribute UI widgets |
+| `channels.register` | Register custom channels |
 
-## Complete Examples
+## Script Plugin Examples
 
 ### Git Branch Widget (infoBar)
 
@@ -156,13 +159,205 @@ fi
 }
 ```
 
+## gRPC Channel Plugin
+
+gRPC plugins run as independent child processes, communicating with xbot via JSON-over-stdin/stdout. This is how you add new channels like Telegram, Discord, Slack, etc.
+
+### Structure
+
+```
+my-channel/
+├── plugin.json       # Manifest (runtime: "grpc")
+└── my-channel-bin    # Compiled binary (any language)
+```
+
+### plugin.json
+
+```json
+{
+  "id": "my.telegram",
+  "name": "Telegram Channel",
+  "version": "1.0.0",
+  "description": "Telegram bot channel for xbot",
+  "runtime": "grpc",
+  "entry": "./my-channel-bin",
+  "permissions": ["channels.register"]
+}
+```
+
+**Key fields:**
+- `runtime`: Must be `"grpc"` for channel plugins
+- `entry`: Relative path to the binary (resolved from plugin directory)
+- `permissions`: Must include `"channels.register"`
+
+### Protocol: xbot → Plugin (request-response)
+
+xbot sends JSON lines to plugin's stdin, plugin responds with JSON lines to stdout.
+
+| Method | Required | Description |
+|--------|----------|-------------|
+| `activate` | ✅ | Return channel_provider declaration |
+| `channel_start` | ✅ | Start channel with config |
+| `channel_stop` | ✅ | Stop channel |
+| `channel_send` | ✅ | Deliver agent reply to user |
+| `channel_history` | ❌ | Load platform conversation history |
+| `channel_update_message` | ❌ | Edit previously sent message |
+| `channel_delete_message` | ❌ | Delete previously sent message |
+| `channel_poll` | ❌ | Legacy Phase 1 polling (return `[]`) |
+| `deactivate` | ✅ | Plugin shutdown |
+
+### Protocol: Plugin → xbot (async push)
+
+Plugin can push messages to xbot at any time by writing JSON to stdout:
+
+```json
+{"method": "channel_inbound", "params": {"chat_id": "xxx", "content": "hello", "sender_id": "user1", "sender_name": "User"}}
+```
+
+Batch mode (multiple messages):
+```json
+{"method": "channel_inbound", "params": {"messages": [{"chat_id": "c1", "content": "hi", "sender_id": "u1"}, {"chat_id": "c2", "content": "hey", "sender_id": "u2"}]}}
+```
+
+### activate Response Format
+
+The `activate` response must include `channel_provider` declaration:
+
+```json
+{
+  "result": "ok",
+  "channel_provider": {
+    "name": "telegram",
+    "config_schema": [
+      {"key": "enabled", "label": "启用", "type": "toggle", "defaultValue": "false", "category": "Telegram"},
+      {"key": "bot_token", "label": "Bot Token", "type": "password", "defaultValue": "", "category": "Telegram"}
+    ]
+  }
+}
+```
+
+### config_schema Types
+
+| Type | UI Widget |
+|------|-----------|
+| `toggle` | On/off switch |
+| `text` | Text input |
+| `password` | Masked text input |
+| `select` | Dropdown (needs `options` array) |
+
+### channel_start Request
+
+```json
+{"method": "channel_start", "params": {"config": {"enabled": "true", "port": "9876", "bot_token": "xxx"}}}
+```
+
+### channel_send Request
+
+```json
+{"method": "channel_send", "params": {"chat_id": "xxx", "content": "Agent reply text", "is_partial": false, "waiting_user": false}}
+```
+
+### channel_history Request/Response
+
+Request:
+```json
+{"method": "channel_history", "params": {"chat_id": "xxx", "limit": 50}}
+```
+
+Response:
+```json
+{"result": "[{\"message_id\":\"1\",\"sender_id\":\"u1\",\"content\":\"hello\",\"is_bot\":false,\"time\":\"2026-01-01T00:00:00Z\"}]"}
+```
+
+### Minimal Channel Plugin (Go)
+
+```go
+package main
+
+import (
+    "bufio"
+    "encoding/json"
+    "fmt"
+    "io"
+    "os"
+)
+
+type request struct {
+    Method string         `json:"method"`
+    Params map[string]any `json:"params,omitempty"`
+}
+
+func main() {
+    dec := json.NewDecoder(bufio.NewReader(os.Stdin))
+    enc := json.NewEncoder(os.Stdout)
+
+    for {
+        var req request
+        if err := dec.Decode(&req); err != nil {
+            if err == io.EOF { return }
+            fmt.Fprintf(os.Stderr, "read error: %v\n", err)
+            return
+        }
+
+        switch req.Method {
+        case "activate":
+            enc.Encode(map[string]any{
+                "result": "ok",
+                "channel_provider": map[string]any{
+                    "name": "mychannel",
+                    "config_schema": []map[string]any{
+                        {"key": "enabled", "label": "Enable", "type": "toggle", "defaultValue": "false"},
+                    },
+                },
+            })
+        case "channel_start":
+            // Initialize your channel here (start HTTP server, bot client, etc.)
+            enc.Encode(map[string]any{"result": "ok"})
+        case "channel_send":
+            // Deliver agent reply to user
+            enc.Encode(map[string]any{"result": "ok"})
+        case "channel_stop":
+            enc.Encode(map[string]any{"result": "ok"})
+        case "deactivate":
+            enc.Encode(map[string]any{"result": "ok"})
+            return
+        default:
+            enc.Encode(map[string]any{"error": fmt.Sprintf("unknown method: %s", req.Method)})
+        }
+    }
+}
+```
+
+### Config Storage
+
+Channel config is stored in `~/.xbot/config.json` under `channels.<name>`:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": "true",
+      "bot_token": "123456:ABC"
+    }
+  }
+}
+```
+
+Users can also configure via TUI Settings → Channels panel (auto-rendered from config_schema).
+
+### Channel Name Restrictions
+
+Channel names must NOT conflict with built-in channels: `feishu`, `qq`, `napcat`, `web`, `cli`.
+
 ## Workflow
 
-1. **Understand requirement**: Widget? Tool? What triggers?
-2. **Choose plugin location**: `~/.xbot/plugins/<id>/` for user-level
-3. **Create plugin.json**: Use FileCreate with the manifest
-4. **Create script**: Write the bash script, ensure it's executable (`chmod +x`)
-5. **Reload plugins**: Use `tui_control` with action `reload_plugins` to hot-reload
+1. **Understand requirement**: Widget? Tool? Channel?
+2. **Choose plugin type**: script for widgets/hooks, grpc for channels
+3. **Choose plugin location**: `~/.xbot/plugins/<id>/` for user-level
+4. **Create plugin.json**: Ensure directory name matches plugin ID
+5. **Create entry point**: Script or compiled binary
+6. **Ensure executable**: `chmod +x` for scripts and binaries
+7. **Reload plugins**: Use `tui_control(action="reload_plugins")` to hot-reload
 
 ## After Creating/Modifying Plugins
 
@@ -176,8 +371,13 @@ This hot-reloads all plugins without restarting the CLI. Alternatively, user can
 
 ## Gotchas
 
+- **Directory name MUST match plugin ID** in plugin.json. `"id": "my.telegram"` → `~/.xbot/plugins/my.telegram/`
 - Script must be executable: `chmod +x my-script.sh`
 - `sync: true` means the widget blocks tool execution until rendered (use for toolHint)
 - Widget output is limited in size — keep it short
 - Plugin ID must be unique across all plugins
 - Script output without `style|` prefix is treated as plain text
+- gRPC channel plugins: `entry` path is relative to the plugin directory
+- gRPC plugins must respond to every request with a JSON line (even if just `{"result":"ok"}`)
+- gRPC plugins can push `channel_inbound` at any time without waiting for a request (bidirectional)
+- Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`
