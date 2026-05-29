@@ -203,7 +203,6 @@ def handle_xbot_rpc(req_id, method, params):
     if method == "channel_send":
         content = params.get("content", "")
         chat_id = params.get("chat_id", "")
-        # Record agent reply in history
         if content:
             add_to_history(chat_id, "assistant", content)
         send_rpc_response(req_id, result="ok")
@@ -217,46 +216,22 @@ def handle_xbot_event(msg):
     content = msg.get("content", "")
     progress = msg.get("progress", {})
     chat_id = msg.get("chat_id", "")
+    meta = msg.get("metadata", {})
 
     if msg_type == "channel_config":
-        meta = msg.get("metadata", {})
-        if "config" in meta:
+        if "config" in (meta or {}):
             try:
-                parsed = json.loads(meta["config"])
-                config.update(parsed)
+                config.update(json.loads(meta["config"]))
             except json.JSONDecodeError:
                 pass
         start_http_server()
 
-    elif msg_type == "stream_content":
-        # Accumulate streaming content
-        if content:
-            _accumulate_stream(chat_id, content)
-
     elif msg_type == "text":
-        # Final text reply from agent
-        if content:
+        # Only store final agent replies (marked by transport).
+        # Status/error/progress text messages are NOT stored.
+        is_final = (meta or {}).get("is_final", "") == "true"
+        if is_final and content:
             add_to_history(chat_id, "assistant", content)
-            # Clear any accumulated stream
-            _clear_stream(chat_id)
-
-    elif msg_type == "session":
-        pass  # not stored
-
-
-# ---------------------------------------------------------------------------
-# Stream content accumulation (for in-progress replies)
-# ---------------------------------------------------------------------------
-
-_stream_buf = {}  # chat_id → accumulated text
-
-
-def _accumulate_stream(chat_id, chunk):
-    _stream_buf[chat_id] = _stream_buf.get(chat_id, "") + chunk
-
-
-def _clear_stream(chat_id):
-    _stream_buf.pop(chat_id, None)
 
 
 # ---------------------------------------------------------------------------

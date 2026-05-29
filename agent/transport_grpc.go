@@ -254,12 +254,17 @@ func (t *GrpcPluginTransport) Stop() {
 // Send implements channel.Channel.Send.
 // Converts the OutboundMsg to a WSMessage and pushes it to the plugin.
 func (t *GrpcPluginTransport) Send(msg channel.OutboundMsg) (string, error) {
+	meta := msg.Metadata
+	if meta == nil {
+		meta = make(map[string]string)
+	}
+	meta["is_final"] = "true"
 	wsMsg := protocol.WSMessage{
 		Type:     protocol.MsgTypeText,
 		Content:  msg.Content,
 		ChatID:   msg.ChatID,
 		Channel:  msg.Channel,
-		Metadata: msg.Metadata,
+		Metadata: meta,
 	}
 	if err := t.PushEvent(wsMsg); err != nil {
 		return "", fmt.Errorf("grpc transport send: %w", err)
