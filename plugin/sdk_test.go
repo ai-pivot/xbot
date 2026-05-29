@@ -382,6 +382,7 @@ func (c *sdkMockContext) ToolCallCount() int64                                  
 func (c *sdkMockContext) HookCallCount() int64                                      { return 0 }
 func (c *sdkMockContext) SetValue(key string, value any)                            {}
 func (c *sdkMockContext) GetValue(key string) (any, bool)                           { return nil, false }
+func (c *sdkMockContext) RegisterChannelProvider(provider any) error                { return nil }
 
 type sdkMockLogger struct {
 	entries []sdkLogEntry

@@ -1106,6 +1106,8 @@ func New(cfg Config) (*Agent, error) {
 		if err := plugin.WireAll(agent.pluginMgr, registry, hookBridge, enricherReg); err != nil {
 			log.WithError(err).Warn("Plugin wiring failed")
 		}
+		// Wire channel providers registered by plugins to ChannelProviderRegistry.
+		plugin.WireChannelProviders(agent.pluginMgr)
 		// Register the hook bridge as a builtin hook handler
 		agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
 		// Wire enricher registry into the message pipeline

@@ -31,21 +31,24 @@ const (
 	PermBusPlugin = "bus.plugin"
 	// PermUIContribute grants permission to contribute UI widgets.
 	PermUIContribute = "ui.contribute"
+	// PermChannelsRegister grants permission to register custom Channel providers.
+	PermChannelsRegister = "channels.register"
 )
 
 // allPermissions is the set of all recognized permission strings.
 var allPermissions = map[string]bool{
-	PermToolsRegister:   true,
-	PermToolsCall:       true,
-	PermHooksSubscribe:  true,
-	PermContextEnrich:   true,
-	PermStoragePrivate:  true,
-	PermStorageShared:   true,
-	PermNetworkOutbound: true,
-	PermBusRead:         true,
-	PermBusWrite:        true,
-	PermBusPlugin:       true,
-	PermUIContribute:    true,
+	PermToolsRegister:    true,
+	PermToolsCall:        true,
+	PermHooksSubscribe:   true,
+	PermContextEnrich:    true,
+	PermStoragePrivate:   true,
+	PermStorageShared:    true,
+	PermNetworkOutbound:  true,
+	PermBusRead:          true,
+	PermBusWrite:         true,
+	PermBusPlugin:        true,
+	PermUIContribute:     true,
+	PermChannelsRegister: true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.

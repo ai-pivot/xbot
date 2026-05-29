@@ -192,6 +192,11 @@ type Config struct {
 	CLI           CLIConfig            `json:"cli,omitempty"`
 	Plugins       PluginConfig         `json:"plugins,omitempty"`
 
+	// Channels 存储插件 channel 的配置。key 是 channel name（如 "telegram"）。
+	// 内置 channel（feishu/qq/napcat/web）使用各自的结构体字段，
+	// 插件 channel 使用此 map 存储任意 key-value 配置。
+	Channels map[string]map[string]string `json:"channels,omitempty"`
+
 	// CLISetupCompleted is set to true after the first-run setup wizard
 	// completes successfully. Used by isFirstRun() to avoid showing the
 	// setup panel on every startup when credentials are stored in DB

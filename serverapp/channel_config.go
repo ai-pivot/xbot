@@ -38,6 +38,27 @@ func getChannelConfigs() (map[string]map[string]string, error) {
 		"ws_url":  cfg.NapCat.WSUrl,
 		"token":   cfg.NapCat.Token,
 	}
+
+	// 插件 channel：从 ChannelProviderRegistry 读取 ConfigSchema 并提取配置
+	reg := GetChannelProviderRegistry()
+	if reg != nil {
+		for _, provider := range reg.List() {
+			name := provider.Name()
+			pluginCfg := getPluginChannelConfig(cfg, name)
+			// 即使配置为空也要返回（展示默认值）
+			if pluginCfg == nil {
+				pluginCfg = make(map[string]string)
+			}
+			// 从 ConfigSchema 提取默认值填充空字段
+			for _, def := range provider.ConfigSchema() {
+				if _, exists := pluginCfg[def.Key]; !exists {
+					pluginCfg[def.Key] = def.DefaultValue
+				}
+			}
+			result[name] = pluginCfg
+		}
+	}
+
 	return result, nil
 }
 
@@ -49,6 +70,8 @@ func setChannelConfig(ch string, values map[string]string, reconfigureFn func(st
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+
+	// 内置 channel
 	switch ch {
 	case "web":
 		if v, ok := values["enabled"]; ok {
@@ -102,7 +125,26 @@ func setChannelConfig(ch string, values map[string]string, reconfigureFn func(st
 			cfg.NapCat.Token = v
 		}
 	default:
-		return fmt.Errorf("unknown channel: %s", ch)
+		// 插件 channel：写入 config.Channels[name]
+		reg := GetChannelProviderRegistry()
+		if reg == nil {
+			return fmt.Errorf("unknown channel: %s", ch)
+		}
+		if _, ok := reg.Get(ch); !ok {
+			return fmt.Errorf("unknown channel: %s", ch)
+		}
+		if cfg.Channels == nil {
+			cfg.Channels = make(map[string]map[string]string)
+		}
+		// 合并到已有配置（保留未提交的字段）
+		existing := cfg.Channels[ch]
+		if existing == nil {
+			existing = make(map[string]string)
+		}
+		for k, v := range values {
+			existing[k] = v
+		}
+		cfg.Channels[ch] = existing
 	}
 	if err := config.SaveToFile(config.ConfigFilePath(), cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)

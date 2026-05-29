@@ -183,6 +183,14 @@ type PluginContext interface {
 
 	// HookCallCount returns the cumulative number of hook dispatches for this plugin.
 	HookCallCount() int64
+
+	// --- Channel Registration ---
+
+	// RegisterChannelProvider 注册自定义 Channel provider。
+	// 需要 "channels.register" 权限。provider 必须实现 channel.ChannelProvider 接口。
+	// 注册后 provider 会被存储，供 serverapp 在 registerChannels 和动态启停路径中使用。
+	// 参数类型为 any 而非 channel.ChannelProvider 是为了避免 plugin→channel 循环依赖。
+	RegisterChannelProvider(provider any) error
 }
 
 // Logger provides structured logging for plugins.
@@ -246,6 +254,7 @@ type pluginContextImpl struct {
 	hooks            []hookRegistration
 	contextEnrichers []enricherRegistration
 	toolMiddlewares  []PluginMiddleware
+	channelProviders []any // channel.ChannelProvider instances (any to avoid import cycle)
 
 	// Metadata from the current session
 	workingDir string
@@ -298,6 +307,7 @@ func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger 
 		tools:            make([]PluginTool, 0),
 		hooks:            make([]hookRegistration, 0),
 		contextEnrichers: make([]enricherRegistration, 0),
+		channelProviders: make([]any, 0),
 		bus:              bus,
 		pm:               pm,
 		configStore:      configStore,
@@ -858,4 +868,50 @@ func (pc *pluginContextImpl) ToolCallCount() int64 {
 // HookCallCount returns the total number of hook dispatches for this plugin.
 func (pc *pluginContextImpl) HookCallCount() int64 {
 	return atomic.LoadInt64(&pc.hookCallCount)
+}
+
+// ---------------------------------------------------------------------------
+// Channel Provider Registration
+// ---------------------------------------------------------------------------
+
+// RegisterChannelProvider 注册自定义 Channel provider。
+// 需要 "channels.register" 权限。provider 必须实现 channel.ChannelProvider 接口。
+func (pc *pluginContextImpl) RegisterChannelProvider(provider any) error {
+	if !pc.perm.Has(PermChannelsRegister) {
+		return fmt.Errorf("permission denied: %q requires %q", "RegisterChannelProvider", PermChannelsRegister)
+	}
+	if provider == nil {
+		return fmt.Errorf("provider must not be nil")
+	}
+	// 验证 provider 实现了 channel.ChannelProvider 接口：
+	// Name() string, CreateChannel(...) (..., error), ConfigSchema() [], IsEnabled(...) bool
+	type nameable interface{ Name() string }
+	n, ok := provider.(nameable)
+	if !ok {
+		return fmt.Errorf("provider must implement channel.ChannelProvider interface (missing Name() method)")
+	}
+	name := n.Name()
+	if name == "" {
+		return fmt.Errorf("provider.Name() must not be empty")
+	}
+	// 内置 channel 名称禁止覆盖
+	switch name {
+	case "feishu", "qq", "napcat", "web", "cli":
+		return fmt.Errorf("cannot register provider with built-in channel name %q", name)
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.channelProviders = append(pc.channelProviders, provider)
+	pc.logger.Info("Channel provider registered", Field{Key: "channel", Value: name})
+	return nil
+}
+
+// ChannelProviders 返回当前插件注册的所有 ChannelProvider 实例。
+// 由 serverapp 桥接层收集并转换为 channel.ChannelProvider。
+func (pc *pluginContextImpl) ChannelProviders() []any {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make([]any, len(pc.channelProviders))
+	copy(result, pc.channelProviders)
+	return result
 }
