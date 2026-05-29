@@ -3002,15 +3002,16 @@ func TestPluginManager_UninstallPlugin(t *testing.T) {
 	}
 
 	// Verify directory removed
-	// On Windows, RemoveAll can fail if file handles are still open;
-	// retry briefly before failing.
+	// On Windows, RemoveAll can fail if file handles are still open.
+	// Close the manager first (releases internal references), then retry.
+	pm.Close()
 	removed := false
-	for range 5 {
+	for i := range 20 {
 		if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
 			removed = true
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(time.Duration(i+1) * 5 * time.Millisecond) // 5ms..100ms, total ~1s
 		os.RemoveAll(expectedDir)
 	}
 	if !removed {
