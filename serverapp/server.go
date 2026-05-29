@@ -226,7 +226,7 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 		if !ok {
 			return nil
 		}
-		pluginCfg := getPluginChannelConfig(cfg, name)
+		pluginCfg := GetPluginChannelConfig(cfg, name)
 		ch, err := provider.CreateChannel(pluginCfg, msgBus)
 		if err != nil {
 			log.WithError(err).WithField("channel", name).Error("Plugin channel creation failed")
@@ -256,14 +256,14 @@ func channelShouldRun(cfg *config.Config, name string) bool {
 		if !ok {
 			return false
 		}
-		pluginCfg := getPluginChannelConfig(cfg, name)
+		pluginCfg := GetPluginChannelConfig(cfg, name)
 		return provider.IsEnabled(pluginCfg)
 	}
 }
 
-// getPluginChannelConfig 从 config.Channels 中读取插件 channel 的配置。
+// GetPluginChannelConfig 从 config.Channels 中读取插件 channel 的配置。
 // 如果 config.Channels 为空或 name 不存在，返回空 map。
-func getPluginChannelConfig(cfg *config.Config, name string) map[string]string {
+func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
 	if cfg == nil || cfg.Channels == nil {
 		return nil
 	}
@@ -378,7 +378,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	if reg != nil {
 		for _, provider := range reg.List() {
 			name := provider.Name()
-			pluginCfg := getPluginChannelConfig(cfg, name)
+			pluginCfg := GetPluginChannelConfig(cfg, name)
 			if !provider.IsEnabled(pluginCfg) {
 				continue
 			}

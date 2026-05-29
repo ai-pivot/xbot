@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"xbot/agent"
+	"xbot/bus"
 	"xbot/channel"
 	"xbot/clipanic"
 	"xbot/config"
@@ -52,6 +53,36 @@ import (
 var saveWg sync.WaitGroup
 
 const cliSenderID = "cli_user"
+
+// registerCLIPluginChannels wires up plugin channel providers in CLI local mode.
+// Equivalent to registerChannels() in server.go, but for the CLI process.
+func registerCLIPluginChannels(disp *channel.Dispatcher, msgBus *bus.MessageBus, cfg *config.Config) {
+	reg := serverapp.GetChannelProviderRegistry()
+	if reg == nil {
+		return
+	}
+	for _, provider := range reg.List() {
+		name := provider.Name()
+		pluginCfg := serverapp.GetPluginChannelConfig(cfg, name)
+		if !provider.IsEnabled(pluginCfg) {
+			continue
+		}
+		ch, err := provider.CreateChannel(pluginCfg, msgBus)
+		if err != nil {
+			log.WithError(err).WithField("channel", name).Warn("Failed to create plugin channel")
+			continue
+		}
+		disp.Register(ch)
+		if transport, ok := ch.(*agent.GrpcPluginTransport); ok {
+			if err := transport.Start(); err != nil {
+				log.WithError(err).WithField("channel", name).Warn("Failed to start plugin transport")
+				continue
+			}
+			go transport.Run(context.Background())
+		}
+		log.WithField("channel", name).Info("Plugin channel registered (CLI mode)")
+	}
+}
 
 // saveCLIConfig merges CLI-owned global fields into the latest on-disk config.
 // It intentionally preserves unrelated sections like on-disk subscriptions and
@@ -745,17 +776,18 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Local mode: InitServer + ChannelTransport + Client.
 		// Create eventCh first — shared between localEventBridge (server side) and Client (CLI side).
 		eventCh := make(chan protocol.WSMessage, 256)
-		_, rpcTable, _, _, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
+		_, rpcTable, disp, msgBus, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
 
 		// Register ChannelProviderFactory for gRPC channel plugins.
-		// In server mode this is done in server.go's Run(); CLI mode must also
-		// register it so plugins declaring channel_provider can activate.
 		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.GrpcPluginProcess) (any, error) {
 			return serverapp.NewGrpcPluginChannelProvider(decl, rpcTable), nil
 		})
+
+		// Register plugin channels in the Dispatcher (equivalent to registerChannels() in server mode).
+		registerCLIPluginChannels(disp, msgBus, cfg)
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {

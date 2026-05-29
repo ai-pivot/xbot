@@ -45,7 +45,7 @@ func getChannelConfigs() (map[string]map[string]string, error) {
 	if reg != nil {
 		for _, provider := range reg.List() {
 			name := provider.Name()
-			pluginCfg := getPluginChannelConfig(cfg, name)
+			pluginCfg := GetPluginChannelConfig(cfg, name)
 			// 即使配置为空也要返回（展示默认值）
 			if pluginCfg == nil {
 				pluginCfg = make(map[string]string)
