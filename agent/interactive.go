@@ -366,6 +366,40 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	}
 }
 
+// sendSubAgentPhaseDone sends a synthetic PhaseDone progress event to the CLI
+// so the TUI can properly end the current turn (reset typing, snapshot iterations, etc.).
+// Used when a background subagent is interrupted, since the normal Run() exit path
+// doesn't send PhaseDone on cancellation.
+func (a *Agent) sendSubAgentPhaseDone(key string) {
+	if a.channelFinder == nil {
+		return
+	}
+	ch, ok := a.channelFinder("cli")
+	if !ok {
+		return
+	}
+	agentProgressKey := "agent:" + key
+
+	// Build PhaseDone payload from the last known progress snapshot.
+	var payload *protocol.ProgressEvent
+	if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
+		cp := *snap.(*protocol.ProgressEvent)
+		cp.Phase = "done"
+		payload = &cp
+	} else {
+		payload = &protocol.ProgressEvent{
+			ChatID: agentProgressKey,
+			Phase:  "done",
+		}
+	}
+
+	if localCh, ok := ch.(*channelpkg.CLIChannel); ok {
+		localCh.SendProgress(key, payload)
+	} else if remoteCh, ok := ch.(channelpkg.ProgressSender); ok {
+		remoteCh.SendProgress(key, payload)
+	}
+}
+
 // destroyInteractiveSession removes all resources for an interactive SubAgent session:
 // interactiveSubAgents entry, progress snapshot/iteration history, tenant session (DB),
 // offload data, and mask data on disk.
@@ -774,9 +808,31 @@ func (a *Agent) SpawnInteractiveSession(
 				placeholder.running = false
 				placeholder.cancelCurrent = nil
 				placeholder.interrupted = false // reset for next send
+
+				// Add an interrupt marker to ia.messages so the TUI session view
+				// can display the interruption. Without this, the session jumps
+				// from old iterations directly to new ones with no visual break.
+				if wasInterrupted && out.Content != "" {
+					// Append partial assistant reply (if any) so it's not lost.
+					if len(placeholder.messages) == 0 || placeholder.messages[len(placeholder.messages)-1].Content != out.Content {
+						placeholder.messages = append(placeholder.messages, llm.NewAssistantMessage(out.Content))
+					}
+				}
+				if wasInterrupted {
+					placeholder.messages = append(placeholder.messages, llm.ChatMessage{
+						Role:    "system",
+						Content: "⏸ [interrupted by parent agent]",
+					})
+				}
 				placeholder.mu.Unlock()
 
 				if wasInterrupted {
+					// Send PhaseDone to CLI so the TUI properly ends the turn
+					// (sets m.typing=false, snapshots iterations). Without this,
+					// the TUI stays in "typing" state and the auto-start guard
+					// doesn't trigger when the next Run starts.
+					a.sendSubAgentPhaseDone(key)
+
 					// Interrupt: notify parent so it knows the agent stopped.
 					// The session stays for future "send" interactions.
 					if notifyMgr != nil {
@@ -1214,6 +1270,29 @@ func (a *Agent) SendToInteractiveSession(
 	ia.mu.Lock()
 	ia.running = true
 	ia.interrupted = false // clear any stale interrupt flag from previous Run
+
+	// --- Pre-Run state reset for background mode ---
+	// Before starting a new Run, reset iteration history and progress snapshots
+	// so the TUI session view shows a clean break from the previous turn.
+	// Without this, the new Run's iterations (starting from 0) are appended to
+	// the old history, creating confusing numbering (e.g. #0-#35 from previous
+	// Run, then #0-#N from new Run), and recordIterationSnapshot skips new
+	// iterations because they're <= the old max iteration.
+	if ia.background {
+		// 1. Add user message to ia.messages NOW (before Run) so
+		//    GetAgentSessionDump shows it immediately for TUI rendering.
+		ia.messages = append(ia.messages, llm.NewUserMessage(msg.Content))
+
+		// 2. Clear iteration history so the new Run starts fresh.
+		ia.iterationHistory = nil
+
+		// 3. Clear progress snapshots so recordIterationSnapshot works correctly
+		//    for the new Run's iterations (which start from 0).
+		agentProgressKey := "agent:" + key
+		a.lastProgressSnapshot.Delete(agentProgressKey)
+		a.iterationHistories.Delete(agentProgressKey)
+	}
+
 	// For background mode, create a cancellable context so UnloadInteractiveSession
 	// can cancel the running goroutine. Must derive from the agent lifecycle context
 	// (a.agentCtx), NOT from subCtx — subCtx inherits the parent's tool execution
@@ -1297,6 +1376,22 @@ func (a *Agent) SendToInteractiveSession(
 
 			if wasCancelled {
 				if wasInterrupted {
+					// Add interrupt marker to ia.messages (same as initial spawn path).
+					ia.mu.Lock()
+					if out.Content != "" {
+						if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content {
+							ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+						}
+					}
+					ia.messages = append(ia.messages, llm.ChatMessage{
+						Role:    "system",
+						Content: "⏸ [interrupted by parent agent]",
+					})
+					ia.mu.Unlock()
+
+					// Send PhaseDone to CLI so TUI properly ends the turn.
+					a.sendSubAgentPhaseDone(key)
+
 					// Interrupt: notify parent so it knows the agent stopped.
 					// The session stays for future "send" interactions.
 					if a.bgTaskMgr != nil {
@@ -1387,29 +1482,35 @@ func (a *Agent) SendToInteractiveSession(
 				ia.promptTokens = out.LastPromptTokens
 				ia.completionTokens = out.LastCompletionTokens
 
-				// out.Messages comes from Run()'s s.messages — the engine's
-				// internal message list. If compression happened during Run(),
-				// out.Messages is the COMPRESSED list (much shorter than the
-				// original). We must replace ia.messages entirely, not append.
+				// Build ia.messages from the authoritative engine output.
+				// out.Messages comes from Run()'s s.messages — it includes the
+				// system prompt at [0] and ALL previous messages. We must NOT
+				// include the system prompt in ia.messages (it's stored separately
+				// in ia.systemPrompt), so we skip out.Messages[0].
 				//
-				// Detection: if out.Messages is shorter than preLen (the number
-				// of messages BEFORE Run started), compression must have happened.
-				// Even without compression, using out.Messages as the full
-				// replacement is correct — it contains the authoritative state
-				// from the engine (including any tool calls/results/assistant
-				// messages produced during Run).
+				// Note: ia.messages was already updated before Run (user message
+				// appended), so we need to replace it entirely with the engine's
+				// output (minus system prompt) to reflect tool calls, compression,
+				// and other changes that happened during Run.
 				if len(out.Messages) < preLen || len(out.Messages) == 0 {
 					// Compression happened (or edge case): replace entirely.
-					ia.messages = make([]llm.ChatMessage, len(out.Messages))
-					copy(ia.messages, out.Messages)
+					// Skip system prompt (out.Messages[0]) if present.
+					start := 0
+					if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
+						start = 1
+					}
+					ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
+					copy(ia.messages, out.Messages[start:])
 				} else {
-					// Normal case (no compression): append new messages from Run.
-					// The user message was already in cfg.Messages[preLen-1] which
-					// was appended by the caller before Run() — but Run() copies
-					// cfg.Messages, so out.Messages includes everything from the start.
-					// Replace ia.messages with out.Messages to keep them in sync.
-					ia.messages = make([]llm.ChatMessage, len(out.Messages))
-					copy(ia.messages, out.Messages)
+					// Normal case (no compression): out.Messages includes all
+					// messages from the start. Skip system prompt at [0].
+					// Replace ia.messages entirely to keep in sync with engine.
+					start := 0
+					if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
+						start = 1
+					}
+					ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
+					copy(ia.messages, out.Messages[start:])
 				}
 
 				// Append final assistant reply if not already in out.Messages.

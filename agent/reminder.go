@@ -51,12 +51,15 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	// 1. 提取任务目标：最后一条 user message（去掉时间戳和引导文本）
 	//   - 主 Agent：用户最新需求
 	//   - SubAgent：父 Agent 分配的任务命令
+	// 同时记录该 user message 的位置，用于计算 toolsSinceUser。
 	var taskGoal string
+	lastUserIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role == "user" && msg.Content != "" {
 			taskGoal = extractUserGoal(msg.Content)
 			if taskGoal != "" {
+				lastUserIdx = i
 				break
 			}
 		}
@@ -67,6 +70,16 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	for _, msg := range messages {
 		if msg.Role == "tool" {
 			toolCount++
+		}
+	}
+
+	// 2b. 统计用户消息之后的 tool 调用数（用于区分新旧消息）
+	toolsSinceUser := 0
+	if lastUserIdx >= 0 {
+		for i := lastUserIdx + 1; i < len(messages); i++ {
+			if messages[i].Role == "tool" {
+				toolsSinceUser++
+			}
 		}
 	}
 
@@ -82,8 +95,12 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	if taskGoal != "" {
 		if isSubAgent {
 			parts = append(parts, fmt.Sprintf("执行任务: %s", taskGoal))
+		} else if toolsSinceUser == 0 {
+			// 用户刚说的——这是当前轮的第一个工具调用
+			parts = append(parts, fmt.Sprintf("用户最新需求: %s", taskGoal))
 		} else {
-			parts = append(parts, fmt.Sprintf("用户需求: %s", taskGoal))
+			// 用户之前说的——明确标注这不是新消息
+			parts = append(parts, fmt.Sprintf("用户原始需求（正在处理中，已执行 %d 次工具调用）: %s", toolsSinceUser, taskGoal))
 		}
 	}
 

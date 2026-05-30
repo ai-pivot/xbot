@@ -469,6 +469,24 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	m.carryForwardProgressState(prev)
 
+	// Detect iteration reset for SubAgent sessions: when a new background
+	// Run starts after interrupt+resend, iteration counter resets to 0.
+	// The TUI still has old progress state (m.typing=true, old iterations).
+	// Reset progress state and trigger history reload so:
+	// 1. Progress panel shows fresh iterations (starting from #0)
+	// 2. User message from parent agent appears in message list (from DB)
+	// This must run BEFORE snapshotIterationChange, which skips iterations
+	// that are <= m.lastSeenIteration.
+	if m.progress != nil && prev != nil && m.progress.Iteration < m.lastSeenIteration && m.lastSeenIteration > 0 && m.typing {
+		// Snapshot the old turn's final state before resetting.
+		// Use the current agentTurnID since we're ending the current turn.
+		m.endAgentTurn(m.agentTurnID)
+		// Auto-start will trigger on this same progress event
+		// (m.typing is now false, and the guard below will start a new turn).
+		// Reload messages from DB to show the new user message from the parent agent.
+		m.reloadMessagesFromSession()
+	}
+
 	// Update bg task count from callback
 	if m.bgTaskCountFn != nil {
 		m.bgTaskCount = m.bgTaskCountFn()
