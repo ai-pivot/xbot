@@ -84,13 +84,22 @@ func (d *DynamicContextInjector) InjectIfNeeded(messages []llm.ChatMessage) bool
 }
 
 // buildPeerContextXML builds the <peers> XML section for the dynamic context injector.
+// Only includes peers with actual worktrees (physical isolation) — lightweight
+// peer-awareness registrations without worktrees do not indicate collaboration.
 func buildPeerContextXML(workspaceRoot, sessionKey string) string {
 	repoPath, err := tools.GitRepoRoot(workspaceRoot)
 	if err != nil {
 		return ""
 	}
 
-	peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
+	allPeers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
+	// Filter: only peers with actual worktrees represent real collaboration.
+	var peers []*tools.WorktreeEntry
+	for _, p := range allPeers {
+		if p.WorktreeDir != "" {
+			peers = append(peers, p)
+		}
+	}
 	if len(peers) == 0 {
 		return ""
 	}
