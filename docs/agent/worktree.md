@@ -138,3 +138,8 @@ Conflict resolution:
 - **AutoDetectAndInit depends on `a.workDir`**, not the session's CWD. For CLI sessions this is the repo root.
 - **`go:embed embed_skills/*`** picks up the worktree skill directory automatically — no code change needed for new embed skills.
 - **`resolveRemoteMainBranch` fetch is best-effort.** Network errors are silently ignored — cached remote refs are used instead. For repos without any remote, `createWorktree` falls back to local HEAD (same as pre-fetch behavior).
+- **`loadPersistedCWD` rejects worktree paths.** If the persisted CWD contains `.xbot-worktrees` or points to a non-existent directory, the file is deleted and "" returned. This prevents stale worktree CWD from leaking into new sessions.
+- **`autoDetectAndInitInto` rejects worktree workDir.** If the input workDir is already inside `.xbot-worktrees`, returns `(nil, false)`. This prevents nested worktree creation from a stale CWD leak.
+- **`autoDetectAndInitInto` auto-cleans stale entries.** If a session's registered worktreeDir no longer exists on disk, the entry is deregistered before creating a fresh worktree.
+- **`buildPrompt` validates worktree ownership.** When CWD contains `.xbot-worktrees`, verifies the session owns that worktree via registry lookup. Mismatched or unregistered worktree CWD is reset to workspaceRoot with a warning log.
+- **Session creation pre-cleans all state.** `showSessionCreateDialog` and `/chat new` both clean up worktree registry, persisted CWD, savedSessions, and todos before creating a new session. This ensures no residual state from deleted sessions can leak into new ones.

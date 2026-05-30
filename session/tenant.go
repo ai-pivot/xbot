@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -242,13 +243,28 @@ func sessionCwdFileName(channel, chatID string) string {
 }
 
 // loadPersistedCWD tries to restore CWD from disk after a restart.
+// CRITICAL SAFETY: never load a worktree path as CWD. Worktree paths
+// are session-specific and must never leak into a different session.
+// If the persisted CWD points to a worktree, it is deleted and "" is returned.
 func loadPersistedCWD(channel, chatID string) string {
 	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", sessionCwdFileName(channel, chatID))
 	data, err := os.ReadFile(cwdFile)
 	if err != nil {
 		return ""
 	}
-	return string(data)
+	cwd := string(data)
+	// Reject worktree paths — they are session-specific and stale after
+	// session deletion/recreation. Delete the file to prevent re-detection.
+	if strings.Contains(cwd, ".xbot-worktrees") {
+		_ = os.Remove(cwdFile)
+		return ""
+	}
+	// Also reject non-existent directories — stale from a previous session.
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		_ = os.Remove(cwdFile)
+		return ""
+	}
+	return cwd
 }
 
 // DeletePersistedCWD removes the persisted CWD file for a session.

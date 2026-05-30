@@ -3630,12 +3630,28 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 		m.showTempStatus(fmt.Sprintf("Failed: %v", err))
 		return nil
 	}
-	// With UUID-based session IDs, we don't need to clean up residual DB tenants
-	// since UUIDs are guaranteed to be unique. However, we still clean up any
-	// existing session data to ensure a completely fresh start.
+	// --- Pre-creation cleanup: nuke ALL residual state for this chatID ---
+	// Even with UUID-based IDs (guaranteed unique), we clean defensively to
+	// handle edge cases like race conditions or manual chatID reuse.
+	sessionKey := "cli:" + chatID
+	// 1. Delete any residual DB tenant (from a previously failed deletion)
 	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
 		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
 	}
+	// 2. Clean up any leftover worktree registration + physical git worktree.
+	// This handles the case where a previous session with the same chatID had
+	// auto_worktree enabled and left a worktree behind.
+	tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
+	// 3. Nuke persisted CWD — prevent inheriting a stale worktree directory.
+	session.DeletePersistedCWD("cli", chatID)
+	// 4. Nuke saved session state from memory.
+	delete(m.savedSessions, sessionKey)
+	// 5. Nuke persisted todo data.
+	if m.todoManager != nil {
+		m.todoManager.SetTodos(sessionKey, nil)
+		_ = m.todoManager.SaveToFile(sessionKey)
+	}
+
 	m.saveCurrentSession()
 	// Inherit parent session's LLM state atomically.
 	// SaveSessionLLMState writes ALL fields (sub, model, maxContext, maxOutput) in one shot.

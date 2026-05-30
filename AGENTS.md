@@ -227,6 +227,7 @@
 - **`go:embed embed_skills/*` auto-discovers new skills.** Adding a directory under `tools/embed_skills/` requires zero code changes.
 - **`buildPrompt` 绝不恢复 CWD 到 worktree 路径。** 当 session 已注册后 `AutoDetectAndInit` 跳过，这是正确行为。agent 通过 Cd 工具主动切换的目录必须被尊重，如果在后续 buildPrompt 中强制恢复会破坏 agent 的 Cd 操作，产生人机对抗。
 - **Cd 工具绝不强制 worktree 边界。** CLI 模式下 Cd 允许 agent 自由导航到任何目录，包括主仓库。如果对 Cd 加边界限制会导致 agent 无法读取 worktree 外的文件（如 AGENTS.md、知识库、配置文件），这是严重 bug。worktree 隔离是软性的工作指引，不是硬性监狱。
+- **新会话绝不能进入老 worktree（纵深防御 6 层）。** `loadPersistedCWD` 拒绝加载 worktree 路径和不存在目录 → `autoDetectAndInitInto` 拒绝从 worktree CWD 创建 worktree + 自动清理 worktreeDir 不存在的孤儿条目 → `buildPrompt` 验证 worktree 所有权（不匹配则重置到 workspaceRoot）→ `showSessionCreateDialog` 和 `/chat new` 新建前清理 worktree registry + persisted CWD + savedSessions + todos。详见 `docs/agent/worktree.md`。
 
 ## Development Principles
 

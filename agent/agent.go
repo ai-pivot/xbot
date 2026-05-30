@@ -2334,9 +2334,38 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// For worktree sessions, override promptWorkDir with the worktree path.
 	// The system prompt shows promptWorkDir as the main "工作目录", so the
 	// agent must see the worktree path here to know where it's working.
+	//
+	// SAFETY: Verify the worktree actually belongs to this session.
+	// A stale worktree path from a deleted/recreated session must NOT
+	// be used — it would put the agent in an orphaned directory.
 	cwd := tenantSession.GetCurrentDir()
 	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
-		promptWorkDir = cwd
+		// Verify ownership: the worktree must be registered to this session
+		if wtEntry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); wtEntry != nil && wtEntry.WorktreeDir != "" {
+			// CWD must be inside the registered worktree (or exactly match it)
+			if cwd == wtEntry.WorktreeDir || strings.HasPrefix(cwd, wtEntry.WorktreeDir+string(os.PathSeparator)) {
+				promptWorkDir = cwd
+			} else {
+				// CWD points to a DIFFERENT worktree than what's registered.
+				// This is a stale state leak — reset to workspace root.
+				log.WithFields(log.Fields{
+					"session":    sessKey,
+					"cwd":        cwd,
+					"registered": wtEntry.WorktreeDir,
+				}).Warn("CWD points to unowned worktree, resetting to workspace root")
+				tenantSession.SetCurrentDir(workspaceRoot)
+				cwd = workspaceRoot
+			}
+		} else {
+			// No worktree registered for this session, but CWD is in a worktree.
+			// This is a stale state leak from a previous session — reset.
+			log.WithFields(log.Fields{
+				"session": sessKey,
+				"cwd":     cwd,
+			}).Warn("Session has worktree CWD but no registry entry, resetting to workspace root")
+			tenantSession.SetCurrentDir(workspaceRoot)
+			cwd = workspaceRoot
+		}
 	}
 
 	mc := NewMessageContext(

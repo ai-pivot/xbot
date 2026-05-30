@@ -507,3 +507,42 @@ func TestResolveRemoteMainBranch_PicksNewestMultiRemote(t *testing.T) {
 	assert.Equal(t, "origin/master", ref,
 		"should pick the remote with the newest default branch commit, not first alphabetically")
 }
+
+func TestAutoDetectAndInit_RejectsWorktreeWorkDir(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	// Create a worktree for session-1 first
+	entry1, created := autoDetectAndInitInto(repoPath, "cli:repo:session-1", reg)
+	require.NotNil(t, entry1)
+	require.True(t, created)
+
+	// Now try to create a worktree for session-2 using the worktree dir as workDir.
+	// This simulates a stale CWD leak where the agent's CWD is stuck in an old worktree.
+	// Should be rejected — we must NOT nest worktrees.
+	entry2, created2 := autoDetectAndInitInto(entry1.WorktreeDir, "cli:repo:session-2", reg)
+	assert.Nil(t, entry2, "should reject worktree dir as workDir")
+	assert.False(t, created2)
+}
+
+func TestAutoDetectAndInit_StaleEntryCleanup(t *testing.T) {
+	repoPath := newTestGitRepo(t)
+	reg := newTestRegistry()
+
+	// Create a worktree for session-stale
+	entry1, _ := autoDetectAndInitInto(repoPath, "cli:repo:session-stale", reg)
+	require.NotNil(t, entry1)
+
+	// Properly cleanup via registry (removes worktree + git metadata + deregisters)
+	reg.CleanupSession("cli:repo:session-stale")
+	assert.Nil(t, reg.GetBySession("cli:repo:session-stale"), "entry should be removed after cleanup")
+
+	// Now re-register: should create a brand new worktree since the old one is gone.
+	// Simulates a session that was deleted and then recreated with the same key.
+	entry2, created := autoDetectAndInitInto(repoPath, "cli:repo:session-stale", reg)
+	if entry2 == nil {
+		t.Fatal("entry2 should not be nil")
+	}
+	assert.NotEmpty(t, entry2.WorktreeDir, "should have a valid worktree dir")
+	_ = created // may be true or false depending on timing
+}

@@ -595,6 +595,13 @@ func AutoDetectAndInit(workDir, sessionKey string) (*WorktreeEntry, bool) {
 
 // autoDetectAndInitInto is the testable core that accepts a custom registry.
 func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) (*WorktreeEntry, bool) {
+	// SAFETY: Never create a worktree from inside another worktree.
+	// If workDir is already inside .xbot-worktrees, it's a stale CWD leak —
+	// creating a worktree here would nest worktrees, breaking git operations.
+	if strings.Contains(workDir, ".xbot-worktrees") {
+		return nil, false
+	}
+
 	// Check if in a git repo
 	repoPath, err := GitRepoRoot(workDir)
 	if err != nil {
@@ -607,7 +614,19 @@ func autoDetectAndInitInto(workDir, sessionKey string, reg *WorktreeRegistry) (*
 
 	// Already registered?
 	if entry := reg.GetBySession(sessionKey); entry != nil {
-		return entry, false
+		// Validate: if the entry has a worktree dir that no longer exists
+		// (e.g. session was deleted and recreated), clean up the stale entry
+		// so we can create a fresh worktree.
+		if entry.WorktreeDir != "" {
+			if _, err := os.Stat(entry.WorktreeDir); os.IsNotExist(err) {
+				reg.Deregister(sessionKey)
+				// Fall through to create a new worktree below
+			} else {
+				return entry, false
+			}
+		} else {
+			return entry, false
+		}
 	}
 
 	// All sessions get a worktree — no primary concept.
