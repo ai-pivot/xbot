@@ -16,6 +16,8 @@ import (
 	"unicode/utf8"
 	log "xbot/logger"
 	"xbot/protocol"
+	"xbot/session"
+	"xbot/tools"
 	"xbot/version"
 
 	"charm.land/bubbles/v2/textinput"
@@ -584,6 +586,15 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				if err != nil {
 					m.showSystemMsg("创建失败: "+err.Error(), feedbackInfo)
 					return nil
+				}
+				// Pre-creation cleanup: nuke ALL residual state for this chatID.
+				newSessionKey := "cli:" + chatID
+				tools.GlobalWorktreeRegistry.CleanupSession(newSessionKey)
+				session.DeletePersistedCWD("cli", chatID)
+				delete(m.savedSessions, newSessionKey)
+				if m.todoManager != nil {
+					m.todoManager.SetTodos(newSessionKey, nil)
+					_ = m.todoManager.SaveToFile(newSessionKey)
 				}
 				m.chatID = chatID
 				SetLastActiveSession(m.defaultChatID, chatID)

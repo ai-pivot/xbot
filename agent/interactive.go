@@ -715,6 +715,15 @@ func (a *Agent) SpawnInteractiveSession(
 							Sid:      originSender,
 						})
 					}
+					// Emit subagent_stopped so sidebar updates immediately
+					a.emitSessionState(protocol.SessionEvent{
+						Channel:  originChannel,
+						ChatID:   originChatID,
+						Action:   "subagent_stopped",
+						Role:     roleName,
+						Instance: instance,
+						ParentID: originChatID,
+					})
 				}
 			}()
 
@@ -794,6 +803,15 @@ func (a *Agent) SpawnInteractiveSession(
 						"instance": instance,
 						"key":      key,
 					}).Info("Background interactive session interrupted, session preserved for future send")
+					// Emit subagent_stopped so sidebar updates immediately (busy→idle)
+					a.emitSessionState(protocol.SessionEvent{
+						Channel:  originChannel,
+						ChatID:   originChatID,
+						Action:   "subagent_stopped",
+						Role:     roleName,
+						Instance: instance,
+						ParentID: originChatID,
+					})
 					return
 				}
 
@@ -896,6 +914,18 @@ func (a *Agent) SpawnInteractiveSession(
 					}).WithError(err).Warn("Failed to save bg interactive agent assistant message with detail")
 				}
 			}
+
+			// Emit subagent_stopped so sidebar updates immediately (busy→idle).
+			// Must be called while placeholder.mu is still held (deferred unlock)
+			// to guarantee the state transition is visible to concurrent readers.
+			a.emitSessionState(protocol.SessionEvent{
+				Channel:  originChannel,
+				ChatID:   originChatID,
+				Action:   "subagent_stopped",
+				Role:     roleName,
+				Instance: instance,
+				ParentID: originChatID,
+			})
 		}()
 
 		log.WithFields(log.Fields{
@@ -1235,6 +1265,15 @@ func (a *Agent) SendToInteractiveSession(
 							Sid:      originSender,
 						})
 					}
+					// Emit subagent_stopped so sidebar updates immediately
+					a.emitSessionState(protocol.SessionEvent{
+						Channel:  originChannel,
+						ChatID:   originChatID,
+						Action:   "subagent_stopped",
+						Role:     roleName,
+						Instance: instance,
+						ParentID: originChatID,
+					})
 				}
 			}()
 
@@ -1285,6 +1324,15 @@ func (a *Agent) SendToInteractiveSession(
 						"role":     roleName,
 						"instance": instance,
 					}).Info("Background send interrupted, session preserved for future send")
+					// Emit subagent_stopped so sidebar updates immediately (busy→idle)
+					a.emitSessionState(protocol.SessionEvent{
+						Channel:  originChannel,
+						ChatID:   originChatID,
+						Action:   "subagent_stopped",
+						Role:     roleName,
+						Instance: instance,
+						ParentID: originChatID,
+					})
 					return
 				}
 				// Unload/shutdown: NO notification — the parent already knows.
@@ -1315,6 +1363,16 @@ func (a *Agent) SendToInteractiveSession(
 					Sid:      originSender,
 				})
 			}
+
+			// Emit subagent_stopped so sidebar updates immediately (busy→idle).
+			a.emitSessionState(protocol.SessionEvent{
+				Channel:  originChannel,
+				ChatID:   originChatID,
+				Action:   "subagent_stopped",
+				Role:     roleName,
+				Instance: instance,
+				ParentID: originChatID,
+			})
 
 			// --- Write back results (mirrors foreground 阶段 3 below) ---
 			ia.mu.Lock()

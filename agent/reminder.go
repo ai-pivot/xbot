@@ -101,17 +101,27 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 	}
 
 	// Peer awareness: show who else is working in the same repo.
-	// Skip worktree isolation mode details — worktree is opt-in now.
+	// Only show peers with actual worktrees (physical isolation) — lightweight
+	// peer-awareness registrations without worktrees do not indicate collaboration.
+	// This prevents injecting misleading "3 peers collaborating" when the user
+	// simply has multiple independent sessions in the same git repo.
 	if !isSubAgent && sessionKey != "" {
 		repoPath := ""
 		if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
 			repoPath = entry.RepoPath
 		}
 		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
-		if len(peers) > 0 {
+		// Filter: only show peers with actual worktrees (real collaboration).
+		var activePeers []*tools.WorktreeEntry
+		for _, p := range peers {
+			if p.WorktreeDir != "" {
+				activePeers = append(activePeers, p)
+			}
+		}
+		if len(activePeers) > 0 {
 			parts = append(parts, "")
-			parts = append(parts, fmt.Sprintf("👥 协作中: %d 个同伴在此仓库工作", len(peers)))
-			for _, p := range peers {
+			parts = append(parts, fmt.Sprintf("👥 协作中: %d 个同伴在此仓库工作", len(activePeers)))
+			for _, p := range activePeers {
 				parts = append(parts, fmt.Sprintf("   - %s (角色: %s, 分支: %s)", shortenPeerName(p.SessionKey), p.Role, p.Branch))
 			}
 			parts = append(parts, "协作规则: 尊重同伴的修改，改动冲突时优先通过 SendMessage 协商。")

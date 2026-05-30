@@ -1,8 +1,11 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"xbot/config"
 	"xbot/llm"
 )
 
@@ -184,5 +187,75 @@ func TestTenantSession_String(t *testing.T) {
 	expected := "feishu:chat123"
 	if len(str) < len(expected) {
 		t.Errorf("String output too short: %s", str)
+	}
+}
+
+func TestLoadPersistedCWD_RejectsWorktreePath(t *testing.T) {
+	cwdDir := filepath.Join(config.XbotHome(), "session_cwd")
+	if err := os.MkdirAll(cwdDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Clean up after test
+	defer os.RemoveAll(filepath.Join(config.XbotHome(), "session_cwd"))
+
+	// Write a persisted CWD that points to a worktree
+	worktreePath := "/some/repo/.xbot-worktrees/session-123/some-dir"
+	cwdFile := filepath.Join(cwdDir, sessionCwdFileName("cli", "test-reject-worktree"))
+	if err := os.WriteFile(cwdFile, []byte(worktreePath), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// loadPersistedCWD should reject the worktree path and return ""
+	result := loadPersistedCWD("cli", "test-reject-worktree")
+	if result != "" {
+		t.Errorf("expected empty CWD for worktree path, got %q", result)
+	}
+
+	// The persisted file should have been deleted
+	if _, err := os.Stat(cwdFile); !os.IsNotExist(err) {
+		t.Error("expected persisted CWD file to be deleted after worktree rejection")
+	}
+}
+
+func TestLoadPersistedCWD_RejectsNonExistentDir(t *testing.T) {
+	cwdDir := filepath.Join(config.XbotHome(), "session_cwd")
+	if err := os.MkdirAll(cwdDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(filepath.Join(config.XbotHome(), "session_cwd"))
+
+	nonExistPath := "/this/absolutely/does/not/exist"
+	cwdFile := filepath.Join(cwdDir, sessionCwdFileName("cli", "test-reject-noexist"))
+	if err := os.WriteFile(cwdFile, []byte(nonExistPath), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := loadPersistedCWD("cli", "test-reject-noexist")
+	if result != "" {
+		t.Errorf("expected empty CWD for non-existent dir, got %q", result)
+	}
+
+	if _, err := os.Stat(cwdFile); !os.IsNotExist(err) {
+		t.Error("expected persisted CWD file to be deleted after non-existent rejection")
+	}
+}
+
+func TestLoadPersistedCWD_AcceptsValidDir(t *testing.T) {
+	cwdDir := filepath.Join(config.XbotHome(), "session_cwd")
+	if err := os.MkdirAll(cwdDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(filepath.Join(config.XbotHome(), "session_cwd"))
+
+	// Use a real directory
+	validPath := t.TempDir()
+	cwdFile := filepath.Join(cwdDir, sessionCwdFileName("cli", "test-valid-dir"))
+	if err := os.WriteFile(cwdFile, []byte(validPath), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := loadPersistedCWD("cli", "test-valid-dir")
+	if result != validPath {
+		t.Errorf("expected %q, got %q", validPath, result)
 	}
 }
