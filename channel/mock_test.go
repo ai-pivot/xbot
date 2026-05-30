@@ -78,6 +78,7 @@ func TestMockChannel_MultipleSends(t *testing.T) {
 	last := mc.LastOutbound()
 	if last == nil {
 		t.Fatal("LastOutbound() = nil, want non-nil")
+		return
 	}
 	if last.Content != "msg4" {
 		t.Errorf("LastOutbound().Content = %q, want %q", last.Content, "msg4")

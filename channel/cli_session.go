@@ -621,6 +621,7 @@ func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManage
 		if subs, err := subMgr.List(""); err == nil {
 			for _, sub := range subs {
 				if sub.ID == state.SubscriptionID {
+					// 2a. Per-model config (highest specificity)
 					model := state.Model
 					if model == "" {
 						model = sub.Model
@@ -629,6 +630,10 @@ func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManage
 						if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
 							return pmc.MaxContext
 						}
+					}
+					// 2b. Subscription-level MaxContext (fallback within sub)
+					if sub.MaxContext > 0 {
+						return sub.MaxContext
 					}
 					break
 				}

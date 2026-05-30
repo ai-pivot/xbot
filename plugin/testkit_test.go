@@ -153,6 +153,7 @@ func TestTestKit_CallTool(t *testing.T) {
 	_, err = tk.CallTool("nonexistent", "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent tool")
+		return
 	}
 }
 

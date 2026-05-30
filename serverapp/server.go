@@ -22,6 +22,7 @@ import (
 	log "xbot/logger"
 	"xbot/oauth"
 	"xbot/oauth/providers"
+	"xbot/plugin"
 	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -216,7 +217,22 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 			AllowFrom: cfg.NapCat.AllowFrom,
 		}, msgBus)
 	default:
-		return nil
+		// 插件 channel：从 ChannelProviderRegistry 查找
+		reg := GetChannelProviderRegistry()
+		if reg == nil {
+			return nil
+		}
+		provider, ok := reg.Get(name)
+		if !ok {
+			return nil
+		}
+		pluginCfg := GetPluginChannelConfig(cfg, name)
+		ch, err := provider.CreateChannel(pluginCfg, msgBus)
+		if err != nil {
+			log.WithError(err).WithField("channel", name).Error("Plugin channel creation failed")
+			return nil
+		}
+		return ch
 	}
 }
 
@@ -231,8 +247,27 @@ func channelShouldRun(cfg *config.Config, name string) bool {
 	case "napcat":
 		return cfg.NapCat.Enabled
 	default:
-		return false
+		// 插件 channel：从 ChannelProviderRegistry 查找并委托 IsEnabled
+		reg := GetChannelProviderRegistry()
+		if reg == nil {
+			return false
+		}
+		provider, ok := reg.Get(name)
+		if !ok {
+			return false
+		}
+		pluginCfg := GetPluginChannelConfig(cfg, name)
+		return provider.IsEnabled(pluginCfg)
 	}
+}
+
+// GetPluginChannelConfig 从 config.Channels 中读取插件 channel 的配置。
+// 如果 config.Channels 为空或 name 不存在，返回空 map。
+func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
+	if cfg == nil || cfg.Channels == nil {
+		return nil
+	}
+	return cfg.Channels[name]
 }
 
 // registerChannels creates and registers all channels.
@@ -338,6 +373,36 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 		}
 	}
 
+	// 注册插件 channel（从 ChannelProviderRegistry 查找）
+	reg := GetChannelProviderRegistry()
+	if reg != nil {
+		for _, provider := range reg.List() {
+			name := provider.Name()
+			pluginCfg := GetPluginChannelConfig(cfg, name)
+			if !provider.IsEnabled(pluginCfg) {
+				continue
+			}
+			ch, err := provider.CreateChannel(pluginCfg, msgBus)
+			if err != nil {
+				log.WithError(err).WithField("channel", name).Error("Failed to create plugin channel")
+				continue
+			}
+			disp.Register(ch)
+
+			// If the channel is a ChannelPluginTransport, start its readLoop
+			// for bidirectional JSON-RPC communication.
+			if transport, ok := ch.(*agent.ChannelPluginTransport); ok {
+				if err := transport.Start(); err != nil {
+					log.WithError(err).WithField("channel", name).Error("Failed to start plugin transport")
+					continue
+				}
+				go transport.Run(context.Background())
+			}
+
+			log.WithField("channel", name).Info("Plugin channel registered")
+		}
+	}
+
 	return feishuCh, webCh, nil
 }
 
@@ -389,6 +454,36 @@ func Run(args []string) error {
 	// 初始化沙箱
 	tools.InitSandbox(cfg.Sandbox, workDir)
 
+	// 初始化 ChannelProviderRegistry 并注入到 plugin 包。
+	// 必须在 InitServer 之前调用，因为插件 Activate 可能在 InitServer 内触发。
+	channelProviderReg := NewChannelProviderRegistry()
+	SetChannelProviderRegistry(channelProviderReg)
+	plugin.SetChannelProviderRegistrar(func(provider any) error {
+		cp, ok := provider.(channel.ChannelProvider)
+		if !ok {
+			return fmt.Errorf("provider does not implement channel.ChannelProvider (got %T)", provider)
+		}
+		return channelProviderReg.Register(cp)
+	})
+
+	// Register the gRPC channel provider factory: creates stdioChannelPluginProvider
+	// from ChannelProviderDecl. The provider spawns a dedicated process for the channel
+	// and uses bidirectional JSON-RPC over stdin/stdout.
+	// rpcTablePtr is set later after InitServer, but the factory is called during
+	// InitServer (plugin activation). The dispatch function resolves lazily.
+	var rpcTablePtr *RPCTable
+	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
+		return &stdioChannelPluginProvider{
+			decl: decl,
+			rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+				if rpcTablePtr == nil {
+					return nil, fmt.Errorf("rpc table not available")
+				}
+				return rpcTablePtr.Dispatch(ctx, method, payload)
+			},
+		}, nil
+	})
+
 	// Pre-declare so the channelReconfigureFn closure can reference them by pointer.
 	// The closure is only invoked at runtime (never during InitServer), so the
 	// nil→non-nil transition after InitServer returns is safe.
@@ -435,6 +530,11 @@ func Run(args []string) error {
 	if err != nil {
 		log.WithError(err).Fatal("Failed to init server")
 	}
+
+	// Set the rpcTablePtr for the channel provider factory.
+	// Plugin activation happens during InitServer, so the factory was already called
+	// with the lazy dispatch function. Now the RPCTable is available.
+	rpcTablePtr = &rpcTable
 
 	// Migrate config.json subscriptions into DB for the admin user.
 	// This ensures admin is a normal DB user with real subscriptions,

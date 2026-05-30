@@ -226,6 +226,7 @@ func TestIntegration_FullPluginLifecycle(t *testing.T) {
 	toolImpl, _ := registry.Get("com.integration.full.greet")
 	if toolImpl == nil {
 		t.Fatal("tool not found in registry")
+		return
 	}
 	result, err := toolImpl.Execute(toolCtx, `{"name":"world"}`)
 	if err != nil {
@@ -511,6 +512,7 @@ func TestIntegration_RateLimiting(t *testing.T) {
 	toolImpl, _ := registry.Get("com.ratelimit.test.greet")
 	if toolImpl == nil {
 		t.Fatal("tool not found in registry")
+		return
 	}
 
 	tCtx := &tools.ToolContext{Ctx: ctx}
@@ -570,6 +572,7 @@ func TestIntegration_MiddlewareChain(t *testing.T) {
 	toolImpl, _ := registry.Get("com.middleware.test.echo")
 	if toolImpl == nil {
 		t.Fatal("tool not found in registry")
+		return
 	}
 
 	tCtx := &tools.ToolContext{Ctx: ctx}
@@ -639,6 +642,7 @@ func TestIntegration_EventBus_PubSub(t *testing.T) {
 	data := received.Load()
 	if data == nil {
 		t.Fatal("subscriber should have received data")
+		return
 	}
 	m, ok := data.(map[string]string)
 	if !ok {

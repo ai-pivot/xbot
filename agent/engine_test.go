@@ -698,6 +698,7 @@ func TestRun_DefaultToolExecutor_InheritsWorkspace(t *testing.T) {
 	}
 	if capturedCtx == nil {
 		t.Fatal("tool was not called")
+		return
 	}
 
 	// Verify workspace fields propagated to ToolContext
@@ -1556,6 +1557,7 @@ func TestRun_TokenUsageInProgress(t *testing.T) {
 	}
 	if capturedSnapshot == nil {
 		t.Fatal("TokenUsage snapshot was never set in progress events")
+		return
 	}
 	if capturedSnapshot.PromptTokens != 1500 {
 		t.Errorf("PromptTokens = %d, want 1500", capturedSnapshot.PromptTokens)

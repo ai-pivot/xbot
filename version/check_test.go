@@ -66,24 +66,24 @@ func TestCheckUpdateSkipDevBuild(t *testing.T) {
 	Version = "dev"
 	Channel = ""
 	result := CheckUpdate(context.TODO())
-	if result != nil {
-		t.Error("CheckUpdate should return nil for dev version")
+	if result == nil || !result.Skipped {
+		t.Error("CheckUpdate should return Skipped=true for dev version")
 	}
 
 	// empty version should skip
 	Version = ""
 	Channel = ""
 	result = CheckUpdate(context.TODO())
-	if result != nil {
-		t.Error("CheckUpdate should return nil for empty version")
+	if result == nil || !result.Skipped {
+		t.Error("CheckUpdate should return Skipped=true for empty version")
 	}
 
 	// non-stable channel should skip
 	Version = "v1.0.0"
 	Channel = "nightly"
 	result = CheckUpdate(context.TODO())
-	if result != nil {
-		t.Error("CheckUpdate should return nil for non-stable channel")
+	if result == nil || !result.Skipped {
+		t.Error("CheckUpdate should return Skipped=true for non-stable channel")
 	}
 }
 

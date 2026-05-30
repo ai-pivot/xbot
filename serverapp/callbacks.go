@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"xbot/protocol"
 
@@ -440,7 +441,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.S
 			if err := svc.Add(newSub); err != nil {
 				return err
 			}
-			ag.LLMFactory().Invalidate(senderID)
+			ag.LLMFactory().InvalidateSender(senderID)
 			return nil
 		},
 		LLMRemoveSubscription: func(id string) error {
@@ -452,7 +453,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.S
 			if err := svc.Remove(id); err != nil {
 				return err
 			}
-			ag.LLMFactory().Invalidate(sub.SenderID)
+			ag.LLMFactory().InvalidateSender(sub.SenderID)
 			return nil
 		},
 		LLMSetDefaultSubscription: func(id string) error {
@@ -477,16 +478,24 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.S
 				return err
 			}
 			existing.Name = sub.Name
-			existing.Provider = sub.Provider
-			existing.BaseURL = sub.BaseURL
-			if sub.APIKey != "" {
+			// Masked-key protection: never overwrite credential fields with masked values.
+			// This matches the updateSubscription RPC handler in rpc_table.go.
+			if sub.Provider != "" && !strings.Contains(sub.Provider, "****") {
+				existing.Provider = sub.Provider
+			}
+			if sub.BaseURL != "" && !strings.Contains(sub.BaseURL, "****") {
+				existing.BaseURL = sub.BaseURL
+			}
+			if sub.APIKey != "" && !strings.HasSuffix(sub.APIKey, "****") {
 				existing.APIKey = sub.APIKey
 			}
-			existing.Model = sub.Model
+			if sub.Model != "" {
+				existing.Model = sub.Model
+			}
 			if err := svc.Update(existing); err != nil {
 				return err
 			}
-			ag.LLMFactory().Invalidate(existing.SenderID)
+			ag.LLMFactory().InvalidateSender(existing.SenderID)
 			return nil
 		},
 

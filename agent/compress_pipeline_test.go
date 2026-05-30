@@ -96,6 +96,7 @@ func TestApplyCompress_CompressSuccess(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 
 	// Verify AccumulateUsage was called
@@ -189,6 +190,7 @@ func TestApplyCompress_CompressError(t *testing.T) {
 	got, err := ApplyCompress(context.Background(), params)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if got != nil {
 		t.Fatalf("expected nil result, got %+v", got)
@@ -223,6 +225,7 @@ func TestApplyCompress_NilStores(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if len(got.NewMessages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(got.NewMessages))
@@ -254,6 +257,7 @@ func TestApplyCompress_NilTrackerAndPersistence(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if len(got.NewMessages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(got.NewMessages))
@@ -291,6 +295,7 @@ func TestApplyCompress_NilSyncMessages(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 
 	// Verify content matches LLMView
@@ -336,6 +341,7 @@ func TestApplyCompress_NilAccumulateUsage(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if len(got.NewMessages) != len(result.LLMView) {
 		t.Errorf("expected %d messages, got %d", len(result.LLMView), len(got.NewMessages))

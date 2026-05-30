@@ -50,6 +50,7 @@ func TestObservationMaskStore_BasicOperations(t *testing.T) {
 	_, err = store.Recall("mk_nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent ID")
+		return
 	}
 }
 
@@ -74,6 +75,7 @@ func TestObservationMaskStore_MaxSize(t *testing.T) {
 	_, err := store.Recall(firstID)
 	if err == nil {
 		t.Fatal("expected first entry to be evicted")
+		return
 	}
 }
 

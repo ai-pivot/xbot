@@ -43,9 +43,20 @@ func (es *eventStream) lastSeq() uint64 {
 }
 
 // push appends a seq-stamped event to the ring buffer.
+// For state-snapshot types (progress, stream_content), only the latest event
+// of each type is kept — replaces the previous one in-place instead of growing.
 func (es *eventStream) push(msg protocol.WSMessage) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
+	if !isStatefulMsg(msg) {
+		for i := es.count - 1; i >= 0; i-- {
+			idx := (es.head + i) % eventStreamSize
+			if es.buf[idx].Type == msg.Type {
+				es.buf[idx] = msg
+				return
+			}
+		}
+	}
 	if es.count == eventStreamSize {
 		es.head = (es.head + 1) % eventStreamSize
 		es.count--

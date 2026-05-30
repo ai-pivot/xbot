@@ -88,6 +88,7 @@ func TestNegotiate(t *testing.T) {
 		_, err := Negotiate(local, remote, []string{"outbound"})
 		if err == nil {
 			t.Fatal("expected error for missing required event")
+			return
 		}
 		if err.Error() != `required event "outbound" not supported by remote` {
 			t.Errorf("unexpected error message: %v", err)
@@ -106,6 +107,7 @@ func TestNegotiate(t *testing.T) {
 		_, err := Negotiate(local, remote, []string{"progress"})
 		if err == nil {
 			t.Fatal("expected error for required event with no common version")
+			return
 		}
 	})
 
@@ -119,6 +121,7 @@ func TestNegotiate(t *testing.T) {
 		_, err := Negotiate(local, remote, []string{"progress"})
 		if err == nil {
 			t.Fatal("expected error for required event not in local")
+			return
 		}
 	})
 

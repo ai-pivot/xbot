@@ -572,6 +572,20 @@ type anthropicStreamEvent struct {
 func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, eventChan chan<- StreamEvent, startTime time.Time) {
 	defer close(eventChan)
 	defer resp.Body.Close()
+
+	// Connect context cancellation to resp.Body.Close().
+	// reader.ReadString('\n') blocks waiting for HTTP response data; on the first
+	// request this includes TLS handshake which can take seconds. Closing the body
+	// immediately unblocks the reader and forces the cancellation to take effect
+	// without waiting for the next line to arrive.
+	ctxDone := ctx.Done()
+	if ctxDone != nil {
+		go func() {
+			<-ctxDone
+			resp.Body.Close()
+		}()
+	}
+
 	reader := bufio.NewReader(resp.Body)
 	var currentIndex int
 	toolCallsByIndex := make(map[int]*ToolCall)

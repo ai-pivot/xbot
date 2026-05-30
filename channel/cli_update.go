@@ -126,6 +126,13 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 	}
 
+	// Remote reconnect overlay: block all interaction when disconnected.
+	// Only quit keys (Ctrl+C, Ctrl+Z) pass through — they're handled above.
+	if m.remoteMode && m.connState != "connected" && m.connState != "" {
+		// Swallow all key presses; user can only Ctrl+C (handled above) or Ctrl+Z.
+		return m, nil
+	}
+
 	// §23 Command palette overlay: highest priority (above quick switch).
 	// When palette is open it intercepts all keys.
 	if key, ok := msg.(tea.KeyPressMsg); ok {
@@ -217,6 +224,10 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
+		// Block mouse events when remote connection is lost.
+		if m.remoteMode && m.connState != "connected" && m.connState != "" {
+			return m, nil
+		}
 		handled, newModel, cmd := m.handleMouseMsg(msg)
 		if handled {
 			if _, ok := newModel.(*cliModel); ok {
@@ -267,6 +278,9 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliConnStateMsg:
 		m.connState = msg.state
+		if msg.state == "connected" {
+			m.reconnectFrame = 0
+		}
 	// flush here, the queued message gets appended BEFORE the reply,
 	// producing wrong order: msg1, msg2, reply1 instead of msg1, reply1, msg2.
 	// Flush is handled in cliTickMsg instead (next tick after typing=false).
@@ -496,9 +510,15 @@ func (m *cliModel) autoExpandInput() {
 	currentVP := m.viewport.Height()
 	if currentVP != expectedVP {
 		wasAtBottom := m.viewport.AtBottom()
+		oldYOffset := m.viewport.YOffset()
 		m.viewport.SetHeight(expectedVP)
 		if wasAtBottom {
 			m.viewport.GotoBottom()
+		} else {
+			// Height changed while user was scrolled up. Clamp yOffset to
+			// the new maxYOffset so the next setViewportContent doesn't
+			// detect "at bottom" (via yOffset >= maxYOffset) and force-scroll.
+			m.viewport.SetYOffset(oldYOffset)
 		}
 	}
 }
@@ -582,6 +602,8 @@ func (m *cliModel) relayoutViewport() {
 
 	cw := m.chatWidth()
 	oldWidth := m.viewport.Width()
+	oldHeight := m.viewport.Height()
+	oldYOffset := m.viewport.YOffset()
 
 	m.viewport.SetWidth(cw)
 	m.viewport.SetHeight(m.layoutViewportHeight())
@@ -595,6 +617,7 @@ func (m *cliModel) relayoutViewport() {
 	m.textarea.SetWidth(iw)
 
 	widthChanged := cw != oldWidth
+	heightChanged := m.viewport.Height() != oldHeight
 
 	// Only invalidate render caches when width changes.
 	// Height-only changes don't affect message rendering — just viewport scrolling.
@@ -610,26 +633,41 @@ func (m *cliModel) relayoutViewport() {
 		m.cachedWrappedHistory = ""
 		m.cachedWrappedHistoryRaw = ""
 		m.cachedWrappedHistoryWidth = 0
+		m.cachedHistoryMaxWidth = 0
+		m.cachedHistoryLines = nil
 		for i := range m.messages {
 			m.messages[i].dirty = true
 		}
 	}
 
+	// Check AtBottom BEFORE updateViewportContent so height changes don't
+	// cause false-positive "at bottom" detection. When height increases
+	// (e.g. todo bar removed), maxYOffset decreases, making AtBottom() true
+	// even though the user was scrolled up.
 	wasAtBottom := m.viewport.AtBottom()
 	m.updateViewportContent()
 	if wasAtBottom {
 		m.viewport.GotoBottom()
+	} else if heightChanged {
+		// Height changed while user was scrolled up. Restore relative
+		// scroll position to prevent jarring jumps.
+		m.viewport.SetYOffset(oldYOffset)
 	}
 }
 
 // handleResize 处理窗口大小变化
 func (m *cliModel) handleResize(width, height int) {
 	// Deduplicate: skip if size hasn't actually changed.
-	// During resize drags, terminals (especially foot) may fire many
-	// SIGWINCH signals with the same dimensions — each one triggers a
-	// full O(N) rebuild of the message history.
 	if width == m.width && height == m.height && m.ready {
 		return
+	}
+
+	// Mark ready BEFORE any rendering operations. During the first resize,
+	// View() may be called while this function is still processing; if ready
+	// is false, View() shows a blank loading screen. Setting ready early
+	// ensures the first render always shows the proper UI, not a blank flash.
+	if !m.ready {
+		m.ready = true
 	}
 
 	m.width = width
@@ -648,10 +686,6 @@ func (m *cliModel) handleResize(width, height int) {
 	}
 
 	m.relayoutViewport()
-
-	if !m.ready {
-		m.ready = true
-	}
 }
 
 // panelWidth returns a width suitable for panel textareas,

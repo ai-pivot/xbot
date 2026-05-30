@@ -20,6 +20,7 @@ func TestDoReplace_NotFound(t *testing.T) {
 	_, _, err := doReplace("hello world", params, "/test/file.txt")
 	if err == nil {
 		t.Fatal("expected error when text not found")
+		return
 	}
 	if !strings.Contains(err.Error(), "text not found") {
 		t.Errorf("error should mention 'text not found', got: %v", err)
@@ -31,6 +32,7 @@ func TestDoReplace_EmptyOldString(t *testing.T) {
 	_, _, err := doReplace("hello world", params, "/test/file.txt")
 	if err == nil {
 		t.Fatal("expected error for empty old_string")
+		return
 	}
 	if !strings.Contains(err.Error(), "old_string is required") {
 		t.Errorf("error should mention 'old_string is required', got: %v", err)
@@ -285,6 +287,7 @@ func TestDoReplace_LineRange(t *testing.T) {
 		_, _, err := doReplace(content, params, "/test/file.txt")
 		if err == nil {
 			t.Fatal("expected error when not found in range")
+			return
 		}
 		if !strings.Contains(err.Error(), "lines 1-2") {
 			t.Errorf("error should mention line range, got: %v", err)
@@ -648,6 +651,7 @@ func TestFileCreateTool_LocalMode(t *testing.T) {
 		_, err := tool.Execute(ctx, `{"path": "hello.txt", "content": "duplicate"}`)
 		if err == nil {
 			t.Fatal("expected error for existing file")
+			return
 		}
 		if !strings.Contains(err.Error(), "already exists") {
 			t.Errorf("error should mention 'already exists', got: %v", err)
@@ -658,6 +662,7 @@ func TestFileCreateTool_LocalMode(t *testing.T) {
 		_, err := tool.Execute(ctx, `{"path": "hello.txt", "content": "nope", "rewrite": false}`)
 		if err == nil {
 			t.Fatal("expected error for existing file without rewrite")
+			return
 		}
 	})
 

@@ -162,6 +162,7 @@ func TestParseFrontmatter_InvalidNameWithSpaces(t *testing.T) {
 	_, _, _, _, _, err := parseFrontmatter(fm)
 	if err == nil {
 		t.Fatal("expected error for name with spaces, got nil")
+		return
 	}
 }
 

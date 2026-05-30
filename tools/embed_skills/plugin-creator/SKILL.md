@@ -1,16 +1,16 @@
 ---
 name: plugin-creator
-description: Create, modify, and manage xbot plugins. Use when the user asks to create a plugin, set up script plugins, configure widgets, or register custom tools via plugins.
+description: Create, modify, and manage xbot plugins. Use when the user asks to create a plugin, set up script plugins, configure widgets, register custom tools via plugins, or create channel plugins.
 ---
 
 # Plugin Creator
 
-Create and manage xbot plugins. Script plugins are the easiest type — just a `plugin.json` + bash script.
+Create and manage xbot plugins.
 
 ## When to Activate
 
 - User wants to create/modify/delete plugins
-- User wants to add custom tools, widgets, or context enrichers
+- User wants to add custom tools, widgets, context enrichers, or channels
 - User asks about plugin system configuration
 
 ## Plugin Types
@@ -19,15 +19,17 @@ Create and manage xbot plugins. Script plugins are the easiest type — just a `
 |------|-----------|----------|
 | **script** | Low | Shell-based plugins: widgets, notifications, simple tools |
 | **native** | Medium | Go in-process plugins (requires compilation) |
-| **grpc** | High | External process plugins (Python, etc.) |
+| **grpc** | High | External process plugins: channels, Python/Go/any language |
 
-**Prefer script plugins** — they require only `plugin.json` + a bash script.
+**Prefer script plugins** for widgets and hooks. **Use gRPC for channel plugins.**
 
 ## Plugin Location
 
 - User plugins: `~/.xbot/plugins/<plugin-id>/`
 - Project plugins: `<project>/.xbot/plugins/<plugin-id>/`
 - Built-in examples: `plugin/examples/`
+
+**IMPORTANT**: The directory name MUST match the plugin ID in `plugin.json`. For example, if `"id": "my.telegram"`, the directory must be `~/.xbot/plugins/my.telegram/`.
 
 ## Script Plugin Structure
 
@@ -112,8 +114,9 @@ echo "dim|no repo"
 | `storage.shared` | Cross-plugin shared storage |
 | `network.outbound` | Make network requests |
 | `ui.contribute` | Contribute UI widgets |
+| `channels.register` | Register custom channels |
 
-## Complete Examples
+## Script Plugin Examples
 
 ### Git Branch Widget (infoBar)
 
@@ -156,13 +159,212 @@ fi
 }
 ```
 
+## gRPC Channel Plugin
+
+gRPC plugins run as independent child processes, communicating with xbot via **bidirectional JSON-RPC over stdin/stdout** (same protocol as WebSocket clients). This is how you add new channels like Telegram, Discord, Slack, etc.
+
+### Architecture
+
+```
+xbot (serverapp)                    Plugin (separate process)
+┌─────────────────┐                 ┌─────────────────┐
+│ RPCTable        │◄───stdout───────│ Plugin main loop │
+│ (dispatch)      │─────stdin──────►│ (JSON-RPC)       │
+│ GrpcPlugin      │                 │ HTTP server /    │
+│ Transport       │◄──eventCh───────│ bot framework    │
+└─────────────────┘                 └─────────────────┘
+```
+
+The channel runs in a **dedicated process** (separate from the plugin activation process). It has full access to xbot's RPC surface — same as a remote CLI client over WebSocket.
+
+### Structure
+
+```
+my-channel/
+├── plugin.json       # Manifest (runtime: "grpc")
+└── main.py           # Any language — Python, Go, Node, etc.
+```
+
+### plugin.json
+
+```json
+{
+  "id": "my.telegram",
+  "name": "Telegram Channel",
+  "version": "1.0.0",
+  "description": "Telegram bot channel for xbot",
+  "runtime": "grpc",
+  "entry": "python3 main.py",
+  "permissions": ["channels.register"],
+  "contributes": {
+    "channelProvider": {
+      "name": "telegram",
+      "config_schema": [
+        {"key": "enabled", "label": "Enable", "type": "toggle", "default_value": "false"},
+        {"key": "bot_token", "label": "Bot Token", "type": "password", "default_value": ""}
+      ]
+    }
+  }
+}
+```
+
+**Key fields:**
+- `runtime`: Must be `"grpc"` for channel plugins
+- `entry`: Command to run (e.g. `"python3 main.py"`, `"./my-binary"`)
+- `permissions`: Must include `"channels.register"`
+- `contributes.channelProvider`: Channel declaration with name and config_schema
+
+### Protocol: Bidirectional JSON-RPC (same as WebSocket)
+
+All communication is JSON lines over stdin/stdout. Messages follow the WS protocol:
+
+**Plugin → xbot (RPC request):**
+```json
+{"id":"plugin-1","method":"send_inbound","params":{"channel":"telegram","chat_id":"chat1","content":"hello","sender_id":"user1","sender_name":"User","chat_type":"p2p"}}
+```
+
+**xbot → Plugin (event push — no id):**
+```json
+{"type":"progress_structured","chat_id":"chat1","progress":{"phase":"thinking"}}
+{"type":"stream_content","chat_id":"chat1","content":"Hello! "}
+{"type":"text","chat_id":"chat1","content":"Hello! How can I help you?"}
+{"type":"session","session":{"channel":"telegram","chat_id":"chat1","action":"busy"}}
+```
+
+**xbot → Plugin (RPC request — has id + method):**
+```json
+{"id":"srv-1","method":"channel_send","params":{"chat_id":"chat1","content":"Agent reply"}}
+```
+
+**Plugin → xbot (RPC response — has id, no method):**
+```json
+{"id":"srv-1","result":"ok"}
+```
+
+### Available RPC Methods (Plugin → xbot)
+
+| Method | Description |
+|--------|-------------|
+| `send_inbound` | Send user message to agent |
+| `get_history` | Get conversation history |
+| `list_sessions` | List available sessions |
+| `set_cwd` | Set working directory |
+| All standard RPC methods | Full access to RPCTable |
+
+### Event Types (xbot → Plugin)
+
+| Type | Description |
+|------|-------------|
+| `channel_config` | Initial config push (metadata.config = JSON config) |
+| `progress_structured` | Progress events (thinking, tools, etc.) |
+| `stream_content` | Streaming text + reasoning content |
+| `text` | Final agent reply |
+| `session` | Session state changes (busy/idle) |
+| `inject_user` | Background message injection |
+| `card` | Rich card message |
+| `ask_user` | Ask user question |
+| `plugin_widgets` | Plugin widget update |
+
+### Activation Flow
+
+1. Plugin process starts → xbot sends `{"method":"activate","params":{}}` (old protocol)
+2. Plugin responds with `{"result":"ok","channel_provider":{...}}`
+3. xbot **spawns a separate process** for the channel (using `entry` from manifest)
+4. The new process receives JSON-RPC over stdin/stdout
+5. First event is `channel_config` with the channel configuration
+6. Plugin starts its HTTP server/bot framework and begins forwarding messages
+
+### config_schema Types
+
+| Type | UI Widget |
+|------|-----------|
+| `toggle` | On/off switch |
+| `text` | Text input |
+| `password` | Masked text input |
+| `select` | Dropdown (needs `options` array) |
+| `number` | Number input |
+
+### Minimal Channel Plugin (Python)
+
+```python
+#!/usr/bin/env python3
+import sys, json, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+def write_stdout(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+def send_inbound(chat_id, content, sender_id="user", sender_name="User"):
+    write_stdout({
+        "id": f"plugin-{id(content)}",
+        "method": "send_inbound",
+        "params": {
+            "channel": "mychannel",
+            "chat_id": chat_id,
+            "content": content,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "chat_type": "p2p",
+        }
+    })
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        if body:
+            send_inbound("default", body)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok\n")
+    def log_message(self, *a): pass
+
+for line in sys.stdin:
+    msg = json.loads(line.strip())
+    if msg.get("method") == "activate":
+        write_stdout({"result": "ok", "channel_provider": {
+            "name": "mychannel",
+            "config_schema": [
+                {"key": "enabled", "label": "Enable", "type": "toggle", "default_value": "false"},
+                {"key": "port", "label": "Port", "type": "number", "default_value": "9876"},
+            ]
+        }})
+    elif msg.get("type") == "channel_config":
+        config = json.loads(msg.get("metadata", {}).get("config", "{}"))
+        port = int(config.get("port", "9876"))
+        HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+```
+
+### Config Storage
+
+Channel config is stored in `~/.xbot/config.json` under `channels.<name>`:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": "true",
+      "bot_token": "123456:ABC"
+    }
+  }
+}
+```
+
+Users can also configure via TUI Settings → Channels panel (auto-rendered from config_schema).
+
+### Channel Name Restrictions
+
+Channel names must NOT conflict with built-in channels: `feishu`, `qq`, `napcat`, `web`, `cli`.
+
 ## Workflow
 
-1. **Understand requirement**: Widget? Tool? What triggers?
-2. **Choose plugin location**: `~/.xbot/plugins/<id>/` for user-level
-3. **Create plugin.json**: Use FileCreate with the manifest
-4. **Create script**: Write the bash script, ensure it's executable (`chmod +x`)
-5. **Reload plugins**: Use `tui_control` with action `reload_plugins` to hot-reload
+1. **Understand requirement**: Widget? Tool? Channel?
+2. **Choose plugin type**: script for widgets/hooks, grpc for channels
+3. **Choose plugin location**: `~/.xbot/plugins/<id>/` for user-level
+4. **Create plugin.json**: Ensure directory name matches plugin ID
+5. **Create entry point**: Script or compiled binary
+6. **Ensure executable**: `chmod +x` for scripts and binaries
+7. **Reload plugins**: Use `tui_control(action="reload_plugins")` to hot-reload
 
 ## After Creating/Modifying Plugins
 
@@ -176,8 +378,15 @@ This hot-reloads all plugins without restarting the CLI. Alternatively, user can
 
 ## Gotchas
 
+- **Directory name MUST match plugin ID** in plugin.json. `"id": "my.telegram"` → `~/.xbot/plugins/my.telegram/`
 - Script must be executable: `chmod +x my-script.sh`
 - `sync: true` means the widget blocks tool execution until rendered (use for toolHint)
 - Widget output is limited in size — keep it short
 - Plugin ID must be unique across all plugins
 - Script output without `style|` prefix is treated as plain text
+- gRPC channel plugins: `entry` command spawns a **dedicated** process for the channel (separate from activation)
+- gRPC plugins use bidirectional JSON-RPC (same as WS protocol), NOT the old request-response protocol
+- Plugin must handle both old-style activation (`{"method":"activate"}`) and new-style JSON-RPC events
+- gRPC plugins receive `channel_config` event with initial configuration, NOT `channel_start` request
+- gRPC plugins send `send_inbound` RPC to push messages, NOT `channel_inbound` async push
+- Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`

@@ -353,6 +353,7 @@ func TestHandleSettingsAction_SetModel(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	if setModel != "claude-3" {
 		t.Errorf("expected model=claude-3, got %q", setModel)
@@ -595,6 +596,7 @@ func TestHandleSettingsAction_MarketPage(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	s := cardJSON(card)
 	if !strings.Contains(s, "skill-6") {
@@ -734,6 +736,7 @@ func TestHandleSettingsAction_MyItemsPage(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	s := cardJSON(card)
 	if !strings.Contains(s, "my-skill-6") {
@@ -832,6 +835,7 @@ func TestHandleSettingsAction_Install(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	if installedType != "skill" || installedID != 42 {
 		t.Errorf("expected skill/42, got %s/%d", installedType, installedID)
@@ -864,6 +868,7 @@ func TestHandleSettingsAction_Publish(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	if pubType != "skill" || pubName != "my-skill" {
 		t.Errorf("expected skill/my-skill, got %s/%s", pubType, pubName)
@@ -896,6 +901,7 @@ func TestHandleSettingsAction_Unpublish(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	if unpubType != "skill" || unpubName != "my-skill" {
 		t.Errorf("expected skill/my-skill, got %s/%s", unpubType, unpubName)
@@ -928,6 +934,7 @@ func TestHandleSettingsAction_DeleteItem(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected card")
+		return
 	}
 	if delType != "agent" || delName != "old-agent" {
 		t.Errorf("expected agent/old-agent, got %s/%s", delType, delName)
@@ -1043,6 +1050,7 @@ func TestHandleSettingsAction_SetConcurrency(t *testing.T) {
 	}
 	if card == nil {
 		t.Fatal("expected non-nil card")
+		return
 	}
 	if gotSenderID != "user1" {
 		t.Errorf("expected senderID=user1, got %q", gotSenderID)

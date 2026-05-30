@@ -142,6 +142,7 @@ func TestTodoListTool_Isolation(t *testing.T) {
 	mainResult, _ := listTool.Execute(mainCtx, "")
 	if mainResult == nil {
 		t.Fatal("main TodoList returned nil")
+		return
 	}
 	// 主 Agent 应该看到 0/1 完成
 	if !strings.Contains(mainResult.Summary, "0/1") {
@@ -151,6 +152,7 @@ func TestTodoListTool_Isolation(t *testing.T) {
 	subResult, _ := listTool.Execute(subCtx, "")
 	if subResult == nil {
 		t.Fatal("sub TodoList returned nil")
+		return
 	}
 	// SubAgent 应该看到 1/1 完成
 	if !strings.Contains(subResult.Summary, "1/1") {

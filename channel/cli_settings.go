@@ -59,9 +59,11 @@ func (m *cliModel) readSettings() map[string]string {
 		values["llm_model"] = sub.Model
 		values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
 		values["thinking_mode"] = sub.ThinkingMode
-		// max_context_tokens: from PerModelConfigs[model].MaxContext
+		// max_context_tokens: per-model config → subscription-level → empty
 		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxContext > 0 {
 			values["max_context_tokens"] = strconv.Itoa(pmc.MaxContext)
+		} else if sub.MaxContext > 0 {
+			values["max_context_tokens"] = strconv.Itoa(sub.MaxContext)
 		}
 	}
 
@@ -71,32 +73,111 @@ func (m *cliModel) readSettings() map[string]string {
 // ── write ────────────────────────────────────────────────────────────
 
 // saveSettings persists changed values to their correct scope.
-// IMPORTANT: subscription fields (provider, key, model, etc.) are NOT written here.
-// They go through ApplySettings → updateActiveSubscription which has masked-key protection.
-// This function ONLY writes:
-//   - PerModelConfigs (max_context_tokens) via subscriptionMgr.Update
-//   - User-scoped keys via settingsSvc
-//   - Runtime effects via ApplySettings (with subscription keys stripped)
+//
+// CRITICAL: Each subscription-scoped key writes to the ACTIVE subscription (m.activeSubID),
+// NEVER to GetDefault(). The settings panel reads from activeSubscription(), so writes
+// MUST target the same subscription. Writing to the wrong subscription is a data-corruption
+// bug (the old code always wrote to GetDefault(), destroying other subscriptions' configs).
+//
+// Write order:
+//  1. Subscription-scoped fields (provider, key, model, base_url, max_output, thinking)
+//     → subscriptionMgr.Update(activeSubID) — one subscription, one call
+//  2. PerModelConfigs (max_context_tokens) → subscriptionMgr.UpdatePerModelConfig(activeSubID)
+//  3. User-scoped keys → settingsSvc
+//  4. Runtime effects → ApplySettings (NO subscription keys — all handled above)
 func (m *cliModel) saveSettings(values map[string]string) {
 	if m.channel == nil {
 		return
 	}
 
+	// --- Subscription-scoped writes ---
+	// Write directly to the ACTIVE subscription, not the default.
+	// Only ONE subscription is updated per save — never batch.
+	// CRITICAL: Only call Update when values have ACTUALLY changed.
+	// Update triggers server-side Invalidate(senderID) which wipes ALL
+	// per-session LLM cache entries, causing the agent to fall back to
+	// the default subscription on the next message (wrong MaxContext → compression).
+	if m.subscriptionMgr != nil && m.activeSubID != "" {
+		activeSub := m.activeSubscription()
+		if activeSub != nil {
+			updated := *activeSub // copy existing to preserve unmasked fields
+			changed := false
+
+			if v, ok := values["llm_provider"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
+				if updated.Provider != strings.TrimSpace(v) {
+					updated.Provider = strings.TrimSpace(v)
+					changed = true
+				}
+			}
+			if v, ok := values["llm_api_key"]; ok && strings.TrimSpace(v) != "" {
+				key := strings.TrimSpace(v)
+				if !isMaskedAPIKey(key) && updated.APIKey != key {
+					updated.APIKey = key
+					changed = true
+				}
+			}
+			if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
+				if updated.Model != strings.TrimSpace(v) {
+					updated.Model = strings.TrimSpace(v)
+					changed = true
+				}
+			}
+			if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
+				if updated.BaseURL != strings.TrimSpace(v) {
+					updated.BaseURL = strings.TrimSpace(v)
+					changed = true
+				}
+			}
+			if v, ok := values["max_output_tokens"]; ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+					if updated.MaxOutputTokens != n {
+						updated.MaxOutputTokens = n
+						changed = true
+					}
+				}
+			}
+			if v, ok := values["thinking_mode"]; ok {
+				if updated.ThinkingMode != v {
+					updated.ThinkingMode = v
+					changed = true
+				}
+			}
+
+			if changed {
+				if err := m.subscriptionMgr.Update(m.activeSubID, &updated); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"err": err, "sub": m.activeSubID,
+					}).Warn("saveSettings: subscription update failed")
+				}
+			}
+		}
+	}
+
 	// --- PerModelConfigs update (max_context_tokens only) ---
+	// Only call UpdatePerModelConfig when the value has ACTUALLY changed.
+	// Unnecessary calls trigger DB write + potential side effects.
 	if v, ok := values["max_context_tokens"]; ok {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			if m.subscriptionMgr != nil && m.activeSubID != "" {
 				model := m.cachedModelName
 				if model == "" {
-					// Read model from subscription
-					if sub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
+					if sub := m.activeSubscription(); sub != nil {
 						model = sub.Model
 					}
 				}
 				if model != "" {
-					pmc := PerModelConfig{MaxContext: n}
-					if err := m.subscriptionMgr.UpdatePerModelConfig(m.activeSubID, model, pmc); err != nil {
-						logrus.WithFields(logrus.Fields{"err": err, "sub": m.activeSubID, "model": model}).Warn("saveSettings: UpdatePerModelConfig failed")
+					// Only write if the value actually differs from current config
+					currentCtx := 0
+					if sub := m.activeSubscription(); sub != nil {
+						if pmc, ok := sub.PerModelConfigs[model]; ok {
+							currentCtx = pmc.MaxContext
+						}
+					}
+					if n != currentCtx {
+						pmc := PerModelConfig{MaxContext: n}
+						if err := m.subscriptionMgr.UpdatePerModelConfig(m.activeSubID, model, pmc); err != nil {
+							logrus.WithFields(logrus.Fields{"err": err, "sub": m.activeSubID, "model": model}).Warn("saveSettings: UpdatePerModelConfig failed")
+						}
 					}
 				}
 			}
@@ -115,31 +196,38 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	}
 
 	// --- Apply to runtime ---
-	// Strip max_context_tokens from values — already handled above via PerModelConfig.
-	// Subscription fields (provider, key, model, etc.) pass through to ApplySettings
-	// which handles them via updateActiveSubscription with masked-key protection.
+	// Strip subscription-scoped keys (provider, key, model, etc.) — already handled above.
+	// Exception: max_context_tokens is subscription-scoped but ALSO needs to reach
+	// ApplyRuntimeSetting → Agent.SetMaxContextTokens so the new value propagates to
+	// LLMFactory.perChatMaxCtx immediately. Without this, maybeCompress uses the old
+	// cached max_context until the session cache expires.
 	if m.channel.config.ApplySettings != nil {
 		runtimeValues := make(map[string]string, len(values))
 		for k, v := range values {
-			if k != "max_context_tokens" {
+			if k == "max_context_tokens" {
+				runtimeValues[k] = v
+			} else if !isSubscriptionScopedSettingKey(k) {
 				runtimeValues[k] = v
 			}
 		}
 		m.channel.config.ApplySettings(runtimeValues, m.chatID)
 	}
+	// Refresh values cache with the ACTIVE subscription ID, not GetDefault().
+	// ApplySettings internally calls refreshRemoteValuesCache("") which falls back
+	// to GetDefaultSubscription(). Override with the correct session subscription.
+	if m.channel != nil && m.channel.config.RefreshValuesCache != nil && m.activeSubID != "" {
+		m.channel.config.RefreshValuesCache(m.activeSubID)
+	}
 }
 
 // ── resolve helpers ──────────────────────────────────────────────────
 
-// activeSubscription returns a mutable copy of the active subscription, or nil.
+// activeSubscription returns the subscription identified by m.activeSubID.
+// Returns nil when activeSubID is empty — callers MUST handle the nil case.
+// NEVER falls back to GetDefault() — the settings panel must show the ACTIVE
+// subscription, not silently substitute the default.
 func (m *cliModel) activeSubscription() *Subscription {
 	if m.subscriptionMgr == nil || m.activeSubID == "" {
-		// Fallback: try GetDefault
-		if m.subscriptionMgr != nil {
-			if sub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
-				return sub
-			}
-		}
 		return nil
 	}
 	subs, err := m.subscriptionMgr.List("")

@@ -113,6 +113,7 @@ func TestPluginEventNotifier_SubscribeNil(t *testing.T) {
 	err := n.Subscribe(nil)
 	if err == nil {
 		t.Fatal("expected error for nil callback")
+		return
 	}
 }
 
@@ -121,6 +122,7 @@ func TestPluginEventNotifier_UnsubscribeNil(t *testing.T) {
 	err := n.Unsubscribe(nil)
 	if err == nil {
 		t.Fatal("expected error for nil callback")
+		return
 	}
 }
 
@@ -130,6 +132,7 @@ func TestPluginEventNotifier_UnsubscribeNotFound(t *testing.T) {
 	err := n.Unsubscribe(cb)
 	if err == nil {
 		t.Fatal("expected error for non-registered callback")
+		return
 	}
 }
 

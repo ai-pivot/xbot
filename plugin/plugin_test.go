@@ -93,6 +93,7 @@ func TestLoadManifestValidation_MissingID(t *testing.T) {
 	_, err := LoadManifest(dir)
 	if err == nil {
 		t.Fatal("expected error for missing ID")
+		return
 	}
 }
 
@@ -106,6 +107,7 @@ func TestLoadManifestValidation_InvalidRuntime(t *testing.T) {
 	_, err := LoadManifest(dir)
 	if err == nil {
 		t.Fatal("expected error for invalid runtime")
+		return
 	}
 }
 
@@ -191,7 +193,7 @@ func TestPluginContext_RegisterTool(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	tool := &SimplePluginTool{
 		Def: ToolDef{
@@ -221,7 +223,7 @@ func TestPluginContext_RegisterTool_NoPermission(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{"hooks.subscribe"} // no tools.register
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	tool := &SimplePluginTool{
 		Def: ToolDef{Name: "test_tool", Description: "test"},
@@ -230,6 +232,7 @@ func TestPluginContext_RegisterTool_NoPermission(t *testing.T) {
 	err := pc.RegisterTool(tool)
 	if err == nil {
 		t.Fatal("expected permission error")
+		return
 	}
 	if _, ok := err.(*PermissionError); !ok {
 		t.Errorf("expected PermissionError, got %T", err)
@@ -240,7 +243,7 @@ func TestPluginContext_RegisterTools(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	tool1 := &SimplePluginTool{
 		Def: ToolDef{Name: "tool_a", Description: "first tool"},
@@ -270,7 +273,7 @@ func TestPluginContext_RegisterTools_PartialFailure(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	tool1 := &SimplePluginTool{
 		Def: ToolDef{Name: "tool_a", Description: "first tool"},
@@ -285,7 +288,7 @@ func TestPluginContext_RegisterTools_PartialFailure(t *testing.T) {
 	// Now revoke permission and try to register more
 	m2 := testManifest()
 	m2.Permissions = []string{"hooks.subscribe"} // no tools.register
-	pc2 := newPluginContext(&m2, storage, newPluginLogger(m2.ID), nil, nil, nil)
+	pc2 := newPluginContext(&m2, storage, newPluginLogger(m2.ID, nil), nil, nil, nil)
 
 	tool2 := &SimplePluginTool{
 		Def: ToolDef{Name: "tool_b", Description: "second tool"},
@@ -298,6 +301,7 @@ func TestPluginContext_RegisterTools_PartialFailure(t *testing.T) {
 	err = pc2.RegisterTools(tool2, tool3)
 	if err == nil {
 		t.Fatal("expected permission error")
+		return
 	}
 	if _, ok := err.(*PermissionError); !ok {
 		t.Errorf("expected PermissionError, got %T", err)
@@ -314,7 +318,7 @@ func TestPluginContext_RegisterHook(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	called := false
 	_ = called
@@ -342,7 +346,7 @@ func TestPluginContext_EnrichContext(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.EnrichContext("test_enricher", func(ctx context.Context) (string, error) {
 		return "enriched content", nil
@@ -364,11 +368,12 @@ func TestPluginContext_OnEvent_NilHandler(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnEvent(HookPreToolUse, "", nil)
 	if err == nil {
 		t.Fatal("expected error for nil handler")
+		return
 	}
 	if !strings.Contains(err.Error(), "must not be nil") {
 		t.Errorf("error = %v, want nil handler message", err)
@@ -379,11 +384,12 @@ func TestPluginContext_EnrichContext_NilEnricher(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.EnrichContext("test", nil)
 	if err == nil {
 		t.Fatal("expected error for nil enricher")
+		return
 	}
 	if !strings.Contains(err.Error(), "must not be nil") {
 		t.Errorf("error = %v, want nil enricher message", err)
@@ -583,6 +589,7 @@ func TestPluginManager_DuplicateRegistration(t *testing.T) {
 	err := pm.Register(p2)
 	if err == nil {
 		t.Fatal("expected error for duplicate registration")
+		return
 	}
 }
 
@@ -1011,6 +1018,7 @@ func TestLoadManifest_GRPCNoEntryOrExecutable(t *testing.T) {
 	_, err := LoadManifest(dir)
 	if err == nil {
 		t.Fatal("expected error for grpc without entry or executable")
+		return
 	}
 }
 
@@ -1088,6 +1096,7 @@ func TestPluginManager_PanicRecovery(t *testing.T) {
 	err := pm.RegisterAndActivate(ctx, panicPluginReal)
 	if err == nil {
 		t.Fatal("expected error from panicking plugin")
+		return
 	}
 
 	// Manager should still be functional
@@ -1235,7 +1244,7 @@ func TestPluginContext_SetSessionMetadata(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	// Before setting, metadata should be empty
 	if pc.WorkingDir() != "" {
@@ -1960,6 +1969,7 @@ func TestWASMRuntime_Create_WrongRuntime(t *testing.T) {
 	_, err := factory.Create(m, "/tmp/test")
 	if err == nil {
 		t.Fatal("expected error for wrong runtime type")
+		return
 	}
 }
 
@@ -1983,7 +1993,7 @@ func TestWASMRuntime_Activate_NoOp(t *testing.T) {
 
 	// Activate should succeed (no-op with warning log)
 	storage := &noopStorage{}
-	ctx := newPluginContext(m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	ctx := newPluginContext(m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err = plugin.Activate(ctx)
 	if err != nil {
@@ -2157,6 +2167,7 @@ func TestPluginManager_Reload_NonExistent(t *testing.T) {
 	err := pm.Reload(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for non-existent plugin")
+		return
 	}
 }
 
@@ -2166,13 +2177,14 @@ func TestPluginContext_Subscribe_NoPermission(t *testing.T) {
 	m.Permissions = []string{"bus.plugin", "bus.write"} // missing bus.read
 	storage := &noopStorage{}
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), bus, nil, nil)
 
 	err := pc.Subscribe("test", func(ctx context.Context, topic string, data any) error {
 		return nil
 	})
 	if err == nil {
 		t.Fatal("expected permission error for Subscribe without bus.read")
+		return
 	}
 }
 
@@ -2182,11 +2194,12 @@ func TestPluginContext_Publish_NoPermission(t *testing.T) {
 	m.Permissions = []string{"bus.plugin", "bus.read"} // missing bus.write
 	storage := &noopStorage{}
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), bus, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), bus, nil, nil)
 
 	err := pc.Publish("test", "data")
 	if err == nil {
 		t.Fatal("expected permission error for Publish without bus.write")
+		return
 	}
 }
 
@@ -2910,6 +2923,7 @@ func TestPluginManager_InstallPlugin(t *testing.T) {
 	}
 	if entry == nil {
 		t.Fatal("expected non-nil entry")
+		return
 	}
 	if entry.Manifest.ID != "com.test.install" {
 		t.Errorf("expected ID %q, got %q", "com.test.install", entry.Manifest.ID)
@@ -2944,6 +2958,7 @@ func TestPluginManager_InstallPlugin_InvalidPath(t *testing.T) {
 	_, err := pm.InstallPlugin(ctx, "/nonexistent/path")
 	if err == nil {
 		t.Fatal("expected error for invalid path")
+		return
 	}
 }
 
@@ -2987,7 +3002,19 @@ func TestPluginManager_UninstallPlugin(t *testing.T) {
 	}
 
 	// Verify directory removed
-	if _, err := os.Stat(expectedDir); !os.IsNotExist(err) {
+	// On Windows, RemoveAll can fail if file handles are still open.
+	// Close the manager first (releases internal references), then retry.
+	pm.Close()
+	removed := false
+	for i := range 20 {
+		if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
+			removed = true
+			break
+		}
+		time.Sleep(time.Duration(i+1) * 5 * time.Millisecond) // 5ms..100ms, total ~1s
+		os.RemoveAll(expectedDir)
+	}
+	if !removed {
 		t.Error("plugin directory still exists after uninstall")
 	}
 }
@@ -3043,7 +3070,7 @@ func TestPluginContext_StorageInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	// Key not found
 	v, ok := pc.StorageInt("missing")
@@ -3093,7 +3120,7 @@ func TestPluginContext_StorageBool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	// Key not found
 	v, ok := pc.StorageBool("missing")
@@ -3150,7 +3177,7 @@ func TestPluginContext_StorageJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	type config struct {
 		Host string `json:"host"`
@@ -3181,7 +3208,7 @@ func TestPluginContext_StorageGetJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, realStorage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	type config struct {
 		Host string `json:"host"`
@@ -3193,6 +3220,7 @@ func TestPluginContext_StorageGetJSON(t *testing.T) {
 	err = pc.StorageGetJSON("missing", &cfg)
 	if err == nil {
 		t.Fatal("expected error for missing key")
+		return
 	}
 
 	// Round-trip
@@ -3213,12 +3241,14 @@ func TestPluginContext_StorageGetJSON(t *testing.T) {
 	err = pc.StorageGetJSON("bad", &cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+		return
 	}
 
 	// Nil target → error
 	err = pc.StorageGetJSON("config", nil)
 	if err == nil {
 		t.Fatal("expected error for nil target")
+		return
 	}
 }
 
@@ -3257,7 +3287,7 @@ func TestPluginContext_OnPluginError(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), bus, nil, nil)
 
 	var receivedErr error
 	err := pc.OnPluginError(func(ctx context.Context, err error) {
@@ -3271,6 +3301,7 @@ func TestPluginContext_OnPluginError(t *testing.T) {
 	cb := pc.GetErrorCallback()
 	if cb == nil {
 		t.Fatal("callback should be registered")
+		return
 	}
 	cb(context.Background(), fmt.Errorf("test error"))
 
@@ -3284,11 +3315,12 @@ func TestPluginContext_OnPluginError_NoPermission(t *testing.T) {
 	m := testManifest()
 	m.Permissions = []string{} // no hooks.subscribe
 	bus := NewPluginEventBus()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), bus, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), bus, nil, nil)
 
 	err := pc.OnPluginError(func(ctx context.Context, err error) {})
 	if err == nil {
 		t.Fatal("expected permission error")
+		return
 	}
 	if _, ok := err.(*PermissionError); !ok {
 		t.Errorf("expected PermissionError, got %T: %v", err, err)
@@ -3358,6 +3390,7 @@ func TestPluginManager_AutoRetry(t *testing.T) {
 	err := pm.ActivateAll(ctx)
 	if err == nil {
 		t.Fatal("expected error on first activation")
+		return
 	}
 
 	entry, ok := pm.GetPlugin("com.test.example")
@@ -3515,6 +3548,7 @@ func TestManifest_ChecksumVerification(t *testing.T) {
 		err = loaded.VerifyChecksum(dir)
 		if err == nil {
 			t.Fatal("expected error for missing plugin.sha256")
+			return
 		}
 		if !strings.Contains(err.Error(), "plugin.sha256") {
 			t.Errorf("error should mention plugin.sha256, got: %v", err)
@@ -3537,6 +3571,7 @@ func TestManifest_ChecksumVerification(t *testing.T) {
 		err = loaded.VerifyChecksum(dir)
 		if err == nil {
 			t.Fatal("expected error for corrupted checksum")
+			return
 		}
 		if !strings.Contains(err.Error(), "mismatch") {
 			t.Errorf("error should mention mismatch, got: %v", err)
@@ -3559,6 +3594,7 @@ func TestManifest_ChecksumVerification(t *testing.T) {
 		err = loaded.VerifyChecksum(dir)
 		if err == nil {
 			t.Fatal("expected error for empty sha256 file")
+			return
 		}
 	})
 
@@ -3612,6 +3648,7 @@ func TestManifest_ChecksumVerification(t *testing.T) {
 		_, err := LoadManifestWithOptions(dir, LoadManifestOptions{VerifyChecksum: true})
 		if err == nil {
 			t.Fatal("expected error for checksum mismatch")
+			return
 		}
 		if !strings.Contains(err.Error(), "checksum") {
 			t.Errorf("error should mention checksum, got: %v", err)
@@ -3623,7 +3660,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 	t.Parallel()
 	t.Run("InitialCountsZero", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 		if pc.ToolCallCount() != 0 {
 			t.Errorf("initial ToolCallCount = %d, want 0", pc.ToolCallCount())
@@ -3635,7 +3672,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("IncrementToolCalls", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 		for i := 0; i < 3; i++ {
 			pc.incrementToolCallCount()
@@ -3651,7 +3688,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("IncrementHookCalls", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 		for i := 0; i < 5; i++ {
 			pc.incrementHookCallCount()
@@ -3667,7 +3704,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("ConcurrentIncrements", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 		const goroutines = 100
 		const increments = 100
@@ -3696,7 +3733,7 @@ func TestPluginContext_ResourceTracking(t *testing.T) {
 
 	t.Run("ToolAdapterIncrementsCount", func(t *testing.T) {
 		m := testManifest()
-		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+		pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 		tool := &SimplePluginTool{
 			Def: ToolDef{Name: "track_tool", Description: "test"},
@@ -4061,6 +4098,7 @@ func TestPluginManager_AuditLog_Install(t *testing.T) {
 	}
 	if entry == nil {
 		t.Fatal("expected non-nil entry")
+		return
 	}
 
 	entries := pm.AuditLog().Query(AuditFilter{PluginID: "com.test.example"})
@@ -4446,7 +4484,7 @@ func TestPluginContext_Config(t *testing.T) {
 		},
 	}
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, store, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, store, nil)
 
 	// Config() should return defaults when no user config exists
 	config, err := pc.Config()
@@ -4485,7 +4523,7 @@ func TestPluginContext_Config_NilStore(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	// nil configStore should not panic
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	config, err := pc.Config()
 	if err != nil {
@@ -4514,7 +4552,7 @@ func TestPluginContext_SetConfig(t *testing.T) {
 		Permissions: []string{"*"},
 	}
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, store, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, store, nil)
 
 	// Set multiple keys
 	if err := pc.SetConfig("key1", "value1"); err != nil {
@@ -4557,6 +4595,7 @@ func TestPluginRegistry_New(t *testing.T) {
 	reg := NewPluginRegistry(pm)
 	if reg == nil {
 		t.Fatal("NewPluginRegistry returned nil")
+		return
 	}
 	if len(reg.sources) != 0 {
 		t.Errorf("expected 0 sources, got %d", len(reg.sources))
@@ -4664,6 +4703,7 @@ func TestPluginRegistry_Search(t *testing.T) {
 	_, err = reg.Search(ctx, "hello")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+		return
 	}
 }
 
@@ -4724,7 +4764,7 @@ func TestPluginContext_OnAllToolUse(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnAllToolUse(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		return &HookResult{Decision: DecisionAllow}, nil
@@ -4747,7 +4787,7 @@ func TestPluginContext_OnError(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnError(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		return &HookResult{Decision: DecisionAllow}, nil
@@ -4767,7 +4807,7 @@ func TestPluginContext_OnUserPrompt(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnUserPrompt(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		return &HookResult{Decision: DecisionAllow}, nil
@@ -4787,7 +4827,7 @@ func TestPluginContext_OnAgentStop(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnAgentStop(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		return &HookResult{Decision: DecisionAllow}, nil
@@ -4804,7 +4844,7 @@ func TestPluginContext_OnSessionStart(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnSessionStart(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		return &HookResult{Decision: DecisionAllow}, nil
@@ -4821,7 +4861,7 @@ func TestPluginContext_OnSessionEnd(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
 	storage := &noopStorage{}
-	pc := newPluginContext(&m, storage, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, storage, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	err := pc.OnSessionEnd(func(ctx context.Context, payload *HookPayload) (*HookResult, error) {
 		return &HookResult{Decision: DecisionAllow}, nil
@@ -4848,6 +4888,7 @@ func TestDeniedStorage(t *testing.T) {
 	err := ds.Set("key", "val")
 	if err == nil {
 		t.Fatal("deniedStorage.Set should return error")
+		return
 	}
 	permErr, ok := err.(*PermissionError)
 	if !ok {
@@ -5176,6 +5217,7 @@ func TestPluginManager_Reload_ManifestLoadFails(t *testing.T) {
 	err = pm.Reload(ctx, "com.test.reload-mf")
 	if err == nil {
 		t.Fatal("expected error when manifest file is missing")
+		return
 	}
 	if !strContains(err.Error(), "manifest") {
 		t.Errorf("error should mention 'manifest', got: %v", err)
@@ -5222,6 +5264,7 @@ func TestPluginManager_Reload_RuntimeCreateFails(t *testing.T) {
 	err = pm.Reload(ctx, "com.test.reload-rt")
 	if err == nil {
 		t.Fatal("expected error when runtime factory fails")
+		return
 	}
 	if !strContains(err.Error(), "runtime") {
 		t.Errorf("error should mention 'runtime', got: %v", err)
@@ -5253,6 +5296,7 @@ func TestPluginManager_InstallPlugin_AlreadyExists(t *testing.T) {
 	_, err := pm.InstallPlugin(ctx, sourceDir)
 	if err == nil {
 		t.Fatal("expected error when installing duplicate plugin")
+		return
 	}
 	if !strContains(err.Error(), "already registered") {
 		t.Errorf("error should mention 'already registered', got: %v", err)
@@ -5278,6 +5322,7 @@ func TestPluginManager_InstallPlugin_InvalidManifest(t *testing.T) {
 	_, err := pm.InstallPlugin(ctx, sourceDir)
 	if err == nil {
 		t.Fatal("expected error for invalid manifest")
+		return
 	}
 }
 
@@ -5307,9 +5352,11 @@ func TestPluginManager_InstallPlugin_RuntimeCreateFails(t *testing.T) {
 	entry, err := pm.InstallPlugin(ctx, sourceDir)
 	if err == nil {
 		t.Fatal("expected error when runtime factory fails")
+		return
 	}
 	if entry == nil {
 		t.Fatal("expected non-nil entry")
+		return
 	}
 	if entry.State != StateError {
 		t.Errorf("expected StateError, got %v", entry.State)
@@ -5325,6 +5372,7 @@ func TestPluginManager_UninstallPlugin_NotFound(t *testing.T) {
 	err := pm.UninstallPlugin(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent plugin")
+		return
 	}
 	if !strContains(err.Error(), "not found") {
 		t.Errorf("error should mention 'not found', got: %v", err)
@@ -5340,6 +5388,7 @@ func TestPluginEventBus_Subscribe_NilHandler(t *testing.T) {
 	err := bus.Subscribe("topic", nil)
 	if err == nil {
 		t.Fatal("expected error for nil handler")
+		return
 	}
 	if !strContains(err.Error(), "must not be nil") {
 		t.Errorf("error should mention 'must not be nil', got: %v", err)
@@ -5359,6 +5408,7 @@ func TestPluginEventBus_Unsubscribe_NoHandlers(t *testing.T) {
 	err := bus.Unsubscribe("topic", handler)
 	if err == nil {
 		t.Fatal("expected error when no handlers for topic")
+		return
 	}
 	if !strContains(err.Error(), "no handlers") {
 		t.Errorf("error should mention 'no handlers', got: %v", err)
@@ -5385,6 +5435,7 @@ func TestPluginEventBus_Unsubscribe_HandlerNotFound(t *testing.T) {
 	err := bus.Unsubscribe("topic", handler2)
 	if err == nil {
 		t.Fatal("expected error when handler not found")
+		return
 	}
 	if !strContains(err.Error(), "handler not found") {
 		t.Errorf("error should mention 'handler not found', got: %v", err)
@@ -5837,7 +5888,7 @@ func TestPluginManager_ExportImport_RoundTrip(t *testing.T) {
 func TestPluginContext_SetValue_GetValue(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	// Set and retrieve a value.
 	pc.SetValue("user", "alice")
@@ -5863,7 +5914,7 @@ func TestPluginContext_SetValue_GetValue(t *testing.T) {
 func TestPluginContext_SetValue_Overwrite(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	pc.SetValue("role", "viewer")
 	pc.SetValue("role", "admin")
@@ -5880,7 +5931,7 @@ func TestPluginContext_SetValue_Overwrite(t *testing.T) {
 func TestPluginContext_GetValue_NotFound(t *testing.T) {
 	t.Parallel()
 	m := testManifest()
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 
 	val, ok := pc.GetValue("nonexistent")
 	if ok {
@@ -5988,10 +6039,11 @@ func TestScriptTrigger_UnsupportedEvent(t *testing.T) {
 	}
 	sp := p.(*scriptPlugin)
 
-	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+	pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 	err = sp.subscribeTrigger(pc, "InvalidEvent:Shell*")
 	if err == nil {
 		t.Fatal("expected error for unsupported trigger event")
+		return
 	}
 }
 
@@ -6027,7 +6079,7 @@ func TestScriptTrigger_AllSupportedEvents(t *testing.T) {
 			}
 			sp := p.(*scriptPlugin)
 
-			pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID), nil, nil, nil)
+			pc := newPluginContext(&m, &noopStorage{}, newPluginLogger(m.ID, nil), nil, nil, nil)
 			err = sp.subscribeTrigger(pc, tc.trigger)
 			// Some events may not have a handler registered (e.g. AgentStop)
 			// but they should not return "unsupported trigger event"
@@ -6423,6 +6475,7 @@ func TestWidgetRegistry_RegisterDuplicate(t *testing.T) {
 	err2 := r.Register("p1", "w1", "infoBar", w, 20)
 	if err2 == nil {
 		t.Fatal("expected error on duplicate registration, got nil")
+		return
 	}
 	if !strings.Contains(err2.Error(), "already registered") {
 		t.Errorf("error = %q, should contain 'already registered'", err2.Error())

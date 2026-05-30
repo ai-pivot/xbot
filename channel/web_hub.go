@@ -226,7 +226,32 @@ func newRingBuffer(size int) *ringBuffer {
 	}
 }
 
+// isStatefulMsg returns true for message types where every intermediate event
+// matters (text, inject_user, ask_user, etc.). Returns false for state-snapshot
+// types where only the latest value is meaningful (progress, stream_content).
+func isStatefulMsg(msg protocol.WSMessage) bool {
+	switch msg.Type {
+	case protocol.MsgTypeProgress, protocol.MsgTypeStreamContent,
+		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus:
+		return false
+	default:
+		return true
+	}
+}
+
 func (rb *ringBuffer) push(msg protocol.WSMessage) {
+	if !isStatefulMsg(msg) {
+		// State-snapshot types: only keep the latest one.
+		// Scan backwards to find an existing message of the same type.
+		for i := rb.count - 1; i >= 0; i-- {
+			idx := (rb.head + i) % rb.size
+			if rb.buf[idx].Type == msg.Type {
+				rb.buf[idx] = msg // replace in-place
+				return
+			}
+		}
+		// No existing message of this type — fall through to normal push.
+	}
 	if rb.count == rb.size {
 		rb.head = (rb.head + 1) % rb.size
 		rb.count--

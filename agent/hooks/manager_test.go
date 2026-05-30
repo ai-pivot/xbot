@@ -58,9 +58,11 @@ func TestManager_NewManager_NoConfig(t *testing.T) {
 	}
 	if m == nil {
 		t.Fatal("Manager should not be nil")
+		return
 	}
 	if m.config == nil {
 		t.Fatal("config should not be nil")
+		return
 	}
 	if len(m.config.Hooks) != 0 {
 		t.Fatalf("expected empty hooks, got %d", len(m.config.Hooks))

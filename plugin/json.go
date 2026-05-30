@@ -36,18 +36,23 @@ func newJSONLineReader(r io.Reader) *jsonLineReader {
 	return &jsonLineReader{scanner: s}
 }
 
-func (j *jsonLineReader) read(v any) error {
+// readLine reads a single raw JSON line from stdout.
+// Returns the raw bytes (owned copy, safe to retain).
+func (j *jsonLineReader) readLine() ([]byte, error) {
 	if !j.scanner.Scan() {
 		if err := j.scanner.Err(); err != nil {
-			return fmt.Errorf("read from plugin: %w", err)
+			return nil, fmt.Errorf("read from plugin: %w", err)
 		}
-		return fmt.Errorf("plugin process exited (EOF)")
+		return nil, fmt.Errorf("plugin process exited (EOF)")
 	}
 	line := j.scanner.Bytes()
 	if len(line) == 0 {
-		return fmt.Errorf("empty response from plugin")
+		return nil, fmt.Errorf("empty line from plugin")
 	}
-	return json.Unmarshal(line, v)
+	// Make a copy since scanner.Bytes() is only valid until next Scan().
+	cp := make([]byte, len(line))
+	copy(cp, line)
+	return cp, nil
 }
 
 // WriteJSON marshals v as JSON followed by a newline and writes it to w.

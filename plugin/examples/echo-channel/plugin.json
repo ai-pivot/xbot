@@ -1,0 +1,32 @@
+{
+  "id": "com.example.echo-channel",
+  "name": "Echo Channel",
+  "version": "1.0.0",
+  "description": "Example channel plugin that echoes messages via JSON-RPC over stdio. Demonstrates the new gRPC transport protocol.",
+  "author": "xbot",
+  "runtime": "grpc",
+  "entry": "python3 main.py",
+  "activationEvents": ["onStart"],
+  "permissions": ["channels.register"],
+  "contributes": {
+    "channelProvider": {
+      "name": "echo",
+      "config_schema": [
+        {
+          "key": "enabled",
+          "label": "Enable",
+          "description": "Enable the echo channel",
+          "type": "toggle",
+          "default_value": "true"
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "description": "HTTP port for the echo server",
+          "type": "number",
+          "default_value": "9876"
+        }
+      ]
+    }
+  }
+}

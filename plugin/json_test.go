@@ -39,6 +39,7 @@ func TestReadJSON_EOF(t *testing.T) {
 	err := ReadJSON(reader, &got)
 	if err == nil {
 		t.Fatal("expected error for EOF")
+		return
 	}
 }
 
@@ -48,6 +49,7 @@ func TestReadJSON_InvalidJSON(t *testing.T) {
 	err := ReadJSON(reader, &got)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+		return
 	}
 }
 

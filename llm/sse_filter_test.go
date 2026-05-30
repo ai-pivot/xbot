@@ -21,6 +21,7 @@ func newTestSSEDecoder(t *testing.T, contentType, input string) ssestream.Decode
 	dec := ssestream.NewDecoder(resp)
 	if dec == nil {
 		t.Fatal("expected decoder, got nil")
+		return nil
 	}
 	if _, ok := dec.(*sseEventFilterDecoder); !ok {
 		t.Fatalf("expected *sseEventFilterDecoder, got %T", dec)

@@ -62,6 +62,7 @@ func TestBuild_WithRunAs(t *testing.T) {
 		_, err := Build(context.TODO(), true, "echo hello", nil, "", nil, Config{RunAsUser: "alice"})
 		if err == nil {
 			t.Fatal("expected error for RunAsUser on Windows")
+			return
 		}
 		return
 	}

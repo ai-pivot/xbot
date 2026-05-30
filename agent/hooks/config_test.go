@@ -55,6 +55,7 @@ func TestLoadHooksConfig_NoFiles(t *testing.T) {
 	}
 	if cfg == nil {
 		t.Fatal("expected non-nil config")
+		return
 	}
 	if len(cfg.Hooks) != 0 {
 		t.Fatalf("expected empty hooks map, got %d entries", len(cfg.Hooks))
@@ -265,6 +266,7 @@ func TestLoadHooksConfig_InvalidJSON(t *testing.T) {
 	_, _, err := LoadHooksConfig(userHome, "")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
+		return
 	}
 }
 

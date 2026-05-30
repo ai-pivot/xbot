@@ -137,6 +137,22 @@ func isRetryableError(err error) bool {
 	if errors.As(err, &netErr) {
 		return true
 	}
+	// 网络层错误字符串匹配（stream error 中丢失了原始 net.Error 类型）。
+	// CollectStreamWithCallback 的 EventError 分支使用 ev.Error (string) 而非原始 error，
+	// 导致 errors.As 无法匹配。通过常见网络错误关键词补充检测。
+	for _, kw := range []string{
+		"connection reset",
+		"connection refused",
+		"broken pipe",
+		"use of closed network connection",
+		"no such host",
+		"i/o timeout",
+		"tls: handshake",
+	} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
 	// OpenAI SDK 错误格式: `POST "URL": NNN StatusText ...`
 	for _, code := range []string{"429", "500", "502", "503", "504"} {
 		if strings.Contains(msg, ": "+code+" ") { // OpenAI
@@ -157,6 +173,17 @@ func isRetryableError(err error) bool {
 			}
 			// 429 和 5xx 可重试
 			if codeStr == "429" || strings.HasPrefix(codeStr, "5") {
+				return true
+			}
+		}
+	}
+	// Stream error 格式: `stream error: ...` (CollectStreamWithCallback)
+	// 底层可能是 provider SDK 的各种错误格式，检查 "status code: NNN" 模式
+	if idx := strings.Index(msg, "status code: "); idx != -1 {
+		rest := msg[idx+len("status code: "):]
+		if len(rest) >= 3 {
+			code := rest[:3]
+			if code == "429" || strings.HasPrefix(code, "5") {
 				return true
 			}
 		}
@@ -280,6 +307,9 @@ func (r *RetryLLM) EnsureModelsLoaded() {
 // perAttemptCtx 的 defer cancel() 会在 goroutine 仍在运行时过早取消上下文，
 // 导致 processStream 检测到 context canceled 并发送 EventError。
 // 流的超时/取消由调用方（generateResponse → CollectStream）通过 ctx 管理。
+//
+// Deprecated: 新代码应使用 GenerateStreamAndCollect，它重试整个 stream 周期
+// （连接+收集），而非仅重试连接建立。
 func (r *RetryLLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
 	release := r.acquire(ctx)
 	defer release()
@@ -291,5 +321,67 @@ func (r *RetryLLM) GenerateStream(ctx context.Context, model string, messages []
 		r.retryOptions(ctx, "Retrying stream connection")...,
 	).Do(func() (<-chan StreamEvent, error) {
 		return streaming.GenerateStream(ctx, model, messages, tools, thinkingMode)
+	})
+}
+
+// GenerateStreamAndCollect 重试整个 stream 周期：连接建立 + 事件收集。
+// 与 GenerateStream 仅重试 SSE 连接建立不同，此方法同时重试 stream 中途错误
+// （断连、服务端 mid-stream 报错）。每次重试通过 perAttemptCtx 获得全新的超时窗口。
+//
+// streamContentFn / streamReasoningFn 在每个 attempt 中都会被调用。
+// 重试过程中中间 attempt 的内容可能短暂出现在 UI 中，但最终只有成功 attempt
+// 的完整响应会被返回。
+func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string, streamContentFn func(string), streamReasoningFn func(string)) (*LLMResponse, error) {
+	release := r.acquire(ctx)
+	defer release()
+
+	streaming, ok := r.inner.(StreamingLLM)
+	if !ok {
+		return nil, fmt.Errorf("underlying LLM does not support streaming")
+	}
+
+	return retry.NewWithData[*LLMResponse](
+		r.retryOptions(ctx, "Retrying stream request")...,
+	).Do(func() (*LLMResponse, error) {
+		// Streaming does NOT use perAttemptCtx. A per-attempt deadline would
+		// bind to the underlying HTTP connection via ctx, causing active streams
+		// to be killed mid-generation when total elapsed time exceeds the deadline
+		// (e.g., 120s for a long DeepSeek reasoning response).
+		//
+		// Instead, we pass the parent ctx directly to GenerateStream. The stream
+		// collection phase uses CollectStreamWithCallback's built-in idle timeout
+		// (120s without any chunk), which correctly handles:
+		//   - Connection hangs (no first chunk within 120s)
+		//   - Mid-stream hangs (no chunk for 120s after the last one)
+		//   - Active streams of any duration (timer resets on every chunk)
+		//
+		// Connection establishment (DNS + TCP + TLS) is bounded by the HTTP
+		// client's own transport timeout, not by context deadline.
+
+		type genResult struct {
+			ch  <-chan StreamEvent
+			err error
+		}
+		resultCh := make(chan genResult, 1)
+		go func() {
+			ch, err2 := streaming.GenerateStream(ctx, model, messages, tools, thinkingMode)
+			resultCh <- genResult{ch, err2}
+		}()
+
+		var eventCh <-chan StreamEvent
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case r := <-resultCh:
+			if r.err != nil {
+				return nil, r.err
+			}
+			eventCh = r.ch
+		}
+
+		if streamContentFn != nil || streamReasoningFn != nil {
+			return CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn)
+		}
+		return CollectStream(ctx, eventCh)
 	})
 }

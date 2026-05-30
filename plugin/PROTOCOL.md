@@ -1,12 +1,12 @@
 # xbot Plugin Protocol (JSON/stdio)
 
 > **Protocol Version**: v1
-> **Runtime Name**: `grpc` (historical naming; the actual transport is JSON over stdin/stdout)
+> **Runtime Name**: `stdio` (aliases: `grpc` for backward compatibility)
 > **Status**: Phase 1 — stable, subject to minor additions in future iterations
 
 ## 1. Overview
 
-The `grpc` runtime communicates with xbot via **newline-delimited JSON (NDJSON)** over stdin/stdout. Despite the name, the protocol does **not** use gRPC or Protocol Buffers — it is a simple, language-agnostic JSON protocol designed for ease of implementation in any language.
+The `stdio` runtime (also accepted as `grpc` for backward compatibility) communicates with xbot via **newline-delimited JSON (NDJSON)** over stdin/stdout. **Language-agnostic: any language that can read/write JSON and stdin/stdout works
 
 **Design goals**:
 - Language-agnostic: any language that can read/write JSON and stdin/stdout works
@@ -491,7 +491,7 @@ xbot (host)                              Plugin process
 
 ## 8. Security Considerations
 
-1. **Process isolation**: gRPC plugins run as separate OS processes, providing memory isolation from xbot
+1. **Process isolation**: stdio plugins run as separate OS processes, providing memory isolation from xbot
 2. **Same user privileges**: The plugin process runs with the same OS user as xbot — no sandboxing
 3. **Permission enforcement**: Permissions declared in `plugin.json` are enforced by the host's `PermissionChecker` — the plugin cannot bypass them
 4. **No sensitive data in transit**: The protocol does not transmit passwords, tokens, or API keys

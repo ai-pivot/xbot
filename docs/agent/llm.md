@@ -29,9 +29,9 @@
 
 ## Retry Behavior
 
-- Creates fresh context per attempt (`context.Background()`), not inheriting parent deadline (`retry.go:230-257`)
-- Parent cancel bridged via separate goroutine
-- `GenerateStream` does NOT use perAttemptCtx — defer cancel() would kill async stream goroutine (`retry.go:278`)
+- `Generate` (non-stream): uses `perAttemptCtx` — fresh `context.Background()` with timeout per attempt, parent cancel bridged via goroutine (`retry.go:251-278`)
+- `GenerateStreamAndCollect`: does NOT use `perAttemptCtx`. A per-attempt deadline would bind to the underlying HTTP connection, killing active streams mid-generation when total elapsed time exceeds the deadline. Instead, passes parent `ctx` directly to `GenerateStream` and `CollectStreamWithCallback`. Stream timeout is handled by idle timeout only.
+- `CollectStreamWithCallback` idle timeout: 120s without any chunk → `context.DeadlineExceeded`. Timer resets on every received chunk. Active streams of any duration are safe. This replaces the old approach of using ctx deadline as total stream timeout, which incorrectly killed long-running responses.
 
 ## Client Fingerprinting
 

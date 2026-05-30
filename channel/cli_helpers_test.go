@@ -48,6 +48,7 @@ func TestCLISettingScope_SettingsSchemaKeysAreClassified(t *testing.T) {
 	locale := localeZH()
 	if locale == nil {
 		t.Fatal("localeZH() returned nil")
+		return
 	}
 	var unknown []string
 	for _, def := range locale.SettingsSchema {
@@ -246,12 +247,14 @@ func TestClearTempStatusCmd_CustomDuration(t *testing.T) {
 	cmd := model.clearTempStatusCmd(5 * time.Second)
 	if cmd == nil {
 		t.Fatal("clearTempStatusCmd with custom duration should return non-nil tea.Cmd")
+		return
 	}
 
 	// Multiple durations: only first should be used
 	cmd2 := model.clearTempStatusCmd(1*time.Second, 10*time.Second)
 	if cmd2 == nil {
 		t.Fatal("clearTempStatusCmd with multiple durations should return non-nil tea.Cmd")
+		return
 	}
 }
 
@@ -260,6 +263,7 @@ func TestClearTempStatusCmd_ZeroDuration(t *testing.T) {
 	cmd := model.clearTempStatusCmd(0)
 	if cmd == nil {
 		t.Fatal("clearTempStatusCmd with zero duration should still return non-nil tea.Cmd")
+		return
 	}
 }
 
@@ -651,6 +655,7 @@ func TestEnqueueToast(t *testing.T) {
 	cmd := model.enqueueToast("saved", "✓")
 	if cmd == nil {
 		t.Fatal("enqueueToast should return non-nil tea.Cmd")
+		return
 	}
 
 	// Execute the Cmd to verify it produces the correct message
@@ -1055,8 +1060,13 @@ func TestPersistCLISettingsValues_PersistsUserScopedAndAppliesAll(t *testing.T) 
 			t.Fatalf("unexpected target: channel=%q sender=%q", call.channelName, call.senderID)
 		}
 	}
-	if applied["max_output_tokens"] != "4096" || applied["theme"] != "mono" || applied["runner_workspace"] != "/tmp/ws" {
-		t.Fatalf("ApplySettings did not receive full input: %#v", applied)
+	// Subscription-scoped keys (max_output_tokens) should NOT reach ApplySettings.
+	// They are handled directly by saveSettings via subscriptionMgr.Update(activeSubID).
+	if _, ok := applied["max_output_tokens"]; ok {
+		t.Fatalf("subscription-scoped key max_output_tokens reached ApplySettings — should be handled by saveSettings directly")
+	}
+	if applied["theme"] != "mono" || applied["runner_workspace"] != "/tmp/ws" {
+		t.Fatalf("ApplySettings did not receive expected user-scoped keys: %#v", applied)
 	}
 }
 

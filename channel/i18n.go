@@ -155,6 +155,12 @@ type UILocale struct {
 	SuSwitching       string // "Switching identity: %s"
 	SuLoadingHistory  string // "  %s  loading history..."
 
+	// --- L2. Reconnect overlay (remote mode) ---
+	ReconnectTitle  string // "Connection Lost"
+	ReconnectingMsg string // "  %s  Reconnecting to server..."
+	ReconnectedMsg  string // "  %s  Reconnected!"
+	ReconnectHint   string // "Press Ctrl+C to quit"
+
 	// --- M. Danger zone ---
 	DangerTitle              string // "⚠ Danger Zone"
 	DangerConfirmClear       string // "Confirm clear: %s"
@@ -377,6 +383,12 @@ func localeZH() *UILocale {
 		SuLoadFailed:      "⚠️ 加载历史失败: %v",
 		SuSwitching:       "切换身份: %s",
 		SuLoadingHistory:  "  %s  加载历史中...",
+
+		// --- L2. Reconnect overlay ---
+		ReconnectTitle:  "连接已断开",
+		ReconnectingMsg: "  %s  正在重新连接服务器...",
+		ReconnectedMsg:  "  %s  已重新连接!",
+		ReconnectHint:   "按 Ctrl+C 退出",
 
 		// --- M. Danger zone ---
 		DangerTitle:              "⚠ 危险区",
@@ -763,6 +775,12 @@ func localeEN() *UILocale {
 		SuSwitching:       "Switching identity: %s",
 		SuLoadingHistory:  "  %s  loading history...",
 
+		// --- L2. Reconnect overlay ---
+		ReconnectTitle:  "Connection Lost",
+		ReconnectingMsg: "  %s  Reconnecting to server...",
+		ReconnectedMsg:  "  %s  Reconnected!",
+		ReconnectHint:   "Press Ctrl+C to quit",
+
 		// --- M. Danger zone ---
 		DangerTitle:              "⚠ Danger Zone",
 		DangerConfirmClear:       "Confirm clear: %s",
@@ -1147,6 +1165,12 @@ func localeJA() *UILocale {
 		SuLoadFailed:      "⚠️ 履歴の読み込みに失敗: %v",
 		SuSwitching:       "ID 切り替え中: %s",
 		SuLoadingHistory:  "  %s  履歴を読み込み中...",
+
+		// --- L2. Reconnect overlay ---
+		ReconnectTitle:  "接続が切断されました",
+		ReconnectingMsg: "  %s  サーバーに再接続中...",
+		ReconnectedMsg:  "  %s  再接続しました!",
+		ReconnectHint:   "Ctrl+C で終了",
 
 		// --- M. Danger zone ---
 		DangerTitle:              "⚠ 危険エリア",

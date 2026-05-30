@@ -18,6 +18,7 @@ import (
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
+	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -496,7 +497,15 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
 		}
 		existing.PerModelConfigs[p.Model] = p.Config
-		return svc.Update(existing)
+		if err := svc.Update(existing); err != nil {
+			return err
+		}
+		// Invalidate the user-level LLM cache so GetLLMForChat picks up the
+		// new PerModelConfigs.MaxContext on the next buildBaseRunConfig.
+		// Without this, the old max_context value persists in the cached llmEntry
+		// and maybeCompress uses stale limits.
+		h.Ag.LLMFactory().InvalidateSender(bizID)
+		return nil
 	})
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		ID string `json:"id"`
@@ -743,6 +752,14 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// Clean up offload files for the deleted session.
 		h.Ag.CleanupSessionFiles(p.Channel, p.ChatID)
+		// Clean up worktree registration + physical git worktree.
+		sessionKey := p.Channel + ":" + p.ChatID
+		tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
+		// Clean up persisted CWD so a future session with the same chatID
+		// does not inherit a stale worktree directory.
+		session.DeletePersistedCWD(p.Channel, p.ChatID)
+		// Destroy tenant session (closes MCP, removes from cache).
+		_ = h.Ag.MultiSession().DestroySession(p.Channel, p.ChatID)
 		log.WithFields(log.Fields{"channel": p.Channel, "chat_id": p.ChatID}).Info("RPC delete_chat")
 		return map[string]string{"status": "ok"}, nil
 	})
@@ -1264,7 +1281,10 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	if err := svc.Update(dbSub); err != nil {
 		return err
 	}
-	h.Ag.LLMFactory().Invalidate(existing.SenderID)
+	// Use InvalidateSender (user-level only) instead of Invalidate (all sessions).
+	// Updating a subscription's fields (name, model, key) should NOT wipe every
+	// session's per-session LLM override. Only the user-level default is affected.
+	h.Ag.LLMFactory().InvalidateSender(existing.SenderID)
 	if existing.IsDefault {
 		h.Ag.LLMFactory().SwitchSubscription(bizID, dbSub, "")
 	}
@@ -1380,7 +1400,8 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 		ID: s.ID, Name: s.Name, Provider: s.Provider,
 		BaseURL: s.BaseURL, APIKey: maskAPIKey(s.APIKey),
 		Model: s.Model, Active: s.IsDefault,
-		MaxOutputTokens: s.MaxOutputTokens, ThinkingMode: s.ThinkingMode,
+		MaxOutputTokens: s.MaxOutputTokens, MaxContext: s.MaxContext,
+		ThinkingMode:    s.ThinkingMode,
 		PerModelConfigs: s.PerModelConfigs,
 	}
 }

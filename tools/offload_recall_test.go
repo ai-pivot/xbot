@@ -81,6 +81,7 @@ func TestOffloadRecallTool_Execute(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("result should not be nil")
+		return
 	}
 	if !strings.Contains(result.Summary, "full content here") {
 		t.Errorf("result should contain stored content, got: %s", result.Summary)

@@ -179,6 +179,7 @@ func TestSerializeToolsToJSON(t *testing.T) {
 		requiredRaw := params["required"]
 		if requiredRaw == nil {
 			t.Fatal("expected 'required' field in parameters")
+			return
 		}
 		required := requiredRaw.([]any)
 		if len(required) != 1 || required[0] != "query" {

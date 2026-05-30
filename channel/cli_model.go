@@ -257,6 +257,11 @@ type suHistoryLoadMsg struct {
 	// context bar still shows the session's last known token usage.
 	tokenPrompt     int64
 	tokenCompletion int64
+	// LLM state for TUI status bar rendering (model name, context limits, etc.)
+	modelName        string
+	maxContextTokens int64
+	maxOutputTokens  int64
+	compressRatio    float64
 	// todos is the server-side TODO list for the target session.
 	// Populated by suLoadHistoryCmd via GetTodosFn RPC.
 	// When non-nil, it overwrites the local TodoManager cache so
@@ -501,6 +506,8 @@ func (m *cliModel) resetToIdleState() {
 	m.cachedWrappedHistory = ""
 	m.cachedWrappedHistoryRaw = ""
 	m.cachedWrappedHistoryWidth = 0
+	m.cachedHistoryMaxWidth = 0
+	m.cachedHistoryLines = nil
 	m.cachedProgressHistory = ""
 	m.cachedProgressHistoryLen = 0
 	m.cachedProgressHistoryWidth = 0
@@ -517,6 +524,15 @@ func (m *cliModel) resetToIdleState() {
 	m.cachedThinkingBlock = ""
 	m.cachedThinkingBlockFP = 0
 	m.cachedThinkingBlockWidth = 0
+	// Full progress block output cache
+	m.cachedProgressBlockOut = ""
+	m.cachedProgressBlockFP = 0
+	m.cachedProgressBlockWidth = 0
+	m.cachedProgressBlockLines = nil
+	m.cachedProgressHistoryFP = 0
+	m.cachedDynamicRaw = ""
+	m.cachedDynamicLines = nil
+	m.cachedDynamicWidth = 0
 
 	// --- Agent State ---
 	m.agentTurnID = 0
@@ -678,56 +694,69 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	// activeSubID, cachedModelName, cachedMaxContextTokens, cachedMaxOutputTokens
 	// are ALWAYS consistent. No scattered field-by-field assignments.
 	if m.activeSubID == "" && m.cachedModelName == "" {
-		state := LoadSessionLLMState(m.workDir, m.chatID)
-		if !state.IsZero() {
-			// Found persisted LLM state on disk — apply to caches atomically
-			m.applySessionLLMState(state)
-			// Restore the actual LLM client via SwitchLLM (creates new client)
-			if state.SubscriptionID != "" && m.subscriptionMgr != nil {
-				if subs, err := m.subscriptionMgr.List(""); err == nil {
-					for i := range subs {
-						if subs[i].ID == state.SubscriptionID {
-							if m.channel != nil && m.channel.config.SwitchLLM != nil {
-								switchFn := m.channel.config.SwitchLLM
-								target := subs[i]
-								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
-									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
-									return cliSwitchLLMDoneMsg{
-										err:       err,
-										subID:     target.ID,
-										subName:   target.Name,
-										subModel:  target.Model,
-										maxCtx:    resolveSubMaxContext(&target),
-										maxOutTok: resolveSubMaxOutputTokens(&target),
-										mgr:       m.subscriptionMgr,
-									}
-								})
+		// Agent sessions: skip default subscription fallback — the model name,
+		// context limits, and token usage come from the SubAgent's config via
+		// handleSuHistoryLoad (AgentSessionLLMStateFn). Setting the default
+		// subscription here would show the parent agent's model name instead.
+		if m.channelName == "agent" {
+			// No-op: model name will be populated by handleSuHistoryLoad
+		} else {
+			state := LoadSessionLLMState(m.workDir, m.chatID)
+			if !state.IsZero() {
+				// Found persisted LLM state on disk — apply to caches atomically
+				m.applySessionLLMState(state)
+				// Refresh values cache so GetCurrentValues() reflects the session's
+				// per-session subscription, not the previous session's or the startup default.
+				if m.channel != nil && m.channel.config.RefreshValuesCache != nil && state.SubscriptionID != "" {
+					m.channel.config.RefreshValuesCache(state.SubscriptionID)
+				}
+				// Restore the actual LLM client via SwitchLLM (creates new client)
+				if state.SubscriptionID != "" && m.subscriptionMgr != nil {
+					if subs, err := m.subscriptionMgr.List(""); err == nil {
+						for i := range subs {
+							if subs[i].ID == state.SubscriptionID {
+								if m.channel != nil && m.channel.config.SwitchLLM != nil {
+									switchFn := m.channel.config.SwitchLLM
+									target := subs[i]
+									m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+										err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+										return cliSwitchLLMDoneMsg{
+											err:       err,
+											subID:     target.ID,
+											subName:   target.Name,
+											subModel:  target.Model,
+											maxCtx:    resolveSubMaxContext(&target),
+											maxOutTok: resolveSubMaxOutputTokens(&target),
+											mgr:       m.subscriptionMgr,
+										}
+									})
+								}
+								break
 							}
-							break
 						}
 					}
 				}
-			}
-		} else {
-			// No per-session override on disk — load global default subscription
-			if m.subscriptionMgr != nil {
-				if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
-					m.activeSubID = defSub.ID
-					m.cachedModelName = defSub.Model
-				}
-			}
-			// Auto-discover: if model name is still empty after loading default sub,
-			// try listing available models and pick the first one.
-			if m.cachedModelName == "" && m.channel != nil && m.channel.modelLister != nil {
-				m.channel.modelLister.EnsureModelsLoaded()
-				if models := m.channel.modelLister.ListModels(); len(models) > 0 {
-					m.cachedModelName = models[0]
-					if m.llmSubscriber != nil {
-						m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+			} else {
+				// No per-session override on disk — load global default subscription
+				if m.subscriptionMgr != nil {
+					if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
+						m.activeSubID = defSub.ID
+						m.cachedModelName = defSub.Model
 					}
-					existing := LoadSessionLLMState(m.workDir, m.chatID)
-					existing.Model = models[0]
-					SaveSessionLLMState(m.workDir, m.chatID, existing)
+				}
+				// Auto-discover: if model name is still empty after loading default sub,
+				// try listing available models and pick the first one.
+				if m.cachedModelName == "" && m.channel != nil && m.channel.modelLister != nil {
+					m.channel.modelLister.EnsureModelsLoaded()
+					if models := m.channel.modelLister.ListModels(); len(models) > 0 {
+						m.cachedModelName = models[0]
+						if m.llmSubscriber != nil {
+							m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
+						}
+						existing := LoadSessionLLMState(m.workDir, m.chatID)
+						existing.Model = models[0]
+						SaveSessionLLMState(m.workDir, m.chatID, existing)
+					}
 				}
 			}
 		}
@@ -1014,6 +1043,7 @@ type cliModel struct {
 	remoteMode             bool      // 是否连接 remote backend（标题栏提示用）
 	remoteServerURL        string    // remote server host for header display (e.g. "host:port")
 	connState              string    // WS connection state: "connected"|"disconnected"|"reconnecting"
+	reconnectFrame         int       // spinner frame counter for reconnect overlay animation
 	debugMode              bool      // --debug: UI capture + key injection via SIGUSR1
 	debugCaptureMs         int       // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
 	ephemeral              bool      // --ephemeral: no persistence, clean slate for benchmarking
@@ -1035,14 +1065,23 @@ type cliModel struct {
 	// Two-tier wrap cache: avoid O(N*W) hardWrapRunes on the growing history every tick.
 	// cachedWrappedHistory stores the hard-wrapped version of cachedHistory at the current width.
 	// Only the dynamic suffix (progress block, rewind result) is re-wrapped on each tick.
-	cachedWrappedHistory      string // hard-wrapped cachedHistory (already split/wrapped at m.width)
-	cachedWrappedHistoryRaw   string // the raw cachedHistory that was wrapped (for invalidation)
-	cachedWrappedHistoryWidth int    // width at which cachedWrappedHistory was built
+	cachedWrappedHistory      string   // hard-wrapped cachedHistory (already split/wrapped at m.width)
+	cachedWrappedHistoryRaw   string   // the raw cachedHistory that was wrapped (for invalidation)
+	cachedWrappedHistoryWidth int      // width at which cachedWrappedHistory was built
+	cachedHistoryMaxWidth     int      // actual max display width of cached wrapped history lines
+	cachedHistoryLines        []string // pre-split lines from cachedWrappedHistory (avoids O(N) strings.Split every tick)
 
 	// --- progress block cache ---
 	cachedProgressHistory      string // cached rendered output of completed iterations (dimmed)
 	cachedProgressHistoryLen   int    // len(iterationHistory) when cache was built
 	cachedProgressHistoryWidth int    // viewport width when cache was built
+	cachedProgressHistoryFP    uint64 // fingerprint of cached history content for O(1) composite FP
+
+	// --- tick-level dirty detection for updateViewportContent fast path ---
+	// Avoids O(total_content) string construction when nothing changed between ticks.
+	lastTickHistoryLen int    // len(m.cachedHistory) at last tick
+	lastTickProgressFP uint64 // cachedProgressBlockFP at last tick
+	lastTickRewindFP   uint64 // fnvHash64(rewindBlock) at last tick
 
 	// Current iteration static content cache — avoids re-rendering reasoning,
 	// completed tools, tool content, and SubAgent tree on every 100ms tick.
@@ -1064,6 +1103,23 @@ type cliModel struct {
 	cachedThinkingBlock      string // rendered thinking lines with guides
 	cachedThinkingBlockFP    uint64 // fingerprint for dirty detection
 	cachedThinkingBlockWidth int    // innerWidth when cache was built
+
+	// Full progress block output cache — avoids the expensive blockStyle.Render()
+	// (lipgloss border wrapping with ANSI width calculation on every character)
+	// running on every 100ms tick. The cache key is a fingerprint of all rendered
+	// sub-blocks + elapsed seconds + cursor state. Without this, blockStyle.Render()
+	// alone consumes 60%+ CPU in SubAgent sessions with large progress history.
+	cachedProgressBlockOut   string   // final rendered result (with manual padding)
+	cachedProgressBlockFP    uint64   // composite fingerprint of all sub-blocks
+	cachedProgressBlockWidth int      // bubbleWidth when cache was built
+	cachedProgressBlockLines []string // pre-split lines of cachedProgressBlockOut
+
+	// cachedDynamicLines stores the pre-wrapped lines of the dynamic viewport suffix
+	// (progress block + rewind block). This avoids O(N_iters) lipgloss.Width +
+	// wrapPreservingGuide calls in setViewportContent on every tick.
+	cachedDynamicRaw   string   // raw dynamic part string (progress + rewind)
+	cachedDynamicLines []string // pre-split and wrapped lines
+	cachedDynamicWidth int      // chatWidth when cached
 
 	// --- §2 工具可视化 ---
 	lastCompletedTools []protocol.ToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
@@ -1501,13 +1557,18 @@ type cliSettingsSavedMsg struct {
 }
 
 // cliSwitchLLMDoneMsg is sent when an async subscription switch completes.
-// resolveSubMaxContext returns the per-model max_context from a subscription.
-// Priority: per-model config for the subscription's model → 0 (let global config decide).
+// resolveSubMaxContext returns the effective max_context from a subscription.
+// Priority: per-model config → subscription-level MaxContext → 0 (let global config decide).
 func resolveSubMaxContext(sub *Subscription) int {
 	if sub.Model != "" {
 		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxContext > 0 {
 			return pmc.MaxContext
 		}
+	}
+	// Fallback to subscription-level MaxContext (previously invisible to TUI,
+	// causing 1M-context subscriptions to show 200k in context bar).
+	if sub.MaxContext > 0 {
+		return sub.MaxContext
 	}
 	return 0
 }
@@ -1618,8 +1679,10 @@ func (m *cliModel) refreshCachedModelName() {
 	// Prefer per-session model from disk (persistent across restarts)
 	if state := LoadSessionLLMState(m.workDir, m.chatID); state.Model != "" {
 		m.cachedModelName = state.Model
-		// Also restore activeSubID so the sub panel checkmark is consistent.
-		if state.SubscriptionID != "" {
+		// Only restore activeSubID from disk when it's empty (TUI restart / session switch).
+		// Never override an already-set activeSubID — a quick-switch may have set it
+		// synchronously, and disk write race could otherwise revert to stale data.
+		if m.activeSubID == "" && state.SubscriptionID != "" {
 			m.activeSubID = state.SubscriptionID
 		}
 		return
@@ -1764,10 +1827,12 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	channelName := m.channelName
 	progressFn := m.channel.config.GetActiveProgressFn
 	todosFn := m.channel.config.GetTodosFn
+	tokenFn := m.channel.config.GetTokenStateFn
 
 	// Agent sessions: load from in-memory interactiveSubAgents (not DB).
 	if channelName == "agent" {
 		dumpFn := m.channel.config.AgentSessionDumpFn
+		llmStateFn := m.channel.config.AgentSessionLLMStateFn
 		if dumpFn != nil {
 			return func() tea.Msg {
 				history, err := dumpFn(chatID)
@@ -1779,7 +1844,24 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				if todosFn != nil {
 					todos = todosFn(channelName, chatID)
 				}
-				return suHistoryLoadMsg{history: history, err: err, channelName: channelName, chatID: chatID, activeProgress: activeProgress, todos: todos}
+				// Fetch LLM state from agent for SubAgent session status bar
+				var modelName string
+				var maxCtx, maxOut, tokPrompt, tokComp int64
+				var compRatio float64
+				if llmStateFn != nil {
+					modelName, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
+				}
+				// Fallback token state from DB if agent didn't provide it
+				if tokPrompt == 0 && tokenFn != nil {
+					tokPrompt, tokComp = tokenFn(channelName, chatID)
+				}
+				return suHistoryLoadMsg{
+					history: history, err: err, channelName: channelName, chatID: chatID,
+					activeProgress: activeProgress, todos: todos,
+					tokenPrompt: tokPrompt, tokenCompletion: tokComp,
+					modelName: modelName, maxContextTokens: maxCtx,
+					maxOutputTokens: maxOut, compressRatio: compRatio,
+				}
 			}
 		}
 	}
@@ -1790,7 +1872,6 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 			return suHistoryLoadMsg{err: fmt.Errorf("no dynamic history loader"), channelName: channelName, chatID: chatID}
 		}
 	}
-	tokenFn := m.channel.config.GetTokenStateFn
 	return func() tea.Msg {
 		history, err := loader(channelName, chatID)
 		// Also fetch active progress for seamless session switch recovery.

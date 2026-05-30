@@ -72,6 +72,7 @@ Two modes (`agent/engine_run.go`):
 | `MemoryProvider` | `memory/memory.go` | Core + Archival memory |
 | `AgentBackend` | `agent/backend.go` | Legacy interface — being replaced by Client (agent/client.go) |
 | `Transport` | `agent/transport.go` | Pure transmission: Call(method, payload) → (response, error) |
+| `GrpcPluginTransport` | `agent/transport_grpc.go` | Bidirectional JSON-RPC over stdin/stdout for channel plugins |
 | `AgentRunner` | `agent/lifecycle.go` | Agent lifecycle: Start/Stop/Run (legacy, for Backend) |
 | `EventRouter` | `agent/lifecycle.go` | Message/event routing (legacy, for Backend) |
 | `CallbackRegistry` | `agent/lifecycle.go` | Callback injection (legacy, for Backend) |

@@ -60,6 +60,7 @@ func TestDependencyResolver_Circular(t *testing.T) {
 	_, err := dr.Resolve()
 	if err == nil {
 		t.Fatal("expected error for circular dependency")
+		return
 	}
 
 	var ce *ErrCircularDependency
@@ -89,6 +90,7 @@ func TestDependencyResolver_Missing(t *testing.T) {
 	_, err := dr.Resolve()
 	if err == nil {
 		t.Fatal("expected error for missing dependency")
+		return
 	}
 
 	var me *ErrMissingDependency
@@ -185,6 +187,7 @@ func TestDependencyResolver_SelfDependency(t *testing.T) {
 	_, err := dr.Resolve()
 	if err == nil {
 		t.Fatal("expected error for self-dependency")
+		return
 	}
 
 	var ce *ErrCircularDependency
@@ -200,6 +203,7 @@ func TestDependencyResolver_Validate_MissingDep(t *testing.T) {
 	err := dr.Validate()
 	if err == nil {
 		t.Fatal("expected error from Validate")
+		return
 	}
 
 	var me *ErrMissingDependency

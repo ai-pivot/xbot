@@ -109,17 +109,20 @@ func TestUserSettingsNilDB(t *testing.T) {
 	_, err := svc.Get("feishu", "user1")
 	if err == nil {
 		t.Fatal("expected error from Get with nil db")
+		return
 	}
 
 	// Set should return error, not panic
 	err = svc.Set("feishu", "user1", "key", "value")
 	if err == nil {
 		t.Fatal("expected error from Set with nil db")
+		return
 	}
 
 	// Delete should return error, not panic
 	err = svc.Delete("feishu", "user1", "key")
 	if err == nil {
 		t.Fatal("expected error from Delete with nil db")
+		return
 	}
 }

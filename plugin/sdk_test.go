@@ -35,6 +35,7 @@ func TestMustActivate_Panic(t *testing.T) {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected MustActivate to panic on error")
+			return
 		}
 		got, ok := r.(string)
 		if !ok {
@@ -250,6 +251,7 @@ func TestFileEnricher_NotFound(t *testing.T) {
 	_, err := enricher(context.Background())
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
+		return
 	}
 }
 
@@ -380,6 +382,7 @@ func (c *sdkMockContext) ToolCallCount() int64                                  
 func (c *sdkMockContext) HookCallCount() int64                                      { return 0 }
 func (c *sdkMockContext) SetValue(key string, value any)                            {}
 func (c *sdkMockContext) GetValue(key string) (any, bool)                           { return nil, false }
+func (c *sdkMockContext) RegisterChannelProvider(provider any) error                { return nil }
 
 type sdkMockLogger struct {
 	entries []sdkLogEntry
@@ -401,6 +404,18 @@ func (l *sdkMockLogger) Warn(msg string, fields ...Field) {
 }
 func (l *sdkMockLogger) Error(msg string, fields ...Field) {
 	l.entries = append(l.entries, sdkLogEntry{msg: msg, fields: fields})
+}
+func (l *sdkMockLogger) Debugf(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *sdkMockLogger) Infof(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *sdkMockLogger) Warnf(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
+}
+func (l *sdkMockLogger) Errorf(format string, args ...any) {
+	l.entries = append(l.entries, sdkLogEntry{msg: fmt.Sprintf(format, args...)})
 }
 
 func (l *sdkMockLogger) WithField(key string, value any) Logger {

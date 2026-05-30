@@ -87,6 +87,7 @@ func TestCollectStream_Error(t *testing.T) {
 	resp, err := CollectStream(context.Background(), ch)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if err.Error() != "stream error: connection reset" {
 		t.Errorf("error = %q, want %q", err.Error(), "stream error: connection reset")
@@ -94,6 +95,7 @@ func TestCollectStream_Error(t *testing.T) {
 	// Verify partial content is preserved in response
 	if resp == nil {
 		t.Fatal("expected non-nil response with partial content")
+		return
 	}
 	if resp.Content != "partial" {
 		t.Errorf("resp.Content = %q, want %q", resp.Content, "partial")
@@ -214,12 +216,14 @@ func TestCollectStreamWithCallback_ErrorReturnsPartial(t *testing.T) {
 	}, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if err.Error() != "stream error: connection reset" {
 		t.Errorf("error = %q, want %q", err.Error(), "stream error: connection reset")
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response with partial content")
+		return
 	}
 	if resp.Content != "partial" {
 		t.Errorf("resp.Content = %q, want %q", resp.Content, "partial")
@@ -271,6 +275,7 @@ func TestCollectStreamWithCallbackPanicProtection(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
+		return
 	}
 	if resp.Content != "hello" {
 		t.Errorf("expected content 'hello', got %q", resp.Content)

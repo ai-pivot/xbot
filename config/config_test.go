@@ -145,6 +145,7 @@ func TestSaveToFilePreservesUnknownFields(t *testing.T) {
 	cfg := LoadFromFile(path)
 	if cfg == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 	cfg.Agent.MaxIterations = 500
 
@@ -274,6 +275,7 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 	cfg2 := LoadFromFile(path)
 	if cfg2 == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 	cfg2.Agent.MaxIterations = 3000
 	if err := SaveToFile(path, cfg2); err != nil {
@@ -284,6 +286,7 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 	cfg3 := LoadFromFile(path)
 	if cfg3 == nil {
 		t.Fatal("final LoadFromFile returned nil")
+		return
 	}
 	if cfg3.Agent.PromptFile != "CLAUDE.md" {
 		t.Errorf("prompt_file lost: got %q", cfg3.Agent.PromptFile)

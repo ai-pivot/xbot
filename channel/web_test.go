@@ -241,6 +241,7 @@ func TestWebSocketAuth(t *testing.T) {
 	_, resp, err := dialer.Dial(wsURL+"/ws", nil)
 	if err == nil {
 		t.Fatal("expected WebSocket upgrade to fail without auth")
+		return
 	}
 	if resp != nil && resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
@@ -274,6 +275,7 @@ func TestWebSocketAuth(t *testing.T) {
 	}
 	if sessionCookie == nil {
 		t.Fatal("no session cookie returned from login")
+		return
 	}
 
 	conn := makeWSConnection(t, server.URL, sessionCookie.Name+"="+sessionCookie.Value)
@@ -570,6 +572,7 @@ func TestConcurrentSends(t *testing.T) {
 	}
 	if sessionCookie == nil {
 		t.Fatal("no session cookie")
+		return
 	}
 
 	conn := makeWSConnection(t, server.URL, sessionCookie.Name+"="+sessionCookie.Value)

@@ -533,6 +533,10 @@ func (f *LLMFactory) ClearProxyLLM(senderID string) {
 }
 
 // Invalidate clears user-level and all per-chat caches for a sender.
+// Invalidate removes ALL cached entries for a sender — both user-level and
+// per-session (sender:chatID). Use with caution: this wipes every session's
+// LLM override and forces every session to fall back to the default subscription.
+// Prefer InvalidateSender (user-level only) or InvalidateSession (one session).
 func (f *LLMFactory) Invalidate(senderID string) {
 	f.mu.Lock()
 	prefix := senderID + ":"
@@ -541,6 +545,22 @@ func (f *LLMFactory) Invalidate(senderID string) {
 			delete(f.entries, k)
 		}
 	}
+	f.mu.Unlock()
+}
+
+// InvalidateSender removes only the user-level entry (senderID key),
+// preserving all per-session entries (senderID:chatID keys).
+// Safe to call from subscription field updates — per-session overrides survive.
+func (f *LLMFactory) InvalidateSender(senderID string) {
+	f.mu.Lock()
+	delete(f.entries, senderID)
+	f.mu.Unlock()
+}
+
+// InvalidateSession removes the per-session entry for a specific chat.
+func (f *LLMFactory) InvalidateSession(senderID, chatID string) {
+	f.mu.Lock()
+	delete(f.entries, chatKey(senderID, chatID))
 	f.mu.Unlock()
 }
 
@@ -712,9 +732,48 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 		}
 	}
 
-	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM")
-	client, defaultModel, maxCtx, tm := f.GetLLM(senderID)
-	return client, defaultModel, maxCtx, tm, false
+	// No subscription for the resolved model. Try using any available
+	// subscription with the resolved model as the requested model name.
+	// OpenAI-compatible endpoints can serve arbitrary model names even if
+	// they're not in cached_models. This prevents the tier system from
+	// silently falling back to the parent's model and confusing the user.
+	f.mu.RLock()
+	getConfigSubs2 := f.configSubsFn
+	f.mu.RUnlock()
+	if getConfigSubs2 != nil {
+		for _, cs := range getConfigSubs2() {
+			if cs.BaseURL == "" || cs.APIKey == "" {
+				continue
+			}
+			sub := configSubToLLMSubscription(cs)
+			client := f.createClientFromSub(sub, resolvedModel)
+			if client != nil {
+				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
+				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+			}
+		}
+	}
+	if f.subscriptionSvc != nil && senderID != "" {
+		subs, err := f.subscriptionSvc.List(senderID)
+		if err == nil {
+			for _, sub := range subs {
+				if sub.BaseURL == "" || sub.APIKey == "" {
+					continue
+				}
+				client := f.createClientFromSub(sub, resolvedModel)
+				if client != nil {
+					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
+					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+				}
+			}
+		}
+	}
+
+	// Last resort: use parent LLM but keep the resolved model name so the
+	// TUI status bar shows what was requested, not the fallback model.
+	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM with resolved model name")
+	client, _, maxCtx, tm := f.GetLLM(senderID)
+	return client, resolvedModel, maxCtx, tm, false
 }
 
 func (f *LLMFactory) buildModelSubscriptionMap(senderID string) map[string]*sqlite.LLMSubscription {

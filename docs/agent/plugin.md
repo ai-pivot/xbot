@@ -5,19 +5,21 @@
 | File | Purpose |
 |------|---------|
 | `plugin.go` | Plugin interface, PluginManifest, PluginTool, PluginToolV2, ToolCallContext, PluginDependency |
-| `context.go` | PluginContext interface + implementations + type-safe Storage helpers + event bus + error callback |
+| `audit.go` | AuditLogger — daily-rotating JSONL audit trail with per-plugin query |
+| `plog.go` | Per-plugin log infrastructure: rotateWriter, pluginLogManager, unified cleanup |
+| `context.go` | PluginContext interface + implementations + type-safe Storage helpers + event bus + error callback + per-plugin Logger |
 | `manager.go` | PluginManager — discovery, lifecycle, reload, install, uninstall, watchConfig, health, metrics, String |
 | `manifest.go` | Manifest parsing, validation, dependency validation |
 | `permissions.go` | Permission checker (includes bus.plugin gate) |
 | `storage.go` | Per-plugin KV storage (JSON file based) |
 | `eventbus.go` | PluginEventBus — in-process pub/sub with panic recovery |
-| `runtime.go` | Native + gRPC runtime factories |
+| `runtime.go` | Native + stdio runtime factories |
 | `runtime_wasm_skel.go` | WASM runtime skeleton (Phase 2, wazero placeholder) |
 | `integration.go` | WireAll, PluginToolBridge, PluginHookBridge — integration with xbot subsystems |
 | `adapter_tool.go` | PluginToolAdapter, SimplePluginTool, BuildToolDef |
 | `adapter_hook.go` | PluginHookBridge, hook dispatch, matcher |
 | `adapter_enricher.go` | EnricherRegistry |
-| `json.go` | JSON line protocol helpers (for gRPC runtime) |
+| `json.go` | JSON line protocol helpers (for stdio runtime) |
 | `examples/hello-world/` | Example plugin demonstrating the API |
 | `examples/git-info/` | Git status widget plugin (triggers on Shell/Cd/FileReplace etc.) |
 | `examples/file-diff/` | Diff summary widget plugin (triggers on FileReplace/FileCreate) |
@@ -33,13 +35,14 @@
 
 ### Plugin Interface
 - Manifest() → Activate(PluginContext) → Deactivate(PluginContext)
-- 三种运行时：native (in-process), gRPC (external process), wasm (sandbox, Phase 2 skeleton)
+- 三种运行时：native (in-process), stdio (external process, `"grpc"` alias for backward compat), wasm (sandbox, Phase 2 skeleton)
 
 ### PluginContext
 - 安全子集接口：RegisterTool, OnPreToolUse/OnPostToolUse, EnrichContext, Storage, Logger
 - Type-safe Storage: StorageInt/StorageBool/StorageJSON/StorageGetJSON — 避免手动类型转换
 - Event Bus: Subscribe/Publish (需要 bus.plugin + bus.read/bus.write 权限)
 - Error Callback: OnPluginError 注册插件级错误回调 (非 tool 错误)
+- Logger: per-plugin 日志文件 + 全局 logrus 双写，支持 Debugf/Infof/Warnf/Errorf 格式化
 
 ### Plugin States
 - StateDiscovered → StateActive → StateDeactivating → StateInactive
@@ -172,13 +175,32 @@ bug where session B (non-git dir) would overwrite session A's (git repo) content
 3. Push path uses `RenderZoneForWorkDir(zone, workDir)` per chatID
 4. Each client receives only its session-specific widget content
 
+### Script Plugin Triggers Are Global Hooks
+Script plugin triggers (from `plugin.json` triggers) are registered as **global hooks**
+via `registerGlobalHook()` / `pluginContextImpl.onEvent(..., global=true)`. This means:
+
+- They bypass session isolation in `bridge.Dispatch` (the `ChatID != payload.ChatID`
+  check that would otherwise silently skip them)
+- They fire regardless of which session triggered the hook event
+- This is safe because script plugins manage per-workDir output caches internally
+  and the push path renders per-session content via `RenderZoneForWorkDir`
+
+Without this, in multi-session remote CLI, only the session that last called
+`RefreshWorkDir` would receive hook triggers; all other sessions' triggers would
+be silently filtered, falling back to the 30s ticker only.
+
+### Change Detection in runAndUpdate
+`runAndUpdate()` snapshots outputs before re-running scripts, then compares
+afterward. Only calls `NotifyUpdated()` when at least one output actually changed.
+This avoids unnecessary WebSocket pushes on every 30s ticker when nothing changed.
+
 ### Debounce
 `WidgetRegistry.SetDebounce(d)` coalesces rapid widget updates into a single
 push notification. Default: disabled (immediate). Server-side uses 200ms.
 
 ### Incremental Updates
-`PushPluginWidgets` compares new zones against last-pushed content and skips
-the push if nothing changed. Reduces WebSocket traffic for idle sessions.
+`PushPluginWidgetsPerSession` compares new zones against last-pushed content and skips
+the push if nothing changed for that chatID. Reduces WebSocket traffic for idle sessions.
 
 ### Per-WorkDir Isolation
 `RenderZoneForWorkDir(zone, workDir)` renders widgets using workDir-specific
@@ -188,3 +210,48 @@ caches so multiple CLI windows in different git repos see correct branch info.
 `HookPayload` now carries `ToolOutput` and `ToolElapsedMs` fields from
 `PostToolUseEvent`. This enables plugins to inspect tool results (e.g. diff
 plugins reading FileReplace output).
+
+## Per-Plugin Logging System
+
+Each plugin writes to its own daily-rotated log file, with unified cleanup.
+
+### Architecture
+
+```
+plugin/plog.go
+  ├── rotateWriter        — daily-rotating io.Writer (custom suffix: .log/.jsonl)
+  ├── pluginLogManager    — manages per-plugin rotateWriters + single cleanup goroutine
+  ├── cleanLogDir         — shared cleanup for .log/.jsonl files by maxAge
+  └── multiWriter         — dynamic writer list (add/remove at runtime)
+
+plugin/context.go
+  └── pluginLogger        — dual-writes: per-plugin file + global logrus (backward compat)
+```
+
+### Log File Locations
+
+| Component | Path Pattern | Rotation |
+|-----------|-------------|----------|
+| Plugin logs | `~/.xbot/plugins/<id>/logs/<id>-YYYY-MM-DD.log` | Daily |
+| Audit logs | `~/.xbot/plugins/audit-YYYY-MM-DD.jsonl` | Daily |
+
+### Design Decisions
+
+- **Single cleanup goroutine**: `pluginLogManager.cleanupLoop()` runs hourly, scans all
+  `~/.xbot/plugins/*/logs/` subdirectories + audit directory. Default maxAge: 7 days.
+- **Dual-write**: `pluginLogger` writes to per-plugin file AND global logrus. Main log
+  file still shows all plugin logs (backward compat). Per-plugin files are for isolation.
+- **rotateWriter is standalone**: Implemented in plugin package (not reusing logger.dailyRotateFile)
+  to avoid circular dependency (plugin → logger → plugin would be circular).
+- **Logger interface extended**: Added `Debugf/Infof/Warnf/Errorf` formatted methods.
+  All Logger implementations (pluginLogger, loggerWithFields, testLogger, captureLogger,
+  sdkMockLogger) must implement these.
+- **No lumberjack dependency**: Pure stdlib rotation by date (same as main logger).
+
+### Integration Points
+
+- `PluginManager` creates `pluginLogManager` in `NewPluginManager()`
+- `Discover()` calls `newPluginLogger(id, pm.logMgr)` which gets a per-plugin rotateWriter
+- `PluginManager.Close()` calls `logMgr.CloseAll()` to stop cleanup goroutine + close writers
+- AuditLogger uses `newRotateWriterWithSuffix(dir, "audit", ".jsonl")` for daily rotation
+

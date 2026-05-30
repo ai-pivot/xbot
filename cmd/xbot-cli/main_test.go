@@ -72,6 +72,7 @@ func TestSubscriptionPersistence(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("failed to load config")
+		return
 	}
 	var activeName string
 	for _, s := range loaded.Subscriptions {
@@ -97,6 +98,7 @@ func TestSubscriptionPersistence(t *testing.T) {
 	loaded = config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("failed to reload config")
+		return
 	}
 	activeName = ""
 	for _, s := range loaded.Subscriptions {
@@ -223,6 +225,7 @@ func TestConfigFilePathStability(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 	if len(loaded.Subscriptions) != 1 || !loaded.Subscriptions[0].Active {
 		t.Error("subscription not preserved correctly")
@@ -270,6 +273,7 @@ func TestSaveCLIConfigPreservesDiskFields(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 
 	// Agent settings should be updated from appCfg.
@@ -441,6 +445,7 @@ func TestSaveCLIConfig_WritesLLMCredentialsWhenNoSubscriptions(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 
 	// LLM credentials MUST be written because there are no subscriptions.
@@ -522,6 +527,7 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 
 	// Tier models must always be persisted regardless of subscriptions.
@@ -618,6 +624,7 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
+		return
 	}
 
 	// Agent settings must be updated from appCfg.

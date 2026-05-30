@@ -5,6 +5,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -2235,16 +2236,30 @@ func (m *cliModel) viewSettingsPanel() string {
 			continue
 		}
 
-		// Subscription management entry: show count + active subscription
+		// Subscription management entry: show count + CURRENT session's subscription
 		if def.Key == "subscription_manage" {
 			subHint := ""
 			if m.subscriptionMgr != nil {
 				if subs, err := m.subscriptionMgr.List(""); err == nil && len(subs) > 0 {
 					var activeName string
-					for _, sub := range subs {
-						if sub.Active {
-							activeName = sub.Name
-							break
+					// Use m.activeSubID (per-session) to find the current subscription,
+					// NOT sub.Active (global default). The settings panel must reflect
+					// the session's active subscription, not the global default.
+					if m.activeSubID != "" {
+						for _, sub := range subs {
+							if sub.ID == m.activeSubID {
+								activeName = sub.Name
+								break
+							}
+						}
+					}
+					// Fallback: if no per-session subscription is set, use the global default.
+					if activeName == "" {
+						for _, sub := range subs {
+							if sub.Active {
+								activeName = sub.Name
+								break
+							}
 						}
 					}
 					if activeName != "" {
@@ -2668,8 +2683,26 @@ func (m *cliModel) applyQuickSwitch() {
 		if m.channel == nil || m.channel.config.SwitchLLM == nil {
 			break
 		}
-		// Switch LLM asynchronously — createLLM is now non-blocking
-		// (model list loads in background), but we keep async for UX feedback.
+		// ── IMMEDIATE frontend state update ──────────────────────
+		// Must happen synchronously before the async SwitchLLM call.
+		// Without this, activeSubID and cachedModelName stay stale between
+		// Enter press and handleSwitchLLMDoneMsg processing. The settings
+		// panel and context bar read from these fields, so they would show
+		// the OLD subscription until the async callback completes.
+		m.activeSubID = selected.ID
+		m.cachedModelName = selected.Model
+		m.subGeneration++ // subscription actually changed
+		// Persist immediately so refreshCachedModelName (called on settings save)
+		// loads the correct state from disk instead of stale old data.
+		state := SessionLLMState{
+			SubscriptionID:   selected.ID,
+			Model:            selected.Model,
+			MaxContextTokens: resolveSubMaxContext(target),
+			MaxOutputTokens:  resolveSubMaxOutputTokens(target),
+		}
+		SaveSessionLLMState(m.workDir, m.chatID, state)
+		m.applySessionLLMState(state)
+		// ── Async backend switch ─────────────────────────────────
 		m.showTempStatus(fmt.Sprintf("Switching to: %s …", selected.Name))
 		switchFn := m.channel.config.SwitchLLM
 		subID := selected.ID
@@ -2848,13 +2881,23 @@ func (m *cliModel) deleteQuickSwitchEntry() {
 	if m.subscriptionMgr == nil {
 		return
 	}
-	// Don't allow deleting the active subscription without a fallback
 	subs, err := m.subscriptionMgr.List("")
 	if err != nil || len(subs) <= 1 {
 		m.showTempStatus("Cannot delete the last subscription")
 		return
 	}
-	if selected.Active {
+	// Don't allow deleting the per-session active subscription without a fallback.
+	// Check m.activeSubID first (per-session), then fall back to Active flag (global default).
+	activeID := m.activeSubID
+	if activeID == "" {
+		for _, s := range subs {
+			if s.Active {
+				activeID = s.ID
+				break
+			}
+		}
+	}
+	if selected.ID == activeID {
 		m.showTempStatus("Cannot delete active subscription — switch to another first")
 		return
 	}
@@ -2872,6 +2915,18 @@ func (m *cliModel) updateQuickSwitchModels(newModel string) {
 	if len(m.quickSwitchList) == 0 {
 		return
 	}
+	// Use m.activeSubID (per-session) to find the current subscription,
+	// NOT Active flag (global default). The quick-switch list must reflect
+	// the session's active subscription.
+	if m.activeSubID != "" {
+		for i := range m.quickSwitchList {
+			if m.quickSwitchList[i].ID == m.activeSubID {
+				m.quickSwitchList[i].Model = newModel
+				return
+			}
+		}
+	}
+	// Fallback: if no per-session subscription, use global default.
 	for i := range m.quickSwitchList {
 		if m.quickSwitchList[i].Active {
 			m.quickSwitchList[i].Model = newModel
@@ -3304,7 +3359,7 @@ func (m *cliModel) ensureAskUserVisible() {
 // §Channel Config Panel — /channel command
 // ---------------------------------------------------------------------------
 
-var channelNames = []string{"web", "feishu", "qq", "napcat"}
+var builtinChannelNames = []string{"web", "feishu", "qq", "napcat"}
 var channelLabels = map[string]string{
 	"web":    "🌐 Web Channel",
 	"feishu": "🐦 Feishu (飞书)",
@@ -3317,9 +3372,8 @@ func (m *cliModel) openChannelPanel() {
 	m.panelMode = "channel"
 	m.relayoutViewport()
 	m.panelChannelCursor = 0
-	m.panelChannelItems = channelNames
 
-	// Fetch current channel configs
+	// Fetch current channel configs (includes plugin channels)
 	if m.channel != nil && m.channel.config.ChannelConfigGetFn != nil {
 		cfgs, err := m.channel.config.ChannelConfigGetFn()
 		if err != nil {
@@ -3328,6 +3382,24 @@ func (m *cliModel) openChannelPanel() {
 		}
 		m.panelChannelCfg = cfgs
 	}
+
+	// Build channel list: built-in first (in fixed order), then plugin channels
+	items := make([]string, 0, len(builtinChannelNames)+len(m.panelChannelCfg))
+	seen := make(map[string]bool)
+	for _, name := range builtinChannelNames {
+		items = append(items, name)
+		seen[name] = true
+	}
+	// Add plugin channels from config keys
+	if m.panelChannelCfg != nil {
+		for name := range m.panelChannelCfg {
+			if !seen[name] {
+				items = append(items, name)
+				seen[name] = true
+			}
+		}
+	}
+	m.panelChannelItems = items
 }
 
 // updateChannelPanel handles key events in the channel config panel.
@@ -3417,6 +3489,48 @@ func (m *cliModel) viewChannelPanel() string {
 	return sb.String()
 }
 
+// pluginChannelSchema extracts the settings schema for a plugin channel
+// from the _schema field in panelChannelCfg (populated by getChannelConfigs RPC).
+func (m *cliModel) pluginChannelSchema(channel string) []SettingDefinition {
+	if m.panelChannelCfg == nil {
+		return nil
+	}
+	cfg, ok := m.panelChannelCfg[channel]
+	if !ok {
+		return nil
+	}
+	schemaJSON, ok := cfg["_schema"]
+	if !ok {
+		return nil
+	}
+
+	var rawSchema []struct {
+		Key          string `json:"key"`
+		Label        string `json:"label"`
+		Description  string `json:"description"`
+		Type         string `json:"type"`
+		DefaultValue string `json:"default_value"`
+		Category     string `json:"category"`
+	}
+	if err := json.Unmarshal([]byte(schemaJSON), &rawSchema); err != nil {
+		return nil
+	}
+
+	schema := make([]SettingDefinition, 0, len(rawSchema))
+	for _, r := range rawSchema {
+		sd := SettingDefinition{
+			Key:          r.Key,
+			Label:        r.Label,
+			Description:  r.Description,
+			Type:         SettingType(r.Type),
+			DefaultValue: r.DefaultValue,
+			Category:     r.Category,
+		}
+		schema = append(schema, sd)
+	}
+	return schema
+}
+
 // channelSettingsSchema returns the settings schema for a specific channel.
 func channelSettingsSchema(channel string) []SettingDefinition {
 	switch channel {
@@ -3448,6 +3562,7 @@ func channelSettingsSchema(channel string) []SettingDefinition {
 			{Key: "token", Label: "Token", Description: "NapCat access token", Type: SettingTypePassword, Category: "NapCat", DefaultValue: ""},
 		}
 	default:
+		// Plugin channel: try to parse _schema from channel config
 		return nil
 	}
 }
@@ -3455,6 +3570,10 @@ func channelSettingsSchema(channel string) []SettingDefinition {
 // openChannelSettingsPanel opens the settings panel for a specific channel.
 func (m *cliModel) openChannelSettingsPanel(channel string) {
 	schema := channelSettingsSchema(channel)
+	if schema == nil {
+		// Plugin channel: try to parse _schema from panelChannelCfg
+		schema = m.pluginChannelSchema(channel)
+	}
 	if schema == nil {
 		m.showSystemMsg("Unknown channel: "+channel, feedbackWarning)
 		return
@@ -3585,6 +3704,12 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 	// 3b. Clean up persisted CWD so a future session with the same chatID
 	// (e.g. the default workDir-based session) does not inherit a stale CWD.
 	session.DeletePersistedCWD("cli", entry.ID)
+	// 3c. Remove saved session state from memory to prevent stale state leaks.
+	delete(m.savedSessions, sessionKey)
+	if m.todoManager != nil {
+		m.todoManager.SetTodos(sessionKey, nil)
+		_ = m.todoManager.SaveToFile(sessionKey) // delete persisted todo file
+	}
 	// If we deleted the active session, switch to default
 	if entry.Active {
 		m.saveCurrentSession()
@@ -3609,6 +3734,14 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 		m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
 		return tea.Batch(cmds...)
 	}
+	// Non-active session deleted: refresh sidebar so it disappears immediately.
+	if m.sessionsListFn != nil {
+		m.panelSessionItems = m.sessionsListFn()
+	}
+	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
+		m.channel.config.SessionsListRefresh()
+	}
+	m.showTempStatus(fmt.Sprintf("Deleted session: %s", entry.Label))
 	return nil
 }
 

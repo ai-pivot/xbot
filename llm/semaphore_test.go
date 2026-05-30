@@ -14,6 +14,7 @@ func TestLLMSemaphoreManager_BasicAcquire(t *testing.T) {
 	release := mgr.Acquire(context.Background(), "user1", "global", func() int { return 2 })
 	if release == nil {
 		t.Fatal("release func should not be nil")
+		return
 	}
 	release()
 }
@@ -164,6 +165,7 @@ func TestLLMSemaphoreManager_DynamicCapacityChange(t *testing.T) {
 	release1 := mgr.Acquire(context.Background(), "user1", "global", func() int { return 1 })
 	if release1 == nil {
 		t.Fatal("first acquire should succeed with cap=1")
+		return
 	}
 
 	// Try to acquire again with capacity 1 — should block

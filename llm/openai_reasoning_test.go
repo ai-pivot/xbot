@@ -41,6 +41,7 @@ func TestToOpenAIMessages_ReasoningContentPassedBack(t *testing.T) {
 	assistant1 := result[1].OfAssistant
 	if assistant1 == nil {
 		t.Fatal("expected assistant message at index 1")
+		return
 	}
 	// Serialize to JSON and check for reasoning_content
 	jsonBytes, err := json.Marshal(assistant1)
@@ -81,6 +82,7 @@ func TestToOpenAIMessages_ReasoningContentPassedBack(t *testing.T) {
 	assistant2 := result[3].OfAssistant
 	if assistant2 == nil {
 		t.Fatal("expected assistant message at index 3")
+		return
 	}
 	jsonBytes2, err := json.Marshal(assistant2)
 	if err != nil {
@@ -119,6 +121,7 @@ func TestToOpenAIMessages_AssistantWithoutReasoningContent(t *testing.T) {
 	assistant := result[1].OfAssistant
 	if assistant == nil {
 		t.Fatal("expected assistant message")
+		return
 	}
 	jsonBytes, _ := json.Marshal(assistant)
 	t.Logf("Non-thinking assistant JSON: %s", string(jsonBytes))
@@ -157,6 +160,7 @@ func TestToOpenAIMessages_ThinkingModeEmptyReasoning(t *testing.T) {
 	assistant1 := result[1].OfAssistant
 	if assistant1 == nil {
 		t.Fatal("expected assistant message at index 1")
+		return
 	}
 	jsonBytes1, _ := json.Marshal(assistant1)
 	t.Logf("Thinking mode, empty reasoning JSON: %s", string(jsonBytes1))
@@ -173,6 +177,7 @@ func TestToOpenAIMessages_ThinkingModeEmptyReasoning(t *testing.T) {
 	assistant2 := result[3].OfAssistant
 	if assistant2 == nil {
 		t.Fatal("expected assistant message at index 3")
+		return
 	}
 	jsonBytes2, _ := json.Marshal(assistant2)
 	t.Logf("Thinking mode, with reasoning JSON: %s", string(jsonBytes2))
@@ -253,6 +258,7 @@ func TestToOpenAIMessages_ToolCallsArgumentsRemainJSONString(t *testing.T) {
 	assistant := result[1].OfAssistant
 	if assistant == nil {
 		t.Fatal("expected assistant message")
+		return
 	}
 	jsonBytes, _ := json.Marshal(assistant)
 	jsonStr := string(jsonBytes)

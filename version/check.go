@@ -41,6 +41,7 @@ type UpdateInfo struct {
 	URL       string // release page URL
 	HasUpdate bool
 	Channel   ReleaseChannel // which channel was checked
+	Skipped   bool           // true if check was skipped (dev build, non-stable channel)
 }
 
 // semverRegex matches semantic versioning patterns like v1.2.3, 1.2.3, v1.2.3-rc1, etc.
@@ -91,13 +92,13 @@ func isNewer(a, b string) bool {
 func CheckUpdate(ctx context.Context) *UpdateInfo {
 	// Skip if version is completely empty or dev build
 	if Version == "" || Version == "dev" {
-		return nil
+		return &UpdateInfo{Current: Version, Skipped: true}
 	}
 
 	// Only stable channel checks for updates automatically.
 	// Nightly/beta users manage their own channel via install scripts.
 	if Channel != "" && Channel != string(ChannelStable) {
-		return nil
+		return &UpdateInfo{Current: Version, Channel: ReleaseChannel(Channel), Skipped: true}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)

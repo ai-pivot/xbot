@@ -70,6 +70,9 @@ type PluginManager struct {
 
 	// UI widget registry — shared across all plugins
 	widgetRegistry *WidgetRegistry
+
+	// logMgr manages per-plugin log writers and unified cleanup.
+	logMgr *pluginLogManager
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -103,6 +106,7 @@ func NewPluginManager(xbotHome string) *PluginManager {
 		notifier:       NewPluginEventNotifier(),
 		widgetRegistry: NewWidgetRegistry(),
 		tenantBuses:    make(map[int64]*PluginEventBus),
+		logMgr:         newPluginLogManager(xbotHome, DefaultPluginLogMaxAge),
 	}
 }
 
@@ -474,8 +478,9 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 			storage = &noopStorage{}
 		}
 
-		// Create PluginContext
-		entry.Context = newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm)
+		// Create PluginContext with per-plugin log writer
+		logger := newPluginLogger(m.ID, pm.logMgr)
+		entry.Context = newPluginContext(m, storage, logger, pm.bus, pm.configStore, pm)
 		entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
 		// Create runtime instance
@@ -807,7 +812,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	entry := &PluginEntry{
 		Manifest: &m,
 		Plugin:   p,
-		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm),
+		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID, pm.logMgr), pm.bus, pm.configStore, pm),
 		State:    StateDiscovered,
 		Dir:      pluginDir,
 	}
@@ -914,7 +919,7 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 		Manifest: m,
 		State:    StateDiscovered,
 		Dir:      pluginDir,
-		Context:  newPluginContext(m, storage, newPluginLogger(m.ID), pm.bus, pm.configStore, pm),
+		Context:  newPluginContext(m, storage, newPluginLogger(m.ID, pm.logMgr), pm.bus, pm.configStore, pm),
 	}
 
 	newEntry.Context.SetWidgetRegistry(pm.widgetRegistry)
@@ -1037,7 +1042,7 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 		Manifest: installedManifest,
 		State:    StateDiscovered,
 		Dir:      targetDir,
-		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID), pm.bus, pm.configStore, pm),
+		Context:  newPluginContext(installedManifest, storage, newPluginLogger(pluginID, pm.logMgr), pm.bus, pm.configStore, pm),
 	}
 	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
 
@@ -1610,7 +1615,7 @@ func (pm *PluginManager) ConfigStore() *PluginConfigStore {
 	return pm.configStore
 }
 
-// Close releases resources held by the PluginManager (audit log file, retry loop, etc.).
+// Close releases resources held by the PluginManager (audit log file, retry loop, log writers, etc.).
 // It is safe to call multiple times.
 func (pm *PluginManager) Close() {
 	pm.mu.Lock()
@@ -1624,5 +1629,10 @@ func (pm *PluginManager) Close() {
 	if pm.retryCancel != nil {
 		pm.retryCancel()
 		pm.retryCancel = nil
+	}
+
+	if pm.logMgr != nil {
+		pm.logMgr.CloseAll()
+		pm.logMgr = nil
 	}
 }

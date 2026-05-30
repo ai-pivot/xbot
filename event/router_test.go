@@ -148,6 +148,7 @@ func TestRouter_DispatchByID_NotFound(t *testing.T) {
 	_, err := router.DispatchByID("nonexistent", Event{})
 	if err == nil {
 		t.Fatal("expected error for nonexistent trigger")
+		return
 	}
 }
 

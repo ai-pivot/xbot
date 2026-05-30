@@ -278,6 +278,7 @@ func TestGlobTool_EmptyPattern(t *testing.T) {
 	_, err := tool.Execute(nil, string(input))
 	if err == nil {
 		t.Fatal("expected error for empty pattern, got nil")
+		return
 	}
 	if !strings.Contains(err.Error(), "pattern is required") {
 		t.Errorf("expected 'pattern is required' error, got: %v", err)
@@ -290,6 +291,7 @@ func TestGlobTool_InvalidJSON(t *testing.T) {
 	_, err := tool.Execute(nil, "not json")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
+		return
 	}
 	if !strings.Contains(err.Error(), "parse args") {
 		t.Errorf("expected 'parse args' error, got: %v", err)
@@ -307,6 +309,7 @@ func TestGlobTool_NonexistentPath(t *testing.T) {
 	_, err := tool.Execute(nil, string(input))
 	if err == nil {
 		t.Fatal("expected error for nonexistent path, got nil")
+		return
 	}
 	if !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("expected 'does not exist' error, got: %v", err)

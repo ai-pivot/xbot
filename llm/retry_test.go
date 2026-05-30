@@ -168,6 +168,7 @@ func TestRetryLLM_Generate_ExhaustedRetries(t *testing.T) {
 	_, err := r.Generate(context.Background(), "test", nil, nil, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if inner.calls.Load() != 3 {
 		t.Errorf("calls = %d, want 3", inner.calls.Load())
@@ -184,6 +185,7 @@ func TestRetryLLM_Generate_NonRetryableError(t *testing.T) {
 	_, err := r.Generate(context.Background(), "test", nil, nil, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if inner.calls.Load() != 1 {
 		t.Errorf("calls = %d, want 1 (non-retryable should not retry)", inner.calls.Load())
@@ -203,6 +205,7 @@ func TestRetryLLM_Generate_ContextCanceled(t *testing.T) {
 	_, err := r.Generate(ctx, "test", nil, nil, "")
 	if err == nil {
 		t.Fatal("expected error after context cancel")
+		return
 	}
 	// context.Canceled 不可重试，应只调用 1 次
 	if inner.calls.Load() != 1 {
@@ -282,6 +285,7 @@ func TestRetryLLM_GenerateStream_NonStreamingInner(t *testing.T) {
 	_, err := r.GenerateStream(context.Background(), "test", nil, nil, "")
 	if err == nil {
 		t.Fatal("expected error for non-streaming LLM")
+		return
 	}
 	if err.Error() != "underlying LLM does not support streaming" {
 		t.Errorf("unexpected error: %v", err)
@@ -525,4 +529,208 @@ func TestRetryLLM_perAttemptCtx(t *testing.T) {
 			t.Error("should return parent context when already canceled")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GenerateStreamAndCollect 测试（全周期 stream 重试）
+// ---------------------------------------------------------------------------
+
+// failMidStreamLLM 的 GenerateStream 总是成功（返回 channel），
+// 但 channel 可以发出 EventError 来模拟 mid-stream 失败。
+type failMidStreamLLM struct {
+	// failStreamCount: 前 N 次 stream attempt 发出 EventError
+	failStreamCount int
+	streamAttempts  atomic.Int32
+	// failMsg 用于 EventError 的错误消息
+	failMsg string
+}
+
+func newFailMidStreamLLM(failStreamCount int, failMsg string) *failMidStreamLLM {
+	return &failMidStreamLLM{
+		failStreamCount: failStreamCount,
+		failMsg:         failMsg,
+	}
+}
+
+func (m *failMidStreamLLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
+	return &LLMResponse{Content: "ok", FinishReason: FinishReasonStop, Usage: TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
+}
+
+func (m *failMidStreamLLM) ListModels() []string {
+	return []string{"fail-mid-stream"}
+}
+
+func (m *failMidStreamLLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
+	n := int(m.streamAttempts.Add(1))
+	ch := make(chan StreamEvent, 2)
+	if n <= m.failStreamCount {
+		ch <- StreamEvent{Type: EventError, Error: m.failMsg}
+		close(ch)
+	} else {
+		ch <- StreamEvent{Type: EventContent, Content: "stream-ok"}
+		ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}
+		close(ch)
+	}
+	return ch, nil
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_SuccessFirstTry(t *testing.T) {
+	inner := newFailMidStreamLLM(0, "")
+	r := NewRetryLLM(inner, DefaultRetryConfig())
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	if inner.streamAttempts.Load() != 1 {
+		t.Errorf("streamAttempts = %d, want 1", inner.streamAttempts.Load())
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_StreamErrorRetryThenSuccess(t *testing.T) {
+	// 第 1 次 stream 发出 503 错误，第 2 次成功
+	inner := newFailMidStreamLLM(1, "status code: 503 Service Unavailable")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	if inner.streamAttempts.Load() != 2 {
+		t.Errorf("streamAttempts = %d, want 2", inner.streamAttempts.Load())
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_Exhausted(t *testing.T) {
+	inner := newFailMidStreamLLM(100, "status code: 500 Internal Server Error")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// 应该尝试 3 次后耗尽
+	if inner.streamAttempts.Load() != 3 {
+		t.Errorf("streamAttempts = %d, want 3", inner.streamAttempts.Load())
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_NonRetryableStreamError(t *testing.T) {
+	// 401 不可重试
+	inner := newFailMidStreamLLM(100, "status code: 401 Unauthorized")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// 不可重试，只应该调用 1 次
+	if inner.streamAttempts.Load() != 1 {
+		t.Errorf("streamAttempts = %d, want 1 (non-retryable)", inner.streamAttempts.Load())
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_ContextCanceled(t *testing.T) {
+	inner := newFailMidStreamLLM(100, "")
+	cfg := RetryConfig{Attempts: 5, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消
+
+	_, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// context.Canceled 不应重试
+	if inner.streamAttempts.Load() > 1 {
+		t.Errorf("streamAttempts = %d, want <= 1 (no retry on cancel)", inner.streamAttempts.Load())
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_NotifiesOnRetry(t *testing.T) {
+	inner := newFailMidStreamLLM(2, "status code: 502 Bad Gateway")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	var notifications []struct {
+		attempt, max uint
+		err          error
+	}
+	ctx := WithRetryNotify(context.Background(), func(attempt, max uint, err error) {
+		notifications = append(notifications, struct {
+			attempt, max uint
+			err          error
+		}{attempt, max, err})
+	})
+
+	resp, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+
+	// 应该收到 2 次通知（前 2 次 stream 失败后各一次）
+	if len(notifications) != 2 {
+		t.Fatalf("notifications count = %d, want 2", len(notifications))
+	}
+	if notifications[0].attempt != 1 || notifications[0].max != 3 {
+		t.Errorf("notification[0]: attempt=%d, max=%d, want 1, 3", notifications[0].attempt, notifications[0].max)
+	}
+	if notifications[1].attempt != 2 || notifications[1].max != 3 {
+		t.Errorf("notification[1]: attempt=%d, max=%d, want 2, 3", notifications[1].attempt, notifications[1].max)
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_WithCallbacks(t *testing.T) {
+	inner := newFailMidStreamLLM(1, "status code: 503")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	var contentCalls []string
+	var reasoningCalls []string
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "",
+		func(s string) { contentCalls = append(contentCalls, s) },
+		func(s string) { reasoningCalls = append(reasoningCalls, s) },
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	// 回调应该被调用了（至少最后成功那次）
+	if len(contentCalls) == 0 {
+		t.Error("expected at least one content callback call")
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_NetworkErrorRetry(t *testing.T) {
+	// 前 1 次 stream 发出网络错误，第 2 次成功
+	inner := newFailMidStreamLLM(1, "connection reset by peer")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	if inner.streamAttempts.Load() != 2 {
+		t.Errorf("streamAttempts = %d, want 2", inner.streamAttempts.Load())
+	}
 }

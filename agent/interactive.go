@@ -30,6 +30,14 @@ type bgSessionCtxKey struct{}
 // enabling cascade cleanup when a parent session is unloaded or cancelled.
 type bgParentKey struct{}
 
+// pendingUserMsg represents a message queued for delivery to a running SubAgent.
+// The sender blocks on replyCh until the message is successfully injected into
+// the SubAgent's Run loop (via DrainBgNotifications). A nil error means success.
+type pendingUserMsg struct {
+	content string
+	replyCh chan error // buffered(1): nil on success, error on failure
+}
+
 // interactiveAgent 封装一个 interactive SubAgent 会话。
 // 存储在 parent Agent 的 interactiveSubAgents map 中。
 type interactiveAgent struct {
@@ -45,10 +53,92 @@ type interactiveAgent struct {
 	running          bool                // 当前是否有 Run 在执行
 	background       bool                // 是否后台模式
 	cancelCurrent    context.CancelFunc  // 当前运行的取消函数（nil = idle）
+	interrupted      bool                // set by InterruptInteractiveSession, read by goroutine to skip destroy
 	parentKey        string              // parent session key (for cascade cleanup on unload/cancel)
 	lastError        string              // 最近一次错误
 	lastReply        string              // 最近一次回复摘要
 	task             string              // one-shot subagent 的任务描述（交互式为空）
+	promptTokens     int64               // last known prompt token count (for TUI status bar)
+	completionTokens int64               // last known completion token count (for TUI status bar)
+	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
+}
+
+// drainPendingMessages drains all pending user messages queued while the SubAgent
+// was running. Called by the DrainBgNotifications callback in the SubAgent's Run loop
+// to inject queued messages as synthetic tool call/result pairs.
+// Returns a slice of pendingUserMsg that were drained (callers inject them).
+// Thread-safe: acquires ia.mu.
+func (ia *interactiveAgent) drainPendingMessages() []pendingUserMsg {
+	ia.mu.Lock()
+	defer ia.mu.Unlock()
+	if len(ia.pendingMessages) == 0 {
+		return nil
+	}
+	msgs := ia.pendingMessages
+	ia.pendingMessages = nil
+	return msgs
+}
+
+// wirePendingMessageDrain returns a DrainBgNotifications callback that drains
+// pending user messages from the interactiveAgent and converts them to
+// QueuedUserMessage notifications for injection by the Run loop.
+func (ia *interactiveAgent) wirePendingMessageDrain(sessionKey string) func() []tools.BgNotification {
+	return func() []tools.BgNotification {
+		msgs := ia.drainPendingMessages()
+		if len(msgs) == 0 {
+			return nil
+		}
+		result := make([]tools.BgNotification, len(msgs))
+		for i, pm := range msgs {
+			pm := pm // capture
+			result[i] = &tools.QueuedUserMessage{
+				Key:     sessionKey,
+				Content: pm.content,
+				ReplyFn: func(err error) {
+					select {
+					case pm.replyCh <- err:
+					default:
+					}
+				},
+			}
+		}
+		return result
+	}
+}
+
+// modelName returns the LLM model name. Must be called with ia.mu held.
+func (ia *interactiveAgent) modelName() string {
+	if ia.cfg == nil {
+		return ""
+	}
+	return ia.cfg.Model
+}
+
+// maxContextTokens returns the effective max context for this session.
+// Must be called with ia.mu held.
+func (ia *interactiveAgent) maxContextTokens() int64 {
+	if ia.cfg == nil || ia.cfg.ContextManagerConfig == nil {
+		return 0
+	}
+	return int64(ia.cfg.ContextManagerConfig.MaxContextTokens)
+}
+
+// maxOutputTokens returns the max output tokens for this session.
+// Must be called with ia.mu held.
+func (ia *interactiveAgent) maxOutputTokens() int64 {
+	if ia.cfg == nil {
+		return 0
+	}
+	return int64(ia.cfg.MaxOutputTokens)
+}
+
+// compressRatio returns the compression trigger threshold.
+// Must be called with ia.mu held.
+func (ia *interactiveAgent) compressRatio() float64 {
+	if ia.cfg == nil || ia.cfg.ContextManagerConfig == nil {
+		return 0
+	}
+	return ia.cfg.ContextManagerConfig.CompressionThreshold
 }
 
 // interactiveSessionTTL 是 interactive SubAgent 会话的生存时间。
@@ -56,6 +146,8 @@ const interactiveSessionTTL = 30 * time.Minute
 
 // cleanupExpiredSessions 清理所有过期的 interactive SubAgent 会话。
 // sync.Map 本身并发安全，调用方不需要持有任何额外的锁。
+// 跳过 running==true 的会话：正在执行 Run() 的 session 即使 lastUsed 较旧也不应被清理，
+// 否则父 agent 的 SubAgent 工具调用会永远阻塞（Run() 是同步阻塞的）。
 func (a *Agent) cleanupExpiredSessions() {
 	now := time.Now()
 	a.interactiveSubAgents.Range(func(k, v any) bool {
@@ -64,10 +156,18 @@ func (a *Agent) cleanupExpiredSessions() {
 			a.interactiveSubAgents.Delete(k)
 			return true
 		}
-		// 读取 lastUsed 需要加锁，避免与 SendToInteractiveSession 的写入竞争
+		// 读取 lastUsed 和 running 需要加锁，避免与 Run()/SendToInteractiveSession 的写入竞争
 		ia.mu.Lock()
 		lastUsed := ia.lastUsed
+		running := ia.running
 		ia.mu.Unlock()
+
+		// 正在执行的 session 绝不清理：即使 lastUsed 很旧，
+		// 父 agent 可能正在同步等待 Run() 返回。销毁会导致父 agent 永久卡死。
+		if running {
+			return true
+		}
+
 		if now.Sub(lastUsed) > interactiveSessionTTL {
 			key, ok := k.(string)
 			if !ok {
@@ -413,6 +513,14 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 	cfg := a.buildSubAgentRunConfig(subCtx, parentCtx, msg.Content, msg.SystemPrompt, msg.AllowedTools, caps, roleName, true, instance, subModel)
 
+	// Update placeholder with cfg so GetAgentSessionDumpByFullKey returns the
+	// correct model name, max context tokens, etc. — even during the first Run().
+	// Without this, placeholder.cfg is nil, so ia.modelName() returns "" and the
+	// TUI status bar falls back to the parent agent's default subscription model.
+	placeholder.mu.Lock()
+	placeholder.cfg = &cfg
+	placeholder.mu.Unlock()
+
 	// Update placeholder with system prompt + user message so CLI session viewer
 	// can display them while Run() is executing (before the full session data
 	// replaces the placeholder).
@@ -610,6 +718,10 @@ func (a *Agent) SpawnInteractiveSession(
 				}
 			}()
 
+			// Wire DrainBgNotifications so pending messages (sent via action=send
+			// while this Run is in progress) are injected between iterations.
+			cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(sessionKey)
+
 			out := Run(runCtx, cfg)
 
 			// Check cancellation BEFORE calling runCancel().
@@ -620,14 +732,15 @@ func (a *Agent) SpawnInteractiveSession(
 			cancelled := runCtx.Err() != nil
 			runCancel()
 
-			// Notify parent agent about completion
-			if notifyMgr != nil {
+			// Notify parent agent about completion — but ONLY for natural
+			// completion or interrupt. Unload/shutdown notifications cause
+			// the parent agent to see stale "[SubAgent X completed]" messages
+			// and try to "clean up" agents that are already gone, producing
+			// endless "agent still running" hallucinations.
+			if notifyMgr != nil && !cancelled {
 				content := out.Content
 				if out.Error != nil {
 					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
-				}
-				if cancelled {
-					content = "[cancelled] " + content
 				}
 				if len(content) > 2000 {
 					content = content[:2000] + "... [truncated, use inspect for details]"
@@ -644,8 +757,50 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 
 			if cancelled {
-				// Context was cancelled (parent unloaded, agent shutdown, etc.)
-				// Clean up children and remove self from panel.
+				// Context was cancelled. Two possible causes:
+				// 1. InterruptInteractiveSession → ia.interrupted=true → notify + keep session
+				// 2. UnloadInteractiveSession / agent shutdown → ia.interrupted=false → destroy
+				placeholder.mu.Lock()
+				wasInterrupted := placeholder.interrupted
+				placeholder.running = false
+				placeholder.cancelCurrent = nil
+				placeholder.interrupted = false // reset for next send
+				placeholder.mu.Unlock()
+
+				if wasInterrupted {
+					// Interrupt: notify parent so it knows the agent stopped.
+					// The session stays for future "send" interactions.
+					if notifyMgr != nil {
+						content := out.Content
+						if out.Error != nil {
+							content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
+						}
+						content = "[interrupted] " + content
+						if len(content) > 2000 {
+							content = content[:2000] + "... [truncated, use inspect for details]"
+						}
+						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+							Key:      sessionKey,
+							Type:     tools.SubAgentBgNotifyCompleted,
+							Role:     roleName,
+							Instance: instance,
+							Content:  content,
+							Elapsed:  time.Since(startTime),
+							Sid:      originSender,
+						})
+					}
+					log.WithFields(log.Fields{
+						"role":     roleName,
+						"instance": instance,
+						"key":      key,
+					}).Info("Background interactive session interrupted, session preserved for future send")
+					return
+				}
+
+				// Unload/shutdown: NO notification — the parent already knows
+				// (it triggered the unload). Sending a notification would cause
+				// the parent agent to see "[SubAgent completed]" and try to
+				// "clean up" agents that are already destroyed.
 				// Check if key still exists — UnloadInteractiveSession may have
 				// already cleaned up this session, preventing duplicate cleanup.
 				if _, ok := a.interactiveSubAgents.Load(key); !ok {
@@ -657,7 +812,7 @@ func (a *Agent) SpawnInteractiveSession(
 					"role":     roleName,
 					"instance": instance,
 					"key":      key,
-				}).Info("Background interactive session cancelled, removed from panel")
+				}).Info("Background interactive session cancelled (unload), removed from panel")
 				return
 			}
 
@@ -667,34 +822,48 @@ func (a *Agent) SpawnInteractiveSession(
 
 			placeholder.running = false
 			placeholder.cancelCurrent = nil
+			placeholder.lastReply = out.Content
+			placeholder.promptTokens = out.LastPromptTokens
+			placeholder.completionTokens = out.LastCompletionTokens
 
 			if out.Error != nil {
 				placeholder.lastError = out.Error.Error()
-				placeholder.lastReply = out.Content
 			} else {
 				placeholder.lastError = ""
-				placeholder.lastReply = out.Content
 			}
 
 			// Iteration history was incrementally updated via OnIterationSnapshot during Run().
 			// out.IterationHistory contains the same snapshots, no need to overwrite.
 
-			// Store messages
+			// Store messages: use out.Messages as the authoritative state.
+			// If compression happened during Run(), out.Messages is the compressed
+			// list (much shorter than the original). We must use it entirely,
+			// not just append from preLen onward — otherwise compression results
+			// are discarded and ia.messages keeps growing forever.
 			var newMsgs []llm.ChatMessage
-			// Include the original user message so GetAgentSessionDump shows it
-			if preLen > 1 {
-				newMsgs = append(newMsgs, cfg.Messages[1])
-			}
-			if len(out.Messages) > preLen {
-				newMsgs = append(newMsgs, out.Messages[preLen:]...)
+			if len(out.Messages) < preLen {
+				// Compression happened: replace entirely with compressed messages
+				newMsgs = make([]llm.ChatMessage, len(out.Messages))
+				copy(newMsgs, out.Messages)
+			} else {
+				// Normal case: include original user message + messages from Run
+				if preLen > 1 {
+					newMsgs = append(newMsgs, cfg.Messages[1])
+				}
+				if len(out.Messages) > preLen {
+					newMsgs = append(newMsgs, out.Messages[preLen:]...)
+				}
 			}
 			// Append final assistant reply so GetAgentSessionDumpByFullKey returns it.
 			// out.Messages (from Run) excludes the final text-only response — it's only
 			// in out.Content. Without this, switching away and back loses the assistant's
 			// final reply (same fix as foreground path below).
 			if out.Content != "" {
-				newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
-			} else {
+				// Check if the last message is already this assistant reply
+				if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Content != out.Content || newMsgs[len(newMsgs)-1].Role != "assistant" {
+					newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
+				}
+			} else if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Role != "assistant" {
 				newMsgs = append(newMsgs, llm.NewAssistantMessage("(empty response)"))
 			}
 			// Carry ReasoningContent to the in-memory message for subsequent turns
@@ -707,6 +876,26 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 			placeholder.cfg = &cfg
 			placeholder.cfg.Messages = nil
+
+			// Persist final assistant message with iteration history as Detail,
+			// same as the foreground path and the main agent does in
+			// handleInboundMessage. The incremental persistence in
+			// postToolProcessing saves assistant messages WITHOUT Detail —
+			// this adds the one with full iteration history.
+			if agentTenantSession != nil && out.Content != "" {
+				assistantMsg := llm.NewAssistantMessage(out.Content)
+				assistantMsg.ReasoningContent = out.ReasoningContent
+				if len(out.IterationHistory) > 0 {
+					if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+						assistantMsg.Detail = string(jsonBytes)
+					}
+				}
+				if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
+					log.WithFields(log.Fields{
+						"role": roleName, "instance": instance,
+					}).WithError(err).Warn("Failed to save bg interactive agent assistant message with detail")
+				}
+			}
 		}()
 
 		log.WithFields(log.Fields{
@@ -724,6 +913,11 @@ func (a *Agent) SpawnInteractiveSession(
 	placeholder.mu.Lock()
 	placeholder.running = true
 	placeholder.mu.Unlock()
+
+	// Wire DrainBgNotifications so pending messages (sent via action=send
+	// while this Run is in progress) are injected between iterations.
+	fgSessionKey := originChannel + ":" + originChatID
+	cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(fgSessionKey)
 
 	out := Run(subCtx, cfg)
 
@@ -836,12 +1030,51 @@ func (a *Agent) SendToInteractiveSession(
 	// --- 阶段 1：锁内准备配置（读取 ia 数据）---
 	ia.mu.Lock()
 
-	// Guard: reject send while a background Run is in progress
+	// Guard: when a Run is in progress, queue the message for async injection
+	// instead of rejecting it. The SubAgent's DrainBgNotifications callback
+	// will drain and inject it as a synthetic tool result between iterations.
+	// The sender blocks until the message is successfully injected.
 	if ia.running {
+		if ia.cfg == nil {
+			ia.mu.Unlock()
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
+			}, nil
+		}
+
+		replyCh := make(chan error, 1)
+		ia.pendingMessages = append(ia.pendingMessages, pendingUserMsg{
+			content: msg.Content,
+			replyCh: replyCh,
+		})
 		ia.mu.Unlock()
-		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("interactive session for role %q (instance=%q) is currently running. Use action=\"interrupt\" first, or wait for it to finish, then send.", roleName, instance),
-		}, nil
+
+		// Block until the SubAgent's Run loop drains the message (via DrainBgNotifications)
+		// or the parent context is cancelled.
+		select {
+		case err := <-replyCh:
+			if err != nil {
+				return &channelpkg.OutboundMsg{
+					Content: fmt.Sprintf("failed to deliver message to %q (instance=%q): %v", roleName, instance, err),
+				}, nil
+			}
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("✅ Message delivered to %q (instance=%q). The sub-agent will process it during its current run.", roleName, instance),
+			}, nil
+		case <-ctx.Done():
+			// Context cancelled — remove the pending message to avoid stale delivery
+			ia.mu.Lock()
+			for i, pm := range ia.pendingMessages {
+				if pm.replyCh == replyCh {
+					ia.pendingMessages = append(ia.pendingMessages[:i], ia.pendingMessages[i+1:]...)
+					break
+				}
+			}
+			ia.mu.Unlock()
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("message delivery to %q (instance=%q) cancelled: context deadline exceeded", roleName, instance),
+			}, nil
+		}
 	}
 
 	if ia.cfg == nil {
@@ -853,15 +1086,9 @@ func (a *Agent) SendToInteractiveSession(
 
 	ia.lastUsed = time.Now()
 
-	cfg := *ia.cfg // 浅拷贝 RunConfig 模板
-	originUserID := cfg.OriginUserID
-	if originUserID == "" {
-		originUserID = cfg.SenderID
-	}
-	llmClient, model, _, thinkingMode := a.llmFactory.GetLLM(originUserID)
-	cfg.LLMClient = llmClient
-	cfg.Model = model
-	cfg.ThinkingMode = thinkingMode
+	cfg := *ia.cfg // 浅拷贝 RunConfig 模板（已有正确的 LLMClient + Model + ThinkingMode）
+	// 不再无条件用 GetLLM 覆盖：ia.cfg 在 spawn 时已通过 buildSubAgentRunConfig
+	// 正确解析了角色/tier 对应的 LLM，直接复用即可。
 
 	var newMessages []llm.ChatMessage
 	newMessages = append(newMessages, ia.systemPrompt)
@@ -956,6 +1183,28 @@ func (a *Agent) SendToInteractiveSession(
 
 	ia.mu.Lock()
 	ia.running = true
+	ia.interrupted = false // clear any stale interrupt flag from previous Run
+	// For background mode, create a cancellable context so UnloadInteractiveSession
+	// can cancel the running goroutine. Must derive from the agent lifecycle context
+	// (a.agentCtx), NOT from subCtx — subCtx inherits the parent's tool execution
+	// deadline, which would kill the background goroutine when the parent's tool
+	// call times out. Same pattern as the initial spawn path above.
+	if ia.background {
+		var bgBase context.Context
+		if ctx.Value(bgSessionCtxKey{}) != nil {
+			// Nested: parent is a bg session → derive from parent's lifecycle
+			bgBase = ctx
+		} else {
+			// First level: derive from Agent lifecycle (no deadline)
+			bgBase = a.agentCtx
+		}
+		if bgBase == nil {
+			bgBase = context.Background()
+		}
+		runCtx, runCancel := context.WithCancel(bgBase)
+		subCtx = runCtx
+		ia.cancelCurrent = runCancel
+	}
 	ia.mu.Unlock()
 
 	if ia.background {
@@ -971,6 +1220,7 @@ func (a *Agent) SendToInteractiveSession(
 					clipanic.Report("agent.interactive.SendBackground", fmt.Sprintf("%s:%s", roleName, instance), r)
 					ia.mu.Lock()
 					ia.running = false
+					ia.cancelCurrent = nil
 					ia.lastError = fmt.Sprintf("panic: %v", r)
 					ia.mu.Unlock()
 					if a.bgTaskMgr != nil {
@@ -988,11 +1238,62 @@ func (a *Agent) SendToInteractiveSession(
 				}
 			}()
 
+			// Wire DrainBgNotifications for pending message delivery.
+			bgSendKey := originChannel + ":" + originChatID
+			cfg.DrainBgNotifications = ia.wirePendingMessageDrain(bgSendKey)
+
 			out := Run(subCtx, cfg)
+
+			// Check if the context was cancelled (interrupt or unload).
+			// Must check BEFORE clearing cancelCurrent so we can read ia.interrupted.
+			// subCtx is derived from context.WithCancel, so subCtx.Err() tells us.
+			wasCancelled := subCtx.Err() != nil
 
 			ia.mu.Lock()
 			ia.running = false
+			ia.cancelCurrent = nil
+			wasInterrupted := ia.interrupted
+			ia.interrupted = false // reset for next send
 			ia.mu.Unlock()
+
+			if wasCancelled {
+				if wasInterrupted {
+					// Interrupt: notify parent so it knows the agent stopped.
+					// The session stays for future "send" interactions.
+					if a.bgTaskMgr != nil {
+						content := "[interrupted] "
+						if out.Content != "" {
+							content += out.Content
+						} else {
+							content += "Agent was interrupted."
+						}
+						if len(content) > 2000 {
+							content = content[:2000] + "... [truncated, use inspect for details]"
+						}
+						sessionKey := originChannel + ":" + originChatID
+						a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+							Key:      sessionKey,
+							Type:     tools.SubAgentBgNotifyCompleted,
+							Role:     roleName,
+							Instance: instance,
+							Content:  content,
+							Elapsed:  time.Since(startTime),
+							Sid:      originSender,
+						})
+					}
+					log.WithFields(log.Fields{
+						"role":     roleName,
+						"instance": instance,
+					}).Info("Background send interrupted, session preserved for future send")
+					return
+				}
+				// Unload/shutdown: NO notification — the parent already knows.
+				log.WithFields(log.Fields{
+					"role":     roleName,
+					"instance": instance,
+				}).Info("Background send cancelled (unload/shutdown)")
+				return
+			}
 
 			// Notify parent via BgTaskManager (same as initial spawn).
 			if a.bgTaskMgr != nil {
@@ -1015,7 +1316,7 @@ func (a *Agent) SendToInteractiveSession(
 				})
 			}
 
-			// --- Write back results (same as 阶段 3 below, but for async path) ---
+			// --- Write back results (mirrors foreground 阶段 3 below) ---
 			ia.mu.Lock()
 			defer ia.mu.Unlock()
 
@@ -1025,10 +1326,67 @@ func (a *Agent) SendToInteractiveSession(
 			} else {
 				ia.lastError = ""
 				ia.lastReply = out.Content
-				// Append new messages from Run() to ia.messages
-				if preLen > 0 && len(cfg.Messages) > preLen {
-					newFromRun := cfg.Messages[preLen:]
-					ia.messages = append(ia.messages, newFromRun...)
+				ia.promptTokens = out.LastPromptTokens
+				ia.completionTokens = out.LastCompletionTokens
+
+				// out.Messages comes from Run()'s s.messages — the engine's
+				// internal message list. If compression happened during Run(),
+				// out.Messages is the COMPRESSED list (much shorter than the
+				// original). We must replace ia.messages entirely, not append.
+				//
+				// Detection: if out.Messages is shorter than preLen (the number
+				// of messages BEFORE Run started), compression must have happened.
+				// Even without compression, using out.Messages as the full
+				// replacement is correct — it contains the authoritative state
+				// from the engine (including any tool calls/results/assistant
+				// messages produced during Run).
+				if len(out.Messages) < preLen || len(out.Messages) == 0 {
+					// Compression happened (or edge case): replace entirely.
+					ia.messages = make([]llm.ChatMessage, len(out.Messages))
+					copy(ia.messages, out.Messages)
+				} else {
+					// Normal case (no compression): append new messages from Run.
+					// The user message was already in cfg.Messages[preLen-1] which
+					// was appended by the caller before Run() — but Run() copies
+					// cfg.Messages, so out.Messages includes everything from the start.
+					// Replace ia.messages with out.Messages to keep them in sync.
+					ia.messages = make([]llm.ChatMessage, len(out.Messages))
+					copy(ia.messages, out.Messages)
+				}
+
+				// Append final assistant reply if not already in out.Messages.
+				// handleFinalResponse returns directly without appending to s.messages,
+				// so out.Messages may not contain the final text reply.
+				if out.Content != "" {
+					// Check if the last message is already this assistant reply
+					if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content || ia.messages[len(ia.messages)-1].Role != "assistant" {
+						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+					}
+				} else if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Role != "assistant" {
+					ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
+				}
+				// Carry ReasoningContent to the in-memory message for subsequent turns
+				if out.ReasoningContent != "" && len(ia.messages) > 0 {
+					ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
+				}
+				// Save iteration history for inspect
+				if len(out.IterationHistory) > 0 {
+					ia.iterationHistory = out.IterationHistory
+				}
+			}
+
+			// Persist final assistant message with iteration history as Detail,
+			// same as foreground path below and the main agent does in handleInboundMessage.
+			if cfg.Session != nil && out.Content != "" {
+				assistantMsg := llm.NewAssistantMessage(out.Content)
+				assistantMsg.ReasoningContent = out.ReasoningContent
+				if len(out.IterationHistory) > 0 {
+					if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+						assistantMsg.Detail = string(jsonBytes)
+					}
+				}
+				if err := cfg.Session.AddMessage(assistantMsg); err != nil {
+					log.Ctx(ctx).WithError(err).Warn("Failed to save bg send agent assistant message with detail")
 				}
 			}
 		}()
@@ -1039,6 +1397,10 @@ func (a *Agent) SendToInteractiveSession(
 	}
 
 	// Foreground agents: run synchronously (blocks caller until complete)
+	// Wire DrainBgNotifications for pending message delivery.
+	fgSendKey := originChannel + ":" + originChatID
+	cfg.DrainBgNotifications = ia.wirePendingMessageDrain(fgSendKey)
+
 	out := Run(subCtx, cfg)
 
 	ia.mu.Lock()
@@ -1139,6 +1501,11 @@ func (a *Agent) InterruptInteractiveSession(
 	}
 
 	ia.cancelCurrent()
+	// Mark as not running immediately so subsequent send/unload can proceed
+	// without waiting for the background goroutine to detect cancellation.
+	// The goroutine will see runCtx.Err() != nil and know it was interrupted.
+	ia.running = false
+	ia.interrupted = true
 	log.WithFields(log.Fields{
 		"role":     roleName,
 		"instance": instance,
@@ -1319,8 +1686,14 @@ func (a *Agent) cancelChildSessions(parentKey string) {
 		}
 		childIA.mu.Lock()
 		pk := childIA.parentKey
-		if childIA.cancelCurrent != nil {
-			childIA.cancelCurrent()
+		// Only cancel/destroy sessions that are CHILDREN of the parent being cleaned up.
+		// The old code called cancelCurrent() on ALL sessions regardless of parentKey,
+		// which killed sibling/peer background agents when any single agent was unloaded
+		// or cancelled — the root cause of "all 5 bg agents die at 7 minutes".
+		if pk == parentKey {
+			if childIA.cancelCurrent != nil {
+				childIA.cancelCurrent()
+			}
 		}
 		childIA.mu.Unlock()
 		if pk == parentKey {
@@ -1607,10 +1980,19 @@ type SessionMessage struct {
 }
 
 // AgentSessionDump contains the full state of an interactive SubAgent session
-// for rendering in a viewer. Includes messages and iteration snapshots.
+// for rendering in a viewer. Includes messages, iteration snapshots, and
+// all metadata needed by the TUI status bar (model name, context limits, token usage).
 type AgentSessionDump struct {
 	Messages         []SessionMessage    `json:"messages"`
 	IterationHistory []IterationSnapshot `json:"iterations"`
+
+	// Status bar metadata — used by TUI to render context bar, model name, etc.
+	ModelName        string  `json:"modelName,omitempty"`
+	MaxContextTokens int64   `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int64   `json:"maxOutputTokens,omitempty"`
+	CompressRatio    float64 `json:"compressRatio,omitempty"`
+	PromptTokens     int64   `json:"promptTokens,omitempty"`
+	CompletionTokens int64   `json:"completionTokens,omitempty"`
 }
 
 // GetAgentSessionDump returns the full session state for viewer rendering.
@@ -1652,6 +2034,12 @@ func (a *Agent) GetAgentSessionDump(channel, chatID, roleName, instance string) 
 	return &AgentSessionDump{
 		Messages:         msgs,
 		IterationHistory: iters,
+		ModelName:        ia.modelName(),
+		MaxContextTokens: ia.maxContextTokens(),
+		MaxOutputTokens:  ia.maxOutputTokens(),
+		CompressRatio:    ia.compressRatio(),
+		PromptTokens:     ia.promptTokens,
+		CompletionTokens: ia.completionTokens,
 	}, true
 }
 
@@ -1694,6 +2082,12 @@ func (a *Agent) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump,
 	return &AgentSessionDump{
 		Messages:         msgs,
 		IterationHistory: iters,
+		ModelName:        ia.modelName(),
+		MaxContextTokens: ia.maxContextTokens(),
+		MaxOutputTokens:  ia.maxOutputTokens(),
+		CompressRatio:    ia.compressRatio(),
+		PromptTokens:     ia.promptTokens,
+		CompletionTokens: ia.completionTokens,
 	}, true
 }
 

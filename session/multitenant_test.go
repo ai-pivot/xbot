@@ -27,6 +27,7 @@ func TestMultiTenantSession_GetOrCreateSession(t *testing.T) {
 	}
 	if sess1 == nil {
 		t.Fatal("Session is nil")
+		return
 	}
 	if sess1.Channel() != "feishu" {
 		t.Errorf("Expected channel 'feishu', got '%s'", sess1.Channel())
@@ -294,6 +295,7 @@ func TestMultiTenantSession_RecallTimeRangeFunc(t *testing.T) {
 	fn := mt.RecallTimeRangeFunc()
 	if fn == nil {
 		t.Fatal("Expected non-nil RecallTimeRangeFunc in letta mode")
+		return
 	}
 }
 

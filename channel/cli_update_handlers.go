@@ -978,6 +978,10 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 		m.showSystemMsg(m.locale.UpdateFailed, feedbackError)
 		return
 	}
+	// Dev builds and non-stable channels skip the check — don't show any message.
+	if msg.info.Skipped {
+		return
+	}
 	m.updateNotice = msg.info
 	// Suppress update notice when an agent turn is active (progress running).
 	// The notice would corrupt the progress panel layout and distract from
@@ -1273,6 +1277,22 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
 		}
 	}
+	// Restore LLM state for TUI status bar (model name, context limits, etc.)
+	// For SubAgent sessions, these come from AgentSessionDump. For normal
+	// sessions, they come from LoadSessionLLMState. Without this, the status
+	// bar shows the parent agent's model name and context limits.
+	if msg.modelName != "" {
+		m.cachedModelName = msg.modelName
+	}
+	if msg.maxContextTokens > 0 {
+		m.cachedMaxContextTokens = int(msg.maxContextTokens)
+	}
+	if msg.maxOutputTokens > 0 {
+		m.cachedMaxOutputTokens = msg.maxOutputTokens
+	}
+	if msg.compressRatio > 0 {
+		m.cachedCompressRatio = msg.compressRatio
+	}
 	// Always check for pending AskUser questions after history load.
 	// This covers both active turns (agent paused waiting for user) and
 	// idle sessions (pending from a previous session that was never answered).
@@ -1551,41 +1571,31 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 	m.quickSwitchReturnToPanel = false
 	if done.err != nil {
 		m.showTempStatus(fmt.Sprintf("Failed to switch LLM: %v", done.err))
-	} else if done.mgr != nil {
+		return m, nil, true
+	}
+	if done.mgr != nil {
 		if err := done.mgr.SetDefault(done.subID, m.chatID); err != nil {
 			m.showTempStatus(fmt.Sprintf("LLM switched but failed to save: %v", err))
 		} else {
 			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
-			// Build complete session LLM state and persist atomically.
-			// maxContext comes from the new subscription's per-model config.
-			// Do NOT fallback to the old session JSON value — that belongs
-			// to the previous subscription and would show a stale context bar.
-			state := SessionLLMState{
-				SubscriptionID:   done.subID,
-				Model:            done.subModel,
-				MaxContextTokens: done.maxCtx,
-				MaxOutputTokens:  done.maxOutTok,
-			}
-			SaveSessionLLMState(m.workDir, m.chatID, state)
-			m.applySessionLLMState(state)
-			// Refresh values cache so GetCurrentValues() reflects the new subscription.
-			if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
-				m.channel.config.RefreshValuesCache()
-			}
 		}
-		// Update cached model name directly from the switch result
-		// (same pattern as model-switch case — avoids stale config/RPC reads)
-		if done.subModel != "" {
-			m.cachedModelName = done.subModel
-			// Always refresh modelCount after subscription switch
-			// so status bar shows correct count and [Ctrl+N] hint.
-			if m.channel.modelLister != nil {
-				m.modelCount = len(m.channel.modelLister.ListModels())
-			}
-		} else {
-			// Subscription has no model configured — clear stale model name.
-			m.cachedModelName = ""
+		// ALWAYS update per-session LLM state on successful switch, even if
+		// SetDefault (global DB write) fails. The session must track its own
+		// subscription regardless of global default persistence success.
+		// Failure to update activeSubID is the root cause of the settings panel
+		// showing the wrong subscription after a switch.
+		state := SessionLLMState{
+			SubscriptionID:   done.subID,
+			Model:            done.subModel,
+			MaxContextTokens: done.maxCtx,
+			MaxOutputTokens:  done.maxOutTok,
+		}
+		SaveSessionLLMState(m.workDir, m.chatID, state)
+		m.applySessionLLMState(state)
+		// Refresh values cache so GetCurrentValues() reflects the new subscription.
+		if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
+			m.channel.config.RefreshValuesCache(done.subID)
 		}
 	}
 	// If we came from the settings panel, re-open it so the user can continue editing
@@ -1624,6 +1634,12 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		if m.splashFrame >= 30 {
 			m.splashDone = true
 		}
+	}
+
+	// Reconnect overlay spinner animation — advances every tick (100ms)
+	// when WS connection is lost, providing visual feedback.
+	if m.remoteMode && m.connState != "connected" && m.connState != "" {
+		m.reconnectFrame++
 	}
 
 	// Spinner / progress update

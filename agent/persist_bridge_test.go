@@ -142,6 +142,7 @@ func TestComputeEngineMessages_HasNewMessages(t *testing.T) {
 	result := b.ComputeEngineMessages(messages)
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 engine messages, got %d", len(result))

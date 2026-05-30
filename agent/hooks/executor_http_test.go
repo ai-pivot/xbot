@@ -360,6 +360,7 @@ func TestIsPrivateIP(t *testing.T) {
 			ip := net.ParseIP(tt.ip)
 			if ip == nil {
 				t.Fatalf("failed to parse IP %q", tt.ip)
+				return
 			}
 			if got := isPrivateIP(ip); got != tt.want {
 				t.Errorf("isPrivateIP(%s) = %v, want %v", tt.ip, got, tt.want)

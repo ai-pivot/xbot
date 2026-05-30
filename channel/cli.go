@@ -191,6 +191,16 @@ func (c *CLIChannel) Start() error {
 	// so LoadSessionLLMState can find the correct session file.
 	c.model.refreshCachedModelName()
 
+	// Refresh values cache with the session's actual subscription.
+	// At startup, valuesCache was populated with GetDefaultSubscription()
+	// via refreshRemoteValuesCache(""). If this session has a per-session
+	// subscription (loaded from Session JSON above), the cache must be
+	// updated BEFORE the first render, otherwise GetCurrentValues() returns
+	// the wrong subscription's data.
+	if c.model.activeSubID != "" && c.config.RefreshValuesCache != nil {
+		c.config.RefreshValuesCache(c.model.activeSubID)
+	}
+
 	// If a per-session subscription was restored, trigger async SwitchLLM
 	// so the backend also uses the correct LLM.
 	c.model.scheduleSessionLLMRestore()

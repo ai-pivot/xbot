@@ -585,6 +585,7 @@ func TestCardAddInteractiveTool_SelectStatic_OutsideForm(t *testing.T) {
 	_, err := tool.Execute(ctx, input)
 	if err == nil {
 		t.Fatal("expected error when adding select_static outside form")
+		return
 	}
 	if !strings.Contains(err.Error(), "MUST be placed inside a form container") {
 		t.Errorf("unexpected error: %v", err)

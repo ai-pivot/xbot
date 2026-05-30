@@ -384,10 +384,19 @@ func readArgsHasOffsetOrLimit(argsJSON string) bool {
 // 主 Agent 和 SubAgent 使用同一个 Run()，差异通过 RunConfig 注入：
 //   - 主 Agent: ToolExecutor=buildToolExecutor, ProgressNotifier=sendMessage, ContextManager=enabled, ...
 
-// generateResponse calls the LLM using non-streaming mode.
+// generateResponse calls the LLM, using streaming mode when available.
+//
+// When the client is a *RetryLLM, the streaming path uses GenerateStreamAndCollect
+// which retries the entire stream cycle (connection + event collection), not just
+// the SSE connection. This ensures mid-stream errors (disconnects, server 5xx
+// during generation) are also retried with exponential backoff.
 func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string)) (*llm.LLMResponse, error) {
 	if stream {
 		if sc, ok := client.(llm.StreamingLLM); ok {
+			// Prefer the retry-enabled full stream cycle when available.
+			if rl, ok := client.(*llm.RetryLLM); ok {
+				return rl.GenerateStreamAndCollect(ctx, model, messages, tools, thinkingMode, streamContentFn, streamReasoningFn)
+			}
 			eventCh, err := sc.GenerateStream(ctx, model, messages, tools, thinkingMode)
 			if err != nil {
 				return nil, err

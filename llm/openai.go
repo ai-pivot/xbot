@@ -967,6 +967,24 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	defer close(eventChan)
 	defer stream.Close()
 
+	// Connect context cancellation to stream.Close().
+	// stream.Next() blocks on the HTTP response body read; on the first request
+	// this includes DNS + TCP + TLS handshake which can take seconds. Without this
+	// goroutine, ctx.Done() is only checked AFTER Next() returns, making Ctrl+C
+	// feel unresponsive on the first message. Closing the stream immediately
+	// unblocks Next() and forces the cancellation to take effect.
+	ctxDone := ctx.Done()
+	if ctxDone != nil {
+		go func() {
+			select {
+			case <-ctxDone:
+				stream.Close()
+			case <-ctx.Done():
+				// ctx.Done() may return different channel on re-check; both paths handled
+			}
+		}()
+	}
+
 	l := log.Ctx(ctx)
 	chunkCount := 0
 	var firstChunkTime time.Time

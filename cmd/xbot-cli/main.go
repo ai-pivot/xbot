@@ -32,11 +32,13 @@ import (
 	"time"
 
 	"xbot/agent"
+	"xbot/bus"
 	"xbot/channel"
 	"xbot/clipanic"
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/pprof"
 	"xbot/protocol"
 	"xbot/serverapp"
@@ -51,6 +53,36 @@ import (
 var saveWg sync.WaitGroup
 
 const cliSenderID = "cli_user"
+
+// registerCLIPluginChannels wires up plugin channel providers in CLI local mode.
+// Equivalent to registerChannels() in server.go, but for the CLI process.
+func registerCLIPluginChannels(disp *channel.Dispatcher, msgBus *bus.MessageBus, cfg *config.Config) {
+	reg := serverapp.GetChannelProviderRegistry()
+	if reg == nil {
+		return
+	}
+	for _, provider := range reg.List() {
+		name := provider.Name()
+		pluginCfg := serverapp.GetPluginChannelConfig(cfg, name)
+		if !provider.IsEnabled(pluginCfg) {
+			continue
+		}
+		ch, err := provider.CreateChannel(pluginCfg, msgBus)
+		if err != nil {
+			log.WithError(err).WithField("channel", name).Warn("Failed to create plugin channel")
+			continue
+		}
+		disp.Register(ch)
+		if transport, ok := ch.(*agent.ChannelPluginTransport); ok {
+			if err := transport.Start(); err != nil {
+				log.WithError(err).WithField("channel", name).Warn("Failed to start plugin transport")
+				continue
+			}
+			go transport.Run(context.Background())
+		}
+		log.WithField("channel", name).Info("Plugin channel registered (CLI mode)")
+	}
+}
 
 // saveCLIConfig merges CLI-owned global fields into the latest on-disk config.
 // It intentionally preserves unrelated sections like on-disk subscriptions and
@@ -105,7 +137,7 @@ func configLayoutValue(key string) string {
 	return ""
 }
 
-func (app *cliApp) refreshRemoteValuesCache() {
+func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 	if app.client == nil {
 		return
 	}
@@ -115,10 +147,29 @@ func (app *cliApp) refreshRemoteValuesCache() {
 			vals[k] = v
 		}
 	}
-	// LLM values come from the active subscription (single source of truth).
-	// This replaces the old path where llm_model was read from GetSettings
-	// (which stored stale LLM values in user_settings).
-	if sub, err := app.client.GetDefaultSubscription(cliSenderID); err == nil && sub != nil {
+	// LLM values come from the SPECIFIED subscription (caller-provided ID), never from
+	// GetDefaultSubscription(). The active subscription ID is the single source of truth.
+	// Using GetDefaultSubscription() here would populate the cache with the WRONG
+	// subscription's values, causing the settings panel to show stale data.
+	var sub *protocol.Subscription
+	if subscriptionID != "" {
+		if subs, err := app.client.ListSubscriptions(cliSenderID); err == nil {
+			for i := range subs {
+				if subs[i].ID == subscriptionID {
+					sub = &subs[i]
+					break
+				}
+			}
+		}
+	}
+	// Fallback: if no subscription ID provided (e.g., startup before any subscription is active),
+	// use GetDefaultSubscription() as a last resort.
+	if sub == nil {
+		if s, err := app.client.GetDefaultSubscription(cliSenderID); err == nil && s != nil {
+			sub = s
+		}
+	}
+	if sub != nil {
 		vals["llm_provider"] = sub.Provider
 		vals["llm_base_url"] = sub.BaseURL
 		vals["llm_model"] = sub.Model
@@ -126,17 +177,7 @@ func (app *cliApp) refreshRemoteValuesCache() {
 			vals["llm_api_key"] = sub.APIKey
 		}
 		vals["max_output_tokens"] = fmt.Sprintf("%d", sub.MaxOutputTokens)
-		log.Debugf("[Settings] refreshRemoteValuesCache: sub=%s max_output_tokens=%d", func() string {
-			if sub != nil {
-				return sub.ID
-			}
-			return "<nil>"
-		}(), func() int {
-			if sub != nil {
-				return sub.MaxOutputTokens
-			}
-			return -1
-		}())
+		log.Debugf("[Settings] refreshRemoteValuesCache: sub=%s max_output_tokens=%d", sub.ID, sub.MaxOutputTokens)
 		if sub.ThinkingMode != "" {
 			vals["thinking_mode"] = sub.ThinkingMode
 		}
@@ -735,10 +776,18 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Local mode: InitServer + ChannelTransport + Client.
 		// Create eventCh first — shared between localEventBridge (server side) and Client (CLI side).
 		eventCh := make(chan protocol.WSMessage, 256)
-		_, rpcTable, _, _, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
+		_, rpcTable, disp, msgBus, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
+
+		// Register ChannelProviderFactory for gRPC channel plugins.
+		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
+			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable), nil
+		})
+
+		// Register plugin channels in the Dispatcher (equivalent to registerChannels() in server mode).
+		registerCLIPluginChannels(disp, msgBus, cfg)
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
@@ -1150,8 +1199,12 @@ func main() {
 				app.client.SetRetryConfig(llm.DefaultRetryConfig())
 			}
 
-			// Immediately refresh cache so UI shows new values
-			app.refreshRemoteValuesCache()
+			// NOTE: Do NOT call refreshRemoteValuesCache("") here.
+			// refreshRemoteValuesCache("") falls back to GetDefaultSubscription(),
+			// which overwrites the valuesCache with the global-default subscription,
+			// destroying any per-session subscription data loaded by saveSettings
+			// or postRestoreSessionSetup. Callers that need subscription-aware
+			// cache refresh use RefreshValuesCache(subscriptionID) directly.
 		},
 		ClearMemory: func(targetType string) error {
 			if app.client == nil {
@@ -1183,8 +1236,8 @@ func main() {
 			}
 			return nil
 		},
-		RefreshValuesCache: func() {
-			app.refreshRemoteValuesCache()
+		RefreshValuesCache: func(subscriptionID string) {
+			app.refreshRemoteValuesCache(subscriptionID)
 		},
 		UsageQuery: func(senderID string, days int) (*channel.UserTokenUsage, []channel.DailyTokenUsage, error) {
 			if app.client == nil {
@@ -1427,6 +1480,14 @@ func main() {
 				return cliCfg.DynamicHistoryLoader("agent", chatID)
 			}
 			return nil, nil
+		}
+		// SubAgent LLM state for TUI status bar (model name, context limits, token usage)
+		cliCfg.AgentSessionLLMStateFn = func(chatID string) (string, int64, int64, float64, int64, int64) {
+			dump, ok := backend.GetAgentSessionDumpByFullKey(chatID)
+			if !ok || dump == nil {
+				return "", 0, 0, 0, 0, 0
+			}
+			return dump.ModelName, dump.MaxContextTokens, dump.MaxOutputTokens, dump.CompressRatio, dump.PromptTokens, dump.CompletionTokens
 		}
 	}
 
@@ -1837,7 +1898,7 @@ func main() {
 	// Initial values cache population (event-driven from now on, no polling).
 	// Cache is refreshed on: settings panel save, subscription switch, config tool set.
 	if app.client != nil {
-		app.refreshRemoteValuesCache()
+		app.refreshRemoteValuesCache("")
 	}
 
 	sigCh := make(chan os.Signal, 1)

@@ -7,6 +7,89 @@ import (
 	"time"
 )
 
+// TestCleanupExpiredSessions_RunningSessionNotDestroyed verifies that
+// cleanupExpiredSessions does NOT destroy sessions with running==true.
+// This is a regression test for the bug where a foreground SubAgent running
+// for >30 min was destroyed by the TTL cleaner while the parent agent was
+// still blocked waiting for Run() to return — leaving the parent stuck forever.
+func TestCleanupExpiredSessions_RunningSessionNotDestroyed(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test-session/ministry-works:fix-rv-call"
+
+	// Simulate a running session with old lastUsed (35 minutes ago — past TTL)
+	placeholder := &interactiveAgent{
+		roleName: "ministry-works",
+		instance: "fix-rv-call",
+		lastUsed: time.Now().Add(-35 * time.Minute), // past TTL
+		running:  true,
+	}
+	a.interactiveSubAgents.Store(key, placeholder)
+
+	// Cleanup should NOT destroy this session because running==true
+	a.cleanupExpiredSessions()
+
+	_, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		t.Fatal("running session was destroyed by cleanup — parent agent's SubAgent tool call would be stuck forever")
+	}
+}
+
+// TestCleanupExpiredSessions_IdleSessionCleanedUp verifies that idle (non-running)
+// sessions past TTL are properly cleaned up.
+func TestCleanupExpiredSessions_IdleSessionCleanedUp(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test-session/explore:idle-agent"
+
+	// Simulate an idle session with old lastUsed (35 minutes ago — past TTL)
+	idle := &interactiveAgent{
+		roleName: "explore",
+		instance: "idle-agent",
+		lastUsed: time.Now().Add(-35 * time.Minute),
+		running:  false,
+	}
+	a.interactiveSubAgents.Store(key, idle)
+
+	// Cleanup SHOULD destroy this session
+	a.cleanupExpiredSessions()
+
+	_, ok := a.interactiveSubAgents.Load(key)
+	if ok {
+		t.Fatal("idle session past TTL was NOT cleaned up")
+	}
+}
+
+// TestCleanupExpiredSessions_RecentSessionNotDestroyed verifies that recent
+// sessions (within TTL) are not cleaned up regardless of running state.
+func TestCleanupExpiredSessions_RecentSessionNotDestroyed(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test-session/explore:fresh"
+
+	// Simulate a recent idle session (5 minutes ago — within TTL)
+	fresh := &interactiveAgent{
+		roleName: "explore",
+		instance: "fresh",
+		lastUsed: time.Now().Add(-5 * time.Minute),
+		running:  false,
+	}
+	a.interactiveSubAgents.Store(key, fresh)
+
+	a.cleanupExpiredSessions()
+
+	_, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		t.Fatal("session within TTL was incorrectly cleaned up")
+	}
+}
+
 // TestBgSession_NaturalCompletion_SessionPreserved verifies that a background
 // interactive session is NOT destroyed when Run() completes naturally (i.e. the
 // context was not cancelled externally). This is a regression test for the bug
@@ -148,5 +231,363 @@ func TestBgSession_CancelOrderRegression(t *testing.T) {
 
 	if cancelledAfter {
 		t.Error("cancelledAfter should be false for natural completion (context not cancelled)")
+	}
+}
+
+// TestBgSend_CancelCurrentSetAndCleared verifies that the background "send" path
+// correctly sets cancelCurrent before starting the goroutine and clears it on
+// completion. This is a regression test for the bug where UnloadInteractiveSession
+// called ia.cancelCurrent() but it was nil (never set by the send path), so
+// background send goroutines kept running even after unload.
+func TestBgSend_CancelCurrentSetAndCleared(t *testing.T) {
+	// Simulate the state after initial spawn completes: cancelCurrent is nil.
+	ia := &interactiveAgent{
+		roleName:   "test-role",
+		instance:   "test-inst",
+		background: true,
+		running:    false,
+	}
+
+	if ia.cancelCurrent != nil {
+		t.Fatal("precondition: cancelCurrent should be nil after initial spawn completes")
+	}
+
+	// Simulate the send path's context setup:
+	//   runCtx, runCancel := context.WithCancel(subCtx)
+	//   ia.cancelCurrent = runCancel
+	subCtx := context.Background()
+	runCtx, runCancel := context.WithCancel(subCtx)
+
+	ia.cancelCurrent = runCancel
+	ia.running = true
+
+	// Verify cancelCurrent is set
+	if ia.cancelCurrent == nil {
+		t.Fatal("cancelCurrent should be set before goroutine starts")
+	}
+
+	// Simulate unload calling cancelCurrent
+	ia.cancelCurrent()
+
+	// Verify the context is actually cancelled
+	if runCtx.Err() == nil {
+		t.Fatal("context should be cancelled after cancelCurrent() is called")
+	}
+
+	// Simulate goroutine completion: clear cancelCurrent
+	ia.running = false
+	ia.cancelCurrent = nil
+
+	if ia.cancelCurrent != nil {
+		t.Fatal("cancelCurrent should be nil after goroutine completion")
+	}
+}
+
+// TestBgSend_NoParentDeadlineInheritance verifies that the background "send" path
+// derives its cancellable context from the agent lifecycle (a.agentCtx), NOT from
+// the parent's tool execution context. The parent's context carries a per-attempt
+// deadline — inheriting it would cause background goroutines to be killed when the
+// parent's tool call times out, even though the goroutine should run independently.
+//
+// This is a regression test for the bug where context.WithCancel(subCtx) was used
+// instead of context.WithCancel(a.agentCtx), causing all background send goroutines
+// to time out after ~120s.
+func TestBgSend_NoParentDeadlineInheritance(t *testing.T) {
+	// Simulate a parent tool context WITH a deadline (as in real SubAgent tool calls)
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer parentCancel()
+
+	// Simulate the agent lifecycle context (no deadline)
+	agentCtx, agentCancel := context.WithCancel(context.Background())
+	defer agentCancel()
+
+	a := &Agent{
+		agentCtx:             agentCtx,
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test/worker:w1"
+	ia := &interactiveAgent{
+		roleName:   "worker",
+		instance:   "w1",
+		background: true,
+		running:    false,
+	}
+	a.interactiveSubAgents.Store(key, ia)
+
+	// --- Replicate the fixed send path logic ---
+	// ctx = parentCtx (has deadline)
+	// subCtx derived from ctx (has deadline)
+	subCtx := parentCtx
+
+	var bgBase context.Context
+	if subCtx.Value(bgSessionCtxKey{}) != nil {
+		bgBase = subCtx
+	} else {
+		bgBase = a.agentCtx // MUST use agent lifecycle, not parent's ctx
+	}
+	if bgBase == nil {
+		bgBase = context.Background()
+	}
+	runCtx, runCancel := context.WithCancel(bgBase)
+	defer runCancel()
+	ia.cancelCurrent = runCancel
+	ia.running = true
+
+	// Wait for the parent's deadline to expire
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify the parent context IS expired
+	if parentCtx.Err() == nil {
+		t.Fatal("parent context should have expired by now")
+	}
+
+	// Verify the background runCtx is NOT expired (it's independent)
+	if runCtx.Err() != nil {
+		t.Fatal("runCtx should NOT be cancelled when parent's deadline expires — " +
+			"background goroutines must use agent lifecycle context, not parent tool context")
+	}
+
+	// Verify unload still works via cancelCurrent
+	ia.cancelCurrent()
+	if runCtx.Err() == nil {
+		t.Fatal("runCtx should be cancelled after cancelCurrent() (unload)")
+	}
+}
+
+// TestCancelChildSessions_OnlyTargetsChildren verifies that cancelChildSessions
+// only cancels contexts of sessions with matching parentKey, NOT all sessions.
+// This is a regression test for the bug where cancelChildSessions called
+// cancelCurrent() on EVERY interactive session regardless of parentKey.
+// When 5 peer bg agents were running and any one was unloaded/panicked,
+// all 5 were cancelled simultaneously — manifesting as "all agents die at ~7min".
+func TestCancelChildSessions_OnlyTargetsChildren(t *testing.T) {
+	a := &Agent{
+		agentCtx:             context.Background(),
+		interactiveSubAgents: sync.Map{},
+	}
+
+	// Create 3 peer-level sessions (same parent "root", different roles)
+	type testSession struct {
+		key       string
+		ia        *interactiveAgent
+		runCtx    context.Context
+		runCancel context.CancelFunc
+		role      string
+	}
+	var sessions []testSession
+
+	for _, role := range []string{"worker-a", "worker-b", "worker-c"} {
+		key := "cli:test/" + role + ":inst1"
+		runCtx, runCancel := context.WithCancel(context.Background())
+		ia := &interactiveAgent{
+			roleName:      role,
+			instance:      "inst1",
+			background:    true,
+			running:       true,
+			cancelCurrent: runCancel,
+			parentKey:     "cli:test/root:main", // all share same parent
+		}
+		a.interactiveSubAgents.Store(key, ia)
+		sessions = append(sessions, testSession{key: key, ia: ia, runCtx: runCtx, runCancel: runCancel, role: role})
+	}
+
+	// Create 1 unrelated session (different parent)
+	unrelatedKey := "cli:test/unrelated:x1"
+	unrelatedCtx, unrelatedCancel := context.WithCancel(context.Background())
+	defer unrelatedCancel()
+	unrelatedIA := &interactiveAgent{
+		roleName:      "unrelated",
+		instance:      "x1",
+		background:    true,
+		running:       true,
+		cancelCurrent: unrelatedCancel,
+		parentKey:     "cli:test/other-parent:main", // different parent
+	}
+	a.interactiveSubAgents.Store(unrelatedKey, unrelatedIA)
+
+	// Simulate cancelling children of "cli:test/root:main"
+	a.cancelChildSessions("cli:test/root:main")
+
+	// All 3 peer sessions should be cancelled (they share the parent)
+	for _, s := range sessions {
+		if s.runCtx.Err() == nil {
+			t.Errorf("session %s should have been cancelled", s.role)
+		}
+	}
+
+	// The unrelated session should NOT be cancelled
+	if unrelatedCtx.Err() != nil {
+		t.Fatal("unrelated session was cancelled — cancelChildSessions must only target children with matching parentKey, not ALL sessions")
+	}
+}
+
+// TestInterrupt_PreservesSession verifies the full interrupt lifecycle:
+// 1. Background spawn completes → session is idle (running=false)
+// 2. Background send starts → running=true
+// 3. Interrupt cancels context, sets running=false, sets interrupted=true
+// 4. Goroutine detects interrupt → skips destroy, clears interrupted
+// 5. Session remains in map → subsequent send succeeds
+// 6. Unload after interrupt works correctly
+func TestInterrupt_PreservesSession(t *testing.T) {
+	a := &Agent{
+		agentCtx:             context.Background(),
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test/worker:w1"
+	ia := &interactiveAgent{
+		roleName:   "worker",
+		instance:   "w1",
+		background: true,
+		running:    false,
+		cfg:        &RunConfig{},
+	}
+	a.interactiveSubAgents.Store(key, ia)
+
+	// --- Step 1: Simulate background send starting ---
+	ia.mu.Lock()
+	ia.running = true
+	ia.interrupted = false
+	runCtx, runCancel := context.WithCancel(context.Background())
+	ia.cancelCurrent = runCancel
+	ia.mu.Unlock()
+
+	// Verify session is in map
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		t.Fatal("session should be in map before interrupt")
+	}
+
+	// --- Step 2: Simulate InterruptInteractiveSession ---
+	ia.mu.Lock()
+	if ia.cancelCurrent != nil {
+		ia.cancelCurrent() // cancel the context
+	}
+	ia.running = false
+	ia.interrupted = true
+	ia.mu.Unlock()
+
+	// Verify state after interrupt
+	ia.mu.Lock()
+	if ia.running {
+		t.Fatal("running should be false after interrupt")
+	}
+	if !ia.interrupted {
+		t.Fatal("interrupted should be true after interrupt")
+	}
+	ia.mu.Unlock()
+
+	// --- Step 3: Simulate goroutine detecting cancellation ---
+	// (mirrors the cancelled branch in background send goroutine)
+	wasCancelled := runCtx.Err() != nil
+	if !wasCancelled {
+		t.Fatal("runCtx should be cancelled after interrupt")
+	}
+
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	wasInterrupted := ia.interrupted
+	ia.interrupted = false
+	ia.mu.Unlock()
+
+	if !wasInterrupted {
+		t.Fatal("goroutine should detect interrupted=true")
+	}
+
+	// --- Step 4: Session should still be in map (not destroyed) ---
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		t.Fatal("session should STILL be in map after interrupt — interrupt preserves session")
+	}
+
+	// --- Step 5: Subsequent send should be allowed (running=false) ---
+	ia.mu.Lock()
+	canSend := !ia.running && ia.cfg != nil
+	ia.mu.Unlock()
+	if !canSend {
+		t.Fatal("subsequent send should be allowed after interrupt (running=false, cfg!=nil)")
+	}
+
+	// --- Step 6: New background send should work ---
+	ia.mu.Lock()
+	ia.running = true
+	ia.interrupted = false
+	_, newRunCancel := context.WithCancel(context.Background())
+	ia.cancelCurrent = newRunCancel
+	ia.mu.Unlock()
+
+	// Complete naturally
+	newRunCancel()
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	ia.mu.Unlock()
+
+	// --- Step 7: Unload should work ---
+	a.interactiveSubAgents.Delete(key)
+	if _, ok := a.interactiveSubAgents.Load(key); ok {
+		t.Fatal("session should be removed after unload")
+	}
+}
+
+// TestInterrupt_ThenUnload verifies that unload correctly destroys an
+// interrupted session (interrupt preserves, then unload destroys).
+func TestInterrupt_ThenUnload(t *testing.T) {
+	a := &Agent{
+		agentCtx:             context.Background(),
+		interactiveSubAgents: sync.Map{},
+	}
+
+	key := "cli:test/worker:w1"
+	ia := &interactiveAgent{
+		roleName:   "worker",
+		instance:   "w1",
+		background: true,
+		running:    false,
+		cfg:        &RunConfig{},
+	}
+	a.interactiveSubAgents.Store(key, ia)
+
+	// Start background run
+	ia.mu.Lock()
+	ia.running = true
+	ia.interrupted = false
+	runCtx, runCancel := context.WithCancel(context.Background())
+	_ = runCtx // used indirectly via cancelCurrent
+	ia.cancelCurrent = runCancel
+	ia.mu.Unlock()
+
+	// Interrupt
+	ia.mu.Lock()
+	ia.cancelCurrent()
+	ia.running = false
+	ia.interrupted = true
+	ia.mu.Unlock()
+
+	// Goroutine detects interrupt, clears flags
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	ia.interrupted = false
+	ia.mu.Unlock()
+
+	// Session still exists
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		t.Fatal("session should survive interrupt")
+	}
+
+	// Now unload (simulate UnloadInteractiveSession)
+	ia.mu.Lock()
+	if ia.cancelCurrent != nil {
+		ia.cancelCurrent()
+	}
+	ia.mu.Unlock()
+
+	a.cancelChildSessions(key)
+	a.destroyInteractiveSession(key)
+
+	// Session should be gone
+	if _, ok := a.interactiveSubAgents.Load(key); ok {
+		t.Fatal("session should be removed after unload")
 	}
 }

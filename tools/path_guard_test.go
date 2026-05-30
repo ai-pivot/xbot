@@ -345,6 +345,7 @@ func TestResolveWritePath_CurrentDir_EscapeWorkspace(t *testing.T) {
 	_, err := ResolveWritePath(ctx, "evil.txt")
 	if err == nil {
 		t.Fatal("expected error when CurrentDir is outside workspace, got nil")
+		return
 	}
 
 	// 路径穿越也应被拒绝
@@ -353,6 +354,7 @@ func TestResolveWritePath_CurrentDir_EscapeWorkspace(t *testing.T) {
 	_, err = ResolveWritePath(ctx, "../../etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path traversal, got nil")
+		return
 	}
 }
 
@@ -371,6 +373,7 @@ func TestResolveReadPath_CurrentDir_EscapeWorkspace(t *testing.T) {
 	_, err := ResolveReadPath(ctx, "secret.txt")
 	if err == nil {
 		t.Fatal("expected error when CurrentDir is outside workspace, got nil")
+		return
 	}
 }
 

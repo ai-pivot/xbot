@@ -32,6 +32,7 @@ func TestParseToolArgs_InvalidJSON(t *testing.T) {
 	got, err := parseToolArgs[testArgs](input)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if got != nil {
 		t.Errorf("expected nil result, got %+v", got)
@@ -50,6 +51,7 @@ func TestParseToolArgs_EmptyObject(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil pointer, got nil")
+		return
 	}
 	var zero testArgs
 	if *got != zero {
@@ -63,6 +65,7 @@ func TestParseToolArgs_EmptyString(t *testing.T) {
 	got, err := parseToolArgs[testArgs](input)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		return
 	}
 	if got != nil {
 		t.Errorf("expected nil result, got %+v", got)

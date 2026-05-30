@@ -259,12 +259,24 @@ func (a *Agent) buildMainRunConfig(
 	cfg.OAuthHandler = a.buildOAuthHandler(channel, chatID, senderID, sessionKey)
 
 	// 进度通知
-	// Web 渠道始终启用结构化进度，但不发送文本进度消息
-	if channel == "web" || channel == "cli" {
-		// Web: no-op notifier — structured progress goes via ProgressEventHandler
+	// Web/CLI 渠道: no-op notifier — structured progress goes via ProgressEventHandler
+	// Plugin channels (ProgressSender): same — structured progress via ProgressEventHandler
+	// Other channels: fallback to sendMessage-based progress (legacy behavior)
+	isProgressSenderCh := false
+	if channel != "web" && channel != "cli" && a.channelFinder != nil {
+		if ch, ok := a.channelFinder(channel); ok {
+			if _, ok := ch.(channelpkg.ProgressSender); ok {
+				isProgressSenderCh = true
+			}
+		}
+	}
+
+	if channel == "web" || channel == "cli" || isProgressSenderCh {
+		// Structured progress goes via ProgressEventHandler below.
 		// Setting ProgressNotifier to non-nil enables autoNotify in engine.Run()
 		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	} else if autoNotify {
+		// Legacy fallback: send progress text as messages (no patch support)
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
 				_ = a.sendMessage(channel, chatID, lines[0])
@@ -272,9 +284,8 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// 结构化进度事件推送（web 和 cli 渠道）
-	if (channel == "web" || channel == "cli") && a.channelFinder != nil {
-		// CLI 渠道进度处理
+	// 结构化进度事件推送（web, cli, and plugin ProgressSender channels）
+	if (channel == "web" || channel == "cli" || isProgressSenderCh) && a.channelFinder != nil {
 		switch channel {
 		case "cli":
 			if handler := a.buildCLIProgressEventHandler(chatID, channel); handler != nil {
@@ -282,6 +293,12 @@ func (a *Agent) buildMainRunConfig(
 			}
 		case "web":
 			if handler := a.buildWebProgressEventHandler(chatID, channel); handler != nil {
+				cfg.ProgressEventHandler = handler
+			}
+		default:
+			// Plugin channel with ProgressSender (e.g. TG) — build a handler
+			// that sends progress_structured events via the channel's SendProgress.
+			if handler := a.buildPluginProgressEventHandler(chatID, channel); handler != nil {
 				cfg.ProgressEventHandler = handler
 			}
 		}
@@ -733,6 +750,19 @@ func (a *Agent) buildSubAgentRunConfig(
 	cfg.HookManager = a.hookManager
 	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
+
+	// SaveTokenState: persist token counts so GetTokenState RPC returns
+	// correct values when the TUI switches to a SubAgent session.
+	// Without this, the context bar shows 0 (empty) for SubAgent sessions.
+	if extras := cfg.ToolContextExtras; extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
+		memSvc := extras.MemorySvc
+		tenantID := extras.TenantID
+		cfg.SaveTokenState = func(promptTokens, completionTokens int64) {
+			if err := memSvc.SetTokenState(context.Background(), tenantID, promptTokens, completionTokens); err != nil {
+				log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to persist subagent token state")
+			}
+		}
+	}
 
 	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
 	cfg.TUICtrlFn = a.tuiCtrlFn
@@ -1788,9 +1818,88 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 	}
 }
 
+// buildPluginProgressEventHandler creates the progress event handler for plugin channels
+// (e.g. TG) that implement channel.ProgressSender.
+// Returns nil if no suitable channel is available.
+func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
+	if a.channelFinder == nil {
+		return nil
+	}
+	ch, ok := a.channelFinder(channel)
+	if !ok {
+		return nil
+	}
+	ps, ok := ch.(channelpkg.ProgressSender)
+	if !ok {
+		return nil
+	}
+	progressKey := qualifyChatID(channel, chatID)
+	return func(event *ProgressEvent) {
+		if event == nil || event.Structured == nil {
+			return
+		}
+		s := event.Structured
+		payload := &protocol.ProgressEvent{
+			ChatID:           progressKey,
+			Phase:            string(s.Phase),
+			Seq:              s.Seq,
+			Iteration:        s.Iteration,
+			Thinking:         s.ThinkingContent,
+			Reasoning:        s.ReasoningContent,
+			HistoryCompacted: s.HistoryCompacted,
+			CWD:              s.CWD,
+		}
+		for _, t := range s.ActiveTools {
+			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
+				Name:      t.Name,
+				Label:     t.Label,
+				Status:    string(t.Status),
+				Elapsed:   t.Elapsed.Milliseconds(),
+				Summary:   t.Summary,
+				Detail:    t.Detail,
+				Args:      t.Args,
+				Iteration: t.Iteration,
+			})
+		}
+		for _, t := range s.CompletedTools {
+			payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
+				Name:      t.Name,
+				Label:     t.Label,
+				Status:    string(t.Status),
+				Elapsed:   t.Elapsed.Milliseconds(),
+				Summary:   t.Summary,
+				Detail:    t.Detail,
+				Args:      t.Args,
+				Iteration: t.Iteration,
+			})
+		}
+		if len(s.Todos) > 0 {
+			payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+			for i, td := range s.Todos {
+				payload.Todos[i] = protocol.TodoItem{
+					ID:   td.ID,
+					Text: td.Text,
+					Done: td.Done,
+				}
+			}
+		}
+		if s.TokenUsage != nil {
+			payload.TokenUsage = &protocol.TokenUsage{
+				PromptTokens:     s.TokenUsage.PromptTokens,
+				CompletionTokens: s.TokenUsage.CompletionTokens,
+				TotalTokens:      s.TokenUsage.TotalTokens,
+				CacheHitTokens:   s.TokenUsage.CacheHitTokens,
+				MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
+			}
+		}
+		ps.SendProgress(chatID, payload)
+	}
+}
+
 // buildStreamCallbacks resolves CLI and Web channels and returns stream content
 // and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
 // no channels are available.
+// Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
 	var cliCh *channelpkg.CLIChannel
 	var remoteCLICh channelpkg.ProgressSender

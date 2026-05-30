@@ -122,7 +122,7 @@ func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.Progres
 				"chat_id": chatID,
 				"phase":   payload.Phase,
 				"iter":    payload.Iteration,
-			}).Info("Hub SendProgress: no online subscriber, event buffered")
+			}).Debug("Hub SendProgress: no online subscriber, event buffered")
 		}
 	}
 }
