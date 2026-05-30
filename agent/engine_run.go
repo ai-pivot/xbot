@@ -1281,6 +1281,8 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 				s.injectSubAgentBgNotification(ctx, iteration, n)
 			case *tools.CronFired:
 				s.injectCronFiredNotification(ctx, iteration, n)
+			case *tools.QueuedUserMessage:
+				s.injectQueuedUserMessage(ctx, iteration, n)
 			}
 		}
 	}
@@ -1452,6 +1454,67 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
 			Name:      toolName,
 			Label:     "cron",
+			Status:    ToolDone,
+			Iteration: iteration,
+		})
+		if s.autoNotify {
+			s.notifyProgress("")
+		}
+	}
+}
+
+// injectQueuedUserMessage injects a user message that was delivered while the SubAgent
+// was running. The message is injected as a synthetic tool call/result pair so the
+// SubAgent sees it between iterations. ReplyFn is called after injection to notify
+// the sender of success. The message content explicitly tells the SubAgent the delivery
+// was successful.
+func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m *tools.QueuedUserMessage) {
+	toolName := "delivered_message"
+	toolID := fmt.Sprintf("delivered_%d_%d", iteration, time.Now().UnixNano())
+
+	bgContent := fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", m.Content)
+
+	assistantMsg := llm.ChatMessage{
+		Role:    "assistant",
+		Content: "A message from the parent agent was delivered while I was working.",
+		ToolCalls: []llm.ToolCall{{
+			ID:   toolID,
+			Name: toolName,
+		}},
+	}
+
+	if s.cfg.OffloadStore != nil {
+		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", bgContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
+			bgContent = offloaded.Summary
+			GlobalMetrics.OffloadEvents.Add(1)
+			GlobalMetrics.OffloadedItems.Add(1)
+		}
+	}
+
+	toolMsg := llm.NewToolMessage(toolName, toolID, "", bgContent)
+	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
+
+	log.Ctx(ctx).WithFields(log.Fields{
+		"content_len": len(m.Content),
+		"iteration":   iteration,
+	}).Info("Injected queued user message into SubAgent Run loop")
+
+	if s.cfg.Session != nil {
+		_ = s.cfg.Session.AddMessage(assistantMsg)
+		_ = s.cfg.Session.AddMessage(toolMsg)
+		s.persistence.MarkAllPersisted(len(s.messages))
+	}
+
+	// Notify sender of successful delivery
+	if m.ReplyFn != nil {
+		m.ReplyFn(nil)
+	}
+
+	// Show in TUI progress block
+	if s.structuredProgress != nil {
+		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
+			Name:      toolName,
+			Label:     "delivered_message",
 			Status:    ToolDone,
 			Iteration: iteration,
 		})

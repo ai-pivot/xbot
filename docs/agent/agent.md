@@ -69,6 +69,17 @@ SubAgent outbound messages go to **parent's channel/chatID** (never the agent se
 - **`handleFinalResponse` must set `ThinkingContent`** on the prompt data — otherwise PhaseDone assistant synthesis has empty content
 - **Stream content updates must snapshot** — `StreamContentFunc`/`ReasoningStreamContentFunc` must update `lastProgressSnapshot` for CLI to render
 
+## Pending Message Delivery (Running SubAgent)
+
+When a SubAgent is running (`ia.running=true`), `action=send` no longer rejects the message. Instead:
+1. Message queued in `ia.pendingMessages` with a `replyCh chan error`
+2. SubAgent's `DrainBgNotifications` callback (set via `wirePendingMessageDrain`) drains pending messages between iterations
+3. Each message becomes a `QueuedUserMessage` notification, injected as a synthetic tool result by `injectQueuedUserMessage`
+4. SubAgent sees the message as a `delivered_message` tool result with explicit "已送达确认" content
+5. `ReplyFn` signals the sender via `replyCh`, unblocking the caller
+
+All 4 `Run()` call sites in `interactive.go` set `cfg.DrainBgNotifications = ia.wirePendingMessageDrain(key)`.
+
 ## Context Management
 
 - `Pipeline.Assemble()` safely deduplicates system messages (used to panic) (`middleware.go:170`)

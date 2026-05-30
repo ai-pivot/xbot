@@ -604,6 +604,23 @@ func (n *AsyncMessageNotification) SessionKey() string { return n.Key }
 // SenderID implements BgNotification.
 func (n *AsyncMessageNotification) SenderID() string { return n.Sid }
 
+// QueuedUserMessage represents a user message delivered to a running SubAgent
+// via the DrainBgNotifications mechanism. The SubAgent injects it as a
+// synthetic tool result so the agent sees it between iterations.
+// ReplyFn is called after injection to notify the sender of success/failure.
+type QueuedUserMessage struct {
+	Key     string          // session key for routing (unused for SubAgent drain, but required by interface)
+	Sid     string          // sender ID
+	Content string          // the message content
+	ReplyFn func(err error) // called after injection: nil = success
+}
+
+// SessionKey implements BgNotification.
+func (m *QueuedUserMessage) SessionKey() string { return m.Key }
+
+// SenderID implements BgNotification.
+func (m *QueuedUserMessage) SenderID() string { return m.Sid }
+
 // SendAsyncMessage sends an async message notification through BgTaskManager.NotifyCh.
 // Safe to call from any goroutine. Drops silently if channel is full or closed.
 func (m *BackgroundTaskManager) SendAsyncMessage(n *AsyncMessageNotification) {

@@ -30,6 +30,14 @@ type bgSessionCtxKey struct{}
 // enabling cascade cleanup when a parent session is unloaded or cancelled.
 type bgParentKey struct{}
 
+// pendingUserMsg represents a message queued for delivery to a running SubAgent.
+// The sender blocks on replyCh until the message is successfully injected into
+// the SubAgent's Run loop (via DrainBgNotifications). A nil error means success.
+type pendingUserMsg struct {
+	content string
+	replyCh chan error // buffered(1): nil on success, error on failure
+}
+
 // interactiveAgent 封装一个 interactive SubAgent 会话。
 // 存储在 parent Agent 的 interactiveSubAgents map 中。
 type interactiveAgent struct {
@@ -52,6 +60,50 @@ type interactiveAgent struct {
 	task             string              // one-shot subagent 的任务描述（交互式为空）
 	promptTokens     int64               // last known prompt token count (for TUI status bar)
 	completionTokens int64               // last known completion token count (for TUI status bar)
+	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
+}
+
+// drainPendingMessages drains all pending user messages queued while the SubAgent
+// was running. Called by the DrainBgNotifications callback in the SubAgent's Run loop
+// to inject queued messages as synthetic tool call/result pairs.
+// Returns a slice of pendingUserMsg that were drained (callers inject them).
+// Thread-safe: acquires ia.mu.
+func (ia *interactiveAgent) drainPendingMessages() []pendingUserMsg {
+	ia.mu.Lock()
+	defer ia.mu.Unlock()
+	if len(ia.pendingMessages) == 0 {
+		return nil
+	}
+	msgs := ia.pendingMessages
+	ia.pendingMessages = nil
+	return msgs
+}
+
+// wirePendingMessageDrain returns a DrainBgNotifications callback that drains
+// pending user messages from the interactiveAgent and converts them to
+// QueuedUserMessage notifications for injection by the Run loop.
+func (ia *interactiveAgent) wirePendingMessageDrain(sessionKey string) func() []tools.BgNotification {
+	return func() []tools.BgNotification {
+		msgs := ia.drainPendingMessages()
+		if len(msgs) == 0 {
+			return nil
+		}
+		result := make([]tools.BgNotification, len(msgs))
+		for i, pm := range msgs {
+			pm := pm // capture
+			result[i] = &tools.QueuedUserMessage{
+				Key:     sessionKey,
+				Content: pm.content,
+				ReplyFn: func(err error) {
+					select {
+					case pm.replyCh <- err:
+					default:
+					}
+				},
+			}
+		}
+		return result
+	}
 }
 
 // modelName returns the LLM model name. Must be called with ia.mu held.
@@ -666,6 +718,10 @@ func (a *Agent) SpawnInteractiveSession(
 				}
 			}()
 
+			// Wire DrainBgNotifications so pending messages (sent via action=send
+			// while this Run is in progress) are injected between iterations.
+			cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(sessionKey)
+
 			out := Run(runCtx, cfg)
 
 			// Check cancellation BEFORE calling runCancel().
@@ -858,6 +914,11 @@ func (a *Agent) SpawnInteractiveSession(
 	placeholder.running = true
 	placeholder.mu.Unlock()
 
+	// Wire DrainBgNotifications so pending messages (sent via action=send
+	// while this Run is in progress) are injected between iterations.
+	fgSessionKey := originChannel + ":" + originChatID
+	cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(fgSessionKey)
+
 	out := Run(subCtx, cfg)
 
 	placeholder.mu.Lock()
@@ -969,12 +1030,51 @@ func (a *Agent) SendToInteractiveSession(
 	// --- 阶段 1：锁内准备配置（读取 ia 数据）---
 	ia.mu.Lock()
 
-	// Guard: reject send while a background Run is in progress
+	// Guard: when a Run is in progress, queue the message for async injection
+	// instead of rejecting it. The SubAgent's DrainBgNotifications callback
+	// will drain and inject it as a synthetic tool result between iterations.
+	// The sender blocks until the message is successfully injected.
 	if ia.running {
+		if ia.cfg == nil {
+			ia.mu.Unlock()
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
+			}, nil
+		}
+
+		replyCh := make(chan error, 1)
+		ia.pendingMessages = append(ia.pendingMessages, pendingUserMsg{
+			content: msg.Content,
+			replyCh: replyCh,
+		})
 		ia.mu.Unlock()
-		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("interactive session for role %q (instance=%q) is currently running. Use action=\"interrupt\" first, or wait for it to finish, then send.", roleName, instance),
-		}, nil
+
+		// Block until the SubAgent's Run loop drains the message (via DrainBgNotifications)
+		// or the parent context is cancelled.
+		select {
+		case err := <-replyCh:
+			if err != nil {
+				return &channelpkg.OutboundMsg{
+					Content: fmt.Sprintf("failed to deliver message to %q (instance=%q): %v", roleName, instance, err),
+				}, nil
+			}
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("✅ Message delivered to %q (instance=%q). The sub-agent will process it during its current run.", roleName, instance),
+			}, nil
+		case <-ctx.Done():
+			// Context cancelled — remove the pending message to avoid stale delivery
+			ia.mu.Lock()
+			for i, pm := range ia.pendingMessages {
+				if pm.replyCh == replyCh {
+					ia.pendingMessages = append(ia.pendingMessages[:i], ia.pendingMessages[i+1:]...)
+					break
+				}
+			}
+			ia.mu.Unlock()
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("message delivery to %q (instance=%q) cancelled: context deadline exceeded", roleName, instance),
+			}, nil
+		}
 	}
 
 	if ia.cfg == nil {
@@ -1138,6 +1238,10 @@ func (a *Agent) SendToInteractiveSession(
 				}
 			}()
 
+			// Wire DrainBgNotifications for pending message delivery.
+			bgSendKey := originChannel + ":" + originChatID
+			cfg.DrainBgNotifications = ia.wirePendingMessageDrain(bgSendKey)
+
 			out := Run(subCtx, cfg)
 
 			// Check if the context was cancelled (interrupt or unload).
@@ -1293,6 +1397,10 @@ func (a *Agent) SendToInteractiveSession(
 	}
 
 	// Foreground agents: run synchronously (blocks caller until complete)
+	// Wire DrainBgNotifications for pending message delivery.
+	fgSendKey := originChannel + ":" + originChatID
+	cfg.DrainBgNotifications = ia.wirePendingMessageDrain(fgSendKey)
+
 	out := Run(subCtx, cfg)
 
 	ia.mu.Lock()
