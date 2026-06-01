@@ -295,6 +295,7 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
 	m.newContentHint = false
+	m.userScrolledUp = false
 
 	// 发送到消息总线
 	msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
@@ -2535,13 +2536,17 @@ func (m *cliModel) setViewportContent(content string) {
 		lines = strings.Split(content, "\n")
 	}
 
-	atBottom := m.viewport.AtBottom()
+	// Use userScrolledUp to determine follow-bottom behavior.
+	// AtBottom() alone can false-positive when content shrinks (maxYOffset
+	// decreases below current yOffset). userScrolledUp is only set by
+	// explicit user scroll-up actions, making it reliable.
+	shouldFollowBottom := !m.userScrolledUp
 	prevYOffset := m.viewport.YOffset()
 	// Use SetContentLines with pre-split lines to avoid viewport's internal
 	// strings.Split. We also bypass the expensive maxLineWidth scan inside
 	// SetContentLines by directly setting the internal lines and width.
 	viewportSetLinesBypassMaxWidth(&m.viewport, lines, maxW)
-	if atBottom {
+	if shouldFollowBottom {
 		m.viewport.GotoBottom()
 		m.newContentHint = false
 	} else {
@@ -2670,9 +2675,9 @@ func (m *cliModel) updateViewportContent() {
 			allLines = append(allLines, progressLines...)
 			allLines = append(allLines, rewindLines...)
 
-			atBottom := m.viewport.AtBottom()
+			shouldFollowBottom := !m.userScrolledUp
 			viewportSetLinesBypassMaxWidth(&m.viewport, allLines, cw)
-			if atBottom {
+			if shouldFollowBottom {
 				m.viewport.GotoBottom()
 				m.newContentHint = false
 			} else {

@@ -145,6 +145,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		// Viewport 不在底部时，方向键滚动 viewport
 		if !m.viewport.AtBottom() {
 			m.viewport.ScrollUp(1)
+			m.userScrolledUp = true
 			return m, nil, true
 		}
 
@@ -161,6 +162,10 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 		if !m.viewport.AtBottom() {
 			m.viewport.ScrollDown(1)
+			if m.viewport.AtBottom() {
+				m.userScrolledUp = false
+				m.newContentHint = false
+			}
 			return m, nil, true
 		}
 
@@ -1928,6 +1933,7 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 		m.autoExpandInput()
 		m.viewport.GotoBottom()
 		m.newContentHint = false
+		m.userScrolledUp = false
 	}
 	// NOTE: tick chain is started by startAgentTurn() inside sendMessage().
 	// No need to emit tickCmd() here — doing so would create duplicate chains.

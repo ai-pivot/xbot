@@ -571,6 +571,9 @@ func (r *simRunner) doUserMsg(idx int, step SimStep) error {
 	m.resetProgressState()
 	m.renderCacheValid = false
 	m.updateViewportContent()
+	// Sending a message resets scroll state (matches sendMessage behavior)
+	m.viewport.GotoBottom()
+	m.userScrolledUp = false
 	return nil
 }
 
@@ -1671,12 +1674,14 @@ func (r *simRunner) doScroll(idx int, step SimStep) error {
 	case "top":
 		m.viewport.SetYOffset(0)
 	case "bottom":
-		m.viewport.SetYOffset(m.viewport.TotalLineCount())
+		m.viewport.GotoBottom()
+		m.userScrolledUp = false
 	default:
 		if step.ScrollLines > 0 {
 			m.viewport.ScrollDown(step.ScrollLines)
 		} else if step.ScrollLines < 0 {
 			m.viewport.ScrollUp(-step.ScrollLines)
+			m.userScrolledUp = true
 		}
 	}
 	m.renderCacheValid = false
@@ -2016,6 +2021,7 @@ func (r *simRunner) dumpVars() map[string]any {
 		"queueLen":          len(m.messageQueue),
 		"splashDone":        m.splashDone,
 		"ready":             m.ready,
+		"userScrolledUp":    m.userScrolledUp,
 	}
 }
 

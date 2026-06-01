@@ -176,6 +176,7 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 	case "scrollToBottom":
 		m.viewport.GotoBottom()
 		m.newContentHint = false
+		m.userScrolledUp = false
 		return true, m, nil
 	}
 	// Handle prefixed zone IDs (e.g. "sidebarSectionHeader:sessions")
