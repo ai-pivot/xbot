@@ -354,21 +354,42 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 	askContent := strings.Join(visibleAsk, "\n")
 	// Append scrollbar when content overflows
 	if totalAskLines > askVisibleH && askVisibleH > 0 {
-		contentWidth := m.width - 4 - 2 // PanelBox border(2) + padding(2) - scrollbar(2)
+		// Use chatWidth (not m.width) so panel width respects sidebar
+		panelW := m.chatWidth()
+		contentWidth := panelW - 4 - 2 // PanelBox border(2) + padding(2) - scrollbar(2)
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
 		askContent = m.applyScrollbar(askContent, contentWidth, totalAskLines, m.askPanelScrollY)
 	}
-	boxedAsk := m.styles.PanelBox.Render(askContent)
+	// Use chatWidth-aware PanelBox so the askuser panel fits alongside sidebar
+	cw := m.chatWidth()
+	boxedAsk := m.styles.PanelBox.Width(cw - 4).Render(askContent)
 	// Scroll indicator — mouse wheel or ↑↓ at edges scrolls content
 	scrollHint := ""
 	if totalAskLines > askVisibleH {
 		pct := (m.askPanelScrollY + askVisibleH) * 100 / totalAskLines
 		scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] ↕ scroll", pct))
 	}
-	return fmt.Sprintf("%s\n%s\n%s%s",
-		titleBar, m.viewport.View(), boxedAsk, scrollHint)
+
+	// Middle block: viewport + askPanel + scrollHint (same structure as layoutMain
+	// middle section, so sidebar can be joined horizontally)
+	middleBlock := fmt.Sprintf("%s\n%s%s", m.viewport.View(), boxedAsk, scrollHint)
+
+	// Sidebar support — askuser is a split layout (viewport + panel), sidebar
+	// should remain visible just like in normal mode. Without this, opening the
+	// askuser panel causes the sidebar to disappear unconditionally.
+	showSidebar := m.sidebarShown()
+	if showSidebar {
+		availableH := m.height - 1 // minus titleBar
+		sidebar := m.renderSidebarForBlock(middleBlock, availableH)
+		if m.sidebarPosition == "right" {
+			return titleBar + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar)
+		}
+		return titleBar + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, sidebar, middleBlock)
+	}
+
+	return fmt.Sprintf("%s\n%s", titleBar, middleBlock)
 }
 
 // layoutPanel renders the generic panel-mode layout: title bar, scrollable
