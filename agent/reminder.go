@@ -191,6 +191,11 @@ func extractUserGoal(content string) string {
 			inGuide = true
 			continue
 		}
+		// Skip auto-naming rename hint (injected by UserMessageMiddleware)
+		if strings.Contains(trimmed, "⚠️ 当前会话名") || strings.Contains(trimmed, "config(action=\"set\", key=\"session_name\"") {
+			inGuide = true
+			continue
+		}
 		if inGuide && trimmed == "" {
 			inGuide = false
 			continue
