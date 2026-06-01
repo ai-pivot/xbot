@@ -145,6 +145,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		// Viewport 不在底部时，方向键滚动 viewport
 		if !m.viewport.AtBottom() {
 			m.viewport.ScrollUp(1)
+			m.userScrolledUp = true
 			return m, nil, true
 		}
 
@@ -161,6 +162,10 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 		if !m.viewport.AtBottom() {
 			m.viewport.ScrollDown(1)
+			if m.viewport.AtBottom() {
+				m.userScrolledUp = false
+				m.newContentHint = false
+			}
 			return m, nil, true
 		}
 
@@ -468,6 +473,24 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	m.restoreIterationHistory(m.progress)
 
 	m.carryForwardProgressState(prev)
+
+	// Detect iteration reset for SubAgent sessions: when a new background
+	// Run starts after interrupt+resend, iteration counter resets to 0.
+	// The TUI still has old progress state (m.typing=true, old iterations).
+	// Reset progress state and trigger history reload so:
+	// 1. Progress panel shows fresh iterations (starting from #0)
+	// 2. User message from parent agent appears in message list (from DB)
+	// This must run BEFORE snapshotIterationChange, which skips iterations
+	// that are <= m.lastSeenIteration.
+	if m.progress != nil && prev != nil && m.progress.Iteration < m.lastSeenIteration && m.lastSeenIteration > 0 && m.typing {
+		// Snapshot the old turn's final state before resetting.
+		// Use the current agentTurnID since we're ending the current turn.
+		m.endAgentTurn(m.agentTurnID)
+		// Auto-start will trigger on this same progress event
+		// (m.typing is now false, and the guard below will start a new turn).
+		// Reload messages from DB to show the new user message from the parent agent.
+		m.reloadMessagesFromSession()
+	}
 
 	// Update bg task count from callback
 	if m.bgTaskCountFn != nil {
@@ -1910,6 +1933,7 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 		m.autoExpandInput()
 		m.viewport.GotoBottom()
 		m.newContentHint = false
+		m.userScrolledUp = false
 	}
 	// NOTE: tick chain is started by startAgentTurn() inside sendMessage().
 	// No need to emit tickCmd() here — doing so would create duplicate chains.

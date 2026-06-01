@@ -198,12 +198,16 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		}
 		return "flat"
 	}()
-	vals["compression_threshold"] = func() string {
-		if app.cfg.Agent.CompressionThreshold > 0 {
-			return fmt.Sprintf("%g", app.cfg.Agent.CompressionThreshold)
-		}
-		return "0.9"
-	}()
+	// ScopeGlobal keys: only fallback to config.json when DB has no value.
+	// Same pattern as max_iterations/max_concurrency/max_context_tokens below.
+	if _, ok := vals["compression_threshold"]; !ok {
+		vals["compression_threshold"] = func() string {
+			if app.cfg.Agent.CompressionThreshold > 0 {
+				return fmt.Sprintf("%g", app.cfg.Agent.CompressionThreshold)
+			}
+			return "0.9"
+		}()
+	}
 	// ScopeUser keys: tavily_api_key (user_settings → config.json fallback)
 	if _, ok := vals["tavily_api_key"]; !ok {
 		vals["tavily_api_key"] = app.cfg.TavilyAPIKey

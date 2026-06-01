@@ -70,31 +70,56 @@ func (s *NoneSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, err
 		return s.execKeepAlive(ctx, cmd, spec.Timeout)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-
-	result := &ExecResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
+	// Use pipe-based execution (same pattern as execKeepAlive) to avoid cmd.Run()
+	// blocking on pipe EOF when child processes inherit FDs. cmd.Run() uses cmd.Wait()
+	// internally, which blocks until all IO copying completes. If a child process
+	// forks background processes that inherit stdout/stderr pipe FDs, io.Copy never
+	// gets EOF and cmd.Run() hangs forever — even after context timeout kills the
+	// main process. Using cmd.Process.Wait() + separate pipe capture goroutines
+	// avoids this: we wait only for the direct child, then close pipes to unblock
+	// the capture goroutines.
+	stdoutPipe, stderrPipe, err := setupPipes(cmd)
+	if err != nil {
+		return nil, err
 	}
 
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = exitErr.ExitCode()
-			// Even with ExitError, check if context was cancelled (timeout)
-			if ctx.Err() == context.DeadlineExceeded {
-				result.TimedOut = true
-			}
-		} else if ctx.Err() == context.DeadlineExceeded {
-			result.ExitCode = -1
-			result.TimedOut = true
-		} else {
-			killProcessGroup(cmd.Process) // clean up on unexpected errors too
-			return nil, err
-		}
+	var stdoutBuf, stderrBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(&stdoutBuf, stdoutPipe)
+	}()
+	go func() {
+		defer wg.Done()
+		io.Copy(&stderrBuf, stderrPipe)
+	}()
+
+	// Wait for the direct child process to exit.
+	// Use cmd.Process.Wait() (not cmd.Wait()) to avoid blocking on IO completion.
+	state, waitErr := cmd.Process.Wait()
+	// Close pipes to unblock capture goroutines (even if grandchildren hold FDs).
+	stdoutPipe.Close()
+	stderrPipe.Close()
+	wg.Wait()
+
+	result := &ExecResult{
+		Stdout: stdoutBuf.String(),
+		Stderr: stderrBuf.String(),
+	}
+
+	if waitErr == nil && state != nil {
+		result.ExitCode = extractExitCodeFromState(state)
+	} else if waitErr != nil {
+		result.ExitCode = -1
+	}
+
+	if ctx.Err() == context.DeadlineExceeded {
+		result.TimedOut = true
+	} else if waitErr != nil && result.ExitCode == -1 && ctx.Err() == nil {
+		// Non-timeout, non-exit-code error (e.g. signal kill from process group)
+		killProcessGroup(cmd.Process)
+		return nil, waitErr
 	}
 
 	// Always kill the process group to clean up any orphaned children

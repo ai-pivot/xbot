@@ -1781,6 +1781,7 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	case msg.Code == tea.KeyEnd:
 		m.viewport.GotoBottom()
 		m.newContentHint = false
+		m.userScrolledUp = false
 		return true, m, nil
 	case msg.String() == "shift+up":
 		m.viewport.ScrollUp(1)

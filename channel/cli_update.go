@@ -199,6 +199,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		case "end":
 			m.viewport.GotoBottom()
 			m.newContentHint = false
+			m.userScrolledUp = false
 			return m, nil
 		}
 	}
@@ -450,9 +451,28 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// This is the universal safety net — callers that can return cmds do so
 	// directly, but this catches any missed transitions.
 
+	// Track viewport scroll position before update to detect user-initiated scrolling.
+	preViewportYOffset := m.viewport.YOffset()
+
 	// 更新 viewport
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
+
+	// Detect user scroll intent from viewport.Update (mouse wheel, keyboard
+	// scroll, PageUp/Down, etc.). This is the ONLY place userScrolledUp should
+	// be set to true — never from programmatic scroll adjustments.
+	postViewportYOffset := m.viewport.YOffset()
+	if postViewportYOffset != preViewportYOffset {
+		if m.viewport.AtBottom() {
+			// User scrolled to bottom (via any means) → clear intent flag
+			m.userScrolledUp = false
+			m.newContentHint = false
+		} else if postViewportYOffset < preViewportYOffset {
+			// User scrolled up → set intent flag
+			m.userScrolledUp = true
+		}
+		// Scrolling down but not yet at bottom: keep userScrolledUp as-is
+	}
 
 	// 更新 textarea
 	// Skip WindowSizeMsg: handleResize already calls SetWidth() which
@@ -509,10 +529,10 @@ func (m *cliModel) autoExpandInput() {
 	expectedVP := m.layoutViewportHeight()
 	currentVP := m.viewport.Height()
 	if currentVP != expectedVP {
-		wasAtBottom := m.viewport.AtBottom()
+		shouldFollowBottom := !m.userScrolledUp
 		oldYOffset := m.viewport.YOffset()
 		m.viewport.SetHeight(expectedVP)
-		if wasAtBottom {
+		if shouldFollowBottom {
 			m.viewport.GotoBottom()
 		} else {
 			// Height changed while user was scrolled up. Clamp yOffset to
@@ -640,13 +660,11 @@ func (m *cliModel) relayoutViewport() {
 		}
 	}
 
-	// Check AtBottom BEFORE updateViewportContent so height changes don't
-	// cause false-positive "at bottom" detection. When height increases
-	// (e.g. todo bar removed), maxYOffset decreases, making AtBottom() true
-	// even though the user was scrolled up.
-	wasAtBottom := m.viewport.AtBottom()
+	// Use userScrolledUp instead of AtBottom() to avoid false-positive
+	// when height changes cause maxYOffset to decrease below yOffset.
+	shouldFollowBottom := !m.userScrolledUp
 	m.updateViewportContent()
-	if wasAtBottom {
+	if shouldFollowBottom {
 		m.viewport.GotoBottom()
 	} else if heightChanged {
 		// Height changed while user was scrolled up. Restore relative

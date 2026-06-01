@@ -107,6 +107,9 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 	if effectiveModel == "" {
 		effectiveModel = role.Model
 	}
+	if effectiveModel == "" {
+		effectiveModel = "balance"
+	}
 
 	// Spawn interactive SubAgent session
 	task := params.Task
@@ -189,6 +192,9 @@ func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatPar
 			continue
 		}
 		effectiveModel := roleDef.Model
+		if effectiveModel == "" {
+			effectiveModel = "balance"
+		}
 		task := "Ready. Waiting for group discussion."
 		_, err := im.SpawnInteractive(ctx, task, role, roleDef.SystemPrompt, roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
 		if err != nil {

@@ -498,6 +498,7 @@ func (m *cliModel) resetToIdleState() {
 	m.lastTokenUsage = nil
 	m.streamingMsgIdx = -1
 	m.newContentHint = false
+	m.userScrolledUp = false
 	m.renderCacheValid = false
 	m.cachedHistory = ""
 	m.cachedMsgCount = 0
@@ -973,6 +974,14 @@ type cliModel struct {
 	streamingMsgIdx int                   // 当前流式消息的索引（-1 表示无流式消息）
 	newContentHint  bool                  // 有新内容但用户未在底部（显示 ↓ 提示）
 	ready           bool                  // 是否已初始化
+
+	// --- Scroll tracking ---
+	// userScrolledUp tracks the user's INTENT to stay scrolled up, independent
+	// of viewport geometry. AtBottom() can return false-positives when content
+	// shrinks (maxYOffset decreases, clamping yOffset to maxYOffset). This flag
+	// is only set by explicit user scroll-up actions and cleared by explicit
+	// scroll-to-bottom actions, making it immune to geometric false-positives.
+	userScrolledUp bool
 
 	// --- Agent state ---
 	agentTurnID       uint64                       // monotonically increasing turn counter

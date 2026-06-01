@@ -829,6 +829,36 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
 }
 
+// stripRenameHints removes the auto-naming rename hint from all user messages.
+// Called after detecting a config set session_name tool call — once the agent
+// has renamed the session, the hint is stale and should not influence later iterations.
+func (s *runState) stripRenameHints() {
+	const marker = "⚠️ 当前会话名"
+	for i := range s.messages {
+		if s.messages[i].Role != "user" {
+			continue
+		}
+		if !strings.Contains(s.messages[i].Content, marker) {
+			continue
+		}
+		s.messages[i].Content = stripRenameHint(s.messages[i].Content)
+	}
+}
+
+// stripRenameHint removes the rename hint block from a user message content.
+// The hint is appended by UserMessageMiddleware and looks like:
+//
+//	\n⚠️ 当前会话名 "Agent-xxx" 是自动生成的。你必须先...
+//	config(action="set", key="session_name", value="xxx")\n
+func stripRenameHint(content string) string {
+	const marker = "\n⚠️ 当前会话名"
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return content
+	}
+	return strings.TrimSpace(content[:idx])
+}
+
 // maybeCompress checks if context compression or observation masking is needed.
 func (s *runState) maybeCompress(ctx context.Context) {
 	s.compressAttempts++
@@ -1210,6 +1240,23 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 				"stale_ids":   staleIDs,
 			}).Info("Stale offloads detected and invalidated")
 			s.messages = s.syncMessages(s.cfg.OffloadStore.PurgeStaleMessages(s.offloadSessionKey, s.messages))
+		}
+	}
+
+	// Detect session_name config change and strip rename hints from user messages.
+	// The rename hint (⚠️ 当前会话名) is injected by UserMessageMiddleware on the
+	// first user message. Once the agent renames the session, this hint becomes
+	// stale and should be removed to prevent repeated rename attempts in later iterations.
+	for _, tc := range response.ToolCalls {
+		if tc.Name == "config" {
+			var args struct {
+				Action string `json:"action"`
+				Key    string `json:"key"`
+			}
+			if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Action == "set" && args.Key == "session_name" {
+				s.stripRenameHints()
+				break
+			}
 		}
 	}
 }
