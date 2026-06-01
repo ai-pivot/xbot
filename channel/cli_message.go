@@ -242,6 +242,11 @@ func (m *cliModel) sendCancel() {
 
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
 func (m *cliModel) sendToAgent(content string) {
+	// Check if LLM is configured before sending (same check as sendMessage).
+	if m.cachedModelName == "" && m.hasNoSubscription() {
+		m.showSystemMsg(m.locale.SetupNoLLM, feedbackWarning)
+		return
+	}
 	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
@@ -260,6 +265,16 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	content = strings.TrimSpace(content)
 	if strings.HasPrefix(content, "/") {
 		return m.handleSlashCommand(content)
+	}
+
+	// Check if LLM is configured before sending.
+	// When there's no API key and model name is empty, the LLM call will fail anyway.
+	// Show a friendly setup prompt instead of a cryptic error.
+	// Skip this check when sendInboundFn is set (local mode or tests) since
+	// the agent handles missing config gracefully in those cases.
+	if m.sendInboundFn == nil && m.cachedModelName == "" && m.hasNoSubscription() {
+		m.showSystemMsg(m.locale.SetupNoLLM, feedbackWarning)
+		return nil
 	}
 
 	// 🥚 彩蛋 #3: The Answer is 42 检测
@@ -440,6 +455,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 						}
 					}
 				}
+				m.panelIsSetup = false // regular settings, not setup wizard
 				m.openSettingsPanel(schema, currentValues, func(values map[string]string) {
 					// --- Subscription generation guard ---
 					// If the active subscription changed since this panel was opened,

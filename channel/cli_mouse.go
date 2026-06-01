@@ -1012,6 +1012,14 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 		}
 		lines = append(lines, lineInfo{isItem: true, itemIndex: i})
 
+		// Description lines shown when cursor is on this field.
+		if i == m.panelCursor && def.Description != "" {
+			descLines := strings.Count(def.Description, "\n") + 1
+			for k := 0; k < descLines; k++ {
+				lines = append(lines, lineInfo{})
+			}
+		}
+
 		// Inline overlay: combo/edit rendered right after cursor item (Crush-style)
 		if i == m.panelCursor {
 			if m.panelEdit {
@@ -1027,6 +1035,10 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 				end := min(start+maxShow, len(def.Options))
 				for j := start; j < end; j++ {
 					lines = append(lines, lineInfo{isItem: true, itemIndex: -(j + 1)})
+					// Selected combo option may show a description line.
+					if j == m.panelComboIdx && def.Options[j].Description != "" {
+						lines = append(lines, lineInfo{})
+					}
 				}
 				lines = append(lines, lineInfo{}) // hint line
 			}

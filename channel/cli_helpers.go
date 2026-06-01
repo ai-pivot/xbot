@@ -690,6 +690,9 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	lang, hasLang := vals["language"]
 	// Capture feedback string now (m.locale is only safe to read in Update)
 	feedbackMsg := m.locale.SettingsSaved
+	if m.panelIsSetup {
+		feedbackMsg = m.locale.SetupComplete
+	}
 
 	// Detect layout changes and collect layout values
 	layoutKeys := map[string]bool{
@@ -759,6 +762,13 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	m.cachedCompressRatio = m.resolveCompressRatio()
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
+	}
+	// After setup wizard completes, show welcome message with TUI usage tips.
+	if m.panelIsSetup {
+		m.panelIsSetup = false
+		if m.locale.SetupWelcome != "" {
+			m.appendSystem(m.locale.SetupWelcome)
+		}
 	}
 	if visualChanged {
 		m.invalidateAllCache(true)

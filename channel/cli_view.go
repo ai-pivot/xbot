@@ -1431,10 +1431,13 @@ func (m *cliModel) renderSplash() string {
 	}
 	lines = append(lines, strings.Repeat(" ", vPad)+versionText)
 
-	// 描述居中（节日版彩蛋）
+	// 描述居中（节日版彩蛋 + 首次运行欢迎）
 	splashDesc := m.locale.SplashDesc
 	if holidayDesc := getHolidaySplashDesc(); holidayDesc != "" {
 		splashDesc = holidayDesc
+	}
+	if m.channel != nil && m.channel.config.IsFirstRun && m.locale.SplashFirstRun != "" {
+		splashDesc = m.locale.SplashFirstRun
 	}
 	descText := descStyle.Render(splashDesc)
 	dW := lipgloss.Width(descText)

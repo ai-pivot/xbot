@@ -1188,7 +1188,9 @@ type cliModel struct {
 	panelOtherTI       textinput.Model      // askuser panel: single-line Other input
 	askPanelScrollY    int                  // askuser panel: internal scroll offset for long content
 	askPanelTotalLines int                  // cached total line count for scroll clamping
-	panelSchema        []SettingDefinition  // settings panel: schema copy
+	panelSchema        []SettingDefinition  // settings panel: visible schema (filtered from panelSchemaFull)
+	panelSchemaFull    []SettingDefinition  // settings panel: full schema (before DependsOn filtering)
+	panelIsSetup       bool                 // true when panel was opened via /setup or first-run
 	// --- Approval panel ---
 	approvalRequest      *protocol.ApprovalRequest // pending approval request
 	approvalResultCh     chan<- protocol.ApprovalResult
@@ -1676,6 +1678,25 @@ func isCtrlO(msg tea.Msg) bool {
 func isCtrlJ(msg tea.Msg) bool {
 	s := fmt.Sprintf("%v", msg)
 	return s == "?CSI[49 48 59 53 117]?" || s == "\x1b[10;5u" || s == "ctrl+j"
+}
+
+// hasNoSubscription returns true when there is no usable subscription configured.
+// Used to show a friendly setup prompt instead of a cryptic LLM error.
+func (m *cliModel) hasNoSubscription() bool {
+	if m.channel == nil || m.channel.subscriptionMgr == nil {
+		return true
+	}
+	subs, err := m.channel.subscriptionMgr.List(m.senderID)
+	if err != nil || len(subs) == 0 {
+		return true
+	}
+	// Check if any subscription has an API key
+	for _, sub := range subs {
+		if sub.APIKey != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
