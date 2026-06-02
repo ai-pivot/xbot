@@ -14,7 +14,9 @@ package channel
 
 import (
 	"context"
+	"errors"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -379,7 +381,16 @@ func (c *CLIChannel) Start() error {
 
 	// 运行 Bubble Tea（阻塞）
 	if _, err := c.program.Run(); err != nil {
-		log.WithError(err).Error("CLI channel exited with error")
+		if errors.Is(err, tea.ErrProgramPanic) {
+			// BubbleTea swallowed the original panic and stack trace.
+			// Capture current stack (points to Run caller, not the panic site)
+			// and write to cli-panic.log. Not perfect but better than nothing.
+			stack := debug.Stack()
+			clipanic.ReportWithStack("CLIChannel.Start.program.Run", "BubbleTea panic (stack captured post-Run)", err, stack)
+			log.WithError(err).Error("CLI channel exited with panic (see cli-panic.log)")
+		} else {
+			log.WithError(err).Error("CLI channel exited with error")
+		}
 		if debugSock != nil {
 			debugSock.Stop()
 		}

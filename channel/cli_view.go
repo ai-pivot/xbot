@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"xbot/clipanic"
 )
 
 // computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
@@ -1019,7 +1020,8 @@ func (m *cliModel) resolveWidgetZone(zone string) string {
 }
 
 // View renders the CLI interface.
-func (m *cliModel) View() tea.View {
+func (m *cliModel) View() (v tea.View) {
+	defer clipanic.Recover("channel.cliModel.View", nil, true)
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
 
@@ -1081,7 +1083,7 @@ func (m *cliModel) View() tea.View {
 		m.trackMainLayoutZones(&m.mouseZones)
 	}
 
-	v := tea.NewView(content)
+	v = tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 
