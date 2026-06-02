@@ -523,7 +523,7 @@ func (m *cliModel) openWizardPanel() {
 	ti.Placeholder = "sk-..."
 	ti.Prompt = "  "
 	ti.CharLimit = 200
-	ti.SetWidth(min(m.width-10, 60))
+	ti.SetWidth(max(min(m.width-10, 60), 20))
 	ti.Focus()
 	tiStyles := ti.Styles()
 	tiStyles.Focused.Prompt = m.styles.TIPrompt
