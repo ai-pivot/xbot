@@ -6,6 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	log "xbot/logger"
 )
 
 // Wizard step constants.
@@ -435,6 +436,7 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 
 // handleWizardClick dispatches wizard mouse clicks.
 func (m *cliModel) handleWizardClick(zone mouseZone) (bool, tea.Model, tea.Cmd) {
+	log.Debugf("wizard click: zone=%s idx=%d y=%d-%d x=%d-%d", zone.ID, zone.Index, zone.YStart, zone.YEnd, zone.XStart, zone.XEnd)
 	switch zone.ID {
 	case "wizardLang":
 		m.wizardConfirmLang(zone.Index)
