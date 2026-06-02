@@ -94,16 +94,16 @@ var ProviderDefaultURLs = map[string]string{
 // ProviderRecommendedModels maps provider identifiers to their recommended default model.
 // Used by the setup panel to auto-fill llm_model when the user selects a provider.
 var ProviderRecommendedModels = map[string]string{
-	"openai":        "gpt-4o",
-	"anthropic":     "claude-sonnet-4-20250514",
-	"openrouter":    "anthropic/claude-sonnet-4-20250514",
+	"openai":        "gpt-5",
+	"anthropic":     "claude-opus-4-7",
+	"openrouter":    "anthropic/claude-opus-4-7",
 	"google":        "gemini-2.5-pro",
-	"deepseek":      "deepseek-chat",
+	"deepseek":      "deepseek-v4-flash",
 	"moonshot":      "kimi-k2.6",
-	"zhipu":         "glm-4-flash",
-	"zhipu_coding":  "glm-4.5-air",
-	"siliconflow":   "deepseek-ai/DeepSeek-V3",
-	"ollama":        "qwen3:8b",
+	"zhipu":         "glm-5-turbo",
+	"zhipu_coding":  "glm-5-turbo",
+	"siliconflow":   "deepseek-ai/DeepSeek-V4-Pro",
+	"ollama":        "qwen3:30b",
 	"xiaomi":        "mimo-v2.5-pro",
 	"xiaomi_coding": "mimo-v2.5-pro",
 }

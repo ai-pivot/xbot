@@ -2402,10 +2402,18 @@ func (m *cliModel) viewSettingsPanel() string {
 
 		// Show field description when cursor is on this field (not in edit/combo mode).
 		// The description may contain OSC 8 hyperlinks for clickable URLs.
+		// IMPORTANT: lipgloss Style.Render() strips OSC 8 sequences, so we
+		// must write OSC 8 lines directly without applying descStyle.
 		if i == m.panelCursor && !m.panelEdit && !m.panelCombo && def.Description != "" {
 			descLines := strings.Split(def.Description, "\n")
 			for _, dl := range descLines {
-				sb.WriteString(descStyle.Render("    " + dl))
+				if strings.Contains(dl, "\x1b]8;;") {
+					// OSC 8 hyperlink line — write directly, don't let lipgloss touch it.
+					sb.WriteString("    ")
+					sb.WriteString(dl)
+				} else {
+					sb.WriteString(descStyle.Render("    " + dl))
+				}
 				sb.WriteString("\n")
 				ln++
 			}
