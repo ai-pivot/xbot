@@ -71,11 +71,8 @@ func (m *cliModel) renderWizardLang() string {
 	}
 
 	sb.WriteString("\n")
-	// Back button (clickable) — closes panel since this is the first step
-	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
-	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
-	sb.WriteString("  ")
-	sb.WriteString(backOsc)
+	// Back button — closes panel since this is the first step
+	sb.WriteString("    ← " + m.locale.WizardBackBtn)
 	sb.WriteString("\n\n")
 	sb.WriteString(m.wizardHint("↑↓ / 点击选择 · Enter 确认 · Esc 关闭"))
 	return sb.String()
@@ -110,10 +107,7 @@ func (m *cliModel) renderWizardProvider() string {
 
 	sb.WriteString("\n")
 	// Back button
-	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
-	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
-	sb.WriteString("  ")
-	sb.WriteString(backOsc)
+	sb.WriteString("    ← " + m.locale.WizardBackBtn)
 	sb.WriteString("\n\n")
 	sb.WriteString(m.wizardHint(m.locale.WizardNavHint))
 	return sb.String()
@@ -159,15 +153,8 @@ func (m *cliModel) renderWizardAPIKey() string {
 	sb.WriteString("\n\n")
 
 	// Save + Back buttons
-	saveBtn := "  " + m.locale.PanelBtnSave + "  "
-	saveOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-save\x1b\\%s\x1b]8;;\x1b\\", saveBtn)
-	sb.WriteString("  ")
-	sb.WriteString(saveOsc)
-
-	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
-	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
-	sb.WriteString("    ")
-	sb.WriteString(backOsc)
+	sb.WriteString("    ✅ " + m.locale.PanelBtnSave)
+	sb.WriteString("        ← " + m.locale.WizardBackBtn)
 	sb.WriteString("\n\n")
 
 	sb.WriteString(m.wizardHint(m.locale.WizardNavHint))
@@ -186,16 +173,8 @@ func (m *cliModel) renderWizardDone() string {
 	}
 
 	sb.WriteString("\n\n")
-	startBtn := "  🚀 " + m.locale.WizardStartBtn + "  "
-	startOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-start\x1b\\%s\x1b]8;;\x1b\\", startBtn)
-	sb.WriteString("  ")
-	sb.WriteString(startOsc)
-
-	// Back button
-	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
-	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
-	sb.WriteString("    ")
-	sb.WriteString(backOsc)
+	sb.WriteString("    🚀 " + m.locale.WizardStartBtn)
+	sb.WriteString("        ← " + m.locale.WizardBackBtn)
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -445,8 +424,8 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 			zb.addX(0, 24, 40, "wizardBack", 0)
 			zb.skip(1)
 		case "wizardStartBack":
-			zb.addX(0, 0, 20, "wizardStart", 0)
-			zb.addX(0, 24, 44, "wizardBack", 0)
+			zb.addX(0, 2, 22, "wizardStart", 0)
+			zb.addX(0, 26, 46, "wizardBack", 0)
 			zb.skip(1)
 		default:
 			zb.skip(1)
