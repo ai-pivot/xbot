@@ -401,8 +401,12 @@ func (m *cliModel) clickPanelOpenURL() (bool, tea.Model, tea.Cmd) {
 
 // clickPanelSave handles clicking the "保存设置" button.
 func (m *cliModel) clickPanelSave() (bool, tea.Model, tea.Cmd) {
-	if m.panelOnSubmit != nil {
-		return true, m, m.doSaveSettings(m.panelOnSubmit, m.panelValues)
+	onSubmit := m.panelOnSubmit
+	panelVals := m.panelValues
+	m.closePanel()
+	if onSubmit != nil && panelVals != nil {
+		m.settingsSaving = true
+		return true, m, m.doSaveSettings(onSubmit, panelVals)
 	}
 	return true, m, nil
 }

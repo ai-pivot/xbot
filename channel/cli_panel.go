@@ -241,7 +241,7 @@ func (m *cliModel) autoFillBaseURL(provider string) {
 // updateAPIKeyHint updates the llm_api_key field's description in panelSchemaFull
 // to show provider-specific guidance with a clickable OSC 8 hyperlink.
 func (m *cliModel) updateAPIKeyHint(provider string) {
-	hint := FormatProviderHint(provider)
+	hint := FormatProviderHint(provider, m.locale)
 	if hint == "" {
 		return
 	}
@@ -2429,9 +2429,16 @@ func (m *cliModel) viewSettingsPanel() string {
 				sb.WriteString("\n")
 				ln++
 			} else if hasGuide && guide.URL == "" {
-				sb.WriteString(descStyle.Render("    " + guide.Hint))
-				sb.WriteString("\n")
-				ln++
+				// Ollama: no key needed, show info text from locale
+				hint := ""
+				if m.locale.ProviderHints != nil {
+					hint = m.locale.ProviderHints[guide.HintKey]
+				}
+				if hint != "" {
+					sb.WriteString(descStyle.Render("    " + hint))
+					sb.WriteString("\n")
+					ln++
+				}
 			}
 		}
 

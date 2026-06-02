@@ -28,17 +28,18 @@ type UILocale struct {
 	UpdateFailed   string // "更新检查失败（网络超时或无法连接 GitHub API）"
 
 	// --- B. Panel text ---
-	PanelSettingsTitle   string // "⚙ Settings"
-	PanelNotSet          string // "(未设置)"
-	PanelEditHint        string // "Enter confirm | Esc cancel"
-	PanelComboHint       string // "Up/Down select | Enter confirm | Type custom | Esc cancel"
-	PanelNavHint         string // "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭"
-	PanelEditPlaceholder string // "输入新值..."
-	PanelBtnGetKey       string // "🔑 点击这里获取密钥"
-	PanelBtnSave         string // "💾 保存设置"
-	PanelBtnCancel       string // "✖ 取消"
-	PanelToggleOn        string // "● ON"
-	PanelToggleOff       string // "○ OFF"
+	PanelSettingsTitle   string            // "⚙ Settings"
+	PanelNotSet          string            // "(未设置)"
+	PanelEditHint        string            // "Enter confirm | Esc cancel"
+	PanelComboHint       string            // "Up/Down select | Enter confirm | Type custom | Esc cancel"
+	PanelNavHint         string            // "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭"
+	PanelEditPlaceholder string            // "输入新值..."
+	PanelBtnGetKey       string            // "🔑 点击这里获取密钥"
+	PanelBtnSave         string            // "💾 保存设置"
+	PanelBtnCancel       string            // "✖ 取消"
+	ProviderHints        map[string]string // per-provider API key hint text (keyed by HintKey)
+	PanelToggleOn        string            // "● ON"
+	PanelToggleOff       string            // "○ OFF"
 
 	PanelOther      string // "Other: "
 	PanelSubmit     string // "Submit →"
@@ -249,8 +250,21 @@ func localeZH() *UILocale {
 		PanelBtnGetKey:       "🔑 点击这里获取密钥",
 		PanelBtnSave:         "💾 保存设置",
 		PanelBtnCancel:       "✖ 取消",
-		PanelToggleOn:        "● 开启",
-		PanelToggleOff:       "○ 关闭",
+		ProviderHints: map[string]string{
+			"openai":       "👉 打开上面的链接 → 登录 → Create new secret key → 复制密钥",
+			"anthropic":    "👉 打开上面的链接 → 登录 → Create Key → 复制密钥",
+			"openrouter":   "👉 打开上面的链接 → 登录 → Create Key → 复制密钥",
+			"google":       "👉 打开上面的链接 → 登录 → Create API Key → 复制密钥",
+			"deepseek":     "👉 打开上面的链接 → 登录 → 创建 API Key → 复制密钥",
+			"zhipu":        "👉 打开上面的链接 → 登录 → 添加 API Key → 复制密钥",
+			"zhipu_coding": "👉 打开上面的链接 → 登录 → 创建 API Key（sk-sp- 开头的是 Coding Plan 专用密钥）",
+			"siliconflow":  "👉 打开上面的链接 → 登录 → 添加 API Key → 复制密钥",
+			"moonshot":     "👉 打开上面的链接 → 登录 → 创建 API Key → 复制密钥",
+			"xiaomi":       "👉 打开上面的链接 → 注册/登录 → 获取 Token Plan 密钥",
+			"ollama":       "✅ 不需要密钥！只需先安装 Ollama（ollama.com）并运行模型",
+		},
+		PanelToggleOn:  "● 开启",
+		PanelToggleOff: "○ 关闭",
 
 		PanelOther:      "其他: ",
 		PanelSubmit:     "提交 →",
@@ -650,8 +664,21 @@ func localeEN() *UILocale {
 		PanelBtnGetKey:       "🔑 Click to get API key",
 		PanelBtnSave:         "💾 Save",
 		PanelBtnCancel:       "✖ Cancel",
-		PanelToggleOn:        "● ON",
-		PanelToggleOff:       "○ OFF",
+		ProviderHints: map[string]string{
+			"openai":       "👉 Open the link above → Log in → Create new secret key → Copy",
+			"anthropic":    "👉 Open the link above → Log in → Create Key → Copy",
+			"openrouter":   "👉 Open the link above → Log in → Create Key → Copy",
+			"google":       "👉 Open the link above → Log in → Create API Key → Copy",
+			"deepseek":     "👉 Open the link above → Log in → Create API Key → Copy",
+			"zhipu":        "👉 Open the link above → Log in → Add API Key → Copy",
+			"zhipu_coding": "👉 Open the link above → Log in → Create API Key (sk-sp- prefix is for Coding Plan)",
+			"siliconflow":  "👉 Open the link above → Log in → Add API Key → Copy",
+			"moonshot":     "👉 Open the link above → Log in → Create API Key → Copy",
+			"xiaomi":       "👉 Open the link above → Sign up / Log in → Get Token Plan key",
+			"ollama":       "✅ No key needed! Just install Ollama (ollama.com) and run a model",
+		},
+		PanelToggleOn:  "● ON",
+		PanelToggleOff: "○ OFF",
 
 		PanelOther:      "Other: ",
 		PanelSubmit:     "Submit →",
@@ -1046,8 +1073,21 @@ func localeJA() *UILocale {
 		PanelBtnGetKey:       "🔑 クリックしてキーを取得",
 		PanelBtnSave:         "💾 保存",
 		PanelBtnCancel:       "✖ キャンセル",
-		PanelToggleOn:        "● オン",
-		PanelToggleOff:       "○ オフ",
+		ProviderHints: map[string]string{
+			"openai":       "👉 上のリンクを開く → ログイン → Create new secret key → コピー",
+			"anthropic":    "👉 上のリンクを開く → ログイン → Create Key → コピー",
+			"openrouter":   "👉 上のリンクを開く → ログイン → Create Key → コピー",
+			"google":       "👉 上のリンクを開く → ログイン → Create API Key → コピー",
+			"deepseek":     "👉 上のリンクを開く → ログイン → API Key を作成 → コピー",
+			"zhipu":        "👉 上のリンクを開く → ログイン → API Key を追加 → コピー",
+			"zhipu_coding": "👉 上のリンクを開く → ログイン → API Key を作成（sk-sp- は Coding Plan 専用）",
+			"siliconflow":  "👉 上のリンクを開く → ログイン → API Key を追加 → コピー",
+			"moonshot":     "👉 上のリンクを開く → ログイン → API Key を作成 → コピー",
+			"xiaomi":       "👉 上のリンクを開く → 登録/ログイン → Token Plan キーを取得",
+			"ollama":       "✅ キー不要！Ollama（ollama.com）をインストールしてモデルを実行",
+		},
+		PanelToggleOn:  "● オン",
+		PanelToggleOff: "○ オフ",
 
 		PanelOther:      "その他: ",
 		PanelSubmit:     "送信 →",

@@ -111,77 +111,49 @@ var ProviderRecommendedModels = map[string]string{
 // ProviderSetupGuide holds instructions for obtaining an API key from a provider.
 type ProviderSetupGuide struct {
 	// URL is the direct link to the provider's API key management page.
-	// Rendered as an OSC 8 clickable hyperlink in the terminal.
 	URL string
-	// Hint is a short instruction shown below the API Key field.
-	// May contain an OSC 8 hyperlink placeholder {{URL}} that gets replaced at render time.
-	Hint string
+	// HintKey is the i18n key for the hint text, looked up in UILocale.ProviderHints.
+	HintKey string
 }
 
 // ProviderSetupGuides maps provider identifiers to their API key acquisition guides.
 // When the user selects a provider in the setup panel, the API Key field's description
 // is dynamically updated to include the guide hint with a clickable link.
 var ProviderSetupGuides = map[string]ProviderSetupGuide{
-	"openai": {
-		URL:  "https://platform.openai.com/api-keys",
-		Hint: "👉 打开上面的链接 → 登录 → Create new secret key → 复制密钥",
-	},
-	"anthropic": {
-		URL:  "https://console.anthropic.com/settings/keys",
-		Hint: "👉 打开上面的链接 → 登录 → Create Key → 复制密钥",
-	},
-	"openrouter": {
-		URL:  "https://openrouter.ai/settings/keys",
-		Hint: "👉 打开上面的链接 → 登录 → Create Key → 复制密钥",
-	},
-	"google": {
-		URL:  "https://aistudio.google.com/apikey",
-		Hint: "👉 打开上面的链接 → 登录 → Create API Key → 复制密钥",
-	},
-	"deepseek": {
-		URL:  "https://platform.deepseek.com/api_keys",
-		Hint: "👉 打开上面的链接 → 登录 → 创建 API Key → 复制密钥",
-	},
-	"zhipu": {
-		URL:  "https://open.bigmodel.cn/usercenter/apikeys",
-		Hint: "👉 打开上面的链接 → 登录 → 添加 API Key → 复制密钥",
-	},
-	"zhipu_coding": {
-		URL:  "https://bigmodel.cn/apikey/platform",
-		Hint: "👉 打开上面的链接 → 登录 → 创建 API Key（sk-sp- 开头的是 Coding Plan 专用密钥）",
-	},
-	"siliconflow": {
-		URL:  "https://cloud.siliconflow.cn/account/ak",
-		Hint: "👉 打开上面的链接 → 登录 → 添加 API Key → 复制密钥",
-	},
-	"moonshot": {
-		URL:  "https://platform.moonshot.cn/console/api-keys",
-		Hint: "👉 打开上面的链接 → 登录 → 创建 API Key → 复制密钥",
-	},
-	"xiaomi": {
-		URL:  "https://mimo.mi.com",
-		Hint: "👉 打开上面的链接 → 注册/登录 → 获取 Token Plan 密钥",
-	},
-	"ollama": {
-		URL:  "",
-		Hint: "✅ 不需要密钥！只需先安装 Ollama（ollama.com）并运行模型",
-	},
+	"openai":       {URL: "https://platform.openai.com/api-keys", HintKey: "openai"},
+	"anthropic":    {URL: "https://console.anthropic.com/settings/keys", HintKey: "anthropic"},
+	"openrouter":   {URL: "https://openrouter.ai/settings/keys", HintKey: "openrouter"},
+	"google":       {URL: "https://aistudio.google.com/apikey", HintKey: "google"},
+	"deepseek":     {URL: "https://platform.deepseek.com/api_keys", HintKey: "deepseek"},
+	"zhipu":        {URL: "https://open.bigmodel.cn/usercenter/apikeys", HintKey: "zhipu"},
+	"zhipu_coding": {URL: "https://bigmodel.cn/apikey/platform", HintKey: "zhipu_coding"},
+	"siliconflow":  {URL: "https://cloud.siliconflow.cn/account/ak", HintKey: "siliconflow"},
+	"moonshot":     {URL: "https://platform.moonshot.cn/console/api-keys", HintKey: "moonshot"},
+	"xiaomi":       {URL: "https://mimo.mi.com", HintKey: "xiaomi"},
+	"ollama":       {URL: "", HintKey: "ollama"},
 }
 
 // FormatProviderHint returns the full hint string for a provider, including
 // an OSC 8 clickable hyperlink if a URL is available.
-// The link text is the URL itself, followed by the hint instruction.
-func FormatProviderHint(provider string) string {
+// The hint text is looked up from the locale's ProviderHints map.
+func FormatProviderHint(provider string, locale *UILocale) string {
 	guide, ok := ProviderSetupGuides[provider]
 	if !ok {
 		return ""
 	}
+	hint := ""
+	if locale != nil && locale.ProviderHints != nil {
+		hint = locale.ProviderHints[guide.HintKey]
+	}
+	if hint == "" {
+		return ""
+	}
 	if guide.URL == "" {
-		return guide.Hint
+		return hint
 	}
 	// OSC 8 hyperlink: \x1b]8;;URL\x1b\\TEXT\x1b]8;;\x1b\\
 	link := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, guide.URL)
-	return link + "\n" + guide.Hint
+	return link + "\n" + hint
 }
 
 // ProviderIsCodingPlan returns true if the provider value represents a coding plan variant.
