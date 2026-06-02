@@ -8,7 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
-	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -112,10 +111,6 @@ func (m *cliModel) handleMouseMsg(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
 func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea.Cmd) {
 	zone, found := m.mouseZones.findZone(msg.Y, msg.X)
 	if !found {
-		// Debug: log when click misses all zones in wizard mode
-		if m.panelMode == "wizard" {
-			log.Debugf("wizard click miss: y=%d x=%d zones=%d", msg.Y, msg.X, len(m.mouseZones.zones))
-		}
 		return false, m, nil
 	}
 

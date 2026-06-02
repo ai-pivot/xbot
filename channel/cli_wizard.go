@@ -6,7 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	log "xbot/logger"
+	"charm.land/lipgloss/v2"
 )
 
 // Wizard step constants.
@@ -163,13 +163,27 @@ func (m *cliModel) renderWizardAPIKey() string {
 }
 
 func (m *cliModel) renderWizardDone() string {
+	w := m.width - 4
+	if w > 80 {
+		w = 80
+	}
 	sb := strings.Builder{}
 	sb.WriteString(m.wizardTitle(m.locale.WizardDoneTitle))
 	sb.WriteString("\n\n")
 
 	if m.locale.SetupWelcome != "" {
 		for _, l := range strings.Split(m.locale.SetupWelcome, "\n") {
-			sb.WriteString("  " + l + "\n")
+			line := "  " + l
+			// Truncate to panel content width to prevent PanelBox from wrapping.
+			// Wrapping adds extra rendered lines, making zone Y-coordinates wrong.
+			for lipgloss.Width(line) > w {
+				runes := []rune(line)
+				if len(runes) <= 1 {
+					break
+				}
+				line = string(runes[:len(runes)-1])
+			}
+			sb.WriteString(line + "\n")
 		}
 	}
 
@@ -436,7 +450,6 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 
 // handleWizardClick dispatches wizard mouse clicks.
 func (m *cliModel) handleWizardClick(zone mouseZone) (bool, tea.Model, tea.Cmd) {
-	log.Debugf("wizard click: zone=%s idx=%d y=%d-%d x=%d-%d", zone.ID, zone.Index, zone.YStart, zone.YEnd, zone.XStart, zone.XEnd)
 	switch zone.ID {
 	case "wizardLang":
 		m.wizardConfirmLang(zone.Index)
@@ -495,9 +508,7 @@ func (m *cliModel) openWizardPanel() {
 		}
 	}
 	m.panelOnSubmit = func(vals map[string]string) {
-		if m.channel != nil && m.channel.config.ApplySettings != nil {
-			m.channel.config.ApplySettings(vals, m.chatID)
-		}
+		m.persistCLISettingsValues(vals)
 	}
 	m.panelIsSetup = true
 	ti := textinput.New()
