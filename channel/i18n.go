@@ -2,6 +2,7 @@ package channel
 
 import (
 	"fmt"
+	"time"
 
 	"xbot/config"
 )
@@ -1444,10 +1445,21 @@ func SetLocale(lang string) {
 }
 
 // GetLocale returns the UILocale for the given language code.
-// Falls back to Chinese (zh) for unknown languages.
+// When lang is empty (no language configured, e.g. first run), it detects
+// the default language from the system timezone: CST (UTC+8) → Chinese,
+// otherwise English. Explicit language codes always take precedence.
 func GetLocale(lang string) *UILocale {
 	if loc, ok := locales[lang]; ok {
 		return loc
 	}
-	return locales[""] // default zh
+	// No language configured — infer from timezone.
+	if lang == "" {
+		_, offset := time.Now().Zone()
+		// UTC+8 zones: CST (China Standard Time), HKT, SGT, etc.
+		// Offset is in seconds: UTC+8 = 28800
+		if offset >= 25200 && offset <= 32400 { // UTC+7 to UTC+9
+			return locales["zh"]
+		}
+	}
+	return locales["en"]
 }
