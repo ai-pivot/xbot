@@ -62,16 +62,22 @@ func (m *cliModel) renderWizardLang() string {
 	sb.WriteString("\n\n")
 
 	for i, opt := range wizardLangOptions {
-		line := "  " + opt.Label + "  "
 		if i == m.wizardLangSel {
-			line = m.wizardSelLine(line, w)
+			sb.WriteString(m.wizardSelLine(opt.Label, w))
+		} else {
+			sb.WriteString(m.wizardUnselLine(opt.Label, w))
 		}
-		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(m.wizardHint("↑↓ / 点击选择"))
+	// Back button (clickable) — closes panel since this is the first step
+	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
+	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
+	sb.WriteString("  ")
+	sb.WriteString(backOsc)
+	sb.WriteString("\n\n")
+	sb.WriteString(m.wizardHint("↑↓ / 点击选择 · Enter 确认 · Esc 关闭"))
 	return sb.String()
 }
 
@@ -87,22 +93,28 @@ func (m *cliModel) renderWizardProvider() string {
 	opts := m.wizardProviderList()
 	for i, opt := range opts {
 		if i == m.wizardProvSel {
-			sb.WriteString(m.wizardSelLine("  "+opt.Label+"  ", w))
+			sb.WriteString(m.wizardSelLine(opt.Label, w))
 			if opt.Description != "" {
 				sb.WriteString("\n")
-				sb.WriteString(m.wizardSelLine("    "+opt.Description, w))
+				sb.WriteString(m.styles.TextSecondarySt.Render("      " + opt.Description))
 			}
 		} else {
-			sb.WriteString("  " + opt.Label + "  ")
+			sb.WriteString(m.wizardUnselLine(opt.Label, w))
 			if opt.Description != "" {
 				sb.WriteString("\n")
-				sb.WriteString(m.styles.TextMutedSt.Render("    " + opt.Description))
+				sb.WriteString(m.styles.TextMutedSt.Render("      " + opt.Description))
 			}
 		}
 		sb.WriteString("\n")
 	}
 
 	sb.WriteString("\n")
+	// Back button
+	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
+	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
+	sb.WriteString("  ")
+	sb.WriteString(backOsc)
+	sb.WriteString("\n\n")
 	sb.WriteString(m.wizardHint(m.locale.WizardNavHint))
 	return sb.String()
 }
@@ -178,6 +190,12 @@ func (m *cliModel) renderWizardDone() string {
 	startOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-start\x1b\\%s\x1b]8;;\x1b\\", startBtn)
 	sb.WriteString("  ")
 	sb.WriteString(startOsc)
+
+	// Back button
+	backBtn := "  ← " + m.locale.WizardBackBtn + "  "
+	backOsc := fmt.Sprintf("\x1b]8;;xbot://wizard-back\x1b\\%s\x1b]8;;\x1b\\", backBtn)
+	sb.WriteString("    ")
+	sb.WriteString(backOsc)
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -196,7 +214,12 @@ func (m *cliModel) wizardTitle(text string) string {
 }
 
 func (m *cliModel) wizardSelLine(text string, width int) string {
-	return m.styles.SettingsSelBg.Width(width).Render(text)
+	// Use Accent style for selected items — gives bold colored text + pointer
+	return m.styles.Accent.Width(width).Render("▸ " + text)
+}
+
+func (m *cliModel) wizardUnselLine(text string, width int) string {
+	return m.styles.TextMutedSt.Width(width).Render("  " + text)
 }
 
 func (m *cliModel) wizardHint(text string) string {
@@ -356,8 +379,10 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 		for i := range wizardLangOptions {
 			lines = append(lines, wLine{zoneID: "wizardLang", zoneIdx: i})
 		}
-		lines = append(lines, wLine{}) // blank
-		lines = append(lines, wLine{}) // hint
+		lines = append(lines, wLine{})                     // blank
+		lines = append(lines, wLine{zoneID: "wizardBack"}) // back button
+		lines = append(lines, wLine{})                     // blank
+		lines = append(lines, wLine{})                     // hint
 
 	case wizardProvider:
 		lines = append(lines, wLine{}) // title
@@ -369,8 +394,10 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 				lines = append(lines, wLine{})
 			}
 		}
-		lines = append(lines, wLine{}) // blank
-		lines = append(lines, wLine{}) // hint
+		lines = append(lines, wLine{})                     // blank
+		lines = append(lines, wLine{zoneID: "wizardBack"}) // back button
+		lines = append(lines, wLine{})                     // blank
+		lines = append(lines, wLine{})                     // hint
 
 	case wizardAPIKey:
 		lines = append(lines, wLine{}) // title
@@ -399,9 +426,9 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 				lines = append(lines, wLine{})
 			}
 		}
-		lines = append(lines, wLine{}) // blank
-		lines = append(lines, wLine{}) // blank
-		lines = append(lines, wLine{zoneID: "wizardStart"})
+		lines = append(lines, wLine{})                          // blank
+		lines = append(lines, wLine{})                          // blank
+		lines = append(lines, wLine{zoneID: "wizardStartBack"}) // start + back buttons on same line
 	}
 
 	for ln := scrollY; ln < len(lines) && zb.y < contentStartY+visibleH; ln++ {
@@ -411,12 +438,16 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 			zb.add(1, info.zoneID, info.zoneIdx)
 		case "panelOpenURL":
 			zb.add(1, "panelOpenURL", 0)
+		case "wizardBack":
+			zb.add(1, "wizardBack", 0)
 		case "wizardSaveLine":
 			zb.addX(0, 0, 20, "wizardSave", 0)
 			zb.addX(0, 24, 40, "wizardBack", 0)
 			zb.skip(1)
-		case "wizardStart":
-			zb.add(1, "wizardStart", 0)
+		case "wizardStartBack":
+			zb.addX(0, 0, 20, "wizardStart", 0)
+			zb.addX(0, 24, 44, "wizardBack", 0)
+			zb.skip(1)
 		default:
 			zb.skip(1)
 		}
@@ -437,7 +468,23 @@ func (m *cliModel) handleWizardClick(zone mouseZone) (bool, tea.Model, tea.Cmd) 
 		m.wizardStep = wizardDone
 		return true, m, nil
 	case "wizardBack":
-		m.wizardStep = wizardProvider
+		switch m.wizardStep {
+		case wizardLang:
+			m.closePanel()
+		case wizardProvider:
+			m.wizardStep = wizardLang
+		case wizardAPIKey:
+			m.wizardStep = wizardProvider
+		case wizardDone:
+			provider := m.panelValues["llm_provider"]
+			if provider == "ollama" {
+				m.wizardStep = wizardProvider
+			} else {
+				m.wizardStep = wizardAPIKey
+				m.panelEditTA.SetValue(m.panelValues["llm_api_key"])
+				m.panelEditTA.Focus()
+			}
+		}
 		return true, m, nil
 	case "wizardStart":
 		return true, m, m.wizardFinish()
@@ -477,5 +524,7 @@ func (m *cliModel) openWizardPanel() {
 	ta.SetWidth(min(m.width-10, 60))
 	ta.SetHeight(1)
 	ta.CharLimit = 200
+	ta.Focus()
+	applyTAStyles(&ta, &m.styles)
 	m.panelEditTA = ta
 }
