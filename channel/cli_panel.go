@@ -2422,7 +2422,7 @@ func (m *cliModel) viewSettingsPanel() string {
 		if def.Key == "llm_api_key" && m.panelValues["llm_provider"] != "" {
 			guide, hasGuide := ProviderSetupGuides[m.panelValues["llm_provider"]]
 			if hasGuide && guide.URL != "" {
-				btnLabel := "  🔑 点击这里获取密钥  "
+				btnLabel := "  " + m.locale.PanelBtnGetKey + "  "
 				oscLink := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, btnLabel)
 				sb.WriteString("    ")
 				sb.WriteString(oscLink)
@@ -2490,12 +2490,12 @@ func (m *cliModel) viewSettingsPanel() string {
 	if !m.panelEdit && !m.panelCombo {
 		sb.WriteString("\n")
 		// Save button — styled prominently
-		saveBtn := "  💾 保存设置  "
+		saveBtn := "  " + m.locale.PanelBtnSave + "  "
 		saveOsc := fmt.Sprintf("\x1b]8;;xbot://panel-save\x1b\\%s\x1b]8;;\x1b\\", saveBtn)
 		sb.WriteString("  ")
 		sb.WriteString(saveOsc)
 		// Cancel button
-		cancelBtn := "  ✖ 取消  "
+		cancelBtn := "  " + m.locale.PanelBtnCancel + "  "
 		cancelOsc := fmt.Sprintf("\x1b]8;;xbot://panel-cancel\x1b\\%s\x1b]8;;\x1b\\", cancelBtn)
 		sb.WriteString("    ")
 		sb.WriteString(cancelOsc)

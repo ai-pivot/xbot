@@ -33,6 +33,9 @@ type UILocale struct {
 	PanelComboHint       string // "Up/Down select | Enter confirm | Type custom | Esc cancel"
 	PanelNavHint         string // "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭"
 	PanelEditPlaceholder string // "输入新值..."
+	PanelBtnGetKey       string // "🔑 点击这里获取密钥"
+	PanelBtnSave         string // "💾 保存设置"
+	PanelBtnCancel       string // "✖ 取消"
 	PanelToggleOn        string // "● ON"
 	PanelToggleOff       string // "○ OFF"
 
@@ -242,6 +245,9 @@ func localeZH() *UILocale {
 		PanelComboHint:       "↑↓ 选择 | Enter 确认 | 输入自定义值 | Esc 取消",
 		PanelNavHint:         "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭",
 		PanelEditPlaceholder: "> 输入新值...",
+		PanelBtnGetKey:       "🔑 点击这里获取密钥",
+		PanelBtnSave:         "💾 保存设置",
+		PanelBtnCancel:       "✖ 取消",
 		PanelToggleOn:        "● 开启",
 		PanelToggleOff:       "○ 关闭",
 
@@ -640,6 +646,9 @@ func localeEN() *UILocale {
 		PanelComboHint:       "Up/Down select | Enter confirm | Type custom | Esc cancel",
 		PanelNavHint:         "↑↓ navigate · Enter edit/toggle · Ctrl+S save · Esc close",
 		PanelEditPlaceholder: "Enter new value...",
+		PanelBtnGetKey:       "🔑 Click to get API key",
+		PanelBtnSave:         "💾 Save",
+		PanelBtnCancel:       "✖ Cancel",
 		PanelToggleOn:        "● ON",
 		PanelToggleOff:       "○ OFF",
 
@@ -1033,6 +1042,9 @@ func localeJA() *UILocale {
 		PanelComboHint:       "↑↓ 選択 | Enter 確認 | カスタム入力 | Esc キャンセル",
 		PanelNavHint:         "↑↓ 移動 · Enter 編集/切替 · Ctrl+S 保存 · Esc 閉じる",
 		PanelEditPlaceholder: "> 新しい値を入力...",
+		PanelBtnGetKey:       "🔑 クリックしてキーを取得",
+		PanelBtnSave:         "💾 保存",
+		PanelBtnCancel:       "✖ キャンセル",
 		PanelToggleOn:        "● オン",
 		PanelToggleOff:       "○ オフ",
 
