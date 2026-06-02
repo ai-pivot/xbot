@@ -181,7 +181,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			}
 		case "wizard":
 			if m.wizardStep == wizardAPIKey {
-				m.panelEditTA, cmd = m.panelEditTA.Update(paste)
+				m.wizardKeyTI, cmd = m.wizardKeyTI.Update(paste)
 			}
 		}
 		return m, cmd

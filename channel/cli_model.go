@@ -1190,6 +1190,7 @@ type cliModel struct {
 	panelOptCursor     map[int]int          // askuser panel: highlighted option index per question
 	panelAnswerTA      textarea.Model       // askuser panel: free-input editor (no-options mode)
 	panelOtherTI       textinput.Model      // askuser panel: single-line Other input
+	wizardKeyTI        textinput.Model      // wizard: API key single-line input
 	askPanelScrollY    int                  // askuser panel: internal scroll offset for long content
 	askPanelTotalLines int                  // cached total line count for scroll clamping
 	panelSchema        []SettingDefinition  // settings panel: visible schema (filtered from panelSchemaFull)

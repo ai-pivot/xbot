@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"xbot/internal/textarea"
 )
 
 // Wizard step constants.
@@ -155,7 +155,7 @@ func (m *cliModel) renderWizardAPIKey() string {
 	// Single input for API key
 	sb.WriteString("  " + m.locale.WizardKeyLabel)
 	sb.WriteString("\n  ")
-	sb.WriteString(m.panelEditTA.View())
+	sb.WriteString(m.wizardKeyTI.View())
 	sb.WriteString("\n\n")
 
 	// Save + Back buttons
@@ -282,7 +282,7 @@ func (m *cliModel) wizardProvKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 func (m *cliModel) wizardKeyInput(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s", "enter":
-		m.panelValues["llm_api_key"] = m.panelEditTA.Value()
+		m.panelValues["llm_api_key"] = m.wizardKeyTI.Value()
 		m.wizardStep = wizardDone
 		return true, nil
 	case "esc":
@@ -290,7 +290,7 @@ func (m *cliModel) wizardKeyInput(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	default:
 		var cmd tea.Cmd
-		m.panelEditTA, cmd = m.panelEditTA.Update(msg)
+		m.wizardKeyTI, cmd = m.wizardKeyTI.Update(msg)
 		return true, cmd
 	}
 }
@@ -305,8 +305,8 @@ func (m *cliModel) wizardDoneKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 			m.wizardStep = wizardProvider
 		} else {
 			m.wizardStep = wizardAPIKey
-			m.panelEditTA.SetValue(m.panelValues["llm_api_key"])
-			m.panelEditTA.Focus()
+			m.wizardKeyTI.SetValue(m.panelValues["llm_api_key"])
+			m.wizardKeyTI.Focus()
 		}
 	}
 	return true, nil
@@ -345,8 +345,8 @@ func (m *cliModel) wizardConfirmProvider(idx int) {
 		m.wizardStep = wizardDone
 	} else {
 		m.wizardStep = wizardAPIKey
-		m.panelEditTA.SetValue("")
-		m.panelEditTA.Focus()
+		m.wizardKeyTI.SetValue("")
+		m.wizardKeyTI.Focus()
 	}
 }
 
@@ -464,7 +464,7 @@ func (m *cliModel) handleWizardClick(zone mouseZone) (bool, tea.Model, tea.Cmd) 
 		m.wizardConfirmProvider(zone.Index)
 		return true, m, nil
 	case "wizardSave":
-		m.panelValues["llm_api_key"] = m.panelEditTA.Value()
+		m.panelValues["llm_api_key"] = m.wizardKeyTI.Value()
 		m.wizardStep = wizardDone
 		return true, m, nil
 	case "wizardBack":
@@ -481,8 +481,8 @@ func (m *cliModel) handleWizardClick(zone mouseZone) (bool, tea.Model, tea.Cmd) 
 				m.wizardStep = wizardProvider
 			} else {
 				m.wizardStep = wizardAPIKey
-				m.panelEditTA.SetValue(m.panelValues["llm_api_key"])
-				m.panelEditTA.Focus()
+				m.wizardKeyTI.SetValue(m.panelValues["llm_api_key"])
+				m.wizardKeyTI.Focus()
 			}
 		}
 		return true, m, nil
@@ -519,12 +519,17 @@ func (m *cliModel) openWizardPanel() {
 		}
 	}
 	m.panelIsSetup = true
-	ta := textarea.New()
-	ta.Placeholder = "sk-..."
-	ta.SetWidth(min(m.width-10, 60))
-	ta.SetHeight(1)
-	ta.CharLimit = 200
-	ta.Focus()
-	applyTAStyles(&ta, &m.styles)
-	m.panelEditTA = ta
+	ti := textinput.New()
+	ti.Placeholder = "sk-..."
+	ti.Prompt = "  "
+	ti.CharLimit = 200
+	ti.SetWidth(min(m.width-10, 60))
+	ti.Focus()
+	tiStyles := ti.Styles()
+	tiStyles.Focused.Prompt = m.styles.TIPrompt
+	tiStyles.Focused.Text = m.styles.TIText
+	tiStyles.Focused.Placeholder = m.styles.TIPlaceholder
+	tiStyles.Cursor.Color = m.styles.TICursor.GetForeground()
+	ti.SetStyles(tiStyles)
+	m.wizardKeyTI = ti
 }
