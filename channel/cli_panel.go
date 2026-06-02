@@ -270,34 +270,11 @@ func isProviderRecommendedModel(model string) bool {
 	return false
 }
 
-// openSetupPanel opens the first-run setup wizard as a settings-style panel.
-// Pre-fills from GetCurrentValues (respects existing config), falls back to
-// DefaultValue for keys not yet configured. This prevents misleading the user
-// with "flat" when their config already says "letta".
+// openSetupPanel opens the step-by-step setup wizard.
+// Uses a multi-step state machine (language → provider → apikey → done)
+// instead of a single-panel form, so users only make one choice per page.
 func (m *cliModel) openSetupPanel() {
-	schema := m.locale.SetupSchema
-	values := make(map[string]string)
-	// Start from current config so existing choices are preserved.
-	if m.channel != nil && m.channel.config.GetCurrentValues != nil {
-		for k, v := range m.channel.config.GetCurrentValues() {
-			values[k] = v
-		}
-	}
-	// Fill gaps with schema defaults (e.g. keys not yet in config).
-	for _, def := range schema {
-		if _, ok := values[def.Key]; !ok && def.DefaultValue != "" {
-			values[def.Key] = def.DefaultValue
-		}
-	}
-	m.panelIsSetup = true
-	m.openSettingsPanel(schema, values, func(vals map[string]string) {
-		// Apply all settings including setup-only keys (provider, api_key, sandbox, memory)
-		if m.channel.config.ApplySettings != nil {
-			m.channel.config.ApplySettings(vals, m.chatID)
-		}
-		// NOTE: UI updates (theme/locale/viewport) are handled by
-		// handleSettingsSavedMsg in Update() since this runs in a goroutine.
-	})
+	m.openWizardPanel()
 }
 
 // askItem represents a single question in the AskUser panel.
@@ -1482,6 +1459,8 @@ func (m *cliModel) updatePanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 		switch m.panelMode {
 		case "settings":
 			return m.updateSettingsPanel(msg)
+		case "wizard":
+			return m.updateWizardPanel(msg)
 		case "askuser":
 			return m.updateAskUserPanel(msg)
 		case "bgtasks":
@@ -2206,6 +2185,8 @@ func (m *cliModel) viewPanel() string {
 	switch m.panelMode {
 	case "settings":
 		raw = m.viewSettingsPanel()
+	case "wizard":
+		raw = m.renderWizard()
 	case "askuser":
 		raw = m.viewAskUserPanel()
 	case "bgtasks":

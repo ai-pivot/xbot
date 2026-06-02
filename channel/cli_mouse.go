@@ -129,6 +129,8 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickPanelSave()
 	case "panelCancel":
 		return m.clickPanelCancel()
+	case "wizardLang", "wizardProv", "wizardSave", "wizardBack", "wizardStart":
+		return m.handleWizardClick(zone)
 	case "askUserOption":
 		return m.clickAskUserOption(zone.Index)
 	case "askUserTab":
@@ -984,6 +986,8 @@ func (m *cliModel) trackPanelZones(zb *mouseZoneBuilder) {
 	switch m.panelMode {
 	case "settings":
 		m.trackSettingsZones(zb, visibleH, contentStartY)
+	case "wizard":
+		m.trackWizardZones(zb, contentStartY, visibleH)
 	case "sessions":
 		m.trackSessionsZones(zb, visibleH)
 	case "bgtasks":

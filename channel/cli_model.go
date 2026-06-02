@@ -1165,7 +1165,7 @@ type cliModel struct {
 	pendingToolSummary *cliMessage
 
 	// --- §12 Interactive Panel ---
-	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel
+	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel, "wizard"=setup wizard
 	panelMode      string
 	settingsSaving bool              // true while onSubmit is running in background; blocks user input
 	panelStack     []panelStackEntry // push/pop navigation stack for nested panels
@@ -1175,6 +1175,10 @@ type cliModel struct {
 	panelEditTA    textarea.Model    // settings panel: inline editor
 	panelCombo     bool              // settings panel: combo dropdown open
 	panelComboIdx  int               // settings panel: combo selected option index
+	// --- Wizard state (step-by-step setup) ---
+	wizardStep    int // 0=language, 1=provider, 2=apikey, 3=done
+	wizardLangSel int // selected language index
+	wizardProvSel int // selected provider index
 	// --- Panel state backup (for quick switch round-trip) ---
 	panelValuesBackup   map[string]string              // saved panelValues before quick switch
 	panelCursorBackup   int                            // saved panelCursor before quick switch

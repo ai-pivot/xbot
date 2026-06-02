@@ -1719,6 +1719,25 @@ func (m *cliModel) renderFooter() string {
 				m.footerHintItem("Ctrl+s", "Save", "ctrl+s"),
 				m.footerHintItem("Esc", escLabel, "esc"),
 			)
+		case "wizard":
+			switch m.wizardStep {
+			case wizardAPIKey:
+				hints = append(hints,
+					m.footerHintItem("Enter/Ctrl+s", m.locale.WizardNextBtn, "enter"),
+					m.footerHintItem("Esc", m.locale.WizardBackBtn, "esc"),
+				)
+			case wizardDone:
+				hints = append(hints,
+					m.footerHintItem("Enter", m.locale.WizardStartBtn, "enter"),
+					m.footerHintItem("Esc", m.locale.WizardBackBtn, "esc"),
+				)
+			default:
+				hints = append(hints,
+					m.footerHintItem("↑↓/jk", m.locale.FooterNavigate, "navigate"),
+					m.footerHintItem("Enter", m.locale.WizardNextBtn, "enter"),
+					m.footerHintItem("Esc", escLabel, "esc"),
+				)
+			}
 		case "askuser":
 			hints = append(hints,
 				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),

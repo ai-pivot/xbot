@@ -10,22 +10,30 @@ import (
 // UILocale holds all UI strings for a given language.
 type UILocale struct {
 	// --- A. System messages ---
-	CancelSent     string // "已发送取消请求"
-	QueueCleared   string // "已清空 %d 条排队消息"
-	SettingsSaved  string // "✅ 设置已保存"
-	NoSettings     string // "当前渠道没有可配置的设置项。"
-	CheckingUpdate string // "正在检查更新..."
-	ModelUsage     string // "用法: /model <模型名>\n使用 /models 查看可用模型"
-	AskCancelled   string // "已取消提问"
-	SetupComplete  string // "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。"
-	SetupLettaNote string // "[!] letta memory mode requires embedding service:\n  1. ..."
-	SetupTitle     string // Setup wizard title banner (HTML-like markup)
-	SetupSubtitle  string // Setup wizard subtitle explaining the 2-step process
-	SetupWelcome   string // Welcome message shown after setup completes
-	SetupNoLLM     string // Message shown when user tries to chat without LLM config
-	UpdateFound    string // "发现新版本: %s → %s\n升级命令: ..."
-	UpdateCurrent  string // "当前版本 %s 已是最新"
-	UpdateFailed   string // "更新检查失败（网络超时或无法连接 GitHub API）"
+	CancelSent          string // "已发送取消请求"
+	QueueCleared        string // "已清空 %d 条排队消息"
+	SettingsSaved       string // "✅ 设置已保存"
+	NoSettings          string // "当前渠道没有可配置的设置项。"
+	CheckingUpdate      string // "正在检查更新..."
+	ModelUsage          string // "用法: /model <模型名>\n使用 /models 查看可用模型"
+	AskCancelled        string // "已取消提问"
+	SetupComplete       string // "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。"
+	SetupLettaNote      string // "[!] letta memory mode requires embedding service:\n  1. ..."
+	SetupTitle          string // Setup wizard title banner (HTML-like markup)
+	SetupSubtitle       string // Setup wizard subtitle explaining the 2-step process
+	SetupWelcome        string // Welcome message shown after setup completes
+	SetupNoLLM          string // Message shown when user tries to chat without LLM config
+	WizardProviderTitle string // "选择你的 AI 服务商"
+	WizardKeyTitle      string // "获取 %s 的密钥"
+	WizardKeyLabel      string // "密钥："
+	WizardDoneTitle     string // "🎉 设置完成！"
+	WizardStartBtn      string // "开始使用"
+	WizardNextBtn       string // "下一步"
+	WizardBackBtn       string // "返回"
+	WizardNavHint       string // "↑↓ 选择 · Enter 确认"
+	UpdateFound         string // "发现新版本: %s → %s\n升级命令: ..."
+	UpdateCurrent       string // "当前版本 %s 已是最新"
+	UpdateFailed        string // "更新检查失败（网络超时或无法连接 GitHub API）"
 
 	// --- B. Panel text ---
 	PanelSettingsTitle   string            // "⚙ Settings"
@@ -223,22 +231,30 @@ var locales map[string]*UILocale
 func localeZH() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
-		CancelSent:     "已发送取消请求",
-		QueueCleared:   "已清空 %d 条排队消息",
-		SettingsSaved:  "✅ 设置已保存",
-		NoSettings:     "当前渠道没有可配置的设置项。",
-		CheckingUpdate: "正在检查更新...",
-		ModelUsage:     "用法: /model <模型名>\n使用 /models 查看可用模型",
-		AskCancelled:   "已取消提问",
-		SetupComplete:  "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。",
-		SetupLettaNote: "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在配置或环境变量中设置嵌入端点",
-		SetupTitle:     "👋 欢迎使用 xbot！",
-		SetupSubtitle:  "要开始使用，只需做两件事：选择 AI 服务商 → 填入密钥。其他选项可以先不填",
-		SetupWelcome:   "🎉 设置完成！你可以开始和 AI 对话了。\n\n📝 怎么用：\n• 在底部输入框打字，按 Enter 发送\n• 想换行？按 Ctrl+J\n• 输入 /help 查看更多操作\n\n⌨️ 常用快捷键：\n• Ctrl+K — 命令面板（可以执行各种操作）\n• Ctrl+T — 查看和切换对话\n• Ctrl+P — 切换 AI 模型\n• Ctrl+C — 取消 AI 正在生成的回复\n\n💡 小提示：直接用大白话和 AI 说话就行，比如「帮我写一个 Python 脚本」或「解释一下这段代码」",
-		SetupNoLLM:     "⚠️ 还没有配置 AI 服务密钥，暂时无法对话。\n\n按 /setup 重新配置，或按 /settings 打开完整设置。\n\n📖 如果你不确定怎么做，输入 /help 查看帮助。",
-		UpdateFound:    "发现新版本: %s → %s (stable)\n升级命令: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "当前版本 %s (channel: %s) 已是最新",
-		UpdateFailed:   "更新检查失败（网络超时或无法连接 GitHub API）",
+		CancelSent:          "已发送取消请求",
+		QueueCleared:        "已清空 %d 条排队消息",
+		SettingsSaved:       "✅ 设置已保存",
+		NoSettings:          "当前渠道没有可配置的设置项。",
+		CheckingUpdate:      "正在检查更新...",
+		ModelUsage:          "用法: /model <模型名>\n使用 /models 查看可用模型",
+		AskCancelled:        "已取消提问",
+		SetupComplete:       "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。",
+		SetupLettaNote:      "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在配置或环境变量中设置嵌入端点",
+		SetupTitle:          "👋 欢迎使用 xbot！",
+		SetupSubtitle:       "要开始使用，只需做两件事：选择 AI 服务商 → 填入密钥。其他选项可以先不填",
+		SetupWelcome:        "🎉 设置完成！你可以开始和 AI 对话了。\n\n📝 怎么用：\n• 在底部输入框打字，按 Enter 发送\n• 想换行？按 Ctrl+J\n• 输入 /help 查看更多操作\n\n⌨️ 常用快捷键：\n• Ctrl+K — 命令面板（可以执行各种操作）\n• Ctrl+T — 查看和切换对话\n• Ctrl+P — 切换 AI 模型\n• Ctrl+C — 取消 AI 正在生成的回复\n\n💡 小提示：直接用大白话和 AI 说话就行，比如「帮我写一个 Python 脚本」或「解释一下这段代码」",
+		SetupNoLLM:          "⚠️ 还没有配置 AI 服务密钥，暂时无法对话。\n\n按 /setup 重新配置，或按 /settings 打开完整设置。\n\n📖 如果你不确定怎么做，输入 /help 查看帮助。",
+		WizardProviderTitle: "选择你的 AI 服务商",
+		WizardKeyTitle:      "获取 %s 的密钥",
+		WizardKeyLabel:      "密钥（API Key）：",
+		WizardDoneTitle:     "🎉 设置完成！",
+		WizardStartBtn:      "开始使用",
+		WizardNextBtn:       "下一步",
+		WizardBackBtn:       "返回",
+		WizardNavHint:       "↑↓ 选择 · Enter 确认 · Esc 返回上一步",
+		UpdateFound:         "发现新版本: %s → %s (stable)\n升级命令: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:       "当前版本 %s (channel: %s) 已是最新",
+		UpdateFailed:        "更新检查失败（网络超时或无法连接 GitHub API）",
 
 		// --- B. Panel text ---
 		PanelSettingsTitle:   "⚙ 设置",
@@ -637,22 +653,30 @@ func localeZH() *UILocale {
 func localeEN() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
-		CancelSent:     "Cancel request sent",
-		QueueCleared:   "Cleared %d queued messages",
-		SettingsSaved:  "✅ Settings saved",
-		NoSettings:     "No configurable settings for this channel.",
-		CheckingUpdate: "Checking for updates...",
-		ModelUsage:     "Usage: /model <model name>\nUse /models to list available models",
-		AskCancelled:   "Question cancelled",
-		SetupComplete:  "✅ Initial setup complete. Use /settings to configure, /setup to re-run.",
-		SetupLettaNote: "\n\n[!] letta memory mode requires embedding service:\n  1. Install Ollama: https://ollama.ai\n  2. Pull embedding model: `ollama pull nomic-embed-text`\n  3. Set embedding endpoint in config or env",
-		SetupTitle:     "👋 Welcome to xbot!",
-		SetupSubtitle:  "To get started: choose an AI provider → enter your key. Other options can be left as-is",
-		SetupWelcome:   "🎉 Setup complete! You can now chat with AI.\n\n📝 How to use:\n• Type in the input box at the bottom, press Enter to send\n• Want a new line? Press Ctrl+J\n• Type /help for more options\n\n⌨️ Useful shortcuts:\n• Ctrl+K — Command palette (all actions)\n• Ctrl+T — View and switch sessions\n• Ctrl+P — Switch AI model\n• Ctrl+C — Cancel AI response\n\n💡 Tip: Just talk to AI in plain language, e.g. 'help me write a Python script'",
-		SetupNoLLM:     "⚠️ No AI service key configured yet.\n\nPress /setup to configure, or /settings for full options.\n\n📖 Not sure what to do? Type /help for guidance.",
-		UpdateFound:    "New version available: %s → %s (stable)\nUpdate command: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "Current version %s (channel: %s) is up to date",
-		UpdateFailed:   "Update check failed (network timeout or unable to connect to GitHub API)",
+		CancelSent:          "Cancel request sent",
+		QueueCleared:        "Cleared %d queued messages",
+		SettingsSaved:       "✅ Settings saved",
+		NoSettings:          "No configurable settings for this channel.",
+		CheckingUpdate:      "Checking for updates...",
+		ModelUsage:          "Usage: /model <model name>\nUse /models to list available models",
+		AskCancelled:        "Question cancelled",
+		SetupComplete:       "✅ Initial setup complete. Use /settings to configure, /setup to re-run.",
+		SetupLettaNote:      "\n\n[!] letta memory mode requires embedding service:\n  1. Install Ollama: https://ollama.ai\n  2. Pull embedding model: `ollama pull nomic-embed-text`\n  3. Set embedding endpoint in config or env",
+		SetupTitle:          "👋 Welcome to xbot!",
+		SetupSubtitle:       "To get started: choose an AI provider → enter your key. Other options can be left as-is",
+		SetupWelcome:        "🎉 Setup complete! You can now chat with AI.\n\n📝 How to use:\n• Type in the input box at the bottom, press Enter to send\n• Want a new line? Press Ctrl+J\n• Type /help for more options\n\n⌨️ Useful shortcuts:\n• Ctrl+K — Command palette (all actions)\n• Ctrl+T — View and switch sessions\n• Ctrl+P — Switch AI model\n• Ctrl+C — Cancel AI response\n\n💡 Tip: Just talk to AI in plain language, e.g. 'help me write a Python script'",
+		SetupNoLLM:          "⚠️ No AI service key configured yet.\n\nPress /setup to configure, or /settings for full options.\n\n📖 Not sure what to do? Type /help for guidance.",
+		WizardProviderTitle: "Choose your AI provider",
+		WizardKeyTitle:      "Get your %s API key",
+		WizardKeyLabel:      "API Key:",
+		WizardDoneTitle:     "🎉 Setup complete!",
+		WizardStartBtn:      "Start using",
+		WizardNextBtn:       "Next",
+		WizardBackBtn:       "Back",
+		WizardNavHint:       "↑↓ Select · Enter confirm · Esc Go back",
+		UpdateFound:         "New version available: %s → %s (stable)\nUpdate command: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:       "Current version %s (channel: %s) is up to date",
+		UpdateFailed:        "Update check failed (network timeout or unable to connect to GitHub API)",
 
 		// --- B. Panel text ---
 		PanelSettingsTitle:   "⚙ Settings",
@@ -1046,22 +1070,30 @@ func localeEN() *UILocale {
 func localeJA() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
-		CancelSent:     "キャンセルリクエストを送信しました",
-		QueueCleared:   "%d 件のキューに入ったメッセージをクリアしました",
-		SettingsSaved:  "✅ 設定を保存しました",
-		NoSettings:     "このチャンネルには設定項目がありません。",
-		CheckingUpdate: "アップデートを確認中...",
-		ModelUsage:     "使い方: /model <モデル名>\n/models で利用可能モデルを表示",
-		AskCancelled:   "質問をキャンセルしました",
-		SetupComplete:  "✅ 初期設定が完了しました。/settings で設定変更、/setup で再設定。",
-		SetupLettaNote: "\n\n[!] letta メモリモードには埋め込みサービスが必要です:\n  1. Ollama をインストール: https://ollama.ai\n  2. 埋め込みモデルを取得: `ollama pull nomic-embed-text`\n  3. 設定または環境変数で埋め込みエンドポイントを設定",
-		SetupTitle:     "👋 xbot へようこそ！",
-		SetupSubtitle:  "AI プロバイダーを選択 → キーを入力するだけ。その他は後で変更できます",
-		SetupWelcome:   "🎉 設定完了！AI とチャットを開始できます。\n\n📝 使い方：\n• 下の入力欄に文字を入力し、Enter で送信\n• 改行は Ctrl+J\n• /help でその他の操作を確認\n\n⌨️ よく使うショートカット：\n• Ctrl+K — コマンドパレット（すべての操作）\n• Ctrl+T — セッションの表示・切替\n• Ctrl+P — AI モデル切替\n• Ctrl+C — AI 応答のキャンセル\n\n💡 ヒント：自然な言葉で AI に話しかけてください",
-		SetupNoLLM:     "⚠️ AI サービスのキーが未設定です。\n\n/setup で設定、/settings で詳細設定。\n📖 /help でガイダンスを確認。",
-		UpdateFound:    "新しいバージョン: %s → %s (stable)\nアップデート: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "現在のバージョン %s (channel: %s) は最新です",
-		UpdateFailed:   "アップデート確認に失敗（ネットワークタイムアウトまたは GitHub API に接続できません）",
+		CancelSent:          "キャンセルリクエストを送信しました",
+		QueueCleared:        "%d 件のキューに入ったメッセージをクリアしました",
+		SettingsSaved:       "✅ 設定を保存しました",
+		NoSettings:          "このチャンネルには設定項目がありません。",
+		CheckingUpdate:      "アップデートを確認中...",
+		ModelUsage:          "使い方: /model <モデル名>\n/models で利用可能モデルを表示",
+		AskCancelled:        "質問をキャンセルしました",
+		SetupComplete:       "✅ 初期設定が完了しました。/settings で設定変更、/setup で再設定。",
+		SetupLettaNote:      "\n\n[!] letta メモリモードには埋め込みサービスが必要です:\n  1. Ollama をインストール: https://ollama.ai\n  2. 埋め込みモデルを取得: `ollama pull nomic-embed-text`\n  3. 設定または環境変数で埋め込みエンドポイントを設定",
+		SetupTitle:          "👋 xbot へようこそ！",
+		SetupSubtitle:       "AI プロバイダーを選択 → キーを入力するだけ。その他は後で変更できます",
+		SetupWelcome:        "🎉 設定完了！AI とチャットを開始できます。\n\n📝 使い方：\n• 下の入力欄に文字を入力し、Enter で送信\n• 改行は Ctrl+J\n• /help でその他の操作を確認\n\n⌨️ よく使うショートカット：\n• Ctrl+K — コマンドパレット（すべての操作）\n• Ctrl+T — セッションの表示・切替\n• Ctrl+P — AI モデル切替\n• Ctrl+C — AI 応答のキャンセル\n\n💡 ヒント：自然な言葉で AI に話しかけてください",
+		SetupNoLLM:          "⚠️ AI サービスのキーが未設定です。\n\n/setup で設定、/settings で詳細設定。\n📖 /help でガイダンスを確認。",
+		WizardProviderTitle: "AI プロバイダーを選択",
+		WizardKeyTitle:      "%s の API キーを取得",
+		WizardKeyLabel:      "API キー：",
+		WizardDoneTitle:     "🎉 設定完了！",
+		WizardStartBtn:      "利用開始",
+		WizardNextBtn:       "次へ",
+		WizardBackBtn:       "戻る",
+		WizardNavHint:       "↑↓ 選択 · Enter 確認 · Esc 戻る",
+		UpdateFound:         "新しいバージョン: %s → %s (stable)\nアップデート: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:       "現在のバージョン %s (channel: %s) は最新です",
+		UpdateFailed:        "アップデート確認に失敗（ネットワークタイムアウトまたは GitHub API に接続できません）",
 
 		// --- B. Panel text ---
 		PanelSettingsTitle:   "⚙ 設定",
