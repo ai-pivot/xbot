@@ -2401,9 +2401,6 @@ func (m *cliModel) viewSettingsPanel() string {
 		ln++
 
 		// Show field description when cursor is on this field (not in edit/combo mode).
-		// The description may contain OSC 8 hyperlinks for clickable URLs.
-		// IMPORTANT: lipgloss Style.Render() strips OSC 8 sequences, so we
-		// must write OSC 8 lines directly without applying descStyle.
 		if i == m.panelCursor && !m.panelEdit && !m.panelCombo && def.Description != "" {
 			descLines := strings.Split(def.Description, "\n")
 			for _, dl := range descLines {
@@ -2414,6 +2411,25 @@ func (m *cliModel) viewSettingsPanel() string {
 				} else {
 					sb.WriteString(descStyle.Render("    " + dl))
 				}
+				sb.WriteString("\n")
+				ln++
+			}
+		}
+
+		// API Key field: always show "获取密钥" button below the field.
+		// Clickable via mouse zone (panelOpenURL) — opens browser directly.
+		// Also wrapped in OSC 8 hyperlink for terminals that support it.
+		if def.Key == "llm_api_key" && m.panelValues["llm_provider"] != "" {
+			guide, hasGuide := ProviderSetupGuides[m.panelValues["llm_provider"]]
+			if hasGuide && guide.URL != "" {
+				btnLabel := "  🔑 点击这里获取密钥  "
+				oscLink := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, btnLabel)
+				sb.WriteString("    ")
+				sb.WriteString(oscLink)
+				sb.WriteString("\n")
+				ln++
+			} else if hasGuide && guide.URL == "" {
+				sb.WriteString(descStyle.Render("    " + guide.Hint))
 				sb.WriteString("\n")
 				ln++
 			}
@@ -2469,10 +2485,24 @@ func (m *cliModel) viewSettingsPanel() string {
 		}
 	}
 
-	// Bottom hint when no overlay is active
+	// Bottom buttons: always show Save and Cancel buttons.
+	// These are clickable mouse zones for users who don't know keyboard shortcuts.
 	if !m.panelEdit && !m.panelCombo {
 		sb.WriteString("\n")
+		// Save button — styled prominently
+		saveBtn := "  💾 保存设置  "
+		saveOsc := fmt.Sprintf("\x1b]8;;xbot://panel-save\x1b\\%s\x1b]8;;\x1b\\", saveBtn)
+		sb.WriteString("  ")
+		sb.WriteString(saveOsc)
+		// Cancel button
+		cancelBtn := "  ✖ 取消  "
+		cancelOsc := fmt.Sprintf("\x1b]8;;xbot://panel-cancel\x1b\\%s\x1b]8;;\x1b\\", cancelBtn)
+		sb.WriteString("    ")
+		sb.WriteString(cancelOsc)
+		sb.WriteString("\n")
+		// Keyboard hint below buttons (secondary, for discoverability)
 		sb.WriteString(hintStyle.Render("  " + m.locale.PanelNavHint))
+		sb.WriteString("\n")
 	}
 
 	return sb.String()
