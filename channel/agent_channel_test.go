@@ -262,3 +262,256 @@ func TestAgentChannelPanicRecovery(t *testing.T) {
 		t.Errorf("expected 'ok: req2', got: %s", result2)
 	}
 }
+
+// TestAgentChannelCircularWaitNoDeadlock verifies that two AgentChannels
+// sending messages to each other do NOT deadlock. Before the fix (serial
+// processing loop), this would hang forever because each channel's processing
+// goroutine was blocked waiting for the other to reply.
+func TestAgentChannelCircularWaitNoDeadlock(t *testing.T) {
+	var chA, chB *AgentChannel
+
+	// Channel A: when it receives a message, sends back to B
+	runFnA := func(ctx context.Context, task string) (string, error) {
+		if task == "ping" {
+			// A sends "pong" to B — this would deadlock with serial processing
+			result, err := chB.Send(OutboundMsg{Content: "from_A"})
+			if err != nil {
+				return "A error: " + err.Error(), nil
+			}
+			return "A got: " + result, nil
+		}
+		return "A ack: " + task, nil
+	}
+
+	// Channel B: just responds
+	runFnB := func(ctx context.Context, task string) (string, error) {
+		return "B ack: " + task, nil
+	}
+
+	chA = NewAgentChannel("agent:test/a", runFnA)
+	chB = NewAgentChannel("agent:test/b", runFnB)
+
+	if err := chA.Start(); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
+	defer chA.Stop()
+	if err := chB.Start(); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
+	defer chB.Stop()
+
+	// This would deadlock with serial processing — the test itself would time out.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		result, err := chA.Send(OutboundMsg{Content: "ping"})
+		if err != nil {
+			t.Errorf("Send to A: %v", err)
+			return
+		}
+		if !strings.Contains(result, "A got: B ack: from_A") {
+			t.Errorf("unexpected result: %s", result)
+		}
+	}()
+
+	select {
+	case <-done:
+		// Success — no deadlock
+	case <-time.After(5 * time.Second):
+		t.Fatal("DEADLOCK DETECTED: circular SendMessage hung — the fix is not working")
+	}
+}
+
+// TestAgentChannelBidirectionalSend verifies that two channels can
+// simultaneously send to each other without deadlocking.
+func TestAgentChannelBidirectionalSend(t *testing.T) {
+	var chA, chB *AgentChannel
+
+	runFnA := func(ctx context.Context, task string) (string, error) {
+		// When A receives a message, it also sends to B
+		result, err := chB.Send(OutboundMsg{Content: "from_A_" + task})
+		if err != nil {
+			return "", err
+		}
+		return "A:" + result, nil
+	}
+
+	runFnB := func(ctx context.Context, task string) (string, error) {
+		return "B:" + task, nil
+	}
+
+	chA = NewAgentChannel("agent:test/bidi-a", runFnA)
+	chB = NewAgentChannel("agent:test/bidi-b", runFnB)
+
+	if err := chA.Start(); err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
+	defer chA.Stop()
+	if err := chB.Start(); err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
+	defer chB.Stop()
+
+	// Send to A — A will in turn send to B
+	done := make(chan string, 1)
+	go func() {
+		result, err := chA.Send(OutboundMsg{Content: "hello"})
+		if err != nil {
+			done <- "error: " + err.Error()
+			return
+		}
+		done <- result
+	}()
+
+	select {
+	case result := <-done:
+		if !strings.Contains(result, "A:B:from_A_hello") {
+			t.Errorf("unexpected result: %s", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Bidirectional send timed out — possible deadlock")
+	}
+}
+
+// TestAgentChannelCallerCtxCancellation verifies that Send() respects the
+// caller's context cancellation (e.g. Ctrl+C propagation).
+func TestAgentChannelCallerCtxCancellation(t *testing.T) {
+	started := make(chan struct{})
+	runFn := func(ctx context.Context, task string) (string, error) {
+		close(started)
+		// Simulate long-running work
+		<-ctx.Done()
+		return "cancelled", nil
+	}
+
+	ac := NewAgentChannel("agent:test/caller-cancel", runFn)
+	if err := ac.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer ac.Stop()
+
+	// Create a caller context that we can cancel
+	callerCtx, callerCancel := context.WithCancel(context.Background())
+	defer callerCancel()
+
+	// Start a Send with caller context
+	done := make(chan error, 1)
+	go func() {
+		_, err := ac.Send(OutboundMsg{
+			Content: "long-task",
+			Ctx:     callerCtx,
+		})
+		done <- err
+	}()
+
+	// Wait for runFn to start
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runFn never started")
+	}
+
+	// Cancel the caller context (simulating Ctrl+C)
+	callerCancel()
+
+	// The Send should return with a cancellation error
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error from cancelled Send")
+		}
+		if !strings.Contains(err.Error(), "caller cancelled") {
+			t.Errorf("expected caller cancellation error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not return after caller context cancellation — Ctrl+C would not work")
+	}
+}
+
+// TestAgentChannelStartWithContext verifies that the channel stops when
+// the parent context is cancelled.
+func TestAgentChannelStartWithContext(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+
+	var calls atomic.Int32
+	runFn := func(ctx context.Context, task string) (string, error) {
+		calls.Add(1)
+		return "ok", nil
+	}
+
+	ac := NewAgentChannel("agent:test/parent-ctx", runFn)
+	if err := ac.StartWithContext(parentCtx); err != nil {
+		t.Fatalf("StartWithContext: %v", err)
+	}
+
+	// Should work normally
+	result, err := ac.Send(OutboundMsg{Content: "hello"})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("expected 'ok', got %q", result)
+	}
+
+	// Cancel parent — should stop the channel
+	parentCancel()
+
+	// Give it a moment to propagate
+	time.Sleep(100 * time.Millisecond)
+
+	// Send should now fail
+	_, err = ac.Send(OutboundMsg{Content: "after-cancel"})
+	if err == nil {
+		t.Error("expected error after parent context cancellation")
+	}
+}
+
+// TestAgentChannelDispatcherCtxPropagation verifies that SendMessageCtx
+// propagates context through the Dispatcher to the AgentChannel.
+func TestAgentChannelDispatcherCtxPropagation(t *testing.T) {
+	started := make(chan struct{})
+	runFn := func(ctx context.Context, task string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "cancelled", nil
+	}
+
+	disp := NewDispatcher(nil)
+	ac := NewAgentChannel("agent:test/ctx-prop", runFn)
+	if err := ac.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	disp.Register(ac)
+	defer disp.Unregister("agent:test/ctx-prop")
+
+	// Create caller context
+	callerCtx, callerCancel := context.WithCancel(context.Background())
+	defer callerCancel()
+
+	// Start async send via Dispatcher
+	done := make(chan error, 1)
+	go func() {
+		_, err := disp.SendMessageCtx(callerCtx, "agent:test/ctx-prop", "", "test")
+		done <- err
+	}()
+
+	// Wait for runFn to start
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runFn never started")
+	}
+
+	// Cancel caller context
+	callerCancel()
+
+	// Should return error
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error from cancelled SendMessageCtx")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendMessageCtx did not return after context cancellation")
+	}
+}

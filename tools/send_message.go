@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"xbot/bus"
 	"xbot/llm"
 )
 
@@ -101,7 +102,7 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
 
-	result, err := ctx.MessageSender.SendMessage(channelName, chatID, params.Message)
+	result, err := sendMessageWithCtx(ctx, channelName, chatID, params.Message)
 	if err != nil {
 		return nil, fmt.Errorf("send failed: %w", err)
 	}
@@ -125,7 +126,7 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 	if ctx.MessageSender == nil {
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
-	result, err := ctx.MessageSender.SendMessage(addr, "", message)
+	result, err := sendMessageWithCtx(ctx, addr, "", message)
 	if err != nil {
 		return nil, fmt.Errorf("agent send failed: %w", err)
 	}
@@ -175,12 +176,12 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 
 	mentions := parseMentions(message)
 
-	// No @mentions → broadcast to all members
+	// Without @mentions, the message is broadcast to all members
 	if len(mentions) == 0 {
 		var responses []string
 		for _, memberAddr := range members {
 			prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
-			result, err := ctx.MessageSender.SendMessage(memberAddr, "", prefixedMsg)
+			result, err := sendMessageWithCtx(ctx, memberAddr, "", prefixedMsg)
 			if err != nil {
 				responses = append(responses, fmt.Sprintf("[WARN] %s: %v", memberAddr, err))
 			} else {
@@ -201,7 +202,7 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 		}
 
 		prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
-		result, err := ctx.MessageSender.SendMessage(agentAddr, "", prefixedMsg)
+		result, err := sendMessageWithCtx(ctx, agentAddr, "", prefixedMsg)
 		if err != nil {
 			responses = append(responses, fmt.Sprintf("[ERROR] %s: %v", agentAddr, err))
 			continue
@@ -373,4 +374,14 @@ func truncateMsg(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// sendMessageWithCtx sends a message via MessageSender, using MessageSenderCtx
+// (which propagates caller context for cancellation) when available.
+// Falls back to plain MessageSender for backward compatibility.
+func sendMessageWithCtx(ctx *ToolContext, channelName, chatID, content string) (string, error) {
+	if senderCtx, ok := ctx.MessageSender.(bus.MessageSenderCtx); ok {
+		return senderCtx.SendMessageCtx(ctx.Ctx, channelName, chatID, content)
+	}
+	return ctx.MessageSender.SendMessage(channelName, chatID, content)
 }
