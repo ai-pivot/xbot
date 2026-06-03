@@ -166,6 +166,10 @@ func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatPar
 	}
 	ctx.Metadata["group_id"] = groupName
 	ctx.Metadata["group_members"] = strings.Join(params.Members, ",")
+	// Always spawn in background mode so group creation returns immediately.
+	// Without this, SpawnInteractive blocks synchronously and the loop
+	// never progresses to spawn the second agent.
+	ctx.Metadata["background"] = "true"
 	ctx.GroupID = groupName
 	ctx.GroupMembers = params.Members
 

@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -49,7 +52,7 @@ Examples:
 - SendMessage(to="group:g1", message="@agent:reviewer/r1 What do you think?")
   → Triggers agent:reviewer/r1 with full history + this question. Response added to history.
 - SendMessage(to="group:g1", message="@agent:reviewer/r1 @agent:tester/t1 Please both review.")
-  → Triggers both agents sequentially. Both see the same history. Both responses added.
+  → Triggers both agents concurrently. Both see the same history. Both responses added.
   - SendMessage(to="peer:dev-team", message="Found a critical bug in auth module, please check.")
   → Async broadcast to all members in peer group "dev-team".
 
@@ -126,7 +129,16 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 	if ctx.MessageSender == nil {
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
-	result, err := sendMessageWithCtx(ctx, addr, "", message)
+	// 30s timeout protection to prevent indefinite blocking on agent RPC.
+	baseCtx := ctx.Ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	timeoutCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+	timeoutToolCtx := *ctx
+	timeoutToolCtx.Ctx = timeoutCtx
+	result, err := sendMessageWithCtx(&timeoutToolCtx, addr, "", message)
 	if err != nil {
 		return nil, fmt.Errorf("agent send failed: %w", err)
 	}
@@ -174,40 +186,87 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
 
+	// 30s timeout protection to prevent indefinite blocking on agent RPCs.
+	baseCtx := ctx.Ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	timeoutCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	defer cancel()
+	ctxWithTimeout := *ctx
+	ctxWithTimeout.Ctx = timeoutCtx
+
 	mentions := parseMentions(message)
 
-	// Without @mentions, the message is broadcast to all members
+	// memberResult collects the result of a concurrent agent send.
+	type memberResult struct {
+		addr   string
+		result string
+		err    error
+	}
+
+	// Without @mentions, broadcast to all members concurrently.
 	if len(mentions) == 0 {
-		var responses []string
+		results := make(chan memberResult, len(members))
+		var wg sync.WaitGroup
 		for _, memberAddr := range members {
-			prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
-			result, err := sendMessageWithCtx(ctx, memberAddr, "", prefixedMsg)
-			if err != nil {
-				responses = append(responses, fmt.Sprintf("[WARN] %s: %v", memberAddr, err))
+			wg.Add(1)
+			go func(addr string) {
+				defer wg.Done()
+				prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
+				result, err := sendMessageWithCtx(&ctxWithTimeout, addr, "", prefixedMsg)
+				results <- memberResult{addr: addr, result: result, err: err}
+			}(memberAddr)
+		}
+		wg.Wait()
+		close(results)
+
+		var responses []string
+		for r := range results {
+			if r.err != nil {
+				responses = append(responses, fmt.Sprintf("[WARN] %s: %v", r.addr, r.err))
 			} else {
-				responses = append(responses, fmt.Sprintf("[→ %s]: %s", memberAddr, truncateMsg(result, 200)))
+				responses = append(responses, fmt.Sprintf("[→ %s]: %s", r.addr, truncateMsg(r.result, 200)))
 			}
 		}
 		return NewResult(fmt.Sprintf("Broadcast to group %s (%d members):\n%s",
 			groupName, len(members), strings.Join(responses, "\n"))), nil
 	}
 
-	// @mentioned agents: send directly with group context prefix.
-	// Each agent already has its own session for full context.
+	// @mentioned agents: send concurrently with group context prefix.
+	// Filter to valid members first, then launch concurrent sends.
 	var responses []string
+	var validMentions []string
 	for _, agentAddr := range mentions {
 		if !gm.IsMember(agentAddr) {
 			responses = append(responses, fmt.Sprintf("[REJECT] %s is not a member of group %s", agentAddr, groupName))
 			continue
 		}
+		validMentions = append(validMentions, agentAddr)
+	}
 
-		prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
-		result, err := sendMessageWithCtx(ctx, agentAddr, "", prefixedMsg)
-		if err != nil {
-			responses = append(responses, fmt.Sprintf("[ERROR] %s: %v", agentAddr, err))
-			continue
+	if len(validMentions) > 0 {
+		results := make(chan memberResult, len(validMentions))
+		var wg sync.WaitGroup
+		for _, agentAddr := range validMentions {
+			wg.Add(1)
+			go func(addr string) {
+				defer wg.Done()
+				prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
+				result, err := sendMessageWithCtx(&ctxWithTimeout, addr, "", prefixedMsg)
+				results <- memberResult{addr: addr, result: result, err: err}
+			}(agentAddr)
 		}
-		responses = append(responses, fmt.Sprintf("[%s]:\n%s", agentAddr, truncateMsg(result, 500)))
+		wg.Wait()
+		close(results)
+
+		for r := range results {
+			if r.err != nil {
+				responses = append(responses, fmt.Sprintf("[ERROR] %s: %v", r.addr, r.err))
+			} else {
+				responses = append(responses, fmt.Sprintf("[%s]:\n%s", r.addr, truncateMsg(r.result, 500)))
+			}
+		}
 	}
 
 	return NewResult(strings.Join(responses, "\n\n---\n\n")), nil
