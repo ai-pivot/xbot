@@ -43,6 +43,9 @@ func NewAgentChannel(name string, runFn bus.RunFn) *AgentChannel {
 	return &AgentChannel{
 		name:  name,
 		runFn: runFn,
+		// Buffer 32: increased from 16 because concurrent request dispatch (ac.wg.Go per
+		// request) means multiple requests may arrive in quick succession before the
+		// processing goroutines pick them up.
 		inbox: make(chan *rpcRequest, 32),
 	}
 }
@@ -67,7 +70,8 @@ func (ac *AgentChannel) StartWithContext(parentCtx context.Context) error {
 	ac.ctx = ctx
 	ac.cancel = cancel
 
-	// When parent is cancelled, clean up.
+	// Note: Stop() calls ac.cancel() which triggers ctx.Done(),
+	// so this goroutine always exits via the ctx.Done() branch.
 	go func() {
 		select {
 		case <-parentCtx.Done():

@@ -140,13 +140,10 @@ func (s *OffloadStore) offloadFilePath(sessionDir, id string) string {
 	return filepath.Join(sessionDir, id+".json")
 }
 
-// estimateTokenSize 使用 llm.CountTokens 估算 token 数，error 时 fallback 到 len(text)*2/5。
+// estimateTokenSize 使用字符数估算 token 数。
+// ~2/5 字符/token 是英文的保守估计（中文约 2/3）。
 func estimateTokenSize(text string, model string) int {
-	n, err := llm.CountTokens(text, model)
-	if err != nil {
-		return len(text) * 2 / 5
-	}
-	return n
+	return len(text) * 2 / 5
 }
 
 // MaybeOffload 检测 tool result 是否超过阈值，超过则 offload 到磁盘。

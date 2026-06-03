@@ -93,6 +93,10 @@ var ProviderDefaultURLs = map[string]string{
 
 // ProviderRecommendedModels maps provider identifiers to their recommended default model.
 // Used by the setup panel to auto-fill llm_model when the user selects a provider.
+//
+// NOTE: These model names may become outdated as providers update their offerings.
+// When a model name changes, users see a 404 error after setup. Check and update
+// these values periodically, especially after provider API announcements.
 var ProviderRecommendedModels = map[string]string{
 	"openai":        "gpt-5.5",
 	"anthropic":     "claude-opus-4-7",

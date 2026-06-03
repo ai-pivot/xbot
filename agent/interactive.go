@@ -1268,6 +1268,7 @@ func (a *Agent) SendToInteractiveSession(
 	preLen := len(cfg.Messages)
 
 	ia.mu.Lock()
+	wasRunning := ia.running
 	ia.running = true
 	ia.interrupted = false // clear any stale interrupt flag from previous Run
 
@@ -1320,14 +1321,18 @@ func (a *Agent) SendToInteractiveSession(
 	// The initial spawn already emitted this, but subsequent "send" actions
 	// re-enter this code path after ia.running was set back to false.
 	// Without this, the sidebar stays idle while the agent is actively running.
-	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_started",
-		Role:     roleName,
-		Instance: instance,
-		ParentID: originChatID,
-	})
+	// Guard: only emit if the agent was not already running (avoid duplicate
+	// events if a concurrent send somehow bypasses the ia.running queue guard).
+	if !wasRunning {
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:  originChannel,
+			ChatID:   originChatID,
+			Action:   "subagent_started",
+			Role:     roleName,
+			Instance: instance,
+			ParentID: originChatID,
+		})
+	}
 
 	if ia.background {
 		// Background agents: run asynchronously (same as initial spawn).

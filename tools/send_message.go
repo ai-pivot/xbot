@@ -213,6 +213,11 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 			wg.Add(1)
 			go func(addr string) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						results <- memberResult{addr: addr, err: fmt.Errorf("panic: %v", r)}
+					}
+				}()
 				prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
 				result, err := sendMessageWithCtx(&ctxWithTimeout, addr, "", prefixedMsg)
 				results <- memberResult{addr: addr, result: result, err: err}
@@ -252,6 +257,11 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 			wg.Add(1)
 			go func(addr string) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						results <- memberResult{addr: addr, err: fmt.Errorf("panic: %v", r)}
+					}
+				}()
 				prefixedMsg := fmt.Sprintf("[group:%s] %s", groupName, message)
 				result, err := sendMessageWithCtx(&ctxWithTimeout, addr, "", prefixedMsg)
 				results <- memberResult{addr: addr, result: result, err: err}

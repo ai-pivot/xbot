@@ -306,9 +306,9 @@ type InteractiveCallbacks struct {
 // used for system reminder injection so the parent agent knows which SubAgents
 // are currently busy or idle.
 type SubAgentStatus struct {
-	Role     string
-	Instance string
-	Running  bool
+	Role     string `json:"role"`
+	Instance string `json:"instance"`
+	Running  bool   `json:"running"`
 }
 
 // ToolContextExtras Letta 记忆相关的 ToolContext 扩展字段。

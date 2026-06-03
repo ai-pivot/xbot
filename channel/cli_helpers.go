@@ -760,6 +760,8 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	m.cachedMaxContextTokens = m.resolveMaxContextTokens()
 	m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
 	m.cachedCompressRatio = m.resolveCompressRatio()
+	// Invalidate subscription cache — settings save may have created/updated subscriptions.
+	m.invalidateSubCache()
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
 	}

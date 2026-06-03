@@ -80,6 +80,7 @@ type runState struct {
 	subAgentNodes      []SubAgentNode // structured SubAgent tree (updated alongside progressLines)
 	iterationSnapshots []IterationSnapshot
 	progressFinalizer  func()
+	compressWarning    string
 }
 
 // newRunState creates and initializes a runState from the given RunConfig.
@@ -305,6 +306,11 @@ func (s *runState) notifyProgress(extra string) {
 	s.progressMu.Unlock()
 	if extra != "" {
 		lines = append(lines, extra)
+	}
+	// Append one-shot compression warning (set by aggressiveTruncate path).
+	if s.compressWarning != "" {
+		lines = append(lines, "> "+s.compressWarning)
+		s.compressWarning = ""
 	}
 	var flatLines []string
 	for _, line := range lines {
@@ -1082,31 +1088,19 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			"msg_count":       len(s.messages),
 		}).Warn("Compressed context still exceeds budget, applying aggressive truncation")
 		if s.aggressiveTruncate(ctx) {
-			// aggressiveTruncate calls ResetAfterCompress internally, which
-			// zeroes the tracker. Estimate the truncated token count (6 tail
-			// messages ≈ small) so that:
-			//   - maybeCompress doesn't see "no_data" and skip the guard
-			//   - SaveTokenState persists a realistic value for the next turn
-			truncatedTokens, _ := llm.CountMessagesTokens(s.messages, s.cfg.Model)
-			if s.tokenTracker != nil {
-				s.tokenTracker.SetAfterCompress(int64(truncatedTokens))
+			// aggressiveTruncate already called ResetAfterCompress, zeroing
+			// the tracker to no_data. Do NOT use local estimation
+			// (CountMessagesTokens) — the next LLM API call will fill in the
+			// real value. Save 0 to clear persisted state so restart doesn't
+			// see the stale post-compress count and trigger re-compression.
+			if s.cfg.SaveContextTokens != nil {
+				s.cfg.SaveContextTokens(0)
 			}
-			s.setTokenUsageAfterCompress(int64(truncatedTokens))
-			if s.cfg.SaveContextTokens != nil && truncatedTokens > 0 {
-				s.cfg.SaveContextTokens(int64(truncatedTokens))
+			if s.cfg.SaveTokenState != nil {
+				s.cfg.SaveTokenState(0, 0)
 			}
-			if s.cfg.SaveTokenState != nil && truncatedTokens > 0 {
-				s.cfg.SaveTokenState(int64(truncatedTokens), 0)
-			}
-			if s.autoNotify {
-				for i := len(s.progressLines) - 1; i >= 0; i-- {
-					if strings.Contains(s.progressLines[i], "压缩完成") {
-						s.progressLines[i] = "> ⚠️ 压缩后仍超限，已截断旧消息"
-						break
-					}
-				}
-				s.notifyProgress("")
-			}
+			s.compressWarning = "⚠️ 压缩后仍超限，已截断旧消息"
+			s.notifyProgress("")
 		}
 	}
 }

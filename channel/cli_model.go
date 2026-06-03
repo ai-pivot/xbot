@@ -460,7 +460,7 @@ func (m *cliModel) restoreSession() {
 		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
 		m.activeSubID = ""
 		m.cachedModelName = ""
-		// Reset bg task count from backend for this session
+		m.hasNoSubCacheValid = false
 		if m.bgTaskCountFn != nil {
 			m.bgTaskCount = m.bgTaskCountFn()
 		} else {
@@ -667,6 +667,7 @@ func (m *cliModel) resetToIdleState() {
 	// --- Per-session LLM state (prevents leaking from previous session) ---
 	m.activeSubID = ""
 	m.cachedModelName = ""
+	m.hasNoSubCacheValid = false
 	m.cachedMaxContextTokens = 0
 	m.cachedMaxOutputTokens = 0
 	m.cachedCompressRatio = 0
@@ -1347,6 +1348,8 @@ type cliModel struct {
 	modelNameZoneXStart int             // rendered X start of model name in status bar (-1 = not rendered)
 	modelNameZoneXEnd   int             // rendered X end of model name in status bar (exclusive)
 	activeSubID         string          // active subscription ID for current session
+	hasNoSubCache       bool            // cached result of hasNoSubscription()
+	hasNoSubCacheValid  bool            // true when hasNoSubCache is authoritative
 	todoManager         *cliTodoManager // per-session todo persistence
 	askUserSession      string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
 	modelCount          int             // cached model list length for View() performance
@@ -1688,6 +1691,17 @@ func isCtrlJ(msg tea.Msg) bool {
 // hasNoSubscription returns true when there is no usable subscription configured.
 // Used to show a friendly setup prompt instead of a cryptic LLM error.
 func (m *cliModel) hasNoSubscription() bool {
+	if m.hasNoSubCacheValid {
+		return m.hasNoSubCache
+	}
+	result := m.computeHasNoSubscription()
+	m.hasNoSubCache = result
+	m.hasNoSubCacheValid = true
+	return result
+}
+
+// computeHasNoSubscription performs the actual subscription check.
+func (m *cliModel) computeHasNoSubscription() bool {
 	if m.channel == nil || m.channel.subscriptionMgr == nil {
 		return true
 	}
@@ -1702,6 +1716,11 @@ func (m *cliModel) hasNoSubscription() bool {
 		}
 	}
 	return true
+}
+
+// invalidateSubCache forces hasNoSubscription to re-query on next call.
+func (m *cliModel) invalidateSubCache() {
+	m.hasNoSubCacheValid = false
 }
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
