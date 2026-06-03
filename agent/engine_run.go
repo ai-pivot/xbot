@@ -1056,6 +1056,59 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if hook := cm.SessionHook(); hook != nil {
 		hook.AfterPersist(ctx, s.cfg.Session, pipelineResult.CompressOutput)
 	}
+
+	// Post-compression safety check: if the compressed result still exceeds the
+	// context budget, the next iteration will trigger another compress cycle,
+	// creating an infinite loop.  This happens when there are 500+ iterations and
+	// the tail alone is too large.  Apply aggressive truncation as a last resort.
+	maxOutputTokens := s.cfg.MaxOutputTokens
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = 32_768
+	}
+	promptBudget := maxTokens - maxOutputTokens
+	if promptBudget <= 0 {
+		promptBudget = maxTokens / 2
+	}
+	compressThreshold := 0.9
+	if s.cfg.ContextManagerConfig != nil && s.cfg.ContextManagerConfig.CompressionThreshold > 0 {
+		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
+	}
+	postCompressLimit := float64(promptBudget) * compressThreshold
+	if pipelineResult.NewTokenCount > int64(postCompressLimit) && len(s.messages) > 10 {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"new_tokens":      pipelineResult.NewTokenCount,
+			"prompt_budget":   promptBudget,
+			"threshold_limit": int64(postCompressLimit),
+			"msg_count":       len(s.messages),
+		}).Warn("Compressed context still exceeds budget, applying aggressive truncation")
+		if s.aggressiveTruncate(ctx) {
+			// aggressiveTruncate calls ResetAfterCompress internally, which
+			// zeroes the tracker. Estimate the truncated token count (6 tail
+			// messages ≈ small) so that:
+			//   - maybeCompress doesn't see "no_data" and skip the guard
+			//   - SaveTokenState persists a realistic value for the next turn
+			truncatedTokens, _ := llm.CountMessagesTokens(s.messages, s.cfg.Model)
+			if s.tokenTracker != nil {
+				s.tokenTracker.SetAfterCompress(int64(truncatedTokens))
+			}
+			s.setTokenUsageAfterCompress(int64(truncatedTokens))
+			if s.cfg.SaveContextTokens != nil && truncatedTokens > 0 {
+				s.cfg.SaveContextTokens(int64(truncatedTokens))
+			}
+			if s.cfg.SaveTokenState != nil && truncatedTokens > 0 {
+				s.cfg.SaveTokenState(int64(truncatedTokens), 0)
+			}
+			if s.autoNotify {
+				for i := len(s.progressLines) - 1; i >= 0; i-- {
+					if strings.Contains(s.progressLines[i], "压缩完成") {
+						s.progressLines[i] = "> ⚠️ 压缩后仍超限，已截断旧消息"
+						break
+					}
+				}
+				s.notifyProgress("")
+			}
+		}
+	}
 }
 
 // aggressiveTruncate performs emergency context truncation when all compression
@@ -1306,7 +1359,13 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 				sessionName = s.cfg.ChatID[idx+1:]
 			}
 		}
-		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName)
+		// Collect active SubAgent status for system reminder
+		var subAgentStatuses []SubAgentStatus
+		if s.cfg.InteractiveCallbacks != nil && s.cfg.InteractiveCallbacks.ListActiveFn != nil {
+			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
+		}
+
+		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
 		if reminder != "" && len(s.messages) > 0 {
 			lastIdx := len(s.messages) - 1
 			s.messages[lastIdx].Content += "\n\n" + reminder

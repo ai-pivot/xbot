@@ -41,7 +41,7 @@ var systemReminderRe = regexp.MustCompile(`\n?\n?<system-reminder>[\s\S]*?</syst
 // roundToolCalls is the current round's tool calls (used to detect git commit).
 // sessionKey is the unique session identifier (used for worktree peer lookup).
 // sessionName is the current session display name (used to detect auto-generated names needing rename).
-func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string, sessionName string) string {
+func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string, sessionName string, activeSubAgents []SubAgentStatus) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -143,6 +143,25 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 			}
 			parts = append(parts, "协作规则: 尊重同伴的修改，改动冲突时优先通过 SendMessage 协商。")
 		}
+	}
+
+	// Active SubAgents: show idle/busy state so the parent agent knows
+	// which SubAgents are currently running vs available.
+	if !isSubAgent && len(activeSubAgents) > 0 {
+		parts = append(parts, "")
+		parts = append(parts, "🤖 活跃 SubAgent:")
+		for _, sa := range activeSubAgents {
+			status := "⏳ 空闲"
+			if sa.Running {
+				status = "🔄 执行中"
+			}
+			label := sa.Role
+			if sa.Instance != "" {
+				label += "/" + sa.Instance
+			}
+			parts = append(parts, fmt.Sprintf("   - %s %s", label, status))
+		}
+		parts = append(parts, "提示: 执行中的 SubAgent 仍在工作，请等待其完成。可用 SubAgent(action=\"inspect\") 查看进度。")
 	}
 
 	parts = append(parts, "行为提醒:")

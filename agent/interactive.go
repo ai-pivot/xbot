@@ -1316,6 +1316,19 @@ func (a *Agent) SendToInteractiveSession(
 	}
 	ia.mu.Unlock()
 
+	// Emit subagent_started so sidebar spinner updates from idle→busy.
+	// The initial spawn already emitted this, but subsequent "send" actions
+	// re-enter this code path after ia.running was set back to false.
+	// Without this, the sidebar stays idle while the agent is actively running.
+	a.emitSessionState(protocol.SessionEvent{
+		Channel:  originChannel,
+		ChatID:   originChatID,
+		Action:   "subagent_started",
+		Role:     roleName,
+		Instance: instance,
+		ParentID: originChatID,
+	})
+
 	if ia.background {
 		// Background agents: run asynchronously (same as initial spawn).
 		// Without this, SubAgent(action="send") blocks the caller's tool

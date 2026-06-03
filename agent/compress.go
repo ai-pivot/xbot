@@ -355,10 +355,11 @@ func truncateRunes(s string, maxLen int) string {
 //
 // Flow:
 //  1. Find a safe cut point (last user message or plain assistant message)
-//  2. Separate system messages from the history before the cut point
-//  3. Build history text within token budget
-//  4. Multi-turn LLM call with optional memory tools
-//  5. Build result: [system] + [compaction summary] + [continuation] + [tail messages]
+//  2. Cap tail length so only the most recent iterations are kept verbatim
+//  3. Separate system messages from the history before the cut point
+//  4. Build history text within token budget
+//  5. Multi-turn LLM call with optional memory tools
+//  6. Build result: [system] + [compaction summary] + [continuation] + [tail messages]
 func compactMessages(
 	ctx context.Context,
 	messages []llm.ChatMessage,
@@ -385,7 +386,25 @@ func compactMessages(
 		}
 	}
 
-	// Step 2: separate system messages from content to compress
+	// Step 2: cap tail length. Each iteration is typically 2-3 messages
+	// (assistant + tool_call + tool_result). With 500+ iterations the tail can be
+	// enormous, causing compression to produce a summary that — combined with the
+	// unmodified tail — still exceeds the context limit, triggering infinite
+	// re-compression.  We keep at most maxTailMessages (~100 iterations ≈ 300
+	// messages); anything older is forced into toCompress.
+	const maxTailMessages = 300 // ~100 iterations
+	tailLen := len(messages) - tailStart
+	if tailLen > maxTailMessages {
+		oldTailStart := tailStart
+		tailStart = len(messages) - maxTailMessages
+		log.Ctx(ctx).WithFields(log.Fields{
+			"old_tail_start": oldTailStart,
+			"new_tail_start": tailStart,
+			"tail_capped":    tailLen - maxTailMessages,
+		}).Info("Capping tail length for compaction")
+	}
+
+	// Step 3: separate system messages from content to compress
 	var systemMsgs []llm.ChatMessage
 	var toCompress []llm.ChatMessage
 

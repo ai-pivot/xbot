@@ -296,6 +296,19 @@ type InteractiveCallbacks struct {
 	UnloadFn    func(ctx context.Context, roleName, instance string) error
 	InterruptFn func(ctx context.Context, roleName, instance string) error
 	InspectFn   func(ctx context.Context, roleName, instance string, tail int) (string, error)
+	// ListActiveFn returns status of all active interactive SubAgents for the
+	// current session. Used by BuildSystemReminder to inject SubAgent state
+	// into the system prompt. Nil for SubAgents (they don't manage children).
+	ListActiveFn func(channel, chatID string) []SubAgentStatus
+}
+
+// SubAgentStatus is a lightweight snapshot of an interactive SubAgent's state,
+// used for system reminder injection so the parent agent knows which SubAgents
+// are currently busy or idle.
+type SubAgentStatus struct {
+	Role     string
+	Instance string
+	Running  bool
 }
 
 // ToolContextExtras Letta 记忆相关的 ToolContext 扩展字段。
