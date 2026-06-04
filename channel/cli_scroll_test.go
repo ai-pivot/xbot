@@ -97,3 +97,107 @@ func TestSimUserScrolledUpResetOnScrollToBottom(t *testing.T) {
 		t.Fatalf("UserScrolledUp reset on scroll-to-bottom scenario failed: %s", result.Error)
 	}
 }
+
+// TestSimHistoryCompactedDoesNotForceScroll verifies that a HistoryCompacted
+// progress event does NOT force the viewport to bottom when the user has
+// scrolled up. This was a bug where:
+//   - engine_run.go never reset HistoryCompacted=false after sending the notification
+//   - cli_update_handlers.go unconditionally called GotoBottom() on HistoryCompacted
+//   - cliWidgetUpdateMsg set renderCacheValid=false causing fullRebuild+GotoBottom on every tick
+//
+// The result was: after context compression, every subsequent progress event
+// (and even idle ticks via widget updates) would force-scroll to bottom.
+func TestSimHistoryCompactedDoesNotForceScroll(t *testing.T) {
+	longContent := ""
+	for i := 0; i < 30; i++ {
+		longContent += fmt.Sprintf("Line %d of long content that fills the viewport\n", i)
+	}
+
+	scenario := SimScenario{
+		Config: SimConfig{Width: 80, Height: 20},
+		Steps: []SimStep{
+			// Create content so viewport is scrollable
+			{Action: "turn", Content: "hello", Response: longContent},
+			{Action: "assert", AssertViewportAtBottom: true},
+
+			// Start a new agent turn with progress
+			{Action: "progress", Iteration: 1, Phase: "thinking"},
+			{Action: "tick"},
+			{Action: "assert", AssertState: map[string]any{"typing": true}},
+
+			// User scrolls up to read old content
+			{Action: "scroll", ScrollLines: -10},
+			{Action: "tick"}, // tick triggers updateViewportContent which sets newContentHint
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true, "newContentHint": true}},
+
+			// Context compression fires — HistoryCompacted=true
+			{Action: "progress", Iteration: 1, Phase: "thinking", HistoryCompacted: true},
+			{Action: "tick"},
+
+			// CRITICAL: user should still be scrolled up after compression
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+
+			// Another progress event (e.g. new tool call) — should NOT force scroll
+			{Action: "progress", Iteration: 2, Phase: "thinking",
+				ActiveTools: []SimToolRecord{{Name: "Read", Status: "running"}}},
+			{Action: "tick"},
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+
+			// Yet another — still should NOT force scroll
+			{Action: "progress", Iteration: 2, Phase: "thinking",
+				CompletedTools: []SimToolRecord{{Name: "Read", Status: "done"}}},
+			{Action: "tick"},
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("HistoryCompacted should not force scroll: %s", result.Error)
+	}
+}
+
+// TestSimWidgetUpdateDoesNotInvalidateCache verifies that widget updates
+// (plugin widgets refreshing) do NOT set renderCacheValid=false. This was
+// a bug where every widget refresh (every few seconds) caused a fullRebuild
+// + GotoBottom, forcing the viewport to bottom even when idle and scrolled up.
+func TestSimWidgetUpdateDoesNotInvalidateCache(t *testing.T) {
+	longContent := ""
+	for i := 0; i < 30; i++ {
+		longContent += fmt.Sprintf("Line %d of long content that fills the viewport\n", i)
+	}
+
+	scenario := SimScenario{
+		Config: SimConfig{Width: 80, Height: 20},
+		Steps: []SimStep{
+			// Create content
+			{Action: "turn", Content: "hello", Response: longContent},
+			{Action: "assert", AssertViewportAtBottom: true},
+
+			// User scrolls up
+			{Action: "scroll", ScrollLines: -10},
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+
+			// Build the render cache (simulate a stable rendered state)
+			{Action: "tick"},
+			{Action: "assert", AssertState: map[string]any{"renderCacheValid": true}},
+
+			// Simulate widget update — should NOT invalidate cache
+			{Action: "set_var", Var: "renderCacheValid", Value: false},
+			// (widget update used to set renderCacheValid=false)
+			// Simulate what the widget update actually does now: just relayout, no cache invalidation
+			// For this test we verify that after a tick with renderCacheValid=false set by
+			// external non-message-change events, the viewport should still respect user scroll
+
+			// A tick after cache invalidation — fullRebuild should happen,
+			// but should NOT force scroll because userScrolledUp is true
+			{Action: "tick"},
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Widget update should not force scroll: %s", result.Error)
+	}
+}

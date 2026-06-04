@@ -1973,6 +1973,9 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 // The engine has replaced its internal message list and persisted to session DB;
 // CLI must rebuild m.messages to stay in sync.
 func (m *cliModel) reloadMessagesFromSession() {
+	if m.channel == nil {
+		return
+	}
 	loader := m.channel.config.DynamicHistoryLoader
 	if loader == nil {
 		return

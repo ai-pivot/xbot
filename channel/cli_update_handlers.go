@@ -510,7 +510,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
 		m.streamingMsgIdx = -1
 		m.invalidateAllCache(true)
-		m.viewport.GotoBottom()
+		// Do NOT GotoBottom here — compression can happen while the user
+		// is scrolled up reading old content. Forcing to bottom would
+		// lose their position. The subsequent reloadMessagesFromSession
+		// → handleHistoryReload respects userScrolledUp/newContentHint.
 		m.reloadMessagesFromSession()
 	}
 

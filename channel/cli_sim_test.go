@@ -105,6 +105,8 @@ type SimStep struct {
 	CompletedTools         []SimToolRecord `json:"completed_tools,omitempty"`
 	// TODO items for progress bar simulation
 	Todos []SimTodoItem `json:"todos,omitempty"`
+	// HistoryCompacted simulates context compression
+	HistoryCompacted bool `json:"history_compacted,omitempty"`
 
 	// ─── key / resize / rewind fields ───
 	Key         string `json:"key,omitempty"`
@@ -603,6 +605,7 @@ func (r *simRunner) doProgress(idx int, step SimStep) error {
 		ActiveTools:            convertSimTools(step.ActiveTools, step.Iteration),
 		CompletedTools:         convertSimTools(step.CompletedTools, step.Iteration),
 		Todos:                  convertSimTodos(step.Todos),
+		HistoryCompacted:       step.HistoryCompacted,
 		ChatID:                 m.channelName + ":" + m.chatID,
 	}
 	m.Update(cliProgressMsg{payload: payload})
@@ -1249,6 +1252,10 @@ func (r *simRunner) doSetVar(idx int, step SimStep) error {
 		m.inputReady = step.Value
 	case "typing":
 		m.typing = step.Value
+	case "newContentHint":
+		m.newContentHint = step.Value
+	case "renderCacheValid":
+		m.renderCacheValid = step.Value
 	default:
 		return fmt.Errorf("unknown variable: %q", step.Var)
 	}
@@ -2022,6 +2029,8 @@ func (r *simRunner) dumpVars() map[string]any {
 		"splashDone":        m.splashDone,
 		"ready":             m.ready,
 		"userScrolledUp":    m.userScrolledUp,
+		"newContentHint":    m.newContentHint,
+		"renderCacheValid":  m.renderCacheValid,
 	}
 }
 

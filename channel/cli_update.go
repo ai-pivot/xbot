@@ -421,9 +421,10 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		cmds = append(cmds, m.handleToastClear(msg)...)
 
 	case cliWidgetUpdateMsg:
-		// Widget content changed — invalidate render cache and relayout viewport.
-		// Info bar appearing/disappearing changes the number of reserved lines.
-		m.renderCacheValid = false
+		// Widget content changed — relayout viewport (info bar height may
+		// have changed). Do NOT set renderCacheValid=false: widget updates
+		// don't affect message content, and invalidating the cache causes
+		// an expensive fullRebuild on every widget tick (100ms→full rebuild).
 		m.relayoutViewport()
 
 	case cliModelDiscoverMsg:

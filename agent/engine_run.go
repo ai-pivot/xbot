@@ -1052,6 +1052,11 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		}
 		s.notifyProgress("")
 	}
+	// Reset HistoryCompacted after the notification is sent so subsequent
+	// progress events don't repeatedly trigger CLI message rebuild.
+	if s.structuredProgress != nil {
+		s.structuredProgress.HistoryCompacted = false
+	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"new_tokens": pipelineResult.NewTokenCount,
