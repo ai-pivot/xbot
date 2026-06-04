@@ -179,6 +179,10 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			if m.panelEdit {
 				m.panelEditTA, cmd = m.panelEditTA.Update(paste)
 			}
+		case "wizard":
+			if m.wizardStep == wizardAPIKey {
+				m.wizardKeyTI, cmd = m.wizardKeyTI.Update(paste)
+			}
 		}
 		return m, cmd
 	}
@@ -655,9 +659,14 @@ func (m *cliModel) relayoutViewport() {
 		m.cachedWrappedHistoryWidth = 0
 		m.cachedHistoryMaxWidth = 0
 		m.cachedHistoryLines = nil
+		m.cachedAllLines = nil
+		m.cachedAllLinesHistoryLen = 0
 		for i := range m.messages {
 			m.messages[i].dirty = true
+			m.messages[i].wrappedLines = nil
+			m.messages[i].wrappedWidth = 0
 		}
+		m.invalidateProgressHistoryCache()
 	}
 
 	// Use userScrolledUp instead of AtBottom() to avoid false-positive

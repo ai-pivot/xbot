@@ -1342,7 +1342,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 			content:   hm.Content,
 			timestamp: hm.Timestamp,
 			isPartial: false,
-			dirty:     true,
+			dirty:     true, // will be cleared by merge below if cached
 		}
 		if len(hm.Iterations) > 0 {
 			cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
@@ -1367,12 +1367,27 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		}
 		m.pendingUserMsg = nil
 	}
-	m.messages = newMessages
+	// Smart merge: reuse rendered cache from existing messages to avoid
+	// O(N) glamour re-rendering of ALL messages. Only truly new or changed
+	// messages need re-rendering. This is critical for sessions with hundreds
+	// of iterations where full rebuild would take seconds.
+	prevMsgCount := len(m.messages)
+	allMatched := m.mergeMessagesPreservingCache(newMessages)
 	m.streamingMsgIdx = -1
-	m.invalidateAllCache(false)
+	// If ALL messages matched (same content, same count), skip fullRebuild.
+	// MUST check count: rewind deletes messages — remaining ones match old
+	// cache, but cachedHistoryLines still contains deleted messages' lines.
+	if allMatched && m.renderCacheValid && len(m.messages) == prevMsgCount {
+		m.viewport.GotoBottom()
+		log.WithField("count", len(m.messages)).Debug("History reloaded (all cached, skipped rebuild)")
+		return
+	}
+	// Some messages are new/dirty or count changed — need rebuild, but only
+	// those will be re-rendered. Invalidate the flag so fullRebuild runs.
+	m.renderCacheValid = false
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
-	log.WithField("count", len(newMessages)).Info("History reloaded after compression")
+	log.WithField("count", len(m.messages)).Info("History reloaded after compression")
 
 	// NOTE: do NOT call refreshTokenStateAfterReload() here.
 	// The HistoryCompacted handler in handleProgressMsg already calls

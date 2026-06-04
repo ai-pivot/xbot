@@ -1,8 +1,9 @@
 package channel
 
 import (
-	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -52,6 +53,11 @@ type OutboundMsg struct {
 	ToolsUsed   []string          `json:"tools_used,omitempty"`
 	Media       []string          `json:"media,omitempty"`
 	Error       error             `json:"-"`
+
+	// Ctx carries the caller's context for cancellation propagation.
+	// Used by AgentChannel.Send to respect caller cancellation (e.g. Ctrl+C).
+	// Ignored by other Channel implementations. Not serialized.
+	Ctx context.Context `json:"-"`
 }
 
 // ---------------------------------------------------------------------------

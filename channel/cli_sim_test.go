@@ -677,7 +677,7 @@ func (r *simRunner) doRewind(idx int, step SimStep) error {
 	cutIdx := items[ri].MsgIndex
 	m.messages = m.messages[:cutIdx]
 	m.renderCacheValid = false
-	m.cachedHistory = ""
+	m.invalidateAllCache(false)
 	m.updateViewportContent()
 	return nil
 }

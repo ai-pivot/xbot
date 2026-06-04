@@ -376,6 +376,9 @@ func (a *Agent) buildMainRunConfig(
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, channel, chatID, instance, tail)
 		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
 	}
 
 	// Memory tools for compaction — allows the compaction LLM to archive
@@ -785,6 +788,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, parentCtx.Channel, parentCtx.ChatID, instance, tail)
 		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
 	}
 
 	return cfg
@@ -852,6 +858,9 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		},
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, channel, chatID, instance, tail)
+		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
 		},
 	}
 
@@ -1942,4 +1951,21 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 	return streamContentFunc, streamReasoningFunc
+}
+
+// interactiveSessionsToStatuses converts InteractiveSessionInfo slice to
+// lightweight SubAgentStatus slice for system reminder injection.
+func interactiveSessionsToStatuses(sessions []InteractiveSessionInfo) []SubAgentStatus {
+	if len(sessions) == 0 {
+		return nil
+	}
+	statuses := make([]SubAgentStatus, len(sessions))
+	for i, s := range sessions {
+		statuses[i] = SubAgentStatus{
+			Role:     s.Role,
+			Instance: s.Instance,
+			Running:  s.Running,
+		}
+	}
+	return statuses
 }

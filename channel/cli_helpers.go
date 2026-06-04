@@ -73,8 +73,12 @@ func (m *cliModel) invalidateAllCache(updateViewport bool) {
 	m.cachedWrappedHistoryWidth = 0
 	m.cachedHistoryMaxWidth = 0
 	m.cachedHistoryLines = nil
+	m.cachedAllLines = nil
+	m.cachedAllLinesHistoryLen = 0
 	for i := range m.messages {
 		m.messages[i].dirty = true
+		m.messages[i].wrappedLines = nil
+		m.messages[i].wrappedWidth = 0
 	}
 	if updateViewport {
 		m.updateViewportContent()
@@ -690,6 +694,9 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	lang, hasLang := vals["language"]
 	// Capture feedback string now (m.locale is only safe to read in Update)
 	feedbackMsg := m.locale.SettingsSaved
+	if m.panelIsSetup {
+		feedbackMsg = m.locale.SetupComplete
+	}
 
 	// Detect layout changes and collect layout values
 	layoutKeys := map[string]bool{
@@ -757,8 +764,17 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	m.cachedMaxContextTokens = m.resolveMaxContextTokens()
 	m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
 	m.cachedCompressRatio = m.resolveCompressRatio()
+	// Invalidate subscription cache — settings save may have created/updated subscriptions.
+	m.invalidateSubCache()
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
+	}
+	// After setup wizard completes, show welcome message with TUI usage tips.
+	if m.panelIsSetup {
+		m.panelIsSetup = false
+		if m.locale.SetupWelcome != "" {
+			m.appendSystem(m.locale.SetupWelcome)
+		}
 	}
 	if visualChanged {
 		m.invalidateAllCache(true)

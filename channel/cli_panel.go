@@ -121,15 +121,16 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 	m.panelEdit = false
 	m.panelScrollY = 0
 	m.panelSubGeneration = m.subGeneration // capture current subscription generation
-	m.panelSchema = make([]SettingDefinition, len(schema))
-	copy(m.panelSchema, schema)
+	// Store full schema and pre-process defaults / options on the full copy.
+	m.panelSchemaFull = make([]SettingDefinition, len(schema))
+	copy(m.panelSchemaFull, schema)
 	m.panelValues = make(map[string]string, len(values))
 	for k, v := range values {
 		m.panelValues[k] = v
 	}
 	// Fill defaults and mark global-scoped settings as read-only (admin-only).
-	for i := range m.panelSchema {
-		def := &m.panelSchema[i]
+	for i := range m.panelSchemaFull {
+		def := &m.panelSchemaFull[i]
 		cur, ok := m.panelValues[def.Key]
 		needsDefault := !ok || cur == ""
 		// For number fields, also treat "0" as needing default when the
@@ -159,8 +160,6 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 			def.ReadOnly = true
 		}
 	}
-	m.panelOnSubmit = onSubmit
-	m.panelOnCancel = nil
 	// Auto-fill base_url on panel open if provider has a known default
 	// and base_url is currently empty (typical for setup wizard).
 	if provider := m.panelValues["llm_provider"]; provider != "" {
@@ -169,8 +168,19 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 				m.panelValues["llm_base_url"] = url
 			}
 		}
+		if m.panelValues["llm_model"] == "" {
+			if model, ok := ProviderRecommendedModels[provider]; ok {
+				m.panelValues["llm_model"] = model
+			}
+		}
 		m.panelPrevProvider = provider
+		// Show provider-specific API key guidance on initial open.
+		m.updateAPIKeyHint(provider)
 	}
+	// Build visible schema from full schema (filters DependsOn fields).
+	m.rebuildVisibleSchema()
+	m.panelOnSubmit = onSubmit
+	m.panelOnCancel = nil
 	// Pre-create textarea for editing
 	ta := textarea.New()
 	ta.Placeholder = m.locale.PanelEditPlaceholder
@@ -180,9 +190,25 @@ func (m *cliModel) openSettingsPanel(schema []SettingDefinition, values map[stri
 	m.panelEditTA = ta
 }
 
+// rebuildVisibleSchema rebuilds panelSchema from panelSchemaFull,
+// filtering out fields whose DependsOn conditions are not met by current panelValues.
+func (m *cliModel) rebuildVisibleSchema() {
+	m.panelSchema = make([]SettingDefinition, 0, len(m.panelSchemaFull))
+	for _, def := range m.panelSchemaFull {
+		if IsFieldVisible(def, m.panelValues) {
+			m.panelSchema = append(m.panelSchema, def)
+		}
+	}
+	// Clamp cursor
+	if m.panelCursor >= len(m.panelSchema) {
+		m.panelCursor = max(0, len(m.panelSchema)-1)
+	}
+}
+
 // autoFillBaseURL sets llm_base_url to the provider's default URL when the
 // current base_url is empty or matches a known provider default (i.e., was
 // previously auto-filled). Never overwrites a user's custom URL.
+// Also auto-fills llm_model with the recommended model for the provider.
 func (m *cliModel) autoFillBaseURL(provider string) {
 	defaultURL, ok := ProviderDefaultURLs[provider]
 	if !ok {
@@ -192,41 +218,63 @@ func (m *cliModel) autoFillBaseURL(provider string) {
 		if cur != "" && IsProviderDefaultURL(cur) {
 			m.panelValues["llm_base_url"] = ""
 		}
+	} else {
+		cur := m.panelValues["llm_base_url"]
+		if cur == "" || IsProviderDefaultURL(cur) {
+			m.panelValues["llm_base_url"] = defaultURL
+		}
+	}
+	// Auto-fill recommended model when model is empty or matches a previous provider default.
+	if model, ok := ProviderRecommendedModels[provider]; ok {
+		cur := m.panelValues["llm_model"]
+		if cur == "" || isProviderRecommendedModel(cur) {
+			m.panelValues["llm_model"] = model
+		}
+	}
+	// Dynamically update the API Key field description with provider-specific
+	// guidance and a clickable link to the key management page.
+	m.updateAPIKeyHint(provider)
+	// Rebuild visible schema (DependsOn fields may appear/disappear).
+	m.rebuildVisibleSchema()
+}
+
+// updateAPIKeyHint updates the llm_api_key field's description in panelSchemaFull
+// to show provider-specific guidance with a clickable OSC 8 hyperlink.
+func (m *cliModel) updateAPIKeyHint(provider string) {
+	hint := FormatProviderHint(provider, m.locale)
+	if hint == "" {
 		return
 	}
-	cur := m.panelValues["llm_base_url"]
-	if cur == "" || IsProviderDefaultURL(cur) {
-		m.panelValues["llm_base_url"] = defaultURL
+	for i := range m.panelSchemaFull {
+		if m.panelSchemaFull[i].Key == "llm_api_key" {
+			m.panelSchemaFull[i].Description = hint
+			break
+		}
+	}
+	// Also update in the visible schema if the field is there.
+	for i := range m.panelSchema {
+		if m.panelSchema[i].Key == "llm_api_key" {
+			m.panelSchema[i].Description = hint
+			break
+		}
 	}
 }
 
-// openSetupPanel opens the first-run setup wizard as a settings-style panel.
-// Pre-fills from GetCurrentValues (respects existing config), falls back to
-// DefaultValue for keys not yet configured. This prevents misleading the user
-// with "flat" when their config already says "letta".
+// isProviderRecommendedModel checks if a model name matches any provider's recommended model.
+func isProviderRecommendedModel(model string) bool {
+	for _, m := range ProviderRecommendedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+// openSetupPanel opens the step-by-step setup wizard.
+// Uses a multi-step state machine (language → provider → apikey → done)
+// instead of a single-panel form, so users only make one choice per page.
 func (m *cliModel) openSetupPanel() {
-	schema := m.locale.SetupSchema
-	values := make(map[string]string)
-	// Start from current config so existing choices are preserved.
-	if m.channel != nil && m.channel.config.GetCurrentValues != nil {
-		for k, v := range m.channel.config.GetCurrentValues() {
-			values[k] = v
-		}
-	}
-	// Fill gaps with schema defaults (e.g. keys not yet in config).
-	for _, def := range schema {
-		if _, ok := values[def.Key]; !ok && def.DefaultValue != "" {
-			values[def.Key] = def.DefaultValue
-		}
-	}
-	m.openSettingsPanel(schema, values, func(vals map[string]string) {
-		// Apply all settings including setup-only keys (provider, api_key, sandbox, memory)
-		if m.channel.config.ApplySettings != nil {
-			m.channel.config.ApplySettings(vals, m.chatID)
-		}
-		// NOTE: UI updates (theme/locale/viewport) are handled by
-		// handleSettingsSavedMsg in Update() since this runs in a goroutine.
-	})
+	m.openWizardPanel()
 }
 
 // askItem represents a single question in the AskUser panel.
@@ -1411,6 +1459,8 @@ func (m *cliModel) updatePanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 		switch m.panelMode {
 		case "settings":
 			return m.updateSettingsPanel(msg)
+		case "wizard":
+			return m.updateWizardPanel(msg)
 		case "askuser":
 			return m.updateAskUserPanel(msg)
 		case "bgtasks":
@@ -2135,6 +2185,8 @@ func (m *cliModel) viewPanel() string {
 	switch m.panelMode {
 	case "settings":
 		raw = m.viewSettingsPanel()
+	case "wizard":
+		raw = m.renderWizard()
 	case "askuser":
 		raw = m.viewAskUserPanel()
 	case "bgtasks":
@@ -2329,6 +2381,48 @@ func (m *cliModel) viewSettingsPanel() string {
 		sb.WriteString("\n")
 		ln++
 
+		// Show field description when cursor is on this field (not in edit/combo mode).
+		if i == m.panelCursor && !m.panelEdit && !m.panelCombo && def.Description != "" {
+			descLines := strings.Split(def.Description, "\n")
+			for _, dl := range descLines {
+				if strings.Contains(dl, "\x1b]8;;") {
+					// OSC 8 hyperlink line — write directly, don't let lipgloss touch it.
+					sb.WriteString("    ")
+					sb.WriteString(dl)
+				} else {
+					sb.WriteString(descStyle.Render("    " + dl))
+				}
+				sb.WriteString("\n")
+				ln++
+			}
+		}
+
+		// API Key field: always show "获取密钥" button below the field.
+		// Clickable via mouse zone (panelOpenURL) — opens browser directly.
+		// Also wrapped in OSC 8 hyperlink for terminals that support it.
+		if def.Key == "llm_api_key" && m.panelValues["llm_provider"] != "" {
+			guide, hasGuide := ProviderSetupGuides[m.panelValues["llm_provider"]]
+			if hasGuide && guide.URL != "" {
+				btnLabel := "  " + m.locale.PanelBtnGetKey + "  "
+				oscLink := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, btnLabel)
+				sb.WriteString("    ")
+				sb.WriteString(oscLink)
+				sb.WriteString("\n")
+				ln++
+			} else if hasGuide && guide.URL == "" {
+				// Ollama: no key needed, show info text from locale
+				hint := ""
+				if m.locale.ProviderHints != nil {
+					hint = m.locale.ProviderHints[guide.HintKey]
+				}
+				if hint != "" {
+					sb.WriteString(descStyle.Render("    " + hint))
+					sb.WriteString("\n")
+					ln++
+				}
+			}
+		}
+
 		// ── Inline edit/combo overlay (Crush-style: render right below the item) ──
 		if i == m.panelCursor {
 			if m.panelEdit {
@@ -2361,8 +2455,16 @@ func (m *cliModel) viewSettingsPanel() string {
 					} else {
 						sb.WriteString("      " + label)
 					}
+					// Show option description on the selected combo item.
+					if j == m.panelComboIdx && opt.Description != "" {
+						sb.WriteString("\n")
+						sb.WriteString(descStyle.Render("        " + opt.Description))
+					}
 					sb.WriteString("\n")
 					ln++
+					if j == m.panelComboIdx && opt.Description != "" {
+						ln++
+					}
 				}
 				sb.WriteString(descStyle.Render("    " + m.locale.PanelComboHint))
 				sb.WriteString("\n")
@@ -2371,10 +2473,24 @@ func (m *cliModel) viewSettingsPanel() string {
 		}
 	}
 
-	// Bottom hint when no overlay is active
+	// Bottom buttons: always show Save and Cancel buttons.
+	// These are clickable mouse zones for users who don't know keyboard shortcuts.
 	if !m.panelEdit && !m.panelCombo {
 		sb.WriteString("\n")
+		// Save button — styled prominently
+		saveBtn := "  " + m.locale.PanelBtnSave + "  "
+		saveOsc := fmt.Sprintf("\x1b]8;;xbot://panel-save\x1b\\%s\x1b]8;;\x1b\\", saveBtn)
+		sb.WriteString("  ")
+		sb.WriteString(saveOsc)
+		// Cancel button
+		cancelBtn := "  " + m.locale.PanelBtnCancel + "  "
+		cancelOsc := fmt.Sprintf("\x1b]8;;xbot://panel-cancel\x1b\\%s\x1b]8;;\x1b\\", cancelBtn)
+		sb.WriteString("    ")
+		sb.WriteString(cancelOsc)
+		sb.WriteString("\n")
+		// Keyboard hint below buttons (secondary, for discoverability)
 		sb.WriteString(hintStyle.Render("  " + m.locale.PanelNavHint))
+		sb.WriteString("\n")
 	}
 
 	return sb.String()

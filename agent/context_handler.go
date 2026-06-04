@@ -9,7 +9,6 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
-	"xbot/llm"
 	"xbot/session"
 	"xbot/storage/sqlite"
 )
@@ -45,7 +44,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 	// 获取工具定义并计算 token
 	sessionKey := msg.Channel + ":" + msg.ChatID
 	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), a.settingsSvc, msg.Channel, msg.SenderID)
-	toolDefsTokens, _ := llm.CountToolsTokens(toolDefs, model)
+	toolDefsTokens := len(toolDefs) * 200 // rough estimate
 
 	// Prefer API-returned prompt_tokens (authoritative) over local estimation.
 	// Read from current tenant's DB — Agent-level lastPromptTokens is shared across

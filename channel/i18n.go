@@ -2,6 +2,7 @@ package channel
 
 import (
 	"fmt"
+	"time"
 
 	"xbot/config"
 )
@@ -9,28 +10,44 @@ import (
 // UILocale holds all UI strings for a given language.
 type UILocale struct {
 	// --- A. System messages ---
-	CancelSent     string // "已发送取消请求"
-	QueueCleared   string // "已清空 %d 条排队消息"
-	SettingsSaved  string // "✅ 设置已保存"
-	NoSettings     string // "当前渠道没有可配置的设置项。"
-	CheckingUpdate string // "正在检查更新..."
-	ModelUsage     string // "用法: /model <模型名>\n使用 /models 查看可用模型"
-	AskCancelled   string // "已取消提问"
-	SetupComplete  string // "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。"
-	SetupLettaNote string // "[!] letta memory mode requires embedding service:\n  1. ..."
-	UpdateFound    string // "发现新版本: %s → %s\n升级命令: ..."
-	UpdateCurrent  string // "当前版本 %s 已是最新"
-	UpdateFailed   string // "更新检查失败（网络超时或无法连接 GitHub API）"
+	CancelSent          string // "已发送取消请求"
+	QueueCleared        string // "已清空 %d 条排队消息"
+	SettingsSaved       string // "✅ 设置已保存"
+	NoSettings          string // "当前渠道没有可配置的设置项。"
+	CheckingUpdate      string // "正在检查更新..."
+	ModelUsage          string // "用法: /model <模型名>\n使用 /models 查看可用模型"
+	AskCancelled        string // "已取消提问"
+	SetupComplete       string // "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。"
+	SetupLettaNote      string // "[!] letta memory mode requires embedding service:\n  1. ..."
+	SetupTitle          string // Setup wizard title banner (HTML-like markup)
+	SetupSubtitle       string // Setup wizard subtitle explaining the 2-step process
+	SetupWelcome        string // Welcome message shown after setup completes
+	SetupNoLLM          string // Message shown when user tries to chat without LLM config
+	WizardProviderTitle string // "选择你的 AI 服务商"
+	WizardKeyTitle      string // "获取 %s 的密钥"
+	WizardKeyLabel      string // "密钥："
+	WizardDoneTitle     string // "🎉 设置完成！"
+	WizardStartBtn      string // "开始使用"
+	WizardNextBtn       string // "下一步"
+	WizardBackBtn       string // "返回"
+	WizardNavHint       string // "↑↓ 选择 · Enter 确认"
+	UpdateFound         string // "发现新版本: %s → %s\n升级命令: ..."
+	UpdateCurrent       string // "当前版本 %s 已是最新"
+	UpdateFailed        string // "更新检查失败（网络超时或无法连接 GitHub API）"
 
 	// --- B. Panel text ---
-	PanelSettingsTitle   string // "⚙ Settings"
-	PanelNotSet          string // "(未设置)"
-	PanelEditHint        string // "Enter confirm | Esc cancel"
-	PanelComboHint       string // "Up/Down select | Enter confirm | Type custom | Esc cancel"
-	PanelNavHint         string // "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭"
-	PanelEditPlaceholder string // "输入新值..."
-	PanelToggleOn        string // "● ON"
-	PanelToggleOff       string // "○ OFF"
+	PanelSettingsTitle   string            // "⚙ Settings"
+	PanelNotSet          string            // "(未设置)"
+	PanelEditHint        string            // "Enter confirm | Esc cancel"
+	PanelComboHint       string            // "Up/Down select | Enter confirm | Type custom | Esc cancel"
+	PanelNavHint         string            // "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭"
+	PanelEditPlaceholder string            // "输入新值..."
+	PanelBtnGetKey       string            // "🔑 点击这里获取密钥"
+	PanelBtnSave         string            // "💾 保存设置"
+	PanelBtnCancel       string            // "✖ 取消"
+	ProviderHints        map[string]string // per-provider API key hint text (keyed by HintKey)
+	PanelToggleOn        string            // "● ON"
+	PanelToggleOff       string            // "○ OFF"
 
 	PanelOther      string // "Other: "
 	PanelSubmit     string // "Submit →"
@@ -102,8 +119,9 @@ type UILocale struct {
 	RewindHint  string // "Select a message to rewind to. Content will be placed in input box."
 
 	// --- G. Splash ---
-	SplashDesc    string // "AI-powered terminal agent"
-	SplashLoading string // "  %s  initializing..."
+	SplashDesc     string // "AI-powered terminal agent"
+	SplashLoading  string // "  %s  initializing..."
+	SplashFirstRun string // Splash description for first-run users
 
 	// --- H. Footer keys ---
 	FooterScroll   string // "scroll"
@@ -213,18 +231,30 @@ var locales map[string]*UILocale
 func localeZH() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
-		CancelSent:     "已发送取消请求",
-		QueueCleared:   "已清空 %d 条排队消息",
-		SettingsSaved:  "✅ 设置已保存",
-		NoSettings:     "当前渠道没有可配置的设置项。",
-		CheckingUpdate: "正在检查更新...",
-		ModelUsage:     "用法: /model <模型名>\n使用 /models 查看可用模型",
-		AskCancelled:   "已取消提问",
-		SetupComplete:  "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。",
-		SetupLettaNote: "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在配置或环境变量中设置嵌入端点",
-		UpdateFound:    "发现新版本: %s → %s (stable)\n升级命令: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "当前版本 %s (channel: %s) 已是最新",
-		UpdateFailed:   "更新检查失败（网络超时或无法连接 GitHub API）",
+		CancelSent:          "已发送取消请求",
+		QueueCleared:        "已清空 %d 条排队消息",
+		SettingsSaved:       "✅ 设置已保存",
+		NoSettings:          "当前渠道没有可配置的设置项。",
+		CheckingUpdate:      "正在检查更新...",
+		ModelUsage:          "用法: /model <模型名>\n使用 /models 查看可用模型",
+		AskCancelled:        "已取消提问",
+		SetupComplete:       "✅ 初始配置完成，可以开始使用了。随时用 /settings 修改配置，/setup 重新引导。",
+		SetupLettaNote:      "\n\n[!] letta 记忆模式需要嵌入服务:\n  1. 安装 Ollama: https://ollama.ai\n  2. 拉取嵌入模型: `ollama pull nomic-embed-text`\n  3. 在配置或环境变量中设置嵌入端点",
+		SetupTitle:          "👋 欢迎使用 xbot！",
+		SetupSubtitle:       "要开始使用，只需做两件事：选择 AI 服务商 → 填入密钥。其他选项可以先不填",
+		SetupWelcome:        "🎉 设置完成！你可以开始和 AI 对话了。\n\n📝 怎么用：\n• 在底部输入框打字，按 Enter 发送\n• 想换行？按 Ctrl+J\n• 输入 /help 查看更多操作\n\n⌨️ 常用快捷键：\n• Ctrl+K — 命令面板（可以执行各种操作）\n• Ctrl+T — 查看和切换对话\n• Ctrl+P — 切换 AI 模型\n• Ctrl+C — 取消 AI 正在生成的回复\n\n💡 小提示：直接用大白话和 AI 说话就行，比如「帮我写一个 Python 脚本」或「解释一下这段代码」",
+		SetupNoLLM:          "⚠️ 还没有配置 AI 服务密钥，暂时无法对话。\n\n按 /setup 重新配置，或按 /settings 打开完整设置。\n\n📖 如果你不确定怎么做，输入 /help 查看帮助。",
+		WizardProviderTitle: "选择你的 AI 服务商",
+		WizardKeyTitle:      "获取 %s 的密钥",
+		WizardKeyLabel:      "密钥（API Key）：",
+		WizardDoneTitle:     "🎉 设置完成！",
+		WizardStartBtn:      "开始使用",
+		WizardNextBtn:       "下一步",
+		WizardBackBtn:       "返回",
+		WizardNavHint:       "↑↓ 选择 · Enter 确认 · Esc 返回上一步",
+		UpdateFound:         "发现新版本: %s → %s (stable)\n升级命令: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:       "当前版本 %s (channel: %s) 已是最新",
+		UpdateFailed:        "更新检查失败（网络超时或无法连接 GitHub API）",
 
 		// --- B. Panel text ---
 		PanelSettingsTitle:   "⚙ 设置",
@@ -233,8 +263,24 @@ func localeZH() *UILocale {
 		PanelComboHint:       "↑↓ 选择 | Enter 确认 | 输入自定义值 | Esc 取消",
 		PanelNavHint:         "↑↓ 导航 · Enter 编辑/切换 · Ctrl+S 保存 · Esc 关闭",
 		PanelEditPlaceholder: "> 输入新值...",
-		PanelToggleOn:        "● 开启",
-		PanelToggleOff:       "○ 关闭",
+		PanelBtnGetKey:       "🔑 点击这里获取密钥",
+		PanelBtnSave:         "💾 保存设置",
+		PanelBtnCancel:       "✖ 取消",
+		ProviderHints: map[string]string{
+			"openai":       "👉 打开上面的链接 → 登录 → Create new secret key → 复制密钥",
+			"anthropic":    "👉 打开上面的链接 → 登录 → Create Key → 复制密钥",
+			"openrouter":   "👉 打开上面的链接 → 登录 → Create Key → 复制密钥",
+			"google":       "👉 打开上面的链接 → 登录 → Create API Key → 复制密钥",
+			"deepseek":     "👉 打开上面的链接 → 登录 → 创建 API Key → 复制密钥",
+			"zhipu":        "👉 打开上面的链接 → 登录 → 添加 API Key → 复制密钥",
+			"zhipu_coding": "👉 打开上面的链接 → 登录 → 创建 API Key（sk-sp- 开头的是 Coding Plan 专用密钥）",
+			"siliconflow":  "👉 打开上面的链接 → 登录 → 添加 API Key → 复制密钥",
+			"moonshot":     "👉 打开上面的链接 → 登录 → 创建 API Key → 复制密钥",
+			"xiaomi":       "👉 打开上面的链接 → 注册/登录 → 获取 Token Plan 密钥",
+			"ollama":       "✅ 不需要密钥！只需先安装 Ollama（ollama.com）并运行模型",
+		},
+		PanelToggleOn:  "● 开启",
+		PanelToggleOff: "○ 关闭",
 
 		PanelOther:      "其他: ",
 		PanelSubmit:     "提交 →",
@@ -331,8 +377,9 @@ func localeZH() *UILocale {
 		RewindHint:  "选择要回退到的消息，内容将放入输入框",
 
 		// --- G. Splash ---
-		SplashDesc:    "AI 驱动的终端助手",
-		SplashLoading: "  %s  初始化中...",
+		SplashDesc:     "AI 驱动的终端助手",
+		SplashLoading:  "  %s  初始化中...",
+		SplashFirstRun: "👋 欢迎使用 xbot！正在为你准备初次设置...",
 
 		// --- H. Footer keys ---
 		FooterScroll:   "滚动",
@@ -416,59 +463,56 @@ func localeZH() *UILocale {
 		ThinkingVerbs: []string{"思考中", "推理中", "分析中", "考虑中", "评估中", "反思中", "处理中", "沉思中"},
 		IdlePlaceholders: []string{
 			"Enter 发送 · Ctrl+J 换行 · /help",
+			"试试问：帮我写一个 Python 脚本",
 			"Ctrl+K 命令面板",
 			"Ctrl+T 会话 · Ctrl+K 命令",
 			"@filepath 附加文件",
 			"Ctrl+P 切换模型",
 			"Ctrl+K → 所有命令",
+			"输入 /help 查看所有快捷键",
+			"直接用大白话和 AI 说话就行",
 		},
 
 		// --- J. Settings schema ---
 		SetupSchema: []SettingDefinition{
 
 			{
-				Key: "llm_provider", Label: "LLM 供应商", Description: "大模型服务提供商",
-				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "openai",
+				Key: "llm_provider", Label: "AI 服务商", Description: "选择你使用的 AI 服务。不知道选什么？国内推荐 DeepSeek",
+				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "deepseek",
 				Options: []SettingOption{
-					{Label: "OpenAI", Value: "openai"},
-					{Label: "Anthropic", Value: "anthropic"},
-					{Label: "OpenRouter", Value: "openrouter"},
-					{Label: "Ollama", Value: "ollama"},
-					{Label: "Azure OpenAI", Value: "azure"},
-					{Label: "Google AI (Gemini)", Value: "google"},
-					{Label: "自定义 (OpenAI 兼容)", Value: "custom"},
+					{Label: "DeepSeek（深度求索）", Value: "deepseek", Description: "国内直连 · 性能强 · 新用户有免费额度"},
+					{Label: "智谱（ChatGLM）", Value: "zhipu", Description: "国内直连 · GLM 系列"},
+					{Label: "智谱 Coding Plan（编程套餐）", Value: "zhipu_coding", Description: "编程专用通道 · 针对代码优化 · 需要单独购买"},
+					{Label: "硅基流动（SiliconFlow）", Value: "siliconflow", Description: "国内聚合平台 · 多种模型可选"},
+					{Label: "Moonshot（Kimi）", Value: "moonshot", Description: "国内直连 · Kimi 系列"},
+					{Label: "小米 MiMo（Token Plan）", Value: "xiaomi", Description: "Token 计费 · 月付套餐 · 包含 V2.5 全系列"},
+					{Label: "OpenAI（ChatGPT）", Value: "openai", Description: "需要海外网络"},
+					{Label: "Anthropic（Claude）", Value: "anthropic", Description: "需要海外网络"},
+					{Label: "OpenRouter", Value: "openrouter", Description: "聚合平台 · 可访问多种模型"},
+					{Label: "Google AI（Gemini）", Value: "google", Description: "需要海外网络"},
+					{Label: "Ollama（本地运行）", Value: "ollama", Description: "无需联网 · 需要先安装 Ollama"},
+					{Label: "自定义（兼容 OpenAI 格式）", Value: "custom", Description: "适用于其他 OpenAI 兼容的 AI 服务"},
 				},
 			},
 			{
-				Key: "llm_api_key", Label: "API Key", Description: "模型服务的 API 密钥",
-				Type: SettingTypePassword, Category: "LLM",
+				Key: "llm_api_key", Label: "密钥（API Key）",
+				Description: "使用 AI 服务的通行证。选好服务商后，去它的官网注册并创建密钥",
+				Type:        SettingTypePassword, Category: "LLM",
 			},
 			{
-				Key: "llm_model", Label: "模型", Description: "使用的模型名称",
-				Type: SettingTypeText, Category: "LLM",
+				Key: "llm_model", Label: "AI 模型",
+				Description: "一般会自动填好，也可以改成你想用的模型",
+				Type:        SettingTypeCombo, Category: "LLM",
 			},
 			{
-				Key: "llm_base_url", Label: "Base URL", Description: "API 端点地址（选择供应商时自动填充，也可自定义）",
-				Type: SettingTypeText, Category: "LLM",
+				Key: "llm_base_url", Label: "服务器地址",
+				Description: "一般不用改，会自动填好。只有使用自定义服务时才需要修改",
+				Type:        SettingTypeText, Category: "LLM",
+				DependsOnKey:    "llm_provider",
+				DependsOnValues: "ollama,custom",
 			},
 			{
-				Key: "sandbox_mode", Label: "沙箱模式", Description: "命令执行隔离方式",
-				Type: SettingTypeSelect, Category: "环境", DefaultValue: "none",
-				Options: []SettingOption{
-					{Label: "none — 直接执行（推荐）", Value: "none"},
-					{Label: "docker — 容器隔离", Value: "docker"},
-				},
-			},
-			{
-				Key: "memory_provider", Label: "记忆模式", Description: "记忆系统实现方式",
-				Type: SettingTypeSelect, Category: "环境", DefaultValue: "flat",
-				Options: []SettingOption{
-					{Label: "flat — 全量注入（推荐）", Value: "flat"},
-					{Label: "letta — 分层记忆", Value: "letta"},
-				},
-			},
-			{
-				Key: "theme", Label: "配色方案", Description: "CLI 界面配色",
+				Key: "theme", Label: "界面风格", Description: "选一个你喜欢的颜色风格",
 				Type: SettingTypeSelect, Category: "外观", DefaultValue: "midnight",
 				Options: []SettingOption{
 					{Label: "Midnight（默认）", Value: "midnight"},
@@ -609,18 +653,30 @@ func localeZH() *UILocale {
 func localeEN() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
-		CancelSent:     "Cancel request sent",
-		QueueCleared:   "Cleared %d queued messages",
-		SettingsSaved:  "✅ Settings saved",
-		NoSettings:     "No configurable settings for this channel.",
-		CheckingUpdate: "Checking for updates...",
-		ModelUsage:     "Usage: /model <model name>\nUse /models to list available models",
-		AskCancelled:   "Question cancelled",
-		SetupComplete:  "✅ Initial setup complete. Use /settings to configure, /setup to re-run.",
-		SetupLettaNote: "\n\n[!] letta memory mode requires embedding service:\n  1. Install Ollama: https://ollama.ai\n  2. Pull embedding model: `ollama pull nomic-embed-text`\n  3. Set embedding endpoint in config or env",
-		UpdateFound:    "New version available: %s → %s (stable)\nUpdate command: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "Current version %s (channel: %s) is up to date",
-		UpdateFailed:   "Update check failed (network timeout or unable to connect to GitHub API)",
+		CancelSent:          "Cancel request sent",
+		QueueCleared:        "Cleared %d queued messages",
+		SettingsSaved:       "✅ Settings saved",
+		NoSettings:          "No configurable settings for this channel.",
+		CheckingUpdate:      "Checking for updates...",
+		ModelUsage:          "Usage: /model <model name>\nUse /models to list available models",
+		AskCancelled:        "Question cancelled",
+		SetupComplete:       "✅ Initial setup complete. Use /settings to configure, /setup to re-run.",
+		SetupLettaNote:      "\n\n[!] letta memory mode requires embedding service:\n  1. Install Ollama: https://ollama.ai\n  2. Pull embedding model: `ollama pull nomic-embed-text`\n  3. Set embedding endpoint in config or env",
+		SetupTitle:          "👋 Welcome to xbot!",
+		SetupSubtitle:       "To get started: choose an AI provider → enter your key. Other options can be left as-is",
+		SetupWelcome:        "🎉 Setup complete! You can now chat with AI.\n\n📝 How to use:\n• Type in the input box at the bottom, press Enter to send\n• Want a new line? Press Ctrl+J\n• Type /help for more options\n\n⌨️ Useful shortcuts:\n• Ctrl+K — Command palette (all actions)\n• Ctrl+T — View and switch sessions\n• Ctrl+P — Switch AI model\n• Ctrl+C — Cancel AI response\n\n💡 Tip: Just talk to AI in plain language, e.g. 'help me write a Python script'",
+		SetupNoLLM:          "⚠️ No AI service key configured yet.\n\nPress /setup to configure, or /settings for full options.\n\n📖 Not sure what to do? Type /help for guidance.",
+		WizardProviderTitle: "Choose your AI provider",
+		WizardKeyTitle:      "Get your %s API key",
+		WizardKeyLabel:      "API Key:",
+		WizardDoneTitle:     "🎉 Setup complete!",
+		WizardStartBtn:      "Start using",
+		WizardNextBtn:       "Next",
+		WizardBackBtn:       "Back",
+		WizardNavHint:       "↑↓ Select · Enter confirm · Esc Go back",
+		UpdateFound:         "New version available: %s → %s (stable)\nUpdate command: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:       "Current version %s (channel: %s) is up to date",
+		UpdateFailed:        "Update check failed (network timeout or unable to connect to GitHub API)",
 
 		// --- B. Panel text ---
 		PanelSettingsTitle:   "⚙ Settings",
@@ -629,8 +685,24 @@ func localeEN() *UILocale {
 		PanelComboHint:       "Up/Down select | Enter confirm | Type custom | Esc cancel",
 		PanelNavHint:         "↑↓ navigate · Enter edit/toggle · Ctrl+S save · Esc close",
 		PanelEditPlaceholder: "Enter new value...",
-		PanelToggleOn:        "● ON",
-		PanelToggleOff:       "○ OFF",
+		PanelBtnGetKey:       "🔑 Click to get API key",
+		PanelBtnSave:         "💾 Save",
+		PanelBtnCancel:       "✖ Cancel",
+		ProviderHints: map[string]string{
+			"openai":       "👉 Open the link above → Log in → Create new secret key → Copy",
+			"anthropic":    "👉 Open the link above → Log in → Create Key → Copy",
+			"openrouter":   "👉 Open the link above → Log in → Create Key → Copy",
+			"google":       "👉 Open the link above → Log in → Create API Key → Copy",
+			"deepseek":     "👉 Open the link above → Log in → Create API Key → Copy",
+			"zhipu":        "👉 Open the link above → Log in → Add API Key → Copy",
+			"zhipu_coding": "👉 Open the link above → Log in → Create API Key (sk-sp- prefix is for Coding Plan)",
+			"siliconflow":  "👉 Open the link above → Log in → Add API Key → Copy",
+			"moonshot":     "👉 Open the link above → Log in → Create API Key → Copy",
+			"xiaomi":       "👉 Open the link above → Sign up / Log in → Get Token Plan key",
+			"ollama":       "✅ No key needed! Just install Ollama (ollama.com) and run a model",
+		},
+		PanelToggleOn:  "● ON",
+		PanelToggleOff: "○ OFF",
 
 		PanelOther:      "Other: ",
 		PanelSubmit:     "Submit →",
@@ -722,8 +794,9 @@ func localeEN() *UILocale {
 		RewindHint:  "Select a message to rewind to. Content will be placed in input box.",
 
 		// --- G. Splash ---
-		SplashDesc:    "AI-powered terminal agent",
-		SplashLoading: "  %s  initializing...",
+		SplashDesc:     "AI-powered terminal agent",
+		SplashLoading:  "  %s  initializing...",
+		SplashFirstRun: "👋 Welcome to xbot! Preparing initial setup...",
 
 		// --- H. Footer keys ---
 		FooterScroll:   "scroll",
@@ -807,59 +880,56 @@ func localeEN() *UILocale {
 		ThinkingVerbs: []string{"Thinking", "Reasoning", "Analyzing", "Considering", "Evaluating", "Reflecting", "Processing", "Contemplating"},
 		IdlePlaceholders: []string{
 			"Enter send · Ctrl+J newline · /help",
+			"Try asking: help me write a Python script",
 			"Ctrl+K command palette",
 			"Ctrl+T sessions · Ctrl+K commands",
 			"@filepath to attach files",
 			"Ctrl+P switch model",
 			"Ctrl+K → all commands",
+			"Type /help for all shortcuts",
+			"Just talk to AI in plain language",
 		},
 
 		// --- J. Settings schema ---
 		SetupSchema: []SettingDefinition{
 
 			{
-				Key: "llm_provider", Label: "LLM Provider", Description: "Large language model service provider",
-				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "openai",
+				Key: "llm_provider", Label: "AI Provider", Description: "Choose your AI service. Not sure? Try DeepSeek (works in China)",
+				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "deepseek",
 				Options: []SettingOption{
-					{Label: "OpenAI", Value: "openai"},
-					{Label: "Anthropic", Value: "anthropic"},
-					{Label: "OpenRouter", Value: "openrouter"},
-					{Label: "Ollama", Value: "ollama"},
-					{Label: "Azure OpenAI", Value: "azure"},
-					{Label: "Google AI (Gemini)", Value: "google"},
-					{Label: "Custom (OpenAI-compatible)", Value: "custom"},
+					{Label: "DeepSeek", Value: "deepseek", Description: "China direct · Strong · Free credits for new users"},
+					{Label: "Zhipu (ChatGLM)", Value: "zhipu", Description: "China direct · GLM series"},
+					{Label: "Zhipu Coding Plan", Value: "zhipu_coding", Description: "Coding-specific endpoint · Optimized for code · Separate subscription"},
+					{Label: "SiliconFlow", Value: "siliconflow", Description: "China aggregation · Multiple models"},
+					{Label: "Moonshot (Kimi)", Value: "moonshot", Description: "China direct · Kimi series"},
+					{Label: "Xiaomi MiMo (Token Plan)", Value: "xiaomi", Description: "Token billing · Monthly plan · Includes V2.5 series"},
+					{Label: "OpenAI (ChatGPT)", Value: "openai", Description: "Requires overseas network"},
+					{Label: "Anthropic (Claude)", Value: "anthropic", Description: "Requires overseas network"},
+					{Label: "OpenRouter", Value: "openrouter", Description: "Aggregation platform · Access to many models"},
+					{Label: "Google AI (Gemini)", Value: "google", Description: "Requires overseas network"},
+					{Label: "Ollama (Local)", Value: "ollama", Description: "No internet needed · Requires Ollama installation"},
+					{Label: "Custom (OpenAI-compatible)", Value: "custom", Description: "For other OpenAI-compatible AI services"},
 				},
 			},
 			{
-				Key: "llm_api_key", Label: "API Key", Description: "API key for the model service",
-				Type: SettingTypePassword, Category: "LLM",
+				Key: "llm_api_key", Label: "API Key",
+				Description: "Your passkey for using the AI service. Register at the provider's website to get one",
+				Type:        SettingTypePassword, Category: "LLM",
 			},
 			{
-				Key: "llm_model", Label: "Model", Description: "Model name to use",
-				Type: SettingTypeText, Category: "LLM",
+				Key: "llm_model", Label: "AI Model",
+				Description: "Usually auto-filled. Change it if you want a specific model",
+				Type:        SettingTypeCombo, Category: "LLM",
 			},
 			{
-				Key: "llm_base_url", Label: "Base URL", Description: "API endpoint URL (auto-filled on provider selection, or custom)",
-				Type: SettingTypeText, Category: "LLM",
+				Key: "llm_base_url", Label: "Server URL",
+				Description: "Usually auto-filled. Only modify if using a custom service",
+				Type:        SettingTypeText, Category: "LLM",
+				DependsOnKey:    "llm_provider",
+				DependsOnValues: "ollama,custom",
 			},
 			{
-				Key: "sandbox_mode", Label: "Sandbox Mode", Description: "Command execution isolation method",
-				Type: SettingTypeSelect, Category: "Environment", DefaultValue: "none",
-				Options: []SettingOption{
-					{Label: "none — direct execution (recommended)", Value: "none"},
-					{Label: "docker — container isolation", Value: "docker"},
-				},
-			},
-			{
-				Key: "memory_provider", Label: "Memory Mode", Description: "Memory system implementation",
-				Type: SettingTypeSelect, Category: "Environment", DefaultValue: "flat",
-				Options: []SettingOption{
-					{Label: "flat — full injection (recommended)", Value: "flat"},
-					{Label: "letta — layered memory", Value: "letta"},
-				},
-			},
-			{
-				Key: "theme", Label: "Color Theme", Description: "CLI color scheme",
+				Key: "theme", Label: "Color Theme", Description: "Choose a color scheme you like",
 				Type: SettingTypeSelect, Category: "Appearance", DefaultValue: "midnight",
 				Options: []SettingOption{
 					{Label: "Midnight (default)", Value: "midnight"},
@@ -1000,18 +1070,30 @@ func localeEN() *UILocale {
 func localeJA() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
-		CancelSent:     "キャンセルリクエストを送信しました",
-		QueueCleared:   "%d 件のキューに入ったメッセージをクリアしました",
-		SettingsSaved:  "✅ 設定を保存しました",
-		NoSettings:     "このチャンネルには設定項目がありません。",
-		CheckingUpdate: "アップデートを確認中...",
-		ModelUsage:     "使い方: /model <モデル名>\n/models で利用可能モデルを表示",
-		AskCancelled:   "質問をキャンセルしました",
-		SetupComplete:  "✅ 初期設定が完了しました。/settings で設定変更、/setup で再設定。",
-		SetupLettaNote: "\n\n[!] letta メモリモードには埋め込みサービスが必要です:\n  1. Ollama をインストール: https://ollama.ai\n  2. 埋め込みモデルを取得: `ollama pull nomic-embed-text`\n  3. 設定または環境変数で埋め込みエンドポイントを設定",
-		UpdateFound:    "新しいバージョン: %s → %s (stable)\nアップデート: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
-		UpdateCurrent:  "現在のバージョン %s (channel: %s) は最新です",
-		UpdateFailed:   "アップデート確認に失敗（ネットワークタイムアウトまたは GitHub API に接続できません）",
+		CancelSent:          "キャンセルリクエストを送信しました",
+		QueueCleared:        "%d 件のキューに入ったメッセージをクリアしました",
+		SettingsSaved:       "✅ 設定を保存しました",
+		NoSettings:          "このチャンネルには設定項目がありません。",
+		CheckingUpdate:      "アップデートを確認中...",
+		ModelUsage:          "使い方: /model <モデル名>\n/models で利用可能モデルを表示",
+		AskCancelled:        "質問をキャンセルしました",
+		SetupComplete:       "✅ 初期設定が完了しました。/settings で設定変更、/setup で再設定。",
+		SetupLettaNote:      "\n\n[!] letta メモリモードには埋め込みサービスが必要です:\n  1. Ollama をインストール: https://ollama.ai\n  2. 埋め込みモデルを取得: `ollama pull nomic-embed-text`\n  3. 設定または環境変数で埋め込みエンドポイントを設定",
+		SetupTitle:          "👋 xbot へようこそ！",
+		SetupSubtitle:       "AI プロバイダーを選択 → キーを入力するだけ。その他は後で変更できます",
+		SetupWelcome:        "🎉 設定完了！AI とチャットを開始できます。\n\n📝 使い方：\n• 下の入力欄に文字を入力し、Enter で送信\n• 改行は Ctrl+J\n• /help でその他の操作を確認\n\n⌨️ よく使うショートカット：\n• Ctrl+K — コマンドパレット（すべての操作）\n• Ctrl+T — セッションの表示・切替\n• Ctrl+P — AI モデル切替\n• Ctrl+C — AI 応答のキャンセル\n\n💡 ヒント：自然な言葉で AI に話しかけてください",
+		SetupNoLLM:          "⚠️ AI サービスのキーが未設定です。\n\n/setup で設定、/settings で詳細設定。\n📖 /help でガイダンスを確認。",
+		WizardProviderTitle: "AI プロバイダーを選択",
+		WizardKeyTitle:      "%s の API キーを取得",
+		WizardKeyLabel:      "API キー：",
+		WizardDoneTitle:     "🎉 設定完了！",
+		WizardStartBtn:      "利用開始",
+		WizardNextBtn:       "次へ",
+		WizardBackBtn:       "戻る",
+		WizardNavHint:       "↑↓ 選択 · Enter 確認 · Esc 戻る",
+		UpdateFound:         "新しいバージョン: %s → %s (stable)\nアップデート: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash\n%s",
+		UpdateCurrent:       "現在のバージョン %s (channel: %s) は最新です",
+		UpdateFailed:        "アップデート確認に失敗（ネットワークタイムアウトまたは GitHub API に接続できません）",
 
 		// --- B. Panel text ---
 		PanelSettingsTitle:   "⚙ 設定",
@@ -1020,8 +1102,24 @@ func localeJA() *UILocale {
 		PanelComboHint:       "↑↓ 選択 | Enter 確認 | カスタム入力 | Esc キャンセル",
 		PanelNavHint:         "↑↓ 移動 · Enter 編集/切替 · Ctrl+S 保存 · Esc 閉じる",
 		PanelEditPlaceholder: "> 新しい値を入力...",
-		PanelToggleOn:        "● オン",
-		PanelToggleOff:       "○ オフ",
+		PanelBtnGetKey:       "🔑 クリックしてキーを取得",
+		PanelBtnSave:         "💾 保存",
+		PanelBtnCancel:       "✖ キャンセル",
+		ProviderHints: map[string]string{
+			"openai":       "👉 上のリンクを開く → ログイン → Create new secret key → コピー",
+			"anthropic":    "👉 上のリンクを開く → ログイン → Create Key → コピー",
+			"openrouter":   "👉 上のリンクを開く → ログイン → Create Key → コピー",
+			"google":       "👉 上のリンクを開く → ログイン → Create API Key → コピー",
+			"deepseek":     "👉 上のリンクを開く → ログイン → API Key を作成 → コピー",
+			"zhipu":        "👉 上のリンクを開く → ログイン → API Key を追加 → コピー",
+			"zhipu_coding": "👉 上のリンクを開く → ログイン → API Key を作成（sk-sp- は Coding Plan 専用）",
+			"siliconflow":  "👉 上のリンクを開く → ログイン → API Key を追加 → コピー",
+			"moonshot":     "👉 上のリンクを開く → ログイン → API Key を作成 → コピー",
+			"xiaomi":       "👉 上のリンクを開く → 登録/ログイン → Token Plan キーを取得",
+			"ollama":       "✅ キー不要！Ollama（ollama.com）をインストールしてモデルを実行",
+		},
+		PanelToggleOn:  "● オン",
+		PanelToggleOff: "○ オフ",
 
 		PanelOther:      "その他: ",
 		PanelSubmit:     "送信 →",
@@ -1113,8 +1211,9 @@ func localeJA() *UILocale {
 		RewindHint:  "巻き戻すメッセージを選択してください。内容が入力欄に配置されます。",
 
 		// --- G. Splash ---
-		SplashDesc:    "AI駆動のターミナルエージェント",
-		SplashLoading: "  %s  初期化中...",
+		SplashDesc:     "AI駆動のターミナルエージェント",
+		SplashLoading:  "  %s  初期化中...",
+		SplashFirstRun: "👋 xbot へようこそ！初期設定を準備しています...",
 
 		// --- H. Footer keys ---
 		FooterScroll:   "スクロール",
@@ -1198,59 +1297,56 @@ func localeJA() *UILocale {
 		ThinkingVerbs: []string{"思考中", "推論中", "分析中", "検討中", "評価中", "振り返り", "処理中", "熟考中"},
 		IdlePlaceholders: []string{
 			"Enter 送信 · Ctrl+J 改行 · /help",
+			"試してみて：Python スクリプトを書いて",
 			"Ctrl+K コマンドパレット",
 			"Ctrl+T セッション · Ctrl+K コマンド",
 			"@filepath でファイル添付",
 			"Ctrl+P モデル切替",
 			"Ctrl+K → 全コマンド",
+			"/help で全ショートカットを表示",
+			"自然な言葉で AI に話しかけてください",
 		},
 
 		// --- J. Settings schema ---
 		SetupSchema: []SettingDefinition{
 
 			{
-				Key: "llm_provider", Label: "LLM プロバイダー", Description: "大規模言語モデルサービスプロバイダー",
-				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "openai",
+				Key: "llm_provider", Label: "AI プロバイダー", Description: "AI サービスを選択してください。迷ったら DeepSeek がおすすめ",
+				Type: SettingTypeCombo, Category: "LLM", DefaultValue: "deepseek",
 				Options: []SettingOption{
-					{Label: "OpenAI", Value: "openai"},
-					{Label: "Anthropic", Value: "anthropic"},
-					{Label: "OpenRouter", Value: "openrouter"},
-					{Label: "Ollama", Value: "ollama"},
-					{Label: "Azure OpenAI", Value: "azure"},
-					{Label: "Google AI (Gemini)", Value: "google"},
-					{Label: "カスタム (OpenAI 互換)", Value: "custom"},
+					{Label: "DeepSeek", Value: "deepseek", Description: "中国直結 · 高性能 · 新規無料枠あり"},
+					{Label: "Zhipu (ChatGLM)", Value: "zhipu", Description: "中国直結 · GLM シリーズ"},
+					{Label: "Zhipu Coding Plan", Value: "zhipu_coding", Description: "コーディング専用 · コード最適化 · 別途購入必要"},
+					{Label: "SiliconFlow", Value: "siliconflow", Description: "中国集約プラットフォーム · 複数モデル"},
+					{Label: "Moonshot (Kimi)", Value: "moonshot", Description: "中国直結 · Kimi シリーズ"},
+					{Label: "Xiaomi MiMo (Token Plan)", Value: "xiaomi", Description: "トークン課金 · 月額プラン · V2.5 シリーズ対応"},
+					{Label: "OpenAI (ChatGPT)", Value: "openai", Description: "海外ネットワークが必要"},
+					{Label: "Anthropic (Claude)", Value: "anthropic", Description: "海外ネットワークが必要"},
+					{Label: "OpenRouter", Value: "openrouter", Description: "集約プラットフォーム · 複数モデル利用可能"},
+					{Label: "Google AI (Gemini)", Value: "google", Description: "海外ネットワークが必要"},
+					{Label: "Ollama (ローカル)", Value: "ollama", Description: "インターネット不要 · Ollama のインストールが必要"},
+					{Label: "カスタム (OpenAI 互換)", Value: "custom", Description: "その他の OpenAI 互換 AI サービス"},
 				},
 			},
 			{
-				Key: "llm_api_key", Label: "API Key", Description: "モデルサービスのAPIキー",
-				Type: SettingTypePassword, Category: "LLM",
+				Key: "llm_api_key", Label: "API キー",
+				Description: "AI サービスの認証キー。各プロバイダーのサイトで登録して取得",
+				Type:        SettingTypePassword, Category: "LLM",
 			},
 			{
-				Key: "llm_model", Label: "モデル", Description: "使用するモデル名",
-				Type: SettingTypeText, Category: "LLM",
+				Key: "llm_model", Label: "AI モデル",
+				Description: "通常は自動入力されます。特定のモデルを使いたい場合に変更",
+				Type:        SettingTypeCombo, Category: "LLM",
 			},
 			{
-				Key: "llm_base_url", Label: "Base URL", Description: "APIエンドポイントURL（プロバイダー選択時に自動入力、またはカスタム）",
-				Type: SettingTypeText, Category: "LLM",
+				Key: "llm_base_url", Label: "サーバー URL",
+				Description: "通常は自動入力。カスタムサービスの場合のみ変更",
+				Type:        SettingTypeText, Category: "LLM",
+				DependsOnKey:    "llm_provider",
+				DependsOnValues: "ollama,custom",
 			},
 			{
-				Key: "sandbox_mode", Label: "サンドボックスモード", Description: "コマンド実行の分離方法",
-				Type: SettingTypeSelect, Category: "環境", DefaultValue: "none",
-				Options: []SettingOption{
-					{Label: "none — 直接実行（推奨）", Value: "none"},
-					{Label: "docker — コンテナ分離", Value: "docker"},
-				},
-			},
-			{
-				Key: "memory_provider", Label: "メモリモード", Description: "メモリシステムの実装方式",
-				Type: SettingTypeSelect, Category: "環境", DefaultValue: "flat",
-				Options: []SettingOption{
-					{Label: "flat — 全量注入（推奨）", Value: "flat"},
-					{Label: "letta — 階層メモリ", Value: "letta"},
-				},
-			},
-			{
-				Key: "theme", Label: "カラーテーマ", Description: "CLI カラースキーム",
+				Key: "theme", Label: "カラーテーマ", Description: "お好みのカラースキームを選択",
 				Type: SettingTypeSelect, Category: "外観", DefaultValue: "midnight",
 				Options: []SettingOption{
 					{Label: "Midnight（デフォルト）", Value: "midnight"},
@@ -1421,10 +1517,21 @@ func SetLocale(lang string) {
 }
 
 // GetLocale returns the UILocale for the given language code.
-// Falls back to Chinese (zh) for unknown languages.
+// When lang is empty (no language configured, e.g. first run), it detects
+// the default language from the system timezone: CST (UTC+8) → Chinese,
+// otherwise English. Explicit language codes always take precedence.
 func GetLocale(lang string) *UILocale {
 	if loc, ok := locales[lang]; ok {
 		return loc
 	}
-	return locales[""] // default zh
+	// No language configured — infer from timezone.
+	if lang == "" {
+		_, offset := time.Now().Zone()
+		// UTC+8 zones: CST (China Standard Time), HKT, SGT, etc.
+		// Offset is in seconds: UTC+8 = 28800
+		if offset >= 25200 && offset <= 32400 { // UTC+7 to UTC+9
+			return locales["zh"]
+		}
+	}
+	return locales["en"]
 }

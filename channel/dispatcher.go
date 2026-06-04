@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -116,8 +117,20 @@ func (d *Dispatcher) SendMessage(channelName, chatID, content string) (string, e
 	})
 }
 
+// SendMessageCtx implements bus.MessageSenderCtx.
+// Propagates ctx to AgentChannel so pending RPCs can be cancelled by the caller.
+func (d *Dispatcher) SendMessageCtx(ctx context.Context, channelName, chatID, content string) (string, error) {
+	return d.SendDirect(OutboundMsg{
+		Channel: channelName,
+		ChatID:  chatID,
+		Content: content,
+		Ctx:     ctx,
+	})
+}
+
 // Compile-time interface check
 var _ bus.MessageSender = (*Dispatcher)(nil)
+var _ bus.MessageSenderCtx = (*Dispatcher)(nil)
 
 // SendDirect 同步发送消息到指定渠道，返回平台消息 ID
 func (d *Dispatcher) SendDirect(msg OutboundMsg) (string, error) {

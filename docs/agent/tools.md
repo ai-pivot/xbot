@@ -91,9 +91,15 @@ Two tools for inter-agent messaging via the Dispatcher's AgentChannel mechanism.
 
 ### SendMessage
 Routes by address prefix:
-- `agent:*` → `Dispatcher.SendMessage()` → `AgentChannel.Send()` (RPC, blocks for reply)
-- `group:*` → `GroupState` meeting mode: parses `@agent:xxx` mentions, builds history prompt, sends to each mentioned agent sequentially
+- `agent:*` → `Dispatcher.SendMessageCtx()` → `AgentChannel.Send()` (RPC, blocks for reply)
+- `group:*` → `GroupState` meeting mode: parses `@agent:xxx` mentions, builds history prompt, sends to each mentioned agent sequentially via `sendMessageWithCtx()`
+- `peer:*` → `PeerMessageFn` (async broadcast, busy→inject, idle→user message)
+- `session:*` → `PeerMessageFn` (async to specific session)
 - `feishu:/web:/qq:/cli:` → `Dispatcher.SendMessage()` → IM channel (fire-and-forget)
+
+**Deadlock prevention**: AgentChannel dispatches each request to its own goroutine, so concurrent RPCs don't block each other. Two agents sending to each other simultaneously won't deadlock.
+
+**Ctrl+C propagation**: `sendMessageWithCtx()` uses `bus.MessageSenderCtx` (type assertion) to pass caller context through `OutboundMsg.Ctx` → `AgentChannel.Send()` listens on both `replyCh` and `msg.Ctx.Done()`. Ctrl+C cancels the caller's context → `Send()` returns immediately.
 
 ### Meeting Mode (Group)
 - Moderator (caller) controls who speaks via `@agent:role/instance` mentions
@@ -101,7 +107,7 @@ Routes by address prefix:
 - @mentioned agents receive full discussion history + current question
 - Round counter increments per moderator message WITH mentions; group auto-closes at `max_rounds` (default 10)
 - `group_state.go`: `GroupState` struct with `sync.Mutex`, global `groupStore sync.Map`
-- `channel/agent_channel.go`: `AgentChannel` wraps SubAgent as Dispatcher Channel with per-request RPC reply channels
+- `channel/agent_channel.go`: `AgentChannel` wraps SubAgent as Dispatcher Channel with **concurrent** per-request RPC reply channels. Uses `ac.wg.Go()` dispatch + `msg.Ctx` for caller cancellation.
 
 ## Windows Support
 

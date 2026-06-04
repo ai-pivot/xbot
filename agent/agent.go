@@ -927,14 +927,27 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		if msgs == nil {
 			return
 		}
-		for _, idx := range editedIndices {
-			if idx < 0 || idx >= len(msgs) {
+		// Build index mapping: msgs index → NonDisplayOnly DB index.
+		// System messages and display-only messages are excluded from the DB index.
+		nonDisplayIdx := 0
+		msgToDBIdx := make(map[int]int, len(msgs))
+		for i, msg := range msgs {
+			if msg.Role == "system" || msg.DisplayOnly {
 				continue
 			}
-			if err := sessionSvc.UpdateMessageContentNonDisplayOnly(tenantID, idx, msgs[idx].Content); err != nil {
+			msgToDBIdx[i] = nonDisplayIdx
+			nonDisplayIdx++
+		}
+		for _, idx := range editedIndices {
+			dbIdx, ok := msgToDBIdx[idx]
+			if !ok {
+				continue // system or display-only message, not in DB
+			}
+			if err := sessionSvc.UpdateMessageContentNonDisplayOnly(tenantID, dbIdx, msgs[idx].Content); err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"tenant_id": tenantID,
-					"index":     idx,
+					"index":     dbIdx,
+					"raw_idx":   idx,
 				}).Warn("Failed to persist context edit to database")
 			}
 		}

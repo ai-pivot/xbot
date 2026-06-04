@@ -460,7 +460,7 @@ func (m *cliModel) restoreSession() {
 		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
 		m.activeSubID = ""
 		m.cachedModelName = ""
-		// Reset bg task count from backend for this session
+		m.hasNoSubCacheValid = false
 		if m.bgTaskCountFn != nil {
 			m.bgTaskCount = m.bgTaskCountFn()
 		} else {
@@ -510,6 +510,7 @@ func (m *cliModel) resetToIdleState() {
 	m.cachedHistoryMaxWidth = 0
 	m.cachedHistoryLines = nil
 	m.cachedProgressHistory = ""
+	m.cachedProgressHistoryLines = nil
 	m.cachedProgressHistoryLen = 0
 	m.cachedProgressHistoryWidth = 0
 	m.cachedCurrentStatic = ""
@@ -667,6 +668,7 @@ func (m *cliModel) resetToIdleState() {
 	// --- Per-session LLM state (prevents leaking from previous session) ---
 	m.activeSubID = ""
 	m.cachedModelName = ""
+	m.hasNoSubCacheValid = false
 	m.cachedMaxContextTokens = 0
 	m.cachedMaxOutputTokens = 0
 	m.cachedCompressRatio = 0
@@ -1081,16 +1083,23 @@ type cliModel struct {
 	cachedHistoryLines        []string // pre-split lines from cachedWrappedHistory (avoids O(N) strings.Split every tick)
 
 	// --- progress block cache ---
-	cachedProgressHistory      string // cached rendered output of completed iterations (dimmed)
-	cachedProgressHistoryLen   int    // len(iterationHistory) when cache was built
-	cachedProgressHistoryWidth int    // viewport width when cache was built
-	cachedProgressHistoryFP    uint64 // fingerprint of cached history content for O(1) composite FP
+	cachedProgressHistory      string   // cached rendered output of completed iterations (dimmed)
+	cachedProgressHistoryLines []string // pre-padded lines of cached history (avoids O(N) padProgressLines on cache miss)
+	cachedProgressHistoryLen   int      // len(iterationHistory) when cache was built
+	cachedProgressHistoryWidth int      // viewport width when cache was built
+	cachedProgressHistoryFP    uint64   // fingerprint of cached history content for O(1) composite FP
 
 	// --- tick-level dirty detection for updateViewportContent fast path ---
 	// Avoids O(total_content) string construction when nothing changed between ticks.
 	lastTickHistoryLen int    // len(m.cachedHistory) at last tick
 	lastTickProgressFP uint64 // cachedProgressBlockFP at last tick
 	lastTickRewindFP   uint64 // fnvHash64(rewindBlock) at last tick
+
+	// cachedAllLines: reused slice for viewport lines assembly across ticks.
+	// Avoids O(N) allocation + copy of cachedHistoryLines every 100ms.
+	// Layout: [historyLines... | progressLines... | rewindLines...]
+	cachedAllLines           []string
+	cachedAllLinesHistoryLen int // len(cachedHistoryLines) when slice was built
 
 	// Current iteration static content cache — avoids re-rendering reasoning,
 	// completed tools, tool content, and SubAgent tree on every 100ms tick.
@@ -1165,7 +1174,7 @@ type cliModel struct {
 	pendingToolSummary *cliMessage
 
 	// --- §12 Interactive Panel ---
-	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel
+	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel, "wizard"=setup wizard
 	panelMode      string
 	settingsSaving bool              // true while onSubmit is running in background; blocks user input
 	panelStack     []panelStackEntry // push/pop navigation stack for nested panels
@@ -1175,6 +1184,10 @@ type cliModel struct {
 	panelEditTA    textarea.Model    // settings panel: inline editor
 	panelCombo     bool              // settings panel: combo dropdown open
 	panelComboIdx  int               // settings panel: combo selected option index
+	// --- Wizard state (step-by-step setup) ---
+	wizardStep    int // 0=language, 1=provider, 2=apikey, 3=done
+	wizardLangSel int // selected language index
+	wizardProvSel int // selected provider index
 	// --- Panel state backup (for quick switch round-trip) ---
 	panelValuesBackup   map[string]string              // saved panelValues before quick switch
 	panelCursorBackup   int                            // saved panelCursor before quick switch
@@ -1186,9 +1199,12 @@ type cliModel struct {
 	panelOptCursor     map[int]int          // askuser panel: highlighted option index per question
 	panelAnswerTA      textarea.Model       // askuser panel: free-input editor (no-options mode)
 	panelOtherTI       textinput.Model      // askuser panel: single-line Other input
+	wizardKeyTI        textinput.Model      // wizard: API key single-line input
 	askPanelScrollY    int                  // askuser panel: internal scroll offset for long content
 	askPanelTotalLines int                  // cached total line count for scroll clamping
-	panelSchema        []SettingDefinition  // settings panel: schema copy
+	panelSchema        []SettingDefinition  // settings panel: visible schema (filtered from panelSchemaFull)
+	panelSchemaFull    []SettingDefinition  // settings panel: full schema (before DependsOn filtering)
+	panelIsSetup       bool                 // true when panel was opened via /setup or first-run
 	// --- Approval panel ---
 	approvalRequest      *protocol.ApprovalRequest // pending approval request
 	approvalResultCh     chan<- protocol.ApprovalResult
@@ -1340,6 +1356,8 @@ type cliModel struct {
 	modelNameZoneXStart int             // rendered X start of model name in status bar (-1 = not rendered)
 	modelNameZoneXEnd   int             // rendered X end of model name in status bar (exclusive)
 	activeSubID         string          // active subscription ID for current session
+	hasNoSubCache       bool            // cached result of hasNoSubscription()
+	hasNoSubCacheValid  bool            // true when hasNoSubCache is authoritative
 	todoManager         *cliTodoManager // per-session todo persistence
 	askUserSession      string          // chatID of the session that triggered current AskUser panel (empty = no pending AskUser)
 	modelCount          int             // cached model list length for View() performance
@@ -1393,6 +1411,11 @@ type cliMessage struct {
 	renderedLines         int  // 渲染后的总行数（每次 dirty 重算）
 	originalRenderedLines int  // fold 前的原始行数（fold 时保存，用于 unfold 判断）
 	folded                bool // 是否折叠
+
+	// --- Wrapped lines cache ---
+	wrappedLines    []string // pre-wrapped lines for viewport (avoids O(N) re-parse)
+	wrappedMaxWidth int      // max visual width among wrappedLines
+	wrappedWidth    int      // chatWidth when wrappedLines was computed
 
 	// --- Markdown rendering for system messages ---
 	markdown bool // when true, system messages go through glamour renderer (e.g. /usage tables)
@@ -1676,6 +1699,41 @@ func isCtrlO(msg tea.Msg) bool {
 func isCtrlJ(msg tea.Msg) bool {
 	s := fmt.Sprintf("%v", msg)
 	return s == "?CSI[49 48 59 53 117]?" || s == "\x1b[10;5u" || s == "ctrl+j"
+}
+
+// hasNoSubscription returns true when there is no usable subscription configured.
+// Used to show a friendly setup prompt instead of a cryptic LLM error.
+func (m *cliModel) hasNoSubscription() bool {
+	if m.hasNoSubCacheValid {
+		return m.hasNoSubCache
+	}
+	result := m.computeHasNoSubscription()
+	m.hasNoSubCache = result
+	m.hasNoSubCacheValid = true
+	return result
+}
+
+// computeHasNoSubscription performs the actual subscription check.
+func (m *cliModel) computeHasNoSubscription() bool {
+	if m.channel == nil || m.channel.subscriptionMgr == nil {
+		return true
+	}
+	subs, err := m.channel.subscriptionMgr.List(m.senderID)
+	if err != nil || len(subs) == 0 {
+		return true
+	}
+	// Check if any subscription has an API key
+	for _, sub := range subs {
+		if sub.APIKey != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// invalidateSubCache forces hasNoSubscription to re-query on next call.
+func (m *cliModel) invalidateSubCache() {
+	m.hasNoSubCacheValid = false
 }
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().

@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"xbot/clipanic"
 )
 
 // computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
@@ -1019,7 +1020,8 @@ func (m *cliModel) resolveWidgetZone(zone string) string {
 }
 
 // View renders the CLI interface.
-func (m *cliModel) View() tea.View {
+func (m *cliModel) View() (v tea.View) {
+	defer clipanic.Recover("channel.cliModel.View", nil, true)
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
 
@@ -1081,7 +1083,7 @@ func (m *cliModel) View() tea.View {
 		m.trackMainLayoutZones(&m.mouseZones)
 	}
 
-	v := tea.NewView(content)
+	v = tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 
@@ -1431,10 +1433,13 @@ func (m *cliModel) renderSplash() string {
 	}
 	lines = append(lines, strings.Repeat(" ", vPad)+versionText)
 
-	// 描述居中（节日版彩蛋）
+	// 描述居中（节日版彩蛋 + 首次运行欢迎）
 	splashDesc := m.locale.SplashDesc
 	if holidayDesc := getHolidaySplashDesc(); holidayDesc != "" {
 		splashDesc = holidayDesc
+	}
+	if m.channel != nil && m.channel.config.IsFirstRun && m.locale.SplashFirstRun != "" {
+		splashDesc = m.locale.SplashFirstRun
 	}
 	descText := descStyle.Render(splashDesc)
 	dW := lipgloss.Width(descText)
@@ -1716,6 +1721,25 @@ func (m *cliModel) renderFooter() string {
 				m.footerHintItem("Ctrl+s", "Save", "ctrl+s"),
 				m.footerHintItem("Esc", escLabel, "esc"),
 			)
+		case "wizard":
+			switch m.wizardStep {
+			case wizardAPIKey:
+				hints = append(hints,
+					m.footerHintItem("Enter/Ctrl+s", m.locale.WizardNextBtn, "enter"),
+					m.footerHintItem("Esc", m.locale.WizardBackBtn, "esc"),
+				)
+			case wizardDone:
+				hints = append(hints,
+					m.footerHintItem("Enter", m.locale.WizardStartBtn, "enter"),
+					m.footerHintItem("Esc", m.locale.WizardBackBtn, "esc"),
+				)
+			default:
+				hints = append(hints,
+					m.footerHintItem("↑↓/jk", m.locale.FooterNavigate, "navigate"),
+					m.footerHintItem("Enter", m.locale.WizardNextBtn, "enter"),
+					m.footerHintItem("Esc", escLabel, "esc"),
+				)
+			}
 		case "askuser":
 			hints = append(hints,
 				m.footerHintItem("↑↓", m.locale.FooterNavigate, "navigate"),

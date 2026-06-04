@@ -234,10 +234,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}, nil
 	}
 
-	tokenCount, err := llm.CountMessagesTokens(messages, model)
-	if err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to count tokens for compression")
-	}
+	tokenCount := len(messages) * 200 // rough estimate for display only
 
 	// Always allow manual /compress regardless of threshold — user explicitly requested it.
 
@@ -271,12 +268,12 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 
 	if err := tenantSession.Clear(); err != nil {
 		log.Ctx(ctx).WithError(err).Warn("Failed to clear session for compression")
-		newTokenCount, _ := llm.CountMessagesTokens(result.LLMView, model)
+		newTokenCount := len(result.LLMView) * 200
 		compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("上下文压缩完成 (内存): %d → %d tokens (LLM %d 条, Session %d 条)", tokenCount, newTokenCount, len(result.LLMView), len(result.SessionView)),
+			Content: fmt.Sprintf("上下文压缩完成 (内存): %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
 		}, nil
 	}
 	allOk := true
@@ -291,36 +288,22 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}
 	}
 
-	newTokenCount, _ := llm.CountMessagesTokens(result.LLMView, model)
+	newTokenCount := len(result.LLMView) * 200 // rough estimate
 
 	// Set the token usage for the deferred PhaseDone so the CLI context bar updates.
 	compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
-
-	// Persist the compressed token count so the next Run() restores an accurate
-	// value instead of the pre-compress count. Without this, a restart after
-	// /compress would immediately trigger another compression cycle.
-	if newTokenCount > 0 {
-		if err := tenantSession.SaveContextTokens(int64(newTokenCount)); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save context tokens after manual compress")
-		}
-		if extras := a.buildToolContextExtras(msg.Channel, msg.ChatID); extras != nil && extras.MemorySvc != nil && extras.TenantID != 0 {
-			if err := extras.MemorySvc.SetTokenState(context.Background(), extras.TenantID, int64(newTokenCount), 0); err != nil {
-				log.Ctx(ctx).WithError(err).WithField("tenant_id", extras.TenantID).Warn("Failed to persist token state after manual compress")
-			}
-		}
-	}
 
 	if allOk {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("上下文压缩完成: %d → %d tokens (LLM %d 条, Session %d 条)", tokenCount, newTokenCount, len(result.LLMView), len(result.SessionView)),
+			Content: fmt.Sprintf("上下文压缩完成: %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
 		}, nil
 	}
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: fmt.Sprintf("上下文压缩完成 (内存): %d → %d tokens (LLM %d 条, Session %d 条)", tokenCount, newTokenCount, len(result.LLMView), len(result.SessionView)),
+		Content: fmt.Sprintf("上下文压缩完成 (内存): %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
 	}, nil
 }
 
@@ -355,10 +338,11 @@ func truncateRunes(s string, maxLen int) string {
 //
 // Flow:
 //  1. Find a safe cut point (last user message or plain assistant message)
-//  2. Separate system messages from the history before the cut point
-//  3. Build history text within token budget
-//  4. Multi-turn LLM call with optional memory tools
-//  5. Build result: [system] + [compaction summary] + [continuation] + [tail messages]
+//  2. Cap tail length so only the most recent iterations are kept verbatim
+//  3. Separate system messages from the history before the cut point
+//  4. Build history text within token budget
+//  5. Multi-turn LLM call with optional memory tools
+//  6. Build result: [system] + [compaction summary] + [continuation] + [tail messages]
 func compactMessages(
 	ctx context.Context,
 	messages []llm.ChatMessage,
@@ -385,7 +369,25 @@ func compactMessages(
 		}
 	}
 
-	// Step 2: separate system messages from content to compress
+	// Step 2: cap tail length. Each iteration is typically 2-3 messages
+	// (assistant + tool_call + tool_result). With 500+ iterations the tail can be
+	// enormous, causing compression to produce a summary that — combined with the
+	// unmodified tail — still exceeds the context limit, triggering infinite
+	// re-compression.  We keep at most maxTailMessages (~100 iterations ≈ 300
+	// messages); anything older is forced into toCompress.
+	const maxTailMessages = 300 // ~100 iterations
+	tailLen := len(messages) - tailStart
+	if tailLen > maxTailMessages {
+		oldTailStart := tailStart
+		tailStart = len(messages) - maxTailMessages
+		log.Ctx(ctx).WithFields(log.Fields{
+			"old_tail_start": oldTailStart,
+			"new_tail_start": tailStart,
+			"tail_capped":    tailLen - maxTailMessages,
+		}).Info("Capping tail length for compaction")
+	}
+
+	// Step 3: separate system messages from content to compress
 	var systemMsgs []llm.ChatMessage
 	var toCompress []llm.ChatMessage
 
@@ -427,13 +429,14 @@ func compactMessages(
 	// LLM's output; the rest goes to history.
 	var historyText strings.Builder
 
-	// Pre-compute per-message token counts for toCompress.
+	// Pre-compute per-message character sizes for toCompress (rough token proxy).
 	perMsgTokens := make([]int, len(toCompress))
 	totalCompressTokens := 0
 	for i, msg := range toCompress {
-		t, _ := llm.CountMessagesTokens([]llm.ChatMessage{msg}, model)
-		perMsgTokens[i] = t
-		totalCompressTokens += t
+		// ~2/3 of rune count as token estimate (conservative for mixed CJK/Latin)
+		charEstimate := len([]rune(msg.Content)) * 2 / 3
+		perMsgTokens[i] = charEstimate
+		totalCompressTokens += charEstimate
 	}
 
 	// Overhead for the compaction call (system msg ~50t, prompt template ~300t,
@@ -472,7 +475,13 @@ func compactMessages(
 	}
 
 	// Compute target budget
-	originalTokens, _ := llm.CountMessagesTokens(messages, model)
+	// Compute target budget — use character count as proxy for tokens.
+	// ~3 chars per token average for mixed content.
+	totalChars := 0
+	for _, msg := range messages {
+		totalChars += len([]rune(msg.Content))
+	}
+	originalTokens := totalChars / 3
 	targetRunes := int(float64(originalTokens) * 0.3 * 1.5) // tokens → runes estimate
 	if targetRunes < 500 {
 		targetRunes = 500
@@ -583,7 +592,7 @@ Output the structured working state directly.`
 	sessionView = append(sessionView, summaryMsg)
 	sessionView = append(sessionView, tailDialogue...)
 
-	newTokens, _ := llm.CountMessagesTokens(llmView, model)
+	newTokens := len([]rune(compressed)) * 2 / 3
 	log.Ctx(ctx).WithFields(map[string]any{
 		"original_tokens": originalTokens,
 		"new_tokens":      newTokens,

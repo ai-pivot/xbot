@@ -97,57 +97,95 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	// Update triggers server-side Invalidate(senderID) which wipes ALL
 	// per-session LLM cache entries, causing the agent to fall back to
 	// the default subscription on the next message (wrong MaxContext → compression).
-	if m.subscriptionMgr != nil && m.activeSubID != "" {
-		activeSub := m.activeSubscription()
-		if activeSub != nil {
-			updated := *activeSub // copy existing to preserve unmasked fields
-			changed := false
+	if m.subscriptionMgr != nil {
+		hasSubValues := false
+		for _, k := range []string{"llm_provider", "llm_api_key", "llm_model", "llm_base_url"} {
+			if v, ok := values[k]; ok && strings.TrimSpace(v) != "" {
+				hasSubValues = true
+				break
+			}
+		}
 
-			if v, ok := values["llm_provider"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
-				if updated.Provider != strings.TrimSpace(v) {
-					updated.Provider = strings.TrimSpace(v)
-					changed = true
-				}
-			}
-			if v, ok := values["llm_api_key"]; ok && strings.TrimSpace(v) != "" {
-				key := strings.TrimSpace(v)
-				if !isMaskedAPIKey(key) && updated.APIKey != key {
-					updated.APIKey = key
-					changed = true
-				}
-			}
-			if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
-				if updated.Model != strings.TrimSpace(v) {
-					updated.Model = strings.TrimSpace(v)
-					changed = true
-				}
-			}
-			if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
-				if updated.BaseURL != strings.TrimSpace(v) {
-					updated.BaseURL = strings.TrimSpace(v)
-					changed = true
-				}
-			}
-			if v, ok := values["max_output_tokens"]; ok {
-				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
-					if updated.MaxOutputTokens != n {
-						updated.MaxOutputTokens = n
+		if m.activeSubID != "" {
+			activeSub := m.activeSubscription()
+			if activeSub != nil {
+				updated := *activeSub // copy existing to preserve unmasked fields
+				changed := false
+
+				if v, ok := values["llm_provider"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
+					if updated.Provider != strings.TrimSpace(v) {
+						updated.Provider = strings.TrimSpace(v)
 						changed = true
 					}
 				}
-			}
-			if v, ok := values["thinking_mode"]; ok {
-				if updated.ThinkingMode != v {
-					updated.ThinkingMode = v
-					changed = true
+				if v, ok := values["llm_api_key"]; ok && strings.TrimSpace(v) != "" {
+					key := strings.TrimSpace(v)
+					if !isMaskedAPIKey(key) && updated.APIKey != key {
+						updated.APIKey = key
+						changed = true
+					}
+				}
+				if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
+					if updated.Model != strings.TrimSpace(v) {
+						updated.Model = strings.TrimSpace(v)
+						changed = true
+					}
+				}
+				if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
+					if updated.BaseURL != strings.TrimSpace(v) {
+						updated.BaseURL = strings.TrimSpace(v)
+						changed = true
+					}
+				}
+				if v, ok := values["max_output_tokens"]; ok {
+					if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+						if updated.MaxOutputTokens != n {
+							updated.MaxOutputTokens = n
+							changed = true
+						}
+					}
+				}
+				if v, ok := values["thinking_mode"]; ok {
+					if updated.ThinkingMode != v {
+						updated.ThinkingMode = v
+						changed = true
+					}
+				}
+
+				if changed {
+					if err := m.subscriptionMgr.Update(m.activeSubID, &updated); err != nil {
+						logrus.WithFields(logrus.Fields{
+							"err": err, "sub": m.activeSubID,
+						}).Warn("saveSettings: subscription update failed")
+					}
 				}
 			}
-
-			if changed {
-				if err := m.subscriptionMgr.Update(m.activeSubID, &updated); err != nil {
-					logrus.WithFields(logrus.Fields{
-						"err": err, "sub": m.activeSubID,
-					}).Warn("saveSettings: subscription update failed")
+		} else if hasSubValues {
+			// No active subscription — create one (first-run / wizard setup).
+			newSub := &Subscription{
+				Name:   "default",
+				Active: true,
+			}
+			if v, ok := values["llm_provider"]; ok {
+				newSub.Provider = strings.TrimSpace(v)
+			}
+			if v, ok := values["llm_api_key"]; ok {
+				newSub.APIKey = strings.TrimSpace(v)
+			}
+			if v, ok := values["llm_model"]; ok {
+				newSub.Model = strings.TrimSpace(v)
+			}
+			if v, ok := values["llm_base_url"]; ok {
+				newSub.BaseURL = strings.TrimSpace(v)
+			}
+			if newSub.Provider != "" && newSub.APIKey != "" {
+				if err := m.subscriptionMgr.Add(newSub); err != nil {
+					logrus.WithFields(logrus.Fields{"err": err}).Warn("saveSettings: subscription create failed")
+				} else {
+					// Activate the new subscription
+					if m.channelName != "" && m.senderID != "" {
+						_ = m.subscriptionMgr.SetDefault(newSub.ID, m.senderID)
+					}
 				}
 			}
 		}

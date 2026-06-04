@@ -123,6 +123,14 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickPanelCombo(zone.Index)
 	case "panelComboItem":
 		return m.clickPanelComboItem(zone.Index)
+	case "panelOpenURL":
+		return m.clickPanelOpenURL()
+	case "panelSave":
+		return m.clickPanelSave()
+	case "panelCancel":
+		return m.clickPanelCancel()
+	case "wizardLang", "wizardProv", "wizardSave", "wizardBack", "wizardStart":
+		return m.handleWizardClick(zone)
 	case "askUserOption":
 		return m.clickAskUserOption(zone.Index)
 	case "askUserTab":
@@ -378,6 +386,36 @@ func (m *cliModel) clickPanelToggle(idx int) (bool, tea.Model, tea.Cmd) {
 	}
 	cur := m.panelValues[def.Key]
 	m.panelValues[def.Key] = toggleVal(cur)
+	return true, m, nil
+}
+
+// clickPanelOpenURL handles clicking the "获取密钥" button.
+// Opens the provider's API key management page in the default browser.
+func (m *cliModel) clickPanelOpenURL() (bool, tea.Model, tea.Cmd) {
+	provider := m.panelValues["llm_provider"]
+	guide, ok := ProviderSetupGuides[provider]
+	if !ok || guide.URL == "" {
+		return true, m, nil
+	}
+	_ = openBrowser(guide.URL)
+	return true, m, nil
+}
+
+// clickPanelSave handles clicking the "保存设置" button.
+func (m *cliModel) clickPanelSave() (bool, tea.Model, tea.Cmd) {
+	onSubmit := m.panelOnSubmit
+	panelVals := m.panelValues
+	m.closePanel()
+	if onSubmit != nil && panelVals != nil {
+		m.settingsSaving = true
+		return true, m, m.doSaveSettings(onSubmit, panelVals)
+	}
+	return true, m, nil
+}
+
+// clickPanelCancel handles clicking the "取消" button.
+func (m *cliModel) clickPanelCancel() (bool, tea.Model, tea.Cmd) {
+	m.closePanel()
 	return true, m, nil
 }
 
@@ -948,6 +986,8 @@ func (m *cliModel) trackPanelZones(zb *mouseZoneBuilder) {
 	switch m.panelMode {
 	case "settings":
 		m.trackSettingsZones(zb, visibleH, contentStartY)
+	case "wizard":
+		m.trackWizardZones(zb, contentStartY, visibleH)
 	case "sessions":
 		m.trackSessionsZones(zb, visibleH)
 	case "bgtasks":
@@ -991,8 +1031,11 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 
 	// Build the complete line map (same logic as viewSettingsPanel)
 	type lineInfo struct {
-		isItem    bool
-		itemIndex int // >= 0: schema item, < 0: combo option (-(optIdx+1))
+		isItem       bool
+		itemIndex    int    // >= 0: schema item, < 0: combo option (-(optIdx+1))
+		isButton     bool   // true for clickable button lines
+		buttonAction string // "openURL", "save"
+		buttonURL    string // URL to open (for openURL action)
 	}
 
 	var lines []lineInfo
@@ -1012,6 +1055,27 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 		}
 		lines = append(lines, lineInfo{isItem: true, itemIndex: i})
 
+		// Description lines shown when cursor is on this field.
+		if i == m.panelCursor && def.Description != "" {
+			descLines := strings.Count(def.Description, "\n") + 1
+			for k := 0; k < descLines; k++ {
+				lines = append(lines, lineInfo{})
+			}
+		}
+
+		// API Key field: always show "获取密钥" button line.
+		if def.Key == "llm_api_key" {
+			provider := m.panelValues["llm_provider"]
+			if provider != "" {
+				guide, hasGuide := ProviderSetupGuides[provider]
+				if hasGuide && guide.URL != "" {
+					lines = append(lines, lineInfo{isButton: true, buttonAction: "openURL", buttonURL: guide.URL})
+				} else if hasGuide && guide.URL == "" {
+					lines = append(lines, lineInfo{}) // info text (Ollama)
+				}
+			}
+		}
+
 		// Inline overlay: combo/edit rendered right after cursor item (Crush-style)
 		if i == m.panelCursor {
 			if m.panelEdit {
@@ -1027,16 +1091,21 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 				end := min(start+maxShow, len(def.Options))
 				for j := start; j < end; j++ {
 					lines = append(lines, lineInfo{isItem: true, itemIndex: -(j + 1)})
+					// Selected combo option may show a description line.
+					if j == m.panelComboIdx && def.Options[j].Description != "" {
+						lines = append(lines, lineInfo{})
+					}
 				}
 				lines = append(lines, lineInfo{}) // hint line
 			}
 		}
 	}
 
-	// Bottom hint (when no overlay active)
+	// Bottom buttons (when no overlay active)
 	if !m.panelEdit && !m.panelCombo {
-		lines = append(lines, lineInfo{}) // blank line
-		lines = append(lines, lineInfo{}) // hint line
+		lines = append(lines, lineInfo{})                                     // blank line
+		lines = append(lines, lineInfo{isButton: true, buttonAction: "save"}) // save+cancel buttons row
+		lines = append(lines, lineInfo{})                                     // keyboard hint line
 	}
 
 	// Now apply scroll offset and track zones
@@ -1056,6 +1125,20 @@ func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentSta
 			} else {
 				// Combo dropdown item (negative index)
 				zb.add(1, "panelComboItem", -(info.itemIndex + 1))
+			}
+		} else if info.isButton {
+			switch info.buttonAction {
+			case "openURL":
+				zb.add(1, "panelOpenURL", 0) // URL stored in lineInfo, looked up at click time
+			case "save":
+				// Save button: left portion of the line
+				// Cancel button: right portion
+				// Approximate positions — save is at x=2..20, cancel at x=24..36
+				zb.addX(0, 2, 22, "panelSave", 0)
+				zb.addX(0, 24, 38, "panelCancel", 0)
+				zb.skip(1)
+			default:
+				zb.skip(1)
 			}
 		} else {
 			zb.skip(1)
