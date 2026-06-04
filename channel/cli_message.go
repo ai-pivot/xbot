@@ -1883,7 +1883,9 @@ func (m *cliModel) renderCurrentIteration(
 	// --- 6. SubAgent tree ---
 	if len(m.progress.SubAgents) > 0 {
 		var treeSB strings.Builder
-		m.renderSubAgentTree(&treeSB, m.progress.SubAgents, "", innerWidth)
+		// Use "  ┊ " as the top-level prefix so child agent lines align
+		// with the parent tool line's guide prefix from toolLine().
+		m.renderSubAgentTree(&treeSB, m.progress.SubAgents, "  ┊ ", innerWidth)
 		if treeSB.Len() > 0 {
 			sb.WriteString("\n")
 			sb.WriteString(treeSB.String())

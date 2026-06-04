@@ -431,27 +431,28 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 	GlobalMetrics.MaskedItems.Add(int64(count))
 
 	// Persist masked content to session so the next Run() loads masked messages.
-	// CRITICAL: s.messages indices include system messages (not in DB).
-	// The session DB indices skip system messages. Calculate the offset so
+	// CRITICAL: s.messages indices include system messages and display-only messages,
+	// but the session DB NonDisplayOnly indices skip both. Calculate a mapping so
 	// masked content lands on the correct DB rows.
-	dbOffset := 0
-	for _, msg := range s.messages {
-		if msg.Role == "system" {
-			dbOffset++
-		} else {
-			break
-		}
-	}
 	if s.cfg.Session != nil {
+		// Build a mapping from s.messages index → NonDisplayOnly DB index.
+		// System messages and display-only messages are excluded from the DB index.
+		nonDisplayIdx := 0
+		msgToDBIdx := make(map[int]int, len(s.messages))
+		for i, msg := range s.messages {
+			if msg.Role == "system" || msg.DisplayOnly {
+				continue // not counted in NonDisplayOnly index
+			}
+			msgToDBIdx[i] = nonDisplayIdx
+			nonDisplayIdx++
+		}
 		persistedMasked := 0
 		for _, entry := range maskedEntries {
-			dbIdx := entry.MessageIndex - dbOffset
-			if dbIdx < 0 {
-				continue // system message, not in DB
+			dbIdx, ok := msgToDBIdx[entry.MessageIndex]
+			if !ok {
+				continue // system or display-only message, not in DB
 			}
 			if s.persistence.IsPersisted(entry.MessageIndex) {
-				// Use NonDisplayOnly variant to align with GetAllMessages
-				// (both filter WHERE COALESCE(display_only, 0) = 0).
 				if err := s.cfg.Session.UpdateMessageContentNonDisplayOnly(dbIdx, entry.Content); err != nil {
 					log.Ctx(ctx).WithError(err).WithField("idx", dbIdx).WithField("raw_idx", entry.MessageIndex).Warn("Failed to persist masked message to session")
 				} else {
@@ -460,7 +461,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 			}
 		}
 		if persistedMasked > 0 {
-			log.Ctx(ctx).WithField("persisted_masked", persistedMasked).WithField("db_offset", dbOffset).Info("Persisted masked messages to session")
+			log.Ctx(ctx).WithField("persisted_masked", persistedMasked).Info("Persisted masked messages to session")
 		}
 	}
 
