@@ -199,6 +199,8 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		switch key.String() {
 		case "home":
 			m.viewport.GotoTop()
+			m.userScrolledUp = true
+			m.newContentHint = true
 			return m, nil
 		case "end":
 			m.viewport.GotoBottom()

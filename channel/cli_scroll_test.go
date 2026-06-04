@@ -201,3 +201,36 @@ func TestSimWidgetUpdateDoesNotInvalidateCache(t *testing.T) {
 		t.Fatalf("Widget update should not force scroll: %s", result.Error)
 	}
 }
+
+// TestSimHomeKeyCancelsFollowBottom verifies that pressing Home (scroll to top)
+// sets userScrolledUp=true so the viewport doesn't snap back to bottom on the
+// next tick. This was a bug where Home only called GotoTop() without setting
+// userScrolledUp, so the next tick would immediately scroll back to bottom.
+func TestSimHomeKeyCancelsFollowBottom(t *testing.T) {
+	longContent := ""
+	for i := 0; i < 30; i++ {
+		longContent += fmt.Sprintf("Line %d of long content that fills the viewport\n", i)
+	}
+
+	scenario := SimScenario{
+		Config: SimConfig{Width: 80, Height: 20},
+		Steps: []SimStep{
+			// Create content — viewport at bottom
+			{Action: "turn", Content: "hello", Response: longContent},
+			{Action: "assert", AssertViewportAtBottom: true},
+
+			// User presses Home — should go to top AND cancel follow
+			{Action: "scroll", ScrollTo: "top"},
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+
+			// Tick should NOT snap back to bottom
+			{Action: "tick"},
+			{Action: "assert", AssertState: map[string]any{"userScrolledUp": true}},
+		},
+	}
+	runner := newSimRunner(scenario)
+	result := runner.run()
+	if !result.OK {
+		t.Fatalf("Home key should cancel follow-bottom: %s", result.Error)
+	}
+}

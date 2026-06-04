@@ -1830,6 +1830,8 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	case msg.Code == tea.KeyHome:
 		// Home/End jump to top/bottom of viewport (iteration history above the panel)
 		m.viewport.GotoTop()
+		m.userScrolledUp = true
+		m.newContentHint = true
 		return true, m, nil
 	case msg.Code == tea.KeyEnd:
 		m.viewport.GotoBottom()

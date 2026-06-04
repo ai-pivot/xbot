@@ -1680,6 +1680,8 @@ func (r *simRunner) doScroll(idx int, step SimStep) error {
 	switch step.ScrollTo {
 	case "top":
 		m.viewport.SetYOffset(0)
+		m.userScrolledUp = true
+		m.newContentHint = true
 	case "bottom":
 		m.viewport.GotoBottom()
 		m.userScrolledUp = false
