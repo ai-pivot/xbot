@@ -72,9 +72,17 @@ type PluginManifest struct {
 	Runtime RuntimeType `json:"runtime"`
 
 	// Entry is the plugin entry point.
-	// For native: Go function name (default: "Plugin")
-	// For grpc: command to start the plugin process
+	// For script runtime: command to execute (e.g. "bash my-script.sh")
+	// For grpc runtime: command to start the plugin process
+	// This is the default/fallback — platform-specific entries take precedence.
 	Entry string `json:"entry"`
+
+	// Platform-specific entry overrides. When set, these take precedence
+	// over Entry for the matching OS. Use these when a plugin needs different
+	// scripts on different platforms (e.g. bash on Unix vs PowerShell on Windows).
+	EntryWindows string `json:"entry_windows,omitempty"`
+	EntryDarwin  string `json:"entry_darwin,omitempty"`
+	EntryLinux   string `json:"entry_linux,omitempty"`
 
 	// Executable is the command to start the plugin process (gRPC runtime).
 	// If set, takes precedence over Entry. Use this for security.

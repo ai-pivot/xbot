@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,7 +27,11 @@ func NewScriptRuntime() RuntimeFactory {
 }
 
 func (f *scriptRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
-	if manifest.Entry == "" {
+	// Validate that at least one entry point is defined.
+	// Platform-specific entries (entry_windows, etc.) are optional overrides;
+	// the generic "entry" field is the fallback.
+	if manifest.Entry == "" && manifest.EntryWindows == "" &&
+		manifest.EntryDarwin == "" && manifest.EntryLinux == "" {
 		return nil, fmt.Errorf("script plugin %s: entry command is required", manifest.ID)
 	}
 	if len(manifest.Contributes.UI) == 0 {
@@ -549,9 +554,33 @@ func registerGlobalHook(ctx PluginContext, event HookEvent, matcher string, hand
 }
 
 // ---------------------------------------------------------------------------
+// resolvedEntry returns the platform-appropriate entry command.
+// Platform-specific fields (entry_windows, entry_darwin, entry_linux)
+// take precedence over the generic entry field.
+func (p *scriptPlugin) resolvedEntry() string {
+	switch runtime.GOOS {
+	case "windows":
+		if p.manifest.EntryWindows != "" {
+			return p.manifest.EntryWindows
+		}
+	case "darwin":
+		if p.manifest.EntryDarwin != "" {
+			return p.manifest.EntryDarwin
+		}
+	case "linux":
+		if p.manifest.EntryLinux != "" {
+			return p.manifest.EntryLinux
+		}
+	}
+	return p.manifest.Entry
+}
+
 func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
+	// Resolve platform-specific entry command
+	entry := p.resolvedEntry()
+
 	// Split entry into command and args (safe shell-free splitting)
-	parts := strings.Fields(p.manifest.Entry)
+	parts := strings.Fields(entry)
 	if len(parts) == 0 {
 		return "", fmt.Errorf("empty entry command")
 	}
@@ -621,7 +650,7 @@ func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		log.Infof("[plugin:%s] runScript(%s) failed: %v", p.manifest.ID, workDir, err)
-		return "", fmt.Errorf("script %q: %w", p.manifest.Entry, err)
+		return "", fmt.Errorf("script %q: %w", entry, err)
 	}
 	log.Debugf("[plugin:%s] runScript(%s) output: %s", p.manifest.ID, workDir, strings.TrimSpace(string(out)))
 

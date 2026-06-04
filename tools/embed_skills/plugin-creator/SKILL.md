@@ -50,6 +50,8 @@ my-plugin/
   "author": "your-name",
   "runtime": "script",
   "entry": "bash my-script.sh",
+  "entry_windows": "powershell -File my-script.ps1",
+  "entry_darwin": "bash my-script-macos.sh",
   "permissions": ["ui.contribute", "hooks.subscribe"],
   "contributes": {
     "ui": [{

@@ -694,3 +694,99 @@ func TestParseScriptOutput_Snapshot(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: Platform-specific entry resolution
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_ResolvedEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		entry        string
+		entryWindows string
+		entryDarwin  string
+		entryLinux   string
+	}{
+		{
+			name:  "generic_entry_only",
+			entry: "bash script.sh",
+		},
+		{
+			name:         "all_platform_overrides",
+			entry:        "bash script.sh",
+			entryWindows: "powershell -File script.ps1",
+			entryDarwin:  "bash script_macos.sh",
+			entryLinux:   "bash script_linux.sh",
+		},
+		{
+			name:         "only_windows_override",
+			entry:        "bash script.sh",
+			entryWindows: "powershell -File script.ps1",
+		},
+		{
+			name:        "only_darwin_override",
+			entry:       "bash script.sh",
+			entryDarwin: "bash script_macos.sh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := PluginManifest{
+				ID:           "com.test.platform",
+				Name:         "platform-test",
+				Version:      "1.0.0",
+				Runtime:      RuntimeScript,
+				Entry:        tt.entry,
+				EntryWindows: tt.entryWindows,
+				EntryDarwin:  tt.entryDarwin,
+				EntryLinux:   tt.entryLinux,
+				Permissions:  []string{PermUIContribute},
+				Contributes: &PluginContributes{
+					UI: []UISlotContribution{{ID: "w1", Slot: "infoBar"}},
+				},
+			}
+			sp := &scriptPlugin{manifest: m, dir: t.TempDir()}
+			got := sp.resolvedEntry()
+
+			switch tt.name {
+			case "generic_entry_only":
+				if got != tt.entry {
+					t.Errorf("resolvedEntry() = %q, want %q", got, tt.entry)
+				}
+			case "all_platform_overrides":
+				want := tt.entry // fallback
+				switch runtime.GOOS {
+				case "windows":
+					want = tt.entryWindows
+				case "darwin":
+					want = tt.entryDarwin
+				case "linux":
+					want = tt.entryLinux
+				}
+				if got != want {
+					t.Errorf("resolvedEntry() on %s = %q, want %q", runtime.GOOS, got, want)
+				}
+			case "only_windows_override":
+				want := tt.entry
+				if runtime.GOOS == "windows" {
+					want = tt.entryWindows
+				}
+				if got != want {
+					t.Errorf("resolvedEntry() on %s = %q, want %q", runtime.GOOS, got, want)
+				}
+			case "only_darwin_override":
+				want := tt.entry
+				if runtime.GOOS == "darwin" {
+					want = tt.entryDarwin
+				}
+				if got != want {
+					t.Errorf("resolvedEntry() on %s = %q, want %q", runtime.GOOS, got, want)
+				}
+			}
+		})
+	}
+}
