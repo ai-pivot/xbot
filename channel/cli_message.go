@@ -2859,6 +2859,26 @@ func (m *cliModel) updateViewportContent() {
 
 	// 慢速路径：全量重建
 	m.fullRebuild()
+	// fullRebuild only rebuilds internal caches (cachedHistoryLines etc.)
+	// — it does NOT set viewport lines. Do that now so the viewport
+	// refreshes immediately, not on the next tick.
+	cw := m.chatWidth()
+	if cw > 0 && len(m.cachedHistoryLines) > 0 {
+		progressLines := m.cachedProgressBlockLines
+		rewindBlock := m.renderRewindResultBlock()
+		var rewindLines []string
+		if rewindBlock != "" {
+			rewindLines = wrapDynamicPart(rewindBlock, cw)
+		}
+		totalLines := len(m.cachedHistoryLines) + len(progressLines) + len(rewindLines)
+		allLines := make([]string, totalLines)
+		copy(allLines, m.cachedHistoryLines)
+		copy(allLines[len(m.cachedHistoryLines):], progressLines)
+		copy(allLines[len(m.cachedHistoryLines)+len(progressLines):], rewindLines)
+		viewportSetLinesBypassMaxWidth(&m.viewport, allLines, cw)
+		m.viewport.GotoBottom()
+		m.newContentHint = false
+	}
 }
 
 // updateStreamingOnly 只重新渲染当前流式消息（快速路径）

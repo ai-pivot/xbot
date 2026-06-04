@@ -654,6 +654,9 @@ func (m *cliModel) applyRewind() {
 	m.rewindCursor = 0
 	m.renderCacheValid = false
 	m.cachedHistory = ""
+	m.cachedHistoryLines = nil
+	m.cachedAllLines = nil
+	m.cachedAllLinesHistoryLen = 0
 	m.updateViewportContent()
 }
 
