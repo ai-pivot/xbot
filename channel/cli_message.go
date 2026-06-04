@@ -351,10 +351,65 @@ func parseFileReferences(content string) []string {
 	return files
 }
 
+// mergeMessagesPreservingCache replaces m.messages with newMessages while
+// preserving the rendered cache from existing messages. This avoids O(N)
+// glamour re-rendering when a history reload returns the same messages
+// (e.g. after context compression replaced only the oldest messages).
+//
+// Returns true if ALL messages were matched (no truly new/dirty messages).
+// When true, the caller can skip fullRebuild entirely.
+func (m *cliModel) mergeMessagesPreservingCache(newMessages []cliMessage) bool {
+	cw := m.chatWidth()
+	// Build a fast lookup from existing messages: content-based key → index.
+	// Only use the first occurrence of each key to handle dedup.
+	existing := make(map[string]int, len(m.messages))
+	for i := range m.messages {
+		key := m.messages[i].role + ":" + m.messages[i].content
+		if _, exists := existing[key]; !exists {
+			existing[key] = i
+		}
+	}
+
+	allMatched := true
+	for i := range newMessages {
+		key := newMessages[i].role + ":" + newMessages[i].content
+		if oldIdx, found := existing[key]; found {
+			old := &m.messages[oldIdx]
+			nw := &newMessages[i]
+			// Inherit cache if the old message was rendered at the same width
+			if old.rendered != "" && old.renderWidth == cw && !old.dirty {
+				nw.rendered = old.rendered
+				nw.renderWidth = old.renderWidth
+				nw.dirty = false
+				nw.renderedLines = old.renderedLines
+				nw.wrappedLines = old.wrappedLines
+				nw.wrappedMaxWidth = old.wrappedMaxWidth
+				nw.wrappedWidth = old.wrappedWidth
+				if len(old.iterations) > 0 && len(nw.iterations) == 0 {
+					nw.iterations = old.iterations
+				}
+				// Compute renderedLines from cached rendered output if missing
+				if nw.renderedLines == 0 && nw.rendered != "" {
+					nw.renderedLines = strings.Count(nw.rendered, "\n") + 1
+				}
+			} else {
+				allMatched = false
+			}
+			// Remove from lookup to avoid double-matching
+			delete(existing, key)
+		} else {
+			allMatched = false
+		}
+	}
+	m.messages = newMessages
+	return allMatched
+}
+
 // invalidateProgressHistoryCache clears the cached rendered output of completed
 // iterations so it is rebuilt on the next renderProgressBlock call.
 func (m *cliModel) invalidateProgressHistoryCache() {
 	m.cachedProgressHistory = ""
+	m.cachedProgressHistoryLines = nil
 	m.cachedProgressHistoryLen = 0
 	m.cachedProgressHistoryWidth = 0
 	m.cachedCurrentStatic = ""
@@ -1126,6 +1181,12 @@ func (m *cliModel) renderHistoryRange(
 	iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle lipgloss.Style,
 	s *cliStyles,
 ) {
+	// Pre-render guide prefixes once (they're the same for all lines).
+	// Without this, each iteration re-renders "  ┊ " with Style.Render,
+	// which internally walks the string with ANSI parser — O(chars) per call.
+	reasoningGuidePrefix := reasoningGuide.Render("  ┊ ")
+	thinkingGuidePrefix := thinkingGuide.Render("  ┊ ")
+
 	for j := range snaps {
 		snap := &snaps[j]
 		buf.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
@@ -1137,7 +1198,7 @@ func (m *cliModel) renderHistoryRange(
 					continue
 				}
 				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-reasoningW), "\n") {
-					buf.WriteString(dimStyle.Render(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl)))
+					buf.WriteString(dimStyle.Render(reasoningGuidePrefix + reasoningStyle.Render(wl)))
 					buf.WriteString("\n")
 				}
 			}
@@ -1149,7 +1210,7 @@ func (m *cliModel) renderHistoryRange(
 					continue
 				}
 				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-thinkingW), "\n") {
-					buf.WriteString(dimStyle.Render(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl)))
+					buf.WriteString(dimStyle.Render(thinkingGuidePrefix + thinkingStyle.Render(wl)))
 					buf.WriteString("\n")
 				}
 			}
@@ -1163,7 +1224,7 @@ func (m *cliModel) renderHistoryRange(
 			}
 			buf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
 			buf.WriteString("\n")
-			if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), innerWidth, true, 0); content != "" {
+			if content := m.renderToolContentBelow(tool, reasoningGuidePrefix, innerWidth, true, 0); content != "" {
 				buf.WriteString(content)
 				buf.WriteString("\n")
 			}
@@ -1223,25 +1284,26 @@ func (m *cliModel) renderProgressBlock() string {
 	thinkingW := lipgloss.Width(thinkingGuide.Render("  ┊ "))
 	dimStyle := s.ProgressDim
 
-	var sb strings.Builder
-
-	// Clean section header — no border, just a dim divider (width-safe)
-	sb.WriteString(s.DimGuideSt.Render(strings.Repeat("─", innerWidth)))
-	sb.WriteString("\n")
-
 	// Render completed iterations (dimmed) — use cache to avoid re-running
 	// chroma/lipgloss on every 100ms tick (major CPU saver for long sessions).
 	// Incremental rebuild: only render newly added iterations and append to cache.
+	// Uses padded lines cache (cachedProgressHistoryLines) so that padProgressLines
+	// only needs to process the newly added lines instead of the entire history.
+	var historyLines []string
 	if m.cachedProgressHistoryLen == len(m.iterationHistory) && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistory != "" {
-		sb.WriteString(m.cachedProgressHistory)
+		historyLines = m.cachedProgressHistoryLines
 	} else if m.cachedProgressHistoryLen > 0 && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistoryLen < len(m.iterationHistory) {
 		// Incremental: only render new iterations [cachedProgressHistoryLen:]
 		var histBuf strings.Builder
 		m.renderHistoryRange(&histBuf, m.iterationHistory[m.cachedProgressHistoryLen:], innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, s)
-		m.cachedProgressHistory += histBuf.String()
+		newHistory := histBuf.String()
+		m.cachedProgressHistory += newHistory
 		m.cachedProgressHistoryLen = len(m.iterationHistory)
 		m.cachedProgressHistoryFP = fnvHash64(m.cachedProgressHistory)
-		sb.WriteString(m.cachedProgressHistory)
+		// Incremental padded lines: only pad the new portion
+		newLines := padLinesFromContent(newHistory)
+		m.cachedProgressHistoryLines = append(m.cachedProgressHistoryLines, newLines...)
+		historyLines = m.cachedProgressHistoryLines
 	} else {
 		// Full rebuild (width changed or cache invalidation)
 		var histBuf strings.Builder
@@ -1250,42 +1312,42 @@ func (m *cliModel) renderProgressBlock() string {
 		m.cachedProgressHistoryLen = len(m.iterationHistory)
 		m.cachedProgressHistoryWidth = bubbleWidth
 		m.cachedProgressHistoryFP = fnvHash64(m.cachedProgressHistory)
-		sb.WriteString(m.cachedProgressHistory)
+		// Full padded lines rebuild
+		m.cachedProgressHistoryLines = padLinesFromContent(m.cachedProgressHistory)
+		historyLines = m.cachedProgressHistoryLines
 	}
 
-	// Render current iteration
+	// Render current iteration into a separate buffer so we can
+	// pad only the dynamic parts while reusing the pre-padded
+	// history lines cache.
+	var currentBuf strings.Builder
+
 	if m.progress != nil {
-		sb.WriteString(iterStyle.Render(fmt.Sprintf("#%d", m.progress.Iteration)))
-		sb.WriteString("\n")
+		currentBuf.WriteString(iterStyle.Render(fmt.Sprintf("#%d", m.progress.Iteration)))
+		currentBuf.WriteString("\n")
 
 		// Render all current-iteration content with correct linear order.
 		// Static cache (completed tools + content) is inserted mid-stream.
-		m.renderCurrentIteration(&sb, s, innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, toolDoneStyle, toolErrorStyle, toolRunningStyle, elapsedStyle, dimStyle, iterStyle)
+		m.renderCurrentIteration(&currentBuf, s, innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, toolDoneStyle, toolErrorStyle, toolRunningStyle, elapsedStyle, dimStyle, iterStyle)
 	} else if m.typing {
-		sb.WriteString("  ")
-		sb.WriteString(m.ticker.viewFrames(orbitFrames))
-		sb.WriteString(thinkingStyle.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
-		sb.WriteString("\n")
+		currentBuf.WriteString("  ")
+		currentBuf.WriteString(m.ticker.viewFrames(orbitFrames))
+		currentBuf.WriteString(thinkingStyle.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
+		currentBuf.WriteString("\n")
 	}
 
-	content := strings.TrimRight(sb.String(), "\n")
-	if content == "" {
+	currentContent := strings.TrimRight(currentBuf.String(), "\n")
+	if currentContent == "" && len(historyLines) == 0 {
 		return ""
 	}
 
 	// Total elapsed — quantize to whole seconds so the fingerprint stays stable
 	// across 100ms ticks. Without this, formatElapsed changes every 100ms
 	// (e.g. "1.2s" → "1.3s"), preventing the cache from ever hitting.
-	elapsed := ""
 	var elapsedSec int64
 	if !m.typingStartTime.IsZero() {
 		elapsedSec = time.Since(m.typingStartTime).Milliseconds() / 1000
-		elapsed = " " + elapsedStyle.Render(formatElapsed(elapsedSec*1000))
 	}
-
-	// Header
-	headerStyle := s.ProgressHeader
-	header := headerStyle.Render("Progress") + elapsed
 
 	// --- Full progress block output cache ---
 	// Uses O(1) composite fingerprint (sub-block FPs + active tool state)
@@ -1295,45 +1357,78 @@ func (m *cliModel) renderProgressBlock() string {
 		return m.cachedProgressBlockOut
 	}
 
-	// Manual padding: equivalent to Padding(0,1) + Width(bubbleWidth)
-	// but without lipgloss's O(total_chars) ANSI StringWidth scan.
-	// Content is already hard-wrapped to innerWidth, so each line is
-	// at most innerWidth visual columns; adding " " prefix + suffix
-	// gives innerWidth+2 = bubbleWidth visual columns.
-	preRender := header + "\n" + content
-	result := padProgressLines(preRender) + "\n"
+	// Header
+	headerStyle := s.ProgressHeader
+	elapsed := ""
+	if !m.typingStartTime.IsZero() {
+		elapsed = " " + elapsedStyle.Render(formatElapsed(elapsedSec*1000))
+	}
+	header := headerStyle.Render("Progress") + elapsed
+
+	// Assemble padded lines incrementally:
+	// 1. Header line (padded)
+	// 2. History lines (already padded from cache — O(1) reuse)
+	// 3. Current iteration lines (padded — always short, O(1))
+	// This avoids O(N) padProgressLines on the entire content.
+	totalCap := 1 + 1 + len(historyLines) + 20 // header + divider + history + ~20 lines for current
+	allPaddedLines := make([]string, 0, totalCap)
+	allPaddedLines = append(allPaddedLines, " "+header+" ")
+
+	// Divider at the very start of the progress block
+	allPaddedLines = append(allPaddedLines, " "+s.DimGuideSt.Render(strings.Repeat("─", innerWidth))+" ")
+
+	// History lines are already padded — directly append
+	allPaddedLines = append(allPaddedLines, historyLines...)
+
+	// Pad only the current iteration content (divider + current iter — always short)
+	if currentContent != "" {
+		currentLines := padLinesFromContent(currentContent)
+		allPaddedLines = append(allPaddedLines, currentLines...)
+	}
+
+	// Build the final string from padded lines
+	var resultBuf strings.Builder
+	resultBuf.Grow(len(allPaddedLines) * (bubbleWidth + 2))
+	for _, line := range allPaddedLines {
+		resultBuf.WriteString(line)
+		resultBuf.WriteString("\n")
+	}
+	result := resultBuf.String()
+	// Add trailing empty line for the bottom border
+	allPaddedLines = append(allPaddedLines, "")
 
 	m.cachedProgressBlockOut = result
 	m.cachedProgressBlockFP = fp
 	m.cachedProgressBlockWidth = bubbleWidth
-	m.cachedProgressBlockLines = strings.Split(result, "\n")
+	m.cachedProgressBlockLines = allPaddedLines
 
 	return result
 }
 
-// padProgressLines adds Padding(0,1) equivalent to each line without
-// lipgloss's O(chars) ANSI StringWidth calculation. Since content lines
-// are already hard-wrapped to innerWidth, " " + line + " " produces the
-// same visual result as ProgressBlock's Padding(0,1).Width(bubbleWidth).
-func padProgressLines(content string) string {
-	var buf strings.Builder
-	buf.Grow(len(content) + strings.Count(content, "\n")*3 + 4)
+// padLinesFromContent splits content by newlines and pads each line with
+// " " prefix and " " suffix (equivalent to Padding(0,1)). Returns only
+// the []string of padded lines — used for incremental line assembly
+// where the caller doesn't need the monolithic string.
+func padLinesFromContent(content string) []string {
+	if content == "" {
+		return nil
+	}
+	nlCount := strings.Count(content, "\n")
+	lines := make([]string, 0, nlCount+1)
 	for {
 		idx := strings.IndexByte(content, '\n')
 		if idx < 0 {
 			if content != "" {
-				buf.WriteString(" ")
-				buf.WriteString(content)
-				buf.WriteString(" \n")
+				lines = append(lines, " "+content+" ")
 			}
 			break
 		}
-		buf.WriteString(" ")
-		buf.WriteString(content[:idx])
-		buf.WriteString(" \n")
+		if idx > 0 { // skip empty lines
+			lines = append(lines, " "+content[:idx]+" ")
+		}
 		content = content[idx+1:]
 	}
-	return buf.String()
+	return lines
 }
 
 // progressBlockCompositeFP computes an O(1) composite fingerprint by combining
@@ -2646,12 +2741,19 @@ func (m *cliModel) updateViewportContent() {
 
 	// 快速路径：缓存有效 + 无流式消息 + 消息数未变，只刷新 progress block（tick 场景）
 	if m.renderCacheValid && m.streamingMsgIdx < 0 && m.cachedMsgCount == len(m.messages) {
-		progressBlock := m.renderProgressBlock()
+		// O(1) pre-check: compute composite FP without calling renderProgressBlock.
+		// This avoids the O(N) renderProgressBlock call on every tick when nothing
+		// changed (the dominant case during streaming within a single iteration).
+		var elapsedSec int64
+		if !m.typingStartTime.IsZero() {
+			elapsedSec = time.Since(m.typingStartTime).Milliseconds() / 1000
+		}
+		bubbleWidth := m.chatWidth() - 4
+		if bubbleWidth < 10 {
+			bubbleWidth = 10
+		}
+		progressFP := m.progressBlockCompositeFP(elapsedSec, bubbleWidth)
 		rewindBlock := m.renderRewindResultBlock()
-		// When only progress/rewind blocks changed (typical tick scenario), avoid
-		// O(total_content) string construction. Use FNV fingerprints for O(1)
-		// dirty detection. cachedProgressBlockFP is computed inside renderProgressBlock.
-		progressFP := m.cachedProgressBlockFP
 		rewindFP := fnvHash64(rewindBlock)
 		cachedHistoryLen := len(m.cachedHistory)
 		if cachedHistoryLen == m.lastTickHistoryLen &&
@@ -2663,12 +2765,14 @@ func (m *cliModel) updateViewportContent() {
 		m.lastTickProgressFP = progressFP
 		m.lastTickRewindFP = rewindFP
 
-		// --- O(1) direct lines assembly ---
-		// Assemble viewport lines from pre-cached components instead of building
-		// a monolithic string and re-wrapping it. This eliminates:
-		//   1. O(cachedHistory_size) string copy (sb.WriteString)
-		//   2. O(N_iters) lipgloss.Width + wrapPreservingGuide on progress block lines
-		// Only rewind block needs wrapping (typically < 5 lines, O(1)).
+		// FP changed → call renderProgressBlock (it will also hit its own internal
+		// cache via progressBlockCompositeFP, but we need the actual output string).
+		progressBlock := m.renderProgressBlock()
+
+		// --- Direct lines assembly with cached slice ---
+		// Reuse the cached allLines slice across ticks to avoid O(N)
+		// allocation + copy of cachedHistoryLines every 100ms.
+		// Only progress/rewind sections are updated in-place.
 		cw := m.chatWidth()
 		if len(m.cachedHistoryLines) > 0 && cw > 0 {
 			// Progress block lines: already pre-split by renderProgressBlock
@@ -2685,14 +2789,44 @@ func (m *cliModel) updateViewportContent() {
 				m.cachedDynamicWidth = cw
 			}
 
-			totalLines := len(m.cachedHistoryLines) + len(progressLines) + len(rewindLines)
-			allLines := make([]string, 0, totalLines)
-			allLines = append(allLines, m.cachedHistoryLines...)
-			allLines = append(allLines, progressLines...)
-			allLines = append(allLines, rewindLines...)
+			// Reuse cached allLines when history section unchanged
+			histLen := len(m.cachedHistoryLines)
+			pl := len(progressLines)
+			rl := len(rewindLines)
+			totalLines := histLen + pl + rl
+
+			if histLen == m.cachedAllLinesHistoryLen && totalLines <= cap(m.cachedAllLines) {
+				// History unchanged — in-place update progress + rewind only
+				m.cachedAllLines = m.cachedAllLines[:totalLines]
+				copy(m.cachedAllLines[histLen:histLen+pl], progressLines)
+				copy(m.cachedAllLines[histLen+pl:], rewindLines)
+			} else if histLen > m.cachedAllLinesHistoryLen && cap(m.cachedAllLines) >= totalLines {
+				// History grew (new iteration appended) — extend in-place.
+				// Old history lines are unchanged, only append the new tail.
+				newHistLines := m.cachedHistoryLines[m.cachedAllLinesHistoryLen:]
+				m.cachedAllLines = m.cachedAllLines[:m.cachedAllLinesHistoryLen]
+				m.cachedAllLines = append(m.cachedAllLines, newHistLines...)
+				m.cachedAllLines = append(m.cachedAllLines, progressLines...)
+				m.cachedAllLines = append(m.cachedAllLines, rewindLines...)
+				m.cachedAllLinesHistoryLen = histLen
+			} else if histLen > m.cachedAllLinesHistoryLen {
+				// History grew but slice too small — grow with append
+				m.cachedAllLines = m.cachedAllLines[:m.cachedAllLinesHistoryLen]
+				m.cachedAllLines = append(m.cachedAllLines, m.cachedHistoryLines[m.cachedAllLinesHistoryLen:]...)
+				m.cachedAllLines = append(m.cachedAllLines, progressLines...)
+				m.cachedAllLines = append(m.cachedAllLines, rewindLines...)
+				m.cachedAllLinesHistoryLen = histLen
+			} else {
+				// History shrank (rewind/compression) or first run — rebuild
+				m.cachedAllLines = make([]string, totalLines)
+				copy(m.cachedAllLines, m.cachedHistoryLines)
+				copy(m.cachedAllLines[histLen:histLen+pl], progressLines)
+				copy(m.cachedAllLines[histLen+pl:], rewindLines)
+				m.cachedAllLinesHistoryLen = histLen
+			}
 
 			shouldFollowBottom := !m.userScrolledUp
-			viewportSetLinesBypassMaxWidth(&m.viewport, allLines, cw)
+			viewportSetLinesBypassMaxWidth(&m.viewport, m.cachedAllLines, cw)
 			if shouldFollowBottom {
 				m.viewport.GotoBottom()
 				m.newContentHint = false
@@ -2700,13 +2834,6 @@ func (m *cliModel) updateViewportContent() {
 				m.newContentHint = true
 			}
 
-			// Keep lastViewportContent in sync for any fallback setViewportContent calls
-			var sb strings.Builder
-			sb.Grow(cachedHistoryLen + len(progressBlock) + len(rewindBlock))
-			sb.WriteString(m.cachedHistory)
-			sb.WriteString(progressBlock)
-			sb.WriteString(rewindBlock)
-			m.lastViewportContent = sb.String()
 			m.lastViewportWidth = cw
 			return
 		}
@@ -2794,24 +2921,71 @@ func (m *cliModel) appendNewMessagesToCache() {
 
 // fullRebuild 全量重建渲染缓存（慢速路径）
 func (m *cliModel) fullRebuild() {
-	var historyBuf strings.Builder
-
 	// splitIdx 确保当前流式消息不进入 cachedHistory
 	splitIdx := len(m.messages)
 	if m.streamingMsgIdx >= 0 {
 		splitIdx = m.streamingMsgIdx
 	}
 
+	// Fast path: if all messages are already cached at current width,
+	// no re-rendering or re-wrapping is needed. Just rebuild cachedHistory
+	// from per-message wrapped lines and rebuild msgLineOffsets.
+	cw := m.chatWidth()
+	allCached := splitIdx > 0
+	for i := range m.messages[:splitIdx] {
+		if m.messages[i].dirty || m.messages[i].renderWidth != cw || len(m.messages[i].wrappedLines) == 0 || m.messages[i].wrappedWidth != cw {
+			allCached = false
+			break
+		}
+	}
+	if allCached {
+		m.msgLineOffsets = m.msgLineOffsets[:0]
+		runningLines := 0
+		hmax := 0
+		var allWrappedLines []string
+		for i := range m.messages[:splitIdx] {
+			m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
+			wl := m.messages[i].wrappedLines
+			if m.messages[i].wrappedMaxWidth > hmax {
+				hmax = m.messages[i].wrappedMaxWidth
+			}
+			runningLines += len(wl)
+			allWrappedLines = append(allWrappedLines, wl...)
+		}
+		var histBuf strings.Builder
+		for _, line := range allWrappedLines {
+			histBuf.WriteString(line)
+			histBuf.WriteString("\n")
+		}
+		m.cachedHistory = histBuf.String()
+		m.cachedHistoryLines = allWrappedLines
+		m.cachedWrappedHistory = m.cachedHistory
+		m.cachedWrappedHistoryRaw = m.cachedHistory
+		m.cachedWrappedHistoryWidth = cw
+		m.cachedHistoryMaxWidth = hmax
+		m.renderCacheValid = true
+		m.cachedMsgCount = len(m.messages)
+		return
+	}
+
 	// §19 重置消息行号偏移（基于折行后的 viewport 行号）
 	m.msgLineOffsets = m.msgLineOffsets[:0]
 	runningLines := 0
-	cw := m.chatWidth() // cache once for the entire loop
+	// cw already declared in fast path above
+
+	// Collect wrapped lines incrementally to avoid the O(N) strings.Split +
+	// lipgloss.Width + wrapPreservingGuide on the entire cachedHistory.
+	// Each message contributes its own wrapped lines; cached messages reuse
+	// their pre-computed wrapped lines (no re-parsing needed).
+	var allWrappedLines []string
+	hmax := 0
 	for i := range m.messages[:splitIdx] {
 		// §19 记录消息在 viewport 折行后内容中的起始行号
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
 		needsRender := m.messages[i].dirty || m.messages[i].renderWidth != cw
+		var rendered string
 		if needsRender {
-			rendered := m.renderMessage(&m.messages[i])
+			rendered = m.renderMessage(&m.messages[i])
 			m.messages[i].rendered = rendered
 			m.messages[i].dirty = false
 			m.messages[i].renderWidth = cw
@@ -2820,64 +2994,72 @@ func (m *cliModel) fullRebuild() {
 			// Detail (tool output), and Args (raw JSON) are no longer needed.
 			// Keeping them alive causes O(iterations × tool_size) GC pressure.
 			m.trimToolSummaryPayload(&m.messages[i])
+		} else {
+			rendered = m.messages[i].rendered
 		}
-		// Build per-message chunk for line counting (avoids calling
-		// historyBuf.String() on every iteration — the O(N²) full
-		// buffer copy caused 100% CPU during resize with many messages).
-		chunk := m.messages[i].rendered
+		// Wrap lines for this message only and collect into allWrappedLines.
+		// For cached messages, pre-compute wrappedLines if not already set.
+		msgWrapped := m.messages[i].wrappedLines
+		msgMaxW := m.messages[i].wrappedMaxWidth
+		if len(msgWrapped) == 0 || m.messages[i].wrappedWidth != cw {
+			// Need to (re-)compute wrapped lines for this message
+			rawLines := strings.Split(rendered, "\n")
+			msgWrapped = make([]string, 0, len(rawLines))
+			msgMaxW = 0
+			for _, line := range rawLines {
+				trimmed := strings.TrimRight(line, " \t")
+				if trimmed != line {
+					visualW := lipgloss.Width(line)
+					trimmedW := lipgloss.Width(trimmed)
+					if visualW == trimmedW {
+						line = trimmed
+					}
+				}
+				wrapped := wrapPreservingGuide(line, cw)
+				for _, wl := range wrapped {
+					if w := lipgloss.Width(wl); w > msgMaxW {
+						msgMaxW = w
+					}
+				}
+				msgWrapped = append(msgWrapped, wrapped...)
+			}
+			m.messages[i].wrappedLines = msgWrapped
+			m.messages[i].wrappedMaxWidth = msgMaxW
+			m.messages[i].wrappedWidth = cw
+		}
+		if msgMaxW > hmax {
+			hmax = msgMaxW
+		}
 		// §21 搜索高亮：匹配消息前插入指示条
 		if m.searchMode && m.isSearchMatch(i) {
 			indicator := m.styles.SearchIndicator.Render("▸ ")
-			historyBuf.WriteString(indicator)
-			chunk = indicator + chunk
-		}
-		historyBuf.WriteString(m.messages[i].rendered)
-		// Use pre-computed renderedLines instead of expensive wrappedLineCount.
-		// After rendering, content is already wrapped to the correct width,
-		// so strings.Count(newlines)+1 equals the actual viewport line count.
-		if m.messages[i].renderedLines > 0 {
-			runningLines += m.messages[i].renderedLines
-		} else {
-			runningLines += strings.Count(chunk, "\n") + 1
-		}
-	}
-
-	m.cachedHistory = historyBuf.String()
-	m.renderCacheValid = true
-	m.cachedMsgCount = len(m.messages)
-
-	// Wrap all cached history lines to cw.
-	// renderMessage() does NOT guarantee all lines fit within cw:
-	// - User messages body is raw content (no width constraint on UserContent style)
-	// - Assistant messages go through glamour but edge cases can overshoot
-	// If we skip wrapping here and mark as "cachedWrappedHistory", the fast path in
-	// setViewportContent reuses unwrapped lines, which overflow the viewport.
-	rawLines := strings.Split(m.cachedHistory, "\n")
-	var wrappedLines []string
-	hmax := 0
-	for _, line := range rawLines {
-		trimmed := strings.TrimRight(line, " \t")
-		if trimmed != line {
-			visualW := lipgloss.Width(line)
-			trimmedW := lipgloss.Width(trimmed)
-			if visualW == trimmedW {
-				line = trimmed
-			}
-		}
-		wrapped := wrapPreservingGuide(line, cw)
-		for _, wl := range wrapped {
-			if w := lipgloss.Width(wl); w > hmax {
+			allWrappedLines = append(allWrappedLines, indicator)
+			runningLines++
+			if w := lipgloss.Width(indicator); w > hmax {
 				hmax = w
 			}
 		}
-		wrappedLines = append(wrappedLines, wrapped...)
+		runningLines += len(msgWrapped)
+		allWrappedLines = append(allWrappedLines, msgWrapped...)
 	}
 
-	// Rebuild cachedHistoryLines from the freshly built cachedHistory.
-	// This ensures the direct-lines tick path has up-to-date pre-split lines
-	// that are actually wrapped to cw.
-	m.cachedHistoryLines = wrappedLines
-	m.cachedWrappedHistory = strings.Join(wrappedLines, "\n") + "\n"
+	// Rebuild cachedHistory from allWrappedLines for setViewportContent.
+	// This is O(total_lines) string join — unavoidable but much cheaper than
+	// the previous O(total_content_chars) approach of re-parsing ANSI codes.
+	var histBuf strings.Builder
+	for _, line := range allWrappedLines {
+		histBuf.WriteString(line)
+		histBuf.WriteString("\n")
+	}
+	m.cachedHistory = histBuf.String()
+	m.renderCacheValid = true
+	m.cachedMsgCount = len(m.messages)
+
+	// All wrapped lines are already computed per-message above.
+	// Set the cache directly — no need to re-split + re-wrap the entire
+	// cachedHistory string (that was the O(N) bottleneck).
+	m.cachedHistoryLines = allWrappedLines
+	m.cachedWrappedHistory = m.cachedHistory
 	m.cachedWrappedHistoryRaw = m.cachedHistory
 	m.cachedWrappedHistoryWidth = cw
 	m.cachedHistoryMaxWidth = hmax

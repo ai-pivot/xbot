@@ -510,6 +510,7 @@ func (m *cliModel) resetToIdleState() {
 	m.cachedHistoryMaxWidth = 0
 	m.cachedHistoryLines = nil
 	m.cachedProgressHistory = ""
+	m.cachedProgressHistoryLines = nil
 	m.cachedProgressHistoryLen = 0
 	m.cachedProgressHistoryWidth = 0
 	m.cachedCurrentStatic = ""
@@ -1082,16 +1083,23 @@ type cliModel struct {
 	cachedHistoryLines        []string // pre-split lines from cachedWrappedHistory (avoids O(N) strings.Split every tick)
 
 	// --- progress block cache ---
-	cachedProgressHistory      string // cached rendered output of completed iterations (dimmed)
-	cachedProgressHistoryLen   int    // len(iterationHistory) when cache was built
-	cachedProgressHistoryWidth int    // viewport width when cache was built
-	cachedProgressHistoryFP    uint64 // fingerprint of cached history content for O(1) composite FP
+	cachedProgressHistory      string   // cached rendered output of completed iterations (dimmed)
+	cachedProgressHistoryLines []string // pre-padded lines of cached history (avoids O(N) padProgressLines on cache miss)
+	cachedProgressHistoryLen   int      // len(iterationHistory) when cache was built
+	cachedProgressHistoryWidth int      // viewport width when cache was built
+	cachedProgressHistoryFP    uint64   // fingerprint of cached history content for O(1) composite FP
 
 	// --- tick-level dirty detection for updateViewportContent fast path ---
 	// Avoids O(total_content) string construction when nothing changed between ticks.
 	lastTickHistoryLen int    // len(m.cachedHistory) at last tick
 	lastTickProgressFP uint64 // cachedProgressBlockFP at last tick
 	lastTickRewindFP   uint64 // fnvHash64(rewindBlock) at last tick
+
+	// cachedAllLines: reused slice for viewport lines assembly across ticks.
+	// Avoids O(N) allocation + copy of cachedHistoryLines every 100ms.
+	// Layout: [historyLines... | progressLines... | rewindLines...]
+	cachedAllLines           []string
+	cachedAllLinesHistoryLen int // len(cachedHistoryLines) when slice was built
 
 	// Current iteration static content cache — avoids re-rendering reasoning,
 	// completed tools, tool content, and SubAgent tree on every 100ms tick.
@@ -1403,6 +1411,11 @@ type cliMessage struct {
 	renderedLines         int  // 渲染后的总行数（每次 dirty 重算）
 	originalRenderedLines int  // fold 前的原始行数（fold 时保存，用于 unfold 判断）
 	folded                bool // 是否折叠
+
+	// --- Wrapped lines cache ---
+	wrappedLines    []string // pre-wrapped lines for viewport (avoids O(N) re-parse)
+	wrappedMaxWidth int      // max visual width among wrappedLines
+	wrappedWidth    int      // chatWidth when wrappedLines was computed
 
 	// --- Markdown rendering for system messages ---
 	markdown bool // when true, system messages go through glamour renderer (e.g. /usage tables)
