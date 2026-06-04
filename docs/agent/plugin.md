@@ -157,6 +157,12 @@ When a trigger fires, the script receives environment variables:
 - `XBOT_TOOL_OUTPUT` — tool execution result (truncated to 8KB)
 - `XBOT_TOOL_INPUT` — tool input parameters as JSON string
 - `XBOT_WORK_DIR` — current working directory
+- `XBOT_WIDGET_ID` — the widget ID that triggered this render (e.g. "git-branch"). Scripts can use this to produce different output for different widgets within the same plugin.
+- `XBOT_MODEL` — current LLM model name (e.g. "claude-sonnet-4-20250514")
+- `XBOT_MAX_CONTEXT` — maximum context window in tokens (e.g. "200000")
+- `XBOT_TOKEN_USAGE` — token usage as `prompt/completion` (e.g. "12345/678")
+- `XBOT_PROMPT_TOKENS` — cumulative prompt tokens (input + context)
+- `XBOT_COMP_TOKENS` — cumulative completion tokens (output)
 
 ### Widget Rendering
 Script output format: `"style|text"` where style is one of:

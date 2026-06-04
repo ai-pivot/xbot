@@ -55,6 +55,9 @@ type runState struct {
 	// Token tracking
 	tokenTracker *TokenTracker
 
+	// Session context for plugin hooks (mutable pointer — updated after each LLM call)
+	sessionCtx *hooks.SessionContext
+
 	// Loop state
 	toolsUsed          []string
 	waitingUser        bool
@@ -456,6 +459,11 @@ func (s *runState) updateTokenUsage() {
 		CacheHitTokens:  int64(s.localCachedTokens),
 		MaxOutputTokens: int64(s.cfg.MaxOutputTokens),
 	}
+	// Update session context for plugin hooks (model/token data)
+	if s.sessionCtx != nil {
+		s.sessionCtx.PromptTokens = s.tokenTracker.PromptTokens()
+		s.sessionCtx.CompTokens = s.tokenTracker.CompletionTokens()
+	}
 }
 
 // setTokenUsageAfterCompress updates TokenUsage with the post-compress token count
@@ -492,6 +500,11 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 		TotalTokens:      tokenCount,
 		CacheHitTokens:   0,
 		MaxOutputTokens:  int64(s.cfg.MaxOutputTokens),
+	}
+	// Update session context for plugin hooks
+	if s.sessionCtx != nil {
+		s.sessionCtx.PromptTokens = tokenCount
+		s.sessionCtx.CompTokens = 0
 	}
 }
 

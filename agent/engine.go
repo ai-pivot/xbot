@@ -435,6 +435,19 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	s := newRunState(cfg)
 
+	// Inject mutable SessionContext into context so plugin hooks can read
+	// current model/token data. Updated after each LLM call and compression.
+	maxCtx := 0
+	if cfg.ContextManagerConfig != nil {
+		maxCtx = cfg.ContextManagerConfig.MaxContextTokens
+	}
+	sessionCtx := &hooks.SessionContext{
+		Model:      cfg.Model,
+		MaxContext: int64(maxCtx),
+	}
+	ctx = hooks.WithSessionContext(ctx, sessionCtx)
+	s.sessionCtx = sessionCtx
+
 	// Cleanup completed TODOs on exit
 	defer s.cleanupTodos()
 	// Cleanup completed background tasks on exit to prevent stale tasks from

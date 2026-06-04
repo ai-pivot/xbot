@@ -101,6 +101,14 @@ echo "dim|no repo"
 | `XBOT_TOOL_OUTPUT` | Tool result (truncated to 8KB) |
 | `XBOT_TOOL_INPUT` | Tool input as JSON string |
 | `XBOT_WORK_DIR` | Current working directory |
+| `XBOT_WIDGET_ID` | Widget ID that triggered this render (e.g. "git-branch") |
+| `XBOT_MODEL` | Current LLM model name (e.g. "claude-sonnet-4-20250514") |
+| `XBOT_MAX_CONTEXT` | Maximum context window in tokens (e.g. "200000") |
+| `XBOT_TOKEN_USAGE` | Token usage as `prompt/completion` (e.g. "12345/678") |
+| `XBOT_PROMPT_TOKENS` | Cumulative prompt tokens (input + context) |
+| `XBOT_COMP_TOKENS` | Cumulative completion tokens (output) |
+
+**Session context variables** (`XBOT_MODEL`, `XBOT_MAX_CONTEXT`, `XBOT_TOKEN_USAGE`, etc.) are available on all hook events and refresh runs. They allow widgets to display model name, context usage bar, or token costs.
 
 ### Available Permissions
 
@@ -133,6 +141,28 @@ if [ "$changes" -gt 0 ]; then
     echo "warn|git:${branch} Δ${changes}"
 else
     echo "ok|git:${branch} ✓"
+fi
+```
+
+### Session Context Widget (infoBar)
+
+Shows model name and token usage using session context variables:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+model="${XBOT_MODEL:-unknown}"
+# Shorten model name for display
+short_model=$(echo "$model" | sed 's/-[0-9].*//')
+prompt="${XBOT_PROMPT_TOKENS:-0}"
+comp="${XBOT_COMP_TOKENS:-0}"
+max_ctx="${XBOT_MAX_CONTEXT:-0}"
+
+if [ "$max_ctx" -gt 0 ]; then
+    pct=$((prompt * 100 / max_ctx))
+    echo "dim|${short_model} ${pct}% (${prompt}/${max_ctx})"
+else
+    echo "dim|${short_model}"
 fi
 ```
 
