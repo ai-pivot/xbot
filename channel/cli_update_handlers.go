@@ -1621,6 +1621,11 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
 		}
+		// Also update the global default subscription (is_default flag in DB)
+		// so that new sessions inherit the last-used subscription.
+		// The per-session call above (with chatID) only updates the LLM client
+		// for this session; it does NOT touch is_default.
+		_ = done.mgr.SetDefault(done.subID, "")
 		// ALWAYS update per-session LLM state on successful switch, even if
 		// SetDefault (global DB write) fails. The session must track its own
 		// subscription regardless of global default persistence success.

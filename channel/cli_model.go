@@ -745,6 +745,8 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 					if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
 						m.activeSubID = defSub.ID
 						m.cachedModelName = defSub.Model
+						m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
+						m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
 					}
 				}
 				// Auto-discover: if model name is still empty after loading default sub,
@@ -760,6 +762,16 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 						existing.Model = models[0]
 						SaveSessionLLMState(m.workDir, m.chatID, existing)
 					}
+				}
+				// Resolve cachedMaxContextTokens if still zero (e.g. default sub
+				// had no per-model config and resolveSubMaxContext returned 0).
+				// Without this, the context bar stays as a white line until
+				// the first progress event triggers the lazy resolve.
+				if m.cachedMaxContextTokens == 0 {
+					m.cachedMaxContextTokens = m.resolveMaxContextTokens()
+				}
+				if m.cachedMaxOutputTokens == 0 {
+					m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
 				}
 			}
 		}
@@ -1766,6 +1778,9 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.cachedModelName == "" && m.channel.subscriptionMgr != nil {
 		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
 			m.cachedModelName = sub.Model
+			if m.activeSubID == "" {
+				m.activeSubID = sub.ID
+			}
 		}
 	}
 	// Auto-discover: if model name is still empty, try listing available models
