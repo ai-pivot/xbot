@@ -83,7 +83,7 @@ func (a *Agent) buildBaseRunConfig(
 ) (RunConfig, int) {
 	sessionKey := qualifyChatID(channel, chatID)
 
-	llmClient, model, userMaxCtx, thinkingMode := a.llmFactory.GetLLMForChat(senderID, chatID)
+	llmClient, model, userMaxCtx, thinkingMode, maxOutputTokens := a.llmFactory.GetLLMForChat(senderID, chatID)
 
 	// LLM 并发限流回调（per-tenant）
 	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID)
@@ -139,7 +139,7 @@ func (a *Agent) buildBaseRunConfig(
 
 		// 循环控制
 		MaxIterations:   a.getMaxIterations(),
-		MaxOutputTokens: a.llmFactory.GetMaxOutputTokens(senderID),
+		MaxOutputTokens: maxOutputTokens,
 
 		// Auto worktree: read via GetEffectiveSetting — the single correct
 		// read path for user-scoped settings. Same source as /settings panel.
@@ -579,10 +579,11 @@ func (a *Agent) buildSubAgentRunConfig(
 	var subModel string
 	var userMaxCtx int
 	var thinkingMode string
+	var maxOutputTokens int
 	if model != "" {
-		llmClient, subModel, userMaxCtx, thinkingMode, _ = a.llmFactory.GetLLMForModel(originUserID, model)
+		llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, _ = a.llmFactory.GetLLMForModel(originUserID, model)
 	} else {
-		llmClient, subModel, userMaxCtx, thinkingMode = a.llmFactory.GetLLM(originUserID)
+		llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens = a.llmFactory.GetLLM(originUserID)
 	}
 
 	// Stream — default ON; inherit from parent config unless explicitly disabled.
@@ -600,7 +601,7 @@ func (a *Agent) buildSubAgentRunConfig(
 		Model:           subModel,
 		ThinkingMode:    thinkingMode,
 		Stream:          stream,
-		MaxOutputTokens: a.llmFactory.GetMaxOutputTokens(originUserID),
+		MaxOutputTokens: maxOutputTokens,
 		Tools:           subTools,
 		Messages:        messages,
 		AgentID:         subAgentID,

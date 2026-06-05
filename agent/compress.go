@@ -215,7 +215,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, compressTokenUsage, true)
 	}()
 
-	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
+	llmClient, model, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {

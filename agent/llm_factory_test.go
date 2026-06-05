@@ -43,7 +43,7 @@ func TestGetLLMForModel_EmptyTarget(t *testing.T) {
 
 	// Verify the early return path: targetModel="" should not try to list subscriptions
 	// (subscriptionSvc is nil, so if it tried, we'd get a different error)
-	_, model, _, tm, usedCustom := f.GetLLMForModel("user1", "")
+	_, model, _, tm, _, usedCustom := f.GetLLMForModel("user1", "")
 	if model != "default-model" {
 		t.Errorf("model = %q, want %q", model, "default-model")
 	}
@@ -61,7 +61,7 @@ func TestGetLLMForModel_NilSubscriptionSvc(t *testing.T) {
 
 	// No subscriptionSvc + explicit model → model not found in any subscription,
 	// fallback to default client with the RESOLVED model (not the default model).
-	_, model, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
+	_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
 	if model != "claude-opus-4-20250115" {
 		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved model preserved in fallback)", model)
 	}
@@ -189,7 +189,7 @@ func TestGetLLMForModel_TierResolution(t *testing.T) {
 		VanguardModel: "claude-opus-4-20250115",
 	})
 
-	_, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
 	if usedCustom {
 		t.Error("usedCustom should be false when model not found in any subscription")
 	}
@@ -198,7 +198,7 @@ func TestGetLLMForModel_TierResolution(t *testing.T) {
 	}
 
 	// Non-tier model with no subscriptionSvc → returns the model name itself
-	_, model, _, _, usedCustom = f.GetLLMForModel("user1", "gpt-4o")
+	_, model, _, _, _, usedCustom = f.GetLLMForModel("user1", "gpt-4o")
 	if usedCustom {
 		t.Error("usedCustom should be false when model not found in any subscription")
 	}
@@ -301,7 +301,7 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 	}
 
 	// Verify both caches exist
-	_, modelA, _, _ := f.GetLLMForChat(senderID, chatID)
+	_, modelA, _, _, _ := f.GetLLMForChat(senderID, chatID)
 	if modelA != "gpt-4o" {
 		t.Fatalf("initial model = %q, want gpt-4o", modelA)
 	}
@@ -313,7 +313,7 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 		t.Fatalf("SwitchSubscription subB: %v", err)
 	}
 
-	_, modelB, _, _ := f.GetLLMForChat(senderID, chatID)
+	_, modelB, _, _, _ := f.GetLLMForChat(senderID, chatID)
 	if modelB != "deepseek-v3" {
 		t.Errorf("after sub switch, model = %q, want deepseek-v3", modelB)
 	}
@@ -329,7 +329,7 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 	}
 
 	// GetLLMForChat should NOT return stale per-chat cache
-	_, modelUpdated, _, thinkingUpdated := f.GetLLMForChat(senderID, chatID)
+	_, modelUpdated, _, thinkingUpdated, _ := f.GetLLMForChat(senderID, chatID)
 	if modelUpdated != "deepseek-r1" {
 		t.Errorf("after settings update, model = %q, want deepseek-r1 (stale per-chat cache bug)", modelUpdated)
 	}
@@ -361,7 +361,7 @@ func TestSwitchModel_ClearsPerChatCache(t *testing.T) {
 	f.SwitchModel(senderID, "gpt-4o-mini")
 
 	// GetLLMForChat should return the new model, not the stale per-chat one
-	_, model, _, _ := f.GetLLMForChat(senderID, chatID)
+	_, model, _, _, _ := f.GetLLMForChat(senderID, chatID)
 	if model != "gpt-4o-mini" {
 		t.Errorf("after SwitchModel, per-chat model = %q, want gpt-4o-mini (stale per-chat cache bug)", model)
 	}
@@ -394,7 +394,7 @@ func TestInvalidate_DoesNotAffectOtherUsers(t *testing.T) {
 	f.Invalidate("userA")
 
 	// User B's per-chat cache should still work
-	_, modelB, _, _ := f.GetLLMForChat("userB", "/home/b")
+	_, modelB, _, _, _ := f.GetLLMForChat("userB", "/home/b")
 	if modelB != "claude-3-opus" {
 		t.Errorf("userB model after Invalidate(userA) = %q, want claude-3-opus", modelB)
 	}
@@ -426,7 +426,7 @@ func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 		}
 	})
 
-	client, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
 	if !usedCustom {
 		t.Error("usedCustom should be true when config sub matches resolved model")
 	}
@@ -464,7 +464,7 @@ func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 		}
 	})
 
-	client, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
 	if !usedCustom {
 		t.Error("usedCustom should be true when config sub can serve the resolved model")
 	}
@@ -523,7 +523,7 @@ func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
 				return []config.SubscriptionConfig{tt.sub}
 			})
 
-			_, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+			_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
 			if usedCustom {
 				t.Error("usedCustom should be false when config sub has empty credentials")
 			}

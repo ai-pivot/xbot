@@ -29,7 +29,7 @@ func formatTokenCount(n int64) string {
 
 // handleContextInfo 处理 /context info 命令：显示当前 token 数和组成
 func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
-	_, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
+	_, model, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	// 使用 buildPrompt 获取完整上下文（包含 system、skills、memory 等）
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)

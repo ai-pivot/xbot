@@ -305,7 +305,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 			}
 		}
 		if model == "" {
-			_, m, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
+			_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
 			model = m
 		}
 		log.WithField("sender_id", bizID).WithField("model", model).Debug("RPC get_default_model")
@@ -373,7 +373,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		client, _, _, _ := h.Ag.LLMFactory().GetLLM(rpcBizID(ctx))
+		client, _, _, _, _ := h.Ag.LLMFactory().GetLLM(rpcBizID(ctx))
 		return client.ListModels(), nil
 	})
 	t["list_all_models"] = rpc0err(func(ctx context.Context) ([]string, error) {

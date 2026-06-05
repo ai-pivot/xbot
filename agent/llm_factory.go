@@ -222,13 +222,16 @@ func (f *LLMFactory) ClearPerChatMaxContext(chatID string) {
 
 func chatKey(senderID, chatID string) string { return senderID + ":" + chatID }
 
-// GetLLM returns the LLM client for a user. Lookup order:
+// GetLLM returns (client, model, maxContext, thinkingMode, maxOutputTokens).
+// All subscription-derived values come from a single llmEntry, guaranteeing
+// consistency (same subscription for model, context, thinking, output).
+// Lookup order:
 //  1. In-memory cache (entries map)
 //  2. subscriptionSvc (DB default subscription)
 //  3. Global default LLM
-func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string) {
+func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int) {
 	if e := f.getEntry(senderID); e != nil && e.client != nil {
-		return e.client, e.model, f.resolveEffectiveContext(e.model, e.sub), e.thinkingMode
+		return e.client, e.model, f.resolveEffectiveContext(e.model, e.sub), e.thinkingMode, e.maxOutputTokens
 	}
 
 	if f.subscriptionSvc != nil {
@@ -244,17 +247,18 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string) {
 			if e != nil {
 				f.setEntry(senderID, e)
 				f.hasCustomLLMCache.Store(senderID, true)
-				return e.client, e.model, f.resolveEffectiveContext(e.model, e.sub), e.thinkingMode
+				return e.client, e.model, f.resolveEffectiveContext(e.model, e.sub), e.thinkingMode, e.maxOutputTokens
 			}
 		}
 	}
 
-	return f.defaultLLM, f.defaultModel, 0, f.defaultThinkingMode
+	return f.defaultLLM, f.defaultModel, 0, f.defaultThinkingMode, 0
 }
 
-// GetLLMForChat returns the LLM client for a specific chat session.
-// Priority: per-chat entry → user-level entry (with per-chat maxCtx override).
-func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, int, string) {
+// GetLLMForChat returns (client, model, maxContext, thinkingMode, maxOutputTokens).
+// All subscription-derived values come from a single llmEntry, guaranteeing
+// consistency. Priority: per-chat entry → user-level entry (with per-chat maxCtx override).
+func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, int, string, int) {
 	if chatID == "" {
 		return f.GetLLM(senderID)
 	}
@@ -276,7 +280,7 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 			}
 		}
 		if e != nil && e.client != nil {
-			return e.client, e.model, maxCtx, e.thinkingMode
+			return e.client, e.model, maxCtx, e.thinkingMode, e.maxOutputTokens
 		}
 	}
 
@@ -284,16 +288,23 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 	f.mu.RLock()
 	if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
 		f.mu.RUnlock()
-		client, model, _, thinkingMode := f.GetLLM(senderID)
-		return client, model, pcCtx, thinkingMode
+		client, model, _, thinkingMode, maxOut := f.GetLLM(senderID)
+		return client, model, pcCtx, thinkingMode, maxOut
 	}
 	f.mu.RUnlock()
 
 	return f.GetLLM(senderID)
 }
 
-// GetMaxOutputTokens returns the cached max_output_tokens for a user.
-func (f *LLMFactory) GetMaxOutputTokens(senderID string) int {
+// GetMaxOutputTokens returns the cached max_output_tokens.
+// When chatID is provided, checks the per-chat entry first (same source as GetLLMForChat).
+// Prefer using GetLLMForChat which returns all subscription-derived values in one call.
+func (f *LLMFactory) GetMaxOutputTokens(senderID string, chatID ...string) int {
+	if len(chatID) > 0 && chatID[0] != "" {
+		if e := f.getEntry(chatKey(senderID, chatID[0])); e != nil {
+			return e.maxOutputTokens
+		}
+	}
 	if e := f.getEntry(senderID); e != nil {
 		return e.maxOutputTokens
 	}
@@ -661,12 +672,14 @@ func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 	return result
 }
 
-// GetLLMForModel returns the LLM client for a specific model (used by SubAgent).
-func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, int, string, bool) {
+// GetLLMForModel returns (client, model, maxContext, thinkingMode, maxOutputTokens, usedCustom).
+// All subscription-derived values come from a single subscription, guaranteeing consistency.
+// Used by SubAgent when a role specifies a model (or tier name like vanguard/balance/swift).
+func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, int, string, int, bool) {
 	resolvedModel, fromTier := f.resolveTierModel(targetModel)
 	if resolvedModel == "" {
-		client, model, maxCtx, tm := f.GetLLM(senderID)
-		return client, model, maxCtx, tm, false
+		client, model, maxCtx, tm, maxOut := f.GetLLM(senderID)
+		return client, model, maxCtx, tm, maxOut, false
 	}
 
 	modelMap := f.buildModelSubscriptionMap(senderID)
@@ -678,7 +691,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				source = "tier-exact"
 			}
 			log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: exact match")
-			return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+			return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
 		}
 	}
 
@@ -694,7 +707,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			client := f.createClientFromSub(sub, resolvedModel)
 			if client != nil {
 				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "config-exact"}).Info("[LLM] GetLLMForModel: config sub exact match")
-				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
 	}
@@ -722,7 +735,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 							for _, m := range us.CachedModels {
 								if m == resolvedModel {
 									log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
-									return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+									return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
 								}
 							}
 						}
@@ -749,7 +762,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			client := f.createClientFromSub(sub, resolvedModel)
 			if client != nil {
 				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
-				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
 	}
@@ -763,7 +776,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				client := f.createClientFromSub(sub, resolvedModel)
 				if client != nil {
 					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
-					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, true
+					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
 				}
 			}
 		}
@@ -772,8 +785,8 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 	// Last resort: use parent LLM but keep the resolved model name so the
 	// TUI status bar shows what was requested, not the fallback model.
 	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM with resolved model name")
-	client, _, maxCtx, tm := f.GetLLM(senderID)
-	return client, resolvedModel, maxCtx, tm, false
+	client, _, maxCtx, tm, maxOut := f.GetLLM(senderID)
+	return client, resolvedModel, maxCtx, tm, maxOut, false
 }
 
 func (f *LLMFactory) buildModelSubscriptionMap(senderID string) map[string]*sqlite.LLMSubscription {

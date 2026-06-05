@@ -349,7 +349,7 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)
 	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
-	_, model, _, _ := factory.GetLLM("cli_user")
+	_, model, _, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
 		t.Fatalf("expected initial gpt model, got %q", model)
 	}
@@ -358,7 +358,7 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 	if _, err := HandleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
 		t.Fatalf("HandleCLIRPC set_default_subscription: %v", err)
 	}
-	_, model, _, _ = factory.GetLLM("cli_user")
+	_, model, _, _, _ = factory.GetLLM("cli_user")
 	if model != "glm-5.1" {
 		t.Fatalf("expected switched glm model, got %q", model)
 	}
@@ -395,7 +395,7 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	ag.SetLLMFactory(factory)
 	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
 	// Agent calls GetLLM with "cli_user" (business identity)
-	_, model, _, _ := factory.GetLLM("cli_user")
+	_, model, _, _, _ := factory.GetLLM("cli_user")
 	if model != "gpt-4.1" {
 		t.Fatalf("expected initial gpt model for cli_user, got %q", model)
 	}
@@ -406,7 +406,7 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 		t.Fatalf("HandleCLIRPC set_default_subscription: %v", err)
 	}
 	// The key assertion: GetLLM("cli_user") must see the new model
-	_, model, _, _ = factory.GetLLM("cli_user")
+	_, model, _, _, _ = factory.GetLLM("cli_user")
 	if model != "glm-5.1" {
 		t.Fatalf("expected switched glm model for cli_user, got %q (LLM factory cached under wrong key)", model)
 	}

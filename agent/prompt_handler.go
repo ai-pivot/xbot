@@ -89,7 +89,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	// Pass zero TokenUsage so the TUI context bar resets to empty.
 	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, &protocol.TokenUsage{}, false)
 
-	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
+	llmClient, model, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	messages, err := tenantSession.GetMessages()
 	if err != nil {
