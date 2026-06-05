@@ -156,6 +156,7 @@ type dirSession struct {
 	SubscriptionID   string   `json:"subscription_id,omitempty"`    // per-session subscription override
 	Model            string   `json:"model,omitempty"`              // per-session model override (within subscription)
 	MaxContextTokens int      `json:"max_context_tokens,omitempty"` // per-session max context tokens override
+	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`  // per-session max output tokens override
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.
@@ -562,20 +563,27 @@ func (s SessionLLMState) IsZero() bool {
 // SaveSessionLLMState atomically writes ALL per-session LLM state to disk.
 // This replaces the old SaveSessionLLM + SaveSessionMaxContext pair.
 // Partial writes are impossible — either all fields are persisted or none.
-func SaveSessionLLMState(workDir, chatID string, state SessionLLMState) {
+//
+// In remote mode (skipBackendFields=true), SubscriptionID/Model/MaxContextTokens
+// are NOT written to local JSON — the backend DB is the source of truth.
+func SaveSessionLLMState(workDir, chatID string, state SessionLLMState, skipBackendFields ...bool) {
 	// Ephemeral sessions: skip sessions.json persistence entirely.
 	if IsEphemeralChatID(chatID) {
 		return
 	}
+	skipSub := len(skipBackendFields) > 0 && skipBackendFields[0]
 	ds, err := LoadDirSessions(workDir)
 	if err != nil {
 		return
 	}
 	for i := range ds.Sessions {
 		if ds.Sessions[i].ChatID == chatID {
-			ds.Sessions[i].SubscriptionID = state.SubscriptionID
-			ds.Sessions[i].Model = state.Model
-			ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
+			if !skipSub {
+				ds.Sessions[i].SubscriptionID = state.SubscriptionID
+				ds.Sessions[i].Model = state.Model
+				ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
+				ds.Sessions[i].MaxOutputTokens = state.MaxOutputTokens
+			}
 			_ = ds.save()
 			return
 		}
@@ -595,6 +603,7 @@ func LoadSessionLLMState(workDir, chatID string) SessionLLMState {
 				SubscriptionID:   ds.Sessions[i].SubscriptionID,
 				Model:            ds.Sessions[i].Model,
 				MaxContextTokens: ds.Sessions[i].MaxContextTokens,
+				MaxOutputTokens:  ds.Sessions[i].MaxOutputTokens,
 			}
 		}
 	}

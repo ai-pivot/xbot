@@ -164,6 +164,57 @@ func TestParseChatID_WindowsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveSessionLLMState_SkipBackendFields(t *testing.T) {
+	workDir := t.TempDir()
+	chatID := workDir + ":test-session"
+	// Create session directory
+	ds, _ := LoadDirSessions(workDir)
+	ds.Sessions = append(ds.Sessions, dirSession{
+		Name:   "test-session",
+		ChatID: chatID,
+	})
+	_ = ds.save()
+
+	// Save with skipBackendFields=true (remote mode) — subscription fields NOT written
+	state := SessionLLMState{SubscriptionID: "sub-1", Model: "gpt-4", MaxContextTokens: 128000}
+	SaveSessionLLMState(workDir, chatID, state, true)
+
+	loaded := LoadSessionLLMState(workDir, chatID)
+	if loaded.SubscriptionID != "" {
+		t.Error("expected empty SubscriptionID with skipBackendFields=true")
+	}
+	if loaded.Model != "" {
+		t.Error("expected empty Model with skipBackendFields=true")
+	}
+
+	// Save with skipBackendFields=false (local mode) — subscription fields written
+	SaveSessionLLMState(workDir, chatID, state, false)
+	loaded = LoadSessionLLMState(workDir, chatID)
+	if loaded.SubscriptionID != "sub-1" {
+		t.Errorf("expected sub-1, got %q", loaded.SubscriptionID)
+	}
+	if loaded.Model != "gpt-4" {
+		t.Errorf("expected gpt-4, got %q", loaded.Model)
+	}
+}
+
+func TestSaveSessionLLMState_DefaultBehavior(t *testing.T) {
+	// Without skipBackendFields, should save all fields (backward compatible)
+	workDir := t.TempDir()
+	chatID := workDir + ":test-backcompat"
+	ds, _ := LoadDirSessions(workDir)
+	ds.Sessions = append(ds.Sessions, dirSession{Name: "test-backcompat", ChatID: chatID})
+	_ = ds.save()
+
+	state := SessionLLMState{SubscriptionID: "sub-default", Model: "claude-3"}
+	SaveSessionLLMState(workDir, chatID, state) // no skipBackendFields arg
+
+	loaded := LoadSessionLLMState(workDir, chatID)
+	if loaded.SubscriptionID != "sub-default" {
+		t.Errorf("expected sub-default, got %q", loaded.SubscriptionID)
+	}
+}
+
 // TestParseChatID_UnixRoundTrip verifies that SessionChatID → ParseChatID round-trips correctly on Unix paths.
 func TestParseChatID_UnixRoundTrip(t *testing.T) {
 	workDir := "/home/user/project"

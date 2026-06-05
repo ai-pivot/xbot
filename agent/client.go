@@ -621,6 +621,16 @@ func (c *Client) SetDefaultSubscription(id string, chatID string) error {
 	return c.call(MethodSetDefaultSubscription, setDefaultSubscriptionReq{ID: id, ChatID: chatID}, nil)
 }
 
+// GetSessionSubscription returns the session→subscription mapping from the backend.
+// Returns (subscriptionID, model). Empty strings if no mapping exists.
+func (c *Client) GetSessionSubscription(senderID, chatID string) (subscriptionID, model string, err error) {
+	var result map[string]string
+	if err := c.call(MethodGetSessionSubscription, map[string]string{"chat_id": chatID}, &result); err != nil {
+		return "", "", err
+	}
+	return result["subscription_id"], result["model"], nil
+}
+
 func (c *Client) UpdateSubscription(id string, sub protocol.Subscription) error {
 	return c.call(MethodUpdateSubscription, updateSubscriptionReq{
 		ID: id,

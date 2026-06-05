@@ -510,7 +510,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
 		m.streamingMsgIdx = -1
 		m.invalidateAllCache(true)
-		m.viewport.GotoBottom()
+		// Do NOT GotoBottom here — compression can happen while the user
+		// is scrolled up reading old content. Forcing to bottom would
+		// lose their position. The subsequent reloadMessagesFromSession
+		// → handleHistoryReload respects userScrolledUp/newContentHint.
 		m.reloadMessagesFromSession()
 	}
 
@@ -1615,9 +1618,13 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		if err := done.mgr.SetDefault(done.subID, m.chatID); err != nil {
 			m.showTempStatus(fmt.Sprintf("LLM switched but failed to save: %v", err))
 		} else {
-			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
 		}
+		// Also update the global default subscription (is_default flag in DB)
+		// so that new sessions inherit the last-used subscription.
+		// The per-session call above (with chatID) only updates the LLM client
+		// for this session; it does NOT touch is_default.
+		_ = done.mgr.SetDefault(done.subID, "")
 		// ALWAYS update per-session LLM state on successful switch, even if
 		// SetDefault (global DB write) fails. The session must track its own
 		// subscription regardless of global default persistence success.
@@ -1629,7 +1636,7 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 			MaxContextTokens: done.maxCtx,
 			MaxOutputTokens:  done.maxOutTok,
 		}
-		SaveSessionLLMState(m.workDir, m.chatID, state)
+		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)
 		// Refresh values cache so GetCurrentValues() reflects the new subscription.
 		if m.channel != nil && m.channel.config.RefreshValuesCache != nil {

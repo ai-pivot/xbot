@@ -212,10 +212,10 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	// can carry it in the progress event and update the TUI context bar.
 	var compressTokenUsage *protocol.TokenUsage
 	defer func() {
-		a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, compressTokenUsage)
+		a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, compressTokenUsage, true)
 	}()
 
-	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
+	llmClient, model, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {
@@ -288,10 +288,29 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}
 	}
 
-	newTokenCount := len(result.LLMView) * 200 // rough estimate
+	// Use CompressedTokens for accuracy (same as auto-compress path).
+	newTokenCount := int64(result.CompressedTokens)
+	// Fallback to rough estimate if CompressedTokens is 0 (shouldn't happen).
+	if newTokenCount <= 0 {
+		newTokenCount = int64(len(result.LLMView) * 200)
+	}
+
+	// Persist the compressed token count so the next Run() doesn't immediately
+	// trigger re-compression. Without this, GetLastContextTokens() returns the
+	// pre-compress high value, and maybeCompress triggers again on the next message.
+	if saveErr := tenantSession.SaveContextTokens(newTokenCount); saveErr != nil {
+		log.Ctx(ctx).WithError(saveErr).Warn("Failed to save context tokens after manual compress")
+	}
+	// Also update the token_state table (fallback used by GetTokenState when
+	// context_tokens is unavailable).
+	if memSvc := tenantSession.MemoryService(); memSvc != nil {
+		if saveErr := memSvc.SetTokenState(ctx, tenantSession.TenantID(), newTokenCount, 0); saveErr != nil {
+			log.Ctx(ctx).WithError(saveErr).Warn("Failed to save token state after manual compress")
+		}
+	}
 
 	// Set the token usage for the deferred PhaseDone so the CLI context bar updates.
-	compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
+	compressTokenUsage = &protocol.TokenUsage{PromptTokens: newTokenCount}
 
 	if allOk {
 		return &channel.OutboundMsg{

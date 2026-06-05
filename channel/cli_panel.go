@@ -654,6 +654,9 @@ func (m *cliModel) applyRewind() {
 	m.rewindCursor = 0
 	m.renderCacheValid = false
 	m.cachedHistory = ""
+	m.cachedHistoryLines = nil
+	m.cachedAllLines = nil
+	m.cachedAllLinesHistoryLen = 0
 	m.updateViewportContent()
 }
 
@@ -1827,6 +1830,8 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	case msg.Code == tea.KeyHome:
 		// Home/End jump to top/bottom of viewport (iteration history above the panel)
 		m.viewport.GotoTop()
+		m.userScrolledUp = true
+		m.newContentHint = true
 		return true, m, nil
 	case msg.Code == tea.KeyEnd:
 		m.viewport.GotoBottom()
@@ -2817,7 +2822,7 @@ func (m *cliModel) applyQuickSwitch() {
 			MaxContextTokens: resolveSubMaxContext(target),
 			MaxOutputTokens:  resolveSubMaxOutputTokens(target),
 		}
-		SaveSessionLLMState(m.workDir, m.chatID, state)
+		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)
 		// ── Async backend switch ─────────────────────────────────
 		m.showTempStatus(fmt.Sprintf("Switching to: %s …", selected.Name))
@@ -2826,7 +2831,16 @@ func (m *cliModel) applyQuickSwitch() {
 		subName := selected.Name
 		subModel := selected.Model
 		mgr := m.subscriptionMgr
+		chatID := m.chatID // capture before goroutine
 		m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+			// Set per-chat cache entry FIRST, before creating the LLM client.
+			// Without this, a user message arriving before SetDefault completes
+			// hits GetLLMForChat with no per-chat entry, falls back to the
+			// user-level entry (still pointing to the OLD subscription), and
+			// maybeCompress uses the old MaxContext.
+			if mgr != nil {
+				_ = mgr.SetDefault(subID, chatID)
+			}
 			err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 			return cliSwitchLLMDoneMsg{
 				err:       err,
@@ -2851,7 +2865,7 @@ func (m *cliModel) applyQuickSwitch() {
 				Model:            selected.Model,
 				MaxContextTokens: m.cachedMaxContextTokens,
 				MaxOutputTokens:  int(m.cachedMaxOutputTokens),
-			})
+			}, m.remoteMode)
 			m.showTempStatus(fmt.Sprintf("Model switched to: %s", selected.Model))
 		}
 	}
@@ -3778,7 +3792,7 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 			Model:            m.cachedModelName,
 			MaxContextTokens: m.cachedMaxContextTokens,
 			MaxOutputTokens:  int(m.cachedMaxOutputTokens),
-		})
+		}, m.remoteMode)
 	}
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)

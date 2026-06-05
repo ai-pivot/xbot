@@ -273,6 +273,10 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	m.rwVisible = 0
 	m.typing = false
 	m.typewriterTickActive = false
+	// Clear pending user message: the turn completed, so the user's message
+	// has been persisted to DB. Keeping it set would cause handleHistoryReload
+	// (after /compress) to restore the stale message from a pre-compress turn.
+	m.pendingUserMsg = nil
 	// Do NOT set turnCancelled here — this is normal turn completion,
 	// not a user cancel. Setting turnCancelled=true here prevents
 	// the next turn (from message queue flush) from receiving progress

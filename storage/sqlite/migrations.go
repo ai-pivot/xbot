@@ -147,6 +147,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v34: add subscription_id and model to tenants (session→subscription mapping).
+	if from < 34 {
+		if err := migrateV33ToV34(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v34: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1127,5 +1134,24 @@ func migrateV32ToV33(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.WithField("orphan_rows_cleaned", totalOrphans).Info("Database migrated to v33: cleaned orphaned data, enabled foreign keys")
+	return nil
+}
+
+// migrateV33ToV34 adds subscription_id and model columns to the tenants table
+// so the backend can persist which subscription a session uses. Previously this
+// mapping only existed in LLMFactory's in-memory cache (lost on restart) and
+// in the CLI's local sessions.json (unavailable to other clients).
+func migrateV33ToV34(conn *sql.DB) error {
+	_, err := conn.Exec(`
+		ALTER TABLE tenants ADD COLUMN subscription_id TEXT DEFAULT '';
+		ALTER TABLE tenants ADD COLUMN model TEXT DEFAULT '';
+	`)
+	if err != nil {
+		return fmt.Errorf("add subscription columns: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 34"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v34: added subscription_id/model to tenants")
 	return nil
 }

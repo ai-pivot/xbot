@@ -944,6 +944,21 @@ func (m *cliModel) sidebarCurrentIdx() int {
 	return -1
 }
 
+// padLineToWidth pads a styled line with trailing spaces so it fills the full
+// terminal width. This prevents stale content from previous frames lingering
+// at the right edge when widget zone content shrinks (BubbleTea's diff renderer
+// only updates changed positions and does not clear the line tail).
+func (m *cliModel) padLineToWidth(line string) string {
+	lineW := lipgloss.Width(line)
+	// Use chatWidth (accounts for sidebar) so lines don't overflow when
+	// horizontally joined with the sidebar via lipgloss.JoinHorizontal.
+	targetW := m.chatWidth()
+	if lineW >= targetW {
+		return line
+	}
+	return line + strings.Repeat(" ", targetW-lineW)
+}
+
 // augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.
 func (m *cliModel) augmentTitleBar(titleBar string) string {
 	left, right := m.resolveWidgetZone("titleBarLeft"), m.resolveWidgetZone("titleBarRight")
@@ -960,10 +975,12 @@ func (m *cliModel) augmentTitleBar(titleBar string) string {
 }
 
 // augmentStatusBar prepends statusBarLeft and appends statusBarRight widgets.
+// The result is padded to full terminal width so that stale content from a
+// previous (wider) frame is overwritten.
 func (m *cliModel) augmentStatusBar(statusBar string) string {
 	left, right := m.resolveWidgetZone("statusBarLeft"), m.resolveWidgetZone("statusBarRight")
 	if left == "" && right == "" {
-		return statusBar
+		return m.padLineToWidth(statusBar)
 	}
 	if left != "" {
 		statusBar = left + "  " + statusBar
@@ -971,34 +988,38 @@ func (m *cliModel) augmentStatusBar(statusBar string) string {
 	if right != "" {
 		statusBar = statusBar + "  " + right
 	}
-	return statusBar
+	return m.padLineToWidth(statusBar)
 }
 
 // augmentFooter appends footer widget content below the shortcut-hint bar.
+// The result is padded to full terminal width so that stale content from a
+// previous (wider) frame is overwritten.
 func (m *cliModel) augmentFooter(footer string) string {
 	content := m.resolveWidgetZone("footer")
 	if content == "" {
-		return footer
+		return m.padLineToWidth(footer)
 	}
 	widgetLine := m.styles.TextMutedSt.Render(content)
 	if footer == "" {
-		return widgetLine
+		return m.padLineToWidth(widgetLine)
 	}
-	return footer + "  " + widgetLine
+	return m.padLineToWidth(footer + "  " + widgetLine)
 }
 
 // augmentInfoBar appends infoBar widget content to the base info bar.
 // Widget content is appended left-aligned after the bg task info (if present).
 // The widget's own styling (from buildWidgetRenderFn) is preserved as-is.
+// The result is padded to full terminal width so that stale content from a
+// previous (wider) frame is overwritten.
 func (m *cliModel) augmentInfoBar(infoBar string) string {
 	content := m.resolveWidgetZone("infoBar")
 	if content == "" {
-		return infoBar
+		return m.padLineToWidth(infoBar)
 	}
 	if infoBar == "" {
-		return content
+		return m.padLineToWidth(content)
 	}
-	return infoBar + "  " + content
+	return m.padLineToWidth(infoBar + "  " + content)
 }
 
 // resolveWidgetZone returns widget content for a zone, checking local WidgetRegistry

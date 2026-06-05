@@ -636,6 +636,10 @@ func (m *cliModel) executeRewind() (bool, tea.Model, tea.Cmd) {
 		return true, m, nil
 	}
 	item := m.rewindItems[m.rewindCursor]
+	// Truncate local messages — same as panel rewind path (cli_panel.go).
+	cutIdx := item.MsgIndex
+	m.messages = m.messages[:cutIdx]
+	// Truncate DB messages (synchronous).
 	if m.trimHistoryFn != nil {
 		if err := m.trimHistoryFn(item.Time); err != nil {
 			m.showSystemMsg(fmt.Sprintf("❌ Rewind failed: %v", err), feedbackError)
@@ -648,7 +652,7 @@ func (m *cliModel) executeRewind() (bool, tea.Model, tea.Cmd) {
 	}
 	m.rewindMode = false
 	m.rewindResult = nil
-	m.updateViewportContent()
+	m.invalidateAllCache(true)
 	return true, m, nil
 }
 

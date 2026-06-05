@@ -233,7 +233,7 @@ func (m *cliModel) cycleModel() {
 	existing := LoadSessionLLMState(m.workDir, m.chatID)
 	existing.SubscriptionID = m.activeSubID
 	existing.Model = nextModel
-	SaveSessionLLMState(m.workDir, m.chatID, existing)
+	SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 	m.updateQuickSwitchModels(nextModel)
 }
 
@@ -745,6 +745,8 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 					if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
 						m.activeSubID = defSub.ID
 						m.cachedModelName = defSub.Model
+						m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
+						m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
 					}
 				}
 				// Auto-discover: if model name is still empty after loading default sub,
@@ -758,8 +760,18 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 						}
 						existing := LoadSessionLLMState(m.workDir, m.chatID)
 						existing.Model = models[0]
-						SaveSessionLLMState(m.workDir, m.chatID, existing)
+						SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 					}
+				}
+				// Resolve cachedMaxContextTokens if still zero (e.g. default sub
+				// had no per-model config and resolveSubMaxContext returned 0).
+				// Without this, the context bar stays as a white line until
+				// the first progress event triggers the lazy resolve.
+				if m.cachedMaxContextTokens == 0 {
+					m.cachedMaxContextTokens = m.resolveMaxContextTokens()
+				}
+				if m.cachedMaxOutputTokens == 0 {
+					m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
 				}
 			}
 		}
@@ -1743,12 +1755,22 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.channel == nil {
 		return
 	}
-	// Prefer per-session model from disk (persistent across restarts)
+	// ── Remote mode: backend is the source of truth ──────────────────
+	// Query the backend for the session→subscription mapping first.
+	// The backend persists this in the tenants table (via SetSessionLLM).
+	// Local JSON is NOT authoritative for subscription fields in remote mode.
+	if m.remoteMode && m.channel.subscriptionMgr != nil {
+		if subID, model, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.chatID); err == nil && subID != "" {
+			m.cachedModelName = model
+			m.activeSubID = subID
+			return
+		}
+		// Backend returned empty (server restart, first-time session, etc.).
+		// Fall through to local JSON as cache.
+	}
+	// ── Local mode / fallback: per-session model from disk ──────────
 	if state := LoadSessionLLMState(m.workDir, m.chatID); state.Model != "" {
 		m.cachedModelName = state.Model
-		// Only restore activeSubID from disk when it's empty (TUI restart / session switch).
-		// Never override an already-set activeSubID — a quick-switch may have set it
-		// synchronously, and disk write race could otherwise revert to stale data.
 		if m.activeSubID == "" && state.SubscriptionID != "" {
 			m.activeSubID = state.SubscriptionID
 		}
@@ -1766,6 +1788,9 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.cachedModelName == "" && m.channel.subscriptionMgr != nil {
 		if sub, err := m.channel.subscriptionMgr.GetDefault(m.senderID); err == nil && sub != nil {
 			m.cachedModelName = sub.Model
+			if m.activeSubID == "" {
+				m.activeSubID = sub.ID
+			}
 		}
 	}
 	// Auto-discover: if model name is still empty, try listing available models
@@ -1780,7 +1805,7 @@ func (m *cliModel) refreshCachedModelName() {
 			}
 			existing := LoadSessionLLMState(m.workDir, m.chatID)
 			existing.Model = models[0]
-			SaveSessionLLMState(m.workDir, m.chatID, existing)
+			SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 		}
 	}
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
@@ -1812,7 +1837,7 @@ func (m *cliModel) handleModelDiscoverMsg(msg cliModelDiscoverMsg) tea.Cmd {
 			}
 			existing := LoadSessionLLMState(m.workDir, m.chatID)
 			existing.Model = models[0]
-			SaveSessionLLMState(m.workDir, m.chatID, existing)
+			SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 			m.updateViewportContent()
 			return nil
 		}
@@ -1973,6 +1998,9 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 // The engine has replaced its internal message list and persisted to session DB;
 // CLI must rebuild m.messages to stay in sync.
 func (m *cliModel) reloadMessagesFromSession() {
+	if m.channel == nil {
+		return
+	}
 	loader := m.channel.config.DynamicHistoryLoader
 	if loader == nil {
 		return

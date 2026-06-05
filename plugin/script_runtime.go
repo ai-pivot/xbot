@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +27,11 @@ func NewScriptRuntime() RuntimeFactory {
 }
 
 func (f *scriptRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
-	if manifest.Entry == "" {
+	// Validate that at least one entry point is defined.
+	// Platform-specific entries (entry_windows, etc.) are optional overrides;
+	// the generic "entry" field is the fallback.
+	if manifest.Entry == "" && manifest.EntryWindows == "" &&
+		manifest.EntryDarwin == "" && manifest.EntryLinux == "" {
 		return nil, fmt.Errorf("script plugin %s: entry command is required", manifest.ID)
 	}
 	if len(manifest.Contributes.UI) == 0 {
@@ -45,10 +51,11 @@ type scriptPlugin struct {
 	cancel    context.CancelFunc // stops the periodic refresh loop
 	triggerCh chan struct{}      // signals hook-triggered instant runs
 
-	// Per-workDir output cache — each CLI window (different workDir) sees
-	// its own git branch, not the branch of whichever window last refreshed.
+	// Per-workDir per-widget output cache — each CLI window (different workDir)
+	// sees its own git branch, not the branch of whichever window last refreshed.
+	// Map structure: workDir → widgetID → last script output.
 	outputMu sync.RWMutex
-	outputs  map[string]string // workDir → last script output
+	outputs  map[string]map[string]string // workDir → widgetID → output
 
 	// Pending workDirs from OnWorkDirChanged that haven't been processed yet.
 	// Prevents multi-session races where session B's Cd overwrites pctx before
@@ -70,6 +77,31 @@ type scriptPlugin struct {
 	hintMu      sync.RWMutex
 	hintContent string   // last output from synchronous trigger
 	syncWidgets []string // widget IDs that require synchronous execution
+
+	// All widget IDs declared in the manifest — used by runAndUpdate to run
+	// the script once per workDir and cache output for each widget.
+	widgetIDs []string
+}
+
+// widgetAdapter wraps a scriptPlugin for a specific widget ID.
+// Each widget declared in the manifest gets its own adapter so that
+// Render/RenderForWorkDir can pass the widgetID to the script via
+// XBOT_WIDGET_ID environment variable.
+type widgetAdapter struct {
+	plugin   *scriptPlugin
+	widgetID string
+}
+
+// Ensure widgetAdapter implements UIWidget and WorkDirRenderer.
+var _ UIWidget = (*widgetAdapter)(nil)
+var _ WorkDirRenderer = (*widgetAdapter)(nil)
+
+func (a *widgetAdapter) Render(width int) []WidgetSpan {
+	return a.plugin.renderForWidget(a.widgetID, width, "")
+}
+
+func (a *widgetAdapter) RenderForWorkDir(width int, workDir string) []WidgetSpan {
+	return a.plugin.renderByWidgetAndWorkDir(a.widgetID, width, workDir)
 }
 
 func (p *scriptPlugin) Manifest() PluginManifest {
@@ -92,11 +124,15 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 		p.widgetReg = impl.getWidgetRegistry()
 	}
 
-	// Register UI widgets declared in the manifest
+	// Register UI widgets declared in the manifest — each widget gets its own
+	// widgetAdapter so Render/RenderForWorkDir knows which widgetID to pass
+	// to runScript via XBOT_WIDGET_ID.
 	for _, ui := range p.manifest.Contributes.UI {
-		if err := ctx.ContributeUI(ui.ID, ui.Slot, p, ui.Priority); err != nil {
+		adapter := &widgetAdapter{plugin: p, widgetID: ui.ID}
+		if err := ctx.ContributeUI(ui.ID, ui.Slot, adapter, ui.Priority); err != nil {
 			return fmt.Errorf("contribute widget %q: %w", ui.ID, err)
 		}
+		p.widgetIDs = append(p.widgetIDs, ui.ID)
 		if ui.Sync {
 			p.syncWidgets = append(p.syncWidgets, ui.ID)
 		}
@@ -150,31 +186,40 @@ func (p *scriptPlugin) Deactivate(ctx PluginContext) error {
 // UIWidget — returns the last script output as widget spans
 // ---------------------------------------------------------------------------
 
-// Render returns the cached script output as widget content for the
-// PluginContext's current working directory. Each session sees its own
-// output because ~pctx.WorkingDir()~ is per-session (set by RefreshWorkDir
-// in the RPC handler).
-// If no cached output exists for the current workDir (e.g. after Cd or
-// initial remote connect), runs the script synchronously to populate it.
-func (p *scriptPlugin) Render(width int) []WidgetSpan {
+// renderForWidget returns the cached script output for the given widgetID,
+// using the PluginContext's current working directory.
+// If no cached output exists for this workDir+widgetID, runs the script
+// synchronously with XBOT_WIDGET_ID set, so the script can produce
+// widget-specific output.
+func (p *scriptPlugin) renderForWidget(widgetID string, width int, fallbackWorkDir string) []WidgetSpan {
 	p.outputMu.RLock()
 	var wd string
 	if p.pctx != nil {
 		wd = p.pctx.WorkingDir()
 	}
-	text := p.outputs[wd]
+	if wd == "" {
+		wd = fallbackWorkDir
+	}
+	widgetOutputs := p.outputs[wd]
+	text := ""
+	if widgetOutputs != nil {
+		text = widgetOutputs[widgetID]
+	}
 	p.outputMu.RUnlock()
 
-	// Cache miss — run script synchronously for this workDir
+	// Cache miss — run script synchronously for this workDir+widgetID
 	if text == "" && wd != "" {
-		if output, err := p.runScript(wd); err == nil && output != "" {
+		if output, err := p.runScript(wd, widgetID); err == nil && output != "" {
 			p.outputMu.Lock()
 			if p.outputs == nil {
-				p.outputs = make(map[string]string)
+				p.outputs = make(map[string]map[string]string)
 			}
-			p.outputs[wd] = output
+			if p.outputs[wd] == nil {
+				p.outputs[wd] = make(map[string]string)
+			}
+			p.outputs[wd][widgetID] = output
 			p.outputMu.Unlock()
-			log.Debugf("[plugin:%s] output[%s]=%q", p.manifest.ID, wd, output)
+			log.Debugf("[plugin:%s] output[%s][%s]=%q", p.manifest.ID, wd, widgetID, output)
 			text = output
 		}
 	}
@@ -204,24 +249,31 @@ func (p *scriptPlugin) OnWorkDirChanged(dir string) {
 	}
 }
 
-// RenderForWorkDir renders widget content for a specific workDir WITHOUT
+// renderByWidgetAndWorkDir renders widget content for a specific workDir WITHOUT
 // modifying the shared PluginContext. This prevents cross-session races.
-func (p *scriptPlugin) RenderForWorkDir(width int, workDir string) []WidgetSpan {
+func (p *scriptPlugin) renderByWidgetAndWorkDir(widgetID string, width int, workDir string) []WidgetSpan {
 	if workDir == "" {
-		return p.Render(width)
+		return p.renderForWidget(widgetID, width, "")
 	}
 	p.outputMu.RLock()
-	text := p.outputs[workDir]
+	widgetOutputs := p.outputs[workDir]
+	text := ""
+	if widgetOutputs != nil {
+		text = widgetOutputs[widgetID]
+	}
 	p.outputMu.RUnlock()
 
-	// Cache miss — run script synchronously for this workDir
+	// Cache miss — run script synchronously for this workDir+widgetID
 	if text == "" {
-		if output, err := p.runScript(workDir); err == nil && output != "" {
+		if output, err := p.runScript(workDir, widgetID); err == nil && output != "" {
 			p.outputMu.Lock()
 			if p.outputs == nil {
-				p.outputs = make(map[string]string)
+				p.outputs = make(map[string]map[string]string)
 			}
-			p.outputs[workDir] = output
+			if p.outputs[workDir] == nil {
+				p.outputs[workDir] = make(map[string]string)
+			}
+			p.outputs[workDir][widgetID] = output
 			p.outputMu.Unlock()
 			text = output
 		}
@@ -288,13 +340,18 @@ func (p *scriptPlugin) runAndUpdate() {
 	for wd := range workDirSet {
 		workDirs = append(workDirs, wd)
 	}
-	log.Debugf("[plugin:%s] runAndUpdate: workDirs=%v", p.manifest.ID, workDirs)
+	log.Debugf("[plugin:%s] runAndUpdate: workDirs=%v widgetIDs=%v", p.manifest.ID, workDirs, p.widgetIDs)
 
 	// Snapshot current outputs for change detection (before eviction + re-run).
+	// Deep-copy the two-level map: workDir → widgetID → output.
 	p.outputMu.RLock()
-	prevOutputs := make(map[string]string, len(p.outputs))
-	for k, v := range p.outputs {
-		prevOutputs[k] = v
+	prevOutputs := make(map[string]map[string]string, len(p.outputs))
+	for wd, wm := range p.outputs {
+		prevWm := make(map[string]string, len(wm))
+		for wid, v := range wm {
+			prevWm[wid] = v
+		}
+		prevOutputs[wd] = prevWm
 	}
 	p.outputMu.RUnlock()
 
@@ -309,28 +366,62 @@ func (p *scriptPlugin) runAndUpdate() {
 	}
 	p.outputMu.Unlock()
 
+	// Determine the primary widgetID (first declared, or empty if single-widget).
+	// For backward compatibility, when a plugin has a single widget, we run the
+	// script once per workDir and cache the same output for that widget.
+	// For multi-widget plugins, we also run once per workDir but with XBOT_WIDGET_ID
+	// set to the primary widget so the script output is consistent.
+	// The per-widget render paths (renderForWidget/renderByWidgetAndWorkDir) will
+	// call runScript with the specific widgetID for cache misses.
+	primaryWidgetID := ""
+	if len(p.widgetIDs) > 0 {
+		primaryWidgetID = p.widgetIDs[0]
+	}
+
 	// Run script for each workDir and update per-workDir output cache.
 	for _, wd := range workDirs {
-		output, err := p.runScript(wd)
+		output, err := p.runScript(wd, primaryWidgetID)
 		if err != nil {
 			log.Info(fmt.Sprintf("Script plugin %s execution failed for %s: %v", p.manifest.ID, wd, err))
 			continue
 		}
 		p.outputMu.Lock()
 		if p.outputs == nil {
-			p.outputs = make(map[string]string)
+			p.outputs = make(map[string]map[string]string)
 		}
-		p.outputs[wd] = output
+		if p.outputs[wd] == nil {
+			p.outputs[wd] = make(map[string]string)
+		}
+		// Store the same output for ALL widgets of this plugin.
+		// The per-widget render paths will re-run with specific widgetID
+		// if the script needs different output per widget.
+		for _, wid := range p.widgetIDs {
+			p.outputs[wd][wid] = output
+		}
 		p.outputMu.Unlock()
 	}
 
 	// Change detection: only notify if any output actually changed.
-	// Avoids unnecessary WebSocket pushes when script output is identical.
+	// Compares per-workDir, per-widget outputs against the snapshot.
 	changed := false
 	p.outputMu.RLock()
 	for _, wd := range workDirs {
-		if p.outputs[wd] != prevOutputs[wd] {
+		curWm := p.outputs[wd]
+		prevWm := prevOutputs[wd]
+		if curWm == nil && prevWm == nil {
+			continue
+		}
+		if (curWm == nil) != (prevWm == nil) || len(curWm) != len(prevWm) {
 			changed = true
+			break
+		}
+		for wid, v := range curWm {
+			if prevWm[wid] != v {
+				changed = true
+				break
+			}
+		}
+		if changed {
 			break
 		}
 	}
@@ -377,14 +468,22 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 			if p.pctx != nil {
 				wd = p.pctx.WorkingDir()
 			}
-			output, err := p.runScript(wd)
-			log.Debugf("[plugin:%s] hint sync: wd=%s len=%d", p.manifest.ID, wd, len(output))
+			// Use the first sync widget ID as primary for the hint content.
+			primaryWidgetID := p.syncWidgets[0]
+			output, err := p.runScript(wd, primaryWidgetID)
+			log.Debugf("[plugin:%s] hint sync: wd=%s widget=%s len=%d", p.manifest.ID, wd, primaryWidgetID, len(output))
 			if err == nil && output != "" {
 				p.outputMu.Lock()
 				if p.outputs == nil {
-					p.outputs = make(map[string]string)
+					p.outputs = make(map[string]map[string]string)
 				}
-				p.outputs[wd] = output
+				if p.outputs[wd] == nil {
+					p.outputs[wd] = make(map[string]string)
+				}
+				// Store for all sync widgets
+				for _, wid := range p.syncWidgets {
+					p.outputs[wd][wid] = output
+				}
 				p.outputMu.Unlock()
 				// Strip "md|" prefix for clean markdown text
 				hintText := output
@@ -455,9 +554,33 @@ func registerGlobalHook(ctx PluginContext, event HookEvent, matcher string, hand
 }
 
 // ---------------------------------------------------------------------------
-func (p *scriptPlugin) runScript(workDir string) (string, error) {
+// resolvedEntry returns the platform-appropriate entry command.
+// Platform-specific fields (entry_windows, entry_darwin, entry_linux)
+// take precedence over the generic entry field.
+func (p *scriptPlugin) resolvedEntry() string {
+	switch runtime.GOOS {
+	case "windows":
+		if p.manifest.EntryWindows != "" {
+			return p.manifest.EntryWindows
+		}
+	case "darwin":
+		if p.manifest.EntryDarwin != "" {
+			return p.manifest.EntryDarwin
+		}
+	case "linux":
+		if p.manifest.EntryLinux != "" {
+			return p.manifest.EntryLinux
+		}
+	}
+	return p.manifest.Entry
+}
+
+func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
+	// Resolve platform-specific entry command
+	entry := p.resolvedEntry()
+
 	// Split entry into command and args (safe shell-free splitting)
-	parts := strings.Fields(p.manifest.Entry)
+	parts := strings.Fields(entry)
 	if len(parts) == 0 {
 		return "", fmt.Errorf("empty entry command")
 	}
@@ -482,12 +605,16 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 	}
 
 	// Inject hook payload data as environment variables.
-	// Scripts can use XBOT_TOOL_NAME, XBOT_TOOL_OUTPUT, XBOT_TOOL_INPUT, XBOT_WORK_DIR.
+	// Scripts can use XBOT_WIDGET_ID, XBOT_TOOL_NAME, XBOT_TOOL_OUTPUT, XBOT_TOOL_INPUT,
+	// XBOT_WORK_DIR, XBOT_MODEL, XBOT_MAX_CONTEXT, XBOT_TOKEN_USAGE.
 	p.lastHookMu.RLock()
 	hp := p.lastHook
 	p.lastHookMu.RUnlock()
 	env := os.Environ()
 	env = append(env, "XBOT_WORK_DIR="+workDir)
+	if widgetID != "" {
+		env = append(env, "XBOT_WIDGET_ID="+widgetID)
+	}
 	if hp != nil {
 		if hp.ToolName != "" {
 			env = append(env, "XBOT_TOOL_NAME="+hp.ToolName)
@@ -498,13 +625,32 @@ func (p *scriptPlugin) runScript(workDir string) (string, error) {
 		if hp.ToolInput != "" {
 			env = append(env, "XBOT_TOOL_INPUT="+hp.ToolInput)
 		}
+		// Session context from Extra — available on all hook events
+		if hp.Extra != nil {
+			if model, ok := hp.Extra["model"].(string); ok && model != "" {
+				env = append(env, "XBOT_MODEL="+model)
+			}
+			if maxCtx, ok := hp.Extra["max_context"].(int64); ok && maxCtx > 0 {
+				env = append(env, "XBOT_MAX_CONTEXT="+strconv.FormatInt(maxCtx, 10))
+			}
+			// Token usage — JSON for structured access
+			if pt, okPt := hp.Extra["prompt_tokens"].(int64); okPt && pt > 0 {
+				ct := int64(0)
+				if c, ok := hp.Extra["comp_tokens"].(int64); ok {
+					ct = c
+				}
+				env = append(env, fmt.Sprintf("XBOT_TOKEN_USAGE=%d/%d", pt, ct))
+				env = append(env, "XBOT_PROMPT_TOKENS="+strconv.FormatInt(pt, 10))
+				env = append(env, "XBOT_COMP_TOKENS="+strconv.FormatInt(ct, 10))
+			}
+		}
 	}
 	cmd.Env = env
 
 	out, err := cmd.Output()
 	if err != nil {
 		log.Infof("[plugin:%s] runScript(%s) failed: %v", p.manifest.ID, workDir, err)
-		return "", fmt.Errorf("script %q: %w", p.manifest.Entry, err)
+		return "", fmt.Errorf("script %q: %w", entry, err)
 	}
 	log.Debugf("[plugin:%s] runScript(%s) output: %s", p.manifest.ID, workDir, strings.TrimSpace(string(out)))
 

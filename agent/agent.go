@@ -2266,15 +2266,18 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	out := Run(ctx, cfg)
 
-	// No bgRunActive management or notification draining here.
-	// bgNotifyLoop always buffers (never processes directly).
-	// Remaining notifications in bgRunPending are drained by
-	// chatProcessLoop's post-turn drain (after response is sent),
-	// or by chatWorker's idle notification handler.
+	// Save iteration history on cancellation, even if Run() returned nil error.
+	// The context may have been cancelled after Run() finished its last iteration
+	// but before it checked ctx.Done(). In that case out.Error is nil but the
+	// iteration snapshots are valid and should be persisted.
+	cancelled := out.Error != nil && errors.Is(out.Error, context.Canceled)
+	if !cancelled && ctx.Err() == context.Canceled {
+		cancelled = true
+	}
+	if cancelled {
+		return a.handleCancelledRun(ctx, msg, out, tenantSession)
+	}
 	if out.Error != nil {
-		if errors.Is(out.Error, context.Canceled) {
-			return a.handleCancelledRun(ctx, msg, out, tenantSession)
-		}
 		return nil, out.Error
 	}
 
@@ -2519,7 +2522,9 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
 // Must be called in a defer after emitBuiltinProgress to ensure the CLI ends the turn.
 // tokenUsage is optional — when provided, it updates the CLI's context indicator bar.
-func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *protocol.TokenUsage) {
+// historyCompacted signals the CLI to rebuild messages from session storage after
+// compression or session reset (same as the auto-compress path).
+func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *protocol.TokenUsage, historyCompacted bool) {
 	progressKey := qualifyChatID(chName, chatID)
 
 	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
@@ -2529,10 +2534,11 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 	seq := seqPtr.(*atomic.Uint64).Add(1)
 
 	payload := &protocol.ProgressEvent{
-		ChatID:     progressKey,
-		Phase:      string(PhaseDone),
-		Seq:        seq,
-		TokenUsage: tokenUsage,
+		ChatID:           progressKey,
+		Phase:            string(PhaseDone),
+		Seq:              seq,
+		TokenUsage:       tokenUsage,
+		HistoryCompacted: historyCompacted,
 	}
 
 	if a.channelFinder != nil {

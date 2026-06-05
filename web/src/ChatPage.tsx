@@ -570,10 +570,17 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           if (data.chat_id && !currentChatIDRef.current) {
             setCurrentChatID(data.chat_id)
           }
+          // Check if any message already has non-empty detail (iteration history
+          // from cancellation or normal completion). If so, skip the tool_calls
+          // fallback to avoid duplicate iterations.
+          const hasDetailInHistory = data.messages.some(
+            (m: { detail?: string }) => typeof m.detail === 'string' && m.detail.trim() !== ''
+          )
+
           const hist: Message[] = data.messages
             .filter((m: { role: string; content?: string; tool_calls?: string; detail?: string; display_only?: number }) => {
               if (m.role === 'tool') return false
-              if (m.role === 'assistant' && m.tool_calls && !m.detail) return false
+              // Keep display_only messages that have detail (iteration history from cancellation)
               if (m.role === 'assistant' && m.display_only && !m.detail) return false
               return true
             })
@@ -584,13 +591,36 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
                 content: m.content,
                 ts: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : undefined,
               }
-              // display_only messages (e.g. cron results): never show content
+              // display_only messages (e.g. cron results, cancellation markers): never show content
               if (m.display_only) {
                 msg.content = ''
               }
               if (m.detail) {
                 try {
                   msg.iterationHistory = normalizeIterationHistory(JSON.parse(m.detail))
+                } catch { /* ignore */ }
+              } else if (m.tool_calls && !hasDetailInHistory) {
+                // Fallback: when no message has detail (e.g. cancelled run that
+                // didn't save iteration history), parse tool_calls into synthetic
+                // iteration history so tool calls are still visible.
+                // Skip this fallback if any message already has detail — the
+                // detail-based iteration history is more complete (has thinking).
+                try {
+                  const calls = JSON.parse(m.tool_calls) as { id?: string; name?: string; arguments?: string }[]
+                  if (calls.length > 0) {
+                    msg.iterationHistory = [{
+                      iteration: 0,
+                      thinking: '',
+                      reasoning: '',
+                      tools: calls.map((tc) => ({
+                        name: tc.name || 'unknown',
+                        label: tc.name || 'unknown',
+                        status: 'done' as const,
+                        summary: '',
+                        args: tc.arguments,
+                      })),
+                    }]
+                  }
                 } catch { /* ignore */ }
               }
               // Compressed tool summary detection:
@@ -617,20 +647,82 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             // Filter out assistant messages with empty content and no iteration history.
             // These are compressed tool summaries (for LLM context) that were stripped above.
             .filter((m: Message) => !(m.type === 'assistant' && !m.content && !m.iterationHistory))
-          setMessages(hist)
-          const isProcessing = data.processing === true
+
+          // Merge consecutive assistant messages whose iterationHistory was built
+          // from the tool_calls fallback (no content, no original detail). The
+          // rendering path only shows the LAST message's iterationHistory (line 282),
+          // so collapsing them into one message ensures all tools are visible.
+          const merged: Message[] = []
+          for (let i = 0; i < hist.length; i++) {
+            const m = hist[i]
+            // Only merge assistant messages with no content and synthetic iterationHistory
+            // (these come from the tool_calls fallback and have a single iteration:0 entry).
+            if (m.type === 'assistant' && !m.content && m.iterationHistory && m.iterationHistory.length === 1) {
+              // Collect all consecutive tool_calls fallback messages
+              const group: Message[] = [m]
+              while (i + 1 < hist.length) {
+                const next = hist[i + 1]
+                if (next.type === 'assistant' && !next.content && next.iterationHistory && next.iterationHistory.length === 1) {
+                  group.push(next)
+                  i++
+                } else {
+                  break
+                }
+              }
+              if (group.length === 1) {
+                merged.push(m)
+              } else {
+                // Merge: build sequential iterationHistory from tools in the group
+                const mergedIterations: IterationSnapshot[] = []
+                // Assign sequential iteration numbers
+                for (let j = 0; j < group.length; j++) {
+                  const tools = group[j].iterationHistory![0].tools
+                  mergedIterations.push({
+                    iteration: j,
+                    thinking: group[j].iterationHistory![0].thinking || '',
+                    reasoning: group[j].iterationHistory![0].reasoning || '',
+                    tools,
+                  })
+                }
+                const last = { ...group[group.length - 1], iterationHistory: mergedIterations }
+                merged.push(last)
+              }
+            } else {
+              merged.push(m)
+            }
+          }
+          const ap = data.active_progress
+          const hasLiveProgress = ap != null && ap.phase !== 'done'
+          const isProcessing = data.processing === true || hasLiveProgress
+          const isInterrupted = !isProcessing && merged.length > 0 && (() => {
+            // No final assistant reply with content, but tool_calls messages exist.
+            const lastMsg = merged[merged.length - 1]
+            if (lastMsg.type === 'user') return false
+            if (lastMsg.type === 'assistant' && lastMsg.content && lastMsg.content.trim()) return false
+            return merged.some(m => m.type === 'assistant' && m.iterationHistory && m.iterationHistory.length > 0)
+          })()
+          // Insert interruption marker between user message and tool_calls.
+          // This keeps the tool_calls message last so its iterationHistory
+          // is picked up by the renderer (messages[messages.length - 1]).
+          const finalMessages = isInterrupted
+            ? [merged[0], {
+                id: '__interrupted__',
+                type: 'system' as const,
+                content: '⚠️ 对话被中断，未生成最终回复',
+              }, ...merged.slice(1)]
+            : merged
+          setMessages(finalMessages)
+
           if (isProcessing) {
             setLoading(true)
             turnDoneRef.current = false
           } else {
-            // Backend is idle — force clear any stale loading state (e.g. after page refresh)
             setLoading(false)
             turnDoneRef.current = true
             resetProgress()
             streamingContentRef.current = ''
           }
-          if (isProcessing && data.active_progress) {
-            const ap = data.active_progress
+          if (isProcessing && ap) {
             progressRef.current = {
               phase: ap.phase || 'running',
               iteration: ap.iteration || 0,

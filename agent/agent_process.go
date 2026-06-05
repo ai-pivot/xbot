@@ -9,6 +9,7 @@ import (
 	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/tools"
 )
@@ -167,12 +168,52 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// so web UI can restore it on page refresh without showing "loading".
 	// Serialize iteration history once and reuse to avoid duplicate JSON marshal
 	var iterationHistoryJSON string
-	if len(out.IterationHistory) > 0 {
-		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+	iterHistory := out.IterationHistory
+
+	// Fallback: when Run() returned before creating iteration snapshots
+	// (e.g. ctx cancelled mid-tool-call), use in-memory iteration histories
+	// accumulated by recordIterationSnapshot during progress handling.
+	if len(iterHistory) == 0 {
+		key := qualifyChatID(msg.Channel, msg.ChatID)
+		if histPtr, ok := a.iterationHistories.Load(key); ok {
+			hist := histPtr.(*[]protocol.ProgressEvent)
+			if len(*hist) > 0 {
+				iterHistory = make([]IterationSnapshot, len(*hist))
+				for i, ev := range *hist {
+					iterHistory[i] = IterationSnapshot{
+						Iteration: ev.Iteration,
+						Thinking:  ev.Thinking,
+						Reasoning: ev.Reasoning,
+					}
+					for _, t := range ev.CompletedTools {
+						iterHistory[i].Tools = append(iterHistory[i].Tools, IterationToolSnapshot{
+							Name:      t.Name,
+							Label:     t.Label,
+							Status:    t.Status,
+							ElapsedMS: t.Elapsed,
+							Summary:   t.Summary,
+						})
+					}
+					for _, t := range ev.ActiveTools {
+						iterHistory[i].Tools = append(iterHistory[i].Tools, IterationToolSnapshot{
+							Name:      t.Name,
+							Label:     t.Label,
+							Status:    t.Status,
+							ElapsedMS: t.Elapsed,
+							Summary:   t.Summary,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if len(iterHistory) > 0 {
+		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
 			iterationHistoryJSON = string(jsonBytes)
 		}
 	}
-	if len(out.IterationHistory) > 0 {
+	if len(iterHistory) > 0 {
 		cancelMsg := llm.NewAssistantMessage("[interrupted]")
 		cancelMsg.DisplayOnly = true
 		if iterationHistoryJSON != "" {
@@ -184,7 +225,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	}
 	// Send a minimal outbound so the web channel knows processing ended.
 	meta := map[string]string{"cancelled": "true"}
-	if len(out.IterationHistory) > 0 {
+	if len(iterHistory) > 0 {
 		if iterationHistoryJSON != "" {
 			meta["progress_history"] = iterationHistoryJSON
 		}

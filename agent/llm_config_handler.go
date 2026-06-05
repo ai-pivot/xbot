@@ -412,7 +412,7 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 // handleModels handles /models command to list available models for current user's LLM
 func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	// Get user's LLM client
-	llmClient, currentModel, _, _ := a.llmFactory.GetLLM(msg.SenderID)
+	llmClient, currentModel, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
 	// Get available models
 	models := llmClient.ListModels()

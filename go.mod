@@ -99,4 +99,4 @@ replace github.com/pgavlin/mermaid-ascii => github.com/Chronostasys/mermaid-asci
 
 replace github.com/muesli/reflow => github.com/Chronostasys/reflow v0.3.1-0.20260521051503-dc28980c812f
 
-replace charm.land/glamour/v2 => github.com/Chronostasys/glamour/v2 v2.0.0-20260526121141-a74839ec9466
+replace charm.land/glamour/v2 => github.com/Chronostasys/glamour/v2 v2.0.0-20260605055613-68fad3c7e2f9

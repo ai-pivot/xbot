@@ -982,6 +982,13 @@ func (a *Agent) SpawnInteractiveSession(
 				Instance: instance,
 				ParentID: originChatID,
 			})
+
+			// Note: cancelChildSessions is NOT called here because this bg session
+			// stays for future "send" interactions. Its children's lifecycles are
+			// managed by context cancellation (runCancel was called at L776) and
+			// by UnloadInteractiveSession when the session is explicitly unloaded.
+			// Children detect context cancellation and self-clean via the cancelled
+			// path (L883 cancelChildSessions + L884 destroyInteractiveSession).
 		}()
 
 		log.WithFields(log.Fields{
@@ -996,8 +1003,21 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 
 	// Foreground mode: execute synchronously
+	// Wrap subCtx with a session-scoped context that carries bgSessionCtxKey
+	// and bgParentKey so that any SubAgents spawned during this Run derive
+	// their lifecycle from THIS session — not from a grandparent. Without
+	// this wrapper, a foreground SubAgent B (child of A) that creates C would
+	// have C's context chain point directly to A, so B's completion would NOT
+	// cancel C, violating the "subagents never outlive their creator" invariant.
+	fgRunCtx, fgRunCancel := context.WithCancel(subCtx)
+	fgRunCtx = context.WithValue(fgRunCtx, bgSessionCtxKey{}, true)
+	fgRunCtx = context.WithValue(fgRunCtx, bgParentKey{}, key)
+	// Preserve call chain from subCtx
+	fgRunCtx = WithCallChain(fgRunCtx, CallChainFromContext(subCtx))
+
 	placeholder.mu.Lock()
 	placeholder.running = true
+	placeholder.cancelCurrent = fgRunCancel
 	placeholder.mu.Unlock()
 
 	// Wire DrainBgNotifications so pending messages (sent via action=send
@@ -1005,11 +1025,20 @@ func (a *Agent) SpawnInteractiveSession(
 	fgSessionKey := originChannel + ":" + originChatID
 	cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(fgSessionKey)
 
-	out := Run(subCtx, cfg)
+	out := Run(fgRunCtx, cfg)
+
+	// Cancel the foreground session context so any child SubAgents spawned
+	// during this Run are notified that their creator has finished.
+	fgRunCancel()
 
 	placeholder.mu.Lock()
 	placeholder.running = false
+	placeholder.cancelCurrent = nil
 	placeholder.mu.Unlock()
+
+	// Cascade: cancel and remove all child sessions spawned by this Run,
+	// ensuring no SubAgent outlives its creator even on natural completion.
+	a.cancelChildSessions(key)
 
 	if out.Error != nil {
 		a.destroyInteractiveSession(key) // 清理占位符 + tenant session
@@ -1042,6 +1071,9 @@ func (a *Agent) SpawnInteractiveSession(
 		cfg:              &cfg,
 		lastUsed:         time.Now(),
 		lastReply:        out.Content,
+		background:       false,
+		parentKey:        placeholder.parentKey, // preserve parent key for cascade cleanup
+		groupID:          placeholder.groupID,   // preserve group membership
 	}
 	if len(cfg.Messages) > 0 {
 		ia.systemPrompt = cfg.Messages[0]
@@ -1294,6 +1326,11 @@ func (a *Agent) SendToInteractiveSession(
 		asyncBase = context.Background()
 	}
 	runCtx, runCancel := context.WithCancel(asyncBase)
+	// Mark as bg session context so nested SubAgents detect it and
+	// derive their lifecycle from this session (not a grandparent).
+	runCtx = context.WithValue(runCtx, bgSessionCtxKey{}, true)
+	// Store own key so nested bg sessions can identify this as parent.
+	runCtx = context.WithValue(runCtx, bgParentKey{}, key)
 	// Carry call chain and progress callbacks from subCtx so nested
 	// SubAgents can still report progress up the chain.
 	runCtx = WithCallChain(runCtx, CallChainFromContext(subCtx))
@@ -1355,8 +1392,12 @@ func (a *Agent) SendToInteractiveSession(
 
 		out := Run(runCtx, cfg)
 
-		// Check if the context was cancelled (interrupt or unload).
+		// Cancel the run context after Run completes so any child SubAgents
+		// spawned during this Run are notified that their creator has finished.
+		// Must check cancellation BEFORE calling runCancel — after runCancel,
+		// runCtx.Err() is always non-nil.
 		wasCancelled := runCtx.Err() != nil
+		runCancel()
 
 		ia.mu.Lock()
 		ia.running = false
@@ -1420,6 +1461,11 @@ func (a *Agent) SendToInteractiveSession(
 				"role":     roleName,
 				"instance": instance,
 			}).Info("Async send cancelled (unload/shutdown)")
+			// Cascade: clean up children so they don't outlive this session.
+			// The UnloadInteractiveSession that triggered this cancel also
+			// calls cancelChildSessions, but if we got here via context
+			// propagation (parent cancelled), we need to clean our own children.
+			a.cancelChildSessions(key)
 			return
 		}
 
@@ -1453,6 +1499,12 @@ func (a *Agent) SendToInteractiveSession(
 			Instance: instance,
 			ParentID: originChatID,
 		})
+
+		// Cascade: cancel and remove all child sessions spawned by this Run.
+		// This ensures no SubAgent outlives its creator even on natural completion.
+		// The session itself stays for future "send" interactions, but its children
+		// (which were created to serve this specific Run) must be cleaned up.
+		a.cancelChildSessions(key)
 
 		// --- Write back results ---
 		ia.mu.Lock()

@@ -305,7 +305,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 			}
 		}
 		if model == "" {
-			_, m, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
+			_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
 			model = m
 		}
 		log.WithField("sender_id", bizID).WithField("model", model).Debug("RPC get_default_model")
@@ -331,6 +331,12 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
 				if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
 					log.WithError(err).Warn("RPC switch_model: SetModel failed")
+				}
+				// Per-session: persist model choice to tenants table so it survives restarts.
+				if p.ChatID != "" && h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
+					if err := sqlite.NewTenantService(h.Ag.MultiSession().DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, p.Model); err != nil {
+						log.WithError(err).Warn("RPC switch_model: SetTenantSubscription failed")
+					}
 				}
 			}
 		}
@@ -373,7 +379,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		client, _, _, _ := h.Ag.LLMFactory().GetLLM(rpcBizID(ctx))
+		client, _, _, _, _ := h.Ag.LLMFactory().GetLLM(rpcBizID(ctx))
 		return client.ListModels(), nil
 	})
 	t["list_all_models"] = rpc0err(func(ctx context.Context) ([]string, error) {
@@ -446,6 +452,23 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	t["list_subscriptions"] = rpc0err(h.listSubscriptions)
 	t["get_default_subscription"] = rpc0err(h.getDefaultSubscription)
+	t["get_session_subscription"] = rpc1(func(ctx context.Context, p struct {
+		ChatID string `json:"chat_id"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		// Read from tenants table (persistent backend source of truth).
+		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
+			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription("cli", p.ChatID)
+			if subID != "" {
+				return map[string]string{"subscription_id": subID, "model": model}, nil
+			}
+		}
+		// Fallback: try LLMFactory in-memory cache (survives until server restart).
+		if llmClient, model, _, _, _ := h.Ag.LLMFactory().GetLLMForChat(bizID, p.ChatID); llmClient != nil {
+			return map[string]string{"model": model}, nil
+		}
+		return map[string]string{}, nil
+	})
 	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		Sub struct {
 			Name            string `json:"name"`
@@ -500,11 +523,12 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err := svc.Update(existing); err != nil {
 			return err
 		}
-		// Invalidate the user-level LLM cache so GetLLMForChat picks up the
-		// new PerModelConfigs.MaxContext on the next buildBaseRunConfig.
-		// Without this, the old max_context value persists in the cached llmEntry
-		// and maybeCompress uses stale limits.
-		h.Ag.LLMFactory().InvalidateSender(bizID)
+		// Invalidate ALL cached entries for this sender (user-level + per-session).
+		// Must use Invalidate() not InvalidateSender() because per-session entries
+		// (senderID:chatID keys) hold a cached *LLMSubscription pointer with stale
+		// PerModelConfigs. InvalidateSender only clears the user-level entry, so
+		// GetLLMForChat hits the per-chat cache and returns the old MaxContext.
+		h.Ag.LLMFactory().Invalidate(bizID)
 		return nil
 	})
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
@@ -1308,9 +1332,18 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 		return fmt.Errorf("subscription not found")
 	}
 	if p.ChatID != "" {
-		// Per-session switch: only update per-chat cache, do NOT modify
-		// the global default subscription or invalidate other sessions.
-		return h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub)
+		// Per-session switch: update per-chat cache AND persist to DB
+		// so the session→subscription mapping survives server restarts.
+		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub); err != nil {
+			return err
+		}
+		// Persist to tenants table (backend source of truth).
+		if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
+			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, sub.Model); err != nil {
+				log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
+			}
+		}
+		return nil
 	}
 	// Global switch: update DB default + invalidate all caches + set per-user LLM
 	if err := svc.SetDefault(p.ID); err != nil {

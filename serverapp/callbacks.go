@@ -139,7 +139,7 @@ func registryCallbacks(ag *agent.Agent) channel.RegistryCallbacks {
 func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]string, string) {
-			llmClient, currentModel, _, _ := ag.LLMFactory().GetLLM(senderID)
+			llmClient, currentModel, _, _, _ := ag.LLMFactory().GetLLM(senderID)
 			if llmClient == nil {
 				return nil, currentModel
 			}
