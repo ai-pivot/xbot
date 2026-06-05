@@ -87,7 +87,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	a.emitBuiltinProgress(msg.Channel, msg.ChatID, PhaseNewing)
 	// Pass zero TokenUsage so the TUI context bar resets to empty.
-	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, &protocol.TokenUsage{})
+	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, &protocol.TokenUsage{}, false)
 
 	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
 
