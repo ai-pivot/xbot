@@ -446,6 +446,23 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	t["list_subscriptions"] = rpc0err(h.listSubscriptions)
 	t["get_default_subscription"] = rpc0err(h.getDefaultSubscription)
+	t["get_session_subscription"] = rpc1(func(ctx context.Context, p struct {
+		ChatID string `json:"chat_id"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		// Read from tenants table (persistent backend source of truth).
+		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
+			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription("cli", p.ChatID)
+			if subID != "" {
+				return map[string]string{"subscription_id": subID, "model": model}, nil
+			}
+		}
+		// Fallback: try LLMFactory in-memory cache (survives until server restart).
+		if llmClient, model, _, _, _ := h.Ag.LLMFactory().GetLLMForChat(bizID, p.ChatID); llmClient != nil {
+			return map[string]string{"model": model}, nil
+		}
+		return map[string]string{}, nil
+	})
 	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		Sub struct {
 			Name            string `json:"name"`
@@ -1309,9 +1326,16 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 		return fmt.Errorf("subscription not found")
 	}
 	if p.ChatID != "" {
-		// Per-session switch: only update per-chat cache, do NOT modify
-		// the global default subscription or invalidate other sessions.
-		return h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub)
+		// Per-session switch: update per-chat cache AND persist to DB
+		// so the session→subscription mapping survives server restarts.
+		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub); err != nil {
+			return err
+		}
+		// Persist to tenants table (backend source of truth).
+		if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
+			_ = sqlite.NewTenantService(ms.DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, sub.Model)
+		}
+		return nil
 	}
 	// Global switch: update DB default + invalidate all caches + set per-user LLM
 	if err := svc.SetDefault(p.ID); err != nil {

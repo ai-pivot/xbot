@@ -411,3 +411,84 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 		t.Fatalf("expected switched glm model for cli_user, got %q (LLM factory cached under wrong key)", model)
 	}
 }
+
+// TestHandleCLIRPCGetSessionSubscription verifies the get_session_subscription RPC.
+// Tests the fallback path (LLMFactory cache) since MultiSession is not wired in this test.
+func TestHandleCLIRPCGetSessionSubscription(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(sqlite.NewUserLLMConfigService(db), &llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	factory.SetSubscriptionSvc(subSvc)
+	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-a", SenderID: "cli_user", Name: "sub-a", Provider: "openai", BaseURL: "https://a.example/v1", APIKey: "sk-a", Model: "gpt-4o", IsDefault: true}); err != nil {
+		t.Fatalf("add sub-a: %v", err)
+	}
+
+	aCfg := &config.Config{}
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
+
+	chatID := "/home/test/project:Agent-001"
+
+	// Set per-session subscription via set_default_subscription (LLMFactory cache only, no DB)
+	params, _ := json.Marshal(map[string]string{"id": "sub-a", "chat_id": chatID})
+	if _, err := HandleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
+		t.Fatalf("set_default_subscription: %v", err)
+	}
+
+	// get_session_subscription uses LLMFactory fallback when no MultiSession
+	params, _ = json.Marshal(map[string]string{"chat_id": chatID})
+	raw, err := HandleCLIRPC(table, "get_session_subscription", params, "admin")
+	if err != nil {
+		t.Fatalf("get_session_subscription: %v", err)
+	}
+	var res map[string]string
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m, ok := res["model"]; !ok || m != "gpt-4o" {
+		t.Errorf("expected model 'gpt-4o', got %q", res["model"])
+	}
+}
+
+// TestHandleCLIRPCGetSessionSubscription_Empty verifies get_session_subscription
+// handles sessions with no prior subscription mapping gracefully (returns empty/fallback).
+func TestHandleCLIRPCGetSessionSubscription_Empty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(sqlite.NewUserLLMConfigService(db), &llm.MockLLM{}, "default-model")
+	factory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(db))
+
+	aCfg := &config.Config{}
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
+
+	// Query for a session that has never been registered
+	params, _ := json.Marshal(map[string]string{"chat_id": "/no/such/session"})
+	raw, err := HandleCLIRPC(table, "get_session_subscription", params, "admin")
+	if err != nil {
+		t.Fatalf("get_session_subscription should not error for unknown session: %v", err)
+	}
+	// Without MultiSession, the handler falls back to LLMFactory's default model.
+	// subscription_id should be empty (no DB mapping), model comes from fallback.
+	var res map[string]string
+	json.Unmarshal(raw, &res)
+	if res["subscription_id"] != "" {
+		t.Errorf("subscription_id should be empty for unknown session, got %q", res["subscription_id"])
+	}
+	// Model from LLMFactory fallback is expected; we just verify subscription_id is empty.
+}

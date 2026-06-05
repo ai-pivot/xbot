@@ -64,6 +64,10 @@ func (m *mockSubscriptionManager) UpdatePerModelConfig(id, model string, pmc Per
 	return nil
 }
 
+func (m *mockSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {
+	return "", "", nil
+}
+
 // TestApplyQuickSwitch tests that switching a subscription actually calls SwitchLLM.
 func TestApplyQuickSwitch(t *testing.T) {
 	// Track what SwitchLLM received

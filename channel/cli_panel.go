@@ -2822,7 +2822,7 @@ func (m *cliModel) applyQuickSwitch() {
 			MaxContextTokens: resolveSubMaxContext(target),
 			MaxOutputTokens:  resolveSubMaxOutputTokens(target),
 		}
-		SaveSessionLLMState(m.workDir, m.chatID, state)
+		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)
 		// ── Async backend switch ─────────────────────────────────
 		m.showTempStatus(fmt.Sprintf("Switching to: %s …", selected.Name))
@@ -2865,7 +2865,7 @@ func (m *cliModel) applyQuickSwitch() {
 				Model:            selected.Model,
 				MaxContextTokens: m.cachedMaxContextTokens,
 				MaxOutputTokens:  int(m.cachedMaxOutputTokens),
-			})
+			}, m.remoteMode)
 			m.showTempStatus(fmt.Sprintf("Model switched to: %s", selected.Model))
 		}
 	}
@@ -3792,7 +3792,7 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 			Model:            m.cachedModelName,
 			MaxContextTokens: m.cachedMaxContextTokens,
 			MaxOutputTokens:  int(m.cachedMaxOutputTokens),
-		})
+		}, m.remoteMode)
 	}
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)

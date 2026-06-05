@@ -115,7 +115,9 @@ func (s *TenantService) GetTenantIDByChannelChatID(channel, chatID string) (int6
 func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(
-		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label, t.created_at, t.last_active_at
+		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label,
+										COALESCE(t.subscription_id, '') as sub_id, COALESCE(t.model, '') as model,
+										t.created_at, t.last_active_at
 		FROM tenants t
 		LEFT JOIN user_chats c ON c.channel = t.channel AND c.chat_id = t.chat_id
 		WHERE t.channel != '_shared'
@@ -130,7 +132,7 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	for rows.Next() {
 		var t TenantInfo
 		var createdAt, lastActiveAt string
-		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &createdAt, &lastActiveAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &t.SubscriptionID, &t.Model, &createdAt, &lastActiveAt); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		t.CreatedAt = parseSQLiteTime(createdAt)
@@ -145,10 +147,40 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 
 // TenantInfo contains tenant information
 type TenantInfo struct {
-	ID           int64
-	Channel      string
-	ChatID       string
-	Label        string `json:"label,omitempty"`
-	CreatedAt    time.Time
-	LastActiveAt time.Time
+	ID             int64
+	Channel        string
+	ChatID         string
+	Label          string `json:"label,omitempty"`
+	SubscriptionID string `json:"subscription_id,omitempty"`
+	Model          string `json:"model,omitempty"`
+	CreatedAt      time.Time
+	LastActiveAt   time.Time
+}
+
+// SetTenantSubscription persists the session→subscription mapping to the tenants table.
+// This is the backend source of truth for which subscription a session uses.
+func (s *TenantService) SetTenantSubscription(channel, chatID, subscriptionID, model string) error {
+	conn := s.db.Conn()
+	_, err := conn.Exec(
+		"UPDATE tenants SET subscription_id = ?, model = ? WHERE channel = ? AND chat_id = ?",
+		subscriptionID, model, channel, chatID,
+	)
+	if err != nil {
+		return fmt.Errorf("set tenant subscription: %w", err)
+	}
+	return nil
+}
+
+// GetTenantSubscription reads the session→subscription mapping from the tenants table.
+// Returns empty strings if no mapping exists.
+func (s *TenantService) GetTenantSubscription(channel, chatID string) (subscriptionID, model string, err error) {
+	conn := s.db.Conn()
+	err = conn.QueryRow(
+		"SELECT subscription_id, model FROM tenants WHERE channel = ? AND chat_id = ?",
+		channel, chatID,
+	).Scan(&subscriptionID, &model)
+	if err != nil {
+		return "", "", nil // not found is not an error
+	}
+	return subscriptionID, model, nil
 }

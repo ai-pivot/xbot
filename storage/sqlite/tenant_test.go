@@ -166,3 +166,124 @@ func TestTenantService_ListTenants(t *testing.T) {
 		}
 	}
 }
+
+func TestTenantService_SetAndGetSubscription(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewTenantService(db)
+
+	// Create tenant first
+	_, err = svc.GetOrCreateTenantID("cli", "/home/user/project")
+	if err != nil {
+		t.Fatalf("Failed to create tenant: %v", err)
+	}
+
+	// Set subscription mapping
+	err = svc.SetTenantSubscription("cli", "/home/user/project", "sub-123", "gpt-4o")
+	if err != nil {
+		t.Fatalf("Failed to set subscription: %v", err)
+	}
+
+	// Read it back
+	subID, model, err := svc.GetTenantSubscription("cli", "/home/user/project")
+	if err != nil {
+		t.Fatalf("Failed to get subscription: %v", err)
+	}
+	if subID != "sub-123" {
+		t.Errorf("Expected subID 'sub-123', got %q", subID)
+	}
+	if model != "gpt-4o" {
+		t.Errorf("Expected model 'gpt-4o', got %q", model)
+	}
+
+	// Update with different values
+	err = svc.SetTenantSubscription("cli", "/home/user/project", "sub-456", "claude-3")
+	if err != nil {
+		t.Fatalf("Failed to update subscription: %v", err)
+	}
+	subID, model, _ = svc.GetTenantSubscription("cli", "/home/user/project")
+	if subID != "sub-456" || model != "claude-3" {
+		t.Errorf("Expected updated values, got %q / %q", subID, model)
+	}
+}
+
+func TestTenantService_GetSubscription_NotFound(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewTenantService(db)
+
+	// Non-existent tenant returns empty strings, no error
+	subID, model, err := svc.GetTenantSubscription("cli", "/nonexistent")
+	if err != nil {
+		t.Fatalf("Expected no error for non-existent, got %v", err)
+	}
+	if subID != "" || model != "" {
+		t.Errorf("Expected empty strings, got %q / %q", subID, model)
+	}
+}
+
+func TestTenantService_GetOrCreate_DoesNotOverwriteSubscription(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewTenantService(db)
+
+	// Create tenant and set subscription
+	_, _ = svc.GetOrCreateTenantID("cli", "/test")
+	svc.SetTenantSubscription("cli", "/test", "sub-abc", "deepseek")
+
+	// GetOrCreateTenantID again — should NOT overwrite subscription
+	_, err = svc.GetOrCreateTenantID("cli", "/test")
+	if err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	subID, model, _ := svc.GetTenantSubscription("cli", "/test")
+	if subID != "sub-abc" || model != "deepseek" {
+		t.Errorf("Subscription was overwritten by GetOrCreate: got %q/%q", subID, model)
+	}
+}
+
+func TestTenantService_ListTenants_IncludesSubscription(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewTenantService(db)
+	_, _ = svc.GetOrCreateTenantID("cli", "/chat-a")
+	_, _ = svc.GetOrCreateTenantID("cli", "/chat-b")
+	svc.SetTenantSubscription("cli", "/chat-a", "sub-1", "gpt-4o")
+	svc.SetTenantSubscription("cli", "/chat-b", "sub-2", "claude-3")
+
+	tenants, err := svc.ListTenants()
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+
+	subs := make(map[string]TenantInfo)
+	for _, t := range tenants {
+		subs[t.ChatID] = t
+	}
+	if a, ok := subs["/chat-a"]; !ok || a.SubscriptionID != "sub-1" || a.Model != "gpt-4o" {
+		t.Errorf("/chat-a: got sub=%q model=%q", a.SubscriptionID, a.Model)
+	}
+	if b, ok := subs["/chat-b"]; !ok || b.SubscriptionID != "sub-2" || b.Model != "claude-3" {
+		t.Errorf("/chat-b: got sub=%q model=%q", b.SubscriptionID, b.Model)
+	}
+}

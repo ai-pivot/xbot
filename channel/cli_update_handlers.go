@@ -1637,7 +1637,7 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 			MaxContextTokens: done.maxCtx,
 			MaxOutputTokens:  done.maxOutTok,
 		}
-		SaveSessionLLMState(m.workDir, m.chatID, state)
+		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)
 		// Refresh values cache so GetCurrentValues() reflects the new subscription.
 		if m.channel != nil && m.channel.config.RefreshValuesCache != nil {

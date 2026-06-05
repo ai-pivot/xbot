@@ -855,6 +855,9 @@ type SubscriptionManager interface {
 	Rename(id, name string) error
 	Update(id string, sub *Subscription) error
 	UpdatePerModelConfig(id, model string, pmc PerModelConfig) error
+	// GetSessionSubscription queries the backend for the session→subscription mapping.
+	// Returns empty strings if no mapping exists (server restart, first-time session, etc.).
+	GetSessionSubscription(senderID, chatID string) (subscriptionID, model string, err error)
 }
 
 // LLMSubscriber switches the active LLM for a user (called when subscription changes).

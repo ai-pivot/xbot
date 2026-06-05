@@ -2167,6 +2167,10 @@ func (m *backendSubscriptionManager) UpdatePerModelConfig(id, model string, pmc 
 	return m.client.UpdatePerModelConfig(id, model, protocol.PerModelConfig(pmc))
 }
 
+func (m *backendSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {
+	return m.client.GetSessionSubscription(senderID, chatID)
+}
+
 // backendLLMSubscriber implements channel.LLMSubscriber via Backend interface.
 // Works identically for both local and remote modes.
 type backendLLMSubscriber struct {

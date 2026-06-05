@@ -562,20 +562,26 @@ func (s SessionLLMState) IsZero() bool {
 // SaveSessionLLMState atomically writes ALL per-session LLM state to disk.
 // This replaces the old SaveSessionLLM + SaveSessionMaxContext pair.
 // Partial writes are impossible — either all fields are persisted or none.
-func SaveSessionLLMState(workDir, chatID string, state SessionLLMState) {
+//
+// In remote mode (skipBackendFields=true), SubscriptionID/Model/MaxContextTokens
+// are NOT written to local JSON — the backend DB is the source of truth.
+func SaveSessionLLMState(workDir, chatID string, state SessionLLMState, skipBackendFields ...bool) {
 	// Ephemeral sessions: skip sessions.json persistence entirely.
 	if IsEphemeralChatID(chatID) {
 		return
 	}
+	skipSub := len(skipBackendFields) > 0 && skipBackendFields[0]
 	ds, err := LoadDirSessions(workDir)
 	if err != nil {
 		return
 	}
 	for i := range ds.Sessions {
 		if ds.Sessions[i].ChatID == chatID {
-			ds.Sessions[i].SubscriptionID = state.SubscriptionID
-			ds.Sessions[i].Model = state.Model
-			ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
+			if !skipSub {
+				ds.Sessions[i].SubscriptionID = state.SubscriptionID
+				ds.Sessions[i].Model = state.Model
+				ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
+			}
 			_ = ds.save()
 			return
 		}

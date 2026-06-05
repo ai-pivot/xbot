@@ -51,6 +51,7 @@ const (
 	MethodUpdateSubscription           = "update_subscription"
 	MethodUpdatePerModelConfig         = "update_per_model_config"
 	MethodSetSubscriptionModel         = "set_subscription_model"
+	MethodGetSessionSubscription       = "get_session_subscription"
 	MethodGetHistory                   = "get_history"
 	MethodGetTokenState                = "get_token_state"
 	MethodTrimHistory                  = "trim_history"
