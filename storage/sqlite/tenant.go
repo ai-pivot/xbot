@@ -159,14 +159,24 @@ type TenantInfo struct {
 
 // SetTenantSubscription persists the session→subscription mapping to the tenants table.
 // This is the backend source of truth for which subscription a session uses.
+// If the tenant row doesn't exist (e.g. CLI session created locally, never written to DB),
+// it is auto-created via INSERT OR IGNORE first.
 func (s *TenantService) SetTenantSubscription(channel, chatID, subscriptionID, model string) error {
 	conn := s.db.Conn()
-	_, err := conn.Exec(
+	// Ensure tenant row exists (no-op if already present).
+	_, _ = conn.Exec(
+		"INSERT OR IGNORE INTO tenants (channel, chat_id) VALUES (?, ?)",
+		channel, chatID,
+	)
+	result, err := conn.Exec(
 		"UPDATE tenants SET subscription_id = ?, model = ? WHERE channel = ? AND chat_id = ?",
 		subscriptionID, model, channel, chatID,
 	)
 	if err != nil {
 		return fmt.Errorf("set tenant subscription: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("set tenant subscription: tenant %s/%s not found after insert", channel, chatID)
 	}
 	return nil
 }

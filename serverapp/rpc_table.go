@@ -332,6 +332,12 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 				if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
 					log.WithError(err).Warn("RPC switch_model: SetModel failed")
 				}
+				// Per-session: persist model choice to tenants table so it survives restarts.
+				if p.ChatID != "" && h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
+					if err := sqlite.NewTenantService(h.Ag.MultiSession().DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, p.Model); err != nil {
+						log.WithError(err).Warn("RPC switch_model: SetTenantSubscription failed")
+					}
+				}
 			}
 		}
 		return nil
@@ -1333,7 +1339,9 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 		}
 		// Persist to tenants table (backend source of truth).
 		if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
-			_ = sqlite.NewTenantService(ms.DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, sub.Model)
+			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, sub.Model); err != nil {
+				log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
+			}
 		}
 		return nil
 	}

@@ -156,6 +156,7 @@ type dirSession struct {
 	SubscriptionID   string   `json:"subscription_id,omitempty"`    // per-session subscription override
 	Model            string   `json:"model,omitempty"`              // per-session model override (within subscription)
 	MaxContextTokens int      `json:"max_context_tokens,omitempty"` // per-session max context tokens override
+	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`  // per-session max output tokens override
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.
@@ -581,6 +582,7 @@ func SaveSessionLLMState(workDir, chatID string, state SessionLLMState, skipBack
 				ds.Sessions[i].SubscriptionID = state.SubscriptionID
 				ds.Sessions[i].Model = state.Model
 				ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
+				ds.Sessions[i].MaxOutputTokens = state.MaxOutputTokens
 			}
 			_ = ds.save()
 			return
@@ -601,6 +603,7 @@ func LoadSessionLLMState(workDir, chatID string) SessionLLMState {
 				SubscriptionID:   ds.Sessions[i].SubscriptionID,
 				Model:            ds.Sessions[i].Model,
 				MaxContextTokens: ds.Sessions[i].MaxContextTokens,
+				MaxOutputTokens:  ds.Sessions[i].MaxOutputTokens,
 			}
 		}
 	}

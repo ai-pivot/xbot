@@ -1618,7 +1618,6 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		if err := done.mgr.SetDefault(done.subID, m.chatID); err != nil {
 			m.showTempStatus(fmt.Sprintf("LLM switched but failed to save: %v", err))
 		} else {
-			m.subGeneration++ // subscription actually changed
 			m.showTempStatus(fmt.Sprintf("Switched to: %s (%s)", done.subName, done.subModel))
 		}
 		// Also update the global default subscription (is_default flag in DB)
