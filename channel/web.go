@@ -515,14 +515,9 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		Progress: payload,
 	})
 
-	ok := wc.hub.sendToClient(chatID, wsMsg)
-	log.WithFields(log.Fields{
-		"chat_id":   chatID,
-		"phase":     payload.Phase,
-		"iteration": payload.Iteration,
-		"tools":     len(payload.ActiveTools) + len(payload.CompletedTools),
-		"delivered": ok,
-	}).Info("Web: SendProgress")
+	if !wc.hub.sendToClient(chatID, wsMsg) {
+		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
+	}
 }
 
 // SendStreamContent sends streaming LLM content to a specific client.
@@ -541,11 +536,6 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 		},
 	})
 	_ = wc.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
-	log.WithFields(log.Fields{
-		"chat_id":     chatID,
-		"content_len": len(content),
-		"reason_len":  len(reasoning),
-	}).Info("Web: SendStreamContent")
 }
 
 // PushRunnerStatus pushes a runner online/offline status change to the Web client.
