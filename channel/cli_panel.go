@@ -2831,7 +2831,16 @@ func (m *cliModel) applyQuickSwitch() {
 		subName := selected.Name
 		subModel := selected.Model
 		mgr := m.subscriptionMgr
+		chatID := m.chatID // capture before goroutine
 		m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+			// Set per-chat cache entry FIRST, before creating the LLM client.
+			// Without this, a user message arriving before SetDefault completes
+			// hits GetLLMForChat with no per-chat entry, falls back to the
+			// user-level entry (still pointing to the OLD subscription), and
+			// maybeCompress uses the old MaxContext.
+			if mgr != nil {
+				_ = mgr.SetDefault(subID, chatID)
+			}
 			err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 			return cliSwitchLLMDoneMsg{
 				err:       err,

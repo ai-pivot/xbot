@@ -500,11 +500,12 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err := svc.Update(existing); err != nil {
 			return err
 		}
-		// Invalidate the user-level LLM cache so GetLLMForChat picks up the
-		// new PerModelConfigs.MaxContext on the next buildBaseRunConfig.
-		// Without this, the old max_context value persists in the cached llmEntry
-		// and maybeCompress uses stale limits.
-		h.Ag.LLMFactory().InvalidateSender(bizID)
+		// Invalidate ALL cached entries for this sender (user-level + per-session).
+		// Must use Invalidate() not InvalidateSender() because per-session entries
+		// (senderID:chatID keys) hold a cached *LLMSubscription pointer with stale
+		// PerModelConfigs. InvalidateSender only clears the user-level entry, so
+		// GetLLMForChat hits the per-chat cache and returns the old MaxContext.
+		h.Ag.LLMFactory().Invalidate(bizID)
 		return nil
 	})
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
