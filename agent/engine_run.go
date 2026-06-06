@@ -532,6 +532,13 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		if s.cfg.SaveContextTokens != nil {
 			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
 		}
+		// Per-iteration token persistence: save both prompt and completion
+		// tokens immediately so that if the process is killed mid-turn,
+		// the next restart restores the latest values instead of stale
+		// data from the previous turn's buildOutput.
+		if s.cfg.SaveTokenState != nil {
+			s.cfg.SaveTokenState(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		}
 		// Push updated token usage to CLI immediately so the context
 		// bar reflects the latest prompt token count on each iteration.
 		s.notifyProgress("")
@@ -607,6 +614,10 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		// Save exact API prompt_tokens (after compress retry, still the same user message)
 		if s.cfg.SaveContextTokens != nil {
 			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
+		}
+		// Per-iteration token persistence (same as main generateResponse path).
+		if s.cfg.SaveTokenState != nil {
+			s.cfg.SaveTokenState(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 		}
 		s.validateInvariantsAt(ctx, "post_llm_call_input_too_long")
 	}
@@ -701,37 +712,26 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				"compress_retry":     s.compressRetryCount,
 			}).Warn("Model context window exceeded, forcing compression and retry")
 
-			// Phase 1: Try LLM-based compression (up to maxCompressRetries times)
+			// Phase 1: Try LLM-based compression (up to maxCompressRetries times).
+			// Use runCompression (same path as maybeCompress) so that:
+			//   - PreCompact/PostCompact hooks fire
+			//   - Phase=Compressing is set on structuredProgress
+			//   - HistoryCompacted flag triggers TUI rebuild
+			//   - Progress notifications are sent to CLI
 			cm := s.cfg.ContextManager
 			if cm != nil && s.compressRetryCount < maxCompressRetries {
 				s.compressRetryCount++
-				if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
-					cm.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
+				totalTokens, tokenSource := s.tokenTracker.GetPromptTokens()
+				if tokenSource == "no_data" {
+					totalTokens = 0
 				}
-				pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-					CM:              cm,
-					Messages:        s.messages,
-					LLMClient:       s.cfg.LLMClient,
-					Model:           s.cfg.Model,
-					TokenTracker:    s.tokenTracker,
-					Persistence:     s.persistence,
-					AccumulateUsage: s.accumulateCompressUsage,
-					SyncMessages:    s.syncMessages,
-				})
-				if compressErr != nil {
-					log.Ctx(ctx).WithError(compressErr).Warn("Compression failed after context_window_exceeded, trying aggressive truncation")
-				} else {
-					s.messages = pipelineResult.NewMessages
-					s.validateInvariantsAt(ctx, "post_compress_window_exceeded")
-					// Update token estimate so CLI shows reduced context immediately
-					s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
-					// Persist API-returned token count in case the retry also fails.
-					if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
-						s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
-					}
-					if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
-						s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
-					}
+				// Resolve maxTokens from config for the post-compress safety check.
+				maxTokens := 0
+				if s.cfg.ContextManagerConfig != nil {
+					maxTokens = s.cfg.ContextManagerConfig.MaxContextTokens
+				}
+				s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+				if len(s.messages) > 0 {
 					log.Ctx(ctx).WithFields(log.Fields{
 						"new_msg_count": len(s.messages),
 						"retry":         s.compressRetryCount,

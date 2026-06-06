@@ -391,6 +391,10 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 			maxOutputTokens: e.maxOutputTokens, thinkingMode: e.thinkingMode,
 		}
 	}
+	// Update user-level default LLM so that SubAgent fallback, ListModels(),
+	// and GetLLM for sessions without per-session subscriptions all follow
+	// the user's last choice. In CLI mode, all sessions share senderID "cli_user",
+	// so this correctly reflects the user's global LLM preference.
 	if senderID == "cli_user" {
 		f.defaultLLM = e.client
 		f.defaultModel = e.model

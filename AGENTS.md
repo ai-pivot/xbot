@@ -14,7 +14,8 @@
 
 - `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
-- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system, model tiers (vanguard/balance/swift)
+- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, model tiers (vanguard/balance/swift)
+- `docs/agent/subscription.md` — **subscription system 完整文档**: LLMFactory cache、GetLLM/GetLLMForChat/GetLLMForModel 解析链、max_context 优先级、所有切换场景（per-session/全局/settings/启动恢复）、会话隔离规则、Invalidate 速查表、TUI↔Backend 数据同步
 - `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, ChannelPluginTransport (stdio channel plugin transport)
 - `docs/agent/settings.md` — settings system: single registry (agent/setting_runtime.go), cli_settings.go, UpdatePerModelConfig, subscription-scoped vs user-scoped, runtime apply chain
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build, **local/remote unification**

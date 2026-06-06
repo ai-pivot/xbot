@@ -202,7 +202,8 @@ CLI connects to server's web channel WebSocket endpoint with query params:
 ## Per-Package Details
 
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management
-- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, subscription system
+- `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior
+- `docs/agent/subscription.md` — subscription system, LLM resolution, session isolation, all switch scenarios
 - `docs/agent/tools.md` — built-in tools, hooks, sandbox types, AI-native config tools
 - `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters, deterministic rendering
 - `docs/agent/memory.md` — letta vs flat providers
