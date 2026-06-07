@@ -1248,10 +1248,8 @@ func migrateV34ToV35(db *DB) error {
 		return fmt.Errorf("rows iteration: %w", err)
 	}
 
-	// 4. Add model_id to tenants
-	if _, err := conn.Exec("ALTER TABLE tenants ADD COLUMN model_id TEXT DEFAULT ''"); err != nil {
-		return fmt.Errorf("add tenants.model_id: %w", err)
-	}
+	// 4. Add model_id to tenants (ignore error if column already exists)
+	conn.Exec("ALTER TABLE tenants ADD COLUMN model_id TEXT DEFAULT ''")
 
 	// 5. Bump version
 	if _, err := conn.Exec("UPDATE schema_version SET version = 35"); err != nil {

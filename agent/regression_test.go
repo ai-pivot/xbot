@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"xbot/agent/hooks"
+	"xbot/config"
 	"xbot/llm"
+	"xbot/storage/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -316,4 +318,221 @@ func TestCompressionUsesSessionConfig_NotSharedManager(t *testing.T) {
 	// was already captured in the log. The key contract: sessionConfig (200k)
 	// is used, not the agent-level default (1M).
 	_ = capturedMaxTokens
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: resolveSubContext dual-path resolution (subscription_models + PerModelConfigs)
+// ---------------------------------------------------------------------------
+
+// TestResolveSubContext_UsesSubscriptionModels verifies that resolveSubContext
+// reads from subscription_models (v35+) when available, falling back to
+// PerModelConfigs when subscription_models has no data.
+func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f.SetSubscriptionSvc(subSvc)
+
+	// Add a subscription with PerModelConfigs
+	sub := &sqlite.LLMSubscription{
+		Provider: "test", BaseURL: "http://test", APIKey: "sk-test",
+		Model: "test-model", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"test-model": {MaxContext: 200000},
+		},
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Create entry for this subscription
+	e := f.createEntryFromSub(sub, "test-model")
+	if e == nil || e.subID == "" {
+		t.Fatal("createEntryFromSub failed: subID not set")
+	}
+
+	// Verify resolveSubContext uses PerModelConfigs (no subscription_models data yet)
+	if mc := f.resolveSubContext("test-model", e); mc != 200000 {
+		t.Errorf("resolveSubContext(PerModelConfigs) = %d, want 200000", mc)
+	}
+
+	// Now add subscription_models data
+	subSvc.UpsertModel(e.subID, "test-model", 1000000, 8192, "")
+
+	// Verify resolveSubContext now uses subscription_models (higher priority)
+	if mc := f.resolveSubContext("test-model", e); mc != 1000000 {
+		t.Errorf("resolveSubContext(subscription_models) = %d, want 1000000 (subscription_models takes priority)", mc)
+	}
+
+	// Verify different model still uses PerModelConfigs
+	if mc := f.resolveSubContext("other-model", e); mc != 0 {
+		t.Errorf("resolveSubContext(unknown-model) = %d, want 0", mc)
+	}
+
+	// Clean up subscription_models, verify fallback
+	subSvc.UpsertModel(e.subID, "test-model", 0, 0, "") // setting max_context to 0
+	if mc := f.resolveSubContext("test-model", e); mc != 200000 {
+		t.Errorf("resolveSubContext(fallback) = %d, want 200000 (fallback to PerModelConfigs)", mc)
+	}
+}
+
+// TestResolveSubContext_NoDB_FallsBackToSubCache verifies that when the
+// subscription service is nil (as in tests), resolveSubContext falls back
+// to the cached sub pointer's PerModelConfigs.
+func TestResolveSubContext_NoDB_FallsBackToSubCache(t *testing.T) {
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+
+	sub := &sqlite.LLMSubscription{
+		Provider: "test", BaseURL: "http://test", APIKey: "sk-test",
+		Model: "glm-5", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"glm-5": {MaxContext: 200000},
+		},
+	}
+	// Hand-craft entry: bypass createEntryFromSub which requires real client.
+	// resolveSubContext only needs model, subID, and sub cache.
+	e := &llmEntry{
+		client: &llm.MockLLM{},
+		model:  "glm-5",
+		subID:  sub.ID, // empty (no DB) — resolveSub falls back to e.sub
+		sub:    sub,
+	}
+
+	if mc := f.resolveSubContext("glm-5", e); mc != 200000 {
+		t.Errorf("resolveSubContext(no-DB) = %d, want 200000", mc)
+	}
+}
+
+// TestSwitchModel_CopiesSubIDAndSub verifies that SwitchModel copies both
+// subID and sub from the user-level entry to the per-chat entry. This is
+// the critical fix: before subID was added, SwitchModel only copied the sub
+// pointer, which could be stale.
+func TestSwitchModel_CopiesSubIDAndSub(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f.SetSubscriptionSvc(subSvc)
+
+	// Add a GLM subscription with PerModelConfigs for both models
+	subGLM := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://glm.com/v1", APIKey: "sk-glm",
+		Model: "glm-5", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"glm-5":           {MaxContext: 200000},
+			"deepseek-v4-pro": {MaxContext: 0}, // not configured for this model
+		},
+	}
+	if err := subSvc.Add(subGLM); err != nil {
+		t.Fatalf("Add GLM: %v", err)
+	}
+
+	// Set user-level entry with GLM subscription
+	f.SwitchSubscription("cli_user", subGLM, "")
+
+	userEntry := f.entries["cli_user"]
+	if userEntry == nil || userEntry.subID == "" {
+		t.Fatal("user-level entry not set")
+	}
+
+	// Simulate: user switches MODEL to deepseek-v4-pro (same subscription, different model)
+	// This is what SwitchModel does when called from TUI
+	chatID := "/home/proj:Agent-test"
+	f.SwitchModel("cli_user", "deepseek-v4-pro", chatID)
+
+	// Verify per-chat entry has both subID and sub
+	key := chatKey("cli_user", chatID)
+	pcEntry := f.entries[key]
+	if pcEntry == nil {
+		t.Fatal("per-chat entry not created by SwitchModel")
+	}
+	if pcEntry.subID != userEntry.subID {
+		t.Errorf("per-chat subID = %q, want %q (must match user-level)", pcEntry.subID, userEntry.subID)
+	}
+	if pcEntry.sub == nil {
+		t.Error("per-chat sub cache is nil (should be copied from user-level)")
+	}
+	if pcEntry.model != "deepseek-v4-pro" {
+		t.Errorf("per-chat model = %q, want deepseek-v4-pro", pcEntry.model)
+	}
+
+	// Now set up subscription_models data for the new model
+	subSvc.UpsertModel(subGLM.ID, "deepseek-v4-pro", 1000000, 8192, "")
+
+	// Verify resolveSubContext returns 1M (from subscription_models, not PerModelConfigs)
+	// PerModelConfigs has 0 for deepseek-v4-pro, but subscription_models has 1M
+	_, _, maxCtx, _, _ := f.GetLLMForChat("cli_user", chatID)
+	if maxCtx != 1000000 {
+		t.Errorf("GetLLMForChat maxCtx = %d, want 1000000 (from subscription_models, not stale PerModelConfigs)", maxCtx)
+	}
+}
+
+// TestSwitchModel_PerChatEntryIndependent verifies that after SwitchModel,
+// the per-chat entry is independent from the user-level entry. Changing the
+// user-level entry should not affect the per-chat entry.
+func TestSwitchModel_PerChatEntryIndependent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f.SetSubscriptionSvc(subSvc)
+
+	// Add two subscriptions
+	subGLM := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://glm.com/v1", APIKey: "sk-glm",
+		Model: "glm-5", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"glm-5": {MaxContext: 200000},
+		},
+	}
+	subDS := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://deepseek.com/v1", APIKey: "sk-ds",
+		Model: "deepseek-v4-pro", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"deepseek-v4-pro": {MaxContext: 1000000},
+		},
+	}
+	subSvc.Add(subGLM)
+	subSvc.Add(subDS)
+
+	// User-level: GLM
+	f.SwitchSubscription("cli_user", subGLM, "")
+
+	// Per-chat: switch model to deepseek-v4-pro (same GLM subscription)
+	chatID := "/home/proj:Agent-test"
+	f.SwitchModel("cli_user", "deepseek-v4-pro", chatID)
+
+	// Add subscription_models data for deepseek under GLM subscription
+	subSvc.UpsertModel(subGLM.ID, "deepseek-v4-pro", 1000000, 8192, "")
+
+	// Now user-level switches to DeepSeek subscription entirely
+	f.InvalidateSender("cli_user")
+	f.SwitchSubscription("cli_user", subDS, "")
+
+	// Per-chat entry should still work (subID still points to GLM sub,
+	// but GLM sub's subscription_models now has deepseek-v4-pro with 1M)
+	_, _, maxCtx, _, _ := f.GetLLMForChat("cli_user", chatID)
+	if maxCtx != 1000000 {
+		t.Errorf("per-chat maxCtx = %d, want 1000000 (per-chat entry should survive user-level switch)", maxCtx)
+	}
+
+	// Chat without per-chat entry should use new user-level default (DeepSeek)
+	_, _, maxCtxB, _, _ := f.GetLLMForChat("cli_user", "/other-chat")
+	if maxCtxB != 1000000 {
+		t.Errorf("new chat maxCtx = %d, want 1000000 (user-level DeepSeek)", maxCtxB)
+	}
 }
