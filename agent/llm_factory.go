@@ -18,11 +18,18 @@ import (
 // some maps but forgot others (e.g. SetChatLLM not writing subscriptions).
 //
 // Every write method must create a complete llmEntry — it is impossible
-// to have an entry with a client but no subscription.
+// to have an entry with a client but no subscription ID.
+//
+// subID is the authoritative subscription identifier. resolveSub(entry) reads
+// subscription data from DB via subID, falling back to the sub cache when DB
+// is unavailable (tests, startup races). This prevents model-from-sub-A +
+// config-from-sub-B cross-contamination: SwitchModel copies subID + sub
+// from the user entry, but resolveSub always queries DB first by subID.
 type llmEntry struct {
 	client          llm.LLM
 	model           string
-	sub             *sqlite.LLMSubscription
+	subID           string                  // authoritative subscription identity
+	sub             *sqlite.LLMSubscription // cache (fallback when DB unavailable)
 	maxOutputTokens int
 	thinkingMode    string
 }
@@ -160,10 +167,43 @@ func (f *LLMFactory) resolveModelContext(model string) int {
 	return ctx
 }
 
-// resolveEffectiveContext resolves max context for (model, subscription):
+// resolveSub returns the subscription for an entry. DB (by subID) takes priority;
+// falls back to the cached sub pointer when the subscription service is unavailable.
+func (f *LLMFactory) resolveSub(e *llmEntry) *sqlite.LLMSubscription {
+	if sub := f.lookupSub(e.subID); sub != nil {
+		return sub
+	}
+	return e.sub
+}
+
+// lookupSub fetches a subscription by ID from the subscription service.
+// Returns nil if the service is unavailable or the subscription doesn't exist.
+func (f *LLMFactory) lookupSub(subID string) *sqlite.LLMSubscription {
+	if f.subscriptionSvc == nil || subID == "" {
+		return nil
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil {
+		return nil
+	}
+	return sub
+}
+
+// resolveEffectiveContext resolves max context for (model, subID):
 // per-model subscription config → global model_contexts → 0
-func (f *LLMFactory) resolveEffectiveContext(model string, sub *sqlite.LLMSubscription) int {
-	if sub != nil {
+func (f *LLMFactory) resolveEffectiveContext(model string, subID string) int {
+	if sub := f.lookupSub(subID); sub != nil {
+		if v := sub.GetPerModelMaxContext(model); v > 0 {
+			return v
+		}
+	}
+	return f.resolveModelContext(model)
+}
+
+// resolveSubContext resolves max context using an llmEntry's subscription.
+// Uses resolveSub (DB-first, cache-fallback) to get the subscription data.
+func (f *LLMFactory) resolveSubContext(model string, e *llmEntry) int {
+	if sub := f.resolveSub(e); sub != nil {
 		if v := sub.GetPerModelMaxContext(model); v > 0 {
 			return v
 		}
@@ -187,7 +227,7 @@ func (f *LLMFactory) GetEffectiveMaxContext(senderID, chatID string) int {
 		key = chatKey(senderID, chatID)
 	}
 	if e := f.getEntry(key); e != nil {
-		if mc := f.resolveEffectiveContext(e.model, e.sub); mc > 0 {
+		if mc := f.resolveSubContext(e.model, e); mc > 0 {
 			return mc
 		}
 	}
@@ -231,7 +271,7 @@ func chatKey(senderID, chatID string) string { return senderID + ":" + chatID }
 //  3. Global default LLM
 func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int) {
 	if e := f.getEntry(senderID); e != nil && e.client != nil {
-		return e.client, e.model, f.resolveEffectiveContext(e.model, e.sub), e.thinkingMode, e.maxOutputTokens
+		return e.client, e.model, f.resolveSubContext(e.model, e), e.thinkingMode, e.maxOutputTokens
 	}
 
 	if f.subscriptionSvc != nil {
@@ -247,7 +287,7 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int)
 			if e != nil {
 				f.setEntry(senderID, e)
 				f.hasCustomLLMCache.Store(senderID, true)
-				return e.client, e.model, f.resolveEffectiveContext(e.model, e.sub), e.thinkingMode, e.maxOutputTokens
+				return e.client, e.model, f.resolveSubContext(e.model, e), e.thinkingMode, e.maxOutputTokens
 			}
 		}
 	}
@@ -266,15 +306,15 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 
 	// Per-chat cache hit
 	if e := f.getEntry(key); e != nil {
-		maxCtx := f.resolveEffectiveContext(e.model, e.sub)
+		maxCtx := f.resolveSubContext(e.model, e)
 		f.mu.RLock()
 		if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
 			maxCtx = pcCtx
 		}
 		f.mu.RUnlock()
 		// Lazy client recreation (SwitchModel clears client)
-		if e.client == nil && e.sub != nil {
-			e = f.createEntryFromSub(e.sub, e.model)
+		if e.client == nil && e.subID != "" {
+			e = f.createEntryFromSubID(e.subID, e.model)
 			if e != nil {
 				f.setEntry(key, e)
 			}
@@ -366,9 +406,52 @@ func (f *LLMFactory) createEntryFromSub(sub *sqlite.LLMSubscription, model strin
 		return nil
 	}
 	return &llmEntry{
-		client: client, model: model, sub: sub,
+		client: client, model: model, subID: sub.ID, sub: sub,
 		maxOutputTokens: sub.MaxOutputTokens, thinkingMode: sub.ThinkingMode,
 	}
+}
+
+// createEntryFromSubID looks up a subscription by ID then creates an entry.
+// This is the ID-based variant of createEntryFromSub — used when only the
+// subscription ID is available (e.g. lazy rebuild in GetLLMForChat).
+func (f *LLMFactory) createEntryFromSubID(subID, model string) *llmEntry {
+	if f.subscriptionSvc == nil || subID == "" {
+		return nil
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil || sub == nil {
+		return nil
+	}
+	return f.createEntryFromSub(sub, model)
+}
+
+// RefreshSessionEntry re-fetches the subscription for a per-session entry from DB
+// and rebuilds the entry. This must be called at the start of every Run so that
+// stale cached data from a previous Run never survives across message boundaries.
+func (f *LLMFactory) RefreshSessionEntry(senderID, chatID string) {
+	if f.subscriptionSvc == nil || chatID == "" {
+		return
+	}
+	key := chatKey(senderID, chatID)
+	e := f.getEntry(key)
+	if e == nil || e.subID == "" {
+		return
+	}
+	sub, err := f.subscriptionSvc.Get(e.subID)
+	if err != nil || sub == nil {
+		return
+	}
+	f.mu.Lock()
+	current := f.entries[key]
+	if current == nil || current.subID == "" || current.subID != sub.ID {
+		f.mu.Unlock()
+		return
+	}
+	newEntry := f.createEntryFromSub(sub, sub.Model)
+	if newEntry != nil {
+		f.entries[key] = newEntry
+	}
+	f.mu.Unlock()
 }
 
 // SwitchSubscription switches a user's active LLM to the specified subscription.
@@ -387,7 +470,7 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 	f.entries[senderID] = e
 	if chatID != "" {
 		f.entries[chatKey(senderID, chatID)] = &llmEntry{
-			client: e.client, model: e.model, sub: e.sub,
+			client: e.client, model: e.model, subID: e.subID, sub: e.sub,
 			maxOutputTokens: e.maxOutputTokens, thinkingMode: e.thinkingMode,
 		}
 	}
@@ -437,9 +520,12 @@ func (f *LLMFactory) SwitchModel(senderID, model string, chatID ...string) {
 	if effectiveChatID != "" {
 		key := chatKey(senderID, effectiveChatID)
 		if userEntry := f.entries[senderID]; userEntry != nil {
-			// Copy user-level sub with new model, clear client for lazy recreation
+			// Copy user-level subID and sub cache. resolveSubContext will query
+			// DB by subID first; the sub cache is only a fallback when DB is
+			// unavailable (tests, startup). This prevents stale sub pointers
+			// from causing model-from-sub-A + config-from-sub-B contamination.
 			f.entries[key] = &llmEntry{
-				sub: userEntry.sub, model: model,
+				subID: userEntry.subID, sub: userEntry.sub, model: model,
 				maxOutputTokens: userEntry.maxOutputTokens,
 				thinkingMode:    userEntry.thinkingMode,
 			}
@@ -479,6 +565,7 @@ func (f *LLMFactory) SetChatLLM(senderID, chatID string, client llm.LLM, model s
 	// Inherit subscription metadata from user-level entry
 	f.mu.Lock()
 	if existing := f.entries[senderID]; existing != nil {
+		entry.subID = existing.subID
 		entry.sub = existing.sub
 		entry.maxOutputTokens = existing.maxOutputTokens
 		entry.thinkingMode = existing.thinkingMode
@@ -695,7 +782,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				source = "tier-exact"
 			}
 			log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: exact match")
-			return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
+			return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 		}
 	}
 
@@ -711,7 +798,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			client := f.createClientFromSub(sub, resolvedModel)
 			if client != nil {
 				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "config-exact"}).Info("[LLM] GetLLMForModel: config sub exact match")
-				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
+				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
 	}
@@ -739,7 +826,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 							for _, m := range us.CachedModels {
 								if m == resolvedModel {
 									log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
-									return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
+									return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 								}
 							}
 						}
@@ -766,7 +853,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			client := f.createClientFromSub(sub, resolvedModel)
 			if client != nil {
 				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
-				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
+				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
 	}
@@ -780,7 +867,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				client := f.createClientFromSub(sub, resolvedModel)
 				if client != nil {
 					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
-					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub), sub.ThinkingMode, sub.MaxOutputTokens, true
+					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 				}
 			}
 		}
