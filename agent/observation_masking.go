@@ -620,8 +620,13 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 		grp := cand.grp
 
 		// 判断该组是否为"纯工具组"（assistant 无思考文本，只有 tool_calls）
+		// 必须同时检查 Content 和 ReasoningContent：
+		// 早期不支持 reasoning 时只看 Content，现在 reasoning 模型的思维链
+		// 存在 ReasoningContent 中，Content 可能为空。如果不检查 ReasoningContent，
+		// 有推理过程的组会被判为"纯工具组"然后被 fold，丢失推理上下文。
 		assistantMsg := messages[grp.start]
-		isPureToolGroup := strings.TrimSpace(llm.StripThinkBlocks(assistantMsg.Content)) == ""
+		isPureToolGroup := strings.TrimSpace(llm.StripThinkBlocks(assistantMsg.Content)) == "" &&
+			strings.TrimSpace(assistantMsg.ReasoningContent) == ""
 
 		if isPureToolGroup {
 			// 连续纯工具组折叠：收集该组的所有 tool result，折叠为一对消息
