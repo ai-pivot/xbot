@@ -90,7 +90,10 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	}
 
 	if params.Persistence != nil {
-		if ok, _ := params.Persistence.RewriteAfterCompress(result.SessionView, len(newMessages)); !ok {
+		// Persist LLMView (not SessionView) to preserve complete tool call/result
+		// structure. SessionView folds tool messages into flat text summaries,
+		// which loses the original tool structure that TUI needs to render properly.
+		if ok, _ := params.Persistence.RewriteAfterCompress(newMessages, len(newMessages)); !ok {
 			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
 		}
 	}
