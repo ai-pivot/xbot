@@ -1859,6 +1859,19 @@ func (a *Agent) UnloadInteractiveSession(
 	// 清理
 	a.destroyInteractiveSession(key)
 
+	// Emit subagent_stopped so sidebar updates immediately.
+	// Other completion paths (foreground/bg Run, timeout) emit this event,
+	// but the explicit unload path was missing it, causing sidebar to
+	// only refresh on the 30s safety-net poll.
+	a.emitSessionState(protocol.SessionEvent{
+		Channel:  channel,
+		ChatID:   chatID,
+		Action:   "subagent_stopped",
+		Role:     roleName,
+		Instance: instance,
+		ParentID: chatID,
+	})
+
 	log.WithField("role", roleName).Info("Interactive session unloaded")
 	return nil
 }

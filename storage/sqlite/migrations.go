@@ -1200,6 +1200,9 @@ func migrateV34ToV35(db *DB) error {
 	}
 
 	// 3. Migrate per_model_configs JSON into subscription_models rows
+	// IMPORTANT: collect all rows first, then execute inserts. SQLite's
+	// single-connection pool cannot run conn.Exec while rows.Next() is
+	// iterating — that would deadlock and freeze the entire startup.
 	rows, err := conn.Query(`
 		SELECT id, COALESCE(per_model_configs, '{}') FROM user_llm_subscriptions
 		WHERE per_model_configs IS NOT NULL AND per_model_configs != '' AND per_model_configs != '{}'
@@ -1207,23 +1210,36 @@ func migrateV34ToV35(db *DB) error {
 	if err != nil {
 		return fmt.Errorf("query per_model_configs: %w", err)
 	}
-	defer rows.Close()
 
-	type pmcEntry struct {
-		MaxContext      int `json:"max_context,omitempty"`
-		MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	type pmcRow struct {
+		subID   string
+		jsonStr string
 	}
+	var pmcRows []pmcRow
 	for rows.Next() {
-		var subID, jsonStr string
-		if err := rows.Scan(&subID, &jsonStr); err != nil {
+		var r pmcRow
+		if err := rows.Scan(&r.subID, &r.jsonStr); err != nil {
+			rows.Close()
 			return fmt.Errorf("scan per_model_configs row: %w", err)
 		}
-		if jsonStr == "" || jsonStr == "{}" {
+		pmcRows = append(pmcRows, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows iteration: %w", err)
+	}
+
+	// Now process collected rows (no conn.Exec inside a rows loop).
+	for _, r := range pmcRows {
+		if r.jsonStr == "" || r.jsonStr == "{}" {
 			continue
 		}
-		var pmc map[string]pmcEntry
-		if err := json.Unmarshal([]byte(jsonStr), &pmc); err != nil {
-			log.WithError(err).WithField("sub_id", subID).Warn("v35: failed to parse per_model_configs, skipping")
+		var pmc map[string]struct {
+			MaxContext      int `json:"max_context,omitempty"`
+			MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(r.jsonStr), &pmc); err != nil {
+			log.WithError(err).WithField("sub_id", r.subID).Warn("v35: failed to parse per_model_configs, skipping")
 			continue
 		}
 		for modelName, cfg := range pmc {
@@ -1236,16 +1252,13 @@ func migrateV34ToV35(db *DB) error {
 				ON CONFLICT(subscription_id, model) DO UPDATE SET
 					max_context = COALESCE(excluded.max_context, max_context),
 					max_output_tokens = COALESCE(excluded.max_output_tokens, max_output_tokens)
-			`, subID, modelName, cfg.MaxContext, cfg.MaxOutputTokens)
+			`, r.subID, modelName, cfg.MaxContext, cfg.MaxOutputTokens)
 			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
-					"sub_id": subID, "model": modelName,
+					"sub_id": r.subID, "model": modelName,
 				}).Warn("v35: failed to upsert per_model_config row")
 			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("rows iteration: %w", err)
 	}
 
 	// 4. Add model_id to tenants (ignore error if column already exists)
