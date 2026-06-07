@@ -982,12 +982,45 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		})
 	}
 
+	// Use the per-session ContextManager for compression.
+	// If cfg.ContextManager is a shared agent-level phase1Manager whose config
+	// points to a.contextManagerConfig (e.g. 1M DeepSeek default), it would target
+	// 1M instead of the per-session config (e.g. 200k GLM) → tiny reduction →
+	// tokens immediately past the 200k threshold → infinite compression.
+	// Fix: create a fresh phase1Manager from the per-session config, unless the
+	// caller injected a custom ContextManager (tests, manual compress).
+	var sessionCM ContextManager
+	if s.cfg.ContextManager != nil {
+		// Check if the CM's config matches the per-session config.
+		// If not, create a new one. This preserves test mocks that implement
+		// ContextManager directly (e.g. mockCompressor in integration tests).
+		if p1, ok := s.cfg.ContextManager.(*phase1Manager); ok && s.cfg.ContextManagerConfig != nil {
+			if p1.config != s.cfg.ContextManagerConfig {
+				// Shared manager with different config → create per-session copy
+				sessionCM = newPhase1Manager(s.cfg.ContextManagerConfig)
+			} else {
+				sessionCM = s.cfg.ContextManager
+			}
+		} else {
+			// Non-phase1Manager (test mock, noopManager, etc.) → use as-is
+			sessionCM = s.cfg.ContextManager
+		}
+	} else if s.cfg.ContextManagerConfig != nil {
+		sessionCM = newPhase1Manager(s.cfg.ContextManagerConfig)
+	}
+	if sessionCM == nil {
+		log.Ctx(ctx).Warn("No ContextManager available for compression")
+		if s.structuredProgress != nil {
+			s.structuredProgress.Phase = PhaseThinking
+		}
+		return
+	}
 	if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
-		cm.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
+		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 	}
 
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-		CM:                cm,
+		CM:                sessionCM,
 		Messages:          s.messages,
 		LLMClient:         s.cfg.LLMClient,
 		Model:             s.cfg.Model,
