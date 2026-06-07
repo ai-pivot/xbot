@@ -35,6 +35,20 @@ type LLMSubscription struct {
 	UpdatedAt       time.Time
 }
 
+// SubscriptionModel stores per-model configuration for a subscription.
+// Introduced in v35 to replace the JSON-blob PerModelConfigs and subscription-level
+// model fields. One subscription → many models.
+type SubscriptionModel struct {
+	ID              string // unique model row ID
+	SubscriptionID  string // FK → user_llm_subscriptions.id
+	Model           string // model name (e.g. "deepseek-v4-pro")
+	MaxContext      int    // max context window tokens
+	MaxOutputTokens int    // max output tokens
+	ThinkingMode    string // thinking mode override
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // LLMSubscriptionService manages user LLM subscriptions.
 type LLMSubscriptionService struct {
 	db *DB
@@ -411,6 +425,81 @@ func (sub *LLMSubscription) GetPerModelMaxContext(model string) int {
 		return cfg.MaxContext
 	}
 	return 0
+}
+
+// ─── SubscriptionModel CRUD ─────────────────────────────
+
+// scanSubscriptionModel scans a subscription_models row into a SubscriptionModel.
+func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *SubscriptionModel) error {
+	var createdAt, updatedAt string
+	err := scanner.Scan(&m.ID, &m.SubscriptionID, &m.Model, &m.MaxContext,
+		&m.MaxOutputTokens, &m.ThinkingMode, &createdAt, &updatedAt)
+	if err != nil {
+		return err
+	}
+	m.CreatedAt = parseSQLiteTime(createdAt)
+	m.UpdatedAt = parseSQLiteTime(updatedAt)
+	return nil
+}
+
+// GetModels returns all models for a subscription.
+func (s *LLMSubscriptionService) GetModels(subID string) ([]*SubscriptionModel, error) {
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, created_at, updated_at
+		FROM subscription_models WHERE subscription_id = ? ORDER BY created_at ASC
+	`, subID)
+	if err != nil {
+		return nil, fmt.Errorf("get models: %w", err)
+	}
+	defer rows.Close()
+	var models []*SubscriptionModel
+	for rows.Next() {
+		m := &SubscriptionModel{}
+		if err := scanSubscriptionModel(rows, m); err != nil {
+			return nil, fmt.Errorf("scan model: %w", err)
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
+}
+
+// GetModel returns a model row by subscription ID and model name.
+func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionModel, error) {
+	conn := s.db.Conn()
+	m := &SubscriptionModel{}
+	err := scanSubscriptionModel(
+		conn.QueryRow(`
+			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, created_at, updated_at
+			FROM subscription_models WHERE subscription_id = ? AND model = ?
+		`, subID, model),
+		m,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get model: %w", err)
+	}
+	return m, nil
+}
+
+// UpsertModel inserts or updates a model row in subscription_models.
+func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut int, thinking string) error {
+	conn := s.db.Conn()
+	_, err := conn.Exec(`
+		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode)
+		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)
+		ON CONFLICT(subscription_id, model) DO UPDATE SET
+			max_context = excluded.max_context,
+			max_output_tokens = excluded.max_output_tokens,
+			thinking_mode = excluded.thinking_mode,
+			updated_at = datetime('now')
+	`, subID, model, maxCtx, maxOut, thinking)
+	if err != nil {
+		return fmt.Errorf("upsert model: %w", err)
+	}
+	return nil
 }
 
 // newULID generates a new ULID string.

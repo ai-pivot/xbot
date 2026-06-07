@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -151,6 +152,13 @@ func (db *DB) migrateSchema(from int) error {
 	if from < 34 {
 		if err := migrateV33ToV34(db.Conn()); err != nil {
 			return fmt.Errorf("migrate to v34: %w", err)
+		}
+	}
+
+	// v35: extract model data into subscription_models table.
+	if from < 35 {
+		if err := migrateV34ToV35(db); err != nil {
+			return fmt.Errorf("migrate to v35: %w", err)
 		}
 	}
 
@@ -1153,5 +1161,102 @@ func migrateV33ToV34(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v34: added subscription_id/model to tenants")
+	return nil
+}
+
+// migrateV34ToV35 extracts model-level attributes from user_llm_subscriptions
+// into a proper subscription_models table. The old columns (model, max_context,
+// max_output_tokens, thinking_mode, cached_models, per_model_configs) remain
+// on the subscription row for backward compatibility during the transition.
+func migrateV34ToV35(db *DB) error {
+	conn := db.Conn()
+
+	// 1. Create subscription_models table
+	if _, err := conn.Exec(`
+		CREATE TABLE IF NOT EXISTS subscription_models (
+			id                TEXT PRIMARY KEY,
+			subscription_id   TEXT NOT NULL REFERENCES user_llm_subscriptions(id) ON DELETE CASCADE,
+			model             TEXT NOT NULL,
+			max_context       INTEGER NOT NULL DEFAULT 0,
+			max_output_tokens INTEGER NOT NULL DEFAULT 0,
+			thinking_mode     TEXT NOT NULL DEFAULT '',
+			created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_sub_models_sub ON subscription_models(subscription_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_models_uniq ON subscription_models(subscription_id, model);
+	`); err != nil {
+		return fmt.Errorf("create subscription_models: %w", err)
+	}
+
+	// 2. Migrate default model from each subscription row
+	if _, err := conn.Exec(`
+		INSERT OR IGNORE INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode)
+		SELECT lower(hex(randomblob(16))), id, model, COALESCE(max_context, 0), COALESCE(max_output_tokens, 0), COALESCE(thinking_mode, '')
+		FROM user_llm_subscriptions
+		WHERE model IS NOT NULL AND model != '';
+	`); err != nil {
+		return fmt.Errorf("migrate default models: %w", err)
+	}
+
+	// 3. Migrate per_model_configs JSON into subscription_models rows
+	rows, err := conn.Query(`
+		SELECT id, COALESCE(per_model_configs, '{}') FROM user_llm_subscriptions
+		WHERE per_model_configs IS NOT NULL AND per_model_configs != '' AND per_model_configs != '{}'
+	`)
+	if err != nil {
+		return fmt.Errorf("query per_model_configs: %w", err)
+	}
+	defer rows.Close()
+
+	type pmcEntry struct {
+		MaxContext      int `json:"max_context,omitempty"`
+		MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	}
+	for rows.Next() {
+		var subID, jsonStr string
+		if err := rows.Scan(&subID, &jsonStr); err != nil {
+			return fmt.Errorf("scan per_model_configs row: %w", err)
+		}
+		if jsonStr == "" || jsonStr == "{}" {
+			continue
+		}
+		var pmc map[string]pmcEntry
+		if err := json.Unmarshal([]byte(jsonStr), &pmc); err != nil {
+			log.WithError(err).WithField("sub_id", subID).Warn("v35: failed to parse per_model_configs, skipping")
+			continue
+		}
+		for modelName, cfg := range pmc {
+			if modelName == "" {
+				continue
+			}
+			_, err := conn.Exec(`
+				INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens)
+				VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)
+				ON CONFLICT(subscription_id, model) DO UPDATE SET
+					max_context = COALESCE(excluded.max_context, max_context),
+					max_output_tokens = COALESCE(excluded.max_output_tokens, max_output_tokens)
+			`, subID, modelName, cfg.MaxContext, cfg.MaxOutputTokens)
+			if err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"sub_id": subID, "model": modelName,
+				}).Warn("v35: failed to upsert per_model_config row")
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows iteration: %w", err)
+	}
+
+	// 4. Add model_id to tenants
+	if _, err := conn.Exec("ALTER TABLE tenants ADD COLUMN model_id TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("add tenants.model_id: %w", err)
+	}
+
+	// 5. Bump version
+	if _, err := conn.Exec("UPDATE schema_version SET version = 35"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v35: added subscription_models table")
 	return nil
 }

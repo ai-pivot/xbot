@@ -178,6 +178,19 @@ func (s *TenantService) SetTenantSubscription(channel, chatID, subscriptionID, m
 	if n, _ := result.RowsAffected(); n == 0 {
 		return fmt.Errorf("set tenant subscription: tenant %s/%s not found after insert", channel, chatID)
 	}
+	// Also set model_id from subscription_models (v35+)
+	if subscriptionID != "" && model != "" {
+		var modelID string
+		if err := conn.QueryRow(
+			"SELECT id FROM subscription_models WHERE subscription_id = ? AND model = ?",
+			subscriptionID, model,
+		).Scan(&modelID); err == nil && modelID != "" {
+			_, _ = conn.Exec(
+				"UPDATE tenants SET model_id = ? WHERE channel = ? AND chat_id = ?",
+				modelID, channel, chatID,
+			)
+		}
+	}
 	return nil
 }
 

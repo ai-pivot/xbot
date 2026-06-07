@@ -201,9 +201,16 @@ func (f *LLMFactory) resolveEffectiveContext(model string, subID string) int {
 }
 
 // resolveSubContext resolves max context using an llmEntry's subscription.
-// Uses resolveSub (DB-first, cache-fallback) to get the subscription data.
+// Priority: subscription_models table (v35+) → sub.PerModelConfigs (backward compat) → modelContexts.
 func (f *LLMFactory) resolveSubContext(model string, e *llmEntry) int {
 	if sub := f.resolveSub(e); sub != nil {
+		// 1. Check subscription_models (authoritative for v35+)
+		if f.subscriptionSvc != nil && e.subID != "" {
+			if sm, err := f.subscriptionSvc.GetModel(e.subID, model); err == nil && sm != nil && sm.MaxContext > 0 {
+				return sm.MaxContext
+			}
+		}
+		// 2. Fall back to PerModelConfigs (backward compat, pre-v35)
 		if v := sub.GetPerModelMaxContext(model); v > 0 {
 			return v
 		}
