@@ -392,9 +392,21 @@ func compactMessages(
 	// (assistant + tool_call + tool_result). With 500+ iterations the tail can be
 	// enormous, causing compression to produce a summary that — combined with the
 	// unmodified tail — still exceeds the context limit, triggering infinite
-	// re-compression.  We keep at most maxTailMessages (~100 iterations ≈ 300
-	// messages); anything older is forced into toCompress.
-	const maxTailMessages = 300 // ~100 iterations
+	// re-compression.
+	//
+	// Cap tail to at most 15% of maxContextTokens (estimated at ~200 tokens/message).
+	// This keeps tail small enough that summary + tail + output stays under threshold,
+	// regardless of context window size.  Hard upper bound of 300 messages for 1M+ contexts.
+	const maxTailContextFraction = 0.15
+	const tokensPerMessage = 200
+	dynamicTailLimit := int(float64(maxContextTokens) * maxTailContextFraction / tokensPerMessage)
+	maxTailMessages := dynamicTailLimit
+	if maxTailMessages > 300 {
+		maxTailMessages = 300 // hard cap for very large contexts
+	}
+	if maxTailMessages < 50 {
+		maxTailMessages = 50 // minimum to keep useful recent context
+	}
 	tailLen := len(messages) - tailStart
 	if tailLen > maxTailMessages {
 		oldTailStart := tailStart
