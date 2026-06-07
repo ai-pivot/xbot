@@ -448,13 +448,18 @@ func (f *LLMFactory) RefreshSessionEntry(senderID, chatID string) {
 	if err != nil || sub == nil {
 		return
 	}
+	// Build new entry BEFORE acquiring the lock. createEntryFromSub makes HTTP
+	// calls (model list loading) that can take 5-30s. Holding f.mu during that
+	// call blocks every other goroutine that needs f.mu.RLock() — including
+	// getEntry, GetLLMForChat, and GetLLMForModel — freezing the entire agent loop.
+	newEntry := f.createEntryFromSub(sub, sub.Model)
+
 	f.mu.Lock()
 	current := f.entries[key]
 	if current == nil || current.subID == "" || current.subID != sub.ID {
 		f.mu.Unlock()
 		return
 	}
-	newEntry := f.createEntryFromSub(sub, sub.Model)
 	if newEntry != nil {
 		f.entries[key] = newEntry
 	}
