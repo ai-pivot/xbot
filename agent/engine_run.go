@@ -512,6 +512,7 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 // concurrency semaphore and input-too-long errors with forced compression.
 func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
 	toolDefs := visibleToolDefs(s.cfg.Tools.AsDefinitionsForSession(s.sessionKey, s.cfg.TenantID), s.cfg.SettingsSvc, s.cfg.Channel, s.cfg.OriginUserID)
+	s.messages = s.syncMessages(llm.SanitizeMessages(s.messages))
 
 	var releaseLLMSem func()
 	if s.cfg.LLMSemAcquire != nil {

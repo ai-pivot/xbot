@@ -74,9 +74,9 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 		params.AccumulateUsage(result)
 	}
 
-	newMessages := result.LLMView
+	newMessages := llm.SanitizeMessages(result.LLMView)
 	if params.SyncMessages != nil {
-		newMessages = params.SyncMessages(result.LLMView)
+		newMessages = params.SyncMessages(newMessages)
 	}
 
 	// Use the locally-estimated token count of the compressed LLMView.
