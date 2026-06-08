@@ -1452,12 +1452,9 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
 		// Question text (may wrap to multiple lines — not tracked as zones)
-		// viewAskUserPanel uses hardWrapRunes with qWrapWidth. We approximate.
+		// Keep this in sync with viewAskUserPanel/ensureAskUserCursorVisible.
 		prefix := "❓ " + item.Question
-		qWrapWidth := m.width - 6
-		if qWrapWidth < 20 {
-			qWrapWidth = 20
-		}
+		qWrapWidth := m.askUserQuestionWrapWidth()
 		questionLines := max(1, strings.Count(hardWrapRunes(prefix, qWrapWidth), "\n")+1)
 		for i := 0; i < questionLines; i++ {
 			lines = append(lines, askLine{})

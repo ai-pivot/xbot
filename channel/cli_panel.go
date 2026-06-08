@@ -2154,11 +2154,7 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 		headerLines = 2 // tab bar + blank line
 	}
 	// Question: may be multiple lines after hardWrap.
-	// Use chatWidth() (not m.width) so the panel respects sidebar width.
-	qWrapWidth := m.chatWidth() - 6
-	if qWrapWidth < 20 {
-		qWrapWidth = 20
-	}
+	qWrapWidth := m.askUserQuestionWrapWidth()
 	wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
 	headerLines += strings.Count(wrapped, "\n") + 1 // question lines
 	headerLines++                                   // blank line between question and options
@@ -2183,6 +2179,17 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 			m.askPanelScrollY = 0
 		}
 	}
+}
+
+func (m *cliModel) askUserQuestionWrapWidth() int {
+	// layoutAskUser reserves two columns for the scrollbar path before the
+	// PanelBox renders. Keep question lines strictly inside that width so
+	// applyScrollbar never has to truncate a line produced by hardWrapRunes.
+	w := m.chatWidth() - 7
+	if w < 1 {
+		return 1
+	}
+	return w
 }
 
 // viewPanel renders the active panel as a string.
@@ -2459,7 +2466,8 @@ func (m *cliModel) viewSettingsPanel() string {
 					if j == m.panelComboIdx {
 						sb.WriteString(cursorStyle.Render("    ▸ " + label))
 					} else {
-						sb.WriteString("      " + label)
+						sb.WriteString("      ")
+						sb.WriteString(label)
 					}
 					// Show option description on the selected combo item.
 					if j == m.panelComboIdx && opt.Description != "" {
@@ -2535,12 +2543,8 @@ func (m *cliModel) viewAskUserPanel() string {
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
 		isLastTab := m.panelTab == len(m.panelItems)-1
-		// Wrap question text to fit inside PanelBox (border 2 + padding 2 + scrollbar reserve 2).
-		// Use chatWidth() (not m.width) so the panel respects sidebar width.
-		qWrapWidth := m.chatWidth() - 6
-		if qWrapWidth < 20 {
-			qWrapWidth = 20
-		}
+		// Wrap question text to fit inside PanelBox and its optional scrollbar.
+		qWrapWidth := m.askUserQuestionWrapWidth()
 		wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
 		sb.WriteString(questionStyle.Render(wrapped))
 		sb.WriteString("\n")
@@ -2588,7 +2592,8 @@ func (m *cliModel) viewAskUserPanel() string {
 			} else {
 				prefix = "  "
 			}
-			sb.WriteString(prefix + otherLabel)
+			sb.WriteString(prefix)
+			sb.WriteString(otherLabel)
 			// Resize textinput to fit within panel content width (qWrapWidth)
 			// minus label width and scrollbar column.  The textinput View()
 			// (specifically placeholderView) always outputs Width()+1 chars
@@ -2617,9 +2622,11 @@ func (m *cliModel) viewAskUserPanel() string {
 			if isLastTab {
 				submitLabel := m.locale.PanelSubmit
 				if cursor == numOpts+1 {
-					sb.WriteString(cursorStyle.Render("▸ ") + submitStyle.Render(submitLabel))
+					sb.WriteString(cursorStyle.Render("▸ "))
+					sb.WriteString(submitStyle.Render(submitLabel))
 				} else {
-					sb.WriteString("  " + submitStyle.Render(submitLabel))
+					sb.WriteString("  ")
+					sb.WriteString(submitStyle.Render(submitLabel))
 				}
 				sb.WriteString("\n")
 			}

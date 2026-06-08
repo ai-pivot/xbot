@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 // mockSubscriptionManager implements SubscriptionManager for testing.
@@ -205,6 +207,28 @@ func TestPanelBoxLeftAlign(t *testing.T) {
 		}
 	}
 	t.Error("could not find 'Name:' in panel output")
+}
+
+func TestAskUserQuestionWrapPreservesTextWithScrollbar(t *testing.T) {
+	m := newCLIModel()
+	m.handleResize(80, 12)
+	m.panelMode = "askuser"
+
+	scrollContentWidth := m.chatWidth() - 6
+	question := strings.Repeat("a", scrollContentWidth-lipgloss.Width("❓ "))
+	m.panelItems = []askItem{{
+		Question: question,
+		Options:  []string{"one", "two", "three", "four", "five", "six"},
+	}}
+	m.panelTab = 0
+	m.panelOptCursor = map[int]int{0: 0}
+	m.panelOptSel = map[int]map[int]bool{0: {}}
+
+	rendered := m.layoutAskUser("")
+	got := strings.Count(stripANSI(rendered), "a")
+	if got != len(question) {
+		t.Fatalf("askuser question lost text at wrap boundary: got %d %q chars, want %d", got, "a", len(question))
+	}
 }
 
 // TestSubscriptionGenerationGuard tests that stale per-subscription values
