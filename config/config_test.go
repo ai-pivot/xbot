@@ -467,44 +467,44 @@ func TestConfigDurationBackwardCompat(t *testing.T) {
 func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	// Simulates what install.sh (jq --arg) writes: port as string "8082"
 	raw := `{
-	  "server": {"host": "0.0.0.0", "port": "8082", "read_timeout": "30s", "write_timeout": "120s"},
-	  "web": {"enable": "true", "host": "127.0.0.1", "port": "8082"},
-	  "oauth": {"enable": "false", "port": "8081"},
-	  "pprof": {"enable": "true", "port": "6060"},
-	  "feishu": {"enabled": "true"},
-	  "qq": {"enabled": "false"},
-	  "napcat": {"enabled": "1"},
-	  "agent": {
-	    "max_iterations": "2000",
-	    "max_concurrency": "3",
-	    "max_context_tokens": "200000",
-	    "enable_auto_compress": "true",
-	    "compression_threshold": "0.7",
-	    "purge_old_messages": "false",
-	    "max_sub_agent_depth": "6",
-	    "llm_retry_attempts": "5"
-	  },
-	  "embedding": {"max_tokens": "2048"},
-	  "sandbox": {"ws_port": "8080"},
-	  "event_webhook": {"enable": "true", "port": "9090", "max_body_size": "1048576", "rate_limit": "100"},
-	  "plugins": {"enabled": "true", "allow_unverified": "false"},
-	  "llm": {"max_output_tokens": "8192"},
-	  "subscriptions": [
-	    {
-	      "name": "default",
-	      "provider": "openai",
-	      "api_key": "sk-xxx",
-	      "model": "gpt-4o",
-	      "max_output_tokens": "4096",
-	      "max_context": "128000",
-	      "active": "true",
-	      "per_model_configs": {
-	        "gpt-4o": {"max_output_tokens": "8192", "max_context": "200000"}
-	      }
-	    }
-	  ],
-	  "cli_setup_completed": "true"
-	}`
+   "server": {"host": "0.0.0.0", "port": "8082"},
+   "web": {"enable": "true", "host": "127.0.0.1", "port": "8082"},
+   "oauth": {"enable": "false", "port": "8081"},
+   "pprof": {"enable": "true", "port": "6060"},
+   "feishu": {"enabled": "true"},
+   "qq": {"enabled": "false"},
+   "napcat": {"enabled": "1"},
+   "agent": {
+     "max_iterations": "2000",
+     "max_concurrency": "3",
+     "max_context_tokens": "200000",
+     "enable_auto_compress": "true",
+     "compression_threshold": "0.7",
+     "purge_old_messages": "false",
+     "max_sub_agent_depth": "6",
+     "llm_retry_attempts": "5"
+   },
+   "embedding": {"max_tokens": "2048"},
+   "sandbox": {"ws_port": "8080"},
+   "event_webhook": {"enable": "true", "port": "9090", "max_body_size": "1048576", "rate_limit": "100"},
+   "plugins": {"enabled": "true", "allow_unverified": "false"},
+   "llm": {"max_output_tokens": "8192"},
+   "subscriptions": [
+     {
+        "name": "default",
+        "provider": "openai",
+        "api_key": "sk-xxx",
+        "model": "gpt-4o",
+        "max_output_tokens": "4096",
+        "max_context": "128000",
+        "active": "true",
+        "per_model_configs": {
+          "gpt-4o": {"max_output_tokens": "8192", "max_context": "200000"}
+        }
+     }
+   ],
+   "cli_setup_completed": "true"
+}`
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -660,5 +660,128 @@ func TestNormalizeConfigTypes_AlreadyCorrect(t *testing.T) {
 	}
 	if cfg.Agent.MaxIterations != 2000 {
 		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
+	}
+}
+
+func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
+	// Verify that dirty data + unknown fields are preserved through save/load cycle
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	dirtyConfig := `{
+	"server": {"host": "0.0.0.0", "port": "8082"},
+	"web": {"enable": "true", "port": "8082", "custom_web_key": "preserved"},
+	"agent": {"max_iterations": "2000"},
+	"my_custom_section": {"key": "value"},
+	"llm": {"provider": "openai", "model": "gpt-4o"}
+	}`
+	if err := os.WriteFile(path, []byte(dirtyConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load should succeed despite string-typed port/enable/max_iterations
+	cfg := LoadFromFile(path)
+	if cfg == nil {
+		t.Fatal("LoadFromFile returned nil")
+	}
+	if cfg.Server.Port != 8082 {
+		t.Errorf("server.port: got %d, want 8082", cfg.Server.Port)
+	}
+	if !cfg.Web.Enable {
+		t.Error("web.enable: got false, want true")
+	}
+	if cfg.Web.Port != 8082 {
+		t.Errorf("web.port: got %d, want 8082", cfg.Web.Port)
+	}
+	if cfg.Agent.MaxIterations != 2000 {
+		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
+	}
+
+	// Modify a known field and save
+	cfg.Agent.MaxConcurrency = 50
+	if err := SaveToFile(path, cfg); err != nil {
+		t.Fatalf("SaveToFile: %v", err)
+	}
+
+	// Verify: unknown fields preserved, dirty types fixed, new field present
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, `"custom_web_key": "preserved"`) {
+		t.Errorf("custom_web_key not preserved in:\n%s", content)
+	}
+	if !strings.Contains(content, `"my_custom_section"`) {
+		t.Errorf("my_custom_section not preserved in:\n%s", content)
+	}
+	if !strings.Contains(content, `"max_concurrency": 50`) {
+		t.Errorf("max_concurrency=50 not written in:\n%s", content)
+	}
+	// Dirty string values should now be proper types after merge
+	if !strings.Contains(content, `"port": 8082`) {
+		t.Errorf("server.port should be integer 8082, got:\n%s", content)
+	}
+	if !strings.Contains(content, `"enable": true`) {
+		t.Errorf("web.enable should be boolean true, got:\n%s", content)
+	}
+}
+
+func TestNormalizeConfigTypes_FastPath(t *testing.T) {
+	// When types are already correct, normalizeConfigTypes should return original bytes
+	input := `{"server":{"port":8082},"web":{"enable":true}}`
+	result := normalizeConfigTypes([]byte(input))
+	if string(result) != input {
+		t.Errorf("fast path should return original data unchanged.\ninput:  %s\nresult: %s", input, string(result))
+	}
+}
+
+func TestSaveToFile_DirtyDataPreserved(t *testing.T) {
+	// Simulate: user has dirty config.json on disk, code saves back, unknown fields preserved
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	dirty := `{
+	"server": {"host": "0.0.0.0", "port": "8082"},
+	"web": {"enable": "true", "port": "8082"},
+	"agent": {"max_iterations": "100"},
+	"llm": {"provider": "openai", "model": "gpt-4o"},
+	"custom_field": "keep_me"
+	}`
+	if err := os.WriteFile(path, []byte(dirty), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load (normalizes dirty types)
+	cfg := LoadFromFile(path)
+	if cfg == nil {
+		t.Fatal("LoadFromFile returned nil")
+	}
+
+	// Save back
+	if err := SaveToFile(path, cfg); err != nil {
+		t.Fatalf("SaveToFile: %v", err)
+	}
+
+	// Reload and verify
+	cfg2 := LoadFromFile(path)
+	if cfg2 == nil {
+		t.Fatal("second LoadFromFile returned nil")
+	}
+	if cfg2.Server.Port != 8082 {
+		t.Errorf("server.port not preserved: got %d", cfg2.Server.Port)
+	}
+	if !cfg2.Web.Enable {
+		t.Error("web.enable not preserved")
+	}
+	if cfg2.Agent.MaxIterations != 100 {
+		t.Errorf("agent.max_iterations not preserved: got %d", cfg2.Agent.MaxIterations)
+	}
+
+	// Unknown field must survive the save/load cycle
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"custom_field": "keep_me"`) {
+		t.Errorf("custom_field lost after save/load cycle:\n%s", string(data))
 	}
 }

@@ -362,9 +362,7 @@ const (
 // When adding new numeric/bool fields to any config struct, add them here too.
 var configTypeSchema = map[string]map[string]fieldType{
 	"server": {
-		"port":          ftInt,
-		"read_timeout":  ftInt, // Duration handled by UnmarshalJSON, but int fallback
-		"write_timeout": ftInt,
+		"port": ftInt,
 	},
 	"web": {
 		"enable":            ftBool,
@@ -427,69 +425,159 @@ var subscriptionTypeSchema = map[string]fieldType{
 	"active":            ftBool,
 }
 
+// coerceRawValue checks if a JSON RawMessage value is a string that should be
+// int/bool/float and returns the corrected JSON bytes. Returns the original
+// value unchanged if no coercion is needed or possible.
+func coerceRawValue(raw json.RawMessage, ft fieldType) json.RawMessage {
+	s := strings.TrimSpace(string(raw))
+	if len(s) == 0 || s[0] != '"' {
+		return raw // not a string, leave untouched
+	}
+	// Extract the string content
+	var strVal string
+	if json.Unmarshal(raw, &strVal) != nil {
+		return raw
+	}
+	switch ft {
+	case ftBool:
+		switch strings.ToLower(strings.TrimSpace(strVal)) {
+		case "true", "1", "yes", "on":
+			return json.RawMessage(`true`)
+		case "false", "0", "no", "off", "":
+			return json.RawMessage(`false`)
+		}
+	case ftInt, ftInt64:
+		if n, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
+			return json.RawMessage(strconv.FormatInt(n, 10))
+		}
+	case ftFloat:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(strVal), 64); err == nil {
+			b, _ := json.Marshal(f)
+			return json.RawMessage(b)
+		}
+	}
+	return raw // can't coerce, leave as-is
+}
+
+// normalizeObjectFields fixes string→type mismatches in a JSON object.
+// Takes raw JSON object bytes and a field schema, returns fixed bytes and whether changes were made.
+func normalizeObjectFields(objRaw json.RawMessage, schema map[string]fieldType) (json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(objRaw, &obj) != nil {
+		return objRaw, false
+	}
+	changed := false
+	for key, ft := range schema {
+		val, ok := obj[key]
+		if !ok {
+			continue
+		}
+		fixed := coerceRawValue(val, ft)
+		if string(fixed) != string(val) {
+			obj[key] = fixed
+			changed = true
+		}
+	}
+	if !changed {
+		return objRaw, false
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return objRaw, false
+	}
+	return out, true
+}
+
 // normalizeConfigTypes preprocesses raw JSON bytes to coerce string values
 // into the types expected by Go config structs. This handles config files
 // written by install scripts (e.g., jq --arg always writes strings) or
 // manually edited by users who may write "8082" instead of 8082.
 //
+// Uses json.RawMessage for surgical fixes — only modifies fields that need
+// coercion, everything else (formatting, unknown keys, comments-safe structure)
+// is preserved through the RawMessage layer.
+//
 // Returns the (possibly modified) JSON bytes. If preprocessing fails,
 // returns the original data unchanged — the subsequent json.Unmarshal
 // will then produce its own descriptive error.
 func normalizeConfigTypes(data []byte) []byte {
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// Fast path: try direct unmarshal into Config struct first.
+	// If Go can handle the JSON as-is, no preprocessing needed.
+	var probe Config
+	if json.Unmarshal(data, &probe) == nil {
 		return data
+	}
+
+	// Slow path: direct parse failed (likely string values where int/bool expected).
+	// Parse into raw map and surgically fix type mismatches.
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return data // can't even parse as JSON object
 	}
 
 	changed := false
 
-	// Normalize top-level sections
+	// Fix top-level sections
 	for section, fields := range configTypeSchema {
-		sectionMap, ok := raw[section]
+		sectionRaw, ok := raw[section]
 		if !ok {
 			continue
 		}
-		sm, ok := sectionMap.(map[string]any)
-		if !ok {
-			continue
-		}
-		for key, ft := range fields {
-			if coerceMapValue(sm, key, ft) {
-				changed = true
-			}
+		fixed, wasChanged := normalizeObjectFields(sectionRaw, fields)
+		if wasChanged {
+			raw[section] = fixed
+			changed = true
 		}
 	}
 
-	// Normalize subscriptions array items
-	if subs, ok := raw["subscriptions"].([]any); ok {
-		for _, sub := range subs {
-			sm, ok := sub.(map[string]any)
-			if !ok {
-				continue
-			}
-			for key, ft := range subscriptionTypeSchema {
-				if coerceMapValue(sm, key, ft) {
-					changed = true
-				}
-			}
-			// per_model_configs is nested: {"model": {"max_context": "128000"}}
-			if pmc, ok := sm["per_model_configs"].(map[string]any); ok {
-				for _, modelCfg := range pmc {
-					if mm, ok := modelCfg.(map[string]any); ok {
-						for key, ft := range subscriptionTypeSchema {
-							if coerceMapValue(mm, key, ft) {
-								changed = true
+	// Fix subscriptions array items (including nested per_model_configs)
+	if subsRaw, ok := raw["subscriptions"]; ok {
+		var subs []json.RawMessage
+		if json.Unmarshal(subsRaw, &subs) == nil {
+			fixed := make([]json.RawMessage, len(subs))
+			subChanged := false
+			for i, sub := range subs {
+				fixed[i], subChanged = normalizeObjectFields(sub, subscriptionTypeSchema)
+				// Also fix nested per_model_configs
+				var subObj map[string]json.RawMessage
+				if json.Unmarshal(fixed[i], &subObj) == nil {
+					if pmcRaw, ok := subObj["per_model_configs"]; ok {
+						var pmcMap map[string]json.RawMessage
+						if json.Unmarshal(pmcRaw, &pmcMap) == nil {
+							pmcChanged := false
+							for model, modelRaw := range pmcMap {
+								fixedPMC, c := normalizeObjectFields(modelRaw, subscriptionTypeSchema)
+								if c {
+									pmcMap[model] = fixedPMC
+									pmcChanged = true
+								}
+							}
+							if pmcChanged {
+								out, _ := json.Marshal(pmcMap)
+								subObj["per_model_configs"] = out
+								out2, _ := json.Marshal(subObj)
+								fixed[i] = out2
+								subChanged = true
 							}
 						}
 					}
 				}
 			}
+			if subChanged {
+				out, _ := json.Marshal(fixed)
+				raw["subscriptions"] = out
+				changed = true
+			}
 		}
 	}
 
 	// Top-level bool field
-	if coerceMapValue(raw, "cli_setup_completed", ftBool) {
-		changed = true
+	if v, ok := raw["cli_setup_completed"]; ok {
+		fixed := coerceRawValue(v, ftBool)
+		if string(fixed) != string(v) {
+			raw["cli_setup_completed"] = fixed
+			changed = true
+		}
 	}
 
 	if !changed {
@@ -501,48 +589,6 @@ func normalizeConfigTypes(data []byte) []byte {
 		return data
 	}
 	return result
-}
-
-// coerceMapValue attempts to coerce m[key] from a string to the expected type ft.
-// Returns true if the value was changed.
-func coerceMapValue(m map[string]any, key string, ft fieldType) bool {
-	v, ok := m[key]
-	if !ok {
-		return false
-	}
-	s, ok := v.(string)
-	if !ok {
-		return false
-	}
-	switch ft {
-	case ftBool:
-		switch strings.ToLower(strings.TrimSpace(s)) {
-		case "true", "1", "yes", "on":
-			m[key] = true
-			return true
-		case "false", "0", "no", "off", "":
-			m[key] = false
-			return true
-		default:
-			return false
-		}
-	case ftInt:
-		if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
-			m[key] = float64(n) // JSON numbers unmarshal to float64 in map[string]any
-			return true
-		}
-	case ftInt64:
-		if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
-			m[key] = float64(n)
-			return true
-		}
-	case ftFloat:
-		if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
-			m[key] = f
-			return true
-		}
-	}
-	return false
 }
 
 // LoadFromFile 从 JSON 文件加载配置。只覆盖文件中存在的非零值字段。
@@ -587,6 +633,8 @@ func SaveToFile(path string, cfg *Config) error {
 	// 尝试读取磁盘上已有的文件，做 JSON 级合并以保留未知字段
 	finalData := structData
 	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 {
+		// Normalize existing data so dirty string values don't break the merge
+		existing = normalizeConfigTypes(existing)
 		if merged, mergeErr := mergeJSONPreserveUnknown(existing, structData); mergeErr == nil {
 			finalData = merged
 		}
