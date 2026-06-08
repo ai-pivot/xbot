@@ -770,10 +770,21 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		m.savePendingAskUser(msg.ChatID, msg.Metadata)
 	}
 
-	// Deduplication in handleSuHistoryLoad prevents message duplication,
-	// so we accept all messages immediately even during suLoading.
-	// This ensures progress/app responses are visible without delay
-	// when the user sends a message right after session switch.
+	// suLoading guard: during session switch in remote mode, the history
+	// RPC is in-flight. handleSuHistoryLoad will load all messages from DB
+	// (including this reply). Without this guard, handleAgentMessage appends
+	// the live message (with turnID > 0) and handleSuHistoryLoad then appends
+	// the DB version (with turnID = 0) — the dedup key role|timestamp differs
+	// because time.Now() ≠ DB timestamp, producing duplicate messages in
+	// m.messages that survive fullRebuild (symptom: entire chat block repeated).
+	if m.suLoading {
+		log.WithFields(log.Fields{
+			"msg_chatid":   msg.ChatID,
+			"waiting_user": msg.WaitingUser,
+		}).Debug("handleAgentMessage: suLoading, discarding (session switch in progress)")
+		return
+	}
+
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
 		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
@@ -2932,6 +2943,13 @@ func (m *cliModel) appendNewMessagesToCache() {
 	m.cachedHistory = sb.String()
 	m.renderCacheValid = true
 	m.cachedMsgCount = len(m.messages)
+
+	// Invalidate cachedHistoryLines so setViewportContent's slow path
+	// re-wraps and re-caches the lines. Without this, cachedHistoryLines
+	// is stale (missing the new messages) and the tick fast path renders
+	// incomplete history, causing visual duplication or missing content.
+	m.cachedHistoryLines = nil
+	m.cachedWrappedHistoryRaw = ""
 
 	// Set viewport with new content + progress block
 	var vp strings.Builder

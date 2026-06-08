@@ -2154,7 +2154,8 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 		headerLines = 2 // tab bar + blank line
 	}
 	// Question: may be multiple lines after hardWrap.
-	qWrapWidth := m.width - 6
+	// Use chatWidth() (not m.width) so the panel respects sidebar width.
+	qWrapWidth := m.chatWidth() - 6
 	if qWrapWidth < 20 {
 		qWrapWidth = 20
 	}
@@ -2534,8 +2535,9 @@ func (m *cliModel) viewAskUserPanel() string {
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
 		isLastTab := m.panelTab == len(m.panelItems)-1
-		// Wrap question text to fit inside PanelBox (border 2 + padding 2 + scrollbar reserve 2)
-		qWrapWidth := m.width - 6
+		// Wrap question text to fit inside PanelBox (border 2 + padding 2 + scrollbar reserve 2).
+		// Use chatWidth() (not m.width) so the panel respects sidebar width.
+		qWrapWidth := m.chatWidth() - 6
 		if qWrapWidth < 20 {
 			qWrapWidth = 20
 		}

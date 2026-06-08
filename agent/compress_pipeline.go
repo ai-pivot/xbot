@@ -93,7 +93,15 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 		// Persist LLMView (not SessionView) to preserve complete tool call/result
 		// structure. SessionView folds tool messages into flat text summaries,
 		// which loses the original tool structure that TUI needs to render properly.
-		if ok, _ := params.Persistence.RewriteAfterCompress(newMessages, len(newMessages)); !ok {
+		// Strip system messages before persisting — session storage must never
+		// contain system messages (they are rebuilt from scratch by buildPrompt).
+		persistView := make([]llm.ChatMessage, 0, len(newMessages))
+		for _, msg := range newMessages {
+			if msg.Role != "system" {
+				persistView = append(persistView, msg)
+			}
+		}
+		if ok, _ := params.Persistence.RewriteAfterCompress(persistView, len(persistView)); !ok {
 			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
 		}
 	}
