@@ -2154,12 +2154,12 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 			if len(toolIters) > 0 {
 				if m.toolSummaryExpanded {
-					// ── Expanded: per-iteration blocks with separators ──
+					// ── Expanded: per-iteration blocks with left bar grouping ──
+					bar := s.ProgressDone.Render("▎")
 					for ii := range toolIters {
 						it := &toolIters[ii]
 						allTools := it.Tools
-						// Iteration header: dim colored, distinctive from content
-						iterLabel := s.ProgressIter.Render(fmt.Sprintf("#%d", it.Iteration))
+						iterLabel := bar + " " + s.ProgressIter.Render(fmt.Sprintf("#%d", it.Iteration))
 						if it.ElapsedWall > 0 {
 							iterLabel += s.TextMutedSt.Render(fmt.Sprintf(" · %s", formatElapsed(it.ElapsedWall)))
 						}
@@ -2195,7 +2195,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 									if line == "" {
 										continue
 									}
-									bodyLines = append(bodyLines, s.TextMutedSt.Render("  "+line))
+									bodyLines = append(bodyLines, bar+" "+s.TextMutedSt.Render(line))
 								}
 							}
 						}
@@ -2209,10 +2209,9 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								if line == "" {
 									continue
 								}
-								bodyLines = append(bodyLines, s.TextMutedSt.Render("  "+line))
+								bodyLines = append(bodyLines, bar+" "+s.TextMutedSt.Render(line))
 							}
 						}
-						// Tool details
 						for k := range allTools {
 							tool := &allTools[k]
 							toolLabel, icon, sty := toolDisplayInfo(*tool, s.ToolItem, s.ToolErrorItem)
