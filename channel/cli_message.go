@@ -2199,7 +2199,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								}
 							}
 						}
-						if it.Thinking != "" {
+						if !isLastIter && it.Thinking != "" {
 							rendered, err := m.renderer.Render(it.Thinking)
 							if err != nil {
 								rendered = it.Thinking
@@ -2219,11 +2219,11 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 							if tool.Elapsed > 0 {
 								elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
 							}
-							bodyLines = append(bodyLines, sty.Render(fmt.Sprintf("  %s %s%s", icon, toolLabel, elapsed)))
+							bodyLines = append(bodyLines, bar+" "+sty.Render(fmt.Sprintf("%s %s%s", icon, toolLabel, elapsed)))
 						}
 						// Separator between iterations (dim dotted line)
 						if ii < len(toolIters)-1 {
-							bodyLines = append(bodyLines, s.DimGuideSt.Render("  ·· ·· ·· ·· ·· ·· ·· ·· ··"))
+							bodyLines = append(bodyLines, bar+" "+s.DimGuideSt.Render("·· ·· ·· ·· ·· ·· ·· ·· ··"))
 						}
 					}
 					// Thick separator between tool iterations and content
