@@ -1167,53 +1167,70 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 	m.updateViewportContent()
 }
 
-// renderProgressBlock renders the iteration progress panel for the viewport.
-// The output is cached via fingerprint — the expensive blockStyle.Render()
-// (lipgloss border wrapping with ANSI width calculation on every character)
-// renderHistoryRange renders a slice of iteration snapshots into buf.
-// Extracted from renderProgressBlock to enable incremental rebuild — when only
-// the last iteration is new, we render just that one instead of all N.
+// renderHistoryRange renders completed iteration snapshots into buf.
+// Uses plain text (hardWrapRunes) instead of glamour — glamour's wrapWidth
+// is set for chat messages and doesn't match progress innerWidth.
+// Visual style matches the settled expanded view (▎ left bar, same format).
 func (m *cliModel) renderHistoryRange(
 	buf *strings.Builder,
 	snaps []cliIterationSnapshot,
 	innerWidth int,
 	toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, iterStyle lipgloss.Style,
 ) {
-	// Guide prefix for tool body content in history (4-space indent)
-	toolBodyGuide := "    "
-
+	bar := dimStyle.Render("▎")
 	for j := range snaps {
 		snap := &snaps[j]
-		buf.WriteString(dimStyle.Render(iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))))
+		// Iteration header — same format as settled expanded
+		iterLabel := bar + " " + iterStyle.Render(fmt.Sprintf("#%d", snap.Iteration))
+		if snap.ElapsedWall > 0 {
+			iterLabel += dimStyle.Render(fmt.Sprintf(" · %s", formatElapsed(snap.ElapsedWall)))
+		}
+		if len(snap.Tools) > 0 {
+			sc, ec := 0, 0
+			for _, t := range snap.Tools {
+				if t.Status == "error" {
+					ec++
+				} else {
+					sc++
+				}
+			}
+			iterLabel += dimStyle.Render(fmt.Sprintf(" · %d tools", len(snap.Tools)))
+			if ec > 0 {
+				iterLabel += " " + toolErrorStyle.Render(fmt.Sprintf("✗%d", ec))
+			}
+			if sc > 0 {
+				iterLabel += " " + toolDoneStyle.Render(fmt.Sprintf("✓%d", sc))
+			}
+		}
+		buf.WriteString(dimStyle.Render(iterLabel))
 		buf.WriteString("\n")
+		// Reasoning — plain text, dimmed
 		if snap.Reasoning != "" {
-			rendered, err := m.renderer.Render(snap.Reasoning)
-			if err != nil {
-				rendered = snap.Reasoning
-			}
-			for _, line := range strings.Split(rendered, "\n") {
+			for _, line := range strings.Split(snap.Reasoning, "\n") {
 				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
 					continue
 				}
-				buf.WriteString(dimStyle.Render(line))
-				buf.WriteString("\n")
+				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-4), "\n") {
+					buf.WriteString(bar + " " + dimStyle.Render(wl))
+					buf.WriteString("\n")
+				}
 			}
 		}
+		// Thinking — plain text, dimmed
 		if snap.Thinking != "" {
-			rendered, err := m.renderer.Render(snap.Thinking)
-			if err != nil {
-				rendered = snap.Thinking
-			}
-			for _, line := range strings.Split(rendered, "\n") {
+			for _, line := range strings.Split(snap.Thinking, "\n") {
 				line = strings.TrimRight(line, " \t\r")
 				if line == "" {
 					continue
 				}
-				buf.WriteString(dimStyle.Render(line))
-				buf.WriteString("\n")
+				for _, wl := range strings.Split(hardWrapRunes(line, innerWidth-4), "\n") {
+					buf.WriteString(bar + " " + dimStyle.Render(wl))
+					buf.WriteString("\n")
+				}
 			}
 		}
+		// Tools
 		for k := range snap.Tools {
 			tool := &snap.Tools[k]
 			label, icon, sty := toolDisplayInfo(*tool, toolDoneStyle, toolErrorStyle)
@@ -1221,12 +1238,8 @@ func (m *cliModel) renderHistoryRange(
 			if tool.Elapsed > 0 {
 				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
 			}
-			buf.WriteString(dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth))))
+			buf.WriteString(bar + " " + dimStyle.Render(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth-4))))
 			buf.WriteString("\n")
-			if content := m.renderToolContentBelow(tool, toolBodyGuide, innerWidth, true, 0); content != "" {
-				buf.WriteString(content)
-				buf.WriteString("\n")
-			}
 		}
 	}
 }
@@ -1645,11 +1658,8 @@ func (m *cliModel) getCurrentStaticCache(
 //  6. Phase spinner (only when no content at all)
 //  7. SubAgent tree
 //
-// renderStreamMd renders markdown content through the glamour renderer for the
-// progress panel. Returns the rendered string with trailing newline.
-// If showCursor is true, appends a typewriter cursor ▋ to the last content line.
-// This is O(content_length) per call, but only runs for the current iteration
-// (O(1) relative to total iteration count).
+// renderStreamMd renders markdown content through the glamour renderer for
+// SETTLED (non-live) content like tool_summary expanded reasoning.
 func (m *cliModel) renderStreamMd(content string, cursorStyle lipgloss.Style, showCursor bool) string {
 	rendered, err := m.renderer.Render(content)
 	if err != nil {
@@ -1668,6 +1678,34 @@ func (m *cliModel) renderStreamMd(content string, cursorStyle lipgloss.Style, sh
 	return rendered + "\n"
 }
 
+// renderStreamText renders plain text with wrapping for LIVE progress content.
+// Uses hardWrapRunes (fast, correct width) instead of glamour (wrong width for progress).
+func (m *cliModel) renderStreamText(content string, wrapWidth int, cursorStyle lipgloss.Style, showCursor bool, bar string) string {
+	if wrapWidth < 10 {
+		wrapWidth = 10
+	}
+	var sb strings.Builder
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" {
+			continue
+		}
+		isLast := i == len(lines)-1
+		wrappedLines := strings.Split(hardWrapRunes(line, wrapWidth), "\n")
+		for j, wl := range wrappedLines {
+			isLastWrap := isLast && j == len(wrappedLines)-1
+			if isLastWrap && showCursor {
+				sb.WriteString(bar + " " + wl + cursorStyle.Render("▋"))
+			} else {
+				sb.WriteString(bar + " " + wl)
+			}
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
+
 // Reasoning, thinking, and stream blocks use glamour for markdown rendering.
 // Each block has an FP-based cache so unchanged content is not re-rendered.
 func (m *cliModel) renderCurrentIteration(
@@ -1680,6 +1718,7 @@ func (m *cliModel) renderCurrentIteration(
 		return
 	}
 
+	bar := s.ProgressDone.Render("▎")
 	cursorState := int((m.ticker.ticks / 5) % 2) // 0 or 1, changes every ~500ms
 
 	// --- 1. Reasoning (glamour-rendered) ---
@@ -1746,7 +1785,7 @@ func (m *cliModel) renderCurrentIteration(
 			}
 			streamText := string(runes)
 			typing := m.twVisible < totalRunes
-			block := m.renderStreamMd(streamText, s.StreamCursor, typing && cursorState == 0)
+			block := m.renderStreamText(streamText, innerWidth-4, s.StreamCursor, typing && cursorState == 0, bar)
 			m.cachedStreamBlock = block
 			m.cachedStreamBlockFP = fp
 			m.cachedStreamBlockWidth = innerWidth
@@ -1759,23 +1798,19 @@ func (m *cliModel) renderCurrentIteration(
 		if !hasReasoning && !hasThinking {
 			switch m.progress.Phase {
 			case "thinking":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.view())
+				sb.WriteString(bar + " " + m.ticker.view())
 				sb.WriteString(s.ProgressThinking.Render(" " + m.pickVerb(m.ticker.ticks) + "..."))
 				sb.WriteString("\n")
 			case "compressing":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.viewFrames(orbitFrames))
+				sb.WriteString(bar + " " + m.ticker.viewFrames(orbitFrames))
 				sb.WriteString(s.ProgressThinking.Render(" compressing..."))
 				sb.WriteString("\n")
 			case "newing":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.viewFrames(orbitFrames))
+				sb.WriteString(bar + " " + m.ticker.viewFrames(orbitFrames))
 				sb.WriteString(s.ProgressThinking.Render(" resetting session..."))
 				sb.WriteString("\n")
 			case "retrying":
-				sb.WriteString("  ")
-				sb.WriteString(m.ticker.viewFrames(orbitFrames))
+				sb.WriteString(bar + " " + m.ticker.viewFrames(orbitFrames))
 				sb.WriteString(s.ProgressThinking.Render(" retrying..."))
 				sb.WriteString("\n")
 			}
@@ -1796,7 +1831,7 @@ func (m *cliModel) renderCurrentIteration(
 			elapsedMs = tool.Elapsed
 		}
 		elapsedStyled := elapsedStyle.Render(formatElapsed(elapsedMs))
-		sb.WriteString(toolRunningStyle.Render(toolLine(pulseIcon, label, elapsedStyled, innerWidth)))
+		sb.WriteString(bar + " " + toolRunningStyle.Render(toolLine(pulseIcon, label, elapsedStyled, innerWidth-4)))
 		sb.WriteString("\n")
 	}
 
