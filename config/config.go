@@ -345,12 +345,216 @@ func DBFilePath() string {
 	return filepath.Join(XbotHome(), "xbot.db")
 }
 
+// fieldType represents the expected JSON type for a config field.
+// Used by normalizeConfigTypes to coerce string values to the correct type.
+type fieldType int
+
+const (
+	ftInt   fieldType = iota // int fields: port, max_iterations, etc.
+	ftInt64                  // int64 fields: max_body_size
+	ftFloat                  // float64 fields: compression_threshold
+	ftBool                   // bool fields: enabled, enable, active
+)
+
+// configTypeSchema defines the expected JSON types for config fields.
+// Top-level keys map to section names; each section maps field names to expected types.
+// This schema covers all int/bool/float64 fields across all config structs.
+// When adding new numeric/bool fields to any config struct, add them here too.
+var configTypeSchema = map[string]map[string]fieldType{
+	"server": {
+		"port":          ftInt,
+		"read_timeout":  ftInt, // Duration handled by UnmarshalJSON, but int fallback
+		"write_timeout": ftInt,
+	},
+	"web": {
+		"enable":            ftBool,
+		"port":              ftInt,
+		"persona_isolation": ftBool,
+		"invite_only":       ftBool,
+	},
+	"oauth": {
+		"enable": ftBool,
+		"port":   ftInt,
+	},
+	"pprof": {
+		"enable": ftBool,
+		"port":   ftInt,
+	},
+	"feishu": {
+		"enabled": ftBool,
+	},
+	"qq": {
+		"enabled": ftBool,
+	},
+	"napcat": {
+		"enabled": ftBool,
+	},
+	"agent": {
+		"max_iterations":        ftInt,
+		"max_concurrency":       ftInt,
+		"max_context_tokens":    ftInt,
+		"enable_auto_compress":  ftBool,
+		"compression_threshold": ftFloat,
+		"purge_old_messages":    ftBool,
+		"max_sub_agent_depth":   ftInt,
+		"llm_retry_attempts":    ftInt,
+	},
+	"embedding": {
+		"max_tokens": ftInt,
+	},
+	"sandbox": {
+		"ws_port": ftInt,
+	},
+	"event_webhook": {
+		"enable":        ftBool,
+		"port":          ftInt,
+		"max_body_size": ftInt64,
+		"rate_limit":    ftInt,
+	},
+	"plugins": {
+		"enabled":          ftBool,
+		"allow_unverified": ftBool,
+	},
+	"llm": {
+		"max_output_tokens": ftInt,
+	},
+}
+
+// subscriptionTypeSchema defines expected types for subscription array items.
+var subscriptionTypeSchema = map[string]fieldType{
+	"max_output_tokens": ftInt,
+	"max_context":       ftInt,
+	"active":            ftBool,
+}
+
+// normalizeConfigTypes preprocesses raw JSON bytes to coerce string values
+// into the types expected by Go config structs. This handles config files
+// written by install scripts (e.g., jq --arg always writes strings) or
+// manually edited by users who may write "8082" instead of 8082.
+//
+// Returns the (possibly modified) JSON bytes. If preprocessing fails,
+// returns the original data unchanged — the subsequent json.Unmarshal
+// will then produce its own descriptive error.
+func normalizeConfigTypes(data []byte) []byte {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return data
+	}
+
+	changed := false
+
+	// Normalize top-level sections
+	for section, fields := range configTypeSchema {
+		sectionMap, ok := raw[section]
+		if !ok {
+			continue
+		}
+		sm, ok := sectionMap.(map[string]any)
+		if !ok {
+			continue
+		}
+		for key, ft := range fields {
+			if coerceMapValue(sm, key, ft) {
+				changed = true
+			}
+		}
+	}
+
+	// Normalize subscriptions array items
+	if subs, ok := raw["subscriptions"].([]any); ok {
+		for _, sub := range subs {
+			sm, ok := sub.(map[string]any)
+			if !ok {
+				continue
+			}
+			for key, ft := range subscriptionTypeSchema {
+				if coerceMapValue(sm, key, ft) {
+					changed = true
+				}
+			}
+			// per_model_configs is nested: {"model": {"max_context": "128000"}}
+			if pmc, ok := sm["per_model_configs"].(map[string]any); ok {
+				for _, modelCfg := range pmc {
+					if mm, ok := modelCfg.(map[string]any); ok {
+						for key, ft := range subscriptionTypeSchema {
+							if coerceMapValue(mm, key, ft) {
+								changed = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Top-level bool field
+	if coerceMapValue(raw, "cli_setup_completed", ftBool) {
+		changed = true
+	}
+
+	if !changed {
+		return data
+	}
+
+	result, err := json.Marshal(raw)
+	if err != nil {
+		return data
+	}
+	return result
+}
+
+// coerceMapValue attempts to coerce m[key] from a string to the expected type ft.
+// Returns true if the value was changed.
+func coerceMapValue(m map[string]any, key string, ft fieldType) bool {
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	switch ft {
+	case ftBool:
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "true", "1", "yes", "on":
+			m[key] = true
+			return true
+		case "false", "0", "no", "off", "":
+			m[key] = false
+			return true
+		default:
+			return false
+		}
+	case ftInt:
+		if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
+			m[key] = float64(n) // JSON numbers unmarshal to float64 in map[string]any
+			return true
+		}
+	case ftInt64:
+		if n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
+			m[key] = float64(n)
+			return true
+		}
+	case ftFloat:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			m[key] = f
+			return true
+		}
+	}
+	return false
+}
+
 // LoadFromFile 从 JSON 文件加载配置。只覆盖文件中存在的非零值字段。
+// 对 int/bool/float64 字段自动做字符串兼容（如 "8082" → 8082, "true" → true），
+// 防止安装脚本（jq --arg）或手动编辑写入的字符串值导致反序列化失败。
 func LoadFromFile(path string) *Config {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
+	// 预处理：将字符串值转换为 struct 期望的类型
+	data = normalizeConfigTypes(data)
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)

@@ -463,3 +463,202 @@ func TestConfigDurationBackwardCompat(t *testing.T) {
 		t.Errorf("LLMRetryDelay: got %v, want 1s", time.Duration(cfg.Agent.LLMRetryDelay))
 	}
 }
+
+func TestNormalizeConfigTypes_StringPort(t *testing.T) {
+	// Simulates what install.sh (jq --arg) writes: port as string "8082"
+	raw := `{
+	  "server": {"host": "0.0.0.0", "port": "8082", "read_timeout": "30s", "write_timeout": "120s"},
+	  "web": {"enable": "true", "host": "127.0.0.1", "port": "8082"},
+	  "oauth": {"enable": "false", "port": "8081"},
+	  "pprof": {"enable": "true", "port": "6060"},
+	  "feishu": {"enabled": "true"},
+	  "qq": {"enabled": "false"},
+	  "napcat": {"enabled": "1"},
+	  "agent": {
+	    "max_iterations": "2000",
+	    "max_concurrency": "3",
+	    "max_context_tokens": "200000",
+	    "enable_auto_compress": "true",
+	    "compression_threshold": "0.7",
+	    "purge_old_messages": "false",
+	    "max_sub_agent_depth": "6",
+	    "llm_retry_attempts": "5"
+	  },
+	  "embedding": {"max_tokens": "2048"},
+	  "sandbox": {"ws_port": "8080"},
+	  "event_webhook": {"enable": "true", "port": "9090", "max_body_size": "1048576", "rate_limit": "100"},
+	  "plugins": {"enabled": "true", "allow_unverified": "false"},
+	  "llm": {"max_output_tokens": "8192"},
+	  "subscriptions": [
+	    {
+	      "name": "default",
+	      "provider": "openai",
+	      "api_key": "sk-xxx",
+	      "model": "gpt-4o",
+	      "max_output_tokens": "4096",
+	      "max_context": "128000",
+	      "active": "true",
+	      "per_model_configs": {
+	        "gpt-4o": {"max_output_tokens": "8192", "max_context": "200000"}
+	      }
+	    }
+	  ],
+	  "cli_setup_completed": "true"
+	}`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadFromFile(path)
+	if cfg == nil {
+		t.Fatal("LoadFromFile returned nil — string types probably failed to unmarshal")
+	}
+
+	// Verify all coerced int fields
+	if cfg.Server.Port != 8082 {
+		t.Errorf("server.port: got %d, want 8082", cfg.Server.Port)
+	}
+	if cfg.Web.Port != 8082 {
+		t.Errorf("web.port: got %d, want 8082", cfg.Web.Port)
+	}
+	if cfg.Web.Enable != true {
+		t.Errorf("web.enable: got %v, want true", cfg.Web.Enable)
+	}
+	if cfg.OAuth.Enable != false {
+		t.Errorf("oauth.enable: got %v, want false", cfg.OAuth.Enable)
+	}
+	if cfg.OAuth.Port != 8081 {
+		t.Errorf("oauth.port: got %d, want 8081", cfg.OAuth.Port)
+	}
+	if cfg.PProf.Enable != true {
+		t.Errorf("pprof.enable: got %v, want true", cfg.PProf.Enable)
+	}
+	if cfg.PProf.Port != 6060 {
+		t.Errorf("pprof.port: got %d, want 6060", cfg.PProf.Port)
+	}
+	if cfg.Feishu.Enabled != true {
+		t.Errorf("feishu.enabled: got %v, want true", cfg.Feishu.Enabled)
+	}
+	if cfg.QQ.Enabled != false {
+		t.Errorf("qq.enabled: got %v, want false", cfg.QQ.Enabled)
+	}
+	if cfg.NapCat.Enabled != true {
+		t.Errorf("napcat.enabled (='1'): got %v, want true", cfg.NapCat.Enabled)
+	}
+
+	// Agent fields
+	if cfg.Agent.MaxIterations != 2000 {
+		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
+	}
+	if cfg.Agent.MaxConcurrency != 3 {
+		t.Errorf("agent.max_concurrency: got %d, want 3", cfg.Agent.MaxConcurrency)
+	}
+	if cfg.Agent.MaxContextTokens != 200000 {
+		t.Errorf("agent.max_context_tokens: got %d, want 200000", cfg.Agent.MaxContextTokens)
+	}
+	if cfg.Agent.EnableAutoCompress == nil || !*cfg.Agent.EnableAutoCompress {
+		t.Errorf("agent.enable_auto_compress: got %v, want true", cfg.Agent.EnableAutoCompress)
+	}
+	if cfg.Agent.CompressionThreshold != 0.7 {
+		t.Errorf("agent.compression_threshold: got %f, want 0.7", cfg.Agent.CompressionThreshold)
+	}
+	if cfg.Agent.PurgeOldMessages != false {
+		t.Errorf("agent.purge_old_messages: got %v, want false", cfg.Agent.PurgeOldMessages)
+	}
+	if cfg.Agent.MaxSubAgentDepth != 6 {
+		t.Errorf("agent.max_sub_agent_depth: got %d, want 6", cfg.Agent.MaxSubAgentDepth)
+	}
+	if cfg.Agent.LLMRetryAttempts != 5 {
+		t.Errorf("agent.llm_retry_attempts: got %d, want 5", cfg.Agent.LLMRetryAttempts)
+	}
+
+	// Other sections
+	if cfg.Embedding.MaxTokens != 2048 {
+		t.Errorf("embedding.max_tokens: got %d, want 2048", cfg.Embedding.MaxTokens)
+	}
+	if cfg.Sandbox.WSPort != 8080 {
+		t.Errorf("sandbox.ws_port: got %d, want 8080", cfg.Sandbox.WSPort)
+	}
+	if cfg.EventWebhook.Enable != true {
+		t.Errorf("event_webhook.enable: got %v, want true", cfg.EventWebhook.Enable)
+	}
+	if cfg.EventWebhook.Port != 9090 {
+		t.Errorf("event_webhook.port: got %d, want 9090", cfg.EventWebhook.Port)
+	}
+	if cfg.EventWebhook.MaxBodySize != 1048576 {
+		t.Errorf("event_webhook.max_body_size: got %d, want 1048576", cfg.EventWebhook.MaxBodySize)
+	}
+	if cfg.EventWebhook.RateLimit != 100 {
+		t.Errorf("event_webhook.rate_limit: got %d, want 100", cfg.EventWebhook.RateLimit)
+	}
+	if cfg.Plugins.Enabled != true {
+		t.Errorf("plugins.enabled: got %v, want true", cfg.Plugins.Enabled)
+	}
+	if cfg.LLM.MaxOutputTokens != 8192 {
+		t.Errorf("llm.max_output_tokens: got %d, want 8192", cfg.LLM.MaxOutputTokens)
+	}
+
+	// Subscription fields
+	if len(cfg.Subscriptions) != 1 {
+		t.Fatalf("subscriptions: got %d, want 1", len(cfg.Subscriptions))
+	}
+	sub := cfg.Subscriptions[0]
+	if sub.MaxOutputTokens != 4096 {
+		t.Errorf("subscription.max_output_tokens: got %d, want 4096", sub.MaxOutputTokens)
+	}
+	if sub.MaxContext != 128000 {
+		t.Errorf("subscription.max_context: got %d, want 128000", sub.MaxContext)
+	}
+	if sub.Active != true {
+		t.Errorf("subscription.active: got %v, want true", sub.Active)
+	}
+
+	// PerModelConfigs
+	if len(sub.PerModelConfigs) != 1 {
+		t.Fatalf("per_model_configs: got %d entries, want 1", len(sub.PerModelConfigs))
+	}
+	pmc, ok := sub.PerModelConfigs["gpt-4o"]
+	if !ok {
+		t.Fatal("per_model_configs['gpt-4o'] not found")
+	}
+	if pmc.MaxOutputTokens != 8192 {
+		t.Errorf("per_model_configs.gpt-4o.max_output_tokens: got %d, want 8192", pmc.MaxOutputTokens)
+	}
+	if pmc.MaxContext != 200000 {
+		t.Errorf("per_model_configs.gpt-4o.max_context: got %d, want 200000", pmc.MaxContext)
+	}
+}
+
+func TestNormalizeConfigTypes_AlreadyCorrect(t *testing.T) {
+	// When types are already correct, normalization should be a no-op
+	raw := `{
+	  "server": {"host": "0.0.0.0", "port": 8082},
+	  "web": {"enable": true, "port": 8082},
+	  "agent": {"max_iterations": 2000}
+	}`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadFromFile(path)
+	if cfg == nil {
+		t.Fatal("LoadFromFile returned nil")
+	}
+	if cfg.Server.Port != 8082 {
+		t.Errorf("server.port: got %d, want 8082", cfg.Server.Port)
+	}
+	if cfg.Web.Port != 8082 {
+		t.Errorf("web.port: got %d, want 8082", cfg.Web.Port)
+	}
+	if cfg.Web.Enable != true {
+		t.Errorf("web.enable: got %v, want true", cfg.Web.Enable)
+	}
+	if cfg.Agent.MaxIterations != 2000 {
+		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
+	}
+}
