@@ -2068,130 +2068,9 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	switch msg.role {
 	case "tool_summary":
-		// New design: borderless iteration summaries
-		toolItemStyle := s.ToolItem
-		toolErrorItemStyle := s.ToolErrorItem
-		toolHeaderStyle := s.ToolHeader
-		hintStyle := s.ToolHint
-
-		// 统计总工具数和总耗时
-		allTools, iterCount := msg.iterToolsFlat()
-		totalTools := len(allTools)
-		totalMs := int64(0)
-		for _, it := range msg.iterations {
-			totalMs += it.ElapsedWall
-		}
-
-		var toolSb strings.Builder
-
-		if m.toolSummaryExpanded {
-			// 展开模式：完整渲染每个迭代
-			if iterCount > 0 {
-				for ii := range msg.iterations {
-					it := &msg.iterations[ii]
-					iterLabel := fmt.Sprintf("#%d", it.Iteration)
-					if it.ElapsedWall > 0 {
-						iterLabel += " · " + formatElapsed(it.ElapsedWall)
-					}
-					// Tool count for this iteration
-					iterToolCount := len(it.Tools)
-					if iterToolCount > 0 {
-						successCount, errCount := 0, 0
-						for _, t := range it.Tools {
-							if t.Status == "error" {
-								errCount++
-							} else {
-								successCount++
-							}
-						}
-						iterLabel += fmt.Sprintf(" · %d tools", iterToolCount)
-						if errCount > 0 {
-							iterLabel += fmt.Sprintf(" %s%d %s%d",
-								s.ProgressError.Render("✗"), errCount,
-								s.ProgressDone.Render("✓"), successCount)
-						}
-					}
-					toolSb.WriteString(s.ProgressIter.Render(iterLabel))
-					toolSb.WriteString("\n")
-					if it.Reasoning != "" {
-						rendered, err := m.renderer.Render(it.Reasoning)
-						if err != nil {
-							rendered = it.Reasoning
-						}
-						for _, line := range strings.Split(rendered, "\n") {
-							line = strings.TrimRight(line, " \t\r")
-							if line == "" {
-								continue
-							}
-							toolSb.WriteString("  " + line)
-							toolSb.WriteString("\n")
-						}
-					}
-					if it.Thinking != "" {
-						rendered, err := m.renderer.Render(it.Thinking)
-						if err != nil {
-							rendered = it.Thinking
-						}
-						for _, line := range strings.Split(rendered, "\n") {
-							line = strings.TrimRight(line, " \t\r")
-							if line == "" {
-								continue
-							}
-							toolSb.WriteString("  " + line)
-							toolSb.WriteString("\n")
-						}
-					}
-					for k := range it.Tools {
-						tool := &it.Tools[k]
-						label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
-						elapsed := ""
-						if tool.Elapsed > 0 {
-							elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
-						}
-						toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
-						toolSb.WriteString("\n")
-						// Render tool body (diff hints or per-tool output)
-						if content := m.renderToolContentBelow(tool, "    ", contentWidth, false, 0); content != "" {
-							toolSb.WriteString(content)
-							toolSb.WriteString("\n")
-						}
-					}
-				}
-			} else {
-				for i := range msg.tools {
-					tool := &msg.tools[i]
-					label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
-					elapsed := ""
-					if tool.Elapsed > 0 {
-						elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
-					}
-					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
-					toolSb.WriteString("\n")
-				}
-			}
-		} else {
-			// 折叠模式：紧凑单行摘要（无边框）
-			elapsedStr := formatElapsed(totalMs)
-			successCount, errorCount := 0, 0
-			for _, tool := range allTools {
-				if tool.Status == "error" {
-					errorCount++
-				} else {
-					successCount++
-				}
-			}
-			// Build compact summary: "3 calls · 1.2s ✓2 ✗1  [Ctrl+O]"
-			summary := toolHeaderStyle.Render(fmt.Sprintf("%d calls · %s", totalTools, elapsedStr))
-			if errorCount > 0 {
-				summary += " " + s.ProgressError.Render(fmt.Sprintf("✗%d", errorCount))
-			}
-			if successCount > 0 {
-				summary += " " + s.ProgressDone.Render(fmt.Sprintf("✓%d", successCount))
-			}
-			summary += "  " + hintStyle.Render("[Ctrl+O]")
-			toolSb.WriteString(summary)
-		}
-		sb.WriteString(toolSb.String())
+		// Tool summary is now rendered inline within the assistant message.
+		// Hide the standalone tool_summary message to avoid duplication.
+		return ""
 	case "system":
 		if msg.styled {
 			// Pre-styled content: output as-is, no wrapping
@@ -2243,14 +2122,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 		sb.WriteString(strings.Join(userLines, "\n"))
 	default:
-		// assistant 消息 — crush 风格：先构建内容体，再逐行加 guide 前缀
-		// Streaming: bright guide; Completed: dim guide
-		var guideSt lipgloss.Style
-		guideSym := "┊ "
+		// assistant 消息 — 无 guide 前缀的干净布局
+		// tool_summary 迭代（如果有）作为 body 开头部分
+		// Streaming: bright header; Completed: dim header
+		var headerSt lipgloss.Style
 		if msg.isPartial {
-			guideSt = s.GuideSt
+			headerSt = s.GuideSt
 		} else {
-			guideSt = s.DimGuideSt
+			headerSt = s.DimGuideSt
 		}
 
 		// Build header line
@@ -2258,15 +2137,129 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		if !msg.isPartial {
 			label = lipgloss.NewStyle().Foreground(lipgloss.Color(currentTheme.TextSecondary)).Render("Assistant")
 		}
-		headerLine := fmt.Sprintf("%s %s", guideSt.Render(guideSym)+timeStr, label)
+		headerLine := fmt.Sprintf("%s %s", headerSt.Render("┊ ")+timeStr, label)
 		if msg.isPartial {
 			headerLine += " ..."
 		}
 		sb.WriteString(headerLine)
 		sb.WriteString("\n")
 
-		// Build body lines (thinking box + content + cursor)
+		// Build body lines (tool iterations + thinking box + content + cursor)
 		var bodyLines []string
+
+		// Tool iterations summary (compact per-iteration lines)
+		// Find the tool_summary message for this same turn to get iteration data
+		if !msg.isPartial {
+			var toolIters []cliIterationSnapshot
+			// Check if this assistant message has iterations from tool_summary merge
+			if len(msg.iterations) > 0 {
+				toolIters = msg.iterations
+			} else {
+				// Fallback: search backwards for tool_summary with same turnID
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if m.messages[i].turnID == msg.turnID && m.messages[i].role == "tool_summary" {
+						toolIters = m.messages[i].iterations
+						break
+					}
+				}
+			}
+			if len(toolIters) > 0 {
+				if m.toolSummaryExpanded {
+					// Expanded mode: full iteration details with reasoning
+					for ii := range toolIters {
+						it := &toolIters[ii]
+						allTools := it.Tools
+						iterLabel := fmt.Sprintf("#%d", it.Iteration)
+						if it.ElapsedWall > 0 {
+							iterLabel += " · " + formatElapsed(it.ElapsedWall)
+						}
+						if len(allTools) > 0 {
+							successCount, errCount := 0, 0
+							for _, t := range allTools {
+								if t.Status == "error" {
+									errCount++
+								} else {
+									successCount++
+								}
+							}
+							iterLabel += fmt.Sprintf(" · %d tools", len(allTools))
+							if errCount > 0 {
+								iterLabel += fmt.Sprintf(" %s%d %s%d",
+									s.ProgressError.Render("✗"), errCount,
+									s.ProgressDone.Render("✓"), successCount)
+							}
+						}
+						bodyLines = append(bodyLines, s.TextMutedSt.Render(iterLabel))
+						// Reasoning (glamour-rendered)
+						if it.Reasoning != "" {
+							rendered, err := m.renderer.Render(it.Reasoning)
+							if err != nil {
+								rendered = it.Reasoning
+							}
+							for _, line := range strings.Split(rendered, "\n") {
+								line = strings.TrimRight(line, " \t\r")
+								if line == "" {
+									continue
+								}
+								bodyLines = append(bodyLines, "  "+line)
+							}
+						}
+						// Thinking (glamour-rendered)
+						if it.Thinking != "" {
+							rendered, err := m.renderer.Render(it.Thinking)
+							if err != nil {
+								rendered = it.Thinking
+							}
+							for _, line := range strings.Split(rendered, "\n") {
+								line = strings.TrimRight(line, " \t\r")
+								if line == "" {
+									continue
+								}
+								bodyLines = append(bodyLines, "  "+line)
+							}
+						}
+						// Tool details
+						for k := range allTools {
+							tool := &allTools[k]
+							toolLabel, icon, sty := toolDisplayInfo(*tool, s.ToolItem, s.ToolErrorItem)
+							elapsed := ""
+							if tool.Elapsed > 0 {
+								elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
+							}
+							bodyLines = append(bodyLines, sty.Render(fmt.Sprintf("  %s %s%s", icon, toolLabel, elapsed)))
+						}
+					}
+				} else {
+					// Collapsed mode: compact summary per iteration
+					totalMs := int64(0)
+					totalTools := 0
+					for _, it := range toolIters {
+						totalMs += it.ElapsedWall
+						totalTools += len(it.Tools)
+					}
+					successCount, errorCount := 0, 0
+					for _, it := range toolIters {
+						for _, t := range it.Tools {
+							if t.Status == "error" {
+								errorCount++
+							} else {
+								successCount++
+							}
+						}
+					}
+					summary := s.ToolHeader.Render(fmt.Sprintf("%d calls · %s", totalTools, formatElapsed(totalMs)))
+					if errorCount > 0 {
+						summary += " " + s.ProgressError.Render(fmt.Sprintf("✗%d", errorCount))
+					}
+					if successCount > 0 {
+						summary += " " + s.ProgressDone.Render(fmt.Sprintf("✓%d", successCount))
+					}
+					summary += "  " + s.ToolHint.Render("[Ctrl+O]")
+					bodyLines = append(bodyLines, summary)
+				}
+				bodyLines = append(bodyLines, "") // blank separator
+			}
+		}
 
 		// Thinking Box
 		if !msg.isPartial && msg.thinking != "" {
@@ -2331,17 +2324,9 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		}
 
-		// Render all body lines with guide prefix.
-		// ANSI reset before guide: clears inline code background color inherited
-		// from the previous body line (hardWrapRunes doesn't add trailing reset
-		// when breaking inside an inline code span, so bg color leaks forward).
-		// ANSI reset after guide: prevents guide foreground from mixing with
-		// body line ANSI styles.
-		// Right-align: body content width = contentWidth (same as user msg "You"),
-		// so guide(2) + body(cw-4) leaves 2 cols right padding.
-		const ansiReset = "\x1b[0m"
+		// Render all body lines — no guide prefix, clean layout.
+		// Each line gets a 2-space indent for visual alignment with header.
 		for _, l := range bodyLines {
-			sb.WriteString(ansiReset + guideSt.Render(guideSym) + ansiReset)
 			sb.WriteString(l)
 			sb.WriteString("\n")
 		}
