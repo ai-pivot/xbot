@@ -139,6 +139,32 @@ xbot 使用**订阅（Subscription）系统**管理 LLM 配置，不再使用全
 
 > ⚠️ **Server 模式**：`user_llm_subscriptions` 表中的订阅为单一真相来源，管理员通过 TUI `/setup` 创建后全团队共享。`user_settings` 表不应包含订阅字段（provider, model, api_key 等）。
 
+### Model Tier 设置（用户级）
+
+Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模式）或 `config.json` 的全局 `llm` 字段（CLI 模式），不在 Subscription 中。通过 TUI `/settings` 面板配置。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `vanguard_model` | string | Vanguard 级别模型（最强推理，SubAgent 用） |
+| `balance_model` | string | Balance 级别模型（均衡，SubAgent 用） |
+| `swift_model` | string | Swift 级别模型（快速，SubAgent 用） |
+
+未配置的层自动回退：vanguard → balance → swift。
+
+**CLI 模式 config.json 示例：**
+
+```json
+{
+  "llm": {
+    "vanguard_model": "claude-opus-4",
+    "balance_model": "claude-sonnet-4",
+    "swift_model": "claude-haiku-4"
+  }
+}
+```
+
+**Server 模式**：通过 `/settings` → LLM Settings 配置，存储在 `user_settings` 表中。
+
 ### Agent 配置
 
 ```json
