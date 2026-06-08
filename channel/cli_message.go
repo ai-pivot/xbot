@@ -1359,7 +1359,13 @@ func (m *cliModel) renderProgressBlock() string {
 	// History lines are already padded — directly append
 	allPaddedLines = append(allPaddedLines, historyLines...)
 
-	// Pad only the current iteration content (divider + current iter — always short)
+	// Separator between history and current iteration
+	if len(historyLines) > 0 && currentContent != "" {
+		sepLine := " " + dimStyle.Render("  ···") + " "
+		allPaddedLines = append(allPaddedLines, sepLine)
+	}
+
+	// Pad only the current iteration content (always short)
 	if currentContent != "" {
 		currentLines := padLinesFromContent(currentContent)
 		allPaddedLines = append(allPaddedLines, currentLines...)
@@ -2071,10 +2077,16 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			sb.WriteString(systemMsgStyle.Render(msg.content))
 		}
 	case "user":
-		// 用户消息上方：右侧柔和光点分隔，与 assistant 的左侧竖线形成对称
-		dotSep := s.UserDotSep.Width(chatUsableWidth).Align(lipgloss.Right).Render("···")
-		sb.WriteString(dotSep)
+		// 用户消息：右对齐布局，与 assistant 左对齐形成对称
+		// 上方：细线分隔（右对齐，占 1/3 宽度）
+		sepWidth := chatUsableWidth / 3
+		sep := s.DimGuideSt.Render(strings.Repeat("─", sepWidth))
+		sepLine := s.UserHeader.Width(chatUsableWidth).Align(lipgloss.Right).Render(sep)
+		sb.WriteString("")
 		sb.WriteString("\n")
+		sb.WriteString(sepLine)
+		sb.WriteString("\n")
+		// Header: 右对齐时间 + You 标签
 		label := userLabelStyle.Render("You")
 		header := s.UserHeader.Width(chatUsableWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
 		sb.WriteString(header)
@@ -2124,18 +2136,15 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		sb.WriteString(headerLine)
 		sb.WriteString("\n")
 
-		// Build body lines (tool iterations + thinking box + content + cursor)
+		// Build body lines — layered layout with clear visual hierarchy
 		var bodyLines []string
 
-		// Tool iterations summary (compact per-iteration lines)
-		// Find the tool_summary message for this same turn to get iteration data
+		// ── Layer 1: Tool iterations (metadata, visually distinct from content) ──
 		if !msg.isPartial {
 			var toolIters []cliIterationSnapshot
-			// Check if this assistant message has iterations from tool_summary merge
 			if len(msg.iterations) > 0 {
 				toolIters = msg.iterations
 			} else {
-				// Fallback: search backwards for tool_summary with same turnID
 				for i := len(m.messages) - 1; i >= 0; i-- {
 					if m.messages[i].turnID == msg.turnID && m.messages[i].role == "tool_summary" {
 						toolIters = m.messages[i].iterations
@@ -2145,13 +2154,14 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 			if len(toolIters) > 0 {
 				if m.toolSummaryExpanded {
-					// Expanded mode: full iteration details with reasoning
+					// ── Expanded: per-iteration blocks with separators ──
 					for ii := range toolIters {
 						it := &toolIters[ii]
 						allTools := it.Tools
-						iterLabel := fmt.Sprintf("#%d", it.Iteration)
+						// Iteration header: dim colored, distinctive from content
+						iterLabel := s.ProgressIter.Render(fmt.Sprintf("#%d", it.Iteration))
 						if it.ElapsedWall > 0 {
-							iterLabel += " · " + formatElapsed(it.ElapsedWall)
+							iterLabel += s.TextMutedSt.Render(fmt.Sprintf(" · %s", formatElapsed(it.ElapsedWall)))
 						}
 						if len(allTools) > 0 {
 							successCount, errCount := 0, 0
@@ -2162,29 +2172,33 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 									successCount++
 								}
 							}
-							iterLabel += fmt.Sprintf(" · %d tools", len(allTools))
+							iterLabel += s.TextMutedSt.Render(fmt.Sprintf(" · %d tools", len(allTools)))
 							if errCount > 0 {
-								iterLabel += fmt.Sprintf(" %s%d %s%d",
-									s.ProgressError.Render("✗"), errCount,
-									s.ProgressDone.Render("✓"), successCount)
+								iterLabel += " " + s.ProgressError.Render(fmt.Sprintf("✗%d", errCount))
+							}
+							if successCount > 0 {
+								iterLabel += " " + s.ProgressDone.Render(fmt.Sprintf("✓%d", successCount))
 							}
 						}
-						bodyLines = append(bodyLines, s.TextMutedSt.Render(iterLabel))
-						// Reasoning (glamour-rendered)
-						if it.Reasoning != "" {
-							rendered, err := m.renderer.Render(it.Reasoning)
-							if err != nil {
-								rendered = it.Reasoning
-							}
-							for _, line := range strings.Split(rendered, "\n") {
-								line = strings.TrimRight(line, " \t\r")
-								if line == "" {
-									continue
+						bodyLines = append(bodyLines, iterLabel)
+
+						// Only show reasoning for non-last iterations (avoid duplication with final response)
+						isLastIter := ii == len(toolIters)-1
+						if !isLastIter {
+							if it.Reasoning != "" {
+								rendered, err := m.renderer.Render(it.Reasoning)
+								if err != nil {
+									rendered = it.Reasoning
 								}
-								bodyLines = append(bodyLines, "  "+line)
+								for _, line := range strings.Split(rendered, "\n") {
+									line = strings.TrimRight(line, " \t\r")
+									if line == "" {
+										continue
+									}
+									bodyLines = append(bodyLines, s.TextMutedSt.Render("  "+line))
+								}
 							}
 						}
-						// Thinking (glamour-rendered)
 						if it.Thinking != "" {
 							rendered, err := m.renderer.Render(it.Thinking)
 							if err != nil {
@@ -2195,7 +2209,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 								if line == "" {
 									continue
 								}
-								bodyLines = append(bodyLines, "  "+line)
+								bodyLines = append(bodyLines, s.TextMutedSt.Render("  "+line))
 							}
 						}
 						// Tool details
@@ -2208,9 +2222,17 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 							}
 							bodyLines = append(bodyLines, sty.Render(fmt.Sprintf("  %s %s%s", icon, toolLabel, elapsed)))
 						}
+						// Separator between iterations (dim dotted line)
+						if ii < len(toolIters)-1 {
+							bodyLines = append(bodyLines, s.DimGuideSt.Render("  ···"))
+						}
 					}
+					// Thick separator between tool iterations and content
+					bodyLines = append(bodyLines, "") // blank above
+					bodyLines = append(bodyLines, s.DimGuideSt.Render("─────────────────────────────────────────"))
+					bodyLines = append(bodyLines, "") // blank below
 				} else {
-					// Collapsed mode: compact summary per iteration
+					// ── Collapsed: single-line summary with accent left bar ──
 					totalMs := int64(0)
 					totalTools := 0
 					for _, it := range toolIters {
@@ -2227,7 +2249,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 							}
 						}
 					}
-					summary := s.ToolHeader.Render(fmt.Sprintf("%d calls · %s", totalTools, formatElapsed(totalMs)))
+					bar := s.ProgressDone.Render("▎")
+					summary := bar + s.ToolHeader.Render(fmt.Sprintf(" %d calls · %s", totalTools, formatElapsed(totalMs)))
 					if errorCount > 0 {
 						summary += " " + s.ProgressError.Render(fmt.Sprintf("✗%d", errorCount))
 					}
@@ -2237,7 +2260,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 					summary += "  " + s.ToolHint.Render("[Ctrl+O]")
 					bodyLines = append(bodyLines, summary)
 				}
-				bodyLines = append(bodyLines, "") // blank separator
+				bodyLines = append(bodyLines, "") // blank line after tools section
 			}
 		}
 
@@ -2287,10 +2310,6 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 
 		// Main content — trim trailing newlines so cursor stays inline.
-		// glamour already handles word-wrap via WithWordWrap(wrapWidth),
-		// including CJK-aware line breaking (via forked muesli/reflow).
-		// No additional hard-wrap needed — it would double-wrap and
-		// break table structure.
 		trimmed := strings.TrimRight(displayContent, "\n")
 		if trimmed != "" {
 			bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
@@ -2305,7 +2324,6 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		}
 
 		// Render all body lines — no guide prefix, clean layout.
-		// Each line gets a 2-space indent for visual alignment with header.
 		for _, l := range bodyLines {
 			sb.WriteString(l)
 			sb.WriteString("\n")
