@@ -523,21 +523,30 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 
 	s.localLLMCalls++
 	if response != nil {
-		s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		// Only record token data when Usage is present. When a stream is
+		// cancelled mid-flight, the API hasn't sent usage events yet and
+		// Usage is zero-valued. Recording 0 would: (a) overwrite the
+		// tracker's correct value from a previous iteration, causing
+		// buildOutput/SaveState to save a stale or zero value; (b) make
+		// the CLI context bar flash to 0.
+		if response.Usage.PromptTokens > 0 {
+			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
-		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
 		// Save exact API prompt_tokens to the most recent user message
 		// so rewind can restore accurate token state from DB.
-		if s.cfg.SaveContextTokens != nil {
+		// Guard: skip when PromptTokens is 0 (stream cancelled mid-flight).
+		if s.cfg.SaveContextTokens != nil && response.Usage.PromptTokens > 0 {
 			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
 		}
 		// Per-iteration token persistence: save both prompt and completion
 		// tokens immediately so that if the process is killed mid-turn,
 		// the next restart restores the latest values instead of stale
 		// data from the previous turn's buildOutput.
-		if s.cfg.SaveTokenState != nil {
+		if s.cfg.SaveTokenState != nil && response.Usage.PromptTokens > 0 {
 			s.cfg.SaveTokenState(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 		}
 		// Push updated token usage to CLI immediately so the context
@@ -607,17 +616,20 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc)
 	s.localLLMCalls++
 	if response != nil {
-		s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		if response.Usage.PromptTokens > 0 {
+			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
-		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
-		// Save exact API prompt_tokens (after compress retry, still the same user message)
-		if s.cfg.SaveContextTokens != nil {
+		// Save exact API prompt_tokens (after compress retry, still the same user message).
+		// Guard: skip when PromptTokens is 0 (stream cancelled mid-flight).
+		if s.cfg.SaveContextTokens != nil && response.Usage.PromptTokens > 0 {
 			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
 		}
 		// Per-iteration token persistence (same as main generateResponse path).
-		if s.cfg.SaveTokenState != nil {
+		if s.cfg.SaveTokenState != nil && response.Usage.PromptTokens > 0 {
 			s.cfg.SaveTokenState(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 		}
 		s.validateInvariantsAt(ctx, "post_llm_call_input_too_long")
