@@ -50,7 +50,8 @@ The old `ToolHook`/`HookChain` (`tools/hook.go`, `tools/hook_builtin.go`) has be
 ### Key Changes
 - `tools/hook.go`, `tools/hook_builtin.go` — **deleted** (replaced by `agent/hooks/`)
 - `tools/approval.go` — `ApprovalHook` removed, `ApprovalRequest`/`ApprovalResult`/`ApprovalHandler` types preserved
-- `tools/checkpoint.go` — `CheckpointHook` removed, `CheckpointStore` preserved
+- `tools/checkpoint.go` — `CheckpointHook` removed, `CheckpointStore` preserved (used by `CheckpointCallback`)
+- Checkpoint initialization: `agent.go` NewAgent creates `CheckpointState`, registers `CheckpointCallback` as builtin. Per-session `CheckpointStore` created lazily in `processMessage` → `ensureCheckpointStore`, wired to CLI via `SetCheckpointState`.
 - Old `HookChain` field in `engine.go`/`agent.go` → replaced by `hooks.Manager`
 
 ### agent/hooks/ Package
