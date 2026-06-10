@@ -214,8 +214,10 @@ func TestAskUserQuestionWrapPreservesTextWithScrollbar(t *testing.T) {
 	m.handleResize(80, 12)
 	m.panelMode = "askuser"
 
-	scrollContentWidth := m.chatWidth() - 6
-	question := strings.Repeat("a", scrollContentWidth-lipgloss.Width("❓ "))
+	// Use the same wrap width that viewAskUserPanel uses internally.
+	// Text at exactly this width must survive applyScrollbar without truncation.
+	qWrapWidth := m.askUserQuestionWrapWidth()
+	question := strings.Repeat("a", qWrapWidth-lipgloss.Width("❓ ")+5) // slightly more than 1 line
 	m.panelItems = []askItem{{
 		Question: question,
 		Options:  []string{"one", "two", "three", "four", "five", "six"},
@@ -228,6 +230,65 @@ func TestAskUserQuestionWrapPreservesTextWithScrollbar(t *testing.T) {
 	got := strings.Count(stripANSI(rendered), "a")
 	if got != len(question) {
 		t.Fatalf("askuser question lost text at wrap boundary: got %d %q chars, want %d", got, "a", len(question))
+	}
+}
+
+func TestAskUserLongOptionWraps(t *testing.T) {
+	m := newCLIModel()
+	m.handleResize(80, 24)
+	m.panelMode = "askuser"
+
+	// Create an option that exceeds the panel content width
+	qWrapWidth := m.askUserQuestionWrapWidth()
+	// prefixW = ansi.StringWidth("▸ ☑ ") = 4
+	prefixW := 4
+	optWrapW := qWrapWidth - prefixW
+	longOpt := strings.Repeat("x", optWrapW+20) // longer than one line
+	m.panelItems = []askItem{{
+		Question: "Pick one",
+		Options:  []string{longOpt, "short"},
+	}}
+	m.panelTab = 0
+	m.panelOptCursor = map[int]int{0: 0}
+	m.panelOptSel = map[int]map[int]bool{0: {}}
+
+	raw := m.viewAskUserPanel()
+	lines := strings.Split(raw, "\n")
+
+	// Find option lines (after question + blank line)
+	// The long option should produce multiple lines
+	// Count how many lines contain the long option's 'x' characters
+	optLineCount := 0
+	foundOpt := false
+	for _, line := range lines {
+		stripped := stripANSI(line)
+		if strings.Contains(stripped, "☐") || strings.Contains(stripped, "☑") {
+			foundOpt = true
+		}
+		if foundOpt && strings.Contains(stripped, "x") {
+			optLineCount++
+		}
+	}
+
+	if optLineCount < 2 {
+		t.Errorf("long option should wrap to multiple lines, got %d lines containing 'x'", optLineCount)
+	}
+
+	// Verify no line exceeds the panel content width
+	rendered := m.layoutAskUser("")
+	renderedLines := strings.Split(rendered, "\n")
+	for i, line := range renderedLines {
+		visW := lipgloss.Width(line)
+		if visW > m.chatWidth() {
+			t.Errorf("line %d exceeds chatWidth: visW=%d chatWidth=%d line=%q",
+				i, visW, m.chatWidth(), stripANSI(line))
+		}
+	}
+
+	// Verify total 'x' count matches the original option length
+	totalX := strings.Count(stripANSI(rendered), "x")
+	if totalX != len(longOpt) {
+		t.Errorf("lost option text after wrap: got %d 'x', want %d", totalX, len(longOpt))
 	}
 }
 

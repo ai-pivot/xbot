@@ -648,13 +648,14 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	isCLI := r.URL.Query().Get("client_type") == "cli"
 	client := &Client{
-		conn:   conn,
-		sendCh: make(chan protocol.WSMessage, webSendChBufSize),
-		done:   make(chan struct{}),
-		hub:    wc.hub,
-		userID: senderID,
-		id:     strings.ReplaceAll(uuid.New().String(), "-", ""),
-		isCLI:  isCLI,
+		conn:         conn,
+		sendCh:       make(chan protocol.WSMessage, webSendChBufSize),
+		done:         make(chan struct{}),
+		hub:          wc.hub,
+		userID:       senderID,
+		id:           strings.ReplaceAll(uuid.New().String(), "-", ""),
+		isCLI:        isCLI,
+		statelessSig: make(chan struct{}, 1),
 	}
 
 	wc.hub.addClient(client.id, client)
@@ -796,6 +797,14 @@ func (wc *WebChannel) writePump(c *Client) {
 
 	for {
 		select {
+		case <-c.statelessSig:
+			// Drain all accumulated stateless messages (one per type — latest only).
+			for _, msg := range c.drainStateless() {
+				if err := c.conn.WriteJSON(*msg); err != nil {
+					log.WithError(err).Debug("WS write error (stateless)")
+					return
+				}
+			}
 		case msg, ok := <-c.sendCh:
 			if !ok {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})

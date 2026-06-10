@@ -3,6 +3,7 @@ package channel
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -527,25 +528,233 @@ func TestHubOfflineBuffering(t *testing.T) {
 		t.Error("expected 1 buffered message")
 	}
 
-	// Add client and subscribe → should flush offline messages
+ // Add client and subscribe → should flush offline messages
+  client := &Client{
+  sendCh:       make(chan protocol.WSMessage, 10),
+  done:         make(chan struct{}),
+  id:           "test-client-1",
+  statelessSig: make(chan struct{}, 1),
+  }
+  hub.addClient(client.id, client)
+  hub.subscribe(client.id, chatID)
+
+  // Wait for flush
+  time.Sleep(100 * time.Millisecond)
+
+  select {
+  case m := <-client.sendCh:
+  if m.Content != "offline msg" {
+   t.Errorf("expected 'offline msg', got '%s'", m.Content)
+  }
+  default:
+  t.Error("expected offline message to be flushed")
+  }
+ }
+
+func TestHubStatelessSlot(t *testing.T) {
+	hub := newHub()
+	chatID := "/home/user/test"
+
 	client := &Client{
-		sendCh: make(chan protocol.WSMessage, 10),
-		done:   make(chan struct{}),
-		id:     "test-client-1",
+		sendCh:       make(chan protocol.WSMessage, 64),
+		done:         make(chan struct{}),
+		id:           "test-stateless-client",
+		statelessSig: make(chan struct{}, 1),
 	}
 	hub.addClient(client.id, client)
 	hub.subscribe(client.id, chatID)
 
-	// Wait for flush
-	time.Sleep(100 * time.Millisecond)
-
-	select {
-	case m := <-client.sendCh:
-		if m.Content != "offline msg" {
-			t.Errorf("expected 'offline msg', got '%s'", m.Content)
+	// Send multiple stream_content messages rapidly — only the latest should be stored.
+	for i := 0; i < 100; i++ {
+		ok := hub.sendToClient(chatID, protocol.WSMessage{
+			Type: protocol.MsgTypeStreamContent,
+			Progress: &protocol.ProgressEvent{
+				ChatID:        "cli:/home/user/test",
+				StreamContent: fmt.Sprintf("content-%d", i),
+			},
+		})
+		if !ok {
+			t.Fatalf("sendToClient returned false for message %d", i)
 		}
+	}
+
+	// sendCh should NOT contain any stream_content — they go to statelessMap.
+	if len(client.sendCh) != 0 {
+		t.Errorf("expected sendCh to be empty, got %d items", len(client.sendCh))
+	}
+
+	// Only the latest stream_content should be in the stateless map.
+	msgs := client.drainStateless()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 stateless message, got %d", len(msgs))
+	}
+	if msgs[0].Progress.StreamContent != "content-99" {
+		t.Errorf("expected 'content-99', got '%s'", msgs[0].Progress.StreamContent)
+	}
+
+	// Signal should have been fired exactly once (cap-1 channel, excess signals dropped).
+	select {
+	case <-client.statelessSig:
 	default:
-		t.Error("expected offline message to be flushed")
+		t.Error("expected statelessSig to have a pending signal")
+	}
+}
+
+func TestHubStatelessPerSubAgent(t *testing.T) {
+	hub := newHub()
+	chatID := "/home/user/test"
+
+	client := &Client{
+		sendCh:       make(chan protocol.WSMessage, 64),
+		done:         make(chan struct{}),
+		id:           "test-multi-subagent",
+		statelessSig: make(chan struct{}, 1),
+	}
+	hub.addClient(client.id, client)
+	hub.subscribe(client.id, chatID)
+
+	// Simulate 3 concurrent SubAgents streaming — each should keep its own latest.
+	agentA := "cli:/home/user/test:Agent-keen-fox"
+	agentB := "cli:/home/user/test:Agent-bold-cat"
+	agentC := "cli:/home/user/test:Agent-swift-owl"
+	mainSession := "cli:/home/user/test"
+
+	// Rapid stream_content from all 3 agents + main session.
+	for i := 0; i < 50; i++ {
+		hub.sendToClient(chatID, protocol.WSMessage{
+			Type: protocol.MsgTypeStreamContent,
+			Progress: &protocol.ProgressEvent{
+				ChatID:        agentA,
+				StreamContent: fmt.Sprintf("agentA-%d", i),
+			},
+		})
+		hub.sendToClient(chatID, protocol.WSMessage{
+			Type: protocol.MsgTypeStreamContent,
+			Progress: &protocol.ProgressEvent{
+				ChatID:        agentB,
+				StreamContent: fmt.Sprintf("agentB-%d", i),
+			},
+		})
+		hub.sendToClient(chatID, protocol.WSMessage{
+			Type: protocol.MsgTypeStreamContent,
+			Progress: &protocol.ProgressEvent{
+				ChatID:        agentC,
+				StreamContent: fmt.Sprintf("agentC-%d", i),
+			},
+		})
+		hub.sendToClient(chatID, protocol.WSMessage{
+			Type: protocol.MsgTypeStreamContent,
+			Progress: &protocol.ProgressEvent{
+				ChatID:        mainSession,
+				StreamContent: fmt.Sprintf("main-%d", i),
+			},
+		})
+	}
+
+	msgs := client.drainStateless()
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 stateless messages (one per source), got %d", len(msgs))
+	}
+
+	bySource := make(map[string]string)
+	for _, m := range msgs {
+		bySource[m.Progress.ChatID] = m.Progress.StreamContent
+	}
+	if bySource[agentA] != "agentA-49" {
+		t.Errorf("agentA: expected 'agentA-49', got '%s'", bySource[agentA])
+	}
+	if bySource[agentB] != "agentB-49" {
+		t.Errorf("agentB: expected 'agentB-49', got '%s'", bySource[agentB])
+	}
+	if bySource[agentC] != "agentC-49" {
+		t.Errorf("agentC: expected 'agentC-49', got '%s'", bySource[agentC])
+	}
+	if bySource[mainSession] != "main-49" {
+		t.Errorf("main: expected 'main-49', got '%s'", bySource[mainSession])
+	}
+}
+
+func TestHubStatelessMixedTypes(t *testing.T) {
+	hub := newHub()
+	chatID := "/home/user/test"
+
+	client := &Client{
+		sendCh:       make(chan protocol.WSMessage, 64),
+		done:         make(chan struct{}),
+		id:           "test-mixed-client",
+		statelessSig: make(chan struct{}, 1),
+	}
+	hub.addClient(client.id, client)
+	hub.subscribe(client.id, chatID)
+
+	// Send stream_content + progress for the same source — should keep latest of each.
+	source := "cli:/home/user/test"
+	hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeStreamContent,
+		Progress: &protocol.ProgressEvent{ChatID: source, StreamContent: "old-stream"},
+	})
+	hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeProgress,
+		Progress: &protocol.ProgressEvent{ChatID: source, Iteration: 1},
+	})
+	hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeStreamContent,
+		Progress: &protocol.ProgressEvent{ChatID: source, StreamContent: "new-stream"},
+	})
+	hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeProgress,
+		Progress: &protocol.ProgressEvent{ChatID: source, Iteration: 3},
+	})
+
+	msgs := client.drainStateless()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 stateless messages (one per type), got %d", len(msgs))
+	}
+
+	byType := make(map[string]*protocol.ProgressEvent)
+	for _, m := range msgs {
+		byType[m.Type] = m.Progress
+	}
+	if byType[protocol.MsgTypeStreamContent].StreamContent != "new-stream" {
+		t.Errorf("stream_content: expected 'new-stream', got '%s'", byType[protocol.MsgTypeStreamContent].StreamContent)
+	}
+	if byType[protocol.MsgTypeProgress].Iteration != 3 {
+		t.Errorf("progress: expected iteration 3, got %d", byType[protocol.MsgTypeProgress].Iteration)
+	}
+}
+
+func TestHubStatefulStillUsesSendCh(t *testing.T) {
+	hub := newHub()
+	chatID := "/home/user/test"
+
+	client := &Client{
+		sendCh:       make(chan protocol.WSMessage, 2),
+		done:         make(chan struct{}),
+		id:           "test-stateful-client",
+		statelessSig: make(chan struct{}, 1),
+	}
+	hub.addClient(client.id, client)
+	hub.subscribe(client.id, chatID)
+
+	// Stateful messages should still go through sendCh.
+	ok := hub.sendToClient(chatID, protocol.WSMessage{Type: "text", Content: "hello"})
+	if !ok {
+		t.Error("expected stateful message to be sent via sendCh")
+	}
+	if len(client.sendCh) != 1 {
+		t.Errorf("expected sendCh len 1, got %d", len(client.sendCh))
+	}
+	msgs := client.drainStateless()
+	if len(msgs) != 0 {
+		t.Errorf("expected no stateless messages, got %d", len(msgs))
+	}
+
+	// Fill sendCh with stateful messages and verify warning is still logged.
+	client.sendCh <- protocol.WSMessage{Type: "text", Content: "fill1"}
+	// sendCh now has 2 items (capacity 2) — next send should fail.
+	ok = hub.sendToClient(chatID, protocol.WSMessage{Type: "text", Content: "overflow"})
+	if ok {
+		t.Error("expected stateful message to be dropped when sendCh full")
 	}
 }
 
@@ -650,7 +859,7 @@ func TestConcurrentSends(t *testing.T) {
 func TestPushPluginWidgetsPerSession_Incremental(t *testing.T) {
 	h := newHub()
 	// Add a client and subscribe to chatID "chat1"
-	cl := &Client{sendCh: make(chan protocol.WSMessage, 16)}
+	cl := &Client{sendCh: make(chan protocol.WSMessage, 16), statelessSig: make(chan struct{}, 1)}
 	h.addClient("client1", cl)
 	h.subscribe("client1", "/home/user/test")
 
