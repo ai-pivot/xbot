@@ -710,14 +710,15 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 	if payload == nil {
 		return
 	}
-	if payload.Iteration > m.lastSeenIteration && m.lastSeenIteration >= 0 && prev != nil {
+	if payload.Iteration > m.lastSeenIteration && m.lastSeenIteration >= 0 {
 		// Guard: only create snapshot if prev actually belongs to lastSeenIteration.
 		// After session switch, resetProgressState sets lastSeenIteration=0 but
 		// the restored m.progress has Iteration=N. When the next live progress
 		// arrives, prev (which came from the restore) has Iteration=N, not 0.
 		// Snapshoting "iteration 0" with iteration N's data would cause #0 and #1
 		// to display the same reasoning content.
-		if prev.Iteration != m.lastSeenIteration {
+		// Also guard against prev being nil (progress cleared by endAgentTurn).
+		if prev != nil && prev.Iteration != m.lastSeenIteration {
 			// Data mismatch: prev belongs to a different iteration than what
 			// lastSeenIteration claims. Skip the snapshot to avoid corruption,
 			// but update the counter to prevent repeated misfires.
@@ -725,32 +726,34 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			m.iterationStartTime = time.Now()
 			return
 		}
-		prevIterTools := prev.CompletedTools
-		// Also include ActiveTools that completed (status=done/error) but
-		// haven't been moved to CompletedTools yet by progressFinalizer.
-		for _, t := range prev.ActiveTools {
-			if t.Status == "done" || t.Status == "error" {
-				prevIterTools = append(prevIterTools, t)
+		if prev != nil {
+			prevIterTools := prev.CompletedTools
+			// Also include ActiveTools that completed (status=done/error) but
+			// haven't been moved to CompletedTools yet by progressFinalizer.
+			for _, t := range prev.ActiveTools {
+				if t.Status == "done" || t.Status == "error" {
+					prevIterTools = append(prevIterTools, t)
+				}
 			}
-		}
-		prevReasoning := prev.Reasoning
-		if prevReasoning == "" {
-			prevReasoning = m.reasoningByIter[m.lastSeenIteration]
-		}
-		if prevReasoning == "" {
-			prevReasoning = prev.ReasoningStreamContent
-		}
-		if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
-			snap := cliIterationSnapshot{
-				Iteration:   m.lastSeenIteration,
-				Thinking:    prev.Thinking,
-				Reasoning:   prevReasoning,
-				Tools:       prevIterTools,
-				ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+			prevReasoning := prev.Reasoning
+			if prevReasoning == "" {
+				prevReasoning = m.reasoningByIter[m.lastSeenIteration]
 			}
-			m.iterationHistory = append(m.iterationHistory, snap)
+			if prevReasoning == "" {
+				prevReasoning = prev.ReasoningStreamContent
+			}
+			if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
+				snap := cliIterationSnapshot{
+					Iteration:   m.lastSeenIteration,
+					Thinking:    prev.Thinking,
+					Reasoning:   prevReasoning,
+					Tools:       prevIterTools,
+					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+				}
+				m.iterationHistory = append(m.iterationHistory, snap)
+			}
+			m.lastCompletedTools = m.lastCompletedTools[:0]
 		}
-		m.lastCompletedTools = m.lastCompletedTools[:0]
 		m.lastSeenIteration = payload.Iteration
 		m.iterationStartTime = time.Now()
 	}
@@ -811,17 +814,6 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					m.iterationHistory = append(m.iterationHistory, snap)
 				}
 			}
-		}
-		if len(m.iterationHistory) > 0 {
-			toolSummaryMsg := cliMessage{
-				role:       "tool_summary",
-				content:    "",
-				timestamp:  time.Now(),
-				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
-				dirty:      true,
-			}
-			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
-			m.rc.valid = false
 		}
 		m.setTurnDoneProcessed(turnID)
 		m.endAgentTurn(turnID)
@@ -889,27 +881,36 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				m.iterationHistory = append(m.iterationHistory, snap)
 			}
 		}
-		// Generate tool_summary if we have iteration history.
-		// Use upsert to avoid duplicates when PhaseDone fires multiple times
-		// (e.g. cancel + late tool completion).
+		// Store iterations in pendingToolSummary for handleAgentMessage
+		// to bake into the assistant message. Accumulate (not replace) to
+		// handle multiple PhaseDone events per logical turn (simulation tests).
 		if len(m.iterationHistory) > 0 {
-			toolSummaryMsg := cliMessage{
-				role:       "tool_summary",
-				content:    "",
-				timestamp:  time.Now(),
-				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
-				dirty:      true,
+			if m.pendingToolSummary == nil {
+				m.pendingToolSummary = &cliMessage{}
 			}
-			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
-			m.pendingToolSummary = nil // upsert replaces the slot; no need for separate pending
-			m.rc.valid = false
+			// Dedup by iteration number to avoid duplicates from repeated PhaseDone.
+			existingIters := make(map[int]bool)
+			for _, it := range m.pendingToolSummary.iterations {
+				existingIters[it.Iteration] = true
+			}
+			for _, it := range m.iterationHistory {
+				if !existingIters[it.Iteration] {
+					m.pendingToolSummary.iterations = append(m.pendingToolSummary.iterations, it)
+				}
+			}
 		}
 	}
-	// Mark this turn as done-processed (tool_summary created, turn ending).
+	// Mark this turn as done-processed (iterations stored in pendingToolSummary).
 	m.setTurnDoneProcessed(turnID)
+
+	// Save pendingToolSummary before endAgentTurn clears it via resetProgressState.
+	savedPTS := m.pendingToolSummary
 
 	// Reset all iteration tracking state (always, even if handleAgentMessage ran first)
 	m.endAgentTurn(turnID) // also clears todos and does relayoutViewport
+
+	// Restore pendingToolSummary so it persists across auto-start-turn cycles.
+	m.pendingToolSummary = savedPTS
 	if turnID == m.agentTurnID {
 		m.inputReady = true
 		if len(m.messageQueue) > 0 {
@@ -923,7 +924,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 	// synthesize the assistant message from the progress payload's final
 	// content (Thinking field carries the last clean assistant text).
 	// For main sessions, handleAgentMessage handles this and will
-	// relocate the tool_summary before the assistant reply.
+	// bake iterations into the assistant reply via pendingToolSummary.
 	if m.channelName == "agent" && !m.typing {
 		assistantContent := msg.payload.Thinking
 		if assistantContent == "" {

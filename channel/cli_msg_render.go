@@ -367,66 +367,75 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// Build body lines (thinking box + content + cursor)
 		var bodyLines []string
 
-		// Thinking Box
-		if !msg.isPartial && msg.thinking != "" {
-			thinkingLines := strings.Split(strings.TrimSpace(msg.thinking), "\n")
-			const maxTL = 10
-			if len(thinkingLines) > 0 {
-				var display []string
-				truncated := len(thinkingLines) > maxTL
-				if truncated {
-					display = thinkingLines[len(thinkingLines)-maxTL:]
-				} else {
-					display = thinkingLines
-				}
-				body := strings.Join(display, "\n")
-				if truncated {
-					body = s.TextMutedSt.Render(fmt.Sprintf("… (%d lines hidden)", len(thinkingLines)-maxTL)) + "\n" + body
-				}
-				boxW := contentWidth - 4
-				if boxW < 20 {
-					boxW = 20
-				}
-				thinkingBox := s.ThinkingBox
-				for _, l := range strings.Split(thinkingBox.Width(boxW).Render(body), "\n") {
-					bodyLines = append(bodyLines, "  "+l)
-				}
-				bodyLines = append(bodyLines, "") // blank after box
+		// Unified turn rendering: if this assistant message has iteration data,
+		// use renderTurnBody instead of separate thinking box + content.
+		if len(msg.iterations) > 0 {
+			bodyContent := m.renderTurnBody(
+				msg.iterations,
+				nil, // idle: no liveProgress
+				contentWidth,
+			)
+			if bodyContent != "" {
+				bodyLines = append(bodyLines, strings.Split(bodyContent, "\n")...)
 			}
-		}
-
-		// §19 长消息折叠
-		displayContent := rendered
-		if msg.folded && !msg.isPartial {
-			origLines := msg.originalRenderedLines
-			if origLines == 0 {
-				origLines = msg.renderedLines
-			}
-			if origLines > msgFoldThresholdLines {
-				renderedLinesList := strings.Split(rendered, "\n")
-				if len(renderedLinesList) > msgFoldPreviewLines {
-					displayContent = strings.Join(renderedLinesList[:msgFoldPreviewLines], "\n")
-					displayContent += "\n" + m.styles.TextMutedSt.Render(
-						fmt.Sprintf("  ... %s (%d lines) ...", m.locale.MsgCollapsed, origLines))
+		} else {
+			// Thinking Box
+			if !msg.isPartial && msg.thinking != "" {
+				thinkingLines := strings.Split(strings.TrimSpace(msg.thinking), "\n")
+				const maxTL = 10
+				if len(thinkingLines) > 0 {
+					var display []string
+					truncated := len(thinkingLines) > maxTL
+					if truncated {
+						display = thinkingLines[len(thinkingLines)-maxTL:]
+					} else {
+						display = thinkingLines
+					}
+					body := strings.Join(display, "\n")
+					if truncated {
+						body = s.TextMutedSt.Render(fmt.Sprintf("… (%d lines hidden)", len(thinkingLines)-maxTL)) + "\n" + body
+					}
+					boxW := contentWidth - 4
+					if boxW < 20 {
+						boxW = 20
+					}
+					thinkingBox := s.ThinkingBox
+					for _, l := range strings.Split(thinkingBox.Width(boxW).Render(body), "\n") {
+						bodyLines = append(bodyLines, "  "+l)
+					}
+					bodyLines = append(bodyLines, "") // blank after box
 				}
 			}
-		}
 
-		// Main content — trim trailing newlines so cursor stays inline.
-		// glamour already handles word-wrap via WithWordWrap(wrapWidth),
-		// including CJK-aware line breaking (via forked muesli/reflow).
-		// No additional hard-wrap needed — it would double-wrap and
-		// break table structure.
-		trimmed := strings.TrimRight(displayContent, "\n")
-		if trimmed != "" {
-			bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
-		}
+			// §19 长消息折叠
+			displayContent := rendered
+			if msg.folded && !msg.isPartial {
+				origLines := msg.originalRenderedLines
+				if origLines == 0 {
+					origLines = msg.renderedLines
+				}
+				if origLines > msgFoldThresholdLines {
+					renderedLinesList := strings.Split(rendered, "\n")
+					if len(renderedLinesList) > msgFoldPreviewLines {
+						displayContent = strings.Join(renderedLinesList[:msgFoldPreviewLines], "\n")
+						displayContent += "\n" + m.styles.TextMutedSt.Render(
+							fmt.Sprintf("  ... %s (%d lines) ...", m.locale.MsgCollapsed, origLines))
+					}
+				}
+			}
 
-		// Streaming cursor
-		if msg.isPartial && trimmed != "" {
-			cursorVisible := (m.ticker.ticks/5)%2 == 0
-			if cursorVisible {
-				bodyLines = append(bodyLines, s.StreamCursor.Render("▋"))
+			// Main content — trim trailing newlines so cursor stays inline.
+			trimmed := strings.TrimRight(displayContent, "\n")
+			if trimmed != "" {
+				bodyLines = append(bodyLines, strings.Split(trimmed, "\n")...)
+			}
+
+			// Streaming cursor
+			if msg.isPartial && trimmed != "" {
+				cursorVisible := (m.ticker.ticks/5)%2 == 0
+				if cursorVisible {
+					bodyLines = append(bodyLines, s.StreamCursor.Render("▋"))
+				}
 			}
 		}
 

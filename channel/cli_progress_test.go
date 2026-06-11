@@ -41,15 +41,17 @@ func assertCount(t *testing.T, label, haystack, needle string, expected int) {
 }
 
 func countToolsInSummary(model *cliModel) int {
+	// Check assistant messages for iterations (unified model).
+	// Also check any remaining tool_summary messages (AskUser).
 	for _, msg := range model.messages {
-		if msg.role == "tool_summary" {
-			if len(msg.iterations) > 0 {
-				count := 0
-				for _, it := range msg.iterations {
-					count += len(it.Tools)
-				}
-				return count
+		if len(msg.iterations) > 0 {
+			count := 0
+			for _, it := range msg.iterations {
+				count += len(it.Tools)
 			}
+			return count
+		}
+		if len(msg.tools) > 0 {
 			return len(msg.tools)
 		}
 	}
@@ -204,17 +206,15 @@ func TestErrorToolIterationAttribution(t *testing.T) {
 		t.Errorf("Expected 2 tools in summary, got %d", tools)
 	}
 
-	// Check iteration attribution in the summary
+	// Check iteration attribution in the summary (now in assistant messages)
 	var foundIter0, foundIter1 bool
 	for _, msg := range model.messages {
-		if msg.role == "tool_summary" {
-			for _, it := range msg.iterations {
-				if it.Iteration == 0 && len(it.Tools) == 1 && it.Tools[0].Name == "read" && it.Tools[0].Status == "error" {
-					foundIter0 = true
-				}
-				if it.Iteration == 1 && len(it.Tools) == 1 && it.Tools[0].Name == "edit" && it.Tools[0].Status == "done" {
-					foundIter1 = true
-				}
+		for _, it := range msg.iterations {
+			if it.Iteration == 0 && len(it.Tools) == 1 && it.Tools[0].Name == "read" && it.Tools[0].Status == "error" {
+				foundIter0 = true
+			}
+			if it.Iteration == 1 && len(it.Tools) == 1 && it.Tools[0].Name == "edit" && it.Tools[0].Status == "done" {
+				foundIter1 = true
 			}
 		}
 	}

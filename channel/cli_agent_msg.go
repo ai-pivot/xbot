@@ -129,22 +129,35 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 	} else {
 		// 完整消息 — save the message index for later thinking capture
 		var completedMsgIdx int
+
+		// Compute iterations to bake into the assistant message.
+		// If PhaseDone already processed this turn, use iterations stored in pendingToolSummary.
+		// Otherwise (PhaseDone hasn't arrived yet), use local iterationHistory.
+		var bakeIterations []cliIterationSnapshot
+		if m.isTurnDoneProcessed(turnID) && m.pendingToolSummary != nil {
+			bakeIterations = m.pendingToolSummary.iterations
+		} else if len(m.iterationHistory) > 0 {
+			bakeIterations = append([]cliIterationSnapshot{}, m.iterationHistory...)
+		}
+
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 			// 更新流式消息为完整消息
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
 			m.messages[m.streamingMsgIdx].turnID = turnID
+			m.messages[m.streamingMsgIdx].iterations = bakeIterations
 			completedMsgIdx = m.streamingMsgIdx
 		} else {
 			// 新增完整的 assistant 消息 — use upsert to prevent duplicates
 			assistantMsg := cliMessage{
-				role:      "assistant",
-				content:   content,
-				timestamp: time.Now(),
-				isPartial: false,
-				dirty:     true,
-				turnID:    turnID,
+				role:       "assistant",
+				content:    content,
+				timestamp:  time.Now(),
+				isPartial:  false,
+				dirty:      true,
+				turnID:     turnID,
+				iterations: bakeIterations,
 			}
 			completedMsgIdx = m.upsertMessageByTurn(turnID, "assistant", assistantMsg)
 		}
@@ -343,63 +356,27 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			}
 		}
 
-		// Tool summary handling with deterministic rendering.
-		// If handleProgressDone already processed this turn (doneProcessed=true),
-		// the tool_summary is already in m.messages — skip to avoid duplicates.
-		// If not, we need to create/update it from local iteration history.
-		if !m.isTurnDoneProcessed(turnID) && len(m.iterationHistory) > 0 {
-			// PhaseDone hasn't run yet (or arrived after the reply).
-			// Create tool_summary from local iteration history.
-			toolSummaryMsg := cliMessage{
-				role:       "tool_summary",
-				content:    "",
-				timestamp:  time.Now(),
-				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
-				dirty:      true,
-			}
-			// Insert before the assistant message using upsert.
-			// If a tool_summary for this turn already exists (shouldn't happen
-			// since doneProcessed is false, but defensive), update in-place.
-			tsIdx := m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
-
-			// Ensure tool_summary is positioned BEFORE the assistant message.
-			// The assistant was just added/updated above; find its index.
+		// Update assistant message iterations if we have richer local data
+		// that wasn't captured at assistant message creation time (step above).
+		// The assistant message already has iterations from pendingToolSummary
+		// (if PhaseDone arrived first) or from iterationHistory (if not).
+		// The final snapshot just above may have added more iterations.
+		if len(m.iterationHistory) > 0 {
 			asstIdx := m.findMessageByTurn(turnID, "assistant")
-			if asstIdx >= 0 && tsIdx > asstIdx {
-				// Swap positions: move tool_summary before assistant
-				toolSummary := m.messages[tsIdx]
-				m.messages = append(m.messages[:tsIdx], m.messages[tsIdx+1:]...)
-				// Recalculate asstIdx after removal (shifted by 1 if asstIdx > tsIdx)
-				asstIdx = m.findMessageByTurn(turnID, "assistant")
-				if asstIdx >= 0 {
-					m.messages = append(m.messages[:asstIdx], append([]cliMessage{toolSummary}, m.messages[asstIdx:]...)...)
-				} else {
-					m.messages = append(m.messages, toolSummary)
+			if asstIdx >= 0 {
+				existing := m.messages[asstIdx]
+				existingIters := make(map[int]bool)
+				for _, it := range existing.iterations {
+					existingIters[it.Iteration] = true
 				}
-			}
-			m.rc.valid = false
-		} else if m.isTurnDoneProcessed(turnID) {
-			// PhaseDone already created the tool_summary. If we have richer
-			// local iteration data (e.g. more complete reasoning), update it.
-			if len(m.iterationHistory) > 0 {
-				tsIdx := m.findMessageByTurn(turnID, "tool_summary")
-				if tsIdx >= 0 {
-					// Merge: prefer PhaseDone iterations (server-authoritative reasoning)
-					// but add any local-only iterations not in PhaseDone's snapshot.
-					existing := m.messages[tsIdx]
-					pendingIters := make(map[int]bool)
-					for _, it := range existing.iterations {
-						pendingIters[it.Iteration] = true
+				for _, it := range m.iterationHistory {
+					if !existingIters[it.Iteration] {
+						existing.iterations = append(existing.iterations, it)
 					}
-					for _, it := range m.iterationHistory {
-						if !pendingIters[it.Iteration] {
-							existing.iterations = append(existing.iterations, it)
-						}
-					}
-					existing.dirty = true
-					m.messages[tsIdx] = existing
-					m.rc.valid = false
 				}
+				existing.dirty = true
+				m.messages[asstIdx] = existing
+				m.rc.valid = false
 			}
 		}
 

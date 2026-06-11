@@ -20,7 +20,7 @@
     {"action": "agent_msg", "content": "Third response"},
 
     {"action": "rewind", "rewind_index": 0},
-    {"action": "assert", "assert_role": "tool_summary", "assert_count": 2},
+    {"action": "assert", "assert_role": "assistant", "assert_count": 1},
     {"action": "assert", "assert_role": "tool_summary", "assert_tools": ["Shell", "Read"]},
     {"action": "assert", "not_contains": "Third response"}
   ]
