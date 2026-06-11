@@ -40,13 +40,14 @@ func (m *cliModel) renderTurnBody(
 		if iter.Thinking != "" {
 			rendered := m.renderTurnContent(iter.Thinking, contentWidth)
 			sb.WriteString(rendered)
-			sb.WriteString("\n")
 		}
 
-		// Tool tags (compact dot-separated)
+		// Tool tags — inline after content, no extra newline
 		if len(iter.Tools) > 0 {
+			if iter.Thinking != "" {
+				sb.WriteString("\n")
+			}
 			sb.WriteString(m.renderToolTags(iter.Tools, s))
-			sb.WriteString("\n")
 		}
 	}
 
@@ -74,29 +75,23 @@ func (m *cliModel) renderTurnContent(text string, width int) string {
 	return strings.TrimSpace(rendered)
 }
 
-// toolShortLabel returns a short, human-readable tool name for tags.
-// Name is always like "Shell", "Read", "Grep" — clean and short.
-func toolShortLabel(tool protocol.ToolProgress) string {
-	if tool.Name != "" {
-		return tool.Name
-	}
-	return tool.Label
-}
-
-// renderToolTags renders compact dot-separated tool badges.
+// renderToolTags renders compact dot-separated tool badges with full labels.
 //
-//	· Shell ✓  · Read ✓  · FileReplace ✓
+//	· Shell: cd /home/user/... ✓  · Read ✓
 func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, s *cliStyles) string {
 	var tags []string
 	for _, tool := range tools {
-		name := toolShortLabel(tool)
+		label := tool.Label
+		if label == "" {
+			label = tool.Name
+		}
 		switch tool.Status {
 		case "error":
-			tags = append(tags, s.ProgressError.Render("✗ "+name))
+			tags = append(tags, s.ProgressError.Render("✗ "+label))
 		case "done":
-			tags = append(tags, s.ProgressDone.Render("✓")+" "+s.TextMutedSt.Render(name))
+			tags = append(tags, s.ProgressDone.Render("✓")+" "+s.TextMutedSt.Render(label))
 		default:
-			tags = append(tags, s.ProgressRunning.Render("● "+name))
+			tags = append(tags, s.ProgressRunning.Render("● "+label))
 		}
 	}
 	sep := " " + s.ProgressDim.Render("·") + " "
