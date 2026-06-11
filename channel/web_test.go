@@ -528,28 +528,28 @@ func TestHubOfflineBuffering(t *testing.T) {
 		t.Error("expected 1 buffered message")
 	}
 
- // Add client and subscribe → should flush offline messages
-  client := &Client{
-  sendCh:       make(chan protocol.WSMessage, 10),
-  done:         make(chan struct{}),
-  id:           "test-client-1",
-  statelessSig: make(chan struct{}, 1),
-  }
-  hub.addClient(client.id, client)
-  hub.subscribe(client.id, chatID)
+	// Add client and subscribe → should flush offline messages
+	client := &Client{
+		sendCh:       make(chan protocol.WSMessage, 10),
+		done:         make(chan struct{}),
+		id:           "test-client-1",
+		statelessSig: make(chan struct{}, 1),
+	}
+	hub.addClient(client.id, client)
+	hub.subscribe(client.id, chatID)
 
-  // Wait for flush
-  time.Sleep(100 * time.Millisecond)
+	// Wait for flush
+	time.Sleep(100 * time.Millisecond)
 
-  select {
-  case m := <-client.sendCh:
-  if m.Content != "offline msg" {
-   t.Errorf("expected 'offline msg', got '%s'", m.Content)
-  }
-  default:
-  t.Error("expected offline message to be flushed")
-  }
- }
+	select {
+	case m := <-client.sendCh:
+		if m.Content != "offline msg" {
+			t.Errorf("expected 'offline msg', got '%s'", m.Content)
+		}
+	default:
+		t.Error("expected offline message to be flushed")
+	}
+}
 
 func TestHubStatelessSlot(t *testing.T) {
 	hub := newHub()
