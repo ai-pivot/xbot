@@ -33,18 +33,20 @@ func (m *cliModel) renderTurnBody(
 		// Reasoning (collapsed box above content)
 		if iter.Reasoning != "" {
 			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s, reasoningExpanded))
-			sb.WriteString("\n")
 		}
 
 		// Content (markdown)
 		if iter.Thinking != "" {
+			if iter.Reasoning != "" {
+				sb.WriteString("\n")
+			}
 			rendered := m.renderTurnContent(iter.Thinking, contentWidth)
 			sb.WriteString(rendered)
 		}
 
-		// Tool tags — inline after content, no extra newline
+		// Tool tags
 		if len(iter.Tools) > 0 {
-			if iter.Thinking != "" {
+			if iter.Thinking != "" || iter.Reasoning != "" {
 				sb.WriteString("\n")
 			}
 			sb.WriteString(m.renderToolTags(iter.Tools, s))
@@ -175,11 +177,14 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 	s := &m.styles
 	var sb strings.Builder
 
-	// Content: prefer live stream → reasoning stream → accumulated msg text
-	streamContent := p.StreamContent
-	if streamContent == "" {
-		streamContent = p.ReasoningStreamContent
+	// 1. Reasoning box (if streaming reasoning)
+	if p.ReasoningStreamContent != "" {
+		sb.WriteString(m.renderReasoningBox(p.ReasoningStreamContent, width, s, true))
+		sb.WriteString("\n")
 	}
+
+	// 2. Content: prefer live stream → accumulated msg text
+	streamContent := p.StreamContent
 	displayContent := streamContent
 	if displayContent == "" {
 		displayContent = fallbackContent
@@ -190,7 +195,7 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 		sb.WriteString("\n")
 	}
 
-	// Active tools with spinner
+	// 3. Active tools with spinner
 	if len(p.ActiveTools) > 0 {
 		for _, tool := range p.ActiveTools {
 			if tool.Status == "running" || tool.Status == "active" {
@@ -207,13 +212,13 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 				sb.WriteString("\n")
 			}
 		}
-	} else if displayContent == "" {
+	} else if displayContent == "" && p.ReasoningStreamContent == "" {
 		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
 		sb.WriteString(s.ProgressRunning.Render(frame))
 		sb.WriteString("\n")
 	}
 
-	// SubAgent tree
+	// 4. SubAgent tree
 	if len(p.SubAgents) > 0 {
 		var treeSb strings.Builder
 		m.renderSubAgentTree(&treeSb, p.SubAgents, "", width)
