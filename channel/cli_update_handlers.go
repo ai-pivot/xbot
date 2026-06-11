@@ -519,7 +519,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastReasoning = ""
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
-		m.invalidateProgressHistoryCache()
+		m.rc.invalidateProgress()
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
@@ -657,7 +657,7 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 			} else {
 				// Same count, just status/text changed — no height change needed.
 				// Only invalidate progress block render so next tick picks it up.
-				m.renderCacheValid = false
+				m.rc.valid = false
 			}
 
 			// Persist to TodoManager so todos survive turn end and session switches.
@@ -821,7 +821,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				dirty:      true,
 			}
 			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
-			m.renderCacheValid = false
+			m.rc.valid = false
 		}
 		m.setTurnDoneProcessed(turnID)
 		m.endAgentTurn(turnID)
@@ -902,7 +902,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			}
 			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
 			m.pendingToolSummary = nil // upsert replaces the slot; no need for separate pending
-			m.renderCacheValid = false
+			m.rc.valid = false
 		}
 	}
 	// Mark this turn as done-processed (tool_summary created, turn ending).
@@ -937,7 +937,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				dirty:     true,
 			})
 			m.setTurnReplyReceived(turnID)
-			m.renderCacheValid = false
+			m.rc.valid = false
 		}
 	}
 
@@ -983,7 +983,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	if m.agentCountFn != nil {
 		m.agentCount = m.agentCountFn()
 	}
-	m.renderCacheValid = false
+	m.rc.valid = false
 	// NOTE: do NOT return tickCmd() here. The wasTyping guard at the bottom of
 	// Update() detects idle->typing and starts the tick chain.
 	// Returning tickCmd() here creates a duplicate chain (2x spinner speed).
@@ -1186,7 +1186,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 		// Rebuild iteration history from server snapshot (authoritative).
 		m.iterationHistory = nil
-		m.invalidateProgressHistoryCache()
+		m.rc.invalidateProgress()
 		if len(msg.activeProgress.IterationHistory) > 0 {
 			for _, ih := range msg.activeProgress.IterationHistory {
 				snap := cliIterationSnapshot{
@@ -1255,7 +1255,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// show a phantom progress block.
 		if m.progress != nil {
 			m.progress = nil
-			m.renderCacheValid = false
+			m.rc.valid = false
 		}
 		// Server says session is idle — enable input.
 		m.inputReady = true
@@ -1390,14 +1390,14 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// If ALL messages matched (same content, same count), skip fullRebuild.
 	// MUST check count: rewind deletes messages — remaining ones match old
 	// cache, but cachedHistoryLines still contains deleted messages' lines.
-	if allMatched && m.renderCacheValid && len(m.messages) == prevMsgCount {
+	if allMatched && m.rc.valid && len(m.messages) == prevMsgCount {
 		m.viewport.GotoBottom()
 		log.WithField("count", len(m.messages)).Debug("History reloaded (all cached, skipped rebuild)")
 		return
 	}
 	// Some messages are new/dirty or count changed — need rebuild, but only
 	// those will be re-rendered. Invalidate the flag so fullRebuild runs.
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
 	log.WithField("count", len(m.messages)).Info("History reloaded after compression")
@@ -1727,7 +1727,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.updateViewportContent()
 	} else {
 		m.typewriterTickActive = false
-		if !m.renderCacheValid || countsChanged {
+		if !m.rc.valid || countsChanged {
 			m.updateViewportContent()
 		}
 	}
@@ -1830,7 +1830,7 @@ func (m *cliModel) handleApprovalRequest(msg approvalRequestMsg) (tea.Model, tea
 	m.approvalDenyInput.CharLimit = 200
 	m.approvalDenyInput.SetWidth(60)
 	m.panelMode = "approval"
-	m.renderCacheValid = false
+	m.rc.valid = false
 	return m, nil
 }
 
@@ -1859,7 +1859,7 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 					next = 0
 				}
 				m.jumpToSearchResult(next)
-				m.renderCacheValid = false
+				m.rc.valid = false
 				m.updateViewportContent()
 			}
 			return m, nil, true
@@ -1870,7 +1870,7 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 					prev = len(m.searchResults) - 1
 				}
 				m.jumpToSearchResult(prev)
-				m.renderCacheValid = false
+				m.rc.valid = false
 				m.updateViewportContent()
 			}
 			return m, nil, true

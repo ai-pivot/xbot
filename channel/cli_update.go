@@ -96,7 +96,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	select {
 	case <-localeChangeCh:
 		m.locale = GetLocale(currentLocaleLang)
-		m.renderCacheValid = false
+		m.rc.valid = false
 		for i := range m.messages {
 			m.messages[i].dirty = true
 		}
@@ -442,7 +442,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	case easterEggDoneMsg:
 		// 🥚 彩蛋关闭（按任意键触发）
 		m.dismissEasterEgg()
-		m.renderCacheValid = false
+		m.rc.valid = false
 		m.updateViewportContent()
 		return m, nil
 
@@ -655,26 +655,26 @@ func (m *cliModel) relayoutViewport() {
 	// Height-only changes don't affect message rendering — just viewport scrolling.
 	if widthChanged {
 		// Invalidate render caches so content re-wraps at new width
-		m.renderCacheValid = false
-		m.lastViewportContent = ""
+		m.rc.valid = false
+		m.rc.vpContent = ""
 
 		// Glamour word-wrap matches viewport
 		if cw > 4 {
 			m.renderer = newGlamourRenderer(cw - 4)
 		}
-		m.cachedWrappedHistory = ""
-		m.cachedWrappedHistoryRaw = ""
-		m.cachedWrappedHistoryWidth = 0
-		m.cachedHistoryMaxWidth = 0
-		m.cachedHistoryLines = nil
-		m.cachedAllLines = nil
-		m.cachedAllLinesHistoryLen = 0
+		m.rc.wrapHistory = ""
+		m.rc.wrapRaw = ""
+		m.rc.wrapWidth = 0
+		m.rc.histMaxW = 0
+		m.rc.histLines = nil
+		m.rc.allLines = nil
+		m.rc.allLinesHistLen = 0
 		for i := range m.messages {
 			m.messages[i].dirty = true
 			m.messages[i].wrappedLines = nil
 			m.messages[i].wrappedWidth = 0
 		}
-		m.invalidateProgressHistoryCache()
+		m.rc.invalidateProgress()
 	}
 
 	// Use userScrolledUp instead of AtBottom() to avoid false-positive

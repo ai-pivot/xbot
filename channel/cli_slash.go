@@ -35,7 +35,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 
 	case "/clear":
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
-		m.cachedHistory = ""
+		m.rc.history = ""
 		m.exitSearch()
 
 	case "/rewind":

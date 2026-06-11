@@ -57,35 +57,6 @@ func (m *cliModel) mergeMessagesPreservingCache(newMessages []cliMessage) bool {
 	return allMatched
 }
 
-// invalidateProgressHistoryCache clears the cached rendered output of completed
-// iterations so it is rebuilt on the next renderProgressBlock call.
-func (m *cliModel) invalidateProgressHistoryCache() {
-	m.cachedProgressHistory = ""
-	m.cachedProgressHistoryLines = nil
-	m.cachedProgressHistoryLen = 0
-	m.cachedProgressHistoryWidth = 0
-	m.cachedCurrentStatic = ""
-	m.cachedCurrentStaticFP = 0
-	m.cachedCurrentStaticWidth = 0
-	m.cachedCurrentIter = 0
-	// Invalidate reasoning/stream/thinking block caches
-	m.cachedReasoningBlock = ""
-	m.cachedReasoningBlockFP = 0
-	m.cachedReasoningBlockWidth = 0
-	m.cachedStreamBlock = ""
-	m.cachedStreamBlockFP = 0
-	m.cachedStreamBlockWidth = 0
-	m.cachedThinkingBlock = ""
-	m.cachedThinkingBlockFP = 0
-	m.cachedThinkingBlockWidth = 0
-	// Full progress block output cache
-	m.cachedProgressBlockOut = ""
-	m.cachedProgressBlockFP = 0
-	m.cachedProgressBlockWidth = 0
-	m.cachedProgressBlockLines = nil
-	m.cachedProgressHistoryFP = 0
-}
-
 // resetProgressState resets iteration tracking for a new agent turn.
 func (m *cliModel) resetProgressState() {
 	m.iterationHistory = nil
@@ -96,7 +67,7 @@ func (m *cliModel) resetProgressState() {
 	m.progress = nil
 	m.iterationStartTime = time.Now() // wall-clock start for iteration 0
 	m.typingStartTime = time.Now()
-	m.invalidateProgressHistoryCache()
+	m.rc.invalidateProgress()
 }
 
 // collectAllTools gathers all tools from iteration history into a flat slice.
@@ -125,7 +96,7 @@ func (m *cliModel) trimToolSummaryPayload(msg *cliMessage) {
 // The logic mirrors setViewportContent exactly so that msgLineOffsets (computed via
 func (m *cliModel) appendNewMessagesToCache() {
 	var sb strings.Builder
-	sb.WriteString(m.cachedHistory)
+	sb.WriteString(m.rc.history)
 
 	// Calculate starting line offset for new messages
 	cw := m.chatWidth()
@@ -133,10 +104,10 @@ func (m *cliModel) appendNewMessagesToCache() {
 	if len(m.msgLineOffsets) > 0 {
 		// Approximate: use the line count of cachedHistory at current width.
 		// This is an estimate but sufficient for msgLineOffsets (used for Ctrl+E folding).
-		runningLines = wrappedLineCount(m.cachedHistory, cw)
+		runningLines = wrappedLineCount(m.rc.history, cw)
 	}
 
-	startIdx := m.cachedMsgCount
+	startIdx := m.rc.msgCount
 	for i := startIdx; i < len(m.messages); i++ {
 		msg := &m.messages[i]
 		m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
@@ -150,20 +121,20 @@ func (m *cliModel) appendNewMessagesToCache() {
 		runningLines += wrappedLineCount(rendered, cw)
 	}
 
-	m.cachedHistory = sb.String()
-	m.renderCacheValid = true
-	m.cachedMsgCount = len(m.messages)
+	m.rc.history = sb.String()
+	m.rc.valid = true
+	m.rc.msgCount = len(m.messages)
 
 	// Invalidate cachedHistoryLines so setViewportContent's slow path
 	// re-wraps and re-caches the lines. Without this, cachedHistoryLines
 	// is stale (missing the new messages) and the tick fast path renders
 	// incomplete history, causing visual duplication or missing content.
-	m.cachedHistoryLines = nil
-	m.cachedWrappedHistoryRaw = ""
+	m.rc.histLines = nil
+	m.rc.wrapRaw = ""
 
 	// Set viewport with new content + progress block
 	var vp strings.Builder
-	vp.WriteString(m.cachedHistory)
+	vp.WriteString(m.rc.history)
 	vp.WriteString(m.renderProgressBlock())
 	vp.WriteString(m.renderRewindResultBlock())
 	m.setViewportContent(vp.String())
@@ -207,14 +178,14 @@ func (m *cliModel) fullRebuild() {
 			histBuf.WriteString(line)
 			histBuf.WriteString("\n")
 		}
-		m.cachedHistory = histBuf.String()
-		m.cachedHistoryLines = allWrappedLines
-		m.cachedWrappedHistory = m.cachedHistory
-		m.cachedWrappedHistoryRaw = m.cachedHistory
-		m.cachedWrappedHistoryWidth = cw
-		m.cachedHistoryMaxWidth = hmax
-		m.renderCacheValid = true
-		m.cachedMsgCount = len(m.messages)
+		m.rc.history = histBuf.String()
+		m.rc.histLines = allWrappedLines
+		m.rc.wrapHistory = m.rc.history
+		m.rc.wrapRaw = m.rc.history
+		m.rc.wrapWidth = cw
+		m.rc.histMaxW = hmax
+		m.rc.valid = true
+		m.rc.msgCount = len(m.messages)
 		return
 	}
 
@@ -301,22 +272,22 @@ func (m *cliModel) fullRebuild() {
 		histBuf.WriteString(line)
 		histBuf.WriteString("\n")
 	}
-	m.cachedHistory = histBuf.String()
-	m.renderCacheValid = true
-	m.cachedMsgCount = len(m.messages)
+	m.rc.history = histBuf.String()
+	m.rc.valid = true
+	m.rc.msgCount = len(m.messages)
 
 	// All wrapped lines are already computed per-message above.
 	// Set the cache directly — no need to re-split + re-wrap the entire
 	// cachedHistory string (that was the O(N) bottleneck).
-	m.cachedHistoryLines = allWrappedLines
-	m.cachedWrappedHistory = m.cachedHistory
-	m.cachedWrappedHistoryRaw = m.cachedHistory
-	m.cachedWrappedHistoryWidth = cw
-	m.cachedHistoryMaxWidth = hmax
+	m.rc.histLines = allWrappedLines
+	m.rc.wrapHistory = m.rc.history
+	m.rc.wrapRaw = m.rc.history
+	m.rc.wrapWidth = cw
+	m.rc.histMaxW = hmax
 
 	// 拼接最终内容：历史 + 当前流式消息（如有） + progress block + rewind result
 	var sb strings.Builder
-	sb.WriteString(m.cachedHistory)
+	sb.WriteString(m.rc.history)
 	if m.streamingMsgIdx >= 0 {
 		sb.WriteString(m.renderMessage(&m.messages[m.streamingMsgIdx]))
 	}

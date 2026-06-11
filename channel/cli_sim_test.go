@@ -420,7 +420,7 @@ func (r *simRunner) loadHistory() {
 		}
 		r.model.messages = append(r.model.messages, msg)
 	}
-	r.model.renderCacheValid = false
+	r.model.rc.valid = false
 	r.model.updateViewportContent()
 }
 
@@ -571,7 +571,7 @@ func (r *simRunner) doUserMsg(idx int, step SimStep) error {
 	})
 	m.startAgentTurn()
 	m.resetProgressState()
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	// Sending a message resets scroll state (matches sendMessage behavior)
 	m.viewport.GotoBottom()
@@ -587,7 +587,7 @@ func (r *simRunner) doAgentMsg(idx int, step SimStep) error {
 		IsPartial: step.IsPartial,
 	}
 	m.Update(cliOutboundMsg{msg: outMsg})
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -609,7 +609,7 @@ func (r *simRunner) doProgress(idx int, step SimStep) error {
 		ChatID:                 m.channelName + ":" + m.chatID,
 	}
 	m.Update(cliProgressMsg{payload: payload})
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -629,7 +629,7 @@ func (r *simRunner) doPhaseDone(idx int, step SimStep) error {
 		ChatID:         m.channelName + ":" + m.chatID,
 	}
 	m.Update(cliProgressMsg{payload: payload})
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -639,7 +639,7 @@ func (r *simRunner) doKey(idx int, step SimStep) error {
 	m := r.model
 	key := parseKeyInput(step.Key)
 	m.Update(key)
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -679,7 +679,7 @@ func (r *simRunner) doRewind(idx int, step SimStep) error {
 	}
 	cutIdx := items[ri].MsgIndex
 	m.messages = m.messages[:cutIdx]
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.invalidateAllCache(false)
 	m.updateViewportContent()
 	return nil
@@ -1255,7 +1255,7 @@ func (r *simRunner) doSetVar(idx int, step SimStep) error {
 	case "newContentHint":
 		m.newContentHint = step.Value
 	case "renderCacheValid":
-		m.renderCacheValid = step.Value
+		m.rc.valid = step.Value
 	default:
 		return fmt.Errorf("unknown variable: %q", step.Var)
 	}
@@ -1308,8 +1308,8 @@ func (r *simRunner) doQueueAdd(idx int, step SimStep) error {
 func (r *simRunner) doClear(idx int, step SimStep) error {
 	m := r.model
 	m.messages = nil
-	m.cachedHistory = ""
-	m.renderCacheValid = false
+	m.rc.history = ""
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -1693,7 +1693,7 @@ func (r *simRunner) doScroll(idx int, step SimStep) error {
 			m.userScrolledUp = true
 		}
 	}
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -1845,7 +1845,7 @@ func (r *simRunner) doSubAgent(idx int, step SimStep) error {
 			ChatID:    m.channelName + ":" + m.chatID,
 		}
 		m.Update(cliProgressMsg{payload: payload})
-		m.renderCacheValid = false
+		m.rc.valid = false
 		m.updateViewportContent()
 	}
 	return nil
@@ -1864,7 +1864,7 @@ func (r *simRunner) doSystemMsg(idx int, step SimStep) error {
 		content = "ℹ " + content
 	}
 	m.appendSystem(content)
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	return nil
 }
@@ -2032,7 +2032,7 @@ func (r *simRunner) dumpVars() map[string]any {
 		"ready":             m.ready,
 		"userScrolledUp":    m.userScrolledUp,
 		"newContentHint":    m.newContentHint,
-		"renderCacheValid":  m.renderCacheValid,
+		"renderCacheValid":  m.rc.valid,
 	}
 }
 

@@ -431,7 +431,7 @@ func (m *cliModel) restoreSession() {
 		m.typing = false
 		m.streamingMsgIdx = -1
 		m.iterationHistory = nil
-		m.invalidateProgressHistoryCache()
+		m.rc.invalidateProgress()
 		m.lastSeenIteration = 0
 		m.typingStartTime = time.Time{}
 		m.lastReasoning = ""
@@ -499,42 +499,7 @@ func (m *cliModel) resetToIdleState() {
 	m.streamingMsgIdx = -1
 	m.newContentHint = false
 	m.userScrolledUp = false
-	m.renderCacheValid = false
-	m.cachedHistory = ""
-	m.cachedMsgCount = 0
-	m.lastViewportContent = ""
-	m.lastViewportWidth = 0
-	m.cachedWrappedHistory = ""
-	m.cachedWrappedHistoryRaw = ""
-	m.cachedWrappedHistoryWidth = 0
-	m.cachedHistoryMaxWidth = 0
-	m.cachedHistoryLines = nil
-	m.cachedProgressHistory = ""
-	m.cachedProgressHistoryLines = nil
-	m.cachedProgressHistoryLen = 0
-	m.cachedProgressHistoryWidth = 0
-	m.cachedCurrentStatic = ""
-	m.cachedCurrentStaticWidth = 0
-	m.cachedCurrentIter = 0
-	m.cachedCurrentStaticFP = 0
-	m.cachedReasoningBlock = ""
-	m.cachedReasoningBlockFP = 0
-	m.cachedReasoningBlockWidth = 0
-	m.cachedStreamBlock = ""
-	m.cachedStreamBlockFP = 0
-	m.cachedStreamBlockWidth = 0
-	m.cachedThinkingBlock = ""
-	m.cachedThinkingBlockFP = 0
-	m.cachedThinkingBlockWidth = 0
-	// Full progress block output cache
-	m.cachedProgressBlockOut = ""
-	m.cachedProgressBlockFP = 0
-	m.cachedProgressBlockWidth = 0
-	m.cachedProgressBlockLines = nil
-	m.cachedProgressHistoryFP = 0
-	m.cachedDynamicRaw = ""
-	m.cachedDynamicLines = nil
-	m.cachedDynamicWidth = 0
+	m.rc.resetAll()
 
 	// --- Agent State ---
 	m.agentTurnID = 0
@@ -1079,77 +1044,8 @@ type cliModel struct {
 	newContentHintRendered string    // rendered "↓ 新内容" string for zone width measurement
 	newContentHintXStart   int       // X position of newContentHint in status bar
 
-	// --- §1 增量渲染 ---
-	renderCacheValid    bool   // 全局缓存是否有效（resize 后置 false）
-	cachedHistory       string // 缓存的历史消息渲染结果（不含当前流式消息）
-	cachedMsgCount      int    // messages count when cache was built
-	lastViewportContent string // 上次 setViewportContent 的原始内容（去重用）
-	lastViewportWidth   int    // 上次 setViewportContent 的宽度（去重用）
-	// Two-tier wrap cache: avoid O(N*W) hardWrapRunes on the growing history every tick.
-	// cachedWrappedHistory stores the hard-wrapped version of cachedHistory at the current width.
-	// Only the dynamic suffix (progress block, rewind result) is re-wrapped on each tick.
-	cachedWrappedHistory      string   // hard-wrapped cachedHistory (already split/wrapped at m.width)
-	cachedWrappedHistoryRaw   string   // the raw cachedHistory that was wrapped (for invalidation)
-	cachedWrappedHistoryWidth int      // width at which cachedWrappedHistory was built
-	cachedHistoryMaxWidth     int      // actual max display width of cached wrapped history lines
-	cachedHistoryLines        []string // pre-split lines from cachedWrappedHistory (avoids O(N) strings.Split every tick)
-
-	// --- progress block cache ---
-	cachedProgressHistory      string   // cached rendered output of completed iterations (dimmed)
-	cachedProgressHistoryLines []string // pre-padded lines of cached history (avoids O(N) padProgressLines on cache miss)
-	cachedProgressHistoryLen   int      // len(iterationHistory) when cache was built
-	cachedProgressHistoryWidth int      // viewport width when cache was built
-	cachedProgressHistoryFP    uint64   // fingerprint of cached history content for O(1) composite FP
-
-	// --- tick-level dirty detection for updateViewportContent fast path ---
-	// Avoids O(total_content) string construction when nothing changed between ticks.
-	lastTickHistoryLen int    // len(m.cachedHistory) at last tick
-	lastTickProgressFP uint64 // cachedProgressBlockFP at last tick
-	lastTickRewindFP   uint64 // fnvHash64(rewindBlock) at last tick
-
-	// cachedAllLines: reused slice for viewport lines assembly across ticks.
-	// Avoids O(N) allocation + copy of cachedHistoryLines every 100ms.
-	// Layout: [historyLines... | progressLines... | rewindLines...]
-	cachedAllLines           []string
-	cachedAllLinesHistoryLen int // len(cachedHistoryLines) when slice was built
-
-	// Current iteration static content cache — avoids re-rendering reasoning,
-	// completed tools, tool content, and SubAgent tree on every 100ms tick.
-	cachedCurrentStatic      string // rendered static parts of current iteration
-	cachedCurrentStaticWidth int    // bubbleWidth when cache was built
-	cachedCurrentIter        int    // progress.Iteration when cache was built
-	cachedCurrentStaticFP    uint64 // fingerprint of static content for dirty detection
-
-	// Reasoning/stream/thinking block caches — avoids per-line Style.Render,
-	// lipgloss.Width, and hardWrapRunes on every tick when content is static.
-	cachedReasoningBlock      string // rendered reasoning lines with guides and cursor
-	cachedReasoningBlockFP    uint64 // fingerprint for dirty detection
-	cachedReasoningBlockWidth int    // innerWidth when cache was built
-
-	cachedStreamBlock      string // rendered stream lines with guides and cursor
-	cachedStreamBlockFP    uint64 // fingerprint for dirty detection
-	cachedStreamBlockWidth int    // innerWidth when cache was built
-
-	cachedThinkingBlock      string // rendered thinking lines with guides
-	cachedThinkingBlockFP    uint64 // fingerprint for dirty detection
-	cachedThinkingBlockWidth int    // innerWidth when cache was built
-
-	// Full progress block output cache — avoids the expensive blockStyle.Render()
-	// (lipgloss border wrapping with ANSI width calculation on every character)
-	// running on every 100ms tick. The cache key is a fingerprint of all rendered
-	// sub-blocks + elapsed seconds + cursor state. Without this, blockStyle.Render()
-	// alone consumes 60%+ CPU in SubAgent sessions with large progress history.
-	cachedProgressBlockOut   string   // final rendered result (with manual padding)
-	cachedProgressBlockFP    uint64   // composite fingerprint of all sub-blocks
-	cachedProgressBlockWidth int      // bubbleWidth when cache was built
-	cachedProgressBlockLines []string // pre-split lines of cachedProgressBlockOut
-
-	// cachedDynamicLines stores the pre-wrapped lines of the dynamic viewport suffix
-	// (progress block + rewind block). This avoids O(N_iters) lipgloss.Width +
-	// wrapPreservingGuide calls in setViewportContent on every tick.
-	cachedDynamicRaw   string   // raw dynamic part string (progress + rewind)
-	cachedDynamicLines []string // pre-split and wrapped lines
-	cachedDynamicWidth int      // chatWidth when cached
+	// --- §1 增量渲染 (aggregated into renderCache) ---
+	rc renderCache
 
 	// --- §2 工具可视化 ---
 	lastCompletedTools []protocol.ToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期

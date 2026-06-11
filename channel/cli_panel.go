@@ -446,7 +446,7 @@ func (m *cliModel) openRewindPanel() {
 	m.rewindItems = items
 	m.rewindCursor = len(items) - 1 // default to most recent
 	m.rewindMode = true
-	m.renderCacheValid = false
+	m.rc.valid = false
 }
 
 // closeRewindPanel deactivates the rewind overlay.
@@ -654,11 +654,11 @@ func (m *cliModel) applyRewind() {
 	m.rewindMode = false
 	m.rewindItems = nil
 	m.rewindCursor = 0
-	m.renderCacheValid = false
-	m.cachedHistory = ""
-	m.cachedHistoryLines = nil
-	m.cachedAllLines = nil
-	m.cachedAllLinesHistoryLen = 0
+	m.rc.valid = false
+	m.rc.history = ""
+	m.rc.histLines = nil
+	m.rc.allLines = nil
+	m.rc.allLinesHistLen = 0
 	m.updateViewportContent()
 }
 

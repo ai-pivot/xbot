@@ -77,9 +77,9 @@ func (m *cliModel) renderHistoryRange(
 // seconds so the cache stays stable across 100ms ticks.
 func (m *cliModel) renderProgressBlock() string {
 	if !m.typing && m.progress == nil {
-		m.cachedProgressBlockOut = ""
-		m.cachedProgressBlockFP = 0
-		m.cachedProgressBlockLines = nil
+		m.rc.progressBlock.content = ""
+		m.rc.progressBlock.fp = 0
+		m.rc.progressBlock.lines = nil
 		return ""
 	}
 	// Cross-session guard: if progress payload carries a ChatID that doesn't match
@@ -91,9 +91,9 @@ func (m *cliModel) renderProgressBlock() string {
 		if m.progress.ChatID != currentKey {
 			m.progress = nil
 			m.typing = false
-			m.cachedProgressBlockOut = ""
-			m.cachedProgressBlockFP = 0
-			m.cachedProgressBlockLines = nil
+			m.rc.progressBlock.content = ""
+			m.rc.progressBlock.fp = 0
+			m.rc.progressBlock.lines = nil
 			return ""
 		}
 	}
@@ -129,31 +129,24 @@ func (m *cliModel) renderProgressBlock() string {
 	// Uses padded lines cache (cachedProgressHistoryLines) so that padProgressLines
 	// only needs to process the newly added lines instead of the entire history.
 	var historyLines []string
-	if m.cachedProgressHistoryLen == len(m.iterationHistory) && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistory != "" {
-		historyLines = m.cachedProgressHistoryLines
-	} else if m.cachedProgressHistoryLen > 0 && m.cachedProgressHistoryWidth == bubbleWidth && m.cachedProgressHistoryLen < len(m.iterationHistory) {
+	if lines, ok := m.rc.progressHistory.get(len(m.iterationHistory), bubbleWidth); ok {
+		historyLines = lines
+	} else if m.rc.progressHistory.count > 0 && m.rc.progressHistory.width == bubbleWidth && m.rc.progressHistory.count < len(m.iterationHistory) {
 		// Incremental: only render new iterations [cachedProgressHistoryLen:]
 		var histBuf strings.Builder
-		m.renderHistoryRange(&histBuf, m.iterationHistory[m.cachedProgressHistoryLen:], innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, s)
+		m.renderHistoryRange(&histBuf, m.iterationHistory[m.rc.progressHistory.count:], innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, s)
 		newHistory := histBuf.String()
-		m.cachedProgressHistory += newHistory
-		m.cachedProgressHistoryLen = len(m.iterationHistory)
-		m.cachedProgressHistoryFP = fnvHash64(m.cachedProgressHistory)
 		// Incremental padded lines: only pad the new portion
 		newLines := padLinesFromContent(newHistory)
-		m.cachedProgressHistoryLines = append(m.cachedProgressHistoryLines, newLines...)
-		historyLines = m.cachedProgressHistoryLines
+		m.rc.progressHistory.appendIncremental(newHistory, newLines, len(m.iterationHistory))
+		historyLines = m.rc.progressHistory.lines
 	} else {
 		// Full rebuild (width changed or cache invalidation)
 		var histBuf strings.Builder
 		m.renderHistoryRange(&histBuf, m.iterationHistory, innerWidth, reasoningW, thinkingW, reasoningGuide, reasoningStyle, thinkingGuide, thinkingStyle, iterStyle, toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, s)
-		m.cachedProgressHistory = histBuf.String()
-		m.cachedProgressHistoryLen = len(m.iterationHistory)
-		m.cachedProgressHistoryWidth = bubbleWidth
-		m.cachedProgressHistoryFP = fnvHash64(m.cachedProgressHistory)
 		// Full padded lines rebuild
-		m.cachedProgressHistoryLines = padLinesFromContent(m.cachedProgressHistory)
-		historyLines = m.cachedProgressHistoryLines
+		m.rc.progressHistory.rebuild(histBuf.String(), len(m.iterationHistory), bubbleWidth)
+		historyLines = m.rc.progressHistory.lines
 	}
 
 	// Render current iteration into a separate buffer so we can
@@ -192,8 +185,8 @@ func (m *cliModel) renderProgressBlock() string {
 	// Uses O(1) composite fingerprint (sub-block FPs + active tool state)
 	// instead of O(N) hash of the entire pre-render string.
 	fp := m.progressBlockCompositeFP(elapsedSec, bubbleWidth)
-	if fp == m.cachedProgressBlockFP && bubbleWidth == m.cachedProgressBlockWidth && m.cachedProgressBlockOut != "" {
-		return m.cachedProgressBlockOut
+	if fp == m.rc.progressBlock.fp && bubbleWidth == m.rc.progressBlock.width && m.rc.progressBlock.content != "" {
+		return m.rc.progressBlock.content
 	}
 
 	// Header
@@ -236,10 +229,10 @@ func (m *cliModel) renderProgressBlock() string {
 	// Add trailing empty line for the bottom border
 	allPaddedLines = append(allPaddedLines, "")
 
-	m.cachedProgressBlockOut = result
-	m.cachedProgressBlockFP = fp
-	m.cachedProgressBlockWidth = bubbleWidth
-	m.cachedProgressBlockLines = allPaddedLines
+	m.rc.progressBlock.content = result
+	m.rc.progressBlock.fp = fp
+	m.rc.progressBlock.width = bubbleWidth
+	m.rc.progressBlock.lines = allPaddedLines
 
 	return result
 }
@@ -278,15 +271,15 @@ func (m *cliModel) progressBlockCompositeFP(elapsedSec int64, bubbleWidth int) u
 	h.Write(eb[:])
 	binary.LittleEndian.PutUint64(eb[:], uint64(bubbleWidth))
 	h.Write(eb[:])
-	binary.LittleEndian.PutUint64(eb[:], m.cachedProgressHistoryFP)
+	binary.LittleEndian.PutUint64(eb[:], m.rc.progressHistory.fp)
 	h.Write(eb[:])
-	binary.LittleEndian.PutUint64(eb[:], m.cachedCurrentStaticFP)
+	binary.LittleEndian.PutUint64(eb[:], m.rc.currentStatic.fp)
 	h.Write(eb[:])
-	binary.LittleEndian.PutUint64(eb[:], m.cachedReasoningBlockFP)
+	binary.LittleEndian.PutUint64(eb[:], m.rc.reasoning.fp)
 	h.Write(eb[:])
-	binary.LittleEndian.PutUint64(eb[:], m.cachedThinkingBlockFP)
+	binary.LittleEndian.PutUint64(eb[:], m.rc.thinking.fp)
 	h.Write(eb[:])
-	binary.LittleEndian.PutUint64(eb[:], m.cachedStreamBlockFP)
+	binary.LittleEndian.PutUint64(eb[:], m.rc.stream.fp)
 	h.Write(eb[:])
 	// Spinner tick count — ensures pulse/phase animations update every 100ms.
 	// Without this, the cache stays stable for a whole second (elapsedSec is
@@ -419,73 +412,70 @@ func (m *cliModel) getCurrentStaticCache(
 	toolDoneStyle, toolErrorStyle, elapsedStyle, dimStyle, iterStyle lipgloss.Style,
 ) string {
 	if m.progress == nil {
-		m.cachedCurrentStatic = ""
+		m.rc.currentStatic.reset()
 		return ""
 	}
 
+	// Reset cache when iteration changes
+	if m.rc.currentIter != m.progress.Iteration {
+		m.rc.currentStatic.reset()
+	}
+
 	fp := m.progressStaticFP()
-	if m.cachedCurrentStatic != "" &&
-		m.cachedCurrentStaticWidth == bubbleWidth &&
-		m.cachedCurrentIter == m.progress.Iteration &&
-		m.cachedCurrentStaticFP == fp {
-		return m.cachedCurrentStatic
-	}
+	return m.rc.currentStatic.getOrBuild(fp, bubbleWidth, func() string {
+		var sb strings.Builder
 
-	var sb strings.Builder
-
-	// Completed tools in current iteration
-	for _, tool := range m.progress.CompletedTools {
-		if tool.Iteration != m.progress.Iteration {
-			continue
-		}
-		label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-		var elapsedStyled string
-		if tool.Elapsed > 0 {
-			elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
-		}
-		sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
-		sb.WriteString("\n")
-	}
-
-	// Done/error active tools (static once finished)
-	for _, tool := range m.progress.ActiveTools {
-		if tool.Status != "done" && tool.Status != "error" {
-			continue
-		}
-		label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
-		var elapsedStyled string
-		if tool.Elapsed > 0 {
-			elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
-		}
-		sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
-		sb.WriteString("\n")
-	}
-
-	// Tool content (completed + done/error active)
-	guide := reasoningGuide.Render("  ┊ ")
-	for i := range m.progress.CompletedTools {
-		tool := &m.progress.CompletedTools[i]
-		if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
-			sb.WriteString(content)
+		// Completed tools in current iteration
+		for _, tool := range m.progress.CompletedTools {
+			if tool.Iteration != m.progress.Iteration {
+				continue
+			}
+			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+			var elapsedStyled string
+			if tool.Elapsed > 0 {
+				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
+			}
+			sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
 			sb.WriteString("\n")
 		}
-	}
-	for i := range m.progress.ActiveTools {
-		tool := &m.progress.ActiveTools[i]
-		if tool.Status != "done" && tool.Status != "error" {
-			continue
-		}
-		if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
-			sb.WriteString(content)
+
+		// Done/error active tools (static once finished)
+		for _, tool := range m.progress.ActiveTools {
+			if tool.Status != "done" && tool.Status != "error" {
+				continue
+			}
+			label, icon, sty := toolDisplayInfo(tool, toolDoneStyle, toolErrorStyle)
+			var elapsedStyled string
+			if tool.Elapsed > 0 {
+				elapsedStyled = elapsedStyle.Render(formatElapsed(tool.Elapsed))
+			}
+			sb.WriteString(sty.Render(toolLine(icon, label, elapsedStyled, innerWidth)))
 			sb.WriteString("\n")
 		}
-	}
 
-	m.cachedCurrentStatic = sb.String()
-	m.cachedCurrentStaticWidth = bubbleWidth
-	m.cachedCurrentIter = m.progress.Iteration
-	m.cachedCurrentStaticFP = fp
-	return m.cachedCurrentStatic
+		// Tool content (completed + done/error active)
+		guide := reasoningGuide.Render("  ┊ ")
+		for i := range m.progress.CompletedTools {
+			tool := &m.progress.CompletedTools[i]
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
+				sb.WriteString(content)
+				sb.WriteString("\n")
+			}
+		}
+		for i := range m.progress.ActiveTools {
+			tool := &m.progress.ActiveTools[i]
+			if tool.Status != "done" && tool.Status != "error" {
+				continue
+			}
+			if content := m.renderToolContentBelow(tool, guide, innerWidth, false, 0); content != "" {
+				sb.WriteString(content)
+				sb.WriteString("\n")
+			}
+		}
+
+		m.rc.currentIter = m.progress.Iteration
+		return sb.String()
+	})
 }
 
 // renderCurrentIteration renders the current iteration with correct linear order:
@@ -520,9 +510,7 @@ func (m *cliModel) renderCurrentIteration(
 	}
 	if reasoningText != "" {
 		fp := m.reasoningBlockFP(innerWidth, reasoningW, cursorState)
-		if m.cachedReasoningBlock != "" && m.cachedReasoningBlockFP == fp && m.cachedReasoningBlockWidth == innerWidth {
-			sb.WriteString(m.cachedReasoningBlock)
-		} else {
+		sb.WriteString(m.rc.reasoning.getOrBuild(fp, innerWidth, func() string {
 			var blockBuf strings.Builder
 			// Typewriter effect for reasoning streaming
 			if isReasoningStreaming {
@@ -568,19 +556,14 @@ func (m *cliModel) renderCurrentIteration(
 					blockBuf.WriteString("\n")
 				}
 			}
-			m.cachedReasoningBlock = blockBuf.String()
-			m.cachedReasoningBlockFP = fp
-			m.cachedReasoningBlockWidth = innerWidth
-			sb.WriteString(m.cachedReasoningBlock)
-		}
+			return blockBuf.String()
+		}))
 	}
 
 	// --- 2. Thinking (cached) ---
 	if m.progress.Thinking != "" {
 		fp := m.thinkingBlockFP(innerWidth, thinkingW)
-		if m.cachedThinkingBlock != "" && m.cachedThinkingBlockFP == fp && m.cachedThinkingBlockWidth == innerWidth {
-			sb.WriteString(m.cachedThinkingBlock)
-		} else {
+		sb.WriteString(m.rc.thinking.getOrBuild(fp, innerWidth, func() string {
 			var blockBuf strings.Builder
 			for _, line := range strings.Split(m.progress.Thinking, "\n") {
 				line = strings.TrimRight(line, " \t\r")
@@ -592,11 +575,8 @@ func (m *cliModel) renderCurrentIteration(
 					blockBuf.WriteString("\n")
 				}
 			}
-			m.cachedThinkingBlock = blockBuf.String()
-			m.cachedThinkingBlockFP = fp
-			m.cachedThinkingBlockWidth = innerWidth
-			sb.WriteString(m.cachedThinkingBlock)
-		}
+			return blockBuf.String()
+		}))
 	}
 
 	// --- 3. Completed tools + tool content (static cache) ---
@@ -611,9 +591,7 @@ func (m *cliModel) renderCurrentIteration(
 
 	if m.progress.StreamContent != "" {
 		fp := m.streamBlockFP(innerWidth, thinkingW, cursorState)
-		if m.cachedStreamBlock != "" && m.cachedStreamBlockFP == fp && m.cachedStreamBlockWidth == innerWidth {
-			sb.WriteString(m.cachedStreamBlock)
-		} else {
+		sb.WriteString(m.rc.stream.getOrBuild(fp, innerWidth, func() string {
 			var blockBuf strings.Builder
 			totalRunes := len([]rune(m.progress.StreamContent))
 			runes := []rune(m.progress.StreamContent)
@@ -656,11 +634,8 @@ func (m *cliModel) renderCurrentIteration(
 					blockBuf.WriteString("\n")
 				}
 			}
-			m.cachedStreamBlock = blockBuf.String()
-			m.cachedStreamBlockFP = fp
-			m.cachedStreamBlockWidth = innerWidth
-			sb.WriteString(m.cachedStreamBlock)
-		}
+			return blockBuf.String()
+		}))
 	} else if !hasTools {
 		// Phase spinner only when no content at all
 		hasReasoning := m.progress.Reasoning != "" || m.progress.ReasoningStreamContent != ""

@@ -57,7 +57,7 @@ func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 	if m.approvalEnteringDeny {
 		var cmd tea.Cmd
 		m.approvalDenyInput, cmd = m.approvalDenyInput.Update(msg)
-		m.renderCacheValid = false
+		m.rc.valid = false
 		switch msg.Code {
 		case tea.KeyEnter:
 			m.resolveApproval(false, strings.TrimSpace(m.approvalDenyInput.Value()))
@@ -73,15 +73,15 @@ func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 	switch msg.Code {
 	case tea.KeyLeft, tea.KeyUp:
 		m.approvalCursor = 0 // Approve
-		m.renderCacheValid = false
+		m.rc.valid = false
 		return true, m, nil
 	case tea.KeyRight, tea.KeyDown:
 		m.approvalCursor = 1 // Deny
-		m.renderCacheValid = false
+		m.rc.valid = false
 		return true, m, nil
 	case tea.KeyTab:
 		m.approvalCursor = (m.approvalCursor + 1) % 2
-		m.renderCacheValid = false
+		m.rc.valid = false
 		return true, m, nil
 	case tea.KeyEnter:
 		if m.approvalCursor == 0 {
@@ -104,7 +104,7 @@ func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 		case "n", "N":
 			m.approvalEnteringDeny = true
 			m.approvalDenyInput.Focus()
-			m.renderCacheValid = false
+			m.rc.valid = false
 			return true, m, nil
 		}
 	}
@@ -122,7 +122,7 @@ func (m *cliModel) resolveApproval(approved bool, denyReason string) {
 	m.approvalCursor = 0
 	m.approvalEnteringDeny = false
 	m.panelMode = ""
-	m.renderCacheValid = false
+	m.rc.valid = false
 }
 
 // --- Panel: View (rendering) ---

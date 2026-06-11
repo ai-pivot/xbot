@@ -347,11 +347,11 @@ func TestInvalidateAllCache_MarksDirty(t *testing.T) {
 		{role: "user", content: "hello", dirty: false},
 		{role: "assistant", content: "hi", dirty: false},
 	}
-	model.renderCacheValid = true
+	model.rc.valid = true
 
 	model.invalidateAllCache(false)
 
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false after invalidate")
 	}
 	for i, msg := range model.messages {
@@ -385,13 +385,13 @@ func TestInvalidateAllCache_WithUpdateViewport(t *testing.T) {
 	model.messages = []cliMessage{
 		{role: "user", content: "hello"},
 	}
-	model.renderCacheValid = true
+	model.rc.valid = true
 
 	model.invalidateAllCache(true)
 
 	// After full rebuild (triggered by updateViewportContent), cache becomes valid again.
 	// The key behavior to verify is that viewport was actually refreshed.
-	if model.renderCacheValid != true {
+	if model.rc.valid != true {
 		t.Error("renderCacheValid should be true after full rebuild restores cache")
 	}
 	if model.viewport.View() == "" {
@@ -407,11 +407,11 @@ func TestInvalidateAllCache_WithUpdateViewport(t *testing.T) {
 
 func TestInvalidateAllCache_EmptyMessages(t *testing.T) {
 	model := newCLIModel()
-	model.renderCacheValid = true
+	model.rc.valid = true
 
 	model.invalidateAllCache(false)
 
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false even with no messages")
 	}
 }
@@ -429,7 +429,7 @@ func TestToggleToolSummary(t *testing.T) {
 	if model.toolSummaryExpanded == initial {
 		t.Error("toggleToolSummary should flip toolSummaryExpanded")
 	}
-	if model.cachedHistory != "" {
+	if model.rc.history != "" {
 		t.Error("cachedHistory should be cleared")
 	}
 	// After toggleToolSummary → invalidateAllCache(true) → updateViewportContent → fullRebuild,
@@ -493,13 +493,13 @@ func TestStartAgentTurn_ResetsProgressState(t *testing.T) {
 func TestApplyThemeAndRebuild_ValidTheme(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.renderCacheValid = true
+	model.rc.valid = true
 
 	themes := ThemeNames()
 	if len(themes) > 0 {
 		model.applyThemeAndRebuild(themes[0])
 	}
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false after applyThemeAndRebuild")
 	}
 }
@@ -510,7 +510,7 @@ func TestApplyThemeAndRebuild_InvalidTheme(t *testing.T) {
 
 	// Unknown theme should not panic, falls back to default
 	model.applyThemeAndRebuild("nonexistent_theme_xyz")
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false")
 	}
 }
@@ -521,7 +521,7 @@ func TestApplyThemeAndRebuild_NarrowWidth(t *testing.T) {
 
 	model.applyThemeAndRebuild("midnight")
 	// Should not panic when width <= 4 (renderer not rebuilt)
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false")
 	}
 }
@@ -531,7 +531,7 @@ func TestApplyThemeAndRebuild_ZeroWidth(t *testing.T) {
 	// No handleResize — width stays 0
 	model.applyThemeAndRebuild("midnight")
 	// Should not panic
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false")
 	}
 }
@@ -543,13 +543,13 @@ func TestApplyThemeAndRebuild_ZeroWidth(t *testing.T) {
 func TestApplyLanguageChange_ValidLang(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.renderCacheValid = true
+	model.rc.valid = true
 
 	model.applyLanguageChange("en")
 	if model.locale == nil {
 		t.Error("locale should not be nil after applyLanguageChange")
 	}
-	if model.renderCacheValid {
+	if model.rc.valid {
 		t.Error("renderCacheValid should be false after applyLanguageChange")
 	}
 }
@@ -909,7 +909,7 @@ func TestInvalidateAllCache_LargeMessageSlice(t *testing.T) {
 	for i := range model.messages {
 		model.messages[i] = cliMessage{role: "user", content: "test"}
 	}
-	model.renderCacheValid = true
+	model.rc.valid = true
 
 	model.invalidateAllCache(false)
 

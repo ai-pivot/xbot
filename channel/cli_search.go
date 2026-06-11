@@ -74,7 +74,7 @@ func (m *cliModel) toggleMessageFold() {
 		}
 	}
 	if changed {
-		m.renderCacheValid = false
+		m.rc.valid = false
 		m.updateViewportContent()
 	}
 }
@@ -97,7 +97,7 @@ func (m *cliModel) enterSearchMode() {
 	m.searchQuery = ""
 	m.searchResults = nil
 	m.searchIdx = -1
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 }
 
@@ -127,7 +127,7 @@ func (m *cliModel) executeSearch() {
 		m.showSystemMsg(fmt.Sprintf(m.locale.SearchResults, len(m.searchResults)), feedbackInfo)
 		m.jumpToSearchResult(0)
 	}
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 }
 
@@ -138,7 +138,7 @@ func (m *cliModel) exitSearch() {
 	m.searchResults = nil
 	m.searchIdx = -1
 	m.searchEditing = false
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 }
 

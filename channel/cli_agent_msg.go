@@ -74,7 +74,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		m.streamingMsgIdx = -1
 		m.progress = nil
 		m.typing = false // clear typing indicator immediately after cancel
-		m.renderCacheValid = false
+		m.rc.valid = false
 		m.updateViewportContent()
 		return
 	}
@@ -187,7 +187,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 				m.messages[completedMsgIdx].thinking = thinking
 			}
 		}
-		m.renderCacheValid = false
+		m.rc.valid = false
 		m.updateViewportContent()
 
 		// §11.5 Session reset: clear messages and token usage bar after /new
@@ -196,12 +196,12 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
 			m.messages = make([]cliMessage, 0, cliMsgBufSize)
 			m.streamingMsgIdx = -1
-			m.cachedHistory = ""
-			m.cachedWrappedHistory = ""
-			m.cachedWrappedHistoryRaw = ""
-			m.cachedWrappedHistoryWidth = 0
-			m.cachedHistoryMaxWidth = 0
-			m.cachedHistoryLines = nil
+			m.rc.history = ""
+			m.rc.wrapHistory = ""
+			m.rc.wrapRaw = ""
+			m.rc.wrapWidth = 0
+			m.rc.histMaxW = 0
+			m.rc.histLines = nil
 			// PhaseDone from emitBuiltinProgressDone should arrive before this outbound,
 			// so endAgentTurn is usually a no-op (turn already ended). Kept as safety net.
 			m.endAgentTurn(m.agentTurnID)
@@ -377,7 +377,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 					m.messages = append(m.messages, toolSummary)
 				}
 			}
-			m.renderCacheValid = false
+			m.rc.valid = false
 		} else if m.isTurnDoneProcessed(turnID) {
 			// PhaseDone already created the tool_summary. If we have richer
 			// local iteration data (e.g. more complete reasoning), update it.
@@ -398,7 +398,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 					}
 					existing.dirty = true
 					m.messages[tsIdx] = existing
-					m.renderCacheValid = false
+					m.rc.valid = false
 				}
 			}
 		}

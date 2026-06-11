@@ -12,11 +12,11 @@ func (m *cliModel) setViewportContent(content string) {
 	// During resize storms or high-frequency ticks (busy state), this prevents
 	// O(N*W) hardWrapRunes from running every 100ms on the same content.
 	cw := m.chatWidth()
-	if content == m.lastViewportContent && cw == m.lastViewportWidth && m.ready {
+	if content == m.rc.vpContent && cw == m.rc.vpWidth && m.ready {
 		return
 	}
-	m.lastViewportContent = content
-	m.lastViewportWidth = cw
+	m.rc.vpContent = content
+	m.rc.vpWidth = cw
 
 	// Track actual max width across all wrapped lines.
 	// The performance optimization bypasses viewport's internal maxLineWidth()
@@ -33,17 +33,17 @@ func (m *cliModel) setViewportContent(content string) {
 		// The history portion is stable (doesn't change between ticks) — reuse
 		// its wrapped version to avoid O(N*W) hardWrapRunes on the growing history.
 		historyEnd := 0
-		if len(m.cachedHistory) > 0 && strings.HasPrefix(content, m.cachedHistory) {
-			historyEnd = len(m.cachedHistory)
+		if len(m.rc.history) > 0 && strings.HasPrefix(content, m.rc.history) {
+			historyEnd = len(m.rc.history)
 		}
 
-		if historyEnd > 0 && m.cachedWrappedHistoryRaw == m.cachedHistory && m.cachedWrappedHistoryWidth == cw {
+		if historyEnd > 0 && m.rc.wrapRaw == m.rc.history && m.rc.wrapWidth == cw {
 			// Fast path: reuse cached history lines (avoids O(N) strings.Split every tick).
 			// cachedHistoryLines is pre-split; only the dynamic suffix needs wrap.
-			if len(m.cachedHistoryLines) > 0 {
-				lines = make([]string, len(m.cachedHistoryLines))
-				copy(lines, m.cachedHistoryLines)
-				maxW = m.cachedHistoryMaxWidth
+			if len(m.rc.histLines) > 0 {
+				lines = make([]string, len(m.rc.histLines))
+				copy(lines, m.rc.histLines)
+				maxW = m.rc.histMaxW
 			}
 			dynamicPart := content[historyEnd:]
 			if dynamicPart != "" {
@@ -70,8 +70,8 @@ func (m *cliModel) setViewportContent(content string) {
 			rawLines := strings.Split(content, "\n")
 			historyLineCount := 0
 			if historyEnd > 0 {
-				historyLineCount = strings.Count(m.cachedHistory, "\n")
-				if len(m.cachedHistory) > 0 && m.cachedHistory[len(m.cachedHistory)-1] != '\n' {
+				historyLineCount = strings.Count(m.rc.history, "\n")
+				if len(m.rc.history) > 0 && m.rc.history[len(m.rc.history)-1] != '\n' {
 					historyLineCount++
 				}
 			}
@@ -98,11 +98,11 @@ func (m *cliModel) setViewportContent(content string) {
 			}
 			// Cache the wrapped history portion (both string and []string) for next tick
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
-				m.cachedWrappedHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
-				m.cachedHistoryLines = wrappedHistoryParts
-				m.cachedWrappedHistoryRaw = m.cachedHistory
-				m.cachedWrappedHistoryWidth = cw
-				m.cachedHistoryMaxWidth = maxW
+				m.rc.wrapHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
+				m.rc.histLines = wrappedHistoryParts
+				m.rc.wrapRaw = m.rc.history
+				m.rc.wrapWidth = cw
+				m.rc.histMaxW = maxW
 			}
 		}
 	} else {
@@ -179,13 +179,13 @@ func visibleMsgGroupIndices(messages []cliMessage) []int {
 // updateViewportContent 更新 viewport 显示内容（§1 增量渲染）
 func (m *cliModel) updateViewportContent() {
 	// 快速路径：流式消息 + 缓存有效
-	if m.streamingMsgIdx >= 0 && m.renderCacheValid {
+	if m.streamingMsgIdx >= 0 && m.rc.valid {
 		m.updateStreamingOnly()
 		return
 	}
 
 	// 快速路径：缓存有效 + 无流式消息 + 消息数未变，只刷新 progress block（tick 场景）
-	if m.renderCacheValid && m.streamingMsgIdx < 0 && m.cachedMsgCount == len(m.messages) {
+	if m.rc.valid && m.streamingMsgIdx < 0 && m.rc.msgCount == len(m.messages) {
 		// O(1) pre-check: compute composite FP without calling renderProgressBlock.
 		// This avoids the O(N) renderProgressBlock call on every tick when nothing
 		// changed (the dominant case during streaming within a single iteration).
@@ -200,15 +200,15 @@ func (m *cliModel) updateViewportContent() {
 		progressFP := m.progressBlockCompositeFP(elapsedSec, bubbleWidth)
 		rewindBlock := m.renderRewindResultBlock()
 		rewindFP := fnvHash64(rewindBlock)
-		cachedHistoryLen := len(m.cachedHistory)
-		if cachedHistoryLen == m.lastTickHistoryLen &&
-			m.lastTickProgressFP == progressFP &&
-			m.lastTickRewindFP == rewindFP {
+		cachedHistoryLen := len(m.rc.history)
+		if cachedHistoryLen == m.rc.lastTickHistLen &&
+			m.rc.lastTickProgFP == progressFP &&
+			m.rc.lastTickRewFP == rewindFP {
 			return
 		}
-		m.lastTickHistoryLen = cachedHistoryLen
-		m.lastTickProgressFP = progressFP
-		m.lastTickRewindFP = rewindFP
+		m.rc.lastTickHistLen = cachedHistoryLen
+		m.rc.lastTickProgFP = progressFP
+		m.rc.lastTickRewFP = rewindFP
 
 		// FP changed → call renderProgressBlock (it will also hit its own internal
 		// cache via progressBlockCompositeFP, but we need the actual output string).
@@ -219,59 +219,59 @@ func (m *cliModel) updateViewportContent() {
 		// allocation + copy of cachedHistoryLines every 100ms.
 		// Only progress/rewind sections are updated in-place.
 		cw := m.chatWidth()
-		if len(m.cachedHistoryLines) > 0 && cw > 0 {
+		if len(m.rc.histLines) > 0 && cw > 0 {
 			// Progress block lines: already pre-split by renderProgressBlock
-			progressLines := m.cachedProgressBlockLines
+			progressLines := m.rc.progressBlock.lines
 
 			// Rewind block lines: cache wrapped version
 			var rewindLines []string
-			if rewindBlock == m.cachedDynamicRaw && cw == m.cachedDynamicWidth {
-				rewindLines = m.cachedDynamicLines
+			if rewindBlock == m.rc.dynamicRaw && cw == m.rc.dynamicWidth {
+				rewindLines = m.rc.dynamicLines
 			} else {
 				rewindLines = wrapDynamicPart(rewindBlock, cw)
-				m.cachedDynamicRaw = rewindBlock
-				m.cachedDynamicLines = rewindLines
-				m.cachedDynamicWidth = cw
+				m.rc.dynamicRaw = rewindBlock
+				m.rc.dynamicLines = rewindLines
+				m.rc.dynamicWidth = cw
 			}
 
 			// Reuse cached allLines when history section unchanged
-			histLen := len(m.cachedHistoryLines)
+			histLen := len(m.rc.histLines)
 			pl := len(progressLines)
 			rl := len(rewindLines)
 			totalLines := histLen + pl + rl
 
-			if histLen == m.cachedAllLinesHistoryLen && totalLines <= cap(m.cachedAllLines) {
+			if histLen == m.rc.allLinesHistLen && totalLines <= cap(m.rc.allLines) {
 				// History unchanged — in-place update progress + rewind only
-				m.cachedAllLines = m.cachedAllLines[:totalLines]
-				copy(m.cachedAllLines[histLen:histLen+pl], progressLines)
-				copy(m.cachedAllLines[histLen+pl:], rewindLines)
-			} else if histLen > m.cachedAllLinesHistoryLen && cap(m.cachedAllLines) >= totalLines {
+				m.rc.allLines = m.rc.allLines[:totalLines]
+				copy(m.rc.allLines[histLen:histLen+pl], progressLines)
+				copy(m.rc.allLines[histLen+pl:], rewindLines)
+			} else if histLen > m.rc.allLinesHistLen && cap(m.rc.allLines) >= totalLines {
 				// History grew (new iteration appended) — extend in-place.
 				// Old history lines are unchanged, only append the new tail.
-				newHistLines := m.cachedHistoryLines[m.cachedAllLinesHistoryLen:]
-				m.cachedAllLines = m.cachedAllLines[:m.cachedAllLinesHistoryLen]
-				m.cachedAllLines = append(m.cachedAllLines, newHistLines...)
-				m.cachedAllLines = append(m.cachedAllLines, progressLines...)
-				m.cachedAllLines = append(m.cachedAllLines, rewindLines...)
-				m.cachedAllLinesHistoryLen = histLen
-			} else if histLen > m.cachedAllLinesHistoryLen {
+				newHistLines := m.rc.histLines[m.rc.allLinesHistLen:]
+				m.rc.allLines = m.rc.allLines[:m.rc.allLinesHistLen]
+				m.rc.allLines = append(m.rc.allLines, newHistLines...)
+				m.rc.allLines = append(m.rc.allLines, progressLines...)
+				m.rc.allLines = append(m.rc.allLines, rewindLines...)
+				m.rc.allLinesHistLen = histLen
+			} else if histLen > m.rc.allLinesHistLen {
 				// History grew but slice too small — grow with append
-				m.cachedAllLines = m.cachedAllLines[:m.cachedAllLinesHistoryLen]
-				m.cachedAllLines = append(m.cachedAllLines, m.cachedHistoryLines[m.cachedAllLinesHistoryLen:]...)
-				m.cachedAllLines = append(m.cachedAllLines, progressLines...)
-				m.cachedAllLines = append(m.cachedAllLines, rewindLines...)
-				m.cachedAllLinesHistoryLen = histLen
+				m.rc.allLines = m.rc.allLines[:m.rc.allLinesHistLen]
+				m.rc.allLines = append(m.rc.allLines, m.rc.histLines[m.rc.allLinesHistLen:]...)
+				m.rc.allLines = append(m.rc.allLines, progressLines...)
+				m.rc.allLines = append(m.rc.allLines, rewindLines...)
+				m.rc.allLinesHistLen = histLen
 			} else {
 				// History shrank (rewind/compression) or first run — rebuild
-				m.cachedAllLines = make([]string, totalLines)
-				copy(m.cachedAllLines, m.cachedHistoryLines)
-				copy(m.cachedAllLines[histLen:histLen+pl], progressLines)
-				copy(m.cachedAllLines[histLen+pl:], rewindLines)
-				m.cachedAllLinesHistoryLen = histLen
+				m.rc.allLines = make([]string, totalLines)
+				copy(m.rc.allLines, m.rc.histLines)
+				copy(m.rc.allLines[histLen:histLen+pl], progressLines)
+				copy(m.rc.allLines[histLen+pl:], rewindLines)
+				m.rc.allLinesHistLen = histLen
 			}
 
 			shouldFollowBottom := !m.userScrolledUp
-			viewportSetLinesBypassMaxWidth(&m.viewport, m.cachedAllLines, cw)
+			viewportSetLinesBypassMaxWidth(&m.viewport, m.rc.allLines, cw)
 			if shouldFollowBottom {
 				m.viewport.GotoBottom()
 				m.newContentHint = false
@@ -279,13 +279,13 @@ func (m *cliModel) updateViewportContent() {
 				m.newContentHint = true
 			}
 
-			m.lastViewportWidth = cw
+			m.rc.vpWidth = cw
 			return
 		}
 
 		// Fallback: string path (first tick before cachedHistoryLines is populated)
 		var sb strings.Builder
-		sb.WriteString(m.cachedHistory)
+		sb.WriteString(m.rc.history)
 		sb.WriteString(progressBlock)
 		sb.WriteString(rewindBlock)
 		m.setViewportContent(sb.String())
@@ -294,8 +294,8 @@ func (m *cliModel) updateViewportContent() {
 
 	// 快速路径：缓存有效 + 仅追加了新消息（无流式、无搜索）
 	// 只渲染新增的 dirty 消息并追加到 cachedHistory，跳过全量重建。
-	if m.renderCacheValid && m.streamingMsgIdx < 0 && !m.searchMode &&
-		len(m.messages) > m.cachedMsgCount {
+	if m.rc.valid && m.streamingMsgIdx < 0 && !m.searchMode &&
+		len(m.messages) > m.rc.msgCount {
 		m.appendNewMessagesToCache()
 		return
 	}
@@ -306,18 +306,18 @@ func (m *cliModel) updateViewportContent() {
 	// — it does NOT set viewport lines. Do that now so the viewport
 	// refreshes immediately, not on the next tick.
 	cw := m.chatWidth()
-	if cw > 0 && len(m.cachedHistoryLines) > 0 {
-		progressLines := m.cachedProgressBlockLines
+	if cw > 0 && len(m.rc.histLines) > 0 {
+		progressLines := m.rc.progressBlock.lines
 		rewindBlock := m.renderRewindResultBlock()
 		var rewindLines []string
 		if rewindBlock != "" {
 			rewindLines = wrapDynamicPart(rewindBlock, cw)
 		}
-		totalLines := len(m.cachedHistoryLines) + len(progressLines) + len(rewindLines)
+		totalLines := len(m.rc.histLines) + len(progressLines) + len(rewindLines)
 		allLines := make([]string, totalLines)
-		copy(allLines, m.cachedHistoryLines)
-		copy(allLines[len(m.cachedHistoryLines):], progressLines)
-		copy(allLines[len(m.cachedHistoryLines)+len(progressLines):], rewindLines)
+		copy(allLines, m.rc.histLines)
+		copy(allLines[len(m.rc.histLines):], progressLines)
+		copy(allLines[len(m.rc.histLines)+len(progressLines):], rewindLines)
 		viewportSetLinesBypassMaxWidth(&m.viewport, allLines, cw)
 		m.viewport.GotoBottom()
 		m.newContentHint = false
@@ -327,7 +327,7 @@ func (m *cliModel) updateViewportContent() {
 // updateStreamingOnly 只重新渲染当前流式消息（快速路径）
 func (m *cliModel) updateStreamingOnly() {
 	var sb strings.Builder
-	sb.WriteString(m.cachedHistory)
+	sb.WriteString(m.rc.history)
 
 	// 只渲染当前流式消息
 	msg := &m.messages[m.streamingMsgIdx]
