@@ -214,7 +214,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			} else {
 				iterations = msg.iterations
 			}
-			bodyContent := m.renderTurnBody(iterations, liveProgress, contentWidth, fallbackContent, msg.expandedReasoning)
+			bodyContent := m.renderTurnBody(iterations, liveProgress, contentWidth, fallbackContent)
 			if bodyContent != "" {
 				bodyLines = append(bodyLines, strings.Split(bodyContent, "\n")...)
 			}

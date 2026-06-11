@@ -108,6 +108,19 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		if m.progress != nil {
 			m.cacheTokenUsage(m.progress.TokenUsage)
 		}
+		// Restore pendingUserMsg: startAgentTurn cleared it, but if the engine
+		// hasn't persisted the user message to DB yet (immediate Ctrl+C), a
+		// subsequent reloadMessagesFromSession would lose it. Re-save the last
+		// user message from m.messages so handleHistoryReload can restore it.
+		if m.pendingUserMsg == nil {
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "user" {
+					cp := m.messages[i]
+					m.pendingUserMsg = &cp
+					break
+				}
+			}
+		}
 		m.streamingMsgIdx = -1
 		m.progress = nil
 		m.typing = false // clear typing indicator immediately after cancel

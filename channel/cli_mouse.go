@@ -223,20 +223,6 @@ func (m *cliModel) handleViewportClick(x, y int) bool {
 		return false
 	}
 
-	clickedLine := viewLines[idx]
-
-	// Detect reasoning box header: "╭ Reasoning"
-	if strings.Contains(clickedLine, "╭ Reasoning") {
-		for i := len(m.messages) - 1; i >= 0; i-- {
-			if m.messages[i].role == "assistant" {
-				m.messages[i].expandedReasoning = !m.messages[i].expandedReasoning
-				m.messages[i].dirty = true
-				m.rc.valid = false
-				return true
-			}
-		}
-	}
-
 	return false
 }
 

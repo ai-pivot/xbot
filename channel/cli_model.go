@@ -1321,7 +1321,6 @@ type cliMessage struct {
 	renderedLines         int  // 渲染后的总行数（每次 dirty 重算）
 	originalRenderedLines int  // fold 前的原始行数（fold 时保存，用于 unfold 判断）
 	folded                bool // 是否折叠
-	expandedReasoning     bool // reasoning box 是否展开（点击 toggle）
 
 	// --- Wrapped lines cache ---
 	wrappedLines    []string // pre-wrapped lines for viewport (avoids O(N) re-parse)

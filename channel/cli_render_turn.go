@@ -19,7 +19,6 @@ func (m *cliModel) renderTurnBody(
 	liveProgress *protocol.ProgressEvent,
 	contentWidth int,
 	fallbackContent string,
-	reasoningExpanded bool,
 ) string {
 	s := &m.styles
 	var sb strings.Builder
@@ -30,24 +29,24 @@ func (m *cliModel) renderTurnBody(
 			sb.WriteString("\n")
 		}
 
-		// Reasoning (collapsed box above content)
+		// Reasoning (always fully expanded box)
 		if iter.Reasoning != "" {
-			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s, reasoningExpanded))
+			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s))
 		}
 
 		// Content (markdown)
 		if iter.Thinking != "" {
-			if iter.Reasoning != "" {
-				sb.WriteString("\n")
-			}
+			sb.WriteString("\n\n") // blank line before content
 			rendered := m.renderTurnContent(iter.Thinking, contentWidth)
 			sb.WriteString(rendered)
 		}
 
-		// Tool tags
+		// Tool tags: blank line only if preceded by content, never standalone
 		if len(iter.Tools) > 0 {
-			if iter.Thinking != "" || iter.Reasoning != "" {
-				sb.WriteString("\n")
+			if iter.Thinking != "" {
+				sb.WriteString("\n\n") // blank line between content and tool tags
+			} else if iter.Reasoning != "" {
+				sb.WriteString("\n") // no content, just after reasoning box
 			}
 			sb.WriteString(m.renderToolTags(iter.Tools, s))
 		}
@@ -97,16 +96,10 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, s *cliStyles) s
 		}
 	}
 	sep := " " + s.ProgressDim.Render("·") + " "
-	return s.ProgressDim.Render("·") + " " + strings.Join(tags, sep)
+	return "  " + s.ProgressDim.Render("·") + " " + strings.Join(tags, sep)
 }
 
-// renderReasoningBox renders a collapsible reasoning section.
-//
-// Collapsed:
-//
-//	╭ Reasoning (38 lines) ──────────────────────╮
-//
-// Expanded:
+// renderReasoningBox renders reasoning in an always-expanded box:
 //
 //	╭ Reasoning ──────────────────────────────╮
 //	│ reasoning text line 1                   │
@@ -116,7 +109,6 @@ func (m *cliModel) renderReasoningBox(
 	reasoning string,
 	width int,
 	s *cliStyles,
-	expanded bool,
 ) string {
 	if reasoning == "" {
 		return ""
@@ -126,18 +118,6 @@ func (m *cliModel) renderReasoningBox(
 	innerW := width - 4 // "│ " + " │"
 	if innerW < 20 {
 		innerW = 20
-	}
-
-	if !expanded {
-		label := fmt.Sprintf(" Reasoning (%d lines) ", len(lines))
-		labelW := lipgloss.Width(label)
-		dashCount := innerW - labelW
-		if dashCount < 0 {
-			dashCount = 0
-		}
-		return s.ProgressDim.Render("╭") +
-			s.TextSecondarySt.Render(label) +
-			s.ProgressDim.Render(strings.Repeat("─", dashCount)+"╮")
 	}
 
 	var sb strings.Builder
@@ -177,10 +157,10 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 	s := &m.styles
 	var sb strings.Builder
 
-	// 1. Reasoning box (if streaming reasoning)
+	// 1. Reasoning box (always fully expanded)
 	if p.ReasoningStreamContent != "" {
-		sb.WriteString(m.renderReasoningBox(p.ReasoningStreamContent, width, s, true))
-		sb.WriteString("\n")
+		sb.WriteString(m.renderReasoningBox(p.ReasoningStreamContent, width, s))
+		sb.WriteString("\n\n") // blank line between reasoning box and content
 	}
 
 	// 2. Content: prefer live stream → accumulated msg text
@@ -205,7 +185,7 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 				if label == "" {
 					label = tool.Name
 				}
-				fmt.Fprintf(&sb, "%s %s %s",
+				fmt.Fprintf(&sb, "  %s %s %s",
 					s.ProgressRunning.Render(frame),
 					s.ProgressRunning.Render(label),
 					s.ProgressElapsed.Render(elapsed))
@@ -214,6 +194,7 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 		}
 	} else if displayContent == "" && p.ReasoningStreamContent == "" {
 		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
+		sb.WriteString("  ")
 		sb.WriteString(s.ProgressRunning.Render(frame))
 		sb.WriteString("\n")
 	}
