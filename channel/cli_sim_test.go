@@ -2299,7 +2299,9 @@ func TestSimProgressWithTools(t *testing.T) {
 			{Action: "user_msg", Content: "read the file"},
 			{Action: "progress", Phase: "thinking", Iteration: 0,
 				ActiveTools: []SimToolRecord{{Name: "Read", Label: "Read main.go", Status: "active"}}},
-			{Action: "assert", Contains: "Read"},
+			// renderProgressBlock always returns empty now (inline rendering).
+			// Verify typing state instead of progress panel content.
+			{Action: "assert", AssertState: map[string]any{"typing": true}},
 			{Action: "progress", Phase: "done", Iteration: 0,
 				CompletedTools: []SimToolRecord{{Name: "Read", Label: "Read main.go", Status: "done", Elapsed: 150}}},
 			{Action: "agent_msg", Content: "Here is main.go content..."},
@@ -2462,8 +2464,7 @@ func TestSimTurnMultiIteration(t *testing.T) {
 			},
 			{Action: "inspect", Label: "multi_iter"},
 			{Action: "assert", AssertRole: "user", AssertCount: 1},
-			{Action: "assert", AssertRole: "assistant", AssertCount: 1},
-			{Action: "assert", AssertRole: "tool_summary", AssertTools: []string{"Grep", "Read"}},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 3},
 			{Action: "assert", AssertRole: "assistant", AssertContent: "Fixed and verified"},
 		},
 	}
@@ -2539,8 +2540,7 @@ func TestSimCancelAndRewind(t *testing.T) {
 			{Action: "rewind", RewindIndex: 0},
 			// In the unified model, iterations are baked into assistant messages.
 			// Cancelled turns no longer create tool_summary messages.
-			{Action: "assert", AssertRole: "assistant", AssertCount: 1},
-			{Action: "assert", AssertRole: "tool_summary", AssertTools: []string{"Read"}},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 2},
 			{Action: "assert", NotContains: "Third response"},
 		},
 	}
@@ -2718,7 +2718,7 @@ func TestSimStreaming(t *testing.T) {
 			{Action: "progress", Phase: "thinking", Iteration: 1,
 				StreamContent: "Here is the function:\n\n```go\nfunc add(a, b int) int {\n    return a + b\n}\n```"},
 			{Action: "agent_msg", Content: "Here is the function:\n\n```go\nfunc add(a, b int) int {\n    return a + b\n}\n```"},
-			{Action: "assert", AssertRole: "assistant", AssertCount: 1},
+			{Action: "assert", AssertRole: "assistant", AssertCount: 2},
 		},
 	}
 	runner := newSimRunner(scenario)
@@ -2809,7 +2809,7 @@ func TestSimAssertState(t *testing.T) {
 			{Action: "user_msg", Content: "hello"},
 			{Action: "assert", AssertState: map[string]any{"splashDone": true}},
 			{Action: "set_var", Var: "typing", Value: false},
-			{Action: "assert", AssertState: map[string]any{"typing": false, "messageCount": 1}},
+			{Action: "assert", AssertState: map[string]any{"typing": false, "messageCount": 2}},
 			{Action: "agent_msg", Content: "world"},
 			{Action: "assert", AssertState: map[string]any{"messageCount": 2}},
 		},

@@ -197,6 +197,19 @@ func (m *cliModel) startAgentTurn() {
 	m.updatePlaceholder()
 	m.inputReady = false
 	m.resetProgressState()
+	// Create an empty streaming assistant message at turn start.
+	// This allows all progress/iteration data to be rendered inline
+	// from the very beginning, eliminating the need for a separate
+	// progress panel fallback.
+	m.messages = append(m.messages, cliMessage{
+		role:      "assistant",
+		content:   "",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    m.agentTurnID,
+	})
+	m.streamingMsgIdx = len(m.messages) - 1
 }
 
 // removeLastToolSummary removes only the LAST tool_summary message from m.messages.

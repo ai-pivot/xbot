@@ -10,28 +10,30 @@ import (
 // TestAskUserLateProgressClearsState reproduces the real-world bug:
 // A late-arriving progress event (still in progressCh from the engine)
 // arrives after openAskUserPanel sets m.typing=false.
-// handleProgressMsg's auto-start turn logic (line 380) then calls
+// handleProgressMsg's auto-start turn logic then calls
 // startAgentTurn() → resetProgressState(), clearing iterationHistory.
+// Updated: renderProgressBlock always returns empty now (inline rendering).
+// The test verifies iterationHistory and progress are preserved.
 func TestAskUserLateProgressClearsState(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Simulate 2 iterations with tools
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0})
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 0,
-		CompletedTools: []protocol.ToolProgress{
-			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 0},
-		},
-	})
 	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 1,
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "Shell", Label: "echo done", Status: "done", Elapsed: 200, Iteration: 1},
+			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 2,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "echo done", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
 
@@ -59,19 +61,15 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 	}
 
 	// Now simulate a LATE progress event arriving after the panel is open.
-	// In real execution, this can happen because progressCh and msgBus
-	// are separate async channels with non-deterministic ordering.
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "thinking",
-		Iteration: 2, // next iteration that never actually ran
+		Iteration: 3,
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "AskUser", Label: "asked question", Status: "done", Elapsed: 100, Iteration: 2},
+			{Name: "AskUser", Label: "asked question", Status: "done", Elapsed: 100, Iteration: 3},
 		},
 	})
 
-	// BUG: The auto-start turn logic in handleProgressMsg triggers because
-	// m.typing=false (set by openAskUserPanel). This calls startAgentTurn()
-	// → resetProgressState() → clears m.iterationHistory!
+	// The late progress event should NOT clear iterationHistory.
 	if len(model.iterationHistory) == 0 {
 		t.Error("BUG REPRODUCED: late progress event cleared iterationHistory after AskUser panel opened")
 	}
@@ -79,36 +77,31 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 	if model.progress == nil {
 		t.Error("BUG: progress was cleared by late progress event's auto-start turn")
 	}
-
-	// Progress block should still render
-	block := model.renderProgressBlock()
-	if block == "" {
-		t.Error("renderProgressBlock returned empty after late progress event")
-	}
 }
 
 // TestAskUserTickPreservesIterations verifies that tick handler
 // doesn't destroy iteration state when AskUser panel is open.
+// Updated: renderProgressBlock always returns empty now (inline rendering).
 func TestAskUserTickPreservesIterations(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Simulate 2 iterations
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0})
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 0,
-		CompletedTools: []protocol.ToolProgress{
-			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 0},
-		},
-	})
 	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 1,
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "Shell", Label: "echo done", Status: "done", Elapsed: 200, Iteration: 1},
+			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 2,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "echo done", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
 
@@ -132,10 +125,5 @@ func TestAskUserTickPreservesIterations(t *testing.T) {
 	if len(model.iterationHistory) != iterCount {
 		t.Errorf("Tick changed iterationHistory: before=%d after=%d",
 			iterCount, len(model.iterationHistory))
-	}
-
-	block := model.renderProgressBlock()
-	if block == "" {
-		t.Error("renderProgressBlock empty after tick with AskUser panel open")
 	}
 }

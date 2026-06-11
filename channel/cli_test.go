@@ -903,9 +903,9 @@ func TestCLIModelUpdateEnterKeyWithContent(t *testing.T) {
 	keyMsg := tea.KeyPressMsg{Code: tea.KeyEnter}
 	_, _ = model.Update(keyMsg)
 
-	// Message should be added
-	if len(model.messages) != 1 {
-		t.Errorf("Expected 1 message after Enter, got %d", len(model.messages))
+	// Message should be added (user message + streaming assistant from startAgentTurn)
+	if len(model.messages) != 2 {
+		t.Errorf("Expected 2 messages after Enter, got %d", len(model.messages))
 	}
 }
 
@@ -1066,22 +1066,27 @@ func TestCLIModelRenderProgressBlockThinking(t *testing.T) {
 	model := newCLIModel()
 	model.locale = GetLocale("en")
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
-	result := model.renderProgressBlock()
-	if !strings.Contains(result, "Thinking") {
-		t.Errorf("renderProgressBlock should show a thinking verb, got: %q", result)
+	// Verify streaming assistant message exists from startAgentTurn
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set after startAgentTurn")
 	}
-	if !strings.Contains(result, "Progress") {
-		t.Errorf("renderProgressBlock should show Progress header, got: %q", result)
+	if !model.typing {
+		t.Error("typing should be true after startAgentTurn")
+	}
+	// Progress block always returns empty now (inline rendering)
+	result := model.renderProgressBlock()
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline rendering), got: %q", result)
 	}
 }
 
 func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
@@ -1094,22 +1099,24 @@ func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 		},
 	}
 
+	// Progress block always empty now — tools rendered inline in streaming message
 	result := model.renderProgressBlock()
-	if !strings.Contains(result, "Searching imports") {
-		t.Errorf("renderProgressBlock should show completed tool, got: %q", result)
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline), got: %q", result)
 	}
-	if !strings.Contains(result, "Reading config.go") {
-		t.Errorf("renderProgressBlock should show active tool, got: %q", result)
+	// Verify streaming message exists and progress is set
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set")
 	}
-	if !strings.Contains(result, "#1") {
-		t.Errorf("renderProgressBlock should show iteration number, got: %q", result)
+	if model.progress == nil {
+		t.Error("progress should be set")
 	}
 }
 
 func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 	model.iterationHistory = []cliIterationSnapshot{
 		{
@@ -1125,22 +1132,24 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 		Iteration: 1,
 	}
 
+	// Progress block always empty now — iterations rendered inline in streaming message
 	result := model.renderProgressBlock()
-	if !strings.Contains(result, "#0") {
-		t.Errorf("renderProgressBlock should show completed iteration #0, got: %q", result)
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline), got: %q", result)
 	}
-	if !strings.Contains(result, "#1") {
-		t.Errorf("renderProgressBlock should show current iteration #1, got: %q", result)
+	// Verify streaming message exists and iteration history is preserved
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set")
 	}
-	if !strings.Contains(result, "Reading file") {
-		t.Errorf("renderProgressBlock should show historical tool, got: %q", result)
+	if len(model.iterationHistory) == 0 {
+		t.Error("iterationHistory should have entries")
 	}
 }
 
 func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
@@ -1152,20 +1161,17 @@ func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 		},
 	}
 
+	// Progress block always empty now — subagent tree rendered inline
 	result := model.renderProgressBlock()
-	if !strings.Contains(result, "code-reviewer") {
-		t.Errorf("renderProgressBlock should show subagent role, got: %q", result)
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline), got: %q", result)
 	}
-	if !strings.Contains(result, "Reviewing code") {
-		t.Errorf("renderProgressBlock should show subagent desc, got: %q", result)
+	// Verify streaming message and subagent data exists
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set")
 	}
-	// Done sub-agents should be hidden from progress panel
-	if strings.Contains(result, "test-runner") {
-		t.Errorf("renderProgressBlock should not show completed subagent, got: %q", result)
-	}
-	// Error sub-agents should also be hidden from progress panel
-	if strings.Contains(result, "explore") {
-		t.Errorf("renderProgressBlock should not show errored subagent, got: %q", result)
+	if model.progress == nil || len(model.progress.SubAgents) != 3 {
+		t.Error("progress should have subagent data")
 	}
 }
 
@@ -1332,9 +1338,9 @@ func TestCLIModelSendMessageEmpty(t *testing.T) {
 
 	model.sendMessage("")
 
-	// Message should still be added (empty is valid)
-	if len(model.messages) != 1 {
-		t.Errorf("Expected 1 message, got %d", len(model.messages))
+	// Message should still be added (empty is valid, + streaming from startAgentTurn)
+	if len(model.messages) != 2 {
+		t.Errorf("Expected 2 messages, got %d", len(model.messages))
 	}
 }
 

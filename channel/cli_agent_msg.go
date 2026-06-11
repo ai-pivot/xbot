@@ -109,13 +109,14 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 	}
 
 	if msg.IsPartial {
-		// 流式输出：追加到当前消息
-		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// 追加到现有流式消息
+		// Update existing streaming message (created by startAgentTurn) or create new one.
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
+			m.messages[m.streamingMsgIdx].turnID == turnID {
+			// Update existing streaming message
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].dirty = true
 		} else {
-			// 创建新的流式消息
+			// Create new streaming message (fallback)
 			m.streamingMsgIdx = len(m.messages)
 			m.messages = append(m.messages, cliMessage{
 				role:      "assistant",
@@ -269,21 +270,12 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 					if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
 						m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
 					}
-					// Render as tool call style (not user message)
+					// Show answers as a system message (was previously a tool_summary)
 					m.messages = append(m.messages, cliMessage{
-						role:       "tool_summary",
-						content:    "AskUser",
-						timestamp:  time.Now(),
-						dirty:      true,
-						iterations: nil,
-						tools: []protocol.ToolProgress{
-							{
-								Name:    "AskUser",
-								Label:   fmt.Sprintf("asked %d question(s)", len(items)),
-								Status:  "completed",
-								Elapsed: 0,
-							},
-						},
+						role:      "system",
+						content:   "AskUser: " + fmt.Sprintf("answered %d question(s)", len(items)),
+						timestamp: time.Now(),
+						dirty:     true,
 					})
 					// Show answers as system message
 					var answerParts []string
@@ -297,14 +289,11 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 					// Without this, iterations 1..N from the first run disappear when
 					// resetProgressState sets m.iterationHistory = nil.
 					if len(m.iterationHistory) > 0 {
-						m.upsertMessageByTurn(turnID, "tool_summary", cliMessage{
-							role:       "tool_summary",
-							content:    "",
-							timestamp:  time.Now(),
-							iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
-							dirty:      true,
-							turnID:     turnID,
-						})
+						// Store iterations in pendingToolSummary (same pattern as handleProgressDone)
+						if m.pendingToolSummary == nil {
+							m.pendingToolSummary = &cliMessage{}
+						}
+						m.pendingToolSummary.iterations = append([]cliIterationSnapshot{}, m.iterationHistory...)
 					}
 					m.startAgentTurn()
 					m.updateViewportContent()

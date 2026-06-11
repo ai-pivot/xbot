@@ -228,7 +228,6 @@ func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
 			m.lastSeenIteration = lastIter
 		}
 	}
-	m.removeLastToolSummary()
 }
 
 // carryForwardProgressState preserves transient state across progress updates
@@ -1211,16 +1210,6 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 				}
 			}
 		}
-		// Remove the LAST tool_summary from loaded history. The active
-		// progress block owns the current turn's iteration display — the
-		// static tool_summary from the active turn would duplicate content
-		// and its iteration numbers (globally cumulative from DB) don't
-		// match the progress block's per-turn numbers.
-		// Only the last tool_summary is removed. Previous turns' tool_summaries
-		// (including interrupted turns without assistant replies) are preserved
-		// — they have no live progress panel to replace them.
-		m.removeLastToolSummary()
-
 		// Fallback: if server returned Iteration=0 but iteration history
 		// has entries, derive the current iteration from history max.
 		// This handles a server-side quirk where activeProgress.Iteration

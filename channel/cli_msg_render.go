@@ -69,55 +69,9 @@ func (m *cliModel) renderToolContentBelow(tool *protocol.ToolProgress, guide str
 	return result
 }
 
-func toolDisplayInfo(tool protocol.ToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
-	if tool.Label == "" {
-		label = tool.Name
-	} else {
-		label = tool.Label
-	}
-	icon = "✓"
-	sty = okStyle
-	if tool.Status == "error" {
-		icon = "✗"
-		sty = errStyle
-	}
-	return
-}
-
 // toolLine formats a tool progress line guaranteed to fit within maxWidth cells.
 // icon and label are plain text; elapsed may be pre-styled with ANSI codes.
 // Returns the formatted string — caller wraps with style.Render().
-func toolLine(icon, label string, elapsedStyled string, maxWidth int) string {
-	prefix := fmt.Sprintf("  ┊ %s ", icon)
-	prefixW := lipgloss.Width(prefix)
-
-	elapsedW := lipgloss.Width(elapsedStyled) // strips ANSI, measures visual width
-
-	minPad := 0
-	if elapsedW > 0 {
-		minPad = 1
-	}
-
-	maxLabelW := maxWidth - prefixW - elapsedW - minPad
-	if maxLabelW < 0 {
-		maxLabelW = 0
-	}
-	label = truncateToWidth(label, maxLabelW)
-	labelW := lipgloss.Width(label)
-
-	var sb strings.Builder
-	sb.WriteString(prefix)
-	sb.WriteString(label)
-	if elapsedW > 0 {
-		pad := maxWidth - prefixW - labelW - elapsedW
-		if pad < minPad {
-			pad = minPad
-		}
-		sb.WriteString(strings.Repeat(" ", pad))
-		sb.WriteString(elapsedStyled)
-	}
-	return sb.String()
-}
 
 func (m *cliModel) renderMessage(msg *cliMessage) string {
 	// §20 使用缓存样式
@@ -160,137 +114,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 
 	switch msg.role {
 	case "tool_summary":
-		// §20 使用缓存样式（override width to chatWidth for sidebar compat）
-		toolSummaryStyle := s.ToolSummary.Width(cw - 4)
-		toolHeaderStyle := s.ToolHeader
-		toolItemStyle := s.ToolItem
-		toolErrorItemStyle := s.ToolErrorItem
-		thinkingStyle := s.ProgressThinking
-		reasoningStyle := s.TextMutedSt
-		reasoningGuide := s.ProgressDim
-		thinkingGuide := s.ProgressIndent
-		hintStyle := s.ToolHint
-
-		// 统计总工具数和总耗时
-		allTools, iterCount := msg.iterToolsFlat()
-		totalTools := len(allTools)
-		totalMs := int64(0)
-		for _, it := range msg.iterations {
-			totalMs += it.ElapsedWall
-		}
-
-		var toolSb strings.Builder
-
-		// Box internal width: ToolSummary has Border(2) + Padding(0,1 → 2) = 4 cols overhead
-		boxInnerW := contentWidth - 4
-
-		if m.toolSummaryExpanded {
-			// 展开模式：完整渲染
-			if iterCount > 0 {
-				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d iterations, %d calls)", iterCount, totalTools)))
-				toolSb.WriteString("\n")
-				guideW := lipgloss.Width(s.ProgressIndent.Render("  ┊ "))
-				textW := boxInnerW - guideW
-				for ii := range msg.iterations {
-					it := &msg.iterations[ii]
-					iterLabel := fmt.Sprintf("#%d", it.Iteration)
-					if it.ElapsedWall > 0 {
-						iterLabel += " " + reasoningStyle.Render(formatElapsed(it.ElapsedWall))
-					}
-					toolSb.WriteString(s.ProgressIter.Render(iterLabel))
-					toolSb.WriteString("\n")
-					if it.Reasoning != "" {
-						for _, line := range strings.Split(it.Reasoning, "\n") {
-							line = strings.TrimRight(line, " \t\r")
-							if line == "" {
-								continue
-							}
-							for _, wl := range strings.Split(hardWrapRunes(line, textW), "\n") {
-								toolSb.WriteString(reasoningGuide.Render("  ┊ ") + reasoningStyle.Render(wl))
-								toolSb.WriteString("\n")
-							}
-						}
-					}
-					if it.Thinking != "" {
-						for _, line := range strings.Split(it.Thinking, "\n") {
-							line = strings.TrimRight(line, " \t\r")
-							if line == "" {
-								continue
-							}
-							for _, wl := range strings.Split(hardWrapRunes(line, textW), "\n") {
-								toolSb.WriteString(thinkingGuide.Render("  ┊ ") + thinkingStyle.Render(wl))
-								toolSb.WriteString("\n")
-							}
-						}
-					}
-					for k := range it.Tools {
-						tool := &it.Tools[k]
-						label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
-						elapsed := ""
-						if tool.Elapsed > 0 {
-							elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
-						}
-						toolSb.WriteString(sty.Render(fmt.Sprintf("    %s %s%s", icon, label, elapsed)))
-						toolSb.WriteString("\n")
-						// Render tool body (diff hints or per-tool output)
-						if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), textW, false, 0); content != "" {
-							toolSb.WriteString(content)
-							toolSb.WriteString("\n")
-						}
-					}
-				}
-			} else {
-				toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools (%d)", totalTools)))
-				toolSb.WriteString("\n")
-				for i := range msg.tools {
-					tool := &msg.tools[i]
-					label, icon, sty := toolDisplayInfo(*tool, toolItemStyle, toolErrorItemStyle)
-					elapsed := ""
-					if tool.Elapsed > 0 {
-						elapsed = fmt.Sprintf(" (%s)", formatElapsed(tool.Elapsed))
-					}
-					toolSb.WriteString(sty.Render(fmt.Sprintf("  %s %s%s", icon, label, elapsed)))
-					toolSb.WriteString("\n")
-					// Render tool body for flat tool list too
-					if content := m.renderToolContentBelow(tool, reasoningGuide.Render("  ┊ "), boxInnerW, false, 0); content != "" {
-						toolSb.WriteString(content)
-						toolSb.WriteString("\n")
-					}
-				}
-			}
-		} else {
-			// 折叠模式升级（第 4 轮）：统计摘要 + 成功/失败状态图标
-			elapsedStr := formatElapsed(totalMs)
-			// 统计成功/失败工具数
-			successCount, errorCount := 0, 0
-			for _, tool := range allTools {
-				if tool.Status == "error" {
-					errorCount++
-				} else {
-					successCount++
-				}
-			}
-			var statusIcons string
-			if errorCount > 0 {
-				statusIcons = s.ProgressError.Render("✗") +
-					s.TextMutedSt.Render(fmt.Sprintf("%d", errorCount))
-			}
-			if successCount > 0 && errorCount > 0 {
-				statusIcons += " "
-			}
-			if successCount > 0 {
-				statusIcons += s.ProgressDone.Render("✓") +
-					s.TextMutedSt.Render(fmt.Sprintf("%d", successCount))
-			}
-			toolSb.WriteString(toolHeaderStyle.Render(fmt.Sprintf("Tools %d calls · %s", totalTools, elapsedStr)))
-			if statusIcons != "" {
-				toolSb.WriteString("  ")
-				toolSb.WriteString(statusIcons)
-			}
-			toolSb.WriteString("  ")
-			toolSb.WriteString(hintStyle.Render("[Ctrl+O]"))
-		}
-		sb.WriteString(toolSummaryStyle.Render(toolSb.String()))
+		// Removed: tool data is now rendered inline in the assistant message
+		// via renderTurnBody(). No separate tool_summary rendering needed.
 	case "system":
 		if msg.styled {
 			// Pre-styled content: output as-is, no wrapping
@@ -582,3 +407,48 @@ func wrapDynamicPart(content string, cw int) []string {
 
 // setViewportContent sets viewport content while preserving scroll position.
 // If the user was at the bottom before the update, keep them at the bottom.
+func toolDisplayInfo(tool protocol.ToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
+	if tool.Label == "" {
+		label = tool.Name
+	} else {
+		label = tool.Label
+	}
+	icon = "✓"
+	sty = okStyle
+	if tool.Status == "error" {
+		icon = "✗"
+		sty = errStyle
+	}
+	return
+}
+func toolLine(icon, label string, elapsedStyled string, maxWidth int) string {
+	prefix := fmt.Sprintf("  ┊ %s ", icon)
+	prefixW := lipgloss.Width(prefix)
+
+	elapsedW := lipgloss.Width(elapsedStyled) // strips ANSI, measures visual width
+
+	minPad := 0
+	if elapsedW > 0 {
+		minPad = 1
+	}
+
+	maxLabelW := maxWidth - prefixW - elapsedW - minPad
+	if maxLabelW < 0 {
+		maxLabelW = 0
+	}
+	label = truncateToWidth(label, maxLabelW)
+	labelW := lipgloss.Width(label)
+
+	var sb strings.Builder
+	sb.WriteString(prefix)
+	sb.WriteString(label)
+	if elapsedW > 0 {
+		pad := maxWidth - prefixW - labelW - elapsedW
+		if pad < minPad {
+			pad = minPad
+		}
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(elapsedStyled)
+	}
+	return sb.String()
+}
