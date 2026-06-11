@@ -1,0 +1,432 @@
+package channel
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	log "xbot/logger"
+	"xbot/protocol"
+)
+
+func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
+	// Persist pending AskUser questions BEFORE session filter, so they survive
+	// session switches and restarts. Only persist if metadata has ask_questions.
+	if msg.WaitingUser && msg.Metadata != nil && msg.Metadata["ask_questions"] != "" && msg.ChatID != "" {
+		m.savePendingAskUser(msg.ChatID, msg.Metadata)
+	}
+
+	// suLoading guard: during session switch in remote mode, the history
+	// RPC is in-flight. handleSuHistoryLoad will load all messages from DB
+	// (including this reply). Without this guard, handleAgentMessage appends
+	// the live message (with turnID > 0) and handleSuHistoryLoad then appends
+	// the DB version (with turnID = 0) — the dedup key role|timestamp differs
+	// because time.Now() ≠ DB timestamp, producing duplicate messages in
+	// m.messages that survive fullRebuild (symptom: entire chat block repeated).
+	if m.suLoading {
+		log.WithFields(log.Fields{
+			"msg_chatid":   msg.ChatID,
+			"waiting_user": msg.WaitingUser,
+		}).Debug("handleAgentMessage: suLoading, discarding (session switch in progress)")
+		return
+	}
+
+	// Filter by session: only process outbound for the currently viewed session.
+	if msg.Channel != "" && msg.ChatID != "" {
+		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
+			log.WithFields(log.Fields{
+				"msg_channel":    msg.Channel,
+				"msg_chatid":     msg.ChatID,
+				"my_channelName": m.channelName,
+				"my_chatid":      m.chatID,
+				"waiting_user":   msg.WaitingUser,
+			}).Warn("handleAgentMessage: session filter rejected outbound message")
+			return
+		}
+	} else {
+		log.WithFields(log.Fields{
+			"msg_channel":    msg.Channel,
+			"msg_chatid":     msg.ChatID,
+			"my_channelName": m.channelName,
+			"my_chatid":      m.chatID,
+			"waiting_user":   msg.WaitingUser,
+			"content_len":    len(msg.Content),
+		}).Warn("handleAgentMessage: ChatID empty — filter bypassed, applying to current session")
+	}
+
+	turnID := m.agentTurnID // capture at entry for stale-signal guard
+	content := msg.Content
+
+	// Cancel ack handling: when a Run is cancelled, the agent sends outbound
+	// messages with metadata cancelled=true. These belong to the cancelled turn,
+	// not the current turn. If a new turn has already started (bg notification
+	// injection arrived first via cliInjectedUserMsg), these cancel acks would
+	// match the new turn's ID and incorrectly endAgentTurn. Skip turn-ending
+	// logic for cancel acks to preserve the new turn's state.
+	isCancelledAck := msg.Metadata != nil && msg.Metadata["cancelled"] == "true"
+	if isCancelledAck {
+		// Still clean up progress/streaming state for the cancelled turn.
+		// Do NOT endAgentTurn — the current turn (if any) must remain active.
+		if m.progress != nil {
+			m.cacheTokenUsage(m.progress.TokenUsage)
+		}
+		m.streamingMsgIdx = -1
+		m.progress = nil
+		m.typing = false // clear typing indicator immediately after cancel
+		m.renderCacheValid = false
+		m.updateViewportContent()
+		return
+	}
+
+	// 处理 __FEISHU_CARD__ 协议（简化显示）
+	if strings.HasPrefix(content, "__FEISHU_CARD__") {
+		content = ConvertFeishuCard(content)
+	}
+
+	// Empty content with no waiting user: end turn and flush queue,
+	// but don't append a blank message.
+	// Guard: when AskUser panel is open, the turn is paused (not ended).
+	// A late-arriving empty-content outbound (e.g. from engine cleanup) must
+	// not trigger endAgentTurn, which clears iterationHistory and makes all
+	// previous iterations disappear from the viewport.
+	if content == "" && !msg.WaitingUser && len(msg.ToolsUsed) == 0 && m.panelMode != "askuser" {
+		// Persist token usage before clearing progress
+		if m.progress != nil {
+			m.cacheTokenUsage(m.progress.TokenUsage)
+		}
+		m.streamingMsgIdx = -1
+		m.progress = nil
+		m.setTurnReplyReceived(turnID)
+		m.endAgentTurn(turnID)
+		if turnID == m.agentTurnID {
+			m.inputReady = true
+			if len(m.messageQueue) > 0 {
+				m.needFlushQueue = true
+			}
+		}
+		return
+	}
+
+	if msg.IsPartial {
+		// 流式输出：追加到当前消息
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+			// 追加到现有流式消息
+			m.messages[m.streamingMsgIdx].content = content
+			m.messages[m.streamingMsgIdx].dirty = true
+		} else {
+			// 创建新的流式消息
+			m.streamingMsgIdx = len(m.messages)
+			m.messages = append(m.messages, cliMessage{
+				role:      "assistant",
+				content:   content,
+				timestamp: time.Now(),
+				isPartial: true,
+				dirty:     true,
+				turnID:    turnID,
+			})
+		}
+	} else {
+		// 完整消息 — save the message index for later thinking capture
+		var completedMsgIdx int
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+			// 更新流式消息为完整消息
+			m.messages[m.streamingMsgIdx].content = content
+			m.messages[m.streamingMsgIdx].isPartial = false
+			m.messages[m.streamingMsgIdx].dirty = true
+			m.messages[m.streamingMsgIdx].turnID = turnID
+			completedMsgIdx = m.streamingMsgIdx
+		} else {
+			// 新增完整的 assistant 消息 — use upsert to prevent duplicates
+			assistantMsg := cliMessage{
+				role:      "assistant",
+				content:   content,
+				timestamp: time.Now(),
+				isPartial: false,
+				dirty:     true,
+				turnID:    turnID,
+			}
+			completedMsgIdx = m.upsertMessageByTurn(turnID, "assistant", assistantMsg)
+		}
+		// 重置流式状态
+		m.streamingMsgIdx = -1
+		// Capture reasoning from progress before it might be cleared.
+		// Do NOT clear m.progress here — progress is only cleared by endAgentTurn.
+		// Intermediate text messages (e.g. thinking content) arrive while the agent
+		// is still running; clearing progress here would hide the progress panel
+		// and make it look like the turn ended prematurely.
+		// IMPORTANT: Do NOT fallback to m.progress.ReasoningStreamContent.
+		// ReasoningStreamContent is a streaming accumulator with no per-iteration
+		// boundary. When handleAgentMessage arrives after the next structured
+		// progress has advanced m.progress.Iteration, ReasoningStreamContent may
+		// still contain the previous iteration's content — causing the previous
+		// iteration's reasoning to be misattributed to m.reasoningByIter[newIter].
+		if turnID == m.agentTurnID && m.progress != nil {
+			reasoning := m.progress.Reasoning
+			if reasoning != "" {
+				m.lastReasoning = reasoning
+				if m.reasoningByIter == nil {
+					m.reasoningByIter = make(map[int]string)
+				}
+				iter := m.progress.Iteration
+				if iter >= 0 {
+					m.reasoningByIter[iter] = reasoning
+				}
+			}
+			if m.progress.Thinking != "" {
+				m.lastThinking = m.progress.Thinking
+			}
+		}
+		// Store captured thinking on the completed message for Thinking Box rendering.
+		if completedMsgIdx >= 0 && completedMsgIdx < len(m.messages) {
+			thinking := m.lastReasoning
+			if thinking == "" {
+				thinking = m.lastThinking
+			}
+			if thinking != "" {
+				m.messages[completedMsgIdx].thinking = thinking
+			}
+		}
+		m.renderCacheValid = false
+		m.updateViewportContent()
+
+		// §11.5 Session reset: clear messages and token usage bar after /new
+		if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
+			m.lastTokenUsage = nil
+			m.cachedMaxContextTokens = 0 // reset context budget — solid line until next progress
+			m.messages = make([]cliMessage, 0, cliMsgBufSize)
+			m.streamingMsgIdx = -1
+			m.cachedHistory = ""
+			m.cachedWrappedHistory = ""
+			m.cachedWrappedHistoryRaw = ""
+			m.cachedWrappedHistoryWidth = 0
+			m.cachedHistoryMaxWidth = 0
+			m.cachedHistoryLines = nil
+			// PhaseDone from emitBuiltinProgressDone should arrive before this outbound,
+			// so endAgentTurn is usually a no-op (turn already ended). Kept as safety net.
+			m.endAgentTurn(m.agentTurnID)
+			m.invalidateAllCache(true)
+			m.viewport.GotoBottom()
+		}
+
+		// §12 AskUser panel: detect WaitingUser and open interactive panel
+		if msg.WaitingUser {
+			var items []askItem
+			if msg.Metadata != nil {
+				if qJSON := msg.Metadata["ask_questions"]; qJSON != "" {
+					// Multi-question mode: parse questions array
+					var qs []askQItem
+					if json.Unmarshal([]byte(qJSON), &qs) == nil {
+						for _, q := range qs {
+							items = append(items, askItem{Question: q.Question, Options: q.Options})
+						}
+					}
+				}
+			}
+			// Fallback: search message history for ❓ (legacy single-question format)
+			if len(items) == 0 {
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if strings.HasPrefix(m.messages[i].content, "❓") {
+						question := strings.TrimSpace(strings.TrimPrefix(m.messages[i].content, "❓"))
+						m.messages = append(m.messages[:i], m.messages[i+1:]...)
+						if question != "" {
+							items = append(items, askItem{Question: question})
+						}
+						break
+					}
+				}
+			}
+			if len(items) > 0 {
+				m.updateViewportContent()
+				m.askUserSession = m.chatID // bind AskUser to current session
+				m.openAskUserPanel(items, func(answers map[string]string) {
+					// Clean up persisted pending question now that user answered.
+					m.deletePendingAskUser(m.askUserSession)
+					// Format answers as tool-call style message
+					var parts []string
+					for i, item := range items {
+						key := fmt.Sprintf("q%d", i)
+						ans := answers[key]
+						parts = append(parts, fmt.Sprintf("Q: %s\nA: %s", item.Question, ans))
+					}
+					content := strings.Join(parts, "\n\n")
+					// Send to agent as tool result replacement (not a new user message).
+					// Use blocking send with timeout — ask_user answers are critical:
+					// if dropped, the agent hangs indefinitely waiting for a response.
+					if !m.sendInboundWait(m.newInbound(content, map[string]string{"ask_user_answered": "true"}), 5*time.Second) {
+						m.showSystemMsg("Failed to deliver answer to agent, please try again", feedbackError)
+					}
+					// Render as tool call style (not user message)
+					m.messages = append(m.messages, cliMessage{
+						role:       "tool_summary",
+						content:    "AskUser",
+						timestamp:  time.Now(),
+						dirty:      true,
+						iterations: nil,
+						tools: []protocol.ToolProgress{
+							{
+								Name:    "AskUser",
+								Label:   fmt.Sprintf("asked %d question(s)", len(items)),
+								Status:  "completed",
+								Elapsed: 0,
+							},
+						},
+					})
+					// Show answers as system message
+					var answerParts []string
+					for i, item := range items {
+						key := fmt.Sprintf("q%d", i)
+						ans := answers[key]
+						answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
+					}
+					m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
+					// Persist pre-AskUser iteration history before startAgentTurn clears it.
+					// Without this, iterations 1..N from the first run disappear when
+					// resetProgressState sets m.iterationHistory = nil.
+					if len(m.iterationHistory) > 0 {
+						m.upsertMessageByTurn(turnID, "tool_summary", cliMessage{
+							role:       "tool_summary",
+							content:    "",
+							timestamp:  time.Now(),
+							iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
+							dirty:      true,
+							turnID:     turnID,
+						})
+					}
+					m.startAgentTurn()
+					m.updateViewportContent()
+				}, func() {
+					// Clean up persisted pending question on cancel.
+					m.deletePendingAskUser(m.askUserSession)
+					m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
+					m.typing = false
+					m.updatePlaceholder()
+					m.inputReady = true
+					m.resetProgressState()
+					m.updateViewportContent()
+				})
+				return
+			}
+		}
+
+		// Snapshot the final iteration before clearing
+		if m.lastSeenIteration >= 0 && (len(m.lastCompletedTools) > 0 || m.lastReasoning != "" || m.lastThinking != "") {
+			alreadySnapped := false
+			for _, s := range m.iterationHistory {
+				if s.Iteration == m.lastSeenIteration {
+					alreadySnapped = true
+					break
+				}
+			}
+			if !alreadySnapped {
+				// Filter tools by Iteration field to ensure correct attribution
+				var finalTools []protocol.ToolProgress
+				for _, t := range m.lastCompletedTools {
+					if t.Iteration == m.lastSeenIteration {
+						finalTools = append(finalTools, t)
+					}
+				}
+				reasoning := m.lastReasoning
+				if reasoning == "" && m.reasoningByIter != nil {
+					reasoning = m.reasoningByIter[m.lastSeenIteration]
+				}
+				snap := cliIterationSnapshot{
+					Iteration:   m.lastSeenIteration,
+					Reasoning:   reasoning,
+					Thinking:    m.lastThinking,
+					Tools:       finalTools,
+					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+				}
+				if len(finalTools) > 0 || reasoning != "" || m.lastThinking != "" {
+					m.iterationHistory = append(m.iterationHistory, snap)
+				}
+			}
+		}
+
+		// Tool summary handling with deterministic rendering.
+		// If handleProgressDone already processed this turn (doneProcessed=true),
+		// the tool_summary is already in m.messages — skip to avoid duplicates.
+		// If not, we need to create/update it from local iteration history.
+		if !m.isTurnDoneProcessed(turnID) && len(m.iterationHistory) > 0 {
+			// PhaseDone hasn't run yet (or arrived after the reply).
+			// Create tool_summary from local iteration history.
+			toolSummaryMsg := cliMessage{
+				role:       "tool_summary",
+				content:    "",
+				timestamp:  time.Now(),
+				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
+				dirty:      true,
+			}
+			// Insert before the assistant message using upsert.
+			// If a tool_summary for this turn already exists (shouldn't happen
+			// since doneProcessed is false, but defensive), update in-place.
+			tsIdx := m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
+
+			// Ensure tool_summary is positioned BEFORE the assistant message.
+			// The assistant was just added/updated above; find its index.
+			asstIdx := m.findMessageByTurn(turnID, "assistant")
+			if asstIdx >= 0 && tsIdx > asstIdx {
+				// Swap positions: move tool_summary before assistant
+				toolSummary := m.messages[tsIdx]
+				m.messages = append(m.messages[:tsIdx], m.messages[tsIdx+1:]...)
+				// Recalculate asstIdx after removal (shifted by 1 if asstIdx > tsIdx)
+				asstIdx = m.findMessageByTurn(turnID, "assistant")
+				if asstIdx >= 0 {
+					m.messages = append(m.messages[:asstIdx], append([]cliMessage{toolSummary}, m.messages[asstIdx:]...)...)
+				} else {
+					m.messages = append(m.messages, toolSummary)
+				}
+			}
+			m.renderCacheValid = false
+		} else if m.isTurnDoneProcessed(turnID) {
+			// PhaseDone already created the tool_summary. If we have richer
+			// local iteration data (e.g. more complete reasoning), update it.
+			if len(m.iterationHistory) > 0 {
+				tsIdx := m.findMessageByTurn(turnID, "tool_summary")
+				if tsIdx >= 0 {
+					// Merge: prefer PhaseDone iterations (server-authoritative reasoning)
+					// but add any local-only iterations not in PhaseDone's snapshot.
+					existing := m.messages[tsIdx]
+					pendingIters := make(map[int]bool)
+					for _, it := range existing.iterations {
+						pendingIters[it.Iteration] = true
+					}
+					for _, it := range m.iterationHistory {
+						if !pendingIters[it.Iteration] {
+							existing.iterations = append(existing.iterations, it)
+						}
+					}
+					existing.dirty = true
+					m.messages[tsIdx] = existing
+					m.renderCacheValid = false
+				}
+			}
+		}
+
+		// Mark reply as received and reset iteration tracking state.
+		// When WaitingUser is true (AskUser), the turn is paused not ended —
+		// endAgentTurn would clear iterationHistory and progress, causing all
+		// previous iterations to disappear. The turn will be ended later when
+		// the agent completes after receiving the user's answer.
+		if !msg.WaitingUser {
+			m.setTurnReplyReceived(turnID)
+			m.endAgentTurn(turnID)
+			if turnID == m.agentTurnID {
+				m.inputReady = true
+				// §Q 标记需要刷新消息队列（由 Update 循环检查）
+				if len(m.messageQueue) > 0 {
+					m.needFlushQueue = true
+				}
+			}
+		}
+
+	}
+
+	m.updateViewportContent()
+}
+
+// renderProgressBlock renders the iteration progress panel for the viewport.
+// The output is cached via fingerprint — the expensive blockStyle.Render()
+// (lipgloss border wrapping with ANSI width calculation on every character)
+// renderHistoryRange renders a slice of iteration snapshots into buf.
+// Extracted from renderProgressBlock to enable incremental rebuild — when only
