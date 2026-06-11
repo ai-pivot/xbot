@@ -13,38 +13,29 @@ import (
 // Unified Turn Renderer
 // ---------------------------------------------------------------------------
 //
-// Design principles:
+// One assistant message per turn. All iterations render inline with
+// consistent styling for both busy and idle states.
 //
-//   • One assistant message per turn, containing all iterations inline.
-//   • Each completed iteration shows: content (glamour md) + tool tags.
-//   • The current (live) iteration shows: streaming md + active tools.
-//   • Reasoning is rendered in a collapsible box (default: collapsed).
-//   • Tools are inline tags: "✓ Shell  ✓ Read", expandable via Ctrl+O.
-//   • SubAgent tree is preserved.
+// Visual hierarchy (per iteration):
 //
-// Layout for a single completed iteration:
-//
-//   ┊  I found the issue in the auth module.
-//   ┊  [Shell ✓ Read ✓]
-//   ┊  ╭ Reasoning ──────────────────────╮
-//   ┊  │ The error occurs because the     │  ← only when expanded
-//   ┊  │ token is not properly validated. │
-//   ┊  ╰──────────────────────────────────╯
+//   ┊  Content text rendered as markdown...
+//   ┊  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+//   ┊  · Shell ✓  · Read ✓  · FileReplace ✓
 //   ┊
-//
-// Layout for the current (live) iteration:
-//
-//   ┊  Let me check the config file...
-//   ┊  🔄 Grep ● 2.1s
-//   ┊    └── explore [mem-1]: searching...
+//   ┊  ▸ Reasoning (8 lines) ─────────────────
+//   ┊
+//   ┊  ────────────────────────────────────────   ← iteration divider
+//   ┊
+//   ┊  Next iteration content...
+//   ┊  🔄 Grep ● 2.1s                           ← live tool
+//   ┊    └── explore [mem-1]: searching...       ← SubAgent tree
 // ---------------------------------------------------------------------------
 
-// renderTurnBody renders the full body of an assistant message for a turn.
-// During busy state: uses liveProgress + iterationHistory.
-// During idle state: uses msg.iterations (baked from iterationHistory).
+// renderTurnBody renders all iteration content for an assistant message.
+// busy: uses liveProgress + iterationHistory
+// idle: uses baked iterations from the message
 //
-// The output is raw ANSI lines WITHOUT the guide prefix — the caller
-// (renderMessage assistant branch) adds the "┊ " prefix per line.
+// Output does NOT include guide prefix — caller adds "┊ " per line.
 func (m *cliModel) renderTurnBody(
 	iterations []cliIterationSnapshot,
 	liveProgress *protocol.ProgressEvent,
@@ -57,25 +48,28 @@ func (m *cliModel) renderTurnBody(
 	for i := range iterations {
 		iter := &iterations[i]
 		if i > 0 {
-			sb.WriteString("\n") // blank line between iterations
+			sb.WriteString("\n")
+			sb.WriteString(s.ProgressDim.Render(strings.Repeat("─", contentWidth)))
+			sb.WriteString("\n\n")
 		}
 
-		// 1. Iteration content (Thinking field = final text reply of this iter).
+		// 1. Iteration content (Thinking = text reply).
 		if iter.Thinking != "" {
 			rendered := m.renderTurnContent(iter.Thinking, contentWidth)
 			sb.WriteString(rendered)
 			sb.WriteString("\n")
 		}
 
-		// 2. Tool tags.
-		if len(iter.Tools) > 0 {
-			sb.WriteString(m.renderToolTags(iter.Tools, contentWidth, s))
+		// 2. Reasoning (collapsible, above tool tags for better reading flow).
+		if iter.Reasoning != "" {
+			sb.WriteString("\n")
+			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s, false))
 			sb.WriteString("\n")
 		}
 
-		// 3. Reasoning (collapsible box, default collapsed).
-		if iter.Reasoning != "" {
-			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s, false))
+		// 3. Tool tags — subtle pill row.
+		if len(iter.Tools) > 0 {
+			sb.WriteString(m.renderToolTags(iter.Tools, contentWidth, s))
 			sb.WriteString("\n")
 		}
 	}
@@ -83,7 +77,9 @@ func (m *cliModel) renderTurnBody(
 	// Render the current live iteration (if any).
 	if liveProgress != nil {
 		if len(iterations) > 0 {
-			sb.WriteString("\n") // blank line before live iteration
+			sb.WriteString("\n")
+			sb.WriteString(s.ProgressDim.Render(strings.Repeat("─", contentWidth)))
+			sb.WriteString("\n\n")
 		}
 		sb.WriteString(m.renderLiveIteration(liveProgress, contentWidth))
 	}
@@ -91,7 +87,7 @@ func (m *cliModel) renderTurnBody(
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// renderTurnContent renders markdown text through glamour for turn content.
+// renderTurnContent renders markdown text through glamour.
 func (m *cliModel) renderTurnContent(text string, width int) string {
 	if width < 20 {
 		width = 20
@@ -105,53 +101,44 @@ func (m *cliModel) renderTurnContent(text string, width int) string {
 	return strings.TrimSpace(rendered)
 }
 
-// renderToolTags renders inline tool tags: "[✓ Shell  ✓ Read  ✗ Grep]"
+// renderToolTags renders a row of compact tool badges.
+//
+//	· Shell ✓   · Read ✓   · FileReplace ✓
+//
+// Done tools are muted. Running tools use warning color. Errors use error color.
 func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *cliStyles) string {
-	var sb strings.Builder
-	// Compact inline tag format.
-	// Use different icons for status.
-	for i, tool := range tools {
-		if i > 0 {
-			sb.WriteString("  ") // double space between tags
-		}
+	var tags []string
+	for _, tool := range tools {
 		label := tool.Label
 		if label == "" {
 			label = tool.Name
 		}
 		switch tool.Status {
 		case "error":
-			sb.WriteString(s.ProgressError.Render("✗"))
-			sb.WriteString(" ")
-			sb.WriteString(s.ProgressError.Render(label))
+			tags = append(tags, s.ProgressError.Render("✗")+" "+s.ProgressError.Render(label))
 		case "done":
-			sb.WriteString(s.ProgressDone.Render("✓"))
-			sb.WriteString(" ")
-			sb.WriteString(s.TextMutedSt.Render(label))
+			tags = append(tags, s.ProgressDone.Render("✓")+" "+s.TextMutedSt.Render(label))
 		default:
-			sb.WriteString(s.ProgressRunning.Render("●"))
-			sb.WriteString(" ")
-			sb.WriteString(s.ProgressRunning.Render(label))
+			tags = append(tags, s.ProgressRunning.Render("●")+" "+s.ProgressRunning.Render(label))
 		}
 	}
-	// Wrap in subtle brackets
-	tags := sb.String()
-	return s.TextMutedSt.Render("[") + tags + s.TextMutedSt.Render("]")
+	// Join with dim dot separator
+	sep := " " + s.ProgressDim.Render("·") + " "
+	return s.ProgressDim.Render("·") + " " + strings.Join(tags, sep)
 }
 
 // renderReasoningBox renders a collapsible reasoning section.
-// When collapsed, shows a one-line summary. When expanded, shows full content
-// in a bordered box with "Reasoning" in the top-left corner.
 //
-// Collapsed:
+// Collapsed (default):
 //
-//	┊  ▸ Reasoning (12 lines) ─────────────
+//	▸ Reasoning (12 lines) ──────────────────────
 //
 // Expanded:
 //
-//	┊  ╭ Reasoning ──────────────────────╮
-//	┊  │ The error occurs because the     │
-//	┊  │ token is not properly validated. │
-//	┊  ╰──────────────────────────────────╯
+//	╭ Reasoning ──────────────────────────────╮
+//	│ The error occurs because the token is   │
+//	│ not properly validated in the handler.  │
+//	╰─────────────────────────────────────────╯
 func (m *cliModel) renderReasoningBox(
 	reasoning string,
 	width int,
@@ -163,15 +150,11 @@ func (m *cliModel) renderReasoningBox(
 	}
 
 	lines := strings.Split(strings.TrimSpace(reasoning), "\n")
-	innerW := width - 4 // space for "│ " prefix and " │" suffix
-	if innerW < 20 {
-		innerW = 20
-	}
 
 	if !expanded {
-		// Collapsed: single line summary
-		summary := fmt.Sprintf("▸ Reasoning (%d lines)", len(lines))
-		// Pad with dim dashes
+		// Collapsed: one-line indicator
+		count := len(lines)
+		summary := fmt.Sprintf("▸ Reasoning (%d lines)", count)
 		padW := width - lipgloss.Width(summary) - 2
 		if padW > 0 {
 			summary += " " + s.ProgressDim.Render(strings.Repeat("─", padW))
@@ -179,26 +162,29 @@ func (m *cliModel) renderReasoningBox(
 		return s.TextSecondarySt.Render(summary)
 	}
 
-	// Expanded: bordered box with "Reasoning" label
+	// Expanded: bordered box
+	innerW := width - 4 // "│ " + " │"
+	if innerW < 20 {
+		innerW = 20
+	}
 	var sb strings.Builder
 
-	// Top border: ╭ Reasoning ──────╮
+	// Top border with label
 	label := " Reasoning "
-	labelLen := lipgloss.Width(label)
-	dashCount := innerW - labelLen
+	labelW := lipgloss.Width(label)
+	dashCount := innerW - labelW
 	if dashCount < 3 {
 		dashCount = 3
 	}
-	topBorder := s.ProgressDim.Render("╭") + s.TextSecondarySt.Render(label) +
-		s.ProgressDim.Render(strings.Repeat("─", dashCount)+"╮")
-	sb.WriteString(topBorder)
+	sb.WriteString(s.ProgressDim.Render("╭"))
+	sb.WriteString(s.TextSecondarySt.Render(label))
+	sb.WriteString(s.ProgressDim.Render(strings.Repeat("─", dashCount) + "╮"))
 	sb.WriteString("\n")
 
 	// Content lines
 	for _, line := range lines {
 		wrapped := hardWrapRunes(line, innerW-2)
 		for _, wl := range strings.Split(wrapped, "\n") {
-			// Pad line to innerW
 			visW := lipgloss.Width(wl)
 			pad := innerW - 2 - visW
 			if pad < 0 {
@@ -212,15 +198,15 @@ func (m *cliModel) renderReasoningBox(
 		}
 	}
 
-	// Bottom border: ╰───────────────╯
+	// Bottom border
 	sb.WriteString(s.ProgressDim.Render("╰" + strings.Repeat("─", innerW) + "╯"))
 
 	return sb.String()
 }
 
-// renderLiveIteration renders the current in-progress iteration:
+// renderLiveIteration renders the in-progress iteration:
 //   - Streaming content (glamour md)
-//   - Active tools with spinner
+//   - Active tools with elapsed time
 //   - SubAgent tree
 func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int) string {
 	s := &m.styles
@@ -239,6 +225,9 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int) str
 
 	// 2. Active tools with elapsed
 	if len(p.ActiveTools) > 0 {
+		if streamContent != "" {
+			sb.WriteString("\n") // breathe between content and tools
+		}
 		for _, tool := range p.ActiveTools {
 			if tool.Status == "running" || tool.Status == "active" {
 				elapsed := formatElapsed(tool.Elapsed)
