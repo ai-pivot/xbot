@@ -316,6 +316,11 @@ type Agent struct {
 	// approvalState manages approval handling for privileged operations.
 	approvalState *hooks.ApprovalState
 
+	// checkpointState manages file checkpoint snapshots for rewind file rollback.
+	checkpointState *hooks.CheckpointState
+	// checkpointStores caches per-session CheckpointStores (keyed by session key).
+	checkpointStores sync.Map // map[string]*tools.CheckpointStore
+
 	// OffloadStore manages large tool result offload to disk
 	offloadStore *OffloadStore
 
@@ -1089,6 +1094,11 @@ func New(cfg Config) (*Agent, error) {
 	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
+	// 5b-2. Create checkpoint state and register checkpoint hook for rewind file rollback.
+	// The CheckpointStore is created per-session (in processMessage) and set via SetStore.
+	agent.checkpointState = protocol.NewCheckpointState(nil)
+	agent.hookManager.RegisterBuiltin(hooks.CheckpointCallback(agent.checkpointState))
+
 	// 5c. Initialize plugin system (if enabled in config)
 	if cfg.PluginEnabled {
 		agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
@@ -1494,6 +1504,60 @@ func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 		return
 	}
 	injector.InjectUserMessage(qualifyChatID(channelName, chatID), content)
+}
+
+// ensureCheckpointStore creates a per-session CheckpointStore if one doesn't
+// already exist for this session key, updates the shared CheckpointState to
+// point at it, and wires the CheckpointState into the CLI channel.
+func (a *Agent) ensureCheckpointStore(ctx context.Context, sessionKey, channel, chatID string) {
+	if a.checkpointState == nil {
+		return
+	}
+
+	// Only CLI sessions need checkpoint tracking (rewind is a CLI feature).
+	if channel != "cli" {
+		return
+	}
+
+	// Check if we already have a store for this session.
+	if _, ok := a.checkpointStores.Load(sessionKey); ok {
+		// Store exists — just point the shared state at it and ensure CLI has the state.
+		if raw, ok := a.checkpointStores.Load(sessionKey); ok {
+			a.checkpointState.SetStore(raw.(*tools.CheckpointStore))
+		}
+		a.wireCheckpointStateToCLI()
+		return
+	}
+
+	// Create new per-session store.
+	baseDir := filepath.Join(a.xbotHome, "checkpoints", sessionKey)
+	store, err := tools.NewCheckpointStore(baseDir)
+	if err != nil {
+		log.Ctx(ctx).WithError(err).WithField("session", sessionKey).Warn("Failed to create checkpoint store for session")
+		return
+	}
+
+	a.checkpointStores.Store(sessionKey, store)
+	a.checkpointState.SetStore(store)
+	a.wireCheckpointStateToCLI()
+
+	log.Ctx(ctx).WithField("session", sessionKey).Debug("Created checkpoint store for session")
+}
+
+// wireCheckpointStateToCLI passes the shared CheckpointState to the CLI channel
+// so that rewind can access it for file rollback.
+func (a *Agent) wireCheckpointStateToCLI() {
+	if a.channelFinder == nil || a.checkpointState == nil {
+		return
+	}
+	ch, ok := a.channelFinder("cli")
+	if !ok {
+		return
+	}
+	// CLIChannel (local mode) — checkpoint store and CLI model share the same process.
+	if cliCh, ok := ch.(*channel.CLIChannel); ok {
+		cliCh.SetCheckpointState(a.checkpointState)
+	}
 }
 
 // Run 启动 Agent 循环，持续消费入站消息。
@@ -2123,6 +2187,11 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			}
 		}
 	}
+
+	// Ensure per-session checkpoint store exists and is wired to CLI channel.
+	// File snapshots are persisted to ~/.xbot/checkpoints/{sessionKey}/changes.jsonl
+	// and used by /rewind to restore files to their pre-edit state.
+	a.ensureCheckpointStore(ctx, key, msg.Channel, msg.ChatID)
 
 	// 缓存消息到聊天历史（用于 ChatHistory 工具查询）
 	a.chatHistory.Add(msg.Channel, msg.ChatID, msg.SenderID, msg.Content)

@@ -41,7 +41,7 @@ func NewSystemMessage(content string) ChatMessage {
 }
 
 // SanitizeMessages validates and cleans the message list before sending to LLM.
-// It performs three passes:
+// It performs these passes:
 //
 // Pass 1: Strip invalid assistant messages that have empty content AND no tool_calls.
 // These occur when DisplayOnly messages (e.g. cancel iteration history) are persisted
@@ -52,10 +52,15 @@ func NewSystemMessage(content string) ChatMessage {
 // Pass 2: Strip tool_calls with invalid/malformed arguments (e.g. partial JSON from
 // a cancelled stream). DeepSeek/OpenAI reject tool_calls with broken argument JSON.
 //
-// Pass 3: Strip trailing unpaired tool_calls left by a cancelled Run.
-// An assistant message with non-empty ToolCalls is unpaired if not followed by
-// matching tool-result messages. Both APIs reject unpaired tool_calls.
+// Pass 3: Normalize assistant/tool pairing order. OpenAI-compatible APIs require
+// tool messages to be consecutive responses to the immediately preceding assistant
+// message with matching tool_calls. This also repairs corrupted persisted history
+// left by compression/masking/cancellation.
 func SanitizeMessages(messages []ChatMessage) []ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
 	// Pass 1: Strip invalid assistant messages (empty content + no tool_calls)
 	// from anywhere in the list. Use a single pass filter.
 	n := 0
@@ -93,118 +98,141 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 		}
 	}
 
-	// Pass 3: Strip trailing unpaired tool_calls (existing logic)
-	for len(messages) > 0 {
-		last := messages[len(messages)-1]
+	return sanitizeToolPairOrder(messages)
+}
 
-		// Trailing assistant with tool_calls → unpaired, strip it
-		if last.Role == "assistant" && len(last.ToolCalls) > 0 {
-			messages = messages[:len(messages)-1]
-			continue
-		}
-
-		// Trailing tool message without a preceding assistant that has matching
-		// tool_calls (orphaned tool result) → also strip
-		if last.Role == "tool" {
-			// Check if the message before this is an assistant with tool_calls
-			if len(messages) >= 2 {
-				prev := messages[len(messages)-2]
-				if prev.Role == "assistant" && len(prev.ToolCalls) > 0 {
-					break // paired, we're done
-				}
-			}
-			// Orphaned tool result, strip it
-			messages = messages[:len(messages)-1]
-			continue
-		}
-
-		break
+func sanitizeToolPairOrder(messages []ChatMessage) []ChatMessage {
+	if toolPairOrderIsValid(messages) {
+		return messages
 	}
 
-	// Pass 4: Ensure every tool_call_id has a matching tool response message.
-	// Some providers (Kimi) reject assistant messages with tool_calls when the
-	// corresponding tool response messages are missing — even in the middle of
-	// the conversation, not just trailing.
-	// Build set of all tool_call_ids that have response messages.
-	respondedIDs := make(map[string]bool)
-	for _, msg := range messages {
-		if msg.Role == "tool" && msg.ToolCallID != "" {
-			respondedIDs[msg.ToolCallID] = true
-		}
-	}
-	// Remove unpaired tool_calls from assistant messages
-	for i := range messages {
-		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
-			continue
-		}
-		valid := make([]ToolCall, 0, len(messages[i].ToolCalls))
-		for _, tc := range messages[i].ToolCalls {
-			if respondedIDs[tc.ID] {
-				valid = append(valid, tc)
-			} else {
-				log.WithFields(log.Fields{
-					"tool_name": tc.Name,
-					"tool_id":   tc.ID,
-					"msg_index": i,
-				}).Warn("[SanitizeMessages] Removing tool_call without response message")
-			}
-		}
-		messages[i].ToolCalls = valid
-		// If all tool_calls were removed and content is empty, will be stripped by Pass 1 on next round
-		if len(valid) == 0 && messages[i].Content == "" {
-			messages[i].ToolCalls = nil
-		}
-	}
-	// Run Pass 1 again to clean up any assistant messages that became empty after Pass 4
-	n = 0
-	for _, msg := range messages {
-		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
-			continue
-		}
-		messages[n] = msg
-		n++
-	}
-	messages = messages[:n]
-
-	// Pass 5: Remove tool messages whose tool_call_id doesn't appear in any
-	// assistant message's tool_calls. Pass 2 (invalid JSON) and Pass 4
-	// (missing tool response) can strip tool_calls from assistant messages,
-	// leaving orphaned tool messages behind. DeepSeek rejects these with
-	// "Messages with role 'tool' must be a response to a preceding message
-	// with 'tool_calls'".
-	allToolCallIDs := make(map[string]bool)
-	for _, msg := range messages {
-		if msg.Role == "assistant" {
-			for _, tc := range msg.ToolCalls {
-				allToolCallIDs[tc.ID] = true
-			}
-		}
-	}
-	n = 0
-	for _, msg := range messages {
-		if msg.Role == "tool" && !allToolCallIDs[msg.ToolCallID] {
+	out := make([]ChatMessage, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == "tool" {
 			log.WithFields(log.Fields{
 				"tool_name":    msg.ToolName,
 				"tool_call_id": msg.ToolCallID,
-			}).Warn("[SanitizeMessages] Stripping orphaned tool message (no matching tool_call in any assistant)")
+				"msg_index":    i,
+			}).Warn("[SanitizeMessages] Stripping orphaned tool message (not after matching assistant tool_calls)")
 			continue
 		}
-		messages[n] = msg
-		n++
-	}
-	messages = messages[:n]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			out = append(out, msg)
+			continue
+		}
 
-	return messages
+		j := i + 1
+		for j < len(messages) && messages[j].Role == "tool" {
+			j++
+		}
+
+		validTools := make([]ChatMessage, 0, j-i-1)
+		for _, toolMsg := range messages[i+1 : j] {
+			if toolMsg.ToolCallID == "" || !toolCallIDInCalls(msg.ToolCalls, toolMsg.ToolCallID) || toolIDSeenInMessages(validTools, toolMsg.ToolCallID) {
+				log.WithFields(log.Fields{
+					"tool_name":    toolMsg.ToolName,
+					"tool_call_id": toolMsg.ToolCallID,
+					"assistant_i":  i,
+				}).Warn("[SanitizeMessages] Stripping tool message without matching preceding tool_call")
+				continue
+			}
+			validTools = append(validTools, toolMsg)
+		}
+
+		validCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+		for _, tc := range msg.ToolCalls {
+			if toolIDSeenInMessages(validTools, tc.ID) && !toolCallIDInCalls(validCalls, tc.ID) {
+				validCalls = append(validCalls, tc)
+				continue
+			}
+			log.WithFields(log.Fields{
+				"tool_name": tc.Name,
+				"tool_id":   tc.ID,
+				"msg_index": i,
+			}).Warn("[SanitizeMessages] Removing tool_call without following tool response")
+		}
+
+		msg.ToolCalls = validCalls
+		if len(validCalls) == 0 {
+			msg.ToolCalls = nil
+			if msg.Content == "" {
+				i = j - 1
+				continue
+			}
+		}
+		out = append(out, msg)
+		out = append(out, validTools...)
+		i = j - 1
+	}
+	return out
+}
+
+func toolPairOrderIsValid(messages []ChatMessage) bool {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == "tool" {
+			return false
+		}
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+
+		j := i + 1
+		for j < len(messages) && messages[j].Role == "tool" {
+			toolMsg := messages[j]
+			if toolMsg.ToolCallID == "" || !toolCallIDInCalls(msg.ToolCalls, toolMsg.ToolCallID) || toolIDSeenInRange(messages, i+1, j, toolMsg.ToolCallID) {
+				return false
+			}
+			j++
+		}
+		if j-i-1 != len(msg.ToolCalls) {
+			return false
+		}
+		for _, tc := range msg.ToolCalls {
+			if !toolIDSeenInRange(messages, i+1, j, tc.ID) {
+				return false
+			}
+		}
+		i = j - 1
+	}
+	return true
+}
+
+func toolCallIDInCalls(calls []ToolCall, id string) bool {
+	for _, tc := range calls {
+		if tc.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func toolIDSeenInMessages(messages []ChatMessage, id string) bool {
+	for _, msg := range messages {
+		if msg.ToolCallID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func toolIDSeenInRange(messages []ChatMessage, start, end int, id string) bool {
+	for i := start; i < end; i++ {
+		if messages[i].ToolCallID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // isValidToolCallArgs returns true if the argument string is valid JSON (or empty).
 // Partially streamed tool_call arguments may contain broken JSON like {"command":"ls
 func isValidToolCallArgs(args string) bool {
-	if args == "" {
+	if args == "" || args == "{}" {
 		return true
 	}
-	var dummy any
-	return json.Unmarshal([]byte(args), &dummy) == nil
+	return json.Valid([]byte(args))
 }
 
 // NewUserMessage 创建用户消息

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"xbot/config"
 	"xbot/internal/textarea"
 	"xbot/llm"
@@ -2154,15 +2156,31 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 		headerLines = 2 // tab bar + blank line
 	}
 	// Question: may be multiple lines after hardWrap.
-	qWrapWidth := m.width - 6
-	if qWrapWidth < 20 {
-		qWrapWidth = 20
-	}
+	qWrapWidth := m.askUserQuestionWrapWidth()
 	wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
 	headerLines += strings.Count(wrapped, "\n") + 1 // question lines
 	headerLines++                                   // blank line between question and options
 
-	cursorLine := headerLines + cursor
+	// Each option may span multiple lines after hardWrap. Count lines for
+	// options before the cursor to compute its true Y position.
+	// prefixW matches viewAskUserPanel: "▸ ☑ " = 4 visible columns.
+	cursorLine := headerLines
+	prefixW := ansi.StringWidth("▸ ☑ ")
+	optWrapW := qWrapWidth - prefixW
+	if optWrapW < 10 {
+		optWrapW = 10
+	}
+	for i := 0; i < cursor && i < len(item.Options); i++ {
+		optWrapped := hardWrapRunes(item.Options[i], optWrapW)
+		cursorLine += strings.Count(optWrapped, "\n") + 1
+	}
+	// cursor itself: add at least 1 line
+	if cursor < len(item.Options) {
+		optWrapped := hardWrapRunes(item.Options[cursor], optWrapW)
+		cursorLine += strings.Count(optWrapped, "\n")
+	}
+	// cursor at "Other" or "Submit" row: 1 line each (no wrapping needed)
+
 	// Visible height — use askUserPanelVisibleHeight for the askuser split layout.
 	askVisibleH := m.askUserPanelVisibleHeight()
 	if askVisibleH <= 0 {
@@ -2182,6 +2200,18 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 			m.askPanelScrollY = 0
 		}
 	}
+}
+
+func (m *cliModel) askUserQuestionWrapWidth() int {
+	// layoutAskUser uses PanelBox.Width(cw-2) with effective text_area = cw-6.
+	// applyScrollbar uses contentWidth = cw-7. Lines at exactly contentWidth get
+	// truncated (>= check), so qWrapWidth must be strictly less: cw-8.
+	// This ensures hardWrapRunes output never triggers applyScrollbar truncation.
+	w := m.chatWidth() - 8
+	if w < 1 {
+		return 1
+	}
+	return w
 }
 
 // viewPanel renders the active panel as a string.
@@ -2458,7 +2488,8 @@ func (m *cliModel) viewSettingsPanel() string {
 					if j == m.panelComboIdx {
 						sb.WriteString(cursorStyle.Render("    ▸ " + label))
 					} else {
-						sb.WriteString("      " + label)
+						sb.WriteString("      ")
+						sb.WriteString(label)
 					}
 					// Show option description on the selected combo item.
 					if j == m.panelComboIdx && opt.Description != "" {
@@ -2534,14 +2565,15 @@ func (m *cliModel) viewAskUserPanel() string {
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
 		isLastTab := m.panelTab == len(m.panelItems)-1
-		// Wrap question text to fit inside PanelBox (border 2 + padding 2 + scrollbar reserve 2)
-		qWrapWidth := m.width - 6
-		if qWrapWidth < 20 {
-			qWrapWidth = 20
-		}
+		// Wrap question text to fit inside PanelBox and its optional scrollbar.
+		qWrapWidth := m.askUserQuestionWrapWidth()
+		// Wrap first, then render style per-line to avoid lipgloss.Render
+		// re-wrapping multi-line styled content (causes width miscalculation).
 		wrapped := hardWrapRunes("❓ "+item.Question, qWrapWidth)
-		sb.WriteString(questionStyle.Render(wrapped))
-		sb.WriteString("\n")
+		for _, wl := range strings.Split(wrapped, "\n") {
+			sb.WriteString(questionStyle.Render(wl))
+			sb.WriteString("\n")
+		}
 
 		hasOpts := len(item.Options) > 0
 
@@ -2551,31 +2583,66 @@ func (m *cliModel) viewAskUserPanel() string {
 			cursor := m.panelOptCursor[m.panelTab]
 			numOpts := len(item.Options)
 
+			// renderAskUserOption renders a single option with proper wrapping.
+			// It avoids nested Render() calls which corrupt ANSI sequences,
+			// and wraps option text to fit within the panel content width.
+			renderAskUserOption := func(isCursor, isChecked bool, optText string) {
+				var boxStr string
+				if isChecked {
+					boxStr = "☑"
+				} else {
+					boxStr = "☐"
+				}
+				// Compute the visible prefix width for this option line.
+				// First line format: "▸ ☑ " or "  ☐ " (cursor prefix + box + space)
+				var plainPrefix string
+				if isCursor {
+					plainPrefix = "▸ " + boxStr + " "
+				} else {
+					plainPrefix = "  " + boxStr + " "
+				}
+				prefixW := ansi.StringWidth(plainPrefix)
+				optWrapW := qWrapWidth - prefixW
+				if optWrapW < 10 {
+					optWrapW = 10
+				}
+				wrappedOpt := hardWrapRunes(optText, optWrapW)
+				optLines := strings.Split(wrappedOpt, "\n")
+				for j, ol := range optLines {
+					if j == 0 {
+						// First line: render prefix + box + wrapped option fragment
+						var plainPrefix string
+						if isCursor {
+							plainPrefix = "▸ " + boxStr + " "
+						} else {
+							plainPrefix = "  " + boxStr + " "
+						}
+						rendered := plainPrefix + ol
+						if isChecked {
+							sb.WriteString(checkStyle.Render(rendered))
+						} else if isCursor {
+							// Cursor prefix styled separately, rest is plain
+							sb.WriteString(cursorStyle.Render("▸ ") + boxStr + " " + ol)
+						} else {
+							sb.WriteString(rendered)
+						}
+					} else {
+						// Continuation lines: indent to align with option text
+						indent := strings.Repeat(" ", prefixW)
+						if isChecked {
+							sb.WriteString(checkStyle.Render(indent + ol))
+						} else {
+							sb.WriteString(indent + ol)
+						}
+					}
+					sb.WriteString("\n")
+				}
+			}
+
 			for i, opt := range item.Options {
 				checked := sel != nil && sel[i]
-				var box string
-				if checked {
-					box = "☑"
-				} else {
-					box = "☐"
-				}
-				var line string
-				if i == cursor {
-					prefix := cursorStyle.Render("▸ ")
-					if checked {
-						line = checkStyle.Render(prefix + box + " " + opt)
-					} else {
-						line = prefix + box + " " + opt
-					}
-				} else {
-					if checked {
-						line = checkStyle.Render("  " + box + " " + opt)
-					} else {
-						line = "  " + box + " " + opt
-					}
-				}
-				sb.WriteString(line)
-				sb.WriteString("\n")
+				isCur := i == cursor
+				renderAskUserOption(isCur, checked, opt)
 			}
 
 			// Other input (single-line)
@@ -2586,7 +2653,8 @@ func (m *cliModel) viewAskUserPanel() string {
 			} else {
 				prefix = "  "
 			}
-			sb.WriteString(prefix + otherLabel)
+			sb.WriteString(prefix)
+			sb.WriteString(otherLabel)
 			// Resize textinput to fit within panel content width (qWrapWidth)
 			// minus label width and scrollbar column.  The textinput View()
 			// (specifically placeholderView) always outputs Width()+1 chars
@@ -2615,9 +2683,11 @@ func (m *cliModel) viewAskUserPanel() string {
 			if isLastTab {
 				submitLabel := m.locale.PanelSubmit
 				if cursor == numOpts+1 {
-					sb.WriteString(cursorStyle.Render("▸ ") + submitStyle.Render(submitLabel))
+					sb.WriteString(cursorStyle.Render("▸ "))
+					sb.WriteString(submitStyle.Render(submitLabel))
 				} else {
-					sb.WriteString("  " + submitStyle.Render(submitLabel))
+					sb.WriteString("  ")
+					sb.WriteString(submitStyle.Render(submitLabel))
 				}
 				sb.WriteString("\n")
 			}

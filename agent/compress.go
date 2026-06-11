@@ -371,12 +371,19 @@ func compactMessages(
 	memTools []llm.ToolDefinition,
 	memToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error),
 ) (*CompressResult, error) {
-	// Step 1: find tail cut point — keep the last user message and everything after it
+	// Step 1: find tail cut point — keep the last user message and everything after it.
+	// Remember the original user message content so it can be re-injected if tail capping
+	// truncates it. The original user message is the user's actual request from
+	// buildPrompt's Assemble() — it must NEVER be lost.
 	tailStart := len(messages)
+	var originalUserMsg *llm.ChatMessage // will be set if we find a user msg before tail
 	for i := len(messages) - 1; i >= 1; i-- {
 		msg := messages[i]
 		if msg.Role == "user" {
 			tailStart = i
+			// Capture a pointer to this message — it's the original user request.
+			msgCopy := msg
+			originalUserMsg = &msgCopy
 			break
 		}
 		if msg.Role == "assistant" && len(msg.ToolCalls) == 0 {
@@ -387,14 +394,29 @@ func compactMessages(
 			tailStart = 1
 		}
 	}
+	// originalTailStart is the uncapped position — used to detect if capping
+	// will push the original user message into toCompress.
+	originalTailStart := tailStart
 
 	// Step 2: cap tail length. Each iteration is typically 2-3 messages
 	// (assistant + tool_call + tool_result). With 500+ iterations the tail can be
 	// enormous, causing compression to produce a summary that — combined with the
 	// unmodified tail — still exceeds the context limit, triggering infinite
-	// re-compression.  We keep at most maxTailMessages (~100 iterations ≈ 300
-	// messages); anything older is forced into toCompress.
-	const maxTailMessages = 300 // ~100 iterations
+	// re-compression.
+	//
+	// Cap tail to at most 15% of maxContextTokens (estimated at ~200 tokens/message).
+	// This keeps tail small enough that summary + tail + output stays under threshold,
+	// regardless of context window size.  Hard upper bound of 300 messages for 1M+ contexts.
+	const maxTailContextFraction = 0.15
+	const tokensPerMessage = 200
+	dynamicTailLimit := int(float64(maxContextTokens) * maxTailContextFraction / tokensPerMessage)
+	maxTailMessages := dynamicTailLimit
+	if maxTailMessages > 300 {
+		maxTailMessages = 300 // hard cap for very large contexts
+	}
+	if maxTailMessages < 50 {
+		maxTailMessages = 50 // minimum to keep useful recent context
+	}
 	tailLen := len(messages) - tailStart
 	if tailLen > maxTailMessages {
 		oldTailStart := tailStart
@@ -598,17 +620,40 @@ Output the structured working state directly.`
 	summaryMsg := llm.NewUserMessage("[Compacted context]\n\n" + compressed)
 	continuationMsg := llm.NewUserMessage(continuationMessage)
 
-	// LLM View: system + compaction summary + continuation instruction + tail
-	llmView := make([]llm.ChatMessage, 0, len(systemMsgs)+2+len(tail))
+	// Check if the original user message was lost due to tail capping.
+	// If so, inject it into the LLMView so the LLM always has access to
+	// the exact user request. Without this, BuildSystemReminder would
+	// extract taskGoal from "[Compacted context]..." instead of the real request.
+	needInjectUserMsg := originalUserMsg != nil && tailStart > originalTailStart
+	if needInjectUserMsg {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"original_tail": originalTailStart,
+			"capped_tail":   tailStart,
+			"user_msg_idx":  originalTailStart,
+		}).Info("Injecting original user message after tail capping")
+	}
+
+	// LLM View: system + compaction summary + continuation instruction + [original user msg] + tail
+	extraCap := 0
+	if needInjectUserMsg {
+		extraCap = 1
+	}
+	llmView := make([]llm.ChatMessage, 0, len(systemMsgs)+2+extraCap+len(tail))
 	llmView = append(llmView, systemMsgs...)
 	llmView = append(llmView, summaryMsg)
 	llmView = append(llmView, continuationMsg)
+	if needInjectUserMsg {
+		llmView = append(llmView, *originalUserMsg)
+	}
 	llmView = append(llmView, tail...)
 
-	// Session View: compaction summary + tail dialogue (user/assistant only)
+	// Session View: compaction summary + [original user msg] + tail dialogue (user/assistant only)
 	tailDialogue := extractDialogueFromTail(tail)
-	sessionView := make([]llm.ChatMessage, 0, 1+len(tailDialogue))
+	sessionView := make([]llm.ChatMessage, 0, 1+extraCap+len(tailDialogue))
 	sessionView = append(sessionView, summaryMsg)
+	if needInjectUserMsg {
+		sessionView = append(sessionView, *originalUserMsg)
+	}
 	sessionView = append(sessionView, tailDialogue...)
 
 	newTokens := len([]rune(compressed)) * 2 / 3

@@ -354,18 +354,22 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 	visibleAsk := askLines[m.askPanelScrollY:end]
 	askContent := strings.Join(visibleAsk, "\n")
 	// Append scrollbar when content overflows
+	cw := m.chatWidth()
 	if totalAskLines > askVisibleH && askVisibleH > 0 {
-		// Use chatWidth (not m.width) so panel width respects sidebar
-		panelW := m.chatWidth()
-		contentWidth := panelW - 4 - 2 // PanelBox border(2) + padding(2) - scrollbar(2)
+		// PanelBox.Width(W) has effective text_area = W-4 (border+padding).
+		// With Width(cw-2): text_area = cw-6. applyScrollbar adds 2 columns
+		// (padding+scrollbar), so total per line = contentWidth+1. We need
+		// contentWidth+1 ≤ cw-6, so contentWidth ≤ cw-7. Setting it to cw-7
+		// matches qWrapWidth so question/option lines are never truncated.
+		contentWidth := cw - 7
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
 		askContent = m.applyScrollbar(askContent, contentWidth, totalAskLines, m.askPanelScrollY)
 	}
-	// Use chatWidth-aware PanelBox so the askuser panel fits alongside sidebar
-	cw := m.chatWidth()
-	boxedAsk := m.styles.PanelBox.Width(cw - 4).Render(askContent)
+	// Width(cw-2): text_area = cw-6. Without scrollbar, lines ≤ qWrapWidth(cw-7)
+	// fit (cw-7 < cw-6). With scrollbar, total = contentWidth(cw-7)+1 = cw-6 = text_area.
+	boxedAsk := m.styles.PanelBox.Width(cw - 2).Render(askContent)
 	// Scroll indicator — mouse wheel or ↑↓ at edges scrolls content
 	scrollHint := ""
 	if totalAskLines > askVisibleH {
@@ -374,8 +378,15 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 	}
 
 	// Middle block: viewport + askPanel + scrollHint (same structure as layoutMain
-	// middle section, so sidebar can be joined horizontally)
-	middleBlock := fmt.Sprintf("%s\n%s%s", m.viewport.View(), boxedAsk, scrollHint)
+	// middle section, so sidebar can be joined horizontally).
+	// scrollHint goes on its own line below the PanelBox to avoid concatenating
+	// with the bottom border line (which would overflow terminal width).
+	var middleBlock string
+	if scrollHint != "" {
+		middleBlock = fmt.Sprintf("%s\n%s\n%s", m.viewport.View(), boxedAsk, scrollHint)
+	} else {
+		middleBlock = fmt.Sprintf("%s\n%s", m.viewport.View(), boxedAsk)
+	}
 
 	// Sidebar support — askuser is a split layout (viewport + panel), sidebar
 	// should remain visible just like in normal mode. Without this, opening the

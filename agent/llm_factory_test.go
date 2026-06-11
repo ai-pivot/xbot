@@ -400,6 +400,140 @@ func TestInvalidate_DoesNotAffectOtherUsers(t *testing.T) {
 	}
 }
 
+// TestSwitchSubscription_UpdatesDefaultLLM verifies that SwitchSubscription
+// DOES update the global defaultLLM/defaultModel for cli_user. In CLI mode,
+// all sessions share senderID "cli_user", so defaultLLM is a user-level
+// preference that should follow the user's last subscription choice.
+// SubAgent fallback, ListModels(), and GetLLM() for sessions without
+// per-session subscriptions should all see the new default.
+func TestSwitchSubscription_UpdatesDefaultLLM(t *testing.T) {
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "original-default-model")
+
+	subDeepSeek := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-deep",
+		Model: "deepseek-v4-pro",
+	}
+
+	// Global default before switch
+	if dm := f.GetDefaultModel(); dm != "original-default-model" {
+		t.Fatalf("initial default model = %q, want original-default-model", dm)
+	}
+
+	// Switch subscription for cli_user (the common CLI senderID)
+	if err := f.SwitchSubscription("cli_user", subDeepSeek, ""); err != nil {
+		t.Fatalf("SwitchSubscription: %v", err)
+	}
+
+	// Global default SHOULD be updated (user-level preference)
+	if dm := f.GetDefaultModel(); dm != "deepseek-v4-pro" {
+		t.Errorf("default model after SwitchSubscription = %q, want deepseek-v4-pro", dm)
+	}
+
+	// User-level entry should also be updated
+	_, model, _, _, _ := f.GetLLM("cli_user")
+	if model != "deepseek-v4-pro" {
+		t.Errorf("cli_user model = %q, want deepseek-v4-pro", model)
+	}
+}
+
+// TestGlobalSwitch_PreservesPerSessionEntries verifies that when a global subscription
+// switch happens (via InvalidateSender + SwitchSubscription), per-session entries
+// belonging to other chatIDs are NOT cleared. This prevents cross-session contamination:
+// session A switching to DeepSeek must not destroy session B's per-session GLM override.
+func TestGlobalSwitch_PreservesPerSessionEntries(t *testing.T) {
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	senderID := "cli_user" // all CLI sessions share this senderID
+
+	subGLM := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://api.glm.com/v1", APIKey: "sk-glm",
+		Model: "glm-5", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"glm-5": {MaxContext: 200000},
+		},
+	}
+	subDeepSeek := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-deep",
+		Model: "deepseek-v4-pro", PerModelConfigs: map[string]sqlite.PerModelConfig{
+			"deepseek-v4-pro": {MaxContext: 1000000},
+		},
+	}
+
+	chatA := "/home/user/src/project-a:Agent-001"
+	chatB := "/home/user/src/project-b:Agent-002"
+
+	// Session A gets per-session GLM
+	if err := f.SetSessionLLM(senderID, chatA, subGLM); err != nil {
+		t.Fatalf("SetSessionLLM A: %v", err)
+	}
+
+	// Session B has no per-session entry, uses user-level default
+
+	// User-level default is DeepSeek (e.g. global switch)
+	f.InvalidateSender(senderID)
+	if err := f.SwitchSubscription(senderID, subDeepSeek, ""); err != nil {
+		t.Fatalf("SwitchSubscription: %v", err)
+	}
+
+	// Session A should STILL use GLM (per-session preserved)
+	_, modelA, maxCtxA, _, _ := f.GetLLMForChat(senderID, chatA)
+	if modelA != "glm-5" {
+		t.Errorf("session A model = %q, want glm-5 (per-session must survive global switch)", modelA)
+	}
+	if maxCtxA != 200000 {
+		t.Errorf("session A maxCtx = %d, want 200000 (GLM per-model config)", maxCtxA)
+	}
+
+	// Session B should use DeepSeek (from user-level, no per-session override)
+	_, modelB, maxCtxB, _, _ := f.GetLLMForChat(senderID, chatB)
+	if modelB != "deepseek-v4-pro" {
+		t.Errorf("session B model = %q, want deepseek-v4-pro (user-level default)", modelB)
+	}
+	if maxCtxB != 1000000 {
+		t.Errorf("session B maxCtx = %d, want 1000000 (DeepSeek per-model config)", maxCtxB)
+	}
+}
+
+// TestInvalidate_ClearsPerSessionEntries verifies that Invalidate (full) DOES clear
+// per-session entries. This is the old behavior that caused cross-session contamination
+// and should NOT be used for global subscription switches.
+func TestInvalidate_ClearsPerSessionEntries(t *testing.T) {
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	senderID := "cli_user"
+
+	subGLM := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://api.glm.com/v1", APIKey: "sk-glm",
+		Model: "glm-5",
+	}
+	subDeepSeek := &sqlite.LLMSubscription{
+		Provider: "openai", BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-deep",
+		Model: "deepseek-v4-pro",
+	}
+
+	chatA := "/home/user/src/project-a:Agent-001"
+
+	// Session A gets per-session GLM
+	if err := f.SetSessionLLM(senderID, chatA, subGLM); err != nil {
+		t.Fatalf("SetSessionLLM: %v", err)
+	}
+
+	// Verify A has GLM
+	_, modelA, _, _, _ := f.GetLLMForChat(senderID, chatA)
+	if modelA != "glm-5" {
+		t.Fatalf("session A model before Invalidate = %q, want glm-5", modelA)
+	}
+
+	// Full Invalidate (old behavior) destroys per-session entry
+	f.Invalidate(senderID)
+	if err := f.SwitchSubscription(senderID, subDeepSeek, ""); err != nil {
+		t.Fatalf("SwitchSubscription: %v", err)
+	}
+
+	// Session A now falls back to user-level DeepSeek (per-session was wiped)
+	_, modelA2, _, _, _ := f.GetLLMForChat(senderID, chatA)
+	if modelA2 != "deepseek-v4-pro" {
+		t.Errorf("session A model after Invalidate = %q, want deepseek-v4-pro (per-session was cleared)", modelA2)
+	}
+}
+
 // TestGetLLMForModel_ConfigSubExactMatch verifies the config.json subscription path:
 // when configSubsFn returns a subscription whose Model matches the resolved tier model,
 // GetLLMForModel should use that subscription (usedCustom=true).

@@ -65,12 +65,11 @@ xbot 使用**订阅（Subscription）系统**管理 LLM 配置，不再使用全
       "api_key": "sk-xxx",
       "base_url": "https://api.openai.com/v1",
       "model": "gpt-4o",
-      "vanguard_model": "",
-      "balance_model": "",
-      "swift_model": "",
       "max_output_tokens": 0,
+      "max_context": 0,
       "thinking_mode": "",
-      "active": true
+      "active": true,
+      "per_model_configs": {}
     }
   ]
 }
@@ -83,19 +82,20 @@ xbot 使用**订阅（Subscription）系统**管理 LLM 配置，不再使用全
 | `api_key` | string | `""` | API Key |
 | `base_url` | string | `"https://api.openai.com/v1"` | API 地址（兼容服务时修改） |
 | `model` | string | `"gpt-4o"` | 默认模型 |
-| `vanguard_model` | string | `""` | Vanguard 级别模型（最强推理，SubAgent 用） |
-| `balance_model` | string | `""` | Balance 级别模型（均衡，SubAgent 用） |
-| `swift_model` | string | `""` | Swift 级别模型（快速，SubAgent 用） |
 | `max_output_tokens` | int | `0`（=8192） | 最大输出 token 数 |
+| `max_context` | int | `0`（=200000） | 最大上下文 token 数（0 使用默认值） |
 | `thinking_mode` | string | `""`（=auto） | 思考模式：`auto` / `enabled` / `disabled` |
 | `active` | bool | `true` | 是否为当前激活的订阅 |
+| `per_model_configs` | object | `{}` | 按模型覆盖 token 配置（见下方说明） |
 
-**Model Tiers**：Vanguard / Balance / Swift 三层模型分级，可按场景选用不同模型：
-- **Vanguard**：最强推理，用于复杂分析任务
-- **Balance**：均衡性能，默认 SubAgent 使用
-- **Swift**：快速轻量，用于简单探索任务
+**per_model_configs**：按模型覆盖 `max_output_tokens` 和 `max_context`，优先级高于订阅级默认值。
 
-未配置的层自动回退：vanguard → balance → swift。
+```json
+"per_model_configs": {
+  "gpt-4o": {"max_output_tokens": 16384, "max_context": 128000},
+  "deepseek-chat": {"max_context": 64000}
+}
+```
 
 **使用 DeepSeek 等兼容 API：**
 
@@ -138,6 +138,32 @@ xbot 使用**订阅（Subscription）系统**管理 LLM 配置，不再使用全
 ```
 
 > ⚠️ **Server 模式**：`user_llm_subscriptions` 表中的订阅为单一真相来源，管理员通过 TUI `/setup` 创建后全团队共享。`user_settings` 表不应包含订阅字段（provider, model, api_key 等）。
+
+### Model Tier 设置（用户级）
+
+Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模式）或 `config.json` 的全局 `llm` 字段（CLI 模式），不在 Subscription 中。通过 TUI `/settings` 面板配置。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `vanguard_model` | string | Vanguard 级别模型（最强推理，SubAgent 用） |
+| `balance_model` | string | Balance 级别模型（均衡，SubAgent 用） |
+| `swift_model` | string | Swift 级别模型（快速，SubAgent 用） |
+
+未配置的层自动回退：vanguard → balance → swift。
+
+**CLI 模式 config.json 示例：**
+
+```json
+{
+  "llm": {
+    "vanguard_model": "claude-opus-4",
+    "balance_model": "claude-sonnet-4",
+    "swift_model": "claude-haiku-4"
+  }
+}
+```
+
+**Server 模式**：通过 `/settings` → LLM Settings 配置，存储在 `user_settings` 表中。
 
 ### Agent 配置
 

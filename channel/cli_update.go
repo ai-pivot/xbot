@@ -275,10 +275,15 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.handleSessionStateMsg(msg)
 
 	case cliProcessingMsg:
-		if msg.processing && !m.typing {
-			m.startAgentTurn()
-		} else if !msg.processing && m.typing {
-			m.endAgentTurn(m.agentTurnID)
+		// suLoading guard: during session switch, handleSuHistoryLoad
+		// manages typing/progress state. WS session state updates would
+		// conflict with the authoritative RPC snapshot.
+		if !m.suLoading {
+			if msg.processing && !m.typing {
+				m.startAgentTurn()
+			} else if !msg.processing && m.typing {
+				m.endAgentTurn(m.agentTurnID)
+			}
 		}
 		// NOTE: do NOT flush queue here even if needFlushQueue is true!
 		// PhaseDone can arrive before cliOutboundMsg (the reply text). If we

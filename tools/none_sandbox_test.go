@@ -4,7 +4,9 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -84,6 +86,24 @@ func TestExecKeepAlive_ChildHoldsPipeOpen(t *testing.T) {
 		// Kill the process group to clean up
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		t.Fatal("execKeepAlive hung: cmd.Process.Wait() did not return within 10s")
+	}
+}
+
+func TestNoneSandboxExec_ChildHoldsPipeOpenPreservesOutput(t *testing.T) {
+	sb := &NoneSandbox{}
+	result, err := sb.Exec(context.Background(), ExecSpec{
+		Command: "(sleep 300 &); echo done",
+		Shell:   true,
+	})
+	if err != nil {
+		t.Fatalf("Exec failed: %v", err)
+	}
+	stdout := strings.ReplaceAll(result.Stdout, "\r\n", "\n")
+	if stdout != "done\n" {
+		t.Fatalf("Exec stdout = %q, want %q", stdout, "done\n")
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("Exec exit code = %d, want 0", result.ExitCode)
 	}
 }
 

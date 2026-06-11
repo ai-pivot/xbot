@@ -1345,11 +1345,14 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 		}
 		return nil
 	}
-	// Global switch: update DB default + invalidate all caches + set per-user LLM
+	// Global switch: update DB default + set per-user LLM.
+	// Use InvalidateSender (NOT Invalidate) to preserve per-chat entries —
+	// other sessions with their own per-session subscriptions must not be
+	// affected by this global switch.
 	if err := svc.SetDefault(p.ID); err != nil {
 		return err
 	}
-	h.Ag.LLMFactory().Invalidate(bizID)
+	h.Ag.LLMFactory().InvalidateSender(bizID)
 	return h.Ag.LLMFactory().SwitchSubscription(bizID, sub, "")
 }
 
@@ -1377,7 +1380,7 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 	}
 	if updated != nil {
 		if def, _ := svc.GetDefault(updated.SenderID); def != nil && def.ID == updated.ID {
-			h.Ag.LLMFactory().Invalidate(updated.SenderID)
+			h.Ag.LLMFactory().InvalidateSender(updated.SenderID)
 			if err := h.Ag.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
 				return err
 			}

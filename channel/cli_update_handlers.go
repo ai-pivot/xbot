@@ -509,7 +509,17 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastTokenUsage = nil
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
 		m.streamingMsgIdx = -1
+		// Clear all progress/iteration state. Without this, a stale PhaseDone
+		// event from the pre-compression iteration can arrive after clearing
+		// and re-insert old iterationHistory as a tool_summary message, causing
+		// the TUI to show extra content that doesn't exist after restart.
+		m.iterationHistory = nil
+		m.reasoningByIter = nil
+		m.lastSeenIteration = 0
+		m.lastReasoning = ""
+		m.lastThinking = ""
 		m.invalidateAllCache(true)
+		m.invalidateProgressHistoryCache()
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession

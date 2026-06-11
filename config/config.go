@@ -345,12 +345,262 @@ func DBFilePath() string {
 	return filepath.Join(XbotHome(), "xbot.db")
 }
 
+// fieldType represents the expected JSON type for a config field.
+// Used by normalizeConfigTypes to coerce string values to the correct type.
+type fieldType int
+
+const (
+	ftInt   fieldType = iota // int fields: port, max_iterations, etc.
+	ftInt64                  // int64 fields: max_body_size
+	ftFloat                  // float64 fields: compression_threshold
+	ftBool                   // bool fields: enabled, enable, active
+)
+
+// configTypeSchema defines the expected JSON types for config fields.
+// Top-level keys map to section names; each section maps field names to expected types.
+// This schema covers all int/bool/float64 fields across all config structs.
+// When adding new numeric/bool fields to any config struct, add them here too.
+var configTypeSchema = map[string]map[string]fieldType{
+	"server": {
+		"port": ftInt,
+	},
+	"web": {
+		"enable":            ftBool,
+		"port":              ftInt,
+		"persona_isolation": ftBool,
+		"invite_only":       ftBool,
+	},
+	"oauth": {
+		"enable": ftBool,
+		"port":   ftInt,
+	},
+	"pprof": {
+		"enable": ftBool,
+		"port":   ftInt,
+	},
+	"feishu": {
+		"enabled": ftBool,
+	},
+	"qq": {
+		"enabled": ftBool,
+	},
+	"napcat": {
+		"enabled": ftBool,
+	},
+	"agent": {
+		"max_iterations":        ftInt,
+		"max_concurrency":       ftInt,
+		"max_context_tokens":    ftInt,
+		"enable_auto_compress":  ftBool,
+		"compression_threshold": ftFloat,
+		"purge_old_messages":    ftBool,
+		"max_sub_agent_depth":   ftInt,
+		"llm_retry_attempts":    ftInt,
+	},
+	"embedding": {
+		"max_tokens": ftInt,
+	},
+	"sandbox": {
+		"ws_port": ftInt,
+	},
+	"event_webhook": {
+		"enable":        ftBool,
+		"port":          ftInt,
+		"max_body_size": ftInt64,
+		"rate_limit":    ftInt,
+	},
+	"plugins": {
+		"enabled":          ftBool,
+		"allow_unverified": ftBool,
+	},
+	"llm": {
+		"max_output_tokens": ftInt,
+	},
+}
+
+// subscriptionTypeSchema defines expected types for subscription array items.
+var subscriptionTypeSchema = map[string]fieldType{
+	"max_output_tokens": ftInt,
+	"max_context":       ftInt,
+	"active":            ftBool,
+}
+
+// coerceRawValue checks if a JSON RawMessage value is a string that should be
+// int/bool/float and returns the corrected JSON bytes. Returns the original
+// value unchanged if no coercion is needed or possible.
+func coerceRawValue(raw json.RawMessage, ft fieldType) json.RawMessage {
+	s := strings.TrimSpace(string(raw))
+	if len(s) == 0 || s[0] != '"' {
+		return raw // not a string, leave untouched
+	}
+	// Extract the string content
+	var strVal string
+	if json.Unmarshal(raw, &strVal) != nil {
+		return raw
+	}
+	switch ft {
+	case ftBool:
+		switch strings.ToLower(strings.TrimSpace(strVal)) {
+		case "true", "1", "yes", "on":
+			return json.RawMessage(`true`)
+		case "false", "0", "no", "off", "":
+			return json.RawMessage(`false`)
+		}
+	case ftInt, ftInt64:
+		if n, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
+			return json.RawMessage(strconv.FormatInt(n, 10))
+		}
+	case ftFloat:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(strVal), 64); err == nil {
+			b, _ := json.Marshal(f)
+			return json.RawMessage(b)
+		}
+	}
+	return raw // can't coerce, leave as-is
+}
+
+// normalizeObjectFields fixes string→type mismatches in a JSON object.
+// Takes raw JSON object bytes and a field schema, returns fixed bytes and whether changes were made.
+func normalizeObjectFields(objRaw json.RawMessage, schema map[string]fieldType) (json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(objRaw, &obj) != nil {
+		return objRaw, false
+	}
+	changed := false
+	for key, ft := range schema {
+		val, ok := obj[key]
+		if !ok {
+			continue
+		}
+		fixed := coerceRawValue(val, ft)
+		if string(fixed) != string(val) {
+			obj[key] = fixed
+			changed = true
+		}
+	}
+	if !changed {
+		return objRaw, false
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return objRaw, false
+	}
+	return out, true
+}
+
+// normalizeConfigTypes preprocesses raw JSON bytes to coerce string values
+// into the types expected by Go config structs. This handles config files
+// written by install scripts (e.g., jq --arg always writes strings) or
+// manually edited by users who may write "8082" instead of 8082.
+//
+// Uses json.RawMessage for surgical fixes — only modifies fields that need
+// coercion, everything else (formatting, unknown keys, comments-safe structure)
+// is preserved through the RawMessage layer.
+//
+// Returns the (possibly modified) JSON bytes. If preprocessing fails,
+// returns the original data unchanged — the subsequent json.Unmarshal
+// will then produce its own descriptive error.
+func normalizeConfigTypes(data []byte) []byte {
+	// Fast path: try direct unmarshal into Config struct first.
+	// If Go can handle the JSON as-is, no preprocessing needed.
+	var probe Config
+	if json.Unmarshal(data, &probe) == nil {
+		return data
+	}
+
+	// Slow path: direct parse failed (likely string values where int/bool expected).
+	// Parse into raw map and surgically fix type mismatches.
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return data // can't even parse as JSON object
+	}
+
+	changed := false
+
+	// Fix top-level sections
+	for section, fields := range configTypeSchema {
+		sectionRaw, ok := raw[section]
+		if !ok {
+			continue
+		}
+		fixed, wasChanged := normalizeObjectFields(sectionRaw, fields)
+		if wasChanged {
+			raw[section] = fixed
+			changed = true
+		}
+	}
+
+	// Fix subscriptions array items (including nested per_model_configs)
+	if subsRaw, ok := raw["subscriptions"]; ok {
+		var subs []json.RawMessage
+		if json.Unmarshal(subsRaw, &subs) == nil {
+			fixed := make([]json.RawMessage, len(subs))
+			subChanged := false
+			for i, sub := range subs {
+				fixed[i], subChanged = normalizeObjectFields(sub, subscriptionTypeSchema)
+				// Also fix nested per_model_configs
+				var subObj map[string]json.RawMessage
+				if json.Unmarshal(fixed[i], &subObj) == nil {
+					if pmcRaw, ok := subObj["per_model_configs"]; ok {
+						var pmcMap map[string]json.RawMessage
+						if json.Unmarshal(pmcRaw, &pmcMap) == nil {
+							pmcChanged := false
+							for model, modelRaw := range pmcMap {
+								fixedPMC, c := normalizeObjectFields(modelRaw, subscriptionTypeSchema)
+								if c {
+									pmcMap[model] = fixedPMC
+									pmcChanged = true
+								}
+							}
+							if pmcChanged {
+								out, _ := json.Marshal(pmcMap)
+								subObj["per_model_configs"] = out
+								out2, _ := json.Marshal(subObj)
+								fixed[i] = out2
+								subChanged = true
+							}
+						}
+					}
+				}
+			}
+			if subChanged {
+				out, _ := json.Marshal(fixed)
+				raw["subscriptions"] = out
+				changed = true
+			}
+		}
+	}
+
+	// Top-level bool field
+	if v, ok := raw["cli_setup_completed"]; ok {
+		fixed := coerceRawValue(v, ftBool)
+		if string(fixed) != string(v) {
+			raw["cli_setup_completed"] = fixed
+			changed = true
+		}
+	}
+
+	if !changed {
+		return data
+	}
+
+	result, err := json.Marshal(raw)
+	if err != nil {
+		return data
+	}
+	return result
+}
+
 // LoadFromFile 从 JSON 文件加载配置。只覆盖文件中存在的非零值字段。
+// 对 int/bool/float64 字段自动做字符串兼容（如 "8082" → 8082, "true" → true），
+// 防止安装脚本（jq --arg）或手动编辑写入的字符串值导致反序列化失败。
 func LoadFromFile(path string) *Config {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
+	// 预处理：将字符串值转换为 struct 期望的类型
+	data = normalizeConfigTypes(data)
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)
@@ -383,6 +633,8 @@ func SaveToFile(path string, cfg *Config) error {
 	// 尝试读取磁盘上已有的文件，做 JSON 级合并以保留未知字段
 	finalData := structData
 	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 {
+		// Normalize existing data so dirty string values don't break the merge
+		existing = normalizeConfigTypes(existing)
 		if merged, mergeErr := mergeJSONPreserveUnknown(existing, structData); mergeErr == nil {
 			finalData = merged
 		}

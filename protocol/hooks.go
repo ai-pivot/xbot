@@ -104,6 +104,15 @@ func (cs *CheckpointState) Store() CheckpointStore {
 	return cs.store
 }
 
+// SetStore replaces the underlying CheckpointStore. Used when switching sessions
+// to point the shared CheckpointState at a session-specific store.
+// The old store (if any) is NOT closed — the caller manages store lifecycle.
+func (cs *CheckpointState) SetStore(store CheckpointStore) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.store = store
+}
+
 // SetPending stores a file snapshot for the given path.
 func (cs *CheckpointState) SetPending(filePath string, snap FileSnapshot) {
 	cs.mu.Lock()

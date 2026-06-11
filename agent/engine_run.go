@@ -512,6 +512,7 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 // concurrency semaphore and input-too-long errors with forced compression.
 func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
 	toolDefs := visibleToolDefs(s.cfg.Tools.AsDefinitionsForSession(s.sessionKey, s.cfg.TenantID), s.cfg.SettingsSvc, s.cfg.Channel, s.cfg.OriginUserID)
+	s.messages = s.syncMessages(llm.SanitizeMessages(s.messages))
 
 	var releaseLLMSem func()
 	if s.cfg.LLMSemAcquire != nil {
@@ -522,15 +523,31 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 
 	s.localLLMCalls++
 	if response != nil {
-		s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		// Only record token data when Usage is present. When a stream is
+		// cancelled mid-flight, the API hasn't sent usage events yet and
+		// Usage is zero-valued. Recording 0 would: (a) overwrite the
+		// tracker's correct value from a previous iteration, causing
+		// buildOutput/SaveState to save a stale or zero value; (b) make
+		// the CLI context bar flash to 0.
+		if response.Usage.PromptTokens > 0 {
+			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
-		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
 		// Save exact API prompt_tokens to the most recent user message
 		// so rewind can restore accurate token state from DB.
-		if s.cfg.SaveContextTokens != nil {
+		// Guard: skip when PromptTokens is 0 (stream cancelled mid-flight).
+		if s.cfg.SaveContextTokens != nil && response.Usage.PromptTokens > 0 {
 			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
+		}
+		// Per-iteration token persistence: save both prompt and completion
+		// tokens immediately so that if the process is killed mid-turn,
+		// the next restart restores the latest values instead of stale
+		// data from the previous turn's buildOutput.
+		if s.cfg.SaveTokenState != nil && response.Usage.PromptTokens > 0 {
+			s.cfg.SaveTokenState(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 		}
 		// Push updated token usage to CLI immediately so the context
 		// bar reflects the latest prompt token count on each iteration.
@@ -599,14 +616,21 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc)
 	s.localLLMCalls++
 	if response != nil {
-		s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		if response.Usage.PromptTokens > 0 {
+			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
+			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
-		s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		s.updateTokenUsage()
-		// Save exact API prompt_tokens (after compress retry, still the same user message)
-		if s.cfg.SaveContextTokens != nil {
+		// Save exact API prompt_tokens (after compress retry, still the same user message).
+		// Guard: skip when PromptTokens is 0 (stream cancelled mid-flight).
+		if s.cfg.SaveContextTokens != nil && response.Usage.PromptTokens > 0 {
 			s.cfg.SaveContextTokens(response.Usage.PromptTokens)
+		}
+		// Per-iteration token persistence (same as main generateResponse path).
+		if s.cfg.SaveTokenState != nil && response.Usage.PromptTokens > 0 {
+			s.cfg.SaveTokenState(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 		}
 		s.validateInvariantsAt(ctx, "post_llm_call_input_too_long")
 	}
@@ -701,37 +725,26 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				"compress_retry":     s.compressRetryCount,
 			}).Warn("Model context window exceeded, forcing compression and retry")
 
-			// Phase 1: Try LLM-based compression (up to maxCompressRetries times)
+			// Phase 1: Try LLM-based compression (up to maxCompressRetries times).
+			// Use runCompression (same path as maybeCompress) so that:
+			//   - PreCompact/PostCompact hooks fire
+			//   - Phase=Compressing is set on structuredProgress
+			//   - HistoryCompacted flag triggers TUI rebuild
+			//   - Progress notifications are sent to CLI
 			cm := s.cfg.ContextManager
 			if cm != nil && s.compressRetryCount < maxCompressRetries {
 				s.compressRetryCount++
-				if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
-					cm.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
+				totalTokens, tokenSource := s.tokenTracker.GetPromptTokens()
+				if tokenSource == "no_data" {
+					totalTokens = 0
 				}
-				pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-					CM:              cm,
-					Messages:        s.messages,
-					LLMClient:       s.cfg.LLMClient,
-					Model:           s.cfg.Model,
-					TokenTracker:    s.tokenTracker,
-					Persistence:     s.persistence,
-					AccumulateUsage: s.accumulateCompressUsage,
-					SyncMessages:    s.syncMessages,
-				})
-				if compressErr != nil {
-					log.Ctx(ctx).WithError(compressErr).Warn("Compression failed after context_window_exceeded, trying aggressive truncation")
-				} else {
-					s.messages = pipelineResult.NewMessages
-					s.validateInvariantsAt(ctx, "post_compress_window_exceeded")
-					// Update token estimate so CLI shows reduced context immediately
-					s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
-					// Persist API-returned token count in case the retry also fails.
-					if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
-						s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
-					}
-					if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
-						s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
-					}
+				// Resolve maxTokens from config for the post-compress safety check.
+				maxTokens := 0
+				if s.cfg.ContextManagerConfig != nil {
+					maxTokens = s.cfg.ContextManagerConfig.MaxContextTokens
+				}
+				s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+				if len(s.messages) > 0 {
 					log.Ctx(ctx).WithFields(log.Fields{
 						"new_msg_count": len(s.messages),
 						"retry":         s.compressRetryCount,
@@ -982,12 +995,45 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		})
 	}
 
+	// Use the per-session ContextManager for compression.
+	// If cfg.ContextManager is a shared agent-level phase1Manager whose config
+	// points to a.contextManagerConfig (e.g. 1M DeepSeek default), it would target
+	// 1M instead of the per-session config (e.g. 200k GLM) → tiny reduction →
+	// tokens immediately past the 200k threshold → infinite compression.
+	// Fix: create a fresh phase1Manager from the per-session config, unless the
+	// caller injected a custom ContextManager (tests, manual compress).
+	var sessionCM ContextManager
+	if s.cfg.ContextManager != nil {
+		// Check if the CM's config matches the per-session config.
+		// If not, create a new one. This preserves test mocks that implement
+		// ContextManager directly (e.g. mockCompressor in integration tests).
+		if p1, ok := s.cfg.ContextManager.(*phase1Manager); ok && s.cfg.ContextManagerConfig != nil {
+			if p1.config != s.cfg.ContextManagerConfig {
+				// Shared manager with different config → create per-session copy
+				sessionCM = newPhase1Manager(s.cfg.ContextManagerConfig)
+			} else {
+				sessionCM = s.cfg.ContextManager
+			}
+		} else {
+			// Non-phase1Manager (test mock, noopManager, etc.) → use as-is
+			sessionCM = s.cfg.ContextManager
+		}
+	} else if s.cfg.ContextManagerConfig != nil {
+		sessionCM = newPhase1Manager(s.cfg.ContextManagerConfig)
+	}
+	if sessionCM == nil {
+		log.Ctx(ctx).Warn("No ContextManager available for compression")
+		if s.structuredProgress != nil {
+			s.structuredProgress.Phase = PhaseThinking
+		}
+		return
+	}
 	if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
-		cm.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
+		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 	}
 
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-		CM:                cm,
+		CM:                sessionCM,
 		Messages:          s.messages,
 		LLMClient:         s.cfg.LLMClient,
 		Model:             s.cfg.Model,

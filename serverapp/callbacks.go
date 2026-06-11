@@ -463,7 +463,10 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.S
 			}
 			sub, err := svc.Get(id)
 			if err == nil && sub != nil {
-				ag.LLMFactory().Invalidate(sub.SenderID)
+				// Use InvalidateSender to preserve per-session entries.
+				// Invalidate() would wipe every session's LLM override.
+				ag.LLMFactory().InvalidateSender(sub.SenderID)
+				_ = ag.LLMFactory().SwitchSubscription(sub.SenderID, sub, "")
 			}
 			return nil
 		},

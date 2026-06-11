@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"xbot/protocol"
 )
@@ -1452,12 +1453,9 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
 		item := m.panelItems[m.panelTab]
 		// Question text (may wrap to multiple lines — not tracked as zones)
-		// viewAskUserPanel uses hardWrapRunes with qWrapWidth. We approximate.
+		// Keep this in sync with viewAskUserPanel/ensureAskUserCursorVisible.
 		prefix := "❓ " + item.Question
-		qWrapWidth := m.width - 6
-		if qWrapWidth < 20 {
-			qWrapWidth = 20
-		}
+		qWrapWidth := m.askUserQuestionWrapWidth()
 		questionLines := max(1, strings.Count(hardWrapRunes(prefix, qWrapWidth), "\n")+1)
 		for i := 0; i < questionLines; i++ {
 			lines = append(lines, askLine{})
@@ -1467,9 +1465,25 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 		lines = append(lines, askLine{})
 
 		if len(item.Options) > 0 {
-			// Option items
+			// Option items — each option may span multiple lines after hardWrap.
+			// Keep in sync with viewAskUserPanel's renderAskUserOption.
+			// prefixW = "▸ ☑ " = 4 visible columns.
+			prefixW := ansi.StringWidth("▸ ☑ ")
+			optWrapW := qWrapWidth - prefixW
+			if optWrapW < 10 {
+				optWrapW = 10
+			}
 			for i := range item.Options {
-				lines = append(lines, askLine{zoneID: "askUserOption", index: i})
+				optWrapped := hardWrapRunes(item.Options[i], optWrapW)
+				optLines := strings.Count(optWrapped, "\n") + 1
+				for j := 0; j < optLines; j++ {
+					// Only the first line is a click zone
+					if j == 0 {
+						lines = append(lines, askLine{zoneID: "askUserOption", index: i})
+					} else {
+						lines = append(lines, askLine{})
+					}
+				}
 			}
 			// "Other" input (not tracked as click zone — textinput handles its own input)
 			lines = append(lines, askLine{})

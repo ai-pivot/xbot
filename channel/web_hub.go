@@ -118,11 +118,19 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 			log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID}).Debug("Hub.sendToClient: subscriber conn nil, skipping")
 			continue
 		}
-		select {
-		case c.sendCh <- msg:
+		if !isStatefulMsg(msg) {
+			// Stateless messages (progress, stream_content, etc.) are superseded
+			// by newer ones of the same type — store only the latest per type
+			// in the stateless slot so writePump always sends the freshest snapshot.
+			c.storeStateless(&msg)
 			sent = true
-		default:
-			log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message")
+		} else {
+			select {
+			case c.sendCh <- msg:
+				sent = true
+			default:
+				log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message")
+			}
 		}
 	}
 	if !sent {
@@ -140,6 +148,53 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 
 func (c *Client) closeDone() {
 	c.closeOnce.Do(func() { close(c.done) })
+}
+
+// storeStateless saves a stateless message in a per-source slot (overwriting any
+// previous message from the same source) and nudges writePump via statelessSig.
+// The slot key combines msg type + Progress.ChatID so that different SubAgents
+// each retain their own latest snapshot (e.g. two concurrent SubAgents' stream_content
+// coexist without evicting each other).
+func (c *Client) storeStateless(msg *protocol.WSMessage) {
+	key := statelessSlotKey(msg)
+	c.statelessMu.Lock()
+	if c.statelessMap == nil {
+		c.statelessMap = make(map[string]*protocol.WSMessage, 4)
+	}
+	c.statelessMap[key] = msg
+	c.statelessMu.Unlock()
+	// Non-blocking signal — writePump will drain all accumulated slots.
+	select {
+	case c.statelessSig <- struct{}{}:
+	default:
+	}
+}
+
+// statelessSlotKey returns a unique key per message source. For progress/stream
+// messages it uses the type + Progress.ChatID (which carries the originating
+// SubAgent session key). Types without a Progress payload fall back to type only.
+func statelessSlotKey(msg *protocol.WSMessage) string {
+	if msg.Progress != nil && msg.Progress.ChatID != "" {
+		return msg.Type + "|" + msg.Progress.ChatID
+	}
+	return msg.Type
+}
+
+// drainStateless atomically swaps out all accumulated stateless messages and
+// returns them as a slice. Called by writePump when statelessSig fires.
+func (c *Client) drainStateless() []*protocol.WSMessage {
+	c.statelessMu.Lock()
+	old := c.statelessMap
+	c.statelessMap = make(map[string]*protocol.WSMessage, len(old))
+	c.statelessMu.Unlock()
+	if len(old) == 0 {
+		return nil
+	}
+	out := make([]*protocol.WSMessage, 0, len(old))
+	for _, m := range old {
+		out = append(out, m)
+	}
+	return out
 }
 
 func (h *Hub) stopAll() {
@@ -162,10 +217,14 @@ func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
 	}
 	h.mu.RUnlock()
 	for _, c := range clients {
-		select {
-		case c.sendCh <- msg:
-		default:
-			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToAll: sendCh full, skipping")
+		if !isStatefulMsg(msg) {
+			c.storeStateless(&msg)
+		} else {
+			select {
+			case c.sendCh <- msg:
+			default:
+				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToAll: sendCh full, skipping")
+			}
 		}
 	}
 }
@@ -182,10 +241,14 @@ func (h *Hub) broadcastToCLI(msg protocol.WSMessage) {
 	}
 	h.mu.RUnlock()
 	for _, c := range clients {
-		select {
-		case c.sendCh <- msg:
-		default:
-			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToCLI: sendCh full, skipping")
+		if !isStatefulMsg(msg) {
+			c.storeStateless(&msg)
+		} else {
+			select {
+			case c.sendCh <- msg:
+			default:
+				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToCLI: sendCh full, skipping")
+			}
 		}
 	}
 }
@@ -205,6 +268,14 @@ type Client struct {
 	id        string                      // unique client ID (UUID), generated at connection time
 	syncCh    atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
 	isCLI     bool                        // true if client_type=cli (runner token auth)
+
+	// statelessSlot holds the latest stateless message per type (progress,
+	// stream_content, etc.).  Each type is kept at most once — newer values
+	// silently overwrite older ones so only the freshest snapshot is ever
+	// written to the WebSocket.  Protected by statelessMu.
+	statelessMu  sync.Mutex
+	statelessMap map[string]*protocol.WSMessage // msg type → latest message
+	statelessSig chan struct{}                  // cap-1 signal: writePump checks slot
 }
 
 // ---------------------------------------------------------------------------

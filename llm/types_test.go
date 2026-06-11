@@ -120,3 +120,80 @@ func TestSanitizeMessages_EmptyAssistant(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeMessages_StripsToolMessageBeforeMatchingAssistant(t *testing.T) {
+	input := []ChatMessage{
+		NewUserMessage("hello"),
+		NewToolMessage("read", "call_late", "{}", "orphan result from corrupted history"),
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{ID: "call_late", Name: "read", Arguments: "{}"},
+			},
+		},
+		NewAssistantMessage("done"),
+	}
+
+	got := SanitizeMessages(input)
+	for _, msg := range got {
+		if msg.Role == "tool" {
+			t.Fatalf("SanitizeMessages() kept orphan tool message before its assistant: %+v", got)
+		}
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			t.Fatalf("SanitizeMessages() kept assistant tool_call without following tool response: %+v", got)
+		}
+	}
+}
+
+func TestSanitizeMessages_KeepsTrailingMultipleToolResults(t *testing.T) {
+	input := []ChatMessage{
+		NewUserMessage("hello"),
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "read", Arguments: "{}"},
+				{ID: "call_2", Name: "grep", Arguments: "{}"},
+			},
+		},
+		NewToolMessage("read", "call_1", "{}", "file content"),
+		NewToolMessage("grep", "call_2", "{}", "matches"),
+	}
+
+	got := SanitizeMessages(input)
+	if len(got) != len(input) {
+		t.Fatalf("SanitizeMessages() len = %d, want %d; got messages: %+v", len(got), len(input), got)
+	}
+	if got[1].Role != "assistant" || len(got[1].ToolCalls) != 2 {
+		t.Fatalf("SanitizeMessages() assistant tool_calls = %+v, want both calls preserved", got[1])
+	}
+	if got[2].Role != "tool" || got[2].ToolCallID != "call_1" {
+		t.Fatalf("SanitizeMessages() first tool result = %+v, want call_1", got[2])
+	}
+	if got[3].Role != "tool" || got[3].ToolCallID != "call_2" {
+		t.Fatalf("SanitizeMessages() second tool result = %+v, want call_2", got[3])
+	}
+}
+
+func TestSanitizeMessages_CleanHistoryUsesFastPath(t *testing.T) {
+	input := []ChatMessage{
+		NewUserMessage("hello"),
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{ID: "call_1", Name: "read", Arguments: "{}"},
+				{ID: "call_2", Name: "grep", Arguments: "{}"},
+			},
+		},
+		NewToolMessage("read", "call_1", "{}", "file content"),
+		NewToolMessage("grep", "call_2", "{}", "matches"),
+		NewAssistantMessage("done"),
+	}
+
+	got := SanitizeMessages(input)
+	if len(got) != len(input) {
+		t.Fatalf("SanitizeMessages() len = %d, want %d", len(got), len(input))
+	}
+	if &got[0] != &input[0] {
+		t.Fatal("SanitizeMessages() should reuse the original backing array for clean history")
+	}
+}
