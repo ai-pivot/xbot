@@ -175,10 +175,9 @@ func (m *cliModel) startAgentTurn() {
 		}
 	}
 
-	// Remote mode: optimistically show initial progress so the user sees
-	// immediate feedback (progress bubble) without waiting for the server's
-	// first progress_structured event (which has network round-trip latency).
-	if m.remoteMode && m.progress == nil {
+	// Show initial progress so the user sees immediate feedback (spinner)
+	// without waiting for the first progress_structured event.
+	if m.progress == nil {
 		m.progress = &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 0,

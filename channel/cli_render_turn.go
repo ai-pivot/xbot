@@ -16,28 +16,33 @@ import (
 // One assistant message per turn. All iterations render inline with
 // consistent styling for both busy and idle states.
 //
-// Visual hierarchy (per iteration):
+// Layout per completed iteration:
 //
 //   ┊  Content text rendered as markdown...
-//   ┊
 //   ┊  · Shell ✓  · Read ✓  · FileReplace ✓
-//   ┊
 //   ┊  ▸ Reasoning (8 lines) ─────────────────
-//   ┊
+//
+// Layout for the live iteration:
+//
 //   ┊  Next iteration content...
-//   ┊  ◌ Grep ● 2.1s                           ← live tool (animated orbit spinner)
+//   ┊  ◕ Grep ● 2.1s                           ← animated spinner + elapsed
 //   ┊    └── explore [mem-1]: searching...       ← SubAgent tree
 // ---------------------------------------------------------------------------
 
 // renderTurnBody renders all iteration content for an assistant message.
-// busy: uses liveProgress + iterationHistory
+// busy: uses liveProgress + iterationHistory + fallbackContent
 // idle: uses baked iterations from the message
+//
+// fallbackContent is the streaming message's accumulated text, used when
+// liveProgress has no StreamContent (e.g. during tool execution the LLM
+// has stopped streaming but tools are running).
 //
 // Output does NOT include guide prefix — caller adds "┊ " per line.
 func (m *cliModel) renderTurnBody(
 	iterations []cliIterationSnapshot,
 	liveProgress *protocol.ProgressEvent,
 	contentWidth int,
+	fallbackContent string,
 ) string {
 	s := &m.styles
 	var sb strings.Builder
@@ -58,12 +63,11 @@ func (m *cliModel) renderTurnBody(
 
 		// 2. Reasoning (collapsible, above tool tags for better reading flow).
 		if iter.Reasoning != "" {
-			sb.WriteString("\n")
 			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s, false))
 			sb.WriteString("\n")
 		}
 
-		// 3. Tool tags — subtle pill row.
+		// 3. Tool tags — subtle dot-separated row.
 		if len(iter.Tools) > 0 {
 			sb.WriteString(m.renderToolTags(iter.Tools, contentWidth, s))
 			sb.WriteString("\n")
@@ -75,7 +79,7 @@ func (m *cliModel) renderTurnBody(
 		if len(iterations) > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(m.renderLiveIteration(liveProgress, contentWidth))
+		sb.WriteString(m.renderLiveIteration(liveProgress, contentWidth, fallbackContent))
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
@@ -95,11 +99,7 @@ func (m *cliModel) renderTurnContent(text string, width int) string {
 	return strings.TrimSpace(rendered)
 }
 
-// renderToolTags renders a row of compact tool badges.
-//
-//	· Shell ✓   · Read ✓   · FileReplace ✓
-//
-// Done tools are muted. Running tools use warning color. Errors use error color.
+// renderToolTags renders a compact dot-separated row of tool badges.
 func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *cliStyles) string {
 	var tags []string
 	for _, tool := range tools {
@@ -116,23 +116,11 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 			tags = append(tags, s.ProgressRunning.Render("●")+" "+s.ProgressRunning.Render(label))
 		}
 	}
-	// Join with dim dot separator
 	sep := " " + s.ProgressDim.Render("·") + " "
 	return s.ProgressDim.Render("·") + " " + strings.Join(tags, sep)
 }
 
 // renderReasoningBox renders a collapsible reasoning section.
-//
-// Collapsed (default):
-//
-//	▸ Reasoning (12 lines) ──────────────────────
-//
-// Expanded:
-//
-//	╭ Reasoning ──────────────────────────────╮
-//	│ The error occurs because the token is   │
-//	│ not properly validated in the handler.  │
-//	╰─────────────────────────────────────────╯
 func (m *cliModel) renderReasoningBox(
 	reasoning string,
 	width int,
@@ -146,9 +134,7 @@ func (m *cliModel) renderReasoningBox(
 	lines := strings.Split(strings.TrimSpace(reasoning), "\n")
 
 	if !expanded {
-		// Collapsed: one-line indicator
-		count := len(lines)
-		summary := fmt.Sprintf("▸ Reasoning (%d lines)", count)
+		summary := fmt.Sprintf("▸ Reasoning (%d lines)", len(lines))
 		padW := width - lipgloss.Width(summary) - 2
 		if padW > 0 {
 			summary += " " + s.ProgressDim.Render(strings.Repeat("─", padW))
@@ -156,14 +142,12 @@ func (m *cliModel) renderReasoningBox(
 		return s.TextSecondarySt.Render(summary)
 	}
 
-	// Expanded: bordered box
-	innerW := width - 4 // "│ " + " │"
+	innerW := width - 4
 	if innerW < 20 {
 		innerW = 20
 	}
 	var sb strings.Builder
 
-	// Top border with label
 	label := " Reasoning "
 	labelW := lipgloss.Width(label)
 	dashCount := innerW - labelW
@@ -175,7 +159,6 @@ func (m *cliModel) renderReasoningBox(
 	sb.WriteString(s.ProgressDim.Render(strings.Repeat("─", dashCount) + "╮"))
 	sb.WriteString("\n")
 
-	// Content lines
 	for _, line := range lines {
 		wrapped := hardWrapRunes(line, innerW-2)
 		for _, wl := range strings.Split(wrapped, "\n") {
@@ -192,40 +175,44 @@ func (m *cliModel) renderReasoningBox(
 		}
 	}
 
-	// Bottom border
 	sb.WriteString(s.ProgressDim.Render("╰" + strings.Repeat("─", innerW) + "╯"))
 
 	return sb.String()
 }
 
-// renderLiveIteration renders the in-progress iteration:
-//   - Streaming content (glamour md)
-//   - Active tools with elapsed time
-//   - SubAgent tree
-func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int) string {
+// renderLiveIteration renders the in-progress iteration.
+// fallbackContent is the streaming message's accumulated text, used when
+// liveProgress has no StreamContent (tool execution phase).
+func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fallbackContent string) string {
 	s := &m.styles
 	var sb strings.Builder
 
-	// 1. Streaming content (md rendered)
+	// 1. Content — prefer live stream, fall back to accumulated message text.
+	// During tool execution, StreamContent is empty but the LLM's prior
+	// text is in fallbackContent (streaming message's accumulated content).
 	streamContent := p.StreamContent
 	if streamContent == "" {
 		streamContent = p.ReasoningStreamContent
 	}
-	if streamContent != "" {
-		rendered := m.renderTurnContent(streamContent, width)
+	displayContent := streamContent
+	if displayContent == "" {
+		displayContent = fallbackContent
+	}
+	if displayContent != "" {
+		rendered := m.renderTurnContent(displayContent, width)
 		sb.WriteString(rendered)
 		sb.WriteString("\n")
 	}
 
-	// 2. Active tools with elapsed
+	// 2. Active tools with animated spinner + elapsed.
+	// If no content yet and no active tools, show a standalone spinner
+	// (waiting for LLM first response).
 	if len(p.ActiveTools) > 0 {
-		if streamContent != "" {
-			sb.WriteString("\n") // breathe between content and tools
-		}
 		for _, tool := range p.ActiveTools {
 			if tool.Status == "running" || tool.Status == "active" {
 				elapsed := formatElapsed(tool.Elapsed)
-				icon := s.ProgressRunning.Render(orbitFrames[m.ticker.frame%len(orbitFrames)])
+				frame := orbitFrames[m.ticker.frame%len(orbitFrames)]
+				icon := s.ProgressRunning.Render(frame)
 				label := tool.Label
 				if label == "" {
 					label = tool.Name
@@ -234,6 +221,11 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int) str
 				sb.WriteString("\n")
 			}
 		}
+	} else if displayContent == "" {
+		// No content and no tools — LLM is thinking. Show spinner.
+		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
+		sb.WriteString(s.ProgressRunning.Render(frame))
+		sb.WriteString("\n")
 	}
 
 	// 3. SubAgent tree

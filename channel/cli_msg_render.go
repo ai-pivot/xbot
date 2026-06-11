@@ -201,13 +201,20 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		if hasIterData || isLiveTurn {
 			var iterations []cliIterationSnapshot
 			var liveProgress *protocol.ProgressEvent
+			var fallbackContent string // content from streaming message when liveProgress has no stream text
 			if isLiveTurn {
 				iterations = m.iterationHistory
 				liveProgress = m.progress
+				// During tool execution, liveProgress.StreamContent is empty.
+				// Fall back to the streaming message's accumulated content so
+				// the LLM's latest text doesn't vanish while tools run.
+				if liveProgress != nil && liveProgress.StreamContent == "" && liveProgress.ReasoningStreamContent == "" {
+					fallbackContent = msg.content
+				}
 			} else {
 				iterations = msg.iterations
 			}
-			bodyContent := m.renderTurnBody(iterations, liveProgress, contentWidth)
+			bodyContent := m.renderTurnBody(iterations, liveProgress, contentWidth, fallbackContent)
 			if bodyContent != "" {
 				bodyLines = append(bodyLines, strings.Split(bodyContent, "\n")...)
 			}

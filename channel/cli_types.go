@@ -656,11 +656,21 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				}
 			} else if m.Content != "" {
 				flushPending()
-				history = append(history, HistoryMessage{
-					Role:      "assistant",
-					Content:   m.Content,
-					Timestamp: m.Timestamp,
-				})
+				// Merge with previous assistant message that had iterations but no content.
+				// Backend stores iterations in a separate DisplayOnly assistant message
+				// (Detail set, content empty), followed by the real assistant reply (content set).
+				// We need to combine them into one HistoryMessage for unified rendering.
+				if len(history) > 0 && history[len(history)-1].Role == "assistant" &&
+					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
+					history[len(history)-1].Content = m.Content
+					history[len(history)-1].Timestamp = m.Timestamp
+				} else {
+					history = append(history, HistoryMessage{
+						Role:      "assistant",
+						Content:   m.Content,
+						Timestamp: m.Timestamp,
+					})
+				}
 			}
 		default:
 			flushPending()
