@@ -144,8 +144,12 @@ func (m *cliModel) appendNewMessagesToCache() {
 func (m *cliModel) fullRebuild() {
 	// splitIdx 确保当前流式消息不进入 cachedHistory
 	splitIdx := len(m.messages)
-	if m.streamingMsgIdx >= 0 {
+	if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 		splitIdx = m.streamingMsgIdx
+	}
+	if m.streamingMsgIdx >= 0 && m.streamingMsgIdx >= len(m.messages) {
+		// Session switch or reset: streamingMsgIdx is stale, clear it
+		m.streamingMsgIdx = -1
 	}
 
 	// Fast path: if all messages are already cached at current width,
