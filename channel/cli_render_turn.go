@@ -200,22 +200,45 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 		sb.WriteString("\n")
 	}
 
-	// 3. Active tools with spinner — aligned with done tool tags: "· ✓ label"
-	if len(p.ActiveTools) > 0 {
-		for _, tool := range p.ActiveTools {
-			if tool.Status == "running" || tool.Status == "active" {
+	// 3. Tool lines (done + running), always blank line before them
+	var tools []protocol.ToolProgress
+	for _, tool := range p.ActiveTools {
+		if tool.Status == "running" || tool.Status == "active" || tool.Status == "done" || tool.Status == "error" {
+			tools = append(tools, tool)
+		}
+	}
+	// Also include CompletedTools from this iteration
+	tools = append(tools, p.CompletedTools...)
+	if len(tools) > 0 {
+		sb.WriteString("\n") // blank line between content/reasoning and tools
+		for _, tool := range tools {
+			label := tool.Label
+			if label == "" {
+				label = tool.Name
+			}
+			switch tool.Status {
+			case "error":
+				sb.WriteString("  ")
+				sb.WriteString(s.ProgressDim.Render("·"))
+				sb.WriteString(" ")
+				sb.WriteString(s.ProgressError.Render("✗ " + label))
+				sb.WriteString("\n")
+			case "done":
+				sb.WriteString("  ")
+				sb.WriteString(s.ProgressDim.Render("·"))
+				sb.WriteString(" ")
+				sb.WriteString(s.ProgressDone.Render("✓"))
+				sb.WriteString(" ")
+				sb.WriteString(s.TextMutedSt.Render(label))
+				sb.WriteString("\n")
+			default: // running/active
 				elapsed := formatElapsed(tool.Elapsed)
 				frame := orbitFrames[m.ticker.frame%len(orbitFrames)]
-				label := tool.Label
-				if label == "" {
-					label = tool.Name
-				}
-				fmt.Fprintf(&sb, "  %s %s %s %s",
+				fmt.Fprintf(&sb, "  %s %s %s %s\n",
 					s.ProgressDim.Render("·"),
 					s.ProgressRunning.Render(frame),
 					s.ProgressRunning.Render(label),
 					s.ProgressElapsed.Render(elapsed))
-				sb.WriteString("\n")
 			}
 		}
 	} else if displayContent == "" && p.ReasoningStreamContent == "" {

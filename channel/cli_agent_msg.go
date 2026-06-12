@@ -185,11 +185,16 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		// Compute iterations to bake into the assistant message.
 		// If PhaseDone already processed this turn, use iterations stored in pendingToolSummary.
 		// Otherwise (PhaseDone hasn't arrived yet), use local iterationHistory.
+		// Fallback: preserve existing iterations from the streaming message
+		// (e.g. saved by cancel ack before this response arrived).
 		var bakeIterations []cliIterationSnapshot
 		if m.isTurnDoneProcessed(turnID) && m.pendingToolSummary != nil {
 			bakeIterations = m.pendingToolSummary.iterations
 		} else if len(m.iterationHistory) > 0 {
 			bakeIterations = append([]cliIterationSnapshot{}, m.iterationHistory...)
+		}
+		if len(bakeIterations) == 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+			bakeIterations = m.messages[m.streamingMsgIdx].iterations
 		}
 
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
