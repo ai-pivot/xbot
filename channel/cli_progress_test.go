@@ -398,6 +398,71 @@ func TestStreamingSeparatorUsesAdjacentBlockKinds(t *testing.T) {
 	}
 }
 
+func TestRenderLiveIterationCompressingShowsStatus(t *testing.T) {
+	model := initTestModel()
+	model.locale = GetLocale("en")
+
+	rendered := stripAnsi(model.renderLiveIteration(&protocol.ProgressEvent{Phase: "compressing"}, 80, ""))
+
+	if !strings.Contains(rendered, "compressing") {
+		t.Fatalf("compressing phase should render status text, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "◇◇◇◇◇") {
+		t.Fatalf("compressing phase should not fall back to pulse spinner, got:\n%s", rendered)
+	}
+}
+
+func TestRenderToolTagsKeepsLabelsSingleLine(t *testing.T) {
+	model := initTestModel()
+
+	rendered := stripAnsi(model.renderToolTags([]protocol.ToolProgress{
+		{Name: "Shell", Label: "ssh remote\ncargo build\r\n--release", Status: "done"},
+	}, 80, &model.styles))
+
+	if strings.Contains(rendered, "\n  cargo") || strings.Contains(rendered, "\n--release") {
+		t.Fatalf("tool label should stay on one rendered line, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ssh remote cargo build --release") {
+		t.Fatalf("tool label should normalize internal newlines, got:\n%s", rendered)
+	}
+}
+
+func TestRenderMessageAddsSpacerBeforeFirstToolBlock(t *testing.T) {
+	model := initTestModel()
+	msg := &cliMessage{
+		role:      "assistant",
+		timestamp: time.Now(),
+		iterations: []cliIterationSnapshot{
+			{
+				Iteration: 1,
+				Tools: []protocol.ToolProgress{
+					{Name: "Shell", Label: "first tool", Status: "done", Iteration: 1},
+				},
+			},
+		},
+		dirty: true,
+	}
+
+	rendered := stripAnsi(model.renderMessage(msg))
+	lines := strings.Split(rendered, "\n")
+	headerIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Assistant") {
+			headerIdx = i
+			break
+		}
+	}
+	if headerIdx < 0 || headerIdx+2 >= len(lines) {
+		t.Fatalf("assistant header not found or output too short:\n%s", rendered)
+	}
+	if strings.TrimSpace(lines[headerIdx+1]) != "┊" {
+		t.Fatalf("expected blank guide spacer after Assistant header, got %q in:\n%s", lines[headerIdx+1], rendered)
+	}
+	if !strings.Contains(lines[headerIdx+2], "first tool") {
+		t.Fatalf("expected first tool after spacer, got line %q in:\n%s", lines[headerIdx+2], rendered)
+	}
+}
+
 func TestFullRebuildWithStreamingCachesOnlyHistoryMessages(t *testing.T) {
 	model := initTestModel()
 	model.messages = []cliMessage{
@@ -521,6 +586,56 @@ func TestHistoryReloadForceFullRebuildDoesNotReuseStaleRenderedCache(t *testing.
 	if model.messages[0].rendered == "STALE_RENDERED_OUTPUT" {
 		t.Fatal("force history reload should re-render message instead of preserving stale rendered output")
 	}
+}
+
+func TestHistoryReloadKeepsPendingUserUntilHistoryConfirmsIt(t *testing.T) {
+	model := initTestModel()
+	pending := cliMessage{role: "user", content: "just sent", timestamp: time.Now(), dirty: true}
+	model.pendingUserMsg = &pending
+
+	reload := cliHistoryReloadMsg{
+		channelName: model.channelName,
+		chatID:      model.chatID,
+		history: []HistoryMessage{
+			{Role: "assistant", Content: "old reply", Timestamp: time.Now()},
+		},
+	}
+	model.handleHistoryReload(reload)
+	if model.pendingUserMsg == nil {
+		t.Fatal("pending user should remain when it was only restored locally")
+	}
+	if !hasUserMessage(model.messages, "just sent") {
+		t.Fatalf("pending user was not restored into messages: %+v", model.messages)
+	}
+
+	model.handleHistoryReload(reload)
+	if model.pendingUserMsg == nil {
+		t.Fatal("pending user should survive repeated stale history reloads")
+	}
+	if !hasUserMessage(model.messages, "just sent") {
+		t.Fatalf("pending user disappeared after repeated reload: %+v", model.messages)
+	}
+
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName: model.channelName,
+		chatID:      model.chatID,
+		history: []HistoryMessage{
+			{Role: "user", Content: "just sent", Timestamp: time.Now()},
+			{Role: "assistant", Content: "old reply", Timestamp: time.Now()},
+		},
+	})
+	if model.pendingUserMsg != nil {
+		t.Fatal("pending user should clear once history confirms it")
+	}
+}
+
+func hasUserMessage(messages []cliMessage, content string) bool {
+	for _, msg := range messages {
+		if msg.role == "user" && msg.content == content {
+			return true
+		}
+	}
+	return false
 }
 
 func appendRenderSnapshotCase(sb *strings.Builder, name, rendered string) {

@@ -205,7 +205,7 @@ func (s *runState) initProgress() {
 				s.structuredProgress.SubAgents = s.subAgentNodes
 				s.cfg.ProgressEventHandler(&ProgressEvent{
 					Lines:      copyLines(s.progressLines),
-					Structured: s.structuredProgress,
+					Structured: s.structuredProgress.Clone(),
 					Timestamp:  time.Now(),
 				})
 			}
@@ -348,10 +348,11 @@ func (s *runState) notifyProgress(extra string) {
 		// Attach structured SubAgent tree (if any) directly to the event,
 		// so consumers don't need to parse text lines.
 		s.structuredProgress.SubAgents = s.subAgentNodes
+		structured := s.structuredProgress.Clone()
 		s.progressMu.Unlock()
 		s.cfg.ProgressEventHandler(&ProgressEvent{
 			Lines:      snapshot,
-			Structured: s.structuredProgress,
+			Structured: structured,
 			Timestamp:  time.Now(),
 		})
 	}
@@ -610,7 +611,14 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	}
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", pipelineResult.NewTokenCount))
+		if s.structuredProgress != nil {
+			s.structuredProgress.Phase = PhaseThinking
+			s.structuredProgress.HistoryCompacted = true
+		}
 		s.notifyProgress("")
+	}
+	if s.structuredProgress != nil {
+		s.structuredProgress.HistoryCompacted = false
 	}
 
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc)
