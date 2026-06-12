@@ -119,7 +119,8 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		}
 		m.streamingMsgIdx = -1
 		m.progress = nil
-		m.typing = false // clear typing indicator immediately after cancel
+		m.typing = false        // clear typing indicator immediately after cancel
+		m.turnCancelled = false // cancel complete, allow future turns
 		m.cancelTargetTurnID = 0
 		m.rc.valid = false
 		m.updateViewportContent()

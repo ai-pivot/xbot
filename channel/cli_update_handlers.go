@@ -816,6 +816,14 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 		}
 		m.setTurnDoneProcessed(turnID)
 		m.endAgentTurn(turnID)
+		// Restore turnCancelled: endAgentTurn resets it to false (correct for
+		// normal completion), but in the cancel path we need it to stay true
+		// until the cancel ack arrives. Otherwise, stale progress events from
+		// the engine (e.g. mid-stream cancellation) trigger auto-start turn
+		// via handleProgressMsg's auto-start guard, creating a phantom turn
+		// that overwrites the cancel state and loses the user message from
+		// the viewport.
+		m.turnCancelled = true
 		if turnID == m.agentTurnID {
 			m.inputReady = true
 			if len(m.messageQueue) > 0 {
@@ -1156,6 +1164,27 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			m.lastSeenIteration = msg.activeProgress.Iteration
 		}
 		m.progress = msg.activeProgress
+
+		// When an active turn is restored from the server snapshot, the
+		// last assistant message in DB history corresponds to the in-flight
+		// streaming message. Without marking it as isPartial + streamingMsgIdx,
+		// subsequent live outbound messages (arriving after suLoading=false)
+		// would create a NEW streaming message via handleAgentMessage's
+		// "if m.streamingMsgIdx < 0" branch — duplicating the assistant
+		// content in the viewport (DB version + live version).
+		// This is the same model as normal operation: the streaming message
+		// stays isPartial until endAgentTurn finalizes it.
+		if m.streamingMsgIdx < 0 {
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "assistant" {
+					m.messages[i].isPartial = true
+					m.messages[i].dirty = true
+					m.messages[i].turnID = m.agentTurnID
+					m.streamingMsgIdx = i
+					break
+				}
+			}
+		}
 
 		// Sync todos from server snapshot so the todo bar shows them
 		// immediately without waiting for the next live progress event.
