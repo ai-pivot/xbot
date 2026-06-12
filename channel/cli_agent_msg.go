@@ -119,7 +119,8 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		}
 		m.streamingMsgIdx = -1
 		m.progress = nil
-		m.typing = false // clear typing indicator immediately after cancel
+		m.typing = false        // clear typing indicator immediately after cancel
+		m.turnCancelled = false // cancel complete, allow future turns
 		m.cancelTargetTurnID = 0
 		m.rc.valid = false
 		m.updateViewportContent()
@@ -191,6 +192,59 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		}
 		if len(bakeIterations) == 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 			bakeIterations = m.messages[m.streamingMsgIdx].iterations
+		}
+		// Append the last iteration from m.progress if it wasn't already
+		// captured in iterationHistory. The last iteration's data (tools,
+		// reasoning) is typically in m.progress but hasn't been snapshotted
+		// by snapshotIterationChange (which only fires on iteration N→N+1
+		// transitions). Without this, AskUser messages lose the last
+		// iteration's tools from the viewport.
+		// Guard: use lastCompletedTools (filtered per-iteration) instead of
+		// m.progress.CompletedTools (may contain stale tools from earlier
+		// iterations), and only run when the iteration is genuinely missing.
+		if m.progress != nil && m.lastSeenIteration >= 0 && msg.WaitingUser {
+			iterNum := m.lastSeenIteration
+			if m.progress.Iteration > 0 {
+				iterNum = m.progress.Iteration
+			}
+			alreadyBaked := false
+			for _, it := range bakeIterations {
+				if it.Iteration == iterNum {
+					alreadyBaked = true
+					break
+				}
+			}
+			if !alreadyBaked {
+				// Use lastCompletedTools — these are per-iteration filtered
+				// (cleared by snapshotIterationChange on N→N+1), unlike
+				// m.progress.CompletedTools which accumulates stale tools.
+				var finalTools []protocol.ToolProgress
+				finalTools = append(finalTools, m.lastCompletedTools...)
+				for _, t := range m.progress.ActiveTools {
+					if t.Status == "done" || t.Status == "error" {
+						if !containsToolProgress(finalTools, t) {
+							finalTools = append(finalTools, t)
+						}
+					}
+				}
+				reasoning := m.progress.Reasoning
+				if reasoning == "" && m.reasoningByIter != nil {
+					reasoning = m.reasoningByIter[iterNum]
+				}
+				if reasoning == "" {
+					reasoning = m.lastReasoning
+				}
+				snap := cliIterationSnapshot{
+					Iteration:   iterNum,
+					Thinking:    m.progress.Thinking,
+					Reasoning:   reasoning,
+					Tools:       finalTools,
+					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+				}
+				if len(snap.Tools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
+					bakeIterations = append(bakeIterations, snap)
+				}
+			}
 		}
 
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
