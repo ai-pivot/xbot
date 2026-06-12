@@ -283,7 +283,7 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// session switch recovery.
 	// Skip when Thinking is already set — it contains the same finalized content
 	// and carrying StreamContent forward would cause duplicate rendering
-	// (renderCurrentIteration renders both fields separately).
+	// (renderLiveIteration renders both fields separately).
 	if prev.StreamContent != "" && m.progress.StreamContent == "" && sameIter {
 		if m.progress.Thinking == "" {
 			m.progress.StreamContent = prev.StreamContent
@@ -488,7 +488,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// Auto-start will trigger on this same progress event
 		// (m.typing is now false, and the guard below will start a new turn).
 		// Reload messages from DB to show the new user message from the parent agent.
-		m.reloadMessagesFromSession()
+		m.reloadMessagesFromSession(false)
 	}
 
 	// Update bg task count from callback
@@ -523,7 +523,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
 		// → handleHistoryReload respects userScrolledUp/newContentHint.
-		m.reloadMessagesFromSession()
+		m.reloadMessagesFromSession(true)
 	}
 
 	// Cache token usage for context bar display — every progress event
@@ -1374,9 +1374,16 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// O(N) glamour re-rendering of ALL messages. Only truly new or changed
 	// messages need re-rendering. This is critical for sessions with hundreds
 	// of iterations where full rebuild would take seconds.
+	m.streamingMsgIdx = -1
+	if msg.forceFullRebuild {
+		m.messages = newMessages
+		m.invalidateAllCache(false)
+		m.updateViewportContent()
+		log.WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")
+		return
+	}
 	prevMsgCount := len(m.messages)
 	allMatched := m.mergeMessagesPreservingCache(newMessages)
-	m.streamingMsgIdx = -1
 	// If ALL messages matched (same content, same count), skip fullRebuild.
 	// MUST check count: rewind deletes messages — remaining ones match old
 	// cache, but cachedHistoryLines still contains deleted messages' lines.

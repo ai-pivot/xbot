@@ -132,10 +132,9 @@ func (m *cliModel) appendNewMessagesToCache() {
 	m.rc.histLines = nil
 	m.rc.wrapRaw = ""
 
-	// Set viewport with new content + progress block
+	// Set viewport with new content + rewind block
 	var vp strings.Builder
 	vp.WriteString(m.rc.history)
-	vp.WriteString(m.renderProgressBlock())
 	vp.WriteString(m.renderRewindResultBlock())
 	m.setViewportContent(vp.String())
 }
@@ -189,7 +188,7 @@ func (m *cliModel) fullRebuild() {
 		m.rc.wrapWidth = cw
 		m.rc.histMaxW = hmax
 		m.rc.valid = true
-		m.rc.msgCount = len(m.messages)
+		m.rc.msgCount = splitIdx
 		return
 	}
 
@@ -278,7 +277,7 @@ func (m *cliModel) fullRebuild() {
 	}
 	m.rc.history = histBuf.String()
 	m.rc.valid = true
-	m.rc.msgCount = len(m.messages)
+	m.rc.msgCount = splitIdx
 
 	// All wrapped lines are already computed per-message above.
 	// Set the cache directly — no need to re-split + re-wrap the entire
@@ -295,7 +294,6 @@ func (m *cliModel) fullRebuild() {
 	if m.streamingMsgIdx >= 0 {
 		sb.WriteString(m.renderMessage(&m.messages[m.streamingMsgIdx]))
 	}
-	sb.WriteString(m.renderProgressBlock())
 	sb.WriteString(m.renderRewindResultBlock())
 
 	m.setViewportContent(sb.String())

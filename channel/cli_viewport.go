@@ -1,8 +1,8 @@
 package channel
 
 import (
+	"fmt"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 )
@@ -180,49 +180,32 @@ func visibleMsgGroupIndices(messages []cliMessage) []int {
 func (m *cliModel) updateViewportContent() {
 	// 快速路径：流式消息 + 缓存有效
 	if m.streamingMsgIdx >= 0 && m.rc.valid {
-		m.updateStreamingOnly()
-		return
+		if m.streamingMsgIdx >= len(m.messages) {
+			m.streamingMsgIdx = -1
+			m.rc.invalidateProgress()
+		} else {
+			m.updateStreamingOnly()
+			return
+		}
 	}
 
-	// 快速路径：缓存有效 + 无流式消息 + 消息数未变，只刷新 progress block（tick 场景）
+	// 快速路径：缓存有效 + 无流式消息 + 消息数未变，只刷新 rewind block（tick 场景）
 	if m.rc.valid && m.streamingMsgIdx < 0 && m.rc.msgCount == len(m.messages) {
-		// O(1) pre-check: compute composite FP without calling renderProgressBlock.
-		// This avoids the O(N) renderProgressBlock call on every tick when nothing
-		// changed (the dominant case during streaming within a single iteration).
-		var elapsedSec int64
-		if !m.typingStartTime.IsZero() {
-			elapsedSec = time.Since(m.typingStartTime).Milliseconds() / 1000
-		}
-		bubbleWidth := m.chatWidth() - 4
-		if bubbleWidth < 10 {
-			bubbleWidth = 10
-		}
-		progressFP := m.progressBlockCompositeFP(elapsedSec, bubbleWidth)
+		// progress block is now a no-op (rendered inline in streaming message).
+		// Only check rewind block for changes.
 		rewindBlock := m.renderRewindResultBlock()
 		rewindFP := fnvHash64(rewindBlock)
 		cachedHistoryLen := len(m.rc.history)
 		if cachedHistoryLen == m.rc.lastTickHistLen &&
-			m.rc.lastTickProgFP == progressFP &&
 			m.rc.lastTickRewFP == rewindFP {
 			return
 		}
 		m.rc.lastTickHistLen = cachedHistoryLen
-		m.rc.lastTickProgFP = progressFP
 		m.rc.lastTickRewFP = rewindFP
 
-		// FP changed → call renderProgressBlock (it will also hit its own internal
-		// cache via progressBlockCompositeFP, but we need the actual output string).
-		progressBlock := m.renderProgressBlock()
-
 		// --- Direct lines assembly with cached slice ---
-		// Reuse the cached allLines slice across ticks to avoid O(N)
-		// allocation + copy of cachedHistoryLines every 100ms.
-		// Only progress/rewind sections are updated in-place.
 		cw := m.chatWidth()
 		if len(m.rc.histLines) > 0 && cw > 0 {
-			// Progress block lines: already pre-split by renderProgressBlock
-			progressLines := m.rc.progressBlock.lines
-
 			// Rewind block lines: cache wrapped version
 			var rewindLines []string
 			if rewindBlock == m.rc.dynamicRaw && cw == m.rc.dynamicWidth {
@@ -236,37 +219,31 @@ func (m *cliModel) updateViewportContent() {
 
 			// Reuse cached allLines when history section unchanged
 			histLen := len(m.rc.histLines)
-			pl := len(progressLines)
 			rl := len(rewindLines)
-			totalLines := histLen + pl + rl
+			totalLines := histLen + rl
 
 			if histLen == m.rc.allLinesHistLen && totalLines <= cap(m.rc.allLines) {
-				// History unchanged — in-place update progress + rewind only
+				// History unchanged — in-place update rewind only
 				m.rc.allLines = m.rc.allLines[:totalLines]
-				copy(m.rc.allLines[histLen:histLen+pl], progressLines)
-				copy(m.rc.allLines[histLen+pl:], rewindLines)
+				copy(m.rc.allLines[histLen:], rewindLines)
 			} else if histLen > m.rc.allLinesHistLen && cap(m.rc.allLines) >= totalLines {
 				// History grew (new iteration appended) — extend in-place.
-				// Old history lines are unchanged, only append the new tail.
 				newHistLines := m.rc.histLines[m.rc.allLinesHistLen:]
 				m.rc.allLines = m.rc.allLines[:m.rc.allLinesHistLen]
 				m.rc.allLines = append(m.rc.allLines, newHistLines...)
-				m.rc.allLines = append(m.rc.allLines, progressLines...)
 				m.rc.allLines = append(m.rc.allLines, rewindLines...)
 				m.rc.allLinesHistLen = histLen
 			} else if histLen > m.rc.allLinesHistLen {
 				// History grew but slice too small — grow with append
 				m.rc.allLines = m.rc.allLines[:m.rc.allLinesHistLen]
 				m.rc.allLines = append(m.rc.allLines, m.rc.histLines[m.rc.allLinesHistLen:]...)
-				m.rc.allLines = append(m.rc.allLines, progressLines...)
 				m.rc.allLines = append(m.rc.allLines, rewindLines...)
 				m.rc.allLinesHistLen = histLen
 			} else {
 				// History shrank (rewind/compression) or first run — rebuild
 				m.rc.allLines = make([]string, totalLines)
 				copy(m.rc.allLines, m.rc.histLines)
-				copy(m.rc.allLines[histLen:histLen+pl], progressLines)
-				copy(m.rc.allLines[histLen+pl:], rewindLines)
+				copy(m.rc.allLines[histLen:], rewindLines)
 				m.rc.allLinesHistLen = histLen
 			}
 
@@ -286,7 +263,6 @@ func (m *cliModel) updateViewportContent() {
 		// Fallback: string path (first tick before cachedHistoryLines is populated)
 		var sb strings.Builder
 		sb.WriteString(m.rc.history)
-		sb.WriteString(progressBlock)
 		sb.WriteString(rewindBlock)
 		m.setViewportContent(sb.String())
 		return
@@ -307,17 +283,15 @@ func (m *cliModel) updateViewportContent() {
 	// refreshes immediately, not on the next tick.
 	cw := m.chatWidth()
 	if cw > 0 && len(m.rc.histLines) > 0 {
-		progressLines := m.rc.progressBlock.lines
 		rewindBlock := m.renderRewindResultBlock()
 		var rewindLines []string
 		if rewindBlock != "" {
 			rewindLines = wrapDynamicPart(rewindBlock, cw)
 		}
-		totalLines := len(m.rc.histLines) + len(progressLines) + len(rewindLines)
+		totalLines := len(m.rc.histLines) + len(rewindLines)
 		allLines := make([]string, totalLines)
 		copy(allLines, m.rc.histLines)
-		copy(allLines[len(m.rc.histLines):], progressLines)
-		copy(allLines[len(m.rc.histLines)+len(progressLines):], rewindLines)
+		copy(allLines[len(m.rc.histLines):], rewindLines)
 		viewportSetLinesBypassMaxWidth(&m.viewport, allLines, cw)
 		m.viewport.GotoBottom()
 		m.newContentHint = false
@@ -325,22 +299,146 @@ func (m *cliModel) updateViewportContent() {
 }
 
 // updateStreamingOnly 只重新渲染当前流式消息（快速路径）
+// Uses incremental rendering: completed iterations are cached as line arrays,
+// only the live (in-progress) iteration is re-rendered per tick.
+// Assembles lines directly into viewport, bypassing the string-based path.
 func (m *cliModel) updateStreamingOnly() {
-	var sb strings.Builder
-	sb.WriteString(m.rc.history)
-
-	// 只渲染当前流式消息
+	cw := m.chatWidth()
+	contentWidth := cw - 4
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
 	msg := &m.messages[m.streamingMsgIdx]
-	msg.dirty = true
-	sb.WriteString(m.renderMessage(msg))
+	s := &m.styles
 
-	// Append progress block
-	sb.WriteString(m.renderProgressBlock())
+	// When there's no iteration data yet (turn just started, no progress arrived),
+	// fall back to the full renderMessage path. This is a brief transitional state
+	// that resolves within the first progress event.
+	hasIterData := len(m.iterationHistory) > 0 || m.progress != nil
+	if !hasIterData && len(msg.iterations) == 0 {
+		var sb strings.Builder
+		sb.WriteString(m.rc.history)
+		msg.dirty = true
+		sb.WriteString(m.renderMessage(msg))
+		sb.WriteString(m.renderRewindResultBlock())
+		m.setViewportContent(sb.String())
+		return
+	}
 
-	// Append rewind result block
-	sb.WriteString(m.renderRewindResultBlock())
+	// --- Determine guide style (streaming = bright) ---
+	guideSt := s.GuideSt
+	guideSym := "┊ "
+	const ansiReset = "\x1b[0m"
+	guidePrefix := ansiReset + guideSt.Render(guideSym) + ansiReset
 
-	m.setViewportContent(sb.String())
+	// --- Build or reuse header line ---
+	if m.rc.streamHeaderWidth != contentWidth {
+		timeStr := s.Time.Render(msg.timestamp.Format("15:04:05"))
+		label := s.StreamingLabel.Render("Assistant")
+		m.rc.streamHeaderLine = fmt.Sprintf("%s %s ...", guideSt.Render(guideSym)+timeStr, label)
+		m.rc.streamHeaderWidth = contentWidth
+	}
+
+	// --- Render completed iterations (cached) ---
+	// Uses renderTurnBody(iterations, nil, ...) to get the exact same output
+	// as the full render path. Only re-renders when iteration count changes.
+	numCompleted := len(m.iterationHistory)
+	var completedLines []string
+	completedMaxW := 0
+
+	if numCompleted == m.rc.streamCompletedCount && contentWidth == m.rc.streamCompletedWidth && len(m.rc.streamCompletedLines) > 0 {
+		// Cache hit: reuse pre-rendered lines for completed iterations
+		completedLines = m.rc.streamCompletedLines
+		completedMaxW = m.rc.streamMaxW
+	} else {
+		// Cache miss: render completed iterations and cache the result
+		if numCompleted > 0 {
+			bodyContent := m.renderTurnBody(m.iterationHistory, nil, contentWidth, "")
+			bodyContent = strings.TrimRight(bodyContent, "\n")
+			if bodyContent != "" {
+				for _, l := range strings.Split(bodyContent, "\n") {
+					guideLine := guidePrefix + l
+					if w := lipgloss.Width(guideLine); w > completedMaxW {
+						completedMaxW = w
+					}
+					completedLines = append(completedLines, guideLine)
+				}
+			}
+		}
+		// Cache for next tick
+		m.rc.streamCompletedLines = completedLines
+		m.rc.streamCompletedCount = numCompleted
+		m.rc.streamCompletedWidth = contentWidth
+		m.rc.streamMaxW = completedMaxW
+	}
+
+	// --- Render live iteration (every tick — this is the dynamic part) ---
+	// Uses renderLiveIteration directly, then combines with completed.
+	// Separator logic matches renderTurnBody: no blank line when both sides
+	// only have tools (running tools should be continuous with completed tools).
+	var liveLines []string
+	liveMaxW := 0
+	if m.progress != nil {
+		liveBlocks := m.liveIterationBlocks(m.progress, contentWidth, msg.content)
+		liveContent := renderTurnBlocks(liveBlocks)
+		liveContent = strings.TrimRight(liveContent, "\n")
+		if liveContent != "" {
+			if len(completedLines) > 0 {
+				prevKind, hasPrev := lastIterationBlockKind(m.iterationHistory)
+				nextKind, hasNext := firstTurnBlockKind(liveBlocks)
+				if hasPrev && hasNext && needsTurnBlockSeparator(prevKind, nextKind) {
+					liveLines = append(liveLines, guidePrefix) // blank guide line as separator
+				}
+			}
+			for _, l := range strings.Split(liveContent, "\n") {
+				guideLine := guidePrefix + l
+				if w := lipgloss.Width(guideLine); w > liveMaxW {
+					liveMaxW = w
+				}
+				liveLines = append(liveLines, guideLine)
+			}
+		}
+	}
+
+	// --- Assemble all lines: history + header + completed + live + footer ---
+	histLines := m.rc.histLines
+	if len(histLines) == 0 {
+		// histLines not populated yet — fall back to string path
+		var sb strings.Builder
+		sb.WriteString(m.rc.history)
+		msg.dirty = true
+		sb.WriteString(m.renderMessage(msg))
+		sb.WriteString(m.renderRewindResultBlock())
+		m.setViewportContent(sb.String())
+		return
+	}
+
+	allLines := make([]string, 0, len(histLines)+1+len(completedLines)+len(liveLines)+2)
+	allLines = append(allLines, histLines...)
+	allLines = append(allLines, m.rc.streamHeaderLine) // header line
+	allLines = append(allLines, completedLines...)
+	allLines = append(allLines, liveLines...)
+	allLines = append(allLines, "") // trailing \n\n from renderMessage
+
+	// Compute max width
+	maxW := m.rc.histMaxW
+	if completedMaxW > maxW {
+		maxW = completedMaxW
+	}
+	if liveMaxW > maxW {
+		maxW = liveMaxW
+	}
+
+	shouldFollowBottom := !m.userScrolledUp
+	viewportSetLinesBypassMaxWidth(&m.viewport, allLines, maxW)
+	if shouldFollowBottom {
+		m.viewport.GotoBottom()
+		m.newContentHint = false
+	} else {
+		m.newContentHint = true
+	}
+	m.rc.vpWidth = cw
+	m.rc.vpContent = "" // invalidate string dedup since we bypassed it
 }
 
 // since cachedMsgCount, updating cachedHistory and msgLineOffsets without rebuilding

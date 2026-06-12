@@ -83,7 +83,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		// Fallback: if cancelTargetTurnID is not set (e.g. cancel from external
 		// source), use the current streaming message index — but only if its
 		// turnID matches m.agentTurnID (i.e. no new turn has started).
-		if cancelledIdx < 0 && m.streamingMsgIdx >= 0 {
+		if cancelledIdx < 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 			if m.messages[m.streamingMsgIdx].turnID == m.agentTurnID {
 				cancelledIdx = m.streamingMsgIdx
 			}
@@ -446,9 +446,3 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 
 	m.updateViewportContent()
 }
-
-// renderProgressBlock renders the iteration progress panel for the viewport.
-// The output is cached via fingerprint — the expensive blockStyle.Render()
-// (lipgloss border wrapping with ANSI width calculation on every character)
-// renderHistoryRange renders a slice of iteration snapshots into buf.
-// Extracted from renderProgressBlock to enable incremental rebuild — when only

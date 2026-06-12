@@ -38,14 +38,6 @@ func (t *animTicker) tick() {
 	}
 }
 
-// view 渲染当前帧，带双色呼吸效果（每 10 tick 在两种颜色间切换）
-func (t *animTicker) view() string {
-	if t.ticks%20 < 10 {
-		return t.style.Render(t.frames[t.frame])
-	}
-	return t.styleAlt.Render(t.frames[t.frame])
-}
-
 // viewFrames renders a frame from a given set using the ticker's current frame index.
 // speedOverride controls per-call animation speed (0 = use ticker's default speed).
 // 同样带呼吸效果。
@@ -148,8 +140,6 @@ var (
 	orbitFrames = []string{"◌", "◔", "◕", "●", "◕", "◔", "◌", "◔", "◕", "●", "◕", "◔"}
 	// splashFrames: loading bar animation — 启动画面进度条
 	splashFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
-	// pulseFrames: pulsing circle — tool completion pulse
-	pulseFrames = []string{"◌", "◎", "◉", "◎", "◌"}
 	// sidebarSpinnerFrames: braille spinner for sidebar busy sessions
 	sidebarSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 )
@@ -529,6 +519,11 @@ func (m *cliModel) resetToIdleState() {
 	m.todos = nil
 	m.todosDoneCleared = false
 	m.toolSummaryExpanded = false
+	if m.expandedTools == nil {
+		m.expandedTools = make(map[string]bool)
+	} else {
+		clear(m.expandedTools)
+	}
 
 	// --- UI State ---
 	m.completions = nil
@@ -881,10 +876,11 @@ func (m *cliModel) savePendingToSessionState() {
 
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
 type cliHistoryReloadMsg struct {
-	channelName string
-	chatID      string
-	history     []HistoryMessage
-	err         error
+	channelName      string
+	chatID           string
+	history          []HistoryMessage
+	err              error
+	forceFullRebuild bool
 }
 
 // cliTokenRefreshMsg refreshes the context bar after compression.
@@ -1076,6 +1072,11 @@ type cliModel struct {
 
 	// --- §11 Tool Summary 折叠 ---
 	toolSummaryExpanded bool // Ctrl+O 切换
+
+	// --- §11c Tool detail expand on click ---
+	// expandedTools tracks which tool lines are expanded to show detail bodies.
+	// Key format: "msgIdx:toolIdx" — identifies a specific tool within a specific message.
+	expandedTools map[string]bool
 
 	// --- §11b Pending Tool Summary ---
 	// PhaseDone may arrive before handleAgentMessage. Store the tool_summary
@@ -1400,6 +1401,7 @@ func newCLIModel() *cliModel {
 		inputDraft:      "",
 		senderID:        "cli_user",
 		channelName:     "cli",
+		expandedTools:   make(map[string]bool),
 		// Layout defaults
 		chatMaxWidth:             76,
 		chatCenter:               true,
@@ -1895,7 +1897,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 // reloadMessagesFromSession triggers async history reload after context compression.
 // The engine has replaced its internal message list and persisted to session DB;
 // CLI must rebuild m.messages to stay in sync.
-func (m *cliModel) reloadMessagesFromSession() {
+func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
 	if m.channel == nil {
 		return
 	}
@@ -1911,10 +1913,11 @@ func (m *cliModel) reloadMessagesFromSession() {
 		if m.channel != nil {
 			select {
 			case m.channel.asyncCh <- cliHistoryReloadMsg{
-				channelName: channelName,
-				chatID:      chatID,
-				history:     history,
-				err:         err,
+				channelName:      channelName,
+				chatID:           chatID,
+				history:          history,
+				err:              err,
+				forceFullRebuild: forceFullRebuild,
 			}:
 			default:
 				// channel full, drop — next progress event will retry

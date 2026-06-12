@@ -3,6 +3,7 @@ package channel
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"xbot/protocol"
 
@@ -13,6 +14,20 @@ import (
 // Unified Turn Renderer
 // ---------------------------------------------------------------------------
 
+type turnBlockKind int
+
+const (
+	turnBlockReasoning turnBlockKind = iota
+	turnBlockContent
+	turnBlockTools
+	turnBlockPulse
+)
+
+type turnBlock struct {
+	kind turnBlockKind
+	text string
+}
+
 // renderTurnBody renders all iteration content for an assistant message.
 func (m *cliModel) renderTurnBody(
 	iterations []cliIterationSnapshot,
@@ -22,41 +37,38 @@ func (m *cliModel) renderTurnBody(
 ) string {
 	s := &m.styles
 	var sb strings.Builder
+	var lastKind turnBlockKind
+	hasBlock := false
 
 	for i := range iterations {
 		iter := &iterations[i]
-		if i > 0 {
-			sb.WriteString("\n")
-		}
 
-		// Reasoning (always fully expanded box)
 		if iter.Reasoning != "" {
-			sb.WriteString(m.renderReasoningBox(iter.Reasoning, contentWidth, s))
+			appendTurnBlock(&sb, &lastKind, &hasBlock, turnBlock{
+				kind: turnBlockReasoning,
+				text: m.renderReasoningBox(iter.Reasoning, contentWidth, s),
+			})
 		}
 
-		// Content (markdown)
 		if iter.Thinking != "" {
-			sb.WriteString("\n\n") // blank line before content
-			rendered := m.renderTurnContent(iter.Thinking, contentWidth)
-			sb.WriteString(rendered)
+			appendTurnBlock(&sb, &lastKind, &hasBlock, turnBlock{
+				kind: turnBlockContent,
+				text: m.renderTurnContent(iter.Thinking, contentWidth),
+			})
 		}
 
-		// Tool tags: blank line only if preceded by content, never standalone
 		if len(iter.Tools) > 0 {
-			if iter.Thinking != "" {
-				sb.WriteString("\n\n") // blank line between content and tool tags
-			} else if iter.Reasoning != "" {
-				sb.WriteString("\n") // no content, just after reasoning box
-			}
-			sb.WriteString(m.renderToolTags(iter.Tools, s))
+			appendTurnBlock(&sb, &lastKind, &hasBlock, turnBlock{
+				kind: turnBlockTools,
+				text: m.renderToolTags(iter.Tools, contentWidth, s),
+			})
 		}
 	}
 
 	if liveProgress != nil {
-		if len(iterations) > 0 {
-			sb.WriteString("\n")
+		for _, block := range m.liveIterationBlocks(liveProgress, contentWidth, fallbackContent) {
+			appendTurnBlock(&sb, &lastKind, &hasBlock, block)
 		}
-		sb.WriteString(m.renderLiveIteration(liveProgress, contentWidth, fallbackContent))
 	} else if fallbackContent != "" {
 		// Idle state: render the final assistant content after iterations.
 		// Avoid duplication: skip if the last iteration already contains it.
@@ -68,15 +80,39 @@ func (m *cliModel) renderTurnBody(
 			}
 		}
 		if !alreadyRendered {
-			if sb.Len() > 0 {
-				sb.WriteString("\n\n")
-			}
-			rendered := m.renderTurnContent(fallbackContent, contentWidth)
-			sb.WriteString(rendered)
+			appendTurnBlock(&sb, &lastKind, &hasBlock, turnBlock{
+				kind: turnBlockContent,
+				text: m.renderTurnContent(fallbackContent, contentWidth),
+			})
 		}
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func appendTurnBlock(sb *strings.Builder, lastKind *turnBlockKind, hasBlock *bool, block turnBlock) {
+	text := cleanTurnBlockText(block.text)
+	if text == "" {
+		return
+	}
+
+	if !*hasBlock {
+		// First block starts immediately; renderReasoningBox includes a leading
+		// newline for historical callers, so normalize text before appending.
+	} else if block.kind == turnBlockPulse {
+		sb.WriteString("\n\n")
+	} else if *lastKind == block.kind {
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(text)
+	*lastKind = block.kind
+	*hasBlock = true
+}
+
+func cleanTurnBlockText(text string) string {
+	return strings.TrimRight(strings.TrimLeft(text, "\n"), "\n")
 }
 
 // renderTurnContent renders markdown through glamour.
@@ -96,13 +132,18 @@ func (m *cliModel) renderTurnContent(text string, width int) string {
 // renderToolTags renders compact dot-separated tool badges with full labels.
 //
 //	· Shell: cd /home/user/... ✓  · Read ✓
-func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, s *cliStyles) string {
+func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *cliStyles) string {
+	maxLabelW := width * 2 / 3
+	if maxLabelW < 20 {
+		maxLabelW = 20
+	}
 	var lines []string
 	for _, tool := range tools {
 		label := tool.Label
 		if label == "" {
 			label = tool.Name
 		}
+		label = truncateToWidth(label, maxLabelW)
 		var tag string
 		switch tool.Status {
 		case "error":
@@ -145,6 +186,7 @@ func (m *cliModel) renderReasoningBox(
 	if dashCount < 3 {
 		dashCount = 3
 	}
+	sb.WriteString("\n")
 	sb.WriteString(s.ProgressDim.Render("╭"))
 	sb.WriteString(s.TextSecondarySt.Render(label))
 	sb.WriteString(s.ProgressDim.Render(strings.Repeat("─", dashCount) + "╮"))
@@ -170,19 +212,62 @@ func (m *cliModel) renderReasoningBox(
 	return sb.String()
 }
 
-// renderLiveIteration renders the in-progress iteration.
-func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fallbackContent string) string {
-	s := &m.styles
+func renderTurnBlocks(blocks []turnBlock) string {
 	var sb strings.Builder
+	var lastKind turnBlockKind
+	hasBlock := false
+	for _, block := range blocks {
+		appendTurnBlock(&sb, &lastKind, &hasBlock, block)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
 
-	// 1. Reasoning box (always fully expanded)
+func firstTurnBlockKind(blocks []turnBlock) (turnBlockKind, bool) {
+	for _, block := range blocks {
+		if cleanTurnBlockText(block.text) != "" {
+			return block.kind, true
+		}
+	}
+	return 0, false
+}
+
+func lastIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, bool) {
+	for i := len(iterations) - 1; i >= 0; i-- {
+		iter := iterations[i]
+		if len(iter.Tools) > 0 {
+			return turnBlockTools, true
+		}
+		if iter.Thinking != "" {
+			return turnBlockContent, true
+		}
+		if iter.Reasoning != "" {
+			return turnBlockReasoning, true
+		}
+	}
+	return 0, false
+}
+
+func needsTurnBlockSeparator(prev, next turnBlockKind) bool {
+	return next != turnBlockPulse && prev != next
+}
+
+func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fallbackContent string) []turnBlock {
+	s := &m.styles
+	var blocks []turnBlock
+	hasSpinner := false
+
 	if p.ReasoningStreamContent != "" {
-		sb.WriteString(m.renderReasoningBox(p.ReasoningStreamContent, width, s))
-		sb.WriteString("\n\n") // blank line between reasoning box and content
+		hasSpinner = true
+		blocks = append(blocks, turnBlock{
+			kind: turnBlockReasoning,
+			text: m.renderReasoningBox(p.ReasoningStreamContent, width, s),
+		})
 	}
 
-	// 2. Content: prefer live stream → accumulated thinking → msg text
 	streamContent := p.StreamContent
+	if streamContent != "" || fallbackContent != "" {
+		hasSpinner = true
+	}
 	displayContent := streamContent
 	if displayContent == "" {
 		displayContent = p.Thinking
@@ -191,70 +276,90 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 		displayContent = fallbackContent
 	}
 	if displayContent != "" {
-		if p.ReasoningStreamContent != "" {
-			// already added \n\n after reasoning box above
-		} else {
-			sb.WriteString("\n\n") // blank line before content
-		}
-		rendered := m.renderTurnContent(displayContent, width)
-		sb.WriteString(rendered)
-		sb.WriteString("\n")
+		blocks = append(blocks, turnBlock{
+			kind: turnBlockContent,
+			text: m.renderTurnContent(displayContent, width),
+		})
 	}
 
-	// 3. Tool lines (done + running), always blank line before them
 	var tools []protocol.ToolProgress
 	for _, tool := range p.ActiveTools {
 		if tool.Status == "running" || tool.Status == "active" || tool.Status == "done" || tool.Status == "error" {
 			tools = append(tools, tool)
 		}
-	}
-	// Also include CompletedTools from this iteration
-	tools = append(tools, p.CompletedTools...)
-	if len(tools) > 0 {
-		sb.WriteString("\n") // blank line between content/reasoning and tools
-		for _, tool := range tools {
-			label := tool.Label
-			if label == "" {
-				label = tool.Name
-			}
-			switch tool.Status {
-			case "error":
-				sb.WriteString("  ")
-				sb.WriteString(s.ProgressDim.Render("·"))
-				sb.WriteString(" ")
-				sb.WriteString(s.ProgressError.Render("✗ " + label))
-				sb.WriteString("\n")
-			case "done":
-				sb.WriteString("  ")
-				sb.WriteString(s.ProgressDim.Render("·"))
-				sb.WriteString(" ")
-				sb.WriteString(s.ProgressDone.Render("✓"))
-				sb.WriteString(" ")
-				sb.WriteString(s.TextMutedSt.Render(label))
-				sb.WriteString("\n")
-			default: // running/active
-				elapsed := formatElapsed(tool.Elapsed)
-				frame := orbitFrames[m.ticker.frame%len(orbitFrames)]
-				fmt.Fprintf(&sb, "  %s %s %s %s\n",
-					s.ProgressDim.Render("·"),
-					s.ProgressRunning.Render(frame),
-					s.ProgressRunning.Render(label),
-					s.ProgressElapsed.Render(elapsed))
-			}
+		if tool.Status == "running" || tool.Status == "active" {
+			hasSpinner = true
 		}
-	} else if displayContent == "" && p.ReasoningStreamContent == "" {
-		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
-		sb.WriteString("  ")
-		sb.WriteString(s.ProgressRunning.Render(frame))
-		sb.WriteString("\n")
+	}
+	tools = append(tools, p.CompletedTools...)
+
+	if len(tools) > 0 {
+		blocks = append(blocks, turnBlock{
+			kind: turnBlockTools,
+			text: m.renderLiveToolTags(tools, width),
+		})
 	}
 
-	// 4. SubAgent tree
 	if len(p.SubAgents) > 0 {
 		var treeSb strings.Builder
 		m.renderSubAgentTree(&treeSb, p.SubAgents, "", width)
 		if tree := strings.TrimRight(treeSb.String(), "\n"); tree != "" {
-			sb.WriteString(tree)
+			hasSpinner = true
+			blocks = append(blocks, turnBlock{kind: turnBlockTools, text: tree})
+		}
+	}
+
+	if !hasSpinner {
+		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
+		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: "  " + s.ProgressRunning.Render(frame)})
+	}
+
+	return blocks
+}
+
+func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) string {
+	s := &m.styles
+	maxLabelW := width * 2 / 3
+	if maxLabelW < 20 {
+		maxLabelW = 20
+	}
+
+	var sb strings.Builder
+	for _, tool := range tools {
+		label := tool.Label
+		if label == "" {
+			label = tool.Name
+		}
+		label = truncateToWidth(label, maxLabelW)
+		switch tool.Status {
+		case "error":
+			sb.WriteString("  ")
+			sb.WriteString(s.ProgressDim.Render("·"))
+			sb.WriteString(" ")
+			sb.WriteString(s.ProgressError.Render("✗ " + label))
+			sb.WriteString("\n")
+		case "done":
+			sb.WriteString("  ")
+			sb.WriteString(s.ProgressDim.Render("·"))
+			sb.WriteString(" ")
+			sb.WriteString(s.ProgressDone.Render("✓"))
+			sb.WriteString(" ")
+			sb.WriteString(s.TextMutedSt.Render(label))
+			sb.WriteString("\n")
+		default: // running/active
+			var elapsedMs int64
+			if !tool.StartedAt.IsZero() {
+				elapsedMs = time.Since(tool.StartedAt).Milliseconds()
+			} else {
+				elapsedMs = tool.Elapsed
+			}
+			elapsed := formatElapsed(elapsedMs)
+			frame := orbitFrames[m.ticker.frame%len(orbitFrames)]
+			fmt.Fprintf(&sb, "  %s %s %s %s\n",
+				s.ProgressDim.Render("·"),
+				s.ProgressRunning.Render(frame),
+				s.ProgressRunning.Render(label),
+				s.ProgressElapsed.Render(elapsed))
 		}
 	}
 

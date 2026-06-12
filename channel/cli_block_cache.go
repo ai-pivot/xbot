@@ -1,97 +1,19 @@
 package channel
 
-// blockCache is a reusable cache for rendered output blocks. It eliminates the
-// repeated (content, fingerprint, width) triple pattern that appeared 6+ times
-// across the progress rendering pipeline.
-//
-// Usage:
-//
-//	result := m.cache.reasoning.getOrBuild(fp, width, func() string {
-//	    // expensive render...
-//	    return rendered
-//	})
-//	sb.WriteString(result)
-//
-// All blockCache fields are accessed through methods — never read/written directly.
-type blockCache struct {
+// blockLinesCache caches rendered output with pre-split lines for incremental assembly.
+type blockLinesCache struct {
 	content string
 	fp      uint64
 	width   int
-}
-
-// getOrBuild returns the cached content if fp and width match, otherwise calls
-// build to produce new content, caches it, and returns it.
-func (c *blockCache) getOrBuild(fp uint64, width int, build func() string) string {
-	if c.content != "" && c.fp == fp && c.width == width {
-		return c.content
-	}
-	c.content = build()
-	c.fp = fp
-	c.width = width
-	return c.content
+	lines   []string
 }
 
 // reset clears the cache entry.
-func (c *blockCache) reset() {
-	c.content = ""
-	c.fp = 0
-	c.width = 0
-}
-
-// blockLinesCache extends blockCache with pre-split lines for incremental assembly.
-type blockLinesCache struct {
-	blockCache
-	lines []string
-}
-
-// reset clears the cache entry including lines.
 func (c *blockLinesCache) reset() {
-	c.blockCache.reset()
-	c.lines = nil
-}
-
-// progressHistoryCache is a specialized cache for iteration history that supports
-// incremental append (only render newly added iterations) in addition to full rebuild.
-type progressHistoryCache struct {
-	content string
-	lines   []string
-	count   int    // len(iterationHistory) when cache was built
-	width   int    // bubbleWidth when cache was built
-	fp      uint64 // fingerprint of content
-}
-
-// get returns (lines, ok) if the cache is valid for the given count and width.
-func (c *progressHistoryCache) get(count, width int) ([]string, bool) {
-	if c.count == count && c.width == width && c.content != "" {
-		return c.lines, true
-	}
-	return nil, false
-}
-
-// appendIncremental appends newly rendered content to the existing cache.
-func (c *progressHistoryCache) appendIncremental(newContent string, newLines []string, totalCount int) {
-	c.content += newContent
-	c.count = totalCount
-	c.fp = fnvHash64(c.content)
-	c.lines = append(c.lines, newLines...)
-}
-
-// rebuild replaces the entire cache with fresh content.
-func (c *progressHistoryCache) rebuild(content string, count, width int) {
-	c.content = content
-	c.count = count
-	c.width = width
-	c.fp = fnvHash64(content)
-	c.lines = padLinesFromContent(content)
-}
-
-// reset clears the history cache.
-func (c *progressHistoryCache) reset() {
 	c.content = ""
-	c.lines = nil
-	c.count = 0
-	c.width = 0
 	c.fp = 0
+	c.width = 0
+	c.lines = nil
 }
 
 // renderCache aggregates all render caching state for cliModel.
@@ -108,14 +30,8 @@ type renderCache struct {
 	histMaxW    int    // actual max display width of cached wrapped lines
 	histLines   []string
 
-	// Progress sub-blocks — use blockCache.getOrBuild() for FP-gated caching.
-	progressHistory progressHistoryCache // iteration history (incremental + full rebuild)
-	currentStatic   blockCache           // completed tools + content (also keyed on iteration)
-	currentIter     int                  // progress.Iteration when currentStatic was built
-	reasoning       blockCache           // reasoning lines with guides and cursor
-	stream          blockCache           // stream (assistant text) lines with guides and cursor
-	thinking        blockCache           // thinking lines with guides
-	progressBlock   blockLinesCache      // full progress panel output (content + lines)
+	// Progress block cache (now minimal — renderProgressBlock is a no-op).
+	progressBlock blockLinesCache
 
 	// Tick-level dirty detection for updateViewportContent fast path.
 	lastTickHistLen int    // len(rc.history) at last tick
@@ -130,6 +46,16 @@ type renderCache struct {
 	dynamicRaw   string
 	dynamicLines []string
 	dynamicWidth int
+
+	// Streaming message incremental cache — avoids O(N) re-render of all
+	// completed iterations on every 100ms tick during streaming.
+	// Only the live (in-progress) iteration is re-rendered per tick.
+	streamCompletedLines []string // guide-prefixed lines for completed iterations
+	streamCompletedCount int      // len(iterations) when streamCompletedLines was built
+	streamCompletedWidth int      // contentWidth when cache was built
+	streamHeaderLine     string   // cached header line (guide + "Assistant ..." label)
+	streamHeaderWidth    int      // contentWidth for the header line cache
+	streamMaxW           int      // max visual width across all cached streaming lines
 }
 
 // resetAll clears all render caches. Called on resize, session switch, etc.
@@ -144,12 +70,6 @@ func (rc *renderCache) resetAll() {
 	rc.wrapWidth = 0
 	rc.histMaxW = 0
 	rc.histLines = nil
-	rc.progressHistory.reset()
-	rc.currentStatic.reset()
-	rc.currentIter = 0
-	rc.reasoning.reset()
-	rc.stream.reset()
-	rc.thinking.reset()
 	rc.progressBlock.reset()
 	rc.lastTickHistLen = 0
 	rc.lastTickProgFP = 0
@@ -159,15 +79,18 @@ func (rc *renderCache) resetAll() {
 	rc.dynamicRaw = ""
 	rc.dynamicLines = nil
 	rc.dynamicWidth = 0
+	rc.streamCompletedLines = nil
+	rc.streamCompletedCount = 0
+	rc.streamCompletedWidth = 0
+	rc.streamHeaderLine = ""
+	rc.streamHeaderWidth = 0
+	rc.streamMaxW = 0
 }
 
 // invalidateProgress resets all progress-related caches (called on iteration change).
 func (rc *renderCache) invalidateProgress() {
-	rc.progressHistory.reset()
-	rc.currentStatic.reset()
-	rc.currentIter = 0
-	rc.reasoning.reset()
-	rc.stream.reset()
-	rc.thinking.reset()
 	rc.progressBlock.reset()
+	// Completed iteration lines depend on iterationHistory which changed.
+	rc.streamCompletedLines = nil
+	rc.streamCompletedCount = 0
 }

@@ -10,69 +10,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-func (m *cliModel) renderToolContentBelow(tool *protocol.ToolProgress, guide string, bodyW int, dimmed bool, maxLines int) string {
-	var sb strings.Builder
-	guideFn := func(s string) string { return s }
-	if dimmed {
-		dimSt := m.styles.ProgressDim
-		guideFn = func(s string) string { return dimSt.Render(s) }
-	}
-
-	// 1. ToolHints (diff from plugin or built-in) — render with guide prefix,
-	// same as per-tool body, so diff appears inside the guide tree.
-	if tool.ToolHints != "" {
-		g := guideFn(guide)
-		hintW := bodyW - lipgloss.Width(g)
-		if hintW < 1 {
-			hintW = 1
-		}
-		if r, err := m.renderToolHint(tool.ToolHints, hintW, maxLines); err == nil && r != "" {
-			for _, line := range strings.Split(r, "\n") {
-				sb.WriteString(g)
-				sb.WriteString(line)
-				sb.WriteString("\n")
-			}
-		}
-	}
-
-	// 2. Per-tool body (Read code, Shell output, Grep matches, etc.)
-	if tool.ToolHints == "" { // Don't show body if diff hints are already displayed
-		g := guideFn(guide)
-		bodyContentW := bodyW - lipgloss.Width(g)
-		if bodyContentW < 1 {
-			bodyContentW = 1
-		}
-		if body := m.renderToolBody(*tool, bodyContentW); body != "" {
-			guideW := lipgloss.Width(g)
-			for _, line := range strings.Split(body, "\n") {
-				// Final safety net: ensure guide + rendered line fits within bodyW.
-				// Tool body renderers (renderShellBody etc.) wrap to bodyContentW,
-				// but lipgloss.Style.Render() may change effective width. Use hardWrapRunes
-				// so overflow lines wrap (preserving content) instead of truncating.
-				if visW := lipgloss.Width(line); guideW+visW > bodyW {
-					wrapped := hardWrapRunes(line, bodyW-guideW)
-					for _, wl := range strings.Split(wrapped, "\n") {
-						sb.WriteString(g)
-						sb.WriteString(wl)
-						sb.WriteString("\n")
-					}
-					continue
-				}
-				sb.WriteString(g)
-				sb.WriteString(line)
-				sb.WriteString("\n")
-			}
-		}
-	}
-
-	result := strings.TrimRight(sb.String(), "\n")
-	return result
-}
-
-// toolLine formats a tool progress line guaranteed to fit within maxWidth cells.
-// icon and label are plain text; elapsed may be pre-styled with ANSI codes.
-// Returns the formatted string — caller wraps with style.Render().
-
 func (m *cliModel) renderMessage(msg *cliMessage) string {
 	// §20 使用缓存样式
 	s := &m.styles
@@ -408,50 +345,34 @@ func wrapDynamicPart(content string, cw int) []string {
 	return lines
 }
 
-// setViewportContent sets viewport content while preserving scroll position.
-// If the user was at the bottom before the update, keep them at the bottom.
-func toolDisplayInfo(tool protocol.ToolProgress, okStyle, errStyle lipgloss.Style) (label, icon string, sty lipgloss.Style) {
-	if tool.Label == "" {
-		label = tool.Name
-	} else {
-		label = tool.Label
+func (m *cliModel) renderRewindResultBlock() string {
+	if m.rewindResult == nil {
+		return ""
 	}
-	icon = "✓"
-	sty = okStyle
-	if tool.Status == "error" {
-		icon = "✗"
-		sty = errStyle
-	}
-	return
-}
-func toolLine(icon, label string, elapsedStyled string, maxWidth int) string {
-	prefix := fmt.Sprintf("  ┊ %s ", icon)
-	prefixW := lipgloss.Width(prefix)
-
-	elapsedW := lipgloss.Width(elapsedStyled) // strips ANSI, measures visual width
-
-	minPad := 0
-	if elapsedW > 0 {
-		minPad = 1
-	}
-
-	maxLabelW := maxWidth - prefixW - elapsedW - minPad
-	if maxLabelW < 0 {
-		maxLabelW = 0
-	}
-	label = truncateToWidth(label, maxLabelW)
-	labelW := lipgloss.Width(label)
+	r := m.rewindResult
 
 	var sb strings.Builder
-	sb.WriteString(prefix)
-	sb.WriteString(label)
-	if elapsedW > 0 {
-		pad := maxWidth - prefixW - labelW - elapsedW
-		if pad < minPad {
-			pad = minPad
+	sb.WriteString("\n")
+	sb.WriteString(m.styles.ProgressDone.Bold(true).Render("  Rewind complete"))
+	sb.WriteString("\n")
+
+	if len(r.Restored) > 0 {
+		fmt.Fprintf(&sb, "  Files restored: %d\n", len(r.Restored))
+		for _, f := range r.Restored {
+			sb.WriteString(m.styles.TextMutedSt.Render(fmt.Sprintf("    %s\n", f)))
 		}
-		sb.WriteString(strings.Repeat(" ", pad))
-		sb.WriteString(elapsedStyled)
 	}
+	if len(r.CreatedDel) > 0 {
+		fmt.Fprintf(&sb, "  Files deleted: %d\n", len(r.CreatedDel))
+		for _, f := range r.CreatedDel {
+			sb.WriteString(m.styles.TextMutedSt.Render(fmt.Sprintf("    %s\n", f)))
+		}
+	}
+	if len(r.Errors) > 0 {
+		for _, e := range r.Errors {
+			sb.WriteString(m.styles.ProgressError.Render(fmt.Sprintf("  Error: %s\n", e)))
+		}
+	}
+
 	return sb.String()
 }
