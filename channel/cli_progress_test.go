@@ -438,6 +438,54 @@ func TestCancelMessageIgnoresStaleStreamingIndex(t *testing.T) {
 	model.handleAgentMessage(OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
 }
 
+func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.cancelTargetTurnID = model.agentTurnID
+	model.iterationHistory = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Thinking:  "previous iteration",
+			Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "Previous read", Status: "done", Elapsed: 100, Iteration: 1},
+			},
+		},
+	}
+	model.lastSeenIteration = 2
+	model.progress = &protocol.ProgressEvent{
+		Iteration: 2,
+		Thinking:  "current unsnapped iteration",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "Current build", Status: "done", Elapsed: 200, Iteration: 2},
+		},
+	}
+
+	model.handleAgentMessage(OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+
+	if model.streamingMsgIdx != -1 {
+		t.Fatalf("streamingMsgIdx = %d, want -1 after cancel", model.streamingMsgIdx)
+	}
+	var assistant *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" {
+			assistant = &model.messages[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("expected cancelled assistant message")
+	}
+	if got := len(assistant.iterations); got != 2 {
+		t.Fatalf("cancelled assistant iterations = %d, want 2: %+v", got, assistant.iterations)
+	}
+	if assistant.iterations[1].Iteration != 2 || assistant.iterations[1].Thinking != "current unsnapped iteration" {
+		t.Fatalf("current unsnapped iteration was not preserved: %+v", assistant.iterations[1])
+	}
+	if len(assistant.iterations[1].Tools) != 1 || assistant.iterations[1].Tools[0].Label != "Current build" {
+		t.Fatalf("current unsnapped tools were not preserved: %+v", assistant.iterations[1].Tools)
+	}
+}
+
 func TestHistoryReloadForceFullRebuildDoesNotReuseStaleRenderedCache(t *testing.T) {
 	model := initTestModel()
 	now := time.Now()

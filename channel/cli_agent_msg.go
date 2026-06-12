@@ -97,11 +97,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			// The cancel outbound has empty Content, but the streaming message
 			// may have accumulated text via IsPartial before the cancel.
 			// Do NOT overwrite existing content — keep what was streamed.
-			if m.pendingToolSummary != nil && len(m.pendingToolSummary.iterations) > 0 {
-				streamingMsg.iterations = m.pendingToolSummary.iterations
-			} else if len(m.iterationHistory) > 0 {
-				streamingMsg.iterations = append([]cliIterationSnapshot{}, m.iterationHistory...)
-			}
+			streamingMsg.iterations = m.cancelledTurnIterations()
 		}
 		// Still clean up progress/streaming state for the cancelled turn.
 		// Do NOT endAgentTurn — the current turn (if any) must remain active.
@@ -445,4 +441,60 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 	}
 
 	m.updateViewportContent()
+}
+
+func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {
+	var iterations []cliIterationSnapshot
+	if m.pendingToolSummary != nil && len(m.pendingToolSummary.iterations) > 0 {
+		iterations = append(iterations, m.pendingToolSummary.iterations...)
+	} else if len(m.iterationHistory) > 0 {
+		iterations = append(iterations, m.iterationHistory...)
+	}
+	if m.progress == nil {
+		return append([]cliIterationSnapshot{}, iterations...)
+	}
+
+	iterNum := m.progress.Iteration
+	if iterNum == 0 && m.lastSeenIteration != 0 {
+		iterNum = m.lastSeenIteration
+	}
+	for _, it := range iterations {
+		if it.Iteration == iterNum {
+			return append([]cliIterationSnapshot{}, iterations...)
+		}
+	}
+
+	tools := append([]protocol.ToolProgress{}, m.progress.CompletedTools...)
+	for _, tool := range m.progress.ActiveTools {
+		if !containsToolProgress(tools, tool) {
+			tools = append(tools, tool)
+		}
+	}
+	reasoning := m.progress.Reasoning
+	if reasoning == "" && m.reasoningByIter != nil {
+		reasoning = m.reasoningByIter[iterNum]
+	}
+	if reasoning == "" {
+		reasoning = m.lastReasoning
+	}
+	snap := cliIterationSnapshot{
+		Iteration:   iterNum,
+		Thinking:    m.progress.Thinking,
+		Reasoning:   reasoning,
+		Tools:       tools,
+		ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+	}
+	if snap.Thinking != "" || snap.Reasoning != "" || len(snap.Tools) > 0 {
+		iterations = append(iterations, snap)
+	}
+	return append([]cliIterationSnapshot{}, iterations...)
+}
+
+func containsToolProgress(tools []protocol.ToolProgress, needle protocol.ToolProgress) bool {
+	for _, tool := range tools {
+		if tool.Name == needle.Name && tool.Label == needle.Label && tool.Iteration == needle.Iteration {
+			return true
+		}
+	}
+	return false
 }
