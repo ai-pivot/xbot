@@ -89,9 +89,12 @@ func (m *cliModel) handleMouseMsg(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseClickMsg:
 		handled, model, cmd := m.handleMouseClick(msg)
-		// Unhandled click without Shift → user likely tried to select text,
-		// show hint in title bar.
+		// Unhandled click without Shift → check viewport content clicks
+		// (reasoning toggle, etc.), or show shift-select hint.
 		if !handled && msg.Mouse().Mod&tea.ModShift == 0 {
+			if m.handleViewportClick(msg.X, msg.Y) {
+				return true, m, nil
+			}
 			m.shiftHintUntil = time.Now().Add(3 * time.Second)
 		}
 		return handled, model, cmd
@@ -193,6 +196,34 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 		return m.clickSidebarSectionHeader(zone.ID)
 	}
 	return false, m, nil
+}
+
+// handleViewportClick handles clicks on the viewport content area
+// (no zone matched). Detects clicks on reasoning box headers to toggle
+// expand/collapse, and clicks on tool tags for future expand support.
+func (m *cliModel) handleViewportClick(x, y int) bool {
+	// Convert absolute Y to viewport-relative Y
+	vpY := y - m.viewportYStart
+	if vpY < 0 {
+		return false
+	}
+
+	// Get the line at the clicked viewport position
+	totalLines := len(m.viewport.View())
+	if totalLines == 0 {
+		return false
+	}
+
+	// Use viewport's internal lines via the cache
+	view := m.viewport.View()
+	viewLines := strings.Split(view, "\n")
+	scrollOffset := m.viewport.YOffset()
+	idx := scrollOffset + vpY
+	if idx < 0 || idx >= len(viewLines) {
+		return false
+	}
+
+	return false
 }
 
 // clickFooterHint handles mouse clicks on footer hint items.

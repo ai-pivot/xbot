@@ -228,7 +228,6 @@ func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
 			m.lastSeenIteration = lastIter
 		}
 	}
-	m.removeLastToolSummary()
 }
 
 // carryForwardProgressState preserves transient state across progress updates
@@ -284,7 +283,7 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// session switch recovery.
 	// Skip when Thinking is already set — it contains the same finalized content
 	// and carrying StreamContent forward would cause duplicate rendering
-	// (renderCurrentIteration renders both fields separately).
+	// (renderLiveIteration renders both fields separately).
 	if prev.StreamContent != "" && m.progress.StreamContent == "" && sameIter {
 		if m.progress.Thinking == "" {
 			m.progress.StreamContent = prev.StreamContent
@@ -489,7 +488,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// Auto-start will trigger on this same progress event
 		// (m.typing is now false, and the guard below will start a new turn).
 		// Reload messages from DB to show the new user message from the parent agent.
-		m.reloadMessagesFromSession()
+		m.reloadMessagesFromSession(false)
 	}
 
 	// Update bg task count from callback
@@ -519,12 +518,12 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastReasoning = ""
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
-		m.invalidateProgressHistoryCache()
+		m.rc.invalidateProgress()
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
 		// → handleHistoryReload respects userScrolledUp/newContentHint.
-		m.reloadMessagesFromSession()
+		m.reloadMessagesFromSession(true)
 	}
 
 	// Cache token usage for context bar display — every progress event
@@ -657,7 +656,7 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 			} else {
 				// Same count, just status/text changed — no height change needed.
 				// Only invalidate progress block render so next tick picks it up.
-				m.renderCacheValid = false
+				m.rc.valid = false
 			}
 
 			// Persist to TodoManager so todos survive turn end and session switches.
@@ -710,14 +709,15 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 	if payload == nil {
 		return
 	}
-	if payload.Iteration > m.lastSeenIteration && m.lastSeenIteration >= 0 && prev != nil {
+	if payload.Iteration > m.lastSeenIteration && m.lastSeenIteration >= 0 {
 		// Guard: only create snapshot if prev actually belongs to lastSeenIteration.
 		// After session switch, resetProgressState sets lastSeenIteration=0 but
 		// the restored m.progress has Iteration=N. When the next live progress
 		// arrives, prev (which came from the restore) has Iteration=N, not 0.
 		// Snapshoting "iteration 0" with iteration N's data would cause #0 and #1
 		// to display the same reasoning content.
-		if prev.Iteration != m.lastSeenIteration {
+		// Also guard against prev being nil (progress cleared by endAgentTurn).
+		if prev != nil && prev.Iteration != m.lastSeenIteration {
 			// Data mismatch: prev belongs to a different iteration than what
 			// lastSeenIteration claims. Skip the snapshot to avoid corruption,
 			// but update the counter to prevent repeated misfires.
@@ -725,32 +725,34 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			m.iterationStartTime = time.Now()
 			return
 		}
-		prevIterTools := prev.CompletedTools
-		// Also include ActiveTools that completed (status=done/error) but
-		// haven't been moved to CompletedTools yet by progressFinalizer.
-		for _, t := range prev.ActiveTools {
-			if t.Status == "done" || t.Status == "error" {
-				prevIterTools = append(prevIterTools, t)
+		if prev != nil {
+			prevIterTools := prev.CompletedTools
+			// Also include ActiveTools that completed (status=done/error) but
+			// haven't been moved to CompletedTools yet by progressFinalizer.
+			for _, t := range prev.ActiveTools {
+				if t.Status == "done" || t.Status == "error" {
+					prevIterTools = append(prevIterTools, t)
+				}
 			}
-		}
-		prevReasoning := prev.Reasoning
-		if prevReasoning == "" {
-			prevReasoning = m.reasoningByIter[m.lastSeenIteration]
-		}
-		if prevReasoning == "" {
-			prevReasoning = prev.ReasoningStreamContent
-		}
-		if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
-			snap := cliIterationSnapshot{
-				Iteration:   m.lastSeenIteration,
-				Thinking:    prev.Thinking,
-				Reasoning:   prevReasoning,
-				Tools:       prevIterTools,
-				ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+			prevReasoning := prev.Reasoning
+			if prevReasoning == "" {
+				prevReasoning = m.reasoningByIter[m.lastSeenIteration]
 			}
-			m.iterationHistory = append(m.iterationHistory, snap)
+			if prevReasoning == "" {
+				prevReasoning = prev.ReasoningStreamContent
+			}
+			if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
+				snap := cliIterationSnapshot{
+					Iteration:   m.lastSeenIteration,
+					Thinking:    prev.Thinking,
+					Reasoning:   prevReasoning,
+					Tools:       prevIterTools,
+					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+				}
+				m.iterationHistory = append(m.iterationHistory, snap)
+			}
+			m.lastCompletedTools = m.lastCompletedTools[:0]
 		}
-		m.lastCompletedTools = m.lastCompletedTools[:0]
 		m.lastSeenIteration = payload.Iteration
 		m.iterationStartTime = time.Now()
 	}
@@ -811,17 +813,6 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					m.iterationHistory = append(m.iterationHistory, snap)
 				}
 			}
-		}
-		if len(m.iterationHistory) > 0 {
-			toolSummaryMsg := cliMessage{
-				role:       "tool_summary",
-				content:    "",
-				timestamp:  time.Now(),
-				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
-				dirty:      true,
-			}
-			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
-			m.renderCacheValid = false
 		}
 		m.setTurnDoneProcessed(turnID)
 		m.endAgentTurn(turnID)
@@ -889,27 +880,36 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				m.iterationHistory = append(m.iterationHistory, snap)
 			}
 		}
-		// Generate tool_summary if we have iteration history.
-		// Use upsert to avoid duplicates when PhaseDone fires multiple times
-		// (e.g. cancel + late tool completion).
+		// Store iterations in pendingToolSummary for handleAgentMessage
+		// to bake into the assistant message. Accumulate (not replace) to
+		// handle multiple PhaseDone events per logical turn (simulation tests).
 		if len(m.iterationHistory) > 0 {
-			toolSummaryMsg := cliMessage{
-				role:       "tool_summary",
-				content:    "",
-				timestamp:  time.Now(),
-				iterations: append([]cliIterationSnapshot{}, m.iterationHistory...),
-				dirty:      true,
+			if m.pendingToolSummary == nil {
+				m.pendingToolSummary = &cliMessage{}
 			}
-			m.upsertMessageByTurn(turnID, "tool_summary", toolSummaryMsg)
-			m.pendingToolSummary = nil // upsert replaces the slot; no need for separate pending
-			m.renderCacheValid = false
+			// Dedup by iteration number to avoid duplicates from repeated PhaseDone.
+			existingIters := make(map[int]bool)
+			for _, it := range m.pendingToolSummary.iterations {
+				existingIters[it.Iteration] = true
+			}
+			for _, it := range m.iterationHistory {
+				if !existingIters[it.Iteration] {
+					m.pendingToolSummary.iterations = append(m.pendingToolSummary.iterations, it)
+				}
+			}
 		}
 	}
-	// Mark this turn as done-processed (tool_summary created, turn ending).
+	// Mark this turn as done-processed (iterations stored in pendingToolSummary).
 	m.setTurnDoneProcessed(turnID)
+
+	// Save pendingToolSummary before endAgentTurn clears it via resetProgressState.
+	savedPTS := m.pendingToolSummary
 
 	// Reset all iteration tracking state (always, even if handleAgentMessage ran first)
 	m.endAgentTurn(turnID) // also clears todos and does relayoutViewport
+
+	// Restore pendingToolSummary so it persists across auto-start-turn cycles.
+	m.pendingToolSummary = savedPTS
 	if turnID == m.agentTurnID {
 		m.inputReady = true
 		if len(m.messageQueue) > 0 {
@@ -923,7 +923,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 	// synthesize the assistant message from the progress payload's final
 	// content (Thinking field carries the last clean assistant text).
 	// For main sessions, handleAgentMessage handles this and will
-	// relocate the tool_summary before the assistant reply.
+	// bake iterations into the assistant reply via pendingToolSummary.
 	if m.channelName == "agent" && !m.typing {
 		assistantContent := msg.payload.Thinking
 		if assistantContent == "" {
@@ -937,7 +937,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				dirty:     true,
 			})
 			m.setTurnReplyReceived(turnID)
-			m.renderCacheValid = false
+			m.rc.valid = false
 		}
 	}
 
@@ -983,7 +983,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	if m.agentCountFn != nil {
 		m.agentCount = m.agentCountFn()
 	}
-	m.renderCacheValid = false
+	m.rc.valid = false
 	// NOTE: do NOT return tickCmd() here. The wasTyping guard at the bottom of
 	// Update() detects idle->typing and starts the tick chain.
 	// Returning tickCmd() here creates a duplicate chain (2x spinner speed).
@@ -1186,7 +1186,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 		// Rebuild iteration history from server snapshot (authoritative).
 		m.iterationHistory = nil
-		m.invalidateProgressHistoryCache()
+		m.rc.invalidateProgress()
 		if len(msg.activeProgress.IterationHistory) > 0 {
 			for _, ih := range msg.activeProgress.IterationHistory {
 				snap := cliIterationSnapshot{
@@ -1210,16 +1210,6 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 				}
 			}
 		}
-		// Remove the LAST tool_summary from loaded history. The active
-		// progress block owns the current turn's iteration display — the
-		// static tool_summary from the active turn would duplicate content
-		// and its iteration numbers (globally cumulative from DB) don't
-		// match the progress block's per-turn numbers.
-		// Only the last tool_summary is removed. Previous turns' tool_summaries
-		// (including interrupted turns without assistant replies) are preserved
-		// — they have no live progress panel to replace them.
-		m.removeLastToolSummary()
-
 		// Fallback: if server returned Iteration=0 but iteration history
 		// has entries, derive the current iteration from history max.
 		// This handles a server-side quirk where activeProgress.Iteration
@@ -1255,7 +1245,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// show a phantom progress block.
 		if m.progress != nil {
 			m.progress = nil
-			m.renderCacheValid = false
+			m.rc.valid = false
 		}
 		// Server says session is idle — enable input.
 		m.inputReady = true
@@ -1384,20 +1374,27 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// O(N) glamour re-rendering of ALL messages. Only truly new or changed
 	// messages need re-rendering. This is critical for sessions with hundreds
 	// of iterations where full rebuild would take seconds.
+	m.streamingMsgIdx = -1
+	if msg.forceFullRebuild {
+		m.messages = newMessages
+		m.invalidateAllCache(false)
+		m.updateViewportContent()
+		log.WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")
+		return
+	}
 	prevMsgCount := len(m.messages)
 	allMatched := m.mergeMessagesPreservingCache(newMessages)
-	m.streamingMsgIdx = -1
 	// If ALL messages matched (same content, same count), skip fullRebuild.
 	// MUST check count: rewind deletes messages — remaining ones match old
 	// cache, but cachedHistoryLines still contains deleted messages' lines.
-	if allMatched && m.renderCacheValid && len(m.messages) == prevMsgCount {
+	if allMatched && m.rc.valid && len(m.messages) == prevMsgCount {
 		m.viewport.GotoBottom()
 		log.WithField("count", len(m.messages)).Debug("History reloaded (all cached, skipped rebuild)")
 		return
 	}
 	// Some messages are new/dirty or count changed — need rebuild, but only
 	// those will be re-rendered. Invalidate the flag so fullRebuild runs.
-	m.renderCacheValid = false
+	m.rc.valid = false
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
 	log.WithField("count", len(m.messages)).Info("History reloaded after compression")
@@ -1727,7 +1724,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.updateViewportContent()
 	} else {
 		m.typewriterTickActive = false
-		if !m.renderCacheValid || countsChanged {
+		if !m.rc.valid || countsChanged {
 			m.updateViewportContent()
 		}
 	}
@@ -1830,7 +1827,7 @@ func (m *cliModel) handleApprovalRequest(msg approvalRequestMsg) (tea.Model, tea
 	m.approvalDenyInput.CharLimit = 200
 	m.approvalDenyInput.SetWidth(60)
 	m.panelMode = "approval"
-	m.renderCacheValid = false
+	m.rc.valid = false
 	return m, nil
 }
 
@@ -1859,7 +1856,7 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 					next = 0
 				}
 				m.jumpToSearchResult(next)
-				m.renderCacheValid = false
+				m.rc.valid = false
 				m.updateViewportContent()
 			}
 			return m, nil, true
@@ -1870,7 +1867,7 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 					prev = len(m.searchResults) - 1
 				}
 				m.jumpToSearchResult(prev)
-				m.renderCacheValid = false
+				m.rc.valid = false
 				m.updateViewportContent()
 			}
 			return m, nil, true

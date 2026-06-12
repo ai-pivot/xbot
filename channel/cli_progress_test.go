@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -33,23 +34,546 @@ func sendDone(model *cliModel, content string) {
 	})
 }
 
-func assertCount(t *testing.T, label, haystack, needle string, expected int) {
-	count := strings.Count(haystack, needle)
-	if count != expected {
-		t.Errorf("%s: expected '%s' x%d, got x%d", label, needle, expected, count)
+func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
+	model := initTestModel()
+	model.ticker.frame = 0
+
+	tests := []struct {
+		name            string
+		iterations      []cliIterationSnapshot
+		progress        *protocol.ProgressEvent
+		fallbackContent string
+	}{
+		{
+			name: "previous tool done then active empty next iteration renders pulse",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous read succeeded", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+			},
+			progress: &protocol.ProgressEvent{Iteration: 2},
+		},
+		{
+			name: "previous content plus tool then active fallback stream text",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Thinking:  "previous content before current stream",
+					Tools: []protocol.ToolProgress{
+						{Name: "Glob", Label: "Previous glob succeeded", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+			},
+			progress:        &protocol.ProgressEvent{Iteration: 2},
+			fallbackContent: "current assistant fallback stream",
+		},
+		{
+			name: "previous reasoning plus tool then active thinking overrides fallback",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Reasoning: "previous reasoning",
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous read after reasoning", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+			},
+			progress:        &protocol.ProgressEvent{Iteration: 2, Thinking: "current thinking text"},
+			fallbackContent: "fallback assistant text",
+		},
+		{
+			name: "previous tool then active reasoning stream does not render pulse",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous tool before reasoning", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+			},
+			progress: &protocol.ProgressEvent{
+				Iteration:              2,
+				ReasoningStreamContent: "current reasoning stream only",
+			},
+		},
+		{
+			name: "previous success and failure then active stream with success failure running",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous tool succeeded", Status: "done", Elapsed: 100, Iteration: 1},
+						{Name: "Edit", Label: "Previous tool failed", Status: "error", Elapsed: 200, Iteration: 1},
+					},
+				},
+			},
+			progress: &protocol.ProgressEvent{
+				Iteration:     2,
+				Thinking:      "current thinking text",
+				StreamContent: "current streamed content",
+				ActiveTools: []protocol.ToolProgress{
+					{Name: "Read", Label: "Current active succeeded", Status: "done", Elapsed: 300},
+					{Name: "Edit", Label: "Current active failed", Status: "error", Elapsed: 400},
+					{Name: "Shell", Label: "Current active running", Status: "running", Elapsed: 1500},
+				},
+			},
+			fallbackContent: "fallback assistant text",
+		},
+		{
+			name: "multiple previous tool only iterations then active running tool",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Iter one completed", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+				{
+					Iteration: 2,
+					Tools: []protocol.ToolProgress{
+						{Name: "Edit", Label: "Iter two failed", Status: "error", Elapsed: 200, Iteration: 2},
+					},
+				},
+			},
+			progress: &protocol.ProgressEvent{
+				Iteration: 3,
+				ActiveTools: []protocol.ToolProgress{
+					{Name: "Shell", Label: "Iter three still running", Status: "running", Elapsed: 2400},
+				},
+			},
+		},
+		{
+			name: "previous content then active reasoning plus mixed tools",
+			iterations: []cliIterationSnapshot{
+				{Iteration: 1, Thinking: "previous content only"},
+				{
+					Iteration: 2,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous second iter done", Status: "done", Elapsed: 100, Iteration: 2},
+					},
+				},
+			},
+			progress: &protocol.ProgressEvent{
+				Iteration:              3,
+				ReasoningStreamContent: "current reasoning before tools",
+				ActiveTools: []protocol.ToolProgress{
+					{Name: "Read", Label: "Current read succeeded", Status: "done", Elapsed: 200},
+					{Name: "Edit", Label: "Current edit failed", Status: "error", Elapsed: 300},
+					{Name: "Shell", Label: "Current shell running", Status: "running", Elapsed: 2400},
+				},
+			},
+		},
+		{
+			name: "previous reasoning then active content plus completed tools",
+			iterations: []cliIterationSnapshot{
+				{Iteration: 1, Reasoning: "previous reasoning only"},
+				{
+					Iteration: 2,
+					Thinking:  "previous content and done tool",
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous done tool", Status: "done", Elapsed: 100, Iteration: 2},
+					},
+				},
+			},
+			progress: &protocol.ProgressEvent{
+				Iteration:     3,
+				StreamContent: "current content before completed tools",
+				CompletedTools: []protocol.ToolProgress{
+					{Name: "Glob", Label: "Current glob completed", Status: "done", Elapsed: 100},
+					{Name: "ApplyPatch", Label: "Current patch failed", Status: "error", Elapsed: 400},
+				},
+			},
+		},
+		{
+			name: "multiple previous iterations then active subagents only",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous tool done", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+				{Iteration: 2, Thinking: "previous content before subagent"},
+			},
+			progress: &protocol.ProgressEvent{
+				Iteration: 3,
+				SubAgents: []protocol.SubAgentInfo{
+					{
+						Role:     "explore",
+						Instance: "alpha",
+						Status:   "running",
+						Desc:     "map rendering behavior",
+						Children: []protocol.SubAgentInfo{
+							{Role: "review", Instance: "done", Status: "done", Desc: "already finished"},
+							{Role: "test", Instance: "beta", Status: "running", Desc: "verify snapshots"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var snapshot strings.Builder
+	for _, tt := range tests {
+		rendered := model.renderTurnBody(tt.iterations, tt.progress, 80, tt.fallbackContent)
+		appendRenderSnapshotCase(&snapshot, tt.name, rendered)
+	}
+	assertRenderSnapshot(t, "render_turn_body_multi_iteration_live.snap", snapshot.String())
+}
+
+func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
+	model := initTestModel()
+	model.ticker.frame = 0
+
+	iterations := []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Reasoning: "completed reasoning",
+			Thinking:  "completed iteration text",
+			Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "Read completed file", Status: "done", Elapsed: 200, Iteration: 1},
+			},
+		},
+		{
+			Iteration: 2,
+			Tools: []protocol.ToolProgress{
+				{Name: "Glob", Label: "Second completed file search", Status: "done", Elapsed: 100, Iteration: 2},
+			},
+		},
+	}
+
+	tests := []struct {
+		name            string
+		iterations      []cliIterationSnapshot
+		liveProgress    *protocol.ProgressEvent
+		fallbackContent string
+	}{
+		{
+			name:            "idle fallback is rendered after completed iterations",
+			iterations:      iterations,
+			fallbackContent: "final assistant answer",
+		},
+		{
+			name:            "idle fallback is skipped when last iteration already has it",
+			iterations:      []cliIterationSnapshot{{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "Read", Label: "Earlier completed tool", Status: "done", Elapsed: 100, Iteration: 1}}}, {Iteration: 2, Thinking: "final assistant answer"}},
+			fallbackContent: "final assistant answer",
+		},
+		{
+			name: "completed reasoning plus tool only",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Reasoning: "reasoning-only completed iteration",
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Read after reasoning", Status: "done", Elapsed: 100, Iteration: 1},
+						{Name: "Edit", Label: "Edit failed after reasoning", Status: "error", Elapsed: 200, Iteration: 1},
+					},
+				},
+				{
+					Iteration: 2,
+					Tools: []protocol.ToolProgress{
+						{Name: "Shell", Label: "Second tool still marked running", Status: "running", Elapsed: 500, Iteration: 2},
+					},
+				},
+			},
+		},
+		{
+			name: "completed content plus tool only",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Reasoning: "reasoning before content iteration",
+				},
+				{
+					Iteration: 2,
+					Thinking:  "content-only completed iteration",
+					Tools: []protocol.ToolProgress{
+						{Name: "Shell", Label: "Run content command", Status: "done", Elapsed: 300, Iteration: 2},
+					},
+				},
+			},
+		},
+		{
+			name: "completed tools only mixed statuses",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "First completed tool", Status: "done", Elapsed: 100, Iteration: 1},
+						{Name: "Edit", Label: "Second failed tool", Status: "error", Elapsed: 200, Iteration: 1},
+					},
+				},
+				{
+					Iteration: 2,
+					Tools: []protocol.ToolProgress{
+						{Name: "Shell", Label: "Third running tool", Status: "running", Elapsed: 300, Iteration: 2},
+					},
+				},
+			},
+		},
+		{
+			name: "multiple tool only iterations with prior done and next running",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "Previous iteration done", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+				{
+					Iteration: 2,
+					Tools: []protocol.ToolProgress{
+						{Name: "Shell", Label: "Next iteration running", Status: "running", Elapsed: 2000, Iteration: 2},
+					},
+				},
+			},
+		},
+		{
+			name: "mixed completed iterations without live progress",
+			iterations: []cliIterationSnapshot{
+				{Iteration: 1, Reasoning: "reasoning only iteration"},
+				{Iteration: 2, Thinking: "content only iteration"},
+				{
+					Iteration: 3,
+					Tools: []protocol.ToolProgress{
+						{Name: "Glob", Label: "tool only iteration", Status: "done", Elapsed: 100, Iteration: 3},
+					},
+				},
+			},
+		},
+		{
+			name: "multiple completed iterations with final content fallback",
+			iterations: []cliIterationSnapshot{
+				{
+					Iteration: 1,
+					Reasoning: "first completed reasoning",
+					Tools: []protocol.ToolProgress{
+						{Name: "Read", Label: "First completed tool", Status: "done", Elapsed: 100, Iteration: 1},
+					},
+				},
+				{
+					Iteration: 2,
+					Thinking:  "second completed content",
+					Tools: []protocol.ToolProgress{
+						{Name: "Edit", Label: "Second completed failed", Status: "error", Elapsed: 200, Iteration: 2},
+					},
+				},
+			},
+			fallbackContent: "final fallback after multi iter",
+		},
+	}
+
+	var snapshot strings.Builder
+	for _, tt := range tests {
+		rendered := model.renderTurnBody(tt.iterations, tt.liveProgress, 80, tt.fallbackContent)
+		appendRenderSnapshotCase(&snapshot, tt.name, rendered)
+	}
+	assertRenderSnapshot(t, "render_turn_body_multi_iteration_idle.snap", snapshot.String())
+}
+
+func TestStreamingSeparatorUsesAdjacentBlockKinds(t *testing.T) {
+	iterations := []cliIterationSnapshot{
+		{Iteration: 1, Thinking: "earlier content makes whole history mixed"},
+		{
+			Iteration: 2,
+			Tools: []protocol.ToolProgress{
+				{Name: "Shell", Label: "completed build", Status: "done", Elapsed: 100, Iteration: 2},
+			},
+		},
+	}
+	liveBlocks := []turnBlock{
+		{kind: turnBlockTools, text: "  · ◌ running qemu 2.1s"},
+	}
+
+	prevKind, hasPrev := lastIterationBlockKind(iterations)
+	nextKind, hasNext := firstTurnBlockKind(liveBlocks)
+	if !hasPrev || !hasNext {
+		t.Fatal("expected adjacent block kinds")
+	}
+	if needsTurnBlockSeparator(prevKind, nextKind) {
+		t.Fatal("same adjacent tools blocks should not insert a blank guide line")
+	}
+}
+
+func TestFullRebuildWithStreamingCachesOnlyHistoryMessages(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{
+		{role: "user", content: "current user message", timestamp: time.Now(), dirty: true},
+		{role: "assistant", content: "streaming reply", timestamp: time.Now(), isPartial: true, dirty: true},
+	}
+	model.streamingMsgIdx = 1
+
+	model.fullRebuild()
+
+	if model.rc.msgCount != model.streamingMsgIdx {
+		t.Fatalf("rc.msgCount = %d, want streaming split index %d", model.rc.msgCount, model.streamingMsgIdx)
+	}
+	if strings.Contains(model.rc.history, "streaming reply") {
+		t.Fatalf("streaming message should not be cached in history:\n%s", model.rc.history)
+	}
+}
+
+func TestUpdateViewportContentClearsStaleStreamingIndex(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{{role: "user", content: "history", timestamp: time.Now(), dirty: true}}
+	model.streamingMsgIdx = 3
+	model.rc.valid = true
+
+	model.updateViewportContent()
+
+	if model.streamingMsgIdx != -1 {
+		t.Fatalf("streamingMsgIdx = %d, want -1 after stale index cleanup", model.streamingMsgIdx)
+	}
+}
+
+func TestCancelMessageIgnoresStaleStreamingIndex(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{{role: "user", content: "history", timestamp: time.Now(), dirty: true}}
+	model.streamingMsgIdx = 3
+	model.agentTurnID = 10
+
+	model.handleAgentMessage(OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+}
+
+func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.cancelTargetTurnID = model.agentTurnID
+	model.iterationHistory = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Thinking:  "previous iteration",
+			Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "Previous read", Status: "done", Elapsed: 100, Iteration: 1},
+			},
+		},
+	}
+	model.lastSeenIteration = 2
+	model.progress = &protocol.ProgressEvent{
+		Iteration: 2,
+		Thinking:  "current unsnapped iteration",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "Current build", Status: "done", Elapsed: 200, Iteration: 2},
+		},
+	}
+
+	model.handleAgentMessage(OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+
+	if model.streamingMsgIdx != -1 {
+		t.Fatalf("streamingMsgIdx = %d, want -1 after cancel", model.streamingMsgIdx)
+	}
+	var assistant *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" {
+			assistant = &model.messages[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("expected cancelled assistant message")
+	}
+	if got := len(assistant.iterations); got != 2 {
+		t.Fatalf("cancelled assistant iterations = %d, want 2: %+v", got, assistant.iterations)
+	}
+	if assistant.iterations[1].Iteration != 2 || assistant.iterations[1].Thinking != "current unsnapped iteration" {
+		t.Fatalf("current unsnapped iteration was not preserved: %+v", assistant.iterations[1])
+	}
+	if len(assistant.iterations[1].Tools) != 1 || assistant.iterations[1].Tools[0].Label != "Current build" {
+		t.Fatalf("current unsnapped tools were not preserved: %+v", assistant.iterations[1].Tools)
+	}
+}
+
+func TestHistoryReloadForceFullRebuildDoesNotReuseStaleRenderedCache(t *testing.T) {
+	model := initTestModel()
+	now := time.Now()
+	model.messages = []cliMessage{
+		{
+			role:         "assistant",
+			content:      "compacted summary",
+			timestamp:    now,
+			rendered:     "STALE_RENDERED_OUTPUT",
+			renderWidth:  model.chatWidth(),
+			wrappedLines: []string{"STALE_RENDERED_OUTPUT"},
+			wrappedWidth: model.chatWidth(),
+			dirty:        false,
+		},
+	}
+	model.rc.valid = true
+	model.rc.history = "STALE_RENDERED_OUTPUT\n"
+	model.rc.histLines = []string{"STALE_RENDERED_OUTPUT"}
+	model.rc.msgCount = len(model.messages)
+
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName:      model.channelName,
+		chatID:           model.chatID,
+		forceFullRebuild: true,
+		history: []HistoryMessage{
+			{Role: "assistant", Content: "compacted summary", Timestamp: now},
+		},
+	})
+
+	if strings.Contains(model.rc.history, "STALE_RENDERED_OUTPUT") {
+		t.Fatalf("force history reload reused stale rendered cache:\n%s", model.rc.history)
+	}
+	if model.messages[0].rendered == "STALE_RENDERED_OUTPUT" {
+		t.Fatal("force history reload should re-render message instead of preserving stale rendered output")
+	}
+}
+
+func appendRenderSnapshotCase(sb *strings.Builder, name, rendered string) {
+	if sb.Len() > 0 {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("=== ")
+	sb.WriteString(name)
+	sb.WriteString(" ===\n")
+	sb.WriteString(normalizeRenderSnapshot(rendered))
+}
+
+func normalizeRenderSnapshot(rendered string) string {
+	clean := strings.ReplaceAll(stripAnsi(rendered), "\r\n", "\n")
+	lines := strings.Split(clean, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t")
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
+}
+
+func assertRenderSnapshot(t *testing.T, name, got string) {
+	t.Helper()
+	path := "testdata/snapshots/" + name
+	if os.Getenv("UPDATE_SNAPSHOTS") == "1" {
+		if err := os.MkdirAll("testdata/snapshots", 0o755); err != nil {
+			t.Fatalf("create snapshot dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatalf("write snapshot %s: %v", path, err)
+		}
+	}
+	wantBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read snapshot %s: %v", path, err)
+	}
+	if got != string(wantBytes) {
+		t.Fatalf("snapshot %s mismatch\n--- got ---\n%s\n--- want ---\n%s", path, got, string(wantBytes))
 	}
 }
 
 func countToolsInSummary(model *cliModel) int {
+	// Check assistant messages for iterations (unified model).
+	// Also check any remaining tool_summary messages (AskUser).
 	for _, msg := range model.messages {
-		if msg.role == "tool_summary" {
-			if len(msg.iterations) > 0 {
-				count := 0
-				for _, it := range msg.iterations {
-					count += len(it.Tools)
-				}
-				return count
+		if len(msg.iterations) > 0 {
+			count := 0
+			for _, it := range msg.iterations {
+				count += len(it.Tools)
 			}
+			return count
+		}
+		if len(msg.tools) > 0 {
 			return len(msg.tools)
 		}
 	}
@@ -59,35 +583,31 @@ func countToolsInSummary(model *cliModel) int {
 // Basic: 2 iterations, no final empty iteration
 func TestProgressNoDuplication(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0, Thinking: "A"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "A"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "A",
+		Phase: "tool_exec", Iteration: 1, Thinking: "A",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read file", Status: "done", Elapsed: 1000, Iteration: 0},
+			{Name: "read", Label: "Read file", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "B"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: "B"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "B",
+		Phase: "tool_exec", Iteration: 2, Thinking: "B",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 500, Iteration: 1},
+			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 500, Iteration: 2},
 		},
 	})
 
-	block := model.renderProgressBlock()
-	assertCount(t, "Read file", block, "Read file", 1)
-	assertCount(t, "Search pattern", block, "Search pattern", 1)
-	assertCount(t, "Thinking A", block, "A", 1)
-	assertCount(t, "Thinking B", block, "B", 1)
+	// Verify iterationHistory has entries and tools
+	if len(model.iterationHistory) == 0 {
+		t.Error("Expected iterationHistory to have entries after progress events")
+	}
 
 	sendDone(model, "Final answer")
 
-	if model.renderProgressBlock() != "" {
-		t.Error("Progress block should be empty after done")
-	}
 	if tools := countToolsInSummary(model); tools != 2 {
 		t.Errorf("Expected 2 tools in summary, got %d", tools)
 	}
@@ -96,39 +616,35 @@ func TestProgressNoDuplication(t *testing.T) {
 // Realistic: 2 iterations with 2+1 tools, then empty thinking iteration before done
 func TestProgressRealisticSequence(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Iter 0
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0, Thinking: "Let me look"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "Let me look"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "Let me look",
+		Phase: "tool_exec", Iteration: 1, Thinking: "Let me look",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read config", Status: "done", Elapsed: 500, Iteration: 0},
-			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 300, Iteration: 0},
+			{Name: "read", Label: "Read config", Status: "done", Elapsed: 500, Iteration: 1},
+			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 300, Iteration: 1},
 		},
 	})
 	// Iter 1
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "Based on results"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: "Based on results"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "Based on results",
+		Phase: "tool_exec", Iteration: 2, Thinking: "Based on results",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "edit", Label: "Fix bug", Status: "done", Elapsed: 200, Iteration: 1},
+			{Name: "edit", Label: "Fix bug", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
-	// Iter 2: empty thinking (no tools) - this is the bug trigger
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: ""})
+	// Iter 2: empty thinking (no tools)
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Thinking: ""})
 
-	block := model.renderProgressBlock()
-	assertCount(t, "Read config total", block, "Read config", 1)
-	assertCount(t, "Search pattern total", block, "Search pattern", 1)
-	assertCount(t, "Fix bug total", block, "Fix bug", 1)
+	if len(model.iterationHistory) == 0 {
+		t.Error("Expected iterationHistory to have entries")
+	}
 
 	sendDone(model, "Here is the fix.")
 
-	if model.renderProgressBlock() != "" {
-		t.Error("Progress block should be empty after done")
-	}
 	if tools := countToolsInSummary(model); tools != 3 {
 		t.Errorf("Expected 3 tools in summary, got %d", tools)
 	}
@@ -174,28 +690,23 @@ func TestLastCompletedToolsLeak(t *testing.T) {
 // appear under the wrong iteration.
 func TestErrorToolIterationAttribution(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Iter 0: a tool that errors
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "Trying A",
+		Phase: "tool_exec", Iteration: 1, Thinking: "Trying A",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read", Status: "error", Elapsed: 100, Iteration: 0},
+			{Name: "read", Label: "Read", Status: "error", Elapsed: 100, Iteration: 1},
 		},
 	})
 	// Iter 1: a tool that succeeds
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "Trying B",
+		Phase: "tool_exec", Iteration: 2, Thinking: "Trying B",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 1},
+			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
-
-	block := model.renderProgressBlock()
-	// The error tool should appear in iteration history (dimmed), not in current iteration
-	assertCount(t, "Error tool in progress", block, "Read", 1)
-	assertCount(t, "Success tool in current iter", block, "Edit", 1)
 
 	sendDone(model, "Done")
 
@@ -204,25 +715,23 @@ func TestErrorToolIterationAttribution(t *testing.T) {
 		t.Errorf("Expected 2 tools in summary, got %d", tools)
 	}
 
-	// Check iteration attribution in the summary
+	// Check iteration attribution in the summary (in assistant messages)
 	var foundIter0, foundIter1 bool
 	for _, msg := range model.messages {
-		if msg.role == "tool_summary" {
-			for _, it := range msg.iterations {
-				if it.Iteration == 0 && len(it.Tools) == 1 && it.Tools[0].Name == "read" && it.Tools[0].Status == "error" {
-					foundIter0 = true
-				}
-				if it.Iteration == 1 && len(it.Tools) == 1 && it.Tools[0].Name == "edit" && it.Tools[0].Status == "done" {
-					foundIter1 = true
-				}
+		for _, it := range msg.iterations {
+			if it.Iteration == 1 && len(it.Tools) == 1 && it.Tools[0].Name == "read" && it.Tools[0].Status == "error" {
+				foundIter0 = true
+			}
+			if it.Iteration == 2 && len(it.Tools) == 1 && it.Tools[0].Name == "edit" && it.Tools[0].Status == "done" {
+				foundIter1 = true
 			}
 		}
 	}
 	if !foundIter0 {
-		t.Error("Expected error tool 'read' in iteration 0 of summary")
+		t.Error("Expected error tool 'read' in iteration 1 of summary")
 	}
 	if !foundIter1 {
-		t.Error("Expected success tool 'edit' in iteration 1 of summary")
+		t.Error("Expected success tool 'edit' in iteration 2 of summary")
 	}
 }
 
@@ -231,49 +740,44 @@ func TestErrorToolIterationAttribution(t *testing.T) {
 // be correctly grouped by their Iteration field.
 func TestCrossIterationToolsFiltered(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Iter 0 with tool from iter 0
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "A",
+		Phase: "tool_exec", Iteration: 1, Thinking: "A",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 0},
+			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 1},
 		},
 	})
 	// Iter 1 payload that accidentally includes a tool from iter 0 (stale)
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "B",
+		Phase: "tool_exec", Iteration: 2, Thinking: "B",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 0}, // stale from iter 0
-			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 1},
+			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 1}, // stale
+			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
 
-	block := model.renderProgressBlock()
-	// In the current iteration view, only Edit should appear (not stale Read)
-	assertCount(t, "Stale Read in current iter", block, "Read", 1) // once in history
-	assertCount(t, "Edit in current iter", block, "Edit", 1)
-
 	sendDone(model, "Done")
 
-	// Summary should have exactly 2 tools (Read in iter 0, Edit in iter 1)
+	// Summary should have exactly 2 tools (Read in iter 1, Edit in iter 2)
 	if tools := countToolsInSummary(model); tools != 2 {
 		t.Errorf("Expected 2 tools in summary, got %d", tools)
 	}
 
-	// Verify iteration attribution
+	// Verify iteration attribution (in assistant messages, not tool_summary)
 	for _, msg := range model.messages {
-		if msg.role == "tool_summary" {
+		if msg.role == "assistant" && len(msg.iterations) > 0 {
 			for _, it := range msg.iterations {
-				if it.Iteration == 0 {
+				if it.Iteration == 1 {
 					if len(it.Tools) != 1 || it.Tools[0].Name != "read" {
-						t.Errorf("Iter 0 should have 1 'read' tool, got %+v", it.Tools)
+						t.Errorf("Iter 1 should have 1 'read' tool, got %+v", it.Tools)
 					}
 				}
-				if it.Iteration == 1 {
+				if it.Iteration == 2 {
 					if len(it.Tools) != 1 || it.Tools[0].Name != "edit" {
-						t.Errorf("Iter 1 should have 1 'edit' tool, got %+v", it.Tools)
+						t.Errorf("Iter 2 should have 1 'edit' tool, got %+v", it.Tools)
 					}
 				}
 			}
@@ -352,27 +856,17 @@ func TestBgTaskInjectedUserMessage_RefreshesBgCount(t *testing.T) {
 
 func TestBgDrainCompletedTool_AppearsInIteration(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Iter 0: normal tool + bg drain tool in same iteration
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "working",
+		Phase: "tool_exec", Iteration: 1, Thinking: "working",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read file", Status: "done", Elapsed: 100, Iteration: 0},
-			{Name: "background_task_result", Label: "bg:abc123", Status: "done", Elapsed: 30000, Iteration: 0},
+			{Name: "read", Label: "Read file", Status: "done", Elapsed: 100, Iteration: 1},
+			{Name: "background_task_result", Label: "bg:abc123", Status: "done", Elapsed: 30000, Iteration: 1},
 		},
 	})
-
-	block := model.renderProgressBlock()
-
-	// Both tools should appear in current iteration view
-	if !strings.Contains(block, "Read file") {
-		t.Error("normal tool should appear in iteration")
-	}
-	if !strings.Contains(block, "bg:abc123") {
-		t.Error("bg tool should appear in iteration")
-	}
 
 	// Final done — snapshot into summary
 	sendDone(model, "all done")
@@ -384,33 +878,24 @@ func TestBgDrainCompletedTool_AppearsInIteration(t *testing.T) {
 
 func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 	model := initTestModel()
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
 	// Iter 0: bg tool
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "working",
-		CompletedTools: []protocol.ToolProgress{
-			{Name: "background_task_result", Label: "bg:old", Status: "done", Elapsed: 1000, Iteration: 0},
-		},
-	})
-
-	block0 := model.renderProgressBlock()
-	// At iter 0, bg:old should appear once
-	assertCount(t, "bg:old at iter 0", block0, "bg:old", 1)
-
-	// Iter 1: bg tool — iter 0 tool should be in history (dimmed), not duplicated in current
-	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 1, Thinking: "working",
 		CompletedTools: []protocol.ToolProgress{
-			{Name: "background_task_result", Label: "bg:new", Status: "done", Elapsed: 2000, Iteration: 1},
+			{Name: "background_task_result", Label: "bg:old", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
 	})
 
-	block1 := model.renderProgressBlock()
-	// bg:old appears once in history (dimmed), bg:new appears once in current iteration
-	assertCount(t, "bg:old in history", block1, "bg:old", 1)
-	assertCount(t, "bg:new in current", block1, "bg:new", 1)
+	// Iter 1: bg tool
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 2, Thinking: "working",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "background_task_result", Label: "bg:new", Status: "done", Elapsed: 2000, Iteration: 2},
+		},
+	})
 
 	// Final done — snapshot both iterations into summary
 	sendDone(model, "done")

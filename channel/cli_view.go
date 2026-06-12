@@ -1098,6 +1098,10 @@ func (m *cliModel) View() (v tea.View) {
 	borderColor, completionsHint := m.renderCompletionsHint(m.textarea.Value())
 	input := m.renderInputArea(borderColor)
 
+	// Set viewport Y start for mouse coordinate translation.
+	// The viewport always starts right below the title bar (Y=1).
+	m.viewportYStart = 1
+
 	// Layout selection + zone tracking
 	var content string
 	switch {

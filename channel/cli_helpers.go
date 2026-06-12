@@ -65,16 +65,7 @@ func (m *cliModel) persistCLISettingsValues(values map[string]string) { m.saveSe
 // and optionally updates the viewport content.
 // This pattern appears in theme change, locale change, resize, and tool-summary toggle.
 func (m *cliModel) invalidateAllCache(updateViewport bool) {
-	m.renderCacheValid = false
-	m.lastViewportContent = "" // Force viewport refresh on next updateViewportContent
-	m.lastViewportWidth = 0
-	m.cachedWrappedHistory = ""
-	m.cachedWrappedHistoryRaw = ""
-	m.cachedWrappedHistoryWidth = 0
-	m.cachedHistoryMaxWidth = 0
-	m.cachedHistoryLines = nil
-	m.cachedAllLines = nil
-	m.cachedAllLinesHistoryLen = 0
+	m.rc.resetAll()
 	for i := range m.messages {
 		m.messages[i].dirty = true
 		m.messages[i].wrappedLines = nil
@@ -104,7 +95,7 @@ func (m *cliModel) toggleToolSummary() {
 	}
 
 	m.toolSummaryExpanded = !m.toolSummaryExpanded
-	m.cachedHistory = ""
+	m.rc.history = ""
 	m.invalidateAllCache(true)
 
 	// Restore scroll position anchored to the same message.
@@ -184,15 +175,14 @@ func (m *cliModel) startAgentTurn() {
 		}
 	}
 
-	// Remote mode: optimistically show initial progress so the user sees
-	// immediate feedback (progress bubble) without waiting for the server's
-	// first progress_structured event (which has network round-trip latency).
-	if m.remoteMode && m.progress == nil {
+	// Show initial progress so the user sees immediate feedback (spinner)
+	// without waiting for the first progress_structured event.
+	if m.progress == nil {
 		m.progress = &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 0,
 		}
-		m.renderCacheValid = false
+		m.rc.valid = false
 	}
 	// NOTE: Callers are responsible for ensuring the tick chain starts:
 	//   - Inside Bubble Tea Update: return tickCmd() in the cmd chain
@@ -206,6 +196,19 @@ func (m *cliModel) startAgentTurn() {
 	m.updatePlaceholder()
 	m.inputReady = false
 	m.resetProgressState()
+	// Create an empty streaming assistant message at turn start.
+	// This allows all progress/iteration data to be rendered inline
+	// from the very beginning, eliminating the need for a separate
+	// progress panel fallback.
+	m.messages = append(m.messages, cliMessage{
+		role:      "assistant",
+		content:   "",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    m.agentTurnID,
+	})
+	m.streamingMsgIdx = len(m.messages) - 1
 }
 
 // removeLastToolSummary removes only the LAST tool_summary message from m.messages.
@@ -244,7 +247,7 @@ func (m *cliModel) removeLastToolSummary() {
 		}
 	}
 	m.messages = append(m.messages[:lastIdx], m.messages[lastIdx+1:]...)
-	m.renderCacheValid = false
+	m.rc.valid = false
 }
 
 // endAgentTurn resets all agent-turn tracking state and returns to idle.
@@ -262,7 +265,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	}
 	m.lastCompletedTools = nil
 	m.iterationHistory = nil
-	m.invalidateProgressHistoryCache()
+	m.rc.invalidateProgress()
 	m.lastSeenIteration = 0
 	m.lastReasoning = ""
 	m.reasoningByIter = nil
@@ -456,7 +459,7 @@ func (m *cliModel) applyThemeAndRebuild(theme string) {
 		m.renderer = newGlamourRenderer(cw - 4)
 	}
 	// Mark all messages for re-render (new theme = new styles)
-	m.renderCacheValid = false
+	m.rc.valid = false
 	for i := range m.messages {
 		m.messages[i].dirty = true
 	}
@@ -657,7 +660,7 @@ func (m *cliModel) askUserPanelVisibleHeight() int {
 func (m *cliModel) applyLanguageChange(lang string) {
 	setLocale(lang)
 	m.locale = GetLocale(lang)
-	m.renderCacheValid = false
+	m.rc.valid = false
 }
 
 // applyLayoutConfig updates layout-related model fields from settings values
@@ -685,7 +688,7 @@ func (m *cliModel) applyLayoutConfig(vals map[string]string) {
 	if v, ok := vals["chat_center"]; ok {
 		m.chatCenter = ParseSettingBool(v)
 	}
-	m.renderCacheValid = false
+	m.rc.valid = false
 }
 
 // doSaveSettings runs the settings save callback synchronously and returns
@@ -1283,7 +1286,7 @@ func (m *cliModel) handlePluginStatus() tea.Cmd {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.Refresh()
 			m.showSystemMsg(m.remotePluginCache.FormatStatus(), feedbackInfo)
-			m.renderCacheValid = false
+			m.rc.valid = false
 			m.relayoutViewport()
 			return nil
 		}
@@ -1311,7 +1314,7 @@ func (m *cliModel) handlePluginList() tea.Cmd {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.Refresh()
 			m.showSystemMsg(m.remotePluginCache.FormatList(), feedbackInfo)
-			m.renderCacheValid = false
+			m.rc.valid = false
 			m.relayoutViewport()
 		} else {
 			m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
@@ -1647,7 +1650,7 @@ func (m *cliModel) handlePluginRefresh() tea.Cmd {
 		if m.remotePluginCache != nil {
 			m.remotePluginCache.Refresh()
 			m.showSystemMsg("🔄 Plugin data refreshed.", feedbackInfo)
-			m.renderCacheValid = false
+			m.rc.valid = false
 			m.relayoutViewport()
 			return nil
 		}
@@ -1682,7 +1685,7 @@ func (m *cliModel) handlePluginWidgets() tea.Cmd {
 				}
 			}
 			m.showSystemMsg(msg, feedbackInfo)
-			m.renderCacheValid = false
+			m.rc.valid = false
 			m.relayoutViewport()
 			return nil
 		}
@@ -1886,7 +1889,7 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 			return nil
 		}
 		m.applyThemeAndRebuild(theme)
-		m.renderCacheValid = false
+		m.rc.valid = false
 		m.updateViewportContent()
 		sc.result <- &cliSessionResult{ok: true}
 		m.persistCLISettingsValues(map[string]string{"theme": theme})

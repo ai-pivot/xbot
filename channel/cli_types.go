@@ -561,12 +561,13 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			ts := lastAssistantTS
 			if ts.IsZero() {
 				// No assistant message in this turn — assign a synthetic
-				// timestamp so each tool_summary gets a unique dedup key.
+				// timestamp so each assistant message gets a unique dedup key.
 				ts = time.Date(2024, 1, 1, 0, 0, 0, syntheticIdx, time.UTC)
 				syntheticIdx++
 			}
 			history = append(history, HistoryMessage{
-				Role:       "tool_summary",
+				Role:       "assistant",
+				Content:    "",
 				Timestamp:  ts,
 				Iterations: pendingIters,
 			})
@@ -613,19 +614,34 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						})
 					}
 					if len(iters) > 0 {
+						// [interrupted] messages carry cancelled-turn iteration history
+						// with full elapsed data. Use empty Content so the UI shows
+						// only the progress block, not the "[interrupted]" marker text.
+						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
+						if m.Content != "" && !isInterrupted {
+							history = append(history, HistoryMessage{
+								Role:       "assistant",
+								Content:    m.Content,
+								Timestamp:  m.Timestamp,
+								Iterations: iters,
+							})
+						} else {
+							// Detail has iterations but no displayable content
+							// (intermediate assistant, cancelled turn, or [interrupted] marker).
+							history = append(history, HistoryMessage{
+								Role:       "assistant",
+								Content:    "",
+								Timestamp:  m.Timestamp,
+								Iterations: iters,
+							})
+						}
+					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
 						history = append(history, HistoryMessage{
-							Role:       "tool_summary",
-							Timestamp:  m.Timestamp,
-							Iterations: iters,
+							Role:      "assistant",
+							Content:   m.Content,
+							Timestamp: m.Timestamp,
 						})
 					}
-				}
-				if m.Content != "" {
-					history = append(history, HistoryMessage{
-						Role:      "assistant",
-						Content:   m.Content,
-						Timestamp: m.Timestamp,
-					})
 				}
 			} else if len(m.ToolCalls) > 0 {
 				// Intermediate assistant with tool_calls from incremental persistence.
@@ -645,11 +661,21 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				}
 			} else if m.Content != "" {
 				flushPending()
-				history = append(history, HistoryMessage{
-					Role:      "assistant",
-					Content:   m.Content,
-					Timestamp: m.Timestamp,
-				})
+				// Merge with previous assistant message that had iterations but no content.
+				// Backend stores iterations in a separate DisplayOnly assistant message
+				// (Detail set, content empty), followed by the real assistant reply (content set).
+				// We need to combine them into one HistoryMessage for unified rendering.
+				if len(history) > 0 && history[len(history)-1].Role == "assistant" &&
+					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
+					history[len(history)-1].Content = m.Content
+					history[len(history)-1].Timestamp = m.Timestamp
+				} else {
+					history = append(history, HistoryMessage{
+						Role:      "assistant",
+						Content:   m.Content,
+						Timestamp: m.Timestamp,
+					})
+				}
 			}
 		default:
 			flushPending()

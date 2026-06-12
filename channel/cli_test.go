@@ -903,9 +903,9 @@ func TestCLIModelUpdateEnterKeyWithContent(t *testing.T) {
 	keyMsg := tea.KeyPressMsg{Code: tea.KeyEnter}
 	_, _ = model.Update(keyMsg)
 
-	// Message should be added
-	if len(model.messages) != 1 {
-		t.Errorf("Expected 1 message after Enter, got %d", len(model.messages))
+	// Message should be added (user message + streaming assistant from startAgentTurn)
+	if len(model.messages) != 2 {
+		t.Errorf("Expected 2 messages after Enter, got %d", len(model.messages))
 	}
 }
 
@@ -1066,22 +1066,27 @@ func TestCLIModelRenderProgressBlockThinking(t *testing.T) {
 	model := newCLIModel()
 	model.locale = GetLocale("en")
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
-	result := model.renderProgressBlock()
-	if !strings.Contains(result, "Thinking") {
-		t.Errorf("renderProgressBlock should show a thinking verb, got: %q", result)
+	// Verify streaming assistant message exists from startAgentTurn
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set after startAgentTurn")
 	}
-	if !strings.Contains(result, "Progress") {
-		t.Errorf("renderProgressBlock should show Progress header, got: %q", result)
+	if !model.typing {
+		t.Error("typing should be true after startAgentTurn")
+	}
+	// Progress block always returns empty now (inline rendering)
+	result := model.renderProgressBlock()
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline rendering), got: %q", result)
 	}
 }
 
 func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
@@ -1094,22 +1099,24 @@ func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 		},
 	}
 
+	// Progress block always empty now — tools rendered inline in streaming message
 	result := model.renderProgressBlock()
-	if !strings.Contains(result, "Searching imports") {
-		t.Errorf("renderProgressBlock should show completed tool, got: %q", result)
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline), got: %q", result)
 	}
-	if !strings.Contains(result, "Reading config.go") {
-		t.Errorf("renderProgressBlock should show active tool, got: %q", result)
+	// Verify streaming message exists and progress is set
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set")
 	}
-	if !strings.Contains(result, "#1") {
-		t.Errorf("renderProgressBlock should show iteration number, got: %q", result)
+	if model.progress == nil {
+		t.Error("progress should be set")
 	}
 }
 
 func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 	model.iterationHistory = []cliIterationSnapshot{
 		{
@@ -1125,22 +1132,24 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 		Iteration: 1,
 	}
 
+	// Progress block always empty now — iterations rendered inline in streaming message
 	result := model.renderProgressBlock()
-	if !strings.Contains(result, "#0") {
-		t.Errorf("renderProgressBlock should show completed iteration #0, got: %q", result)
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline), got: %q", result)
 	}
-	if !strings.Contains(result, "#1") {
-		t.Errorf("renderProgressBlock should show current iteration #1, got: %q", result)
+	// Verify streaming message exists and iteration history is preserved
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set")
 	}
-	if !strings.Contains(result, "Reading file") {
-		t.Errorf("renderProgressBlock should show historical tool, got: %q", result)
+	if len(model.iterationHistory) == 0 {
+		t.Error("iterationHistory should have entries")
 	}
 }
 
 func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.typing = true
+	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 	model.progress = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
@@ -1152,20 +1161,17 @@ func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 		},
 	}
 
+	// Progress block always empty now — subagent tree rendered inline
 	result := model.renderProgressBlock()
-	if !strings.Contains(result, "code-reviewer") {
-		t.Errorf("renderProgressBlock should show subagent role, got: %q", result)
+	if result != "" {
+		t.Errorf("renderProgressBlock should be empty (inline), got: %q", result)
 	}
-	if !strings.Contains(result, "Reviewing code") {
-		t.Errorf("renderProgressBlock should show subagent desc, got: %q", result)
+	// Verify streaming message and subagent data exists
+	if model.streamingMsgIdx < 0 {
+		t.Error("streamingMsgIdx should be set")
 	}
-	// Done sub-agents should be hidden from progress panel
-	if strings.Contains(result, "test-runner") {
-		t.Errorf("renderProgressBlock should not show completed subagent, got: %q", result)
-	}
-	// Error sub-agents should also be hidden from progress panel
-	if strings.Contains(result, "explore") {
-		t.Errorf("renderProgressBlock should not show errored subagent, got: %q", result)
+	if model.progress == nil || len(model.progress.SubAgents) != 3 {
+		t.Error("progress should have subagent data")
 	}
 }
 
@@ -1332,9 +1338,9 @@ func TestCLIModelSendMessageEmpty(t *testing.T) {
 
 	model.sendMessage("")
 
-	// Message should still be added (empty is valid)
-	if len(model.messages) != 1 {
-		t.Errorf("Expected 1 message, got %d", len(model.messages))
+	// Message should still be added (empty is valid, + streaming from startAgentTurn)
+	if len(model.messages) != 2 {
+		t.Errorf("Expected 2 messages, got %d", len(model.messages))
 	}
 }
 
@@ -1715,20 +1721,23 @@ func TestConvert_NormalCompletedTurn(t *testing.T) {
 	}
 	history := ConvertMessagesToHistory(msgs)
 
-	// Should be: user, tool_summary(from Detail), assistant
-	if len(history) != 3 {
-		t.Fatalf("expected 3 messages, got %d: %+v", len(history), history)
+	// Should be: user, assistant(content + iterations merged)
+	if len(history) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %+v", len(history), history)
 	}
 	assertRole(t, history[0], "user")
-	assertRole(t, history[1], "tool_summary")
-	assertRole(t, history[2], "assistant")
+	assertRole(t, history[1], "assistant")
 
 	if history[1].Iterations == nil || len(history[1].Iterations) != 2 {
-		t.Fatalf("expected 2 iterations in tool_summary, got %d", len(history[1].Iterations))
+		t.Fatalf("expected 2 iterations in assistant message, got %d", len(history[1].Iterations))
 	}
 	// Should come from Detail (has elapsed data), not from pending (elapsed=0)
 	if history[1].Iterations[0].Tools[0].Elapsed != 500 {
 		t.Errorf("expected elapsed=500 from Detail, got %d", history[1].Iterations[0].Tools[0].Elapsed)
+	}
+	// Content should also be on the same assistant message
+	if history[1].Content != "done!" {
+		t.Errorf("expected content='done!' on assistant, got %q", history[1].Content)
 	}
 }
 
@@ -1743,12 +1752,12 @@ func TestConvert_CancelledTurn(t *testing.T) {
 	}
 	history := ConvertMessagesToHistory(msgs)
 
-	// Should be: user, tool_summary (accumulated from both iterations)
+	// Should be: user, assistant (accumulated from both iterations)
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages, got %d: %+v", len(history), history)
 	}
 	assertRole(t, history[0], "user")
-	assertRole(t, history[1], "tool_summary")
+	assertRole(t, history[1], "assistant")
 
 	if len(history[1].Iterations) != 2 {
 		t.Fatalf("expected 2 iterations, got %d", len(history[1].Iterations))
@@ -1777,23 +1786,26 @@ func TestConvert_MultipleTurns(t *testing.T) {
 	}
 	history := ConvertMessagesToHistory(msgs)
 
-	// Expected: user, tool_summary(Detail, 1 iter), assistant, user, tool_summary(pending, 1 iter)
-	if len(history) != 5 {
-		t.Fatalf("expected 5 messages, got %d: %+v", len(history), history)
+	// Expected: user, assistant(Detail, 1 iter, content), user, assistant(pending, 1 iter)
+	if len(history) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %+v", len(history), history)
 	}
-	assertRole(t, history[0], "user")         // turn1 user
-	assertRole(t, history[1], "tool_summary") // turn1 completed
-	assertRole(t, history[2], "assistant")    // turn1 reply
-	assertRole(t, history[3], "user")         // turn2 user
-	assertRole(t, history[4], "tool_summary") // turn2 cancelled
+	assertRole(t, history[0], "user")      // turn1 user
+	assertRole(t, history[1], "assistant") // turn1 completed (has iterations + content)
+	assertRole(t, history[2], "user")      // turn2 user
+	assertRole(t, history[3], "assistant") // turn2 cancelled (has iterations, no content)
 
-	// Turn 1 tool_summary should have elapsed=100 from Detail
+	// Turn 1 assistant should have elapsed=100 from Detail
 	if history[1].Iterations[0].Tools[0].Elapsed != 100 {
 		t.Errorf("turn1 expected elapsed=100, got %d", history[1].Iterations[0].Tools[0].Elapsed)
 	}
-	// Turn 2 tool_summary should have elapsed=0 from pending
-	if history[4].Iterations[0].Tools[0].Elapsed != 0 {
-		t.Errorf("turn2 expected elapsed=0, got %d", history[4].Iterations[0].Tools[0].Elapsed)
+	// Turn 1 assistant should also have content
+	if history[1].Content != "done1" {
+		t.Errorf("turn1 expected content='done1', got %q", history[1].Content)
+	}
+	// Turn 2 assistant should have elapsed=0 from pending
+	if history[3].Iterations[0].Tools[0].Elapsed != 0 {
+		t.Errorf("turn2 expected elapsed=0, got %d", history[3].Iterations[0].Tools[0].Elapsed)
 	}
 }
 

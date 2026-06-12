@@ -1,0 +1,65 @@
+=== idle fallback is rendered after completed iterations ===
+╭ Reasoning ─────────────────────────────────────────────────────────────────╮
+│ completed reasoning                                                        │
+╰────────────────────────────────────────────────────────────────────────────╯
+
+completed iteration text
+
+  · ✓ Read completed file
+  · ✓ Second completed file search
+
+final assistant answer
+
+=== idle fallback is skipped when last iteration already has it ===
+  · ✓ Earlier completed tool
+
+final assistant answer
+
+=== completed reasoning plus tool only ===
+╭ Reasoning ─────────────────────────────────────────────────────────────────╮
+│ reasoning-only completed iteration                                         │
+╰────────────────────────────────────────────────────────────────────────────╯
+
+  · ✓ Read after reasoning
+  · ✗ Edit failed after reasoning
+  · ● Second tool still marked running
+
+=== completed content plus tool only ===
+╭ Reasoning ─────────────────────────────────────────────────────────────────╮
+│ reasoning before content iteration                                         │
+╰────────────────────────────────────────────────────────────────────────────╯
+
+content-only completed iteration
+
+  · ✓ Run content command
+
+=== completed tools only mixed statuses ===
+  · ✓ First completed tool
+  · ✗ Second failed tool
+  · ● Third running tool
+
+=== multiple tool only iterations with prior done and next running ===
+  · ✓ Previous iteration done
+  · ● Next iteration running
+
+=== mixed completed iterations without live progress ===
+╭ Reasoning ─────────────────────────────────────────────────────────────────╮
+│ reasoning only iteration                                                   │
+╰────────────────────────────────────────────────────────────────────────────╯
+
+content only iteration
+
+  · ✓ tool only iteration
+
+=== multiple completed iterations with final content fallback ===
+╭ Reasoning ─────────────────────────────────────────────────────────────────╮
+│ first completed reasoning                                                  │
+╰────────────────────────────────────────────────────────────────────────────╯
+
+  · ✓ First completed tool
+
+second completed content
+
+  · ✗ Second completed failed
+
+final fallback after multi iter
