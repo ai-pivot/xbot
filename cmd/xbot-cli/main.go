@@ -34,6 +34,7 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/cli"
 	"xbot/clipanic"
 	"xbot/config"
 	"xbot/llm"
@@ -637,8 +638,8 @@ func isLocalServer(serverURL string) bool {
 // Otherwise creates a LocalBackend (agent runs in-process).
 // buildPaletteExternalCommands collects commands from skills, plugins, and user
 // custom commands (~/.xbot/commands/*.md). Called each time the palette opens.
-func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand {
-	var cmds []channel.PaletteExternalCommand
+func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
+	var cmds []cli.PaletteExternalCommand
 	home, _ := os.UserHomeDir()
 	xbotDir := home + "/.xbot"
 
@@ -652,10 +653,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if strings.HasPrefix(name, ".") || name == "skill-creator" {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       "Skill: " + name,
 				Description: "activate /" + name + " skill",
-				Category:    channel.PaletteCategorySkills,
+				Category:    cli.PaletteCategorySkills,
 				Content:     "/" + name + " ",
 			})
 		}
@@ -675,10 +676,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if err != nil {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       name,
 				Description: "custom command",
-				Category:    channel.PaletteCategoryUser,
+				Category:    cli.PaletteCategoryUser,
 				Content:     string(content),
 				Send:        true,
 			})
@@ -695,10 +696,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       "Agent: " + name,
 				Description: "spawn " + name + " SubAgent",
-				Category:    channel.PaletteCategoryAgents,
+				Category:    cli.PaletteCategoryAgents,
 				Content:     "/agent " + name + " ",
 			})
 		}
@@ -1102,20 +1103,20 @@ func main() {
 		log.WithField("chatID", initialChatID).Info("Ephemeral session (no persistence)")
 	} else if newSession {
 		// --new/--new-session: unconditionally create a new isolated session.
-		name, chatID, err := channel.NewAutoSession(absWorkDir)
+		name, chatID, err := cli.NewAutoSession(absWorkDir)
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create new session")
 		}
 		initialChatID = chatID
 		log.WithFields(log.Fields{"chatID": chatID, "name": name}).Info("Created new session")
-	} else if last := channel.GetLastActiveSession(absWorkDir); last != "" {
+	} else if last := cli.GetLastActiveSession(absWorkDir); last != "" {
 		initialChatID = last
 		log.WithFields(log.Fields{"chatID": initialChatID}).Info("Restoring last active session")
 	}
 
 	remoteServerURL := app.client.ServerURL()
 
-	cliCfg := channel.CLIChannelConfig{
+	cliCfg := cli.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
 		RemoteMode:           false, // unified: always use remote adapter path
@@ -1166,7 +1167,7 @@ func main() {
 					continue // global-scoped keys not stored in DB
 				}
 				// Per-session settings: skip global DB write when in a session context
-				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+				if cli.IsPerSessionSettingKey(k) && chatID != "" {
 					continue
 				}
 				_ = app.client.SetSetting("cli", "cli_user", k, v)
@@ -1181,7 +1182,7 @@ func main() {
 					app.valuesCache = make(map[string]string)
 				}
 				// Per-session settings: don't cache globally (other sessions should see their own values)
-				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+				if cli.IsPerSessionSettingKey(k) && chatID != "" {
 					continue
 				}
 				app.valuesCache[k] = v
@@ -1371,7 +1372,7 @@ func main() {
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
 		},
-		PaletteContributor: func() []channel.PaletteExternalCommand {
+		PaletteContributor: func() []cli.PaletteExternalCommand {
 			return app.buildPaletteExternalCommands()
 		},
 	}
@@ -1495,7 +1496,7 @@ func main() {
 		}
 	}
 
-	cliCh := channel.NewCLIChannel(&cliCfg)
+	cliCh := cli.NewCLIChannel(&cliCfg)
 	// NOTE: No disp.Register(cliCh) — localEventBridge (registered inside InitServer)
 	// handles server→CLI events via eventCh. Remote mode: events come via WS.
 
@@ -1712,7 +1713,7 @@ func main() {
 	// Refresh from server when WS is ready (or from local agent immediately)
 	if vals, err := app.client.GetSettings("cli", "cli_user"); err == nil {
 		if t, ok := vals["theme"]; ok && t != "" {
-			channel.ApplyTheme(t)
+			cli.ApplyTheme(t)
 		}
 		cliCh.ApplyInitialLayout(vals)
 	}
@@ -1738,7 +1739,7 @@ func main() {
 	app.client.BindChat(chatID)
 
 	// Plugin widgets: subscribe to push events for widget zone content.
-	remoteCache := channel.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
+	remoteCache := cli.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
 		return app.client.CallRPC(method, params)
 	})
 	cliCh.SetRemotePluginCache(remoteCache)
@@ -1846,7 +1847,7 @@ func main() {
 		}
 		var sessionEntries []channel.SessionPanelEntry
 		seen := make(map[string]bool)
-		for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+		for _, s := range cli.ListLocalDirSessions(absWorkDir) {
 			mainBusy := app.client.IsProcessing("cli", s.ID)
 			sessLabel := s.Label
 			if sessLabel == "default" {
@@ -2037,7 +2038,7 @@ func setupLogger(cfg config.LogConfig, xbotHome string) error {
 func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) {
 	modelsLoadErrCb := func(err error) {
 		select {
-		case channel.ModelsLoadErrorCh() <- err:
+		case cli.ModelsLoadErrorCh() <- err:
 		default:
 		}
 	}

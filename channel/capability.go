@@ -137,28 +137,8 @@ var ProviderSetupGuides = map[string]ProviderSetupGuide{
 	"ollama":       {URL: "", HintKey: "ollama"},
 }
 
-// FormatProviderHint returns the full hint string for a provider, including
-// an OSC 8 clickable hyperlink if a URL is available.
-// The hint text is looked up from the locale's ProviderHints map.
-func FormatProviderHint(provider string, locale *UILocale) string {
-	guide, ok := ProviderSetupGuides[provider]
-	if !ok {
-		return ""
-	}
-	hint := ""
-	if locale != nil && locale.ProviderHints != nil {
-		hint = locale.ProviderHints[guide.HintKey]
-	}
-	if hint == "" {
-		return ""
-	}
-	if guide.URL == "" {
-		return hint
-	}
-	// OSC 8 hyperlink: \x1b]8;;URL\x1b\\TEXT\x1b]8;;\x1b\\
-	link := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, guide.URL)
-	return link + "\n" + hint
-}
+// FormatProviderHint has been moved to the cli/ sub-package.
+// It depended on UILocale which is CLI-specific.
 
 // ProviderIsCodingPlan returns true if the provider value represents a coding plan variant.
 func ProviderIsCodingPlan(provider string) bool {

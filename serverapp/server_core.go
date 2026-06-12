@@ -10,6 +10,7 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/cli"
 	"xbot/config"
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
@@ -38,7 +39,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 
 	// 2. Register ChannelCliChannel when eventCh is provided (local CLI mode).
 	if eventCh != nil {
-		disp.Register(channel.NewChannelCliChannel(eventCh))
+		disp.Register(cli.NewChannelCliChannel(eventCh))
 	}
 
 	// 1b. Migrate data to SQLite if needed (one-time migration from old formats).

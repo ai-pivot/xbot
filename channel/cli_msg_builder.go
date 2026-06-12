@@ -8,16 +8,16 @@ import (
 	"xbot/protocol"
 )
 
-// cliMessageBuilder constructs WSMessage payloads for CLI channel operations.
+// CliMessageBuilder constructs WSMessage payloads for CLI channel operations.
 // Both ChannelCliChannel (local/in-process) and RemoteCLIChannel (WebSocket)
 // use these builders so the message format stays identical — only the
 // transport layer differs.
-type cliMessageBuilder struct{}
+type CliMessageBuilder struct{}
 
-var cliMsg = cliMessageBuilder{}
+var CliMsg = CliMessageBuilder{}
 
-// buildTextMsg creates a text outbound message.
-func (cliMessageBuilder) buildTextMsg(msg OutboundMsg) protocol.WSMessage {
+// BuildTextMsg creates a text outbound message.
+func (CliMessageBuilder) BuildTextMsg(msg OutboundMsg) protocol.WSMessage {
 	return protocol.WSMessage{
 		Type:     protocol.MsgTypeText,
 		TS:       time.Now().Unix(),
@@ -28,9 +28,9 @@ func (cliMessageBuilder) buildTextMsg(msg OutboundMsg) protocol.WSMessage {
 	}
 }
 
-// buildAskUserMsg creates an ask_user message from an outbound message with
+// BuildAskUserMsg creates an ask_user message from an outbound message with
 // WaitingUser=true. Returns nil if WaitingUser is false.
-func (cliMessageBuilder) buildAskUserMsg(msg OutboundMsg) *protocol.WSMessage {
+func (CliMessageBuilder) BuildAskUserMsg(msg OutboundMsg) *protocol.WSMessage {
 	if !msg.WaitingUser {
 		return nil
 	}
@@ -51,9 +51,9 @@ func (cliMessageBuilder) buildAskUserMsg(msg OutboundMsg) *protocol.WSMessage {
 	}
 }
 
-// buildProgressMsg creates a progress event message.
+// BuildProgressMsg creates a progress event message.
 // Returns nil if payload is nil.
-func (cliMessageBuilder) buildProgressMsg(chatID string, payload *protocol.ProgressEvent) *protocol.WSMessage {
+func (CliMessageBuilder) BuildProgressMsg(chatID string, payload *protocol.ProgressEvent) *protocol.WSMessage {
 	if payload == nil {
 		return nil
 	}
@@ -65,11 +65,11 @@ func (cliMessageBuilder) buildProgressMsg(chatID string, payload *protocol.Progr
 	}
 }
 
-// buildStreamContentMsg creates a stream content message.
+// BuildStreamContentMsg creates a stream content message.
 // The Progress.ChatID carries the "cli:" prefix expected by
 // handleProgressMsg's session filter. Returns nil if both content and
 // reasoning are empty.
-func (cliMessageBuilder) buildStreamContentMsg(chatID, content, reasoning string) *protocol.WSMessage {
+func (CliMessageBuilder) BuildStreamContentMsg(chatID, content, reasoning string) *protocol.WSMessage {
 	if content == "" && reasoning == "" {
 		return nil
 	}
@@ -84,8 +84,8 @@ func (cliMessageBuilder) buildStreamContentMsg(chatID, content, reasoning string
 	}
 }
 
-// buildSessionStateMsg creates a session state change message.
-func (cliMessageBuilder) buildSessionStateMsg(ev protocol.SessionEvent) protocol.WSMessage {
+// BuildSessionStateMsg creates a session state change message.
+func (CliMessageBuilder) BuildSessionStateMsg(ev protocol.SessionEvent) protocol.WSMessage {
 	return protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
@@ -93,8 +93,8 @@ func (cliMessageBuilder) buildSessionStateMsg(ev protocol.SessionEvent) protocol
 	}
 }
 
-// buildInjectUserMsg creates an inject_user message.
-func (cliMessageBuilder) buildInjectUserMsg(chatID, content string) protocol.WSMessage {
+// BuildInjectUserMsg creates an inject_user message.
+func (CliMessageBuilder) BuildInjectUserMsg(chatID, content string) protocol.WSMessage {
 	return protocol.WSMessage{
 		Type:    protocol.MsgTypeInjectUser,
 		TS:      time.Now().Unix(),
@@ -103,8 +103,8 @@ func (cliMessageBuilder) buildInjectUserMsg(chatID, content string) protocol.WSM
 	}
 }
 
-// buildTUIControlReqMsg creates a TUI control request message.
-func (cliMessageBuilder) buildTUIControlReqMsg(id, chatID string, action string, params map[string]string) protocol.WSMessage {
+// BuildTUIControlReqMsg creates a TUI control request message.
+func (CliMessageBuilder) BuildTUIControlReqMsg(id, chatID string, action string, params map[string]string) protocol.WSMessage {
 	return protocol.WSMessage{
 		Type:   protocol.MsgTypeTUIControlReq,
 		ID:     id,
@@ -116,10 +116,10 @@ func (cliMessageBuilder) buildTUIControlReqMsg(id, chatID string, action string,
 	}
 }
 
-// generateTUIID creates a unique ID for TUI control requests.
-func (cliMessageBuilder) generateTUIID() string {
+// GenerateTUIID creates a unique ID for TUI control requests.
+func (CliMessageBuilder) GenerateTUIID() string {
 	return fmt.Sprintf("tui-%d", time.Now().UnixNano())
 }
 
-// tuiRespTimeout is the timeout for waiting on a TUI control response.
-const tuiRespTimeout = 10 * time.Second
+// TuiRespTimeout is the timeout for waiting on a TUI control response.
+const TuiRespTimeout = 10 * time.Second

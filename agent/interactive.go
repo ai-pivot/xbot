@@ -13,6 +13,7 @@ import (
 
 	"xbot/bus"
 	channelpkg "xbot/channel"
+	"xbot/channel/cli"
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
@@ -227,9 +228,9 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	if !ok {
 		return
 	}
-	var localCh *channelpkg.CLIChannel
+	var localCh *cli.CLIChannel
 	var remoteCh channelpkg.ProgressSender
-	if cc, ok := ch.(*channelpkg.CLIChannel); ok {
+	if cc, ok := ch.(*cli.CLIChannel); ok {
 		localCh = cc
 	} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 		remoteCh = rc
@@ -393,7 +394,7 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 		}
 	}
 
-	if localCh, ok := ch.(*channelpkg.CLIChannel); ok {
+	if localCh, ok := ch.(*cli.CLIChannel); ok {
 		localCh.SendProgress(key, payload)
 	} else if remoteCh, ok := ch.(channelpkg.ProgressSender); ok {
 		remoteCh.SendProgress(key, payload)

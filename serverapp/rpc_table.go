@@ -14,6 +14,7 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/web"
 	"xbot/config"
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
@@ -1030,19 +1031,19 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 	t["create_web_user"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) (any, error) {
-		_, password, err := channel.CreateWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+		_, password, err := web.CreateWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]string{"password": password}, nil
 	}))
 	t["list_web_users"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
-		return channel.ListWebUsers(h.Ag.MultiSession().DB().Conn())
+		return web.ListWebUsers(h.Ag.MultiSession().DB().Conn())
 	}))
 	t["delete_web_user"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) error {
-		return channel.DeleteWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+		return web.DeleteWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
 	}))
 }
 

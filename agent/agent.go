@@ -16,6 +16,8 @@ import (
 	"xbot/agent/hooks"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/cli"
+	"xbot/channel/web"
 	"xbot/clipanic"
 	"xbot/cron"
 	"xbot/event"
@@ -412,13 +414,13 @@ func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string
 		log.Debug("buildRemoteTUICtrlFn: channelFinder('cli') returned not found")
 		return nil
 	}
-	if rc, ok := ch.(*channel.RemoteCLIChannel); ok {
+	if rc, ok := ch.(*web.RemoteCLIChannel); ok {
 		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
 		return func(action string, params map[string]string) (map[string]string, error) {
 			return rc.SendTUIControlRequest(chatID, action, params)
 		}
 	}
-	if cch, ok := ch.(*channel.ChannelCliChannel); ok {
+	if cch, ok := ch.(*cli.ChannelCliChannel); ok {
 		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: local CLI TUI control enabled")
 		return func(action string, params map[string]string) (map[string]string, error) {
 			return cch.SendTUIControlRequest(chatID, action, params)
@@ -548,21 +550,21 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
 	_ = row.Scan(&oldName)
 	if oldName == "" {
-		_, oldName = channel.ParseChatID(chatID)
+		_, oldName = cli.ParseChatID(chatID)
 	}
 
 	// Deduplicate
-	finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
+	finalName := cli.DeduplicateSessionName(newName, chatID, func() []cli.NameEntry {
 		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ? AND label != ''`, ch, senderID)
 		if err != nil {
 			return nil
 		}
 		defer rows.Close()
-		var entries []channel.NameEntry
+		var entries []cli.NameEntry
 		for rows.Next() {
 			var cid, lbl string
 			if err := rows.Scan(&cid, &lbl); err == nil {
-				entries = append(entries, channel.NameEntry{Name: lbl, ChatID: cid})
+				entries = append(entries, cli.NameEntry{Name: lbl, ChatID: cid})
 			}
 		}
 		return entries
@@ -1150,7 +1152,7 @@ func New(cfg Config) (*Agent, error) {
 			if !ok {
 				return
 			}
-			rcli, ok := ch.(*channel.RemoteCLIChannel)
+			rcli, ok := ch.(*web.RemoteCLIChannel)
 			if !ok {
 				return // local CLIChannel handles its own OnUpdated
 			}
@@ -1555,7 +1557,7 @@ func (a *Agent) wireCheckpointStateToCLI() {
 		return
 	}
 	// CLIChannel (local mode) — checkpoint store and CLI model share the same process.
-	if cliCh, ok := ch.(*channel.CLIChannel); ok {
+	if cliCh, ok := ch.(*cli.CLIChannel); ok {
 		cliCh.SetCheckpointState(a.checkpointState)
 	}
 }
@@ -2493,7 +2495,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	mc.SetExtra(ExtraKeyTenantID, tenantSession.TenantID())
 
 	// Session name for rename hint (only injected on first user message)
-	_, sessionName := channel.ParseChatID(msg.ChatID)
+	_, sessionName := cli.ParseChatID(msg.ChatID)
 	if a.multiSession != nil {
 		if db := a.multiSession.DB(); db != nil {
 			var label string
@@ -2576,7 +2578,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	// Send via CLI channel
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder("cli"); ok {
-			if cc, ok := ch.(*channel.CLIChannel); ok {
+			if cc, ok := ch.(*cli.CLIChannel); ok {
 				cc.SendProgress(chatID, payload)
 			} else if rc, ok := ch.(channel.ProgressSender); ok {
 				rc.SendProgress(chatID, payload)
@@ -2612,7 +2614,7 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder("cli"); ok {
-			if cc, ok := ch.(*channel.CLIChannel); ok {
+			if cc, ok := ch.(*cli.CLIChannel); ok {
 				cc.SendProgress(chatID, payload)
 			} else if rc, ok := ch.(channel.ProgressSender); ok {
 				rc.SendProgress(chatID, payload)

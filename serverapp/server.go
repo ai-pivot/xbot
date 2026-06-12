@@ -16,6 +16,8 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/feishu"
+	"xbot/channel/web"
 	"xbot/config"
 	"xbot/event"
 	llm_pkg "xbot/llm"
@@ -197,7 +199,7 @@ func resolveStaticDir(cfg *config.Config) string {
 func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageBus) channel.Channel {
 	switch name {
 	case "feishu":
-		return channel.NewFeishuChannel(channel.FeishuConfig{
+		return feishu.NewFeishuChannel(feishu.FeishuConfig{
 			AppID:             cfg.Feishu.AppID,
 			AppSecret:         cfg.Feishu.AppSecret,
 			EncryptKey:        cfg.Feishu.EncryptKey,
@@ -271,11 +273,11 @@ func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
-	var feishuCh *channel.FeishuChannel
-	var webCh *channel.WebChannel
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sql.DB, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
+	var feishuCh *feishu.FeishuChannel
+	var webCh *web.WebChannel
 	if cfg.Feishu.Enabled {
-		feishuCh = channel.NewFeishuChannel(channel.FeishuConfig{
+		feishuCh = feishu.NewFeishuChannel(feishu.FeishuConfig{
 			AppID:             cfg.Feishu.AppID,
 			AppSecret:         cfg.Feishu.AppSecret,
 			EncryptKey:        cfg.Feishu.EncryptKey,
@@ -308,7 +310,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 
 	if cfg.Web.Enable {
 		if webDB != nil {
-			webCh = channel.NewWebChannel(channel.WebChannelConfig{
+			webCh = web.NewWebChannel(web.WebChannelConfig{
 				Host:       cfg.Web.Host,
 				Port:       cfg.Web.Port,
 				DB:         webDB,
@@ -326,10 +328,10 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			webCh.SetWorkDir(workDir)
 			// Set OSS provider for file storage
 			if cfg.OSS.Provider == "qiniu" {
-				ossProvider, err := channel.NewOSSProvider(
+				ossProvider, err := web.NewOSSProvider(
 					cfg.OSS.Provider,
 					"",
-					channel.QiniuConfig{
+					web.QiniuConfig{
 						AccessKey: cfg.OSS.QiniuAccessKey,
 						SecretKey: cfg.OSS.QiniuSecretKey,
 						Bucket:    cfg.OSS.QiniuBucket,
@@ -734,7 +736,7 @@ func Run(args []string) error {
 	// This makes the dispatcher aware of channel=cli so all outbound messages
 	// (including raw bus.Outbound calls) route correctly to WS clients.
 	if webCh != nil {
-		disp.Register(channel.NewRemoteCLIChannel(webCh.Hub()))
+		disp.Register(web.NewRemoteCLIChannel(webCh.Hub()))
 	}
 
 	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.
@@ -1001,7 +1003,7 @@ func sendStartupNotify(disp *channel.Dispatcher, cfg *config.Config) {
 // feishuPromptAdapter 将 FeishuChannel 桥接为 agent.ChannelPromptProvider 接口。
 // 避免在 agent 包中直接依赖 channel 包。
 type feishuPromptAdapter struct {
-	ch *channel.FeishuChannel
+	ch *feishu.FeishuChannel
 }
 
 func (a *feishuPromptAdapter) ChannelPromptName() string {
