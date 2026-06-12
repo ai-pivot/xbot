@@ -135,6 +135,65 @@ func TestContextWindowExceeded_SetsPhase(t *testing.T) {
 	}
 }
 
+func TestRunCompressionEmitsCompressingAndCompactedSnapshots(t *testing.T) {
+	cm := &mockContextManager{
+		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+			return &CompressResult{
+				LLMView:          messages[:2],
+				CompressedTokens: 5000,
+			}, nil
+		},
+	}
+
+	var events []*StructuredProgress
+	state := &runState{
+		cfg: RunConfig{
+			MaxOutputTokens:      4096,
+			LLMClient:            &mockLLM{},
+			Model:                "test-model",
+			ContextManager:       cm,
+			ContextManagerConfig: &ContextManagerConfig{MaxContextTokens: 200000},
+			SaveTokenState:       func(_, _ int64) {},
+			SaveContextTokens:    func(_ int64) {},
+			ProgressEventHandler: func(ev *ProgressEvent) {
+				events = append(events, ev.Structured)
+			},
+		},
+		messages: []llm.ChatMessage{
+			llm.NewSystemMessage("system"),
+			llm.NewUserMessage("hello"),
+			llm.NewAssistantMessage("hi"),
+			llm.NewUserMessage("complex task"),
+		},
+		tokenTracker:       NewTokenTracker(180000, 3000),
+		persistence:        NewPersistenceBridge(nil, 0),
+		structuredProgress: &StructuredProgress{Phase: PhaseThinking},
+		autoNotify:         true,
+		sessionCtx:         &hooks.SessionContext{},
+	}
+
+	state.runCompression(context.Background(), cm, 180000, 200000)
+
+	var sawCompressing, sawCompacted bool
+	for _, ev := range events {
+		if ev.Phase == PhaseCompressing {
+			sawCompressing = true
+		}
+		if ev.HistoryCompacted {
+			sawCompacted = true
+		}
+	}
+	if !sawCompressing {
+		t.Fatalf("runCompression did not emit PhaseCompressing event: %+v", events)
+	}
+	if !sawCompacted {
+		t.Fatalf("runCompression did not emit HistoryCompacted event: %+v", events)
+	}
+	if len(events) > 0 && events[len(events)-1].HistoryCompacted != true {
+		t.Fatalf("last captured event was mutated after emission: %+v", events[len(events)-1])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test 2: Per-iteration token persistence (SaveTokenState after each LLM call)
 // ---------------------------------------------------------------------------

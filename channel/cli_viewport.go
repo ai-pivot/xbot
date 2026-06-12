@@ -416,6 +416,12 @@ func (m *cliModel) updateStreamingOnly() {
 	allLines := make([]string, 0, len(histLines)+1+len(completedLines)+len(liveLines)+2)
 	allLines = append(allLines, histLines...)
 	allLines = append(allLines, m.rc.streamHeaderLine) // header line
+	if len(completedLines) > 0 || len(liveLines) > 0 {
+		allLines = append(allLines, guidePrefix)
+		if w := lipgloss.Width(guidePrefix); w > liveMaxW {
+			liveMaxW = w
+		}
+	}
 	allLines = append(allLines, completedLines...)
 	allLines = append(allLines, liveLines...)
 	allLines = append(allLines, "") // trailing \n\n from renderMessage
