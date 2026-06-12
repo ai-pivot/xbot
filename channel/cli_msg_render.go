@@ -213,6 +213,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				}
 			} else {
 				iterations = msg.iterations
+				fallbackContent = msg.content
 			}
 			bodyContent := m.renderTurnBody(iterations, liveProgress, contentWidth, fallbackContent)
 			if bodyContent != "" {
