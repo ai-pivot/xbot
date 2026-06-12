@@ -1372,11 +1372,19 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 			m.pendingUserMsg = nil
 		}
 	}
+	restoredStreamingIdx := -1
+	if !msg.forceFullRebuild && m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+		streamingMsg := m.messages[m.streamingMsgIdx]
+		if streamingMsg.role == "assistant" && streamingMsg.isPartial {
+			restoredStreamingIdx = len(newMessages)
+			newMessages = append(newMessages, streamingMsg)
+		}
+	}
 	// Smart merge: reuse rendered cache from existing messages to avoid
 	// O(N) glamour re-rendering of ALL messages. Only truly new or changed
 	// messages need re-rendering. This is critical for sessions with hundreds
 	// of iterations where full rebuild would take seconds.
-	m.streamingMsgIdx = -1
+	m.streamingMsgIdx = restoredStreamingIdx
 	if msg.forceFullRebuild {
 		m.messages = newMessages
 		m.invalidateAllCache(false)

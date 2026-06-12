@@ -427,6 +427,30 @@ func TestRenderToolTagsKeepsLabelsSingleLine(t *testing.T) {
 	}
 }
 
+func TestRenderToolTagsColorsDoneAndErrorLabels(t *testing.T) {
+	model := initTestModel()
+	tools := []protocol.ToolProgress{
+		{Name: "Shell", Label: "success label", Status: "done"},
+		{Name: "Read", Label: "failure label", Status: "error"},
+	}
+
+	rendered := model.renderToolTags(tools, 80, &model.styles)
+	if !strings.Contains(rendered, model.styles.ProgressDone.Render("✓ success label")) {
+		t.Fatalf("done tool label should use success color, got:\n%q", rendered)
+	}
+	if !strings.Contains(rendered, model.styles.ProgressError.Render("✗ failure label")) {
+		t.Fatalf("error tool label should use error color, got:\n%q", rendered)
+	}
+
+	liveRendered := model.renderLiveToolTags(tools, 80)
+	if !strings.Contains(liveRendered, model.styles.ProgressDone.Render("✓ success label")) {
+		t.Fatalf("live done tool label should use success color, got:\n%q", liveRendered)
+	}
+	if !strings.Contains(liveRendered, model.styles.ProgressError.Render("✗ failure label")) {
+		t.Fatalf("live error tool label should use error color, got:\n%q", liveRendered)
+	}
+}
+
 func TestRenderMessageAddsSpacerBeforeFirstToolBlock(t *testing.T) {
 	model := initTestModel()
 	msg := &cliMessage{
@@ -626,6 +650,54 @@ func TestHistoryReloadKeepsPendingUserUntilHistoryConfirmsIt(t *testing.T) {
 	})
 	if model.pendingUserMsg != nil {
 		t.Fatal("pending user should clear once history confirms it")
+	}
+}
+
+func TestHistoryReloadPreservesActiveStreamingTurn(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{
+		{role: "user", content: "previous user", timestamp: time.Now(), dirty: true},
+		{role: "assistant", content: "previous reply", timestamp: time.Now(), dirty: true},
+		{role: "user", content: "current user", timestamp: time.Now(), dirty: true},
+	}
+	model.startAgentTurn()
+	model.iterationHistory = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Thinking:  "current turn thinking",
+			Tools: []protocol.ToolProgress{
+				{Name: "Shell", Label: "running command", Status: "running", Iteration: 1},
+			},
+		},
+	}
+	model.progress = &protocol.ProgressEvent{Phase: "tool_exec", Iteration: 1}
+	streamingIdx := model.streamingMsgIdx
+
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName: model.channelName,
+		chatID:      model.chatID,
+		history: []HistoryMessage{
+			{Role: "user", Content: "previous user", Timestamp: time.Now()},
+			{Role: "assistant", Content: "previous reply", Timestamp: time.Now()},
+			{Role: "user", Content: "current user", Timestamp: time.Now()},
+		},
+	})
+
+	if model.streamingMsgIdx != streamingIdx {
+		t.Fatalf("streamingMsgIdx = %d, want active index %d", model.streamingMsgIdx, streamingIdx)
+	}
+	if model.streamingMsgIdx < 0 || model.streamingMsgIdx >= len(model.messages) {
+		t.Fatalf("streamingMsgIdx out of range after reload: %d messages=%d", model.streamingMsgIdx, len(model.messages))
+	}
+	streaming := model.messages[model.streamingMsgIdx]
+	if streaming.role != "assistant" || !streaming.isPartial {
+		t.Fatalf("active streaming assistant was not preserved: %+v", streaming)
+	}
+	if len(model.iterationHistory) != 1 || model.iterationHistory[0].Thinking != "current turn thinking" {
+		t.Fatalf("iteration history was not preserved: %+v", model.iterationHistory)
+	}
+	if !strings.Contains(model.viewport.View(), "running command") {
+		t.Fatalf("viewport lost current turn tools after reload:\n%s", stripAnsi(model.viewport.View()))
 	}
 }
 

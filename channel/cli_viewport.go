@@ -278,6 +278,10 @@ func (m *cliModel) updateViewportContent() {
 
 	// 慢速路径：全量重建
 	m.fullRebuild()
+	if m.streamingMsgIdx >= 0 {
+		m.updateStreamingOnly()
+		return
+	}
 	// fullRebuild only rebuilds internal caches (cachedHistoryLines etc.)
 	// — it does NOT set viewport lines. Do that now so the viewport
 	// refreshes immediately, not on the next tick.

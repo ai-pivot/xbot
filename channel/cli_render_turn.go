@@ -147,7 +147,7 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 		case "error":
 			tag = s.ProgressError.Render("✗ " + label)
 		case "done":
-			tag = s.ProgressDone.Render("✓") + " " + s.TextMutedSt.Render(label)
+			tag = s.ProgressDone.Render("✓ " + label)
 		default:
 			tag = s.ProgressRunning.Render("● " + label)
 		}
@@ -353,9 +353,7 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 			sb.WriteString("  ")
 			sb.WriteString(s.ProgressDim.Render("·"))
 			sb.WriteString(" ")
-			sb.WriteString(s.ProgressDone.Render("✓"))
-			sb.WriteString(" ")
-			sb.WriteString(s.TextMutedSt.Render(label))
+			sb.WriteString(s.ProgressDone.Render("✓ " + label))
 			sb.WriteString("\n")
 		default: // running/active
 			var elapsedMs int64
