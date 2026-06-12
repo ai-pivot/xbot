@@ -57,6 +57,23 @@ func (m *cliModel) renderTurnBody(
 			sb.WriteString("\n")
 		}
 		sb.WriteString(m.renderLiveIteration(liveProgress, contentWidth, fallbackContent))
+	} else if fallbackContent != "" {
+		// Idle state: render the final assistant content after iterations.
+		// Avoid duplication: skip if the last iteration already contains it.
+		alreadyRendered := false
+		if len(iterations) > 0 {
+			last := iterations[len(iterations)-1]
+			if last.Thinking == fallbackContent {
+				alreadyRendered = true
+			}
+		}
+		if !alreadyRendered {
+			if sb.Len() > 0 {
+				sb.WriteString("\n\n")
+			}
+			rendered := m.renderTurnContent(fallbackContent, contentWidth)
+			sb.WriteString(rendered)
+		}
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
