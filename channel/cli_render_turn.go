@@ -180,9 +180,12 @@ func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fal
 		sb.WriteString("\n\n") // blank line between reasoning box and content
 	}
 
-	// 2. Content: prefer live stream → accumulated msg text
+	// 2. Content: prefer live stream → accumulated thinking → msg text
 	streamContent := p.StreamContent
 	displayContent := streamContent
+	if displayContent == "" {
+		displayContent = p.Thinking
+	}
 	if displayContent == "" {
 		displayContent = fallbackContent
 	}
