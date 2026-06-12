@@ -221,8 +221,17 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// Right-align: body content width = contentWidth (same as user msg "You"),
 		// so guide(2) + body(cw-4) leaves 2 cols right padding.
 		const ansiReset = "\x1b[0m"
+		renderedGuide := guideSt.Render(guideSym)
+		if len(bodyLines) > 0 {
+			sb.WriteString(ansiReset)
+			sb.WriteString(renderedGuide)
+			sb.WriteString(ansiReset)
+			sb.WriteString("\n")
+		}
 		for _, l := range bodyLines {
-			sb.WriteString(ansiReset + guideSt.Render(guideSym) + ansiReset)
+			sb.WriteString(ansiReset)
+			sb.WriteString(renderedGuide)
+			sb.WriteString(ansiReset)
 			sb.WriteString(l)
 			sb.WriteString("\n")
 		}

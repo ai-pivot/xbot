@@ -1110,8 +1110,9 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			if !found {
 				m.pendingUserMsg.dirty = true
 				m.messages = append(m.messages, *m.pendingUserMsg)
+			} else {
+				m.pendingUserMsg = nil
 			}
-			m.pendingUserMsg = nil
 		}
 		// SuSwitchedHistory提示已移除 — 切换session静默完成
 	}
@@ -1367,8 +1368,9 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		if !found {
 			m.pendingUserMsg.dirty = true
 			newMessages = append(newMessages, *m.pendingUserMsg)
+		} else {
+			m.pendingUserMsg = nil
 		}
-		m.pendingUserMsg = nil
 	}
 	// Smart merge: reuse rendered cache from existing messages to avoid
 	// O(N) glamour re-rendering of ALL messages. Only truly new or changed

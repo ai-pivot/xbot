@@ -99,9 +99,7 @@ func appendTurnBlock(sb *strings.Builder, lastKind *turnBlockKind, hasBlock *boo
 	if !*hasBlock {
 		// First block starts immediately; renderReasoningBox includes a leading
 		// newline for historical callers, so normalize text before appending.
-	} else if block.kind == turnBlockPulse {
-		sb.WriteString("\n\n")
-	} else if *lastKind == block.kind {
+	} else if block.kind == turnBlockPulse || *lastKind == block.kind {
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("\n\n")
@@ -139,9 +137,9 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 	}
 	var lines []string
 	for _, tool := range tools {
-		label := tool.Label
+		label := oneLineToolLabel(tool.Label)
 		if label == "" {
-			label = tool.Name
+			label = oneLineToolLabel(tool.Name)
 		}
 		label = truncateToWidth(label, maxLabelW)
 		var tag string
@@ -212,6 +210,11 @@ func (m *cliModel) renderReasoningBox(
 	return sb.String()
 }
 
+// renderLiveIteration renders the in-progress iteration.
+func (m *cliModel) renderLiveIteration(p *protocol.ProgressEvent, width int, fallbackContent string) string {
+	return renderTurnBlocks(m.liveIterationBlocks(p, width, fallbackContent))
+}
+
 func renderTurnBlocks(blocks []turnBlock) string {
 	var sb strings.Builder
 	var lastKind turnBlockKind
@@ -255,6 +258,14 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 	s := &m.styles
 	var blocks []turnBlock
 	hasSpinner := false
+
+	if p.Phase == "compressing" {
+		hasSpinner = true
+		blocks = append(blocks, turnBlock{
+			kind: turnBlockPulse,
+			text: "  " + s.ProgressRunning.Render(m.locale.StatusCompressing),
+		})
+	}
 
 	if p.ReasoningStreamContent != "" {
 		hasSpinner = true
@@ -326,9 +337,9 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 
 	var sb strings.Builder
 	for _, tool := range tools {
-		label := tool.Label
+		label := oneLineToolLabel(tool.Label)
 		if label == "" {
-			label = tool.Name
+			label = oneLineToolLabel(tool.Name)
 		}
 		label = truncateToWidth(label, maxLabelW)
 		switch tool.Status {
@@ -364,4 +375,8 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func oneLineToolLabel(label string) string {
+	return strings.Join(strings.Fields(label), " ")
 }

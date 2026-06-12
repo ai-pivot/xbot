@@ -47,6 +47,34 @@ type StructuredProgress struct {
 	SubAgents []SubAgentNode
 }
 
+func (p *StructuredProgress) Clone() *StructuredProgress {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.ActiveTools = append([]ToolProgress(nil), p.ActiveTools...)
+	cp.CompletedTools = append([]ToolProgress(nil), p.CompletedTools...)
+	cp.Todos = append([]TodoProgressItem(nil), p.Todos...)
+	cp.SubAgents = cloneSubAgentNodes(p.SubAgents)
+	if p.TokenUsage != nil {
+		tu := *p.TokenUsage
+		cp.TokenUsage = &tu
+	}
+	return &cp
+}
+
+func cloneSubAgentNodes(nodes []SubAgentNode) []SubAgentNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	cp := make([]SubAgentNode, len(nodes))
+	for i := range nodes {
+		cp[i] = nodes[i]
+		cp[i].Children = cloneSubAgentNodes(nodes[i].Children)
+	}
+	return cp
+}
+
 // ProgressPhase Agent 运行阶段。
 type ProgressPhase string
 
