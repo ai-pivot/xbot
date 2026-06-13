@@ -3,6 +3,7 @@ package channel
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"xbot/protocol"
@@ -724,8 +725,39 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 		// Also guard against prev being nil (progress cleared by endAgentTurn).
 		if prev != nil && prev.Iteration != m.lastSeenIteration {
 			// Data mismatch: prev belongs to a different iteration than what
-			// lastSeenIteration claims. Skip the snapshot to avoid corruption,
-			// but update the counter to prevent repeated misfires.
+			// lastSeenIteration claims. Instead of discarding the snapshot
+			// entirely (which permanently loses iteration data), create a
+			// snapshot tagged with prev.Iteration (the actual iteration number).
+			// Guard against duplicate snapshots for the same iteration.
+			alreadySnapped := false
+			for _, snap := range m.iterationHistory {
+				if snap.Iteration == prev.Iteration {
+					alreadySnapped = true
+					break
+				}
+			}
+			if !alreadySnapped {
+				prevIterTools := prev.CompletedTools
+				for _, t := range prev.ActiveTools {
+					if t.Status == "done" || t.Status == "error" {
+						prevIterTools = append(prevIterTools, t)
+					}
+				}
+				prevReasoning := prev.Reasoning
+				if prevReasoning == "" && m.reasoningByIter != nil {
+					prevReasoning = m.reasoningByIter[prev.Iteration]
+				}
+				if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
+					snap := cliIterationSnapshot{
+						Iteration:   prev.Iteration,
+						Thinking:    prev.Thinking,
+						Reasoning:   prevReasoning,
+						Tools:       prevIterTools,
+						ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+					}
+					m.iterationHistory = append(m.iterationHistory, snap)
+				}
+			}
 			m.lastSeenIteration = payload.Iteration
 			m.iterationStartTime = time.Now()
 			return
@@ -1585,6 +1617,14 @@ func mergeSubAgentTrees(prev, new []protocol.SubAgentInfo) []protocol.SubAgentIn
 				merged.Desc = p.Desc
 			}
 			merged.Children = mergeSubAgentTrees(p.Children, n.Children)
+			// When parent agent is still active but its children list is empty in
+			// the new update, preserve previous children (marked as done if still
+			// running) instead of dropping them entirely. This prevents child
+			// progress trees from flickering when the server doesn't include
+			// children in every update frame.
+			if len(n.Children) == 0 && len(merged.Children) == 0 && len(p.Children) > 0 {
+				merged.Children = markAllDone(p.Children)
+			}
 			result = append(result, merged)
 			delete(newByKey, key)
 		} else {
@@ -1625,6 +1665,17 @@ func markDoneIfRunning(sa protocol.SubAgentInfo) protocol.SubAgentInfo {
 		sa.Children[i] = markDoneIfRunning(sa.Children[i])
 	}
 	return sa
+}
+
+// markAllDone applies markDoneIfRunning to every agent in the slice.
+// Used by mergeSubAgentTrees when a parent's children list is empty in the
+// new update but existed in prev — preserves the subtree as completed.
+func markAllDone(agents []protocol.SubAgentInfo) []protocol.SubAgentInfo {
+	result := make([]protocol.SubAgentInfo, len(agents))
+	for i := range agents {
+		result[i] = markDoneIfRunning(agents[i])
+	}
+	return result
 }
 
 // pruneDoneSubAgents removes agents (and their children) that are already
@@ -1732,11 +1783,28 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		// subscription regardless of global default persistence success.
 		// Failure to update activeSubID is the root cause of the settings panel
 		// showing the wrong subscription after a switch.
+		// Determine the effective model: if this is a session restore and the
+		// session has its own model choice, preserve it instead of using the
+		// subscription's default model. Also sync the per-session model to the
+		// server so GetLLMForChat returns the correct model for this session.
+		effectiveModel := done.subModel
+		if done.restoreModel != "" && done.restoreModel != done.subModel {
+			effectiveModel = done.restoreModel
+			// Sync per-session model to server (creates per-chat LLM entry)
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, effectiveModel, m.chatID)
+			}
+		}
+		// Do NOT pass done.maxCtx/done.maxOutTok as MaxContextTokens/MaxOutputTokens.
+		// Those values come from resolveSubMaxContext which uses the subscription's
+		// DEFAULT model, not the session's model. Setting them here would poison
+		// state.MaxContextTokens, and ResolveEffectiveMaxContext priority-1 returns
+		// it directly, bypassing per-model lookup. Instead, let
+		// applySessionLLMState → ResolveEffectiveMaxContext resolve from
+		// PerModelConfigs (which now includes subscription_models data).
 		state := SessionLLMState{
-			SubscriptionID:   done.subID,
-			Model:            done.subModel,
-			MaxContextTokens: done.maxCtx,
-			MaxOutputTokens:  done.maxOutTok,
+			SubscriptionID: done.subID,
+			Model:          effectiveModel,
 		}
 		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)
@@ -1900,13 +1968,32 @@ func (m *cliModel) handleHistoryLoad(msg cliHistoryLoadMsg) {
 		return
 	}
 	if len(msg.history) > 0 {
-		m.messages = append(m.messages, msg.history...)
-		m.invalidateAllCache(false)
-		m.updateViewportContent()
-		if m.streamingMsgIdx < 0 {
-			m.viewport.GotoBottom()
+		// Deduplicate: build a set of existing message identity keys.
+		// Key = role + ":" + turnID + ":" + content — algorithmic dedup,
+		// no raw string matching. Messages with same identity are skipped.
+		existing := make(map[string]bool, len(m.messages))
+		for _, cm := range m.messages {
+			key := cm.role + ":" + strconv.FormatUint(cm.turnID, 36) + ":" + cm.content
+			existing[key] = true
 		}
-		log.WithFields(log.Fields{"count": len(msg.history)}).Info("Applied history load in Update loop")
+		added := 0
+		for _, cm := range msg.history {
+			key := cm.role + ":" + strconv.FormatUint(cm.turnID, 36) + ":" + cm.content
+			if existing[key] {
+				continue // skip duplicate
+			}
+			existing[key] = true
+			m.messages = append(m.messages, cm)
+			added++
+		}
+		if added > 0 {
+			m.invalidateAllCache(false)
+			m.updateViewportContent()
+			if m.streamingMsgIdx < 0 {
+				m.viewport.GotoBottom()
+			}
+		}
+		log.WithFields(log.Fields{"total": len(msg.history), "added": added}).Info("Applied history load in Update loop")
 	}
 }
 

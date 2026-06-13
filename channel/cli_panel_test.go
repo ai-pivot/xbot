@@ -17,6 +17,15 @@ type mockSubscriptionManager struct {
 	addCalled bool
 	setDefID  string
 	saveErr   error
+
+	// Track UpdatePerModelConfig calls for assertions.
+	pmcUpdates []mockPMCUpdate
+}
+
+type mockPMCUpdate struct {
+	subID  string
+	model  string
+	config PerModelConfig
 }
 
 func (m *mockSubscriptionManager) List(_ string) ([]Subscription, error) {
@@ -63,6 +72,16 @@ func (m *mockSubscriptionManager) Update(id string, sub *Subscription) error {
 }
 
 func (m *mockSubscriptionManager) UpdatePerModelConfig(id, model string, pmc PerModelConfig) error {
+	m.pmcUpdates = append(m.pmcUpdates, mockPMCUpdate{subID: id, model: model, config: pmc})
+	// Also apply to in-memory subs so activeSubscription() sees the update.
+	for i := range m.subs {
+		if m.subs[i].ID == id {
+			if m.subs[i].PerModelConfigs == nil {
+				m.subs[i].PerModelConfigs = make(map[string]PerModelConfig)
+			}
+			m.subs[i].PerModelConfigs[model] = pmc
+		}
+	}
 	return nil
 }
 

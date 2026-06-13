@@ -45,6 +45,10 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			return
 		}
 	} else {
+		// ChatID empty: this is a defensive warning. Messages without proper
+		// session identity risk cross-session contamination. The dedupMessagesGuard
+		// will catch any resulting duplicates, but the root cause should be fixed
+		// at the sender. Log at error level to make it visible.
 		log.WithFields(log.Fields{
 			"msg_channel":    msg.Channel,
 			"msg_chatid":     msg.ChatID,
@@ -52,7 +56,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			"my_chatid":      m.chatID,
 			"waiting_user":   msg.WaitingUser,
 			"content_len":    len(msg.Content),
-		}).Warn("handleAgentMessage: ChatID empty — filter bypassed, applying to current session")
+		}).Error("handleAgentMessage: ChatID empty — filter bypassed, risk of cross-session contamination")
 	}
 
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
@@ -188,6 +192,13 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			// Update existing streaming message
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].dirty = true
+		} else if existingIdx := m.findMessageByTurn(turnID, "assistant"); existingIdx >= 0 {
+			// Reuse existing message for this turn (prevents duplicate streaming messages
+			// when streamingMsgIdx was stale or cleared by endAgentTurn).
+			m.streamingMsgIdx = existingIdx
+			m.messages[existingIdx].content = content
+			m.messages[existingIdx].isPartial = true
+			m.messages[existingIdx].dirty = true
 		} else {
 			// Create new streaming message (fallback)
 			m.streamingMsgIdx = len(m.messages)
@@ -272,8 +283,9 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			}
 		}
 
-		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// 更新流式消息为完整消息
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
+			m.messages[m.streamingMsgIdx].turnID == turnID {
+			// 更新流式消息为完整消息 (turnID 校验：防止跨 turn 覆盖)
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
@@ -347,6 +359,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			m.rc.wrapWidth = 0
 			m.rc.histMaxW = 0
 			m.rc.histLines = nil
+			m.rc.bumpHistGen()
 			// PhaseDone from emitBuiltinProgressDone should arrive before this outbound,
 			// so endAgentTurn is usually a no-op (turn already ended). Kept as safety net.
 			m.endAgentTurn(m.agentTurnID)

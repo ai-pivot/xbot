@@ -560,8 +560,11 @@ func (f *LLMFactory) SwitchModel(senderID, model string, chatID ...string) {
 	svc := f.subscriptionSvc
 	f.mu.Unlock()
 
-	// Always persist model change to the default subscription so it survives restarts.
-	if svc != nil && senderID != "" {
+	// Only persist model change to the default subscription for user-level
+	// switches (no chatID). Per-session model switches (with chatID) must NOT
+	// modify the subscription — otherwise switching model in session A
+	// contaminates all sessions sharing the same subscription.
+	if effectiveChatID == "" && svc != nil && senderID != "" {
 		if sub, err := svc.GetDefault(senderID); err == nil && sub != nil && sub.Model != model && sub.ID != "" {
 			_ = svc.SetModel(sub.ID, model)
 		}
