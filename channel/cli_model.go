@@ -1196,6 +1196,7 @@ type cliModel struct {
 	splashFrame          int  // 当前 splash 动画帧索引
 	suLoading            bool // true = /su 切换用户后正在加载历史，显示 loading 画面
 	suPhaseDoneConfirmed bool // true = PhaseDone received during suLoading (server confirmed idle)
+	compressionReloading bool // true = HistoryCompacted 异步 reload 进行中，阻止 auto-start
 
 	// --- §16 Toast 通知队列 ---
 	toasts     []cliToastItem // Toast 队列（头部=当前显示）
