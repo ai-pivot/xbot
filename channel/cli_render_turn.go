@@ -261,9 +261,10 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 
 	if p.Phase == "compressing" {
 		hasSpinner = true
+		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockPulse,
-			text: "  " + s.ProgressRunning.Render(m.locale.StatusCompressing),
+			text: "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressRunning.Render(m.locale.StatusCompressing),
 		})
 	}
 

@@ -384,7 +384,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// turn is paused (not ended). Late progress events from the engine must not
 	// trigger startAgentTurn → resetProgressState, which clears iterationHistory
 	// and makes all previous iterations disappear.
-	if !m.typing && !m.suLoading && msg.payload != nil && msg.payload.Phase != "done" && m.panelMode != "askuser" {
+	if !m.typing && !m.suLoading && !m.compressionReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelMode != "askuser" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
@@ -519,6 +519,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
 		m.rc.invalidateProgress()
+		// Block auto-start until reload completes. Without this, progress
+		// events from the post-compression iteration trigger auto-start,
+		// creating a streaming message that gets wiped by handleHistoryReload's
+		// forceFullRebuild path — losing the streaming state and stalling TUI.
+		m.compressionReloading = true
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
@@ -1414,9 +1419,18 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// messages need re-rendering. This is critical for sessions with hundreds
 	// of iterations where full rebuild would take seconds.
 	m.streamingMsgIdx = restoredStreamingIdx
+	// Compression reload complete — allow auto-start turn again.
+	m.compressionReloading = false
 	if msg.forceFullRebuild {
 		m.messages = newMessages
 		m.invalidateAllCache(false)
+		// If engine is still running, start turn immediately so new
+		// iterations get a streaming message. Without this, progress
+		// updates only appear in the progress panel — new iteration
+		// tools never render in the message area, making TUI look frozen.
+		if !m.typing && m.progress != nil && m.progress.Phase != "done" && m.panelMode != "askuser" {
+			m.startAgentTurn()
+		}
 		m.updateViewportContent()
 		log.WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")
 		return

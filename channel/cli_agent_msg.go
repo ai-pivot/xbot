@@ -91,13 +91,23 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 
 		if cancelledIdx >= 0 {
 			streamingMsg := &m.messages[cancelledIdx]
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-			// Preserve any accumulated content from IsPartial updates.
-			// The cancel outbound has empty Content, but the streaming message
-			// may have accumulated text via IsPartial before the cancel.
-			// Do NOT overwrite existing content — keep what was streamed.
-			streamingMsg.iterations = m.cancelledTurnIterations()
+			if strings.TrimSpace(streamingMsg.content) != "" {
+				// Streaming message accumulated real content (e.g. partial LLM text).
+				// Finalize it as a completed message so the user keeps what was streamed.
+				streamingMsg.isPartial = false
+				streamingMsg.dirty = true
+				streamingMsg.iterations = m.cancelledTurnIterations()
+			} else {
+				// Empty streaming message (shell created by startAgentTurn).
+				// Remove it — keeping an empty assistant with stale iterations
+				// creates a phantom message that doesn't match DB history.
+				m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
+				if m.streamingMsgIdx == cancelledIdx {
+					m.streamingMsgIdx = -1
+				} else if m.streamingMsgIdx > cancelledIdx {
+					m.streamingMsgIdx--
+				}
+			}
 		}
 		// Still clean up progress/streaming state for the cancelled turn.
 		// Do NOT endAgentTurn — the current turn (if any) must remain active.
@@ -117,7 +127,9 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 				}
 			}
 		}
-		m.streamingMsgIdx = -1
+		if m.streamingMsgIdx >= 0 {
+			m.streamingMsgIdx = -1
+		}
 		m.progress = nil
 		m.typing = false        // clear typing indicator immediately after cancel
 		m.turnCancelled = false // cancel complete, allow future turns
