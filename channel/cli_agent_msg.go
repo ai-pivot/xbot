@@ -97,9 +97,22 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 				streamingMsg.isPartial = false
 				streamingMsg.dirty = true
 				streamingMsg.iterations = m.cancelledTurnIterations()
+			} else if len(streamingMsg.iterations) > 0 {
+				// Empty content but has iteration data (tool tags, reasoning).
+				// The user saw these rendered inline during the cancelled turn.
+				// Finalize instead of removing so the progress is preserved.
+				// (iterations already baked by handleProgressDone cancel path)
+				streamingMsg.isPartial = false
+				streamingMsg.dirty = true
+			} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
+				// Empty content but iterations exist in iterationHistory/pendingToolSummary
+				// (cancel ack arrived before PhaseDone). Finalize and bake iterations.
+				streamingMsg.isPartial = false
+				streamingMsg.dirty = true
+				streamingMsg.iterations = iters
 			} else {
-				// Empty streaming message (shell created by startAgentTurn).
-				// Remove it — keeping an empty assistant with stale iterations
+				// Empty streaming message (shell created by startAgentTurn)
+				// with no iteration data. Remove it — keeping an empty assistant
 				// creates a phantom message that doesn't match DB history.
 				m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
 				if m.streamingMsgIdx == cancelledIdx {

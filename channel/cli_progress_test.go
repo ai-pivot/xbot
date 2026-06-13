@@ -554,13 +554,37 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 	if model.streamingMsgIdx != -1 {
 		t.Fatalf("streamingMsgIdx = %d, want -1 after cancel", model.streamingMsgIdx)
 	}
-	// Empty streaming message should be removed on cancel — it is a shell
-	// created by startAgentTurn with no content. Keeping it produces a
-	// phantom assistant message with stale iterations in the viewport.
+	// With iteration data preserved on cancel, the empty streaming message
+	// is finalized (not removed) so the user keeps seeing tool tags/reasoning
+	// that were rendered inline before Ctrl+C.
+	var assistantMsg *cliMessage
 	for i := range model.messages {
 		if model.messages[i].role == "assistant" {
-			t.Fatalf("empty streaming message should have been removed on cancel, got assistant at index %d", i)
+			assistantMsg = &model.messages[i]
+			break
 		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("expected assistant message to be preserved with iterations after cancel")
+	}
+	if assistantMsg.isPartial {
+		t.Error("expected isPartial=false after cancel finalize")
+	}
+	if len(assistantMsg.iterations) == 0 {
+		t.Error("expected iterations to be baked into finalized message")
+	}
+	// Verify both the previous iteration and current unsnapped iteration are captured.
+	// cancelledTurnIterations combines iterationHistory + progress data.
+	var foundShell bool
+	for _, it := range assistantMsg.iterations {
+		for _, tool := range it.Tools {
+			if tool.Name == "Shell" {
+				foundShell = true
+			}
+		}
+	}
+	if !foundShell {
+		t.Error("expected Shell tool from current unsnapped iteration to be preserved")
 	}
 }
 

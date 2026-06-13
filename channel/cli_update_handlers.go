@@ -820,6 +820,19 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			}
 		}
 		m.setTurnDoneProcessed(turnID)
+		// Bake iteration data into the streaming message BEFORE endAgentTurn
+		// clears iterationHistory and progress. This preserves tool tags and
+		// reasoning in the viewport after Ctrl+C — the user already saw this
+		// content rendered inline and expects it to remain visible.
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
+			m.messages[m.streamingMsgIdx].turnID == turnID {
+			if len(m.iterationHistory) > 0 {
+				baked := make([]cliIterationSnapshot, len(m.iterationHistory))
+				copy(baked, m.iterationHistory)
+				m.messages[m.streamingMsgIdx].iterations = baked
+				m.messages[m.streamingMsgIdx].dirty = true
+			}
+		}
 		m.endAgentTurn(turnID)
 		// Restore turnCancelled: endAgentTurn resets it to false (correct for
 		// normal completion), but in the cancel path we need it to stay true
