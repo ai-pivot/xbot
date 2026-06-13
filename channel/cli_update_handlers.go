@@ -1167,21 +1167,50 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 		// When an active turn is restored from the server snapshot, the
 		// last assistant message in DB history corresponds to the in-flight
-		// streaming message. Without marking it as isPartial + streamingMsgIdx,
-		// subsequent live outbound messages (arriving after suLoading=false)
-		// would create a NEW streaming message via handleAgentMessage's
-		// "if m.streamingMsgIdx < 0" branch — duplicating the assistant
-		// content in the viewport (DB version + live version).
-		// This is the same model as normal operation: the streaming message
-		// stays isPartial until endAgentTurn finalizes it.
-		if m.streamingMsgIdx < 0 {
-			for i := len(m.messages) - 1; i >= 0; i-- {
+		// streaming message. We must ensure there is exactly ONE assistant
+		// message serving as the streaming slot — either reuse the history
+		// assistant or keep startAgentTurn's empty one (when no history assistant).
+		//
+		// startAgentTurn() always creates a new empty streaming assistant message.
+		// If history already has an assistant message, we must replace
+		// startAgentTurn's empty message with the history one to avoid showing
+		// two assistant messages (the history version + the empty streaming version).
+		{
+			// Find the last non-streaming assistant message from history
+			// (before the empty one created by startAgentTurn).
+			historyAssistantIdx := -1
+			streamIdx := m.streamingMsgIdx
+			for i := streamIdx - 1; i >= 0; i-- {
 				if m.messages[i].role == "assistant" {
-					m.messages[i].isPartial = true
-					m.messages[i].dirty = true
-					m.messages[i].turnID = m.agentTurnID
-					m.streamingMsgIdx = i
+					historyAssistantIdx = i
 					break
+				}
+			}
+			if historyAssistantIdx >= 0 && streamIdx >= 0 {
+				// Replace startAgentTurn's empty message with the history
+				// assistant's content, keeping isPartial + turnID for live updates.
+				m.messages[streamIdx].content = m.messages[historyAssistantIdx].content
+				if len(m.messages[historyAssistantIdx].iterations) > 0 {
+					m.messages[streamIdx].iterations = m.messages[historyAssistantIdx].iterations
+				}
+				m.messages[streamIdx].dirty = true
+				// Remove the duplicate history assistant message.
+				m.messages = slices.Delete(m.messages, historyAssistantIdx, historyAssistantIdx+1)
+				// Adjust streamingMsgIdx after deletion.
+				if historyAssistantIdx < streamIdx {
+					m.streamingMsgIdx--
+				}
+			} else if m.streamingMsgIdx < 0 {
+				// No startAgentTurn was called (m.typing was true from restoreSession).
+				// Find the last assistant from history and mark it as the streaming slot.
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if m.messages[i].role == "assistant" {
+						m.messages[i].isPartial = true
+						m.messages[i].dirty = true
+						m.messages[i].turnID = m.agentTurnID
+						m.streamingMsgIdx = i
+						break
+					}
 				}
 			}
 		}
