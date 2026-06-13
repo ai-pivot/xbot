@@ -100,7 +100,16 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 				// Finalize it as a completed message so the user keeps what was streamed.
 				streamingMsg.isPartial = false
 				streamingMsg.dirty = true
-				streamingMsg.iterations = m.cancelledTurnIterations()
+				// Only set iterations from cancelledTurnIterations() if the message
+				// doesn't already have baked iterations. handleProgressDone's cancel
+				// path bakes iterations BEFORE endAgentTurn clears iterationHistory.
+				// By the time this cancel ack arrives, iterationHistory is already
+				// empty, so cancelledTurnIterations() would return nothing and
+				// OVERWRITE the baked iterations — causing the exact bug where
+				// "Ctrl+C loses iterations but restart brings them back".
+				if len(streamingMsg.iterations) == 0 {
+					streamingMsg.iterations = m.cancelledTurnIterations()
+				}
 			} else if len(streamingMsg.iterations) > 0 {
 				// Empty content but has iteration data (tool tags, reasoning).
 				// The user saw these rendered inline during the cancelled turn.
@@ -147,6 +156,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 		if m.streamingMsgIdx >= 0 {
 			m.streamingMsgIdx = -1
 		}
+		m.pendingToolSummary = nil // clear stale iteration data from cancelled turn
 		m.progress = nil
 		m.typing = false        // clear typing indicator immediately after cancel
 		m.turnCancelled = false // cancel complete, allow future turns
@@ -305,6 +315,14 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			}
 			completedMsgIdx = m.upsertMessageByTurn(turnID, "assistant", assistantMsg)
 		}
+		// Clear pendingToolSummary after consuming — prevents stale iteration
+		// data from Turn N leaking into Turn N+1's bakeIterations.
+		// Exception: when WaitingUser=true, the turn is paused (not ended).
+		// pendingToolSummary must survive so iterations remain available when
+		// the user answers and the turn resumes.
+		if !msg.WaitingUser {
+			m.pendingToolSummary = nil
+		}
 		// 重置流式状态
 		m.streamingMsgIdx = -1
 		// Capture reasoning from progress before it might be cleared.
@@ -429,17 +447,18 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 						answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
 					}
 					m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
-					// Persist pre-AskUser iteration history before startAgentTurn clears it.
-					// Without this, iterations 1..N from the first run disappear when
-					// resetProgressState sets m.iterationHistory = nil.
-					if len(m.iterationHistory) > 0 {
-						// Store iterations in pendingToolSummary (same pattern as handleProgressDone)
+					// Persist pre-AskUser iteration history AFTER startAgentTurn.
+					// startAgentTurn clears pendingToolSummary (to prevent stale
+					// cross-turn data), so we must save iterationHistory AFTER
+					// the clear, not before.
+					savedIterHistory := append([]cliIterationSnapshot{}, m.iterationHistory...)
+					m.startAgentTurn()
+					if len(savedIterHistory) > 0 {
 						if m.pendingToolSummary == nil {
 							m.pendingToolSummary = &cliMessage{}
 						}
-						m.pendingToolSummary.iterations = append([]cliIterationSnapshot{}, m.iterationHistory...)
+						m.pendingToolSummary.iterations = savedIterHistory
 					}
-					m.startAgentTurn()
 					m.updateViewportContent()
 				}, func() {
 					// Clean up persisted pending question on cancel.
