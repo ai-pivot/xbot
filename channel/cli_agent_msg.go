@@ -183,6 +183,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			m.cacheTokenUsage(m.progress.TokenUsage)
 		}
 		m.streamingMsgIdx = -1
+		m.pendingToolSummary = nil // prevent cross-turn leak (same class as U1 A1 U2 A1 bug)
 		m.progress = nil
 		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
