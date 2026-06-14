@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"time"
 	ch "xbot/channel"
 
 	tea "charm.land/bubbletea/v2"
@@ -130,13 +129,6 @@ func (m *cliModel) hasNoSubscription() bool {
 	return result
 }
 
-// hasAnySubscription returns true if any subscription with an API key exists.
-// Used by refreshCachedModelName to gate auto-discover — prevents
-// ListModels()[0] from overriding a configured subscription's model.
-func (m *cliModel) hasAnySubscription() bool {
-	return !m.hasNoSubscription()
-}
-
 // computeHasNoSubscription performs the actual subscription check.
 // computeHasNoSubscription performs the actual subscription check.
 func (m *cliModel) computeHasNoSubscription() bool {
@@ -210,67 +202,10 @@ func (m *cliModel) refreshCachedModelName() {
 			}
 		}
 	}
-	// Auto-discover: if model name is STILL empty (no subscription, no per-session
-	// override, no global default), try listing available models and pick the first.
-	// CRITICAL: Skip auto-discover if ANY subscription exists — picking ListModels()[0]
-	// over a configured subscription's model causes display/actual model divergence
-	// (e.g. API proxy returns "gpt-4o-mini" first, overriding "deepseek-v4-pro").
-	if m.cachedModelName == "" && m.channel.modelLister != nil && !m.hasAnySubscription() {
-		m.channel.modelLister.EnsureModelsLoaded()
-		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
-			m.cachedModelName = models[0]
-			// Persist the discovered model
-			if m.llmSubscriber != nil {
-				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
-			}
-			existing := LoadSessionLLMState(m.workDir, m.chatID)
-			existing.Model = models[0]
-			SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
-		}
-	}
 	// Cache model count for View() (avoids ListAllModels RPC per frame)
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
 	}
-}
-
-// scheduleModelDiscoverRetry returns a tea.Cmd that sends a delayed
-// cliModelDiscoverMsg to retry auto-discovering the model name.
-// Used when ListModels returns empty (e.g. LLM client not ready after setup).
-// scheduleModelDiscoverRetry returns a tea.Cmd that sends a delayed
-// cliModelDiscoverMsg to retry auto-discovering the model name.
-// Used when ListModels returns empty (e.g. LLM client not ready after setup).
-func (m *cliModel) scheduleModelDiscoverRetry(attempt int) tea.Cmd {
-	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-		return cliModelDiscoverMsg{attempt: attempt}
-	})
-}
-
-// handleModelDiscoverMsg processes a delayed model auto-discover retry.
-// handleModelDiscoverMsg processes a delayed model auto-discover retry.
-func (m *cliModel) handleModelDiscoverMsg(msg cliModelDiscoverMsg) tea.Cmd {
-	if m.cachedModelName != "" {
-		return nil // already resolved
-	}
-	// Retry auto-discover
-	if m.channel != nil && m.channel.modelLister != nil {
-		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
-			m.cachedModelName = models[0]
-			if m.llmSubscriber != nil {
-				m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
-			}
-			existing := LoadSessionLLMState(m.workDir, m.chatID)
-			existing.Model = models[0]
-			SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
-			m.updateViewportContent()
-			return nil
-		}
-	}
-	// Max 5 retries (15s total)
-	if msg.attempt < 5 {
-		return m.scheduleModelDiscoverRetry(msg.attempt + 1)
-	}
-	return nil
 }
 
 // scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when
@@ -296,27 +231,16 @@ func (m *cliModel) scheduleSessionLLMRestore() {
 		if subs[i].ID == m.activeSubID {
 			switchFn := m.channel.config.SwitchLLM
 			target := subs[i]
-			// Preserve the session's model choice across the async SwitchLLM.
-			// Only preserve if cachedModelName differs from the subscription's
-			// model AND matches a known model in the subscription's model list
-			// (legitimate per-session model switch). This prevents stale
-			// auto-discovered models (e.g. "gpt-4o-mini" from API proxy) from
-			// overriding the subscription's actual model.
-			sessionModel := ""
-			if m.cachedModelName != "" && m.cachedModelName != target.Model {
-				sessionModel = m.cachedModelName
-			}
 			m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 				err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 				return cliSwitchLLMDoneMsg{
-					err:          err,
-					subID:        target.ID,
-					subName:      target.Name,
-					subModel:     target.Model,
-					maxCtx:       resolveSubMaxContext(&target),
-					maxOutTok:    resolveSubMaxOutputTokens(&target),
-					mgr:          m.subscriptionMgr,
-					restoreModel: sessionModel,
+					err:       err,
+					subID:     target.ID,
+					subName:   target.Name,
+					subModel:  target.Model,
+					maxCtx:    resolveSubMaxContext(&target),
+					maxOutTok: resolveSubMaxOutputTokens(&target),
+					mgr:       m.subscriptionMgr,
 				}
 			})
 			break

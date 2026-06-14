@@ -447,99 +447,12 @@ func TestReadSaveSettings_RoundTrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// cliSwitchLLMDoneMsg restoreModel
+// handleSwitchLLMDoneMsg (normal subscription switch)
 // ---------------------------------------------------------------------------
 
-// TestHandleSwitchLLMDone_RestoreModel verifies that when a session restore
-// completes (restoreModel is set), the session's own model is preserved
-// instead of being overwritten by the subscription's default model.
-func TestHandleSwitchLLMDone_RestoreModel(t *testing.T) {
-	mgr := &mockSubscriptionManager{
-		subs: []channel.Subscription{
-			{
-				ID: "sub1", Name: "test", Provider: "openai", BaseURL: "https://api.test/v1",
-				APIKey: "key", Model: "model-a", Active: true,
-				PerModelConfigs: map[string]channel.PerModelConfig{
-					"model-a": {MaxContext: 200000},
-					"model-b": {MaxContext: 1000000},
-				},
-			},
-		},
-		defaultID: "sub1",
-	}
-
-	m := newCLIModel()
-	m.channelName = "cli"
-	m.senderID = "cli_user"
-	workDir := t.TempDir()
-	m.workDir = workDir
-	m.chatID = workDir + ":session-1"
-	m.subscriptionMgr = mgr
-	m.remoteMode = true
-	m.channel = &CLIChannel{config: &CLIChannelConfig{}}
-
-	// Simulate: SwitchLLM completed. The subscription default is model-a,
-	// but this session was using model-b. restoreModel="model-b" must be preserved.
-	var switchedModel string
-	var switchedChatID string
-	m.llmSubscriber = &mockLLMSubscriber{
-		switchFn: func(senderID, model, chatID string) {
-			switchedModel = model
-			switchedChatID = chatID
-		},
-	}
-
-	done := cliSwitchLLMDoneMsg{
-		subID:        "sub1",
-		subName:      "test",
-		subModel:     "model-a", // subscription's default
-		maxCtx:       200000,
-		maxOutTok:    4096,
-		mgr:          mgr,
-		restoreModel: "model-b", // session's own model
-	}
-
-	_, _, handled := m.handleSwitchLLMDoneMsg(done)
-	if !handled {
-		t.Fatal("expected handleSwitchLLMDoneMsg to handle the message")
-	}
-
-	// Session must end up with model-b, not model-a.
-	if m.cachedModelName != "model-b" {
-		t.Errorf("cachedModelName = %q, want model-b (session's model, not subscription's)",
-			m.cachedModelName)
-	}
-	// The session's model must be synced to server via SwitchModel.
-	if switchedModel != "model-b" {
-		t.Errorf("SwitchModel called with %q, want model-b", switchedModel)
-	}
-	if switchedChatID != m.chatID {
-		t.Errorf("SwitchModel chatID = %q, want %q", switchedChatID, m.chatID)
-	}
-	// In remote mode (skipBackendFields=true), the Model is NOT persisted to
-	// disk JSON. Instead, it's kept in m.cachedModelName and synced to server.
-	// Verify the in-memory state is correct — that's what the TUI displays.
-	if m.activeSubID != "sub1" {
-		t.Errorf("activeSubID = %q, want sub1", m.activeSubID)
-	}
-	// CRITICAL: cachedMaxContextTokens must be resolved from PerModelConfigs
-	// for model-b (1000000), NOT from done.maxCtx (200000 which is model-a's).
-	// Before the fix, done.maxCtx was passed as state.MaxContextTokens,
-	// poisoning the ResolveEffectiveMaxContext priority-1 shortcut.
-	if m.cachedMaxContextTokens != 1000000 {
-		t.Errorf("cachedMaxContextTokens = %d, want 1000000 (model-b's per-model config, "+
-			"not done.maxCtx=200000 from model-a)", m.cachedMaxContextTokens)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleSwitchLLMDoneMsg without restoreModel (normal subscription switch)
-// ---------------------------------------------------------------------------
-
-// TestHandleSwitchLLMDone_NormalSwitchUsesSubModel verifies that without
-// restoreModel (a normal subscription switch from the settings panel),
-// the subscription's model is used, not some stale cached model.
-func TestHandleSwitchLLMDone_NormalSwitchUsesSubModel(t *testing.T) {
+// TestHandleSwitchLLMDone_UsesSubModel verifies that on subscription switch,
+// the subscription's model is used and per-model context is correctly resolved.
+func TestHandleSwitchLLMDone_UsesSubModel(t *testing.T) {
 	mgr := &mockSubscriptionManager{
 		subs: []channel.Subscription{
 			{
@@ -563,10 +476,6 @@ func TestHandleSwitchLLMDone_NormalSwitchUsesSubModel(t *testing.T) {
 	m.remoteMode = true
 	m.channel = &CLIChannel{config: &CLIChannelConfig{}}
 
-	// No restoreModel → normal switch, should use subModel.
-	// maxCtx/maxOutTok are from resolveSubMaxContext (subscription default model).
-	// They should NOT be used as state.MaxContextTokens — applySessionLLMState
-	// must resolve from PerModelConfigs instead.
 	done := cliSwitchLLMDoneMsg{
 		subID:     "sub1",
 		subName:   "test",
@@ -584,33 +493,10 @@ func TestHandleSwitchLLMDone_NormalSwitchUsesSubModel(t *testing.T) {
 	if m.cachedModelName != "model-a" {
 		t.Errorf("cachedModelName = %q, want model-a (subscription's model)", m.cachedModelName)
 	}
-	// cachedMaxContextTokens must come from PerModelConfigs, not done.maxCtx.
 	if m.cachedMaxContextTokens != 200000 {
 		t.Errorf("cachedMaxContextTokens = %d, want 200000 (from PerModelConfigs, not done.maxCtx=999999)",
 			m.cachedMaxContextTokens)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Helper: mock LLM subscriber
-// ---------------------------------------------------------------------------
-
-type mockLLMSubscriber struct {
-	switchFn func(senderID, model, chatID string)
-}
-
-func (s *mockLLMSubscriber) SwitchSubscription(senderID string, sub *channel.Subscription, chatID string) error {
-	return nil
-}
-
-func (s *mockLLMSubscriber) SwitchModel(senderID, model, chatID string) {
-	if s.switchFn != nil {
-		s.switchFn(senderID, model, chatID)
-	}
-}
-
-func (s *mockLLMSubscriber) GetDefaultModel() string {
-	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -622,9 +508,6 @@ func (s *mockLLMSubscriber) GetDefaultModel() string {
 // 2. Cycle to model-b (1M context)
 // 3. Cycle back to model-a
 // 4. Context bar must show 200k, not 1M
-//
-// This tests the fix for handleSwitchLLMDoneMsg no longer poisoning
-// state.MaxContextTokens with done.maxCtx (subscription default model's context).
 func TestCycleModel_PreservesPerModelMaxContext(t *testing.T) {
 	mgr := &mockSubscriptionManager{
 		subs: []channel.Subscription{
@@ -655,33 +538,19 @@ func TestCycleModel_PreservesPerModelMaxContext(t *testing.T) {
 		t.Fatalf("initial: cachedMaxContextTokens = %d, want 200000", m.cachedMaxContextTokens)
 	}
 
-	// Simulate session restore via handleSwitchLLMDoneMsg.
-	// done.maxCtx comes from resolveSubMaxContext which uses sub.Model (model-a) → 200000.
-	// But the session's model might differ. The key assertion: even if done.maxCtx
-	// is passed, it must NOT override per-model resolution.
-	m.llmSubscriber = &mockLLMSubscriber{}
-	done := cliSwitchLLMDoneMsg{
-		subID:        "sub1",
-		subName:      "test",
-		subModel:     "model-a",
-		maxCtx:       200000, // model-a's context (correct by coincidence here)
-		maxOutTok:    4096,
-		mgr:          mgr,
-		restoreModel: "model-b", // session uses model-b!
-	}
-	workDir := t.TempDir()
-	m.workDir = workDir
-	m.chatID = workDir + ":session-1"
-	_, _, _ = m.handleSwitchLLMDoneMsg(done)
+	// Simulate cycleModel going to model-b.
+	existing := SessionLLMState{SubscriptionID: m.activeSubID, Model: "model-b"}
+	m.cachedModelName = "model-b"
+	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(existing, m.subscriptionMgr)
 
-	// After restore: should be model-b with 1M, NOT 200k from done.maxCtx.
+	// MUST be 1M (model-b).
 	if m.cachedMaxContextTokens != 1000000 {
-		t.Errorf("after restore: cachedMaxContextTokens = %d, want 1000000 (model-b's per-model, "+
-			"not done.maxCtx=200000)", m.cachedMaxContextTokens)
+		t.Fatalf("after cycling to model-b: cachedMaxContextTokens = %d, want 1000000",
+			m.cachedMaxContextTokens)
 	}
 
 	// Now simulate cycleModel going back to model-a.
-	existing := SessionLLMState{SubscriptionID: m.activeSubID, Model: "model-a"}
+	existing = SessionLLMState{SubscriptionID: m.activeSubID, Model: "model-a"}
 	m.cachedModelName = "model-a"
 	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(existing, m.subscriptionMgr)
 

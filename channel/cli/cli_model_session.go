@@ -493,21 +493,16 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 								if m.channel != nil && m.channel.config.SwitchLLM != nil {
 									switchFn := m.channel.config.SwitchLLM
 									target := subs[i]
-									// Capture the session's model so it survives the async
-									// SwitchLLM callback. Without this, handleSwitchLLMDoneMsg
-									// overwrites the session model with the subscription's model.
-									sessionModel := state.Model
 									m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 										err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 										return cliSwitchLLMDoneMsg{
-											err:          err,
-											subID:        target.ID,
-											subName:      target.Name,
-											subModel:     target.Model,
-											maxCtx:       resolveSubMaxContext(&target),
-											maxOutTok:    resolveSubMaxOutputTokens(&target),
-											mgr:          m.subscriptionMgr,
-											restoreModel: sessionModel,
+											err:       err,
+											subID:     target.ID,
+											subName:   target.Name,
+											subModel:  target.Model,
+											maxCtx:    resolveSubMaxContext(&target),
+											maxOutTok: resolveSubMaxOutputTokens(&target),
+											mgr:       m.subscriptionMgr,
 										}
 									})
 								}
@@ -524,20 +519,6 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 						m.cachedModelName = defSub.Model
 						m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
 						m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
-					}
-				}
-				// Auto-discover: if model name is still empty after loading default sub,
-				// try listing available models and pick the first one.
-				if m.cachedModelName == "" && m.channel != nil && m.channel.modelLister != nil {
-					m.channel.modelLister.EnsureModelsLoaded()
-					if models := m.channel.modelLister.ListModels(); len(models) > 0 {
-						m.cachedModelName = models[0]
-						if m.llmSubscriber != nil {
-							m.llmSubscriber.SwitchModel(m.senderID, models[0], m.chatID)
-						}
-						existing := LoadSessionLLMState(m.workDir, m.chatID)
-						existing.Model = models[0]
-						SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 					}
 				}
 				// Resolve cachedMaxContextTokens if still zero (e.g. default sub

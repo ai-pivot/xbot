@@ -23,36 +23,13 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		}
 		// Also update the global default subscription (is_default flag in DB)
 		// so that new sessions inherit the last-used subscription.
-		// The per-session call above (with chatID) only updates the LLM client
-		// for this session; it does NOT touch is_default.
 		_ = done.mgr.SetDefault(done.subID, "")
-		// ALWAYS update per-session LLM state on successful switch, even if
-		// SetDefault (global DB write) fails. The session must track its own
-		// subscription regardless of global default persistence success.
-		// Failure to update activeSubID is the root cause of the settings panel
-		// showing the wrong subscription after a switch.
-		// Determine the effective model: if this is a session restore and the
-		// session has its own model choice, preserve it instead of using the
-		// subscription's default model. Also sync the per-session model to the
-		// server so GetLLMForChat returns the correct model for this session.
-		effectiveModel := done.subModel
-		if done.restoreModel != "" && done.restoreModel != done.subModel {
-			effectiveModel = done.restoreModel
-			// Sync per-session model to server (creates per-chat LLM entry)
-			if m.llmSubscriber != nil {
-				m.llmSubscriber.SwitchModel(m.senderID, effectiveModel, m.chatID)
-			}
-		}
-		// Do NOT pass done.maxCtx/done.maxOutTok as MaxContextTokens/MaxOutputTokens.
-		// Those values come from resolveSubMaxContext which uses the subscription's
-		// DEFAULT model, not the session's model. Setting them here would poison
-		// state.MaxContextTokens, and ResolveEffectiveMaxContext priority-1 returns
-		// it directly, bypassing per-model lookup. Instead, let
-		// applySessionLLMState → ResolveEffectiveMaxContext resolve from
-		// PerModelConfigs (which now includes subscription_models data).
+		// Update per-session LLM state. The subscription's model is authoritative —
+		// per-session model overrides (Ctrl+N) are handled by cycleModel which
+		// saves directly to session JSON + calls SwitchModel RPC.
 		state := SessionLLMState{
 			SubscriptionID: done.subID,
-			Model:          effectiveModel,
+			Model:          done.subModel,
 		}
 		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)

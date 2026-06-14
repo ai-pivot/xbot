@@ -271,11 +271,6 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 	} else {
 		m.updateViewportContent()
 	}
-	// If model name is still empty after refresh (e.g. LLM client not ready after
-	// first setup), schedule a delayed auto-discover retry.
-	if m.cachedModelName == "" {
-		return m.scheduleModelDiscoverRetry(0)
-	}
 	return nil
 }
 

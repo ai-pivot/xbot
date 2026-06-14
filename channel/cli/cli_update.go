@@ -436,11 +436,6 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// an expensive fullRebuild on every widget tick (100ms→full rebuild).
 		m.relayoutViewport()
 
-	case cliModelDiscoverMsg:
-		if cmd := m.handleModelDiscoverMsg(msg); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-
 	case easterEggDoneMsg:
 		// 🥚 彩蛋关闭（按任意键触发）
 		m.dismissEasterEgg()

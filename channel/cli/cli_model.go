@@ -608,14 +608,13 @@ type cliSettingsSavedMsg struct {
 }
 
 type cliSwitchLLMDoneMsg struct {
-	err          error
-	subID        string
-	subName      string
-	subModel     string
-	maxCtx       int // per-model max_context from subscription (for session persistence)
-	maxOutTok    int // per-model max_output_tokens from subscription
-	mgr          SubscriptionManager
-	restoreModel string // non-empty when this switch is a session restore; preserves per-session model
+	err       error
+	subID     string
+	subName   string
+	subModel  string
+	maxCtx    int // per-model max_context from subscription (for session persistence)
+	maxOutTok int // per-model max_output_tokens from subscription
+	mgr       SubscriptionManager
 }
 
 // cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
@@ -656,13 +655,6 @@ type cliPluginUninstallResultMsg struct {
 // cliWidgetUpdateMsg signals that a plugin widget's content has been updated
 // and the TUI should re-render to show the new content.
 type cliWidgetUpdateMsg struct{}
-
-// cliModelDiscoverMsg triggers a delayed auto-discover retry for the model name.
-// Sent when the initial refreshCachedModelName fails to find a model (e.g. LLM
-// client not yet ready after setup). The handler retries the auto-discover logic.
-type cliModelDiscoverMsg struct {
-	attempt int // retry attempt number (0-based)
-}
 
 // isCtrlEnter 检测 Ctrl+Enter 按键。
 // 终端对 Ctrl+Enter 没有统一标准，常见 raw sequences：
