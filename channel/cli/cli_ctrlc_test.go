@@ -192,7 +192,7 @@ func TestCtrlC_CancelAckPreservesBakedIterations(t *testing.T) {
 	}
 
 	// Simulate iterations accumulated during the turn
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
 			Thinking:  "analyzing the code",
@@ -208,8 +208,8 @@ func TestCtrlC_CancelAckPreservesBakedIterations(t *testing.T) {
 			},
 		},
 	}
-	model.lastSeenIteration = 2
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.lastIter = 2
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 2,
 	}
@@ -243,7 +243,7 @@ func TestCtrlC_CancelAckPreservesBakedIterations(t *testing.T) {
 		t.Fatal("handleProgressDone should have baked iterations into streaming message")
 	}
 	// Verify iterationHistory was cleared by endAgentTurn
-	if len(model.iterationHistory) != 0 {
+	if len(model.progressState.iterations) != 0 {
 		t.Fatal("iterationHistory should be cleared after endAgentTurn")
 	}
 
@@ -297,7 +297,7 @@ func TestCtrlC_CancelAckBakesIterationsWhenPhaseDoneNotArrived(t *testing.T) {
 	})
 
 	// Iteration history still available (PhaseDone hasn't arrived yet)
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
 			Tools: []protocol.ToolProgress{
@@ -305,7 +305,7 @@ func TestCtrlC_CancelAckBakesIterationsWhenPhaseDoneNotArrived(t *testing.T) {
 			},
 		},
 	}
-	model.progress = &protocol.ProgressEvent{Iteration: 1}
+	model.progressState.current = &protocol.ProgressEvent{Iteration: 1}
 
 	// Cancel ack arrives BEFORE PhaseDone
 	model.Update(cliOutboundMsg{

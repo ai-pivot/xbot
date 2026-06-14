@@ -11,7 +11,7 @@ import (
 
 // TestAskUserViewportPreservesIterations verifies that when AskUser panel opens,
 // the viewport rendering of the previous assistant message still shows ALL iteration
-// data (tool names). The bug was that the last iteration's tools (from m.progress)
+// data (tool names). The bug was that the last iteration's tools (from m.progressState.current)
 // were not included in bakeIterations, so they disappeared when the message was finalized.
 func TestAskUserViewportPreservesIterations(t *testing.T) {
 	model := initTestModel()
@@ -50,8 +50,8 @@ func TestAskUserViewportPreservesIterations(t *testing.T) {
 		},
 	})
 
-	if model.panelMode != "askuser" {
-		t.Fatalf("Expected panelMode=askuser, got %q", model.panelMode)
+	if model.panelState.mode != "askuser" {
+		t.Fatalf("Expected panelMode=askuser, got %q", model.panelState.mode)
 	}
 
 	// Verify the assistant message has iterations baked in
@@ -125,8 +125,8 @@ func TestAskUserAnswerPreservesViewportIterations(t *testing.T) {
 		},
 	})
 
-	if model.panelMode != "askuser" {
-		t.Fatalf("Expected panelMode=askuser, got %q", model.panelMode)
+	if model.panelState.mode != "askuser" {
+		t.Fatalf("Expected panelMode=askuser, got %q", model.panelState.mode)
 	}
 
 	// Verify pre-answer: assistant has iterations
@@ -152,8 +152,8 @@ func TestAskUserAnswerPreservesViewportIterations(t *testing.T) {
 	}
 
 	// Answer the AskUser question
-	if model.panelOnAnswer != nil {
-		model.panelOnAnswer(map[string]string{"q0": "yes"})
+	if model.panelState.onAnswer != nil {
+		model.panelState.onAnswer(map[string]string{"q0": "yes"})
 	}
 
 	// After answer: find the pre-AskUser assistant message (non-partial, not the new streaming one)

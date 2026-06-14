@@ -35,32 +35,32 @@ type panelStackEntry struct {
 // The caller should set the new panelMode afterwards (via openXxxPanel).
 // Used when navigating from a parent panel (e.g. Settings) to a child panel.
 func (m *cliModel) pushPanel() {
-	m.panelStack = append(m.panelStack, panelStackEntry{
-		mode:     m.panelMode,
-		cursor:   m.panelCursor,
-		scrollY:  m.panelScrollY,
-		values:   m.panelValues,
-		schema:   m.panelSchema,
-		onSubmit: m.panelOnSubmit,
+	m.panelState.stack = append(m.panelState.stack, panelStackEntry{
+		mode:     m.panelState.mode,
+		cursor:   m.panelState.cursor,
+		scrollY:  m.panelState.scrollY,
+		values:   m.panelState.values,
+		schema:   m.panelState.schema,
+		onSubmit: m.panelState.onSubmit,
 	})
 }
 
 // pushPanelFromPalette saves a marker so that popPanel reopens the palette
 // instead of restoring a previous panel. Called when a palette command opens a panel.
 func (m *cliModel) pushPanelFromPalette() {
-	m.panelStack = append(m.panelStack, panelStackEntry{fromPalette: true})
+	m.panelState.stack = append(m.panelState.stack, panelStackEntry{fromPalette: true})
 }
 
 // popPanel restores the parent panel state from the navigation stack.
 // Returns true if a parent panel was restored, false if the stack is empty
 // (meaning we should close the panel entirely).
 func (m *cliModel) popPanel() bool {
-	if len(m.panelStack) == 0 {
+	if len(m.panelState.stack) == 0 {
 		return false
 	}
 	// Pop the last entry
-	entry := m.panelStack[len(m.panelStack)-1]
-	m.panelStack = m.panelStack[:len(m.panelStack)-1]
+	entry := m.panelState.stack[len(m.panelState.stack)-1]
+	m.panelState.stack = m.panelState.stack[:len(m.panelState.stack)-1]
 
 	if entry.fromPalette {
 		// Clean up current panel state entirely, then reopen palette
@@ -70,14 +70,14 @@ func (m *cliModel) popPanel() bool {
 	}
 
 	// Restore parent panel state
-	m.panelMode = entry.mode
-	m.panelCursor = entry.cursor
-	m.panelScrollY = entry.scrollY
-	m.panelValues = entry.values
-	m.panelSchema = entry.schema
-	m.panelOnSubmit = entry.onSubmit
-	m.panelEdit = false
-	m.panelCombo = false
+	m.panelState.mode = entry.mode
+	m.panelState.cursor = entry.cursor
+	m.panelState.scrollY = entry.scrollY
+	m.panelState.values = entry.values
+	m.panelState.schema = entry.schema
+	m.panelState.onSubmit = entry.onSubmit
+	m.panelState.editing = false
+	m.panelState.combo = false
 	m.relayoutViewport()
 	return true
 }
@@ -101,38 +101,38 @@ func (m *cliModel) renderSelLine(line string, w int) string {
 
 // closePanel deactivates any active panel.
 func (m *cliModel) closePanel() {
-	m.panelMode = ""
-	m.panelStack = nil
-	m.panelEdit = false
-	m.panelCombo = false
-	m.panelSchema = nil
-	m.panelValues = nil
-	m.panelPrevProvider = ""
-	m.panelOnSubmit = nil
-	m.panelItems = nil
-	m.panelTab = 0
-	m.panelOptSel = nil
-	m.panelOptCursor = nil
+	m.panelState.mode = ""
+	m.panelState.stack = nil
+	m.panelState.editing = false
+	m.panelState.combo = false
+	m.panelState.schema = nil
+	m.panelState.values = nil
+	m.panelState.prevProvider = ""
+	m.panelState.onSubmit = nil
+	m.panelState.askItems = nil
+	m.panelState.askTab = 0
+	m.panelState.askOptSel = nil
+	m.panelState.askOptCursor = nil
 	// Bg tasks/agents panel cleanup
 	m.cleanupCompletedBgTasks()
-	m.panelBgTasks = nil
-	m.panelBgAgents = nil
-	m.panelBgViewing = false
-	m.panelScrollY = 0
-	m.panelBgLogLines = nil
-	m.panelBgLogFollow = false
+	m.panelState.bgTasks = nil
+	m.panelState.bgAgents = nil
+	m.panelState.bgViewing = false
+	m.panelState.scrollY = 0
+	m.panelState.bgLogLines = nil
+	m.panelState.bgLogFollow = false
 	// Danger zone cleanup
-	m.panelDangerItems = nil
-	m.panelDangerCursor = 0
-	m.panelDangerConfirm = false
-	m.panelDangerOnExec = nil
+	m.panelState.dangerItems = nil
+	m.panelState.dangerCursor = 0
+	m.panelState.dangerConfirm = false
+	m.panelState.dangerOnExec = nil
 	// Runner panel cleanup
-	m.panelRunnerServerTI = textinput.Model{}
-	m.panelRunnerTokenTI = textinput.Model{}
-	m.panelRunnerWorkspace = textinput.Model{}
-	m.panelRunnerEditField = 0
+	m.panelState.runnerServerTI = textinput.Model{}
+	m.panelState.runnerTokenTI = textinput.Model{}
+	m.panelState.runnerWS = textinput.Model{}
+	m.panelState.runnerEditField = 0
 	// 恢复 viewport 到正常模式高度
-	m.panelScrollY = 0
+	m.panelState.scrollY = 0
 	m.relayoutViewport()
 }
 
@@ -162,12 +162,12 @@ func splitLines(s string) []string {
 // updatePanel handles key events when a panel is active.
 // Returns (handled, newModel, cmd).
 func (m *cliModel) updatePanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	if m.panelMode == "" {
+	if m.panelState.mode == "" {
 		return false, m, nil
 	}
 
 	handled, newModel, cmd := func() (bool, tea.Model, tea.Cmd) {
-		switch m.panelMode {
+		switch m.panelState.mode {
 		case "settings":
 			return m.updateSettingsPanel(msg)
 		case "wizard":
@@ -192,7 +192,7 @@ func (m *cliModel) updatePanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 
 	// 对有 cursor 导航的 panel：cursor 超出可见区域时自动滚动
 	if handled {
-		switch m.panelMode {
+		switch m.panelState.mode {
 		case "settings":
 			m.ensurePanelCursorVisible()
 		case "askuser":
@@ -206,7 +206,7 @@ func (m *cliModel) updatePanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 // viewPanel renders the active panel as a string.
 func (m *cliModel) viewPanel() string {
 	var raw string
-	switch m.panelMode {
+	switch m.panelState.mode {
 	case "settings":
 		raw = m.viewSettingsPanel()
 	case "wizard":

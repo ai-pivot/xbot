@@ -17,12 +17,12 @@ import (
 func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Model, []tea.Cmd, bool) {
 
 	// 🥚 彩蛋覆盖层激活时，按任意键退出（Ctrl+C 除外，已在上面处理）
-	if m.easterEgg != easterEggNone {
+	if m.easterEggState.mode != easterEggNone {
 		return m, []tea.Cmd{func() tea.Msg { return easterEggDoneMsg{} }}, true
 	}
 
 	// 🥚 Konami Code 彩蛋：监听方向键和字母键
-	if m.easterEgg == easterEggNone {
+	if m.easterEggState.mode == easterEggNone {
 		konamiKey := ""
 		switch msg.Code {
 		case tea.KeyUp:
@@ -84,22 +84,22 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 
 	case msg.String() == "ctrl+p":
 		// Ctrl+P: Quick switch subscription
-		if m.panelMode == "" && m.subscriptionMgr != nil && !m.typing {
+		if m.panelState.mode == "" && m.subscriptionMgr != nil && !m.typing {
 			m.openQuickSwitch("subscription")
 			return m, nil, true
 		}
 
 	case msg.String() == "ctrl+t":
 		// Ctrl+T: Open Sessions panel (T = Tabs/Sessions)
-		if m.panelMode == "" {
+		if m.panelState.mode == "" {
 			m.openSessionsPanel()
 			return m, nil, true
 		}
 
 	case msg.String() == "ctrl+b":
 		// Ctrl+B: Toggle sidebar (only in wide mode)
-		if m.panelMode == "" && m.isWide() && m.sidebarEnabled {
-			m.sidebarVisible = !m.sidebarVisible
+		if m.panelState.mode == "" && m.isWide() && m.layoutConfig.sidebarEnabled {
+			m.layoutConfig.sidebarVisible = !m.layoutConfig.sidebarVisible
 			m.invalidateLayoutCache()
 			m.relayoutViewport()
 			return m, nil, true
@@ -109,7 +109,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		// Cycle model (next in list)
 		// Uses Ctrl+N instead of Ctrl+M because Ctrl+M is indistinguishable
 		// from Enter on Windows VT Input Mode (Char=\r in both cases).
-		if m.panelMode == "" && !m.typing && m.channel != nil {
+		if m.panelState.mode == "" && !m.typing && m.channel != nil {
 			m.cycleModel()
 			// Drain pending cmds (e.g. showTempStatus timer) immediately
 			// to avoid an extra Update→View cycle on the next frame.
@@ -124,7 +124,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 	case msg.Text == "^":
 		// ^ opens bg tasks panel only when input is empty AND there are running tasks.
 		// Gate prevents intercepting the ^ character during normal typing.
-		if m.panelMode == "" && m.inputHistoryIdx == -1 && m.bgTaskCount > 0 {
+		if m.panelState.mode == "" && m.inputHistoryIdx == -1 && m.bgTaskCount > 0 {
 			m.openBgTasksPanel()
 			return m, nil, true
 		}
@@ -138,7 +138,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 	case msg.Code == tea.KeyUp:
 		// Plain ArrowUp: only viewport scroll (no queue recall / history).
 		// If textarea has content, let textarea own multiline vertical cursor movement.
-		if m.panelMode == "" && m.textarea.Value() != "" {
+		if m.panelState.mode == "" && m.textarea.Value() != "" {
 			break
 		}
 		// Viewport 不在底部时，方向键滚动 viewport
@@ -156,7 +156,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 
 	case msg.Code == tea.KeyDown:
 		// Plain ArrowDown: only viewport scroll.
-		if m.panelMode == "" && m.textarea.Value() != "" {
+		if m.panelState.mode == "" && m.textarea.Value() != "" {
 			break
 		}
 		if !m.viewport.AtBottom() {
@@ -186,10 +186,10 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 
 	case msg.String() == "ctrl+e":
 		// §19 Ctrl+E 切换长消息折叠（搜索导航模式下拦截）
-		if m.searchMode && !m.searchEditing {
+		if m.searchState.mode && !m.searchState.editing {
 			return m, nil, true
 		}
-		if !m.typing && !m.searchMode && len(m.messages) > 0 {
+		if !m.typing && !m.searchState.mode && len(m.messages) > 0 {
 			m.toggleMessageFold()
 		}
 		return m, nil, true
@@ -204,7 +204,7 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	// suLoading guard: during session switch in remote mode, discard injected messages.
 	// They belong to the previous session's context; the RPC will handle state.
-	if m.suLoading {
+	if m.splashState.suLoading {
 		log.WithFields(log.Fields{"msg_chat_id": msg.chatID}).Debug("handleInjectedUserMsg: suLoading, discarding (session switch in progress)")
 		return nil
 	}
@@ -279,7 +279,7 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 	// The notice would corrupt the progress panel layout and distract from
 	// the active iteration history the user needs to see.
 	// The notice is still stored in m.updateNotice for manual /update check.
-	if m.typing || (m.progress != nil && m.progress.Phase != "done" && m.progress.Phase != "") {
+	if m.typing || (m.progressState.current != nil && m.progressState.current.Phase != "done" && m.progressState.current.Phase != "") {
 		return
 	}
 	if msg.info.HasUpdate {
@@ -298,12 +298,12 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 // handleToastMsg enqueues a toast notification.
 func (m *cliModel) handleToastMsg(msg cliToastMsg) []tea.Cmd {
 	// §16 Toast 通知入队（最多保留 5 条，显示前 3 条）
-	if len(m.toasts) >= 5 {
-		m.toasts = m.toasts[len(m.toasts)-4:]
+	if len(m.toastState.queue) >= 5 {
+		m.toastState.queue = m.toastState.queue[len(m.toastState.queue)-4:]
 	}
-	m.toasts = append(m.toasts, cliToastItem(msg))
-	if !m.toastTimer {
-		m.toastTimer = true
+	m.toastState.queue = append(m.toastState.queue, cliToastItem(msg))
+	if !m.toastState.timerActive {
+		m.toastState.timerActive = true
 		return []tea.Cmd{tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 			return cliToastClearMsg{}
 		})}
@@ -313,15 +313,15 @@ func (m *cliModel) handleToastMsg(msg cliToastMsg) []tea.Cmd {
 
 // handleToastClear removes the oldest toast notification.
 func (m *cliModel) handleToastClear(msg cliToastClearMsg) []tea.Cmd {
-	if len(m.toasts) > 0 {
-		m.toasts = m.toasts[1:]
+	if len(m.toastState.queue) > 0 {
+		m.toastState.queue = m.toastState.queue[1:]
 	}
-	if len(m.toasts) > 0 {
+	if len(m.toastState.queue) > 0 {
 		return []tea.Cmd{tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 			return cliToastClearMsg{}
 		})}
 	}
-	m.toastTimer = false
+	m.toastState.timerActive = false
 	return nil
 }
 
@@ -338,10 +338,10 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 	if m.rewindMode {
 		m.closeRewindPanel()
 	}
-	if m.panelMode != "" {
+	if m.panelState.mode != "" {
 		m.closePanel()
 	}
-	if m.searchMode {
+	if m.searchState.mode {
 		m.exitSearch()
 	}
 	// 2. 取消正在编辑的排队消息
@@ -399,16 +399,16 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	var cmds []tea.Cmd
 
 	// Splash / suLoading animation — data-ready driven, no artificial delay.
-	if !m.splashDone || m.suLoading {
-		m.splashFrame++
+	if !m.splashState.done || m.splashState.suLoading {
+		m.splashState.frame++
 		// End splash as soon as model is ready and RPC loading is done.
-		if !m.suLoading && m.ready {
-			m.splashDone = true
+		if !m.splashState.suLoading && m.ready {
+			m.splashState.done = true
 		}
 		// Hard limit: ~3s (30 frames × 100ms) UNCONDITIONAL — safety net
 		// if RPC hangs. User sees the UI instead of staring at splash forever.
-		if m.splashFrame >= 30 {
-			m.splashDone = true
+		if m.splashState.frame >= 30 {
+			m.splashState.done = true
 		}
 	}
 
@@ -419,9 +419,9 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 
 	// Spinner / progress update
-	sessionActive := m.progress != nil && m.progress.Phase != "done"
+	sessionActive := m.progressState.current != nil && m.progressState.current.Phase != "done"
 	busy := m.typing || sessionActive
-	needsSpinnerTick := busy || m.sidebarHasBusySessions
+	needsSpinnerTick := busy || m.progressState.busySessions
 
 	// Refresh bg task / agent counts every tick so the infobar and sidebar
 	// stay accurate even when the agent is idle (no progress messages flowing).
@@ -437,24 +437,24 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 
 	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick {
 		m.ticker.tick()
-		hasStreamContent := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
-		hasReasoningContent := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
+		hasStreamContent := m.progressState.current != nil && m.progressState.current.StreamContent != "" && m.progressState.twVisible < len([]rune(m.progressState.current.StreamContent))
+		hasReasoningContent := m.progressState.current != nil && m.progressState.current.ReasoningStreamContent != "" && m.progressState.rwVisible < len([]rune(m.progressState.current.ReasoningStreamContent))
 		if hasStreamContent || hasReasoningContent {
-			if !m.typewriterTickActive {
-				m.typewriterTickActive = true
+			if !m.progressState.twActive {
+				m.progressState.twActive = true
 				cmds = append(cmds, typewriterTickCmd())
 			}
 		}
 		m.updateViewportContent()
 	} else {
-		m.typewriterTickActive = false
+		m.progressState.twActive = false
 		if !m.rc.valid || countsChanged {
 			m.updateViewportContent()
 		}
 	}
 
 	// Queue flush
-	if m.needFlushQueue && !m.typing && !m.suLoading && len(m.messageQueue) > 0 {
+	if m.needFlushQueue && !m.typing && !m.splashState.suLoading && len(m.messageQueue) > 0 {
 		prevTurnID := m.agentTurnID
 		canFlush := m.isTurnReplyReceived(prevTurnID)
 		if !canFlush && m.isTurnDoneProcessed(prevTurnID) && m.turnCancelled {
@@ -476,7 +476,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 
 	// Idle: placeholder rotation (every 30 ticks = ~3s)
-	if !busy && !needsSpinnerTick && m.splashDone {
+	if !busy && !needsSpinnerTick && m.splashState.done {
 		m.idleTickCounter++
 		if m.idleTickCounter >= 30 {
 			m.idleTickCounter = 0
@@ -498,12 +498,12 @@ func (m *cliModel) handleTypewriterTick() []tea.Cmd {
 	m.advanceTypewriter()
 	m.updateViewportContent()
 	// Continue chain if still behind on either stream or reasoning content
-	streamBehind := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
-	reasoningBehind := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
-	if m.typewriterTickActive && (streamBehind || reasoningBehind) {
+	streamBehind := m.progressState.current != nil && m.progressState.current.StreamContent != "" && m.progressState.twVisible < len([]rune(m.progressState.current.StreamContent))
+	reasoningBehind := m.progressState.current != nil && m.progressState.current.ReasoningStreamContent != "" && m.progressState.rwVisible < len([]rune(m.progressState.current.ReasoningStreamContent))
+	if m.progressState.twActive && (streamBehind || reasoningBehind) {
 		cmds = append(cmds, typewriterTickCmd())
 	} else {
-		m.typewriterTickActive = false
+		m.progressState.twActive = false
 	}
 	return cmds
 }
@@ -512,28 +512,28 @@ func (m *cliModel) handleTypewriterTick() []tea.Cmd {
 func (m *cliModel) handleSplashDone() []tea.Cmd {
 	var cmds []tea.Cmd
 	// §14 启动画面结束确认
-	m.splashDone = true
+	m.splashState.done = true
 	// Remote mode: retry model name fetch — the initial call in cli.go:76
 	// may have failed if the WS RPC wasn't fully ready yet.
 	if m.cachedModelName == "" && m.remoteMode {
 		m.refreshCachedModelName()
 	}
-	_ = m.progress // sessionActive computed for future use
+	_ = m.progressState.current // sessionActive computed for future use
 	return cmds
 }
 
 // handleApprovalRequest shows the approval dialog for a permission request.
 func (m *cliModel) handleApprovalRequest(msg approvalRequestMsg) (tea.Model, tea.Cmd) {
 	// Permission control: show approval dialog
-	m.approvalRequest = &msg.request
-	m.approvalResultCh = msg.resultCh
-	m.approvalCursor = 0 // default to Approve
-	m.approvalEnteringDeny = false
-	m.approvalDenyInput = textinput.New()
-	m.approvalDenyInput.Placeholder = "Optional deny reason for LLM"
-	m.approvalDenyInput.CharLimit = 200
-	m.approvalDenyInput.SetWidth(60)
-	m.panelMode = "approval"
+	m.panelState.approvalReq = &msg.request
+	m.panelState.approvalCh = msg.resultCh
+	m.panelState.approvalCursor = 0 // default to Approve
+	m.panelState.approvalDenyMode = false
+	m.panelState.approvalDenyTA = textinput.New()
+	m.panelState.approvalDenyTA.Placeholder = "Optional deny reason for LLM"
+	m.panelState.approvalDenyTA.CharLimit = 200
+	m.panelState.approvalDenyTA.SetWidth(60)
+	m.panelState.mode = "approval"
 	m.rc.valid = false
 	return m, nil
 }
@@ -542,7 +542,7 @@ func (m *cliModel) handleApprovalRequest(msg approvalRequestMsg) (tea.Model, tea
 // Returns (model, cmd, handled). If handled is true, Update() returns immediately.
 func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
-	case m.searchEditing:
+	case m.searchState.editing:
 		switch key.String() {
 		case "enter":
 			m.executeSearch()
@@ -552,14 +552,14 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 			return m, nil, true
 		}
 		var cmd tea.Cmd
-		m.searchTI, cmd = m.searchTI.Update(key)
+		m.searchState.ti, cmd = m.searchState.ti.Update(key)
 		return m, cmd, true
 	default:
 		switch key.String() {
 		case "n":
-			if len(m.searchResults) > 0 {
-				next := m.searchIdx + 1
-				if next >= len(m.searchResults) {
+			if len(m.searchState.results) > 0 {
+				next := m.searchState.idx + 1
+				if next >= len(m.searchState.results) {
 					next = 0
 				}
 				m.jumpToSearchResult(next)
@@ -568,10 +568,10 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 			}
 			return m, nil, true
 		case "N":
-			if len(m.searchResults) > 0 {
-				prev := m.searchIdx - 1
+			if len(m.searchState.results) > 0 {
+				prev := m.searchState.idx - 1
 				if prev < 0 {
-					prev = len(m.searchResults) - 1
+					prev = len(m.searchState.results) - 1
 				}
 				m.jumpToSearchResult(prev)
 				m.rc.valid = false
@@ -681,14 +681,14 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 	// Shift+Up: recall queued message for editing / browse input history.
 	// When actively browsing history (inputHistoryIdx >= 0), allow continued
 	// scrolling even though textarea has content (from the previous history entry).
-	if m.panelMode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
+	if m.panelState.mode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
 		return m, nil, true
 	}
 	if !m.viewport.AtBottom() {
 		return m, nil, true
 	}
 	// §Q 消息队列：typing 时 Shift+↑ 追回最后一条排队消息编辑
-	if m.panelMode == "" && m.typing && !m.inputReady && len(m.messageQueue) > 0 {
+	if m.panelState.mode == "" && m.typing && !m.inputReady && len(m.messageQueue) > 0 {
 		if !m.queueEditing && m.textarea.Value() == "" {
 			// 追回最后一条排队消息
 			m.queueEditing = true
@@ -698,7 +698,7 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 			return m, nil, true
 		}
 	}
-	if m.panelMode == "" && !m.typing {
+	if m.panelState.mode == "" && !m.typing {
 		// 空输入时浏览历史
 		if (m.textarea.Value() == "" || m.inputHistoryIdx >= 0) && len(m.inputHistory) > 0 {
 			if m.inputHistoryIdx == -1 {
@@ -719,13 +719,13 @@ func (m *cliModel) handleShiftUp() (tea.Model, []tea.Cmd, bool) {
 func (m *cliModel) handleShiftDown() (tea.Model, []tea.Cmd, bool) {
 	// Shift+Down: browse input history backwards.
 	// Only block when NOT in history browsing mode AND textarea has content.
-	if m.panelMode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
+	if m.panelState.mode == "" && m.textarea.Value() != "" && m.inputHistoryIdx < 0 {
 		return m, nil, true
 	}
 	if !m.viewport.AtBottom() {
 		return m, nil, true
 	}
-	if m.panelMode == "" && !m.typing && m.inputHistoryIdx >= 0 {
+	if m.panelState.mode == "" && !m.typing && m.inputHistoryIdx >= 0 {
 		if m.inputHistoryIdx > 0 {
 			m.inputHistoryIdx--
 			m.textarea.SetValue(m.inputHistory[m.inputHistoryIdx])

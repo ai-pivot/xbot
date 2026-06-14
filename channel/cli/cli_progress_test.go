@@ -532,7 +532,7 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 	model.cancelTargetTurnID = model.agentTurnID
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
 			Thinking:  "previous iteration",
@@ -541,8 +541,8 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 			},
 		},
 	}
-	model.lastSeenIteration = 2
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.lastIter = 2
+	model.progressState.current = &protocol.ProgressEvent{
 		Iteration: 2,
 		Thinking:  "current unsnapped iteration",
 		CompletedTools: []protocol.ToolProgress{
@@ -675,7 +675,7 @@ func TestHistoryReloadPreservesActiveStreamingTurn(t *testing.T) {
 		{role: "user", content: "current user", timestamp: time.Now(), dirty: true},
 	}
 	model.startAgentTurn()
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
 			Thinking:  "current turn thinking",
@@ -684,7 +684,7 @@ func TestHistoryReloadPreservesActiveStreamingTurn(t *testing.T) {
 			},
 		},
 	}
-	model.progress = &protocol.ProgressEvent{Phase: "tool_exec", Iteration: 1}
+	model.progressState.current = &protocol.ProgressEvent{Phase: "tool_exec", Iteration: 1}
 	streamingIdx := model.streamingMsgIdx
 
 	model.handleHistoryReload(cliHistoryReloadMsg{
@@ -707,8 +707,8 @@ func TestHistoryReloadPreservesActiveStreamingTurn(t *testing.T) {
 	if streaming.role != "assistant" || !streaming.isPartial {
 		t.Fatalf("active streaming assistant was not preserved: %+v", streaming)
 	}
-	if len(model.iterationHistory) != 1 || model.iterationHistory[0].Thinking != "current turn thinking" {
-		t.Fatalf("iteration history was not preserved: %+v", model.iterationHistory)
+	if len(model.progressState.iterations) != 1 || model.progressState.iterations[0].Thinking != "current turn thinking" {
+		t.Fatalf("iteration history was not preserved: %+v", model.progressState.iterations)
 	}
 	if !strings.Contains(model.viewport.View(), "running command") {
 		t.Fatalf("viewport lost current turn tools after reload:\n%s", stripAnsi(model.viewport.View()))
@@ -803,7 +803,7 @@ func TestProgressNoDuplication(t *testing.T) {
 	})
 
 	// Verify iterationHistory has entries and tools
-	if len(model.iterationHistory) == 0 {
+	if len(model.progressState.iterations) == 0 {
 		t.Error("Expected iterationHistory to have entries after progress events")
 	}
 
@@ -840,7 +840,7 @@ func TestProgressRealisticSequence(t *testing.T) {
 	// Iter 2: empty thinking (no tools)
 	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Thinking: ""})
 
-	if len(model.iterationHistory) == 0 {
+	if len(model.progressState.iterations) == 0 {
 		t.Error("Expected iterationHistory to have entries")
 	}
 

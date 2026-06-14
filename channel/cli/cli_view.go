@@ -25,11 +25,11 @@ import (
 // uses uniseg.StringWidth), then adds the screen layout offsets.
 func (m *cliModel) computeInputCursorScreenPos() (x, y int, ok bool) {
 	// Only compute for main layout where textarea is visible
-	if m.panelMode != "" || m.paletteOpen || m.quickSwitchMode != "" || m.rewindMode || m.searchMode {
+	if m.panelState.mode != "" || m.paletteOpen || m.quickSwitchMode != "" || m.rewindMode || m.searchState.mode {
 		return 0, 0, false
 	}
 	// Textarea is not rendered when settings are being saved
-	if m.settingsSaving {
+	if m.panelState.settingsSaving {
 		return 0, 0, false
 	}
 
@@ -68,7 +68,7 @@ func (m *cliModel) computeInputCursorScreenPos() (x, y int, ok bool) {
 	// --- Compute X (screen column) ---
 	// textarea.Cursor().X already includes: CharOffset + prompt + lineNumber + base border/padding.
 	// We need to add: xShift (sidebar) + InputBox border-left + InputBox padding-left.
-	x = m.xShift
+	x = m.layoutConfig.xShift
 	x += inputBox.GetBorderLeftSize() + inputBox.GetPaddingLeft()
 	x += taCur.X
 
@@ -96,41 +96,43 @@ func (m *cliModel) isNarrow() bool { return m.width < 60 }
 func (m *cliModel) isWide() bool { return m.width >= 120 }
 
 // sidebarShown returns true when the sidebar is currently rendered on screen.
-func (m *cliModel) sidebarShown() bool { return m.isWide() && m.sidebarEnabled && m.sidebarVisible }
+func (m *cliModel) sidebarShown() bool {
+	return m.isWide() && m.layoutConfig.sidebarEnabled && m.layoutConfig.sidebarVisible
+}
 
 // invalidateLayoutCache resets cached sidebar/chat width metrics.
 // Must be called on resize, sidebar toggle, sidebarWidth change, or theme change.
 func (m *cliModel) invalidateLayoutCache() {
-	m.cachedSidebarRenderedWidth = 0
-	m.cachedSidebarWidthKey = 0
-	m.cachedChatWidth = 0
-	m.cachedChatWidthKey = 0
+	m.layoutConfig.cachedSBWidth = 0
+	m.layoutConfig.cachedSBKey = 0
+	m.layoutConfig.cachedChatW = 0
+	m.layoutConfig.cachedChatKey = 0
 }
 
 // sidebarRenderedWidth returns the actual visual width of the sidebar after rendering.
 // This depends on character widths (e.g. RUNEWIDTH_EASTASIAN makes │ width=2),
 // so we measure it dynamically — but cache the result until layout changes.
 func (m *cliModel) sidebarRenderedWidth() int {
-	sw := m.sidebarWidth
+	sw := m.layoutConfig.sidebarWidth
 	if sw < 12 {
 		sw = 12
 	}
-	if m.cachedSidebarRenderedWidth > 0 && m.cachedSidebarWidthKey == sw {
-		return m.cachedSidebarRenderedWidth
+	if m.layoutConfig.cachedSBWidth > 0 && m.layoutConfig.cachedSBKey == sw {
+		return m.layoutConfig.cachedSBWidth
 	}
 	rendered := m.styles.SidebarBg.Width(sw).Height(1).Render("")
 	line := strings.Split(rendered, "\n")[0]
 	w := lipgloss.Width(line)
-	m.cachedSidebarRenderedWidth = w
-	m.cachedSidebarWidthKey = sw
+	m.layoutConfig.cachedSBWidth = w
+	m.layoutConfig.cachedSBKey = sw
 	return w
 }
 
 // chatWidth returns the effective width for the chat viewport, accounting for sidebar.
 // Result is cached until invalidateLayoutCache() is called.
 func (m *cliModel) chatWidth() int {
-	if m.cachedChatWidth > 0 && m.cachedChatWidthKey == m.width {
-		return m.cachedChatWidth
+	if m.layoutConfig.cachedChatW > 0 && m.layoutConfig.cachedChatKey == m.width {
+		return m.layoutConfig.cachedChatW
 	}
 	var w int
 	if m.sidebarShown() {
@@ -141,8 +143,8 @@ func (m *cliModel) chatWidth() int {
 	} else {
 		w = m.width
 	}
-	m.cachedChatWidth = w
-	m.cachedChatWidthKey = m.width
+	m.layoutConfig.cachedChatW = w
+	m.layoutConfig.cachedChatKey = m.width
 	return w
 }
 
@@ -167,7 +169,7 @@ func (m *cliModel) renderTitleBar() string {
 	titleLeft := m.titleText()
 	titleRight := m.locale.TitleHint
 	// Askuser panel: override titleRight with panel-specific hints (always visible)
-	if m.panelMode == "askuser" {
+	if m.panelState.mode == "askuser" {
 		titleRight = m.askUserTitleHints()
 	} else if m.updateNotice != nil && m.updateNotice.HasUpdate {
 		titleRight = fmt.Sprintf("%s→%s · /update · /help", m.updateNotice.Current, m.updateNotice.Latest)
@@ -208,7 +210,7 @@ func (m *cliModel) renderTitleBar() string {
 // which triggers CJK rendering bugs on Windows Terminal).
 func (m *cliModel) renderInputArea(borderColor color.Color) string {
 	// Show saving overlay instead of textarea while settings are being saved
-	if m.settingsSaving {
+	if m.panelState.settingsSaving {
 		w := m.chatWidth()
 		inputBoxStyle := m.styles.InputBox.BorderForeground(borderColor).Width(w - 4)
 		return inputBoxStyle.Render(lipgloss.NewStyle().Faint(true).Render("  ⏳ Saving settings..."))
@@ -321,11 +323,11 @@ func (m *cliModel) renderReadyStatus() string {
 // and input box.
 func (m *cliModel) layoutSearch(titleBar, input string) string {
 	var searchBar string
-	if m.searchEditing {
-		searchBar = m.styles.SearchBar.Render(m.searchTI.View())
+	if m.searchState.editing {
+		searchBar = m.styles.SearchBar.Render(m.searchState.ti.View())
 	} else {
 		searchBar = m.styles.SearchBar.Render(
-			fmt.Sprintf(m.locale.SearchNavFormat, m.searchQuery, m.searchIdx+1, len(m.searchResults)))
+			fmt.Sprintf(m.locale.SearchNavFormat, m.searchState.query, m.searchState.idx+1, len(m.searchState.results)))
 	}
 	return fmt.Sprintf("%s\n%s\n%s\n%s",
 		titleBar, m.viewport.View(), searchBar, input)
@@ -345,14 +347,14 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 		askVisibleH = 3
 	}
 	totalAskLines := len(askLines)
-	if m.askPanelScrollY+askVisibleH > totalAskLines {
-		m.askPanelScrollY = max(0, totalAskLines-askVisibleH)
+	if m.panelState.askScrollY+askVisibleH > totalAskLines {
+		m.panelState.askScrollY = max(0, totalAskLines-askVisibleH)
 	}
-	end := m.askPanelScrollY + askVisibleH
+	end := m.panelState.askScrollY + askVisibleH
 	if end > totalAskLines {
 		end = totalAskLines
 	}
-	visibleAsk := askLines[m.askPanelScrollY:end]
+	visibleAsk := askLines[m.panelState.askScrollY:end]
 	askContent := strings.Join(visibleAsk, "\n")
 	// Append scrollbar when content overflows
 	cw := m.chatWidth()
@@ -366,7 +368,7 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
-		askContent = m.applyScrollbar(askContent, contentWidth, totalAskLines, m.askPanelScrollY)
+		askContent = m.applyScrollbar(askContent, contentWidth, totalAskLines, m.panelState.askScrollY)
 	}
 	// Width(cw-2): text_area = cw-6. Without scrollbar, lines ≤ qWrapWidth(cw-7)
 	// fit (cw-7 < cw-6). With scrollbar, total = contentWidth(cw-7)+1 = cw-6 = text_area.
@@ -374,7 +376,7 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 	// Scroll indicator — mouse wheel or ↑↓ at edges scrolls content
 	scrollHint := ""
 	if totalAskLines > askVisibleH {
-		pct := (m.askPanelScrollY + askVisibleH) * 100 / totalAskLines
+		pct := (m.panelState.askScrollY + askVisibleH) * 100 / totalAskLines
 		scrollHint = m.styles.PanelDesc.Render(fmt.Sprintf(" [%d%%] ↕ scroll", pct))
 	}
 
@@ -396,7 +398,7 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 	if showSidebar {
 		availableH := m.height - 1 // minus titleBar
 		sidebar := m.renderSidebarForBlock(middleBlock, availableH)
-		if m.sidebarPosition == "right" {
+		if m.layoutConfig.sidebarPos == "right" {
 			return titleBar + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar)
 		}
 		return titleBar + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, sidebar, middleBlock)
@@ -414,14 +416,14 @@ func (m *cliModel) layoutPanel(titleBar string) string {
 	rawLines := strings.Split(rawContent, "\n")
 	visibleH := m.panelVisibleHeight()
 	totalLines := len(rawLines)
-	if m.panelScrollY+visibleH > totalLines {
-		m.panelScrollY = max(0, totalLines-visibleH)
+	if m.panelState.scrollY+visibleH > totalLines {
+		m.panelState.scrollY = max(0, totalLines-visibleH)
 	}
-	end := m.panelScrollY + visibleH
+	end := m.panelState.scrollY + visibleH
 	if end > totalLines {
 		end = totalLines
 	}
-	visible := rawLines[m.panelScrollY:end]
+	visible := rawLines[m.panelState.scrollY:end]
 	panelContent := strings.Join(visible, "\n")
 	// Append scrollbar when content overflows
 	if totalLines > visibleH && visibleH > 0 {
@@ -430,7 +432,7 @@ func (m *cliModel) layoutPanel(titleBar string) string {
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
-		panelContent = m.applyScrollbar(panelContent, contentWidth, totalLines, m.panelScrollY)
+		panelContent = m.applyScrollbar(panelContent, contentWidth, totalLines, m.panelState.scrollY)
 	}
 	boxedContent := m.styles.PanelBox.Render(panelContent)
 	return fmt.Sprintf("%s\n%s%s",
@@ -443,7 +445,7 @@ func (m *cliModel) layoutPanel(titleBar string) string {
 func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	// Render status bar
 	var status string
-	if m.typing || m.progress != nil {
+	if m.typing || m.progressState.current != nil {
 		thinkingStatusStyle := m.styles.ThinkingSt
 		status = thinkingStatusStyle.Render(m.renderProgressStatus())
 	} else if m.checkingUpdate {
@@ -521,7 +523,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	// Sidebar: spans the full height of the middle section (viewport → infoBar)
 	if showSidebar {
 		sidebar := m.renderSidebarForBlock(middleBlock, m.height-len(topLines))
-		if m.sidebarPosition == "right" {
+		if m.layoutConfig.sidebarPos == "right" {
 			return strings.Join(topLines, "\n") + "\n" +
 				lipgloss.JoinHorizontal(lipgloss.Top, middleBlock, sidebar)
 		}
@@ -536,7 +538,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 // middle content block (viewport + status + footer + input).
 // The block string is used only to measure height via line counting.
 func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
-	sw := m.sidebarWidth
+	sw := m.layoutConfig.sidebarWidth
 	if sw < 12 {
 		sw = 12
 	}
@@ -560,14 +562,14 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 
 	// --- Sessions (always shown, clickable) ---
 	sidebarSectionHeaders["sessions"] = 0
-	if m.sidebarCollapsedSections["sessions"] {
+	if m.layoutConfig.collapsedSects["sessions"] {
 		// Must reset tracking vars even when collapsed, otherwise stale
 		// zone data from the previous frame causes wrong click targets.
 		sidebarSessionLines = nil
 		sidebarDeleteXStart = nil
 		sidebarDeleteXEnd = nil
 		sidebarNewSessionY = -1
-		m.sidebarHasBusySessions = false
+		m.progressState.busySessions = false
 		blocks = append(blocks, m.renderSidebarSectionHeader("Sessions", true))
 	} else {
 		blocks = append(blocks, m.renderSidebarSessions(contentW))
@@ -575,7 +577,7 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 
 	// --- Todo (when sidebar is visible, todo moves here from main view) ---
 	if len(m.todos) > 0 {
-		if m.sidebarCollapsedSections["todo"] {
+		if m.layoutConfig.collapsedSects["todo"] {
 			sidebarSectionHeaders["todo"] = nextBlockOffset(blocks)
 			blocks = append(blocks, m.renderSidebarSectionHeader("Todo", true))
 		} else {
@@ -588,7 +590,7 @@ func (m *cliModel) renderSidebarForBlock(block string, availableH int) string {
 
 	// --- Active tasks (only when something is running) ---
 	if m.bgTaskCount > 0 || m.agentCount > 0 {
-		if m.sidebarCollapsedSections["tasks"] {
+		if m.layoutConfig.collapsedSects["tasks"] {
 			sidebarSectionHeaders["tasks"] = nextBlockOffset(blocks)
 			blocks = append(blocks, m.renderSidebarSectionHeader("Tasks", true))
 			sidebarActiveSectionOffset = -1
@@ -645,7 +647,7 @@ func nextBlockOffset(blocks []string) int {
 
 func (m *cliModel) renderSidebarSessions(w int) string {
 	// Reset tracking
-	m.sidebarHasBusySessions = false
+	m.progressState.busySessions = false
 	sidebarSessionLines = nil
 	sidebarDeleteXStart = nil
 	sidebarDeleteXEnd = nil
@@ -706,13 +708,13 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 			} else if s.Type == "agent" {
 				isBusy = s.Running
 				// Check live state for agent sessions
-				if ls, ok := m.liveSessionStates[s.ID]; ok {
+				if ls, ok := m.progressState.liveStates[s.ID]; ok {
 					isBusy = ls.busy
 				}
 			} else {
 				isBusy = s.Busy
 				// Live state takes priority for non-active main sessions
-				if ls, ok := m.liveSessionStates[s.ID]; ok {
+				if ls, ok := m.progressState.liveStates[s.ID]; ok {
 					isBusy = ls.busy
 				}
 			}
@@ -724,10 +726,10 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				icon = "●"
 				itemStyle = m.styles.SidebarActive
 				// Clear unread flag when user is viewing this session.
-				delete(m.unreadSessions, s.ID)
+				delete(m.progressState.unread, s.ID)
 			} else if isBusy {
 				// Non-active but busy: animated spinner.
-				m.sidebarHasBusySessions = true
+				m.progressState.busySessions = true
 				icon = m.ticker.viewFrames(sidebarSpinnerFrames, 3)
 				itemStyle = m.styles.SidebarBusy
 				// Clear unread when busy — a running session shows a spinner,
@@ -735,18 +737,18 @@ func (m *cliModel) renderSidebarSessions(w int) string {
 				// that briefly returns Running=false can set unread=true via
 				// the busy→idle transition below, and the flag persists even
 				// after the sessions list catches up and shows Running=true again.
-				delete(m.unreadSessions, s.ID)
-			} else if m.unreadSessions[s.ID] {
+				delete(m.progressState.unread, s.ID)
+			} else if m.progressState.unread[s.ID] {
 				// Non-active, idle, but has unread results.
 				icon = "✦"
 				itemStyle = m.styles.SidebarBusy
 			}
 			// Track busy→idle transitions to mark unread.
-			wasBusy := m.lastBusyStates[s.ID]
+			wasBusy := m.progressState.busyStates[s.ID]
 			if wasBusy && !isBusy && !isActive {
-				m.unreadSessions[s.ID] = true
+				m.progressState.unread[s.ID] = true
 			}
-			m.lastBusyStates[s.ID] = isBusy
+			m.progressState.busyStates[s.ID] = isBusy
 
 			labelPart := indent + " " + icon + " " + label
 			labelVisW := lipgloss.Width(labelPart)
@@ -1059,7 +1061,7 @@ func (m *cliModel) View() (v tea.View) {
 	m.mouseZones.reset()
 
 	// Splash screen
-	if !m.splashDone {
+	if !m.splashState.done {
 		v := tea.NewView(m.renderSplash())
 		v.AltScreen = true
 		return v
@@ -1071,14 +1073,14 @@ func (m *cliModel) View() (v tea.View) {
 	}
 
 	// Easter egg overlay
-	if m.easterEgg != easterEggNone {
+	if m.easterEggState.mode != easterEggNone {
 		v := tea.NewView(m.renderEasterEggOverlay())
 		v.AltScreen = true
 		return v
 	}
 
 	// /su loading
-	if m.suLoading {
+	if m.splashState.suLoading {
 		v := tea.NewView(m.renderSuLoading())
 		v.AltScreen = true
 		return v
@@ -1106,13 +1108,13 @@ func (m *cliModel) View() (v tea.View) {
 	// Layout selection + zone tracking
 	var content string
 	switch {
-	case m.searchMode:
+	case m.searchState.mode:
 		content = m.layoutSearch(titleBar, input)
 		m.trackMainLayoutZones(&m.mouseZones)
-	case m.panelMode == "askuser":
+	case m.panelState.mode == "askuser":
 		content = m.layoutAskUser(titleBar)
 		m.trackAskUserZones(&m.mouseZones)
-	case m.panelMode != "":
+	case m.panelState.mode != "":
 		content = m.layoutPanel(titleBar)
 		m.trackPanelZones(&m.mouseZones)
 	default:
@@ -1236,8 +1238,8 @@ func (m *cliModel) renderInfoBar() string {
 // "🏠 main workspace" for main workspace, "🌿 <name>" for worktree sessions.
 func (m *cliModel) renderWorkspaceIndicator() string {
 	cwd := ""
-	if m.progress != nil {
-		cwd = m.progress.CWD
+	if m.progressState.current != nil {
+		cwd = m.progressState.current.CWD
 	}
 
 	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
@@ -1396,7 +1398,7 @@ func (m *cliModel) titleText() string {
 // Keep it short — header width is limited and line wrap looks terrible.
 func (m *cliModel) askUserTitleHints() string {
 	hints := []string{"↑↓ select", "Space check", "Enter submit", "Esc cancel"}
-	if len(m.panelItems) > 1 {
+	if len(m.panelState.askItems) > 1 {
 		hints = append([]string{"←→ switch"}, hints...)
 	}
 	return strings.Join(hints, " · ")
@@ -1490,7 +1492,7 @@ func (m *cliModel) renderSplash() string {
 	lines = append(lines, "")
 
 	// 加载动画
-	frame := splashFrames[m.splashFrame%len(splashFrames)]
+	frame := splashFrames[m.splashState.frame%len(splashFrames)]
 	loadingText := loadingStyle.Render(fmt.Sprintf(m.locale.SplashLoading, frame))
 	lW := lipgloss.Width(loadingText)
 	lPad := (screenW - lW) / 2
@@ -1533,7 +1535,7 @@ func (m *cliModel) renderSuLoading() string {
 
 	// 居中内容
 	var lines []string
-	frame := splashFrames[m.splashFrame%len(splashFrames)]
+	frame := splashFrames[m.splashState.frame%len(splashFrames)]
 
 	// 切换目标提示
 	suText := descStyle.Render(fmt.Sprintf(m.locale.SuSwitching, m.senderID))
@@ -1724,15 +1726,15 @@ func init() {
 func (m *cliModel) renderFooter() string {
 	var hints []footerHint
 
-	if m.panelMode != "" {
+	if m.panelState.mode != "" {
 		// 面板打开时：显示面板相关快捷键
 		escLabel := m.locale.FooterClose
-		if len(m.panelStack) > 0 {
+		if len(m.panelState.stack) > 0 {
 			escLabel = m.locale.FooterBack
 		}
-		switch m.panelMode {
+		switch m.panelState.mode {
 		case "bgtasks":
-			if m.panelBgViewing {
+			if m.panelState.bgViewing {
 				hints = append(hints,
 					m.footerHintItem("PgUp/PgDn", m.locale.FooterScroll, "scroll"),
 					m.footerHintItem("Esc", m.locale.FooterBack, "esc"),
@@ -1759,7 +1761,7 @@ func (m *cliModel) renderFooter() string {
 				m.footerHintItem("Esc", escLabel, "esc"),
 			)
 		case "wizard":
-			switch m.wizardStep {
+			switch m.panelState.wizardStep {
 			case wizardAPIKey:
 				hints = append(hints,
 					m.footerHintItem("Enter/Ctrl+s", m.locale.WizardNextBtn, "enter"),
@@ -1911,11 +1913,11 @@ func (m *cliModel) renderProgressStatus() string {
 		sb.WriteString(" · ")
 	}
 
-	if m.progress != nil {
-		fmt.Fprintf(&sb, "#%d", m.progress.Iteration)
+	if m.progressState.current != nil {
+		fmt.Fprintf(&sb, "#%d", m.progressState.current.Iteration)
 
 		// Phase hint
-		switch m.progress.Phase {
+		switch m.progressState.current.Phase {
 		case "thinking":
 			sb.WriteString(" · " + m.pickVerb(m.ticker.ticks))
 		case "compressing":
@@ -1925,7 +1927,7 @@ func (m *cliModel) renderProgressStatus() string {
 		case "retrying":
 			sb.WriteString(" · " + m.locale.StatusRetrying)
 		default:
-			if len(m.progress.CompletedTools) > 0 {
+			if len(m.progressState.current.CompletedTools) > 0 {
 				sb.WriteString(" · " + m.locale.StatusDone)
 			}
 		}

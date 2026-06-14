@@ -21,7 +21,7 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 	turn1 := model.agentTurnID
 
 	// Simulate Turn 1 iterations
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{Iteration: 0, Thinking: "turn1-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Read", Label: "file1.go", Status: "done", Elapsed: 100, Iteration: 0},
 		}},
@@ -29,7 +29,7 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 			{Name: "Shell", Label: "go build", Status: "done", Elapsed: 200, Iteration: 1},
 		}},
 	}
-	model.lastSeenIteration = 1
+	model.progressState.lastIter = 1
 
 	// PhaseDone for Turn 1 (populates pendingToolSummary)
 	sendProgress(model, &protocol.ProgressEvent{
@@ -82,7 +82,7 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 	}
 
 	// Simulate Turn 2 iterations
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{Iteration: 0, Thinking: "turn2-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Edit", Label: "fix.go", Status: "done", Elapsed: 50, Iteration: 0},
 		}},
@@ -93,7 +93,7 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 			{Name: "Shell", Label: "go test", Status: "done", Elapsed: 150, Iteration: 2},
 		}},
 	}
-	model.lastSeenIteration = 2
+	model.progressState.lastIter = 2
 
 	// PhaseDone for Turn 2
 	sendProgress(model, &protocol.ProgressEvent{
@@ -173,13 +173,13 @@ func TestPendingToolSummary_ClearedOnCancelAck(t *testing.T) {
 	model.cancelTargetTurnID = turn1
 
 	// Populate iterationHistory + pendingToolSummary
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{Iteration: 0, Thinking: "cancel-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Read", Label: "file.go", Status: "done", Elapsed: 100, Iteration: 0},
 		}},
 	}
-	model.lastSeenIteration = 0
-	model.pendingToolSummary = &cliMessage{iterations: model.iterationHistory}
+	model.progressState.lastIter = 0
+	model.pendingToolSummary = &cliMessage{iterations: model.progressState.iterations}
 
 	// Cancel ack
 	model.Update(cliOutboundMsg{

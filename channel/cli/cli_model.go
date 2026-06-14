@@ -132,22 +132,6 @@ type cliModel struct {
 	deleteWebUserFn func(username string) error
 	isAdminFn       func() bool
 
-	// --- Progress ---
-	progress               *protocol.ProgressEvent
-	iterationHistory       []cliIterationSnapshot       // 已完成迭代快照
-	lastSeenIteration      int                          // 上次进度事件的迭代号
-	lastProgressSeq        uint64                       // 上次进度事件的序列号（单调递增校验）
-	iterationStartTime     time.Time                    // current iteration wall-clock start time
-	sidebarHasBusySessions bool                         // true when any non-active sidebar session is busy (needs spinner tick)
-	unreadSessions         map[string]bool              // chatID → has unread results the user hasn't viewed yet
-	lastBusyStates         map[string]bool              // previous busy state per session, for detecting busy→idle transition
-	liveSessionStates      map[string]*liveSessionState // server-pushed session state overrides
-	typewriterTickActive   bool                         // true when typewriter tick chain (50ms) is running
-	twVisible              int                          // typewriter: runes currently visible in stream content
-	rwVisible              int                          // typewriter: runes currently visible in reasoning stream content
-	rwCjkSkipTick          bool                         // alternates each tick to halve CJK speed (reasoning)
-	twCjkSkipTick          bool                         // alternates each tick to halve CJK speed (stream)
-
 	// --- Session ---
 	workDir                string    // 工作目录（标题栏显示用）
 	remoteMode             bool      // 是否连接 remote backend（标题栏提示用）
@@ -170,7 +154,7 @@ type cliModel struct {
 	rc renderCache
 
 	// --- §2 工具可视化 ---
-	lastCompletedTools []protocol.ToolProgress // 每轮结束时快照，不依赖 m.progress 生命周期
+	lastCompletedTools []protocol.ToolProgress // 每轮结束时快照，不依赖 m.progressState.current 生命周期
 	lastReasoning      string                  // 最后一次迭代的 reasoning_content，在 progress 清除前捕获
 	reasoningByIter    map[int]string          // per-iteration reasoning，snapshot 时用于精确查找
 	lastThinking       string                  // 最后一次迭代的 thinking_content，在 progress 清除前捕获
@@ -208,87 +192,10 @@ type cliModel struct {
 	// here so handleAgentMessage can insert it at the correct position.
 	pendingToolSummary *cliMessage
 
-	// --- §12 Interactive Panel ---
-	// panelMode: ""=normal, "settings"=settings panel, "askuser"=ask user panel, "wizard"=setup wizard
-	panelMode      string
-	settingsSaving bool              // true while onSubmit is running in background; blocks user input
-	panelStack     []panelStackEntry // push/pop navigation stack for nested panels
-	panelCursor    int               // settings panel: selected item index
-	panelEdit      bool              // settings panel: editing current item
-	panelScrollY   int               // panel 滚动偏移（手动管理，不依赖 viewport）
-	panelEditTA    textarea.Model    // settings panel: inline editor
-	panelCombo     bool              // settings panel: combo dropdown open
-	panelComboIdx  int               // settings panel: combo selected option index
-	// --- Wizard state (step-by-step setup) ---
-	wizardStep    int // 0=language, 1=provider, 2=apikey, 3=done
-	wizardLangSel int // selected language index
-	wizardProvSel int // selected provider index
-	// --- Panel state backup (for quick switch round-trip) ---
-	panelValuesBackup   map[string]string              // saved panelValues before quick switch
-	panelCursorBackup   int                            // saved panelCursor before quick switch
-	panelOnSubmitBackup func(values map[string]string) // saved onSubmit callback
-	// --- AskUser panel ---
-	panelItems         []askItem              // askuser panel: question items
-	panelTab           int                    // askuser panel: current tab (question index)
-	panelOptSel        map[int]map[int]bool   // askuser panel: selected option indices per question
-	panelOptCursor     map[int]int            // askuser panel: highlighted option index per question
-	panelAnswerTA      textarea.Model         // askuser panel: free-input editor (no-options mode)
-	panelOtherTI       textinput.Model        // askuser panel: single-line Other input
-	wizardKeyTI        textinput.Model        // wizard: API key single-line input
-	askPanelScrollY    int                    // askuser panel: internal scroll offset for long content
-	askPanelTotalLines int                    // cached total line count for scroll clamping
-	panelSchema        []ch.SettingDefinition // settings panel: visible schema (filtered from panelSchemaFull)
-	panelSchemaFull    []ch.SettingDefinition // settings panel: full schema (before DependsOn filtering)
-	panelIsSetup       bool                   // true when panel was opened via /setup or first-run
-	// --- Approval panel ---
-	approvalRequest      *protocol.ApprovalRequest // pending approval request
-	approvalResultCh     chan<- protocol.ApprovalResult
-	approvalCursor       int                             // 0=approve, 1=deny
-	approvalDenyInput    textinput.Model                 // deny reason input
-	approvalEnteringDeny bool                            // true when editing deny reason
-	panelValues          map[string]string               // settings panel: current values
-	panelPrevProvider    string                          // previous llm_provider value for base_url auto-fill
-	panelOnSubmit        func(values map[string]string)  // callback on settings submit
-	panelOnAnswer        func(answers map[string]string) // callback on askuser answers (key=index, value=answer)
-	panelOnCancel        func()                          // callback on cancel
-
-	// --- Bg Tasks Panel ---
-	panelBgTasks   []*BgTask         // cached task list
-	panelBgAgents  []panelAgentEntry // cached agent list
-	panelBgCursor  int               // selected item index (tasks first, then agents)
-	panelBgViewing bool              // true = viewing log of selected task
-
-	panelBgLogLines  []string // cached log lines for viewing
-	panelBgLogFollow bool     // auto-scroll to bottom on new output (follow-tail)
-
-	// --- Sessions Panel ---
-	panelSessionItems         []SessionPanelEntry // cached session list
-	panelSessionCursor        int                 // selected item index
-	panelSessionViewing       bool                // true = viewing session messages
-	panelSessionConfirmDelete bool                // true = showing delete confirmation
-	panelSessionConfirmEntry  SessionPanelEntry   // entry pending deletion
-
-	// --- Danger Zone Panel ---
-	panelDangerItems   []dangerItem
-	panelDangerCursor  int
-	panelDangerConfirm bool // true = showing confirm input
-	panelDangerInput   textinput.Model
-	panelDangerOnExec  func(targetType string) error // callback to execute clear
-
 	// --- §13 Update Check ---
 
-	// --- Runner Panel ---
-	panelRunnerServerTI  textinput.Model     // server URL 输入
-	panelRunnerTokenTI   textinput.Model     // token 输入
-	panelRunnerWorkspace textinput.Model     // workspace 输入
-	panelRunnerEditField int                 // 当前编辑字段 (0=server, 1=token, 2=workspace)
-	updateNotice         *version.UpdateInfo // nil=nothing, non-nil=show notice
-	checkingUpdate       bool                // true while /update is in progress
-
-	// --- ch.Channel Config Panel ---
-	panelChannelItems  []string                     // channel names: ["web", "feishu", "qq", "napcat"]
-	panelChannelCursor int                          // selected channel index
-	panelChannelCfg    map[string]map[string]string // cached channel configs
+	updateNotice   *version.UpdateInfo // nil=nothing, non-nil=show notice
+	checkingUpdate bool                // true while /update is in progress
 
 	// --- §15 ch.Subscription / Model Quick Switch ---
 	quickSwitchMode          string              // ""=off, "subscription"=selecting subscription, "model"=selecting model
@@ -313,19 +220,7 @@ type cliModel struct {
 	// panelSubGeneration captures the generation when the settings panel opens.
 	// ApplySettings REFUSES to write per-subscription LLM fields if generations don't match.
 	// This is the structural guarantee against stale LLM values overwriting a new subscription.
-	subGeneration      int
-	panelSubGeneration int
-
-	// --- §14 Splash 画面 ---
-	splashDone           bool // true = splash 动画结束，进入正常界面
-	splashFrame          int  // 当前 splash 动画帧索引
-	suLoading            bool // true = /su 切换用户后正在加载历史，显示 loading 画面
-	suPhaseDoneConfirmed bool // true = PhaseDone received during suLoading (server confirmed idle)
-	compressionReloading bool // true = HistoryCompacted 异步 reload 进行中，阻止 auto-start
-
-	// --- §16 Toast 通知队列 ---
-	toasts     []cliToastItem // Toast 队列（头部=当前显示）
-	toastTimer bool           // true = toast 消除计时器已启动
+	subGeneration int
 
 	// --- §19 长消息折叠 ---
 	msgLineOffsets []int // 每条消息在 viewport 折行后 content 中的起始行号
@@ -345,48 +240,22 @@ type cliModel struct {
 	// Keyed by agentTurnID. Entries for old turns are cleaned up in startAgentTurn.
 	turnDoneFlags map[uint64]*turnDoneFlag
 
-	// --- §21 消息搜索 /search ---
-	searchMode    bool            // 是否处于搜索模式
-	searchQuery   string          // 搜索关键词
-	searchResults []int           // 匹配的消息索引列表
-	searchIdx     int             // 当前导航到的搜索结果索引（-1 = 未选择）
-	searchEditing bool            // true = 编辑搜索词, false = 导航结果
-	searchTI      textinput.Model // 搜索输入框
-
 	// --- Mouse support ---
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
-	// --- Layout configuration ---
-	chatMaxWidth             int             // max content width (0 = unlimited)
-	chatCenter               bool            // center content in middle-width screens
-	layoutMode               string          // "auto" / "single" / "dual"
-	sidebarEnabled           bool            // show sidebar in wide screens
-	sidebarWidth             int             // sidebar width in chars
-	sidebarPosition          string          // "left" / "right"
-	sidebarVisible           bool            // runtime: is sidebar currently shown (user toggled with Ctrl+B)?
-	sidebarCollapsedSections map[string]bool // per-section collapse state: "sessions"/"todo"/"tasks" → true=collapsed
-	xShift                   int             // sidebar X offset for middleBlock, set during trackMainLayoutZones
+	easterEggState easterEggState
 
-	// Cached layout metrics (invalidated on resize / sidebar toggle).
-	// Eliminates repeated lipgloss.Render + ansi.StringWidth per chatWidth() call.
-	cachedSidebarRenderedWidth int // measured visual width of sidebar (0 = not yet computed)
-	cachedSidebarWidthKey      int // sidebarWidth at time of measurement (for invalidation)
-	cachedChatWidth            int // effective chat width (0 = not yet computed)
-	cachedChatWidthKey         int // m.width at time of measurement (for invalidation)
+	searchState searchState
 
-	// toolDisplayInfo
+	toastState toastState
 
-	// --- 🥚 Easter Eggs 彩蛋 ---
-	easterEgg       easterEggMode // 当前激活的彩蛋类型（"" = 无）
-	easterEggCustom string        // 彩蛋自定义内容（版本成就 art 等）
-	konamiBuffer    []string      // Konami Code 按键缓冲区
-	matrixCols      int           // Matrix 代码雨列数
-	matrixRows      int           // Matrix 代码雨行数
-	matrixDrops     []int         // Matrix 每列头部位置
-	matrixSpeeds    []int         // Matrix 每列下落速度
-	matrixTrailLen  []int         // Matrix 每列拖尾长度
-	matrixBuffer    [][]rune      // Matrix 字符缓冲区
-	versionHitTimes []time.Time   // /version 命令调用时间戳（三连检测）
+	splashState splashState
+
+	panelState panelState
+
+	layoutConfig layoutConfig
+
+	progressState progressState
 
 	channel             *CLIChannel     // back-reference to owning channel (set during Start)
 	cachedModelName     string          // cached model name for View() performance
@@ -519,7 +388,6 @@ func newCLIModel() *cliModel {
 		ready:           false,
 		typing:          false,
 		streamingMsgIdx: -1,
-		progress:        nil,
 		inputReady:      true,
 		locale:          ch.GetLocale(""),
 		inputHistory:    make([]string, 0, 100),
@@ -529,17 +397,21 @@ func newCLIModel() *cliModel {
 		channelName:     "cli",
 		expandedTools:   make(map[string]bool),
 		// Layout defaults
-		chatMaxWidth:             76,
-		chatCenter:               true,
-		layoutMode:               "auto",
-		sidebarEnabled:           true,
-		sidebarVisible:           true,
-		sidebarWidth:             30,
-		sidebarPosition:          "left",
-		sidebarCollapsedSections: make(map[string]bool),
-		unreadSessions:           make(map[string]bool),
-		lastBusyStates:           make(map[string]bool),
-		liveSessionStates:        make(map[string]*liveSessionState),
+		layoutConfig: layoutConfig{
+			maxWidth:       76,
+			center:         true,
+			mode:           "auto",
+			sidebarEnabled: true,
+			sidebarVisible: true,
+			sidebarWidth:   30,
+			sidebarPos:     "left",
+			collapsedSects: make(map[string]bool),
+		},
+		progressState: progressState{
+			unread:     make(map[string]bool),
+			busyStates: make(map[string]bool),
+			liveStates: make(map[string]*liveSessionState),
+		},
 	}
 }
 
@@ -794,13 +666,13 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 }
 
 func (m *cliModel) toggleSidebarSection(section string) {
-	if m.sidebarCollapsedSections == nil {
-		m.sidebarCollapsedSections = make(map[string]bool)
+	if m.layoutConfig.collapsedSects == nil {
+		m.layoutConfig.collapsedSects = make(map[string]bool)
 	}
-	if m.sidebarCollapsedSections[section] {
-		delete(m.sidebarCollapsedSections, section)
+	if m.layoutConfig.collapsedSects[section] {
+		delete(m.layoutConfig.collapsedSects, section)
 	} else {
-		m.sidebarCollapsedSections[section] = true
+		m.layoutConfig.collapsedSects[section] = true
 	}
 	m.saveSidebarCollapsedPrefs()
 }
@@ -811,6 +683,145 @@ func (m *cliModel) saveSidebarCollapsedPrefs() {
 		return
 	}
 	prefs := tools.LoadPreferences(m.workDir, m.senderID)
-	prefs.SidebarCollapsed = m.sidebarCollapsedSections
+	prefs.SidebarCollapsed = m.layoutConfig.collapsedSects
 	_ = tools.SavePreferences(m.workDir, m.senderID, prefs)
+}
+
+// easterEggState groups 10 fields for easteregg.
+type easterEggState struct {
+	mode           easterEggMode
+	customArt      string
+	konamiBuf      []string
+	matrixCols     int
+	matrixRows     int
+	matrixDrops    []int
+	matrixSpeeds   []int
+	matrixTrailLen []int
+	matrixBuf      [][]rune
+	versionHits    []time.Time
+}
+
+// searchState groups related fields extracted from cliModel.
+type searchState struct {
+	mode    bool
+	query   string
+	results []int
+	idx     int
+	editing bool
+	ti      textinput.Model
+}
+
+// toastState groups related fields extracted from cliModel.
+type toastState struct {
+	queue       []cliToastItem
+	timerActive bool
+}
+
+// splashState groups related fields extracted from cliModel.
+type splashState struct {
+	done             bool
+	frame            int
+	suLoading        bool
+	suPhaseConfirmed bool
+	compReloading    bool
+}
+
+// panelState groups 61 panel-related fields extracted from cliModel.
+type panelState struct {
+	mode              string
+	settingsSaving    bool
+	stack             []panelStackEntry
+	cursor            int
+	editing           bool
+	scrollY           int
+	editTA            textarea.Model
+	combo             bool
+	comboIdx          int
+	wizardStep        int
+	wizardLangSel     int
+	wizardProvSel     int
+	wizardKeyTI       textinput.Model
+	valuesBackup      map[string]string
+	cursorBackup      int
+	onSubmitBackup    func(values map[string]string)
+	askItems          []askItem
+	askTab            int
+	askOptSel         map[int]map[int]bool
+	askOptCursor      map[int]int
+	askAnswerTA       textarea.Model
+	askOtherTI        textinput.Model
+	askScrollY        int
+	askTotalLines     int
+	schema            []ch.SettingDefinition
+	schemaFull        []ch.SettingDefinition
+	isSetup           bool
+	approvalReq       *protocol.ApprovalRequest
+	approvalCh        chan<- protocol.ApprovalResult
+	approvalCursor    int
+	approvalDenyTA    textinput.Model
+	approvalDenyMode  bool
+	values            map[string]string
+	prevProvider      string
+	onSubmit          func(values map[string]string)
+	onAnswer          func(answers map[string]string)
+	onCancel          func()
+	bgTasks           []*BgTask
+	bgAgents          []panelAgentEntry
+	bgCursor          int
+	bgViewing         bool
+	bgLogLines        []string
+	bgLogFollow       bool
+	sessItems         []SessionPanelEntry
+	sessCursor        int
+	sessViewing       bool
+	sessConfirmDelete bool
+	sessConfirmEntry  SessionPanelEntry
+	dangerItems       []dangerItem
+	dangerCursor      int
+	dangerConfirm     bool
+	dangerInput       textinput.Model
+	dangerOnExec      func(targetType string) error
+	runnerServerTI    textinput.Model
+	runnerTokenTI     textinput.Model
+	runnerWS          textinput.Model
+	runnerEditField   int
+	channelItems      []string
+	channelCursor     int
+	channelCfg        map[string]map[string]string
+	subGeneration     int
+}
+
+// layoutConfig groups 13 fields extracted from cliModel.
+type layoutConfig struct {
+	maxWidth       int
+	center         bool
+	mode           string
+	sidebarEnabled bool
+	sidebarWidth   int
+	sidebarPos     string
+	sidebarVisible bool
+	collapsedSects map[string]bool
+	xShift         int
+	cachedSBWidth  int
+	cachedSBKey    int
+	cachedChatW    int
+	cachedChatKey  int
+}
+
+// progressState groups 14 fields extracted from cliModel.
+type progressState struct {
+	current      *protocol.ProgressEvent
+	iterations   []cliIterationSnapshot
+	lastIter     int
+	lastSeq      uint64
+	iterStart    time.Time
+	busySessions bool
+	unread       map[string]bool
+	busyStates   map[string]bool
+	liveStates   map[string]*liveSessionState
+	twActive     bool
+	twVisible    int
+	rwVisible    int
+	rwCjkSkip    bool
+	twCjkSkip    bool
 }

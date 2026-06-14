@@ -11,7 +11,7 @@ import (
 // restoreIterationHistory converts IterationHistory from a reconnect snapshot
 // into local iteration history, bootstrapping tool StartedAt timestamps.
 func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
-	if payload == nil || len(payload.IterationHistory) == 0 || len(m.iterationHistory) > 0 {
+	if payload == nil || len(payload.IterationHistory) == 0 || len(m.progressState.iterations) > 0 {
 		return
 	}
 	for _, ih := range payload.IterationHistory {
@@ -27,12 +27,12 @@ func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
 				t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
 			}
 		}
-		m.iterationHistory = append(m.iterationHistory, snap)
+		m.progressState.iterations = append(m.progressState.iterations, snap)
 	}
-	if len(m.iterationHistory) > 0 {
-		lastIter := m.iterationHistory[len(m.iterationHistory)-1].Iteration
-		if lastIter > m.lastSeenIteration {
-			m.lastSeenIteration = lastIter
+	if len(m.progressState.iterations) > 0 {
+		lastIter := m.progressState.iterations[len(m.progressState.iterations)-1].Iteration
+		if lastIter > m.progressState.lastIter {
+			m.progressState.lastIter = lastIter
 		}
 	}
 }
@@ -40,7 +40,7 @@ func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
 // carryForwardProgressState preserves transient state across progress updates
 // (StartedAt timers, CompletedTools, Reasoning/Thinking content, SubAgent trees).
 func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
-	if m.progress == nil {
+	if m.progressState.current == nil {
 		return
 	}
 
@@ -53,8 +53,8 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 			}
 		}
 	}
-	for i := range m.progress.ActiveTools {
-		t := &m.progress.ActiveTools[i]
+	for i := range m.progressState.current.ActiveTools {
+		t := &m.progressState.current.ActiveTools[i]
 		if sa, ok := startedAtMap[t.Name]; ok {
 			t.StartedAt = sa
 		} else if t.StartedAt.IsZero() {
@@ -69,19 +69,19 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	if prev == nil {
 		return
 	}
-	sameIter := m.progress.Iteration == prev.Iteration || m.progress.Iteration == 0
+	sameIter := m.progressState.current.Iteration == prev.Iteration || m.progressState.current.Iteration == 0
 
 	// Carry forward CompletedTools from previous progress within the same iteration.
-	if len(m.progress.CompletedTools) == 0 && len(prev.CompletedTools) > 0 && sameIter {
-		m.progress.CompletedTools = prev.CompletedTools
+	if len(m.progressState.current.CompletedTools) == 0 && len(prev.CompletedTools) > 0 && sameIter {
+		m.progressState.current.CompletedTools = prev.CompletedTools
 	}
 
 	// Carry forward Reasoning/Thinking content.
-	if m.progress.Reasoning == "" && prev.Reasoning != "" && sameIter {
-		m.progress.Reasoning = prev.Reasoning
+	if m.progressState.current.Reasoning == "" && prev.Reasoning != "" && sameIter {
+		m.progressState.current.Reasoning = prev.Reasoning
 	}
-	if m.progress.Thinking == "" && prev.Thinking != "" && sameIter {
-		m.progress.Thinking = prev.Thinking
+	if m.progressState.current.Thinking == "" && prev.Thinking != "" && sameIter {
+		m.progressState.current.Thinking = prev.Thinking
 	}
 
 	// Carry forward StreamContent within the same iteration.
@@ -91,9 +91,9 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// Skip when Thinking is already set — it contains the same finalized content
 	// and carrying StreamContent forward would cause duplicate rendering
 	// (renderLiveIteration renders both fields separately).
-	if prev.StreamContent != "" && m.progress.StreamContent == "" && sameIter {
-		if m.progress.Thinking == "" {
-			m.progress.StreamContent = prev.StreamContent
+	if prev.StreamContent != "" && m.progressState.current.StreamContent == "" && sameIter {
+		if m.progressState.current.Thinking == "" {
+			m.progressState.current.StreamContent = prev.StreamContent
 		}
 	}
 
@@ -101,9 +101,9 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// Guard: only when StreamContent is also empty — reasoning stream is the
 	// LLM's internal thinking; once the actual text response (StreamContent)
 	// starts, reasoning stream from the previous progress shouldn't reappear.
-	if m.progress.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && sameIter {
-		if m.progress.StreamContent == "" {
-			m.progress.ReasoningStreamContent = prev.ReasoningStreamContent
+	if m.progressState.current.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && sameIter {
+		if m.progressState.current.StreamContent == "" {
+			m.progressState.current.ReasoningStreamContent = prev.ReasoningStreamContent
 		}
 	}
 
@@ -117,18 +117,18 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	//   - Completed SubAgents stay completed (don't revert to "running")
 	//   - New SubAgents get added
 	//   - SubAgents no longer in the server's tree get removed
-	iterationChanged := m.progress.Iteration != prev.Iteration && m.progress.Iteration > 0
+	iterationChanged := m.progressState.current.Iteration != prev.Iteration && m.progressState.current.Iteration > 0
 	if iterationChanged {
-		m.progress.SubAgents = nil
-	} else if len(m.progress.SubAgents) > 0 {
+		m.progressState.current.SubAgents = nil
+	} else if len(m.progressState.current.SubAgents) > 0 {
 		// New progress has SubAgent data — merge into previous tree to preserve
 		// completion status for agents no longer reported by the server.
-		m.progress.SubAgents = mergeSubAgentTrees(prev.SubAgents, m.progress.SubAgents)
+		m.progressState.current.SubAgents = mergeSubAgentTrees(prev.SubAgents, m.progressState.current.SubAgents)
 	} else if len(prev.SubAgents) > 0 {
 		// No new SubAgent data — carry forward previous tree, but filter out
 		// agents that were already done in prev. Done agents have already been
 		// displayed to the user and should not linger across subsequent updates.
-		m.progress.SubAgents = pruneDoneSubAgents(prev.SubAgents)
+		m.progressState.current.SubAgents = pruneDoneSubAgents(prev.SubAgents)
 	}
 }
 
@@ -155,15 +155,15 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 
 	turnID := m.agentTurnID // capture before any mutation
-	prev := m.progress
+	prev := m.progressState.current
 
 	// Seq monotonic check: discard out-of-order or duplicate progress events.
 	// Placed after ChatID filtering, before any state mutation.
 	if msg.payload != nil && msg.payload.Seq > 0 {
-		if msg.payload.Seq <= m.lastProgressSeq {
+		if msg.payload.Seq <= m.progressState.lastSeq {
 			return
 		}
-		m.lastProgressSeq = msg.payload.Seq
+		m.progressState.lastSeq = msg.payload.Seq
 	}
 
 	// New turn's first non-PhaseDone progress clears the cancel flag.
@@ -191,7 +191,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// turn is paused (not ended). Late progress events from the engine must not
 	// trigger startAgentTurn → resetProgressState, which clears iterationHistory
 	// and makes all previous iterations disappear.
-	if !m.typing && !m.suLoading && !m.compressionReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelMode != "askuser" {
+	if !m.typing && !m.splashState.suLoading && !m.splashState.compReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelState.mode != "askuser" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
@@ -205,15 +205,15 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// non-PhaseDone progress events. Only PhaseDone is allowed through
 	// (to clear stale turn state). All other events are stale — the RPC
 	// (handleSuHistoryLoad) will reconcile with authoritative server data.
-	if m.suLoading && msg.payload != nil && msg.payload.Phase != "done" {
+	if m.splashState.suLoading && msg.payload != nil && msg.payload.Phase != "done" {
 		return
 	}
 	// suLoading + PhaseDone: server confirmed the turn is done.
 	// Record this so handleSuHistoryLoad won't restore stale progress
 	// as active (which would create a stuck spinner — typing=true with
 	// no more progress events coming from the idle server).
-	if m.suLoading && msg.payload != nil && msg.payload.Phase == "done" {
-		m.suPhaseDoneConfirmed = true
+	if m.splashState.suLoading && msg.payload != nil && msg.payload.Phase == "done" {
+		m.splashState.suPhaseConfirmed = true
 	}
 
 	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc) only carry
@@ -223,47 +223,47 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
 		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "")
 	if isStreamOnly {
-		if m.progress != nil {
+		if m.progressState.current != nil {
 			if msg.payload.StreamContent != "" {
-				m.progress.StreamContent = msg.payload.StreamContent
+				m.progressState.current.StreamContent = msg.payload.StreamContent
 			}
 			if msg.payload.ReasoningStreamContent != "" {
-				m.progress.ReasoningStreamContent = msg.payload.ReasoningStreamContent
+				m.progressState.current.ReasoningStreamContent = msg.payload.ReasoningStreamContent
 			}
 			// Refresh lastTokenUsage from current progress so the context bar
 			// stays visible even when structured events are lost to progressCh
 			// coalescing (stream-only events evicting structured events).
-			m.cacheTokenUsage(m.progress.TokenUsage)
+			m.cacheTokenUsage(m.progressState.current.TokenUsage)
 		} else if m.typing {
 			// Turn started but no structured progress yet — create minimal payload
-			if msg.payload.CWD == "" && m.progress != nil {
-				msg.payload.CWD = m.progress.CWD
+			if msg.payload.CWD == "" && m.progressState.current != nil {
+				msg.payload.CWD = m.progressState.current.CWD
 			}
 			// Preserve CWD from previous progress if new payload doesn't have it.
-			if msg.payload.CWD == "" && m.progress != nil {
-				msg.payload.CWD = m.progress.CWD
+			if msg.payload.CWD == "" && m.progressState.current != nil {
+				msg.payload.CWD = m.progressState.current.CWD
 			}
 			// Preserve CWD from previous progress if new payload doesn't have it.
-			if msg.payload.CWD == "" && m.progress != nil {
-				msg.payload.CWD = m.progress.CWD
+			if msg.payload.CWD == "" && m.progressState.current != nil {
+				msg.payload.CWD = m.progressState.current.CWD
 			}
-			m.progress = msg.payload
+			m.progressState.current = msg.payload
 		}
 		return
 	}
-	// Structured (non-stream-only) payload: replace m.progress.
+	// Structured (non-stream-only) payload: replace m.progressState.current.
 	// Carrying forward stream content (same-iteration only) is handled by
 	// carryForwardProgressState below — the single source of truth for all
 	// carry-forward logic.
 	if msg.payload == nil {
-		m.progress = nil
+		m.progressState.current = nil
 		return
 	}
 	// Preserve CWD from previous progress if new payload doesn't have it.
-	if msg.payload.CWD == "" && m.progress != nil {
-		msg.payload.CWD = m.progress.CWD
+	if msg.payload.CWD == "" && m.progressState.current != nil {
+		msg.payload.CWD = m.progressState.current.CWD
 	}
-	m.progress = msg.payload
+	m.progressState.current = msg.payload
 
 	if m.cachedMaxContextTokens == 0 {
 		m.cachedMaxContextTokens = m.resolveMaxContextTokens()
@@ -276,7 +276,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 
 	// Restore iteration history from reconnect/GetActiveProgress snapshot.
-	m.restoreIterationHistory(m.progress)
+	m.restoreIterationHistory(m.progressState.current)
 
 	m.carryForwardProgressState(prev)
 
@@ -287,8 +287,8 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// 1. Progress panel shows fresh iterations (starting from #0)
 	// 2. User message from parent agent appears in message list (from DB)
 	// This must run BEFORE snapshotIterationChange, which skips iterations
-	// that are <= m.lastSeenIteration.
-	if m.progress != nil && prev != nil && m.progress.Iteration < m.lastSeenIteration && m.lastSeenIteration > 0 && m.typing {
+	// that are <= m.progressState.lastIter.
+	if m.progressState.current != nil && prev != nil && m.progressState.current.Iteration < m.progressState.lastIter && m.progressState.lastIter > 0 && m.typing {
 		// Snapshot the old turn's final state before resetting.
 		// Use the current agentTurnID since we're ending the current turn.
 		m.endAgentTurn(m.agentTurnID)
@@ -319,9 +319,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// event from the pre-compression iteration can arrive after clearing
 		// and re-insert old iterationHistory as a tool_summary message, causing
 		// the TUI to show extra content that doesn't exist after restart.
-		m.iterationHistory = nil
+		m.progressState.iterations = nil
 		m.reasoningByIter = nil
-		m.lastSeenIteration = 0
+		m.progressState.lastIter = 0
 		m.lastReasoning = ""
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
@@ -330,7 +330,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// events from the post-compression iteration trigger auto-start,
 		// creating a streaming message that gets wiped by handleHistoryReload's
 		// forceFullRebuild path — losing the streaming state and stalling TUI.
-		m.compressionReloading = true
+		m.splashState.compReloading = true
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
@@ -342,8 +342,8 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// carries fresh token counts from the agent's updateTokenUsage().
 	// Must run after HistoryCompacted so the compressed estimate overwrites
 	// the nil set above, rather than being cleared by it.
-	if m.progress != nil {
-		m.cacheTokenUsage(m.progress.TokenUsage)
+	if m.progressState.current != nil {
+		m.cacheTokenUsage(m.progressState.current.TokenUsage)
 	}
 
 	if msg.payload != nil {
@@ -353,11 +353,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.snapshotIterationChange(msg.payload, prev)
 
 		// Record per-iteration reasoning from structured progress.
-		if m.progress != nil && m.progress.Reasoning != "" && m.progress.Iteration >= 0 {
+		if m.progressState.current != nil && m.progressState.current.Reasoning != "" && m.progressState.current.Iteration >= 0 {
 			if m.reasoningByIter == nil {
 				m.reasoningByIter = make(map[int]string)
 			}
-			m.reasoningByIter[m.progress.Iteration] = m.progress.Reasoning
+			m.reasoningByIter[m.progressState.current.Iteration] = m.progressState.current.Reasoning
 		}
 
 		// §2 工具可视化：快照 CompletedTools 到独立字段
@@ -465,22 +465,22 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 	if payload == nil {
 		return
 	}
-	if payload.Iteration > m.lastSeenIteration && m.lastSeenIteration >= 0 {
+	if payload.Iteration > m.progressState.lastIter && m.progressState.lastIter >= 0 {
 		// Guard: only create snapshot if prev actually belongs to lastSeenIteration.
 		// After session switch, resetProgressState sets lastSeenIteration=0 but
-		// the restored m.progress has Iteration=N. When the next live progress
+		// the restored m.progressState.current has Iteration=N. When the next live progress
 		// arrives, prev (which came from the restore) has Iteration=N, not 0.
 		// Snapshoting "iteration 0" with iteration N's data would cause #0 and #1
 		// to display the same reasoning content.
 		// Also guard against prev being nil (progress cleared by endAgentTurn).
-		if prev != nil && prev.Iteration != m.lastSeenIteration {
+		if prev != nil && prev.Iteration != m.progressState.lastIter {
 			// Data mismatch: prev belongs to a different iteration than what
 			// lastSeenIteration claims. Instead of discarding the snapshot
 			// entirely (which permanently loses iteration data), create a
 			// snapshot tagged with prev.Iteration (the actual iteration number).
 			// Guard against duplicate snapshots for the same iteration.
 			alreadySnapped := false
-			for _, snap := range m.iterationHistory {
+			for _, snap := range m.progressState.iterations {
 				if snap.Iteration == prev.Iteration {
 					alreadySnapped = true
 					break
@@ -503,13 +503,13 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 						Thinking:    prev.Thinking,
 						Reasoning:   prevReasoning,
 						Tools:       prevIterTools,
-						ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+						ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 					}
-					m.iterationHistory = append(m.iterationHistory, snap)
+					m.progressState.iterations = append(m.progressState.iterations, snap)
 				}
 			}
-			m.lastSeenIteration = payload.Iteration
-			m.iterationStartTime = time.Now()
+			m.progressState.lastIter = payload.Iteration
+			m.progressState.iterStart = time.Now()
 			return
 		}
 		if prev != nil {
@@ -523,25 +523,25 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			}
 			prevReasoning := prev.Reasoning
 			if prevReasoning == "" {
-				prevReasoning = m.reasoningByIter[m.lastSeenIteration]
+				prevReasoning = m.reasoningByIter[m.progressState.lastIter]
 			}
 			if prevReasoning == "" {
 				prevReasoning = prev.ReasoningStreamContent
 			}
 			if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 				snap := cliIterationSnapshot{
-					Iteration:   m.lastSeenIteration,
+					Iteration:   m.progressState.lastIter,
 					Thinking:    prev.Thinking,
 					Reasoning:   prevReasoning,
 					Tools:       prevIterTools,
-					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
-				m.iterationHistory = append(m.iterationHistory, snap)
+				m.progressState.iterations = append(m.progressState.iterations, snap)
 			}
 			m.lastCompletedTools = m.lastCompletedTools[:0]
 		}
-		m.lastSeenIteration = payload.Iteration
-		m.iterationStartTime = time.Now()
+		m.progressState.lastIter = payload.Iteration
+		m.progressState.iterStart = time.Now()
 	}
 }
 
@@ -558,9 +558,9 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 		// Snapshot the final iteration (same logic as the non-cancelled path below).
 		// This is needed because snapshotIterationChange only fires on iteration
 		// *changes* (N→N+1), so a single-iteration turn won't have any snapshots yet.
-		if m.lastSeenIteration >= 0 {
-			alreadySnapped := slices.ContainsFunc(m.iterationHistory, func(s cliIterationSnapshot) bool {
-				return s.Iteration == m.lastSeenIteration
+		if m.progressState.lastIter >= 0 {
+			alreadySnapped := slices.ContainsFunc(m.progressState.iterations, func(s cliIterationSnapshot) bool {
+				return s.Iteration == m.progressState.lastIter
 			})
 			if !alreadySnapped {
 				var finalTools []protocol.ToolProgress
@@ -582,13 +582,13 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					}
 				}
 				snap := cliIterationSnapshot{
-					Iteration:   m.lastSeenIteration,
+					Iteration:   m.progressState.lastIter,
 					Thinking:    msg.payload.Thinking,
 					Tools:       finalTools,
-					ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
 				if m.reasoningByIter != nil {
-					snap.Reasoning = m.reasoningByIter[m.lastSeenIteration]
+					snap.Reasoning = m.reasoningByIter[m.progressState.lastIter]
 				}
 				if snap.Reasoning == "" {
 					snap.Reasoning = m.lastReasoning
@@ -597,7 +597,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					snap.Reasoning = msg.payload.Reasoning
 				}
 				if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
-					m.iterationHistory = append(m.iterationHistory, snap)
+					m.progressState.iterations = append(m.progressState.iterations, snap)
 				}
 			}
 		}
@@ -608,9 +608,9 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 		// content rendered inline and expects it to remain visible.
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
 			m.messages[m.streamingMsgIdx].turnID == turnID {
-			if len(m.iterationHistory) > 0 {
-				baked := make([]cliIterationSnapshot, len(m.iterationHistory))
-				copy(baked, m.iterationHistory)
+			if len(m.progressState.iterations) > 0 {
+				baked := make([]cliIterationSnapshot, len(m.progressState.iterations))
+				copy(baked, m.progressState.iterations)
 				m.messages[m.streamingMsgIdx].iterations = baked
 				m.messages[m.streamingMsgIdx].dirty = true
 			}
@@ -637,9 +637,9 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 	// handleAgentMessage (e.g. agent error/cancel).
 	// Skip if handleAgentMessage already processed (m.typing == false
 	// means the reply arrived and cleaned up iteration state).
-	if m.typing && m.lastSeenIteration >= 0 {
-		alreadySnapped := slices.ContainsFunc(m.iterationHistory, func(s cliIterationSnapshot) bool {
-			return s.Iteration == m.lastSeenIteration
+	if m.typing && m.progressState.lastIter >= 0 {
+		alreadySnapped := slices.ContainsFunc(m.progressState.iterations, func(s cliIterationSnapshot) bool {
+			return s.Iteration == m.progressState.lastIter
 		})
 		if !alreadySnapped {
 			var finalTools []protocol.ToolProgress
@@ -664,16 +664,16 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				}
 			}
 			snap := cliIterationSnapshot{
-				Iteration:   m.lastSeenIteration,
+				Iteration:   m.progressState.lastIter,
 				Thinking:    msg.payload.Thinking,
 				Tools:       finalTools,
-				ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+				ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 			}
 			// Carry over reasoning: priority is reasoningByIter (per-iteration, authoritative)
 			// > lastReasoning (captured before progress clear)
 			// > prev progress Reasoning (server-authoritative, from ReasoningContent)
 			// > PhaseDone payload Reasoning
-			reasoning := m.reasoningByIter[m.lastSeenIteration]
+			reasoning := m.reasoningByIter[m.progressState.lastIter]
 			if reasoning == "" {
 				reasoning = m.lastReasoning
 			}
@@ -685,13 +685,13 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			}
 			snap.Reasoning = reasoning
 			if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
-				m.iterationHistory = append(m.iterationHistory, snap)
+				m.progressState.iterations = append(m.progressState.iterations, snap)
 			}
 		}
 		// Store iterations in pendingToolSummary for handleAgentMessage
 		// to bake into the assistant message. Accumulate (not replace) to
 		// handle multiple PhaseDone events per logical turn (simulation tests).
-		if len(m.iterationHistory) > 0 {
+		if len(m.progressState.iterations) > 0 {
 			if m.pendingToolSummary == nil {
 				m.pendingToolSummary = &cliMessage{}
 			}
@@ -700,7 +700,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			for _, it := range m.pendingToolSummary.iterations {
 				existingIters[it.Iteration] = true
 			}
-			for _, it := range m.iterationHistory {
+			for _, it := range m.progressState.iterations {
 				if !existingIters[it.Iteration] {
 					m.pendingToolSummary.iterations = append(m.pendingToolSummary.iterations, it)
 				}

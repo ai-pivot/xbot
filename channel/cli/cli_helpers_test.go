@@ -79,12 +79,12 @@ func TestIsSubscriptionScopedSettingKey(t *testing.T) {
 func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T) {
 	model := newCLIModel()
 	model.channel = &CLIChannel{config: &CLIChannelConfig{}}
-	model.panelValuesBackup = map[string]string{
+	model.panelState.valuesBackup = map[string]string{
 		"theme":    "mono",
 		"language": "en",
 	}
-	model.panelCursorBackup = 1
-	model.panelOnSubmitBackup = func(map[string]string) {}
+	model.panelState.cursorBackup = 1
+	model.panelState.onSubmitBackup = func(map[string]string) {}
 	model.channel.config.GetCurrentValues = func() map[string]string {
 		return map[string]string{
 			"theme":    "midnight",
@@ -92,13 +92,13 @@ func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T)
 		}
 	}
 	model.openSettingsFromQuickSwitch()
-	if model.panelMode != "settings" {
-		t.Fatalf("panelMode = %q, want settings", model.panelMode)
+	if model.panelState.mode != "settings" {
+		t.Fatalf("panelMode = %q, want settings", model.panelState.mode)
 	}
-	if got := model.panelValues["theme"]; got != "mono" {
+	if got := model.panelState.values["theme"]; got != "mono" {
 		t.Fatalf("theme = %q, want mono", got)
 	}
-	if got := model.panelValues["language"]; got != "en" {
+	if got := model.panelState.values["language"]; got != "en" {
 		t.Fatalf("language = %q, want en", got)
 	}
 }
@@ -461,10 +461,10 @@ func TestStartAgentTurn(t *testing.T) {
 	if model.inputReady {
 		t.Error("inputReady should be false after startAgentTurn")
 	}
-	if model.iterationHistory != nil {
+	if model.progressState.iterations != nil {
 		t.Error("iterationHistory should be nil after resetProgressState")
 	}
-	if model.lastSeenIteration != 0 {
+	if model.progressState.lastIter != 0 {
 		t.Error("lastSeenIteration should be 0 after resetProgressState")
 	}
 }
@@ -472,18 +472,18 @@ func TestStartAgentTurn(t *testing.T) {
 func TestStartAgentTurn_ResetsProgressState(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "test"}}},
 	}
-	model.lastSeenIteration = 5
+	model.progressState.lastIter = 5
 
 	model.startAgentTurn()
 
-	if len(model.iterationHistory) != 0 {
-		t.Errorf("iterationHistory should be empty, got %d items", len(model.iterationHistory))
+	if len(model.progressState.iterations) != 0 {
+		t.Errorf("iterationHistory should be empty, got %d items", len(model.progressState.iterations))
 	}
-	if model.lastSeenIteration != 0 {
-		t.Errorf("lastSeenIteration = %d, want 0", model.lastSeenIteration)
+	if model.progressState.lastIter != 0 {
+		t.Errorf("lastSeenIteration = %d, want 0", model.progressState.lastIter)
 	}
 }
 
@@ -582,7 +582,7 @@ func TestApplyLanguageChange_EmptyLang(t *testing.T) {
 func TestClosePanelAndResume_NotTyping(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "settings"
+	model.panelState.mode = "settings"
 	model.typing = false
 
 	cont, _, cmd := model.closePanelAndResume()
@@ -593,15 +593,15 @@ func TestClosePanelAndResume_NotTyping(t *testing.T) {
 	if cmd != nil {
 		t.Error("cmd should be nil when not typing")
 	}
-	if model.panelMode != "" {
-		t.Errorf("panelMode = %q, want empty", model.panelMode)
+	if model.panelState.mode != "" {
+		t.Errorf("panelMode = %q, want empty", model.panelState.mode)
 	}
 }
 
 func TestClosePanelAndResume_Typing(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelState.mode = "askuser"
 	model.typing = true
 
 	cont, _, cmd := model.closePanelAndResume()
@@ -613,35 +613,35 @@ func TestClosePanelAndResume_Typing(t *testing.T) {
 	if cmd != nil {
 		t.Error("cmd should be nil — tick chain managed by startAgentTurn")
 	}
-	if model.panelMode != "" {
-		t.Errorf("panelMode = %q, want empty", model.panelMode)
+	if model.panelState.mode != "" {
+		t.Errorf("panelMode = %q, want empty", model.panelState.mode)
 	}
 }
 
 func TestClosePanelAndResume_CleansUpPanelState(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "settings"
-	model.panelEdit = true
-	model.panelCombo = true
-	model.panelSchema = []channel.SettingDefinition{{Key: "test"}}
-	model.panelValues = map[string]string{"test": "value"}
+	model.panelState.mode = "settings"
+	model.panelState.editing = true
+	model.panelState.combo = true
+	model.panelState.schema = []channel.SettingDefinition{{Key: "test"}}
+	model.panelState.values = map[string]string{"test": "value"}
 
 	model.closePanelAndResume()
 
-	if model.panelMode != "" {
+	if model.panelState.mode != "" {
 		t.Error("panelMode should be cleared")
 	}
-	if model.panelEdit {
+	if model.panelState.editing {
 		t.Error("panelEdit should be false")
 	}
-	if model.panelCombo {
+	if model.panelState.combo {
 		t.Error("panelCombo should be false")
 	}
-	if model.panelSchema != nil {
+	if model.panelState.schema != nil {
 		t.Error("panelSchema should be nil")
 	}
-	if model.panelValues != nil {
+	if model.panelState.values != nil {
 		t.Error("panelValues should be nil")
 	}
 }
@@ -775,10 +775,10 @@ func TestIterToolsFlat_IterationsWithEmptyTools(t *testing.T) {
 func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelState.mode = "askuser"
 
 	var received map[string]string
-	model.panelOnAnswer = func(answers map[string]string) {
+	model.panelState.onAnswer = func(answers map[string]string) {
 		received = answers
 	}
 
@@ -791,7 +791,7 @@ func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 	if cmd != nil {
 		t.Error("cmd should be nil when not typing")
 	}
-	if model.panelMode != "" {
+	if model.panelState.mode != "" {
 		t.Error("panel should be closed")
 	}
 	// received may be empty (no answers) but callback should have been called
@@ -801,7 +801,7 @@ func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 func TestSubmitAskAnswers_Typing(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
+	model.panelState.mode = "askuser"
 	model.typing = true
 
 	cont, _, cmd := model.submitAskAnswers()
@@ -818,8 +818,8 @@ func TestSubmitAskAnswers_Typing(t *testing.T) {
 func TestSubmitAskAnswers_NilCallback(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
-	model.panelOnAnswer = nil
+	model.panelState.mode = "askuser"
+	model.panelState.onAnswer = nil
 	model.typing = false
 
 	// Should not panic with nil callback
@@ -836,13 +836,13 @@ func TestSubmitAskAnswers_NilCallback(t *testing.T) {
 func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelMode = "askuser"
-	model.panelItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
-	model.panelTab = 1
-	model.panelAnswerTA = model.newPanelTextArea("custom", 50, 3)
+	model.panelState.mode = "askuser"
+	model.panelState.askItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
+	model.panelState.askTab = 1
+	model.panelState.askAnswerTA = model.newPanelTextArea("custom", 50, 3)
 
 	model.saveCurrentFreeInput()
-	if got := model.panelItems[1].Other; got != "custom" {
+	if got := model.panelState.askItems[1].Other; got != "custom" {
 		t.Fatalf("panelItems[1].Other = %q, want custom", got)
 	}
 }
@@ -850,10 +850,10 @@ func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 func TestCollectAskAnswers_UncheckedOptionsExcluded(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelItems = []askItem{
+	model.panelState.askItems = []askItem{
 		{Question: "color?", Options: []string{"Red", "Blue", "Green"}},
 	}
-	model.panelOptSel = map[int]map[int]bool{
+	model.panelState.askOptSel = map[int]map[int]bool{
 		0: {0: true, 1: false, 2: true},
 	}
 
@@ -867,10 +867,10 @@ func TestCollectAskAnswers_UncheckedOptionsExcluded(t *testing.T) {
 func TestCollectAskAnswers_AllUncheckedReturnsEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelItems = []askItem{
+	model.panelState.askItems = []askItem{
 		{Question: "color?", Options: []string{"Red", "Blue"}},
 	}
-	model.panelOptSel = map[int]map[int]bool{
+	model.panelState.askOptSel = map[int]map[int]bool{
 		0: {0: false, 1: false},
 	}
 
@@ -1179,7 +1179,7 @@ func TestSuHistoryLoad_TypingReconcile_AcceptProgress(t *testing.T) {
 	// Simulate restored session with typing=false (e.g. fresh connect,
 	// or session that was idle when saved).
 	m.typing = false
-	m.suLoading = true
+	m.splashState.suLoading = true
 
 	payload := &protocol.ProgressEvent{
 		ChatID:    "cli:/test",
@@ -1198,11 +1198,11 @@ func TestSuHistoryLoad_TypingReconcile_AcceptProgress(t *testing.T) {
 	if m.typing != true {
 		t.Fatalf("expected typing=true after acceptProgress, got typing=%v", m.typing)
 	}
-	if m.progress == nil {
+	if m.progressState.current == nil {
 		t.Fatal("expected progress to be restored from server snapshot, got nil")
 	}
-	if m.suLoading != false {
-		t.Fatalf("expected suLoading=false after handleSuHistoryLoad, got %v", m.suLoading)
+	if m.splashState.suLoading != false {
+		t.Fatalf("expected suLoading=false after handleSuHistoryLoad, got %v", m.splashState.suLoading)
 	}
 }
 
@@ -1219,7 +1219,7 @@ func TestSuHistoryLoad_TypingReconcile_Default(t *testing.T) {
 	// Simulate restored session with typing=true (old saved state).
 	// Even though the saved state says typing, the server knows better.
 	m.typing = true
-	m.suLoading = true
+	m.splashState.suLoading = true
 
 	msg := suHistoryLoadMsg{
 		channelName:    "cli",
@@ -1233,11 +1233,11 @@ func TestSuHistoryLoad_TypingReconcile_Default(t *testing.T) {
 	if m.typing != false {
 		t.Fatalf("expected typing=false after default (no active turn), got typing=%v", m.typing)
 	}
-	if m.progress != nil {
-		t.Fatalf("expected progress=nil after default (no active turn), got %v", m.progress)
+	if m.progressState.current != nil {
+		t.Fatalf("expected progress=nil after default (no active turn), got %v", m.progressState.current)
 	}
-	if m.suLoading != false {
-		t.Fatalf("expected suLoading=false, got %v", m.suLoading)
+	if m.splashState.suLoading != false {
+		t.Fatalf("expected suLoading=false, got %v", m.splashState.suLoading)
 	}
 }
 
@@ -1255,7 +1255,7 @@ func TestSuHistoryLoad_TypingReconcile_Error(t *testing.T) {
 	// Simulate restored session with typing=true (saved state).
 	// RPC fails — we cannot know the real state.
 	m.typing = true
-	m.suLoading = true
+	m.splashState.suLoading = true
 
 	msg := suHistoryLoadMsg{
 		channelName: "cli",
@@ -1268,11 +1268,11 @@ func TestSuHistoryLoad_TypingReconcile_Error(t *testing.T) {
 	if m.typing != false {
 		t.Fatalf("expected typing=false after RPC error (safe fallback), got typing=%v", m.typing)
 	}
-	if m.progress != nil {
-		t.Fatalf("expected progress=nil after RPC error, got %v", m.progress)
+	if m.progressState.current != nil {
+		t.Fatalf("expected progress=nil after RPC error, got %v", m.progressState.current)
 	}
-	if m.suLoading != false {
-		t.Fatalf("expected suLoading=false, got %v", m.suLoading)
+	if m.splashState.suLoading != false {
+		t.Fatalf("expected suLoading=false, got %v", m.splashState.suLoading)
 	}
 }
 
@@ -1288,7 +1288,7 @@ func TestSuHistoryLoad_StaleGuardDoesNotTouchState(t *testing.T) {
 	setupTestRemoteChannel(m)
 
 	m.typing = true
-	m.suLoading = true
+	m.splashState.suLoading = true
 
 	// Stale message: channelName/chatID doesn't match current session.
 	msg := suHistoryLoadMsg{
@@ -1303,8 +1303,8 @@ func TestSuHistoryLoad_StaleGuardDoesNotTouchState(t *testing.T) {
 	if m.typing != true {
 		t.Fatalf("stale msg should NOT change typing, got typing=%v", m.typing)
 	}
-	if m.suLoading != true {
-		t.Fatalf("stale msg should NOT clear suLoading, got %v", m.suLoading)
+	if m.splashState.suLoading != true {
+		t.Fatalf("stale msg should NOT clear suLoading, got %v", m.splashState.suLoading)
 	}
 }
 
@@ -1319,7 +1319,7 @@ func TestSuHistoryLoad_TypingReconcile_PhaseDoneIsDefault(t *testing.T) {
 	setupTestRemoteChannel(m)
 
 	m.typing = true // restored hint says typing
-	m.suLoading = true
+	m.splashState.suLoading = true
 
 	payload := &protocol.ProgressEvent{
 		ChatID:    "cli:/test",

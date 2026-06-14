@@ -363,7 +363,7 @@ func newSimRunner(scenario SimScenario) *simRunner {
 		model.remoteMode = true
 	}
 	model.handleResize(cfg.Width, cfg.Height)
-	model.splashDone = true
+	model.splashState.done = true
 
 	return &simRunner{
 		model:    model,
@@ -1313,7 +1313,7 @@ func (r *simRunner) doSummary(idx int, step SimStep) error {
 
 	// State overview
 	fmt.Fprintf(&sb, "**State**: typing=%v cancelled=%v inputReady=%v msgs=%d iterHist=%d queueLen=%d\n\n",
-		m.typing, m.turnCancelled, m.inputReady, len(m.messages), len(m.iterationHistory), len(m.messageQueue))
+		m.typing, m.turnCancelled, m.inputReady, len(m.messages), len(m.progressState.iterations), len(m.messageQueue))
 
 	// Messages table (max 20 rows, with summary for overflow)
 	if len(m.messages) > 0 {
@@ -1990,16 +1990,16 @@ func (r *simRunner) dumpState() *SimModelSnapshot {
 		InputReady:    m.inputReady,
 		AgentTurnID:   m.agentTurnID,
 		MessageCount:  len(m.messages),
-		IterHistCount: len(m.iterationHistory),
-		LastSeenIter:  m.lastSeenIteration,
+		IterHistCount: len(m.progressState.iterations),
+		LastSeenIter:  m.progressState.lastIter,
 		RemoteMode:    m.remoteMode,
 		QueueLen:      len(m.messageQueue),
 		ViewportAtTop: m.viewport.AtTop(),
 		ViewportAtBot: m.viewport.AtBottom(),
 		TotalLines:    m.viewport.TotalLineCount(),
 	}
-	if m.progress != nil {
-		snap.ProgressPhase = m.progress.Phase
+	if m.progressState.current != nil {
+		snap.ProgressPhase = m.progressState.current.Phase
 	}
 	return snap
 }
@@ -2013,12 +2013,12 @@ func (r *simRunner) dumpVars() map[string]any {
 		"turnCancelled":     m.turnCancelled,
 		"inputReady":        m.inputReady,
 		"agentTurnID":       m.agentTurnID,
-		"lastSeenIteration": m.lastSeenIteration,
+		"lastSeenIteration": m.progressState.lastIter,
 		"messageCount":      len(m.messages),
-		"iterHistCount":     len(m.iterationHistory),
+		"iterHistCount":     len(m.progressState.iterations),
 		"remoteMode":        m.remoteMode,
 		"queueLen":          len(m.messageQueue),
-		"splashDone":        m.splashDone,
+		"splashDone":        m.splashState.done,
 		"ready":             m.ready,
 		"userScrolledUp":    m.userScrolledUp,
 		"newContentHint":    m.newContentHint,

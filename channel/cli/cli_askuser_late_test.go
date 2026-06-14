@@ -38,7 +38,7 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 		},
 	})
 
-	iterCountBefore := len(model.iterationHistory)
+	iterCountBefore := len(model.progressState.iterations)
 	if iterCountBefore == 0 {
 		t.Fatalf("Expected iterationHistory to have entries, got 0")
 	}
@@ -57,8 +57,8 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 		},
 	})
 
-	if model.panelMode != "askuser" {
-		t.Fatalf("Expected panelMode=askuser, got %q", model.panelMode)
+	if model.panelState.mode != "askuser" {
+		t.Fatalf("Expected panelMode=askuser, got %q", model.panelState.mode)
 	}
 
 	// Now simulate a LATE progress event arriving after the panel is open.
@@ -71,11 +71,11 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 	})
 
 	// The late progress event should NOT clear iterationHistory.
-	if len(model.iterationHistory) == 0 {
+	if len(model.progressState.iterations) == 0 {
 		t.Error("BUG REPRODUCED: late progress event cleared iterationHistory after AskUser panel opened")
 	}
 
-	if model.progress == nil {
+	if model.progressState.current == nil {
 		t.Error("BUG: progress was cleared by late progress event's auto-start turn")
 	}
 }
@@ -118,13 +118,13 @@ func TestAskUserTickPreservesIterations(t *testing.T) {
 		},
 	})
 
-	iterCount := len(model.iterationHistory)
+	iterCount := len(model.progressState.iterations)
 
 	// Simulate tick
 	model.handleTickMsg()
 
-	if len(model.iterationHistory) != iterCount {
+	if len(model.progressState.iterations) != iterCount {
 		t.Errorf("Tick changed iterationHistory: before=%d after=%d",
-			iterCount, len(model.iterationHistory))
+			iterCount, len(model.progressState.iterations))
 	}
 }

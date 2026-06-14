@@ -59,13 +59,13 @@ func (m *cliModel) mergeMessagesPreservingCache(newMessages []cliMessage) bool {
 
 // resetProgressState resets iteration tracking for a new agent turn.
 func (m *cliModel) resetProgressState() {
-	m.iterationHistory = nil
-	m.lastSeenIteration = 0
-	m.lastProgressSeq = 0
+	m.progressState.iterations = nil
+	m.progressState.lastIter = 0
+	m.progressState.lastSeq = 0
 	m.lastReasoning = ""
 	m.reasoningByIter = nil
-	m.progress = nil
-	m.iterationStartTime = time.Now() // wall-clock start for iteration 0
+	m.progressState.current = nil
+	m.progressState.iterStart = time.Now() // wall-clock start for iteration 0
 	m.typingStartTime = time.Now()
 	m.rc.invalidateProgress()
 }
@@ -73,7 +73,7 @@ func (m *cliModel) resetProgressState() {
 // collectAllTools gathers all tools from iteration history into a flat slice.
 func (m *cliModel) collectAllTools() []protocol.ToolProgress {
 	var all []protocol.ToolProgress
-	for _, snap := range m.iterationHistory {
+	for _, snap := range m.progressState.iterations {
 		all = append(all, snap.Tools...)
 	}
 	return all
@@ -257,7 +257,7 @@ func (m *cliModel) fullRebuild() {
 			hmax = msgMaxW
 		}
 		// §21 搜索高亮：匹配消息前插入指示条
-		if m.searchMode && m.isSearchMatch(i) {
+		if m.searchState.mode && m.isSearchMatch(i) {
 			indicator := m.styles.SearchIndicator.Render("▸ ")
 			allWrappedLines = append(allWrappedLines, indicator)
 			runningLines++

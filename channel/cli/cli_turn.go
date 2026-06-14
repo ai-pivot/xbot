@@ -179,8 +179,8 @@ func (m *cliModel) startAgentTurn() {
 
 	// Show initial progress so the user sees immediate feedback (spinner)
 	// without waiting for the first progress_structured event.
-	if m.progress == nil {
-		m.progress = &protocol.ProgressEvent{
+	if m.progressState.current == nil {
+		m.progressState.current = &protocol.ProgressEvent{
 			Phase:     "thinking",
 			Iteration: 0,
 		}
@@ -217,7 +217,7 @@ func (m *cliModel) startAgentTurn() {
 //
 // When the agent turn is active, ch.ConvertMessagesToHistory produces a tool_summary
 // from intermediate assistant messages of the in-progress turn. The progress
-// block (m.progress + m.iterationHistory) owns iteration display for the active
+// block (m.progressState.current + m.progressState.iterations) owns iteration display for the active
 // turn — the static tool_summary from ch.ConvertMessagesToHistory would duplicate
 // content with mismatched (globally-cumulative vs per-turn) iteration numbers.
 //
@@ -230,7 +230,7 @@ func (m *cliModel) startAgentTurn() {
 //
 // When the agent turn is active, ch.ConvertMessagesToHistory produces a tool_summary
 // from intermediate assistant messages of the in-progress turn. The progress
-// block (m.progress + m.iterationHistory) owns iteration display for the active
+// block (m.progressState.current + m.progressState.iterations) owns iteration display for the active
 // turn — the static tool_summary from ch.ConvertMessagesToHistory would duplicate
 // content with mismatched (globally-cumulative vs per-turn) iteration numbers.
 //
@@ -283,22 +283,22 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	// a new turn's streaming message when a delayed complete message arrives.
 	m.streamingMsgIdx = -1
 	// Persist token usage for ready-status bar before clearing progress
-	if m.progress != nil {
-		m.cacheTokenUsage(m.progress.TokenUsage)
+	if m.progressState.current != nil {
+		m.cacheTokenUsage(m.progressState.current.TokenUsage)
 	}
 	m.lastCompletedTools = nil
-	m.iterationHistory = nil
+	m.progressState.iterations = nil
 	m.rc.invalidateProgress()
-	m.lastSeenIteration = 0
+	m.progressState.lastIter = 0
 	m.lastReasoning = ""
 	m.reasoningByIter = nil
 	m.lastThinking = ""
 	m.typingStartTime = time.Time{}
-	m.progress = nil
-	m.twVisible = 0
-	m.rwVisible = 0
+	m.progressState.current = nil
+	m.progressState.twVisible = 0
+	m.progressState.rwVisible = 0
 	m.typing = false
-	m.typewriterTickActive = false
+	m.progressState.twActive = false
 	// Clear pending user message: the turn completed, so the user's message
 	// has been persisted to DB. Keeping it set would cause handleHistoryReload
 	// (after /compress) to restore the stale message from a pre-compress turn.

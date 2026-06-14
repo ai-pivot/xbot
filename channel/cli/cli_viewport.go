@@ -280,7 +280,7 @@ func (m *cliModel) updateViewportContent() {
 
 	// 快速路径：缓存有效 + 仅追加了新消息（无流式、无搜索）
 	// 只渲染新增的 dirty 消息并追加到 cachedHistory，跳过全量重建。
-	if m.rc.valid && m.streamingMsgIdx < 0 && !m.searchMode &&
+	if m.rc.valid && m.streamingMsgIdx < 0 && !m.searchState.mode &&
 		len(m.messages) > m.rc.msgCount {
 		m.appendNewMessagesToCache()
 		return
@@ -338,7 +338,7 @@ func (m *cliModel) updateStreamingOnly() {
 	// When there's no iteration data yet (turn just started, no progress arrived),
 	// fall back to the full renderMessage path. This is a brief transitional state
 	// that resolves within the first progress event.
-	hasIterData := len(m.iterationHistory) > 0 || m.progress != nil
+	hasIterData := len(m.progressState.iterations) > 0 || m.progressState.current != nil
 	if !hasIterData && len(msg.iterations) == 0 {
 		var sb strings.Builder
 		sb.WriteString(m.rc.history)
@@ -366,7 +366,7 @@ func (m *cliModel) updateStreamingOnly() {
 	// --- Render completed iterations (cached) ---
 	// Uses renderTurnBody(iterations, nil, ...) to get the exact same output
 	// as the full render path. Only re-renders when iteration count changes.
-	numCompleted := len(m.iterationHistory)
+	numCompleted := len(m.progressState.iterations)
 	var completedLines []string
 	completedMaxW := 0
 
@@ -377,7 +377,7 @@ func (m *cliModel) updateStreamingOnly() {
 	} else {
 		// Cache miss: render completed iterations and cache the result
 		if numCompleted > 0 {
-			bodyContent := m.renderTurnBody(m.iterationHistory, nil, contentWidth, "")
+			bodyContent := m.renderTurnBody(m.progressState.iterations, nil, contentWidth, "")
 			bodyContent = strings.TrimRight(bodyContent, "\n")
 			if bodyContent != "" {
 				for _, l := range strings.Split(bodyContent, "\n") {
@@ -402,13 +402,13 @@ func (m *cliModel) updateStreamingOnly() {
 	// only have tools (running tools should be continuous with completed tools).
 	var liveLines []string
 	liveMaxW := 0
-	if m.progress != nil {
-		liveBlocks := m.liveIterationBlocks(m.progress, contentWidth, msg.content)
+	if m.progressState.current != nil {
+		liveBlocks := m.liveIterationBlocks(m.progressState.current, contentWidth, msg.content)
 		liveContent := renderTurnBlocks(liveBlocks)
 		liveContent = strings.TrimRight(liveContent, "\n")
 		if liveContent != "" {
 			if len(completedLines) > 0 {
-				prevKind, hasPrev := lastIterationBlockKind(m.iterationHistory)
+				prevKind, hasPrev := lastIterationBlockKind(m.progressState.iterations)
 				nextKind, hasNext := firstTurnBlockKind(liveBlocks)
 				if hasPrev && hasNext && needsTurnBlockSeparator(prevKind, nextKind) {
 					liveLines = append(liveLines, guidePrefix) // blank guide line as separator

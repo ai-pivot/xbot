@@ -157,7 +157,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	// §12 Panel mode: intercept all key events when panel is active
 	// NOTE: Ctrl+C is handled at the top of Update() — never intercept it here.
-	if key, ok := msg.(tea.KeyPressMsg); ok && m.panelMode != "" {
+	if key, ok := msg.(tea.KeyPressMsg); ok && m.panelState.mode != "" {
 		handled, newModel, cmd := m.updatePanel(key)
 		if handled {
 			return newModel, cmd
@@ -166,30 +166,30 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	// §12b Panel mode: intercept paste events — PasteMsg is not KeyPressMsg,
 	// so it bypasses the above panel interceptor and would be captured by the
 	// main textarea below. Forward it to the panel's internal textarea instead.
-	if paste, ok := msg.(tea.PasteMsg); ok && m.panelMode != "" {
+	if paste, ok := msg.(tea.PasteMsg); ok && m.panelState.mode != "" {
 		var cmd tea.Cmd
-		switch m.panelMode {
+		switch m.panelState.mode {
 		case "askuser":
 			// Check if current tab has options (use textinput) or free input (use textarea)
-			if m.panelTab >= 0 && m.panelTab < len(m.panelItems) && len(m.panelItems[m.panelTab].Options) > 0 {
-				m.panelOtherTI, cmd = m.panelOtherTI.Update(paste)
+			if m.panelState.askTab >= 0 && m.panelState.askTab < len(m.panelState.askItems) && len(m.panelState.askItems[m.panelState.askTab].Options) > 0 {
+				m.panelState.askOtherTI, cmd = m.panelState.askOtherTI.Update(paste)
 			} else {
 				m.autoExpandAskTA()
-				m.panelAnswerTA, cmd = m.panelAnswerTA.Update(paste)
+				m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(paste)
 			}
 		case "settings":
-			if m.panelEdit {
-				m.panelEditTA, cmd = m.panelEditTA.Update(paste)
+			if m.panelState.editing {
+				m.panelState.editTA, cmd = m.panelState.editTA.Update(paste)
 			}
 		case "wizard":
-			if m.wizardStep == wizardAPIKey {
-				m.wizardKeyTI, cmd = m.wizardKeyTI.Update(paste)
+			if m.panelState.wizardStep == wizardAPIKey {
+				m.panelState.wizardKeyTI, cmd = m.panelState.wizardKeyTI.Update(paste)
 			}
 		}
 		return m, cmd
 	}
 	// §21 搜索模式拦截
-	if key, ok := msg.(tea.KeyPressMsg); ok && m.searchMode {
+	if key, ok := msg.(tea.KeyPressMsg); ok && m.searchState.mode {
 		model, cmd, handled := m.handleSearchKey(key)
 		if handled {
 			return model, cmd
@@ -248,7 +248,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// will be forwarded to viewport/textarea at the end of Update().
 
 	case tea.KeyPressMsg:
-		if m.settingsSaving {
+		if m.panelState.settingsSaving {
 			break // block input while settings are being saved
 		}
 		model, keyCmds, handled := m.handleKeyPress(msg, wasTyping)
@@ -280,7 +280,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// suLoading guard: during session switch, handleSuHistoryLoad
 		// manages typing/progress state. WS session state updates would
 		// conflict with the authoritative RPC snapshot.
-		if !m.suLoading {
+		if !m.splashState.suLoading {
 			if msg.processing && !m.typing {
 				m.startAgentTurn()
 			} else if !msg.processing && m.typing {
@@ -445,7 +445,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case easterEggMatrixTickMsg:
 		// 🥚 Matrix 代码雨动画帧推进
-		if m.easterEgg == easterEggMatrix {
+		if m.easterEggState.mode == easterEggMatrix {
 			m.tickMatrix()
 			cmds = append(cmds, matrixTickCmd())
 		}
@@ -559,8 +559,8 @@ func (m *cliModel) layoutViewportHeight() int {
 	height := m.height
 	fixedLines := 3 // titleBar + status + footer
 
-	if m.panelMode != "" {
-		if m.panelMode == "askuser" {
+	if m.panelState.mode != "" {
+		if m.panelState.mode == "askuser" {
 			// AskUser split layout: viewport stays visible above the panel.
 			// Calculate panel content height, cap it, let viewport take the rest.
 			askContent := m.viewAskUserPanel()
@@ -710,7 +710,7 @@ func (m *cliModel) handleResize(width, height int) {
 	// §20 重建样式缓存
 	m.styles = buildStyles(width)
 	// Invalidate again after style rebuild (sidebar styles may have changed)
-	m.cachedSidebarRenderedWidth = 0
+	m.layoutConfig.cachedSBWidth = 0
 
 	// Refresh widget render function with new styles and re-render all widgets
 	if m.widgetRegistry != nil {

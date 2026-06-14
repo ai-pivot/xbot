@@ -60,22 +60,22 @@ func isCJK(r rune) bool {
 // advanceTypewriter advances both typewriters (stream + reasoning) on each tick.
 // Called every typewriterTickMsg (50ms) during streaming.
 func (m *cliModel) advanceTypewriter() {
-	if m.progress == nil {
-		m.twVisible = 0
-		m.rwVisible = 0
+	if m.progressState.current == nil {
+		m.progressState.twVisible = 0
+		m.progressState.rwVisible = 0
 		return
 	}
 
 	// Advance reasoning writer
-	if m.progress.ReasoningStreamContent != "" {
-		target := len([]rune(m.progress.ReasoningStreamContent))
-		m.advanceWriterCJK(&m.rwVisible, target, m.progress.ReasoningStreamContent, &m.rwCjkSkipTick)
+	if m.progressState.current.ReasoningStreamContent != "" {
+		target := len([]rune(m.progressState.current.ReasoningStreamContent))
+		m.advanceWriterCJK(&m.progressState.rwVisible, target, m.progressState.current.ReasoningStreamContent, &m.progressState.rwCjkSkip)
 	}
 
 	// Advance stream writer
-	if m.progress.StreamContent != "" {
-		target := len([]rune(m.progress.StreamContent))
-		m.advanceWriterCJK(&m.twVisible, target, m.progress.StreamContent, &m.twCjkSkipTick)
+	if m.progressState.current.StreamContent != "" {
+		target := len([]rune(m.progressState.current.StreamContent))
+		m.advanceWriterCJK(&m.progressState.twVisible, target, m.progressState.current.StreamContent, &m.progressState.twCjkSkip)
 	}
 }
 
