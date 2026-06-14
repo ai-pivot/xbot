@@ -20,11 +20,11 @@ import (
 	"time"
 
 	"xbot/bus"
+	ch "xbot/channel"
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
-	ch "xbot/channel"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"

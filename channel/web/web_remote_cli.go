@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	log "xbot/logger"
 	ch "xbot/channel"
+	log "xbot/logger"
 	"xbot/protocol"
 )
 

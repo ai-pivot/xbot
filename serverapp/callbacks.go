@@ -12,8 +12,8 @@ import (
 
 	"xbot/agent"
 	"xbot/channel"
-	"xbot/channel/web"
 	"xbot/channel/feishu"
+	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
 	"xbot/storage/sqlite"

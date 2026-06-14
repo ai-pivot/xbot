@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"xbot/bus"
-	log "xbot/logger"
 	ch "xbot/channel"
+	log "xbot/logger"
 
 	"github.com/gorilla/websocket"
 )
