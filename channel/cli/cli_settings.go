@@ -331,6 +331,16 @@ func (m *cliModel) activeSubscription() *ch.Subscription {
 // resolveMaxContext reads max_context from subscription.PerModelConfigs[model].
 // Returns 0 if not set (caller uses schema default 200000).
 func (m *cliModel) resolveMaxContext() int {
+	// Check user settings first — config tool writes max_context_tokens
+	// to SettingsSvc (user_settings DB), not to subscription PerModelConfigs.
+	// Same pattern as resolveMaxOutputTokens and resolveCompressRatio.
+	if m.channel != nil && m.channel.config.GetCurrentValues != nil {
+		if v, ok := m.channel.config.GetCurrentValues()["max_context_tokens"]; ok && v != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
 	sub := m.activeSubscription()
 	if sub == nil {
 		return 0
