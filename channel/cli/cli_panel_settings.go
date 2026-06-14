@@ -1,0 +1,890 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	ch "xbot/channel"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"xbot/internal/textarea"
+)
+
+var dangerConfirmStrings = map[string]string{
+	"session":       "DELETE-SESSION",
+	"core_persona":  "DELETE-PERSONA",
+	"core_human":    "DELETE-HUMAN",
+	"core_working":  "DELETE-WORKING",
+	"core_all":      "DELETE-CORE-MEMORY",
+	"long_term":     "DELETE-LONG-TERM",
+	"event_history": "DELETE-HISTORY",
+	"archival":      "DELETE-ARCHIVAL",
+	"reset_all":     "RESET-ALL-MEMORY",
+}
+
+type dangerItem struct {
+	Action string // "session", "core_persona", etc.
+	Label  string // display label
+	Stat   string // current stat (e.g. "128 msgs")
+}
+
+// openSettingsPanel activates the settings panel overlay.
+func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[string]string, onSubmit func(map[string]string)) {
+	m.panelMode = "settings"
+	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
+	m.panelCursor = 0
+	m.panelEdit = false
+	m.panelScrollY = 0
+	m.panelSubGeneration = m.subGeneration // capture current subscription generation
+	// Store full schema and pre-process defaults / options on the full copy.
+	m.panelSchemaFull = make([]ch.SettingDefinition, len(schema))
+	copy(m.panelSchemaFull, schema)
+	m.panelValues = make(map[string]string, len(values))
+	for k, v := range values {
+		m.panelValues[k] = v
+	}
+	// Fill defaults and mark global-scoped settings as read-only (admin-only).
+	for i := range m.panelSchemaFull {
+		def := &m.panelSchemaFull[i]
+		cur, ok := m.panelValues[def.Key]
+		needsDefault := !ok || cur == ""
+		// For number fields, also treat "0" as needing default when the
+		// default value is non-zero (handles stale DB entries from scope migrations).
+		if !needsDefault && def.Type == ch.SettingTypeNumber && def.DefaultValue != "" && def.DefaultValue != "0" {
+			if cur == "0" {
+				needsDefault = true
+			}
+		}
+		if needsDefault && def.DefaultValue != "" {
+			m.panelValues[def.Key] = def.DefaultValue
+		}
+		// Inject cross-subscription model list for tier model selectors.
+		if (def.Key == "vanguard_model" || def.Key == "balance_model" || def.Key == "swift_model") && m.channel.modelLister != nil && len(def.Options) == 0 {
+			models := m.channel.modelLister.ListModels()
+			if len(models) > 0 {
+				opts := make([]ch.SettingOption, len(models))
+				for j, mdl := range models {
+					opts[j] = ch.SettingOption{Label: mdl, Value: mdl}
+				}
+				def.Options = opts
+				def.Type = ch.SettingTypeCombo
+			}
+		}
+		// Global-scoped settings require admin access — mark read-only for non-admin users.
+		if !def.ReadOnly && ch.IsGlobalScopedSettingKey(def.Key) && (m.isAdminFn == nil || !m.isAdminFn()) {
+			def.ReadOnly = true
+		}
+	}
+	// Auto-fill base_url on panel open if provider has a known default
+	// and base_url is currently empty (typical for setup wizard).
+	if provider := m.panelValues["llm_provider"]; provider != "" {
+		if m.panelValues["llm_base_url"] == "" {
+			if url, ok := ch.ProviderDefaultURLs[provider]; ok {
+				m.panelValues["llm_base_url"] = url
+			}
+		}
+		if m.panelValues["llm_model"] == "" {
+			if model, ok := ch.ProviderRecommendedModels[provider]; ok {
+				m.panelValues["llm_model"] = model
+			}
+		}
+		m.panelPrevProvider = provider
+		// Show provider-specific API key guidance on initial open.
+		m.updateAPIKeyHint(provider)
+	}
+	// Build visible schema from full schema (filters DependsOn fields).
+	m.rebuildVisibleSchema()
+	m.panelOnSubmit = onSubmit
+	m.panelOnCancel = nil
+	// Pre-create textarea for editing
+	ta := textarea.New()
+	ta.Placeholder = m.locale.PanelEditPlaceholder
+	ta.SetWidth(m.panelWidth(60))
+	ta.SetHeight(1)
+	ta.CharLimit = 200
+	m.panelEditTA = ta
+}
+
+// rebuildVisibleSchema rebuilds panelSchema from panelSchemaFull,
+// filtering out fields whose DependsOn conditions are not met by current panelValues.
+func (m *cliModel) rebuildVisibleSchema() {
+	m.panelSchema = make([]ch.SettingDefinition, 0, len(m.panelSchemaFull))
+	for _, def := range m.panelSchemaFull {
+		if ch.IsFieldVisible(def, m.panelValues) {
+			m.panelSchema = append(m.panelSchema, def)
+		}
+	}
+	// Clamp cursor
+	if m.panelCursor >= len(m.panelSchema) {
+		m.panelCursor = max(0, len(m.panelSchema)-1)
+	}
+}
+
+// autoFillBaseURL sets llm_base_url to the provider's default URL when the
+// current base_url is empty or matches a known provider default (i.e., was
+// previously auto-filled). Never overwrites a user's custom URL.
+// Also auto-fills llm_model with the recommended model for the provider.
+func (m *cliModel) autoFillBaseURL(provider string) {
+	defaultURL, ok := ch.ProviderDefaultURLs[provider]
+	if !ok {
+		// Provider has no known default (azure, custom) — clear base_url only
+		// if it currently holds a previous provider's auto-filled URL.
+		cur := m.panelValues["llm_base_url"]
+		if cur != "" && ch.IsProviderDefaultURL(cur) {
+			m.panelValues["llm_base_url"] = ""
+		}
+	} else {
+		cur := m.panelValues["llm_base_url"]
+		if cur == "" || ch.IsProviderDefaultURL(cur) {
+			m.panelValues["llm_base_url"] = defaultURL
+		}
+	}
+	// Auto-fill recommended model when model is empty or matches a previous provider default.
+	if model, ok := ch.ProviderRecommendedModels[provider]; ok {
+		cur := m.panelValues["llm_model"]
+		if cur == "" || isProviderRecommendedModel(cur) {
+			m.panelValues["llm_model"] = model
+		}
+	}
+	// Dynamically update the API Key field description with provider-specific
+	// guidance and a clickable link to the key management page.
+	m.updateAPIKeyHint(provider)
+	// Rebuild visible schema (DependsOn fields may appear/disappear).
+	m.rebuildVisibleSchema()
+}
+
+// updateAPIKeyHint updates the llm_api_key field's description in panelSchemaFull
+// to show provider-specific guidance with a clickable OSC 8 hyperlink.
+func (m *cliModel) updateAPIKeyHint(provider string) {
+	hint := ch.FormatProviderHint(provider, m.locale)
+	if hint == "" {
+		return
+	}
+	for i := range m.panelSchemaFull {
+		if m.panelSchemaFull[i].Key == "llm_api_key" {
+			m.panelSchemaFull[i].Description = hint
+			break
+		}
+	}
+	// Also update in the visible schema if the field is there.
+	for i := range m.panelSchema {
+		if m.panelSchema[i].Key == "llm_api_key" {
+			m.panelSchema[i].Description = hint
+			break
+		}
+	}
+}
+
+// isProviderRecommendedModel checks if a model name matches any provider's recommended model.
+func isProviderRecommendedModel(model string) bool {
+	for _, m := range ch.ProviderRecommendedModels {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
+
+// openSetupPanel opens the step-by-step setup wizard.
+// Uses a multi-step state machine (language → provider → apikey → done)
+// instead of a single-panel form, so users only make one choice per page.
+func (m *cliModel) openSetupPanel() {
+	m.openWizardPanel()
+}
+
+// viewDangerPanel renders the danger zone panel.
+func (m *cliModel) viewDangerPanel() string {
+	s := &m.styles
+	var sb strings.Builder
+
+	sb.WriteString(s.PanelHeader.Render(m.locale.DangerTitle))
+	sb.WriteString("\n")
+
+	if m.panelDangerConfirm && m.panelDangerCursor < len(m.panelDangerItems) {
+		// Confirmation sub-mode
+		item := m.panelDangerItems[m.panelDangerCursor]
+		confirmStr := dangerConfirmStrings[item.Action]
+		fmt.Fprintf(&sb, "  %s\n", fmt.Sprintf(m.locale.DangerConfirmClear, s.WarningSt.Render(item.Label)))
+		sb.WriteString(s.PanelDesc.Render("  " + m.locale.DangerIrreversible))
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, "  %s\n", fmt.Sprintf(m.locale.DangerTypeConfirm, s.ProgressError.Render(confirmStr)))
+		sb.WriteString("  ")
+		sb.WriteString(m.panelDangerInput.View())
+		sb.WriteString("\n")
+		sb.WriteString(s.PanelHint.Render("  " + m.locale.DangerNavHint))
+	} else {
+		// Item selection mode
+		for i, item := range m.panelDangerItems {
+			var prefix string
+			statText := ""
+			if item.Stat != "" {
+				statText = fmt.Sprintf("  %s", s.InfoSt.Render(item.Stat))
+			}
+			if i == m.panelDangerCursor {
+				prefix = s.PanelCursor.Render("▸")
+			} else {
+				prefix = "  "
+			}
+			line := fmt.Sprintf("%s %s%s", prefix, item.Label, statText)
+			if i == m.panelDangerCursor {
+				line = m.renderSelLine(line, m.panelWidth(60)-4)
+			}
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+		sb.WriteString(s.PanelHint.Render("  " + m.locale.DangerNavHint))
+	}
+
+	return sb.String()
+}
+
+// updateDangerPanel handles key events in the danger zone panel.
+func (m *cliModel) updateDangerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if m.panelDangerConfirm {
+		// Confirmation input mode
+		switch msg.Code {
+		case tea.KeyEsc:
+			m.panelDangerConfirm = false
+			m.panelDangerInput.SetValue("")
+			return true, m, nil
+		case tea.KeyEnter:
+			if m.panelDangerOnExec == nil || m.panelDangerCursor >= len(m.panelDangerItems) {
+				return true, m, nil
+			}
+			item := m.panelDangerItems[m.panelDangerCursor]
+			confirmStr := dangerConfirmStrings[item.Action]
+			if m.panelDangerInput.Value() != confirmStr {
+				m.showSystemMsg(m.locale.DangerMismatch, feedbackWarning)
+				return true, m, nil
+			}
+			// Execute the clear action
+			if err := m.panelDangerOnExec(item.Action); err != nil {
+				m.showSystemMsg(fmt.Sprintf(m.locale.DangerClearFailed, err), feedbackWarning)
+			} else {
+				m.showSystemMsg(fmt.Sprintf(m.locale.DangerCleared, item.Label), feedbackInfo)
+			}
+			m.closePanel()
+			return true, m, nil
+		default:
+			var cmd tea.Cmd
+			m.panelDangerInput, cmd = m.panelDangerInput.Update(msg)
+			return true, m, cmd
+		}
+	}
+
+	// Item selection mode
+	switch {
+	case msg.Code == tea.KeyEsc:
+		// ESC: pop back to parent panel via navigation stack
+		if !m.popPanel() {
+			m.closePanel()
+		}
+		return true, m, nil
+
+	case msg.String() == "ctrl+c":
+		return m.closePanelAndResume()
+
+	case msg.Code == tea.KeyUp:
+		if m.panelDangerCursor > 0 {
+			m.panelDangerCursor--
+		}
+
+	case msg.Code == tea.KeyDown:
+		if m.panelDangerCursor < len(m.panelDangerItems)-1 {
+			m.panelDangerCursor++
+		}
+
+	case msg.Code == tea.KeyEnter:
+		if m.panelDangerCursor < len(m.panelDangerItems) {
+			m.panelDangerConfirm = true
+			m.panelDangerInput.SetValue("")
+			m.panelDangerInput.Focus()
+			return true, m, m.panelDangerInput.Focus()
+		}
+	}
+
+	return true, m, nil
+}
+
+// openDangerPanelFromSettings builds danger items with stats and opens the danger zone panel.
+func (m *cliModel) openDangerPanelFromSettings() {
+	stats := map[string]string{}
+	if m.channel != nil && m.channel.config.GetMemoryStats != nil {
+		stats = m.channel.config.GetMemoryStats()
+	}
+
+	items := []dangerItem{
+		{"session", m.locale.DangerSessionHistory, stats["session"]},
+		{"core_persona", "Core Memory: persona", stats["persona"]},
+		{"core_human", "Core Memory: human", stats["human"]},
+		{"core_working", "Core Memory: working_context", stats["working_context"]},
+		{"core_all", m.locale.DangerCoreAll, ""},
+		{"long_term", m.locale.DangerLongTerm, stats["long_term"]},
+		{"event_history", m.locale.DangerEventHistory, stats["event_history"]},
+		{"archival", m.locale.DangerArchival, stats["archival"]},
+	}
+
+	m.panelMode = "danger"
+	m.panelScrollY = 0
+	m.relayoutViewport()
+	m.panelDangerItems = items
+	m.panelDangerCursor = 0
+	m.panelDangerConfirm = false
+	m.panelDangerOnExec = func(targetType string) error {
+		if m.channel != nil && m.channel.config.ClearMemory != nil {
+			return m.channel.config.ClearMemory(targetType)
+		}
+		return fmt.Errorf("clear memory not configured")
+	}
+	// Pre-create text input for confirmation
+	ti := textinput.New()
+	ti.Placeholder = m.locale.DangerConfirmPlaceholder
+	ti.CharLimit = 50
+	ti.SetWidth(m.panelWidth(40))
+	tiStyles := ti.Styles()
+	tiStyles.Focused.Prompt = m.styles.TIPrompt
+	tiStyles.Focused.Text = m.styles.TIText
+	tiStyles.Focused.Placeholder = m.styles.TIPlaceholder
+	tiStyles.Cursor.Color = m.styles.TICursor.GetForeground()
+	ti.SetStyles(tiStyles)
+	m.panelDangerInput = ti
+}
+
+func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
+	if m.panelEdit {
+		// Editing mode
+		switch msg.Code {
+		case tea.KeyEnter:
+			// Save value
+			newVal := strings.TrimSpace(m.panelEditTA.Value())
+			if m.panelCursor < len(m.panelSchema) {
+				key := m.panelSchema[m.panelCursor].Key
+				m.panelValues[key] = newVal
+			}
+			m.panelEdit = false
+			return true, m, nil
+		case tea.KeyEsc:
+			m.panelEdit = false
+			return true, m, nil
+		default:
+			// Delegate to textarea
+			var cmd tea.Cmd
+			m.panelEditTA, cmd = m.panelEditTA.Update(msg)
+			return true, m, cmd
+		}
+	}
+
+	// Combo dropdown mode
+	if m.panelCombo {
+		if m.panelCursor < len(m.panelSchema) {
+			def := m.panelSchema[m.panelCursor]
+			opts := def.Options
+			switch msg.Code {
+			case tea.KeyEsc:
+				m.panelCombo = false
+				return true, m, nil
+			case tea.KeyUp:
+				if m.panelComboIdx > 0 {
+					m.panelComboIdx--
+				}
+				return true, m, nil
+			case tea.KeyDown:
+				if m.panelComboIdx < len(opts)-1 {
+					m.panelComboIdx++
+				}
+				return true, m, nil
+			case tea.KeyEnter:
+				if m.panelComboIdx < len(opts) {
+					m.panelValues[def.Key] = opts[m.panelComboIdx].Value
+				}
+				m.panelCombo = false
+				// Auto-fill llm_base_url when llm_provider changes via combo
+				if def.Key == "llm_provider" && m.panelValues["llm_provider"] != m.panelPrevProvider {
+					m.autoFillBaseURL(m.panelValues["llm_provider"])
+					m.panelPrevProvider = m.panelValues["llm_provider"]
+				}
+				return true, m, nil
+			case tea.KeySpace:
+				m.panelCombo = false
+				// Switch to edit mode for custom input
+				m.panelEdit = true
+				ta := m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
+				var cmd tea.Cmd
+				m.panelEditTA, cmd = ta.Update(msg)
+				return true, m, cmd
+			default:
+				// Any printable key: auto-switch to edit mode for custom input
+				if len(msg.Text) > 0 {
+					m.panelCombo = false
+					m.panelEdit = true
+					ta := m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
+					var cmd tea.Cmd
+					m.panelEditTA, cmd = ta.Update(msg)
+					return true, m, cmd
+				}
+			}
+		}
+		return true, m, nil
+	}
+
+	// Navigation mode
+	switch {
+	case msg.Code == tea.KeyEsc:
+		if !m.popPanel() {
+			m.closePanel()
+		}
+		return true, m, nil
+	case msg.String() == "ctrl+s":
+		// If currently editing a field, commit the edit before saving.
+		if m.panelEdit && m.panelCursor < len(m.panelSchema) {
+			def := m.panelSchema[m.panelCursor]
+			if !def.ReadOnly {
+				key := def.Key
+				m.panelValues[key] = strings.TrimSpace(m.panelEditTA.Value())
+			}
+			m.panelEdit = false
+		}
+		// Submit all settings — async to avoid blocking the UI.
+		// Close panel immediately to restore responsiveness, then run
+		// the save callback in a goroutine and send back results.
+		onSubmit := m.panelOnSubmit
+		panelVals := m.panelValues
+		m.closePanel()
+		if onSubmit != nil && panelVals != nil {
+			m.settingsSaving = true // block input until cliSettingsSavedMsg arrives
+			return true, m, m.doSaveSettings(onSubmit, panelVals)
+		}
+		return true, m, nil
+	case msg.Code == tea.KeyUp || msg.String() == "shift+tab":
+		if m.panelCursor > 0 {
+			m.panelCursor--
+			m.ensureSettingsCursorVisible(0)
+		}
+		return true, m, nil
+	case msg.Code == tea.KeyDown || msg.Code == tea.KeyTab:
+		if m.panelCursor < len(m.panelSchema)-1 {
+			m.panelCursor++
+			m.ensureSettingsCursorVisible(0)
+		}
+		return true, m, nil
+	case msg.Code == tea.KeyEnter:
+		if m.panelCursor < len(m.panelSchema) {
+			def := m.panelSchema[m.panelCursor]
+			// Read-only items: skip editing (display-only)
+			if def.ReadOnly {
+				return true, m, nil
+			}
+			// Runner panel entry — push settings state before opening child panel
+			if def.Key == "runner_panel" {
+				m.pushPanel()
+				m.openRunnerPanel()
+				return true, m, nil
+			}
+			// Danger zone entry — push settings state before opening child panel
+			if def.Key == "danger_zone" {
+				m.pushPanel()
+				m.openDangerPanelFromSettings()
+				return true, m, nil
+			}
+			// ch.Subscription management entry — save panel state, open quick switch
+			if def.Key == "subscription_manage" {
+				// Backup current panel state so we can restore after quick switch
+				m.panelValuesBackup = make(map[string]string, len(m.panelValues))
+				for k, v := range m.panelValues {
+					m.panelValuesBackup[k] = v
+				}
+				m.panelCursorBackup = m.panelCursor
+				m.panelOnSubmitBackup = m.panelOnSubmit
+				m.panelMode = ""
+				m.relayoutViewport()
+				m.quickSwitchReturnToPanel = true
+				m.openQuickSwitch("subscription")
+				return true, m, nil
+			}
+			switch def.Type {
+			case ch.SettingTypeToggle:
+				// Toggle on Enter
+				cur := m.panelValues[def.Key]
+				if cur == "true" {
+					m.panelValues[def.Key] = "false"
+				} else {
+					m.panelValues[def.Key] = "true"
+				}
+				return true, m, nil
+			case ch.SettingTypeSelect:
+				// Cycle through options
+				cur := m.panelValues[def.Key]
+				if cur == "" && def.DefaultValue != "" {
+					cur = def.DefaultValue
+				}
+				idx := slices.IndexFunc(def.Options, func(opt ch.SettingOption) bool {
+					return opt.Value == cur
+				})
+				if idx >= 0 && idx < len(def.Options)-1 {
+					m.panelValues[def.Key] = def.Options[idx+1].Value
+				} else if len(def.Options) > 0 {
+					m.panelValues[def.Key] = def.Options[0].Value
+				}
+				return true, m, nil
+			case ch.SettingTypeCombo:
+				// Open combo dropdown if options available, otherwise edit
+				if len(def.Options) > 0 {
+					m.panelCombo = true
+					m.panelComboIdx = 0
+					// Pre-select current value if it matches an option
+					cur := m.panelValues[def.Key]
+					for i, opt := range def.Options {
+						if opt.Value == cur {
+							m.panelComboIdx = i
+							break
+						}
+					}
+					return true, m, nil
+				}
+				// No options: fall through to default edit mode
+				fallthrough
+			default:
+				// Enter edit mode for text/number/textarea/combo(fallback)
+				m.panelEdit = true
+				m.panelEditTA = m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
+				return true, m, nil
+			}
+		}
+		return true, m, nil
+	}
+	return true, m, nil
+}
+
+func (m *cliModel) viewSettingsPanel() string {
+
+	// §20 使用缓存样式
+	s := &m.styles
+	valueStyle := s.InfoSt
+	cursorStyle := s.PanelCursor
+	descStyle := s.PanelDesc
+	hintStyle := s.PanelHint
+
+	var sb strings.Builder
+	sb.WriteString(s.PanelHeader.Render(m.locale.PanelSettingsTitle))
+	sb.WriteString("\n")
+	// 表头下方精致分割线，区分标题与内容
+	sb.WriteString(s.SettingsDivider.Render("┈" + strings.Repeat("┈", 30)))
+	sb.WriteString("\n")
+
+	// Group by category
+	lastCat := ""
+	ln := 0 // 当前渲染行号
+	for i, def := range m.panelSchema {
+		if def.Category != lastCat {
+			lastCat = def.Category
+			sb.WriteString("\n")
+			sb.WriteString(s.SettingsCat.Render("▸ " + lastCat))
+			sb.WriteString("\n")
+			ln += 2
+		}
+
+		cur := m.panelValues[def.Key]
+		// If value is empty, fall back to DefaultValue for display
+		if cur == "" && def.DefaultValue != "" {
+			cur = def.DefaultValue
+		}
+		var prefix string
+		if i == m.panelCursor && !m.panelEdit {
+			prefix = cursorStyle.Render("▸")
+		} else {
+			prefix = "  "
+		}
+
+		// Read-only items: show lock icon, dim label, skip value interaction
+		labelSt := lipgloss.NewStyle()
+		valueSt := valueStyle
+		if def.ReadOnly {
+			prefix = s.PanelDesc.Render("🔒")
+			labelSt = s.PanelDesc
+			valueSt = s.PanelDesc
+		}
+
+		// Runner panel entry: render with connection status
+		if def.Key == "runner_panel" {
+			statusHint := ""
+			if m.runnerBridge != nil {
+				switch m.runnerBridge.Status() {
+				case RunnerConnected:
+					statusHint = " " + s.ProgressDone.Render("● "+m.locale.RunnerStatusConnected)
+				case RunnerConnecting:
+					statusHint = " " + s.ProgressRunning.Render("● "+m.locale.RunnerConnecting)
+				}
+			}
+			line := fmt.Sprintf("%s %s%s", prefix, s.ProgressDone.Render(def.Label), statusHint)
+			if i == m.panelCursor && !m.panelEdit {
+				line = m.renderSelLine(line, m.width-6)
+			}
+			sb.WriteString(line)
+			sb.WriteString("\n")
+			ln++
+			continue
+		}
+
+		// Danger zone entry: render with warning style
+		if def.Key == "danger_zone" {
+			line := fmt.Sprintf("%s %s", prefix, s.WarningSt.Render(def.Label))
+			if i == m.panelCursor && !m.panelEdit {
+				line = m.renderSelLine(line, m.width-6)
+			}
+			sb.WriteString(line)
+			sb.WriteString("\n")
+			ln++
+			continue
+		}
+
+		// ch.Subscription management entry: show count + CURRENT session's subscription
+		if def.Key == "subscription_manage" {
+			subHint := ""
+			if m.subscriptionMgr != nil {
+				if subs, err := m.subscriptionMgr.List(""); err == nil && len(subs) > 0 {
+					var activeName string
+					// Use m.activeSubID (per-session) to find the current subscription,
+					// NOT sub.Active (global default). The settings panel must reflect
+					// the session's active subscription, not the global default.
+					if m.activeSubID != "" {
+						for _, sub := range subs {
+							if sub.ID == m.activeSubID {
+								activeName = sub.Name
+								break
+							}
+						}
+					}
+					// Fallback: if no per-session subscription is set, use the global default.
+					if activeName == "" {
+						for _, sub := range subs {
+							if sub.Active {
+								activeName = sub.Name
+								break
+							}
+						}
+					}
+					if activeName != "" {
+						subHint = " " + s.ProgressDone.Render("● "+activeName)
+					}
+					subHint += descStyle.Render(fmt.Sprintf(" (%d)", len(subs)))
+				}
+			}
+			line := fmt.Sprintf("%s %s%s", prefix, s.ProgressDone.Render(def.Label), subHint)
+			if i == m.panelCursor && !m.panelEdit {
+				line = m.renderSelLine(line, m.width-6)
+			}
+			sb.WriteString(line)
+			sb.WriteString("\n")
+			ln++
+			continue
+		}
+
+		// Format value display
+		var displayVal string
+		switch def.Type {
+		case ch.SettingTypeToggle:
+			if cur == "true" {
+				displayVal = valueSt.Render(m.locale.PanelToggleOn)
+			} else {
+				displayVal = valueSt.Render(m.locale.PanelToggleOff)
+			}
+		case ch.SettingTypeSelect:
+			// Find label for current value
+			displayVal = cur
+			for _, opt := range def.Options {
+				if opt.Value == cur {
+					displayVal = valueSt.Render(opt.Label)
+					break
+				}
+			}
+		case ch.SettingTypeCombo:
+			// Show current value with dropdown hint
+			if cur == "" {
+				displayVal = descStyle.Render(m.locale.PanelNotSet)
+			} else {
+				displayVal = valueSt.Render(cur)
+			}
+			if !def.ReadOnly && len(def.Options) > 0 {
+				displayVal += descStyle.Render(" ▾")
+			}
+		case ch.SettingTypePassword:
+			if cur == "" {
+				displayVal = descStyle.Render(m.locale.PanelNotSet)
+			} else {
+				displayVal = valueSt.Render("••••••")
+			}
+		default:
+			if cur == "" {
+				displayVal = descStyle.Render(m.locale.PanelNotSet)
+			} else {
+				displayVal = valueSt.Render(cur)
+			}
+		}
+
+		line := fmt.Sprintf("%s %s: %s", prefix, labelSt.Render(def.Label), displayVal)
+		if i == m.panelCursor && !m.panelEdit && !m.panelCombo {
+			line = m.renderSelLine(line, m.width-6)
+		}
+		sb.WriteString(line)
+		sb.WriteString("\n")
+		ln++
+
+		// Show field description when cursor is on this field (not in edit/combo mode).
+		if i == m.panelCursor && !m.panelEdit && !m.panelCombo && def.Description != "" {
+			descLines := strings.Split(def.Description, "\n")
+			for _, dl := range descLines {
+				if strings.Contains(dl, "\x1b]8;;") {
+					// OSC 8 hyperlink line — write directly, don't let lipgloss touch it.
+					sb.WriteString("    ")
+					sb.WriteString(dl)
+				} else {
+					sb.WriteString(descStyle.Render("    " + dl))
+				}
+				sb.WriteString("\n")
+				ln++
+			}
+		}
+
+		// API Key field: always show "获取密钥" button below the field.
+		// Clickable via mouse zone (panelOpenURL) — opens browser directly.
+		// Also wrapped in OSC 8 hyperlink for terminals that support it.
+		if def.Key == "llm_api_key" && m.panelValues["llm_provider"] != "" {
+			guide, hasGuide := ch.ProviderSetupGuides[m.panelValues["llm_provider"]]
+			if hasGuide && guide.URL != "" {
+				btnLabel := "  " + m.locale.PanelBtnGetKey + "  "
+				oscLink := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, btnLabel)
+				sb.WriteString("    ")
+				sb.WriteString(oscLink)
+				sb.WriteString("\n")
+				ln++
+			} else if hasGuide && guide.URL == "" {
+				// Ollama: no key needed, show info text from locale
+				hint := ""
+				if m.locale.ProviderHints != nil {
+					hint = m.locale.ProviderHints[guide.HintKey]
+				}
+				if hint != "" {
+					sb.WriteString(descStyle.Render("    " + hint))
+					sb.WriteString("\n")
+					ln++
+				}
+			}
+		}
+
+		// ── Inline edit/combo overlay (Crush-style: render right below the item) ──
+		if i == m.panelCursor {
+			if m.panelEdit {
+				sb.WriteString("  ")
+				sb.WriteString(cursorStyle.Render("✎ "))
+				sb.WriteString(m.panelEditTA.View())
+				sb.WriteString("\n")
+				sb.WriteString(descStyle.Render("    " + m.locale.PanelEditHint))
+				sb.WriteString("\n")
+				ln += 3
+			} else if m.panelCombo {
+				maxShow := 8
+				start := 0
+				if m.panelComboIdx >= maxShow {
+					start = m.panelComboIdx - maxShow + 1
+				}
+				end := start + maxShow
+				if end > len(def.Options) {
+					end = len(def.Options)
+				}
+				for j := start; j < end; j++ {
+					opt := def.Options[j]
+					label := opt.Label
+					runes := []rune(label)
+					if len(runes) > 40 {
+						label = string(runes[:37]) + "..."
+					}
+					if j == m.panelComboIdx {
+						sb.WriteString(cursorStyle.Render("    ▸ " + label))
+					} else {
+						sb.WriteString("      ")
+						sb.WriteString(label)
+					}
+					// Show option description on the selected combo item.
+					if j == m.panelComboIdx && opt.Description != "" {
+						sb.WriteString("\n")
+						sb.WriteString(descStyle.Render("        " + opt.Description))
+					}
+					sb.WriteString("\n")
+					ln++
+					if j == m.panelComboIdx && opt.Description != "" {
+						ln++
+					}
+				}
+				sb.WriteString(descStyle.Render("    " + m.locale.PanelComboHint))
+				sb.WriteString("\n")
+				ln++
+			}
+		}
+	}
+
+	// Bottom buttons: always show Save and Cancel buttons.
+	// These are clickable mouse zones for users who don't know keyboard shortcuts.
+	if !m.panelEdit && !m.panelCombo {
+		sb.WriteString("\n")
+		// Save button — styled prominently
+		saveBtn := "  " + m.locale.PanelBtnSave + "  "
+		saveOsc := fmt.Sprintf("\x1b]8;;xbot://panel-save\x1b\\%s\x1b]8;;\x1b\\", saveBtn)
+		sb.WriteString("  ")
+		sb.WriteString(saveOsc)
+		// Cancel button
+		cancelBtn := "  " + m.locale.PanelBtnCancel + "  "
+		cancelOsc := fmt.Sprintf("\x1b]8;;xbot://panel-cancel\x1b\\%s\x1b]8;;\x1b\\", cancelBtn)
+		sb.WriteString("    ")
+		sb.WriteString(cancelOsc)
+		sb.WriteString("\n")
+		// Keyboard hint below buttons (secondary, for discoverability)
+		sb.WriteString(hintStyle.Render("  " + m.locale.PanelNavHint))
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+// SettingsSchema returns the settings definitions for CLI ch.
+func (c *CLIChannel) SettingsSchema() []ch.SettingDefinition {
+	loc := ch.GetLocale(ch.CurrentLocaleLang())
+	return loc.SettingsSchema
+}
+
+// HandleSettingSubmit processes a setting value submission from the CLI ch.
+func (c *CLIChannel) HandleSettingSubmit(ctx context.Context, rawInput string) (map[string]string, error) {
+	// CLI uses interactive panel, this is for programmatic access
+	return nil, fmt.Errorf("CLI uses interactive settings panel")
+}
+
+// SetSettingsService injects the settings service for the interactive panel.
+func (c *CLIChannel) SetSettingsService(svc SettingsService) {
+	c.settingsSvc = svc
+}
+
+// SetModelLister injects the model lister for combo settings.
+func (c *CLIChannel) SetModelLister(lister ModelLister) {
+	c.modelLister = lister
+}
+
+// SetSubscriptionManager sets the subscription manager for multi-subscription support.
+func (c *CLIChannel) SetSubscriptionManager(mgr SubscriptionManager) {
+	c.subscriptionMgr = mgr
+	if c.model != nil {
+		c.model.SetSubscriptionMgr(mgr)
+	}
+}
+
+// SetLLMSubscriber sets the LLM subscriber for quick switch actions.
+// Stores on channel for propagation to model in Start().
+func (c *CLIChannel) SetLLMSubscriber(sub LLMSubscriber) {
+	c.llmSubscriber = sub
+	if c.model != nil {
+		c.model.SetLLMSubscriber(sub)
+	}
+}
