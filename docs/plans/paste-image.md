@@ -155,7 +155,17 @@ type InboundMessage struct {
 - **Why**: 否则只有 OpenAI 兼容模型能看到图片，Anthropic（Claude）用户粘贴图片无效
 - **复用**: 解析逻辑可直接调用 `openai.go` 中已有的 `parseEmbeddedImages`（提取到公共位置或复制）
 
-### 12. `go.mod` — 新增依赖
+### 12. `llm/openai.go` + `llm/anthropic.go` — 不支持 vision 的模型自动降级
+
+- **What**: 当 LLM API 返回图片相关的 4xx 错误时，自动移除 content 中的 image parts 后重试一次
+  - OpenAI: 检测 `parseEmbeddedImages` 产生的 image content part → 移除 → 只保留文本
+  - Anthropic: 检测 image content block → 移除 → 只保留文本
+  - 降级成功后通过 callback 通知 CLI 显示 `⚠️ 当前模型不支持图片，已发送文本部分`
+- **Why**: 没有可靠的 API 接口能查询模型是否支持 vision（OpenAI `/v1/models` 只返回 ID，无能力字段）。乐观发送 + 错误降级是唯一零维护方案
+- **错误识别**: 匹配错误消息中的关键词（`image`, `vision`, `multimodal`, `not supported`, `invalid content`）
+- **降级范围**: 仅在本轮请求中移除 image parts，不修改 session history 中存储的原始消息
+
+### 13. `go.mod` — 新增依赖
 
 - **What**: `golang.design/x/clipboard`
 - **Why**: 跨平台剪贴板读取
@@ -207,6 +217,7 @@ CLI Client (本地)
 | WS 大消息被截断 | CLI 侧 5MB 硬限制；server 侧确认 WS max message size |
 | agent.go 图片编码增加首消息处理延迟 | base64 编码 5MB 图片 < 50ms，仅在 MediaContent 非空时触发 |
 | 旧版本 InboundMsg JSON 缺少 MediaContent | `omitempty` + nil slice 处理，向后兼容 |
+| 模型不支持 vision 导致 API 4xx | 乐观发送 + 错误降级：自动移除 image parts 重试一次，CLI 提示降级 |
 
 ## Definition of Done
 
@@ -216,6 +227,7 @@ CLI Client (本地)
 - [ ] 终端显示 `📎 已粘贴图片 (xxx.png, 234KB)`，不显示 base64
 - [ ] 图片 > 5MB 自动压缩；压缩后仍 > 5MB 则拒绝并提示
 - [ ] 远程模式下图片通过 WS 传输成功
+- [ ] 不支持 vision 的模型：API 报错后自动移除图片重试，CLI 提示降级
 - [ ] 现有所有测试通过（`go test ./...`）
 - [ ] 新增单元测试覆盖：图片编码、压缩、文件类型检测
 
