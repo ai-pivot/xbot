@@ -251,9 +251,10 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		visualChanged = true
 	}
 	m.reloadSettingsCaches()
-	// If model name is still empty after refresh (e.g. GetDefault RPC race on
-	// first setup), use the model name directly from the saved values.
-	if m.cachedModelName == "" && msg.savedModel != "" {
+	// msg.savedModel comes from the user's explicit choice in the wizard/settings
+	// panel. It is authoritative — refreshCachedModelName may fail due to RPC
+	// timing (subscription just created, not yet visible to GetDefault).
+	if msg.savedModel != "" {
 		m.cachedModelName = msg.savedModel
 	}
 	if msg.feedbackMsg != "" {
