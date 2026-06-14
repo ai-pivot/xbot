@@ -38,6 +38,7 @@ llm/openai.go:371-392:
 | 图片编码 | channel 层支持「文件引用」+「文件内容」两种模式 |
 | 远程模式 | MVP 支持，base64 随 WS JSON 传输 |
 | 图片大小限制 | 5MB（base64 后约 6.7MB） |
+| 非 vision 模型 | 乐观发送 + API 报错自动降级（移除图片后重试），无白名单维护 |
 
 ## Architecture
 
