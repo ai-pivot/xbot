@@ -9,6 +9,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/feishu"
 	"xbot/version"
 )
 
@@ -560,7 +561,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	// /settings (list) — 检测飞书渠道使用交互式卡片，其他渠道使用 markdown
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder(msg.Channel); ok {
-			if fc, ok := ch.(*channel.FeishuChannel); ok {
+			if fc, ok := ch.(*feishu.FeishuChannel); ok {
 				card, err := fc.BuildSettingsCard(ctx, msg.SenderID, msg.ChatID, "basic")
 				if err != nil {
 					return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("构建设置卡片失败：%v", err)}, nil

@@ -12,6 +12,8 @@ import (
 
 	"xbot/agent"
 	"xbot/channel"
+	"xbot/channel/feishu"
+	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
 	"xbot/storage/sqlite"
@@ -222,12 +224,12 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) channel.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
 	regc := registryCallbacks(ag)
 	llmc := llmCallbacks(ag)
 
-	callbacks := channel.WebCallbacks{
+	callbacks := web.WebCallbacks{
 		// Runner callbacks
 		RunnerTokenGet:      rc.RunnerTokenGet,
 		RunnerTokenGenerate: rc.RunnerTokenGenerate,
@@ -291,11 +293,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) chann
 		return ag.GetActiveProgress(channel, chatID)
 	}
 	// Wire SessionsList
-	callbacks.SessionsList = func(senderID string) []channel.SessionInfo {
+	callbacks.SessionsList = func(senderID string) []web.SessionInfo {
 		sessions := ag.ListInteractiveSessions("web", senderID)
-		result := make([]channel.SessionInfo, len(sessions))
+		result := make([]web.SessionInfo, len(sessions))
 		for i, s := range sessions {
-			result[i] = channel.ChatRoom{
+			result[i] = web.ChatRoom{
 				ID:       s.Role + "/" + s.Instance,
 				Type:     "subagent",
 				Label:    s.Role + "/" + s.Instance,
@@ -321,7 +323,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) chann
 		return result, true
 	}
 	// Wire Chat CRUD
-	callbacks.ChatList = func(senderID, currentChatID string) ([]channel.UserChatWithPreview, error) {
+	callbacks.ChatList = func(senderID, currentChatID string) ([]web.UserChatWithPreview, error) {
 		if webDB == nil {
 			return nil, nil
 		}
@@ -330,9 +332,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) chann
 		if err != nil {
 			return nil, err
 		}
-		result := make([]channel.UserChatWithPreview, len(chats))
+		result := make([]web.UserChatWithPreview, len(chats))
 		for i, c := range chats {
-			result[i] = channel.UserChatWithPreview{
+			result[i] = web.UserChatWithPreview{
 				ChatID:     c.ChatID,
 				Label:      c.Label,
 				LastActive: c.LastActive.Format(time.RFC3339),
@@ -367,12 +369,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) chann
 }
 
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
-func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.SettingsCallbacks {
+func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
 	regc := registryCallbacks(ag)
 	llmc := llmCallbacks(ag)
 
-	return channel.SettingsCallbacks{
+	return feishu.SettingsCallbacks{
 		// LLM basic callbacks
 		LLMList:                   llmc.LLMList,
 		LLMSet:                    llmc.LLMSet,
@@ -594,21 +596,21 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) channel.S
 			if db == nil {
 				return "", fmt.Errorf("web linking not enabled")
 			}
-			return channel.FeishuLinkUser(db, feishuUserID, username, password)
+			return web.FeishuLinkUser(db, feishuUserID, username, password)
 		},
 		FeishuWebGetLinked: func(feishuUserID string) (string, bool) {
 			db := tools.GetRunnerTokenDB()
 			if db == nil {
 				return "", false
 			}
-			return channel.FeishuGetLinkedUser(db, feishuUserID)
+			return web.FeishuGetLinkedUser(db, feishuUserID)
 		},
 		FeishuWebUnlink: func(feishuUserID string) error {
 			db := tools.GetRunnerTokenDB()
 			if db == nil {
 				return fmt.Errorf("web linking not enabled")
 			}
-			return channel.FeishuUnlinkUser(db, feishuUserID)
+			return web.FeishuUnlinkUser(db, feishuUserID)
 		},
 
 		// Memory

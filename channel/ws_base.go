@@ -11,13 +11,13 @@ import (
 
 // WSChannelBase provides shared WebSocket infrastructure for QQ and NapCat channels.
 type WSChannelBase struct {
-	conn             *websocket.Conn
-	connMu           sync.Mutex
-	stopCh           chan struct{}
+	Conn             *websocket.Conn
+	ConnMu           sync.Mutex
+	StopCh           chan struct{}
 	processedIDs     map[string]struct{}
 	processedOrder   []string
 	processedMu      sync.Mutex
-	maxProcessed     int
+	MaxProcessed     int
 	disconnectTimes  []time.Time
 	disconnectMu     sync.Mutex
 	maxDisconnectAge time.Duration
@@ -28,7 +28,7 @@ type WSChannelBase struct {
 func NewWSChannelBase(maxProcessed int, maxDisconnectAge time.Duration, maxDisconnects int) WSChannelBase {
 	return WSChannelBase{
 		processedIDs:     make(map[string]struct{}),
-		maxProcessed:     maxProcessed,
+		MaxProcessed:     maxProcessed,
 		maxDisconnectAge: maxDisconnectAge,
 		maxDisconnects:   maxDisconnects,
 	}
@@ -38,8 +38,8 @@ func NewWSChannelBase(maxProcessed int, maxDisconnectAge time.Duration, maxDisco
 // Deduplication
 // ---------------------------------------------------------------------------
 
-// isDuplicate checks if a message ID has been seen before.
-func (b *WSChannelBase) isDuplicate(messageID string) bool {
+// IsDuplicate checks if a message ID has been seen before.
+func (b *WSChannelBase) IsDuplicate(messageID string) bool {
 	b.processedMu.Lock()
 	defer b.processedMu.Unlock()
 
@@ -51,7 +51,7 @@ func (b *WSChannelBase) isDuplicate(messageID string) bool {
 	b.processedOrder = append(b.processedOrder, messageID)
 
 	// Evict oldest entries when over capacity
-	for len(b.processedOrder) > b.maxProcessed {
+	for len(b.processedOrder) > b.MaxProcessed {
 		oldest := b.processedOrder[0]
 		b.processedOrder = b.processedOrder[1:]
 		delete(b.processedIDs, oldest)
@@ -63,9 +63,9 @@ func (b *WSChannelBase) isDuplicate(messageID string) bool {
 // Access control
 // ---------------------------------------------------------------------------
 
-// isAllowed checks if a sender ID is in the allow list.
+// IsAllowed checks if a sender ID is in the allow list.
 // An empty allow list means everyone is allowed.
-func (b *WSChannelBase) isAllowed(allowList []string, senderID string) bool {
+func (b *WSChannelBase) IsAllowed(allowList []string, senderID string) bool {
 	if len(allowList) == 0 {
 		return true
 	}
@@ -81,13 +81,13 @@ func (b *WSChannelBase) isAllowed(allowList []string, senderID string) bool {
 // Wait / stop
 // ---------------------------------------------------------------------------
 
-// sleepOrStop waits for the given duration or until stopCh is closed.
+// SleepOrStop waits for the given duration or until StopCh is closed.
 // Returns true if the wait completed, false if interrupted.
-func (b *WSChannelBase) sleepOrStop(d time.Duration) bool {
+func (b *WSChannelBase) SleepOrStop(d time.Duration) bool {
 	select {
 	case <-time.After(d):
 		return true
-	case <-b.stopCh:
+	case <-b.StopCh:
 		return false
 	}
 }
@@ -96,30 +96,30 @@ func (b *WSChannelBase) sleepOrStop(d time.Duration) bool {
 // WebSocket send / close
 // ---------------------------------------------------------------------------
 
-// wsSend sends a JSON payload over the WebSocket connection.
-func (b *WSChannelBase) wsSend(payload any) error {
+// WsSend sends a JSON payload over the WebSocket connection.
+func (b *WSChannelBase) WsSend(payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal ws payload: %w", err)
 	}
 
-	b.connMu.Lock()
-	defer b.connMu.Unlock()
+	b.ConnMu.Lock()
+	defer b.ConnMu.Unlock()
 
-	if b.conn == nil {
+	if b.Conn == nil {
 		return fmt.Errorf("no ws connection")
 	}
-	return b.conn.WriteMessage(websocket.TextMessage, data)
+	return b.Conn.WriteMessage(websocket.TextMessage, data)
 }
 
-// closeConn closes the WebSocket connection if open.
-func (b *WSChannelBase) closeConn() {
-	b.connMu.Lock()
-	defer b.connMu.Unlock()
+// CloseConn closes the WebSocket connection if open.
+func (b *WSChannelBase) CloseConn() {
+	b.ConnMu.Lock()
+	defer b.ConnMu.Unlock()
 
-	if b.conn != nil {
-		b.conn.Close()
-		b.conn = nil
+	if b.Conn != nil {
+		b.Conn.Close()
+		b.Conn = nil
 	}
 }
 
@@ -127,8 +127,8 @@ func (b *WSChannelBase) closeConn() {
 // Quick disconnect detection
 // ---------------------------------------------------------------------------
 
-// recordDisconnect records a disconnect event for quick-disconnect detection.
-func (b *WSChannelBase) recordDisconnect(_ time.Time) {
+// RecordDisconnect records a disconnect event for quick-disconnect detection.
+func (b *WSChannelBase) RecordDisconnect(_ time.Time) {
 	b.disconnectMu.Lock()
 	defer b.disconnectMu.Unlock()
 
@@ -140,8 +140,8 @@ func (b *WSChannelBase) recordDisconnect(_ time.Time) {
 	}
 }
 
-// isQuickDisconnectLoop detects rapid disconnect loops.
-func (b *WSChannelBase) isQuickDisconnectLoop() bool {
+// IsQuickDisconnectLoop detects rapid disconnect loops.
+func (b *WSChannelBase) IsQuickDisconnectLoop() bool {
 	b.disconnectMu.Lock()
 	defer b.disconnectMu.Unlock()
 
