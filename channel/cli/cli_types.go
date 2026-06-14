@@ -437,6 +437,29 @@ type SessionPanelEntry struct {
 // ---------------------------------------------------------------------------
 
 // CLIChannel CLI 渠道实现
+// cliPending holds injections that arrive before c.model is created in Start().
+// All fields are nil/zero in local mode — only populated in remote mode where
+// callbacks are registered before Start() is called.
+// Flushed to model fields in a single applyPending() call inside Start().
+type cliPending struct {
+	// Function callbacks
+	trimHistoryFn     func(time.Time) error
+	resetTokenStateFn func()
+	sendInboundFn     func(ch.InboundMsg) bool
+	bgTaskCountFn     func() int
+	bgTaskListFn      func() []*BgTask
+	bgTaskKillFn      func(taskID string) error
+	bgTaskCleanupFn   func()
+	pluginMgrFn       func() *plugin.PluginManager
+
+	// Data objects (may need special wiring beyond simple assignment)
+	checkpointState   *protocol.CheckpointState
+	widgetRegistry    *plugin.WidgetRegistry
+	remotePluginCache *remotePluginCache
+	history           []ch.HistoryMessage     // cached before model is ready
+	progress          *protocol.ProgressEvent // cached before model is ready
+}
+
 type CLIChannel struct {
 	config  *CLIChannelConfig
 	msgChan chan ch.OutboundMsg // 接收 agent 回复的通道
@@ -492,21 +515,8 @@ type CLIChannel struct {
 	// Permission control
 	approvalState *protocol.ApprovalState // injected to wire CLIApprovalHandler after program creation
 
-	// Pending injections (set before model exists, applied in Start)
-	pendingTrimHistoryFn     func(time.Time) error
-	pendingResetTokenStateFn func()
-	pendingHistory           []ch.HistoryMessage     // remote mode: cached history before model is ready
-	pendingProgress          *protocol.ProgressEvent // remote mode: cached progress before model is ready
-	pendingCheckpointState   *protocol.CheckpointState
-	pendingSendInboundFn     func(ch.InboundMsg) bool
-	// Pending remote bg task callbacks (set before model exists in remote mode)
-	pendingBgTaskCountFn     func() int
-	pendingBgTaskListFn      func() []*BgTask
-	pendingBgTaskKillFn      func(taskID string) error // remote mode: forward to server
-	pendingBgTaskCleanupFn   func()                    // remote mode: cleanup completed tasks
-	pendingPluginMgrFn       func() *plugin.PluginManager
-	pendingWidgetRegistry    *plugin.WidgetRegistry // deferred from SetWidgetRegistry before model ready
-	pendingRemotePluginCache *remotePluginCache     // deferred from SetRemotePluginCache before model ready
+	// Pending injections (set before model exists, applied in Start via applyPending)
+	pending cliPending
 }
 
 // SettingsService is the interface needed by CLIChannel for settings panel.
