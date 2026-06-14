@@ -36,7 +36,7 @@ func TestAskUserIterationVisibility(t *testing.T) {
 	})
 
 	// Snapshot iteration history count
-	iterCountBefore := len(model.iterationHistory)
+	iterCountBefore := len(model.progressState.iterations)
 	if iterCountBefore == 0 {
 		t.Fatalf("Expected iterationHistory to have entries, got 0")
 	}
@@ -65,8 +65,8 @@ func TestAskUserIterationVisibility(t *testing.T) {
 	})
 
 	// After the outbound, the AskUser panel should be open
-	if model.panelMode != "askuser" {
-		t.Fatalf("Expected panelMode=askuser, got %q", model.panelMode)
+	if model.panelState.mode != "askuser" {
+		t.Fatalf("Expected panelMode=askuser, got %q", model.panelState.mode)
 	}
 
 	// typing should be false (openAskUserPanel sets it)
@@ -75,13 +75,13 @@ func TestAskUserIterationVisibility(t *testing.T) {
 	}
 
 	// CRITICAL CHECK: iterationHistory should still have entries
-	if len(model.iterationHistory) != iterCountBefore {
+	if len(model.progressState.iterations) != iterCountBefore {
 		t.Errorf("iterationHistory was cleared! Before=%d, After=%d",
-			iterCountBefore, len(model.iterationHistory))
+			iterCountBefore, len(model.progressState.iterations))
 	}
 
 	// progress should still be non-nil
-	if model.progress == nil {
+	if model.progressState.current == nil {
 		t.Error("progress should not be nil while AskUser panel is open")
 	}
 }
@@ -127,13 +127,13 @@ func TestAskUserIterationSurvivesAnswer(t *testing.T) {
 		},
 	})
 
-	if model.panelMode != "askuser" {
-		t.Fatalf("Expected panelMode=askuser, got %q", model.panelMode)
+	if model.panelState.mode != "askuser" {
+		t.Fatalf("Expected panelMode=askuser, got %q", model.panelState.mode)
 	}
 
 	// Simulate answer callback
-	if model.panelOnAnswer != nil {
-		model.panelOnAnswer(map[string]string{"q0": "yes"})
+	if model.panelState.onAnswer != nil {
+		model.panelState.onAnswer(map[string]string{"q0": "yes"})
 	}
 
 	// After answer: startAgentTurn clears iterationHistory, but

@@ -57,26 +57,26 @@ var konamiASCII = strings.TrimLeft(`
 
 // checkKonami 检查按键是否匹配 Konami Code 序列
 func (m *cliModel) checkKonami(keyName string) bool {
-	if m.konamiBuffer == nil {
-		m.konamiBuffer = make([]string, 0, len(konamiSequence))
+	if m.easterEggState.konamiBuf == nil {
+		m.easterEggState.konamiBuf = make([]string, 0, len(konamiSequence))
 	}
-	m.konamiBuffer = append(m.konamiBuffer, keyName)
+	m.easterEggState.konamiBuf = append(m.easterEggState.konamiBuf, keyName)
 
-	if len(m.konamiBuffer) > len(konamiSequence) {
-		m.konamiBuffer = m.konamiBuffer[len(m.konamiBuffer)-len(konamiSequence):]
+	if len(m.easterEggState.konamiBuf) > len(konamiSequence) {
+		m.easterEggState.konamiBuf = m.easterEggState.konamiBuf[len(m.easterEggState.konamiBuf)-len(konamiSequence):]
 	}
 
-	if len(m.konamiBuffer) >= len(konamiSequence) {
-		offset := len(m.konamiBuffer) - len(konamiSequence)
+	if len(m.easterEggState.konamiBuf) >= len(konamiSequence) {
+		offset := len(m.easterEggState.konamiBuf) - len(konamiSequence)
 		match := true
 		for i := 0; i < len(konamiSequence); i++ {
-			if m.konamiBuffer[offset+i] != konamiSequence[i] {
+			if m.easterEggState.konamiBuf[offset+i] != konamiSequence[i] {
 				match = false
 				break
 			}
 		}
 		if match {
-			m.konamiBuffer = nil
+			m.easterEggState.konamiBuf = nil
 			return true
 		}
 	}
@@ -106,64 +106,64 @@ func (m *cliModel) initMatrixColumns() {
 	if rows < 5 {
 		rows = 5
 	}
-	m.matrixCols = cols
-	m.matrixRows = rows
-	m.matrixDrops = make([]int, cols)
-	m.matrixSpeeds = make([]int, cols)
-	m.matrixTrailLen = make([]int, cols)
+	m.easterEggState.matrixCols = cols
+	m.easterEggState.matrixRows = rows
+	m.easterEggState.matrixDrops = make([]int, cols)
+	m.easterEggState.matrixSpeeds = make([]int, cols)
+	m.easterEggState.matrixTrailLen = make([]int, cols)
 	for i := 0; i < cols; i++ {
-		m.matrixDrops[i] = -rand.Intn(rows) // 负数 = 还在画面外
-		m.matrixSpeeds[i] = 1 + rand.Intn(2)
-		m.matrixTrailLen[i] = 5 + rand.Intn(15)
+		m.easterEggState.matrixDrops[i] = -rand.Intn(rows) // 负数 = 还在画面外
+		m.easterEggState.matrixSpeeds[i] = 1 + rand.Intn(2)
+		m.easterEggState.matrixTrailLen[i] = 5 + rand.Intn(15)
 	}
 	// 用空格初始化矩阵缓冲区
-	m.matrixBuffer = make([][]rune, rows)
+	m.easterEggState.matrixBuf = make([][]rune, rows)
 	for r := 0; r < rows; r++ {
-		m.matrixBuffer[r] = make([]rune, cols)
+		m.easterEggState.matrixBuf[r] = make([]rune, cols)
 		for c := 0; c < cols; c++ {
-			m.matrixBuffer[r][c] = ' '
+			m.easterEggState.matrixBuf[r][c] = ' '
 		}
 	}
 }
 
 // tickMatrix 推进一帧代码雨动画
 func (m *cliModel) tickMatrix() {
-	if m.matrixDrops == nil {
+	if m.easterEggState.matrixDrops == nil {
 		m.initMatrixColumns()
 	}
 
-	cols := m.matrixCols
-	rows := m.matrixRows
+	cols := m.easterEggState.matrixCols
+	rows := m.easterEggState.matrixRows
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// 随机更新已有字符产生闪烁效果
 	for r := 0; r < rows; r++ {
 		for c := 0; c < cols; c++ {
-			if m.matrixBuffer[r][c] != ' ' && rng.Intn(10) == 0 {
-				m.matrixBuffer[r][c] = matrixChars[rng.Intn(len(matrixChars))]
+			if m.easterEggState.matrixBuf[r][c] != ' ' && rng.Intn(10) == 0 {
+				m.easterEggState.matrixBuf[r][c] = matrixChars[rng.Intn(len(matrixChars))]
 			}
 		}
 	}
 
 	// 推进每列下落
 	for c := 0; c < cols; c++ {
-		m.matrixDrops[c] += m.matrixSpeeds[c]
-		head := m.matrixDrops[c]
-		tail := head - m.matrixTrailLen[c]
+		m.easterEggState.matrixDrops[c] += m.easterEggState.matrixSpeeds[c]
+		head := m.easterEggState.matrixDrops[c]
+		tail := head - m.easterEggState.matrixTrailLen[c]
 
 		// 头部写入新字符
 		if head >= 0 && head < rows {
-			m.matrixBuffer[head][c] = matrixChars[rng.Intn(len(matrixChars))]
+			m.easterEggState.matrixBuf[head][c] = matrixChars[rng.Intn(len(matrixChars))]
 		}
 		// 尾部擦除
 		if tail >= 0 && tail < rows {
-			m.matrixBuffer[tail][c] = ' '
+			m.easterEggState.matrixBuf[tail][c] = ' '
 		}
 		// 超出画面：重置
 		if tail > rows+5 {
-			m.matrixDrops[c] = -rng.Intn(rows / 2)
-			m.matrixSpeeds[c] = 1 + rng.Intn(2)
-			m.matrixTrailLen[c] = 5 + rng.Intn(15)
+			m.easterEggState.matrixDrops[c] = -rng.Intn(rows / 2)
+			m.easterEggState.matrixSpeeds[c] = 1 + rng.Intn(2)
+			m.easterEggState.matrixTrailLen[c] = 5 + rng.Intn(15)
 		}
 	}
 }
@@ -332,14 +332,14 @@ var versionAchievementArt = strings.TrimLeft(`
 // recordVersionHit 记录 /version 调用，返回 true 表示触发了彩蛋
 func (m *cliModel) recordVersionHit() bool {
 	now := time.Now()
-	m.versionHitTimes = append(m.versionHitTimes, now)
-	if len(m.versionHitTimes) > 3 {
-		m.versionHitTimes = m.versionHitTimes[len(m.versionHitTimes)-3:]
+	m.easterEggState.versionHits = append(m.easterEggState.versionHits, now)
+	if len(m.easterEggState.versionHits) > 3 {
+		m.easterEggState.versionHits = m.easterEggState.versionHits[len(m.easterEggState.versionHits)-3:]
 	}
-	if len(m.versionHitTimes) >= 3 {
-		elapsed := m.versionHitTimes[len(m.versionHitTimes)-1].Sub(m.versionHitTimes[len(m.versionHitTimes)-3])
+	if len(m.easterEggState.versionHits) >= 3 {
+		elapsed := m.easterEggState.versionHits[len(m.easterEggState.versionHits)-1].Sub(m.easterEggState.versionHits[len(m.easterEggState.versionHits)-3])
 		if elapsed <= 10*time.Second {
-			m.versionHitTimes = nil
+			m.easterEggState.versionHits = nil
 			return true
 		}
 	}
@@ -376,7 +376,7 @@ func randomZen() (string, string) {
 // activateEasterEgg 激活指定彩蛋（按任意键退出）。
 // 返回 tea.Cmd 用于 Matrix 动画的初始 tick。
 func (m *cliModel) activateEasterEgg(mode easterEggMode) tea.Cmd {
-	m.easterEgg = mode
+	m.easterEggState.mode = mode
 	if mode == easterEggMatrix {
 		m.initMatrixColumns()
 		// 生成第一帧并启动动画循环
@@ -388,10 +388,10 @@ func (m *cliModel) activateEasterEgg(mode easterEggMode) tea.Cmd {
 
 // dismissEasterEgg 关闭当前彩蛋
 func (m *cliModel) dismissEasterEgg() {
-	m.easterEgg = easterEggNone
-	m.matrixBuffer = nil
-	m.matrixDrops = nil
-	m.easterEggCustom = ""
+	m.easterEggState.mode = easterEggNone
+	m.easterEggState.matrixBuf = nil
+	m.easterEggState.matrixDrops = nil
+	m.easterEggState.customArt = ""
 }
 
 // handleEasterEggCommand 处理隐藏的彩蛋斜杠命令。
@@ -438,7 +438,7 @@ func (m *cliModel) handleEasterEggCommand(cmd string) (bool, tea.Cmd) {
 
 // renderEasterEggOverlay 渲染彩蛋覆盖层。返回空字符串表示无彩蛋。
 func (m *cliModel) renderEasterEggOverlay() string {
-	switch m.easterEgg {
+	switch m.easterEggState.mode {
 	case easterEggKonami:
 		return m.renderKonamiOverlay()
 	case easterEggMatrix:
@@ -461,7 +461,7 @@ func (m *cliModel) renderKonamiOverlay() string {
 
 // renderMatrixOverlay 渲染 Matrix 代码雨画面
 func (m *cliModel) renderMatrixOverlay() string {
-	if m.matrixBuffer == nil {
+	if m.easterEggState.matrixBuf == nil {
 		return ""
 	}
 
@@ -470,24 +470,24 @@ func (m *cliModel) renderMatrixOverlay() string {
 	dimGreen := lipgloss.NewStyle().Foreground(lipgloss.Color("#003300"))
 
 	var sb strings.Builder
-	for r := 0; r < m.matrixRows; r++ {
-		for c := 0; c < m.matrixCols; c++ {
-			ch := m.matrixBuffer[r][c]
+	for r := 0; r < m.easterEggState.matrixRows; r++ {
+		for c := 0; c < m.easterEggState.matrixCols; c++ {
+			ch := m.easterEggState.matrixBuf[r][c]
 			if ch == ' ' {
 				sb.WriteString(" ")
 				continue
 			}
 			// 判断是否是列头部
 			isHead := false
-			if m.matrixDrops != nil && c < len(m.matrixDrops) && m.matrixDrops[c] == r {
+			if m.easterEggState.matrixDrops != nil && c < len(m.easterEggState.matrixDrops) && m.easterEggState.matrixDrops[c] == r {
 				isHead = true
 			}
 			if isHead {
 				sb.WriteString(brightWhite.Render(string(ch)))
 			} else {
 				distance := 0
-				if m.matrixDrops != nil && c < len(m.matrixDrops) {
-					distance = m.matrixDrops[c] - r
+				if m.easterEggState.matrixDrops != nil && c < len(m.easterEggState.matrixDrops) {
+					distance = m.easterEggState.matrixDrops[c] - r
 					if distance < 0 {
 						distance = 0
 					}
@@ -499,7 +499,7 @@ func (m *cliModel) renderMatrixOverlay() string {
 				}
 			}
 		}
-		if r < m.matrixRows-1 {
+		if r < m.easterEggState.matrixRows-1 {
 			sb.WriteString("\n")
 		}
 	}
@@ -522,7 +522,7 @@ func (m *cliModel) renderAnswer42Overlay() string {
 // renderVersionOverlay 渲染版本强迫症成就画面
 func (m *cliModel) renderVersionOverlay() string {
 	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD700")).Bold(true)
-	content := gold.Render(m.easterEggCustom)
+	content := gold.Render(m.easterEggState.customArt)
 	return centerOverlay(content, m.width, m.height)
 }
 

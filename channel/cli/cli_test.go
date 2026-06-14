@@ -306,7 +306,7 @@ func TestCLIModelHandleResizeMinimum(t *testing.T) {
 
 func TestCLIModelHandleResizeWithProgress(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase: "tool_exec",
 		ActiveTools: []protocol.ToolProgress{
 			{Name: "test", Label: "Testing"},
@@ -334,7 +334,7 @@ func TestCLIModelViewNotReady(t *testing.T) {
 
 func TestCLIModelViewReady(t *testing.T) {
 	model := newCLIModel()
-	model.splashDone = true
+	model.splashState.done = true
 	model.handleResize(80, 24)
 
 	view := model.View()
@@ -345,7 +345,7 @@ func TestCLIModelViewReady(t *testing.T) {
 
 func TestCLIModelViewWithTyping(t *testing.T) {
 	model := newCLIModel()
-	model.splashDone = true
+	model.splashState.done = true
 	model.handleResize(80, 24)
 	model.typing = true
 
@@ -358,7 +358,7 @@ func TestCLIModelViewWithTyping(t *testing.T) {
 func TestCLIModelViewWithProgress(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 	}
@@ -371,7 +371,7 @@ func TestCLIModelViewWithProgress(t *testing.T) {
 
 func TestCLIModelViewWithMessages(t *testing.T) {
 	model := newCLIModel()
-	model.splashDone = true
+	model.splashState.done = true
 	model.handleResize(80, 24)
 	model.messages = []cliMessage{
 		{role: "user", content: "Hello", timestamp: time.Now()},
@@ -570,7 +570,7 @@ func TestCLIModelHandleAgentMessageEmptyContent(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// Simulate active progress state
-	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
+	model.progressState.current = &protocol.ProgressEvent{Phase: "thinking"}
 	model.typing = true
 
 	msg := channel.OutboundMsg{
@@ -584,7 +584,7 @@ func TestCLIModelHandleAgentMessageEmptyContent(t *testing.T) {
 	if len(model.messages) != 0 {
 		t.Fatalf("Expected 0 messages, got %d", len(model.messages))
 	}
-	if model.progress != nil {
+	if model.progressState.current != nil {
 		t.Error("Expected progress to be cleared")
 	}
 	if model.typing {
@@ -688,11 +688,11 @@ func TestCLIModelUpdateProgressMsg(t *testing.T) {
 
 	_, _ = model.Update(progMsg)
 
-	if model.progress == nil {
+	if model.progressState.current == nil {
 		t.Error("Progress should be set after cliProgressMsg")
 	}
-	if model.progress.Phase != "thinking" {
-		t.Errorf("Progress phase = %q, want 'thinking'", model.progress.Phase)
+	if model.progressState.current.Phase != "thinking" {
+		t.Errorf("Progress phase = %q, want 'thinking'", model.progressState.current.Phase)
 	}
 }
 
@@ -703,7 +703,7 @@ func TestCLIModelUpdateProgressDone(t *testing.T) {
 	model.chatID = "/test"
 
 	// Set initial progress
-	model.progress = &protocol.ProgressEvent{Phase: "thinking", ChatID: "cli:/test"}
+	model.progressState.current = &protocol.ProgressEvent{Phase: "thinking", ChatID: "cli:/test"}
 
 	// Send done progress
 	progMsg := cliProgressMsg{
@@ -716,7 +716,7 @@ func TestCLIModelUpdateProgressDone(t *testing.T) {
 	_, _ = model.Update(progMsg)
 
 	// Progress should be cleared when phase is "done"
-	if model.progress != nil {
+	if model.progressState.current != nil {
 		t.Error("Progress should be nil after done phase")
 	}
 }
@@ -739,7 +739,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 
 	// Scenario 1: After Ctrl+C (typing=false, turnCancelled=true), progress is ignored
 	model.typing = false
-	model.progress = nil
+	model.progressState.current = nil
 	model.turnCancelled = true
 
 	progMsg := cliProgressMsg{
@@ -753,7 +753,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 	model.channelName = "cli"
 	model.handleProgressMsg(progMsg)
 
-	if model.progress != nil {
+	if model.progressState.current != nil {
 		t.Error("Progress after Ctrl+C should be ignored when turnCancelled=true")
 	}
 
@@ -772,7 +772,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 		},
 	})
 
-	if model2.progress != nil {
+	if model2.progressState.current != nil {
 		t.Error("Progress for a different session should be ignored")
 	}
 
@@ -803,7 +803,7 @@ func TestCLIModelStaleProgressIgnored(t *testing.T) {
 	if !model3.typing {
 		t.Error("Auto-start should fire when turnCancelled=false and typing=false")
 	}
-	if model3.progress == nil {
+	if model3.progressState.current == nil {
 		t.Error("Progress should be set after auto-start")
 	}
 }
@@ -839,7 +839,7 @@ func TestGlobalTickUpdatesSpinnerAndProgress(t *testing.T) {
 
 	// Simulate an active agent turn.
 	model.typing = true
-	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
+	model.progressState.current = &protocol.ProgressEvent{Phase: "thinking"}
 
 	// cliTickMsg from the global goroutine should advance spinner
 	// and NOT panic or return errors.
@@ -854,10 +854,10 @@ func TestGlobalTickAdvancesSplashAnimation(t *testing.T) {
 	model.handleResize(80, 24)
 
 	// Splash not done — tick should advance splashFrame.
-	model.splashDone = false
+	model.splashState.done = false
 	model.Update(cliTickMsg{})
-	if model.splashFrame != 1 {
-		t.Fatalf("expected splashFrame=1, got %d", model.splashFrame)
+	if model.splashState.frame != 1 {
+		t.Fatalf("expected splashFrame=1, got %d", model.splashState.frame)
 	}
 }
 
@@ -969,7 +969,7 @@ func TestCLIModelRenderProgressStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.phase, func(t *testing.T) {
-			model.progress = &protocol.ProgressEvent{Phase: tt.phase}
+			model.progressState.current = &protocol.ProgressEvent{Phase: tt.phase}
 			result := model.renderProgressStatus()
 			if !strings.Contains(result, tt.expected) {
 				t.Errorf("renderProgressStatus(%s) should contain %q, got %q",
@@ -982,7 +982,7 @@ func TestCLIModelRenderProgressStatus(t *testing.T) {
 func TestCLIModelRenderProgressStatusNil(t *testing.T) {
 	model := newCLIModel()
 	model.locale = channel.GetLocale("en")
-	model.progress = nil
+	model.progressState.current = nil
 
 	result := model.renderProgressStatus()
 	if !strings.Contains(result, "Thinking") {
@@ -992,7 +992,7 @@ func TestCLIModelRenderProgressStatusNil(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusWithIteration(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 5,
 	}
@@ -1006,7 +1006,7 @@ func TestCLIModelRenderProgressStatusWithIteration(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:       "tool_exec",
 		Iteration:   1,
 		ActiveTools: []protocol.ToolProgress{{Name: "read", Label: "Reading file", Elapsed: 100}},
@@ -1023,7 +1023,7 @@ func TestCLIModelRenderProgressStatusWithActiveTools(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:       "tool_exec",
 		Iteration:   1,
 		ActiveTools: []protocol.ToolProgress{{Name: "read", Label: "", Elapsed: 0}},
@@ -1039,7 +1039,7 @@ func TestCLIModelRenderProgressStatusToolWithoutLabel(t *testing.T) {
 
 func TestCLIModelRenderProgressStatusWithElapsed(t *testing.T) {
 	model := newCLIModel()
-	model.progress = &protocol.ProgressEvent{Phase: "thinking"}
+	model.progressState.current = &protocol.ProgressEvent{Phase: "thinking"}
 	model.typingStartTime = time.Now().Add(-5 * time.Second)
 
 	result := model.renderProgressStatus()
@@ -1056,7 +1056,7 @@ func TestCLIModelRenderProgressBlockEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.typing = false
-	model.progress = nil
+	model.progressState.current = nil
 
 	result := model.renderProgressBlock()
 	if result != "" {
@@ -1090,7 +1090,7 @@ func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 	model.handleResize(80, 24)
 	model.startAgentTurn()
 	model.typingStartTime = time.Now()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 1,
 		ActiveTools: []protocol.ToolProgress{
@@ -1110,7 +1110,7 @@ func TestCLIModelRenderProgressBlockWithTools(t *testing.T) {
 	if model.streamingMsgIdx < 0 {
 		t.Error("streamingMsgIdx should be set")
 	}
-	if model.progress == nil {
+	if model.progressState.current == nil {
 		t.Error("progress should be set")
 	}
 }
@@ -1120,7 +1120,7 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 	model.handleResize(80, 24)
 	model.startAgentTurn()
 	model.typingStartTime = time.Now()
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 0,
 			Thinking:  "Analyzing requirements",
@@ -1129,7 +1129,7 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 			},
 		},
 	}
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 	}
@@ -1143,7 +1143,7 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 	if model.streamingMsgIdx < 0 {
 		t.Error("streamingMsgIdx should be set")
 	}
-	if len(model.iterationHistory) == 0 {
+	if len(model.progressState.iterations) == 0 {
 		t.Error("iterationHistory should have entries")
 	}
 }
@@ -1153,7 +1153,7 @@ func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 	model.handleResize(80, 24)
 	model.startAgentTurn()
 	model.typingStartTime = time.Now()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 0,
 		SubAgents: []protocol.SubAgentInfo{
@@ -1172,7 +1172,7 @@ func TestCLIModelRenderProgressBlockSubAgents(t *testing.T) {
 	if model.streamingMsgIdx < 0 {
 		t.Error("streamingMsgIdx should be set")
 	}
-	if model.progress == nil || len(model.progress.SubAgents) != 3 {
+	if model.progressState.current == nil || len(model.progressState.current.SubAgents) != 3 {
 		t.Error("progress should have subagent data")
 	}
 }
@@ -1182,7 +1182,7 @@ func TestCLIModelRenderProgressBlockSubAgentChildren(t *testing.T) {
 	model.handleResize(80, 24)
 	model.typing = true
 	model.typingStartTime = time.Now()
-	model.progress = &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 0,
 		SubAgents: []protocol.SubAgentInfo{
@@ -1610,8 +1610,8 @@ func TestCLIModelIterationAccumulation(t *testing.T) {
 		ChatID:    "cli:/test",
 	}}
 	model.Update(prog0)
-	if len(model.iterationHistory) != 0 {
-		t.Errorf("Expected 0 history entries, got %d", len(model.iterationHistory))
+	if len(model.progressState.iterations) != 0 {
+		t.Errorf("Expected 0 history entries, got %d", len(model.progressState.iterations))
 	}
 
 	// Iteration 0: tool_exec with completed tools
@@ -1632,20 +1632,20 @@ func TestCLIModelIterationAccumulation(t *testing.T) {
 		ChatID:    "cli:/test",
 	}}
 	model.Update(prog1)
-	if len(model.iterationHistory) != 1 {
-		t.Fatalf("Expected 1 history entry after iteration change, got %d", len(model.iterationHistory))
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("Expected 1 history entry after iteration change, got %d", len(model.progressState.iterations))
 	}
-	if model.iterationHistory[0].Iteration != 0 {
-		t.Errorf("History[0].Iteration = %d, want 0", model.iterationHistory[0].Iteration)
+	if model.progressState.iterations[0].Iteration != 0 {
+		t.Errorf("History[0].Iteration = %d, want 0", model.progressState.iterations[0].Iteration)
 	}
-	if len(model.iterationHistory[0].Tools) != 1 {
-		t.Errorf("History[0].Tools count = %d, want 1", len(model.iterationHistory[0].Tools))
+	if len(model.progressState.iterations[0].Tools) != 1 {
+		t.Errorf("History[0].Tools count = %d, want 1", len(model.progressState.iterations[0].Tools))
 	}
 }
 
 func TestCLIModelCollectAllTools(t *testing.T) {
 	model := newCLIModel()
-	model.iterationHistory = []cliIterationSnapshot{
+	model.progressState.iterations = []cliIterationSnapshot{
 		{Iteration: 0, Tools: []protocol.ToolProgress{{Name: "a"}, {Name: "b"}}},
 		{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "c"}}},
 	}
@@ -1657,17 +1657,17 @@ func TestCLIModelCollectAllTools(t *testing.T) {
 
 func TestCLIModelResetProgressState(t *testing.T) {
 	model := newCLIModel()
-	model.iterationHistory = []cliIterationSnapshot{{Iteration: 0}}
-	model.lastSeenIteration = 5
+	model.progressState.iterations = []cliIterationSnapshot{{Iteration: 0}}
+	model.progressState.lastIter = 5
 	model.typingStartTime = time.Now().Add(-10 * time.Second)
 
 	model.resetProgressState()
 
-	if model.iterationHistory != nil {
+	if model.progressState.iterations != nil {
 		t.Error("iterationHistory should be nil after reset")
 	}
-	if model.lastSeenIteration != 0 {
-		t.Errorf("lastSeenIteration = %d, want 0", model.lastSeenIteration)
+	if model.progressState.lastIter != 0 {
+		t.Errorf("lastSeenIteration = %d, want 0", model.progressState.lastIter)
 	}
 	if model.typingStartTime.IsZero() {
 		t.Error("typingStartTime should be set after reset")

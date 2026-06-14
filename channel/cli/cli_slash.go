@@ -65,14 +65,14 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 						}
 					}
 				}
-				m.panelIsSetup = false // regular settings, not setup wizard
+				m.panelState.isSetup = false // regular settings, not setup wizard
 				m.openSettingsPanel(schema, currentValues, func(values map[string]string) {
 					// --- ch.Subscription generation guard ---
 					// If the active subscription changed since this panel was opened,
 					// the per-subscription LLM fields (provider/key/model/base_url) are STALE
 					// and must NOT be written back — they would overwrite the new subscription.
 					// This is the structural guarantee against subscription data corruption.
-					if m.panelSubGeneration != m.subGeneration {
+					if m.panelState.subGeneration != m.subGeneration {
 						for k := range values {
 							if isSubscriptionScopedSettingKey(k) {
 								delete(values, k)
@@ -304,7 +304,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			if m.recordVersionHit() {
 				art := fmt.Sprintf(versionAchievementArt, version.Version)
 				_ = m.activateEasterEgg(easterEggVersion)
-				m.easterEggCustom = art
+				m.easterEggState.customArt = art
 				m.updateViewportContent()
 				return nil
 			}

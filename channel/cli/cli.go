@@ -115,7 +115,7 @@ func (c *CLIChannel) Start() error {
 	// Load per-user UI preferences (sidebar collapse state, etc.)
 	prefs := tools.LoadPreferences(c.workDir, c.model.senderID)
 	if prefs.SidebarCollapsed != nil {
-		c.model.sidebarCollapsedSections = prefs.SidebarCollapsed
+		c.model.layoutConfig.collapsedSects = prefs.SidebarCollapsed
 	}
 
 	// CLI-side TodoManager for persisting todos across turns and session switches.
@@ -125,10 +125,10 @@ func (c *CLIChannel) Start() error {
 
 	// Apply CLI flag overrides for layout
 	if c.config.SidebarWidthOverride > 0 {
-		c.model.sidebarWidth = c.config.SidebarWidthOverride
+		c.model.layoutConfig.sidebarWidth = c.config.SidebarWidthOverride
 	}
 	if c.config.NoSidebar {
-		c.model.sidebarEnabled = false
+		c.model.layoutConfig.sidebarEnabled = false
 	}
 
 	// Apply pending injections that were set before model existed

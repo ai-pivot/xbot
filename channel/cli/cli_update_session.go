@@ -25,16 +25,16 @@ func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
 	switch ev.Action {
 	case "busy":
 		// Main session started processing.
-		m.liveSessionStates[ev.ChatID] = &liveSessionState{busy: true}
+		m.progressState.liveStates[ev.ChatID] = &liveSessionState{busy: true}
 	case "idle":
 		// Main session finished processing.
 		// Explicitly mark as idle (not delete) — the 30s safety-net poll
 		// may return stale Busy=true from cache, so we need the override.
-		m.liveSessionStates[ev.ChatID] = &liveSessionState{busy: false}
+		m.progressState.liveStates[ev.ChatID] = &liveSessionState{busy: false}
 	case "subagent_started":
 		// SubAgent interactive session created.
 		key := "agent:" + ev.Role + "/" + ev.Instance
-		m.liveSessionStates[key] = &liveSessionState{
+		m.progressState.liveStates[key] = &liveSessionState{
 			busy:     true,
 			role:     ev.Role,
 			instance: ev.Instance,
@@ -46,7 +46,7 @@ func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
 		// SubAgent interactive session destroyed.
 		key := "agent:" + ev.Role + "/" + ev.Instance
 		// Explicitly mark as idle (not delete) — same reason as main session idle.
-		m.liveSessionStates[key] = &liveSessionState{
+		m.progressState.liveStates[key] = &liveSessionState{
 			busy:     false,
 			role:     ev.Role,
 			instance: ev.Instance,
@@ -80,7 +80,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 	}
 
 	// Only clear suLoading for the matching session.
-	m.suLoading = false
+	m.splashState.suLoading = false
 
 	if msg.err != nil {
 		m.showSystemMsg(fmt.Sprintf(m.locale.SuLoadFailed, msg.err), feedbackWarning)
@@ -94,7 +94,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// confirmation we cannot know the real turn state. Assuming idle is the
 		// safe fallback (prevents perpetual spinner from stuck typing=true).
 		m.typing = false
-		m.progress = nil
+		m.progressState.current = nil
 		m.inputReady = true
 	} else {
 		// Build a dedup set from existing messages.
@@ -157,7 +157,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 	// is stale. Skip acceptProgress to avoid restoring a stuck spinner.
 	var cmds []tea.Cmd
 	var acceptProgress bool
-	if !m.suPhaseDoneConfirmed && msg.activeProgress != nil && msg.activeProgress.Phase != "done" {
+	if !m.splashState.suPhaseConfirmed && msg.activeProgress != nil && msg.activeProgress.Phase != "done" {
 		acceptProgress = true
 		// Cross-session guard: activeProgress from GetActiveProgress RPC
 		// should match the current session. If ChatID is set and doesn't
@@ -182,9 +182,9 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// from creating a spurious "iteration 0" snapshot on the next live
 		// progress event (symptom: #0 and #1 both show the same reasoning).
 		if msg.activeProgress.Iteration > 0 {
-			m.lastSeenIteration = msg.activeProgress.Iteration
+			m.progressState.lastIter = msg.activeProgress.Iteration
 		}
-		m.progress = msg.activeProgress
+		m.progressState.current = msg.activeProgress
 
 		// When an active turn is restored from the server snapshot, the
 		// last assistant message in DB history corresponds to the in-flight
@@ -257,15 +257,15 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		}
 
 		// Restore StartedAt for active tools so live elapsed timers work.
-		for i := range m.progress.ActiveTools {
-			t := &m.progress.ActiveTools[i]
+		for i := range m.progressState.current.ActiveTools {
+			t := &m.progressState.current.ActiveTools[i]
 			if t.StartedAt.IsZero() && t.Elapsed > 0 {
 				t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
 			}
 		}
 
 		// Rebuild iteration history from server snapshot (authoritative).
-		m.iterationHistory = nil
+		m.progressState.iterations = nil
 		m.rc.invalidateProgress()
 		if len(msg.activeProgress.IterationHistory) > 0 {
 			for _, ih := range msg.activeProgress.IterationHistory {
@@ -281,12 +281,12 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 						t.StartedAt = time.Now().Add(-time.Duration(t.Elapsed) * time.Millisecond)
 					}
 				}
-				m.iterationHistory = append(m.iterationHistory, snap)
+				m.progressState.iterations = append(m.progressState.iterations, snap)
 			}
-			if len(m.iterationHistory) > 0 {
-				lastIter := m.iterationHistory[len(m.iterationHistory)-1].Iteration
-				if lastIter > m.lastSeenIteration {
-					m.lastSeenIteration = lastIter
+			if len(m.progressState.iterations) > 0 {
+				lastIter := m.progressState.iterations[len(m.progressState.iterations)-1].Iteration
+				if lastIter > m.progressState.lastIter {
+					m.progressState.lastIter = lastIter
 				}
 			}
 		}
@@ -296,8 +296,8 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// is 0 but IterationHistory is populated during SubAgent session
 		// switches (symptom: progress shows #0 while history shows
 		// correct #1, #2, ...).
-		if m.progress != nil && m.progress.Iteration <= 0 && len(m.iterationHistory) > 0 {
-			m.progress.Iteration = m.iterationHistory[len(m.iterationHistory)-1].Iteration
+		if m.progressState.current != nil && m.progressState.current.Iteration <= 0 && len(m.progressState.iterations) > 0 {
+			m.progressState.current.Iteration = m.progressState.iterations[len(m.progressState.iterations)-1].Iteration
 		}
 
 		// Emit a tickCmd to guarantee the fast tick chain is running.
@@ -305,10 +305,10 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// If the restored progress has stream or reasoning content, start the
 		// typewriter tick immediately. Without this, the cursor won't blink and
 		// streaming content won't animate until the next handleTickMsg cycle.
-		hasStream := m.progress != nil && m.progress.StreamContent != "" && m.twVisible < len([]rune(m.progress.StreamContent))
-		hasReasoning := m.progress != nil && m.progress.ReasoningStreamContent != "" && m.rwVisible < len([]rune(m.progress.ReasoningStreamContent))
-		if !m.typewriterTickActive && (hasStream || hasReasoning) {
-			m.typewriterTickActive = true
+		hasStream := m.progressState.current != nil && m.progressState.current.StreamContent != "" && m.progressState.twVisible < len([]rune(m.progressState.current.StreamContent))
+		hasReasoning := m.progressState.current != nil && m.progressState.current.ReasoningStreamContent != "" && m.progressState.rwVisible < len([]rune(m.progressState.current.ReasoningStreamContent))
+		if !m.progressState.twActive && (hasStream || hasReasoning) {
+			m.progressState.twActive = true
 			cmds = append(cmds, typewriterTickCmd())
 		}
 
@@ -323,8 +323,8 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// before this async handler runs, so endAgentTurn's typing guard above may
 		// not fire. But progress can still be non-nil → renderProgressBlock would
 		// show a phantom progress block.
-		if m.progress != nil {
-			m.progress = nil
+		if m.progressState.current != nil {
+			m.progressState.current = nil
 			m.rc.valid = false
 		}
 		// Server says session is idle — enable input.
@@ -465,7 +465,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// of iterations where full rebuild would take seconds.
 	m.streamingMsgIdx = restoredStreamingIdx
 	// Compression reload complete — allow auto-start turn again.
-	m.compressionReloading = false
+	m.splashState.compReloading = false
 	if msg.forceFullRebuild {
 		m.messages = newMessages
 		m.invalidateAllCache(false)
@@ -473,7 +473,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		// iterations get a streaming message. Without this, progress
 		// updates only appear in the progress panel — new iteration
 		// tools never render in the message area, making TUI look frozen.
-		if !m.typing && m.progress != nil && m.progress.Phase != "done" && m.panelMode != "askuser" {
+		if !m.typing && m.progressState.current != nil && m.progressState.current.Phase != "done" && m.panelState.mode != "askuser" {
 			m.startAgentTurn()
 		}
 		m.updateViewportContent()
@@ -499,7 +499,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 
 	// NOTE: do NOT call refreshTokenStateAfterReload() here.
 	// The HistoryCompacted handler in handleProgressMsg already calls
-	// cacheTokenUsage(m.progress.TokenUsage) synchronously, which sets
+	// cacheTokenUsage(m.progressState.current.TokenUsage) synchronously, which sets
 	// the compressed token count from the engine's progress event.
 	// refreshTokenStateAfterReload was an async DB read that could race:
 	// it reads the compressed value (e.g. 20k) from DB and sends

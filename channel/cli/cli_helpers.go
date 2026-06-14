@@ -78,7 +78,7 @@ func (m *cliModel) invalidateAllCache(updateViewport bool) {
 }
 
 func (m *cliModel) openSettingsFromQuickSwitch() {
-	if m.channel == nil || len(m.panelValuesBackup) == 0 {
+	if m.channel == nil || len(m.panelState.valuesBackup) == 0 {
 		return
 	}
 	schema := m.channel.SettingsSchema()
@@ -102,20 +102,20 @@ func (m *cliModel) openSettingsFromQuickSwitch() {
 	values := m.mergeCLISettingsValues()
 	// Overlay non-subscription values from backup (preserves user's in-memory edits).
 	// ch.Subscription quick switch should only refresh the active subscription-backed keys.
-	for k, v := range m.panelValuesBackup {
+	for k, v := range m.panelState.valuesBackup {
 		if isSubscriptionScopedSettingKey(k) {
 			continue
 		}
 		values[k] = v
 	}
-	cursor := m.panelCursorBackup
-	onSubmit := m.panelOnSubmitBackup
+	cursor := m.panelState.cursorBackup
+	onSubmit := m.panelState.onSubmitBackup
 	// Clear backup
-	m.panelValuesBackup = nil
-	m.panelOnSubmitBackup = nil
+	m.panelState.valuesBackup = nil
+	m.panelState.onSubmitBackup = nil
 	// Open panel with restored state
 	m.openSettingsPanel(schema, values, onSubmit)
-	m.panelCursor = cursor
+	m.panelState.cursor = cursor
 }
 
 func (m *cliModel) applyThemeAndRebuild(theme string) {
@@ -147,26 +147,26 @@ func (m *cliModel) applyLanguageChange(lang string) {
 // and invalidates the render cache so the viewport relayouts.
 func (m *cliModel) applyLayoutConfig(vals map[string]string) {
 	if v, ok := vals["layout_mode"]; ok && v != "" {
-		m.layoutMode = v
+		m.layoutConfig.mode = v
 	}
 	if v, ok := vals["sidebar_enabled"]; ok {
-		m.sidebarEnabled = ParseSettingBool(v)
+		m.layoutConfig.sidebarEnabled = ParseSettingBool(v)
 	}
 	if v, ok := vals["sidebar_width"]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			m.sidebarWidth = n
+			m.layoutConfig.sidebarWidth = n
 		}
 	}
 	if v, ok := vals["sidebar_position"]; ok && v != "" {
-		m.sidebarPosition = v
+		m.layoutConfig.sidebarPos = v
 	}
 	if v, ok := vals["chat_max_width"]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			m.chatMaxWidth = n
+			m.layoutConfig.maxWidth = n
 		}
 	}
 	if v, ok := vals["chat_center"]; ok {
-		m.chatCenter = ParseSettingBool(v)
+		m.layoutConfig.center = ParseSettingBool(v)
 	}
 	m.rc.valid = false
 }
@@ -181,7 +181,7 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	lang, hasLang := vals["language"]
 	// Capture feedback string now (m.locale is only safe to read in Update)
 	feedbackMsg := m.locale.SettingsSaved
-	if m.panelIsSetup {
+	if m.panelState.isSetup {
 		feedbackMsg = m.locale.SetupComplete
 	}
 
@@ -236,7 +236,7 @@ func (m *cliModel) reloadSettingsCaches() {
 // handleSettingsSavedMsg processes the async settings save result.
 // Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
-	m.settingsSaving = false // unblock user input
+	m.panelState.settingsSaving = false // unblock user input
 	visualChanged := false
 	if msg.themeChanged {
 		m.applyThemeAndRebuild(msg.theme)
@@ -261,8 +261,8 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		m.appendSystem(msg.feedbackMsg)
 	}
 	// After setup wizard completes, show welcome message with TUI usage tips.
-	if m.panelIsSetup {
-		m.panelIsSetup = false
+	if m.panelState.isSetup {
+		m.panelState.isSetup = false
 		if m.locale.SetupWelcome != "" {
 			m.appendSystem(m.locale.SetupWelcome)
 		}
@@ -281,8 +281,8 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 func (m *cliModel) submitAskAnswers() (bool, tea.Model, tea.Cmd) {
 	m.saveCurrentFreeInput()
 	answers := m.collectAskAnswers()
-	if m.panelOnAnswer != nil {
-		m.panelOnAnswer(answers)
+	if m.panelState.onAnswer != nil {
+		m.panelState.onAnswer(answers)
 	}
 	m.closePanel()
 	// NOTE: tickCmd() is NOT returned here. If agent is typing, the tick chain

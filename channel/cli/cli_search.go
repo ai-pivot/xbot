@@ -10,7 +10,7 @@ import (
 )
 
 func (m *cliModel) isSearchMatch(idx int) bool {
-	for _, si := range m.searchResults {
+	for _, si := range m.searchState.results {
 		if si == idx {
 			return true
 		}
@@ -91,40 +91,40 @@ func (m *cliModel) enterSearchMode() {
 		w = 20
 	}
 	ti.SetWidth(w)
-	m.searchTI = ti
-	m.searchMode = true
-	m.searchEditing = true
-	m.searchQuery = ""
-	m.searchResults = nil
-	m.searchIdx = -1
+	m.searchState.ti = ti
+	m.searchState.mode = true
+	m.searchState.editing = true
+	m.searchState.query = ""
+	m.searchState.results = nil
+	m.searchState.idx = -1
 	m.rc.valid = false
 	m.updateViewportContent()
 }
 
 // executeSearch 执行搜索（§21）
 func (m *cliModel) executeSearch() {
-	query := strings.TrimSpace(m.searchTI.Value())
+	query := strings.TrimSpace(m.searchState.ti.Value())
 	if query == "" {
 		m.exitSearch()
 		return
 	}
-	m.searchQuery = query
+	m.searchState.query = query
 	lower := strings.ToLower(query)
-	m.searchResults = nil
+	m.searchState.results = nil
 	for i, msg := range m.messages {
 		if msg.role == "system" {
 			continue
 		}
 		if strings.Contains(strings.ToLower(msg.content), lower) {
-			m.searchResults = append(m.searchResults, i)
+			m.searchState.results = append(m.searchState.results, i)
 		}
 	}
-	m.searchIdx = -1
-	m.searchEditing = false
-	if len(m.searchResults) == 0 {
+	m.searchState.idx = -1
+	m.searchState.editing = false
+	if len(m.searchState.results) == 0 {
 		m.showSystemMsg(m.locale.SearchNoResults, feedbackInfo)
 	} else {
-		m.showSystemMsg(fmt.Sprintf(m.locale.SearchResults, len(m.searchResults)), feedbackInfo)
+		m.showSystemMsg(fmt.Sprintf(m.locale.SearchResults, len(m.searchState.results)), feedbackInfo)
 		m.jumpToSearchResult(0)
 	}
 	m.rc.valid = false
@@ -133,22 +133,22 @@ func (m *cliModel) executeSearch() {
 
 // exitSearch 退出搜索模式（§21）
 func (m *cliModel) exitSearch() {
-	m.searchMode = false
-	m.searchQuery = ""
-	m.searchResults = nil
-	m.searchIdx = -1
-	m.searchEditing = false
+	m.searchState.mode = false
+	m.searchState.query = ""
+	m.searchState.results = nil
+	m.searchState.idx = -1
+	m.searchState.editing = false
 	m.rc.valid = false
 	m.updateViewportContent()
 }
 
 // jumpToSearchResult 跳转到指定搜索结果（§21）
 func (m *cliModel) jumpToSearchResult(idx int) {
-	if idx < 0 || idx >= len(m.searchResults) {
+	if idx < 0 || idx >= len(m.searchState.results) {
 		return
 	}
-	m.searchIdx = idx
-	msgIdx := m.searchResults[idx]
+	m.searchState.idx = idx
+	msgIdx := m.searchState.results[idx]
 	if msgIdx < len(m.msgLineOffsets) {
 		m.viewport.SetYOffset(m.msgLineOffsets[msgIdx])
 	}

@@ -27,19 +27,19 @@ type askItem struct {
 
 // openAskUserPanel activates the ask-user panel overlay.
 func (m *cliModel) openAskUserPanel(items []askItem, onAnswer func(map[string]string), onCancel func()) {
-	m.panelMode = "askuser"
-	// Do NOT clear m.progress here — the viewport above the AskUser panel
+	m.panelState.mode = "askuser"
+	// Do NOT clear m.progressState.current here — the viewport above the AskUser panel
 	// still renders the progress block (iteration history, tool calls, etc).
 	// Clearing it causes all iteration info from the current turn to disappear.
 	// Progress will be cleaned up by endAgentTurn when the turn actually finishes.
 	m.typing = false
 	m.relayoutViewport() // viewport gets split-layout height
-	m.panelItems = items
-	m.panelTab = 0
-	m.panelOptSel = make(map[int]map[int]bool)
-	m.panelOptCursor = make(map[int]int)
-	m.askPanelScrollY = 0
-	m.askPanelTotalLines = 0
+	m.panelState.askItems = items
+	m.panelState.askTab = 0
+	m.panelState.askOptSel = make(map[int]map[int]bool)
+	m.panelState.askOptCursor = make(map[int]int)
+	m.panelState.askScrollY = 0
+	m.panelState.askTotalLines = 0
 	ta := textarea.New()
 	ta.Placeholder = m.locale.PanelEditPlaceholder
 	ta.Prompt = "  "
@@ -49,7 +49,7 @@ func (m *cliModel) openAskUserPanel(items []askItem, onAnswer func(map[string]st
 	ta.SetHeight(3)
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+j")
 	ta.Focus()
-	m.panelAnswerTA = ta
+	m.panelState.askAnswerTA = ta
 	// Initialize Other single-line input
 	ti := textinput.New()
 	ti.Placeholder = m.locale.PanelOtherPlaceholder
@@ -63,13 +63,13 @@ func (m *cliModel) openAskUserPanel(items []askItem, onAnswer func(map[string]st
 	tiStyles.Cursor.Color = m.styles.TICursor.GetForeground()
 	ti.SetStyles(tiStyles)
 	ti.Focus()
-	m.panelOtherTI = ti
-	m.panelOnAnswer = onAnswer
-	m.panelOnCancel = onCancel
+	m.panelState.askOtherTI = ti
+	m.panelState.onAnswer = onAnswer
+	m.panelState.onCancel = onCancel
 }
 
 func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	if m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+	if m.panelState.askTab < 0 || m.panelState.askTab >= len(m.panelState.askItems) {
 		return true, m, nil
 	}
 
@@ -101,33 +101,33 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		m.viewport.ScrollDown(1)
 		return true, m, nil
 	case msg.String() == "ctrl+up":
-		m.askPanelScrollY -= 1
-		if m.askPanelScrollY < 0 {
-			m.askPanelScrollY = 0
+		m.panelState.askScrollY -= 1
+		if m.panelState.askScrollY < 0 {
+			m.panelState.askScrollY = 0
 		}
 		return true, m, nil
 	case msg.String() == "ctrl+down":
-		m.askPanelScrollY += 1
+		m.panelState.askScrollY += 1
 		// clamp happens in View via clampAskUserPanelScroll
 		return true, m, nil
 	case msg.String() == "pgup":
-		m.askPanelScrollY -= 5
-		if m.askPanelScrollY < 0 {
-			m.askPanelScrollY = 0
+		m.panelState.askScrollY -= 5
+		if m.panelState.askScrollY < 0 {
+			m.panelState.askScrollY = 0
 		}
 		return true, m, nil
 	case msg.String() == "pgdown":
-		m.askPanelScrollY += 5
+		m.panelState.askScrollY += 5
 		// clamp happens in View via clampAskUserPanelScroll
 		return true, m, nil
 	}
 
-	item := &m.panelItems[m.panelTab]
+	item := &m.panelState.askItems[m.panelState.askTab]
 	numOpts := len(item.Options)
 	hasOpts := numOpts > 0
-	isLastTab := m.panelTab == len(m.panelItems)-1
+	isLastTab := m.panelState.askTab == len(m.panelState.askItems)-1
 	// Cursor: 0..numOpts-1 (checkbox), numOpts (Other input), numOpts+1 (Submit, last tab only)
-	cursor := m.panelOptCursor[m.panelTab]
+	cursor := m.panelState.askOptCursor[m.panelState.askTab]
 	onOther := hasOpts && cursor == numOpts
 	onSubmit := hasOpts && isLastTab && cursor == numOpts+1
 
@@ -135,53 +135,53 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	case msg.String() == "ctrl+s":
 		return m.submitAskAnswers()
 	case msg.Code == tea.KeyEsc:
-		if m.panelOnCancel != nil {
-			m.panelOnCancel()
+		if m.panelState.onCancel != nil {
+			m.panelState.onCancel()
 		}
 		m.closePanel()
 		return true, m, nil
 	case msg.Code == tea.KeyRight || msg.Code == tea.KeyTab:
-		if len(m.panelItems) > 1 && m.panelTab < len(m.panelItems)-1 {
+		if len(m.panelState.askItems) > 1 && m.panelState.askTab < len(m.panelState.askItems)-1 {
 			m.saveCurrentFreeInput()
-			m.panelTab++
+			m.panelState.askTab++
 			m.restoreFreeInput()
 		}
 		return true, m, nil
 	case msg.String() == "shift+tab" || msg.Code == tea.KeyLeft:
-		if len(m.panelItems) > 1 && m.panelTab > 0 {
+		if len(m.panelState.askItems) > 1 && m.panelState.askTab > 0 {
 			m.saveCurrentFreeInput()
-			m.panelTab--
+			m.panelState.askTab--
 			m.restoreFreeInput()
 		}
 		return true, m, nil
 	case msg.Code == tea.KeyUp:
 		if hasOpts {
 			if onOther {
-				m.panelOptCursor[m.panelTab] = numOpts - 1
+				m.panelState.askOptCursor[m.panelState.askTab] = numOpts - 1
 				m.ensureAskUserCursorVisible()
 				return true, m, nil
 			}
 			if onSubmit {
-				m.panelOptCursor[m.panelTab] = numOpts
+				m.panelState.askOptCursor[m.panelState.askTab] = numOpts
 				m.ensureAskUserCursorVisible()
 				return true, m, nil
 			}
 			if cursor > 0 {
-				m.panelOptCursor[m.panelTab] = cursor - 1
+				m.panelState.askOptCursor[m.panelState.askTab] = cursor - 1
 				// Auto-scroll panel up when cursor moves above visible area
 				m.ensureAskUserCursorVisible()
-			} else if cursor == 0 && m.askPanelScrollY > 0 {
+			} else if cursor == 0 && m.panelState.askScrollY > 0 {
 				// At top option and panel is scrolled — scroll content up
-				m.askPanelScrollY -= 1
-				if m.askPanelScrollY < 0 {
-					m.askPanelScrollY = 0
+				m.panelState.askScrollY -= 1
+				if m.panelState.askScrollY < 0 {
+					m.panelState.askScrollY = 0
 				}
 			}
 			return true, m, nil
 		}
 		m.autoExpandAskTA()
 		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+		m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(msg)
 		return true, m, cmd
 	case msg.Code == tea.KeyDown:
 		if hasOpts {
@@ -191,13 +191,13 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			}
 			if onOther {
 				if isLastTab {
-					m.panelOptCursor[m.panelTab] = numOpts + 1
+					m.panelState.askOptCursor[m.panelState.askTab] = numOpts + 1
 					m.ensureAskUserCursorVisible()
 				}
 				return true, m, nil
 			}
 			if cursor < maxCursor {
-				m.panelOptCursor[m.panelTab] = cursor + 1
+				m.panelState.askOptCursor[m.panelState.askTab] = cursor + 1
 				// Auto-scroll panel down when cursor moves below visible area
 				m.ensureAskUserCursorVisible()
 			}
@@ -205,7 +205,7 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		}
 		m.autoExpandAskTA()
 		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+		m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(msg)
 		return true, m, cmd
 	case msg.Code == tea.KeyEnter:
 		if hasOpts {
@@ -223,7 +223,7 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			return m.submitAskAnswers()
 		}
 		m.saveCurrentFreeInput()
-		m.panelTab++
+		m.panelState.askTab++
 		m.restoreFreeInput()
 		return true, m, nil
 	case msg.Code == tea.KeySpace:
@@ -232,29 +232,29 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 				m.toggleOptAtCursor()
 			}
 			if cursor < numOpts+1 {
-				m.panelOptCursor[m.panelTab] = cursor + 1
+				m.panelState.askOptCursor[m.panelState.askTab] = cursor + 1
 			}
 			return true, m, nil
 		}
 		if onOther {
 			// Other 输入框：空格传给 textinput
 			var cmd tea.Cmd
-			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
+			m.panelState.askOtherTI, cmd = m.panelState.askOtherTI.Update(msg)
 			return true, m, cmd
 		}
 		// No options: fall through to textarea
 		m.autoExpandAskTA()
 		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+		m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(msg)
 		return true, m, cmd
 	case len(msg.Text) > 0:
 		if hasOpts && !onOther {
-			m.panelOptCursor[m.panelTab] = numOpts
+			m.panelState.askOptCursor[m.panelState.askTab] = numOpts
 			m.restoreOtherInput()
 		}
 		if onOther {
 			var cmd tea.Cmd
-			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
+			m.panelState.askOtherTI, cmd = m.panelState.askOtherTI.Update(msg)
 			return true, m, cmd
 		}
 		if hasOpts {
@@ -264,19 +264,19 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		// No options: textarea
 		m.autoExpandAskTA()
 		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+		m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(msg)
 		return true, m, cmd
 	default:
 		if isCtrlJ(msg) {
 			if !hasOpts {
-				m.panelAnswerTA.InsertString("\n")
+				m.panelState.askAnswerTA.InsertString("\n")
 				m.autoExpandAskTA()
 			}
 			return true, m, nil
 		}
 		if onOther {
 			var cmd tea.Cmd
-			m.panelOtherTI, cmd = m.panelOtherTI.Update(msg)
+			m.panelState.askOtherTI, cmd = m.panelState.askOtherTI.Update(msg)
 			return true, m, cmd
 		}
 		if hasOpts {
@@ -284,7 +284,7 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		}
 		m.autoExpandAskTA()
 		var cmd tea.Cmd
-		m.panelAnswerTA, cmd = m.panelAnswerTA.Update(msg)
+		m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(msg)
 		return true, m, cmd
 	}
 
@@ -292,23 +292,23 @@ func (m *cliModel) updateAskUserPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 
 // toggleOptAtCursor toggles the checkbox at the current cursor position.
 func (m *cliModel) toggleOptAtCursor() {
-	tab := m.panelTab
-	if m.panelOptSel[tab] == nil {
-		m.panelOptSel[tab] = make(map[int]bool)
+	tab := m.panelState.askTab
+	if m.panelState.askOptSel[tab] == nil {
+		m.panelState.askOptSel[tab] = make(map[int]bool)
 	}
-	cursor := m.panelOptCursor[tab]
-	m.panelOptSel[tab][cursor] = !m.panelOptSel[tab][cursor]
+	cursor := m.panelState.askOptCursor[tab]
+	m.panelState.askOptSel[tab][cursor] = !m.panelState.askOptSel[tab][cursor]
 }
 
 // collectAskAnswers gathers answers from all questions.
 func (m *cliModel) collectAskAnswers() map[string]string {
 	answers := make(map[string]string)
-	for i, item := range m.panelItems {
+	for i, item := range m.panelState.askItems {
 		key := fmt.Sprintf("q%d", i)
 		hasOpts := len(item.Options) > 0
 		var parts []string
 		if hasOpts {
-			if sel, ok := m.panelOptSel[i]; ok && len(sel) > 0 {
+			if sel, ok := m.panelState.askOptSel[i]; ok && len(sel) > 0 {
 				// Iterate by index order (maps are unordered in Go)
 				for idx := 0; idx < len(item.Options); idx++ {
 					if sel[idx] {
@@ -317,8 +317,8 @@ func (m *cliModel) collectAskAnswers() map[string]string {
 				}
 			}
 			var otherText string
-			if i == m.panelTab {
-				otherText = strings.TrimSpace(m.panelOtherTI.Value())
+			if i == m.panelState.askTab {
+				otherText = strings.TrimSpace(m.panelState.askOtherTI.Value())
 			} else {
 				otherText = strings.TrimSpace(item.Other)
 			}
@@ -327,8 +327,8 @@ func (m *cliModel) collectAskAnswers() map[string]string {
 			}
 			answers[key] = strings.Join(parts, ", ")
 		} else {
-			if i == m.panelTab {
-				answers[key] = strings.TrimSpace(m.panelAnswerTA.Value())
+			if i == m.panelState.askTab {
+				answers[key] = strings.TrimSpace(m.panelState.askAnswerTA.Value())
 			} else {
 				answers[key] = strings.TrimSpace(item.Other)
 			}
@@ -339,55 +339,55 @@ func (m *cliModel) collectAskAnswers() map[string]string {
 
 // saveCurrentFreeInput saves textarea/textinput content for the current tab.
 func (m *cliModel) saveCurrentFreeInput() {
-	if m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+	if m.panelState.askTab < 0 || m.panelState.askTab >= len(m.panelState.askItems) {
 		return
 	}
-	item := &m.panelItems[m.panelTab]
+	item := &m.panelState.askItems[m.panelState.askTab]
 	if len(item.Options) > 0 {
-		item.Other = m.panelOtherTI.Value()
+		item.Other = m.panelState.askOtherTI.Value()
 	} else {
-		item.Other = m.panelAnswerTA.Value()
+		item.Other = m.panelState.askAnswerTA.Value()
 	}
 }
 
 // restoreFreeInput restores textarea/textinput content for the current tab.
 func (m *cliModel) restoreFreeInput() {
-	if m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+	if m.panelState.askTab < 0 || m.panelState.askTab >= len(m.panelState.askItems) {
 		return
 	}
-	item := m.panelItems[m.panelTab]
+	item := m.panelState.askItems[m.panelState.askTab]
 	if len(item.Options) > 0 {
-		m.panelOtherTI.SetValue(item.Other)
-		m.panelOtherTI.CursorEnd()
-		m.panelOtherTI.Focus()
+		m.panelState.askOtherTI.SetValue(item.Other)
+		m.panelState.askOtherTI.CursorEnd()
+		m.panelState.askOtherTI.Focus()
 	} else {
-		m.panelAnswerTA.SetValue(item.Other)
-		m.panelAnswerTA.CursorEnd()
-		m.panelAnswerTA.Focus()
+		m.panelState.askAnswerTA.SetValue(item.Other)
+		m.panelState.askAnswerTA.CursorEnd()
+		m.panelState.askAnswerTA.Focus()
 		m.autoExpandAskTA()
 	}
 }
 
 // restoreOtherInput restores the Other textinput for the current tab (options mode).
 func (m *cliModel) restoreOtherInput() {
-	if m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+	if m.panelState.askTab < 0 || m.panelState.askTab >= len(m.panelState.askItems) {
 		return
 	}
-	m.panelOtherTI.SetValue(m.panelItems[m.panelTab].Other)
-	m.panelOtherTI.CursorEnd()
+	m.panelState.askOtherTI.SetValue(m.panelState.askItems[m.panelState.askTab].Other)
+	m.panelState.askOtherTI.CursorEnd()
 }
 
 // autoExpandAskTA dynamically grows the textarea height based on content.
 func (m *cliModel) autoExpandAskTA() {
-	lines := strings.Count(m.panelAnswerTA.Value(), "\n") + 1
+	lines := strings.Count(m.panelState.askAnswerTA.Value(), "\n") + 1
 	if lines < 2 {
 		lines = 2
 	}
 	if lines > 6 {
 		lines = 6
 	}
-	if m.panelAnswerTA.Height() != lines {
-		m.panelAnswerTA.SetHeight(lines)
+	if m.panelState.askAnswerTA.Height() != lines {
+		m.panelState.askAnswerTA.SetHeight(lines)
 	}
 }
 
@@ -395,18 +395,18 @@ func (m *cliModel) autoExpandAskTA() {
 // cursor stays within the visible panel area. This provides automatic
 // edge-scrolling when navigating options with ↑/↓ keys.
 func (m *cliModel) ensureAskUserCursorVisible() {
-	if m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+	if m.panelState.askTab < 0 || m.panelState.askTab >= len(m.panelState.askItems) {
 		return
 	}
-	item := &m.panelItems[m.panelTab]
+	item := &m.panelState.askItems[m.panelState.askTab]
 	if len(item.Options) == 0 {
 		return
 	}
-	cursor := m.panelOptCursor[m.panelTab]
+	cursor := m.panelState.askOptCursor[m.panelState.askTab]
 	// Calculate exact line offset of the cursor by counting actual header lines.
 	// Tab bar: 2 lines (tabs + blank) if multiple questions, 0 otherwise.
 	headerLines := 0
-	if len(m.panelItems) > 1 {
+	if len(m.panelState.askItems) > 1 {
 		headerLines = 2 // tab bar + blank line
 	}
 	// Question: may be multiple lines after hardWrap.
@@ -441,17 +441,17 @@ func (m *cliModel) ensureAskUserCursorVisible() {
 		return
 	}
 	// Scroll up if cursor is above visible area
-	if cursorLine < m.askPanelScrollY+1 {
-		m.askPanelScrollY = cursorLine - 1
-		if m.askPanelScrollY < 0 {
-			m.askPanelScrollY = 0
+	if cursorLine < m.panelState.askScrollY+1 {
+		m.panelState.askScrollY = cursorLine - 1
+		if m.panelState.askScrollY < 0 {
+			m.panelState.askScrollY = 0
 		}
 	}
 	// Scroll down if cursor is below visible area
-	if cursorLine > m.askPanelScrollY+askVisibleH-1 {
-		m.askPanelScrollY = cursorLine - askVisibleH + 1
-		if m.askPanelScrollY < 0 {
-			m.askPanelScrollY = 0
+	if cursorLine > m.panelState.askScrollY+askVisibleH-1 {
+		m.panelState.askScrollY = cursorLine - askVisibleH + 1
+		if m.panelState.askScrollY < 0 {
+			m.panelState.askScrollY = 0
 		}
 	}
 }
@@ -482,15 +482,15 @@ func (m *cliModel) viewAskUserPanel() string {
 	var sb strings.Builder
 
 	// Tab bar (if multiple questions)
-	if len(m.panelItems) > 1 {
-		for i := range m.panelItems {
+	if len(m.panelState.askItems) > 1 {
+		for i := range m.panelState.askItems {
 			label := fmt.Sprintf(" %d ", i+1)
-			if i == m.panelTab {
+			if i == m.panelState.askTab {
 				sb.WriteString(activeTabStyle.Render(label))
 			} else {
 				sb.WriteString(inactiveTabStyle.Render(label))
 			}
-			if i < len(m.panelItems)-1 {
+			if i < len(m.panelState.askItems)-1 {
 				sb.WriteString(inactiveTabStyle.Render("│"))
 			}
 		}
@@ -498,9 +498,9 @@ func (m *cliModel) viewAskUserPanel() string {
 	}
 
 	// Current question
-	if m.panelTab >= 0 && m.panelTab < len(m.panelItems) {
-		item := m.panelItems[m.panelTab]
-		isLastTab := m.panelTab == len(m.panelItems)-1
+	if m.panelState.askTab >= 0 && m.panelState.askTab < len(m.panelState.askItems) {
+		item := m.panelState.askItems[m.panelState.askTab]
+		isLastTab := m.panelState.askTab == len(m.panelState.askItems)-1
 		// Wrap question text to fit inside PanelBox and its optional scrollbar.
 		qWrapWidth := m.askUserQuestionWrapWidth()
 		// Wrap first, then render style per-line to avoid lipgloss.Render
@@ -515,8 +515,8 @@ func (m *cliModel) viewAskUserPanel() string {
 
 		if hasOpts {
 			sb.WriteString("\n")
-			sel := m.panelOptSel[m.panelTab]
-			cursor := m.panelOptCursor[m.panelTab]
+			sel := m.panelState.askOptSel[m.panelState.askTab]
+			cursor := m.panelState.askOptCursor[m.panelState.askTab]
 			numOpts := len(item.Options)
 
 			// renderAskUserOption renders a single option with proper wrapping.
@@ -599,7 +599,7 @@ func (m *cliModel) viewAskUserPanel() string {
 			if tiWidth < 10 {
 				tiWidth = 10
 			}
-			m.panelOtherTI.SetWidth(tiWidth)
+			m.panelState.askOtherTI.SetWidth(tiWidth)
 			// Strip NUL bytes from textinput View(). When the input is empty,
 			// placeholderView() copies the placeholder string into a rune slice
 			// sized to Width()+1 and renders the unwritten slots as \x00.
@@ -611,7 +611,7 @@ func (m *cliModel) viewAskUserPanel() string {
 					return -1
 				}
 				return r
-			}, m.panelOtherTI.View())
+			}, m.panelState.askOtherTI.View())
 			sb.WriteString(tiView)
 			sb.WriteString("\n")
 
@@ -629,7 +629,7 @@ func (m *cliModel) viewAskUserPanel() string {
 			}
 		} else {
 			sb.WriteString("\n")
-			sb.WriteString(m.panelAnswerTA.View())
+			sb.WriteString(m.panelState.askAnswerTA.View())
 			sb.WriteString("\n")
 		}
 	}
@@ -638,26 +638,26 @@ func (m *cliModel) viewAskUserPanel() string {
 }
 
 func (m *cliModel) ensureAskUserVisible() {
-	if m.panelMode != "askuser" || m.panelTab < 0 || m.panelTab >= len(m.panelItems) {
+	if m.panelState.mode != "askuser" || m.panelState.askTab < 0 || m.panelState.askTab >= len(m.panelState.askItems) {
 		return
 	}
 	visible := m.askUserPanelVisibleHeight()
 	if visible <= 0 {
 		return
 	}
-	total := m.askPanelTotalLines
+	total := m.panelState.askTotalLines
 	if total == 0 {
 		return
 	}
 	if total <= visible {
-		m.askPanelScrollY = 0
+		m.panelState.askScrollY = 0
 		return
 	}
-	if m.askPanelScrollY < 0 {
-		m.askPanelScrollY = 0
+	if m.panelState.askScrollY < 0 {
+		m.panelState.askScrollY = 0
 	}
 	maxScroll := total - visible
-	if m.askPanelScrollY > maxScroll {
-		m.askPanelScrollY = maxScroll
+	if m.panelState.askScrollY > maxScroll {
+		m.panelState.askScrollY = maxScroll
 	}
 }

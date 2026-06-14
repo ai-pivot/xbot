@@ -41,7 +41,7 @@ func (m *cliModel) wizardProviderList() []ch.SettingOption {
 // --- Rendering ---
 
 func (m *cliModel) renderWizard() string {
-	switch m.wizardStep {
+	switch m.panelState.wizardStep {
 	case wizardLang:
 		return m.renderWizardLang()
 	case wizardProvider:
@@ -64,7 +64,7 @@ func (m *cliModel) renderWizardLang() string {
 	sb.WriteString("\n\n")
 
 	for i, opt := range wizardLangOptions {
-		if i == m.wizardLangSel {
+		if i == m.panelState.wizardLangSel {
 			sb.WriteString(m.wizardSelLine(opt.Label, w))
 		} else {
 			sb.WriteString(m.wizardUnselLine(opt.Label, w))
@@ -91,7 +91,7 @@ func (m *cliModel) renderWizardProvider() string {
 
 	opts := m.wizardProviderList()
 	for i, opt := range opts {
-		if i == m.wizardProvSel {
+		if i == m.panelState.wizardProvSel {
 			sb.WriteString(m.wizardSelLine(opt.Label, w))
 			if opt.Description != "" {
 				sb.WriteString("\n")
@@ -116,7 +116,7 @@ func (m *cliModel) renderWizardProvider() string {
 }
 
 func (m *cliModel) renderWizardAPIKey() string {
-	provider := m.panelValues["llm_provider"]
+	provider := m.panelState.values["llm_provider"]
 	providerLabel := provider
 	for _, opt := range m.wizardProviderList() {
 		if opt.Value == provider {
@@ -151,7 +151,7 @@ func (m *cliModel) renderWizardAPIKey() string {
 	// Single input for API key
 	sb.WriteString("  " + m.locale.WizardKeyLabel)
 	sb.WriteString("\n  ")
-	sb.WriteString(m.wizardKeyTI.View())
+	sb.WriteString(m.panelState.wizardKeyTI.View())
 	sb.WriteString("\n\n")
 
 	// Save + Back buttons
@@ -204,7 +204,7 @@ func (m *cliModel) wizardTitle(text string) string {
 		w = 80
 	}
 	stepLabels := []string{"1/3", "2/3", "3/3", "✓"}
-	step := stepLabels[min(m.wizardStep, 3)]
+	step := stepLabels[min(m.panelState.wizardStep, 3)]
 	return m.styles.PanelHeader.Width(w).Render(fmt.Sprintf(" %s  %s", step, text))
 }
 
@@ -224,7 +224,7 @@ func (m *cliModel) wizardHint(text string) string {
 // --- Keyboard ---
 
 func (m *cliModel) handleWizardKey(msg tea.KeyMsg) (bool, tea.Cmd) {
-	switch m.wizardStep {
+	switch m.panelState.wizardStep {
 	case wizardLang:
 		return m.wizardLangKey(msg)
 	case wizardProvider:
@@ -240,15 +240,15 @@ func (m *cliModel) handleWizardKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 func (m *cliModel) wizardLangKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		if m.wizardLangSel > 0 {
-			m.wizardLangSel--
+		if m.panelState.wizardLangSel > 0 {
+			m.panelState.wizardLangSel--
 		}
 	case "down", "j":
-		if m.wizardLangSel < len(wizardLangOptions)-1 {
-			m.wizardLangSel++
+		if m.panelState.wizardLangSel < len(wizardLangOptions)-1 {
+			m.panelState.wizardLangSel++
 		}
 	case "enter":
-		m.wizardConfirmLang(m.wizardLangSel)
+		m.wizardConfirmLang(m.panelState.wizardLangSel)
 	case "esc":
 		m.closePanel()
 	}
@@ -259,17 +259,17 @@ func (m *cliModel) wizardProvKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	opts := m.wizardProviderList()
 	switch msg.String() {
 	case "up", "k":
-		if m.wizardProvSel > 0 {
-			m.wizardProvSel--
+		if m.panelState.wizardProvSel > 0 {
+			m.panelState.wizardProvSel--
 		}
 	case "down", "j":
-		if m.wizardProvSel < len(opts)-1 {
-			m.wizardProvSel++
+		if m.panelState.wizardProvSel < len(opts)-1 {
+			m.panelState.wizardProvSel++
 		}
 	case "enter":
-		m.wizardConfirmProvider(m.wizardProvSel)
+		m.wizardConfirmProvider(m.panelState.wizardProvSel)
 	case "esc":
-		m.wizardStep = wizardLang
+		m.panelState.wizardStep = wizardLang
 	}
 	return true, nil
 }
@@ -277,15 +277,15 @@ func (m *cliModel) wizardProvKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 func (m *cliModel) wizardKeyInput(msg tea.KeyMsg) (bool, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s", "enter":
-		m.panelValues["llm_api_key"] = m.wizardKeyTI.Value()
-		m.wizardStep = wizardDone
+		m.panelState.values["llm_api_key"] = m.panelState.wizardKeyTI.Value()
+		m.panelState.wizardStep = wizardDone
 		return true, nil
 	case "esc":
-		m.wizardStep = wizardProvider
+		m.panelState.wizardStep = wizardProvider
 		return true, nil
 	default:
 		var cmd tea.Cmd
-		m.wizardKeyTI, cmd = m.wizardKeyTI.Update(msg)
+		m.panelState.wizardKeyTI, cmd = m.panelState.wizardKeyTI.Update(msg)
 		return true, cmd
 	}
 }
@@ -295,13 +295,13 @@ func (m *cliModel) wizardDoneKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	case "enter":
 		return true, m.wizardFinish()
 	case "esc":
-		provider := m.panelValues["llm_provider"]
+		provider := m.panelState.values["llm_provider"]
 		if provider == "ollama" {
-			m.wizardStep = wizardProvider
+			m.panelState.wizardStep = wizardProvider
 		} else {
-			m.wizardStep = wizardAPIKey
-			m.wizardKeyTI.SetValue(m.panelValues["llm_api_key"])
-			m.wizardKeyTI.Focus()
+			m.panelState.wizardStep = wizardAPIKey
+			m.panelState.wizardKeyTI.SetValue(m.panelState.values["llm_api_key"])
+			m.panelState.wizardKeyTI.Focus()
 		}
 	}
 	return true, nil
@@ -315,9 +315,9 @@ func (m *cliModel) wizardConfirmLang(idx int) {
 	}
 	code := wizardLangOptions[idx].Code
 	m.locale = ch.GetLocale(code)
-	m.panelValues["language"] = code
-	m.wizardStep = wizardProvider
-	m.wizardProvSel = 0
+	m.panelState.values["language"] = code
+	m.panelState.wizardStep = wizardProvider
+	m.panelState.wizardProvSel = 0
 }
 
 func (m *cliModel) wizardConfirmProvider(idx int) {
@@ -326,31 +326,31 @@ func (m *cliModel) wizardConfirmProvider(idx int) {
 		return
 	}
 	provider := opts[idx].Value
-	m.panelValues["llm_provider"] = provider
+	m.panelState.values["llm_provider"] = provider
 	if url, ok := ch.ProviderDefaultURLs[provider]; ok {
-		m.panelValues["llm_base_url"] = url
+		m.panelState.values["llm_base_url"] = url
 	}
 	if model, ok := ch.ProviderRecommendedModels[provider]; ok {
-		m.panelValues["llm_model"] = model
+		m.panelState.values["llm_model"] = model
 	}
 	m.updateAPIKeyHint(provider)
 	m.rebuildVisibleSchema()
 
 	if provider == "ollama" {
-		m.wizardStep = wizardDone
+		m.panelState.wizardStep = wizardDone
 	} else {
-		m.wizardStep = wizardAPIKey
-		m.wizardKeyTI.SetValue("")
-		m.wizardKeyTI.Focus()
+		m.panelState.wizardStep = wizardAPIKey
+		m.panelState.wizardKeyTI.SetValue("")
+		m.panelState.wizardKeyTI.Focus()
 	}
 }
 
 func (m *cliModel) wizardFinish() tea.Cmd {
-	onSubmit := m.panelOnSubmit
-	panelVals := m.panelValues
+	onSubmit := m.panelState.onSubmit
+	panelVals := m.panelState.values
 	m.closePanel()
 	if onSubmit != nil && panelVals != nil {
-		m.settingsSaving = true
+		m.panelState.settingsSaving = true
 		return m.doSaveSettings(onSubmit, panelVals)
 	}
 	return nil
@@ -359,7 +359,7 @@ func (m *cliModel) wizardFinish() tea.Cmd {
 // --- Mouse zone tracking ---
 
 func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visibleH int) {
-	scrollY := m.panelScrollY
+	scrollY := m.panelState.scrollY
 
 	type wLine struct {
 		zoneID  string
@@ -367,7 +367,7 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 	}
 	var lines []wLine
 
-	switch m.wizardStep {
+	switch m.panelState.wizardStep {
 	case wizardLang:
 		lines = append(lines, wLine{}) // title
 		lines = append(lines, wLine{}) // blank
@@ -397,7 +397,7 @@ func (m *cliModel) trackWizardZones(zb *mouseZoneBuilder, contentStartY, visible
 	case wizardAPIKey:
 		lines = append(lines, wLine{}) // title
 		lines = append(lines, wLine{}) // blank
-		provider := m.panelValues["llm_provider"]
+		provider := m.panelState.values["llm_provider"]
 		guide, hasGuide := ch.ProviderSetupGuides[provider]
 		if hasGuide && guide.URL != "" {
 			lines = append(lines, wLine{zoneID: "panelOpenURL"}) // button
@@ -459,25 +459,25 @@ func (m *cliModel) handleWizardClick(zone mouseZone) (bool, tea.Model, tea.Cmd) 
 		m.wizardConfirmProvider(zone.Index)
 		return true, m, nil
 	case "wizardSave":
-		m.panelValues["llm_api_key"] = m.wizardKeyTI.Value()
-		m.wizardStep = wizardDone
+		m.panelState.values["llm_api_key"] = m.panelState.wizardKeyTI.Value()
+		m.panelState.wizardStep = wizardDone
 		return true, m, nil
 	case "wizardBack":
-		switch m.wizardStep {
+		switch m.panelState.wizardStep {
 		case wizardLang:
 			m.closePanel()
 		case wizardProvider:
-			m.wizardStep = wizardLang
+			m.panelState.wizardStep = wizardLang
 		case wizardAPIKey:
-			m.wizardStep = wizardProvider
+			m.panelState.wizardStep = wizardProvider
 		case wizardDone:
-			provider := m.panelValues["llm_provider"]
+			provider := m.panelState.values["llm_provider"]
 			if provider == "ollama" {
-				m.wizardStep = wizardProvider
+				m.panelState.wizardStep = wizardProvider
 			} else {
-				m.wizardStep = wizardAPIKey
-				m.wizardKeyTI.SetValue(m.panelValues["llm_api_key"])
-				m.wizardKeyTI.Focus()
+				m.panelState.wizardStep = wizardAPIKey
+				m.panelState.wizardKeyTI.SetValue(m.panelState.values["llm_api_key"])
+				m.panelState.wizardKeyTI.Focus()
 			}
 		}
 		return true, m, nil
@@ -495,23 +495,23 @@ func (m *cliModel) updateWizardPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 
 // openWizardPanel opens the step-by-step setup wizard.
 func (m *cliModel) openWizardPanel() {
-	m.panelMode = "wizard"
+	m.panelState.mode = "wizard"
 	m.relayoutViewport()
-	m.wizardStep = wizardLang
-	m.wizardLangSel = 0
-	m.wizardProvSel = 0
-	m.panelValues = make(map[string]string)
-	m.panelSchemaFull = make([]ch.SettingDefinition, len(m.locale.SetupSchema))
-	copy(m.panelSchemaFull, m.locale.SetupSchema)
-	for _, def := range m.panelSchemaFull {
+	m.panelState.wizardStep = wizardLang
+	m.panelState.wizardLangSel = 0
+	m.panelState.wizardProvSel = 0
+	m.panelState.values = make(map[string]string)
+	m.panelState.schemaFull = make([]ch.SettingDefinition, len(m.locale.SetupSchema))
+	copy(m.panelState.schemaFull, m.locale.SetupSchema)
+	for _, def := range m.panelState.schemaFull {
 		if def.DefaultValue != "" {
-			m.panelValues[def.Key] = def.DefaultValue
+			m.panelState.values[def.Key] = def.DefaultValue
 		}
 	}
-	m.panelOnSubmit = func(vals map[string]string) {
+	m.panelState.onSubmit = func(vals map[string]string) {
 		m.persistCLISettingsValues(vals)
 	}
-	m.panelIsSetup = true
+	m.panelState.isSetup = true
 	ti := textinput.New()
 	ti.Placeholder = "sk-..."
 	ti.Prompt = "  "
@@ -524,5 +524,5 @@ func (m *cliModel) openWizardPanel() {
 	tiStyles.Focused.Placeholder = m.styles.TIPlaceholder
 	tiStyles.Cursor.Color = m.styles.TICursor.GetForeground()
 	ti.SetStyles(tiStyles)
-	m.wizardKeyTI = ti
+	m.panelState.wizardKeyTI = ti
 }

@@ -54,17 +54,17 @@ type approvalRequestMsg struct {
 
 // updateApprovalPanel handles key events for the approval dialog.
 func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	if m.approvalEnteringDeny {
+	if m.panelState.approvalDenyMode {
 		var cmd tea.Cmd
-		m.approvalDenyInput, cmd = m.approvalDenyInput.Update(msg)
+		m.panelState.approvalDenyTA, cmd = m.panelState.approvalDenyTA.Update(msg)
 		m.rc.valid = false
 		switch msg.Code {
 		case tea.KeyEnter:
-			m.resolveApproval(false, strings.TrimSpace(m.approvalDenyInput.Value()))
+			m.resolveApproval(false, strings.TrimSpace(m.panelState.approvalDenyTA.Value()))
 			return true, m, nil
 		case tea.KeyEscape:
-			m.approvalEnteringDeny = false
-			m.approvalDenyInput.Blur()
+			m.panelState.approvalDenyMode = false
+			m.panelState.approvalDenyTA.Blur()
 			return true, m, nil
 		}
 		return true, m, cmd
@@ -72,23 +72,23 @@ func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 
 	switch msg.Code {
 	case tea.KeyLeft, tea.KeyUp:
-		m.approvalCursor = 0 // Approve
+		m.panelState.approvalCursor = 0 // Approve
 		m.rc.valid = false
 		return true, m, nil
 	case tea.KeyRight, tea.KeyDown:
-		m.approvalCursor = 1 // Deny
+		m.panelState.approvalCursor = 1 // Deny
 		m.rc.valid = false
 		return true, m, nil
 	case tea.KeyTab:
-		m.approvalCursor = (m.approvalCursor + 1) % 2
+		m.panelState.approvalCursor = (m.panelState.approvalCursor + 1) % 2
 		m.rc.valid = false
 		return true, m, nil
 	case tea.KeyEnter:
-		if m.approvalCursor == 0 {
+		if m.panelState.approvalCursor == 0 {
 			m.resolveApproval(true, "")
 		} else {
-			m.approvalEnteringDeny = true
-			m.approvalDenyInput.Focus()
+			m.panelState.approvalDenyMode = true
+			m.panelState.approvalDenyTA.Focus()
 		}
 		return true, m, nil
 	case tea.KeyEscape:
@@ -102,8 +102,8 @@ func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 			m.resolveApproval(true, "")
 			return true, m, nil
 		case "n", "N":
-			m.approvalEnteringDeny = true
-			m.approvalDenyInput.Focus()
+			m.panelState.approvalDenyMode = true
+			m.panelState.approvalDenyTA.Focus()
 			m.rc.valid = false
 			return true, m, nil
 		}
@@ -114,14 +114,14 @@ func (m *cliModel) updateApprovalPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 
 // resolveApproval sends the result and closes the approval panel.
 func (m *cliModel) resolveApproval(approved bool, denyReason string) {
-	if m.approvalResultCh != nil {
-		m.approvalResultCh <- protocol.ApprovalResult{Approved: approved, DenyReason: denyReason}
-		m.approvalResultCh = nil
+	if m.panelState.approvalCh != nil {
+		m.panelState.approvalCh <- protocol.ApprovalResult{Approved: approved, DenyReason: denyReason}
+		m.panelState.approvalCh = nil
 	}
-	m.approvalRequest = nil
-	m.approvalCursor = 0
-	m.approvalEnteringDeny = false
-	m.panelMode = ""
+	m.panelState.approvalReq = nil
+	m.panelState.approvalCursor = 0
+	m.panelState.approvalDenyMode = false
+	m.panelState.mode = ""
 	m.rc.valid = false
 }
 
@@ -129,12 +129,12 @@ func (m *cliModel) resolveApproval(approved bool, denyReason string) {
 
 // viewApprovalPanel renders the approval dialog content.
 func (m *cliModel) viewApprovalPanel() string {
-	if m.approvalRequest == nil {
+	if m.panelState.approvalReq == nil {
 		return ""
 	}
 
 	s := m.styles
-	req := m.approvalRequest
+	req := m.panelState.approvalReq
 	var sb strings.Builder
 
 	// Header
@@ -177,10 +177,10 @@ func (m *cliModel) viewApprovalPanel() string {
 	}
 
 	sb.WriteString("\n")
-	if m.approvalEnteringDeny {
+	if m.panelState.approvalDenyMode {
 		sb.WriteString(labelSt.Render("  Deny note: "))
 		sb.WriteString("\n")
-		sb.WriteString("  " + m.approvalDenyInput.View())
+		sb.WriteString("  " + m.panelState.approvalDenyTA.View())
 		sb.WriteString("\n")
 		sb.WriteString(labelSt.Render("  Enter submit deny, Esc back"))
 		sb.WriteString("\n\n")
@@ -195,7 +195,7 @@ func (m *cliModel) viewApprovalPanel() string {
 	inactiveSt := lipgloss.NewStyle().Foreground(s.PanelDesc.GetForeground()).Faint(true)
 
 	var approve, deny string
-	if m.approvalCursor == 0 {
+	if m.panelState.approvalCursor == 0 {
 		approve = activeSt.Render(approveLabel)
 		deny = inactiveSt.Render(denyLabel)
 	} else {

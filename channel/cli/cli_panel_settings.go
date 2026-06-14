@@ -34,23 +34,23 @@ type dangerItem struct {
 
 // openSettingsPanel activates the settings panel overlay.
 func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[string]string, onSubmit func(map[string]string)) {
-	m.panelMode = "settings"
+	m.panelState.mode = "settings"
 	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
-	m.panelCursor = 0
-	m.panelEdit = false
-	m.panelScrollY = 0
-	m.panelSubGeneration = m.subGeneration // capture current subscription generation
+	m.panelState.cursor = 0
+	m.panelState.editing = false
+	m.panelState.scrollY = 0
+	m.panelState.subGeneration = m.subGeneration // capture current subscription generation
 	// Store full schema and pre-process defaults / options on the full copy.
-	m.panelSchemaFull = make([]ch.SettingDefinition, len(schema))
-	copy(m.panelSchemaFull, schema)
-	m.panelValues = make(map[string]string, len(values))
+	m.panelState.schemaFull = make([]ch.SettingDefinition, len(schema))
+	copy(m.panelState.schemaFull, schema)
+	m.panelState.values = make(map[string]string, len(values))
 	for k, v := range values {
-		m.panelValues[k] = v
+		m.panelState.values[k] = v
 	}
 	// Fill defaults and mark global-scoped settings as read-only (admin-only).
-	for i := range m.panelSchemaFull {
-		def := &m.panelSchemaFull[i]
-		cur, ok := m.panelValues[def.Key]
+	for i := range m.panelState.schemaFull {
+		def := &m.panelState.schemaFull[i]
+		cur, ok := m.panelState.values[def.Key]
 		needsDefault := !ok || cur == ""
 		// For number fields, also treat "0" as needing default when the
 		// default value is non-zero (handles stale DB entries from scope migrations).
@@ -60,7 +60,7 @@ func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[s
 			}
 		}
 		if needsDefault && def.DefaultValue != "" {
-			m.panelValues[def.Key] = def.DefaultValue
+			m.panelState.values[def.Key] = def.DefaultValue
 		}
 		// Inject cross-subscription model list for tier model selectors.
 		if (def.Key == "vanguard_model" || def.Key == "balance_model" || def.Key == "swift_model") && m.channel.modelLister != nil && len(def.Options) == 0 {
@@ -81,46 +81,46 @@ func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[s
 	}
 	// Auto-fill base_url on panel open if provider has a known default
 	// and base_url is currently empty (typical for setup wizard).
-	if provider := m.panelValues["llm_provider"]; provider != "" {
-		if m.panelValues["llm_base_url"] == "" {
+	if provider := m.panelState.values["llm_provider"]; provider != "" {
+		if m.panelState.values["llm_base_url"] == "" {
 			if url, ok := ch.ProviderDefaultURLs[provider]; ok {
-				m.panelValues["llm_base_url"] = url
+				m.panelState.values["llm_base_url"] = url
 			}
 		}
-		if m.panelValues["llm_model"] == "" {
+		if m.panelState.values["llm_model"] == "" {
 			if model, ok := ch.ProviderRecommendedModels[provider]; ok {
-				m.panelValues["llm_model"] = model
+				m.panelState.values["llm_model"] = model
 			}
 		}
-		m.panelPrevProvider = provider
+		m.panelState.prevProvider = provider
 		// Show provider-specific API key guidance on initial open.
 		m.updateAPIKeyHint(provider)
 	}
 	// Build visible schema from full schema (filters DependsOn fields).
 	m.rebuildVisibleSchema()
-	m.panelOnSubmit = onSubmit
-	m.panelOnCancel = nil
+	m.panelState.onSubmit = onSubmit
+	m.panelState.onCancel = nil
 	// Pre-create textarea for editing
 	ta := textarea.New()
 	ta.Placeholder = m.locale.PanelEditPlaceholder
 	ta.SetWidth(m.panelWidth(60))
 	ta.SetHeight(1)
 	ta.CharLimit = 200
-	m.panelEditTA = ta
+	m.panelState.editTA = ta
 }
 
 // rebuildVisibleSchema rebuilds panelSchema from panelSchemaFull,
 // filtering out fields whose DependsOn conditions are not met by current panelValues.
 func (m *cliModel) rebuildVisibleSchema() {
-	m.panelSchema = make([]ch.SettingDefinition, 0, len(m.panelSchemaFull))
-	for _, def := range m.panelSchemaFull {
-		if ch.IsFieldVisible(def, m.panelValues) {
-			m.panelSchema = append(m.panelSchema, def)
+	m.panelState.schema = make([]ch.SettingDefinition, 0, len(m.panelState.schemaFull))
+	for _, def := range m.panelState.schemaFull {
+		if ch.IsFieldVisible(def, m.panelState.values) {
+			m.panelState.schema = append(m.panelState.schema, def)
 		}
 	}
 	// Clamp cursor
-	if m.panelCursor >= len(m.panelSchema) {
-		m.panelCursor = max(0, len(m.panelSchema)-1)
+	if m.panelState.cursor >= len(m.panelState.schema) {
+		m.panelState.cursor = max(0, len(m.panelState.schema)-1)
 	}
 }
 
@@ -133,21 +133,21 @@ func (m *cliModel) autoFillBaseURL(provider string) {
 	if !ok {
 		// Provider has no known default (azure, custom) — clear base_url only
 		// if it currently holds a previous provider's auto-filled URL.
-		cur := m.panelValues["llm_base_url"]
+		cur := m.panelState.values["llm_base_url"]
 		if cur != "" && ch.IsProviderDefaultURL(cur) {
-			m.panelValues["llm_base_url"] = ""
+			m.panelState.values["llm_base_url"] = ""
 		}
 	} else {
-		cur := m.panelValues["llm_base_url"]
+		cur := m.panelState.values["llm_base_url"]
 		if cur == "" || ch.IsProviderDefaultURL(cur) {
-			m.panelValues["llm_base_url"] = defaultURL
+			m.panelState.values["llm_base_url"] = defaultURL
 		}
 	}
 	// Auto-fill recommended model when model is empty or matches a previous provider default.
 	if model, ok := ch.ProviderRecommendedModels[provider]; ok {
-		cur := m.panelValues["llm_model"]
+		cur := m.panelState.values["llm_model"]
 		if cur == "" || isProviderRecommendedModel(cur) {
-			m.panelValues["llm_model"] = model
+			m.panelState.values["llm_model"] = model
 		}
 	}
 	// Dynamically update the API Key field description with provider-specific
@@ -164,16 +164,16 @@ func (m *cliModel) updateAPIKeyHint(provider string) {
 	if hint == "" {
 		return
 	}
-	for i := range m.panelSchemaFull {
-		if m.panelSchemaFull[i].Key == "llm_api_key" {
-			m.panelSchemaFull[i].Description = hint
+	for i := range m.panelState.schemaFull {
+		if m.panelState.schemaFull[i].Key == "llm_api_key" {
+			m.panelState.schemaFull[i].Description = hint
 			break
 		}
 	}
 	// Also update in the visible schema if the field is there.
-	for i := range m.panelSchema {
-		if m.panelSchema[i].Key == "llm_api_key" {
-			m.panelSchema[i].Description = hint
+	for i := range m.panelState.schema {
+		if m.panelState.schema[i].Key == "llm_api_key" {
+			m.panelState.schema[i].Description = hint
 			break
 		}
 	}
@@ -204,33 +204,33 @@ func (m *cliModel) viewDangerPanel() string {
 	sb.WriteString(s.PanelHeader.Render(m.locale.DangerTitle))
 	sb.WriteString("\n")
 
-	if m.panelDangerConfirm && m.panelDangerCursor < len(m.panelDangerItems) {
+	if m.panelState.dangerConfirm && m.panelState.dangerCursor < len(m.panelState.dangerItems) {
 		// Confirmation sub-mode
-		item := m.panelDangerItems[m.panelDangerCursor]
+		item := m.panelState.dangerItems[m.panelState.dangerCursor]
 		confirmStr := dangerConfirmStrings[item.Action]
 		fmt.Fprintf(&sb, "  %s\n", fmt.Sprintf(m.locale.DangerConfirmClear, s.WarningSt.Render(item.Label)))
 		sb.WriteString(s.PanelDesc.Render("  " + m.locale.DangerIrreversible))
 		sb.WriteString("\n\n")
 		fmt.Fprintf(&sb, "  %s\n", fmt.Sprintf(m.locale.DangerTypeConfirm, s.ProgressError.Render(confirmStr)))
 		sb.WriteString("  ")
-		sb.WriteString(m.panelDangerInput.View())
+		sb.WriteString(m.panelState.dangerInput.View())
 		sb.WriteString("\n")
 		sb.WriteString(s.PanelHint.Render("  " + m.locale.DangerNavHint))
 	} else {
 		// Item selection mode
-		for i, item := range m.panelDangerItems {
+		for i, item := range m.panelState.dangerItems {
 			var prefix string
 			statText := ""
 			if item.Stat != "" {
 				statText = fmt.Sprintf("  %s", s.InfoSt.Render(item.Stat))
 			}
-			if i == m.panelDangerCursor {
+			if i == m.panelState.dangerCursor {
 				prefix = s.PanelCursor.Render("▸")
 			} else {
 				prefix = "  "
 			}
 			line := fmt.Sprintf("%s %s%s", prefix, item.Label, statText)
-			if i == m.panelDangerCursor {
+			if i == m.panelState.dangerCursor {
 				line = m.renderSelLine(line, m.panelWidth(60)-4)
 			}
 			sb.WriteString(line)
@@ -245,25 +245,25 @@ func (m *cliModel) viewDangerPanel() string {
 
 // updateDangerPanel handles key events in the danger zone panel.
 func (m *cliModel) updateDangerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	if m.panelDangerConfirm {
+	if m.panelState.dangerConfirm {
 		// Confirmation input mode
 		switch msg.Code {
 		case tea.KeyEsc:
-			m.panelDangerConfirm = false
-			m.panelDangerInput.SetValue("")
+			m.panelState.dangerConfirm = false
+			m.panelState.dangerInput.SetValue("")
 			return true, m, nil
 		case tea.KeyEnter:
-			if m.panelDangerOnExec == nil || m.panelDangerCursor >= len(m.panelDangerItems) {
+			if m.panelState.dangerOnExec == nil || m.panelState.dangerCursor >= len(m.panelState.dangerItems) {
 				return true, m, nil
 			}
-			item := m.panelDangerItems[m.panelDangerCursor]
+			item := m.panelState.dangerItems[m.panelState.dangerCursor]
 			confirmStr := dangerConfirmStrings[item.Action]
-			if m.panelDangerInput.Value() != confirmStr {
+			if m.panelState.dangerInput.Value() != confirmStr {
 				m.showSystemMsg(m.locale.DangerMismatch, feedbackWarning)
 				return true, m, nil
 			}
 			// Execute the clear action
-			if err := m.panelDangerOnExec(item.Action); err != nil {
+			if err := m.panelState.dangerOnExec(item.Action); err != nil {
 				m.showSystemMsg(fmt.Sprintf(m.locale.DangerClearFailed, err), feedbackWarning)
 			} else {
 				m.showSystemMsg(fmt.Sprintf(m.locale.DangerCleared, item.Label), feedbackInfo)
@@ -272,7 +272,7 @@ func (m *cliModel) updateDangerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 			return true, m, nil
 		default:
 			var cmd tea.Cmd
-			m.panelDangerInput, cmd = m.panelDangerInput.Update(msg)
+			m.panelState.dangerInput, cmd = m.panelState.dangerInput.Update(msg)
 			return true, m, cmd
 		}
 	}
@@ -290,21 +290,21 @@ func (m *cliModel) updateDangerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		return m.closePanelAndResume()
 
 	case msg.Code == tea.KeyUp:
-		if m.panelDangerCursor > 0 {
-			m.panelDangerCursor--
+		if m.panelState.dangerCursor > 0 {
+			m.panelState.dangerCursor--
 		}
 
 	case msg.Code == tea.KeyDown:
-		if m.panelDangerCursor < len(m.panelDangerItems)-1 {
-			m.panelDangerCursor++
+		if m.panelState.dangerCursor < len(m.panelState.dangerItems)-1 {
+			m.panelState.dangerCursor++
 		}
 
 	case msg.Code == tea.KeyEnter:
-		if m.panelDangerCursor < len(m.panelDangerItems) {
-			m.panelDangerConfirm = true
-			m.panelDangerInput.SetValue("")
-			m.panelDangerInput.Focus()
-			return true, m, m.panelDangerInput.Focus()
+		if m.panelState.dangerCursor < len(m.panelState.dangerItems) {
+			m.panelState.dangerConfirm = true
+			m.panelState.dangerInput.SetValue("")
+			m.panelState.dangerInput.Focus()
+			return true, m, m.panelState.dangerInput.Focus()
 		}
 	}
 
@@ -329,13 +329,13 @@ func (m *cliModel) openDangerPanelFromSettings() {
 		{"archival", m.locale.DangerArchival, stats["archival"]},
 	}
 
-	m.panelMode = "danger"
-	m.panelScrollY = 0
+	m.panelState.mode = "danger"
+	m.panelState.scrollY = 0
 	m.relayoutViewport()
-	m.panelDangerItems = items
-	m.panelDangerCursor = 0
-	m.panelDangerConfirm = false
-	m.panelDangerOnExec = func(targetType string) error {
+	m.panelState.dangerItems = items
+	m.panelState.dangerCursor = 0
+	m.panelState.dangerConfirm = false
+	m.panelState.dangerOnExec = func(targetType string) error {
 		if m.channel != nil && m.channel.config.ClearMemory != nil {
 			return m.channel.config.ClearMemory(targetType)
 		}
@@ -352,79 +352,79 @@ func (m *cliModel) openDangerPanelFromSettings() {
 	tiStyles.Focused.Placeholder = m.styles.TIPlaceholder
 	tiStyles.Cursor.Color = m.styles.TICursor.GetForeground()
 	ti.SetStyles(tiStyles)
-	m.panelDangerInput = ti
+	m.panelState.dangerInput = ti
 }
 
 func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
-	if m.panelEdit {
+	if m.panelState.editing {
 		// Editing mode
 		switch msg.Code {
 		case tea.KeyEnter:
 			// Save value
-			newVal := strings.TrimSpace(m.panelEditTA.Value())
-			if m.panelCursor < len(m.panelSchema) {
-				key := m.panelSchema[m.panelCursor].Key
-				m.panelValues[key] = newVal
+			newVal := strings.TrimSpace(m.panelState.editTA.Value())
+			if m.panelState.cursor < len(m.panelState.schema) {
+				key := m.panelState.schema[m.panelState.cursor].Key
+				m.panelState.values[key] = newVal
 			}
-			m.panelEdit = false
+			m.panelState.editing = false
 			return true, m, nil
 		case tea.KeyEsc:
-			m.panelEdit = false
+			m.panelState.editing = false
 			return true, m, nil
 		default:
 			// Delegate to textarea
 			var cmd tea.Cmd
-			m.panelEditTA, cmd = m.panelEditTA.Update(msg)
+			m.panelState.editTA, cmd = m.panelState.editTA.Update(msg)
 			return true, m, cmd
 		}
 	}
 
 	// Combo dropdown mode
-	if m.panelCombo {
-		if m.panelCursor < len(m.panelSchema) {
-			def := m.panelSchema[m.panelCursor]
+	if m.panelState.combo {
+		if m.panelState.cursor < len(m.panelState.schema) {
+			def := m.panelState.schema[m.panelState.cursor]
 			opts := def.Options
 			switch msg.Code {
 			case tea.KeyEsc:
-				m.panelCombo = false
+				m.panelState.combo = false
 				return true, m, nil
 			case tea.KeyUp:
-				if m.panelComboIdx > 0 {
-					m.panelComboIdx--
+				if m.panelState.comboIdx > 0 {
+					m.panelState.comboIdx--
 				}
 				return true, m, nil
 			case tea.KeyDown:
-				if m.panelComboIdx < len(opts)-1 {
-					m.panelComboIdx++
+				if m.panelState.comboIdx < len(opts)-1 {
+					m.panelState.comboIdx++
 				}
 				return true, m, nil
 			case tea.KeyEnter:
-				if m.panelComboIdx < len(opts) {
-					m.panelValues[def.Key] = opts[m.panelComboIdx].Value
+				if m.panelState.comboIdx < len(opts) {
+					m.panelState.values[def.Key] = opts[m.panelState.comboIdx].Value
 				}
-				m.panelCombo = false
+				m.panelState.combo = false
 				// Auto-fill llm_base_url when llm_provider changes via combo
-				if def.Key == "llm_provider" && m.panelValues["llm_provider"] != m.panelPrevProvider {
-					m.autoFillBaseURL(m.panelValues["llm_provider"])
-					m.panelPrevProvider = m.panelValues["llm_provider"]
+				if def.Key == "llm_provider" && m.panelState.values["llm_provider"] != m.panelState.prevProvider {
+					m.autoFillBaseURL(m.panelState.values["llm_provider"])
+					m.panelState.prevProvider = m.panelState.values["llm_provider"]
 				}
 				return true, m, nil
 			case tea.KeySpace:
-				m.panelCombo = false
+				m.panelState.combo = false
 				// Switch to edit mode for custom input
-				m.panelEdit = true
-				ta := m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
+				m.panelState.editing = true
+				ta := m.newPanelTextArea(m.panelState.values[def.Key], 50, 1)
 				var cmd tea.Cmd
-				m.panelEditTA, cmd = ta.Update(msg)
+				m.panelState.editTA, cmd = ta.Update(msg)
 				return true, m, cmd
 			default:
 				// Any printable key: auto-switch to edit mode for custom input
 				if len(msg.Text) > 0 {
-					m.panelCombo = false
-					m.panelEdit = true
-					ta := m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
+					m.panelState.combo = false
+					m.panelState.editing = true
+					ta := m.newPanelTextArea(m.panelState.values[def.Key], 50, 1)
 					var cmd tea.Cmd
-					m.panelEditTA, cmd = ta.Update(msg)
+					m.panelState.editTA, cmd = ta.Update(msg)
 					return true, m, cmd
 				}
 			}
@@ -441,40 +441,40 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 		return true, m, nil
 	case msg.String() == "ctrl+s":
 		// If currently editing a field, commit the edit before saving.
-		if m.panelEdit && m.panelCursor < len(m.panelSchema) {
-			def := m.panelSchema[m.panelCursor]
+		if m.panelState.editing && m.panelState.cursor < len(m.panelState.schema) {
+			def := m.panelState.schema[m.panelState.cursor]
 			if !def.ReadOnly {
 				key := def.Key
-				m.panelValues[key] = strings.TrimSpace(m.panelEditTA.Value())
+				m.panelState.values[key] = strings.TrimSpace(m.panelState.editTA.Value())
 			}
-			m.panelEdit = false
+			m.panelState.editing = false
 		}
 		// Submit all settings — async to avoid blocking the UI.
 		// Close panel immediately to restore responsiveness, then run
 		// the save callback in a goroutine and send back results.
-		onSubmit := m.panelOnSubmit
-		panelVals := m.panelValues
+		onSubmit := m.panelState.onSubmit
+		panelVals := m.panelState.values
 		m.closePanel()
 		if onSubmit != nil && panelVals != nil {
-			m.settingsSaving = true // block input until cliSettingsSavedMsg arrives
+			m.panelState.settingsSaving = true // block input until cliSettingsSavedMsg arrives
 			return true, m, m.doSaveSettings(onSubmit, panelVals)
 		}
 		return true, m, nil
 	case msg.Code == tea.KeyUp || msg.String() == "shift+tab":
-		if m.panelCursor > 0 {
-			m.panelCursor--
+		if m.panelState.cursor > 0 {
+			m.panelState.cursor--
 			m.ensureSettingsCursorVisible(0)
 		}
 		return true, m, nil
 	case msg.Code == tea.KeyDown || msg.Code == tea.KeyTab:
-		if m.panelCursor < len(m.panelSchema)-1 {
-			m.panelCursor++
+		if m.panelState.cursor < len(m.panelState.schema)-1 {
+			m.panelState.cursor++
 			m.ensureSettingsCursorVisible(0)
 		}
 		return true, m, nil
 	case msg.Code == tea.KeyEnter:
-		if m.panelCursor < len(m.panelSchema) {
-			def := m.panelSchema[m.panelCursor]
+		if m.panelState.cursor < len(m.panelState.schema) {
+			def := m.panelState.schema[m.panelState.cursor]
 			// Read-only items: skip editing (display-only)
 			if def.ReadOnly {
 				return true, m, nil
@@ -494,13 +494,13 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 			// ch.Subscription management entry — save panel state, open quick switch
 			if def.Key == "subscription_manage" {
 				// Backup current panel state so we can restore after quick switch
-				m.panelValuesBackup = make(map[string]string, len(m.panelValues))
-				for k, v := range m.panelValues {
-					m.panelValuesBackup[k] = v
+				m.panelState.valuesBackup = make(map[string]string, len(m.panelState.values))
+				for k, v := range m.panelState.values {
+					m.panelState.valuesBackup[k] = v
 				}
-				m.panelCursorBackup = m.panelCursor
-				m.panelOnSubmitBackup = m.panelOnSubmit
-				m.panelMode = ""
+				m.panelState.cursorBackup = m.panelState.cursor
+				m.panelState.onSubmitBackup = m.panelState.onSubmit
+				m.panelState.mode = ""
 				m.relayoutViewport()
 				m.quickSwitchReturnToPanel = true
 				m.openQuickSwitch("subscription")
@@ -509,16 +509,16 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 			switch def.Type {
 			case ch.SettingTypeToggle:
 				// Toggle on Enter
-				cur := m.panelValues[def.Key]
+				cur := m.panelState.values[def.Key]
 				if cur == "true" {
-					m.panelValues[def.Key] = "false"
+					m.panelState.values[def.Key] = "false"
 				} else {
-					m.panelValues[def.Key] = "true"
+					m.panelState.values[def.Key] = "true"
 				}
 				return true, m, nil
 			case ch.SettingTypeSelect:
 				// Cycle through options
-				cur := m.panelValues[def.Key]
+				cur := m.panelState.values[def.Key]
 				if cur == "" && def.DefaultValue != "" {
 					cur = def.DefaultValue
 				}
@@ -526,21 +526,21 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 					return opt.Value == cur
 				})
 				if idx >= 0 && idx < len(def.Options)-1 {
-					m.panelValues[def.Key] = def.Options[idx+1].Value
+					m.panelState.values[def.Key] = def.Options[idx+1].Value
 				} else if len(def.Options) > 0 {
-					m.panelValues[def.Key] = def.Options[0].Value
+					m.panelState.values[def.Key] = def.Options[0].Value
 				}
 				return true, m, nil
 			case ch.SettingTypeCombo:
 				// Open combo dropdown if options available, otherwise edit
 				if len(def.Options) > 0 {
-					m.panelCombo = true
-					m.panelComboIdx = 0
+					m.panelState.combo = true
+					m.panelState.comboIdx = 0
 					// Pre-select current value if it matches an option
-					cur := m.panelValues[def.Key]
+					cur := m.panelState.values[def.Key]
 					for i, opt := range def.Options {
 						if opt.Value == cur {
-							m.panelComboIdx = i
+							m.panelState.comboIdx = i
 							break
 						}
 					}
@@ -550,8 +550,8 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 				fallthrough
 			default:
 				// Enter edit mode for text/number/textarea/combo(fallback)
-				m.panelEdit = true
-				m.panelEditTA = m.newPanelTextArea(m.panelValues[def.Key], 50, 1)
+				m.panelState.editing = true
+				m.panelState.editTA = m.newPanelTextArea(m.panelState.values[def.Key], 50, 1)
 				return true, m, nil
 			}
 		}
@@ -579,7 +579,7 @@ func (m *cliModel) viewSettingsPanel() string {
 	// Group by category
 	lastCat := ""
 	ln := 0 // 当前渲染行号
-	for i, def := range m.panelSchema {
+	for i, def := range m.panelState.schema {
 		if def.Category != lastCat {
 			lastCat = def.Category
 			sb.WriteString("\n")
@@ -588,13 +588,13 @@ func (m *cliModel) viewSettingsPanel() string {
 			ln += 2
 		}
 
-		cur := m.panelValues[def.Key]
+		cur := m.panelState.values[def.Key]
 		// If value is empty, fall back to DefaultValue for display
 		if cur == "" && def.DefaultValue != "" {
 			cur = def.DefaultValue
 		}
 		var prefix string
-		if i == m.panelCursor && !m.panelEdit {
+		if i == m.panelState.cursor && !m.panelState.editing {
 			prefix = cursorStyle.Render("▸")
 		} else {
 			prefix = "  "
@@ -621,7 +621,7 @@ func (m *cliModel) viewSettingsPanel() string {
 				}
 			}
 			line := fmt.Sprintf("%s %s%s", prefix, s.ProgressDone.Render(def.Label), statusHint)
-			if i == m.panelCursor && !m.panelEdit {
+			if i == m.panelState.cursor && !m.panelState.editing {
 				line = m.renderSelLine(line, m.width-6)
 			}
 			sb.WriteString(line)
@@ -633,7 +633,7 @@ func (m *cliModel) viewSettingsPanel() string {
 		// Danger zone entry: render with warning style
 		if def.Key == "danger_zone" {
 			line := fmt.Sprintf("%s %s", prefix, s.WarningSt.Render(def.Label))
-			if i == m.panelCursor && !m.panelEdit {
+			if i == m.panelState.cursor && !m.panelState.editing {
 				line = m.renderSelLine(line, m.width-6)
 			}
 			sb.WriteString(line)
@@ -675,7 +675,7 @@ func (m *cliModel) viewSettingsPanel() string {
 				}
 			}
 			line := fmt.Sprintf("%s %s%s", prefix, s.ProgressDone.Render(def.Label), subHint)
-			if i == m.panelCursor && !m.panelEdit {
+			if i == m.panelState.cursor && !m.panelState.editing {
 				line = m.renderSelLine(line, m.width-6)
 			}
 			sb.WriteString(line)
@@ -727,7 +727,7 @@ func (m *cliModel) viewSettingsPanel() string {
 		}
 
 		line := fmt.Sprintf("%s %s: %s", prefix, labelSt.Render(def.Label), displayVal)
-		if i == m.panelCursor && !m.panelEdit && !m.panelCombo {
+		if i == m.panelState.cursor && !m.panelState.editing && !m.panelState.combo {
 			line = m.renderSelLine(line, m.width-6)
 		}
 		sb.WriteString(line)
@@ -735,7 +735,7 @@ func (m *cliModel) viewSettingsPanel() string {
 		ln++
 
 		// Show field description when cursor is on this field (not in edit/combo mode).
-		if i == m.panelCursor && !m.panelEdit && !m.panelCombo && def.Description != "" {
+		if i == m.panelState.cursor && !m.panelState.editing && !m.panelState.combo && def.Description != "" {
 			descLines := strings.Split(def.Description, "\n")
 			for _, dl := range descLines {
 				if strings.Contains(dl, "\x1b]8;;") {
@@ -753,8 +753,8 @@ func (m *cliModel) viewSettingsPanel() string {
 		// API Key field: always show "获取密钥" button below the field.
 		// Clickable via mouse zone (panelOpenURL) — opens browser directly.
 		// Also wrapped in OSC 8 hyperlink for terminals that support it.
-		if def.Key == "llm_api_key" && m.panelValues["llm_provider"] != "" {
-			guide, hasGuide := ch.ProviderSetupGuides[m.panelValues["llm_provider"]]
+		if def.Key == "llm_api_key" && m.panelState.values["llm_provider"] != "" {
+			guide, hasGuide := ch.ProviderSetupGuides[m.panelState.values["llm_provider"]]
 			if hasGuide && guide.URL != "" {
 				btnLabel := "  " + m.locale.PanelBtnGetKey + "  "
 				oscLink := fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", guide.URL, btnLabel)
@@ -777,20 +777,20 @@ func (m *cliModel) viewSettingsPanel() string {
 		}
 
 		// ── Inline edit/combo overlay (Crush-style: render right below the item) ──
-		if i == m.panelCursor {
-			if m.panelEdit {
+		if i == m.panelState.cursor {
+			if m.panelState.editing {
 				sb.WriteString("  ")
 				sb.WriteString(cursorStyle.Render("✎ "))
-				sb.WriteString(m.panelEditTA.View())
+				sb.WriteString(m.panelState.editTA.View())
 				sb.WriteString("\n")
 				sb.WriteString(descStyle.Render("    " + m.locale.PanelEditHint))
 				sb.WriteString("\n")
 				ln += 3
-			} else if m.panelCombo {
+			} else if m.panelState.combo {
 				maxShow := 8
 				start := 0
-				if m.panelComboIdx >= maxShow {
-					start = m.panelComboIdx - maxShow + 1
+				if m.panelState.comboIdx >= maxShow {
+					start = m.panelState.comboIdx - maxShow + 1
 				}
 				end := start + maxShow
 				if end > len(def.Options) {
@@ -803,20 +803,20 @@ func (m *cliModel) viewSettingsPanel() string {
 					if len(runes) > 40 {
 						label = string(runes[:37]) + "..."
 					}
-					if j == m.panelComboIdx {
+					if j == m.panelState.comboIdx {
 						sb.WriteString(cursorStyle.Render("    ▸ " + label))
 					} else {
 						sb.WriteString("      ")
 						sb.WriteString(label)
 					}
 					// Show option description on the selected combo item.
-					if j == m.panelComboIdx && opt.Description != "" {
+					if j == m.panelState.comboIdx && opt.Description != "" {
 						sb.WriteString("\n")
 						sb.WriteString(descStyle.Render("        " + opt.Description))
 					}
 					sb.WriteString("\n")
 					ln++
-					if j == m.panelComboIdx && opt.Description != "" {
+					if j == m.panelState.comboIdx && opt.Description != "" {
 						ln++
 					}
 				}
@@ -829,7 +829,7 @@ func (m *cliModel) viewSettingsPanel() string {
 
 	// Bottom buttons: always show Save and Cancel buttons.
 	// These are clickable mouse zones for users who don't know keyboard shortcuts.
-	if !m.panelEdit && !m.panelCombo {
+	if !m.panelState.editing && !m.panelState.combo {
 		sb.WriteString("\n")
 		// Save button — styled prominently
 		saveBtn := "  " + m.locale.PanelBtnSave + "  "

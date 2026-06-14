@@ -434,9 +434,9 @@ func (m *cliModel) renderDebugStats() string {
 
 	fmt.Fprintf(&sb, "\n── Session ──\n")
 	fmt.Fprintf(&sb, "Messages:   %d\n", len(m.messages))
-	if m.progress != nil {
-		fmt.Fprintf(&sb, "Iteration:  %d\n", m.progress.Iteration)
-		fmt.Fprintf(&sb, "History:    %d snapshots\n", len(m.iterationHistory))
+	if m.progressState.current != nil {
+		fmt.Fprintf(&sb, "Iteration:  %d\n", m.progressState.current.Iteration)
+		fmt.Fprintf(&sb, "History:    %d snapshots\n", len(m.progressState.iterations))
 	}
 	fmt.Fprintf(&sb, "Queue:      %d\n", len(m.messageQueue))
 	fmt.Fprintf(&sb, "Viewport H: %d\n", m.viewport.Height())

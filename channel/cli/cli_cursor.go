@@ -7,12 +7,12 @@ import (
 // ensurePanelCursorVisible ensures the panel cursor line is within the visible area.
 // For settings panel: uses precise line calculation with inline overlay awareness.
 func (m *cliModel) ensurePanelCursorVisible() {
-	if m.panelMode == "settings" {
+	if m.panelState.mode == "settings" {
 		extra := 0
-		if m.panelEdit {
+		if m.panelState.editing {
 			extra = 3
-		} else if m.panelCombo && m.panelCursor < len(m.panelSchema) {
-			def := m.panelSchema[m.panelCursor]
+		} else if m.panelState.combo && m.panelState.cursor < len(m.panelState.schema) {
+			def := m.panelState.schema[m.panelState.cursor]
 			extra = min(len(def.Options), 8) + 1
 		}
 		m.ensureSettingsCursorVisible(extra)
@@ -32,16 +32,16 @@ func (m *cliModel) ensureBgCursorVisible() {
 	// Header line
 	cursorLine = 1
 	idx := 0
-	for _, task := range m.panelBgTasks {
+	for _, task := range m.panelState.bgTasks {
 		_ = task // tasks are always 1 line
-		if idx == m.panelBgCursor {
+		if idx == m.panelState.bgCursor {
 			break
 		}
 		cursorLine++
 		idx++
 	}
-	for _, ag := range m.panelBgAgents {
-		if idx == m.panelBgCursor {
+	for _, ag := range m.panelState.bgAgents {
+		if idx == m.panelState.bgCursor {
 			break
 		}
 		cursorLine++ // agent label line
@@ -53,14 +53,14 @@ func (m *cliModel) ensureBgCursorVisible() {
 
 	totalLines := cursorLine + 2 // +2 for header and bottom padding
 	if totalLines <= visibleH {
-		m.panelScrollY = 0
+		m.panelState.scrollY = 0
 		return
 	}
-	if cursorLine >= m.panelScrollY+visibleH {
-		m.panelScrollY = cursorLine - visibleH + 1
+	if cursorLine >= m.panelState.scrollY+visibleH {
+		m.panelState.scrollY = cursorLine - visibleH + 1
 	}
-	if cursorLine < m.panelScrollY {
-		m.panelScrollY = cursorLine
+	if cursorLine < m.panelState.scrollY {
+		m.panelState.scrollY = cursorLine
 	}
 }
 
@@ -71,17 +71,17 @@ func (m *cliModel) ensureBgCursorVisible() {
 func (m *cliModel) ensureSessionCursorVisible() {
 	visibleH := m.panelVisibleHeight()
 	// +1 for header line
-	cursorLine := m.panelSessionCursor + 1
-	totalLines := len(m.panelSessionItems) + 1
+	cursorLine := m.panelState.sessCursor + 1
+	totalLines := len(m.panelState.sessItems) + 1
 	if totalLines <= visibleH {
-		m.panelScrollY = 0
+		m.panelState.scrollY = 0
 		return
 	}
-	if cursorLine >= m.panelScrollY+visibleH {
-		m.panelScrollY = cursorLine - visibleH + 1
+	if cursorLine >= m.panelState.scrollY+visibleH {
+		m.panelState.scrollY = cursorLine - visibleH + 1
 	}
-	if cursorLine < m.panelScrollY {
-		m.panelScrollY = cursorLine
+	if cursorLine < m.panelState.scrollY {
+		m.panelState.scrollY = cursorLine
 	}
 }
 
@@ -103,14 +103,14 @@ func (m *cliModel) clampPanelScroll(rawContent string) {
 	total := strings.Count(rawContent, "\n") + 1
 	visible := m.panelVisibleHeight()
 	if total <= visible {
-		m.panelScrollY = 0
+		m.panelState.scrollY = 0
 		return
 	}
-	if m.panelScrollY < 0 {
-		m.panelScrollY = 0
+	if m.panelState.scrollY < 0 {
+		m.panelState.scrollY = 0
 	}
-	if m.panelScrollY > total-visible {
-		m.panelScrollY = total - visible
+	if m.panelState.scrollY > total-visible {
+		m.panelState.scrollY = total - visible
 	}
 }
 
@@ -126,12 +126,12 @@ func (m *cliModel) settingsCursorLine() int {
 	const headerLines = 2 // title + divider
 	line := headerLines
 	lastCat := ""
-	for i, def := range m.panelSchema {
+	for i, def := range m.panelState.schema {
 		if def.Category != lastCat {
 			lastCat = def.Category
 			line += 2 // blank line + category header
 		}
-		if i == m.panelCursor {
+		if i == m.panelState.cursor {
 			return line
 		}
 		line++
@@ -158,15 +158,15 @@ func (m *cliModel) ensureSettingsCursorVisible(extraLines int) {
 	neededTop := cursorLine
 
 	// If overlay extends below visible area, scroll down
-	if neededBottom > m.panelScrollY+visibleH {
-		m.panelScrollY = neededBottom - visibleH
+	if neededBottom > m.panelState.scrollY+visibleH {
+		m.panelState.scrollY = neededBottom - visibleH
 	}
 	// If cursor is above visible area, scroll up
-	if neededTop < m.panelScrollY {
-		m.panelScrollY = neededTop
+	if neededTop < m.panelState.scrollY {
+		m.panelState.scrollY = neededTop
 	}
-	if m.panelScrollY < 0 {
-		m.panelScrollY = 0
+	if m.panelState.scrollY < 0 {
+		m.panelState.scrollY = 0
 	}
 }
 
@@ -180,7 +180,7 @@ func (m *cliModel) ensureSettingsCursorVisible(extraLines int) {
 // Caches total line count in askPanelTotalLines for use by ensureAskUserVisible.
 func (m *cliModel) clampAskUserPanelScroll(rawContent string) {
 	total := strings.Count(rawContent, "\n") + 1
-	m.askPanelTotalLines = total
+	m.panelState.askTotalLines = total
 	fixedLines := 2 // titleBar + toast (no separate footer — hints are in-panel)
 	panelBorder := 2
 	viewportH := m.layoutViewportHeight()
@@ -189,14 +189,14 @@ func (m *cliModel) clampAskUserPanelScroll(rawContent string) {
 		visible = 3
 	}
 	if total <= visible {
-		m.askPanelScrollY = 0
+		m.panelState.askScrollY = 0
 		return
 	}
-	if m.askPanelScrollY < 0 {
-		m.askPanelScrollY = 0
+	if m.panelState.askScrollY < 0 {
+		m.panelState.askScrollY = 0
 	}
-	if m.askPanelScrollY > total-visible {
-		m.askPanelScrollY = total - visible
+	if m.panelState.askScrollY > total-visible {
+		m.panelState.askScrollY = total - visible
 	}
 }
 
