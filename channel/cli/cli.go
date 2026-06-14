@@ -132,55 +132,8 @@ func (c *CLIChannel) Start() error {
 	}
 
 	// Apply pending injections that were set before model existed
-	if c.pendingTrimHistoryFn != nil {
-		c.model.trimHistoryFn = c.pendingTrimHistoryFn
-	}
-	if c.pendingResetTokenStateFn != nil {
-		c.model.resetTokenStateFn = c.pendingResetTokenStateFn
-	}
-	if c.pendingCheckpointState != nil {
-		c.model.checkpointState = c.pendingCheckpointState
-	}
-	if c.pendingSendInboundFn != nil {
-		c.model.sendInboundFn = c.pendingSendInboundFn
-	}
-	// Apply pending remote bg task callbacks (remote mode: set before Start)
-	if c.pendingBgTaskCountFn != nil {
-		c.model.bgTaskCountFn = c.pendingBgTaskCountFn
-	}
-	if c.pendingBgTaskListFn != nil {
-		c.model.bgTaskListFn = c.pendingBgTaskListFn
-	}
-	if c.pendingBgTaskKillFn != nil {
-		c.model.bgTaskKillFn = c.pendingBgTaskKillFn
-	}
-	if c.pendingBgTaskCleanupFn != nil {
-		c.model.bgTaskCleanupFn = c.pendingBgTaskCleanupFn
-	}
-	if c.pendingPluginMgrFn != nil {
-		c.model.pluginMgrFn = c.pendingPluginMgrFn
-	}
-	if c.pendingWidgetRegistry != nil {
-		c.model.widgetRegistry = c.pendingWidgetRegistry
-		c.pendingWidgetRegistry.SetDefaultRenderFn(buildWidgetRenderFn(c.model.styles))
-		c.pendingWidgetRegistry.OnUpdated(func() {
-			select {
-			case c.asyncCh <- cliWidgetUpdateMsg{}:
-			default:
-			}
-		})
-		c.pendingWidgetRegistry = nil
-	}
-	if c.pendingRemotePluginCache != nil {
-		c.model.remotePluginCache = c.pendingRemotePluginCache
-		c.pendingRemotePluginCache.SetOnUpdated(func() {
-			select {
-			case c.asyncCh <- cliWidgetUpdateMsg{}:
-			default:
-			}
-		})
-		c.pendingRemotePluginCache = nil
-	}
+	c.applyPending()
+
 	// Set identity fields on the model.
 	c.model.channelName = "cli"
 	c.model.defaultChatID = c.config.ChatID
@@ -209,19 +162,8 @@ func (c *CLIChannel) Start() error {
 	// so the backend also uses the correct LLM.
 	c.model.scheduleSessionLLMRestore()
 
-	// If RestoreSession ran before Start() (c.model was nil), it cached
-	// data in pendingHistory/pendingProgress. Convert to pendingSuRestore
-	// so Init() emits it as a suHistoryLoadMsg via the event loop.
-	if c.pendingHistory != nil || c.pendingProgress != nil {
-		c.model.pendingSuRestore = &suHistoryLoadMsg{
-			history:        c.pendingHistory,
-			channelName:    "cli",
-			chatID:         c.config.ChatID,
-			activeProgress: c.pendingProgress,
-		}
-		c.pendingHistory = nil
-		c.pendingProgress = nil
-	}
+	// History/progress was converted to pendingSuRestore inside applyPending().
+	// Nothing more to do here.
 
 	// Propagate late-injected services to model (set before Start() when model was nil)
 	if c.subscriptionMgr != nil {
@@ -406,6 +348,80 @@ func (c *CLIChannel) Start() error {
 	return nil
 }
 
+// applyPending flushes all deferred injections (set before model existed)
+// into the newly created model. Called once inside Start().
+func (c *CLIChannel) applyPending() {
+	p := &c.pending
+	m := c.model
+
+	// Simple callback assignments
+	if p.trimHistoryFn != nil {
+		m.trimHistoryFn = p.trimHistoryFn
+	}
+	if p.resetTokenStateFn != nil {
+		m.resetTokenStateFn = p.resetTokenStateFn
+	}
+	if p.checkpointState != nil {
+		m.checkpointState = p.checkpointState
+	}
+	if p.sendInboundFn != nil {
+		m.sendInboundFn = p.sendInboundFn
+	}
+	if p.bgTaskCountFn != nil {
+		m.bgTaskCountFn = p.bgTaskCountFn
+	}
+	if p.bgTaskListFn != nil {
+		m.bgTaskListFn = p.bgTaskListFn
+	}
+	if p.bgTaskKillFn != nil {
+		m.bgTaskKillFn = p.bgTaskKillFn
+	}
+	if p.bgTaskCleanupFn != nil {
+		m.bgTaskCleanupFn = p.bgTaskCleanupFn
+	}
+	if p.pluginMgrFn != nil {
+		m.pluginMgrFn = p.pluginMgrFn
+	}
+
+	// Widget registry needs render fn + update callback wiring
+	if p.widgetRegistry != nil {
+		m.widgetRegistry = p.widgetRegistry
+		p.widgetRegistry.SetDefaultRenderFn(buildWidgetRenderFn(m.styles))
+		p.widgetRegistry.OnUpdated(func() {
+			select {
+			case c.asyncCh <- cliWidgetUpdateMsg{}:
+			default:
+			}
+		})
+		p.widgetRegistry = nil
+	}
+
+	// Remote plugin cache needs update callback wiring
+	if p.remotePluginCache != nil {
+		m.remotePluginCache = p.remotePluginCache
+		p.remotePluginCache.SetOnUpdated(func() {
+			select {
+			case c.asyncCh <- cliWidgetUpdateMsg{}:
+			default:
+			}
+		})
+		p.remotePluginCache = nil
+	}
+
+	// History/progress: convert to pendingSuRestore so Init() emits
+	// it as a suHistoryLoadMsg via the event loop.
+	if p.history != nil || p.progress != nil {
+		m.pendingSuRestore = &suHistoryLoadMsg{
+			history:        p.history,
+			channelName:    "cli",
+			chatID:         c.config.ChatID,
+			activeProgress: p.progress,
+		}
+		p.history = nil
+		p.progress = nil
+	}
+}
+
 // Stop 停止 CLI 渠道
 func (c *CLIChannel) Stop() {
 	log.Info("CLI channel stopping...")
@@ -547,7 +563,7 @@ func (c *CLIChannel) SetApprovalState(state *protocol.ApprovalState) {
 // In remote mode, this forwards user messages to the server via backend.SendInbound
 // instead of the local bus (which has no agent loop).
 func (c *CLIChannel) SetSendInboundFn(fn func(ch.InboundMsg) bool) {
-	c.pendingSendInboundFn = fn
+	c.pending.sendInboundFn = fn
 }
 
 // SetBgTaskRemoteCallbacks configures remote-mode background task callbacks.
@@ -563,10 +579,10 @@ func (c *CLIChannel) SetBgTaskRemoteCallbacks(sessionKey string, countFn func() 
 		c.model.bgTaskCleanupFn = cleanupFn
 	} else {
 		// Model not created yet (Start() not called) — save as pending
-		c.pendingBgTaskCountFn = countFn
-		c.pendingBgTaskListFn = listFn
-		c.pendingBgTaskKillFn = killFn
-		c.pendingBgTaskCleanupFn = cleanupFn
+		c.pending.bgTaskCountFn = countFn
+		c.pending.bgTaskListFn = listFn
+		c.pending.bgTaskKillFn = killFn
+		c.pending.bgTaskCleanupFn = cleanupFn
 	}
 }
 
@@ -577,7 +593,7 @@ func (c *CLIChannel) SetPluginManager(fn func() *plugin.PluginManager) {
 	if c.model != nil {
 		c.model.pluginMgrFn = fn
 	} else {
-		c.pendingPluginMgrFn = fn
+		c.pending.pluginMgrFn = fn
 	}
 }
 
@@ -600,7 +616,7 @@ func (c *CLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 			})
 		}
 	} else {
-		c.pendingWidgetRegistry = wr
+		c.pending.widgetRegistry = wr
 	}
 }
 
@@ -620,7 +636,7 @@ func (c *CLIChannel) SetRemotePluginCache(cache *remotePluginCache) {
 			})
 		}
 	} else {
-		c.pendingRemotePluginCache = cache
+		c.pending.remotePluginCache = cache
 	}
 }
 
@@ -657,8 +673,8 @@ func (c *CLIChannel) RestoreSession(history []ch.HistoryMessage, activeProgress 
 	defer c.programMu.Unlock()
 	if c.model == nil {
 		// Model not created yet — cache for Start().
-		c.pendingHistory = history
-		c.pendingProgress = activeProgress
+		c.pending.history = history
+		c.pending.progress = activeProgress
 		return
 	}
 	if c.program == nil {
@@ -698,7 +714,7 @@ func (c *CLIChannel) SetTrimHistoryFn(fn func(cutoff time.Time) error) {
 	if c.model != nil {
 		c.model.trimHistoryFn = fn
 	}
-	c.pendingTrimHistoryFn = fn
+	c.pending.trimHistoryFn = fn
 }
 
 // SetResetTokenStateFn sets the callback for /rewind token state reset.
@@ -710,7 +726,7 @@ func (c *CLIChannel) SetResetTokenStateFn(fn func()) {
 	if c.model != nil {
 		c.model.resetTokenStateFn = fn
 	}
-	c.pendingResetTokenStateFn = fn
+	c.pending.resetTokenStateFn = fn
 }
 
 // ApplyInitialLayout applies layout settings (sidebar_width, sidebar_position, etc.)
@@ -747,7 +763,7 @@ func (c *CLIChannel) SetCheckpointState(state *protocol.CheckpointState) {
 	if c.model != nil {
 		c.model.checkpointState = state
 	}
-	c.pendingCheckpointState = state
+	c.pending.checkpointState = state
 }
 
 // InjectUserMessage 通知 CLI 有 user 消息被 agent 注入（如 bg task 完成通知）。
