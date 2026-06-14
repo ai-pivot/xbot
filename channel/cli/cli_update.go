@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
-	"xbot/channel"
 	ch "xbot/channel"
 
 	tea "charm.land/bubbletea/v2"
@@ -97,7 +96,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	// i18n: locale 变更通知
 	select {
-	case <-channel.LocaleChangeCh():
+	case <-ch.LocaleChangeCh():
 		m.locale = ch.GetLocale(ch.CurrentLocaleLang())
 		m.rc.valid = false
 		for i := range m.messages {
