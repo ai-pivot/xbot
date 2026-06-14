@@ -1,5 +1,37 @@
 # channel/ — Channel Adapters
 
+## Package Structure (Refactored)
+
+The `channel` package has been split into a shared root package plus implementation sub-packages:
+
+```
+channel/              # Root package — shared core types, interfaces, infrastructure
+├── channel.go        # Channel interface
+├── types.go          # OutboundMsg, InboundMsg, AskQItem, SessionChatMessage
+├── interfaces.go     # ProgressSender, UserMessageInjector, SessionStateSender
+├── subscription.go   # Subscription/PerModelConfig aliases, ConvertMessagesToHistory
+├── session_utils.go  # DeduplicateSessionName, NameEntry, GenerateSessionName
+├── dispatcher.go     # Outbound message routing to channels
+├── agent_channel.go  # AgentChannel for SubAgent communication
+├── capability.go     # SettingsCapability, SettingDefinition, UIBuilder
+├── provider.go       # ChannelProvider interface
+├── callbacks.go      # RunnerCallbacks, RegistryCallbacks, LLMCallbacks
+├── setting_keys.go   # Setting key constants, CLIRuntimeSettingKeys
+├── setting_helpers.go
+├── card_converter.go # ConvertFeishuCard (shared by CLI + Web)
+├── mock.go           # MockChannel for testing
+├── ws_base.go        # WSChannelBase (shared by QQ + NapCat)
+├── i18n.go           # Internationalization: zh/en UI strings (~1390 lines)
+├── channel_cli.go    # ChannelCliChannel: WS bridge for remote CLI
+├── cli_msg_builder.go # CliMsg: message builder (shared by CLI + Web)
+
+channel/cli/          # CLI BubbleTea TUI (~44k lines)
+channel/feishu/       # Feishu webhook + settings UI
+channel/web/          # WebSocket server, REST API, OAuth, RemoteCLIChannel
+channel/qq/           # QQ bot (WebSocket)
+channel/napcat/       # NapCat HTTP API
+```
+
 ## Files
 
 | File | Purpose |

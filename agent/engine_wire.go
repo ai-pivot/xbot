@@ -13,6 +13,8 @@ import (
 	"xbot/agent/hooks"
 	"xbot/bus"
 	channelpkg "xbot/channel"
+	"xbot/channel/cli"
+	"xbot/channel/web"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
@@ -109,7 +111,7 @@ func (a *Agent) buildBaseRunConfig(
 		Channel: channel,
 		ChatID:  chatID,
 		SessionName: func() string {
-			_, name := channelpkg.ParseChatID(chatID)
+			_, name := cli.ParseChatID(chatID)
 			// Override with DB label if available (e.g. renamed from "Agent-xxx" to a custom name).
 			// This ensures the rename reminder doesn't fire for already-renamed sessions.
 			if a.multiSession != nil {
@@ -1529,11 +1531,11 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 // buildCLIProgressEventHandler creates the progress event handler for CLI channels
 // (both local and remote). Returns nil if no CLI channel is available.
 func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
-	var cliCh *channelpkg.CLIChannel
+	var cliCh *cli.CLIChannel
 	var remoteCLICh channelpkg.ProgressSender
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder("cli"); ok {
-			if cc, ok := ch.(*channelpkg.CLIChannel); ok {
+			if cc, ok := ch.(*cli.CLIChannel); ok {
 				cliCh = cc
 			} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 				// RemoteCLIChannel, ChannelCliChannel, or any other ProgressSender
@@ -1749,7 +1751,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 	if !ok {
 		return nil
 	}
-	wc, ok := ch.(*channelpkg.WebChannel)
+	wc, ok := ch.(*web.WebChannel)
 	if !ok {
 		log.WithField("channel", channel).Warn("Web channel found but type assertion failed, skipping ProgressEventHandler")
 		return nil
@@ -1918,18 +1920,18 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 // no channels are available.
 // Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
-	var cliCh *channelpkg.CLIChannel
+	var cliCh *cli.CLIChannel
 	var remoteCLICh channelpkg.ProgressSender
 	if ch, ok := a.channelFinder("cli"); ok {
-		if cc, ok := ch.(*channelpkg.CLIChannel); ok {
+		if cc, ok := ch.(*cli.CLIChannel); ok {
 			cliCh = cc
 		} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
 			remoteCLICh = rc
 		}
 	}
-	var webCh *channelpkg.WebChannel
+	var webCh *web.WebChannel
 	if ch, ok := a.channelFinder("web"); ok {
-		if wc, ok := ch.(*channelpkg.WebChannel); ok {
+		if wc, ok := ch.(*web.WebChannel); ok {
 			webCh = wc
 		}
 	}

@@ -228,7 +228,7 @@ type HelpKeyEntry struct {
 
 var locales map[string]*UILocale
 
-func localeZH() *UILocale {
+func LocaleZH() *UILocale {
 	return &UILocale{
 		// --- A. System messages ---
 		CancelSent:          "已发送取消请求",
@@ -1487,7 +1487,7 @@ func localeJA() *UILocale {
 func init() {
 	locales = map[string]*UILocale{
 		"":   localeEN(),
-		"zh": localeZH(),
+		"zh": LocaleZH(),
 		"en": localeEN(),
 		"ja": localeJA(),
 	}
@@ -1496,6 +1496,10 @@ func init() {
 // localeChangeCh is used to notify the running CLI model of locale changes.
 // Follows the same pattern as themeChangeCh (buffered channel, non-blocking send).
 var localeChangeCh = make(chan struct{}, 1)
+
+// LocaleChangeCh returns the locale change notification channel.
+// Sub-packages (cli) listen on this to reload UI after locale changes.
+func LocaleChangeCh() chan struct{} { return localeChangeCh }
 
 // currentLocaleLang stores the current locale language code.
 var currentLocaleLang string
@@ -1514,6 +1518,12 @@ func SetLocale(lang string) {
 	case localeChangeCh <- struct{}{}:
 	default:
 	}
+}
+
+// CurrentLocaleLang returns the current locale language code.
+// Exported for use by sub-packages (feishu, etc.) that need locale-aware settings.
+func CurrentLocaleLang() string {
+	return currentLocaleLang
 }
 
 // GetLocale returns the UILocale for the given language code.

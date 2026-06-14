@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"xbot/channel"
+	"xbot/channel/cli"
 	"xbot/config"
 	log "xbot/logger"
 	"xbot/tools"
@@ -101,7 +102,7 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	},
 	"max_iterations": {
 		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.MaxIterations = channel.ParseSettingInt(value, cfg.Agent.MaxIterations)
+			cfg.Agent.MaxIterations = cli.ParseSettingInt(value, cfg.Agent.MaxIterations)
 		},
 		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
 			if ag == nil {
@@ -114,7 +115,7 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	},
 	"max_concurrency": {
 		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.MaxConcurrency = channel.ParseSettingInt(value, cfg.Agent.MaxConcurrency)
+			cfg.Agent.MaxConcurrency = cli.ParseSettingInt(value, cfg.Agent.MaxConcurrency)
 		},
 		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
 			if ag == nil {
@@ -144,14 +145,14 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	},
 	"enable_auto_compress": {
 		ApplyConfig: func(cfg *config.Config, value string) {
-			b := channel.ParseSettingBool(value)
+			b := cli.ParseSettingBool(value)
 			cfg.Agent.EnableAutoCompress = &b
 		},
 		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
 			if ag == nil {
 				return
 			}
-			if channel.ParseSettingBool(value) {
+			if cli.ParseSettingBool(value) {
 				_ = ag.SetContextMode("auto")
 			} else {
 				_ = ag.SetContextMode("none")

@@ -39,28 +39,6 @@ func (c *ChannelCliChannel) Stop()                                   {}
 func (c *ChannelCliChannel) SetChatID(string)                        {}
 func (c *ChannelCliChannel) SetSendInboundFn(func(InboundMsg) error) {}
 
-// ProgressSender is implemented by channels that can send progress events
-// to remote or in-process clients (RemoteCLIChannel, ChannelCliChannel).
-// Used by agent's buildCLIProgressEventHandler for type assertion.
-type ProgressSender interface {
-	SendProgress(chatID string, payload *protocol.ProgressEvent)
-	SendStreamContent(chatID, content, reasoning string)
-}
-
-// UserMessageInjector is implemented by channels that support injecting
-// user messages from background sources (cron, bg task notifications).
-// Used by agent's injectCLIUserMessage for type assertion.
-type UserMessageInjector interface {
-	InjectUserMessage(chatID, content string)
-}
-
-// SessionStateSender is implemented by channels that can receive session
-// state change events (e.g. busy/idle, subagent lifecycle, rename).
-// Used by Agent internally to push state without external callbacks.
-type SessionStateSender interface {
-	SendSessionState(ev protocol.SessionEvent)
-}
-
 // sendMsg pushes a WSMessage to the event channel. Returns error if full.
 func (c *ChannelCliChannel) sendMsg(msg protocol.WSMessage) error {
 	select {
@@ -81,10 +59,10 @@ func (c *ChannelCliChannel) sendMsgBestEffort(msg protocol.WSMessage) {
 }
 
 func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
-	if err := c.sendMsg(cliMsg.buildTextMsg(msg)); err != nil {
+	if err := c.sendMsg(CliMsg.BuildTextMsg(msg)); err != nil {
 		return "", err
 	}
-	if askMsg := cliMsg.buildAskUserMsg(msg); askMsg != nil {
+	if askMsg := CliMsg.BuildAskUserMsg(msg); askMsg != nil {
 		if err := c.sendMsg(*askMsg); err != nil {
 			return "", err
 		}
@@ -93,13 +71,13 @@ func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
 }
 
 func (c *ChannelCliChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
-	if msg := cliMsg.buildProgressMsg(chatID, payload); msg != nil {
+	if msg := CliMsg.BuildProgressMsg(chatID, payload); msg != nil {
 		c.sendMsgBestEffort(*msg)
 	}
 }
 
 func (c *ChannelCliChannel) SendSessionState(ev protocol.SessionEvent) {
-	c.sendMsgBestEffort(cliMsg.buildSessionStateMsg(ev))
+	c.sendMsgBestEffort(CliMsg.BuildSessionStateMsg(ev))
 }
 
 func (c *ChannelCliChannel) SendToast(msg string) {
@@ -111,7 +89,7 @@ func (c *ChannelCliChannel) SendToast(msg string) {
 }
 
 func (c *ChannelCliChannel) SendStreamContent(chatID, content, reasoning string) {
-	if msg := cliMsg.buildStreamContentMsg(chatID, content, reasoning); msg != nil {
+	if msg := CliMsg.BuildStreamContentMsg(chatID, content, reasoning); msg != nil {
 		c.sendMsgBestEffort(*msg)
 	}
 }
@@ -119,11 +97,11 @@ func (c *ChannelCliChannel) SendStreamContent(chatID, content, reasoning string)
 func (c *ChannelCliChannel) SetConnState(string) {}
 
 func (c *ChannelCliChannel) InjectUserMessage(chatID, content string) {
-	c.sendMsgBestEffort(cliMsg.buildInjectUserMsg(chatID, content))
+	c.sendMsgBestEffort(CliMsg.BuildInjectUserMsg(chatID, content))
 }
 
 func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, params map[string]string) (map[string]string, error) {
-	id := cliMsg.generateTUIID()
+	id := CliMsg.GenerateTUIID()
 	ch := make(chan *protocol.TUIControlPayload, 1)
 
 	c.tuiPendingMu.Lock()
@@ -136,7 +114,7 @@ func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, 
 		c.tuiPendingMu.Unlock()
 	}()
 
-	if err := c.sendMsg(cliMsg.buildTUIControlReqMsg(id, chatID, action, params)); err != nil {
+	if err := c.sendMsg(CliMsg.BuildTUIControlReqMsg(id, chatID, action, params)); err != nil {
 		return nil, err
 	}
 
@@ -146,7 +124,7 @@ func (c *ChannelCliChannel) SendTUIControlRequest(chatID string, action string, 
 			return nil, fmt.Errorf("%s", resp.Error)
 		}
 		return resp.Result, nil
-	case <-time.After(tuiRespTimeout):
+	case <-time.After(TuiRespTimeout):
 		return nil, fmt.Errorf("tui_control request %s timed out", id)
 	}
 }
