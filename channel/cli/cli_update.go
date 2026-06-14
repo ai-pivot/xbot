@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
-	ch "xbot/channel"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	ch "xbot/channel"
 	"xbot/clipanic"
 	log "xbot/logger"
 	"xbot/protocol"
