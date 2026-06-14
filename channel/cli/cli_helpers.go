@@ -222,6 +222,17 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	}
 }
 
+// reloadSettingsCaches re-resolves all settings-dependent cached values.
+// Called when settings change (panel save or config tool write) to ensure
+// the TUI reflects the latest configuration (context bar, model name, etc.).
+func (m *cliModel) reloadSettingsCaches() {
+	m.refreshCachedModelName()
+	m.cachedMaxContextTokens = m.resolveMaxContextTokens()
+	m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
+	m.cachedCompressRatio = m.resolveCompressRatio()
+	m.invalidateSubCache()
+}
+
 // handleSettingsSavedMsg processes the async settings save result.
 // Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
@@ -239,20 +250,12 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		m.applyLayoutConfig(msg.layoutVals)
 		visualChanged = true
 	}
-	m.refreshCachedModelName()
+	m.reloadSettingsCaches()
 	// If model name is still empty after refresh (e.g. GetDefault RPC race on
 	// first setup), use the model name directly from the saved values.
 	if m.cachedModelName == "" && msg.savedModel != "" {
 		m.cachedModelName = msg.savedModel
 	}
-	// Invalidate cached context settings so they are re-resolved from user settings.
-	// Without this, changing max_context_tokens/max_output_tokens/compression_threshold
-	// in the settings panel has no effect on the context progress bar.
-	m.cachedMaxContextTokens = m.resolveMaxContextTokens()
-	m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
-	m.cachedCompressRatio = m.resolveCompressRatio()
-	// Invalidate subscription cache — settings save may have created/updated subscriptions.
-	m.invalidateSubCache()
 	if msg.feedbackMsg != "" {
 		m.appendSystem(msg.feedbackMsg)
 	}
@@ -925,6 +928,14 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 		// the agent goroutine is blocked in SendTUIControl waiting on resultCh.
 		sc.result <- &cliSessionResult{ok: true}
 		return m.handleSlashCommand(cmd)
+
+	case "reload_settings":
+		// Triggered by config tool after writing settings (e.g. max_context_tokens).
+		// Re-resolves all settings-dependent cached values so the TUI reflects
+		// the change immediately (context bar, model name, compress ratio, etc.).
+		m.reloadSettingsCaches()
+		m.updateViewportContent()
+		sc.result <- &cliSessionResult{ok: true}
 
 	default:
 		sc.result <- &cliSessionResult{ok: false, err: "unknown action: " + sc.action}

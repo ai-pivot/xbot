@@ -132,6 +132,13 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		if err != nil {
 			return nil, fmt.Errorf("config: set %q failed: %w", params.Key, err)
 		}
+		// Notify TUI to reload settings-dependent caches (context bar, model name, etc.).
+		// Without this, changes like max_context_tokens don't reflect in the TUI until restart.
+		if ctx.TUIControl != nil {
+			if _, tuiErr := ctx.TUIControl("reload_settings", map[string]string{"key": params.Key}); tuiErr != nil {
+				log.WithError(tuiErr).WithField("key", params.Key).Debug("config: TUI reload_settings notification failed (non-fatal)")
+			}
+		}
 		return NewResult(fmt.Sprintf("Updated %s from %s to %s", params.Key, prev, params.Value)), nil
 
 	default:

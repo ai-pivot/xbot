@@ -263,10 +263,23 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	// all models that don't have their own per-model override.
 	if m.channel.config.ApplySettings != nil {
 		runtimeValues := make(map[string]string, len(values))
+		// Track whether LLM credentials were saved in this call.
+		// saveSettings already persisted them via subscriptionMgr above,
+		// but those subscription-scoped keys are stripped from runtimeValues.
+		// Without signaling, ApplySettings can't detect that LLM config changed,
+		// so CLISetupCompleted never gets set → setup panel re-appears on restart.
+		llmCredsSaved := false
 		for k, v := range values {
-			if !isSubscriptionScopedSettingKey(k) {
-				runtimeValues[k] = v
+			if isSubscriptionScopedSettingKey(k) {
+				if k == "llm_api_key" && strings.TrimSpace(v) != "" {
+					llmCredsSaved = true
+				}
+				continue
 			}
+			runtimeValues[k] = v
+		}
+		if llmCredsSaved {
+			runtimeValues["__llm_creds_saved"] = "1"
 		}
 		m.channel.config.ApplySettings(runtimeValues, m.chatID)
 	}

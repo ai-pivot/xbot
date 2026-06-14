@@ -1144,14 +1144,22 @@ func main() {
 			_, urlChanged := values["llm_base_url"]
 			_, maxOutputChanged := values["max_output_tokens"]
 			_, thinkingChanged := values["thinking_mode"]
+			// Signal from saveSettings: LLM credentials were saved via subscriptionMgr.
+			// The actual subscription-scoped keys are stripped before reaching here,
+			// so this synthetic key is the only way to know LLM config changed.
+			_, llmCredsSaved := values["__llm_creds_saved"]
 
 			llmFieldChanged := llmChanged || keyChanged || modelChanged || urlChanged || maxOutputChanged || thinkingChanged
 
 			// ── Subscription-scoped fields: update via subscription manager ──
+			// Skip the redundant updateActiveSubscription call when saveSettings
+			// already persisted credentials (signaled by __llm_creds_saved).
 			if llmFieldChanged {
 				if err := updateActiveSubscription(app.client, app.cfg, values); err != nil {
 					log.Warnf("Failed to update active subscription: %v", err)
 				}
+			}
+			if llmFieldChanged || llmCredsSaved {
 				// Mark setup as completed so isFirstRun() won't re-trigger on next startup.
 				// This is needed because LLM credentials are stored in DB (user_llm_subscriptions),
 				// not in config.json, so the config-level API key check won't catch them.
