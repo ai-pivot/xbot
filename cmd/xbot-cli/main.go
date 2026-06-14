@@ -34,6 +34,7 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/cli"
 	"xbot/clipanic"
 	"xbot/config"
 	"xbot/llm"
@@ -561,8 +562,8 @@ type cliApp struct {
 	// Remote-mode async cache for agent info (avoid RPC from event loop → deadlock)
 	agentCacheMu      sync.RWMutex
 	agentCacheCount   int
-	agentCacheList    []channel.AgentPanelEntry
-	sessionsCacheList []channel.SessionPanelEntry
+	agentCacheList    []cli.AgentPanelEntry
+	sessionsCacheList []cli.SessionPanelEntry
 
 	// Remote-mode async cache for GetCurrentValues (avoid RPC from Update loop → 30s freeze)
 	valuesCacheMu sync.RWMutex
@@ -637,8 +638,8 @@ func isLocalServer(serverURL string) bool {
 // Otherwise creates a LocalBackend (agent runs in-process).
 // buildPaletteExternalCommands collects commands from skills, plugins, and user
 // custom commands (~/.xbot/commands/*.md). Called each time the palette opens.
-func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand {
-	var cmds []channel.PaletteExternalCommand
+func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
+	var cmds []cli.PaletteExternalCommand
 	home, _ := os.UserHomeDir()
 	xbotDir := home + "/.xbot"
 
@@ -652,10 +653,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if strings.HasPrefix(name, ".") || name == "skill-creator" {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       "Skill: " + name,
 				Description: "activate /" + name + " skill",
-				Category:    channel.PaletteCategorySkills,
+				Category:    cli.PaletteCategorySkills,
 				Content:     "/" + name + " ",
 			})
 		}
@@ -675,10 +676,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if err != nil {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       name,
 				Description: "custom command",
-				Category:    channel.PaletteCategoryUser,
+				Category:    cli.PaletteCategoryUser,
 				Content:     string(content),
 				Send:        true,
 			})
@@ -695,10 +696,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       "Agent: " + name,
 				Description: "spawn " + name + " SubAgent",
-				Category:    channel.PaletteCategoryAgents,
+				Category:    cli.PaletteCategoryAgents,
 				Content:     "/agent " + name + " ",
 			})
 		}
@@ -1102,20 +1103,20 @@ func main() {
 		log.WithField("chatID", initialChatID).Info("Ephemeral session (no persistence)")
 	} else if newSession {
 		// --new/--new-session: unconditionally create a new isolated session.
-		name, chatID, err := channel.NewAutoSession(absWorkDir)
+		name, chatID, err := cli.NewAutoSession(absWorkDir)
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create new session")
 		}
 		initialChatID = chatID
 		log.WithFields(log.Fields{"chatID": chatID, "name": name}).Info("Created new session")
-	} else if last := channel.GetLastActiveSession(absWorkDir); last != "" {
+	} else if last := cli.GetLastActiveSession(absWorkDir); last != "" {
 		initialChatID = last
 		log.WithFields(log.Fields{"chatID": initialChatID}).Info("Restoring last active session")
 	}
 
 	remoteServerURL := app.client.ServerURL()
 
-	cliCfg := channel.CLIChannelConfig{
+	cliCfg := cli.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
 		RemoteMode:           false, // unified: always use remote adapter path
@@ -1166,7 +1167,7 @@ func main() {
 					continue // global-scoped keys not stored in DB
 				}
 				// Per-session settings: skip global DB write when in a session context
-				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+				if cli.IsPerSessionSettingKey(k) && chatID != "" {
 					continue
 				}
 				_ = app.client.SetSetting("cli", "cli_user", k, v)
@@ -1181,7 +1182,7 @@ func main() {
 					app.valuesCache = make(map[string]string)
 				}
 				// Per-session settings: don't cache globally (other sessions should see their own values)
-				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+				if cli.IsPerSessionSettingKey(k) && chatID != "" {
 					continue
 				}
 				app.valuesCache[k] = v
@@ -1243,7 +1244,7 @@ func main() {
 		RefreshValuesCache: func(subscriptionID string) {
 			app.refreshRemoteValuesCache(subscriptionID)
 		},
-		UsageQuery: func(senderID string, days int) (*channel.UserTokenUsage, []channel.DailyTokenUsage, error) {
+		UsageQuery: func(senderID string, days int) (*cli.UserTokenUsage, []channel.DailyTokenUsage, error) {
 			if app.client == nil {
 				return nil, nil, fmt.Errorf("agent not initialized")
 			}
@@ -1251,9 +1252,9 @@ func main() {
 			if err != nil {
 				return nil, nil, err
 			}
-			var cumulative *channel.UserTokenUsage
+			var cumulative *cli.UserTokenUsage
 			if cumMap != nil {
-				var u channel.UserTokenUsage
+				var u cli.UserTokenUsage
 				if b, _ := json.Marshal(cumMap); len(b) > 0 {
 					_ = json.Unmarshal(b, &u)
 				}
@@ -1279,14 +1280,14 @@ func main() {
 			}
 			return app.client.CountInteractiveSessions("cli", absWorkDir)
 		},
-		AgentList: func() []channel.AgentPanelEntry {
+		AgentList: func() []cli.AgentPanelEntry {
 			if app.client == nil {
 				return nil
 			}
 			sessions := app.client.ListInteractiveSessions("cli", absWorkDir)
-			entries := make([]channel.AgentPanelEntry, len(sessions))
+			entries := make([]cli.AgentPanelEntry, len(sessions))
 			for i, s := range sessions {
-				entries[i] = channel.AgentPanelEntry{
+				entries[i] = cli.AgentPanelEntry{
 					Role:       s.Role,
 					Instance:   s.Instance,
 					Running:    s.Running,
@@ -1317,19 +1318,19 @@ func main() {
 			}
 			return result
 		},
-		SessionsList: func() []channel.SessionPanelEntry {
+		SessionsList: func() []cli.SessionPanelEntry {
 			// All modes use cache — refreshed by refreshAgentCache() in background.
 			app.agentCacheMu.RLock()
 			cached := app.sessionsCacheList
 			app.agentCacheMu.RUnlock()
-			entries := make([]channel.SessionPanelEntry, len(cached))
+			entries := make([]cli.SessionPanelEntry, len(cached))
 			copy(entries, cached)
 			for _, g := range tools.ListGroups() {
 				status := ""
 				if g.Closed {
 					status = " [closed]"
 				}
-				entries = append(entries, channel.SessionPanelEntry{
+				entries = append(entries, cli.SessionPanelEntry{
 					ID:          g.Name,
 					Type:        "group",
 					Label:       "💬 " + g.Name + status,
@@ -1371,7 +1372,7 @@ func main() {
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
 		},
-		PaletteContributor: func() []channel.PaletteExternalCommand {
+		PaletteContributor: func() []cli.PaletteExternalCommand {
 			return app.buildPaletteExternalCommands()
 		},
 	}
@@ -1495,7 +1496,7 @@ func main() {
 		}
 	}
 
-	cliCh := channel.NewCLIChannel(&cliCfg)
+	cliCh := cli.NewCLIChannel(&cliCfg)
 	// NOTE: No disp.Register(cliCh) — localEventBridge (registered inside InitServer)
 	// handles server→CLI events via eventCh. Remote mode: events come via WS.
 
@@ -1582,17 +1583,17 @@ func main() {
 		cliCh.SetBgTaskRemoteCallbacks(
 			"cli:"+cliCfg.ChatID,
 			func() int { return app.client.GetBgTaskCount(cliCh.BgSessionKey()) },
-			func() []*channel.BgTask {
+			func() []*cli.BgTask {
 				tasks, _ := app.client.ListBgTasks(cliCh.BgSessionKey())
 				if tasks == nil {
 					return nil
 				}
-				result := make([]*channel.BgTask, len(tasks))
+				result := make([]*cli.BgTask, len(tasks))
 				for i, t := range tasks {
-					result[i] = &channel.BgTask{
+					result[i] = &cli.BgTask{
 						ID:       t.ID,
 						Command:  t.Command,
-						Status:   channel.BgTaskStatus(t.Status),
+						Status:   cli.BgTaskStatus(t.Status),
 						Output:   t.Output,
 						ExitCode: t.ExitCode,
 						Error:    t.Error,
@@ -1712,7 +1713,7 @@ func main() {
 	// Refresh from server when WS is ready (or from local agent immediately)
 	if vals, err := app.client.GetSettings("cli", "cli_user"); err == nil {
 		if t, ok := vals["theme"]; ok && t != "" {
-			channel.ApplyTheme(t)
+			cli.ApplyTheme(t)
 		}
 		cliCh.ApplyInitialLayout(vals)
 	}
@@ -1738,7 +1739,7 @@ func main() {
 	app.client.BindChat(chatID)
 
 	// Plugin widgets: subscribe to push events for widget zone content.
-	remoteCache := channel.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
+	remoteCache := cli.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
 		return app.client.CallRPC(method, params)
 	})
 	cliCh.SetRemotePluginCache(remoteCache)
@@ -1844,9 +1845,9 @@ func main() {
 				tenantMap[t.ChatID] = t.Label
 			}
 		}
-		var sessionEntries []channel.SessionPanelEntry
+		var sessionEntries []cli.SessionPanelEntry
 		seen := make(map[string]bool)
-		for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+		for _, s := range cli.ListLocalDirSessions(absWorkDir) {
 			mainBusy := app.client.IsProcessing("cli", s.ID)
 			sessLabel := s.Label
 			if sessLabel == "default" {
@@ -1855,7 +1856,7 @@ func main() {
 			if dbLabel, ok := tenantMap[s.ID]; ok && dbLabel != "" {
 				sessLabel = dbLabel
 			}
-			sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+			sessionEntries = append(sessionEntries, cli.SessionPanelEntry{
 				ID: s.ID, Type: "main", Channel: "cli",
 				Label: sessLabel, Active: s.ID == absWorkDir, Busy: mainBusy,
 			})
@@ -1865,16 +1866,16 @@ func main() {
 					continue
 				}
 				seen[agentKey] = true
-				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+				sessionEntries = append(sessionEntries, cli.SessionPanelEntry{
 					ID:   fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
 					Type: "agent", Channel: "cli", Role: sub.Role, Instance: sub.Instance,
 					ParentID: s.ID, Running: sub.Running, Busy: sub.Running, MessageHint: sub.Preview,
 				})
 			}
 		}
-		agentEntries := make([]channel.AgentPanelEntry, 0, len(allSubAgents))
+		agentEntries := make([]cli.AgentPanelEntry, 0, len(allSubAgents))
 		for _, s := range allSubAgents {
-			agentEntries = append(agentEntries, channel.AgentPanelEntry{
+			agentEntries = append(agentEntries, cli.AgentPanelEntry{
 				Role: s.Role, Instance: s.Instance, Running: s.Running,
 				Background: s.Background, Task: s.Task, Preview: s.Preview,
 			})
@@ -2037,7 +2038,7 @@ func setupLogger(cfg config.LogConfig, xbotHome string) error {
 func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) {
 	modelsLoadErrCb := func(err error) {
 		select {
-		case channel.ModelsLoadErrorCh() <- err:
+		case cli.ModelsLoadErrorCh() <- err:
 		default:
 		}
 	}
@@ -2076,7 +2077,7 @@ func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) 
 // Backend adapters — implement CLI interfaces via Backend RPC
 // ---------------------------------------------------------------------------
 
-// backendSettingsService implements channel.SettingsService via Backend RPC.
+// backendSettingsService implements cli.SettingsService via Backend RPC.
 type backendSettingsService struct {
 	client *agent.Client
 }
@@ -2093,7 +2094,7 @@ func (s *backendSettingsService) SetSetting(namespace, senderID, key, value stri
 	return s.client.SetSetting(namespace, senderID, key, value)
 }
 
-// backendModelLister implements channel.ModelLister via Backend RPC.
+// backendModelLister implements cli.ModelLister via Backend RPC.
 type backendModelLister struct {
 	client *agent.Client
 }
@@ -2115,7 +2116,7 @@ func (l *backendModelLister) ListAllModels() []string {
 	return l.client.ListAllModels()
 }
 
-// backendSubscriptionManager implements channel.SubscriptionManager via Backend interface.
+// backendSubscriptionManager implements cli.SubscriptionManager via Backend interface.
 // Works identically for both local (localTransport → DB) and remote (WS RPC → server DB) modes.
 type backendSubscriptionManager struct {
 	client *agent.Client
@@ -2171,7 +2172,7 @@ func (m *backendSubscriptionManager) GetSessionSubscription(senderID, chatID str
 	return m.client.GetSessionSubscription(senderID, chatID)
 }
 
-// backendLLMSubscriber implements channel.LLMSubscriber via Backend interface.
+// backendLLMSubscriber implements cli.LLMSubscriber via Backend interface.
 // Works identically for both local and remote modes.
 type backendLLMSubscriber struct {
 	client *agent.Client
