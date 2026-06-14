@@ -192,10 +192,24 @@ func (m *cliModel) saveSettings(values map[string]string) {
 				if err := m.subscriptionMgr.Add(newSub); err != nil {
 					logrus.WithFields(logrus.Fields{"err": err}).Warn("saveSettings: subscription create failed")
 				} else {
-					// Activate the new subscription
-					if m.channelName != "" && m.senderID != "" {
-						_ = m.subscriptionMgr.SetDefault(newSub.ID, m.senderID)
-					}
+					// Activate the new subscription as the GLOBAL default.
+					// Must pass chatID="" so the RPC handler takes the global
+					// path (svc.SetDefault + SwitchSubscription), NOT the
+					// per-session path which skips both.
+					_ = m.subscriptionMgr.SetDefault(newSub.ID, "")
+					// Also bind to the current session so GetSessionSubscription
+					// finds it immediately and the LLM factory has a per-chat entry.
+					_ = m.subscriptionMgr.SetDefault(newSub.ID, m.chatID)
+					// Sync TUI caches immediately — applySessionLLMState is the
+					// single source of truth for cachedModelName/activeSubID.
+					// Without this, refreshCachedModelName may fire before
+					// GetDefault reflects the new subscription (RPC timing),
+					// letting auto-discover pick a wrong model from ListModels().
+					m.activeSubID = newSub.ID
+					m.applySessionLLMState(SessionLLMState{
+						SubscriptionID: newSub.ID,
+						Model:          newSub.Model,
+					})
 				}
 			}
 		}

@@ -130,6 +130,13 @@ func (m *cliModel) hasNoSubscription() bool {
 	return result
 }
 
+// hasAnySubscription returns true if any subscription with an API key exists.
+// Used by refreshCachedModelName to gate auto-discover — prevents
+// ListModels()[0] from overriding a configured subscription's model.
+func (m *cliModel) hasAnySubscription() bool {
+	return !m.hasNoSubscription()
+}
+
 // computeHasNoSubscription performs the actual subscription check.
 // computeHasNoSubscription performs the actual subscription check.
 func (m *cliModel) computeHasNoSubscription() bool {
@@ -203,9 +210,12 @@ func (m *cliModel) refreshCachedModelName() {
 			}
 		}
 	}
-	// Auto-discover: if model name is still empty, try listing available models
-	// and pick the first one.
-	if m.cachedModelName == "" && m.channel.modelLister != nil {
+	// Auto-discover: if model name is STILL empty (no subscription, no per-session
+	// override, no global default), try listing available models and pick the first.
+	// CRITICAL: Skip auto-discover if ANY subscription exists — picking ListModels()[0]
+	// over a configured subscription's model causes display/actual model divergence
+	// (e.g. API proxy returns "gpt-4o-mini" first, overriding "deepseek-v4-pro").
+	if m.cachedModelName == "" && m.channel.modelLister != nil && !m.hasAnySubscription() {
 		m.channel.modelLister.EnsureModelsLoaded()
 		if models := m.channel.modelLister.ListModels(); len(models) > 0 {
 			m.cachedModelName = models[0]
@@ -287,8 +297,15 @@ func (m *cliModel) scheduleSessionLLMRestore() {
 			switchFn := m.channel.config.SwitchLLM
 			target := subs[i]
 			// Preserve the session's model choice across the async SwitchLLM.
-			// m.cachedModelName was set by applySessionLLMState before this call.
-			sessionModel := m.cachedModelName
+			// Only preserve if cachedModelName differs from the subscription's
+			// model AND matches a known model in the subscription's model list
+			// (legitimate per-session model switch). This prevents stale
+			// auto-discovered models (e.g. "gpt-4o-mini" from API proxy) from
+			// overriding the subscription's actual model.
+			sessionModel := ""
+			if m.cachedModelName != "" && m.cachedModelName != target.Model {
+				sessionModel = m.cachedModelName
+			}
 			m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 				err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 				return cliSwitchLLMDoneMsg{
