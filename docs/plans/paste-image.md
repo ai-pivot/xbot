@@ -2,7 +2,7 @@
 
 ## Summary
 
-实现 CLI 终端的图片粘贴功能。用户通过 `Ctrl+V` 或 `/paste` 命令将系统剪贴板中的图片粘贴到 xbot 对话中，图片自动保存为临时文件、编码为 base64 data URL 发送给 LLM vision 模型。支持本地和远程两种模式，跨 macOS / Linux(X11+Wayland) / Windows 平台。
+实现 CLI 终端的图片粘贴功能。用户通过 `/paste` 命令将系统剪贴板中的图片粘贴到 xbot 对话中，图片自动保存为临时文件、编码为 base64 data URL 发送给 LLM vision 模型。支持本地和远程两种模式，跨 macOS / Linux(X11+Wayland) / Windows 平台。
 
 同时修复现有 Gap：`@path/to/image.png` 文件引用当前只追加为纯文本路径，LLM 无法看到图片内容。
 
@@ -29,14 +29,13 @@ llm/openai.go:371-392:
 1. **Media 图片路径只作为文本追加** — vision 模型看不到图片内容
 2. **parseEmbeddedImages 已就绪但无输入** — base64 data URL 编码逻辑缺失
 3. **InboundMsg 不支持内联图片内容** — 只有文件路径引用，无 inline content
-4. **Ctrl+V 只处理文本粘贴** — BubbleTea 的 `tea.PasteMsg` 不包含图片数据
 
 ## Design Decisions（已确认）
 
 | 决策 | 选择 |
 |------|------|
 | 剪贴板读取 | `golang.design/x/clipboard` 纯 Go 库 |
-| 用户交互 | `Ctrl+V` 智能拦截 + `/paste` 命令兼容 |
+| 用户交互 | `/paste` 命令（后续可选加 Ctrl+V） |
 | 图片编码 | channel 层支持「文件引用」+「文件内容」两种模式 |
 | 远程模式 | MVP 支持，base64 随 WS JSON 传输 |
 | 图片大小限制 | 5MB（base64 后约 6.7MB） |
@@ -73,7 +72,7 @@ type InboundMessage struct {
 ### 数据流（目标）
 
 ```
-场景 1: Ctrl+V / /paste 粘贴图片
+场景 1: /paste 粘贴图片
   剪贴板 → golang.design/x/clipboard.Read(FmtImage)
     → 压缩/限制 (max 5MB)
     → InboundMsg.MediaContent [{MIMEType, Base64, Filename}]
@@ -123,34 +122,21 @@ type InboundMessage struct {
   - `CompressImage(data []byte, maxBytes int) ([]byte, string, error)` — 压缩/缩放
   - `SavePasteImage(data []byte) (string, error)` — 保存到 `~/.xbot/paste/{timestamp}.png`
   - `CleanupOldPasteImages(maxKeep int)` — 清理旧图片（保留最近 N 张）
-- **Why**: 封装剪贴板操作，供 Ctrl+V 和 /paste 共用
+- **Why**: 封装剪贴板操作，供 /paste 命令使用
 
-### 6. `channel/cli/cli_update.go` — Ctrl+V 智能拦截
-
-- **What**: 
-  - 在 Update() 的 switch 块中（line ~234），新增 `case tea.PasteMsg` 处理
-  - 当 `PasteMsg.Content` 为空时，异步检查剪贴板是否有图片
-  - 有图片 → 处理为图片粘贴（保存、编码、发送）
-  - 无图片 → 正常 fallthrough 到 textarea 文本粘贴
-- **Why**: 让 Ctrl+V 在剪贴板有图片时自动粘贴图片
-- **注意**: 
-  - 剪贴板读取是同步阻塞操作（~10-50ms），用 `tea.Cmd` 异步执行避免卡 UI
-  - `PasteMsg.Content` 非空时一定是文本粘贴，跳过图片检查（避免延迟）
-  - 某些终端在剪贴板只有图片时不发送 PasteMsg，需 /paste 作为 fallback
-
-### 7. `channel/cli/cli_slash.go` — /paste 命令
+### 6. `channel/cli/cli_slash.go` — /paste 命令
 
 - **What**: 新增 `case "/paste"` 分支
   - 读取剪贴板 → 检查图片 → 如果有图片则粘贴，否则提示「剪贴板中没有图片」
   - 如果剪贴板有文本，将文本插入到 textarea（兼容 aider 行为）
 - **Why**: 提供可靠的显式图片粘贴入口
 
-### 8. `channel/cli/cli_types.go` — 注册 /paste 命令
+### 7. `channel/cli/cli_types.go` — 注册 /paste 命令
 
 - **What**: 在 `cliCommands` 数组中添加 `"/paste"`
 - **Why**: Tab 补全支持
 
-### 9. `channel/cli/cli_inbound.go` — 新增发送图片消息方法
+### 8. `channel/cli/cli_inbound.go` — 新增发送图片消息方法
 
 - **What**: 新增 `sendImageMessage(mediaContent MediaContent, displayText string)` 方法
   - `displayText`（如 "📎 已粘贴图片 (paste_xxx.png, 234KB)"）存入 cliMessage 用于终端显示
@@ -158,17 +144,17 @@ type InboundMessage struct {
   - 终端不显示 base64 内容
 - **Why**: 终端显示内容 ≠ 发送给 agent 的内容
 
-### 10. `agent/client.go` — 远程模式 RPC 扩展
+### 9. `agent/client.go` — 远程模式 RPC 扩展
 
 - **What**: `SendInbound` RPC 参数结构添加 `MediaContent` 字段
 - **Why**: 远程 CLI 需要通过 WS 将 base64 图片传输到服务器
 
-### 11. `serverapp/rpc_table.go` — 服务端 handler 同步
+### 10. `serverapp/rpc_table.go` — 服务端 handler 同步
 
 - **What**: `send_inbound` handler 接收 `MediaContent` 并透传到 `bus.InboundMessage`
 - **Why**: 远程模式闭环
 
-### 12. `llm/anthropic.go` — Anthropic 图片 content block 支持
+### 11. `llm/anthropic.go` — Anthropic 图片 content block 支持
 
 - **What**: `toAnthropicMessages` 中 user 消息添加 `parseEmbeddedImages` 调用，将 `data:image/...;base64,...` 转为 Anthropic 的 image content block：
   ```go
@@ -177,32 +163,10 @@ type InboundMessage struct {
 - **Why**: 否则只有 OpenAI 兼容模型能看到图片，Anthropic（Claude）用户粘贴图片无效
 - **复用**: 解析逻辑可直接调用 `openai.go` 中已有的 `parseEmbeddedImages`（提取到公共位置或复制）
 
-### 13. `go.mod` — 新增依赖
+### 12. `go.mod` — 新增依赖
 
 - **What**: `golang.design/x/clipboard`
 - **Why**: 跨平台剪贴板读取
-
-## Ctrl+V 交互流程（详细）
-
-```
-用户按 Ctrl+V
-  ├── 终端激活 bracketed paste mode
-  │   ├── 剪贴板有文本 → 发送 bracketed paste(text) → PasteMsg{Content: "text"}
-  │   │   → Content 非空，跳过图片检查 → 正常文本粘贴
-  │   └── 剪贴板只有图片 → 发送 empty paste 或无事件
-  │       → PasteMsg{Content: ""} 或无 PasteMsg
-  │       → 异步检查剪贴板图片 → 有图 → 图片粘贴
-  │
-  └── 某些终端（不拦截 Ctrl+V）
-      → KeyPressMsg{Code: 0x16} (Ctrl+V)
-      → 拦截 → 异步检查剪贴板 → 有图 → 图片粘贴 / 无图 → 插入文本
-```
-
-**PasteMsg 为空时的处理**：
-1. 返回 `tea.Cmd` 异步读取剪贴板图片
-2. 图片读取成功 → 发送 `cliPasteImageMsg{data}` 消息回 event loop
-3. 图片读取失败/无图片 → 发送 `cliPasteImageMsg{data: nil}` → fallthrough 为空操作
-4. 避免阻塞 event loop（剪贴板读取 ~10-50ms）
 
 ## 图片压缩策略
 
@@ -248,8 +212,6 @@ CLI Client (本地)
 | 风险 | 缓解 |
 |------|------|
 | `golang.design/x/clipboard` 依赖链拉入 `golang.org/x/mobile` | 仅 darwin 平台需要，Linux/Windows 不受影响；`x/mobile` 是纯 Go 无 CGO |
-| 剪贴板读取阻塞 event loop | 使用 `tea.Cmd` 异步执行，通过消息回传结果 |
-| 某些终端不发送空 PasteMsg | `/paste` 命令作为可靠 fallback |
 | WS 大消息被截断 | CLI 侧 5MB 硬限制；server 侧确认 WS max message size |
 | agent.go 图片编码增加首消息处理延迟 | 仅在 Media 包含图片文件时触发；base64 编码 5MB 图片 < 50ms |
 | 旧版本 InboundMsg JSON 缺少 MediaContent | `omitempty` + nil slice 处理，向后兼容 |
@@ -259,7 +221,6 @@ CLI Client (本地)
 - [ ] `go build ./...` 通过（含 `golang.design/x/clipboard` 新依赖）
 - [ ] macOS/Linux/Windows 下 `clipboard.Init()` 不 panic（无 GUI 环境优雅降级）
 - [ ] `/paste` 命令：剪贴板有图片时保存 + 发送，无图片时提示
-- [ ] Ctrl+V：剪贴板有图片时粘贴图片，有文本时正常粘贴文本
 - [ ] 终端显示 `📎 已粘贴图片 (xxx.png, 234KB)`，不显示 base64
 - [ ] `@path/to/image.png` 引用也能让 vision 模型看到图片（Gap 修复）
 - [ ] 图片 > 5MB 自动压缩；压缩后仍 > 5MB 则拒绝并提示
@@ -285,8 +246,3 @@ msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
 
 - `channel/web/web.go:840` — `SetReadLimit(10 << 20)` (10MB)，5MB 图片足够
 - CLI remote WS 需要在连接时同样设置足够的 read limit
-
-### Ctrl+V 在 panel/edit 模式下的行为
-
-- 编辑 settings 或回答 askuser 时，Ctrl+V 保持现有文本粘贴行为（已在 `cli_update.go:169` 拦截）
-- 图片粘贴仅在主输入区域（非 panel 模式）触发
