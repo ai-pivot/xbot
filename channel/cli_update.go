@@ -667,6 +667,7 @@ func (m *cliModel) relayoutViewport() {
 		m.rc.wrapWidth = 0
 		m.rc.histMaxW = 0
 		m.rc.histLines = nil
+		m.rc.bumpHistGen()
 		m.rc.allLines = nil
 		m.rc.allLinesHistLen = 0
 		for i := range m.messages {

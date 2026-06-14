@@ -261,9 +261,10 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 
 	if p.Phase == "compressing" {
 		hasSpinner = true
+		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockPulse,
-			text: "  " + s.ProgressRunning.Render(m.locale.StatusCompressing),
+			text: "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressRunning.Render(m.locale.StatusCompressing),
 		})
 	}
 
@@ -293,16 +294,30 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		})
 	}
 
+	// Combine ActiveTools (active/done/error) and CompletedTools.
+	// Deduplicate by Name+Label to prevent the same tool appearing twice
+	// when it transitions from ActiveTools(done) to CompletedTools across frames.
 	var tools []protocol.ToolProgress
+	seen := make(map[string]bool)
+	addTool := func(t protocol.ToolProgress) {
+		key := t.Name + "\x00" + t.Label
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		tools = append(tools, t)
+	}
 	for _, tool := range p.ActiveTools {
 		if tool.Status == "running" || tool.Status == "active" || tool.Status == "done" || tool.Status == "error" {
-			tools = append(tools, tool)
+			addTool(tool)
 		}
 		if tool.Status == "running" || tool.Status == "active" {
 			hasSpinner = true
 		}
 	}
-	tools = append(tools, p.CompletedTools...)
+	for _, tool := range p.CompletedTools {
+		addTool(tool)
+	}
 
 	if len(tools) > 0 {
 		blocks = append(blocks, turnBlock{

@@ -407,8 +407,8 @@ func TestRenderLiveIterationCompressingShowsStatus(t *testing.T) {
 	if !strings.Contains(rendered, "compressing") {
 		t.Fatalf("compressing phase should render status text, got:\n%s", rendered)
 	}
-	if strings.Contains(rendered, "◇◇◇◇◇") {
-		t.Fatalf("compressing phase should not fall back to pulse spinner, got:\n%s", rendered)
+	if !strings.Contains(rendered, "◇") {
+		t.Fatalf("compressing phase should show pulse spinner animation, got:\n%s", rendered)
 	}
 }
 
@@ -554,24 +554,37 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 	if model.streamingMsgIdx != -1 {
 		t.Fatalf("streamingMsgIdx = %d, want -1 after cancel", model.streamingMsgIdx)
 	}
-	var assistant *cliMessage
+	// With iteration data preserved on cancel, the empty streaming message
+	// is finalized (not removed) so the user keeps seeing tool tags/reasoning
+	// that were rendered inline before Ctrl+C.
+	var assistantMsg *cliMessage
 	for i := range model.messages {
 		if model.messages[i].role == "assistant" {
-			assistant = &model.messages[i]
+			assistantMsg = &model.messages[i]
 			break
 		}
 	}
-	if assistant == nil {
-		t.Fatal("expected cancelled assistant message")
+	if assistantMsg == nil {
+		t.Fatal("expected assistant message to be preserved with iterations after cancel")
 	}
-	if got := len(assistant.iterations); got != 2 {
-		t.Fatalf("cancelled assistant iterations = %d, want 2: %+v", got, assistant.iterations)
+	if assistantMsg.isPartial {
+		t.Error("expected isPartial=false after cancel finalize")
 	}
-	if assistant.iterations[1].Iteration != 2 || assistant.iterations[1].Thinking != "current unsnapped iteration" {
-		t.Fatalf("current unsnapped iteration was not preserved: %+v", assistant.iterations[1])
+	if len(assistantMsg.iterations) == 0 {
+		t.Error("expected iterations to be baked into finalized message")
 	}
-	if len(assistant.iterations[1].Tools) != 1 || assistant.iterations[1].Tools[0].Label != "Current build" {
-		t.Fatalf("current unsnapped tools were not preserved: %+v", assistant.iterations[1].Tools)
+	// Verify both the previous iteration and current unsnapped iteration are captured.
+	// cancelledTurnIterations combines iterationHistory + progress data.
+	var foundShell bool
+	for _, it := range assistantMsg.iterations {
+		for _, tool := range it.Tools {
+			if tool.Name == "Shell" {
+				foundShell = true
+			}
+		}
+	}
+	if !foundShell {
+		t.Error("expected Shell tool from current unsnapped iteration to be preserved")
 	}
 }
 

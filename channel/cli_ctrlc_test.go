@@ -157,3 +157,174 @@ func TestCtrlC_AutoStartRace(t *testing.T) {
 		t.Fatal("User message disappeared in auto-start race!")
 	}
 }
+
+// TestCtrlC_CancelAckPreservesBakedIterations verifies that the cancel ack
+// does NOT overwrite iterations that were already baked by handleProgressDone's
+// cancel path. This is the root cause of "Ctrl+C loses iterations but restart
+// brings them back": handleProgressDone bakes iterationHistory into the
+// streaming message, then endAgentTurn clears iterationHistory. When the
+// cancel ack arrives, cancelledTurnIterations() returns empty (because
+// iterationHistory is gone), and overwrites the baked iterations.
+func TestCtrlC_CancelAckPreservesBakedIterations(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn() // increments agentTurnID to 1
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	// Set up a turn with iteration history
+	oldTurnID := model.agentTurnID
+	model.cancelTargetTurnID = oldTurnID
+	model.messages = append(model.messages, cliMessage{
+		role:      "user",
+		content:   "fix this bug",
+		timestamp: time.Now(),
+		dirty:     true,
+	})
+	// Replace the empty streaming message created by startAgentTurn with one that has content
+	model.messages[model.streamingMsgIdx] = cliMessage{
+		role:      "assistant",
+		content:   "Here is some streamed content", // Non-empty: triggers the overwrite bug
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    oldTurnID,
+	}
+
+	// Simulate iterations accumulated during the turn
+	model.iterationHistory = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Thinking:  "analyzing the code",
+			Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "main.go", Status: "done", Elapsed: 100, Iteration: 1},
+			},
+		},
+		{
+			Iteration: 2,
+			Thinking:  "found the bug",
+			Tools: []protocol.ToolProgress{
+				{Name: "Shell", Label: "go test", Status: "done", Elapsed: 200, Iteration: 2},
+			},
+		},
+	}
+	model.lastSeenIteration = 2
+	model.progress = &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 2,
+	}
+
+	// PhaseDone arrives with turnCancelled=true (handleProgressDone cancel path)
+	model.turnCancelled = true
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "go test", Status: "done", Elapsed: 200, Iteration: 2},
+		},
+	})
+
+	// After handleProgressDone cancel path:
+	// - iterations should be baked into streaming message
+	// - iterationHistory should be cleared by endAgentTurn
+	// - turnCancelled restored to true
+	bakedIters := 0
+	if model.streamingMsgIdx >= 0 && model.streamingMsgIdx < len(model.messages) {
+		bakedIters = len(model.messages[model.streamingMsgIdx].iterations)
+	}
+	// streamingMsgIdx was set to -1 by endAgentTurn, but the message is still in m.messages
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			bakedIters = len(model.messages[i].iterations)
+			break
+		}
+	}
+	if bakedIters == 0 {
+		t.Fatal("handleProgressDone should have baked iterations into streaming message")
+	}
+	// Verify iterationHistory was cleared by endAgentTurn
+	if len(model.iterationHistory) != 0 {
+		t.Fatal("iterationHistory should be cleared after endAgentTurn")
+	}
+
+	// Cancel ack arrives — this is where the bug occurs
+	model.Update(cliOutboundMsg{
+		msg: OutboundMsg{
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// Find the assistant message and verify iterations are PRESERVED
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should still exist after cancel ack")
+	}
+	if assistantMsg.isPartial {
+		t.Error("assistant message should be finalized (isPartial=false)")
+	}
+	// CRITICAL: iterations must NOT be overwritten by the cancel ack
+	if len(assistantMsg.iterations) != bakedIters {
+		t.Errorf("iterations overwritten by cancel ack: got %d, want %d (baked by handleProgressDone)",
+			len(assistantMsg.iterations), bakedIters)
+	}
+}
+
+// TestCtrlC_CancelAckBakesIterationsWhenPhaseDoneNotArrived verifies that
+// when cancel ack arrives BEFORE PhaseDone (iterationHistory still available),
+// the iterations are correctly baked via cancelledTurnIterations().
+func TestCtrlC_CancelAckBakesIterationsWhenPhaseDoneNotArrived(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	oldTurnID := model.agentTurnID
+	model.cancelTargetTurnID = oldTurnID
+	model.streamingMsgIdx = len(model.messages)
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		content:   "partial response",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    oldTurnID,
+	})
+
+	// Iteration history still available (PhaseDone hasn't arrived yet)
+	model.iterationHistory = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "file.go", Status: "done", Elapsed: 50, Iteration: 1},
+			},
+		},
+	}
+	model.progress = &protocol.ProgressEvent{Iteration: 1}
+
+	// Cancel ack arrives BEFORE PhaseDone
+	model.Update(cliOutboundMsg{
+		msg: OutboundMsg{
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should exist after cancel")
+	}
+	if len(assistantMsg.iterations) == 0 {
+		t.Error("iterations should be baked via cancelledTurnIterations() when PhaseDone hasn't arrived")
+	}
+}

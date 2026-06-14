@@ -224,6 +224,10 @@ func (m *cliModel) cycleModel() {
 	existing.SubscriptionID = m.activeSubID
 	existing.Model = nextModel
 	SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
+	// Re-resolve context/output token limits for the new model so the
+	// context usage bar reflects the correct window size immediately.
+	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(existing, m.subscriptionMgr)
+	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(existing, m.subscriptionMgr))
 	m.updateQuickSwitchModels(nextModel)
 }
 
@@ -651,6 +655,14 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	m.lastTokenUsage = nil
 	m.cachedCompressRatio = 0
 
+	// Clear session-scoped flags that must NOT leak across sessions.
+	// compressionReloading: if set by a previous session's HistoryCompacted event,
+	//   it permanently blocks auto-start in the new session (Bug: stale flag leak).
+	// turnDoneFlags: per-turn reply/done tracking from the old session is meaningless
+	//   in the new session and can cause premature queue flush (Bug: stale flags).
+	m.compressionReloading = false
+	m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
+
 	// ── Session LLM state restoration ──────────────────────────
 	// Only when in-memory caches are empty (new session or TUI restart).
 	// Uses unified LoadSessionLLMState + applySessionLLMState to ensure
@@ -681,16 +693,21 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 								if m.channel != nil && m.channel.config.SwitchLLM != nil {
 									switchFn := m.channel.config.SwitchLLM
 									target := subs[i]
+									// Capture the session's model so it survives the async
+									// SwitchLLM callback. Without this, handleSwitchLLMDoneMsg
+									// overwrites the session model with the subscription's model.
+									sessionModel := state.Model
 									m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 										err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 										return cliSwitchLLMDoneMsg{
-											err:       err,
-											subID:     target.ID,
-											subName:   target.Name,
-											subModel:  target.Model,
-											maxCtx:    resolveSubMaxContext(&target),
-											maxOutTok: resolveSubMaxOutputTokens(&target),
-											mgr:       m.subscriptionMgr,
+											err:          err,
+											subID:        target.ID,
+											subName:      target.Name,
+											subModel:     target.Model,
+											maxCtx:       resolveSubMaxContext(&target),
+											maxOutTok:    resolveSubMaxOutputTokens(&target),
+											mgr:          m.subscriptionMgr,
+											restoreModel: sessionModel,
 										}
 									})
 								}
@@ -770,6 +787,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 			m.progress = nil
 			m.typing = false
 			m.lastProgressSeq = 0
+			m.suPhaseDoneConfirmed = false
 			m.inputReady = false
 			m.suLoading = true
 			cmds = append(cmds, m.suLoadHistoryCmd())
@@ -1196,6 +1214,7 @@ type cliModel struct {
 	splashFrame          int  // 当前 splash 动画帧索引
 	suLoading            bool // true = /su 切换用户后正在加载历史，显示 loading 画面
 	suPhaseDoneConfirmed bool // true = PhaseDone received during suLoading (server confirmed idle)
+	compressionReloading bool // true = HistoryCompacted 异步 reload 进行中，阻止 auto-start
 
 	// --- §16 Toast 通知队列 ---
 	toasts     []cliToastItem // Toast 队列（头部=当前显示）
@@ -1528,13 +1547,14 @@ func resolveSubMaxOutputTokens(sub *Subscription) int {
 }
 
 type cliSwitchLLMDoneMsg struct {
-	err       error
-	subID     string
-	subName   string
-	subModel  string
-	maxCtx    int // per-model max_context from subscription (for session persistence)
-	maxOutTok int // per-model max_output_tokens from subscription
-	mgr       SubscriptionManager
+	err          error
+	subID        string
+	subName      string
+	subModel     string
+	maxCtx       int // per-model max_context from subscription (for session persistence)
+	maxOutTok    int // per-model max_output_tokens from subscription
+	mgr          SubscriptionManager
+	restoreModel string // non-empty when this switch is a session restore; preserves per-session model
 }
 
 // cliInjectedUserMsg 通知 CLI 有 user 消息被注入（如 bg task 完成通知）
@@ -1768,16 +1788,20 @@ func (m *cliModel) scheduleSessionLLMRestore() {
 		if subs[i].ID == m.activeSubID {
 			switchFn := m.channel.config.SwitchLLM
 			target := subs[i]
+			// Preserve the session's model choice across the async SwitchLLM.
+			// m.cachedModelName was set by applySessionLLMState before this call.
+			sessionModel := m.cachedModelName
 			m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
 				err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
 				return cliSwitchLLMDoneMsg{
-					err:       err,
-					subID:     target.ID,
-					subName:   target.Name,
-					subModel:  target.Model,
-					maxCtx:    resolveSubMaxContext(&target),
-					maxOutTok: resolveSubMaxOutputTokens(&target),
-					mgr:       m.subscriptionMgr,
+					err:          err,
+					subID:        target.ID,
+					subName:      target.Name,
+					subModel:     target.Model,
+					maxCtx:       resolveSubMaxContext(&target),
+					maxOutTok:    resolveSubMaxOutputTokens(&target),
+					mgr:          m.subscriptionMgr,
+					restoreModel: sessionModel,
 				}
 			})
 			break

@@ -45,6 +45,10 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			return
 		}
 	} else {
+		// ChatID empty: this is a defensive warning. Messages without proper
+		// session identity risk cross-session contamination. The dedupMessagesGuard
+		// will catch any resulting duplicates, but the root cause should be fixed
+		// at the sender. Log at error level to make it visible.
 		log.WithFields(log.Fields{
 			"msg_channel":    msg.Channel,
 			"msg_chatid":     msg.ChatID,
@@ -52,7 +56,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			"my_chatid":      m.chatID,
 			"waiting_user":   msg.WaitingUser,
 			"content_len":    len(msg.Content),
-		}).Warn("handleAgentMessage: ChatID empty — filter bypassed, applying to current session")
+		}).Error("handleAgentMessage: ChatID empty — filter bypassed, risk of cross-session contamination")
 	}
 
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
@@ -91,13 +95,45 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 
 		if cancelledIdx >= 0 {
 			streamingMsg := &m.messages[cancelledIdx]
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-			// Preserve any accumulated content from IsPartial updates.
-			// The cancel outbound has empty Content, but the streaming message
-			// may have accumulated text via IsPartial before the cancel.
-			// Do NOT overwrite existing content — keep what was streamed.
-			streamingMsg.iterations = m.cancelledTurnIterations()
+			if strings.TrimSpace(streamingMsg.content) != "" {
+				// Streaming message accumulated real content (e.g. partial LLM text).
+				// Finalize it as a completed message so the user keeps what was streamed.
+				streamingMsg.isPartial = false
+				streamingMsg.dirty = true
+				// Only set iterations from cancelledTurnIterations() if the message
+				// doesn't already have baked iterations. handleProgressDone's cancel
+				// path bakes iterations BEFORE endAgentTurn clears iterationHistory.
+				// By the time this cancel ack arrives, iterationHistory is already
+				// empty, so cancelledTurnIterations() would return nothing and
+				// OVERWRITE the baked iterations — causing the exact bug where
+				// "Ctrl+C loses iterations but restart brings them back".
+				if len(streamingMsg.iterations) == 0 {
+					streamingMsg.iterations = m.cancelledTurnIterations()
+				}
+			} else if len(streamingMsg.iterations) > 0 {
+				// Empty content but has iteration data (tool tags, reasoning).
+				// The user saw these rendered inline during the cancelled turn.
+				// Finalize instead of removing so the progress is preserved.
+				// (iterations already baked by handleProgressDone cancel path)
+				streamingMsg.isPartial = false
+				streamingMsg.dirty = true
+			} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
+				// Empty content but iterations exist in iterationHistory/pendingToolSummary
+				// (cancel ack arrived before PhaseDone). Finalize and bake iterations.
+				streamingMsg.isPartial = false
+				streamingMsg.dirty = true
+				streamingMsg.iterations = iters
+			} else {
+				// Empty streaming message (shell created by startAgentTurn)
+				// with no iteration data. Remove it — keeping an empty assistant
+				// creates a phantom message that doesn't match DB history.
+				m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
+				if m.streamingMsgIdx == cancelledIdx {
+					m.streamingMsgIdx = -1
+				} else if m.streamingMsgIdx > cancelledIdx {
+					m.streamingMsgIdx--
+				}
+			}
 		}
 		// Still clean up progress/streaming state for the cancelled turn.
 		// Do NOT endAgentTurn — the current turn (if any) must remain active.
@@ -117,7 +153,10 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 				}
 			}
 		}
-		m.streamingMsgIdx = -1
+		if m.streamingMsgIdx >= 0 {
+			m.streamingMsgIdx = -1
+		}
+		m.pendingToolSummary = nil // clear stale iteration data from cancelled turn
 		m.progress = nil
 		m.typing = false        // clear typing indicator immediately after cancel
 		m.turnCancelled = false // cancel complete, allow future turns
@@ -144,6 +183,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			m.cacheTokenUsage(m.progress.TokenUsage)
 		}
 		m.streamingMsgIdx = -1
+		m.pendingToolSummary = nil // prevent cross-turn leak (same class as U1 A1 U2 A1 bug)
 		m.progress = nil
 		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
@@ -163,6 +203,13 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			// Update existing streaming message
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].dirty = true
+		} else if existingIdx := m.findMessageByTurn(turnID, "assistant"); existingIdx >= 0 {
+			// Reuse existing message for this turn (prevents duplicate streaming messages
+			// when streamingMsgIdx was stale or cleared by endAgentTurn).
+			m.streamingMsgIdx = existingIdx
+			m.messages[existingIdx].content = content
+			m.messages[existingIdx].isPartial = true
+			m.messages[existingIdx].dirty = true
 		} else {
 			// Create new streaming message (fallback)
 			m.streamingMsgIdx = len(m.messages)
@@ -247,8 +294,9 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			}
 		}
 
-		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			// 更新流式消息为完整消息
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
+			m.messages[m.streamingMsgIdx].turnID == turnID {
+			// 更新流式消息为完整消息 (turnID 校验：防止跨 turn 覆盖)
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
@@ -267,6 +315,14 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 				iterations: bakeIterations,
 			}
 			completedMsgIdx = m.upsertMessageByTurn(turnID, "assistant", assistantMsg)
+		}
+		// Clear pendingToolSummary after consuming — prevents stale iteration
+		// data from Turn N leaking into Turn N+1's bakeIterations.
+		// Exception: when WaitingUser=true, the turn is paused (not ended).
+		// pendingToolSummary must survive so iterations remain available when
+		// the user answers and the turn resumes.
+		if !msg.WaitingUser {
+			m.pendingToolSummary = nil
 		}
 		// 重置流式状态
 		m.streamingMsgIdx = -1
@@ -322,6 +378,7 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 			m.rc.wrapWidth = 0
 			m.rc.histMaxW = 0
 			m.rc.histLines = nil
+			m.rc.bumpHistGen()
 			// PhaseDone from emitBuiltinProgressDone should arrive before this outbound,
 			// so endAgentTurn is usually a no-op (turn already ended). Kept as safety net.
 			m.endAgentTurn(m.agentTurnID)
@@ -391,17 +448,18 @@ func (m *cliModel) handleAgentMessage(msg OutboundMsg) {
 						answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
 					}
 					m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
-					// Persist pre-AskUser iteration history before startAgentTurn clears it.
-					// Without this, iterations 1..N from the first run disappear when
-					// resetProgressState sets m.iterationHistory = nil.
-					if len(m.iterationHistory) > 0 {
-						// Store iterations in pendingToolSummary (same pattern as handleProgressDone)
+					// Persist pre-AskUser iteration history AFTER startAgentTurn.
+					// startAgentTurn clears pendingToolSummary (to prevent stale
+					// cross-turn data), so we must save iterationHistory AFTER
+					// the clear, not before.
+					savedIterHistory := append([]cliIterationSnapshot{}, m.iterationHistory...)
+					m.startAgentTurn()
+					if len(savedIterHistory) > 0 {
 						if m.pendingToolSummary == nil {
 							m.pendingToolSummary = &cliMessage{}
 						}
-						m.pendingToolSummary.iterations = append([]cliIterationSnapshot{}, m.iterationHistory...)
+						m.pendingToolSummary.iterations = savedIterHistory
 					}
-					m.startAgentTurn()
 					m.updateViewportContent()
 				}, func() {
 					// Clean up persisted pending question on cancel.

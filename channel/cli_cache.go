@@ -131,6 +131,7 @@ func (m *cliModel) appendNewMessagesToCache() {
 	// incomplete history, causing visual duplication or missing content.
 	m.rc.histLines = nil
 	m.rc.wrapRaw = ""
+	m.rc.bumpHistGen() // invalidate allLines cache — histLines cleared
 
 	// Set viewport with new content + rewind block
 	var vp strings.Builder
@@ -183,6 +184,7 @@ func (m *cliModel) fullRebuild() {
 		}
 		m.rc.history = histBuf.String()
 		m.rc.histLines = allWrappedLines
+		m.rc.bumpHistGen() // invalidate allLines cache — content changed
 		m.rc.wrapHistory = m.rc.history
 		m.rc.wrapRaw = m.rc.history
 		m.rc.wrapWidth = cw
@@ -283,6 +285,7 @@ func (m *cliModel) fullRebuild() {
 	// Set the cache directly — no need to re-split + re-wrap the entire
 	// cachedHistory string (that was the O(N) bottleneck).
 	m.rc.histLines = allWrappedLines
+	m.rc.bumpHistGen() // invalidate allLines cache — content changed
 	m.rc.wrapHistory = m.rc.history
 	m.rc.wrapRaw = m.rc.history
 	m.rc.wrapWidth = cw

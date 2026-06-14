@@ -3,6 +3,7 @@ package channel
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"xbot/protocol"
@@ -384,7 +385,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// turn is paused (not ended). Late progress events from the engine must not
 	// trigger startAgentTurn → resetProgressState, which clears iterationHistory
 	// and makes all previous iterations disappear.
-	if !m.typing && !m.suLoading && msg.payload != nil && msg.payload.Phase != "done" && m.panelMode != "askuser" {
+	if !m.typing && !m.suLoading && !m.compressionReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelMode != "askuser" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
@@ -519,6 +520,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
 		m.rc.invalidateProgress()
+		// Block auto-start until reload completes. Without this, progress
+		// events from the post-compression iteration trigger auto-start,
+		// creating a streaming message that gets wiped by handleHistoryReload's
+		// forceFullRebuild path — losing the streaming state and stalling TUI.
+		m.compressionReloading = true
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
@@ -719,8 +725,39 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 		// Also guard against prev being nil (progress cleared by endAgentTurn).
 		if prev != nil && prev.Iteration != m.lastSeenIteration {
 			// Data mismatch: prev belongs to a different iteration than what
-			// lastSeenIteration claims. Skip the snapshot to avoid corruption,
-			// but update the counter to prevent repeated misfires.
+			// lastSeenIteration claims. Instead of discarding the snapshot
+			// entirely (which permanently loses iteration data), create a
+			// snapshot tagged with prev.Iteration (the actual iteration number).
+			// Guard against duplicate snapshots for the same iteration.
+			alreadySnapped := false
+			for _, snap := range m.iterationHistory {
+				if snap.Iteration == prev.Iteration {
+					alreadySnapped = true
+					break
+				}
+			}
+			if !alreadySnapped {
+				prevIterTools := prev.CompletedTools
+				for _, t := range prev.ActiveTools {
+					if t.Status == "done" || t.Status == "error" {
+						prevIterTools = append(prevIterTools, t)
+					}
+				}
+				prevReasoning := prev.Reasoning
+				if prevReasoning == "" && m.reasoningByIter != nil {
+					prevReasoning = m.reasoningByIter[prev.Iteration]
+				}
+				if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
+					snap := cliIterationSnapshot{
+						Iteration:   prev.Iteration,
+						Thinking:    prev.Thinking,
+						Reasoning:   prevReasoning,
+						Tools:       prevIterTools,
+						ElapsedWall: time.Since(m.iterationStartTime).Milliseconds(),
+					}
+					m.iterationHistory = append(m.iterationHistory, snap)
+				}
+			}
 			m.lastSeenIteration = payload.Iteration
 			m.iterationStartTime = time.Now()
 			return
@@ -815,6 +852,19 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			}
 		}
 		m.setTurnDoneProcessed(turnID)
+		// Bake iteration data into the streaming message BEFORE endAgentTurn
+		// clears iterationHistory and progress. This preserves tool tags and
+		// reasoning in the viewport after Ctrl+C — the user already saw this
+		// content rendered inline and expects it to remain visible.
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
+			m.messages[m.streamingMsgIdx].turnID == turnID {
+			if len(m.iterationHistory) > 0 {
+				baked := make([]cliIterationSnapshot, len(m.iterationHistory))
+				copy(baked, m.iterationHistory)
+				m.messages[m.streamingMsgIdx].iterations = baked
+				m.messages[m.streamingMsgIdx].dirty = true
+			}
+		}
 		m.endAgentTurn(turnID)
 		// Restore turnCancelled: endAgentTurn resets it to false (correct for
 		// normal completion), but in the cancel path we need it to stay true
@@ -1167,21 +1217,50 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 
 		// When an active turn is restored from the server snapshot, the
 		// last assistant message in DB history corresponds to the in-flight
-		// streaming message. Without marking it as isPartial + streamingMsgIdx,
-		// subsequent live outbound messages (arriving after suLoading=false)
-		// would create a NEW streaming message via handleAgentMessage's
-		// "if m.streamingMsgIdx < 0" branch — duplicating the assistant
-		// content in the viewport (DB version + live version).
-		// This is the same model as normal operation: the streaming message
-		// stays isPartial until endAgentTurn finalizes it.
-		if m.streamingMsgIdx < 0 {
-			for i := len(m.messages) - 1; i >= 0; i-- {
+		// streaming message. We must ensure there is exactly ONE assistant
+		// message serving as the streaming slot — either reuse the history
+		// assistant or keep startAgentTurn's empty one (when no history assistant).
+		//
+		// startAgentTurn() always creates a new empty streaming assistant message.
+		// If history already has an assistant message, we must replace
+		// startAgentTurn's empty message with the history one to avoid showing
+		// two assistant messages (the history version + the empty streaming version).
+		{
+			// Find the last non-streaming assistant message from history
+			// (before the empty one created by startAgentTurn).
+			historyAssistantIdx := -1
+			streamIdx := m.streamingMsgIdx
+			for i := streamIdx - 1; i >= 0; i-- {
 				if m.messages[i].role == "assistant" {
-					m.messages[i].isPartial = true
-					m.messages[i].dirty = true
-					m.messages[i].turnID = m.agentTurnID
-					m.streamingMsgIdx = i
+					historyAssistantIdx = i
 					break
+				}
+			}
+			if historyAssistantIdx >= 0 && streamIdx >= 0 {
+				// Replace startAgentTurn's empty message with the history
+				// assistant's content, keeping isPartial + turnID for live updates.
+				m.messages[streamIdx].content = m.messages[historyAssistantIdx].content
+				if len(m.messages[historyAssistantIdx].iterations) > 0 {
+					m.messages[streamIdx].iterations = m.messages[historyAssistantIdx].iterations
+				}
+				m.messages[streamIdx].dirty = true
+				// Remove the duplicate history assistant message.
+				m.messages = slices.Delete(m.messages, historyAssistantIdx, historyAssistantIdx+1)
+				// Adjust streamingMsgIdx after deletion.
+				if historyAssistantIdx < streamIdx {
+					m.streamingMsgIdx--
+				}
+			} else if m.streamingMsgIdx < 0 {
+				// No startAgentTurn was called (m.typing was true from restoreSession).
+				// Find the last assistant from history and mark it as the streaming slot.
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if m.messages[i].role == "assistant" {
+						m.messages[i].isPartial = true
+						m.messages[i].dirty = true
+						m.messages[i].turnID = m.agentTurnID
+						m.streamingMsgIdx = i
+						break
+					}
 				}
 			}
 		}
@@ -1414,9 +1493,18 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// messages need re-rendering. This is critical for sessions with hundreds
 	// of iterations where full rebuild would take seconds.
 	m.streamingMsgIdx = restoredStreamingIdx
+	// Compression reload complete — allow auto-start turn again.
+	m.compressionReloading = false
 	if msg.forceFullRebuild {
 		m.messages = newMessages
 		m.invalidateAllCache(false)
+		// If engine is still running, start turn immediately so new
+		// iterations get a streaming message. Without this, progress
+		// updates only appear in the progress panel — new iteration
+		// tools never render in the message area, making TUI look frozen.
+		if !m.typing && m.progress != nil && m.progress.Phase != "done" && m.panelMode != "askuser" {
+			m.startAgentTurn()
+		}
 		m.updateViewportContent()
 		log.WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")
 		return
@@ -1529,6 +1617,14 @@ func mergeSubAgentTrees(prev, new []protocol.SubAgentInfo) []protocol.SubAgentIn
 				merged.Desc = p.Desc
 			}
 			merged.Children = mergeSubAgentTrees(p.Children, n.Children)
+			// When parent agent is still active but its children list is empty in
+			// the new update, preserve previous children (marked as done if still
+			// running) instead of dropping them entirely. This prevents child
+			// progress trees from flickering when the server doesn't include
+			// children in every update frame.
+			if len(n.Children) == 0 && len(merged.Children) == 0 && len(p.Children) > 0 {
+				merged.Children = markAllDone(p.Children)
+			}
 			result = append(result, merged)
 			delete(newByKey, key)
 		} else {
@@ -1569,6 +1665,17 @@ func markDoneIfRunning(sa protocol.SubAgentInfo) protocol.SubAgentInfo {
 		sa.Children[i] = markDoneIfRunning(sa.Children[i])
 	}
 	return sa
+}
+
+// markAllDone applies markDoneIfRunning to every agent in the slice.
+// Used by mergeSubAgentTrees when a parent's children list is empty in the
+// new update but existed in prev — preserves the subtree as completed.
+func markAllDone(agents []protocol.SubAgentInfo) []protocol.SubAgentInfo {
+	result := make([]protocol.SubAgentInfo, len(agents))
+	for i := range agents {
+		result[i] = markDoneIfRunning(agents[i])
+	}
+	return result
 }
 
 // pruneDoneSubAgents removes agents (and their children) that are already
@@ -1676,11 +1783,28 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		// subscription regardless of global default persistence success.
 		// Failure to update activeSubID is the root cause of the settings panel
 		// showing the wrong subscription after a switch.
+		// Determine the effective model: if this is a session restore and the
+		// session has its own model choice, preserve it instead of using the
+		// subscription's default model. Also sync the per-session model to the
+		// server so GetLLMForChat returns the correct model for this session.
+		effectiveModel := done.subModel
+		if done.restoreModel != "" && done.restoreModel != done.subModel {
+			effectiveModel = done.restoreModel
+			// Sync per-session model to server (creates per-chat LLM entry)
+			if m.llmSubscriber != nil {
+				m.llmSubscriber.SwitchModel(m.senderID, effectiveModel, m.chatID)
+			}
+		}
+		// Do NOT pass done.maxCtx/done.maxOutTok as MaxContextTokens/MaxOutputTokens.
+		// Those values come from resolveSubMaxContext which uses the subscription's
+		// DEFAULT model, not the session's model. Setting them here would poison
+		// state.MaxContextTokens, and ResolveEffectiveMaxContext priority-1 returns
+		// it directly, bypassing per-model lookup. Instead, let
+		// applySessionLLMState → ResolveEffectiveMaxContext resolve from
+		// PerModelConfigs (which now includes subscription_models data).
 		state := SessionLLMState{
-			SubscriptionID:   done.subID,
-			Model:            done.subModel,
-			MaxContextTokens: done.maxCtx,
-			MaxOutputTokens:  done.maxOutTok,
+			SubscriptionID: done.subID,
+			Model:          effectiveModel,
 		}
 		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
 		m.applySessionLLMState(state)
@@ -1844,13 +1968,32 @@ func (m *cliModel) handleHistoryLoad(msg cliHistoryLoadMsg) {
 		return
 	}
 	if len(msg.history) > 0 {
-		m.messages = append(m.messages, msg.history...)
-		m.invalidateAllCache(false)
-		m.updateViewportContent()
-		if m.streamingMsgIdx < 0 {
-			m.viewport.GotoBottom()
+		// Deduplicate: build a set of existing message identity keys.
+		// Key = role + ":" + turnID + ":" + content — algorithmic dedup,
+		// no raw string matching. Messages with same identity are skipped.
+		existing := make(map[string]bool, len(m.messages))
+		for _, cm := range m.messages {
+			key := cm.role + ":" + strconv.FormatUint(cm.turnID, 36) + ":" + cm.content
+			existing[key] = true
 		}
-		log.WithFields(log.Fields{"count": len(msg.history)}).Info("Applied history load in Update loop")
+		added := 0
+		for _, cm := range msg.history {
+			key := cm.role + ":" + strconv.FormatUint(cm.turnID, 36) + ":" + cm.content
+			if existing[key] {
+				continue // skip duplicate
+			}
+			existing[key] = true
+			m.messages = append(m.messages, cm)
+			added++
+		}
+		if added > 0 {
+			m.invalidateAllCache(false)
+			m.updateViewportContent()
+			if m.streamingMsgIdx < 0 {
+				m.viewport.GotoBottom()
+			}
+		}
+		log.WithFields(log.Fields{"total": len(msg.history), "added": added}).Info("Applied history load in Update loop")
 	}
 }
 
