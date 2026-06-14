@@ -60,10 +60,19 @@ func (m *cliModel) readSettings() map[string]string {
 		values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
 		values["thinking_mode"] = sub.ThinkingMode
 		// max_context_tokens: per-model config → subscription-level → empty
-		if pmc, ok := sub.PerModelConfigs[sub.Model]; ok && pmc.MaxContext > 0 {
-			values["max_context_tokens"] = strconv.Itoa(pmc.MaxContext)
-		} else if sub.MaxContext > 0 {
-			values["max_context_tokens"] = strconv.Itoa(sub.MaxContext)
+		// Use the SESSION's active model (m.cachedModelName), NOT sub.Model.
+		// Without this, the settings panel shows the subscription default model's
+		// max_context instead of the currently selected model's value.
+		model := m.cachedModelName
+		if model == "" {
+			model = sub.Model
+		}
+		if model != "" {
+			if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
+				values["max_context_tokens"] = strconv.Itoa(pmc.MaxContext)
+			} else if sub.MaxContext > 0 {
+				values["max_context_tokens"] = strconv.Itoa(sub.MaxContext)
+			}
 		}
 	}
 
@@ -206,16 +215,26 @@ func (m *cliModel) saveSettings(values map[string]string) {
 				if model != "" {
 					// Only write if the value actually differs from current config
 					currentCtx := 0
+					currentMaxOut := 0
 					if sub := m.activeSubscription(); sub != nil {
 						if pmc, ok := sub.PerModelConfigs[model]; ok {
 							currentCtx = pmc.MaxContext
+							currentMaxOut = pmc.MaxOutputTokens
 						}
 					}
 					if n != currentCtx {
-						pmc := PerModelConfig{MaxContext: n}
+						// Preserve existing MaxOutputTokens when updating MaxContext.
+						// PerModelConfig{MaxContext: n} alone would zero out MaxOutputTokens.
+						pmc := PerModelConfig{MaxContext: n, MaxOutputTokens: currentMaxOut}
 						if err := m.subscriptionMgr.UpdatePerModelConfig(m.activeSubID, model, pmc); err != nil {
 							logrus.WithFields(logrus.Fields{"err": err, "sub": m.activeSubID, "model": model}).Warn("saveSettings: UpdatePerModelConfig failed")
 						}
+						// Update local cache so the context bar reflects the new value immediately.
+						m.cachedMaxContextTokens = n
+						// Persist to session JSON so it survives session switches.
+						existing := LoadSessionLLMState(m.workDir, m.chatID)
+						existing.MaxContextTokens = n
+						SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 					}
 				}
 			}
@@ -235,16 +254,16 @@ func (m *cliModel) saveSettings(values map[string]string) {
 
 	// --- Apply to runtime ---
 	// Strip subscription-scoped keys (provider, key, model, etc.) — already handled above.
-	// Exception: max_context_tokens is subscription-scoped but ALSO needs to reach
-	// ApplyRuntimeSetting → Agent.SetMaxContextTokens so the new value propagates to
-	// LLMFactory.perChatMaxCtx immediately. Without this, maybeCompress uses the old
-	// cached max_context until the session cache expires.
+	// max_context_tokens is NOT passed to ApplySettings anymore. The PerModelConfig
+	// write above already persists the value and calls Invalidate() on the server,
+	// so the next GetLLMForChat re-reads from DB with the correct per-model value.
+	// Passing it to ApplySettings would call ag.SetMaxContextTokens(n) without chatID,
+	// setting the GLOBAL contextManagerConfig.MaxContextTokens — which contaminates
+	// all models that don't have their own per-model override.
 	if m.channel.config.ApplySettings != nil {
 		runtimeValues := make(map[string]string, len(values))
 		for k, v := range values {
-			if k == "max_context_tokens" {
-				runtimeValues[k] = v
-			} else if !isSubscriptionScopedSettingKey(k) {
+			if !isSubscriptionScopedSettingKey(k) {
 				runtimeValues[k] = v
 			}
 		}

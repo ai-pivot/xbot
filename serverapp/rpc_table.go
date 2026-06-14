@@ -329,8 +329,14 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		}
 		if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
-				if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
-					log.WithError(err).Warn("RPC switch_model: SetModel failed")
+				// Only persist to subscription model for user-level switches (no chatID).
+				// Per-session switches (with chatID) must NOT modify the subscription —
+				// otherwise switching model in one session contaminates all sessions
+				// sharing the same subscription.
+				if p.ChatID == "" {
+					if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
+						log.WithError(err).Warn("RPC switch_model: SetModel failed")
+					}
 				}
 				// Per-session: persist model choice to tenants table so it survives restarts.
 				if p.ChatID != "" && h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
@@ -1213,9 +1219,35 @@ func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscript
 	}
 	result := make([]channel.Subscription, len(subs))
 	for i, s := range subs {
+		// Merge subscription_models table data into PerModelConfigs so the
+		// client sees a unified view. Without this, client-side
+		// ResolveEffectiveMaxContext (which only checks PerModelConfigs) misses
+		// values stored in the subscription_models table (v35+ authoritative source).
+		mergeSubscriptionModels(svc, s)
 		result[i] = subToChannel(s)
 	}
 	return result, nil
+}
+
+// mergeSubscriptionModels merges subscription_models table rows into the
+// subscription's PerModelConfigs map. Table values are authoritative (v35+);
+// existing PerModelConfigs entries are preserved only if the table has no
+// entry for that model.
+func mergeSubscriptionModels(svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) {
+	models, err := svc.GetModels(sub.ID)
+	if err != nil || len(models) == 0 {
+		return
+	}
+	if sub.PerModelConfigs == nil {
+		sub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(models))
+	}
+	for _, m := range models {
+		// subscription_models is authoritative — always overwrite.
+		sub.PerModelConfigs[m.Model] = sqlite.PerModelConfig{
+			MaxContext:      m.MaxContext,
+			MaxOutputTokens: m.MaxOutputTokens,
+		}
+	}
 }
 
 func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subscription, error) {
@@ -1231,6 +1263,7 @@ func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subsc
 	if sub == nil {
 		return nil, nil
 	}
+	mergeSubscriptionModels(svc, sub)
 	ch := subToChannel(sub)
 	return &ch, nil
 }

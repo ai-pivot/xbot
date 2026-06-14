@@ -657,6 +657,7 @@ func (m *cliModel) applyRewind() {
 	m.rc.valid = false
 	m.rc.history = ""
 	m.rc.histLines = nil
+	m.rc.bumpHistGen()
 	m.rc.allLines = nil
 	m.rc.allLinesHistLen = 0
 	m.updateViewportContent()
@@ -2927,9 +2928,18 @@ func (m *cliModel) applyQuickSwitch() {
 			m.llmSubscriber.SwitchModel(m.senderID, selected.Model, m.chatID)
 			m.cachedModelName = selected.Model
 			m.subGeneration++ // model switch also changes effective subscription state
+			// Re-resolve context/output token limits for the new model.
+			newState := SessionLLMState{
+				SubscriptionID: m.activeSubID,
+				Model:          selected.Model,
+			}
+			m.cachedMaxContextTokens = ResolveEffectiveMaxContext(newState, m.subscriptionMgr)
+			m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(newState, m.subscriptionMgr))
 			// Update quickSwitchList so the panel reflects the new model
 			m.updateQuickSwitchModels(selected.Model)
-			// Persist per-session model choice so it survives restarts
+			// Persist per-session model choice so it survives restarts.
+			// Use resolved values (not stale cached ones) so the saved state
+			// reflects the new model's effective limits.
 			SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
 				SubscriptionID:   m.activeSubID,
 				Model:            selected.Model,

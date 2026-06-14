@@ -100,6 +100,7 @@ func (m *cliModel) setViewportContent(content string) {
 			if historyEnd > 0 && len(wrappedHistoryParts) > 0 {
 				m.rc.wrapHistory = strings.Join(wrappedHistoryParts, "\n") + "\n"
 				m.rc.histLines = wrappedHistoryParts
+				m.rc.bumpHistGen() // invalidate allLines cache — histLines rebuilt
 				m.rc.wrapRaw = m.rc.history
 				m.rc.wrapWidth = cw
 				m.rc.histMaxW = maxW
@@ -179,6 +180,7 @@ func visibleMsgGroupIndices(messages []cliMessage) []int {
 // updateViewportContent 更新 viewport 显示内容（§1 增量渲染）
 func (m *cliModel) updateViewportContent() {
 	// 快速路径：流式消息 + 缓存有效
+	// dedupMessagesGuard 不需要在此路径运行：流式更新只改内容不增消息。
 	if m.streamingMsgIdx >= 0 && m.rc.valid {
 		if m.streamingMsgIdx >= len(m.messages) {
 			m.streamingMsgIdx = -1
@@ -217,34 +219,39 @@ func (m *cliModel) updateViewportContent() {
 				m.rc.dynamicWidth = cw
 			}
 
-			// Reuse cached allLines when history section unchanged
+			// Reuse cached allLines when history section is unchanged.
+			// Generation counter guarantees: histGen==allLinesGen means allLines
+			// was built from the SAME histLines content — no stale reuse possible
+			// even when line count coincidentally matches.
 			histLen := len(m.rc.histLines)
 			rl := len(rewindLines)
 			totalLines := histLen + rl
+			genMatch := m.rc.histGen == m.rc.allLinesGen
 
-			if histLen == m.rc.allLinesHistLen && totalLines <= cap(m.rc.allLines) {
-				// History unchanged — in-place update rewind only
+			if genMatch && histLen == m.rc.allLinesHistLen && totalLines <= cap(m.rc.allLines) {
+				// History unchanged (same generation + same length) — in-place update rewind only
 				m.rc.allLines = m.rc.allLines[:totalLines]
 				copy(m.rc.allLines[histLen:], rewindLines)
-			} else if histLen > m.rc.allLinesHistLen && cap(m.rc.allLines) >= totalLines {
-				// History grew (new iteration appended) — extend in-place.
+			} else if genMatch && histLen > m.rc.allLinesHistLen && cap(m.rc.allLines) >= totalLines {
+				// History grew (new iteration appended, same generation) — extend in-place.
 				newHistLines := m.rc.histLines[m.rc.allLinesHistLen:]
 				m.rc.allLines = m.rc.allLines[:m.rc.allLinesHistLen]
 				m.rc.allLines = append(m.rc.allLines, newHistLines...)
 				m.rc.allLines = append(m.rc.allLines, rewindLines...)
 				m.rc.allLinesHistLen = histLen
-			} else if histLen > m.rc.allLinesHistLen {
+			} else if genMatch && histLen > m.rc.allLinesHistLen {
 				// History grew but slice too small — grow with append
 				m.rc.allLines = m.rc.allLines[:m.rc.allLinesHistLen]
 				m.rc.allLines = append(m.rc.allLines, m.rc.histLines[m.rc.allLinesHistLen:]...)
 				m.rc.allLines = append(m.rc.allLines, rewindLines...)
 				m.rc.allLinesHistLen = histLen
 			} else {
-				// History shrank (rewind/compression) or first run — rebuild
+				// Content changed (gen mismatch), history shrank, or first run — rebuild
 				m.rc.allLines = make([]string, totalLines)
 				copy(m.rc.allLines, m.rc.histLines)
 				copy(m.rc.allLines[histLen:], rewindLines)
 				m.rc.allLinesHistLen = histLen
+				m.rc.allLinesGen = m.rc.histGen
 			}
 
 			shouldFollowBottom := !m.userScrolledUp
@@ -276,6 +283,14 @@ func (m *cliModel) updateViewportContent() {
 		return
 	}
 
+	// ── dedupGuard: algorithmic guarantee against duplicate rendering ──
+	// Only runs on the SLOW path (cache invalid or msgCount changed).
+	// Fast paths above guarantee: when rc.valid==true and msgCount unchanged,
+	// no new messages were added since last dedup check → skip is safe.
+	// Enforces the invariant that no two messages share the same (turnID, role)
+	// identity. Uses O(n) map-based identity check, NOT string matching.
+	m.dedupMessagesGuard()
+
 	// 慢速路径：全量重建
 	m.fullRebuild()
 	if m.streamingMsgIdx >= 0 {
@@ -293,10 +308,12 @@ func (m *cliModel) updateViewportContent() {
 			rewindLines = wrapDynamicPart(rewindBlock, cw)
 		}
 		totalLines := len(m.rc.histLines) + len(rewindLines)
-		allLines := make([]string, totalLines)
-		copy(allLines, m.rc.histLines)
-		copy(allLines[len(m.rc.histLines):], rewindLines)
-		viewportSetLinesBypassMaxWidth(&m.viewport, allLines, cw)
+		m.rc.allLines = make([]string, totalLines)
+		copy(m.rc.allLines, m.rc.histLines)
+		copy(m.rc.allLines[len(m.rc.histLines):], rewindLines)
+		m.rc.allLinesHistLen = len(m.rc.histLines)
+		m.rc.allLinesGen = m.rc.histGen // sync generation so tick fast path can reuse
+		viewportSetLinesBypassMaxWidth(&m.viewport, m.rc.allLines, cw)
 		m.viewport.GotoBottom()
 		m.newContentHint = false
 	}

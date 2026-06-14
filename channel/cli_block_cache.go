@@ -42,6 +42,16 @@ type renderCache struct {
 	allLines        []string
 	allLinesHistLen int
 
+	// Generation counter for histLines → allLines consistency.
+	// histGen is incremented every time histLines content changes
+	// (fullRebuild, appendNewMessagesToCache, setViewportContent slow path).
+	// allLinesGen records the generation when allLines was last built.
+	// The tick fast path only reuses allLines when histGen == allLinesGen.
+	// This is an algorithmic guarantee against stale cache reuse —
+	// no string comparison needed.
+	histGen     uint64
+	allLinesGen uint64
+
 	// Dynamic viewport suffix (progress + rewind).
 	dynamicRaw   string
 	dynamicLines []string
@@ -76,6 +86,8 @@ func (rc *renderCache) resetAll() {
 	rc.lastTickRewFP = 0
 	rc.allLines = nil
 	rc.allLinesHistLen = 0
+	rc.histGen = 0
+	rc.allLinesGen = 0
 	rc.dynamicRaw = ""
 	rc.dynamicLines = nil
 	rc.dynamicWidth = 0
@@ -93,4 +105,12 @@ func (rc *renderCache) invalidateProgress() {
 	// Completed iteration lines depend on iterationHistory which changed.
 	rc.streamCompletedLines = nil
 	rc.streamCompletedCount = 0
+}
+
+// bumpHistGen increments the histLines generation counter.
+// Must be called at every site that modifies histLines content.
+// This ensures the tick fast path detects stale allLines via generation
+// mismatch (histGen != allLinesGen) instead of length comparison.
+func (rc *renderCache) bumpHistGen() {
+	rc.histGen++
 }

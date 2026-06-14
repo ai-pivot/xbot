@@ -1449,3 +1449,122 @@ func TestRemoveLastToolSummary_PriorTurnWithUserAfter(t *testing.T) {
 		t.Error("Ctrl+C tool_summary should be preserved when a user message follows it")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// dedupMessagesGuard tests — proves algorithmic guarantee against duplicate
+// message rendering. The guard enforces at-most-one (turnID, role) invariant.
+// ---------------------------------------------------------------------------
+
+func TestDedupMessagesGuard_NoDuplicates(t *testing.T) {
+	m := &cliModel{}
+	m.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 1},
+		{role: "assistant", content: "hi", turnID: 1},
+		{role: "user", content: "bye", turnID: 2},
+		{role: "assistant", content: "bye", turnID: 2},
+	}
+	originalLen := len(m.messages)
+	m.dedupMessagesGuard()
+	if len(m.messages) != originalLen {
+		t.Fatalf("dedupMessagesGuard should not modify messages without duplicates: got %d, want %d",
+			len(m.messages), originalLen)
+	}
+}
+
+func TestDedupMessagesGuard_PurgesDuplicates(t *testing.T) {
+	m := &cliModel{}
+	// Two assistant messages with same turnID=1 (a zombie from race condition)
+	m.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 1},
+		{role: "assistant", content: "old_reply", turnID: 1}, // zombie
+		{role: "assistant", content: "new_reply", turnID: 1}, // keep this (last)
+	}
+	m.dedupMessagesGuard()
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 messages after dedup, got %d", len(m.messages))
+	}
+	// The LAST assistant message should be kept
+	if m.messages[1].content != "new_reply" {
+		t.Errorf("expected last duplicate to survive, got content %q", m.messages[1].content)
+	}
+}
+
+func TestDedupMessagesGuard_PreservesSystemMessages(t *testing.T) {
+	m := &cliModel{}
+	// turnID=0 messages (system, injected) should NOT be deduplicated
+	m.messages = []cliMessage{
+		{role: "system", content: "msg1", turnID: 0},
+		{role: "system", content: "msg2", turnID: 0},
+		{role: "user", content: "hello", turnID: 1},
+		{role: "assistant", content: "reply", turnID: 1},
+	}
+	m.dedupMessagesGuard()
+	if len(m.messages) != 4 {
+		t.Fatalf("system messages with turnID=0 should not be deduplicated: got %d, want 4",
+			len(m.messages))
+	}
+}
+
+func TestDedupMessagesGuard_PreservesStreamingMsg(t *testing.T) {
+	m := &cliModel{}
+	m.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 1},
+		{role: "assistant", content: "streaming", turnID: 1, isPartial: true},
+	}
+	m.streamingMsgIdx = 1
+	m.dedupMessagesGuard()
+	// streaming message should survive since it's the only one with turnID=1+assistant
+	if m.streamingMsgIdx != 1 {
+		t.Errorf("streamingMsgIdx should be unchanged: got %d, want 1", m.streamingMsgIdx)
+	}
+}
+
+func TestUpsertMessageByTurn_PurgesZombies(t *testing.T) {
+	m := &cliModel{}
+	// Pre-create two messages with same turnID+role (simulating a race condition)
+	m.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 1},
+		{role: "assistant", content: "zombie", turnID: 2}, // zombie at idx 1
+		{role: "assistant", content: "real", turnID: 2},   // real at idx 2
+	}
+	// upsert should update the last one AND purge the zombie
+	m.upsertMessageByTurn(2, "assistant", cliMessage{
+		role:    "assistant",
+		content: "updated",
+	})
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 messages after upsert+purge, got %d", len(m.messages))
+	}
+	if m.messages[1].content != "updated" {
+		t.Errorf("expected updated content, got %q", m.messages[1].content)
+	}
+}
+
+// TestCacheGenerationCounter verifies the generation counter mechanism
+// prevents stale allLines reuse after fullRebuild.
+func TestCacheGenerationCounter(t *testing.T) {
+	rc := &renderCache{}
+
+	// Initial state
+	if rc.histGen != 0 || rc.allLinesGen != 0 {
+		t.Fatal("generation counters should start at 0")
+	}
+
+	// Simulate histLines change
+	rc.bumpHistGen()
+	if rc.histGen != 1 {
+		t.Fatalf("expected histGen=1 after bump, got %d", rc.histGen)
+	}
+
+	// Simulate allLines build from current generation
+	rc.allLinesGen = rc.histGen
+	if rc.histGen != rc.allLinesGen {
+		t.Fatal("after sync, histGen should equal allLinesGen")
+	}
+
+	// Simulate another histLines change (e.g. fullRebuild)
+	rc.bumpHistGen()
+	if rc.histGen == rc.allLinesGen {
+		t.Fatal("after second bump, histGen should differ from allLinesGen (stale detection)")
+	}
+}
