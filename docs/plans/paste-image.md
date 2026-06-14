@@ -4,7 +4,7 @@
 
 实现 CLI 终端的图片粘贴功能。用户通过 `/paste` 命令将系统剪贴板中的图片粘贴到 xbot 对话中，图片自动保存为临时文件、编码为 base64 data URL 发送给 LLM vision 模型。支持本地和远程两种模式，跨 macOS / Linux(X11+Wayland) / Windows 平台。
 
-同时修复现有 Gap：`@path/to/image.png` 文件引用当前只追加为纯文本路径，LLM 无法看到图片内容。
+`@path` 文件引用保持现有行为不变（纯文本路径追加），不做特殊图片处理。
 
 ## Background — 当前架构与 Gap
 
@@ -26,9 +26,8 @@ llm/openai.go:371-392:
 
 ### Gap
 
-1. **Media 图片路径只作为文本追加** — vision 模型看不到图片内容
+1. **InboundMsg 不支持内联图片内容** — 只有文件路径引用，无 inline content
 2. **parseEmbeddedImages 已就绪但无输入** — base64 data URL 编码逻辑缺失
-3. **InboundMsg 不支持内联图片内容** — 只有文件路径引用，无 inline content
 
 ## Design Decisions（已确认）
 
@@ -72,21 +71,16 @@ type InboundMessage struct {
 ### 数据流（目标）
 
 ```
-场景 1: /paste 粘贴图片
+/paste 粘贴图片
   剪贴板 → golang.design/x/clipboard.Read(FmtImage)
     → 压缩/限制 (max 5MB)
     → InboundMsg.MediaContent [{MIMEType, Base64, Filename}]
     → agent.go: 编码为 data URL，嵌入 content
     → openai.go: parseEmbeddedImages → vision 模型看到图片
 
-场景 2: @path/to/image.png 文件引用（修复 Gap）
-  parseFileReferences → InboundMsg.Media ["path/to/image.png"]
-    → agent.go: 检测图片文件 → 读取 → 编码为 data URL，嵌入 content
-    → openai.go: parseEmbeddedImages → vision 模型看到图片
-
-场景 3: @path/to/document.pdf 文件引用（不变）
-  parseFileReferences → InboundMsg.Media ["path/to/doc.pdf"]
-    → agent.go: 非图片文件 → 保持纯文本引用
+@path/to/file 引用（不变）
+  parseFileReferences → InboundMsg.Media ["path/to/file"]
+    → agent.go: 追加为 "[Attached files]" 纯文本，保持现有行为
 ```
 
 ## Changes
@@ -106,14 +100,12 @@ type InboundMessage struct {
 - **What**: `bus.InboundMessage` 构造处添加 `MediaContent` 透传
 - **Why**: 从 channel.InboundMsg 到 bus.InboundMessage 的转换不能丢失字段
 
-### 4. `agent/agent.go` — 图片编码核心修复
+### 4. `agent/agent.go` — MediaContent 编码为 data URL
 
-- **What**: 
-  1. 处理 `msg.MediaContent`：每个 item 编码为 `data:{mime};base64,{data}` → 嵌入 content 为 `![filename](data:url)`
-  2. 处理 `msg.Media` 中的图片文件：检测扩展名 → 读取文件 → base64 编码 → 同样嵌入 content
-  3. 非图片 Media 文件保持纯文本路径引用
-- **Why**: 修复现有 gap，让 vision 模型能看到图片；同时支持 inline content
+- **What**: 处理 `msg.MediaContent`：每个 item 编码为 `data:{mime};base64,{data}` → 嵌入 content 为 `![filename](data:url)`
+- **Why**: 将内联图片内容转换为 LLM 可识别的格式
 - **关键**: 现有 `parseEmbeddedImages` (openai.go:466) 已能解析 data URL，无需改动 LLM 层
+- **注意**: `msg.Media`（@path 引用）保持现有行为不变，不做特殊处理
 
 ### 5. `channel/cli/clipboard_image.go` — 新文件：剪贴板图片读取
 
@@ -213,7 +205,7 @@ CLI Client (本地)
 |------|------|
 | `golang.design/x/clipboard` 依赖链拉入 `golang.org/x/mobile` | 仅 darwin 平台需要，Linux/Windows 不受影响；`x/mobile` 是纯 Go 无 CGO |
 | WS 大消息被截断 | CLI 侧 5MB 硬限制；server 侧确认 WS max message size |
-| agent.go 图片编码增加首消息处理延迟 | 仅在 Media 包含图片文件时触发；base64 编码 5MB 图片 < 50ms |
+| agent.go 图片编码增加首消息处理延迟 | base64 编码 5MB 图片 < 50ms，仅在 MediaContent 非空时触发 |
 | 旧版本 InboundMsg JSON 缺少 MediaContent | `omitempty` + nil slice 处理，向后兼容 |
 
 ## Definition of Done
@@ -222,7 +214,6 @@ CLI Client (本地)
 - [ ] macOS/Linux/Windows 下 `clipboard.Init()` 不 panic（无 GUI 环境优雅降级）
 - [ ] `/paste` 命令：剪贴板有图片时保存 + 发送，无图片时提示
 - [ ] 终端显示 `📎 已粘贴图片 (xxx.png, 234KB)`，不显示 base64
-- [ ] `@path/to/image.png` 引用也能让 vision 模型看到图片（Gap 修复）
 - [ ] 图片 > 5MB 自动压缩；压缩后仍 > 5MB 则拒绝并提示
 - [ ] 远程模式下图片通过 WS 传输成功
 - [ ] 现有所有测试通过（`go test ./...`）
