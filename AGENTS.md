@@ -65,6 +65,11 @@
 
 - **SQLite `datetime()` comparison with RFC3339 strings is a silent trap.** `created_at` stores `2026-05-24T14:00:00+08:00` (RFC3339 with timezone). `datetime(?, '-2 seconds')` returns `2026-05-24 05:59:58` (UTC, no timezone). Raw string comparison: `'T'` (0x54) > `' '` (0x20) at position 10, so `created_at > datetime(?)` is **always TRUE**, breaking any time-window dedup/filter. Always wrap both sides in `datetime()`: `datetime(created_at) > datetime(?, '-2 seconds')`.
 
+### Cron Scheduler
+- **`cleanupExpiredJobs` must NOT delete `delay_seconds` one-shot jobs.** `delay_seconds` represents relative time ("N seconds from creation"). If the job expired during downtime, deleting it silently drops the user's scheduled reminder. Keep expired `delay_seconds` jobs so `checkAndFire` triggers them on the first tick. Only `at`-based one-shot jobs (absolute time point) should be removed when expired — the scheduled moment has passed.
+- **`every_seconds` next_run must be based on `job.NextRun`, NOT `now`.** The old code used `nextRun = now.Add(interval)`, where `now` is the actual fire time (delayed by 0–5s due to the 5s ticker). Each fire accumulates drift, causing the schedule to slide later and later. Fix: `nextRun = job.NextRun.Add(interval)` anchored to the planned schedule, with a forward-advance loop for missed intervals.
+- **Recurring jobs skip missed executions on restart (by design).** `cleanupExpiredJobs` recalculates `next_run` from `now` for recurring jobs. This matches traditional cron semantics — no catch-up execution.
+
 ### Startup
 - `NewOpenAILLM` loads model list asynchronously. `ListModels()` returns fallback immediately.
 - Settings save is synchronous — all local I/O, no network calls.
