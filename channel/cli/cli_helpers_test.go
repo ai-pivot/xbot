@@ -1206,6 +1206,174 @@ func TestSuHistoryLoad_TypingReconcile_AcceptProgress(t *testing.T) {
 	}
 }
 
+// TestSuHistoryLoad_CompressingPhase_NoContentMerge verifies that when the
+// server snapshot has Phase=="compressing", the last assistant message from
+// history is NOT merged into the streaming message. The compression indicator
+// must render as a standalone message, not inside the previous assistant content.
+//
+// Regression: handleSuHistoryLoad used to unconditionally replace the empty
+// streaming message's content with the last history assistant's content.
+// For Phase=="compressing", this caused "◇◇◇◇◇ 压缩中" to render between
+// the previous assistant's header and its content after a TUI restart.
+func TestSuHistoryLoad_CompressingPhase_NoContentMerge(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	// Simulate restored session: typing=false (fresh restart).
+	m.typing = false
+	m.splashState.suLoading = true
+
+	// History with an assistant message that must NOT be merged.
+	history := []channel.HistoryMessage{
+		{Role: "user", Content: "hello", Timestamp: time.Now()},
+		{Role: "assistant", Content: "已 commit，磁盘已清理。", Timestamp: time.Now()},
+	}
+
+	payload := &protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Phase:     "compressing",
+		Iteration: 1,
+	}
+	msg := suHistoryLoadMsg{
+		channelName:    "cli",
+		chatID:         "/test",
+		history:        history,
+		activeProgress: payload,
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.streamingMsgIdx < 0 {
+		t.Fatal("expected streamingMsgIdx >= 0 for compressing phase")
+	}
+
+	streamingMsg := m.messages[m.streamingMsgIdx]
+	if streamingMsg.content != "" {
+		t.Fatalf("streaming message content should be empty for compressing phase, got %q",
+			streamingMsg.content)
+	}
+	if !streamingMsg.isPartial {
+		t.Fatal("streaming message should be isPartial=true")
+	}
+
+	// The history assistant message should still be in messages (not deleted/merged).
+	foundHistoryAssistant := false
+	for i, msg := range m.messages {
+		if i == m.streamingMsgIdx {
+			continue
+		}
+		if msg.role == "assistant" && strings.Contains(msg.content, "已 commit") {
+			foundHistoryAssistant = true
+			break
+		}
+	}
+	if !foundHistoryAssistant {
+		t.Fatal("history assistant message should still exist, not be merged into streaming slot")
+	}
+}
+
+// TestSuHistoryLoad_CompressingPhase_TypingRestored verifies that when
+// typing was already true (from restoreSession) and Phase=="compressing",
+// a new empty streaming message is created rather than reusing the last
+// history assistant as the streaming slot.
+func TestSuHistoryLoad_CompressingPhase_TypingRestored(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	// Simulate restored session: typing=true, streamingMsgIdx=-1 (cleared by
+	// HistoryCompacted handler before session switch).
+	m.typing = true
+	m.streamingMsgIdx = -1
+	m.splashState.suLoading = true
+
+	history := []channel.HistoryMessage{
+		{Role: "user", Content: "hello", Timestamp: time.Now()},
+		{Role: "assistant", Content: "previous reply", Timestamp: time.Now()},
+	}
+
+	payload := &protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Phase:     "compressing",
+		Iteration: 1,
+	}
+	msg := suHistoryLoadMsg{
+		channelName:    "cli",
+		chatID:         "/test",
+		history:        history,
+		activeProgress: payload,
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.streamingMsgIdx < 0 {
+		t.Fatal("expected streamingMsgIdx >= 0 for compressing phase even when typing was restored")
+	}
+
+	streamingMsg := m.messages[m.streamingMsgIdx]
+	if streamingMsg.content != "" {
+		t.Fatalf("streaming message content should be empty, got %q", streamingMsg.content)
+	}
+
+	// The history assistant should NOT be marked as isPartial.
+	for i, msg := range m.messages {
+		if i == m.streamingMsgIdx {
+			continue
+		}
+		if msg.role == "assistant" && msg.isPartial {
+			t.Fatal("history assistant should not be marked isPartial for compressing phase")
+		}
+	}
+}
+
+// TestSuHistoryLoad_NonCompressingPhase_ContentMerge verifies the ORIGINAL
+// behavior is preserved for non-compressing phases: the last history assistant
+// IS merged into the streaming slot.
+func TestSuHistoryLoad_NonCompressingPhase_ContentMerge(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	m.typing = false
+	m.splashState.suLoading = true
+
+	history := []channel.HistoryMessage{
+		{Role: "user", Content: "hello", Timestamp: time.Now()},
+		{Role: "assistant", Content: "in-flight reply", Timestamp: time.Now()},
+	}
+
+	payload := &protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Phase:     "executing",
+		Iteration: 2,
+	}
+	msg := suHistoryLoadMsg{
+		channelName:    "cli",
+		chatID:         "/test",
+		history:        history,
+		activeProgress: payload,
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	if m.streamingMsgIdx < 0 {
+		t.Fatal("expected streamingMsgIdx >= 0 for executing phase")
+	}
+
+	streamingMsg := m.messages[m.streamingMsgIdx]
+	if streamingMsg.content != "in-flight reply" {
+		t.Fatalf("expected streaming message content to be merged with history assistant, got %q",
+			streamingMsg.content)
+	}
+}
+
 // TestSuHistoryLoad_TypingReconcile_Default verifies that
 // handleSuHistoryLoad sets typing=false when the server has no active
 // turn (default path — turn completed while user was away).

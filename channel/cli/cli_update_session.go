@@ -196,7 +196,12 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// If history already has an assistant message, we must replace
 		// startAgentTurn's empty message with the history one to avoid showing
 		// two assistant messages (the history version + the empty streaming version).
-		{
+		//
+		// EXCEPTION: Phase=="compressing" — compression is a transient operation.
+		// The last assistant message in DB is NOT the in-flight streaming message;
+		// merging its content into the streaming slot causes the compression
+		// indicator to render inside the previous assistant's content.
+		if msg.activeProgress.Phase != "compressing" {
 			// Find the last non-streaming assistant message from history
 			// (before the empty one created by startAgentTurn).
 			historyAssistantIdx := -1
@@ -234,6 +239,20 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 					}
 				}
 			}
+		} else if m.streamingMsgIdx < 0 {
+			// Phase=="compressing" with no streaming slot: create a fresh empty
+			// streaming message so the compression indicator renders standalone.
+			// Do NOT reuse the last history assistant — that would merge the
+			// compression indicator into the previous message's content.
+			m.messages = append(m.messages, cliMessage{
+				role:      "assistant",
+				content:   "",
+				timestamp: time.Now(),
+				isPartial: true,
+				dirty:     true,
+				turnID:    m.agentTurnID,
+			})
+			m.streamingMsgIdx = len(m.messages) - 1
 		}
 
 		// Sync todos from server snapshot so the todo bar shows them
