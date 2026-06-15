@@ -321,6 +321,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// the TUI to show extra content that doesn't exist after restart.
 		m.progressState.iterations = nil
 		m.reasoningByIter = nil
+		m.progressState.streamReasoningByIter = nil
 		m.progressState.lastIter = 0
 		m.lastReasoning = ""
 		m.lastThinking = ""
@@ -524,9 +525,6 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			prevReasoning := prev.Reasoning
 			if prevReasoning == "" {
 				prevReasoning = m.reasoningByIter[m.progressState.lastIter]
-			}
-			if prevReasoning == "" {
-				prevReasoning = prev.ReasoningStreamContent
 			}
 			if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 				snap := cliIterationSnapshot{

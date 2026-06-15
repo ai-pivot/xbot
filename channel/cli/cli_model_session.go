@@ -219,8 +219,8 @@ func (m *cliModel) restoreSession() {
 		m.typingStartTime = time.Time{}
 		m.lastReasoning = ""
 		m.reasoningByIter = nil
+		m.progressState.streamReasoningByIter = nil
 		m.lastThinking = ""
-		m.turnCancelled = false
 		m.inputReady = false
 		m.needFlushQueue = false
 		m.messageQueue = nil
@@ -297,6 +297,7 @@ func (m *cliModel) resetToIdleState() {
 	m.lastCompletedTools = nil
 	m.lastReasoning = ""
 	m.reasoningByIter = make(map[int]string)
+	m.progressState.streamReasoningByIter = nil
 	m.lastThinking = ""
 
 	// --- Message Queue ---

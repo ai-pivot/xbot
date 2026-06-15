@@ -292,6 +292,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	m.progressState.lastIter = 0
 	m.lastReasoning = ""
 	m.reasoningByIter = nil
+	m.progressState.streamReasoningByIter = nil
 	m.lastThinking = ""
 	m.typingStartTime = time.Time{}
 	m.progressState.current = nil
