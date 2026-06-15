@@ -268,11 +268,23 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		})
 	}
 
-	if p.ReasoningStreamContent != "" {
+	// Prefer ReasoningStreamContent (streaming, real-time) but fall back to
+	// structured Reasoning (final, set by recordAssistantMsg). Structured
+	// progress events sent during tool execution do NOT carry
+	// ReasoningStreamContent — only Reasoning. Without this fallback, the
+	// reasoning box flickers: visible during streaming, disappears when the
+	// first structured event replaces m.progressState.current (losing
+	// ReasoningStreamContent), then reappears when carryForwardProgressState
+	// restores it or when the iteration is snapshotted.
+	reasoningContent := p.ReasoningStreamContent
+	if reasoningContent == "" {
+		reasoningContent = p.Reasoning
+	}
+	if reasoningContent != "" {
 		hasSpinner = true
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockReasoning,
-			text: m.renderReasoningBox(p.ReasoningStreamContent, width, s),
+			text: m.renderReasoningBox(reasoningContent, width, s),
 		})
 	}
 
