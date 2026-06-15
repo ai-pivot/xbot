@@ -219,6 +219,12 @@
 - **Command hooks disabled by default** — requires `enable_command_hooks: true` in config.
 - **Max 10 handlers per event**, total timeout 60s. Excess silently truncated with warning log.
 
+### Clipboard Image Paste (`/paste`)
+- **`channel.MediaContent` is a type alias to `bus.MediaContent`**, not a separate struct. This ensures zero-conversion pass-through from CLI → bus → agent → LLM. Never re-define it as a separate struct.
+- **`/paste` sends images as inline `MediaContent`, not file paths.** agent.go encodes them as `![filename](data:{mime};base64,{data})` data URLs in content. `@path` references remain text-only — no image detection.
+- **`golang.design/x/clipboard.Init()` may panic on headless systems.** `clipboard_native.go` wraps it with recover. `clipboard.Read(FmtImage)` returns nil if clipboard has no image (not an error).
+- **Vision fallback must guard `messagesHaveEmbeddedImages` before retry.** Without this guard, non-image 4xx errors matching keywords (e.g. "invalid content") would trigger infinite retry loop. The guard ensures only messages with actual images are retried.
+
 ### Plugin System
 - **Plugin system is opt-in** — only activates when `plugins.enabled: true` in config.json. No plugin loading happens without explicit user consent.
 - **`pm.workDir` is `atomic.Value` (not `string`).** `activate()` may be called while `pm.mu` write lock is held — reading workDir must be lock-free. Never change it back to `string` or `activate`/`InstallPlugin` will deadlock.

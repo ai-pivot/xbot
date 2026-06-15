@@ -253,38 +253,44 @@ func (c *Client) ServerURL() string {
 //
 // Parameters are flat fields to decouple callers from bus.InboundMessage.
 // Time and RequestID are generated internally.
-func (c *Client) SendInbound(ch, chatID, content, senderID, senderName, chatType string, metadata map[string]string) error {
+func (c *Client) SendInbound(ch, chatID, content, senderID, senderName, chatType string, metadata map[string]string, mediaContent ...bus.MediaContent) error {
 	// Remote mode — use WebSocket SendMessage.
 	if c.eventCh == nil {
 		type messageSender interface {
 			SendMessage(msg protocol.InboundMessage) error
 		}
 		if sender, ok := c.transport.(messageSender); ok {
+			payload := bus.MessagePayload{
+				Content:    content,
+				Channel:    ch,
+				ChatID:     chatID,
+				SenderID:   senderID,
+				SenderName: senderName,
+				ChatType:   chatType,
+				Metadata:   metadata,
+			}
+			if len(mediaContent) > 0 {
+				payload.MediaContent = mediaContent
+			}
 			return sender.SendMessage(protocol.InboundMessage{
-				MessagePayload: bus.MessagePayload{
-					Content:    content,
-					Channel:    ch,
-					ChatID:     chatID,
-					SenderID:   senderID,
-					SenderName: senderName,
-					ChatType:   chatType,
-					Metadata:   metadata,
-				},
+				MessagePayload: payload,
 			})
 		}
 		return fmt.Errorf("Client: no remote sender configured")
 	}
 	// Local mode — use RPC (send_inbound handler writes to msgBus.Inbound).
-	return c.call(MethodSendInbound, struct {
-		Channel    string            `json:"channel"`
-		ChatID     string            `json:"chat_id"`
-		Content    string            `json:"content"`
-		SenderID   string            `json:"sender_id"`
-		SenderName string            `json:"sender_name"`
-		ChatType   string            `json:"chat_type"`
-		RequestID  string            `json:"request_id"`
-		Metadata   map[string]string `json:"metadata,omitempty"`
-	}{
+	type rpcParams struct {
+		Channel      string             `json:"channel"`
+		ChatID       string             `json:"chat_id"`
+		Content      string             `json:"content"`
+		SenderID     string             `json:"sender_id"`
+		SenderName   string             `json:"sender_name"`
+		ChatType     string             `json:"chat_type"`
+		RequestID    string             `json:"request_id"`
+		Metadata     map[string]string  `json:"metadata,omitempty"`
+		MediaContent []bus.MediaContent `json:"media_content,omitempty"`
+	}
+	params := rpcParams{
 		Channel:    ch,
 		ChatID:     chatID,
 		Content:    content,
@@ -293,7 +299,11 @@ func (c *Client) SendInbound(ch, chatID, content, senderID, senderName, chatType
 		ChatType:   chatType,
 		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 		Metadata:   metadata,
-	}, nil)
+	}
+	if len(mediaContent) > 0 {
+		params.MediaContent = mediaContent
+	}
+	return c.call(MethodSendInbound, params, nil)
 }
 
 // Subscribe registers an event handler matching the given pattern.

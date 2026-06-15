@@ -1548,7 +1548,7 @@ func main() {
 		// Forward user messages to backend (unified local/remote path)
 		cliCh.SetSendInboundFn(func(msg channel.InboundMsg) bool {
 			clipanic.Go("main.SendInbound", func() {
-				if err := app.client.SendInbound(msg.Channel, msg.ChatID, msg.Content, msg.SenderID, msg.SenderName, msg.ChatType, msg.Metadata); err != nil {
+				if err := app.client.SendInbound(msg.Channel, msg.ChatID, msg.Content, msg.SenderID, msg.SenderName, msg.ChatType, msg.Metadata, msg.MediaContent...); err != nil {
 					log.WithError(err).Warn("Failed to send message")
 					cliCh.SendToast("Failed to send message: "+err.Error(), "✗")
 				}

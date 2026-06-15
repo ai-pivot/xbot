@@ -120,24 +120,26 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 	// send_inbound routes an inbound message through the message bus.
 	// Used by Client.SendInbound in local mode so CLI never touches msgBus directly.
 	t["send_inbound"] = rpc1(func(ctx context.Context, p struct {
-		Channel    string            `json:"channel"`
-		ChatID     string            `json:"chat_id"`
-		Content    string            `json:"content"`
-		SenderID   string            `json:"sender_id"`
-		SenderName string            `json:"sender_name"`
-		ChatType   string            `json:"chat_type"`
-		RequestID  string            `json:"request_id"`
-		Metadata   map[string]string `json:"metadata,omitempty"`
+		Channel      string             `json:"channel"`
+		ChatID       string             `json:"chat_id"`
+		Content      string             `json:"content"`
+		SenderID     string             `json:"sender_id"`
+		SenderName   string             `json:"sender_name"`
+		ChatType     string             `json:"chat_type"`
+		RequestID    string             `json:"request_id"`
+		Metadata     map[string]string  `json:"metadata,omitempty"`
+		MediaContent []bus.MediaContent `json:"media_content,omitempty"`
 	}) (any, error) {
 		msg := bus.InboundMessage{
-			Channel:    p.Channel,
-			ChatID:     p.ChatID,
-			Content:    p.Content,
-			SenderID:   p.SenderID,
-			SenderName: p.SenderName,
-			ChatType:   p.ChatType,
-			RequestID:  p.RequestID,
-			Metadata:   p.Metadata,
+			Channel:      p.Channel,
+			ChatID:       p.ChatID,
+			Content:      p.Content,
+			SenderID:     p.SenderID,
+			SenderName:   p.SenderName,
+			ChatType:     p.ChatType,
+			RequestID:    p.RequestID,
+			Metadata:     p.Metadata,
+			MediaContent: p.MediaContent,
 		}
 		select {
 		case h.MsgBus.Inbound <- msg:

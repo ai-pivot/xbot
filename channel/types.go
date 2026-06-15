@@ -1,20 +1,30 @@
 package channel
 
-import "context"
+import (
+	"context"
+
+	"xbot/bus"
+)
+
+// MediaContent carries inline media data (e.g. clipboard-pasted images),
+// as opposed to Media which holds file path references.
+// Alias to bus.MediaContent so the same type flows through all layers.
+type MediaContent = bus.MediaContent
 
 // InboundMsg represents a user message from CLI to server.
 // This is the CLI-local equivalent of bus.InboundMessage, containing only
 // the fields needed by the CLI channel.
 type InboundMsg struct {
-	Channel    string            `json:"channel"`
-	ChatID     string            `json:"chat_id"`
-	Content    string            `json:"content"`
-	SenderID   string            `json:"sender_id"`
-	SenderName string            `json:"sender_name"`
-	ChatType   string            `json:"chat_type"`
-	RequestID  string            `json:"request_id"`
-	Media      []string          `json:"media,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	Channel      string            `json:"channel"`
+	ChatID       string            `json:"chat_id"`
+	Content      string            `json:"content"`
+	SenderID     string            `json:"sender_id"`
+	SenderName   string            `json:"sender_name"`
+	ChatType     string            `json:"chat_type"`
+	RequestID    string            `json:"request_id"`
+	Media        []string          `json:"media,omitempty"`
+	MediaContent []MediaContent    `json:"media_content,omitempty"` // inline media (pasted images)
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 // OutboundMsg represents a server response to CLI.

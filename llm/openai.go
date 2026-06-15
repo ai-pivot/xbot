@@ -520,6 +520,50 @@ func parseEmbeddedImages(content string) []imageContentPart {
 	return parts
 }
 
+// isVisionUnsupportedError checks if an API error is related to image/vision support.
+// Returns true if the error message contains keywords indicating the model
+// doesn't support images or multimodal input.
+func isVisionUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, kw := range []string{"image", "vision", "multimodal", "not supported", "invalid content", "unsupported content type"} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// messagesHaveEmbeddedImages checks if any user message contains data URL images.
+func messagesHaveEmbeddedImages(messages []ChatMessage) bool {
+	for _, msg := range messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "data:image") {
+			parts := parseEmbeddedImages(msg.Content)
+			for _, p := range parts {
+				if p.Type == "image" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// stripImagesFromMessages returns a copy of messages with all embedded data URL
+// images removed from user message content. Used for vision fallback.
+func stripImagesFromMessages(messages []ChatMessage) []ChatMessage {
+	result := make([]ChatMessage, len(messages))
+	copy(result, messages)
+	for i := range result {
+		if result[i].Role == "user" && strings.Contains(result[i].Content, "data:") {
+			result[i].Content = stripEmbeddedImages(result[i].Content)
+		}
+	}
+	return result
+}
+
 // toOpenAITools 将工具转换为 OpenAI 格式
 func toOpenAITools(tools []ToolDefinition) []openai.ChatCompletionToolUnionParam {
 	result := make([]openai.ChatCompletionToolUnionParam, 0, len(tools))
@@ -972,6 +1016,24 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 					"error":    retryErr.Error(),
 					"raw_tail": o.captureStreamTail(),
 				}).Error("[LLM] Stream init error (after max_tokens retry)")
+				return nil, retryErr
+			}
+			return stream, nil
+		}
+		// Vision fallback: if the model doesn't support images, strip and retry
+		if isVisionUnsupportedError(err) && messagesHaveEmbeddedImages(messages) {
+			log.Ctx(ctx).WithField("model", model).Info("[LLM] Stream: model doesn't support images, retrying without images")
+			stream.Close()
+			strippedMsgs := stripImagesFromMessages(messages)
+			params = o.buildParams(model, strippedMsgs, tools, thinkingMode, true)
+			stream = o.client.Chat.Completions.NewStreaming(ctx, params, opts...)
+			if retryErr := stream.Err(); retryErr != nil {
+				stream.Close()
+				log.Ctx(ctx).WithFields(log.Fields{
+					"provider": "openai", "model": model, "base_url": o.baseURL,
+					"error":    retryErr.Error(),
+					"raw_tail": o.captureStreamTail(),
+				}).Error("[LLM] Stream init error (after vision fallback)")
 				return nil, retryErr
 			}
 			return stream, nil
