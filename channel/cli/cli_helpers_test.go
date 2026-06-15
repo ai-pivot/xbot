@@ -1569,3 +1569,139 @@ func TestCacheGenerationCounter(t *testing.T) {
 		t.Fatal("after second bump, histGen should differ from allLinesGen (stale detection)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cross-turn merge guard in handleSuHistoryLoad
+// ---------------------------------------------------------------------------
+// When TUI restarts while the agent is mid-turn, handleSuHistoryLoad must NOT
+// merge the PREVIOUS turn's assistant message into the current streaming slot.
+// The merge is only correct when the last assistant in history belongs to the
+// CURRENT turn. If there's a user message between the assistant and the
+// streaming slot, the assistant is from a previous turn — merging it would
+// display the previous turn's content as the current streaming message.
+//
+// Regression: previous code searched backward for any role=="assistant",
+// skipping user messages, and always merged the first one found.
+// ---------------------------------------------------------------------------
+
+// TestSuHistoryLoad_NoCrossTurnMerge verifies that when history has a user
+// message between the last assistant and the streaming slot (indicating a
+// new turn started), the previous turn's assistant content is NOT merged
+// into the current streaming slot.
+func TestSuHistoryLoad_NoCrossTurnMerge(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	m.typing = false // fresh restart
+	m.splashState.suLoading = true
+
+	prevTurnContent := "你说得对，路由逻辑确实混乱。这是上一轮的内容。"
+	now := time.Now()
+
+	msg := suHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      "/test",
+		activeProgress: &protocol.ProgressEvent{
+			ChatID:    "cli:/test",
+			Phase:     "executing",
+			Iteration: 1,
+		},
+		history: []channel.HistoryMessage{
+			{Role: "assistant", Content: prevTurnContent, Timestamp: now.Add(-2 * time.Minute)},
+			{Role: "tool_summary", Content: "", Timestamp: now.Add(-90 * time.Second)},
+			{Role: "user", Content: "开始新一轮", Timestamp: now.Add(-30 * time.Second)},
+		},
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	// The streaming slot should NOT contain the previous turn's content.
+	if m.streamingMsgIdx < 0 || m.streamingMsgIdx >= len(m.messages) {
+		t.Fatalf("streamingMsgIdx out of range: %d (messages: %d)", m.streamingMsgIdx, len(m.messages))
+	}
+	streamingContent := m.messages[m.streamingMsgIdx].content
+	if streamingContent == prevTurnContent {
+		t.Fatalf("BUG: previous turn's content leaked into streaming slot.\n"+
+			"streaming content = %q\nexpected empty or current-turn content", streamingContent)
+	}
+	if streamingContent != "" {
+		t.Fatalf("streaming slot should be empty for a new turn, got %q", streamingContent)
+	}
+
+	// The previous turn's assistant message should still be in history (not deleted).
+	foundPrev := false
+	for _, cm := range m.messages {
+		if cm.content == prevTurnContent && cm.role == "assistant" {
+			foundPrev = true
+			break
+		}
+	}
+	if !foundPrev {
+		t.Fatal("previous turn's assistant message was incorrectly deleted by cross-turn merge")
+	}
+
+	// Verify message order: assistant(prev) → tool_summary → user → assistant(streaming, empty)
+	if len(m.messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %+v", len(m.messages), m.messages)
+	}
+	expectedRoles := []string{"assistant", "tool_summary", "user", "assistant"}
+	for i, exp := range expectedRoles {
+		if m.messages[i].role != exp {
+			t.Errorf("message[%d]: expected role=%q, got %q (content=%q)",
+				i, exp, m.messages[i].role, m.messages[i].content)
+		}
+	}
+}
+
+// TestSuHistoryLoad_SameTurnMergeStillWorks verifies that when the last
+// assistant in history IS from the current turn (no user message between it
+// and the streaming slot), the merge still works correctly.
+func TestSuHistoryLoad_SameTurnMergeStillWorks(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+
+	m.typing = false
+	m.splashState.suLoading = true
+
+	currentContent := "这是当前轮次的部分输出。"
+	now := time.Now()
+
+	msg := suHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      "/test",
+		activeProgress: &protocol.ProgressEvent{
+			ChatID:    "cli:/test",
+			Phase:     "executing",
+			Iteration: 2,
+		},
+		history: []channel.HistoryMessage{
+			{Role: "user", Content: "hello", Timestamp: now.Add(-2 * time.Minute)},
+			// Last assistant is from current turn — no user after it.
+			{Role: "assistant", Content: currentContent, Timestamp: now.Add(-30 * time.Second)},
+		},
+	}
+
+	_ = m.handleSuHistoryLoad(msg)
+
+	// The streaming slot SHOULD contain the current turn's content (merged).
+	if m.streamingMsgIdx < 0 || m.streamingMsgIdx >= len(m.messages) {
+		t.Fatalf("streamingMsgIdx out of range: %d", m.streamingMsgIdx)
+	}
+	streamingContent := m.messages[m.streamingMsgIdx].content
+	if streamingContent != currentContent {
+		t.Fatalf("expected streaming slot to contain current turn content %q, got %q",
+			currentContent, streamingContent)
+	}
+
+	// Should have exactly 2 messages: user + assistant(streaming)
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 messages after same-turn merge, got %d: %+v",
+			len(m.messages), m.messages)
+	}
+}
