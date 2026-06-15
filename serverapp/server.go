@@ -476,6 +476,7 @@ func Run(args []string) error {
 	// rpcTablePtr is set later after InitServer, but the factory is called during
 	// InitServer (plugin activation). The dispatch function resolves lazily.
 	var rpcTablePtr *RPCTable
+	var registryPtr *tools.Registry // resolved after InitServer (same pattern as rpcTablePtr)
 	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
 		return &stdioChannelPluginProvider{
 			decl: decl,
@@ -485,6 +486,7 @@ func Run(args []string) error {
 				}
 				return rpcTablePtr.Dispatch(ctx, method, payload)
 			},
+			getRegistry: func() *tools.Registry { return registryPtr },
 		}, nil
 	})
 
@@ -539,6 +541,7 @@ func Run(args []string) error {
 	// Plugin activation happens during InitServer, so the factory was already called
 	// with the lazy dispatch function. Now the RPCTable is available.
 	rpcTablePtr = &rpcTable
+	registryPtr = ag.Tools() // resolve lazy registry getter for channel providers
 
 	// Migrate config.json subscriptions into DB for the admin user.
 	// This ensures admin is a normal DB user with real subscriptions,
@@ -626,39 +629,39 @@ func Run(args []string) error {
 		if feishuProvider != nil {
 			feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())
 		}
-		ag.RegisterTool(&feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BitableRecordTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BitableListTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableRecordTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableListTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
 
 		// Wiki tools
-		ag.RegisterTool(&feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
 
 		// Document tools
-		ag.RegisterTool(&feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxCreateTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxCreateTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
 
 		// Search tools
-		ag.RegisterTool(&feishu_mcp.SearchWikiTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.SearchWikiTool{MCP: feishuMCP})
 
 		// Drive tools
-		ag.RegisterTool(&feishu_mcp.UploadFileTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.ListFilesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.AddPermissionTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.UploadFileTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.ListFilesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.AddPermissionTool{MCP: feishuMCP})
 
 		// Message resource tools
-		ag.RegisterTool(&feishu_mcp.DownloadFileTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.SendFileTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DownloadFileTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.SendFileTool{MCP: feishuMCP})
 
 		log.Info("OAuth and Feishu MCP tools registered")
 	}

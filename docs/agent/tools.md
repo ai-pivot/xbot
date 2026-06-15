@@ -252,8 +252,24 @@ xbot (serverapp)                    Plugin (separate process)
 
 | File | Purpose |
 |------|---------|
-| `agent/transport_grpc.go` | Core transport: GrpcPluginTransport + processIO abstraction |
-| `serverapp/channel_plugin.go` | grpcPluginChannelProvider: spawns process, creates transport |
-| `serverapp/channel_helpers.go` | Shared helpers: strVal, boolVal for config parsing |
+| `agent/transport_channel_plugin.go` | ChannelPluginTransport: bidirectional JSON-RPC over stdin/stdout |
+| `serverapp/channel_plugin.go` | stdioChannelPluginProvider: spawns process, creates transport |
 | `plugin/channel_provider.go` | ChannelProviderFactory: creates provider from plugin decl |
+| `plugin/channel_tool_bridge.go` | ChannelToolBridge: adapts channel-declared tools to tools.Tool |
 | `plugin/examples/echo-channel/` | Example plugin: HTTP echo server over JSON-RPC |
+
+### Channel-Scoped Tools
+
+Channel plugins can declare tools via the `"channel_tools"` protocol message.
+These tools are registered with `Registry.RegisterForChannel(channel, bridge)`
+and only visible in sessions of that channel.
+
+Flow:
+1. Channel process sends `{"type":"channel_tools","tools":[...]}` on stdout
+2. `ChannelPluginTransport.handleChannelTools()` parses the declaration
+3. Each tool is wrapped in `ChannelToolBridge` (implements `tools.Tool`)
+4. Registered via `Registry.RegisterForChannel(channelName, bridge)`
+5. When agent calls the tool → `ChannelToolBridge.Execute` → `Call("execute_tool")` → channel process
+
+Hot-update: sending a new `channel_tools` message replaces the entire tool set
+(`UnregisterChannelTools` + re-register).

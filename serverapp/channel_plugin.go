@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/plugin"
+	"xbot/tools"
 
 	log "xbot/logger"
 	"xbot/protocol"
@@ -30,9 +32,10 @@ type RPCTableDispatcher interface {
 // ---------------------------------------------------------------------------
 
 type stdioChannelPluginProvider struct {
-	decl    *plugin.ChannelProviderDecl
-	msgBus  *bus.MessageBus
-	rpcDisp func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
+	decl        *plugin.ChannelProviderDecl
+	msgBus      *bus.MessageBus
+	rpcDisp     func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
+	getRegistry func() *tools.Registry // lazy registry getter (resolved after agent init)
 
 	mu   sync.Mutex
 	conn *agent.ChannelPluginTransport
@@ -41,13 +44,16 @@ type stdioChannelPluginProvider struct {
 var _ channel.ChannelProvider = (*stdioChannelPluginProvider)(nil)
 
 // NewStdioChannelPluginProvider creates a stdioChannelPluginProvider with the
-// given declaration and RPC dispatch table. Used by both CLI and server modes.
-func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher) *stdioChannelPluginProvider {
+// given declaration, RPC dispatch table, and tool registry. Used by both CLI
+// and server modes. registry may be nil if channel tool registration is not
+// needed.
+func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher, registry *tools.Registry) *stdioChannelPluginProvider {
 	return &stdioChannelPluginProvider{
 		decl: decl,
 		rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 			return rpcTable.Dispatch(ctx, method, payload)
 		},
+		getRegistry: func() *tools.Registry { return registry },
 	}
 }
 
@@ -66,12 +72,19 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 
 	// Create the bidirectional transport.
 	eventCh := make(chan protocol.WSMessage, 256)
+	// Resolve registry lazily (agent may not be available at factory creation time).
+	var reg *tools.Registry
+	if p.getRegistry != nil {
+		reg = p.getRegistry()
+	}
+
 	transport := agent.NewChannelPluginTransport(agent.ChannelPluginTransportConfig{
 		Name:     p.decl.Name,
 		Stdin:    proc.stdinPipe,
 		Stdout:   proc.stdoutPipe,
 		Dispatch: p.rpcDisp,
 		EventCh:  eventCh,
+		Registry: reg,
 	})
 
 	p.mu.Lock()
@@ -157,6 +170,7 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, err
 		cmd = exec.Command(parts[0], parts[1:]...)
 	}
 	cmd.Dir = decl.Dir
+	cmd.Stderr = os.Stderr // capture stderr for debugging
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {

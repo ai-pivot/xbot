@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"xbot/channel"
+	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/tools"
 
 	log "xbot/logger"
 )
@@ -48,6 +50,11 @@ type ChannelPluginTransport struct {
 	pending   map[string]chan *rpcResponse
 	pendingMu sync.Mutex
 	rpcID     atomic.Int64
+
+	// Registry for channel-scoped tool registration.
+	// When the channel process declares tools via "channel_tools" message,
+	// they are registered here with RegisterForChannel(name, bridge).
+	registry *tools.Registry
 
 	// Lifecycle
 	writeMu   sync.Mutex // serializes writes to stdin (Call + PushEvent)
@@ -120,6 +127,11 @@ type ChannelPluginTransportConfig struct {
 	// EventCh receives WSMessage events that should be pushed to the plugin.
 	// The transport reads from this channel and writes to the plugin's stdin.
 	EventCh chan protocol.WSMessage
+
+	// Registry is used to register channel-scoped tools when the channel
+	// process declares them via "channel_tools" message. May be nil if
+	// channel tool registration is not needed.
+	Registry *tools.Registry
 }
 
 // NewChannelPluginTransport creates a new ChannelPluginTransport from config.
@@ -129,6 +141,7 @@ func NewChannelPluginTransport(cfg ChannelPluginTransportConfig) *ChannelPluginT
 		process:  newStdioPipes(cfg.Stdin, cfg.Stdout),
 		dispatch: cfg.Dispatch,
 		eventCh:  cfg.EventCh,
+		registry: cfg.Registry,
 		pending:  make(map[string]chan *rpcResponse),
 		closeCh:  make(chan struct{}),
 	}
@@ -224,6 +237,7 @@ var (
 	_ channel.ProgressSender      = (*ChannelPluginTransport)(nil)
 	_ channel.SessionStateSender  = (*ChannelPluginTransport)(nil)
 	_ channel.UserMessageInjector = (*ChannelPluginTransport)(nil)
+	_ plugin.ChannelToolExecutor  = (*ChannelPluginTransport)(nil) // has Call() method
 )
 
 func (t *ChannelPluginTransport) Name() string                                    { return t.name }
@@ -248,6 +262,11 @@ func (t *ChannelPluginTransport) Stop() {
 			delete(t.pending, id)
 		}
 		t.pendingMu.Unlock()
+
+		// Clean up channel-scoped tools registered by this transport.
+		if t.registry != nil {
+			t.registry.UnregisterChannelTools(t.name)
+		}
 	})
 }
 
@@ -396,11 +415,18 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 	var peek struct {
 		ID     string          `json:"id"`
 		Method string          `json:"method"`
+		Type   string          `json:"type"`
 		Result json.RawMessage `json:"result"`
 		Error  string          `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &peek); err != nil {
 		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse plugin message")
+		return
+	}
+
+	// Channel tool declaration (type-based, no id/method)
+	if peek.Type == protocol.MsgTypeChannelTools {
+		t.handleChannelTools(raw)
 		return
 	}
 
@@ -412,6 +438,33 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 		t.handlePluginResponse(peek.ID, peek.Result, peek.Error)
 	}
 	// else: unknown message type, ignore
+}
+
+// handleChannelTools processes a "channel_tools" declaration from the channel
+// process. It registers each declared tool into the Registry with
+// RegisterForChannel, allowing the agent to discover and call them.
+// Sending a new "channel_tools" message replaces the previous set (hot-update).
+func (t *ChannelPluginTransport) handleChannelTools(raw json.RawMessage) {
+	if t.registry == nil {
+		return
+	}
+
+	var msg struct {
+		Tools []plugin.ChannelToolDecl `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_tools message")
+		return
+	}
+
+	// Hot-update: clear old tools, register new ones
+	t.registry.UnregisterChannelTools(t.name)
+	for _, decl := range msg.Tools {
+		bridge := plugin.NewChannelToolBridge(decl, t) // t implements ChannelToolExecutor via Call()
+		t.registry.RegisterForChannel(t.name, bridge)
+	}
+
+	log.WithField("channel", t.name).WithField("count", len(msg.Tools)).Info("Channel tools registered")
 }
 
 // handlePluginRPC dispatches an RPC request from the plugin to xbot's RPCTable.

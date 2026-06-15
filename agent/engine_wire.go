@@ -919,11 +919,12 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			}
 		}
 		if !ok {
-			tool, ok = a.tools.Get(tc.Name)
-			// Also check tenant-scoped tools if session is available
-			if !ok && cfg.Session != nil {
-				tool, ok = a.tools.GetForTenant(tc.Name, cfg.Session.TenantID())
+			// Unified lookup: channel-scoped → tenant → global
+			tenantID := int64(0)
+			if cfg.Session != nil {
+				tenantID = cfg.Session.TenantID()
 			}
+			tool, ok = a.tools.GetForSession(tc.Name, tenantID, sessionKey)
 		}
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)

@@ -43,6 +43,7 @@ func (m *cliModel) openAskUserPanel(items []askItem, onAnswer func(map[string]st
 	ta := textarea.New()
 	ta.Placeholder = m.locale.PanelEditPlaceholder
 	ta.Prompt = "  "
+	ta.ShowLineNumbers = false // free-text input, no need for line numbers
 	applyTAStyles(&ta, &m.styles)
 	ta.CharLimit = 0
 	ta.SetWidth(m.panelWidth(50))
@@ -629,6 +630,16 @@ func (m *cliModel) viewAskUserPanel() string {
 			}
 		} else {
 			sb.WriteString("\n")
+			// Resize textarea to fit within panel content area.
+			// qWrapWidth = cw-8 accounts for PanelBox border+padding and
+			// potential scrollbar. SetWidth(W) internally subtracts the
+			// prompt width, so the output line width = W chars total.
+			taWidth := qWrapWidth
+			if taWidth < 10 {
+				taWidth = 10
+			}
+			m.panelState.askAnswerTA.SetWidth(taWidth)
+			m.autoExpandAskTA()
 			sb.WriteString(m.panelState.askAnswerTA.View())
 			sb.WriteString("\n")
 		}

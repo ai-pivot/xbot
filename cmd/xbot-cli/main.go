@@ -781,14 +781,14 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Local mode: InitServer + ChannelTransport + Client.
 		// Create eventCh first — shared between localEventBridge (server side) and Client (CLI side).
 		eventCh := make(chan protocol.WSMessage, 256)
-		_, rpcTable, disp, msgBus, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
+		ag, rpcTable, disp, msgBus, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
 
 		// Register ChannelProviderFactory for gRPC channel plugins.
 		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
-			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable), nil
+			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable, ag.Tools()), nil
 		})
 
 		// Register plugin channels in the Dispatcher (equivalent to registerChannels() in server mode).
