@@ -1565,6 +1565,14 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 		if event == nil || event.Structured == nil {
 			return
 		}
+		// Cancel barrier: drop all progress events for cancelled sessions.
+		// Set by /cancel handler BEFORE the cancel signal reaches the engine.
+		// This ensures the cancel ack is the last event the CLI receives for
+		// this turn — no stale progress/PhaseDone events leak through to
+		// trigger re-renders that lose iteration display data.
+		if _, cancelled := a.cancelledProgress.Load(progressKey); cancelled {
+			return
+		}
 		s := event.Structured
 		if cliCh != nil {
 			payload := &protocol.ProgressEvent{
@@ -1762,6 +1770,10 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 		if event == nil || event.Structured == nil {
 			return
 		}
+		// Cancel barrier: same as CLI handler.
+		if _, cancelled := a.cancelledProgress.Load(progressKey); cancelled {
+			return
+		}
 		s := event.Structured
 		payload := &protocol.ProgressEvent{
 			ChatID:           progressKey,
@@ -1856,6 +1868,10 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 	progressKey := qualifyChatID(channel, chatID)
 	return func(event *ProgressEvent) {
 		if event == nil || event.Structured == nil {
+			return
+		}
+		// Cancel barrier: same as CLI handler.
+		if _, cancelled := a.cancelledProgress.Load(progressKey); cancelled {
 			return
 		}
 		s := event.Structured

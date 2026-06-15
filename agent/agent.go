@@ -281,6 +281,13 @@ type Agent struct {
 	// key: "channel:chatID" -> bool
 	pendingCancel sync.Map
 
+	// cancelledProgress: 当 /cancel 被处理后，阻止后续 progress 事件发送到 CLI。
+	// 这确保 cancel ack 是该轮次最后一个事件，避免 stale progress/PhaseDone
+	// 事件到达 CLI 后触发重新渲染导致迭代数据丢失。
+	// key: "channel:chatID" -> bool
+	// Set by /cancel handler, cleared by chatProcessLoop defer + next turn start.
+	cancelledProgress sync.Map
+
 	// lastProgressSnapshot stores the latest CLIProgressPayload per active chat,
 	// updated by ProgressEventHandler during processing. Used by GetActiveProgress
 	// RPC to restore progress state on mid-session reconnect.
@@ -1647,6 +1654,13 @@ func (a *Agent) Run(ctx context.Context) error {
 				cancelKey := msg.Channel + ":" + msg.ChatID
 				cancelMeta := map[string]string{"cancelled": "true"}
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
+				// Set progress cancel barrier BEFORE sending the cancel signal.
+				// This ensures the progress event handler drops ALL subsequent
+				// progress events (including PhaseDone) for this session, so the
+				// cancel ack is guaranteed to be the last event the CLI receives.
+				// Without this, stale progress events arriving after the ack
+				// trigger re-renders that lose the latest iterations' display.
+				a.cancelledProgress.Store(cancelKey, true)
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
 					case ch.(chan struct{}) <- struct{}{}:
@@ -2000,6 +2014,10 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				reqCancel()
 				a.chatCancelCh.Delete(cancelKey)
 				a.pendingCancel.Delete(cancelKey)
+				// Clear progress cancel barrier. The turn is over — no more
+				// progress events can be generated. The next turn for this
+				// session should be allowed to send progress events normally.
+				a.cancelledProgress.Delete(cancelKey)
 
 				// Emit session idle event for instant sidebar push.
 				a.emitSessionState(protocol.SessionEvent{
