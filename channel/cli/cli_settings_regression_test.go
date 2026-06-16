@@ -560,3 +560,141 @@ func TestCycleModel_PreservesPerModelMaxContext(t *testing.T) {
 			m.cachedMaxContextTokens)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Per-session model persistence on startup restore (regression for model switch bug)
+// ---------------------------------------------------------------------------
+
+// mockLLMSubscriber tracks SwitchModel calls for assertions.
+type mockLLMSubscriber struct {
+	switchModelCalls []mockSwitchModelCall
+	switchSubCalls   []mockSwitchSubCall
+	defaultModel     string
+}
+
+type mockSwitchModelCall struct {
+	senderID string
+	model    string
+	chatID   string
+}
+
+type mockSwitchSubCall struct {
+	senderID string
+	chatID   string
+}
+
+func (m *mockLLMSubscriber) SwitchSubscription(senderID string, sub *channel.Subscription, chatID string) error {
+	m.switchSubCalls = append(m.switchSubCalls, mockSwitchSubCall{senderID, chatID})
+	return nil
+}
+
+func (m *mockLLMSubscriber) SwitchModel(senderID, model, chatID string) {
+	m.switchModelCalls = append(m.switchModelCalls, mockSwitchModelCall{senderID, model, chatID})
+}
+
+func (m *mockLLMSubscriber) GetDefaultModel() string {
+	return m.defaultModel
+}
+
+// TestScheduleSessionLLMRestore_UsesPerSessionModel verifies that when a session
+// had a per-session model override (e.g. user switched via Ctrl+L), the restore
+// path uses that model instead of the subscription's default model.
+func TestScheduleSessionLLMRestore_UsesPerSessionModel(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{
+				ID: "sub1", Name: "test", Provider: "openai", BaseURL: "https://api.test/v1",
+				APIKey: "key", Model: "model-a", Active: true,
+			},
+		},
+		defaultID: "sub1",
+	}
+
+	var switchedModel string
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.senderID = "cli_user"
+	m.workDir = t.TempDir()
+	m.chatID = "/test:session-1"
+	m.subscriptionMgr = mgr
+	m.activeSubID = "sub1"
+	// Simulate per-session model restored from backend by refreshCachedModelName
+	m.cachedModelName = "model-b"
+	m.channel = &CLIChannel{config: &CLIChannelConfig{
+		SwitchLLM: func(provider, baseURL, apiKey, model string) error {
+			switchedModel = model
+			return nil
+		},
+	}, subscriptionMgr: mgr}
+
+	m.scheduleSessionLLMRestore()
+	if len(m.pendingCmds) == 0 {
+		t.Fatal("expected pendingCmds to be populated")
+	}
+	// Execute the pending cmd
+	msg := m.pendingCmds[0]()
+	done, ok := msg.(cliSwitchLLMDoneMsg)
+	if !ok {
+		t.Fatalf("expected cliSwitchLLMDoneMsg, got %T", msg)
+	}
+	if switchedModel != "model-b" {
+		t.Errorf("SwitchLLM model = %q, want model-b (per-session model)", switchedModel)
+	}
+	if done.subModel != "model-b" {
+		t.Errorf("done.subModel = %q, want model-b (per-session model)", done.subModel)
+	}
+}
+
+// TestHandleSwitchLLMDone_RestoresPerSessionModel verifies that handleSwitchLLMDoneMsg
+// calls SwitchModel to set the per-session model after SetDefault creates the entry
+// with the subscription's default model.
+func TestHandleSwitchLLMDone_RestoresPerSessionModel(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{
+				ID: "sub1", Name: "test", Provider: "openai", BaseURL: "https://api.test/v1",
+				APIKey: "key", Model: "model-a", Active: true,
+			},
+		},
+		defaultID: "sub1",
+	}
+
+	mockSub := &mockLLMSubscriber{}
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.senderID = "cli_user"
+	m.workDir = t.TempDir()
+	m.chatID = "/test:session-1"
+	m.subscriptionMgr = mgr
+	m.llmSubscriber = mockSub
+	m.remoteMode = true
+	m.channel = &CLIChannel{config: &CLIChannelConfig{}}
+
+	// Simulate startup restore: subModel is per-session model "model-b",
+	// NOT subscription default "model-a"
+	done := cliSwitchLLMDoneMsg{
+		subID:    "sub1",
+		subName:  "test",
+		subModel: "model-b", // per-session model
+		mgr:      mgr,
+	}
+
+	m.handleSwitchLLMDoneMsg(done)
+
+	// SwitchModel must have been called with the per-session model
+	if len(mockSub.switchModelCalls) != 1 {
+		t.Fatalf("expected 1 SwitchModel call, got %d", len(mockSub.switchModelCalls))
+	}
+	call := mockSub.switchModelCalls[0]
+	if call.model != "model-b" {
+		t.Errorf("SwitchModel model = %q, want model-b", call.model)
+	}
+	if call.chatID != m.chatID {
+		t.Errorf("SwitchModel chatID = %q, want %q", call.chatID, m.chatID)
+	}
+
+	// cachedModelName must reflect per-session model, not subscription default
+	if m.cachedModelName != "model-b" {
+		t.Errorf("cachedModelName = %q, want model-b (per-session model)", m.cachedModelName)
+	}
+}

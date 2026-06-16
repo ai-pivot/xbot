@@ -406,3 +406,87 @@ func TestCtrlC_CancelAckDoesNotForceRebuild(t *testing.T) {
 		t.Errorf("expected iteration 2, got %d", assistantMsg.iterations[1].Iteration)
 	}
 }
+
+// TestCtrlC_CancelAckSetsInputReadyAndFlushQueue verifies that the cancel ack
+// sets inputReady=true and needFlushQueue=true (when queue has messages),
+// matching every other turn-end path. Without this fix, Ctrl+C leaves
+// inputReady=false: the status bar shows "就绪" (because typing=false) but
+// new messages silently queue (📬N) and the queue never flushes.
+func TestCtrlC_CancelAckSetsInputReadyAndFlushQueue(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.typing = true
+	model.typingStartTime = time.Now()
+	oldTurnID := model.agentTurnID
+
+	// User queued a message while agent was typing
+	model.messageQueue = append(model.messageQueue, queuedMsg{
+		content: "follow up question",
+		chatID:  model.chatID,
+	})
+
+	// Streaming message for the active turn
+	model.cancelTargetTurnID = oldTurnID
+	model.streamingMsgIdx = len(model.messages)
+	model.messages = append(model.messages, cliMessage{
+		role: "assistant", content: "partial response", timestamp: time.Now(),
+		isPartial: true, dirty: true, turnID: oldTurnID,
+	})
+
+	// Cancel ack arrives
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// typing must be false (status bar shows "就绪")
+	if model.typing {
+		t.Error("typing should be false after cancel ack")
+	}
+
+	// inputReady must be true — user should be able to send directly,
+	// not silently queue. This is the core bug: "就绪 but still queuing"
+	if !model.inputReady {
+		t.Error("inputReady should be true after cancel ack — " +
+			"status bar shows ready but messages still queue")
+	}
+
+	// needFlushQueue must be true — tick handler should drain the queue
+	if !model.needFlushQueue {
+		t.Error("needFlushQueue should be true when queue has messages after cancel ack")
+	}
+}
+
+// TestCtrlC_CancelAckNoQueueNoFlushFlag verifies that needFlushQueue is NOT
+// set when there are no queued messages (avoids unnecessary flush attempts).
+func TestCtrlC_CancelAckNoQueueNoFlushFlag(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.typing = true
+	model.typingStartTime = time.Now()
+	oldTurnID := model.agentTurnID
+
+	model.cancelTargetTurnID = oldTurnID
+	model.streamingMsgIdx = len(model.messages)
+	model.messages = append(model.messages, cliMessage{
+		role: "assistant", content: "partial", timestamp: time.Now(),
+		isPartial: true, dirty: true, turnID: oldTurnID,
+	})
+
+	// No messages in queue
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	if !model.inputReady {
+		t.Error("inputReady should be true after cancel ack even with empty queue")
+	}
+	if model.needFlushQueue {
+		t.Error("needFlushQueue should remain false when queue is empty")
+	}
+}

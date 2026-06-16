@@ -24,9 +24,16 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		// Also update the global default subscription (is_default flag in DB)
 		// so that new sessions inherit the last-used subscription.
 		_ = done.mgr.SetDefault(done.subID, "")
-		// Update per-session LLM state. The subscription's model is authoritative —
-		// per-session model overrides (Ctrl+N) are handled by cycleModel which
-		// saves directly to session JSON + calls SwitchModel RPC.
+		// Restore per-session model: SetDefault(subID, chatID) creates the per-chat
+		// entry using the subscription's default model (via SetSessionLLM). If the
+		// session had a different model choice (e.g. user switched via Ctrl+L),
+		// SwitchModel overrides the per-chat entry's model field AND persists the
+		// correct model back to the tenants table. This is idempotent when
+		// done.subModel equals the subscription default.
+		if done.subModel != "" && m.llmSubscriber != nil {
+			m.llmSubscriber.SwitchModel(m.senderID, done.subModel, m.chatID)
+		}
+		// Update per-session LLM state.
 		state := SessionLLMState{
 			SubscriptionID: done.subID,
 			Model:          done.subModel,

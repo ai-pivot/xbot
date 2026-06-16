@@ -162,6 +162,16 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		m.typing = false        // clear typing indicator immediately after cancel
 		m.turnCancelled = false // cancel complete, allow future turns
 		m.cancelTargetTurnID = 0
+		// Match every other turn-end path: set inputReady so the user can send
+		// directly (status bar already shows "就绪" because typing=false), and
+		// arm needFlushQueue so the tick handler drains queued messages.
+		// Without this, Ctrl+C leaves inputReady=false: new messages silently
+		// queue (📬N) but never flush — the state bar says "ready" but the
+		// queue is stuck.
+		m.inputReady = true
+		if len(m.messageQueue) > 0 {
+			m.needFlushQueue = true
+		}
 		// Do NOT force immediate full rebuild via updateViewportContent().
 		// The live streaming display already shows all iterations correctly.
 		// Forcing a rebuild here causes a full glamour re-render of ALL messages,
