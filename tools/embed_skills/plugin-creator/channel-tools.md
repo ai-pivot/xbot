@@ -287,7 +287,7 @@ for line in sys.stdin:
   "name": "GitHub Code Reviewer",
   "version": "1.0.0",
   "description": "Auto code review via GitHub App",
-  "runtime": "grpc",
+  "runtime": "stdio",
   "entry": "python3 main.py",
   "permissions": ["channels.register"],
   "contributes": {

@@ -21,9 +21,9 @@ Create and manage xbot plugins.
 |------|-----------|----------|
 | **script** | Low | Shell-based plugins: widgets, notifications, simple tools |
 | **native** | Medium | Go in-process plugins (requires compilation) |
-| **grpc** | High | External process plugins: channels, channel-scoped tools, Python/Go/any language |
+| **stdio** | High | External process plugins: channels, channel-scoped tools, Python/Go/any language |
 
-**Prefer script plugins** for widgets and hooks. **Use gRPC for channel plugins and channel-scoped tools.**
+**Prefer script plugins** for widgets and hooks. **Use stdio for channel plugins and channel-scoped tools.**
 
 ## Plugin Location
 
@@ -39,9 +39,9 @@ Create and manage xbot plugins.
 User wants to...
 ├─ Show info in TUI (git branch, tokens) → script plugin + widget → read script-plugins.md
 ├─ React to tool events (post-edit diff) → script plugin + hook → read script-plugins.md
-├─ Add a new message channel (Telegram) → gRPC channel plugin → read channel-plugins.md
-├─ Channel + custom tools (GitHub App CR) → gRPC channel + channel_tools → read channel-tools.md
-└─ Register tools/hooks without channel → gRPC plugin + contributes.tools
+├─ Add a new message channel (Telegram) → stdio channel plugin → read channel-plugins.md
+├─ Channel + custom tools (GitHub App CR) → stdio channel + channel_tools → read channel-tools.md
+└─ Register tools/hooks without channel → stdio plugin + contributes.tools
 ```
 
 ## Files in This Skill
@@ -49,7 +49,7 @@ User wants to...
 | File | Content |
 |------|---------|
 | `script-plugins.md` | Script plugin: manifest format, UI slots, triggers, env vars, examples |
-| `channel-plugins.md` | gRPC channel plugin: protocol, RPC methods, event types, Python example |
+| `channel-plugins.md` | stdio channel plugin: protocol, RPC methods, event types, Python example |
 | `channel-tools.md` | Channel-scoped tools: `channel_tools` protocol, `execute_tool` RPC, complete example |
 
 When you need detailed guidance on a specific plugin type, load the relevant file:
@@ -60,7 +60,7 @@ Skill(name="plugin-creator", file="channel-tools.md")
 ## Workflow
 
 1. **Understand requirement**: Widget? Tool? Channel? Channel+Tools?
-2. **Choose plugin type**: script for widgets/hooks, grpc for channels/tools
+2. **Choose plugin type**: script for widgets/hooks, stdio for channels/tools
 3. **Choose plugin location**: `~/.xbot/plugins/<id>/` for user-level
 4. **Create plugin.json**: Ensure directory name matches plugin ID
 5. **Create entry point**: Script or compiled binary
@@ -97,9 +97,9 @@ tui_control(action="reload_plugins")
 - Widget output is limited in size — keep it short
 - Plugin ID must be unique across all plugins
 - Script output without `style|` prefix is treated as plain text
-- gRPC channel plugins: `entry` command spawns a **dedicated** process for the channel (separate from activation)
-- gRPC plugins use bidirectional JSON-RPC (same as WS protocol), NOT the old request-response protocol
+- stdio channel plugins: `entry` command spawns a **dedicated** process for the channel (separate from activation)
+- stdio plugins use bidirectional JSON-RPC (same as WS protocol), NOT the old request-response protocol
 - Plugin must handle both old-style activation (`{"method":"activate"}`) and new-style JSON-RPC events
-- gRPC plugins receive `channel_config` event with initial configuration, NOT `channel_start` request
-- gRPC plugins send `send_inbound` RPC to push messages, NOT `channel_inbound` async push
+- stdio plugins receive `channel_config` event with initial configuration, NOT `channel_start` request
+- stdio plugins send `send_inbound` RPC to push messages, NOT `channel_inbound` async push
 - Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`

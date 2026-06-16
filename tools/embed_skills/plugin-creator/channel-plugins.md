@@ -1,4 +1,4 @@
-# gRPC Channel Plugins
+# stdio Channel Plugins
 
 External process plugins that act as message channels, communicating with xbot via bidirectional JSON-RPC over stdin/stdout.
 
@@ -20,7 +20,7 @@ The channel runs in a **dedicated process** (separate from the plugin activation
 
 ```
 my-channel/
-├── plugin.json       # Manifest (runtime: "grpc")
+├── plugin.json       # Manifest (runtime: "stdio")
 └── main.py           # Any language — Python, Go, Node, etc.
 ```
 
@@ -32,7 +32,7 @@ my-channel/
   "name": "Telegram Channel",
   "version": "1.0.0",
   "description": "Telegram bot channel for xbot",
-  "runtime": "grpc",
+  "runtime": "stdio",
   "entry": "python3 main.py",
   "permissions": ["channels.register"],
   "contributes": {
@@ -48,7 +48,7 @@ my-channel/
 ```
 
 **Key fields:**
-- `runtime`: Must be `"grpc"` for channel plugins
+- `runtime`: Must be `"stdio"` for channel plugins
 - `entry`: Command to run (e.g. `"python3 main.py"`, `"./my-binary"`)
 - `permissions`: Must include `"channels.register"`
 - `contributes.channelProvider`: Channel declaration with name and config_schema
