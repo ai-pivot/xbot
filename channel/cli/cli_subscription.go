@@ -231,13 +231,20 @@ func (m *cliModel) scheduleSessionLLMRestore() {
 		if subs[i].ID == m.activeSubID {
 			switchFn := m.channel.config.SwitchLLM
 			target := subs[i]
+			// Use per-session model if available (restored by refreshCachedModelName
+			// from the backend tenants table). This ensures the restored LLM uses the
+			// model the user switched to in this session, not the subscription's default.
+			model := target.Model
+			if m.cachedModelName != "" {
+				model = m.cachedModelName
+			}
 			m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
-				err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+				err := switchFn(target.Provider, target.BaseURL, target.APIKey, model)
 				return cliSwitchLLMDoneMsg{
 					err:       err,
 					subID:     target.ID,
 					subName:   target.Name,
-					subModel:  target.Model,
+					subModel:  model,
 					maxCtx:    resolveSubMaxContext(&target),
 					maxOutTok: resolveSubMaxOutputTokens(&target),
 					mgr:       m.subscriptionMgr,
