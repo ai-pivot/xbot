@@ -4,6 +4,7 @@ import (
 	"embed"
 	"io/fs"
 	"path"
+	"path/filepath"
 )
 
 // EmbeddedSkills contains skill templates built into the binary.
@@ -35,20 +36,28 @@ func ReadEmbeddedSkillFile(skillName, file string) ([]byte, error) {
 	return EmbeddedSkills.ReadFile(path)
 }
 
-// ListEmbeddedSkillFiles returns all file paths (relative to skill root) in an embedded skill.
+// ListEmbeddedSkillFiles returns all file paths (relative to skill root) in an
+// embedded skill, recursing into subdirectories. Paths use forward slashes
+// (e.g., "SKILL.md", "examples/debug.go").
 func ListEmbeddedSkillFiles(skillName string) ([]string, error) {
-	dir := path.Join("embed_skills", skillName)
-	entries, err := fs.ReadDir(EmbeddedSkills, dir)
-	if err != nil {
-		return nil, err
-	}
+	skillDir := path.Join("embed_skills", skillName)
 	var files []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			files = append(files, e.Name())
+	err := fs.WalkDir(EmbeddedSkills, skillDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-	}
-	return files, nil
+		if d.IsDir() {
+			return nil
+		}
+		// Convert to path relative to skill root
+		rel, err := filepath.Rel(skillDir, p)
+		if err != nil {
+			return nil // skip on error
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	return files, err
 }
 
 // HasEmbeddedSkill checks if a skill with the given name exists in the embedded FS.
