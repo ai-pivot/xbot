@@ -763,7 +763,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 
 	cardBuilder := tools.NewCardBuilder()
 	for _, t := range tools.NewCardTools(cardBuilder) {
-		registry.Register(t)
+		registry.RegisterForChannel("feishu", t)
 	}
 
 	// Clean up expired waiting cards from previous runs (TTL: 24h)
@@ -2555,6 +2555,18 @@ func (a *Agent) RegisterTool(tool tools.Tool) {
 func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 	a.tools.RegisterCore(tool)
 	log.WithField("tool", tool.Name()).Info("Tool registered")
+}
+
+// RegisterToolForChannel registers a channel-scoped tool.
+// The tool is only visible in sessions of the specified channel.
+func (a *Agent) RegisterToolForChannel(channel string, tool tools.Tool) {
+	a.tools.RegisterForChannel(channel, tool)
+	log.WithField("tool", tool.Name()).WithField("channel", channel).Info("Channel tool registered")
+}
+
+// Tools returns the agent's tool registry.
+func (a *Agent) Tools() *tools.Registry {
+	return a.tools
 }
 
 // emitBuiltinProgress sends a progress event for builtin commands (/compress, /new)

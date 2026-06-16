@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"xbot/bus"
 	"xbot/llm"
@@ -235,6 +236,12 @@ type Registry struct {
 
 	tenantTools   map[int64]map[string]Tool // tenantID → toolName → Tool（per-tenant 工具）
 	tenantToolsMu sync.RWMutex
+
+	// channelTools: channel → toolName → Tool
+	// Channel-scoped tools registered via RegisterForChannel.
+	// Only visible in sessions whose channel matches (extracted from sessionKey).
+	channelTools   map[string]map[string]Tool
+	channelToolsMu sync.RWMutex
 }
 
 // NewRegistry 创建工具注册表
@@ -297,6 +304,67 @@ func (r *Registry) RegisterCore(tool Tool) {
 	defer r.mu.Unlock()
 	r.globalTools[tool.Name()] = tool
 	r.coreTools[tool.Name()] = true
+}
+
+// RegisterForChannel 注册 channel 专属工具。
+// 该工具仅对指定 channel 的会话可见，不需要 ChannelProvider 接口。
+// channel 为空时等同于 Register（全局注册）。
+func (r *Registry) RegisterForChannel(channel string, tool Tool) {
+	if channel == "" {
+		r.Register(tool)
+		return
+	}
+	r.channelToolsMu.Lock()
+	defer r.channelToolsMu.Unlock()
+	if r.channelTools == nil {
+		r.channelTools = make(map[string]map[string]Tool)
+	}
+	if r.channelTools[channel] == nil {
+		r.channelTools[channel] = make(map[string]Tool)
+	}
+	r.channelTools[channel][tool.Name()] = tool
+}
+
+// UnregisterChannelTools 移除指定 channel 的所有工具（channel 关闭时调用）。
+func (r *Registry) UnregisterChannelTools(channel string) {
+	r.channelToolsMu.Lock()
+	defer r.channelToolsMu.Unlock()
+	delete(r.channelTools, channel)
+}
+
+// GetChannelTool 查找 channel 专属工具。
+func (r *Registry) GetChannelTool(channel, name string) (Tool, bool) {
+	r.channelToolsMu.RLock()
+	defer r.channelToolsMu.RUnlock()
+	if tools, ok := r.channelTools[channel]; ok {
+		tool, ok := tools[name]
+		return tool, ok
+	}
+	return nil, false
+}
+
+// ChannelFromSessionKey 从 "channel:chatID" 格式的 sessionKey 提取 channel 前缀。
+// 返回空字符串表示格式不匹配或没有冒号分隔符。
+func ChannelFromSessionKey(sessionKey string) string {
+	idx := strings.IndexByte(sessionKey, ':')
+	if idx < 0 {
+		return ""
+	}
+	return sessionKey[:idx]
+}
+
+// GetForSession 统一工具查找：channel → tenant → global。
+// 替代 GetForTenant，增加 channel 维度优先查找。
+func (r *Registry) GetForSession(name string, tenantID int64, sessionKey string) (Tool, bool) {
+	// 1. Channel-scoped tools (highest priority in session context)
+	channel := ChannelFromSessionKey(sessionKey)
+	if channel != "" {
+		if tool, ok := r.GetChannelTool(channel, name); ok {
+			return tool, true
+		}
+	}
+	// 2. Tenant → global (existing logic)
+	return r.GetForTenant(name, tenantID)
 }
 
 // Unregister 注销工具
@@ -421,6 +489,18 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 	// 再遍历 global 工具
 	for _, tool := range r.globalTools {
 		addTool(tool)
+	}
+
+	// 追加 channel 专属工具：始终对该 channel 可见（不走激活机制）
+	// channelTools 由 RegisterForChannel 注册，是 channel 能力的一部分
+	r.channelToolsMu.RLock()
+	channelToolMap := r.channelTools[ChannelFromSessionKey(sessionKey)]
+	r.channelToolsMu.RUnlock()
+	for _, tool := range channelToolMap {
+		if !seen[tool.Name()] {
+			seen[tool.Name()] = true
+			defs = append(defs, tool)
+		}
 	}
 
 	// 追加会话 MCP 工具：flat 模式直接可见（含完整参数 schema）；否则仅追加已激活工具
@@ -674,6 +754,24 @@ func (r *Registry) GetToolGroupsForChannel(channel string) []ToolGroupEntry {
 
 	// 转换为切片并排序
 	result := make([]ToolGroupEntry, 0, len(groups))
+
+	// NEW: 合并 channel 专属工具的工具组
+	r.channelToolsMu.RLock()
+	for _, tool := range r.channelTools[channel] {
+		if groupProvider, ok := tool.(ToolGroupProvider); ok {
+			groupName := groupProvider.GroupName()
+			if groups[groupName] == nil {
+				groups[groupName] = &ToolGroupEntry{
+					Name:         groupName,
+					Instructions: groupProvider.GroupInstructions(),
+					ToolNames:    []string{},
+				}
+			}
+			groups[groupName].ToolNames = append(groups[groupName].ToolNames, tool.Name())
+		}
+	}
+	r.channelToolsMu.RUnlock()
+
 	for _, entry := range groups {
 		slices.Sort(entry.ToolNames)
 		result = append(result, *entry)

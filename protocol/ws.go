@@ -22,6 +22,9 @@ const (
 	MsgTypeSyncProgress  = "sync_progress"
 	MsgTypeSession       = "session"
 	MsgTypePong          = "__pong__"
+
+	// Channel Plugin → xbot: tool declaration
+	MsgTypeChannelTools = "channel_tools"
 )
 
 // Client → Server message types
