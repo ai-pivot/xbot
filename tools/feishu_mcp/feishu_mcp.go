@@ -17,12 +17,13 @@ const (
 	FeishuGroupInstructions = `Feishu (飞书) integration tools for Wiki, Bitable, Docs, and file operations.`
 )
 
-// FeishuToolBase 飞书工具基类，实现 ToolGroupProvider 和 ChannelProvider 接口
+// FeishuToolBase 飞书工具基类，实现 ToolGroupProvider 接口
+// Channel restriction is handled via RegisterForChannel("feishu", ...) at
+// registration time, not via ChannelProvider interface.
 type FeishuToolBase struct{}
 
-func (b FeishuToolBase) GroupName() string           { return FeishuGroupName }
-func (b FeishuToolBase) GroupInstructions() string   { return FeishuGroupInstructions }
-func (b FeishuToolBase) SupportedChannels() []string { return []string{"feishu"} }
+func (b FeishuToolBase) GroupName() string         { return FeishuGroupName }
+func (b FeishuToolBase) GroupInstructions() string { return FeishuGroupInstructions }
 
 // FeishuMCP provides access to Feishu APIs using the generic OAuth framework.
 type FeishuMCP struct {

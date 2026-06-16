@@ -329,3 +329,80 @@ func TestCtrlC_CancelAckBakesIterationsWhenPhaseDoneNotArrived(t *testing.T) {
 		t.Error("iterations should be baked via cancelledTurnIterations() when PhaseDone hasn't arrived")
 	}
 }
+
+// TestCtrlC_CancelAckDoesNotForceRebuild verifies that the cancel ack does NOT
+// call updateViewportContent() — this would trigger a full glamour re-render
+// of ALL messages, which can lose the latest iterations' display data.
+// The cancel ack should just set m.rc.valid = false and let the next tick
+// handle the cosmetic changes (guide color dimming) incrementally.
+func TestCtrlC_CancelAckDoesNotForceRebuild(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	oldTurnID := model.agentTurnID
+	model.cancelTargetTurnID = oldTurnID
+	model.streamingMsgIdx = len(model.messages)
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		content:   "",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    oldTurnID,
+	})
+
+	// Simulate some iterations displayed during streaming
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "Read", Label: "file.go", Status: "done"}}},
+		{Iteration: 2, Tools: []protocol.ToolProgress{{Name: "Shell", Label: "make", Status: "done"}}},
+	}
+	model.progressState.lastIter = 2
+	model.progressState.current = &protocol.ProgressEvent{Iteration: 2}
+
+	// Build cache by doing an initial render
+	model.updateViewportContent()
+	// Verify cache is valid after initial render
+	if !model.rc.valid {
+		t.Fatal("cache should be valid after updateViewportContent")
+	}
+
+	// Cancel ack arrives
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// After cancel ack: cache should be marked invalid (for next tick to pick up)
+	// but the critical point is that updateViewportContent was NOT called from
+	// the cancel ack handler itself. We verify this by checking that the
+	// cached history still contains the old content (not rebuilt).
+	// The next tick will handle the rebuild incrementally.
+	if model.rc.valid {
+		t.Error("rc.valid should be false after cancel ack (pending tick rebuild)")
+	}
+
+	// Verify iterations are baked into the streaming message
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should exist after cancel")
+	}
+	if len(assistantMsg.iterations) != 2 {
+		t.Fatalf("expected 2 baked iterations, got %d", len(assistantMsg.iterations))
+	}
+	// Verify the latest iterations are preserved
+	if assistantMsg.iterations[0].Iteration != 1 {
+		t.Errorf("expected iteration 1, got %d", assistantMsg.iterations[0].Iteration)
+	}
+	if assistantMsg.iterations[1].Iteration != 2 {
+		t.Errorf("expected iteration 2, got %d", assistantMsg.iterations[1].Iteration)
+	}
+}

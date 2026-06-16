@@ -162,8 +162,13 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		m.typing = false        // clear typing indicator immediately after cancel
 		m.turnCancelled = false // cancel complete, allow future turns
 		m.cancelTargetTurnID = 0
+		// Do NOT force immediate full rebuild via updateViewportContent().
+		// The live streaming display already shows all iterations correctly.
+		// Forcing a rebuild here causes a full glamour re-render of ALL messages,
+		// which can lose the latest iterations' display data.
+		// Just invalidate cache so the next tick (100ms) picks up the
+		// isPartial=false change (guide color dimming) incrementally.
 		m.rc.valid = false
-		m.updateViewportContent()
 		return
 	}
 

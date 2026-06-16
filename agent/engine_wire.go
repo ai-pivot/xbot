@@ -208,7 +208,7 @@ func (a *Agent) buildBaseRunConfig(
 // buildMainRunConfig 为主 Agent 构建完整的 RunConfig。
 // 从 processMessage / handleCardResponse 调用。
 func (a *Agent) buildMainRunConfig(
-	_ context.Context,
+	ctx context.Context,
 	msg bus.InboundMessage,
 	messages []llm.ChatMessage,
 	tenantSession *session.TenantSession,
@@ -294,21 +294,36 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	// 结构化进度事件推送（web, cli, and plugin ProgressSender channels）
+	// Progress handlers are wrapped with ctx so that when the user presses Ctrl+C
+	// (reqCancel cancels ctx), no more progress events are forwarded to the CLI.
+	// This guarantees the cancel ack is the last event — no stale progress/PhaseDone
+	// events leak through to trigger re-renders that lose iteration display data.
 	if (channel == "web" || channel == "cli" || isProgressSenderCh) && a.channelFinder != nil {
+		done := ctx.Done() // capture for closure
+		wrap := func(h func(*ProgressEvent)) func(*ProgressEvent) {
+			return func(ev *ProgressEvent) {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				h(ev)
+			}
+		}
 		switch channel {
 		case "cli":
 			if handler := a.buildCLIProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = handler
+				cfg.ProgressEventHandler = wrap(handler)
 			}
 		case "web":
 			if handler := a.buildWebProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = handler
+				cfg.ProgressEventHandler = wrap(handler)
 			}
 		default:
 			// Plugin channel with ProgressSender (e.g. TG) — build a handler
 			// that sends progress_structured events via the channel's SendProgress.
 			if handler := a.buildPluginProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = handler
+				cfg.ProgressEventHandler = wrap(handler)
 			}
 		}
 	}
@@ -919,11 +934,12 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			}
 		}
 		if !ok {
-			tool, ok = a.tools.Get(tc.Name)
-			// Also check tenant-scoped tools if session is available
-			if !ok && cfg.Session != nil {
-				tool, ok = a.tools.GetForTenant(tc.Name, cfg.Session.TenantID())
+			// Unified lookup: channel-scoped → tenant → global
+			tenantID := int64(0)
+			if cfg.Session != nil {
+				tenantID = cfg.Session.TenantID()
 			}
+			tool, ok = a.tools.GetForSession(tc.Name, tenantID, sessionKey)
 		}
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)

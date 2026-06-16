@@ -212,7 +212,23 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 					break
 				}
 			}
-			if historyAssistantIdx >= 0 && streamIdx >= 0 {
+			// Guard: only merge if the assistant belongs to the CURRENT
+			// turn. If there's a user message between the found assistant
+			// and the streaming slot, the assistant is from a PREVIOUS
+			// turn — merging it would display the previous turn's content
+			// as the current streaming message (Bug: stale content on
+			// TUI restart when the agent is mid-turn but hasn't produced
+			// assistant text yet).
+			canMerge := historyAssistantIdx >= 0 && streamIdx >= 0
+			if canMerge {
+				for i := historyAssistantIdx + 1; i < streamIdx; i++ {
+					if m.messages[i].role == "user" {
+						canMerge = false
+						break
+					}
+				}
+			}
+			if canMerge {
 				// Replace startAgentTurn's empty message with the history
 				// assistant's content, keeping isPartial + turnID for live updates.
 				m.messages[streamIdx].content = m.messages[historyAssistantIdx].content
@@ -229,12 +245,23 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			} else if m.streamingMsgIdx < 0 {
 				// No startAgentTurn was called (m.typing was true from restoreSession).
 				// Find the last assistant from history and mark it as the streaming slot.
+				// Guard: skip if there's a user message after the assistant — that
+				// means the assistant is from a PREVIOUS turn, not the current one.
 				for i := len(m.messages) - 1; i >= 0; i-- {
 					if m.messages[i].role == "assistant" {
-						m.messages[i].isPartial = true
-						m.messages[i].dirty = true
-						m.messages[i].turnID = m.agentTurnID
-						m.streamingMsgIdx = i
+						hasUserAfter := false
+						for j := i + 1; j < len(m.messages); j++ {
+							if m.messages[j].role == "user" {
+								hasUserAfter = true
+								break
+							}
+						}
+						if !hasUserAfter {
+							m.messages[i].isPartial = true
+							m.messages[i].dirty = true
+							m.messages[i].turnID = m.agentTurnID
+							m.streamingMsgIdx = i
+						}
 						break
 					}
 				}
