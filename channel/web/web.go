@@ -795,6 +795,7 @@ func (wc *WebChannel) writePump(c *Client) {
 		case <-c.statelessSig:
 			// Drain all accumulated stateless messages (one per type — latest only).
 			for _, msg := range c.drainStateless() {
+				c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 				if err := c.conn.WriteJSON(*msg); err != nil {
 					log.WithError(err).Debug("WS write error (stateless)")
 					return
@@ -810,6 +811,7 @@ func (wc *WebChannel) writePump(c *Client) {
 				c.conn.WriteControl(websocket.PongMessage, []byte(msg.Content), time.Now().Add(5*time.Second))
 				continue
 			}
+			c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := c.conn.WriteJSON(msg); err != nil {
 				log.WithError(err).Debug("WS write error")
 				return
@@ -962,10 +964,15 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			} else if result != nil {
 				rpcMsg.Result = result
 			}
+			// RPC responses MUST NOT be dropped — a dropped response causes the
+			// client to block until its 30s RPC timeout. During plugin reload-all,
+			// multiple widget pushes can fill sendCh (64 buffer) simultaneously,
+			// so we block with a timeout instead of silently dropping.
 			select {
 			case c.sendCh <- rpcMsg:
-			default:
-				log.Warn("RPC response channel full, dropping response to CLI client")
+			case <-time.After(10 * time.Second):
+				log.WithField("rpc_id", rpcReq.ID).WithField("method", rpcReq.Method).
+					Error("RPC response send timeout (10s), sendCh full — writePump may be stuck")
 			}
 			continue
 		case protocol.MsgTypeSubscribe:
