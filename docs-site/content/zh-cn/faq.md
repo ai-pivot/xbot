@@ -147,6 +147,11 @@ Shell 执行。个人开发用默认的 `mode: "none"` 即可。
 Agent 动态发现 MCP 工具。用 `ManageTools` 工具列出和管理 MCP Server。MCP Server
 通过 stdio 或 HTTP 连接——检查可执行文件路径是否正确且可从 xbot 进程 PATH 访问。
 
+### 子 Agent 似乎卡住
+
+子 Agent 在自己的上下文中运行。如果子 Agent 卡住了，可以用 `Ctrl+C` 中断，
+或通过子 Agent 面板（`Ctrl+T`）查看其进度。
+
 ### Agent 无法访问工作目录外的文件
 
 Agent 的工作目录通过 `work_dir` 配置或从启动 `xbot-cli` 的目录继承。Agent 可以用
