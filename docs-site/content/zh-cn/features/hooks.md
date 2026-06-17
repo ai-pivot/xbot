@@ -241,3 +241,8 @@ command 类型的 hook，环境变量自动可用：
   }
 }
 ```
+
+## 参见
+- [插件](/zh-cn/features/plugins/) — 插件系统概览
+- [权限控制](/zh-cn/guides/permission-control/) — 沙箱和权限
+- [配置参考](/zh-cn/configuration/) — enable_command_hooks 设置

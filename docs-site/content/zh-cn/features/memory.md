@@ -81,3 +81,8 @@ In multi-tenant deployments (server mode with multiple channels):
 - `working_context` is **per-session** — reset on `/new`
 
 See [Core Memory Isolation Design](/design/core-memory-isolation/) for implementation details.
+
+## 参见
+- [内置工具](/zh-cn/features/tools/) — 记忆工具
+- [MCP](/zh-cn/features/mcp/) — 外部工具集成
+- [配置参考](/zh-cn/configuration/) — memory_provider 设置

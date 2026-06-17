@@ -232,3 +232,8 @@ completes, ensuring hints appear instantly:
 | `/plugin install <dir>` | Install a plugin from directory |
 | `/plugin uninstall <id>` | Uninstall a plugin |
 | `/plugin widgets` | View widget status |
+
+## See also
+- [Hooks](/features/hooks/) — lifecycle event hooks
+- [MCP](/features/mcp/) — external tool integration
+- [Tips & Tricks](/tips/) — plugin usage patterns

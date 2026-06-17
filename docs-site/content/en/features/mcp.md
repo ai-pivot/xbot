@@ -112,3 +112,8 @@ The agent can dynamically manage MCP servers during conversation:
 - Tool execution is constrained by the sandbox configuration
 - File paths are limited to workspace scope
 - HTTP services should use authentication tokens where possible
+
+## See also
+- [Built-in Tools](/features/tools/) — all available tools
+- [Skills & Agents](/features/skills-agents/) — extend the agent
+- [Plugins](/features/plugins/) — hooks, widgets, custom tools

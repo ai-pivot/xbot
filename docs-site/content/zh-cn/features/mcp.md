@@ -104,3 +104,8 @@ AI 可以在对话中动态管理 MCP 服务：
 - 工具执行受沙箱配置约束
 - 文件路径受工作区范围限制
 - HTTP 服务建议使用认证 token
+
+## 参见
+- [内置工具](/zh-cn/features/tools/) — 所有可用工具
+- [技能与子 Agent](/zh-cn/features/skills-agents/) — 扩展 Agent
+- [插件](/zh-cn/features/plugins/) — hooks、widget、自定义工具

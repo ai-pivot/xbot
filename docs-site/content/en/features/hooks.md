@@ -243,3 +243,8 @@ high-priority "allow."
   }
 }
 ```
+
+## See also
+- [Plugins](/features/plugins/) — plugin system overview
+- [Permission Control](/guides/permission-control/) — sandbox and permissions
+- [Configuration](/configuration/) — enable_command_hooks setting

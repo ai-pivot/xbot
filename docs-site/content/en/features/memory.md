@@ -119,3 +119,8 @@ Core memory blocks set via `core_memory_append`/`core_memory_replace` are
 **persistent across sessions**. Use `rethink` to trigger the agent to
 re-examine and evolve its memory, similar to MemGPT's self-editing mechanism.
 {{< /hint >}}
+
+## See also
+- [Built-in Tools](/features/tools/) — memory tools
+- [MCP](/features/mcp/) — external tool integration
+- [Configuration](/configuration/) — memory_provider setting

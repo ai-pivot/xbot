@@ -198,3 +198,8 @@ fi
 | `/plugin install <目录>` | 从目录安装插件 |
 | `/plugin uninstall <id>` | 卸载插件 |
 | `/plugin widgets` | 查看 widget 状态 |
+
+## 参见
+- [Hooks](/zh-cn/features/hooks/) — 生命周期事件钩子
+- [MCP](/zh-cn/features/mcp/) — 外部工具集成
+- [高级技巧](/zh-cn/tips/) — 插件使用模式
