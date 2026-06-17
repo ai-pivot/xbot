@@ -273,3 +273,18 @@ Flow:
 
 Hot-update: sending a new `channel_tools` message replaces the entire tool set
 (`UnregisterChannelTools` + re-register).
+
+## Tool Visibility Model
+
+All registered tools are **always visible** to the LLM with full parameter schemas. There is no
+on-demand activation, no `load_tools`, and no expiry mechanism. This applies uniformly to:
+
+- Built-in tools (`Register` / `RegisterCore` — equivalent)
+- MCP tools (global + per-session) — full schemas via `mcpSchemaProvider` interface
+- Channel-scoped tools (`RegisterForChannel`)
+- Tenant-specific tools (`RegisterForTenant`)
+
+The previous two-phase system (stub schemas + `load_tools` activation + `maxIdleRounds` expiry)
+was removed because it caused LLM confusion: tools visible in conversation history would silently
+disappear from the tool list, and the execution gate would reject calls with "not loaded" errors,
+creating feedback loops.

@@ -19,7 +19,6 @@ type TuiControlParams struct {
 }
 
 // TuiControlTool allows AI to operate the TUI sidebar and layout.
-// It is registered as a non-core tool (load_tools activated).
 type TuiControlTool struct{}
 
 func (t *TuiControlTool) Name() string { return "tui_control" }

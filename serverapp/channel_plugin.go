@@ -37,7 +37,7 @@ type stdioChannelPluginProvider struct {
 	msgBus      *bus.MessageBus
 	rpcDisp     func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
 	getRegistry func() *tools.Registry // lazy registry getter (resolved after agent init)
-	xbotHome    string                  // for per-plugin log file redirection
+	xbotHome    string                 // for per-plugin log file redirection
 
 	mu   sync.Mutex
 	conn *agent.ChannelPluginTransport

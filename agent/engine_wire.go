@@ -945,17 +945,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
 
-		// 2. 激活检查：未激活的工具返回提示
-		if !a.tools.IsToolActive(sessionKey, tc.Name) {
-			return &tools.ToolResult{
-				Summary: fmt.Sprintf("Tool %q is not loaded yet. Call load_tools(tools=%q) first to load it before use.", tc.Name, tc.Name),
-			}, nil
-		}
-
-		// 3. 刷新工具最后使用 round，延长激活有效期
-		a.tools.TouchTool(sessionKey, tc.Name)
-
-		// 4. 确保用户工作目录存在（remote 模式跳过，runner 自行管理文件系统）
+		// 2. 确保用户工作目录存在（remote 模式跳过，runner 自行管理文件系统）
 		if !a.isRemoteUser(senderID) {
 			if err := os.MkdirAll(wsRoot, 0o755); err != nil {
 				return nil, fmt.Errorf("create user workspace: %w", err)

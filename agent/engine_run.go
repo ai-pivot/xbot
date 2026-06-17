@@ -230,13 +230,6 @@ func (s *runState) initDynamicInjector() {
 	)
 }
 
-// tickSession advances the round counter for tool activation cleanup.
-func (s *runState) tickSession() {
-	if s.sessionKey != "" {
-		s.cfg.Tools.TickSession(s.sessionKey)
-	}
-}
-
 // cleanupTodos clears completed TODOs. Called via defer from Run().
 func (s *runState) cleanupTodos() {
 	if s.cfg.TodoManager != nil && s.sessionKey != "" {

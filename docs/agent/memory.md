@@ -39,6 +39,16 @@ type MemoryProvider interface {
 - Each tenant has isolated memory
 - `consolidate_memory` tool: moves working_context items to archival
 
+## Tool Visibility (Unified)
+
+Both flat and letta memory providers use the **same tool visibility model**: all registered tools
+are always visible to the LLM with full parameter schemas. The previous distinction (flat mode =
+all tools visible, letta mode = on-demand activation via `load_tools`) has been removed.
+
+The memory provider only affects which **memory-specific tools** are registered:
+- Flat: `memory_read`, `memory_write`, `memory_list`
+- Letta: `core_memory_*`, `archival_memory_*`, `recall_memory_search`
+
 ## Metrics
 
 Knowledge system metrics are tracked in `AgentMetrics`:

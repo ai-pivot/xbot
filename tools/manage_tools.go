@@ -30,7 +30,7 @@ func (t *ManageTools) Name() string {
 }
 
 func (t *ManageTools) Description() string {
-	return "Manage the bot's MCP servers. Can add, remove, list MCP servers, and reload configurations. This tool is not related to specified tools, if you want anything related to tools, use `search_tools` or `load_tools` instead."
+	return "Manage the bot's MCP servers. Can add, remove, list MCP servers, and reload configurations. This tool is not related to specified tools, if you want anything related to tools, use `search_tools` instead."
 }
 
 func (t *ManageTools) Parameters() []llm.ToolParam {
@@ -138,11 +138,7 @@ func (t *ManageTools) addMCP(ctx *ToolContext, args manageToolsArgs) (*ToolResul
 	results := []string{fmt.Sprintf("MCP server '%s' has been added.", args.Name)}
 	if ctx != nil && ctx.InvalidateAllSessionMCP != nil {
 		ctx.InvalidateAllSessionMCP()
-		if ctx.Registry != nil && ctx.Registry.IsFlatMode() {
-			results = append(results, "Flat memory: MCP config invalidated, new tools are immediately visible.")
-		} else {
-			results = append(results, "Use ManageTools' 'reload' action to connect to it.")
-		}
+		results = append(results, "MCP config invalidated. Use ManageTools' 'reload' action to connect to it.")
 	} else {
 		results = append(results, "Use ManageTools' 'reload' action to connect to it.")
 	}
@@ -183,11 +179,7 @@ func (t *ManageTools) removeMCP(ctx *ToolContext, args manageToolsArgs) (*ToolRe
 	results := []string{fmt.Sprintf("MCP server '%s' has been removed.", args.Name)}
 	if ctx != nil && ctx.InvalidateAllSessionMCP != nil {
 		ctx.InvalidateAllSessionMCP()
-		if ctx.Registry != nil && ctx.Registry.IsFlatMode() {
-			results = append(results, "Flat memory: MCP config invalidated, tool removal is immediately visible.")
-		} else {
-			results = append(results, "Use 'reload' action to apply changes.")
-		}
+		results = append(results, "MCP config invalidated. Use 'reload' action to apply changes.")
 	} else {
 		results = append(results, "Use 'reload' action to apply changes.")
 	}

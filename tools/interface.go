@@ -220,19 +220,12 @@ type Tool interface {
 	Execute(ctx *ToolContext, input string) (*ToolResult, error)
 }
 
-const defaultMaxIdleRounds int64 = 5
-
 // Registry 工具注册表
 type Registry struct {
 	mu               sync.RWMutex
-	globalTools      map[string]Tool             // 所有工具（全局共享）
-	coreTools        map[string]bool             // 核心工具名（始终在 tool definitions 中）
-	sessionActivated map[string]map[string]int64 // sessionKey → toolName → lastUsedRound
-	sessionRound     map[string]int64            // sessionKey → 当前 round 计数
-	maxIdleRounds    int64                       // 连续多少轮未使用后自动失效
-	sessionMCPMgr    SessionMCPManagerProvider   // 会话MCP管理器提供者
-	globalMCPCatalog []MCPServerCatalogEntry     // 全局 MCP Server 目录（由 MCPManager.RegisterTools 设置）
-	flatMode         bool                        // flat memory 模式：所有工具均为核心，无需 load_tools
+	globalTools      map[string]Tool           // 所有工具（全局共享）
+	sessionMCPMgr    SessionMCPManagerProvider // 会话MCP管理器提供者
+	globalMCPCatalog []MCPServerCatalogEntry   // 全局 MCP Server 目录（由 MCPManager.RegisterTools 设置）
 
 	tenantTools   map[int64]map[string]Tool // tenantID → toolName → Tool（per-tenant 工具）
 	tenantToolsMu sync.RWMutex
@@ -247,37 +240,15 @@ type Registry struct {
 // NewRegistry 创建工具注册表
 func NewRegistry() *Registry {
 	return &Registry{
-		globalTools:      make(map[string]Tool),
-		coreTools:        make(map[string]bool),
-		sessionActivated: make(map[string]map[string]int64),
-		sessionRound:     make(map[string]int64),
-		maxIdleRounds:    defaultMaxIdleRounds,
+		globalTools: make(map[string]Tool),
 	}
 }
 
-// SetFlatMode 设置 flat memory 模式。
-// flat 模式下所有工具均为核心工具，无需 load_tools 激活，永不过期。
-func (r *Registry) SetFlatMode(flat bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.flatMode = flat
-}
-
-func (r *Registry) IsFlatMode() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.flatMode
-}
-
-// Register 注册工具（非核心，需通过 load_tools 激活后才出现在 tool definitions 中）。
-// flat 模式下等同于 RegisterCore。
+// Register 注册工具（始终在 tool definitions 中可见）
 func (r *Registry) Register(tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.globalTools[tool.Name()] = tool
-	if r.flatMode {
-		r.coreTools[tool.Name()] = true
-	}
 }
 
 // RegisterForTenant 注册一个工具仅对特定租户可见。
@@ -298,12 +269,9 @@ func (r *Registry) RegisterForTenant(tenantID int64, tool Tool) {
 	r.tenantTools[tenantID][tool.Name()] = tool
 }
 
-// RegisterCore 注册核心工具（始终出现在 tool definitions 中，无需激活）
+// RegisterCore 注册工具（与 Register 等效，保留用于语义兼容）
 func (r *Registry) RegisterCore(tool Tool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.globalTools[tool.Name()] = tool
-	r.coreTools[tool.Name()] = true
+	r.Register(tool)
 }
 
 // RegisterForChannel 注册 channel 专属工具。
@@ -411,13 +379,19 @@ func (r *Registry) List() []Tool {
 	return tools
 }
 
-// AsDefinitions 转换为 LLM 工具定义列表（仅核心工具，按名称排序）
+// AsDefinitions 转换为 LLM 工具定义列表（全部工具，按名称排序）
 func (r *Registry) AsDefinitions() []llm.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var defs []llm.ToolDefinition
 	for _, tool := range r.globalTools {
-		if r.coreTools[tool.Name()] {
+		if mcp, isMCP := tool.(mcpSchemaProvider); isMCP {
+			defs = append(defs, &mcpToolDefinition{
+				name:   tool.Name(),
+				desc:   tool.Description(),
+				params: mcp.fullParams(),
+			})
+		} else {
 			defs = append(defs, tool)
 		}
 	}
@@ -434,27 +408,22 @@ func (r *Registry) SetSessionMCPManagerProvider(provider SessionMCPManagerProvid
 	r.sessionMCPMgr = provider
 }
 
-// AsDefinitionsForSession 获取特定会话的工具定义：
-//   - 核心工具始终包含
-//   - 非核心工具仅在激活且未过期（maxIdleRounds 内有使用）时才包含
-//   - 全局 MCP 工具激活后以完整参数 schema 加入（而非 stub 模式的空 params）
+// AsDefinitionsForSession 获取特定会话的工具定义（全量）：
+//   - 所有全局注册的工具始终包含（含完整参数 schema）
+//   - 全局 MCP 工具始终以完整参数 schema 加入
 //   - tenantID>0 时同时包含该租户的专属工具（与全局合并，租户优先）
 //   - tenantID=0 时仅返回全局工具（向后兼容）
+//   - channel 专属工具和会话 MCP 工具也始终包含
 func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []llm.ToolDefinition {
 	r.mu.RLock()
-	active := r.activeToolSet(sessionKey)
-	flatMode := r.flatMode
 
 	// 收集 tenant 专属工具（先获取，在合并时优先）
-	r.mu.RUnlock()
 	var tenantToolMap map[string]Tool
 	if tenantID != 0 {
 		r.tenantToolsMu.RLock()
 		tenantToolMap = r.tenantTools[tenantID]
 		r.tenantToolsMu.RUnlock()
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 
 	seen := make(map[string]bool)
 	var defs []llm.ToolDefinition
@@ -466,19 +435,14 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 		}
 		seen[tool.Name()] = true
 		if mcp, isMCP := tool.(mcpSchemaProvider); isMCP {
-			// 全局 MCP 工具：flat 模式直接可见；否则仅在激活后以完整参数 schema 加入
-			if flatMode || active[tool.Name()] {
-				defs = append(defs, &mcpToolDefinition{
-					name:   tool.Name(),
-					desc:   tool.Description(),
-					params: mcp.fullParams(),
-				})
-			}
+			defs = append(defs, &mcpToolDefinition{
+				name:   tool.Name(),
+				desc:   tool.Description(),
+				params: mcp.fullParams(),
+			})
 			return
 		}
-		if r.coreTools[tool.Name()] || active[tool.Name()] {
-			defs = append(defs, tool)
-		}
+		defs = append(defs, tool)
 	}
 
 	// 先遍历 tenant 工具（租户优先）
@@ -490,9 +454,9 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 	for _, tool := range r.globalTools {
 		addTool(tool)
 	}
+	r.mu.RUnlock()
 
-	// 追加 channel 专属工具：始终对该 channel 可见（不走激活机制）
-	// channelTools 由 RegisterForChannel 注册，是 channel 能力的一部分
+	// 追加 channel 专属工具
 	r.channelToolsMu.RLock()
 	channelToolMap := r.channelTools[ChannelFromSessionKey(sessionKey)]
 	r.channelToolsMu.RUnlock()
@@ -503,12 +467,13 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 		}
 	}
 
-	// 追加会话 MCP 工具：flat 模式直接可见（含完整参数 schema）；否则仅追加已激活工具
+	// 追加会话 MCP 工具（全量，含完整参数 schema）
 	if r.sessionMCPMgr != nil {
 		if sm := r.sessionMCPMgr.GetSessionMCPManager(sessionKey); sm != nil {
-			if flatMode {
-				for _, tool := range sm.GetSessionTools() {
-					if mcp, ok := tool.(mcpSchemaProvider); ok {
+			for _, tool := range sm.GetSessionTools() {
+				if mcp, ok := tool.(mcpSchemaProvider); ok {
+					if !seen[tool.Name()] {
+						seen[tool.Name()] = true
 						defs = append(defs, &mcpToolDefinition{
 							name:   tool.Name(),
 							desc:   tool.Description(),
@@ -516,8 +481,6 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 						})
 					}
 				}
-			} else {
-				defs = append(defs, sm.GetActivatedToolDefs(active)...)
 			}
 		}
 	}
@@ -529,97 +492,6 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 	return defs
 }
 
-// activeToolSet 返回指定会话中未过期的已激活工具名集合（调用方需持有 r.mu 读锁）
-func (r *Registry) activeToolSet(sessionKey string) map[string]bool {
-	toolRounds := r.sessionActivated[sessionKey]
-	if len(toolRounds) == 0 {
-		return nil
-	}
-	curRound := r.sessionRound[sessionKey]
-	active := make(map[string]bool, len(toolRounds))
-	for name, lastRound := range toolRounds {
-		if curRound-lastRound <= r.maxIdleRounds {
-			active[name] = true
-		}
-	}
-	return active
-}
-
-// TickSession 推进会话 round 计数（每次处理新用户消息时调用），同时清理已过期的工具。
-// 返回新的 round 编号。
-func (r *Registry) TickSession(sessionKey string) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessionRound[sessionKey]++
-	curRound := r.sessionRound[sessionKey]
-
-	// 清理过期工具，防止 map 无限增长
-	if toolRounds := r.sessionActivated[sessionKey]; len(toolRounds) > 0 {
-		for name, lastRound := range toolRounds {
-			if curRound-lastRound > r.maxIdleRounds {
-				delete(toolRounds, name)
-			}
-		}
-	}
-
-	return curRound
-}
-
-// ActivateTools 激活指定会话的工具，记录当前 round（内置 + MCP 均通过此方法）
-func (r *Registry) ActivateTools(sessionKey string, toolNames []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	m := r.sessionActivated[sessionKey]
-	if m == nil {
-		m = make(map[string]int64, len(toolNames))
-		r.sessionActivated[sessionKey] = m
-	}
-	curRound := r.sessionRound[sessionKey]
-	for _, name := range toolNames {
-		m[name] = curRound
-	}
-}
-
-// TouchTool 刷新工具的最后使用 round（在工具实际执行时调用）
-func (r *Registry) TouchTool(sessionKey, toolName string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.coreTools[toolName] {
-		return
-	}
-	if m := r.sessionActivated[sessionKey]; m != nil {
-		if _, exists := m[toolName]; exists {
-			m[toolName] = r.sessionRound[sessionKey]
-		}
-	}
-}
-
-// IsToolActive 检查工具是否对指定会话可用（核心工具始终返回 true，已过期的返回 false）
-// flat 模式下所有工具（包括 session MCP 工具）始终视为活跃，无需 load_tools 激活。
-func (r *Registry) IsToolActive(sessionKey, toolName string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.coreTools[toolName] {
-		return true
-	}
-	if r.flatMode {
-		return true
-	}
-	lastRound, ok := r.sessionActivated[sessionKey][toolName]
-	if !ok {
-		return false
-	}
-	return r.sessionRound[sessionKey]-lastRound <= r.maxIdleRounds
-}
-
-// DeactivateSession 清理指定会话的全部激活状态和 round 计数
-func (r *Registry) DeactivateSession(sessionKey string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.sessionActivated, sessionKey)
-	delete(r.sessionRound, sessionKey)
-}
-
 // Clone 复制工具注册表
 func (r *Registry) Clone() *Registry {
 	r.mu.RLock()
@@ -627,9 +499,6 @@ func (r *Registry) Clone() *Registry {
 	clone := NewRegistry()
 	for name, tool := range r.globalTools {
 		clone.globalTools[name] = tool
-	}
-	for name := range r.coreTools {
-		clone.coreTools[name] = true
 	}
 	// 复制 tenant 工具
 	r.tenantToolsMu.RLock()
@@ -648,7 +517,7 @@ func (r *Registry) Clone() *Registry {
 }
 
 // mcpSchemaProvider 内部接口，MCPRemoteTool 和 SessionMCPRemoteTool 都实现此接口
-// 用于 load_tools 获取完整参数信息
+// 用于获取完整参数 schema（所有工具始终以完整 schema 展示给 LLM）
 type mcpSchemaProvider interface {
 	fullDescription() string
 	fullParams() []llm.ToolParam
@@ -840,7 +709,7 @@ func (r *Registry) GetToolSchemasForChannel(sessionKey string, toolNames []strin
 				Description: p.fullDescription(),
 				Params:      p.fullParams(),
 			})
-		} else if !r.coreTools[name] {
+		} else {
 			schemas = append(schemas, ToolSchema{
 				ToolName:    name,
 				Description: tool.Description(),
@@ -873,16 +742,12 @@ func (r *Registry) GetToolSchemasForChannel(sessionKey string, toolNames []strin
 	return schemas
 }
 
-// DefaultRegistry 创建包含默认工具的注册表
-// 核心工具（RegisterCore）始终在 tool definitions 中；其余需通过 load_tools 激活。
-// flat 模式下所有工具均为核心工具，不注册 LoadToolsTool。
+// DefaultRegistry 创建包含默认工具的注册表。
+// 所有工具始终在 tool definitions 中可见（全量激活，无按需加载）。
 // 注意：CronTool 需要依赖注入，不在默认注册表中，需单独注册
 func DefaultRegistry(memoryProvider string) *Registry {
 	r := NewRegistry()
-	if memoryProvider == "flat" {
-		r.SetFlatMode(true)
-	}
-	// 核心工具：基础文件/系统操作，始终可用
+	// 基础文件/系统操作工具
 	r.RegisterCore(&ShellTool{})
 	r.RegisterCore(&CdTool{})
 	r.RegisterCore(&GlobTool{})
@@ -908,9 +773,5 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	r.RegisterCore(&AskUserTool{})
 	// WorktreeTool — multi-agent workspace isolation via git worktrees
 	r.RegisterCore(&WorktreeTool{})
-	// LoadToolsTool 仅在 letta 模式下注册（flat 模式所有工具直接可用）
-	if memoryProvider != "flat" {
-		r.RegisterCore(&LoadToolsTool{})
-	}
 	return r
 }

@@ -87,7 +87,6 @@ func resolveGlobalSkillsDirs(skillsDir string) []string {
 // metaTools are tools that manage/search other tools — not useful to index.
 var metaTools = map[string]bool{
 	"search_tools": true,
-	"load_tools":   true,
 	"manage_tools": true,
 }
 
@@ -810,10 +809,6 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	memoryProvider := resolveMemoryProvider(cfg.MemoryProvider)
 
 	multiSession.SetMCPConfigPath(mcpConfigPath)
-
-	// 设置会话被清理时的回调，同步清理 Registry 中的 sessionActivated/sessionRound（C-09）
-	registryRef := registry // capture for closure
-	multiSession.SetOnSessionEvict(func(sessionKey string) { registryRef.DeactivateSession(sessionKey) })
 
 	// 设置会话 MCP 管理器提供者
 	registry.SetSessionMCPManagerProvider(multiSession)
@@ -2406,9 +2401,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		log.Ctx(ctx).WithError(err).Warn("Failed to configure session MCP scope")
 	}
 	if len(newTools) > 0 {
-		sessKey := qualifyChatID(msg.Channel, msg.ChatID)
-		a.tools.ActivateTools(sessKey, newTools)
-		log.Ctx(ctx).WithField("tools", len(newTools)).Info("Auto-activated new personal MCP tools")
+		log.Ctx(ctx).WithField("tools", len(newTools)).Info("New personal MCP tools configured")
 	}
 
 	promptWorkDir := a.workDir

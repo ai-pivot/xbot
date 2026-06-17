@@ -213,7 +213,7 @@ func TestIntegration_FullPluginLifecycle(t *testing.T) {
 
 	// Wire subsystems
 	registry := tools.NewRegistry()
-	registry.SetFlatMode(true)
+
 	hookBridge := NewPluginHookBridge()
 	enricherRegistry := NewEnricherRegistry()
 
@@ -504,7 +504,7 @@ func TestIntegration_RateLimiting(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.SetFlatMode(true)
+
 	if err := WirePluginTools(pm, registry); err != nil {
 		t.Fatalf("WirePluginTools failed: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestIntegration_MiddlewareChain(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.SetFlatMode(true)
+
 	if err := WirePluginTools(pm, registry); err != nil {
 		t.Fatalf("WirePluginTools failed: %v", err)
 	}

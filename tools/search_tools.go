@@ -112,12 +112,12 @@ func (t *SearchToolsTool) formatResults(results []memory.ToolIndexEntry, query s
 		fmt.Fprintf(&sb, "   %s\n\n", r.Description)
 	}
 
-	sb.WriteString("To use a tool, call `load_tools` with the tool name to load it, then you can call the tool.\n")
+	sb.WriteString("All tools are directly available — just call the tool by name.\n")
 
 	return &ToolResult{
 		Summary: fmt.Sprintf("Found %d tools matching '%s'", len(results), query),
 		Detail:  sb.String(),
-		Tips:    "Use `load_tools` with the tool name to use the tool.",
+		Tips:    "Call the tool directly by name.",
 	}, nil
 }
 
@@ -238,7 +238,7 @@ func (t *SearchToolsTool) executeFallback(ctx *ToolContext, query string, topK i
 	if len(matched) == 0 {
 		return &ToolResult{
 			Summary: "No tools found",
-			Detail:  "No tools match your query. Try a different search term or use load_tools to see all available tools.",
+			Detail:  "No tools match your query. Try a different search term.",
 		}, nil
 	}
 
@@ -266,11 +266,11 @@ func (t *SearchToolsTool) executeFallback(ctx *ToolContext, query string, topK i
 		}
 	}
 
-	sb.WriteString("To use a tool, first call `load_tools` with the loadable name to load it, then you can call the tool.\n")
+	sb.WriteString("All tools are directly available — just call the tool by name.\n")
 
 	return &ToolResult{
 		Summary: fmt.Sprintf("Found %d tools matching '%s'", len(matched), query),
 		Detail:  sb.String(),
-		Tips:    "Use `load_tools` to load the tool you want to use, then call it directly.",
+		Tips:    "Call the tool directly by name.",
 	}, nil
 }

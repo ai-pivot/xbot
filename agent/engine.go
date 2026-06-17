@@ -471,9 +471,6 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	// Setup dynamic context injector for CWD change detection
 	s.initDynamicInjector()
 
-	// Advance round counter for tool activation cleanup
-	s.tickSession()
-
 	// Wrap context with LLM retry notification
 	retryNotifyCtx := s.setupRetryNotify(ctx)
 
