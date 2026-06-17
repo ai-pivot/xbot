@@ -233,6 +233,20 @@ completes, ensuring hints appear instantly:
 | `/plugin uninstall <id>` | Uninstall a plugin |
 | `/plugin widgets` | View widget status |
 
+## Plugin Ideas
+
+Need inspiration? Here are practical plugins you can create:
+
+- **Git branch widget** — show current branch + dirty status in the info bar
+- **PR reminder** — check for open PRs daily and notify
+- **Auto-lint** — run `make lint` after every file edit
+- **Disk usage** — show free disk space in the status bar
+- **Build status** — display CI pass/fail badge
+- **Time tracker** — track time spent per session
+- **Notification sound** — play a sound when the agent finishes
+
+Ask the agent: "Create a plugin that [your idea]" and it handles the rest.
+
 ## See also
 - [Hooks](/features/hooks/) — lifecycle event hooks
 - [MCP](/features/mcp/) — external tool integration
