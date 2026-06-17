@@ -129,6 +129,14 @@ This works for all channels (Feishu, QQ, NapCat).
 
 ## TUI / CLI
 
+### The agent is slow — how to improve performance?
+
+- Use `/compress` regularly to keep context small
+- Switch to a faster model for simple tasks (`Ctrl+L`)
+- Use SubAgents for parallel work (each has its own context)
+- Increase `max_concurrency` for parallel tool execution
+- Use background mode for long-running commands
+
 ### How do I switch sessions?
 
 Open the sidebar (it's always visible by default). Click any session to
