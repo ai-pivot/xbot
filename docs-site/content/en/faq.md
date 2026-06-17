@@ -162,6 +162,14 @@ Docker sandboxing isolates shell execution. For personal development,
 
 See the [Sandbox guide](/guides/sandbox/) for Docker setup.
 
+### Security best practices
+
+- Use `allow_from` to restrict who can talk to the agent
+- Enable Docker sandboxing on shared servers
+- Use permission control for privileged operations
+- Keep API keys in subscriptions (never in environment variables for production)
+- Regularly review `/context` to monitor what the agent is doing
+
 ## Troubleshooting
 
 ### "connection refused" when CLI connects to Server

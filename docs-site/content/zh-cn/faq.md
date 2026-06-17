@@ -155,6 +155,14 @@ Shell 执行。个人开发用默认的 `mode: "none"` 即可。
 
 详见[沙箱指南](/zh-cn/guides/sandbox/)。
 
+### 安全最佳实践
+
+- 使用 `allow_from` 限制谁能与 Agent 对话
+- 在共享服务器上启用 Docker 沙箱
+- 对特权操作使用权限控制
+- 将 API Key 存储在订阅中（生产环境不要用环境变量）
+- 定期查看 `/context` 监控 Agent 在做什么
+
 ## 故障排查
 
 ### CLI 连接 Server 报"connection refused"
