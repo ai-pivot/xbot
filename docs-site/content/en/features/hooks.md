@@ -244,6 +244,19 @@ high-priority "allow."
 }
 ```
 
+## Hook Ideas
+
+Practical hooks you can create:
+
+- **Auto-format Go** — run `gofmt` after every `FileReplace`
+- **Git diff preview** — show diff after every file edit
+- **Slack notification** — POST to webhook when agent errors
+- **Cost tracker** — log token usage to a file after each LLM call
+- **Auto-commit** — `git add` after successful file operations
+- **Security scan** — run `gosec` before allowing Shell commands
+
+Ask the agent: "Set up a hook that [your requirement]."
+
 ## See also
 - [Plugins](/features/plugins/) — plugin system overview
 - [Permission Control](/guides/permission-control/) — sandbox and permissions
