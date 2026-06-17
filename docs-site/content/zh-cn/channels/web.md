@@ -29,6 +29,7 @@ weight: 25
 | `host` | ❌ | `""` | 监听地址（空 = 所有接口） |
 | `port` | ❌ | `0` | 监听端口 |
 | `static_dir` | ❌ | 自动检测 | 前端静态文件目录 |
+| `upload_dir` | ❌ | `""` | 上传文件自定义目录 |
 | `persona_isolation` | ❌ | `false` | 启用后每个 Web 用户的 persona 互相隔离 |
 | `invite_only` | ❌ | `false` | 启用后禁止自主注册，只能由管理员创建账号 |
 
