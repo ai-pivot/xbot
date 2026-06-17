@@ -7,6 +7,19 @@ weight: 15
 
 所有配置通过 `~/.xbot/config.json` 文件管理。**不推荐使用环境变量**，请直接编辑配置文件。
 
+## 快速参考
+
+| 你想要做什么 | 配置键 |
+|-------------|--------|
+| 设置 API Key | `subscriptions[].api_key` |
+| 使用 DeepSeek/Ollama | `subscriptions[].base_url` |
+| 启用飞书 | `feishu.enabled: true` |
+| 启用 Web | `web.enable: true` |
+| Docker 沙箱 | `sandbox.mode: "docker"` |
+| 限制用户 | `*.allow_from: [...]` |
+| 最大并发调用 | `agent.max_concurrency` |
+| 上下文压缩 | `agent.compression_threshold` |
+
 ## 配置文件位置
 
 - **默认位置**：`~/.xbot/config.json`

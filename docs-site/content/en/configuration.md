@@ -8,6 +8,19 @@ weight: 15
 All configuration lives in `~/.xbot/config.json`. **Direct editing is
 preferred over environment variables.**
 
+## Quick reference
+
+| What you want to do | Config key |
+|---------------------|------------|
+| Set API key | `subscriptions[].api_key` |
+| Use DeepSeek/Ollama | `subscriptions[].base_url` |
+| Enable Feishu | `feishu.enabled: true` |
+| Enable Web | `web.enable: true` |
+| Docker sandbox | `sandbox.mode: "docker"` |
+| Restrict users | `*.allow_from: [...]` |
+| Max concurrent calls | `agent.max_concurrency` |
+| Context compression | `agent.compression_threshold` |
+
 ## Config file location
 
 - **Default:** `~/.xbot/config.json`
