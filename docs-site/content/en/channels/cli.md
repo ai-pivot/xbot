@@ -75,6 +75,13 @@ The CLI supports 9 built-in color schemes. Switch via the Setup wizard or
 `midnight` · `dracula` · `catppuccin` · `nord` · `gruvbox` · `tokyo` ·
 `rose` · `rosepine` · `default`
 
+## Rich rendering
+
+The TUI renders markdown, syntax-highlighted code blocks, and Mermaid
+diagrams inline:
+
+![Mermaid diagram rendering](/img/cli/mermaid.png)
+
 ## Keyboard shortcuts
 
 ### Main interface
