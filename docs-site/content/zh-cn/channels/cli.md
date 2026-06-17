@@ -62,6 +62,12 @@ CLI 支持 9 种配色方案，在 Setup 向导或 `/settings` 中切换：
 
 `midnight` · `dracula` · `catppuccin` · `nord` · `gruvbox` · `tokyo` · `rose` · `rosepine` · `default`
 
+## 富渲染
+
+TUI 内联渲染 Markdown、语法高亮代码块和 Mermaid 图表：
+
+![Mermaid 图表渲染](/img/cli/mermaid.png)
+
 ## 键盘快捷键
 
 ### 主界面
