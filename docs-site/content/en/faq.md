@@ -230,6 +230,21 @@ If the agent gets stuck in a loop, use `Ctrl+C` to interrupt, then `/clear`
 to reset the conversation. You can also use `context_edit` to remove
 specific messages that might be causing the loop.
 
+### How to backup xbot data
+
+All xbot data is in `~/.xbot/`:
+- `config.json` — configuration
+- `*.db` — SQLite databases (conversations, sessions, users)
+- `skills/`, `agents/` — custom skills and agent roles
+
+```bash
+# Backup everything
+cp -r ~/.xbot ~/.xbot-backup-$(date +%Y%m%d)
+
+# Restore
+cp -r ~/.xbot-backup-YYYYMMDD/* ~/.xbot/
+```
+
 {{< hint type=note >}}
 **Need more help?** Check the [full documentation](/) or open an issue on
 [GitHub](https://github.com/ai-pivot/xbot/issues).
