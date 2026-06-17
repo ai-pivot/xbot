@@ -90,6 +90,10 @@ enableGitInfo = true
     pageRef = "/use-cases"
     weight = 60
   [[languages.en.menu.main]]
+    name = "Tips & Tricks"
+    pageRef = "/tips"
+    weight = 63
+  [[languages.en.menu.main]]
     name = "Development"
     pageRef = "/development"
     weight = 70
@@ -148,6 +152,10 @@ enableGitInfo = true
     name = "使用场景"
     pageRef = "/use-cases"
     weight = 60
+  [[languages.zh-cn.menu.main]]
+    name = "高级技巧"
+    pageRef = "/tips"
+    weight = 63
   [[languages.zh-cn.menu.main]]
     name = "开发指南"
     pageRef = "/development"
