@@ -10,6 +10,8 @@ geekdocHidden: true
 server, then talk to it through **Feishu, QQ, the terminal, or a web
 browser** — it uses tools to get real work done.
 
+![xbot CLI streaming output](/img/cli/streaming.gif)
+
 <--->
 
 {{< button href="/getting-started" >}}Quick Start{{< /button >}}

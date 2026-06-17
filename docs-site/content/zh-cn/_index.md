@@ -9,6 +9,8 @@ geekdocHidden: true
 **xbot** 是一个自托管 AI Agent 框架。部署一次在你自己的服务器上，通过
 **飞书、QQ、终端、浏览器**与它对话，它能调用工具完成实际工作。
 
+![xbot CLI 流式输出](/img/cli/streaming.gif)
+
 <--->
 
 {{< button href="/zh-cn/getting-started" >}}快速开始{{< /button >}}

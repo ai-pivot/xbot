@@ -169,6 +169,8 @@ You are XXX, specializing in XXX...
 
 ## Group Chat (Meeting Mode)
 
+![SubAgents and Group Chat](/img/cli/subagents.gif)
+
 Group Chat is a **moderated multi-agent discussion**. You create a group,
 invite agents, and control who speaks via @mentions.
 
