@@ -147,6 +147,26 @@ Shell 执行。个人开发用默认的 `mode: "none"` 即可。
 Agent 动态发现 MCP 工具。用 `ManageTools` 工具列出和管理 MCP Server。MCP Server
 通过 stdio 或 HTTP 连接——检查可执行文件路径是否正确且可从 xbot 进程 PATH 访问。
 
+### Agent 无法访问工作目录外的文件
+
+Agent 的工作目录通过 `work_dir` 配置或从启动 `xbot-cli` 的目录继承。Agent 可以用
+`Cd` 工具导航。如果文件在预期目录之外，告诉 Agent 完整路径。
+
+### 上下文填得太快
+
+用 `/compress` 总结旧消息释放上下文空间。要从头开始，用 `/clear`。用 `/context`
+查看 token 用量。长会话考虑用子 Agent 委派工作——它们有独立的上下文窗口。
+
+### 如何导出对话
+
+让 Agent："把这个对话导出为 Markdown"——它会用 `FileCreate` 工具将对话写入文件。
+也可以用 `/rewind` 回退到对话中的特定时间点。
+
+### Agent 重复同样的操作
+
+如果 Agent 陷入循环，用 `Ctrl+C` 中断，然后 `/clear` 重置对话。也可以用
+`context_edit` 删除可能导致循环的特定消息。
+
 {{< hint type=note >}}
 **需要更多帮助？** 查看[完整文档](/zh-cn/)或在
 [GitHub](https://github.com/ai-pivot/xbot/issues) 提 issue。

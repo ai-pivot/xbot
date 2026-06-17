@@ -162,6 +162,31 @@ SubAgents run in their own context. If a SubAgent is stuck, you can
 interrupt it with Ctrl+C, or check its progress via the SubAgent panel
 (`Ctrl+T`).
 
+### Agent can't access files outside the working directory
+
+The agent's working directory is set via the `work_dir` config or inherited
+from where you launch `xbot-cli`. The agent can use the `Cd` tool to navigate.
+If files are outside the expected directory, tell the agent the full path.
+
+### Context fills up too quickly
+
+Use `/compress` to summarize old messages and free up context space. For a
+fresh start, use `/clear`. Check token usage with `/context`. For long
+sessions, consider using SubAgents to delegate work — they have their own
+context windows.
+
+### How to export a conversation
+
+Ask the agent: "Export this conversation as Markdown" — it will use the
+`FileCreate` tool to write the conversation to a file. You can also use
+`/rewind` to go back to a specific point in the conversation.
+
+### Agent repeats the same action
+
+If the agent gets stuck in a loop, use `Ctrl+C` to interrupt, then `/clear`
+to reset the conversation. You can also use `context_edit` to remove
+specific messages that might be causing the loop.
+
 {{< hint type=note >}}
 **Need more help?** Check the [full documentation](/) or open an issue on
 [GitHub](https://github.com/ai-pivot/xbot/issues).
