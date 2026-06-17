@@ -242,6 +242,19 @@ command 类型的 hook，环境变量自动可用：
 }
 ```
 
+## Hook 创意
+
+你可以创建的实用 hooks：
+
+- **Go 自动格式化** — 每次文件编辑后运行 `gofmt`
+- **Git diff 预览** — 每次文件编辑后显示 diff
+- **Slack 通知** — Agent 出错时 POST 到 webhook
+- **成本追踪** — 每次 LLM 调用后记录 token 用量到文件
+- **自动提交** — 文件操作成功后 `git add`
+- **安全扫描** — 允许 Shell 命令前运行 `gosec`
+
+让 Agent："设置一个 hook 来[你的需求]。"
+
 ## 参见
 - [插件](/zh-cn/features/plugins/) — 插件系统概览
 - [权限控制](/zh-cn/guides/permission-control/) — 沙箱和权限
