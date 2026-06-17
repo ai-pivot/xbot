@@ -2735,29 +2735,39 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 }
 
 // bgNotifyLoop routes background notifications from BgTaskManager.NotifyCh.
-// ALL notifications are buffered into bgRunPending. The function NEVER processes
-// them directly — this eliminates the race between injectCLIUserMessage and the
-// agent's reply on asyncCh.
+// ALL notifications are buffered into bgRunPending first.
 //
-// After buffering, the target session's notifyCh is signaled. The session's
-// chatWorker or chatProcessLoop picks up the signal and drains notifications
-// at a safe point (after the turn's reply is sent, or when idle).
+// If the target session has an active chatWorker (registered in bgSessionStates),
+// its notifyCh is signaled — the chatWorker or chatProcessLoop drains notifications
+// at a safe point (after the turn's reply is sent, or when idle). This deferred
+// processing eliminates the race between injectCLIUserMessage and the agent's
+// reply on asyncCh.
+//
+// If the target session has NO active chatWorker (e.g. after service restart, before
+// the first user message creates a chatWorker), notifications are processed directly.
+// This is safe because no Run() is active for the session — there is no concurrent
+// reply on asyncCh to race with. Without this fallback, cron triggers and other bg
+// notifications would silently accumulate in bgRunPending until the first user message.
 func (a *Agent) bgNotifyLoop() {
 	for notif := range a.bgTaskMgr.NotifyCh {
-		// Always buffer — never process directly
+		// Always buffer first
 		a.bgRunPendingMu.Lock()
 		a.bgRunPending = append(a.bgRunPending, notif)
 		a.bgRunPendingMu.Unlock()
 
-		// Signal the target session's chatWorker
 		sessionKey := notif.SessionKey()
 		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+			// Active chatWorker exists — signal it to drain at a safe point
 			ss := state.(*bgSessionState)
 			select {
 			case ss.notifyCh <- struct{}{}:
 			default:
 				// Already signaled — notification will be drained with others
 			}
+		} else {
+			// No active chatWorker (e.g. after restart). No Run() is in progress
+			// for this session, so processing directly is race-free.
+			a.drainAndProcessNotifications(sessionKey)
 		}
 	}
 }
