@@ -36,6 +36,8 @@ sidebar" and the agent handles it.
 **Background mode:** Set `background: true` for dev servers or build processes.
 The agent receives a task ID and continues working. Use `task_status` to check
 progress — but don't poll repeatedly.
+
+![Background tasks](/img/cli/bg-tasks.gif)
 {{< /hint >}}
 
 ## Web & Search
@@ -178,6 +180,8 @@ Tools available depend on the memory provider. See [Memory System](../memory/) f
 | `TodoList` | List current TODOs with status. |
 | `Logs` | List/read xbot log files with filtering. |
 | `oauth_authorize` | Send an OAuth authorization card to the user (Feishu). |
+
+![AskUser interactive dialog](/img/cli/askuser.png)
 
 ## Permission Control
 
