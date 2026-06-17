@@ -492,7 +492,8 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 	return defs
 }
 
-// Clone 复制工具注册表
+// Clone 复制工具注册表（用于 SubAgent 工具集继承）
+// 复制所有字段：globalTools、tenantTools、channelTools、sessionMCPMgr、globalMCPCatalog
 func (r *Registry) Clone() *Registry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -513,6 +514,25 @@ func (r *Registry) Clone() *Registry {
 		}
 	}
 	r.tenantToolsMu.RUnlock()
+	// 复制 channel 专属工具（Feishu Card 等）
+	r.channelToolsMu.RLock()
+	if len(r.channelTools) > 0 {
+		clone.channelTools = make(map[string]map[string]Tool, len(r.channelTools))
+		for ch, tools := range r.channelTools {
+			m := make(map[string]Tool, len(tools))
+			for name, tool := range tools {
+				m[name] = tool
+			}
+			clone.channelTools[ch] = m
+		}
+	}
+	r.channelToolsMu.RUnlock()
+	// 共享 sessionMCPMgr（provider 指向同一 MultiTenantSession，无副作用）
+	clone.sessionMCPMgr = r.sessionMCPMgr
+	// 复制全局 MCP 目录
+	if len(r.globalMCPCatalog) > 0 {
+		clone.globalMCPCatalog = append([]MCPServerCatalogEntry{}, r.globalMCPCatalog...)
+	}
 	return clone
 }
 
