@@ -218,6 +218,23 @@ xbot supports publishing, browsing, and installing skills and agents:
 | `/publish` | Publish your skill or agent |
 | `/unpublish` | Remove from market |
 
+## Skill & Agent Ideas
+
+**Skill ideas:**
+- Code review checklist for your team's standards
+- Deployment checklist with environment-specific steps
+- API documentation generator for your codebase
+- Onboarding guide for new team members
+- Debugging workflow for common error patterns
+
+**Agent ideas:**
+- `security-reviewer` — analyze code for security issues
+- `test-writer` — generate unit tests for new code
+- `doc-writer` — create documentation from code
+- `data-analyst` — analyze CSV/JSON data files
+
+Ask the agent: "Create a skill for [your workflow]" or "Create a [role] agent."
+
 ## See also
 - [Built-in Tools](/features/tools/) — all available tools
 - [MCP](/features/mcp/) — external tool integration
