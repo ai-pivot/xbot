@@ -158,6 +158,10 @@ systemctl --user status xbot-server
 launchctl list | grep xbot
 ```
 
+{{< hint type=tip >}}
+**快速健康检查：** 运行 `xbot-cli` 并输入"你好"。如果 Agent 回复了，说明一切正常。
+{{< /hint >}}
+
 ## 参见
 - [快速开始](/zh-cn/getting-started/) — 5 分钟快速上手
 - [配置参考](/zh-cn/configuration/) — config.json 全字段

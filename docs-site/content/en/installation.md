@@ -175,6 +175,11 @@ systemctl --user status xbot-server
 launchctl list | grep xbot
 ```
 
+{{< hint type=tip >}}
+**Quick health check:** Run `xbot-cli` and type "hello". If the agent
+responds, everything is working correctly.
+{{< /hint >}}
+
 ## See also
 - [Getting Started](/getting-started/) — 5-minute quick start
 - [Configuration](/configuration/) — all config.json fields
