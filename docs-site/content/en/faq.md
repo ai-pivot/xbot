@@ -218,6 +218,12 @@ Ask the agent: "Export this conversation as Markdown" — it will use the
 `FileCreate` tool to write the conversation to a file. You can also use
 `/rewind` to go back to a specific point in the conversation.
 
+### How does xbot protect my data?
+
+xbot is **fully self-hosted** — all data stays on your server. Conversations
+are stored in local SQLite databases. API keys are in your config file, never
+sent to third parties. No telemetry or analytics are collected.
+
 ### Agent repeats the same action
 
 If the agent gets stuck in a loop, use `Ctrl+C` to interrupt, then `/clear`
