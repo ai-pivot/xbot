@@ -102,3 +102,12 @@ Core design: **Backend** is a pure RPC client interface (zero business logic),
 directly, `remoteTransport` forwards over WebSocket).
 
 Read the full [Architecture overview](/architecture/).
+
+## Community
+
+- 📖 [Documentation](/getting-started/) — full guides and references
+- 🐛 [GitHub Issues](https://github.com/ai-pivot/xbot/issues) — report bugs or request features
+- 💬 [GitHub Discussions](https://github.com/ai-pivot/xbot/discussions) — ask questions and share ideas
+- 📦 [Releases](https://github.com/ai-pivot/xbot/releases) — download the latest version
+- 📄 [Changelog](https://github.com/ai-pivot/xbot/blob/master/CHANGELOG.md) — what's new
+- 🤝 [Contributing](/development/) — how to contribute

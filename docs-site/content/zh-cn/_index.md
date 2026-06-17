@@ -90,3 +90,12 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 （local 直接调用 Agent，remote 通过 WebSocket 转发）。
 
 阅读完整 [架构概览](/zh-cn/architecture/)。
+
+## 社区
+
+- 📖 [文档](/zh-cn/getting-started/) — 完整指南和参考
+- 🐛 [GitHub Issues](https://github.com/ai-pivot/xbot/issues) — 报告 bug 或请求功能
+- 💬 [GitHub Discussions](https://github.com/ai-pivot/xbot/discussions) — 提问和分享想法
+- 📦 [Releases](https://github.com/ai-pivot/xbot/releases) — 下载最新版本
+- 📄 [更新日志](https://github.com/ai-pivot/xbot/blob/master/CHANGELOG.md) — 最新变化
+- 🤝 [贡献](/zh-cn/development/) — 如何参与贡献
