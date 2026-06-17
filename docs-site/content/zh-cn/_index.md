@@ -1,13 +1,40 @@
 ---
 title: "xbot"
 weight: 0
+geekdocHidden: true
 ---
 
-**xbot** 是一个自托管 AI Agent 框架。部署在你自己的服务器上，通过飞书 / QQ / 终端 / 浏览器与它对话，它能调用工具完成实际工作。
+{{< columns >}}
 
-## 解决什么问题
+**xbot** 是一个自托管 AI Agent 框架。部署一次在你自己的服务器上，通过
+**飞书、QQ、终端、浏览器**与它对话，它能调用工具完成实际工作。
 
-你想让 AI 帮团队做事——写代码、查文档、跑命令、操作飞书表格——但又不想把数据交给第三方 SaaS。xbot 让你在自己的服务器上运行一个全功能 AI Agent，团队成员通过他们已有的通讯工具与 Agent 对话。
+<--->
+
+{{< button href="/zh-cn/getting-started" >}}快速开始{{< /button >}}
+&nbsp;
+{{< button href="/zh-cn/installation" >}}安装指南{{< /button >}}
+
+{{< /columns >}}
+
+## 为什么选 xbot？
+
+大多数 AI 编程 Agent 只活在终端里。**xbot 不一样**：一个 Agent，全渠道。
+在你的服务器上配置一次，全团队就能通过已有的工具与同一个 Agent 对话。
+
+| | xbot | Codex / Claude Code / OpenCode |
+|--|------|-------------------------------|
+| **多渠道** | 飞书 · QQ · Web · CLI | 仅终端 |
+| **团队共享 LLM** | 管理员配一次，所有人用 | 各自配置 API Key |
+| **自托管** | ✅ 数据不出服务器 | ✅ |
+| **飞书集成** | 文档、多维表格、云盘、卡片 | ❌ |
+| **子 Agent + 群聊** | 委派、并行、辩论 | 仅子 Agent |
+| **插件系统** | 工具、hooks、widget、渠道插件 | 有限 |
+
+{{< hint type=important >}}
+**最常见场景**：部署 Server 模式 → 连接飞书应用 → 全团队在群里 @机器人对话，
+无需各自配置 API Key。
+{{< /hint >}}
 
 ## 核心特性
 
@@ -28,8 +55,6 @@ weight: 0
 | **QQ / NapCat** | 个人或小圈子 | QQ 聊天窗口交互 |
 | **Web** | 任何有浏览器的人 | 网页聊天，注册/登录，邀请制 |
 
-> 💡 **最常见场景**：部署 Server 模式 → 配置飞书应用 → 全团队在飞书群里 @机器人对话。
-
 ## 快速开始
 
 ```bash
@@ -42,7 +67,7 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 
 安装完成后运行 `xbot-cli`，首次会弹出 Setup 向导引导你配置 API Key。
 
-详见 [安装指南](/xbot/installation/)。
+详见 [快速开始](/zh-cn/getting-started/) 或 [安装指南](/zh-cn/installation/)。
 
 ## 架构
 
@@ -54,10 +79,12 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 │  CLI     │                          │  Transport  │
 └──────────┘                          │  (local/    │────▶ 工具
                                       │   remote)   │      (tools/)
-                                      │             │
                                       │  Agent Loop │────▶ 记忆
                                       │  (agent/)   │      (memory/)
                                       └────────────┘
 ```
 
-核心设计：**Backend** 为纯 RPC 客户端接口（零业务逻辑），**Transport** 层负责实际执行（local 直接调用 Agent，remote 通过 WebSocket 转发）。
+核心设计：**Backend** 为纯 RPC 客户端接口（零业务逻辑），**Transport** 层负责实际执行
+（local 直接调用 Agent，remote 通过 WebSocket 转发）。
+
+阅读完整 [架构概览](/zh-cn/architecture/)。

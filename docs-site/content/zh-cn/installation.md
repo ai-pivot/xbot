@@ -112,7 +112,7 @@ xbot-cli
 
 ### 手动编辑配置
 
-配置文件位于 `~/.xbot/config.json`，也可以直接编辑。详见 [配置参考](/xbot/configuration/)。
+配置文件位于 `~/.xbot/config.json`，也可以直接编辑。详见 [配置参考](/zh-cn/configuration/)。
 
 **最小配置（Standalone 模式）：**
 
