@@ -146,7 +146,7 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 		switch tool.Status {
 		case "generating":
 			frame := splashFrames[m.ticker.frame%len(splashFrames)]
-			tag = s.ProgressRunning.Render(frame + " " + label + " ⋯")
+			tag = s.ProgressRunning.Render(frame+" "+label) + " " + s.ProgressDim.Render("generating...")
 		case "error":
 			tag = s.ProgressError.Render("✗ " + label)
 		case "done":
@@ -380,15 +380,14 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 		label = truncateToWidth(label, maxLabelW)
 		switch tool.Status {
 		case "generating":
-			// LLM is still streaming tool call arguments. Use a braille spinner
-			// (distinct from orbitFrames used for executing tools) to convey
-			// "parameters generating…" like Cursor's early tool detection.
+			// LLM is still streaming tool call arguments. Show braille spinner
+			// + tool name + dimmed "generating..." hint.
 			frame := splashFrames[m.ticker.frame%len(splashFrames)]
 			fmt.Fprintf(&sb, "  %s %s %s %s\n",
 				s.ProgressDim.Render("·"),
 				s.ProgressRunning.Render(frame),
 				s.ProgressRunning.Render(label),
-				s.ProgressDim.Render("⋯"))
+				s.ProgressDim.Render("generating..."))
 		case "error":
 			sb.WriteString("  ")
 			sb.WriteString(s.ProgressDim.Render("·"))
