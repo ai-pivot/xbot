@@ -25,6 +25,9 @@ const (
 
 	// Channel Plugin → xbot: tool declaration
 	MsgTypeChannelTools = "channel_tools"
+
+	// Channel Plugin → xbot: prompt declaration
+	MsgTypeChannelPrompt = "channel_prompt"
 )
 
 // Client → Server message types

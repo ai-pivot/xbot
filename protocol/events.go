@@ -82,9 +82,14 @@ type ProgressEvent struct {
 	RequestID              string            `json:"request_id,omitempty"`
 	StreamContent          string            `json:"stream_content,omitempty"`
 	ReasoningStreamContent string            `json:"reasoning_stream_content,omitempty"`
-	IterationHistory       []ProgressEvent   `json:"iteration_history,omitempty"`
-	HistoryCompacted       bool              `json:"history_compacted,omitempty"`
-	CWD                    string            `json:"cwd,omitempty"`
+	// StreamingTools carries tool names detected during LLM streaming,
+	// before arguments finish generating. Each entry has Status="generating".
+	// This is a stream-only field (like StreamContent) — it must NOT enter
+	// snapshotIterationChange or any structured snapshot path.
+	StreamingTools   []ToolProgress  `json:"streaming_tools,omitempty"`
+	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
+	HistoryCompacted bool            `json:"history_compacted,omitempty"`
+	CWD              string          `json:"cwd,omitempty"`
 }
 
 func (ProgressEvent) EventType() string { return "progress" }

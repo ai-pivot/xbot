@@ -253,6 +253,7 @@ xbot (serverapp)                    Plugin (separate process)
 | File | Purpose |
 |------|---------|
 | `agent/transport_channel_plugin.go` | ChannelPluginTransport: bidirectional JSON-RPC over stdin/stdout |
+| `agent/channel_plugin_prompt.go` | channelPluginPromptProvider: thread-safe prompt storage for channel plugins |
 | `serverapp/channel_plugin.go` | stdioChannelPluginProvider: spawns process, creates transport |
 | `plugin/channel_provider.go` | ChannelProviderFactory: creates provider from plugin decl |
 | `plugin/channel_tool_bridge.go` | ChannelToolBridge: adapts channel-declared tools to tools.Tool |
@@ -273,6 +274,22 @@ Flow:
 
 Hot-update: sending a new `channel_tools` message replaces the entire tool set
 (`UnregisterChannelTools` + re-register).
+
+### Channel-Specific Prompt
+
+Channel plugins can declare channel-specific system prompt fragments via the
+`"channel_prompt"` protocol message. These are injected into the agent's system
+prompt for sessions of that channel — identical to built-in channels (feishu, cli).
+
+Flow:
+1. Channel process sends `{"type":"channel_prompt","system_parts":{"05_channel_xxx":"..."}}` on stdout
+2. `ChannelPluginTransport.handleChannelPrompt()` stores parts in `channelPluginPromptProvider`
+3. `OnChannelPrompt` callback fires → `Agent.AddChannelPromptProvider()` registers with pipeline
+4. `ChannelPromptMiddleware` (priority 5) matches `MessageContext.Channel` and injects parts
+
+Key files: `agent/channel_plugin_prompt.go` (provider), `agent/channel_prompt.go` (middleware).
+Hot-update: sending a new `channel_prompt` replaces the entire parts map.
+The `ChannelPromptMiddleware` uses `sync.RWMutex` for concurrent `AddProvider` access.
 
 ## Tool Visibility Model
 

@@ -479,9 +479,44 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 	case c.progressCh <- payload:
 	default:
 		if isStreamOnly {
-			// ch.Channel has a structured event waiting. Drop this
-			// stream-only event — the structured event is more
-			// important for the context bar and progress panel.
+			// Channel full, but both old and new are stream-only.
+			// Merge the stream fields (StreamContent, ReasoningStreamContent,
+			// StreamingTools) instead of dropping — this prevents early tool
+			// detection events (StreamingTools) from being silently discarded
+			// when a preceding StreamContent event still occupies the channel.
+			select {
+			case old := <-c.progressCh:
+				if old.Phase == "" && old.Iteration == 0 {
+					// Both stream-only: merge fields, old value wins when
+					// new doesn't have it.
+					if payload.StreamContent == "" && old.StreamContent != "" {
+						payload.StreamContent = old.StreamContent
+					}
+					if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
+						payload.ReasoningStreamContent = old.ReasoningStreamContent
+					}
+					if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
+						payload.StreamingTools = old.StreamingTools
+					}
+					// Re-send merged event
+					select {
+					case c.progressCh <- payload:
+					default:
+					}
+				} else {
+					// Old event is structured — put it back, drop stream-only.
+					select {
+					case c.progressCh <- old:
+					default:
+					}
+				}
+			default:
+				// Race: channel became empty, try again
+				select {
+				case c.progressCh <- payload:
+				default:
+				}
+			}
 			return
 		}
 		// Both old (queued) and new are structured. Drain the old

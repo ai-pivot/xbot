@@ -10,6 +10,10 @@ sessions **only for that channel**. This enables use cases like:
 - **Any integration plugin**: tools that use the channel's API credentials,
   without polluting other channels' tool lists
 
+> **See also**: Channel plugins can also declare **channel-specific agent prompts**
+> via `channel_prompt` message — see `channel-plugins.md` → "Channel Prompt".
+> Tools + prompt together let you fully customize agent behavior per channel.
+
 ## How It Works
 
 ```
@@ -254,11 +258,19 @@ for line in sys.stdin:
             ]
         }})
 
-    # Phase 2: Channel config — init and declare tools
+    # Phase 2: Channel config — init, declare prompt + tools
     elif msg.get("type") == "channel_config":
         config = json.loads(msg.get("metadata", {}).get("config", "{}"))
         GITHUB_TOKEN = config.get("github_token", os.environ.get("GITHUB_TOKEN", ""))
         port = int(config.get("webhook_port", "9876"))
+
+        # Declare channel-specific prompt so agent knows its role
+        write_stdout({
+            "type": "channel_prompt",
+            "system_parts": {
+                "05_channel_github": "# GitHub Code Review Agent\n\nYou are a code review assistant for GitHub.\n- Always fetch the PR diff before reviewing.\n- Use `post_review_comment` to submit reviews.\n- Be concise and focus on actionable feedback."
+            }
+        })
 
         # Declare tools so agent can interact with GitHub
         declare_tools()
@@ -318,3 +330,8 @@ It is sent dynamically at runtime by the channel process after receiving
   `Registry.UnregisterChannelTools`).
 - **Hot-update**: send a new `channel_tools` message at any time to replace
   the entire tool set. Old tools are unregistered before new ones are added.
+- **Channel prompt**: besides tools, channel plugins can also declare
+  channel-specific agent instructions via `channel_prompt` message.
+  See `channel-plugins.md` → "Channel Prompt" section for details.
+  Both `channel_prompt` and `channel_tools` can be used together — the prompt
+  shapes agent behavior while tools extend agent capabilities for the channel.
