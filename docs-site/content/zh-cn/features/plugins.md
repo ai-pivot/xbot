@@ -89,6 +89,30 @@ fi
 | `~/.xbot/plugins/<id>/` | 用户级，所有项目都能用 |
 | `<项目>/.xbot/plugins/<id>/` | 项目级，只在这个项目生效（可以提交到 git 共享给团队） |
 
+## 启用与配置
+
+插件是**主动选择加入**的。在 `~/.xbot/config.json` 中启用：
+
+```json
+{
+  "plugins": {
+    "enabled": true,
+    "allow_unverified": false
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `enabled` | bool | 启用插件系统。**默认: false。** |
+| `dirs` | []string | 额外扫描插件的目录（默认: `~/.xbot/plugins/`）。 |
+| `disabled_plugins` | []string | 在发现阶段跳过的插件 ID 列表。 |
+| `allow_unverified` | bool | 加载未经验证签名的插件。**不推荐开启。** |
+
+{{< hint type=warning >}}
+**安全提醒：** 插件会以脚本形式在你的机器上运行。只从你信任的来源安装插件。除非你清楚自己在做什么，否则请保持 `allow_unverified` 为关闭状态。
+{{< /hint >}}
+
 ## 插件能做什么
 
 ### 显示信息（Widget）
@@ -125,6 +149,12 @@ fi
 | `XBOT_TOOL_OUTPUT` | 工具执行结果（最长 8KB） |
 | `XBOT_TOOL_INPUT` | 工具输入参数（JSON 格式） |
 | `XBOT_WORK_DIR` | 当前工作目录 |
+| `XBOT_MODEL` | 当前模型名称 |
+| `XBOT_MAX_CONTEXT` | 最大上下文 token 数 |
+| `XBOT_TOKEN_USAGE` | 格式: `"prompt/completion"` |
+| `XBOT_PROMPT_TOKENS` | 提示词 token 数量 |
+| `XBOT_COMP_TOKENS` | 补全 token 数量 |
+| `XBOT_WIDGET_ID` | Widget 标识符（插件有多个 widget 时区分） |
 
 ## 参考手册
 
@@ -139,6 +169,7 @@ fi
   "author": "your-name",
   "runtime": "script",         // "script" | "native" | "grpc"
   "entry": "bash main.sh",     // 入口命令（script 类型）
+  "timeout": "30s",            // 执行超时（Go duration 字符串，最长 5m）
   "permissions": [...],        // 需要的权限
   "contributes": {             // 插件贡献的功能
     "ui": [...],               // UI 组件
@@ -158,6 +189,7 @@ fi
 | `tools.call` | 调用其他工具 |
 | `storage.private` | 插件私有存储 |
 | `context.enrich` | 注入系统提示 |
+| `bus.plugin` | 插件事件总线（发布/订阅） |
 
 ### 高级：定时刷新
 

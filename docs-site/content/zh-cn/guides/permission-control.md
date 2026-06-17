@@ -86,17 +86,56 @@ If the user doesn't respond within the LLM context timeout, the approval card cl
 
 ### CLI
 
-TUI approval panel with:
-- Approve button
-- Deny button (opens text input for optional deny reason)
-- Deny reason propagates into tool error
+TUI 审批面板提供：
+- 批准按钮
+- 拒绝按钮（打开文本输入框，可填写可选的拒绝理由）
+- 拒绝理由会传递到工具的错误信息中
 
 ### Feishu
 
-Interactive card-based approval:
-- Approve button on the initial card
-- Deny button opens a second card with optional deny reason form
-- Card auto-closes on timeout with "Timed Out" status
+基于交互式卡片的审批：
+- 初始卡片上有批准按钮
+- 拒绝按钮打开第二张卡片，包含可选的拒绝理由表单
+- 卡片超时自动关闭，显示 "Timed Out" 状态
+
+## Hooks 集成
+
+权限请求会流经 Hooks 系统。`PermissionRequest` 和 `PermissionDenied` 生命周期事件允许自定义 Hook 处理器来：
+
+- 在权限请求到达用户之前拦截它们
+- 自动批准或拒绝特定模式
+- 记录所有权限请求以备审计
+- 与外部审批系统集成（如 PagerDuty、Slack）
+
+在 `~/.xbot/hooks.json` 中配置 Hooks：
+
+```json
+{
+  "enable_command_hooks": true,
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [{
+          "type": "command",
+          "command": ".xbot/hooks/perm-request.sh"
+        }]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "",
+        "hooks": [{
+          "type": "http",
+          "url": "https://your-audit-service.example.com/hooks/perm-denied"
+        }]
+      }
+    ]
+  }
+}
+```
+
+完整 Hook 配置说明参见 [Hooks](/zh-cn/features/hooks/) 页面。
 
 ## 参见
 - [Hooks](/zh-cn/features/hooks/) — 生命周期事件
