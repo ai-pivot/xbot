@@ -3,6 +3,13 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ai-pivot/xbot/actions/workflows/ci.yml"><img src="https://github.com/ai-pivot/xbot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/ai-pivot/xbot/blob/master/LICENSE"><img src="https://img.shields.io/github/license/ai-pivot/xbot" alt="License"></a>
+  <a href="https://github.com/ai-pivot/xbot/releases"><img src="https://img.shields.io/github/v/release/ai-pivot/xbot?display_name=tag" alt="Release"></a>
+  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go" alt="Go Version">
+</p>
+
+<p align="center">
   <a href="README.zh-CN.md">简体中文</a>
   &nbsp;·&nbsp;
   <a href="https://cjiw.github.io/xbot/">Documentation</a>
