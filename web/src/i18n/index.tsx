@@ -13,7 +13,7 @@ import en from './en'
 
 const locales = { 'zh-CN': zhCN, en } as const
 export type Locale = keyof typeof locales
-export const DEFAULT_LOCALE: Locale = 'zh-CN'
+export const DEFAULT_LOCALE: Locale = 'en'
 
 // ── Template substitution ──
 
@@ -40,13 +40,22 @@ const I18nContext = createContext<I18nContextValue>({
 
 const STORAGE_KEY = 'xbot-language'
 
+export function detectBrowserLocale(): Locale {
+  try {
+    const navLang = navigator.language.toLowerCase()
+    if (navLang.startsWith('zh')) return 'zh-CN'
+  } catch { /* ignore */ }
+  return DEFAULT_LOCALE
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved && saved in locales) return saved as Locale
     } catch { /* ignore */ }
-    return DEFAULT_LOCALE
+    // Fall back to browser language, then DEFAULT_LOCALE
+    return detectBrowserLocale()
   })
 
   const setLocale = useCallback((newLocale: Locale) => {
@@ -88,7 +97,7 @@ export function getTranslation(locale?: Locale) {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved && saved in locales) return saved as Locale
     } catch { /* ignore */ }
-    return DEFAULT_LOCALE
+    return detectBrowserLocale()
   })()
   const dict = locales[loc] ?? locales[DEFAULT_LOCALE]
   return (key: I18nKey, params?: Record<string, string | number>): string => {

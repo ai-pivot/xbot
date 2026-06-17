@@ -2,19 +2,26 @@
 # GitHub: steps.pages.outputs.base_url
 # GitLab: $CI_PAGES_URL
 baseURL = ""
-languageCode = "zh-cn"
-title = "xbot"
 theme = "hugo-geekdoc"
 
-# GeekDoc
 pluralizeListTitles = false
 pygmentsUseClasses = true
 pygmentsCodeFences = true
+enableRobotsTXT = true
+
+# ── Multilingual: English (default at root), Chinese (at /zh-cn/) ──
+defaultContentLanguage = "en"
+defaultContentLanguageInSubdir = false
+enableGitInfo = true
 
 [params]
   geekdocToC = 3
   geekdocRepo = "https://github.com/ai-pivot/xbot"
   geekdocEditPath = "edit/master/docs-site"
+  geekdocOverwriteHTMLBase = false
+  # Show language switcher button (globe icon in header)
+  geekdocDarkModeToggle = true
+  geekdocDarkModeDimension = true
 
 [markup]
   [markup.goldmark]
@@ -28,26 +35,128 @@ pygmentsCodeFences = true
 [outputs]
   home = ["HTML", "RSS"]
 
-[[menu.main]]
-  name = "安装指南"
-  weight = 5
+# ──────────────────────────────────────────────
+# English (default language, served at site root)
+# ──────────────────────────────────────────────
+[languages.en]
+  languageCode = "en"
+  languageName = "English"
+  weight = 1
+  title = "xbot"
+  contentDir = "content/en"
 
-[[menu.main]]
-  name = "配置参考"
-  weight = 15
+  [[languages.en.menu.main]]
+    name = "Getting Started"
+    pageRef = "/getting-started"
+    weight = 5
+  [[languages.en.menu.main]]
+    name = "Installation"
+    pageRef = "/installation"
+    weight = 10
+  [[languages.en.menu.main]]
+    name = "CLI Reference"
+    pageRef = "/cli-reference"
+    weight = 12
+  [[languages.en.menu.main]]
+    name = "Configuration"
+    pageRef = "/configuration"
+    weight = 15
+  [[languages.en.menu.main]]
+    name = "Channels"
+    pageRef = "/channels"
+    weight = 20
+  [[languages.en.menu.main]]
+    name = "Features"
+    pageRef = "/features"
+    weight = 30
+  [[languages.en.menu.main]]
+    name = "Guides"
+    pageRef = "/guides"
+    weight = 40
+  [[languages.en.menu.main]]
+    name = "Architecture"
+    pageRef = "/architecture"
+    weight = 50
+  [[languages.en.menu.main]]
+    name = "FAQ"
+    pageRef = "/faq"
+    weight = 55
+  [[languages.en.menu.main]]
+    name = "Comparison"
+    pageRef = "/comparison"
+    weight = 58
+  [[languages.en.menu.main]]
+    name = "Use Cases"
+    pageRef = "/use-cases"
+    weight = 60
+  [[languages.en.menu.main]]
+    name = "Tips & Tricks"
+    pageRef = "/tips"
+    weight = 63
+  [[languages.en.menu.main]]
+    name = "Development"
+    pageRef = "/development"
+    weight = 70
 
-[[menu.main]]
-  name = "渠道"
-  weight = 20
+# ──────────────────────────────────────────────
+# Chinese (中文, served at /zh-cn/)
+# ──────────────────────────────────────────────
+[languages.zh-cn]
+  languageCode = "zh-cn"
+  languageName = "中文"
+  weight = 2
+  title = "xbot"
+  contentDir = "content/zh-cn"
 
-[[menu.main]]
-  name = "沙箱"
-  weight = 30
-
-[[menu.main]]
-  name = "架构"
-  weight = 40
-
-[[menu.main]]
-  name = "设计"
-  weight = 50
+  [[languages.zh-cn.menu.main]]
+    name = "快速开始"
+    pageRef = "/getting-started"
+    weight = 5
+  [[languages.zh-cn.menu.main]]
+    name = "安装指南"
+    pageRef = "/installation"
+    weight = 10
+  [[languages.zh-cn.menu.main]]
+    name = "CLI 参考"
+    pageRef = "/cli-reference"
+    weight = 12
+  [[languages.zh-cn.menu.main]]
+    name = "配置参考"
+    pageRef = "/configuration"
+    weight = 15
+  [[languages.zh-cn.menu.main]]
+    name = "渠道"
+    pageRef = "/channels"
+    weight = 20
+  [[languages.zh-cn.menu.main]]
+    name = "功能"
+    pageRef = "/features"
+    weight = 30
+  [[languages.zh-cn.menu.main]]
+    name = "指南"
+    pageRef = "/guides"
+    weight = 40
+  [[languages.zh-cn.menu.main]]
+    name = "架构"
+    pageRef = "/architecture"
+    weight = 50
+  [[languages.zh-cn.menu.main]]
+    name = "常见问题"
+    pageRef = "/faq"
+    weight = 55
+  [[languages.zh-cn.menu.main]]
+    name = "功能对比"
+    pageRef = "/comparison"
+    weight = 58
+  [[languages.zh-cn.menu.main]]
+    name = "使用场景"
+    pageRef = "/use-cases"
+    weight = 60
+  [[languages.zh-cn.menu.main]]
+    name = "高级技巧"
+    pageRef = "/tips"
+    weight = 63
+  [[languages.zh-cn.menu.main]]
+    name = "开发指南"
+    pageRef = "/development"
+    weight = 70
