@@ -206,3 +206,8 @@ All tools run within the configured sandbox:
 File tools respect workspace scope: by default, operations are limited to the
 project directory and its subdirectories. `Read`, `FileCreate`, `FileReplace`,
 `Glob`, and `Grep` enforce this boundary.
+
+## See also
+- [Skills & Agents](/features/skills-agents/) — extend the agent with custom roles
+- [MCP](/features/mcp/) — connect external tools via MCP
+- [Plugins](/features/plugins/) — hooks, widgets, custom tools

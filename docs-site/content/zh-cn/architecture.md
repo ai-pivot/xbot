@@ -611,3 +611,8 @@ Layer 5: 工具超时 (120s) + 后台任务 (24h 安全上限)
 | 后台任务 | 24h 安全上限，50KB 输出截断 |
 | LLM 单次调用 | 120s |
 | LLM 单次调用 (Anthropic HTTP Client) | 300s |
+
+## 参见
+- [开发指南](/zh-cn/development/) — 如何贡献
+- [配置参考](/zh-cn/configuration/) — 所有配置字段
+- [内置工具](/zh-cn/features/tools/) — 工具系统详情

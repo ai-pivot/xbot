@@ -20,7 +20,7 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 指定版本或安装路径：
 
 ```bash
-VERSION=v0.0.24 curl -fsSL ... | bash          # 指定版本
+VERSION=v0.0.48 curl -fsSL ... | bash          # 指定版本
 INSTALL_PATH=~/.local/bin curl -fsSL ... | bash  # 自定义安装路径
 ```
 
@@ -157,3 +157,8 @@ systemctl --user status xbot-server
 # macOS:
 launchctl list | grep xbot
 ```
+
+## 参见
+- [快速开始](/zh-cn/getting-started/) — 5 分钟快速上手
+- [配置参考](/zh-cn/configuration/) — config.json 全字段
+- [渠道](/zh-cn/channels/) — 飞书、QQ、Web、CLI 配置

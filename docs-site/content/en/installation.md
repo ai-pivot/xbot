@@ -174,3 +174,8 @@ systemctl --user status xbot-server
 # macOS:
 launchctl list | grep xbot
 ```
+
+## See also
+- [Getting Started](/getting-started/) — 5-minute quick start
+- [Configuration](/configuration/) — all config.json fields
+- [Channels](/channels/) — Feishu, QQ, Web, CLI setup

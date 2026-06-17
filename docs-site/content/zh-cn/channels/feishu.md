@@ -160,3 +160,8 @@ xbot 通过 **WebSocket** 连接飞书服务器（非 HTTP 回调），因此：
 **Q: 用户报 "no LLM configured"？**
 - 确认 `config.json` 中 `llm.api_key` 已配置
 - 全局 LLM 配置会让所有无个人订阅的用户共享此 Key
+
+## 参见
+- [Web 渠道](/zh-cn/channels/web/) — 浏览器聊天
+- [CLI 渠道](/zh-cn/channels/cli/) — 终端 TUI
+- [配置参考](/zh-cn/configuration/) — 完整配置参考

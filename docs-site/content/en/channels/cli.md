@@ -243,3 +243,8 @@ tools:
 **Typical scenario:** you say "switch my theme to dracula and make the sidebar
 a bit narrower" → the agent calls `config set theme dracula` + `tui_control
 set_layout sidebar_width 25` → the UI changes instantly.
+
+## See also
+- [CLI Reference](/cli-reference/) — complete keyboard shortcuts and commands
+- [Tips & Tricks](/tips/) — power-user tips
+- [Getting Started](/getting-started/) — quick start guide

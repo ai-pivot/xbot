@@ -217,3 +217,8 @@ xbot supports publishing, browsing, and installing skills and agents:
 | `/uninstall <name>` | Uninstall |
 | `/publish` | Publish your skill or agent |
 | `/unpublish` | Remove from market |
+
+## See also
+- [Built-in Tools](/features/tools/) — all available tools
+- [MCP](/features/mcp/) — external tool integration
+- [Tips & Tricks](/tips/) — SubAgent delegation patterns

@@ -177,3 +177,8 @@ xbot connects to Feishu servers via **WebSocket** (not HTTP callbacks), so:
 
 - Verify `llm.api_key` is set in `config.json`
 - The global LLM config is shared by all users without personal subscriptions
+
+## See also
+- [Web Channel](/channels/web/) — browser-based chat
+- [CLI Channel](/channels/cli/) — terminal TUI
+- [Configuration](/configuration/) — full config reference

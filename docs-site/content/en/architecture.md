@@ -614,3 +614,8 @@ Layer 5: Tool timeout (120s) + background task (24h safety ceiling)
 | Background tasks | 24h safety ceiling, 50KB output truncation |
 | LLM single call | 120s |
 | LLM single call (Anthropic HTTP Client) | 300s |
+
+## See also
+- [Development Guide](/development/) — how to contribute
+- [Configuration](/configuration/) — all config fields
+- [Built-in Tools](/features/tools/) — tool system details

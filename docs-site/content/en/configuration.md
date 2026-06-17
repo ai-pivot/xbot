@@ -385,3 +385,8 @@ Required only when using `memory_provider: "letta"`:
   }
 }
 ```
+
+## See also
+- [Channels](/channels/) — per-channel configuration
+- [Sandbox guide](/guides/sandbox/) — Docker sandboxing
+- [CLI Reference](/cli-reference/) — keyboard shortcuts and commands

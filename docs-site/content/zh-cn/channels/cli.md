@@ -218,3 +218,8 @@ xbot 的 Agent 可以通过内置工具自行调整 TUI 配置和界面：
 | `tui_control` | AI 自助操作 TUI：切换/关闭会话、调整侧边栏宽度、切换主题、发送 slash 命令 |
 
 典型场景：用户说「帮我把主题换成 dracula，侧边栏收窄一点」→ Agent 调用 `config set theme dracula` + `tui_control set_layout sidebar_width 25` → 界面即时变化。
+
+## 参见
+- [CLI 参考](/zh-cn/cli-reference/) — 完整键盘快捷键和命令
+- [高级技巧](/zh-cn/tips/) — 高级用户技巧
+- [快速开始](/zh-cn/getting-started/) — 快速上手指南

@@ -133,3 +133,8 @@ When permission control is enabled, `Shell`, `FileCreate`, and `FileReplace` gai
 ## Hooks System
 
 xbot has a full lifecycle hooks system that fires on 17 events (PreToolUse, PostToolUse, UserPromptSubmit, etc.). Supports command/http/mcp_tool/callback handlers with JSON configuration. See [Hooks System Design](/design/hooks-system/) for details.
+
+## 参见
+- [技能与子 Agent](/zh-cn/features/skills-agents/) — 扩展 Agent
+- [MCP](/zh-cn/features/mcp/) — 连接外部工具
+- [插件](/zh-cn/features/plugins/) — hooks、widget、自定义工具

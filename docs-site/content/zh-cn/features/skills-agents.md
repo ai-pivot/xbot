@@ -159,3 +159,8 @@ xbot 支持技能和 Agent 的发布、浏览和安装：
 | `/uninstall <name>` | 卸载 |
 | `/publish` | 发布自己的 skill 或 agent |
 | `/unpublish` | 取消发布 |
+
+## 参见
+- [内置工具](/zh-cn/features/tools/) — 所有可用工具
+- [MCP](/zh-cn/features/mcp/) — 外部工具集成
+- [高级技巧](/zh-cn/tips/) — 子 Agent 委派模式
