@@ -4,6 +4,7 @@
 baseURL = ""
 theme = "hugo-geekdoc"
 
+canonifyURLs = true
 pluralizeListTitles = false
 pygmentsUseClasses = true
 pygmentsCodeFences = true
