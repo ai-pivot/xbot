@@ -53,6 +53,10 @@ enableGitInfo = true
     pageRef = "/installation"
     weight = 10
   [[languages.en.menu.main]]
+    name = "CLI Reference"
+    pageRef = "/cli-reference"
+    weight = 12
+  [[languages.en.menu.main]]
     name = "Configuration"
     pageRef = "/configuration"
     weight = 15
@@ -103,6 +107,10 @@ enableGitInfo = true
     name = "安装指南"
     pageRef = "/installation"
     weight = 10
+  [[languages.zh-cn.menu.main]]
+    name = "CLI 参考"
+    pageRef = "/cli-reference"
+    weight = 12
   [[languages.zh-cn.menu.main]]
     name = "配置参考"
     pageRef = "/configuration"
