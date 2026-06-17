@@ -65,6 +65,32 @@ Re-run the wizard anytime with `/setup` or `Ctrl+K → Setup`.
 You're ready. Type a message and press Enter. The agent can call tools, run
 commands, search the web, and delegate to sub-agents.
 
+### Try these right now
+
+```text
+You: What files are in this directory?
+
+Agent: *uses Shell tool to run ls*
+Agent: The current directory contains...
+
+You: Read the README.md and summarize it
+
+Agent: *uses Read tool*
+Agent: This project is about...
+
+You: Create a new file called notes.txt with today's date
+
+Agent: *uses FileCreate tool*
+Agent: Done! Created notes.txt with today's date.
+
+You: Search the web for the latest Go release
+
+Agent: *uses WebSearch tool*
+Agent: The latest Go release is...
+```
+
+The agent picks the right tool for the job — you just describe what you want.
+
 Type `/` to see all slash commands. A few essentials:
 
 | Command | What it does |

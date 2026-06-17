@@ -60,6 +60,32 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/ma
 
 准备就绪。输入消息按回车，Agent 会调用工具、执行命令、搜索网页、委派子 Agent。
 
+### 立即试试
+
+```text
+你：这个目录里有哪些文件？
+
+Agent：*使用 Shell 工具运行 ls*
+Agent：当前目录包含...
+
+你：读取 README.md 并总结
+
+Agent：*使用 Read 工具*
+Agent：这个项目是关于...
+
+你：创建一个名为 notes.txt 的文件，写入今天的日期
+
+Agent：*使用 FileCreate 工具*
+Agent：完成！已创建 notes.txt 并写入今天的日期。
+
+你：搜索最新的 Go 版本
+
+Agent：*使用 WebSearch 工具*
+Agent：最新的 Go 版本是...
+```
+
+Agent 会自动选择合适的工具——你只需描述你想要的。
+
 输入 `/` 查看所有命令。常用命令：
 
 | 命令 | 作用 |
