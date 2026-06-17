@@ -44,6 +44,7 @@ type llmEntry struct {
 type LLMFactory struct {
 	configSvc       *sqlite.UserLLMConfigService
 	subscriptionSvc *sqlite.LLMSubscriptionService
+	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
 	configSubsFn    func() []config.SubscriptionConfig
 	settingsSvc     *SettingsService
 
@@ -139,6 +140,13 @@ func (f *LLMFactory) SetGlobalMaxTokens(n int) {
 
 func (f *LLMFactory) SetSubscriptionSvc(svc *sqlite.LLMSubscriptionService) {
 	f.subscriptionSvc = svc
+}
+
+// SetTenantSvc injects the TenantService for per-session model restoration.
+// Used by GetLLMForChat to recover per-session subscription+model from the
+// tenants table when the in-memory cache is empty (e.g. after server restart).
+func (f *LLMFactory) SetTenantSvc(svc *sqlite.TenantService) {
+	f.tenantSvc = svc
 }
 
 func (f *LLMFactory) SetConfigSubs(fn func() []config.SubscriptionConfig) {
@@ -328,6 +336,39 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 		}
 		if e != nil && e.client != nil {
 			return e.client, e.model, maxCtx, e.thinkingMode, e.maxOutputTokens
+		}
+	}
+
+	// Per-chat cache miss → restore from tenants table (survives server restart).
+	// Without this, sessions that had per-session model switches (Ctrl+L) lose
+	// their model on restart and fall back to the subscription default model —
+	// causing tokenizer mismatches and incorrect token accounting.
+	if f.tenantSvc != nil && f.subscriptionSvc != nil {
+		if subID, model, _ := f.tenantSvc.GetTenantSubscription("cli", chatID); subID != "" {
+			sub, err := f.subscriptionSvc.Get(subID)
+			if err == nil && sub != nil {
+				effectiveModel := model
+				if effectiveModel == "" {
+					effectiveModel = sub.Model
+				}
+				e := f.createEntryFromSub(sub, effectiveModel)
+				if e != nil {
+					f.setEntry(key, e)
+					maxCtx := f.resolveSubContext(effectiveModel, e)
+					f.mu.RLock()
+					if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
+						maxCtx = pcCtx
+					}
+					f.mu.RUnlock()
+					log.WithFields(log.Fields{
+						"chat_id":  chatID,
+						"sub_id":   subID,
+						"model":    effectiveModel,
+						"restored": true,
+					}).Info("Restored per-session LLM from DB")
+					return e.client, e.model, maxCtx, e.thinkingMode, e.maxOutputTokens
+				}
+			}
 		}
 	}
 

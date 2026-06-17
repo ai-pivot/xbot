@@ -861,6 +861,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.llmConfigSvc = sqlite.NewUserLLMConfigService(multiSession.DB())
 	a.llmFactory = NewLLMFactory(a.llmConfigSvc, cfg.LLM, cfg.Model)
 	a.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
+	a.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
 
 	// 初始化上下文管理器
 	a.contextManagerConfig = &ContextManagerConfig{
