@@ -46,3 +46,8 @@ weight: 23
 - QQ 渠道不支持消息更新（patch），因此 Agent 的流式渲染和进度通知不可见
 - Markdown 格式如果发送失败会自动降级为纯文本
 - 支持断线自动重连（指数退避）
+
+## 参见
+- [NapCat 渠道](/zh-cn/channels/napcat/) — OneBot 11 协议
+- [飞书渠道](/zh-cn/channels/feishu/) — 团队协作
+- [配置参考](/zh-cn/configuration/) — QQ 渠道设置

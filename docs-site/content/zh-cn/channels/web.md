@@ -69,3 +69,8 @@ Server 模式安装时，安装器会自动下载 Web UI 到 `~/.xbot/web/dist/`
 - 每个 Web 用户的系统人格（persona）互相隔离
 - 用户 A 设置的 Agent 行为不影响用户 B
 - 适合多租户场景
+
+## 参见
+- [飞书渠道](/zh-cn/channels/feishu/) — 团队协作
+- [CLI 渠道](/zh-cn/channels/cli/) — 终端 TUI
+- [配置参考](/zh-cn/configuration/) — Web 渠道设置

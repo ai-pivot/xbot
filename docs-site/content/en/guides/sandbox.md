@@ -156,3 +156,8 @@ xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name 
 When using remote runners, xbot can sync the `skills/` and `agents/` directories from the server to the runner. This ensures the runner has access to the same tools and agent definitions.
 
 Enable sync in the runner settings via `/settings` → Runner panel.
+
+## See also
+- [Configuration](/configuration/) — sandbox config fields
+- [Permission Control](/guides/permission-control/) — access control
+- [Development Guide](/development/) — project structure

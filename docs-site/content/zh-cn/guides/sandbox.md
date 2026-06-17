@@ -74,3 +74,8 @@ sudo usermod -aG docker $USER  # 需要重新登录
 ### 远程沙箱
 
 用户可以连接自己的远程 Runner，在自己的机器上执行命令。通过 CLI 的 `/settings` 面板配置。
+
+## 参见
+- [配置参考](/zh-cn/configuration/) — 沙箱配置字段
+- [权限控制](/zh-cn/guides/permission-control/) — 访问控制
+- [开发指南](/zh-cn/development/) — 项目结构

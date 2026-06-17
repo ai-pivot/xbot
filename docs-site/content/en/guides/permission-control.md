@@ -136,3 +136,8 @@ Configure hooks in `~/.xbot/hooks.json`:
 ```
 
 See the [Hooks](/features/hooks/) page for full details on hook configuration.
+
+## See also
+- [Hooks](/features/hooks/) — lifecycle events
+- [Sandbox Guide](/guides/sandbox/) — Docker sandboxing
+- [Configuration](/configuration/) — permission settings

@@ -52,3 +52,8 @@ weight: 24
 - NapCat 渠道不支持消息更新，流式渲染不可见
 - 支持发送图片和文件
 - 支持断线自动重连
+
+## 参见
+- [QQ 渠道](/zh-cn/channels/qq/) — 官方 QQ 机器人
+- [飞书渠道](/zh-cn/channels/feishu/) — 团队协作
+- [配置参考](/zh-cn/configuration/) — NapCat 设置

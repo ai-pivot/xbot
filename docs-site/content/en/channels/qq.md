@@ -49,3 +49,8 @@ chats, and channel messages.
   rendering and progress notifications are not visible
 - Markdown messages automatically degrade to plain text if sending fails
 - Supports automatic reconnection with exponential backoff
+
+## See also
+- [NapCat Channel](/channels/napcat/) — OneBot 11 protocol
+- [Feishu Channel](/channels/feishu/) — team collaboration
+- [Configuration](/configuration/) — QQ channel settings

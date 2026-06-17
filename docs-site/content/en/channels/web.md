@@ -79,3 +79,8 @@ When `persona_isolation` is `true`:
 - Each web user's system persona is isolated from others
 - User A's agent behavior settings do not affect User B
 - Suitable for multi-tenant scenarios
+
+## See also
+- [Feishu Channel](/channels/feishu/) — team collaboration
+- [CLI Channel](/channels/cli/) — terminal TUI
+- [Configuration](/configuration/) — web channel settings

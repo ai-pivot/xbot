@@ -97,3 +97,8 @@ Interactive card-based approval:
 - Approve button on the initial card
 - Deny button opens a second card with optional deny reason form
 - Card auto-closes on timeout with "Timed Out" status
+
+## 参见
+- [Hooks](/zh-cn/features/hooks/) — 生命周期事件
+- [沙箱指南](/zh-cn/guides/sandbox/) — Docker 沙箱
+- [配置参考](/zh-cn/configuration/) — 权限设置

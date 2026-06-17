@@ -64,3 +64,8 @@ the OneBot 11 protocol. Compatible with any OneBot 11 implementation.
 | WebSocket connection fails | Verify NapCat is running and the WS URL is correct |
 | Messages not received | Check that the allow-list includes the sender's QQ number |
 | Reconnection loops | Check network stability; NapCat has exponential backoff |
+
+## See also
+- [QQ Channel](/channels/qq/) — official QQ Bot
+- [Feishu Channel](/channels/feishu/) — team collaboration
+- [Configuration](/configuration/) — NapCat settings
