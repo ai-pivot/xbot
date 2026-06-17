@@ -119,3 +119,8 @@ Agent 可以调整自己的设置——无需手动编辑配置：
 {{< hint type=tip >}}
 **最好的技巧：** 直接让 Agent 做事。xbot 设计为对话式——如果你能描述你想要的，Agent 通常能想出怎么做。
 {{< /hint >}}
+
+## 参见
+- [CLI 参考](/zh-cn/cli-reference/) — 完整键盘快捷键
+- [使用场景](/zh-cn/use-cases/) — 真实场景
+- [常见问题](/zh-cn/faq/) — 常见问题

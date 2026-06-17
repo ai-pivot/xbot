@@ -114,3 +114,8 @@ complements it. Use Codex/Claude Code for in-IDE editing, and xbot for
 team-accessible Feishu/QQ/Web automation, scheduled tasks, and shared AI
 workflows.
 {{< /hint >}}
+
+## See also
+- [Getting Started](/getting-started/) — 5-minute quick start
+- [Use Cases](/use-cases/) — real-world scenarios
+- [Tips & Tricks](/tips/) — power-user tips

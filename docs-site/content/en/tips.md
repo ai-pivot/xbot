@@ -134,3 +134,8 @@ Create Skills (Markdown files in `~/.xbot/skills/`) for workflows you repeat:
 conversational — if you can describe what you want, the agent can probably
 figure out how to do it.
 {{< /hint >}}
+
+## See also
+- [CLI Reference](/cli-reference/) — complete keyboard shortcuts
+- [Use Cases](/use-cases/) — real-world scenarios
+- [FAQ](/faq/) — common questions

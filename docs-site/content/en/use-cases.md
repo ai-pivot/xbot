@@ -115,3 +115,8 @@ chat UI with markdown rendering, code highlighting, and file uploads.
 Have a use case we should document? Open an issue on
 [GitHub](https://github.com/ai-pivot/xbot/issues).
 {{< /hint >}}
+
+## See also
+- [Comparison](/comparison/) — xbot vs other agents
+- [Tips & Tricks](/tips/) — power-user tips
+- [FAQ](/faq/) — common questions

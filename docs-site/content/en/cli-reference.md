@@ -126,3 +126,8 @@ xbot uses three model tiers for different complexity levels. Configure via
 
 SubAgents automatically select the appropriate tier. Unconfigured tiers fall
 back: vanguard → balance → swift.
+
+## See also
+- [Getting Started](/getting-started/) — quick start guide
+- [Channels](/channels/) — all channel options
+- [Configuration](/configuration/) — config.json reference

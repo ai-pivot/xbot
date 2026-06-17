@@ -104,3 +104,8 @@ Agent：完成。我已创建了一份包含状态总结的周报文档。
 {{< hint type=note >}}
 有值得记录的使用场景？在 [GitHub](https://github.com/ai-pivot/xbot/issues) 提 issue。
 {{< /hint >}}
+
+## 参见
+- [功能对比](/zh-cn/comparison/) — xbot 与其他 Agent 对比
+- [高级技巧](/zh-cn/tips/) — 高级用户技巧
+- [常见问题](/zh-cn/faq/) — 常见问题
