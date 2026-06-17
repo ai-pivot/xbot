@@ -7,6 +7,10 @@ weight: 5
 
 5 分钟内让 xbot 跑起来。
 
+{{< hint type=note >}}
+**系统要求：** 任何现代操作系统（Linux、macOS、Windows）。无需预装依赖——安装器会下载静态二进制。
+{{< /hint >}}
+
 ## 1. 安装
 
 ```bash

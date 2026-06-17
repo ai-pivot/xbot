@@ -7,6 +7,11 @@ weight: 5
 
 Get xbot running in under 5 minutes.
 
+{{< hint type=note >}}
+**System requirements:** Any modern OS (Linux, macOS, Windows). No pre-installed
+dependencies needed — the installer downloads a static binary.
+{{< /hint >}}
+
 ## 1. Install
 
 ```bash
