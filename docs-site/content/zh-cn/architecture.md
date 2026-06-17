@@ -420,14 +420,14 @@ type MemoryProvider interface {
 | **文件操作** | Read, Edit, Glob, Grep, Cd, DownloadFile |
 | **命令执行** | Shell |
 | **搜索** | WebSearch, ChatHistory |
-| **记忆** | save_memory (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
+| **记忆** | memory_write, memory_list (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
 | **上下文管理** | offload_recall, recall_masked, context_edit |
 | **SubAgent & 协作** | SubAgent（一次性 + Interactive）, CreateChat, SendMessage, Worktree |
-| **Skill/Agent** | Skill, manage_tools, search_tools, load_tools |
+| **Skill/Agent** | Skill, ManageTools, search_tools |
 | **AI-Native 配置** | config（AI 读写配置）, tui_control（AI 操作 TUI 界面） |
 | **卡片** | card_create, card_add_content, card_add_interactive, card_add_container, card_preview, card_send |
-| **任务** | todo_write/todo_list（跨会话持久化）, cron, task_start/task_status/task_cancel |
-| **管理** | Logs, ask_user, OAuth, EventTrigger |
+| **任务** | TodoWrite/TodoList（跨会话持久化）, Cron, task_status/task_kill/task_read |
+| **管理** | Logs, AskUser, oauth_authorize, EventTrigger |
 | **飞书 MCP** | 20+ 工具（多维表格/知识库/文档/云盘） |
 
 ### 5.2 Hooks 系统
