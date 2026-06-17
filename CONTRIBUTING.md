@@ -70,7 +70,7 @@ hugo server -D    # local dev server
 ### New tool
 
 Create a file in `tools/` implementing the `Tool` interface. See the
-[Development guide](https://cjiw.github.io/xbot/development/) for details.
+[Development guide](https://ai-pivot.github.io/xbot/development/) for details.
 
 ### New channel
 
@@ -83,5 +83,5 @@ Create a `SKILL.md` in `~/.xbot/skills/` or `.xbot/skills/`.
 ## Questions?
 
 - Open an [issue](https://github.com/ai-pivot/xbot/issues)
-- Read the [documentation](https://cjiw.github.io/xbot/)
+- Read the [documentation](https://ai-pivot.github.io/xbot/)
 - Check `AGENTS.md` for architecture details

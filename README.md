@@ -12,7 +12,7 @@
 <p align="center">
   <a href="README.zh-CN.md">简体中文</a>
   &nbsp;·&nbsp;
-  <a href="https://cjiw.github.io/xbot/">Documentation</a>
+  <a href="https://ai-pivot.github.io/xbot/">Documentation</a>
   &nbsp;·&nbsp;
   <a href="CHANGELOG.md">Changelog</a>
 </p>
@@ -129,11 +129,11 @@ Create an app on the [Feishu Open Platform](https://open.feishu.cn), then:
 Required permissions: `im:message`, `im:message.receive_v1`,
 `im:message:send_as_bot`, `contact:user.base:readonly`
 
-See the [Feishu guide](https://cjiw.github.io/xbot/channels/feishu/).
+See the [Feishu guide](https://ai-pivot.github.io/xbot/channels/feishu/).
 
 ### QQ / NapCat / Web
 
-See the [Channels documentation](https://cjiw.github.io/xbot/channels/).
+See the [Channels documentation](https://ai-pivot.github.io/xbot/channels/).
 
 ## Built-in tools
 
@@ -187,20 +187,20 @@ Requires **Go 1.26+**.
 
 **Backend** is a pure RPC client (zero business logic); **Transport** is the
 execution layer. Read the full
-[Architecture overview](https://cjiw.github.io/xbot/architecture/).
+[Architecture overview](https://ai-pivot.github.io/xbot/architecture/).
 
 ## Documentation
 
-Full docs: **[cjiw.github.io/xbot](https://cjiw.github.io/xbot/)**
+Full docs: **[ai-pivot.github.io/xbot](https://ai-pivot.github.io/xbot/)**
 
 | Doc | Description |
 |-----|-------------|
-| [Getting Started](https://cjiw.github.io/xbot/getting-started/) | 5-minute quick start |
-| [Installation](https://cjiw.github.io/xbot/installation/) | Modes, service management |
-| [Configuration](https://cjiw.github.io/xbot/configuration/) | Every `config.json` field |
-| [Channels](https://cjiw.github.io/xbot/channels/) | Feishu / QQ / Web / CLI |
-| [Features](https://cjiw.github.io/xbot/features/) | Tools, skills, MCP, plugins |
-| [Architecture](https://cjiw.github.io/xbot/architecture/) | System design |
+| [Getting Started](https://ai-pivot.github.io/xbot/getting-started/) | 5-minute quick start |
+| [Installation](https://ai-pivot.github.io/xbot/installation/) | Modes, service management |
+| [Configuration](https://ai-pivot.github.io/xbot/configuration/) | Every `config.json` field |
+| [Channels](https://ai-pivot.github.io/xbot/channels/) | Feishu / QQ / Web / CLI |
+| [Features](https://ai-pivot.github.io/xbot/features/) | Tools, skills, MCP, plugins |
+| [Architecture](https://ai-pivot.github.io/xbot/architecture/) | System design |
 
 ## License
 
