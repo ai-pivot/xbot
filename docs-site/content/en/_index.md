@@ -14,9 +14,9 @@ browser** — it uses tools to get real work done.
 
 <--->
 
-{{< button href="/getting-started" >}}Quick Start{{< /button >}}
+{{< button relref="getting-started.md" >}}Quick Start{{< /button >}}
 &nbsp;
-{{< button href="/installation" >}}Installation{{< /button >}}
+{{< button relref="installation.md" >}}Installation{{< /button >}}
 
 {{< /columns >}}
 

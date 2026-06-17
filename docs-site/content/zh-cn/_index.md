@@ -13,9 +13,9 @@ geekdocHidden: true
 
 <--->
 
-{{< button href="/zh-cn/getting-started" >}}快速开始{{< /button >}}
+{{< button relref="getting-started.md" >}}快速开始{{< /button >}}
 &nbsp;
-{{< button href="/zh-cn/installation" >}}安装指南{{< /button >}}
+{{< button relref="installation.md" >}}安装指南{{< /button >}}
 
 {{< /columns >}}
 
