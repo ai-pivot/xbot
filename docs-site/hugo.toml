@@ -88,6 +88,10 @@ enableGitInfo = true
     name = "Use Cases"
     pageRef = "/use-cases"
     weight = 60
+  [[languages.en.menu.main]]
+    name = "Development"
+    pageRef = "/development"
+    weight = 70
 
 # ──────────────────────────────────────────────
 # Chinese (中文, served at /zh-cn/)
@@ -143,3 +147,7 @@ enableGitInfo = true
     name = "使用场景"
     pageRef = "/use-cases"
     weight = 60
+  [[languages.zh-cn.menu.main]]
+    name = "开发指南"
+    pageRef = "/development"
+    weight = 70
