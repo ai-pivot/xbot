@@ -60,6 +60,11 @@ Re-run the wizard anytime with `/setup` or `Ctrl+K → Setup`.
 > system. You can create multiple subscriptions (e.g. work Claude, personal
 > DeepSeek) and switch between them per session.
 
+{{< hint type=tip >}}
+**Using DeepSeek, Qwen, or Ollama?** Set `provider: "openai"` and change the
+`base_url` in the Setup wizard. xbot works with any OpenAI-compatible API.
+{{< /hint >}}
+
 ## 4. Start chatting
 
 You're ready. Type a message and press Enter. The agent can call tools, run

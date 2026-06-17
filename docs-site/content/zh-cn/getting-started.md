@@ -56,6 +56,11 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/ma
 > **订阅系统，非单一全局 key。** xbot 使用订阅系统，可创建多个订阅（如工作用
 > Claude、个人用 DeepSeek），按会话切换。
 
+{{< hint type=tip >}}
+**使用 DeepSeek、通义千问或 Ollama？** 在 Setup 向导中设置 `provider: "openai"` 并修改
+`base_url`。xbot 兼容任何 OpenAI 兼容 API。
+{{< /hint >}}
+
 ## 4. 开始对话
 
 准备就绪。输入消息按回车，Agent 会调用工具、执行命令、搜索网页、委派子 Agent。
