@@ -10,6 +10,55 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// toolGeneratingHints maps tool names to human-friendly hint text shown
+// when the LLM is streaming a tool call (before arguments finish).
+var toolGeneratingHints = map[string]string{
+	"Read":           "skimming…",
+	"Grep":           "scanning…",
+	"Glob":           "browsing…",
+	"Shell":          "preparing…",
+	"WebSearch":      "searching…",
+	"Fetch":          "fetching…",
+	"FileCreate":     "drafting…",
+	"FileReplace":    "rewriting…",
+	"SubAgent":       "deciding…",
+	"SendMessage":    "wording…",
+	"Cd":             "navigating…",
+	"Worktree":       "branching…",
+	"config":         "tuning…",
+	"Cron":           "scheduling…",
+	"TodoWrite":      "organizing…",
+	"TodoList":       "checking…",
+	"AskUser":        "asking…",
+	"ChatHistory":    "recalling…",
+	"DownloadFile":   "downloading…",
+	"EventTrigger":   "watching…",
+	"ManageTools":    "connecting…",
+	"Skill":          "loading…",
+	"context_edit":   "trimming…",
+	"Edit":           "editing…",
+	"Write":          "writing…",
+	"offload_recall": "recalling…",
+	"recall_masked":  "recalling…",
+	"memory_write":   "remembering…",
+	"memory_list":    "listing…",
+	"task_read":      "reading…",
+	"task_status":    "checking…",
+	"task_kill":      "stopping…",
+	"Logs":           "digging…",
+}
+
+// fallbackHints is randomly sampled (deterministically by tool name len mod)
+// when a tool has no explicit entry in toolGeneratingHints.
+var fallbackHints = []string{"proposing…", "planning…", "figuring out…", "deciding…"}
+
+func toolGeneratingHint(name string) string {
+	if hint, ok := toolGeneratingHints[name]; ok {
+		return hint
+	}
+	return fallbackHints[len(name)%len(fallbackHints)]
+}
+
 // ---------------------------------------------------------------------------
 // Unified Turn Renderer
 // ---------------------------------------------------------------------------
@@ -146,7 +195,7 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 		switch tool.Status {
 		case "generating":
 			frame := splashFrames[m.ticker.frame%len(splashFrames)]
-			tag = s.ProgressRunning.Render(frame+" "+label) + " " + s.ProgressRunning.Render("generating...")
+			tag = s.ProgressRunning.Render(frame+" "+label) + " " + s.ProgressRunning.Render(toolGeneratingHint(tool.Name))
 		case "error":
 			tag = s.ProgressError.Render("✗ " + label)
 		case "done":
@@ -380,14 +429,13 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 		label = truncateToWidth(label, maxLabelW)
 		switch tool.Status {
 		case "generating":
-			// LLM is still streaming tool call arguments. Show braille spinner
-			// + tool name + "generating..." hint (same color as tool name).
 			frame := splashFrames[m.ticker.frame%len(splashFrames)]
+			hint := toolGeneratingHint(tool.Name)
 			fmt.Fprintf(&sb, "  %s %s %s %s\n",
 				s.ProgressDim.Render("·"),
 				s.ProgressRunning.Render(frame),
 				s.ProgressRunning.Render(label),
-				s.ProgressRunning.Render("generating..."))
+				s.ProgressRunning.Render(hint))
 		case "error":
 			sb.WriteString("  ")
 			sb.WriteString(s.ProgressDim.Render("·"))
