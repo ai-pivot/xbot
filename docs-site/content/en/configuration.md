@@ -54,9 +54,9 @@ Feishu app:
 ```
 
 {{< hint type=warning >}}
-**Channel config key:** use `enabled` (not `enable`) for all channels
-(`feishu`, `qq`, `napcat`, `web`). The `web` section also accepts `enable`
-for backward compatibility, but `enabled` is the canonical key.
+**Channel config keys:** Feishu, QQ, and NapCat use `enabled`. Web uses
+`enable` (note: no `d`). Both `enable` and `enabled` are accepted at runtime
+for backward compatibility, but match the struct tag for clarity.
 {{< /hint >}}
 
 ---
@@ -188,13 +188,13 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 {
   "agent": {
     "max_iterations": 2000,
-    "max_concurrency": 3,
+    "max_concurrency": 100,
     "memory_provider": "flat",
     "work_dir": ".",
     "prompt_file": "prompt.md",
     "max_context_tokens": 200000,
     "enable_auto_compress": true,
-    "compression_threshold": 0.7,
+    "compression_threshold": 0.9,
     "context_mode": "",
     "purge_old_messages": false,
     "max_sub_agent_depth": 6,
@@ -212,14 +212,14 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_iterations` | int | `2000` | Max tool calls per conversation turn |
-| `max_concurrency` | int | `3` | Max concurrent LLM calls |
+| `max_concurrency` | int | `100` | Max concurrent LLM calls |
 | `memory_provider` | string | `"flat"` | Memory system: `flat` or `letta` |
 | `work_dir` | string | `"."` | Working directory |
 | `prompt_file` | string | `"prompt.md"` | Custom system prompt file |
 | `max_context_tokens` | int | `200000` | Max context window (tokens) |
 | `model_contexts` | object | `{}` | Per-model context overrides (model → tokens) |
 | `enable_auto_compress` | bool | `true` | Auto-compress context when full |
-| `compression_threshold` | float | `0.7` | Token ratio that triggers compression |
+| `compression_threshold` | float | `0.9` | Token ratio that triggers compression |
 | `context_mode` | string | `""` | Context management mode |
 | `purge_old_messages` | bool | `false` | Purge old messages after compression |
 | `max_sub_agent_depth` | int | `6` | Max SubAgent nesting depth |

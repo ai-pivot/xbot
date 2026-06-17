@@ -106,7 +106,6 @@ xbot includes ~50 built-in tools the agent can call during conversations. This p
 | Tool | Description |
 |------|-------------|
 | `ManageTools` | Add/remove/list/reload MCP servers |
-| `load_tools` | Activate MCP tools by name to load parameter schemas |
 | `search_tools` | Semantic search for available tools using embedding similarity |
 
 ## Other

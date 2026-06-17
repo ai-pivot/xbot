@@ -14,7 +14,7 @@ user-specific context.
 ## Flat
 *(default)*
 
-- In-memory text blob
+- File-based text blob
 - Zero dependencies
 - Simple: append, replace, search
 
@@ -56,7 +56,7 @@ LLM consolidates and summarizes the memory blob.
 
 | Characteristic | Detail |
 |---------------|--------|
-| Storage | In-memory text blob |
+| Storage | File-based text blob |
 | Persistence | Saved/restored with session state |
 | Consolidation | LLM-driven on `/new` |
 | Search | Basic text matching (grep-style) |

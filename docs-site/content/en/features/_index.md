@@ -16,7 +16,7 @@ delegate, and schedule.
 - [Built-in Tools](tools/) — 50+ tools: Shell, file I/O, web search, scheduling, cards
 - [Skills & Agents](skills-agents/) — Markdown-based skill packs and role-based SubAgents
 - [MCP Integration](mcp/) — Connect external tools via the Model Context Protocol
-- [Memory System](memory/) — Pluggable memory: flat in-memory or Letta (vector search + SQLite)
+- [Memory System](memory/) — Pluggable memory: flat file-based or Letta (vector search + SQLite)
 
 <--->
 

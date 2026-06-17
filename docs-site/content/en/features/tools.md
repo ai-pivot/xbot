@@ -30,7 +30,7 @@ sidebar" and the agent handles it.
 
 | Tool | Description |
 |------|-------------|
-| `Shell` | Execute shell commands. Configurable `timeout` (default 120s, max 600s), `background` mode for long-running tasks, `run_as` for user switching. |
+| `Shell` | Execute shell commands. Configurable `timeout` (default 120s, max 600s), `background` mode for long-running tasks. `run_as` available when permission control is enabled. |
 
 {{< hint type=note >}}
 **Background mode:** Set `background: true` for dev servers or build processes.
@@ -52,6 +52,7 @@ progress — but don't poll repeatedly.
 |------|-------------|
 | `context_edit` | Edit conversation context: list turns, delete turn/message, truncate, regex replace. |
 | `ChatHistory` | Retrieve recent messages from group chats. |
+| `recall` | Retrieve offloaded or masked observation content with pagination. |
 | `recall_masked` | Retrieve masked observations. List all masked items or retrieve by ID. |
 | `offload_recall` | Retrieve offloaded tool result content by offload ID, with `offset` and `limit` pagination. |
 
@@ -115,7 +116,7 @@ Tools available depend on the memory provider. See [Memory System](../memory/) f
 
 | Tool | Description |
 |------|-------------|
-| `memory_write` | Write to the in-memory memory blob. |
+| `memory_write` | Write to the file-based memory store. |
 | `memory_list` | List current memory contents. |
 
 ### Letta Provider
@@ -167,7 +168,6 @@ Tools available depend on the memory provider. See [Memory System](../memory/) f
 | Tool | Description |
 |------|-------------|
 | `ManageTools` | Add/remove/list/reload MCP servers dynamically. |
-| `load_tools` | Activate MCP tools by name to load parameter schemas. |
 
 ## Other
 

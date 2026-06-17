@@ -216,13 +216,16 @@ Executed in priority order, assembling system prompt parts into the `SystemParts
 | Order | Middleware | Priority | SystemParts Key | Responsibility |
 |-------|-----------|----------|-----------------|----------------|
 | 1 | SystemPromptMiddleware | 0 | `00_base` | Render prompt.md (hot reload) |
-| 2 | ProjectHintMiddleware | 1 | `05_project_hint` | Inject known project knowledge cards |
-| 3 | SkillsCatalogMiddleware | 100 | `10_skills` | Available skills catalog |
-| 4 | AgentsCatalogMiddleware | 110 | `15_agents` | Available agents catalog |
-| 5 | MemoryMiddleware | 120 | `20_memory` | Long-term memory (Recall) |
-| 6 | SenderInfoMiddleware | 130 | `30_sender` | Sender name |
-| 7 | LanguageMiddleware | 135 | `32_language` | Language instructions |
-| 8 | UserMessageMiddleware | 200 | — | Timestamp + guide text |
+| 2 | ProjectContextMiddleware | 5 | `04_global_context`, `05_project_context` | Inject global (~/.xbot/AGENTS.md) + project (.xbot/AGENTS.md) instructions |
+| 3 | ChannelPromptMiddleware | 5 | channel-specific (e.g. `05_channel_xxx`) | Inject channel-specific system prompt parts |
+| 4 | SkillsCatalogMiddleware | 100 | `10_skills` | Available skills catalog |
+| 5 | AgentsCatalogMiddleware | 110 | `15_agents` | Available agents catalog |
+| 6 | PermissionControlMiddleware | 115 | `14_perm_control` | Read/write/tool permission control |
+| 7 | MemoryMiddleware | 120 | `20_memory` | Long-term memory (Recall) |
+| 8 | SenderInfoMiddleware | 130 | `30_sender` | Sender name |
+| 9 | LanguageMiddleware | 135 | `32_language` | Language instructions |
+| 10 | pluginEnricherMiddleware | 150 | `plugin_enrichers` | Plugin-enriched system prompt content |
+| 11 | UserMessageMiddleware | 200 | — | Timestamp + guide text |
 
 **CacheHint**: system prompt marked `"static"`, converted to `cache_control: {type: "ephemeral"}` under Anthropic.
 
@@ -417,17 +420,17 @@ Uses `chromem-go` embedded vector database, persisted to `.xbot/vectordb/`. Supp
 
 | Category | Tools |
 |----------|-------|
-| **File Operations** | Read, Edit, Glob, Grep, Cd, DownloadFile |
+| **File Operations** | Read, FileCreate, FileReplace, Glob, Grep, Cd, DownloadFile |
 | **Command Execution** | Shell |
 | **Search** | WebSearch, ChatHistory |
-| **Memory** | save_memory (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
+| **Memory** | memory_write, memory_list (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
 | **Context Management** | offload_recall, recall_masked, context_edit |
 | **SubAgent & Collaboration** | SubAgent (one-shot + Interactive), CreateChat, SendMessage, Worktree |
-| **Skill/Agent** | Skill, manage_tools, search_tools, load_tools |
+| **Skill/Agent** | Skill, ManageTools, search_tools |
 | **AI-Native Config** | config (AI reads/writes config), tui_control (AI operates TUI) |
 | **Cards** | card_create, card_add_content, card_add_interactive, card_add_container, card_preview, card_send |
-| **Tasks** | todo_write/todo_list (cross-session persistent), cron, task_start/task_status/task_cancel |
-| **Management** | Logs, ask_user, OAuth, EventTrigger |
+| **Tasks** | todo_write/todo_list (cross-session persistent), Cron, task_status, task_kill, task_read |
+| **Management** | Logs, AskUser, oauth_authorize, EventTrigger |
 | **Feishu MCP** | 20+ tools (Bitable, Knowledge Base, Docs, Drive) |
 
 ### 5.2 Hooks System
