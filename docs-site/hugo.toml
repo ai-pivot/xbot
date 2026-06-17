@@ -80,6 +80,10 @@ enableGitInfo = true
     name = "Comparison"
     pageRef = "/comparison"
     weight = 58
+  [[languages.en.menu.main]]
+    name = "Use Cases"
+    pageRef = "/use-cases"
+    weight = 60
 
 # ──────────────────────────────────────────────
 # Chinese (中文, served at /zh-cn/)
@@ -127,3 +131,7 @@ enableGitInfo = true
     name = "功能对比"
     pageRef = "/comparison"
     weight = 58
+  [[languages.zh-cn.menu.main]]
+    name = "使用场景"
+    pageRef = "/use-cases"
+    weight = 60

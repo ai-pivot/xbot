@@ -82,7 +82,7 @@ xbot 使用**订阅（Subscription）系统**管理 LLM 配置，不再使用全
 | `api_key` | string | `""` | API Key |
 | `base_url` | string | `"https://api.openai.com/v1"` | API 地址（兼容服务时修改） |
 | `model` | string | `"gpt-4o"` | 默认模型 |
-| `max_output_tokens` | int | `0`（=8192） | 最大输出 token 数 |
+| `max_output_tokens` | int | `0`（= 32768） | 最大输出 token 数 |
 | `max_context` | int | `0`（=200000） | 最大上下文 token 数（0 使用默认值） |
 | `thinking_mode` | string | `""`（=auto） | 思考模式：`auto` / `enabled` / `disabled` |
 | `active` | bool | `true` | 是否为当前激活的订阅 |
