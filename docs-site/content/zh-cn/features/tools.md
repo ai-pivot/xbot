@@ -95,6 +95,8 @@ xbot includes ~50 built-in tools the agent can call during conversations. This p
 
 ## Background Tasks
 
+![后台任务](/img/cli/bg-tasks.gif)
+
 | Tool | Description |
 |------|-------------|
 | `task_status` | Check background task status |
@@ -116,6 +118,8 @@ xbot includes ~50 built-in tools the agent can call during conversations. This p
 | `TodoWrite` / `TodoList` | Structured TODO management with cross-session persistence |
 | `Logs` | List/read xbot log files with filtering |
 | `oauth_authorize` | Send OAuth authorization card to user |
+
+![AskUser 交互式对话框](/img/cli/askuser.png)
 
 ## Permission Control Parameters
 
