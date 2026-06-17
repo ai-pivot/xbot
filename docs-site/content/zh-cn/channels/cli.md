@@ -1,6 +1,6 @@
 ---
 title: "CLI"
-weight: 21
+weight: 30
 ---
 
 # CLI 渠道

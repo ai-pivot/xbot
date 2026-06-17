@@ -1,6 +1,6 @@
 ---
 title: "Skills & Agents"
-weight: 30
+weight: 40
 ---
 
 # Skills & Agents

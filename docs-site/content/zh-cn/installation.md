@@ -1,6 +1,6 @@
 ---
 title: "安装指南"
-weight: 5
+weight: 10
 ---
 
 # 安装指南

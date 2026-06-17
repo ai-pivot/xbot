@@ -1,6 +1,6 @@
 ---
 title: "MCP 工具集成"
-weight: 50
+weight: 45
 ---
 
 # MCP 工具集成

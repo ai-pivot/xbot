@@ -1,6 +1,6 @@
 ---
 title: "飞书"
-weight: 22
+weight: 25
 ---
 
 # 飞书渠道

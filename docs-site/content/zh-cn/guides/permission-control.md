@@ -1,6 +1,6 @@
 ---
 title: "Permission Control"
-weight: 40
+weight: 50
 ---
 
 # Permission Control

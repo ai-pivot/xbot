@@ -1,6 +1,6 @@
 ---
 title: "插件系统"
-weight: 40
+weight: 55
 ---
 
 # 插件系统
