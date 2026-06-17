@@ -521,6 +521,21 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		// tools never render in the message area, making TUI look frozen.
 		if !m.typing && m.progressState.current != nil && m.progressState.current.Phase != "done" && m.panelState.mode != "askuser" {
 			m.startAgentTurn()
+		} else if m.typing && m.streamingMsgIdx < 0 {
+			// Compression happened mid-turn: HistoryCompacted cleared messages
+			// and streamingMsgIdx, but typing is still true. Without recreating
+			// the streaming message, subsequent progress/streaming events have
+			// nowhere to render — TUI freezes until restart.
+			m.messages = append(m.messages, cliMessage{
+				role:      "assistant",
+				content:   "",
+				timestamp: time.Now(),
+				isPartial: true,
+				dirty:     true,
+				turnID:    m.agentTurnID,
+			})
+			m.streamingMsgIdx = len(m.messages) - 1
+			m.rc.valid = false
 		}
 		m.updateViewportContent()
 		log.WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")

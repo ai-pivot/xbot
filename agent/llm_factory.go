@@ -44,6 +44,7 @@ type llmEntry struct {
 type LLMFactory struct {
 	configSvc       *sqlite.UserLLMConfigService
 	subscriptionSvc *sqlite.LLMSubscriptionService
+	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
 	configSubsFn    func() []config.SubscriptionConfig
 	settingsSvc     *SettingsService
 
@@ -139,6 +140,13 @@ func (f *LLMFactory) SetGlobalMaxTokens(n int) {
 
 func (f *LLMFactory) SetSubscriptionSvc(svc *sqlite.LLMSubscriptionService) {
 	f.subscriptionSvc = svc
+}
+
+// SetTenantSvc injects the TenantService for per-session model restoration.
+// Used by GetLLMForChat to recover per-session subscription+model from the
+// tenants table when the in-memory cache is empty (e.g. after server restart).
+func (f *LLMFactory) SetTenantSvc(svc *sqlite.TenantService) {
+	f.tenantSvc = svc
 }
 
 func (f *LLMFactory) SetConfigSubs(fn func() []config.SubscriptionConfig) {
@@ -435,13 +443,21 @@ func (f *LLMFactory) createEntryFromSubID(subID, model string) *llmEntry {
 // RefreshSessionEntry re-fetches the subscription for a per-session entry from DB
 // and rebuilds the entry. This must be called at the start of every Run so that
 // stale cached data from a previous Run never survives across message boundaries.
-func (f *LLMFactory) RefreshSessionEntry(senderID, chatID string) {
+//
+// When the per-chat entry does not exist (e.g. after server restart), it is
+// restored from the tenants table using (channel, chatID) — this ensures
+// per-session model choices survive restarts.
+func (f *LLMFactory) RefreshSessionEntry(senderID, chatID, channel string) {
 	if f.subscriptionSvc == nil || chatID == "" {
 		return
 	}
 	key := chatKey(senderID, chatID)
 	e := f.getEntry(key)
 	if e == nil || e.subID == "" {
+		// Cache miss: try restoring from tenants table before giving up.
+		// Without this, sessions that had per-session model switches lose
+		// their model on restart and fall back to the subscription default.
+		f.restoreEntryFromDB(senderID, chatID, channel)
 		return
 	}
 	sub, err := f.subscriptionSvc.Get(e.subID)
@@ -464,6 +480,44 @@ func (f *LLMFactory) RefreshSessionEntry(senderID, chatID string) {
 		f.entries[key] = newEntry
 	}
 	f.mu.Unlock()
+}
+
+// restoreEntryFromDB recovers per-session subscription+model from the tenants
+// table and populates the in-memory cache. Called by RefreshSessionEntry when
+// the per-chat entry is empty (typically after server restart).
+func (f *LLMFactory) restoreEntryFromDB(senderID, chatID, channel string) {
+	if f.tenantSvc == nil || f.subscriptionSvc == nil {
+		return
+	}
+	subID, model, err := f.tenantSvc.GetTenantSubscription(channel, chatID)
+	if err != nil {
+		log.WithError(err).WithField("chat_id", chatID).Debug("restoreEntryFromDB: GetTenantSubscription failed")
+		return
+	}
+	if subID == "" {
+		return // no per-session mapping in DB
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil || sub == nil {
+		log.WithError(err).WithFields(log.Fields{
+			"chat_id": chatID, "sub_id": subID,
+		}).Debug("restoreEntryFromDB: subscription lookup failed")
+		return
+	}
+	effectiveModel := model
+	if effectiveModel == "" {
+		effectiveModel = sub.Model
+	}
+	e := f.createEntryFromSub(sub, effectiveModel)
+	if e != nil {
+		f.setEntry(chatKey(senderID, chatID), e)
+		log.WithFields(log.Fields{
+			"chat_id": chatID,
+			"channel": channel,
+			"sub_id":  subID,
+			"model":   effectiveModel,
+		}).Info("Restored per-session LLM from DB")
+	}
 }
 
 // SwitchSubscription switches a user's active LLM to the specified subscription.

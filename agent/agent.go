@@ -340,6 +340,10 @@ type Agent struct {
 	// channelPromptProviders channel 特化 prompt 提供者列表（由外部注入）
 	channelPromptProviders []ChannelPromptProvider
 
+	// channelPromptMiddleware 持有 pipeline 中的 ChannelPromptMiddleware 引用，
+	// 用于运行时动态添加 provider（通过 AddChannelPromptProvider）。
+	channelPromptMiddleware *ChannelPromptMiddleware
+
 	// RegistryManager for skill/agent sharing and marketplace
 	registryManager *RegistryManager
 
@@ -857,6 +861,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.llmConfigSvc = sqlite.NewUserLLMConfigService(multiSession.DB())
 	a.llmFactory = NewLLMFactory(a.llmConfigSvc, cfg.LLM, cfg.Model)
 	a.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
+	a.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
 
 	// 初始化上下文管理器
 	a.contextManagerConfig = &ContextManagerConfig{
@@ -1375,7 +1380,26 @@ func (a *Agent) SetEventRouter(r *event.Router) {
 // 调用后会重建 pipeline，将 ChannelPromptMiddleware 插入到管道中。
 func (a *Agent) SetChannelPromptProviders(providers ...ChannelPromptProvider) {
 	a.channelPromptProviders = providers
-	a.pipeline.Use(NewChannelPromptMiddleware(providers...))
+	// 移除旧的 middleware，创建新的
+	if a.channelPromptMiddleware != nil {
+		a.pipeline.Remove("channel_prompt")
+	}
+	a.channelPromptMiddleware = NewChannelPromptMiddleware(providers...)
+	a.pipeline.Use(a.channelPromptMiddleware)
+}
+
+// AddChannelPromptProvider 动态添加一个 channel prompt provider（线程安全）。
+// 适用于运行时动态注册（如 channel 插件声明专属 prompt）。
+// 如果同名 provider 已存在，则覆盖更新。
+func (a *Agent) AddChannelPromptProvider(provider ChannelPromptProvider) {
+	a.channelPromptProviders = append(a.channelPromptProviders, provider)
+	if a.channelPromptMiddleware == nil {
+		// 首个 provider：创建 middleware 并插入 pipeline
+		a.channelPromptMiddleware = NewChannelPromptMiddleware(provider)
+		a.pipeline.Use(a.channelPromptMiddleware)
+	} else {
+		a.channelPromptMiddleware.AddProvider(provider)
+	}
 }
 
 // HookManager returns the Agent's shared hook manager for tool execution.
@@ -2735,29 +2759,39 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 }
 
 // bgNotifyLoop routes background notifications from BgTaskManager.NotifyCh.
-// ALL notifications are buffered into bgRunPending. The function NEVER processes
-// them directly — this eliminates the race between injectCLIUserMessage and the
-// agent's reply on asyncCh.
+// ALL notifications are buffered into bgRunPending first.
 //
-// After buffering, the target session's notifyCh is signaled. The session's
-// chatWorker or chatProcessLoop picks up the signal and drains notifications
-// at a safe point (after the turn's reply is sent, or when idle).
+// If the target session has an active chatWorker (registered in bgSessionStates),
+// its notifyCh is signaled — the chatWorker or chatProcessLoop drains notifications
+// at a safe point (after the turn's reply is sent, or when idle). This deferred
+// processing eliminates the race between injectCLIUserMessage and the agent's
+// reply on asyncCh.
+//
+// If the target session has NO active chatWorker (e.g. after service restart, before
+// the first user message creates a chatWorker), notifications are processed directly.
+// This is safe because no Run() is active for the session — there is no concurrent
+// reply on asyncCh to race with. Without this fallback, cron triggers and other bg
+// notifications would silently accumulate in bgRunPending until the first user message.
 func (a *Agent) bgNotifyLoop() {
 	for notif := range a.bgTaskMgr.NotifyCh {
-		// Always buffer — never process directly
+		// Always buffer first
 		a.bgRunPendingMu.Lock()
 		a.bgRunPending = append(a.bgRunPending, notif)
 		a.bgRunPendingMu.Unlock()
 
-		// Signal the target session's chatWorker
 		sessionKey := notif.SessionKey()
 		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+			// Active chatWorker exists — signal it to drain at a safe point
 			ss := state.(*bgSessionState)
 			select {
 			case ss.notifyCh <- struct{}{}:
 			default:
 				// Already signaled — notification will be drained with others
 			}
+		} else {
+			// No active chatWorker (e.g. after restart). No Run() is in progress
+			// for this session, so processing directly is race-free.
+			a.drainAndProcessNotifications(sessionKey)
 		}
 	}
 }

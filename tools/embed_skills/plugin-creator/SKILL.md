@@ -13,7 +13,7 @@ Create and manage xbot plugins.
 - User wants to add custom tools, widgets, context enrichers, or channels
 - User asks about plugin system configuration
 - User wants a plugin that connects to an external service (GitHub App, Telegram bot, etc.)
-- User wants channel plugins that provide their own tools
+- User wants channel plugins that provide their own tools or channel-specific prompts
 
 ## Plugin Types
 
@@ -40,6 +40,7 @@ User wants to...
 ├─ Show info in TUI (git branch, tokens) → script plugin + widget → read script-plugins.md
 ├─ React to tool events (post-edit diff) → script plugin + hook → read script-plugins.md
 ├─ Add a new message channel (Telegram) → stdio channel plugin → read channel-plugins.md
+├─ Channel + custom agent prompt (Telegram formatting rules) → stdio channel + channel_prompt → read channel-plugins.md
 ├─ Channel + custom tools (GitHub App CR) → stdio channel + channel_tools → read channel-tools.md
 └─ Register tools/hooks without channel → stdio plugin + contributes.tools
 ```
@@ -49,7 +50,7 @@ User wants to...
 | File | Content |
 |------|---------|
 | `script-plugins.md` | Script plugin: manifest format, UI slots, triggers, env vars, examples |
-| `channel-plugins.md` | stdio channel plugin: protocol, RPC methods, event types, Python example |
+| `channel-plugins.md` | stdio channel plugin: protocol, RPC methods, event types, **channel prompt**, Python example |
 | `channel-tools.md` | Channel-scoped tools: `channel_tools` protocol, `execute_tool` RPC, complete example |
 
 When you need detailed guidance on a specific plugin type, load the relevant file:
@@ -59,7 +60,7 @@ Skill(name="plugin-creator", file="channel-tools.md")
 
 ## Workflow
 
-1. **Understand requirement**: Widget? Tool? Channel? Channel+Tools?
+1. **Understand requirement**: Widget? Tool? Channel? Channel+Tools? Channel+Prompt?
 2. **Choose plugin type**: script for widgets/hooks, stdio for channels/tools
 3. **Choose plugin location**: `~/.xbot/plugins/<id>/` for user-level
 4. **Create plugin.json**: Ensure directory name matches plugin ID
@@ -102,4 +103,7 @@ tui_control(action="reload_plugins")
 - Plugin must handle both old-style activation (`{"method":"activate"}`) and new-style JSON-RPC events
 - stdio plugins receive `channel_config` event with initial configuration, NOT `channel_start` request
 - stdio plugins send `send_inbound` RPC to push messages, NOT `channel_inbound` async push
+- Channel plugins can declare channel-specific agent prompts via `channel_prompt` message (see channel-plugins.md)
+- Channel plugins can declare channel-scoped tools via `channel_tools` message (see channel-tools.md)
+- Both `channel_prompt` and `channel_tools` support **hot-update**: sending a new message replaces the previous set
 - Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`

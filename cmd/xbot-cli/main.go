@@ -788,7 +788,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 		// Register ChannelProviderFactory for gRPC channel plugins.
 		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
-			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable, ag.Tools()), nil
+			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable, ag.Tools(), func() *agent.Agent { return ag }), nil
 		})
 
 		// Register plugin channels in the Dispatcher (equivalent to registerChannels() in server mode).

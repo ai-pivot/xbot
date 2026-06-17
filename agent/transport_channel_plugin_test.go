@@ -506,3 +506,124 @@ func TestChannelPluginTransport_ChannelInterface(t *testing.T) {
 	// Double Stop (should not panic)
 	transport.Stop()
 }
+
+// TestChannelPluginTransport_HandleChannelPrompt verifies the channel_prompt message handling.
+func TestChannelPluginTransport_HandleChannelPrompt(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+
+	var capturedProvider ChannelPromptProvider
+	transport := NewChannelPluginTransportWithIO("telegram", pio, dispatch, eventCh)
+	transport.onChannelPrompt = func(provider ChannelPromptProvider) {
+		capturedProvider = provider
+	}
+	defer transport.Stop()
+
+	// Simulate receiving a channel_prompt message via handleChannelPrompt directly
+	raw, _ := json.Marshal(map[string]interface{}{
+		"type": "channel_prompt",
+		"system_parts": map[string]string{
+			"05_channel_telegram": "telegram specific rules",
+		},
+	})
+	transport.handleChannelPrompt(json.RawMessage(raw))
+
+	// Verify the callback was called
+	if capturedProvider == nil {
+		t.Fatal("expected OnChannelPrompt callback to be called")
+	}
+	if name := capturedProvider.ChannelPromptName(); name != "telegram" {
+		t.Errorf("expected name 'telegram', got %q", name)
+	}
+
+	// Verify system parts are stored correctly
+	parts := capturedProvider.ChannelSystemParts(context.Background(), "chat1", "user1")
+	if got := parts["05_channel_telegram"]; got != "telegram specific rules" {
+		t.Errorf("expected 'telegram specific rules', got %q", got)
+	}
+}
+
+// TestChannelPluginTransport_HandleChannelPrompt_NoCallback verifies that
+// channel_prompt works without OnChannelPrompt callback set (no panic).
+func TestChannelPluginTransport_HandleChannelPrompt_NoCallback(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
+	defer transport.Stop()
+
+	// Should not panic
+	raw, _ := json.Marshal(map[string]interface{}{
+		"type": "channel_prompt",
+		"system_parts": map[string]string{
+			"05_test": "test rules",
+		},
+	})
+	transport.handleChannelPrompt(json.RawMessage(raw))
+
+	// Verify the provider is accessible and has the parts
+	provider := transport.ChannelPromptProvider()
+	if provider == nil {
+		t.Fatal("expected non-nil ChannelPromptProvider")
+	}
+	parts := provider.ChannelSystemParts(context.Background(), "chat1", "user1")
+	if got := parts["05_test"]; got != "test rules" {
+		t.Errorf("expected 'test rules', got %q", got)
+	}
+}
+
+// TestChannelPluginTransport_ChannelPromptProvider_InitiallyEmpty verifies that
+// ChannelPromptProvider returns nil parts before any channel_prompt message.
+func TestChannelPluginTransport_ChannelPromptProvider_InitiallyEmpty(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
+	defer transport.Stop()
+
+	provider := transport.ChannelPromptProvider()
+	if provider == nil {
+		t.Fatal("expected non-nil ChannelPromptProvider")
+	}
+
+	// Initially empty -> should return nil
+	parts := provider.ChannelSystemParts(context.Background(), "chat1", "user1")
+	if parts != nil {
+		t.Errorf("expected nil parts initially, got %v", parts)
+	}
+}
+
+// TestChannelPluginTransport_HandleChannelPrompt_EmptyParts verifies that
+// sending an empty system_parts doesn't panic.
+func TestChannelPluginTransport_HandleChannelPrompt_EmptyParts(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+
+	transport := NewChannelPluginTransportWithIO("test", pio, dispatch, eventCh)
+	defer transport.Stop()
+
+	// Empty system_parts
+	raw, _ := json.Marshal(map[string]interface{}{
+		"type":         "channel_prompt",
+		"system_parts": map[string]string{},
+	})
+	transport.handleChannelPrompt(json.RawMessage(raw))
+
+	provider := transport.ChannelPromptProvider()
+	parts := provider.ChannelSystemParts(context.Background(), "chat1", "user1")
+	if parts != nil {
+		t.Errorf("expected nil parts for empty declaration, got %v", parts)
+	}
+}

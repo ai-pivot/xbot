@@ -37,6 +37,7 @@ type stdioChannelPluginProvider struct {
 	msgBus      *bus.MessageBus
 	rpcDisp     func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
 	getRegistry func() *tools.Registry // lazy registry getter (resolved after agent init)
+	agentGetter func() *agent.Agent    // lazy agent getter (for prompt registration)
 	xbotHome    string                 // for per-plugin log file redirection
 
 	mu   sync.Mutex
@@ -46,16 +47,18 @@ type stdioChannelPluginProvider struct {
 var _ channel.ChannelProvider = (*stdioChannelPluginProvider)(nil)
 
 // NewStdioChannelPluginProvider creates a stdioChannelPluginProvider with the
-// given declaration, RPC dispatch table, and tool registry. Used by both CLI
-// and server modes. registry may be nil if channel tool registration is not
-// needed.
-func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher, registry *tools.Registry) *stdioChannelPluginProvider {
+// given declaration, RPC dispatch table, tool registry, and agent getter.
+// Used by both CLI and server modes. registry may be nil if channel tool
+// registration is not needed. getAgent may be nil if agent is not yet available
+// (use SetAgentGetter later).
+func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher, registry *tools.Registry, getAgent func() *agent.Agent) *stdioChannelPluginProvider {
 	return &stdioChannelPluginProvider{
 		decl: decl,
 		rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 			return rpcTable.Dispatch(ctx, method, payload)
 		},
 		getRegistry: func() *tools.Registry { return registry },
+		agentGetter: getAgent,
 	}
 }
 
@@ -80,13 +83,24 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 		reg = p.getRegistry()
 	}
 
+	// Set up the OnChannelPrompt callback to register with the Agent.
+	var onChannelPrompt func(agent.ChannelPromptProvider)
+	if p.agentGetter != nil {
+		onChannelPrompt = func(provider agent.ChannelPromptProvider) {
+			if ag := p.agentGetter(); ag != nil {
+				ag.AddChannelPromptProvider(provider)
+			}
+		}
+	}
+
 	transport := agent.NewChannelPluginTransport(agent.ChannelPluginTransportConfig{
-		Name:     p.decl.Name,
-		Stdin:    proc.stdinPipe,
-		Stdout:   proc.stdoutPipe,
-		Dispatch: p.rpcDisp,
-		EventCh:  eventCh,
-		Registry: reg,
+		Name:            p.decl.Name,
+		Stdin:           proc.stdinPipe,
+		Stdout:          proc.stdoutPipe,
+		Dispatch:        p.rpcDisp,
+		EventCh:         eventCh,
+		Registry:        reg,
+		OnChannelPrompt: onChannelPrompt,
 	})
 
 	p.mu.Lock()
@@ -148,6 +162,23 @@ func (p *stdioChannelPluginProvider) GetTransport() *agent.ChannelPluginTranspor
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.conn
+}
+
+// SetAgentGetter sets the lazy agent getter for prompt and other
+// agent-dependent registrations. Should be called before CreateChannel.
+func (p *stdioChannelPluginProvider) SetAgentGetter(getter func() *agent.Agent) {
+	p.agentGetter = getter
+}
+
+// GetChannelPromptProvider returns the ChannelPromptProvider for this channel
+// plugin, or nil if the transport is not yet created.
+func (p *stdioChannelPluginProvider) GetChannelPromptProvider() agent.ChannelPromptProvider {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conn == nil {
+		return nil
+	}
+	return p.conn.ChannelPromptProvider()
 }
 
 // ---------------------------------------------------------------------------

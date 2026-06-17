@@ -112,6 +112,50 @@ All communication is JSON lines over stdin/stdout.
 4. The new process receives JSON-RPC over stdin/stdout
 5. First event is `channel_config` with the channel configuration
 6. Plugin starts its HTTP server/bot framework and begins forwarding messages
+7. (Optional) Plugin sends `channel_prompt` to declare channel-specific system prompt
+8. (Optional) Plugin sends `channel_tools` to declare channel-scoped tools
+
+## Channel Prompt (Plugin → xbot)
+
+Channel plugins can declare a **channel-specific system prompt** that is automatically injected
+into agent sessions for this channel — just like built-in channels (feishu, cli).
+
+### Protocol
+
+After receiving `channel_config`, send a `channel_prompt` message on stdout:
+
+```json
+{
+  "type": "channel_prompt",
+  "system_parts": {
+    "05_channel_telegram": "# Telegram Channel Instructions\n\n- Keep replies concise for mobile readability.\n- Use Telegram-flavored Markdown for formatting.\n- Never send messages longer than 4096 characters.\n- Use inline buttons sparingly."
+  }
+}
+```
+
+**Key rules:**
+- Key names should use the `"05_channel_xxx"` prefix to ensure correct ordering in the final
+  system prompt (after `"00_base"`, before `"10_skills"`).
+- **Hot-update**: Sending a new `channel_prompt` message replaces the entire prompt.
+- Multiple keys are supported — they are merged into the system prompt in key-sorted order.
+- The prompt is **injected automatically** into every agent session of this channel.
+- Omit this message entirely if your channel doesn't need custom agent instructions.
+
+### How It Works
+
+```
+1. Channel process starts → receives channel_config
+2. Plugin sends channel_prompt with system_parts
+3. xbot registers a ChannelPromptProvider for this channel
+4. When agent processes a message from this channel:
+   → ChannelPromptMiddleware matches channel name
+   → injects system_parts into the system prompt
+   → agent sees channel-specific instructions
+```
+
+## Channel Tools
+
+Channel plugins can also declare **channel-scoped tools** — see `channel-tools.md` for details.
 
 ## config_schema Types
 
@@ -192,5 +236,14 @@ for line in sys.stdin:
     elif msg.get("type") == "channel_config":
         config = json.loads(msg.get("metadata", {}).get("config", "{}"))
         port = int(config.get("port", "9876"))
+
+        # Optional: declare channel-specific system prompt
+        write_stdout({
+            "type": "channel_prompt",
+            "system_parts": {
+                "05_channel_mychannel": "# MyChannel Instructions\n\n- Keep replies concise.\n- Format with Markdown."
+            }
+        })
+
         HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 ```
