@@ -52,8 +52,7 @@ progress — but don't poll repeatedly.
 |------|-------------|
 | `context_edit` | Edit conversation context: list turns, delete turn/message, truncate, regex replace. |
 | `ChatHistory` | Retrieve recent messages from group chats. |
-| `recall` | Retrieve offloaded or masked observation content with pagination. |
-| `recall_masked` | Retrieve masked observations only. List all masked items or retrieve by ID. |
+| `recall_masked` | Retrieve masked observations. List all masked items or retrieve by ID. |
 | `offload_recall` | Retrieve offloaded tool result content by offload ID, with `offset` and `limit` pagination. |
 
 {{< hint type=info >}}

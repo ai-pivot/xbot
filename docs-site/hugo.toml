@@ -72,6 +72,14 @@ enableGitInfo = true
     name = "Architecture"
     pageRef = "/architecture"
     weight = 50
+  [[languages.en.menu.main]]
+    name = "FAQ"
+    pageRef = "/faq"
+    weight = 55
+  [[languages.en.menu.main]]
+    name = "Comparison"
+    pageRef = "/comparison"
+    weight = 58
 
 # ──────────────────────────────────────────────
 # Chinese (中文, served at /zh-cn/)
@@ -111,3 +119,11 @@ enableGitInfo = true
     name = "架构"
     pageRef = "/architecture"
     weight = 50
+  [[languages.zh-cn.menu.main]]
+    name = "常见问题"
+    pageRef = "/faq"
+    weight = 55
+  [[languages.zh-cn.menu.main]]
+    name = "功能对比"
+    pageRef = "/comparison"
+    weight = 58

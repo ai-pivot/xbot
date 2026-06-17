@@ -135,4 +135,4 @@ Configure hooks in `~/.xbot/hooks.json`:
 }
 ```
 
-See the [Hooks system design](/design/hooks-system/) for full details on hook configuration.
+See the [Hooks](/features/hooks/) page for full details on hook configuration.
