@@ -479,7 +479,8 @@ func Run(args []string) error {
 	var registryPtr *tools.Registry // resolved after InitServer (same pattern as rpcTablePtr)
 	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
 		return &stdioChannelPluginProvider{
-			decl: decl,
+			decl:     decl,
+			xbotHome: xbotDir,
 			rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 				if rpcTablePtr == nil {
 					return nil, fmt.Errorf("rpc table not available")

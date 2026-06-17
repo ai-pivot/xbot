@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -36,6 +37,7 @@ type stdioChannelPluginProvider struct {
 	msgBus      *bus.MessageBus
 	rpcDisp     func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
 	getRegistry func() *tools.Registry // lazy registry getter (resolved after agent init)
+	xbotHome    string                  // for per-plugin log file redirection
 
 	mu   sync.Mutex
 	conn *agent.ChannelPluginTransport
@@ -65,7 +67,7 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 	p.msgBus = msgBus
 
 	// Spawn a dedicated process for the channel.
-	proc, err := spawnChannelProcess(p.decl)
+	proc, err := spawnChannelProcess(p.decl, p.xbotHome)
 	if err != nil {
 		return nil, fmt.Errorf("spawn channel process: %w", err)
 	}
@@ -158,7 +160,7 @@ type channelProcess struct {
 	stdoutPipe io.Reader
 }
 
-func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, error) {
+func spawnChannelProcess(decl *plugin.ChannelProviderDecl, xbotHome string) (*channelProcess, error) {
 	var cmd *exec.Cmd
 	if decl.Executable != "" {
 		cmd = exec.Command(decl.Executable, decl.Args...)
@@ -170,7 +172,18 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, err
 		cmd = exec.Command(parts[0], parts[1:]...)
 	}
 	cmd.Dir = decl.Dir
-	cmd.Stderr = os.Stderr // capture stderr for debugging
+
+	// Redirect stderr to per-plugin log file instead of os.Stderr.
+	// This keeps channel plugin process output (DEBUG logs, HTTP traces, etc.)
+	// out of the main xbot log — consistent with Go plugin log isolation.
+	stderrWriter, err := openPluginStderrWriter(decl.Name, xbotHome)
+	if err != nil {
+		log.WithField("channel", decl.Name).WithError(err).
+			Warn("Failed to open plugin log file for stderr, falling back to os.Stderr")
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stderr = stderrWriter
+	}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -192,4 +205,25 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, err
 		stdinPipe:  stdinPipe,
 		stdoutPipe: stdoutPipe,
 	}, nil
+}
+
+// openPluginStderrWriter creates (or opens) a log file for the channel plugin
+// process's stderr. The file is at <xbotHome>/plugins/<channelName>/logs/stderr.log.
+// Returns an *os.File that the caller assigns to cmd.Stderr. The OS will close
+// the file when the process exits.
+// If xbotHome is empty, returns an error so the caller falls back to os.Stderr.
+func openPluginStderrWriter(channelName, xbotHome string) (*os.File, error) {
+	if xbotHome == "" {
+		return nil, fmt.Errorf("xbotHome is empty")
+	}
+	dir := filepath.Join(xbotHome, "plugins", channelName, "logs")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("create plugin log dir: %w", err)
+	}
+	logPath := filepath.Join(dir, "stderr.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open plugin stderr log: %w", err)
+	}
+	return f, nil
 }

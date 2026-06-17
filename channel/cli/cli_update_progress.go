@@ -585,11 +585,34 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
+				// Capture streamed content as fallback when structured Thinking
+				// is empty. This happens when Ctrl+C interrupts mid-stream (LLM
+				// hasn't finished, recordAssistantMsg hasn't set ThinkingContent).
+				// prev holds the live progress the user was watching — its
+				// StreamContent/Thinking are correct for the current iteration.
+				// This preserves the "what you see is what stays" principle.
+				if snap.Thinking == "" && prev != nil {
+					if prev.Thinking != "" {
+						snap.Thinking = prev.Thinking
+					} else if prev.StreamContent != "" {
+						snap.Thinking = prev.StreamContent
+					}
+				}
 				if m.reasoningByIter != nil {
 					snap.Reasoning = m.reasoningByIter[m.progressState.lastIter]
 				}
 				if snap.Reasoning == "" {
 					snap.Reasoning = m.lastReasoning
+				}
+				if snap.Reasoning == "" && prev != nil {
+					snap.Reasoning = prev.Reasoning
+				}
+				// Capture streamed reasoning as fallback (LLM was still streaming
+				// reasoning when Ctrl+C interrupted). Safe in cancel path: prev is
+				// the current iteration's live progress — ReasoningStreamContent is
+				// what the user saw on screen.
+				if snap.Reasoning == "" && prev != nil && prev.ReasoningStreamContent != "" {
+					snap.Reasoning = prev.ReasoningStreamContent
 				}
 				if snap.Reasoning == "" {
 					snap.Reasoning = msg.payload.Reasoning

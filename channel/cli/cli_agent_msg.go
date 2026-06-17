@@ -609,9 +609,22 @@ func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {
 	if reasoning == "" {
 		reasoning = m.lastReasoning
 	}
+	// Capture streamed reasoning as fallback (LLM was still streaming when
+	// Ctrl+C interrupted). m.progressState.current is the live progress the
+	// user was watching — ReasoningStreamContent is what they saw on screen.
+	if reasoning == "" && m.progressState.current.ReasoningStreamContent != "" {
+		reasoning = m.progressState.current.ReasoningStreamContent
+	}
+	// Capture streamed content as fallback when structured Thinking is empty.
+	// This preserves partial LLM output that was streamed but not yet finalized
+	// by recordAssistantMsg when Ctrl+C interrupted.
+	content := m.progressState.current.Thinking
+	if content == "" && m.progressState.current.StreamContent != "" {
+		content = m.progressState.current.StreamContent
+	}
 	snap := cliIterationSnapshot{
 		Iteration:   iterNum,
-		Thinking:    m.progressState.current.Thinking,
+		Thinking:    content,
 		Reasoning:   reasoning,
 		Tools:       tools,
 		ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),

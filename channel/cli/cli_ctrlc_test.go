@@ -490,3 +490,419 @@ func TestCtrlC_CancelAckNoQueueNoFlushFlag(t *testing.T) {
 		t.Error("needFlushQueue should remain false when queue is empty")
 	}
 }
+
+// TestCtrlC_CancelPathCapturesStreamContent verifies that when Ctrl+C
+// interrupts mid-stream (LLM hasn't finished, structured Thinking/Reasoning
+// not yet set), the cancel path in handleProgressDone captures StreamContent
+// and ReasoningStreamContent from the live progress (prev) into the snapshot.
+// Without this fix, the last reasoning block and content disappear after
+// Ctrl+C because they were only available via stream fields.
+func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn() // increments agentTurnID to 1
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	oldTurnID := model.agentTurnID
+	model.cancelTargetTurnID = oldTurnID
+
+	// Set up streaming message (empty content — LLM was still streaming)
+	model.messages[model.streamingMsgIdx] = cliMessage{
+		role:      "assistant",
+		content:   "", // empty: content was streamed via StreamContent, not via cliOutboundMsg
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    oldTurnID,
+	}
+
+	// Previous iteration already snapshotted (structured data available)
+	model.progressState.iterations = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Reasoning: "previous reasoning",
+			Thinking:  "previous content",
+			Tools:     []protocol.ToolProgress{{Name: "Read", Label: "file.go", Status: "done", Elapsed: 100}},
+		},
+	}
+	model.progressState.lastIter = 2
+
+	// Current iteration (iteration 2) is being STREAMED.
+	// Structured Thinking/Reasoning are EMPTY (recordAssistantMsg not called yet).
+	// Stream content is what the user sees on screen.
+	model.progressState.current = &protocol.ProgressEvent{
+		Phase:                  "thinking",
+		Iteration:              2,
+		StreamContent:          "I'm still generating this response...",
+		ReasoningStreamContent: "Let me think about this problem...",
+		// Thinking and Reasoning are EMPTY — LLM hasn't finished
+	}
+
+	// PhaseDone arrives with turnCancelled=true (Ctrl+C during streaming)
+	model.turnCancelled = true
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		// PhaseDone's Thinking/Reasoning are also empty (LLM didn't finish)
+	})
+
+	// Find the assistant message and verify iterations
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should exist after cancel")
+	}
+
+	// Should have 2 iterations: iter1 (pre-existing snapshot) + iter2 (cancel snapshot)
+	if len(assistantMsg.iterations) != 2 {
+		t.Fatalf("expected 2 baked iterations, got %d", len(assistantMsg.iterations))
+	}
+
+	// iter2 (the one being streamed when Ctrl+C hit) must have captured stream content
+	iter2 := assistantMsg.iterations[1]
+	if iter2.Iteration != 2 {
+		t.Fatalf("expected iteration 2, got %d", iter2.Iteration)
+	}
+	if iter2.Thinking != "I'm still generating this response..." {
+		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
+	}
+	if iter2.Reasoning != "Let me think about this problem..." {
+		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
+	}
+}
+
+// TestCtrlC_CancelAckCapturesStreamContent verifies that when cancel ack
+// arrives BEFORE PhaseDone, cancelledTurnIterations() captures StreamContent
+// and ReasoningStreamContent from the live progress (m.progressState.current).
+func TestCtrlC_CancelAckCapturesStreamContent(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	oldTurnID := model.agentTurnID
+	model.cancelTargetTurnID = oldTurnID
+	model.streamingMsgIdx = len(model.messages)
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		content:   "", // empty: content was streamed via StreamContent
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    oldTurnID,
+	})
+
+	// Previous iteration snapshot exists
+	model.progressState.iterations = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Reasoning: "previous reasoning",
+			Tools:     []protocol.ToolProgress{{Name: "Read", Label: "file.go", Status: "done"}},
+		},
+	}
+	model.progressState.lastIter = 2
+
+	// Current iteration (iteration 2) is being STREAMED — no structured data yet
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:              2,
+		StreamContent:          "partial streamed output",
+		ReasoningStreamContent: "partial streamed reasoning",
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "go test", Status: "running"},
+		},
+	}
+
+	// Cancel ack arrives BEFORE PhaseDone
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// Find the assistant message
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should exist after cancel")
+	}
+
+	// Should have 2 iterations: iter1 + iter2 (from cancelledTurnIterations)
+	if len(assistantMsg.iterations) != 2 {
+		t.Fatalf("expected 2 iterations, got %d", len(assistantMsg.iterations))
+	}
+
+	// iter2 must have captured stream content
+	iter2 := assistantMsg.iterations[1]
+	if iter2.Thinking != "partial streamed output" {
+		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
+	}
+	if iter2.Reasoning != "partial streamed reasoning" {
+		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
+	}
+}
+
+// TestCtrlC_PhaseDoneBakedIterationsNotOverwrittenByCancelAck verifies the
+// double-path safety: PhaseDone cancel path bakes iterations, then cancel ack
+// arrives and must NOT overwrite them. This is the most critical race scenario.
+func TestCtrlC_PhaseDoneBakedIterationsNotOverwrittenByCancelAck(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	oldTurnID := model.agentTurnID
+	model.cancelTargetTurnID = oldTurnID
+
+	// Streaming message with partial content (simulating IsPartial outbound)
+	model.messages[model.streamingMsgIdx] = cliMessage{
+		role:      "assistant",
+		content:   "partial text from outbound",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    oldTurnID,
+	}
+
+	// Two iterations: iter1 has structured data, iter2 is being streamed
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 1, Thinking: "iter1 content", Reasoning: "iter1 reasoning",
+			Tools: []protocol.ToolProgress{{Name: "Read", Label: "a.go", Status: "done"}}},
+	}
+	model.progressState.lastIter = 2
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:              2,
+		StreamContent:          "streamed iter2 content",
+		ReasoningStreamContent: "streamed iter2 reasoning",
+	}
+
+	// Step 1: PhaseDone arrives with cancel (Ctrl+C during streaming)
+	model.turnCancelled = true
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+	})
+
+	// Verify iterations are baked with stream content
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should exist after PhaseDone cancel")
+	}
+	bakedCount := len(assistantMsg.iterations)
+	if bakedCount != 2 {
+		t.Fatalf("expected 2 baked iterations after PhaseDone, got %d", bakedCount)
+	}
+	// iter2 must have captured stream content
+	if assistantMsg.iterations[1].Thinking != "streamed iter2 content" {
+		t.Errorf("iter2 Thinking = %q, want streamed content", assistantMsg.iterations[1].Thinking)
+	}
+
+	// Step 2: Cancel ack arrives — must NOT overwrite baked iterations
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  "partial text from outbound",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// Find assistant message again (index may have shifted)
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == oldTurnID {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant message should still exist after cancel ack")
+	}
+	if len(assistantMsg.iterations) != bakedCount {
+		t.Errorf("cancel ack overwrote iterations: got %d, want %d",
+			len(assistantMsg.iterations), bakedCount)
+	}
+	// Stream-captured content must survive cancel ack
+	if assistantMsg.iterations[1].Thinking != "streamed iter2 content" {
+		t.Errorf("iter2 Thinking corrupted by cancel ack: got %q",
+			assistantMsg.iterations[1].Thinking)
+	}
+}
+
+// TestCtrlC_CancelledTurnIterationsNilSafety verifies that
+// cancelledTurnIterations() does NOT panic when progressState.current is nil
+// (after endAgentTurn cleared it). It should return whatever iterations are
+// available from pendingToolSummary or progressState.iterations.
+func TestCtrlC_CancelledTurnIterationsNilSafety(t *testing.T) {
+	model := initTestModel()
+
+	// Simulate post-endAgentTurn state: everything cleared
+	model.progressState.current = nil
+	model.progressState.iterations = nil
+	model.pendingToolSummary = nil
+
+	// Should return empty slice, NOT panic
+	iters := model.cancelledTurnIterations()
+	if len(iters) != 0 {
+		t.Errorf("expected empty iterations when all state cleared, got %d", len(iters))
+	}
+
+	// Now with pendingToolSummary set (simulating pre-PhaseDone cancel ack)
+	model.pendingToolSummary = &cliMessage{
+		iterations: []cliIterationSnapshot{
+			{Iteration: 1, Thinking: "from PTS"},
+		},
+	}
+	iters = model.cancelledTurnIterations()
+	if len(iters) != 1 {
+		t.Fatalf("expected 1 iteration from pendingToolSummary, got %d", len(iters))
+	}
+	if iters[0].Thinking != "from PTS" {
+		t.Errorf("expected 'from PTS', got %q", iters[0].Thinking)
+	}
+}
+
+// TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent verifies that the
+// NORMAL (non-cancel) PhaseDone path does NOT use stream content as fallback.
+// This is intentional: in normal completion, ThinkingContent is set by
+// recordAssistantMsg and carries the authoritative content. Using stream
+// content in the normal path risks cross-iteration contamination.
+func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	turnID := model.agentTurnID
+	model.messages[model.streamingMsgIdx] = cliMessage{
+		role:      "assistant",
+		content:   "",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    turnID,
+	}
+
+	// Set up: iteration 2 with EMPTY Thinking but non-empty StreamContent
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 1, Thinking: "iter1", Tools: []protocol.ToolProgress{{Name: "Read", Label: "a.go", Status: "done"}}},
+	}
+	model.progressState.lastIter = 2
+	model.progressState.current = &protocol.ProgressEvent{
+		Phase:         "tool_exec",
+		Iteration:     2,
+		StreamContent: "this should NOT be captured in normal path",
+		Thinking:      "", // empty: simulates progressCh coalescing
+	}
+
+	// Normal PhaseDone (turnCancelled is FALSE)
+	// Include a completed tool so the iter2 snapshot is actually created
+	// (empty Thinking + empty Reasoning + no tools → snapshot is skipped)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		Thinking:  "", // also empty in payload
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "go test", Status: "done", Elapsed: 100, Iteration: 2},
+		},
+	})
+
+	// Find the pendingToolSummary iterations (stored for handleAgentMessage)
+	if model.pendingToolSummary == nil {
+		t.Fatal("pendingToolSummary should be set after normal PhaseDone")
+	}
+	iters := model.pendingToolSummary.iterations
+	if len(iters) < 2 {
+		t.Fatalf("expected at least 2 iterations, got %d", len(iters))
+	}
+
+	// The last iteration's Thinking should be EMPTY, not stream content.
+	// This proves the normal path does NOT capture stream content.
+	lastIter := iters[len(iters)-1]
+	if lastIter.Thinking == "this should NOT be captured in normal path" {
+		t.Error("normal PhaseDone path captured StreamContent — this risks cross-iteration contamination")
+	}
+}
+
+// TestCtrlC_RenderNoDuplicationWithStreamContent verifies that rendering
+// after Ctrl+C does NOT produce duplicate content when both the streaming
+// message content and the last iteration's Thinking carry similar text.
+// renderTurnBody's dedup (last.Thinking == fallbackContent) must catch this.
+func TestCtrlC_RenderNoDuplicationWithStreamContent(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	turnID := model.agentTurnID
+	streamText := "Hello world response"
+
+	// Streaming message has content from IsPartial outbound
+	model.messages[model.streamingMsgIdx] = cliMessage{
+		role:      "assistant",
+		content:   streamText,
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    turnID,
+	}
+
+	// Cancel path captures StreamContent (same text) into snapshot Thinking
+	model.progressState.lastIter = 1
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:     1,
+		StreamContent: streamText, // same as streaming message content
+		Thinking:      "",         // structured empty
+	}
+
+	model.cancelTargetTurnID = turnID
+	model.turnCancelled = true
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1,
+	})
+
+	// Cancel ack finalizes the message
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  streamText,
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// Find the assistant message
+	var msg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == turnID {
+			msg = &model.messages[i]
+			break
+		}
+	}
+	if msg == nil {
+		t.Fatal("assistant message should exist")
+	}
+
+	// Render the message body
+	body := model.renderTurnBody(msg.iterations, nil, 76, msg.content)
+
+	// The streamText should appear exactly ONCE in the rendered output.
+	// Count occurrences (as rendered text, not raw — glamour may add formatting)
+	// We check for the plain text presence without ANSI codes.
+	plain := stripANSI(body)
+	count := strings.Count(plain, "Hello world response")
+	if count != 1 {
+		t.Errorf("streamText should appear exactly once in rendered output, got %d times.\nRendered:\n%s", count, plain)
+	}
+}
