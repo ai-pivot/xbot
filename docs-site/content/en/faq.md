@@ -142,6 +142,15 @@ This works for all channels (Feishu, QQ, NapCat).
 Open the sidebar (it's always visible by default). Click any session to
 switch. Or use `/sessions` to list, `/su` to switch, `/new` to create.
 
+### Which model should I use?
+
+- **Complex reasoning** (architecture, debugging): GPT-4o, Claude Sonnet/Opus
+- **General work** (writing, editing): GPT-4o-mini, Claude Haiku, DeepSeek
+- **Quick lookups** (simple Q&A): Any fast model works
+- **Budget-conscious**: DeepSeek, Qwen, or local models via Ollama
+
+Switch models per-session with `Ctrl+L`, or globally with `Ctrl+N`.
+
 ### How do I change the theme?
 
 `Ctrl+K → Theme`, or type `/palette theme`. You can also create custom

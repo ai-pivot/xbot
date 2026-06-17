@@ -137,6 +137,15 @@ make build
 打开侧边栏（默认始终可见），点击任意会话切换。或用 `/sessions` 列出，
 `/su` 切换，`/new` 新建。
 
+### 应该用哪个模型？
+
+- **复杂推理**（架构、调试）：GPT-4o、Claude Sonnet/Opus
+- **一般工作**（写作、编辑）：GPT-4o-mini、Claude Haiku、DeepSeek
+- **快速查找**（简单问答）：任何快速模型都可以
+- **预算敏感**：DeepSeek、通义千问或通过 Ollama 的本地模型
+
+用 `Ctrl+L` 按会话切换模型，或用 `Ctrl+N` 全局切换。
+
 ### 如何更换主题？
 
 `Ctrl+K → Theme`，或输入 `/palette theme`。也可以创建自定义主题。
