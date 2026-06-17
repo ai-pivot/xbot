@@ -339,39 +339,6 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 		}
 	}
 
-	// Per-chat cache miss → restore from tenants table (survives server restart).
-	// Without this, sessions that had per-session model switches (Ctrl+L) lose
-	// their model on restart and fall back to the subscription default model —
-	// causing tokenizer mismatches and incorrect token accounting.
-	if f.tenantSvc != nil && f.subscriptionSvc != nil {
-		if subID, model, _ := f.tenantSvc.GetTenantSubscription("cli", chatID); subID != "" {
-			sub, err := f.subscriptionSvc.Get(subID)
-			if err == nil && sub != nil {
-				effectiveModel := model
-				if effectiveModel == "" {
-					effectiveModel = sub.Model
-				}
-				e := f.createEntryFromSub(sub, effectiveModel)
-				if e != nil {
-					f.setEntry(key, e)
-					maxCtx := f.resolveSubContext(effectiveModel, e)
-					f.mu.RLock()
-					if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
-						maxCtx = pcCtx
-					}
-					f.mu.RUnlock()
-					log.WithFields(log.Fields{
-						"chat_id":  chatID,
-						"sub_id":   subID,
-						"model":    effectiveModel,
-						"restored": true,
-					}).Info("Restored per-session LLM from DB")
-					return e.client, e.model, maxCtx, e.thinkingMode, e.maxOutputTokens
-				}
-			}
-		}
-	}
-
 	// Per-chat max_context override without per-chat subscription
 	f.mu.RLock()
 	if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
@@ -476,13 +443,21 @@ func (f *LLMFactory) createEntryFromSubID(subID, model string) *llmEntry {
 // RefreshSessionEntry re-fetches the subscription for a per-session entry from DB
 // and rebuilds the entry. This must be called at the start of every Run so that
 // stale cached data from a previous Run never survives across message boundaries.
-func (f *LLMFactory) RefreshSessionEntry(senderID, chatID string) {
+//
+// When the per-chat entry does not exist (e.g. after server restart), it is
+// restored from the tenants table using (channel, chatID) — this ensures
+// per-session model choices survive restarts.
+func (f *LLMFactory) RefreshSessionEntry(senderID, chatID, channel string) {
 	if f.subscriptionSvc == nil || chatID == "" {
 		return
 	}
 	key := chatKey(senderID, chatID)
 	e := f.getEntry(key)
 	if e == nil || e.subID == "" {
+		// Cache miss: try restoring from tenants table before giving up.
+		// Without this, sessions that had per-session model switches lose
+		// their model on restart and fall back to the subscription default.
+		f.restoreEntryFromDB(senderID, chatID, channel)
 		return
 	}
 	sub, err := f.subscriptionSvc.Get(e.subID)
@@ -505,6 +480,44 @@ func (f *LLMFactory) RefreshSessionEntry(senderID, chatID string) {
 		f.entries[key] = newEntry
 	}
 	f.mu.Unlock()
+}
+
+// restoreEntryFromDB recovers per-session subscription+model from the tenants
+// table and populates the in-memory cache. Called by RefreshSessionEntry when
+// the per-chat entry is empty (typically after server restart).
+func (f *LLMFactory) restoreEntryFromDB(senderID, chatID, channel string) {
+	if f.tenantSvc == nil || f.subscriptionSvc == nil {
+		return
+	}
+	subID, model, err := f.tenantSvc.GetTenantSubscription(channel, chatID)
+	if err != nil {
+		log.WithError(err).WithField("chat_id", chatID).Debug("restoreEntryFromDB: GetTenantSubscription failed")
+		return
+	}
+	if subID == "" {
+		return // no per-session mapping in DB
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil || sub == nil {
+		log.WithError(err).WithFields(log.Fields{
+			"chat_id": chatID, "sub_id": subID,
+		}).Debug("restoreEntryFromDB: subscription lookup failed")
+		return
+	}
+	effectiveModel := model
+	if effectiveModel == "" {
+		effectiveModel = sub.Model
+	}
+	e := f.createEntryFromSub(sub, effectiveModel)
+	if e != nil {
+		f.setEntry(chatKey(senderID, chatID), e)
+		log.WithFields(log.Fields{
+			"chat_id": chatID,
+			"channel": channel,
+			"sub_id":  subID,
+			"model":   effectiveModel,
+		}).Info("Restored per-session LLM from DB")
+	}
 }
 
 // SwitchSubscription switches a user's active LLM to the specified subscription.

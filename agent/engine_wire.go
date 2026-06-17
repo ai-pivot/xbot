@@ -90,7 +90,7 @@ func (a *Agent) buildBaseRunConfig(
 	// may carry stale PerModelConfigs. The Ctrl+C path clears the entry,
 	// but LLM error aborts don't — this caused sessions to keep using old
 	// max_context values after subscription switches.
-	a.llmFactory.RefreshSessionEntry(senderID, chatID)
+	a.llmFactory.RefreshSessionEntry(senderID, chatID, channel)
 
 	llmClient, model, userMaxCtx, thinkingMode, maxOutputTokens := a.llmFactory.GetLLMForChat(senderID, chatID)
 
