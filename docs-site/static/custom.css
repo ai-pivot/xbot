@@ -6,6 +6,11 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   max-width: 100%;
   height: auto;
+  transition: box-shadow 0.2s;
+}
+
+.gdoc-markdown p img:hover {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
 }
 
 /* ── Better table styling ── */
@@ -13,6 +18,8 @@
   border-collapse: collapse;
   width: 100%;
   margin: 1rem 0;
+  overflow-x: auto;
+  display: block;
 }
 
 .gdoc-markdown table th,
@@ -26,10 +33,18 @@
   font-weight: 600;
 }
 
+.gdoc-markdown table tr:hover td {
+  background: var(--color-gray-surface, #f9f9f9);
+}
+
 /* ── Code block improvements ── */
 .gdoc-markdown pre {
   border-radius: 6px;
   border: 1px solid var(--color-gray-border, #e0e0e0);
+}
+
+.gdoc-markdown code {
+  border-radius: 3px;
 }
 
 /* ── Hint/notice boxes ── */
@@ -46,6 +61,7 @@
 /* ── Better link styling ── */
 .gdoc-markdown a {
   text-decoration: none;
+  transition: color 0.15s;
 }
 
 .gdoc-markdown a:hover {
@@ -62,6 +78,10 @@
   .gdoc-markdown table th {
     background: var(--color-gray-secondary-dark, #2a2a2a);
   }
+
+  .gdoc-markdown table tr:hover td {
+    background: var(--color-gray-surface-dark, #333);
+  }
 }
 
 /* ── Column layout spacing ── */
@@ -75,9 +95,34 @@
   padding: 0.4rem 1rem;
   border-radius: 6px;
   font-weight: 500;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, transform 0.1s;
 }
 
 .gdoc-markdown .gdoc-button:hover {
   opacity: 0.85;
+}
+
+.gdoc-markdown .gdoc-button:active {
+  transform: scale(0.97);
+}
+
+/* ── Heading anchor improvements ── */
+.gdoc-markdown h2,
+.gdoc-markdown h3 {
+  scroll-margin-top: 4rem;
+}
+
+/* ── Blockquote styling ── */
+.gdoc-markdown blockquote {
+  border-left: 3px solid var(--color-accent, #4a9eff);
+  padding-left: 1rem;
+  margin-left: 0;
+  color: var(--color-gray-font, #666);
+}
+
+/* ── HR styling ── */
+.gdoc-markdown hr {
+  border: none;
+  border-top: 1px solid var(--color-gray-border, #e0e0e0);
+  margin: 2rem 0;
 }
