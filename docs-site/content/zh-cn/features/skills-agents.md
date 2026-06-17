@@ -207,6 +207,23 @@ xbot 支持技能和 Agent 的发布、浏览和安装：
 | `/publish` | 发布自己的 skill 或 agent |
 | `/unpublish` | 取消发布 |
 
+## 技能与 Agent 创意
+
+**技能创意：**
+- 团队代码审查清单
+- 环境特定的部署检查清单
+- 代码库 API 文档生成器
+- 新成员入职指南
+- 常见错误模式的调试工作流
+
+**Agent 创意：**
+- `security-reviewer` — 分析代码安全问题
+- `test-writer` — 为新代码生成单元测试
+- `doc-writer` — 从代码创建文档
+- `data-analyst` — 分析 CSV/JSON 数据文件
+
+让 Agent："为[你的工作流]创建一个技能" 或 "创建一个[角色] agent"。
+
 ## 参见
 - [内置工具](/zh-cn/features/tools/) — 所有可用工具
 - [MCP](/zh-cn/features/mcp/) — 外部工具集成
