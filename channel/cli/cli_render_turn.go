@@ -144,6 +144,9 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 		label = truncateToWidth(label, maxLabelW)
 		var tag string
 		switch tool.Status {
+		case "generating":
+			frame := splashFrames[m.ticker.frame%len(splashFrames)]
+			tag = s.ProgressRunning.Render(frame + " " + label + " ⋯")
 		case "error":
 			tag = s.ProgressError.Render("✗ " + label)
 		case "done":
@@ -306,9 +309,9 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		})
 	}
 
-	// Combine ActiveTools (active/done/error) and CompletedTools.
+	// Combine StreamingTools (generating), ActiveTools (active/done/error), and CompletedTools.
 	// Deduplicate by Name+Label to prevent the same tool appearing twice
-	// when it transitions from ActiveTools(done) to CompletedTools across frames.
+	// when it transitions across phases (generating → active → done → completed).
 	var tools []protocol.ToolProgress
 	seen := make(map[string]bool)
 	addTool := func(t protocol.ToolProgress) {
@@ -318,6 +321,12 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		}
 		seen[key] = true
 		tools = append(tools, t)
+	}
+	// StreamingTools: LLM is still generating tool call arguments. These appear
+	// before any structured ActiveTools — show them first with a distinct spinner.
+	for _, tool := range p.StreamingTools {
+		addTool(tool)
+		hasSpinner = true
 	}
 	for _, tool := range p.ActiveTools {
 		if tool.Status == "running" || tool.Status == "active" || tool.Status == "done" || tool.Status == "error" {
@@ -370,6 +379,16 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 		}
 		label = truncateToWidth(label, maxLabelW)
 		switch tool.Status {
+		case "generating":
+			// LLM is still streaming tool call arguments. Use a braille spinner
+			// (distinct from orbitFrames used for executing tools) to convey
+			// "parameters generating…" like Cursor's early tool detection.
+			frame := splashFrames[m.ticker.frame%len(splashFrames)]
+			fmt.Fprintf(&sb, "  %s %s %s %s\n",
+				s.ProgressDim.Render("·"),
+				s.ProgressRunning.Render(frame),
+				s.ProgressRunning.Render(label),
+				s.ProgressDim.Render("⋯"))
 		case "error":
 			sb.WriteString("  ")
 			sb.WriteString(s.ProgressDim.Render("·"))

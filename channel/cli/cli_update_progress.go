@@ -216,12 +216,12 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.splashState.suPhaseConfirmed = true
 	}
 
-	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc) only carry
-	// stream content fields. Merge into existing progress instead of replacing to
+	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc/StreamToolCallFunc)
+	// only carry stream fields. Merge into existing progress instead of replacing to
 	// preserve tool/iteration state.
 	isStreamOnly := msg.payload != nil &&
 		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "")
+		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" || len(msg.payload.StreamingTools) > 0)
 	if isStreamOnly {
 		if m.progressState.current != nil {
 			if msg.payload.StreamContent != "" {
@@ -229,6 +229,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			}
 			if msg.payload.ReasoningStreamContent != "" {
 				m.progressState.current.ReasoningStreamContent = msg.payload.ReasoningStreamContent
+			}
+			if len(msg.payload.StreamingTools) > 0 {
+				m.progressState.current.StreamingTools = msg.payload.StreamingTools
 			}
 			// Refresh lastTokenUsage from current progress so the context bar
 			// stays visible even when structured events are lost to progressCh

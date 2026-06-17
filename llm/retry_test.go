@@ -578,7 +578,7 @@ func TestRetryLLM_GenerateStreamAndCollect_SuccessFirstTry(t *testing.T) {
 	inner := newFailMidStreamLLM(0, "")
 	r := NewRetryLLM(inner, DefaultRetryConfig())
 
-	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestRetryLLM_GenerateStreamAndCollect_StreamErrorRetryThenSuccess(t *testin
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -613,7 +613,7 @@ func TestRetryLLM_GenerateStreamAndCollect_Exhausted(t *testing.T) {
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -629,7 +629,7 @@ func TestRetryLLM_GenerateStreamAndCollect_NonRetryableStreamError(t *testing.T)
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -647,7 +647,7 @@ func TestRetryLLM_GenerateStreamAndCollect_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	_, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil)
+	_, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -673,7 +673,7 @@ func TestRetryLLM_GenerateStreamAndCollect_NotifiesOnRetry(t *testing.T) {
 		}{attempt, max, err})
 	})
 
-	resp, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -704,6 +704,7 @@ func TestRetryLLM_GenerateStreamAndCollect_WithCallbacks(t *testing.T) {
 	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "",
 		func(s string) { contentCalls = append(contentCalls, s) },
 		func(s string) { reasoningCalls = append(reasoningCalls, s) },
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -723,7 +724,7 @@ func TestRetryLLM_GenerateStreamAndCollect_NetworkErrorRetry(t *testing.T) {
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
