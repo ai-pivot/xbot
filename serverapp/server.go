@@ -477,6 +477,7 @@ func Run(args []string) error {
 	// InitServer (plugin activation). The dispatch function resolves lazily.
 	var rpcTablePtr *RPCTable
 	var registryPtr *tools.Registry // resolved after InitServer (same pattern as rpcTablePtr)
+	var ag *agent.Agent             // resolved after InitServer; used by channel plugin prompt registration
 	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
 		return &stdioChannelPluginProvider{
 			decl:     decl,
@@ -488,6 +489,7 @@ func Run(args []string) error {
 				return rpcTablePtr.Dispatch(ctx, method, payload)
 			},
 			getRegistry: func() *tools.Registry { return registryPtr },
+			agentGetter: func() *agent.Agent { return ag },
 		}, nil
 	})
 
@@ -495,7 +497,6 @@ func Run(args []string) error {
 	// The closure is only invoked at runtime (never during InitServer), so the
 	// nil→non-nil transition after InitServer returns is safe.
 	var (
-		ag       *agent.Agent
 		rpcTable RPCTable
 		disp     *channel.Dispatcher
 		msgBus   *bus.MessageBus

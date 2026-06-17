@@ -340,6 +340,10 @@ type Agent struct {
 	// channelPromptProviders channel 特化 prompt 提供者列表（由外部注入）
 	channelPromptProviders []ChannelPromptProvider
 
+	// channelPromptMiddleware 持有 pipeline 中的 ChannelPromptMiddleware 引用，
+	// 用于运行时动态添加 provider（通过 AddChannelPromptProvider）。
+	channelPromptMiddleware *ChannelPromptMiddleware
+
 	// RegistryManager for skill/agent sharing and marketplace
 	registryManager *RegistryManager
 
@@ -1375,7 +1379,26 @@ func (a *Agent) SetEventRouter(r *event.Router) {
 // 调用后会重建 pipeline，将 ChannelPromptMiddleware 插入到管道中。
 func (a *Agent) SetChannelPromptProviders(providers ...ChannelPromptProvider) {
 	a.channelPromptProviders = providers
-	a.pipeline.Use(NewChannelPromptMiddleware(providers...))
+	// 移除旧的 middleware，创建新的
+	if a.channelPromptMiddleware != nil {
+		a.pipeline.Remove("channel_prompt")
+	}
+	a.channelPromptMiddleware = NewChannelPromptMiddleware(providers...)
+	a.pipeline.Use(a.channelPromptMiddleware)
+}
+
+// AddChannelPromptProvider 动态添加一个 channel prompt provider（线程安全）。
+// 适用于运行时动态注册（如 channel 插件声明专属 prompt）。
+// 如果同名 provider 已存在，则覆盖更新。
+func (a *Agent) AddChannelPromptProvider(provider ChannelPromptProvider) {
+	a.channelPromptProviders = append(a.channelPromptProviders, provider)
+	if a.channelPromptMiddleware == nil {
+		// 首个 provider：创建 middleware 并插入 pipeline
+		a.channelPromptMiddleware = NewChannelPromptMiddleware(provider)
+		a.pipeline.Use(a.channelPromptMiddleware)
+	} else {
+		a.channelPromptMiddleware.AddProvider(provider)
+	}
 }
 
 // HookManager returns the Agent's shared hook manager for tool execution.
