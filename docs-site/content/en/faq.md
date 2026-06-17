@@ -5,6 +5,18 @@ weight: 60
 
 # Frequently Asked Questions
 
+## Key Terms
+
+| Term | Meaning |
+|------|---------|
+| **Subscription** | An LLM provider configuration (API key, model, base URL). You can have multiple. |
+| **Channel** | A communication endpoint (CLI, Feishu, QQ, Web). |
+| **SubAgent** | A child agent with its own context, delegated by the main agent. |
+| **Skill** | A Markdown capability pack that guides the agent on specific tasks. |
+| **Tier** | Model classification (Vanguard/Balance/Swift) for SubAgent task complexity. |
+| **Session** | A conversation context. Multiple sessions can run independently. |
+| **Sandbox** | Execution isolation for Shell commands (none or Docker mode). |
+
 ## Installation
 
 ### The installer fails with "connection refused" or "timeout"

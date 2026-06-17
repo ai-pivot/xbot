@@ -5,6 +5,18 @@ weight: 60
 
 # 常见问题
 
+## 关键术语
+
+| 术语 | 含义 |
+|------|------|
+| **订阅 (Subscription)** | LLM 提供商配置（API Key、模型、API 地址）。可创建多个。 |
+| **渠道 (Channel)** | 通信端点（CLI、飞书、QQ、Web）。 |
+| **子 Agent (SubAgent)** | 拥有独立上下文的子 Agent，由主 Agent 委派。 |
+| **技能 (Skill)** | 指导 Agent 完成特定任务的 Markdown 能力包。 |
+| **模型层 (Tier)** | 模型分级（Vanguard/Balance/Swift），用于子 Agent 按任务复杂度选模型。 |
+| **会话 (Session)** | 对话上下文。多个会话可独立运行。 |
+| **沙箱 (Sandbox)** | Shell 命令执行隔离（none 或 Docker 模式）。 |
+
 ## 安装
 
 ### 安装器报错"connection refused"或"timeout"
