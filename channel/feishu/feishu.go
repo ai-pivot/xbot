@@ -1601,11 +1601,12 @@ func (f *FeishuChannel) buildApprovalDenyReasonCard(p *feishuPendingApproval) ma
 				"placeholder": map[string]any{"tag": "plain_text", "content": "Why deny this request?"},
 			},
 			{
-				"tag":   "button",
-				"name":  "submit_deny_reason",
-				"text":  map[string]any{"tag": "plain_text", "content": "Submit Deny"},
-				"type":  "danger",
-				"value": map[string]any{"action": p.DenySubmitAction},
+				"tag":         "button",
+				"name":        "submit_deny_reason",
+				"text":        map[string]any{"tag": "plain_text", "content": "Submit Deny"},
+				"type":        "danger",
+				"action_type": "form_submit",
+				"value":       map[string]any{"action": p.DenySubmitAction},
 			},
 		},
 	})
@@ -1694,15 +1695,25 @@ func (f *FeishuChannel) sendAskUserCard(msg ch.OutboundMsg) (string, error) {
 		return "", fmt.Errorf("marshal ask_user card: %w", err)
 	}
 
-	// Try reply mode if we have a parent message_id
+	// Always use sendNormalMessage for AskUser cards.
+	// Reply API has limited support for schema 2.0 cards with form/input elements
+	// (returns 200621 "unknown property: elements" or 300123 "no submit button").
 	msgID := ""
-	if msg.Metadata != nil && msg.Metadata["message_id"] != "" {
-		msgID, err = f.sendReplyMessage(msg.ChatID, msg.Metadata["message_id"], cardJSON)
-	} else {
-		msgID, err = f.sendNormalMessage(msg.ChatID, cardJSON)
-	}
+	log.WithField("card_json", string(cardJSON)).Debug("Feishu: AskUser card JSON")
+	msgID, err = f.sendNormalMessage(msg.ChatID, cardJSON)
 	if err != nil {
-		return "", fmt.Errorf("send ask_user card: %w", err)
+		// Fallback: retry with a simplified card (no form/input elements).
+		// Some Feishu API versions reject form/input components in interactive cards.
+		log.WithError(err).Warn("Feishu: AskUser card send failed, retrying with simplified card")
+		simpleCard := f.buildSimpleAskUserCard(questions)
+		simpleJSON, marshalErr := json.Marshal(simpleCard)
+		if marshalErr != nil {
+			return "", fmt.Errorf("marshal simplified ask_user card: %w (original error: %v)", marshalErr, err)
+		}
+		msgID, err = f.sendNormalMessage(msg.ChatID, simpleJSON)
+		if err != nil {
+			return "", fmt.Errorf("send ask_user card: %w", err)
+		}
 	}
 
 	// Extract senderID from metadata (injected by engine)
@@ -1781,10 +1792,11 @@ func (f *FeishuChannel) buildAskUserCard(questions []ch.AskQItem) map[string]any
 						"placeholder": map[string]any{"tag": "plain_text", "content": "Enter custom answer..."},
 					},
 					{
-						"tag":  "button",
-						"name": fmt.Sprintf("submit_q%d", i),
-						"text": map[string]any{"tag": "plain_text", "content": "Submit"},
-						"type": "primary",
+						"tag":         "button",
+						"name":        fmt.Sprintf("submit_q%d", i),
+						"text":        map[string]any{"tag": "plain_text", "content": "Submit"},
+						"type":        "primary",
+						"action_type": "form_submit",
 						"value": map[string]string{
 							"ask_user_action": fmt.Sprintf("%sq%d_submit", askUserActionPrefix, i),
 						},
@@ -1803,10 +1815,11 @@ func (f *FeishuChannel) buildAskUserCard(questions []ch.AskQItem) map[string]any
 						"placeholder": map[string]any{"tag": "plain_text", "content": "Type your answer here..."},
 					},
 					{
-						"tag":  "button",
-						"name": fmt.Sprintf("submit_q%d", i),
-						"text": map[string]any{"tag": "plain_text", "content": "Submit"},
-						"type": "primary",
+						"tag":         "button",
+						"name":        fmt.Sprintf("submit_q%d", i),
+						"text":        map[string]any{"tag": "plain_text", "content": "Submit"},
+						"type":        "primary",
+						"action_type": "form_submit",
 						"value": map[string]string{
 							"ask_user_action": fmt.Sprintf("%sq%d_submit", askUserActionPrefix, i),
 						},
@@ -1826,6 +1839,90 @@ func (f *FeishuChannel) buildAskUserCard(questions []ch.AskQItem) map[string]any
 	elements = append(elements, map[string]any{
 		"tag":     "markdown",
 		"content": "<text_tag color='grey'>💡 You can also reply to this message directly with your answer</text_tag>",
+	})
+
+	// Reject and Cancel buttons
+	elements = append(elements, wrapButtonsInColumns([]map[string]any{
+		{
+			"tag":  "button",
+			"text": map[string]any{"tag": "plain_text", "content": "Reject"},
+			"type": "danger",
+			"value": map[string]string{
+				"ask_user_action": askUserActionPrefix + "reject",
+			},
+		},
+		{
+			"tag":  "button",
+			"text": map[string]any{"tag": "plain_text", "content": "Cancel"},
+			"type": "default",
+			"value": map[string]string{
+				"ask_user_action": askUserActionPrefix + "cancel",
+			},
+		},
+	}))
+
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "Question",
+			},
+			"template": "blue",
+		},
+		"body": map[string]any{
+			"elements": elements,
+		},
+	}
+}
+
+// buildSimpleAskUserCard constructs a Feishu interactive card WITHOUT form/input
+// elements. Used as a fallback when the full card (with form containers) is
+// rejected by the Feishu API. Option buttons still work via card callbacks;
+// open questions rely on text reply fallback.
+func (f *FeishuChannel) buildSimpleAskUserCard(questions []ch.AskQItem) map[string]any {
+	elements := []map[string]any{}
+	multiQ := len(questions) > 1
+
+	for i, q := range questions {
+		questionText := q.Question
+		if multiQ {
+			questionText = fmt.Sprintf("**Q%d.** %s", i+1, q.Question)
+		}
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": questionText,
+		})
+
+		if len(q.Options) > 0 {
+			buttons := []map[string]any{}
+			for _, opt := range q.Options {
+				buttons = append(buttons, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": opt},
+					"type": "primary",
+					"value": map[string]string{
+						"ask_user_action": fmt.Sprintf("%sq%d_opt", askUserActionPrefix, i),
+						"answer":          opt,
+					},
+				})
+			}
+			elements = append(elements, wrapButtonsInColumns(buttons))
+		}
+
+		if i < len(questions)-1 {
+			elements = append(elements, map[string]any{"tag": "hr"})
+		}
+	}
+
+	// Hint about text reply fallback
+	elements = append(elements, map[string]any{"tag": "hr"})
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": "💡 Reply to this message directly with your answer",
 	})
 
 	// Reject and Cancel buttons
@@ -1887,7 +1984,20 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 	f.askUserMu.Unlock()
 
 	if !ok {
-		log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Debug("AskUser card action but no pending state")
+		// Log all existing keys for debugging key mismatch
+		existingKeys := []string{}
+		f.askUserMu.Lock()
+		for k := range f.askUsers {
+			existingKeys = append(existingKeys, k)
+		}
+		f.askUserMu.Unlock()
+		log.WithFields(log.Fields{
+			"chat_id":       chatID,
+			"sender_id":     senderID,
+			"ask_key":       askKey,
+			"action_val":    actionVal,
+			"existing_keys": existingKeys,
+		}).Warn("AskUser card action but no pending state")
 		return nil, false
 	}
 
@@ -1940,7 +2050,11 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 	if strings.HasPrefix(actionVal, askUserActionPrefix+"q") && strings.Contains(actionVal, "_opt") {
 		answer, _ := actionData["answer"].(string)
 		if answer == "" {
-			return nil, false
+			// Empty option action — show a toast and consume the action
+			// so it doesn't fall through to generic card action processing.
+			return &callback.CardActionTriggerResponse{
+				Toast: &callback.Toast{Type: "error", Content: "请选择一个有效选项"},
+			}, true
 		}
 
 		parts := strings.TrimPrefix(actionVal, askUserActionPrefix+"q")
@@ -1978,7 +2092,11 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 			answer, _ = actionData[answerKey].(string)
 		}
 		if answer == "" {
-			return nil, false
+			// Empty form submit — show toast and consume the action
+			// so it doesn't fall through to generic card action processing.
+			return &callback.CardActionTriggerResponse{
+				Toast: &callback.Toast{Type: "error", Content: "请输入答案后再提交"},
+			}, true
 		}
 
 		return f.recordAskUserAnswer(askKey, pending, questionIdx, answer, chatID, senderID)

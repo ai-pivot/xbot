@@ -241,6 +241,35 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 // handleRunOutput processes the successful result of a Run() call:
 // - WaitingUser: send WaitingUser outbound
 // - Empty content with mandatory reply: send warning
+// buildWaitingUserOutbound constructs the WaitingUser OutboundMsg from a RunOutput.
+// Shared by handleRunOutput (main message path) and card_handler.go (card action path).
+func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) *channel.OutboundMsg {
+	log.Ctx(ctx).Info("Tool is waiting for user response, sending WaitingUser outbound")
+	meta := map[string]string{}
+	for k, v := range out.Metadata {
+		meta[k] = v
+	}
+	// Persist iteration history to session so it survives restarts.
+	if len(out.IterationHistory) > 0 {
+		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+			histMsg := llm.NewAssistantMessage("")
+			histMsg.DisplayOnly = true
+			histMsg.Detail = string(jsonBytes)
+			if err := tenantSession.AddMessage(histMsg); err != nil {
+				log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
+			}
+			meta["progress_history"] = string(jsonBytes)
+		}
+	}
+	return &channel.OutboundMsg{
+		Channel:     msg.Channel,
+		ChatID:      msg.ChatID,
+		Content:     out.Content,
+		WaitingUser: true,
+		Metadata:    meta,
+	}
+}
+
 // - Empty content with optional reply: clear progress state
 // - Normal: persist assistant message, send, add reaction
 func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession, replyPolicy string) (*channel.OutboundMsg, error) {
@@ -249,36 +278,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {
-		log.Ctx(ctx).Info("Tool is waiting for user response, sending WaitingUser outbound")
-		meta := map[string]string{}
-		for k, v := range out.Metadata {
-			meta[k] = v
-		}
-		// Persist iteration history to session so it survives restarts,
-		// same pattern as the cancelled path above.
-		var iterationHistoryJSON string
-		if len(out.IterationHistory) > 0 {
-			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-				iterationHistoryJSON = string(jsonBytes)
-				histMsg := llm.NewAssistantMessage("")
-				histMsg.DisplayOnly = true
-				histMsg.Detail = iterationHistoryJSON
-				if err := tenantSession.AddMessage(histMsg); err != nil {
-					log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
-				}
-			}
-			if iterationHistoryJSON != "" {
-				meta["progress_history"] = iterationHistoryJSON
-			}
-		}
-		waitOut := &channel.OutboundMsg{
-			Channel:     msg.Channel,
-			ChatID:      msg.ChatID,
-			Content:     finalContent,
-			WaitingUser: true,
-			Metadata:    meta,
-		}
-		return waitOut, nil
+		return buildWaitingUserOutbound(ctx, msg, out, tenantSession), nil
 	}
 
 	// Empty content without waiting for user and not optional reply

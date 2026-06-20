@@ -45,8 +45,7 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	waitingUser := cardOut.WaitingUser
 
 	if waitingUser {
-		log.Ctx(ctx).Info("Tool is waiting for user response, skipping reply")
-		return nil, nil
+		return buildWaitingUserOutbound(ctx, msg, cardOut, tenantSession), nil
 	}
 
 	cardUserMsg := llm.NewUserMessage(summary)
