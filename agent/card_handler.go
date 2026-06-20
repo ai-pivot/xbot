@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -46,30 +45,7 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	waitingUser := cardOut.WaitingUser
 
 	if waitingUser {
-		log.Ctx(ctx).Info("Tool is waiting for user response, sending WaitingUser outbound from card handler")
-		meta := map[string]string{}
-		for k, v := range cardOut.Metadata {
-			meta[k] = v
-		}
-		// Persist iteration history to session so it survives restarts.
-		if len(cardOut.IterationHistory) > 0 {
-			if jsonBytes, err := json.Marshal(cardOut.IterationHistory); err == nil {
-				histMsg := llm.NewAssistantMessage("")
-				histMsg.DisplayOnly = true
-				histMsg.Detail = string(jsonBytes)
-				if err := tenantSession.AddMessage(histMsg); err != nil {
-					log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
-				}
-				meta["progress_history"] = string(jsonBytes)
-			}
-		}
-		return &channel.OutboundMsg{
-			Channel:     msg.Channel,
-			ChatID:      msg.ChatID,
-			Content:     finalContent,
-			WaitingUser: true,
-			Metadata:    meta,
-		}, nil
+		return buildWaitingUserOutbound(ctx, msg, cardOut, tenantSession), nil
 	}
 
 	cardUserMsg := llm.NewUserMessage(summary)

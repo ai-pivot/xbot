@@ -2050,10 +2050,10 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 	if strings.HasPrefix(actionVal, askUserActionPrefix+"q") && strings.Contains(actionVal, "_opt") {
 		answer, _ := actionData["answer"].(string)
 		if answer == "" {
-			// Empty form submit — show a toast and consume the action
+			// Empty option action — show a toast and consume the action
 			// so it doesn't fall through to generic card action processing.
 			return &callback.CardActionTriggerResponse{
-				Toast: &callback.Toast{Type: "error", Content: "Please enter an answer before submitting"},
+				Toast: &callback.Toast{Type: "error", Content: "请选择一个有效选项"},
 			}, true
 		}
 
@@ -2095,7 +2095,7 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 			// Empty form submit — show toast and consume the action
 			// so it doesn't fall through to generic card action processing.
 			return &callback.CardActionTriggerResponse{
-				Toast: &callback.Toast{Type: "error", Content: "Please enter an answer before submitting"},
+				Toast: &callback.Toast{Type: "error", Content: "请输入答案后再提交"},
 			}, true
 		}
 
