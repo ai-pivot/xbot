@@ -1984,7 +1984,20 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 	f.askUserMu.Unlock()
 
 	if !ok {
-		log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Debug("AskUser card action but no pending state")
+		// Log all existing keys for debugging key mismatch
+		existingKeys := []string{}
+		f.askUserMu.Lock()
+		for k := range f.askUsers {
+			existingKeys = append(existingKeys, k)
+		}
+		f.askUserMu.Unlock()
+		log.WithFields(log.Fields{
+			"chat_id":       chatID,
+			"sender_id":     senderID,
+			"ask_key":       askKey,
+			"action_val":    actionVal,
+			"existing_keys": existingKeys,
+		}).Warn("AskUser card action but no pending state")
 		return nil, false
 	}
 
@@ -2079,7 +2092,11 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 			answer, _ = actionData[answerKey].(string)
 		}
 		if answer == "" {
-			return nil, false
+			// Empty form submit — show toast and consume the action
+			// so it doesn't fall through to generic card action processing.
+			return &callback.CardActionTriggerResponse{
+				Toast: &callback.Toast{Type: "error", Content: "Please enter an answer before submitting"},
+			}, true
 		}
 
 		return f.recordAskUserAnswer(askKey, pending, questionIdx, answer, chatID, senderID)
