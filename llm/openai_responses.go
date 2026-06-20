@@ -141,7 +141,7 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int) resp
 		// xbot is stateless — it sends full message history each turn and
 		// never uses previous_response_id. Setting store=false avoids
 		// unnecessary server-side storage of conversation state.
-		Store: param.Opt[bool]{Value: false},
+		Store: param.NewOpt(false),
 	}
 
 	if len(instructions) > 0 {
@@ -186,7 +186,7 @@ func toResponsesTools(tools []ToolDefinition) []responses.ToolUnionParam {
 				},
 				// Strict defaults to true in the Responses API; set false to
 				// match Chat Completions behavior (no strict schema enforcement).
-				Strict: param.Opt[bool]{Value: false},
+				Strict: param.NewOpt(false),
 			},
 		})
 	}
