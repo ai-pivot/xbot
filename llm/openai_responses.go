@@ -29,7 +29,7 @@ import (
 //   - tool/result messages become ResponseInputItemFunctionCallOutputParam items
 //   - reasoning_content from previous assistant turns is passed back as
 //     ResponseReasoningItemParam items
-func toResponsesParams(model string, messages []ChatMessage, thinkingMode string, maxTokens int) responses.ResponseNewParams {
+func toResponsesParams(model string, messages []ChatMessage, maxTokens int) responses.ResponseNewParams {
 	var instructions []string
 	inputItems := make([]responses.ResponseInputItemUnionParam, 0, len(messages))
 
@@ -138,6 +138,10 @@ func toResponsesParams(model string, messages []ChatMessage, thinkingMode string
 			OfInputItemList: responses.ResponseInputParam(inputItems),
 		},
 		MaxOutputTokens: param.Opt[int64]{Value: int64(maxTokens)},
+		// xbot is stateless — it sends full message history each turn and
+		// never uses previous_response_id. Setting store=false avoids
+		// unnecessary server-side storage of conversation state.
+		Store: param.Opt[bool]{Value: false},
 	}
 
 	if len(instructions) > 0 {
@@ -277,7 +281,7 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 		effectiveMaxTokens = maxOut
 	}
 
-	params := toResponsesParams(model, messages, thinkingMode, effectiveMaxTokens)
+	params := toResponsesParams(model, messages, effectiveMaxTokens)
 
 	// Build reasoning config
 	reasoning := buildResponsesReasoning(thinkingMode)
@@ -338,18 +342,12 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 			})
 
 		case "reasoning":
-			// Extract reasoning summary content
+			// Extract reasoning summary content.
+			// Note: item.Content (full reasoning text) requires the "reasoning.encrypted_content"
+			// include parameter and is not available by default. We only use Summary,
+			// which is always returned when reasoning is enabled.
 			for _, summary := range item.Summary {
 				result.ReasoningContent += summary.Text
-			}
-			// Also check for reasoning content (full reasoning text)
-			for _, content := range item.Content {
-				if content.Type == "reasoning_text" {
-					if result.ReasoningContent != "" {
-						result.ReasoningContent += "\n"
-					}
-					result.ReasoningContent += content.Text
-				}
 			}
 		}
 	}
@@ -428,7 +426,7 @@ func (o *OpenAILLM) generateStreamResponses(ctx context.Context, model string, m
 		effectiveMaxTokens = maxOut
 	}
 
-	params := toResponsesParams(model, messages, thinkingMode, effectiveMaxTokens)
+	params := toResponsesParams(model, messages, effectiveMaxTokens)
 
 	// Build reasoning config
 	reasoning := buildResponsesReasoning(thinkingMode)
@@ -472,16 +470,20 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	defer stream.Close()
 
 	// Connect context cancellation to stream.Close().
+	// Use a done channel to allow the goroutine to exit when the stream
+	// processing completes normally (prevents goroutine leak).
+	streamDone := make(chan struct{})
 	ctxDone := ctx.Done()
 	if ctxDone != nil {
 		go func() {
 			select {
 			case <-ctxDone:
 				stream.Close()
-			case <-ctx.Done():
+			case <-streamDone:
 			}
 		}()
 	}
+	defer close(streamDone)
 
 	l := log.Ctx(ctx)
 	eventCount := 0
@@ -566,7 +568,11 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 					Name:  event.Item.Name,
 					index: len(toolCallList),
 				}
-				toolCallsByID[event.ItemID] = tc
+				// Use event.Item.ID as the map key — this is the "item_id"
+				// that subsequent function_call_arguments.delta/done events carry.
+				// event.ItemID is empty for output_item.added events (no top-level
+				// "item_id" in the JSON; the ID lives inside event.Item.ID).
+				toolCallsByID[event.Item.ID] = tc
 				toolCallList = append(toolCallList, tc)
 				hasToolCalls = true
 
@@ -604,6 +610,27 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 				}
 				if event.Name != "" {
 					tc.Name = event.Name
+				}
+			}
+
+		case "response.output_item.done":
+			// Output item complete — use as fallback for tool calls that
+			// may have missed delta events (defensive).
+			if event.Item.Type == "function_call" {
+				tc, ok := toolCallsByID[event.Item.ID]
+				if ok {
+					// Only update if arguments were missing (delta events failed)
+					if tc.Arguments == "" && event.Item.Arguments != "" {
+						tc.Arguments = event.Item.Arguments
+						// Send the complete arguments as a final delta
+						eventChan <- StreamEvent{
+							Type: EventToolCall,
+							ToolCall: &ToolCallDelta{
+								Index:     tc.index,
+								Arguments: tc.Arguments,
+							},
+						}
+					}
 				}
 			}
 

@@ -13,7 +13,7 @@ import (
 func TestToResponsesParams_SystemMessageBecomesInstructions(t *testing.T) {
 	msgs := []ChatMessage{NewSystemMessage("You are a helpful assistant.")}
 
-	p := toResponsesParams("test-model", msgs, "", 1000)
+	p := toResponsesParams("test-model", msgs, 1000)
 
 	// Instructions should hold the system content
 	if !p.Instructions.Valid() {
@@ -40,7 +40,7 @@ func TestToResponsesParams_MultipleSystemMessagesConcatenated(t *testing.T) {
 		NewSystemMessage("Rule two."),
 	}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	if !p.Instructions.Valid() {
 		t.Fatal("expected Instructions to be set")
@@ -54,7 +54,7 @@ func TestToResponsesParams_MultipleSystemMessagesConcatenated(t *testing.T) {
 func TestToResponsesParams_UserPlainText(t *testing.T) {
 	msgs := []ChatMessage{NewUserMessage("Hello world")}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -82,7 +82,7 @@ func TestToResponsesParams_UserMultimodalImage(t *testing.T) {
 	imgURL := "data:image/png;base64,iVBORw0KGgo="
 	msgs := []ChatMessage{NewUserMessage("What is this? ![pic](" + imgURL + ")")}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -121,7 +121,7 @@ func TestToResponsesParams_UserMultimodalImage(t *testing.T) {
 func TestToResponsesParams_AssistantPlainText(t *testing.T) {
 	msgs := []ChatMessage{NewAssistantMessage("Sure, here is the answer.")}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -154,7 +154,7 @@ func TestToResponsesParams_AssistantWithToolCalls(t *testing.T) {
 		},
 	}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	// user message + 2 function_call items, no assistant message (content empty)
@@ -191,7 +191,7 @@ func TestToResponsesParams_AssistantToolCallEmptyArgumentsDefaultsToBraces(t *te
 		},
 	}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -214,7 +214,7 @@ func TestToResponsesParams_AssistantWithReasoningContent(t *testing.T) {
 		},
 	}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -246,7 +246,7 @@ func TestToResponsesParams_ToolMessageBecomesFunctionCallOutput(t *testing.T) {
 		},
 	}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -276,7 +276,7 @@ func TestToResponsesParams_ToolMessageEmptyContentDefaultsToBraces(t *testing.T)
 		},
 	}
 
-	p := toResponsesParams("m", msgs, "", 0)
+	p := toResponsesParams("m", msgs, 0)
 
 	items := p.Input.OfInputItemList
 	if len(items) != 1 {
@@ -295,7 +295,7 @@ func TestToResponsesParams_ToolMessageEmptyContentDefaultsToBraces(t *testing.T)
 }
 
 func TestToResponsesParams_MaxOutputTokensCarried(t *testing.T) {
-	p := toResponsesParams("m", []ChatMessage{NewUserMessage("hi")}, "", 2048)
+	p := toResponsesParams("m", []ChatMessage{NewUserMessage("hi")}, 2048)
 
 	if !p.MaxOutputTokens.Valid() {
 		t.Fatal("expected MaxOutputTokens to be set")
