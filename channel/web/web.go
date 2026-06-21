@@ -1062,8 +1062,16 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			msgChannel := "web"
 			msgSenderID := c.userID
 			msgSenderName := username
-			msgChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
+			// Use getCurrentSession to support cross-channel browsing (admin can
+			// send messages to CLI/Feishu sessions from the Web UI).
+			sel := wc.getCurrentSession(c.userID)
+			msgChatID := sel.ChatID
 			msgChatType := "p2p"
+			if sel.Channel != "web" {
+				// Admin is browsing a non-web channel — send to that channel's session.
+				// Only admin is allowed (checked by handleChatSwitch which sets userCurrentSession).
+				msgChannel = sel.Channel
+			}
 			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
 				// Only CLI relay connections may override channel/chatID/sender.
 				// Web browser clients must use their authenticated identity.
