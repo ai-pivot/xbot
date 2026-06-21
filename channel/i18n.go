@@ -589,6 +589,14 @@ func LocaleZH() *UILocale {
 				},
 			},
 			{
+				Key: "api_type", Label: "API 类型", Description: "OpenAI API 端点类型（默认 Chat Completions）",
+				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "chat_completions",
+				Options: []SettingOption{
+					{Label: "Chat Completions（默认）", Value: "chat_completions"},
+					{Label: "Responses API", Value: "responses"},
+				},
+			},
+			{
 				Key: "enable_auto_compress", Label: "自动压缩", Description: "上下文过长时自动压缩（默认开启）",
 				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
 				Options: []SettingOption{
@@ -1006,6 +1014,14 @@ func localeEN() *UILocale {
 				},
 			},
 			{
+				Key: "api_type", Label: "API Type", Description: "OpenAI API endpoint type (default: Chat Completions)",
+				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "chat_completions",
+				Options: []SettingOption{
+					{Label: "Chat Completions (default)", Value: "chat_completions"},
+					{Label: "Responses API", Value: "responses"},
+				},
+			},
+			{
 				Key: "enable_auto_compress", Label: "Auto Compress", Description: "Automatically compress when context is too long (on by default)",
 				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
 				Options: []SettingOption{
@@ -1420,6 +1436,14 @@ func localeJA() *UILocale {
 					{Label: "無効", Value: "disabled"},
 					{Label: "DeepSeek: effort=high", Value: `{"thinking":{"type":"enabled"},"reasoning_effort":"high"}`},
 					{Label: "DeepSeek: effort=max", Value: `{"thinking":{"type":"enabled"},"reasoning_effort":"max"}`},
+				},
+			},
+			{
+				Key: "api_type", Label: "API タイプ", Description: "OpenAI API エンドポイントタイプ（デフォルト: Chat Completions）",
+				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "chat_completions",
+				Options: []SettingOption{
+					{Label: "Chat Completions（デフォルト）", Value: "chat_completions"},
+					{Label: "Responses API", Value: "responses"},
 				},
 			},
 			{

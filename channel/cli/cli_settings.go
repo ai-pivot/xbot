@@ -60,6 +60,22 @@ func (m *cliModel) readSettings() map[string]string {
 		values["llm_model"] = sub.Model
 		values["max_output_tokens"] = strconv.Itoa(sub.MaxOutputTokens)
 		values["thinking_mode"] = sub.ThinkingMode
+		// api_type: per-model config → subscription-level
+		// Use the SESSION's active model for per-model override, matching
+		// max_context_tokens behavior.
+		apiModel := m.cachedModelName
+		if apiModel == "" {
+			apiModel = sub.Model
+		}
+		if apiModel != "" {
+			if pmc, ok := sub.PerModelConfigs[apiModel]; ok && pmc.APIType != "" {
+				values["api_type"] = pmc.APIType
+			} else {
+				values["api_type"] = sub.APIType
+			}
+		} else {
+			values["api_type"] = sub.APIType
+		}
 		// max_context_tokens: per-model config → subscription-level → empty
 		// Use the SESSION's active model (m.cachedModelName), NOT sub.Model.
 		// Without this, the settings panel shows the subscription default model's
@@ -158,6 +174,12 @@ func (m *cliModel) saveSettings(values map[string]string) {
 				if v, ok := values["thinking_mode"]; ok {
 					if updated.ThinkingMode != v {
 						updated.ThinkingMode = v
+						changed = true
+					}
+				}
+				if v, ok := values["api_type"]; ok {
+					if updated.APIType != v {
+						updated.APIType = v
 						changed = true
 					}
 				}

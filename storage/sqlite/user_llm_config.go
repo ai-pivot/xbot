@@ -20,6 +20,7 @@ type UserLLMConfig struct {
 	MaxContext      int            // 最大上下文 token 数（0 表示不限制）
 	MaxOutputTokens int            // 最大输出 token 数（0 表示使用默认值 8192）
 	ThinkingMode    string         // 思考模式: "" (自动), "enabled", "disabled"
+	APIType         string         // API type: "" (default=chat_completions), "responses"
 	OnModelsLoaded  func([]string) // callback after models loaded from API
 	CreatedAt       time.Time      // 创建时间
 	UpdatedAt       time.Time      // 更新时间
@@ -42,13 +43,13 @@ func (s *UserLLMConfigService) GetConfig(senderID string) (*UserLLMConfig, error
 	var cfg UserLLMConfig
 	var createdAt, updatedAt string
 	err := conn.QueryRow(`
-				SELECT id, sender_id, provider, base_url, api_key, model, max_context, max_output_tokens, thinking_mode, created_at, updated_at
+				SELECT id, sender_id, provider, base_url, api_key, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at
 				FROM user_llm_subscriptions
 				WHERE sender_id = ? AND is_default = 1
 				LIMIT 1
-			`, senderID).Scan(
+		`, senderID).Scan(
 		&cfg.ID, &cfg.SenderID, &cfg.Provider, &cfg.BaseURL, &cfg.APIKey, &cfg.Model,
-		&cfg.MaxContext, &cfg.MaxOutputTokens, &cfg.ThinkingMode,
+		&cfg.MaxContext, &cfg.MaxOutputTokens, &cfg.ThinkingMode, &cfg.APIType,
 		&createdAt, &updatedAt,
 	)
 
@@ -109,11 +110,11 @@ func (s *UserLLMConfigService) SetConfig(cfg *UserLLMConfig) error {
 		_, err = tx.Exec(`
 		UPDATE user_llm_subscriptions SET
 		provider = ?, base_url = ?, api_key = ?, model = ?,
-		max_context = ?, max_output_tokens = ?, thinking_mode = ?,
+		max_context = ?, max_output_tokens = ?, thinking_mode = ?, api_type = ?,
 		is_default = 1, updated_at = ?
 		WHERE id = ? AND sender_id = ?
 		`, cfg.Provider, cfg.BaseURL, encryptedAPIKey, cfg.Model,
-			cfg.MaxContext, cfg.MaxOutputTokens, cfg.ThinkingMode,
+			cfg.MaxContext, cfg.MaxOutputTokens, cfg.ThinkingMode, cfg.APIType,
 			now, cfg.ID, cfg.SenderID)
 		if err != nil {
 			return fmt.Errorf("update subscription by id: %w", err)
@@ -124,11 +125,11 @@ func (s *UserLLMConfigService) SetConfig(cfg *UserLLMConfig) error {
 		result, err := tx.Exec(`
 		UPDATE user_llm_subscriptions SET
 		provider = ?, base_url = ?, api_key = ?, model = ?,
-		max_context = ?, max_output_tokens = ?, thinking_mode = ?,
+		max_context = ?, max_output_tokens = ?, thinking_mode = ?, api_type = ?,
 		is_default = 1, updated_at = ?
 		WHERE sender_id = ? AND provider = ?
 		`, cfg.Provider, cfg.BaseURL, encryptedAPIKey, cfg.Model,
-			cfg.MaxContext, cfg.MaxOutputTokens, cfg.ThinkingMode,
+			cfg.MaxContext, cfg.MaxOutputTokens, cfg.ThinkingMode, cfg.APIType,
 			now, cfg.SenderID, cfg.Provider)
 		if err != nil {
 			return fmt.Errorf("update subscription: %w", err)
@@ -143,9 +144,9 @@ func (s *UserLLMConfigService) SetConfig(cfg *UserLLMConfig) error {
 				subName = "openai"
 			}
 			_, err = tx.Exec(`
-			INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-		`, subID, cfg.SenderID, subName, cfg.Provider, cfg.BaseURL, encryptedAPIKey, cfg.Model, cfg.MaxContext, cfg.MaxOutputTokens, cfg.ThinkingMode, now, now)
+			INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+		`, subID, cfg.SenderID, subName, cfg.Provider, cfg.BaseURL, encryptedAPIKey, cfg.Model, cfg.MaxContext, cfg.MaxOutputTokens, cfg.ThinkingMode, cfg.APIType, now, now)
 			if err != nil {
 				return fmt.Errorf("insert subscription: %w", err)
 			}

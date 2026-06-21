@@ -27,11 +27,11 @@ func TestV35Migration_SubscriptionModelsTable(t *testing.T) {
 		t.Fatalf("tenants.model_id column should exist: %v", err)
 	}
 
-	// Verify schema version is 35
+	// Verify schema version is 37
 	var version int
 	conn.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
-	if version != 35 {
-		t.Errorf("schema version = %d, want 35", version)
+	if version != 37 {
+		t.Errorf("schema version = %d, want 37", version)
 	}
 
 	// Verify migration is idempotent
@@ -71,7 +71,7 @@ func TestSubscriptionModelCRUD(t *testing.T) {
 	}
 
 	// UpsertModel: create
-	if err := svc.UpsertModel("crud-sub", "gpt-4", 200000, 8192, "enabled"); err != nil {
+	if err := svc.UpsertModel("crud-sub", "gpt-4", 200000, 8192, "enabled", ""); err != nil {
 		t.Fatalf("UpsertModel: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestSubscriptionModelCRUD(t *testing.T) {
 	oldID := m.ID
 
 	// UpsertModel: update
-	svc.UpsertModel("crud-sub", "gpt-4", 500000, 16384, "")
+	svc.UpsertModel("crud-sub", "gpt-4", 500000, 16384, "", "")
 	m, _ = svc.GetModel("crud-sub", "gpt-4")
 	if m == nil || m.MaxContext != 500000 || m.MaxOutputTokens != 16384 {
 		t.Errorf("after update: MaxContext=%d MaxOutput=%d", m.MaxContext, m.MaxOutputTokens)
@@ -96,14 +96,14 @@ func TestSubscriptionModelCRUD(t *testing.T) {
 	}
 
 	// Add second model + verify count
-	svc.UpsertModel("crud-sub", "gpt-3.5", 16000, 4096, "")
+	svc.UpsertModel("crud-sub", "gpt-3.5", 16000, 4096, "", "")
 	models, _ = svc.GetModels("crud-sub")
 	if len(models) != 2 {
 		t.Errorf("expected 2 models, got %d", len(models))
 	}
 
 	// Verify unique constraint: re-upsert same model is update, not insert
-	svc.UpsertModel("crud-sub", "gpt-4", 999, 999, "")
+	svc.UpsertModel("crud-sub", "gpt-4", 999, 999, "", "")
 	models, _ = svc.GetModels("crud-sub")
 	if len(models) != 2 {
 		t.Errorf("expected still 2 models after re-upsert, got %d", len(models))

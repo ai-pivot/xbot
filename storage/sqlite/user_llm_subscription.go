@@ -28,6 +28,7 @@ type LLMSubscription struct {
 	MaxContext      int                       // max context token limit (0 = use default)
 	MaxOutputTokens int                       // max output token limit (0 = use default 8192)
 	ThinkingMode    string                    // thinking mode: "" (auto), "enabled", "disabled"
+	APIType         string                    // API type: "" (default=chat_completions), "responses"
 	IsDefault       bool                      // whether this is the active subscription
 	CachedModels    []string                  // cached model list from API (JSON in DB)
 	PerModelConfigs map[string]PerModelConfig // per-model token overrides (JSON in DB)
@@ -45,6 +46,7 @@ type SubscriptionModel struct {
 	MaxContext      int    // max context window tokens
 	MaxOutputTokens int    // max output tokens
 	ThinkingMode    string // thinking mode override
+	APIType         string // API type override: "" (use subscription default), "responses"
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -68,7 +70,7 @@ func scanSubscription(scanner interface{ Scan(...any) error }, sub *LLMSubscript
 	var cachedModelsJSON string
 	var perModelConfigsJSON string
 	err := scanner.Scan(&sub.ID, &sub.SenderID, &sub.Name, &sub.Provider, &sub.BaseURL,
-		&encryptedAPIKey, &sub.Model, &isDefault, &sub.MaxContext, &sub.MaxOutputTokens, &sub.ThinkingMode,
+		&encryptedAPIKey, &sub.Model, &isDefault, &sub.MaxContext, &sub.MaxOutputTokens, &sub.ThinkingMode, &sub.APIType,
 		&cachedModelsJSON, &perModelConfigsJSON, &createdAt, &updatedAt)
 	if err != nil {
 		return "", 0, err
@@ -102,7 +104,7 @@ func decryptAPIKey(sub *LLMSubscription, encryptedAPIKey string) {
 func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
 			FROM user_llm_subscriptions
 			ORDER BY created_at ASC
 		`)
@@ -128,7 +130,7 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
+			SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
 				FROM user_llm_subscriptions
 				WHERE sender_id = ?
 				ORDER BY created_at ASC
@@ -155,7 +157,7 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
 			FROM user_llm_subscriptions
 			WHERE sender_id = ? AND is_default = 1
 			LIMIT 1
@@ -177,7 +179,7 @@ func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, 
 func (s *LLMSubscriptionService) Get(id string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, cached_models, per_model_configs, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
 			FROM user_llm_subscriptions
 			WHERE id = ?
 		`, id)
@@ -237,9 +239,9 @@ func (s *LLMSubscriptionService) Add(sub *LLMSubscription) error {
 		}
 	}
 	_, err = tx.Exec(`
-		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, per_model_configs, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, isDefault, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, perModelConfigsJSON, now, now)
+		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, max_context, max_output_tokens, thinking_mode, api_type, per_model_configs, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, isDefault, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, perModelConfigsJSON, now, now)
 	if err != nil {
 		return fmt.Errorf("insert subscription: %w", err)
 	}
@@ -316,11 +318,11 @@ func (s *LLMSubscriptionService) Update(sub *LLMSubscription) error {
 	_, err = tx.Exec(`
 		UPDATE user_llm_subscriptions SET
 		name = ?, provider = ?, base_url = ?, api_key = ?, model = ?,
-		max_context = ?, max_output_tokens = ?, thinking_mode = ?,
+		max_context = ?, max_output_tokens = ?, thinking_mode = ?, api_type = ?,
 		per_model_configs = ?,
 		is_default = ?, updated_at = ?
 		WHERE id = ? AND sender_id = ?
-	`, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, perModelConfigsJSON, isDefault, now, sub.ID, sub.SenderID)
+	`, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, perModelConfigsJSON, isDefault, now, sub.ID, sub.SenderID)
 	if err != nil {
 		return fmt.Errorf("update subscription: %w", err)
 	}
@@ -427,13 +429,25 @@ func (sub *LLMSubscription) GetPerModelMaxContext(model string) int {
 	return 0
 }
 
+// GetPerModelAPIType returns the per-model API type override.
+// Returns "" if no override is set (use subscription default).
+func (sub *LLMSubscription) GetPerModelAPIType(model string) string {
+	if sub.PerModelConfigs == nil || model == "" {
+		return ""
+	}
+	if cfg, ok := sub.PerModelConfigs[model]; ok {
+		return cfg.APIType
+	}
+	return ""
+}
+
 // ─── SubscriptionModel CRUD ─────────────────────────────
 
 // scanSubscriptionModel scans a subscription_models row into a SubscriptionModel.
 func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *SubscriptionModel) error {
 	var createdAt, updatedAt string
 	err := scanner.Scan(&m.ID, &m.SubscriptionID, &m.Model, &m.MaxContext,
-		&m.MaxOutputTokens, &m.ThinkingMode, &createdAt, &updatedAt)
+		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt)
 	if err != nil {
 		return err
 	}
@@ -446,7 +460,7 @@ func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *Subscript
 func (s *LLMSubscriptionService) GetModels(subID string) ([]*SubscriptionModel, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, created_at, updated_at
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at
 		FROM subscription_models WHERE subscription_id = ? ORDER BY created_at ASC
 	`, subID)
 	if err != nil {
@@ -470,7 +484,7 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 	m := &SubscriptionModel{}
 	err := scanSubscriptionModel(
 		conn.QueryRow(`
-			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, created_at, updated_at
+			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at
 			FROM subscription_models WHERE subscription_id = ? AND model = ?
 		`, subID, model),
 		m,
@@ -485,17 +499,18 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 }
 
 // UpsertModel inserts or updates a model row in subscription_models.
-func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut int, thinking string) error {
+func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
 	conn := s.db.Conn()
 	_, err := conn.Exec(`
-		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode)
-		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)
+		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type)
+		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(subscription_id, model) DO UPDATE SET
 			max_context = excluded.max_context,
 			max_output_tokens = excluded.max_output_tokens,
 			thinking_mode = excluded.thinking_mode,
+			api_type = excluded.api_type,
 			updated_at = datetime('now')
-	`, subID, model, maxCtx, maxOut, thinking)
+	`, subID, model, maxCtx, maxOut, thinking, apiType)
 	if err != nil {
 		return fmt.Errorf("upsert model: %w", err)
 	}

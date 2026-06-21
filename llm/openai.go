@@ -28,6 +28,7 @@ type OpenAILLM struct {
 	defaultModel      string         // 默认模型
 	maxTokens         int            // 最大生成 token 数（用户配置值，作为上限）
 	baseURL           string         // API base URL for error logging/diagnosis
+	apiType           string         // "chat_completions" (default) | "responses"
 	onModelsLoaded    func([]string) // callback after models loaded from API
 	onModelsLoadError func(error)    // callback after models load fails
 	modelsLoaded      bool           // true after first ListModels() triggers async fetch
@@ -50,6 +51,11 @@ type OpenAIConfig struct {
 	MaxTokens    int    // 最大生成 token 数（默认 defaultMaxTokens）
 	UserAgent    string // 自定义 User-Agent（留空使用默认值）
 
+	// APIType selects the OpenAI API endpoint to use.
+	// "chat_completions" (default) — POST /v1/chat/completions
+	// "responses" — POST /v1/responses (OpenAI Responses API)
+	APIType string
+
 	// OnModelsLoadError is called when the async model list API call fails.
 	// Used by CLI to show a toast notification.
 	OnModelsLoadError func(err error)
@@ -67,6 +73,14 @@ type OpenAIConfig struct {
 // Keep in sync with config.DefaultMaxOutputTokens.
 const defaultMaxTokens = 32_768
 
+// API type constants for selecting between OpenAI API endpoints.
+const (
+	// APITypeChatCompletions is the default API type, using POST /v1/chat/completions.
+	APITypeChatCompletions = "chat_completions"
+	// APITypeResponses uses the OpenAI Responses API (POST /v1/responses).
+	APITypeResponses = "responses"
+)
+
 // NewOpenAILLM 创建 OpenAI LLM 实例
 func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 	if cfg.MaxTokens <= 0 {
@@ -80,6 +94,7 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 
 	o := &OpenAILLM{
 		baseURL:           cfg.BaseURL,
+		apiType:           cfg.APIType,
 		maxTokens:         cfg.MaxTokens,
 		onModelsLoaded:    cfg.OnModelsLoaded,
 		onModelsLoadError: cfg.OnModelsLoadError,
@@ -759,6 +774,11 @@ func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOp
 
 // Generate 生成 LLM 响应
 func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
+	// Route to Responses API if configured
+	if o.apiType == APITypeResponses {
+		return o.generateResponses(ctx, model, messages, tools, thinkingMode)
+	}
+
 	// 如果未指定模型，使用默认模型
 	if model == "" {
 		model = o.GetDefaultModel()
@@ -888,6 +908,11 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 
 // GenerateStream 流式生成 LLM 响应
 func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
+	// Route to Responses API if configured
+	if o.apiType == APITypeResponses {
+		return o.generateStreamResponses(ctx, model, messages, tools, thinkingMode)
+	}
+
 	// 如果未指定模型，使用默认模型
 	if model == "" {
 		model = o.GetDefaultModel()

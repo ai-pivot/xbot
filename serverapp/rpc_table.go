@@ -530,6 +530,8 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err := svc.Update(existing); err != nil {
 			return err
 		}
+		// Also write to subscription_models table (authoritative source for v35+)
+		svc.UpsertModel(existing.ID, p.Model, p.Config.MaxContext, p.Config.MaxOutputTokens, "", p.Config.APIType)
 		// Invalidate ALL cached entries for this sender (user-level + per-session).
 		// Must use Invalidate() not InvalidateSender() because per-session entries
 		// (senderID:chatID keys) hold a cached *LLMSubscription pointer with stale
@@ -1247,6 +1249,7 @@ func mergeSubscriptionModels(svc *sqlite.LLMSubscriptionService, sub *sqlite.LLM
 		sub.PerModelConfigs[m.Model] = sqlite.PerModelConfig{
 			MaxContext:      m.MaxContext,
 			MaxOutputTokens: m.MaxOutputTokens,
+			APIType:         m.APIType,
 		}
 	}
 }
@@ -1280,6 +1283,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 		Active          bool                             `json:"active"`
 		MaxOutputTokens int                              `json:"max_output_tokens"`
 		ThinkingMode    string                           `json:"thinking_mode"`
+		APIType         string                           `json:"api_type"`
 		PerModelConfigs map[string]sqlite.PerModelConfig `json:"per_model_configs"`
 	} `json:"sub"`
 }) error {
@@ -1303,7 +1307,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 		APIKey: existing.APIKey, Model: existing.Model,
 		MaxOutputTokens: existing.MaxOutputTokens,
 		MaxContext:      existing.MaxContext,
-		ThinkingMode:    existing.ThinkingMode, IsDefault: existing.IsDefault,
+		ThinkingMode:    existing.ThinkingMode, APIType: existing.APIType, IsDefault: existing.IsDefault,
 		PerModelConfigs: existing.PerModelConfigs,
 		CreatedAt:       existing.CreatedAt, UpdatedAt: existing.UpdatedAt,
 	}
@@ -1318,6 +1322,8 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	}
 	// ThinkingMode: always accept
 	dbSub.ThinkingMode = p.Sub.ThinkingMode
+	// APIType: always accept
+	dbSub.APIType = p.Sub.APIType
 	// MaxOutputTokens: always accept
 	dbSub.MaxOutputTokens = p.Sub.MaxOutputTokens
 	// Model: accept if non-empty
@@ -1472,6 +1478,7 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 		Model: s.Model, Active: s.IsDefault,
 		MaxOutputTokens: s.MaxOutputTokens, MaxContext: s.MaxContext,
 		ThinkingMode:    s.ThinkingMode,
+		APIType:         s.APIType,
 		PerModelConfigs: s.PerModelConfigs,
 	}
 }

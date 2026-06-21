@@ -72,6 +72,7 @@ var AllSettingDefs = []SettingDef{
 	{Key: "llm_model", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Model name to use (provider-specific)", ValidValues: "provider-specific model ID"},
 	{Key: "max_output_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
 	{Key: "thinking_mode", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode", ValidValues: "true|false", DefaultValue: "true"},
+	{Key: "api_type", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
 
 	// ── User-scoped settings (user_settings DB) ──
 	{Key: "enable_stream", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Show LLM output token-by-token", ValidValues: "true|false", DefaultValue: "true"},

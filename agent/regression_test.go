@@ -422,7 +422,7 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 	}
 
 	// Now add subscription_models data
-	subSvc.UpsertModel(e.subID, "test-model", 1000000, 8192, "")
+	subSvc.UpsertModel(e.subID, "test-model", 1000000, 8192, "", "")
 
 	// Verify resolveSubContext now uses subscription_models (higher priority)
 	if mc := f.resolveSubContext("test-model", e); mc != 1000000 {
@@ -435,7 +435,7 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 	}
 
 	// Clean up subscription_models, verify fallback
-	subSvc.UpsertModel(e.subID, "test-model", 0, 0, "") // setting max_context to 0
+	subSvc.UpsertModel(e.subID, "test-model", 0, 0, "", "") // setting max_context to 0
 	if mc := f.resolveSubContext("test-model", e); mc != 200000 {
 		t.Errorf("resolveSubContext(fallback) = %d, want 200000 (fallback to PerModelConfigs)", mc)
 	}
@@ -526,7 +526,7 @@ func TestSwitchModel_CopiesSubIDAndSub(t *testing.T) {
 	}
 
 	// Now set up subscription_models data for the new model
-	subSvc.UpsertModel(subGLM.ID, "deepseek-v4-pro", 1000000, 8192, "")
+	subSvc.UpsertModel(subGLM.ID, "deepseek-v4-pro", 1000000, 8192, "", "")
 
 	// Verify resolveSubContext returns 1M (from subscription_models, not PerModelConfigs)
 	// PerModelConfigs has 0 for deepseek-v4-pro, but subscription_models has 1M
@@ -576,7 +576,7 @@ func TestSwitchModel_PerChatEntryIndependent(t *testing.T) {
 	f.SwitchModel("cli_user", "deepseek-v4-pro", chatID)
 
 	// Add subscription_models data for deepseek under GLM subscription
-	subSvc.UpsertModel(subGLM.ID, "deepseek-v4-pro", 1000000, 8192, "")
+	subSvc.UpsertModel(subGLM.ID, "deepseek-v4-pro", 1000000, 8192, "", "")
 
 	// Now user-level switches to DeepSeek subscription entirely
 	f.InvalidateSender("cli_user")
