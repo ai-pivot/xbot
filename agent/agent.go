@@ -1673,14 +1673,7 @@ func (a *Agent) Run(ctx context.Context) error {
 						// 对正在输出的消息添加 ❌ 表情回复
 						if existingID, ok := a.sessionMsgIDs.Load(qualifyChatID(msg.Channel, msg.ChatID)); ok {
 							if id, ok := existingID.(string); ok {
-								_, _ = a.directSend(channel.OutboundMsg{
-									Channel: msg.Channel,
-									ChatID:  msg.ChatID,
-									Metadata: map[string]string{
-										"add_reaction":        "CrossMark",
-										"reaction_message_id": id,
-									},
-								})
+								a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
 							}
 						}
 						_ = a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 已取消请求", cancelMeta)
@@ -3025,6 +3018,24 @@ func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPro
 	return out.Content, nil
 }
 
+// addReactionToMessage 对指定消息添加表情回复
+func (a *Agent) addReactionToMessage(chName, chatID, messageID, emojiType string) {
+	if a.directSend == nil || messageID == "" {
+		return
+	}
+	_, err := a.directSend(channel.OutboundMsg{
+		Channel: chName,
+		ChatID:  chatID,
+		Metadata: map[string]string{
+			"add_reaction":        emojiType,
+			"reaction_message_id": messageID,
+		},
+	})
+	if err != nil {
+		log.WithError(err).Debug("Failed to add reaction")
+	}
+}
+
 // addReaction 对用户消息添加表情回复，表示处理完成
 func (a *Agent) addReaction(msg bus.InboundMessage) {
 	if a.directSend == nil {
@@ -3037,18 +3048,7 @@ func (a *Agent) addReaction(msg bus.InboundMessage) {
 	if messageID == "" {
 		return
 	}
-
-	_, err := a.directSend(channel.OutboundMsg{
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-		Metadata: map[string]string{
-			"add_reaction":        "DONE",
-			"reaction_message_id": messageID,
-		},
-	})
-	if err != nil {
-		log.WithError(err).Debug("Failed to add reaction")
-	}
+	a.addReactionToMessage(msg.Channel, msg.ChatID, messageID, "DONE")
 }
 
 // ProcessDirect 直接处理一条消息（用于 CLI 模式）
