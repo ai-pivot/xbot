@@ -1664,13 +1664,19 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				cancelKey := msg.Channel + ":" + msg.ChatID
-				cancelMeta := map[string]string{"cancelled": "true"}
+				cancelMeta := map[string]string{"cancelled": "true", "no_patch": "true"}
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
 					case ch.(chan struct{}) <- struct{}{}:
 						log.Info("Cancel signal sent to processing goroutine")
-						_ = a.sendMessage(msg.Channel, msg.ChatID, "Request cancelled.", cancelMeta)
+						// 对正在输出的消息添加 ❌ 表情回复
+						if existingID, ok := a.sessionMsgIDs.Load(qualifyChatID(msg.Channel, msg.ChatID)); ok {
+							if id, ok := existingID.(string); ok {
+								a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
+							}
+						}
+						_ = a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 已取消请求", cancelMeta)
 					default:
 						// cancel 信号已发过
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
@@ -1679,7 +1685,7 @@ func (a *Agent) Run(ctx context.Context) error {
 					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
 					a.pendingCancel.Store(cancelKey, true)
 					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
-					_ = a.sendMessage(msg.Channel, msg.ChatID, "Request queued for cancellation.", cancelMeta)
+					_ = a.sendMessage(msg.Channel, msg.ChatID, "⏳ 请求已排队等待取消", cancelMeta)
 				}
 				continue
 			}
@@ -2682,18 +2688,22 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 
 	if a.directSend != nil {
-		// Always include update_message_id for patch support.
-		// For cards: feishu.go will attempt patch first; if cross-type conflict occurs,
-		// it falls back to creating a new message and deleting the old progress message.
-		if existingID, ok := a.sessionMsgIDs.Load(key); ok {
-			if id, ok := existingID.(string); ok {
-				msg.Metadata["update_message_id"] = id
+		// Skip patch for messages that should not overwrite the streaming
+		// message (e.g. cancel confirmations). These are sent as new messages.
+		if msg.Metadata["no_patch"] != "true" {
+			// Always include update_message_id for patch support.
+			// For cards: feishu.go will attempt patch first; if cross-type conflict occurs,
+			// it falls back to creating a new message and deleting the old progress message.
+			if existingID, ok := a.sessionMsgIDs.Load(key); ok {
+				if id, ok := existingID.(string); ok {
+					msg.Metadata["update_message_id"] = id
+				}
 			}
-		}
 
-		if replyTo, ok := a.sessionReplyTo.Load(key); ok {
-			if id, ok := replyTo.(string); ok {
-				msg.Metadata["message_id"] = id
+			if replyTo, ok := a.sessionReplyTo.Load(key); ok {
+				if id, ok := replyTo.(string); ok {
+					msg.Metadata["message_id"] = id
+				}
 			}
 		}
 
@@ -3008,6 +3018,24 @@ func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPro
 	return out.Content, nil
 }
 
+// addReactionToMessage 对指定消息添加表情回复
+func (a *Agent) addReactionToMessage(chName, chatID, messageID, emojiType string) {
+	if a.directSend == nil || messageID == "" {
+		return
+	}
+	_, err := a.directSend(channel.OutboundMsg{
+		Channel: chName,
+		ChatID:  chatID,
+		Metadata: map[string]string{
+			"add_reaction":        emojiType,
+			"reaction_message_id": messageID,
+		},
+	})
+	if err != nil {
+		log.WithError(err).Debug("Failed to add reaction")
+	}
+}
+
 // addReaction 对用户消息添加表情回复，表示处理完成
 func (a *Agent) addReaction(msg bus.InboundMessage) {
 	if a.directSend == nil {
@@ -3020,18 +3048,7 @@ func (a *Agent) addReaction(msg bus.InboundMessage) {
 	if messageID == "" {
 		return
 	}
-
-	_, err := a.directSend(channel.OutboundMsg{
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-		Metadata: map[string]string{
-			"add_reaction":        "DONE",
-			"reaction_message_id": messageID,
-		},
-	})
-	if err != nil {
-		log.WithError(err).Debug("Failed to add reaction")
-	}
+	a.addReactionToMessage(msg.Channel, msg.ChatID, messageID, "DONE")
 }
 
 // ProcessDirect 直接处理一条消息（用于 CLI 模式）
