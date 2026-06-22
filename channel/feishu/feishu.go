@@ -1043,7 +1043,8 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 
 	// AskUser text reply fallback: if there's a pending AskUser for this chat+user,
 	// treat the text message as the answer instead of a new conversation turn.
-	if askKey := chatID + ":" + senderID; f.tryResolveAskUserByText(askKey, finalContent, senderID, senderName, chatID, chatType, msgTime, requestID, metadata) {
+	askKey, pending := f.findPendingAskUser(chatID, senderID)
+	if pending != nil && f.tryResolveAskUserByText(askKey, finalContent, senderID, senderName, chatID, chatType, msgTime, requestID, metadata) {
 		return nil
 	}
 
@@ -1963,6 +1964,26 @@ func (f *FeishuChannel) buildSimpleAskUserCard(questions []ch.AskQItem) map[stri
 	}
 }
 
+// findPendingAskUser looks up a pending AskUser state by chat+user.
+// In P2P chats, msg.ChatID is senderID (open_id), but card/text callbacks
+// return the real P2P chat_id (oc_xxx). So we try both key formats.
+func (f *FeishuChannel) findPendingAskUser(chatID, senderID string) (string, *feishuPendingAskUser) {
+	primaryKey := chatID + ":" + senderID
+	f.askUserMu.Lock()
+	if pending, ok := f.askUsers[primaryKey]; ok {
+		f.askUserMu.Unlock()
+		return primaryKey, pending
+	}
+	// P2P fallback: the pending state was registered with senderID as ChatID
+	p2pKey := senderID + ":" + senderID
+	if pending, ok := f.askUsers[p2pKey]; ok {
+		f.askUserMu.Unlock()
+		return p2pKey, pending
+	}
+	f.askUserMu.Unlock()
+	return "", nil
+}
+
 // handleAskUserCardAction intercepts card callbacks from AskUser cards.
 // Returns (response, true) if the action was an AskUser action, (nil, false) otherwise.
 func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, action *callback.CallBackAction, chatID, senderID, messageID string) (*callback.CardActionTriggerResponse, bool) {
@@ -1975,15 +1996,9 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 	}
 
 	// Find pending AskUser for this chat+user
-	askKey := chatID + ":" + senderID
-	f.askUserMu.Lock()
-	pending, ok := f.askUsers[askKey]
-	// NOTE: Do NOT delete from askUsers here — we keep it alive for
-	// multi-question mode where the user answers questions one at a time.
-	// Only delete on final submit, cancel, or reject.
-	f.askUserMu.Unlock()
+	askKey, pending := f.findPendingAskUser(chatID, senderID)
 
-	if !ok {
+	if pending == nil {
 		// Log all existing keys for debugging key mismatch
 		existingKeys := []string{}
 		f.askUserMu.Lock()
@@ -2011,13 +2026,13 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 		f.msgBus.Inbound <- bus.InboundMessage{
 			Channel:   "feishu",
 			SenderID:  senderID,
-			ChatID:    chatID,
+			ChatID:    pending.ChatID,
 			ChatType:  "p2p",
 			Content:   "/cancel",
 			Time:      time.Now(),
 			RequestID: log.NewRequestID(),
 			From:      bus.NewIMAddress("feishu", senderID),
-			To:        bus.NewIMAddress("feishu", chatID),
+			To:        bus.NewIMAddress("feishu", pending.ChatID),
 		}
 		return f.buildAskUserAnsweredCard(pending, map[int]string{}, "Cancelled", "grey"), true
 	}
@@ -2034,13 +2049,13 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 			Channel:    "feishu",
 			SenderID:   senderID,
 			SenderName: "",
-			ChatID:     chatID,
+			ChatID:     pending.ChatID,
 			ChatType:   "p2p",
 			Content:    content,
 			Time:       time.Now(),
 			RequestID:  log.NewRequestID(),
 			From:       bus.NewIMAddress("feishu", senderID),
-			To:         bus.NewIMAddress("feishu", chatID),
+			To:         bus.NewIMAddress("feishu", pending.ChatID),
 			Metadata:   map[string]string{"ask_user_answered": "true"},
 		}
 		return f.buildAskUserAnsweredCard(pending, map[int]string{0: "Rejected"}, "Rejected", "red"), true
@@ -2139,17 +2154,20 @@ func (f *FeishuChannel) recordAskUserAnswer(askKey string, pending *feishuPendin
 	}
 	content := strings.Join(parts, "\n\n")
 
+	// Use pending.ChatID (the session's ChatID from the original conversation)
+	// not the card callback's chatID. In P2P chats these differ: the session
+	// uses senderID (open_id) as ChatID, but card callbacks return oc_xxx.
 	f.msgBus.Inbound <- bus.InboundMessage{
 		Channel:    "feishu",
 		SenderID:   senderID,
 		SenderName: "",
-		ChatID:     chatID,
+		ChatID:     pending.ChatID,
 		ChatType:   "p2p",
 		Content:    content,
 		Time:       time.Now(),
 		RequestID:  log.NewRequestID(),
 		From:       bus.NewIMAddress("feishu", senderID),
-		To:         bus.NewIMAddress("feishu", chatID),
+		To:         bus.NewIMAddress("feishu", pending.ChatID),
 		Metadata:   map[string]string{"ask_user_answered": "true"},
 	}
 
