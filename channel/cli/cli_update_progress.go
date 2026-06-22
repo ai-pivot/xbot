@@ -107,6 +107,15 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 		}
 	}
 
+	// Carry forward StreamingTools.
+	// Structured payloads from progressFinalizer do not carry StreamingTools;
+	// without carry forward, a structured event arriving between two
+	// streamToolCallFunc callbacks would erase the first tool's "generating"
+	// display before the second tool name arrives.
+	if len(m.progressState.current.StreamingTools) == 0 && len(prev.StreamingTools) > 0 && sameIter {
+		m.progressState.current.StreamingTools = prev.StreamingTools
+	}
+
 	// SubAgent tree preservation: merge new data into previous tree instead of
 	// blindly copying the old tree. This prevents stale/zombie SubAgent entries
 	// from persisting after they've completed.
