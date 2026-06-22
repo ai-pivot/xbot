@@ -97,9 +97,9 @@ func TestDataURLToAnthropicImage(t *testing.T) {
 
 func TestStripEmbeddedImages(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    string
+		name  string
+		input string
+		want  string
 	}{
 		{
 			name:  "no images",

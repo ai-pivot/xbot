@@ -19,7 +19,7 @@ func TestDetectMimeType(t *testing.T) {
 	}{
 		{"PNG", append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 100)...), "image/png"},
 		{"JPEG", append([]byte("\xFF\xD8\xFF\xE0"), make([]byte, 100)...), "image/jpeg"},
-		{"empty", []byte{}, "image/png"},       // default
+		{"empty", []byte{}, "image/png"},                // default
 		{"unknown", []byte("HELLO WORLD"), "image/png"}, // default
 	}
 	for _, tt := range tests {
