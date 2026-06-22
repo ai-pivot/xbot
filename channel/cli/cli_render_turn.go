@@ -364,6 +364,12 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 	var tools []protocol.ToolProgress
 	seen := make(map[string]bool)
 	addTool := func(t protocol.ToolProgress) {
+		// Generating tools may have the same Name+Label (args still streaming,
+		// no label yet). Don't deduplicate them — each is a distinct tool call.
+		if t.Status == "generating" {
+			tools = append(tools, t)
+			return
+		}
 		key := t.Name + "\x00" + t.Label
 		if seen[key] {
 			return
