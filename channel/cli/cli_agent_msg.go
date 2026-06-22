@@ -172,13 +172,11 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		if len(m.messageQueue) > 0 {
 			m.needFlushQueue = true
 		}
-		// Do NOT force immediate full rebuild via updateViewportContent().
-		// The live streaming display already shows all iterations correctly.
-		// Forcing a rebuild here causes a full glamour re-render of ALL messages,
-		// which can lose the latest iterations' display data.
-		// Just invalidate cache so the next tick (100ms) picks up the
-		// isPartial=false change (guide color dimming) incrementally.
-		m.rc.valid = false
+		// Keep rc.valid = true — same rationale as the normal completion path.
+		// The cancelled message's isPartial=false / dirty=true changes are
+		// picked up lazily by appendNewMessagesToCache (if not yet cached) or
+		// on the next fullRebuild triggered by a real layout change.
+		// Avoids fullRebuild flicker after Ctrl+C.
 		return
 	}
 
@@ -379,12 +377,16 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				m.messages[completedMsgIdx].thinking = thinking
 			}
 		}
-		// Do NOT call updateViewportContent() here — the live streaming display
-		// already shows all content correctly. Forcing a full rebuild here causes
-		// the entire message block to flicker on turn completion. Just invalidate
-		// the cache so the next tick (100ms) picks up the isPartial=false change
-		// (guide color dimming) incrementally, same strategy as cancel ack.
-		m.rc.valid = false
+		// Keep rc.valid = true to avoid fullRebuild flicker on turn completion.
+		// During streaming, rc.msgCount was set to streamingMsgIdx (the streaming
+		// message was excluded from cache). Now that streamingMsgIdx = -1, the
+		// former streaming message appears as a "new" message to the cache.
+		// The next updateViewportContent (if called) uses appendNewMessagesToCache
+		// which renders ONLY this one message — not a full O(N) rebuild.
+		// Even better: the tick handler's idle branch checks !rc.valid and skips
+		// updateViewportContent entirely when valid, so there's zero rendering
+		// overhead. The isPartial=false guide dimming is picked up lazily on the
+		// next real viewport update (new turn, user input, etc.).
 
 		// §11.5 Session reset: clear messages and token usage bar after /new
 		if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
