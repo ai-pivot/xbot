@@ -15,7 +15,6 @@ require (
 	charm.land/glamour/v2 v2.0.0-00010101000000-000000000000
 	charm.land/lipgloss/v2 v2.0.2
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
-	github.com/alecthomas/chroma/v2 v2.24.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/avast/retry-go/v5 v5.0.0
 	github.com/charmbracelet/colorprofile v0.4.3
@@ -41,6 +40,7 @@ require (
 require (
 	github.com/BurntSushi/toml v1.3.2 // indirect
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/alecthomas/chroma/v2 v2.24.0 // indirect
 	github.com/alex-ant/gomath v0.0.0-20160516115720-89013a210a82 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
@@ -99,4 +99,4 @@ replace github.com/pgavlin/mermaid-ascii => github.com/Chronostasys/mermaid-asci
 
 replace github.com/muesli/reflow => github.com/Chronostasys/reflow v0.3.1-0.20260521051503-dc28980c812f
 
-replace charm.land/glamour/v2 => github.com/Chronostasys/glamour/v2 v2.0.0-20260605055613-68fad3c7e2f9
+replace charm.land/glamour/v2 => github.com/Chronostasys/glamour/v2 v2.0.0-20260622062237-90791654e88b
