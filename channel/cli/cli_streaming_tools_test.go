@@ -66,9 +66,10 @@ func TestLiveIterationBlocks_SameNameStreamingTools(t *testing.T) {
 	}
 }
 
-// TestStreamingToolsCarryForward verifies that carryForwardProgressState
-// preserves StreamingTools when a structured event replaces current.
-func TestStreamingToolsCarryForward(t *testing.T) {
+// TestStreamingToolsCarryForward_SameIter verifies that carryForwardProgressState
+// preserves StreamingTools when a structured event replaces current within
+// the same iteration.
+func TestStreamingToolsCarryForward_SameIter(t *testing.T) {
 	model := newCLIModel()
 
 	// Simulate: StreamingTools set on current
@@ -98,15 +99,78 @@ func TestStreamingToolsCarryForward(t *testing.T) {
 	}
 }
 
-// TestStreamingToolsMergeInStreamOnly verifies that handleProgressMsg
-// correctly merges StreamingTools from multiple stream-only events.
-func TestStreamingToolsMergeInStreamOnly(t *testing.T) {
+// TestStreamingToolsCarryForward_DifferentIter verifies that StreamingTools
+// are NOT carried forward when the new event belongs to a different iteration.
+// This tests the sameIter guard.
+func TestStreamingToolsCarryForward_DifferentIter(t *testing.T) {
+	model := newCLIModel()
+
+	// Previous iteration had StreamingTools
+	prev := &protocol.ProgressEvent{
+		Phase:          "tool_exec",
+		Iteration:      1,
+		StreamingTools: []protocol.ToolProgress{{Name: "Read", Status: "generating"}},
+	}
+
+	// New event is a different iteration (2 vs 1) — carry forward should NOT happen
+	newPayload := &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 2,
+	}
+
+	model.progressState.current = newPayload
+	model.carryForwardProgressState(prev)
+
+	if len(model.progressState.current.StreamingTools) != 0 {
+		t.Errorf("StreamingTools should NOT carry forward across iterations, got %d tools",
+			len(model.progressState.current.StreamingTools))
+	}
+}
+
+// TestStreamingToolsCarryForward_FiltersStaleActive verifies that carry
+// forward does NOT restore a tool that has already transitioned to
+// ActiveTools (running/done). This prevents the same tool rendering as
+// both "generating" and "running" simultaneously.
+func TestStreamingToolsCarryForward_FiltersStaleActive(t *testing.T) {
+	model := newCLIModel()
+
+	// Previous: Read was generating
+	prev := &protocol.ProgressEvent{
+		Iteration: 1,
+		StreamingTools: []protocol.ToolProgress{
+			{Name: "Read", Status: "generating"},
+			{Name: "Grep", Status: "generating"},
+		},
+	}
+
+	// New event: Read has transitioned to running (ActiveTools),
+	// Grep is still generating (not in ActiveTools yet).
+	newPayload := &protocol.ProgressEvent{
+		Iteration:   1,
+		ActiveTools: []protocol.ToolProgress{{Name: "Read", Status: "running"}},
+	}
+
+	model.progressState.current = newPayload
+	model.carryForwardProgressState(prev)
+
+	// Only Grep should be carried forward — Read is already in ActiveTools
+	if len(model.progressState.current.StreamingTools) != 1 {
+		t.Fatalf("expected 1 carried-forward tool (Grep), got %d: %+v",
+			len(model.progressState.current.StreamingTools), model.progressState.current.StreamingTools)
+	}
+	if model.progressState.current.StreamingTools[0].Name != "Grep" {
+		t.Errorf("expected Grep, got %q", model.progressState.current.StreamingTools[0].Name)
+	}
+}
+
+// TestStreamingToolsReplaceInStreamOnly verifies that handleProgressMsg
+// correctly replaces StreamingTools from stream-only events (snapshot semantics).
+func TestStreamingToolsReplaceInStreamOnly(t *testing.T) {
 	model := newCLIModel()
 	model.typing = true
 	model.agentTurnID = 1
 	model.channelName = "cli"
 	model.chatID = "test"
-	// Bypass ChatID filter by using the matching key
 	chatKey := "cli:test"
 
 	// First StreamingTools event: one tool
@@ -150,9 +214,9 @@ func TestStreamingToolsMergeInStreamOnly(t *testing.T) {
 		names[tool.Name] = true
 	}
 	if !names["Read"] {
-		t.Error("Read missing from StreamingTools after merge")
+		t.Error("Read missing from StreamingTools after replace")
 	}
 	if !names["Grep"] {
-		t.Error("Grep missing from StreamingTools after merge")
+		t.Error("Grep missing from StreamingTools after replace")
 	}
 }

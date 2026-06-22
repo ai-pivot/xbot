@@ -112,8 +112,22 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// without carry forward, a structured event arriving between two
 	// streamToolCallFunc callbacks would erase the first tool's "generating"
 	// display before the second tool name arrives.
+	// Guard: filter out tools whose Name already appears in ActiveTools —
+	// the tool has transitioned from "generating" to "running"/"done", and
+	// carrying forward the stale "generating" state would cause the same tool
+	// to render twice (once as generating skipping dedup, once as running).
 	if len(m.progressState.current.StreamingTools) == 0 && len(prev.StreamingTools) > 0 && sameIter {
-		m.progressState.current.StreamingTools = prev.StreamingTools
+		activeNames := make(map[string]bool)
+		for _, t := range m.progressState.current.ActiveTools {
+			activeNames[t.Name] = true
+		}
+		var carried []protocol.ToolProgress
+		for _, t := range prev.StreamingTools {
+			if !activeNames[t.Name] {
+				carried = append(carried, t)
+			}
+		}
+		m.progressState.current.StreamingTools = carried
 	}
 
 	// SubAgent tree preservation: merge new data into previous tree instead of
