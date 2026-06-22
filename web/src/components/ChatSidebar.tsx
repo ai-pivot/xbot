@@ -1,20 +1,27 @@
 import { useTranslation } from '../i18n'
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { IconRefresh, IconPlus, IconSearch, IconSidebarCollapse, IconSidebarExpand } from './Icons'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { IconRefresh, IconPlus, IconSearch, IconSidebarCollapse, IconSidebarExpand, IconGlobe, IconChevronDown, IconFolder } from './Icons'
 import ConfirmDialog from './ConfirmDialog'
 
 interface ChatInfo {
   chat_id: string
+  channel?: string
   label: string
   last_active: string
   preview: string
   is_current: boolean
 }
 
+interface ChannelInfo {
+  channel: string
+  label: string
+}
+
 interface ChatSidebarProps {
-  onSwitchChat: (chatID: string) => void
+  onSwitchChat: (chatID: string, channel: string) => void
   onNewChat: () => void
   currentChatID: string
+  currentChannel?: string
   onExportMarkdown?: () => void
   onExportJSON?: () => void
   connected?: boolean
@@ -23,7 +30,7 @@ interface ChatSidebarProps {
   unreadSessions?: Set<string>
 }
 
-export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, onExportMarkdown, onExportJSON, connected = true, reconnecting = false, sessionStates, unreadSessions }: ChatSidebarProps) {
+export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, currentChatID, currentChannel, onExportMarkdown, onExportJSON, connected = true, reconnecting = false, sessionStates, unreadSessions }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768)
@@ -32,6 +39,23 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   const [searchQuery, setSearchQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const { t } = useTranslation()
+
+  // Cross-channel browsing: channel selector state
+  const [channels, setChannels] = useState<ChannelInfo[]>([{ channel: 'web', label: 'Web' }])
+  const [activeChannel, setActiveChannel] = useState('web')
+  const [channelDropdownOpen, setChannelDropdownOpen] = useState(false)
+  const channelDropdownRef = useRef<HTMLDivElement>(null)
+
+  // Close channel dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (channelDropdownRef.current && !channelDropdownRef.current.contains(e.target as Node)) {
+        setChannelDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
   const isMobileRef = useRef(isMobile)
@@ -43,22 +67,43 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     return () => mql.removeEventListener('change', handler)
   }, [])
 
-  const fetchChats = useCallback(async () => {
+  // Fetch available channels (admin sees all; non-admin sees only web)
+  const fetchChannels = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/channels')
+      const data = await resp.json()
+      if (data.ok && data.channels?.length > 0) {
+        setChannels(data.channels)
+      }
+    } catch { /* non-admin or error — default to web only */ }
+  }, [])
+  useEffect(() => { fetchChannels() }, [fetchChannels])
+
+  // Sync activeChannel from parent (e.g. on page refresh after server-side switch)
+  useEffect(() => {
+    if (currentChannel && currentChannel !== activeChannel) {
+      setActiveChannel(currentChannel)
+    }
+  }, [currentChannel]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchChats = useCallback(async (channel?: string) => {
+    const ch = channel || activeChannel
     setLoading(true)
     try {
-      const resp = await fetch('/api/chats')
+      const resp = await fetch(`/api/chats${ch && ch !== 'web' ? `?channel=${encodeURIComponent(ch)}` : ''}`)
       const data = await resp.json()
       if (data.ok) setChats(data.chats || [])
     } catch (err) { console.warn('[ChatSidebar] fetchChats failed:', err) }
     setLoading(false)
-  }, [])
+  }, [activeChannel])
 
   useEffect(() => { fetchChats() }, [fetchChats])
 
   const handleSwitch = async (chatID: string) => {
     try {
-      await fetch(`/api/chats/${encodeURIComponent(chatID)}/switch`, { method: 'POST' })
-      onSwitchChat(chatID)
+      const qs = activeChannel !== 'web' ? `?channel=${encodeURIComponent(activeChannel)}` : ''
+      await fetch(`/api/chats/${encodeURIComponent(chatID)}/switch${qs}`, { method: 'POST' })
+      onSwitchChat(chatID, activeChannel)
       fetchChats()
       if (isMobileRef.current) setCollapsed(true)
     } catch (err) { console.warn('[ChatSidebar] switchChat failed:', err) }
@@ -74,7 +119,7 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
       const data = await resp.json()
       if (data.ok && data.chat_id) {
         await fetch(`/api/chats/${encodeURIComponent(data.chat_id)}/switch`, { method: 'POST' })
-        onSwitchChat(data.chat_id)
+        onSwitchChat(data.chat_id, 'web')
         fetchChats()
         if (isMobileRef.current) setCollapsed(true)
       }
@@ -90,19 +135,12 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
     setConfirmDelete(null)
     try {
       await fetch(`/api/chats/${encodeURIComponent(chatID)}`, { method: 'DELETE' })
-      const resp = await fetch('/api/chats')
-      const data = await resp.json()
-      if (data.ok) {
-        const remaining: ChatInfo[] = (data.chats || []).filter((c: ChatInfo) => c.chat_id !== chatID)
-        setChats(remaining)
-        if (chatID === currentChatID) {
-          if (remaining.length > 0) {
-            await fetch(`/api/chats/${encodeURIComponent(remaining[0].chat_id)}/switch`, { method: 'POST' })
-            onSwitchChat(remaining[0].chat_id)
-          } else {
-            _onNewChat()
-          }
-        }
+      fetchChats()
+      // After deleting current chat, switch to remaining one
+      if (chatID === currentChatID) {
+        // fetchChats will update the list; we need to wait for it to pick the first remaining
+        // For now, just call onNewChat as fallback
+        _onNewChat()
       }
     } catch (err) { console.warn('[ChatSidebar] deleteChat failed:', err) }
   }
@@ -125,6 +163,53 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
   const filteredChats = searchQuery.trim()
     ? chats.filter(c => (c.label || '').toLowerCase().includes(searchQuery.toLowerCase()) || (c.preview || '').toLowerCase().includes(searchQuery.toLowerCase()))
     : chats
+
+  // Group CLI sessions by working directory (chat_id format: "/path/to/cwd" or "/path/to/cwd:Agent-xxx")
+  const groupedChats = useMemo(() => {
+    if (activeChannel !== 'cli') return null
+    const groups: Record<string, ChatInfo[]> = {}
+    for (const chat of filteredChats) {
+      const cwd = chat.chat_id.includes(':') ? chat.chat_id.split(':')[0] : chat.chat_id
+      if (!groups[cwd]) groups[cwd] = []
+      groups[cwd].push(chat)
+    }
+    // Sort groups by latest last_active
+    return Object.entries(groups).sort((a, b) => {
+      const aLatest = Math.max(...a[1].map(c => new Date(c.last_active).getTime() || 0))
+      const bLatest = Math.max(...b[1].map(c => new Date(c.last_active).getTime() || 0))
+      return bLatest - aLatest
+    })
+  }, [filteredChats, activeChannel])
+
+  const renderChatItem = (chat: ChatInfo) => {
+    const isBusy = sessionStates?.[chat.chat_id]?.busy ?? false
+    const isUnread = unreadSessions?.has(chat.chat_id) ?? false
+    const isActive = chat.is_current
+    // For CLI grouped sessions, show the session name after ":" (or "main" if no colon)
+    let displayName = chat.label || t('unnamedSession')
+    if (activeChannel === 'cli' && chat.chat_id.includes(':')) {
+      displayName = chat.chat_id.split(':').slice(1).join(':') || chat.label
+    }
+    return (
+      <div key={chat.chat_id} className={`sidebar-item ${isActive ? 'sidebar-item-active' : ''} ${isUnread ? 'sidebar-item-unread' : ''}`} onClick={() => handleSwitch(chat.chat_id)}>
+        {renamingId === chat.chat_id ? (
+          <input className="sidebar-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => handleRename(e, chat.chat_id)} onBlur={() => setRenamingId(null)} autoFocus onClick={e => e.stopPropagation()} />
+        ) : (
+          <>
+            <span className={
+              isBusy ? 'sidebar-busy-dot'
+              : isActive ? 'sidebar-current-dot'
+              : isUnread ? 'sidebar-unread-dot'
+              : 'sidebar-idle-dot'
+            } />
+            <span className="sidebar-chatname" onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}>{displayName}</span>
+            {!isActive && activeChannel === 'web' && <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>×</button>}
+            {(isActive || activeChannel !== 'web') && <span className="sidebar-delete-spacer" />}
+          </>
+        )}
+      </div>
+    )
+  }
 
   if (collapsed) {
     const status = connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'
@@ -161,10 +246,42 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
         </div>
       </div>
 
-      {/* New Chat */}
-      <button className="sidebar-new-btn" onClick={handleCreate}>
-        <span style={{ fontSize: 16 }}>+</span> {t("newSession")}
-      </button>
+      {/* Channel Selector dropdown (only shown if more than web) */}
+      {channels.length > 1 && (
+        <div className="sidebar-channel-selector" ref={channelDropdownRef}>
+          <button
+            className="sidebar-channel-trigger"
+            onClick={() => setChannelDropdownOpen(!channelDropdownOpen)}
+          >
+            <IconGlobe width={14} height={14} />
+            <span className="sidebar-channel-label">{channels.find(c => c.channel === activeChannel)?.label || 'Web'}</span>
+            <IconChevronDown width={12} height={12} className={`sidebar-channel-chevron ${channelDropdownOpen ? 'open' : ''}`} />
+          </button>
+          {channelDropdownOpen && (
+            <div className="sidebar-channel-dropdown">
+              {channels.map(ch => (
+                <button
+                  key={ch.channel}
+                  className={`sidebar-channel-option ${activeChannel === ch.channel ? 'active' : ''}`}
+                  onClick={() => {
+                    setChannelDropdownOpen(false)
+                    setActiveChannel(ch.channel)
+                  }}
+                >
+                  {ch.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* New Chat — only for web channel (can't create sessions for other channels) */}
+      {activeChannel === 'web' && (
+        <button className="sidebar-new-btn" onClick={handleCreate}>
+          <span style={{ fontSize: 16 }}>+</span> {t("newSession")}
+        </button>
+      )}
 
       {/* Search */}
       <div className="sidebar-search-wrap">
@@ -177,39 +294,29 @@ export default function ChatSidebar({ onSwitchChat, onNewChat: _onNewChat, curre
           <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>{t('sidebarLoading')}</div>
         ) : chats.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>{t('noSessions')}</div>
+        ) : groupedChats ? (
+          // CLI: grouped by working directory
+          groupedChats.map(([cwd, sessionList]) => {
+            const cwdShort = cwd.split('/').pop() || cwd
+            return (
+              <div key={cwd} className="sidebar-group">
+                <div className="sidebar-group-header" title={cwd}>
+                  <IconFolder width={13} height={13} />
+                  <span className="sidebar-group-name">{cwdShort}</span>
+                  <span className="sidebar-group-count">{sessionList.length}</span>
+                </div>
+                {sessionList.map(chat => renderChatItem(chat))}
+              </div>
+            )
+          })
         ) : (
-          filteredChats.map((chat) => {
-              const isBusy = sessionStates?.[chat.chat_id]?.busy ?? false
-              const isUnread = unreadSessions?.has(chat.chat_id) ?? false
-              const isActive = chat.is_current
-              return (
-            <div key={chat.chat_id} className={`sidebar-item ${isActive ? 'sidebar-item-active' : ''} ${isUnread ? 'sidebar-item-unread' : ''}`} onClick={() => handleSwitch(chat.chat_id)}>
-              {renamingId === chat.chat_id ? (
-                <input className="sidebar-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => handleRename(e, chat.chat_id)} onBlur={() => setRenamingId(null)} autoFocus onClick={e => e.stopPropagation()} />
-              ) : (
-                <>
-                  {/* Status dot — always rendered to maintain alignment */}
-                  <span className={
-                    isBusy ? 'sidebar-busy-dot'
-                    : isActive ? 'sidebar-current-dot'
-                    : isUnread ? 'sidebar-unread-dot'
-                    : 'sidebar-idle-dot'
-                  } />
-                  <span className="sidebar-chatname" onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(chat.chat_id); setRenameValue(chat.label) }}>{chat.label || t('unnamedSession')}</span>
-                  {/* Delete button — always reserve space to keep alignment */}
-                  {!isActive && <button onClick={(e) => handleDelete(e, chat.chat_id)} className="sidebar-delete-btn" aria-label={t("deleteSession")}>×</button>}
-                  {isActive && <span className="sidebar-delete-spacer" />}
-                </>
-              )}
-            </div>
-              )
-            })
+          filteredChats.map(chat => renderChatItem(chat))
         )}
       </div>
 
       {/* Footer */}
       <div className="sidebar-footer">
-        <button onClick={fetchChats} disabled={loading} className="sidebar-footer-btn"><IconRefresh className="inline" /> {loading ? '...' : t('refreshSessions')}</button>
+        <button onClick={() => fetchChats()} disabled={loading} className="sidebar-footer-btn"><IconRefresh className="inline" /> {loading ? '...' : t('refreshSessions')}</button>
         {onExportMarkdown && <button onClick={onExportMarkdown} className="sidebar-footer-btn" title={t('exportMarkdown')}>↓ MD</button>}
         {onExportJSON && <button onClick={onExportJSON} className="sidebar-footer-btn" title={t('exportJSON')}>↓ JSON</button>}
       </div>

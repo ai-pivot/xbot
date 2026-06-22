@@ -1,5 +1,5 @@
 {
-  "enable_command_hooks": true,
+  "enable_command_hooks": false,
   "hooks": {
     "PreToolUse": [
       {

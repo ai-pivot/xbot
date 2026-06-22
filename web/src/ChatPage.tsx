@@ -249,6 +249,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
   const currentChatIDRef = useRef(currentChatID)
   // Keep ref in sync with state
   currentChatIDRef.current = currentChatID
+  const [currentChannel, setCurrentChannel] = useState<string>('web')
   const [replyingTo, setReplyingTo] = useState<{ id: string; content: string; type: 'user' | 'assistant' } | null>(null)
   const [logoutConfirm, setLogoutConfirm] = useState(false)
   const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>(() =>
@@ -569,6 +570,10 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
           // Recover currentChatID from backend on page refresh
           if (data.chat_id && !currentChatIDRef.current) {
             setCurrentChatID(data.chat_id)
+          }
+          // Recover currentChannel from backend on page refresh
+          if (data.channel) {
+            setCurrentChannel(data.channel)
           }
           // Check if any message already has non-empty detail (iteration history
           // from cancellation or normal completion). If so, skip the tool_calls
@@ -1196,8 +1201,9 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
         reconnecting={reconnecting}
         sessionStates={sessionStates}
         unreadSessions={unreadSessions}
-        onSwitchChat={(chatID: string) => {
+        onSwitchChat={(chatID: string, channel: string) => {
             setCurrentChatID(chatID)
+            setCurrentChannel(channel)
             setMessages([])
             resetProgress()
             setTodos([])
@@ -1229,6 +1235,7 @@ export default function ChatPage({ onLogout }: ChatPageProps) {
             reasoningRef.current = ''
           }}
           currentChatID={currentChatID}
+          currentChannel={currentChannel}
           onExportMarkdown={handleExportMarkdown}
           onExportJSON={handleExportJSON}
       />

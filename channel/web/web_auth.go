@@ -387,6 +387,7 @@ func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			senderID = si.feishuUserID
 		}
 		ctx := contextWithSenderID(r.Context(), senderID)
+		ctx = contextWithUserID(ctx, si.userID)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -630,7 +631,10 @@ func (wc *WebChannel) isSecureCookie() bool {
 
 type contextKey string
 
-const senderIDKey contextKey = "sender_id"
+const (
+	senderIDKey contextKey = "sender_id"
+	userIDKey   contextKey = "user_id"
+)
 
 func contextWithSenderID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, senderIDKey, id)
@@ -641,6 +645,17 @@ func senderIDFromContext(ctx context.Context) string {
 		return id
 	}
 	return ""
+}
+
+func contextWithUserID(ctx context.Context, userID int) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
+func userIDFromContext(ctx context.Context) int {
+	if id, ok := ctx.Value(userIDKey).(int); ok {
+		return id
+	}
+	return 0
 }
 
 // ---------------------------------------------------------------------------

@@ -144,3 +144,12 @@ export const IconSun = memo((props: IconProps) => (
 export const IconMoon = memo((props: IconProps) => (
   <svg {...s} {...props}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
 ))
+export const IconGlobe = memo((props: IconProps) => (
+  <svg {...s} {...props}><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+))
+export const IconChevronDown = memo((props: IconProps) => (
+  <svg {...s} {...props}><polyline points="6 9 12 15 18 9"/></svg>
+))
+export const IconFolder = memo((props: IconProps) => (
+  <svg {...s} {...props}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z"/></svg>
+))

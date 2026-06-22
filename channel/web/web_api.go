@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	ch "xbot/channel"
+	log "xbot/logger"
 	"xbot/tools"
 )
 
@@ -24,6 +26,7 @@ type historyResponse struct {
 	ActiveProgress *histProgress `json:"active_progress,omitempty"` // live progress snapshot for in-progress turns
 	LastSeq        uint64        `json:"last_seq,omitempty"`        // seq of active_progress snapshot (for WS sync)
 	ChatID         string        `json:"chat_id,omitempty"`         // current active chatID (for page-refresh recovery)
+	Channel        string        `json:"channel,omitempty"`         // current active channel (for page-refresh recovery)
 	Error          string        `json:"error,omitempty"`
 	Deleted        int64         `json:"deleted,omitempty"`
 }
@@ -83,17 +86,23 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 // handleHistoryGet returns the message history for the current user.
 func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, senderID string) {
 
-	// Use the currently active chatID (respects chat switching)
-	chatID := wc.getCurrentChatID(senderID)
+	// Use the currently active session (channel + chatID, respects chat switching)
+	sel := wc.getCurrentSession(senderID)
 
-	// Find tenant ID for this web user
+	// Cross-channel access requires admin.
+	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+		return
+	}
+
+	// Find tenant ID for this user's active session
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
 	).Scan(&tenantID)
 	if err != nil {
 		// No tenant yet = no history
-		writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: nil, ChatID: chatID})
+		writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: nil, ChatID: sel.ChatID, Channel: sel.Channel})
 		return
 	}
 
@@ -155,7 +164,13 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 
 	processing := false
 	if wc.callbacks.IsProcessing != nil {
-		processing = wc.callbacks.IsProcessing(senderID)
+		// For cross-channel browsing, use activeProgress as the processing indicator
+		// since IsProcessing(senderID) checks the admin's own session, not the browsed one.
+		if sel.Channel != "web" {
+			// Cross-channel: rely on activeProgress below instead
+		} else {
+			processing = wc.callbacks.IsProcessing(senderID)
+		}
 	}
 
 	// Always attempt to get active progress snapshot, regardless of IsProcessing.
@@ -165,7 +180,7 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 	// data is still available).
 	var activeProgress *histProgress
 	if wc.callbacks.GetActiveProgress != nil {
-		if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil && p.Phase != "done" {
+		if p := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); p != nil && p.Phase != "done" {
 			hp := &histProgress{
 				Phase:         p.Phase,
 				Iteration:     p.Iteration,
@@ -202,22 +217,29 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 
 	// Include current event stream seq so frontend can WS sync from this point
 	var lastSeq uint64
-	if es := wc.getEventStream(chatID); es != nil {
+	if es := wc.getEventStream(sel.ChatID); es != nil {
 		lastSeq = es.lastSeq()
 	}
 
-	writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: messages, Processing: processing, ActiveProgress: activeProgress, LastSeq: lastSeq, ChatID: chatID})
+	writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: messages, Processing: processing, ActiveProgress: activeProgress, LastSeq: lastSeq, ChatID: sel.ChatID, Channel: sel.Channel})
 }
 
 // handleHistoryDelete clears all messages for the current user.
 func (wc *WebChannel) handleHistoryDelete(w http.ResponseWriter, r *http.Request, senderID string) {
-	// Use the currently active chatID (respects chat switching)
-	chatID := wc.getCurrentChatID(senderID)
+	// Use the currently active session (channel + chatID, respects chat switching)
+	sel := wc.getCurrentSession(senderID)
 
-	// Find tenant ID for this web user
+	// Cross-channel history deletion is not allowed — admin can browse but
+	// not delete other channels' history from the Web UI.
+	if sel.Channel != "web" {
+		jsonErrorResponse(w, http.StatusForbidden, "cannot delete cross-channel history")
+		return
+	}
+
+	// Find tenant ID for this user's active session
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
 	).Scan(&tenantID)
 	if err != nil {
 		// No tenant yet = nothing to delete
@@ -1177,12 +1199,16 @@ func (wc *WebChannel) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Find tenant ID for this web user
-	// Use the currently active chatID (respects chat switching)
-	chatID := wc.getCurrentChatID(senderID)
+	// Find tenant ID for this user's active session
+	sel := wc.getCurrentSession(senderID)
+	// Cross-channel access requires admin.
+	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+		return
+	}
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
 	).Scan(&tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, searchResponse{OK: true, Results: nil})
@@ -1373,11 +1399,16 @@ func (wc *WebChannel) handleSessionMessages(w http.ResponseWriter, r *http.Reque
 
 // handleMainSessionMessages returns the main conversation history as session messages.
 func (wc *WebChannel) handleMainSessionMessages(w http.ResponseWriter, r *http.Request, senderID string) {
-	// Use the currently active chatID (respects chat switching)
-	chatID := wc.getCurrentChatID(senderID)
+	// Use the currently active session (channel + chatID, respects chat switching)
+	sel := wc.getCurrentSession(senderID)
+	// Cross-channel access requires admin.
+	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+		return
+	}
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
 	).Scan(&tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}})
@@ -1439,8 +1470,24 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chats": []any{}})
 			return
 		}
-		currentChatID := wc.getCurrentChatID(senderID)
-		chats, err := wc.callbacks.ChatList(senderID, currentChatID)
+		channel := r.URL.Query().Get("channel")
+		if channel == "" {
+			channel = "web"
+		}
+		// Non-admin users can only browse web sessions.
+		if !wc.isAdmin(r.Context(), senderID) && channel != "web" {
+			jsonErrorResponse(w, http.StatusForbidden, "access denied")
+			return
+		}
+		// getCurrentSession already returns the right {channel, chatID};
+		// only use it when the requested channel matches the active session.
+		sel := wc.getCurrentSession(senderID)
+		currentChatID := sel.ChatID
+		if sel.Channel != channel {
+			// Listing a different channel — no "current" chat to highlight
+			currentChatID = ""
+		}
+		chats, err := wc.callbacks.ChatList(senderID, currentChatID, channel)
 		if err != nil {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1472,6 +1519,7 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleChatSwitch handles POST /api/chats/{chatID}/switch — switch active chatroom.
+// Optional ?channel=cli query param switches to a non-web channel (admin only).
 func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1489,18 +1537,42 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ownership check: user can only switch to their own default chat (chatID == senderID)
-	// or to a chat they own in user_chats table.
-	if !wc.userOwnsChat(senderID, chatID) {
-		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		channel = "web"
+	}
+
+	// Non-admin users can only switch within web channel.
+	if !wc.isAdmin(r.Context(), senderID) && channel != "web" {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
 		return
 	}
 
-	wc.userCurrentChatMu.Lock()
-	wc.userCurrentChat[senderID] = chatID
-	wc.userCurrentChatMu.Unlock()
+	// For web channel: check chat ownership via user_chats table.
+	// For other channels (admin only): verify the tenant exists in DB.
+	if channel == "web" {
+		if !wc.userOwnsChat(senderID, chatID) {
+			jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+			return
+		}
+	} else {
+		// Verify tenant exists for the requested channel + chatID.
+		var count int
+		err := wc.db.QueryRow(
+			"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
+			channel, chatID,
+		).Scan(&count)
+		if err != nil || count == 0 {
+			jsonErrorResponse(w, http.StatusNotFound, "session not found")
+			return
+		}
+	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chat_id": chatID})
+	wc.userCurrentSessionMu.Lock()
+	wc.userCurrentSession[senderID] = SessionSelector{Channel: channel, ChatID: chatID}
+	wc.userCurrentSessionMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chat_id": chatID, "channel": channel})
 }
 
 // handleChatDelete handles DELETE /api/chats/{chatID} — delete a chatroom.
@@ -1537,12 +1609,12 @@ func (wc *WebChannel) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If deleting current chat, switch back to default
-	wc.userCurrentChatMu.Lock()
-	if wc.userCurrentChat[senderID] == chatID {
-		delete(wc.userCurrentChat, senderID)
+	// If deleting current chat, reset to default session
+	wc.userCurrentSessionMu.Lock()
+	if sel, ok := wc.userCurrentSession[senderID]; ok && sel.ChatID == chatID {
+		delete(wc.userCurrentSession, senderID)
 	}
-	wc.userCurrentChatMu.Unlock()
+	wc.userCurrentSessionMu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -1608,13 +1680,18 @@ func (wc *WebChannel) handleContextInfo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Use the currently active chatID (respects chat switching)
-	chatID := wc.getCurrentChatID(senderID)
+	// Use the currently active session (channel + chatID, respects chat switching)
+	sel := wc.getCurrentSession(senderID)
+	// Cross-channel access requires admin.
+	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+		return
+	}
 
-	// Find tenant ID for this web user
+	// Find tenant ID for this user's active session
 	var tenantID int64
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", chatID,
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
 	).Scan(&tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -1637,7 +1714,11 @@ func (wc *WebChannel) handleContextInfo(w http.ResponseWriter, r *http.Request) 
 	// Get max context tokens from user config
 	maxTokens := 0
 	if wc.callbacks.LLMGetMaxContext != nil {
-		maxTokens = wc.callbacks.LLMGetMaxContext(senderID)
+		// For cross-channel browsing, maxTokens from admin's config is not meaningful.
+		// Only compute usage_pct for the admin's own (web) sessions.
+		if sel.Channel == "web" {
+			maxTokens = wc.callbacks.LLMGetMaxContext(senderID)
+		}
 	}
 
 	usagePct := float64(0)
@@ -1662,12 +1743,36 @@ func (wc *WebChannel) handleContextInfo(w http.ResponseWriter, r *http.Request) 
 // getCurrentChatID returns the currently active chatID for a user.
 // Defaults to senderID (backward compatible).
 func (wc *WebChannel) getCurrentChatID(senderID string) string {
-	wc.userCurrentChatMu.RLock()
-	defer wc.userCurrentChatMu.RUnlock()
-	if id, ok := wc.userCurrentChat[senderID]; ok {
-		return id
+	wc.userCurrentSessionMu.RLock()
+	defer wc.userCurrentSessionMu.RUnlock()
+	if sel, ok := wc.userCurrentSession[senderID]; ok {
+		return sel.ChatID
 	}
 	return senderID
+}
+
+// getCurrentSession returns the active SessionSelector (channel + chatID).
+func (wc *WebChannel) getCurrentSession(senderID string) SessionSelector {
+	wc.userCurrentSessionMu.RLock()
+	defer wc.userCurrentSessionMu.RUnlock()
+	if sel, ok := wc.userCurrentSession[senderID]; ok {
+		return sel
+	}
+	return SessionSelector{Channel: "web", ChatID: senderID}
+}
+
+// isAdmin returns true if the user is an admin.
+// Admin is determined by:
+// 1. senderID == "admin" (CLI token auth via AdminToken)
+// 2. web user ID == 1 (first registered user, web cookie auth)
+func (wc *WebChannel) isAdmin(ctx context.Context, senderID string) bool {
+	if senderID == "admin" {
+		return true
+	}
+	if userID := userIDFromContext(ctx); userID == 1 {
+		return true
+	}
+	return false
 }
 
 // userOwnsChat checks whether senderID owns the given chatID.
@@ -1717,4 +1822,77 @@ var sensitiveSettingKeys = func() map[string]bool {
 // isSensitiveSettingKey returns true if the key is marked sensitive in setting definitions.
 func isSensitiveSettingKey(key string) bool {
 	return sensitiveSettingKeys[key]
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Channel Browsing API
+// ---------------------------------------------------------------------------
+
+// ChannelInfo describes a browsable channel for the Web UI.
+type ChannelInfo struct {
+	Channel string `json:"channel"`
+	Label   string `json:"label"`
+}
+
+// channelLabels maps internal channel names to human-readable labels.
+var channelLabels = map[string]string{
+	"web":    "Web",
+	"cli":    "CLI (TUI)",
+	"feishu": "Feishu",
+	"qq":     "QQ",
+	"napcat": "NapCat",
+}
+
+// handleChannels handles GET /api/channels — lists channels available for browsing.
+// Admin users see all channels that have tenants in the database.
+// Non-admin users only see "web".
+func (wc *WebChannel) handleChannels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// Non-admin users can only browse web sessions.
+	if !wc.isAdmin(r.Context(), senderID) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"channels": []ChannelInfo{{Channel: "web", Label: channelLabels["web"]}},
+		})
+		return
+	}
+
+	// Admin: query distinct channels from tenants table.
+	channels := []ChannelInfo{{Channel: "web", Label: channelLabels["web"]}}
+	if wc.db != nil {
+		rows, err := wc.db.Query("SELECT DISTINCT channel FROM tenants WHERE channel != 'web' AND channel != '_shared' ORDER BY channel")
+		if err == nil {
+			defer rows.Close()
+			seen := map[string]bool{"web": true}
+			for rows.Next() {
+				var channelName string
+				if err := rows.Scan(&channelName); err != nil {
+					continue
+				}
+				if seen[channelName] {
+					continue
+				}
+				seen[channelName] = true
+				label := channelLabels[channelName]
+				if label == "" {
+					label = channelName
+				}
+				channels = append(channels, ChannelInfo{Channel: channelName, Label: label})
+			}
+			if err := rows.Err(); err != nil {
+				log.WithError(err).Warn("Failed to iterate channels")
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channels": channels})
 }

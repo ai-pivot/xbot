@@ -323,26 +323,32 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) web.W
 		return result, true
 	}
 	// Wire Chat CRUD
-	callbacks.ChatList = func(senderID, currentChatID string) ([]web.UserChatWithPreview, error) {
+	callbacks.ChatList = func(senderID, currentChatID, channel string) ([]web.UserChatWithPreview, error) {
 		if webDB == nil {
 			return nil, nil
 		}
-		cs := sqlite.NewChatService(webDB)
-		chats, err := cs.ListUserChats("web", senderID, currentChatID)
-		if err != nil {
-			return nil, err
-		}
-		result := make([]web.UserChatWithPreview, len(chats))
-		for i, c := range chats {
-			result[i] = web.UserChatWithPreview{
-				ChatID:     c.ChatID,
-				Label:      c.Label,
-				LastActive: c.LastActive.Format(time.RFC3339),
-				Preview:    c.Preview,
-				IsCurrent:  c.IsCurrent,
+		// For web channel: use ChatService.ListUserChats (includes user-created chatrooms).
+		if channel == "" || channel == "web" {
+			cs := sqlite.NewChatService(webDB)
+			chats, err := cs.ListUserChats("web", senderID, currentChatID)
+			if err != nil {
+				return nil, err
 			}
+			result := make([]web.UserChatWithPreview, len(chats))
+			for i, c := range chats {
+				result[i] = web.UserChatWithPreview{
+					ChatID:     c.ChatID,
+					Channel:    "web",
+					Label:      c.Label,
+					LastActive: c.LastActive.Format(time.RFC3339),
+					Preview:    c.Preview,
+					IsCurrent:  c.IsCurrent,
+				}
+			}
+			return result, nil
 		}
-		return result, nil
+		// For non-web channels (admin only): list all tenants in that channel.
+		return listTenantsByChannel(webDB, channel, currentChatID)
 	}
 	callbacks.ChatCreate = func(senderID, label string) (string, error) {
 		if webDB == nil {
@@ -366,6 +372,64 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) web.W
 		return cs.RenameChat("web", senderID, chatID, label)
 	}
 	return callbacks
+}
+
+// listTenantsByChannel lists all tenants for a given channel (e.g. "cli", "feishu").
+// Used by admin to browse sessions from other channels in the Web UI.
+// Returns the last user/assistant message as preview.
+func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
+	// Single query with correlated subquery for preview — avoids N+1 pattern.
+	rows, err := db.Query(`
+		SELECT t.id, t.chat_id, t.last_active_at,
+		       (SELECT sm.content FROM session_messages sm
+		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
+		        ORDER BY sm.id DESC LIMIT 1) AS preview
+		FROM tenants t
+		WHERE t.channel = ? AND t.chat_id != '_shared'
+		ORDER BY t.last_active_at DESC`, channel)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants by channel: %w", err)
+	}
+	defer rows.Close()
+
+	var result []web.UserChatWithPreview
+	for rows.Next() {
+		var tenantID int64
+		var chatID, lastActiveStr string
+		var preview sql.NullString
+		if err := rows.Scan(&tenantID, &chatID, &lastActiveStr, &preview); err != nil {
+			log.WithError(err).Warn("Failed to scan tenant row in listTenantsByChannel")
+			continue
+		}
+
+		previewStr := preview.String
+		if runes := []rune(previewStr); len(runes) > 80 {
+			previewStr = string(runes[:80])
+		}
+
+		// Try RFC3339 first, then SQLite's "2006-01-02 15:04:05" format
+		// (DEFAULT CURRENT_TIMESTAMP produces the latter).
+		lastActive, err := time.Parse(time.RFC3339, lastActiveStr)
+		if err != nil {
+			lastActive, err = time.Parse("2006-01-02 15:04:05", lastActiveStr)
+			if err != nil {
+				log.WithError(err).WithField("raw", lastActiveStr).Warn("Failed to parse last_active_at in listTenantsByChannel")
+			}
+		}
+
+		result = append(result, web.UserChatWithPreview{
+			ChatID:     chatID,
+			Channel:    channel,
+			Label:      chatID, // For non-web channels, use chatID as label
+			LastActive: lastActive.Format(time.RFC3339),
+			Preview:    previewStr,
+			IsCurrent:  chatID == currentChatID,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tenants: %w", err)
+	}
+	return result, nil
 }
 
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.

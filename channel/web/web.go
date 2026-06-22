@@ -140,7 +140,8 @@ type WebCallbacks struct {
 	SessionMessages func(senderID, roleName, instance string) ([]ch.SessionChatMessage, bool)
 
 	// ChatList returns all chatrooms for a user (main + user-created).
-	ChatList func(senderID, currentChatID string) ([]UserChatWithPreview, error)
+	// channel parameter selects which channel's sessions to list ("web", "cli", etc.).
+	ChatList func(senderID, currentChatID, channel string) ([]UserChatWithPreview, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	ChatCreate func(senderID, label string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
@@ -153,6 +154,7 @@ type WebCallbacks struct {
 // This mirrors storage/sqlite.UserChatWithPreview to avoid channel→storage dependency.
 type UserChatWithPreview struct {
 	ChatID     string `json:"chat_id"`
+	Channel    string `json:"channel,omitempty"` // channel name (e.g. "web", "cli", "feishu")
 	Label      string `json:"label"`
 	LastActive string `json:"last_active"` // RFC3339
 	Preview    string `json:"preview"`
@@ -220,10 +222,11 @@ type WebChannel struct {
 	evtBuf   map[string]*eventStream
 	evtBufMu sync.Mutex
 
-	// Per-user current chatID (multi-chatroom support).
-	// Key: senderID, Value: chatID (defaults to senderID if not set).
-	userCurrentChat   map[string]string
-	userCurrentChatMu sync.RWMutex
+	// Per-user current session (multi-chatroom + cross-channel support).
+	// Key: senderID, Value: SessionSelector (channel + chatID).
+	// Defaults to {Channel:"web", ChatID:senderID} if not set.
+	userCurrentSession   map[string]SessionSelector
+	userCurrentSessionMu sync.RWMutex
 }
 
 type sessionInfo struct {
@@ -247,16 +250,22 @@ func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
 	})
 }
 
+// SessionSelector holds the active channel + chatID for cross-channel browsing.
+type SessionSelector struct {
+	Channel string `json:"channel"`
+	ChatID  string `json:"chat_id"`
+}
+
 // NewWebChannel 创建 Web 渠道
 func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 	return &WebChannel{
-		config:          cfg,
-		msgBus:          msgBus,
-		hub:             newHub(),
-		sessions:        make(map[string]sessionInfo),
-		db:              cfg.DB,
-		stopCh:          make(chan struct{}),
-		userCurrentChat: make(map[string]string),
+		config:             cfg,
+		msgBus:             msgBus,
+		hub:                newHub(),
+		sessions:           make(map[string]sessionInfo),
+		db:                 cfg.DB,
+		stopCh:             make(chan struct{}),
+		userCurrentSession: make(map[string]SessionSelector),
 	}
 }
 
@@ -353,6 +362,9 @@ func (wc *WebChannel) Start() error {
 	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authMiddleware(wc.handleChatRename))
 	mux.HandleFunc("/api/chats/{chatID}", wc.authMiddleware(wc.handleChatDelete))
 	mux.HandleFunc("/api/context-info", wc.authMiddleware(wc.handleContextInfo))
+
+	// Cross-channel browsing API
+	mux.HandleFunc("/api/channels", wc.authMiddleware(wc.handleChannels))
 
 	// Static files
 	if wc.staticDir != "" {
@@ -715,8 +727,9 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 // replayMissedEvents replays buffered events with seq > client's last_seq.
 // Waits up to 2s for the client's sync message, then replays.
 func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
-	// Resolve the user's currently active chatID (respects chat switching)
-	chatID := wc.getCurrentChatID(senderID)
+	// Resolve the user's currently active session (channel + chatID, respects chat switching)
+	sel := wc.getCurrentSession(senderID)
+	chatID := sel.ChatID
 	// The client sends sync immediately after WS connect.
 	// If no sync arrives within 2s, send current state anyway (backward compat).
 	syncCh := make(chan uint64, 1)
@@ -730,7 +743,7 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 	case <-time.After(2 * time.Second):
 		// No sync message — client is old version. Send current progress snapshot.
 		if wc.callbacks.GetActiveProgress != nil {
-			if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil {
+			if p := wc.callbacks.GetActiveProgress(sel.Channel, chatID); p != nil {
 				select {
 				case client.sendCh <- protocol.WSMessage{
 					Type:     protocol.MsgTypeProgress,
@@ -775,7 +788,7 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 		}
 	}
 	if !replayedProgress && wc.callbacks.GetActiveProgress != nil {
-		if p := wc.callbacks.GetActiveProgress("web", chatID); p != nil {
+		if p := wc.callbacks.GetActiveProgress(sel.Channel, chatID); p != nil {
 			select {
 			case client.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeProgress, TS: time.Now().Unix(), Progress: p}:
 			default:
@@ -913,10 +926,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			continue
 		case protocol.MsgTypeCancel:
 			// Reuse existing /cancel mechanism: push "/cancel" text into msgBus.
-			// Resolve business channel/chatID from WS message fields (same as message handler)
+			// Resolve business channel/chatID from getCurrentSession (same as message handler)
 			// so the cancel key matches the one used during message processing.
-			msgChannel := "web"
-			msgChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
+			cancelSel := wc.getCurrentSession(c.userID)
+			msgChannel := cancelSel.Channel
+			msgChatID := cancelSel.ChatID
 			msgSenderID := c.userID
 			msgSenderName := username
 			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
@@ -1048,21 +1062,12 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				metadata["feishu_user_id"] = feishuUserID
 			}
 
-			// Echo back complete user message (with file info) so frontend can update optimistic message
-			if content != originalContent && len(msg.UploadKeys) > 0 {
-				echoMsg := protocol.WSMessage{
-					Type:            "user_echo",
-					Content:         content,
-					OriginalContent: originalContent,
-					TS:              time.Now().Unix(),
-				}
-				wc.hub.sendToClient(wc.getCurrentChatID(c.userID), echoMsg)
-			}
-
-			msgChannel := "web"
+			// Resolve active session (channel + chatID) — supports cross-channel browsing.
+			sel := wc.getCurrentSession(c.userID)
+			msgChannel := sel.Channel
 			msgSenderID := c.userID
 			msgSenderName := username
-			msgChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
+			msgChatID := sel.ChatID
 			msgChatType := "p2p"
 			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
 				// Only CLI relay connections may override channel/chatID/sender.
@@ -1079,6 +1084,18 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					msgChatType = msg.ChatType
 				}
 			}
+
+			// Echo back complete user message (with file info) so frontend can update optimistic message
+			if content != originalContent && len(msg.UploadKeys) > 0 {
+				echoMsg := protocol.WSMessage{
+					Type:            "user_echo",
+					Content:         content,
+					OriginalContent: originalContent,
+					TS:              time.Now().Unix(),
+				}
+				wc.hub.sendToClient(msgChatID, echoMsg)
+			}
+
 			// Subscribe this client to receive messages for this chatID.
 			// Hub routes by business chatID directly — no transport metadata needed.
 			// Always subscribe on every message — idempotent and handles both
@@ -1092,7 +1109,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
 			trimmed := strings.TrimSpace(content)
 			if msgChannel != "cli" && (len(trimmed) <= 1 || trimmed[0] != '!') {
-				if err := eagerSaveUserMsg(wc.db, msgChatID, content); err != nil {
+				if err := eagerSaveUserMsg(wc.db, msgChannel, msgChatID, content); err != nil {
 					log.WithError(err).Warn("Failed to eager-save user message")
 				}
 				metadata["user_msg_eager_saved"] = "true"
@@ -1119,14 +1136,17 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			// Resolve business channel/chatID (same as message/cancel handlers)
 			// so the response routes to the correct chatroom session.
-			respChatID := wc.getCurrentChatID(c.userID) // dynamic: respects chat switches
-			if msg.Channel != "" && msg.ChatID != "" {
+			respSel := wc.getCurrentSession(c.userID)
+			respChatID := respSel.ChatID
+			respChannel := respSel.Channel
+			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
 				respChatID = msg.ChatID
+				respChannel = msg.Channel
 			}
 			if resp.Cancelled {
 				// User cancelled — send /cancel equivalent
 				wc.msgBus.Inbound <- bus.InboundMessage{
-					Channel:    "web",
+					Channel:    respChannel,
 					SenderID:   c.userID,
 					SenderName: username,
 					ChatID:     respChatID,
@@ -1134,7 +1154,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Content:    "/cancel",
 					Time:       time.Now(),
 					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-					From:       bus.NewIMAddress("web", c.userID),
+					From:       bus.NewIMAddress(respChannel, c.userID),
 				}
 			} else {
 				// Format answers as indexed Q/A pairs
@@ -1144,7 +1164,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				}
 				content := strings.Join(parts, "\n\n")
 				wc.msgBus.Inbound <- bus.InboundMessage{
-					Channel:    "web",
+					Channel:    respChannel,
 					SenderID:   c.userID,
 					SenderName: username,
 					ChatID:     respChatID,
@@ -1152,7 +1172,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Content:    content,
 					Time:       time.Now(),
 					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-					From:       bus.NewIMAddress("web", c.userID),
+					From:       bus.NewIMAddress(respChannel, c.userID),
 					Metadata:   map[string]string{"ask_user_answered": "true"},
 				}
 			}
@@ -1283,7 +1303,7 @@ func isImageExt(ext string) bool {
 
 // eagerSaveUserMsg persists a user message to session_messages immediately
 // so that a page-refresh can recover it while the backend is still processing.
-func eagerSaveUserMsg(db *sql.DB, userID string, content string) error {
+func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -1292,15 +1312,15 @@ func eagerSaveUserMsg(db *sql.DB, userID string, content string) error {
 
 	// Ensure tenant exists before saving (first message from a new client).
 	now := time.Now().Format(time.RFC3339)
-	_, err = tx.Exec(`INSERT OR IGNORE INTO tenants (channel, chat_id, created_at, last_active_at) VALUES ('web', ?, ?, ?)`,
-		userID, now, now)
+	_, err = tx.Exec(`INSERT OR IGNORE INTO tenants (channel, chat_id, created_at, last_active_at) VALUES (?, ?, ?, ?)`,
+		channel, chatID, now, now)
 	if err != nil {
 		return err
 	}
 
 	var tenantID int64
 	if err := tx.QueryRow(
-		"SELECT id FROM tenants WHERE channel = 'web' AND chat_id = ?", userID,
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", channel, chatID,
 	).Scan(&tenantID); err != nil {
 		return err
 	}
@@ -1318,7 +1338,7 @@ func eagerSaveUserMsg(db *sql.DB, userID string, content string) error {
 	SELECT 1 FROM session_messages
 	WHERE tenant_id = ? AND role = 'user' AND content = ?
 	  AND datetime(created_at) > datetime(?, '-2 seconds')
-	ORDER BY id DESC LIMIT 1
+	LIMIT 1
 	)`, tenantID, content, now, tenantID, content, now)
 	if err != nil {
 		return err
