@@ -2809,88 +2809,130 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 	return strings.Join(parts, " ")
 }
 
-// extractInteractiveContent 解析卡片消息内容（接收到的卡片结构与发送时不一致，仅支持部分元素）
+// extractInteractiveContent 解析卡片消息内容
+// 支持 schema 1.0（elements 为数组的数组）和 schema 2.0（body.elements 为对象的扁平数组）
 func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) string {
 	var parts []string
 
-	// 解析标题
+	// 解析标题 — schema 1.0: {"title": "string"}
 	if title, ok := contentJSON["title"].(string); ok && title != "" {
 		parts = append(parts, "[卡片: "+title+"]")
 	}
-
-	// 解析元素
-	if elements, ok := contentJSON["elements"].([]any); ok {
-		for _, block := range elements {
-			blockElems, ok := block.([]any)
-			if !ok {
-				continue
+	// 解析标题 — schema 2.0: {"header": {"title": {"content": "string"}}}
+	if header, ok := contentJSON["header"].(map[string]any); ok {
+		if title, ok := header["title"].(map[string]any); ok {
+			if content, ok := title["content"].(string); ok && content != "" {
+				parts = append(parts, "[卡片: "+content+"]")
 			}
-			for _, elem := range blockElems {
-				elemMap, ok := elem.(map[string]any)
-				if !ok {
-					continue
+		}
+	}
+
+	// 收集元素列表
+	var rawElements []any
+
+	// schema 2.0: body.elements 是扁平的对象数组
+	if body, ok := contentJSON["body"].(map[string]any); ok {
+		if elements, ok := body["elements"].([]any); ok {
+			rawElements = elements
+		}
+	}
+
+	// schema 1.0: elements 是数组的数组（每个子数组是一个 block）
+	if rawElements == nil {
+		if elements, ok := contentJSON["elements"].([]any); ok {
+			for _, block := range elements {
+				if blockElems, ok := block.([]any); ok {
+					rawElements = append(rawElements, blockElems...)
+				} else if elemMap, ok := block.(map[string]any); ok {
+					// 1.0 有时也是扁平数组
+					rawElements = append(rawElements, elemMap)
 				}
-				tag, _ := elemMap["tag"].(string)
-				switch tag {
-				case "text":
-					if text, ok := elemMap["text"].(string); ok {
-						parts = append(parts, text)
-					}
-				case "a":
-					if text, ok := elemMap["text"].(string); ok {
-						href, _ := elemMap["href"].(string)
-						parts = append(parts, fmt.Sprintf("%s (%s)", text, href))
-					}
-				case "at":
-					if userID, ok := elemMap["user_id"].(string); ok {
-						parts = append(parts, fmt.Sprintf("@%s", userID))
-					}
-				case "img":
-					if imageKey, ok := elemMap["image_key"].(string); ok {
-						parts = append(parts, fmt.Sprintf("<image image_key=\"%s\" />", imageKey))
-					}
-				case "button":
-					if text, ok := elemMap["text"].(string); ok {
-						btnType, _ := elemMap["type"].(string)
-						parts = append(parts, fmt.Sprintf("[按钮: %s (%s)]", text, btnType))
-					}
-				case "hr":
-					parts = append(parts, "---")
-				case "note":
-					// 备注元素
-					if noteElems, ok := elemMap["elements"].([]any); ok {
-						var noteParts []string
-						for _, ne := range noteElems {
-							if neMap, ok := ne.(map[string]any); ok {
-								if neTag, _ := neMap["tag"].(string); neTag == "img" {
-									if ik, ok := neMap["image_key"].(string); ok {
-										noteParts = append(noteParts, fmt.Sprintf("<image image_key=\"%s\" />", ik))
-									}
-								} else if neText, ok := neMap["text"].(string); ok {
-									noteParts = append(noteParts, neText)
-								}
+			}
+		}
+	}
+
+	// 解析每个元素
+	for _, elem := range rawElements {
+		elemMap, ok := elem.(map[string]any)
+		if !ok {
+			continue
+		}
+		tag, _ := elemMap["tag"].(string)
+		switch tag {
+		case "markdown":
+			// schema 2.0 markdown 元素
+			if content, ok := elemMap["content"].(string); ok {
+				parts = append(parts, content)
+			}
+		case "text":
+			if text, ok := elemMap["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		case "a":
+			if text, ok := elemMap["text"].(string); ok {
+				href, _ := elemMap["href"].(string)
+				parts = append(parts, fmt.Sprintf("%s (%s)", text, href))
+			}
+		case "at":
+			if userID, ok := elemMap["user_id"].(string); ok {
+				parts = append(parts, fmt.Sprintf("@%s", userID))
+			}
+		case "img":
+			if imageKey, ok := elemMap["image_key"].(string); ok {
+				parts = append(parts, fmt.Sprintf("<image image_key=\"%s\" />", imageKey))
+			}
+		case "button":
+			// schema 2.0: {"text": {"tag": "plain_text", "content": "确定"}}
+			if textObj, ok := elemMap["text"].(map[string]any); ok {
+				if content, ok := textObj["content"].(string); ok {
+					btnType, _ := elemMap["type"].(string)
+					parts = append(parts, fmt.Sprintf("[按钮: %s (%s)]", content, btnType))
+				}
+			} else if text, ok := elemMap["text"].(string); ok {
+				btnType, _ := elemMap["type"].(string)
+				parts = append(parts, fmt.Sprintf("[按钮: %s (%s)]", text, btnType))
+			}
+		case "hr":
+			parts = append(parts, "---")
+		case "note":
+			if noteElems, ok := elemMap["elements"].([]any); ok {
+				var noteParts []string
+				for _, ne := range noteElems {
+					if neMap, ok := ne.(map[string]any); ok {
+						if neTag, _ := neMap["tag"].(string); neTag == "img" {
+							if ik, ok := neMap["image_key"].(string); ok {
+								noteParts = append(noteParts, fmt.Sprintf("<image image_key=\"%s\" />", ik))
 							}
+						} else if neText, ok := neMap["text"].(string); ok {
+							noteParts = append(noteParts, neText)
 						}
-						if len(noteParts) > 0 {
-							parts = append(parts, "[备注: "+strings.Join(noteParts, " ")+"]")
-						}
-					}
-				case "select_static", "multi_select_static":
-					if placeholder, ok := elemMap["placeholder"].(string); ok {
-						parts = append(parts, fmt.Sprintf("[下拉选择: %s]", placeholder))
-					}
-				case "date_picker":
-					if placeholder, ok := elemMap["placeholder"].(string); ok {
-						parts = append(parts, fmt.Sprintf("[日期选择: %s]", placeholder))
-					}
-				case "overflow":
-					parts = append(parts, "[更多选项]")
-				default:
-					// 未知元素类型，记录但不阻塞
-					if tag != "" {
-						parts = append(parts, fmt.Sprintf("[%s]", tag))
 					}
 				}
+				if len(noteParts) > 0 {
+					parts = append(parts, "[备注: "+strings.Join(noteParts, " ")+"]")
+				}
+			}
+		case "select_static", "multi_select_static":
+			if placeholder, ok := elemMap["placeholder"].(map[string]any); ok {
+				if content, ok := placeholder["content"].(string); ok {
+					parts = append(parts, fmt.Sprintf("[下拉选择: %s]", content))
+				}
+			} else if placeholder, ok := elemMap["placeholder"].(string); ok {
+				parts = append(parts, fmt.Sprintf("[下拉选择: %s]", placeholder))
+			}
+		case "date_picker":
+			if placeholder, ok := elemMap["placeholder"].(map[string]any); ok {
+				if content, ok := placeholder["content"].(string); ok {
+					parts = append(parts, fmt.Sprintf("[日期选择: %s]", content))
+				}
+			} else if placeholder, ok := elemMap["placeholder"].(string); ok {
+				parts = append(parts, fmt.Sprintf("[日期选择: %s]", placeholder))
+			}
+		case "overflow":
+			parts = append(parts, "[更多选项]")
+		default:
+			if tag != "" {
+				parts = append(parts, fmt.Sprintf("[%s]", tag))
 			}
 		}
 	}
@@ -2978,9 +3020,13 @@ func (f *FeishuChannel) getHistoryMsgById(currentMsgEV *larkim.P2MessageReceiveV
 	if currentMsg.ParentId == nil || *currentMsg.ParentId == "" {
 		return nil
 	}
+
+	// 使用 SDK 的 GetMessage，传 card_msg_content_type=user_card_content
+	// 获取原始卡片 JSON。不传此参数时飞书 API 对 schema 2.0 卡片返回降级内容（截图+升级提示）。
 	req := larkim.NewGetMessageReqBuilder().
 		MessageId(*currentMsg.ParentId).
 		UserIdType(`open_id`).
+		CardMsgContentType(`user_card_content`).
 		Build()
 
 	resp, err := f.client.Im.Message.Get(context.Background(), req)

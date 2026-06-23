@@ -21,7 +21,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gorilla/websocket v1.5.0
-	github.com/larksuite/oapi-sdk-go/v3 v3.5.3
+	github.com/larksuite/oapi-sdk-go/v3 v3.9.6
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.21
 	github.com/modelcontextprotocol/go-sdk v1.4.0
