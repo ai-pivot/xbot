@@ -546,6 +546,10 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 				if prevReasoning == "" && m.reasoningByIter != nil {
 					prevReasoning = m.reasoningByIter[prev.Iteration]
 				}
+				// Fallback to streaming reasoning content (same as main path).
+				if prevReasoning == "" && prev.ReasoningStreamContent != "" {
+					prevReasoning = prev.ReasoningStreamContent
+				}
 				if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 					snap := cliIterationSnapshot{
 						Iteration:   prev.Iteration,
@@ -573,6 +577,14 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			prevReasoning := prev.Reasoning
 			if prevReasoning == "" {
 				prevReasoning = m.reasoningByIter[m.progressState.lastIter]
+			}
+			// Fallback: capture streaming reasoning when structured Reasoning
+			// hasn't been finalized yet (LLM still streaming). Without this,
+			// the reasoning block in completed iterations briefly disappears
+			// when iteration changes — see handleProgressDone cancel path
+			// for the same pattern.
+			if prevReasoning == "" && prev.ReasoningStreamContent != "" {
+				prevReasoning = prev.ReasoningStreamContent
 			}
 			if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
 				snap := cliIterationSnapshot{
