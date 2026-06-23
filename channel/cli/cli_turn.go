@@ -279,9 +279,21 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	if turnID != m.agentTurnID {
 		return // new turn already started — stale signal, ignore
 	}
-	// Clear streamingMsgIdx to prevent stale index from overwriting
-	// a new turn's streaming message when a delayed complete message arrives.
-	m.streamingMsgIdx = -1
+	// Do NOT clear streamingMsgIdx here — that would cause the upcoming
+	// updateViewportContent (via relayoutViewport below) to call
+	// appendNewMessagesToCache and cache the streaming message with
+	// incomplete content (reply hasn't arrived yet). This would force
+	// a second viewport update when rerenderCachedMessage runs in
+	// handleAgentMessage, causing visible flicker.
+	//
+	// Instead, keep streamingMsgIdx so updateViewportContent uses
+	// updateStreamingOnly (streaming path), which does NOT cache the
+	// message. handleAgentMessage will set streamingMsgIdx = -1 and
+	// call rerenderCachedMessage for a single clean transition.
+	//
+	// The stale-index concern is handled by startAgentTurn overwriting
+	// streamingMsgIdx on the next turn, and the turnID guard in
+	// handleAgentMessage preventing cross-turn message corruption.
 	// Persist token usage for ready-status bar before clearing progress
 	if m.progressState.current != nil {
 		m.cacheTokenUsage(m.progressState.current.TokenUsage)
