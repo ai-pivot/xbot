@@ -279,21 +279,11 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	if turnID != m.agentTurnID {
 		return // new turn already started — stale signal, ignore
 	}
-	// Do NOT clear streamingMsgIdx here — that would cause the upcoming
-	// updateViewportContent (via relayoutViewport below) to call
-	// appendNewMessagesToCache and cache the streaming message with
-	// incomplete content (reply hasn't arrived yet). This would force
-	// a second viewport update when rerenderCachedMessage runs in
-	// handleAgentMessage, causing visible flicker.
-	//
-	// Instead, keep streamingMsgIdx so updateViewportContent uses
-	// updateStreamingOnly (streaming path), which does NOT cache the
-	// message. handleAgentMessage will set streamingMsgIdx = -1 and
-	// call rerenderCachedMessage for a single clean transition.
-	//
-	// The stale-index concern is handled by startAgentTurn overwriting
-	// streamingMsgIdx on the next turn, and the turnID guard in
-	// handleAgentMessage preventing cross-turn message corruption.
+	// Do NOT clear streamingMsgIdx BEFORE relayoutViewport — that causes
+	// appendNewMessagesToCache to cache the streaming message with incomplete
+	// content (reply hasn't arrived yet). Instead, keep it so relayoutViewport
+	// uses updateStreamingOnly (no caching), then clear it AFTER to prevent
+	// the tick handler from showing old turn content via updateStreamingOnly.
 	// Persist token usage for ready-status bar before clearing progress
 	if m.progressState.current != nil {
 		m.cacheTokenUsage(m.progressState.current.TokenUsage)
@@ -355,6 +345,12 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 		m.todosDoneCleared = false
 	}
 	m.relayoutViewport()
+	// Clear streamingMsgIdx AFTER relayoutViewport: during relayout we need it
+	// valid so updateViewportContent uses updateStreamingOnly (no caching).
+	// After relayout, clear it so the tick handler doesn't keep rendering
+	// the old turn's message via updateStreamingOnly (would briefly flash
+	// previous turn content before the next real progress event).
+	m.streamingMsgIdx = -1
 	// Refresh agent count so the tick chain continues if agents exist
 	if m.agentCountFn != nil {
 		m.agentCount = m.agentCountFn()
