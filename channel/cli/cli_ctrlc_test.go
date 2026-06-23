@@ -331,12 +331,9 @@ func TestCtrlC_CancelAckBakesIterationsWhenPhaseDoneNotArrived(t *testing.T) {
 }
 
 // TestCtrlC_CancelAckDoesNotForceRebuild verifies that the cancel ack does NOT
-// call updateViewportContent() — this would trigger a full glamour re-render
-// of ALL messages, which can lose the latest iterations' display data.
-// The cancel ack keeps rc.valid = true so the tick handler's idle branch
-// skips updateViewportContent entirely, avoiding unnecessary rebuild.
-// Cosmetic changes (guide color dimming) are picked up lazily on the next
-// real viewport update (new turn, user input, etc.).
+// trigger a fullRebuild of ALL messages. Instead, it uses rerenderCachedMessage
+// to re-render only the affected message (O(1)) while keeping rc.valid = true.
+// This avoids the flicker caused by O(N) glamour re-render of every message.
 func TestCtrlC_CancelAckDoesNotForceRebuild(t *testing.T) {
 	model := initTestModel()
 	model.typing = true
@@ -377,14 +374,11 @@ func TestCtrlC_CancelAckDoesNotForceRebuild(t *testing.T) {
 		},
 	})
 
-	// After cancel ack: cache stays valid — the cancel ack does NOT call
-	// updateViewportContent() and does NOT invalidate the cache.
-	// The tick handler's idle branch checks !rc.valid and skips rendering
-	// entirely when valid, avoiding unnecessary fullRebuild flicker.
-	// The isPartial=false guide dimming is picked up lazily on the next
-	// real viewport update (new turn, user input, etc.).
+	// After cancel ack: cache stays valid — rerenderCachedMessage re-rendered
+	// only the affected message via appendNewMessagesToCache (O(1)), not a
+	// fullRebuild of all messages (O(N) → flicker).
 	if !model.rc.valid {
-		t.Error("rc.valid should stay true after cancel ack (lazy update, no forced rebuild)")
+		t.Error("rc.valid should stay true after cancel ack (targeted re-render, no fullRebuild)")
 	}
 
 	// Verify iterations are baked into the streaming message
