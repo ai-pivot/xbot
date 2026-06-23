@@ -339,6 +339,11 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// Also clear the token usage bar — compressed context has far fewer tokens.
 	if msg.payload != nil && msg.payload.HistoryCompacted {
 		m.lastTokenUsage = nil
+		// Clear pendingUserMsg: the reload will fetch the authoritative user
+		// message from DB (with system guide text prepended). Keeping the raw
+		// pendingUserMsg causes a duplicate because its content doesn't match
+		// the DB version (content comparison fails in handleHistoryReload).
+		m.pendingUserMsg = nil
 		m.messages = make([]cliMessage, 0, cliMsgBufSize)
 		m.streamingMsgIdx = -1
 		// Clear all progress/iteration state. Without this, a stale PhaseDone
@@ -353,16 +358,33 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
 		m.rc.invalidateProgress()
-		// Block auto-start until reload completes. Without this, progress
-		// events from the post-compression iteration trigger auto-start,
-		// creating a streaming message that gets wiped by handleHistoryReload's
-		// forceFullRebuild path — losing the streaming state and stalling TUI.
-		m.splashState.compReloading = true
+		// Do NOT set compReloading=true. The old code blocked auto-start until
+		// the async reload completed, but if the reload message was dropped
+		// (asyncCh full), compReloading stayed true forever — the streaming
+		// message was never recreated, freezing the TUI (busy but no updates).
+		// Instead, create the streaming message immediately. Progress events
+		// continue to render live content via updateStreamingOnly, even before
+		// the reload arrives with compacted history.
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
 		// → handleHistoryReload respects userScrolledUp/newContentHint.
 		m.reloadMessagesFromSession(true)
+		// Create streaming message immediately so progress events have a
+		// rendering target. handleHistoryReload preserves it when the
+		// compacted history arrives.
+		if m.typing {
+			m.messages = append(m.messages, cliMessage{
+				role:      "assistant",
+				content:   "",
+				timestamp: time.Now(),
+				isPartial: true,
+				dirty:     true,
+				turnID:    m.agentTurnID,
+			})
+			m.streamingMsgIdx = len(m.messages) - 1
+			m.rc.valid = false
+		}
 	}
 
 	// Cache token usage for context bar display — every progress event

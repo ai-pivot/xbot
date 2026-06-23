@@ -498,7 +498,12 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		}
 	}
 	restoredStreamingIdx := -1
-	if !msg.forceFullRebuild && m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+	// Always preserve the streaming message when the engine is still running.
+	// The old code only preserved it for non-forceFullRebuild, but forceFullRebuild
+	// (from HistoryCompacted) also needs to preserve it — the HistoryCompacted
+	// handler creates the streaming message immediately so progress events have
+	// a rendering target while the async reload is in flight.
+	if m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 		streamingMsg := m.messages[m.streamingMsgIdx]
 		if streamingMsg.role == "assistant" && streamingMsg.isPartial {
 			restoredStreamingIdx = len(newMessages)

@@ -727,18 +727,28 @@ func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
 	channelName := m.channelName
 	clipanic.Go("ch.cliModel.reloadMessagesFromSession", func() {
 		history, err := loader(channelName, chatID)
-		// Send result via async channel (goroutine-safe)
+		// Send result via async channel (goroutine-safe).
+		// Use blocking send with timeout instead of silent drop.
+		// The old `default` drop was a bug: if asyncCh was full (256 buffer),
+		// the reload message was lost forever — compReloading stayed true,
+		// streaming message was never recreated, TUI froze permanently.
+		// Now we block up to 10s to ensure delivery.
 		if m.channel != nil {
-			select {
-			case m.channel.asyncCh <- cliHistoryReloadMsg{
+			reloadMsg := cliHistoryReloadMsg{
 				channelName:      channelName,
 				chatID:           chatID,
 				history:          history,
 				err:              err,
 				forceFullRebuild: forceFullRebuild,
-			}:
-			default:
-				// channel full, drop — next progress event will retry
+			}
+			timer := time.NewTimer(10 * time.Second)
+			defer timer.Stop()
+			select {
+			case m.channel.asyncCh <- reloadMsg:
+			case <-timer.C:
+				log.Warn("reloadMessagesFromSession: asyncCh full after 10s, reload dropped")
+			case <-m.channel.stopCh:
+				return
 			}
 		}
 	})
