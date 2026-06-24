@@ -1214,3 +1214,44 @@ func TestFormatSubAgentProgress_FullTreeScenario(t *testing.T) {
 		t.Errorf("line 4 (刑部): %q", lines[4])
 	}
 }
+
+// TestFormatToolProgress_SubAgent_InstanceDistinguishesLabel verifies that
+// the SubAgent tool progress label includes the instance parameter so that
+// parallel SubAgent calls with the same role+task get unique labels and are
+// not incorrectly deduplicated by liveIterationBlocks.
+func TestFormatToolProgress_SubAgent_InstanceDistinguishesLabel(t *testing.T) {
+	// Three parallel SubAgent calls, all with role=explore and same task,
+	// but different instances. Without instance in the label, all three
+	// would share the same key and get deduplicated to one.
+	label1 := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash","instance":"debug-1"}`)
+	label2 := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash","instance":"debug-2"}`)
+	label3 := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash","instance":"debug-3"}`)
+
+	// All three must have unique labels
+	if label1 == label2 {
+		t.Errorf("label1 and label2 are identical: %q — instance not included", label1)
+	}
+	if label1 == label3 {
+		t.Errorf("label1 and label3 are identical: %q — instance not included", label1)
+	}
+	if label2 == label3 {
+		t.Errorf("label2 and label3 are identical: %q — instance not included", label2)
+	}
+
+	// Verify instances appear in the labels
+	if !strings.Contains(label1, "debug-1") {
+		t.Errorf("label1 missing instance: %q", label1)
+	}
+	if !strings.Contains(label2, "debug-2") {
+		t.Errorf("label2 missing instance: %q", label2)
+	}
+	if !strings.Contains(label3, "debug-3") {
+		t.Errorf("label3 missing instance: %q", label3)
+	}
+
+	// Backward compat: SubAgent without instance should still work
+	labelNoInst := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash"}`)
+	if !strings.Contains(labelNoInst, "explore") {
+		t.Errorf("label without instance should still include role: %q", labelNoInst)
+	}
+}

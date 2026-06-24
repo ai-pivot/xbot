@@ -1105,3 +1105,106 @@ func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 		t.Errorf("expected 2 tools in summary (one per iteration), got %d", tools)
 	}
 }
+
+// TestAgentSession_PhaseDone_PreservesIterations verifies that when a SubAgent
+// session finishes (PhaseDone), the synthetic assistant message preserves all
+// intermediate iteration history — same as the main agent session.
+//
+// Regression test for: after SubAgent generates final reply, all intermediate
+// iteration process disappears from the TUI viewport.
+func TestAgentSession_PhaseDone_PreservesIterations(t *testing.T) {
+	model := initTestModel()
+	model.channelName = "agent"
+	model.chatID = "agent:explore/debug-1"
+	model.startAgentTurn()
+	model.typingStartTime = time.Now()
+
+	// Simulate 3 iterations of tool execution
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 1, Thinking: "investigating...",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "uname -a", Status: "done", Elapsed: 100, Iteration: 1},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 2, Thinking: "checking logs...",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Grep", Label: "error", Status: "done", Elapsed: 200, Iteration: 2},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 3, Thinking: "reading code...",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "main.go", Status: "done", Elapsed: 300, Iteration: 3},
+		},
+	})
+
+	// Send the final PhaseDone with the assistant reply
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 3,
+		Thinking:  "Bug found: the crash is caused by a null pointer dereference.",
+	})
+
+	// After PhaseDone, the synthetic assistant message should have iterations
+	if tools := countToolsInSummary(model); tools != 3 {
+		t.Errorf("expected 3 tools preserved in iterations after PhaseDone, got %d", tools)
+	}
+
+	// Verify the assistant message was created with content
+	foundAssistant := false
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && !msg.isPartial {
+			foundAssistant = true
+			if len(msg.iterations) == 0 {
+				t.Error("assistant message has no iterations after PhaseDone")
+			}
+			if !strings.Contains(msg.content, "null pointer dereference") {
+				t.Errorf("assistant content missing expected text: %q", msg.content)
+			}
+			break
+		}
+	}
+	if !foundAssistant {
+		t.Error("no completed assistant message found after PhaseDone")
+	}
+}
+
+// TestAgentSession_MultipleSubAgents_DistinctToolEntries verifies that when a
+// parent agent spawns multiple SubAgent tool calls with different instances,
+// all tool progress entries are preserved (not deduplicated).
+func TestAgentSession_MultipleSubAgents_DistinctToolEntries(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.typingStartTime = time.Now()
+
+	// Simulate 3 parallel SubAgent tool calls — each in a separate iteration
+	// so snapshotIterationChange properly captures all three.
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "launching..."})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 1, Thinking: "launching...",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "SubAgent", Label: "SubAgent [explore/debug-1]: Investigate crash", Status: "done", Elapsed: 1000, Iteration: 1},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: "waiting on others..."})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 2, Thinking: "waiting on others...",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "SubAgent", Label: "SubAgent [explore/debug-2]: Investigate crash", Status: "done", Elapsed: 1200, Iteration: 2},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Thinking: "almost done..."})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 3, Thinking: "almost done...",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "SubAgent", Label: "SubAgent [explore/debug-3]: Investigate crash", Status: "done", Elapsed: 900, Iteration: 3},
+		},
+	})
+
+	sendDone(model, "all three subagents completed, analyzing results...")
+
+	if tools := countToolsInSummary(model); tools != 3 {
+		t.Errorf("expected 3 SubAgent tools in summary, got %d (dedup bug)", tools)
+	}
+}
