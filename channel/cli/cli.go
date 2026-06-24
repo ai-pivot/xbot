@@ -535,36 +535,20 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 		// across structured→structured eviction chains.
 		select {
 		case old := <-c.progressCh:
-			oldIsStreamOnly := old.Phase == "" && old.Iteration == 0
-			if oldIsStreamOnly {
-				// Old event is stream-only: merge its live stream fields
-				// into the new structured event so they survive eviction.
-				// This is the fix for the "reasoning disappears when tool
-				// result arrives" bug — the reasoning stream (iter N+1)
-				// was in progressCh when iter N's tool completion
-				// structured event arrived and evicted it.
-				if payload.StreamContent == "" && old.StreamContent != "" {
-					payload.StreamContent = old.StreamContent
-				}
-				if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
-					payload.ReasoningStreamContent = old.ReasoningStreamContent
-				}
-				if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
-					payload.StreamingTools = old.StreamingTools
-				}
-			} else {
-				// Old event is structured: merge any stream fields it
-				// accumulated (from previous stream→structured merges)
-				// so they survive chained evictions.
-				if payload.StreamContent == "" && old.StreamContent != "" {
-					payload.StreamContent = old.StreamContent
-				}
-				if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
-					payload.ReasoningStreamContent = old.ReasoningStreamContent
-				}
-				if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
-					payload.StreamingTools = old.StreamingTools
-				}
+			// Merge live stream fields from the evicted event into
+			// the new event so stream content survives coalescing.
+			// Two scenarios: the old event may be stream-only (first
+			// eviction; Phase=="" && Iteration==0) or structured
+			// (chained eviction where structured accumulated stream
+			// fields from prior merges). Both need the same merge.
+			if payload.StreamContent == "" && old.StreamContent != "" {
+				payload.StreamContent = old.StreamContent
+			}
+			if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
+				payload.ReasoningStreamContent = old.ReasoningStreamContent
+			}
+			if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
+				payload.StreamingTools = old.StreamingTools
 			}
 			// Merge TokenUsage and CWD regardless of old event type —
 			// context-bar data must never be lost to eviction.
