@@ -727,18 +727,34 @@ func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
 	channelName := m.channelName
 	clipanic.Go("ch.cliModel.reloadMessagesFromSession", func() {
 		history, err := loader(channelName, chatID)
-		// Send result via async channel (goroutine-safe)
+		// Send result via async channel (goroutine-safe).
+		// Retry up to 3 times with 5s timeout each (15s total).
+		// The old `default` drop caused permanent message loss after
+		// compression; the old 10s single-attempt timeout had no retry.
 		if m.channel != nil {
-			select {
-			case m.channel.asyncCh <- cliHistoryReloadMsg{
+			reloadMsg := cliHistoryReloadMsg{
 				channelName:      channelName,
 				chatID:           chatID,
 				history:          history,
 				err:              err,
 				forceFullRebuild: forceFullRebuild,
-			}:
-			default:
-				// channel full, drop — next progress event will retry
+			}
+			sent := false
+			for attempt := 0; attempt < 3 && !sent; attempt++ {
+				timer := time.NewTimer(5 * time.Second)
+				select {
+				case m.channel.asyncCh <- reloadMsg:
+					timer.Stop()
+					sent = true
+				case <-timer.C:
+					log.WithField("attempt", attempt+1).Warn("reloadMessagesFromSession: asyncCh full, retrying...")
+				case <-m.channel.stopCh:
+					timer.Stop()
+					return
+				}
+			}
+			if !sent {
+				log.Error("reloadMessagesFromSession: asyncCh full after 3 retries (15s), reload permanently dropped")
 			}
 		}
 	})

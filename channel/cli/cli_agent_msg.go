@@ -172,13 +172,10 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		if len(m.messageQueue) > 0 {
 			m.needFlushQueue = true
 		}
-		// Do NOT force immediate full rebuild via updateViewportContent().
-		// The live streaming display already shows all iterations correctly.
-		// Forcing a rebuild here causes a full glamour re-render of ALL messages,
-		// which can lose the latest iterations' display data.
-		// Just invalidate cache so the next tick (100ms) picks up the
-		// isPartial=false change (guide color dimming) incrementally.
-		m.rc.valid = false
+		// Targeted re-render: same rationale as the normal completion path.
+		// The cancelled message was cached with streaming content by
+		// endAgentTurn→relayoutViewport. Re-render just this one message.
+		m.rerenderCachedMessage(cancelledIdx)
 		return
 	}
 
@@ -379,12 +376,12 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				m.messages[completedMsgIdx].thinking = thinking
 			}
 		}
-		// Do NOT call updateViewportContent() here — the live streaming display
-		// already shows all content correctly. Forcing a full rebuild here causes
-		// the entire message block to flicker on turn completion. Just invalidate
-		// the cache so the next tick (100ms) picks up the isPartial=false change
-		// (guide color dimming) incrementally, same strategy as cancel ack.
-		m.rc.valid = false
+		// Targeted re-render: the message was already cached by
+		// endAgentTurn→relayoutViewport→appendNewMessagesToCache with incomplete
+		// streaming content. Now that the final reply arrived, re-render JUST
+		// this one message (O(1)) instead of invalidating the entire cache
+		// (O(N) fullRebuild → flicker).
+		m.rerenderCachedMessage(completedMsgIdx)
 
 		// §11.5 Session reset: clear messages and token usage bar after /new
 		if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {

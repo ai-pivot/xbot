@@ -7,6 +7,8 @@ import (
 
 	"xbot/protocol"
 
+	log "xbot/logger"
+
 	"charm.land/lipgloss/v2"
 )
 
@@ -91,6 +93,59 @@ func (m *cliModel) trimToolSummaryPayload(msg *cliMessage) {
 			msg.iterations[i].Tools[k].Args = ""
 		}
 	}
+}
+
+// rerenderCachedMessage truncates the render cache back to before msgIdx,
+// then re-renders from msgIdx onwards via appendNewMessagesToCache.
+// This is O(1 message) instead of O(N messages) fullRebuild — used when
+// a single message's content changed (e.g. streaming → finalized) and we
+// need to update its cached rendering without flickering.
+//
+// The history string rebuild is O(total_lines) string join, but this is
+// orders of magnitude cheaper than O(N × glamour_render) in fullRebuild.
+func (m *cliModel) rerenderCachedMessage(msgIdx int) {
+	if msgIdx < 0 || msgIdx >= len(m.messages) {
+		log.Debug("rerenderCachedMessage: msgIdx out of bounds, skipping",
+			"msgIdx", msgIdx, "lenMessages", len(m.messages))
+		return
+	}
+	// If the message hasn't been cached yet (e.g. cancel ack before
+	// endAgentTurn cached it), just call appendNewMessagesToCache which
+	// renders from rc.msgCount onwards — picks up this message naturally.
+	if msgIdx >= m.rc.msgCount {
+		log.Debug("rerenderCachedMessage: message not yet cached, using appendNewMessagesToCache",
+			"msgIdx", msgIdx, "msgCount", m.rc.msgCount)
+		m.appendNewMessagesToCache()
+		return
+	}
+	// Truncate histLines back to before this message.
+	if msgIdx < len(m.msgLineOffsets) {
+		lineStart := m.msgLineOffsets[msgIdx]
+		m.rc.histLines = m.rc.histLines[:lineStart]
+	}
+	// Truncate msgLineOffsets. Guard against invariant deviation:
+	// msgIdx should always be ≤ len(msgLineOffsets) because msgIdx < rc.msgCount
+	// (checked above) and rc.msgCount ≤ len(msgLineOffsets) (cache invariant).
+	// If the invariant is broken, fall back to fullRebuild instead of panicking.
+	if msgIdx <= len(m.msgLineOffsets) {
+		m.msgLineOffsets = m.msgLineOffsets[:msgIdx]
+	} else {
+		log.Warn("rerenderCachedMessage: msgLineOffsets invariant broken, falling back to fullRebuild",
+			"msgIdx", msgIdx, "lenMsgLineOffsets", len(m.msgLineOffsets), "msgCount", m.rc.msgCount)
+		m.rc.valid = false
+		return
+	}
+	// Rebuild history string from truncated histLines.
+	var sb strings.Builder
+	for _, line := range m.rc.histLines {
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	m.rc.history = sb.String()
+	// Set msgCount so appendNewMessagesToCache re-renders from msgIdx.
+	m.rc.msgCount = msgIdx
+	// Keep rc.valid = true — appendNewMessagesToCache is the fast path.
+	m.appendNewMessagesToCache()
 }
 
 // wrappedLineCount returns the number of viewport display lines after hard-wrapping.
