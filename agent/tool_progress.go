@@ -117,8 +117,13 @@ func formatToolProgress(name string, args string) string {
 	case "SubAgent":
 		role := get(m, "role")
 		task := get(m, "task")
+		instance := get(m, "instance")
 		if role != "" {
-			summary = truncate(fmt.Sprintf("SubAgent [%s]: %s", role, task), maxLen)
+			if instance != "" {
+				summary = truncate(fmt.Sprintf("SubAgent [%s/%s]: %s", role, instance, task), maxLen)
+			} else {
+				summary = truncate(fmt.Sprintf("SubAgent [%s]: %s", role, task), maxLen)
+			}
 		} else {
 			summary = fmt.Sprintf("SubAgent: %s", task)
 		}

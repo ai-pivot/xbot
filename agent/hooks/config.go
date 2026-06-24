@@ -43,12 +43,12 @@ type ConfigLayer struct {
 //
 // An empty projectDir skips project and local layers.
 // Missing files are silently ignored.
-func LoadHooksConfig(userHome string, projectDir string) ([]*ConfigLayer, *HookConfig, error) {
+func LoadHooksConfig(xbotHome string, projectDir string) ([]*ConfigLayer, *HookConfig, error) {
 	layers := make([]*ConfigLayer, 0, 3)
 	merged := &HookConfig{Hooks: make(map[string][]EventGroup)}
 
-	// 1. User layer
-	userPath := filepath.Join(userHome, ".xbot", "hooks.json")
+	// 1. User layer (~/.xbot/hooks.json)
+	userPath := filepath.Join(xbotHome, "hooks.json")
 	if cfg, err := loadConfigFile(userPath); err != nil {
 		return nil, nil, fmt.Errorf("user hooks config %s: %w", userPath, err)
 	} else if cfg != nil {

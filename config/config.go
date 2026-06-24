@@ -202,10 +202,6 @@ type Config struct {
 	// setup panel on every startup when credentials are stored in DB
 	// (user_llm_subscriptions) rather than config.json.
 	CLISetupCompleted bool `json:"cli_setup_completed,omitempty"`
-
-	// hasPluginsKey is true when the JSON file contained a "plugins" key.
-	// Used by Load() to set the default (enabled=true when absent).
-	hasPluginsKey bool `json:"-"`
 }
 
 // ExperimentalConfig holds experimental features that may change or be removed.
@@ -218,7 +214,8 @@ type ExperimentalConfig struct {
 // PluginConfig configures the plugin system.
 type PluginConfig struct {
 	// Enabled controls whether the plugin system is active.
-	Enabled bool `json:"enabled"`
+	// Defaults to true when not explicitly set.
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Dirs is a list of additional directories to scan for plugins.
 	// Defaults to ~/.xbot/plugins/ if empty.
@@ -229,6 +226,15 @@ type PluginConfig struct {
 
 	// AllowUnverified allows loading plugins without verified manifests.
 	AllowUnverified bool `json:"allow_unverified,omitempty"`
+}
+
+// IsEnabled returns whether the plugin system is enabled.
+// Defaults to true when Enabled is nil (not explicitly configured).
+func (p PluginConfig) IsEnabled() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
 }
 
 // FeishuConfig 飞书渠道配置
@@ -606,11 +612,6 @@ func LoadFromFile(path string) *Config {
 		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)
 		return nil
 	}
-	// Detect whether the "plugins" key exists in the JSON so Load() can set
-	// the default. We check here (instead of in Load) to avoid re-reading the file.
-	var raw map[string]json.RawMessage
-	_ = json.Unmarshal(data, &raw)
-	cfg.hasPluginsKey = raw != nil && string(raw["plugins"]) != ""
 	return &cfg
 }
 
@@ -1161,11 +1162,8 @@ func Load() *Config {
 	if cfg.Agent.MaxContextTokens == 0 {
 		cfg.Agent.MaxContextTokens = DefaultMaxContextTokens
 	}
-	// Plugin system defaults to enabled when config file has no "plugins" section.
-	// When the section exists (even as {}), respect the user's explicit setting.
-	if !cfg.hasPluginsKey {
-		cfg.Plugins.Enabled = true
-	}
+	// Plugin system defaults to enabled (IsEnabled() returns true when Enabled is nil).
+	// Explicitly set "enabled": false to disable.
 	if cfg.Agent.CompressionThreshold == 0 {
 		cfg.Agent.CompressionThreshold = 0.9
 	}

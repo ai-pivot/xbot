@@ -594,8 +594,8 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	if cfg.EventWebhook.RateLimit != 100 {
 		t.Errorf("event_webhook.rate_limit: got %d, want 100", cfg.EventWebhook.RateLimit)
 	}
-	if cfg.Plugins.Enabled != true {
-		t.Errorf("plugins.enabled: got %v, want true", cfg.Plugins.Enabled)
+	if !cfg.Plugins.IsEnabled() {
+		t.Errorf("plugins.enabled: got %v, want true", cfg.Plugins.IsEnabled())
 	}
 	if cfg.LLM.MaxOutputTokens != 8192 {
 		t.Errorf("llm.max_output_tokens: got %d, want 8192", cfg.LLM.MaxOutputTokens)

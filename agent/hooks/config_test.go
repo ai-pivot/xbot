@@ -28,15 +28,15 @@ func writeJSON(t *testing.T, path string, v any) {
 }
 
 // setupTempDirs creates a temp directory layout for testing.
-// Returns (userHome, projectDir, cleanup).
+// Returns (xbotHome, projectDir, cleanup).
 func setupTempDirs(t *testing.T) (string, string, func()) {
 	t.Helper()
 	tmp := t.TempDir()
-	userHome := filepath.Join(tmp, "home")
+	xbotHome := filepath.Join(tmp, "home", ".xbot")
 	projectDir := filepath.Join(tmp, "project")
-	_ = os.MkdirAll(filepath.Join(userHome, ".xbot"), 0o755)
+	_ = os.MkdirAll(xbotHome, 0o755)
 	_ = os.MkdirAll(filepath.Join(projectDir, ".xbot"), 0o755)
-	return userHome, projectDir, func() {}
+	return xbotHome, projectDir, func() {}
 }
 
 // ---------------------------------------------------------------------------
@@ -44,9 +44,9 @@ func setupTempDirs(t *testing.T) (string, string, func()) {
 // ---------------------------------------------------------------------------
 
 func TestLoadHooksConfig_NoFiles(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
-	layers, cfg, err := LoadHooksConfig(userHome, projectDir)
+	layers, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,9 +66,9 @@ func TestLoadHooksConfig_NoFiles(t *testing.T) {
 }
 
 func TestLoadHooksConfig_UserOnly(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
-	userPath := filepath.Join(userHome, ".xbot", "hooks.json")
+	userPath := filepath.Join(xbotHome, "hooks.json")
 	writeJSON(t, userPath, &HookConfig{
 		Hooks: map[string][]EventGroup{
 			"PreToolUse": {
@@ -79,7 +79,7 @@ func TestLoadHooksConfig_UserOnly(t *testing.T) {
 		},
 	})
 
-	layers, cfg, err := LoadHooksConfig(userHome, projectDir)
+	layers, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestLoadHooksConfig_UserOnly(t *testing.T) {
 }
 
 func TestLoadHooksConfig_ProjectOnly(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
 	projectPath := filepath.Join(projectDir, ".xbot", "hooks.json")
 	writeJSON(t, projectPath, &HookConfig{
@@ -113,7 +113,7 @@ func TestLoadHooksConfig_ProjectOnly(t *testing.T) {
 		},
 	})
 
-	layers, cfg, err := LoadHooksConfig(userHome, projectDir)
+	layers, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -131,10 +131,10 @@ func TestLoadHooksConfig_ProjectOnly(t *testing.T) {
 }
 
 func TestLoadHooksConfig_AllLayers(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
 	// User layer
-	writeJSON(t, filepath.Join(userHome, ".xbot", "hooks.json"), &HookConfig{
+	writeJSON(t, filepath.Join(xbotHome, "hooks.json"), &HookConfig{
 		Hooks: map[string][]EventGroup{
 			"SessionStart": {
 				{Matcher: "", Hooks: []HookDef{
@@ -172,7 +172,7 @@ func TestLoadHooksConfig_AllLayers(t *testing.T) {
 		},
 	})
 
-	layers, cfg, err := LoadHooksConfig(userHome, projectDir)
+	layers, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,10 +211,10 @@ func TestLoadHooksConfig_AllLayers(t *testing.T) {
 }
 
 func TestLoadHooksConfig_MergeSameEventSameMatcher(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
 	// User layer: PreToolUse with matcher="Shell", 1 hook
-	writeJSON(t, filepath.Join(userHome, ".xbot", "hooks.json"), &HookConfig{
+	writeJSON(t, filepath.Join(xbotHome, "hooks.json"), &HookConfig{
 		Hooks: map[string][]EventGroup{
 			"PreToolUse": {
 				{Matcher: "Shell", Hooks: []HookDef{
@@ -235,7 +235,7 @@ func TestLoadHooksConfig_MergeSameEventSameMatcher(t *testing.T) {
 		},
 	})
 
-	_, cfg, err := LoadHooksConfig(userHome, projectDir)
+	_, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,14 +256,14 @@ func TestLoadHooksConfig_MergeSameEventSameMatcher(t *testing.T) {
 }
 
 func TestLoadHooksConfig_InvalidJSON(t *testing.T) {
-	userHome, _, _ := setupTempDirs(t)
+	xbotHome, _, _ := setupTempDirs(t)
 
-	userPath := filepath.Join(userHome, ".xbot", "hooks.json")
+	userPath := filepath.Join(xbotHome, "hooks.json")
 	if err := os.WriteFile(userPath, []byte("{invalid json}"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := LoadHooksConfig(userHome, "")
+	_, _, err := LoadHooksConfig(xbotHome, "")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 		return
@@ -271,10 +271,10 @@ func TestLoadHooksConfig_InvalidJSON(t *testing.T) {
 }
 
 func TestLoadHooksConfig_EnableCommandHooks(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
 	// User layer: no enable_command_hooks (defaults to false)
-	writeJSON(t, filepath.Join(userHome, ".xbot", "hooks.json"), &HookConfig{
+	writeJSON(t, filepath.Join(xbotHome, "hooks.json"), &HookConfig{
 		Hooks: map[string][]EventGroup{},
 	})
 
@@ -284,7 +284,7 @@ func TestLoadHooksConfig_EnableCommandHooks(t *testing.T) {
 		EnableCommandHooks: true,
 	})
 
-	_, cfg, err := LoadHooksConfig(userHome, projectDir)
+	_, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,8 +293,8 @@ func TestLoadHooksConfig_EnableCommandHooks(t *testing.T) {
 	}
 
 	// Also verify that default (no file) is false
-	emptyHome := filepath.Join(t.TempDir(), "home2")
-	_ = os.MkdirAll(filepath.Join(emptyHome, ".xbot"), 0o755)
+	emptyHome := filepath.Join(t.TempDir(), "home2", ".xbot")
+	_ = os.MkdirAll(emptyHome, 0o755)
 	_, cfg2, err := LoadHooksConfig(emptyHome, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -305,10 +305,10 @@ func TestLoadHooksConfig_EnableCommandHooks(t *testing.T) {
 }
 
 func TestLoadHooksConfig_EmptyProjectDir(t *testing.T) {
-	userHome, _, _ := setupTempDirs(t)
+	xbotHome, _, _ := setupTempDirs(t)
 
 	// Only user layer exists
-	writeJSON(t, filepath.Join(userHome, ".xbot", "hooks.json"), &HookConfig{
+	writeJSON(t, filepath.Join(xbotHome, "hooks.json"), &HookConfig{
 		Hooks: map[string][]EventGroup{
 			"SessionStart": {
 				{Matcher: "", Hooks: []HookDef{
@@ -318,7 +318,7 @@ func TestLoadHooksConfig_EmptyProjectDir(t *testing.T) {
 		},
 	})
 
-	layers, cfg, err := LoadHooksConfig(userHome, "")
+	layers, cfg, err := LoadHooksConfig(xbotHome, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -331,10 +331,10 @@ func TestLoadHooksConfig_EmptyProjectDir(t *testing.T) {
 }
 
 func TestLoadHooksConfig_MergeSameEventDifferentMatcher(t *testing.T) {
-	userHome, projectDir, _ := setupTempDirs(t)
+	xbotHome, projectDir, _ := setupTempDirs(t)
 
 	// User: PreToolUse matcher="Shell"
-	writeJSON(t, filepath.Join(userHome, ".xbot", "hooks.json"), &HookConfig{
+	writeJSON(t, filepath.Join(xbotHome, "hooks.json"), &HookConfig{
 		Hooks: map[string][]EventGroup{
 			"PreToolUse": {
 				{Matcher: "Shell", Hooks: []HookDef{
@@ -355,7 +355,7 @@ func TestLoadHooksConfig_MergeSameEventDifferentMatcher(t *testing.T) {
 		},
 	})
 
-	_, cfg, err := LoadHooksConfig(userHome, projectDir)
+	_, cfg, err := LoadHooksConfig(xbotHome, projectDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

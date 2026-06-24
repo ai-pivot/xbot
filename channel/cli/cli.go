@@ -519,11 +519,39 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			}
 			return
 		}
-		// Both old (queued) and new are structured. Drain the old
-		// one, but merge its TokenUsage and CWD into the new one
-		// so context-bar data is never lost to eviction.
+		// New event is structured (non-stream-only). The old event in the
+		// channel could be either stream-only or structured.
+		//
+		// Stream-only events carry live LLM output (ReasoningStreamContent,
+		// StreamContent, StreamingTools) that has not yet been finalized
+		// into structured fields. If a structured event evicts a stream-only
+		// event, the live content is permanently lost — the user sees
+		// reasoning/text vanish mid-display (severe UX bug).
+		//
+		// When the old event is also structured, the new event carries
+		// fresher state (newer iteration/tools). We merge TokenUsage, CWD,
+		// and any stream fields the old event may have accumulated from
+		// previously-merged stream events — this preserves stream content
+		// across structured→structured eviction chains.
 		select {
 		case old := <-c.progressCh:
+			// Merge live stream fields from the evicted event into
+			// the new event so stream content survives coalescing.
+			// Two scenarios: the old event may be stream-only (first
+			// eviction; Phase=="" && Iteration==0) or structured
+			// (chained eviction where structured accumulated stream
+			// fields from prior merges). Both need the same merge.
+			if payload.StreamContent == "" && old.StreamContent != "" {
+				payload.StreamContent = old.StreamContent
+			}
+			if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
+				payload.ReasoningStreamContent = old.ReasoningStreamContent
+			}
+			if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
+				payload.StreamingTools = old.StreamingTools
+			}
+			// Merge TokenUsage and CWD regardless of old event type —
+			// context-bar data must never be lost to eviction.
 			if payload.TokenUsage == nil && old.TokenUsage != nil {
 				payload.TokenUsage = old.TokenUsage
 			}
@@ -936,6 +964,13 @@ func (c *CLIChannel) handleProgressDrain() {
 				// asyncCh full — event loop is behind. Cache token
 				// usage directly so the context bar doesn't flash
 				// blank before the next progress event arrives.
+				// Log a warning so this backpressure condition is visible
+				// in logs for debugging ordering/dropped-event issues.
+				log.WithFields(log.Fields{
+					"phase":     payload.Phase,
+					"iteration": payload.Iteration,
+					"has_tools": len(payload.ActiveTools) + len(payload.CompletedTools),
+				}).Warn("handleProgressDrain: asyncCh full, dropping progress event")
 				if payload.TokenUsage != nil && payload.TokenUsage.PromptTokens > 0 {
 					c.programMu.Lock()
 					if c.model != nil {

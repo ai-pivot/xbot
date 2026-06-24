@@ -82,13 +82,6 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("command contains control characters (null bytes or other non-printable characters)")
 	}
 
-	// 安全预检：拦截危险命令
-	// - run_as 模式下禁止任何形式的 sudo（用户切换由框架通过 cmdbuilder 处理）
-	// - permission control 启用时，即使未设置 run_as，也禁止 LLM 直接使用 sudo
-	if blocked, reason := checkDangerousCommand(toolCtx.Ctx, params.Command, params.RunAs != ""); blocked {
-		return nil, fmt.Errorf("command blocked by safety check: %s", reason)
-	}
-
 	const maxShellTimeout = 600 * time.Second
 
 	timeout := defaultShellTimeout
@@ -495,64 +488,4 @@ func detectCdTip(command string) string {
 		return ""
 	}
 	return `NOTE: "cd" inside Shell only affects this single command — the working directory resets on the next tool call. Use the Cd tool to persistently change directory.`
-}
-
-// dangerPatterns 定义绝对禁止执行的命令模式（黑名单拦截，直接拒绝）
-var dangerPatterns = []struct {
-	pattern *regexp.Regexp
-	reason  string
-}{
-	{regexp.MustCompile(`rm\s+-[^\s]*rf\s+/\s*`), "rm -rf / is destructive and will wipe the entire filesystem"},
-	{regexp.MustCompile(`mkfs\b`), "mkfs will destroy filesystem data"},
-	{regexp.MustCompile(`dd\s+.*(/dev/zero|/dev/random|/dev/null)\s+.*of=/dev/`), "dd writing to device is destructive"},
-	{regexp.MustCompile(`:\(\)\s*\{.*\}\s*;`), "fork bomb detected"},
-	{regexp.MustCompile(`chmod\s+777\s+/\s*`), "chmod 777 / is a security risk"},
-	{regexp.MustCompile(`mv\s+/\s+/dev/null`), "mv / /dev/null is destructive"},
-}
-
-// warningPatterns 定义高危命令（告警但允许执行）
-var warningPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\brm\s+(-[^\s]*rf|-rf)\b`),
-	regexp.MustCompile(`\bdd\b`),
-	regexp.MustCompile(`\bmkfs\b`),
-	regexp.MustCompile(`\bchmod\s+777\b`),
-	regexp.MustCompile(`\b(format| FORMAT)\b`),
-}
-
-// checkDangerousCommand 检查命令是否包含危险模式
-// 返回 (blocked, reason)，如果 blocked=true 则应拒绝执行
-// disallowSudo: 当为 true 时（run_as 模式），任何形式的 sudo 都被禁止
-func checkDangerousCommand(ctx context.Context, cmd string, disallowSudo bool) (bool, string) {
-	// 检查绝对禁止模式
-	for _, dp := range dangerPatterns {
-		if dp.pattern.MatchString(cmd) {
-			return true, dp.reason
-		}
-	}
-
-	// sudo 检查
-	sudoRe := regexp.MustCompile(`\bsudo\b`)
-	if sudoRe.MatchString(cmd) {
-		if disallowSudo {
-			// run_as 模式：用户切换由框架控制，禁止 LLM 使用任何形式的 sudo
-			return true, "sudo is not allowed when run_as is set (user switching is handled by the framework)"
-		}
-		defaultUser, privilegedUser := PermUsersFromContext(ctx)
-		if defaultUser != "" || privilegedUser != "" {
-			// Permission control enabled: all LLM-authored sudo is forbidden.
-			// User switching must go through run_as so approval/default-user policy can be enforced.
-			return true, "sudo is not allowed when permission control is enabled (use run_as instead so the framework can enforce approval policy)"
-		}
-		// No additional sudo restrictions in default mode.
-	}
-
-	// 检查高危告警模式（仅日志记录，不拦截）
-	for _, wp := range warningPatterns {
-		if wp.MatchString(cmd) {
-			log.WithField("command", cmd).Warn("Dangerous command detected (allowed with warning)")
-			break
-		}
-	}
-
-	return false, ""
 }

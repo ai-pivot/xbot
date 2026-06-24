@@ -819,12 +819,27 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			assistantContent = msg.payload.StreamContent
 		}
 		if assistantContent != "" {
-			m.upsertMessageByTurn(turnID, "assistant", cliMessage{
+			asstMsg := cliMessage{
 				role:      "assistant",
 				content:   assistantContent,
 				timestamp: time.Now(),
 				dirty:     true,
-			})
+			}
+			// MUST bake iterations so the SubAgent session view preserves
+			// intermediate iteration history (tool tags, reasoning, etc.)
+			// after the turn completes — same as handleAgentMessage does
+			// for main sessions via bakeIterations.
+			if savedPTS != nil && len(savedPTS.iterations) > 0 {
+				asstMsg.iterations = savedPTS.iterations
+			}
+			// Carry over reasoning content for the thinking box (same as
+			// handleAgentMessage does for main sessions at lines 380-387).
+			if m.lastReasoning != "" {
+				asstMsg.thinking = m.lastReasoning
+			} else if msg.payload.Reasoning != "" {
+				asstMsg.thinking = msg.payload.Reasoning
+			}
+			m.upsertMessageByTurn(turnID, "assistant", asstMsg)
 			m.setTurnReplyReceived(turnID)
 			m.rc.valid = false
 		}

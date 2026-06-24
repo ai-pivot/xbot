@@ -87,9 +87,11 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}
 		// Fallback: if cancelTargetTurnID is not set (e.g. cancel from external
 		// source), use the current streaming message index — but only if its
-		// turnID matches m.agentTurnID (i.e. no new turn has started).
+		// turnID matches m.agentTurnID AND no cancel ack has already been
+		// processed for this session (prevents stale second cancel ack from
+		// async goroutine race from matching the wrong streaming message).
 		if cancelledIdx < 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			if m.messages[m.streamingMsgIdx].turnID == m.agentTurnID {
+			if !m.cancelAckProcessed && m.messages[m.streamingMsgIdx].turnID == m.agentTurnID {
 				cancelledIdx = m.streamingMsgIdx
 			}
 		}
@@ -134,6 +136,13 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				} else if m.streamingMsgIdx > cancelledIdx {
 					m.streamingMsgIdx--
 				}
+				// If the removed message was the last element, cancelledIdx
+				// is now out of bounds (>= len(messages)).  Force a full
+				// rebuild on the next updateViewportContent so the cache
+				// doesn't hold stale lines for the removed message.
+				if cancelledIdx >= len(m.messages) {
+					m.rc.valid = false
+				}
 			}
 		}
 		// Still clean up progress/streaming state for the cancelled turn.
@@ -162,6 +171,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		m.typing = false        // clear typing indicator immediately after cancel
 		m.turnCancelled = false // cancel complete, allow future turns
 		m.cancelTargetTurnID = 0
+		m.cancelAckProcessed = true // prevent stale second cancel ack from matching via fallback
 		// Match every other turn-end path: set inputReady so the user can send
 		// directly (status bar already shows "就绪" because typing=false), and
 		// arm needFlushQueue so the tick handler drains queued messages.
