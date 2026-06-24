@@ -218,7 +218,8 @@ type ExperimentalConfig struct {
 // PluginConfig configures the plugin system.
 type PluginConfig struct {
 	// Enabled controls whether the plugin system is active.
-	Enabled bool `json:"enabled"`
+	// Defaults to true when not explicitly set.
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Dirs is a list of additional directories to scan for plugins.
 	// Defaults to ~/.xbot/plugins/ if empty.
@@ -229,6 +230,15 @@ type PluginConfig struct {
 
 	// AllowUnverified allows loading plugins without verified manifests.
 	AllowUnverified bool `json:"allow_unverified,omitempty"`
+}
+
+// IsEnabled returns whether the plugin system is enabled.
+// Defaults to true when Enabled is nil (not explicitly configured).
+func (p PluginConfig) IsEnabled() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
 }
 
 // FeishuConfig 飞书渠道配置
@@ -1161,11 +1171,8 @@ func Load() *Config {
 	if cfg.Agent.MaxContextTokens == 0 {
 		cfg.Agent.MaxContextTokens = DefaultMaxContextTokens
 	}
-	// Plugin system defaults to enabled when config file has no "plugins" section.
-	// When the section exists (even as {}), respect the user's explicit setting.
-	if !cfg.hasPluginsKey {
-		cfg.Plugins.Enabled = true
-	}
+	// Plugin system defaults to enabled (IsEnabled() returns true when Enabled is nil).
+	// Explicitly set "enabled": false to disable.
 	if cfg.Agent.CompressionThreshold == 0 {
 		cfg.Agent.CompressionThreshold = 0.9
 	}

@@ -96,7 +96,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		PersonaIsolation:      personaIsolation,
 		OffloadDir:            offloadDir,
 		MaskDir:               maskDir,
-		PluginEnabled:         cfg.Plugins.Enabled,
+		PluginEnabled:         cfg.Plugins.IsEnabled(),
 		PluginDirs:            cfg.Plugins.Dirs,
 		PluginDisabledPlugins: cfg.Plugins.DisabledPlugins,
 	})

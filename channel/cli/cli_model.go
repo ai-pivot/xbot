@@ -233,6 +233,7 @@ type cliModel struct {
 	pendingSuRestore   *suHistoryLoadMsg // pre-start restore data, consumed by Init()
 	turnCancelled      bool              // true after Ctrl+C — prevents auto-start on stale progress
 	cancelTargetTurnID uint64            // turnID being cancelled; guards stale cancel ack from modifying wrong message
+	cancelAckProcessed bool              // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
 	idleTickCounter    int               // counts 100ms ticks in idle state; placeholder rotates every 30
 
 	// --- Deterministic rendering: per-turn completion tracking ---
