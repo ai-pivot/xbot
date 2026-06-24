@@ -202,10 +202,6 @@ type Config struct {
 	// setup panel on every startup when credentials are stored in DB
 	// (user_llm_subscriptions) rather than config.json.
 	CLISetupCompleted bool `json:"cli_setup_completed,omitempty"`
-
-	// hasPluginsKey is true when the JSON file contained a "plugins" key.
-	// Used by Load() to set the default (enabled=true when absent).
-	hasPluginsKey bool `json:"-"`
 }
 
 // ExperimentalConfig holds experimental features that may change or be removed.
@@ -616,11 +612,6 @@ func LoadFromFile(path string) *Config {
 		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)
 		return nil
 	}
-	// Detect whether the "plugins" key exists in the JSON so Load() can set
-	// the default. We check here (instead of in Load) to avoid re-reading the file.
-	var raw map[string]json.RawMessage
-	_ = json.Unmarshal(data, &raw)
-	cfg.hasPluginsKey = raw != nil && string(raw["plugins"]) != ""
 	return &cfg
 }
 
