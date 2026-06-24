@@ -2809,17 +2809,30 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 	return strings.Join(parts, " ")
 }
 
+// extractTextValue 从飞书卡片字段中提取文本内容，兼容 schema 1.0（字符串）和 2.0（对象）两种格式。
+func extractTextValue(v any) string {
+	if obj, ok := v.(map[string]any); ok {
+		if content, ok := obj["content"].(string); ok {
+			return content
+		}
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 // extractInteractiveContent 解析卡片消息内容
 // 支持 schema 1.0（elements 为数组的数组）和 schema 2.0（body.elements 为对象的扁平数组）
 func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) string {
 	var parts []string
 
-	// 解析标题 — schema 1.0: {"title": "string"}
+	// 解析标题 — schema 1.0: {"title": "string"} 或 schema 2.0: {"header": {"title": {"content": "string"}}}
+	// 两套 schema 不会同时出现，用 else if 互斥避免畸形消息导致重复前缀
 	if title, ok := contentJSON["title"].(string); ok && title != "" {
 		parts = append(parts, "[卡片: "+title+"]")
-	}
-	// 解析标题 — schema 2.0: {"header": {"title": {"content": "string"}}}
-	if header, ok := contentJSON["header"].(map[string]any); ok {
+	} else if header, ok := contentJSON["header"].(map[string]any); ok {
 		if title, ok := header["title"].(map[string]any); ok {
 			if content, ok := title["content"].(string); ok && content != "" {
 				parts = append(parts, "[卡片: "+content+"]")
@@ -2883,12 +2896,8 @@ func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) st
 			}
 		case "button":
 			// schema 2.0: {"text": {"tag": "plain_text", "content": "确定"}}
-			if textObj, ok := elemMap["text"].(map[string]any); ok {
-				if content, ok := textObj["content"].(string); ok {
-					btnType, _ := elemMap["type"].(string)
-					parts = append(parts, fmt.Sprintf("[按钮: %s (%s)]", content, btnType))
-				}
-			} else if text, ok := elemMap["text"].(string); ok {
+			// schema 1.0: {"text": "确定"}
+			if text := extractTextValue(elemMap["text"]); text != "" {
 				btnType, _ := elemMap["type"].(string)
 				parts = append(parts, fmt.Sprintf("[按钮: %s (%s)]", text, btnType))
 			}
@@ -2913,24 +2922,17 @@ func (f *FeishuChannel) extractInteractiveContent(contentJSON map[string]any) st
 				}
 			}
 		case "select_static", "multi_select_static":
-			if placeholder, ok := elemMap["placeholder"].(map[string]any); ok {
-				if content, ok := placeholder["content"].(string); ok {
-					parts = append(parts, fmt.Sprintf("[下拉选择: %s]", content))
-				}
-			} else if placeholder, ok := elemMap["placeholder"].(string); ok {
+			if placeholder := extractTextValue(elemMap["placeholder"]); placeholder != "" {
 				parts = append(parts, fmt.Sprintf("[下拉选择: %s]", placeholder))
 			}
 		case "date_picker":
-			if placeholder, ok := elemMap["placeholder"].(map[string]any); ok {
-				if content, ok := placeholder["content"].(string); ok {
-					parts = append(parts, fmt.Sprintf("[日期选择: %s]", content))
-				}
-			} else if placeholder, ok := elemMap["placeholder"].(string); ok {
+			if placeholder := extractTextValue(elemMap["placeholder"]); placeholder != "" {
 				parts = append(parts, fmt.Sprintf("[日期选择: %s]", placeholder))
 			}
 		case "overflow":
 			parts = append(parts, "[更多选项]")
 		default:
+			// 未知元素类型，记录但不阻塞
 			if tag != "" {
 				parts = append(parts, fmt.Sprintf("[%s]", tag))
 			}
