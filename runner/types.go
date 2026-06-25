@@ -39,17 +39,36 @@ const (
 	StatusError        Status = "error"
 )
 
-// Instance is a named execution environment that provides tools.
+// Entry is a discovered agent definition (the runner knows about it).
+type Entry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Dir         string `json:"dir"` // "embed", "global", or absolute path
+}
+
+// SkillEntry is a discovered skill (the runner knows about it).
+type SkillEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Dir         string `json:"dir"` // "embed", "global", or absolute path
+}
+
+// Instance is a named execution environment that provides tools, skills, and agents.
 //
 // Each runner has a unique ID, a display name, a type, and a connection status.
 // Tools maps tool names to their implementations — for local runner these are real
 // tools, for remote runner these are proxies that send RPC over Transport.
+//
+// Skills and Agents are discovered by the runner at startup (local) or declared
+// in the register message (remote). The system prompt reads them via the runner.
 type Instance struct {
 	ID         string                `json:"id"`
 	Name       string                `json:"name"`
 	Type       Type                  `json:"type"`
 	Status     Status                `json:"status"`
-	Tools      map[string]tools.Tool `json:"-"` // tool implementations (real or proxy)
+	Tools      map[string]tools.Tool `json:"-"`      // tool implementations (real or proxy)
+	Skills     []SkillEntry          `json:"skills"` // skills this runner provides
+	Agents     []Entry               `json:"agents"` // subagent definitions this runner provides
 	CreatedAt  time.Time             `json:"created_at"`
 	LastSeenAt time.Time             `json:"last_seen_at"`
 }

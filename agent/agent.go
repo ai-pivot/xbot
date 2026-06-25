@@ -1207,6 +1207,28 @@ func New(cfg Config) (*Agent, error) {
 	// This bridges the gap until tools are migrated to runner/tools/.
 	agent.runnerManager.SetLocalTools(registry.List())
 
+	// 8. Populate local runner's skill/agent declarations from the stores.
+	// Base scan (embedded + global) — per-user and project-local are
+	// merged at buildPrompt time via the existing store calls.
+	if skills, err := agent.skills.ListSkills(context.Background(), ""); err == nil {
+		entries := make([]runner.SkillEntry, len(skills))
+		for i, s := range skills {
+			entries[i] = runner.SkillEntry{
+				Name: s.Name, Description: s.Description, Dir: s.Path,
+			}
+		}
+		agent.runnerManager.Local().Skills = entries
+	}
+	if roles, err := tools.LoadAgentRoles(agent.agentsDir); err == nil {
+		entries := make([]runner.Entry, 0, len(roles))
+		for _, r := range roles {
+			entries = append(entries, runner.Entry{
+				Name: r.Name, Description: r.Description, Dir: agent.agentsDir,
+			})
+		}
+		agent.runnerManager.Local().Agents = entries
+	}
+
 	return agent, nil
 }
 
