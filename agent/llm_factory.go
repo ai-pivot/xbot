@@ -1125,15 +1125,17 @@ func (f *LLMFactory) LLMSemAcquireForUser(senderID, channel string) func(context
 	}
 	return func(ctx context.Context) func() {
 		personalCap := f.GetLLMConcurrency(senderID)
-		cap := llm.DefaultLLMConcurrency
-		if llmKey == "personal" {
-			cap = personalCap
-		} else {
-			// Check user setting for global LLM concurrency.
-			// Reads max_concurrent from user DB (populated by settings
-			// panel or startup seed from config.json), falls back to
-			// DefaultLLMConcurrency.
-			cap = parseOrDefault(f.getSetting(senderID, channel, "max_concurrent"), llm.DefaultLLMConcurrency)
+		// Resolution order: user DB max_concurrent (applies to both
+		// global and personal keys) → personal-specific → hardcoded default.
+		// This ensures the user's single max_concurrency knob controls
+		// ALL LLM calls regardless of whether they use shared or personal LLM.
+		cap := parseOrDefault(f.getSetting(senderID, channel, "max_concurrent"), -1)
+		if cap <= 0 {
+			if llmKey == "personal" {
+				cap = personalCap
+			} else {
+				cap = llm.DefaultLLMConcurrency
+			}
 		}
 		return f.llmSemManager.Acquire(ctx, senderID, llmKey, func() int { return cap })
 	}
