@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/clipanic"
 	"xbot/config"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
 
@@ -679,15 +681,31 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 
 // fakeTransport implements agent.Transport for tests, delegating subscription RPCs to sqlite.
 type fakeTransport struct {
-	subSvc       *sqlite.LLMSubscriptionService
-	defaultModel string
-	defaultSub   *channel.Subscription
+	subSvc          *sqlite.LLMSubscriptionService
+	defaultModel    string
+	defaultSub      *channel.Subscription
+	perModelConfigs map[string]protocol.PerModelConfig // injected for ListSubscriptions/GetDefaultSubscription
+	subMaxContext   int                                // injected for ListSubscriptions/GetDefaultSubscription
+	settingsData    map[string]string                  // injected for GetSettings
+	contextMode     string                             // injected for GetContextMode
 }
 
 func (t *fakeTransport) Close() error { return nil }
 
 func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
+	case agent.MethodGetSettings:
+		if t.settingsData != nil {
+			return json.Marshal(t.settingsData)
+		}
+		return json.RawMessage("null"), nil
+
+	case agent.MethodGetContextMode:
+		if t.contextMode != "" {
+			return json.RawMessage(`"` + t.contextMode + `"`), nil
+		}
+		return json.RawMessage(`""`), nil
+
 	case agent.MethodListSubscriptions:
 		var req struct {
 			SenderID string `json:"sender_id"`
@@ -701,7 +719,7 @@ func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMe
 		}
 		out := make([]channel.Subscription, len(subs))
 		for i, s := range subs {
-			out[i] = channel.Subscription{ID: s.ID, Name: s.Name, Provider: s.Provider, BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault}
+			out[i] = channel.Subscription{ID: s.ID, Name: s.Name, Provider: s.Provider, BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault, PerModelConfigs: t.perModelConfigs, MaxContext: t.subMaxContext}
 		}
 		return json.Marshal(out)
 
@@ -719,7 +737,7 @@ func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMe
 		if err != nil || sub == nil {
 			return json.Marshal(nil)
 		}
-		return json.Marshal(&channel.Subscription{ID: sub.ID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault})
+		return json.Marshal(&channel.Subscription{ID: sub.ID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault, PerModelConfigs: t.perModelConfigs, MaxContext: t.subMaxContext})
 
 	case agent.MethodAddSubscription:
 		var req struct {
@@ -880,5 +898,237 @@ func TestIsCLISubscriptionSettingKey(t *testing.T) {
 				t.Errorf("isCLISubscriptionSettingKey(%q) = %v, want %v", tc.key, got, tc.want)
 			}
 		})
+	}
+}
+
+// ── refreshRemoteValuesCache: max_context_tokens regression tests ──────
+//
+// Bug: refreshRemoteValuesCache did not extract max_context_tokens from
+// subscription PerModelConfigs. When the user saved max_context_tokens via the
+// settings panel (saveSettings → UpdatePerModelConfig → RefreshValuesCache),
+// the cache was populated with config.DefaultMaxContextTokens (200000) instead
+// of the real PerModelConfigs value. Then reloadSettingsCaches → resolveMaxContext
+// → GetCurrentValues() read the wrong value, overwriting cachedMaxContextTokens.
+// Restarting the TUI fixed it because startup re-resolved from subscription data.
+//
+// These tests verify refreshRemoteValuesCache correctly picks up max_context_tokens
+// from PerModelConfigs[model].MaxContext and sub.MaxContext, with proper fallback.
+
+func TestRefreshValuesCache_MaxContextFromPerModelConfigs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxContext: 128000, MaxOutputTokens: 4096},
+		},
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	if got != "128000" {
+		t.Errorf("max_context_tokens = %q, want 128000 (from PerModelConfigs)", got)
+	}
+}
+
+func TestRefreshValuesCache_MaxContextFromSubMaxContext(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// PerModelConfigs doesn't have MaxContext for the model, but sub.MaxContext is set
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxOutputTokens: 4096}, // MaxContext = 0
+		},
+		subMaxContext: 256000,
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	if got != "256000" {
+		t.Errorf("max_context_tokens = %q, want 256000 (from sub.MaxContext fallback)", got)
+	}
+}
+
+func TestRefreshValuesCache_MaxContextFallbackToAgentConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// Neither PerModelConfigs nor sub.MaxContext has max_context
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxOutputTokens: 4096},
+		},
+	}
+	client := newTestClient(ft)
+
+	// Config.Agent.MaxContextTokens should be used as fallback
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{Agent: config.AgentConfig{MaxContextTokens: 50000}},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	if got != "50000" {
+		t.Errorf("max_context_tokens = %q, want 50000 (from config.Agent.MaxContextTokens fallback)", got)
+	}
+}
+
+func TestRefreshValuesCache_MaxContextNotOverwrittenByDBValue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxContext: 128000},
+		},
+		// Simulate config tool wrote max_context_tokens to user_settings DB
+		// (the old SetSetting path). The DB value should take precedence.
+		settingsData: map[string]string{
+			"max_context_tokens": "99999",
+		},
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	// user_settings DB value takes precedence over subscription defaults
+	if got != "99999" {
+		t.Errorf("max_context_tokens = %q, want 99999 (user_settings DB value takes precedence)", got)
+	}
+}
+
+func TestRefreshValuesCache_DefaultFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// Completely empty: no PerModelConfigs, no sub.MaxContext, no config.Agent.MaxContextTokens
+	ft := &fakeTransport{
+		subSvc: svc,
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	want := fmt.Sprintf("%d", config.DefaultMaxContextTokens)
+	if got != want {
+		t.Errorf("max_context_tokens = %q, want %q (config.DefaultMaxContextTokens fallback)", got, want)
 	}
 }
