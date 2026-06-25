@@ -14,6 +14,7 @@ CREATE TABLE tenants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel TEXT NOT NULL,
     chat_id TEXT NOT NULL,
+    runner_id TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(channel, chat_id)
