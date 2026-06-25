@@ -108,7 +108,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 		snapshot = messages[lastConsolidated:]
 	}
 
-	if len(snapshot) > 0 {
+	if mem != nil && len(snapshot) > 0 {
 		log.Ctx(ctx).WithField("tenant", tenantSession.String()).Infof("/new: archiving %d unconsolidated messages", len(snapshot))
 		result, _ := mem.Memorize(ctx, memory.MemorizeInput{
 			Messages:         snapshot,
