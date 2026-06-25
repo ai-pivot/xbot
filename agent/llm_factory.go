@@ -1115,7 +1115,7 @@ func parseOrDefault(s string, defaultVal int) int {
 	return v
 }
 
-func (f *LLMFactory) LLMSemAcquireForUser(senderID string) func(context.Context) func() {
+func (f *LLMFactory) LLMSemAcquireForUser(senderID, channel string) func(context.Context) func() {
 	if f.llmSemManager == nil {
 		return nil
 	}
@@ -1128,29 +1128,35 @@ func (f *LLMFactory) LLMSemAcquireForUser(senderID string) func(context.Context)
 		cap := llm.DefaultLLMConcurrency
 		if llmKey == "personal" {
 			cap = personalCap
+		} else {
+			// Check user setting for global LLM concurrency.
+			// Reads max_concurrent from user DB (populated by settings
+			// panel or startup seed from config.json), falls back to
+			// DefaultLLMConcurrency.
+			cap = parseOrDefault(f.getSetting(senderID, channel, "max_concurrent"), llm.DefaultLLMConcurrency)
 		}
 		return f.llmSemManager.Acquire(ctx, senderID, llmKey, func() int { return cap })
 	}
 }
 
-func (f *LLMFactory) SubAgentSemAcquireForUser(senderID string) func(context.Context) func() {
+func (f *LLMFactory) SubAgentSemAcquireForUser(senderID, channel string) func(context.Context) func() {
 	if f.llmSemManager == nil {
 		return nil
 	}
 	return func(ctx context.Context) func() {
-		cap := parseOrDefault(f.getSetting(senderID, "subagent_max_concurrent"), -1)
+		cap := parseOrDefault(f.getSetting(senderID, channel, "subagent_max_concurrent"), -1)
 		if cap < 0 {
-			cap = parseOrDefault(f.getSetting(senderID, "max_concurrent"), llm.DefaultLLMConcurrency)
+			cap = parseOrDefault(f.getSetting(senderID, channel, "max_concurrent"), llm.DefaultLLMConcurrency)
 		}
 		return f.llmSemManager.Acquire(ctx, senderID, "subagent", func() int { return cap })
 	}
 }
 
-func (f *LLMFactory) getSetting(senderID, key string) string {
+func (f *LLMFactory) getSetting(senderID, channel, key string) string {
 	if f.settingsSvc == nil {
 		return ""
 	}
-	settings, err := f.settingsSvc.GetSettings("feishu", senderID)
+	settings, err := f.settingsSvc.GetSettings(channel, senderID)
 	if err != nil || settings == nil {
 		return ""
 	}
