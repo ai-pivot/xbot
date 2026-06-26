@@ -404,10 +404,6 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 		old.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "reconnecting"))
 		old.Close()
-		// Wait for old readPump to exit before declaring success.
-		// Prevents stale readPump from racing with the new one
-		// (e.g. old readPump clearing t.conn after connect() replaced it).
-		t.readPumpWg.Wait()
 	}
 	log.Info("Connected to remote xbot server")
 	t.setConnState("connected")

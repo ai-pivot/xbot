@@ -103,10 +103,10 @@ func TestReadPumpDoesNotClearReplacedConn(t *testing.T) {
 	}
 }
 
-// TestConnectWaitsForOldReadPump verifies that connect() waits for the old
-// readPump to exit before returning, preventing multiple readPumps from
-// running concurrently.
-func TestConnectWaitsForOldReadPump(t *testing.T) {
+// TestOldReadPumpReturnsWithoutInterference verifies that when connect()
+// replaces the connection, the old readPump exits cleanly without
+// clearing the new connection or sending a redundant reconnect signal.
+func TestOldReadPumpReturnsWithoutInterference(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 	var (
@@ -145,26 +145,34 @@ func TestConnectWaitsForOldReadPump(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	// Force a reconnect via connect() directly.
+	// Force a reconnect via connect() while the old readPump is still running.
+	// The old readPump should detect t.conn != conn and return without
+	// clearing the new connection or sending a redundant reconnectCh signal.
 	if err := transport.connect(ctx); err != nil {
 		t.Fatalf("reconnect failed: %v", err)
 	}
 
-	// After connect() returns, the old readPump must have exited.
-	// We verify by checking readPumpWg count: after old readPump exits,
-	// the count should be 0 (since we haven't spawned a new readPump yet).
-	done := make(chan struct{})
-	go func() {
-		transport.readPumpWg.Wait()
-		close(done)
-	}()
+	// Verify t.conn is still non-nil.
+	transport.connMu.Lock()
+	currentConn := transport.conn
+	transport.connMu.Unlock()
 
-	select {
-	case <-done:
-		// Old readPump exited before or right after connect() returned.
-	case <-time.After(2 * time.Second):
-		t.Fatal("connect() did not wait for old readPump to exit")
+	if currentConn == nil {
+		t.Fatal("t.conn was nil after reconnect — old readPump cleared the new connection")
 	}
+
+	// Verify we only created 2 connections (initial + reconnect),
+	// not an infinite reconnect loop.
+	time.Sleep(500 * time.Millisecond)
+	connMu.Lock()
+	connCount := len(serverConns)
+	connMu.Unlock()
+	if connCount != 2 {
+		t.Fatalf("expected 2 server conns, got %d (possible reconnect loop)", connCount)
+	}
+
+	// Verify new connection works.
+	transport.sendPing()
 }
 
 // TestReconnectEventOnlyOnActiveProgress verifies that after reconnect,
