@@ -1806,7 +1806,7 @@ func main() {
 					return
 				}
 				cliCh.RestoreSession(history, progress, nil)
-				if progress != nil {
+				if progress != nil && progress.Phase != "done" {
 					cliCh.SetProcessing(true)
 				} else {
 					cliCh.SetProcessing(false)

@@ -404,6 +404,10 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 		old.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "reconnecting"))
 		old.Close()
+		// Wait for old readPump to exit before declaring success.
+		// Prevents stale readPump from racing with the new one
+		// (e.g. old readPump clearing t.conn after connect() replaced it).
+		t.readPumpWg.Wait()
 	}
 	log.Info("Connected to remote xbot server")
 	t.setConnState("connected")
@@ -448,14 +452,18 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			t.rpcMu.Unlock()
 			// Clear conn so subsequent Call() returns immediately instead of
 			// blocking for 30s on a dead connection (freezes BubbleTea event loop).
+			// Only clear if this readPump still owns the connection — connect()
+			// may have replaced t.conn with a new one while we were waiting.
 			t.connMu.Lock()
-			t.conn = nil
-			t.connMu.Unlock()
-			select {
-			case t.reconnectCh <- struct{}{}:
-			default:
+			if t.conn == conn {
+				t.conn = nil
+				select {
+				case t.reconnectCh <- struct{}{}:
+				default:
+				}
+				t.setConnState("disconnected")
 			}
-			t.setConnState("disconnected")
+			t.connMu.Unlock()
 			return
 		}
 		var msg protocol.WSMessage
