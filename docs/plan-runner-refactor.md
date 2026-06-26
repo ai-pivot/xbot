@@ -60,7 +60,7 @@ Runner 层 = 工具执行环境。所有 Shell/文件/MCP/网络能力由 Runner
 │  │ Core     │  │ (per-session)│  │ Tools  │  │ Tools  │ │
 │  │ Tools    │  │              │  │        │  │        │ │
 │  └──────────┘  └──────────────┘  └────────┘  └────────┘ │
-│      9 个        动态（取决于          现有        现有    │
+│      10 个       动态（取决于          现有        现有    │
 │                   runner 能力）                            │
 └─────────────────────────────────────────────────────────┘
           │
@@ -359,7 +359,7 @@ func (m *RunnerManager) OnRunnerDisconnected(runnerID string) {
 
 ### 2.5 工具分类一览
 
-#### Agent 核心编排工具（`tools/` 保留，约 9 个）
+#### Agent 核心编排工具（`tools/` 保留，约 10 个）
 
 | 工具 | 职责 |
 |------|------|
@@ -373,8 +373,9 @@ func (m *RunnerManager) OnRunnerDisconnected(runnerID string) {
 | `context_edit` | 上下文编辑 |
 | `config` | 配置读写 |
 | `tui_control` | TUI 控制 |
+| `Skill` | 加载技能知识到上下文 |
 
-#### Runner 本地工具（迁移到 `runner/tools/`，约 15 个标准工具）
+#### Runner 本地工具（迁移到 `runner/tools/`，约 14 个标准工具）
 
 | 工具 | 对应现有文件 |
 |------|------------|
@@ -389,7 +390,6 @@ func (m *RunnerManager) OnRunnerDisconnected(runnerID string) {
 | `WebSearch` | `tools/websearch.go` → `runner/tools/websearch.go` |
 | `DownloadFile` | `tools/download_file.go` → `runner/tools/download_file.go` |
 | `Worktree` | `tools/worktree.go` → `runner/tools/worktree.go` |
-| `Skill` | `tools/skill.go` → `runner/tools/skill.go` |
 | `TaskManager` | `tools/task_manager.go` → `runner/tools/task_manager.go` |
 | `ChatHistory` | `tools/chat_history.go` → `runner/tools/chat_history.go` |
 | `ManageTools` (MCP) | `tools/mcp_*.go` → `runner/mcp/` |

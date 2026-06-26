@@ -911,6 +911,7 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	r.RegisterCore(&JoinGroupTool{})
 	r.RegisterCore(&LeaveGroupTool{})
 	r.RegisterCore(&ListGroupMembersTool{})
+	// Agent core tool: loads skill knowledge into context (not a runner execution tool)
 	r.RegisterCore(&SkillTool{})
 	r.RegisterCore(&TaskStatusTool{})
 	r.RegisterCore(&TaskKillTool{})
