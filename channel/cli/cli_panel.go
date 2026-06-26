@@ -101,6 +101,15 @@ func (m *cliModel) renderSelLine(line string, w int) string {
 
 // closePanel deactivates any active panel.
 func (m *cliModel) closePanel() {
+	// Clean up AskUser persistence BEFORE clearing panel state.
+	// This ensures the persisted cache is deleted regardless of how
+	// the panel is closed — ESC, Ctrl+C, or any other path.
+	// Without this, Ctrl+C bypassed the onCancel callback that
+	// normally deletes the file, causing the AskUser panel to
+	// reappear on next TUI restart.
+	if m.panelState.mode == "askuser" {
+		m.deletePendingAskUser(m.askUserSession)
+	}
 	m.panelState.mode = ""
 	m.panelState.stack = nil
 	m.panelState.editing = false

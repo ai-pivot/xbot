@@ -98,11 +98,19 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	}
 
 	// Carry forward ReasoningStreamContent.
-	// Guard: only when StreamContent is also empty — reasoning stream is the
-	// LLM's internal thinking; once the actual text response (StreamContent)
-	// starts, reasoning stream from the previous progress shouldn't reappear.
+	// Guard: only when prev didn't have text response yet — reasoning stream
+	// is the LLM's internal thinking; once the actual text response
+	// (StreamContent) starts, reasoning shouldn't reappear on the new event.
+	//
+	// IMPORTANT: use prev.StreamContent (NOT current.StreamContent).
+	// The StreamContent carry-forward above may have already set
+	// current.StreamContent from prev. Checking current.StreamContent at
+	// this point would always fail (it's already non-empty from the carry),
+	// permanently blocking reasoning carry-forward when BOTH stream content
+	// AND reasoning stream content are on the previous progress state.
+	// This causes reasoning to visibly disappear mid-stream (regression).
 	if m.progressState.current.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && sameIter {
-		if m.progressState.current.StreamContent == "" {
+		if prev.StreamContent == "" {
 			m.progressState.current.ReasoningStreamContent = prev.ReasoningStreamContent
 		}
 	}
@@ -458,11 +466,12 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 				// Todo count affects layoutViewportHeight (todo bar lines).
 				// Must relayout viewport to adjust height.
 				m.relayoutViewport()
-			} else {
-				// Same count, just status/text changed — no height change needed.
-				// Only invalidate progress block render so next tick picks it up.
-				m.rc.valid = false
 			}
+			// Note: we do NOT set rc.valid=false here.
+			// The progress block is a no-op; todo display is in the status bar,
+			// not in the viewport. rc.valid=false would trigger fullRebuild which
+			// causes a dual viewport update (fullRebuild→updateStreamingOnly) and
+			// visible history flicker during streaming.
 
 			// Persist to TodoManager so todos survive turn end and session switches.
 			m.persistTodosToManager()

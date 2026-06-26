@@ -1086,6 +1086,14 @@ func guessProvider(model string) string {
 
 // ─── Concurrency settings ────────────────────────────────
 
+// Setting keys used by LLMFactory for concurrency control.
+// Must match keys stored in user_settings DB (written by settings panel).
+const (
+	settingMaxConcurrency           = "max_concurrency" // channel.SettingMaxConcurrency
+	settingSubAgentMaxConcurrency   = "subagent_max_concurrency"
+	settingLLMMaxConcurrentPersonal = "llm_max_concurrent_personal"
+)
+
 func (f *LLMFactory) GetLLMConcurrency(senderID string) int {
 	if f.settingsSvc == nil {
 		return llm.DefaultLLMConcurrencyPersonal
@@ -1094,14 +1102,14 @@ func (f *LLMFactory) GetLLMConcurrency(senderID string) int {
 	if err != nil || settings == nil {
 		return llm.DefaultLLMConcurrencyPersonal
 	}
-	return parseOrDefault(settings["llm_max_concurrent_personal"], llm.DefaultLLMConcurrencyPersonal)
+	return parseOrDefault(settings[settingLLMMaxConcurrentPersonal], llm.DefaultLLMConcurrencyPersonal)
 }
 
 func (f *LLMFactory) SetLLMConcurrency(senderID string, personal int) error {
 	if f.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
-	return f.settingsSvc.SetSetting("feishu", senderID, "llm_max_concurrent_personal", fmt.Sprintf("%d", personal))
+	return f.settingsSvc.SetSetting("feishu", senderID, settingLLMMaxConcurrentPersonal, fmt.Sprintf("%d", personal))
 }
 
 func parseOrDefault(s string, defaultVal int) int {
@@ -1115,7 +1123,7 @@ func parseOrDefault(s string, defaultVal int) int {
 	return v
 }
 
-func (f *LLMFactory) LLMSemAcquireForUser(senderID string) func(context.Context) func() {
+func (f *LLMFactory) LLMSemAcquireForUser(senderID, channel string) func(context.Context) func() {
 	if f.llmSemManager == nil {
 		return nil
 	}
@@ -1125,32 +1133,47 @@ func (f *LLMFactory) LLMSemAcquireForUser(senderID string) func(context.Context)
 	}
 	return func(ctx context.Context) func() {
 		personalCap := f.GetLLMConcurrency(senderID)
-		cap := llm.DefaultLLMConcurrency
-		if llmKey == "personal" {
-			cap = personalCap
+		// Resolution order: user DB max_concurrent (applies to both
+		// global and personal keys) → personal-specific → hardcoded default.
+		// This ensures the user's single max_concurrency knob controls
+		// ALL LLM calls regardless of whether they use shared or personal LLM.
+		cap := parseOrDefault(f.getSetting(senderID, channel, settingMaxConcurrency), -1)
+		if cap <= 0 {
+			if llmKey == "personal" {
+				cap = personalCap
+			} else {
+				cap = llm.DefaultLLMConcurrency
+			}
 		}
+		log.WithFields(log.Fields{
+			"sender":  senderID,
+			"channel": channel,
+			"llmKey":  llmKey,
+			"cap":     cap,
+			"dbVal":   f.getSetting(senderID, channel, settingMaxConcurrency),
+		}).Debug("LLMSemAcquireForUser: resolved capacity")
 		return f.llmSemManager.Acquire(ctx, senderID, llmKey, func() int { return cap })
 	}
 }
 
-func (f *LLMFactory) SubAgentSemAcquireForUser(senderID string) func(context.Context) func() {
+func (f *LLMFactory) SubAgentSemAcquireForUser(senderID, channel string) func(context.Context) func() {
 	if f.llmSemManager == nil {
 		return nil
 	}
 	return func(ctx context.Context) func() {
-		cap := parseOrDefault(f.getSetting(senderID, "subagent_max_concurrent"), -1)
+		cap := parseOrDefault(f.getSetting(senderID, channel, settingSubAgentMaxConcurrency), -1)
 		if cap < 0 {
-			cap = parseOrDefault(f.getSetting(senderID, "max_concurrent"), llm.DefaultLLMConcurrency)
+			cap = parseOrDefault(f.getSetting(senderID, channel, settingMaxConcurrency), llm.DefaultLLMConcurrency)
 		}
 		return f.llmSemManager.Acquire(ctx, senderID, "subagent", func() int { return cap })
 	}
 }
 
-func (f *LLMFactory) getSetting(senderID, key string) string {
+func (f *LLMFactory) getSetting(senderID, channel, key string) string {
 	if f.settingsSvc == nil {
 		return ""
 	}
-	settings, err := f.settingsSvc.GetSettings("feishu", senderID)
+	settings, err := f.settingsSvc.GetSettings(channel, senderID)
 	if err != nil || settings == nil {
 		return ""
 	}

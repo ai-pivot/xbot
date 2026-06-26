@@ -149,7 +149,9 @@ func (n *NapCatChannel) Start() error {
 func (n *NapCatChannel) Stop() {
 	n.stopOnce.Do(func() {
 		n.running.Store(false)
-		close(n.StopCh)
+		if n.StopCh != nil {
+			close(n.StopCh)
+		}
 		n.CloseConn()
 		n.clearPending()
 		log.Info("NapCat bot stopped")

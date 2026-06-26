@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"xbot/config"
 	"xbot/llm"
@@ -33,6 +36,114 @@ func TestGuessProvider(t *testing.T) {
 				t.Errorf("guessProvider(%q) = %q, want %q", tt.model, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLLMSemAcquireForUser_ReadsMaxConcurrencyFromDB verifies that
+// LLMSemAcquireForUser correctly reads the max_concurrency setting from
+// the user_settings DB via the correct channel, rather than falling back
+// to the hardcoded default. Regression test for the bug where the setting
+// key was misspelled ("max_concurrent" vs "max_concurrency").
+func TestLLMSemAcquireForUser_ReadsMaxConcurrencyFromDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	settingsSvc := NewSettingsService(store)
+	// Write max_concurrency=100 into the DB under channel "cli".
+	if err := settingsSvc.SetSetting("cli", "test_user", settingMaxConcurrency, "100"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	// Create LLMFactory with the settings service.
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f.SetSettingsService(settingsSvc)
+	mgr := llm.NewLLMSemaphoreManager()
+	f.SetLLMSemaphoreManager(mgr)
+
+	// Acquire the semaphore and release immediately to verify capacity.
+	acquire := f.LLMSemAcquireForUser("test_user", "cli")
+	if acquire == nil {
+		t.Fatal("LLMSemAcquireForUser returned nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Acquire N slots to verify capacity is at least 100 (not the default 5).
+	releases := make([]func(), 0, 100)
+	for i := 0; i < 100; i++ {
+		release := acquire(ctx)
+		if release == nil {
+			t.Fatalf("failed to acquire slot %d (capacity too low, was it %d?)", i, llm.DefaultLLMConcurrency)
+		}
+		releases = append(releases, release)
+	}
+	for _, r := range releases {
+		r()
+	}
+}
+
+// TestSubAgentSemAcquireForUser_ReadsMaxConcurrencyFromDB verifies that
+// SubAgentSemAcquireForUser correctly reads max_concurrency from the DB.
+func TestSubAgentSemAcquireForUser_ReadsMaxConcurrencyFromDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	settingsSvc := NewSettingsService(store)
+	if err := settingsSvc.SetSetting("cli", "test_user", settingMaxConcurrency, "50"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f.SetSettingsService(settingsSvc)
+	mgr := llm.NewLLMSemaphoreManager()
+	f.SetLLMSemaphoreManager(mgr)
+
+	acquire := f.SubAgentSemAcquireForUser("test_user", "cli")
+	if acquire == nil {
+		t.Fatal("SubAgentSemAcquireForUser returned nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	releases := make([]func(), 0, 50)
+	for i := 0; i < 50; i++ {
+		release := acquire(ctx)
+		if release == nil {
+			t.Fatalf("failed to acquire subagent slot %d (capacity too low, was it %d?)", i, llm.DefaultLLMConcurrency)
+		}
+		releases = append(releases, release)
+	}
+	for _, r := range releases {
+		r()
+	}
+}
+
+// TestSettingKeyConstants_MatchDB verifies that the setting key constants
+// used in LLMFactory match the canonical keys stored in user_settings DB.
+func TestSettingKeyConstants_MatchDB(t *testing.T) {
+	// These constants must match the keys written by settings panel.
+	if settingMaxConcurrency != "max_concurrency" {
+		t.Errorf("settingMaxConcurrency = %q, want %q", settingMaxConcurrency, "max_concurrency")
+	}
+	if settingSubAgentMaxConcurrency != "subagent_max_concurrency" {
+		t.Errorf("settingSubAgentMaxConcurrency = %q, want %q", settingSubAgentMaxConcurrency, "subagent_max_concurrency")
+	}
+	if settingLLMMaxConcurrentPersonal != "llm_max_concurrent_personal" {
+		t.Errorf("settingLLMMaxConcurrentPersonal = %q, want %q", settingLLMMaxConcurrentPersonal, "llm_max_concurrent_personal")
 	}
 }
 

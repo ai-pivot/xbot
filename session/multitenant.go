@@ -311,6 +311,9 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 		memProvider = letta.New(tenantID, m.coreSvc, m.archivalSvc, m.memorySvc, m.toolIndexSvc)
 		// 前向兼容：一次性迁移 user_profiles → core memory blocks
 		m.migrateProfileToCoreMemory(tenantID)
+	case "none":
+		// No memory provider — tools and archiving are disabled.
+		memProvider = nil
 	default:
 		// Flat memory: file-based storage under ~/.xbot/memory/{tenantID}/
 		// Use tenantID (numeric) as directory name for filesystem safety

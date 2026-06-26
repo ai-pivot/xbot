@@ -239,7 +239,9 @@ func (q *QQChannel) Stop() {
 		return
 	}
 	q.running.Store(false)
-	close(q.StopCh)
+	if q.StopCh != nil {
+		close(q.StopCh)
+	}
 	q.CloseConn()
 	log.Info("QQ bot stopped")
 }

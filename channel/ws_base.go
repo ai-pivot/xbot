@@ -27,6 +27,7 @@ type WSChannelBase struct {
 // NewWSChannelBase creates a WSChannelBase with the given configuration.
 func NewWSChannelBase(maxProcessed int, maxDisconnectAge time.Duration, maxDisconnects int) WSChannelBase {
 	return WSChannelBase{
+		StopCh:           make(chan struct{}),
 		processedIDs:     make(map[string]struct{}),
 		MaxProcessed:     maxProcessed,
 		maxDisconnectAge: maxDisconnectAge,
