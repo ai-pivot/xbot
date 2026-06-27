@@ -249,20 +249,18 @@ func (t *RemoteTransport) Run(ctx context.Context) error {
 
 // SendMessage sends a user message to the remote server via WebSocket.
 func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
+	var writeErr error
 	t.connMu.Lock()
-	defer t.connMu.Unlock()
 	if t.conn == nil {
+		t.connMu.Unlock()
 		return fmt.Errorf("not connected to server")
 	}
-	// Set write deadline to avoid blocking indefinitely on dead connections.
 	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	defer t.conn.SetWriteDeadline(time.Time{}) // reset
-
+	defer t.conn.SetWriteDeadline(time.Time{})
 	msgType := "message"
 	if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 		msgType = "cancel"
 	}
-
 	outMsg := protocol.WSClientMessage{
 		Type:       msgType,
 		Content:    msg.Content,
@@ -272,7 +270,21 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 		SenderName: msg.SenderName,
 		ChatType:   msg.ChatType,
 	}
-	return t.conn.WriteJSON(outMsg)
+	writeErr = t.conn.WriteJSON(outMsg)
+	if writeErr != nil {
+		// Write failure means the connection is dead.
+		t.conn = nil
+	}
+	t.connMu.Unlock()
+
+	if writeErr != nil {
+		select {
+		case t.reconnectCh <- struct{}{}:
+		default:
+		}
+		t.setConnState("disconnected")
+	}
+	return writeErr
 }
 
 // BindChat registers this connection to receive events for chatID.
@@ -579,14 +591,26 @@ func (t *RemoteTransport) pingLoop(ctx context.Context) {
 }
 
 // sendPing sends a WebSocket ping frame to the server.
+// On write failure, it triggers a reconnect — the connection is dead even
+// if readPump hasn't detected it yet (e.g. server died without closing TCP).
 func (t *RemoteTransport) sendPing() {
+	var pingFailed bool
 	t.connMu.Lock()
-	defer t.connMu.Unlock()
-	if t.conn == nil {
-		return
+	if t.conn != nil {
+		if err := t.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+			log.WithError(err).Warn("WS ping failed, connection dead")
+			t.conn = nil
+			pingFailed = true
+		}
 	}
-	if err := t.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-		log.WithError(err).Warn("WS ping failed")
+	t.connMu.Unlock()
+
+	if pingFailed {
+		select {
+		case t.reconnectCh <- struct{}{}:
+		default:
+		}
+		t.setConnState("disconnected")
 	}
 }
 
