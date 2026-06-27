@@ -392,3 +392,211 @@ func TestListAllModelsForUser_ExcludesDisabled(t *testing.T) {
 		t.Errorf("m-cached (loose) missing from %v", models)
 	}
 }
+
+// TestSetSubscriptionEnabled_SkipsEverywhere verifies the v40 subscription-level
+// enabled flag: a disabled subscription contributes no models to ListAllModelsForUser,
+// is never resolved as a model's owner, and rejects explicit SelectModel.
+func TestSetSubscriptionEnabled_SkipsEverywhere(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-d", SenderID: "cli_user", Name: "d", Provider: "openai",
+		BaseURL: "https://api.d.example/v1", APIKey: "sk-d", IsDefault: true,
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := subSvc.UpsertModel(sub.ID, "d-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel: %v", err)
+	}
+
+	// Enabled by default: model visible and resolvable.
+	models := f.ListAllModelsForUser("cli_user")
+	if !containsModel(models, "d-model") {
+		t.Fatalf("d-model should be visible before disable, got %v", models)
+	}
+	owner, err := f.ResolveSubscriptionForModel("cli_user", "d-model")
+	if err != nil || owner.ID != sub.ID {
+		t.Fatalf("owner before disable = %v, %v (want %s)", owner, err, sub.ID)
+	}
+
+	// Disable the subscription.
+	if err := f.SetSubscriptionEnabled(sub.ID, false); err != nil {
+		t.Fatalf("SetSubscriptionEnabled(false): %v", err)
+	}
+
+	// ListAllModelsForUser skips the disabled subscription entirely.
+	if models = f.ListAllModelsForUser("cli_user"); containsModel(models, "d-model") {
+		t.Errorf("d-model should be hidden after sub disable, got %v", models)
+	}
+	// ResolveSubscriptionForModel no longer resolves the disabled subscription as owner.
+	if _, err := f.ResolveSubscriptionForModel("cli_user", "d-model"); err == nil {
+		t.Error("ResolveSubscriptionForModel should fail for disabled subscription's model")
+	}
+	// SelectModel rejects the disabled subscription.
+	chatID := "/home/proj:Agent-2"
+	if err := f.SelectModel("cli_user", chatID, "cli", sub.ID, "d-model"); err == nil {
+		t.Error("SelectModel should reject disabled subscription")
+	}
+
+	// Re-enable: everything works again (lossless).
+	if err := f.SetSubscriptionEnabled(sub.ID, true); err != nil {
+		t.Fatalf("SetSubscriptionEnabled(true): %v", err)
+	}
+	if models = f.ListAllModelsForUser("cli_user"); !containsModel(models, "d-model") {
+		t.Errorf("d-model should reappear after re-enable, got %v", models)
+	}
+}
+
+func containsModel(models []string, want string) bool {
+	for _, m := range models {
+		if m == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestMakeOnModelsLoaded_PersistsCachedModels verifies the OnModelsLoaded
+// callback (re-wired into createClientFromSub in the model-first path) persists
+// a subscription's API-discovered models to CachedModels. This is the fix for
+// the "incomplete model list" bug where fetched /models never reached the DB.
+func TestMakeOnModelsLoaded_PersistsCachedModels(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-c", SenderID: "cli_user", Name: "charlie", Provider: "openai",
+		BaseURL: "https://api.c.example/v1", APIKey: "sk-c", IsDefault: true,
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	cb := f.makeOnModelsLoaded(sub.ID)
+	if cb == nil {
+		t.Fatal("makeOnModelsLoaded returned nil for a real subscription")
+	}
+	cb([]string{"c-1", "c-2", "c-3"})
+
+	got, err := subSvc.Get(sub.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.CachedModels) != 3 || got.CachedModels[0] != "c-1" {
+		t.Errorf("CachedModels = %v, want [c-1 c-2 c-3]", got.CachedModels)
+	}
+	// The persisted models now appear in the entry list with the owner's name.
+	entries := f.ListAllModelEntriesForUser("cli_user")
+	want := map[string]string{"c-1": "charlie", "c-2": "charlie", "c-3": "charlie"}
+	gotMap := map[string]string{}
+	for _, e := range entries {
+		gotMap[e.Model] = e.SubName
+	}
+	for m, s := range want {
+		if gotMap[m] != s {
+			t.Errorf("entry %q = subName %q, want %q (entries=%v)", m, gotMap[m], s, entries)
+		}
+	}
+
+	// Callback for a non-existent subscription must be safe (no nil deref).
+	cb2 := f.makeOnModelsLoaded("does-not-exist")
+	if cb2 != nil {
+		cb2([]string{"x"}) // must not panic
+	}
+}
+
+// TestRefreshModelEntriesForUser_NoLoaderGraceful verifies RefreshModelEntriesForUser
+// degrades gracefully when LLM clients don't implement ModelLoader (e.g. MockLLM
+// in tests): it returns the current entry list without error.
+func TestRefreshModelEntriesForUser_NoLoaderGraceful(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-r", SenderID: "cli_user", Name: "romeo", Provider: "openai",
+		BaseURL: "http://127.0.0.1:1", APIKey: "sk-r", Model: "r-default",
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	before := f.ListAllModelEntriesForUser("cli_user")
+	after := f.RefreshModelEntriesForUser("cli_user")
+	if len(before) != len(after) {
+		t.Fatalf("refresh changed entry count: before=%v after=%v", before, after)
+	}
+	// r-default (sub.Model) must still be present.
+	found := false
+	for _, e := range after {
+		if e.Model == "r-default" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("r-default missing after refresh: %v", after)
+	}
+}
+
+// model with its owning subscription's name (for "订阅名 · 模型名" display),
+// skip disabled subscriptions/models, and stay consistent with ListAllModelsForUser.
+func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	subA := &sqlite.LLMSubscription{
+		ID: "sub-a", SenderID: "cli_user", Name: "alpha", Provider: "openai",
+		BaseURL: "https://api.a.example/v1", APIKey: "sk-a", IsDefault: true,
+	}
+	subB := &sqlite.LLMSubscription{
+		ID: "sub-b", SenderID: "cli_user", Name: "beta", Provider: "openai",
+		BaseURL: "https://api.b.example/v1", APIKey: "sk-b",
+	}
+	if err := subSvc.Add(subA); err != nil {
+		t.Fatalf("Add A: %v", err)
+	}
+	if err := subSvc.Add(subB); err != nil {
+		t.Fatalf("Add B: %v", err)
+	}
+	if err := subSvc.UpsertModel(subA.ID, "a-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel a-model: %v", err)
+	}
+	if err := subSvc.UpsertModel(subB.ID, "b-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel b-model: %v", err)
+	}
+	if err := subSvc.UpsertModel(subB.ID, "b-disabled", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel b-disabled: %v", err)
+	}
+	if err := subSvc.SetModelEnabled(subB.ID, "b-disabled", false); err != nil {
+		t.Fatalf("SetModelEnabled: %v", err)
+	}
+
+	entries := f.ListAllModelEntriesForUser("cli_user")
+	want := map[string]string{"a-model": "alpha", "b-model": "beta"}
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Model] = e.SubName
+	}
+	for model, subName := range want {
+		if got[model] != subName {
+			t.Errorf("entry for %q = subName %q, want %q", model, got[model], subName)
+		}
+	}
+	if _, ok := got["b-disabled"]; ok {
+		t.Errorf("b-disabled should be excluded, got entries %v", entries)
+	}
+
+	// Consistency: the model names in entries must exactly match ListAllModelsForUser.
+	names := f.ListAllModelsForUser("cli_user")
+	if len(names) != len(entries) {
+		t.Fatalf("len mismatch: ListAllModels=%v entries=%v", names, entries)
+	}
+	for i, n := range names {
+		if entries[i].Model != n {
+			t.Errorf("position %d: entry.Model=%q != ListAllModels=%q", i, entries[i].Model, n)
+		}
+	}
+
+	// Disabling subscription B hides b-model entirely.
+	if err := f.SetSubscriptionEnabled(subB.ID, false); err != nil {
+		t.Fatalf("SetSubscriptionEnabled(false): %v", err)
+	}
+	entries = f.ListAllModelEntriesForUser("cli_user")
+	for _, e := range entries {
+		if e.SubID == subB.ID {
+			t.Errorf("disabled subscription B should contribute no entries, got %v", e)
+		}
+	}
+}

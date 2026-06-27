@@ -9,13 +9,19 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 
 > 本节描述 **当前权威路径**。下方 "LLM Resolution" 里的 `GetLLMForChat` 等遗留入口仍存在，但 agent loop 已切换到 `ResolveLLM`，新代码应优先使用本节 API。
 
-设计原则：**model 是一等实体，subscription 是模型的凭据来源**。agent 只关心 model 层；订阅只提供凭据和 per-model 配置。模型可被禁用。
+设计原则：**model 是一等实体，subscription 是模型的凭据来源**。agent 只关心 model 层；订阅只提供凭据和 per-model 配置。模型可被禁用，订阅也可被整体禁用（v40）。
+
+**UI 后果**：TUI 不再有"切换订阅"动作。模型选择（Ctrl+N / 模型面板）是唯一的切换入口，且**跨订阅**——选中属于别的订阅的模型时，后端 `ResolveSubscriptionForModel` 自动解析 owner 订阅并配对凭据。订阅面板降级为管理面板：**只支持 添加 / 禁用 / 删除**，不支持切换。
 
 ### 新增 DB（v39 迁移，rebase 后与 master 的 v38 runner_id 并存）
 
 - `subscription_models.enabled INTEGER NOT NULL DEFAULT 1` — 模型禁用开关。禁用后该模型不出现在轮换/选择器，`SelectModel` 拒绝选中。
 - `user_default_model(sender_id PK, subscription_id, model, updated_at)` — 用户级默认 (订阅, 模型)，用于新会话解析，取代旧的 `user_llm_subscriptions.model` "当前模型" 隐式语义。
 - v39 迁移幂等：补建 `enabled` 列、`user_default_model` 表，从 tenants 引用回填具体 model 行，从默认订阅 seed `user_default_model`。
+
+### 新增 DB（v40 迁移）
+
+- `user_llm_subscriptions.enabled INTEGER NOT NULL DEFAULT 1` — **订阅级禁用开关**。禁用后该订阅不再向模型选择池贡献任何模型（`ListAllModelsForUser` / `ResolveSubscriptionForModel` 跳过，`SelectModel` 拒绝），但凭据和 per-model 配置保留，重新启用无损。v40 迁移幂等（`ALTER TABLE ... ADD COLUMN enabled ...`，缺失才加）。
 
 ### 新增 LLMFactory API
 
@@ -25,7 +31,11 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 | `SelectModel(senderID, chatID, channel, subID, model)` | per-session 选 (订阅, 模型)，校验 enabled，写 tenants 表，失效 sessionMemo |
 | `SetUserDefaultModel(senderID, subID, model)` | 用户级默认 (订阅, 模型)，写 `user_default_model`，失效该用户所有 memo |
 | `SetModelEnabled(subID, model, enabled)` | 切换模型禁用状态，失效该订阅缓存 |
-| `ResolveSubscriptionForModel(senderID, model)` | **模型→订阅反向解析**：找提供该模型的订阅（enabled 行优先 → CachedModels/sub.Model；默认订阅优先；跳过 disabled） |
+| `SetSubscriptionEnabled(subID, enabled)` | **v40** 切换订阅级禁用，失效该订阅缓存（禁用订阅不贡献模型） |
+| `ListAllModelEntriesForUser(senderID)` | 返回 `[]protocol.ModelEntry{SubID,SubName,Model}`，`ListAllModelsForUser` 的富化版（带 owner 订阅名，供"订阅名·模型名"选择器），共享同一 selectable 逻辑 |
+| `RefreshModelEntriesForUser(senderID)` | 并行拉每个启用订阅的 `/models` → 经 `OnModelsLoaded` 落 `CachedModels` → 返回最新 `[]ModelEntry`。失败软降级。供选择器开面板刷新 |
+| `makeOnModelsLoaded(subID)` | 构造 `OnModelsLoaded` 回调：`Get(subID)` nil-check 后 `UpdateCachedModels`。在 `createClientFromSub` 及 entry 构造路径注入，修复 model-first 重构丢失的持久化 |
+| `ResolveSubscriptionForModel(senderID, model)` | **模型→订阅反向解析**：找提供该模型的订阅（enabled 行优先 → CachedModels/sub.Model；默认订阅优先；跳过 disabled 订阅与 disabled 模型） |
 | `PickDefaultModelForSub(sub)` | 订阅无 `Model` 时从 `subscription_models`/`CachedModels` 选一个真实模型，避免 `f.defaultModel` 污染 |
 
 ### ResolveLLM 解析链（优先级从高到低）
@@ -48,8 +58,11 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 | `select_model` | per-session (subID, model)，走 `SelectModel`。需 chatID（用户级用 `set_default_model`） |
 | `set_default_model` | 用户级默认 (subID, model)，走 `SetUserDefaultModel` |
 | `set_model_enabled` | 切换模型 enabled，走 `SetModelEnabled` |
+| `set_subscription_enabled` | **v40** 切换订阅 enabled，走 `SetSubscriptionEnabled` |
+| `list_all_model_entries` | 返回 `[]{SubID,SubName,Model}`，模型选择器权威数据源（带 owner 订阅名） |
+| `refresh_model_entries` | 并行拉每个启用订阅 `/models` 落 `CachedModels`，返回最新 entries（选择器开面板触发） |
 
-`client.SelectModel` / `client.SetDefaultModel` / `client.SetModelEnabled` 对应客户端方法。`SubscriptionManager.SetModelEnabled` 已加入 CLI 接口。
+`client.SelectModel` / `client.SetDefaultModel` / `client.SetModelEnabled` / `client.SetSubscriptionEnabled` 对应客户端方法。`SubscriptionManager.SetModelEnabled` / `SetSubscriptionEnabled` 已加入 CLI 接口。
 
 ### 跨订阅切模型 404（已修复）
 
@@ -57,11 +70,17 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 
 **修复**：`switch_model` per-session 分支先 `ResolveSubscriptionForModel` 解析拥有该模型的订阅，再走 `SelectModel(owner.ID, model, chatID)`（含 enabled 校验 + memo 失效）。解析失败才回退旧默认订阅路径。
 
-### 模型禁用 UX
+### 禁用 UX（模型级 + 订阅级）
 
-- `ListAllModelsForUser` 聚合 `subscription_models` 行 + `CachedModels` + `sub.Model`，并**排除被禁用的模型**（仅当所有列出它的订阅都禁用时排除）。Ctrl+N 轮换、tier 选择器、idle placeholder 自动不再出现禁用模型。
-- `protocol.PerModelConfig.Enabled` 是读侧投射字段，`mergeSubscriptionModels` 把 `subscription_models.enabled` 透传到客户端，供 UI 显示。
+- `ListAllModelsForUser` 聚合 `subscription_models` 行 + `CachedModels` + `sub.Model`，并**排除被禁用的模型**（仅当所有列出它的订阅都禁用时排除），且**整体跳过 `enabled=0` 的订阅**（禁用订阅不贡献任何模型）。Ctrl+N 轮换、tier 选择器、idle placeholder 自动不再出现禁用模型/禁用订阅的模型。
+- `protocol.PerModelConfig.Enabled` 是读侧投射字段，`mergeSubscriptionModels` 把 `subscription_models.enabled` 透传到客户端，供 UI 显示。`protocol.Subscription.Enabled`（v40）由 `subToChannel` / `LLMGetSubscription` 从 `user_llm_subscriptions.enabled` 透传。
 - 订阅编辑面板（`editQuickSwitchEntry`）每个模型行有 Enabled/Disabled 下拉，保存时按差异调 `SetModelEnabled`。
+- 订阅管理面板（`cli_panel_quickswitch.go`，"subscription" 模式）**不再有切换动作**：Enter = 启用/禁用该订阅（调 `SetSubscriptionEnabled`，面板保持打开以便连续管理），E = 编辑，D = 删除，末尾 `➕ Add subscription`。删除当前活跃订阅会被拒绝（提示先切模型）。
+- 模型选择面板（"model" 模式）= **可搜索的跨订阅模型选择器**：`ListAllModelEntries()` 返回 `[]{SubID, SubName, Model}`（权威：服务端 `ListAllModelEntriesForUser` 复用 `ListAllModelsForUser` 的 enabled 过滤），列表项显示 **`订阅名 · 模型名`**（系统默认模型无订阅名时只显示模型名）。带过滤输入框（输入即按订阅名/模型名子串过滤），↑↓ 导航，Enter 调 `applyModelSwitch` → `SwitchModel` → 后端 `ResolveSubscriptionForModel` + `SelectModel` 配对 owner 订阅。`applyModelSwitch` 在 `SwitchModel` 之后用 `GetSessionSubscription` 回读 owner 订阅，修正 `activeSubID`/上下文上限/输出上限并持久化（local 模式同样走 RPC，tenants 表是 source of truth）。
+  - **入口**：`Ctrl+L`（主入口，匹配历史文档语义）、点状态栏模型名（不再是轮转）、palette "Switch Model" 命令。`Ctrl+N` 保留为快速轮转（无面板，逐个切换）。
+  - **状态栏**显示 `订阅名 · 模型名`（窄屏回退为只显示模型名），由 `cachedSubName` 缓存（`refreshCachedSubName` 在 `activeSubID` 变更路径上刷新：`applyModelSwitch` / `refreshCachedModelName`(defer) / `applySessionLLMState`，每次一次 `List("")` RPC，View() 只读缓存，非每帧）。
+  - **开面板即时刷新**：`openQuickSwitch("model")` 先用 DB 快照渲染，同时后台调 `RefreshModelEntries()` → RPC `refresh_model_entries` → `LLMFactory.RefreshModelEntriesForUser`：并行（并发上限 8、每订阅 8s 超时、失败软降级保留旧 `CachedModels`）对每个启用订阅拉 `/models`，经 `OnModelsLoaded` 回调落 `CachedModels`，返回最新 entries。CLI 收到 `cliModelEntriesRefreshedMsg` 后替换 `quickSwitchModelEntries` 并重过滤（保留当前过滤文本与光标位置，越界则夹紧），面板顶部显示 `↻ 刷新模型列表…`。这解决了"列表不全"——不再只靠 `sub.Model` + 手动行，而是反映 provider 真实可用模型。
+- `cycleModel`（Ctrl+N）已改为跨订阅：用 `ListAllModels()` 而非 `ListModels()`，复用 `applyModelSwitch`。Ctrl+N 是"快速轮转"，Ctrl+L 是"挑一个"，二者互补。
 
 ## Key Files
 
@@ -213,49 +232,33 @@ ResolveEffectiveMaxContext(state, subMgr)
 
 ## Subscription Switch Scenarios（订阅切换场景）
 
-### 场景 1: TUI 订阅面板切换（per-session）
+### 场景 1: TUI 切换模型（跨订阅，per-session）
 
-用户在 TUI 订阅面板选择一个新订阅。
+用户在 TUI 用 Ctrl+N 或模型面板选中一个模型，该模型可能属于**另一个订阅**。
 
-**TUI 端** (`cli_panel.go:2814-2853`):
-1. 立即更新 `activeSubID` / `cachedModelName` / `cachedMaxContextTokens`
-2. `SaveSessionLLMState()` 持久化到 Session JSON
-3. 异步调用 `mgr.SetDefault(subID, chatID)` → RPC with chatID
-4. 异步调用 `switchFn(provider, url, key, model)` → 创建新 LLM 客户端
+**TUI 端** (`cli_subscription.go:applyModelSwitch`):
+1. `m.llmSubscriber.SwitchModel(senderID, model, chatID)` → RPC `switch_model`
+2. `GetSessionSubscription(senderID, chatID)` 回读后端解析出的 owner 订阅，修正 `activeSubID`
+3. `ResolveEffectiveMaxContext/Output` 重算上下文/输出上限
+4. `SaveSessionLLMState()` 持久化 (ownerSubID, model) 到 Session JSON
 
-**RPC 端** (`rpc_table.go:1334-1346`，chatID != "" 路径):
-1. `SetSessionLLM(bizID, chatID, sub)` → 设置 `entries["cli_user:chatID"]`
-2. `SetTenantSubscription()` → 持久化到 tenants 表
+**RPC 端** (`rpc_table.go` `switch_model`，chatID != "" 路径):
+1. `ResolveSubscriptionForModel(bizID, model)` → 解析 owner 订阅（跳过 disabled 订阅/模型，默认订阅优先）
+2. `SelectModel(owner.ID, model, chatID)` → 校验订阅/模型 enabled，写 tenants 表 (ownerSubID, model)，失效 sessionMemo
+3. 解析失败才回退旧默认订阅路径
 
-**回调** (`cli_update_handlers.go:1617-1644`):
-1. `mgr.SetDefault(subID, m.chatID)` — 再次确认 per-session（幂等）
-2. **`mgr.SetDefault(subID, "")`** — 更新全局默认（让新会话继承）
-3. `SaveSessionLLMState()` — 持久化
-4. `RefreshValuesCache(subID)` — 更新 TUI settings 缓存
+**订阅面板不再切换**：`cli_panel_quickswitch.go` "subscription" 模式只做 添加/禁用/删除（Enter=启停，E=编辑，D=删除）。旧的 `SwitchLLM` 异步切换 + `cliSwitchLLMDoneMsg` 流程仅保留给启动恢复（`scheduleSessionLLMRestore`）使用。
 
-**关键**: 步骤 2 的全局 `SetDefault("")` 调用 RPC `setDefaultSubscription` 的全局路径：
-- `svc.SetDefault(id)` — 更新 DB is_default 标记
-- `InvalidateSender(bizID)` — **只**清除 user-level entry，**保留**所有 per-chat entries
-- `SwitchSubscription(bizID, sub, "")` — 更新 user-level entry + defaultLLM/defaultModel
+**对其他会话的影响**: 模型切换是 per-session 的（只写当前 chatID 的 tenants 行 + per-chat entry），不触碰全局默认，不影响其他会话。
 
-**对其他会话的影响**:
-- ✅ 有 per-session 订阅的会话：不受影响（per-chat entry 保留）
-- ✅ 没有 per-session 订阅的会话：使用新的全局默认（合理行为）
-- ✅ SubAgent fallback：跟随新的 defaultLLM（用户级别偏好已更新）
-- ✅ 新会话：继承全局默认订阅
+### 场景 2: TUI 切换模型（Ctrl+L 选择器 / Ctrl+N 轮转）
 
-### 场景 2: TUI 快速切换模型（Ctrl+L）
+两种互补入口：
 
-在当前订阅内切换模型（不换订阅）。
+- **Ctrl+L / 点状态栏模型名 / palette "Switch Model"** → 打开**可搜索模型选择器**：`ListAllModelEntries()` 列出全部可选模型（`订阅名 · 模型名`），输入框按订阅名/模型名子串过滤，↑↓ + Enter 选中，走 `applyModelSwitch`（同场景 1）。模型多时比轮转快得多。
+- **Ctrl+N** → 快速轮转下一个模型（不开面板），`cycleModel` 用 `ListAllModels()`，复用 `applyModelSwitch`。
 
-**路径** (`cli_model.go:210-237`):
-1. `llmSubscriber.SwitchModel(senderID, nextModel, chatID)` → RPC
-2. `SaveSessionLLMState()` 持久化
-
-**RPC 端** (`SwitchModel` with chatID):
-1. 更新 `entries["cli_user:chatID"]` 的 model 字段
-2. 清除 client（懒重建）
-3. 持久化到 DB 默认订阅的 Model 字段
+选中属于别的订阅的模型时，后端 `ResolveSubscriptionForModel` + `SelectModel` 自动配对 owner 订阅凭据。
 
 ### 场景 3: Settings 面板修改 max_context
 
@@ -434,4 +437,30 @@ model-first 引入 `clientCache`（按 `(subID, apiType)` 缓存 client）。`ad
 
 ### 12. v39 迁移与 master v38 runner_id 的 rebase 关系
 
-master #179 用了 v38（`tenants.runner_id`）；model-first 重设计也用了 v38。rebase 后 model-first 迁移抬到 **v39**，保留 master 的 v38。`schemaVersion=39`。注意：曾用旧 model-pool 二进制升到 v38 的 live DB 缺 `runner_id`（旧 v38 没加），需手动 `ALTER TABLE tenants ADD COLUMN runner_id TEXT DEFAULT ''` 后再跑新二进制（v39 幂等，会把 version 升到 39）。这是该 dev 机器的特例，不应写进迁移代码。
+master #179 用了 v38（`tenants.runner_id`）；model-first 重设计也用了 v38。rebase 后 model-first 迁移抬到 **v39**，保留 master 的 v38。`schemaVersion=40`（v40 加入订阅级 enabled）。注意：曾用旧 model-pool 二进制升到 v38 的 live DB 缺 `runner_id`（旧 v38 没加），需手动 `ALTER TABLE tenants ADD COLUMN runner_id TEXT DEFAULT ''` 后再跑新二进制（v39/v40 幂等，会把 version 升到 40）。这是该 dev 机器的特例，不应写进迁移代码。
+
+### 13. 订阅级 enabled（v40）必须三层同步跳过
+
+`user_llm_subscriptions.enabled=0` 的订阅必须被三处同时跳过，否则禁用形同虚设：
+- `ListAllModelsForUser`：两个循环都加 `if !sub.Enabled { continue }`，否则禁用订阅的模型仍进 `states`/结果列表。
+- `ResolveSubscriptionForModel`：`find` 闭包内 `if !sub.Enabled { continue }`，否则禁用订阅会被选为 owner。
+- `SelectModel`：`if !sub.Enabled { return err }`，否则显式 SelectModel 仍能选中禁用订阅。
+`SetSubscriptionEnabled` 改完必须 `InvalidateSubscription(subID)`，否则 `clientCache`/`sessionMemo` 复用旧 client。
+
+### 14. 订阅面板不再切换；模型切换跨订阅必须回读 owner
+
+`cli_panel_quickswitch.go` "subscription" 模式已移除切换逻辑（旧 `SwitchLLM` 异步 + `cliSwitchLLMDoneMsg` 仅留作启动恢复）。Enter 现在是启停订阅。模型切换（Ctrl+N / "model" 面板）跨订阅时，`applyModelSwitch` 在 `SwitchModel` 之后**必须**用 `GetSessionSubscription` 回读 owner 订阅修正 `activeSubID`——否则 `activeSubID` 停留在旧订阅，上下文上限/输出上限/settings 面板都显示错误订阅的配置。`cycleModel` 必须用 `ListAllModels()`（不是 `ListModels()`）才能跨订阅轮换。
+
+### 15. 模型选择器用 `ListAllModelEntries`（带 owner 名）；过滤/状态栏都靠它
+
+"model" 模式选择器必须用 `ListAllModelEntries()`（`[]{SubID,SubName,Model}`），**不要**用纯 `ListAllModels()` + CLI 本地拼装订阅名——本地拼装会和服务端 `ListAllModelEntriesForUser` 的 enabled 过滤逻辑分叉（禁用订阅/禁用模型口径不一致）。`ListAllModelsForUser` 已重写为 `ListAllModelEntriesForUser` 的薄包装，二者结果按位置一致，新增模型可见性逻辑只需改一处。
+
+- 选择器有**过滤输入框**（`quickSwitchFilterInput` textinput）；`handleQuickSwitchKey` 在 "model" 模式必须先拦截 Esc/Up/Down/Enter（操作 `quickSwitchModelFiltered`），其余键喂给 textinput 再 `applyQuickSwitchFilter` 重建过滤视图。`applyQuickSwitch` 在 "model" 模式从 `quickSwitchModelFiltered[cursor]` 取（不是 `quickSwitchList`，model 模式下 `quickSwitchList` 是 nil）。
+- **点状态栏模型名 = 打开选择器**（`cli_mouse.go` "modelName" → `openQuickSwitch("model")`），不再是 `cycleModel`；Ctrl+N 保留轮转。
+- 状态栏 `订阅名 · 模型名` 靠 `cachedSubName`，由 `refreshCachedSubName` 在 `activeSubID` 变更路径（`applyModelSwitch` / `refreshCachedModelName` defer / `applySessionLLMState`）刷新——每次一次 `List("")` RPC，**View() 只读缓存**，绝不能在每帧 RPC。订阅重命名后状态栏订阅名可能短暂滞后（下次 activeSubID 变更或面板刷新才更新），可接受。
+
+### 16. `OnModelsLoaded` 必须在 model-first 路径注入；选择器开面板必须实时刷新
+
+model-first 重构曾把 `OnModelsLoaded` 回调丢线：`createClientFromSub`（及 entry 构造路径）构造 `UserLLMConfig` 时不设 `OnModelsLoaded`，导致每个订阅 client 即便异步拉到 `/models` 也不写回 `CachedModels`。症状：模型选择器/Ctrl+N 每个订阅只看到 `sub.Model`（一个）+ 手动 `subscription_models` 行，**provider 真实可用模型全部缺失**（"列表不全"）。修复：`makeOnModelsLoaded(subID)` 在三处 `createClient` 调用点注入（`createClientFromSub` + 两处 entry 构造），回调内 `Get(subID)` nil-check 后 `UpdateCachedModels`（`UpdateCachedModels` 对不存在的 subID 会 nil-deref，必须先 Get 守卫）。
+
+光修回调还不够——`CachedModels` 只在订阅 client 被构造时才更新，"从没用过的订阅" / "provider 新增模型"仍是旧值。所以选择器开面板**必须**触发 `RefreshModelEntriesForUser`：并行（`sem` 容量 8）对每个 `Enabled && BaseURL && APIKey` 的订阅 `createClientFromSub` + `llm.ModelLoader.LoadModelsFromAPI`（8s 超时），失败软降级（保留旧 `CachedModels`），完成后返回最新 entries。CLI 侧异步：`openQuickSwitch("model")` 把 `refreshModelEntriesCmd` 推进 `m.pendingCmds`，三个入口（Ctrl+L / 点状态栏模型名 / palette Enter）都必须 drain `pendingCmds` 把 cmd 发出去；回包 `cliModelEntriesRefreshedMsg` 在 `Update` 顶层处理，替换 `quickSwitchModelEntries` 后 `applyQuickSwitchFilter`（**只夹紧光标，不重置**——否则后台刷新会把用户光标拽回顶部）。`applyQuickSwitchFilter` 因此只做 clamp，光标置位由调用方负责（open → `cursorToActiveModel`，typing → 0）。`backendModelLister.EnsureModelsLoaded` 是 no-op（远程模式服务端管缓存），刷新由 `RefreshModelEntries` 显式触发，别再依赖 `EnsureModelsLoaded`。

@@ -484,7 +484,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			ch := channel.Subscription{
 				ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
 				BaseURL: sub.BaseURL, APIKey: sub.APIKey,
-				Model: sub.Model, Active: sub.IsDefault,
+				Model: sub.Model, Active: sub.IsDefault, Enabled: sub.Enabled,
 				MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
 			}
 			return &ch, nil

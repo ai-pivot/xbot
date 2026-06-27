@@ -7,13 +7,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// cycleModel switches to the next model across all subscriptions.
-// Uses ListAllModels() so models from ALL subscriptions are visible (not just the
-// current default LLM). Cycles through the model names displayed in the status bar.
-// Note: this only changes the cached model name — the actual subscription switch
-// happens when a new LLM call is made (or via quick switch panel).
+// cycleModel switches to the next model across ALL subscriptions (model-first).
+// Uses ListAllModels() so models from every enabled subscription are visible and
+// selectable. Picking a model owned by a different subscription is handled by the
+// backend switch_model RPC, which resolves the owner via ResolveSubscriptionForModel
+// and persists the correct (subID, model) pair to the tenants table.
 func (m *cliModel) cycleModel() {
-	if m.channel == nil {
+	if m.channel == nil || m.channel.modelLister == nil {
 		return
 	}
 
@@ -22,9 +22,9 @@ func (m *cliModel) cycleModel() {
 	// (the async fetch hasn't completed yet).
 	m.channel.modelLister.EnsureModelsLoaded()
 
-	// Use ListModels (current subscription only) instead of ListAllModels.
-	// Ctrl+N should cycle through the current subscription's models only.
-	models := m.channel.modelLister.ListModels()
+	// Cross-subscription: cycle through every selectable model from every
+	// enabled subscription, not just the current subscription's models.
+	models := m.channel.modelLister.ListAllModels()
 	if len(models) < 2 {
 		m.showTempStatus("Only one model available")
 		return
@@ -38,26 +38,46 @@ func (m *cliModel) cycleModel() {
 			break
 		}
 	}
-	nextModel := models[nextIdx]
+	m.applyModelSwitch(models[nextIdx])
+}
 
-	m.cachedModelName = nextModel
-	m.showTempStatus(fmt.Sprintf("Model: %s", nextModel))
-
-	// Switch model on the current subscription (no need to change subscription
-	// since we're already cycling within the current subscription's models).
+// applyModelSwitch switches the session to the given model and re-syncs client
+// state. Because the model may belong to a different subscription than the
+// current one, the owning subscription is re-read from the backend
+// (GetSessionSubscription, authoritative in both local and remote modes) after
+// the SwitchModel RPC completes, so activeSubID/cachedModelName/context limits
+// reflect the new owner rather than the stale previous subscription.
+func (m *cliModel) applyModelSwitch(nextModel string) {
+	if nextModel == "" {
+		return
+	}
 	if m.llmSubscriber != nil {
 		m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
 	}
-	// Persist per-session model choice
-	existing := LoadSessionLLMState(m.workDir, m.chatID)
-	existing.SubscriptionID = m.activeSubID
-	existing.Model = nextModel
-	SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
-	// Re-resolve context/output token limits for the new model so the
-	// context usage bar reflects the correct window size immediately.
-	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(existing, m.subscriptionMgr)
-	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(existing, m.subscriptionMgr))
+	m.cachedModelName = nextModel
+	// Re-resolve the owning subscription from the backend. switch_model persists
+	// (ownerSubID, model) to tenants; GetSessionSubscription reads it back. This
+	// works in local mode too (same RPC path through ChannelTransport → ServerCore).
+	if m.channel != nil && m.channel.subscriptionMgr != nil {
+		if subID, _, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.chatID); err == nil && subID != "" {
+			m.activeSubID = subID
+		}
+	}
+	m.refreshCachedSubName()
+	state := SessionLLMState{
+		SubscriptionID: m.activeSubID,
+		Model:          nextModel,
+	}
+	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
+	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
+	SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
+		SubscriptionID:   m.activeSubID,
+		Model:            nextModel,
+		MaxContextTokens: m.cachedMaxContextTokens,
+		MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+	}, m.remoteMode)
 	m.updateQuickSwitchModels(nextModel)
+	m.showTempStatus(fmt.Sprintf("Model: %s", nextModel))
 }
 
 // tickerTickMsg 是 ticker 定时 tick 消息
@@ -154,6 +174,24 @@ func (m *cliModel) invalidateSubCache() {
 	m.hasNoSubCacheValid = false
 }
 
+// refreshCachedSubName caches the owning subscription's display name for the
+// status bar ("订阅名 · 模型名"). Called whenever activeSubID changes. Reads the
+// subscription list (one RPC) — NOT per-frame; View() reads the cached field.
+func (m *cliModel) refreshCachedSubName() {
+	m.cachedSubName = ""
+	if m.activeSubID == "" || m.channel == nil || m.channel.subscriptionMgr == nil {
+		return
+	}
+	if subs, err := m.channel.subscriptionMgr.List(""); err == nil {
+		for _, s := range subs {
+			if s.ID == m.activeSubID {
+				m.cachedSubName = s.Name
+				return
+			}
+		}
+	}
+}
+
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
 // Should be called after channel init, config changes, and settings saves.
 // Prefers per-session override (from disk or in-memory state) over global default.
@@ -161,6 +199,7 @@ func (m *cliModel) invalidateSubCache() {
 // Should be called after channel init, config changes, and settings saves.
 // Prefers per-session override (from disk or in-memory state) over global default.
 func (m *cliModel) refreshCachedModelName() {
+	defer m.refreshCachedSubName() // keep status-bar "订阅名 · 模型名" in sync with activeSubID
 	if m.channel == nil {
 		return
 	}

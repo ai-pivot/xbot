@@ -2200,6 +2200,14 @@ func (l *backendModelLister) ListAllModels() []string {
 	return l.client.ListAllModels()
 }
 
+func (l *backendModelLister) ListAllModelEntries() []protocol.ModelEntry {
+	return l.client.ListAllModelEntries()
+}
+
+func (l *backendModelLister) RefreshModelEntries() []protocol.ModelEntry {
+	return l.client.RefreshModelEntries()
+}
+
 // backendSubscriptionManager implements cli.SubscriptionManager via Backend interface.
 // Works identically for both local (localTransport → DB) and remote (WS RPC → server DB) modes.
 type backendSubscriptionManager struct {
@@ -2254,6 +2262,10 @@ func (m *backendSubscriptionManager) UpdatePerModelConfig(id, model string, pmc 
 
 func (m *backendSubscriptionManager) SetModelEnabled(id, model string, enabled bool) error {
 	return m.client.SetModelEnabled(id, model, enabled)
+}
+
+func (m *backendSubscriptionManager) SetSubscriptionEnabled(id string, enabled bool) error {
+	return m.client.SetSubscriptionEnabled(id, enabled)
 }
 
 func (m *backendSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {

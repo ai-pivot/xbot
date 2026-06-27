@@ -45,6 +45,12 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		}
 	}
 
+	// Model picker: background /models refresh completed.
+	if refreshed, ok := msg.(cliModelEntriesRefreshedMsg); ok {
+		m.handleModelEntriesRefreshed(refreshed)
+		return m, nil
+	}
+
 	// Runner status change notification
 	if rsm, ok := msg.(runnerStatusMsg); ok {
 		cmd := m.handleRunnerStatusMsg(rsm)

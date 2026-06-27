@@ -104,16 +104,23 @@ func (m *mockSubscriptionManager) SetModelEnabled(id, model string, enabled bool
 	return nil
 }
 
-// TestApplyQuickSwitch tests that switching a subscription actually calls SwitchLLM.
-func TestApplyQuickSwitch(t *testing.T) {
-	// Track what SwitchLLM received
-	var switchedProvider, switchedBaseURL, switchedAPIKey, switchedModel string
-	switchCalled := false
+func (m *mockSubscriptionManager) SetSubscriptionEnabled(id string, enabled bool) error {
+	for i := range m.subs {
+		if m.subs[i].ID == id {
+			m.subs[i].Enabled = enabled
+		}
+	}
+	return nil
+}
 
+// TestApplyQuickSwitch tests that applying a subscription entry toggles its
+// enabled state (model-first: the subscription panel is management-only — add /
+// disable / delete — and no longer "switches" the active subscription).
+func TestApplyQuickSwitch(t *testing.T) {
 	mgr := &mockSubscriptionManager{
 		subs: []channel.Subscription{
-			{ID: "sub1", Name: "glm", Provider: "openai", BaseURL: "https://glm.example.com/v1", APIKey: "key1", Model: "glm-4", Active: true},
-			{ID: "sub2", Name: "gpt", Provider: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "key2", Model: "gpt-4.1", Active: false},
+			{ID: "sub1", Name: "glm", Provider: "openai", BaseURL: "https://glm.example.com/v1", APIKey: "key1", Model: "glm-4", Active: true, Enabled: true},
+			{ID: "sub2", Name: "gpt", Provider: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "key2", Model: "gpt-4.1", Active: false, Enabled: true},
 		},
 	}
 
@@ -122,11 +129,7 @@ func TestApplyQuickSwitch(t *testing.T) {
 	model.channel = &CLIChannel{
 		config: &CLIChannelConfig{
 			SwitchLLM: func(provider, baseURL, apiKey, model string) error {
-				switchCalled = true
-				switchedProvider = provider
-				switchedBaseURL = baseURL
-				switchedAPIKey = apiKey
-				switchedModel = model
+				t.Fatal("SwitchLLM must NOT be called from the subscription panel anymore")
 				return nil
 			},
 			GetCurrentValues: func() map[string]string {
@@ -135,70 +138,47 @@ func TestApplyQuickSwitch(t *testing.T) {
 		},
 	}
 
-	// Open quick switch, select second subscription, apply
+	// Open quick switch in subscription (management) mode.
 	model.openQuickSwitch("subscription")
 	if model.quickSwitchMode != "subscription" {
 		t.Fatalf("expected quickSwitchMode=subscription, got %s", model.quickSwitchMode)
 	}
-
+	// sub1 (active) + sub2 + __add__
+	if len(model.quickSwitchList) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(model.quickSwitchList))
+	}
 	// The active sub (sub1) should be pre-selected
 	if model.quickSwitchCursor != 0 {
 		t.Fatalf("expected cursor=0 (active sub), got %d", model.quickSwitchCursor)
 	}
 
-	// Move cursor to sub2 (index 1, before __add__ at index 2)
+	// Move cursor to sub2 and apply — this toggles enabled (true → false).
 	model.quickSwitchCursor = 1
 	model.applyQuickSwitch()
 
-	// applyQuickSwitch now defers SwitchLLM + SetDefault to a background Cmd.
-	// Verify pending Cmds were queued (async SwitchLLM).
-	// showTempStatus no longer uses pendingCmds — its timer is goroutine-based.
-	if len(model.pendingCmds) < 1 {
-		t.Fatalf("expected at least 1 pendingCmd (async switch), got %d", len(model.pendingCmds))
+	if mgr.subs[1].Enabled {
+		t.Errorf("expected sub2 disabled after toggle, got enabled=true")
 	}
-
-	// The pending Cmd is the async SwitchLLM
-	asyncCmd := model.pendingCmds[0]
-	msg := asyncCmd()
-	doneMsg, ok := msg.(cliSwitchLLMDoneMsg)
-	if !ok {
-		t.Fatalf("expected cliSwitchLLMDoneMsg, got %T", msg)
-	}
-	if doneMsg.err != nil {
-		t.Fatalf("unexpected SwitchLLM error: %v", doneMsg.err)
-	}
-
-	// Verify SwitchLLM was called with correct values
-	if !switchCalled {
-		t.Fatal("SwitchLLM was NOT called!")
-	}
-	if switchedProvider != "openai" {
-		t.Errorf("expected provider=openai, got %s", switchedProvider)
-	}
-	if switchedBaseURL != "https://api.openai.com/v1" {
-		t.Errorf("expected baseURL=https://api.openai.com/v1, got %s", switchedBaseURL)
-	}
-	if switchedAPIKey != "key2" {
-		t.Errorf("expected apiKey=key2, got %s", switchedAPIKey)
-	}
-	if switchedModel != "gpt-4.1" {
-		t.Errorf("expected model=gpt-4.1, got %s", switchedModel)
-	}
-
-	// Verify quick switch mode is cleared
-	if model.quickSwitchMode != "" {
-		t.Errorf("expected quickSwitchMode cleared, got %s", model.quickSwitchMode)
-	}
-
-	// Now simulate the Update handler processing the doneMsg (which calls SetDefault)
-	// The Update handler in cli_update.go does this when it receives cliSwitchLLMDoneMsg
-	if doneMsg.mgr != nil {
-		if err := doneMsg.mgr.SetDefault(doneMsg.subID, ""); err != nil {
-			t.Fatalf("SetDefault failed: %v", err)
+	// No async subscription switch should be queued. showTempStatus may queue a
+	// status-clear cmd, but none of the pending cmds may produce a
+	// cliSwitchLLMDoneMsg (that was the old switch-subscription behavior).
+	for _, c := range model.pendingCmds {
+		if _, ok := c().(cliSwitchLLMDoneMsg); ok {
+			t.Fatal("a cliSwitchLLMDoneMsg was queued — subscription switching must not happen from the panel")
 		}
 	}
-	if mgr.setDefID != "sub2" {
-		t.Errorf("expected SetDefault(sub2), got SetDefault(%s)", mgr.setDefID)
+		}
+	}
+	// Panel stays open so the user can keep managing subscriptions.
+	if model.quickSwitchMode != "subscription" {
+		t.Errorf("expected panel to stay open, got quickSwitchMode=%q", model.quickSwitchMode)
+	}
+
+	// Toggle again (false → true).
+	model.quickSwitchCursor = 1
+	model.applyQuickSwitch()
+	if !mgr.subs[1].Enabled {
+		t.Errorf("expected sub2 re-enabled after second toggle, got enabled=false")
 	}
 }
 

@@ -395,6 +395,24 @@ func (c *Client) ListAllModels() []string {
 	return r
 }
 
+// ListAllModelEntries returns selectable models paired with their owning
+// subscription (SubID/SubName empty for system-default models), for the model
+// picker UI. Skips disabled subscriptions and disabled models.
+func (c *Client) ListAllModelEntries() []protocol.ModelEntry {
+	var r []protocol.ModelEntry
+	_ = c.call(MethodListAllModelEntries, struct{}{}, &r)
+	return r
+}
+
+// RefreshModelEntries live-fetches /models for every enabled subscription,
+// persists to CachedModels, and returns the fresh entry list. Use before
+// opening the model picker so it reflects providers' true available models.
+func (c *Client) RefreshModelEntries() []protocol.ModelEntry {
+	var r []protocol.ModelEntry
+	_ = c.call(MethodRefreshModelEntries, struct{}{}, &r)
+	return r
+}
+
 func (c *Client) SetModelTiers(cfg config.LLMConfig) error {
 	return c.call(MethodSetModelTiers, cfg, nil)
 }
@@ -506,6 +524,15 @@ func (c *Client) SetModelEnabled(subID, model string, enabled bool) error {
 		Model   string `json:"model"`
 		Enabled bool   `json:"enabled"`
 	}{SubID: subID, Model: model, Enabled: enabled}, nil)
+}
+
+// SetSubscriptionEnabled toggles a subscription's enabled flag (v40). A disabled
+// subscription stops contributing models to the picker.
+func (c *Client) SetSubscriptionEnabled(subID string, enabled bool) error {
+	return c.call(MethodSetSubscriptionEnabled, struct {
+		SubID   string `json:"sub_id"`
+		Enabled bool   `json:"enabled"`
+	}{SubID: subID, Enabled: enabled}, nil)
 }
 
 // ---------------------------------------------------------------------------

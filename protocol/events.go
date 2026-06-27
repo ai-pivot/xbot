@@ -126,6 +126,10 @@ type Subscription struct {
 	APIType         string                    `json:"api_type,omitempty"` // "chat_completions" (default) | "responses"
 	PerModelConfigs map[string]PerModelConfig `json:"per_model_configs,omitempty"`
 	Active          bool                      `json:"active"`
+	// Enabled is the subscription-level enabled flag (v40). A disabled subscription
+	// stops contributing models to the picker; credentials are preserved. Populated
+	// from user_llm_subscriptions.enabled by listSubscriptions/mergeSubscriptionModels.
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // PerModelConfig stores per-model token overrides within a subscription.
@@ -137,6 +141,16 @@ type PerModelConfig struct {
 	// mergeSubscriptionModels so the UI can show/toggle per-model enabled state. It is
 	// NOT authoritative on writes — enabled is managed by the set_model_enabled RPC.
 	Enabled bool `json:"enabled,omitempty"`
+}
+
+// ModelEntry is a selectable model paired with the subscription that provides it.
+// Used by the model picker (ListAllModelEntries) so the UI can show "订阅名 · 模型名"
+// and disambiguate models served by different subscriptions. System-default models
+// (not owned by any user subscription) carry empty SubID/SubName.
+type ModelEntry struct {
+	SubID   string `json:"sub_id,omitempty"`
+	SubName string `json:"sub_name,omitempty"`
+	Model   string `json:"model"`
 }
 
 type OutboundEvent struct {

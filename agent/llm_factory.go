@@ -10,6 +10,7 @@ import (
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
 
@@ -456,6 +457,8 @@ func (f *LLMFactory) createEntryFromSub(sub *sqlite.LLMSubscription, model strin
 	cfg := &sqlite.UserLLMConfig{
 		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 		Model: model, MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode, APIType: apiType,
+		ID:             sub.ID,
+		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
 	client, _ := f.createClient(cfg)
 	if client == nil {
@@ -856,9 +859,26 @@ func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model stri
 	cfg := &sqlite.UserLLMConfig{
 		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
+		ID:             sub.ID,
+		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
 	client, _ := f.createClient(cfg)
 	return client
+}
+
+// makeOnModelsLoaded returns a callback that persists a subscription's
+// API-discovered model list to CachedModels. Runs in NewOpenAILLM's async
+// goroutine, so it must be concurrency-safe and nil-guard the subscription
+// (UpdateCachedModels nil-derefs if the sub no longer exists in DB).
+func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
+	if f.subscriptionSvc == nil || subID == "" {
+		return nil
+	}
+	return func(models []string) {
+		if sub, err := f.subscriptionSvc.Get(subID); err == nil && sub != nil {
+			_ = f.subscriptionSvc.UpdateCachedModels(subID, models)
+		}
+	}
 }
 
 // ─── Model-first resolution (v38+) ───────────────────────
@@ -977,6 +997,7 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 	cfg := &sqlite.UserLLMConfig{
 		ID: sub.ID, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
+		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
 	client, _ := f.createClient(cfg)
 	if client == nil {
@@ -1085,6 +1106,9 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 	if err != nil || sub == nil {
 		return fmt.Errorf("SelectModel: subscription %s not found", subID)
 	}
+	if !sub.Enabled {
+		return fmt.Errorf("SelectModel: subscription %s is disabled", subID)
+	}
 	if !sub.IsDefault {
 		// Allow selecting non-default subscriptions per-session; no-op flag check.
 	}
@@ -1137,6 +1161,9 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 		var fallback *sqlite.LLMSubscription
 		for i := range subs {
 			sub := subs[i]
+			if !sub.Enabled {
+				continue // disabled subscription cannot own a selectable model
+			}
 			if !matchFn(sub) {
 				continue
 			}
@@ -1220,6 +1247,21 @@ func (f *LLMFactory) SetModelEnabled(subID, model string, enabled bool) error {
 	return nil
 }
 
+// SetSubscriptionEnabled toggles a subscription's enabled flag (v40). Disabling a
+// subscription removes all its models from the picker and prevents it from being
+// resolved as a model's owner; the credentials and per-model config are preserved
+// so re-enabling is lossless. Invalidates the client cache and session memos.
+func (f *LLMFactory) SetSubscriptionEnabled(subID string, enabled bool) error {
+	if f.subscriptionSvc == nil {
+		return fmt.Errorf("SetSubscriptionEnabled: subscription service unavailable")
+	}
+	if err := f.subscriptionSvc.SetSubscriptionEnabled(subID, enabled); err != nil {
+		return err
+	}
+	f.InvalidateSubscription(subID)
+	return nil
+}
+
 // InvalidateSubscription drops the client cache + all session memos referencing
 // a subscription. Called when a subscription's credentials/config change or one
 // of its models is toggled.
@@ -1268,14 +1310,32 @@ func (f *LLMFactory) invalidateUserMemos(senderID string) {
 func (f *LLMFactory) ListModels() []string { return f.defaultLLM.ListModels() }
 
 func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
+	entries := f.ListAllModelEntriesForUser(senderID)
+	result := make([]string, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, e.Model)
+	}
+	return result
+}
+
+// ListAllModelEntriesForUser returns every selectable model for a user, paired
+// with the subscription that provides it (SubID/SubName empty for system-default
+// models). Mirrors ListAllModelsForUser's selectability rules: disabled
+// subscriptions and disabled models are excluded. The list is stable, grouped by
+// source (system default first, then subscriptions in creation order).
+func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.ModelEntry {
 	seen := make(map[string]bool)
-	var result []string
+	var result []protocol.ModelEntry
+	add := func(subID, subName, model string) {
+		if model == "" || seen[model] {
+			return
+		}
+		seen[model] = true
+		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model})
+	}
 	// System default client models: always selectable (system fallback, not user-disableable).
 	for _, m := range f.defaultLLM.ListModels() {
-		if m != "" && !seen[m] {
-			seen[m] = true
-			result = append(result, m)
-		}
+		add("", "", m)
 	}
 	if f.subscriptionSvc == nil {
 		return result
@@ -1308,6 +1368,9 @@ func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 	// Cache per-subscription model rows so we don't query twice.
 	subModels := make([][]*sqlite.SubscriptionModel, len(subs))
 	for i, sub := range subs {
+		if !sub.Enabled {
+			continue // disabled subscription contributes no models to the picker
+		}
 		if models, gerr := f.subscriptionSvc.GetModels(sub.ID); gerr == nil {
 			subModels[i] = models
 			for _, sm := range models {
@@ -1336,24 +1399,76 @@ func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 	}
 	// Append in subscription order so the list is stable and grouped by source.
 	for i, sub := range subs {
+		if !sub.Enabled {
+			continue
+		}
 		for _, sm := range subModels[i] {
-			if sm.Enabled && selectable(sm.Model) && !seen[sm.Model] {
-				seen[sm.Model] = true
-				result = append(result, sm.Model)
+			if sm.Enabled && selectable(sm.Model) {
+				add(sub.ID, sub.Name, sm.Model)
 			}
 		}
-		if sub.Model != "" && selectable(sub.Model) && !seen[sub.Model] {
-			seen[sub.Model] = true
-			result = append(result, sub.Model)
+		if selectable(sub.Model) {
+			add(sub.ID, sub.Name, sub.Model)
 		}
 		for _, m := range sub.CachedModels {
-			if m != "" && selectable(m) && !seen[m] {
-				seen[m] = true
-				result = append(result, m)
+			if selectable(m) {
+				add(sub.ID, sub.Name, m)
 			}
 		}
 	}
 	return result
+}
+
+// RefreshModelEntriesForUser live-fetches /models for every enabled subscription
+// (parallel, capped concurrency, per-sub timeout), persists results to
+// CachedModels via the OnModelsLoaded callback, then returns the fresh entry
+// list. Subscriptions that error keep their existing CachedModels (soft fail).
+// Used by the model picker so the list reflects each provider's true available
+// models, not just the persisted snapshot.
+func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.ModelEntry {
+	if f.subscriptionSvc == nil {
+		return f.ListAllModelEntriesForUser(senderID)
+	}
+	var subs []*sqlite.LLMSubscription
+	var err error
+	if senderID != "" {
+		subs, err = f.subscriptionSvc.List(senderID)
+	} else {
+		subs, err = f.subscriptionSvc.ListAll()
+	}
+	if err != nil {
+		return f.ListAllModelEntriesForUser(senderID)
+	}
+	const concurrency = 8
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, sub := range subs {
+		if !sub.Enabled || sub.BaseURL == "" || sub.APIKey == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(s *sqlite.LLMSubscription) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			// Model is only the client's default; /models fetch is independent of it.
+			client := f.createClientFromSub(s, s.Model)
+			if client == nil {
+				return
+			}
+			loader, ok := client.(llm.ModelLoader)
+			if !ok {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			if err := loader.LoadModelsFromAPI(ctx); err != nil {
+				log.WithFields(log.Fields{"sub": s.Name, "error": err}).Debug("[LLM] RefreshModelEntries: /models fetch failed")
+			}
+		}(sub)
+	}
+	wg.Wait()
+	return f.ListAllModelEntriesForUser(senderID)
 }
 
 // GetLLMForModel returns (client, model, maxContext, thinkingMode, maxOutputTokens, usedCustom).

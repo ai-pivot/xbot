@@ -19,6 +19,7 @@ import (
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -400,6 +401,14 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	}) error {
 		return h.Ag.LLMFactory().SetModelEnabled(p.SubID, p.Model, p.Enabled)
 	})
+	// set_subscription_enabled: toggle a subscription's enabled flag (v40). A
+	// disabled subscription stops contributing models to the picker.
+	t["set_subscription_enabled"] = rpc1void(func(ctx context.Context, p struct {
+		SubID   string `json:"sub_id"`
+		Enabled bool   `json:"enabled"`
+	}) error {
+		return h.Ag.LLMFactory().SetSubscriptionEnabled(p.SubID, p.Enabled)
+	})
 	t["get_user_max_context"] = rpc0(func(ctx context.Context) int { return h.Ag.GetUserMaxContext(rpcBizID(ctx)) })
 	t["set_user_max_context"] = rpc1void(func(ctx context.Context, p struct {
 		MaxContext int `json:"max_context"`
@@ -447,6 +456,22 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		models := h.Ag.LLMFactory().ListAllModelsForUser(rpcBizID(ctx))
 		log.WithField("count", len(models)).Debug("RPC list_all_models")
 		return models, nil
+	})
+	t["list_all_model_entries"] = rpc0err(func(ctx context.Context) ([]protocol.ModelEntry, error) {
+		if h.Ag.LLMFactory() == nil {
+			return nil, fmt.Errorf("LLM factory not available")
+		}
+		entries := h.Ag.LLMFactory().ListAllModelEntriesForUser(rpcBizID(ctx))
+		log.WithField("count", len(entries)).Debug("RPC list_all_model_entries")
+		return entries, nil
+	})
+	t["refresh_model_entries"] = rpc0err(func(ctx context.Context) ([]protocol.ModelEntry, error) {
+		if h.Ag.LLMFactory() == nil {
+			return nil, fmt.Errorf("LLM factory not available")
+		}
+		entries := h.Ag.LLMFactory().RefreshModelEntriesForUser(rpcBizID(ctx))
+		log.WithField("count", len(entries)).Info("RPC refresh_model_entries")
+		return entries, nil
 	})
 	t["set_model_tiers"] = h.requireAdmin(rpc1void(func(ctx context.Context, p config.LLMConfig) error {
 		if h.Ag.LLMFactory() == nil {
@@ -1663,7 +1688,7 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 	return channel.Subscription{
 		ID: s.ID, Name: s.Name, Provider: s.Provider,
 		BaseURL: s.BaseURL, APIKey: maskAPIKey(s.APIKey),
-		Model: s.Model, Active: s.IsDefault,
+		Model: s.Model, Active: s.IsDefault, Enabled: s.Enabled,
 		MaxOutputTokens: s.MaxOutputTokens, MaxContext: s.MaxContext,
 		ThinkingMode:    s.ThinkingMode,
 		APIType:         s.APIType,

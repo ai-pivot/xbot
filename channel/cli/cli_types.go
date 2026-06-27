@@ -543,6 +543,14 @@ type ModelLister interface {
 	ListModels() []string
 	// ListAllModels returns models across all subscriptions (for global tier settings).
 	ListAllModels() []string
+	// ListAllModelEntries returns selectable models paired with their owning
+	// subscription (SubID/SubName empty for system-default models), for the model
+	// picker UI ("订阅名 · 模型名"). Skips disabled subscriptions and disabled models.
+	ListAllModelEntries() []protocol.ModelEntry
+	// RefreshModelEntries live-fetches /models for every enabled subscription,
+	// persists to CachedModels, and returns the fresh entry list. Use before
+	// opening the model picker so it reflects providers' true available models.
+	RefreshModelEntries() []protocol.ModelEntry
 	// EnsureModelsLoaded triggers a synchronous model list fetch if not yet loaded.
 	// After this call returns, ListModels() should return the full model list.
 	EnsureModelsLoaded()
@@ -562,6 +570,9 @@ type SubscriptionManager interface {
 	// SetModelEnabled toggles a model's enabled flag (model-disable feature).
 	// Disabled models are excluded from cycling/model pickers and rejected by SelectModel.
 	SetModelEnabled(id, model string, enabled bool) error
+	// SetSubscriptionEnabled toggles a subscription's enabled flag (v40). A disabled
+	// subscription stops contributing models to the picker; credentials are preserved.
+	SetSubscriptionEnabled(id string, enabled bool) error
 	// GetSessionSubscription queries the backend for the session→subscription mapping.
 	// Returns empty strings if no mapping exists (server restart, first-time session, etc.).
 	GetSessionSubscription(senderID, chatID string) (subscriptionID, model string, err error)

@@ -15,9 +15,9 @@ Complete reference for the xbot CLI terminal interface.
 |----------|--------|
 | `Ctrl+K` | Open command palette (fuzzy search all commands) |
 | `Ctrl+C` | Cancel current generation / interrupt |
-| `Ctrl+N` | Cycle through available models |
-| `Ctrl+P` | Switch LLM subscription |
-| `Ctrl+L` | Switch model (per-session, persists) |
+| `Ctrl+N` | Cycle to the next available model (cross-subscription) |
+| `Ctrl+P` | Manage LLM subscriptions (add / disable / delete) |
+| `Ctrl+L` | Open searchable model picker (`订阅名 · 模型名`, cross-subscription, per-session, persists) |
 | `Ctrl+T` | Toggle SubAgent progress panel |
 
 ### Input

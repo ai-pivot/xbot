@@ -202,12 +202,20 @@ type cliModel struct {
 	checkingUpdate bool                // true while /update is in progress
 
 	// --- §15 ch.Subscription / Model Quick Switch ---
-	quickSwitchMode          string              // ""=off, "subscription"=selecting subscription, "model"=selecting model
-	quickSwitchList          []ch.Subscription   // available subscriptions or models
-	quickSwitchCursor        int                 // selected index
-	quickSwitchReturnToPanel bool                // true = return to settings panel after switch completes
-	subscriptionMgr          SubscriptionManager // injected by CLIChannel
-	llmSubscriber            LLMSubscriber       // injected by CLIChannel
+	quickSwitchMode          string            // ""=off, "subscription"=selecting subscription, "model"=selecting model
+	quickSwitchList          []ch.Subscription // available subscriptions (subscription mode)
+	quickSwitchCursor        int               // selected index
+	quickSwitchReturnToPanel bool              // true = return to settings panel after switch completes
+	// Model picker (model mode): filterable list of selectable models paired with
+	// their owning subscription, shown as "订阅名 · 模型名". quickSwitchList is NOT
+	// used in model mode.
+	quickSwitchModelEntries  []protocol.ModelEntry // full model list (unfiltered)
+	quickSwitchModelFiltered []protocol.ModelEntry // filtered view the cursor indexes into
+	quickSwitchFilterInput   textinput.Model       // fuzzy filter input
+	quickSwitchRefreshing    bool                  // model picker: /models refresh in flight
+	subscriptionMgr          SubscriptionManager   // injected by CLIChannel
+	llmSubscriber            LLMSubscriber         // injected by CLIChannel
+	cachedSubName            string                // owning subscription display name for status bar
 
 	// --- §23 Command Palette (Ctrl+K) ---
 	paletteOpen           bool               // true = command palette overlay is active

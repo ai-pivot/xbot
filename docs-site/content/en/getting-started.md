@@ -119,9 +119,10 @@ Type `/` to see all slash commands. A few essentials:
 |----------|--------|
 | `Ctrl+K` | Command palette (fuzzy search) |
 | `Ctrl+N` | Cycle model |
-| `Ctrl+P` | Switch subscription |
+| `Ctrl+P` | Manage subscriptions (add/disable/delete) |
 | `Ctrl+T` | Sub-agent progress panel |
-| `Ctrl+L` | Switch model (per-session) |
+| `Ctrl+L` | Switch model — searchable picker (`订阅名 · 模型名`, per-session) |
+| `Ctrl+N` | Cycle to next model |
 
 ## Where to go next
 

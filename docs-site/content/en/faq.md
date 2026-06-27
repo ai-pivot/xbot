@@ -149,7 +149,7 @@ switch. Or use `/sessions` to list, `/su` to switch, `/new` to create.
 - **Quick lookups** (simple Q&A): Any fast model works
 - **Budget-conscious**: DeepSeek, Qwen, or local models via Ollama
 
-Switch models per-session with `Ctrl+L`, or globally with `Ctrl+N`.
+Switch models per-session with `Ctrl+L` (searchable picker) or `Ctrl+N` (cycle to next). Both are per-session and cross-subscription.
 
 ### How do I change the theme?
 

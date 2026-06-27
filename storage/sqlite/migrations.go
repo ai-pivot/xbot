@@ -193,6 +193,14 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v40: subscription-level enabled flag. A disabled subscription stops
+	// contributing models to the picker without deleting its credentials.
+	if from < 40 {
+		if err := migrateV39ToV40(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v40: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1431,5 +1439,22 @@ WHERE s.is_default = 1
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v39: subscription_models.enabled + user_default_model + model backfill")
+	return nil
+}
+
+// migrateV39ToV40 adds the subscription-level enabled flag (default 1). A disabled
+// subscription stops contributing models to the picker without losing credentials.
+// Purely additive.
+func migrateV39ToV40(conn *sql.DB) error {
+	var count int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'enabled'").Scan(&count); err == nil && count == 0 {
+		if _, err := conn.Exec("ALTER TABLE user_llm_subscriptions ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return fmt.Errorf("migrate v39->v40 add user_llm_subscriptions.enabled: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 40"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v40: user_llm_subscriptions.enabled")
 	return nil
 }

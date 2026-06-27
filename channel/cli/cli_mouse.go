@@ -184,8 +184,14 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 	case "footerHint":
 		return m.clickFooterHint(zone.Index)
 	case "modelName":
-		m.cycleModel()
-		return true, m, nil
+		m.openQuickSwitch("model")
+		var cmd tea.Cmd
+		if len(m.pendingCmds) > 0 {
+			pending := m.pendingCmds
+			m.pendingCmds = nil
+			cmd = tea.Batch(pending...)
+		}
+		return true, m, cmd
 	case "scrollToBottom":
 		m.viewport.GotoBottom()
 		m.newContentHint = false

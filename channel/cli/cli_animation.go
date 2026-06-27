@@ -162,11 +162,6 @@ func (m *cliModel) updatePlaceholder() {
 	}
 }
 
-// cycleModel switches to the next model across all subscriptions.
-// Uses ListAllModels() so models from ALL subscriptions are visible (not just the
-// current default LLM). Cycles through the model names displayed in the status bar.
-// Note: this only changes the cached model name — the actual subscription switch
-// happens when a new LLM call is made (or via quick switch panel).
 // typewriterTickMsg 独立的打字机刷新（50ms 间隔，逐 rune 输出）
 type typewriterTickMsg struct{}
 

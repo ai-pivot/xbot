@@ -293,6 +293,11 @@ func (m *cliModel) renderReadyStatus() string {
 	m.modelNameZoneXEnd = -1
 	if m.cachedModelName != "" {
 		modelHint := m.cachedModelName
+		// Show "订阅名 · 模型名" so models served by different subscriptions are
+		// distinguishable. On narrow screens fall back to the model name only.
+		if m.cachedSubName != "" && !m.isNarrow() {
+			modelHint = m.cachedSubName + " · " + m.cachedModelName
+		}
 		// Track X position of the model name part for click detection.
 		// The model name is: prefixBeforeModel + modelHint
 		// where prefixBeforeModel = join(readyParts without modelHint) + " · "

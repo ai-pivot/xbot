@@ -6,35 +6,73 @@ import (
 	"strings"
 	"time"
 	ch "xbot/channel"
+	"xbot/protocol"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"xbot/config"
 )
 
 // openQuickSwitch opens the quick switch overlay for subscription or model selection.
+//
+// Model-first redesign: "model" mode is the primary selection mechanism and lists
+// every selectable model across ALL enabled subscriptions (ListAllModels). Picking
+// a model implicitly selects its owning subscription (resolved by the backend).
+// "subscription" mode is management-only: add / disable / delete — there is no
+// "switch subscription" action; subscriptions are credential sources, not the
+// thing you run.
 func (m *cliModel) openQuickSwitch(mode string) {
 	if m.subscriptionMgr == nil {
 		return
 	}
-	subs, err := m.subscriptionMgr.List("")
-	if err != nil || len(subs) == 0 {
-		// Even with no subscriptions, allow adding one
-		subs = nil
-	}
-
 	m.quickSwitchMode = mode
-	m.quickSwitchList = subs
+	m.quickSwitchList = nil
 	m.quickSwitchCursor = 0
 
-	// Append "Add subscription" entry for subscription mode
-	if mode == "subscription" {
-		m.quickSwitchList = append(m.quickSwitchList, ch.Subscription{
-			ID:   "__add__",
-			Name: "➕ Add subscription",
-		})
+	if mode == "model" {
+		// Cross-subscription model picker. Each entry pairs a model with its owning
+		// subscription so the UI can show "订阅名 · 模型名". Render immediately from the
+		// DB snapshot, then kick off an async /models refresh so the list reflects
+		// each provider's true available models (not just the persisted cache).
+		var entries []protocol.ModelEntry
+		if m.channel != nil && m.channel.modelLister != nil {
+			m.channel.modelLister.EnsureModelsLoaded()
+			entries = m.channel.modelLister.ListAllModelEntries()
+		}
+		m.quickSwitchModelEntries = entries
+		if len(entries) == 0 {
+			m.quickSwitchMode = ""
+			m.showTempStatus("No models available — add a subscription first")
+			return
+		}
+		ti := textinput.New()
+		ti.Placeholder = "Filter models…"
+		ti.Prompt = " > "
+		ti.CharLimit = 80
+		ti.SetWidth(40)
+		ti.Focus()
+		m.quickSwitchFilterInput = ti
+		m.applyQuickSwitchFilter()
+		m.cursorToActiveModel()
+		// Background refresh: fetch /models for every enabled subscription,
+		// persist to CachedModels, then push the fresh entries back. The UI
+		// shows a spinner until the refresh reply arrives.
+		m.quickSwitchRefreshing = true
+		m.pendingCmds = append(m.pendingCmds, m.refreshModelEntriesCmd())
+		return
 	}
 
+	// subscription mode: list subscriptions + an "Add" entry.
+	subs, err := m.subscriptionMgr.List("")
+	if err != nil || len(subs) == 0 {
+		subs = nil
+	}
+	m.quickSwitchList = subs
+	m.quickSwitchList = append(m.quickSwitchList, ch.Subscription{
+		ID:   "__add__",
+		Name: "➕ Add subscription",
+	})
 	// Pre-select the active subscription (per-session, not DB default)
 	if m.activeSubID != "" {
 		for i, s := range subs {
@@ -53,10 +91,53 @@ func (m *cliModel) openQuickSwitch(mode string) {
 	}
 }
 
+// applyQuickSwitchFilter rebuilds quickSwitchModelFiltered from
+// quickSwitchModelEntries using the current filter input (case-insensitive
+// substring match on subscription name or model name). It preserves the cursor
+// when still valid, else clamps — so a background refresh doesn't yank the
+// cursor. Callers set the cursor explicitly (open → active model, type → top).
+func (m *cliModel) applyQuickSwitchFilter() {
+	q := strings.ToLower(strings.TrimSpace(m.quickSwitchFilterInput.Value()))
+	m.quickSwitchModelFiltered = m.quickSwitchModelFiltered[:0]
+	for _, e := range m.quickSwitchModelEntries {
+		if q == "" || strings.Contains(strings.ToLower(e.SubName), q) || strings.Contains(strings.ToLower(e.Model), q) {
+			m.quickSwitchModelFiltered = append(m.quickSwitchModelFiltered, e)
+		}
+	}
+	if m.quickSwitchCursor >= len(m.quickSwitchModelFiltered) {
+		m.quickSwitchCursor = max(0, len(m.quickSwitchModelFiltered)-1)
+	}
+}
+
+// cursorToActiveModel parks the cursor on the currently active model (used on
+// open, when no filter is typed).
+func (m *cliModel) cursorToActiveModel() {
+	for i, e := range m.quickSwitchModelFiltered {
+		if e.Model == m.cachedModelName {
+			m.quickSwitchCursor = i
+			return
+		}
+	}
+	m.quickSwitchCursor = 0
+}
+
 // applyQuickSwitch applies the selected item from the quick switch overlay.
 // For subscription switches, the LLM creation (which may hit the network) runs
 // asynchronously so the UI never freezes.
 func (m *cliModel) applyQuickSwitch() {
+	// Model picker: select from the filtered entry list. The backend resolves the
+	// owning subscription and persists (ownerSubID, model) to tenants; applyModelSwitch
+	// re-reads the owner so activeSubID/context limits stay correct.
+	if m.quickSwitchMode == "model" {
+		if m.quickSwitchCursor < 0 || m.quickSwitchCursor >= len(m.quickSwitchModelFiltered) {
+			m.quickSwitchMode = ""
+			return
+		}
+		entry := m.quickSwitchModelFiltered[m.quickSwitchCursor]
+		m.quickSwitchMode = ""
+		m.applyModelSwitch(entry.Model)
+		return
+	}
 	if m.quickSwitchCursor >= len(m.quickSwitchList) {
 		m.quickSwitchMode = ""
 		return
@@ -124,7 +205,7 @@ func (m *cliModel) applyQuickSwitch() {
 		if m.subscriptionMgr == nil {
 			break
 		}
-		// Find the full subscription config first
+		// Find the full subscription config (carries Enabled).
 		var target *ch.Subscription
 		if subs, err := m.subscriptionMgr.List(""); err == nil {
 			for i := range subs {
@@ -138,81 +219,27 @@ func (m *cliModel) applyQuickSwitch() {
 			m.showTempStatus("ch.Subscription not found")
 			break
 		}
-		if m.channel == nil || m.channel.config.SwitchLLM == nil {
+		// Management-only action: toggle enabled. A disabled subscription stops
+		// contributing models to the picker; credentials are preserved so
+		// re-enabling is lossless. There is no "switch subscription" action.
+		wantEnabled := !target.Enabled
+		if err := m.subscriptionMgr.SetSubscriptionEnabled(target.ID, wantEnabled); err != nil {
+			m.showTempStatus(fmt.Sprintf("Failed to toggle: %v", err))
 			break
 		}
-		// ── IMMEDIATE frontend state update ──────────────────────
-		// Must happen synchronously before the async SwitchLLM call.
-		// Without this, activeSubID and cachedModelName stay stale between
-		// Enter press and handleSwitchLLMDoneMsg processing. The settings
-		// panel and context bar read from these fields, so they would show
-		// the OLD subscription until the async callback completes.
-		m.activeSubID = selected.ID
-		m.cachedModelName = selected.Model
-		m.subGeneration++ // subscription actually changed
-		// Persist immediately so refreshCachedModelName (called on settings save)
-		// loads the correct state from disk instead of stale old data.
-		state := SessionLLMState{
-			SubscriptionID:   selected.ID,
-			Model:            selected.Model,
-			MaxContextTokens: resolveSubMaxContext(target),
-			MaxOutputTokens:  resolveSubMaxOutputTokens(target),
+		verb := "Disabled"
+		if wantEnabled {
+			verb = "Enabled"
 		}
-		SaveSessionLLMState(m.workDir, m.chatID, state, m.remoteMode)
-		m.applySessionLLMState(state)
-		// ── Async backend switch ─────────────────────────────────
-		m.showTempStatus(fmt.Sprintf("Switching to: %s …", selected.Name))
-		switchFn := m.channel.config.SwitchLLM
-		subID := selected.ID
-		subName := selected.Name
-		subModel := selected.Model
-		mgr := m.subscriptionMgr
-		chatID := m.chatID // capture before goroutine
-		m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
-			// Set per-chat cache entry FIRST, before creating the LLM client.
-			// Without this, a user message arriving before SetDefault completes
-			// hits GetLLMForChat with no per-chat entry, falls back to the
-			// user-level entry (still pointing to the OLD subscription), and
-			// maybeCompress uses the old MaxContext.
-			if mgr != nil {
-				_ = mgr.SetDefault(subID, chatID)
-			}
-			err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
-			return cliSwitchLLMDoneMsg{
-				err:       err,
-				subID:     subID,
-				subName:   subName,
-				subModel:  subModel,
-				maxCtx:    resolveSubMaxContext(target),
-				maxOutTok: resolveSubMaxOutputTokens(target),
-				mgr:       mgr,
-			}
-		})
-	case "model":
-		if m.llmSubscriber != nil {
-			m.llmSubscriber.SwitchModel(m.senderID, selected.Model, m.chatID)
-			m.cachedModelName = selected.Model
-			m.subGeneration++ // model switch also changes effective subscription state
-			// Re-resolve context/output token limits for the new model.
-			newState := SessionLLMState{
-				SubscriptionID: m.activeSubID,
-				Model:          selected.Model,
-			}
-			m.cachedMaxContextTokens = ResolveEffectiveMaxContext(newState, m.subscriptionMgr)
-			m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(newState, m.subscriptionMgr))
-			// Update quickSwitchList so the panel reflects the new model
-			m.updateQuickSwitchModels(selected.Model)
-			// Persist per-session model choice so it survives restarts.
-			// Use resolved values (not stale cached ones) so the saved state
-			// reflects the new model's effective limits.
-			SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
-				SubscriptionID:   m.activeSubID,
-				Model:            selected.Model,
-				MaxContextTokens: m.cachedMaxContextTokens,
-				MaxOutputTokens:  int(m.cachedMaxOutputTokens),
-			}, m.remoteMode)
-			m.showTempStatus(fmt.Sprintf("Model switched to: %s", selected.Model))
+		warning := ""
+		if !wantEnabled && (target.ID == m.activeSubID || (m.activeSubID == "" && target.Active)) {
+			warning = " — active session's models hidden; switch model to continue"
 		}
+		m.showTempStatus(fmt.Sprintf("%s: %s%s", verb, target.Name, warning))
+		// Refresh the list so the enabled/disabled marker updates, and keep the
+		// panel open so the user can manage more subscriptions.
+		m.openQuickSwitch(m.quickSwitchMode)
+		return
 	}
 
 	m.quickSwitchMode = ""
@@ -404,7 +431,7 @@ func (m *cliModel) deleteQuickSwitchEntry() {
 		}
 	}
 	if selected.ID == activeID {
-		m.showTempStatus("Cannot delete active subscription — switch to another first")
+		m.showTempStatus("Cannot delete the active subscription — switch model first")
 		return
 	}
 	if err := m.subscriptionMgr.Remove(selected.ID); err != nil {
@@ -442,12 +469,19 @@ func (m *cliModel) updateQuickSwitchModels(newModel string) {
 }
 
 func (m *cliModel) viewQuickSwitch(width, height int) string {
-	if m.quickSwitchMode == "" || len(m.quickSwitchList) == 0 {
+	if m.quickSwitchMode == "" {
+		return ""
+	}
+	modelMode := m.quickSwitchMode == "model"
+	if modelMode && len(m.quickSwitchModelEntries) == 0 {
+		return ""
+	}
+	if !modelMode && len(m.quickSwitchList) == 0 {
 		return ""
 	}
 
-	title := "Switch ch.Subscription"
-	if m.quickSwitchMode == "model" {
+	title := "Manage Subscriptions"
+	if modelMode {
 		title = "Switch Model"
 	}
 
@@ -457,32 +491,65 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 	lines = append(lines, m.styles.PanelHeader.Render(title))
 	lines = append(lines, "") // spacer
 
-	// Items
-	for i, s := range m.quickSwitchList {
-		// Separator before "Add" entry
-		if s.ID == "__add__" && i > 0 {
-			lines = append(lines, m.styles.TextMutedSt.Render(" ─────────────────────────────────"))
+	if modelMode {
+		// Filter input
+		lines = append(lines, m.quickSwitchFilterInput.View())
+		if m.quickSwitchRefreshing {
+			lines = append(lines, m.styles.TextMutedSt.Render("  ↻ 刷新模型列表…"))
+		} else {
+			lines = append(lines, "") // spacer (keeps layout stable across refresh states)
 		}
-		cursor := " "
-		style := m.styles.TextMutedSt
-		if i == m.quickSwitchCursor {
-			cursor = "▸"
-			style = m.styles.Accent
+		filtered := m.quickSwitchModelFiltered
+		if len(filtered) == 0 {
+			lines = append(lines, m.styles.TextMutedSt.Render("  No matching models"))
 		}
-		active := ""
-		if m.activeSubID != "" {
-			if s.ID == m.activeSubID {
+		for i, e := range filtered {
+			cursor := " "
+			style := m.styles.TextMutedSt
+			if i == m.quickSwitchCursor {
+				cursor = "▸"
+				style = m.styles.Accent
+			}
+			label := e.Model
+			if e.SubName != "" {
+				label = e.SubName + " · " + e.Model
+			}
+			mark := ""
+			if e.Model == m.cachedModelName {
+				mark = " ✓"
+			}
+			lines = append(lines, style.Render(fmt.Sprintf(" %s %s%s", cursor, label, mark)))
+		}
+	} else {
+		// subscription mode items
+		for i, s := range m.quickSwitchList {
+			if s.ID == "__add__" && i > 0 {
+				lines = append(lines, m.styles.TextMutedSt.Render(" ─────────────────────────────────"))
+			}
+			cursor := " "
+			style := m.styles.TextMutedSt
+			if i == m.quickSwitchCursor {
+				cursor = "▸"
+				style = m.styles.Accent
+			}
+			active := ""
+			if m.activeSubID != "" {
+				if s.ID == m.activeSubID {
+					active = " ✓"
+				}
+			} else if s.Active {
 				active = " ✓"
 			}
-		} else if s.Active {
-			active = " ✓"
+			name := s.Name
+			if name == "" {
+				name = s.ID
+			}
+			disabledTag := ""
+			if !s.Enabled {
+				disabledTag = " (disabled)"
+			}
+			lines = append(lines, style.Render(fmt.Sprintf(" %s %-30s %-16s%s%s", cursor, name, s.Model, disabledTag, active)))
 		}
-		name := s.Name
-		if name == "" {
-			name = s.ID
-		}
-		line := style.Render(fmt.Sprintf(" %s %-30s %-16s%s", cursor, name, s.Model, active))
-		lines = append(lines, line)
 	}
 
 	// Build panel with border
@@ -490,17 +557,33 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 	box := m.styles.PanelBox.Render(panelContent)
 
 	// Hint line below the box
-	hint := m.styles.PanelHint.Render(" ↑↓ Navigate  Enter Select  E Edit  D Delete  Esc Close")
+	hint := m.styles.PanelHint.Render(" ↑↓ Navigate  Enter Select  Esc Close")
+	if modelMode {
+		hint = m.styles.PanelHint.Render(" Type to filter  ↑↓ Navigate  Enter Select  Esc Close")
+	} else {
+		hint = m.styles.PanelHint.Render(" ↑↓ Navigate  Enter Enable/Disable  E Edit  D Delete  Esc Close")
+	}
 
 	// Center vertically
-	sepLines := 0
-	for _, s := range m.quickSwitchList {
-		if s.ID == "__add__" {
-			sepLines = 1
-			break
+	itemCount := len(m.quickSwitchList)
+	extra := 0
+	if modelMode {
+		itemCount = len(m.quickSwitchModelFiltered)
+		extra = 2 // filter input + spacer
+		if itemCount == 0 {
+			itemCount = 1 // "No matching models" line
 		}
 	}
-	listH := len(m.quickSwitchList) + 3 + sepLines // header + spacer + items + separator + borders(~2)
+	sepLines := 0
+	if !modelMode {
+		for _, s := range m.quickSwitchList {
+			if s.ID == "__add__" {
+				sepLines = 1
+				break
+			}
+		}
+	}
+	listH := itemCount + 3 + extra + sepLines // header + spacer + items + extra + separator + borders(~2)
 	blankLines := max(0, (height-listH)/2)
 	var b strings.Builder
 	for i := 0; i < blankLines; i++ {
@@ -519,6 +602,41 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	if m.quickSwitchMode == "" {
 		return false, nil
+	}
+	// Model picker: filterable list. Esc/Up/Down/Enter navigate; all other keys
+	// (printable, backspace) feed the filter input and re-apply the filter.
+	if m.quickSwitchMode == "model" {
+		switch msg.Code {
+		case tea.KeyEsc:
+			m.quickSwitchMode = ""
+			return true, nil
+		case tea.KeyUp:
+			if m.quickSwitchCursor > 0 {
+				m.quickSwitchCursor--
+			}
+			return true, nil
+		case tea.KeyDown:
+			if m.quickSwitchCursor < len(m.quickSwitchModelFiltered)-1 {
+				m.quickSwitchCursor++
+			}
+			return true, nil
+		case tea.KeyEnter:
+			m.applyQuickSwitch()
+			if len(m.pendingCmds) > 0 {
+				pending := m.pendingCmds
+				m.pendingCmds = nil
+				return true, tea.Batch(pending...)
+			}
+			return true, nil
+		}
+		var cmd tea.Cmd
+		m.quickSwitchFilterInput, cmd = m.quickSwitchFilterInput.Update(msg)
+		m.applyQuickSwitchFilter()
+		// Jump to the top match while typing (standard filter UX).
+		if strings.TrimSpace(m.quickSwitchFilterInput.Value()) != "" {
+			m.quickSwitchCursor = 0
+		}
+		return true, cmd
 	}
 	switch msg.Code {
 	case tea.KeyEsc:
@@ -548,15 +666,46 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	}
-	// E: edit selected subscription
-	if msg.String() == "e" {
+	// E: edit selected subscription (subscription mode only — models are edited
+	// inside their owning subscription's edit panel).
+	if msg.String() == "e" && m.quickSwitchMode == "subscription" {
 		m.editQuickSwitchEntry()
 		return true, nil
 	}
-	// D: delete selected subscription
-	if msg.String() == "d" {
+	// D: delete selected subscription (subscription mode only).
+	if msg.String() == "d" && m.quickSwitchMode == "subscription" {
 		m.deleteQuickSwitchEntry()
 		return true, nil
 	}
 	return true, nil // block all other keys
+}
+
+// cliModelEntriesRefreshedMsg carries the fresh model entry list after a
+// background /models refresh of every enabled subscription.
+type cliModelEntriesRefreshedMsg struct {
+	entries []protocol.ModelEntry
+}
+
+// refreshModelEntriesCmd issues the backend refresh (blocking RPC) in a
+// goroutine and emits cliModelEntriesRefreshedMsg with the fresh entries.
+func (m *cliModel) refreshModelEntriesCmd() tea.Cmd {
+	return func() tea.Msg {
+		var entries []protocol.ModelEntry
+		if m.channel != nil && m.channel.modelLister != nil {
+			entries = m.channel.modelLister.RefreshModelEntries()
+		}
+		return cliModelEntriesRefreshedMsg{entries: entries}
+	}
+}
+
+// handleModelEntriesRefreshed applies the fresh entry list to the picker if it
+// is still open in model mode. Preserves the current filter text and cursor
+// position (clamped if the filtered set shrank).
+func (m *cliModel) handleModelEntriesRefreshed(msg cliModelEntriesRefreshedMsg) {
+	m.quickSwitchRefreshing = false
+	if m.quickSwitchMode != "model" || len(msg.entries) == 0 {
+		return
+	}
+	m.quickSwitchModelEntries = msg.entries
+	m.applyQuickSwitchFilter()
 }

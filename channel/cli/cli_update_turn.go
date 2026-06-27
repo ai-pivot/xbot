@@ -121,6 +121,20 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			return m, nil, true
 		}
 
+	case msg.String() == "ctrl+l":
+		// Open the filterable model picker (cross-subscription). Faster than
+		// Ctrl+N cycling when many models are available.
+		if m.panelState.mode == "" && !m.typing && m.subscriptionMgr != nil {
+			m.openQuickSwitch("model")
+			// Drain the background /models refresh cmd immediately.
+			if len(m.pendingCmds) > 0 {
+				pending := m.pendingCmds
+				m.pendingCmds = nil
+				return m, []tea.Cmd{tea.Batch(pending...)}, true
+			}
+			return m, nil, true
+		}
+
 	case msg.Text == "^":
 		// ^ opens bg tasks panel only when input is empty AND there are running tasks.
 		// Gate prevents intercepting the ^ character during normal typing.

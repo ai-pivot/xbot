@@ -92,8 +92,12 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 		Shortcut: "Ctrl+T", Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "sessions",
 	})
 	cmds = append(cmds, paletteCommand{
-		ID: "switch_sub", Title: "Switch ch.Subscription", Description: "change LLM subscription",
+		ID: "switch_sub", Title: "Manage Subscriptions", Description: "add / disable / delete LLM subscriptions",
 		Shortcut: "Ctrl+P", Category: PaletteCategorySystem, ActionKind: paletteActionOpenQuickSwitch, ActionData: "subscription",
+	})
+	cmds = append(cmds, paletteCommand{
+		ID: "switch_model", Title: "Switch Model", Description: "pick a model (cross-subscription, searchable)",
+		Shortcut: "Ctrl+L", Category: PaletteCategorySystem, ActionKind: paletteActionOpenQuickSwitch, ActionData: "model",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "cycle_model", Title: "Cycle Model", Description: "switch to next model in list",

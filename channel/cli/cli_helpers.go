@@ -717,6 +717,7 @@ func (m *cliModel) applySessionLLMState(state SessionLLMState) {
 	m.cachedModelName = state.Model
 	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
 	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
+	m.refreshCachedSubName()
 }
 
 // ---------------------------------------------------------------------------
