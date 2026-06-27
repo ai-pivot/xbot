@@ -95,8 +95,8 @@ func (a *Agent) buildBaseRunConfig(
 	llmClient, model, userMaxCtx, thinkingMode, maxOutputTokens := a.llmFactory.GetLLMForChat(senderID, chatID)
 
 	// LLM 并发限流回调（per-tenant）
-	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID)
-	subAgentSem := a.llmFactory.SubAgentSemAcquireForUser(senderID)
+	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID, channel)
+	subAgentSem := a.llmFactory.SubAgentSemAcquireForUser(senderID, channel)
 
 	return RunConfig{
 		// 必需
@@ -673,11 +673,11 @@ func (a *Agent) buildSubAgentRunConfig(
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
-		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
+		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID, parentCtx.Channel),
 
 		// SubAgent 如果能 spawn 子 Agent，也启用并行执行
 		EnableConcurrentSubAgents: caps.SpawnAgent,
-		SubAgentSem:               a.llmFactory.SubAgentSemAcquireForUser(originUserID),
+		SubAgentSem:               a.llmFactory.SubAgentSemAcquireForUser(originUserID, parentCtx.Channel),
 
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}

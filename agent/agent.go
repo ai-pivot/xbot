@@ -27,6 +27,7 @@ import (
 	"xbot/memory/letta"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/runner"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -233,14 +234,19 @@ type Agent struct {
 	cronPipeline       *MessagePipeline // Cron 专用消息构建管道
 	sandboxMode        string           // "none" or "docker"
 	sandbox            tools.Sandbox    // Sandbox 实例引用（V4 新增）
+	runnerManager      *runner.Manager  // Runner 管理器（V5：runner 作为一等公民）
 	sandboxIdleTimeout time.Duration    // 沙箱空闲超时（0 禁用）
-	directWorkspace    string           // 非空时 workspaceRoot() 直接返回此值（CLI 模式使用，取代 singleUser 的 workspace 短路）
-	maxConcurrency     int              // 最大并发会话处理数
-	globalSem          chan struct{}    // 全局并发信号量（SetMaxConcurrency 动态重建）
-	globalSemMu        sync.Mutex       // 保护 globalSem 替换
-	globalSkillDirs    []string         // 全局 skill 目录（宿主机路径）
-	agentsDir          string
-	xbotHome           string // global xbot config dir (e.g. ~/.xbot), used for mcp.json etc.
+
+	// toolProviders are the ordered tool sources for the agent.
+	// Priority: agent-core(1) → runner(2) → channel(3) → plugin(4).
+	toolProviders   []tools.ToolProvider
+	directWorkspace string        // 非空时 workspaceRoot() 直接返回此值（CLI 模式使用，取代 singleUser 的 workspace 短路）
+	maxConcurrency  int           // 最大并发会话处理数
+	globalSem       chan struct{} // 全局并发信号量（SetMaxConcurrency 动态重建）
+	globalSemMu     sync.Mutex    // 保护 globalSem 替换
+	globalSkillDirs []string      // 全局 skill 目录（宿主机路径）
+	agentsDir       string
+	xbotHome        string // global xbot config dir (e.g. ~/.xbot), used for mcp.json etc.
 
 	// 上下文管理配置
 	contextManagerConfig *ContextManagerConfig
@@ -1047,6 +1053,7 @@ func New(cfg Config) (*Agent, error) {
 		sandboxMode = "docker"
 	}
 
+	rm := runner.NewManager()
 	agent := &Agent{
 		bus:              cfg.Bus,
 		multiSession:     multiSession,
@@ -1063,10 +1070,15 @@ func New(cfg Config) (*Agent, error) {
 		promptLoader:       NewPromptLoader(cfg.PromptFile),
 		sandboxMode:        sandboxMode,
 		sandbox:            cfg.Sandbox,
+		runnerManager:      rm,
 		sandboxIdleTimeout: cfg.SandboxIdleTimeout,
-		directWorkspace:    cfg.DirectWorkspace,
-		globalSkillDirs:    resolveGlobalSkillsDirs(cfg.SkillsDir),
-		maxSubAgentDepth:   cfg.MaxSubAgentDepth,
+		toolProviders: []tools.ToolProvider{
+			newAgentToolProvider(),
+			runner.NewToolProvider(rm),
+		},
+		directWorkspace:  cfg.DirectWorkspace,
+		globalSkillDirs:  resolveGlobalSkillsDirs(cfg.SkillsDir),
+		maxSubAgentDepth: cfg.MaxSubAgentDepth,
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
@@ -1190,6 +1202,32 @@ func New(cfg Config) (*Agent, error) {
 
 	// 6. 启动 bg task 通知路由 goroutine
 	go agent.bgNotifyLoop()
+
+	// 7. Inject all registered tools into the local runner's tool set.
+	// This bridges the gap until tools are migrated to runner/tools/.
+	agent.runnerManager.SetLocalTools(registry.List())
+
+	// 8. Populate local runner's skill/agent declarations from the stores.
+	// Base scan (embedded + global) — per-user and project-local are
+	// merged at buildPrompt time via the existing store calls.
+	if skills, err := agent.skills.ListSkills(context.Background(), ""); err == nil {
+		entries := make([]runner.SkillEntry, len(skills))
+		for i, s := range skills {
+			entries[i] = runner.SkillEntry{
+				Name: s.Name, Description: s.Description, Dir: s.Path,
+			}
+		}
+		agent.runnerManager.Local().Skills = entries
+	}
+	if roles, err := tools.LoadAgentRoles(agent.agentsDir); err == nil {
+		entries := make([]runner.Entry, 0, len(roles))
+		for _, r := range roles {
+			entries = append(entries, runner.Entry{
+				Name: r.Name, Description: r.Description, Dir: agent.agentsDir,
+			})
+		}
+		agent.runnerManager.Local().Agents = entries
+	}
 
 	return agent, nil
 }
@@ -2590,6 +2628,27 @@ func (a *Agent) RegisterToolForChannel(channel string, tool tools.Tool) {
 // Tools returns the agent's tool registry.
 func (a *Agent) Tools() *tools.Registry {
 	return a.tools
+}
+
+// RunnerManager returns the agent's runner manager.
+func (a *Agent) RunnerManager() *runner.Manager {
+	return a.runnerManager
+}
+
+// ToolProviders returns the ordered tool providers.
+func (a *Agent) ToolProviders() []tools.ToolProvider {
+	return a.toolProviders
+}
+
+// ResolveTool looks up a tool by name across all tool providers in priority order.
+// Returns nil, false if no provider has the tool.
+func (a *Agent) ResolveTool(sessionKey string, tenantID int64, name string) (tools.Tool, bool) {
+	for _, p := range a.toolProviders {
+		if t, ok := p.GetTool(sessionKey, tenantID, name); ok {
+			return t, true
+		}
+	}
+	return nil, false
 }
 
 // emitBuiltinProgress sends a progress event for builtin commands (/compress, /new)

@@ -176,6 +176,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v38: add runner_id to tenants (session→runner binding)
+	if from < 38 {
+		if err := migrateV37ToV38(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v38: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1320,5 +1327,22 @@ func migrateV36ToV37(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v37: added api_type column to subscription_models")
+	return nil
+}
+
+// migrateV37ToV38 adds runner_id to tenants for session-runner binding.
+func migrateV37ToV38(conn *sql.DB) error {
+	var count int
+	err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tenants') WHERE name = 'runner_id'").Scan(&count)
+	if err == nil && count == 0 {
+		_, err = conn.Exec("ALTER TABLE tenants ADD COLUMN runner_id TEXT DEFAULT ''")
+		if err != nil {
+			return fmt.Errorf("migrate v37->v38 add runner_id: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 38"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v38: added runner_id to tenants")
 	return nil
 }

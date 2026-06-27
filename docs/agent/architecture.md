@@ -5,12 +5,13 @@
 ```
 cmd/xbot-cli/     CLI entry point, app wiring, subscription management
 cmd/runner/       Remote runner process (sandbox execution)
-agent/            Agent loop, LLM orchestration, middleware pipeline, tool execution
+agent/            Agent loop, LLM orchestration, middleware pipeline
 channel/          Channel adapters: CLI (BubbleTea), Feishu, QQ, Web
 llm/              LLM client abstraction (OpenAI, Anthropic), retry, streaming
 memory/           Pluggable memory: letta/ (archival+core), flat/ (in-memory)
 plugin/           Plugin system: extensible tools, hooks, context enrichers
-tools/            Built-in tools, sandbox, hooks, MCP integration
+runner/           Runner management: tool providers, session binding, skill/agent discovery
+tools/            Tool interface + Registry + ToolProvider; sandbox abstraction
 session/          Multi-tenant session management
 storage/          SQLite persistence, vector DB for archival memory
 config/           JSON config (~/.xbot/config.json), env var overrides
@@ -66,18 +67,15 @@ Two modes (`agent/engine_run.go`):
 |-----------|------|---------|
 | `LLM` | `llm/interface.go` | Generate, ListModels, Stream |
 | `Tool` | `tools/interface.go` | Execute, Definition, Name |
-| `Sandbox` | `tools/sandbox.go` | Run, Sync, Resolve |
+| `ToolProvider` | `tools/tool_provider.go` | Unified tool source: Name, ListTools, GetTool, Priority |
+| `Sandbox` | `tools/sandbox.go` | Run, Sync, Resolve (migrating to runner) |
 | `Channel` | `channel/channel.go` | Start, Stop, Send |
 | `MessageMiddleware` | `agent/middleware.go` | Process(mc) |
 | `MemoryProvider` | `memory/memory.go` | Core + Archival memory |
-| `AgentBackend` | `agent/backend.go` | Legacy interface — being replaced by Client (agent/client.go) |
 | `Transport` | `agent/transport.go` | Pure transmission: Call(method, payload) → (response, error) |
-| `GrpcPluginTransport` | `agent/transport_grpc.go` | Bidirectional JSON-RPC over stdin/stdout for channel plugins |
-| `AgentRunner` | `agent/lifecycle.go` | Agent lifecycle: Start/Stop/Run (legacy, for Backend) |
-| `EventRouter` | `agent/lifecycle.go` | Message/event routing (legacy, for Backend) |
-| `CallbackRegistry` | `agent/lifecycle.go` | Callback injection (legacy, for Backend) |
-| `ServerCore` | `serverapp/server_core.go` | Shared server core: Agent + RPCTable + Bus (local & remote) |
 | `Client` | `agent/client.go` | Unified RPC client: all methods = Transport.Call() |
+| `RunnerManager` | `runner/manager.go` | Runner CRUD, session binding, ResolveSession |
+| `ServerCore` | `serverapp/server_core.go` | Shared server core: Agent + RPCTable + Bus (local & remote) |
 
 ## Subscription System
 

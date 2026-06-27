@@ -182,6 +182,22 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		if sub.ThinkingMode != "" {
 			vals["thinking_mode"] = sub.ThinkingMode
 		}
+		// max_context_tokens from subscription's PerModelConfigs.
+		// Must mirror the settings panel read path (cli_settings.go).
+		// Without this, refreshRemoteValuesCache leaves max_context_tokens empty,
+		// and the fallback below fills it with config.DefaultMaxContextTokens (200000),
+		// which then overwrites cachedMaxContextTokens via reloadSettingsCaches →
+		// resolveMaxContext → GetCurrentValues.
+		if _, ok := vals["max_context_tokens"]; !ok {
+			model := sub.Model
+			if model != "" {
+				if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
+					vals["max_context_tokens"] = fmt.Sprintf("%d", pmc.MaxContext)
+				} else if sub.MaxContext > 0 {
+					vals["max_context_tokens"] = fmt.Sprintf("%d", sub.MaxContext)
+				}
+			}
+		}
 	}
 	vals["context_mode"] = app.client.GetContextMode()
 	// ScopeGlobal keys: always override DB values with config (single source of truth).
