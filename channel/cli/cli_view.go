@@ -1079,10 +1079,8 @@ func (m *cliModel) View() (v tea.View) {
 		return v
 	}
 
-	// Remote reconnect overlay — disconnected state overrides everything.
-	// Uses showDisconnect flag (set by sendInbound on send failure) which is
-	// NOT affected by connState event races during reconnect.
-	if m.showDisconnect {
+	// Remote reconnect overlay — show spinner when WS is disconnected.
+	if m.remoteMode && m.connState != "connected" && m.connState != "" {
 		if overlay := m.renderReconnectOverlay(); overlay != "" {
 			v := tea.NewView(overlay)
 			v.AltScreen = true
@@ -1580,7 +1578,7 @@ func (m *cliModel) renderSuLoading() string {
 // renderReconnectOverlay renders a full-screen disconnect splash screen.
 // Only Ctrl+Z is accepted (quit).
 func (m *cliModel) renderReconnectOverlay() string {
-	frame := splashFrames[m.reconnectFrame%len(splashFrames)]
+	frame := splashFrames[(time.Now().UnixMilli()/100)%int64(len(splashFrames))]
 	lines := []string{
 		"",
 		"",
