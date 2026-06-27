@@ -1090,11 +1090,10 @@ func (m *cliModel) View() (v tea.View) {
 	// Uses showDisconnect flag (set by sendInbound on send failure) which is
 	// NOT affected by connState event races during reconnect.
 	if m.remoteMode && m.showDisconnect {
-		if overlay := m.renderReconnectOverlay(); overlay != "" {
-			v := tea.NewView(overlay)
-			v.AltScreen = true
-			return v
-		}
+		// XXX TEST: use startup splash renderer to rule out rendering issues
+		v := tea.NewView(m.renderSplash())
+		v.AltScreen = true
+		return v
 	}
 
 	// /su loading
@@ -1582,15 +1581,6 @@ func (m *cliModel) renderSuLoading() string {
 	}
 
 	return sb.String()
-}
-
-// renderReconnectOverlay renders a full-screen splash-like reconnect screen
-// when the remote WS connection is lost. Only Ctrl+Z is accepted (quit).
-func (m *cliModel) renderReconnectOverlay() string {
-	// Minimal version: just confirm the function is reached.
-	// Full logo/version rendering can be restored once basic splash works.
-	msg := "\n\n\n\n\n\n\n\n          ⚠ " + m.locale.ReconnectTitle + "\n\n          " + fmt.Sprintf(m.locale.ReconnectingMsg, "⣾") + "\n\n          " + m.locale.ReconnectHint + "\n"
-	return msg
 }
 
 // ---------------------------------------------------------------------------
