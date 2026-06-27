@@ -593,14 +593,14 @@ func (c *CLIChannel) SendSessionState(ev protocol.SessionEvent) {
 }
 
 // SetConnState updates the connection state indicator in the header bar.
-// Non-blocking — drops if asyncCh is full.
+// Sends directly via program.Send (not asyncCh) to avoid being dropped
+// when asyncCh is full during disconnect (tick flood can fill the channel).
 func (c *CLIChannel) SetConnState(state string) {
-	if c.program == nil {
-		return
-	}
-	select {
-	case c.asyncCh <- cliConnStateMsg{state: state}:
-	default:
+	c.programMu.Lock()
+	p := c.program
+	c.programMu.Unlock()
+	if p != nil {
+		p.Send(cliConnStateMsg{state: state})
 	}
 }
 
