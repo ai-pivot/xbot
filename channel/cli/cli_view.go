@@ -1079,21 +1079,22 @@ func (m *cliModel) View() (v tea.View) {
 		return v
 	}
 
-	// /su loading
-	if m.splashState.suLoading {
-		v := tea.NewView(m.renderSuLoading())
-		v.AltScreen = true
-		return v
-	}
-
-	// Remote reconnect overlay — show spinner when WS is disconnected.
-	// Placed after suLoading so that session-switch reconnect doesn't conflict.
+	// Remote reconnect overlay — disconnected state overrides everything.
+	// Must come BEFORE suLoading so that a stale suLoading flag from a
+	// dead server doesn't permanently block the reconnect splash.
 	if m.remoteMode && m.connState != "connected" && m.connState != "" {
 		if overlay := m.renderReconnectOverlay(); overlay != "" {
 			v := tea.NewView(overlay)
 			v.AltScreen = true
 			return v
 		}
+	}
+
+	// /su loading
+	if m.splashState.suLoading {
+		v := tea.NewView(m.renderSuLoading())
+		v.AltScreen = true
+		return v
 	}
 
 	// Build shared components
