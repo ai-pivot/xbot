@@ -596,13 +596,20 @@ func (c *CLIChannel) SendSessionState(ev protocol.SessionEvent) {
 // Sends directly via program.Send (not asyncCh) to avoid being dropped
 // when asyncCh is full during disconnect (tick flood can fill the channel).
 func (c *CLIChannel) SetConnState(state string) {
+	// Write directly to model field — bypasses program.Send/asyncCh entirely.
+	// During disconnect, tick flood fills all message channels, making
+	// delivery impossible. Direct write is the only reliable path.
 	c.programMu.Lock()
-	p := c.program
-	c.programMu.Unlock()
-	if p != nil {
-		log.WithField("state", state).Warn("SetConnState: sending directly via program.Send")
-		go p.Send(cliConnStateMsg{state: state})
+	if c.model != nil {
+		c.model.connState = state
+		if state == "connected" {
+			c.model.showDisconnect = false
+		} else {
+			c.model.showDisconnect = true
+		}
 	}
+	c.programMu.Unlock()
+	log.WithField("state", state).Warn("SetConnState: written directly to model")
 }
 
 // SendToast shows a toast notification in the CLI (non-blocking).
