@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image/color"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	log "xbot/logger"
 )
 
 // computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
@@ -1060,7 +1060,7 @@ func (m *cliModel) View() (v tea.View) {
 	defer clipanic.Recover("ch.cliModel.View", nil, true)
 
 	if m.connState != "connected" && m.connState != "" {
-		fmt.Fprintf(os.Stderr, "SPLASH: connState=%q showDisconnect=%v\n", m.connState, m.showDisconnect)
+		log.WithFields(log.Fields{"connState": m.connState, "showDisconnect": m.showDisconnect, "remoteMode": m.remoteMode}).Warn("SPLASH: View() rendering reconnect overlay")
 	}
 
 	// Reset mouse zones for this frame
