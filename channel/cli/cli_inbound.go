@@ -63,9 +63,16 @@ func (m *cliModel) appendSystemStyled(content string) {
 // Uses non-blocking send to prevent the BubbleTea event loop from freezing
 // if the channel is full (e.g., agent is busy with a long LLM call).
 // Returns false if the message was dropped.
+// On failure, immediately marks the connection as disconnected so the
+// splash screen appears without waiting for readPump timeout.
 func (m *cliModel) sendInbound(msg ch.InboundMsg) bool {
 	if m.sendInboundFn != nil {
-		return m.sendInboundFn(msg)
+		if m.sendInboundFn(msg) {
+			return true
+		}
+		// Write failed — connection is dead. Show splash immediately.
+		m.connState = "disconnected"
+		return false
 	}
 	return false
 }
@@ -107,7 +114,9 @@ func (m *cliModel) sendToAgent(content string) {
 	m.messages = append(m.messages, userCliMsg)
 	m.pendingUserMsg = &userCliMsg
 	m.savePendingToSessionState()
-	m.sendInbound(m.newInbound(content, map[string]string{MetadataReplyPolicy: ReplyPolicyOptional}))
+	if !m.sendInbound(m.newInbound(content, map[string]string{MetadataReplyPolicy: ReplyPolicyOptional})) {
+		return // send failed — connState already set to disconnected by sendInbound
+	}
 	m.startAgentTurn()
 }
 
