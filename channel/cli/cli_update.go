@@ -287,10 +287,13 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.connState = msg.state
 		if msg.state == "connected" {
 			m.reconnectFrame = 0
+			// NOTE: showDisconnect is NOT cleared here — only sendInbound
+			// success clears it. This prevents transient reconnects from
+			// hiding the splash before the user confirms connectivity.
+		} else if msg.state != "" {
+			// readPump detected disconnect — show splash immediately
+			m.showDisconnect = true
 		}
-	// NOTE: showDisconnect is NOT set/cleared here. It is driven
-	// exclusively by user actions (sendInbound success/failure) to
-	// avoid being overwritten by transient WebSocket reconnects.
 	// Flush is handled in cliTickMsg instead (next tick after typing=false).
 
 	case cliTickMsg:
