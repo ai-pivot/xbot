@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1059,6 +1060,12 @@ func (m *cliModel) View() (v tea.View) {
 	defer clipanic.Recover("ch.cliModel.View", nil, true)
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
+
+	// XXX DEBUG: dump splash-related state to stderr to find blocker
+	if m.showDisconnect {
+		fmt.Fprintf(os.Stderr, "DEBUG View: remoteMode=%v showDisconnect=%v connState=%q suLoading=%v splashDone=%v\n",
+			m.remoteMode, m.showDisconnect, m.connState, m.splashState.suLoading, m.splashState.done)
+	}
 
 	// Splash screen
 	if !m.splashState.done {
