@@ -12,6 +12,7 @@ import (
 
 	ch "xbot/channel"
 	"xbot/clipanic"
+	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -285,6 +286,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliConnStateMsg:
 		m.connState = msg.state
+		log.WithField("state", msg.state).Warn("UPDATE: received cliConnStateMsg")
 		if msg.state == "connected" {
 			m.reconnectFrame = 0
 			m.showDisconnect = false // connection restored, dismiss splash

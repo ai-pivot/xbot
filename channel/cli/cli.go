@@ -600,6 +600,7 @@ func (c *CLIChannel) SetConnState(state string) {
 	p := c.program
 	c.programMu.Unlock()
 	if p != nil {
+		log.WithField("state", state).Warn("SetConnState: sending directly via program.Send")
 		p.Send(cliConnStateMsg{state: state})
 	}
 }
