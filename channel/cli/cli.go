@@ -40,10 +40,12 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan ch.OutboundMsg, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
-		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
+		tickCh:     make(chan tea.Msg, 1),                 // buffered-1: tick, drop on full
+		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound
 		stopCh:     make(chan struct{}),
 	}
-	// Global ticker goroutine: sends cliTickMsg every 100ms.
+	// Global ticker goroutine: sends cliTickMsg every 100ms to tickCh.
+	// tickCh is separate from asyncCh so tick flood never blocks business messages.
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
@@ -51,7 +53,7 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 			select {
 			case <-ticker.C:
 				select {
-				case ch.asyncCh <- cliTickMsg{}:
+				case ch.tickCh <- cliTickMsg{}:
 				default:
 				}
 			case <-ch.stopCh:
@@ -265,6 +267,10 @@ func (c *CLIChannel) Start() error {
 	// 启动 unified async drain goroutine: single sender to p.msgs
 	c.wg.Add(1)
 	clipanic.Go("ch.CLIChannel.handleAsyncDrain", c.handleAsyncDrain)
+
+	// 启动 tick drain goroutine: independent of asyncCh to prevent tick starvation
+	c.wg.Add(1)
+	clipanic.Go("ch.CLIChannel.handleTickDrain", c.handleTickDrain)
 
 	// §13 异步检查更新（不阻塞 TUI 启动）
 	c.CheckUpdateAsync()
@@ -991,6 +997,27 @@ func (c *CLIChannel) handleAsyncDrain() {
 		case <-c.stopCh:
 			return
 		case msg := <-c.asyncCh:
+			c.programMu.Lock()
+			p := c.program
+			c.programMu.Unlock()
+			if p != nil {
+				p.Send(msg)
+			}
+		}
+	}
+}
+
+// handleTickDrain forwards tick messages from tickCh to BubbleTea independently
+// of asyncCh. This prevents tick starvation when asyncCh is congested (e.g.
+// during reconnect when RestoreSession/SetProcessing/outbound flood asyncCh).
+func (c *CLIChannel) handleTickDrain() {
+	defer c.wg.Done()
+
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case msg := <-c.tickCh:
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
