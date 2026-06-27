@@ -656,11 +656,8 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 							Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
 						})
 					}
-					// Exponential backoff capped at 30s, never give up.
-					delay = delay * 2
-					if delay > 30*time.Second {
-						delay = 30 * time.Second
-					}
+					// Retry every second.
+					delay = time.Second
 					continue
 				}
 				log.Info("Reconnected to server")
