@@ -2,6 +2,13 @@ package bus
 
 import "time"
 
+// MediaContent carries inline media data (e.g. clipboard-pasted images).
+type MediaContent struct {
+	MIMEType string `json:"mime_type"`
+	Base64   string `json:"base64"`
+	Filename string `json:"filename,omitempty"`
+}
+
 // MessagePayload 是所有消息共享的核心字段。
 // protocol/ 通过嵌入复用，避免字段重复定义。
 type MessagePayload struct {
@@ -11,8 +18,9 @@ type MessagePayload struct {
 	ChatID     string `json:"chat_id"`
 	ChatType   string `json:"chat_type"`
 
-	Content string   `json:"content"`
-	Media   []string `json:"media,omitempty"`
+	Content      string         `json:"content"`
+	Media        []string       `json:"media,omitempty"`
+	MediaContent []MediaContent `json:"media_content,omitempty"`
 
 	Metadata  map[string]string `json:"metadata,omitempty"`
 	Time      time.Time         `json:"time"`
@@ -72,8 +80,9 @@ type InboundMessage struct {
 	ChatType   string // 会话类型: "p2p" / "group" / "agent"
 
 	// === 内容 ===
-	Content string   // 消息文本
-	Media   []string // 媒体文件路径
+	Content      string         // 消息文本
+	Media        []string       // 媒体文件路径
+	MediaContent []MediaContent // 内联媒体内容（粘贴的图片等）
 
 	// === 元数据 ===
 	Metadata  map[string]string // 渠道/调用方特定元数据

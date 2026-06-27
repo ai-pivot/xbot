@@ -61,6 +61,8 @@ channel/napcat/       # NapCat HTTP API
 | `napcat.go` | NapCat HTTP API (~821 lines) |
 | `i18n.go` | Internationalization: zh/en UI strings (~1390 lines) |
 | `mermaid.go` | Mermaid → ASCII chart rendering |
+| `clipboard_image.go` | **Clipboard image paste**: ReadClipboardImage, CompressImage, SavePasteImage, /paste handler |
+| `clipboard_native.go` | `golang.design/x/clipboard` wrapper (panic-safe Init + Read) |
 
 ## Capabilities
 

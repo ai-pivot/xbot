@@ -91,6 +91,34 @@ func (m *cliModel) sendCancel() {
 	m.showSystemMsg(m.locale.CancelSent, feedbackInfo)
 }
 
+// sendImageMessage sends a pasted image to the agent.
+// displayText is shown in the terminal (e.g. "📎 已粘贴图片 (xxx.png, 234KB)"),
+// mediaContent carries the actual image data sent to the LLM.
+func (m *cliModel) sendImageMessage(mediaContent ch.MediaContent, displayText string) tea.Cmd {
+	// Add display message to history
+	userCliMsg := cliMessage{
+		role:      "user",
+		content:   displayText,
+		timestamp: time.Now(),
+		dirty:     true,
+	}
+	m.messages = append(m.messages, userCliMsg)
+	m.pendingUserMsg = &userCliMsg
+	m.savePendingToSessionState()
+
+	m.updateViewportContent()
+	m.viewport.GotoBottom()
+	m.newContentHint = false
+	m.userScrolledUp = false
+
+	// Send to message bus with inline media content
+	msg := m.newInbound(displayText, nil)
+	msg.MediaContent = []ch.MediaContent{mediaContent}
+	m.sendInbound(msg)
+	m.startAgentTurn()
+	return nil
+}
+
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
 func (m *cliModel) sendToAgent(content string) {
 	// Check if LLM is configured before sending (same check as sendMessage).

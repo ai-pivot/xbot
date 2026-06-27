@@ -31,6 +31,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	case "/cancel":
 		m.sendCancel()
 
+	case "/paste":
+		return m.handlePasteCommand()
+
 	case "/commands", "/palette":
 		m.openCommandPalette()
 

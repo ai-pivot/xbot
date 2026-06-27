@@ -2180,6 +2180,21 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		msg.Content += ref.String()
 	}
 
+	// 将 MediaContent（内联图片，如剪贴板粘贴）编码为 data URL 并嵌入 content
+	if len(msg.MediaContent) > 0 {
+		var imgBuilder strings.Builder
+		for _, mc := range msg.MediaContent {
+			imgBuilder.WriteString("\n\n![")
+			imgBuilder.WriteString(mc.Filename)
+			imgBuilder.WriteString("](data:")
+			imgBuilder.WriteString(mc.MIMEType)
+			imgBuilder.WriteString(";base64,")
+			imgBuilder.WriteString(mc.Base64)
+			imgBuilder.WriteString(")")
+		}
+		msg.Content += imgBuilder.String()
+	}
+
 	// 初始化 session 消息跟踪：清除旧的已发消息 ID，记录入站消息 ID 用于首条回复
 	key := qualifyChatID(msg.Channel, msg.ChatID)
 	a.resetSessionState(key)

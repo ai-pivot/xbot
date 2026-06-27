@@ -65,3 +65,14 @@ type ModelLoader interface {
 ## OnModelsLoaded Callback
 
 `UserLLMConfig.OnModelsLoaded` is called by `NewOpenAILLM`'s async goroutine after fetching model list from API. Used to persist models to DB via `UpdateCachedModels`. Must handle case where sub ID doesn't exist in DB (config-only subs).
+
+## Vision Image Support & Fallback
+
+`/paste` command sends clipboard images as inline `MediaContent` → agent encodes as `![filename](data:{mime};base64,{data})` data URL embedded in message content.
+
+- **OpenAI**: `parseEmbeddedImages()` (openai.go) already splits data URLs into `image_url` content parts — no change needed
+- **Anthropic**: `toAnthropicMessages` now calls `parseEmbeddedImages` on user messages, converting data URLs to `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}` blocks via `dataURLToAnthropicImage`
+- **Vision fallback** (乐观发送+降级): when API returns 4xx with image/vision/multimodal keywords, `stripImagesFromMessages` removes all data URL images and retries once. Both OpenAI (`newStreamingWithRetry`) and Anthropic (`Generate`) implement this.
+  - `isVisionUnsupportedError`: keyword match on error message
+  - `messagesHaveEmbeddedImages`: guard to only retry when images exist (prevents infinite loop)
+  - No model whitelist maintained — every model gets optimistic send + auto-fallback

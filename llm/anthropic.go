@@ -121,6 +121,15 @@ type anthropicTextBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
+type anthropicImageSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // "image/png", "image/jpeg"
+	Data      string `json:"data"`       // base64-encoded data (no prefix)
+}
+type anthropicImageBlock struct {
+	Type   string               `json:"type"` // "image"
+	Source anthropicImageSource `json:"source"`
+}
 type anthropicToolUseBlock struct {
 	Type  string          `json:"type"`
 	ID    string          `json:"id"`
@@ -204,7 +213,32 @@ func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthrop
 			// system 消息由 buildAnthropicSystem 单独处理，此处跳过
 			i++
 		case "user":
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+			// Check for embedded data URL images
+			parts := parseEmbeddedImages(msg.Content)
+			if len(parts) > 1 || (len(parts) == 1 && parts[0].Type == "image") {
+				// Content has images — build content blocks array
+				blocks := make([]any, 0, len(parts))
+				for _, part := range parts {
+					switch part.Type {
+					case "text":
+						if strings.TrimSpace(part.Text) != "" {
+							blocks = append(blocks, anthropicTextBlock{Type: "text", Text: part.Text})
+						}
+					case "image":
+						if imgBlock, ok := dataURLToAnthropicImage(part.URL); ok {
+							blocks = append(blocks, imgBlock)
+						}
+					}
+				}
+				if len(blocks) > 0 {
+					msgs = append(msgs, anthropicMessage{Role: "user", Content: blocks})
+				} else {
+					// Fallback: all parts were empty/invalid, send original text
+					msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+				}
+			} else {
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+			}
 			i++
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
@@ -357,6 +391,52 @@ func (a *AnthropicLLM) setHeaders(req *http.Request) {
 //   - "adaptive" -> {type: "adaptive"}
 //   - "disabled" -> nil (不发送 thinking 参数)
 //   - JSON 格式: {"type": "enabled", "budget_tokens": 10000} 或 {"type": "adaptive", "effort": "high"}
+
+// dataURLToAnthropicImage parses a data URL (data:image/png;base64,...) into an Anthropic image block.
+// Returns false if the URL is not a valid data URL.
+func dataURLToAnthropicImage(dataURL string) (anthropicImageBlock, bool) {
+	mimeType, base64Data, ok := parseDataURL(dataURL)
+	if !ok {
+		return anthropicImageBlock{}, false
+	}
+	return anthropicImageBlock{
+		Type: "image",
+		Source: anthropicImageSource{
+			Type:      "base64",
+			MediaType: mimeType,
+			Data:      base64Data,
+		},
+	}, true
+}
+
+// parseDataURL extracts mime type and base64 data from a data URL.
+// Expected format: data:{mime};base64,{data}
+func parseDataURL(dataURL string) (mimeType, base64Data string, ok bool) {
+	if !strings.HasPrefix(dataURL, "data:") {
+		return "", "", false
+	}
+	rest := dataURL[5:] // strip "data:"
+	semiIdx := strings.Index(rest, ";base64,")
+	if semiIdx < 0 {
+		return "", "", false
+	}
+	mimeType = rest[:semiIdx]
+	base64Data = rest[semiIdx+len(";base64,"):]
+	if mimeType == "" || base64Data == "" {
+		return "", "", false
+	}
+	return mimeType, base64Data, true
+}
+
+// stripEmbeddedImages removes all embedded data URL images from content,
+// keeping only text. Used for vision fallback when a model doesn't support images.
+func stripEmbeddedImages(content string) string {
+	if !strings.Contains(content, "data:") {
+		return content
+	}
+	return embeddedImageRe.ReplaceAllString(content, "")
+}
+
 func parseAnthropicThinking(thinkingMode string) *anthropicThinking {
 	if thinkingMode == "" || thinkingMode == "disabled" {
 		return nil
@@ -422,12 +502,21 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		errMsg := fmt.Sprintf("anthropic API error: status=%d, body=%s", resp.StatusCode, string(bodyBytes))
+
+		// Vision fallback: if the model doesn't support images, strip and retry
+		if isVisionUnsupportedError(fmt.Errorf("%s", errMsg)) && messagesHaveEmbeddedImages(messages) {
+			log.Ctx(ctx).WithField("model", model).Info("[LLM] Anthropic: model doesn't support images, retrying without images")
+			strippedMsgs := stripImagesFromMessages(messages)
+			return a.Generate(ctx, model, strippedMsgs, tools, thinkingMode)
+		}
+
 		log.Ctx(ctx).WithFields(log.Fields{
 			"provider":    "anthropic",
 			"status_code": resp.StatusCode,
 			"body":        string(bodyBytes),
 		}).Error("[LLM] API error")
-		return nil, fmt.Errorf("anthropic API error: status=%d, body=%s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 	var apiResp anthropicResp
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
