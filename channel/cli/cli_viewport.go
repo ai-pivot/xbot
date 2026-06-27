@@ -365,7 +365,9 @@ func (m *cliModel) updateStreamingOnly() {
 
 	// --- Render completed iterations (cached) ---
 	// Uses renderTurnBody(iterations, nil, ...) to get the exact same output
-	// as the full render path. Only re-renders when iteration count changes.
+	// as the full render path. Incremental: when only the count increases and width
+	// is unchanged, renders only the NEW iterations and appends to cached lines.
+	// Full rebuild only on width change or count reset.
 	numCompleted := len(m.progressState.iterations)
 	var completedLines []string
 	completedMaxW := 0
@@ -374,8 +376,45 @@ func (m *cliModel) updateStreamingOnly() {
 		// Cache hit: reuse pre-rendered lines for completed iterations
 		completedLines = m.rc.streamCompletedLines
 		completedMaxW = m.rc.streamMaxW
+	} else if m.rc.streamCompletedCount > 0 && numCompleted > m.rc.streamCompletedCount && contentWidth == m.rc.streamCompletedWidth {
+		// Incremental path: render only NEW iterations since last cache update.
+		// This is O(1) per iteration instead of O(N) re-rendering all completed.
+		completedLines = m.rc.streamCompletedLines
+		completedMaxW = m.rc.streamMaxW
+
+		oldCount := m.rc.streamCompletedCount
+		newIters := m.progressState.iterations[oldCount:]
+		bodyContent := m.renderTurnBody(newIters, nil, contentWidth, "")
+		bodyContent = strings.TrimRight(bodyContent, "\n")
+		if bodyContent != "" {
+			// Handle separator between old last iteration and new first iteration.
+			// renderTurnBody on newIters alone resets the internal lastKind, so the
+			// first new block has no leading separator. We prepend the correct one.
+			prevKind, hasPrev := lastIterationBlockKind(m.progressState.iterations[:oldCount])
+			nextKind, hasNext := firstIterationBlockKind(newIters)
+			if hasPrev && hasNext && needsTurnBlockSeparator(prevKind, nextKind) {
+				// \n\n = different kinds, \n = same kind; splitting produces
+				// one blank guide line between old and new iteration groups.
+				if prevKind == nextKind || nextKind == turnBlockPulse {
+					bodyContent = "\n" + bodyContent
+				} else {
+					bodyContent = "\n\n" + bodyContent
+				}
+			}
+			for _, l := range strings.Split(bodyContent, "\n") {
+				guideLine := guidePrefix + l
+				if w := lipgloss.Width(guideLine); w > completedMaxW {
+					completedMaxW = w
+				}
+				completedLines = append(completedLines, guideLine)
+			}
+		}
+		// Update cache state (width unchanged)
+		m.rc.streamCompletedLines = completedLines
+		m.rc.streamCompletedCount = numCompleted
+		m.rc.streamMaxW = completedMaxW
 	} else {
-		// Cache miss: render completed iterations and cache the result
+		// Full rebuild: width changed, count went backwards, or first render.
 		if numCompleted > 0 {
 			bodyContent := m.renderTurnBody(m.progressState.iterations, nil, contentWidth, "")
 			bodyContent = strings.TrimRight(bodyContent, "\n")

@@ -306,6 +306,23 @@ func needsTurnBlockSeparator(prev, next turnBlockKind) bool {
 	return next != turnBlockPulse && prev != next
 }
 
+// firstIterationBlockKind returns the kind of the first non-empty block
+// across a slice of iterations, scanning in forward order.
+func firstIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, bool) {
+	for _, iter := range iterations {
+		if iter.Reasoning != "" {
+			return turnBlockReasoning, true
+		}
+		if iter.Thinking != "" {
+			return turnBlockContent, true
+		}
+		if len(iter.Tools) > 0 {
+			return turnBlockTools, true
+		}
+	}
+	return 0, false
+}
+
 func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fallbackContent string) []turnBlock {
 	s := &m.styles
 	var blocks []turnBlock
