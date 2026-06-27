@@ -414,7 +414,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 
 	// Reconnect overlay spinner animation — advances every tick (100ms)
 	// when WS connection is lost, providing visual feedback.
-	if m.remoteMode && m.connState != "connected" && m.connState != "" {
+	if m.remoteMode && (m.connState != "connected" || m.showDisconnect) && m.connState != "" {
 		m.reconnectFrame++
 	}
 

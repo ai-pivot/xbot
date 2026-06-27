@@ -227,7 +227,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
 		// Block mouse events when remote connection is lost.
-		if m.remoteMode && m.connState != "connected" && m.connState != "" {
+		if m.remoteMode && (m.connState != "connected" || m.showDisconnect) && m.connState != "" {
 			return m, nil
 		}
 		handled, newModel, cmd := m.handleMouseMsg(msg)
