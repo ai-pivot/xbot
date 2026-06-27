@@ -70,6 +70,7 @@ func (m *cliModel) sendInbound(msg ch.InboundMsg) bool {
 	if m.sendInboundFn != nil {
 		ok := m.sendInboundFn(msg)
 		if ok {
+			m.showDisconnect = false // user action confirmed connection works
 			return true
 		}
 		// Write failed — connection is dead. Show splash immediately.
