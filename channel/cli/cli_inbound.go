@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -78,7 +77,7 @@ func (m *cliModel) sendInbound(msg ch.InboundMsg) bool {
 		log.WithFields(log.Fields{"fn_exists": true, "fn_returned": ok}).Warn("sendInbound: send failed, setting connState=disconnected")
 		m.connState = "disconnected"
 		m.showDisconnect = true
-		fmt.Fprintf(os.Stderr, "\n\n!!! sendInbound: showDisconnect=TRUE connState=%q remoteMode=%v !!!\n\n", m.connState, m.remoteMode)
+		log.WithFields(log.Fields{"remoteMode": m.remoteMode, "connState": m.connState, "showDisconnect": m.showDisconnect}).Warn("!!! sendInbound SET showDisconnect=TRUE !!!")
 		return false
 	}
 	log.Warn("sendInbound: sendInboundFn is nil, connState NOT set")
