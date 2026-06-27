@@ -1080,9 +1080,9 @@ func (m *cliModel) View() (v tea.View) {
 	}
 
 	// Remote reconnect overlay — disconnected state overrides everything.
-	// Must come BEFORE suLoading so that a stale suLoading flag from a
-	// dead server doesn't permanently block the reconnect splash.
-	if m.remoteMode && m.connState != "connected" && m.connState != "" {
+	// Uses showDisconnect flag (set by sendInbound on send failure) which is
+	// NOT affected by connState event races during reconnect.
+	if m.remoteMode && m.showDisconnect {
 		if overlay := m.renderReconnectOverlay(); overlay != "" {
 			v := tea.NewView(overlay)
 			v.AltScreen = true

@@ -138,6 +138,7 @@ type cliModel struct {
 	remoteServerURL        string    // remote server host for header display (e.g. "host:port")
 	connState              string    // WS connection state: "connected"|"disconnected"|"reconnecting"
 	reconnectFrame         int       // spinner frame counter for reconnect overlay animation
+	showDisconnect         bool      // set when send fails — triggers splash regardless of connState event race
 	debugMode              bool      // --debug: UI capture + key injection via SIGUSR1
 	debugCaptureMs         int       // --debug-capture-ms: UI capture interval in ms (0 = default 1000)
 	ephemeral              bool      // --ephemeral: no persistence, clean slate for benchmarking

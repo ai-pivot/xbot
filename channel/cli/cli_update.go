@@ -113,7 +113,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	}
 
 	// Remote disconnect: only Ctrl+Z passes — all other keys (including Ctrl+C) swallowed.
-	if m.remoteMode && m.connState != "connected" && m.connState != "" {
+	if m.remoteMode && (m.connState != "connected" || m.showDisconnect) && m.connState != "" {
 		return m, nil
 	}
 
@@ -287,6 +287,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.connState = msg.state
 		if msg.state == "connected" {
 			m.reconnectFrame = 0
+			m.showDisconnect = false // splash dismissed on reconnect
 		}
 	// flush here, the queued message gets appended BEFORE the reply,
 	// producing wrong order: msg1, msg2, reply1 instead of msg1, reply1, msg2.
