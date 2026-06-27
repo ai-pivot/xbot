@@ -1119,7 +1119,7 @@ func main() {
 	cliCfg := cli.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
-		RemoteMode:           false, // unified: always use remote adapter path
+		RemoteMode:           true, // unified: always use remote adapter path
 		RemoteServerURL:      remoteServerURL,
 		DebugMode:            flagDebug,
 		DebugInput:           flagDebugInput,
