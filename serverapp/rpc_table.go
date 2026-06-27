@@ -325,30 +325,80 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		bizID := rpcBizID(ctx)
 		log.WithField("sender_id", bizID).WithField("model", p.Model).WithField("chat_id", p.ChatID).Info("RPC switch_model")
 		if p.ChatID != "" {
-			h.Ag.LLMFactory().SwitchModel(bizID, p.Model, p.ChatID)
+			// Per-session switch: resolve which subscription actually provides this
+			// model and pair (ownerSub, model) via SelectModel. The old behavior paired
+			// the DEFAULT subscription with whatever model name was picked — when the
+			// model belonged to a different subscription, ResolveLLM built a client from
+			// the default sub's baseURL/apiKey but requested the other sub's model name,
+			// causing 404 "model not supported by any configured account".
+			resolved := false
+			if owner, rerr := h.Ag.LLMFactory().ResolveSubscriptionForModel(bizID, p.Model); rerr == nil && owner != nil {
+				if serr := h.Ag.LLMFactory().SelectModel(bizID, p.ChatID, "cli", owner.ID, p.Model); serr != nil {
+					log.WithError(serr).Warn("RPC switch_model: SelectModel failed, falling back to default subscription")
+				} else {
+					resolved = true
+				}
+			}
+			if !resolved {
+				// Fallback: model not registered to any subscription (e.g. freshly typed,
+				// or subscription_models not yet populated). Preserve legacy behavior:
+				// pair with the default subscription and update the in-memory entry.
+				h.Ag.LLMFactory().SwitchModel(bizID, p.Model, p.ChatID)
+				if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
+					if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
+						if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
+							if err := sqlite.NewTenantService(h.Ag.MultiSession().DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, p.Model); err != nil {
+								log.WithError(err).Warn("RPC switch_model: SetTenantSubscription failed")
+							}
+						}
+					}
+				}
+			}
 		} else {
+			// User-level switch (no chatID): update the default subscription's model
+			// and keep user_default_model in sync for fresh-session resolution.
 			h.Ag.LLMFactory().SwitchModel(bizID, p.Model)
-		}
-		if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
-			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
-				// Only persist to subscription model for user-level switches (no chatID).
-				// Per-session switches (with chatID) must NOT modify the subscription —
-				// otherwise switching model in one session contaminates all sessions
-				// sharing the same subscription.
-				if p.ChatID == "" {
+			if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
+				if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
 					if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
 						log.WithError(err).Warn("RPC switch_model: SetModel failed")
 					}
-				}
-				// Per-session: persist model choice to tenants table so it survives restarts.
-				if p.ChatID != "" && h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
-					if err := sqlite.NewTenantService(h.Ag.MultiSession().DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, p.Model); err != nil {
-						log.WithError(err).Warn("RPC switch_model: SetTenantSubscription failed")
+					if err := h.Ag.LLMFactory().SetUserDefaultModel(bizID, sub.ID, p.Model); err != nil {
+						log.WithError(err).Warn("RPC switch_model: SetUserDefaultModel failed")
 					}
 				}
 			}
 		}
 		return nil
+	})
+	// select_model: model-first per-session selection. Sets (subID, model) for a
+	// chat via the new ResolveLLM/SelectModel path. Preferred over switch_model.
+	t["select_model"] = rpc1void(func(ctx context.Context, p struct {
+		SubID  string `json:"sub_id"`
+		Model  string `json:"model"`
+		ChatID string `json:"chat_id,omitempty"`
+	}) error {
+		bizID := rpcBizID(ctx)
+		channel := "cli"
+		if p.ChatID == "" {
+			return fmt.Errorf("select_model requires a chat_id (use set_default_model for the user-level default)")
+		}
+		return h.Ag.LLMFactory().SelectModel(bizID, p.ChatID, channel, p.SubID, p.Model)
+	})
+	// set_default_model: model-first user-level default (subscription, model).
+	t["set_default_model"] = rpc1void(func(ctx context.Context, p struct {
+		SubID string `json:"sub_id"`
+		Model string `json:"model"`
+	}) error {
+		return h.Ag.LLMFactory().SetUserDefaultModel(rpcBizID(ctx), p.SubID, p.Model)
+	})
+	// set_model_enabled: toggle a model's enabled flag (model disable feature).
+	t["set_model_enabled"] = rpc1void(func(ctx context.Context, p struct {
+		SubID   string `json:"sub_id"`
+		Model   string `json:"model"`
+		Enabled bool   `json:"enabled"`
+	}) error {
+		return h.Ag.LLMFactory().SetModelEnabled(p.SubID, p.Model, p.Enabled)
 	})
 	t["get_user_max_context"] = rpc0(func(ctx context.Context) int { return h.Ag.GetUserMaxContext(rpcBizID(ctx)) })
 	t["set_user_max_context"] = rpc1void(func(ctx context.Context, p struct {
@@ -539,6 +589,9 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		// PerModelConfigs. InvalidateSender only clears the user-level entry, so
 		// GetLLMForChat hits the per-chat cache and returns the old MaxContext.
 		h.Ag.LLMFactory().Invalidate(bizID)
+		// Drop the new-path client cache + session memos for this subscription so
+		// ResolveLLM picks up the new per-model config.
+		h.Ag.LLMFactory().InvalidateSubscription(existing.ID)
 		return nil
 	})
 	t["remove_subscription"] = rpc1void(func(ctx context.Context, p struct {
@@ -558,7 +611,12 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err := svc.Remove(p.ID); err != nil {
 			return err
 		}
+		// Drop both the legacy entries map and the new clientCache/sessionMemo
+		// for this subscription. Invalidate(senderID) clears legacy entries;
+		// InvalidateSubscription(subID) drops the per-subscription client cache
+		// used by ResolveLLM.
 		h.Ag.LLMFactory().Invalidate(sub.SenderID)
+		h.Ag.LLMFactory().InvalidateSubscription(sub.ID)
 		return nil
 	})
 	t["set_default_subscription"] = rpc1void(h.setDefaultSubscription)
@@ -1263,6 +1321,7 @@ func mergeSubscriptionModels(svc *sqlite.LLMSubscriptionService, sub *sqlite.LLM
 			MaxContext:      m.MaxContext,
 			MaxOutputTokens: m.MaxOutputTokens,
 			APIType:         m.APIType,
+			Enabled:         m.Enabled,
 		}
 	}
 }
@@ -1362,6 +1421,9 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	// Updating a subscription's fields (name, model, key) should NOT wipe every
 	// session's per-session LLM override. Only the user-level default is affected.
 	h.Ag.LLMFactory().InvalidateSender(existing.SenderID)
+	// Drop the new-path client cache for this subscription so ResolveLLM rebuilds
+	// the client with the updated credentials/base_url/config.
+	h.Ag.LLMFactory().InvalidateSubscription(dbSub.ID)
 	if existing.IsDefault {
 		h.Ag.LLMFactory().SwitchSubscription(bizID, dbSub, "")
 	}
@@ -1405,6 +1467,15 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	if err := svc.SetDefault(p.ID); err != nil {
 		return err
 	}
+	// Keep user_default_model in sync so ResolveLLM's user-level fallback sees
+	// the new default subscription for fresh sessions.
+	defaultModel := sub.Model
+	if defaultModel == "" {
+		defaultModel = h.Ag.LLMFactory().PickDefaultModelForSub(sub)
+	}
+	if err := h.Ag.LLMFactory().SetUserDefaultModel(bizID, sub.ID, defaultModel); err != nil {
+		log.WithError(err).Warn("RPC setDefaultSubscription: SetUserDefaultModel failed")
+	}
 	h.Ag.LLMFactory().InvalidateSender(bizID)
 	return h.Ag.LLMFactory().SwitchSubscription(bizID, sub, "")
 }
@@ -1434,6 +1505,9 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 	if updated != nil {
 		if def, _ := svc.GetDefault(updated.SenderID); def != nil && def.ID == updated.ID {
 			h.Ag.LLMFactory().InvalidateSender(updated.SenderID)
+			// Drop the new-path client cache for this subscription so ResolveLLM
+			// picks up the new default model + per-model config.
+			h.Ag.LLMFactory().InvalidateSubscription(updated.ID)
 			if err := h.Ag.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
 				return err
 			}

@@ -271,10 +271,12 @@ func (m *cliModel) editQuickSwitchEntry() {
 	for mdl := range subModels {
 		pmOut := 0
 		pmCtx := 0
+		pmEnabled := true // default enabled for models without an explicit row
 		if target.PerModelConfigs != nil {
 			if cfg, ok := target.PerModelConfigs[mdl]; ok {
 				pmOut = cfg.MaxOutputTokens
 				pmCtx = cfg.MaxContext
+				pmEnabled = cfg.Enabled
 			}
 		}
 		editSchema = append(editSchema, ch.SettingDefinition{
@@ -286,6 +288,19 @@ func (m *cliModel) editQuickSwitchEntry() {
 			Key: "pm_" + mdl + "_max_context", Label: mdl + " Max Context",
 			Description: "Max context tokens for " + mdl + " (0 = use default)",
 			Type:        ch.SettingTypeNumber, DefaultValue: strconv.Itoa(pmCtx),
+		})
+		enabledDef := "enabled"
+		if !pmEnabled {
+			enabledDef = "disabled"
+		}
+		editSchema = append(editSchema, ch.SettingDefinition{
+			Key: "pm_" + mdl + "_enabled", Label: mdl + " Enabled",
+			Description: "Disabled models are hidden from cycling and rejected on switch",
+			Type:        ch.SettingTypeSelect, DefaultValue: enabledDef,
+			Options: []ch.SettingOption{
+				{Label: "Enabled", Value: "enabled"},
+				{Label: "Disabled", Value: "disabled"},
+			},
 		})
 	}
 	editValues := map[string]string{
@@ -341,6 +356,21 @@ func (m *cliModel) editQuickSwitchEntry() {
 			m.showTempStatus(fmt.Sprintf("Failed to update: %v", err))
 		} else {
 			m.showTempStatus(fmt.Sprintf("Updated: %s", updated.Name))
+		}
+		// Apply per-model enable/disable toggles. SetModelEnabled is independent of
+		// Update (which writes token overrides), so a failed Update still won't lose
+		// the enabled state and vice versa.
+		for mdl := range subModels {
+			wantEnabled := values["pm_"+mdl+"_enabled"] != "disabled"
+			origEnabled := true
+			if cfg, ok := target.PerModelConfigs[mdl]; ok {
+				origEnabled = cfg.Enabled
+			}
+			if wantEnabled != origEnabled {
+				if err := m.subscriptionMgr.SetModelEnabled(target.ID, mdl, wantEnabled); err != nil {
+					m.showTempStatus(fmt.Sprintf("Failed to %s %s: %v", map[bool]string{true: "enable", false: "disable"}[wantEnabled], mdl, err))
+				}
+			}
 		}
 	})
 }

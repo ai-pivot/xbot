@@ -508,6 +508,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				return err
 			}
 			ag.LLMFactory().InvalidateSender(senderID)
+			ag.LLMFactory().InvalidateSubscription(newSub.ID)
 			return nil
 		},
 		LLMRemoveSubscription: func(id string) error {
@@ -520,6 +521,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				return err
 			}
 			ag.LLMFactory().InvalidateSender(sub.SenderID)
+			ag.LLMFactory().InvalidateSubscription(sub.ID)
 			return nil
 		},
 		LLMSetDefaultSubscription: func(id string) error {
@@ -532,6 +534,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				// Use InvalidateSender to preserve per-session entries.
 				// Invalidate() would wipe every session's LLM override.
 				ag.LLMFactory().InvalidateSender(sub.SenderID)
+				ag.LLMFactory().InvalidateSubscription(sub.ID)
 				_ = ag.LLMFactory().SwitchSubscription(sub.SenderID, sub, "")
 			}
 			return nil
@@ -565,6 +568,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				return err
 			}
 			ag.LLMFactory().InvalidateSender(existing.SenderID)
+			ag.LLMFactory().InvalidateSubscription(existing.ID)
 			return nil
 		},
 

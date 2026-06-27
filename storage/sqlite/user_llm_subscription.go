@@ -47,6 +47,7 @@ type SubscriptionModel struct {
 	MaxOutputTokens int    // max output tokens
 	ThinkingMode    string // thinking mode override
 	APIType         string // API type override: "" (use subscription default), "responses"
+	Enabled         bool   // whether this model is selectable (v38); default true
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -446,11 +447,13 @@ func (sub *LLMSubscription) GetPerModelAPIType(model string) string {
 // scanSubscriptionModel scans a subscription_models row into a SubscriptionModel.
 func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *SubscriptionModel) error {
 	var createdAt, updatedAt string
+	var enabled int
 	err := scanner.Scan(&m.ID, &m.SubscriptionID, &m.Model, &m.MaxContext,
-		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt)
+		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt, &enabled)
 	if err != nil {
 		return err
 	}
+	m.Enabled = enabled == 1
 	m.CreatedAt = parseSQLiteTime(createdAt)
 	m.UpdatedAt = parseSQLiteTime(updatedAt)
 	return nil
@@ -460,7 +463,7 @@ func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *Subscript
 func (s *LLMSubscriptionService) GetModels(subID string) ([]*SubscriptionModel, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
 		FROM subscription_models WHERE subscription_id = ? ORDER BY created_at ASC
 	`, subID)
 	if err != nil {
@@ -484,7 +487,7 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 	m := &SubscriptionModel{}
 	err := scanSubscriptionModel(
 		conn.QueryRow(`
-			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at
+			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
 			FROM subscription_models WHERE subscription_id = ? AND model = ?
 		`, subID, model),
 		m,
@@ -513,6 +516,87 @@ func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut
 	`, subID, model, maxCtx, maxOut, thinking, apiType)
 	if err != nil {
 		return fmt.Errorf("upsert model: %w", err)
+	}
+	return nil
+}
+
+// SetModelEnabled toggles a model's enabled flag (v38). Disabling a model removes
+// it from the selectable catalog without deleting its per-model config.
+func (s *LLMSubscriptionService) SetModelEnabled(subID, model string, enabled bool) error {
+	conn := s.db.Conn()
+	v := 0
+	if enabled {
+		v = 1
+	}
+	res, err := conn.Exec(`
+		UPDATE subscription_models SET enabled = ?, updated_at = datetime('now')
+		WHERE subscription_id = ? AND model = ?
+	`, v, subID, model)
+	if err != nil {
+		return fmt.Errorf("set model enabled: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("set model enabled: no row for subscription %s model %s", subID, model)
+	}
+	return nil
+}
+
+// ─── user_default_model (v38) ──────────────────────────
+
+// UserDefaultModel holds a user's default (subscription, model) used to resolve
+// the LLM for new sessions. Replaces the implicit "current model" semantics of
+// user_llm_subscriptions.model.
+type UserDefaultModel struct {
+	SenderID       string
+	SubscriptionID string
+	Model          string
+	UpdatedAt      time.Time
+}
+
+// GetUserDefaultModel returns the user's default model selection, or nil if unset.
+func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefaultModel, error) {
+	conn := s.db.Conn()
+	m := &UserDefaultModel{}
+	var updatedAt string
+	err := conn.QueryRow(`
+		SELECT sender_id, subscription_id, model, updated_at
+		FROM user_default_model WHERE sender_id = ?
+	`, senderID).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user default model: %w", err)
+	}
+	m.UpdatedAt = parseSQLiteTime(updatedAt)
+	return m, nil
+}
+
+// SetUserDefaultModel sets the user's default (subscription, model). An empty
+// model means "use the subscription's default model" and is allowed only when the
+// caller intends to defer model selection.
+func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model string) error {
+	conn := s.db.Conn()
+	_, err := conn.Exec(`
+		INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT(sender_id) DO UPDATE SET
+			subscription_id = excluded.subscription_id,
+			model = excluded.model,
+			updated_at = datetime('now')
+	`, senderID, subID, model)
+	if err != nil {
+		return fmt.Errorf("set user default model: %w", err)
+	}
+	return nil
+}
+
+// ClearUserDefaultModel removes the user's default model selection.
+func (s *LLMSubscriptionService) ClearUserDefaultModel(senderID string) error {
+	conn := s.db.Conn()
+	_, err := conn.Exec(`DELETE FROM user_default_model WHERE sender_id = ?`, senderID)
+	if err != nil {
+		return fmt.Errorf("clear user default model: %w", err)
 	}
 	return nil
 }

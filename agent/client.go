@@ -479,6 +479,35 @@ func (c *Client) SwitchModel(senderID, model, chatID string) error {
 	return c.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model, ChatID: chatID}, nil)
 }
 
+// SelectModel sets the per-session (subscription, model) for a chat.
+// Model-first replacement for SwitchModel when the subscription is known.
+func (c *Client) SelectModel(senderID, subID, model, chatID string) error {
+	return c.call(MethodSelectModel, struct {
+		SenderID string `json:"sender_id"`
+		SubID    string `json:"sub_id"`
+		Model    string `json:"model"`
+		ChatID   string `json:"chat_id,omitempty"`
+	}{SenderID: senderID, SubID: subID, Model: model, ChatID: chatID}, nil)
+}
+
+// SetDefaultModel sets the user-level default (subscription, model) for new sessions.
+func (c *Client) SetDefaultModel(senderID, subID, model string) error {
+	return c.call(MethodSetDefaultModel, struct {
+		SenderID string `json:"sender_id"`
+		SubID    string `json:"sub_id"`
+		Model    string `json:"model"`
+	}{SenderID: senderID, SubID: subID, Model: model}, nil)
+}
+
+// SetModelEnabled toggles a model's enabled flag (model disable feature).
+func (c *Client) SetModelEnabled(subID, model string, enabled bool) error {
+	return c.call(MethodSetModelEnabled, struct {
+		SubID   string `json:"sub_id"`
+		Model   string `json:"model"`
+		Enabled bool   `json:"enabled"`
+	}{SubID: subID, Model: model, Enabled: enabled}, nil)
+}
+
 // ---------------------------------------------------------------------------
 // Runtime config (via RPC)
 // ---------------------------------------------------------------------------

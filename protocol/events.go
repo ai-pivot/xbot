@@ -133,6 +133,10 @@ type PerModelConfig struct {
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use subscription default
 	MaxContext      int    `json:"max_context,omitempty"`       // 0 = use subscription default
 	APIType         string `json:"api_type,omitempty"`          // "" = use subscription default
+	// Enabled is a read-side projection of subscription_models.enabled, populated by
+	// mergeSubscriptionModels so the UI can show/toggle per-model enabled state. It is
+	// NOT authoritative on writes — enabled is managed by the set_model_enabled RPC.
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 type OutboundEvent struct {

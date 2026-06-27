@@ -90,6 +90,20 @@ func (m *mockSubscriptionManager) GetSessionSubscription(senderID, chatID string
 	return "", "", nil
 }
 
+func (m *mockSubscriptionManager) SetModelEnabled(id, model string, enabled bool) error {
+	for i := range m.subs {
+		if m.subs[i].ID == id {
+			if m.subs[i].PerModelConfigs == nil {
+				m.subs[i].PerModelConfigs = make(map[string]channel.PerModelConfig)
+			}
+			pmc := m.subs[i].PerModelConfigs[model]
+			pmc.Enabled = enabled
+			m.subs[i].PerModelConfigs[model] = pmc
+		}
+	}
+	return nil
+}
+
 // TestApplyQuickSwitch tests that switching a subscription actually calls SwitchLLM.
 func TestApplyQuickSwitch(t *testing.T) {
 	// Track what SwitchLLM received

@@ -68,9 +68,36 @@ type LLMFactory struct {
 	// session-scoped, not subscription-scoped.
 	perChatMaxCtx map[string]int
 
+	// ─── Model-first resolution (v38+) ───────────────────────
+	// clientCache shares one LLM client per (subscription, apiType). A client is
+	// reusable across models of the same subscription — the model is supplied
+	// per request — so we cache at the subscription level, not the model level.
+	clientCache map[clientCacheKey]llm.LLM
+	// sessionMemo caches the per-session resolution (subID, model) read from DB
+	// (tenants + user_default_model). It is a pure memo of DB state: every write
+	// (SelectModel / SetUserDefaultModel / InvalidateSubscription) invalidates
+	// the affected keys, so the memo can never diverge from DB.
+	sessionMemo map[string]*resolvedEntry
+
 	mu                sync.RWMutex
 	llmSemManager     *llm.LLMSemaphoreManager
 	hasCustomLLMCache sync.Map
+}
+
+// clientCacheKey identifies a shared LLM client by subscription + API type.
+type clientCacheKey struct {
+	subID   string
+	apiType string
+}
+
+// resolvedEntry is the memoized per-session resolution: which subscription +
+// model this session uses, plus the materialized client and derived config.
+type resolvedEntry struct {
+	subID           string
+	model           string
+	maxOutputTokens int
+	thinkingMode    string
+	client          llm.LLM
 }
 
 // NewLLMFactory 创建 LLM 工厂
@@ -82,6 +109,8 @@ func NewLLMFactory(configSvc *sqlite.UserLLMConfigService, defaultLLM llm.LLM, d
 		entries:       make(map[string]*llmEntry),
 		modelContexts: make(map[string]int),
 		perChatMaxCtx: make(map[string]int),
+		clientCache:   make(map[clientCacheKey]llm.LLM),
+		sessionMemo:   make(map[string]*resolvedEntry),
 	}
 }
 
@@ -410,6 +439,13 @@ func (f *LLMFactory) createEntryFromSub(sub *sqlite.LLMSubscription, model strin
 		model = sub.Model
 	}
 	if model == "" {
+		// Do NOT fall straight back to f.defaultModel — that contaminates this
+		// entry (and f.defaultModel) with a model name from an unrelated
+		// subscription when the current subscription has no default model
+		// (the 404 bug). Pick a concrete model from this subscription first.
+		model = f.PickDefaultModelForSub(sub)
+	}
+	if model == "" {
 		model = f.defaultModel
 	}
 	// Resolve per-model APIType override, fallback to subscription-level
@@ -469,11 +505,27 @@ func (f *LLMFactory) RefreshSessionEntry(senderID, chatID, channel string) {
 	if err != nil || sub == nil {
 		return
 	}
+	// Preserve the per-session model across the refresh. The authoritative
+	// source is the tenants table (written by the per-session switch RPC);
+	// fall back to the cached entry's model, then the subscription default.
+	// Rebuilding with sub.Model unconditionally discards per-session model
+	// switches — and when sub.Model is empty, createEntryFromSub falls back to
+	// f.defaultModel, which may still hold a model name from a PREVIOUS
+	// subscription, producing a request to (new base_url, old model) → 404.
+	model := e.model
+	if f.tenantSvc != nil {
+		if dbSubID, dbModel, gerr := f.tenantSvc.GetTenantSubscription(channel, chatID); gerr == nil && dbSubID == sub.ID && dbModel != "" {
+			model = dbModel
+		}
+	}
+	if model == "" {
+		model = sub.Model
+	}
 	// Build new entry BEFORE acquiring the lock. createEntryFromSub makes HTTP
 	// calls (model list loading) that can take 5-30s. Holding f.mu during that
 	// call blocks every other goroutine that needs f.mu.RLock() — including
 	// getEntry, GetLLMForChat, and GetLLMForModel — freezing the entire agent loop.
-	newEntry := f.createEntryFromSub(sub, sub.Model)
+	newEntry := f.createEntryFromSub(sub, model)
 
 	f.mu.Lock()
 	current := f.entries[key]
@@ -809,6 +861,408 @@ func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model stri
 	return client
 }
 
+// ─── Model-first resolution (v38+) ───────────────────────
+//
+// This is the new authoritative resolution path. Per-session state lives in DB
+// (tenants.subscription_id + model for per-session; user_default_model for the
+// user-level default). The in-memory sessionMemo is a pure memo of that DB
+// state — every write invalidates the affected keys, so it can never diverge.
+//
+// LLM clients are cached per (subscription_id, apiType): one client serves all
+// models of a subscription, with the model supplied per request. This is the
+// correct granularity because credentials/base_url live on the subscription,
+// not the model.
+//
+// These methods are additive alongside the legacy Switch*/Set*/Invalidate*
+// matrix. The legacy matrix is removed once RPC + CLI migrate (later chunk).
+
+// PickDefaultModelForSub returns a sensible default model for a subscription
+// when neither the caller nor the subscription specifies one. Prefers the first
+// enabled subscription_models row, then the first cached API model. Returns ""
+// if none is found (caller falls back to the global default).
+func (f *LLMFactory) PickDefaultModelForSub(sub *sqlite.LLMSubscription) string {
+	if sub == nil {
+		return ""
+	}
+	if f.subscriptionSvc != nil && sub.ID != "" {
+		if models, err := f.subscriptionSvc.GetModels(sub.ID); err == nil {
+			for _, m := range models {
+				if m.Enabled {
+					return m.Model
+				}
+			}
+		}
+	}
+	if len(sub.CachedModels) > 0 {
+		return sub.CachedModels[0]
+	}
+	return ""
+}
+
+// modelPerModelConfig holds the per-model overrides read from subscription_models.
+type modelPerModelConfig struct {
+	maxContext      int
+	maxOutputTokens int
+	thinkingMode    string
+	apiType         string
+	enabled         bool
+	present         bool
+}
+
+// resolveModelConfig reads per-model config from the subscription_models table.
+// Returns present=false when no row exists for (subID, model).
+func (f *LLMFactory) resolveModelConfig(subID, model string) modelPerModelConfig {
+	var c modelPerModelConfig
+	if f.subscriptionSvc == nil || subID == "" || model == "" {
+		return c
+	}
+	sm, err := f.subscriptionSvc.GetModel(subID, model)
+	if err != nil || sm == nil {
+		return c
+	}
+	c.present = true
+	c.maxContext = sm.MaxContext
+	c.maxOutputTokens = sm.MaxOutputTokens
+	c.thinkingMode = sm.ThinkingMode
+	c.apiType = sm.APIType
+	c.enabled = sm.Enabled
+	return c
+}
+
+// resolveSubContextFor is the (subID, model) variant of resolveSubContext,
+// used by the new path which does not carry an llmEntry.
+// Priority: subscription_models table → sub.PerModelConfigs (backward compat) → modelContexts.
+func (f *LLMFactory) resolveSubContextFor(subID, model string) int {
+	if sub := f.lookupSub(subID); sub != nil {
+		if f.subscriptionSvc != nil && subID != "" {
+			if sm, err := f.subscriptionSvc.GetModel(subID, model); err == nil && sm != nil && sm.MaxContext > 0 {
+				return sm.MaxContext
+			}
+		}
+		if v := sub.GetPerModelMaxContext(model); v > 0 {
+			return v
+		}
+	}
+	return f.resolveModelContext(model)
+}
+
+// getOrCreateClient returns a cached client for (subID, apiType) or builds one.
+// The model is supplied per request, so the cache key excludes the model.
+func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string) llm.LLM {
+	if sub == nil || sub.BaseURL == "" || sub.APIKey == "" {
+		return nil
+	}
+	pmc := f.resolveModelConfig(sub.ID, model)
+	apiType := pmc.apiType
+	if apiType == "" {
+		apiType = sub.APIType
+	}
+	key := clientCacheKey{subID: sub.ID, apiType: apiType}
+	f.mu.RLock()
+	if c, ok := f.clientCache[key]; ok && c != nil {
+		f.mu.RUnlock()
+		return c
+	}
+	f.mu.RUnlock()
+
+	maxTokens := sub.MaxOutputTokens
+	if pmc.maxOutputTokens > 0 {
+		maxTokens = pmc.maxOutputTokens
+	}
+	f.mu.RLock()
+	if f.globalMaxTokens > 0 {
+		maxTokens = f.globalMaxTokens
+	}
+	f.mu.RUnlock()
+	cfg := &sqlite.UserLLMConfig{
+		ID: sub.ID, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
+		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
+	}
+	client, _ := f.createClient(cfg)
+	if client == nil {
+		return nil
+	}
+	f.mu.Lock()
+	// Another goroutine may have raced; keep the first cached.
+	if existing, ok := f.clientCache[key]; ok && existing != nil {
+		f.mu.Unlock()
+		return existing
+	}
+	f.clientCache[key] = client
+	f.mu.Unlock()
+	return client
+}
+
+// ResolveLLM is the single authoritative resolution path for the agent loop.
+// Returns (client, model, maxContext, thinkingMode, maxOutputTokens).
+//
+// Resolution order:
+//  1. Per-session (channel, chatID) from tenants table
+//  2. User-level default from user_default_model
+//  3. System default (defaultLLM)
+//
+// The sessionMemo caches the result; SelectModel / SetUserDefaultModel /
+// InvalidateSubscription invalidate the affected keys so the memo tracks DB.
+func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, string, int, string, int) {
+	key := senderID
+	if chatID != "" {
+		key = chatKey(senderID, chatID)
+	}
+
+	f.mu.RLock()
+	memo := f.sessionMemo[key]
+	f.mu.RUnlock()
+	if memo != nil && memo.client != nil {
+		return memo.client, memo.model, f.resolveSubContextFor(memo.subID, memo.model), memo.thinkingMode, memo.maxOutputTokens
+	}
+
+	subID, model := "", ""
+	if chatID != "" && f.tenantSvc != nil {
+		subID, model, _ = f.tenantSvc.GetTenantSubscription(channel, chatID)
+	}
+	if subID == "" && f.subscriptionSvc != nil {
+		if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
+			subID = udm.SubscriptionID
+			model = udm.Model
+		}
+	}
+	if subID == "" {
+		// Fall back to the legacy user-level default subscription, then system default.
+		client, m, mc, tm, mo := f.GetLLM(senderID)
+		return client, m, mc, tm, mo
+	}
+	sub := f.lookupSub(subID)
+	if sub == nil {
+		client, m, mc, tm, mo := f.GetLLM(senderID)
+		return client, m, mc, tm, mo
+	}
+	if model == "" {
+		model = sub.Model
+	}
+	if model == "" {
+		model = f.PickDefaultModelForSub(sub)
+	}
+	if model == "" {
+		client, m, mc, tm, mo := f.GetLLM(senderID)
+		return client, m, mc, tm, mo
+	}
+	client := f.getOrCreateClient(sub, model)
+	if client == nil {
+		client, m, mc, tm, mo := f.GetLLM(senderID)
+		return client, m, mc, tm, mo
+	}
+	pmc := f.resolveModelConfig(sub.ID, model)
+	maxOut := pmc.maxOutputTokens
+	if maxOut == 0 {
+		maxOut = sub.MaxOutputTokens
+	}
+	thinking := pmc.thinkingMode
+	if thinking == "" {
+		thinking = sub.ThinkingMode
+	}
+	entry := &resolvedEntry{
+		subID: sub.ID, model: model, client: client,
+		maxOutputTokens: maxOut, thinkingMode: thinking,
+	}
+	f.mu.Lock()
+	f.sessionMemo[key] = entry
+	f.mu.Unlock()
+	return client, model, f.resolveSubContextFor(sub.ID, model), thinking, maxOut
+}
+
+// SelectModel sets the per-session (subscription, model) for a chat and
+// persists it to the tenants table. Validates the model is enabled when a
+// subscription_models row exists for it. Invalidates the session memo so the
+// next ResolveLLM re-reads DB.
+func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string) error {
+	if f.subscriptionSvc == nil {
+		return fmt.Errorf("SelectModel: subscription service unavailable")
+	}
+	if subID == "" || model == "" {
+		return fmt.Errorf("SelectModel: subID and model are required")
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil || sub == nil {
+		return fmt.Errorf("SelectModel: subscription %s not found", subID)
+	}
+	if !sub.IsDefault {
+		// Allow selecting non-default subscriptions per-session; no-op flag check.
+	}
+	if sm, gerr := f.subscriptionSvc.GetModel(subID, model); gerr == nil && sm != nil && !sm.Enabled {
+		return fmt.Errorf("SelectModel: model %q is disabled for subscription %s", model, subID)
+	}
+	if f.tenantSvc != nil && chatID != "" {
+		if err := f.tenantSvc.SetTenantSubscription(channel, chatID, subID, model); err != nil {
+			return fmt.Errorf("SelectModel: persist tenant: %w", err)
+		}
+	}
+	// Invalidate the session memo (and any user-level memo) so ResolveLLM re-reads.
+	f.invalidateMemo(senderID, chatID)
+	f.hasCustomLLMCache.Store(senderID, true)
+	return nil
+}
+
+// ResolveSubscriptionForModel finds the subscription that provides the given
+// model for a user. This is the model-first inverse of "which models does this
+// subscription serve": given a model name picked from the unified model list,
+// return the subscription whose endpoint actually serves it, so the agent pairs
+// the right credentials with the model name.
+//
+// Search order (first match wins, default subscription preferred when tied):
+//  1. subscription_models rows with Enabled=true for each subscription.
+//  2. Each subscription's CachedModels (API-discovered list) and sub.Model.
+//
+// Disabled subscription_models rows are skipped in pass 1. Pass 2 does not
+// consult subscription_models because CachedModels/sub.Model predate the
+// enable flag and are only a fallback for models not yet registered as rows.
+// Returns an error if no subscription provides the model.
+func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlite.LLMSubscription, error) {
+	if f.subscriptionSvc == nil {
+		return nil, fmt.Errorf("ResolveSubscriptionForModel: subscription service unavailable")
+	}
+	if model == "" {
+		return nil, fmt.Errorf("ResolveSubscriptionForModel: model is required")
+	}
+	subs, err := f.subscriptionSvc.List(senderID)
+	if err != nil {
+		return nil, fmt.Errorf("ResolveSubscriptionForModel: list: %w", err)
+	}
+	if len(subs) == 0 {
+		return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscriptions for %s", senderID)
+	}
+	// find returns the subscription for the model, preferring the default sub.
+	// matchFn reports whether a subscription provides the model.
+	var find func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription
+	find = func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
+		var fallback *sqlite.LLMSubscription
+		for i := range subs {
+			sub := subs[i]
+			if !matchFn(sub) {
+				continue
+			}
+			if sub.IsDefault {
+				return sub
+			}
+			if fallback == nil {
+				fallback = sub
+			}
+		}
+		return fallback
+	}
+	// Pass 1: enabled subscription_models rows.
+	if owner := find(func(sub *sqlite.LLMSubscription) bool {
+		models, gerr := f.subscriptionSvc.GetModels(sub.ID)
+		if gerr != nil || len(models) == 0 {
+			return false
+		}
+		for _, sm := range models {
+			if sm.Model == model && sm.Enabled {
+				return true
+			}
+		}
+		return false
+	}); owner != nil {
+		return owner, nil
+	}
+	// Pass 2: CachedModels and sub.Model (models not registered as rows).
+	if owner := find(func(sub *sqlite.LLMSubscription) bool {
+		if sub.Model == model {
+			return true
+		}
+		for _, m := range sub.CachedModels {
+			if m == model {
+				return true
+			}
+		}
+		return false
+	}); owner != nil {
+		return owner, nil
+	}
+	return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscription provides model %q", model)
+}
+
+// SetUserDefaultModel sets the user-level default (subscription, model) used for
+// new sessions. Persists to user_default_model and invalidates the user's memos.
+func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
+	if f.subscriptionSvc == nil {
+		return fmt.Errorf("SetUserDefaultModel: subscription service unavailable")
+	}
+	if subID == "" {
+		return fmt.Errorf("SetUserDefaultModel: subID is required")
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil || sub == nil {
+		return fmt.Errorf("SetUserDefaultModel: subscription %s not found", subID)
+	}
+	if model != "" {
+		if sm, gerr := f.subscriptionSvc.GetModel(subID, model); gerr == nil && sm != nil && !sm.Enabled {
+			return fmt.Errorf("SetUserDefaultModel: model %q is disabled", model)
+		}
+	}
+	if err := f.subscriptionSvc.SetUserDefaultModel(senderID, subID, model); err != nil {
+		return fmt.Errorf("SetUserDefaultModel: persist: %w", err)
+	}
+	f.invalidateUserMemos(senderID)
+	f.hasCustomLLMCache.Store(senderID, true)
+	return nil
+}
+
+// SetModelEnabled toggles a model's enabled flag and invalidates any cached
+// state for its subscription so resolution picks up the change.
+func (f *LLMFactory) SetModelEnabled(subID, model string, enabled bool) error {
+	if f.subscriptionSvc == nil {
+		return fmt.Errorf("SetModelEnabled: subscription service unavailable")
+	}
+	if err := f.subscriptionSvc.SetModelEnabled(subID, model, enabled); err != nil {
+		return err
+	}
+	f.InvalidateSubscription(subID)
+	return nil
+}
+
+// InvalidateSubscription drops the client cache + all session memos referencing
+// a subscription. Called when a subscription's credentials/config change or one
+// of its models is toggled.
+func (f *LLMFactory) InvalidateSubscription(subID string) {
+	if subID == "" {
+		return
+	}
+	f.mu.Lock()
+	for k := range f.clientCache {
+		if k.subID == subID {
+			delete(f.clientCache, k)
+		}
+	}
+	for k, e := range f.sessionMemo {
+		if e.subID == subID {
+			delete(f.sessionMemo, k)
+		}
+	}
+	f.mu.Unlock()
+}
+
+// invalidateMemo drops the memo for one session (and the user-level key).
+func (f *LLMFactory) invalidateMemo(senderID, chatID string) {
+	f.mu.Lock()
+	delete(f.sessionMemo, senderID)
+	if chatID != "" {
+		delete(f.sessionMemo, chatKey(senderID, chatID))
+	}
+	f.mu.Unlock()
+}
+
+// invalidateUserMemos drops all memos for a user (user-level + every session).
+func (f *LLMFactory) invalidateUserMemos(senderID string) {
+	prefix := senderID + ":"
+	f.mu.Lock()
+	for k := range f.sessionMemo {
+		if k == senderID || strings.HasPrefix(k, prefix) {
+			delete(f.sessionMemo, k)
+		}
+	}
+	f.mu.Unlock()
+}
+
 // ─── Model listing & SubAgent resolution ─────────────────
 
 func (f *LLMFactory) ListModels() []string { return f.defaultLLM.ListModels() }
@@ -816,26 +1270,86 @@ func (f *LLMFactory) ListModels() []string { return f.defaultLLM.ListModels() }
 func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 	seen := make(map[string]bool)
 	var result []string
+	// System default client models: always selectable (system fallback, not user-disableable).
 	for _, m := range f.defaultLLM.ListModels() {
-		if !seen[m] {
+		if m != "" && !seen[m] {
 			seen[m] = true
 			result = append(result, m)
 		}
 	}
-	if f.subscriptionSvc != nil {
-		var subs []*sqlite.LLMSubscription
-		var err error
-		if senderID != "" {
-			subs, err = f.subscriptionSvc.List(senderID)
-		} else {
-			subs, err = f.subscriptionSvc.ListAll()
+	if f.subscriptionSvc == nil {
+		return result
+	}
+	var subs []*sqlite.LLMSubscription
+	var err error
+	if senderID != "" {
+		subs, err = f.subscriptionSvc.List(senderID)
+	} else {
+		subs, err = f.subscriptionSvc.ListAll()
+	}
+	if err != nil || len(subs) == 0 {
+		return result
+	}
+
+	// A model is selectable when at least one subscription provides it enabled (via a
+	// subscription_models row) OR via a "loose" source (CachedModels / sub.Model) without
+	// an explicit disabling row. A model disabled in every subscription that lists it is
+	// excluded so disabled models never appear in Ctrl+N cycling or the model pickers.
+	type modelState struct {
+		hasEnabled, hasDisabled, hasLoose bool
+	}
+	states := make(map[string]*modelState)
+	ensure := func(m string) *modelState {
+		if states[m] == nil {
+			states[m] = &modelState{}
 		}
-		if err == nil {
-			for _, sub := range subs {
-				if sub.Model != "" && !seen[sub.Model] {
-					seen[sub.Model] = true
-					result = append(result, sub.Model)
+		return states[m]
+	}
+	// Cache per-subscription model rows so we don't query twice.
+	subModels := make([][]*sqlite.SubscriptionModel, len(subs))
+	for i, sub := range subs {
+		if models, gerr := f.subscriptionSvc.GetModels(sub.ID); gerr == nil {
+			subModels[i] = models
+			for _, sm := range models {
+				if sm.Enabled {
+					ensure(sm.Model).hasEnabled = true
+				} else {
+					ensure(sm.Model).hasDisabled = true
 				}
+			}
+		}
+		if sub.Model != "" {
+			ensure(sub.Model).hasLoose = true
+		}
+		for _, m := range sub.CachedModels {
+			if m != "" {
+				ensure(m).hasLoose = true
+			}
+		}
+	}
+	selectable := func(m string) bool {
+		st := states[m]
+		if st == nil {
+			return false
+		}
+		return st.hasEnabled || (st.hasLoose && !st.hasDisabled)
+	}
+	// Append in subscription order so the list is stable and grouped by source.
+	for i, sub := range subs {
+		for _, sm := range subModels[i] {
+			if sm.Enabled && selectable(sm.Model) && !seen[sm.Model] {
+				seen[sm.Model] = true
+				result = append(result, sm.Model)
+			}
+		}
+		if sub.Model != "" && selectable(sub.Model) && !seen[sub.Model] {
+			seen[sub.Model] = true
+			result = append(result, sub.Model)
+		}
+		for _, m := range sub.CachedModels {
+			if m != "" && selectable(m) && !seen[m] {
+				seen[m] = true
+				result = append(result, m)
 			}
 		}
 	}

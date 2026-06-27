@@ -85,14 +85,12 @@ func (a *Agent) buildBaseRunConfig(
 ) (RunConfig, int) {
 	sessionKey := qualifyChatID(channel, chatID)
 
-	// Force-refresh the per-session LLM entry from DB before every Run.
-	// A cached entry from a previous Run (especially one aborted by LLM error)
-	// may carry stale PerModelConfigs. The Ctrl+C path clears the entry,
-	// but LLM error aborts don't — this caused sessions to keep using old
-	// max_context values after subscription switches.
-	a.llmFactory.RefreshSessionEntry(senderID, chatID, channel)
-
-	llmClient, model, userMaxCtx, thinkingMode, maxOutputTokens := a.llmFactory.GetLLMForChat(senderID, chatID)
+	// Resolve the per-session LLM from the authoritative DB state (tenants +
+	// user_default_model) via the single ResolveLLM path. This replaces the old
+	// RefreshSessionEntry + GetLLMForChat pair: ResolveLLM reads DB fresh and
+	// memoizes, so stale cached entries from a previous Run cannot survive, and
+	// per-session model switches are always honored (the 404 bug).
+	llmClient, model, userMaxCtx, thinkingMode, maxOutputTokens := a.llmFactory.ResolveLLM(senderID, chatID, channel)
 
 	// LLM 并发限流回调（per-tenant）
 	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID, channel)

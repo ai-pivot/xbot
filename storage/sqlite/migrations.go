@@ -183,6 +183,16 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v39: model-first subscription redesign foundation.
+	// Adds subscription_models.enabled (model disable), user_default_model table,
+	// backfills concrete model rows for tenants-referenced (sub, model) pairs, and
+	// seeds per-user default model selection.
+	if from < 39 {
+		if err := migrateV38ToV39(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v39: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1344,5 +1354,82 @@ func migrateV37ToV38(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v38: added runner_id to tenants")
+	return nil
+}
+
+// migrateV38ToV39 lays the DB foundation for the model-first subscription redesign:
+//
+//  1. Adds subscription_models.enabled (default 1) so individual models can be
+//     disabled independently of their subscription.
+//  2. Creates user_default_model, storing each user's default (subscription, model)
+//     used to resolve LLM for new sessions (replaces the implicit
+//     user_llm_subscriptions.model "current model" semantics).
+//  3. Backfills subscription_models rows for every (subscription_id, model) pair
+//     referenced in tenants that lacks a row. This makes existing per-session
+//     selections concrete, disable-able model entities. Config defaults to 0
+//     (resolution falls back to subscription defaults). This is safe because the
+//     v35 migration already moved all non-empty per_model_configs JSON entries
+//     into rows, so missing rows have no real config to clobber.
+//  4. Seeds user_default_model from each user's default subscription. When the
+//     default subscription's model is empty, falls back to the most-recently-active
+//     tenant's model for that subscription; if none exists, the user is skipped
+//     (ResolveLLM will fall back to the system default until they pick a model).
+//
+// This migration is purely additive: no existing column is dropped or narrowed,
+// so the pre-redesign code paths keep working unchanged.
+func migrateV38ToV39(conn *sql.DB) error {
+	// 1. enabled column on subscription_models.
+	var enabledCount int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('subscription_models') WHERE name = 'enabled'").Scan(&enabledCount); err == nil && enabledCount == 0 {
+		if _, err := conn.Exec("ALTER TABLE subscription_models ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return fmt.Errorf("migrate v38->v39 add subscription_models.enabled: %w", err)
+		}
+	}
+
+	// 2. user_default_model table.
+	if _, err := conn.Exec(`
+CREATE TABLE IF NOT EXISTS user_default_model (
+    sender_id       TEXT PRIMARY KEY,
+    subscription_id TEXT NOT NULL,
+    model           TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);`); err != nil {
+		return fmt.Errorf("migrate v38->v39 create user_default_model: %w", err)
+	}
+
+	// 3. Backfill concrete model rows for tenants-referenced (sub, model) pairs.
+	if _, err := conn.Exec(`
+INSERT OR IGNORE INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, enabled)
+SELECT lower(hex(randomblob(16))), t.subscription_id, t.model, 0, 0, '', '', 1
+FROM tenants t
+WHERE t.subscription_id != '' AND t.model != ''
+  AND NOT EXISTS (
+      SELECT 1 FROM subscription_models sm
+      WHERE sm.subscription_id = t.subscription_id AND sm.model = t.model
+  )
+GROUP BY t.subscription_id, t.model;`); err != nil {
+		return fmt.Errorf("migrate v38->v39 backfill subscription_models: %w", err)
+	}
+
+	// 4. Seed user_default_model from each user's default subscription.
+	if _, err := conn.Exec(`
+INSERT OR REPLACE INTO user_default_model (sender_id, subscription_id, model, updated_at)
+SELECT s.sender_id, s.id,
+    COALESCE(NULLIF(s.model, ''),
+        (SELECT t.model FROM tenants t
+         WHERE t.subscription_id = s.id AND t.model != ''
+         ORDER BY t.last_active_at DESC LIMIT 1)),
+    datetime('now')
+FROM user_llm_subscriptions s
+WHERE s.is_default = 1
+  AND (s.model != '' OR EXISTS (
+      SELECT 1 FROM tenants t WHERE t.subscription_id = s.id AND t.model != ''));`); err != nil {
+		return fmt.Errorf("migrate v38->v39 seed user_default_model: %w", err)
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 39"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v39: subscription_models.enabled + user_default_model + model backfill")
 	return nil
 }

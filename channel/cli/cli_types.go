@@ -559,6 +559,9 @@ type SubscriptionManager interface {
 	Rename(id, name string) error
 	Update(id string, sub *ch.Subscription) error
 	UpdatePerModelConfig(id, model string, pmc ch.PerModelConfig) error
+	// SetModelEnabled toggles a model's enabled flag (model-disable feature).
+	// Disabled models are excluded from cycling/model pickers and rejected by SelectModel.
+	SetModelEnabled(id, model string, enabled bool) error
 	// GetSessionSubscription queries the backend for the session→subscription mapping.
 	// Returns empty strings if no mapping exists (server restart, first-time session, etc.).
 	GetSessionSubscription(senderID, chatID string) (subscriptionID, model string, err error)

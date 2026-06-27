@@ -2252,6 +2252,10 @@ func (m *backendSubscriptionManager) UpdatePerModelConfig(id, model string, pmc 
 	return m.client.UpdatePerModelConfig(id, model, protocol.PerModelConfig(pmc))
 }
 
+func (m *backendSubscriptionManager) SetModelEnabled(id, model string, enabled bool) error {
+	return m.client.SetModelEnabled(id, model, enabled)
+}
+
 func (m *backendSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {
 	return m.client.GetSessionSubscription(senderID, chatID)
 }
