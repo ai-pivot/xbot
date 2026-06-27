@@ -40,7 +40,8 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan ch.OutboundMsg, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
-		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
+		tickCh:     make(chan tea.Msg, 1),                 // buffered-1: tick independent of asyncCh
+		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound
 		stopCh:     make(chan struct{}),
 	}
 	// Global ticker goroutine: sends cliTickMsg every 100ms. This is the
@@ -55,9 +56,9 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 			select {
 			case <-ticker.C:
 				select {
-				case ch.asyncCh <- cliTickMsg{}:
+				case ch.tickCh <- cliTickMsg{}:
 				default:
-					// ch.Channel full — drop tick. Next tick will arrive in 100ms.
+					// tickCh full — drop tick. Next tick will arrive in 100ms.
 					// This prevents blocking the ticker goroutine.
 				}
 			case <-ch.stopCh:
@@ -1001,6 +1002,13 @@ func (c *CLIChannel) handleAsyncDrain() {
 		select {
 		case <-c.stopCh:
 			return
+		case msg := <-c.tickCh:
+			c.programMu.Lock()
+			p := c.program
+			c.programMu.Unlock()
+			if p != nil {
+				p.Send(msg)
+			}
 		case msg := <-c.asyncCh:
 			c.programMu.Lock()
 			p := c.program

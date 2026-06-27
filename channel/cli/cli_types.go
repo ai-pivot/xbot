@@ -489,6 +489,7 @@ type CLIChannel struct {
 	// ALL non-critical sends through one channel + one goroutine, we reduce
 	// concurrent senders to 2 (readLoop + drain), giving keys ~50% chance.
 	progressCh chan *protocol.ProgressEvent
+	tickCh     chan tea.Msg // tick channel (buffer 1), independent of asyncCh
 	asyncCh    chan tea.Msg // unified async send channel (buffered)
 
 	// Services (injected by Agent or main)
