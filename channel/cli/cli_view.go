@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1080,6 +1081,9 @@ func (m *cliModel) View() (v tea.View) {
 	}
 
 	// Remote reconnect overlay — show spinner when WS is disconnected.
+	if m.connState != "" && m.connState != "connected" {
+		fmt.Fprintf(os.Stderr, "SPLASH_CHECK: remoteMode=%v connState=%q showDisconnect=%v\n", m.remoteMode, m.connState, m.showDisconnect)
+	}
 	if m.remoteMode && m.connState != "connected" && m.connState != "" {
 		if overlay := m.renderReconnectOverlay(); overlay != "" {
 			v := tea.NewView(overlay)
