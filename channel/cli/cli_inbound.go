@@ -175,7 +175,9 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	// 发送到消息总线
 	msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
 	msg.Media = media
-	m.sendInbound(msg)
+	if !m.sendInbound(msg) {
+		return nil // send failed — connState already set to disconnected by sendInbound
+	}
 	m.startAgentTurn()
 	return nil
 }
