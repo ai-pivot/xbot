@@ -116,7 +116,9 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 
 	case "/compress":
 		// 保留本地处理（system 消息样式），发送但不作为用户气泡
-		m.sendInbound(m.newInbound("/compress", nil))
+		if !m.sendInbound(m.newInbound("/compress", nil)) {
+			return nil // send failed — connState already set to disconnected
+		}
 		m.startAgentTurn()
 
 	// --- 透传命令（发送到 agent） ---
