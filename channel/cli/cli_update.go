@@ -288,6 +288,8 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		if msg.state == "connected" {
 			m.reconnectFrame = 0
 			m.showDisconnect = false // splash dismissed on reconnect
+		} else {
+			m.showDisconnect = true // any non-connected state shows splash
 		}
 	// flush here, the queued message gets appended BEFORE the reply,
 	// producing wrong order: msg1, msg2, reply1 instead of msg1, reply1, msg2.
