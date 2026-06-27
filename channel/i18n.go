@@ -435,7 +435,7 @@ func LocaleZH() *UILocale {
 		ReconnectTitle:  "连接已断开",
 		ReconnectingMsg: "  %s  正在重新连接服务器...",
 		ReconnectedMsg:  "  %s  已重新连接!",
-		ReconnectHint:   "按 Ctrl+C 退出",
+		ReconnectHint:   "按 Ctrl+Z 退出",
 
 		// --- M. Danger zone ---
 		DangerTitle:              "⚠ 危险区",
@@ -860,7 +860,7 @@ func localeEN() *UILocale {
 		ReconnectTitle:  "Connection Lost",
 		ReconnectingMsg: "  %s  Reconnecting to server...",
 		ReconnectedMsg:  "  %s  Reconnected!",
-		ReconnectHint:   "Press Ctrl+C to quit",
+		ReconnectHint:   "Press Ctrl+Z to quit",
 
 		// --- M. Danger zone ---
 		DangerTitle:              "⚠ Danger Zone",
@@ -1285,7 +1285,7 @@ func localeJA() *UILocale {
 		ReconnectTitle:  "接続が切断されました",
 		ReconnectingMsg: "  %s  サーバーに再接続中...",
 		ReconnectedMsg:  "  %s  再接続しました!",
-		ReconnectHint:   "Ctrl+C で終了",
+		ReconnectHint:   "Ctrl+Z で終了",
 
 		// --- M. Danger zone ---
 		DangerTitle:              "⚠ 危険エリア",

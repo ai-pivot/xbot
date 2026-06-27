@@ -1576,8 +1576,8 @@ func (m *cliModel) renderSuLoading() string {
 	return sb.String()
 }
 
-// renderReconnectOverlay renders a full-screen reconnect spinner overlay
-// when the remote WS connection is lost. Blocks all interaction except quit.
+// renderReconnectOverlay renders a full-screen splash-like reconnect screen
+// when the remote WS connection is lost. Only Ctrl+Z is accepted (quit).
 func (m *cliModel) renderReconnectOverlay() string {
 	screenW := m.chatWidth()
 	if screenW < 40 {
@@ -1588,15 +1588,53 @@ func (m *cliModel) renderReconnectOverlay() string {
 		screenH = 10
 	}
 
-	warningStyle := m.styles.WarningSt
 	errorStyle := m.styles.ErrorMsg
-	mutedStyle := m.styles.TextMutedSt
+	warningStyle := m.styles.WarningSt
+	descStyle := m.styles.TextMutedSt
+	versionStyle := m.styles.VersionSt
 
-	frame := splashFrames[m.reconnectFrame%len(splashFrames)]
-
+	// ── Logo (gradient, same as splash) ─────────────────────────
 	var lines []string
+	maxLogoW := 0
+	renderedLogo := make([]string, len(xbotLogo))
+	fromR, fromG, fromB := hexToRGB(currentTheme.Accent)
+	toR, toG, toB := hexToRGB(currentTheme.Gradient)
+	n := len(xbotLogo)
+	for i, line := range xbotLogo {
+		t := float64(i) / float64(max(n-1, 1))
+		r := uint8(float64(fromR) + (float64(toR)-float64(fromR))*t)
+		g := uint8(float64(fromG) + (float64(toG)-float64(fromG))*t)
+		b := uint8(float64(fromB) + (float64(toB)-float64(fromB))*t)
+		lineColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b))
+		renderedLogo[i] = lipgloss.NewStyle().Foreground(lineColor).Bold(true).Render(line)
+		if w := lipgloss.Width(renderedLogo[i]); w > maxLogoW {
+			maxLogoW = w
+		}
+	}
+	logoPad := (screenW - maxLogoW) / 2
+	if logoPad < 0 {
+		logoPad = 0
+	}
+	for _, line := range renderedLogo {
+		lines = append(lines, strings.Repeat(" ", logoPad)+line)
+	}
 
-	// Title — connection lost
+	// Blank line
+	lines = append(lines, "")
+
+	// ── Version info ────────────────────────────────────────────
+	versionText := versionStyle.Render(fmt.Sprintf("xbot %s · %s · %s", version.Version, version.Channel, version.Commit))
+	vW := lipgloss.Width(versionText)
+	vPad := (screenW - vW) / 2
+	if vPad < 0 {
+		vPad = 0
+	}
+	lines = append(lines, strings.Repeat(" ", vPad)+versionText)
+
+	// Blank line
+	lines = append(lines, "")
+
+	// ── Connection lost title ───────────────────────────────────
 	titleText := errorStyle.Render(m.locale.ReconnectTitle)
 	tW := lipgloss.Width(titleText)
 	tPad := (screenW - tW) / 2
@@ -1605,15 +1643,12 @@ func (m *cliModel) renderReconnectOverlay() string {
 	}
 	lines = append(lines, strings.Repeat(" ", tPad)+titleText)
 
-	// Blank line
-	lines = append(lines, "")
-
-	// Server URL
+	// ── Server URL ──────────────────────────────────────────────
 	host := m.remoteServerURL
 	if u, err := url.Parse(host); err == nil && u.Host != "" {
 		host = u.Host
 	}
-	serverText := mutedStyle.Render("  " + host)
+	serverText := descStyle.Render("  " + host)
 	sW := lipgloss.Width(serverText)
 	sPad := (screenW - sW) / 2
 	if sPad < 0 {
@@ -1624,14 +1659,9 @@ func (m *cliModel) renderReconnectOverlay() string {
 	// Blank line
 	lines = append(lines, "")
 
-	// Spinner + reconnecting message
-	var spinnerMsg string
-	switch m.connState {
-	case "disconnected":
-		spinnerMsg = fmt.Sprintf(m.locale.ReconnectingMsg, frame)
-	default: // "reconnecting" or any other non-connected state
-		spinnerMsg = fmt.Sprintf(m.locale.ReconnectingMsg, frame)
-	}
+	// ── Spinner + reconnecting message ──────────────────────────
+	frame := splashFrames[m.reconnectFrame%len(splashFrames)]
+	spinnerMsg := fmt.Sprintf(m.locale.ReconnectingMsg, frame)
 	loadingText := warningStyle.Render(spinnerMsg)
 	lW := lipgloss.Width(loadingText)
 	lPad := (screenW - lW) / 2
@@ -1643,8 +1673,8 @@ func (m *cliModel) renderReconnectOverlay() string {
 	// Blank line
 	lines = append(lines, "")
 
-	// Quit hint
-	hintText := mutedStyle.Render(m.locale.ReconnectHint)
+	// ── Quit hint ───────────────────────────────────────────────
+	hintText := descStyle.Render(m.locale.ReconnectHint)
 	hW := lipgloss.Width(hintText)
 	hPad := (screenW - hW) / 2
 	if hPad < 0 {
@@ -1654,8 +1684,8 @@ func (m *cliModel) renderReconnectOverlay() string {
 
 	// Vertical center
 	emptyLinesBefore := (screenH - len(lines)) / 2
-	if emptyLinesBefore < 3 {
-		emptyLinesBefore = 3
+	if emptyLinesBefore < 2 {
+		emptyLinesBefore = 2
 	}
 
 	var sb strings.Builder

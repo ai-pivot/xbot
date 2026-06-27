@@ -450,6 +450,7 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			// blocking for 30s on a dead connection (freezes BubbleTea event loop).
 			// Only clear if this readPump still owns the connection — connect()
 			// may have replaced t.conn with a new one while we were waiting.
+			var emitDisconnected bool
 			t.connMu.Lock()
 			if t.conn == conn {
 				t.conn = nil
@@ -457,9 +458,12 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 				case t.reconnectCh <- struct{}{}:
 				default:
 				}
-				t.setConnState("disconnected")
+				emitDisconnected = true
 			}
 			t.connMu.Unlock()
+			if emitDisconnected {
+				t.setConnState("disconnected")
+			}
 			return
 		}
 		var msg protocol.WSMessage

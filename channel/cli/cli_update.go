@@ -12,7 +12,6 @@ import (
 
 	ch "xbot/channel"
 	"xbot/clipanic"
-	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -113,26 +112,20 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// DEBUG: log all KeyPressMsg to trace ctrl+c handling
-	if key, ok := msg.(tea.KeyPressMsg); ok {
-		log.WithFields(log.Fields{"str": key.String(), "code": key.Code, "mod": key.Mod}).Debug("DEBUG keypress")
+	// Remote disconnect: only Ctrl+Z passes — all other keys (including Ctrl+C) swallowed.
+	if m.remoteMode && m.connState != "connected" && m.connState != "" {
+		return m, nil
 	}
 
 	// Ctrl+C: 统一处理，位于所有其他 key handler 之前。
 	// 这是唯一的 Ctrl+C 处理点——任何其他地方不得再拦截 Ctrl+C。
 	// 保证无论什么状态（typing/idle/panel/queue/editing），Ctrl+C 始终有效。
+	// NOTE: 已被上面的 Remote disconnect 拦截——断开连接时 Ctrl+C 不可用。
 	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == "ctrl+c" {
 		model, cmd, handled := m.handleCtrlC()
 		if handled {
 			return model, cmd
 		}
-	}
-
-	// Remote reconnect overlay: block all interaction when disconnected.
-	// Only quit keys (Ctrl+C, Ctrl+Z) pass through — they're handled above.
-	if m.remoteMode && m.connState != "connected" && m.connState != "" {
-		// Swallow all key presses; user can only Ctrl+C (handled above) or Ctrl+Z.
-		return m, nil
 	}
 
 	// §23 Command palette overlay: highest priority (above quick switch).
