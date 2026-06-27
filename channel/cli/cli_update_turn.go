@@ -435,7 +435,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
 
-	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick {
+	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick || m.showDisconnect {
 		m.ticker.tick()
 		hasStreamContent := m.progressState.current != nil && m.progressState.current.StreamContent != "" && m.progressState.twVisible < len([]rune(m.progressState.current.StreamContent))
 		hasReasoningContent := m.progressState.current != nil && m.progressState.current.ReasoningStreamContent != "" && m.progressState.rwVisible < len([]rune(m.progressState.current.ReasoningStreamContent))

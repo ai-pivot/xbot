@@ -287,9 +287,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.connState = msg.state
 		if msg.state == "connected" {
 			m.reconnectFrame = 0
-			// NOTE: showDisconnect is NOT cleared here — only sendInbound
-			// success clears it. This prevents transient reconnects from
-			// hiding the splash before the user confirms connectivity.
+			m.showDisconnect = false // connection restored, dismiss splash
 		} else if msg.state != "" {
 			// readPump detected disconnect — show splash immediately
 			m.showDisconnect = true
