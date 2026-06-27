@@ -662,10 +662,11 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 				}
 				log.Info("Reconnected to server")
 				consecutiveFailures = 0
-				// Emit protocol reconnect event
-				t.emitLocal(ctx, protocol.ReconnectEvent{})
+				// Start readPump BEFORE emitting ReconnectEvent, so the new
+				// reader is ready to receive RPC responses (BindChat etc.).
 				t.readPumpWg.Add(1)
 				go t.readPump(ctx)
+				t.emitLocal(ctx, protocol.ReconnectEvent{})
 				break
 			}
 		}
