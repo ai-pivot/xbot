@@ -489,12 +489,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.idleTickCounter = 0
 	}
 
-	// Keep tick chain alive — BubbleTea's tea.Tick replaces the removed global tick goroutine.
-	// Must run unconditionally, just like the old global goroutine did every 100ms.
-	cmds = append(cmds, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-		return cliTickMsg{}
-	}))
-
+	// NEVER returns tickCmd — the global goroutine is the single tick source.
 	return cmds
 }
 

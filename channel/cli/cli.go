@@ -40,9 +40,25 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan ch.OutboundMsg, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
-		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound
+		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound + ticks
 		stopCh:     make(chan struct{}),
 	}
+	// Global ticker goroutine: sends cliTickMsg every 100ms.
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				select {
+				case ch.asyncCh <- cliTickMsg{}:
+				default:
+				}
+			case <-ch.stopCh:
+				return
+			}
+		}
+	}()
 	return ch
 }
 
