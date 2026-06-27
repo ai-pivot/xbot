@@ -273,6 +273,10 @@ func (c *CLIChannel) Start() error {
 	c.wg.Add(1)
 	clipanic.Go("ch.CLIChannel.handleAsyncDrain", c.handleAsyncDrain)
 
+	// 启动 tick drain goroutine: independent of asyncCh to prevent tick starvation
+	c.wg.Add(1)
+	clipanic.Go("ch.CLIChannel.handleTickDrain", c.handleTickDrain)
+
 	// §13 异步检查更新（不阻塞 TUI 启动）
 	c.CheckUpdateAsync()
 
@@ -995,6 +999,8 @@ func (c *CLIChannel) handleProgressDrain() {
 // handleAsyncDrain is the SINGLE goroutine that forwards messages from asyncCh
 // to the Bubble Tea event loop via program.Send. This is the only non-readLoop
 // sender to p.msgs, ensuring key events get fair scheduling (~50% instead of ~25%).
+// Tick messages have their own goroutine (handleTickDrain) so they never block
+// on asyncCh congestion.
 func (c *CLIChannel) handleAsyncDrain() {
 	defer c.wg.Done()
 
@@ -1002,14 +1008,28 @@ func (c *CLIChannel) handleAsyncDrain() {
 		select {
 		case <-c.stopCh:
 			return
-		case msg := <-c.tickCh:
+		case msg := <-c.asyncCh:
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
 			if p != nil {
 				p.Send(msg)
 			}
-		case msg := <-c.asyncCh:
+		}
+	}
+}
+
+// handleTickDrain forwards tick messages from tickCh to BubbleTea independently
+// of asyncCh. This prevents tick starvation when asyncCh is congested (e.g.
+// during reconnect when RestoreSession/SetProcessing/outbound flood asyncCh).
+func (c *CLIChannel) handleTickDrain() {
+	defer c.wg.Done()
+
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case msg := <-c.tickCh:
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
