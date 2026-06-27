@@ -12,7 +12,6 @@ import (
 
 	ch "xbot/channel"
 	"xbot/clipanic"
-	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -114,7 +113,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	}
 
 	// Remote disconnect: only Ctrl+Z passes — all other keys (including Ctrl+C) swallowed.
-	if m.remoteMode && (m.connState != "connected" || m.showDisconnect) && m.connState != "" {
+	if m.remoteMode && m.connState != "connected" && m.connState != "" {
 		return m, nil
 	}
 
@@ -228,7 +227,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
 		// Block mouse events when remote connection is lost.
-		if m.remoteMode && (m.connState != "connected" || m.showDisconnect) && m.connState != "" {
+		if m.remoteMode && m.connState != "connected" && m.connState != "" {
 			return m, nil
 		}
 		handled, newModel, cmd := m.handleMouseMsg(msg)
@@ -286,13 +285,8 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliConnStateMsg:
 		m.connState = msg.state
-		log.WithField("state", msg.state).Warn("UPDATE: received cliConnStateMsg")
 		if msg.state == "connected" {
 			m.reconnectFrame = 0
-			m.showDisconnect = false // connection restored, dismiss splash
-		} else if msg.state != "" {
-			// readPump detected disconnect — show splash immediately
-			m.showDisconnect = true
 		}
 	// Flush is handled in cliTickMsg instead (next tick after typing=false).
 

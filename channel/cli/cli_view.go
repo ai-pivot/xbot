@@ -1060,7 +1060,7 @@ func (m *cliModel) View() (v tea.View) {
 	defer clipanic.Recover("ch.cliModel.View", nil, true)
 
 	if m.connState != "connected" && m.connState != "" {
-		log.WithFields(log.Fields{"connState": m.connState, "showDisconnect": m.showDisconnect, "remoteMode": m.remoteMode}).Warn("SPLASH: View() rendering reconnect overlay")
+		log.WithFields(log.Fields{"connState": m.connState, "remoteMode": m.remoteMode}).Warn("SPLASH: View() rendering reconnect overlay")
 	}
 
 	// Reset mouse zones for this frame

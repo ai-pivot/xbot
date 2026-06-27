@@ -596,11 +596,6 @@ func (c *CLIChannel) SetConnState(state string) {
 	c.programMu.Lock()
 	if c.model != nil {
 		c.model.connState = state
-		if state == "connected" {
-			c.model.showDisconnect = false
-		} else {
-			c.model.showDisconnect = true
-		}
 	}
 	c.programMu.Unlock()
 	log.WithField("state", state).Warn("SetConnState: written directly to model")

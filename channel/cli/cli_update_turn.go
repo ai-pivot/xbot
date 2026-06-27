@@ -414,7 +414,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 
 	// Reconnect overlay spinner animation — advances every tick (100ms)
 	// when WS connection is lost, providing visual feedback.
-	if m.remoteMode && (m.connState != "connected" || m.showDisconnect) && m.connState != "" {
+	if m.remoteMode && m.connState != "connected" && m.connState != "" {
 		m.reconnectFrame++
 	}
 
@@ -435,7 +435,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
 
-	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick || m.showDisconnect {
+	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick {
 		m.ticker.tick()
 		hasStreamContent := m.progressState.current != nil && m.progressState.current.StreamContent != "" && m.progressState.twVisible < len([]rune(m.progressState.current.StreamContent))
 		hasReasoningContent := m.progressState.current != nil && m.progressState.current.ReasoningStreamContent != "" && m.progressState.rwVisible < len([]rune(m.progressState.current.ReasoningStreamContent))
