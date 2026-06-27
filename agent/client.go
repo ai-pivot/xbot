@@ -179,6 +179,11 @@ func (c *Client) callVoid(method string, req any) {
 // Start initializes the client. For remote mode, starts the transport.
 // For local mode, the eventLoop is already started in NewClient.
 func (c *Client) Start(ctx context.Context) error {
+	// Share event base with transport so local events (conn_state, reconnect)
+	// dispatched by the transport reach Client subscribers.
+	if sharer, ok := c.transport.(interface{ ShareEventBase(*baseTransport) }); ok {
+		sharer.ShareEventBase(&c.base)
+	}
 	// For remote mode, if transport implements AgentRunner, start it.
 	if runner, ok := c.transport.(AgentRunner); ok {
 		return runner.Start(ctx)

@@ -46,6 +46,10 @@ type rpcResponse struct {
 type RemoteTransport struct {
 	baseTransport
 
+	// eventBase, when set, overrides baseTransport for local event dispatch.
+	// This bridges events from the transport to Client's subscriber base.
+	eventBase *baseTransport
+
 	serverURL string
 	token     string
 
@@ -295,6 +299,24 @@ func (t *RemoteTransport) ConnState() string {
 	return t.connState
 }
 
+// ShareEventBase sets the baseTransport used for local event dispatch.
+// When set, emitLocal uses this instead of the embedded baseTransport,
+// bridging events from the transport to Client's subscriber base.
+func (t *RemoteTransport) ShareEventBase(base *baseTransport) {
+	t.eventBase = base
+}
+
+// emitLocal dispatches a transport event to the correct subscriber base.
+// Uses the shared eventBase when available, otherwise falls back to the
+// embedded baseTransport.
+func (t *RemoteTransport) emitLocal(ctx context.Context, event protocol.TransportEvent) {
+	if t.eventBase != nil {
+		t.eventBase.emit(ctx, event)
+	} else {
+		t.emit(ctx, event)
+	}
+}
+
 // setConnState updates connState and emits a protocol event if state changed.
 func (t *RemoteTransport) setConnState(state string) {
 	t.connMu.Lock()
@@ -302,7 +324,7 @@ func (t *RemoteTransport) setConnState(state string) {
 	t.connState = state
 	t.connMu.Unlock()
 	if prev != state {
-		t.emit(context.Background(), protocol.ConnStateEvent{State: state})
+		t.emitLocal(context.Background(), protocol.ConnStateEvent{State: state})
 	}
 }
 
@@ -604,7 +626,7 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 					log.WithError(err).Warn("Reconnect failed")
 					// Notify user after every 3 failures via emit.
 					if consecutiveFailures%3 == 0 {
-						t.emit(ctx, protocol.OutboundEvent{
+						t.emitLocal(ctx, protocol.OutboundEvent{
 							Channel: "cli",
 							ChatID:  "remote",
 							Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
@@ -620,7 +642,7 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 				log.Info("Reconnected to server")
 				consecutiveFailures = 0
 				// Emit protocol reconnect event
-				t.emit(ctx, protocol.ReconnectEvent{})
+				t.emitLocal(ctx, protocol.ReconnectEvent{})
 				t.readPumpWg.Add(1)
 				go t.readPump(ctx)
 				break
