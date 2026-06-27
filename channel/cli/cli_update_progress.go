@@ -458,11 +458,11 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 				// Todo count affects layoutViewportHeight (todo bar lines).
 				// Must relayout viewport to adjust height.
 				m.relayoutViewport()
-			} else {
-				// Same count, just status/text changed — no height change needed.
-				// Only invalidate progress block render so next tick picks it up.
-				m.rc.valid = false
 			}
+			// If same count, just status/text changed — no height change needed.
+			// Progress block is a no-op; todo bar in View() picks up changes
+			// naturally on the next frame. Do NOT set rc.valid=false — that
+			// would trigger fullRebuild (O(all_messages) glamour).
 
 			// Persist to TodoManager so todos survive turn end and session switches.
 			m.persistTodosToManager()

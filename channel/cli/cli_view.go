@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1057,6 +1058,11 @@ func (m *cliModel) resolveWidgetZone(zone string) string {
 // View renders the CLI interface.
 func (m *cliModel) View() (v tea.View) {
 	defer clipanic.Recover("ch.cliModel.View", nil, true)
+
+	if m.connState != "connected" && m.connState != "" {
+		fmt.Fprintf(os.Stderr, "SPLASH: connState=%q showDisconnect=%v\n", m.connState, m.showDisconnect)
+	}
+
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
 
