@@ -489,6 +489,15 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.idleTickCounter = 0
 	}
 
+	// Keep tick chain alive when disconnected so splash/View() keeps updating.
+	// The global tick goroutine was removed — BubbleTea's tea.Tick is the sole
+	// driver now. If connState is not "connected", we MUST return a tick cmd.
+	if m.connState != "connected" && m.connState != "" {
+		cmds = append(cmds, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+			return cliTickMsg{}
+		}))
+	}
+
 	return cmds
 }
 

@@ -40,32 +40,9 @@ func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 		workDir:    cfg.WorkDir,
 		msgChan:    make(chan ch.OutboundMsg, cliMsgBufSize),
 		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
-		tickCh:     make(chan tea.Msg, 1),                 // buffered-1: tick independent of asyncCh
 		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound
 		stopCh:     make(chan struct{}),
 	}
-	// Global ticker goroutine: sends cliTickMsg every 100ms. This is the
-	// SINGLE source of all timed UI updates (splash animation, spinner,
-	// progress timers, queue flush, placeholder rotation). No BubbleTea
-	// cmd chain is needed — eliminating the class of bugs where multiple
-	// cmd chains accumulate and double the tick rate.
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				select {
-				case ch.tickCh <- cliTickMsg{}:
-				default:
-					// tickCh full — drop tick. Next tick will arrive in 100ms.
-					// This prevents blocking the ticker goroutine.
-				}
-			case <-ch.stopCh:
-				return
-			}
-		}
-	}()
 	return ch
 }
 
@@ -272,10 +249,6 @@ func (c *CLIChannel) Start() error {
 	// 启动 unified async drain goroutine: single sender to p.msgs
 	c.wg.Add(1)
 	clipanic.Go("ch.CLIChannel.handleAsyncDrain", c.handleAsyncDrain)
-
-	// 启动 tick drain goroutine: independent of asyncCh to prevent tick starvation
-	c.wg.Add(1)
-	clipanic.Go("ch.CLIChannel.handleTickDrain", c.handleTickDrain)
 
 	// §13 异步检查更新（不阻塞 TUI 启动）
 	c.CheckUpdateAsync()
@@ -999,8 +972,6 @@ func (c *CLIChannel) handleProgressDrain() {
 // handleAsyncDrain is the SINGLE goroutine that forwards messages from asyncCh
 // to the Bubble Tea event loop via program.Send. This is the only non-readLoop
 // sender to p.msgs, ensuring key events get fair scheduling (~50% instead of ~25%).
-// Tick messages have their own goroutine (handleTickDrain) so they never block
-// on asyncCh congestion.
 func (c *CLIChannel) handleAsyncDrain() {
 	defer c.wg.Done()
 
@@ -1009,27 +980,6 @@ func (c *CLIChannel) handleAsyncDrain() {
 		case <-c.stopCh:
 			return
 		case msg := <-c.asyncCh:
-			c.programMu.Lock()
-			p := c.program
-			c.programMu.Unlock()
-			if p != nil {
-				p.Send(msg)
-			}
-		}
-	}
-}
-
-// handleTickDrain forwards tick messages from tickCh to BubbleTea independently
-// of asyncCh. This prevents tick starvation when asyncCh is congested (e.g.
-// during reconnect when RestoreSession/SetProcessing/outbound flood asyncCh).
-func (c *CLIChannel) handleTickDrain() {
-	defer c.wg.Done()
-
-	for {
-		select {
-		case <-c.stopCh:
-			return
-		case msg := <-c.tickCh:
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
