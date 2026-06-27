@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image/color"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1061,12 +1060,6 @@ func (m *cliModel) View() (v tea.View) {
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
 
-	// XXX DEBUG: dump splash-related state to stderr to find blocker
-	if m.showDisconnect {
-		fmt.Fprintf(os.Stderr, "DEBUG View: remoteMode=%v showDisconnect=%v connState=%q suLoading=%v splashDone=%v\n",
-			m.remoteMode, m.showDisconnect, m.connState, m.splashState.suLoading, m.splashState.done)
-	}
-
 	// Splash screen
 	if !m.splashState.done {
 		v := tea.NewView(m.renderSplash())
@@ -1090,10 +1083,11 @@ func (m *cliModel) View() (v tea.View) {
 	// Uses showDisconnect flag (set by sendInbound on send failure) which is
 	// NOT affected by connState event races during reconnect.
 	if m.showDisconnect {
-		// XXX TEST: use startup splash renderer to rule out rendering issues
-		v := tea.NewView(m.renderSplash())
-		v.AltScreen = true
-		return v
+		if overlay := m.renderReconnectOverlay(); overlay != "" {
+			v := tea.NewView(overlay)
+			v.AltScreen = true
+			return v
+		}
 	}
 
 	// /su loading
@@ -1581,6 +1575,28 @@ func (m *cliModel) renderSuLoading() string {
 	}
 
 	return sb.String()
+}
+
+// renderReconnectOverlay renders a full-screen disconnect splash screen.
+// Only Ctrl+Z is accepted (quit).
+func (m *cliModel) renderReconnectOverlay() string {
+	frame := splashFrames[m.reconnectFrame%len(splashFrames)]
+	lines := []string{
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"          ⚠ " + m.locale.ReconnectTitle,
+		"",
+		"          " + fmt.Sprintf(m.locale.ReconnectingMsg, frame),
+		"",
+		"          " + m.locale.ReconnectHint,
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ---------------------------------------------------------------------------
