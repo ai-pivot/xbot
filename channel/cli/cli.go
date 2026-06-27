@@ -593,8 +593,20 @@ func (c *CLIChannel) SendSessionState(ev protocol.SessionEvent) {
 }
 
 // SetConnState updates the connection state indicator in the header bar.
-// Sends directly via program.Send (not asyncCh) to avoid being dropped
-// when asyncCh is full during disconnect (tick flood can fill the channel).
+// Writes directly to cliModel fields — bypasses ALL message channels (asyncCh,
+// program.Send) which are unreliable during disconnect (tick flood fills buffers).
+//
+// ConnState state machine (single source of truth):
+//
+//	"" ──(initial connect)──→ "connected"
+//	"connected" ──(readPump/SendMessage/sendPing error)──→ "disconnected"
+//	"disconnected" ──(reconnectLoop starts)──→ "reconnecting"
+//	"reconnecting" ──(connect() success)──→ "connected"
+//
+// Rules:
+//  1. Only SetConnState modifies connState in the model
+//  2. View(), guards, splash only READ connState, never write
+//  3. There is NO showDisconnect or other flag — connState alone is sufficient
 func (c *CLIChannel) SetConnState(state string) {
 	// Write directly to model field — bypasses program.Send/asyncCh entirely.
 	// During disconnect, tick flood fills all message channels, making
