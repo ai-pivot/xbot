@@ -74,6 +74,7 @@ cron.json
 .tmp
 .npm
 /runner
+!/runner/
 *.service
 /xbot-runner
 /xbot

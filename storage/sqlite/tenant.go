@@ -207,3 +207,38 @@ func (s *TenantService) GetTenantSubscription(channel, chatID string) (subscript
 	}
 	return subscriptionID, model, nil
 }
+
+// SetTenantRunner persists the session→runner binding to the tenants table.
+func (s *TenantService) SetTenantRunner(channel, chatID, runnerID string) error {
+	conn := s.db.Conn()
+	_, _ = conn.Exec(
+		"INSERT OR IGNORE INTO tenants (channel, chat_id) VALUES (?, ?)",
+		channel, chatID,
+	)
+	result, err := conn.Exec(
+		"UPDATE tenants SET runner_id = ? WHERE channel = ? AND chat_id = ?",
+		runnerID, channel, chatID,
+	)
+	if err != nil {
+		return fmt.Errorf("set tenant runner: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("set tenant runner: tenant %s/%s not found after insert", channel, chatID)
+	}
+	return nil
+}
+
+// GetTenantRunner reads the session→runner binding from the tenants table.
+// Returns empty string if no binding exists.
+func (s *TenantService) GetTenantRunner(channel, chatID string) (string, error) {
+	conn := s.db.Conn()
+	var runnerID string
+	err := conn.QueryRow(
+		"SELECT runner_id FROM tenants WHERE channel = ? AND chat_id = ?",
+		channel, chatID,
+	).Scan(&runnerID)
+	if err != nil {
+		return "", nil // not found is not an error
+	}
+	return runnerID, nil
+}

@@ -235,12 +235,25 @@ type Registry struct {
 	// Only visible in sessions whose channel matches (extracted from sessionKey).
 	channelTools   map[string]map[string]Tool
 	channelToolsMu sync.RWMutex
+
+	// runnerTools: runnerID → toolName → Tool
+	// Runner-scoped tools registered when a runner connects.
+	// Only visible in sessions bound to that runner.
+	runnerTools   map[string]map[string]Tool
+	runnerToolsMu sync.RWMutex
+
+	// sessionRunners: sessionKey → runnerID
+	// Set when a session is bound to a specific runner.
+	sessionRunners   map[string]string
+	sessionRunnersMu sync.RWMutex
 }
 
 // NewRegistry 创建工具注册表
 func NewRegistry() *Registry {
 	return &Registry{
-		globalTools: make(map[string]Tool),
+		globalTools:    make(map[string]Tool),
+		runnerTools:    make(map[string]map[string]Tool),
+		sessionRunners: make(map[string]string),
 	}
 }
 
@@ -321,17 +334,91 @@ func ChannelFromSessionKey(sessionKey string) string {
 	return sessionKey[:idx]
 }
 
-// GetForSession 统一工具查找：channel → tenant → global。
-// 替代 GetForTenant，增加 channel 维度优先查找。
+// --- Runner-scoped tools ---
+
+// RegisterForRunner registers a tool provided by a specific runner.
+// Runner tools are only visible in sessions bound to that runner.
+func (r *Registry) RegisterForRunner(runnerID string, tool Tool) {
+	r.runnerToolsMu.Lock()
+	defer r.runnerToolsMu.Unlock()
+	if r.runnerTools == nil {
+		r.runnerTools = make(map[string]map[string]Tool)
+	}
+	if r.runnerTools[runnerID] == nil {
+		r.runnerTools[runnerID] = make(map[string]Tool)
+	}
+	r.runnerTools[runnerID][tool.Name()] = tool
+}
+
+// ReplaceRunnerTools atomically replaces all tools for a runner.
+func (r *Registry) ReplaceRunnerTools(runnerID string, tools []Tool) {
+	r.runnerToolsMu.Lock()
+	defer r.runnerToolsMu.Unlock()
+	m := make(map[string]Tool, len(tools))
+	for _, t := range tools {
+		m[t.Name()] = t
+	}
+	if r.runnerTools == nil {
+		r.runnerTools = make(map[string]map[string]Tool)
+	}
+	r.runnerTools[runnerID] = m
+}
+
+// UnregisterRunnerTools removes all tools for a specific runner.
+func (r *Registry) UnregisterRunnerTools(runnerID string) {
+	r.runnerToolsMu.Lock()
+	defer r.runnerToolsMu.Unlock()
+	delete(r.runnerTools, runnerID)
+}
+
+// SetSessionRunner binds a session to a runner.
+func (r *Registry) SetSessionRunner(sessionKey, runnerID string) {
+	r.sessionRunnersMu.Lock()
+	defer r.sessionRunnersMu.Unlock()
+	if r.sessionRunners == nil {
+		r.sessionRunners = make(map[string]string)
+	}
+	r.sessionRunners[sessionKey] = runnerID
+}
+
+// getSessionRunner returns the runner ID bound to a session ("" if none).
+func (r *Registry) getSessionRunner(sessionKey string) string {
+	r.sessionRunnersMu.RLock()
+	defer r.sessionRunnersMu.RUnlock()
+	if r.sessionRunners == nil {
+		return ""
+	}
+	return r.sessionRunners[sessionKey]
+}
+
+// getRunnerTool looks up a tool by name in a runner's tool set.
+func (r *Registry) getRunnerTool(runnerID, name string) (Tool, bool) {
+	r.runnerToolsMu.RLock()
+	defer r.runnerToolsMu.RUnlock()
+	if tools, ok := r.runnerTools[runnerID]; ok {
+		tool, ok := tools[name]
+		return tool, ok
+	}
+	return nil, false
+}
+
+// GetForSession 统一工具查找：runner → channel → tenant → global。
+// 替代 GetForTenant，增加 runner 和 channel 维度优先查找。
 func (r *Registry) GetForSession(name string, tenantID int64, sessionKey string) (Tool, bool) {
-	// 1. Channel-scoped tools (highest priority in session context)
+	// 1. Runner-scoped tools (highest priority — session's bound runner)
+	if runnerID := r.getSessionRunner(sessionKey); runnerID != "" {
+		if tool, ok := r.getRunnerTool(runnerID, name); ok {
+			return tool, true
+		}
+	}
+	// 2. Channel-scoped tools
 	channel := ChannelFromSessionKey(sessionKey)
 	if channel != "" {
 		if tool, ok := r.GetChannelTool(channel, name); ok {
 			return tool, true
 		}
 	}
-	// 2. Tenant → global (existing logic)
+	// 3. Tenant → global (existing logic)
 	return r.GetForTenant(name, tenantID)
 }
 
@@ -456,6 +543,26 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 	}
 	r.mu.RUnlock()
 
+	// 追加 runner 专属工具（session 绑定的 runner）
+	r.runnerToolsMu.RLock()
+	runnerID := ""
+	r.sessionRunnersMu.RLock()
+	if r.sessionRunners != nil {
+		runnerID = r.sessionRunners[sessionKey]
+	}
+	r.sessionRunnersMu.RUnlock()
+	if runnerID != "" {
+		if runnerToolMap, ok := r.runnerTools[runnerID]; ok {
+			for _, tool := range runnerToolMap {
+				if !seen[tool.Name()] {
+					seen[tool.Name()] = true
+					defs = append(defs, tool)
+				}
+			}
+		}
+	}
+	r.runnerToolsMu.RUnlock()
+
 	// 追加 channel 专属工具
 	r.channelToolsMu.RLock()
 	channelToolMap := r.channelTools[ChannelFromSessionKey(sessionKey)]
@@ -527,6 +634,28 @@ func (r *Registry) Clone() *Registry {
 		}
 	}
 	r.channelToolsMu.RUnlock()
+	// 复制 runner 专属工具
+	r.runnerToolsMu.RLock()
+	if len(r.runnerTools) > 0 {
+		clone.runnerTools = make(map[string]map[string]Tool, len(r.runnerTools))
+		for rid, tools := range r.runnerTools {
+			m := make(map[string]Tool, len(tools))
+			for name, tool := range tools {
+				m[name] = tool
+			}
+			clone.runnerTools[rid] = m
+		}
+	}
+	r.runnerToolsMu.RUnlock()
+	// 复制 session-runner 绑定
+	r.sessionRunnersMu.RLock()
+	if len(r.sessionRunners) > 0 {
+		clone.sessionRunners = make(map[string]string, len(r.sessionRunners))
+		for k, v := range r.sessionRunners {
+			clone.sessionRunners[k] = v
+		}
+	}
+	r.sessionRunnersMu.RUnlock()
 	// 共享 sessionMCPMgr（provider 指向同一 MultiTenantSession，无副作用）
 	clone.sessionMCPMgr = r.sessionMCPMgr
 	// 复制全局 MCP 目录
@@ -782,6 +911,7 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	r.RegisterCore(&JoinGroupTool{})
 	r.RegisterCore(&LeaveGroupTool{})
 	r.RegisterCore(&ListGroupMembersTool{})
+	// Agent core tool: loads skill knowledge into context (not a runner execution tool)
 	r.RegisterCore(&SkillTool{})
 	r.RegisterCore(&TaskStatusTool{})
 	r.RegisterCore(&TaskKillTool{})
