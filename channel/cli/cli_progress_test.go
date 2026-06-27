@@ -1320,6 +1320,77 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 		}
 		t.Logf("Full rebuild confirmed: width reset from 999 → %d, all %d iterations re-rendered", model.rc.streamCompletedWidth, model.rc.streamCompletedCount)
 	})
+
+	t.Run("cross-kind-separator-single-blank-line", func(t *testing.T) {
+		model := setupModel()
+
+		// Seed: iteration 1 ends with tools, iteration 2 is reasoning only.
+		// Different block kinds (tools → reasoning) should produce exactly one
+		// blank guide line as separator between old and new iteration groups.
+		model.progressState.iterations = []cliIterationSnapshot{
+			{Iteration: 1, Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "read file", Status: "done", Elapsed: 100, Iteration: 1},
+			}},
+		}
+		model.rc.streamCompletedWidth = -1
+		model.updateStreamingOnly()
+
+		if model.rc.streamCompletedCount != 1 {
+			t.Fatalf("expected count=1 after seed, got %d", model.rc.streamCompletedCount)
+		}
+		oldLines := make([]string, len(model.rc.streamCompletedLines))
+		copy(oldLines, model.rc.streamCompletedLines)
+
+		// Add iteration 2: Reasoning block (different kind from tools).
+		model.progressState.iterations = append(model.progressState.iterations,
+			cliIterationSnapshot{Iteration: 2, Reasoning: "cross-kind reasoning text"})
+
+		model.updateStreamingOnly()
+
+		if model.rc.streamCompletedCount != 2 {
+			t.Fatalf("expected count=2 after increment, got %d", model.rc.streamCompletedCount)
+		}
+
+		// Old lines preserved
+		newLines := model.rc.streamCompletedLines
+		for i := range oldLines {
+			if newLines[i] != oldLines[i] {
+				t.Errorf("line %d changed: old=%q new=%q", i, oldLines[i], newLines[i])
+			}
+		}
+
+		// The appended portion should contain exactly one blank guide line
+		// (separator) before the reasoning content.
+		appended := newLines[len(oldLines):]
+		if len(appended) < 2 {
+			t.Fatalf("expected at least 2 appended lines (separator + content), got %d", len(appended))
+		}
+		// First appended line should be a blank guide line (just the guide symbol,
+		// no content). Strip ANSI then check that only "┊ " remains.
+		guideSym := "┊"
+		firstStripped := strings.TrimRight(stripAnsi(appended[0]), " ")
+		if firstStripped != guideSym {
+			t.Errorf("first appended line should be blank guide (just %q), got %q", guideSym, firstStripped)
+		}
+		// Reasoning marker should appear somewhere in appended content
+		appendedText := strings.Join(appended, "\n")
+		if !strings.Contains(stripAnsi(appendedText), "cross-kind reasoning text") {
+			t.Errorf("appended portion should contain reasoning marker, got:\n%s", stripAnsi(appendedText))
+		}
+		// Verify no double blank guide lines (bug: "\n\n" prepend would produce 2)
+		blankCount := 0
+		for _, l := range appended {
+			s := strings.TrimRight(stripAnsi(l), " ")
+			if s == guideSym {
+				blankCount++
+			}
+		}
+		if blankCount != 1 {
+			t.Errorf("expected exactly 1 blank guide line as separator, got %d", blankCount)
+		}
+
+		t.Logf("Cross-kind separator correct: 1 blank guide line between tools→reasoning")
+	})
 }
 
 // TestSyncProgressTodos_SameCountPreservesCache locks in the P3 fix:
