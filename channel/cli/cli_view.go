@@ -1094,8 +1094,9 @@ func (m *cliModel) View() (v tea.View) {
 		}
 	}
 
-	// /su loading
-	if m.splashState.suLoading {
+	// /su loading — skip if already connected (reconnect restored session but
+	// suHistoryLoadMsg was dropped due to asyncCh congestion)
+	if m.splashState.suLoading && m.connState != "connected" {
 		v := tea.NewView(m.renderSuLoading())
 		v.AltScreen = true
 		return v
