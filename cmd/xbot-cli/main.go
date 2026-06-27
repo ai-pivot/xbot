@@ -1531,10 +1531,17 @@ func main() {
 		cliCh.SetModelLister(newBackendModelLister(app.client))
 		// Forward user messages to backend (unified local/remote path)
 		cliCh.SetSendInboundFn(func(msg channel.InboundMsg) bool {
-			if err := app.client.SendInbound(msg.Channel, msg.ChatID, msg.Content, msg.SenderID, msg.SenderName, msg.ChatType, msg.Metadata); err != nil {
-				cliCh.SendToast("Failed to send message: "+err.Error(), "✗")
-				return false
-			}
+			clipanic.Go("main.SendInbound", func() {
+				if err := app.client.SendInbound(msg.Channel, msg.ChatID, msg.Content, msg.SenderID, msg.SenderName, msg.ChatType, msg.Metadata); err != nil {
+					log.WithError(err).Warn("Failed to send message")
+					cliCh.SendToast("Failed to send message: "+err.Error(), "✗")
+					// Write failure means connection is dead — update UI immediately.
+					cliCh.SetConnState("disconnected")
+				} else {
+					// Send succeeded — connection confirmed working.
+					cliCh.SetConnState("connected")
+				}
+			})
 			return true
 		})
 		// Subscribe to outbound events (unified local/remote path)

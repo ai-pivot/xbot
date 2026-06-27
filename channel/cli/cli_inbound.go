@@ -120,8 +120,9 @@ func (m *cliModel) sendToAgent(content string) {
 	m.messages = append(m.messages, userCliMsg)
 	m.pendingUserMsg = &userCliMsg
 	m.savePendingToSessionState()
-	if !m.sendInbound(m.newInbound(content, map[string]string{MetadataReplyPolicy: ReplyPolicyOptional})) {
-		return // send failed — connState already set to disconnected by sendInbound
+	m.sendInbound(m.newInbound(content, map[string]string{MetadataReplyPolicy: ReplyPolicyOptional}))
+	if m.connState != "connected" {
+		return // disconnected — connState updated directly by SetConnState
 	}
 	m.startAgentTurn()
 }
