@@ -1387,8 +1387,8 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 				blankCount++
 			}
 		}
-		if blankCount != 2 {
-			t.Errorf("expected exactly 2 blank guide lines as separator (PR #181: \\n\\n for different kinds), got %d", blankCount)
+		if blankCount != 1 {
+			t.Errorf("expected exactly 1 blank guide line as separator (unified to 1 line), got %d", blankCount)
 		}
 
 		t.Logf("Cross-kind separator correct: 1 blank guide line between tools→reasoning")
@@ -1503,5 +1503,92 @@ func TestUpdateStreamingOnly_LiveOnlyRendersCurrentIteration(t *testing.T) {
 	}
 	if len(model.rc.streamCompletedLines) != beforeLen {
 		t.Error("streamCompletedLines were re-rendered on cache hit — should have been reused")
+	}
+}
+
+// TestIncrementalPathSeparatorMatchesFullRebuild verifies that the
+// incremental rendering path in updateStreamingOnly produces the SAME
+// number of blank guide lines between iteration groups as the full
+// rebuild path. Regression: the incremental path prepended \n\n to
+// bodyContent before Split, producing 2 blank guide lines, while
+// appendTurnBlock's \n\n between blocks produces just 1.
+func TestIncrementalPathSeparatorMatchesFullRebuild(t *testing.T) {
+	model := initTestModel()
+	model.ticker.frame = 0
+	model.typing = true
+	model.streamingMsgIdx = 0
+	// Set up a streaming message so updateStreamingOnly works
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		turnID:    1,
+		timestamp: time.Now(),
+		isPartial: true,
+	})
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:              3,
+		ReasoningStreamContent: "live reasoning",
+	}
+
+	// Test for each block kind transition
+	tests := []struct {
+		name    string
+		iter1   cliIterationSnapshot
+		iter2   cliIterationSnapshot
+		wantSep int // expected blank guide lines between iter1 and iter2
+	}{
+		{
+			name: "tools→reasoning",
+			iter1: cliIterationSnapshot{Iteration: 1, Tools: []protocol.ToolProgress{
+				{Name: "Read", Label: "done tool", Status: "done", Elapsed: 100, Iteration: 1},
+			}},
+			iter2:   cliIterationSnapshot{Iteration: 2, Reasoning: "next reasoning"},
+			wantSep: 1,
+		},
+		{
+			name:    "reasoning→reasoning",
+			iter1:   cliIterationSnapshot{Iteration: 1, Reasoning: "first reasoning"},
+			iter2:   cliIterationSnapshot{Iteration: 2, Reasoning: "second reasoning"},
+			wantSep: 0,
+		},
+		{
+			name:    "content→reasoning",
+			iter1:   cliIterationSnapshot{Iteration: 1, Thinking: "thinking text"},
+			iter2:   cliIterationSnapshot{Iteration: 2, Reasoning: "next reasoning"},
+			wantSep: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// --- Full rebuild path ---
+			model.progressState.iterations = []cliIterationSnapshot{tt.iter1, tt.iter2}
+			model.rc.streamCompletedWidth = -1 // force full rebuild
+			model.rc.streamCompletedCount = 0
+			model.updateStreamingOnly()
+			fullLines := make([]string, len(model.rc.streamCompletedLines))
+			copy(fullLines, model.rc.streamCompletedLines)
+
+			// --- Incremental path ---
+			model.progressState.iterations = []cliIterationSnapshot{tt.iter1}
+			model.rc.streamCompletedWidth = -1
+			model.rc.streamCompletedCount = 0
+			model.updateStreamingOnly() // first render
+			// Now add second iteration → incremental
+			model.progressState.iterations = []cliIterationSnapshot{tt.iter1, tt.iter2}
+			model.updateStreamingOnly() // incremental render
+
+			incrLines := model.rc.streamCompletedLines
+
+			// Compare: both paths should produce identical line sets
+			if len(fullLines) != len(incrLines) {
+				t.Errorf("line count mismatch: full=%d incremental=%d", len(fullLines), len(incrLines))
+				return
+			}
+			for i := range fullLines {
+				if fullLines[i] != incrLines[i] {
+					t.Errorf("line %d mismatch:\n  full: %q\n  incr: %q", i, fullLines[i], incrLines[i])
+				}
+			}
+		})
 	}
 }
