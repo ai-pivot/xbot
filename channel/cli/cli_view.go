@@ -11,6 +11,7 @@ import (
 	"xbot/config"
 	"xbot/version"
 
+	ch "xbot/channel"
 	"xbot/clipanic"
 
 	tea "charm.land/bubbletea/v2"
@@ -1581,12 +1582,12 @@ func (m *cliModel) renderSuLoading() string {
 // Only Ctrl+Z is accepted (quit).
 func (m *cliModel) renderReconnectOverlay() string {
 	screenW := m.chatWidth()
-	if screenW < 40 {
-		screenW = 40
+	if screenW < 32 {
+		screenW = 32
 	}
 	screenH := m.height
-	if screenH < 8 {
-		screenH = 8
+	if screenH < 6 {
+		screenH = 6
 	}
 
 	errorStyle := m.styles.ErrorMsg
@@ -1595,10 +1596,45 @@ func (m *cliModel) renderReconnectOverlay() string {
 
 	tick := time.Now().UnixMilli() / 100
 	frame := splashFrames[tick%int64(len(splashFrames))]
+	lang := ch.CurrentLocaleLang()
 
 	var lines []string
 
-	// Title — cute emoji + connection lost message
+	// ── ASCII art (changes every 8 seconds) ──
+	if art := selectReconnectArt(tick); len(art) > 0 && screenW >= 36 {
+		// Find max art width for centering
+		maxArtW := 0
+		for _, l := range art {
+			if w := lipgloss.Width(l); w > maxArtW {
+				maxArtW = w
+			}
+		}
+		artPad := (screenW - maxArtW) / 2
+		if artPad < 0 {
+			artPad = 0
+		}
+		for _, al := range art {
+			lines = append(lines, mutedStyle.Render(strings.Repeat(" ", artPad)+al))
+		}
+		lines = append(lines, "")
+	}
+
+	// ── Divider ──
+	divW := screenW - 4
+	if divW > 36 {
+		divW = 36
+	}
+	if divW > 2 {
+		divider := mutedStyle.Render(strings.Repeat("─", divW))
+		dPad := (screenW - lipgloss.Width(divider)) / 2
+		if dPad < 0 {
+			dPad = 0
+		}
+		lines = append(lines, strings.Repeat(" ", dPad)+divider)
+		lines = append(lines, "")
+	}
+
+	// ── Title ──
 	titleText := errorStyle.Render("💔 " + m.locale.ReconnectTitle)
 	tW := lipgloss.Width(titleText)
 	tPad := (screenW - tW) / 2
@@ -1606,11 +1642,9 @@ func (m *cliModel) renderReconnectOverlay() string {
 		tPad = 0
 	}
 	lines = append(lines, strings.Repeat(" ", tPad)+titleText)
-
-	// Blank line
 	lines = append(lines, "")
 
-	// Server URL
+	// ── Server URL ──
 	host := m.remoteServerURL
 	if u, err := url.Parse(host); err == nil && u.Host != "" {
 		host = u.Host
@@ -1622,11 +1656,9 @@ func (m *cliModel) renderReconnectOverlay() string {
 		sPad = 0
 	}
 	lines = append(lines, strings.Repeat(" ", sPad)+serverText)
-
-	// Blank line
 	lines = append(lines, "")
 
-	// Spinner + reconnecting message
+	// ── Spinner ──
 	spinnerMsg := fmt.Sprintf(m.locale.ReconnectingMsg, frame)
 	loadingText := warningStyle.Render(spinnerMsg)
 	lW := lipgloss.Width(loadingText)
@@ -1635,25 +1667,32 @@ func (m *cliModel) renderReconnectOverlay() string {
 		lPad = 0
 	}
 	lines = append(lines, strings.Repeat(" ", lPad)+loadingText)
-
-	// Blank line
 	lines = append(lines, "")
 
-	// Random fun quip — cycles every 4 seconds
-	if len(reconnectQuips) > 0 && screenW >= 30 {
-		quipIdx := (tick / 40) % int64(len(reconnectQuips))
-		quipText := mutedStyle.Render("“" + reconnectQuips[quipIdx] + "”")
+	// ── Light divider ──
+	if divW > 2 {
+		ldiv := mutedStyle.Render(strings.Repeat("·", divW))
+		lPad := (screenW - lipgloss.Width(ldiv)) / 2
+		if lPad < 0 {
+			lPad = 0
+		}
+		lines = append(lines, strings.Repeat(" ", lPad)+ldiv)
+		lines = append(lines, "")
+	}
+
+	// ── Fun quip (i18n, changes every 4 seconds) ──
+	if quip := selectReconnectQuip(lang, tick); quip != "" {
+		quipText := mutedStyle.Italic(true).Render("\"" + quip + "\"")
 		qW := lipgloss.Width(quipText)
 		qPad := (screenW - qW) / 2
 		if qPad < 0 {
 			qPad = 0
 		}
 		lines = append(lines, strings.Repeat(" ", qPad)+quipText)
-		// Blank line after quip
 		lines = append(lines, "")
 	}
 
-	// Quit hint
+	// ── Quit hint ──
 	hintText := mutedStyle.Render(m.locale.ReconnectHint)
 	hW := lipgloss.Width(hintText)
 	hPad := (screenW - hW) / 2
@@ -1662,7 +1701,7 @@ func (m *cliModel) renderReconnectOverlay() string {
 	}
 	lines = append(lines, strings.Repeat(" ", hPad)+hintText)
 
-	// Vertical center
+	// ── Vertical center ──
 	emptyLinesBefore := (screenH - len(lines)) / 2
 	if emptyLinesBefore < 0 {
 		emptyLinesBefore = 0
