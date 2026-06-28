@@ -15,7 +15,7 @@ description: "Guide for AI to configure xbot TUI, themes, subscriptions, and set
 | Switch session | `tui_control switch_session(chat_id)` | |
 | Switch theme | `tui_control set_theme(theme_name)` | `tui_control set_theme("ocean")` |
 | Adjust layout | `tui_control set_layout(key, value)` | `tui_control set_layout("sidebar_width", "30")` |
-| Execute command | `tui_control send_slash(command="/xxx")` | `/set-llm`, `/palette`, `/model`, `/context` |
+| Execute command | `tui_control send_slash(command="/xxx")` | `/set-llm`, `/palette`, `/set-model`, `/context` |
 | List subscriptions | `config subscriptions` | |
 | Create new session | `CreateChat(type=agent, role=explore, instance="name")` | |
 
@@ -45,8 +45,8 @@ All fields are optional; defaults fill the rest. Full field list: `text_primary`
 
 | Command | Effect | Result timing |
 |---------|--------|--------------|
-| `/set-llm provider=X model=Y` | Change LLM subscription | Next turn |
-| `/model` | Cycle to next model | Immediate (UI) |
+| `/set-llm provider=X model=Y` | Create/update personal LLM subscription | Next turn |
+| `/set-model <model>` | Switch model across subscriptions | Next turn |
 | `/palette` | Open command palette for user | Immediate (UI) |
 | `/context` | Show context usage bar | Immediate (UI) |
 | `/new` | Start new chat session | Next turn |

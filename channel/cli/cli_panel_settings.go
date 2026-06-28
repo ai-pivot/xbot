@@ -503,7 +503,7 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 				m.panelState.mode = ""
 				m.relayoutViewport()
 				m.quickSwitchReturnToPanel = true
-				m.openQuickSwitch("subscription")
+				m.openQuickSwitch("")
 				return true, m, nil
 			}
 			switch def.Type {

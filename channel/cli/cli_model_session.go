@@ -393,8 +393,9 @@ func (m *cliModel) resetToIdleState() {
 
 	// --- Quick Switch State ---
 	m.quickSwitchMode = ""
-	m.quickSwitchList = nil
+	m.quickSwitchRows = nil
 	m.quickSwitchCursor = 0
+	m.quickSwitchFiltering = false
 	m.quickSwitchReturnToPanel = false
 
 	// --- Command Palette ---

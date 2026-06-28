@@ -58,8 +58,11 @@ Type these in the TUI:
 | `/setup` | Re-run the configuration wizard |
 | `/settings` | Open settings panels (sandbox, memory, etc.) |
 | `/channel` | **Channel configuration panel** — visually manage Web/Feishu/QQ/NapCat channels |
-| `/model` | View or switch the current LLM model |
-| `/models` | List available models |
+| `/llm` | Show the currently resolved subscription and model |
+| `/models` | List selectable models (with normal/offline/disabled status) |
+| `/set-model <model>` | Switch the current model across subscriptions |
+| `/set-llm` | Create/update a personal LLM subscription |
+| `/unset-llm` | Delete the personal default subscription |
 | `/context` | Inspect token usage |
 | `/clear` | Clear conversation and memory |
 | `/new` | Start a new conversation |
@@ -92,9 +95,8 @@ diagrams inline:
 | `Ctrl+C` | Cancel current generation |
 | `Ctrl+D` | Quit |
 | `Ctrl+K` | Open command palette |
-| `Ctrl+P` | Quick subscription switch |
+| `Ctrl+N` | LLM panel (switch model + manage subscriptions: add/disable/delete) |
 | `Ctrl+T` | Open session panel |
-| `Ctrl+N` | Next model |
 | `Ctrl+E` | Expand/collapse long messages |
 | `Ctrl+O` | Expand/collapse tool summaries |
 | `Ctrl+J` | Insert newline |
@@ -227,7 +229,7 @@ dynamically to context:
 - **Processing**: cancel operation
 - **In panel**: panel-specific hints (e.g., Ctrl+S to save in Settings)
 
-The hint bar is clickable (mouse), providing quick access to `/session`,
+The hint bar is clickable (mouse), providing quick access to `/sessions`,
 `Ctrl+K`, `Ctrl+N`, and more.
 
 ## AI-native configuration

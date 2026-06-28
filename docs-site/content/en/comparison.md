@@ -56,7 +56,7 @@ once, and the entire team uses them immediately — no individual key
 management.
 
 You can create multiple subscriptions (work Claude, personal DeepSeek) and
-switch per session with `Ctrl+P`.
+switch per session with `Ctrl+N` (LLM panel).
 
 ### 🏢 Feishu deep integration
 

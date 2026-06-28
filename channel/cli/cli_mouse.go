@@ -184,7 +184,7 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 	case "footerHint":
 		return m.clickFooterHint(zone.Index)
 	case "modelName":
-		m.openQuickSwitch("model")
+		m.openQuickSwitch("")
 		var cmd tea.Cmd
 		if len(m.pendingCmds) > 0 {
 			pending := m.pendingCmds
@@ -192,6 +192,11 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 			cmd = tea.Batch(pending...)
 		}
 		return true, m, cmd
+	case "thinkingMode":
+		if !m.typing {
+			m.toggleThinkingMode()
+		}
+		return true, m, nil
 	case "scrollToBottom":
 		m.viewport.GotoBottom()
 		m.newContentHint = false
@@ -253,9 +258,14 @@ func (m *cliModel) clickFooterHint(index int) (bool, tea.Model, tea.Cmd) {
 	case "ctrl+e":
 		m.toggleMessageFold()
 		return true, m, nil
-	case "ctrl+p":
+	case "ctrl+n":
 		if m.subscriptionMgr != nil {
-			m.openQuickSwitch("subscription")
+			m.openQuickSwitch("")
+		}
+		return true, m, nil
+	case "ctrl+m":
+		if !m.typing {
+			m.toggleThinkingMode()
 		}
 		return true, m, nil
 	case "ctrl+t":
@@ -538,7 +548,7 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 		m.panelState.mode = ""
 		m.relayoutViewport()
 		m.quickSwitchReturnToPanel = true
-		m.openQuickSwitch("subscription")
+		m.openQuickSwitch("")
 		return true, m, nil
 	}
 
@@ -644,12 +654,11 @@ func (m *cliModel) clickPaletteTab(idx int) (bool, tea.Model, tea.Cmd) {
 // --- QuickSwitch click handler ---
 
 func (m *cliModel) clickQuickSwitchItem(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.quickSwitchMode == "" || idx >= len(m.quickSwitchList) {
+	if m.quickSwitchMode != "llm" || idx >= len(m.quickSwitchRows) {
 		return false, m, nil
 	}
 	m.quickSwitchCursor = idx
-	// Use the same full apply logic as keyboard Enter (handles
-	// subscription switch, model switch, async LLM creation, status bar update).
+	// Same as keyboard Enter: toggle sub / switch model / open add panel.
 	m.applyQuickSwitch()
 	if len(m.pendingCmds) > 0 {
 		pending := m.pendingCmds
@@ -942,10 +951,13 @@ func (m *cliModel) trackMainLayoutZones(zb *mouseZoneBuilder) {
 
 	zb.skip(viewportH)
 
-	// status bar: 1 line — track clickable model name and "new content" hint
+	// status bar: 1 line — track clickable model name, thinking indicator, and "new content" hint
 	// Model name zone is tracked in both ready and progress status bars.
 	if m.modelNameZoneXStart >= 0 && m.modelNameZoneXEnd > m.modelNameZoneXStart {
 		zb.addX(0, m.modelNameZoneXStart+xShift, m.modelNameZoneXEnd+xShift, "modelName", 0)
+	}
+	if m.thinkingZoneXStart >= 0 && m.thinkingZoneXEnd > m.thinkingZoneXStart {
+		zb.addX(0, m.thinkingZoneXStart+xShift, m.thinkingZoneXEnd+xShift, "thinkingMode", 0)
 	}
 	if m.newContentHintRendered != "" {
 		// The new content hint is rendered inline in the status bar.
@@ -1371,29 +1383,27 @@ func (m *cliModel) trackPaletteZones(zb *mouseZoneBuilder) {
 	zb.skip(1) // PanelBox bottom border
 }
 
-// trackQuickSwitchZones records zones for the quick switch overlay.
+// trackQuickSwitchZones records zones for the unified LLM panel overlay.
 func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
-	// Count separator line (present when __add__ entry exists)
-	sepLines := 0
-	for _, s := range m.quickSwitchList {
-		if s.ID == "__add__" {
-			sepLines = 1
-			break
-		}
+	if m.quickSwitchMode != "llm" {
+		return
 	}
-	totalLines := 2 + len(m.quickSwitchList) + sepLines // header + spacer + items + separator
-	// Match viewQuickSwitch's centering formula exactly (listH = N+3+sepLines).
-	totalH := totalLines + 1 // (2+N+sepLines)+1 = N+3+sepLines = view's listH
-	blankLines := max(0, (m.height-totalH)/2)
+	n := len(m.quickSwitchRows)
+	// Match viewQuickSwitch's centering formula (listH = N+5).
+	listH := n + 5
+	blankLines := max(0, (m.height-listH)/2)
 
 	zb.skip(blankLines)
 	zb.skip(1) // PanelBox top border
 	zb.skip(1) // header
 	zb.skip(1) // spacer
+	zb.skip(1) // filter line
+	zb.skip(1) // refresh / spacer line
 
-	for i, s := range m.quickSwitchList {
-		if s.ID == "__add__" && i > 0 {
-			zb.skip(1) // separator line before __add__
+	for i, r := range m.quickSwitchRows {
+		if r.kind == qsSection {
+			zb.skip(1) // section header — not clickable
+			continue
 		}
 		zb.add(1, "quickSwitchItem", i)
 	}

@@ -201,21 +201,23 @@ type cliModel struct {
 	updateNotice   *version.UpdateInfo // nil=nothing, non-nil=show notice
 	checkingUpdate bool                // true while /update is in progress
 
-	// --- §15 ch.Subscription / Model Quick Switch ---
-	quickSwitchMode          string            // ""=off, "subscription"=selecting subscription, "model"=selecting model
-	quickSwitchList          []ch.Subscription // available subscriptions (subscription mode)
-	quickSwitchCursor        int               // selected index
-	quickSwitchReturnToPanel bool              // true = return to settings panel after switch completes
-	// Model picker (model mode): filterable list of selectable models paired with
-	// their owning subscription, shown as "订阅名 · 模型名". quickSwitchList is NOT
-	// used in model mode.
-	quickSwitchModelEntries  []protocol.ModelEntry // full model list (unfiltered)
-	quickSwitchModelFiltered []protocol.ModelEntry // filtered view the cursor indexes into
-	quickSwitchFilterInput   textinput.Model       // fuzzy filter input
-	quickSwitchRefreshing    bool                  // model picker: /models refresh in flight
-	subscriptionMgr          SubscriptionManager   // injected by CLIChannel
-	llmSubscriber            LLMSubscriber         // injected by CLIChannel
-	cachedSubName            string                // owning subscription display name for status bar
+	// --- §15 Unified LLM panel (Ctrl+N) ---
+	// One panel for both subscriptions and models. quickSwitchMode is "" or
+	// "llm". quickSwitchRows is the flat displayed list (sections + subs +
+	// models + action rows); quickSwitchCursor indexes into it. Filtering is
+	// toggled by "/" (quickSwitchFiltering) so command letters (e/d/n/s) don't
+	// collide with typing.
+	quickSwitchMode          string              // ""=off, "llm"=unified panel open
+	quickSwitchRows          []qsRow             // flat row list the cursor indexes into
+	quickSwitchCursor        int                 // selected row index
+	quickSwitchFilterInput   textinput.Model     // filter input (focused only in filter mode)
+	quickSwitchFiltering     bool                // "/" filter mode active
+	quickSwitchShowAll       bool                // show noise models (image/realtime/…)
+	quickSwitchRefreshing    bool                // /models refresh in flight
+	quickSwitchReturnToPanel bool                // return to settings panel after close
+	subscriptionMgr          SubscriptionManager // injected by CLIChannel
+	llmSubscriber            LLMSubscriber       // injected by CLIChannel
+	cachedSubName            string              // owning subscription display name for status bar
 
 	// --- §23 Command Palette (Ctrl+K) ---
 	paletteOpen           bool               // true = command palette overlay is active
@@ -280,6 +282,9 @@ type cliModel struct {
 	cachedModelName     string          // cached model name for View() performance
 	modelNameZoneXStart int             // rendered X start of model name in status bar (-1 = not rendered)
 	modelNameZoneXEnd   int             // rendered X end of model name in status bar (exclusive)
+	cachedThinkingMode  string          // global thinking_mode user setting ("" = auto), for status-bar indicator
+	thinkingZoneXStart  int             // rendered X start of thinking indicator in status bar (-1 = not rendered)
+	thinkingZoneXEnd    int             // rendered X end of thinking indicator in status bar (exclusive)
 	activeSubID         string          // active subscription ID for current session
 	hasNoSubCache       bool            // cached result of hasNoSubscription()
 	hasNoSubCacheValid  bool            // true when hasNoSubCache is authoritative

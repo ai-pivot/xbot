@@ -27,11 +27,11 @@ func TestV35Migration_SubscriptionModelsTable(t *testing.T) {
 		t.Fatalf("tenants.model_id column should exist: %v", err)
 	}
 
-	// Verify schema version is 40
+	// Verify schema version is 44
 	var version int
 	conn.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
-	if version != 40 {
-		t.Errorf("schema version = %d, want 40", version)
+	if version != 44 {
+		t.Errorf("schema version = %d, want 44", version)
 	}
 
 	// Verify migration is idempotent
@@ -203,5 +203,93 @@ func TestV39Migration_ModelFirstFoundation(t *testing.T) {
 	udm, _ = svc.GetUserDefaultModel("cli_user")
 	if udm != nil {
 		t.Errorf("GetUserDefaultModel after clear: %+v", udm)
+	}
+}
+
+// TestSystemSubscription verifies the shared system subscription lifecycle:
+// UpsertSystemSubscription reconciles fields on each boot, GetSystemSubscription
+// returns it, List injects it for every user, mutation guards refuse it, and
+// GetDefault falls back to it when a user has no default.
+func TestSystemSubscription(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewLLMSubscriptionService(db)
+
+	// No system subscription initially.
+	if sys, err := svc.GetSystemSubscription(); err != nil || sys != nil {
+		t.Fatalf("GetSystemSubscription before upsert: err=%v sys=%v", err, sys)
+	}
+
+	// Reconcile from "config/env" values.
+	first := &LLMSubscription{Provider: "openai", BaseURL: "http://api", APIKey: "sk-first", Model: "gpt-4o"}
+	if err := svc.UpsertSystemSubscription(first); err != nil {
+		t.Fatalf("UpsertSystemSubscription: %v", err)
+	}
+	sys, err := svc.GetSystemSubscription()
+	if err != nil || sys == nil {
+		t.Fatalf("GetSystemSubscription after upsert: err=%v sys=%v", err, sys)
+	}
+	if sys.ID != "system" || sys.SenderID != SystemSenderID || sys.Name != SystemSubscriptionName || !sys.IsSystem {
+		t.Errorf("system sub identity: id=%q sender=%q name=%q isSystem=%v", sys.ID, sys.SenderID, sys.Name, sys.IsSystem)
+	}
+	if sys.Provider != "openai" || sys.Model != "gpt-4o" || sys.APIKey != "sk-first" {
+		t.Errorf("system sub fields: provider=%q model=%q key=%q", sys.Provider, sys.Model, sys.APIKey)
+	}
+
+	// Reconcile again with different values — fields overwrite, ID stable.
+	second := &LLMSubscription{Provider: "deepseek", BaseURL: "http://ds", APIKey: "sk-second", Model: "deepseek-v4"}
+	if err := svc.UpsertSystemSubscription(second); err != nil {
+		t.Fatalf("UpsertSystemSubscription reconcile: %v", err)
+	}
+	sys, _ = svc.GetSystemSubscription()
+	if sys == nil || sys.Provider != "deepseek" || sys.Model != "deepseek-v4" || sys.APIKey != "sk-second" {
+		t.Errorf("reconciled fields wrong: %+v", sys)
+	}
+
+	// List injects the system sub for an arbitrary user.
+	subs, err := svc.List("any-user")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	found := false
+	for _, s := range subs {
+		if s.IsSystem {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("List should include system subscription for any user, got %d subs", len(subs))
+	}
+
+	// Mutation guards refuse the system subscription.
+	if err := svc.SetSubscriptionEnabled("system", false); err == nil {
+		t.Errorf("SetSubscriptionEnabled on system should error")
+	}
+	if err := svc.Rename("system", "x"); err == nil {
+		t.Errorf("Rename on system should error")
+	}
+	if err := svc.Remove("system"); err == nil {
+		t.Errorf("Remove on system should error")
+	}
+	if err := svc.Update(&LLMSubscription{ID: "system", SenderID: SystemSenderID, Name: "x"}); err == nil {
+		t.Errorf("Update on system should error")
+	}
+
+	// GetDefault falls back to system when user has no default.
+	def, err := svc.GetDefault("user-without-default")
+	if err != nil || def == nil || !def.IsSystem {
+		t.Errorf("GetDefault fallback to system: err=%v def=%+v", err, def)
+	}
+
+	// GetDefault prefers the user's explicit default when set.
+	own := &LLMSubscription{ID: "own-sub", SenderID: "u1", Name: "Own", Provider: "openai", BaseURL: "http://api", APIKey: "sk"}
+	if err := svc.Add(own); err != nil {
+		t.Fatalf("Add own: %v", err)
+	}
+	if err := svc.SetUserDefaultModel("u1", "own-sub", "gpt-4o"); err != nil {
+		t.Fatalf("SetUserDefaultModel: %v", err)
+	}
+	def, _ = svc.GetDefault("u1")
+	if def == nil || def.ID != "own-sub" {
+		t.Errorf("GetDefault should prefer user default, got %+v", def)
 	}
 }

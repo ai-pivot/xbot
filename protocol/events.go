@@ -130,6 +130,10 @@ type Subscription struct {
 	// stops contributing models to the picker; credentials are preserved. Populated
 	// from user_llm_subscriptions.enabled by listSubscriptions/mergeSubscriptionModels.
 	Enabled bool `json:"enabled,omitempty"`
+	// IsSystem marks the shared system subscription (v44): reconciled from
+	// config/env at boot, read-only, and the lowest-priority default/fallback.
+	// The UI uses this to render a lock badge and disable edit/disable/delete.
+	IsSystem bool `json:"is_system,omitempty"`
 }
 
 // PerModelConfig stores per-model token overrides within a subscription.
@@ -147,10 +151,20 @@ type PerModelConfig struct {
 // Used by the model picker (ListAllModelEntries) so the UI can show "订阅名 · 模型名"
 // and disambiguate models served by different subscriptions. System-default models
 // (not owned by any user subscription) carry empty SubID/SubName.
+//
+// The list is DB-driven: it unions sub.CachedModels (fetched) + sub.Model +
+// subscription_models rows (manually added / param overrides). Status reflects
+// per-(SubID,Model) availability:
+//   - "normal": present in CachedModels (or it's sub.Model) and enabled → fetched & usable
+//   - "offline": has a subscription_models record but NOT fetched, and enabled →
+//     manually added; still selectable (anything not disabled is selectable)
+//   - "disabled": subscription_models.enabled=0 → rendered greyed, not selectable;
+//     press ctrl+e to re-enable
 type ModelEntry struct {
 	SubID   string `json:"sub_id,omitempty"`
 	SubName string `json:"sub_name,omitempty"`
 	Model   string `json:"model"`
+	Status  string `json:"status"` // normal | offline | disabled
 }
 
 type OutboundEvent struct {

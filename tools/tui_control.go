@@ -30,7 +30,7 @@ func (t *TuiControlTool) Description() string {
 		"To CREATE a new session, use CreateChat (type=agent, role=explore, instance=\"name\") instead. " +
 		"To create a custom theme, use FileCreate to write a JSON file to ~/.xbot/themes/<name>.json then switch via set_theme. Activate the ai-config skill for the JSON format template. " +
 		"Use send_slash ONLY for pure-TUI operations (/palette, /settings, /rewind, /tasks, /clear, etc.). " +
-		"DO NOT use send_slash for /usage, /set-llm, /set-model, /models, /new, /compress, /context — these are agent-level commands handled natively. " +
+		"DO NOT use send_slash for /usage, /set-llm, /unset-llm, /set-model, /models, /new, /compress, /context — these are agent-level commands handled natively. " +
 		"For all configuration management (LLM models, subscriptions, settings, plugins, hooks), use the config tool instead. " +
 		"Actions: switch_session(chat_id), close_session(chat_id, params.confirm=true), " +
 		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/palette\"). " +

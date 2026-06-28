@@ -127,7 +127,7 @@ Core tool (always loaded). AI operates TUI sidebar, layout, and themes.
 
 **Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`, `send_slash`, `reload_plugins`, `reload_hooks`
 
-**send_slash**: Executes TUI-only slash commands (`/palette`, `/settings`, `/rewind`, `/tasks`, `/clear`, etc.). Do NOT use `send_slash` for agent-level commands like `/set-llm`, `/set-model`, `/models`, `/new`, `/compress`, `/usage`, `/context` — those are handled natively by the agent command registry. `send_slash` goes through BubbleTea's event loop (synchronous RPC); commands that call back into the agent (like `/usage` did via `usageQueryFn` → agent RPC) will deadlock.
+**send_slash**: Executes TUI-only slash commands (`/palette`, `/settings`, `/rewind`, `/tasks`, `/clear`, etc.). Do NOT use `send_slash` for agent-level commands like `/set-llm`, `/unset-llm`, `/set-model`, `/models`, `/new`, `/compress`, `/usage`, `/context` — those are handled natively by the agent command registry. `send_slash` goes through BubbleTea's event loop (synchronous RPC); commands that call back into the agent (like `/usage` did via `usageQueryFn` → agent RPC) will deadlock.
 
 **Flow**: `Execute()` → `ctx.TUIControl(action, params)` → `CLIChannel.SendTUIControl()` → `asyncCh` → `handleAsyncDrain` → `program.Send` → event loop → `handleSessionControlMsg`
 

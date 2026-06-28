@@ -16,6 +16,14 @@ import (
 // Alias to protocol.PerModelConfig — the canonical definition used across all packages.
 type PerModelConfig = protocol.PerModelConfig
 
+// SystemSenderID is the reserved sender_id for the shared system subscription.
+// The system subscription is reconciled from config/env at boot, visible to all
+// users, read-only, and acts as the lowest-priority default/fallback LLM.
+const SystemSenderID = "__system__"
+
+// SystemSubscriptionName is the display name of the system subscription.
+const SystemSubscriptionName = "system"
+
 // LLMSubscription represents a user's LLM provider subscription.
 type LLMSubscription struct {
 	ID              string                    // unique subscription ID
@@ -31,6 +39,7 @@ type LLMSubscription struct {
 	APIType         string                    // API type: "" (default=chat_completions), "responses"
 	IsDefault       bool                      // whether this is the active subscription
 	Enabled         bool                      // whether this subscription contributes models to the picker (v40); default true
+	IsSystem        bool                      // whether this is the shared system subscription (v44); read-only, fallback default
 	CachedModels    []string                  // cached model list from API (JSON in DB)
 	PerModelConfigs map[string]PerModelConfig // per-model token overrides (JSON in DB)
 	CreatedAt       time.Time
@@ -65,30 +74,50 @@ func NewLLMSubscriptionService(db *DB) *LLMSubscriptionService {
 
 // scanSubscription scans a single subscription row from the given scanner.
 // SQLite stores created_at/updated_at as TEXT, so we scan into string and parse.
-func scanSubscription(scanner interface{ Scan(...any) error }, sub *LLMSubscription) (string, int, error) {
+// IsDefault is NOT populated here — it's a read-side projection derived from
+// user_default_model (GetDefault/List mark it). The is_default column was dropped in v43.
+func scanSubscription(scanner interface{ Scan(...any) error }, sub *LLMSubscription) (string, error) {
 	var encryptedAPIKey string
-	var isDefault int
 	var enabled int
+	var isSystem int
 	var createdAt, updatedAt string
 	var cachedModelsJSON string
-	var perModelConfigsJSON string
 	err := scanner.Scan(&sub.ID, &sub.SenderID, &sub.Name, &sub.Provider, &sub.BaseURL,
-		&encryptedAPIKey, &sub.Model, &isDefault, &enabled, &sub.MaxContext, &sub.MaxOutputTokens, &sub.ThinkingMode, &sub.APIType,
-		&cachedModelsJSON, &perModelConfigsJSON, &createdAt, &updatedAt)
+		&encryptedAPIKey, &sub.Model, &enabled, &sub.MaxContext, &sub.MaxOutputTokens, &sub.ThinkingMode, &sub.APIType,
+		&cachedModelsJSON, &createdAt, &updatedAt, &isSystem)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
-	sub.IsDefault = isDefault == 1
 	sub.Enabled = enabled == 1
+	sub.IsSystem = isSystem == 1
 	sub.CreatedAt = parseSQLiteTime(createdAt)
 	sub.UpdatedAt = parseSQLiteTime(updatedAt)
 	if cachedModelsJSON != "" {
 		_ = json.Unmarshal([]byte(cachedModelsJSON), &sub.CachedModels)
 	}
-	if perModelConfigsJSON != "" && perModelConfigsJSON != "{}" {
-		_ = json.Unmarshal([]byte(perModelConfigsJSON), &sub.PerModelConfigs)
+	return encryptedAPIKey, nil
+}
+
+// loadPerModelConfigs populates sub.PerModelConfigs from the subscription_models
+// table (the sole source since v42). Called after scanSubscription.
+func (s *LLMSubscriptionService) loadPerModelConfigs(sub *LLMSubscription) {
+	if sub == nil {
+		return
 	}
-	return encryptedAPIKey, isDefault, nil
+	models, err := s.GetModels(sub.ID)
+	if err != nil {
+		log.WithError(err).WithField("sub_id", sub.ID).Warn("failed to load subscription_models")
+		return
+	}
+	sub.PerModelConfigs = make(map[string]PerModelConfig, len(models))
+	for _, m := range models {
+		sub.PerModelConfigs[m.Model] = PerModelConfig{
+			MaxOutputTokens: m.MaxOutputTokens,
+			MaxContext:      m.MaxContext,
+			APIType:         m.APIType,
+			Enabled:         m.Enabled,
+		}
+	}
 }
 
 // decryptAPIKey decrypts the subscription's API key in place.
@@ -108,9 +137,9 @@ func decryptAPIKey(sub *LLMSubscription, encryptedAPIKey string) {
 func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
 			FROM user_llm_subscriptions
-			ORDER BY created_at ASC
+			ORDER BY is_system DESC, created_at ASC
 		`)
 	if err != nil {
 		return nil, fmt.Errorf("list all subscriptions: %w", err)
@@ -120,24 +149,34 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	var subs []*LLMSubscription
 	for rows.Next() {
 		sub := &LLMSubscription{}
-		encryptedAPIKey, _, err := scanSubscription(rows, sub)
+		encryptedAPIKey, err := scanSubscription(rows, sub)
 		if err != nil {
 			return nil, fmt.Errorf("scan subscription: %w", err)
 		}
 		decryptAPIKey(sub, encryptedAPIKey)
 		subs = append(subs, sub)
 	}
-	return subs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// Populate PerModelConfigs AFTER closing the rows cursor — the SQLite pool is
+	// single-connection, so a nested query inside the rows loop would deadlock.
+	for _, sub := range subs {
+		s.loadPerModelConfigs(sub)
+	}
+	s.markDefaultsAll(subs)
+	return subs, nil
 }
 
 // List returns all subscriptions for a user, ordered by creation time.
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
+			SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
 				FROM user_llm_subscriptions
-				WHERE sender_id = ?
-				ORDER BY created_at ASC
+				WHERE sender_id = ? OR is_system = 1
+				ORDER BY is_system DESC, created_at ASC
 			`, senderID)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
@@ -147,49 +186,183 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 	var subs []*LLMSubscription
 	for rows.Next() {
 		sub := &LLMSubscription{}
-		encryptedAPIKey, _, err := scanSubscription(rows, sub)
+		encryptedAPIKey, err := scanSubscription(rows, sub)
 		if err != nil {
 			return nil, fmt.Errorf("scan subscription: %w", err)
 		}
 		decryptAPIKey(sub, encryptedAPIKey)
 		subs = append(subs, sub)
 	}
-	return subs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, sub := range subs {
+		s.loadPerModelConfigs(sub)
+	}
+	s.markDefaultsFor(subs, senderID)
+	return subs, nil
+}
+
+// markDefaultsFor sets IsDefault=true on the subscription matching the user's
+// user_default_model row. IsDefault is a read-side projection (no DB column since v43).
+func (s *LLMSubscriptionService) markDefaultsFor(subs []*LLMSubscription, senderID string) {
+	udm, err := s.GetUserDefaultModel(senderID)
+	if err != nil || udm == nil {
+		return
+	}
+	for _, sub := range subs {
+		if sub.ID == udm.SubscriptionID {
+			sub.IsDefault = true
+		}
+	}
+}
+
+// markDefaultsAll is the multi-user variant of markDefaultsFor for ListAll.
+func (s *LLMSubscriptionService) markDefaultsAll(subs []*LLMSubscription) {
+	conn := s.db.Conn()
+	rows, err := conn.Query("SELECT sender_id, subscription_id FROM user_default_model")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	defaults := make(map[string]string)
+	for rows.Next() {
+		var sid, subID string
+		if rows.Scan(&sid, &subID) == nil {
+			defaults[subID] = sid
+		}
+	}
+	for _, sub := range subs {
+		if _, ok := defaults[sub.ID]; ok {
+			sub.IsDefault = true
+		}
+	}
 }
 
 // GetDefault returns the default (active) subscription for a user.
+// The default is derived from user_default_model (is_default column dropped in v43).
+// If the user has no default, falls back to the shared system subscription (v44),
+// which is always present after boot reconcile.
 func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, error) {
+	udm, err := s.GetUserDefaultModel(senderID)
+	if err != nil {
+		return nil, fmt.Errorf("get default subscription: %w", err)
+	}
+	if udm == nil {
+		sys, err := s.GetSystemSubscription()
+		if err != nil {
+			return nil, fmt.Errorf("get default subscription (system fallback): %w", err)
+		}
+		if sys != nil {
+			sys.IsDefault = true
+		}
+		return sys, nil
+	}
+	sub, err := s.Get(udm.SubscriptionID)
+	if err != nil {
+		return nil, fmt.Errorf("get default subscription: %w", err)
+	}
+	if sub != nil {
+		sub.IsDefault = true
+	}
+	return sub, nil
+}
+
+// isSystemSubscription reports whether the given subscription ID is the shared
+// system subscription (is_system=1). Used to guard mutation entry points.
+func (s *LLMSubscriptionService) isSystemSubscription(id string) bool {
+	if id == "" {
+		return false
+	}
+	conn := s.db.Conn()
+	var isSystem int
+	err := conn.QueryRow("SELECT is_system FROM user_llm_subscriptions WHERE id = ?", id).Scan(&isSystem)
+	if err != nil {
+		return false
+	}
+	return isSystem == 1
+}
+
+// GetSystemSubscription returns the shared system subscription, or nil if absent.
+func (s *LLMSubscriptionService) GetSystemSubscription() (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
 			FROM user_llm_subscriptions
-			WHERE sender_id = ? AND is_default = 1
-			LIMIT 1
-		`, senderID)
-
+			WHERE is_system = 1 LIMIT 1
+		`)
 	sub := &LLMSubscription{}
-	encryptedAPIKey, _, err := scanSubscription(row, sub)
+	encryptedAPIKey, err := scanSubscription(row, sub)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get default subscription: %w", err)
+		return nil, fmt.Errorf("get system subscription: %w", err)
 	}
 	decryptAPIKey(sub, encryptedAPIKey)
+	s.loadPerModelConfigs(sub)
 	return sub, nil
+}
+
+// UpsertSystemSubscription creates or reconciles the shared system subscription
+// from config/env at boot. Every boot overwrites credentials/config fields
+// (reconcile policy); cached_models and per-model configs are preserved.
+// caller provides the desired subscription fields (typically derived from cfg.LLM).
+func (s *LLMSubscriptionService) UpsertSystemSubscription(sub *LLMSubscription) error {
+	if sub == nil {
+		return fmt.Errorf("nil system subscription")
+	}
+	sub.SenderID = SystemSenderID
+	sub.IsSystem = true
+	sub.Name = SystemSubscriptionName
+	if sub.ID == "" {
+		sub.ID = "system"
+	}
+	encryptedAPIKey := sub.APIKey
+	if sub.APIKey != "" {
+		encrypted, err := crypto.Encrypt(sub.APIKey)
+		if err != nil {
+			return fmt.Errorf("encrypt API key: %w", err)
+		}
+		encryptedAPIKey = encrypted
+	}
+	conn := s.db.Conn()
+	now := time.Now()
+	_, err := conn.Exec(`
+		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, is_system, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			sender_id = excluded.sender_id,
+			name = excluded.name,
+			provider = excluded.provider,
+			base_url = excluded.base_url,
+			api_key = excluded.api_key,
+			model = excluded.model,
+			max_context = excluded.max_context,
+			max_output_tokens = excluded.max_output_tokens,
+			thinking_mode = excluded.thinking_mode,
+			api_type = excluded.api_type,
+			is_system = 1,
+			updated_at = excluded.updated_at
+	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, now, now)
+	if err != nil {
+		return fmt.Errorf("upsert system subscription: %w", err)
+	}
+	return nil
 }
 
 // Get returns a subscription by ID.
 func (s *LLMSubscriptionService) Get(id string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, is_default, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, per_model_configs, created_at, updated_at
+		SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
 			FROM user_llm_subscriptions
 			WHERE id = ?
 		`, id)
 
 	sub := &LLMSubscription{}
-	encryptedAPIKey, _, err := scanSubscription(row, sub)
+	encryptedAPIKey, err := scanSubscription(row, sub)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -197,6 +370,7 @@ func (s *LLMSubscriptionService) Get(id string) (*LLMSubscription, error) {
 		return nil, fmt.Errorf("get subscription: %w", err)
 	}
 	decryptAPIKey(sub, encryptedAPIKey)
+	s.loadPerModelConfigs(sub)
 	return sub, nil
 }
 
@@ -226,34 +400,44 @@ func (s *LLMSubscriptionService) Add(sub *LLMSubscription) error {
 	}
 	defer tx.Rollback()
 
-	if sub.IsDefault {
-		if _, err := tx.Exec("UPDATE user_llm_subscriptions SET is_default = 0 WHERE sender_id = ?", sub.SenderID); err != nil {
-			return fmt.Errorf("clear default: %w", err)
+	isSystem := 0
+	if sub.IsSystem {
+		isSystem = 1
+	}
+	_, err = tx.Exec(`
+		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, is_system, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, isSystem, now, now)
+	if err != nil {
+		return fmt.Errorf("insert subscription: %w", err)
+	}
+
+	// Persist any per-model overrides to the subscription_models table (sole source since v42).
+	for model, cfg := range sub.PerModelConfigs {
+		if err := s.upsertModelTx(tx, sub.ID, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType); err != nil {
+			return fmt.Errorf("upsert per-model %s: %w", model, err)
 		}
 	}
 
-	isDefault := 0
-	if sub.IsDefault {
-		isDefault = 1
-	}
-	perModelConfigsJSON := "{}"
-	if len(sub.PerModelConfigs) > 0 {
-		if data, err := json.Marshal(sub.PerModelConfigs); err == nil {
-			perModelConfigsJSON = string(data)
+	// If the new subscription is marked default, seed user_default_model (is_default
+	// column was dropped in v43; user_default_model is the sole source for "default").
+	if sub.IsDefault && sub.SenderID != "" {
+		model := sub.Model
+		if model == "" {
+			model = sub.Name
 		}
-	}
-	_, err = tx.Exec(`
-		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, is_default, enabled, max_context, max_output_tokens, thinking_mode, api_type, per_model_configs, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
-	`, sub.ID, sub.SenderID, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, isDefault, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, perModelConfigsJSON, now, now)
-	if err != nil {
-		return fmt.Errorf("insert subscription: %w", err)
+		if _, err := tx.Exec(`
+			INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
+			VALUES (?, ?, ?, datetime('now'))
+			ON CONFLICT(sender_id) DO UPDATE SET subscription_id = excluded.subscription_id, model = excluded.model, updated_at = excluded.updated_at
+		`, sub.SenderID, sub.ID, model); err != nil {
+			return fmt.Errorf("seed user_default_model: %w", err)
+		}
 	}
 
 	return tx.Commit()
 }
 
-// UpdateCachedModels persists the model list cache for a subscription.
 // It ensures the subscription's active model is always included.
 func (s *LLMSubscriptionService) UpdateCachedModels(subID string, models []string) error {
 	sub, err := s.Get(subID)
@@ -285,6 +469,9 @@ func ensureModel(models []string, model string) []string {
 
 // Update updates an existing subscription.
 func (s *LLMSubscriptionService) Update(sub *LLMSubscription) error {
+	if s.isSystemSubscription(sub.ID) {
+		return fmt.Errorf("system subscription is read-only")
+	}
 	conn := s.db.Conn()
 
 	encryptedAPIKey := sub.APIKey
@@ -302,33 +489,28 @@ func (s *LLMSubscriptionService) Update(sub *LLMSubscription) error {
 	}
 	defer tx.Rollback()
 
-	if sub.IsDefault {
-		if _, err := tx.Exec("UPDATE user_llm_subscriptions SET is_default = 0 WHERE sender_id = ? AND id != ?", sub.SenderID, sub.ID); err != nil {
-			return fmt.Errorf("clear default: %w", err)
-		}
-	}
-
 	now := time.Now()
-	isDefault := 0
-	if sub.IsDefault {
-		isDefault = 1
-	}
-	perModelConfigsJSON := "{}"
-	if len(sub.PerModelConfigs) > 0 {
-		if data, err := json.Marshal(sub.PerModelConfigs); err == nil {
-			perModelConfigsJSON = string(data)
-		}
-	}
 	_, err = tx.Exec(`
 		UPDATE user_llm_subscriptions SET
 		name = ?, provider = ?, base_url = ?, api_key = ?, model = ?,
 		max_context = ?, max_output_tokens = ?, thinking_mode = ?, api_type = ?,
-		per_model_configs = ?,
-		is_default = ?, updated_at = ?
+		updated_at = ?
 		WHERE id = ? AND sender_id = ?
-	`, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, perModelConfigsJSON, isDefault, now, sub.ID, sub.SenderID)
+	`, sub.Name, sub.Provider, sub.BaseURL, encryptedAPIKey, sub.Model, sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode, sub.APIType, now, sub.ID, sub.SenderID)
 	if err != nil {
 		return fmt.Errorf("update subscription: %w", err)
+	}
+
+	// If marked default, keep user_default_model in sync (is_default column dropped in v43).
+	if sub.IsDefault && sub.SenderID != "" {
+		model := sub.Model
+		if _, err := tx.Exec(`
+			INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
+			VALUES (?, ?, ?, datetime('now'))
+			ON CONFLICT(sender_id) DO UPDATE SET subscription_id = excluded.subscription_id, model = excluded.model, updated_at = excluded.updated_at
+		`, sub.SenderID, sub.ID, model); err != nil {
+			return fmt.Errorf("sync user_default_model: %w", err)
+		}
 	}
 
 	return tx.Commit()
@@ -336,6 +518,9 @@ func (s *LLMSubscriptionService) Update(sub *LLMSubscription) error {
 
 // Remove deletes a subscription by ID.
 func (s *LLMSubscriptionService) Remove(id string) error {
+	if s.isSystemSubscription(id) {
+		return fmt.Errorf("system subscription is read-only")
+	}
 	conn := s.db.Conn()
 	_, err := conn.Exec("DELETE FROM user_llm_subscriptions WHERE id = ?", id)
 	if err != nil {
@@ -345,30 +530,25 @@ func (s *LLMSubscriptionService) Remove(id string) error {
 }
 
 // SetDefault sets a subscription as the default for its user.
+// Derived from user_default_model (is_default column dropped in v43).
 func (s *LLMSubscriptionService) SetDefault(id string) error {
 	conn := s.db.Conn()
 
-	// First find the sender_id
-	var senderID string
-	err := conn.QueryRow("SELECT sender_id FROM user_llm_subscriptions WHERE id = ?", id).Scan(&senderID)
+	var senderID, model string
+	err := conn.QueryRow("SELECT sender_id, model FROM user_llm_subscriptions WHERE id = ?", id).Scan(&senderID, &model)
 	if err != nil {
 		return fmt.Errorf("find subscription: %w", err)
 	}
 
-	tx, err := conn.Begin()
+	_, err = conn.Exec(`
+		INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT(sender_id) DO UPDATE SET subscription_id = excluded.subscription_id, model = excluded.model, updated_at = excluded.updated_at
+	`, senderID, id, model)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec("UPDATE user_llm_subscriptions SET is_default = 0 WHERE sender_id = ?", senderID); err != nil {
-		return fmt.Errorf("clear default: %w", err)
-	}
-	if _, err := tx.Exec("UPDATE user_llm_subscriptions SET is_default = 1 WHERE id = ?", id); err != nil {
 		return fmt.Errorf("set default: %w", err)
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 // SetModel updates the model for a subscription.
@@ -382,6 +562,9 @@ func (s *LLMSubscriptionService) SetModel(id, model string) error {
 }
 
 func (s *LLMSubscriptionService) Rename(id, name string) error {
+	if s.isSystemSubscription(id) {
+		return fmt.Errorf("system subscription is read-only")
+	}
 	conn := s.db.Conn()
 	_, err := conn.Exec("UPDATE user_llm_subscriptions SET name = ?, updated_at = datetime('now') WHERE id = ?", name, id)
 	if err != nil {
@@ -390,23 +573,25 @@ func (s *LLMSubscriptionService) Rename(id, name string) error {
 	return nil
 }
 
-// UpdatePerModelConfigs updates the per-model token overrides for a subscription.
-// configs is the full map to persist (replaces existing entirely).
+// UpdatePerModelConfigs replaces all per-model token overrides for a subscription.
+// Since v42 the subscription_models table is the sole source; this deletes existing
+// rows and re-inserts the provided map. configs replaces existing rows entirely.
 func (s *LLMSubscriptionService) UpdatePerModelConfigs(id string, configs map[string]PerModelConfig) error {
-	configsJSON := "{}"
-	if len(configs) > 0 {
-		data, err := json.Marshal(configs)
-		if err != nil {
-			return fmt.Errorf("marshal per_model_configs: %w", err)
-		}
-		configsJSON = string(data)
-	}
 	conn := s.db.Conn()
-	_, err := conn.Exec("UPDATE user_llm_subscriptions SET per_model_configs = ?, updated_at = datetime('now') WHERE id = ?", configsJSON, id)
+	tx, err := conn.Begin()
 	if err != nil {
-		return fmt.Errorf("update per_model_configs: %w", err)
+		return fmt.Errorf("begin tx: %w", err)
 	}
-	return nil
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM subscription_models WHERE subscription_id = ?", id); err != nil {
+		return fmt.Errorf("clear subscription_models: %w", err)
+	}
+	for model, cfg := range configs {
+		if err := s.upsertModelTx(tx, id, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType); err != nil {
+			return fmt.Errorf("upsert model %s: %w", model, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // GetPerModelMaxTokens returns the per-model max_output_tokens override for the given subscription and model.
@@ -507,7 +692,14 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 // UpsertModel inserts or updates a model row in subscription_models.
 func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
 	conn := s.db.Conn()
-	_, err := conn.Exec(`
+	return s.upsertModelTx(conn, subID, model, maxCtx, maxOut, thinking, apiType)
+}
+
+// upsertModelTx is the tx-aware core of UpsertModel.
+func (s *LLMSubscriptionService) upsertModelTx(tx interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}, subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
+	_, err := tx.Exec(`
 		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type)
 		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(subscription_id, model) DO UPDATE SET
@@ -527,6 +719,9 @@ func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut
 // subscription stops contributing models to the picker (ListAllModelsForUser and
 // ResolveSubscriptionForModel skip it) without deleting its credentials/models.
 func (s *LLMSubscriptionService) SetSubscriptionEnabled(subID string, enabled bool) error {
+	if s.isSystemSubscription(subID) {
+		return fmt.Errorf("system subscription is read-only")
+	}
 	conn := s.db.Conn()
 	v := 0
 	if enabled {

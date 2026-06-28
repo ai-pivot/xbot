@@ -264,9 +264,9 @@ type Agent struct {
 	// Event trigger router
 	eventRouter *event.Router
 
-	// User LLM config service and factory
-	llmConfigSvc *sqlite.UserLLMConfigService
-	llmFactory   *LLMFactory
+	// LLM factory (per-user/per-chat LLM resolution). User LLM config lives in
+	// user_llm_subscriptions; the legacy UserLLMConfigService shim was removed.
+	llmFactory *LLMFactory
 
 	// 用户级别的信号量：设置了自己的 LLM 配置的用户使用独立信号量
 	// key: senderID, value: 用户独立的信号量（容量为1）
@@ -625,18 +625,19 @@ func (a *Agent) SettingsService() *SettingsService { return a.settingsSvc }
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
 
-// SetUserModel sets the model for a user's LLM configuration (used by settings card callback).
+// SetUserModel switches the user's default model (cross-subscription). Used by the
+// settings card callback and the set_user_model RPC. Resolves the owning subscription
+// via the subscription service and persists the choice to user_default_model.
 func (a *Agent) SetUserModel(senderID, model string) error {
-	cfg, err := a.llmConfigSvc.GetConfig(senderID)
+	if model == "" {
+		return fmt.Errorf("model is required")
+	}
+	sub, err := a.llmFactory.ResolveSubscriptionForModel(senderID, model)
 	if err != nil {
-		return fmt.Errorf("get LLM config: %w", err)
+		return fmt.Errorf("resolve subscription for model %q: %w", model, err)
 	}
-	if cfg == nil {
-		return fmt.Errorf("user has no custom LLM config; use /set-llm first")
-	}
-	cfg.Model = model
-	if err := a.llmConfigSvc.SetConfig(cfg); err != nil {
-		return fmt.Errorf("save model: %w", err)
+	if err := a.llmFactory.SetUserDefaultModel(senderID, sub.ID, model); err != nil {
+		return fmt.Errorf("save default model: %w", err)
 	}
 	a.llmFactory.Invalidate(senderID)
 	return nil
@@ -997,9 +998,8 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.cronSvc = cronSvc
 	a.cronSch = cronSch
 
-	// Initialize UserLLMConfigService
-	a.llmConfigSvc = sqlite.NewUserLLMConfigService(multiSession.DB())
-	a.llmFactory = NewLLMFactory(a.llmConfigSvc, cfg.LLM, cfg.Model)
+	// LLM factory: per-user subscriptions are the single source for custom LLM.
+	a.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
 	a.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
 	a.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
 
@@ -1534,45 +1534,6 @@ func (a *Agent) SetSandbox(sb tools.Sandbox, mode string) {
 	if a.offloadStore != nil {
 		a.offloadStore.SetSandbox(sb)
 	}
-}
-
-// GetUserLLMConfig returns the user's LLM config summary (no API key), or nil if none.
-func (a *Agent) GetUserLLMConfig(senderID string) (provider, baseURL, model string, ok bool) {
-	cfg, err := a.llmConfigSvc.GetConfig(senderID)
-	if err != nil || cfg == nil || (cfg.BaseURL == "" && cfg.APIKey == "") {
-		return "", "", "", false
-	}
-	return cfg.Provider, cfg.BaseURL, cfg.Model, true
-}
-
-// SetUserLLM creates or replaces a user's full LLM config.
-func (a *Agent) SetUserLLM(senderID, provider, baseURL, apiKey, model string) error {
-	if provider == "" || baseURL == "" || apiKey == "" {
-		return fmt.Errorf("provider, base_url, api_key 必填")
-	}
-	cfg := &sqlite.UserLLMConfig{
-		SenderID: senderID,
-		Provider: provider,
-		BaseURL:  baseURL,
-		APIKey:   apiKey,
-		Model:    model,
-	}
-	if err := a.llmConfigSvc.SetConfig(cfg); err != nil {
-		return err
-	}
-	a.llmFactory.Invalidate(senderID)
-	a.llmFactory.InvalidateCustomLLMCache(senderID)
-	return nil
-}
-
-// DeleteUserLLM removes a user's LLM config and reverts to global.
-func (a *Agent) DeleteUserLLM(senderID string) error {
-	if err := a.llmConfigSvc.DeleteConfig(senderID); err != nil {
-		return err
-	}
-	a.llmFactory.Invalidate(senderID)
-	a.llmFactory.InvalidateCustomLLMCache(senderID)
-	return nil
 }
 
 // GetLLMConcurrency 获取用户个人 LLM 并发上限配置。

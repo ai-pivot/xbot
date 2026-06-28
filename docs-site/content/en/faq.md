@@ -69,7 +69,7 @@ Set `provider: "openai"` and change the `base_url`:
 ### Can I use multiple LLM subscriptions?
 
 Yes. Create multiple subscriptions in `config.json` (or via `/setup`), then
-switch between them with `Ctrl+P` or `/models`. In Server mode, the admin
+switch between them with `Ctrl+N` or `/models`. In Server mode, the admin
 creates subscriptions once and the whole team shares them.
 
 ### What are model tiers (Vanguard / Balance / Swift)?
@@ -132,7 +132,7 @@ This works for all channels (Feishu, QQ, NapCat).
 ### The agent is slow — how to improve performance?
 
 - Use `/compress` regularly to keep context small
-- Switch to a faster model for simple tasks (`Ctrl+L`)
+- Switch to a faster model for simple tasks (`Ctrl+N`)
 - Use SubAgents for parallel work (each has its own context)
 - Increase `max_concurrency` for parallel tool execution
 - Use background mode for long-running commands
@@ -149,7 +149,7 @@ switch. Or use `/sessions` to list, `/su` to switch, `/new` to create.
 - **Quick lookups** (simple Q&A): Any fast model works
 - **Budget-conscious**: DeepSeek, Qwen, or local models via Ollama
 
-Switch models per-session with `Ctrl+L` (searchable picker) or `Ctrl+N` (cycle to next). Both are per-session and cross-subscription.
+Switch models per-session with `Ctrl+N` to open the LLM panel (searchable, cross-subscription). The panel also lets you add, disable, and delete subscriptions and models.
 
 ### How do I change the theme?
 

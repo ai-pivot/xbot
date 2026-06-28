@@ -592,12 +592,17 @@ func (m *mockLLMSubscriber) SwitchModel(senderID, model, chatID string) {
 	m.switchModelCalls = append(m.switchModelCalls, mockSwitchModelCall{senderID, model, chatID})
 }
 
+func (m *mockLLMSubscriber) SelectModel(senderID, subID, model, chatID string) error {
+	m.switchModelCalls = append(m.switchModelCalls, mockSwitchModelCall{senderID, model, chatID})
+	return nil
+}
+
 func (m *mockLLMSubscriber) GetDefaultModel() string {
 	return m.defaultModel
 }
 
 // TestScheduleSessionLLMRestore_UsesPerSessionModel verifies that when a session
-// had a per-session model override (e.g. user switched via Ctrl+L), the restore
+// had a per-session model override (e.g. user switched via Ctrl+N), the restore
 // path uses that model instead of the subscription's default model.
 func TestScheduleSessionLLMRestore_UsesPerSessionModel(t *testing.T) {
 	mgr := &mockSubscriptionManager{

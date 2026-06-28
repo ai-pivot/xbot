@@ -168,6 +168,21 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	"sidebar_sections": {},
 	"chat_max_width":   {},
 	"chat_center":      {},
+
+	// --- Global thinking mode ---
+	// thinking_mode is a global user setting (no longer subscription-scoped).
+	// ResolveLLM caches the resolved thinking value in sessionMemo, so changing
+	// it must drop every session memo for the user — the next call re-reads the
+	// new value from the user_settings DB.
+	"thinking_mode": {
+		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
+			if ag == nil || ag.llmFactory == nil {
+				return
+			}
+			ag.llmFactory.invalidateUserMemos(senderID)
+			ag.llmFactory.InvalidateSender(senderID)
+		},
+	},
 }
 
 // ApplyRuntimeSetting applies a single setting change to the in-memory config and agent.

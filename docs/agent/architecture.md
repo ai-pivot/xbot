@@ -85,7 +85,7 @@ LLM 配置通过**订阅（Subscription）**系统管理，不再使用全局单
 - **Server 模式**: 订阅存储在 `user_llm_subscriptions` 表中，为单一真相来源
 - **Model Tiers**: 支持 Vanguard / Balance / Swift 三层模型分级，可按场景选用
 - **Tier Fallback**: 未配置的层自动回退：vanguard → balance → swift
-- **运行时切换**: `/model` 命令或 TUI 面板实时切换订阅和模型
+- **运行时切换**: `Ctrl+N` LLM 面板或 `/set-model <model>` 命令实时切换模型（跨订阅）
 
 `GetLLMForModel` 必须同时检查 CLI 配置订阅和 DB 订阅。`user_llm_subscriptions` 的字段（provider, model, base_url, api_key, max_output_tokens, thinking_mode）是订阅级作用域，**不得**出现在 `user_settings` 表中。
 

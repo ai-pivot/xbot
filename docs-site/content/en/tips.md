@@ -31,13 +31,13 @@ relevant.
 
 ### Per-session model switching
 
-Use `Ctrl+L` to switch the model for the current session only — without
+Use `Ctrl+N` to switch the model for the current session only — without
 affecting other sessions. This is great for using a cheaper model for simple
 tasks and a stronger model for complex ones.
 
 ### Multiple subscriptions
 
-Create subscriptions for different providers and switch with `Ctrl+P`:
+Create subscriptions for different providers and switch with `Ctrl+N` (LLM panel):
 - One for daily work (balanced cost/quality)
 - One for complex reasoning (premium model)
 - One for quick lookups (fast/cheap model)

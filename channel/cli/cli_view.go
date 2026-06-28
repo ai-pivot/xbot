@@ -313,6 +313,21 @@ func (m *cliModel) renderReadyStatus() string {
 		m.modelNameZoneXEnd = m.modelNameZoneXStart + lipgloss.Width(modelHint)
 		readyParts = append(readyParts, modelHint)
 	}
+	// Thinking-mode indicator (global toggle, Ctrl+M). Skipped on narrow screens
+	// (the narrow truncation below would drop it anyway, leaving a stale click zone).
+	m.thinkingZoneXStart = -1
+	m.thinkingZoneXEnd = -1
+	if !m.isNarrow() {
+		thinkingHint := m.thinkingModeLabel() + " [Ctrl+M]"
+		thinkingIdx := len(readyParts) // index where the indicator will be appended
+		prefixBeforeThinking := ""
+		if thinkingIdx > 0 {
+			prefixBeforeThinking = strings.Join(readyParts, " · ") + " · "
+		}
+		m.thinkingZoneXStart = lipgloss.Width(prefixBeforeThinking)
+		m.thinkingZoneXEnd = m.thinkingZoneXStart + lipgloss.Width(thinkingHint)
+		readyParts = append(readyParts, thinkingHint)
+	}
 	// Narrow screen: drop msg count to save space
 	if m.isNarrow() && len(readyParts) > 2 {
 		readyParts = readyParts[:2]
@@ -1949,7 +1964,10 @@ func (m *cliModel) renderFooter() string {
 				hints = append(hints, m.footerHintItem("Ctrl+e", m.locale.FooterFold, "ctrl+e"))
 			}
 			if m.subscriptionMgr != nil && !m.isNarrow() {
-				hints = append(hints, m.footerHintItem("Ctrl+p", "Subs", "ctrl+p"))
+				hints = append(hints, m.footerHintItem("Ctrl+n", "Models", "ctrl+n"))
+			}
+			if !m.isNarrow() {
+				hints = append(hints, m.footerHintItem("Ctrl+m", "Thinking", "ctrl+m"))
 			}
 			if !m.isNarrow() {
 				hints = append(hints, m.footerHintItem("Ctrl+t", "Sessions", "ctrl+t"))

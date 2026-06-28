@@ -290,8 +290,8 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
 var cliCommands = []string{
 	"/cancel", "/channel", "/chat", "/clear", "/commands", "/compress", "/context", "/exit",
-	"/help", "/list-sessions", "/model", "/models", "/new", "/palette", "/plugin", "/quit", "/rename", "/rewind",
-	"/search", "/sessions", "/settings", "/setup", "/ss", "/su", "/tasks", "/update",
+	"/help", "/list-sessions", "/llm", "/models", "/new", "/palette", "/plugin", "/quit", "/rename", "/rewind",
+	"/search", "/sessions", "/set-llm", "/set-model", "/settings", "/setup", "/ss", "/su", "/tasks", "/unset-llm", "/update",
 	"/usage", "/user",
 }
 
@@ -582,6 +582,12 @@ type SubscriptionManager interface {
 type LLMSubscriber interface {
 	SwitchSubscription(senderID string, sub *ch.Subscription, chatID string) error
 	SwitchModel(senderID, model, chatID string)
+	// SelectModel switches to a specific (subscription, model) pair. Used by the
+	// model picker when the row carries an owning SubID, so the user picks the
+	// exact subscription that serves a model even when the same model name is
+	// served by multiple subscriptions. SwitchModel (model-first, owner resolved
+	// server-side) is the fallback when no SubID is available.
+	SelectModel(senderID, subID, model, chatID string) error
 	GetDefaultModel() string
 }
 

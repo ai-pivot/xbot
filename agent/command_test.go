@@ -31,8 +31,9 @@ func TestCommandRegistry_Match(t *testing.T) {
 		// Prefix commands
 		{"/prompt", "/prompt"},
 		{"/prompt show me the system prompt", "/prompt"},
-		{"/set-llm provider=openai", "/set-llm"},
 		{"/set-llm", "/set-llm"},
+		{"/set-llm provider=openai", "/set-llm"},
+		{"/unset-llm", "/unset-llm"},
 		{"/set-model", "/set-model"},
 		{"/set-model gpt-4", "/set-model"},
 		{"/models", "/models"},

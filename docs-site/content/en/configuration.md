@@ -124,7 +124,7 @@ model, taking priority over the subscription-level defaults:
 
 ### Multiple subscriptions
 
-Switch between them in the TUI via `Ctrl+P` or `/models`:
+Switch between them in the TUI via `Ctrl+N` or `/models`:
 
 ```json
 {

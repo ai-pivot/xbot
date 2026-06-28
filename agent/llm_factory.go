@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"xbot/channel"
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
@@ -43,7 +45,6 @@ type llmEntry struct {
 //   - 读取通过 getEntry() 获取完整 entry，从中派生所有值
 //   - per-chat max_context override 存在独立的 perChatMaxCtx 中（key=chatID）
 type LLMFactory struct {
-	configSvc       *sqlite.UserLLMConfigService
 	subscriptionSvc *sqlite.LLMSubscriptionService
 	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
 	configSubsFn    func() []config.SubscriptionConfig
@@ -102,9 +103,8 @@ type resolvedEntry struct {
 }
 
 // NewLLMFactory 创建 LLM 工厂
-func NewLLMFactory(configSvc *sqlite.UserLLMConfigService, defaultLLM llm.LLM, defaultModel string) *LLMFactory {
+func NewLLMFactory(defaultLLM llm.LLM, defaultModel string) *LLMFactory {
 	return &LLMFactory{
-		configSvc:     configSvc,
 		defaultLLM:    defaultLLM,
 		defaultModel:  defaultModel,
 		entries:       make(map[string]*llmEntry),
@@ -405,13 +405,6 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 	if e := f.getEntry(senderID); e != nil && e.client != nil {
 		f.hasCustomLLMCache.Store(senderID, true)
 		return true
-	}
-	if f.configSvc != nil {
-		cfg, err := f.configSvc.GetConfig(senderID)
-		if err == nil && cfg != nil && cfg.BaseURL != "" && cfg.APIKey != "" {
-			f.hasCustomLLMCache.Store(senderID, true)
-			return true
-		}
 	}
 	if f.subscriptionSvc != nil {
 		sub, err := f.subscriptionSvc.GetDefault(senderID)
@@ -738,6 +731,22 @@ func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	f.defaultModel = newModel
 	f.entries = make(map[string]*llmEntry)
 	f.perChatMaxCtx = make(map[string]int)
+}
+
+// SetSystemLLM sets the factory's fallback LLM from the shared system
+// subscription (reconciled from config/env at boot). Unlike SetDefaults it does
+// NOT clear per-user caches — it only updates the lowest-priority fallback used
+// when no per-user/per-chat entry and no DB default subscription resolve.
+func (f *LLMFactory) SetSystemLLM(newLLM llm.LLM, newModel string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.retryConfig.Attempts > 0 {
+		if _, ok := newLLM.(*llm.RetryLLM); !ok {
+			newLLM = llm.NewRetryLLM(newLLM, f.retryConfig)
+		}
+	}
+	f.defaultLLM = newLLM
+	f.defaultModel = newModel
 }
 
 func (f *LLMFactory) SetDefaultThinkingMode(mode string) {
@@ -1077,9 +1086,15 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 	if maxOut == 0 {
 		maxOut = sub.MaxOutputTokens
 	}
+	// Thinking mode: per-model override (hidden, programmatic) → global user
+	// setting (ScopeUser, the Ctrl+M toggle / /settings Select) → "" (auto).
+	// sub.ThinkingMode is no longer read — thinking is global, not per-subscription.
+	// The global setting is stored under a canonical channel (see
+	// userThinkingMode) so one value applies regardless of which channel the
+	// LLM call comes from.
 	thinking := pmc.thinkingMode
 	if thinking == "" {
-		thinking = sub.ThinkingMode
+		thinking = f.userThinkingMode(senderID)
 	}
 	entry := &resolvedEntry{
 		subID: sub.ID, model: model, client: client,
@@ -1108,9 +1123,6 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 	}
 	if !sub.Enabled {
 		return fmt.Errorf("SelectModel: subscription %s is disabled", subID)
-	}
-	if !sub.IsDefault {
-		// Allow selecting non-default subscriptions per-session; no-op flag check.
 	}
 	if sm, gerr := f.subscriptionSvc.GetModel(subID, model); gerr == nil && sm != nil && !sm.Enabled {
 		return fmt.Errorf("SelectModel: model %q is disabled for subscription %s", model, subID)
@@ -1310,34 +1322,67 @@ func (f *LLMFactory) invalidateUserMemos(senderID string) {
 func (f *LLMFactory) ListModels() []string { return f.defaultLLM.ListModels() }
 
 func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
-	entries := f.ListAllModelEntriesForUser(senderID)
+	entries := f.listModelEntriesCore(senderID, false)
 	result := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
+		if seen[e.Model] {
+			continue
+		}
+		seen[e.Model] = true
 		result = append(result, e.Model)
 	}
 	return result
 }
 
-// ListAllModelEntriesForUser returns every selectable model for a user, paired
-// with the subscription that provides it (SubID/SubName empty for system-default
-// models). Mirrors ListAllModelsForUser's selectability rules: disabled
-// subscriptions and disabled models are excluded. The list is stable, grouped by
-// source (system default first, then subscriptions in creation order).
+// ListAllModelEntriesForUser returns every (subscription, model) pair the picker
+// should show for a user, paired with availability Status. The list is DB-driven
+// (CachedModels ∪ sub.Model ∪ subscription_models rows) and INCLUDES
+// disabled/offline models so the picker can render them with their status tag.
+// The same model name served by multiple subscriptions is listed once per
+// subscription (e.g. "system · deepseek-v4-pro" and "deepseek ·
+// deepseek-v4-pro" both appear) so the user can pick the exact subscription;
+// within a single subscription a model name is emitted at most once.
 func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.ModelEntry {
+	return f.listModelEntriesCore(senderID, true)
+}
+
+// listModelEntriesCore is the shared DB-driven list builder.
+//   - includeDisabled=true: emit every (subscription, model) pair (normal/offline/disabled)
+//     for the picker — same model name served by different subscriptions is listed
+//     once per subscription, NOT deduped by model name;
+//   - includeDisabled=false: emit only selectable models (normal + offline; skip
+//     disabled) — used by tier selectors and other selectable-model callers.
+//
+// Within a single subscription, a model name is emitted at most once (CachedModels,
+// sub.Model, and subscription_models rows are merged). Disabled subscriptions
+// contribute nothing. Emitted in subscription order (stable), system subscription
+// first (it is injected at the head of the list by the storage layer).
+func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool) []protocol.ModelEntry {
+	// seen keyed by (subID, model) so the same model from different subscriptions
+	// is listed once per subscription, while a single subscription never emits the
+	// same model twice (e.g. a model present in both CachedModels and sub.Model).
 	seen := make(map[string]bool)
 	var result []protocol.ModelEntry
-	add := func(subID, subName, model string) {
-		if model == "" || seen[model] {
+	add := func(subID, subName, model, status string) {
+		if model == "" {
 			return
 		}
-		seen[model] = true
-		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model})
+		key := subID + "\x00" + model
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
 	}
-	// System default client models: always selectable (system fallback, not user-disableable).
-	for _, m := range f.defaultLLM.ListModels() {
-		add("", "", m)
-	}
+	// systemModelLabel tags models that come from the global default LLM (no
+	// owning subscription). Shown as "system · model" in the picker so they're
+	// not bare among subscription-owned entries.
+	const systemModelLabel = "system"
 	if f.subscriptionSvc == nil {
+		for _, m := range f.defaultLLM.ListModels() {
+			add("", systemModelLabel, m, "normal")
+		}
 		return result
 	}
 	var subs []*sqlite.LLMSubscription
@@ -1351,69 +1396,91 @@ func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.Mode
 		return result
 	}
 
-	// A model is selectable when at least one subscription provides it enabled (via a
-	// subscription_models row) OR via a "loose" source (CachedModels / sub.Model) without
-	// an explicit disabling row. A model disabled in every subscription that lists it is
-	// excluded so disabled models never appear in Ctrl+N cycling or the model pickers.
-	type modelState struct {
-		hasEnabled, hasDisabled, hasLoose bool
+	// Only enabled subscriptions contribute. Cache their subscription_models rows
+	// (the "record") and their fetched CachedModels set.
+	type subInfo struct {
+		sub    *sqlite.LLMSubscription
+		rows   []*sqlite.SubscriptionModel
+		fetch  map[string]bool
+		rowEn  map[string]bool // model → enabled flag from row (absent ⇒ true)
+		rowHas map[string]bool // model → has a subscription_models record
 	}
-	states := make(map[string]*modelState)
-	ensure := func(m string) *modelState {
-		if states[m] == nil {
-			states[m] = &modelState{}
-		}
-		return states[m]
-	}
-	// Cache per-subscription model rows so we don't query twice.
-	subModels := make([][]*sqlite.SubscriptionModel, len(subs))
-	for i, sub := range subs {
-		if !sub.Enabled {
-			continue // disabled subscription contributes no models to the picker
-		}
-		if models, gerr := f.subscriptionSvc.GetModels(sub.ID); gerr == nil {
-			subModels[i] = models
-			for _, sm := range models {
-				if sm.Enabled {
-					ensure(sm.Model).hasEnabled = true
-				} else {
-					ensure(sm.Model).hasDisabled = true
-				}
-			}
-		}
-		if sub.Model != "" {
-			ensure(sub.Model).hasLoose = true
-		}
-		for _, m := range sub.CachedModels {
-			if m != "" {
-				ensure(m).hasLoose = true
-			}
-		}
-	}
-	selectable := func(m string) bool {
-		st := states[m]
-		if st == nil {
-			return false
-		}
-		return st.hasEnabled || (st.hasLoose && !st.hasDisabled)
-	}
-	// Append in subscription order so the list is stable and grouped by source.
-	for i, sub := range subs {
+	infos := make([]subInfo, 0, len(subs))
+	for _, sub := range subs {
 		if !sub.Enabled {
 			continue
 		}
-		for _, sm := range subModels[i] {
-			if sm.Enabled && selectable(sm.Model) {
-				add(sub.ID, sub.Name, sm.Model)
-			}
-		}
-		if selectable(sub.Model) {
-			add(sub.ID, sub.Name, sub.Model)
-		}
+		rows, _ := f.subscriptionSvc.GetModels(sub.ID)
+		fetch := make(map[string]bool, len(sub.CachedModels))
 		for _, m := range sub.CachedModels {
-			if selectable(m) {
-				add(sub.ID, sub.Name, m)
+			if m != "" {
+				fetch[m] = true
 			}
+		}
+		rowEn := make(map[string]bool, len(rows))
+		rowHas := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			rowHas[r.Model] = true
+			rowEn[r.Model] = r.Enabled
+		}
+		infos = append(infos, subInfo{sub: sub, rows: rows, fetch: fetch, rowEn: rowEn, rowHas: rowHas})
+	}
+	// statusOf computes the per-(sub,model) status.
+	//   disabled: row.enabled == false
+	//   normal:   fetched (in CachedModels) OR it's sub.Model, and not disabled
+	//   offline:  has a record (row) but not fetched, and not disabled
+	statusOf := func(i int, m string) string {
+		info := infos[i]
+		if info.rowHas[m] && !info.rowEn[m] {
+			return "disabled"
+		}
+		if info.fetch[m] || m == info.sub.Model {
+			return "normal"
+		}
+		return "offline"
+	}
+	// candidates(i) = every model subscription i knows about (fetched + default
+	// + records), deduped by name and SORTED for deterministic emission order.
+	// Map iteration (s.fetch / s.rows) is randomized in Go, so without sorting
+	// the picker display order — and tests comparing two separate calls — would
+	// be nondeterministic.
+	candidates := func(i int) []string {
+		s := infos[i]
+		set := make(map[string]bool)
+		for m := range s.fetch {
+			if m != "" {
+				set[m] = true
+			}
+		}
+		if s.sub.Model != "" {
+			set[s.sub.Model] = true
+		}
+		for _, r := range s.rows {
+			if r.Model != "" {
+				set[r.Model] = true
+			}
+		}
+		cs := make([]string, 0, len(set))
+		for m := range set {
+			cs = append(cs, m)
+		}
+		sort.Strings(cs)
+		return cs
+	}
+	// Emit every (subscription, model) pair in subscription order. The picker
+	// shows each pair as its own row so a user can pick the specific subscription
+	// that serves a model (e.g. "system · deepseek-v4-pro" vs "deepseek ·
+	// deepseek-v4-pro"). `add` dedups within a subscription by model name.
+	for i := range infos {
+		for _, m := range candidates(i) {
+			if m == "" {
+				continue
+			}
+			st := statusOf(i, m)
+			if !includeDisabled && st == "disabled" {
+				continue
+			}
+			add(infos[i].sub.ID, infos[i].sub.Name, m, st)
 		}
 	}
 	return result
@@ -1807,4 +1874,23 @@ func (f *LLMFactory) getSetting(senderID, channel, key string) string {
 		return ""
 	}
 	return settings[key]
+}
+
+// thinkingModeChannel is the canonical channel under which the global
+// thinking_mode user setting is stored. The CLI settings panel and Ctrl+M
+// toggle both write here, and ResolveLLM reads here regardless of the actual
+// call channel — making thinking a single per-user value.
+//
+// The constant itself lives in the channel package (channel.ThinkingModeChannel)
+// to avoid an import cycle: channel/cli and agent both need it, and agent
+// already imports channel while channel/cli cannot import agent.
+const thinkingModeChannel = channel.ThinkingModeChannel
+
+// userThinkingMode returns the global thinking_mode user setting for a sender
+// (the Ctrl+M toggle / /settings Select), stored under the canonical channel.
+// Returns "" (auto) when unset or the settings service is unavailable.
+// Per-model overrides still win above this; sub.ThinkingMode is no longer
+// consulted.
+func (f *LLMFactory) userThinkingMode(senderID string) string {
+	return f.getSetting(senderID, thinkingModeChannel, "thinking_mode")
 }

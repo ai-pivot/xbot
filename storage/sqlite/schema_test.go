@@ -28,7 +28,7 @@ func TestSchema_CreationFromZero(t *testing.T) {
 	tables := []string{
 		"tenants", "session_messages", "core_memory_blocks",
 		"archival_memory", "event_history", "user_profiles",
-		"cron_jobs", "user_llm_configs", "shared_registry", "user_settings",
+		"cron_jobs", "user_llm_subscriptions", "shared_registry", "user_settings",
 	}
 	for _, table := range tables {
 		var name string

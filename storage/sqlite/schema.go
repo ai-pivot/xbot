@@ -160,17 +160,6 @@ CREATE TABLE user_settings (
     UNIQUE(channel, sender_id, key)
 );
 CREATE INDEX idx_user_settings_sender ON user_settings(channel, sender_id);
-CREATE TABLE user_llm_configs (
-    sender_id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    base_url TEXT NOT NULL,
-    api_key TEXT NOT NULL,
-    model TEXT,
-    max_context INTEGER DEFAULT 0,
-    thinking_mode TEXT DEFAULT '',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
 
 CREATE TABLE cron_jobs (
     id TEXT PRIMARY KEY,

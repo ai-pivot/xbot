@@ -413,29 +413,45 @@ func TestSeedLocalDBSubscriptionsOnlyWhenDBEmpty(t *testing.T) {
 	}
 }
 
-func TestSaveCLIConfig_WritesLLMCredentialsWhenNoSubscriptions(t *testing.T) {
+func TestSaveCLIConfig_DoesNotWriteLLMCredentials(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
 	cfgPath := filepath.Join(dir, "config.json")
 
-	// Seed disk config with NO subscriptions — the legacy/first-run path.
+	// Seed disk config with NO subscriptions and existing LLM credentials that
+	// must be preserved (not overwritten) — the DB system subscription is the
+	// single source of truth for credentials, so saveCLIConfig must NOT write
+	// runtime cfg.LLM credentials back to config.json (they may be decrypted
+	// values refreshed from DB).
 	diskCfg := &config.Config{
 		Admin: config.AdminConfig{Token: "admin-secret"},
 		Web:   config.WebConfig{Port: 9090, Enable: true},
+		LLM: config.LLMConfig{
+			Provider:        "openai",
+			BaseURL:         "https://api.openai.com/v1",
+			APIKey:          "sk-disk-key",
+			Model:           "gpt-4.1",
+			MaxOutputTokens: 2048,
+			ThinkingMode:    "disabled",
+		},
 	}
 	if err := config.SaveToFile(cfgPath, diskCfg); err != nil {
 		t.Fatalf("seed disk config: %v", err)
 	}
 
-	// Runtime cfg carries LLM credentials and agent settings.
+	// Runtime cfg carries DIFFERENT LLM credentials (e.g. decrypted from DB) and
+	// agent settings. These credentials must NOT leak into config.json.
 	appCfg := &config.Config{
 		LLM: config.LLMConfig{
-			Provider:        "openai",
-			BaseURL:         "https://api.openai.com/v1",
-			APIKey:          "sk-test-key",
-			Model:           "gpt-4.1",
+			Provider:        "deepseek",
+			BaseURL:         "https://api.deepseek.com",
+			APIKey:          "sk-runtime-leak",
+			Model:           "deepseek-v4",
 			MaxOutputTokens: 4096,
 			ThinkingMode:    "enabled",
+			VanguardModel:   "vanguard-1",
+			BalanceModel:    "balance-1",
+			SwiftModel:      "swift-1",
 		},
 		Agent: config.AgentConfig{MaxIterations: 42},
 	}
@@ -447,32 +463,27 @@ func TestSaveCLIConfig_WritesLLMCredentialsWhenNoSubscriptions(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
-		return
 	}
 
-	// LLM credentials MUST be written because there are no subscriptions.
+	// LLM credentials MUST be preserved from disk, NOT overwritten by runtime values.
 	if loaded.LLM.Provider != "openai" {
-		t.Errorf("LLM.Provider = %q, want %q", loaded.LLM.Provider, "openai")
+		t.Errorf("LLM.Provider = %q, want %q (disk preserved)", loaded.LLM.Provider, "openai")
 	}
-	if loaded.LLM.BaseURL != "https://api.openai.com/v1" {
-		t.Errorf("LLM.BaseURL = %q, want %q", loaded.LLM.BaseURL, "https://api.openai.com/v1")
-	}
-	if loaded.LLM.APIKey != "sk-test-key" {
-		t.Errorf("LLM.APIKey = %q, want %q", loaded.LLM.APIKey, "sk-test-key")
+	if loaded.LLM.APIKey != "sk-disk-key" {
+		t.Errorf("LLM.APIKey = %q, want %q (disk preserved, no runtime leak)", loaded.LLM.APIKey, "sk-disk-key")
 	}
 	if loaded.LLM.Model != "gpt-4.1" {
-		t.Errorf("LLM.Model = %q, want %q", loaded.LLM.Model, "gpt-4.1")
-	}
-	if loaded.LLM.MaxOutputTokens != 4096 {
-		t.Errorf("LLM.MaxOutputTokens = %d, want %d", loaded.LLM.MaxOutputTokens, 4096)
-	}
-	if loaded.LLM.ThinkingMode != "enabled" {
-		t.Errorf("LLM.ThinkingMode = %q, want %q", loaded.LLM.ThinkingMode, "enabled")
+		t.Errorf("LLM.Model = %q, want %q (disk preserved)", loaded.LLM.Model, "gpt-4.1")
 	}
 
-	// Agent should also be persisted.
+	// Tier model mappings ARE written back (global preferences, not credentials).
+	if loaded.LLM.VanguardModel != "vanguard-1" || loaded.LLM.BalanceModel != "balance-1" || loaded.LLM.SwiftModel != "swift-1" {
+		t.Errorf("tier models not persisted: v=%q b=%q s=%q", loaded.LLM.VanguardModel, loaded.LLM.BalanceModel, loaded.LLM.SwiftModel)
+	}
+
+	// Agent should be persisted.
 	if loaded.Agent.MaxIterations != 42 {
-		t.Errorf("Agent.MaxIterations = %d, want %d", loaded.Agent.MaxIterations, 42)
+		t.Errorf("Agent.MaxIterations = %d, want 42", loaded.Agent.MaxIterations)
 	}
 
 	// Other sections from disk should be preserved.
@@ -543,9 +554,10 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 		t.Errorf("SwiftModel = %q, want %q", loaded.LLM.SwiftModel, "new-swift")
 	}
 
-	// LLM credentials must NOT be written because subscriptions exist.
+	// LLM credentials must NOT be written — the DB system subscription is the
+	// single source of truth, so runtime cfg.LLM credentials never go to disk.
 	if loaded.LLM.Provider != "" {
-		t.Errorf("LLM.Provider should NOT be overwritten when subscriptions exist, got %q", loaded.LLM.Provider)
+		t.Errorf("LLM.Provider should NOT be written to config.json, got %q", loaded.LLM.Provider)
 	}
 	if loaded.LLM.BaseURL != "" {
 		t.Errorf("LLM.BaseURL should NOT be overwritten when subscriptions exist, got %q", loaded.LLM.BaseURL)

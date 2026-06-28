@@ -26,7 +26,7 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		_ = done.mgr.SetDefault(done.subID, "")
 		// Restore per-session model: SetDefault(subID, chatID) creates the per-chat
 		// entry using the subscription's default model (via SetSessionLLM). If the
-		// session had a different model choice (e.g. user switched via Ctrl+L),
+		// session had a different model choice (e.g. user switched via Ctrl+N),
 		// SwitchModel overrides the per-chat entry's model field AND persists the
 		// correct model back to the tenants table. This is idempotent when
 		// done.subModel equals the subscription default.

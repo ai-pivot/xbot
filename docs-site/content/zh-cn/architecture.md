@@ -371,7 +371,6 @@ Layer 4: ContextEdit → 精确删除/裁剪/替换
 | `shared_registry` | Skill/Agent 市场 |
 | `web_users` | Web 用户认证 |
 | `user_settings` | 用户设置 |
-| `user_llm_configs` | 用户自定义 LLM 配置 |
 | `user_token_usage` | 用户 Token 使用量统计 |
 | `schema_version` | Schema 版本 |
 

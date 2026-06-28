@@ -10,6 +10,15 @@ import (
 	"xbot/tools"
 )
 
+// ThinkingModeChannel is the canonical channel under which the global
+// thinking_mode user setting is stored. The CLI settings panel and the Ctrl+M
+// toggle both write here, and ResolveLLM reads here regardless of the actual
+// call channel — making thinking a single per-user value across all surfaces
+// (CLI, Feishu, Web). Defined in the channel package (not agent) to avoid an
+// import cycle: both agent and channel/cli need it, and channel/cli cannot
+// import agent.
+const ThinkingModeChannel = "cli"
+
 // SettingScope defines where a setting's value is stored and persisted.
 type SettingScope int
 
@@ -65,14 +74,19 @@ type SettingDef struct {
 // AllSettingDefs is the single registry of all known setting keys.
 // Every other scope map, runtime key list, and known-key check is derived from this.
 var AllSettingDefs = []SettingDef{
-	// ── LLM Subscription config (user_llm_subscriptions DB) ──
-	{Key: "llm_provider", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "LLM provider (only openai and anthropic are supported)", ValidValues: "openai|anthropic", DefaultValue: "openai"},
-	{Key: "llm_api_key", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked)", ValidValues: "any valid API key starting with sk-"},
-	{Key: "llm_base_url", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Custom API base URL (leave empty for default)", ValidValues: "empty or valid HTTPS URL"},
-	{Key: "llm_model", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Model name to use (provider-specific)", ValidValues: "provider-specific model ID"},
-	{Key: "max_output_tokens", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
-	{Key: "thinking_mode", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode", ValidValues: "true|false", DefaultValue: "true"},
-	{Key: "api_type", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
+	// ── LLM Subscription config (nested under "llm" in config.json) ──
+	{Key: "llm_provider", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "LLM provider (only openai and anthropic are supported)", ValidValues: "openai|anthropic", DefaultValue: "openai"},
+	{Key: "llm_api_key", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked)", ValidValues: "any valid API key starting with sk-"},
+	{Key: "llm_base_url", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Custom API base URL (leave empty for default)", ValidValues: "empty or valid HTTPS URL"},
+	{Key: "llm_model", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Model name to use (provider-specific)", ValidValues: "provider-specific model ID"},
+	{Key: "max_output_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
+	// thinking_mode is a GLOBAL user setting (one toggle for all subscriptions/
+	// models), surfaced as a Ctrl+M hotkey + status-bar indicator on the main
+	// chat dialog and as a Select in /settings. Per-model overrides still exist
+	// in subscription_models but are not user-editable. It is NOT subscription-
+	// scoped anymore ("订阅是订阅，模型是模型").
+	{Key: "thinking_mode", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode (global toggle)", ValidValues: "|enabled|disabled", DefaultValue: ""},
+	{Key: "api_type", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
 
 	// ── User-scoped settings (user_settings DB) ──
 	{Key: "enable_stream", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Show LLM output token-by-token", ValidValues: "true|false", DefaultValue: "true"},

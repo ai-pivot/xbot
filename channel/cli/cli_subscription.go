@@ -7,52 +7,33 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// cycleModel switches to the next model across ALL subscriptions (model-first).
-// Uses ListAllModels() so models from every enabled subscription are visible and
-// selectable. Picking a model owned by a different subscription is handled by the
-// backend switch_model RPC, which resolves the owner via ResolveSubscriptionForModel
-// and persists the correct (subID, model) pair to the tenants table.
-func (m *cliModel) cycleModel() {
-	if m.channel == nil || m.channel.modelLister == nil {
-		return
-	}
-
-	// Ensure models are loaded synchronously before cycling.
-	// Without this, the first Ctrl+N sees only the single fallback model
-	// (the async fetch hasn't completed yet).
-	m.channel.modelLister.EnsureModelsLoaded()
-
-	// Cross-subscription: cycle through every selectable model from every
-	// enabled subscription, not just the current subscription's models.
-	models := m.channel.modelLister.ListAllModels()
-	if len(models) < 2 {
-		m.showTempStatus("Only one model available")
-		return
-	}
-
-	current := m.cachedModelName
-	nextIdx := 0
-	for i, name := range models {
-		if name == current {
-			nextIdx = (i + 1) % len(models)
-			break
-		}
-	}
-	m.applyModelSwitch(models[nextIdx])
-}
-
 // applyModelSwitch switches the session to the given model and re-syncs client
 // state. Because the model may belong to a different subscription than the
 // current one, the owning subscription is re-read from the backend
 // (GetSessionSubscription, authoritative in both local and remote modes) after
-// the SwitchModel RPC completes, so activeSubID/cachedModelName/context limits
+// the switch RPC completes, so activeSubID/cachedModelName/context limits
 // reflect the new owner rather than the stale previous subscription.
-func (m *cliModel) applyModelSwitch(nextModel string) {
+//
+// When subID is non-empty, the picker row carried an owning subscription, so
+// SelectModel pins that exact subscription (the same model name may be served
+// by several subscriptions; SelectModel disambiguates). When subID is empty
+// (no owning subscription, e.g. a bare system-default entry from the
+// subscriptionSvc==nil path), it falls back to SwitchModel, which resolves the
+// owner server-side by model name.
+func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 	if nextModel == "" {
 		return
 	}
 	if m.llmSubscriber != nil {
-		m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
+		if subID != "" {
+			if err := m.llmSubscriber.SelectModel(m.senderID, subID, nextModel, m.chatID); err != nil {
+				// Fall back to model-first resolution if the pinned subscription
+				// is no longer valid (disabled/removed between list render and click).
+				m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
+			}
+		} else {
+			m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
+		}
 	}
 	m.cachedModelName = nextModel
 	// Re-resolve the owning subscription from the backend. switch_model persists
@@ -245,6 +226,63 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
 	}
+}
+
+// refreshCachedThinkingMode loads the global thinking_mode user setting from
+// the settings service into m.cachedThinkingMode for status-bar display. Called
+// on startup, session restore, and after the Ctrl+M toggle. Thinking is a
+// global per-user value stored under the canonical channel (agent.ThinkingModeChannel).
+func (m *cliModel) refreshCachedThinkingMode() {
+	if m.channel == nil || m.channel.settingsSvc == nil {
+		return
+	}
+	vals, err := m.channel.settingsSvc.GetSettings(ch.ThinkingModeChannel, m.senderID)
+	if err != nil || vals == nil {
+		return
+	}
+	m.cachedThinkingMode = vals["thinking_mode"]
+}
+
+// thinkingModeLabel renders the status-bar indicator for the current global
+// thinking mode. "" = auto (provider default), "enabled" = on, "disabled" = off.
+func (m *cliModel) thinkingModeLabel() string {
+	switch m.cachedThinkingMode {
+	case "enabled":
+		return "🧠 on"
+	case "disabled":
+		return "🧠 off"
+	default:
+		return "🧠 auto"
+	}
+}
+
+// toggleThinkingMode cycles the global thinking_mode user setting
+// (auto → enabled → disabled → auto), persists it, applies the runtime effect
+// (InvalidateSender via the SettingHandlerRegistry), and refreshes the cache.
+func (m *cliModel) toggleThinkingMode() {
+	if m.channel == nil || m.channel.settingsSvc == nil {
+		return
+	}
+	next := ""
+	switch m.cachedThinkingMode {
+	case "":
+		next = "enabled"
+	case "enabled":
+		next = "disabled"
+	case "disabled":
+		next = ""
+	}
+	if err := m.channel.settingsSvc.SetSetting(ch.ThinkingModeChannel, m.senderID, "thinking_mode", next); err != nil {
+		m.showTempStatus(fmt.Sprintf("Failed to set thinking mode: %v", err))
+		return
+	}
+	// Apply runtime effect (the thinking_mode handler calls InvalidateSender so
+	// the next LLM call re-reads the new value).
+	if m.channel.config.ApplySettings != nil {
+		m.channel.config.ApplySettings(map[string]string{"thinking_mode": next}, m.chatID)
+	}
+	m.cachedThinkingMode = next
+	m.showTempStatus("Thinking mode: " + m.thinkingModeLabel())
 }
 
 // scheduleSessionLLMRestore triggers an async SwitchLLM + SetDefault RPC when

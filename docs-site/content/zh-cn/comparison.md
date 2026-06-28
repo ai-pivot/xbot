@@ -51,7 +51,7 @@ AI 编程 Agent。**xbot 的思路完全不同**：一个 Agent，全渠道。
 在 Codex / Claude Code / OpenCode 中，每个团队成员都要自己配置 API Key。
 在 xbot Server 模式下，**管理员配置一次**，全团队立即使用——无需个人密钥管理。
 
-可以创建多个订阅（工作用 Claude、个人用 DeepSeek），用 `Ctrl+P` 按会话切换。
+可以创建多个订阅（工作用 Claude、个人用 DeepSeek），用 `Ctrl+N` 打开 LLM 面板按会话切换。
 
 ### 🏢 飞书深度集成
 

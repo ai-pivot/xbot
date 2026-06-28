@@ -82,13 +82,6 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			return m, nil, true
 		}
 
-	case msg.String() == "ctrl+p":
-		// Ctrl+P: Quick switch subscription
-		if m.panelState.mode == "" && m.subscriptionMgr != nil && !m.typing {
-			m.openQuickSwitch("subscription")
-			return m, nil, true
-		}
-
 	case msg.String() == "ctrl+t":
 		// Ctrl+T: Open Sessions panel (T = Tabs/Sessions)
 		if m.panelState.mode == "" {
@@ -106,13 +99,10 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 		}
 
 	case msg.String() == "ctrl+n":
-		// Cycle model (next in list)
-		// Uses Ctrl+N instead of Ctrl+M because Ctrl+M is indistinguishable
-		// from Enter on Windows VT Input Mode (Char=\r in both cases).
-		if m.panelState.mode == "" && !m.typing && m.channel != nil {
-			m.cycleModel()
-			// Drain pending cmds (e.g. showTempStatus timer) immediately
-			// to avoid an extra Update→View cycle on the next frame.
+		// Open the unified LLM panel (subscriptions + models).
+		if m.panelState.mode == "" && !m.typing && m.subscriptionMgr != nil {
+			m.openQuickSwitch("")
+			// Drain the background /models refresh cmd immediately.
 			if len(m.pendingCmds) > 0 {
 				pending := m.pendingCmds
 				m.pendingCmds = nil
@@ -121,17 +111,12 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 			return m, nil, true
 		}
 
-	case msg.String() == "ctrl+l":
-		// Open the filterable model picker (cross-subscription). Faster than
-		// Ctrl+N cycling when many models are available.
-		if m.panelState.mode == "" && !m.typing && m.subscriptionMgr != nil {
-			m.openQuickSwitch("model")
-			// Drain the background /models refresh cmd immediately.
-			if len(m.pendingCmds) > 0 {
-				pending := m.pendingCmds
-				m.pendingCmds = nil
-				return m, []tea.Cmd{tea.Batch(pending...)}, true
-			}
+	case msg.String() == "ctrl+m":
+		// Toggle the global thinking_mode user setting (auto → enabled → disabled → auto).
+		// Surfaced on the main chat status bar; works in normal chat mode (not while typing
+		// in an input/panel).
+		if m.panelState.mode == "" && !m.typing {
+			m.toggleThinkingMode()
 			return m, nil, true
 		}
 
@@ -610,7 +595,6 @@ func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 	// the textarea so its native multiline/internal-scroll behavior works,
 	// especially once the input reaches MaxHeight.
 	// Note: ctrl+j is handled earlier in Update() via isCtrlJ() → InsertString("\n").
-	// Note: cycleModel uses Ctrl+N (not Ctrl+M), so no need to intercept here.
 	// Enter 发送消息
 	if !m.inputReady {
 		// §Q 消息队列：typing 期间允许排队消息

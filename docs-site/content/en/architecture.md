@@ -374,7 +374,6 @@ Single SQLite file, WAL mode, `MaxOpenConns=1` (SQLite single-writer model), `Bu
 | `shared_registry` | Skill/Agent marketplace |
 | `web_users` | Web user authentication |
 | `user_settings` | User settings |
-| `user_llm_configs` | User custom LLM configuration |
 | `user_token_usage` | User token usage statistics |
 | `schema_version` | Schema version |
 

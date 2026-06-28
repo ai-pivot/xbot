@@ -396,7 +396,7 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 	defer db.Close()
 
 	subSvc := sqlite.NewLLMSubscriptionService(db)
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSubscriptionSvc(subSvc)
 
 	// Add a subscription with PerModelConfigs
@@ -416,28 +416,31 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 		t.Fatal("createEntryFromSub failed: subID not set")
 	}
 
-	// Verify resolveSubContext uses PerModelConfigs (no subscription_models data yet)
+	// Verify resolveSubContext reads the per-model config persisted by Add
+	// (subscription_models table is the sole source since v42).
 	if mc := f.resolveSubContext("test-model", e); mc != 200000 {
 		t.Errorf("resolveSubContext(PerModelConfigs) = %d, want 200000", mc)
 	}
 
-	// Now add subscription_models data
+	// Now override via subscription_models directly
 	subSvc.UpsertModel(e.subID, "test-model", 1000000, 8192, "", "")
 
-	// Verify resolveSubContext now uses subscription_models (higher priority)
+	// Verify resolveSubContext now uses the overridden value
 	if mc := f.resolveSubContext("test-model", e); mc != 1000000 {
 		t.Errorf("resolveSubContext(subscription_models) = %d, want 1000000 (subscription_models takes priority)", mc)
 	}
 
-	// Verify different model still uses PerModelConfigs
+	// Verify a different model has no per-model config
 	if mc := f.resolveSubContext("other-model", e); mc != 0 {
 		t.Errorf("resolveSubContext(unknown-model) = %d, want 0", mc)
 	}
 
-	// Clean up subscription_models, verify fallback
+	// Clean up subscription_models, verify fallback to subscription-level/model_contexts.
+	// Since v42 the subscription_models table is the sole per-model source (no JSON
+	// fallback), so zeroing the row yields 0 (→ resolveModelContext, which is 0 here).
 	subSvc.UpsertModel(e.subID, "test-model", 0, 0, "", "") // setting max_context to 0
-	if mc := f.resolveSubContext("test-model", e); mc != 200000 {
-		t.Errorf("resolveSubContext(fallback) = %d, want 200000 (fallback to PerModelConfigs)", mc)
+	if mc := f.resolveSubContext("test-model", e); mc != 0 {
+		t.Errorf("resolveSubContext(fallback) = %d, want 0 (table-only, no JSON fallback)", mc)
 	}
 }
 
@@ -445,7 +448,7 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 // subscription service is nil (as in tests), resolveSubContext falls back
 // to the cached sub pointer's PerModelConfigs.
 func TestResolveSubContext_NoDB_FallsBackToSubCache(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 
 	sub := &sqlite.LLMSubscription{
 		Provider: "test", BaseURL: "http://test", APIKey: "sk-test",
@@ -481,7 +484,7 @@ func TestSwitchModel_CopiesSubIDAndSub(t *testing.T) {
 	defer db.Close()
 
 	subSvc := sqlite.NewLLMSubscriptionService(db)
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSubscriptionSvc(subSvc)
 
 	// Add a GLM subscription with PerModelConfigs for both models
@@ -549,7 +552,7 @@ func TestSwitchModel_PerChatEntryIndependent(t *testing.T) {
 	defer db.Close()
 
 	subSvc := sqlite.NewLLMSubscriptionService(db)
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSubscriptionSvc(subSvc)
 
 	// Add two subscriptions
@@ -611,7 +614,7 @@ func TestSwitchModel_PerSessionDoesNotContaminateSubscription(t *testing.T) {
 	defer db.Close()
 
 	subSvc := sqlite.NewLLMSubscriptionService(db)
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSubscriptionSvc(subSvc)
 
 	// Add a subscription with default model "model-a"

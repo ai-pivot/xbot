@@ -188,7 +188,7 @@ func (o *OpenAILLM) ListModels() []string {
 }
 
 // EnsureModelsLoaded performs a synchronous model list fetch if not yet loaded.
-// Callers that need the full model list (e.g. Ctrl+N model cycling) should
+// Callers that need the full model list (e.g. the LLM panel picker) should
 // call this before ListModels to avoid getting a stale single-model fallback.
 func (o *OpenAILLM) EnsureModelsLoaded() {
 	o.mu.RLock()

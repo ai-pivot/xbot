@@ -316,18 +316,11 @@ func saveCLIConfig(cfg *config.Config) error {
 	merged.LLM.SwiftModel = cfg.LLM.SwiftModel
 
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
-	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
-	// Only write credentials to config.json if there are no DB subscriptions
-	// (first-run path where config.json is the only data source).
-	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
-	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
-		merged.LLM.Provider = cfg.LLM.Provider
-		merged.LLM.BaseURL = cfg.LLM.BaseURL
-		merged.LLM.APIKey = cfg.LLM.APIKey
-		merged.LLM.Model = cfg.LLM.Model
-		merged.LLM.MaxOutputTokens = cfg.LLM.MaxOutputTokens
-		merged.LLM.ThinkingMode = cfg.LLM.ThinkingMode
-	}
+	// NOT written back to config.json. The DB system subscription (reconciled at
+	// boot) is the single source of truth, and cfg.LLM.* may hold decrypted values
+	// refreshed from DB — writing them back would leak plaintext keys. config.json
+	// keeps its existing credentials (preserved by SaveToFile's deep merge) only as
+	// a boot seed.
 
 	// CLI remote connection settings: only write if non-empty (e.g. first setup)
 	if cfg.CLI.ServerURL != "" || cfg.CLI.Token != "" {
@@ -507,9 +500,7 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 				newSub.MaxOutputTokens = n
 			}
 		}
-		if v, ok := values["thinking_mode"]; ok {
-			newSub.ThinkingMode = v
-		}
+		// thinking_mode is no longer written onto subscription rows (global user setting).
 		if err := client.AddSubscription(cliSenderID, newSub); err != nil {
 			return fmt.Errorf("create subscription: %w", err)
 		}
@@ -553,9 +544,8 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 			log.Warnf("[Settings] Invalid max_output_tokens value %q: err=%v", v, err)
 		}
 	}
-	if v, ok := values["thinking_mode"]; ok {
-		sub.ThinkingMode = v
-	}
+	// thinking_mode is no longer written onto subscription rows — it is a global
+	// user setting applied via ApplyRuntimeSettings (Ctrl+M / /settings).
 
 	// Preserve PerModelConfigs — never overwrite with nil (would destroy per-model overrides
 	// written by saveSettings or sub panel). Merge existing values on top.
@@ -1196,13 +1186,16 @@ func main() {
 			_, modelChanged := values["llm_model"]
 			_, urlChanged := values["llm_base_url"]
 			_, maxOutputChanged := values["max_output_tokens"]
-			_, thinkingChanged := values["thinking_mode"]
+			// thinking_mode is NOT a subscription field anymore (it's a global user
+			// setting), so it must not trigger updateActiveSubscription nor be written
+			// onto a subscription row. It flows through ApplyRuntimeSettings, whose
+			// thinking_mode handler drops the session memo.
 			// Signal from saveSettings: LLM credentials were saved via subscriptionMgr.
 			// The actual subscription-scoped keys are stripped before reaching here,
 			// so this synthetic key is the only way to know LLM config changed.
 			_, llmCredsSaved := values["__llm_creds_saved"]
 
-			llmFieldChanged := llmChanged || keyChanged || modelChanged || urlChanged || maxOutputChanged || thinkingChanged
+			llmFieldChanged := llmChanged || keyChanged || modelChanged || urlChanged || maxOutputChanged
 
 			// ── Subscription-scoped fields: update via subscription manager ──
 			// Skip the redundant updateActiveSubscription call when saveSettings
@@ -2296,6 +2289,18 @@ func (s *backendLLMSubscriber) SwitchModel(senderID, model, chatID string) {
 	if err := s.client.SwitchModel(senderID, model, chatID); err != nil {
 		log.WithError(err).Warn("backendLLMSubscriber: SwitchModel failed")
 	}
+}
+
+// SelectModel switches to a specific (subscription, model) pair, used by the
+// model picker when the row carries an owning SubID. Unlike SwitchModel (which
+// resolves the owning subscription server-side by model name), this pins the
+// exact subscription the user picked — necessary now that the picker lists the
+// same model name once per subscription that serves it.
+func (s *backendLLMSubscriber) SelectModel(senderID, subID, model, chatID string) error {
+	if senderID == "" {
+		senderID = cliSenderID
+	}
+	return s.client.SelectModel(senderID, subID, model, chatID)
 }
 
 func (s *backendLLMSubscriber) GetDefaultModel() string {

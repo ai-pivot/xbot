@@ -1318,37 +1318,11 @@ func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscript
 	}
 	result := make([]channel.Subscription, len(subs))
 	for i, s := range subs {
-		// Merge subscription_models table data into PerModelConfigs so the
-		// client sees a unified view. Without this, client-side
-		// ResolveEffectiveMaxContext (which only checks PerModelConfigs) misses
-		// values stored in the subscription_models table (v35+ authoritative source).
-		mergeSubscriptionModels(svc, s)
+		// PerModelConfigs is populated from the subscription_models table by the
+		// storage layer (loadPerModelConfigs, v42); no merge needed here.
 		result[i] = subToChannel(s)
 	}
 	return result, nil
-}
-
-// mergeSubscriptionModels merges subscription_models table rows into the
-// subscription's PerModelConfigs map. Table values are authoritative (v35+);
-// existing PerModelConfigs entries are preserved only if the table has no
-// entry for that model.
-func mergeSubscriptionModels(svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) {
-	models, err := svc.GetModels(sub.ID)
-	if err != nil || len(models) == 0 {
-		return
-	}
-	if sub.PerModelConfigs == nil {
-		sub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(models))
-	}
-	for _, m := range models {
-		// subscription_models is authoritative — always overwrite.
-		sub.PerModelConfigs[m.Model] = sqlite.PerModelConfig{
-			MaxContext:      m.MaxContext,
-			MaxOutputTokens: m.MaxOutputTokens,
-			APIType:         m.APIType,
-			Enabled:         m.Enabled,
-		}
-	}
 }
 
 func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subscription, error) {
@@ -1364,7 +1338,6 @@ func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subsc
 	if sub == nil {
 		return nil, nil
 	}
-	mergeSubscriptionModels(svc, sub)
 	ch := subToChannel(sub)
 	return &ch, nil
 }
@@ -1439,6 +1412,13 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	if p.Sub.APIKey != "" && !strings.HasSuffix(p.Sub.APIKey, "****") {
 		dbSub.APIKey = p.Sub.APIKey
 	}
+	// PerModelConfigs are persisted to the subscription_models table (v42 sole source).
+	// Update() no longer writes the JSON column, so persist them explicitly when provided.
+	if p.Sub.PerModelConfigs != nil {
+		if err := svc.UpdatePerModelConfigs(dbSub.ID, p.Sub.PerModelConfigs); err != nil {
+			return fmt.Errorf("update per-model configs: %w", err)
+		}
+	}
 	if err := svc.Update(dbSub); err != nil {
 		return err
 	}
@@ -1449,7 +1429,9 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	// Drop the new-path client cache for this subscription so ResolveLLM rebuilds
 	// the client with the updated credentials/base_url/config.
 	h.Ag.LLMFactory().InvalidateSubscription(dbSub.ID)
-	if existing.IsDefault {
+	// If this subscription is the user's default (per user_default_model), re-switch
+	// the user-level entry so defaultLLM picks up the updated fields immediately.
+	if udm, _ := svc.GetUserDefaultModel(existing.SenderID); udm != nil && udm.SubscriptionID == existing.ID {
 		h.Ag.LLMFactory().SwitchSubscription(bizID, dbSub, "")
 	}
 	return nil
@@ -1693,6 +1675,7 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 		ThinkingMode:    s.ThinkingMode,
 		APIType:         s.APIType,
 		PerModelConfigs: s.PerModelConfigs,
+		IsSystem:        s.IsSystem,
 	}
 }
 

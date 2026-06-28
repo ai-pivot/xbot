@@ -24,7 +24,6 @@ const (
 	paletteActionInsertText                        // inserts text into textarea
 	paletteActionSendText                          // sends text as user message (slash command)
 	paletteActionToggle                            // toggles a UI feature
-	paletteActionCycleModel                        // cycles to next model
 	paletteActionQuit                              // quits the application
 )
 
@@ -92,16 +91,8 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 		Shortcut: "Ctrl+T", Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "sessions",
 	})
 	cmds = append(cmds, paletteCommand{
-		ID: "switch_sub", Title: "Manage Subscriptions", Description: "add / disable / delete LLM subscriptions",
-		Shortcut: "Ctrl+P", Category: PaletteCategorySystem, ActionKind: paletteActionOpenQuickSwitch, ActionData: "subscription",
-	})
-	cmds = append(cmds, paletteCommand{
-		ID: "switch_model", Title: "Switch Model", Description: "pick a model (cross-subscription, searchable)",
-		Shortcut: "Ctrl+L", Category: PaletteCategorySystem, ActionKind: paletteActionOpenQuickSwitch, ActionData: "model",
-	})
-	cmds = append(cmds, paletteCommand{
-		ID: "cycle_model", Title: "Cycle Model", Description: "switch to next model in list",
-		Shortcut: "Ctrl+N", Category: PaletteCategorySystem, ActionKind: paletteActionCycleModel,
+		ID: "switch_model", Title: "Models & Subscriptions", Description: "switch model / manage subscriptions (add, edit, disable, delete)",
+		Shortcut: "Ctrl+N", Category: PaletteCategorySystem, ActionKind: paletteActionOpenQuickSwitch, ActionData: "model",
 	})
 	cmds = append(cmds, paletteCommand{
 		ID: "bgtasks", Title: "Background Tasks", Description: "view running background tasks and agents",
@@ -345,8 +336,6 @@ func (m *cliModel) applyPaletteCommand() {
 		case "msg_fold":
 			m.toggleMessageFold()
 		}
-	case paletteActionCycleModel:
-		m.cycleModel()
 	case paletteActionQuit:
 		m.shouldQuit = true
 	}

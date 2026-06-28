@@ -201,6 +201,37 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v41: drop the legacy user_llm_configs table (dead since v24).
+	if from < 41 {
+		if err := migrateV40ToV41(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v41: %w", err)
+		}
+	}
+
+	// v42: drop the redundant per_model_configs JSON column (subscription_models
+	// table is the sole source for per-model config).
+	if from < 42 {
+		if err := migrateV41ToV42(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v42: %w", err)
+		}
+	}
+
+	// v43: drop the redundant is_default column (default derived from user_default_model).
+	if from < 43 {
+		if err := migrateV42ToV43(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v43: %w", err)
+		}
+	}
+
+	// v44: add is_system column to user_llm_subscriptions. A system subscription
+	// (sender_id="__system__", is_system=1) is reconciled from config/env at boot
+	// and acts as the shared default/fallback LLM source visible to all users.
+	if from < 44 {
+		if err := migrateV43ToV44(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v44: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1238,64 +1269,70 @@ func migrateV34ToV35(db *DB) error {
 		return fmt.Errorf("migrate default models: %w", err)
 	}
 
-	// 3. Migrate per_model_configs JSON into subscription_models rows
-	// IMPORTANT: collect all rows first, then execute inserts. SQLite's
-	// single-connection pool cannot run conn.Exec while rows.Next() is
-	// iterating — that would deadlock and freeze the entire startup.
-	rows, err := conn.Query(`
-		SELECT id, COALESCE(per_model_configs, '{}') FROM user_llm_subscriptions
-		WHERE per_model_configs IS NOT NULL AND per_model_configs != '' AND per_model_configs != '{}'
-	`)
-	if err != nil {
-		return fmt.Errorf("query per_model_configs: %w", err)
-	}
+	// 3. Migrate per_model_configs JSON into subscription_models rows.
+	// Guard: the column was dropped in v42, so skip this step once it's gone
+	// (keeps the migration idempotent when re-run on a post-v42 schema).
+	var pmcCol int
+	_ = conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'per_model_configs'").Scan(&pmcCol)
+	if pmcCol > 0 {
+		// IMPORTANT: collect all rows first, then execute inserts. SQLite's
+		// single-connection pool cannot run conn.Exec while rows.Next() is
+		// iterating — that would deadlock and freeze the entire startup.
+		rows, err := conn.Query(`
+			SELECT id, COALESCE(per_model_configs, '{}') FROM user_llm_subscriptions
+			WHERE per_model_configs IS NOT NULL AND per_model_configs != '' AND per_model_configs != '{}'
+		`)
+		if err != nil {
+			return fmt.Errorf("query per_model_configs: %w", err)
+		}
 
-	type pmcRow struct {
-		subID   string
-		jsonStr string
-	}
-	var pmcRows []pmcRow
-	for rows.Next() {
-		var r pmcRow
-		if err := rows.Scan(&r.subID, &r.jsonStr); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan per_model_configs row: %w", err)
+		type pmcRow struct {
+			subID   string
+			jsonStr string
 		}
-		pmcRows = append(pmcRows, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("rows iteration: %w", err)
-	}
+		var pmcRows []pmcRow
+		for rows.Next() {
+			var r pmcRow
+			if err := rows.Scan(&r.subID, &r.jsonStr); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan per_model_configs row: %w", err)
+			}
+			pmcRows = append(pmcRows, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("rows iteration: %w", err)
+		}
 
-	// Now process collected rows (no conn.Exec inside a rows loop).
-	for _, r := range pmcRows {
-		if r.jsonStr == "" || r.jsonStr == "{}" {
-			continue
-		}
-		var pmc map[string]struct {
-			MaxContext      int `json:"max_context,omitempty"`
-			MaxOutputTokens int `json:"max_output_tokens,omitempty"`
-		}
-		if err := json.Unmarshal([]byte(r.jsonStr), &pmc); err != nil {
-			log.WithError(err).WithField("sub_id", r.subID).Warn("v35: failed to parse per_model_configs, skipping")
-			continue
-		}
-		for modelName, cfg := range pmc {
-			if modelName == "" {
+		// Now process collected rows (no conn.Exec inside a rows loop).
+		for _, r := range pmcRows {
+			if r.jsonStr == "" || r.jsonStr == "{}" {
 				continue
 			}
-			_, err := conn.Exec(`
+			var pmc map[string]struct {
+				MaxContext      int `json:"max_context,omitempty"`
+				MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(r.jsonStr), &pmc); err != nil {
+				log.WithError(err).WithField("sub_id", r.subID).Warn("v35: failed to parse per_model_configs, skipping")
+				continue
+			}
+			for modelName, cfg := range pmc {
+				if modelName == "" {
+					continue
+				}
+				_, err := conn.Exec(`
 				INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens)
 				VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)
 				ON CONFLICT(subscription_id, model) DO UPDATE SET
 					max_context = COALESCE(excluded.max_context, max_context),
 					max_output_tokens = COALESCE(excluded.max_output_tokens, max_output_tokens)
 			`, r.subID, modelName, cfg.MaxContext, cfg.MaxOutputTokens)
-			if err != nil {
-				log.WithError(err).WithFields(log.Fields{
-					"sub_id": r.subID, "model": modelName,
-				}).Warn("v35: failed to upsert per_model_config row")
+				if err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"sub_id": r.subID, "model": modelName,
+					}).Warn("v35: failed to upsert per_model_config row")
+				}
 			}
 		}
 	}
@@ -1420,7 +1457,13 @@ GROUP BY t.subscription_id, t.model;`); err != nil {
 	}
 
 	// 4. Seed user_default_model from each user's default subscription.
-	if _, err := conn.Exec(`
+	// Guard: the is_default column was dropped in v43, so skip this seed once it's
+	// gone (user_default_model is already authoritative by then). Keeps the
+	// migration idempotent when re-run on a post-v43 schema.
+	var isDefaultCol int
+	_ = conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'is_default'").Scan(&isDefaultCol)
+	if isDefaultCol > 0 {
+		if _, err := conn.Exec(`
 INSERT OR REPLACE INTO user_default_model (sender_id, subscription_id, model, updated_at)
 SELECT s.sender_id, s.id,
     COALESCE(NULLIF(s.model, ''),
@@ -1432,7 +1475,8 @@ FROM user_llm_subscriptions s
 WHERE s.is_default = 1
   AND (s.model != '' OR EXISTS (
       SELECT 1 FROM tenants t WHERE t.subscription_id = s.id AND t.model != ''));`); err != nil {
-		return fmt.Errorf("migrate v38->v39 seed user_default_model: %w", err)
+			return fmt.Errorf("migrate v38->v39 seed user_default_model: %w", err)
+		}
 	}
 
 	if _, err := conn.Exec("UPDATE schema_version SET version = 39"); err != nil {
@@ -1456,5 +1500,73 @@ func migrateV39ToV40(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v40: user_llm_subscriptions.enabled")
+	return nil
+}
+
+// migrateV40ToV41 drops the legacy user_llm_configs table. Its data was migrated
+// into user_llm_subscriptions in v24, and no code path reads/writes it anymore.
+func migrateV40ToV41(conn *sql.DB) error {
+	if _, err := conn.Exec("DROP TABLE IF EXISTS user_llm_configs"); err != nil {
+		return fmt.Errorf("migrate v40->v41 drop user_llm_configs: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 41"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v41: dropped legacy user_llm_configs table")
+	return nil
+}
+
+// migrateV41ToV42 drops the redundant per_model_configs JSON column from
+// user_llm_subscriptions. Per-model config now lives solely in the
+// subscription_models table (authoritative since v35). The JSON column was a
+// stale duplicate and incomplete (no ThinkingMode). Uses ALTER TABLE DROP
+// COLUMN (SQLite >= 3.35, provided by modernc.org/sqlite).
+func migrateV41ToV42(conn *sql.DB) error {
+	var count int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'per_model_configs'").Scan(&count); err == nil && count > 0 {
+		if _, err := conn.Exec("ALTER TABLE user_llm_subscriptions DROP COLUMN per_model_configs"); err != nil {
+			return fmt.Errorf("migrate v41->v42 drop per_model_configs: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 42"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v42: dropped redundant per_model_configs JSON column")
+	return nil
+}
+
+// migrateV42ToV43 drops the is_default column from user_llm_subscriptions. The
+// default subscription is now derived from user_default_model (seeded in v39),
+// making the per-row is_default flag redundant. IsDefault stays as an in-memory
+// read-side projection populated by GetDefault/List. Uses ALTER TABLE DROP
+// COLUMN (SQLite >= 3.35, provided by modernc.org/sqlite).
+func migrateV42ToV43(conn *sql.DB) error {
+	var count int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'is_default'").Scan(&count); err == nil && count > 0 {
+		if _, err := conn.Exec("ALTER TABLE user_llm_subscriptions DROP COLUMN is_default"); err != nil {
+			return fmt.Errorf("migrate v42->v43 drop is_default: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 43"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v43: dropped redundant is_default column (derived from user_default_model)")
+	return nil
+}
+
+// migrateV43ToV44 adds the is_system column to user_llm_subscriptions. A system
+// subscription row (is_system=1) is the shared default/fallback LLM reconciled
+// from config/env at boot, visible to all users and read-only in the UI.
+func migrateV43ToV44(conn *sql.DB) error {
+	var count int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM pragma_table_info('user_llm_subscriptions') WHERE name = 'is_system'").Scan(&count); err == nil && count == 0 {
+		if _, err := conn.Exec("ALTER TABLE user_llm_subscriptions ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migrate v43->v44 add is_system: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 44"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v44: added is_system column to user_llm_subscriptions")
 	return nil
 }

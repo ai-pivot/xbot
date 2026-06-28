@@ -5,6 +5,7 @@ import (
 
 	"xbot/config"
 	"xbot/llm"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
 
@@ -21,7 +22,7 @@ func newModelFirstTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptio
 	t.Cleanup(func() { db.Close() })
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	tenantSvc := sqlite.NewTenantService(db)
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "system-default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "system-default-model")
 	f.SetSubscriptionSvc(subSvc)
 	f.SetTenantSvc(tenantSvc)
 	return f, subSvc, tenantSvc
@@ -68,6 +69,49 @@ func TestResolveLLM_SelectModel_PersistsPerSession(t *testing.T) {
 	c2, _, _, _, _ := f.ResolveLLM("cli_user", chatID, "cli")
 	if c2 != client {
 		t.Error("client not reused from clientCache")
+	}
+}
+
+// TestResolveLLM_ThinkingMode_GlobalUserSetting verifies thinking_mode is now a
+// global per-user setting read from user_settings (canonical channel), NOT from
+// sub.ThinkingMode. Priority: per-model override → global user setting → "".
+func TestResolveLLM_ThinkingMode_GlobalUserSetting(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	// Wire a settings service on a sibling connection to the same DB so
+	// ResolveLLM can read the global user setting.
+	db2, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db2: %v", err)
+	}
+	t.Cleanup(func() { db2.Close() })
+	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db2))
+	f.SetSettingsService(settingsSvc)
+
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-think", SenderID: "cli_user", Name: "ds", Provider: "openai",
+		BaseURL: "https://api.ds.example/v1", APIKey: "sk-ds", Model: "deepseek-v4-pro",
+		ThinkingMode: "disabled", // must be IGNORED — thinking is global now
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	chatID := "/home/proj:Agent-1"
+	if err := f.SelectModel("cli_user", chatID, "cli", sub.ID, "deepseek-v4-pro"); err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+
+	// No global setting → "" (auto), even though sub.ThinkingMode="disabled".
+	if _, _, _, tm, _ := f.ResolveLLM("cli_user", chatID, "cli"); tm != "" {
+		t.Errorf("thinkingMode = %q, want \"\" (auto) when global unset; sub.ThinkingMode must be ignored", tm)
+	}
+
+	// Set global thinking_mode=enabled under the canonical channel.
+	if err := settingsSvc.SetSetting(thinkingModeChannel, "cli_user", "thinking_mode", "enabled"); err != nil {
+		t.Fatalf("set thinking_mode: %v", err)
+	}
+	f.invalidateUserMemos("cli_user")
+	if _, _, _, tm, _ := f.ResolveLLM("cli_user", chatID, "cli"); tm != "enabled" {
+		t.Errorf("thinkingMode = %q, want \"enabled\" from global user setting", tm)
 	}
 }
 
@@ -186,7 +230,7 @@ func TestRefreshSessionEntry_PreservesPerSessionModel(t *testing.T) {
 
 	chatID := "/home/proj:Agent-fix"
 	// Establish a per-session entry on the gpt subscription, then switch its
-	// model to gpt-4o-audio-preview (mirrors Ctrl+L per-session model switch).
+	// model to gpt-4o-audio-preview (mirrors Ctrl+N per-session model switch).
 	if err := f.SwitchSubscription("cli_user", subGPT, chatID); err != nil {
 		t.Fatalf("SwitchSubscription: %v", err)
 	}
@@ -369,7 +413,10 @@ func TestListAllModelsForUser_ExcludesDisabled(t *testing.T) {
 	if err := subSvc.SetModelEnabled(sub.ID, "m-disabled", false); err != nil {
 		t.Fatalf("SetModelEnabled: %v", err)
 	}
-	if err := subSvc.UpdateCachedModels(sub.ID, []string{"m-cached"}); err != nil {
+	// List is /models-driven (CachedModels + sub.Model); subscription_models rows
+	// only carry params/enabled. Put all three in CachedModels so the disabled
+	// one is actually present-then-excluded (not just absent).
+	if err := subSvc.UpdateCachedModels(sub.ID, []string{"m-enabled", "m-disabled", "m-cached"}); err != nil {
 		t.Fatalf("UpdateCachedModels: %v", err)
 	}
 
@@ -400,11 +447,14 @@ func TestSetSubscriptionEnabled_SkipsEverywhere(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
 	sub := &sqlite.LLMSubscription{
 		ID: "sub-d", SenderID: "cli_user", Name: "d", Provider: "openai",
-		BaseURL: "https://api.d.example/v1", APIKey: "sk-d", IsDefault: true,
+		BaseURL: "https://api.d.example/v1", APIKey: "sk-d", Model: "d-model",
+		IsDefault: true,
 	}
 	if err := subSvc.Add(sub); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	// subscription_models row carries params only; the list is /models-driven
+	// (CachedModels + sub.Model), so the model appears via sub.Model.
 	if err := subSvc.UpsertModel(sub.ID, "d-model", 0, 0, "", ""); err != nil {
 		t.Fatalf("UpsertModel: %v", err)
 	}
@@ -427,6 +477,12 @@ func TestSetSubscriptionEnabled_SkipsEverywhere(t *testing.T) {
 	// ListAllModelsForUser skips the disabled subscription entirely.
 	if models = f.ListAllModelsForUser("cli_user"); containsModel(models, "d-model") {
 		t.Errorf("d-model should be hidden after sub disable, got %v", models)
+	}
+	// ListAllModelEntriesForUser (picker) also skips disabled subscriptions.
+	for _, e := range f.ListAllModelEntriesForUser("cli_user") {
+		if e.Model == "d-model" {
+			t.Errorf("d-model should not appear in entries after sub disable, got %+v", e)
+		}
 	}
 	// ResolveSubscriptionForModel no longer resolves the disabled subscription as owner.
 	if _, err := f.ResolveSubscriptionForModel("cli_user", "d-model"); err == nil {
@@ -532,17 +588,20 @@ func TestRefreshModelEntriesForUser_NoLoaderGraceful(t *testing.T) {
 	}
 }
 
-// model with its owning subscription's name (for "订阅名 · 模型名" display),
-// skip disabled subscriptions/models, and stay consistent with ListAllModelsForUser.
+// model with its owning subscription's name (for "订阅名 · 模型名" display), carry
+// the per-(sub,model) availability Status (normal/offline/disabled), include all
+// DB items (fetched + sub.Model + manually-added records), and skip disabled
+// subscriptions. Anything not disabled is selectable.
 func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
 	subA := &sqlite.LLMSubscription{
 		ID: "sub-a", SenderID: "cli_user", Name: "alpha", Provider: "openai",
-		BaseURL: "https://api.a.example/v1", APIKey: "sk-a", IsDefault: true,
+		BaseURL: "https://api.a.example/v1", APIKey: "sk-a", Model: "a-model",
+		IsDefault: true,
 	}
 	subB := &sqlite.LLMSubscription{
 		ID: "sub-b", SenderID: "cli_user", Name: "beta", Provider: "openai",
-		BaseURL: "https://api.b.example/v1", APIKey: "sk-b",
+		BaseURL: "https://api.b.example/v1", APIKey: "sk-b", Model: "b-model",
 	}
 	if err := subSvc.Add(subA); err != nil {
 		t.Fatalf("Add A: %v", err)
@@ -550,12 +609,15 @@ func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 	if err := subSvc.Add(subB); err != nil {
 		t.Fatalf("Add B: %v", err)
 	}
-	if err := subSvc.UpsertModel(subA.ID, "a-model", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel a-model: %v", err)
+	// subB fetched list includes b-fetched (normal, no row) and b-disabled (row disabled).
+	if err := subSvc.UpdateCachedModels(subB.ID, []string{"b-fetched", "b-disabled"}); err != nil {
+		t.Fatalf("UpdateCachedModels: %v", err)
 	}
-	if err := subSvc.UpsertModel(subB.ID, "b-model", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel b-model: %v", err)
+	// b-manual: a record but NOT fetched → offline (selectable).
+	if err := subSvc.UpsertModel(subB.ID, "b-manual", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel b-manual: %v", err)
 	}
+	// b-disabled: fetched but row disabled → disabled (not selectable).
 	if err := subSvc.UpsertModel(subB.ID, "b-disabled", 0, 0, "", ""); err != nil {
 		t.Fatalf("UpsertModel b-disabled: %v", err)
 	}
@@ -564,32 +626,56 @@ func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 	}
 
 	entries := f.ListAllModelEntriesForUser("cli_user")
-	want := map[string]string{"a-model": "alpha", "b-model": "beta"}
-	got := map[string]string{}
+	got := map[string]protocol.ModelEntry{}
 	for _, e := range entries {
-		got[e.Model] = e.SubName
+		got[e.Model] = e
 	}
-	for model, subName := range want {
-		if got[model] != subName {
-			t.Errorf("entry for %q = subName %q, want %q", model, got[model], subName)
+	wantStatus := map[string]string{
+		"a-model":    "normal",   // sub.Model
+		"b-model":    "normal",   // sub.Model
+		"b-fetched":  "normal",   // in CachedModels, no row
+		"b-manual":   "offline",  // record, not fetched
+		"b-disabled": "disabled", // row enabled=0
+	}
+	for model, wantSt := range wantStatus {
+		e, ok := got[model]
+		if !ok {
+			t.Errorf("missing entry for %q (entries=%+v)", model, entries)
+			continue
+		}
+		if e.Status != wantSt {
+			t.Errorf("status for %q = %q, want %q", model, e.Status, wantSt)
 		}
 	}
-	if _, ok := got["b-disabled"]; ok {
-		t.Errorf("b-disabled should be excluded, got entries %v", entries)
+	if e, ok := got["b-manual"]; !ok || e.SubName != "beta" {
+		t.Errorf("b-manual should be owned by beta, got %+v", e)
 	}
 
-	// Consistency: the model names in entries must exactly match ListAllModelsForUser.
+	// ListAllModelsForUser = selectable entries (normal + offline), in
+	// entry order, excluding disabled.
 	names := f.ListAllModelsForUser("cli_user")
-	if len(names) != len(entries) {
-		t.Fatalf("len mismatch: ListAllModels=%v entries=%v", names, entries)
+	selectable := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Status != "disabled" {
+			selectable = append(selectable, e.Model)
+		}
+	}
+	if len(names) != len(selectable) {
+		t.Fatalf("len mismatch: ListAllModels=%v selectable=%v", names, selectable)
 	}
 	for i, n := range names {
-		if entries[i].Model != n {
-			t.Errorf("position %d: entry.Model=%q != ListAllModels=%q", i, entries[i].Model, n)
+		if selectable[i] != n {
+			t.Errorf("position %d: selectable=%q != ListAllModels=%q", i, selectable[i], n)
 		}
 	}
+	if containsModel(names, "b-disabled") {
+		t.Errorf("ListAllModelsForUser should exclude disabled b-disabled, got %v", names)
+	}
+	if !containsModel(names, "b-manual") {
+		t.Errorf("ListAllModelsForUser should include offline b-manual (selectable), got %v", names)
+	}
 
-	// Disabling subscription B hides b-model entirely.
+	// Disabling subscription B hides all its models entirely.
 	if err := f.SetSubscriptionEnabled(subB.ID, false); err != nil {
 		t.Fatalf("SetSubscriptionEnabled(false): %v", err)
 	}
@@ -598,5 +684,63 @@ func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 		if e.SubID == subB.ID {
 			t.Errorf("disabled subscription B should contribute no entries, got %v", e)
 		}
+	}
+}
+
+// TestListAllModelEntriesForUser_ListsSameModelPerSubscription verifies the
+// picker lists the same model name once per subscription that serves it, NOT
+// deduped by model name. The user must be able to pick the exact subscription
+// (e.g. "system · deepseek-v4-pro" vs "deepseek · deepseek-v4-pro").
+func TestListAllModelEntriesForUser_ListsSameModelPerSubscription(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	subA := &sqlite.LLMSubscription{
+		ID: "sub-a", SenderID: "cli_user", Name: "alpha", Provider: "openai",
+		BaseURL: "https://api.a.example/v1", APIKey: "sk-a", Model: "shared-model",
+		IsDefault: true,
+	}
+	subB := &sqlite.LLMSubscription{
+		ID: "sub-b", SenderID: "cli_user", Name: "beta", Provider: "openai",
+		BaseURL: "https://api.b.example/v1", APIKey: "sk-b", Model: "shared-model",
+	}
+	if err := subSvc.Add(subA); err != nil {
+		t.Fatalf("Add A: %v", err)
+	}
+	if err := subSvc.Add(subB); err != nil {
+		t.Fatalf("Add B: %v", err)
+	}
+	// Both subs serve the same model name (sub.Model). The picker must emit two
+	// distinct entries — one per subscription — so the user can disambiguate.
+	entries := f.ListAllModelEntriesForUser("cli_user")
+	var owners []string
+	for _, e := range entries {
+		if e.Model == "shared-model" {
+			owners = append(owners, e.SubID)
+		}
+	}
+	if len(owners) != 2 {
+		t.Fatalf("expected shared-model to appear once per subscription (2 entries), got %d: %v", len(owners), entries)
+	}
+	seen := map[string]bool{}
+	for _, id := range owners {
+		if id != subA.ID && id != subB.ID {
+			t.Errorf("unexpected owner %q for shared-model", id)
+		}
+		if seen[id] {
+			t.Errorf("owner %q listed twice for shared-model", id)
+		}
+		seen[id] = true
+	}
+
+	// ListAllModelsForUser is the selectable model-name set (for tier selectors);
+	// it stays deduped by model name, so shared-model appears once.
+	names := f.ListAllModelsForUser("cli_user")
+	count := 0
+	for _, n := range names {
+		if n == "shared-model" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("ListAllModelsForUser should list shared-model once, got %d: %v", count, names)
 	}
 }
