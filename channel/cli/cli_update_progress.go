@@ -848,7 +848,9 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			m.setTurnReplyReceived(turnID)
 			m.rc.valid = false
 		}
+		// SubAgent path needs relayoutViewport because rc.valid was set to false.
+		// Main sessions skip this — endAgentTurn already called relayoutViewport
+		// BEFORE clearing state, producing a single clean GotoBottom.
+		m.relayoutViewport()
 	}
-
-	m.relayoutViewport()
 }

@@ -279,15 +279,20 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	if turnID != m.agentTurnID {
 		return // new turn already started — stale signal, ignore
 	}
-	// Do NOT clear streamingMsgIdx BEFORE relayoutViewport — that causes
-	// appendNewMessagesToCache to cache the streaming message with incomplete
-	// content (reply hasn't arrived yet). Instead, keep it so relayoutViewport
-	// uses updateStreamingOnly (no caching), then clear it AFTER to prevent
-	// the tick handler from showing old turn content via updateStreamingOnly.
 	// Persist token usage for ready-status bar before clearing progress
 	if m.progressState.current != nil {
 		m.cacheTokenUsage(m.progressState.current.TokenUsage)
 	}
+
+	// --- relayoutViewport BEFORE clearing progress state ---
+	// This ensures updateStreamingOnly renders the turn's final state
+	// (all completed iterations + live content) rather than an empty shell.
+	// streamingMsgIdx is still valid here → updateStreamingOnly path.
+	m.relayoutViewport()
+
+	// --- Clear progress/typing state ---
+	// All state cleared AFTER the final render, so the viewport stays
+	// visually stable until handleAgentMessage re-renders the completed message.
 	m.lastCompletedTools = nil
 	m.progressState.iterations = nil
 	m.rc.invalidateProgress()
@@ -344,7 +349,6 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 		m.todos = nil
 		m.todosDoneCleared = false
 	}
-	m.relayoutViewport()
 	// Clear streamingMsgIdx AFTER relayoutViewport: during relayout we need it
 	// valid so updateViewportContent uses updateStreamingOnly (no caching).
 	// After relayout, clear it so the tick handler doesn't keep rendering
