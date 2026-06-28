@@ -550,8 +550,13 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			// snapshotted by snapshotIterationChange). Merging it
 			// into the new payload causes reasoning to render twice —
 			// once in completed iterations, once in live.
-			sameIter := payload.Iteration == old.Iteration || payload.Iteration == 0
-			if sameIter {
+			//
+			// payload.Iteration==0 branch: payload's iteration is
+			// unknown (stream-only or edge-case structured event with
+			// Iteration==0). Conservatively allow merge — the stream
+			// content is presumed to belong to the same logical turn.
+			sameOrUnknownIter := payload.Iteration == old.Iteration || payload.Iteration == 0
+			if sameOrUnknownIter {
 				if payload.StreamContent == "" && old.StreamContent != "" {
 					payload.StreamContent = old.StreamContent
 				}
@@ -560,7 +565,7 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 				}
 			}
 			// StreamingTools follow the same rule.
-			if sameIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
+			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
 				payload.StreamingTools = old.StreamingTools
 			}
 			// Merge TokenUsage and CWD regardless of old event type —
