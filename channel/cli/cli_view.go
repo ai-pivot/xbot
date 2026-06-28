@@ -1593,12 +1593,13 @@ func (m *cliModel) renderReconnectOverlay() string {
 	warningStyle := m.styles.WarningSt
 	mutedStyle := m.styles.TextMutedSt
 
-	frame := splashFrames[(time.Now().UnixMilli()/100)%int64(len(splashFrames))]
+	tick := time.Now().UnixMilli() / 100
+	frame := splashFrames[tick%int64(len(splashFrames))]
 
 	var lines []string
 
-	// Title — connection lost
-	titleText := errorStyle.Render(m.locale.ReconnectTitle)
+	// Title — cute emoji + connection lost message
+	titleText := errorStyle.Render("💔 " + m.locale.ReconnectTitle)
 	tW := lipgloss.Width(titleText)
 	tPad := (screenW - tW) / 2
 	if tPad < 0 {
@@ -1637,6 +1638,20 @@ func (m *cliModel) renderReconnectOverlay() string {
 
 	// Blank line
 	lines = append(lines, "")
+
+	// Random fun quip — cycles every 4 seconds
+	if len(reconnectQuips) > 0 && screenW >= 30 {
+		quipIdx := (tick / 40) % int64(len(reconnectQuips))
+		quipText := mutedStyle.Render("“" + reconnectQuips[quipIdx] + "”")
+		qW := lipgloss.Width(quipText)
+		qPad := (screenW - qW) / 2
+		if qPad < 0 {
+			qPad = 0
+		}
+		lines = append(lines, strings.Repeat(" ", qPad)+quipText)
+		// Blank line after quip
+		lines = append(lines, "")
+	}
 
 	// Quit hint
 	hintText := mutedStyle.Render(m.locale.ReconnectHint)

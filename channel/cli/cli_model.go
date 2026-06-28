@@ -25,6 +25,30 @@ var (
 	orbitFrames = []string{"◌", "◔", "◕", "●", "◕", "◔", "◌", "◔", "◕", "●", "◕", "◔"}
 	// splashFrames: loading bar animation — 启动画面进度条
 	splashFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	// reconnectQuips: random fun messages shown during reconnect splash.
+	// Each frame picks one by wall-clock tick; changes roughly every 4 seconds.
+	reconnectQuips = []string{
+		"正在顺着网线爬过去...",
+		"别急，马上就好～",
+		"正在施展重连魔法 ✨",
+		"服务器：等等我！这就来～",
+		"网络波动，请稍候喵～",
+		"正在和服务器重新握手 🤝",
+		"信号不好，换个姿势试试",
+		"正在敲服务器的门 🚪",
+		"请稍等，马上就连上啦～",
+		"网络打了个盹，很快就醒",
+		"正在建立量子纠缠...",
+		"正在召唤服务器... 🪄",
+		"网线有点松，拧紧中 🔧",
+		"给服务器一个抱抱... 🤗",
+		"正在用意念重连... 🧠",
+		"数据包迷路了，正在找回",
+		"蓄力中... 马上就连上了！",
+		"正在呼叫 xbot 总部... 📡",
+		"稍安勿躁，好事多磨～",
+		"滴！正在重新登录中...",
+	}
 	// sidebarSpinnerFrames: braille spinner for sidebar busy sessions
 	sidebarSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 )
