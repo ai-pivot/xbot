@@ -183,6 +183,17 @@ type RunConfig struct {
 	// ListLLMSubs returns all LLM subscriptions for the current user.
 	ListLLMSubs func(channel, senderID string) []tools.SubscriptionInfo
 
+	// UpdateActiveSubFn updates the active subscription for the current user.
+	// Used by config tool's set action for subscription-scoped keys (llm_model, llm_provider, etc.).
+	// Takes the target field key and new value, returns the old value.
+	// Implementation routes to subscription manager (user_llm_subscriptions DB).
+	UpdateActiveSubFn func(key, value string) (string, error)
+
+	// GetActiveSubFieldFn reads a single field from the active subscription.
+	// Used by config tool's get action for subscription-scoped keys.
+	// Returns the field value (empty string if not set or no active subscription).
+	GetActiveSubFieldFn func(key string) (string, error)
+
 	// OffloadStore Layer 1 offload store（nil = 不启用）
 	OffloadStore *OffloadStore
 
@@ -1138,31 +1149,49 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		hm := cfg.HookManager
 		tc.HooksReloader = hm.ReloadConfig
 	}
-	// Config read/write: from SettingsSvc (works everywhere: local + remote via RPC)
+	// Config read/write: routes to correct backend.
+	// Subscription-scoped keys (llm_model, llm_provider, etc.) use subscription manager.
+	// All other keys use user_settings DB (via SettingsSvc).
 	if cfg.SettingsSvc != nil {
 		svc := cfg.SettingsSvc
 		tc.ConfigGet = func(key string) (string, error) {
+			// Subscription-scoped keys: read from active subscription
+			if channel.IsSubscriptionScopedSettingKey(key) {
+				if cfg.GetActiveSubFieldFn != nil {
+					if v, err := cfg.GetActiveSubFieldFn(key); err == nil && v != "" {
+						return v, nil
+					}
+				}
+				return "", nil
+			}
+			// SourceConfigJSON / SourceLLMConfig: read from config.json
+			if def, ok := channel.GetSettingDef(key); ok {
+				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
+					return channel.ConfigValueBySource(key, def.Source), nil
+				}
+			}
+			// SourceUserDB: read from user_settings DB
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
 				if v, ok := vals[key]; ok && v != "" {
 					return v, nil
 				}
 			}
-			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys.
-			// Also fallback for SourceUserDB keys that may have a default in config.json
-			// (e.g. tavily_api_key can be set globally in config.json as a default).
-			if def, ok := channel.GetSettingDef(key); ok {
-				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
-					return channel.ConfigValueBySource(key, def.Source), nil
-				}
-				// For SourceUserDB keys, try config.json fallback (global defaults)
-				if cfgVal := channel.ConfigValueBySource(key, channel.SourceConfigJSON); cfgVal != "" {
-					return cfgVal, nil
-				}
+			// Fallback: config.json for user-scoped keys with global defaults
+			if cfgVal := channel.ConfigValueBySource(key, channel.SourceConfigJSON); cfgVal != "" {
+				return cfgVal, nil
 			}
-			return "", fmt.Errorf("config: key %q not found", key)
+			return "", nil
 		}
 		tc.ConfigSet = func(key, value string) (string, error) {
+			// Subscription-scoped keys: write to active subscription via subscription manager
+			if channel.IsSubscriptionScopedSettingKey(key) {
+				if cfg.UpdateActiveSubFn == nil {
+					return "", fmt.Errorf("config: subscription manager not available")
+				}
+				return cfg.UpdateActiveSubFn(key, value)
+			}
+			// All other keys: write to user_settings DB
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err != nil {
 				return "", err

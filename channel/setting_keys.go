@@ -65,14 +65,14 @@ type SettingDef struct {
 // AllSettingDefs is the single registry of all known setting keys.
 // Every other scope map, runtime key list, and known-key check is derived from this.
 var AllSettingDefs = []SettingDef{
-	// ── LLM Subscription config (nested under "llm" in config.json) ──
-	{Key: "llm_provider", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "LLM provider (only openai and anthropic are supported)", ValidValues: "openai|anthropic", DefaultValue: "openai"},
-	{Key: "llm_api_key", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked)", ValidValues: "any valid API key starting with sk-"},
-	{Key: "llm_base_url", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Custom API base URL (leave empty for default)", ValidValues: "empty or valid HTTPS URL"},
-	{Key: "llm_model", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Model name to use (provider-specific)", ValidValues: "provider-specific model ID"},
-	{Key: "max_output_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
-	{Key: "thinking_mode", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode", ValidValues: "true|false", DefaultValue: "true"},
-	{Key: "api_type", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
+	// ── LLM Subscription config (user_llm_subscriptions DB) ──
+	{Key: "llm_provider", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "LLM provider (only openai and anthropic are supported)", ValidValues: "openai|anthropic", DefaultValue: "openai"},
+	{Key: "llm_api_key", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "API key for the LLM provider (masked)", ValidValues: "any valid API key starting with sk-"},
+	{Key: "llm_base_url", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Custom API base URL (leave empty for default)", ValidValues: "empty or valid HTTPS URL"},
+	{Key: "llm_model", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Model name to use (provider-specific)", ValidValues: "provider-specific model ID"},
+	{Key: "max_output_tokens", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
+	{Key: "thinking_mode", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode", ValidValues: "true|false", DefaultValue: "true"},
+	{Key: "api_type", Scope: ScopeSubscription, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
 
 	// ── User-scoped settings (user_settings DB) ──
 	{Key: "enable_stream", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Show LLM output token-by-token", ValidValues: "true|false", DefaultValue: "true"},
@@ -105,14 +105,14 @@ var AllSettingDefs = []SettingDef{
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
 	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
-	{Key: "max_context_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression (per subscription+model)", ValidValues: "any positive integer"},
+	{Key: "max_context_tokens", Scope: ScopeSubscription, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression (per subscription+model)", ValidValues: "any positive integer"},
 	{Key: "enable_auto_compress", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Legacy alias for context_mode=auto (deprecated)", ValidValues: "true|false"},
 	{Key: "runner_server", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
 	{Key: "runner_token", Scope: ScopeUser, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote runner (masked)", ValidValues: "any valid token"},
 	{Key: "runner_workspace", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Workspace dir on remote runner", ValidValues: "any valid path"},
-	{Key: "vanguard_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermManual, AIDescription: "Model for vanguard tier", ValidValues: "any model name"},
-	{Key: "balance_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermManual, AIDescription: "Model for balance tier", ValidValues: "any model name"},
-	{Key: "swift_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermManual, AIDescription: "Model for swift tier", ValidValues: "any model name"},
+	{Key: "vanguard_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Model for vanguard tier", ValidValues: "any model name"},
+	{Key: "balance_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Model for balance tier", ValidValues: "any model name"},
+	{Key: "swift_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Model for swift tier", ValidValues: "any model name"},
 
 	// ── Action keys (UI triggers) ──
 	{Key: "subscription_manage", Scope: ScopeAction, AIDescription: "Open subscription management panel"},

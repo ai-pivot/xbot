@@ -113,6 +113,11 @@ type ToolContext struct {
 	ConfigGet func(key string) (string, error)
 
 	// ConfigSet writes a configuration value and returns the previous value (for config tool).
+	// The implementation routes to the correct backend based on SettingDef.Source:
+	//   SourceUserDB        → user_settings DB (via SettingsSvc)
+	//   SourceConfigJSON    → config.json (via SaveToFile)
+	// Subscription-scoped keys (llm_model, max_output_tokens, etc.) are written via
+	// the subscription manager to the user_llm_subscriptions DB.
 	ConfigSet func(key, value string) (string, error)
 
 	// ChatRename renames the current chat session (for config tool's session_name key).

@@ -198,6 +198,10 @@ func (a *Agent) buildBaseRunConfig(
 		// Subscription listing — from LLMFactory
 		ListLLMSubs: a.listLLMSubsFn(channel),
 
+		// Subscription read/write — from LLMFactory (for config tool)
+		GetActiveSubFieldFn: a.getActiveSubFieldFn(channel),
+		UpdateActiveSubFn:   a.updateActiveSubFn(channel),
+
 		// LLM 并发限流回调（per-tenant）
 		LLMSemAcquire:             llmSemAcquire,
 		EnableConcurrentSubAgents: true,
@@ -905,6 +909,8 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(channel, chatID)
 	cfg.ChatRenameFn = a.renameSession
 	cfg.ListLLMSubs = a.listLLMSubsFn(channel)
+	cfg.GetActiveSubFieldFn = a.getActiveSubFieldFn(channel)
+	cfg.UpdateActiveSubFn = a.updateActiveSubFn(channel)
 
 	var sessionOnce sync.Once
 

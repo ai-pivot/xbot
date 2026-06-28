@@ -31,17 +31,15 @@ func (t *TuiControlTool) Description() string {
 		"To create a custom theme, use FileCreate to write a JSON file to ~/.xbot/themes/<name>.json then switch via set_theme. Activate the ai-config skill for the JSON format template. " +
 		"Use send_slash ONLY for pure-TUI operations (/palette, /settings, /rewind, /tasks, /clear, etc.). " +
 		"DO NOT use send_slash for /usage, /set-llm, /set-model, /models, /new, /compress, /context — these are agent-level commands handled natively. " +
+		"For all configuration management (LLM models, subscriptions, settings, plugins, hooks), use the config tool instead. " +
 		"Actions: switch_session(chat_id), close_session(chat_id, params.confirm=true), " +
-		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/palette\"), " +
-		"reload_plugins(), reload_hooks(). " +
-		"Use reload_plugins after creating or modifying plugin files to hot-reload all plugins. " +
-		"Use reload_hooks after modifying hooks.json to reload hook configuration without restart. " +
+		"set_layout(key=\"sidebar_width\"|..., value), set_theme(theme_name), send_slash(command=\"/palette\"). " +
 		"To find available sessions to switch to, look at the sessions listed in the sidebar."
 }
 
 func (t *TuiControlTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "action", Type: "string", Description: "Action: switch_session, close_session, set_layout, set_theme, send_slash, reload_plugins, reload_hooks", Required: true},
+		{Name: "action", Type: "string", Description: "Action: switch_session, close_session, set_layout, set_theme, send_slash. For config changes use config tool.", Required: true},
 		{Name: "chat_id", Type: "string", Description: "Target session chatID (for switch/close)", Required: false},
 		{Name: "key", Type: "string", Description: "Layout key: sidebar_width, sidebar_enabled, etc.", Required: false},
 		{Name: "value", Type: "string", Description: "New value for layout key or theme name", Required: false},
@@ -133,24 +131,6 @@ func (t *TuiControlTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 		}
 		_ = res
 		return NewResult(fmt.Sprintf("Slash command sent: %s", cmd)), nil
-
-	case "reload_plugins":
-		if ctx.PluginReloader == nil {
-			return nil, fmt.Errorf("tui_control: plugin reload is not available (plugin system not enabled)")
-		}
-		if err := ctx.PluginReloader(); err != nil {
-			return nil, fmt.Errorf("tui_control: reload_plugins failed: %w", err)
-		}
-		return NewResult("All plugins reloaded successfully"), nil
-
-	case "reload_hooks":
-		if ctx.HooksReloader == nil {
-			return nil, fmt.Errorf("tui_control: hooks reload is not available")
-		}
-		if err := ctx.HooksReloader(); err != nil {
-			return nil, fmt.Errorf("tui_control: reload_hooks failed: %w", err)
-		}
-		return NewResult("Hooks configuration reloaded successfully"), nil
 
 	default:
 		if params.Action == "new_session" || params.Action == "create_session" {
