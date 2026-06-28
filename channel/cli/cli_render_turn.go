@@ -304,6 +304,10 @@ func lastIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, b
 
 // firstIterationBlockKind returns the kind of the first non-empty block
 // across a slice of iterations, scanning in forward order.
+// Priority order is intentionally reversed from lastIterationBlockKind:
+// last cares what an iteration ENDED with (Tools→Thinking→Reasoning, heaviest last),
+// first cares what an iteration STARTED with (Reasoning→Thinking→Tools, lightest first).
+// This asymmetry ensures correct separator insertion at the boundary between groups.
 func firstIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, bool) {
 	for _, iter := range iterations {
 		if iter.Reasoning != "" {

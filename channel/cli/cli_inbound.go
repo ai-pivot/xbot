@@ -73,8 +73,9 @@ func (m *cliModel) sendInbound(msg ch.InboundMsg) bool {
 			return true
 		}
 		// Write failed — connection is dead. Show splash immediately.
-		log.WithFields(log.Fields{"fn_exists": true, "fn_returned": ok}).Warn("sendInbound: send failed, setting connState=disconnected")
-		m.connState = "disconnected"
+		if m.channel != nil {
+			m.channel.SetConnState("disconnected")
+		}
 		return false
 	}
 	log.Warn("sendInbound: sendInboundFn is nil, connState NOT set")

@@ -616,7 +616,7 @@ func (c *CLIChannel) SetConnState(state string) {
 		c.model.connState = state
 	}
 	c.programMu.Unlock()
-	log.WithField("state", state).Warn("SetConnState: written directly to model")
+	log.WithField("state", state).Info("SetConnState: written directly to model")
 }
 
 // SendToast shows a toast notification in the CLI (non-blocking).

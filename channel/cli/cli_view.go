@@ -15,7 +15,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	log "xbot/logger"
 )
 
 // computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
@@ -1059,10 +1058,6 @@ func (m *cliModel) resolveWidgetZone(zone string) string {
 func (m *cliModel) View() (v tea.View) {
 	defer clipanic.Recover("ch.cliModel.View", nil, true)
 
-	if m.connState != "connected" && m.connState != "" {
-		log.WithFields(log.Fields{"connState": m.connState, "remoteMode": m.remoteMode}).Warn("SPLASH: View() rendering reconnect overlay")
-	}
-
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
 
@@ -1585,23 +1580,91 @@ func (m *cliModel) renderSuLoading() string {
 // renderReconnectOverlay renders a full-screen disconnect splash screen.
 // Only Ctrl+Z is accepted (quit).
 func (m *cliModel) renderReconnectOverlay() string {
-	frame := splashFrames[(time.Now().UnixMilli()/100)%int64(len(splashFrames))]
-	lines := []string{
-		"",
-		"",
-		"",
-		"",
-		"",
-		"",
-		"",
-		"",
-		"          ⚠ " + m.locale.ReconnectTitle,
-		"",
-		"          " + fmt.Sprintf(m.locale.ReconnectingMsg, frame),
-		"",
-		"          " + m.locale.ReconnectHint,
+	screenW := m.chatWidth()
+	if screenW < 40 {
+		screenW = 40
 	}
-	return strings.Join(lines, "\n")
+	screenH := m.height
+	if screenH < 8 {
+		screenH = 8
+	}
+
+	errorStyle := m.styles.ErrorMsg
+	warningStyle := m.styles.WarningSt
+	mutedStyle := m.styles.TextMutedSt
+
+	frame := splashFrames[(time.Now().UnixMilli()/100)%int64(len(splashFrames))]
+
+	var lines []string
+
+	// Title — connection lost
+	titleText := errorStyle.Render(m.locale.ReconnectTitle)
+	tW := lipgloss.Width(titleText)
+	tPad := (screenW - tW) / 2
+	if tPad < 0 {
+		tPad = 0
+	}
+	lines = append(lines, strings.Repeat(" ", tPad)+titleText)
+
+	// Blank line
+	lines = append(lines, "")
+
+	// Server URL
+	host := m.remoteServerURL
+	if u, err := url.Parse(host); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	serverText := mutedStyle.Render("  " + host)
+	sW := lipgloss.Width(serverText)
+	sPad := (screenW - sW) / 2
+	if sPad < 0 {
+		sPad = 0
+	}
+	lines = append(lines, strings.Repeat(" ", sPad)+serverText)
+
+	// Blank line
+	lines = append(lines, "")
+
+	// Spinner + reconnecting message
+	spinnerMsg := fmt.Sprintf(m.locale.ReconnectingMsg, frame)
+	loadingText := warningStyle.Render(spinnerMsg)
+	lW := lipgloss.Width(loadingText)
+	lPad := (screenW - lW) / 2
+	if lPad < 0 {
+		lPad = 0
+	}
+	lines = append(lines, strings.Repeat(" ", lPad)+loadingText)
+
+	// Blank line
+	lines = append(lines, "")
+
+	// Quit hint
+	hintText := mutedStyle.Render(m.locale.ReconnectHint)
+	hW := lipgloss.Width(hintText)
+	hPad := (screenW - hW) / 2
+	if hPad < 0 {
+		hPad = 0
+	}
+	lines = append(lines, strings.Repeat(" ", hPad)+hintText)
+
+	// Vertical center
+	emptyLinesBefore := (screenH - len(lines)) / 2
+	if emptyLinesBefore < 0 {
+		emptyLinesBefore = 0
+	}
+
+	var sb strings.Builder
+	for i := 0; i < emptyLinesBefore; i++ {
+		sb.WriteByte('\n')
+	}
+	for i, line := range lines {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(line)
+	}
+
+	return sb.String()
 }
 
 // ---------------------------------------------------------------------------
