@@ -1,7 +1,24 @@
 package cli
 
-// reconnectQuipsZH — 中文趣味重连语录。
-// 每 ~4 秒通过 wall-clock tick 轮换一条。
+// =============================================================================
+// Reconnect Splash Data — quips & ASCII art with hidden easter eggs
+// =============================================================================
+//
+// Rarity system (deterministic per wall-clock art-cycle, no stored state):
+//
+//   reconnectRarity(tick) returns:
+//     0 = normal  (~94% of art cycles)  — 6 standard arts + full quip pool
+//     1 = rare    (~5%  of art cycles)  — 3 rare arts + rare quips mixed in
+//     2 = golden  (~1%  of art cycles)  — 1 golden art + golden quips
+//
+// Rarity is deterministic per 8-second art-cycle window (tick/80), not per
+// 100ms frame — so the rare/golden content stays visible for a full cycle
+// rather than flickering.
+
+// =============================================================================
+// Normal quip sets (i18n)
+// =============================================================================
+
 var reconnectQuipsZH = []string{
 	"正在顺着网线爬过去...",
 	"别急，马上就好～",
@@ -33,7 +50,6 @@ var reconnectQuipsZH = []string{
 	"马上就连上了！大概... 也许...",
 }
 
-// reconnectQuipsEN — English fun reconnect quips.
 var reconnectQuipsEN = []string{
 	"Hold on, crawling through the cable...",
 	"Almost there, pinky promise～",
@@ -65,7 +81,6 @@ var reconnectQuipsEN = []string{
 	"Should be connected soon! Probably... maybe...",
 }
 
-// reconnectQuipsJA — 日本語の再接続中の楽しいメッセージ。
 var reconnectQuipsJA = []string{
 	"ケーブルの中を這ってます...",
 	"もう少し、待っててね～",
@@ -97,78 +112,238 @@ var reconnectQuipsJA = []string{
 	"もうすぐ繋がります！多分... きっと...",
 }
 
-// reconnectArts — small ASCII art scenes that cycle every ~8 seconds.
-// Each art fits within 28 columns and 4 lines for narrow terminal safety.
+// =============================================================================
+// Normal ASCII art scenes (6 total, cycle every ~8 seconds)
+// All characters are halfwidth (ASCII + box-drawing + solid block) to avoid
+// alignment drift from CJK/fullwidth character mixing.
+// =============================================================================
+
 var reconnectArts = [][]string{
-	// 0: Cat — kawaii
+	// 0: Cat — kawaii (8 cols wide, pure ASCII)
 	{
-		"  ╱|、",
-		" (˚ˎ 。7",
-		"  |、˜〵",
-		" じしˍ,)ノ",
+		"  /\\_/\\",
+		" ( o.o )",
+		"  > ^ <",
 	},
-	// 1: Robot — tech buddy
+	// 1: Robot — tech buddy (9 cols wide, pure ASCII)
 	{
-		"  [○_○]",
+		"  [o_o]",
 		"  ]|_|[",
 		"  / > < \\",
 	},
-	// 2: Heart — sweet
+	// 2: Heart — sweet (11 cols wide, ASCII + ♥)
 	{
 		"  .::\"\"::.",
 		"  ::'  '::",
-		"  :: ♡ ::",
+		"  :: \u2665 ::",
 		"  ':.  .:'",
 		"    '::'",
 	},
-	// 3: Server rack — datacenter vibes
+	// 3: Server rack — datacenter (12 cols wide, box-drawing + block)
 	{
-		"  ╔══════╗",
-		"  ║ ██ ██ ║",
-		"  ║ ██ ██ ║",
-		"  ╚══════╝",
+		"  \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2510",
+		"  \u2502 \u2588\u2588 \u2588\u2588 \u2502",
+		"  \u2502 \u2588\u2588 \u2588\u2588 \u2502",
+		"  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2518",
 	},
-	// 4: Cable plug — connection theme
+	// 4: Plug — connection (13 cols wide, box-drawing + middle dot)
 	{
-		"   ╭─────╮",
-		" ──┤·····├──",
-		"   ╰─────╯",
+		"   \u256d\u2500\u2500\u2500\u2500\u2500\u256e",
+		"\u2500\u2500\u2500\u2524\u00b7\u00b7\u00b7\u00b7\u00b7\u251c\u2500\u2500\u2500",
+		"   \u2570\u2500\u2500\u2500\u2500\u2500\u256f",
 	},
-	// 5: Shooting star — wish
+	// 5: Ghost — spooky cute (8 cols wide, pure ASCII)
 	{
-		"  ☆",
-		"   ╲",
-		"    ╲  ✧",
-		"     ╲",
-		"      ★",
+		"   .-.",
+		"  (o o)",
+		"  | O |",
+		"   '-'",
 	},
 }
 
-// selectReconnectQuip picks a quip by language and tick.
-// lang is the locale language code ("zh", "en", "ja").
-// tick is wall-clock 100ms ticks (time.Now().UnixMilli()/100).
-func selectReconnectQuip(lang string, tick int64) string {
-	var quips []string
-	switch lang {
-	case "ja":
-		quips = reconnectQuipsJA
-	case "en":
-		quips = reconnectQuipsEN
-	default:
-		quips = reconnectQuipsZH
+// =============================================================================
+// Rare easter egg (~5% of art cycles)
+// =============================================================================
+
+var reconnectArtsRare = [][]string{
+	// 0: Rocket — to the moon (pure ASCII, 9 cols)
+	{
+		"    /\\",
+		"   /  \\",
+		"  |    |",
+		"  |    |",
+		"  /||\\",
+	},
+	// 1: Diamond — shiny (pure ASCII, 7 cols)
+	{
+		"   /\\",
+		"  /  \\",
+		" /    \\",
+		" \\    /",
+		"  \\  /",
+		"   \\/",
+	},
+	// 2: Fish — swimming (pure ASCII, 9 cols)
+	{
+		"   ><>",
+		"  <><>",
+		"   ><>",
+	},
+}
+
+var reconnectQuipsRareZH = []string{
+	"🐛 发现一只稀有 bug，正在捕获...",
+	"⚡ 运气不错！今天是重连日～",
+	"🎰 叮叮叮！稀有重连动画解锁！",
+	"🔮 水晶球显示：马上就连上了",
+	"🦄 独角兽正在帮你重连...",
+	"🎪 马戏团数据包正在赶来的路上",
+}
+
+var reconnectQuipsRareEN = []string{
+	"🐛 A wild rare bug appeared! Catching it...",
+	"⚡ Lucky day! Rare reconnect sequence!",
+	"🎰 Jackpot! Rare reconnect animation unlocked!",
+	"🔮 The crystal ball says: reconnecting soon!",
+	"🦄 A unicorn is assisting your reconnect...",
+	"🎪 Circus packets en route to your terminal!",
+}
+
+var reconnectQuipsRareJA = []string{
+	"🐛 レアバグ発見！捕獲中...",
+	"⚡ ラッキー！レア再接続デー！",
+	"🎰 ジャックポット！レアアニメーション解放！",
+	"🔮 水晶玉が示す：もうすぐ繋がる！",
+	"🦄 ユニコーンが再接続をお手伝い...",
+	"🎪 サーカスパケットが到着中！",
+}
+
+// =============================================================================
+// Golden easter egg (~1% of art cycles — ultra rare)
+// =============================================================================
+
+var reconnectArtsGolden = [][]string{
+	// 0: Crown — you found it! (pure ASCII, 11 cols)
+	{
+		"    .-.-.",
+		"   /  ^  \\",
+		"  |  \\_/  |",
+		"   \\_____/",
+		"    |   |",
+		"    |   |",
+	},
+}
+
+var reconnectQuipsGoldenZH = []string{
+	"👑 天选之人！传说级重连动画解锁！！",
+}
+
+var reconnectQuipsGoldenEN = []string{
+	"👑 The Chosen One! Legendary reconnect unlocked!!",
+}
+
+var reconnectQuipsGoldenJA = []string{
+	"👑 選ばれし者！伝説の再接続アニメーション解放！！",
+}
+
+// =============================================================================
+// Helper functions
+// =============================================================================
+
+// reconnectRarity returns the rarity tier for the given tick.
+//
+//	0 = normal      (~97.6%)  — standard art + standard quips
+//	1 = rare quips  (~2%)     — standard art + rare quips mixed into pool
+//	2 = rare arts   (~0.4%)   — rare art + rare quips
+//	3 = hidden      (special) — golden art + golden quip
+//
+// Tiers 1-2 are deterministic per art-cycle (tick/80). Tier 3 uses a
+// hidden trigger: the art-cycle number must equal a specific magic value
+// that occurs once every ~8 hours of continuous disconnection — if you
+// happen to be disconnected at that exact 8-second window, you win.
+func reconnectRarity(tick int64) int {
+	cycle := tick / 80 // 8-second art cycle
+
+	// Hidden: ~0.027% — once per 3600 cycles (≈8 hours)
+	// Specific cycle number 1337 acts as the "secret code"
+	if cycle%3600 == 1337 {
+		return 3
 	}
+	// Rare arts: ~0.4% — once per ~34 minutes (257 is prime)
+	if cycle%257 == 127 {
+		return 2
+	}
+	// Rare quips: ~2% — once per ~7 minutes (53 is prime)
+	if cycle%53 == 23 {
+		return 1
+	}
+	return 0
+}
+
+// selectReconnectQuip picks a quip by language, tick, and rarity.
+func selectReconnectQuip(lang string, tick int64) string {
+	rarity := reconnectRarity(tick)
+
+	var quips []string
+	switch rarity {
+	case 3: // hidden golden
+		switch lang {
+		case "ja":
+			quips = reconnectQuipsGoldenJA
+		case "en":
+			quips = reconnectQuipsGoldenEN
+		default:
+			quips = reconnectQuipsGoldenZH
+		}
+	case 2, 1: // rare arts or rare quips — mix rare quips into pool
+		var rare []string
+		switch lang {
+		case "ja":
+			rare = reconnectQuipsRareJA
+		case "en":
+			rare = reconnectQuipsRareEN
+		default:
+			rare = reconnectQuipsRareZH
+		}
+		quips = append(append([]string{}, reconnectQuips(lang)...), rare...)
+	default: // normal
+		quips = reconnectQuips(lang)
+	}
+
 	if len(quips) == 0 {
 		return ""
 	}
-	// Cycle every 4 seconds (40 ticks)
 	return quips[(tick/40)%int64(len(quips))]
 }
 
-// selectReconnectArt picks an ASCII art scene by tick.
-// Cycles every 8 seconds (80 ticks).
+// selectReconnectArt picks an ASCII art scene by tick and rarity.
 func selectReconnectArt(tick int64) []string {
-	if len(reconnectArts) == 0 {
+	rarity := reconnectRarity(tick)
+
+	var arts [][]string
+	switch rarity {
+	case 3:
+		arts = reconnectArtsGolden
+	case 2:
+		arts = reconnectArtsRare
+	default:
+		arts = reconnectArts
+	}
+
+	if len(arts) == 0 {
 		return nil
 	}
-	return reconnectArts[(tick/80)%int64(len(reconnectArts))]
+	return arts[(tick/80)%int64(len(arts))]
+}
+
+// reconnectQuips returns the normal quip set for a language.
+func reconnectQuips(lang string) []string {
+	switch lang {
+	case "ja":
+		return reconnectQuipsJA
+	case "en":
+		return reconnectQuipsEN
+	default:
+		return reconnectQuipsZH
+	}
 }
