@@ -1590,9 +1590,12 @@ func (m *cliModel) renderReconnectOverlay() string {
 		screenH = 6
 	}
 
-	errorStyle := m.styles.ErrorMsg
 	warningStyle := m.styles.WarningSt
 	mutedStyle := m.styles.TextMutedSt
+	// Title uses a dedicated style: bold + error color, but NO fixed Width
+	// (ErrorMsg has .Width(cw) + rounded border, which looks ugly full-width
+	// on wide screens with left-aligned short text).
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))
 
 	tick := time.Now().UnixMilli() / 100
 	frame := splashFrames[tick%int64(len(splashFrames))]
@@ -1635,7 +1638,7 @@ func (m *cliModel) renderReconnectOverlay() string {
 	}
 
 	// ── Title ──
-	titleText := errorStyle.Render("💔 " + m.locale.ReconnectTitle)
+	titleText := titleStyle.Render("💔 " + m.locale.ReconnectTitle)
 	tW := lipgloss.Width(titleText)
 	tPad := (screenW - tW) / 2
 	if tPad < 0 {

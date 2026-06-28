@@ -119,62 +119,13 @@ var reconnectQuipsJA = []string{
 // =============================================================================
 
 var reconnectArts = [][]string{
-	// 0: Cat — kawaii (8 cols wide, pure ASCII)
+	// 0: Cat — kawaii (7 cols wide)
 	{
-		"  /\\_/\\",
-		" ( o.o )",
-		"  > ^ <",
+		" |\\__/|",
+		" (o  o)",
+		"  >^^<",
 	},
-	// 1: Robot — tech buddy (9 cols wide, pure ASCII)
-	{
-		"  [o_o]",
-		"  ]|_|[",
-		"  / > < \\",
-	},
-	// 2: Heart — sweet (11 cols wide, ASCII + ♥)
-	{
-		"  .::\"\"::.",
-		"  ::'  '::",
-		"  :: \u2665 ::",
-		"  ':.  .:'",
-		"    '::'",
-	},
-	// 3: Server rack — datacenter (12 cols wide, box-drawing + block)
-	{
-		"  \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2510",
-		"  \u2502 \u2588\u2588 \u2588\u2588 \u2502",
-		"  \u2502 \u2588\u2588 \u2588\u2588 \u2502",
-		"  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2518",
-	},
-	// 4: Plug — connection (13 cols wide, box-drawing + middle dot)
-	{
-		"   \u256d\u2500\u2500\u2500\u2500\u2500\u256e",
-		"\u2500\u2500\u2500\u2524\u00b7\u00b7\u00b7\u00b7\u00b7\u251c\u2500\u2500\u2500",
-		"   \u2570\u2500\u2500\u2500\u2500\u2500\u256f",
-	},
-	// 5: Ghost — spooky cute (8 cols wide, pure ASCII)
-	{
-		"   .-.",
-		"  (o o)",
-		"  | O |",
-		"   '-'",
-	},
-}
-
-// =============================================================================
-// Rare easter egg (~5% of art cycles)
-// =============================================================================
-
-var reconnectArtsRare = [][]string{
-	// 0: Rocket — to the moon (pure ASCII, 9 cols)
-	{
-		"    /\\",
-		"   /  \\",
-		"  |    |",
-		"  |    |",
-		"  /||\\",
-	},
-	// 1: Diamond — shiny (pure ASCII, 7 cols)
+	// 1: Diamond — shiny (7 cols wide)
 	{
 		"   /\\",
 		"  /  \\",
@@ -183,11 +134,66 @@ var reconnectArtsRare = [][]string{
 		"  \\  /",
 		"   \\/",
 	},
-	// 2: Fish — swimming (pure ASCII, 9 cols)
+	// 2: Star — simple (6 cols wide)
 	{
-		"   ><>",
-		"  <><>",
-		"   ><>",
+		"   *",
+		"  ***",
+		" *****",
+		"  ***",
+		"   *",
+	},
+	// 3: Server — rack (10 cols wide)
+	{
+		"+--------+",
+		"| [==]   |",
+		"| [==]   |",
+		"+--------+",
+	},
+	// 4: Connection — cable (9 cols wide)
+	{
+		"  o    o",
+		"---------",
+		"  \\    /",
+		"   \\  /",
+		"    \\/",
+	},
+	// 5: Ghost — spooky cute (6 cols wide)
+	{
+		"  .-.",
+		" (o o)",
+		" | O |",
+		"  '-'",
+	},
+}
+
+// =============================================================================
+// Rare easter egg (~5% of art cycles)
+// =============================================================================
+
+var reconnectArtsRare = [][]string{
+	// 0: Rocket — launch (8 cols wide)
+	{
+		"   /\\",
+		"  /  \\",
+		" /    \\",
+		" | [] |",
+		" | [] |",
+		" /----\\",
+	},
+	// 1: Diamond — repeat of normal for consistency
+	{
+		"   /\\",
+		"  /  \\",
+		" /    \\",
+		" \\    /",
+		"  \\  /",
+		"   \\/",
+	},
+	// 2: Fish — swimming (7 cols wide)
+	{
+		" ><>",
+		"<><><>",
+		" ><>",
 	},
 }
 
@@ -223,14 +229,14 @@ var reconnectQuipsRareJA = []string{
 // =============================================================================
 
 var reconnectArtsGolden = [][]string{
-	// 0: Crown — you found it! (pure ASCII, 11 cols)
+	// 0: Crown — you found it! (9 cols wide)
 	{
-		"    .-.-.",
-		"   /  ^  \\",
-		"  |  \\_/  |",
-		"   \\_____/",
-		"    |   |",
-		"    |   |",
+		"  .-.-.",
+		" /  ^  \\",
+		"|  \\_/  |",
+		" \\_____/",
+		"  |   |",
+		"  |   |",
 	},
 }
 
