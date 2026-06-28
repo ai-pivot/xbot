@@ -393,10 +393,13 @@ func (m *cliModel) updateStreamingOnly() {
 			prevKind, hasPrev := lastIterationBlockKind(m.progressState.iterations[:oldCount])
 			nextKind, hasNext := firstIterationBlockKind(newIters)
 			if hasPrev && hasNext && needsTurnBlockSeparator(prevKind, nextKind) {
-				// One blank guide line between different-kind iteration groups,
-				// matching what appendTurnBlock produces between blocks internally.
-				// (Same kind or pulse: no separator — old/new are separate arrays.)
-				bodyContent = "\n" + bodyContent
+				// \n\n = different kinds, \n = same kind; splitting produces
+				// one blank guide line between old and new iteration groups.
+				if prevKind == nextKind || nextKind == turnBlockPulse {
+					bodyContent = "\n" + bodyContent
+				} else {
+					bodyContent = "\n\n" + bodyContent
+				}
 			}
 			for _, l := range strings.Split(bodyContent, "\n") {
 				guideLine := guidePrefix + l

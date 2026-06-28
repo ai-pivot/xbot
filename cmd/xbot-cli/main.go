@@ -1135,7 +1135,7 @@ func main() {
 	cliCfg := cli.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
-		RemoteMode:           false, // unified: always use remote adapter path
+		RemoteMode:           true, // unified: always use remote adapter path
 		RemoteServerURL:      remoteServerURL,
 		DebugMode:            flagDebug,
 		DebugInput:           flagDebugInput,
@@ -1822,7 +1822,7 @@ func main() {
 					return
 				}
 				cliCh.RestoreSession(history, progress, nil)
-				if progress != nil {
+				if progress != nil && progress.Phase != "done" {
 					cliCh.SetProcessing(true)
 				} else {
 					cliCh.SetProcessing(false)

@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	log "xbot/logger"
 )
 
 // computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
@@ -1057,6 +1058,11 @@ func (m *cliModel) resolveWidgetZone(zone string) string {
 // View renders the CLI interface.
 func (m *cliModel) View() (v tea.View) {
 	defer clipanic.Recover("ch.cliModel.View", nil, true)
+
+	if m.connState != "connected" && m.connState != "" {
+		log.WithFields(log.Fields{"connState": m.connState, "remoteMode": m.remoteMode}).Warn("SPLASH: View() rendering reconnect overlay")
+	}
+
 	// Reset mouse zones for this frame
 	m.mouseZones.reset()
 
@@ -1079,21 +1085,21 @@ func (m *cliModel) View() (v tea.View) {
 		return v
 	}
 
-	// /su loading
-	if m.splashState.suLoading {
-		v := tea.NewView(m.renderSuLoading())
-		v.AltScreen = true
-		return v
-	}
-
 	// Remote reconnect overlay — show spinner when WS is disconnected.
-	// Placed after suLoading so that session-switch reconnect doesn't conflict.
 	if m.remoteMode && m.connState != "connected" && m.connState != "" {
 		if overlay := m.renderReconnectOverlay(); overlay != "" {
 			v := tea.NewView(overlay)
 			v.AltScreen = true
 			return v
 		}
+	}
+
+	// /su loading — skip if already connected (reconnect restored session but
+	// suHistoryLoadMsg was dropped due to asyncCh congestion)
+	if m.splashState.suLoading && m.connState != "connected" {
+		v := tea.NewView(m.renderSuLoading())
+		v.AltScreen = true
+		return v
 	}
 
 	// Build shared components
@@ -1576,98 +1582,26 @@ func (m *cliModel) renderSuLoading() string {
 	return sb.String()
 }
 
-// renderReconnectOverlay renders a full-screen reconnect spinner overlay
-// when the remote WS connection is lost. Blocks all interaction except quit.
+// renderReconnectOverlay renders a full-screen disconnect splash screen.
+// Only Ctrl+Z is accepted (quit).
 func (m *cliModel) renderReconnectOverlay() string {
-	screenW := m.chatWidth()
-	if screenW < 40 {
-		screenW = 40
+	frame := splashFrames[(time.Now().UnixMilli()/100)%int64(len(splashFrames))]
+	lines := []string{
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"",
+		"          ⚠ " + m.locale.ReconnectTitle,
+		"",
+		"          " + fmt.Sprintf(m.locale.ReconnectingMsg, frame),
+		"",
+		"          " + m.locale.ReconnectHint,
 	}
-	screenH := m.height
-	if screenH < 10 {
-		screenH = 10
-	}
-
-	warningStyle := m.styles.WarningSt
-	errorStyle := m.styles.ErrorMsg
-	mutedStyle := m.styles.TextMutedSt
-
-	frame := splashFrames[m.reconnectFrame%len(splashFrames)]
-
-	var lines []string
-
-	// Title — connection lost
-	titleText := errorStyle.Render(m.locale.ReconnectTitle)
-	tW := lipgloss.Width(titleText)
-	tPad := (screenW - tW) / 2
-	if tPad < 0 {
-		tPad = 0
-	}
-	lines = append(lines, strings.Repeat(" ", tPad)+titleText)
-
-	// Blank line
-	lines = append(lines, "")
-
-	// Server URL
-	host := m.remoteServerURL
-	if u, err := url.Parse(host); err == nil && u.Host != "" {
-		host = u.Host
-	}
-	serverText := mutedStyle.Render("  " + host)
-	sW := lipgloss.Width(serverText)
-	sPad := (screenW - sW) / 2
-	if sPad < 0 {
-		sPad = 0
-	}
-	lines = append(lines, strings.Repeat(" ", sPad)+serverText)
-
-	// Blank line
-	lines = append(lines, "")
-
-	// Spinner + reconnecting message
-	var spinnerMsg string
-	switch m.connState {
-	case "disconnected":
-		spinnerMsg = fmt.Sprintf(m.locale.ReconnectingMsg, frame)
-	default: // "reconnecting" or any other non-connected state
-		spinnerMsg = fmt.Sprintf(m.locale.ReconnectingMsg, frame)
-	}
-	loadingText := warningStyle.Render(spinnerMsg)
-	lW := lipgloss.Width(loadingText)
-	lPad := (screenW - lW) / 2
-	if lPad < 0 {
-		lPad = 0
-	}
-	lines = append(lines, strings.Repeat(" ", lPad)+loadingText)
-
-	// Blank line
-	lines = append(lines, "")
-
-	// Quit hint
-	hintText := mutedStyle.Render(m.locale.ReconnectHint)
-	hW := lipgloss.Width(hintText)
-	hPad := (screenW - hW) / 2
-	if hPad < 0 {
-		hPad = 0
-	}
-	lines = append(lines, strings.Repeat(" ", hPad)+hintText)
-
-	// Vertical center
-	emptyLinesBefore := (screenH - len(lines)) / 2
-	if emptyLinesBefore < 3 {
-		emptyLinesBefore = 3
-	}
-
-	var sb strings.Builder
-	for i := 0; i < emptyLinesBefore; i++ {
-		sb.WriteString("\n")
-	}
-	for _, line := range lines {
-		sb.WriteString(line)
-		sb.WriteString("\n")
-	}
-
-	return sb.String()
+	return strings.Join(lines, "\n")
 }
 
 // ---------------------------------------------------------------------------

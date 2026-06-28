@@ -46,6 +46,10 @@ type rpcResponse struct {
 type RemoteTransport struct {
 	baseTransport
 
+	// eventBase, when set, overrides baseTransport for local event dispatch.
+	// This bridges events from the transport to Client's subscriber base.
+	eventBase *baseTransport
+
 	serverURL string
 	token     string
 
@@ -245,20 +249,18 @@ func (t *RemoteTransport) Run(ctx context.Context) error {
 
 // SendMessage sends a user message to the remote server via WebSocket.
 func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
+	var writeErr error
 	t.connMu.Lock()
-	defer t.connMu.Unlock()
 	if t.conn == nil {
+		t.connMu.Unlock()
 		return fmt.Errorf("not connected to server")
 	}
-	// Set write deadline to avoid blocking indefinitely on dead connections.
 	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	defer t.conn.SetWriteDeadline(time.Time{}) // reset
-
+	defer t.conn.SetWriteDeadline(time.Time{})
 	msgType := "message"
 	if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 		msgType = "cancel"
 	}
-
 	outMsg := protocol.WSClientMessage{
 		Type:       msgType,
 		Content:    msg.Content,
@@ -268,7 +270,21 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 		SenderName: msg.SenderName,
 		ChatType:   msg.ChatType,
 	}
-	return t.conn.WriteJSON(outMsg)
+	writeErr = t.conn.WriteJSON(outMsg)
+	if writeErr != nil {
+		// Write failure means the connection is dead.
+		t.conn = nil
+	}
+	t.connMu.Unlock()
+
+	if writeErr != nil {
+		select {
+		case t.reconnectCh <- struct{}{}:
+		default:
+		}
+		t.setConnState("disconnected")
+	}
+	return writeErr
 }
 
 // BindChat registers this connection to receive events for chatID.
@@ -295,6 +311,24 @@ func (t *RemoteTransport) ConnState() string {
 	return t.connState
 }
 
+// ShareEventBase sets the baseTransport used for local event dispatch.
+// When set, emitLocal uses this instead of the embedded baseTransport,
+// bridging events from the transport to Client's subscriber base.
+func (t *RemoteTransport) ShareEventBase(base *baseTransport) {
+	t.eventBase = base
+}
+
+// emitLocal dispatches a transport event to the correct subscriber base.
+// Uses the shared eventBase when available, otherwise falls back to the
+// embedded baseTransport.
+func (t *RemoteTransport) emitLocal(ctx context.Context, event protocol.TransportEvent) {
+	if t.eventBase != nil {
+		t.eventBase.emit(ctx, event)
+	} else {
+		t.emit(ctx, event)
+	}
+}
+
 // setConnState updates connState and emits a protocol event if state changed.
 func (t *RemoteTransport) setConnState(state string) {
 	t.connMu.Lock()
@@ -302,7 +336,7 @@ func (t *RemoteTransport) setConnState(state string) {
 	t.connState = state
 	t.connMu.Unlock()
 	if prev != state {
-		t.emit(context.Background(), protocol.ConnStateEvent{State: state})
+		t.emitLocal(context.Background(), protocol.ConnStateEvent{State: state})
 	}
 }
 
@@ -448,14 +482,22 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			t.rpcMu.Unlock()
 			// Clear conn so subsequent Call() returns immediately instead of
 			// blocking for 30s on a dead connection (freezes BubbleTea event loop).
+			// Only clear if this readPump still owns the connection — connect()
+			// may have replaced t.conn with a new one while we were waiting.
+			var emitDisconnected bool
 			t.connMu.Lock()
-			t.conn = nil
-			t.connMu.Unlock()
-			select {
-			case t.reconnectCh <- struct{}{}:
-			default:
+			if t.conn == conn {
+				t.conn = nil
+				select {
+				case t.reconnectCh <- struct{}{}:
+				default:
+				}
+				emitDisconnected = true
 			}
-			t.setConnState("disconnected")
+			t.connMu.Unlock()
+			if emitDisconnected {
+				t.setConnState("disconnected")
+			}
 			return
 		}
 		var msg protocol.WSMessage
@@ -549,14 +591,26 @@ func (t *RemoteTransport) pingLoop(ctx context.Context) {
 }
 
 // sendPing sends a WebSocket ping frame to the server.
+// On write failure, it triggers a reconnect — the connection is dead even
+// if readPump hasn't detected it yet (e.g. server died without closing TCP).
 func (t *RemoteTransport) sendPing() {
+	var pingFailed bool
 	t.connMu.Lock()
-	defer t.connMu.Unlock()
-	if t.conn == nil {
-		return
+	if t.conn != nil {
+		if err := t.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+			log.WithError(err).Warn("WS ping failed, connection dead")
+			t.conn = nil
+			pingFailed = true
+		}
 	}
-	if err := t.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-		log.WithError(err).Warn("WS ping failed")
+	t.connMu.Unlock()
+
+	if pingFailed {
+		select {
+		case t.reconnectCh <- struct{}{}:
+		default:
+		}
+		t.setConnState("disconnected")
 	}
 }
 
@@ -596,25 +650,23 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 					log.WithError(err).Warn("Reconnect failed")
 					// Notify user after every 3 failures via emit.
 					if consecutiveFailures%3 == 0 {
-						t.emit(ctx, protocol.OutboundEvent{
+						t.emitLocal(ctx, protocol.OutboundEvent{
 							Channel: "cli",
 							ChatID:  "remote",
 							Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
 						})
 					}
-					// Exponential backoff capped at 30s, never give up.
-					delay = delay * 2
-					if delay > 30*time.Second {
-						delay = 30 * time.Second
-					}
+					// Retry every second.
+					delay = time.Second
 					continue
 				}
 				log.Info("Reconnected to server")
 				consecutiveFailures = 0
-				// Emit protocol reconnect event
-				t.emit(ctx, protocol.ReconnectEvent{})
+				// Start readPump BEFORE emitting ReconnectEvent, so the new
+				// reader is ready to receive RPC responses (BindChat etc.).
 				t.readPumpWg.Add(1)
 				go t.readPump(ctx)
+				t.emitLocal(ctx, protocol.ReconnectEvent{})
 				break
 			}
 		}

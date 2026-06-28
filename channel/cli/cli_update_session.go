@@ -407,7 +407,10 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Reload history to pick up messages that arrived while we were viewing
 		// another session (e.g. the assistant's final reply was filtered out by
 		// ChatID check during the agent session view).
-		if loader := m.channel.config.DynamicHistoryLoader; loader != nil {
+		// Only reload history if it wasn't already provided in the message.
+		// When called from ReconnectRestore, msg.history is pre-populated
+		// by the async goroutine — no need for a second blocking RPC.
+		if loader := m.channel.config.DynamicHistoryLoader; loader != nil && len(msg.history) == 0 {
 			ch, cid := m.channelName, m.chatID
 			cmds = append(cmds, func() tea.Msg {
 				history, err := loader(ch, cid)

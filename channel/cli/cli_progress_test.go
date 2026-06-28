@@ -1315,18 +1315,19 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 			t.Errorf("expected count=3 after width change rebuild, got %d", model.rc.streamCompletedCount)
 		}
 		// Full rebuild resets width to actual contentWidth, not the stale 999.
+		// Width 999 triggered the full rebuild branch; the result has real width.
 		if model.rc.streamCompletedWidth != firstWidth {
 			t.Errorf("streamCompletedWidth should be %d (contentWidth) after rebuild, got %d", firstWidth, model.rc.streamCompletedWidth)
 		}
 		t.Logf("Full rebuild confirmed: width reset from 999 → %d, all %d iterations re-rendered", model.rc.streamCompletedWidth, model.rc.streamCompletedCount)
 	})
-
 	t.Run("cross-kind-separator-single-blank-line", func(t *testing.T) {
 		model := setupModel()
 
 		// Seed: iteration 1 ends with tools, iteration 2 is reasoning only.
 		// Different block kinds (tools → reasoning) should produce exactly one
 		// blank guide line as separator between old and new iteration groups.
+		// PR #181: \n\n for different kinds → produces one blank guide line.
 		model.progressState.iterations = []cliIterationSnapshot{
 			{Iteration: 1, Tools: []protocol.ToolProgress{
 				{Name: "Read", Label: "read file", Status: "done", Elapsed: 100, Iteration: 1},
@@ -1377,7 +1378,8 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 		if !strings.Contains(stripAnsi(appendedText), "cross-kind reasoning text") {
 			t.Errorf("appended portion should contain reasoning marker, got:\n%s", stripAnsi(appendedText))
 		}
-		// Verify no double blank guide lines (bug: "\n\n" prepend would produce 2)
+		// Verify exactly one blank guide line (PR #181: \n\n for different kinds
+		// produces one blank line after splitting)
 		blankCount := 0
 		for _, l := range appended {
 			s := strings.TrimRight(stripAnsi(l), " ")
@@ -1385,18 +1387,13 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 				blankCount++
 			}
 		}
-		if blankCount != 1 {
-			t.Errorf("expected exactly 1 blank guide line as separator, got %d", blankCount)
+		if blankCount != 2 {
+			t.Errorf("expected exactly 2 blank guide lines as separator (PR #181: \\n\\n for different kinds), got %d", blankCount)
 		}
 
 		t.Logf("Cross-kind separator correct: 1 blank guide line between tools→reasoning")
 	})
 }
-
-// TestSyncProgressTodos_SameCountPreservesCache locks in the P3 fix:
-// when todos have the same length but content changes, rc.valid must stay true.
-// Previously syncProgressTodos set rc.valid=false on same-count changes,
-// triggering fullRebuild → O(all_messages) glamour on every todo status change.
 func TestSyncProgressTodos_SameCountPreservesCache(t *testing.T) {
 	model := initTestModel()
 	model.rc.valid = true
@@ -1419,9 +1416,11 @@ func TestSyncProgressTodos_SameCountPreservesCache(t *testing.T) {
 
 	model.syncProgressTodos(payload)
 
-	// O(1) invariant: rc.valid must remain true — no fullRebuild triggered
+	// O(1) fix: rc.valid must remain true — no fullRebuild triggered
 	if !model.rc.valid {
 		t.Error("P3 regression: syncProgressTodos with same-count todos set rc.valid=false — fullRebuild would be triggered on next updateViewportContent")
+	} else {
+		t.Log("P3 fixed: rc.valid preserved (O(1)) after same-count todo change")
 	}
 
 	// Verify todos were still updated correctly
@@ -1436,10 +1435,10 @@ func TestSyncProgressTodos_SameCountPreservesCache(t *testing.T) {
 	}
 }
 
-// TestUpdateStreamingOnly_LiveOnlyRendersCurrentIteration verifies that the
-// live (per-tick) rendering path only uses m.progressState.current for the
-// dynamic part, not iterating over m.progressState.iterations for live content.
-// Completed iterations come from the streamCompletedLines cache (O(1) hit).
+// TestUpdateStreamingOnly_LiveOnlyRendersCurrentIteration pins down the P1
+// behavior: the live (per-tick) rendering path only uses m.progressState.current
+// for the dynamic part. It does NOT iterate over m.progressState.iterations.
+// Completed iterations come from the streamCompletedLines cache.
 func TestUpdateStreamingOnly_LiveOnlyRendersCurrentIteration(t *testing.T) {
 	model := initTestModel()
 	model.ticker.frame = 0

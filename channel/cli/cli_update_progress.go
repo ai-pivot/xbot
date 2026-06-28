@@ -467,11 +467,7 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 				// Must relayout viewport to adjust height.
 				m.relayoutViewport()
 			}
-			// Note: we do NOT set rc.valid=false here.
-			// The progress block is a no-op; todo display is in the status bar,
-			// not in the viewport. rc.valid=false would trigger fullRebuild which
-			// causes a dual viewport update (fullRebuild→updateStreamingOnly) and
-			// visible history flicker during streaming.
+			// If same count, just status/text changed — no height change needed.
 
 			// Persist to TodoManager so todos survive turn end and session switches.
 			m.persistTodosToManager()

@@ -489,6 +489,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.idleTickCounter = 0
 	}
 
+	// NEVER returns tickCmd — the global goroutine is the single tick source.
 	return cmds
 }
 

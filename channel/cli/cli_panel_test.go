@@ -137,13 +137,14 @@ func TestApplyQuickSwitch(t *testing.T) {
 	model.applyQuickSwitch()
 
 	// applyQuickSwitch now defers SwitchLLM + SetDefault to a background Cmd.
-	// Verify pending Cmds were queued (showTempStatus + async SwitchLLM).
-	if len(model.pendingCmds) < 2 {
-		t.Fatalf("expected at least 2 pendingCmds (status clear + async switch), got %d", len(model.pendingCmds))
+	// Verify pending Cmds were queued (async SwitchLLM).
+	// showTempStatus no longer uses pendingCmds — its timer is goroutine-based.
+	if len(model.pendingCmds) < 1 {
+		t.Fatalf("expected at least 1 pendingCmd (async switch), got %d", len(model.pendingCmds))
 	}
 
-	// The last pending Cmd is the async SwitchLLM (first is tempStatus clear)
-	asyncCmd := model.pendingCmds[len(model.pendingCmds)-1]
+	// The pending Cmd is the async SwitchLLM
+	asyncCmd := model.pendingCmds[0]
 	msg := asyncCmd()
 	doneMsg, ok := msg.(cliSwitchLLMDoneMsg)
 	if !ok {

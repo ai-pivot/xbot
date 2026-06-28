@@ -420,6 +420,12 @@ func (m *cliModel) resetToIdleState() {
 	m.inputDraft = ""
 	m.placeholderText = ""
 	m.tempStatus = ""
+	// Drain pending cmds before clearing so queued timers (e.g. showTempStatus)
+	// don't leak. Each cmd is a closure that returns a tea.Msg — we discard
+	// the msg since we're switching sessions anyway.
+	for _, cmd := range m.pendingCmds {
+		_ = cmd // gc
+	}
 	m.pendingCmds = nil
 	m.bgTaskCount = 0
 	m.agentCount = 0

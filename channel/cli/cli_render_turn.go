@@ -302,10 +302,6 @@ func lastIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, b
 	return 0, false
 }
 
-func needsTurnBlockSeparator(prev, next turnBlockKind) bool {
-	return next != turnBlockPulse && prev != next
-}
-
 // firstIterationBlockKind returns the kind of the first non-empty block
 // across a slice of iterations, scanning in forward order.
 func firstIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, bool) {
@@ -321,6 +317,10 @@ func firstIterationBlockKind(iterations []cliIterationSnapshot) (turnBlockKind, 
 		}
 	}
 	return 0, false
+}
+
+func needsTurnBlockSeparator(prev, next turnBlockKind) bool {
+	return next != turnBlockPulse && prev != next
 }
 
 func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fallbackContent string) []turnBlock {

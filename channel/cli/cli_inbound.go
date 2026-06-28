@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/google/uuid"
+	log "xbot/logger"
 )
 
 // newInbound creates an ch.InboundMsg with common fields pre-filled.
@@ -63,10 +64,20 @@ func (m *cliModel) appendSystemStyled(content string) {
 // Uses non-blocking send to prevent the BubbleTea event loop from freezing
 // if the channel is full (e.g., agent is busy with a long LLM call).
 // Returns false if the message was dropped.
+// On failure, immediately marks the connection as disconnected so the
+// splash screen appears without waiting for readPump timeout.
 func (m *cliModel) sendInbound(msg ch.InboundMsg) bool {
 	if m.sendInboundFn != nil {
-		return m.sendInboundFn(msg)
+		ok := m.sendInboundFn(msg)
+		if ok {
+			return true
+		}
+		// Write failed — connection is dead. Show splash immediately.
+		log.WithFields(log.Fields{"fn_exists": true, "fn_returned": ok}).Warn("sendInbound: send failed, setting connState=disconnected")
+		m.connState = "disconnected"
+		return false
 	}
+	log.Warn("sendInbound: sendInboundFn is nil, connState NOT set")
 	return false
 }
 
@@ -108,6 +119,9 @@ func (m *cliModel) sendToAgent(content string) {
 	m.pendingUserMsg = &userCliMsg
 	m.savePendingToSessionState()
 	m.sendInbound(m.newInbound(content, map[string]string{MetadataReplyPolicy: ReplyPolicyOptional}))
+	if m.connState != "connected" {
+		return // disconnected — connState updated directly by SetConnState
+	}
 	m.startAgentTurn()
 }
 
@@ -166,7 +180,9 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	// 发送到消息总线
 	msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
 	msg.Media = media
-	m.sendInbound(msg)
+	if !m.sendInbound(msg) {
+		return nil // send failed — connState already set to disconnected by sendInbound
+	}
 	m.startAgentTurn()
 	return nil
 }
