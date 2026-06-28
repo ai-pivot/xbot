@@ -484,6 +484,10 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			// blocking for 30s on a dead connection (freezes BubbleTea event loop).
 			// Only clear if this readPump still owns the connection — connect()
 			// may have replaced t.conn with a new one while we were waiting.
+			// Relies on identity comparison (t.conn == conn): connect() MUST
+			// create a new *websocket.Conn object each time. Connection pool
+			// reuse would break this guard and cause the new connection to be
+			// cleared by a stale readPump.
 			var emitDisconnected bool
 			t.connMu.Lock()
 			if t.conn == conn {

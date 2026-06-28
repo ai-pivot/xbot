@@ -390,6 +390,12 @@ func (m *cliModel) updateStreamingOnly() {
 			// Handle separator between old last iteration and new first iteration.
 			// renderTurnBody on newIters alone resets the internal lastKind, so the
 			// first new block has no leading separator. We prepend the correct one.
+			//
+			// NOTE: This depends on renderTurnBody's internal implementation —
+			// specifically that it uses an internal lastKind accumulator that resets
+			// per call. If renderTurnBody's separator strategy changes, the
+			// lastIterationBlockKind / firstIterationBlockKind logic here must be
+			// updated accordingly.
 			prevKind, hasPrev := lastIterationBlockKind(m.progressState.iterations[:oldCount])
 			nextKind, hasNext := firstIterationBlockKind(newIters)
 			if hasPrev && hasNext && needsTurnBlockSeparator(prevKind, nextKind) {
