@@ -231,10 +231,10 @@ func (h *Handler) handleExec(msg runnerproto.RunnerMessage) *runnerproto.RunnerM
 		RunAsUser: req.RunAsUser,
 	}
 
-	// pathguard 检查工作目录
+	// pathguard 检查工作目录：不通过则回退到 workspace（用户无需感知 runner 路径差异）
 	if spec.Dir != "" && h.PathGuard != nil {
 		if err := h.PathGuard.Validate(spec.Dir); err != nil {
-			return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
+			spec.Dir = h.PathGuard.Workspace
 		}
 	}
 
@@ -427,10 +427,10 @@ func (h *Handler) handleBgExec(msg runnerproto.RunnerMessage) *runnerproto.Runne
 		return runnerproto.MakeError(msg.ID, "EINVAL", "invalid bg_exec request: "+err.Error())
 	}
 
-	// pathguard 检查工作目录
+	// pathguard 检查工作目录：不通过则回退到 workspace
 	if req.Dir != "" && h.PathGuard != nil {
 		if err := h.PathGuard.Validate(req.Dir); err != nil {
-			return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
+			req.Dir = h.PathGuard.Workspace
 		}
 	}
 

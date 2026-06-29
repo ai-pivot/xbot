@@ -134,6 +134,26 @@ type ToolContext struct {
 	// ListSubscriptions returns all LLM subscriptions for the current user.
 	ListSubscriptions func() []SubscriptionInfo
 
+	// ── Runner CRUD (for config tool) ──
+
+	// RunnerCreate creates a new runner and returns the token.
+	RunnerCreate func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (token string, err error)
+
+	// RunnerList returns all runners for the current user.
+	RunnerList func() ([]RunnerInfo, error)
+
+	// RunnerDelete deletes a runner by name.
+	RunnerDelete func(name string) error
+
+	// RunnerGetActive returns the active runner name for the current user.
+	RunnerGetActive func() (string, error)
+
+	// RunnerSetActive sets the active runner by name.
+	RunnerSetActive func(name string) error
+
+	// RunnerRename renames a runner.
+	RunnerRename func(oldName, newName string) error
+
 	// OriginUserIsAdmin is true when the end user has admin privileges.
 	// Global-scoped settings should only be modified when this is true.
 	OriginUserIsAdmin bool

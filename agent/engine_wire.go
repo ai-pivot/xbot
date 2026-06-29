@@ -863,6 +863,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		SandboxEnabled:         a.sandboxMode != "none",
 		PreferredSandbox:       a.sandboxMode,
 		Sandbox:                resolveSandbox(a.sandbox, sandboxUserID),
+		SandboxRouter:          a.sandbox, // raw router for per-tool-call re-resolution
 		SandboxMode:            a.sandboxMode,
 		InjectInbound:          a.injectInbound,
 		Tools:                  a.tools,
@@ -956,6 +957,14 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			if err := os.MkdirAll(wsRoot, 0o755); err != nil {
 				return nil, fmt.Errorf("create user workspace: %w", err)
 			}
+		}
+
+		// Re-resolve sandbox per tool call — picks up runner switches immediately
+		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
+			cfg.Sandbox = router.SandboxForSession(
+				cfg.Channel+":"+cfg.ChatID,
+				cfg.OriginUserID,
+			)
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)

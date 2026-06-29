@@ -75,6 +75,12 @@ const (
 	MethodSetMaxContextTokens          = "set_max_context_tokens"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
 	MethodApplyRuntimeSettings         = "apply_runtime_settings"
+	MethodRunnerCreate                 = "runner_create"
+	MethodRunnerList                   = "runner_list"
+	MethodRunnerDelete                 = "runner_delete"
+	MethodRunnerGetActive              = "runner_get_active"
+	MethodRunnerSetActive              = "runner_set_active"
+	MethodRunnerRename                 = "runner_rename"
 )
 
 // --- Settings ---

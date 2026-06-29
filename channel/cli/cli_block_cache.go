@@ -66,6 +66,21 @@ type renderCache struct {
 	streamHeaderLine     string   // cached header line (guide + "Assistant ..." label)
 	streamHeaderWidth    int      // contentWidth for the header line cache
 	streamMaxW           int      // max visual width across all cached streaming lines
+
+	// Persistent viewport buffer for streaming mode.
+	// Layout: [histLines | header | maybe-separator | completedLines] | [liveLines | ""]
+	// The prefix (before liveLines) is stable between ticks — only the suffix
+	// (live iteration) changes. When the prefix is stable, we overwrite only
+	// the suffix in-place, avoiding O(N) slice allocation + pointer copy.
+	streamAllBuf     []string // persistent buffer (prefix stable across ticks)
+	streamPrefixLen  int      // length of stable prefix portion
+	streamPrefixMaxW int      // max visual width of prefix portion (cached)
+	// Prefix validity markers — compared against current state to detect dirty.
+	streamPrefixHistGen uint64 // histGen when prefix was built
+	streamPrefixCompCnt int    // streamCompletedCount when prefix was built
+	streamPrefixCompW   int    // streamCompletedWidth when prefix was built
+	streamPrefixHeaderW int    // streamHeaderWidth when prefix was built
+	streamPrefixHasSep  bool   // whether separator was included
 }
 
 // resetAll clears all render caches. Called on resize, session switch, etc.
@@ -97,6 +112,14 @@ func (rc *renderCache) resetAll() {
 	rc.streamHeaderLine = ""
 	rc.streamHeaderWidth = 0
 	rc.streamMaxW = 0
+	rc.streamAllBuf = nil
+	rc.streamPrefixLen = 0
+	rc.streamPrefixMaxW = 0
+	rc.streamPrefixHistGen = 0
+	rc.streamPrefixCompCnt = 0
+	rc.streamPrefixCompW = 0
+	rc.streamPrefixHeaderW = 0
+	rc.streamPrefixHasSep = false
 }
 
 // invalidateProgress resets all progress-related caches (called on iteration change).
@@ -105,6 +128,8 @@ func (rc *renderCache) invalidateProgress() {
 	// Completed iteration lines depend on iterationHistory which changed.
 	rc.streamCompletedLines = nil
 	rc.streamCompletedCount = 0
+	// Force prefix rebuild on next tick.
+	rc.streamPrefixLen = 0
 }
 
 // bumpHistGen increments the histLines generation counter.

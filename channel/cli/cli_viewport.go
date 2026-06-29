@@ -484,26 +484,91 @@ func (m *cliModel) updateStreamingOnly() {
 		return
 	}
 
-	allLines := make([]string, 0, len(histLines)+1+len(completedLines)+len(liveLines)+2)
-	allLines = append(allLines, histLines...)
-	allLines = append(allLines, m.rc.streamHeaderLine) // header line
-	if len(completedLines) > 0 || len(liveLines) > 0 {
-		allLines = append(allLines, guidePrefix)
-		if w := lipgloss.Width(guidePrefix); w > liveMaxW {
-			liveMaxW = w
-		}
-	}
-	allLines = append(allLines, completedLines...)
-	allLines = append(allLines, liveLines...)
-	allLines = append(allLines, "") // trailing \n\n from renderMessage
+	// Persistent buffer optimization: the prefix (histLines + header +
+	// separator + completedLines) is stable between ticks. Only the suffix
+	// (liveLines + trailing "") changes. When the prefix is stable, we
+	// overwrite only the suffix in-place — O(liveLines) instead of O(total).
+	//
+	// Layout: [histLines | header | maybe-sep | completedLines] | [liveLines | ""]
+	hasSep := len(completedLines) > 0 || len(liveLines) > 0
 
-	// Compute max width
-	maxW := m.rc.histMaxW
-	if completedMaxW > maxW {
-		maxW = completedMaxW
-	}
-	if liveMaxW > maxW {
-		maxW = liveMaxW
+	prefixStable := m.rc.streamPrefixLen > 0 &&
+		m.rc.streamPrefixHistGen == m.rc.histGen &&
+		m.rc.streamPrefixCompCnt == m.rc.streamCompletedCount &&
+		m.rc.streamPrefixCompW == m.rc.streamCompletedWidth &&
+		m.rc.streamPrefixHeaderW == m.rc.streamHeaderWidth &&
+		m.rc.streamPrefixHasSep == hasSep
+
+	suffixLen := len(liveLines) + 1 // + trailing ""
+	var allLines []string
+	var maxW int
+
+	if prefixStable {
+		// Fast path: prefix unchanged — overwrite only suffix.
+		off := m.rc.streamPrefixLen
+		needed := off + suffixLen
+		buf := m.rc.streamAllBuf
+		if needed > cap(buf) {
+			// Rare: live lines grew beyond initial capacity.
+			newBuf := make([]string, off, needed+32)
+			copy(newBuf, buf[:off])
+			buf = newBuf
+			m.rc.streamAllBuf = buf
+		}
+		buf = buf[:needed]
+		for i, l := range liveLines {
+			buf[off+i] = l
+		}
+		buf[off+len(liveLines)] = "" // trailing
+		allLines = buf
+
+		// Max width: reuse cached prefix max, only check live portion.
+		maxW = m.rc.streamPrefixMaxW
+		if liveMaxW > maxW {
+			maxW = liveMaxW
+		}
+	} else {
+		// Slow path: prefix changed (new iterations, width change, history
+		// change). Rebuild the entire buffer.
+		totalLen := len(histLines) + 1 + boolToInt(hasSep) + len(completedLines) + suffixLen
+		buf := make([]string, 0, totalLen+32) // +32 headroom for future live lines
+		buf = append(buf, histLines...)
+		buf = append(buf, m.rc.streamHeaderLine)
+		if hasSep {
+			buf = append(buf, guidePrefix)
+		}
+		buf = append(buf, completedLines...)
+
+		// Record prefix state for future fast-path checks.
+		m.rc.streamPrefixLen = len(buf)
+		m.rc.streamPrefixHistGen = m.rc.histGen
+		m.rc.streamPrefixCompCnt = m.rc.streamCompletedCount
+		m.rc.streamPrefixCompW = m.rc.streamCompletedWidth
+		m.rc.streamPrefixHeaderW = m.rc.streamHeaderWidth
+		m.rc.streamPrefixHasSep = hasSep
+
+		// Cache prefix max width.
+		prefixMaxW := m.rc.histMaxW
+		if completedMaxW > prefixMaxW {
+			prefixMaxW = completedMaxW
+		}
+		if hasSep {
+			if w := lipgloss.Width(guidePrefix); w > prefixMaxW {
+				prefixMaxW = w
+			}
+		}
+		m.rc.streamPrefixMaxW = prefixMaxW
+
+		// Append suffix.
+		buf = append(buf, liveLines...)
+		buf = append(buf, "")
+		m.rc.streamAllBuf = buf
+		allLines = buf
+
+		maxW = prefixMaxW
+		if liveMaxW > maxW {
+			maxW = liveMaxW
+		}
 	}
 
 	shouldFollowBottom := !m.userScrolledUp
@@ -519,6 +584,14 @@ func (m *cliModel) updateStreamingOnly() {
 }
 
 // since cachedMsgCount, updating cachedHistory and msgLineOffsets without rebuilding
+
+// boolToInt converts a bool to 0 or 1 for slice capacity calculations.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
 
 var (
 	viewportLinesOffset            uintptr
