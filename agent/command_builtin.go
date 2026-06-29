@@ -10,6 +10,8 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/channel/feishu"
+	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/version"
 )
 
@@ -48,6 +50,34 @@ func (c *versionCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 		Content: info,
+	}, nil
+}
+
+// --- /plugin reload-all (agent-level command for remote CLI) ---
+
+type pluginReloadAllCmd struct{}
+
+func (c *pluginReloadAllCmd) Name() string      { return "/plugin reload-all" }
+func (c *pluginReloadAllCmd) Aliases() []string { return nil }
+func (c *pluginReloadAllCmd) Concurrent() bool  { return true } // doesn't block message queue
+func (c *pluginReloadAllCmd) Match(s string) bool {
+	return strings.TrimSpace(s) == "/plugin reload-all"
+}
+func (c *pluginReloadAllCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.pluginMgr == nil {
+		return nil, fmt.Errorf("plugin system not available")
+	}
+	// Run reload in background — ReloadAll can take a while and must not
+	// block the command handler (which blocks message processing).
+	go func() {
+		if err := a.pluginMgr.ReloadAll(context.Background()); err != nil {
+			log.WithError(err).Error("Plugin reload-all failed")
+		}
+	}()
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: "🔄 Plugin reload started — widgets will refresh when complete",
 	}, nil
 }
 
@@ -637,4 +667,45 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&myCmd{})
 	r.Register(&settingsCmd{})
 	r.Register(&menuCmd{})
+	r.Register(&pluginReloadAllCmd{})
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Command Adapter — bridges plugin.PluginCommandHandler → agent.Command
+// ---------------------------------------------------------------------------
+
+// pluginCmdAdapter wraps a plugin command handler as an agent.Command.
+// It avoids circular imports by living in the agent package, receiving the
+// handler and PluginContext from plugin.WirePluginCommands.
+type pluginCmdAdapter struct {
+	name        string
+	description string
+	handler     plugin.PluginCommandHandler
+	pctx        plugin.PluginContext
+}
+
+func (a *pluginCmdAdapter) Name() string      { return a.name }
+func (a *pluginCmdAdapter) Aliases() []string { return nil }
+func (a *pluginCmdAdapter) Concurrent() bool  { return false }
+
+func (a *pluginCmdAdapter) Match(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return strings.HasPrefix(trimmed, a.name+" ") || trimmed == a.name
+}
+
+func (a *pluginCmdAdapter) Execute(ctx context.Context, ag *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	trimmed := strings.TrimSpace(msg.Content)
+	args := ""
+	if strings.HasPrefix(trimmed, a.name+" ") {
+		args = strings.TrimSpace(strings.TrimPrefix(trimmed, a.name+" "))
+	}
+	result, err := a.handler(ctx, args, a.pctx)
+	if err != nil {
+		return nil, err
+	}
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: result,
+	}, nil
 }

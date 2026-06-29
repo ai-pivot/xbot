@@ -3,7 +3,10 @@ package cli
 import (
 	"fmt"
 	"image/color"
+	"io"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
@@ -126,6 +129,17 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		if handled {
 			return model, cmd
 		}
+	}
+
+	// Plugin overlay: when active, forward all keys to the overlay provider.
+	// Ctrl+C above is handled first so the user can always dismiss the overlay.
+	if m.pluginOverlay.active && m.pluginOverlay.provider != nil {
+		if key, ok := msg.(tea.KeyPressMsg); ok {
+			if m.pluginOverlay.provider.HandleKey(key.String()) {
+				m.hidePluginOverlay()
+			}
+		}
+		return m, nil
 	}
 
 	// §23 Command palette overlay: highest priority (above quick switch).
@@ -441,6 +455,15 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 			cmds = append(cmds, matrixTickCmd())
 		}
 		return m, tea.Batch(cmds...)
+
+	case cliPluginOverlayShowMsg:
+		cmds = append(cmds, m.handlePluginOverlayShow(msg)...)
+	case cliPluginOverlayHideMsg:
+		m.handlePluginOverlayHide(msg)
+	case cliPluginNotifyMsg:
+		cmds = append(cmds, m.handlePluginNotify(msg)...)
+	case cliPluginSoundMsg:
+		m.handlePluginSound(msg)
 
 	case approvalRequestMsg:
 		return m.handleApprovalRequest(msg)
@@ -772,12 +795,7 @@ func (m *cliModel) renderCompletionsHint(inputValue string) (borderColor color.C
 			}
 			hint = truncateCompHint(m.styles.CompHint.Render(strings.Join(parts, " · ")), m.chatWidth())
 		} else {
-			var matches []string
-			for _, cmd := range cliCommands {
-				if strings.HasPrefix(cmd, inputValue) {
-					matches = append(matches, cmd)
-				}
-			}
+			matches := m.getCommandCompletions(inputValue)
 			if len(matches) > 0 {
 				hint = truncateCompHint(m.styles.CompHintBorder.Render("[Tab] "+strings.Join(matches, " · ")), m.chatWidth())
 			}
@@ -835,4 +853,95 @@ func (m *cliModel) handleRunnerStatusMsg(msg runnerStatusMsg) tea.Cmd {
 		return m.clearTempStatusCmd()
 	}
 	return nil
+}
+
+// --- Plugin Overlay Handlers ---
+
+// handlePluginOverlayShow resolves the overlay provider from the plugin manager
+// and activates the full-screen overlay.
+func (m *cliModel) handlePluginOverlayShow(msg cliPluginOverlayShowMsg) []tea.Cmd {
+	if m.pluginMgrFn == nil {
+		return nil
+	}
+	mgr := m.pluginMgrFn()
+	provider, ok := mgr.GetOverlayProvider(msg.pluginID, msg.overlayID)
+	if !ok {
+		return nil
+	}
+	m.showPluginOverlay(msg.overlayID, provider)
+	return nil
+}
+
+// handlePluginOverlayHide deactivates the current plugin overlay.
+func (m *cliModel) handlePluginOverlayHide(msg cliPluginOverlayHideMsg) {
+	m.hidePluginOverlay()
+}
+
+// handlePluginNotify shows a plugin notification as a toast message.
+func (m *cliModel) handlePluginNotify(msg cliPluginNotifyMsg) []tea.Cmd {
+	icon := "ℹ"
+	switch msg.level {
+	case "success":
+		icon = "✓"
+	case "error":
+		icon = "✗"
+	case "warning":
+		icon = "⚠"
+	}
+	text := msg.message
+	if msg.title != "" {
+		text = msg.title + ": " + msg.message
+	}
+	return m.handleToastMsg(cliToastMsg{text: text, icon: icon})
+}
+
+// handlePluginSound plays a sound effect requested by a plugin.
+// On Linux, tries paplay first (PulseAudio), falls back to terminal bell.
+// On macOS, uses afplay. On other platforms, uses terminal bell.
+func (m *cliModel) handlePluginSound(msg cliPluginSoundMsg) {
+	soundID := msg.sound
+	var cmd string
+	switch soundID {
+	case "complete", "achievement":
+		if isMacOS() {
+			cmd = "afplay /System/Library/Sounds/Glass.aiff &"
+		} else if isLinux() {
+			cmd = "paplay /usr/share/sounds/freedesktop/stereo/complete.oga 2>/dev/null || printf '\\a'"
+		} else {
+			cmd = "printf '\\a'" // terminal bell fallback
+		}
+	case "error":
+		if isMacOS() {
+			cmd = "afplay /System/Library/Sounds/Basso.aiff &"
+		} else {
+			cmd = "printf '\\a'"
+		}
+	case "chime", "beep":
+		fallthrough
+	default:
+		cmd = "printf '\\a'" // terminal bell
+	}
+	if cmd != "" {
+		go runShellBg(cmd)
+	}
+}
+
+// runShellBg runs a shell command in the background (fire-and-forget).
+func runShellBg(cmd string) {
+	go func() {
+		c := exec.Command("sh", "-c", cmd)
+		c.Stdout = io.Discard
+		c.Stderr = io.Discard
+		_ = c.Run() // Start + Wait to avoid zombie processes
+	}()
+}
+
+// isMacOS returns true if running on macOS.
+func isMacOS() bool {
+	return runtime.GOOS == "darwin"
+}
+
+// isLinux returns true if running on Linux.
+func isLinux() bool {
+	return runtime.GOOS == "linux"
 }

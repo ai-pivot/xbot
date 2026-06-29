@@ -16,6 +16,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // computeInputCursorScreenPos calculates the absolute screen (X, Y) of the
@@ -166,8 +167,9 @@ func cliFormatTokenCount(n int64) string {
 // renderTitleBar builds the top title bar with gradient wordmark, diagonal fill,
 // mode label, hints, runner status, and user identity indicator.
 // In compact mode (<80 cols), extras (runner, user) are hidden.
-func (m *cliModel) renderTitleBar() string {
-	titleLeft := m.titleText()
+// buildTitleRight builds the right side of the title bar (hints, runner status, etc).
+// Extracted so augmentTitleBar can rebuild the title bar with widgets in the padding.
+func (m *cliModel) buildTitleRight() string {
 	titleRight := m.locale.TitleHint
 	// Askuser panel: override titleRight with panel-specific hints (always visible)
 	if m.panelState.mode == "askuser" {
@@ -199,6 +201,12 @@ func (m *cliModel) renderTitleBar() string {
 	if m.isNarrow() {
 		titleRight = ""
 	}
+	return titleRight
+}
+
+func (m *cliModel) renderTitleBar() string {
+	titleLeft := m.titleText()
+	titleRight := m.buildTitleRight()
 	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight)
 	if titlePad < 1 {
 		titlePad = 1
@@ -974,19 +982,57 @@ func (m *cliModel) padLineToWidth(line string) string {
 	return line + strings.Repeat(" ", targetW-lineW)
 }
 
-// augmentTitleBar prepends titleBarLeft widgets and appends titleBarRight widgets.
+// augmentTitleBar rebuilds the title bar with titleBarLeft/titleBarRight widgets
+// embedded in the padding area between titleLeft and titleRight, all rendered
+// with TitleBar style so widgets share the bar's background color.
 func (m *cliModel) augmentTitleBar(titleBar string) string {
 	left, right := m.resolveWidgetZone("titleBarLeft"), m.resolveWidgetZone("titleBarRight")
 	if left == "" && right == "" {
 		return titleBar
 	}
+
+	titleLeft := m.titleText()
+	titleRight := m.buildTitleRight()
+
+	// Build widget segments with surrounding space.
+	// Strip ANSI from widget content so it doesn't break the TitleBar background.
+	var extraLeft, extraRight string
 	if left != "" {
-		titleBar = left + " " + titleBar
+		extraLeft = " " + ansi.Strip(left) + " "
 	}
 	if right != "" {
-		titleBar = titleBar + " " + right
+		extraRight = " " + ansi.Strip(right) + " "
 	}
-	return titleBar
+
+	// Calculate remaining padding after accounting for widgets
+	totalExtra := lipgloss.Width(extraLeft) + lipgloss.Width(extraRight)
+	titlePad := m.width - lipgloss.Width(titleLeft) - lipgloss.Width(titleRight) - totalExtra
+	if titlePad < 1 {
+		titlePad = 1
+	}
+
+	// Rebuild with widgets embedded in the padding area — all rendered with
+	// TitleBar style so they inherit the bar's background color.
+	content := titleLeft + extraLeft + strings.Repeat(" ", titlePad) + extraRight + titleRight
+	// Truncate content BEFORE rendering — lipgloss v2 may auto-wrap long content
+	if cw := lipgloss.Width(content); cw > m.width {
+		// Shrink titlePad to fit, or truncate titleRight as last resort
+		over := cw - m.width
+		if titlePad > over {
+			titlePad -= over
+			content = titleLeft + extraLeft + strings.Repeat(" ", titlePad) + extraRight + titleRight
+		} else {
+			// Still too long — truncate titleRight
+			avail := m.width - lipgloss.Width(titleLeft+extraLeft+strings.Repeat(" ", 1)+extraRight)
+			if avail > 4 {
+				titleRight = ansi.Truncate(titleRight, avail-1, "…")
+				content = titleLeft + extraLeft + " " + extraRight + titleRight
+			} else {
+				content = ansi.Truncate(content, m.width, "…")
+			}
+		}
+	}
+	return m.styles.TitleBar.Render(content)
 }
 
 // augmentStatusBar prepends statusBarLeft and appends statusBarRight widgets.
@@ -1027,14 +1073,22 @@ func (m *cliModel) augmentFooter(footer string) string {
 // The result is padded to full terminal width so that stale content from a
 // previous (wider) frame is overwritten.
 func (m *cliModel) augmentInfoBar(infoBar string) string {
-	content := m.resolveWidgetZone("infoBar")
+	return m.augmentWithWidget(infoBar, "infoBar", "  ")
+}
+
+// augmentWithWidget appends widget content for a given zone to a base string.
+// This is a generic version usable for any single-content widget zone.
+// The result is padded to full terminal width so stale content from a
+// previous (wider) frame is overwritten.
+func (m *cliModel) augmentWithWidget(base string, zone string, separator string) string {
+	content := m.resolveWidgetZone(zone)
 	if content == "" {
-		return m.padLineToWidth(infoBar)
+		return m.padLineToWidth(base)
 	}
-	if infoBar == "" {
+	if base == "" {
 		return m.padLineToWidth(content)
 	}
-	return m.padLineToWidth(infoBar + "  " + content)
+	return m.padLineToWidth(base + separator + content)
 }
 
 // resolveWidgetZone returns widget content for a zone, checking local WidgetRegistry
@@ -1077,6 +1131,13 @@ func (m *cliModel) View() (v tea.View) {
 	// Easter egg overlay
 	if m.easterEggState.mode != easterEggNone {
 		v := tea.NewView(m.renderEasterEggOverlay())
+		v.AltScreen = true
+		return v
+	}
+
+	// Plugin overlay — full-screen overlay contributed by plugins.
+	if m.pluginOverlay.active && m.pluginOverlay.provider != nil {
+		v := tea.NewView(m.pluginOverlay.provider.Render(m.width, m.height))
 		v.AltScreen = true
 		return v
 	}

@@ -33,6 +33,11 @@ type WidgetRegistry struct {
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
 	debounceDur   time.Duration // 0 = no debounce (immediate notify)
+
+	// suppress prevents OnUpdated callbacks from firing.
+	// Set to true during batch operations (e.g. ReloadAll) to avoid
+	// flooding the WebSocket sendCh with intermediate widget states.
+	suppress atomic.Bool
 }
 
 // SetDebounce configures the debounce interval for OnUpdated notifications.
@@ -42,6 +47,19 @@ func (r *WidgetRegistry) SetDebounce(d time.Duration) {
 	r.mu.Lock()
 	r.debounceDur = d
 	r.mu.Unlock()
+}
+
+// SuppressUpdates disables OnUpdated callbacks and returns a function that
+// re-enables them and fires a single update. Use during batch operations
+// (e.g. ReloadAll) to prevent flooding downstream channels.
+func (r *WidgetRegistry) SuppressUpdates() (done func()) {
+	r.suppress.Store(true)
+	return func() {
+		r.suppress.Store(false)
+		// Fire after suppress is off, but asynchronously so the caller
+		// (typically an RPC handler) can send its response first.
+		go r.FireUpdated()
+	}
 }
 
 // NotifyUpdated triggers the OnUpdated callback (with debounce if configured)
@@ -61,6 +79,9 @@ func (r *WidgetRegistry) NotifyUpdated() {
 // Use this after direct CWD changes (e.g. Cd) where widget content was already
 // regenerated via RefreshWorkDir → OnWorkDirChanged and should be pushed now.
 func (r *WidgetRegistry) FireUpdated() {
+	if r.suppress.Load() {
+		return
+	}
 	r.mu.RLock()
 	fn := r.onUpdated
 	r.mu.RUnlock()
@@ -131,6 +152,9 @@ func (r *WidgetRegistry) OnUpdated(fn func()) {
 }
 
 func (r *WidgetRegistry) notifyUpdated() {
+	if r.suppress.Load() {
+		return
+	}
 	r.mu.RLock()
 	fn := r.onUpdated
 	dur := r.debounceDur

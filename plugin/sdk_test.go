@@ -383,6 +383,19 @@ func (c *sdkMockContext) HookCallCount() int64                                  
 func (c *sdkMockContext) SetValue(key string, value any)                            {}
 func (c *sdkMockContext) GetValue(key string) (any, bool)                           { return nil, false }
 func (c *sdkMockContext) RegisterChannelProvider(provider any) error                { return nil }
+func (c *sdkMockContext) RegisterCommand(name string, description string, handler PluginCommandHandler) error {
+	return nil
+}
+func (c *sdkMockContext) ScheduleCron(spec CronContribution) (string, error) { return "", nil }
+func (c *sdkMockContext) CancelCron(jobID string) error                      { return nil }
+func (c *sdkMockContext) ContributeTheme(id string, themeData []byte) error  { return nil }
+func (c *sdkMockContext) RegisterOverlay(id string, provider OverlayProvider) error {
+	return nil
+}
+func (c *sdkMockContext) ShowOverlay(id string) error                           { return nil }
+func (c *sdkMockContext) HideOverlay() error                                    { return nil }
+func (c *sdkMockContext) Notify(level NotificationLevel, title, message string) {}
+func (c *sdkMockContext) PlaySound(sound SoundID)                               {}
 
 type sdkMockLogger struct {
 	entries []sdkLogEntry

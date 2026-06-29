@@ -33,22 +33,37 @@ const (
 	PermUIContribute = "ui.contribute"
 	// PermChannelsRegister grants permission to register custom Channel providers.
 	PermChannelsRegister = "channels.register"
+	// PermCommandsRegister grants permission to register slash commands.
+	PermCommandsRegister = "commands.register"
+	// PermCronSchedule grants permission to schedule cron tasks.
+	PermCronSchedule = "cron.schedule"
+	// PermUIThemes grants permission to contribute themes.
+	PermUIThemes = "ui.themes"
+	// PermUIOverlay grants permission to register and control overlays.
+	PermUIOverlay = "ui.overlay"
+	// PermNotificationsSend grants permission to send notifications and play sounds.
+	PermNotificationsSend = "notifications.send"
 )
 
 // allPermissions is the set of all recognized permission strings.
 var allPermissions = map[string]bool{
-	PermToolsRegister:    true,
-	PermToolsCall:        true,
-	PermHooksSubscribe:   true,
-	PermContextEnrich:    true,
-	PermStoragePrivate:   true,
-	PermStorageShared:    true,
-	PermNetworkOutbound:  true,
-	PermBusRead:          true,
-	PermBusWrite:         true,
-	PermBusPlugin:        true,
-	PermUIContribute:     true,
-	PermChannelsRegister: true,
+	PermToolsRegister:     true,
+	PermToolsCall:         true,
+	PermHooksSubscribe:    true,
+	PermContextEnrich:     true,
+	PermStoragePrivate:    true,
+	PermStorageShared:     true,
+	PermNetworkOutbound:   true,
+	PermBusRead:           true,
+	PermBusWrite:          true,
+	PermBusPlugin:         true,
+	PermUIContribute:      true,
+	PermChannelsRegister:  true,
+	PermCommandsRegister:  true,
+	PermCronSchedule:      true,
+	PermUIThemes:          true,
+	PermUIOverlay:         true,
+	PermNotificationsSend: true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.

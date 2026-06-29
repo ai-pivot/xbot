@@ -193,6 +193,52 @@ type PluginContext interface {
 	// 注册后 provider 会被存储，供 serverapp 在 registerChannels 和动态启停路径中使用。
 	// 参数类型为 any 而非 channel.ChannelProvider 是为了避免 plugin→channel 循环依赖。
 	RegisterChannelProvider(provider any) error
+
+	// --- Command Registration ---
+
+	// RegisterCommand registers a slash command handler for this plugin.
+	// Requires "commands.register" permission.
+	RegisterCommand(name string, description string, handler PluginCommandHandler) error
+
+	// --- Cron Scheduling ---
+
+	// ScheduleCron creates a scheduled task. Returns a job ID.
+	// Requires "cron.schedule" permission.
+	ScheduleCron(spec CronContribution) (string, error)
+
+	// CancelCron cancels a previously scheduled task.
+	// Requires "cron.schedule" permission.
+	CancelCron(jobID string) error
+
+	// --- Theme Contribution ---
+
+	// ContributeTheme registers a theme from the plugin.
+	// Requires "ui.themes" permission.
+	ContributeTheme(id string, themeData []byte) error
+
+	// --- Overlay ---
+
+	// RegisterOverlay registers a full-screen overlay provider.
+	// Requires "ui.overlay" permission.
+	RegisterOverlay(id string, provider OverlayProvider) error
+
+	// ShowOverlay triggers the display of a registered overlay.
+	// Requires "ui.overlay" permission.
+	ShowOverlay(id string) error
+
+	// HideOverlay hides the currently displayed overlay.
+	// Requires "ui.overlay" permission.
+	HideOverlay() error
+
+	// --- Notifications & Sound ---
+
+	// Notify sends a notification to the user.
+	// Requires "notifications.send" permission.
+	Notify(level NotificationLevel, title, message string)
+
+	// PlaySound plays a sound effect.
+	// Requires "notifications.send" permission.
+	PlaySound(sound SoundID)
 }
 
 // Logger provides structured logging for plugins.
@@ -288,6 +334,19 @@ type pluginContextImpl struct {
 	// Runtime resource tracking (atomic for lock-free reads)
 	toolCallCount int64
 	hookCallCount int64
+
+	// Command handlers
+	commands map[string]pluginCommandEntry
+
+	// Cron tasks
+	crons             []CronContribution
+	cronCancellations map[string]bool
+
+	// Themes
+	themes map[string][]byte
+
+	// Overlays
+	overlays map[string]OverlayProvider
 }
 
 type hookRegistration struct {
@@ -304,22 +363,34 @@ type enricherRegistration struct {
 	Enricher ContextEnricher
 }
 
+// pluginCommandEntry stores a registered command handler.
+type pluginCommandEntry struct {
+	name        string
+	description string
+	handler     PluginCommandHandler
+}
+
 // newPluginContext creates a new PluginContext for the given plugin.
 func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger Logger, bus *PluginEventBus, configStore *PluginConfigStore, pm *PluginManager) *pluginContextImpl {
 	return &pluginContextImpl{
-		pluginID:         manifest.ID,
-		manifest:         manifest,
-		perm:             NewPermissionChecker(manifest.Permissions),
-		storage:          storage,
-		logger:           logger,
-		tools:            make([]PluginTool, 0),
-		hooks:            make([]hookRegistration, 0),
-		contextEnrichers: make([]enricherRegistration, 0),
-		channelProviders: make([]any, 0),
-		bus:              bus,
-		pm:               pm,
-		configStore:      configStore,
-		contextValues:    make(map[string]any),
+		pluginID:          manifest.ID,
+		manifest:          manifest,
+		perm:              NewPermissionChecker(manifest.Permissions),
+		storage:           storage,
+		logger:            logger,
+		tools:             make([]PluginTool, 0),
+		hooks:             make([]hookRegistration, 0),
+		contextEnrichers:  make([]enricherRegistration, 0),
+		channelProviders:  make([]any, 0),
+		bus:               bus,
+		pm:                pm,
+		configStore:       configStore,
+		contextValues:     make(map[string]any),
+		commands:          make(map[string]pluginCommandEntry),
+		crons:             make([]CronContribution, 0),
+		cronCancellations: make(map[string]bool),
+		themes:            make(map[string][]byte),
+		overlays:          make(map[string]OverlayProvider),
 	}
 }
 
@@ -1002,4 +1073,252 @@ func (pc *pluginContextImpl) ChannelProviders() []any {
 	result := make([]any, len(pc.channelProviders))
 	copy(result, pc.channelProviders)
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// Command Registration
+// ---------------------------------------------------------------------------
+
+// RegisterCommand registers a slash command handler for this plugin.
+func (pc *pluginContextImpl) RegisterCommand(name string, description string, handler PluginCommandHandler) error {
+	if !pc.perm.Has(PermCommandsRegister) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermCommandsRegister,
+			Action:     "register command",
+		}
+	}
+	if handler == nil {
+		return fmt.Errorf("command handler must not be nil")
+	}
+	if name == "" {
+		return fmt.Errorf("command name must not be empty")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.commands[name] = pluginCommandEntry{
+		name:        name,
+		description: description,
+		handler:     handler,
+	}
+	pc.logger.Info("Command registered", Field{Key: "command", Value: name})
+	return nil
+}
+
+// GetCommands returns a snapshot of all registered command handlers.
+func (pc *pluginContextImpl) GetCommands() map[string]pluginCommandEntry {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make(map[string]pluginCommandEntry, len(pc.commands))
+	for k, v := range pc.commands {
+		result[k] = v
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Cron Scheduling
+// ---------------------------------------------------------------------------
+
+// ScheduleCron creates a scheduled task. Returns a job ID.
+func (pc *pluginContextImpl) ScheduleCron(spec CronContribution) (string, error) {
+	if !pc.perm.Has(PermCronSchedule) {
+		return "", &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermCronSchedule,
+			Action:     "schedule cron",
+		}
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	jobID := fmt.Sprintf("plugin:%s:%d", pc.pluginID, len(pc.crons))
+	pc.crons = append(pc.crons, spec)
+	pc.logger.Info("Cron scheduled", Field{Key: "job_id", Value: jobID})
+	return jobID, nil
+}
+
+// CancelCron cancels a previously scheduled task.
+func (pc *pluginContextImpl) CancelCron(jobID string) error {
+	if !pc.perm.Has(PermCronSchedule) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermCronSchedule,
+			Action:     "cancel cron",
+		}
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.cronCancellations[jobID] = true
+	pc.logger.Info("Cron cancellation requested", Field{Key: "job_id", Value: jobID})
+	return nil
+}
+
+// GetCrons returns a snapshot of all scheduled crons.
+func (pc *pluginContextImpl) GetCrons() []CronContribution {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make([]CronContribution, len(pc.crons))
+	copy(result, pc.crons)
+	return result
+}
+
+// GetCronCancellations returns a snapshot of all cancelled cron job IDs.
+func (pc *pluginContextImpl) GetCronCancellations() map[string]bool {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make(map[string]bool, len(pc.cronCancellations))
+	for k, v := range pc.cronCancellations {
+		result[k] = v
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Theme Contribution
+// ---------------------------------------------------------------------------
+
+// ContributeTheme registers a theme from the plugin.
+func (pc *pluginContextImpl) ContributeTheme(id string, themeData []byte) error {
+	if !pc.perm.Has(PermUIThemes) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIThemes,
+			Action:     "contribute theme",
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("theme id must not be empty")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.themes[id] = themeData
+	pc.logger.Info("Theme contributed", Field{Key: "theme_id", Value: id})
+	return nil
+}
+
+// GetThemes returns a snapshot of all contributed themes.
+func (pc *pluginContextImpl) GetThemes() map[string][]byte {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make(map[string][]byte, len(pc.themes))
+	for k, v := range pc.themes {
+		result[k] = v
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Overlay
+// ---------------------------------------------------------------------------
+
+// RegisterOverlay registers a full-screen overlay provider.
+func (pc *pluginContextImpl) RegisterOverlay(id string, provider OverlayProvider) error {
+	if !pc.perm.Has(PermUIOverlay) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIOverlay,
+			Action:     "register overlay",
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("overlay id must not be empty")
+	}
+	if provider == nil {
+		return fmt.Errorf("overlay provider must not be nil")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.overlays[id] = provider
+	pc.logger.Info("Overlay registered", Field{Key: "overlay_id", Value: id})
+	return nil
+}
+
+// ShowOverlay triggers the display of a registered overlay.
+func (pc *pluginContextImpl) ShowOverlay(id string) error {
+	if !pc.perm.Has(PermUIOverlay) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIOverlay,
+			Action:     "show overlay",
+		}
+	}
+	pc.mu.RLock()
+	_, ok := pc.overlays[id]
+	pc.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("overlay %q not registered", id)
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:overlay:show", map[string]string{
+			"plugin_id":  pc.pluginID,
+			"overlay_id": id,
+		})
+	}
+	pc.logger.Info("Overlay shown", Field{Key: "overlay_id", Value: id})
+	return nil
+}
+
+// HideOverlay hides the currently displayed overlay.
+func (pc *pluginContextImpl) HideOverlay() error {
+	if !pc.perm.Has(PermUIOverlay) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIOverlay,
+			Action:     "hide overlay",
+		}
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:overlay:hide", map[string]string{
+			"plugin_id": pc.pluginID,
+		})
+	}
+	pc.logger.Info("Overlay hidden")
+	return nil
+}
+
+// GetOverlays returns a snapshot of all registered overlay providers.
+func (pc *pluginContextImpl) GetOverlays() map[string]OverlayProvider {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	result := make(map[string]OverlayProvider, len(pc.overlays))
+	for k, v := range pc.overlays {
+		result[k] = v
+	}
+	return result
+}
+
+// ---------------------------------------------------------------------------
+// Notifications & Sound
+// ---------------------------------------------------------------------------
+
+// Notify sends a notification to the user.
+func (pc *pluginContextImpl) Notify(level NotificationLevel, title, message string) {
+	if !pc.perm.Has(PermNotificationsSend) {
+		pc.logger.Warn("Notification denied", Field{Key: "permission", Value: PermNotificationsSend})
+		return
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:notify", map[string]string{
+			"plugin_id": pc.pluginID,
+			"level":     string(level),
+			"title":     title,
+			"message":   message,
+		})
+	}
+	pc.logger.Info("Notification sent", Field{Key: "level", Value: string(level)}, Field{Key: "title", Value: title})
+}
+
+// PlaySound plays a sound effect.
+func (pc *pluginContextImpl) PlaySound(sound SoundID) {
+	if !pc.perm.Has(PermNotificationsSend) {
+		pc.logger.Warn("Sound denied", Field{Key: "permission", Value: PermNotificationsSend})
+		return
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:sound:play", map[string]string{
+			"plugin_id": pc.pluginID,
+			"sound":     string(sound),
+		})
+	}
+	pc.logger.Info("Sound played", Field{Key: "sound", Value: string(sound)})
 }
