@@ -829,6 +829,64 @@ func (c *Client) DeleteChat(ch, senderID, chatID string) error {
 	return err
 }
 
+// ---------------------------------------------------------------------------
+// Runner CRUD (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) RunnerCreate(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (map[string]string, error) {
+	var r map[string]string
+	err := c.call(MethodRunnerCreate, map[string]string{
+		"name":         name,
+		"mode":         mode,
+		"docker_image": dockerImage,
+		"workspace":    workspace,
+		"llm_provider": llmProvider,
+		"llm_api_key":  llmAPIKey,
+		"llm_model":    llmModel,
+		"llm_base_url": llmBaseURL,
+	}, &r)
+	return r, err
+}
+
+func (c *Client) RunnerList() ([]map[string]any, error) {
+	var r []map[string]any
+	raw, err := c.CallRPC(MethodRunnerList, struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (c *Client) RunnerDelete(name string) error {
+	_, err := c.CallRPC(MethodRunnerDelete, map[string]string{"name": name})
+	return err
+}
+
+func (c *Client) RunnerGetActive() (string, error) {
+	raw, err := c.CallRPC(MethodRunnerGetActive, struct{}{})
+	if err != nil {
+		return "", err
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+func (c *Client) RunnerSetActive(name string) error {
+	_, err := c.CallRPC(MethodRunnerSetActive, map[string]string{"name": name})
+	return err
+}
+
+func (c *Client) RunnerRename(oldName, newName string) error {
+	_, err := c.CallRPC(MethodRunnerRename, map[string]string{"old_name": oldName, "new_name": newName})
+	return err
+}
+
 func (c *Client) RenameChat(ch, senderID, chatID, newName string) error {
 	_, err := c.CallRPC("rename_chat", map[string]string{
 		"channel":  ch,

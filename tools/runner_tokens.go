@@ -85,15 +85,36 @@ func (s *RunnerTokenStore) Generate(userID string, settings RunnerTokenSettings)
 }
 
 // Validate checks whether the token exists and is owned by the given user.
+// Checks both the legacy runner_tokens table and the multi-runner runners table.
+// Both paths use subtle.ConstantTimeCompare to prevent timing attacks.
 func (s *RunnerTokenStore) Validate(token, userID string) bool {
+	// 1. Check legacy runner_tokens table (single token per user, backward compat).
 	var storedToken string
-	err := s.db.QueryRow(
+	if err := s.db.QueryRow(
 		"SELECT token FROM runner_tokens WHERE user_id = ?", userID,
-	).Scan(&storedToken)
+	).Scan(&storedToken); err == nil {
+		if subtle.ConstantTimeCompare([]byte(storedToken), []byte(token)) == 1 {
+			return true
+		}
+	}
+	// 2. Check runners table (multi-runner support — one token per runner per user).
+	rows, err := s.db.Query(
+		"SELECT token FROM runners WHERE user_id = ?", userID,
+	)
 	if err != nil {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(storedToken), []byte(token)) == 1
+	defer rows.Close()
+	for rows.Next() {
+		var runnerToken string
+		if err := rows.Scan(&runnerToken); err != nil {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(runnerToken), []byte(token)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // Get returns the current token entry for a user, or nil if none exists.
@@ -263,6 +284,47 @@ func (s *RunnerTokenStore) DeleteRunner(userID, name string) error {
 		return fmt.Errorf("delete runner: %w", err)
 	}
 	return nil
+}
+
+// RenameRunner renames a runner. Returns an error if oldName doesn't exist or newName is taken.
+func (s *RunnerTokenStore) RenameRunner(userID, oldName, newName string) error {
+	if oldName == "" || newName == "" {
+		return fmt.Errorf("old and new runner names are required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("rename runner: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check old exists
+	var count int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM runners WHERE user_id = ? AND name = ?", userID, oldName).Scan(&count); err != nil {
+		return fmt.Errorf("rename runner: check old: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("runner %q not found", oldName)
+	}
+
+	// Check new name not taken
+	if err := tx.QueryRow("SELECT COUNT(*) FROM runners WHERE user_id = ? AND name = ?", userID, newName).Scan(&count); err != nil {
+		return fmt.Errorf("rename runner: check new: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("runner name %q already exists", newName)
+	}
+
+	// Rename
+	if _, err := tx.Exec("UPDATE runners SET name = ? WHERE user_id = ? AND name = ?", newName, userID, oldName); err != nil {
+		return fmt.Errorf("rename runner: update: %w", err)
+	}
+
+	// Update active_runner if pointing to old name (any channel)
+	if _, err := tx.Exec("UPDATE user_settings SET value = ? WHERE sender_id = ? AND key = 'active_runner' AND value = ?", newName, userID, oldName); err != nil {
+		return fmt.Errorf("rename runner: update active: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // UpdateRunnerLLM updates the LLM settings for an existing runner.

@@ -70,6 +70,7 @@ type RemoteSandbox struct {
 	authToken            string
 	addr                 string
 	tokenStore           *RunnerTokenStore
+	sessionRunners       *sync.Map // shared with SandboxRouter: "channel:chatID" → runnerName
 	pendingMu            sync.Mutex
 	pending              map[string]chan *RunnerMessage // request ID → response channel
 	upgrader             websocket.Upgrader             // per-instance upgrader with origin check
@@ -379,8 +380,15 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 
 }
 
-// getRunner returns the active connection for a user, or an error.
+// getRunner returns the active connection for a user (backward-compat wrapper).
+// For session-aware routing, use getRunnerForSession.
 func (rs *RemoteSandbox) getRunner(userID string) (*runnerConnection, error) {
+	return rs.getRunnerForSession(userID, "")
+}
+
+// getRunnerForSession resolves the runner connection for a session, checking
+// session-level binding (sessionRunners) first, then falling back to entry.active.
+func (rs *RemoteSandbox) getRunnerForSession(userID, sessionKey string) (*runnerConnection, error) {
 	val, ok := rs.connections.Load(userID)
 	if !ok {
 		return nil, fmt.Errorf("no runner connected for user %q", userID)
@@ -391,12 +399,27 @@ func (rs *RemoteSandbox) getRunner(userID string) (*runnerConnection, error) {
 	}
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
-	if entry.active == "" || len(entry.runners) == 0 {
+
+	// Determine which runner to use.
+	// Priority: sessionRunners (session-level) → tokenStore.active_runner (user-level) → entry.active
+	runnerName := entry.active
+	if rs.sessionRunners != nil && sessionKey != "" {
+		if v, ok := rs.sessionRunners.Load(sessionKey); ok {
+			runnerName = v.(string)
+		}
+	}
+	if runnerName == "" && rs.tokenStore != nil {
+		if name, err := rs.tokenStore.GetActiveRunner(userID); err == nil && name != "" && name != BuiltinDockerRunnerName {
+			runnerName = name
+		}
+	}
+
+	if runnerName == "" || len(entry.runners) == 0 {
 		return nil, fmt.Errorf("no active runner for user %q", userID)
 	}
-	rc, ok := entry.runners[entry.active]
+	rc, ok := entry.runners[runnerName]
 	if !ok {
-		return nil, fmt.Errorf("active runner %q not connected for user %q", entry.active, userID)
+		return nil, fmt.Errorf("active runner %q not connected for user %q", runnerName, userID)
 	}
 	return rc, nil
 }

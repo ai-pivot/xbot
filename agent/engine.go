@@ -72,7 +72,8 @@ type RunConfig struct {
 	DataDir             string        // 数据持久化目录
 	SandboxEnabled      bool          // 是否启用命令沙箱
 	PreferredSandbox    string        // 沙箱类型（docker 优先）
-	Sandbox             tools.Sandbox // Sandbox 实例引用（V4 新增）
+	Sandbox             tools.Sandbox // 当前解析的 Sandbox（每次工具执行前从 SandboxRouter 重新解析）
+	SandboxRouter       tools.Sandbox // 原始 SandboxRouter 引用（用于每次工具执行时重新解析 session 级 runner 绑定）
 	SandboxMode         string        // 实际沙箱模式："none", "docker", "remote"
 	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
 	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
@@ -757,6 +758,14 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 			}
 		}
 
+		// Re-resolve sandbox per tool call — picks up runner switches immediately
+		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
+			cfg.Sandbox = router.SandboxForSession(
+				cfg.Channel+":"+cfg.ChatID,
+				cfg.OriginUserID,
+			)
+		}
+
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
 		if cfg.SettingsSvc != nil {
 			permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
@@ -1253,6 +1262,55 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			return cfg.ListLLMSubs(cfg.Channel, cfg.OriginUserID)
 		}
 		return nil
+	}
+
+	// Inject runner CRUD callbacks (for config tool).
+	// Runner management requires a database — if not configured, callbacks return errors.
+	if db := tools.GetRunnerTokenDB(); db != nil {
+		store := tools.NewRunnerTokenStore(db)
+		originUserID := cfg.OriginUserID
+		tc.RunnerCreate = func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (string, error) {
+			llm := tools.RunnerLLMSettings{
+				Provider: llmProvider,
+				APIKey:   llmAPIKey,
+				Model:    llmModel,
+				BaseURL:  llmBaseURL,
+			}
+			// Ensure remote sandbox is listening before creating a runner
+			sb := tools.GetSandbox()
+			if router, ok := sb.(*tools.SandboxRouter); ok {
+				router.EnsureRemote()
+			}
+			token, _, err := store.CreateRunner(originUserID, name, mode, dockerImage, workspace, llm)
+			return token, err
+		}
+		tc.RunnerList = func() ([]tools.RunnerInfo, error) {
+			runners, err := store.ListRunners(originUserID)
+			if err != nil {
+				return nil, err
+			}
+			// Populate online status (same as server-side populateRunnerOnlineStatus)
+			if sb := tools.GetSandbox(); sb != nil {
+				if router, ok := sb.(*tools.SandboxRouter); ok {
+					for i := range runners {
+						runners[i].Online = router.IsRunnerOnline(originUserID, runners[i].Name)
+					}
+				}
+			}
+			return runners, nil
+		}
+		tc.RunnerDelete = func(name string) error {
+			return store.DeleteRunner(originUserID, name)
+		}
+		tc.RunnerGetActive = func() (string, error) {
+			return store.GetActiveRunner(originUserID)
+		}
+		tc.RunnerSetActive = func(name string) error {
+			return store.SetActiveRunner(originUserID, name)
+		}
+		tc.RunnerRename = func(oldName, newName string) error {
+			return store.RenameRunner(originUserID, oldName, newName)
+		}
 	}
 
 	return tc
