@@ -452,6 +452,12 @@ func (a *Agent) buildSubAgentRunConfig(
 	if !caps.SpawnAgent {
 		subTools.Unregister("SubAgent")
 	}
+	// AskUser 依赖 channel adapter 渲染交互 UI（TUI 面板/飞书卡片），
+	// 但 SubAgent 运行在 "agent" channel 上，不在 AskUser.SupportedChannels 中。
+	// 即使工具被执行，WaitingUser 信号也会被 RunSubAgent/SpawnInteractive 丢弃，
+	// 导致 SubAgent 静默挂起（空回复 + idle 状态，用户从未看到问题）。
+	// 无条件移除，避免静默失效。
+	subTools.Unregister("AskUser")
 
 	// 如果指定了工具白名单，只保留白名单中的工具
 	// 以下工具永久可用，不受白名单限制：
