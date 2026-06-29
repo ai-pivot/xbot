@@ -1139,15 +1139,22 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
-		// Run reload asynchronously so the RPC returns immediately.
-		// ReloadAll can take a while (plugin deactivation/activation,
-		// script startup, etc.) and should not block the RPC channel.
+		// Run ReloadAll with timeout — typically <5s, 30s max.
+		// Since this RPC is dispatched from a concurrent agent command
+		// (not readPump), synchronous execution does not cause TCP deadlock.
+		resultCh := make(chan error, 1)
 		go func() {
-			if err := pm.ReloadAll(context.Background()); err != nil {
-				log.WithError(err).Error("Async plugin reload failed")
-			}
+			resultCh <- pm.ReloadAll(context.Background())
 		}()
-		return map[string]string{"status": "started"}, nil
+		select {
+		case err := <-resultCh:
+			if err != nil {
+				return nil, err
+			}
+			return map[string]string{"status": "ok"}, nil
+		case <-time.After(30 * time.Second):
+			return map[string]string{"status": "timeout", "message": "reload still in progress"}, nil
+		}
 	})
 
 	t["plugin_install"] = rpc1(func(ctx context.Context, p struct {

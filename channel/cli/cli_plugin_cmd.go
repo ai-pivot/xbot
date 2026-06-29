@@ -186,6 +186,9 @@ func (m *cliModel) handlePluginReloadAll() tea.Cmd {
 					ChatID:  m.chatID,
 					Content: "/plugin reload-all",
 				})
+			} else {
+				m.showSystemMsg("Cannot reload plugins: session not connected", feedbackWarning)
+				m.pluginReloading = false
 			}
 			return nil
 		}
