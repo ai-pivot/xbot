@@ -10,6 +10,7 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/channel/feishu"
+	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/version"
 )
@@ -70,7 +71,7 @@ func (c *pluginReloadAllCmd) Execute(ctx context.Context, a *Agent, msg bus.Inbo
 	// block the command handler (which blocks message processing).
 	go func() {
 		if err := a.pluginMgr.ReloadAll(context.Background()); err != nil {
-			_ = err // reload errors handled by plugin logging
+			log.WithError(err).Error("Plugin reload-all failed")
 		}
 	}()
 	return &channel.OutboundMsg{

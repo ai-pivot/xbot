@@ -356,7 +356,10 @@ func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
 		pluginID := entry.Manifest.ID
 
 		// Remove stale plugin jobs (idempotent: delete before re-add)
-		allJobs, _ := cronSvc.ListAllJobs()
+		allJobs, err := cronSvc.ListAllJobs()
+		if err != nil {
+			log.WithError(err).Warn("plugin: failed to list existing cron jobs during re-wire")
+		}
 		for _, job := range allJobs {
 			if strings.HasPrefix(job.ID, "plugin:"+pluginID+":") {
 				if err := cronSvc.RemoveJob(job.ID); err != nil {

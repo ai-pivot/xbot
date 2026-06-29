@@ -928,15 +928,12 @@ func (m *cliModel) handlePluginSound(msg cliPluginSoundMsg) {
 
 // runShellBg runs a shell command in the background (fire-and-forget).
 func runShellBg(cmd string) {
-	_ = execShell(cmd)
-}
-
-// execShell executes a shell command and returns any error.
-func execShell(cmd string) error {
-	c := exec.Command("sh", "-c", cmd)
-	c.Stdout = io.Discard
-	c.Stderr = io.Discard
-	return c.Start()
+	go func() {
+		c := exec.Command("sh", "-c", cmd)
+		c.Stdout = io.Discard
+		c.Stderr = io.Discard
+		_ = c.Run() // Start + Wait to avoid zombie processes
+	}()
 }
 
 // isMacOS returns true if running on macOS.

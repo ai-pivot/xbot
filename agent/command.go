@@ -83,5 +83,7 @@ func (r *CommandRegistry) IsCommand(content string) bool {
 func (r *CommandRegistry) Commands() []Command {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.commands
+	result := make([]Command, len(r.commands))
+	copy(result, r.commands)
+	return result
 }
