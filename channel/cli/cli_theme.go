@@ -960,6 +960,65 @@ func loadExternalTheme(name string) *cliTheme {
 	return t
 }
 
+var pluginThemesMu sync.Mutex
+
+// LoadPluginTheme parses a theme JSON (same format as external themes) and
+// registers it in the theme registry. This is called when plugins contribute
+// themes via ContributeTheme. Thread-safe.
+func LoadPluginTheme(id string, data []byte) error {
+	var ext externalThemeJSON
+	if err := json.Unmarshal(data, &ext); err != nil {
+		return fmt.Errorf("plugin theme %q: %w", id, err)
+	}
+	t := &cliTheme{
+		TextPrimary:     or(ext.TextPrimary, "#e8eaed"),
+		TextSecondary:   or(ext.TextSecondary, "#9aa0a6"),
+		TextMuted:       or(ext.TextMuted, "#5f6368"),
+		FGMostSubtle:    or(ext.FGMostSubtle, "#3c4043"),
+		FGGuide:         or(ext.FGGuide, "#667eea"),
+		Success:         or(ext.Success, "#81c995"),
+		Warning:         or(ext.Warning, "#fdd663"),
+		Error:           or(ext.Error, "#f28b82"),
+		Info:            or(ext.Info, "#8ab4f8"),
+		Accent:          or(ext.Accent, "#8c9eff"),
+		AccentAlt:       or(ext.AccentAlt, "#c58af9"),
+		BarFilled:       or(ext.BarFilled, "#8c9eff"),
+		BarEmpty:        or(ext.BarEmpty, "#292a3d"),
+		Border:          or(ext.Border, "#3c4043"),
+		TitleText:       or(ext.TitleText, "#e8eaed"),
+		Surface:         or(ext.Surface, "#1e1f2e"),
+		BGPanel:         or(ext.BGPanel, "#252736"),
+		Gradient:        or(ext.Gradient, "#667eea"),
+		ErrorBg:         or(ext.ErrorBg, "#332020"),
+		SuccessBg:       or(ext.SuccessBg, "#1a3325"),
+		WarningBg:       or(ext.WarningBg, "#332d1a"),
+		InfoBg:          or(ext.InfoBg, "#1a2533"),
+		GDocumentText:   or(ext.GDocumentText, "#e8eaed"),
+		GHeadingText:    or(ext.GHeadingText, "#8ab4f8"),
+		GCodeBlock:      or(ext.GCodeBlock, "#1e1f2e"),
+		GCodeText:       or(ext.GCodeText, "#c9d1d9"),
+		GLinkText:       or(ext.GLinkText, "#8ab4f8"),
+		GBlockQuote:     or(ext.GBlockQuote, "#8c9eff"),
+		GListItem:       or(ext.GListItem, "#8ab4f8"),
+		GHorizontalRule: or(ext.GHorizontalRule, "#3c4043"),
+		FGBright:        or(ext.FGBright, "#ffffff"),
+		BGHover:         or(ext.BGHover, "#2d2f3e"),
+		BGInset:         or(ext.BGInset, "#161722"),
+		BGOverlay:       or(ext.BGOverlay, "#0d0e1a"),
+		SuccessMuted:    or(ext.SuccessMuted, "#4a7d5f"),
+		WarningMuted:    or(ext.WarningMuted, "#8a7a3a"),
+		ErrorMuted:      or(ext.ErrorMuted, "#8a4d4d"),
+		InfoMuted:       or(ext.InfoMuted, "#4a6d8a"),
+		AccentStart:     or(ext.AccentStart, ext.Accent),
+		AccentEnd:       or(ext.AccentEnd, ext.AccentAlt),
+	}
+
+	pluginThemesMu.Lock()
+	themeRegistry[id] = t
+	pluginThemesMu.Unlock()
+	return nil
+}
+
 // externalThemeJSON is the JSON-serializable theme format for external files.
 // Users only need to specify colors they want to override; defaults fill the rest.
 type externalThemeJSON struct {

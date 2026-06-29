@@ -186,6 +186,7 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 
 	// --- External contributions (plugins, skills, agents, custom commands) ---
 	if m.paletteContributor != nil {
+		m.pluginCmdNames = nil // reset
 		for _, ext := range m.paletteContributor() {
 			kind := paletteActionInsertText
 			if ext.Send {
@@ -203,6 +204,21 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 				ActionKind:  kind,
 				ActionData:  ext.Content,
 			})
+			// Collect slash command names for Tab completion
+			if strings.HasPrefix(ext.Content, "/") {
+				name := strings.SplitN(ext.Content, " ", 2)[0]
+				// Avoid duplicates
+				found := false
+				for _, existing := range m.pluginCmdNames {
+					if existing == name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.pluginCmdNames = append(m.pluginCmdNames, name)
+				}
+			}
 		}
 	}
 

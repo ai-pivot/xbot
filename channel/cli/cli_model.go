@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 	ch "xbot/channel"
 	"xbot/internal/textarea"
@@ -160,8 +162,9 @@ type cliModel struct {
 	lastThinking       string                  // 最后一次迭代的 thinking_content，在 progress 清除前捕获
 
 	// --- §8 Tab 补全 ---
-	completions []string // 当前补全候选项
-	compIdx     int      // 当前选中的补全索引
+	completions    []string // 当前补全候选项
+	compIdx        int      // 当前选中的补全索引
+	pluginCmdNames []string // 插件注册的命令名（/xxx 格式），合并到 Tab 补全
 
 	// --- §8b @ 文件引用补全 ---
 	fileCompletions []string // @ 文件路径补全候选项
@@ -245,6 +248,12 @@ type cliModel struct {
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
 	easterEggState easterEggState
+
+	pluginOverlay struct {
+		active   bool
+		id       string
+		provider plugin.OverlayProvider
+	}
 
 	searchState searchState
 
@@ -826,4 +835,145 @@ type progressState struct {
 	rwCjkSkip             bool
 	twCjkSkip             bool
 	streamReasoningByIter map[int]string // per-iteration stream-only reasoning, captured at arrival time
+}
+
+// --- Plugin Overlay ---
+
+// refreshPluginCmdNames lazily populates plugin command names for Tab completion
+// from the palette contributor. Called on every slash-input keypress; syncs from
+// channel.PaletteContributor if needed and caches results.
+func (m *cliModel) refreshPluginCmdNames() {
+	// Sync palette contributor from channel if not yet set
+	if m.paletteContributor == nil && m.channel != nil && m.channel.PaletteContributor != nil {
+		m.paletteContributor = m.channel.PaletteContributor
+	}
+	if m.paletteContributor == nil {
+		return
+	}
+	// Already populated — only refresh if palette was rebuilt
+	if len(m.pluginCmdNames) > 0 {
+		return
+	}
+	for _, ext := range m.paletteContributor() {
+		if strings.HasPrefix(ext.Content, "/") {
+			name := strings.SplitN(ext.Content, " ", 2)[0]
+			found := false
+			for _, existing := range m.pluginCmdNames {
+				if existing == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.pluginCmdNames = append(m.pluginCmdNames, name)
+			}
+		}
+	}
+}
+
+// showPluginOverlay activates a full-screen overlay provided by a plugin.
+func (m *cliModel) showPluginOverlay(id string, provider plugin.OverlayProvider) {
+	m.pluginOverlay.active = true
+	m.pluginOverlay.id = id
+	m.pluginOverlay.provider = provider
+}
+
+// hidePluginOverlay deactivates the current plugin overlay.
+func (m *cliModel) hidePluginOverlay() {
+	m.pluginOverlay.active = false
+	m.pluginOverlay.provider = nil
+}
+
+// --- Plugin Event Bus Messages ---
+
+// cliPluginOverlayShowMsg triggers display of a plugin overlay.
+type cliPluginOverlayShowMsg struct {
+	pluginID  string
+	overlayID string
+}
+
+// cliPluginOverlayHideMsg triggers hiding of the current plugin overlay.
+type cliPluginOverlayHideMsg struct {
+	pluginID string
+}
+
+// cliPluginNotifyMsg carries a notification from a plugin to be shown as a toast.
+type cliPluginNotifyMsg struct {
+	pluginID string
+	level    string
+	title    string
+	message  string
+}
+
+// cliPluginSoundMsg carries a sound playback request from a plugin.
+type cliPluginSoundMsg struct {
+	pluginID string
+	sound    string
+}
+
+// wirePluginEventBus subscribes to plugin event bus topics and routes events
+// into the Bubble Tea event loop via program.Send(). This is called once
+// during CLI channel startup after the model and program are both available.
+func (m *cliModel) wirePluginEventBus(program *tea.Program) {
+	if m.pluginMgrFn == nil {
+		return
+	}
+	mgr := m.pluginMgrFn()
+	bus := mgr.Bus()
+	if bus == nil {
+		return
+	}
+
+	// plugin:overlay:show — display a plugin's full-screen overlay
+	_ = bus.Subscribe("plugin:overlay:show", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginOverlayShowMsg{
+			pluginID:  d["plugin_id"],
+			overlayID: d["overlay_id"],
+		})
+		return nil
+	})
+
+	// plugin:overlay:hide — dismiss the current plugin overlay
+	_ = bus.Subscribe("plugin:overlay:hide", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginOverlayHideMsg{
+			pluginID: d["plugin_id"],
+		})
+		return nil
+	})
+
+	// plugin:notify — show a plugin notification as a toast
+	_ = bus.Subscribe("plugin:notify", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginNotifyMsg{
+			pluginID: d["plugin_id"],
+			level:    d["level"],
+			title:    d["title"],
+			message:  d["message"],
+		})
+		return nil
+	})
+
+	// plugin:sound:play — play a sound effect
+	_ = bus.Subscribe("plugin:sound:play", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginSoundMsg{
+			pluginID: d["plugin_id"],
+			sound:    d["sound"],
+		})
+		return nil
+	})
 }

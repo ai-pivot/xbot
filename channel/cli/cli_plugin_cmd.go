@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"path/filepath"
+	ch "xbot/channel"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -169,7 +170,7 @@ func (m *cliModel) handlePluginReload(pluginID string) tea.Cmd {
 
 func (m *cliModel) handlePluginReloadAll() tea.Cmd {
 	if m.pluginMgrFn == nil {
-		if m.remotePluginCache != nil {
+		if m.remotePluginCache != nil || m.remoteMode {
 			if m.pluginReloading {
 				m.showSystemMsg("Plugin reload already in progress, please wait...", feedbackWarning)
 				return nil
@@ -177,11 +178,16 @@ func (m *cliModel) handlePluginReloadAll() tea.Cmd {
 			m.pluginReloading = true
 			m.showSystemMsg("🔄 Reloading all plugins...", feedbackInfo)
 			m.updateViewportContent()
-			cache := m.remotePluginCache
-			return func() tea.Msg {
-				err := cache.PluginReloadAll()
-				return cliPluginReloadAllResultMsg{err: err}
+			// Send as regular message — agent's builtin command handler
+			// calls ReloadAll directly, avoiding RPC deadlock.
+			if m.sendInboundFn != nil {
+				m.sendInboundFn(ch.InboundMsg{
+					Channel: m.channelName,
+					ChatID:  m.chatID,
+					Content: "/plugin reload-all",
+				})
 			}
+			return nil
 		}
 		m.showSystemMsg("Plugin system is not enabled", feedbackWarning)
 		return nil

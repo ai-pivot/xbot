@@ -993,15 +993,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			} else if result != nil {
 				rpcMsg.Result = result
 			}
-			// RPC responses MUST NOT be dropped — a dropped response causes the
-			// client to block until its 30s RPC timeout. During plugin reload-all,
-			// multiple widget pushes can fill sendCh (64 buffer) simultaneously,
-			// so we block with a timeout instead of silently dropping.
 			select {
 			case c.sendCh <- rpcMsg:
 			case <-time.After(10 * time.Second):
 				log.WithField("rpc_id", rpcReq.ID).WithField("method", rpcReq.Method).
-					Error("RPC response send timeout (10s), sendCh full — writePump may be stuck")
+					Error("RPC response send timeout (10s)")
 			}
 			continue
 		case protocol.MsgTypeSubscribe:

@@ -1145,6 +1145,43 @@ func New(cfg Config) (*Agent, error) {
 		}
 		// Wire channel providers registered by plugins to ChannelProviderRegistry.
 		plugin.WireChannelProviders(agent.pluginMgr)
+		// Wire plugin commands into the agent command registry.
+		plugin.WirePluginCommands(agent.pluginMgr, func(name, description string, handler plugin.PluginCommandHandler, pctx plugin.PluginContext) {
+			agent.commands.Register(&pluginCmdAdapter{
+				name:        name,
+				description: description,
+				handler:     handler,
+				pctx:        pctx,
+			})
+		})
+		// Re-wire commands after every plugin reload
+		agent.pluginMgr.OnReload(func() {
+			plugin.WirePluginCommands(agent.pluginMgr, func(name, description string, handler plugin.PluginCommandHandler, pctx plugin.PluginContext) {
+				agent.commands.Register(&pluginCmdAdapter{
+					name:        name,
+					description: description,
+					handler:     handler,
+					pctx:        pctx,
+				})
+			})
+			plugin.WirePluginCrons(agent.pluginMgr, agent.cronSvc)
+			plugin.WirePluginThemes(agent.pluginMgr, func(id string, data []byte) error {
+				themesDir := filepath.Join(agent.xbotHome, "themes")
+				os.MkdirAll(themesDir, 0755)
+				return os.WriteFile(filepath.Join(themesDir, id+".json"), data, 0644)
+			})
+		})
+		// Wire plugin crons into the cron service.
+		plugin.WirePluginCrons(agent.pluginMgr, agent.cronSvc)
+		// Wire plugin themes into the local themes directory.
+		plugin.WirePluginThemes(agent.pluginMgr, func(id string, data []byte) error {
+			themesDir := filepath.Join(agent.xbotHome, "themes")
+			if err := os.MkdirAll(themesDir, 0755); err != nil {
+				return err
+			}
+			themePath := filepath.Join(themesDir, id+".json")
+			return os.WriteFile(themePath, data, 0644)
+		})
 		// Register the hook bridge as a builtin hook handler
 		agent.hookManager.RegisterBuiltin(hooks.PluginBridgeCallback(hookBridge))
 		// Wire enricher registry into the message pipeline

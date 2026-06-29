@@ -678,8 +678,41 @@ func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
 		}
 	}
 
-	// 2. Plugin commands from loaded plugins
-	// TODO: migrate palette plugin commands to RPC
+	// 2. Plugin commands from ~/.xbot/plugins/*/plugin.json
+	if entries, err := os.ReadDir(xbotDir + "/plugins"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			manifestPath := filepath.Join(xbotDir, "plugins", e.Name(), "plugin.json")
+			data, err := os.ReadFile(manifestPath)
+			if err != nil {
+				continue
+			}
+			var manifest struct {
+				Contributes struct {
+					Commands []struct {
+						Name        string `json:"name"`
+						Description string `json:"description"`
+					} `json:"commands"`
+				} `json:"contributes"`
+			}
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				continue
+			}
+			for _, cmd := range manifest.Contributes.Commands {
+				if cmd.Name == "" {
+					continue
+				}
+				cmds = append(cmds, cli.PaletteExternalCommand{
+					Title:       cmd.Name,
+					Description: cmd.Description,
+					Category:    cli.PaletteCategoryPlugins,
+					Content:     cmd.Name + " ",
+				})
+			}
+		}
+	}
 
 	// 3. User custom commands from ~/.xbot/commands/*.md (crush-style)
 	if entries, err := os.ReadDir(xbotDir + "/commands"); err == nil {

@@ -249,6 +249,10 @@ func (c *CLIChannel) Start() error {
 		c.approvalState.SetHandler(NewCLIApprovalHandler(c.program))
 	}
 
+	// Wire plugin event bus subscriptions — overlay show/hide, notifications, sound.
+	// This must happen after applyPending() wires pluginMgrFn into the model.
+	c.model.wirePluginEventBus(c.program)
+
 	// Ctrl+Z 紧急退出：双保险
 	// 1) Key event handler (cli_update.go): raw mode 下终端可能直接传 0x1A 字节
 	// 2) SIGTSTP 信号兜底: 某些终端 emulator 在 raw mode 下仍发信号

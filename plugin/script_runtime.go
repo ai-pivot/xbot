@@ -34,9 +34,6 @@ func (f *scriptRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plu
 		manifest.EntryDarwin == "" && manifest.EntryLinux == "" {
 		return nil, fmt.Errorf("script plugin %s: entry command is required", manifest.ID)
 	}
-	if len(manifest.Contributes.UI) == 0 {
-		return nil, fmt.Errorf("script plugin %s: at least one ui contribution required", manifest.ID)
-	}
 	return &scriptPlugin{
 		manifest: *manifest,
 		dir:      dir,
@@ -188,6 +185,47 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 				// Config detail — route to plugin log only, not main log.
 				ctx.Logger().Warnf("trigger %q subscribe failed: %v", trigger, err)
 			}
+		}
+	}
+
+	// Register commands declared in the manifest.
+	// Each command invokes the script with XBOT_COMMAND_NAME and XBOT_COMMAND_ARGS
+	// environment variables. The script's stdout becomes the command response.
+	for _, cmd := range p.manifest.Contributes.Commands {
+		cmdName := cmd.Name
+		cmdDesc := cmd.Description
+		pluginPtr := p // capture for closure
+		handler := func(ctx2 context.Context, args string, pctx PluginContext) (string, error) {
+			return pluginPtr.runCommand(cmdName, args)
+		}
+		if err := ctx.RegisterCommand(cmdName, cmdDesc, handler); err != nil {
+			ctx.Logger().Warnf("command %q registration failed: %v", cmdName, err)
+		}
+	}
+
+	// Subscribe to lifecycle hooks declared in the manifest.
+	// Format: {"event": "PostToolUse", "matcher": ""} → hook fires → script runs
+	// The script receives hook data via XBOT_TOOL_NAME, XBOT_TOOL_INPUT, etc.
+	for _, h := range p.manifest.Contributes.Hooks {
+		hookEvent := HookEvent(h.Event)
+		matcher := h.Matcher
+		pluginPtr := p // capture for closure
+		handler := func(_ context.Context, hp *HookPayload) (*HookResult, error) {
+			if hp != nil {
+				pluginPtr.lastHookMu.Lock()
+				pluginPtr.lastHook = hp
+				pluginPtr.lastHookMu.Unlock()
+			}
+			// Trigger async script run via the trigger channel
+			select {
+			case pluginPtr.triggerCh <- struct{}{}:
+			default:
+				// Channel full, skip — next refresh will catch up
+			}
+			return &HookResult{Decision: DecisionAllow}, nil
+		}
+		if err := ctx.OnEvent(hookEvent, matcher, handler); err != nil {
+			ctx.Logger().Warnf("hook %q (matcher=%q) subscribe failed: %v", h.Event, matcher, err)
 		}
 	}
 
@@ -394,25 +432,10 @@ func (p *scriptPlugin) runAndUpdate() {
 	}
 	p.outputMu.Unlock()
 
-	// Determine the primary widgetID (first declared, or empty if single-widget).
-	// For backward compatibility, when a plugin has a single widget, we run the
-	// script once per workDir and cache the same output for that widget.
-	// For multi-widget plugins, we also run once per workDir but with XBOT_WIDGET_ID
-	// set to the primary widget so the script output is consistent.
-	// The per-widget render paths (renderForWidget/renderByWidgetAndWorkDir) will
-	// call runScript with the specific widgetID for cache misses.
-	primaryWidgetID := ""
-	if len(p.widgetIDs) > 0 {
-		primaryWidgetID = p.widgetIDs[0]
-	}
-
-	// Run script for each workDir and update per-workDir output cache.
+	// Run script once per widget per workDir for correct per-widget output.
+	// Multi-widget plugins need XBOT_WIDGET_ID set per widget so they can
+	// branch on it and produce different content for each slot.
 	for _, wd := range workDirs {
-		output, err := p.runScript(wd, primaryWidgetID)
-		if err != nil {
-			p.logger().Errorf("script execution failed for %s: %v", wd, err)
-			continue
-		}
 		p.outputMu.Lock()
 		if p.outputs == nil {
 			p.outputs = make(map[string]map[string]string)
@@ -420,13 +443,18 @@ func (p *scriptPlugin) runAndUpdate() {
 		if p.outputs[wd] == nil {
 			p.outputs[wd] = make(map[string]string)
 		}
-		// Store the same output for ALL widgets of this plugin.
-		// The per-widget render paths will re-run with specific widgetID
-		// if the script needs different output per widget.
-		for _, wid := range p.widgetIDs {
-			p.outputs[wd][wid] = output
-		}
 		p.outputMu.Unlock()
+
+		for _, wid := range p.widgetIDs {
+			output, err := p.runScript(wd, wid)
+			if err != nil {
+				p.logger().Errorf("script execution failed for %s/%s: %v", wd, wid, err)
+				continue
+			}
+			p.outputMu.Lock()
+			p.outputs[wd][wid] = output
+			p.outputMu.Unlock()
+		}
 	}
 
 	// Change detection: only notify if any output actually changed.
@@ -644,6 +672,7 @@ func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
 		env = append(env, "XBOT_WIDGET_ID="+widgetID)
 	}
 	if hp != nil {
+		env = append(env, "XBOT_HOOK_EVENT="+string(hp.Event))
 		if hp.ToolName != "" {
 			env = append(env, "XBOT_TOOL_NAME="+hp.ToolName)
 		}
@@ -691,6 +720,59 @@ func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
 	// Default: use first line as widget content
 	lines := strings.SplitN(trimmed, "\n", 2)
 	return lines[0], nil
+}
+
+// runCommand invokes the script as a command handler. Sets XBOT_COMMAND_NAME
+// and XBOT_COMMAND_ARGS environment variables so the script can branch on them.
+// Returns the full stdout as the command response.
+func (p *scriptPlugin) runCommand(cmdName, args string) (string, error) {
+	// Resolve platform-specific entry command
+	entry := p.resolvedEntry()
+
+	// Split entry into command and args (safe shell-free splitting)
+	parts := strings.Fields(entry)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty entry command")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	// Resolve the script path relative to the plugin directory.
+	if len(parts) > 1 && !filepath.IsAbs(parts[1]) {
+		parts[1] = filepath.Join(p.dir, parts[1])
+		cmd = exec.CommandContext(ctx, parts[0], parts[1:]...)
+	}
+
+	// Use the plugin context's working directory
+	workDir := ""
+	if p.pctx != nil {
+		workDir = p.pctx.WorkingDir()
+	}
+	if workDir != "" {
+		if _, err := os.Stat(workDir); err == nil {
+			cmd.Dir = workDir
+		}
+	}
+
+	// Inject command-specific environment variables
+	env := os.Environ()
+	env = append(env, "XBOT_COMMAND_NAME="+cmdName)
+	env = append(env, "XBOT_COMMAND_ARGS="+args)
+	if workDir != "" {
+		env = append(env, "XBOT_WORK_DIR="+workDir)
+	}
+	cmd.Env = env
+
+	out, err := cmd.Output()
+	if err != nil {
+		p.logger().Errorf("runCommand(%s) failed: %v", cmdName, err)
+		return "", fmt.Errorf("command script %q: %w", entry, err)
+	}
+	p.logger().Debugf("runCommand(%s) output: %s", cmdName, strings.TrimSpace(string(out)))
+
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ---------------------------------------------------------------------------

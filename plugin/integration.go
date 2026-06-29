@@ -3,11 +3,14 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"xbot/cron"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -294,4 +297,147 @@ func WireAll(pm *PluginManager, registry *tools.Registry, bridge *PluginHookBrid
 	WirePluginEnrichers(enricherRegistry, pm, defaultEnricherPriority)
 
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Command Wiring
+// ---------------------------------------------------------------------------
+
+// CommandRegisterFn is the callback signature for registering a plugin command.
+// The caller (agent package) wraps this into a Command implementation to avoid
+// circular imports between plugin ↔ agent.
+type CommandRegisterFn func(name, description string, handler PluginCommandHandler, pctx PluginContext)
+
+// WirePluginCommands iterates active plugins and calls registerFn for each
+// registered command handler. The registerFn is responsible for wrapping the
+// handler into an agent.Command and registering it with the command registry.
+func WirePluginCommands(pm *PluginManager, registerFn CommandRegisterFn) {
+	entries := pm.ListPlugins()
+	registered := 0
+
+	for _, entry := range entries {
+		if entry.State != StateActive {
+			continue
+		}
+		pctx := entry.Context
+		for _, cmd := range pctx.GetCommands() {
+			registerFn(cmd.name, cmd.description, cmd.handler, pctx)
+			registered++
+		}
+	}
+
+	if registered > 0 {
+		log.Infof("plugin: registered %d commands from %d active plugins", registered, pm.ActiveCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Cron Wiring
+// ---------------------------------------------------------------------------
+
+// WirePluginCrons scans active plugins for scheduled crons and adds them to
+// the CronService. It also processes cancellation requests (removes jobs that
+// were cancelled via CancelCron). Re-wiring is idempotent: existing plugin jobs
+// are cleaned up before re-adding to avoid duplicates.
+func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
+	if cronSvc == nil {
+		return
+	}
+
+	added := 0
+	removed := 0
+	now := time.Now()
+
+	entries := pm.ListPlugins()
+	for _, entry := range entries {
+		if entry.State != StateActive {
+			continue
+		}
+		pluginID := entry.Manifest.ID
+
+		// Remove stale plugin jobs (idempotent: delete before re-add)
+		allJobs, _ := cronSvc.ListAllJobs()
+		for _, job := range allJobs {
+			if strings.HasPrefix(job.ID, "plugin:"+pluginID+":") {
+				if err := cronSvc.RemoveJob(job.ID); err != nil {
+					log.WithError(err).WithField("job_id", job.ID).Warn("plugin: failed to remove stale cron job")
+				} else {
+					removed++
+				}
+			}
+		}
+
+		// Process cancellation requests
+		for jobID := range entry.Context.GetCronCancellations() {
+			if err := cronSvc.RemoveJob(jobID); err != nil {
+				log.WithError(err).WithField("job_id", jobID).Warn("plugin: failed to cancel cron job")
+			} else {
+				removed++
+			}
+		}
+
+		// Add current cron contributions
+		for i, spec := range entry.Context.GetCrons() {
+			job := &sqlite.CronJob{
+				ID:           fmt.Sprintf("plugin:%s:%d", pluginID, i),
+				Message:      spec.Message,
+				CronExpr:     spec.CronExpr,
+				EverySeconds: spec.EverySeconds,
+				DelaySeconds: spec.DelaySeconds,
+				At:           spec.At,
+				CreatedAt:    now,
+			}
+
+			// Calculate next run and one_shot flag
+			job.OneShot = job.At != "" || job.DelaySeconds > 0
+			nextRun, err := cron.CalculateNextRun(job, now)
+			if err != nil {
+				log.WithError(err).WithField("plugin", pluginID).Warn("plugin: failed to calculate next run for cron")
+				continue
+			}
+			job.NextRun = nextRun
+
+			if err := cronSvc.AddJob(job); err != nil {
+				log.WithError(err).WithField("job_id", job.ID).Warn("plugin: failed to add cron job")
+				continue
+			}
+			added++
+		}
+	}
+
+	if added > 0 || removed > 0 {
+		log.Infof("plugin: cron wiring complete: %d added, %d removed", added, removed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Theme Wiring
+// ---------------------------------------------------------------------------
+
+// WirePluginThemes iterates active plugins and calls themeLoader for each
+// contributed theme. themeLoader receives the theme ID and raw JSON data,
+// and is responsible for persisting the theme (e.g. to ~/.xbot/themes/).
+func WirePluginThemes(pm *PluginManager, themeLoader func(id string, data []byte) error) {
+	entries := pm.ListPlugins()
+	loaded := 0
+
+	for _, entry := range entries {
+		if entry.State != StateActive {
+			continue
+		}
+		for id, data := range entry.Context.GetThemes() {
+			if err := themeLoader(id, data); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"plugin": entry.Manifest.ID,
+					"theme":  id,
+				}).Warn("plugin: failed to load theme")
+				continue
+			}
+			loaded++
+		}
+	}
+
+	if loaded > 0 {
+		log.Infof("plugin: loaded %d themes from active plugins", loaded)
+	}
 }

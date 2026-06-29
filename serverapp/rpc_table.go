@@ -1139,10 +1139,15 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
-		if err := pm.ReloadAll(context.Background()); err != nil {
-			return nil, err
-		}
-		return map[string]string{"status": "ok"}, nil
+		// Run reload asynchronously so the RPC returns immediately.
+		// ReloadAll can take a while (plugin deactivation/activation,
+		// script startup, etc.) and should not block the RPC channel.
+		go func() {
+			if err := pm.ReloadAll(context.Background()); err != nil {
+				log.WithError(err).Error("Async plugin reload failed")
+			}
+		}()
+		return map[string]string{"status": "started"}, nil
 	})
 
 	t["plugin_install"] = rpc1(func(ctx context.Context, p struct {

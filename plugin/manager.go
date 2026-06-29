@@ -73,6 +73,10 @@ type PluginManager struct {
 
 	// logMgr manages per-plugin log writers and unified cleanup.
 	logMgr *pluginLogManager
+
+	// onReloadCallbacks are called after ReloadAll completes successfully.
+	onReloadCallbacks []func()
+	onReloadMu        sync.Mutex
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -770,6 +774,18 @@ func (pm *PluginManager) ListPlugins() []*PluginEntry {
 	return result
 }
 
+// GetOverlayProvider looks up an overlay provider by plugin ID and overlay ID.
+// Returns the provider and true if found, or nil and false otherwise.
+func (pm *PluginManager) GetOverlayProvider(pluginID, overlayID string) (OverlayProvider, bool) {
+	entry, ok := pm.GetPlugin(pluginID)
+	if !ok || entry.Context == nil || entry.State != StateActive {
+		return nil, false
+	}
+	overlays := entry.Context.GetOverlays()
+	provider, ok := overlays[overlayID]
+	return provider, ok
+}
+
 // ActiveCount returns the number of currently active plugins.
 func (pm *PluginManager) ActiveCount() int {
 	pm.mu.RLock()
@@ -954,6 +970,8 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 // ReloadAll deactivates all plugins, clears entries, re-discovers, and re-activates.
 func (pm *PluginManager) ReloadAll(ctx context.Context) error {
+	// Suppress widget push during reload to avoid flooding WebSocket sendCh
+	defer pm.widgetRegistry.SuppressUpdates()()
 	pm.DeactivateAll(ctx)
 
 	// Collect plugin IDs before clearing entries so we can unregister widgets.
@@ -977,7 +995,32 @@ func (pm *PluginManager) ReloadAll(ctx context.Context) error {
 		return fmt.Errorf("reload all: discover failed: %w", err)
 	}
 
-	return pm.ActivateAll(ctx)
+	if err := pm.ActivateAll(ctx); err != nil {
+		return err
+	}
+
+	// Notify reload listeners asynchronously to avoid blocking the RPC handler
+	// (listeners may push widget updates via WebSocket which can be slow).
+	pm.onReloadMu.Lock()
+	cbs := make([]func(), len(pm.onReloadCallbacks))
+	copy(cbs, pm.onReloadCallbacks)
+	pm.onReloadMu.Unlock()
+	if len(cbs) > 0 {
+		go func() {
+			for _, cb := range cbs {
+				cb()
+			}
+		}()
+	}
+
+	return nil
+}
+
+// OnReload registers a callback invoked after ReloadAll completes.
+func (pm *PluginManager) OnReload(cb func()) {
+	pm.onReloadMu.Lock()
+	defer pm.onReloadMu.Unlock()
+	pm.onReloadCallbacks = append(pm.onReloadCallbacks, cb)
 }
 
 // ---------------------------------------------------------------------------

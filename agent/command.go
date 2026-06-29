@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -38,7 +39,9 @@ type Command interface {
 }
 
 // CommandRegistry holds registered commands and provides lookup.
+// Thread-safe: Register and Match can be called concurrently.
 type CommandRegistry struct {
+	mu       sync.RWMutex
 	commands []Command
 }
 
@@ -47,18 +50,22 @@ func NewCommandRegistry() *CommandRegistry {
 	return &CommandRegistry{}
 }
 
-// Register adds a command to the registry.
+// Register adds a command to the registry. Safe for concurrent use.
 func (r *CommandRegistry) Register(cmd Command) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.commands = append(r.commands, cmd)
 }
 
 // Match finds the first command that matches the given message content.
-// Returns nil if no command matches.
+// Returns nil if no command matches. Safe for concurrent use.
 func (r *CommandRegistry) Match(content string) Command {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return nil
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, cmd := range r.commands {
 		if cmd.Match(trimmed) {
 			return cmd
@@ -74,5 +81,7 @@ func (r *CommandRegistry) IsCommand(content string) bool {
 
 // Commands returns all registered commands (for /help generation, etc.).
 func (r *CommandRegistry) Commands() []Command {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.commands
 }

@@ -26,11 +26,7 @@ func (m *cliModel) handleTabComplete() {
 	}
 
 	if len(m.completions) == 0 {
-		for _, cmd := range cliCommands {
-			if strings.HasPrefix(cmd, trimmed) {
-				m.completions = append(m.completions, cmd)
-			}
-		}
+		m.completions = m.getCommandCompletions(trimmed)
 		if len(m.completions) == 0 {
 			return
 		}
@@ -40,6 +36,25 @@ func (m *cliModel) handleTabComplete() {
 	}
 
 	m.textarea.SetValue(m.completions[m.compIdx] + " ")
+}
+
+// getCommandCompletions returns all registered command names (built-in + plugin)
+// matching the given prefix. This is the SINGLE source of truth used by both
+// Tab completion (handleTabComplete) and hint display (renderCompletionsHint).
+func (m *cliModel) getCommandCompletions(prefix string) []string {
+	var matches []string
+	for _, cmd := range cliCommands {
+		if strings.HasPrefix(cmd, prefix) {
+			matches = append(matches, cmd)
+		}
+	}
+	m.refreshPluginCmdNames()
+	for _, cmd := range m.pluginCmdNames {
+		if strings.HasPrefix(cmd, prefix) {
+			matches = append(matches, cmd)
+		}
+	}
+	return matches
 }
 
 // detectAtPrefix 检测输入文本末尾是否有 @ 触发文件补全。
