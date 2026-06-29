@@ -16,27 +16,25 @@ func (t *ConfigTool) Name() string { return "config" }
 
 func (t *ConfigTool) Description() string {
 	return "Read, list, and modify any xbot configuration setting. " +
+		"This is the PRIMARY tool for all configuration management — subscriptions, models, settings, plugins, and hooks. " +
 		"Use this whenever the user wants to see available configs, check a setting, or change a setting " +
-		"like max_iterations, context_mode, api_key, provider, theme (prefer tui_control for theme switching), " +
-		"sidebar_width (prefer tui_control), or any other config key. " +
+		"like max_iterations, context_mode, llm_model, llm_provider, or any other config key. " +
+		"For theme switching and TUI layout (sidebar_width, sidebar_position), use tui_control. " +
 		"Actions: list (see all configs with descriptions), get (key), set (key, value), " +
-		"subscriptions (list all LLM subscriptions). " +
-		"NOTE: To switch the active model, tell the user to run /set-model <model>. " +
-		"To configure a custom LLM provider, tell the user to run /set-llm directly. " +
+		"subscriptions (list all LLM subscriptions), reload_plugins, reload_hooks. " +
 		"To view token usage, tell the user to run /usage."
 }
 
 func (t *ConfigTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "action", Type: "string", Description: "get or set", Required: true},
-		{Name: "key", Type: "string", Description: "Configuration key (e.g. theme, max_iterations, context_mode)", Required: true},
+		{Name: "action", Type: "string", Description: "Action: list, get, set, subscriptions, reload_plugins, reload_hooks", Required: true},
+		{Name: "key", Type: "string", Description: "Configuration key (e.g. theme, max_iterations, context_mode, llm_model)", Required: true},
 		{Name: "value", Type: "string", Description: "New value (for set action)", Required: false},
 	}
 }
 
 // isConfigKeyAllowed checks whether a key can be accessed via the config tool.
-// Subscription-scoped (LLM keys) and action-scoped keys are excluded — they have
-// dedicated management paths (/set-llm, subscription management, palette).
+// Action-scoped keys are excluded — they are UI triggers, not config values.
 func isConfigKeyAllowed(ctx *ToolContext, key string) bool {
 	if ctx.ConfigList == nil {
 		return true // can't check, allow (defensive)
@@ -141,7 +139,25 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		}
 		return NewResult(fmt.Sprintf("Updated %s from %s to %s", params.Key, prev, params.Value)), nil
 
+	case "reload_plugins":
+		if ctx.PluginReloader == nil {
+			return nil, fmt.Errorf("config: plugin reload is not available (plugin system not enabled)")
+		}
+		if err := ctx.PluginReloader(); err != nil {
+			return nil, fmt.Errorf("config: reload_plugins failed: %w", err)
+		}
+		return NewResult("All plugins reloaded successfully"), nil
+
+	case "reload_hooks":
+		if ctx.HooksReloader == nil {
+			return nil, fmt.Errorf("config: hooks reload is not available")
+		}
+		if err := ctx.HooksReloader(); err != nil {
+			return nil, fmt.Errorf("config: reload_hooks failed: %w", err)
+		}
+		return NewResult("Hooks configuration reloaded successfully"), nil
+
 	default:
-		return nil, fmt.Errorf("config: unknown action: %s (valid: list, get, set, subscriptions)", params.Action)
+		return nil, fmt.Errorf("config: unknown action: %s (valid: list, get, set, subscriptions, reload_plugins, reload_hooks)", params.Action)
 	}
 }

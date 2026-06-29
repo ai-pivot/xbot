@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -462,6 +463,139 @@ func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.
 		}
 		return result
 	}
+}
+
+// getActiveSubFieldFn returns a function that reads a single field from the
+// active subscription. Used by config tool's get action for subscription-scoped keys.
+func (a *Agent) getActiveSubFieldFn(channel string) func(key string) (string, error) {
+	if a.llmFactory == nil {
+		return nil
+	}
+	svc := a.llmFactory.GetSubscriptionSvc()
+	if svc == nil {
+		return nil
+	}
+	return func(key string) (string, error) {
+		// Use cliSenderID for CLI channel
+		senderID := a.cliSenderID
+		if senderID == "" {
+			senderID = "cli_user"
+		}
+		sub, err := svc.GetDefault(senderID)
+		if err != nil {
+			return "", fmt.Errorf("get default subscription: %w", err)
+		}
+		if sub == nil {
+			return "", nil
+		}
+		return subFieldValue(sub, key), nil
+	}
+}
+
+// updateActiveSubFn returns a function that updates a single field in the active
+// subscription. Used by config tool's set action for subscription-scoped keys.
+func (a *Agent) updateActiveSubFn(channel string) func(key, value string) (string, error) {
+	if a.llmFactory == nil {
+		return nil
+	}
+	svc := a.llmFactory.GetSubscriptionSvc()
+	if svc == nil {
+		return nil
+	}
+	return func(key, value string) (string, error) {
+		senderID := a.cliSenderID
+		if senderID == "" {
+			senderID = "cli_user"
+		}
+		sub, err := svc.GetDefault(senderID)
+		if err != nil {
+			return "", fmt.Errorf("get default subscription: %w", err)
+		}
+		if sub == nil {
+			return "", fmt.Errorf("no active subscription found")
+		}
+		oldVal := subFieldValue(sub, key)
+		// Update the relevant field
+		if err := setSubFieldValue(sub, key, value); err != nil {
+			return "", err
+		}
+		if err := svc.Update(sub); err != nil {
+			return "", fmt.Errorf("update subscription: %w", err)
+		}
+		// Trigger switch model if model changed
+		if key == "llm_model" {
+			a.llmFactory.SwitchModel(senderID, value)
+		}
+		return oldVal, nil
+	}
+}
+
+// subFieldValue reads a single field from an LLMSubscription by config key.
+func subFieldValue(sub *sqlite.LLMSubscription, key string) string {
+	switch key {
+	case "llm_provider":
+		return sub.Provider
+	case "llm_api_key":
+		return sub.APIKey
+	case "llm_base_url":
+		return sub.BaseURL
+	case "llm_model":
+		return sub.Model
+	case "max_output_tokens":
+		if sub.MaxOutputTokens > 0 {
+			return strconv.Itoa(sub.MaxOutputTokens)
+		}
+		return "4096"
+	case "max_context_tokens":
+		if sub.MaxContext > 0 {
+			return strconv.Itoa(sub.MaxContext)
+		}
+		return ""
+	case "thinking_mode":
+		return sub.ThinkingMode
+	case "api_type":
+		return sub.APIType
+	}
+	return ""
+}
+
+// setSubFieldValue sets a single field on an LLMSubscription by config key.
+func setSubFieldValue(sub *sqlite.LLMSubscription, key, value string) error {
+	switch key {
+	case "llm_provider":
+		sub.Provider = strings.TrimSpace(value)
+	case "llm_api_key":
+		sub.APIKey = strings.TrimSpace(value)
+	case "llm_base_url":
+		sub.BaseURL = strings.TrimSpace(value)
+	case "llm_model":
+		sub.Model = strings.TrimSpace(value)
+	case "max_output_tokens":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("max_output_tokens must be an integer: %w", err)
+		}
+		if n < 1 || n > 131072 {
+			return fmt.Errorf("max_output_tokens must be between 1 and 131072, got %d", n)
+		}
+		sub.MaxOutputTokens = n
+	case "max_context_tokens":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("max_context_tokens must be an integer: %w", err)
+		}
+		if n < 1 {
+			return fmt.Errorf("max_context_tokens must be positive, got %d", n)
+		}
+		sub.MaxContext = n
+	case "thinking_mode":
+		sub.ThinkingMode = strings.TrimSpace(value)
+	case "api_type":
+		sub.APIType = strings.TrimSpace(value)
+	default:
+		return fmt.Errorf("unknown subscription key: %s", key)
+	}
+	return nil
 }
 
 // LLMFactory returns the Agent's LLMFactory (for external injection of callbacks).
