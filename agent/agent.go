@@ -482,7 +482,10 @@ func (a *Agent) getActiveSubFieldFn(channel string) func(key string) (string, er
 			senderID = "cli_user"
 		}
 		sub, err := svc.GetDefault(senderID)
-		if err != nil || sub == nil {
+		if err != nil {
+			return "", fmt.Errorf("get default subscription: %w", err)
+		}
+		if sub == nil {
 			return "", nil
 		}
 		return subFieldValue(sub, key), nil
@@ -572,17 +575,23 @@ func setSubFieldValue(sub *sqlite.LLMSubscription, key, value string) error {
 		if err != nil {
 			return fmt.Errorf("max_output_tokens must be an integer: %w", err)
 		}
+		if n < 1 || n > 131072 {
+			return fmt.Errorf("max_output_tokens must be between 1 and 131072, got %d", n)
+		}
 		sub.MaxOutputTokens = n
 	case "max_context_tokens":
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
 			return fmt.Errorf("max_context_tokens must be an integer: %w", err)
 		}
+		if n < 1 {
+			return fmt.Errorf("max_context_tokens must be positive, got %d", n)
+		}
 		sub.MaxContext = n
 	case "thinking_mode":
-		sub.ThinkingMode = value
+		sub.ThinkingMode = strings.TrimSpace(value)
 	case "api_type":
-		sub.APIType = value
+		sub.APIType = strings.TrimSpace(value)
 	default:
 		return fmt.Errorf("unknown subscription key: %s", key)
 	}
