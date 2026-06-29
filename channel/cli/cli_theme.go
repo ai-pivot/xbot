@@ -960,7 +960,7 @@ func loadExternalTheme(name string) *cliTheme {
 	return t
 }
 
-var pluginThemesMu sync.Mutex
+// pluginThemesMu removed — currentThemeMu protects themeRegistry reads and writes
 
 // LoadPluginTheme parses a theme JSON (same format as external themes) and
 // registers it in the theme registry. This is called when plugins contribute
@@ -1013,9 +1013,9 @@ func LoadPluginTheme(id string, data []byte) error {
 		AccentEnd:       or(ext.AccentEnd, ext.AccentAlt),
 	}
 
-	pluginThemesMu.Lock()
+	currentThemeMu.Lock()
 	themeRegistry[id] = t
-	pluginThemesMu.Unlock()
+	currentThemeMu.Unlock()
 	return nil
 }
 

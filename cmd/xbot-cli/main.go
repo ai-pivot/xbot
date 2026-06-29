@@ -678,7 +678,11 @@ func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
 		}
 	}
 
-	// 2. Plugin commands from ~/.xbot/plugins/*/plugin.json
+	// 2. Plugin commands from local ~/.xbot/plugins/*/plugin.json
+	// NOTE: This reads plugin.json directly to discover commands. In remote mode,
+	// plugin manifests are also synced locally via the plugin system. A future
+	// improvement would be to fetch commands via RPC (list_plugin_commands) for
+	// consistency with the PluginManager, but this approach is correct and simple.
 	if entries, err := os.ReadDir(xbotDir + "/plugins"); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {

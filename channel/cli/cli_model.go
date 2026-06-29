@@ -7,6 +7,7 @@ import (
 	"time"
 	ch "xbot/channel"
 	"xbot/internal/textarea"
+	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/tools"
@@ -924,8 +925,15 @@ func (m *cliModel) wirePluginEventBus(program *tea.Program) {
 		return
 	}
 
+	// Helper that logs subscription failures instead of silently dropping them.
+	sub := func(topic string, handler plugin.PluginEventHandler) {
+		if err := bus.Subscribe(topic, handler); err != nil {
+			log.WithError(err).WithField("topic", topic).Warn("plugin event subscription failed")
+		}
+	}
+
 	// plugin:overlay:show — display a plugin's full-screen overlay
-	_ = bus.Subscribe("plugin:overlay:show", func(ctx context.Context, topic string, data any) error {
+	sub("plugin:overlay:show", func(ctx context.Context, topic string, data any) error {
 		d, ok := data.(map[string]string)
 		if !ok {
 			return nil
@@ -938,7 +946,7 @@ func (m *cliModel) wirePluginEventBus(program *tea.Program) {
 	})
 
 	// plugin:overlay:hide — dismiss the current plugin overlay
-	_ = bus.Subscribe("plugin:overlay:hide", func(ctx context.Context, topic string, data any) error {
+	sub("plugin:overlay:hide", func(ctx context.Context, topic string, data any) error {
 		d, ok := data.(map[string]string)
 		if !ok {
 			return nil
@@ -950,7 +958,7 @@ func (m *cliModel) wirePluginEventBus(program *tea.Program) {
 	})
 
 	// plugin:notify — show a plugin notification as a toast
-	_ = bus.Subscribe("plugin:notify", func(ctx context.Context, topic string, data any) error {
+	sub("plugin:notify", func(ctx context.Context, topic string, data any) error {
 		d, ok := data.(map[string]string)
 		if !ok {
 			return nil
@@ -965,7 +973,7 @@ func (m *cliModel) wirePluginEventBus(program *tea.Program) {
 	})
 
 	// plugin:sound:play — play a sound effect
-	_ = bus.Subscribe("plugin:sound:play", func(ctx context.Context, topic string, data any) error {
+	sub("plugin:sound:play", func(ctx context.Context, topic string, data any) error {
 		d, ok := data.(map[string]string)
 		if !ok {
 			return nil

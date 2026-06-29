@@ -1156,6 +1156,17 @@ func New(cfg Config) (*Agent, error) {
 		})
 		// Re-wire commands after every plugin reload
 		agent.pluginMgr.OnReload(func() {
+			// Remove old plugin commands before re-registering to avoid duplicates
+			agent.commands.mu.Lock()
+			filtered := agent.commands.commands[:0]
+			for _, cmd := range agent.commands.commands {
+				if _, ok := cmd.(*pluginCmdAdapter); !ok {
+					filtered = append(filtered, cmd)
+				}
+			}
+			agent.commands.commands = filtered
+			agent.commands.mu.Unlock()
+
 			plugin.WirePluginCommands(agent.pluginMgr, func(name, description string, handler plugin.PluginCommandHandler, pctx plugin.PluginContext) {
 				agent.commands.Register(&pluginCmdAdapter{
 					name:        name,
