@@ -890,13 +890,18 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 	var sb strings.Builder
 	// Header: "▾ Todo N/M" + progress bar, padded to full width
 	headerLabel := m.renderSidebarSectionHeader("Todo", false)
-	fmt.Fprintf(&sb, "%s %d/%d", headerLabel, done, total)
-	sb.WriteString(" ")
-	barWidth := 10
+	headerPrefix := fmt.Sprintf("%s %d/%d", headerLabel, done, total)
+	headerPrefixW := lipgloss.Width(headerPrefix)
+	spacerW := 1 // space before progress bar
+	barWidth := w - headerPrefixW - spacerW
+	if barWidth < 3 {
+		barWidth = 3
+	}
 	filled := 0
 	if total > 0 {
 		filled = done * barWidth / total
 	}
+	fmt.Fprintf(&sb, "%s ", headerPrefix)
 	sb.WriteString(s.TodoFilled.Render(strings.Repeat("█", filled)))
 	sb.WriteString(s.TodoEmpty.Render(strings.Repeat("░", barWidth-filled)))
 
