@@ -257,35 +257,30 @@ func (p *scriptPlugin) Deactivate(ctx PluginContext) error {
 // If no cached output exists for this workDir+widgetID, runs the script
 // synchronously with XBOT_WIDGET_ID set, so the script can produce
 // widget-specific output.
-func (p *scriptPlugin) renderForWidget(widgetID string, width int, fallbackWorkDir string) []WidgetSpan {
+// renderFromCacheOrRun is the shared rendering core: read from cache, run
+// script on miss, store result, then parse. Called by both renderForWidget
+// and renderByWidgetAndWorkDir.
+func (p *scriptPlugin) renderFromCacheOrRun(widgetID, workDir string) []WidgetSpan {
 	p.outputMu.RLock()
-	var wd string
-	if p.pctx != nil {
-		wd = p.pctx.WorkingDir()
-	}
-	if wd == "" {
-		wd = fallbackWorkDir
-	}
-	widgetOutputs := p.outputs[wd]
+	widgetOutputs := p.outputs[workDir]
 	text := ""
 	if widgetOutputs != nil {
 		text = widgetOutputs[widgetID]
 	}
 	p.outputMu.RUnlock()
 
-	// Cache miss — run script synchronously for this workDir+widgetID
-	if text == "" && wd != "" {
-		if output, err := p.runScript(wd, widgetID); err == nil && output != "" {
+	if text == "" && workDir != "" {
+		if output, err := p.runScript(workDir, widgetID); err == nil && output != "" {
 			p.outputMu.Lock()
 			if p.outputs == nil {
 				p.outputs = make(map[string]map[string]string)
 			}
-			if p.outputs[wd] == nil {
-				p.outputs[wd] = make(map[string]string)
+			if p.outputs[workDir] == nil {
+				p.outputs[workDir] = make(map[string]string)
 			}
-			p.outputs[wd][widgetID] = output
+			p.outputs[workDir][widgetID] = output
 			p.outputMu.Unlock()
-			p.logger().Debugf("output[%s][%s]=%q", wd, widgetID, output)
+			p.logger().Debugf("output[%s][%s]=%q", workDir, widgetID, output)
 			text = output
 		}
 	}
@@ -294,6 +289,19 @@ func (p *scriptPlugin) renderForWidget(widgetID string, width int, fallbackWorkD
 		return []WidgetSpan{{Text: "", Style: StyleDim}}
 	}
 	return parseScriptOutput(text)
+}
+
+// renderForWidget resolves the effective workDir from PluginContext (falling
+// back to fallbackWorkDir) and delegates to renderFromCacheOrRun.
+func (p *scriptPlugin) renderForWidget(widgetID string, width int, fallbackWorkDir string) []WidgetSpan {
+	var wd string
+	if p.pctx != nil {
+		wd = p.pctx.WorkingDir()
+	}
+	if wd == "" {
+		wd = fallbackWorkDir
+	}
+	return p.renderFromCacheOrRun(widgetID, wd)
 }
 
 // OnWorkDirChanged triggers an immediate script re-run when the session CWD changes.
@@ -321,34 +329,7 @@ func (p *scriptPlugin) renderByWidgetAndWorkDir(widgetID string, width int, work
 	if workDir == "" {
 		return p.renderForWidget(widgetID, width, "")
 	}
-	p.outputMu.RLock()
-	widgetOutputs := p.outputs[workDir]
-	text := ""
-	if widgetOutputs != nil {
-		text = widgetOutputs[widgetID]
-	}
-	p.outputMu.RUnlock()
-
-	// Cache miss — run script synchronously for this workDir+widgetID
-	if text == "" {
-		if output, err := p.runScript(workDir, widgetID); err == nil && output != "" {
-			p.outputMu.Lock()
-			if p.outputs == nil {
-				p.outputs = make(map[string]map[string]string)
-			}
-			if p.outputs[workDir] == nil {
-				p.outputs[workDir] = make(map[string]string)
-			}
-			p.outputs[workDir][widgetID] = output
-			p.outputMu.Unlock()
-			text = output
-		}
-	}
-
-	if text == "" {
-		return []WidgetSpan{{Text: "", Style: StyleDim}}
-	}
-	return parseScriptOutput(text)
+	return p.renderFromCacheOrRun(widgetID, workDir)
 }
 
 // ---------------------------------------------------------------------------

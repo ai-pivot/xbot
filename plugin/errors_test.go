@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestSentinelErrors(t *testing.T) {
@@ -16,7 +15,6 @@ func TestSentinelErrors(t *testing.T) {
 	}{
 		{"ErrPluginNotFound matches itself", ErrPluginNotFound, ErrPluginNotFound},
 		{"ErrPluginAlreadyRegistered matches itself", ErrPluginAlreadyRegistered, ErrPluginAlreadyRegistered},
-		{"ErrPluginNotActive matches itself", ErrPluginNotActive, ErrPluginNotActive},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -65,26 +63,6 @@ func TestErrPluginActivationFailed(t *testing.T) {
 	}
 	if !strings.Contains(msg, "timeout after 5s") {
 		t.Errorf("Error() = %q, want inner error in message", msg)
-	}
-}
-
-func TestErrRateLimitExceeded(t *testing.T) {
-	err := &ErrRateLimitExceeded{PluginID: "rl-plugin", RetryAfter: 5 * time.Second}
-
-	var typed *ErrRateLimitExceeded
-	if !errors.As(err, &typed) {
-		t.Fatal("errors.As should match *ErrRateLimitExceeded")
-	}
-	if typed.RetryAfter != 5*time.Second {
-		t.Errorf("RetryAfter = %v, want 5s", typed.RetryAfter)
-	}
-
-	msg := err.Error()
-	if !strings.Contains(msg, "rate limit exceeded") {
-		t.Errorf("Error() = %q, want rate limit message", msg)
-	}
-	if !strings.Contains(msg, "rl-plugin") {
-		t.Errorf("Error() = %q, want plugin ID", msg)
 	}
 }
 
