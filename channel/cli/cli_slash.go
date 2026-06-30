@@ -263,6 +263,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				s.Channel, s.ChatID, label, model, lastActive, active))
 		}
 		m.showSystemMsg(strings.Join(lines, "\n"), feedbackInfo)
+		return nil
 
 	case "/ss", "/sessions":
 		// /ss — Open Sessions panel

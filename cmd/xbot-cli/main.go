@@ -1447,6 +1447,7 @@ func main() {
 					Channel:      t.Channel,
 					ChatID:       t.ChatID,
 					Label:        t.Label,
+					Model:        t.Model,
 					LastActiveAt: t.LastActiveAt,
 				})
 			}
