@@ -1248,20 +1248,3 @@ func (r *tailReader) Read(p []byte) (int, error) {
 }
 
 func (r *tailReader) Close() error { return r.inner.Close() }
-
-// captureStreamTail returns a truncated string of the captured streaming
-// response body tail, for inclusion in error logs. Resets the buffer.
-func (o *OpenAILLM) captureStreamTail() string {
-	o.streamBodyMu.Lock()
-	tail := make([]byte, len(o.streamBodyTail))
-	copy(tail, o.streamBodyTail)
-	o.streamBodyTail = o.streamBodyTail[:0]
-	o.streamBodyMu.Unlock()
-
-	s := string(tail)
-	const maxLogLen = 2000
-	if len(s) > maxLogLen {
-		s = "..." + s[len(s)-maxLogLen:]
-	}
-	return s
-}
