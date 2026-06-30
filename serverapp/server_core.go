@@ -135,7 +135,6 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	ag.IndexGlobalTools()
 
 	// 5. Configure LLM.
-	ag.LLMFactory().SetModelTiers(cfg.LLM)
 	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),

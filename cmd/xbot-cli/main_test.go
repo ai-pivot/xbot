@@ -449,9 +449,6 @@ func TestSaveCLIConfig_DoesNotWriteLLMCredentials(t *testing.T) {
 			Model:           "deepseek-v4",
 			MaxOutputTokens: 4096,
 			ThinkingMode:    "enabled",
-			VanguardModel:   "vanguard-1",
-			BalanceModel:    "balance-1",
-			SwiftModel:      "swift-1",
 		},
 		Agent: config.AgentConfig{MaxIterations: 42},
 	}
@@ -476,11 +473,6 @@ func TestSaveCLIConfig_DoesNotWriteLLMCredentials(t *testing.T) {
 		t.Errorf("LLM.Model = %q, want %q (disk preserved)", loaded.LLM.Model, "gpt-4.1")
 	}
 
-	// Tier model mappings ARE written back (global preferences, not credentials).
-	if loaded.LLM.VanguardModel != "vanguard-1" || loaded.LLM.BalanceModel != "balance-1" || loaded.LLM.SwiftModel != "swift-1" {
-		t.Errorf("tier models not persisted: v=%q b=%q s=%q", loaded.LLM.VanguardModel, loaded.LLM.BalanceModel, loaded.LLM.SwiftModel)
-	}
-
 	// Agent should be persisted.
 	if loaded.Agent.MaxIterations != 42 {
 		t.Errorf("Agent.MaxIterations = %d, want 42", loaded.Agent.MaxIterations)
@@ -503,11 +495,7 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	// Disk config has subscriptions — LLM credentials should NOT be written,
 	// but tier models should always be persisted.
 	diskCfg := &config.Config{
-		LLM: config.LLMConfig{
-			VanguardModel: "old-vanguard",
-			BalanceModel:  "old-balance",
-			SwiftModel:    "old-swift",
-		},
+		LLM: config.LLMConfig{},
 		Subscriptions: []config.SubscriptionConfig{{
 			ID: "sub1", Name: "sub1", Provider: "openai",
 			BaseURL: "https://sub.example/v1", APIKey: "sub-key",
@@ -522,13 +510,10 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	// Runtime cfg updates tier models.
 	appCfg := &config.Config{
 		LLM: config.LLMConfig{
-			Provider:      "openai",
-			BaseURL:       "https://runtime.example/v1",
-			APIKey:        "runtime-key",
-			Model:         "runtime-model",
-			VanguardModel: "new-vanguard",
-			BalanceModel:  "new-balance",
-			SwiftModel:    "new-swift",
+			Provider: "openai",
+			BaseURL:  "https://runtime.example/v1",
+			APIKey:   "runtime-key",
+			Model:    "runtime-model",
 		},
 		Agent: config.AgentConfig{MaxConcurrency: 5},
 	}
@@ -541,17 +526,6 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
 		return
-	}
-
-	// Tier models must always be persisted regardless of subscriptions.
-	if loaded.LLM.VanguardModel != "new-vanguard" {
-		t.Errorf("VanguardModel = %q, want %q", loaded.LLM.VanguardModel, "new-vanguard")
-	}
-	if loaded.LLM.BalanceModel != "new-balance" {
-		t.Errorf("BalanceModel = %q, want %q", loaded.LLM.BalanceModel, "new-balance")
-	}
-	if loaded.LLM.SwiftModel != "new-swift" {
-		t.Errorf("SwiftModel = %q, want %q", loaded.LLM.SwiftModel, "new-swift")
 	}
 
 	// LLM credentials must NOT be written — the DB system subscription is the
@@ -592,11 +566,10 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	diskCfg := &config.Config{
 		CLI: config.CLIConfig{ServerURL: "ws://localhost:7777", Token: "existing-token"},
 		LLM: config.LLMConfig{
-			Provider:      "anthropic",
-			BaseURL:       "https://api.anthropic.com",
-			APIKey:        "sk-ant-existing",
-			Model:         "claude-3",
-			VanguardModel: "claude-opus",
+			Provider: "anthropic",
+			BaseURL:  "https://api.anthropic.com",
+			APIKey:   "sk-ant-existing",
+			Model:    "claude-3",
 		},
 		Agent: config.AgentConfig{
 			MaxIterations:  10,
@@ -619,11 +592,7 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 
 	// Call saveCLIConfig with new agent settings only.
 	appCfg := &config.Config{
-		LLM: config.LLMConfig{
-			VanguardModel: "claude-opus-4",
-			BalanceModel:  "claude-sonnet-4",
-			SwiftModel:    "claude-haiku-4",
-		},
+		LLM: config.LLMConfig{},
 		Agent: config.AgentConfig{
 			MaxIterations:  99,
 			MaxConcurrency: 12,
@@ -650,17 +619,6 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	}
 	if loaded.Agent.MemoryProvider != "redis" {
 		t.Errorf("Agent.MemoryProvider = %q, want %q", loaded.Agent.MemoryProvider, "redis")
-	}
-
-	// Tier models must be updated.
-	if loaded.LLM.VanguardModel != "claude-opus-4" {
-		t.Errorf("VanguardModel = %q, want %q", loaded.LLM.VanguardModel, "claude-opus-4")
-	}
-	if loaded.LLM.BalanceModel != "claude-sonnet-4" {
-		t.Errorf("BalanceModel = %q, want %q", loaded.LLM.BalanceModel, "claude-sonnet-4")
-	}
-	if loaded.LLM.SwiftModel != "claude-haiku-4" {
-		t.Errorf("SwiftModel = %q, want %q", loaded.LLM.SwiftModel, "claude-haiku-4")
 	}
 
 	// Existing CLI settings must be preserved (appCfg.CLI is zero, so no overwrite).

@@ -589,35 +589,16 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			return nil
 		},
 
-		// Model tier
-		LLMGetModelTier: func(tier string) string {
-			switch tier {
-			case "vanguard":
-				return cfg.LLM.VanguardModel
-			case "balance":
-				return cfg.LLM.BalanceModel
-			case "swift":
-				return cfg.LLM.SwiftModel
-			default:
-				return ""
-			}
+		// Model tier — per-user, stored in user_settings DB (same pattern as
+		// thinking_mode). No global config fallback — tier is purely per-user.
+		LLMGetModelTier: func(senderID, tier string) (subID, model string) {
+			return ag.GetUserTierModel(senderID, tier)
 		},
-		LLMSetModelTier: func(tier, model string) error {
-			switch tier {
-			case "vanguard":
-				cfg.LLM.VanguardModel = model
-			case "balance":
-				cfg.LLM.BalanceModel = model
-			case "swift":
-				cfg.LLM.SwiftModel = model
-			default:
-				return fmt.Errorf("unknown tier: %s", tier)
-			}
-			ag.LLMFactory().SetModelTiers(cfg.LLM)
-			return saveServerConfig(cfg)
+		LLMSetModelTier: func(senderID, tier, subID, model string) error {
+			return ag.SetUserTierModel(senderID, tier, subID, model)
 		},
-		LLMListAllModels: func() []string {
-			return ag.LLMFactory().ListAllModelsForUser("")
+		LLMListAllModels: func(senderID string) []protocol.ModelEntry {
+			return ag.LLMFactory().ListAllModelEntriesForUser(senderID)
 		},
 
 		// Context mode

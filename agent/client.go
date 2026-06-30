@@ -413,10 +413,6 @@ func (c *Client) RefreshModelEntries() []protocol.ModelEntry {
 	return r
 }
 
-func (c *Client) SetModelTiers(cfg config.LLMConfig) error {
-	return c.call(MethodSetModelTiers, cfg, nil)
-}
-
 func (c *Client) SetDefaultThinkingMode(mode string) error {
 	return c.call(MethodSetDefaultThinkingMode, setDefaultThinkingModeReq{Mode: mode}, nil)
 }

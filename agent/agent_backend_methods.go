@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"xbot/config"
 	"xbot/protocol"
 )
 
@@ -39,12 +38,6 @@ func (a *Agent) SetCWD(ch, chatID, dir string) error {
 		a.pluginMgr.RefreshWorkDir(cwd, ch, chatID, sess.TenantID())
 		a.pluginMgr.RefreshTenantID(sess.TenantID())
 	}
-	return nil
-}
-
-// SetModelTiers configures the LLM model tiers via LLMFactory.
-func (a *Agent) SetModelTiers(cfg config.LLMConfig) error {
-	a.llmFactory.SetModelTiers(cfg)
 	return nil
 }
 

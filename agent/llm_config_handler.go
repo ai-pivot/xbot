@@ -658,6 +658,46 @@ func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
 	return nil
 }
 
+// GetUserTierModel returns the per-user tier model setting from user_settings DB.
+// Returns (subID, model). Both may be empty when unset (falls back to global config
+// in resolveTierModel). Uses the same canonical channel as thinking_mode so tier
+// settings are shared across all channels (CLI, Feishu, Web) per user.
+func (a *Agent) GetUserTierModel(senderID, tier string) (subID, model string) {
+	if a.llmFactory == nil || a.settingsSvc == nil {
+		return "", ""
+	}
+	vals, err := a.settingsSvc.GetSettings(thinkingModeChannel, senderID)
+	if err != nil || vals == nil {
+		return "", ""
+	}
+	raw := vals["tier_"+tier]
+	if raw == "" {
+		return "", ""
+	}
+	return parseTierValue(raw)
+}
+
+// SetUserTierModel updates the per-user tier model setting in user_settings DB.
+// Value is stored as "subID|model" (or plain "model" when subID is empty).
+// Invalidates the cached LLM client for the sender.
+func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
+	if a.settingsSvc == nil {
+		return ErrSettingsUnavailable
+	}
+	val := model
+	if subID != "" {
+		val = subID + "|" + model
+	}
+	if err := a.settingsSvc.SetSetting(thinkingModeChannel, senderID, "tier_"+tier, val); err != nil {
+		return fmt.Errorf("save tier_%s: %w", tier, err)
+	}
+	if a.llmFactory != nil {
+		a.llmFactory.invalidateUserMemos(senderID)
+		a.llmFactory.InvalidateSender(senderID)
+	}
+	return nil
+}
+
 // maskAPIKey masks API key, showing only first 4 characters
 func maskAPIKey(key string) string {
 	if len(key) <= 4 {

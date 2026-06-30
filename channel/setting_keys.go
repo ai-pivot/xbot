@@ -127,9 +127,6 @@ var AllSettingDefs = []SettingDef{
 	{Key: "runner_server", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
 	{Key: "runner_token", Scope: ScopeUser, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote runner (masked)", ValidValues: "any valid token"},
 	{Key: "runner_workspace", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Workspace dir on remote runner", ValidValues: "any valid path"},
-	{Key: "vanguard_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Model for vanguard tier", ValidValues: "any model name"},
-	{Key: "balance_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Model for balance tier", ValidValues: "any model name"},
-	{Key: "swift_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Model for swift tier", ValidValues: "any model name"},
 
 	// ── Action keys (UI triggers) ──
 	{Key: "subscription_manage", Scope: ScopeAction, AIDescription: "Open subscription management panel"},

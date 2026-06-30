@@ -33,23 +33,6 @@ type SettingHandler struct {
 //  2. Add a handler here
 //  3. Done — no switch-case to update, no if-chain to extend.
 var SettingHandlerRegistry = map[string]SettingHandler{
-	// --- LLM tier settings (config-only, agent effects applied by caller via SetModelTiers) ---
-	"vanguard_model": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.LLM.VanguardModel = strings.TrimSpace(value)
-		},
-	},
-	"balance_model": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.LLM.BalanceModel = strings.TrimSpace(value)
-		},
-	},
-	"swift_model": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.LLM.SwiftModel = strings.TrimSpace(value)
-		},
-	},
-
 	// --- Agent settings ---
 	"sandbox_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Sandbox.Mode = value },
@@ -197,14 +180,10 @@ func ApplyRuntimeSetting(cfg *config.Config, ag *Agent, senderID, key, value str
 		return
 	}
 	applyHandler(cfg, ag, senderID, "", handler, value)
-	if ag != nil {
-		ag.LLMFactory().SetModelTiers(cfg.LLM)
-	}
 }
 
 // ApplyRuntimeSettings applies a batch of setting changes.
 // context_mode is processed LAST so it correctly overrides enable_auto_compress.
-// SetModelTiers is called once after all keys are processed.
 // Caller should save config after this returns.
 func ApplyRuntimeSettings(cfg *config.Config, ag *Agent, senderID string, values map[string]string) {
 	for k, v := range values {
@@ -224,9 +203,6 @@ func ApplyRuntimeSettings(cfg *config.Config, ag *Agent, senderID string, values
 	if v, ok := values["context_mode"]; ok && v != "" {
 		handler := SettingHandlerRegistry["context_mode"]
 		applyHandler(cfg, ag, senderID, "", handler, v)
-	}
-	if ag != nil {
-		ag.LLMFactory().SetModelTiers(cfg.LLM)
 	}
 }
 

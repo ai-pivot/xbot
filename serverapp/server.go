@@ -740,7 +740,6 @@ func Run(args []string) error {
 
 	// 所有工具注册完成，索引全局工具（用于 search_tools 语义搜索）
 	ag.IndexGlobalTools()
-	ag.LLMFactory().SetModelTiers(cfg.LLM)
 	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
@@ -1146,12 +1145,6 @@ func saveServerConfig(cfg *config.Config) error {
 	if cfg.Agent.EnableAutoCompress != nil {
 		merged.Agent.EnableAutoCompress = cfg.Agent.EnableAutoCompress
 	}
-
-	// LLM tier model mappings: always write back (vanguard/balance/swift models).
-	// These are global preferences, not subscription credentials.
-	merged.LLM.VanguardModel = cfg.LLM.VanguardModel
-	merged.LLM.BalanceModel = cfg.LLM.BalanceModel
-	merged.LLM.SwiftModel = cfg.LLM.SwiftModel
 
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode)
 	// are NOT written back to config.json. The DB system subscription (reconciled

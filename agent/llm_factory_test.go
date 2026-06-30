@@ -209,165 +209,6 @@ func TestNormalizeModelTier(t *testing.T) {
 	}
 }
 
-func TestResolveTierModel(t *testing.T) {
-	f := NewLLMFactory(nil, "default-model")
-
-	// No tiers configured → tier keywords are recognized but model is empty
-	model, usedTier := f.resolveTierModel("vanguard")
-	if !usedTier {
-		t.Error("usedTier should be true (keyword recognized)")
-	}
-	if model != "" {
-		t.Errorf("model = %q, want empty", model)
-	}
-
-	// Non-tier value passes through unchanged
-	model, usedTier = f.resolveTierModel("gpt-4o")
-	if usedTier {
-		t.Error("usedTier should be false for non-tier value")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("model = %q, want gpt-4o", model)
-	}
-
-	// Configure tiers
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "claude-opus-4-20250115",
-		BalanceModel:  "claude-sonnet-4-20250514",
-		SwiftModel:    "gpt-4o-mini",
-	})
-
-	model, usedTier = f.resolveTierModel("vanguard")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115", model)
-	}
-
-	model, usedTier = f.resolveTierModel("balance")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %q, want claude-sonnet-4-20250514", model)
-	}
-
-	model, usedTier = f.resolveTierModel("swift")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o-mini" {
-		t.Errorf("model = %q, want gpt-4o-mini", model)
-	}
-
-	// Aliases: strong/medium/weak
-	model, _ = f.resolveTierModel("strong")
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115", model)
-	}
-
-	model, _ = f.resolveTierModel("medium")
-	if model != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %q, want claude-sonnet-4-20250514", model)
-	}
-
-	model, _ = f.resolveTierModel("weak")
-	if model != "gpt-4o-mini" {
-		t.Errorf("model = %q, want gpt-4o-mini", model)
-	}
-
-	// Partial config: only vanguard set
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "opus",
-	})
-	model, usedTier = f.resolveTierModel("balance")
-	if !usedTier {
-		t.Error("usedTier should be true even for unconfigured tier")
-	}
-	// balance unconfigured → fallback to vanguard
-	if model != "opus" {
-		t.Errorf("model = %q, want opus (fallback from unconfigured balance to vanguard)", model)
-	}
-}
-
-func TestGetLLMForModel_TierResolution(t *testing.T) {
-	f := NewLLMFactory(nil, "default-model")
-	f.defaultThinkingMode = "auto"
-
-	// Tier with no subscriptionSvc → model not found, fallback to default client
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "claude-opus-4-20250115",
-	})
-
-	_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
-	if usedCustom {
-		t.Error("usedCustom should be false when model not found in any subscription")
-	}
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved tier model)", model)
-	}
-
-	// Non-tier model with no subscriptionSvc → returns the model name itself
-	_, model, _, _, _, usedCustom = f.GetLLMForModel("user1", "gpt-4o")
-	if usedCustom {
-		t.Error("usedCustom should be false when model not found in any subscription")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("model = %q, want gpt-4o (non-tier model, returned as-is)", model)
-	}
-}
-
-func TestResolveTierModel_UnconfiguredFallback(t *testing.T) {
-	// When swift/vanguard are not configured, should fallback to balance
-	f := NewLLMFactory(nil, "default-model")
-	f.SetModelTiers(config.LLMConfig{
-		BalanceModel: "gpt-4o",
-		// VanguardModel and SwiftModel intentionally empty
-	})
-
-	// swift not configured → fallback to balance
-	model, usedTier := f.resolveTierModel("swift")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("swift fallback = %q, want gpt-4o (balance)", model)
-	}
-
-	// vanguard not configured → fallback to balance
-	model, usedTier = f.resolveTierModel("vanguard")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("vanguard fallback = %q, want gpt-4o (balance)", model)
-	}
-
-	// balance configured → returns balance
-	model, usedTier = f.resolveTierModel("balance")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("balance = %q, want gpt-4o", model)
-	}
-}
-
-func TestResolveTierModel_AllUnconfigured(t *testing.T) {
-	// All tiers unconfigured → returns empty string (will fall to default client)
-	f := NewLLMFactory(nil, "default-model")
-	f.SetModelTiers(config.LLMConfig{})
-
-	model, usedTier := f.resolveTierModel("swift")
-	if !usedTier {
-		t.Error("usedTier should be true (tier keyword recognized)")
-	}
-	if model != "" {
-		t.Errorf("model = %q, want empty (no tiers configured)", model)
-	}
-}
-
 func TestHasCustomLLMChecksSubscriptionSvc(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
@@ -646,16 +487,11 @@ func TestInvalidate_ClearsPerSessionEntries(t *testing.T) {
 }
 
 // TestGetLLMForModel_ConfigSubExactMatch verifies the config.json subscription path:
-// when configSubsFn returns a subscription whose Model matches the resolved tier model,
+// when configSubsFn returns a subscription whose Model matches the resolved model,
 // GetLLMForModel should use that subscription (usedCustom=true).
 func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
-
-	// Configure tier so "vanguard" resolves to "gpt-4o"
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "gpt-4o",
-	})
 
 	// Set up configSubsFn with a matching subscription
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
@@ -671,7 +507,7 @@ func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 		}
 	})
 
-	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
 	if !usedCustom {
 		t.Error("usedCustom should be true when config sub matches resolved model")
 	}
@@ -685,15 +521,10 @@ func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 
 // TestGetLLMForModel_ConfigSubNoMatch verifies that when configSubsFn returns
 // subscriptions with different Model fields, it still tries to use them with
-// the resolved model name (OpenAI-compatible endpoints can serve any model).
+// the model name (OpenAI-compatible endpoints can serve any model).
 func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
-
-	// Configure tier so "vanguard" resolves to "gpt-4o"
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "gpt-4o",
-	})
 
 	// Config sub has a different model — but still usable with gpt-4o
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
@@ -709,12 +540,12 @@ func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 		}
 	})
 
-	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
 	if !usedCustom {
 		t.Error("usedCustom should be true when config sub can serve the resolved model")
 	}
 	if model != "gpt-4o" {
-		t.Errorf("model = %q, want %q (resolved tier model)", model, "gpt-4o")
+		t.Errorf("model = %q, want %q (resolved model)", model, "gpt-4o")
 	}
 	if client == nil {
 		t.Error("client should not be nil")
@@ -728,12 +559,6 @@ func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
 	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
 
-	// Configure tier so "vanguard" resolves to "gpt-4o"
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "gpt-4o",
-	})
-
-	// Sub-tests for empty BaseURL and empty APIKey
 	tests := []struct {
 		name string
 		sub  config.SubscriptionConfig
@@ -768,12 +593,12 @@ func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
 				return []config.SubscriptionConfig{tt.sub}
 			})
 
-			_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+			_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
 			if usedCustom {
 				t.Error("usedCustom should be false when config sub has empty credentials")
 			}
 			if model != "gpt-4o" {
-				t.Errorf("model = %q, want %q (resolved tier model preserved in fallback)", model, "gpt-4o")
+				t.Errorf("model = %q, want %q (resolved model preserved in fallback)", model, "gpt-4o")
 			}
 		})
 	}

@@ -548,18 +548,6 @@ func LocaleZH() *UILocale {
 					{Label: "DeepSeek: effort=max", Value: `{"thinking":{"type":"enabled"},"reasoning_effort":"max"}`},
 				},
 			},
-			{
-				Key: "vanguard_model", Label: "Vanguard 模型", Description: "SubAgent 的高强度模型等级映射",
-				Type: SettingTypeCombo, Category: "模型与推理",
-			},
-			{
-				Key: "balance_model", Label: "Balance 模型", Description: "SubAgent 的均衡模型等级映射",
-				Type: SettingTypeCombo, Category: "模型与推理",
-			},
-			{
-				Key: "swift_model", Label: "Swift 模型", Description: "SubAgent 的轻量模型等级映射",
-				Type: SettingTypeCombo, Category: "模型与推理",
-			},
 			// Subscription management entry (display-only, triggers quick switch)
 			{Key: "subscription_manage", Label: "📦 订阅管理", Type: SettingTypeText, Category: "模型与推理"},
 
@@ -964,18 +952,6 @@ func localeEN() *UILocale {
 					{Label: "DeepSeek: effort=max", Value: `{"thinking":{"type":"enabled"},"reasoning_effort":"max"}`},
 				},
 			},
-			{
-				Key: "vanguard_model", Label: "Vanguard Model", Description: "SubAgent tier mapping for high-power tasks",
-				Type: SettingTypeCombo, Category: "Model & Reasoning",
-			},
-			{
-				Key: "balance_model", Label: "Balance Model", Description: "SubAgent tier mapping for balanced tasks",
-				Type: SettingTypeCombo, Category: "Model & Reasoning",
-			},
-			{
-				Key: "swift_model", Label: "Swift Model", Description: "SubAgent tier mapping for lightweight tasks",
-				Type: SettingTypeCombo, Category: "Model & Reasoning",
-			},
 			// Subscription management entry (display-only, triggers quick switch)
 			{Key: "subscription_manage", Label: "📦 Subscriptions", Type: SettingTypeText, Category: "Model & Reasoning"},
 
@@ -1379,18 +1355,6 @@ func localeJA() *UILocale {
 					{Label: "DeepSeek: effort=high", Value: `{"thinking":{"type":"enabled"},"reasoning_effort":"high"}`},
 					{Label: "DeepSeek: effort=max", Value: `{"thinking":{"type":"enabled"},"reasoning_effort":"max"}`},
 				},
-			},
-			{
-				Key: "vanguard_model", Label: "Vanguard モデル", Description: "SubAgent の高強度タスク向けモデル階層マッピング",
-				Type: SettingTypeCombo, Category: "モデルと推論",
-			},
-			{
-				Key: "balance_model", Label: "Balance モデル", Description: "SubAgent のバランスタスク向けモデル階層マッピング",
-				Type: SettingTypeCombo, Category: "モデルと推論",
-			},
-			{
-				Key: "swift_model", Label: "Swift モデル", Description: "SubAgent の軽量タスク向けモデル階層マッピング",
-				Type: SettingTypeCombo, Category: "モデルと推論",
 			},
 			// Subscription management entry (display-only, triggers quick switch)
 			{Key: "subscription_manage", Label: "📦 サブスクリプション管理", Type: SettingTypeText, Category: "モデルと推論"},

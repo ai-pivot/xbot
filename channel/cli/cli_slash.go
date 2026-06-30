@@ -51,15 +51,6 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				// Get current values: config is the single source of truth for LLM settings.
 				// Only overlay non-LLM settings from SettingsService (e.g. theme, language).
 				currentValues := m.mergeCLISettingsValues()
-				// Inject model list into combo options for tier model selectors.
-				// tierModelOptions labels each entry "订阅名 · 模型名".
-				if opts := m.tierModelOptions(); len(opts) > 0 {
-					for i, s := range schema {
-						if s.Key == "vanguard_model" || s.Key == "balance_model" || s.Key == "swift_model" {
-							schema[i].Options = opts
-						}
-					}
-				}
 				m.panelState.isSetup = false // regular settings, not setup wizard
 				m.openSettingsPanel(schema, currentValues, func(values map[string]string) {
 					// --- ch.Subscription generation guard ---

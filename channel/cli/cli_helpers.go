@@ -77,30 +77,6 @@ func (m *cliModel) invalidateAllCache(updateViewport bool) {
 	}
 }
 
-// tierModelOptions returns SettingOptions for the vanguard/balance/swift model
-// selectors, labeled "订阅名 · 模型名" for disambiguation across subscriptions.
-// Value stays the raw model name (tier settings store model names; ResolveLLM
-// resolves the owning subscription at Run time). Returns nil if modelLister is
-// nil or no entries available.
-func (m *cliModel) tierModelOptions() []ch.SettingOption {
-	if m.channel == nil || m.channel.modelLister == nil {
-		return nil
-	}
-	entries := m.channel.modelLister.ListAllModelEntries()
-	if len(entries) == 0 {
-		return nil
-	}
-	opts := make([]ch.SettingOption, len(entries))
-	for j, e := range entries {
-		label := e.Model
-		if e.SubName != "" {
-			label = e.SubName + " · " + e.Model
-		}
-		opts[j] = ch.SettingOption{Label: label, Value: e.Model}
-	}
-	return opts
-}
-
 func (m *cliModel) openSettingsFromQuickSwitch() {
 	if m.channel == nil || len(m.panelState.valuesBackup) == 0 {
 		return
@@ -109,31 +85,20 @@ func (m *cliModel) openSettingsFromQuickSwitch() {
 	if len(schema) == 0 {
 		return
 	}
-	// Refresh model list options in the schema (subscription change may affect available models)
-	// Use tierModelOptions so each option shows "订阅名 · 模型名" for disambiguation.
-	if opts := m.tierModelOptions(); len(opts) > 0 {
-		for i, s := range schema {
-			if s.Key == "vanguard_model" || s.Key == "balance_model" || s.Key == "swift_model" {
-				schema[i].Options = opts
-			}
-		}
-	}
 	// Re-read ALL values fresh (including LLM fields from new active subscription)
 	values := m.mergeCLISettingsValues()
-	// Overlay non-subscription values from backup (preserves user's in-memory edits).
-	// ch.Subscription quick switch should only refresh the active subscription-backed keys.
+	// Overlay non-subscription values from backup (preserves user's in-memory
+	// edits to global/user-scoped settings like thinking_mode, sandbox_mode).
 	for k, v := range m.panelState.valuesBackup {
-		if isSubscriptionScopedSettingKey(k) {
+		if ch.IsSubscriptionScopedSettingKey(k) {
 			continue
 		}
 		values[k] = v
 	}
 	cursor := m.panelState.cursorBackup
 	onSubmit := m.panelState.onSubmitBackup
-	// Clear backup
 	m.panelState.valuesBackup = nil
 	m.panelState.onSubmitBackup = nil
-	// Open panel with restored state
 	m.openSettingsPanel(schema, values, onSubmit)
 	m.panelState.cursor = cursor
 }

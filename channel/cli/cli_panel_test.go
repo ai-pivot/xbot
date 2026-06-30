@@ -337,8 +337,6 @@ func TestSubscriptionGenerationGuard(t *testing.T) {
 		"llm_model":         "old-model",
 		"max_output_tokens": "8192",
 		"thinking_mode":     "auto",
-		"vanguard_model":    "claude-opus-4",
-		"balance_model":     "claude-sonnet-4",
 	}
 
 	// Simulate: subscription switch happens (generation increments)
@@ -364,14 +362,6 @@ func TestSubscriptionGenerationGuard(t *testing.T) {
 	// Verify: thinking_mode (global user setting) is PRESERVED across subscription switch
 	if values["thinking_mode"] != "auto" {
 		t.Errorf("global thinking_mode should be preserved across subscription switch, got %q", values["thinking_mode"])
-	}
-
-	// Verify: global/tier settings are PRESERVED
-	if values["vanguard_model"] != "claude-opus-4" {
-		t.Errorf("global setting vanguard_model should be preserved, got %q", values["vanguard_model"])
-	}
-	if values["balance_model"] != "claude-sonnet-4" {
-		t.Errorf("global setting balance_model should be preserved, got %q", values["balance_model"])
 	}
 }
 

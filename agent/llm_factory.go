@@ -54,7 +54,6 @@ type LLMFactory struct {
 	defaultLLM          llm.LLM
 	defaultModel        string
 	defaultThinkingMode string
-	tierModels          config.LLMConfig
 	retryConfig         llm.RetryConfig
 	globalMaxTokens     int
 
@@ -138,12 +137,6 @@ func (f *LLMFactory) GetSubscriptionSvc() *sqlite.LLMSubscriptionService {
 }
 
 // ─── Configuration setters ───────────────────────────────
-
-func (f *LLMFactory) SetModelTiers(cfg config.LLMConfig) {
-	f.mu.Lock()
-	f.tierModels = cfg
-	f.mu.Unlock()
-}
 
 func (f *LLMFactory) SetRetryConfig(cfg llm.RetryConfig) {
 	f.mu.Lock()
@@ -1699,10 +1692,28 @@ func truncateErrMsg(msg string) string {
 // All subscription-derived values come from a single subscription, guaranteeing consistency.
 // Used by SubAgent when a role specifies a model (or tier name like vanguard/balance/swift).
 func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, int, string, int, bool) {
-	resolvedModel, fromTier := f.resolveTierModel(targetModel)
+	subID, resolvedModel, fromTier := f.resolveTierModel(senderID, targetModel)
 	if resolvedModel == "" {
 		client, model, maxCtx, tm, maxOut := f.GetLLM(senderID)
 		return client, model, maxCtx, tm, maxOut, false
+	}
+
+	// When tier config provides an explicit subID (new "subID|model" format),
+	// look up the subscription directly — no model→subscription resolution.
+	if fromTier && subID != "" {
+		if f.subscriptionSvc != nil {
+			sub, err := f.subscriptionSvc.Get(subID)
+			if err == nil && sub != nil && sub.Enabled {
+				client := f.createClientFromSub(sub, resolvedModel)
+				if client != nil {
+					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-subid"}).Info("[LLM] GetLLMForModel: exact match via subID")
+					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
+				}
+			}
+		}
+		// subID provided but subscription not found/unavailable — log and
+		// fall through to model-name lookup as a safety net.
+		log.WithFields(log.Fields{"subID": subID, "model": resolvedModel}).Warn("[LLM] GetLLMForModel: subID not found, falling back to model-name lookup")
 	}
 
 	modelMap := f.buildModelSubscriptionMap(senderID)
@@ -1880,17 +1891,18 @@ func normalizeModelTier(value string) string {
 	}
 }
 
-func (f *LLMFactory) resolveTierModel(value string) (string, bool) {
+func (f *LLMFactory) resolveTierModel(senderID, value string) (subID, model string, fromTier bool) {
 	tier := normalizeModelTier(value)
 	if tier == "" {
-		return value, false
+		return "", value, false
 	}
-	f.mu.RLock()
-	tiers := f.tierModels
-	f.mu.RUnlock()
-	model := f.tierModel(tiers, tier)
-	if model != "" {
-		return model, true
+	// Tier config is per-user, stored in user_settings DB (same pattern as
+	// thinking_mode). Key: "tier_vanguard" / "tier_balance" / "tier_swift".
+	// Value: "subID|model" or legacy plain "model".
+	raw := f.userTierModel(senderID, tier)
+	if raw != "" {
+		s, m := parseTierValue(raw)
+		return s, m, true
 	}
 	fallback := ""
 	switch tier {
@@ -1900,23 +1912,29 @@ func (f *LLMFactory) resolveTierModel(value string) (string, bool) {
 		fallback = "vanguard"
 	}
 	if fallback != "" {
-		if model = f.tierModel(tiers, fallback); model != "" {
-			return model, true
+		raw = f.userTierModel(senderID, fallback)
+		if raw != "" {
+			s, m := parseTierValue(raw)
+			return s, m, true
 		}
 	}
-	return "", true
+	return "", "", true
 }
 
-func (f *LLMFactory) tierModel(tiers config.LLMConfig, tier string) string {
-	switch tier {
-	case "vanguard":
-		return strings.TrimSpace(tiers.VanguardModel)
-	case "balance":
-		return strings.TrimSpace(tiers.BalanceModel)
-	case "swift":
-		return strings.TrimSpace(tiers.SwiftModel)
+// userTierModel returns the per-user tier model setting from user_settings DB.
+// Value is "subID|model" or legacy plain "model". Returns "" when unset.
+func (f *LLMFactory) userTierModel(senderID, tier string) string {
+	return f.getSetting(senderID, thinkingModeChannel, "tier_"+tier)
+}
+
+// parseTierValue splits a tier config value into (subID, model).
+// Supports both "subID|model" (new format) and plain "model" (legacy).
+func parseTierValue(s string) (subID, model string) {
+	s = strings.TrimSpace(s)
+	if idx := strings.Index(s, "|"); idx >= 0 {
+		return s[:idx], s[idx+1:]
 	}
-	return ""
+	return "", s
 }
 
 // guessProvider 根据模型名猜测 provider。

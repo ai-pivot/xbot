@@ -63,14 +63,6 @@ func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[s
 			m.panelState.values[def.Key] = def.DefaultValue
 		}
 		// Inject cross-subscription model list for tier model selectors.
-		// tierModelOptions labels each entry "订阅名 · 模型名" for disambiguation;
-		// Value stays the raw model name (resolved cross-sub at Run).
-		if (def.Key == "vanguard_model" || def.Key == "balance_model" || def.Key == "swift_model") && m.channel.modelLister != nil && len(def.Options) == 0 {
-			if opts := m.tierModelOptions(); len(opts) > 0 {
-				def.Options = opts
-				def.Type = ch.SettingTypeCombo
-			}
-		}
 		// Global-scoped settings require admin access — mark read-only for non-admin users.
 		if !def.ReadOnly && ch.IsGlobalScopedSettingKey(def.Key) && (m.isAdminFn == nil || !m.isAdminFn()) {
 			def.ReadOnly = true

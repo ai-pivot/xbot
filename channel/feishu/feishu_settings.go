@@ -104,16 +104,15 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.BuildSettingsCard(ctx, senderID, chatID, parsed["tab"])
 
 	case "settings_select_submit":
-		// Form submit button was clicked. Every select_static in this card
-		// shares its name with the enclosing form (select name == form name),
-		// so the selected value is available directly under form_name in
-		// form_value — no hardcoded select-name list needed.
+		// Form submit button was clicked. Each form has a unique select name
+		// (distinct from the form name — Feishu rejects duplicate names).
+		// Map form_name → select_name to read the selected value.
 		formName := parsed["form_name"]
 		if formName == "" {
 			return nil, fmt.Errorf("missing form_name")
 		}
-		// Special case: the tier form has 3 selects (not 1) and needs a
-		// different handler that reads all 3 values from form_value.
+		// Special case: the tier form has 3 selects and needs a different
+		// handler that reads all 3 values from form_value.
 		if formName == "tier_form" {
 			parsed["action"] = "settings_set_all_tiers"
 			delete(parsed, "form_name")
@@ -127,21 +126,27 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			}
 			return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
 		}
-		selectedValue := formStr(actionData, formName)
-		if selectedValue == "" {
-			// Nothing selected, just re-render.
-			return f.BuildSettingsCard(ctx, senderID, chatID, "model")
-		}
+		// form_name → select_name mapping (names MUST differ to avoid
+		// Feishu "name duplicate" error 11310).
+		selectName := ""
 		var delegateAction string
 		switch formName {
 		case "model_select_form":
+			selectName = "model_select"
 			delegateAction = "settings_set_model"
 		case "concurrency_form":
+			selectName = "conc_select"
 			delegateAction = "settings_set_concurrency"
 		case "thinking_mode_form":
+			selectName = "thinking_mode_select"
 			delegateAction = "settings_set_thinking_mode"
 		default:
 			return nil, fmt.Errorf("unknown select form: %s", formName)
+		}
+		selectedValue := formStr(actionData, selectName)
+		if selectedValue == "" {
+			// Nothing selected, just re-render.
+			return f.BuildSettingsCard(ctx, senderID, chatID, "model")
 		}
 		parsed["action"] = delegateAction
 		delete(parsed, "form_name")
@@ -276,17 +281,30 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
 
 	case "settings_set_all_tiers":
-		// Tier form has 3 selects (vanguard/balance/swift). Read each from
-		// form_value and apply via LLMSetModelTier. Empty values are skipped
-		// (user may have left a tier unset).
+		// Tier form has 3 selects (vanguard/balance/swift). Each select value
+		// is encoded as "subID|model" (same as the model selector). Read each
+		// from form_value and apply via LLMSetModelTier. Empty values are
+		// skipped (user may have left a tier unset).
 		if f.settingsCallbacks.LLMSetModelTier != nil {
 			for _, tier := range []string{"vanguard", "balance", "swift"} {
 				name := "tier_" + tier + "_select"
-				model := formStr(actionData, name)
+				val := formStr(actionData, name)
+				if val == "" {
+					continue
+				}
+				// Parse "subID|model" encoding
+				subID, model := "", ""
+				if idx := strings.Index(val, "|"); idx >= 0 {
+					subID = val[:idx]
+					model = val[idx+1:]
+				} else {
+					// Legacy plain model name (no subID)
+					model = val
+				}
 				if model == "" {
 					continue
 				}
-				if err := f.settingsCallbacks.LLMSetModelTier(tier, model); err != nil {
+				if err := f.settingsCallbacks.LLMSetModelTier(senderID, tier, subID, model); err != nil {
 					return nil, fmt.Errorf("设置 %s tier 失败: %v", tier, err)
 				}
 			}
@@ -1390,7 +1408,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		// otherwise Feishu rejects the entire card (error 200673).
 		selectControl := map[string]any{
 			"tag":         "select_static",
-			"name":        "model_select_form",
+			"name":        "model_select",
 			"placeholder": map[string]any{"tag": "plain_text", "content": "切换模型..."},
 			"options":     options,
 			"value": map[string]string{
@@ -1524,7 +1542,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"concurrency_form",
 		map[string]any{
 			"tag":            "select_static",
-			"name":           "concurrency_form",
+			"name":           "conc_select",
 			"placeholder":    map[string]any{"tag": "plain_text", "content": "选择并发数..."},
 			"initial_option": fmt.Sprintf("%d", personalConc),
 			"options":        concOptions,
@@ -1553,7 +1571,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		func() map[string]any {
 			ctrl := map[string]any{
 				"tag":         "select_static",
-				"name":        "thinking_mode_form",
+				"name":        "thinking_mode_select",
 				"placeholder": map[string]any{"tag": "plain_text", "content": "选择思考模式..."},
 				"options":     thinkingModeOptions(),
 				"value": map[string]string{
@@ -1586,14 +1604,16 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"tag":     "markdown",
 		"content": "**模型等级 (SubAgent)** — 全局设置，跨订阅生效",
 	})
-	// Collect models from ALL subscriptions (not just active one) for tier selectors.
-	var allModels []string
+	// Collect model entries from ALL subscriptions for tier selectors.
+	// Uses the same ModelEntry type as the model selector so tier options
+	// carry (subID, model) — not bare model names.
+	var allEntries []protocol.ModelEntry
 	if f.settingsCallbacks.LLMListAllModels != nil {
-		allModels = f.settingsCallbacks.LLMListAllModels()
+		allEntries = f.settingsCallbacks.LLMListAllModels(senderID)
 	}
 	maxTierModels := 15
-	if len(allModels) > maxTierModels {
-		allModels = allModels[:maxTierModels]
+	if len(allEntries) > maxTierModels {
+		allEntries = allEntries[:maxTierModels]
 	}
 	// Single form containing 3 selects + 1 submit button.
 	var tierFormElements []map[string]any
@@ -1604,29 +1624,38 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		{"balance", "Balance（中）"},
 		{"swift", "Swift（弱）"},
 	} {
-		currentTierModel := ""
+		var currentSubID, currentModel string
 		if f.settingsCallbacks.LLMGetModelTier != nil {
-			currentTierModel = f.settingsCallbacks.LLMGetModelTier(tier.key)
+			currentSubID, currentModel = f.settingsCallbacks.LLMGetModelTier(senderID, tier.key)
 		}
-		// Build options: always include the current model first, then all
-		// global models. Dedup by model name.
+		// Build options: always include the current (subID, model) first,
+		// then all global entries. Dedup by "subID|model" key.
+		// Value encoded as "subID|model" (same as model selector).
+		// Display as "model (subname)" for clarity.
 		tierOptions := []map[string]any{}
 		seenTier := make(map[string]bool)
-		if currentTierModel != "" && !seenTier[currentTierModel] {
-			seenTier[currentTierModel] = true
+		// Helper to add an option
+		addOption := func(subID, model, subName string) {
+			key := subID + "|" + model
+			if seenTier[key] {
+				return
+			}
+			seenTier[key] = true
+			display := model
+			if subName != "" {
+				display = model + " (" + subName + ")"
+			}
 			tierOptions = append(tierOptions, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": currentTierModel},
-				"value": currentTierModel,
+				"text":  map[string]any{"tag": "plain_text", "content": display},
+				"value": key,
 			})
 		}
-		for _, m := range allModels {
-			if !seenTier[m] {
-				seenTier[m] = true
-				tierOptions = append(tierOptions, map[string]any{
-					"text":  map[string]any{"tag": "plain_text", "content": m},
-					"value": m,
-				})
-			}
+		// Current tier value first (may be legacy plain model name with no subID)
+		if currentModel != "" {
+			addOption(currentSubID, currentModel, "")
+		}
+		for _, e := range allEntries {
+			addOption(e.SubID, e.Model, e.SubName)
 		}
 		// Avoid empty options — Feishu rejects select_static with null/empty options.
 		if len(tierOptions) == 0 {
@@ -1642,11 +1671,22 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 			"options":     tierOptions,
 		}
 		// Only set initial_option if it matches an option value.
-		if currentTierModel != "" {
-			for _, opt := range tierOptions {
-				if opt["value"] == currentTierModel {
-					tierCtrl["initial_option"] = currentTierModel
-					break
+		if currentModel != "" {
+			currentKey := currentSubID + "|" + currentModel
+			if currentSubID == "" {
+				// Legacy: try matching by model-only (value without "|")
+				for _, opt := range tierOptions {
+					if opt["value"] == currentModel || strings.HasSuffix(opt["value"].(string), "|"+currentModel) {
+						tierCtrl["initial_option"] = opt["value"]
+						break
+					}
+				}
+			} else {
+				for _, opt := range tierOptions {
+					if opt["value"] == currentKey {
+						tierCtrl["initial_option"] = currentKey
+						break
+					}
 				}
 			}
 		}

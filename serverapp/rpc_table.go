@@ -420,13 +420,6 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		log.WithField("count", len(entries)).Info("RPC refresh_model_entries")
 		return entries, nil
 	})
-	t["set_model_tiers"] = h.requireAdmin(rpc1void(func(ctx context.Context, p config.LLMConfig) error {
-		if h.Ag.LLMFactory() == nil {
-			return fmt.Errorf("LLM factory not available")
-		}
-		h.Ag.LLMFactory().SetModelTiers(p)
-		return nil
-	}))
 	t["clear_proxy_llm"] = rpc0void(func(ctx context.Context) error { h.Ag.ClearProxyLLM(rpcBizID(ctx)); return nil })
 	t["set_global_max_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		MaxTokens int `json:"max_tokens"`

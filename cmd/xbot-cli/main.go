@@ -276,21 +276,8 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		}
 	}
 
-	// Sync tier model mappings via RPC so SubAgent model resolution
-	// works correctly (tier models are user-scoped, persisted in DB).
+	// Sync model contexts via RPC.
 	if app.client != nil {
-		llmCfg := app.cfg.LLM // start from current config
-		if v, ok := vals["vanguard_model"]; ok {
-			llmCfg.VanguardModel = v
-		}
-		if v, ok := vals["balance_model"]; ok {
-			llmCfg.BalanceModel = v
-		}
-		if v, ok := vals["swift_model"]; ok {
-			llmCfg.SwiftModel = v
-		}
-		app.cfg.LLM = llmCfg
-		app.client.SetModelTiers(llmCfg)
 		app.client.SetModelContexts(app.cfg.Agent.ModelContexts)
 	}
 }
@@ -308,12 +295,6 @@ func saveCLIConfig(cfg *config.Config) error {
 	}
 	// Agent settings: always write back (max_iterations, max_concurrency, etc.)
 	merged.Agent = cfg.Agent
-
-	// LLM tier model mappings: always write back (vanguard/balance/swift models).
-	// These are global preferences, not subscription credentials.
-	merged.LLM.VanguardModel = cfg.LLM.VanguardModel
-	merged.LLM.BalanceModel = cfg.LLM.BalanceModel
-	merged.LLM.SwiftModel = cfg.LLM.SwiftModel
 
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
 	// NOT written back to config.json. The DB system subscription (reconciled at
@@ -1251,7 +1232,6 @@ func main() {
 
 			// ── LLM config changes applied via RPC (unified local/remote path) ──
 			if llmFieldChanged {
-				app.client.SetModelTiers(app.cfg.LLM)
 				app.client.SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
 				app.client.SetModelContexts(app.cfg.Agent.ModelContexts)
 				app.client.SetGlobalMaxTokens(app.cfg.LLM.MaxOutputTokens)
@@ -1291,7 +1271,6 @@ func main() {
 			app.llmClient = client
 			if app.client != nil {
 				_ = app.client.SetChatLLM(absWorkDir, app.cfg.LLM.Provider, app.cfg.LLM)
-				_ = app.client.SetModelTiers(app.cfg.LLM)
 			}
 			return nil
 		},

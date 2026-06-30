@@ -16,13 +16,10 @@ func newTestConfig() *config.Config {
 	enableAutoCompress := false
 	return &config.Config{
 		LLM: config.LLMConfig{
-			Provider:      "openai",
-			APIKey:        "sk-test",
-			Model:         "gpt-4.1",
-			BaseURL:       "https://api.example.com/v1",
-			VanguardModel: "gpt-4.1-pro",
-			BalanceModel:  "gpt-4.1",
-			SwiftModel:    "gpt-4.1-mini",
+			Provider: "openai",
+			APIKey:   "sk-test",
+			Model:    "gpt-4.1",
+			BaseURL:  "https://api.example.com/v1",
 		},
 		Sandbox: config.SandboxConfig{Mode: "docker"},
 		Agent: config.AgentConfig{
