@@ -353,6 +353,81 @@ func truncateRunes(s string, maxLen int) string {
 	return string(runes[:maxLen]) + "...[truncated]"
 }
 
+// findTailCutPoint 从后向前扫描消息列表，找到 tail 的起始位置。
+// tail 定义为从最后一个用户消息或纯文本 assistant 消息开始到末尾的所有消息。
+// 返回 tailStart（tail 在 messages 中的起始索引）和 originalUserMsg（如果找到用户消息）。
+func findTailCutPoint(messages []llm.ChatMessage) (tailStart int, originalUserMsg *llm.ChatMessage) {
+	tailStart = len(messages)
+	for i := len(messages) - 1; i >= 1; i-- {
+		msg := messages[i]
+		if msg.Role == "user" {
+			tailStart = i
+			msgCopy := msg
+			originalUserMsg = &msgCopy
+			break
+		}
+		if msg.Role == "assistant" && len(msg.ToolCalls) == 0 {
+			tailStart = i
+			break
+		}
+		if i == 1 {
+			tailStart = 1
+		}
+	}
+	return
+}
+
+// capTailLength 根据 maxContextTokens 限制 tail 长度。
+// tail 最多保留 maxContextTokens 的 15%（按 ~200 tokens/message 估算），
+// 硬上限 300 条，软下限 50 条。返回调整后的 tailStart。
+func capTailLength(messages []llm.ChatMessage, tailStart int, maxContextTokens int) int {
+	const maxTailContextFraction = 0.15
+	const tokensPerMessage = 200
+	dynamicTailLimit := int(float64(maxContextTokens) * maxTailContextFraction / tokensPerMessage)
+	maxTailMessages := dynamicTailLimit
+	if maxTailMessages > 300 {
+		maxTailMessages = 300
+	}
+	if maxTailMessages < 50 {
+		maxTailMessages = 50
+	}
+	tailLen := len(messages) - tailStart
+	if tailLen > maxTailMessages {
+		return len(messages) - maxTailMessages
+	}
+	return tailStart
+}
+
+// mergeCompressedResult 将压缩结果与 system 消息和 tail 合并为 LLM view 和 session view。
+func mergeCompressedResult(compressed string, systemMsgs []llm.ChatMessage, tail []llm.ChatMessage, originalUserMsg *llm.ChatMessage, originalTailStart int, tailStart int) (llmView, sessionView []llm.ChatMessage) {
+	summaryMsg := llm.NewUserMessage("[Compacted context]\n\n" + compressed)
+	continuationMsg := llm.NewUserMessage(continuationMessage)
+
+	needInjectUserMsg := originalUserMsg != nil && tailStart > originalTailStart
+
+	extraCap := 0
+	if needInjectUserMsg {
+		extraCap = 1
+	}
+	llmView = make([]llm.ChatMessage, 0, len(systemMsgs)+2+extraCap+len(tail))
+	llmView = append(llmView, systemMsgs...)
+	llmView = append(llmView, summaryMsg)
+	llmView = append(llmView, continuationMsg)
+	if needInjectUserMsg {
+		llmView = append(llmView, *originalUserMsg)
+	}
+	llmView = append(llmView, tail...)
+
+	tailDialogue := extractDialogueFromTail(tail)
+	sessionView = make([]llm.ChatMessage, 0, 1+extraCap+len(tailDialogue))
+	sessionView = append(sessionView, summaryMsg)
+	if needInjectUserMsg {
+		sessionView = append(sessionView, *originalUserMsg)
+	}
+	sessionView = append(sessionView, tailDialogue...)
+	return
+}
+
 // compactMessages performs a structured compaction of conversation history.
 //
 // Flow:
@@ -372,60 +447,18 @@ func compactMessages(
 	memToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error),
 ) (*CompressResult, error) {
 	// Step 1: find tail cut point — keep the last user message and everything after it.
-	// Remember the original user message content so it can be re-injected if tail capping
-	// truncates it. The original user message is the user's actual request from
-	// buildPrompt's Assemble() — it must NEVER be lost.
-	tailStart := len(messages)
-	var originalUserMsg *llm.ChatMessage // will be set if we find a user msg before tail
-	for i := len(messages) - 1; i >= 1; i-- {
-		msg := messages[i]
-		if msg.Role == "user" {
-			tailStart = i
-			// Capture a pointer to this message — it's the original user request.
-			msgCopy := msg
-			originalUserMsg = &msgCopy
-			break
-		}
-		if msg.Role == "assistant" && len(msg.ToolCalls) == 0 {
-			tailStart = i
-			break
-		}
-		if i == 1 {
-			tailStart = 1
-		}
-	}
-	// originalTailStart is the uncapped position — used to detect if capping
-	// will push the original user message into toCompress.
+	tailStart, originalUserMsg := findTailCutPoint(messages)
 	originalTailStart := tailStart
 
-	// Step 2: cap tail length. Each iteration is typically 2-3 messages
-	// (assistant + tool_call + tool_result). With 500+ iterations the tail can be
-	// enormous, causing compression to produce a summary that — combined with the
-	// unmodified tail — still exceeds the context limit, triggering infinite
-	// re-compression.
-	//
-	// Cap tail to at most 15% of maxContextTokens (estimated at ~200 tokens/message).
-	// This keeps tail small enough that summary + tail + output stays under threshold,
-	// regardless of context window size.  Hard upper bound of 300 messages for 1M+ contexts.
-	const maxTailContextFraction = 0.15
-	const tokensPerMessage = 200
-	dynamicTailLimit := int(float64(maxContextTokens) * maxTailContextFraction / tokensPerMessage)
-	maxTailMessages := dynamicTailLimit
-	if maxTailMessages > 300 {
-		maxTailMessages = 300 // hard cap for very large contexts
-	}
-	if maxTailMessages < 50 {
-		maxTailMessages = 50 // minimum to keep useful recent context
-	}
-	tailLen := len(messages) - tailStart
-	if tailLen > maxTailMessages {
-		oldTailStart := tailStart
-		tailStart = len(messages) - maxTailMessages
+	// Step 2: cap tail length.
+	newTailStart := capTailLength(messages, tailStart, maxContextTokens)
+	if newTailStart != tailStart {
 		log.Ctx(ctx).WithFields(log.Fields{
-			"old_tail_start": oldTailStart,
-			"new_tail_start": tailStart,
-			"tail_capped":    tailLen - maxTailMessages,
+			"old_tail_start": tailStart,
+			"new_tail_start": newTailStart,
+			"tail_capped":    (len(messages) - tailStart) - (len(messages) - newTailStart),
 		}).Info("Capping tail length for compaction")
+		tailStart = newTailStart
 	}
 
 	// Step 3: separate system messages from content to compress
@@ -459,36 +492,23 @@ func compactMessages(
 		}, nil
 	}
 
-	// Step 3: build the history text for the compaction prompt.
-	// Scan toCompress from the END (most recent) so that when the token
-	// budget is exhausted the oldest messages are dropped — not the most
-	// recent work context that the LLM needs to preserve in the summary.
-	//
-	// Budget: the compaction LLM call is a separate request. Its input is
-	//   [system_message] + [compaction_prompt + history_text] + output_tokens
-	// We reserve overhead for the system message, prompt template, and the
-	// LLM's output; the rest goes to history.
+	// Step 4: build the history text for the compaction prompt.
 	var historyText strings.Builder
 
-	// Pre-compute per-message character sizes for toCompress (rough token proxy).
 	perMsgTokens := make([]int, len(toCompress))
 	totalCompressTokens := 0
 	for i, msg := range toCompress {
-		// ~2/3 of rune count as token estimate (conservative for mixed CJK/Latin)
 		charEstimate := len([]rune(msg.Content)) * 2 / 3
 		perMsgTokens[i] = charEstimate
 		totalCompressTokens += charEstimate
 	}
 
-	// Overhead for the compaction call (system msg ~50t, prompt template ~300t,
-	// output budget ~1000t).  Use 1500 as a safe reserve.
 	const compactionOverhead = 1500
 	historyBudget := maxContextTokens - compactionOverhead
 	if historyBudget < 1000 {
 		historyBudget = 1000
 	}
 
-	// Scan backwards to find how many messages fit.
 	fitCount := 0
 	usedTokens := 0
 	for i := len(toCompress) - 1; i >= 0; i-- {
@@ -504,10 +524,7 @@ func compactMessages(
 		fmt.Fprintf(&historyText, "[Note: %d older messages omitted from compaction]\n\n", omittedCount)
 	}
 	fitting := toCompress[omittedCount:]
-	// Insert a visual separator between older context and recent messages.
-	// The last ~40% of fitting messages are considered "recent" — the LLM
-	// must prioritize preserving these in detail.
-	recentStart := len(fitting) * 3 / 5 // top 40% = recent (0 when len <= 2 — no separator needed)
+	recentStart := len(fitting) * 3 / 5
 	for i, msg := range fitting {
 		if i == recentStart && recentStart > 0 && recentStart < len(fitting) {
 			historyText.WriteString("--- RECENT WORK BEGINS (messages below are highest priority) ---\n\n")
@@ -515,15 +532,13 @@ func compactMessages(
 		historyText.WriteString(formatCompactLine(msg))
 	}
 
-	// Compute target budget
 	// Compute target budget — use character count as proxy for tokens.
-	// ~3 chars per token average for mixed content.
 	totalChars := 0
 	for _, msg := range messages {
 		totalChars += len([]rune(msg.Content))
 	}
 	originalTokens := totalChars / 3
-	targetRunes := int(float64(originalTokens) * 0.3 * 1.5) // tokens → runes estimate
+	targetRunes := int(float64(originalTokens) * 0.3 * 1.5)
 	if targetRunes < 500 {
 		targetRunes = 500
 	}
@@ -541,7 +556,7 @@ Your output MUST be at most %d characters. Be concise — facts over narrative.
 
 Output the structured working state directly.`
 
-	// Step 4: multi-turn LLM call with optional memory tools
+	// Step 5: multi-turn LLM call with optional memory tools
 	compactionMsgs := []llm.ChatMessage{
 		llm.NewSystemMessage("You are a context compaction expert. Create a structured working state for task continuation. Stay under the specified length limit."),
 		llm.NewUserMessage(prompt),
@@ -571,7 +586,6 @@ Output the structured working state directly.`
 			break
 		}
 
-		// Memory tool calls — execute and append results
 		assistantMsg := llm.ChatMessage{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls}
 		compactionMsgs = append(compactionMsgs, assistantMsg)
 		for _, tc := range resp.ToolCalls {
@@ -611,19 +625,12 @@ Output the structured working state directly.`
 		return nil, fmt.Errorf("compaction LLM produced no output even after fallback")
 	}
 
-	// Step 5: build compacted message structure
+	// Step 6: build compacted message structure
 	if len(systemMsgs) > 1 {
 		log.Ctx(ctx).WithField("system_count", len(systemMsgs)).Error("assert: at most one system message in compact input")
 		return nil, fmt.Errorf("compact: expected at most one system message, got %d", len(systemMsgs))
 	}
 
-	summaryMsg := llm.NewUserMessage("[Compacted context]\n\n" + compressed)
-	continuationMsg := llm.NewUserMessage(continuationMessage)
-
-	// Check if the original user message was lost due to tail capping.
-	// If so, inject it into the LLMView so the LLM always has access to
-	// the exact user request. Without this, BuildSystemReminder would
-	// extract taskGoal from "[Compacted context]..." instead of the real request.
 	needInjectUserMsg := originalUserMsg != nil && tailStart > originalTailStart
 	if needInjectUserMsg {
 		log.Ctx(ctx).WithFields(log.Fields{
@@ -633,28 +640,7 @@ Output the structured working state directly.`
 		}).Info("Injecting original user message after tail capping")
 	}
 
-	// LLM View: system + compaction summary + continuation instruction + [original user msg] + tail
-	extraCap := 0
-	if needInjectUserMsg {
-		extraCap = 1
-	}
-	llmView := make([]llm.ChatMessage, 0, len(systemMsgs)+2+extraCap+len(tail))
-	llmView = append(llmView, systemMsgs...)
-	llmView = append(llmView, summaryMsg)
-	llmView = append(llmView, continuationMsg)
-	if needInjectUserMsg {
-		llmView = append(llmView, *originalUserMsg)
-	}
-	llmView = append(llmView, tail...)
-
-	// Session View: compaction summary + [original user msg] + tail dialogue (user/assistant only)
-	tailDialogue := extractDialogueFromTail(tail)
-	sessionView := make([]llm.ChatMessage, 0, 1+extraCap+len(tailDialogue))
-	sessionView = append(sessionView, summaryMsg)
-	if needInjectUserMsg {
-		sessionView = append(sessionView, *originalUserMsg)
-	}
-	sessionView = append(sessionView, tailDialogue...)
+	llmView, sessionView := mergeCompressedResult(compressed, systemMsgs, tail, originalUserMsg, originalTailStart, tailStart)
 
 	newTokens := len([]rune(compressed)) * 2 / 3
 	log.Ctx(ctx).WithFields(map[string]any{

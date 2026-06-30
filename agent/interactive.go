@@ -451,6 +451,39 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 	return key
 }
 
+// wireSubAgentProgress 为 SubAgent 注入进度上报回调。
+// 设置 cfg.ProgressNotifier 让子 Agent 报告进度到父 Agent 的 TUI，
+// 同时注入穿透回调到 subCtx 让更深层 SubAgent 也能递归穿透。
+// Background 模式不启用（bg subagent 进度不应穿透到父 agent TUI）。
+func wireSubAgentProgress(ctx context.Context, subCtx context.Context, cfg *RunConfig, cc *CallChain, roleName, instance string, background bool) context.Context {
+	if background {
+		return subCtx
+	}
+	if cb, ok := SubAgentProgressFromContext(ctx); ok {
+		myDepth := cc.Depth() + 1
+		myPath := cc.Spawn(roleName).Chain
+		cfg.ProgressNotifier = func(lines []string, thinking string) {
+			if len(lines) > 0 {
+				cb(SubAgentProgressDetail{
+					Path:     myPath,
+					Lines:    lines,
+					Depth:    myDepth,
+					Instance: instance,
+					Thinking: thinking,
+				})
+			}
+		}
+		subCtx = WithSubAgentProgress(subCtx, func(detail SubAgentProgressDetail) {
+			detail.Depth = myDepth + detail.Depth
+			if len(detail.Path) == 0 {
+				detail.Path = myPath
+			}
+			cb(detail)
+		})
+	}
+	return subCtx
+}
+
 // SpawnInteractiveSession 创建一个新的 interactive SubAgent 会话并执行首次任务。
 // 如果同名 role 的 session 已存在，返回 error。
 //
@@ -608,45 +641,8 @@ func (a *Agent) SpawnInteractiveSession(
 		return a.sendMessage("agent", key, content, metadata...)
 	}
 
-	if !background {
-		if cb, ok := SubAgentProgressFromContext(ctx); ok {
-			rn := roleName
-			myDepth := cc.Depth() + 1
-			myPath := cc.Spawn(rn).Chain
-			inst := instance
-			cfg.ProgressNotifier = func(lines []string, thinking string) {
-				if len(lines) > 0 {
-					cb(SubAgentProgressDetail{
-						Path:     myPath,
-						Lines:    lines,
-						Depth:    myDepth,
-						Instance: inst,
-						Thinking: thinking,
-					})
-				}
-			}
-		}
-		// 注意：无父引擎进度上下文时不使用 fallback sendMessage。
-		// 多个交互式 agent 共享 sessionMsgIDs（key=channel:chatID）会导致
-		// 后一个 agent 的进度 patch 到前一个 agent 的消息上（进度树串扰）。
-
-		// 注入穿透回调到 subCtx，让子 Agent 的 execOne 能获取并递归上报进度到父 Agent
-		if cb, ok := SubAgentProgressFromContext(ctx); ok {
-			myDepth := cc.Depth() + 1
-			myPath := cc.Spawn(roleName).Chain
-			subCtx = WithSubAgentProgress(subCtx, func(detail SubAgentProgressDetail) {
-				detail.Depth = myDepth + detail.Depth
-				if len(detail.Path) == 0 {
-					detail.Path = myPath
-				}
-				cb(detail)
-			})
-		}
-	}
-	// Background mode: no ProgressNotifier needed — autoNotify in engine.Run()
-	// now derives from ProgressEventHandler too, not just ProgressNotifier.
-	// wireSubAgentCLIProgress already sets ProgressEventHandler for background
-	// mode, so progress events will flow to the CLI channel automatically.
+	// SubAgent 进度上报：注入 ProgressNotifier 和穿透回调
+	subCtx = wireSubAgentProgress(ctx, subCtx, &cfg, cc, roleName, instance, background)
 
 	// --- 阶段 3：执行 Run ---
 	preLen := len(cfg.Messages)
