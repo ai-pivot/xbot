@@ -1201,7 +1201,14 @@ func (m *cliModel) View() (v tea.View) {
 	if cx, cy, ok := m.computeInputCursorScreenPos(); ok {
 		v.Cursor = tea.NewCursor(cx, cy)
 		v.Cursor.Shape = tea.CursorBar // bar cursor for text input
-		v.Cursor.Blink = true
+		// Steady (non-blinking) cursor: the terminal manages its own blink
+		// cycle when Blink=true (DECSCUSR 5). During IME CJK commit, if the
+		// terminal cursor is in the "blink-off" phase, the cell at the cursor
+		// position may not repaint correctly, causing a CJK character to
+		// visually disappear (it's still in the buffer). A steady cursor
+		// (DECSCUSR 6) is always visible, eliminating the blink race.
+		// This matches the intent of styles.Cursor.Blink=false in applyTAStyles.
+		v.Cursor.Blink = false
 		v.Cursor.Color = m.styles.TACursor.GetForeground()
 	}
 
