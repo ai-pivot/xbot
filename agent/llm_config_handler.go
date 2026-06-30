@@ -130,6 +130,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 
 	parts := parseSetLLMArgs(args)
 	parseErrors := false
+	seenKeys := make(map[string]bool)
 	for _, part := range parts {
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
@@ -138,6 +139,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		}
 		key := strings.ToLower(kv[0])
 		value := kv[1]
+		seenKeys[key] = true
 
 		switch key {
 		case "provider":
@@ -219,9 +221,15 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		if cfg.Model != "" {
 			existing.Model = cfg.Model
 		}
-		existing.MaxContext = cfg.MaxContext
-		existing.MaxOutputTokens = cfg.MaxOutputTokens
-		existing.ThinkingMode = cfg.ThinkingMode
+		if seenKeys["max_context"] {
+			existing.MaxContext = cfg.MaxContext
+		}
+		if seenKeys["max_output_tokens"] {
+			existing.MaxOutputTokens = cfg.MaxOutputTokens
+		}
+		if seenKeys["thinking_mode"] {
+			existing.ThinkingMode = cfg.ThinkingMode
+		}
 		if err := svc.Update(existing); err != nil {
 			return &channel.OutboundMsg{
 				Channel: msg.Channel, ChatID: msg.ChatID,
