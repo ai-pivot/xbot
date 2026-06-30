@@ -117,17 +117,17 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 			return nil, fmt.Errorf("scan cron job row: %w", err)
 		}
 		job.CreatedAt = parseSQLiteTime(createdAt)
-  job.NextRun = parseSQLiteTime(nextRun)
-  if lastTriggerStr != nil {
-   t := parseSQLiteTime(*lastTriggerStr)
-   job.LastTrigger = &t
-  }
-  jobs = append(jobs, job)
- }
- if err := rows.Err(); err != nil {
-  return nil, fmt.Errorf("iterate sender cron jobs: %w", err)
- }
- return jobs, nil
+		job.NextRun = parseSQLiteTime(nextRun)
+		if lastTriggerStr != nil {
+			t := parseSQLiteTime(*lastTriggerStr)
+			job.LastTrigger = &t
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sender cron jobs: %w", err)
+	}
+	return jobs, nil
 }
 
 // ListAllJobs lists all cron jobs (for scheduler)

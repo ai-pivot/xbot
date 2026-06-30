@@ -1554,17 +1554,17 @@ func migrateV43ToV44(conn *sql.DB) error {
 	if _, err := conn.Exec("UPDATE schema_version SET version = 44"); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
- log.Info("Database migrated to v44: added is_system column to user_llm_subscriptions")
- return nil
+	log.Info("Database migrated to v44: added is_system column to user_llm_subscriptions")
+	return nil
 }
 
 // columnExists checks whether a column exists in a table using pragma_table_info.
 // Returns (true, nil) if the column exists, (false, nil) if not, or (false, error) on query failure.
 func columnExists(conn *sql.DB, table, column string) (bool, error) {
-var count int
-query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", table)
-if err := conn.QueryRow(query, column).Scan(&count); err != nil {
- return false, err
-}
-return count > 0, nil
+	var count int
+	query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", table)
+	if err := conn.QueryRow(query, column).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

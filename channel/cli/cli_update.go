@@ -428,7 +428,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.handleEasterEggDone()
 		return m, nil
 
-		case easterEggMatrixTickMsg:
+	case easterEggMatrixTickMsg:
 		return m.handleEasterEggMatrixTick(cmds)
 
 	case cliPluginOverlayShowMsg:

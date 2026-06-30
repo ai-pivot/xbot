@@ -693,7 +693,6 @@ func (rs *RemoteSandbox) GetShell(userID string, _ string) (string, error) {
 	return rc.shell, nil
 }
 
-
 // LLMGenerate sends an LLM generation request to the runner and returns the response.
 // This is used by ProxyLLM to forward LLM calls to runners with local LLM configured.
 func (rs *RemoteSandbox) LLMGenerate(ctx context.Context, userID, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string) (*llm.LLMResponse, error) {
@@ -765,7 +764,6 @@ func (rs *RemoteSandbox) LLMModels(ctx context.Context, userID string) ([]string
 
 	return result.Models, nil
 }
-
 
 // === Runner sync (server → runner file sync on registration) ===
 

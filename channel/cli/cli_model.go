@@ -907,9 +907,7 @@ type cliPluginOverlayShowMsg struct {
 }
 
 // cliPluginOverlayHideMsg triggers hiding of the current plugin overlay.
-type cliPluginOverlayHideMsg struct {
-	pluginID string
-}
+type cliPluginOverlayHideMsg struct{}
 
 // cliPluginNotifyMsg carries a notification from a plugin to be shown as a toast.
 type cliPluginNotifyMsg struct {
@@ -960,13 +958,8 @@ func (m *cliModel) wirePluginEventBus(program *tea.Program) {
 
 	// plugin:overlay:hide — dismiss the current plugin overlay
 	sub("plugin:overlay:hide", func(ctx context.Context, topic string, data any) error {
-		d, ok := data.(map[string]string)
-		if !ok {
-			return nil
-		}
-		program.Send(cliPluginOverlayHideMsg{
-			pluginID: d["plugin_id"],
-		})
+		_, _ = data.(map[string]string) // data type checked for protocol compatibility
+		program.Send(cliPluginOverlayHideMsg{})
 		return nil
 	})
 

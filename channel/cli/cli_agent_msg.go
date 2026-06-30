@@ -93,7 +93,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		m.progressState.current = nil
 		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
-	if turnID == m.agentTurnID {
+		if turnID == m.agentTurnID {
 			m.inputReady = true
 			m.tryFlushMessageQueue()
 		}
@@ -452,7 +452,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			if turnID == m.agentTurnID {
 				m.inputReady = true
 				m.tryFlushMessageQueue()
-				}
+			}
 		}
 
 	}

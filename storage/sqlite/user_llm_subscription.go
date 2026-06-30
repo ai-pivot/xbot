@@ -173,7 +173,7 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT ` + userLLMSubscriptionSelectCols + `
+			SELECT `+userLLMSubscriptionSelectCols+`
 				FROM user_llm_subscriptions
 				WHERE sender_id = ? OR is_system = 1
 				ORDER BY is_system DESC, created_at ASC
@@ -306,7 +306,7 @@ func (s *LLMSubscriptionService) UpsertSystemSubscription(sub *LLMSubscription) 
 	conn := s.db.Conn()
 	now := time.Now()
 	_, err := conn.Exec(`
-		INSERT INTO user_llm_subscriptions (` + userLLMSubscriptionInsertCols + `)
+		INSERT INTO user_llm_subscriptions (`+userLLMSubscriptionInsertCols+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			sender_id = excluded.sender_id,
@@ -332,7 +332,7 @@ func (s *LLMSubscriptionService) UpsertSystemSubscription(sub *LLMSubscription) 
 func (s *LLMSubscriptionService) Get(id string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT ` + userLLMSubscriptionSelectCols + `
+		SELECT `+userLLMSubscriptionSelectCols+`
 			FROM user_llm_subscriptions
 			WHERE id = ?
 		`, id)

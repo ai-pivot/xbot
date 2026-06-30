@@ -376,11 +376,11 @@ var configTypeSchema = map[string]map[string]fieldType{
 	},
 	"oauth": {
 		"enabled": ftBool,
-		"port":   ftInt,
+		"port":    ftInt,
 	},
 	"pprof": {
 		"enabled": ftBool,
-		"port":   ftInt,
+		"port":    ftInt,
 	},
 	"feishu": {
 		"enabled": ftBool,
@@ -408,7 +408,7 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"ws_port": ftInt,
 	},
 	"event_webhook": {
-		"enabled":        ftBool,
+		"enabled":       ftBool,
 		"port":          ftInt,
 		"max_body_size": ftInt64,
 		"rate_limit":    ftInt,
@@ -525,7 +525,7 @@ func normalizeLegacyEnableKeys(data []byte) []byte {
 			continue
 		}
 		// Within this block, replace "enable" with "enabled"
-		block := data[start:end+1]
+		block := data[start : end+1]
 		block = bytes.Replace(block, []byte(`"enable"`), []byte(`"enabled"`), 1)
 		data = append(data[:start], append(block, data[end+1:]...)...)
 	}
