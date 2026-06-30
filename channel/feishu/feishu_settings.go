@@ -37,7 +37,7 @@ func (f *FeishuChannel) BuildSettingsCard(ctx context.Context, senderID, chatID,
 	}
 
 	switch tab {
-	case "general", "model", "market", "metrics", "danger":
+	case "general", "market", "metrics", "danger":
 	default:
 		tab = "general"
 	}
@@ -50,8 +50,6 @@ func (f *FeishuChannel) BuildSettingsCard(ctx context.Context, senderID, chatID,
 	switch tab {
 	case "general":
 		elements = append(elements, f.buildGeneralTabContent(senderID, o)...)
-	case "model":
-		elements = append(elements, f.buildModelTabContent(ctx, senderID)...)
 	case "market":
 		elements = append(elements, f.buildMarketTabContent(ctx, senderID, o)...)
 	case "metrics":
@@ -145,8 +143,11 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		selectedValue := formStr(actionData, selectName)
 		if selectedValue == "" {
-			// Nothing selected, just re-render.
-			return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+			// Nothing selected; re-render whichever card the form lives on.
+			if formName == "model_select_form" {
+				return f.BuildModelsCard(ctx, senderID)
+			}
+			return f.BuildSettingsCard(ctx, senderID, chatID, "general")
 		}
 		parsed["action"] = delegateAction
 		delete(parsed, "form_name")
@@ -181,7 +182,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				return nil, fmt.Errorf("设置模型失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildModelsCard(ctx, senderID)
 
 	case "settings_set_max_context":
 		maxCtxStr := parsed["max_context"]
@@ -210,7 +211,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				return nil, fmt.Errorf("设置 max_context 失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildModelsCard(ctx, senderID)
 
 	case "settings_set_max_output_tokens":
 		maxOutStr := parsed["max_output_tokens"]
@@ -237,7 +238,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				return nil, fmt.Errorf("设置 max_output_tokens 失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildModelsCard(ctx, senderID)
 
 	case "settings_set_concurrency":
 		concStr := parsed["conc"]
@@ -261,7 +262,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				return nil, fmt.Errorf("设置并发数失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
 
 	case "settings_set_thinking_mode":
 		mode := parsed["mode"]
@@ -278,7 +279,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				return nil, fmt.Errorf("设置思考模式失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
 
 	case "settings_set_all_tiers":
 		// Tier form has 3 selects (vanguard/balance/swift). Each select value
@@ -309,37 +310,21 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				}
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildModelsCard(ctx, senderID)
 
-	case "settings_activate_subscription":
+	case "settings_toggle_subscription":
 		subID := parsed["subscription_id"]
 		if subID == "" {
 			return nil, fmt.Errorf("missing subscription_id")
 		}
-		// Audit log: record subscription state before switch for debugging
-		if f.settingsCallbacks.LLMListSubscriptions != nil {
-			if subs, err := f.settingsCallbacks.LLMListSubscriptions(senderID); err == nil {
-				for _, s := range subs {
-					log.WithFields(log.Fields{
-						"action":    "settings_activate_subscription",
-						"sender_id": senderID,
-						"sub_id":    s.ID,
-						"sub_name":  s.Name,
-						"provider":  s.Provider,
-						"model":     s.Model,
-						"base_url":  s.BaseURL,
-						"is_active": s.Active,
-						"target_id": subID,
-					}).Info("ch.Subscription state before activate")
-				}
+		enabledStr := parsed["enabled"]
+		enabled := enabledStr == "true"
+		if f.settingsCallbacks.LLMSetSubscriptionEnabled != nil {
+			if err := f.settingsCallbacks.LLMSetSubscriptionEnabled(subID, enabled); err != nil {
+				return nil, fmt.Errorf("切换订阅状态失败: %v", err)
 			}
 		}
-		if f.settingsCallbacks.LLMSetDefaultSubscription != nil {
-			if err := f.settingsCallbacks.LLMSetDefaultSubscription(subID); err != nil {
-				return nil, fmt.Errorf("切换订阅失败: %v", err)
-			}
-		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildLLMsCard(ctx, senderID)
 
 	case "settings_edit_subscription":
 		subID := parsed["subscription_id"]
@@ -353,10 +338,9 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		provider := formStr(actionData, "provider")
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
-		model := formStr(actionData, "model")
 		name := formStr(actionData, "name")
 		if name == "" {
-			name = provider + " " + model
+			name = provider
 		}
 		if provider == "" || baseURL == "" {
 			return nil, fmt.Errorf("请填写完整配置（Provider、API 地址）")
@@ -367,12 +351,11 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				Provider: provider,
 				BaseURL:  baseURL,
 				APIKey:   apiKey,
-				Model:    model,
 			}); err != nil {
 				return nil, fmt.Errorf("更新订阅失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildLLMsCard(ctx, senderID)
 
 	case "settings_delete_subscription":
 		subID := parsed["subscription_id"]
@@ -384,21 +367,19 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				return nil, fmt.Errorf("删除订阅失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildLLMsCard(ctx, senderID)
 
 	case "settings_add_subscription":
 		// Build a form card for adding a new subscription
 		return f.buildAddSubscriptionCard(senderID)
 
 	case "settings_submit_subscription":
-		// Handle the add subscription form submission
 		provider := formStr(actionData, "provider")
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
-		model := formStr(actionData, "model")
 		name := formStr(actionData, "name")
 		if name == "" {
-			name = provider + " " + model
+			name = provider
 		}
 		if provider == "" || baseURL == "" || apiKey == "" {
 			return nil, fmt.Errorf("请填写完整配置（Provider、API 地址、API Key）")
@@ -409,12 +390,11 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				Provider: provider,
 				BaseURL:  baseURL,
 				APIKey:   apiKey,
-				Model:    model,
 			}); err != nil {
 				return nil, fmt.Errorf("添加订阅失败: %v", err)
 			}
 		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		return f.BuildLLMsCard(ctx, senderID)
 
 	case "settings_install":
 		entryType := parsed["entry_type"]
@@ -641,7 +621,6 @@ func buildTabButtons(currentTab string) []map[string]any {
 		label string
 	}{
 		{"general", "🎯 通用"},
-		{"model", "🤖 模型"},
 		{"market", "📦 市场"},
 		{"metrics", "📊 指标"},
 		{"danger", "⚠️ 危险区"},
@@ -1091,29 +1070,88 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 		elements = append(elements, map[string]any{"tag": "hr"})
 	}
 
+	// --- LLM concurrency (personal) ---
+	personalConc := 3 // default
+	if f.settingsCallbacks.LLMGetPersonalConcurrency != nil {
+		personalConc = f.settingsCallbacks.LLMGetPersonalConcurrency(senderID)
+	}
+
+	concOptions := []map[string]any{
+		{"text": map[string]any{"tag": "plain_text", "content": "1"}, "value": "1"},
+		{"text": map[string]any{"tag": "plain_text", "content": "2"}, "value": "2"},
+		{"text": map[string]any{"tag": "plain_text", "content": "3"}, "value": "3"},
+		{"text": map[string]any{"tag": "plain_text", "content": "5"}, "value": "5"},
+		{"text": map[string]any{"tag": "plain_text", "content": "8"}, "value": "8"},
+		{"text": map[string]any{"tag": "plain_text", "content": "10"}, "value": "10"},
+		{"text": map[string]any{"tag": "plain_text", "content": "不限"}, "value": "0"},
+	}
+
+	elements = append(elements, map[string]any{"tag": "hr"})
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": "**个人 LLM 并发限制**",
+	})
+	elements = append(elements, buildSelectFormRow(
+		"并发上限",
+		fmt.Sprintf("%d", personalConc),
+		"concurrency_form",
+		map[string]any{
+			"tag":            "select_static",
+			"name":           "conc_select",
+			"placeholder":    map[string]any{"tag": "plain_text", "content": "选择并发数..."},
+			"initial_option": fmt.Sprintf("%d", personalConc),
+			"options":        concOptions,
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action": "settings_set_concurrency",
+				}),
+			},
+		},
+	)...)
+
+	// --- Thinking mode (global user preference) ---
+	currentThinkingMode := ""
+	thinkingModeDisplay := "auto"
+	if f.settingsCallbacks.LLMGetThinkingMode != nil {
+		currentThinkingMode = f.settingsCallbacks.LLMGetThinkingMode(senderID)
+	}
+	if currentThinkingMode != "" {
+		thinkingModeDisplay = thinkingModeLabel(currentThinkingMode)
+	}
+
+	elements = append(elements, buildSelectFormRow(
+		"思考模式",
+		thinkingModeDisplay,
+		"thinking_mode_form",
+		func() map[string]any {
+			ctrl := map[string]any{
+				"tag":         "select_static",
+				"name":        "thinking_mode_select",
+				"placeholder": map[string]any{"tag": "plain_text", "content": "选择思考模式..."},
+				"options":     thinkingModeOptions(),
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action": "settings_set_thinking_mode",
+					}),
+				},
+			}
+			if currentThinkingMode != "" {
+				for _, opt := range thinkingModeOptions() {
+					if opt["value"] == currentThinkingMode {
+						ctrl["initial_option"] = currentThinkingMode
+						break
+					}
+				}
+			}
+			return ctrl
+		}(),
+	)...)
+
 	return elements
 }
 
-// buildModelTabContent builds the model configuration tab.
+// buildAddSubscriptionCard builds a form card for adding a new subscription.
 func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]any, error) {
-	// Fetch available models for the model selector dropdown (model names only)
-	var modelOptions []map[string]any
-	if f.settingsCallbacks.LLMList != nil {
-		entries, _ := f.settingsCallbacks.LLMList(senderID)
-		for _, e := range entries {
-			modelOptions = append(modelOptions, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": e.Model},
-				"value": e.Model,
-			})
-		}
-	}
-	if len(modelOptions) == 0 {
-		modelOptions = append(modelOptions, map[string]any{
-			"text":  map[string]any{"tag": "plain_text", "content": "暂无可用模型（保存后可切换）"},
-			"value": "",
-		})
-	}
-
 	formElements := []map[string]any{
 		{
 			"tag":  "input",
@@ -1164,15 +1202,6 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 			},
 		},
 		{
-			"tag":  "select_static",
-			"name": "model",
-			"placeholder": map[string]any{
-				"tag":     "plain_text",
-				"content": "选择模型（可选，保存后可切换）",
-			},
-			"options": modelOptions,
-		},
-		{
 			"tag":         "button",
 			"name":        "sub_submit",
 			"text":        map[string]any{"tag": "plain_text", "content": "保存订阅"},
@@ -1216,7 +1245,7 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 // buildEditSubscriptionCard builds the edit subscription form with current values.
 func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[string]any, error) {
 	// Get current subscription data
-	var currentName, currentProvider, currentBaseURL, currentModel string
+	var currentName, currentProvider, currentBaseURL string
 	if f.settingsCallbacks.LLMListSubscriptions != nil {
 		subs, _ := f.settingsCallbacks.LLMListSubscriptions(senderID)
 		for _, s := range subs {
@@ -1224,43 +1253,15 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 				currentName = s.Name
 				currentProvider = s.Provider
 				currentBaseURL = s.BaseURL
-				currentModel = s.Model
 				break
 			}
 		}
 	}
 
-	// Fetch available models for the dropdown (model names only)
-	var modelOptions []map[string]any
-	if f.settingsCallbacks.LLMList != nil {
-		entries, _ := f.settingsCallbacks.LLMList(senderID)
-		for _, e := range entries {
-			modelOptions = append(modelOptions, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": e.Model},
-				"value": e.Model,
-			})
-		}
-	}
-	// Always include current model
-	found := false
-	for _, opt := range modelOptions {
-		if opt["value"] == currentModel {
-			found = true
-			break
-		}
-	}
-	if !found && currentModel != "" {
-		modelOptions = append([]map[string]any{{
-			"text":  map[string]any{"tag": "plain_text", "content": currentModel},
-			"value": currentModel,
-		}}, modelOptions...)
-	}
-	if len(modelOptions) == 0 {
-		modelOptions = append(modelOptions, map[string]any{
-			"text":  map[string]any{"tag": "plain_text", "content": "暂无可用模型"},
-			"value": "",
-		})
-	}
+	// Fetch available models for the dropdown — NO LONGER NEEDED here.
+	// Model selection lives in the /models card. The edit form is credentials-only
+	// (name, provider, base_url, api_key), matching the project policy that
+	// subscription edit panels are credentials-only.
 
 	formElements := []map[string]any{
 		{
@@ -1315,16 +1316,6 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 			},
 		},
 		{
-			"tag":  "select_static",
-			"name": "model",
-			"placeholder": map[string]any{
-				"tag":     "plain_text",
-				"content": "选择模型",
-			},
-			"initial_option": currentModel,
-			"options":        modelOptions,
-		},
-		{
 			"tag":         "button",
 			"name":        "sub_edit_submit",
 			"text":        map[string]any{"tag": "plain_text", "content": "保存修改"},
@@ -1366,7 +1357,35 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 	}, nil
 }
 
-func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID string) []map[string]any {
+// BuildModelsCard constructs a standalone interactive card for model management
+// (model switch + max_context + max_output + tier settings + subscription management).
+// Separated from settings card to stay under Feishu's ~50 element limit.
+// Triggered by the /models text command.
+func (f *FeishuChannel) BuildModelsCard(ctx context.Context, senderID string) (map[string]any, error) {
+	content, err := f.buildModelsCardContent(ctx, senderID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": "🤖 模型管理"},
+			"template": "blue",
+		},
+		"body": map[string]any{
+			"elements": content,
+		},
+	}, nil
+}
+
+// buildModelsCardContent builds the body elements for the models card.
+// Extracted from the old buildModelTabContent — model-related items only.
+// Thinking mode and concurrency live in settings card (general tab).
+func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID string) ([]map[string]any, error) {
 	var elements []map[string]any
 
 	// --- Quick model switch (all subscriptions' models) ---
@@ -1388,9 +1407,6 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		entries = append(entries, currentEntry)
 	}
 	if len(entries) > 0 {
-		// Build options with subID|model encoding as the option value.
-		// The handler parses subID|model to pass both to LLMSet(senderID, subID, model).
-		// We MUST NOT resolve subscription from model name alone.
 		var options []map[string]any
 		for _, e := range entries {
 			val := e.SubID + "|" + e.Model
@@ -1404,8 +1420,6 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 			})
 		}
 
-		// initial_option MUST match one of the option values exactly,
-		// otherwise Feishu rejects the entire card (error 200673).
 		selectControl := map[string]any{
 			"tag":         "select_static",
 			"name":        "model_select",
@@ -1433,7 +1447,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		)...)
 	}
 
-	// Max context setting (unit: k, stored as k*1000)
+	// Max context (unit: k, stored as k*1000)
 	currentMaxContext := 0
 	maxContextDisplay := "默认"
 	if f.settingsCallbacks.LLMGetMaxContext != nil {
@@ -1474,7 +1488,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		},
 	})
 
-	// Max output tokens setting (unit: k, stored as k*1000)
+	// Max output tokens (unit: k, stored as k*1000)
 	currentMaxOutputTokens := 0
 	maxOutputDisplay := "默认"
 	if f.settingsCallbacks.LLMGetMaxOutputTokens != nil {
@@ -1514,85 +1528,6 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 			},
 		},
 	})
-
-	// LLM concurrency settings (personal only)
-	personalConc := 3 // default
-	if f.settingsCallbacks.LLMGetPersonalConcurrency != nil {
-		personalConc = f.settingsCallbacks.LLMGetPersonalConcurrency(senderID)
-	}
-
-	concOptions := []map[string]any{
-		{"text": map[string]any{"tag": "plain_text", "content": "1"}, "value": "1"},
-		{"text": map[string]any{"tag": "plain_text", "content": "2"}, "value": "2"},
-		{"text": map[string]any{"tag": "plain_text", "content": "3"}, "value": "3"},
-		{"text": map[string]any{"tag": "plain_text", "content": "5"}, "value": "5"},
-		{"text": map[string]any{"tag": "plain_text", "content": "8"}, "value": "8"},
-		{"text": map[string]any{"tag": "plain_text", "content": "10"}, "value": "10"},
-		{"text": map[string]any{"tag": "plain_text", "content": "不限"}, "value": "0"},
-	}
-
-	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "**个人 LLM 并发限制**",
-	})
-	elements = append(elements, buildSelectFormRow(
-		"并发上限",
-		fmt.Sprintf("%d", personalConc),
-		"concurrency_form",
-		map[string]any{
-			"tag":            "select_static",
-			"name":           "conc_select",
-			"placeholder":    map[string]any{"tag": "plain_text", "content": "选择并发数..."},
-			"initial_option": fmt.Sprintf("%d", personalConc),
-			"options":        concOptions,
-			"value": map[string]string{
-				"action_data": mustMapToJSON(map[string]string{
-					"action": "settings_set_concurrency",
-				}),
-			},
-		},
-	)...)
-
-	// Thinking mode setting
-	currentThinkingMode := ""
-	thinkingModeDisplay := "auto"
-	if f.settingsCallbacks.LLMGetThinkingMode != nil {
-		currentThinkingMode = f.settingsCallbacks.LLMGetThinkingMode(senderID)
-	}
-	if currentThinkingMode != "" {
-		thinkingModeDisplay = thinkingModeLabel(currentThinkingMode)
-	}
-
-	elements = append(elements, buildSelectFormRow(
-		"思考模式",
-		thinkingModeDisplay,
-		"thinking_mode_form",
-		func() map[string]any {
-			ctrl := map[string]any{
-				"tag":         "select_static",
-				"name":        "thinking_mode_select",
-				"placeholder": map[string]any{"tag": "plain_text", "content": "选择思考模式..."},
-				"options":     thinkingModeOptions(),
-				"value": map[string]string{
-					"action_data": mustMapToJSON(map[string]string{
-						"action": "settings_set_thinking_mode",
-					}),
-				},
-			}
-			// Only set initial_option if it matches an option value.
-			// Empty/non-matching initial_option causes Feishu error 200673.
-			if currentThinkingMode != "" {
-				for _, opt := range thinkingModeOptions() {
-					if opt["value"] == currentThinkingMode {
-						ctrl["initial_option"] = currentThinkingMode
-						break
-					}
-				}
-			}
-			return ctrl
-		}(),
-	)...)
 
 	// --- Model tier section (single form with 3 selects) ---
 	// Previously 3 independent forms (15+ elements) hit Feishu's ~50 element
@@ -1712,97 +1647,163 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"elements": tierFormElements,
 	})
 
-	// --- ch.Subscription management section ---
-	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "**订阅管理**",
-	})
+	return elements, nil
+}
 
-	if f.settingsCallbacks.LLMListSubscriptions != nil {
-		subs, err := f.settingsCallbacks.LLMListSubscriptions(senderID)
-		if err != nil {
-			elements = append(elements, map[string]any{
-				"tag":     "markdown",
-				"content": fmt.Sprintf("⚠️ 加载订阅失败: %v", err),
-			})
-		} else if len(subs) == 0 {
-			elements = append(elements, map[string]any{
-				"tag":     "markdown",
-				"content": "暂无订阅。添加订阅后可在此管理。",
-			})
-		} else {
-			for _, sub := range subs {
-				activeMark := "  "
-				if sub.Active {
-					activeMark = "✅ "
-				}
-				// Keep label short — no newlines, no BaseURL.
-				// BaseURL renders as a separate markdown element below.
-				label := fmt.Sprintf("%s%s — %s (%s)", activeMark, sub.Name, sub.Provider, sub.Model)
-				var btns []map[string]any
-				if !sub.Active {
-					btns = append(btns, map[string]any{
+// BuildLLMsCard constructs a standalone card for subscription management
+// (list, add, edit, delete, enable/disable). Triggered by /llms command.
+func (f *FeishuChannel) BuildLLMsCard(ctx context.Context, senderID string) (map[string]any, error) {
+	content, err := f.buildLLMsCardContent(senderID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": "🔗 订阅管理"},
+			"template": "green",
+		},
+		"body": map[string]any{
+			"elements": content,
+		},
+	}, nil
+}
+
+// buildLLMsCardContent builds the body elements for the LLMs (subscription) card.
+// Subscriptions are listed with enable/disable, edit, delete buttons.
+// System subscriptions (is_system) are read-only — only shown with a 🔒 badge.
+func (f *FeishuChannel) buildLLMsCardContent(senderID string) ([]map[string]any, error) {
+	var elements []map[string]any
+
+	if f.settingsCallbacks.LLMListSubscriptions == nil {
+		return elements, nil
+	}
+
+	subs, err := f.settingsCallbacks.LLMListSubscriptions(senderID)
+	if err != nil {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": fmt.Sprintf("⚠️ 加载订阅失败: %v", err),
+		})
+		return elements, nil
+	}
+
+	if len(subs) == 0 {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "暂无订阅。点击下方按钮添加。",
+		})
+	} else {
+		for _, sub := range subs {
+			// System subscription: read-only badge, no action buttons
+			if sub.IsSystem {
+				label := fmt.Sprintf("🔒 %s — %s (%s)", sub.Name, sub.Provider, sub.Model)
+				elements = append(elements, buildItemRow(label, "", []map[string]any{
+					{
 						"tag":  "button",
-						"text": map[string]any{"tag": "plain_text", "content": "切换"},
-						"type": "primary",
-						"value": map[string]string{
-							"action_data": mustMapToJSON(map[string]string{
-								"action":          "settings_activate_subscription",
-								"subscription_id": sub.ID,
-							}),
-						},
-					})
-				}
-				btns = append(btns, map[string]any{
-					"tag":  "button",
-					"text": map[string]any{"tag": "plain_text", "content": "编辑"},
-					"type": "default",
-					"value": map[string]string{
-						"action_data": mustMapToJSON(map[string]string{
-							"action":          "settings_edit_subscription",
-							"subscription_id": sub.ID,
-						}),
+						"text": map[string]any{"tag": "plain_text", "content": "系统内置"},
+						"type": "default",
 					},
-				})
-				btns = append(btns, map[string]any{
-					"tag":  "button",
-					"text": map[string]any{"tag": "plain_text", "content": "删除"},
-					"type": "danger",
-					"value": map[string]string{
-						"action_data": mustMapToJSON(map[string]string{
-							"action":          "settings_delete_subscription",
-							"subscription_id": sub.ID,
-						}),
-					},
-				})
-				elements = append(elements, buildItemRow(label, "", btns...))
+				}...))
 				if sub.BaseURL != "" {
 					elements = append(elements, map[string]any{
 						"tag":     "markdown",
 						"content": "　　" + sub.BaseURL,
 					})
 				}
+				continue
+			}
+
+			// Enabled/disabled indicator
+			statusMark := "✅ "
+			if !sub.Enabled {
+				statusMark = "⏸️ "
+			}
+			label := fmt.Sprintf("%s%s — %s (%s)", statusMark, sub.Name, sub.Provider, sub.Model)
+
+			var btns []map[string]any
+
+			// Enable/disable toggle button
+			if sub.Enabled {
+				btns = append(btns, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "禁用"},
+					"type": "default",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":          "settings_toggle_subscription",
+							"subscription_id": sub.ID,
+							"enabled":         "false",
+						}),
+					},
+				})
+			} else {
+				btns = append(btns, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "启用"},
+					"type": "primary",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":          "settings_toggle_subscription",
+							"subscription_id": sub.ID,
+							"enabled":         "true",
+						}),
+					},
+				})
+			}
+
+			btns = append(btns, map[string]any{
+				"tag":  "button",
+				"text": map[string]any{"tag": "plain_text", "content": "编辑"},
+				"type": "default",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action":          "settings_edit_subscription",
+						"subscription_id": sub.ID,
+					}),
+				},
+			})
+			btns = append(btns, map[string]any{
+				"tag":  "button",
+				"text": map[string]any{"tag": "plain_text", "content": "删除"},
+				"type": "danger",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action":          "settings_delete_subscription",
+						"subscription_id": sub.ID,
+					}),
+				},
+			})
+			elements = append(elements, buildItemRow(label, "", btns...))
+			if sub.BaseURL != "" {
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": "　　" + sub.BaseURL,
+				})
 			}
 		}
-
-		// Add subscription button
-		elements = append(elements, map[string]any{
-			"tag": "button",
-			"text": map[string]any{
-				"tag":     "plain_text",
-				"content": "➕ 添加订阅",
-			},
-			"type": "default",
-			"value": map[string]string{
-				"action_data": mustMapToJSON(map[string]string{
-					"action": "settings_add_subscription",
-				}),
-			},
-		})
 	}
 
-	return elements
+	// Add subscription button
+	elements = append(elements, map[string]any{
+		"tag": "button",
+		"text": map[string]any{
+			"tag":     "plain_text",
+			"content": "➕ 添加订阅",
+		},
+		"type": "default",
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{
+				"action": "settings_add_subscription",
+			}),
+		},
+	})
+
+	return elements, nil
 }
 
 // --- Danger zone helpers ---

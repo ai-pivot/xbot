@@ -86,6 +86,9 @@ type SettingsCallbacks struct {
 	LLMRemoveSubscription     func(id string) error                             // remove by subscription ID
 	LLMSetDefaultSubscription func(id string) error                             // set as active subscription
 	LLMRenameSubscription     func(id, name string) error                       // rename subscription
+	// LLMSetSubscriptionEnabled toggles a subscription's enabled flag (v40).
+	// Disabled subscriptions are excluded from model lists and resolution.
+	LLMSetSubscriptionEnabled func(id string, enabled bool) error // toggle subscription enabled
 
 	ContextModeGet func() string
 	ContextModeSet func(mode string) error
@@ -988,6 +991,45 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 
 	// Admin command: !webadd <username> — create web user
 	if handled := f.handleAdminCommand(content, replyTo, senderID, messageID); handled {
+		return nil
+	}
+
+	// /models — open model management card (model switch + max_context +
+	// max_output + tier settings). Separated from settings card to stay
+	// under Feishu's ~50 element limit.
+	if msgType == "text" && strings.TrimSpace(content) == "/models" {
+		card, err := f.BuildModelsCard(ctx, senderID)
+		if err != nil {
+			l.WithError(err).Warn("Failed to build models card")
+			f.sendTextReply(replyTo, messageID, "打开模型卡片失败: "+err.Error())
+			return nil
+		}
+		cardJSON, err := json.Marshal(card)
+		if err != nil {
+			l.WithError(err).Warn("Failed to marshal models card")
+			f.sendTextReply(replyTo, messageID, "卡片序列化失败")
+			return nil
+		}
+		f.sendReplyMessage(replyTo, messageID, cardJSON)
+		return nil
+	}
+
+	// /llms — open subscription management card (list, add, edit, delete,
+	// enable/disable). Separated from /models to keep each card focused.
+	if msgType == "text" && strings.TrimSpace(content) == "/llms" {
+		card, err := f.BuildLLMsCard(ctx, senderID)
+		if err != nil {
+			l.WithError(err).Warn("Failed to build LLMs card")
+			f.sendTextReply(replyTo, messageID, "打开订阅卡片失败: "+err.Error())
+			return nil
+		}
+		cardJSON, err := json.Marshal(card)
+		if err != nil {
+			l.WithError(err).Warn("Failed to marshal LLMs card")
+			f.sendTextReply(replyTo, messageID, "卡片序列化失败")
+			return nil
+		}
+		f.sendReplyMessage(replyTo, messageID, cardJSON)
 		return nil
 	}
 

@@ -559,6 +559,19 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		LLMRenameSubscription: func(id, name string) error {
 			return ag.LLMFactory().GetSubscriptionSvc().Rename(id, name)
 		},
+		LLMSetSubscriptionEnabled: func(id string, enabled bool) error {
+			svc := ag.LLMFactory().GetSubscriptionSvc()
+			if err := svc.SetSubscriptionEnabled(id, enabled); err != nil {
+				return err
+			}
+			// Invalidate cache so the change takes effect immediately.
+			sub, err := svc.Get(id)
+			if err == nil && sub != nil {
+				ag.LLMFactory().InvalidateSender(sub.SenderID)
+				ag.LLMFactory().InvalidateSubscription(sub.ID)
+			}
+			return nil
+		},
 
 		LLMUpdateSubscription: func(id string, sub *channel.Subscription) error {
 			svc := ag.LLMFactory().GetSubscriptionSvc()
