@@ -296,7 +296,7 @@ func TestCursorAtEndOfFullLineRealWidth(t *testing.T) {
 
 	// Type enough CJK chars to exactly fill one line
 	charsPerLine := textareaWidth / 2 // CJK = 2 cols each
-	for i := 0; i < charsPerLine; i++ {
+	for range charsPerLine {
 		m.InsertRune('测')
 	}
 

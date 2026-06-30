@@ -213,6 +213,10 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 // handleViewportClick handles clicks on the viewport content area
 // (no zone matched). Detects clicks on reasoning box headers to toggle
 // expand/collapse, and clicks on tool tags for future expand support.
+//
+// NOTE: Currently this function is a no-op — it always returns false.
+// The coordinate calculations are kept as scaffolding for future
+// click-to-expand support on reasoning boxes and tool tags.
 func (m *cliModel) handleViewportClick(x, y int) bool {
 	// Convert absolute Y to viewport-relative Y
 	vpY := y - m.viewportYStart

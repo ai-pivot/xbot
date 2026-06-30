@@ -65,127 +65,10 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 
 	// Cancel ack handling: when a Run is cancelled, the agent sends outbound
 	// messages with metadata cancelled=true. These belong to the cancelled turn,
-	// not the current turn. If a new turn has already started (bg notification
-	// injection arrived first via cliInjectedUserMsg), these cancel acks would
-	// match the new turn's ID and incorrectly endAgentTurn. Skip turn-ending
-	// logic for cancel acks to preserve the new turn's state.
+	// not the current turn.
 	isCancelledAck := msg.Metadata != nil && msg.Metadata["cancelled"] == "true"
 	if isCancelledAck {
-		// Find the streaming message that belongs to the cancelled turn.
-		// When a new turn starts (via startAgentTurn) before the cancel ack
-		// arrives, m.streamingMsgIdx points to the NEW turn's message and
-		// m.pendingToolSummary may still hold OLD turn's iteration data.
-		// Using cancelTargetTurnID ensures we only finalize the correct message.
-		cancelledIdx := -1
-		if m.cancelTargetTurnID != 0 {
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].turnID == m.cancelTargetTurnID && m.messages[i].isPartial {
-					cancelledIdx = i
-					break
-				}
-			}
-		}
-		// Fallback: if cancelTargetTurnID is not set (e.g. cancel from external
-		// source), use the current streaming message index — but only if its
-		// turnID matches m.agentTurnID AND no cancel ack has already been
-		// processed for this session (prevents stale second cancel ack from
-		// async goroutine race from matching the wrong streaming message).
-		if cancelledIdx < 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-			if !m.cancelAckProcessed && m.messages[m.streamingMsgIdx].turnID == m.agentTurnID {
-				cancelledIdx = m.streamingMsgIdx
-			}
-		}
-
-		if cancelledIdx >= 0 {
-			streamingMsg := &m.messages[cancelledIdx]
-			if strings.TrimSpace(streamingMsg.content) != "" {
-				// Streaming message accumulated real content (e.g. partial LLM text).
-				// Finalize it as a completed message so the user keeps what was streamed.
-				streamingMsg.isPartial = false
-				streamingMsg.dirty = true
-				// Only set iterations from cancelledTurnIterations() if the message
-				// doesn't already have baked iterations. handleProgressDone's cancel
-				// path bakes iterations BEFORE endAgentTurn clears iterationHistory.
-				// By the time this cancel ack arrives, iterationHistory is already
-				// empty, so cancelledTurnIterations() would return nothing and
-				// OVERWRITE the baked iterations — causing the exact bug where
-				// "Ctrl+C loses iterations but restart brings them back".
-				if len(streamingMsg.iterations) == 0 {
-					streamingMsg.iterations = m.cancelledTurnIterations()
-				}
-			} else if len(streamingMsg.iterations) > 0 {
-				// Empty content but has iteration data (tool tags, reasoning).
-				// The user saw these rendered inline during the cancelled turn.
-				// Finalize instead of removing so the progress is preserved.
-				// (iterations already baked by handleProgressDone cancel path)
-				streamingMsg.isPartial = false
-				streamingMsg.dirty = true
-			} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
-				// Empty content but iterations exist in iterationHistory/pendingToolSummary
-				// (cancel ack arrived before PhaseDone). Finalize and bake iterations.
-				streamingMsg.isPartial = false
-				streamingMsg.dirty = true
-				streamingMsg.iterations = iters
-			} else {
-				// Empty streaming message (shell created by startAgentTurn)
-				// with no iteration data. Remove it — keeping an empty assistant
-				// creates a phantom message that doesn't match DB history.
-				m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
-				if m.streamingMsgIdx == cancelledIdx {
-					m.streamingMsgIdx = -1
-				} else if m.streamingMsgIdx > cancelledIdx {
-					m.streamingMsgIdx--
-				}
-				// If the removed message was the last element, cancelledIdx
-				// is now out of bounds (>= len(messages)).  Force a full
-				// rebuild on the next updateViewportContent so the cache
-				// doesn't hold stale lines for the removed message.
-				if cancelledIdx >= len(m.messages) {
-					m.rc.valid = false
-				}
-			}
-		}
-		// Still clean up progress/streaming state for the cancelled turn.
-		// Do NOT endAgentTurn — the current turn (if any) must remain active.
-		if m.progressState.current != nil {
-			m.cacheTokenUsage(m.progressState.current.TokenUsage)
-		}
-		// Restore pendingUserMsg: startAgentTurn cleared it, but if the engine
-		// hasn't persisted the user message to DB yet (immediate Ctrl+C), a
-		// subsequent reloadMessagesFromSession would lose it. Re-save the last
-		// user message from m.messages so handleHistoryReload can restore it.
-		if m.pendingUserMsg == nil {
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].role == "user" {
-					cp := m.messages[i]
-					m.pendingUserMsg = &cp
-					break
-				}
-			}
-		}
-		if m.streamingMsgIdx >= 0 {
-			m.streamingMsgIdx = -1
-		}
-		m.pendingToolSummary = nil // clear stale iteration data from cancelled turn
-		m.progressState.current = nil
-		m.typing = false        // clear typing indicator immediately after cancel
-		m.turnCancelled = false // cancel complete, allow future turns
-		m.cancelTargetTurnID = 0
-		m.cancelAckProcessed = true // prevent stale second cancel ack from matching via fallback
-		// Match every other turn-end path: set inputReady so the user can send
-		// directly (status bar already shows "就绪" because typing=false), and
-		// arm needFlushQueue so the tick handler drains queued messages.
-		// Without this, Ctrl+C leaves inputReady=false: new messages silently
-		// queue (📬N) but never flush — the state bar says "ready" but the
-		// queue is stuck.
-		m.inputReady = true
-		if len(m.messageQueue) > 0 {
-			m.needFlushQueue = true
-		}
-		// Targeted re-render: same rationale as the normal completion path.
-		// The cancelled message was cached with streaming content by
-		// endAgentTurn→relayoutViewport. Re-render just this one message.
-		m.rerenderCachedMessage(cancelledIdx)
+		m.handleCancelAck(msg, turnID)
 		return
 	}
 
@@ -210,11 +93,9 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		m.progressState.current = nil
 		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
-		if turnID == m.agentTurnID {
+	if turnID == m.agentTurnID {
 			m.inputReady = true
-			if len(m.messageQueue) > 0 {
-				m.needFlushQueue = true
-			}
+			m.tryFlushMessageQueue()
 		}
 		return
 	}
@@ -570,16 +451,109 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			m.endAgentTurn(turnID)
 			if turnID == m.agentTurnID {
 				m.inputReady = true
-				// §Q 标记需要刷新消息队列（由 Update 循环检查）
-				if len(m.messageQueue) > 0 {
-					m.needFlushQueue = true
+				m.tryFlushMessageQueue()
 				}
-			}
 		}
 
 	}
 
 	m.updateViewportContent()
+}
+
+// handleCancelAck processes the cancel acknowledgement from the agent.
+// When a Run is cancelled, the agent sends outbound messages with metadata
+// cancelled=true. These belong to the cancelled turn, not the current turn.
+// This method finalizes or removes the cancelled turn's streaming message,
+// cleans up progress state, and restores user-ready state.
+func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
+	// Find the streaming message that belongs to the cancelled turn.
+	// When a new turn starts (via startAgentTurn) before the cancel ack
+	// arrives, m.streamingMsgIdx points to the NEW turn's message and
+	// m.pendingToolSummary may still hold OLD turn's iteration data.
+	// Using cancelTargetTurnID ensures we only finalize the correct message.
+	cancelledIdx := -1
+	if m.cancelTargetTurnID != 0 {
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].turnID == m.cancelTargetTurnID && m.messages[i].isPartial {
+				cancelledIdx = i
+				break
+			}
+		}
+	}
+	// Fallback: if cancelTargetTurnID is not set (e.g. cancel from external
+	// source), use the current streaming message index — but only if its
+	// turnID matches m.agentTurnID AND no cancel ack has already been
+	// processed for this session (prevents stale second cancel ack from
+	// async goroutine race from matching the wrong streaming message).
+	if cancelledIdx < 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+		if !m.cancelAckProcessed && m.messages[m.streamingMsgIdx].turnID == m.agentTurnID {
+			cancelledIdx = m.streamingMsgIdx
+		}
+	}
+
+	if cancelledIdx >= 0 {
+		streamingMsg := &m.messages[cancelledIdx]
+		if strings.TrimSpace(streamingMsg.content) != "" {
+			// Streaming message accumulated real content (e.g. partial LLM text).
+			// Finalize it as a completed message so the user keeps what was streamed.
+			streamingMsg.isPartial = false
+			streamingMsg.dirty = true
+			if len(streamingMsg.iterations) == 0 {
+				streamingMsg.iterations = m.cancelledTurnIterations()
+			}
+		} else if len(streamingMsg.iterations) > 0 {
+			streamingMsg.isPartial = false
+			streamingMsg.dirty = true
+		} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
+			streamingMsg.isPartial = false
+			streamingMsg.dirty = true
+			streamingMsg.iterations = iters
+		} else {
+			// Empty streaming message with no iteration data. Remove it.
+			m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
+			if m.streamingMsgIdx == cancelledIdx {
+				m.streamingMsgIdx = -1
+			} else if m.streamingMsgIdx > cancelledIdx {
+				m.streamingMsgIdx--
+			}
+			if cancelledIdx >= len(m.messages) {
+				m.rc.valid = false
+			}
+		}
+	}
+	// Clean up progress/streaming state for the cancelled turn.
+	if m.progressState.current != nil {
+		m.cacheTokenUsage(m.progressState.current.TokenUsage)
+	}
+	if m.pendingUserMsg == nil {
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].role == "user" {
+				cp := m.messages[i]
+				m.pendingUserMsg = &cp
+				break
+			}
+		}
+	}
+	if m.streamingMsgIdx >= 0 {
+		m.streamingMsgIdx = -1
+	}
+	m.pendingToolSummary = nil
+	m.progressState.current = nil
+	m.typing = false
+	m.turnCancelled = false
+	m.cancelTargetTurnID = 0
+	m.cancelAckProcessed = true
+	m.inputReady = true
+	m.tryFlushMessageQueue()
+	m.rerenderCachedMessage(cancelledIdx)
+}
+
+// tryFlushMessageQueue arms the tick handler to drain queued messages
+// when the message queue has pending items.
+func (m *cliModel) tryFlushMessageQueue() {
+	if len(m.messageQueue) > 0 {
+		m.needFlushQueue = true
+	}
 }
 
 func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {

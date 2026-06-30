@@ -1232,36 +1232,40 @@ func (m *cliModel) View() (v tea.View) {
 		v.Cursor.Color = m.styles.TACursor.GetForeground()
 	}
 
-	// Command palette overlay (highest priority — hides everything)
-	if m.paletteOpen {
-		if overlay := m.viewCommandPalette(m.width, m.height); overlay != "" {
-			v.Content = overlay
-		}
-		// Re-track zones for overlay
+	// Render active overlay (Palette > QuickSwitch > Rewind).
+	// Returns the overlay content and whether to short-circuit (return immediately).
+	if overlay, shortCircuit := m.renderActiveOverlay(m.width, m.height); overlay != "" {
+		v.Content = overlay
 		m.mouseZones.reset()
 		m.trackOverlayZones(&m.mouseZones)
-		return v
-	}
-
-	// Quick switch overlay
-	if m.quickSwitchMode != "" {
-		if overlay := m.viewQuickSwitch(m.width, m.height); overlay != "" {
-			v.Content = overlay
+		if shortCircuit {
+			return v
 		}
-		m.mouseZones.reset()
-		m.trackOverlayZones(&m.mouseZones)
-	}
-
-	// Rewind overlay
-	if m.rewindMode {
-		if overlay := m.viewRewindPanel(m.width, m.height); overlay != "" {
-			v.Content = overlay
-		}
-		m.mouseZones.reset()
-		m.trackOverlayZones(&m.mouseZones)
 	}
 
 	return v
+}
+
+// renderActiveOverlay renders the active overlay (Palette > QuickSwitch > Rewind).
+// Returns the overlay content and whether the caller should short-circuit
+// (return immediately, e.g. for Palette which hides everything).
+func (m *cliModel) renderActiveOverlay(width, height int) (overlay string, shortCircuit bool) {
+	// Command palette (highest priority — hides everything)
+	if m.paletteOpen {
+		overlay = m.viewCommandPalette(width, height)
+		return overlay, true
+	}
+	// Quick switch overlay
+	if m.quickSwitchMode != "" {
+		overlay = m.viewQuickSwitch(width, height)
+		return overlay, false
+	}
+	// Rewind overlay
+	if m.rewindMode {
+		overlay = m.viewRewindPanel(width, height)
+		return overlay, false
+	}
+	return "", false
 }
 
 // allTodosDone returns true when todos exist and every item is marked done.
