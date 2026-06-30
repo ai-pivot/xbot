@@ -1510,7 +1510,11 @@ func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.Mode
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, sub := range subs {
-		if !sub.Enabled || sub.BaseURL == "" || sub.APIKey == "" {
+		if !sub.Enabled {
+			continue
+		}
+		if sub.BaseURL == "" || sub.APIKey == "" {
+			log.WithFields(log.Fields{"sub": sub.Name, "has_baseurl": sub.BaseURL != "", "has_apikey": sub.APIKey != ""}).Debug("[LLM] RefreshModelEntries: skipping sub (missing base_url or api_key)")
 			continue
 		}
 		wg.Add(1)
@@ -1530,7 +1534,7 @@ func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.Mode
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 			if err := loader.LoadModelsFromAPI(ctx); err != nil {
-				log.WithFields(log.Fields{"sub": s.Name, "error": err}).Debug("[LLM] RefreshModelEntries: /models fetch failed")
+				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != ""}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
 			}
 		}(sub)
 	}

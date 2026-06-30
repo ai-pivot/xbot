@@ -875,7 +875,7 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 		if m.quickSwitchShowAll {
 			showAllTag = "  [show all]"
 		}
-		hint = m.styles.PanelHint.Render(" ↑↓ Nav  Enter Select  E Edit  D Disable/Del  N Add model  S Show all" + showAllTag + "  / Filter  Esc Close")
+		hint = m.styles.PanelHint.Render(" ↑↓ Nav  Enter Select  R Refresh  E Edit  D Disable/Del  N Add model  S Show all" + showAllTag + "  / Filter  Esc Close")
 	}
 
 	// Vertical centering (rough).
@@ -988,6 +988,12 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	case "n":
 		m.quickSwitchMode = ""
 		m.openAddModelPanel(m.currentSubForAdd())
+		return true, nil
+	case "r":
+		if !m.quickSwitchRefreshing {
+			m.quickSwitchRefreshing = true
+			m.pendingCmds = append(m.pendingCmds, m.refreshModelEntriesCmd())
+		}
 		return true, nil
 	case "s":
 		m.quickSwitchShowAll = !m.quickSwitchShowAll
