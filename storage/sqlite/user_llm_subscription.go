@@ -137,7 +137,7 @@ func decryptAPIKey(sub *LLMSubscription, encryptedAPIKey string) {
 func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
+		SELECT ` + userLLMSubscriptionSelectCols + `
 			FROM user_llm_subscriptions
 			ORDER BY is_system DESC, created_at ASC
 		`)
@@ -173,7 +173,7 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
+			SELECT ` + userLLMSubscriptionSelectCols + `
 				FROM user_llm_subscriptions
 				WHERE sender_id = ? OR is_system = 1
 				ORDER BY is_system DESC, created_at ASC
@@ -264,7 +264,7 @@ func (s *LLMSubscriptionService) isSystemSubscription(id string) bool {
 func (s *LLMSubscriptionService) GetSystemSubscription() (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
+		SELECT ` + userLLMSubscriptionSelectCols + `
 			FROM user_llm_subscriptions
 			WHERE is_system = 1 LIMIT 1
 		`)
@@ -306,7 +306,7 @@ func (s *LLMSubscriptionService) UpsertSystemSubscription(sub *LLMSubscription) 
 	conn := s.db.Conn()
 	now := time.Now()
 	_, err := conn.Exec(`
-		INSERT INTO user_llm_subscriptions (id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, is_system, created_at, updated_at)
+		INSERT INTO user_llm_subscriptions (` + userLLMSubscriptionInsertCols + `)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			sender_id = excluded.sender_id,
@@ -332,7 +332,7 @@ func (s *LLMSubscriptionService) UpsertSystemSubscription(sub *LLMSubscription) 
 func (s *LLMSubscriptionService) Get(id string) (*LLMSubscription, error) {
 	conn := s.db.Conn()
 	row := conn.QueryRow(`
-		SELECT id, sender_id, name, provider, base_url, api_key, model, enabled, max_context, max_output_tokens, thinking_mode, api_type, cached_models, created_at, updated_at, is_system
+		SELECT ` + userLLMSubscriptionSelectCols + `
 			FROM user_llm_subscriptions
 			WHERE id = ?
 		`, id)

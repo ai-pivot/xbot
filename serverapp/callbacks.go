@@ -241,7 +241,7 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) web.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
 	regc := registryCallbacks(ag)
 	llmc := llmCallbacks(ag)
@@ -365,7 +365,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sql.DB) web.W
 			return result, nil
 		}
 		// For non-web channels (admin only): list all tenants in that channel.
-		return listTenantsByChannel(webDB, channel, currentChatID)
+		return listTenantsByChannel(webDB.Conn(), channel, currentChatID)
 	}
 	callbacks.ChatCreate = func(senderID, label string) (string, error) {
 		if webDB == nil {

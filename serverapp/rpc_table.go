@@ -781,7 +781,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// because ChatRenameFn writes labels with cliSenderID, not the WS auth identity.
 		senderID := bizID
 		if db := h.Ag.MultiSession().DB(); db != nil {
-			cs := sqlite.NewChatService(db.Conn())
+			cs := sqlite.NewChatService(db)
 			if err := cs.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
 				return nil, fmt.Errorf("delete chat: %w", err)
 			}
@@ -818,7 +818,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// consistent with ChatRenameFn which writes labels with cliSenderID.
 		senderID := bizID
 		if db := h.Ag.MultiSession().DB(); db != nil {
-			cs := sqlite.NewChatService(db.Conn())
+			cs := sqlite.NewChatService(db)
 			if err := cs.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
 				return nil, fmt.Errorf("rename chat: %w", err)
 			}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -73,7 +74,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // OAuthConfig OAuth 配置
 type OAuthConfig struct {
-	Enable  bool   `json:"enable"`
+	Enable  bool   `json:"enabled"`
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	BaseURL string `json:"base_url"`
@@ -140,7 +141,7 @@ type OSSConfig struct {
 
 // EventWebhookConfig 事件 Webhook 配置
 type EventWebhookConfig struct {
-	Enable      bool   `json:"enable"`
+	Enable      bool   `json:"enabled"`
 	Host        string `json:"host"`
 	Port        int    `json:"port"`
 	BaseURL     string `json:"base_url"`
@@ -150,7 +151,7 @@ type EventWebhookConfig struct {
 
 // WebConfig Web 渠道配置
 type WebConfig struct {
-	Enable           bool   `json:"enable"`
+	Enable           bool   `json:"enabled"`
 	Host             string `json:"host"`
 	Port             int    `json:"port"`
 	StaticDir        string `json:"static_dir"`
@@ -315,7 +316,7 @@ type LogConfig struct {
 
 // PProfConfig pprof 配置
 type PProfConfig struct {
-	Enable bool   `json:"enable"`
+	Enable bool   `json:"enabled"`
 	Host   string `json:"host"`
 	Port   int    `json:"port"`
 }
@@ -368,17 +369,17 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"port": ftInt,
 	},
 	"web": {
-		"enable":            ftBool,
+		"enabled":           ftBool,
 		"port":              ftInt,
 		"persona_isolation": ftBool,
 		"invite_only":       ftBool,
 	},
 	"oauth": {
-		"enable": ftBool,
+		"enabled": ftBool,
 		"port":   ftInt,
 	},
 	"pprof": {
-		"enable": ftBool,
+		"enabled": ftBool,
 		"port":   ftInt,
 	},
 	"feishu": {
@@ -407,7 +408,7 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"ws_port": ftInt,
 	},
 	"event_webhook": {
-		"enable":        ftBool,
+		"enabled":        ftBool,
 		"port":          ftInt,
 		"max_body_size": ftInt64,
 		"rate_limit":    ftInt,
@@ -489,6 +490,46 @@ func normalizeObjectFields(objRaw json.RawMessage, schema map[string]fieldType) 
 		return objRaw, false
 	}
 	return out, true
+}
+
+// normalizeLegacyEnableKeys renames legacy "enable" keys to "enabled"
+// at the top level of each known config section. This ensures backward
+// compatibility with config files that use the old "enable" spelling.
+func normalizeLegacyEnableKeys(data []byte) []byte {
+	sections := []string{"web", "oauth", "pprof", "event_webhook"}
+	for _, section := range sections {
+		// Pattern: "section": { ... "enable": ... }
+		// We need to replace "enable" with "enabled" within that section only
+		// Simple approach: find "section" and then replace "enable" within its block
+		oldKey := fmt.Sprintf(`"%s": {`, section)
+		idx := bytes.Index(data, []byte(oldKey))
+		if idx < 0 {
+			continue
+		}
+		// Find the matching closing brace
+		depth := 0
+		start := idx + len(oldKey) - 1 // point to '{'
+		end := start
+		for i := start; i < len(data); i++ {
+			if data[i] == '{' {
+				depth++
+			} else if data[i] == '}' {
+				depth--
+				if depth == 0 {
+					end = i
+					break
+				}
+			}
+		}
+		if end == start {
+			continue
+		}
+		// Within this block, replace "enable" with "enabled"
+		block := data[start:end+1]
+		block = bytes.Replace(block, []byte(`"enable"`), []byte(`"enabled"`), 1)
+		data = append(data[:start], append(block, data[end+1:]...)...)
+	}
+	return data
 }
 
 // normalizeConfigTypes preprocesses raw JSON bytes to coerce string values
@@ -603,6 +644,7 @@ func LoadFromFile(path string) *Config {
 		return nil
 	}
 	// 预处理：将字符串值转换为 struct 期望的类型
+	data = normalizeLegacyEnableKeys(data)
 	data = normalizeConfigTypes(data)
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -747,303 +789,138 @@ func setSecondsEnv(key string, dst *Duration) {
 // 这保证了可预测的行为：用户设置环境变量就意味着覆盖，无需关心 config.json 里写了什么。
 // 默认值填充在 Load() 函数中，只对 config.json 和环境变量都未设置的字段生效。
 func applyEnvOverrides(cfg *Config) {
-	if v := os.Getenv("SERVER_HOST"); v != "" {
-		cfg.Server.Host = v
-	}
-	if v := os.Getenv("SERVER_PORT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Server.Port = i
-		}
-	}
+	// Server
+	setStringEnv("SERVER_HOST", &cfg.Server.Host)
+	setIntEnv("SERVER_PORT", &cfg.Server.Port)
 	setSecondsEnv("SERVER_READ_TIMEOUT", &cfg.Server.ReadTimeout)
 	setSecondsEnv("SERVER_WRITE_TIMEOUT", &cfg.Server.WriteTimeout)
 
-	if v := os.Getenv("LLM_PROVIDER"); v != "" {
-		cfg.LLM.Provider = v
-	}
-	if v := os.Getenv("LLM_BASE_URL"); v != "" {
-		cfg.LLM.BaseURL = v
-	}
-	if v := os.Getenv("LLM_API_KEY"); v != "" {
-		cfg.LLM.APIKey = v
-	}
-	if v := os.Getenv("LLM_MODEL"); v != "" {
-		cfg.LLM.Model = v
-	}
-	if v := os.Getenv("LLM_RETRY_ATTEMPTS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.LLMRetryAttempts = i
-		}
-	}
+	// LLM
+	setStringEnv("LLM_PROVIDER", &cfg.LLM.Provider)
+	setStringEnv("LLM_BASE_URL", &cfg.LLM.BaseURL)
+	setStringEnv("LLM_API_KEY", &cfg.LLM.APIKey)
+	setStringEnv("LLM_MODEL", &cfg.LLM.Model)
+	setIntEnv("LLM_RETRY_ATTEMPTS", &cfg.Agent.LLMRetryAttempts)
 	setDurationEnv("LLM_RETRY_DELAY", &cfg.Agent.LLMRetryDelay)
 	setDurationEnv("LLM_RETRY_MAX_DELAY", &cfg.Agent.LLMRetryMaxDelay)
 	setDurationEnv("LLM_RETRY_TIMEOUT", &cfg.Agent.LLMRetryTimeout)
 
-	if v := os.Getenv("LOG_LEVEL"); v != "" {
-		cfg.Log.Level = v
-	}
-	if v := os.Getenv("LOG_FORMAT"); v != "" {
-		cfg.Log.Format = v
-	}
+	// Log
+	setStringEnv("LOG_LEVEL", &cfg.Log.Level)
+	setStringEnv("LOG_FORMAT", &cfg.Log.Format)
 
-	if v := os.Getenv("LLM_EMBEDDING_PROVIDER"); v != "" {
-		cfg.Embedding.Provider = v
-	}
-	if v := os.Getenv("LLM_EMBEDDING_BASE_URL"); v != "" {
-		cfg.Embedding.BaseURL = v
-	}
-	if v := os.Getenv("LLM_EMBEDDING_API_KEY"); v != "" {
-		cfg.Embedding.APIKey = v
-	}
-	if v := os.Getenv("LLM_EMBEDDING_MODEL"); v != "" {
-		cfg.Embedding.Model = v
-	}
-	if v := os.Getenv("LLM_EMBEDDING_MAX_TOKENS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Embedding.MaxTokens = i
-		}
-	}
+	// Embedding
+	setStringEnv("LLM_EMBEDDING_PROVIDER", &cfg.Embedding.Provider)
+	setStringEnv("LLM_EMBEDDING_BASE_URL", &cfg.Embedding.BaseURL)
+	setStringEnv("LLM_EMBEDDING_API_KEY", &cfg.Embedding.APIKey)
+	setStringEnv("LLM_EMBEDDING_MODEL", &cfg.Embedding.Model)
+	setIntEnv("LLM_EMBEDDING_MAX_TOKENS", &cfg.Embedding.MaxTokens)
 
-	if v := os.Getenv("WORK_DIR"); v != "" {
-		cfg.Agent.WorkDir = v
-	}
-	if v := os.Getenv("PROMPT_FILE"); v != "" {
-		cfg.Agent.PromptFile = v
-	}
+	// Agent
+	setStringEnv("WORK_DIR", &cfg.Agent.WorkDir)
+	setStringEnv("PROMPT_FILE", &cfg.Agent.PromptFile)
 	// SINGLE_USER env var removed — singleUser normalization is no longer used
-	if v := os.Getenv("MEMORY_PROVIDER"); v != "" {
-		cfg.Agent.MemoryProvider = v
-	}
-	if v := os.Getenv("AGENT_MAX_ITERATIONS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.MaxIterations = i
-		}
-	}
-	if v := os.Getenv("AGENT_MAX_CONCURRENCY"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.MaxConcurrency = i
-		}
-	}
+	setStringEnv("MEMORY_PROVIDER", &cfg.Agent.MemoryProvider)
+	setIntEnv("AGENT_MAX_ITERATIONS", &cfg.Agent.MaxIterations)
+	setIntEnv("AGENT_MAX_CONCURRENCY", &cfg.Agent.MaxConcurrency)
 	setDurationEnv("MCP_INACTIVITY_TIMEOUT", &cfg.Agent.MCPInactivityTimeout)
 	setDurationEnv("MCP_CLEANUP_INTERVAL", &cfg.Agent.MCPCleanupInterval)
 	setDurationEnv("SESSION_CACHE_TIMEOUT", &cfg.Agent.SessionCacheTimeout)
-
-	if v := os.Getenv("AGENT_CONTEXT_MODE"); v != "" {
-		cfg.Agent.ContextMode = v
-	}
+	setStringEnv("AGENT_CONTEXT_MODE", &cfg.Agent.ContextMode)
+	// AGENT_ENABLE_AUTO_COMPRESS: *bool — keep inline
 	if v := os.Getenv("AGENT_ENABLE_AUTO_COMPRESS"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Agent.EnableAutoCompress = &b
 		}
 	}
-	if v := os.Getenv("AGENT_MAX_CONTEXT_TOKENS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.MaxContextTokens = i
-		}
-	}
-	if v := os.Getenv("AGENT_COMPRESSION_THRESHOLD"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.Agent.CompressionThreshold = f
-		}
-	}
-	if v := os.Getenv("AGENT_PURGE_OLD_MESSAGES"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Agent.PurgeOldMessages = b
-		}
-	}
-	if v := os.Getenv("MAX_SUBAGENT_DEPTH"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Agent.MaxSubAgentDepth = i
-		}
-	}
+	setIntEnv("AGENT_MAX_CONTEXT_TOKENS", &cfg.Agent.MaxContextTokens)
+	setFloatEnv("AGENT_COMPRESSION_THRESHOLD", &cfg.Agent.CompressionThreshold)
+	setBoolEnv("AGENT_PURGE_OLD_MESSAGES", &cfg.Agent.PurgeOldMessages)
+	setIntEnv("MAX_SUBAGENT_DEPTH", &cfg.Agent.MaxSubAgentDepth)
 
-	if v := os.Getenv("SANDBOX_MODE"); v != "" {
-		cfg.Sandbox.Mode = v
-	}
-	if v := os.Getenv("SANDBOX_REMOTE_MODE"); v != "" {
-		cfg.Sandbox.RemoteMode = v
-	}
-	if v := os.Getenv("SANDBOX_DOCKER_IMAGE"); v != "" {
-		cfg.Sandbox.DockerImage = v
-	}
-	if v := os.Getenv("HOST_WORK_DIR"); v != "" {
-		cfg.Sandbox.HostWorkDir = v
-	}
+	// Sandbox
+	setStringEnv("SANDBOX_MODE", &cfg.Sandbox.Mode)
+	setStringEnv("SANDBOX_REMOTE_MODE", &cfg.Sandbox.RemoteMode)
+	setStringEnv("SANDBOX_DOCKER_IMAGE", &cfg.Sandbox.DockerImage)
+	setStringEnv("HOST_WORK_DIR", &cfg.Sandbox.HostWorkDir)
+	// SANDBOX_IDLE_TIMEOUT_MINUTES: minutes → Duration — keep inline
 	if v := os.Getenv("SANDBOX_IDLE_TIMEOUT_MINUTES"); v != "" {
 		if min, err := strconv.Atoi(v); err == nil {
 			cfg.Sandbox.IdleTimeout = Duration(min) * Minute
 		}
 	}
-	if v := os.Getenv("SANDBOX_WS_PORT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Sandbox.WSPort = i
-		}
-	}
-	if v := os.Getenv("SANDBOX_AUTH_TOKEN"); v != "" {
-		cfg.Sandbox.AuthToken = v
-	}
-	if v := os.Getenv("SANDBOX_PUBLIC_URL"); v != "" {
-		cfg.Sandbox.PublicURL = v
-	}
+	setIntEnv("SANDBOX_WS_PORT", &cfg.Sandbox.WSPort)
+	setStringEnv("SANDBOX_AUTH_TOKEN", &cfg.Sandbox.AuthToken)
+	setStringEnv("SANDBOX_PUBLIC_URL", &cfg.Sandbox.PublicURL)
 
-	if v := os.Getenv("FEISHU_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Feishu.Enabled = b
-		}
-	}
-	if v := os.Getenv("FEISHU_APP_ID"); v != "" {
-		cfg.Feishu.AppID = v
-	}
-	if v := os.Getenv("FEISHU_APP_SECRET"); v != "" {
-		cfg.Feishu.AppSecret = v
-	}
-	if v := os.Getenv("FEISHU_ENCRYPT_KEY"); v != "" {
-		cfg.Feishu.EncryptKey = v
-	}
-	if v := os.Getenv("FEISHU_VERIFICATION_TOKEN"); v != "" {
-		cfg.Feishu.VerificationToken = v
-	}
+	// Feishu
+	setBoolEnv("FEISHU_ENABLED", &cfg.Feishu.Enabled)
+	setStringEnv("FEISHU_APP_ID", &cfg.Feishu.AppID)
+	setStringEnv("FEISHU_APP_SECRET", &cfg.Feishu.AppSecret)
+	setStringEnv("FEISHU_ENCRYPT_KEY", &cfg.Feishu.EncryptKey)
+	setStringEnv("FEISHU_VERIFICATION_TOKEN", &cfg.Feishu.VerificationToken)
 	if v, ok := os.LookupEnv("FEISHU_ALLOW_FROM"); ok {
 		cfg.Feishu.AllowFrom = splitCommaTrim(v)
 	}
-	if v := os.Getenv("FEISHU_DOMAIN"); v != "" {
-		cfg.Feishu.Domain = v
-	}
+	setStringEnv("FEISHU_DOMAIN", &cfg.Feishu.Domain)
 
-	if v := os.Getenv("QQ_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.QQ.Enabled = b
-		}
-	}
-	if v := os.Getenv("QQ_APP_ID"); v != "" {
-		cfg.QQ.AppID = v
-	}
-	if v := os.Getenv("QQ_CLIENT_SECRET"); v != "" {
-		cfg.QQ.ClientSecret = v
-	}
+	// QQ
+	setBoolEnv("QQ_ENABLED", &cfg.QQ.Enabled)
+	setStringEnv("QQ_APP_ID", &cfg.QQ.AppID)
+	setStringEnv("QQ_CLIENT_SECRET", &cfg.QQ.ClientSecret)
 	if v, ok := os.LookupEnv("QQ_ALLOW_FROM"); ok {
 		cfg.QQ.AllowFrom = splitCommaTrim(v)
 	}
 
-	if v := os.Getenv("NAPCAT_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.NapCat.Enabled = b
-		}
-	}
-	if v := os.Getenv("NAPCAT_WS_URL"); v != "" {
-		cfg.NapCat.WSUrl = v
-	}
-	if v := os.Getenv("NAPCAT_TOKEN"); v != "" {
-		cfg.NapCat.Token = v
-	}
+	// NapCat
+	setBoolEnv("NAPCAT_ENABLED", &cfg.NapCat.Enabled)
+	setStringEnv("NAPCAT_WS_URL", &cfg.NapCat.WSUrl)
+	setStringEnv("NAPCAT_TOKEN", &cfg.NapCat.Token)
 	if v, ok := os.LookupEnv("NAPCAT_ALLOW_FROM"); ok {
 		cfg.NapCat.AllowFrom = splitCommaTrim(v)
 	}
 
-	if v := os.Getenv("WEB_ENABLED"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Web.Enable = b
-		}
-	}
-	if v := os.Getenv("WEB_HOST"); v != "" {
-		cfg.Web.Host = v
-	}
-	if v := os.Getenv("WEB_PORT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Web.Port = i
-		}
-	}
-	if v := os.Getenv("WEB_STATIC_DIR"); v != "" {
-		cfg.Web.StaticDir = v
-	}
-	if v := os.Getenv("WEB_UPLOAD_DIR"); v != "" {
-		cfg.Web.UploadDir = v
-	}
-	if v := os.Getenv("WEB_PERSONA_ISOLATION"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Web.PersonaIsolation = b
-		}
-	}
-	if v := os.Getenv("WEB_INVITE_ONLY"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.Web.InviteOnly = b
-		}
-	}
+	// Web
+	setBoolEnv("WEB_ENABLED", &cfg.Web.Enable)
+	setStringEnv("WEB_HOST", &cfg.Web.Host)
+	setIntEnv("WEB_PORT", &cfg.Web.Port)
+	setStringEnv("WEB_STATIC_DIR", &cfg.Web.StaticDir)
+	setStringEnv("WEB_UPLOAD_DIR", &cfg.Web.UploadDir)
+	setBoolEnv("WEB_PERSONA_ISOLATION", &cfg.Web.PersonaIsolation)
+	setBoolEnv("WEB_INVITE_ONLY", &cfg.Web.InviteOnly)
 
-	if v := os.Getenv("EVENT_WEBHOOK_ENABLE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.EventWebhook.Enable = b
-		}
-	}
-	if v := os.Getenv("EVENT_WEBHOOK_HOST"); v != "" {
-		cfg.EventWebhook.Host = v
-	}
-	if v := os.Getenv("EVENT_WEBHOOK_PORT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.EventWebhook.Port = i
-		}
-	}
-	if v := os.Getenv("EVENT_WEBHOOK_BASE_URL"); v != "" {
-		cfg.EventWebhook.BaseURL = v
-	}
+	// Event Webhook
+	setBoolEnv("EVENT_WEBHOOK_ENABLE", &cfg.EventWebhook.Enable)
+	setStringEnv("EVENT_WEBHOOK_HOST", &cfg.EventWebhook.Host)
+	setIntEnv("EVENT_WEBHOOK_PORT", &cfg.EventWebhook.Port)
+	setStringEnv("EVENT_WEBHOOK_BASE_URL", &cfg.EventWebhook.BaseURL)
+	// EVENT_WEBHOOK_MAX_BODY_SIZE: int64 — keep inline
 	if v := os.Getenv("EVENT_WEBHOOK_MAX_BODY_SIZE"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			cfg.EventWebhook.MaxBodySize = int64(i)
 		}
 	}
-	if v := os.Getenv("EVENT_WEBHOOK_RATE_LIMIT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.EventWebhook.RateLimit = i
-		}
-	}
+	setIntEnv("EVENT_WEBHOOK_RATE_LIMIT", &cfg.EventWebhook.RateLimit)
 
-	if v := os.Getenv("OAUTH_ENABLE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.OAuth.Enable = b
-		}
-	}
-	if v := os.Getenv("OAUTH_HOST"); v != "" {
-		cfg.OAuth.Host = v
-	}
-	if v := os.Getenv("OAUTH_PORT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.OAuth.Port = i
-		}
-	}
-	if v := os.Getenv("OAUTH_BASE_URL"); v != "" {
-		cfg.OAuth.BaseURL = v
-	}
+	// OAuth
+	setBoolEnv("OAUTH_ENABLE", &cfg.OAuth.Enable)
+	setStringEnv("OAUTH_HOST", &cfg.OAuth.Host)
+	setIntEnv("OAUTH_PORT", &cfg.OAuth.Port)
+	setStringEnv("OAUTH_BASE_URL", &cfg.OAuth.BaseURL)
 
-	if v := os.Getenv("PPROF_ENABLE"); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			cfg.PProf.Enable = b
-		}
-	}
-	if v := os.Getenv("PPROF_HOST"); v != "" {
-		cfg.PProf.Host = v
-	}
-	if v := os.Getenv("PPROF_PORT"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.PProf.Port = i
-		}
-	}
+	// PProf
+	setBoolEnv("PPROF_ENABLE", &cfg.PProf.Enable)
+	setStringEnv("PPROF_HOST", &cfg.PProf.Host)
+	setIntEnv("PPROF_PORT", &cfg.PProf.Port)
 
-	if v := os.Getenv("STARTUP_NOTIFY_CHANNEL"); v != "" {
-		cfg.StartupNotify.Channel = v
-	}
-	if v := os.Getenv("STARTUP_NOTIFY_CHAT_ID"); v != "" {
-		cfg.StartupNotify.ChatID = v
-	}
-	if v := os.Getenv("ADMIN_CHAT_ID"); v != "" {
-		cfg.Admin.ChatID = v
-	}
-	if v := os.Getenv("ADMIN_TOKEN"); v != "" {
-		cfg.Admin.Token = v
-	}
+	// Startup / Admin
+	setStringEnv("STARTUP_NOTIFY_CHANNEL", &cfg.StartupNotify.Channel)
+	setStringEnv("STARTUP_NOTIFY_CHAT_ID", &cfg.StartupNotify.ChatID)
+	setStringEnv("ADMIN_CHAT_ID", &cfg.Admin.ChatID)
+	setStringEnv("ADMIN_TOKEN", &cfg.Admin.Token)
 
-	if v := os.Getenv("TAVILY_API_KEY"); v != "" {
-		cfg.TavilyAPIKey = v
-	}
+	// Misc
+	setStringEnv("TAVILY_API_KEY", &cfg.TavilyAPIKey)
 }
 
 // EffectiveEnableAutoCompress 返回是否启用自动压缩；config.json 省略该字段时与文档默认一致，为 true。
