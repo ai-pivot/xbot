@@ -68,7 +68,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 
 	// When permission control is disabled, ignore any stale run_as/reason
 	// the LLM might send from cached context.
-	if toolCtx.Ctx == nil || !isPermControlActiveFromCtx(toolCtx.Ctx) {
+	if !isPermControlActiveFromCtx(toolCtx.Ctx) {
 		params.RunAs = ""
 		params.Reason = ""
 	}

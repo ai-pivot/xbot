@@ -71,7 +71,7 @@ func (t *FileCreateTool) Execute(ctx *ToolContext, input string) (*ToolResult, e
 	}
 
 	// When permission control is disabled, ignore stale run_as/reason from LLM cache
-	if ctx.Ctx == nil || !isPermControlActiveFromCtx(ctx.Ctx) {
+	if !isPermControlActiveFromCtx(ctx.Ctx) {
 		params.RunAs = ""
 		params.Reason = ""
 	}
@@ -210,7 +210,7 @@ func (t *FileReplaceTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 	}
 
 	// When permission control is disabled, ignore stale run_as/reason from LLM cache
-	if ctx.Ctx == nil || !isPermControlActiveFromCtx(ctx.Ctx) {
+	if !isPermControlActiveFromCtx(ctx.Ctx) {
 		params.RunAs = ""
 		params.Reason = ""
 	}
