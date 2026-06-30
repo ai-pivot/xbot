@@ -1168,8 +1168,7 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 	}
 	// find returns the subscription for the model, preferring the default sub.
 	// matchFn reports whether a subscription provides the model.
-	var find func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription
-	find = func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
+	find := func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
 		var fallback *sqlite.LLMSubscription
 		for i := range subs {
 			sub := subs[i]
