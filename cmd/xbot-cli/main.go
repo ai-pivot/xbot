@@ -2282,15 +2282,6 @@ func (s *backendLLMSubscriber) SwitchSubscription(senderID string, sub *channel.
 	return s.client.SetDefaultSubscription(sub.ID, chatID)
 }
 
-func (s *backendLLMSubscriber) SwitchModel(senderID, model, chatID string) {
-	if senderID == "" {
-		senderID = cliSenderID
-	}
-	if err := s.client.SwitchModel(senderID, model, chatID); err != nil {
-		log.WithError(err).Warn("backendLLMSubscriber: SwitchModel failed")
-	}
-}
-
 // SelectModel switches to a specific (subscription, model) pair, used by the
 // model picker when the row carries an owning SubID. Unlike SwitchModel (which
 // resolves the owning subscription server-side by model name), this pins the

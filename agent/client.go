@@ -489,12 +489,8 @@ func (c *Client) SetLLMConcurrency(senderID string, personal int) error {
 	return c.call(MethodSetLLMConcurrency, setLLMConcurrencyReq{SenderID: senderID, Personal: personal}, nil)
 }
 
-func (c *Client) SetUserModel(senderID, model string) error {
-	return c.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, Model: model}, nil)
-}
-
-func (c *Client) SwitchModel(senderID, model, chatID string) error {
-	return c.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model, ChatID: chatID}, nil)
+func (c *Client) SetUserModel(senderID, subID, model string) error {
+	return c.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, SubID: subID, Model: model}, nil)
 }
 
 // SelectModel sets the per-session (subscription, model) for a chat.

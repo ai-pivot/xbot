@@ -63,13 +63,10 @@ func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[s
 			m.panelState.values[def.Key] = def.DefaultValue
 		}
 		// Inject cross-subscription model list for tier model selectors.
+		// tierModelOptions labels each entry "订阅名 · 模型名" for disambiguation;
+		// Value stays the raw model name (resolved cross-sub at Run).
 		if (def.Key == "vanguard_model" || def.Key == "balance_model" || def.Key == "swift_model") && m.channel.modelLister != nil && len(def.Options) == 0 {
-			models := m.channel.modelLister.ListModels()
-			if len(models) > 0 {
-				opts := make([]ch.SettingOption, len(models))
-				for j, mdl := range models {
-					opts[j] = ch.SettingOption{Label: mdl, Value: mdl}
-				}
+			if opts := m.tierModelOptions(); len(opts) > 0 {
 				def.Options = opts
 				def.Type = ch.SettingTypeCombo
 			}
@@ -659,15 +656,8 @@ func (m *cliModel) viewSettingsPanel() string {
 							}
 						}
 					}
-					// Fallback: if no per-session subscription is set, use the global default.
-					if activeName == "" {
-						for _, sub := range subs {
-							if sub.Active {
-								activeName = sub.Name
-								break
-							}
-						}
-					}
+					// Fallback: if no per-session subscription is set, no hint is shown.
+					// (Previously fell back to sub.Active — "default subscription" concept retired.)
 					if activeName != "" {
 						subHint = " " + s.ProgressDone.Render("● "+activeName)
 					}

@@ -15,7 +15,6 @@ const (
 	MethodSetContextMode               = "set_context_mode"
 	MethodGetContextMode               = "get_context_mode"
 	MethodSetUserModel                 = "set_user_model"
-	MethodSwitchModel                  = "switch_model"
 	MethodSelectModel                  = "select_model"
 	MethodSetDefaultModel              = "set_default_model"
 	MethodSetModelEnabled              = "set_model_enabled"
@@ -133,13 +132,8 @@ type setCompressionThresholdReq struct {
 
 type setUserModelReq struct {
 	SenderID string `json:"sender_id"`
+	SubID    string `json:"sub_id,omitempty"`
 	Model    string `json:"model"`
-}
-
-type switchModelReq struct {
-	SenderID string `json:"sender_id"`
-	Model    string `json:"model"`
-	ChatID   string `json:"chat_id,omitempty"`
 }
 
 type setUserMaxContextReq struct {

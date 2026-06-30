@@ -1,10 +1,7 @@
 package channel
 
 import (
-	"fmt"
 	"time"
-
-	"xbot/config"
 )
 
 // UILocale holds all UI strings for a given language.
@@ -538,56 +535,10 @@ func LocaleZH() *UILocale {
 		},
 		SettingsSchema: []SettingDefinition{
 
-			{
-				Key: "vanguard_model", Label: "Vanguard 模型", Description: "SubAgent 的高强度模型等级映射",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			{
-				Key: "balance_model", Label: "Balance 模型", Description: "SubAgent 的均衡模型等级映射",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			{
-				Key: "swift_model", Label: "Swift 模型", Description: "SubAgent 的轻量模型等级映射",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			// Subscription management entry (display-only, triggers quick switch)
-			{Key: "subscription_manage", Label: "📦 订阅管理", Type: SettingTypeText, Category: "LLM"},
-			{
-				Key: "compression_threshold", Label: "压缩阈值", Description: "上下文压缩触发阈值，占最大上下文的比例（默认 0.9）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
-			},
-			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "网络搜索服务密钥（个人配置，优先使用；留空则使用全局配置）",
-				Type: SettingTypePassword, Category: "Agent",
-			},
-			{
-				Key: "context_mode", Label: "上下文模式", Description: "控制上下文管理策略",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "auto",
-				Options: []SettingOption{
-					{Label: "自动（默认）", Value: "auto"},
-					{Label: "手动压缩", Value: "manual"},
-					{Label: "不压缩", Value: "none"},
-				},
-			},
-			{
-				Key: "max_iterations", Label: "最大迭代次数", Description: "单次对话最大工具调用迭代次数（默认 2000）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "2000",
-			},
-			{
-				Key: "max_concurrency", Label: "最大并发数", Description: "同时处理的最大请求数（默认 3）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
-			},
-			{
-				Key: "max_context_tokens", Label: "最大上下文 Token", Description: fmt.Sprintf("上下文最大 token 数（默认 %d）", config.DefaultMaxContextTokens),
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
-			},
-			{
-				Key: "max_output_tokens", Label: "最大输出 Token", Description: fmt.Sprintf("单次回复最大 token 数（默认 %d）", config.DefaultMaxOutputTokens),
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
-			},
+			// ── 模型与推理（用户级 + 订阅入口）──
 			{
 				Key: "thinking_mode", Label: "思考模式", Description: "模型推理/思维链模式（默认自动）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "",
+				Type: SettingTypeSelect, Category: "模型与推理", DefaultValue: "",
 				Options: []SettingOption{
 					{Label: "自动", Value: ""},
 					{Label: "开启", Value: "enabled"},
@@ -598,24 +549,24 @@ func LocaleZH() *UILocale {
 				},
 			},
 			{
-				Key: "api_type", Label: "API 类型", Description: "OpenAI API 端点类型（默认 Chat Completions）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "chat_completions",
-				Options: []SettingOption{
-					{Label: "Chat Completions（默认）", Value: "chat_completions"},
-					{Label: "Responses API", Value: "responses"},
-				},
+				Key: "vanguard_model", Label: "Vanguard 模型", Description: "SubAgent 的高强度模型等级映射",
+				Type: SettingTypeCombo, Category: "模型与推理",
 			},
 			{
-				Key: "enable_auto_compress", Label: "自动压缩", Description: "上下文过长时自动压缩（默认开启）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
-				Options: []SettingOption{
-					{Label: "开启", Value: "true"},
-					{Label: "关闭", Value: "false"},
-				},
+				Key: "balance_model", Label: "Balance 模型", Description: "SubAgent 的均衡模型等级映射",
+				Type: SettingTypeCombo, Category: "模型与推理",
 			},
+			{
+				Key: "swift_model", Label: "Swift 模型", Description: "SubAgent 的轻量模型等级映射",
+				Type: SettingTypeCombo, Category: "模型与推理",
+			},
+			// Subscription management entry (display-only, triggers quick switch)
+			{Key: "subscription_manage", Label: "📦 订阅管理", Type: SettingTypeText, Category: "模型与推理"},
+
+			// ── Agent 行为（用户级）──
 			{
 				Key: "enable_stream", Label: "流式输出", Description: "使用流式 API 调用 LLM（默认开启）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
+				Type: SettingTypeSelect, Category: "Agent 行为", DefaultValue: "true",
 				Options: []SettingOption{
 					{Label: "开启", Value: "true"},
 					{Label: "关闭", Value: "false"},
@@ -623,22 +574,36 @@ func LocaleZH() *UILocale {
 			},
 			{
 				Key: "enable_masking", Label: "工具结果遮蔽", Description: "上下文较大时自动遮蔽旧工具结果以释放空间（默认开启）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
+				Type: SettingTypeSelect, Category: "Agent 行为", DefaultValue: "true",
 				Options: []SettingOption{
 					{Label: "开启", Value: "true"},
 					{Label: "关闭", Value: "false"},
 				},
 			},
 			{
-				Key: "language", Label: "语言", Description: "Agent 回复使用的语言",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "",
+				Key: "compression_threshold", Label: "压缩阈值", Description: "上下文压缩触发阈值，占最大上下文的比例（默认 0.9）",
+				Type: SettingTypeNumber, Category: "Agent 行为", DefaultValue: "0.9",
+			},
+			{
+				Key: "context_mode", Label: "上下文模式", Description: "控制上下文管理策略",
+				Type: SettingTypeSelect, Category: "Agent 行为", DefaultValue: "auto",
 				Options: []SettingOption{
-					{Label: "跟随 Prompt（默认）", Value: ""},
-					{Label: "English", Value: "en"},
-					{Label: "中文", Value: "zh"},
-					{Label: "日本語", Value: "ja"},
+					{Label: "自动（默认）", Value: "auto"},
+					{Label: "手动压缩", Value: "manual"},
+					{Label: "不压缩", Value: "none"},
 				},
 			},
+			{
+				Key: "max_iterations", Label: "最大迭代次数", Description: "单次对话最大工具调用迭代次数（默认 2000）",
+				Type: SettingTypeNumber, Category: "Agent 行为", DefaultValue: "2000",
+			},
+			{
+				Key: "max_concurrency", Label: "最大并发数", Description: "同时处理的最大请求数（默认 3）",
+				Type: SettingTypeNumber, Category: "Agent 行为", DefaultValue: "3",
+			},
+			{Key: "auto_worktree", Label: "自动 Worktree 隔离", Description: "每个会话自动创建独立的 git worktree，避免多 agent 同时修改同一文件。需要 git 仓库。", Type: SettingTypeToggle, Category: "Agent 行为", DefaultValue: "false"},
+
+			// ── 外观（用户级）──
 			{
 				Key: "theme", Label: "配色", Description: "CLI 界面配色方案",
 				Type: SettingTypeSelect, Category: "外观", DefaultValue: "midnight",
@@ -654,14 +619,29 @@ func LocaleZH() *UILocale {
 					{Label: "catppuccin:摩卡", Value: "catppuccin"},
 				},
 			},
-			// Permission control
+			{
+				Key: "language", Label: "语言", Description: "Agent 回复使用的语言",
+				Type: SettingTypeSelect, Category: "外观", DefaultValue: "",
+				Options: []SettingOption{
+					{Label: "跟随 Prompt（默认）", Value: ""},
+					{Label: "English", Value: "en"},
+					{Label: "中文", Value: "zh"},
+					{Label: "日本語", Value: "ja"},
+				},
+			},
+
+			// ── 服务与密钥（用户级）──
+			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "网络搜索服务密钥（个人配置，优先使用；留空则使用全局配置）",
+				Type: SettingTypePassword, Category: "服务与密钥",
+			},
+			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "服务与密钥"},
+
+			// ── 权限（全局级）──
 			{Key: "default_user", Label: "默认执行用户", Description: "LLM 可以免审批以此用户执行工具。留空则只能以当前进程用户执行（最安全）。需配置 NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
 			{Key: "privileged_user", Label: "特权用户", Description: "LLM 以此用户执行时需要人工审批。留空则禁止提权。需配置 NOPASSWD sudoers", Type: SettingTypeText, Category: "权限"},
-			// Runner panel entry (display-only, triggers panel switch)
-			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "Runner"},
-			// Experimental features
-			{Key: "auto_worktree", Label: "自动 Worktree 隔离", Description: "每个会话自动创建独立的 git worktree，避免多 agent 同时修改同一文件。需要 git 仓库。", Type: SettingTypeToggle, Category: "实验性", DefaultValue: "false"},
-			// Danger zone entry (display-only, triggers panel switch)
+
+			// ── 危险（动作）──
 			{Key: "danger_zone", Label: "⚠️ 危险区 — 清空记忆", Type: SettingTypeText, Category: "危险"},
 		},
 	}
@@ -971,57 +951,10 @@ func localeEN() *UILocale {
 			},
 		},
 		SettingsSchema: []SettingDefinition{
-
-			{
-				Key: "vanguard_model", Label: "Vanguard Model", Description: "SubAgent tier mapping for high-power tasks",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			{
-				Key: "balance_model", Label: "Balance Model", Description: "SubAgent tier mapping for balanced tasks",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			{
-				Key: "swift_model", Label: "Swift Model", Description: "SubAgent tier mapping for lightweight tasks",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			// Subscription management entry (display-only, triggers quick switch)
-			{Key: "subscription_manage", Label: "📦 Subscriptions", Type: SettingTypeText, Category: "LLM"},
-			{
-				Key: "compression_threshold", Label: "Compression Threshold", Description: "Context compression trigger ratio (default 0.9)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
-			},
-			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web search API key (personal config; falls back to global config if empty)",
-				Type: SettingTypePassword, Category: "Agent",
-			},
-			{
-				Key: "context_mode", Label: "Context Mode", Description: "Context management strategy",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "auto",
-				Options: []SettingOption{
-					{Label: "Auto (default)", Value: "auto"},
-					{Label: "Manual compress", Value: "manual"},
-					{Label: "No compress", Value: "none"},
-				},
-			},
-			{
-				Key: "max_iterations", Label: "Max Iterations", Description: "Max tool call iterations per conversation (default 2000)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "2000",
-			},
-			{
-				Key: "max_concurrency", Label: "Max Concurrency", Description: "Max concurrent requests (default 3)",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
-			},
-			{
-				Key: "max_context_tokens", Label: "Max Context Tokens", Description: fmt.Sprintf("Max context token count (default %d)", config.DefaultMaxContextTokens),
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
-			},
-			{
-				Key: "max_output_tokens", Label: "Max Output Tokens", Description: fmt.Sprintf("Max tokens per response (default %d)", config.DefaultMaxOutputTokens),
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
-			},
+			// ── Model & Reasoning (user-level + subscription entry) ──
 			{
 				Key: "thinking_mode", Label: "Thinking Mode", Description: "Model reasoning/thinking chain mode (default: auto)",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "",
+				Type: SettingTypeSelect, Category: "Model & Reasoning", DefaultValue: "",
 				Options: []SettingOption{
 					{Label: "Auto", Value: ""},
 					{Label: "Enabled", Value: "enabled"},
@@ -1032,24 +965,24 @@ func localeEN() *UILocale {
 				},
 			},
 			{
-				Key: "api_type", Label: "API Type", Description: "OpenAI API endpoint type (default: Chat Completions)",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "chat_completions",
-				Options: []SettingOption{
-					{Label: "Chat Completions (default)", Value: "chat_completions"},
-					{Label: "Responses API", Value: "responses"},
-				},
+				Key: "vanguard_model", Label: "Vanguard Model", Description: "SubAgent tier mapping for high-power tasks",
+				Type: SettingTypeCombo, Category: "Model & Reasoning",
 			},
 			{
-				Key: "enable_auto_compress", Label: "Auto Compress", Description: "Automatically compress when context is too long (on by default)",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
-				Options: []SettingOption{
-					{Label: "On", Value: "true"},
-					{Label: "Off", Value: "false"},
-				},
+				Key: "balance_model", Label: "Balance Model", Description: "SubAgent tier mapping for balanced tasks",
+				Type: SettingTypeCombo, Category: "Model & Reasoning",
 			},
+			{
+				Key: "swift_model", Label: "Swift Model", Description: "SubAgent tier mapping for lightweight tasks",
+				Type: SettingTypeCombo, Category: "Model & Reasoning",
+			},
+			// Subscription management entry (display-only, triggers quick switch)
+			{Key: "subscription_manage", Label: "📦 Subscriptions", Type: SettingTypeText, Category: "Model & Reasoning"},
+
+			// ── Agent behavior (user-level) ──
 			{
 				Key: "enable_stream", Label: "Stream Output", Description: "Use streaming API for LLM calls (on by default)",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
+				Type: SettingTypeSelect, Category: "Agent behavior", DefaultValue: "true",
 				Options: []SettingOption{
 					{Label: "On", Value: "true"},
 					{Label: "Off", Value: "false"},
@@ -1057,22 +990,36 @@ func localeEN() *UILocale {
 			},
 			{
 				Key: "enable_masking", Label: "Tool Result Masking", Description: "Automatically mask old tool results to free context space (on by default)",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
+				Type: SettingTypeSelect, Category: "Agent behavior", DefaultValue: "true",
 				Options: []SettingOption{
 					{Label: "On", Value: "true"},
 					{Label: "Off", Value: "false"},
 				},
 			},
 			{
-				Key: "language", Label: "Language", Description: "Language for agent replies",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "",
+				Key: "compression_threshold", Label: "Compression Threshold", Description: "Context compression trigger ratio (default 0.9)",
+				Type: SettingTypeNumber, Category: "Agent behavior", DefaultValue: "0.9",
+			},
+			{
+				Key: "context_mode", Label: "Context Mode", Description: "Context management strategy",
+				Type: SettingTypeSelect, Category: "Agent behavior", DefaultValue: "auto",
 				Options: []SettingOption{
-					{Label: "Follow prompt (default)", Value: ""},
-					{Label: "English", Value: "en"},
-					{Label: "中文", Value: "zh"},
-					{Label: "日本語", Value: "ja"},
+					{Label: "Auto (default)", Value: "auto"},
+					{Label: "Manual compress", Value: "manual"},
+					{Label: "No compress", Value: "none"},
 				},
 			},
+			{
+				Key: "max_iterations", Label: "Max Iterations", Description: "Max tool call iterations per conversation (default 2000)",
+				Type: SettingTypeNumber, Category: "Agent behavior", DefaultValue: "2000",
+			},
+			{
+				Key: "max_concurrency", Label: "Max Concurrency", Description: "Max concurrent requests (default 3)",
+				Type: SettingTypeNumber, Category: "Agent behavior", DefaultValue: "3",
+			},
+			{Key: "auto_worktree", Label: "Auto Worktree Isolation", Description: "Automatically create an isolated git worktree for each session, preventing multi-agent file conflicts. Requires a git repository.", Type: SettingTypeToggle, Category: "Agent behavior", DefaultValue: "false"},
+
+			// ── Appearance (user-level) ──
 			{
 				Key: "theme", Label: "Theme", Description: "CLI color scheme",
 				Type: SettingTypeSelect, Category: "Appearance", DefaultValue: "midnight",
@@ -1088,14 +1035,29 @@ func localeEN() *UILocale {
 					{Label: "catppuccin:Mocha", Value: "catppuccin"},
 				},
 			},
-			// Permission control
+			{
+				Key: "language", Label: "Language", Description: "Language for agent replies",
+				Type: SettingTypeSelect, Category: "Appearance", DefaultValue: "",
+				Options: []SettingOption{
+					{Label: "Follow prompt (default)", Value: ""},
+					{Label: "English", Value: "en"},
+					{Label: "中文", Value: "zh"},
+					{Label: "日本語", Value: "ja"},
+				},
+			},
+
+			// ── Services & Keys (user-level) ──
+			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web search API key (personal config; falls back to global config if empty)",
+				Type: SettingTypePassword, Category: "Services & Keys",
+			},
+			{Key: "runner_panel", Label: "🔧 Runner Manager", Type: SettingTypeText, Category: "Services & Keys"},
+
+			// ── Permissions (global-level) ──
 			{Key: "default_user", Label: "Default User", Description: "OS user for LLM tool execution without approval. Leave empty to restrict to current process user (safest). Requires NOPASSWD sudoers", Type: SettingTypeText, Category: "Permissions"},
-			{Key: "privileged_user", Label: "Privileged User", Description: "OS user that requires human approval when used by LLM. Leave empty to block privilege escalation. Requires NOPASSWD sudoers", Type: SettingTypeText, Category: "Permissions"},
-			// Runner panel entry (display-only, triggers panel switch)
-			{Key: "runner_panel", Label: "🔧 Runner Manager", Type: SettingTypeText, Category: "Runner"},
-			// Experimental features
-			{Key: "auto_worktree", Label: "Auto Worktree Isolation", Description: "Automatically create an isolated git worktree for each session, preventing multi-agent file conflicts. Requires a git repository.", Type: SettingTypeToggle, Category: "Experimental", DefaultValue: "false"},
-			// Danger zone entry (display-only, triggers panel switch)
+			{Key: "privileged_user", Label: "Privileged User", Description: "OS user that require human approval when used by LLM. Leave empty to block privilege escalation. Requires NOPASSWD sudoers", Type: SettingTypeText, Category: "Permissions"},
+
+			// ── Danger (action) ──
 			{Key: "danger_zone", Label: "⚠️ Danger Zone — Clear Memory", Type: SettingTypeText, Category: "Danger"},
 		},
 	}
@@ -1405,57 +1367,10 @@ func localeJA() *UILocale {
 			},
 		},
 		SettingsSchema: []SettingDefinition{
-
-			{
-				Key: "vanguard_model", Label: "Vanguard モデル", Description: "SubAgent の高強度タスク向けモデル階層マッピング",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			{
-				Key: "balance_model", Label: "Balance モデル", Description: "SubAgent のバランスタスク向けモデル階層マッピング",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			{
-				Key: "swift_model", Label: "Swift モデル", Description: "SubAgent の軽量タスク向けモデル階層マッピング",
-				Type: SettingTypeCombo, Category: "LLM",
-			},
-			// Subscription management entry (display-only, triggers quick switch)
-			{Key: "subscription_manage", Label: "📦 サブスクリプション管理", Type: SettingTypeText, Category: "LLM"},
-			{
-				Key: "compression_threshold", Label: "圧縮閾値", Description: "コンテキスト圧縮のトリガー比率（デフォルト 0.9）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "0.9",
-			},
-			{
-				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web検索APIキー（個人設定、空の場合はグローバル設定にフォールバック）",
-				Type: SettingTypePassword, Category: "Agent",
-			},
-			{
-				Key: "context_mode", Label: "コンテキストモード", Description: "コンテキスト管理戦略",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "auto",
-				Options: []SettingOption{
-					{Label: "自動（デフォルト）", Value: "auto"},
-					{Label: "手動圧縮", Value: "manual"},
-					{Label: "圧縮なし", Value: "none"},
-				},
-			},
-			{
-				Key: "max_iterations", Label: "最大反復数", Description: "1回の会話の最大ツール呼び出し反復数（デフォルト 2000）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "2000",
-			},
-			{
-				Key: "max_concurrency", Label: "最大同時実行数", Description: "同時に処理する最大リクエスト数（デフォルト 3）",
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: "3",
-			},
-			{
-				Key: "max_context_tokens", Label: "最大コンテキストトークン", Description: fmt.Sprintf("コンテキストの最大トークン数（デフォルト %d）", config.DefaultMaxContextTokens),
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxContextTokens),
-			},
-			{
-				Key: "max_output_tokens", Label: "最大出力トークン", Description: fmt.Sprintf("1回の応答の最大トークン数（デフォルト %d）", config.DefaultMaxOutputTokens),
-				Type: SettingTypeNumber, Category: "Agent", DefaultValue: fmt.Sprintf("%d", config.DefaultMaxOutputTokens),
-			},
+			// ── モデルと推論（ユーザーレベル + サブスクリプション入口）──
 			{
 				Key: "thinking_mode", Label: "思考モード", Description: "モデルの推論/思考チェーンモード（デフォルト: 自動）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "",
+				Type: SettingTypeSelect, Category: "モデルと推論", DefaultValue: "",
 				Options: []SettingOption{
 					{Label: "自動", Value: ""},
 					{Label: "有効", Value: "enabled"},
@@ -1466,24 +1381,24 @@ func localeJA() *UILocale {
 				},
 			},
 			{
-				Key: "api_type", Label: "API タイプ", Description: "OpenAI API エンドポイントタイプ（デフォルト: Chat Completions）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "chat_completions",
-				Options: []SettingOption{
-					{Label: "Chat Completions（デフォルト）", Value: "chat_completions"},
-					{Label: "Responses API", Value: "responses"},
-				},
+				Key: "vanguard_model", Label: "Vanguard モデル", Description: "SubAgent の高強度タスク向けモデル階層マッピング",
+				Type: SettingTypeCombo, Category: "モデルと推論",
 			},
 			{
-				Key: "enable_auto_compress", Label: "自動圧縮", Description: "コンテキストが長すぎる場合に自動圧縮（デフォルト: オン）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
-				Options: []SettingOption{
-					{Label: "オン", Value: "true"},
-					{Label: "オフ", Value: "false"},
-				},
+				Key: "balance_model", Label: "Balance モデル", Description: "SubAgent のバランスタスク向けモデル階層マッピング",
+				Type: SettingTypeCombo, Category: "モデルと推論",
 			},
+			{
+				Key: "swift_model", Label: "Swift モデル", Description: "SubAgent の軽量タスク向けモデル階層マッピング",
+				Type: SettingTypeCombo, Category: "モデルと推論",
+			},
+			// Subscription management entry (display-only, triggers quick switch)
+			{Key: "subscription_manage", Label: "📦 サブスクリプション管理", Type: SettingTypeText, Category: "モデルと推論"},
+
+			// ── Agent 動作（ユーザーレベル）──
 			{
 				Key: "enable_stream", Label: "ストリーム出力", Description: "ストリーミング API で LLM を呼び出し（デフォルト: オン）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
+				Type: SettingTypeSelect, Category: "Agent 動作", DefaultValue: "true",
 				Options: []SettingOption{
 					{Label: "オン", Value: "true"},
 					{Label: "オフ", Value: "false"},
@@ -1491,22 +1406,36 @@ func localeJA() *UILocale {
 			},
 			{
 				Key: "enable_masking", Label: "ツール結果マスキング", Description: "コンテキストが大きい場合に古いツール結果を自動マスキング（デフォルト: オン）",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "true",
+				Type: SettingTypeSelect, Category: "Agent 動作", DefaultValue: "true",
 				Options: []SettingOption{
 					{Label: "オン", Value: "true"},
 					{Label: "オフ", Value: "false"},
 				},
 			},
 			{
-				Key: "language", Label: "言語", Description: "エージェントの返信言語",
-				Type: SettingTypeSelect, Category: "Agent", DefaultValue: "",
+				Key: "compression_threshold", Label: "圧縮閾値", Description: "コンテキスト圧縮のトリガー比率（デフォルト 0.9）",
+				Type: SettingTypeNumber, Category: "Agent 動作", DefaultValue: "0.9",
+			},
+			{
+				Key: "context_mode", Label: "コンテキストモード", Description: "コンテキスト管理戦略",
+				Type: SettingTypeSelect, Category: "Agent 動作", DefaultValue: "auto",
 				Options: []SettingOption{
-					{Label: "プロンプトに従う（デフォルト）", Value: ""},
-					{Label: "English", Value: "en"},
-					{Label: "中文", Value: "zh"},
-					{Label: "日本語", Value: "ja"},
+					{Label: "自動（デフォルト）", Value: "auto"},
+					{Label: "手動圧縮", Value: "manual"},
+					{Label: "圧縮なし", Value: "none"},
 				},
 			},
+			{
+				Key: "max_iterations", Label: "最大反復数", Description: "1回の会話の最大ツール呼び出し反復数（デフォルト 2000）",
+				Type: SettingTypeNumber, Category: "Agent 動作", DefaultValue: "2000",
+			},
+			{
+				Key: "max_concurrency", Label: "最大同時実行数", Description: "同時に処理する最大リクエスト数（デフォルト 3）",
+				Type: SettingTypeNumber, Category: "Agent 動作", DefaultValue: "3",
+			},
+			{Key: "auto_worktree", Label: "自動 Worktree 分離", Description: "各セッションに独立した git worktree を自動作成し、マルチエージェントのファイル競合を防止します。git リポジトリが必要です。", Type: SettingTypeToggle, Category: "Agent 動作", DefaultValue: "false"},
+
+			// ── 外観（ユーザーレベル）──
 			{
 				Key: "theme", Label: "テーマ", Description: "CLI カラースキーム",
 				Type: SettingTypeSelect, Category: "外観", DefaultValue: "midnight",
@@ -1522,14 +1451,29 @@ func localeJA() *UILocale {
 					{Label: "catppuccin:モカ", Value: "catppuccin"},
 				},
 			},
-			// Permission control
+			{
+				Key: "language", Label: "言語", Description: "エージェントの返信言語",
+				Type: SettingTypeSelect, Category: "外観", DefaultValue: "",
+				Options: []SettingOption{
+					{Label: "プロンプトに従う（デフォルト）", Value: ""},
+					{Label: "English", Value: "en"},
+					{Label: "中文", Value: "zh"},
+					{Label: "日本語", Value: "ja"},
+				},
+			},
+
+			// ── サービスとキー（ユーザーレベル）──
+			{
+				Key: "tavily_api_key", Label: "Tavily API Key", Description: "Web検索APIキー（個人設定、空の場合はグローバル設定にフォールバック）",
+				Type: SettingTypePassword, Category: "サービスとキー",
+			},
+			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "サービスとキー"},
+
+			// ── 権限（グローバルレベル）──
 			{Key: "default_user", Label: "デフォルトユーザー", Description: "LLMが承認なしでツールを実行できるOSユーザー。空の場合は現在のプロセスユーザーに制限（最も安全）。NOPASSWD sudoersが必要", Type: SettingTypeText, Category: "権限"},
 			{Key: "privileged_user", Label: "特権ユーザー", Description: "LLMが使用時に人間の承認が必要なOSユーザー。空の場合は権限昇格を禁止。NOPASSWD sudoersが必要", Type: SettingTypeText, Category: "権限"},
-			// Runner panel entry (display-only, triggers panel switch)
-			{Key: "runner_panel", Label: "🔧 Runner 管理", Type: SettingTypeText, Category: "Runner"},
-			// Experimental features
-			{Key: "auto_worktree", Label: "自動 Worktree 分離", Description: "各セッションに独立した git worktree を自動作成し、マルチエージェントのファイル競合を防止します。git リポジトリが必要です。", Type: SettingTypeToggle, Category: "実験的", DefaultValue: "false"},
-			// Danger zone entry (display-only, triggers panel switch)
+
+			// ── 危険（アクション）──
 			{Key: "danger_zone", Label: "⚠️ 危険エリア — 記憶クリア", Type: SettingTypeText, Category: "危険"},
 		},
 	}

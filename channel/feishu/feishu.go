@@ -56,19 +56,23 @@ type FeishuConfig struct {
 // SettingsCallbacks holds the callback functions for settings card interaction.
 // Injected from Agent to decouple channel from agent packages.
 type SettingsCallbacks struct {
-	LLMList      func(senderID string) ([]string, string)                                                                // (models, currentModel)
-	LLMSet       func(senderID, model string) error                                                                      // switch model
+	LLMList      func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)                                      // (allEntries, currentEntry)
+	LLMSet       func(senderID, subID, model string) error                                                               // switch model
 	LLMGetConfig func(senderID string) (provider, baseURL, model string, ok bool)                                        // user config (no key)
 	LLMSetConfig func(senderID, provider, baseURL, apiKey, model string, maxOutputTokens int, thinkingMode string) error // create/update config
 	LLMDelete    func(senderID string) error                                                                             // revert to global
-	// LLMGetMaxContext 获取用户当前 max_context 设置（0 = 使用默认值）
-	LLMGetMaxContext func(senderID string) int
-	// LLMSetMaxContext 设置用户 max_context
-	LLMSetMaxContext func(senderID string, maxContext int) error
-	// LLMGetMaxOutputTokens 获取用户当前 max_output_tokens 设置（0 = 使用默认值 8192）
-	LLMGetMaxOutputTokens func(senderID string) int
-	// LLMSetMaxOutputTokens 设置用户 max_output_tokens
-	LLMSetMaxOutputTokens func(senderID string, maxTokens int) error
+	// LLMGetMaxContext 获取 (subID, model) 对应的 max_context 设置（0 = 使用默认值）。
+	// subID/model 为空时回退到会话级解析（兼容无模型选择器的旧 UI）。
+	LLMGetMaxContext func(senderID, subID, model string) int
+	// LLMSetMaxContext 设置 (subID, model) 对应的 max_context。
+	// subID/model 为空时回退到会话级解析。
+	LLMSetMaxContext func(senderID, subID, model string, maxContext int) error
+	// LLMGetMaxOutputTokens 获取 (subID, model) 对应的 max_output_tokens（0 = 使用默认值 8192）。
+	// subID/model 为空时回退到会话级解析。
+	LLMGetMaxOutputTokens func(senderID, subID, model string) int
+	// LLMSetMaxOutputTokens 设置 (subID, model) 对应的 max_output_tokens。
+	// subID/model 为空时回退到会话级解析。
+	LLMSetMaxOutputTokens func(senderID, subID, model string, maxTokens int) error
 	// LLMGetThinkingMode 获取用户当前 thinking_mode（"" = auto）
 	LLMGetThinkingMode func(senderID string) string
 	// LLMSetThinkingMode 设置用户 thinking_mode
@@ -951,6 +955,7 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 	if content == "" {
 		return nil
 	}
+	l.WithField("content_preview", truncateForLog(content, 100)).Debug("Feishu: parsed message content")
 
 	// 剥离 @mention 占位符（群聊中 @bot 后内容带 @_user_N 前缀）
 	if msg.Mentions != nil {
@@ -3165,6 +3170,15 @@ func (f *FeishuChannel) isDuplicate(messageID string) bool {
 		f.processedOrder = trimmed
 	}
 	return false
+}
+
+// truncateForLog returns a truncated copy of s with max length n runes.
+func truncateForLog(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
 }
 
 // isAllowed 检查用户是否有权限

@@ -140,27 +140,44 @@ func registryCallbacks(ag *agent.Agent) channel.RegistryCallbacks {
 // llmCallbacks builds the shared LLM callback closures.
 func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
-		LLMList: func(senderID string) ([]string, string) {
-			llmClient, currentModel, _, _, _ := ag.LLMFactory().GetLLM(senderID)
-			if llmClient == nil {
-				return nil, currentModel
+		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
+			entries := ag.LLMFactory().ListAllModelEntriesForUser(senderID)
+			sub, model, err := ag.LLMFactory().ResolveActiveSubModel(senderID, "", "")
+			if err != nil || sub == nil {
+				return entries, protocol.ModelEntry{Model: model}
 			}
-			return llmClient.ListModels(), currentModel
+			return entries, protocol.ModelEntry{SubID: sub.ID, SubName: sub.Name, Model: model}
 		},
-		LLMSet: func(senderID, model string) error {
-			return ag.SetUserModel(senderID, model)
+		LLMSet: func(senderID, subID, model string) error {
+			return ag.SetUserModel(senderID, subID, model)
 		},
-		LLMGetMaxContext: func(senderID string) int {
-			return ag.GetUserMaxContext(senderID)
+		// MaxContext / MaxOutputTokens: when (subID, model) are provided
+		// (feishu model tab passes them from the model selector), write
+		// per-(subID, model) config directly. Empty pair (web, legacy)
+		// falls back to session-level resolution.
+		LLMGetMaxContext: func(senderID, subID, model string) int {
+			if subID != "" && model != "" {
+				return ag.GetUserMaxContextForSubModel(senderID, subID, model)
+			}
+			return ag.GetUserMaxContext(senderID, "", "")
 		},
-		LLMSetMaxContext: func(senderID string, maxContext int) error {
-			return ag.SetUserMaxContext(senderID, maxContext)
+		LLMSetMaxContext: func(senderID, subID, model string, maxContext int) error {
+			if subID != "" && model != "" {
+				return ag.SetUserMaxContextForSubModel(senderID, subID, model, maxContext)
+			}
+			return ag.SetUserMaxContext(senderID, "", "", maxContext)
 		},
-		LLMGetMaxOutputTokens: func(senderID string) int {
-			return ag.GetUserMaxOutputTokens(senderID)
+		LLMGetMaxOutputTokens: func(senderID, subID, model string) int {
+			if subID != "" && model != "" {
+				return ag.GetUserMaxOutputTokensForSubModel(senderID, subID, model)
+			}
+			return ag.GetUserMaxOutputTokens(senderID, "", "")
 		},
-		LLMSetMaxOutputTokens: func(senderID string, maxTokens int) error {
-			return ag.SetUserMaxOutputTokens(senderID, maxTokens)
+		LLMSetMaxOutputTokens: func(senderID, subID, model string, maxTokens int) error {
+			if subID != "" && model != "" {
+				return ag.SetUserMaxOutputTokensForSubModel(senderID, subID, model, maxTokens)
+			}
+			return ag.SetUserMaxOutputTokens(senderID, "", "", maxTokens)
 		},
 		LLMGetThinkingMode: func(senderID string) string {
 			return ag.GetUserThinkingMode(senderID)

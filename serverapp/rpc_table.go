@@ -301,13 +301,12 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	t["get_default_model"] = rpc0(func(ctx context.Context) string {
 		bizID := rpcBizID(ctx)
-		model := ""
-		if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
-			if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil && sub.Model != "" {
-				model = sub.Model
-			}
-		}
-		if model == "" {
+		// Model-first: resolve the user's last-used (sub, model) pair via
+		// the model-first chain (sessionMemo → tenants → user_default_model),
+		// NOT the subscription's default Model field.
+		_, model, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", "")
+		if err != nil || model == "" {
+			// Fallback to GetLLM resolution
 			_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
 			model = m
 		}
@@ -315,65 +314,13 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		return model
 	})
 	t["set_user_model"] = rpc1void(func(ctx context.Context, p struct {
+		SubID string `json:"sub_id"`
 		Model string `json:"model"`
 	}) error {
-		return h.Ag.SetUserModel(rpcBizID(ctx), p.Model)
-	})
-	t["switch_model"] = rpc1void(func(ctx context.Context, p struct {
-		Model  string `json:"model"`
-		ChatID string `json:"chat_id,omitempty"`
-	}) error {
-		bizID := rpcBizID(ctx)
-		log.WithField("sender_id", bizID).WithField("model", p.Model).WithField("chat_id", p.ChatID).Info("RPC switch_model")
-		if p.ChatID != "" {
-			// Per-session switch: resolve which subscription actually provides this
-			// model and pair (ownerSub, model) via SelectModel. The old behavior paired
-			// the DEFAULT subscription with whatever model name was picked — when the
-			// model belonged to a different subscription, ResolveLLM built a client from
-			// the default sub's baseURL/apiKey but requested the other sub's model name,
-			// causing 404 "model not supported by any configured account".
-			resolved := false
-			if owner, rerr := h.Ag.LLMFactory().ResolveSubscriptionForModel(bizID, p.Model); rerr == nil && owner != nil {
-				if serr := h.Ag.LLMFactory().SelectModel(bizID, p.ChatID, "cli", owner.ID, p.Model); serr != nil {
-					log.WithError(serr).Warn("RPC switch_model: SelectModel failed, falling back to default subscription")
-				} else {
-					resolved = true
-				}
-			}
-			if !resolved {
-				// Fallback: model not registered to any subscription (e.g. freshly typed,
-				// or subscription_models not yet populated). Preserve legacy behavior:
-				// pair with the default subscription and update the in-memory entry.
-				h.Ag.LLMFactory().SwitchModel(bizID, p.Model, p.ChatID)
-				if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
-					if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
-						if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
-							if err := sqlite.NewTenantService(h.Ag.MultiSession().DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, p.Model); err != nil {
-								log.WithError(err).Warn("RPC switch_model: SetTenantSubscription failed")
-							}
-						}
-					}
-				}
-			}
-		} else {
-			// User-level switch (no chatID): update the default subscription's model
-			// and keep user_default_model in sync for fresh-session resolution.
-			h.Ag.LLMFactory().SwitchModel(bizID, p.Model)
-			if subSvc := h.Ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
-				if sub, err := subSvc.GetDefault(bizID); err == nil && sub != nil {
-					if err := subSvc.SetModel(sub.ID, p.Model); err != nil {
-						log.WithError(err).Warn("RPC switch_model: SetModel failed")
-					}
-					if err := h.Ag.LLMFactory().SetUserDefaultModel(bizID, sub.ID, p.Model); err != nil {
-						log.WithError(err).Warn("RPC switch_model: SetUserDefaultModel failed")
-					}
-				}
-			}
-		}
-		return nil
+		return h.Ag.SetUserModel(rpcBizID(ctx), p.SubID, p.Model)
 	})
 	// select_model: model-first per-session selection. Sets (subID, model) for a
-	// chat via the new ResolveLLM/SelectModel path. Preferred over switch_model.
+	// chat via the ResolveLLM/SelectModel path.
 	t["select_model"] = rpc1void(func(ctx context.Context, p struct {
 		SubID  string `json:"sub_id"`
 		Model  string `json:"model"`
@@ -409,17 +356,17 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	}) error {
 		return h.Ag.LLMFactory().SetSubscriptionEnabled(p.SubID, p.Enabled)
 	})
-	t["get_user_max_context"] = rpc0(func(ctx context.Context) int { return h.Ag.GetUserMaxContext(rpcBizID(ctx)) })
+	t["get_user_max_context"] = rpc0(func(ctx context.Context) int { return h.Ag.GetUserMaxContext(rpcBizID(ctx), "", "") })
 	t["set_user_max_context"] = rpc1void(func(ctx context.Context, p struct {
 		MaxContext int `json:"max_context"`
 	}) error {
-		return h.Ag.SetUserMaxContext(rpcBizID(ctx), p.MaxContext)
+		return h.Ag.SetUserMaxContext(rpcBizID(ctx), "", "", p.MaxContext)
 	})
-	t["get_user_max_output_tokens"] = rpc0(func(ctx context.Context) int { return h.Ag.GetUserMaxOutputTokens(rpcBizID(ctx)) })
+	t["get_user_max_output_tokens"] = rpc0(func(ctx context.Context) int { return h.Ag.GetUserMaxOutputTokens(rpcBizID(ctx), "", "") })
 	t["set_user_max_output_tokens"] = rpc1void(func(ctx context.Context, p struct {
 		MaxTokens int `json:"max_tokens"`
 	}) error {
-		return h.Ag.SetUserMaxOutputTokens(rpcBizID(ctx), p.MaxTokens)
+		return h.Ag.SetUserMaxOutputTokens(rpcBizID(ctx), "", "", p.MaxTokens)
 	})
 	t["get_user_thinking_mode"] = rpc0(func(ctx context.Context) string { return h.Ag.GetUserThinkingMode(rpcBizID(ctx)) })
 	t["set_user_thinking_mode"] = rpc1void(func(ctx context.Context, p struct {
@@ -480,14 +427,6 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		h.Ag.LLMFactory().SetModelTiers(p)
 		return nil
 	}))
-	t["set_proxy_llm"] = rpc1void(func(ctx context.Context, p struct {
-		Model string `json:"model"`
-	}) error {
-		if h.Ag.LLMFactory() != nil {
-			h.Ag.LLMFactory().SwitchModel(rpcBizID(ctx), p.Model)
-		}
-		return nil
-	})
 	t["clear_proxy_llm"] = rpc0void(func(ctx context.Context) error { h.Ag.ClearProxyLLM(rpcBizID(ctx)); return nil })
 	t["set_global_max_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		MaxTokens int `json:"max_tokens"`

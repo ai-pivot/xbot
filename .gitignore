@@ -103,3 +103,4 @@ web/*.jpeg
 # Static binaries
 /xbot-cli-static
 /xbot-cli-static-riscv64
+core.*

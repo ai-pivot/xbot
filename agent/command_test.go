@@ -17,6 +17,7 @@ func TestCommandRegistry_Match(t *testing.T) {
 		{"/version", "/version"},
 		{"/help", "/help"},
 		{"/llm", "/llm"},
+		{"/llms", "/llms"},
 
 		// Case insensitive
 		{"/NEW", "/new"},
@@ -88,8 +89,8 @@ func TestCommandRegistry_Commands(t *testing.T) {
 	registerBuiltinCommands(r)
 
 	cmds := r.Commands()
-	if len(cmds) != 23 {
-		t.Errorf("Commands() returned %d commands, want 23", len(cmds))
+	if len(cmds) != 24 {
+		t.Errorf("Commands() returned %d commands, want 24", len(cmds))
 	}
 
 	// Verify all expected commands are registered
@@ -97,7 +98,7 @@ func TestCommandRegistry_Commands(t *testing.T) {
 	for _, cmd := range cmds {
 		names[cmd.Name()] = true
 	}
-	expected := []string{"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm", "/llm", "/models", "/set-model", "/compress", "/context", "!", "/publish", "/unpublish", "/browse", "/install", "/uninstall", "/my", "/settings", "/menu"}
+	expected := []string{"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm", "/llm", "/llms", "/models", "/set-model", "/compress", "/context", "!", "/publish", "/unpublish", "/browse", "/install", "/uninstall", "/my", "/settings", "/menu"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("Command %q not found in registry", name)
@@ -128,6 +129,7 @@ func TestCommandConcurrency(t *testing.T) {
 		"/version":  true,
 		"/help":     true,
 		"/llm":      true,
+		"/llms":     true,
 		"/models":   true,
 		"/prompt":   true,
 		"/context":  true,

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	ch "xbot/channel"
 
 	tea "charm.land/bubbletea/v2"
@@ -24,15 +25,9 @@ func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 	if nextModel == "" {
 		return
 	}
-	if m.llmSubscriber != nil {
-		if subID != "" {
-			if err := m.llmSubscriber.SelectModel(m.senderID, subID, nextModel, m.chatID); err != nil {
-				// Fall back to model-first resolution if the pinned subscription
-				// is no longer valid (disabled/removed between list render and click).
-				m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
-			}
-		} else {
-			m.llmSubscriber.SwitchModel(m.senderID, nextModel, m.chatID)
+	if m.llmSubscriber != nil && subID != "" {
+		if err := m.llmSubscriber.SelectModel(m.senderID, subID, nextModel, m.chatID); err != nil {
+			logrus.WithError(err).WithField("sub_id", subID).Warn("applyModelSwitch: SelectModel failed")
 		}
 	}
 	m.cachedModelName = nextModel

@@ -321,6 +321,12 @@ func (m *cliModel) saveSettings(values map[string]string) {
 				}
 				continue
 			}
+			// max_context_tokens is per-model (PerModelConfigs), already handled
+			// above via UpdatePerModelConfig. Never pass it to ApplySettings —
+			// that would call SetMaxContextTokens globally and contaminate all models.
+			if k == "max_context_tokens" {
+				continue
+			}
 			runtimeValues[k] = v
 		}
 		if llmCredsSaved {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"xbot/bus"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 
@@ -337,15 +338,20 @@ func TestHandleApprovalCardAction_RejectsWrongUser(t *testing.T) {
 
 func TestHandleSettingsAction_SetModel(t *testing.T) {
 	f := newTestFeishuChannel()
-	var setModel string
+	var setSubID, setModel string
 	f.SetSettingsCallbacks(SettingsCallbacks{
-		LLMSet:  func(senderID, model string) error { setModel = model; return nil },
-		LLMList: func(senderID string) ([]string, string) { return []string{"gpt-4", "claude-3"}, "claude-3" },
+		LLMSet: func(senderID, subID, model string) error { setSubID = subID; setModel = model; return nil },
+		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
+			return []protocol.ModelEntry{
+				{SubID: "sub1", SubName: "test", Model: "gpt-4"},
+				{SubID: "sub1", SubName: "test", Model: "claude-3"},
+			}, protocol.ModelEntry{SubID: "sub1", SubName: "test", Model: "claude-3"}
+		},
 	})
 
 	actionData := map[string]any{
 		"action_data":     `{"action":"settings_set_model"}`,
-		"selected_option": "claude-3",
+		"selected_option": "sub1|claude-3",
 	}
 	card, err := f.HandleSettingsAction(context.Background(), actionData, "user1", "chat1", "msg1")
 	if err != nil {
@@ -357,6 +363,9 @@ func TestHandleSettingsAction_SetModel(t *testing.T) {
 	}
 	if setModel != "claude-3" {
 		t.Errorf("expected model=claude-3, got %q", setModel)
+	}
+	if setSubID != "sub1" {
+		t.Errorf("expected subID=sub1, got %q", setSubID)
 	}
 }
 
@@ -967,7 +976,9 @@ func TestSettingsCard_NoUnsupportedV2Tags(t *testing.T) {
 	f := newTestFeishuChannel()
 	f.SetSettingsCallbacks(SettingsCallbacks{
 		ContextModeGet: func() string { return "phase1" },
-		LLMList:        func(senderID string) ([]string, string) { return []string{"gpt-4"}, "gpt-4" },
+		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
+			return []protocol.ModelEntry{{SubID: "sub1", Model: "gpt-4"}}, protocol.ModelEntry{SubID: "sub1", Model: "gpt-4"}
+		},
 		RegistryBrowse: func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
 			return []sqlite.SharedEntry{{ID: 1, Name: "test"}}, nil
 		},
@@ -1076,8 +1087,8 @@ func TestHandleSettingsAction_SetConcurrency_Error(t *testing.T) {
 func TestBuildSettingsCard_ModelTab_WithConcurrency(t *testing.T) {
 	f := newTestFeishuChannel()
 	f.SetSettingsCallbacks(SettingsCallbacks{
-		LLMList: func(senderID string) ([]string, string) {
-			return []string{"gpt-4", "gpt-4o"}, "gpt-4"
+		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
+			return []protocol.ModelEntry{{SubID: "sub1", Model: "gpt-4"}, {SubID: "sub1", Model: "gpt-4o"}}, protocol.ModelEntry{SubID: "sub1", Model: "gpt-4"}
 		},
 		LLMGetPersonalConcurrency: func(senderID string) int {
 			return 5

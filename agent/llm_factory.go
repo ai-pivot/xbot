@@ -406,11 +406,18 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 		f.hasCustomLLMCache.Store(senderID, true)
 		return true
 	}
+	// Check if the user has any personal (non-system) subscription with valid
+	// credentials. This replaces the old GetDefault check — there is no "default
+	// subscription" concept anymore; any configured subscription counts.
 	if f.subscriptionSvc != nil {
-		sub, err := f.subscriptionSvc.GetDefault(senderID)
-		if err == nil && sub != nil && sub.BaseURL != "" && sub.APIKey != "" {
-			f.hasCustomLLMCache.Store(senderID, true)
-			return true
+		subs, err := f.subscriptionSvc.List(senderID)
+		if err == nil {
+			for _, sub := range subs {
+				if !sub.IsSystem && sub.BaseURL != "" && sub.APIKey != "" {
+					f.hasCustomLLMCache.Store(senderID, true)
+					return true
+				}
+			}
 		}
 	}
 	f.hasCustomLLMCache.Store(senderID, false)
@@ -1106,6 +1113,77 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 	return client, model, f.resolveSubContextFor(sub.ID, model), thinking, maxOut
 }
 
+// ResolveActiveSubModel returns the subscription and model the given session is
+// currently using, mirroring ResolveLLM's resolution chain (sessionMemo →
+// tenants table → user_default_model → legacy GetDefault fallback) but WITHOUT
+// materializing or caching an LLM client. It is the model-first way to identify
+// a model — by the (subscription, model) pair — and replaces the legacy
+// "default subscription" (GetDefault) lookup used by per-model config setters
+// (max_context / max_output_tokens). Per-model config is model-scoped (stored
+// under (subID, model)), so it must target the (sub, model) the user is
+// actually interacting with in this session, not the user's default
+// subscription's default model. When chatID is empty, resolution falls to user
+// level (user_default_model, then legacy default subscription) — still
+// model-first via the user_default_model table rather than subscriptions'
+// is_default projection.
+func (f *LLMFactory) ResolveActiveSubModel(senderID, chatID, channel string) (*sqlite.LLMSubscription, string, error) {
+	if f.subscriptionSvc == nil {
+		return nil, "", fmt.Errorf("ResolveActiveSubModel: subscription service unavailable")
+	}
+	key := senderID
+	if chatID != "" {
+		key = chatKey(senderID, chatID)
+	}
+	f.mu.RLock()
+	memo := f.sessionMemo[key]
+	f.mu.RUnlock()
+	if memo != nil {
+		if sub := f.lookupSub(memo.subID); sub != nil {
+			return sub, memo.model, nil
+		}
+	}
+	subID, model := "", ""
+	if chatID != "" && f.tenantSvc != nil {
+		subID, model, _ = f.tenantSvc.GetTenantSubscription(channel, chatID)
+	}
+	if subID == "" {
+		if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
+			subID = udm.SubscriptionID
+			model = udm.Model
+		}
+	}
+	// Legacy fallback when no session/user-level (sub,model) is bound: the
+	// user's default subscription. This is the only path that still consults
+	// GetDefault, kept for boot/first-run before any model is chosen.
+	if subID == "" {
+		sub, err := f.subscriptionSvc.GetDefault(senderID)
+		if err != nil {
+			return nil, "", fmt.Errorf("ResolveActiveSubModel: get default subscription: %w", err)
+		}
+		if sub == nil {
+			return nil, "", fmt.Errorf("ResolveActiveSubModel: no active subscription for user %s", senderID)
+		}
+		if model == "" {
+			model = sub.Model
+		}
+		if model == "" {
+			model = f.PickDefaultModelForSub(sub)
+		}
+		return sub, model, nil
+	}
+	sub := f.lookupSub(subID)
+	if sub == nil {
+		return nil, "", fmt.Errorf("ResolveActiveSubModel: subscription %s not found", subID)
+	}
+	if model == "" {
+		model = sub.Model
+	}
+	if model == "" {
+		model = f.PickDefaultModelForSub(sub)
+	}
+	return sub, model, nil
+}
+
 // SelectModel sets the per-session (subscription, model) for a chat and
 // persists it to the tenants table. Validates the model is enabled when a
 // subscription_models row exists for it. Invalidates the session memo so the
@@ -1135,6 +1213,13 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 	// Invalidate the session memo (and any user-level memo) so ResolveLLM re-reads.
 	f.invalidateMemo(senderID, chatID)
 	f.hasCustomLLMCache.Store(senderID, true)
+	// Update "last used model" (user_default_model repurposed) so new sessions
+	// inherit this (sub, model) pair. This is NOT "setting a default subscription" —
+	// the table now serves as last-used-model storage for session inheritance.
+	if err := f.subscriptionSvc.SetUserDefaultModel(senderID, subID, model); err != nil {
+		// Non-fatal: log and continue. New sessions will fall back to system subscription.
+		log.WithError(err).Warn("SelectModel: failed to update last-used model")
+	}
 	return nil
 }
 
@@ -1144,7 +1229,7 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 // return the subscription whose endpoint actually serves it, so the agent pairs
 // the right credentials with the model name.
 //
-// Search order (first match wins, default subscription preferred when tied):
+// Search order (first match wins, system subscription preferred when tied):
 //  1. subscription_models rows with Enabled=true for each subscription.
 //  2. Each subscription's CachedModels (API-discovered list) and sub.Model.
 //
@@ -1166,7 +1251,7 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 	if len(subs) == 0 {
 		return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscriptions for %s", senderID)
 	}
-	// find returns the subscription for the model, preferring the default sub.
+	// find returns the subscription for the model, preferring the system subscription.
 	// matchFn reports whether a subscription provides the model.
 	find := func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
 		var fallback *sqlite.LLMSubscription
@@ -1178,7 +1263,9 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 			if !matchFn(sub) {
 				continue
 			}
-			if sub.IsDefault {
+			// No "default subscription" concept — prefer system subscription,
+			// then first-enabled by creation order.
+			if sub.IsSystem {
 				return sub
 			}
 			if fallback == nil {
@@ -1485,15 +1572,40 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 	return result
 }
 
+// RefreshResult records the outcome of refreshing one subscription's model list.
+// Surfaced to the user via /models so they can see WHY a subscription's models
+// are missing — previously the failure was Warn-level log only, invisible in chat.
+type RefreshResult struct {
+	SubName    string // display name (may be empty for system sub)
+	SubID      string
+	IsSystem   bool
+	Status     string // "ok" | "fail" | "skipped" | "noloader" | "noclient"
+	ModelCount int    // models fetched (ok) or already cached (skipped)
+	Error      string // short failure cause (fail only)
+}
+
 // RefreshModelEntriesForUser live-fetches /models for every enabled subscription
 // (parallel, capped concurrency, per-sub timeout), persists results to
 // CachedModels via the OnModelsLoaded callback, then returns the fresh entry
 // list. Subscriptions that error keep their existing CachedModels (soft fail).
 // Used by the model picker so the list reflects each provider's true available
 // models, not just the persisted snapshot.
+//
+// Returns only the entries for backward compatibility with the RPC handler
+// and TUI picker. Callers that need per-subscription refresh status (e.g.
+// /models command output) should call RefreshModelEntriesForUserWithResults.
 func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.ModelEntry {
+	entries, _ := f.RefreshModelEntriesForUserWithResults(senderID)
+	return entries
+}
+
+// RefreshModelEntriesForUserWithResults is the extended variant that also
+// returns per-subscription refresh outcomes. Used by /models so the user can
+// see which subscriptions refreshed successfully and which failed (and why),
+// rather than silently missing models with no explanation.
+func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]protocol.ModelEntry, []RefreshResult) {
 	if f.subscriptionSvc == nil {
-		return f.ListAllModelEntriesForUser(senderID)
+		return f.ListAllModelEntriesForUser(senderID), nil
 	}
 	var subs []*sqlite.LLMSubscription
 	var err error
@@ -1503,17 +1615,35 @@ func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.Mode
 		subs, err = f.subscriptionSvc.ListAll()
 	}
 	if err != nil {
-		return f.ListAllModelEntriesForUser(senderID)
+		return f.ListAllModelEntriesForUser(senderID), nil
 	}
+
+	// Collect results keyed by sub ID so the summary is stable regardless of
+	// goroutine completion order. Preserves subscription list order.
+	results := make([]RefreshResult, 0, len(subs))
+	resultByID := make(map[string]*RefreshResult, len(subs))
+	for _, sub := range subs {
+		r := RefreshResult{SubName: sub.Name, SubID: sub.ID, IsSystem: sub.IsSystem}
+		switch {
+		case !sub.Enabled:
+			r.Status = "skipped"
+		case sub.BaseURL == "" || sub.APIKey == "":
+			r.Status = "skipped"
+			r.Error = "missing base_url or api_key"
+			log.WithFields(log.Fields{"sub": sub.Name, "has_baseurl": sub.BaseURL != "", "has_apikey": sub.APIKey != ""}).Debug("[LLM] RefreshModelEntries: skipping sub (missing base_url or api_key)")
+		default:
+			// placeholder; filled in by the goroutine below.
+			r.Status = "pending"
+		}
+		results = append(results, r)
+		resultByID[sub.ID] = &results[len(results)-1]
+	}
+
 	const concurrency = 8
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, sub := range subs {
-		if !sub.Enabled {
-			continue
-		}
-		if sub.BaseURL == "" || sub.APIKey == "" {
-			log.WithFields(log.Fields{"sub": sub.Name, "has_baseurl": sub.BaseURL != "", "has_apikey": sub.APIKey != ""}).Debug("[LLM] RefreshModelEntries: skipping sub (missing base_url or api_key)")
+		if !sub.Enabled || sub.BaseURL == "" || sub.APIKey == "" {
 			continue
 		}
 		wg.Add(1)
@@ -1521,24 +1651,48 @@ func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.Mode
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			r := resultByID[s.ID]
 			// Model is only the client's default; /models fetch is independent of it.
 			client := f.createClientFromSub(s, s.Model)
 			if client == nil {
+				r.Status = "noclient"
+				r.Error = "无法创建 LLM 客户端（检查 provider/base_url）"
 				return
 			}
 			loader, ok := client.(llm.ModelLoader)
 			if !ok {
+				r.Status = "noloader"
+				// Anthropic etc. don't expose /models; not an error, just unsupported.
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 			if err := loader.LoadModelsFromAPI(ctx); err != nil {
-				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != ""}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
+				r.Status = "fail"
+				r.Error = truncateErrMsg(err.Error())
+				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
+				return
+			}
+			// Re-read the sub to get the persisted CachedModels count (the
+			// OnModelsLoaded callback updates it asynchronously inside the SDK).
+			r.Status = "ok"
+			if updated, gerr := f.subscriptionSvc.Get(s.ID); gerr == nil && updated != nil {
+				r.ModelCount = len(updated.CachedModels)
 			}
 		}(sub)
 	}
 	wg.Wait()
-	return f.ListAllModelEntriesForUser(senderID)
+	return f.ListAllModelEntriesForUser(senderID), results
+}
+
+// truncateErrMsg shortens an error message for user-facing display. Long SDK
+// errors (HTTP body dumps, stack traces) would flood the chat output.
+func truncateErrMsg(msg string) string {
+	const max = 120
+	if len(msg) <= max {
+		return msg
+	}
+	return msg[:max] + "..."
 }
 
 // GetLLMForModel returns (client, model, maxContext, thinkingMode, maxOutputTokens, usedCustom).

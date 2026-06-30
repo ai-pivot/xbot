@@ -204,46 +204,24 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 	return subs, nil
 }
 
-// markDefaultsFor sets IsDefault=true on the subscription matching the user's
-// user_default_model row. IsDefault is a read-side projection (no DB column since v43).
+// markDefaultsFor is a no-op. IsDefault/Active projection has been retired —
+// subscriptions no longer have a "default" concept. The user_default_model
+// table is repurposed as "last used model" storage, not a default marker.
+// Kept as no-op to avoid touching all List/GetDefault call sites.
 func (s *LLMSubscriptionService) markDefaultsFor(subs []*LLMSubscription, senderID string) {
-	udm, err := s.GetUserDefaultModel(senderID)
-	if err != nil || udm == nil {
-		return
-	}
-	for _, sub := range subs {
-		if sub.ID == udm.SubscriptionID {
-			sub.IsDefault = true
-		}
-	}
+	// IsDefault is always false — no "default subscription" concept.
 }
 
-// markDefaultsAll is the multi-user variant of markDefaultsFor for ListAll.
+// markDefaultsAll is a no-op (see markDefaultsFor).
 func (s *LLMSubscriptionService) markDefaultsAll(subs []*LLMSubscription) {
-	conn := s.db.Conn()
-	rows, err := conn.Query("SELECT sender_id, subscription_id FROM user_default_model")
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-	defaults := make(map[string]string)
-	for rows.Next() {
-		var sid, subID string
-		if rows.Scan(&sid, &subID) == nil {
-			defaults[subID] = sid
-		}
-	}
-	for _, sub := range subs {
-		if _, ok := defaults[sub.ID]; ok {
-			sub.IsDefault = true
-		}
-	}
+	// IsDefault is always false — no "default subscription" concept.
 }
 
-// GetDefault returns the default (active) subscription for a user.
-// The default is derived from user_default_model (is_default column dropped in v43).
-// If the user has no default, falls back to the shared system subscription (v44),
-// which is always present after boot reconcile.
+// GetDefault returns the user's last-used subscription (from user_default_model,
+// repurposed as "last used model" storage). If none set, falls back to the shared
+// system subscription (v44), which is always present after boot reconcile.
+// NOTE: The name "GetDefault" is retained for compatibility but the semantics
+// are now "last used", not "default".
 func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, error) {
 	udm, err := s.GetUserDefaultModel(senderID)
 	if err != nil {
@@ -263,9 +241,7 @@ func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, 
 	if err != nil {
 		return nil, fmt.Errorf("get default subscription: %w", err)
 	}
-	if sub != nil {
-		sub.IsDefault = true
-	}
+	// IsDefault is always false — no "default subscription" concept.
 	return sub, nil
 }
 
@@ -419,21 +395,9 @@ func (s *LLMSubscriptionService) Add(sub *LLMSubscription) error {
 		}
 	}
 
-	// If the new subscription is marked default, seed user_default_model (is_default
-	// column was dropped in v43; user_default_model is the sole source for "default").
-	if sub.IsDefault && sub.SenderID != "" {
-		model := sub.Model
-		if model == "" {
-			model = sub.Name
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
-			VALUES (?, ?, ?, datetime('now'))
-			ON CONFLICT(sender_id) DO UPDATE SET subscription_id = excluded.subscription_id, model = excluded.model, updated_at = excluded.updated_at
-		`, sub.SenderID, sub.ID, model); err != nil {
-			return fmt.Errorf("seed user_default_model: %w", err)
-		}
-	}
+	// No "default subscription" seeding — user_default_model is repurposed as
+	// "last used model", written by SelectModel when the user picks a model.
+	// Adding a subscription does NOT set a default.
 
 	return tx.Commit()
 }
@@ -501,17 +465,8 @@ func (s *LLMSubscriptionService) Update(sub *LLMSubscription) error {
 		return fmt.Errorf("update subscription: %w", err)
 	}
 
-	// If marked default, keep user_default_model in sync (is_default column dropped in v43).
-	if sub.IsDefault && sub.SenderID != "" {
-		model := sub.Model
-		if _, err := tx.Exec(`
-			INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
-			VALUES (?, ?, ?, datetime('now'))
-			ON CONFLICT(sender_id) DO UPDATE SET subscription_id = excluded.subscription_id, model = excluded.model, updated_at = excluded.updated_at
-		`, sub.SenderID, sub.ID, model); err != nil {
-			return fmt.Errorf("sync user_default_model: %w", err)
-		}
-	}
+	// No "default subscription" sync — user_default_model is repurposed as
+	// "last used model", written only by SelectModel.
 
 	return tx.Commit()
 }

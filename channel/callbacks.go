@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -29,12 +30,17 @@ type RegistryCallbacks struct {
 
 // LLMCallbacks groups LLM management closures shared between Web and Feishu channels.
 type LLMCallbacks struct {
-	LLMList                   func(senderID string) ([]string, string)
-	LLMSet                    func(senderID, model string) error
-	LLMGetMaxContext          func(senderID string) int
-	LLMSetMaxContext          func(senderID string, maxContext int) error
-	LLMGetMaxOutputTokens     func(senderID string) int
-	LLMSetMaxOutputTokens     func(senderID string, maxTokens int) error
+	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
+	LLMSet  func(senderID, subID, model string) error
+	// MaxContext / MaxOutputTokens callbacks take an explicit (subID, model)
+	// pair so channel UIs that already know the selected model (e.g. feishu
+	// model tab) can write per-model config directly. When subID/model are
+	// empty (legacy/web callers without a model selector), the implementation
+	// falls back to session resolution.
+	LLMGetMaxContext          func(senderID, subID, model string) int
+	LLMSetMaxContext          func(senderID, subID, model string, maxContext int) error
+	LLMGetMaxOutputTokens     func(senderID, subID, model string) int
+	LLMSetMaxOutputTokens     func(senderID, subID, model string, maxTokens int) error
 	LLMGetThinkingMode        func(senderID string) string
 	LLMSetThinkingMode        func(senderID string, mode string) error
 	LLMGetPersonalConcurrency func(senderID string) int

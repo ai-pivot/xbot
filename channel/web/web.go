@@ -97,10 +97,10 @@ type WebCallbacks struct {
 	RegistryUnpublish func(entryType, name, senderID string) error
 	// RegistryUninstall removes a user-installed entry.
 	RegistryUninstall func(entryType, name, senderID string) error
-	// LLMList returns available models and current model.
-	LLMList func(senderID string) ([]string, string)
-	// LLMSet switches the user's model.
-	LLMSet func(senderID, model string) error
+	// LLMList returns available model entries and current entry.
+	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
+	// LLMSet switches the user's model via explicit (subID, model).
+	LLMSet func(senderID, subID, model string) error
 	// LLMGetConfig returns user's LLM config (provider, baseURL, model, ok).
 	LLMGetConfig func(senderID string) (provider, baseURL, model string, ok bool)
 	// IsProcessing returns true if the backend is actively processing a request for the user.
@@ -112,10 +112,12 @@ type WebCallbacks struct {
 	LLMSetConfig func(senderID, provider, baseURL, apiKey, model string, maxOutputTokens int, thinkingMode string) error
 	// LLMDelete reverts user to global LLM config.
 	LLMDelete func(senderID string) error
-	// LLMGetMaxContext returns the user's max context tokens setting.
-	LLMGetMaxContext func(senderID string) int
-	// LLMSetMaxContext sets the user's max context tokens setting.
-	LLMSetMaxContext func(senderID string, maxContext int) error
+	// LLMGetMaxContext returns the per-(subID, model) max context tokens
+	// setting. When subID/model are empty, falls back to session resolution.
+	LLMGetMaxContext func(senderID, subID, model string) int
+	// LLMSetMaxContext sets the per-(subID, model) max context tokens setting.
+	// When subID/model are empty, falls back to session resolution.
+	LLMSetMaxContext func(senderID, subID, model string, maxContext int) error
 
 	// RegistryPublish publishes a user's agent/skill to the marketplace.
 	RegistryPublish func(entryType, name, senderID string) error

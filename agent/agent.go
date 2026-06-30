@@ -522,9 +522,9 @@ func (a *Agent) updateActiveSubFn(channel string) func(key, value string) (strin
 		if err := svc.Update(sub); err != nil {
 			return "", fmt.Errorf("update subscription: %w", err)
 		}
-		// Trigger switch model if model changed
+		// Update per-session model selection if model changed
 		if key == "llm_model" {
-			a.llmFactory.SwitchModel(senderID, value)
+			a.llmFactory.SelectModel(senderID, "", channel, sub.ID, value)
 		}
 		return oldVal, nil
 	}
@@ -546,13 +546,6 @@ func subFieldValue(sub *sqlite.LLMSubscription, key string) string {
 			return strconv.Itoa(sub.MaxOutputTokens)
 		}
 		return "4096"
-	case "max_context_tokens":
-		if sub.MaxContext > 0 {
-			return strconv.Itoa(sub.MaxContext)
-		}
-		return ""
-	case "thinking_mode":
-		return sub.ThinkingMode
 	case "api_type":
 		return sub.APIType
 	}
@@ -579,17 +572,6 @@ func setSubFieldValue(sub *sqlite.LLMSubscription, key, value string) error {
 			return fmt.Errorf("max_output_tokens must be between 1 and 131072, got %d", n)
 		}
 		sub.MaxOutputTokens = n
-	case "max_context_tokens":
-		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil {
-			return fmt.Errorf("max_context_tokens must be an integer: %w", err)
-		}
-		if n < 1 {
-			return fmt.Errorf("max_context_tokens must be positive, got %d", n)
-		}
-		sub.MaxContext = n
-	case "thinking_mode":
-		sub.ThinkingMode = strings.TrimSpace(value)
 	case "api_type":
 		sub.APIType = strings.TrimSpace(value)
 	default:
@@ -625,18 +607,22 @@ func (a *Agent) SettingsService() *SettingsService { return a.settingsSvc }
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
 
-// SetUserModel switches the user's default model (cross-subscription). Used by the
-// settings card callback and the set_user_model RPC. Resolves the owning subscription
-// via the subscription service and persists the choice to user_default_model.
-func (a *Agent) SetUserModel(senderID, model string) error {
+// SetUserModel sets the user's default model via an explicit (subID, model) pair.
+// Used by the settings card callback (feishu/web) and the set_user_model RPC.
+// When subID is empty, falls back to ResolveSubscriptionForModel (legacy UIs
+// that only know the model name). Persists the choice to user_default_model.
+func (a *Agent) SetUserModel(senderID, subID, model string) error {
 	if model == "" {
 		return fmt.Errorf("model is required")
 	}
-	sub, err := a.llmFactory.ResolveSubscriptionForModel(senderID, model)
-	if err != nil {
-		return fmt.Errorf("resolve subscription for model %q: %w", model, err)
+	if subID == "" {
+		sub, err := a.llmFactory.ResolveSubscriptionForModel(senderID, model)
+		if err != nil {
+			return fmt.Errorf("resolve subscription for model %q: %w", model, err)
+		}
+		subID = sub.ID
 	}
-	if err := a.llmFactory.SetUserDefaultModel(senderID, sub.ID, model); err != nil {
+	if err := a.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
 		return fmt.Errorf("save default model: %w", err)
 	}
 	a.llmFactory.Invalidate(senderID)
@@ -2036,6 +2022,12 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 
 			// 指令消息分发：根据 Concurrent() 决定执行方式
 			if cmd := a.commands.Match(msg.Content); cmd != nil {
+				log.Ctx(ctx).WithFields(log.Fields{
+					"channel":     msg.Channel,
+					"command":     cmd.Name(),
+					"concurrent":  cmd.Concurrent(),
+					"content_len": len(msg.Content),
+				}).Info("Command matched in chatWorker")
 				if cmd.Concurrent() {
 					// 无状态命令：独立 goroutine 处理，不占信号量，不阻塞
 					m := msg

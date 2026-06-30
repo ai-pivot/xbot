@@ -344,6 +344,10 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-glm", SenderID: "cli_user", Name: "glm", Provider: "openai", BaseURL: "https://glm.example/v1", APIKey: "sk-glm", Model: "glm-5.1", IsDefault: false}); err != nil {
 		t.Fatalf("add glm: %v", err)
 	}
+	// Explicitly seed user_default_model (Add no longer seeds it when IsDefault=true).
+	if err := subSvc.SetDefault("sub-gpt"); err != nil {
+		t.Fatalf("set default: %v", err)
+	}
 
 	aCfg := &config.Config{}
 	ag := &agent.Agent{}
@@ -388,6 +392,10 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	}
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-glm", SenderID: "cli_user", Name: "glm", Provider: "openai", BaseURL: "https://glm.example/v1", APIKey: "sk-glm", Model: "glm-5.1", IsDefault: false}); err != nil {
 		t.Fatalf("add glm: %v", err)
+	}
+	// Explicitly seed user_default_model (Add no longer seeds it when IsDefault=true).
+	if err := subSvc.SetDefault("sub-gpt"); err != nil {
+		t.Fatalf("set default: %v", err)
 	}
 
 	aCfg := &config.Config{}

@@ -81,6 +81,16 @@ func (r *RetryLLM) acquire(ctx context.Context) func() {
 	}
 }
 
+// LoadModelsFromAPI delegates to the inner client if it implements ModelLoader.
+// RetryLLM itself does not retry this call — model list fetching has its own
+// timeout/error handling in the refresh pipeline.
+func (r *RetryLLM) LoadModelsFromAPI(ctx context.Context) error {
+	if loader, ok := r.inner.(ModelLoader); ok {
+		return loader.LoadModelsFromAPI(ctx)
+	}
+	return fmt.Errorf("inner LLM does not implement ModelLoader")
+}
+
 // IsInputTooLongError detects 400-class errors caused by the input exceeding the
 // model's context window. Different providers return this in different formats:
 //   - Dashscope: "Range of input length should be [1, 202752]"

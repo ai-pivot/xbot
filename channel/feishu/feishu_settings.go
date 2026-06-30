@@ -11,6 +11,7 @@ import (
 	log "xbot/logger"
 
 	ch "xbot/channel"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
@@ -103,9 +104,34 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.BuildSettingsCard(ctx, senderID, chatID, parsed["tab"])
 
 	case "settings_select_submit":
-		// Form submit button was clicked — extract the select value from form_value
-		// and map to the appropriate action by inspecting the form_name.
+		// Form submit button was clicked. Every select_static in this card
+		// shares its name with the enclosing form (select name == form name),
+		// so the selected value is available directly under form_name in
+		// form_value — no hardcoded select-name list needed.
 		formName := parsed["form_name"]
+		if formName == "" {
+			return nil, fmt.Errorf("missing form_name")
+		}
+		// Special case: the tier form has 3 selects (not 1) and needs a
+		// different handler that reads all 3 values from form_value.
+		if formName == "tier_form" {
+			parsed["action"] = "settings_set_all_tiers"
+			delete(parsed, "form_name")
+			newActionData := map[string]any{
+				"action_data": mustMapToJSON(parsed),
+			}
+			for k, v := range actionData {
+				if _, exists := newActionData[k]; !exists {
+					newActionData[k] = v
+				}
+			}
+			return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
+		}
+		selectedValue := formStr(actionData, formName)
+		if selectedValue == "" {
+			// Nothing selected, just re-render.
+			return f.BuildSettingsCard(ctx, senderID, chatID, "model")
+		}
 		var delegateAction string
 		switch formName {
 		case "model_select_form":
@@ -115,44 +141,8 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		case "thinking_mode_form":
 			delegateAction = "settings_set_thinking_mode"
 		default:
-			if strings.HasPrefix(formName, "tier_") {
-				delegateAction = "settings_set_model_tier"
-			} else {
-				return nil, fmt.Errorf("unknown select form: %s", formName)
-			}
+			return nil, fmt.Errorf("unknown select form: %s", formName)
 		}
-		// The select component's name matches its form_name pattern;
-		// extract the selected value from form_value (merged into actionData by feishu.go).
-		// Find the select name by scanning actionData for keys matching known select names.
-		selectedValue := ""
-		selectNames := []string{
-			"settings_model_select",
-			"settings_llm_conc_personal",
-			"settings_thinking_mode_select",
-		}
-		for _, sn := range selectNames {
-			if v := formStr(actionData, sn); v != "" {
-				selectedValue = v
-				break
-			}
-		}
-		// Check tier selects
-		if selectedValue == "" {
-			for _, tier := range []string{"vanguard", "balance", "swift"} {
-				name := "settings_tier_" + tier + "_select"
-				if v := formStr(actionData, name); v != "" {
-					selectedValue = v
-					// tier selects also need the tier param
-					parsed["tier"] = tier
-					break
-				}
-			}
-		}
-		if selectedValue == "" {
-			// Nothing selected, just re-render
-			return f.BuildSettingsCard(ctx, senderID, chatID, "model")
-		}
-		// Delegate by building action_data for the target handler and recursing
 		parsed["action"] = delegateAction
 		delete(parsed, "form_name")
 		newActionData := map[string]any{
@@ -167,17 +157,22 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
 
 	case "settings_set_model":
-		model := parsed["model"]
-		if model == "" {
-			if opt, ok := actionData["selected_option"].(string); ok {
-				model = opt
+		// Option value is strictly encoded as "subID|model". Per project
+		// policy we MUST NOT resolve subscription from model name alone — so
+		// a value without the "|" separator is treated as corrupt data and
+		// rejected, rather than falling back to model-only resolution.
+		subID, model := "", ""
+		if opt, ok := actionData["selected_option"].(string); ok && opt != "" {
+			if idx := strings.Index(opt, "|"); idx >= 0 {
+				subID = opt[:idx]
+				model = opt[idx+1:]
 			}
 		}
-		if model == "" {
-			return nil, fmt.Errorf("missing model")
+		if subID == "" || model == "" {
+			return nil, fmt.Errorf("模型选择数据损坏：缺少 subID 或 model（应编码为 subID|model）")
 		}
 		if f.settingsCallbacks.LLMSet != nil {
-			if err := f.settingsCallbacks.LLMSet(senderID, model); err != nil {
+			if err := f.settingsCallbacks.LLMSet(senderID, subID, model); err != nil {
 				return nil, fmt.Errorf("设置模型失败: %v", err)
 			}
 		}
@@ -199,8 +194,14 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			return nil, fmt.Errorf("max_context must be >= 0")
 		}
 		maxCtx := maxCtxK * 1000
+		// sub_id/model are embedded in the form's action_data at build time
+		// (from the current model selector entry). When present, the callback
+		// writes per-(subID, model) config; when absent, it falls back to the
+		// session-resolved default model.
+		subID := parsed["sub_id"]
+		model := parsed["model"]
 		if f.settingsCallbacks.LLMSetMaxContext != nil {
-			if err := f.settingsCallbacks.LLMSetMaxContext(senderID, maxCtx); err != nil {
+			if err := f.settingsCallbacks.LLMSetMaxContext(senderID, subID, model, maxCtx); err != nil {
 				return nil, fmt.Errorf("设置 max_context 失败: %v", err)
 			}
 		}
@@ -222,8 +223,12 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			return nil, fmt.Errorf("max_output_tokens must be >= 0")
 		}
 		maxOut := maxOutK * 1000
+		// sub_id/model are embedded in the form's action_data at build time
+		// (same as settings_set_max_context).
+		subID := parsed["sub_id"]
+		model := parsed["model"]
 		if f.settingsCallbacks.LLMSetMaxOutputTokens != nil {
-			if err := f.settingsCallbacks.LLMSetMaxOutputTokens(senderID, maxOut); err != nil {
+			if err := f.settingsCallbacks.LLMSetMaxOutputTokens(senderID, subID, model, maxOut); err != nil {
 				return nil, fmt.Errorf("设置 max_output_tokens 失败: %v", err)
 			}
 		}
@@ -270,20 +275,20 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
 
-	case "settings_set_model_tier":
-		tier := parsed["tier"]
-		if tier == "" {
-			return nil, fmt.Errorf("missing tier")
-		}
-		model := parsed["model"]
-		if model == "" {
-			if opt, ok := actionData["selected_option"].(string); ok {
-				model = opt
-			}
-		}
+	case "settings_set_all_tiers":
+		// Tier form has 3 selects (vanguard/balance/swift). Read each from
+		// form_value and apply via LLMSetModelTier. Empty values are skipped
+		// (user may have left a tier unset).
 		if f.settingsCallbacks.LLMSetModelTier != nil {
-			if err := f.settingsCallbacks.LLMSetModelTier(tier, model); err != nil {
-				return nil, fmt.Errorf("设置 %s 模型失败: %v", tier, err)
+			for _, tier := range []string{"vanguard", "balance", "swift"} {
+				name := "tier_" + tier + "_select"
+				model := formStr(actionData, name)
+				if model == "" {
+					continue
+				}
+				if err := f.settingsCallbacks.LLMSetModelTier(tier, model); err != nil {
+					return nil, fmt.Errorf("设置 %s tier 失败: %v", tier, err)
+				}
 			}
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "model")
@@ -1073,14 +1078,14 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 
 // buildModelTabContent builds the model configuration tab.
 func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]any, error) {
-	// Fetch available models for the model selector dropdown
+	// Fetch available models for the model selector dropdown (model names only)
 	var modelOptions []map[string]any
 	if f.settingsCallbacks.LLMList != nil {
-		models, _ := f.settingsCallbacks.LLMList(senderID)
-		for _, m := range models {
+		entries, _ := f.settingsCallbacks.LLMList(senderID)
+		for _, e := range entries {
 			modelOptions = append(modelOptions, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": m},
-				"value": m,
+				"text":  map[string]any{"tag": "plain_text", "content": e.Model},
+				"value": e.Model,
 			})
 		}
 	}
@@ -1207,14 +1212,14 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 		}
 	}
 
-	// Fetch available models for the dropdown
+	// Fetch available models for the dropdown (model names only)
 	var modelOptions []map[string]any
 	if f.settingsCallbacks.LLMList != nil {
-		models, _ := f.settingsCallbacks.LLMList(senderID)
-		for _, m := range models {
+		entries, _ := f.settingsCallbacks.LLMList(senderID)
+		for _, e := range entries {
 			modelOptions = append(modelOptions, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": m},
-				"value": m,
+				"text":  map[string]any{"tag": "plain_text", "content": e.Model},
+				"value": e.Model,
 			})
 		}
 	}
@@ -1346,49 +1351,67 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID string) []map[string]any {
 	var elements []map[string]any
 
-	// --- Quick model switch (for active subscription) ---
-	var models []string
-	currentModel := ""
+	// --- Quick model switch (all subscriptions' models) ---
+	var entries []protocol.ModelEntry
+	currentEntry := protocol.ModelEntry{}
 	if f.settingsCallbacks.LLMList != nil {
-		models, currentModel = f.settingsCallbacks.LLMList(senderID)
+		entries, currentEntry = f.settingsCallbacks.LLMList(senderID)
 	}
 
 	maxModels := 30
-	if len(models) > maxModels {
-		models = models[:maxModels]
+	if len(entries) > maxModels {
+		entries = entries[:maxModels]
 	}
 
 	// Always render the model selector. When the API model list is empty
 	// (e.g. async loading not complete), include the current model so the
 	// dropdown is never blank.
-	if len(models) == 0 && currentModel != "" {
-		models = append(models, currentModel)
+	if len(entries) == 0 && currentEntry.Model != "" {
+		entries = append(entries, currentEntry)
 	}
-	if len(models) > 0 {
+	if len(entries) > 0 {
+		// Build options with subID|model encoding as the option value.
+		// The handler parses subID|model to pass both to LLMSet(senderID, subID, model).
+		// We MUST NOT resolve subscription from model name alone.
 		var options []map[string]any
-		for _, m := range models {
+		for _, e := range entries {
+			val := e.SubID + "|" + e.Model
+			display := e.Model
+			if e.SubName != "" {
+				display = e.Model + " (" + e.SubName + ")"
+			}
 			options = append(options, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": m},
-				"value": m,
+				"text":  map[string]any{"tag": "plain_text", "content": display},
+				"value": val,
 			})
+		}
+
+		// initial_option MUST match one of the option values exactly,
+		// otherwise Feishu rejects the entire card (error 200673).
+		selectControl := map[string]any{
+			"tag":         "select_static",
+			"name":        "model_select_form",
+			"placeholder": map[string]any{"tag": "plain_text", "content": "切换模型..."},
+			"options":     options,
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action": "settings_set_model",
+				}),
+			},
+		}
+		initialVal := currentEntry.SubID + "|" + currentEntry.Model
+		for _, o := range options {
+			if o["value"] == initialVal {
+				selectControl["initial_option"] = initialVal
+				break
+			}
 		}
 
 		elements = append(elements, buildSelectFormRow(
 			"**当前模型**",
-			currentModel,
+			currentEntry.Model,
 			"model_select_form",
-			map[string]any{
-				"tag":            "select_static",
-				"name":           "settings_model_select",
-				"placeholder":    map[string]any{"tag": "plain_text", "content": "切换模型..."},
-				"initial_option": currentModel,
-				"options":        options,
-				"value": map[string]string{
-					"action_data": mustMapToJSON(map[string]string{
-						"action": "settings_set_model",
-					}),
-				},
-			},
+			selectControl,
 		)...)
 	}
 
@@ -1396,7 +1419,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 	currentMaxContext := 0
 	maxContextDisplay := "默认"
 	if f.settingsCallbacks.LLMGetMaxContext != nil {
-		currentMaxContext = f.settingsCallbacks.LLMGetMaxContext(senderID)
+		currentMaxContext = f.settingsCallbacks.LLMGetMaxContext(senderID, currentEntry.SubID, currentEntry.Model)
 	}
 	if currentMaxContext > 0 {
 		maxContextDisplay = fmt.Sprintf("%dk", currentMaxContext/1000)
@@ -1425,6 +1448,8 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 				"value": map[string]string{
 					"action_data": mustMapToJSON(map[string]string{
 						"action": "settings_set_max_context",
+						"sub_id": currentEntry.SubID,
+						"model":  currentEntry.Model,
 					}),
 				},
 			},
@@ -1435,7 +1460,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 	currentMaxOutputTokens := 0
 	maxOutputDisplay := "默认"
 	if f.settingsCallbacks.LLMGetMaxOutputTokens != nil {
-		currentMaxOutputTokens = f.settingsCallbacks.LLMGetMaxOutputTokens(senderID)
+		currentMaxOutputTokens = f.settingsCallbacks.LLMGetMaxOutputTokens(senderID, currentEntry.SubID, currentEntry.Model)
 	}
 	if currentMaxOutputTokens > 0 {
 		maxOutputDisplay = fmt.Sprintf("%dk", currentMaxOutputTokens/1000)
@@ -1464,6 +1489,8 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 				"value": map[string]string{
 					"action_data": mustMapToJSON(map[string]string{
 						"action": "settings_set_max_output_tokens",
+						"sub_id": currentEntry.SubID,
+						"model":  currentEntry.Model,
 					}),
 				},
 			},
@@ -1497,7 +1524,7 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"concurrency_form",
 		map[string]any{
 			"tag":            "select_static",
-			"name":           "settings_llm_conc_personal",
+			"name":           "concurrency_form",
 			"placeholder":    map[string]any{"tag": "plain_text", "content": "选择并发数..."},
 			"initial_option": fmt.Sprintf("%d", personalConc),
 			"options":        concOptions,
@@ -1523,21 +1550,37 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		"思考模式",
 		thinkingModeDisplay,
 		"thinking_mode_form",
-		map[string]any{
-			"tag":            "select_static",
-			"name":           "settings_thinking_mode_select",
-			"placeholder":    map[string]any{"tag": "plain_text", "content": "选择思考模式..."},
-			"initial_option": currentThinkingMode,
-			"options":        thinkingModeOptions(),
-			"value": map[string]string{
-				"action_data": mustMapToJSON(map[string]string{
-					"action": "settings_set_thinking_mode",
-				}),
-			},
-		},
+		func() map[string]any {
+			ctrl := map[string]any{
+				"tag":         "select_static",
+				"name":        "thinking_mode_form",
+				"placeholder": map[string]any{"tag": "plain_text", "content": "选择思考模式..."},
+				"options":     thinkingModeOptions(),
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action": "settings_set_thinking_mode",
+					}),
+				},
+			}
+			// Only set initial_option if it matches an option value.
+			// Empty/non-matching initial_option causes Feishu error 200673.
+			if currentThinkingMode != "" {
+				for _, opt := range thinkingModeOptions() {
+					if opt["value"] == currentThinkingMode {
+						ctrl["initial_option"] = currentThinkingMode
+						break
+					}
+				}
+			}
+			return ctrl
+		}(),
 	)...)
 
-	// --- Model tier section ---
+	// --- Model tier section (single form with 3 selects) ---
+	// Previously 3 independent forms (15+ elements) hit Feishu's ~50 element
+	// limit (error 11310). Consolidated to 1 form with 3 selects + 1 submit
+	// to stay well under the limit. The handler reads all 3 select values
+	// from form_value on a single submit.
 	elements = append(elements, map[string]any{"tag": "hr"})
 	elements = append(elements, map[string]any{
 		"tag":     "markdown",
@@ -1548,10 +1591,12 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 	if f.settingsCallbacks.LLMListAllModels != nil {
 		allModels = f.settingsCallbacks.LLMListAllModels()
 	}
-	maxTierModels := 50
+	maxTierModels := 15
 	if len(allModels) > maxTierModels {
 		allModels = allModels[:maxTierModels]
 	}
+	// Single form containing 3 selects + 1 submit button.
+	var tierFormElements []map[string]any
 	for _, tier := range []struct {
 		key, label string
 	}{
@@ -1563,12 +1608,8 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 		if f.settingsCallbacks.LLMGetModelTier != nil {
 			currentTierModel = f.settingsCallbacks.LLMGetModelTier(tier.key)
 		}
-		tierDisplay := currentTierModel
-		if tierDisplay == "" {
-			tierDisplay = "未设置"
-		}
-		// Build options: always include the currently configured model so
-		// the dropdown is never empty. Then append all global models.
+		// Build options: always include the current model first, then all
+		// global models. Dedup by model name.
 		tierOptions := []map[string]any{}
 		seenTier := make(map[string]bool)
 		if currentTierModel != "" && !seenTier[currentTierModel] {
@@ -1587,8 +1628,6 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 				})
 			}
 		}
-		// Always render — even with only one option (the current value).
-		// Previously the section was entirely hidden when allModels was empty.
 		// Avoid empty options — Feishu rejects select_static with null/empty options.
 		if len(tierOptions) == 0 {
 			tierOptions = append(tierOptions, map[string]any{
@@ -1596,25 +1635,42 @@ func (f *FeishuChannel) buildModelTabContent(ctx context.Context, senderID strin
 				"value": "",
 			})
 		}
-		elements = append(elements, buildSelectFormRow(
-			tier.label,
-			tierDisplay,
-			"tier_"+tier.key+"_form",
-			map[string]any{
-				"tag":            "select_static",
-				"name":           "settings_tier_" + tier.key + "_select",
-				"placeholder":    map[string]any{"tag": "plain_text", "content": "选择模型..."},
-				"initial_option": currentTierModel,
-				"options":        tierOptions,
-				"value": map[string]string{
-					"action_data": mustMapToJSON(map[string]string{
-						"action": "settings_set_model_tier",
-						"tier":   tier.key,
-					}),
-				},
-			},
-		)...)
+		tierCtrl := map[string]any{
+			"tag":         "select_static",
+			"name":        "tier_" + tier.key + "_select",
+			"placeholder": map[string]any{"tag": "plain_text", "content": tier.label + " — 选择模型..."},
+			"options":     tierOptions,
+		}
+		// Only set initial_option if it matches an option value.
+		if currentTierModel != "" {
+			for _, opt := range tierOptions {
+				if opt["value"] == currentTierModel {
+					tierCtrl["initial_option"] = currentTierModel
+					break
+				}
+			}
+		}
+		tierFormElements = append(tierFormElements, tierCtrl)
 	}
+	// Single submit button saves all 3 tier settings together.
+	tierFormElements = append(tierFormElements, map[string]any{
+		"tag":         "button",
+		"name":        "tier_form_submit",
+		"text":        map[string]any{"tag": "plain_text", "content": "保存 Tier 设置"},
+		"type":        "primary",
+		"action_type": "form_submit",
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{
+				"action":    "settings_select_submit",
+				"form_name": "tier_form",
+			}),
+		},
+	})
+	elements = append(elements, map[string]any{
+		"tag":      "form",
+		"name":     "tier_form",
+		"elements": tierFormElements,
+	})
 
 	// --- ch.Subscription management section ---
 	elements = append(elements, map[string]any{"tag": "hr"})

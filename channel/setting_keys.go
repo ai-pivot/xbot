@@ -119,7 +119,10 @@ var AllSettingDefs = []SettingDef{
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
 	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
-	{Key: "max_context_tokens", Scope: ScopeSubscription, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression (per subscription+model)", ValidValues: "any positive integer"},
+	// max_context_tokens is per-model (stored in PerModelConfigs), not per-subscription.
+	// Its read/write entry point is GetUserMaxContext/SetUserMaxContext (ResolveActiveSubModel
+	// → PerModelConfigs), NOT the subscription-scoped subFieldValue/setSubFieldValue path.
+	// Removed from AllSettingDefs to prevent config tool from routing it to the wrong layer.
 	{Key: "enable_auto_compress", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Legacy alias for context_mode=auto (deprecated)", ValidValues: "true|false"},
 	{Key: "runner_server", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
 	{Key: "runner_token", Scope: ScopeUser, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote runner (masked)", ValidValues: "any valid token"},

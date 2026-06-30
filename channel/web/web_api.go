@@ -12,6 +12,7 @@ import (
 
 	ch "xbot/channel"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
@@ -762,16 +763,17 @@ func (wc *WebChannel) handleMarketInstall(w http.ResponseWriter, r *http.Request
 // ---------------------------------------------------------------------------
 
 type llmConfigResponse struct {
-	OK              bool     `json:"ok"`
-	IsGlobal        bool     `json:"is_global,omitempty"`
-	Provider        string   `json:"provider,omitempty"`
-	BaseURL         string   `json:"base_url,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	Models          []string `json:"models,omitempty"`
-	MaxContext      int      `json:"max_context,omitempty"`
-	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
-	ThinkingMode    string   `json:"thinking_mode,omitempty"`
-	Error           string   `json:"error,omitempty"`
+	OK              bool                  `json:"ok"`
+	IsGlobal        bool                  `json:"is_global,omitempty"`
+	Provider        string                `json:"provider,omitempty"`
+	BaseURL         string                `json:"base_url,omitempty"`
+	Model           string                `json:"model,omitempty"`
+	Models          []string              `json:"models,omitempty"`
+	ModelEntries    []protocol.ModelEntry `json:"model_entries,omitempty"`
+	MaxContext      int                   `json:"max_context,omitempty"`
+	MaxOutputTokens int                   `json:"max_output_tokens,omitempty"`
+	ThinkingMode    string                `json:"thinking_mode,omitempty"`
+	Error           string                `json:"error,omitempty"`
 }
 
 type llmConfigSetRequest struct {
@@ -785,6 +787,7 @@ type llmConfigSetRequest struct {
 }
 
 type llmModelSetRequest struct {
+	SubID string `json:"sub_id"`
 	Model string `json:"model"`
 }
 
@@ -821,26 +824,30 @@ func (wc *WebChannel) handleLLMConfigGet(w http.ResponseWriter, senderID string)
 	provider, baseURL, model, ok := wc.callbacks.LLMGetConfig(senderID)
 
 	// Also fetch available models if a list callback exists
-	var models []string
+	var modelEntries []protocol.ModelEntry
 	if wc.callbacks.LLMList != nil {
-		var currentModel string
-		models, currentModel = wc.callbacks.LLMList(senderID)
-		if currentModel != "" {
-			model = currentModel
+		entries, currentEntry := wc.callbacks.LLMList(senderID)
+		modelEntries = entries
+		if currentEntry.Model != "" {
+			model = currentEntry.Model
 		}
 	}
 
 	resp := llmConfigResponse{
-		OK:       true,
-		IsGlobal: !ok,
-		Provider: provider,
-		BaseURL:  baseURL,
-		Model:    model,
-		Models:   models,
+		OK:           true,
+		IsGlobal:     !ok,
+		Provider:     provider,
+		BaseURL:      baseURL,
+		Model:        model,
+		ModelEntries: modelEntries,
+	}
+	// Also populate the legacy Models []string field for backward compat
+	for _, e := range modelEntries {
+		resp.Models = append(resp.Models, e.Model)
 	}
 	// Also fetch max context if callback exists
 	if wc.callbacks.LLMGetMaxContext != nil {
-		resp.MaxContext = wc.callbacks.LLMGetMaxContext(senderID)
+		resp.MaxContext = wc.callbacks.LLMGetMaxContext(senderID, "", "")
 	}
 	writeJSON(w, http.StatusOK, resp)
 
@@ -899,7 +906,7 @@ func (wc *WebChannel) handleLLMMaxContext(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusOK, llmConfigResponse{OK: true})
 			return
 		}
-		maxCtx := wc.callbacks.LLMGetMaxContext(senderID)
+		maxCtx := wc.callbacks.LLMGetMaxContext(senderID, "", "")
 		writeJSON(w, http.StatusOK, llmConfigResponse{OK: true, MaxContext: maxCtx})
 
 	case http.MethodPost:
@@ -916,7 +923,7 @@ func (wc *WebChannel) handleLLMMaxContext(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, llmConfigResponse{OK: false, Error: "max_context must be >= 0"})
 			return
 		}
-		if err := wc.callbacks.LLMSetMaxContext(senderID, req.MaxContext); err != nil {
+		if err := wc.callbacks.LLMSetMaxContext(senderID, "", "", req.MaxContext); err != nil {
 			writeJSON(w, http.StatusInternalServerError, llmConfigResponse{OK: false, Error: err.Error()})
 			return
 		}
@@ -951,7 +958,7 @@ func (wc *WebChannel) handleLLMModelSet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := wc.callbacks.LLMSet(senderID, req.Model); err != nil {
+	if err := wc.callbacks.LLMSet(senderID, req.SubID, req.Model); err != nil {
 		writeJSON(w, http.StatusInternalServerError, llmConfigResponse{OK: false, Error: err.Error()})
 		return
 	}
@@ -1717,7 +1724,7 @@ func (wc *WebChannel) handleContextInfo(w http.ResponseWriter, r *http.Request) 
 		// For cross-channel browsing, maxTokens from admin's config is not meaningful.
 		// Only compute usage_pct for the admin's own (web) sessions.
 		if sel.Channel == "web" {
-			maxTokens = wc.callbacks.LLMGetMaxContext(senderID)
+			maxTokens = wc.callbacks.LLMGetMaxContext(senderID, "", "")
 		}
 	}
 

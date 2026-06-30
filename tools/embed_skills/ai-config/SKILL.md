@@ -45,7 +45,7 @@ All fields are optional; defaults fill the rest. Full field list: `text_primary`
 
 | Command | Effect | Result timing |
 |---------|--------|--------------|
-| `/set-llm provider=X model=Y` | Create/update personal LLM subscription | Next turn |
+| `/set-llm <sub-name> provider=X model=Y api_key=K` | Create/update named personal LLM subscription | Next turn |
 | `/set-model <model>` | Switch model across subscriptions | Next turn |
 | `/palette` | Open command palette for user | Immediate (UI) |
 | `/context` | Show context usage bar | Immediate (UI) |

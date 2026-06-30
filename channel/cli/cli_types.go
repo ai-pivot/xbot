@@ -581,12 +581,10 @@ type SubscriptionManager interface {
 // LLMSubscriber switches the active LLM for a user (called when subscription changes).
 type LLMSubscriber interface {
 	SwitchSubscription(senderID string, sub *ch.Subscription, chatID string) error
-	SwitchModel(senderID, model, chatID string)
 	// SelectModel switches to a specific (subscription, model) pair. Used by the
 	// model picker when the row carries an owning SubID, so the user picks the
 	// exact subscription that serves a model even when the same model name is
-	// served by multiple subscriptions. SwitchModel (model-first, owner resolved
-	// server-side) is the fallback when no SubID is available.
+	// served by multiple subscriptions.
 	SelectModel(senderID, subID, model, chatID string) error
 	GetDefaultModel() string
 }
