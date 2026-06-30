@@ -1433,6 +1433,25 @@ func main() {
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
 		},
+		ListAllTenantsFn: func() ([]cli.AllSessionInfo, error) {
+			if app.client == nil {
+				return nil, fmt.Errorf("agent not initialized")
+			}
+			tenants, err := app.client.ListTenants()
+			if err != nil {
+				return nil, err
+			}
+			result := make([]cli.AllSessionInfo, 0, len(tenants))
+			for _, t := range tenants {
+				result = append(result, cli.AllSessionInfo{
+					Channel:      t.Channel,
+					ChatID:       t.ChatID,
+					Label:        t.Label,
+					LastActiveAt: t.LastActiveAt,
+				})
+			}
+			return result, nil
+		},
 		PaletteContributor: func() []cli.PaletteExternalCommand {
 			return app.buildPaletteExternalCommands()
 		},

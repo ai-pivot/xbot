@@ -290,7 +290,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
 var cliCommands = []string{
 	"/cancel", "/channel", "/chat", "/clear", "/commands", "/compress", "/context", "/exit",
-	"/help", "/model", "/models", "/new", "/palette", "/plugin", "/quit", "/rename", "/rewind",
+	"/help", "/list-sessions", "/model", "/models", "/new", "/palette", "/plugin", "/quit", "/rename", "/rewind",
 	"/search", "/sessions", "/settings", "/setup", "/ss", "/su", "/tasks", "/update",
 	"/usage", "/user",
 }
@@ -399,6 +399,7 @@ type CLIChannelConfig struct {
 	ListWebUsersFn         func() ([]map[string]any, error)                                                                                                             // 列出所有 Web 用户
 	DeleteWebUserFn        func(username string) error                                                                                                                  // 删除 Web 用户（admin only）
 	IsAdminFn              func() bool                                                                                                                                  // 检查当前用户是否 admin
+	ListAllTenantsFn       func() ([]AllSessionInfo, error)                                                                                                             // 列出后端所有 session（所有渠道，用于 /list-sessions）
 	PaletteContributor     PaletteContributor                                                                                                                           // supplies external commands for command palette
 	SidebarWidthOverride   int                                                                                                                                          // --sidebar-width N (0 = use setting/default)
 	NoSidebar              bool                                                                                                                                         // --no-sidebar
@@ -431,6 +432,16 @@ type SessionPanelEntry struct {
 	Active      bool   // true = currently selected (main session only)
 	Busy        bool   // true = session is processing (agent thinking/tool_exec, etc.)
 	MessageHint string // preview of last message
+}
+
+// AllSessionInfo holds display info for a backend session across all channels.
+// Used by /list-sessions to show every tenant (cli, web, feishu, etc.).
+type AllSessionInfo struct {
+	Channel      string // channel name: cli, web, feishu, ...
+	ChatID       string // session identifier (chatID)
+	Label        string // human-readable name (may be empty)
+	Model        string // LLM model in use (may be empty)
+	LastActiveAt string // last activity timestamp (raw DB string)
 }
 
 // ---------------------------------------------------------------------------
