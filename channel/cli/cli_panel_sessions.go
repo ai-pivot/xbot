@@ -576,6 +576,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			}
 			m.saveCurrentSession()
 			m.chatID = entry.ID
+			m.senderID = "cli_user" // 重置为 CLI 默认身份，防止 /su 跨渠道残留
 			SetLastActiveSession(m.defaultChatID, entry.ID)
 			m.channelName = entry.Channel
 			// Update workdir to match the session's workdir.

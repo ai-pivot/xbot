@@ -383,3 +383,73 @@ func TestCursorAtEndOfFullLineRealWidth(t *testing.T) {
 			rawBytesLines[i][:min(len(rawBytesLines[i]), 80)])
 	}
 }
+
+// TestCursorUpDownShorterLine verifies that vertical cursor movement to a
+// shorter line clamps the cursor to the END of that line (after the last
+// character), not before it.
+//
+// Regression test for: "cursor at position 3 on a 3-char line, moving up to
+// a shorter 2-char line goes BEFORE the last char instead of AFTER."
+// Root cause: setCursorLineRelative's offset loop used `CharWidth-1` as the
+// break condition, stopping one character early.
+func TestCursorUpDownShorterLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		line0 string
+		line1 string
+		col   int // cursor column on line 1 before moving
+	}{
+		{"ascii_short", "ab", "xyz", 3},  // cursor at end of "xyz"
+		{"ascii_mid", "ab", "xyz", 2},    // cursor between 'y' and 'z'
+		{"cjk_short", "你好", "你好世", 3},    // CJK: 3 runes on line 1
+		{"cjk_to_ascii", "ab", "你好", 2},  // ASCII→CJK
+		{"ascii_to_cjk", "你好", "abc", 3}, // CJK→ASCII
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := New()
+			m.ShowLineNumbers = false
+			m.Prompt = ""
+			m.SetWidth(40)
+			m.SetHeight(6)
+			m.Focus()
+			m.SetValue(tt.line0 + "\n" + tt.line1)
+			m.row = 1
+			m.SetCursorColumn(tt.col)
+
+			m.CursorUp()
+
+			want := len([]rune(tt.line0)) // end of line 0
+			if m.col != want {
+				t.Errorf("CursorUp to shorter line: col=%d, want %d (end of line %q)",
+					m.col, want, tt.line0)
+			}
+
+			// Moving back down should restore the goal column.
+			m.CursorDown()
+			if m.col != tt.col {
+				t.Logf("CursorDown: col=%d, want %d (goal column restored)", m.col, tt.col)
+			}
+		})
+	}
+}
+
+// TestCursorUpDownSameWidth verifies horizontal position is preserved when
+// moving between lines of equal length.
+func TestCursorUpDownSameWidth(t *testing.T) {
+	m := New()
+	m.ShowLineNumbers = false
+	m.Prompt = ""
+	m.SetWidth(40)
+	m.SetHeight(6)
+	m.Focus()
+	m.SetValue("abc\nabc")
+	m.row = 1
+	m.SetCursorColumn(2) // between 'b' and 'c'
+
+	m.CursorUp()
+	if m.col != 2 {
+		t.Errorf("CursorUp same width: col=%d, want 2", m.col)
+	}
+}

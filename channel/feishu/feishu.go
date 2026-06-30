@@ -886,16 +886,28 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		return nil
 	}
 
-	// 跳过机器人自己的消息
-	if sender.SenderType != nil && *sender.SenderType == "bot" {
-		l.WithField("message_id", messageID).Debug("Feishu: bot message, skipping")
-		return nil
-	}
-
-	// 权限检查
+	// 权限检查（提前计算 senderID，供后续多处使用）
 	senderID := ""
 	if sender.SenderId != nil && sender.SenderId.OpenId != nil {
 		senderID = *sender.SenderId.OpenId
+	}
+
+	// 跳过机器人「自己」发出的消息（避免自回复循环）。
+	// 注意：只跳过自己，不跳过其他机器人——群里其他机器人 @本机器人 的消息
+	// 需要正常处理（交由后续 shouldHandleGroupMessage 的 @mention 检测）。
+	if sender.SenderType != nil && *sender.SenderType == "bot" {
+		f.mu.Lock()
+		selfOpenID := f.botOpenID
+		f.mu.Unlock()
+		if selfOpenID != "" && senderID == selfOpenID {
+			l.WithField("message_id", messageID).Debug("Feishu: own bot message, skipping")
+			return nil
+		}
+		// 其他机器人的消息：放行，群聊会走 @mention 检测
+		l.WithFields(log.Fields{
+			"message_id": messageID,
+			"sender_id":  senderID,
+		}).Info("Feishu: message from another bot, proceeding to mention check")
 	}
 	if !f.isAllowed(senderID) {
 		l.WithField("sender", senderID).Warn("Feishu: access denied")

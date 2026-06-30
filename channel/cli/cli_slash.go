@@ -147,52 +147,127 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		}
 
 	case "/su":
-		// /su — Switch user identity:
-		//   /su          — 切回默认身份
-		//   /su <userID> — 切换到指定用户身份
+		// /su — Switch session/identity:
+		//   /su                        — 切回默认身份（cli_user）
+		//   /su <userID>               — 切换到指定用户身份
 		//   /su web:<senderID>[:<token>] — 切换到 Web 端用户
+		//   /su <channel>:<chatID>     — 切换到任意渠道的 session（admin 跨渠道，如 feishu:oc_xxx）
 		m.saveCurrentSession()
 		if len(parts) < 2 {
-			if m.senderID == "cli_user" {
+			if m.senderID == "cli_user" && m.chatID == m.defaultChatID && m.channelName == "cli" {
 				m.showSystemMsg(m.locale.SuAlreadyDefault, feedbackInfo)
 				return nil
 			}
 			m.senderID = "cli_user"
 			m.chatID = m.defaultChatID
+			m.channelName = "cli"
+			// 切回默认时同步重置 workDir（header bar 显示用）
+			if wd, _ := ParseChatID(m.defaultChatID); wd != "" {
+				m.workDir = wd
+			}
 		} else {
 			arg := strings.TrimSpace(parts[1])
-			if strings.HasPrefix(arg, "web:") {
-				webParts := strings.SplitN(strings.TrimPrefix(arg, "web:"), ":", 2)
-				if len(webParts) == 0 || webParts[0] == "" {
-					m.showSystemMsg("❌ 格式: /su web:<senderID>[:<token>]", feedbackInfo)
+			// Detect "channel:chatID" format for cross-channel session switching.
+			if idx := strings.Index(arg, ":"); idx > 0 {
+				chName := arg[:idx]
+				rest := arg[idx+1:]
+				if rest == "" {
+					m.showSystemMsg("❌ 格式: /su <channel>:<chatID>（chatID 不能为空）", feedbackInfo)
 					return nil
 				}
-				m.channelName = "web"
-				m.senderID = webParts[0]
-				m.chatID = webParts[0]
-				m.showSystemMsg(fmt.Sprintf("✅ 已切换到 Web 用户: %s", webParts[0]), feedbackInfo)
+				switch chName {
+				case "web":
+					// web:<senderID>[:<token>] — 保持兼容
+					webParts := strings.SplitN(rest, ":", 2)
+					if webParts[0] == "" {
+						m.showSystemMsg("❌ 格式: /su web:<senderID>[:<token>]", feedbackInfo)
+						return nil
+					}
+					m.channelName = "web"
+					m.senderID = webParts[0]
+					m.chatID = webParts[0]
+					m.showSystemMsg(fmt.Sprintf("✅ 已切换到 Web 用户: %s", webParts[0]), feedbackInfo)
+				default:
+					// 通用跨渠道切换: <channel>:<chatID>（如 feishu:oc_xxx, cli:/path）
+					m.channelName = chName
+					m.chatID = rest
+					m.senderID = rest
+					m.showSystemMsg(fmt.Sprintf("✅ 已切换到 %s session: %s", chName, rest), feedbackInfo)
+				}
+				// 跨渠道切换：workDir 保持为 defaultChatID 的 workDir，
+				// 避免 header bar 显示非路径的 chatID（如 feishu 的 oc_xxx）。
+				if wd, _ := ParseChatID(m.defaultChatID); wd != "" {
+					m.workDir = wd
+				}
 			} else {
-				newID := arg
-				if newID == "cli_user" || newID == "" {
+				// 无冒号 → 普通用户ID切换（保持原有行为）
+				if arg == "cli_user" || arg == "" {
 					m.senderID = "cli_user"
 					m.chatID = m.defaultChatID
+					m.channelName = "cli"
 				} else {
-					m.senderID = newID
-					m.chatID = newID
+					m.senderID = arg
+					m.chatID = arg
+					m.channelName = "cli"
 				}
 			}
 		}
 		// Reset critical state after identity switch, then apply unified setup.
 		m.messages = nil
 		m.invalidateAllCache(false)
+		m.scheduleSessionsRefresh() // 联动侧边栏：确保新 session 出现在列表且标记为活跃
 		m.restoreSession()
 		cmds := m.postRestoreSessionSetup()
 		return tea.Batch(cmds...)
 
+	case "/list-sessions":
+		// /list-sessions — Admin-only: list ALL backend sessions across all channels.
+		// Output format: "channel:chatID" — directly usable by /su.
+		if m.isAdminFn == nil || !m.isAdminFn() {
+			m.showSystemMsg("❌ /list-sessions 仅限 admin 使用", feedbackWarning)
+			return nil
+		}
+		if m.channel == nil || m.channel.config.ListAllTenantsFn == nil {
+			m.showSystemMsg("❌ 无法获取后端 session 列表", feedbackInfo)
+			return nil
+		}
+		sessions, err := m.channel.config.ListAllTenantsFn()
+		if err != nil {
+			m.showSystemMsg("❌ 查询失败: "+err.Error(), feedbackInfo)
+			return nil
+		}
+		if len(sessions) == 0 {
+			m.showSystemMsg("（后端没有任何 session）", feedbackInfo)
+			return nil
+		}
+		var lines []string
+		lines = append(lines, fmt.Sprintf("📋 后端共 %d 个 session（可用 /su <channel>:<chatID> 切换）：", len(sessions)))
+		for _, s := range sessions {
+			active := ""
+			if s.Channel == m.channelName && s.ChatID == m.chatID {
+				active = " ← 当前"
+			}
+			label := s.Label
+			if label == "" {
+				label = "(无名称)"
+			}
+			model := s.Model
+			if model != "" {
+				model = "  模型: " + model
+			}
+			lastActive := s.LastActiveAt
+			if lastActive != "" {
+				lastActive = "  活跃: " + lastActive
+			}
+			lines = append(lines, fmt.Sprintf("  • %s:%s  名称: %s%s%s%s",
+				s.Channel, s.ChatID, label, model, lastActive, active))
+		}
+		m.showSystemMsg(strings.Join(lines, "\n"), feedbackInfo)
+		return nil
+
 	case "/ss", "/sessions":
 		// /ss — Open Sessions panel
 		m.openSessionsPanel()
-
 	case "/rename":
 		// /rename — Rename current session (DB label):
 		//   /rename <new name>  — rename current session

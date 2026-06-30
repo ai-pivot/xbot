@@ -38,6 +38,7 @@ type TenantInfo struct {
 	Channel      string `json:"channel"`
 	ChatID       string `json:"chat_id"`
 	Label        string `json:"label,omitempty"`
+	Model        string `json:"model,omitempty"`
 	CreatedAt    string `json:"created_at"`
 	LastActiveAt string `json:"last_active_at"`
 }

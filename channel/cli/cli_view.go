@@ -890,13 +890,18 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 	var sb strings.Builder
 	// Header: "▾ Todo N/M" + progress bar, padded to full width
 	headerLabel := m.renderSidebarSectionHeader("Todo", false)
-	fmt.Fprintf(&sb, "%s %d/%d", headerLabel, done, total)
-	sb.WriteString(" ")
-	barWidth := 10
+	headerPrefix := fmt.Sprintf("%s %d/%d", headerLabel, done, total)
+	headerPrefixW := lipgloss.Width(headerPrefix)
+	spacerW := 1 // space before progress bar
+	barWidth := w - headerPrefixW - spacerW
+	if barWidth < 3 {
+		barWidth = 3
+	}
 	filled := 0
 	if total > 0 {
 		filled = done * barWidth / total
 	}
+	fmt.Fprintf(&sb, "%s ", headerPrefix)
 	sb.WriteString(s.TodoFilled.Render(strings.Repeat("█", filled)))
 	sb.WriteString(s.TodoEmpty.Render(strings.Repeat("░", barWidth-filled)))
 
@@ -1196,7 +1201,14 @@ func (m *cliModel) View() (v tea.View) {
 	if cx, cy, ok := m.computeInputCursorScreenPos(); ok {
 		v.Cursor = tea.NewCursor(cx, cy)
 		v.Cursor.Shape = tea.CursorBar // bar cursor for text input
-		v.Cursor.Blink = true
+		// Steady (non-blinking) cursor: the terminal manages its own blink
+		// cycle when Blink=true (DECSCUSR 5). During IME CJK commit, if the
+		// terminal cursor is in the "blink-off" phase, the cell at the cursor
+		// position may not repaint correctly, causing a CJK character to
+		// visually disappear (it's still in the buffer). A steady cursor
+		// (DECSCUSR 6) is always visible, eliminating the blink race.
+		// This matches the intent of styles.Cursor.Blink=false in applyTAStyles.
+		v.Cursor.Blink = false
 		v.Cursor.Color = m.styles.TACursor.GetForeground()
 	}
 
