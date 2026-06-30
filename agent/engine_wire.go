@@ -290,7 +290,9 @@ func (a *Agent) buildMainRunConfig(
 		// Legacy fallback: send progress text as messages (no patch support)
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
-				_ = a.sendMessage(channel, chatID, lines[0])
+				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
+					log.Warn("Failed to send progress: ", err)
+				}
 			}
 		}
 	}
@@ -1332,7 +1334,9 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 					last = last[idx+1:]
 				}
 				prefixed := "📋 subagent: [" + rn + "] " + last + "\n"
-				_ = a.sendMessage(originChannel, originChatID, prefixed)
+				if err := a.sendMessage(originChannel, originChatID, prefixed); err != nil {
+					log.Warn("Failed to send prefixed output: ", err)
+				}
 			}
 		}
 	} else if originChannel == "cli" {
@@ -1362,7 +1366,9 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
-	_ = agentTenantSession.Clear()
+	if err := agentTenantSession.Clear(); err != nil {
+		log.Warn("Failed to clear agent tenant session: ", err)
+	}
 
 	// Eager-save user message so get_history returns it during Run().
 	if err := agentTenantSession.AddMessage(llm.NewUserMessage(task)); err != nil {

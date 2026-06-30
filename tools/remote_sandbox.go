@@ -85,6 +85,23 @@ type RemoteSandbox struct {
 	OnSyncProgress       func(userID string, phase string, message string)
 }
 
+// parseSandboxErrorResponse unmarshals a ProtoError body and returns a
+// descriptive error. It maps the "ENOENT" code to os.ErrNotExist so callers
+// can use os.IsNotExist. opName is used as a prefix (e.g. "read file").
+func parseSandboxErrorResponse(raw json.RawMessage, opName string) error {
+	var e ErrorResponse
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return fmt.Errorf("%s error (raw: %s): unmarshal failed: %w", opName, string(raw), err)
+	}
+	if e.Code == "ENOENT" {
+		return os.ErrNotExist
+	}
+	if e.Message == "" {
+		return fmt.Errorf("%s error (raw: %s)", opName, string(raw))
+	}
+	return fmt.Errorf("%s: %s", opName, e.Message)
+}
+
 // NewRemoteSandbox creates and starts a RemoteSandbox server.
 func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) (*RemoteSandbox, error) {
 	if cfg.Addr == "" {
@@ -714,14 +731,7 @@ func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 	}
 
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("exec error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("exec error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("exec error: %s", e.Message)
+		return nil, parseSandboxErrorResponse(resp.Body, "exec")
 	}
 
 	var result ExecResultResponse
@@ -770,15 +780,8 @@ func (rs *RemoteSandbox) ExecBg(ctx context.Context, spec ExecSpec, taskID strin
 		return err
 	}
 
-	if resp.Type == runnerproto.ProtoError {
-		var e runnerproto.ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("bg_exec error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("bg_exec error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("bg_exec error: %s", e.Message)
+	if resp.Type == ProtoError {
+		return parseSandboxErrorResponse(resp.Body, "bg_exec")
 	}
 
 	return nil
@@ -807,15 +810,8 @@ func (rs *RemoteSandbox) KillBg(ctx context.Context, userID, taskID string) erro
 		return err
 	}
 
-	if resp.Type == runnerproto.ProtoError {
-		var e runnerproto.ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("bg_kill error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("bg_kill error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("bg_kill error: %s", e.Message)
+	if resp.Type == ProtoError {
+		return parseSandboxErrorResponse(resp.Body, "bg_kill")
 	}
 
 	return nil
@@ -844,15 +840,8 @@ func (rs *RemoteSandbox) StatusBg(ctx context.Context, userID, taskID string) (*
 		return nil, err
 	}
 
-	if resp.Type == runnerproto.ProtoError {
-		var e runnerproto.ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("bg_status error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("bg_status error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("bg_status error: %s", e.Message)
+	if resp.Type == ProtoError {
+		return nil, parseSandboxErrorResponse(resp.Body, "bg_status")
 	}
 
 	var result runnerproto.BgOutputResponse
@@ -908,15 +897,8 @@ func (rs *RemoteSandbox) LLMGenerate(ctx context.Context, userID, model string, 
 		return nil, err
 	}
 
-	if resp.Type == runnerproto.ProtoError {
-		var e runnerproto.ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("llm_generate error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("llm_generate error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("llm_generate error: %s", e.Message)
+	if resp.Type == ProtoError {
+		return nil, parseSandboxErrorResponse(resp.Body, "llm_generate")
 	}
 
 	var result llm.LLMResponse
@@ -945,15 +927,8 @@ func (rs *RemoteSandbox) LLMModels(ctx context.Context, userID string) ([]string
 		return nil, err
 	}
 
-	if resp.Type == runnerproto.ProtoError {
-		var e runnerproto.ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("llm_models error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("llm_models error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("llm_models error: %s", e.Message)
+	if resp.Type == ProtoError {
+		return nil, parseSandboxErrorResponse(resp.Body, "llm_models")
 	}
 
 	var result llm.LLMListModelsResponse
@@ -980,17 +955,7 @@ func (rs *RemoteSandbox) ReadFile(ctx context.Context, path, userID string) ([]b
 		return nil, err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("read file error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Code == "ENOENT" {
-			return nil, os.ErrNotExist
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("read file error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("read file: %s", e.Message)
+		return nil, parseSandboxErrorResponse(resp.Body, "read file")
 	}
 	var fc FileContentResponse
 	if err := json.Unmarshal(resp.Body, &fc); err != nil {
@@ -1019,14 +984,7 @@ func (rs *RemoteSandbox) WriteFile(ctx context.Context, path string, data []byte
 		return err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("write file error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("write file error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("write file: %s", e.Message)
+		return parseSandboxErrorResponse(resp.Body, "write file")
 	}
 	return nil
 }
@@ -1046,17 +1004,7 @@ func (rs *RemoteSandbox) Stat(ctx context.Context, path, userID string) (*Sandbo
 		return nil, err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("stat error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Code == "ENOENT" {
-			return nil, os.ErrNotExist
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("stat error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("stat: %s", e.Message)
+		return nil, parseSandboxErrorResponse(resp.Body, "stat")
 	}
 	var sr StatResponse
 	if err := json.Unmarshal(resp.Body, &sr); err != nil {
@@ -1087,14 +1035,7 @@ func (rs *RemoteSandbox) ReadDir(ctx context.Context, path, userID string) ([]Di
 		return nil, err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return nil, fmt.Errorf("read_dir error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return nil, fmt.Errorf("read_dir error (raw: %s)", string(resp.Body))
-		}
-		return nil, fmt.Errorf("read_dir: %s", e.Message)
+		return nil, parseSandboxErrorResponse(resp.Body, "read_dir")
 	}
 	var de DirEntriesResponse
 	if err := json.Unmarshal(resp.Body, &de); err != nil {
@@ -1122,14 +1063,7 @@ func (rs *RemoteSandbox) MkdirAll(ctx context.Context, path string, perm os.File
 		return err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("mkdir_all error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("mkdir_all error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("mkdir_all: %s", e.Message)
+		return parseSandboxErrorResponse(resp.Body, "mkdir_all")
 	}
 	return nil
 }
@@ -1149,14 +1083,7 @@ func (rs *RemoteSandbox) Remove(ctx context.Context, path, userID string) error 
 		return err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("remove error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("remove error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("remove: %s", e.Message)
+		return parseSandboxErrorResponse(resp.Body, "remove")
 	}
 	return nil
 }
@@ -1176,14 +1103,7 @@ func (rs *RemoteSandbox) RemoveAll(ctx context.Context, path, userID string) err
 		return err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("remove_all error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("remove_all error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("remove_all: %s", e.Message)
+		return parseSandboxErrorResponse(resp.Body, "remove_all")
 	}
 	return nil
 }
@@ -1207,14 +1127,7 @@ func (rs *RemoteSandbox) DownloadFile(ctx context.Context, url, outputPath, user
 		return err
 	}
 	if resp.Type == ProtoError {
-		var e ErrorResponse
-		if err := json.Unmarshal(resp.Body, &e); err != nil {
-			return fmt.Errorf("download_file error (raw: %s): unmarshal failed: %w", string(resp.Body), err)
-		}
-		if e.Message == "" {
-			return fmt.Errorf("download_file error (raw: %s)", string(resp.Body))
-		}
-		return fmt.Errorf("download_file: %s", e.Message)
+		return parseSandboxErrorResponse(resp.Body, "download_file")
 	}
 	return nil
 }

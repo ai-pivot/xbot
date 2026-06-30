@@ -71,7 +71,7 @@ func (pl *PromptLoader) load() {
 		fallback = "你是 xbot。渠道：{{.Channel}} | 工作目录：{{.WorkDir}} | 当前目录：{{.CWD}}\n"
 	}
 	if t, err := template.New("system").Parse(fallback); err != nil {
-		log.Fatalf("Failed to parse default system prompt template: %v", err)
+		log.WithError(err).Error("Failed to parse fallback prompt template")
 	} else {
 		pl.tmpl = t
 	}

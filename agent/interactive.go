@@ -433,7 +433,9 @@ func (a *Agent) destroyInteractiveSession(key string) {
 
 	// Destroy tenant session (cache + DB with CASCADE to messages)
 	if a.multiSession != nil {
-		_ = a.multiSession.DestroySession("agent", key)
+		if err := a.multiSession.DestroySession("agent", key); err != nil {
+			log.Warn("Failed to destroy agent session: ", err)
+		}
 	}
 }
 
@@ -578,7 +580,9 @@ func (a *Agent) SpawnInteractiveSession(
 	// Clear any stale messages from a previous session with the same key.
 	// This can happen after server restart (DB retains old tenant data) or
 	// if destroyInteractiveSession's DeleteTenant failed silently.
-	_ = agentTenantSession.Clear()
+	if err := agentTenantSession.Clear(); err != nil {
+		log.Warn("Failed to clear agent tenant session: ", err)
+	}
 
 	// Eager-save user message so get_history returns it during Run().
 	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no

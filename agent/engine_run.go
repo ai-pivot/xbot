@@ -1479,44 +1479,53 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	return nil
 }
 
-// injectBgTaskNotification injects a bg task completion as a synthetic tool call/result pair.
-func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, bgTask *tools.BackgroundTask) {
-	bgContent := tools.FormatBgTaskCompletion(bgTask, "")
-	bgAssistantMsg := llm.ChatMessage{
+// injectSyntheticToolPair is the shared template for injecting a synthetic
+// assistant tool-call + tool-result pair into the Run loop. All injectXxx
+// helpers delegate to this function so that offload, persistence, and
+// progress-notification logic is defined in exactly one place.
+func (s *runState) injectSyntheticToolPair(
+	ctx context.Context,
+	iteration int,
+	toolName, toolID, assistantContent, toolContent, progressLabel string,
+	progressElapsed time.Duration,
+) {
+	assistantMsg := llm.ChatMessage{
 		Role:    "assistant",
-		Content: "A background task has completed. Let me check the result.",
+		Content: assistantContent,
 		ToolCalls: []llm.ToolCall{{
-			ID:   "bg_" + bgTask.ID,
-			Name: "background_task_result",
+			ID:   toolID,
+			Name: toolName,
 		}},
 	}
+
+	content := toolContent
 	if s.cfg.OffloadStore != nil {
-		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, "background_task_result", "", bgContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
-			bgContent = offloaded.Summary
+		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", content, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
+			content = offloaded.Summary
 			GlobalMetrics.OffloadEvents.Add(1)
 			GlobalMetrics.OffloadedItems.Add(1)
 		}
 	}
-	bgToolMsg := llm.NewToolMessage("background_task_result", "bg_"+bgTask.ID, "", bgContent)
-	s.messages = s.syncMessages(append(s.messages, bgAssistantMsg, bgToolMsg))
-	log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
+
+	toolMsg := llm.NewToolMessage(toolName, toolID, "", content)
+	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
 
 	if s.cfg.Session != nil {
-		_ = s.cfg.Session.AddMessage(bgAssistantMsg)
-		_ = s.cfg.Session.AddMessage(bgToolMsg)
+		if err := s.cfg.Session.AddMessage(assistantMsg); err != nil {
+			log.Ctx(ctx).Warn("Failed to persist synthetic assistant message: ", err)
+		}
+		if err := s.cfg.Session.AddMessage(toolMsg); err != nil {
+			log.Ctx(ctx).Warn("Failed to persist synthetic tool message: ", err)
+		}
 		s.persistence.MarkAllPersisted(len(s.messages))
 	}
 
 	if s.structuredProgress != nil {
-		var elapsed time.Duration
-		if bgTask.FinishedAt != nil {
-			elapsed = bgTask.FinishedAt.Sub(bgTask.StartedAt)
-		}
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
-			Name:      "background_task_result",
-			Label:     fmt.Sprintf("bg:%s", bgTask.ID),
+			Name:      toolName,
+			Label:     progressLabel,
 			Status:    ToolDone,
-			Elapsed:   elapsed,
+			Elapsed:   progressElapsed,
 			Iteration: iteration,
 		})
 		if s.autoNotify {
@@ -1525,11 +1534,25 @@ func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, 
 	}
 }
 
+// injectBgTaskNotification injects a bg task completion as a synthetic tool call/result pair.
+func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, bgTask *tools.BackgroundTask) {
+	content := tools.FormatBgTaskCompletion(bgTask, "")
+	var elapsed time.Duration
+	if bgTask.FinishedAt != nil {
+		elapsed = bgTask.FinishedAt.Sub(bgTask.StartedAt)
+	}
+	s.injectSyntheticToolPair(ctx, iteration,
+		"background_task_result", "bg_"+bgTask.ID,
+		"A background task has completed. Let me check the result.",
+		content, fmt.Sprintf("bg:%s", bgTask.ID), elapsed,
+	)
+	log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
+}
+
 // injectSubAgentBgNotification injects a bg subagent notification as a synthetic tool call/result pair.
 // Progress notifications are dropped entirely — they would pollute the parent's TUI and waste LLM tokens.
 // Only completed notifications are injected (as tool messages) and shown in the TUI progress block.
 func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration int, n *tools.SubAgentBgNotify) {
-	// Drop progress notifications — only completion matters for the parent agent
 	if n.Type == tools.SubAgentBgNotifyProgress {
 		log.Ctx(ctx).WithFields(log.Fields{
 			"role":     n.Role,
@@ -1537,95 +1560,32 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 		}).Debug("Dropping bg subagent progress notification in Run loop")
 		return
 	}
-	bgContent := tools.FormatSubAgentBgNotify(n)
 	toolName := "bg_subagent_" + string(n.Type)
 	toolID := fmt.Sprintf("bgsub_%s_%s", n.Role, n.Instance)
-	assistantMsg := llm.ChatMessage{
-		Role:    "assistant",
-		Content: fmt.Sprintf("Background subagent %s has a %s update.", n.Role, n.Type),
-		ToolCalls: []llm.ToolCall{{
-			ID:   toolID,
-			Name: toolName,
-		}},
-	}
-	if s.cfg.OffloadStore != nil {
-		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", bgContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
-			bgContent = offloaded.Summary
-			GlobalMetrics.OffloadEvents.Add(1)
-			GlobalMetrics.OffloadedItems.Add(1)
-		}
-	}
-	toolMsg := llm.NewToolMessage(toolName, toolID, "", bgContent)
-	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
+	content := tools.FormatSubAgentBgNotify(n)
+	s.injectSyntheticToolPair(ctx, iteration,
+		toolName, toolID,
+		fmt.Sprintf("Background subagent %s has a %s update.", n.Role, n.Type),
+		content, fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance), 0,
+	)
 	log.Ctx(ctx).WithFields(log.Fields{
 		"role":     n.Role,
 		"instance": n.Instance,
 		"type":     n.Type,
 	}).Info("Injected bg subagent notification into Run loop")
-
-	if s.cfg.Session != nil {
-		_ = s.cfg.Session.AddMessage(assistantMsg)
-		_ = s.cfg.Session.AddMessage(toolMsg)
-		s.persistence.MarkAllPersisted(len(s.messages))
-	}
-
-	// Show completion in TUI progress block
-	if s.structuredProgress != nil {
-		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
-			Name:      toolName,
-			Label:     fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance),
-			Status:    ToolDone,
-			Iteration: iteration,
-		})
-		if s.autoNotify {
-			s.notifyProgress("")
-		}
-	}
 }
 
 // injectCronFiredNotification injects a cron fired notification as a synthetic tool call/result pair.
 // Cron messages are injected as tool results so the LLM can act on them during the current Run.
 func (s *runState) injectCronFiredNotification(ctx context.Context, iteration int, c *tools.CronFired) {
-	bgContent := fmt.Sprintf("⏰ A scheduled cron job has fired.\n\nMessage: %s", c.Message)
-	toolName := "cron_fired"
+	content := fmt.Sprintf("⏰ A scheduled cron job has fired.\n\nMessage: %s", c.Message)
 	toolID := "cron_" + c.SessionKey()
-	assistantMsg := llm.ChatMessage{
-		Role:    "assistant",
-		Content: "A scheduled cron job has fired. Let me process it.",
-		ToolCalls: []llm.ToolCall{{
-			ID:   toolID,
-			Name: toolName,
-		}},
-	}
-	if s.cfg.OffloadStore != nil {
-		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", bgContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
-			bgContent = offloaded.Summary
-			GlobalMetrics.OffloadEvents.Add(1)
-			GlobalMetrics.OffloadedItems.Add(1)
-		}
-	}
-	toolMsg := llm.NewToolMessage(toolName, toolID, "", bgContent)
-	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
+	s.injectSyntheticToolPair(ctx, iteration,
+		"cron_fired", toolID,
+		"A scheduled cron job has fired. Let me process it.",
+		content, "cron", 0,
+	)
 	log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
-
-	if s.cfg.Session != nil {
-		_ = s.cfg.Session.AddMessage(assistantMsg)
-		_ = s.cfg.Session.AddMessage(toolMsg)
-		s.persistence.MarkAllPersisted(len(s.messages))
-	}
-
-	// Show in TUI progress block
-	if s.structuredProgress != nil {
-		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
-			Name:      toolName,
-			Label:     "cron",
-			Status:    ToolDone,
-			Iteration: iteration,
-		})
-		if s.autoNotify {
-			s.notifyProgress("")
-		}
-	}
 }
 
 // injectQueuedUserMessage injects a user message that was delivered while the SubAgent
@@ -1636,56 +1596,21 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m *tools.QueuedUserMessage) {
 	toolName := "delivered_message"
 	toolID := fmt.Sprintf("delivered_%d_%d", iteration, time.Now().UnixNano())
+	content := fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", m.Content)
 
-	bgContent := fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", m.Content)
-
-	assistantMsg := llm.ChatMessage{
-		Role:    "assistant",
-		Content: "A message from the parent agent was delivered while I was working.",
-		ToolCalls: []llm.ToolCall{{
-			ID:   toolID,
-			Name: toolName,
-		}},
-	}
-
-	if s.cfg.OffloadStore != nil {
-		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", bgContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
-			bgContent = offloaded.Summary
-			GlobalMetrics.OffloadEvents.Add(1)
-			GlobalMetrics.OffloadedItems.Add(1)
-		}
-	}
-
-	toolMsg := llm.NewToolMessage(toolName, toolID, "", bgContent)
-	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
+	s.injectSyntheticToolPair(ctx, iteration,
+		toolName, toolID,
+		"A message from the parent agent was delivered while I was working.",
+		content, "delivered_message", 0,
+	)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"content_len": len(m.Content),
 		"iteration":   iteration,
 	}).Info("Injected queued user message into SubAgent Run loop")
 
-	if s.cfg.Session != nil {
-		_ = s.cfg.Session.AddMessage(assistantMsg)
-		_ = s.cfg.Session.AddMessage(toolMsg)
-		s.persistence.MarkAllPersisted(len(s.messages))
-	}
-
-	// Notify sender of successful delivery
 	if m.ReplyFn != nil {
 		m.ReplyFn(nil)
-	}
-
-	// Show in TUI progress block
-	if s.structuredProgress != nil {
-		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
-			Name:      toolName,
-			Label:     "delivered_message",
-			Status:    ToolDone,
-			Iteration: iteration,
-		})
-		if s.autoNotify {
-			s.notifyProgress("")
-		}
 	}
 }
 
