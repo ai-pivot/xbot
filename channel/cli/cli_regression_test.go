@@ -247,6 +247,52 @@ func TestSnapshotIterationChange_PendingToolsCaptured(t *testing.T) {
 	}
 }
 
+// ─── Fix 7: HistoryCompacted handler must return early ─────────────
+
+// TestHistoryCompacted_NoStaleSnapshot verifies that the HistoryCompacted
+// handler returns early, preventing snapshotIterationChange from creating
+// a stale snapshot from pre-compression prev data.
+func TestHistoryCompacted_NoStaleSnapshot(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Build up some iteration history
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "f.go", Status: "running", Iteration: 1},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 2,
+	})
+
+	preCompressCount := len(model.progressState.iterations)
+	if preCompressCount == 0 {
+		t.Fatal("should have iterations before compression")
+	}
+
+	// HistoryCompacted event
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:            "thinking",
+		Iteration:        2,
+		HistoryCompacted: true,
+	})
+
+	// After HistoryCompacted, iterations should be cleared (handler sets nil)
+	// and NO stale snapshot should be created from prev
+	if len(model.progressState.iterations) != 0 {
+		t.Errorf("iterations should be cleared after HistoryCompacted, got %d (stale snapshot leaked)",
+			len(model.progressState.iterations))
+	}
+	// lastIter should be 0 (cleared by handler)
+	if model.progressState.lastIter != 0 {
+		t.Errorf("lastIter should be 0 after HistoryCompacted, got %d", model.progressState.lastIter)
+	}
+}
+
 // ─── Fix 3: Queued (pending) tools visible ──────────────────────────
 
 // TestLiveIterationBlocks_PendingToolsVisible verifies that tools with

@@ -429,6 +429,13 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		//
 		// compReloading=true blocks auto-start (startAgentTurn) during the
 		// async reload, so no progress event can create another assistant.
+
+		// RETURN: do not fall through to snapshotIterationChange or
+		// updateViewportContent. After compression, prev (captured before
+		// this handler) holds pre-compression data — snapshotIterationChange
+		// would use it to create a stale snapshot, polluting iteration history.
+		// The async reload will rebuild messages and viewport from DB.
+		return
 	}
 
 	// Cache token usage for context bar display — every progress event
